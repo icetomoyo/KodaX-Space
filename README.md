@@ -169,3 +169,5 @@ KodaX Space 定位为**自家与可信用户使用**，不走"陌生人公开 Be
 [KodaX-AI Fair Core License (KAI-FCL)](LICENSE) © 2026 icetomoyo.
 
 Earlier KodaX Space releases that shipped under Apache-2.0 remain under Apache-2.0 for those released copies. KAI-FCL is source-available / fair-core, not OSI open source; commercial, enterprise, managed deployment, or customer redistribution use requires KodaX-AI authorization and a valid entitlement where required.
+
+KodaX-AI's current official licensing policy is that KodaX Space 0.1.27 and later are provided under KAI-FCL or accompanying KodaX-AI customer terms when distributed by KodaX-AI with that notice. Historical tags, source archives, installers, or other copies already distributed with Apache-2.0 notices remain under Apache-2.0 for those specific copies.

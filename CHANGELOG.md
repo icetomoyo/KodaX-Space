@@ -16,7 +16,7 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ### Changed
 
-- **Project license switched to KAI-FCL** - Future releases now use the source-available KodaX-AI Fair Core License (`KAI-FCL`) in `LICENSE`, README badges/copy, and root package metadata. Earlier KodaX Space releases that shipped under Apache-2.0 remain under Apache-2.0 for those released copies; dependency license metadata is unchanged.
+- **Project license switched to KAI-FCL** - Current and future official KodaX-AI distributions for KodaX Space 0.1.27 and later use the source-available KodaX-AI Fair Core License (`KAI-FCL`) or accompanying customer terms when distributed with that notice. Historical tags, source archives, installers, or other copies already distributed with Apache-2.0 notices remain under Apache-2.0 for those specific copies; dependency license metadata is unchanged.
 
 ## [0.1.28] - 2026-07-06
 
