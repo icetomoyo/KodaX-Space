@@ -10,6 +10,21 @@ Earlier KodaX Space releases or files that were distributed under the Apache
 License, Version 2.0 remain licensed under Apache-2.0 for those released
 copies. Third-party components remain governed by their own license terms.
 
+Effective Version Notice
+
+KodaX-AI intends KAI-FCL to govern official KodaX Space distributions for
+version 0.1.27 and later when those distributions are provided by KodaX-AI with
+this LICENSE file, a KAI-FCL notice, or accompanying customer terms.
+
+Historical Git tags, source archives, installers, or other copies of KodaX Space
+that were already distributed with Apache-2.0 license text remain licensed under
+Apache-2.0 for those specific copies. This notice does not retroactively revoke
+rights that were already granted under Apache-2.0.
+
+For avoidance of doubt, current and future official enterprise/customer
+packages for KodaX Space 0.1.27 and later should be delivered with KAI-FCL or
+separate KodaX-AI customer terms.
+
 1. Definitions
 
 "Software" means KodaX Space, including its source code, object code,
