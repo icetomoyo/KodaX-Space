@@ -1,5 +1,6 @@
 # KodaX Space Feature List
 
+> 2026-07-06 (license distribution update: the root `LICENSE`, README license copy, and package metadata now use KodaX-AI Fair Core License (`KAI-FCL`) prospectively. Earlier Apache-2.0 releases remain under Apache-2.0 for those released copies; dependency license metadata is unchanged, and remaining F098/F101 work is operational distribution governance rather than the public license-file switch.)
 > Last Updated: 2026-07-06 (v0.1.28 released).
 > 2026-07-06 (v0.1.28 released: **React 18 → 19 upgrade** (renderer + `space-ui-kit`, type-transparent via an ambient `JSX` shim), **KodaX 0.7.61 SDK catch-up**, **bash-output-compression rendering** (SDK compression markers surfaced as a `BashCompressedResult` tool card + raw-output link), and a **packaged-Terminal fix** (`node-pty` shipped as an extra resource on Node's runtime module path + `smoke-pack` guard) so the built-in Terminal works in installers. Documentation refresh: new `docs/USER_MANUAL.zh-CN.md`, per-version feature docs + this ledger aligned, README version badge → 0.1.28. Version bumped to 0.1.28 across root + desktop + packages + lockfile. See [features/v0.1.28.md](features/v0.1.28.md).)
 > Last Updated: 2026-07-05 (Partner/Cowork gap review planning; v0.2.x patch-lane cadence normalized).

@@ -4,7 +4,7 @@
   "description": "KodaX Space — Provider-neutral, local-first AI agent desktop client (KodaX 生态桌面客户端)",
   "private": true,
   "type": "module",
-  "license": "Apache-2.0",
+  "license": "SEE LICENSE IN LICENSE",
   "author": "icetomoyo <icetomoyo@gmail.com>",
   "repository": {
     "type": "git",
