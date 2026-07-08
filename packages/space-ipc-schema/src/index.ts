@@ -334,6 +334,7 @@ export {
   artifactDeleteChannel,
   artifactExportChannel,
   artifactOpenWindowChannel,
+  artifactPreviewFileChannel,
   artifactChangedChannel,
   looksLikeInteractiveHtml,
   MAX_ARTIFACT_CONTENT_BYTES,

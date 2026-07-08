@@ -15,6 +15,7 @@ export interface TransientArtifactSnapshot {
   id: string;
   kind: ArtifactKindT;
   title: string;
+  source?: 'artifact' | 'file-preview';
   version?: number;
   summary?: string;
   content?: string;
@@ -93,6 +94,7 @@ export function snapshotFromCreateArtifactTool(
     id,
     kind,
     title,
+    source: 'artifact',
     version,
     ...(summary !== undefined ? { summary } : {}),
     ...(content !== undefined ? { content } : {}),

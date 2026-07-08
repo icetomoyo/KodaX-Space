@@ -265,6 +265,10 @@ function transientPayloadsFromSnapshot(
   );
 }
 
+function isFilePreviewSnapshot(snapshot: TransientArtifactSnapshot): boolean {
+  return snapshot.source === 'file-preview';
+}
+
 /**
  * @param focusedId 由宿主（RightSidebar）锁存的"要聚焦的 artifact id"。用于"从概览 tab 点
  *   对话卡片"场景：此组件当时还没挂载、错过 window 事件，靠这个 prop 在挂载时认领选中。
@@ -331,9 +335,14 @@ export function ArtifactsView({
     return [...byId.values()];
   }, [transcriptArtifacts, transientSnapshot]);
 
+  const listedTransientArtifacts = useMemo(
+    () => transientArtifacts.filter((snapshot) => !isFilePreviewSnapshot(snapshot)),
+    [transientArtifacts],
+  );
+
   const transientRefs = useMemo(
-    () => transientArtifacts.map((snapshot) => transientRefFromSnapshot(snapshot, sessionId)),
-    [transientArtifacts, sessionId],
+    () => listedTransientArtifacts.map((snapshot) => transientRefFromSnapshot(snapshot, sessionId)),
+    [listedTransientArtifacts, sessionId],
   );
 
   const artifactChoices = useMemo(() => {
@@ -351,7 +360,7 @@ export function ArtifactsView({
       ? selectedId !== null
         ? (transientArtifacts.find((a) => a.id === selectedId) ?? null)
         : artifacts.length === 0
-          ? (transientArtifacts[0] ?? null)
+          ? (listedTransientArtifacts[0] ?? null)
           : null
       : null;
   const transientSelected = selectedTransientSnapshot
@@ -361,6 +370,8 @@ export function ArtifactsView({
   const selectedPayloadOverrides = selectedTransientSnapshot
     ? transientPayloadsFromSnapshot(selectedTransientSnapshot)
     : undefined;
+  const selectedIsFilePreview =
+    selectedTransientSnapshot !== null && isFilePreviewSnapshot(selectedTransientSnapshot);
 
   if (artifacts.length === 0 && !selected) {
     if (!loading && error) return <ArtifactsErrorState error={error} />;
@@ -383,7 +394,28 @@ export function ArtifactsView({
           {t('artifact.refreshFailed')}
         </div>
       )}
-      {artifactChoices.length > 1 && (
+      {selectedIsFilePreview && selected && (
+        <div
+          data-testid="artifact-preview-title"
+          className="flex flex-shrink-0 items-center gap-2 border-b border-border-default px-3 py-1.5 font-mono text-[11px] text-fg-muted"
+        >
+          <span className="min-w-0 flex-1 truncate" title={selected.title}>
+            {selected.title}
+          </span>
+          {artifactChoices.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setSelectedId(artifactChoices[0]?.id ?? null)}
+              className="inline-flex h-5 w-5 flex-shrink-0 items-center justify-center rounded text-fg-muted hover:bg-surface-3 hover:text-fg-primary"
+              title={t('right.openArtifactWorkspace')}
+              aria-label={t('right.openArtifactWorkspace')}
+            >
+              <FileOutput className="h-3.5 w-3.5" strokeWidth={1.65} aria-hidden />
+            </button>
+          )}
+        </div>
+      )}
+      {!selectedIsFilePreview && artifactChoices.length > 1 && (
         <div className="px-3 py-1.5 border-b border-border-default flex-shrink-0">
           <select
             data-testid="artifact-selector"

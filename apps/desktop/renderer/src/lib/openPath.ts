@@ -53,6 +53,34 @@ function pathBackedArtifactKind(kind: RichPreviewKind): ArtifactKindT {
   return kind === 'pdf' || kind === 'docx' || kind === 'xlsx' ? kind : 'file';
 }
 
+function filePreviewSnapshot(detail: {
+  readonly projectRoot: string;
+  readonly relPath: string;
+  readonly kind: ArtifactKindT;
+  readonly title: string;
+  readonly content?: string;
+  readonly path?: string;
+}): TransientArtifactSnapshot {
+  const version = 1;
+  const path = detail.path ?? detail.relPath;
+  return {
+    id: `file-preview-${hashId(`${detail.projectRoot}::${detail.relPath}`)}`,
+    kind: detail.kind,
+    title: detail.title,
+    source: 'file-preview',
+    version,
+    ...(detail.content !== undefined ? { content: detail.content } : {}),
+    ...(path !== undefined ? { path } : {}),
+    versions: [
+      {
+        v: version,
+        ...(detail.content !== undefined ? { content: detail.content } : {}),
+        ...(path !== undefined ? { path } : {}),
+      },
+    ],
+  };
+}
+
 function focusArtifactInSidebar(detail: {
   readonly id?: string;
   readonly snapshot?: TransientArtifactSnapshot;
@@ -93,17 +121,15 @@ async function previewPathBackedFileAsTransient(
     return false;
   }
 
-  const id = `file-preview-${hashId(`${ctx.projectRoot}::${relPath}`)}`;
-  const snapshot: TransientArtifactSnapshot = {
-    id,
+  const snapshot = filePreviewSnapshot({
+    projectRoot: ctx.projectRoot,
+    relPath,
     kind: pathBackedArtifactKind(kind),
     title: relPath,
     path: relPath,
-    version: 1,
-    versions: [{ v: 1, path: relPath }],
-  };
+  });
 
-  focusArtifactInSidebar({ id, snapshot });
+  focusArtifactInSidebar({ id: snapshot.id, snapshot });
   return true;
 }
 
@@ -171,9 +197,15 @@ export async function previewFileAsArtifact(rawPath: string, ctx: PreviewCtx): P
       notifyFailure(r.error?.message ?? translateMessage('common.unknownError'));
       return false;
     }
-    // 确保右侧栏开着，然后切到 Artifact tab + 选中该 id（RightSidebar / ArtifactsView 监听此事件）。
-    useAppStore.getState().setRightSidebarOpen(true);
-    focusArtifactInSidebar({ id: r.data.id });
+    const snapshot = filePreviewSnapshot({
+      projectRoot: ctx.projectRoot,
+      relPath: rel,
+      kind: r.data.kind,
+      title: r.data.title,
+      ...(r.data.content !== undefined ? { content: r.data.content } : {}),
+      ...(r.data.path !== undefined ? { path: r.data.path } : {}),
+    });
+    focusArtifactInSidebar({ id: snapshot.id, snapshot });
     return true;
   } catch (err) {
     notifyFailure(

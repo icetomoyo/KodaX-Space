@@ -105,10 +105,6 @@ function isPathPreviewKind(kind: ArtifactKindT): kind is 'pdf' | 'docx' | 'xlsx'
   return kind === 'pdf' || kind === 'docx' || kind === 'xlsx' || kind === 'file';
 }
 
-function isHtmlPreviewKind(kind: ArtifactKindT): boolean {
-  return kind === 'html' || kind === 'interactive-html';
-}
-
 export function previewKindForContent(path: string, content: string): ArtifactKindT {
   const kind = previewKindForPath(path);
   return kind === 'html' && looksLikeInteractiveHtml(content) ? 'interactive-html' : kind;
@@ -323,7 +319,8 @@ export function registerArtifactChannels(): void {
     return { id: res.id, version: res.version };
   });
 
-  // 一键预览：把一个已写盘的可预览文件提级为 Artifact（content 来自磁盘）。
+  // Read-only preview: opening a file in the Artifact surface must not persist it
+  // into the generated-artifact list.
   registerChannel('artifact.previewFile', async (input) => {
     await projectStore.assertAllowed(input.projectRoot);
     const absPath = await resolveInsideProject(input.projectRoot, input.path);
@@ -344,20 +341,11 @@ export function registerArtifactChannels(): void {
     }
 
     if (isPathPreviewKind(pathKind)) {
-      const res = await artifactStore.upsert({
-        sessionId: input.sessionId,
-        surface: input.surface,
-        kind: pathKind,
+      return {
         title,
+        kind: pathKind,
         path: input.path,
-        dedupeKey: { title, kind: pathKind },
-      });
-      pushToRenderer('artifact.changed', {
-        id: res.id,
-        sessionId: input.sessionId,
-        reason: res.created ? 'created' : 'version',
-      });
-      return { id: res.id, version: res.version, kind: pathKind };
+      };
     }
 
     let read;
@@ -378,24 +366,16 @@ export function registerArtifactChannels(): void {
       kind === 'markdown'
         ? await inlineMarkdownImageAssets(read.content, absPath, input.projectRoot)
         : read.content;
+    if (Buffer.byteLength(content, 'utf8') > MAX_ARTIFACT_CONTENT_BYTES) {
+      throw new Error('file too large to preview');
+    }
 
-    // 去重：同一 session 已有同 title+kind 的预览 artifact → 复用其 id 升版本，避免反复点"预览"
-    // 刷出一堆副本。C13: 去重查找移进 store.upsert 的写锁内（dedupeKey），消除 list→upsert 的
-    // check-then-act 竞态（两次快速预览曾各建一个新 UUID）。htmlFamily 让 html/interactive-html 同桶。
-    const res = await artifactStore.upsert({
-      sessionId: input.sessionId,
-      surface: input.surface,
+    return {
       kind,
       title,
       content,
-      dedupeKey: { title, kind, htmlFamily: isHtmlPreviewKind(kind) },
-    });
-    pushToRenderer('artifact.changed', {
-      id: res.id,
-      sessionId: input.sessionId,
-      reason: res.created ? 'created' : 'version',
-    });
-    return { id: res.id, version: res.version, kind };
+      path: input.path,
+    };
   });
 
   registerChannel('artifact.list', async (input) => {

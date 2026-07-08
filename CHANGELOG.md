@@ -42,6 +42,7 @@ This release ships the F103 shell redesign: a Codex-inspired Environment Hub for
 ### Fixed
 
 - **Task Dock review closeout** - Fixed stale right-sidebar preference handling, misleading Sources counts, duplicate Run projection work, and the old subagent compact view that surfaced worker rounds instead of semantic agent status.
+- **Read-only file previews** - Opening project files in the Artifact surface now uses a transient preview payload instead of persisting visited files into the generated-artifact list.
 - **Toolbar regression coverage** - Added E2E coverage for opening the Review popout from the Activity views toolbar, while keeping the layout-position test focused on popout geometry.
 - **Workflow and React 19 type compatibility** - Workflow renderer files now import the React 19 JSX types and include renderer `.d.ts` files in the desktop TypeScript project.
 

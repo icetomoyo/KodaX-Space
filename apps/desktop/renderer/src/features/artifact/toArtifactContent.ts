@@ -25,7 +25,13 @@ export function toArtifactContent(
     case 'markdown':
       return payload.content !== undefined ? { kind: 'markdown', content: payload.content } : null;
     case 'code':
-      return payload.content !== undefined ? { kind: 'code', content: payload.content } : null;
+      return payload.content !== undefined
+        ? {
+            kind: 'code',
+            content: payload.content,
+            ...(payload.path !== undefined ? { filename: payload.path } : {}),
+          }
+        : null;
     case 'html':
       return payload.content !== undefined
         ? {
