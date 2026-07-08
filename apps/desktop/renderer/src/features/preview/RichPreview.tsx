@@ -1,10 +1,3 @@
-// RichPreview — F024 dispatcher
-//
-// 由 PreviewPanel 在 detectKind 命中 PDF/docx/xlsx 时呈现。
-// 1) 调 files.readBinary 拿 base64 + 大小校验
-// 2) lazy 加载对应 viewer，每个 viewer 自己一个 chunk
-// 3) 错误 / truncated / 加载中分别有 placeholder
-
 import { Suspense, lazy, useEffect, useState } from 'react';
 import { PREVIEW_SIZE_CAPS, formatBytes, type RichPreviewKind } from './binaryUtils.js';
 import { useI18n } from '../../i18n/I18nProvider.js';
@@ -12,6 +5,13 @@ import { useI18n } from '../../i18n/I18nProvider.js';
 const PdfViewer = lazy(() => import('./PdfViewer.js').then((m) => ({ default: m.PdfViewer })));
 const DocxViewer = lazy(() => import('./DocxViewer.js').then((m) => ({ default: m.DocxViewer })));
 const XlsxViewer = lazy(() => import('./XlsxViewer.js').then((m) => ({ default: m.XlsxViewer })));
+const PptxViewer = lazy(() => import('./PptxViewer.js').then((m) => ({ default: m.PptxViewer })));
+const MediaFileViewer = lazy(() =>
+  import('./MediaFileViewer.js').then((m) => ({ default: m.MediaFileViewer })),
+);
+const TextFileViewer = lazy(() =>
+  import('./TextFileViewer.js').then((m) => ({ default: m.TextFileViewer })),
+);
 
 interface Props {
   readonly projectRoot: string;
@@ -82,12 +82,19 @@ export function RichPreview({ projectRoot, path, kind }: Props): JSX.Element {
     return <div className="p-3 text-xs text-fg-muted">{t('preview.noContent')}</div>;
 
   return (
-    <Suspense
-      fallback={<div className="p-3 text-xs text-fg-muted">{t('preview.loadingViewer')}</div>}
-    >
-      {kind === 'pdf' && <PdfViewer base64={base64} />}
-      {kind === 'docx' && <DocxViewer base64={base64} />}
-      {kind === 'xlsx' && <XlsxViewer base64={base64} />}
-    </Suspense>
+    <div className="h-full min-h-0" data-testid="rich-preview" data-preview-kind={kind}>
+      <Suspense
+        fallback={<div className="p-3 text-xs text-fg-muted">{t('preview.loadingViewer')}</div>}
+      >
+        {kind === 'pdf' && <PdfViewer base64={base64} />}
+        {kind === 'docx' && <DocxViewer base64={base64} />}
+        {kind === 'xlsx' && <XlsxViewer base64={base64} />}
+        {kind === 'pptx' && <PptxViewer base64={base64} />}
+        {kind === 'text' && <TextFileViewer base64={base64} path={path} />}
+        {(kind === 'image' || kind === 'video' || kind === 'audio') && (
+          <MediaFileViewer base64={base64} path={path} kind={kind} />
+        )}
+      </Suspense>
+    </div>
   );
 }

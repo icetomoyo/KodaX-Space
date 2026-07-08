@@ -7,6 +7,7 @@ export interface ShellPopoutRequest {
 }
 
 const POPOUT_KINDS: readonly PopoutKind[] = [
+  'files',
   'preview',
   'diff',
   'terminal',

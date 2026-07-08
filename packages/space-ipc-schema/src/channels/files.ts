@@ -99,7 +99,7 @@ export const filesReadChannel = {
 // 拆两个 channel 而非合并：file ext 路由在 renderer 自己做，binary 必须显式请求避免
 // 误把巨大 jpg 当文本拉。
 
-const HARD_MAX_BINARY_BYTES = 50 * 1024 * 1024; // 50 MB — PDF 也很少超过
+const HARD_MAX_BINARY_BYTES = 50 * 1024 * 1024; // 50 MB - renderer previews use base64 IPC, so keep this bounded
 
 export const filesReadBinaryChannel = {
   name: 'files.readBinary',

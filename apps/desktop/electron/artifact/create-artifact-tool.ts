@@ -51,12 +51,13 @@ const CREATE_ARTIFACT_KINDS = [
   'pdf',
   'docx',
   'xlsx',
+  'file',
 ] as const satisfies readonly ArtifactKindT[];
 
 const DESCRIPTION = [
   'Create or update a rich ARTIFACT shown in a dedicated preview panel (not inline in chat).',
   'Use for substantial, self-contained deliverables the user will want to preview, iterate, and export:',
-  'reports/docs (markdown), charts, code, static HTML, interactive HTML, SVG, or referencing a generated pdf/docx/xlsx file.',
+  'reports/docs (markdown), charts, code, static HTML, interactive HTML, SVG, or referencing a generated pdf/docx/xlsx/media file.',
   '',
   'kinds:',
   '- markdown/code/html/interactive-html/svg: pass `content` (the text/source).',
@@ -64,7 +65,7 @@ const DESCRIPTION = [
   '- interactive-html runs in an opaque-origin iframe sandbox with scripts allowed, same-origin disabled, no top-navigation, and an injected CSP. By default it blocks network, external scripts, forms, popups, frames, and objects.',
   '- Optional `permissions` for interactive-html can allow limited HTTPS origins: connect/style/img/media/font/forms arrays contain HTTPS origins; scripts contains exact HTTPS script URLs plus SRI integrity; popups can be "confirm-external" (main-window navigation guards still deny in-app popups and route https externally).',
   '- chart: pass `content` as a JSON string: {"type":"line"|"bar"|"area","xKey":"<field>","data":[{...}],"series":[{"key":"<field>","label"?,"color"?}],"title"?}.',
-  '- pdf/docx/xlsx: write the file first, then pass its workspace `path` (no inline content).',
+  '- pdf/docx/xlsx/file: write the file first, then pass its workspace `path` (no inline content). Use file for images, video, audio, presentations, or other previewable files.',
   '- image: pass `content` as a data: URI.',
   '',
   'To revise an existing artifact, pass its `artifactId` to append a new version (iterate). Omit it to create a new artifact.',
@@ -99,7 +100,7 @@ export const CREATE_ARTIFACT_TOOL = {
         type: 'string',
         description: 'Inline content for content kinds (for chart: a JSON string of the chart spec).',
       },
-      path: { type: 'string', description: 'Workspace file path for doc kinds (pdf/docx/xlsx).' },
+      path: { type: 'string', description: 'Workspace file path for path-backed kinds (pdf/docx/xlsx/file).' },
       summary: { type: 'string', description: 'Optional one-line summary of this version.' },
       artifactId: {
         type: 'string',

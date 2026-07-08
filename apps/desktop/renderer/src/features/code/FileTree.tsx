@@ -8,18 +8,26 @@
 //   - 展开状态用 Set<path> 跟踪——避免在 node 上加 mutable expanded 字段
 
 import { useEffect, useState } from 'react';
+import { File, FileCode, Folder, FolderOpen } from 'lucide-react';
 import type { FileNodeT } from '@kodax-space/space-ipc-schema';
 import { Caret } from '../../components/Caret.js';
 import { useI18n } from '../../i18n/I18nProvider.js';
+import { extOf } from '../../lib/pathClassify.js';
 
 interface FileTreeProps {
   projectRoot: string;
   /** 当前选中文件——高亮显示 */
   selectedPath: string | null;
   onSelect: (path: string) => void;
+  onFileContextMenu?: (path: string, x: number, y: number) => void;
 }
 
-export function FileTree({ projectRoot, selectedPath, onSelect }: FileTreeProps): JSX.Element {
+export function FileTree({
+  projectRoot,
+  selectedPath,
+  onSelect,
+  onFileContextMenu,
+}: FileTreeProps): JSX.Element {
   const { t } = useI18n();
   const [rootNodes, setRootNodes] = useState<readonly FileNodeT[]>([]);
   const [loading, setLoading] = useState(true);
@@ -113,6 +121,7 @@ export function FileTree({ projectRoot, selectedPath, onSelect }: FileTreeProps)
         selectedPath={selectedPath}
         onToggle={(p) => void toggleDir(p)}
         onSelect={onSelect}
+        onFileContextMenu={onFileContextMenu}
       />
     </div>
   );
@@ -126,6 +135,7 @@ interface FileTreeLevelProps {
   selectedPath: string | null;
   onToggle: (path: string) => void;
   onSelect: (path: string) => void;
+  onFileContextMenu?: (path: string, x: number, y: number) => void;
 }
 
 function FileTreeLevel({
@@ -136,6 +146,7 @@ function FileTreeLevel({
   selectedPath,
   onToggle,
   onSelect,
+  onFileContextMenu,
 }: FileTreeLevelProps): JSX.Element {
   return (
     <ul>
@@ -149,6 +160,7 @@ function FileTreeLevel({
           selectedPath={selectedPath}
           onToggle={onToggle}
           onSelect={onSelect}
+          onFileContextMenu={onFileContextMenu}
         />
       ))}
     </ul>
@@ -163,6 +175,7 @@ interface FileTreeNodeProps {
   selectedPath: string | null;
   onToggle: (path: string) => void;
   onSelect: (path: string) => void;
+  onFileContextMenu?: (path: string, x: number, y: number) => void;
 }
 
 function FileTreeNode({
@@ -173,6 +186,7 @@ function FileTreeNode({
   selectedPath,
   onToggle,
   onSelect,
+  onFileContextMenu,
 }: FileTreeNodeProps): JSX.Element {
   const isDir = node.kind === 'dir';
   const isExpanded = isDir && expanded.has(node.path);
@@ -180,20 +194,34 @@ function FileTreeNode({
   const dirChildren = isDir ? (childrenCache[node.path] ?? node.children ?? []) : [];
   const isSelected = !isDir && node.path === selectedPath;
   const padLeft = depth * 12 + 6;
+  const FileIcon = isCodeLikePath(node.path) ? FileCode : File;
+  const FolderIcon = isExpanded ? FolderOpen : Folder;
 
   return (
     <li>
       <button
         type="button"
         onClick={() => (isDir ? onToggle(node.path) : onSelect(node.path))}
-        className={`w-full text-left flex items-center gap-1 px-1 py-0.5 hover:bg-hover-bg ${
-          isSelected ? 'bg-surface-3 text-fg-primary' : 'text-fg-muted'
+        onContextMenu={(e) => {
+          if (isDir || !onFileContextMenu) return;
+          e.preventDefault();
+          onFileContextMenu(node.path, e.clientX, e.clientY);
+        }}
+        className={`w-full text-left flex items-center gap-1.5 px-1 py-1 rounded hover:bg-hover-bg ${
+          isSelected ? 'bg-surface-3 text-fg-primary' : 'text-fg-secondary hover:text-fg-primary'
         }`}
         style={{ paddingLeft: padLeft }}
         title={node.path}
       >
-        <span className="w-4 text-fg-muted inline-flex justify-center" aria-hidden>
+        <span className="w-4 text-fg-muted inline-flex justify-center flex-shrink-0" aria-hidden>
           {isDir ? <Caret open={isExpanded} /> : null}
+        </span>
+        <span className="w-3.5 h-3.5 text-fg-muted inline-flex items-center justify-center flex-shrink-0">
+          {isDir ? (
+            <FolderIcon className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden />
+          ) : (
+            <FileIcon className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden />
+          )}
         </span>
         <span className="truncate">{node.name}</span>
       </button>
@@ -206,8 +234,15 @@ function FileTreeNode({
           selectedPath={selectedPath}
           onToggle={onToggle}
           onSelect={onSelect}
+          onFileContextMenu={onFileContextMenu}
         />
       )}
     </li>
   );
+}
+
+function isCodeLikePath(path: string): boolean {
+  const ext = extOf(path);
+  if (ext === '') return false;
+  return !['png', 'jpg', 'jpeg', 'gif', 'webp', 'ico', 'pdf', 'zip'].includes(ext);
 }

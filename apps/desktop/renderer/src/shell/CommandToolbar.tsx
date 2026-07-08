@@ -10,6 +10,7 @@ import { useEffect, useRef, useState } from 'react';
 import {
   LayoutGrid,
   Eye,
+  FolderTree,
   GitCompare,
   Terminal,
   Bot,
@@ -25,6 +26,7 @@ import type { MessageKey } from '../i18n/messages.js';
 
 // 'artifact' (F059b) 不进 toolbar 下拉(同 tasks/plan)——由 RightSidebar Artifact section 的 ⤢ 触发。
 export type PopoutKind =
+  | 'files'
   | 'preview'
   | 'diff'
   | 'terminal'
@@ -50,6 +52,7 @@ const POPOUTS: ReadonlyArray<{
   Icon: LucideIcon;
   shortcut: string;
 }> = [
+  { kind: 'files', labelKey: 'popout.title.files', Icon: FolderTree, shortcut: '' },
   { kind: 'preview', labelKey: 'popout.title.preview', Icon: Eye, shortcut: '⇧Ctrl V' },
   { kind: 'diff', labelKey: 'popout.title.review', Icon: GitCompare, shortcut: '⇧Ctrl D' },
   { kind: 'terminal', labelKey: 'popout.title.terminal', Icon: Terminal, shortcut: 'Ctrl `' },

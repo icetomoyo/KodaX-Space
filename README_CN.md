@@ -223,8 +223,8 @@ npm run e2e:headed
 
 | 版本线   | 重点                                                                                                                            |
 | -------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| v0.1.30  | Partner controlled workspace file writes：通过 reviewed proposals 和 explicit apply/export 落地。                               |
-| v0.1.31+ | Workflow、todo、MCP/extension、provider、review 与 beta-hardening。                                                             |
+| v0.1.35  | Partner controlled workspace file writes：通过 reviewed proposals 和 explicit apply/export 落地。                               |
+| v0.1.36+ | Workflow、todo、MCP/extension、provider、review 与 beta-hardening。                                                             |
 | v0.2.x   | Partner workbench、connector catalog、local automations、policy/audit pack、remote/self-hosted runner、distribution expansion。 |
 
 ## License

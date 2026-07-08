@@ -1542,11 +1542,14 @@ export class RealKodaXSession implements ManagedSession {
         // F045: tag = surface 值（'code' | 'partner'），SDK 持久化进 SessionData.tag
         // → listSessions summary.tag 回带 → session-store mapper 反推回 surface。
         // 这是 Coder / Partner 会话列表彼此独立的持久化依据（KodaX SDK 0.7.49）。
+        // Quick Ask 等 ephemeral session 先写成隐藏 tag，只有显式 promote 后才回到 surface tag。
         session: {
           id: sid,
           scope: 'user',
           tag: this.ephemeral ? SPACE_EPHEMERAL_SESSION_TAG : this.surface,
-          storage: sessionStorage as KodaXSessionStorage | undefined,
+          ...(sessionStorage !== undefined
+            ? { storage: sessionStorage as KodaXSessionStorage }
+            : {}),
         },
         context,
         guardrails,

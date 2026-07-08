@@ -147,7 +147,10 @@ export function DocxViewer({ base64 }: Props): JSX.Element {
     return <div className="p-3 text-xs text-fg-muted">{t('preview.emptyDocument')}</div>;
 
   return (
-    <div className="h-full overflow-auto p-4 bg-surface text-fg-primary text-sm leading-relaxed docx-preview">
+    <div
+      className="h-full overflow-auto p-4 bg-surface text-fg-primary text-sm leading-relaxed docx-preview"
+      data-testid="docx-viewer"
+    >
       <div dangerouslySetInnerHTML={{ __html: html }} />
     </div>
   );

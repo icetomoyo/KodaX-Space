@@ -57,11 +57,44 @@ const EDIT_TOOLS = new Set(['edit', 'write', 'multi_edit', 'str_replace', 'inser
 // (用户反馈：切到 auto[LLM] 还要为 read 授权)。语义上只读无副作用，安全允许。
 // 名字覆盖 KodaX 内置 read 类工具 + Claude Code 通用名 — 三方一致。
 const READONLY_TOOLS = new Set([
-  'read', 'read_file',
-  'glob', 'grep', 'ripgrep', 'search',
-  'ls', 'list_directory', 'list_files',
-  'web_fetch', 'web_search',
+  'read',
+  'read_file',
+  'read_pdf',
+  'glob',
+  'grep',
+  'ripgrep',
+  'search',
+  'code_search',
+  'semantic_lookup',
+  'ls',
+  'list',
+  'list_directory',
+  'list_files',
+  'view',
+  'repo_overview',
+  'module_context',
+  'symbol_context',
+  'process_context',
+  'impact_estimate',
+  'changed_scope',
+  'changed_diff',
+  'changed_diff_bundle',
+  'kodax_manual',
+  'mcp_describe',
+  'mcp_search',
+  'mcp_read_resource',
+  'mcp_get_prompt',
+  'web_fetch',
+  'web_search',
 ]);
+
+function normalizeToolName(toolName: string): string {
+  return toolName.toLowerCase();
+}
+
+function isReadonlyToolName(toolName: string): boolean {
+  return READONLY_TOOLS.has(normalizeToolName(toolName));
+}
 
 export interface PermissionResolved {
   readonly decision: PermissionDecision;
@@ -96,6 +129,7 @@ class PermissionBroker {
   async request(req: PermissionRequestInput): Promise<PermissionResolved> {
     const assessment = assessRisk(req.toolName, req.input);
     const mode: PermissionMode = req.mode ?? 'accept-edits';
+    const toolName = normalizeToolName(req.toolName);
 
     // FEATURE_029 mode-aware 短路 (canonical 3 mode)：
     //
@@ -113,15 +147,20 @@ class PermissionBroker {
       return { decision: 'allow_once', risk: assessment.risk };
     }
     if (mode === 'plan') {
+      if (!assessment.dangerous && isReadonlyToolName(toolName)) {
+        return { decision: 'allow_once', risk: assessment.risk };
+      }
       return { decision: 'deny', risk: assessment.risk };
     }
     if (mode === 'auto' && !assessment.dangerous) {
       // 非 dangerous 工具一律放过，由 SDK guardrail (F030) 决策；dangerous 仍弹窗
       return { decision: 'allow_once', risk: assessment.risk };
     }
-    if (mode === 'accept-edits'
-        && !assessment.dangerous
-        && (EDIT_TOOLS.has(req.toolName) || READONLY_TOOLS.has(req.toolName))) {
+    if (
+      mode === 'accept-edits' &&
+      !assessment.dangerous &&
+      (EDIT_TOOLS.has(toolName) || isReadonlyToolName(toolName))
+    ) {
       return { decision: 'allow_once', risk: assessment.risk };
     }
 
@@ -191,7 +230,9 @@ class PermissionBroker {
    * Handler 在调用 resolve 前用这个拿 trustedPattern——renderer 提交的 pattern 字段一律忽略。
    * 不存在时返回 undefined。
    */
-  peek(reqId: string): { trustedPattern: string | undefined; sessionId: string; risk: PermissionRisk } | undefined {
+  peek(
+    reqId: string,
+  ): { trustedPattern: string | undefined; sessionId: string; risk: PermissionRisk } | undefined {
     const entry = this.pending.get(reqId);
     if (!entry) return undefined;
     return {
@@ -224,7 +265,10 @@ class PermissionBroker {
    * Session 取消 / 删除时调用：所有该 session 的 pending 自动 deny。
    * renderer 收到 permission.cancelled 后应关闭弹窗。
    */
-  cancelSession(sessionId: string, reason: 'session_cancelled' | 'session_disposed' | 'shutdown'): void {
+  cancelSession(
+    sessionId: string,
+    reason: 'session_cancelled' | 'session_disposed' | 'shutdown',
+  ): void {
     const toCancel: PendingEntry[] = [];
     for (const entry of this.pending.values()) {
       if (entry.sessionId === sessionId) toCancel.push(entry);

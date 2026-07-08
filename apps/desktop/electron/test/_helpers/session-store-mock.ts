@@ -13,6 +13,10 @@
 
 import { randomUUID } from 'node:crypto';
 import { setSessionStoreImpl, type SessionStoreImpl } from '../../kodax/session-store.js';
+import {
+  setSessionTitleStoreForTesting,
+  type SessionTitleStoreImpl,
+} from '../../kodax/session-title-store.js';
 
 export interface MockSessionState {
   /** Inject a 'persisted' session so SDK forkSession finds it. */
@@ -39,6 +43,7 @@ export function installSessionStoreMock(): MockSessionState {
   >();
   let lastForkSelectorValue: string | undefined;
   let lastRewindSelectorValue: string | undefined;
+  const titleOverrides = new Map<string, string>();
 
   const impl: SessionStoreImpl = {
     listSessions: async (opts) => {
@@ -87,32 +92,11 @@ export function installSessionStoreMock(): MockSessionState {
       } as never;
     },
     saveSession: async (id, data) => {
-      const existing = storage.get(id);
-      const rec = data as {
-        title?: unknown;
-        gitRoot?: unknown;
-        tag?: unknown;
-        runtimeInfo?: { workspaceRoot?: unknown; gitRoot?: unknown };
-        transcriptEntries?: unknown;
-      };
-      const gitRoot =
-        typeof rec.gitRoot === 'string'
-          ? rec.gitRoot
-          : typeof rec.runtimeInfo?.workspaceRoot === 'string'
-            ? rec.runtimeInfo.workspaceRoot
-            : typeof rec.runtimeInfo?.gitRoot === 'string'
-              ? rec.runtimeInfo.gitRoot
-              : (existing?.gitRoot ?? '');
       storage.set(id, {
         id,
-        title: typeof rec.title === 'string' ? rec.title : (existing?.title ?? 'Untitled'),
-        gitRoot,
-        ...(typeof rec.tag === 'string' ? { tag: rec.tag } : {}),
-        ...(Array.isArray(rec.transcriptEntries)
-          ? { transcriptEntries: rec.transcriptEntries }
-          : existing?.transcriptEntries !== undefined
-            ? { transcriptEntries: existing.transcriptEntries }
-            : {}),
+        title: data.title,
+        gitRoot: data.runtimeInfo?.workspaceRoot ?? data.gitRoot,
+        ...(data.tag !== undefined ? { tag: data.tag } : {}),
       });
       return true;
     },
@@ -130,6 +114,16 @@ export function installSessionStoreMock(): MockSessionState {
   };
 
   setSessionStoreImpl(impl);
+  const titleImpl: SessionTitleStoreImpl = {
+    read: async (sessionId) => titleOverrides.get(sessionId) ?? null,
+    set: async (sessionId, title) => {
+      titleOverrides.set(sessionId, title);
+    },
+    delete: async (sessionId) => {
+      titleOverrides.delete(sessionId);
+    },
+  };
+  setSessionTitleStoreForTesting(titleImpl);
   return {
     seed(id, gitRoot, title = 'Untitled'): void {
       storage.set(id, { id, title, gitRoot });
@@ -155,9 +149,11 @@ export function installSessionStoreMock(): MockSessionState {
     },
     reset(): void {
       storage.clear();
+      titleOverrides.clear();
       lastForkSelectorValue = undefined;
       lastRewindSelectorValue = undefined;
       setSessionStoreImpl(null);
+      setSessionTitleStoreForTesting(null);
     },
   };
 }

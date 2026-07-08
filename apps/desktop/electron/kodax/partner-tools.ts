@@ -57,6 +57,42 @@ export const PARTNER_NETWORK_ALLOW: ReadonlySet<string> = new Set(['web_fetch', 
  */
 export const PARTNER_SPACE_TOOL_ALLOW: ReadonlySet<string> = new Set(['create_artifact']);
 
+/**
+ * Space-side fallback for Coder plan mode. SDK metadata is still the primary source
+ * of truth, but some read-only research tools expose shell/network capabilities.
+ */
+export const PLAN_MODE_READONLY_TOOL_ALLOW: ReadonlySet<string> = new Set([
+  'read',
+  'read_file',
+  'read_pdf',
+  'glob',
+  'grep',
+  'ripgrep',
+  'search',
+  'code_search',
+  'semantic_lookup',
+  'ls',
+  'list',
+  'list_directory',
+  'list_files',
+  'view',
+  'repo_overview',
+  'module_context',
+  'symbol_context',
+  'process_context',
+  'impact_estimate',
+  'changed_scope',
+  'changed_diff',
+  'changed_diff_bundle',
+  'kodax_manual',
+  'mcp_describe',
+  'mcp_search',
+  'mcp_read_resource',
+  'mcp_get_prompt',
+  'web_fetch',
+  'web_search',
+]);
+
 const partnerSpaceToolPolicies = new Map<string, PartnerSpaceToolPolicy>();
 
 export function registerPartnerSpaceToolPolicy(policy: PartnerSpaceToolPolicy): void {
@@ -109,6 +145,22 @@ export function isPartnerToolAllowed(
   return capability === 'read';
 }
 
+function isRegisteredReadOnlyTool(registeredTool?: PartnerRegisteredToolMetadata): boolean {
+  return (
+    registeredTool?.sideEffect === 'readonly' || registeredTool?.sideEffect === 'reads-network'
+  );
+}
+
+function isPlanModeReadOnlyTool(
+  toolName: string,
+  capability: string,
+  registeredTool?: PartnerRegisteredToolMetadata,
+): boolean {
+  if (PLAN_MODE_READONLY_TOOL_ALLOW.has(toolName.toLowerCase())) return true;
+  if (isRegisteredReadOnlyTool(registeredTool)) return true;
+  return capability === 'read';
+}
+
 function capabilityFromVisibilityMeta(meta: PartnerToolVisibilityMeta): string {
   if (meta.sideEffect === 'readonly') return 'read';
   if (meta.sideEffect === 'reads-network') return 'read';
@@ -156,5 +208,6 @@ export function computeToolBlockReason(args: {
   // SDK isToolPlanModeAllowed: readonly / planModeAllowed:true → allowed; 其他 → blocked
   // Fail-closed: 未知 tool 返回 false（一律 block）
   if (isPlanModeAllowed()) return null;
+  if (isPlanModeReadOnlyTool(tool, resolveCapability(), resolveRegisteredTool?.())) return null;
   return `[plan] tool '${tool}' is blocked. Plan mode allows only read/search tools — describe the plan instead of executing it.`;
 }

@@ -56,7 +56,7 @@ test('chart with invalid JSON passes raw string (renderer validates → fallback
   assert.equal((out as { spec: unknown }).spec, 'not json');
 });
 
-test('doc kinds need path + projectRoot', () => {
+test('path-backed kinds need path + projectRoot', () => {
   assert.deepEqual(toArtifactContent('pdf', { path: '/p/a.pdf' }, '/p'), {
     kind: 'pdf',
     projectRoot: '/p',
@@ -64,8 +64,14 @@ test('doc kinds need path + projectRoot', () => {
   });
   assert.deepEqual(toArtifactContent('docx', { path: '/p/a.docx' }, '/p'), { kind: 'docx', projectRoot: '/p', path: '/p/a.docx' });
   assert.deepEqual(toArtifactContent('xlsx', { path: '/p/a.xlsx' }, '/p'), { kind: 'xlsx', projectRoot: '/p', path: '/p/a.xlsx' });
+  assert.deepEqual(toArtifactContent('file', { path: '/p/a.mp4' }, '/p'), {
+    kind: 'file',
+    projectRoot: '/p',
+    path: '/p/a.mp4',
+  });
   assert.equal(toArtifactContent('pdf', { path: '/p/a.pdf' }, null), null); // no projectRoot
   assert.equal(toArtifactContent('docx', {}, '/p'), null); // no path
+  assert.equal(toArtifactContent('file', {}, '/p'), null); // no path
 });
 
 test('image with missing content → null', () => {

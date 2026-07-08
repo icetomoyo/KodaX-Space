@@ -84,7 +84,7 @@ test('fork: child title is "<src title> (fork)" when source has title', async ()
     projectRoot: 'C:\\tmp\\proj',
     provider: 'mock',
   });
-  kodaxHost.setTitle(src, 'Investigate bug');
+  await kodaxHost.setTitle(src, 'Investigate bug');
   seedPersistedSession(src, 'C:\\tmp\\proj', 'Investigate bug');
   const result = await kodaxHost.fork(src, 0);
   assert.ok(result);
@@ -96,7 +96,7 @@ test('fork: title does not accumulate "(fork) (fork)" on repeat fork', async () 
     projectRoot: 'C:\\tmp\\proj',
     provider: 'mock',
   });
-  kodaxHost.setTitle(src, 'X');
+  await kodaxHost.setTitle(src, 'X');
   seedPersistedSession(src, 'C:\\tmp\\proj', 'X');
   const r1 = await kodaxHost.fork(src, 0);
   assert.ok(r1);

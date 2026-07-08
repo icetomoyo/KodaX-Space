@@ -1,0 +1,1212 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>KodaX Space File Surfaces Visual Mock</title>
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+    <style>
+      :root {
+        --surface: 255 255 255;
+        --surface-2: 247 247 248;
+        --surface-3: 238 238 241;
+        --surface-4: 255 255 255;
+        --fg-primary: 26 26 31;
+        --fg-secondary: 86 86 95;
+        --fg-muted: 138 138 147;
+        --fg-faint: 182 182 189;
+        --border-default: 232 232 236;
+        --border-strong: 212 212 216;
+        --hover-bg: 240 240 243;
+        --accent: 245 166 35;
+        --accent-ink: 168 105 8;
+        --ok: 31 157 82;
+        --run: 31 143 214;
+        --info: 37 99 235;
+        --warn: 201 138 9;
+        --danger: 220 77 77;
+        --shadow: 17 17 20;
+        --radius: 12px;
+        --ui:
+          "Geist Variable", "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        --mono:
+          "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, SFMono-Regular, Consolas,
+          monospace;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        color: rgb(var(--fg-primary));
+        background:
+          radial-gradient(circle at 12% 0%, rgb(var(--accent) / 0.13), transparent 26rem),
+          radial-gradient(circle at 92% 100%, rgb(var(--run) / 0.1), transparent 28rem),
+          rgb(232 232 235);
+        font-family: var(--ui);
+        font-size: 13px;
+        line-height: 1.45;
+      }
+
+      button,
+      input {
+        font: inherit;
+      }
+
+      .board {
+        width: min(1480px, calc(100vw - 48px));
+        margin: 0 auto;
+        padding: 22px 0 36px;
+      }
+
+      .board-header {
+        display: flex;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: 24px;
+        margin-bottom: 14px;
+      }
+
+      .board-title {
+        margin: 0;
+        font-size: 22px;
+        font-weight: 670;
+        letter-spacing: 0;
+      }
+
+      .board-subtitle {
+        margin: 5px 0 0;
+        color: rgb(var(--fg-secondary));
+        font-size: 13px;
+      }
+
+      .legend {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        color: rgb(var(--fg-muted));
+        font-size: 11px;
+        white-space: nowrap;
+      }
+
+      .legend-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 999px;
+        background: rgb(var(--accent));
+        box-shadow: 0 0 0 3px rgb(var(--accent) / 0.13);
+      }
+
+      .caption {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        margin: 22px 0 8px;
+      }
+
+      .caption h2 {
+        margin: 0;
+        font-size: 15px;
+        font-weight: 660;
+      }
+
+      .caption p {
+        margin: 0;
+        color: rgb(var(--fg-secondary));
+        font-size: 12px;
+      }
+
+      .screen {
+        height: 840px;
+        overflow: hidden;
+        border: 1px solid rgb(var(--border-strong));
+        border-radius: 18px;
+        background: rgb(var(--surface));
+        box-shadow:
+          0 1px 2px rgb(var(--shadow) / 0.05),
+          0 18px 46px rgb(var(--shadow) / 0.13);
+      }
+
+      .titlebar {
+        height: 42px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 12px;
+        border-bottom: 1px solid rgb(var(--border-default) / 0.82);
+        background:
+          linear-gradient(180deg, rgb(var(--surface-2) / 0.92), rgb(var(--surface-2) / 0.66)),
+          linear-gradient(90deg, rgb(var(--accent) / 0.06), transparent 28%);
+      }
+
+      .traffic {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        width: 80px;
+      }
+
+      .traffic span {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: rgb(var(--border-strong));
+      }
+
+      .top-actions {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        color: rgb(var(--fg-muted));
+      }
+
+      .icon-btn {
+        width: 28px;
+        height: 28px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border: 0;
+        border-radius: 7px;
+        color: rgb(var(--fg-muted));
+        background: transparent;
+      }
+
+      .icon-btn.active,
+      .icon-btn:hover {
+        color: rgb(var(--fg-primary));
+        background: rgb(var(--hover-bg));
+      }
+
+      .app-shell {
+        height: calc(100% - 42px);
+        display: grid;
+        grid-template-columns: 250px minmax(440px, 1fr) minmax(440px, 1fr);
+        gap: 10px;
+        padding: 10px;
+        background: rgb(var(--surface-2));
+      }
+
+      .panel {
+        min-width: 0;
+        min-height: 0;
+        border: 1px solid rgb(var(--border-default));
+        border-radius: var(--radius);
+        background: rgb(var(--surface) / 0.96);
+        box-shadow:
+          inset 0 1px 0 rgb(255 255 255 / 0.8),
+          0 1px 2px rgb(var(--shadow) / 0.055);
+      }
+
+      .left-sidebar {
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+
+      .surface-tabs {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        border-bottom: 1px solid rgb(var(--border-default));
+      }
+
+      .surface-tabs button {
+        height: 34px;
+        border: 0;
+        background: transparent;
+        color: rgb(var(--fg-muted));
+        font-size: 12px;
+      }
+
+      .surface-tabs button.active {
+        color: rgb(var(--fg-primary));
+        background: rgb(var(--surface-2));
+        font-weight: 620;
+      }
+
+      .left-section {
+        padding: 8px;
+        border-bottom: 1px solid rgb(var(--border-default) / 0.78);
+      }
+
+      .nav-button {
+        width: 100%;
+        min-height: 30px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        border: 0;
+        border-radius: 7px;
+        padding: 6px 8px;
+        color: rgb(var(--fg-secondary));
+        background: transparent;
+        text-align: left;
+        font-size: 12px;
+      }
+
+      .nav-button:hover,
+      .nav-button.active {
+        color: rgb(var(--fg-primary));
+        background: rgb(var(--hover-bg));
+      }
+
+      .nav-button.active {
+        box-shadow: inset 2px 0 0 rgb(var(--accent));
+      }
+
+      .nav-button .badge {
+        margin-left: auto;
+        border: 1px solid rgb(var(--border-default));
+        border-radius: 999px;
+        padding: 0 6px;
+        color: rgb(var(--fg-muted));
+        font-size: 10px;
+        line-height: 17px;
+      }
+
+      .left-heading {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 12px 12px 6px;
+        color: rgb(var(--fg-muted));
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+
+      .session-list {
+        overflow: hidden;
+        padding: 0 7px 12px;
+      }
+
+      .session-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 8px;
+        align-items: center;
+        min-height: 28px;
+        border-radius: 7px;
+        padding: 5px 7px;
+        color: rgb(var(--fg-secondary));
+        font-size: 12px;
+      }
+
+      .session-row.active {
+        color: rgb(var(--fg-primary));
+        background: rgb(var(--surface-3));
+      }
+
+      .truncate {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .mini-time {
+        color: rgb(var(--fg-faint));
+        font-size: 10px;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .center-pane {
+        position: relative;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+      }
+
+      .crumb {
+        height: 42px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 12px;
+        border-bottom: 1px solid rgb(var(--border-default) / 0.78);
+      }
+
+      .crumb-title {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+        color: rgb(var(--fg-secondary));
+        font-size: 12px;
+      }
+
+      .activity-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        border: 1px solid rgb(var(--border-default));
+        border-radius: 8px;
+        padding: 5px 8px;
+        color: rgb(var(--fg-secondary));
+        background: rgb(var(--surface-2));
+        font-size: 12px;
+      }
+
+      .conversation {
+        flex: 1;
+        overflow: hidden;
+        padding: 20px 28px 110px;
+      }
+
+      .bubble {
+        width: min(620px, 92%);
+        margin-bottom: 14px;
+        border: 1px solid rgb(var(--border-default));
+        border-radius: 11px;
+        padding: 13px 14px;
+        color: rgb(var(--fg-secondary));
+        background: rgb(var(--surface));
+      }
+
+      .bubble.user {
+        margin-left: auto;
+        background: rgb(var(--surface-3) / 0.75);
+      }
+
+      .composer {
+        position: absolute;
+        right: 16px;
+        bottom: 14px;
+        left: 16px;
+        min-height: 72px;
+        border: 1px solid rgb(var(--border-default));
+        border-radius: 12px;
+        background: rgb(var(--surface) / 0.94);
+        box-shadow: 0 10px 26px rgb(var(--shadow) / 0.08);
+        padding: 11px 12px;
+      }
+
+      .composer-path {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        border: 1px solid rgb(var(--accent) / 0.42);
+        border-radius: 999px;
+        padding: 2px 7px;
+        color: rgb(var(--accent-ink));
+        background: rgb(var(--accent) / 0.12);
+        font-family: var(--mono);
+        font-size: 11px;
+      }
+
+      .file-overlay {
+        position: absolute;
+        inset: 54px 12px 96px;
+        display: grid;
+        grid-template-rows: auto auto minmax(0, 1fr);
+        overflow: hidden;
+        border: 1px solid rgb(var(--border-strong));
+        border-radius: 14px;
+        background: rgb(var(--surface) / 0.98);
+        box-shadow:
+          0 1px 2px rgb(var(--shadow) / 0.08),
+          0 20px 52px rgb(var(--shadow) / 0.14);
+      }
+
+      .file-overlay-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 11px 12px;
+        border-bottom: 1px solid rgb(var(--border-default));
+      }
+
+      .overlay-title {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+        font-weight: 660;
+      }
+
+      .path-label {
+        color: rgb(var(--fg-muted));
+        font-family: var(--mono);
+        font-size: 11px;
+      }
+
+      .searchbar {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 9px 10px;
+        border: 1px solid rgb(var(--border-default));
+        border-radius: 8px;
+        padding: 7px 9px;
+        color: rgb(var(--fg-muted));
+        background: rgb(var(--surface-2));
+      }
+
+      .searchbar span {
+        min-width: 0;
+        color: rgb(var(--fg-secondary));
+        font-size: 12px;
+      }
+
+      .tree-wrap {
+        min-height: 0;
+        overflow: hidden auto;
+        padding: 0 8px 10px;
+      }
+
+      .tree-row {
+        position: relative;
+        display: grid;
+        grid-template-columns: 18px 16px minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 5px;
+        min-height: 27px;
+        border-radius: 7px;
+        padding: 3px 6px;
+        color: rgb(var(--fg-secondary));
+        font-family: var(--mono);
+        font-size: 12px;
+      }
+
+      .tree-row:hover,
+      .tree-row.selected {
+        color: rgb(var(--fg-primary));
+        background: rgb(var(--hover-bg));
+      }
+
+      .tree-row.selected::before {
+        content: "";
+        position: absolute;
+        top: 5px;
+        bottom: 5px;
+        left: 0;
+        width: 2px;
+        border-radius: 2px;
+        background: rgb(var(--accent));
+      }
+
+      .tree-row .meta {
+        color: rgb(var(--fg-faint));
+        font-family: var(--ui);
+        font-size: 10px;
+      }
+
+      .indent-1 {
+        padding-left: 20px;
+      }
+
+      .indent-2 {
+        padding-left: 42px;
+      }
+
+      .indent-3 {
+        padding-left: 64px;
+      }
+
+      .right-pane {
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+
+      .right-toolbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        height: 31px;
+        padding: 0 9px;
+        border-bottom: 1px solid rgb(var(--border-default) / 0.7);
+        color: rgb(var(--fg-faint));
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+
+      .right-tabs {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        border-bottom: 1px solid rgb(var(--border-default));
+      }
+
+      .right-tabs button {
+        height: 36px;
+        border: 0;
+        color: rgb(var(--fg-muted));
+        background: transparent;
+        font-size: 12px;
+      }
+
+      .right-tabs button.active {
+        color: rgb(var(--fg-primary));
+        background: rgb(var(--surface-2));
+        font-weight: 620;
+      }
+
+      .artifact-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 12px 14px;
+        border-bottom: 1px solid rgb(var(--border-default));
+      }
+
+      .artifact-title {
+        min-width: 0;
+      }
+
+      .artifact-title strong {
+        display: block;
+        font-size: 13px;
+      }
+
+      .artifact-title span {
+        display: block;
+        margin-top: 2px;
+        color: rgb(var(--fg-muted));
+        font-family: var(--mono);
+        font-size: 11px;
+      }
+
+      .seg {
+        display: inline-flex;
+        overflow: hidden;
+        border: 1px solid rgb(var(--border-default));
+        border-radius: 8px;
+        background: rgb(var(--surface-2));
+      }
+
+      .seg button {
+        height: 28px;
+        border: 0;
+        border-left: 1px solid rgb(var(--border-default));
+        padding: 0 10px;
+        color: rgb(var(--fg-muted));
+        background: transparent;
+        font-size: 11px;
+      }
+
+      .seg button:first-child {
+        border-left: 0;
+      }
+
+      .seg button.active {
+        color: rgb(var(--fg-primary));
+        background: rgb(var(--surface));
+      }
+
+      .artifact-body {
+        min-height: 0;
+        overflow: hidden auto;
+        padding: 14px;
+      }
+
+      .code-card {
+        overflow: hidden;
+        border: 1px solid rgb(var(--border-default));
+        border-radius: 10px;
+        background: rgb(246 246 248 / 0.72);
+      }
+
+      .code-toolbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        height: 32px;
+        padding: 0 10px;
+        border-bottom: 1px solid rgb(var(--border-default));
+        color: rgb(var(--fg-muted));
+        font-family: var(--mono);
+        font-size: 11px;
+      }
+
+      pre {
+        margin: 0;
+        padding: 13px 14px 18px;
+        color: rgb(var(--fg-secondary));
+        font-family: var(--mono);
+        font-size: 12px;
+        line-height: 1.7;
+        white-space: pre-wrap;
+      }
+
+      .kw {
+        color: rgb(37 99 235);
+      }
+
+      .str {
+        color: rgb(31 157 82);
+      }
+
+      .fn {
+        color: rgb(168 105 8);
+      }
+
+      .comment {
+        color: rgb(var(--fg-muted));
+        font-style: italic;
+      }
+
+      .detail-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 16px;
+      }
+
+      .mini-screen {
+        height: 560px;
+        overflow: hidden;
+        border: 1px solid rgb(var(--border-strong));
+        border-radius: 16px;
+        background: rgb(var(--surface-2));
+        box-shadow: 0 14px 32px rgb(var(--shadow) / 0.1);
+      }
+
+      .mini-shell {
+        height: 100%;
+        display: grid;
+        grid-template-columns: 1fr 330px;
+        gap: 10px;
+        padding: 10px;
+      }
+
+      .mini-center {
+        position: relative;
+        overflow: hidden;
+        border: 1px solid rgb(var(--border-default));
+        border-radius: 12px;
+        background: rgb(var(--surface));
+      }
+
+      .mini-right {
+        overflow: hidden;
+        border: 1px solid rgb(var(--border-default));
+        border-radius: 12px;
+        background: rgb(var(--surface));
+      }
+
+      .section-title {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        height: 34px;
+        padding: 0 11px;
+        color: rgb(var(--fg-muted));
+        border-bottom: 1px solid rgb(var(--border-default) / 0.7);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+
+      .change-list,
+      .context-list {
+        padding: 10px;
+      }
+
+      .change-row,
+      .context-row {
+        display: grid;
+        grid-template-columns: 18px minmax(0, 1fr) auto;
+        gap: 7px;
+        align-items: center;
+        min-height: 28px;
+        border-radius: 7px;
+        padding: 4px 6px;
+        color: rgb(var(--fg-secondary));
+        font-family: var(--mono);
+        font-size: 12px;
+      }
+
+      .change-row.active,
+      .context-row:hover {
+        color: rgb(var(--fg-primary));
+        background: rgb(var(--hover-bg));
+      }
+
+      .status {
+        width: 16px;
+        text-align: center;
+        font-family: var(--mono);
+        font-weight: 740;
+        font-size: 11px;
+      }
+
+      .status.m {
+        color: rgb(var(--warn));
+      }
+
+      .status.a {
+        color: rgb(var(--ok));
+      }
+
+      .status.u {
+        color: rgb(var(--fg-muted));
+      }
+
+      .inline-actions {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+        opacity: 0;
+      }
+
+      .change-row.active .inline-actions,
+      .context-row:hover .inline-actions {
+        opacity: 1;
+      }
+
+      .tiny-icon {
+        width: 22px;
+        height: 22px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border: 0;
+        border-radius: 6px;
+        color: rgb(var(--fg-muted));
+        background: transparent;
+      }
+
+      .tiny-icon:hover {
+        color: rgb(var(--fg-primary));
+        background: rgb(var(--surface-3));
+      }
+
+      .context-menu {
+        position: absolute;
+        z-index: 5;
+        top: 138px;
+        right: 12px;
+        width: 208px;
+        overflow: hidden;
+        border: 1px solid rgb(var(--border-default));
+        border-radius: 10px;
+        background: rgb(var(--surface-4));
+        box-shadow: 0 16px 38px rgb(var(--shadow) / 0.18);
+        padding: 5px;
+      }
+
+      .menu-item {
+        display: grid;
+        grid-template-columns: 18px minmax(0, 1fr);
+        gap: 8px;
+        align-items: center;
+        min-height: 30px;
+        border-radius: 7px;
+        padding: 5px 7px;
+        color: rgb(var(--fg-secondary));
+        font-size: 12px;
+      }
+
+      .menu-item.primary {
+        color: rgb(var(--fg-primary));
+        background: rgb(var(--hover-bg));
+      }
+
+      .menu-sep {
+        height: 1px;
+        margin: 4px 3px;
+        background: rgb(var(--border-default));
+      }
+
+      .empty-nongit {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: calc(100% - 34px);
+        padding: 24px;
+        text-align: center;
+        color: rgb(var(--fg-secondary));
+      }
+
+      .empty-nongit-inner {
+        width: min(360px, 100%);
+      }
+
+      .empty-nongit strong {
+        display: block;
+        margin-bottom: 6px;
+        color: rgb(var(--fg-primary));
+        font-size: 14px;
+      }
+
+      .primary-button {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        height: 31px;
+        margin-top: 13px;
+        border: 1px solid rgb(var(--accent) / 0.48);
+        border-radius: 8px;
+        padding: 0 10px;
+        color: rgb(42 29 5);
+        background: linear-gradient(180deg, rgb(var(--accent) / 0.88), rgb(var(--accent)));
+        box-shadow:
+          inset 0 1px 0 rgb(255 255 255 / 0.34),
+          0 5px 16px rgb(var(--accent) / 0.21);
+        font-size: 12px;
+        font-weight: 620;
+      }
+
+      .context-detail {
+        display: flex;
+        flex-direction: column;
+        height: calc(100% - 34px);
+      }
+
+      .tool-chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px;
+        padding: 10px 10px 4px;
+      }
+
+      .chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        border: 1px solid rgb(var(--border-default));
+        border-radius: 999px;
+        padding: 3px 8px;
+        color: rgb(var(--fg-secondary));
+        background: rgb(var(--surface-2));
+        font-size: 11px;
+      }
+
+      .scroll-context {
+        min-height: 0;
+        max-height: 286px;
+        overflow: hidden auto;
+        margin: 8px 10px 0;
+        border: 1px solid rgb(var(--border-default));
+        border-radius: 9px;
+        background: rgb(var(--surface-2) / 0.72);
+        padding: 5px;
+      }
+
+      .context-footer {
+        margin-top: auto;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 10px;
+        border-top: 1px solid rgb(var(--border-default) / 0.78);
+      }
+
+      .subtle-button {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        height: 29px;
+        border: 1px solid rgb(var(--border-default));
+        border-radius: 8px;
+        padding: 0 9px;
+        color: rgb(var(--fg-secondary));
+        background: rgb(var(--surface));
+        font-size: 12px;
+      }
+
+      .note {
+        color: rgb(var(--fg-muted));
+        font-size: 11px;
+      }
+
+      svg {
+        width: 15px;
+        height: 15px;
+        stroke-width: 1.8;
+      }
+
+      .icon-sm svg {
+        width: 13px;
+        height: 13px;
+      }
+
+      @media (max-width: 1100px) {
+        .board {
+          width: calc(100vw - 24px);
+        }
+
+        .screen {
+          height: 760px;
+        }
+
+        .app-shell {
+          grid-template-columns: 220px minmax(360px, 1fr);
+        }
+
+        .right-pane {
+          display: none;
+        }
+
+        .detail-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="board">
+      <header class="board-header">
+        <div>
+          <h1 class="board-title">文件显示三入口视觉稿 v1</h1>
+          <p class="board-subtitle">
+            Files 负责项目浏览，Changes 负责 diff 审阅，Context 负责本轮证据链；Artifact 是统一查看器。
+          </p>
+        </div>
+        <div class="legend"><span class="legend-dot"></span><span>沿用现有 glass / amber accent / 紧凑列表密度</span></div>
+      </header>
+
+      <div class="caption">
+        <h2>主方案：左侧 Files 入口 + 中间文件树覆层 + 右侧 Artifact 均分</h2>
+        <p>文件树只在需要找文件时出现；文件点击默认进入 Artifact，输入框通过右键插入 @path。</p>
+      </div>
+
+      <section class="screen" aria-label="Files overlay visual mock">
+        <div class="titlebar">
+          <div class="traffic"><span></span><span></span><span></span></div>
+          <div class="top-actions">
+            <button class="icon-btn active" title="Left sidebar"><i data-lucide="panel-left"></i></button>
+            <button class="icon-btn" title="Back"><i data-lucide="arrow-left"></i></button>
+            <button class="icon-btn" title="Forward"><i data-lucide="arrow-right"></i></button>
+            <span style="color: rgb(var(--fg-faint)); margin-left: 6px">KodaX Space</span>
+          </div>
+          <div class="top-actions">
+            <button class="icon-btn" title="Theme"><i data-lucide="sun-medium"></i></button>
+            <button class="icon-btn active" title="Right sidebar"><i data-lucide="panel-right"></i></button>
+          </div>
+        </div>
+
+        <div class="app-shell">
+          <aside class="panel left-sidebar">
+            <div class="surface-tabs">
+              <button class="active">Coder</button>
+              <button>Partner</button>
+            </div>
+            <div class="left-section">
+              <button class="nav-button"><i data-lucide="plus"></i><span>New session</span></button>
+              <button class="nav-button"><i data-lucide="workflow"></i><span>Workflow</span></button>
+              <button class="nav-button active"><i data-lucide="folder-tree"></i><span>Files</span><span class="badge">new</span></button>
+              <button class="nav-button"><i data-lucide="chevron-down"></i><span>More features</span></button>
+            </div>
+            <div class="left-heading">
+              <span>Projects</span>
+              <i data-lucide="list-filter" class="icon-sm"></i>
+            </div>
+            <div class="session-list">
+              <div class="session-row active"><span class="truncate">文件体验重构</span><span class="mini-time">now</span></div>
+              <div class="session-row"><span class="truncate">Artifact preview 调研</span><span class="mini-time">2h</span></div>
+              <div class="session-row"><span class="truncate">Right sidebar polish</span><span class="mini-time">1d</span></div>
+              <div class="session-row"><span class="truncate">Non-git project support</span><span class="mini-time">3d</span></div>
+            </div>
+            <div style="margin-top: auto; border-top: 1px solid rgb(var(--border-default)); padding: 9px 12px; color: rgb(var(--fg-muted)); font-size: 11px; display: flex; align-items: center; justify-content: space-between">
+              <span>KodaX Space</span><i data-lucide="settings"></i>
+            </div>
+          </aside>
+
+          <section class="panel center-pane">
+            <div class="crumb">
+              <div class="crumb-title">
+                <i data-lucide="folder"></i>
+                <span class="truncate">KodaX-Space / 文件体验重构</span>
+              </div>
+              <div class="activity-pill"><i data-lucide="layout-grid"></i><span>Activity</span></div>
+            </div>
+            <div class="conversation">
+              <div class="bubble user">现在文件显示有三块能力：文件树、变更文件和上下文。</div>
+              <div class="bubble">我会把三块按用户意图区分，并让 Artifact 成为统一查看器。</div>
+            </div>
+            <div class="file-overlay">
+              <div class="file-overlay-header">
+                <div class="overlay-title">
+                  <i data-lucide="folder-tree"></i>
+                  <span>Project Files</span>
+                  <span class="path-label">KodaX-Space</span>
+                </div>
+                <div class="top-actions">
+                  <button class="icon-btn" title="Collapse all"><i data-lucide="list-collapse"></i></button>
+                  <button class="icon-btn" title="Refresh"><i data-lucide="refresh-cw"></i></button>
+                  <button class="icon-btn" title="Close"><i data-lucide="x"></i></button>
+                </div>
+              </div>
+              <div class="searchbar">
+                <i data-lucide="search"></i>
+                <span class="truncate">Search files or type a path...</span>
+                <span class="path-label">Ctrl P</span>
+              </div>
+              <div class="tree-wrap">
+                <div class="tree-row"><i data-lucide="chevron-down"></i><i data-lucide="folder"></i><span class="truncate">apps</span><span class="meta">48</span></div>
+                <div class="tree-row indent-1"><i data-lucide="chevron-down"></i><i data-lucide="folder"></i><span class="truncate">desktop</span><span class="meta">31</span></div>
+                <div class="tree-row indent-2"><i data-lucide="chevron-down"></i><i data-lucide="folder"></i><span class="truncate">renderer/src/shell</span><span class="meta">18</span></div>
+                <div class="tree-row indent-3 selected"><span></span><i data-lucide="file-code"></i><span class="truncate">RightSidebar.tsx</span><span class="meta">M</span></div>
+                <div class="tree-row indent-3"><span></span><i data-lucide="file-code"></i><span class="truncate">Shell.tsx</span><span class="meta">M</span></div>
+                <div class="tree-row indent-3"><span></span><i data-lucide="file-code"></i><span class="truncate">CommandToolbar.tsx</span><span class="meta"></span></div>
+                <div class="tree-row indent-2"><i data-lucide="chevron-right"></i><i data-lucide="folder"></i><span class="truncate">features/artifact</span><span class="meta">9</span></div>
+                <div class="tree-row"><i data-lucide="chevron-down"></i><i data-lucide="folder"></i><span class="truncate">packages</span><span class="meta">12</span></div>
+                <div class="tree-row indent-1"><i data-lucide="chevron-right"></i><i data-lucide="folder"></i><span class="truncate">space-ipc-schema</span><span class="meta">5</span></div>
+                <div class="tree-row"><i data-lucide="chevron-down"></i><i data-lucide="folder"></i><span class="truncate">docs</span><span class="meta">24</span></div>
+                <div class="tree-row indent-1"><span></span><i data-lucide="file-text"></i><span class="truncate">USER_MANUAL.zh-CN.md</span><span class="meta"></span></div>
+              </div>
+            </div>
+            <div class="composer">
+              <span style="color: rgb(var(--fg-muted))">检查这个文件显示方案 </span>
+              <span class="composer-path">@apps/desktop/renderer/src/shell/RightSidebar.tsx</span>
+            </div>
+          </section>
+
+          <aside class="panel right-pane">
+            <div class="right-toolbar">
+              <span>Panel</span>
+              <button class="icon-btn" title="Restore width"><i data-lucide="panel-right-close"></i></button>
+            </div>
+            <div class="right-tabs">
+              <button>Overview</button>
+              <button class="active">Artifact (1)</button>
+            </div>
+            <div class="artifact-head">
+              <div class="artifact-title">
+                <strong class="truncate">RightSidebar.tsx</strong>
+                <span class="truncate">apps/desktop/renderer/src/shell/RightSidebar.tsx</span>
+              </div>
+              <div class="seg">
+                <button class="active">Preview</button>
+                <button>Raw</button>
+              </div>
+            </div>
+            <div class="artifact-body">
+              <div class="code-card">
+                <div class="code-toolbar"><span>tsx</span><span>Open as Artifact</span></div>
+                <pre><span class="kw">function</span> <span class="fn">ContextSection</span>() {
+  <span class="kw">const</span> refs = <span class="fn">collectContextRefs</span>(events);
+  <span class="comment">// Context is evidence, not the project explorer.</span>
+  <span class="kw">return</span> (
+    &lt;<span class="kw">Section</span> title=<span class="str">"Context"</span>&gt;
+      &lt;<span class="kw">ScrollableFileRefs</span>
+        files={visibleFiles}
+        onOpenArtifact={openAsArtifact}
+        onInsertPrompt={insertPathReference}
+      /&gt;
+    &lt;/<span class="kw">Section</span>&gt;
+  );
+}</pre>
+              </div>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <div class="detail-grid">
+        <div>
+          <div class="caption">
+            <h2>变更文件：点击仍是 diff，右键补 Artifact</h2>
+            <p>保留 SCM 心智，不把 Changes 做成第二个文件树。</p>
+          </div>
+          <section class="mini-screen">
+            <div class="mini-shell">
+              <div class="mini-center">
+                <div class="section-title"><span>Review Diff</span><span class="path-label">RightSidebar.tsx</span></div>
+                <div class="artifact-body">
+                  <div class="code-card">
+                    <div class="code-toolbar"><span>diff</span><span>3 hunks</span></div>
+                    <pre><span style="color: rgb(var(--danger))">- {visibleFiles.length &gt; 20 &amp;&amp; &lt;li&gt;+3 more&lt;/li&gt;}</span>
+<span style="color: rgb(var(--ok))">+ &lt;ContextFileList mode="scroll" files={visibleFiles} /&gt;</span>
+
+<span style="color: rgb(var(--ok))">+ onContextMenu={() =&gt; openFileMenu(path)}</span></pre>
+                  </div>
+                </div>
+              </div>
+              <div class="mini-right" style="position: relative">
+                <div class="section-title"><span>Changes (7)</span><i data-lucide="external-link"></i></div>
+                <div class="change-list">
+                  <div class="change-row active">
+                    <span class="status m">M</span>
+                    <span class="truncate">RightSidebar.tsx</span>
+                    <span class="inline-actions"><button class="tiny-icon"><i data-lucide="git-compare"></i></button><button class="tiny-icon"><i data-lucide="more-horizontal"></i></button></span>
+                  </div>
+                  <div class="change-row">
+                    <span class="status m">M</span>
+                    <span class="truncate">openPath.ts</span>
+                    <span class="inline-actions"></span>
+                  </div>
+                  <div class="change-row">
+                    <span class="status a">A</span>
+                    <span class="truncate">FileExplorerOverlay.tsx</span>
+                    <span class="inline-actions"></span>
+                  </div>
+                  <div class="change-row">
+                    <span class="status u">U</span>
+                    <span class="truncate">docs/design/file-surfaces.md</span>
+                    <span class="inline-actions"></span>
+                  </div>
+                </div>
+                <div class="context-menu">
+                  <div class="menu-item primary"><i data-lucide="git-compare"></i><span>Open diff</span></div>
+                  <div class="menu-item"><i data-lucide="eye"></i><span>Open as Artifact</span></div>
+                  <div class="menu-item"><i data-lucide="at-sign"></i><span>Insert @path</span></div>
+                  <div class="menu-sep"></div>
+                  <div class="menu-item"><i data-lucide="copy"></i><span>Copy relative path</span></div>
+                  <div class="menu-item"><i data-lucide="folder-open"></i><span>Reveal in file manager</span></div>
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <div>
+          <div class="caption">
+            <h2>Context：从“+N more”改为可交互证据链</h2>
+            <p>列表可以滚动，所有文件都能打开、插入、复制；非 Git 项目引导去 Files。</p>
+          </div>
+          <section class="mini-screen">
+            <div class="mini-shell">
+              <div class="mini-center">
+                <div class="section-title"><span>Non-git Changes</span><span></span></div>
+                <div class="empty-nongit">
+                  <div class="empty-nongit-inner">
+                    <strong>当前文件夹不是 Git 项目</strong>
+                    <div>Changes 只用于变更审阅。浏览项目文件、打开预览或插入 @path，请使用 Files。</div>
+                    <button class="primary-button"><i data-lucide="folder-tree"></i><span>Open Files</span></button>
+                  </div>
+                </div>
+              </div>
+              <div class="mini-right">
+                <div class="section-title"><span>Context</span><span>12 files</span></div>
+                <div class="context-detail">
+                  <div class="tool-chips">
+                    <span class="chip"><i data-lucide="terminal"></i>shell x8</span>
+                    <span class="chip"><i data-lucide="search"></i>rg x12</span>
+                    <span class="chip"><i data-lucide="file-text"></i>open x6</span>
+                  </div>
+                  <div class="scroll-context">
+                    <div class="context-row"><i data-lucide="file-code"></i><span class="truncate">apps/desktop/renderer/src/lib/openPath.ts</span><span class="inline-actions"><button class="tiny-icon"><i data-lucide="eye"></i></button><button class="tiny-icon"><i data-lucide="at-sign"></i></button></span></div>
+                    <div class="context-row"><i data-lucide="file-code"></i><span class="truncate">apps/desktop/electron/ipc/artifact.ts</span><span class="inline-actions"><button class="tiny-icon"><i data-lucide="eye"></i></button><button class="tiny-icon"><i data-lucide="at-sign"></i></button></span></div>
+                    <div class="context-row"><i data-lucide="file-code"></i><span class="truncate">apps/desktop/renderer/src/shell/Shell.tsx</span><span class="inline-actions"><button class="tiny-icon"><i data-lucide="eye"></i></button><button class="tiny-icon"><i data-lucide="at-sign"></i></button></span></div>
+                    <div class="context-row"><i data-lucide="file-code"></i><span class="truncate">apps/desktop/renderer/src/shell/RightSidebar.tsx</span><span class="inline-actions"><button class="tiny-icon"><i data-lucide="eye"></i></button><button class="tiny-icon"><i data-lucide="at-sign"></i></button></span></div>
+                    <div class="context-row"><i data-lucide="file-code"></i><span class="truncate">apps/desktop/renderer/src/shell/BottomBar.tsx</span><span class="inline-actions"><button class="tiny-icon"><i data-lucide="eye"></i></button><button class="tiny-icon"><i data-lucide="at-sign"></i></button></span></div>
+                    <div class="context-row"><i data-lucide="file-code"></i><span class="truncate">packages/space-ipc-schema/src/channels/project.ts</span><span class="inline-actions"><button class="tiny-icon"><i data-lucide="eye"></i></button><button class="tiny-icon"><i data-lucide="at-sign"></i></button></span></div>
+                    <div class="context-row"><i data-lucide="file-text"></i><span class="truncate">docs/FEATURE_LIST.md</span><span class="inline-actions"><button class="tiny-icon"><i data-lucide="eye"></i></button><button class="tiny-icon"><i data-lucide="at-sign"></i></button></span></div>
+                  </div>
+                  <div class="context-footer">
+                    <span class="note">最近使用的文件优先，隐藏项不再不可达。</span>
+                    <button class="subtle-button"><i data-lucide="panel-top-open"></i><span>View all</span></button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
+    </main>
+
+    <script>
+      if (window.lucide) {
+        window.lucide.createIcons();
+      }
+    </script>
+  </body>
+</html>

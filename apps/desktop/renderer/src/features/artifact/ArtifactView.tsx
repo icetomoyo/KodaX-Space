@@ -2,15 +2,16 @@
 // to its renderer by `kind`.
 //
 // STATIC tier (LC-free, the only tier): markdown/code/html/svg/image/chart +
-// pdf/docx/xlsx (reusing F024 RichPreview). The INTERACTIVE 'react' tier (LiveCanvas
+// pdf/docx/xlsx/file (reusing F024 RichPreview). The INTERACTIVE 'react' tier (LiveCanvas
 // sandbox) was removed — its runtime machinery is being re-integrated as a separate
 // feature once LiveCanvas stabilizes; until then a 'react' artifact renders an
 // unavailable placeholder. NO @livecanvas/* dependency anywhere in this path.
 
-import { Markdown } from '../session/messages/Markdown';
 import { MonacoViewer } from '../code/MonacoViewer';
 import { RichPreview } from '../preview/RichPreview';
+import { detectKind } from '../preview/binaryUtils';
 import { HtmlArtifact, InteractiveHtmlArtifact } from './renderers/HtmlArtifact';
+import { MarkdownArtifact } from './renderers/MarkdownArtifact';
 import { ChartArtifact } from './renderers/ChartArtifact';
 import { SvgArtifact, ImageArtifact } from './renderers/MediaArtifact';
 
@@ -46,11 +47,7 @@ function isSafeImageSrc(src: string): boolean {
 export function ArtifactView(props: ArtifactContent): JSX.Element {
   switch (props.kind) {
     case 'markdown':
-      return (
-        <div className="flex-1 min-h-0 overflow-auto p-3">
-          <Markdown content={props.content} />
-        </div>
-      );
+      return <MarkdownArtifact content={props.content} />;
     case 'code':
       return (
         <div className="flex-1 min-h-0">
@@ -81,6 +78,16 @@ export function ArtifactView(props: ArtifactContent): JSX.Element {
           <RichPreview projectRoot={props.projectRoot} path={props.path} kind={props.kind} />
         </div>
       );
+    case 'file': {
+      const kind = detectKind(props.path);
+      return kind === null ? (
+        <Unsupported what="file" />
+      ) : (
+        <div className="flex-1 min-h-0">
+          <RichPreview projectRoot={props.projectRoot} path={props.path} kind={kind} />
+        </div>
+      );
+    }
     case 'react':
       // Interactive tier removed (LiveCanvas sandbox machinery extracted; re-added
       // as a separate feature). A 'react' artifact is never produced now, but keep

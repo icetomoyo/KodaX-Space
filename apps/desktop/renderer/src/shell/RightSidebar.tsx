@@ -24,22 +24,23 @@ import {
   Eye,
   Folder,
   FolderOpen,
+  Maximize2,
   Minus,
   PanelRightClose,
   PanelRightOpen,
   X,
 } from 'lucide-react';
 import type { SessionEvent } from '@kodax-space/space-ipc-schema';
-import { clampSidebarWidthPx, useAppStore } from '../store/appStore.js';
+import { useAppStore } from '../store/appStore.js';
 import {
-  openFileSmart,
-  isPreviewablePath,
+  openFileAsArtifact,
   revealPath,
   toProjectRelative,
   isAbsolutePathOutsideProject,
 } from '../lib/openPath.js';
 import { Caret } from '../components/Caret.js';
 import { ArtifactsView } from '../features/artifact/ArtifactsView.js';
+import { artifactSessionForProjectFiles } from '../features/artifact/filePreviewSession.js';
 import { useArtifacts, useArtifactCreated } from '../features/artifact/useArtifacts.js';
 import { useTranscriptArtifacts } from '../features/artifact/useTranscriptArtifacts.js';
 import {
@@ -56,6 +57,7 @@ import {
 import { useI18n } from '../i18n/I18nProvider.js';
 import type { MessageKey } from '../i18n/messages.js';
 import { requestShellPopout } from './popoutControl.js';
+import { FileActionMenu } from './FileActionMenu.js';
 import type { PopoutKind } from './CommandToolbar.js';
 import {
   isTaskDockSectionId,
@@ -72,23 +74,35 @@ const EMPTY_EVENTS: readonly SessionEvent[] = [];
 const SECTION_OPEN_STORAGE_KEY = 'kodax-space.rightSidebar.sectionOpen';
 type Translate = (key: MessageKey, vars?: Record<string, string | number>) => string;
 
+interface FileMenuState {
+  readonly path: string;
+  readonly x: number;
+  readonly y: number;
+}
+
 interface RightSidebarProps {
   /** Dynamic sidebar width in px. */
   readonly width?: number;
-  readonly defaultWidth?: number;
-  readonly expandedWidth?: number;
+  readonly widthMode?: 'default' | 'half' | 'max' | 'custom';
+  readonly onDefaultWidth?: () => void;
+  readonly onHalfWidth?: () => void;
+  readonly onMaxWidth?: () => void;
   readonly shellFocusRequest?: TaskDockFocusState;
 }
 
 export function RightSidebar({
   width,
-  defaultWidth = 320,
-  expandedWidth = 320,
+  widthMode = 'custom',
+  onDefaultWidth,
+  onHalfWidth,
+  onMaxWidth,
   shellFocusRequest,
 }: RightSidebarProps = {}): JSX.Element {
   const { t } = useI18n();
   const currentSessionId = useAppStore((s) => s.currentSessionId);
-  const { artifacts, error: artifactError } = useArtifacts(currentSessionId);
+  const currentProjectPath = useAppStore((s) => s.currentProjectPath);
+  const artifactSessionId = artifactSessionForProjectFiles(currentSessionId, currentProjectPath);
+  const { artifacts, error: artifactError } = useArtifacts(artifactSessionId);
   const transcriptArtifacts = useTranscriptArtifacts(currentSessionId);
   const hasArtifacts = artifacts.length > 0;
   const hasTranscriptArtifacts = transcriptArtifacts.length > 0;
@@ -133,7 +147,7 @@ export function RightSidebar({
   }, [hasArtifacts, hasTranscriptArtifacts, currentSessionId]);
   // New agent-created artifact: switch to Artifact mode. Updates, deletes, and session switches
   // should not trigger this path.
-  useArtifactCreated(currentSessionId, () => setTab('artifact'));
+  useArtifactCreated(artifactSessionId, () => setTab('artifact'));
   // Transcript artifact card click: switch to Artifact mode and remember the target id.
   useEffect(() => {
     const onFocus = (e: Event): void => {
@@ -160,9 +174,10 @@ export function RightSidebar({
       {/* F059c: when artifacts exist, expose Overview / Artifact tabs. Artifact mode owns
           the full sidebar height instead of being squeezed into a small bottom box. */}
       <RightSidebarWidthToolbar
-        width={width}
-        defaultWidth={defaultWidth}
-        expandedWidth={expandedWidth}
+        mode={widthMode}
+        onDefaultWidth={onDefaultWidth}
+        onHalfWidth={onHalfWidth}
+        onMaxWidth={onMaxWidth}
       />
       {hasArtifactSurface && (
         <div className="flex items-stretch border-b border-border-default flex-shrink-0">
@@ -173,31 +188,6 @@ export function RightSidebar({
             {t('right.artifact')}{' '}
             {artifactCount > 0 ? `(${artifactCount})` : artifactError ? '(!)' : ''}
           </SidebarTab>
-          {showArtifact && (
-            <button
-              type="button"
-              onClick={() => requestShellPopout('artifact')}
-              title={t('right.expandArtifact')}
-              aria-label={t('right.expandArtifact')}
-              className="px-2.5 inline-flex items-center justify-center text-fg-muted hover:text-fg-primary hover:bg-surface-3 border-l border-border-default/60"
-            >
-              <svg
-                width="13"
-                height="13"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden
-              >
-                <path d="M15 3h6v6" />
-                <path d="M10 14L21 3" />
-                <path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5" />
-              </svg>
-            </button>
-          )}
         </div>
       )}
       {showArtifact ? (
@@ -228,42 +218,72 @@ export function RightSidebar({
 }
 
 function RightSidebarWidthToolbar({
-  width,
-  defaultWidth,
-  expandedWidth,
+  mode,
+  onDefaultWidth,
+  onHalfWidth,
+  onMaxWidth,
 }: {
-  readonly width?: number;
-  readonly defaultWidth: number;
-  readonly expandedWidth: number;
+  readonly mode: 'default' | 'half' | 'max' | 'custom';
+  readonly onDefaultWidth?: () => void;
+  readonly onHalfWidth?: () => void;
+  readonly onMaxWidth?: () => void;
 }): JSX.Element {
   const { t } = useI18n();
-  const setRightSidebarWidth = useAppStore((s) => s.setRightSidebarWidth);
-  const effectiveDefaultWidth = Math.min(clampSidebarWidthPx(defaultWidth), expandedWidth);
-  const currentWidth = width ?? effectiveDefaultWidth;
-  const hasRoomToExpand = expandedWidth > effectiveDefaultWidth + 8;
-  const isExpanded = hasRoomToExpand && currentWidth >= (effectiveDefaultWidth + expandedWidth) / 2;
-  const isAtDefaultWidth = Math.abs(currentWidth - effectiveDefaultWidth) <= 8;
-  const shouldRestore = isExpanded || !hasRoomToExpand;
-  const Icon = shouldRestore ? PanelRightClose : PanelRightOpen;
-  const label = shouldRestore ? t('right.restoreDefaultWidth') : t('right.expandWidth');
-  const disabled = !hasRoomToExpand && isAtDefaultWidth;
   return (
     <div className="flex items-center justify-between gap-2 border-b border-border-default/60 px-2 py-1.5 flex-shrink-0">
       <span className="text-[10px] uppercase tracking-wider text-fg-faint">{t('right.panel')}</span>
-      <button
-        type="button"
-        onClick={() => setRightSidebarWidth(shouldRestore ? effectiveDefaultWidth : expandedWidth)}
-        disabled={disabled}
-        className={`w-6 h-6 inline-flex items-center justify-center rounded hover:bg-surface-3 disabled:pointer-events-none disabled:opacity-35 ${
-          isExpanded ? 'text-fg-primary' : 'text-fg-muted hover:text-fg-primary'
-        }`}
-        title={label}
-        aria-label={label}
-        aria-pressed={isExpanded}
-      >
-        <Icon size={13} strokeWidth={1.8} aria-hidden />
-      </button>
+      <div className="flex items-center gap-0.5">
+        <RightWidthButton
+          active={mode === 'max'}
+          label={t('right.maxWidth')}
+          onClick={onMaxWidth}
+        >
+          <Maximize2 size={13} strokeWidth={1.8} aria-hidden />
+        </RightWidthButton>
+        <RightWidthButton
+          active={mode === 'half'}
+          label={t('right.halfWidth')}
+          onClick={onHalfWidth}
+        >
+          <PanelRightOpen size={13} strokeWidth={1.8} aria-hidden />
+        </RightWidthButton>
+        <RightWidthButton
+          active={mode === 'default'}
+          label={t('right.defaultWidth')}
+          onClick={onDefaultWidth}
+        >
+          <PanelRightClose size={13} strokeWidth={1.8} aria-hidden />
+        </RightWidthButton>
+      </div>
     </div>
+  );
+}
+
+function RightWidthButton({
+  active,
+  label,
+  onClick,
+  children,
+}: {
+  readonly active: boolean;
+  readonly label: string;
+  readonly onClick?: () => void;
+  readonly children: React.ReactNode;
+}): JSX.Element {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={!onClick}
+      className={`w-6 h-6 inline-flex items-center justify-center rounded hover:bg-surface-3 disabled:pointer-events-none disabled:opacity-35 ${
+        active ? 'text-fg-primary bg-surface-3' : 'text-fg-muted hover:text-fg-primary'
+      }`}
+      title={label}
+      aria-label={label}
+      aria-pressed={active}
+    >
+      {children}
+    </button>
   );
 }
 
@@ -958,6 +978,7 @@ function ChangesSection({
   // F054: collapse large change lists by directory. Keep collapsed paths across refreshes.
 
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set());
+  const [fileMenu, setFileMenu] = useState<FileMenuState | null>(null);
   const toggleDir = useCallback((dirPath: string): void => {
     setCollapsed((prev) => {
       const next = new Set(prev);
@@ -1062,39 +1083,66 @@ function ChangesSection({
         focusRequest={focusRequest}
         defaultOpen={false}
       >
-        <div className="text-xs text-fg-muted">{t('right.notGitRepo')}</div>
+        <div className="space-y-2 text-xs text-fg-muted">
+          <div>{t('right.notGitRepo')}</div>
+          <div className="leading-relaxed">{t('right.notGitRepoHelp')}</div>
+          <button
+            type="button"
+            onClick={() => {
+              requestShellPopout('files');
+              window.dispatchEvent(new Event('kodax-space.open-files-workspace'));
+              window.dispatchEvent(new Event('kodax-space.focus-artifact'));
+            }}
+            className="inline-flex items-center gap-1.5 rounded-md border border-accent/40 bg-accent/10 px-2 py-1 text-[12px] font-medium text-accent-ink hover:bg-accent/15"
+          >
+            <Folder className="h-3.5 w-3.5" strokeWidth={1.75} aria-hidden />
+            {t('files.openProjectFiles')}
+          </button>
+        </div>
       </Section>
     );
   }
 
   return (
-    <Section
-      title={`${t('right.changes')} (${snapshot.files.length}${snapshot.truncated ? '+' : ''})`}
-      sectionId="changes"
-      focusRequest={focusRequest}
-    >
-      {snapshot.branch && (
-        <div className="text-[11px] text-fg-muted mb-1.5 font-mono">
-          {t('right.onBranch', { branch: snapshot.branch })}
-        </div>
+    <>
+      <Section
+        title={`${t('right.changes')} (${snapshot.files.length}${snapshot.truncated ? '+' : ''})`}
+        sectionId="changes"
+        focusRequest={focusRequest}
+      >
+        {snapshot.branch && (
+          <div className="text-[11px] text-fg-muted mb-1.5 font-mono">
+            {t('right.onBranch', { branch: snapshot.branch })}
+          </div>
+        )}
+        {snapshot.files.length === 0 ? (
+          <div className="text-xs text-fg-muted">{t('right.workingTreeClean')}</div>
+        ) : (
+          <ul className="text-xs font-mono space-y-0.5">
+            <ChangeTreeView
+              node={tree}
+              depth={0}
+              collapsed={collapsed}
+              onToggle={toggleDir}
+              onPick={pickFile}
+              onContextMenu={(path, x, y) => setFileMenu({ path, x, y })}
+            />
+            {snapshot.truncated && (
+              <li className="text-fg-muted px-1">{t('right.moreTruncated', { count: 200 })}</li>
+            )}
+          </ul>
+        )}
+      </Section>
+      {fileMenu && (
+        <FileActionMenu
+          path={fileMenu.path}
+          x={fileMenu.x}
+          y={fileMenu.y}
+          primary="diff"
+          onClose={() => setFileMenu(null)}
+        />
       )}
-      {snapshot.files.length === 0 ? (
-        <div className="text-xs text-fg-muted">{t('right.workingTreeClean')}</div>
-      ) : (
-        <ul className="text-xs font-mono space-y-0.5">
-          <ChangeTreeView
-            node={tree}
-            depth={0}
-            collapsed={collapsed}
-            onToggle={toggleDir}
-            onPick={pickFile}
-          />
-          {snapshot.truncated && (
-            <li className="text-fg-muted px-1">{t('right.moreTruncated', { count: 200 })}</li>
-          )}
-        </ul>
-      )}
-    </Section>
+    </>
   );
 }
 
@@ -1177,6 +1225,7 @@ interface ChangeTreeViewProps {
   collapsed: ReadonlySet<string>;
   onToggle: (dirPath: string) => void;
   onPick: (filePath: string) => void;
+  onContextMenu: (filePath: string, x: number, y: number) => void;
 }
 
 /** Recursive directory tree renderer: folders fold, file rows open diff. */
@@ -1186,6 +1235,7 @@ function ChangeTreeView({
   collapsed,
   onToggle,
   onPick,
+  onContextMenu,
 }: ChangeTreeViewProps): JSX.Element {
   const pad = (d: number): React.CSSProperties => ({ paddingLeft: `${d * 11 + 4}px` });
   return (
@@ -1218,6 +1268,7 @@ function ChangeTreeView({
                   collapsed={collapsed}
                   onToggle={onToggle}
                   onPick={onPick}
+                  onContextMenu={onContextMenu}
                 />
               </ul>
             )}
@@ -1229,6 +1280,10 @@ function ChangeTreeView({
           <button
             type="button"
             onClick={() => onPick(f.path)}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              onContextMenu(f.path, e.clientX, e.clientY);
+            }}
             style={pad(depth)}
             className="w-full text-left flex items-center gap-1.5 pr-1 py-0.5 rounded hover:bg-hover-bg text-fg-secondary hover:text-fg-primary"
             title={f.path}
@@ -1394,6 +1449,7 @@ function ContextSection({
   const refs = useMemo(() => collectContextRefs(events), [events]);
   const contextFilesJson = JSON.stringify(refs.files);
   const [visibleFiles, setVisibleFiles] = useState<readonly string[]>([]);
+  const [fileMenu, setFileMenu] = useState<FileMenuState | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -1461,78 +1517,74 @@ function ContextSection({
   }
 
   return (
-    <Section
-      title={t('right.context')}
-      sectionId="context"
-      focusRequest={focusRequest}
-      defaultOpen={false}
-    >
-      {refs.tools.length > 0 && (
-        <div className="mb-3">
-          <div className="text-[11px] uppercase tracking-wider text-fg-muted mb-1">
-            {t('right.toolsUsed')}
+    <>
+      <Section
+        title={t('right.context')}
+        sectionId="context"
+        focusRequest={focusRequest}
+        defaultOpen={false}
+      >
+        {refs.tools.length > 0 && (
+          <div className="mb-3">
+            <div className="text-[11px] uppercase tracking-wider text-fg-muted mb-1">
+              {t('right.toolsUsed')}
+            </div>
+            <div className="flex flex-wrap gap-1">
+              {refs.tools.map((t) => (
+                <span
+                  key={t.name}
+                  className="text-[11px] px-1.5 py-0.5 rounded bg-surface-2 text-fg-secondary"
+                  title={`${t.count}x ${t.name}`}
+                >
+                  {t.name}
+                  {t.count > 1 && <span className="text-fg-muted ml-0.5">x{t.count}</span>}
+                </span>
+              ))}
+            </div>
           </div>
-          <div className="flex flex-wrap gap-1">
-            {refs.tools.map((t) => (
-              <span
-                key={t.name}
-                className="text-[11px] px-1.5 py-0.5 rounded bg-surface-2 text-fg-secondary"
-                title={`${t.count}x ${t.name}`}
-              >
-                {t.name}
-                {t.count > 1 && <span className="text-fg-muted ml-0.5">x{t.count}</span>}
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-      {visibleFiles.length > 0 && (
-        <div>
-          <div className="text-[11px] uppercase tracking-wider text-fg-muted mb-1">
-            {t('right.filesReferenced')}
-          </div>
-          <ul className="space-y-0.5 text-xs font-mono">
-            {visibleFiles.slice(0, 20).map((f) => {
-              const previewable = isPreviewablePath(f);
-              return (
+        )}
+        {visibleFiles.length > 0 && (
+          <div>
+            <div className="mb-1 flex items-center justify-between gap-2 text-[11px] uppercase tracking-wider text-fg-muted">
+              <span>{t('right.filesReferenced')}</span>
+              <span className="font-mono normal-case tracking-normal">{visibleFiles.length}</span>
+            </div>
+            <ul className="max-h-48 space-y-0.5 overflow-y-auto rounded-md border border-border-default/70 bg-surface-2/60 p-1 text-xs font-mono">
+              {visibleFiles.map((f) => (
                 <li key={f}>
                   <button
                     type="button"
-                    onClick={() => void openFileSmart(f)}
+                    onClick={() => void openFileAsArtifact(f)}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      setFileMenu({ path: f, x: e.clientX, y: e.clientY });
+                    }}
                     className="group/ctxfile w-full text-left flex items-center gap-1.5 px-1 py-0.5 rounded hover:bg-hover-bg text-fg-secondary hover:text-fg-primary"
-                    title={
-                      previewable
-                        ? t('right.previewFile', { path: f })
-                        : t('right.revealFile', { path: f })
-                    }
+                    title={t('fileActions.openAsArtifact')}
                   >
                     <span className="truncate flex-1">{f}</span>
-                    {previewable ? (
-                      <Eye
-                        className="w-3 h-3 flex-shrink-0 text-fg-faint opacity-0 group-hover/ctxfile:opacity-100"
-                        strokeWidth={1.75}
-                        aria-hidden
-                      />
-                    ) : (
-                      <FolderOpen
-                        className="w-3 h-3 flex-shrink-0 text-fg-faint opacity-0 group-hover/ctxfile:opacity-100"
-                        strokeWidth={1.75}
-                        aria-hidden
-                      />
-                    )}
+                    <Eye
+                      className="w-3 h-3 flex-shrink-0 text-fg-faint opacity-0 group-hover/ctxfile:opacity-100"
+                      strokeWidth={1.75}
+                      aria-hidden
+                    />
                   </button>
                 </li>
-              );
-            })}
-            {visibleFiles.length > 20 && (
-              <li className="text-fg-muted px-1">
-                {t('right.moreFiles', { count: visibleFiles.length - 20 })}
-              </li>
-            )}
-          </ul>
-        </div>
+              ))}
+            </ul>
+          </div>
+        )}
+      </Section>
+      {fileMenu && (
+        <FileActionMenu
+          path={fileMenu.path}
+          x={fileMenu.x}
+          y={fileMenu.y}
+          primary="artifact"
+          onClose={() => setFileMenu(null)}
+        />
       )}
-    </Section>
+    </>
   );
 }
 

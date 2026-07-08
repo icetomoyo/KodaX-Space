@@ -178,7 +178,7 @@ test('list filters by sessionId and surface', async () => {
   }
 });
 
-test('doc kind stores a path reference (no inline content)', async () => {
+test('path-backed kind stores a path reference (no inline content)', async () => {
   const { store, dir } = freshStore();
   try {
     const { id } = await store.upsert({
@@ -533,7 +533,7 @@ test('upsert enforces content/path invariants before writing metadata', async ()
     );
     await assert.rejects(
       () => store.upsert({ sessionId: 's1', surface: 'partner', kind: 'pdf', title: 'No path' }),
-      /doc artifact kinds require a path/,
+      /path-backed artifact kinds require a path/,
     );
     await assert.rejects(
       () =>
@@ -545,7 +545,7 @@ test('upsert enforces content/path invariants before writing metadata', async ()
           path: '/proj/a.pdf',
           content: 'x',
         }),
-      /doc artifact kinds do not accept inline content/,
+      /path-backed artifact kinds do not accept inline content/,
     );
     assert.deepEqual(await store.list(), []);
   } finally {
@@ -683,7 +683,7 @@ test('create schema: validates interactive-html permissions', () => {
   );
 });
 
-test('create schema: doc kind requires path, content kind requires content', () => {
+test('create schema: path-backed kind requires path, content kind requires content', () => {
   assert.equal(
     parseCreate({ sessionId: 's', surface: 'partner', kind: 'pdf', title: 'T' }).success,
     false,
@@ -702,6 +702,15 @@ test('create schema: doc kind requires path, content kind requires content', () 
       path: '/p/a.pdf',
       content: 'x',
     }).success,
+    false,
+  );
+  assert.equal(
+    parseCreate({ sessionId: 's', surface: 'partner', kind: 'file', title: 'Movie', path: 'a.mp4' })
+      .success,
+    true,
+  );
+  assert.equal(
+    parseCreate({ sessionId: 's', surface: 'partner', kind: 'file', title: 'Movie' }).success,
     false,
   );
   assert.equal(

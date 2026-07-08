@@ -22,6 +22,7 @@ export const artifactKindSchema = z.enum([
   'pdf',
   'docx',
   'xlsx',
+  'file',
   'chart',
   'react',
 ]);
@@ -63,7 +64,7 @@ const artifactPathSchema = z
   .max(4096)
   .refine((s) => !hasPathControlChar(s), { message: 'path contains control characters' });
 
-const DOC_KINDS = ['pdf', 'docx', 'xlsx'] as const;
+const PATH_KINDS = ['pdf', 'docx', 'xlsx', 'file'] as const;
 
 function parseUrl(raw: string): URL | null {
   try {
@@ -150,7 +151,7 @@ const artifactVersionMetaSchema = z.object({
   createdAt: z.number().int().nonnegative(),
   /** True for content-backed kinds (content fetched via artifact.read). */
   hasContent: z.boolean(),
-  /** File reference for doc kinds (pdf/docx/xlsx); the file lives on disk in scope. */
+  /** File reference for path-backed kinds; the file lives on disk in scope. */
   path: z.string().max(4096).optional(),
   summary: z.string().max(512).optional(),
 });
@@ -182,7 +183,7 @@ export const artifactCreateChannel = {
       title: z.string().min(1).max(256),
       /** Inline content for content-backed kinds (chart = JSON string of the spec). */
       content: artifactContentSchema.optional(),
-      /** File reference for doc kinds. */
+      /** File reference for path-backed kinds. */
       path: artifactPathSchema.optional(),
       permissions: artifactHtmlPermissionsSchema.optional(),
       summary: z.string().max(512).optional(),
@@ -190,30 +191,30 @@ export const artifactCreateChannel = {
       id: z.string().min(1).max(128).optional(),
     })
     .superRefine((val, ctx) => {
-      // kind ↔ payload coherence: doc kinds need a path; everything else needs content.
-      const isDoc = (DOC_KINDS as readonly string[]).includes(val.kind);
-      if (isDoc && val.path === undefined) {
+      // kind -> payload coherence: path-backed kinds need a path; everything else needs content.
+      const isPathBacked = (PATH_KINDS as readonly string[]).includes(val.kind);
+      if (isPathBacked && val.path === undefined) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          message: 'doc kinds require a path',
+          message: 'path-backed kinds require a path',
           path: ['path'],
         });
       }
-      if (isDoc && val.content !== undefined) {
+      if (isPathBacked && val.content !== undefined) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          message: 'doc kinds do not accept inline content',
+          message: 'path-backed kinds do not accept inline content',
           path: ['content'],
         });
       }
-      if (!isDoc && val.content === undefined) {
+      if (!isPathBacked && val.content === undefined) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           message: 'this kind requires content',
           path: ['content'],
         });
       }
-      if (!isDoc && val.path !== undefined) {
+      if (!isPathBacked && val.path !== undefined) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           message: 'content kinds do not accept a path',
@@ -274,7 +275,7 @@ export const artifactDeleteChannel = {
 
 // ---- Invoke: artifact.export (save a version's content to a user-chosen file) ----
 // Content-backed kinds only (markdown/code/html/svg/chart/image). Doc kinds
-// (pdf/docx/xlsx) are already files on disk — exporting them would mean copying an
+// (pdf/docx/xlsx/file) are already files on disk — exporting them would mean copying an
 // arbitrary stored path (file-exfil vector), so they're not exportable here.
 export const artifactExportChannel = {
   name: 'artifact.export',
@@ -305,7 +306,7 @@ export const artifactOpenWindowChannel = {
     id: z.string().min(1).max(128),
     /** Defaults to currentVersion when omitted. */
     version: z.number().int().positive().optional(),
-    /** Needed by doc kinds (pdf/docx/xlsx) to resolve the on-disk path; ignored otherwise. */
+    /** Needed by path-backed kinds (pdf/docx/xlsx/file) to resolve the on-disk path; ignored otherwise. */
     projectRoot: z.string().max(4096).optional(),
     /** OS window title (cosmetic). */
     title: z.string().max(256).optional(),

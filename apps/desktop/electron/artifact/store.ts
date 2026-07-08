@@ -42,7 +42,7 @@ const DEFAULT_MAX_ARTIFACTS = 1000;
 const DEFAULT_TARGET_ARTIFACTS = 900;
 const DEFAULT_MAX_ARTIFACT_BYTES = 512 * 1024 * 1024;
 const DEFAULT_TARGET_ARTIFACT_BYTES = 384 * 1024 * 1024;
-const DOC_ARTIFACT_KINDS = new Set<ArtifactKindT>(['pdf', 'docx', 'xlsx']);
+const PATH_ARTIFACT_KINDS = new Set<ArtifactKindT>(['pdf', 'docx', 'xlsx', 'file']);
 const SAFE_ARTIFACT_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 const artifactIdSchema = z
   .string()
@@ -250,6 +250,8 @@ function versionExt(kind: ArtifactKindT): string {
       return 'docx';
     case 'xlsx':
       return 'xlsx';
+    case 'file':
+      return 'file-ref';
     case 'code':
     default:
       return 'txt';
@@ -264,12 +266,12 @@ function validateUpsertPayload(input: UpsertInput): void {
   if (input.permissions !== undefined && input.kind !== 'html' && input.kind !== 'interactive-html') {
     throw new Error('artifact permissions are only supported for html artifacts');
   }
-  const isDoc = DOC_ARTIFACT_KINDS.has(input.kind);
+  const isPathBacked = PATH_ARTIFACT_KINDS.has(input.kind);
   const hasContent = input.content !== undefined;
   const hasPath = input.path !== undefined;
-  if (isDoc) {
-    if (!hasPath) throw new Error('doc artifact kinds require a path');
-    if (hasContent) throw new Error('doc artifact kinds do not accept inline content');
+  if (isPathBacked) {
+    if (!hasPath) throw new Error('path-backed artifact kinds require a path');
+    if (hasContent) throw new Error('path-backed artifact kinds do not accept inline content');
     return;
   }
   if (!hasContent) throw new Error('content artifact kinds require content');

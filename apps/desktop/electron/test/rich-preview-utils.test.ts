@@ -31,6 +31,12 @@ test('detectKind: plain text falls through to null', () => {
   assert.equal(detectKind('data.json'), null);
 });
 
+test('detectKind: log and config text files map to text preview', () => {
+  assert.equal(detectKind('logs/server.LOG'), 'text');
+  assert.equal(detectKind('config/app.ini'), 'text');
+  assert.equal(detectKind('exports/table.tsv'), 'text');
+});
+
 test('detectKind: extensions only matched at end', () => {
   // 'pdf' anywhere else in the name should NOT match
   assert.equal(detectKind('pdfgen/template.html'), null);

@@ -104,7 +104,7 @@ export function XlsxViewer({ base64 }: Props): JSX.Element {
     return <div className="p-3 text-xs text-fg-muted">{t('preview.noSheet')}</div>;
 
   return (
-    <div className="h-full flex flex-col">
+    <div className="h-full flex flex-col" data-testid="xlsx-viewer">
       {sheets.length > 1 && (
         <div className="flex items-stretch border-b border-border-default/60 bg-surface text-xs flex-shrink-0 overflow-x-auto">
           {sheets.map((s, i) => {

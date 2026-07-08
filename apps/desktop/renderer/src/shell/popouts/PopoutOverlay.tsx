@@ -14,7 +14,7 @@
 // 右侧 slide-in 窄 panel。FULL_COVER_KINDS 控制谁走全宽。
 // **F059c**: artifact 加入 full-cover —— HTML/图表/报告在 760px 窄条里被截、读不全
 // (用户反馈 2026-06-15)。⤢ 后铺满整个中间对话区 (像 diff)；再"单独打开"走 L3 独立窗口。
-const FULL_COVER_KINDS = new Set<string>(['diff', 'artifact', 'workflow']);
+const FULL_COVER_KINDS = new Set<string>(['files', 'diff', 'artifact', 'workflow']);
 // 全覆盖 popout 里，diff / artifact 的内容区自带不透明表面（Monaco 编辑器 / 渲染出的产出），
 // 玻璃半透明只剩标题栏薄边，从不透字；只有 workflow 是纯文字行直接铺在半透明 .glass 上，
 // 没有不透明内容层 → 下层对话会透上来。故只给这类「内容透明」的全覆盖层补不透明度，
@@ -32,6 +32,7 @@ import { Component, Suspense, lazy, type ErrorInfo, type ReactNode, type RefObje
 import { X } from 'lucide-react';
 import type { PopoutKind } from '../CommandToolbar.js';
 import { PreviewPanel } from './PreviewPanel.js';
+import { FilesPanel } from './FilesPanel.js';
 import { DiffPanel } from './DiffPanel.js';
 // F011 v0.1.6 + F023 v0.1.7: Terminal popout 改成真 PTY (xterm.js + node-pty)；
 // F023 引入多 tab 通过 TerminalManager 包装层（每个 tab 自己的 PTY）。
@@ -123,6 +124,7 @@ class PopoutPanelErrorBoundary extends Component<
 }
 
 const POPOUT_TITLE_KEYS: Record<PopoutKind, MessageKey> = {
+  files: 'popout.title.files',
   preview: 'popout.title.preview',
   diff: 'popout.title.review',
   terminal: 'popout.title.terminal',
@@ -183,6 +185,7 @@ export function PopoutOverlay({ kind, onClose, boundsRef }: PopoutOverlayProps):
             panelFailedText={t('popout.panelFailed')}
             closeText={t('popout.close')}
           >
+            {kind === 'files' && <FilesPanel />}
             {kind === 'preview' && <PreviewPanel />}
             {kind === 'diff' && <DiffPanel />}
             {kind === 'terminal' && (

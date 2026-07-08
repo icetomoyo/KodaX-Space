@@ -17,7 +17,7 @@
 // 接 surface store）；LeftSidebar 是两 surface 共用的全局导航（项目 / session / surface tab）。
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Plus, ChevronDown, Settings, Pin } from 'lucide-react';
+import { Plus, ChevronDown, FolderTree, Settings, Pin } from 'lucide-react';
 import { SurfaceTabs } from './SurfaceTabs.js';
 import { useAppStore } from '../store/appStore.js';
 import { useSurfaceStore } from '../store/surface.js';
@@ -60,9 +60,15 @@ function prefetchSessionHistory(sessionId: string, msgCount: number | undefined)
 interface LeftSidebarProps {
   /** 2026-06: 动态宽度（px）。Shell 拖 ResizeHandle 实时改这个值。 */
   width?: number;
+  readonly filesActive?: boolean;
+  readonly onOpenFiles?: () => void;
 }
 
-export function LeftSidebar({ width }: LeftSidebarProps): JSX.Element {
+export function LeftSidebar({
+  width,
+  filesActive = false,
+  onOpenFiles,
+}: LeftSidebarProps): JSX.Element {
   const { t } = useI18n();
   const sessions = useAppStore((s) => s.sessions);
   const currentSessionId = useAppStore((s) => s.currentSessionId);
@@ -101,6 +107,10 @@ export function LeftSidebar({ width }: LeftSidebarProps): JSX.Element {
     setCurrentSession(null);
   }
 
+  function handleOpenFiles(): void {
+    onOpenFiles?.();
+  }
+
   // OC-29: 底栏 ⚙ 打开 unified SettingsModal (默认 Preferences tab)
   const [settingsOpen, setSettingsOpen] = useState(false);
 
@@ -129,6 +139,19 @@ export function LeftSidebar({ width }: LeftSidebarProps): JSX.Element {
           {t('sidebar.newSession')}
         </button>
         <WorkflowNavPanel />
+        <button
+          type="button"
+          onClick={handleOpenFiles}
+          disabled={!currentProjectPath}
+          className={`w-full text-left text-xs px-2 py-1.5 rounded hover:bg-hover-bg flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent ${
+            filesActive ? 'bg-surface-3 text-fg-primary' : 'text-fg-primary'
+          }`}
+          title={!currentProjectPath ? t('sidebar.openFolderFirst') : t('files.openProjectFiles')}
+          aria-pressed={filesActive}
+        >
+          <FolderTree className="w-4 h-4 flex-shrink-0" strokeWidth={1.75} aria-hidden />
+          {t('files.openProjectFiles')}
+        </button>
         <FutureFeaturesDisclosure />
       </div>
 
@@ -226,6 +249,29 @@ function ProjectTree({
   const [dragOverCanon, setDragOverCanon] = useState<string | null>(null);
   // v0.1.9: "+N more sessions" picker overlay — 哪个项目正在浏览全量
   const [pickerProject, setPickerProject] = useState<Project | null>(null);
+  const [projectSessionLimits, setProjectSessionLimits] = useState<Record<string, number>>({});
+
+  const expandProjectSessionList = useCallback((projectPath: string): void => {
+    setProjectSessionLimits((prev) => {
+      const current = prev[projectPath] ?? SESSIONS_PER_PROJECT_INITIAL_VISIBLE;
+      const next = Math.min(
+        SESSIONS_PER_PROJECT_INLINE_MAX,
+        current + SESSIONS_PER_PROJECT_STEP,
+      );
+      if (next === current) return prev;
+      return { ...prev, [projectPath]: next };
+    });
+  }, []);
+
+  const collapseProjectSessionList = useCallback((projectPath: string): void => {
+    setProjectSessionLimits((prev) => {
+      const current = prev[projectPath] ?? SESSIONS_PER_PROJECT_INITIAL_VISIBLE;
+      if (current === SESSIONS_PER_PROJECT_INITIAL_VISIBLE) return prev;
+      const next = { ...prev };
+      delete next[projectPath];
+      return next;
+    });
+  }, []);
 
   // refresh local projects from main after IPC mutation
   const refreshProjects = useCallback(async (): Promise<void> => {
@@ -322,6 +368,8 @@ function ProjectTree({
     const explicit = proj.path in expandedProjects ? expandedProjects[proj.path] : undefined;
     const isExpanded = explicit !== undefined ? explicit : defaultExpanded;
     const projSessions = sessionsByProject.get(projCanon) ?? [];
+    const visibleLimit =
+      projectSessionLimits[proj.path] ?? SESSIONS_PER_PROJECT_INITIAL_VISIBLE;
     const runningCount = projSessions.reduce(
       (acc, s) => (statusMap[s.sessionId] === 'running' ? acc + 1 : acc),
       0,
@@ -479,13 +527,17 @@ function ProjectTree({
               </div>
             ) : (
               <SessionTree
-                sessions={sessions}
+                sessions={projSessions}
                 currentSessionId={currentSessionId}
                 onSelect={onSelect}
                 projectRootOverride={proj.path}
                 statusFor={statusFor}
-                maxVisible={SESSIONS_PER_PROJECT_VISIBLE}
-                onShowMore={() => setPickerProject(proj)}
+                maxVisible={visibleLimit}
+                initialVisible={SESSIONS_PER_PROJECT_INITIAL_VISIBLE}
+                maxInlineVisible={SESSIONS_PER_PROJECT_INLINE_MAX}
+                onExpandMore={() => expandProjectSessionList(proj.path)}
+                onShowAll={() => setPickerProject(proj)}
+                onCollapseVisible={() => collapseProjectSessionList(proj.path)}
               />
             )}
           </div>
@@ -586,10 +638,13 @@ interface SessionTreeProps {
   readonly projectRootOverride?: string;
   /** F040: 每行末尾的状态点。idle 不渲染（避免噪音）；缺省整个 sidebar 都不显示状态。 */
   readonly statusFor?: (sessionId: string) => SessionStatus;
-  /** v0.1.9：默认显示上限。超过 cap 时下方渲染"+N more"按钮；undefined = 不 cap (legacy). */
+  /** 默认显示上限。超过 cap 时下方渲染展开/全部/折叠动作；undefined = 不 cap (legacy). */
   readonly maxVisible?: number;
-  /** v0.1.9：点 "+N more" 按钮的回调，让 ProjectTree 唤出 ProjectSessionPicker overlay。 */
-  readonly onShowMore?: () => void;
+  readonly initialVisible?: number;
+  readonly maxInlineVisible?: number;
+  readonly onExpandMore?: () => void;
+  readonly onShowAll?: () => void;
+  readonly onCollapseVisible?: () => void;
 }
 
 // v0.1.5: canonProjectRootBrowser 替换为 schema 包共享 util（F040/F041 review MED-3）。
@@ -599,10 +654,11 @@ function canonProjectRootBrowser(p: string): string {
   return canonProjectRoot(p, IS_WIN);
 }
 
-// v0.1.9：项目下默认显示 N 个最近 session；超过走 ProjectSessionPicker overlay。
-// 实测 KodaX 项目 200+ sessions 全塞 sidebar 会把别的项目挤下面。8 个是 codex
-// 同款上限；想看更多走"+ N more sessions" → 中央 picker 模糊搜 + 选。
-const SESSIONS_PER_PROJECT_VISIBLE = 8;
+// 项目下默认显示 5 个最近 session；每次轻量展开 5 个，最多内联 20 个。
+// 再多时走中央 picker 模糊搜 + 选，避免长列表把其它项目挤出视野。
+const SESSIONS_PER_PROJECT_INITIAL_VISIBLE = 5;
+const SESSIONS_PER_PROJECT_STEP = 5;
+const SESSIONS_PER_PROJECT_INLINE_MAX = 20;
 
 function SessionTree({
   sessions,
@@ -611,7 +667,11 @@ function SessionTree({
   projectRootOverride,
   statusFor,
   maxVisible,
-  onShowMore,
+  initialVisible,
+  maxInlineVisible,
+  onExpandMore,
+  onShowAll,
+  onCollapseVisible,
 }: SessionTreeProps): JSX.Element {
   const { t } = useI18n();
   const sessionFlags = useAppStore((s) => s.sessionFlags);
@@ -668,11 +728,11 @@ function SessionTree({
   // 内联 rename：哪个 session 正在编辑（点 Rename / 双击触发）
   const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
 
-  // v0.1.9：cap visible 行数。规则：
+  // cap visible 行数。规则：
   //  1. 没设 maxVisible → 全显（legacy）
   //  2. 设了 maxVisible → 取前 maxVisible 条；如果 currentSessionId 在 rendered 里但
-  //     不在 maxVisible 前缀，**强制把 current 拼进 visible 头部**（用户至少能看到自己
-  //     当前选中的那条，而不是因为它 lastActivity 不够新被吞掉）
+  //     不在 maxVisible 前缀，用 current 替换末尾一条（用户至少能看到自己当前选中的那条，
+  //     同时仍遵守内联数量上限）。
   const cappedRendered = useMemo(() => {
     if (maxVisible === undefined || rendered.length <= maxVisible) return rendered;
     const head = rendered.slice(0, maxVisible);
@@ -680,10 +740,27 @@ function SessionTree({
     if (head.some((n) => n.session.sessionId === currentSessionId)) return head;
     const currentNode = rendered.find((n) => n.session.sessionId === currentSessionId);
     if (currentNode === undefined) return head;
-    // current 不在前缀里 → 加进头部，再 cap 一次（多保留一条 visual signal）
-    return [currentNode, ...head];
+    return [currentNode, ...head.slice(0, Math.max(maxVisible - 1, 0))];
   }, [rendered, maxVisible, currentSessionId]);
   const overflowCount = maxVisible !== undefined ? rendered.length - cappedRendered.length : 0;
+  const effectiveInitialVisible = initialVisible ?? maxVisible ?? rendered.length;
+  const effectiveMaxInlineVisible = maxInlineVisible ?? maxVisible ?? rendered.length;
+  const canExpandInline =
+    maxVisible !== undefined &&
+    overflowCount > 0 &&
+    maxVisible < effectiveMaxInlineVisible &&
+    onExpandMore !== undefined;
+  const canShowAll =
+    maxVisible !== undefined &&
+    overflowCount > 0 &&
+    maxVisible >= effectiveMaxInlineVisible &&
+    onShowAll !== undefined;
+  const canCollapse =
+    maxVisible !== undefined &&
+    maxVisible > effectiveInitialVisible &&
+    rendered.length > effectiveInitialVisible &&
+    onCollapseVisible !== undefined;
+  const showOverflowControls = canExpandInline || canShowAll || canCollapse;
 
   return (
     <>
@@ -702,25 +779,40 @@ function SessionTree({
           onCancelRename={() => setRenamingSessionId(null)}
         />
       ))}
-      {overflowCount > 0 && onShowMore !== undefined && (
-        <button
-          type="button"
-          onClick={onShowMore}
-          className="w-full text-left text-xs text-fg-muted hover:text-fg-primary px-3 py-1 flex items-center gap-1.5"
-          aria-label={t('sidebar.moreSessions.aria', { count: rendered.length })}
-        >
-          <span
-            className="w-3 flex items-center justify-center flex-shrink-0 text-base leading-none text-fg-muted"
-            aria-hidden
-          >
-            +
-          </span>
-          <span className="italic">
-            {overflowCount === 1
-              ? t('sidebar.moreSessions.one')
-              : t('sidebar.moreSessions.many', { count: overflowCount })}
-          </span>
-        </button>
+      {showOverflowControls && (
+        <div className="flex items-center gap-3 px-3 py-1 text-xs text-fg-muted">
+          {canExpandInline && (
+            <button
+              type="button"
+              onClick={onExpandMore}
+              className="hover:text-fg-primary"
+              title={t('sidebar.showMore')}
+            >
+              {t('sidebar.showMore')}
+            </button>
+          )}
+          {canShowAll && (
+            <button
+              type="button"
+              onClick={onShowAll}
+              className="hover:text-fg-primary"
+              aria-label={t('sidebar.moreSessions.aria', { count: rendered.length })}
+              title={t('sidebar.moreSessions.aria', { count: rendered.length })}
+            >
+              {t('sidebar.showAll')}
+            </button>
+          )}
+          {canCollapse && (
+            <button
+              type="button"
+              onClick={onCollapseVisible}
+              className="hover:text-fg-primary"
+              title={t('sidebar.showLess')}
+            >
+              {t('sidebar.showLess')}
+            </button>
+          )}
+        </div>
       )}
       {ctxMenu && (
         <SessionContextMenu

@@ -19,6 +19,7 @@ Last Updated: 2026-07-08
 | 011 | Medium | Resolved | Streaming transcript auto-follow ignores upward wheel input and locks the view to the bottom | v0.1.23 | 2026-06-24 |
 | 012 | High | Resolved | Mid-turn interrupt prompts stayed visually above the spinner because SDK prompt-consumption events were not surfaced | v0.1.22 | 2026-06-24 |
 | 013 | High | Resolved | Restored KodaX sessions could pair assistant segments with the following user prompt after consecutive user messages | v0.1.29 | 2026-07-08 |
+| 014 | Medium | Resolved | Session rename reverted after switching sessions because manual titles were not persisted outside memory | v0.1.29 | 2026-07-08 |
 
 ## Issue Details
 
@@ -1086,12 +1087,71 @@ Verification:
 - `node --test --import tsx/esm apps/desktop/electron/test/transcript-dedup.test.ts apps/desktop/electron/test/composeMessages.test.ts apps/desktop/electron/test/history-replay-no-popout.test.ts` passed: 52/52.
 - `npm run build -w @kodax-space/desktop` passed. Vite reported existing large-chunk and dynamic-import warnings.
 
+### 014: Session rename reverted after switching sessions because manual titles were not persisted outside memory
+
+- Priority: Medium
+- Status: Resolved
+- Introduced: v0.1.29
+- Fixed: v0.1.29
+- Created: 2026-07-08
+- Resolution Date: 2026-07-08
+
+#### Original Problem
+
+Current behavior:
+
+- Renaming a session in the sidebar appeared to save at first.
+- After clicking another session or refreshing the session list, the renamed row could revert to its previous title.
+- The failure was most visible for historical/persisted sessions that were listed from SDK storage but were not loaded into the in-memory host map.
+
+Expected behavior:
+
+- Manual session renames should remain visible after switching sessions, refreshing the list, resuming the session, and restarting the app.
+- Renaming a persisted-only session should succeed instead of silently returning to the SDK summary title.
+
+#### Context
+
+Affected components:
+
+- `apps/desktop/electron/kodax/host.ts`
+- `apps/desktop/electron/kodax/session-store.ts`
+- `apps/desktop/electron/kodax/session-title-store.ts`
+- `apps/desktop/electron/ipc/session.ts`
+- `apps/desktop/electron/test/host.test.ts`
+- `apps/desktop/electron/test/_helpers/session-store-mock.ts`
+
+#### Root Cause
+
+`session.setTitle` only updated `ManagedSession.title` in the main-process in-memory map. Persisted-only sessions were not in that map, so the handler returned `ok: false`; the renderer refreshed from `session.list`, which read the unchanged SDK summary title. Even for in-flight sessions, the manual title was not stored anywhere durable outside memory, so a later persisted-list fallback could show the old title again.
+
+#### Resolution
+
+Implemented a Space-owned per-session title override store:
+
+- Added `SessionTitleStore`, stored under Space data as `session-title-overrides`.
+- `kodaxHost.setTitle()` is now async, sanitizes the title, updates in-flight sessions when present, and writes a durable title override for both in-flight and persisted-only sessions.
+- `listPersistedSessions()` overlays Space title overrides on top of SDK session summaries.
+- `tryResume()` hydrates the in-flight session title from the Space override before falling back to the SDK title.
+- Session delete clears the title override only when SDK deletion succeeds.
+- Test mocks now install an in-memory title override store so unit tests do not touch real user data.
+
+Tests added/updated:
+
+- `setTitle: persists rename for a persisted-only session`
+- `setTitle: in-flight rename survives fallback to persisted list`
+- `delete clears a persisted title override`
+
+Verification:
+
+- `node --test --import tsx/esm electron/test/host.test.ts electron/test/session-fork-rewind.test.ts electron/test/host-try-resume.test.ts` from `apps/desktop` passed: 54/54.
+- `node --test --import tsx/esm test/session.test.ts test/project.test.ts` from `packages/space-ipc-schema` passed: 66/66.
+
 ## Summary
 
-- Total: 13
+- Total: 14
 - Open: 1
-- Resolved: 12
+- Resolved: 13
 - High: 9
-- Medium: 3
+- Medium: 4
 - Low: 1
 - Next to resolve: 006

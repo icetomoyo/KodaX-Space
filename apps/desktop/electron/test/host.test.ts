@@ -237,17 +237,59 @@ test('ensureTitle: empty/whitespace-only prompt yields "Untitled"', () => {
   assert.equal(kodaxHost.get(sessionId)?.title, 'Untitled');
 });
 
-test('setTitle: replaces an existing title', () => {
+test('setTitle: replaces an existing title', async () => {
   const { sessionId } = kodaxHost.createSession({ projectRoot: '/r', provider: 'mock' });
   kodaxHost.ensureTitle(sessionId, 'first');
-  const ok = kodaxHost.setTitle(sessionId, 'manual override');
+  const ok = await kodaxHost.setTitle(sessionId, 'manual override');
   assert.equal(ok, true);
   assert.equal(kodaxHost.get(sessionId)?.title, 'manual override');
 });
 
-test('setTitle: returns false for non-existent session', () => {
-  const ok = kodaxHost.setTitle('s_does_not_exist', 'whatever');
+test('setTitle: returns false for non-existent session', async () => {
+  const ok = await kodaxHost.setTitle('s_does_not_exist', 'whatever');
   assert.equal(ok, false);
+});
+
+test('setTitle: persists rename for a persisted-only session', async () => {
+  const sessionId = 's_persisted_rename';
+  mockState.seed(sessionId, '/r', 'Old title');
+
+  const ok = await kodaxHost.setTitle(sessionId, 'Renamed title');
+  assert.equal(ok, true);
+
+  const merged = await kodaxHost.listMerged({ projectRoot: '/r' });
+  const renamed = merged.find((m) => m.sessionId === sessionId);
+  assert.equal(renamed?.kind, 'persisted');
+  assert.equal(renamed?.title, 'Renamed title');
+});
+
+test('setTitle: in-flight rename survives fallback to persisted list', async () => {
+  const { sessionId } = kodaxHost.createSession({ projectRoot: '/r', provider: 'mock' });
+  mockState.seed(sessionId, '/r', 'Old disk title');
+
+  const ok = await kodaxHost.setTitle(sessionId, 'Live renamed title');
+  assert.equal(ok, true);
+  assert.equal(kodaxHost.get(sessionId)?.title, 'Live renamed title');
+
+  await kodaxHost.disposeAll();
+  const merged = await kodaxHost.listMerged({ projectRoot: '/r' });
+  const renamed = merged.find((m) => m.sessionId === sessionId);
+  assert.equal(renamed?.kind, 'persisted');
+  assert.equal(renamed?.title, 'Live renamed title');
+});
+
+test('delete clears a persisted title override', async () => {
+  const sessionId = 's_deleted_rename';
+  mockState.seed(sessionId, '/r', 'Old title');
+  await kodaxHost.setTitle(sessionId, 'Temporary title');
+
+  const deleted = await kodaxHost.delete(sessionId);
+  assert.equal(deleted, true);
+
+  mockState.seed(sessionId, '/r', 'Old title');
+  const merged = await kodaxHost.listMerged({ projectRoot: '/r' });
+  const row = merged.find((m) => m.sessionId === sessionId);
+  assert.equal(row?.title, 'Old title');
 });
 
 // ---- Review fixes: Unicode-safe title + sanitization ----
@@ -287,9 +329,9 @@ test('sanitizeTitle path: strips C0 control chars', () => {
   assert.equal(kodaxHost.get(sessionId)?.title, 'hiworld');
 });
 
-test('setTitle: same sanitization applies to user-supplied renames', () => {
+test('setTitle: same sanitization applies to user-supplied renames', async () => {
   const { sessionId } = kodaxHost.createSession({ projectRoot: '/r', provider: 'mock' });
-  kodaxHost.setTitle(sessionId, 'evil‮txt');
+  await kodaxHost.setTitle(sessionId, 'evil‮txt');
   assert.equal(kodaxHost.get(sessionId)?.title, 'eviltxt');
 });
 

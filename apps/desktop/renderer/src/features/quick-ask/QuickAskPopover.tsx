@@ -64,9 +64,7 @@ export function QuickAskPopover({ open, onClose }: QuickAskPopoverProps): JSX.El
   useEffect(() => {
     if (!open) return;
     setPrompt('');
-    const idleState: AskState = { kind: 'idle' };
-    stateRef.current = idleState;
-    setState(idleState);
+    setState({ kind: 'idle' });
     requestAnimationFrame(() => textareaRef.current?.focus());
   }, [open]);
 
@@ -100,6 +98,8 @@ export function QuickAskPopover({ open, onClose }: QuickAskPopoverProps): JSX.El
       const target = e.target;
       if (!(target instanceof Node)) return;
       if (panelRef.current?.contains(target)) return;
+      e.preventDefault();
+      e.stopPropagation();
       void closeAndCleanup();
     };
     document.addEventListener('pointerdown', onPointerDown, true);
@@ -143,9 +143,7 @@ export function QuickAskPopover({ open, onClose }: QuickAskPopoverProps): JSX.El
     const trimmed = prompt.trim();
     if (!trimmed || !window.kodaxSpace) return;
     if (!currentProjectPath) {
-      const errorState: AskState = { kind: 'error', message: t('quickAsk.openProjectFirst') };
-      stateRef.current = errorState;
-      setState(errorState);
+      setState({ kind: 'error', message: t('quickAsk.openProjectFirst') });
       return;
     }
 
@@ -154,9 +152,7 @@ export function QuickAskPopover({ open, onClose }: QuickAskPopoverProps): JSX.El
     runSeqRef.current = runSeq;
     const isActiveRun = (): boolean => runSeqRef.current === runSeq;
     const setActiveState = (next: AskState): void => {
-      if (!isActiveRun()) return;
-      stateRef.current = next;
-      setState(next);
+      if (isActiveRun()) setState(next);
     };
 
     const previousSessionId = sessionIdFromState(stateRef.current);

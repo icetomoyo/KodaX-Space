@@ -51,6 +51,7 @@ import { CommandToolbar, type PopoutKind } from './CommandToolbar.js';
 import { BottomBar } from './BottomBar.js';
 import { ConversationStreamV2 } from './ConversationStreamV2.js';
 import { PopoutOverlay } from './popouts/PopoutOverlay.js';
+import { FilesPanel } from './popouts/FilesPanel.js';
 import { PermissionModal } from '../features/permission/PermissionModal.js';
 import { AskUserModal } from '../features/ask-user/AskUserModal.js';
 import { ConfirmDialog } from './ConfirmDialog.js';
@@ -92,10 +93,13 @@ interface ShellProps {
 const restoredSessionIds = new Set<string>();
 
 const RIGHT_SIDEBAR_DEFAULT_WIDTH = 320;
+const RIGHT_SIDEBAR_MIN_WIDTH = 180;
 const SHELL_PANEL_HORIZONTAL_PADDING_PX = 20;
 const SHELL_PANEL_GAP_PX = 10;
 const RESIZE_HANDLE_WIDTH_PX = 4;
 const CODER_MIN_CENTER_PX = 520;
+type LeftSidebarMode = 'navigation' | 'files';
+type RightSidebarWidthMode = 'default' | 'half' | 'max' | 'custom';
 
 function getViewportWidth(): number {
   return typeof window !== 'undefined' && window.innerWidth ? window.innerWidth : 1440;
@@ -126,6 +130,25 @@ function rightSidebarOpenWidth(
   const pairedWidth =
     viewportWidth - SHELL_PANEL_HORIZONTAL_PADDING_PX - leftSideChrome - rightSideChrome;
   return clampSidebarWidthPx(Math.round(pairedWidth / 2));
+}
+
+function rightSidebarMaxWidth(
+  leftSidebarVisible: boolean,
+  leftWidth: number,
+  viewportWidth = getViewportWidth(),
+): number {
+  const leftSideChrome = leftSidebarVisible
+    ? leftWidth + RESIZE_HANDLE_WIDTH_PX + SHELL_PANEL_GAP_PX * 2
+    : 0;
+  const rightResizeChrome = RESIZE_HANDLE_WIDTH_PX;
+  const gapCount = leftSidebarVisible ? 4 : 2;
+  const width =
+    viewportWidth -
+    SHELL_PANEL_HORIZONTAL_PADDING_PX -
+    leftSideChrome -
+    rightResizeChrome -
+    SHELL_PANEL_GAP_PX * gapCount;
+  return Math.max(RIGHT_SIDEBAR_MIN_WIDTH, Math.round(width));
 }
 
 function coderCenterWidthPx(
@@ -178,10 +201,16 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
   const setRightSidebarWidth = useAppStore((s) => s.setRightSidebarWidth);
   const [leftWidthDraft, setLeftWidthDraft] = useState<number | null>(null);
   const [rightWidthDraft, setRightWidthDraft] = useState<number | null>(null);
+  const [leftSidebarMode, setLeftSidebarMode] = useState<LeftSidebarMode>('navigation');
+  const [rightSidebarWidthMode, setRightSidebarWidthMode] =
+    useState<RightSidebarWidthMode>('custom');
+  const [rightSidebarWidthSettling, setRightSidebarWidthSettling] = useState(false);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [licenseStatus, setLicenseStatus] = useState<LicenseStatusT | null>(null);
   const popoutBoundsRef = useRef<HTMLDivElement | null>(null);
+  const rightSidebarWidthSettlingTimerRef = useRef<number | null>(null);
+  const rightSidebarWidthPersistTimerRef = useRef<number | null>(null);
   const [taskDockFocusRequest, setTaskDockFocusRequest] = useState<TaskDockFocusState>({
     section: null,
     nonce: 0,
@@ -191,6 +220,45 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
   const closeDiagnostics = useCallback((): void => {
     setDiagnosticsOpen(false);
   }, []);
+
+  const pulseRightSidebarWidthSettling = useCallback((): void => {
+    setRightSidebarWidthSettling(true);
+    if (rightSidebarWidthSettlingTimerRef.current !== null) {
+      window.clearTimeout(rightSidebarWidthSettlingTimerRef.current);
+    }
+    rightSidebarWidthSettlingTimerRef.current = window.setTimeout(() => {
+      rightSidebarWidthSettlingTimerRef.current = null;
+      setRightSidebarWidthSettling(false);
+    }, 240);
+  }, []);
+
+  const persistRightSidebarWidthAfterPaint = useCallback(
+    (px: number): void => {
+      if (rightSidebarWidthPersistTimerRef.current !== null) {
+        window.clearTimeout(rightSidebarWidthPersistTimerRef.current);
+      }
+      rightSidebarWidthPersistTimerRef.current = window.setTimeout(() => {
+        rightSidebarWidthPersistTimerRef.current = null;
+        setRightSidebarWidth(px);
+      }, 240);
+    },
+    [setRightSidebarWidth],
+  );
+
+  useEffect(() => {
+    return () => {
+      if (rightSidebarWidthSettlingTimerRef.current !== null) {
+        window.clearTimeout(rightSidebarWidthSettlingTimerRef.current);
+      }
+      if (rightSidebarWidthPersistTimerRef.current !== null) {
+        window.clearTimeout(rightSidebarWidthPersistTimerRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (currentSurface !== 'code') setLeftSidebarMode('navigation');
+  }, [currentSurface]);
 
   useEffect(() => {
     let raf = 0;
@@ -277,18 +345,43 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
 
   const openRightSidebarAtBalancedWidth = useCallback((): void => {
     const targetWidth = rightSidebarOpenWidth(leftSidebarVisible, leftWidth, viewportWidth);
+    pulseRightSidebarWidthSettling();
     setRightWidthDraft(null);
-    setRightSidebarWidth(targetWidth);
+    setRightSidebarWidthMode('half');
+    persistRightSidebarWidthAfterPaint(targetWidth);
     setRightSidebarOpen(true);
-  }, [leftSidebarVisible, leftWidth, setRightSidebarOpen, setRightSidebarWidth, viewportWidth]);
+  }, [
+    leftSidebarVisible,
+    leftWidth,
+    persistRightSidebarWidthAfterPaint,
+    pulseRightSidebarWidthSettling,
+    setRightSidebarOpen,
+    viewportWidth,
+  ]);
 
   const openRightSidebarAtDefaultWidth = useCallback((): void => {
     const maxComfortWidth = rightSidebarOpenWidth(leftSidebarVisible, leftWidth, viewportWidth);
     const targetWidth = Math.min(clampSidebarWidthPx(RIGHT_SIDEBAR_DEFAULT_WIDTH), maxComfortWidth);
+    pulseRightSidebarWidthSettling();
     setRightWidthDraft(null);
-    setRightSidebarWidth(targetWidth);
+    setRightSidebarWidthMode('default');
+    persistRightSidebarWidthAfterPaint(targetWidth);
     setRightSidebarOpen(true);
-  }, [leftSidebarVisible, leftWidth, setRightSidebarOpen, setRightSidebarWidth, viewportWidth]);
+  }, [
+    leftSidebarVisible,
+    leftWidth,
+    persistRightSidebarWidthAfterPaint,
+    pulseRightSidebarWidthSettling,
+    setRightSidebarOpen,
+    viewportWidth,
+  ]);
+
+  const openRightSidebarAtMaxWidth = useCallback((): void => {
+    pulseRightSidebarWidthSettling();
+    setRightWidthDraft(null);
+    setRightSidebarWidthMode('max');
+    setRightSidebarOpen(true);
+  }, [pulseRightSidebarWidthSettling, setRightSidebarOpen]);
 
   useEffect(() => {
     const onTaskDockFocus = (event: Event): void => {
@@ -349,12 +442,22 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
   // tab + 选中）。否则点了卡片"什么都没发生"。
   useEffect(() => {
     const onFocus = (): void => {
-      if (!rightSidebarOpen) openRightSidebarAtBalancedWidth();
-      else setRightSidebarOpen(true);
+      openRightSidebarAtBalancedWidth();
     };
     window.addEventListener('kodax-space.focus-artifact', onFocus);
     return () => window.removeEventListener('kodax-space.focus-artifact', onFocus);
-  }, [openRightSidebarAtBalancedWidth, rightSidebarOpen, setRightSidebarOpen]);
+  }, [openRightSidebarAtBalancedWidth]);
+
+  useEffect(() => {
+    const onOpenFilesWorkspace = (): void => {
+      if (fullscreenRead) setFullscreenRead(false);
+      setLeftSidebarMode('files');
+      setLeftSidebarOpen(true);
+    };
+    window.addEventListener('kodax-space.open-files-workspace', onOpenFilesWorkspace);
+    return () =>
+      window.removeEventListener('kodax-space.open-files-workspace', onOpenFilesWorkspace);
+  }, [fullscreenRead, setLeftSidebarOpen]);
 
   // 历史 session 切换时按需从 KodaX SDK 拉持久化对话内容回填 store。
   // events / userMessages buffer 是 in-memory；重启 / 切到 new session 后空 → 调
@@ -406,6 +509,13 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
   const [activePopout, setActivePopoutRaw] = useState<PopoutKind | null>(null);
   const setActivePopoutKindInStore = useAppStore((s) => s.setActivePopoutKind);
   const activePopoutKindFromStore = useAppStore((s) => s.activePopoutKind);
+  const openFilesInLeftSidebar = useCallback((): void => {
+    if (currentSurface !== 'code') return;
+    if (fullscreenRead) setFullscreenRead(false);
+    setLeftSidebarMode('files');
+    setLeftSidebarOpen(true);
+    setActivePopoutRaw(null);
+  }, [currentSurface, fullscreenRead, setLeftSidebarOpen]);
   useEffect(() => {
     setActivePopoutKindInStore(activePopout);
   }, [activePopout, setActivePopoutKindInStore]);
@@ -417,6 +527,11 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
       setActivePopoutRaw(null);
       return;
     }
+    if (activePopoutKindFromStore === 'files') {
+      openFilesInLeftSidebar();
+      setActivePopoutKindInStore(null);
+      return;
+    }
     if (isPopoutKind(activePopoutKindFromStore)) {
       setActivePopoutRaw(activePopoutKindFromStore);
       return;
@@ -424,7 +539,7 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
     console.warn('[kodax-space] ignored invalid active popout kind', activePopoutKindFromStore);
     setActivePopoutKindInStore(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activePopoutKindFromStore]);
+  }, [activePopoutKindFromStore, openFilesInLeftSidebar, setActivePopoutKindInStore]);
 
   // KX-I-02: 用户手动切 popout (CommandToolbar / RightSidebar ⤢ / slash command) 时,
   // **顺手**把该 (session, kind) 标 promoted —— 让 director 不会下一秒再"自动"打开同一个
@@ -434,12 +549,16 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
   const markPopoutPromoted = useAppStore((s) => s.markPopoutPromoted);
   const setActivePopout = useCallback(
     (next: PopoutKind | null) => {
+      if (next === 'files') {
+        openFilesInLeftSidebar();
+        return;
+      }
       if (currentSessionIdForPopout !== null && next !== null) {
         markPopoutPromoted(currentSessionIdForPopout, next);
       }
       setActivePopoutRaw(next);
     },
-    [currentSessionIdForPopout, markPopoutPromoted],
+    [currentSessionIdForPopout, markPopoutPromoted, openFilesInLeftSidebar],
   );
 
   useEffect(() => {
@@ -493,26 +612,52 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
     }
   }, [fullscreenRead, openRightSidebarAtDefaultWidth, rightSidebarOpen, setRightSidebarOpen]);
 
-  const rightSidebarExpandedWidth = rightSidebarOpenWidth(
+  const rightSidebarHalfWidth = rightSidebarOpenWidth(
     leftSidebarVisible,
     leftWidth,
     viewportWidth,
   );
-  const clampRightSidebarWidth = useCallback(
-    (px: number): number => Math.min(clampSidebarWidthPx(px), rightSidebarExpandedWidth),
-    [rightSidebarExpandedWidth],
+  const rightSidebarMaxAvailableWidth = rightSidebarMaxWidth(
+    leftSidebarVisible,
+    leftWidth,
+    viewportWidth,
   );
-  const rightWidth = clampRightSidebarWidth(rightWidthDraft ?? persistedRightWidth);
+  const clampRightSidebarNonMaxWidth = useCallback(
+    (px: number): number => Math.min(clampSidebarWidthPx(px), rightSidebarHalfWidth),
+    [rightSidebarHalfWidth],
+  );
+  const clampRightSidebarWidth = useCallback(
+    (px: number): number => {
+      const finite = Number.isFinite(px) ? px : RIGHT_SIDEBAR_DEFAULT_WIDTH;
+      const max =
+        rightSidebarWidthMode === 'max' ? rightSidebarMaxAvailableWidth : rightSidebarHalfWidth;
+      return Math.round(Math.min(max, Math.max(RIGHT_SIDEBAR_MIN_WIDTH, finite)));
+    },
+    [rightSidebarHalfWidth, rightSidebarMaxAvailableWidth, rightSidebarWidthMode],
+  );
+  const rightWidth =
+    rightWidthDraft !== null
+      ? clampRightSidebarWidth(rightWidthDraft)
+      : rightSidebarWidthMode === 'max'
+        ? rightSidebarMaxAvailableWidth
+        : rightSidebarWidthMode === 'half'
+          ? rightSidebarHalfWidth
+          : rightSidebarWidthMode === 'default'
+            ? Math.min(clampSidebarWidthPx(RIGHT_SIDEBAR_DEFAULT_WIDTH), rightSidebarHalfWidth)
+            : clampRightSidebarNonMaxWidth(persistedRightWidth);
   const rightSidebarVisible =
     rightSidebarVisibleBeforeLeft &&
-    coderCenterWidthPx(leftSidebarVisible, leftWidth, true, rightWidth, viewportWidth) >=
-      CODER_MIN_CENTER_PX;
+    (rightSidebarWidthMode === 'max' ||
+      coderCenterWidthPx(leftSidebarVisible, leftWidth, true, rightWidth, viewportWidth) >=
+        CODER_MIN_CENTER_PX);
   const platformClass = getRendererPlatformClass();
   const isWindows = platformClass === 'platform-win32';
 
   return (
     <div
-      className={`h-screen flex flex-col bg-surface text-fg-primary overflow-hidden relative isolate ${platformClass}`}
+      className={`h-screen flex flex-col bg-surface text-fg-primary overflow-hidden relative isolate ${platformClass} ${
+        rightSidebarWidthSettling ? 'right-sidebar-width-settling' : ''
+      }`}
     >
       {/* F060: 背景极光层（玻璃 chrome 通过 backdrop-filter 透出它）。minimal 档不渲染。
           铺在最底层 z-0；下面的 titlebar / body 用 relative z-10 浮在其上。 */}
@@ -586,7 +731,19 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
       <div className="flex flex-1 min-h-0 gap-2.5 p-2.5">
         {leftSidebarVisible && (
           <>
-            <LeftSidebar width={leftWidth} />
+            {leftSidebarMode === 'files' ? (
+              <FilesPanel
+                width={leftWidth}
+                asSidebar
+                onBack={() => setLeftSidebarMode('navigation')}
+              />
+            ) : (
+              <LeftSidebar
+                width={leftWidth}
+                filesActive={false}
+                onOpenFiles={openFilesInLeftSidebar}
+              />
+            )}
             <ResizeHandle
               side="left"
               width={leftWidth}
@@ -672,13 +829,16 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
                   onPreview={(px) => setRightWidthDraft(clampRightSidebarWidth(px))}
                   onCommit={(px) => {
                     setRightWidthDraft(null);
-                    setRightSidebarWidth(clampRightSidebarWidth(px));
+                    setRightSidebarWidthMode('custom');
+                    setRightSidebarWidth(clampRightSidebarNonMaxWidth(px));
                   }}
                 />
                 <RightSidebar
                   width={rightWidth}
-                  defaultWidth={RIGHT_SIDEBAR_DEFAULT_WIDTH}
-                  expandedWidth={rightSidebarExpandedWidth}
+                  widthMode={rightSidebarWidthMode}
+                  onDefaultWidth={openRightSidebarAtDefaultWidth}
+                  onHalfWidth={openRightSidebarAtBalancedWidth}
+                  onMaxWidth={openRightSidebarAtMaxWidth}
                   shellFocusRequest={taskDockFocusRequest}
                 />
               </>

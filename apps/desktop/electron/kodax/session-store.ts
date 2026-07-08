@@ -26,6 +26,7 @@
 // 重置：setSessionStoreImpl(null) 恢复默认。
 import type { Surface } from '@kodax-space/space-ipc-schema';
 import { dedupeTranscriptEntries } from '../ipc/transcript-dedup.js';
+import { getSessionTitleStore } from './session-title-store.js';
 
 type SdkSessionModule = typeof import('@kodax-ai/kodax/session');
 type SessionManager = ReturnType<SdkSessionModule['createSessionManager']>;
@@ -239,16 +240,22 @@ export async function listPersistedSessions(opts: {
     scope: 'user',
     limit: opts.limit ?? 200,
   });
-  return summaries.filter((s) => !isEphemeralSessionTag(s.tag)).map((s) => ({
-    sessionId: s.id,
-    title: s.title,
-    msgCount: s.msgCount,
-    createdAt: s.createdAt,
-    projectRoot: s.runtimeInfo?.workspaceRoot ?? s.runtimeInfo?.gitRoot,
-    // F045: 不把 tag 下推给 SDK listSessions（仍按 projectRoot+scope 拉，避开 all-fetch
-    // 致列表不全的历史回退坑 ②B）。这里反推 surface，main 端（host.listMerged）再 filter。
-    surface: sdkTagToSurface(s.tag),
-  }));
+  const visibleSummaries = summaries.filter((s) => !isEphemeralSessionTag(s.tag));
+  return Promise.all(
+    visibleSummaries.map(async (s) => {
+      const titleOverride = await getSessionTitleStore().read(s.id);
+      return {
+        sessionId: s.id,
+        title: titleOverride ?? s.title,
+        msgCount: s.msgCount,
+        createdAt: s.createdAt,
+        projectRoot: s.runtimeInfo?.workspaceRoot ?? s.runtimeInfo?.gitRoot,
+        // F045: 不把 tag 下推给 SDK listSessions（仍按 projectRoot+scope 拉，避开 all-fetch
+        // 致列表不全的历史回退坑 ②B）。这里反推 surface，main 端（host.listMerged）再 filter。
+        surface: sdkTagToSurface(s.tag),
+      };
+    }),
+  );
 }
 
 /**

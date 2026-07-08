@@ -62,6 +62,7 @@ export function toArtifactContent(
     case 'pdf':
     case 'docx':
     case 'xlsx':
+    case 'file':
       return payload.path !== undefined && projectRoot
         ? { kind, projectRoot, path: payload.path }
         : null;

@@ -68,7 +68,7 @@ interface CollapseResult {
   totalLines: number;
 }
 
-function collapseLargeText(text: string): CollapseResult {
+function collapseLargeText(text: string, t: Translate): CollapseResult {
   const lines = text.split('\n');
   const total = lines.length;
   const isDiff = isDiffLike(text);
@@ -80,7 +80,7 @@ function collapseLargeText(text: string): CollapseResult {
     const head = lines.slice(0, EXTREME_HEAD_LINES).join('\n');
     const omitted = total - EXTREME_HEAD_LINES;
     return {
-      body: `${head}\n…(${omitted} more lines — extremely large, click "Show full" to see)`,
+      body: `${head}\n${t('message.moreLinesExtremelyLarge', { count: omitted })}`,
       collapsed: true,
       extreme: true,
       totalLines: total,
@@ -322,13 +322,15 @@ export function QueuedUserBubble({
   status,
   sentAt,
 }: Extract<ConversationMessage, { kind: 'queued_user' }>): JSX.Element {
-  const label = queueMode === 'after-turn' ? 'After-turn queued' : 'Interrupt queued';
+  const { t } = useI18n();
+  const label =
+    queueMode === 'after-turn' ? t('message.queue.afterTurn') : t('message.queue.interrupt');
   const detail =
     status === 'pending-ack'
-      ? 'Sending to queue'
+      ? t('message.queue.sending')
       : queueMode === 'after-turn'
-        ? 'Waiting for current turn'
-        : 'Waiting for safe point';
+        ? t('message.queue.waitingTurn')
+        : t('message.queue.waitingSafePoint');
   return (
     <div className="group flex flex-col items-start" data-testid="queued-user-message-bubble">
       <div
@@ -369,6 +371,7 @@ export function AssistantBubble({
   onForkTurn?: (turnIndex: number) => void;
   onRewindTurn?: (turnIndex: number) => void;
 }): JSX.Element {
+  const { t } = useI18n();
   const [showThinking, setShowThinking] = useState(false);
   const turnActions =
     completed === true && turnIndex !== undefined
@@ -393,7 +396,7 @@ export function AssistantBubble({
           ].join(' ')}
         >
           <Caret open={showThinking} />
-          <span>Thinking (~{approxTokens(thinking)} tokens)</span>
+          <span>{t('message.thinkingSummary', { tokens: approxTokens(thinking) })}</span>
         </button>
       )}
       {thinking !== undefined && (
@@ -499,8 +502,8 @@ export function ToolCallCard({
   // P4c: result 走行级折叠（diff middle-collapse / 极端守门）
   const resultCollapse = useMemo<CollapseResult | null>(() => {
     if (result === undefined) return null;
-    return collapseLargeText(result);
-  }, [result]);
+    return collapseLargeText(result, t);
+  }, [result, t]);
 
   return (
     <div ref={cardRef} className={`tool-card-anim rounded border ${colorClass} text-xs font-mono`}>
@@ -772,8 +775,8 @@ function ToolEditInputView({ toolName, input }: ToolEditInputViewProps): JSX.Ele
   }, [input]);
   const inputCollapse = useMemo<CollapseResult | null>(() => {
     if (inputPretty === null) return null;
-    return collapseLargeText(inputPretty);
-  }, [inputPretty]);
+    return collapseLargeText(inputPretty, t);
+  }, [inputPretty, t]);
 
   const renderer = getToolInputRenderer(toolName);
   if (renderer !== null) {

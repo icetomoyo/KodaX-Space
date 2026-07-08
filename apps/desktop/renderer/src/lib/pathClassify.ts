@@ -5,7 +5,7 @@
 // 路径分类规则有单一真理源。
 
 /** 可在 Artifact 面板内预览的扩展名（sandbox iframe / 语法高亮）。 */
-export const PREVIEWABLE_EXTS = new Set(['html', 'htm', 'svg', 'md', 'markdown']);
+const MARKUP_PREVIEW_EXTS = new Set(['html', 'htm', 'svg', 'md', 'markdown']);
 
 // 视为"文本/代码"、点击走 App 内 diff 查看器的扩展名。
 // 注意：html/htm/svg/md **不**放进来 —— 它们归 PREVIEWABLE_EXTS。这样无 session（开不了
@@ -19,11 +19,24 @@ export const CODE_EXTS = new Set([
   'txt', 'log', 'csv', 'tsv', 'gradle', 'makefile', 'mk', 'dockerfile',
 ]);
 
+const RICH_FILE_PREVIEW_EXTS = new Set([
+  'pdf', 'docx', 'xlsx', 'xls',
+  'png', 'jpg', 'jpeg', 'gif', 'webp', 'ico', 'bmp', 'avif',
+  'ppt', 'pptx', 'pptm', 'potx', 'potm', 'ppsx', 'ppsm',
+  'mp4', 'm4v', 'mov', 'webm', 'ogv', 'mkv', 'avi',
+  'mp3', 'wav', 'm4a', 'aac', 'flac', 'opus', 'ogg', 'oga',
+]);
+
+export const PREVIEWABLE_EXTS = new Set([
+  ...MARKUP_PREVIEW_EXTS,
+  ...CODE_EXTS,
+  ...RICH_FILE_PREVIEW_EXTS,
+]);
+
 /** 已知扩展名总集（含上面两类 + 常见二进制/文档）——用于判断 inline code 是否"长得像文件路径"。 */
 export const KNOWN_EXTS = new Set([
   ...PREVIEWABLE_EXTS, ...CODE_EXTS,
-  'png', 'jpg', 'jpeg', 'gif', 'webp', 'ico', 'bmp', 'avif',
-  'pdf', 'docx', 'xlsx', 'pptx', 'zip', 'tar', 'gz', 'mp4', 'mov', 'mp3', 'wav',
+  'zip', 'tar', 'gz',
   'lock', 'map', 'wasm', 'ttf', 'woff', 'woff2',
 ]);
 

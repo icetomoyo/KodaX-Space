@@ -194,22 +194,29 @@ test('handler: invalid payload (markdown without content) → error, no write', 
   }
 });
 
-test('handler: doc kind with path works', async () => {
+test('handler: path-backed kinds work', async () => {
   const { store, dir, handler } = harness();
   try {
     const out = await withArtifactContext(CTX, () =>
       handler({ kind: 'pdf', title: 'Doc', path: '/proj/a.pdf' }),
     );
     assert.match(out, /created/i);
-    const read = await store.read((await store.list())[0]!.id);
-    assert.equal(read?.path, '/proj/a.pdf');
+    const media = await withArtifactContext(CTX, () =>
+      handler({ kind: 'file', title: 'Movie', path: '/proj/demo.mp4' }),
+    );
+    assert.match(media, /created/i);
+    const list = await store.list();
+    const pdfRead = await store.read(list.find((artifact) => artifact.kind === 'pdf')!.id);
+    const fileRead = await store.read(list.find((artifact) => artifact.kind === 'file')!.id);
+    assert.equal(pdfRead?.path, '/proj/a.pdf');
+    assert.equal(fileRead?.path, '/proj/demo.mp4');
   } finally {
     store.invalidate();
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test('handler: doc path outside the project is rejected', async () => {
+test('handler: path outside the project is rejected', async () => {
   const { store, dir, handler } = harness();
   try {
     const out = await withArtifactContext(CTX, () =>

@@ -13,7 +13,14 @@ import { useAppStore } from '../store/appStore.js';
 import { useSurfaceStore } from '../store/surface.js';
 import { pushToast } from '../store/toastStore.js';
 import { translateMessage } from '../i18n/I18nProvider.js';
+import { artifactSessionForProjectFiles } from '../features/artifact/filePreviewSession.js';
+import {
+  FOCUS_ARTIFACT_EVENT,
+  type TransientArtifactSnapshot,
+} from '../features/artifact/transientArtifact.js';
+import { detectKind, type RichPreviewKind } from '../features/preview/binaryUtils.js';
 import { isPreviewablePath, isCodePath, toProjectRelative } from './pathClassify.js';
+import type { ArtifactKindT } from '@kodax-space/space-ipc-schema';
 
 // 纯分类/归一化逻辑在 pathClassify.ts（可被 node:test 单测）；这里转出常用的几个，
 // 让 caller 仍从 openPath import（单一入口）。
@@ -30,6 +37,74 @@ interface PreviewCtx {
   readonly sessionId: string;
   readonly projectRoot: string;
   readonly surface: 'code' | 'partner';
+  readonly notifyOnError?: boolean;
+}
+
+function hashId(input: string): string {
+  let hash = 2166136261;
+  for (let i = 0; i < input.length; i += 1) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 16777619) >>> 0;
+  }
+  return hash.toString(36);
+}
+
+function pathBackedArtifactKind(kind: RichPreviewKind): ArtifactKindT {
+  return kind === 'pdf' || kind === 'docx' || kind === 'xlsx' ? kind : 'file';
+}
+
+function focusArtifactInSidebar(detail: {
+  readonly id?: string;
+  readonly snapshot?: TransientArtifactSnapshot;
+}): void {
+  useAppStore.getState().setRightSidebarOpen(true);
+  const dispatch = (): void => {
+    window.dispatchEvent(new CustomEvent(FOCUS_ARTIFACT_EVENT, { detail }));
+  };
+  dispatch();
+  window.setTimeout(dispatch, 0);
+}
+
+async function previewPathBackedFileAsTransient(
+  relPath: string,
+  ctx: PreviewCtx,
+  kind: RichPreviewKind,
+  notifyFailure: (message: string) => void,
+): Promise<boolean> {
+  const bridge = window.kodaxSpace;
+  if (!bridge) return false;
+
+  try {
+    const stat = await bridge.invoke('files.stat', { projectRoot: ctx.projectRoot, path: relPath });
+    if (!stat.ok) {
+      notifyFailure(stat.error?.message ?? translateMessage('common.unknownError'));
+      return false;
+    }
+    if (!stat.data.exists || stat.data.kind !== 'file') {
+      notifyFailure(translateMessage('openPath.fileNotFound'));
+      return false;
+    }
+  } catch (err) {
+    notifyFailure(
+      err instanceof Error && err.message.trim()
+        ? err.message
+        : translateMessage('common.unknownError'),
+    );
+    return false;
+  }
+
+  const id = `file-preview-${hashId(`${ctx.projectRoot}::${relPath}`)}`;
+  const snapshot: TransientArtifactSnapshot = {
+    id,
+    kind: pathBackedArtifactKind(kind),
+    title: relPath,
+    path: relPath,
+    version: 1,
+    versions: [{ v: 1, path: relPath }],
+  };
+
+  focusArtifactInSidebar({ id, snapshot });
+  return true;
 }
 
 export function isAbsolutePathOutsideProject(rawPath: string, projectRoot: string): boolean {
@@ -77,6 +152,14 @@ export async function previewFileAsArtifact(rawPath: string, ctx: PreviewCtx): P
   const bridge = window.kodaxSpace;
   if (!bridge) return false;
   const rel = toProjectRelative(rawPath, ctx.projectRoot);
+  const notifyFailure = (message: string): void => {
+    if (!ctx.notifyOnError) return;
+    pushToast(translateMessage('openPath.previewFailedWithMessage', { message }), 'error');
+  };
+  const richKind = detectKind(rel);
+  if (richKind !== null) {
+    return previewPathBackedFileAsTransient(rel, ctx, richKind, notifyFailure);
+  }
   try {
     const r = await bridge.invoke('artifact.previewFile', {
       sessionId: ctx.sessionId,
@@ -84,16 +167,49 @@ export async function previewFileAsArtifact(rawPath: string, ctx: PreviewCtx): P
       projectRoot: ctx.projectRoot,
       path: rel,
     });
-    if (!r.ok) return false;
+    if (!r.ok) {
+      notifyFailure(r.error?.message ?? translateMessage('common.unknownError'));
+      return false;
+    }
     // 确保右侧栏开着，然后切到 Artifact tab + 选中该 id（RightSidebar / ArtifactsView 监听此事件）。
     useAppStore.getState().setRightSidebarOpen(true);
-    window.dispatchEvent(
-      new CustomEvent('kodax-space.focus-artifact', { detail: { id: r.data.id } }),
-    );
+    focusArtifactInSidebar({ id: r.data.id });
     return true;
-  } catch {
+  } catch (err) {
+    notifyFailure(
+      err instanceof Error && err.message.trim()
+        ? err.message
+        : translateMessage('common.unknownError'),
+    );
     return false;
   }
+}
+
+/** Force a file into Artifact preview, even when smart routing would normally prefer diff. */
+export async function openFileAsArtifact(rawPath: string, ctx?: OpenCtx): Promise<boolean> {
+  const path = rawPath.trim();
+  if (path.length === 0 || path.length > 4096) return false;
+
+  const app = useAppStore.getState();
+  const projectRoot = ctx?.projectRoot ?? app.currentProjectPath;
+  const sessionId = artifactSessionForProjectFiles(
+    ctx?.sessionId ?? app.currentSessionId,
+    projectRoot,
+  );
+  const surface = ctx?.surface ?? useSurfaceStore.getState().currentSurface;
+
+  if (!projectRoot || !sessionId) {
+    pushToast(translateMessage('openPath.previewNoProject'), 'warning');
+    return false;
+  }
+
+  return previewFileAsArtifact(path, { sessionId, projectRoot, surface, notifyOnError: true });
+}
+
+function openDiffPanelForPath(rawPath: string, projectRoot: string): void {
+  const rel = toProjectRelative(rawPath, projectRoot);
+  useAppStore.getState().setLastDiffPath(rel || rawPath);
+  useAppStore.getState().requestPopout('diff');
 }
 
 /** 在 App 内 DiffPanel popout 打开文件（复用 tool-call/git diff 链路）。 */
@@ -131,14 +247,42 @@ export async function openInDiff(rawPath: string, projectRoot: string | null): P
     );
     return false;
   }
-  useAppStore.getState().setLastDiffPath(rel || rawPath);
-  useAppStore.getState().requestPopout('diff');
+  openDiffPanelForPath(rawPath, projectRoot);
   return true;
+}
+
+async function pathHasDiff(rawPath: string, projectRoot: string): Promise<boolean | null> {
+  const bridge = window.kodaxSpace;
+  if (!bridge) return null;
+  const rel = toProjectRelative(rawPath, projectRoot);
+  let checked = false;
+
+  try {
+    const cached = await bridge.invoke('files.diff', { projectRoot, path: rel });
+    if (cached.ok) {
+      checked = true;
+      if (cached.data.available) return true;
+    }
+  } catch {
+    // Cache misses/errors should not block the git fallback.
+  }
+
+  try {
+    const git = await bridge.invoke('project.gitFileDiff', { projectRoot, path: rel });
+    if (git.ok) {
+      checked = true;
+      if (git.data.available) return true;
+    }
+  } catch {
+    // Unknown diff state falls back to the caller's normal file handling.
+  }
+
+  return checked ? false : null;
 }
 
 /**
  * 智能路由：点一个文件路径应该发生什么。ctx 缺省时从 store 读当前 session/project/surface。
- *   预览型 → Artifact 预览；代码型 → App 内 diff；其它 → 文件管理器定位。
+ *   代码型有变更 → App 内 diff；代码型无变更/预览型 → Artifact 预览；其它 → 文件管理器定位。
  * 上游分支失败（无 session、文件不存在等）一律优雅回退到 reveal。
  */
 export async function openFileSmart(rawPath: string, ctx?: OpenCtx): Promise<void> {
@@ -152,13 +296,24 @@ export async function openFileSmart(rawPath: string, ctx?: OpenCtx): Promise<voi
   const projectRoot = ctx?.projectRoot ?? app.currentProjectPath;
   const surface = ctx?.surface ?? useSurfaceStore.getState().currentSurface;
 
+  if (isCodePath(path) && projectRoot) {
+    const hasDiff = await pathHasDiff(path, projectRoot);
+    if (hasDiff === true) {
+      openDiffPanelForPath(path, projectRoot);
+      return;
+    }
+    if (sessionId) {
+      const ok = await previewFileAsArtifact(path, { sessionId, projectRoot, surface });
+      if (ok) return;
+    }
+    await revealPath(path, projectRoot);
+    return;
+  }
+
   if (isPreviewablePath(path) && sessionId && projectRoot) {
     const ok = await previewFileAsArtifact(path, { sessionId, projectRoot, surface });
     if (ok) return;
     // 预览失败（二进制/过大/不存在）→ 回退到定位。
-  } else if (isCodePath(path) && projectRoot) {
-    const ok = await openInDiff(path, projectRoot);
-    if (ok) return;
   }
 
   await revealPath(path, projectRoot);

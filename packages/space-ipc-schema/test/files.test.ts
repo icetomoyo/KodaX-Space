@@ -8,6 +8,7 @@ import {
   INVOKE_CHANNEL_NAMES,
   filesTreeChannel,
   filesReadChannel,
+  filesReadBinaryChannel,
   filesDiffChannel,
   filesStatChannel,
   fileNodeSchema,
@@ -96,6 +97,25 @@ test('files.read output rejects wrong encoding literal', () => {
     truncated: false,
   });
   assert.equal(bad.success, false);
+});
+
+test('files.readBinary keeps base64 preview caps bounded to 50 MB', () => {
+  assert.equal(
+    filesReadBinaryChannel.input.safeParse({
+      projectRoot: '/r',
+      path: 'clip.mp4',
+      maxBytes: 50 * 1024 * 1024,
+    }).success,
+    true,
+  );
+  assert.equal(
+    filesReadBinaryChannel.input.safeParse({
+      projectRoot: '/r',
+      path: 'huge.mp4',
+      maxBytes: 50 * 1024 * 1024 + 1,
+    }).success,
+    false,
+  );
 });
 
 test('files.diff input + output shape', () => {

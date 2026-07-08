@@ -82,7 +82,10 @@ test('Space Partner tool policy allows scoped state tools', () => {
     true,
   );
   assert.equal(getPartnerSpaceToolPolicy('partner_kb_write_page')?.scope, 'knowledge-base');
-  assert.deepEqual(listPartnerSpaceToolPolicies().map((p) => p.name), ['partner_kb_write_page']);
+  assert.deepEqual(
+    listPartnerSpaceToolPolicies().map((p) => p.name),
+    ['partner_kb_write_page'],
+  );
   _clearPartnerSpaceToolPoliciesForTesting();
 });
 
@@ -137,7 +140,13 @@ const planAllowed = (b: boolean) => () => b;
 test('Partner: read tool allowed regardless of permissionMode (incl. plan)', () => {
   for (const mode of ['accept-edits', 'auto', 'plan'] as const) {
     assert.equal(
-      computeToolBlockReason({ surface: 'partner', permissionMode: mode, tool: 'read', resolveCapability: cap('read'), isPlanModeAllowed: planAllowed(false) }),
+      computeToolBlockReason({
+        surface: 'partner',
+        permissionMode: mode,
+        tool: 'read',
+        resolveCapability: cap('read'),
+        isPlanModeAllowed: planAllowed(false),
+      }),
       null,
       `read 应放行 (mode=${mode})`,
     );
@@ -148,8 +157,11 @@ test('Partner: web tools allowed even in plan mode (HIGH fix — plan-mode 不�
   // 关键回归：旧逻辑会 fall-through 到 plan-mode → web_fetch 被 [plan] 拦。修复后 Partner-allowed
   // 直接放行。注意：即便 isPlanModeAllowed=false（plan-mode 本会拦 web），Partner 下仍放行。
   const r = computeToolBlockReason({
-    surface: 'partner', permissionMode: 'plan', tool: 'web_fetch',
-    resolveCapability: cap('bash:network'), isPlanModeAllowed: planAllowed(false),
+    surface: 'partner',
+    permissionMode: 'plan',
+    tool: 'web_fetch',
+    resolveCapability: cap('bash:network'),
+    isPlanModeAllowed: planAllowed(false),
   });
   assert.equal(r, null, 'Partner+plan-mode 下 web_fetch 必须仍可用');
 });
@@ -168,24 +180,86 @@ test('Partner: registered readonly custom tool is allowed in plan mode', () => {
 
 test('Partner: non-whitelisted tool blocked with [partner] reason', () => {
   const r = computeToolBlockReason({
-    surface: 'partner', permissionMode: 'accept-edits', tool: 'bash',
-    resolveCapability: cap('bash:mutating'), isPlanModeAllowed: planAllowed(false),
+    surface: 'partner',
+    permissionMode: 'accept-edits',
+    tool: 'bash',
+    resolveCapability: cap('bash:mutating'),
+    isPlanModeAllowed: planAllowed(false),
   });
   assert.ok(r?.startsWith('[partner]'), 'bash 在 Partner 应得 [partner] block reason');
 });
 
-test('Coder: plan-mode behavior preserved (non-partner 分支不变)', () => {
-  // accept-edits → 不拦
+test('Coder: accept-edits does not apply plan-mode blocking', () => {
   assert.equal(
-    computeToolBlockReason({ surface: 'code', permissionMode: 'accept-edits', tool: 'edit', resolveCapability: cap('edit'), isPlanModeAllowed: planAllowed(false) }),
+    computeToolBlockReason({
+      surface: 'code',
+      permissionMode: 'accept-edits',
+      tool: 'edit',
+      resolveCapability: cap('edit'),
+      isPlanModeAllowed: planAllowed(false),
+    }),
     null,
   );
-  // plan + 工具 plan-allowed → 放行
+});
+
+test('Coder: plan allows SDK plan-allowed tools', () => {
   assert.equal(
-    computeToolBlockReason({ surface: 'code', permissionMode: 'plan', tool: 'read', resolveCapability: cap('read'), isPlanModeAllowed: planAllowed(true) }),
+    computeToolBlockReason({
+      surface: 'code',
+      permissionMode: 'plan',
+      tool: 'read',
+      resolveCapability: cap('read'),
+      isPlanModeAllowed: planAllowed(true),
+    }),
     null,
   );
-  // plan + 工具非 plan-allowed → [plan] 拦
-  const r = computeToolBlockReason({ surface: 'code', permissionMode: 'plan', tool: 'write', resolveCapability: cap('edit'), isPlanModeAllowed: planAllowed(false) });
-  assert.ok(r?.startsWith('[plan]'), 'Coder plan-mode 拦 write 应得 [plan] reason');
+});
+
+test('Coder: plan fallback allows readonly metadata and read capability tools', () => {
+  assert.equal(
+    computeToolBlockReason({
+      surface: 'code',
+      permissionMode: 'plan',
+      tool: 'mcp_describe',
+      resolveCapability: cap('bash:network'),
+      resolveRegisteredTool: () => ({ sideEffect: 'readonly' }),
+      isPlanModeAllowed: planAllowed(false),
+    }),
+    null,
+  );
+  assert.equal(
+    computeToolBlockReason({
+      surface: 'code',
+      permissionMode: 'plan',
+      tool: 'custom_reader',
+      resolveCapability: cap('read'),
+      isPlanModeAllowed: planAllowed(false),
+    }),
+    null,
+  );
+});
+
+test('Coder: plan fallback explicitly allows web_fetch as read-only research', () => {
+  assert.equal(
+    computeToolBlockReason({
+      surface: 'code',
+      permissionMode: 'plan',
+      tool: 'web_fetch',
+      resolveCapability: cap('bash:network'),
+      resolveRegisteredTool: () => ({ sideEffect: 'mutates-network' }),
+      isPlanModeAllowed: planAllowed(false),
+    }),
+    null,
+  );
+});
+
+test('Coder: plan still blocks mutating tools', () => {
+  const r = computeToolBlockReason({
+    surface: 'code',
+    permissionMode: 'plan',
+    tool: 'write',
+    resolveCapability: cap('edit'),
+    isPlanModeAllowed: planAllowed(false),
+  });
+  assert.ok(r?.startsWith('[plan]'), 'Coder plan-mode should block write');
 });

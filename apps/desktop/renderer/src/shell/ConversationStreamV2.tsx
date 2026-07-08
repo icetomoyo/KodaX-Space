@@ -76,6 +76,7 @@ import { useSurfaceStore } from '../store/surface.js';
 import { requestConfirm } from '../store/confirmStore.js';
 import { pushToast } from '../store/toastStore.js';
 import { useI18n } from '../i18n/I18nProvider.js';
+import type { MessageKey } from '../i18n/messages.js';
 // 聚合后的 view-only message kind —— 两层折叠对齐 Claude Desktop "Ran 6 commands ⌄":
 //
 //   ▸ Ran 6 commands · 12s              ← 外层 cluster (此处折叠 = 默认)
@@ -150,11 +151,13 @@ type ViewMessage =
  *
  * Fallback：按 tool 名汇总 "Ran 3 reads + 1 grep"。
  */
-function summarizeTools(tools: readonly ToolCallMsg[]): string {
+type Translate = (key: MessageKey, vars?: Record<string, string | number>) => string;
+
+function summarizeTools(tools: readonly ToolCallMsg[], t: Translate): string {
   const counts = new Map<string, number>();
-  for (const t of tools) counts.set(t.toolName, (counts.get(t.toolName) ?? 0) + 1);
+  for (const tool of tools) counts.set(tool.toolName, (counts.get(tool.toolName) ?? 0) + 1);
   const parts = [...counts.entries()].map(([name, n]) => (n > 1 ? `${n} ${name}s` : `1 ${name}`));
-  return `Ran ${parts.join(' + ')}`;
+  return t('conversation.ranToolSummary', { tools: parts.join(' + ') });
 }
 const ARTIFACT_RESULT_RE = /\(id=([^,]+), v(\d+)\)/;
 
@@ -197,6 +200,7 @@ function artifactMessageFromTool(tool: ToolCallMsg): ArtifactMessage | null {
 function groupTools(
   messages: ConversationMessage[],
   view: 'normal' | 'thinking' | 'verbose' | 'summary',
+  t: Translate,
 ): ViewMessage[] {
   // normal/summary = 紧凑：thinking-only step 的推理折进工具组，连续 thinking→cmd 收敛成一个 cluster。
   // thinking/verbose = 摊开：thinking 仍是独立可读行，每个 step 各自成组（看清每一步在想什么）。
@@ -269,7 +273,7 @@ function groupTools(
           });
           pendingCluster.push({
             id: m.id,
-            title: summarizeTools(tools),
+            title: summarizeTools(tools, t),
             tools,
             syntheticTitle: true,
           });
@@ -278,7 +282,7 @@ function groupTools(
           // 连续的 thinking→cmd→thinking→cmd 就并成一个 "Ran N commands"。
           pendingCluster.push({
             id: m.id,
-            title: summarizeTools(tools),
+            title: summarizeTools(tools, t),
             tools,
             syntheticTitle: true,
             thinking: m.thinking!,
@@ -291,7 +295,7 @@ function groupTools(
           }
           pendingCluster.push({
             id: m.id,
-            title: summarizeTools(tools),
+            title: summarizeTools(tools, t),
             tools,
             syntheticTitle: true,
           });
@@ -321,7 +325,7 @@ function groupTools(
       // 单独成一个 sub-cluster，标题用 tool 汇总（syntheticTitle=true）。
       pendingCluster.push({
         id: m.id,
-        title: summarizeTools([m]),
+        title: summarizeTools([m], t),
         tools: [m],
         syntheticTitle: true,
       });
@@ -388,8 +392,8 @@ export function ConversationStreamV2(): JSX.Element {
     [events, userMessages, localNotices, queuedUserMessages, workflowNotices],
   );
   const viewMessages = useMemo(
-    () => groupTools(messages, transcriptView),
-    [messages, transcriptView],
+    () => groupTools(messages, transcriptView, t),
+    [messages, transcriptView, t],
   );
   // summary 视图：滤掉 thinking 行和工具组，只保留对话正文。其余视图原样渲染。
   const displayMessages = useMemo(
@@ -947,7 +951,9 @@ export function ConversationStreamV2(): JSX.Element {
                   className={`relative search-ring-anim ${ringClass}`}
                 >
                   <TimelineMarker tone={markerTone} />
-                  <Reveal index={i}>{inner}</Reveal>
+                  <Reveal index={i} className="conversation-message-body">
+                    {inner}
+                  </Reveal>
                 </div>
               );
             })}
@@ -1179,6 +1185,7 @@ function ThinkingBlock({
   expanded: boolean;
   onToggle: () => void;
 }): JSX.Element {
+  const { t } = useI18n();
   const tokens = Math.max(1, Math.round(thinking.length / 4));
   return (
     <div>
@@ -1193,7 +1200,7 @@ function ThinkingBlock({
         aria-expanded={expanded}
       >
         <Caret open={expanded} />
-        <span>Thinking · ~{tokens} tokens</span>
+        <span>{t('message.thinkingSummary', { tokens })}</span>
       </button>
       <Collapse open={expanded}>
         <div
@@ -1234,11 +1241,17 @@ function approxTokens(text: string): number {
  * 历史：v0.1.0 起曾两层折叠（外+内 sub-cluster），用户 2026-06-02 反馈两层不直观，降回单层。
  */
 function ToolCluster({ cluster, expanded, onToggle }: ToolClusterProps): JSX.Element {
+  const { t } = useI18n();
   const allTools = cluster.subClusters.flatMap((sc) => sc.tools);
   const allDone = allTools.every((t) => t.status === 'done');
   const running = allTools.find((t) => t.status === 'running');
-  const label = cluster.totalTools === 1 ? 'Ran 1 command' : `Ran ${cluster.totalTools} commands`;
-  const runningHint = running ? ` · running ${running.toolName}…` : '';
+  const label =
+    cluster.totalTools === 1
+      ? t('conversation.ranOneCommand')
+      : t('conversation.ranCommands', { count: cluster.totalTools });
+  const runningHint = running
+    ? ` · ${t('conversation.runningTool', { tool: running.toolName })}`
+    : '';
   // 组内折进来的 thinking 总 token —— header 给个量级提示，让用户知道"这组里藏了多少推理"。
   // 在 groupTools 里预算好（见 ToolClusterMessage.thinkingTokens），这里直接读。
   const thinkingTokens = cluster.thinkingTokens;
@@ -1262,7 +1275,11 @@ function ToolCluster({ cluster, expanded, onToggle }: ToolClusterProps): JSX.Ele
       >
         <Caret open={expanded} />
         <span>{label}</span>
-        {thinkingTokens > 0 && <span className="text-thinking">· 💭 ~{thinkingTokens} tokens</span>}
+        {thinkingTokens > 0 && (
+          <span className="text-thinking">
+            · {t('conversation.thinkingTokens', { tokens: thinkingTokens })}
+          </span>
+        )}
         {!allDone && <span className="text-warn">{runningHint}</span>}
       </button>
       <Collapse open={expanded}>
@@ -1289,7 +1306,7 @@ function ToolCluster({ cluster, expanded, onToggle }: ToolClusterProps): JSX.Ele
                     <span className="whitespace-pre-wrap break-words">{sc.title}</span>
                     {subRunning && (
                       <span className="text-warn text-[11px] flex-shrink-0 mt-px">
-                        · {subRunning.toolName}…
+                        · {t('conversation.runningTool', { tool: subRunning.toolName })}
                       </span>
                     )}
                   </div>

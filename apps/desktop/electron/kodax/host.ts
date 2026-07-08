@@ -25,12 +25,13 @@ import {
   loadPersistedSession,
   compactPersistedSession,
   findPersistedTurnEndSelector,
-  sdkTagToSurface,
   retagPersistedSession,
+  sdkTagToSurface,
 } from './session-store.js';
 import { loadKodaxUserDefaults, registerKodaxCustomProviders } from './user-config.js';
 import { resolveRuntimeDefaults } from './runtime-defaults.js';
 import { getSessionRuntimeStore } from './session-runtime-store.js';
+import { getSessionTitleStore } from './session-title-store.js';
 import { providerConfigStore } from '../providers/config.js';
 import { getBuiltin } from '../providers/catalog.js';
 import { cleanupClipboardForSession } from '../ipc/clipboard.js';
@@ -183,6 +184,8 @@ class KodaXHost {
     agentMode?: import('@kodax-space/space-ipc-schema').AgentMode;
     /** F045: 工作面（'code' = Coder / 'partner' = Partner）。缺省 'code'。持久化为 SDK session tag。*/
     surface?: import('@kodax-space/space-ipc-schema').Surface;
+    /** Host-only temporary session hidden from normal lists until promoted. */
+    ephemeral?: boolean;
     /** 生效 model（创建即带）。undefined = provider 默认。让 SDK 应用 per-model 能力。*/
     model?: string;
     /** FEATURE_033：fork 时由 host.fork 传入；外部调用 createSession 不应直接用。*/
@@ -190,8 +193,6 @@ class KodaXHost {
     forkPointTurnIdx?: number;
     /** tryResume 专用：复用磁盘上的 sessionId 而非生成新的。*/
     existingSessionId?: string;
-    /** Hidden until explicitly promoted from a transient surface such as Quick Ask. */
-    ephemeral?: boolean;
   }): { sessionId: string; createdAt: number } {
     const sessionId = opts.existingSessionId ?? `s_${randomUUID()}`;
     const session = this.factory({
@@ -321,7 +322,8 @@ class KodaXHost {
     // 把 persisted title 同步到 ManagedSession，避免 list 里两边 title 不一致
     const reloaded = this.sessions.get(sessionId);
     if (reloaded) {
-      const persistedTitle = (data as { title?: string }).title;
+      const titleOverride = await getSessionTitleStore().read(sessionId);
+      const persistedTitle = titleOverride ?? (data as { title?: string }).title;
       if (persistedTitle && reloaded.title === undefined) reloaded.title = persistedTitle;
     }
     await getSessionRuntimeStore().set(sessionId, {
@@ -344,16 +346,9 @@ class KodaXHost {
   async promoteEphemeral(sessionId: string): Promise<boolean> {
     const s = this.sessions.get(sessionId);
     if (!s) return false;
-    if (!s.ephemeral) return true;
+    if (s.ephemeral !== true) return true;
     s.ephemeral = false;
-    try {
-      await retagPersistedSession({ sessionId, tag: s.surface });
-    } catch (err) {
-      console.warn(
-        `[host.promoteEphemeral] retag ${sessionId} failed:`,
-        err instanceof Error ? err.message : err,
-      );
-    }
+    await retagPersistedSession({ sessionId, tag: s.surface });
     return true;
   }
 
@@ -368,7 +363,7 @@ class KodaXHost {
     projectRoot?: string;
     surface?: ManagedSession['surface'];
   }): Promise<ListMergedItem[]> {
-    const inFlight = this.listInFlight().filter((s) => !s.ephemeral);
+    const inFlight = this.listInFlight().filter((s) => s.ephemeral !== true);
     const inFlightIds = new Set(inFlight.map((s) => s.sessionId));
     const persisted = await listPersistedSessions({ projectRoot: opts?.projectRoot });
 
@@ -455,12 +450,18 @@ class KodaXHost {
     s.title = autoTitleFromPrompt(fromPrompt);
   }
 
-  setTitle(sessionId: string, title: string): boolean {
+  async setTitle(sessionId: string, title: string): Promise<boolean> {
     const s = this.sessions.get(sessionId);
-    if (!s) return false;
     // 用户手工改名也走清洗——schema 限制了 256 字符上限，这里再剥控制字符 + RTL override
     const cleaned = sanitizeTitle(title, 256);
-    s.title = cleaned;
+    if (s) {
+      s.title = cleaned;
+      await getSessionTitleStore().set(sessionId, cleaned);
+      return true;
+    }
+    const persisted = await loadPersistedSession(sessionId);
+    if (!persisted) return false;
+    await getSessionTitleStore().set(sessionId, cleaned);
     return true;
   }
 
@@ -761,7 +762,10 @@ class KodaXHost {
       this.sessions.delete(sessionId);
     }
     // 持久化擦盘——即便 in-memory 不存在也尝试擦（用户对 historical session 直接删）
-    await deletePersistedSession({ sessionId });
+    const diskDeleteResult = await deletePersistedSession({ sessionId });
+    if (diskDeleteResult === 'ok') {
+      await getSessionTitleStore().delete(sessionId);
+    }
     // OC-31 v0.1.9: 清掉本 session 的 clipboard image 暂存目录（best-effort，
     // ENOENT 静默；KodaX SDK 已经把 image path 序列化进 message history 文本里，
     // 删图本身不影响 historical content，下次 resume 时 path 指向"已不存在"也只会

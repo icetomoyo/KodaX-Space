@@ -223,8 +223,8 @@ Near-term planned work is tracked in [docs/FEATURE_LIST.md](docs/FEATURE_LIST.md
 
 | Lane     | Focus                                                                                                                              |
 | -------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| v0.1.30  | Partner controlled workspace file writes through reviewed proposals and explicit apply/export.                                     |
-| v0.1.31+ | Workflow, todo, MCP/extension, provider, review, and beta-hardening lanes.                                                         |
+| v0.1.35  | Partner controlled workspace file writes through reviewed proposals and explicit apply/export.                                     |
+| v0.1.36+ | Workflow, todo, MCP/extension, provider, review, and beta-hardening lanes.                                                         |
 | v0.2.x   | Partner workbench, connector catalog, local automations, policy/audit pack, remote/self-hosted runner, and distribution expansion. |
 
 ## License

@@ -12,6 +12,7 @@
 //   if (!ok) return;
 
 import { create } from 'zustand';
+import { translateMessage } from '../i18n/I18nProvider.js';
 
 export interface ConfirmRequest {
   readonly id: number;
@@ -54,8 +55,8 @@ export const useConfirmStore = create<ConfirmState>((set, get) => ({
           id: counter,
           title: opts.title,
           message: opts.message,
-          confirmLabel: opts.confirmLabel ?? 'Confirm',
-          cancelLabel: opts.cancelLabel ?? 'Cancel',
+          confirmLabel: opts.confirmLabel ?? translateMessage('common.confirm'),
+          cancelLabel: opts.cancelLabel ?? translateMessage('common.cancel'),
           danger: opts.danger ?? false,
           resolve,
         },

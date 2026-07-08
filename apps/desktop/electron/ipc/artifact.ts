@@ -7,8 +7,13 @@
 // interactive tier as a separate feature.)
 
 import { promises as fs } from 'node:fs';
+import path from 'node:path';
 import { createRequire } from 'node:module';
-import { looksLikeInteractiveHtml, type ArtifactKindT } from '@kodax-space/space-ipc-schema';
+import {
+  MAX_ARTIFACT_CONTENT_BYTES,
+  looksLikeInteractiveHtml,
+  type ArtifactKindT,
+} from '@kodax-space/space-ipc-schema';
 import { registerChannel } from './register.js';
 import { pushToRenderer } from './push.js';
 import { artifactStore } from '../artifact/store.js';
@@ -18,7 +23,11 @@ import {
   parseDataUri,
   sanitizeFilename,
 } from '../artifact/export-helpers.js';
-import { resolveInsideProject, readFileWithGuards } from './files-core.js';
+import {
+  resolveInsideProject,
+  readFileBinaryWithGuards,
+  readFileWithGuards,
+} from './files-core.js';
 import { projectStore } from '../projects/store.js';
 import { kodaxHost } from '../kodax/host.js';
 
@@ -42,9 +51,58 @@ export function previewKindForPath(p: string): ArtifactKindT {
     case 'md':
     case 'markdown':
       return 'markdown';
+    case 'pdf':
+      return 'pdf';
+    case 'docx':
+      return 'docx';
+    case 'xlsx':
+    case 'xls':
+      return 'xlsx';
+    case 'png':
+    case 'jpg':
+    case 'jpeg':
+    case 'gif':
+    case 'webp':
+    case 'bmp':
+    case 'ico':
+    case 'avif':
+    case 'mp4':
+    case 'm4v':
+    case 'mov':
+    case 'webm':
+    case 'ogv':
+    case 'ogg':
+    case 'mkv':
+    case 'avi':
+    case 'mp3':
+    case 'wav':
+    case 'm4a':
+    case 'aac':
+    case 'flac':
+    case 'opus':
+    case 'ppt':
+    case 'pptx':
+    case 'pptm':
+    case 'potx':
+    case 'potm':
+    case 'ppsx':
+    case 'ppsm':
+    case 'log':
+    case 'txt':
+    case 'ini':
+    case 'cfg':
+    case 'conf':
+    case 'properties':
+    case 'csv':
+    case 'tsv':
+      return 'file';
     default:
       return 'code';
   }
+}
+
+function isPathPreviewKind(kind: ArtifactKindT): kind is 'pdf' | 'docx' | 'xlsx' | 'file' {
+  return kind === 'pdf' || kind === 'docx' || kind === 'xlsx' || kind === 'file';
 }
 
 function isHtmlPreviewKind(kind: ArtifactKindT): boolean {
@@ -54,6 +112,186 @@ function isHtmlPreviewKind(kind: ArtifactKindT): boolean {
 export function previewKindForContent(path: string, content: string): ArtifactKindT {
   const kind = previewKindForPath(path);
   return kind === 'html' && looksLikeInteractiveHtml(content) ? 'interactive-html' : kind;
+}
+
+const MARKDOWN_LOCAL_IMAGE_MAX_BYTES = 768 * 1024;
+
+function markdownImageMimeForPath(p: string): string | null {
+  const dot = p.lastIndexOf('.');
+  const ext = dot >= 0 ? p.slice(dot + 1).toLowerCase() : '';
+  switch (ext) {
+    case 'svg':
+      return 'image/svg+xml';
+    case 'png':
+      return 'image/png';
+    case 'jpg':
+    case 'jpeg':
+      return 'image/jpeg';
+    case 'gif':
+      return 'image/gif';
+    case 'webp':
+      return 'image/webp';
+    case 'bmp':
+      return 'image/bmp';
+    case 'ico':
+      return 'image/x-icon';
+    default:
+      return null;
+  }
+}
+
+function isRemoteOrInlineResource(raw: string): boolean {
+  return /^(?:https?:|data:|blob:|mailto:|tel:|#|\/\/)/i.test(raw.trim());
+}
+
+function splitResourceSuffix(raw: string): { resourcePath: string; suffix: string } {
+  const hash = raw.indexOf('#');
+  const query = raw.indexOf('?');
+  const cut = hash === -1 ? query : query === -1 ? hash : Math.min(hash, query);
+  if (cut === -1) return { resourcePath: raw, suffix: '' };
+  return { resourcePath: raw.slice(0, cut), suffix: raw.slice(cut) };
+}
+
+function decodeResourcePath(raw: string): string {
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
+function toProjectRelativeInside(root: string, target: string): string | null {
+  const rel = path.relative(path.resolve(root), path.resolve(target));
+  if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) return null;
+  return rel.split(path.sep).join('/');
+}
+
+async function resolveMarkdownImageTarget(
+  decodedPath: string,
+  markdownDir: string,
+  realRoot: string,
+  projectRoot: string,
+): Promise<string | null> {
+  const lexicalTarget = decodedPath.startsWith('/')
+    ? path.resolve(realRoot, `.${decodedPath}`)
+    : path.resolve(markdownDir, decodedPath);
+  const relativePath = toProjectRelativeInside(realRoot, lexicalTarget);
+  if (!relativePath) return null;
+  try {
+    return await resolveInsideProject(projectRoot, relativePath);
+  } catch {
+    return null;
+  }
+}
+
+async function replaceAsync(
+  input: string,
+  pattern: RegExp,
+  replacer: (match: RegExpMatchArray) => Promise<string>,
+): Promise<string> {
+  let out = '';
+  let lastIndex = 0;
+  for (const match of input.matchAll(pattern)) {
+    const index = match.index ?? 0;
+    out += input.slice(lastIndex, index);
+    out += await replacer(match);
+    lastIndex = index + match[0].length;
+  }
+  return out + input.slice(lastIndex);
+}
+
+export async function inlineMarkdownImageAssets(
+  markdown: string,
+  markdownAbsPath: string,
+  projectRoot: string,
+): Promise<string> {
+  let remainingBytes = Math.max(
+    0,
+    MAX_ARTIFACT_CONTENT_BYTES - Buffer.byteLength(markdown, 'utf8') - 4096,
+  );
+  const markdownDir = path.dirname(markdownAbsPath);
+  const realRoot = await fs.realpath(path.resolve(projectRoot));
+  const cache = new Map<string, Promise<string | null>>();
+
+  const inlineOne = (rawUrl: string): Promise<string | null> => {
+    const trimmed = rawUrl.trim();
+    if (!trimmed || isRemoteOrInlineResource(trimmed)) return Promise.resolve(null);
+    const cached = cache.get(trimmed);
+    if (cached) return cached;
+    const task = (async (): Promise<string | null> => {
+      const { resourcePath } = splitResourceSuffix(trimmed);
+      const decoded = decodeResourcePath(resourcePath);
+      const target = await resolveMarkdownImageTarget(
+        decoded,
+        markdownDir,
+        realRoot,
+        projectRoot,
+      );
+      if (!target) return null;
+      const mime = markdownImageMimeForPath(target);
+      if (!mime || remainingBytes <= 0) return null;
+      const maxRawBytes = Math.min(
+        MARKDOWN_LOCAL_IMAGE_MAX_BYTES,
+        Math.max(0, Math.floor(remainingBytes * 0.75)),
+      );
+      if (maxRawBytes <= 0) return null;
+      try {
+        const image = await readFileBinaryWithGuards(target, maxRawBytes);
+        if (image.truncated) return null;
+        const dataUri = `data:${mime};base64,${image.base64}`;
+        const dataBytes = Buffer.byteLength(dataUri, 'utf8');
+        if (dataBytes > remainingBytes) return null;
+        remainingBytes -= dataBytes;
+        return dataUri;
+      } catch {
+        return null;
+      }
+    })();
+    cache.set(trimmed, task);
+    return task;
+  };
+
+  let out = await replaceAsync(
+    markdown,
+    /(!\[[^\]\n]*\]\(\s*)([^)\s]+)([^)]*\))/g,
+    async (match) => {
+      const url = match[2] ?? '';
+      const inlined = await inlineOne(url);
+      return inlined ? `${match[1] ?? ''}${inlined}${match[3] ?? ''}` : match[0];
+    },
+  );
+
+  out = await replaceAsync(
+    out,
+    /(\s(?:src|poster)\s*=\s*)(["'])([^"']+)(\2)/gi,
+    async (match) => {
+      const url = match[3] ?? '';
+      const inlined = await inlineOne(url);
+      return inlined
+        ? `${match[1] ?? ''}${match[2] ?? '"'}${inlined}${match[4] ?? match[2] ?? '"'}`
+        : match[0];
+    },
+  );
+
+  out = await replaceAsync(out, /(\ssrcset\s*=\s*)(["'])([^"']+)(\2)/gi, async (match) => {
+    const rawSrcset = match[3] ?? '';
+    const parts = await Promise.all(
+      rawSrcset.split(',').map(async (candidate) => {
+        const leading = candidate.match(/^\s*/)?.[0] ?? '';
+        const trailing = candidate.match(/\s*$/)?.[0] ?? '';
+        const body = candidate.trim();
+        if (!body) return candidate;
+        const [url, ...descriptor] = body.split(/\s+/);
+        if (!url) return candidate;
+        const inlined = await inlineOne(url);
+        const nextBody = [inlined ?? url, ...descriptor].join(' ');
+        return `${leading}${nextBody}${trailing}`;
+      }),
+    );
+    return `${match[1] ?? ''}${match[2] ?? '"'}${parts.join(',')}${match[4] ?? match[2] ?? '"'}`;
+  });
+
+  return out;
 }
 
 // Lazy electron access (dialog/BrowserWindow) — avoids a top-level 'electron'
@@ -89,6 +327,39 @@ export function registerArtifactChannels(): void {
   registerChannel('artifact.previewFile', async (input) => {
     await projectStore.assertAllowed(input.projectRoot);
     const absPath = await resolveInsideProject(input.projectRoot, input.path);
+    const slash = Math.max(input.path.lastIndexOf('/'), input.path.lastIndexOf('\\'));
+    const base = slash >= 0 ? input.path.slice(slash + 1) : input.path;
+    const title = input.path.length <= 256 ? input.path : base.slice(0, 256);
+    const pathKind = previewKindForPath(input.path);
+
+    try {
+      const st = await fs.stat(absPath);
+      if (!st.isFile()) throw new Error('file not found or is a directory');
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT' || code === 'EISDIR') {
+        throw new Error('file not found or is a directory');
+      }
+      throw err;
+    }
+
+    if (isPathPreviewKind(pathKind)) {
+      const res = await artifactStore.upsert({
+        sessionId: input.sessionId,
+        surface: input.surface,
+        kind: pathKind,
+        title,
+        path: input.path,
+        dedupeKey: { title, kind: pathKind },
+      });
+      pushToRenderer('artifact.changed', {
+        id: res.id,
+        sessionId: input.sessionId,
+        reason: res.created ? 'created' : 'version',
+      });
+      return { id: res.id, version: res.version, kind: pathKind };
+    }
+
     let read;
     try {
       read = await readFileWithGuards(absPath);
@@ -103,10 +374,10 @@ export function registerArtifactChannels(): void {
     if (read.truncated) throw new Error('file too large to preview');
 
     const kind = previewKindForContent(input.path, read.content);
-    // 标题=相对路径（信息量足、用于 (session,title) 去重）；过长退回 basename。
-    const slash = Math.max(input.path.lastIndexOf('/'), input.path.lastIndexOf('\\'));
-    const base = slash >= 0 ? input.path.slice(slash + 1) : input.path;
-    const title = input.path.length <= 256 ? input.path : base.slice(0, 256);
+    const content =
+      kind === 'markdown'
+        ? await inlineMarkdownImageAssets(read.content, absPath, input.projectRoot)
+        : read.content;
 
     // 去重：同一 session 已有同 title+kind 的预览 artifact → 复用其 id 升版本，避免反复点"预览"
     // 刷出一堆副本。C13: 去重查找移进 store.upsert 的写锁内（dedupeKey），消除 list→upsert 的
@@ -116,7 +387,7 @@ export function registerArtifactChannels(): void {
       surface: input.surface,
       kind,
       title,
-      content: read.content,
+      content,
       dedupeKey: { title, kind, htmlFamily: isHtmlPreviewKind(kind) },
     });
     pushToRenderer('artifact.changed', {

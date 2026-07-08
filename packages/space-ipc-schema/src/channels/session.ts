@@ -201,18 +201,6 @@ export const sessionCreateChannel = {
   }),
 } as const;
 
-// ---- Invoke: session.promoteEphemeral ----
-export const sessionPromoteEphemeralChannel = {
-  name: 'session.promoteEphemeral',
-  direction: 'invoke',
-  input: z.object({
-    sessionId: z.string().min(1),
-  }),
-  output: z.object({
-    promoted: z.boolean(),
-  }),
-} as const;
-
 // ---- Input artifact (OC-31 v0.1.9, image-paste / drag-drop) ----
 //
 // 透传给 KodaX SDK 的 KodaXContextOptions.inputArtifacts；SDK 会用
@@ -618,6 +606,18 @@ export const sessionLocalNoticeAppendChannel = {
   }),
   output: z.object({
     ok: z.boolean(),
+  }),
+} as const;
+
+// ---- Invoke: session.promoteEphemeral ----
+export const sessionPromoteEphemeralChannel = {
+  name: 'session.promoteEphemeral',
+  direction: 'invoke',
+  input: z.object({
+    sessionId: z.string().min(1),
+  }),
+  output: z.object({
+    promoted: z.boolean(),
   }),
 } as const;
 

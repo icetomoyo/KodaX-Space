@@ -18,6 +18,7 @@ export type ArtifactKind =
   | 'pdf'
   | 'docx'
   | 'xlsx'
+  | 'file'
   | 'chart'
   | 'react';
 
@@ -32,6 +33,7 @@ export const STATIC_ARTIFACT_KINDS: readonly ArtifactKind[] = [
   'pdf',
   'docx',
   'xlsx',
+  'file',
   'chart',
 ];
 

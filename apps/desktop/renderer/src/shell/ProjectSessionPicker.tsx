@@ -1,7 +1,7 @@
 // ProjectSessionPicker — v0.1.9
 //
 // 项目下 session 数量大（KodaX 项目实测 200+）时全部塞 sidebar 把别的项目挤下面。
-// SessionTree 默认只显示 8 条最近活跃；溢出走"+ N more sessions"按钮唤出本 modal。
+// SessionTree 默认只显示少量最近活跃；溢出走"展示全部"按钮唤出本 modal。
 //
 // Modal 形态对齐 F026 ⌘Shift+P 命令面板：中央 overlay + 搜索 input + 列表 + 上下箭头 nav +
 // Enter 选中 + Esc 关。但这里只关心**单项目 session**，不混 actions/files/slash。

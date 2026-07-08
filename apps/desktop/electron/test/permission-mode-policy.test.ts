@@ -20,15 +20,21 @@ import { permissionBroker } from '../permission/broker.js';
 import { setRendererTarget } from '../ipc/push.js';
 import { permissionRegistry } from '../permission/registry.js';
 
-interface Captured { channel: string; payload: unknown }
+interface Captured {
+  channel: string;
+  payload: unknown;
+}
 const captured: Captured[] = [];
 
 beforeEach(() => {
   captured.length = 0;
-  setRendererTarget(() => ({
-    send: (channel: string, payload: unknown) => captured.push({ channel, payload }),
-    isDestroyed: () => false,
-  }) as unknown as Electron.WebContents);
+  setRendererTarget(
+    () =>
+      ({
+        send: (channel: string, payload: unknown) => captured.push({ channel, payload }),
+        isDestroyed: () => false,
+      }) as unknown as Electron.WebContents,
+  );
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (permissionRegistry as any).cached = [];
 });
@@ -55,8 +61,8 @@ test('plan denies bash without pushing permission.request', async () => {
   );
 });
 
-test('plan denies edit/write/multi_edit/web_fetch/mcp_call — strict gate', async () => {
-  for (const toolName of ['edit', 'write', 'multi_edit', 'web_fetch', 'mcp_call']) {
+test('plan denies edit/write/multi_edit/mcp_call - mutating gate', async () => {
+  for (const toolName of ['edit', 'write', 'multi_edit', 'mcp_call']) {
     const result = await permissionBroker.request({
       sessionId: 's_plan',
       toolId: `t_${toolName}`,
@@ -68,19 +74,33 @@ test('plan denies edit/write/multi_edit/web_fetch/mcp_call — strict gate', asy
   }
 });
 
-test('plan denies even safe tools (no allowlist short-circuit)', async () => {
-  // plan mode 不区分 read-only / mutating —— 全 deny。
-  // (planModeBlockCheck 在 KodaX 入口已用 SDK isToolPlanModeAllowed 把
-  // read-only 工具放行；broker 这层简单 deny 是 defense-in-depth：万一
-  // KodaX 钩子没被 wire 上，broker 仍兜底)
-  const result = await permissionBroker.request({
-    sessionId: 's_plan',
-    toolId: 't_read',
-    toolName: 'read',
-    input: { path: 'foo.ts' },
-    mode: 'plan',
-  });
-  assert.equal(result.decision, 'deny', 'plan mode broker deny is conservative');
+test('plan allows readonly tools without pushing permission.request', async () => {
+  for (const toolName of [
+    'read',
+    'grep',
+    'glob',
+    'code_search',
+    'kodax_manual',
+    'mcp_describe',
+    'mcp_search',
+    'mcp_read_resource',
+    'web_fetch',
+    'web_search',
+  ]) {
+    const result = await permissionBroker.request({
+      sessionId: 's_plan_readonly',
+      toolId: `t_${toolName}`,
+      toolName,
+      input: { path: 'foo.ts', pattern: 'foo', url: 'https://example.com' },
+      mode: 'plan',
+    });
+    assert.equal(result.decision, 'allow_once', `plan should allow readonly ${toolName}`);
+  }
+  assert.equal(
+    captured.filter((c) => c.channel === 'permission.request').length,
+    0,
+    'plan readonly tools must not show modal',
+  );
 });
 
 test('Partner plan allows tools already admitted by Partner policy without modal', async () => {
@@ -131,6 +151,30 @@ test('accept-edits auto-allows non-dangerous edit tools (edit/write/multi_edit/i
     captured.filter((c) => c.channel === 'permission.request').length,
     0,
     'accept-edits non-dangerous edits should not show modal',
+  );
+});
+
+test('accept-edits auto-allows expanded readonly tools without modal', async () => {
+  for (const toolName of [
+    'code_search',
+    'kodax_manual',
+    'mcp_describe',
+    'mcp_read_resource',
+    'web_fetch',
+  ]) {
+    const result = await permissionBroker.request({
+      sessionId: 's_ae_readonly',
+      toolId: `t_${toolName}`,
+      toolName,
+      input: { query: 'permission mode', url: 'https://example.com' },
+      mode: 'accept-edits',
+    });
+    assert.equal(result.decision, 'allow_once', `accept-edits should auto-allow ${toolName}`);
+  }
+  assert.equal(
+    captured.filter((c) => c.channel === 'permission.request').length,
+    0,
+    'accept-edits readonly tools should not show modal',
   );
 });
 

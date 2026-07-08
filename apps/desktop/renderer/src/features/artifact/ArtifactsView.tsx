@@ -5,7 +5,7 @@
 // session from appStore; artifacts are the current session's (any surface).
 
 import { useEffect, useMemo, useState } from 'react';
-import { FileOutput, Copy, Check, Download, RefreshCw, Maximize2 } from 'lucide-react';
+import { FileOutput, Copy, Check, Download, RefreshCw } from 'lucide-react';
 import { useAppStore } from '../../store/appStore';
 import { ArtifactView } from './ArtifactView';
 import { useArtifacts, useArtifactContent } from './useArtifacts';
@@ -14,6 +14,7 @@ import { toArtifactContent, type ArtifactVersionPayload } from './toArtifactCont
 import { TEXT_COPY_KINDS } from './artifactKind';
 import { useI18n } from '../../i18n/I18nProvider';
 import type { ArtifactRefT } from '@kodax-space/space-ipc-schema';
+import { artifactSessionForProjectFiles } from './filePreviewSession';
 import {
   FOCUS_ARTIFACT_EVENT,
   mergeTransientArtifactSnapshots,
@@ -125,26 +126,6 @@ function ArtifactViewer({
   }
 
   // "单独打开"：F059c L3 —— 开独立最大化窗口看这份 artifact（escalation 第三级）。
-  async function onOpenWindow(): Promise<void> {
-    const bridge = window.kodaxSpace;
-    if (!bridge) return;
-    try {
-      const r = await bridge.invoke('artifact.openWindow', {
-        id: artifact.id,
-        version: effectiveVersion,
-        projectRoot: projectRoot ?? undefined,
-        title: artifact.title,
-      });
-      if (!r.ok) {
-        setActionMsg(t('artifact.openWindowFailed'));
-        setTimeout(() => setActionMsg(null), 2500);
-      }
-    } catch {
-      setActionMsg(t('artifact.openWindowFailed'));
-      setTimeout(() => setActionMsg(null), 2500);
-    }
-  }
-
   return (
     <div className="flex-1 min-h-0 flex flex-col">
       {/* toolbar 恒显示：再改一版对任何 artifact 都可用 */}
@@ -204,17 +185,6 @@ function ArtifactViewer({
               className="w-6 h-6 inline-flex items-center justify-center rounded text-fg-muted hover:text-fg-primary hover:bg-surface-3"
             >
               <Download className="w-3.5 h-3.5" strokeWidth={1.75} />
-            </button>
-          )}
-          {!isTransient && (
-            <button
-              type="button"
-              onClick={() => void onOpenWindow()}
-              title={t('artifact.openStandaloneTitle')}
-              aria-label={t('artifact.openStandalone')}
-              className="w-6 h-6 inline-flex items-center justify-center rounded text-fg-muted hover:text-fg-primary hover:bg-surface-3"
-            >
-              <Maximize2 className="w-3.5 h-3.5" strokeWidth={1.75} />
             </button>
           )}
         </div>
@@ -309,11 +279,14 @@ export function ArtifactsView({
 } = {}): JSX.Element {
   const { t } = useI18n();
   const sessionId = useAppStore((s) => s.currentSessionId);
-  const projectRoot = useAppStore((s) => {
+  const currentProjectPath = useAppStore((s) => s.currentProjectPath);
+  const sessionProjectRoot = useAppStore((s) => {
     const cur = s.currentSessionId;
     return cur ? (s.sessions.find((x) => x.sessionId === cur)?.projectRoot ?? null) : null;
   });
-  const { artifacts, loading, error } = useArtifacts(sessionId);
+  const projectRoot = sessionProjectRoot ?? currentProjectPath;
+  const artifactSessionId = artifactSessionForProjectFiles(sessionId, projectRoot);
+  const { artifacts, loading, error } = useArtifacts(artifactSessionId);
   const transcriptArtifacts = useTranscriptArtifacts(sessionId);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [transientSnapshot, setTransientSnapshot] = useState<TransientArtifactSnapshot | null>(
@@ -324,7 +297,7 @@ export function ArtifactsView({
   useEffect(() => {
     setSelectedId(null);
     setTransientSnapshot(null);
-  }, [sessionId]);
+  }, [artifactSessionId]);
 
   // 宿主锁存的 focusedId（挂载时 / 变化时）→ 选中（修"从概览点卡片选不中"）。
   useEffect(() => {
@@ -401,7 +374,7 @@ export function ArtifactsView({
   }
 
   return (
-    <div className="h-full min-h-0 flex flex-col">
+    <div className="h-full min-h-0 flex flex-col" data-testid="artifacts-view">
       {error && (
         <div
           className="px-3 py-1.5 border-b border-border-default text-[11px] text-danger flex-shrink-0 truncate"
@@ -413,6 +386,7 @@ export function ArtifactsView({
       {artifactChoices.length > 1 && (
         <div className="px-3 py-1.5 border-b border-border-default flex-shrink-0">
           <select
+            data-testid="artifact-selector"
             className="w-full text-[11px] bg-surface-raised border border-border-default rounded px-1.5 py-1 text-fg-secondary"
             value={selected?.id ?? ''}
             onChange={(e) => setSelectedId(e.target.value)}

@@ -38,6 +38,7 @@ export interface FloatingSurfaceDescriptor {
 }
 
 export type FloatingPopoutKind =
+  | 'files'
   | 'preview'
   | 'diff'
   | 'terminal'
@@ -50,6 +51,7 @@ export type FloatingPopoutKind =
   | 'workflow';
 
 const FLOATING_POPOUT_KINDS: readonly FloatingPopoutKind[] = [
+  'files',
   'preview',
   'diff',
   'terminal',
@@ -86,6 +88,18 @@ export function floatingSurfaceForBlockingModal(
 
 export function floatingSurfaceForPopout(kind: FloatingPopoutKind): FloatingSurfaceDescriptor {
   switch (kind) {
+    case 'files':
+      return {
+        id: 'files-workspace',
+        kind: 'dock_sheet',
+        owner: 'task_dock',
+        placement: 'full_height_workspace',
+        modality: 'soft_focus',
+        canAutoOpen: false,
+        dismiss: 'explicit_close',
+        focus: 'move_to_surface',
+        label: 'Files',
+      };
     case 'diff':
       return {
         id: 'review-workspace',

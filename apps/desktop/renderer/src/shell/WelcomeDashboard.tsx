@@ -51,6 +51,7 @@ function dayKey(d: Date): string {
 }
 
 export function WelcomeDashboard(): JSX.Element {
+  const { t } = useI18n();
   const sessions = useAppStore((s) => s.sessions);
   const userMessagesBySession = useAppStore((s) => s.userMessagesBySession);
   // tokensBySession 是派生稳定表 (只在 iteration_end / session_complete 时变)，避免订阅
@@ -361,11 +362,11 @@ export function WelcomeDashboard(): JSX.Element {
               </div>
             ) : stats.sessions === 0 ? (
               <div className="text-xs text-fg-muted italic">
-                No sessions yet — type below to start one.
+                {t('welcome.noSessionsStartBelow')}
               </div>
             ) : (
               <div className="text-xs text-fg-muted italic">
-                Send a few messages to see token comparisons.
+                {t('welcome.sendMessagesForTokens')}
               </div>
             )}
           </>
@@ -392,21 +393,6 @@ const LEVEL_BG: Record<0 | 1 | 2 | 3 | 4, string> = {
   4: 'bg-info',
 };
 
-const MONTH_SHORT = [
-  'Jan',
-  'Feb',
-  'Mar',
-  'Apr',
-  'May',
-  'Jun',
-  'Jul',
-  'Aug',
-  'Sep',
-  'Oct',
-  'Nov',
-  'Dec',
-] as const;
-
 interface HeatmapCell {
   readonly date: string;
   readonly count: number;
@@ -429,19 +415,24 @@ function Heatmap({
 }: {
   cols: ReadonlyArray<ReadonlyArray<HeatmapCell | null>>;
 }): JSX.Element {
-  const { t } = useI18n();
+  const { effectiveLocale, t } = useI18n();
+  const monthFormatter = useMemo(
+    () => new Intl.DateTimeFormat(effectiveLocale, { month: 'short' }),
+    [effectiveLocale],
+  );
   // 每列对应的月份：取列中第一个非空 cell 的月份；用于决定哪些列显示月标签
   const monthLabels: ({ month: string; key: number } | null)[] = cols.map((col, ci) => {
     const firstCell = col.find((c): c is HeatmapCell => c !== null);
     if (!firstCell) return null;
     const d = new Date(firstCell.date);
     const monthIdx = d.getMonth();
-    if (ci === 0) return { month: MONTH_SHORT[monthIdx], key: monthIdx };
+    const month = monthFormatter.format(d);
+    if (ci === 0) return { month, key: monthIdx };
     const prevCol = cols[ci - 1];
     const prevFirst = prevCol.find((c): c is HeatmapCell => c !== null);
-    if (!prevFirst) return { month: MONTH_SHORT[monthIdx], key: monthIdx };
+    if (!prevFirst) return { month, key: monthIdx };
     const prevMonth = new Date(prevFirst.date).getMonth();
-    return prevMonth !== monthIdx ? { month: MONTH_SHORT[monthIdx], key: monthIdx } : null;
+    return prevMonth !== monthIdx ? { month, key: monthIdx } : null;
   });
 
   const gridCols = cols.length;

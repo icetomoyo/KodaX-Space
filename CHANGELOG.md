@@ -276,7 +276,7 @@ This patch release keeps the v0.1.20 feature baseline intact while fixing the hi
 
 - **Version alignment** - Root, desktop, IPC schema, UI kit, lockfile, and `space.version` capability contract are aligned to `0.1.21` / `space-v0.1.21`.
 - **Release notes pipeline** - Release notes now prioritize the matching `CHANGELOG.md` section, so tag-triggered GitHub Releases publish the curated changelog first.
-- **Patch reserve planning** - `v0.1.21` ships as the first patch-only release; `v0.1.22-v0.1.25` remain reserved for patch-only releases, F103 Pinned Runtime Summary moves to `v0.1.26`, and planned 0.1.x feature lanes move to `v0.1.36-v0.1.39`.
+- **Patch reserve planning** - `v0.1.21` ships as the first patch-only release; `v0.1.22-v0.1.25` remain reserved for patch-only releases, F103 Pinned Runtime Summary moves to `v0.1.26`, and planned 0.1.x feature lanes move to `v0.1.41-v0.1.44`.
 
 ### Verified
 
@@ -327,7 +327,7 @@ This release closes the post-v0.1.19 continuity lane: Space now exposes KodaX SD
 - `kodax sessions dedupe` remains CLI-only for now; desktop exposure is deferred until session hygiene/doctor UX.
 - 0.7.53 extension/MCP resume-state preservation is tracked under F090 rather than expanded into v0.1.20 scope.
 - v0.1.21-v0.1.25 are intentionally left open for patch-only releases before the next planned feature lane.
-- v0.1.26 planning lane now targets F103 Pinned Runtime Summary; the previous v0.1.26-v0.1.29 planned 0.1.x features move to v0.1.36-v0.1.39.
+- v0.1.26 planning lane now targets F103 Pinned Runtime Summary; the previous v0.1.26-v0.1.29 planned 0.1.x features move to v0.1.41-v0.1.44.
 
 ### Verified
 

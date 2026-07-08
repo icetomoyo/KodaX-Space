@@ -14,6 +14,8 @@
 import { useEffect, useState, type JSX as ReactJSX } from 'react';
 import type { SessionEvent } from '@kodax-space/space-ipc-schema';
 import { useAppStore } from '../store/appStore.js';
+import { useI18n } from '../i18n/I18nProvider.js';
+import type { MessageKey } from '../i18n/messages.js';
 
 const EMPTY_EVENTS: readonly SessionEvent[] = [];
 
@@ -262,6 +264,7 @@ function resolveStartedAtMemo(events: readonly SessionEvent[]): number {
 }
 
 export function ActivitySpinner(): ReactJSX.Element | null {
+  const { t } = useI18n();
   const currentSessionId = useAppStore((s) => s.currentSessionId);
   const events = useAppStore((s) =>
     currentSessionId ? (s.eventsBySession[currentSessionId] ?? EMPTY_EVENTS) : EMPTY_EVENTS,
@@ -303,7 +306,7 @@ export function ActivitySpinner(): ReactJSX.Element | null {
 
   // Sending 阶段 > 2s 时补 "waiting for LLM"，让长 TTFB 不像卡死
   const sendingTooLong = snap.status === 'Sending…' && elapsedSec >= 2;
-  const statusBase = sendingTooLong ? 'Sending… · waiting for LLM' : snap.status;
+  const statusBase = formatActivityStatus(snap.status, sendingTooLong, t);
 
   // tool path 显示 basename — 全路径太长，basename + dim 灰显
   const toolBase = snap.toolPath ? snap.toolPath.split(/[\\/]/).filter(Boolean).pop() : null;
@@ -346,4 +349,20 @@ export function useIsStreaming(): boolean {
     currentSessionId ? s.managedTaskStatusBySession[currentSessionId]?.phase : undefined,
   );
   return snapshotFromEvents(events, pending, managedPhase).streaming;
+}
+
+type Translate = (key: MessageKey, vars?: Record<string, string | number>) => string;
+
+function formatActivityStatus(status: string, sendingTooLong: boolean, t: Translate): string {
+  if (sendingTooLong) return t('activity.sendingWaiting');
+  if (status === 'Sending…') return t('activity.sending');
+  if (status === 'Thinking…') return t('activity.thinking');
+  if (status === 'Processing result…') return t('activity.processingResult');
+  if (status === 'Writing…') return t('activity.writing');
+  if (status === 'Compacting context…') return t('activity.compactingContext');
+  if (status === 'Verifying…') return t('activity.verifying');
+  if (status.startsWith('Running ') && status.endsWith('…')) {
+    return t('activity.runningTool', { tool: status.slice('Running '.length, -1) });
+  }
+  return status;
 }

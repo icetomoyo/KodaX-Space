@@ -170,7 +170,7 @@ export function registerSessionChannels(): void {
       surface: input.surface,
       ephemeral: input.ephemeral,
     });
-    if (!input.ephemeral) {
+    if (input.ephemeral !== true) {
       await getSessionRuntimeStore().set(sessionId, {
         reasoningMode: runtimeDefaults.reasoningMode,
         permissionMode: runtimeDefaults.permissionMode,
@@ -201,6 +201,20 @@ export function registerSessionChannels(): void {
       autoModeEngine: runtimeDefaults.autoModeEngine,
       agentMode: runtimeDefaults.agentMode,
     };
+  });
+
+  registerChannel('session.promoteEphemeral', async (input) => {
+    const promoted = await kodaxHost.promoteEphemeral(input.sessionId);
+    const session = kodaxHost.get(input.sessionId);
+    if (promoted && session) {
+      await getSessionRuntimeStore().set(input.sessionId, {
+        reasoningMode: session.reasoningMode,
+        permissionMode: session.permissionMode,
+        autoModeEngine: session.autoModeEngine,
+        agentMode: session.agentMode,
+      });
+    }
+    return { promoted };
   });
 
   // session.send
@@ -259,21 +273,6 @@ export function registerSessionChannels(): void {
   registerChannel('session.cancel', async (input) => {
     const cancelled = await kodaxHost.cancel(input.sessionId);
     return { cancelled };
-  });
-
-  registerChannel('session.promoteEphemeral', async (input) => {
-    const promoted = await kodaxHost.promoteEphemeral(input.sessionId);
-    if (!promoted) return { promoted: false };
-    const session = kodaxHost.get(input.sessionId);
-    if (session) {
-      await getSessionRuntimeStore().set(input.sessionId, {
-        reasoningMode: session.reasoningMode,
-        permissionMode: session.permissionMode,
-        autoModeEngine: session.autoModeEngine,
-        agentMode: session.agentMode,
-      });
-    }
-    return { promoted: true };
   });
 
   // session.list
@@ -416,8 +415,8 @@ export function registerSessionChannels(): void {
   });
 
   // session.setTitle
-  registerChannel('session.setTitle', (input) => {
-    const ok = kodaxHost.setTitle(input.sessionId, input.title);
+  registerChannel('session.setTitle', async (input) => {
+    const ok = await kodaxHost.setTitle(input.sessionId, input.title);
     return { ok };
   });
 
