@@ -164,6 +164,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install release tooling
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
