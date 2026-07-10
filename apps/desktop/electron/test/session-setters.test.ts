@@ -11,32 +11,42 @@ import type { SessionEvent } from '@kodax-space/space-ipc-schema';
 import { kodaxHost } from '../kodax/host.js';
 import { setRendererTarget } from '../ipc/push.js';
 import { permissionBroker } from '../permission/broker.js';
+import {
+  SessionRuntimeStore,
+  setSessionRuntimeStoreForTesting,
+} from '../kodax/session-runtime-store.js';
 
 const captured: Array<{ channel: string; payload: unknown }> = [];
 
 beforeEach(async () => {
   captured.length = 0;
   await kodaxHost.disposeAll();
-  setRendererTarget(() => ({
-    send: (channel: string, payload: unknown) => {
-      captured.push({ channel, payload });
-      if (channel === 'permission.request') {
-        const p = payload as { reqId: string };
-        setImmediate(() => permissionBroker.resolve(p.reqId, 'allow_once'));
-      }
-    },
-    isDestroyed: () => false,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  }) as any);
+  setRendererTarget(
+    () =>
+      ({
+        send: (channel: string, payload: unknown) => {
+          captured.push({ channel, payload });
+          if (channel === 'permission.request') {
+            const p = payload as { reqId: string };
+            setImmediate(() => permissionBroker.resolve(p.reqId, 'allow_once'));
+          }
+        },
+        isDestroyed: () => false,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      }) as any,
+  );
 });
 
 afterEach(async () => {
+  setSessionRuntimeStoreForTesting(null);
   await kodaxHost.disposeAll();
   setRendererTarget(() => null);
 });
 
 function getEvents(): readonly SessionEvent[] {
-  return captured.filter((c) => c.channel === 'session.event').map((c) => c.payload as SessionEvent);
+  return captured
+    .filter((c) => c.channel === 'session.event')
+    .map((c) => c.payload as SessionEvent);
 }
 
 function waitFor(predicate: () => boolean, timeoutMs = 3000): Promise<void> {
@@ -69,8 +79,70 @@ test('setProvider updates field; returns true', () => {
   assert.equal(kodaxHost.get(sessionId)?.provider, 'anthropic');
 });
 
+test('setProvider clears a model override when the provider changes', () => {
+  const { sessionId } = kodaxHost.createSession({
+    projectRoot: '/r',
+    provider: 'openai',
+    model: 'gpt-5.3-codex',
+  });
+  assert.equal(kodaxHost.setProvider(sessionId, 'anthropic'), true);
+  assert.equal(kodaxHost.get(sessionId)?.model, undefined);
+});
+
+test('setProvider preserves a model override when the provider is unchanged', () => {
+  const { sessionId } = kodaxHost.createSession({
+    projectRoot: '/r',
+    provider: 'openai',
+    model: 'gpt-5.3-codex',
+  });
+  assert.equal(kodaxHost.setProvider(sessionId, 'openai'), true);
+  assert.equal(kodaxHost.get(sessionId)?.model, 'gpt-5.3-codex');
+});
+
 test('setProvider returns false for unknown session', () => {
   assert.equal(kodaxHost.setProvider('no-such', 'openai'), false);
+});
+
+test('runtime mutations serialize and a failed write rolls back only its own change', async () => {
+  let releaseFirstWrite: (() => void) | undefined;
+  let signalFirstWrite: (() => void) | undefined;
+  const firstWriteEntered = new Promise<void>((resolve) => {
+    signalFirstWrite = resolve;
+  });
+  const firstWriteGate = new Promise<void>((resolve) => {
+    releaseFirstWrite = resolve;
+  });
+  let writes = 0;
+
+  class ControlledRuntimeStore extends SessionRuntimeStore {
+    override async set(): Promise<boolean> {
+      writes += 1;
+      if (writes === 1) {
+        signalFirstWrite?.();
+        await firstWriteGate;
+        return false;
+      }
+      return true;
+    }
+  }
+
+  setSessionRuntimeStoreForTesting(new ControlledRuntimeStore('/unused'));
+  const { sessionId } = kodaxHost.createSession({ projectRoot: '/r', provider: 'mock' });
+  const first = kodaxHost.commitRuntimeMutation(sessionId, () =>
+    kodaxHost.setPermissionMode(sessionId, 'plan'),
+  );
+  await firstWriteEntered;
+  const second = kodaxHost.commitRuntimeMutation(sessionId, () =>
+    kodaxHost.setAutoModeEngine(sessionId, 'rules'),
+  );
+
+  releaseFirstWrite?.();
+
+  assert.equal(await first, 'persist-failed');
+  assert.equal(await second, 'ok');
+  assert.equal(kodaxHost.get(sessionId)?.permissionMode, 'accept-edits');
+  assert.equal(kodaxHost.get(sessionId)?.autoModeEngine, 'rules');
+  assert.equal(writes, 2);
 });
 
 test('Mock emits work_budget at least 3 times during a session run', async () => {

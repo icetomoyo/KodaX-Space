@@ -144,13 +144,16 @@ export function WelcomeDashboard(): JSX.Element {
       //   2. provider.defaultModel：persisted session 没存 model，但每个 provider 都
       //      有 default model alias（"ark-coding" 默认 "deepseek-v4-pro"）作合理猜测
       //   3. s.provider：连 provider 表都没找到时，退回 provider id 字符串
-      const providerInfo = providers.find((p) => p.id === s.provider);
-      const modelKey = s.model ?? providerInfo?.defaultModel ?? s.provider;
-      modelCount.set(modelKey, (modelCount.get(modelKey) ?? 0) + 1);
-      modelTokens.set(modelKey, (modelTokens.get(modelKey) ?? 0) + sessionTokens);
-      modelMessages.set(modelKey, (modelMessages.get(modelKey) ?? 0) + sessionMessages);
-      // 反查表：modelKey → 它的 provider（让 favorite 显示能找到 provider displayName）
-      modelToProvider.set(modelKey, s.provider);
+      // Legacy sessions without a runtime sidecar use today's defaults only to
+      // remain runnable. Do not turn that fallback into false historical model analytics.
+      if (s.runtimeMetadataSource !== 'current-default-fallback') {
+        const providerInfo = providers.find((p) => p.id === s.provider);
+        const modelKey = s.model ?? providerInfo?.defaultModel ?? s.provider;
+        modelCount.set(modelKey, (modelCount.get(modelKey) ?? 0) + 1);
+        modelTokens.set(modelKey, (modelTokens.get(modelKey) ?? 0) + sessionTokens);
+        modelMessages.set(modelKey, (modelMessages.get(modelKey) ?? 0) + sessionMessages);
+        modelToProvider.set(modelKey, s.provider);
+      }
     }
 
     // Streak（基于当前 range 内的 activeDays）

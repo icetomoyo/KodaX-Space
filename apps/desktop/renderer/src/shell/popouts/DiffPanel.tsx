@@ -121,7 +121,7 @@ export function DiffPanel(): JSX.Element {
     return () => {
       cancelled = true;
     };
-  }, [path, projectRoot]);
+  }, [path, projectRoot, t]);
 
   if (!path) {
     return (

@@ -70,7 +70,6 @@ export function detectKind(path: string): RichPreviewKind | null {
     case 'ogg':
     case 'oga':
       return 'audio';
-    case 'ppt':
     case 'pptx':
     case 'pptm':
     case 'potx':

@@ -7,14 +7,26 @@ import assert from 'node:assert/strict';
 import { toArtifactContent } from '../../renderer/src/features/artifact/toArtifactContent.js';
 
 test('content kinds map content through; missing content → null', () => {
-  assert.deepEqual(toArtifactContent('markdown', { content: '# x' }, null), { kind: 'markdown', content: '# x' });
-  assert.deepEqual(toArtifactContent('code', { content: 'a=1' }, null), { kind: 'code', content: 'a=1' });
-  assert.deepEqual(toArtifactContent('html', { content: '<b/>' }, null), { kind: 'html', content: '<b/>' });
+  assert.deepEqual(toArtifactContent('markdown', { content: '# x' }, null), {
+    kind: 'markdown',
+    content: '# x',
+  });
+  assert.deepEqual(toArtifactContent('code', { content: 'a=1' }, null), {
+    kind: 'code',
+    content: 'a=1',
+  });
+  assert.deepEqual(toArtifactContent('html', { content: '<b/>' }, null), {
+    kind: 'html',
+    content: '<b/>',
+  });
   assert.deepEqual(toArtifactContent('interactive-html', { content: '<script></script>' }, null), {
     kind: 'interactive-html',
     content: '<script></script>',
   });
-  assert.deepEqual(toArtifactContent('svg', { content: '<svg/>' }, null), { kind: 'svg', content: '<svg/>' });
+  assert.deepEqual(toArtifactContent('svg', { content: '<svg/>' }, null), {
+    kind: 'svg',
+    content: '<svg/>',
+  });
   assert.equal(toArtifactContent('markdown', {}, null), null);
 });
 
@@ -62,8 +74,21 @@ test('path-backed kinds need path + projectRoot', () => {
     projectRoot: '/p',
     path: '/p/a.pdf',
   });
-  assert.deepEqual(toArtifactContent('docx', { path: '/p/a.docx' }, '/p'), { kind: 'docx', projectRoot: '/p', path: '/p/a.docx' });
-  assert.deepEqual(toArtifactContent('xlsx', { path: '/p/a.xlsx' }, '/p'), { kind: 'xlsx', projectRoot: '/p', path: '/p/a.xlsx' });
+  assert.deepEqual(toArtifactContent('docx', { path: '/p/a.docx' }, '/p'), {
+    kind: 'docx',
+    projectRoot: '/p',
+    path: '/p/a.docx',
+  });
+  assert.deepEqual(toArtifactContent('xlsx', { path: '/p/a.xlsx' }, '/p'), {
+    kind: 'xlsx',
+    projectRoot: '/p',
+    path: '/p/a.xlsx',
+  });
+  assert.deepEqual(toArtifactContent('pptx', { path: '/p/a.pptx' }, '/p'), {
+    kind: 'pptx',
+    projectRoot: '/p',
+    path: '/p/a.pptx',
+  });
   assert.deepEqual(toArtifactContent('file', { path: '/p/a.mp4' }, '/p'), {
     kind: 'file',
     projectRoot: '/p',
@@ -72,6 +97,25 @@ test('path-backed kinds need path + projectRoot', () => {
   assert.equal(toArtifactContent('pdf', { path: '/p/a.pdf' }, null), null); // no projectRoot
   assert.equal(toArtifactContent('docx', {}, '/p'), null); // no path
   assert.equal(toArtifactContent('file', {}, '/p'), null); // no path
+});
+
+test('artifact-store generated files do not need projectRoot', () => {
+  assert.deepEqual(
+    toArtifactContent(
+      'pptx',
+      { path: 'Deck.pptx', fileSource: 'artifact-store' },
+      null,
+      undefined,
+      { id: 'a1', version: 2 },
+    ),
+    {
+      kind: 'pptx',
+      path: 'Deck.pptx',
+      fileSource: 'artifact-store',
+      artifactId: 'a1',
+      version: 2,
+    },
+  );
 });
 
 test('image with missing content → null', () => {

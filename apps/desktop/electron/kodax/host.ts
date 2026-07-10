@@ -28,7 +28,12 @@ import {
   retagPersistedSession,
   sdkTagToSurface,
 } from './session-store.js';
-import { loadKodaxUserDefaults, registerKodaxCustomProviders } from './user-config.js';
+import {
+  loadKodaxCustomProviders,
+  loadKodaxUserDefaults,
+  registerKodaxCustomProviders,
+  type KodaxConfigCustomProvider,
+} from './user-config.js';
 import { resolveRuntimeDefaults } from './runtime-defaults.js';
 import { getSessionRuntimeStore } from './session-runtime-store.js';
 import { getSessionTitleStore } from './session-title-store.js';
@@ -72,18 +77,35 @@ function stripForkSuffix(title: string): string {
   return out;
 }
 
-function modelBelongsToProvider(providerId: string, model: string): boolean {
+export function providerDescriptor(
+  providerId: string,
+  kodaxCustomProviders: readonly KodaxConfigCustomProvider[] = [],
+): { readonly defaultModel: string; readonly models?: readonly string[] } | undefined {
   const builtin = getBuiltin(providerId);
-  if (builtin) {
-    return builtin.defaultModel === model || (builtin.models?.includes(model) ?? false);
-  }
+  if (builtin) return builtin;
   const custom = providerConfigStore.getCustom(providerId);
-  if (custom) {
-    return custom.defaultModel === model || (custom.models?.includes(model) ?? false);
-  }
-  // Unknown providers can come from KodaX-level custom config. With no catalog
-  // available here, trust the provider/model pair from KodaX defaults.
-  return true;
+  if (custom) return custom;
+  return kodaxCustomProviders.find((provider) => provider.id === providerId);
+}
+
+export function modelBelongsToProvider(
+  providerId: string,
+  model: string,
+  kodaxCustomProviders: readonly KodaxConfigCustomProvider[] = [],
+): boolean {
+  const descriptor = providerDescriptor(providerId, kodaxCustomProviders);
+  if (!descriptor) return false;
+  if (!descriptor.models || descriptor.models.length === 0) return true;
+  return descriptor.defaultModel === model || descriptor.models.includes(model);
+}
+
+export function providerIsConfigured(
+  providerId: string,
+  kodaxCustomProviders: readonly KodaxConfigCustomProvider[],
+): boolean {
+  return (
+    providerId === 'mock' || providerDescriptor(providerId, kodaxCustomProviders) !== undefined
+  );
 }
 
 /**
@@ -158,6 +180,8 @@ export type ListMergedItem =
 
 class KodaXHost {
   private readonly sessions = new Map<string, ManagedSession>();
+  private readonly runtimeMutationLocks = new Map<string, Promise<void>>();
+  private readonly runtimeMutationsInProgress = new Set<string>();
   private factory: SessionFactory = defaultFactory;
 
   /**
@@ -238,6 +262,104 @@ class KodaXHost {
     return this.sessions.get(sessionId);
   }
 
+  /** Persist the complete runtime identity after a successful user-visible mutation. */
+  async persistRuntime(sessionId: string): Promise<boolean> {
+    const session = this.sessions.get(sessionId);
+    if (!session) return false;
+    await providerConfigStore.load().catch(() => undefined);
+    const kodaxCustomProviders = await loadKodaxCustomProviders().catch(() => []);
+    const effectiveModel =
+      session.model ?? providerDescriptor(session.provider, kodaxCustomProviders)?.defaultModel;
+    return getSessionRuntimeStore().set(sessionId, {
+      provider: session.provider,
+      model: effectiveModel,
+      thinking: session.thinking,
+      reasoningMode: session.reasoningMode,
+      permissionMode: session.permissionMode,
+      autoModeEngine: session.autoModeEngine,
+      agentMode: session.agentMode,
+    });
+  }
+
+  async commitRuntimeMutation(
+    sessionId: string,
+    mutate: () => boolean,
+  ): Promise<'ok' | 'session-not-found' | 'persist-failed'> {
+    let outcome: 'ok' | 'session-not-found' | 'persist-failed' = 'session-not-found';
+    const previous = this.runtimeMutationLocks.get(sessionId) ?? Promise.resolve();
+    const current = previous
+      .catch(() => undefined)
+      .then(async () => {
+        outcome = await this.commitRuntimeMutationUnlocked(sessionId, mutate);
+      });
+    this.runtimeMutationLocks.set(sessionId, current);
+    try {
+      await current;
+    } finally {
+      if (this.runtimeMutationLocks.get(sessionId) === current) {
+        this.runtimeMutationLocks.delete(sessionId);
+      }
+    }
+    return outcome;
+  }
+
+  private async commitRuntimeMutationUnlocked(
+    sessionId: string,
+    mutate: () => boolean,
+  ): Promise<'ok' | 'session-not-found' | 'persist-failed'> {
+    const session = this.sessions.get(sessionId);
+    if (!session) return 'session-not-found';
+    const before = {
+      provider: session.provider,
+      model: session.model,
+      thinking: session.thinking,
+      reasoningMode: session.reasoningMode,
+      permissionMode: session.permissionMode,
+      autoModeEngine: session.autoModeEngine,
+      agentMode: session.agentMode,
+    };
+    const restore = (): void => {
+      session.provider = before.provider;
+      session.model = before.model;
+      session.thinking = before.thinking;
+      session.reasoningMode = before.reasoningMode;
+      session.permissionMode = before.permissionMode;
+      session.autoModeEngine = before.autoModeEngine;
+      session.agentMode = before.agentMode;
+    };
+    try {
+      this.runtimeMutationsInProgress.add(sessionId);
+      const mutated = mutate();
+      this.runtimeMutationsInProgress.delete(sessionId);
+      if (!mutated) {
+        restore();
+        return 'session-not-found';
+      }
+      const autoModeEngineChanged = before.autoModeEngine !== session.autoModeEngine;
+      if (await this.persistRuntime(sessionId)) {
+        if (autoModeEngineChanged) {
+          pushToRenderer('session.event', {
+            kind: 'auto_engine_change',
+            sessionId,
+            engine: session.autoModeEngine,
+            reason: 'manual',
+          });
+        }
+        return 'ok';
+      }
+      restore();
+      return 'persist-failed';
+    } catch (error) {
+      this.runtimeMutationsInProgress.delete(sessionId);
+      restore();
+      console.warn(
+        `[host.commitRuntimeMutation] persist failed for ${sessionId}:`,
+        error instanceof Error ? error.message : error,
+      );
+      return 'persist-failed';
+    }
+  }
+
   /**
    * Lazy resume：把磁盘上已经 persisted 但 main 进程 in-flight Map 里没有的 session
    * 重新装回 runtime。用户场景：重启 Space 后从 sidebar Recents 点开 "你好" → 想继续。
@@ -269,23 +391,40 @@ class KodaXHost {
       console.warn(`[host.tryResume] persisted session ${sessionId} lacks gitRoot — cannot resume`);
       return false;
     }
-    // Resolve runtime defaults（best-effort；只读，不会改用户配置）
-    let provider = 'mock';
+    const persistedRuntime = await getSessionRuntimeStore().read(sessionId);
+    // Resolve current defaults only as the explicit fallback for legacy sessions.
+    let fallbackProvider = 'mock';
     let configuredModel: string | undefined;
+    let configuredThinking: boolean | undefined;
     try {
       const ud = await loadKodaxUserDefaults();
-      if (ud.provider) provider = ud.provider;
+      if (ud.provider) fallbackProvider = ud.provider;
       if (ud.model) configuredModel = ud.model;
+      configuredThinking = ud.thinking;
     } catch {
-      // 用 hard-coded defaults
+      // Use hard-coded defaults.
     }
     try {
       await providerConfigStore.load();
       const defaultId = providerConfigStore.getDefaultProviderId();
-      if (defaultId) provider = defaultId;
+      if (defaultId) fallbackProvider = defaultId;
     } catch {
-      // 用 user-config 的 provider 或 'mock'
+      // Use the KodaX user default or mock.
     }
+    const kodaxCustomProviders = await loadKodaxCustomProviders().catch(() => []);
+    const persistedProvider = persistedRuntime?.provider;
+    const usePersistedIdentity =
+      persistedProvider !== undefined &&
+      providerIsConfigured(persistedProvider, kodaxCustomProviders);
+    if (persistedProvider !== undefined && !usePersistedIdentity) {
+      console.warn(
+        `[host.tryResume] persisted provider "${persistedProvider}" is no longer configured; using current defaults`,
+      );
+    }
+    const provider =
+      usePersistedIdentity && persistedProvider !== undefined
+        ? persistedProvider
+        : fallbackProvider;
     if (provider !== 'mock' && !getBuiltin(provider)) {
       await registerKodaxCustomProviders(providerConfigStore.listCustom());
     }
@@ -293,18 +432,21 @@ class KodaXHost {
       sessionId,
       includeSessionSidecar: true,
     });
+    const requestedModel = usePersistedIdentity
+      ? (persistedRuntime?.model ??
+        providerDescriptor(provider, kodaxCustomProviders)?.defaultModel)
+      : configuredModel;
     const model =
-      configuredModel && modelBelongsToProvider(provider, configuredModel)
-        ? configuredModel
+      requestedModel && modelBelongsToProvider(provider, requestedModel, kodaxCustomProviders)
+        ? requestedModel
         : undefined;
-    if (configuredModel && model === undefined) {
+    if (requestedModel && model === undefined) {
       console.warn(
-        `[host.tryResume] ignoring configured model "${configuredModel}" because it does not belong to provider "${provider}"`,
+        `[host.tryResume] ignoring model "${requestedModel}" because it does not belong to provider "${provider}"`,
       );
     }
-    // 注：tryResume 始终走 RealKodaXSession 路径（Mock 不接磁盘 lineage）；用户原始
-    // session 是 mock 的话，title 已经在那时存了，但重新打字会接到 Real 端——这是
-    // 可接受的 trade-off（mock session 重启本来也不该期待复活）。
+    // Persisted mock sessions still resume through the real adapter because mock
+    // sessions do not attach to the SDK's on-disk lineage.
     this.createSession({
       projectRoot,
       provider,
@@ -322,16 +464,17 @@ class KodaXHost {
     // 把 persisted title 同步到 ManagedSession，避免 list 里两边 title 不一致
     const reloaded = this.sessions.get(sessionId);
     if (reloaded) {
+      const thinking = usePersistedIdentity ? persistedRuntime?.thinking : configuredThinking;
+      if (thinking !== undefined) reloaded.thinking = thinking;
       const titleOverride = await getSessionTitleStore().read(sessionId);
       const persistedTitle = titleOverride ?? (data as { title?: string }).title;
       if (persistedTitle && reloaded.title === undefined) reloaded.title = persistedTitle;
     }
-    await getSessionRuntimeStore().set(sessionId, {
-      reasoningMode: runtimeDefaults.reasoningMode,
-      permissionMode: runtimeDefaults.permissionMode,
-      autoModeEngine: runtimeDefaults.autoModeEngine,
-      agentMode: runtimeDefaults.agentMode,
-    });
+    if (!(await this.persistRuntime(sessionId))) {
+      await reloaded?.dispose().catch(() => undefined);
+      this.sessions.delete(sessionId);
+      return false;
+    }
     return true;
   }
 
@@ -347,8 +490,9 @@ class KodaXHost {
     const s = this.sessions.get(sessionId);
     if (!s) return false;
     if (s.ephemeral !== true) return true;
+    if (!(await this.persistRuntime(sessionId))) return false;
+    if (!(await retagPersistedSession({ sessionId, tag: s.surface }))) return false;
     s.ephemeral = false;
-    await retagPersistedSession({ sessionId, tag: s.surface });
     return true;
   }
 
@@ -477,6 +621,7 @@ class KodaXHost {
   setProvider(sessionId: string, providerId: string): boolean {
     const s = this.sessions.get(sessionId);
     if (!s) return false;
+    if (s.provider !== providerId) s.model = undefined;
     s.provider = providerId;
     return true;
   }
@@ -525,9 +670,7 @@ class KodaXHost {
       const result = await compactPersistedSession(sessionId, {
         provider: s.provider,
         ...(s.model !== undefined ? { model: s.model } : {}),
-        ...(customInstructions?.trim()
-          ? { customInstructions: customInstructions.trim() }
-          : {}),
+        ...(customInstructions?.trim() ? { customInstructions: customInstructions.trim() } : {}),
       });
       if (result.compacted) {
         pushToRenderer('session.event', {
@@ -583,12 +726,14 @@ class KodaXHost {
     if (!s) return false;
     if (s.autoModeEngine === engine) return true; // 幂等：相同值不 emit event
     s.autoModeEngine = engine;
-    pushToRenderer('session.event', {
-      kind: 'auto_engine_change',
-      sessionId,
-      engine,
-      reason: 'manual',
-    });
+    if (!this.runtimeMutationsInProgress.has(sessionId)) {
+      pushToRenderer('session.event', {
+        kind: 'auto_engine_change',
+        sessionId,
+        engine,
+        reason: 'manual',
+      });
+    }
     return true;
   }
 
@@ -649,6 +794,7 @@ class KodaXHost {
         sessionId,
         projectRoot: src.projectRoot,
         provider: src.provider,
+        ...(src.model !== undefined ? { model: src.model } : {}),
         reasoningMode: src.reasoningMode,
         permissionMode: src.permissionMode,
         autoModeEngine: src.autoModeEngine,
@@ -682,7 +828,14 @@ class KodaXHost {
       throw err;
     }
     this.sessions.set(sessionId, session);
+    session.thinking = src.thinking;
     session.title = forkTitle ?? session.title;
+    if (!(await this.persistRuntime(sessionId))) {
+      await session.dispose().catch(() => undefined);
+      this.sessions.delete(sessionId);
+      await deletePersistedSession({ sessionId }).catch(() => undefined);
+      throw new Error('fork runtime metadata could not be persisted');
+    }
     return { newSessionId: sessionId, createdAt };
   }
 
@@ -743,17 +896,12 @@ class KodaXHost {
    *   2. dispose in-memory runtime + 移出 Map（如有）
    *   3. SDK deleteSession 擦盘（如果 session 不在 in-memory，纯擦盘）
    *
-   * **幂等**：始终返回 true 当本端清理完成（无论 disk 实际状态）；'busy' 场景
-   * 也算 true——大概率是 KodaX REPL 同时连着，用户重试或关 REPL 就行。
-   *
-   * reviewer HIGH-2：之前实现在 'busy' 路径根据 in-flight 存在与否返回 true/false，
-   * 双语义给 renderer 误导信号——干脆统一 true，与 SDK deleteSession 的幂等合约
-   * 对齐（"ok: true even if session doesn't exist"）。
-   *
-   * busy 案例未来想给用户提示时，应该走单独的 status channel 或 toast，而非
-   * 让 deleted=false 当"出错了"用。F039+ 加 UI 反馈。
+   * **幂等**：SDK 返回 `ok`（包括磁盘上已不存在）时返回 true。若另一个 KodaX
+   * 进程仍持有该 session，SDK 返回 `session_running`，这里必须返回 false：持久化
+   * session 尚未删除，调用方也不得清理它的 runtime/title/notice 等 sidecar。
    */
   async delete(sessionId: string): Promise<boolean> {
+    await this.runtimeMutationLocks.get(sessionId)?.catch(() => undefined);
     const s = this.sessions.get(sessionId);
     if (s) {
       permissionBroker.cancelSession(sessionId, 'session_disposed');
@@ -763,9 +911,19 @@ class KodaXHost {
     }
     // 持久化擦盘——即便 in-memory 不存在也尝试擦（用户对 historical session 直接删）
     const diskDeleteResult = await deletePersistedSession({ sessionId });
-    if (diskDeleteResult === 'ok') {
-      await getSessionTitleStore().delete(sessionId);
+    if (diskDeleteResult !== 'ok') {
+      if (s) {
+        const restored = await this.tryResume(sessionId).catch((error: unknown) => {
+          console.warn(`[host.delete] failed to restore busy session ${sessionId}:`, error);
+          return false;
+        });
+        if (!restored) {
+          console.warn(`[host.delete] busy session ${sessionId} is no longer attached locally`);
+        }
+      }
+      return false;
     }
+    await getSessionTitleStore().delete(sessionId);
     // OC-31 v0.1.9: 清掉本 session 的 clipboard image 暂存目录（best-effort，
     // ENOENT 静默；KodaX SDK 已经把 image path 序列化进 message history 文本里，
     // 删图本身不影响 historical content，下次 resume 时 path 指向"已不存在"也只会
@@ -776,6 +934,9 @@ class KodaXHost {
 
   /** 测试 / 关闭流程用：清空所有 session。*/
   async disposeAll(): Promise<void> {
+    await Promise.all(
+      [...this.runtimeMutationLocks.values()].map((pending) => pending.catch(() => undefined)),
+    );
     const sids = [...this.sessions.keys()];
     for (const sid of sids) {
       permissionBroker.cancelSession(sid, 'shutdown');

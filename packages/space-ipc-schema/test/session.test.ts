@@ -39,6 +39,30 @@ test('all 5 session invoke channels are registered', () => {
   }
 });
 
+test('session.list output distinguishes persisted runtime identity from legacy fallback', () => {
+  const base = {
+    sessionId: 's_runtime-source',
+    projectRoot: 'C:/repo',
+    provider: 'openai',
+    reasoningMode: 'auto',
+    permissionMode: 'accept-edits',
+    autoModeEngine: 'llm',
+    agentMode: 'ama',
+    surface: 'partner',
+    createdAt: 1,
+    lastActivityAt: 1,
+  };
+  assert.equal(
+    sessionListChannel.output.safeParse({
+      sessions: [
+        { ...base, runtimeMetadataSource: 'persisted' },
+        { ...base, sessionId: 's_legacy', runtimeMetadataSource: 'current-default-fallback' },
+      ],
+    }).success,
+    true,
+  );
+});
+
 test('session.history output accepts restored sidecar verifier messages', () => {
   assert.equal(
     sessionHistoryChannel.output.safeParse({
@@ -313,6 +337,31 @@ test('session.send accepts expected project and surface guard fields', () => {
     false,
   );
 });
+
+test('session.send accepts bounded Partner prompt overlay without changing prompt shape', () => {
+  const result = sessionSendChannel.input.safeParse({
+    sessionId: 's_1',
+    prompt: 'write a report',
+    expectedSurface: 'partner',
+    partnerPromptOverlay: 'Partner workbench mode: document-processing',
+  });
+
+  assert.equal(result.success, true);
+  if (result.success) {
+    assert.equal(result.data.prompt, 'write a report');
+    assert.match(result.data.partnerPromptOverlay ?? '', /document-processing/);
+  }
+
+  assert.equal(
+    sessionSendChannel.input.safeParse({
+      sessionId: 's_1',
+      prompt: 'write a report',
+      partnerPromptOverlay: 'x'.repeat(131_073),
+    }).success,
+    false,
+  );
+});
+
 test('session.send queued output may include queueMode', () => {
   assert.equal(
     sessionSendChannel.output.safeParse({
@@ -386,6 +435,14 @@ test('session.cancel and session.delete have ok-style booleans', () => {
   assert.equal(sessionCancelChannel.output.safeParse({ cancelled: true }).success, true);
   assert.equal(sessionCancelChannel.output.safeParse({ cancelled: false }).success, true);
   assert.equal(sessionDeleteChannel.output.safeParse({ deleted: true }).success, true);
+  assert.equal(
+    sessionDeleteChannel.output.safeParse({ deleted: false, reason: 'session_running' }).success,
+    true,
+  );
+  assert.equal(
+    sessionDeleteChannel.output.safeParse({ deleted: false, reason: 'unknown' }).success,
+    false,
+  );
 });
 
 test('session.list input is void; output requires sessions array', () => {

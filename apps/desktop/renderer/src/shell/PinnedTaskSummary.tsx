@@ -76,7 +76,9 @@ function SummaryChipButton({ chip }: { readonly chip: SummaryChip }): JSX.Elemen
     <button
       type="button"
       onClick={() => requestTaskDockFocus(chip.section)}
-      className="inline-flex h-7 max-w-[120px] items-center gap-1.5 rounded-md border border-border-default bg-surface-2 px-2 text-fg-secondary transition-colors hover:bg-hover-bg hover:text-fg-primary"
+      className={`inline-flex h-7 items-center gap-1.5 rounded-md border border-border-default bg-surface-2 px-2 text-fg-secondary transition-colors hover:bg-hover-bg hover:text-fg-primary ${
+        chip.key === 'agents' ? 'max-w-[190px]' : 'max-w-[120px]'
+      }`}
       title={t('pinned.openChip', { label: chip.label })}
       aria-label={t('pinned.openChip', { label: chip.label })}
       data-testid={`pinned-summary-${chip.key}`}

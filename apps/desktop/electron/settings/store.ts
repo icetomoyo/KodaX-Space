@@ -32,19 +32,10 @@ const runtimeDefaultFieldSchemas = {
   agentMode: z.enum(['ama', 'amaw', 'sa']).optional(),
 } as const;
 
-const runtimeDefaultsSchema = z.object(runtimeDefaultFieldSchemas).strict();
-
 const fileV1Schema = z.object({
   version: z.literal(1),
   defaultWorkspace: z.string().min(1).max(4096),
   languageMode: z.enum(['system', 'zh-CN', 'en-US']).default('system'),
-});
-
-const fileV2Schema = z.object({
-  version: z.literal(2),
-  defaultWorkspace: z.string().min(1).max(4096),
-  languageMode: z.enum(['system', 'zh-CN', 'en-US']).default('system'),
-  runtimeDefaults: runtimeDefaultsSchema.default({}),
 });
 
 const fileV2LooseSchema = z.object({
@@ -54,7 +45,12 @@ const fileV2LooseSchema = z.object({
   runtimeDefaults: z.unknown().optional(),
 });
 
-export type SpaceSettings = z.infer<typeof fileV2Schema>;
+export interface SpaceSettings {
+  readonly version: 2;
+  readonly defaultWorkspace: string;
+  readonly languageMode: 'system' | 'zh-CN' | 'en-US';
+  readonly runtimeDefaults: SpaceRuntimeDefaultsT;
+}
 
 const DEFAULT_WORKSPACE = path.join(os.homedir(), 'kodax_workspace');
 

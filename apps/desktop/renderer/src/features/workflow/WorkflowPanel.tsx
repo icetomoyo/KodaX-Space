@@ -553,7 +553,11 @@ function WorkflowResultView({
   const [loading, setLoading] = useState(false);
   const fetchAttemptedRef = useRef(false);
   const mountedRef = useRef(true);
+  const resultRef = useRef<string | null>(result);
   useEffect(() => () => void (mountedRef.current = false), []);
+  useEffect(() => {
+    resultRef.current = result;
+  }, [result]);
   useEffect(() => {
     if (fallback) setResult((current) => current ?? fallback);
   }, [fallback]);
@@ -563,7 +567,7 @@ function WorkflowResultView({
     // Only show the loading state (which disables the copy button) when there is no
     // fallback result already displayed. A run with a resultSummary shows immediately and
     // its copy affordance stays usable; the ref above still guards the fetch reentrancy race.
-    setLoading(result === null);
+    setLoading(resultRef.current === null);
     const resultPromise =
       window.kodaxSpace?.invoke('workflow.result', { runId }).catch(() => null) ??
       Promise.resolve(null);

@@ -4,6 +4,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { SessionRuntimeStore } from '../kodax/session-runtime-store.js';
+import { deleteSessionForIpc, resolveHistoricalRuntimeIdentity } from '../ipc/session.js';
 
 let tmpDir = '';
 let store: SessionRuntimeStore;
@@ -18,15 +19,55 @@ afterEach(async () => {
 });
 
 test('SessionRuntimeStore merges partial runtime patches', async () => {
-  await store.set('s_runtime-1', { permissionMode: 'auto', autoModeEngine: 'rules' });
+  await store.set('s_runtime-1', {
+    provider: 'zhipu-coding',
+    model: 'glm-5.2',
+    thinking: true,
+    permissionMode: 'auto',
+    autoModeEngine: 'rules',
+  });
   await store.set('s_runtime-1', { reasoningMode: 'deep', agentMode: 'sa' });
 
   assert.deepEqual(await store.read('s_runtime-1'), {
+    provider: 'zhipu-coding',
+    model: 'glm-5.2',
+    thinking: true,
     permissionMode: 'auto',
     autoModeEngine: 'rules',
     reasoningMode: 'deep',
     agentMode: 'sa',
   });
+});
+
+test('SessionRuntimeStore preserves malformed and schema-invalid bytes on update', async () => {
+  const runtimeDir = path.join(tmpDir, 'runtime');
+  await fs.mkdir(runtimeDir, { recursive: true });
+  for (const [sessionId, original] of [
+    ['s_malformed', Buffer.from('{broken json', 'utf-8')],
+    [
+      's_schema-invalid',
+      Buffer.from(
+        JSON.stringify({ version: 1, sessionId: 's_schema-invalid', unknown: true }),
+        'utf-8',
+      ),
+    ],
+  ] as const) {
+    const filePath = path.join(runtimeDir, `${sessionId}.json`);
+    await fs.writeFile(filePath, original);
+    assert.equal(await store.read(sessionId), null);
+    assert.equal(await store.set(sessionId, { provider: 'openai', model: 'gpt-5.3-codex' }), false);
+    assert.deepEqual(await fs.readFile(filePath), original);
+  }
+});
+
+test('SessionRuntimeStore clears an explicitly undefined identity field', async () => {
+  await store.set('s_runtime-clear', {
+    provider: 'openai',
+    model: 'gpt-5.3-codex',
+    thinking: true,
+  });
+  await store.set('s_runtime-clear', { model: undefined, thinking: undefined });
+  assert.deepEqual(await store.read('s_runtime-clear'), { provider: 'openai' });
 });
 
 test('SessionRuntimeStore sanitizes writes to known runtime fields only', async () => {
@@ -67,4 +108,78 @@ test('SessionRuntimeStore rejects colon session ids to avoid Windows ADS paths',
   await store.set('s:ads', { permissionMode: 'auto' });
 
   assert.equal(await store.read('s:ads'), null);
+});
+
+test('historical runtime identity labels only configured provider/model pairs as exact', () => {
+  assert.deepEqual(
+    resolveHistoricalRuntimeIdentity({
+      persisted: { provider: 'openai', model: 'gpt-5.3-codex' },
+      fallbackProvider: 'zhipu-coding',
+      fallbackModel: 'glm-5.2',
+    }),
+    {
+      provider: 'openai',
+      model: 'gpt-5.3-codex',
+      runtimeMetadataSource: 'persisted',
+    },
+  );
+
+  assert.deepEqual(
+    resolveHistoricalRuntimeIdentity({
+      persisted: { provider: 'removed-provider', model: 'removed-model' },
+      fallbackProvider: 'zhipu-coding',
+      fallbackModel: 'glm-5.2',
+    }),
+    {
+      provider: 'zhipu-coding',
+      model: 'glm-5.2',
+      runtimeMetadataSource: 'current-default-fallback',
+    },
+  );
+
+  assert.deepEqual(
+    resolveHistoricalRuntimeIdentity({
+      persisted: { provider: 'openai', model: 'glm-5.2' },
+      fallbackProvider: 'zhipu-coding',
+      fallbackModel: 'glm-5.2',
+    }),
+    {
+      provider: 'openai',
+      runtimeMetadataSource: 'current-default-fallback',
+    },
+  );
+});
+
+test('busy session deletion preserves all local sidecars', async () => {
+  const cleanupCalls: string[] = [];
+  const result = await deleteSessionForIpc('s_busy', {
+    deleteSession: async () => false,
+    clearGoal: () => cleanupCalls.push('goal'),
+    deleteRuntime: async () => {
+      cleanupCalls.push('runtime');
+    },
+    deleteLocalNotices: async () => {
+      cleanupCalls.push('notices');
+    },
+  });
+
+  assert.deepEqual(result, { deleted: false, reason: 'session_running' });
+  assert.deepEqual(cleanupCalls, []);
+});
+
+test('successful session deletion clears every local sidecar', async () => {
+  const cleanupCalls: string[] = [];
+  const result = await deleteSessionForIpc('s_deleted', {
+    deleteSession: async () => true,
+    clearGoal: () => cleanupCalls.push('goal'),
+    deleteRuntime: async () => {
+      cleanupCalls.push('runtime');
+    },
+    deleteLocalNotices: async () => {
+      cleanupCalls.push('notices');
+    },
+  });
+
+  assert.deepEqual(result, { deleted: true });
+  assert.deepEqual(cleanupCalls, ['goal', 'runtime', 'notices']);
 });

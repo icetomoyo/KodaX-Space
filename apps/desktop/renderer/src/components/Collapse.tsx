@@ -11,12 +11,13 @@
 //
 // 用法：<Collapse open={expanded}><DetailContent /></Collapse>
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 
 interface CollapseProps {
   /** 是否展开。true = 展示内容（grid-rows 1fr），false = 折叠（grid-rows 0fr）。 */
   open: boolean;
+  lazyMount?: boolean;
   children: ReactNode;
 }
 
@@ -24,13 +25,18 @@ interface CollapseProps {
  * 高度折叠包装。grid-rows 0fr↔1fr + opacity 0↔1，transition 由 styles.css .collapse-track 控制。
  * 内层 overflow:hidden 防止折叠态内容溢出。
  */
-export function Collapse({ open, children }: CollapseProps): JSX.Element {
+export function Collapse({ open, lazyMount = false, children }: CollapseProps): JSX.Element {
   // 可访问性：折叠态把内容移出 accessibility tree 与 Tab 序——aria-hidden + inert。
   // 此前折叠态仅 grid-rows:0fr + opacity:0，内容仍在 DOM 与 a11y tree 中，屏幕阅读器仍朗读、
   // 键盘 Tab 仍可聚焦到隐藏内容里。inert 一并把整棵子树移出 Tab 序 + a11y tree + 禁用指针。
   // inert 用 setAttribute 设/清：默认 @types/react 18.3 未把 inert 声明为 boolean prop（仅在
   // experimental.d.ts），setAttribute 在所有 TS 版本下都类型安全且 Electron/Chromium 运行可靠。
   const contentRef = useRef<HTMLDivElement>(null);
+  const [hasMounted, setHasMounted] = useState(() => open || !lazyMount);
+  useEffect(() => {
+    if (!lazyMount || open) setHasMounted(true);
+  }, [lazyMount, open]);
+
   useEffect(() => {
     const el = contentRef.current;
     if (!el) return;
@@ -48,7 +54,7 @@ export function Collapse({ open, children }: CollapseProps): JSX.Element {
       }}
     >
       <div ref={contentRef} aria-hidden={!open} style={{ overflow: 'hidden', minHeight: 0 }}>
-        {children}
+        {hasMounted ? children : null}
       </div>
     </div>
   );

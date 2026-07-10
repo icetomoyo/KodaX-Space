@@ -41,6 +41,7 @@ import {
   type TransientArtifactSnapshot,
 } from '../features/artifact/transientArtifact.js';
 import { applyLiveBudgetFallback } from '../lib/liveTaskProgress.js';
+import { mergeManagedTaskStatus } from '../lib/managedTaskStatusMerge.js';
 
 export type MascotMode = 'legacy' | 'sprite' | 'off';
 
@@ -1836,9 +1837,10 @@ export const useAppStore = create<AppState>((set) => ({
             next.managedTaskStatusBySession = restMtsPhase;
           }
         } else {
+          const previousStatus = state.managedTaskStatusBySession[event.sessionId];
           next.managedTaskStatusBySession = {
             ...state.managedTaskStatusBySession,
-            [event.sessionId]: event.status,
+            [event.sessionId]: mergeManagedTaskStatus(previousStatus, event.status),
           };
         }
         const ws = event.status;

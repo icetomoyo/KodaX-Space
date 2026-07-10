@@ -1,7 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { artifactPreviewFileChannel } from '../src/index.js';
+import {
+  artifactCreateChannel,
+  artifactPreviewFileChannel,
+  artifactReadBinaryChannel,
+} from '../src/index.js';
 
 test('artifact.previewFile output is a read-only preview payload', () => {
   assert.equal(
@@ -21,6 +25,14 @@ test('artifact.previewFile output is a read-only preview payload', () => {
     }).success,
     true,
   );
+  assert.equal(
+    artifactPreviewFileChannel.output.safeParse({
+      title: 'deck.pptx',
+      kind: 'pptx',
+      path: 'deck.pptx',
+    }).success,
+    true,
+  );
 });
 
 test('artifact.previewFile output rejects old persisted artifact shape', () => {
@@ -29,6 +41,47 @@ test('artifact.previewFile output rejects old persisted artifact shape', () => {
       id: 'a1',
       version: 1,
       kind: 'markdown',
+    }).success,
+    false,
+  );
+});
+
+test('artifact.create accepts pptx as a path-backed artifact kind', () => {
+  assert.equal(
+    artifactCreateChannel.input.safeParse({
+      sessionId: 's',
+      surface: 'partner',
+      kind: 'pptx',
+      title: 'Deck',
+      path: 'deck.pptx',
+    }).success,
+    true,
+  );
+  assert.equal(
+    artifactCreateChannel.input.safeParse({
+      sessionId: 's',
+      surface: 'partner',
+      kind: 'pptx',
+      title: 'Deck',
+      content: 'not binary',
+    }).success,
+    false,
+  );
+});
+
+test('artifact.readBinary is bounded to explicit artifact versions', () => {
+  assert.equal(
+    artifactReadBinaryChannel.input.safeParse({
+      id: 'a1',
+      version: 1,
+      maxBytes: 25 * 1024 * 1024,
+    }).success,
+    true,
+  );
+  assert.equal(
+    artifactReadBinaryChannel.input.safeParse({
+      id: 'a1',
+      maxBytes: 60 * 1024 * 1024,
     }).success,
     false,
   );

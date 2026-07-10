@@ -15,8 +15,8 @@
 # historically the flakiest combo. Build matrix in release.yml still includes
 # macOS so we don't lose macOS-specific build coverage.
 #
-# Total runtime budget: ~5 min per platform (npm ci ~2m + build ~30s +
-# e2e ~30s + overhead). Adjust if it grows.
+# Total runtime budget: ~10-12 min per platform (npm ci + native ABI switches +
+# build + the current 53-test Electron e2e suite). Adjust as the suite grows.
 
 name: ci
 
@@ -53,21 +53,19 @@ jobs:
           cache: 'npm'
 
       - name: Install dependencies
-        run: npm ci || npm install
+        run: npm ci
 
-      # Linux: install xvfb so Electron has an X display for e2e
-      - name: Install xvfb (Linux)
+      # Linux: Electron e2e needs Xvfb; Unicode PDF tests and production
+      # generation need a TrueType CJK font with glyf tables.
+      - name: Install Linux runtime test dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y xvfb
+        run: sudo apt-get update && sudo apt-get install -y xvfb fonts-wqy-zenhei
 
       - name: Build workspace packages
         run: npm run build:packages
 
       - name: Typecheck
         run: npm run typecheck
-        # composeMessages.test rootDir issue (same continue-on-error as release.yml).
-        # Remove once that's fixed.
-        continue-on-error: true
 
       - name: Configure npm script-shell (Windows)
         if: runner.os == 'Windows'
@@ -88,6 +86,8 @@ jobs:
       - name: Run e2e (Windows)
         if: runner.os == 'Windows'
         shell: bash
+        # e2e:run restores better-sqlite3 from the unit-test Node ABI to the
+        # Electron ABI before launching Playwright.
         run: npm run e2e:run
 
       - name: Run e2e (Linux)

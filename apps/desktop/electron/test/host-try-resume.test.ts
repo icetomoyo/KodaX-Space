@@ -23,16 +23,25 @@ let mockState: MockSessionState;
 let tmpDir = '';
 let runtimeStore: SessionRuntimeStore;
 
+const mutableProviderConfigStore = providerConfigStore as unknown as {
+  spaceCache: unknown;
+  customCache: unknown;
+  spaceFile: string;
+  spaceDir: string;
+  customFile: string;
+  customDir: string;
+};
+
 beforeEach(async () => {
   mockState = installSessionStoreMock();
   mockUserConfig({});
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kodax-host-resume-test-'));
-  (providerConfigStore as any).spaceCache = null;
-  (providerConfigStore as any).customCache = null;
-  (providerConfigStore as any).spaceFile = path.join(tmpDir, 'space.json');
-  (providerConfigStore as any).spaceDir = tmpDir;
-  (providerConfigStore as any).customFile = path.join(tmpDir, 'custom.json');
-  (providerConfigStore as any).customDir = tmpDir;
+  mutableProviderConfigStore.spaceCache = null;
+  mutableProviderConfigStore.customCache = null;
+  mutableProviderConfigStore.spaceFile = path.join(tmpDir, 'space.json');
+  mutableProviderConfigStore.spaceDir = tmpDir;
+  mutableProviderConfigStore.customFile = path.join(tmpDir, 'custom.json');
+  mutableProviderConfigStore.customDir = tmpDir;
   runtimeStore = new SessionRuntimeStore(path.join(tmpDir, 'session-runtime'));
   setSessionRuntimeStoreForTesting(runtimeStore);
   await kodaxHost.disposeAll();
@@ -114,6 +123,60 @@ test('tryResume hydrates configured model when it belongs to the resolved provid
   assert.ok(resumed);
   assert.equal(resumed.provider, 'zhipu-coding');
   assert.equal(resumed.model, 'glm-5.2');
+});
+
+test('tryResume prefers exact provider, model, and thinking from the session sidecar', async () => {
+  mockUserConfig({ provider: 'zhipu-coding', model: 'glm-5.2', thinking: false });
+  const id = 's_resume-exact-runtime';
+  mockState.seed(id, 'C:/proj/example', 'exact runtime');
+  await runtimeStore.set(id, {
+    provider: 'openai',
+    model: 'gpt-5.3-codex',
+    thinking: true,
+    reasoningMode: 'deep',
+  });
+
+  assert.equal(await kodaxHost.tryResume(id), true);
+  const resumed = kodaxHost.get(id);
+  assert.ok(resumed);
+  assert.equal(resumed.provider, 'openai');
+  assert.equal(resumed.model, 'gpt-5.3-codex');
+  assert.equal(resumed.thinking, true);
+  assert.equal(resumed.reasoningMode, 'deep');
+});
+
+test('tryResume falls back when a persisted provider is no longer configured', async () => {
+  mockUserConfig({ provider: 'zhipu-coding', model: 'glm-5.2' });
+  const id = 's_resume-removed-provider';
+  mockState.seed(id, 'C:/proj/example', 'removed provider');
+  await runtimeStore.set(id, { provider: 'removed-provider', model: 'removed-model' });
+
+  assert.equal(await kodaxHost.tryResume(id), true);
+  assert.equal(kodaxHost.get(id)?.provider, 'zhipu-coding');
+  assert.equal(kodaxHost.get(id)?.model, 'glm-5.2');
+});
+
+test('tryResume accepts an arbitrary persisted model for a custom provider without a model allowlist', async () => {
+  mockUserConfig({
+    provider: 'custom-runtime',
+    model: 'runtime-model-v2',
+    customProviders: [
+      {
+        name: 'custom-runtime',
+        protocol: 'openai',
+        baseUrl: 'https://llm.example.com/v1',
+        apiKeyEnv: 'CUSTOM_RUNTIME_KEY',
+        model: 'runtime-default',
+      },
+    ],
+  });
+  const id = 's_resume-custom-model';
+  mockState.seed(id, 'C:/proj/example', 'custom model');
+  await runtimeStore.set(id, { provider: 'custom-runtime', model: 'runtime-model-v2' });
+
+  assert.equal(await kodaxHost.tryResume(id), true);
+  assert.equal(kodaxHost.get(id)?.provider, 'custom-runtime');
+  assert.equal(kodaxHost.get(id)?.model, 'runtime-model-v2');
 });
 
 test('tryResume ignores configured model when it does not belong to the resolved provider', async () => {

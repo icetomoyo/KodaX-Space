@@ -29,7 +29,20 @@ import {
   readFileWithGuards,
 } from './files-core.js';
 import { projectStore } from '../projects/store.js';
+import { adminPolicyAuditStore } from '../kodax/admin-policy-audit-store.js';
 import { kodaxHost } from '../kodax/host.js';
+import { validateOfficePreviewBytes } from '../artifact/office-zip-guard.js';
+
+export async function guardArtifactBinaryPreview(
+  kind: ArtifactKindT,
+  pathHint: string,
+  bytes: Buffer,
+  truncated: boolean,
+): Promise<void> {
+  const guardPath =
+    kind === 'docx' || kind === 'xlsx' || kind === 'pptx' ? `artifact.${kind}` : pathHint;
+  if (!truncated) await validateOfficePreviewBytes(guardPath, bytes);
+}
 
 /**
  * 文件扩展名 → 可预览的 artifact kind。
@@ -58,6 +71,8 @@ export function previewKindForPath(p: string): ArtifactKindT {
     case 'xlsx':
     case 'xls':
       return 'xlsx';
+    case 'pptx':
+      return 'pptx';
     case 'png':
     case 'jpg':
     case 'jpeg':
@@ -81,7 +96,6 @@ export function previewKindForPath(p: string): ArtifactKindT {
     case 'flac':
     case 'opus':
     case 'ppt':
-    case 'pptx':
     case 'pptm':
     case 'potx':
     case 'potm':
@@ -101,8 +115,8 @@ export function previewKindForPath(p: string): ArtifactKindT {
   }
 }
 
-function isPathPreviewKind(kind: ArtifactKindT): kind is 'pdf' | 'docx' | 'xlsx' | 'file' {
-  return kind === 'pdf' || kind === 'docx' || kind === 'xlsx' || kind === 'file';
+function isPathPreviewKind(kind: ArtifactKindT): kind is 'pdf' | 'docx' | 'xlsx' | 'pptx' | 'file' {
+  return kind === 'pdf' || kind === 'docx' || kind === 'xlsx' || kind === 'pptx' || kind === 'file';
 }
 
 export function previewKindForContent(path: string, content: string): ArtifactKindT {
@@ -217,12 +231,7 @@ export async function inlineMarkdownImageAssets(
     const task = (async (): Promise<string | null> => {
       const { resourcePath } = splitResourceSuffix(trimmed);
       const decoded = decodeResourcePath(resourcePath);
-      const target = await resolveMarkdownImageTarget(
-        decoded,
-        markdownDir,
-        realRoot,
-        projectRoot,
-      );
+      const target = await resolveMarkdownImageTarget(decoded, markdownDir, realRoot, projectRoot);
       if (!target) return null;
       const mime = markdownImageMimeForPath(target);
       if (!mime || remainingBytes <= 0) return null;
@@ -257,17 +266,13 @@ export async function inlineMarkdownImageAssets(
     },
   );
 
-  out = await replaceAsync(
-    out,
-    /(\s(?:src|poster)\s*=\s*)(["'])([^"']+)(\2)/gi,
-    async (match) => {
-      const url = match[3] ?? '';
-      const inlined = await inlineOne(url);
-      return inlined
-        ? `${match[1] ?? ''}${match[2] ?? '"'}${inlined}${match[4] ?? match[2] ?? '"'}`
-        : match[0];
-    },
-  );
+  out = await replaceAsync(out, /(\s(?:src|poster)\s*=\s*)(["'])([^"']+)(\2)/gi, async (match) => {
+    const url = match[3] ?? '';
+    const inlined = await inlineOne(url);
+    return inlined
+      ? `${match[1] ?? ''}${match[2] ?? '"'}${inlined}${match[4] ?? match[2] ?? '"'}`
+      : match[0];
+  });
 
   out = await replaceAsync(out, /(\ssrcset\s*=\s*)(["'])([^"']+)(\2)/gi, async (match) => {
     const rawSrcset = match[3] ?? '';
@@ -395,26 +400,63 @@ export function registerArtifactChannels(): void {
     return res;
   });
 
+  registerChannel('artifact.readBinary', async (input) => {
+    const res = await artifactStore.readGeneratedFile(input.id, input.version, input.maxBytes);
+    if (!res) throw new Error('artifact version is not a generated file');
+    await guardArtifactBinaryPreview(res.ref.kind, res.path, res.bytes, res.truncated);
+    return {
+      base64: res.bytes.toString('base64'),
+      size: res.size,
+      truncated: res.truncated,
+      path: res.path,
+      ...(res.contentHash !== undefined ? { contentHash: res.contentHash } : {}),
+    };
+  });
+
   registerChannel('artifact.delete', async (input) => {
     const deleted = await artifactStore.delete(input.id);
     if (deleted) pushToRenderer('artifact.changed', { id: input.id, reason: 'deleted' });
     return { deleted };
   });
 
-  // Save a content-backed artifact version to a user-chosen file (native dialog).
+  // Save a content-backed or generated store-owned artifact version to a user-chosen file.
   registerChannel('artifact.export', async (input) => {
+    await adminPolicyAuditStore.assertArtifactExportAllowed({
+      artifactId: input.id,
+      version: input.version,
+    });
     const res = await artifactStore.read(input.id, input.version);
     if (!res) throw new Error(`artifact not found: ${input.id}`);
-    if (res.content === undefined) {
-      // doc kinds (path-backed) aren't exported here — already files on disk.
-      return { ok: false, error: '该类型 artifact 不支持导出（无内联内容）。' };
-    }
     const kind = res.ref.kind;
     let ext: string;
     let bytes: Buffer;
-    if (kind === 'image') {
+    if (res.content === undefined) {
+      const generated = await artifactStore.readGeneratedFile(input.id, input.version);
+      if (!generated) {
+        await adminPolicyAuditStore.record({
+          category: 'artifact',
+          action: 'artifact.export',
+          outcome: 'failed',
+          sessionId: res.ref.sessionId,
+          resource: input.id,
+          details: { reason: 'workspace file reference', kind },
+        });
+        return {
+          ok: false,
+          error: 'This artifact version is a workspace file reference and cannot be exported here.',
+        };
+      }
+      await guardArtifactBinaryPreview(
+        generated.ref.kind,
+        generated.path,
+        generated.bytes,
+        generated.truncated,
+      );
+      ext = extForKind(kind);
+      bytes = generated.bytes;
+    } else if (kind === 'image') {
       const parsed = parseDataUri(res.content);
-      if (!parsed) return { ok: false, error: '图片数据无效。' };
+      if (!parsed) return { ok: false, error: 'Invalid image data.' };
       ext = extForImageMime(parsed.mime);
       bytes = parsed.data;
     } else {
@@ -429,6 +471,14 @@ export function registerArtifactChannels(): void {
       : await dialog.showSaveDialog({ defaultPath });
     if (r.canceled || !r.filePath) return { ok: false, canceled: true };
     await fs.writeFile(r.filePath, bytes);
+    await adminPolicyAuditStore.record({
+      category: 'artifact',
+      action: 'artifact.export',
+      outcome: 'allowed',
+      sessionId: res.ref.sessionId,
+      resource: input.id,
+      details: { kind, exportPath: r.filePath, version: input.version },
+    });
     return { ok: true, path: r.filePath };
   });
 }

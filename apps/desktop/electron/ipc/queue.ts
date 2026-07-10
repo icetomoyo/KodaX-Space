@@ -42,6 +42,7 @@ type SpaceQueuedPrompt = {
   readonly mode: 'prompt';
   readonly agentId: string;
   readonly content: string;
+  readonly promptOverlay?: string;
   readonly enqueuedAt: number;
   readonly order: number;
   readonly queueMode: 'after-turn';
@@ -50,6 +51,7 @@ type SpaceQueuedPrompt = {
 export type DequeuedUserPrompt = {
   readonly content: string;
   readonly queueMode: SessionSendQueueMode;
+  readonly promptOverlay?: string;
 };
 
 let agentModuleCache: AgentModule | null = null;
@@ -64,6 +66,7 @@ async function loadQueue(): Promise<MessageQueue> {
   const agent = await loadAgent();
   const q = agent.getMessageQueue();
   installSessionQueueGuard(q);
+  ensureSdkPromptMetadataCleanup(q);
   return q;
 }
 
@@ -73,8 +76,29 @@ const TRUNCATED_SUFFIX = '\n[truncated]';
 
 const afterTurnPromptQueues = new Map<string, SpaceQueuedPrompt[]>();
 const sdkPromptOrders = new Map<string, number>();
+const sdkPromptOverlays = new Map<string, string>();
+let sdkPromptMetadataQueue: MessageQueue | null = null;
+let unsubscribeSdkPromptMetadataCleanup: (() => void) | null = null;
 let nextAfterTurnQueueSeq = 1;
 let nextQueueOrder = 1;
+
+function clearSdkPromptMetadata(messages: readonly QueuedMessage[]): void {
+  for (const message of messages) sdkPromptOrders.delete(message.id);
+  for (const message of messages) sdkPromptOverlays.delete(message.id);
+}
+
+function ensureSdkPromptMetadataCleanup(q: MessageQueue): void {
+  if (sdkPromptMetadataQueue === q && unsubscribeSdkPromptMetadataCleanup !== null) return;
+  unsubscribeSdkPromptMetadataCleanup?.();
+  // A replaced SDK singleton cannot retain any of the old queue's messages.
+  // Clear metadata as well so reused SDK ids cannot inherit stale overlays.
+  sdkPromptOrders.clear();
+  sdkPromptOverlays.clear();
+  sdkPromptMetadataQueue = q;
+  unsubscribeSdkPromptMetadataCleanup = q.subscribe((event) => {
+    if (event.kind !== 'enqueued') clearSdkPromptMetadata(event.messages);
+  });
+}
 
 function clampQueueContentForIpc(content: string): string {
   if (content.length <= QUEUE_CONTENT_SCHEMA_MAX) return content;
@@ -127,7 +151,9 @@ function filterProjectedMessages(
 }
 
 function getAfterTurnPromptSnapshot(): QueuedMessageT[] {
-  return Array.from(afterTurnPromptQueues.values()).flatMap((queue) => queue.map(projectSpacePrompt));
+  return Array.from(afterTurnPromptQueues.values()).flatMap((queue) =>
+    queue.map(projectSpacePrompt),
+  );
 }
 
 function getAfterTurnPromptTotalSize(): number {
@@ -165,13 +191,18 @@ function emitQueueChanged(kind: QueueEventKindT, affected: QueuedMessageT[]): vo
   });
 }
 
-function enqueueAfterTurnPrompt(sessionId: string, content: string): string {
+function enqueueAfterTurnPrompt(
+  sessionId: string,
+  content: string,
+  promptOverlay?: string,
+): string {
   const message: SpaceQueuedPrompt = {
     id: `space-after-turn-${nextAfterTurnQueueSeq++}`,
     priority: 'user',
     mode: 'prompt',
     agentId: sessionId,
     content,
+    ...(promptOverlay !== undefined ? { promptOverlay } : {}),
     enqueuedAt: Date.now(),
     order: nextQueueOrder++,
     queueMode: 'after-turn',
@@ -203,6 +234,7 @@ export async function enqueueUserPrompt(
   sessionId: string,
   content: string,
   queueMode: SessionSendQueueMode = 'interrupt',
+  promptOverlay?: string,
 ): Promise<string> {
   const q = await loadQueue();
   const depth =
@@ -215,11 +247,12 @@ export async function enqueueUserPrompt(
   }
 
   if (queueMode === 'after-turn') {
-    return enqueueAfterTurnPrompt(sessionId, content);
+    return enqueueAfterTurnPrompt(sessionId, content, promptOverlay);
   }
 
   const queueId = enqueueOwnedPrompt(q, sessionId, content);
   sdkPromptOrders.set(queueId, nextQueueOrder++);
+  if (promptOverlay !== undefined) sdkPromptOverlays.set(queueId, promptOverlay);
   return queueId;
 }
 
@@ -240,21 +273,40 @@ export function dequeueNextUserPromptForSession(sessionId: string): DequeuedUser
         : afterTurnPrompt.enqueuedAt <= sdkPrompt.enqueuedAt));
   if (afterTurnFirst) {
     const message = shiftAfterTurnPrompt(sessionId);
-    return message ? { content: message.content, queueMode: message.queueMode } : undefined;
+    return message
+      ? {
+          content: message.content,
+          queueMode: message.queueMode,
+          ...(message.promptOverlay !== undefined ? { promptOverlay: message.promptOverlay } : {}),
+        }
+      : undefined;
   }
 
   if (!sdkPrompt || agentModuleCache === null) return undefined;
   const q = agentModuleCache.getMessageQueue();
+  // MessageQueue listeners run synchronously. The metadata cleanup listener
+  // therefore sees the dequeued id before dequeueOwnedPromptsForSession()
+  // returns. Capture the metadata selected by peek() before mutating the SDK
+  // queue; the listener still cleans external SDK drains, while this path
+  // performs the same cleanup idempotently below.
+  const promptOverlay = sdkPromptOverlays.get(sdkPrompt.id);
   const [message] = dequeueOwnedPromptsForSession(q, sessionId, 1);
   if (message) sdkPromptOrders.delete(message.id);
-  return message ? { content: message.content, queueMode: 'interrupt' } : undefined;
+  if (message) sdkPromptOverlays.delete(message.id);
+  return message
+    ? {
+        content: message.content,
+        queueMode: 'interrupt',
+        ...(promptOverlay !== undefined ? { promptOverlay } : {}),
+      }
+    : undefined;
 }
 
 /** Clear Space-owned queued user prompts when a session is cancelled/disposed. */
 export async function drainQueueForSession(sessionId: string): Promise<number> {
   const q = await loadQueue();
   const sdkDrained = dequeueOwnedPromptsForSession(q, sessionId);
-  for (const message of sdkDrained) sdkPromptOrders.delete(message.id);
+  clearSdkPromptMetadata(sdkDrained);
   const afterTurnDrained = afterTurnPromptQueues.get(sessionId) ?? [];
   if (afterTurnDrained.length > 0) {
     afterTurnPromptQueues.delete(sessionId);
@@ -294,7 +346,6 @@ export async function startQueueWatch(): Promise<() => void> {
       });
       return;
     } else {
-      for (const message of event.messages) sdkPromptOrders.delete(message.id);
       affected = event.messages.map(projectMessage);
     }
     emitQueueChanged(event.kind, affected);
@@ -306,9 +357,13 @@ export async function startQueueWatch(): Promise<() => void> {
 }
 
 export function _resetQueueStateForTests(): void {
+  unsubscribeSdkPromptMetadataCleanup?.();
+  unsubscribeSdkPromptMetadataCleanup = null;
+  sdkPromptMetadataQueue = null;
   _resetSessionQueueGuardForTests();
   afterTurnPromptQueues.clear();
   sdkPromptOrders.clear();
+  sdkPromptOverlays.clear();
   nextAfterTurnQueueSeq = 1;
   nextQueueOrder = 1;
   agentModuleCache = null;

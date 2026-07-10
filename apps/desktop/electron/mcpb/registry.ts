@@ -11,6 +11,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import type { McpbExtensionT } from '@kodax-space/space-ipc-schema';
 import { getKodaxDir } from '../kodax/data-paths.js';
+import { replaceFileWithoutFollowingAliases } from '../kodax/atomic-file.js';
 import type { ManifestT } from './manifest.js';
 
 export interface McpbStoragePaths {
@@ -267,19 +268,13 @@ async function loadRegistryFile(
   return { kind: 'ok', file: { version: 1, extensions: validated }, dropped };
 }
 
-async function writeRegistryFile(
-  file: RegistryFile,
-  paths = getMcpbStoragePaths(),
-): Promise<void> {
+async function writeRegistryFile(file: RegistryFile, paths = getMcpbStoragePaths()): Promise<void> {
   await ensureStorageDirs(paths);
-  const tmp = `${paths.registryPath}.tmp`;
-  await fsp.writeFile(tmp, JSON.stringify(file, null, 2), { encoding: 'utf8', mode: 0o600 });
-  try {
-    await fsp.rename(tmp, paths.registryPath);
-  } catch {
-    await fsp.copyFile(tmp, paths.registryPath);
-    await fsp.unlink(tmp).catch(() => undefined);
-  }
+  await replaceFileWithoutFollowingAliases(
+    paths.registryPath,
+    Buffer.from(JSON.stringify(file, null, 2), 'utf8'),
+    'MCPB registry changed during atomic replacement',
+  );
 }
 
 let migrationPromise: Promise<McpbMigrationResult> | null = null;
@@ -301,13 +296,11 @@ export async function migrateLegacyMcpbStorage(
   return run;
 }
 
-async function migrateLegacyMcpbStorageOnce(
-  opts: {
-    legacyHome?: string;
-    kodaxDir?: string;
-    syncDeps?: McpbKodaxMcpSyncDeps;
-  },
-): Promise<McpbMigrationResult> {
+async function migrateLegacyMcpbStorageOnce(opts: {
+  legacyHome?: string;
+  kodaxDir?: string;
+  syncDeps?: McpbKodaxMcpSyncDeps;
+}): Promise<McpbMigrationResult> {
   const defaultPaths = getMcpbStoragePaths(opts.kodaxDir);
   const paths = opts.legacyHome
     ? {
@@ -543,9 +536,11 @@ export function buildExtensionFromManifest(
   };
 }
 
-export async function addOrReplace(
-  entry: InternalMcpbEntry,
-): Promise<{ registry: RegistryFile; displacedInstallDir?: string; displacedEntry?: InternalMcpbEntry }> {
+export async function addOrReplace(entry: InternalMcpbEntry): Promise<{
+  registry: RegistryFile;
+  displacedInstallDir?: string;
+  displacedEntry?: InternalMcpbEntry;
+}> {
   return withWriteLock(async () => {
     const file = await readRegistry();
     const displaced = file.extensions.find((e) => e.name === entry.name);
@@ -564,9 +559,7 @@ export async function addOrReplace(
   });
 }
 
-export async function removeByExtensionId(
-  extensionId: string,
-): Promise<{
+export async function removeByExtensionId(extensionId: string): Promise<{
   removed: boolean;
   registry: RegistryFile;
   installDir?: string;

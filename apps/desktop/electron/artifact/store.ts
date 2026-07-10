@@ -16,9 +16,9 @@
 // The old v1 ~/.kodax/space/artifacts.json is migrated lazily and kept as
 // artifacts.v1.backup.json.
 
-import { promises as fs } from 'node:fs';
+import { constants as fsConstants, promises as fs } from 'node:fs';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import DatabaseConstructor from 'better-sqlite3';
 import type BetterSqlite3 from 'better-sqlite3';
 import { z } from 'zod';
@@ -32,6 +32,7 @@ import {
   type ArtifactRefT,
 } from '@kodax-space/space-ipc-schema';
 import { getSpaceDataDir } from '../kodax/data-paths.js';
+import { replaceFileWithoutFollowingAliases } from '../kodax/atomic-file.js';
 
 const SPACE_DATA_DIR = getSpaceDataDir();
 const LEGACY_ARTIFACTS_FILE = path.join(SPACE_DATA_DIR, 'artifacts.json');
@@ -42,8 +43,10 @@ const DEFAULT_MAX_ARTIFACTS = 1000;
 const DEFAULT_TARGET_ARTIFACTS = 900;
 const DEFAULT_MAX_ARTIFACT_BYTES = 512 * 1024 * 1024;
 const DEFAULT_TARGET_ARTIFACT_BYTES = 384 * 1024 * 1024;
-const PATH_ARTIFACT_KINDS = new Set<ArtifactKindT>(['pdf', 'docx', 'xlsx', 'file']);
+const MAX_GENERATED_ARTIFACT_FILE_BYTES = 64 * 1024 * 1024;
+const PATH_ARTIFACT_KINDS = new Set<ArtifactKindT>(['pdf', 'docx', 'xlsx', 'pptx', 'file']);
 const SAFE_ARTIFACT_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+const SHA256_CONTENT_HASH_RE = /^sha256:[0-9a-f]{64}$/;
 const artifactIdSchema = z
   .string()
   .min(1)
@@ -56,16 +59,30 @@ const storedVersionSchema = z
     createdAt: z.number().int().nonnegative(),
     contentFile: z.string().min(1).max(256).optional(),
     path: z.string().max(4096).optional(),
+    storedFile: z.string().min(1).max(256).optional(),
+    filename: z.string().min(1).max(256).optional(),
+    contentHash: z
+      .string()
+      .regex(SHA256_CONTENT_HASH_RE, 'content hash must be canonical SHA-256')
+      .optional(),
     summary: z.string().max(512).optional(),
   })
   .superRefine((value, ctx) => {
-    const hasContentFile = value.contentFile !== undefined;
-    const hasPath = value.path !== undefined;
-    if (hasContentFile === hasPath) {
+    const sources = [value.contentFile, value.path, value.storedFile].filter(
+      (source) => source !== undefined,
+    ).length;
+    if (sources !== 1) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: 'version must have exactly one of contentFile or path',
+        message: 'version must have exactly one of contentFile, path, or storedFile',
         path: ['contentFile'],
+      });
+    }
+    if (value.storedFile !== undefined && value.contentHash === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'artifact-owned generated files require a content hash',
+        path: ['contentHash'],
       });
     }
   });
@@ -168,11 +185,34 @@ export interface UpsertInput {
   dedupeKey?: { title: string; kind: ArtifactKindT; htmlFamily?: boolean };
 }
 
+export interface GeneratedFileUpsertInput {
+  sessionId: string;
+  surface: 'code' | 'partner';
+  kind: ArtifactKindT;
+  title: string;
+  bytes: Buffer;
+  filename?: string;
+  summary?: string;
+  id?: string;
+}
+
 export interface ReadResult {
   ref: ArtifactRefT;
   version: number;
   content?: string;
   path?: string;
+  fileSource?: 'workspace' | 'artifact-store';
+  contentHash?: string;
+}
+
+export interface GeneratedFileReadResult {
+  ref: ArtifactRefT;
+  version: number;
+  bytes: Buffer;
+  size: number;
+  truncated: boolean;
+  path: string;
+  contentHash?: string;
 }
 
 interface CatalogRow {
@@ -210,7 +250,15 @@ function toMeta(a: StoredArtifact): ArtifactRefT {
       v: v.v,
       createdAt: v.createdAt,
       hasContent: typeof v.contentFile === 'string',
-      ...(v.path !== undefined ? { path: v.path } : {}),
+      ...(v.path !== undefined
+        ? { path: v.path, fileSource: 'workspace' as const }
+        : v.storedFile !== undefined
+          ? {
+              path: v.filename ?? path.posix.basename(v.storedFile),
+              fileSource: 'artifact-store' as const,
+            }
+          : {}),
+      ...(v.contentHash !== undefined ? { contentHash: v.contentHash } : {}),
       ...(v.summary !== undefined ? { summary: v.summary } : {}),
     })),
     createdAt: a.createdAt,
@@ -250,6 +298,8 @@ function versionExt(kind: ArtifactKindT): string {
       return 'docx';
     case 'xlsx':
       return 'xlsx';
+    case 'pptx':
+      return 'pptx';
     case 'file':
       return 'file-ref';
     case 'code':
@@ -262,8 +312,29 @@ function versionFileName(kind: ArtifactKindT, version: number): string {
   return `${String(version).padStart(4, '0')}.${versionExt(kind)}`;
 }
 
+function sha256ContentHash(bytes: Buffer): string {
+  return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+}
+
+function safeDisplayFilename(title: string, kind: ArtifactKindT): string {
+  let out = '';
+  for (const ch of title) {
+    const c = ch.charCodeAt(0);
+    if ('/\\?%*:|"<>'.includes(ch) || c < 0x20) continue;
+    out += ch;
+  }
+  out = out.replace(/^\.+/, '').replace(/\.+$/, '').trim();
+  const base = out.slice(0, 120) || 'artifact';
+  const ext = versionExt(kind);
+  return base.toLowerCase().endsWith(`.${ext}`) ? base : `${base}.${ext}`;
+}
+
 function validateUpsertPayload(input: UpsertInput): void {
-  if (input.permissions !== undefined && input.kind !== 'html' && input.kind !== 'interactive-html') {
+  if (
+    input.permissions !== undefined &&
+    input.kind !== 'html' &&
+    input.kind !== 'interactive-html'
+  ) {
     throw new Error('artifact permissions are only supported for html artifacts');
   }
   const isPathBacked = PATH_ARTIFACT_KINDS.has(input.kind);
@@ -276,6 +347,16 @@ function validateUpsertPayload(input: UpsertInput): void {
   }
   if (!hasContent) throw new Error('content artifact kinds require content');
   if (hasPath) throw new Error('content artifact kinds do not accept a path');
+}
+
+function validateGeneratedFilePayload(input: GeneratedFileUpsertInput): void {
+  if (!PATH_ARTIFACT_KINDS.has(input.kind) || input.kind === 'file') {
+    throw new Error('generated file artifacts support pdf/docx/xlsx/pptx only');
+  }
+  if (input.bytes.length === 0) throw new Error('generated artifact file is empty');
+  if (input.bytes.length > MAX_GENERATED_ARTIFACT_FILE_BYTES) {
+    throw new Error('generated artifact file exceeds size limit');
+  }
 }
 
 function isNotFound(err: unknown): boolean {
@@ -326,37 +407,94 @@ function resolveInside(base: string, rel: string): string {
   return resolved;
 }
 
-async function atomicWriteText(filePath: string, payload: string): Promise<void> {
-  await fs.mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
-  const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}-${randomUUID()}`;
-  await fs.writeFile(tmp, payload, { encoding: 'utf-8', mode: 0o600 });
-  try {
-    await fs.rename(tmp, filePath);
-  } catch (err) {
-    const code = err instanceof Error && 'code' in err ? (err as { code: string }).code : '';
-    if (code === 'EEXIST' || code === 'EPERM') {
-      await fs.copyFile(tmp, filePath);
-      await fs.unlink(tmp).catch(() => {});
-    } else {
-      await fs.unlink(tmp).catch(() => {});
-      throw err;
+async function lstatOwnedArtifactFile(
+  root: string,
+  filePath: string,
+): Promise<Awaited<ReturnType<typeof fs.lstat>>> {
+  const rootAbs = path.resolve(root);
+  const targetAbs = path.resolve(filePath);
+  const relative = path.relative(rootAbs, targetAbs);
+  if (relative === '' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error('generated artifact path escapes the artifact store');
+  }
+
+  let current = rootAbs;
+  const parts = relative.split(path.sep);
+  for (const part of parts.slice(0, -1)) {
+    current = path.join(current, part);
+    const stat = await fs.lstat(current);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) {
+      throw new Error('generated artifact path traverses an unsafe directory entry');
     }
   }
+
+  const stat = await fs.lstat(targetAbs);
+  if (stat.isSymbolicLink() || !stat.isFile() || stat.nlink !== 1) {
+    throw new Error('generated artifact must be an owned, non-linked regular file');
+  }
+  return stat;
+}
+
+function sameArtifactFileSnapshot(
+  left: Awaited<ReturnType<typeof fs.stat>>,
+  right: Awaited<ReturnType<typeof fs.stat>>,
+): boolean {
+  return (
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.size === right.size &&
+    left.mtimeMs === right.mtimeMs &&
+    left.ctimeMs === right.ctimeMs &&
+    left.nlink === right.nlink
+  );
+}
+
+async function atomicWriteText(filePath: string, payload: string): Promise<void> {
+  await fs.mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
+  await replaceFileWithoutFollowingAliases(
+    filePath,
+    Buffer.from(payload, 'utf8'),
+    'artifact metadata changed during atomic replacement',
+  );
+}
+
+async function atomicWriteBuffer(filePath: string, payload: Buffer): Promise<void> {
+  await fs.mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
+  await replaceFileWithoutFollowingAliases(
+    filePath,
+    payload,
+    'generated artifact changed during atomic replacement',
+  );
 }
 
 async function moveAsideIfExists(filePath: string, targetPath: string): Promise<string | null> {
   if (!(await exists(filePath))) return null;
-  let target = targetPath;
-  if (await exists(target)) {
-    target = `${targetPath}.${Date.now()}`;
+  for (let attempt = 0; attempt < 32; attempt += 1) {
+    const target = attempt === 0 ? targetPath : `${targetPath}.${Date.now()}.${randomUUID()}`;
+    try {
+      // link() installs the backup directory entry exclusively, so a target
+      // raced into place is never replaced or followed.
+      await fs.link(filePath, target);
+      await fs.unlink(filePath).catch(() => {});
+      return target;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'EEXIST') continue;
+      if (code !== 'EXDEV' && code !== 'EPERM' && code !== 'EACCES' && code !== 'ENOTSUP') {
+        throw err;
+      }
+    }
+
+    try {
+      await fs.copyFile(filePath, target, fsConstants.COPYFILE_EXCL);
+      await fs.unlink(filePath).catch(() => {});
+      return target;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'EEXIST') continue;
+      throw err;
+    }
   }
-  try {
-    await fs.rename(filePath, target);
-  } catch {
-    await fs.copyFile(filePath, target);
-    await fs.unlink(filePath).catch(() => {});
-  }
-  return target;
+  throw new Error(`could not reserve a unique backup path for ${path.basename(filePath)}`);
 }
 
 function positiveInt(value: number | undefined, fallback: number): number {
@@ -518,6 +656,77 @@ export class ArtifactStore {
     });
   }
 
+  async upsertGeneratedFile(
+    input: GeneratedFileUpsertInput,
+  ): Promise<{ id: string; version: number; created: boolean }> {
+    validateGeneratedFilePayload(input);
+    await this.ensureReady();
+    return this.mutate(async () => {
+      const now = Date.now();
+      const existing = input.id !== undefined ? await this.loadArtifactById(input.id) : null;
+
+      if (existing) {
+        if (existing.sessionId !== input.sessionId) {
+          throw new Error('artifact id belongs to a different session');
+        }
+        if (existing.kind !== input.kind) {
+          throw new Error('artifact id belongs to a different kind');
+        }
+        if (existing.versions.length >= MAX_VERSIONS) {
+          throw new Error(`artifact ${existing.id} reached max ${MAX_VERSIONS} versions`);
+        }
+        const v = existing.currentVersion + 1;
+        const version = await this.materializeGeneratedFileVersion(existing, input, v, now);
+        const next: StoredArtifact = {
+          ...existing,
+          title: input.title || existing.title,
+          currentVersion: v,
+          versions: [...existing.versions, version],
+          updatedAt: now,
+        };
+        const metaFingerprint = await this.writeArtifactMeta(next);
+        await this.upsertCatalogWithRecovery(
+          next,
+          await this.artifactDiskBytes(next),
+          metaFingerprint,
+        );
+        await this.enforceLimits({ exemptId: next.id });
+        return { id: next.id, version: v, created: false };
+      }
+
+      await this.enforceLimits({
+        reserveArtifacts: 1,
+        reserveBytes: input.bytes.length + 8192,
+      });
+      const count = this.catalogCount();
+      if (count >= this.limits.maxArtifacts) {
+        throw new Error(`artifact store reached max ${this.limits.maxArtifacts} entries`);
+      }
+      const id = randomUUID();
+      const createdBase: StoredArtifact = {
+        id,
+        sessionId: input.sessionId,
+        surface: input.surface,
+        kind: input.kind,
+        title: input.title,
+        currentVersion: 1,
+        versions: [],
+        createdAt: now,
+        updatedAt: now,
+      };
+      const firstVersion = await this.materializeGeneratedFileVersion(createdBase, input, 1, now);
+      const created: StoredArtifact = { ...createdBase, versions: [firstVersion] };
+      const metaFingerprint = await this.writeArtifactMeta(created);
+      await this.upsertCatalogWithRecovery(
+        created,
+        await this.artifactDiskBytes(created),
+        metaFingerprint,
+      );
+      await this.enforceLimits({ exemptId: id });
+      return { id, version: 1, created: true };
+    });
+  }
+
   async list(filter?: {
     sessionId?: string;
     surface?: 'code' | 'partner';
@@ -573,8 +782,105 @@ export class ArtifactStore {
     return {
       ref: toMeta(artifact),
       version: v,
-      ...(ver.path !== undefined ? { path: ver.path } : {}),
+      ...(ver.path !== undefined
+        ? { path: ver.path, fileSource: 'workspace' as const }
+        : ver.storedFile !== undefined
+          ? {
+              path: ver.filename ?? path.posix.basename(ver.storedFile),
+              fileSource: 'artifact-store' as const,
+            }
+          : {}),
+      ...(ver.contentHash !== undefined ? { contentHash: ver.contentHash } : {}),
     };
+  }
+
+  async readGeneratedFile(
+    id: string,
+    version: number | undefined,
+    maxBytes?: number,
+  ): Promise<GeneratedFileReadResult | null> {
+    await this.ensureReady();
+    await this.writeLock;
+    let artifact = await this.loadArtifactById(id);
+    if (!artifact) {
+      artifact = await this.mutate(async () => {
+        const lockedArtifact = await this.loadArtifactById(id);
+        if (lockedArtifact) return lockedArtifact;
+        await this.rebuildCatalogFromDisk();
+        return this.loadArtifactById(id);
+      });
+      if (!artifact) return null;
+    }
+
+    const v = version ?? artifact.currentVersion;
+    const ver = artifact.versions.find((x) => x.v === v);
+    if (!ver?.storedFile) return null;
+    if (!ver.contentHash || !SHA256_CONTENT_HASH_RE.test(ver.contentHash)) {
+      throw new Error('generated artifact integrity metadata is missing or invalid');
+    }
+
+    const artifactDir = this.artifactDir(artifact);
+    const filePath = resolveInside(artifactDir, ver.storedFile);
+    let entryStat;
+    try {
+      entryStat = await lstatOwnedArtifactFile(this.v2Root, filePath);
+    } catch (err) {
+      if (isNotFound(err)) return null;
+      throw err;
+    }
+    const handle = await fs.open(filePath, 'r');
+    try {
+      const before = await handle.stat();
+      if (!before.isFile() || before.nlink !== 1 || !sameArtifactFileSnapshot(entryStat, before)) {
+        throw new Error('generated artifact changed before it could be read safely');
+      }
+
+      const size = before.size;
+      if (size > MAX_GENERATED_ARTIFACT_FILE_BYTES) {
+        throw new Error('generated artifact file exceeds size limit');
+      }
+      const requestedCap =
+        maxBytes === undefined || !Number.isFinite(maxBytes)
+          ? size
+          : Math.max(0, Math.trunc(maxBytes));
+      const cap = Math.min(size, requestedCap);
+      const truncated = size > cap;
+      let bytes = Buffer.alloc(0);
+
+      // A partial Office/PDF prefix is not useful to a renderer and cannot be
+      // checked against the stored full-file hash. Return metadata only.
+      if (!truncated) {
+        bytes = Buffer.alloc(size);
+        let offset = 0;
+        while (offset < size) {
+          const { bytesRead } = await handle.read(bytes, offset, size - offset, offset);
+          if (bytesRead === 0) {
+            throw new Error('generated artifact changed while it was being read');
+          }
+          offset += bytesRead;
+        }
+      }
+
+      const after = await handle.stat();
+      if (!after.isFile() || after.nlink !== 1 || !sameArtifactFileSnapshot(before, after)) {
+        throw new Error('generated artifact changed while it was being read');
+      }
+      if (!truncated && sha256ContentHash(bytes) !== ver.contentHash) {
+        throw new Error('generated artifact content hash does not match its metadata');
+      }
+
+      return {
+        ref: toMeta(artifact),
+        version: v,
+        bytes,
+        size,
+        truncated,
+        path: ver.filename ?? path.posix.basename(ver.storedFile),
+        contentHash: ver.contentHash,
+      };
+    } finally {
+      await handle.close();
+    }
   }
 
   async delete(id: string): Promise<boolean> {
@@ -965,6 +1271,25 @@ export class ArtifactStore {
     };
   }
 
+  private async materializeGeneratedFileVersion(
+    artifact: Pick<StoredArtifact, 'id' | 'sessionId' | 'kind' | 'title'>,
+    input: GeneratedFileUpsertInput,
+    version: number,
+    createdAt: number,
+  ): Promise<StoredVersion> {
+    const artifactDir = this.artifactDir(artifact);
+    const storedFile = path.posix.join('versions', versionFileName(artifact.kind, version));
+    await atomicWriteBuffer(resolveInside(artifactDir, storedFile), input.bytes);
+    return {
+      v: version,
+      createdAt,
+      storedFile,
+      filename: input.filename ?? safeDisplayFilename(input.title || artifact.title, artifact.kind),
+      contentHash: sha256ContentHash(input.bytes),
+      ...(input.summary !== undefined ? { summary: input.summary } : {}),
+    };
+  }
+
   private async writeArtifactMeta(artifact: StoredArtifact): Promise<MetaFingerprint> {
     const payload = JSON.stringify({ version: 2, artifact });
     const metaPath = path.join(this.artifactDir(artifact), 'meta.json');
@@ -992,7 +1317,7 @@ export class ArtifactStore {
     const versionsDir = path.join(this.artifactDir(artifact), 'versions');
     const allowed = new Set(
       artifact.versions
-        .map((version) => version.contentFile)
+        .flatMap((version) => [version.contentFile, version.storedFile])
         .filter((contentFile): contentFile is string => contentFile !== undefined),
     );
 

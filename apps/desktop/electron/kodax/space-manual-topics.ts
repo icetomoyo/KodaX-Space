@@ -614,13 +614,14 @@ export const SPACE_MANUAL_TOPICS: readonly KodaXManualTopicInput[] = [
   {
     id: 'partner',
     title: 'Partner surface status',
-    summary: 'Partner 面底层只读/资料/产物能力存在，但当前 UI 入口保持开发中置灰。',
+    summary:
+      'Partner surface is available with workspace-first Outputs, checkpointed workspace writes, KB, sources, artifacts, and local policy/audit controls.',
     body: text(
       'Space 有 Coder 与 Partner 两个 surface 概念。Coder 是当前可用的主要工作区。',
       '',
-      'Partner 代码中包含 Sources、Conversation、Artifact/Knowledge Base 等只读研究与产物链路，设计上不允许 write/edit/bash 或派生 workflow。',
+      'Partner includes Sources, Conversation, Artifact/Knowledge Base, Outputs, checkpointed workspace-session writes, generated Office/PDF convenience artifacts, reviewed strict fallbacks, and local policy/audit controls.',
       '',
-      '当前 PARTNER_ENABLED 为 false，UI tab 会显示 under development/置灰，启动时也不会恢复 Partner session。回答用户时应说明 Partner 还未开放，而不是指导用户点击不可用入口。',
+      'PARTNER_ENABLED is true. The Partner tab is available, and Partner sessions can be restored like other surface-scoped sessions.',
     ),
     aliases: [
       'Partner',

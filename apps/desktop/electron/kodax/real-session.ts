@@ -135,14 +135,19 @@ import {
   type PartnerVerificationContract,
 } from './partner-profile.js';
 import { ensureCreateArtifactToolRegistered } from '../artifact/create-artifact-tool.js';
+import { ensureOfficeArtifactToolRegistered } from '../artifact/office-artifact-tool.js';
 import { ensurePartnerKbToolsRegistered } from './partner-kb-tools.js';
 import { ensurePartnerSourceToolRegistered } from './partner-source-tool.js';
+import { ensurePartnerDeliveryToolsRegistered } from './partner-delivery-tool.js';
+import { ensurePartnerWorkspaceFileToolsRegistered } from './partner-workspace-file-tool.js';
+import { ensurePartnerFileProposalToolsRegistered } from './partner-file-proposal-tool.js';
+import { ensurePartnerHelperRunnerToolsRegistered } from './partner-helper-runner-tool.js';
 import { partnerSourceStore } from './partner-source-store.js';
 import { withSessionRunContext } from './session-run-context.js';
 import { runWithSessionQueueScope } from './session-queue-guard.js';
 import { getSessionStorageHandle, SPACE_EPHEMERAL_SESSION_TAG } from './session-store.js';
 import { wrapSdkError } from './sdk-errors.js';
-import { buildSkillsPrompt } from './skills-prompt.js';
+import { buildSkillsPromptForSurface } from './skills-prompt.js';
 import {
   createSpaceSdkExtensionRuntime,
   getSpaceSdkExtensionConfigGeneration,
@@ -203,8 +208,7 @@ function askUserAnswerToInputText(answer: SdkAskUserAnswer): string | undefined 
   return first === undefined ? undefined : askUserSelectionToText(first);
 }
 
-const WORKFLOW_TOOL_RUN_ID_RE =
-  /(?:^|\n)\s*(?:task_id|run_id):([A-Za-z0-9][A-Za-z0-9._-]*)\b/;
+const WORKFLOW_TOOL_RUN_ID_RE = /(?:^|\n)\s*(?:task_id|run_id):([A-Za-z0-9][A-Za-z0-9._-]*)\b/;
 
 function parseWorkflowRunIdFromToolResult(
   name: string | undefined,
@@ -364,20 +368,29 @@ export class RealKodaXSession implements ManagedSession {
         );
       }
       const queueMode = options?.queueMode ?? 'interrupt';
-      const queueId = await enqueueUserPrompt(this.sessionId, prompt, queueMode);
+      const queueId = await enqueueUserPrompt(
+        this.sessionId,
+        prompt,
+        queueMode,
+        options?.promptOverlay,
+      );
       this.lastActivityAt = Date.now();
       return { queued: true, queueId, queueMode };
     }
-    this.startRun(prompt, artifacts);
+    this.startRun(prompt, artifacts, options?.promptOverlay);
     return { queued: false };
   }
 
-  private startRun(prompt: string, artifacts?: readonly InputArtifact[]): void {
+  private startRun(
+    prompt: string,
+    artifacts?: readonly InputArtifact[],
+    promptOverlay?: string,
+  ): void {
     const abort = new AbortController();
     this.currentAbort = abort;
     this.lastActivityAt = Date.now();
 
-    void this.runRealStream(prompt, abort.signal, artifacts).finally(() => {
+    void this.runRealStream(prompt, abort.signal, artifacts, promptOverlay).finally(() => {
       if (this.currentAbort === abort) this.currentAbort = null;
       if (!this.disposed && !abort.signal.aborted) {
         this.startQueuedPromptIfIdle();
@@ -395,7 +408,7 @@ export class RealKodaXSession implements ManagedSession {
       queueMode: nextPrompt.queueMode,
       content: clampSessionEventText(nextPrompt.content) ?? nextPrompt.content,
     });
-    this.startRun(nextPrompt.content);
+    this.startRun(nextPrompt.content, undefined, nextPrompt.promptOverlay);
   }
 
   private async ensureExtensionRuntime(
@@ -574,6 +587,7 @@ export class RealKodaXSession implements ManagedSession {
     prompt: string,
     signal: AbortSignal,
     artifacts?: readonly InputArtifact[],
+    promptOverlay?: string,
   ): Promise<void> {
     const sid = this.sessionId;
     const isStopped = (): boolean => this.disposed || signal.aborted;
@@ -683,8 +697,13 @@ export class RealKodaXSession implements ManagedSession {
     // F058: register the in-process create_artifact tool once (global registry).
     // Lazy here (first run) so the agent's tool schema includes it; idempotent.
     ensureCreateArtifactToolRegistered(sdk);
+    ensureOfficeArtifactToolRegistered(sdk);
     ensurePartnerSourceToolRegistered(sdk);
     ensurePartnerKbToolsRegistered(sdk);
+    ensurePartnerDeliveryToolsRegistered(sdk);
+    ensurePartnerWorkspaceFileToolsRegistered(sdk);
+    ensurePartnerFileProposalToolsRegistered(sdk);
+    ensurePartnerHelperRunnerToolsRegistered(sdk);
 
     type SdkAskUserQuestionOptions = Parameters<NonNullable<KodaXEvents['askUser']>>[0];
     type SdkAskUserMultiOptions = Parameters<NonNullable<KodaXEvents['askUserMulti']>>[0];
@@ -793,9 +812,10 @@ export class RealKodaXSession implements ManagedSession {
                 },
               ]
             : question.options.slice(0, ASK_USER_MAX_OPTIONS);
-        const header = question.header !== undefined
-          ? `[${questionIndex + 1}/${options.questions.length}] ${question.header}`
-          : `[${questionIndex + 1}/${options.questions.length}]`;
+        const header =
+          question.header !== undefined
+            ? `[${questionIndex + 1}/${options.questions.length}] ${question.header}`
+            : `[${questionIndex + 1}/${options.questions.length}]`;
         // Clamp selection bounds to the count of REAL (non-"Back") options actually presented. The
         // synthetic "Back" is a navigation escape, not a selectable answer, and we may have trimmed
         // a real option to make room for it — so an un-clamped minSelections (e.g. 20 on a 20-option
@@ -1294,8 +1314,7 @@ export class RealKodaXSession implements ManagedSession {
       },
 
       // ---- Interactive user questions ----
-      askUser: async (options) =>
-        (await requestSdkUserQuestion(options)) ?? cancelledToolResult,
+      askUser: async (options) => (await requestSdkUserQuestion(options)) ?? cancelledToolResult,
       askUserMulti: requestSdkUserMulti as NonNullable<KodaXEvents['askUserMulti']>,
       askUserInput: requestSdkUserInput,
 
@@ -1429,7 +1448,7 @@ export class RealKodaXSession implements ManagedSession {
     // 列表文本。空串时下面 spread `...(p ? {skillsPrompt: p} : {})` 不会注入
     // 字段——KodaX prompt builder 同样会跳过 skills-addendum section。
     // 失败完全静默（buildSkillsPrompt 内部 catch 并返空串），不阻塞主对话回路。
-    const skillsPrompt = await buildSkillsPrompt(this.projectRoot);
+    const skillsPrompt = await buildSkillsPromptForSurface(this.surface, this.projectRoot);
     const partnerSources =
       this.surface === 'partner'
         ? await partnerSourceStore.list(this.sessionId).catch((err) => {
@@ -1440,12 +1459,14 @@ export class RealKodaXSession implements ManagedSession {
             return [];
           })
         : undefined;
-    const partnerAgentProfile =
-      this.surface === 'partner' ? buildPartnerAgentProfile() : undefined;
+    const partnerAgentProfile = this.surface === 'partner' ? buildPartnerAgentProfile() : undefined;
     const partnerRuntimeContextOverlay =
       this.surface === 'partner'
         ? buildPartnerRuntimeContextOverlay({ sources: partnerSources })
         : undefined;
+    const combinedPromptOverlay = [partnerRuntimeContextOverlay, promptOverlay]
+      .filter((part): part is string => typeof part === 'string' && part.trim().length > 0)
+      .join('\n\n');
     const extensionRuntimeHandle = await this.ensureExtensionRuntime();
     const inputArtifacts = buildInputArtifacts(sdk, artifacts);
     const workflowPolicy = workflowPolicyStore.get();
@@ -1492,7 +1513,7 @@ export class RealKodaXSession implements ManagedSession {
           : {}),
         ...(partnerAgentProfile ? { agentProfile: partnerAgentProfile } : {}),
         ...(partnerAgentProfile ? { toolVisibilityPolicy: partnerToolVisibilityPolicy } : {}),
-        ...(partnerRuntimeContextOverlay ? { promptOverlay: partnerRuntimeContextOverlay } : {}),
+        ...(combinedPromptOverlay ? { promptOverlay: combinedPromptOverlay } : {}),
         // skillsPrompt 仅在非空时挂——避免在 SDK 视角注入空字符串字段。
         ...(skillsPrompt ? { skillsPrompt } : {}),
         // OC-31 v0.1.9 — 用户粘贴 / 拖拽的图片走这条路径。SDK

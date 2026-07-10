@@ -13,3 +13,6 @@ apps/desktop/index.html text eol=lf
 
 # 同理: 任何 CSP / hash 类源也锁 LF (没有就保持默认 git autocrlf 行为)
 apps/desktop/electron/csp-config.ts text eol=lf
+# Keep repository text deterministic across Windows, macOS, Linux, CI, and
+# release packaging. `text=auto` leaves binary assets untouched.
+* text=auto eol=lf

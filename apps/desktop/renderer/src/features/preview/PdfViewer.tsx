@@ -4,18 +4,12 @@
 // URL, then pdfjs starts it internally. The viewer renders PDFs as a continuous
 // vertical document with lazy-rendered page canvases so Artifact/Preview reading
 // stays fluid without keeping every page canvas in memory.
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type KeyboardEvent,
-} from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import * as pdfjs from 'pdfjs-dist';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.mjs?url';
 import { base64ToBytes } from './binaryUtils.js';
+import { isPdfPageCountSupported, PDF_MAX_PAGE_COUNT } from './pdfPreviewLimits.js';
 import { useI18n } from '../../i18n/I18nProvider.js';
 
 pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
@@ -64,25 +58,6 @@ function PdfPageCanvas({
 }: PdfPageCanvasProps): JSX.Element {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [size, setSize] = useState<PageSize | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    void doc
-      .getPage(pageNumber)
-      .then((page) => {
-        if (cancelled) return;
-        const viewport = viewportForWidth(page, availableWidth);
-        setSize({ width: viewport.width, height: viewport.height });
-      })
-      .catch(() => {
-        /* The full viewer-level error state handles open failures. */
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [availableWidth, doc, pageNumber]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -186,8 +161,20 @@ export function PdfViewer({ base64 }: Props): JSX.Element {
 
     loadingTask.promise
       .then((nextDoc) => {
+        loadingTask = null;
         if (cancelled) {
           void nextDoc.destroy();
+          return;
+        }
+        if (!isPdfPageCountSupported(nextDoc.numPages)) {
+          void nextDoc.destroy();
+          setErr(
+            t('preview.pdfTooManyPages', {
+              count: nextDoc.numPages,
+              max: PDF_MAX_PAGE_COUNT,
+            }),
+          );
+          setBusy(false);
           return;
         }
         loadedDoc = nextDoc;

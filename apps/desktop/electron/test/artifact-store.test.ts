@@ -3,7 +3,17 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import {
+  existsSync,
+  linkSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  truncateSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import DatabaseConstructor from 'better-sqlite3';
@@ -14,6 +24,22 @@ import {
   type ArtifactStoreOptions,
 } from '../artifact/store.js';
 import { artifactCreateChannel } from '@kodax-space/space-ipc-schema';
+
+function findFileWithSuffix(root: string, suffix: string): string {
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    const child = join(root, entry.name);
+    if (entry.isDirectory()) {
+      try {
+        return findFileWithSuffix(child, suffix);
+      } catch {
+        // Continue with siblings.
+      }
+    } else if (entry.name.endsWith(suffix)) {
+      return child;
+    }
+  }
+  throw new Error(`missing ${suffix} under ${root}`);
+}
 
 function freshStore(options?: ArtifactStoreOptions): {
   store: ArtifactStore;
@@ -194,6 +220,123 @@ test('path-backed kind stores a path reference (no inline content)', async () =>
     const read = await store.read(id);
     assert.equal(read?.path, '/proj/report.pdf');
     assert.equal(read?.content, undefined);
+  } finally {
+    store.invalidate();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('generated office file stores artifact-owned bytes and metadata', async () => {
+  const { store, dir } = freshStore();
+  try {
+    const bytes = Buffer.from('pptx bytes');
+    const { id } = await store.upsertGeneratedFile({
+      sessionId: 's1',
+      surface: 'partner',
+      kind: 'pptx',
+      title: 'Deck',
+      bytes,
+      filename: 'Deck.pptx',
+      summary: 'first deck',
+    });
+    const meta = (await store.list())[0];
+    assert.equal(meta?.kind, 'pptx');
+    assert.equal(meta?.versions[0]?.hasContent, false);
+    assert.equal(meta?.versions[0]?.path, 'Deck.pptx');
+    assert.equal(meta?.versions[0]?.fileSource, 'artifact-store');
+    assert.match(meta?.versions[0]?.contentHash ?? '', /^sha256:/);
+
+    const read = await store.read(id);
+    assert.equal(read?.path, 'Deck.pptx');
+    assert.equal(read?.fileSource, 'artifact-store');
+    assert.equal(read?.content, undefined);
+
+    const binary = await store.readGeneratedFile(id, undefined, 1024);
+    assert.equal(binary?.bytes.toString('utf8'), 'pptx bytes');
+    assert.equal(binary?.truncated, false);
+    assert.equal(binary?.path, 'Deck.pptx');
+
+    const truncated = await store.readGeneratedFile(id, undefined, 4);
+    assert.equal(truncated?.bytes.length, 0);
+    assert.equal(truncated?.truncated, true);
+
+    const empty = await store.readGeneratedFile(id, undefined, 0);
+    assert.equal(empty?.bytes.length, 0);
+    assert.equal(empty?.truncated, true);
+  } finally {
+    store.invalidate();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('generated artifact reads reject content tampering and hard-link aliases', async () => {
+  const { store, dir } = freshStore();
+  try {
+    const original = Buffer.from('original-pptx-bytes');
+    const { id } = await store.upsertGeneratedFile({
+      sessionId: 's1',
+      surface: 'partner',
+      kind: 'pptx',
+      title: 'Integrity deck',
+      bytes: original,
+      filename: 'Integrity.pptx',
+    });
+    const storedPath = findFileWithSuffix(dir, '.pptx');
+
+    writeFileSync(storedPath, Buffer.alloc(original.length, 0x78));
+    await assert.rejects(
+      () => store.readGeneratedFile(id, undefined, 1024),
+      /content hash does not match/,
+    );
+
+    const outsidePath = join(dir, 'outside.pptx');
+    writeFileSync(outsidePath, original);
+    unlinkSync(storedPath);
+    linkSync(outsidePath, storedPath);
+    await assert.rejects(
+      () => store.readGeneratedFile(id, undefined, 1024),
+      /owned, non-linked regular file/,
+    );
+  } finally {
+    store.invalidate();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('generated artifact reads reject oversized sparse tampering before allocation', async () => {
+  const { store, dir } = freshStore();
+  try {
+    const { id } = await store.upsertGeneratedFile({
+      sessionId: 's1',
+      surface: 'partner',
+      kind: 'pptx',
+      title: 'Sparse deck',
+      bytes: Buffer.from('small'),
+    });
+    const storedPath = findFileWithSuffix(dir, '.pptx');
+    truncateSync(storedPath, 64 * 1024 * 1024 + 1);
+
+    await assert.rejects(
+      () => store.readGeneratedFile(id, undefined),
+      /generated artifact file exceeds size limit/,
+    );
+  } finally {
+    store.invalidate();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('workspace path artifacts are not generated-file readable', async () => {
+  const { store, dir } = freshStore();
+  try {
+    const { id } = await store.upsert({
+      sessionId: 's1',
+      surface: 'partner',
+      kind: 'pdf',
+      title: 'Report',
+      path: '/proj/report.pdf',
+    });
+    assert.equal(await store.readGeneratedFile(id, undefined, 1024), null);
   } finally {
     store.invalidate();
     rmSync(dir, { recursive: true, force: true });

@@ -7,6 +7,7 @@
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { validateProjectRoot } from './validate.js';
+import { validateOfficePreviewBytes } from '../artifact/office-zip-guard.js';
 import { MAX_FILE_BYTES, MAX_TREE_NODES, type FileNodeT } from '@kodax-space/space-ipc-schema';
 
 export const SKIP_DIRS = new Set([
@@ -193,6 +194,7 @@ export async function readFileBinaryWithGuards(
     return { base64: '', size: st.size, truncated: true };
   }
   const buf = await fs.readFile(absPath);
+  await validateOfficePreviewBytes(absPath, buf);
   return { base64: buf.toString('base64'), size: st.size, truncated: false };
 }
 
@@ -244,7 +246,10 @@ export function recordDiff(
   }
 }
 
-export function getDiff(projectRoot: string, relativePath: string): { before: string; after: string } | null {
+export function getDiff(
+  projectRoot: string,
+  relativePath: string,
+): { before: string; after: string } | null {
   return diffCache.get(diffKey(projectRoot, relativePath)) ?? null;
 }
 

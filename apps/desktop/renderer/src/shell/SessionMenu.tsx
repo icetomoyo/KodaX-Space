@@ -134,6 +134,10 @@ export function SessionMenu({ sessionId, onClose }: SessionMenuProps): JSX.Eleme
     if (r.ok && r.data.deleted) {
       removeSession(sessionId);
       window.dispatchEvent(new Event('kodax-space.focus-textarea'));
+    } else if (r.ok && r.data.reason === 'session_running') {
+      pushToast(t('menu.session.deleteBusy'), 'warning');
+    } else if (!r.ok) {
+      pushToast(r.error?.message ?? t('common.unknownError'), 'error');
     }
     onClose();
   }

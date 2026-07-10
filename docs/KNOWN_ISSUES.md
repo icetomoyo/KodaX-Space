@@ -1,6 +1,6 @@
 # Known Issues
 
-Last Updated: 2026-07-08
+Last Updated: 2026-07-10
 
 ## Issue Index
 
@@ -11,7 +11,7 @@ Last Updated: 2026-07-08
 | 003 | High | Resolved | SDK `askUser` / `askUserMulti` / `askUserInput` callbacks were not wired to Space UI | v0.1.21 | 2026-06-22 |
 | 004 | Medium | Resolved | MCP manager reload could be overwritten by a stale in-flight initializer | v0.1.x | 2026-06-22 |
 | 005 | Low | Resolved | Context window indicator could keep the previous model cap while the new model cap was loading | v0.1.21 | 2026-06-22 |
-| 006 | Medium | Open | Persisted SDK session summaries do not expose exact historical runtime model metadata | pre-v0.1.21 | 2026-06-22 |
+| 006 | Medium | Resolved | Persisted SDK session summaries do not expose exact historical runtime model metadata | pre-v0.1.21 | 2026-06-22 |
 | 007 | High | Resolved | SDK main-thread follow-up owner guard did not protect already-running concurrent sessions | v0.1.21 | 2026-06-22 |
 | 008 | High | Resolved | Real KodaX sessions did not register configured MCP capability provider | v0.1.x | 2026-06-23 |
 | 009 | High | Resolved | Space per-session follow-up queue removed SDK mid-turn queue-query insertion | v0.1.21 | 2026-06-23 |
@@ -20,6 +20,14 @@ Last Updated: 2026-07-08
 | 012 | High | Resolved | Mid-turn interrupt prompts stayed visually above the spinner because SDK prompt-consumption events were not surfaced | v0.1.22 | 2026-06-24 |
 | 013 | High | Resolved | Restored KodaX sessions could pair assistant segments with the following user prompt after consecutive user messages | v0.1.29 | 2026-07-08 |
 | 014 | Medium | Resolved | Session rename reverted after switching sessions because manual titles were not persisted outside memory | v0.1.29 | 2026-07-08 |
+| 015 | High | Resolved | Partner capability redesign drift allowed overly broad workspace delivery writes and stale output registry state | v0.1.30 | 2026-07-09 |
+| 016 | High | Resolved | Partner helper VM exposed host constructors and allowed escape to Node process and unrestricted filesystem | v0.1.30 | 2026-07-10 |
+| 017 | High | Resolved | Partner corrupted Unicode PDF output and could not read PDF or Office sources | v0.1.30 | 2026-07-10 |
+| 018 | High | Resolved | Active queue watcher deleted Partner follow-up overlay before dequeue returned it | v0.1.30 | 2026-07-10 |
+| 019 | High | Resolved | Partner KB could not search Chinese and could overwrite corrupt durable state | v0.1.30 | 2026-07-10 |
+| 020 | High | Resolved | Partner file paths, writes, decoding, hashing, and durable stores had unsafe edge cases | v0.1.30 | 2026-07-10 |
+| 021 | Medium | Resolved | Partner advertised unavailable SDK Skills and Outputs lacked an in-app delivery preview loop | v0.1.30 | 2026-07-10 |
+| 022 | Medium | Open | KodaX Runtime lacks a general per-invocation execution service for Partner helper migration | KodaX 0.7.66 adoption | 2026-07-10 |
 
 ## Issue Details
 
@@ -405,11 +413,11 @@ The hook used a single `resolved` state value without clearing it on key changes
 ### 006: Persisted SDK session summaries do not expose exact historical runtime model metadata
 
 - Priority: Medium
-- Status: Open
+- Status: Resolved
 - Introduced: pre-v0.1.21
-- Fixed: N/A
+- Fixed: v0.1.30
 - Created: 2026-06-22
-- Resolution Date: N/A
+- Resolution Date: 2026-07-10
 
 #### Original Problem
 
@@ -463,7 +471,26 @@ Two viable repair paths:
 
 #### Resolution
 
-Not resolved in this change set. The current fix correctly handles current-default resume drift and avoids false active-session context display, but exact pre-existing historical model recovery needs an SDK contract extension or a new Space sidecar metadata store.
+Resolved for all sessions created or mutated after the v0.1.30 sidecar migration:
+
+- `session-runtime-store.ts` now persists provider, effective model, `thinking`, `reasoningMode`, `permissionMode`, `autoModeEngine`, and `agentMode` by session id through a compare-and-swap atomic file primitive.
+- Create, promote, fork, provider/model/thinking setters, IPC setters, and slash-command mutations all persist the effective runtime metadata. Explicit `undefined` clears model/thinking instead of silently retaining stale values.
+- Resume prefers validated sidecar metadata, rejects malformed/schema-invalid state without overwriting its bytes, validates provider/model compatibility, and falls back safely when a provider has been removed.
+- Forked sessions inherit and persist the source session's exact model/thinking state.
+- A `session_running` delete refusal now returns `deleted: false`, preserving the still-live session's runtime/title/notice sidecars instead of reporting success and erasing exact metadata.
+- Pre-sidecar sessions are explicitly labeled `runtimeMetadataSource: 'current-default-fallback'`; exact sessions use `persisted`. The UI marks fallback history and excludes it from exact historical model analytics rather than pretending the current default was the original model.
+
+Files changed:
+
+- `apps/desktop/electron/kodax/atomic-file.ts`
+- `apps/desktop/electron/kodax/session-runtime-store.ts`
+- `apps/desktop/electron/kodax/host.ts`
+- `apps/desktop/electron/ipc/session.ts`
+- `apps/desktop/electron/slash/builtin.ts`
+- `packages/space-ipc-schema/src/channels/session.ts`
+- Session list/dashboard renderer surfaces and focused regression tests.
+
+Verification covers exact create/resume/fork/mutation persistence, legacy fallback labeling, corrupt-sidecar preservation, custom providers, removed providers, explicit clears, and runtime/UI schema propagation. Historical sessions that predate the sidecar cannot be reconstructed retroactively; they are now represented honestly as fallback rather than being misreported as exact.
 
 ### 007: SDK main-thread follow-up owner guard did not protect already-running concurrent sessions
 
@@ -1146,12 +1173,485 @@ Verification:
 - `node --test --import tsx/esm electron/test/host.test.ts electron/test/session-fork-rewind.test.ts electron/test/host-try-resume.test.ts` from `apps/desktop` passed: 54/54.
 - `node --test --import tsx/esm test/session.test.ts test/project.test.ts` from `packages/space-ipc-schema` passed: 66/66.
 
+### 015: Partner capability redesign drift allowed overly broad workspace delivery writes and stale output registry state
+
+- Priority: High
+- Status: Resolved
+- Introduced: v0.1.30
+- Fixed: v0.1.30
+- Created: 2026-07-09
+- Resolution Date: 2026-07-09
+
+#### Original Problem
+
+Current behavior:
+
+- Partner delivery remained too rigid for real working-agent output, while direct project-workspace writes were also too broad by default.
+- Admin policy defaults enabled workspace delivery writes and registry-only delivery registration unless explicitly overridden.
+- Rollback restored file contents but did not synchronize the delivery registry, so Outputs could show stale hashes or ghost entries.
+- Checkpoint creation could persist metadata after a target mutation failed.
+- Some write paths checked only the final parent path; recursive directory creation could still traverse an ancestor symlink before the later guard ran.
+- Partner delivery and checkpoint list IPC calls were scoped by session alone instead of requiring a validated project root.
+- Outputs lacked safe copy/reveal actions for arbitrary output files, and 0.1.30 docs overclaimed unsupported arbitrary-file behavior.
+
+Expected behavior:
+
+- Partner can produce arbitrary useful deliverables and, when useful, create and run bounded helper code for itself.
+- Heavy coding work remains a Coder workflow concern, but Partner is not blocked from lightweight tool-making.
+- Direct project-workspace writes are default-closed and require explicit local policy opt-in.
+- Normal Partner writes stay in run-output; checkpointed workspace writes and rollback stay policy-bound and registry-consistent.
+- Project-scoped IPC, symlink guards, and safe UI actions preserve the local-first safety model.
+
+#### Context
+
+Affected components:
+
+- `packages/space-ipc-schema/src/channels/admin.ts`
+- `packages/space-ipc-schema/src/channels/partner-delivery.ts`
+- `packages/space-ipc-schema/src/channels/partner-checkpoint.ts`
+- `apps/desktop/electron/kodax/admin-policy-audit-store.ts`
+- `apps/desktop/electron/kodax/partner-helper-runner-tool.ts`
+- `apps/desktop/electron/kodax/partner-delivery-store.ts`
+- `apps/desktop/electron/kodax/partner-checkpoint-store.ts`
+- `apps/desktop/electron/kodax/partner-workspace-file-tool.ts`
+- `apps/desktop/electron/ipc/partner-deliveries.ts`
+- `apps/desktop/electron/ipc/partner-checkpoints.ts`
+- `apps/desktop/electron/kodax/partner-profile.ts`
+- `apps/desktop/electron/kodax/real-session.ts`
+- `apps/desktop/renderer/src/features/partner/DeliveriesPanel.tsx`
+- `apps/desktop/renderer/src/features/partner/partnerWorkbench.ts`
+- `apps/desktop/renderer/src/i18n/messages.ts`
+- `docs/features/v0.1.30.md`
+- `docs/ADR/ADR-007-partner-surface-model.md`
+- `docs/FEATURE_LIST.md`
+
+#### Root Cause
+
+The Partner redesign mixed two concerns that must be handled separately: delivery expressiveness and mutation authority. The previous implementation addressed arbitrary deliverables incompletely while making direct workspace delivery writes default-open. Rollback, registry, IPC, symlink, UI, and documentation behavior then drifted from the intended bounded working-agent model.
+
+#### Resolution
+
+- Changed workspace delivery direct write/register policy defaults to `false`; project-workspace writes now require explicit local policy opt-in.
+- Added `run_partner_helper`, a bounded Partner-only JavaScript helper runner. Helpers run from Partner run-output files, with no shell, package manager, `require`, `import`, `process`, `env`, or subagents. The file API is capped and restricted to run-output.
+- Registered the helper runner in real Partner sessions and updated Partner prompt/workbench wording to describe lightweight helper use without implying unrestricted coding-agent authority.
+- Changed rollback paths to refresh or remove delivery registry entries after rollback, so Outputs matches actual file state.
+- Reordered checkpoint persistence so failed file mutations do not leave durable checkpoint records.
+- Added ancestor symlink checks before recursive directory creation in delivery, checkpoint, and helper-output paths.
+- Required `projectRoot` for Partner delivery and checkpoint list IPC calls and validated it through the project allowlist before listing.
+- Added safe Outputs actions for copy absolute path and reveal in file manager without opening or executing files.
+- Updated 0.1.30 docs, ADR, and feature list to remove overclaims and document the bounded helper model.
+
+Files changed:
+
+- `packages/space-ipc-schema/src/channels/admin.ts`
+- `packages/space-ipc-schema/src/channels/partner-delivery.ts`
+- `packages/space-ipc-schema/src/channels/partner-checkpoint.ts`
+- `apps/desktop/electron/kodax/admin-policy-audit-store.ts`
+- `apps/desktop/electron/kodax/partner-helper-runner-tool.ts`
+- `apps/desktop/electron/kodax/partner-delivery-store.ts`
+- `apps/desktop/electron/kodax/partner-checkpoint-store.ts`
+- `apps/desktop/electron/kodax/partner-workspace-file-tool.ts`
+- `apps/desktop/electron/ipc/partner-deliveries.ts`
+- `apps/desktop/electron/ipc/partner-checkpoints.ts`
+- `apps/desktop/electron/kodax/partner-profile.ts`
+- `apps/desktop/electron/kodax/real-session.ts`
+- `apps/desktop/renderer/src/features/partner/DeliveriesPanel.tsx`
+- `apps/desktop/renderer/src/features/partner/partnerWorkbench.ts`
+- `apps/desktop/renderer/src/i18n/messages.ts`
+- `packages/space-ipc-schema/test/admin.test.ts`
+- `packages/space-ipc-schema/test/partner-delivery.test.ts`
+- `packages/space-ipc-schema/test/partner-checkpoint.test.ts`
+- `apps/desktop/electron/test/admin-policy-audit-store.test.ts`
+- `apps/desktop/electron/test/partner-helper-runner-tool.test.ts`
+- `apps/desktop/electron/test/partner-delivery-store.test.ts`
+- `apps/desktop/electron/test/partner-checkpoint-store.test.ts`
+- `apps/desktop/electron/test/partner-workspace-file-tool.test.ts`
+- `apps/desktop/electron/test/partner-workbench.test.ts`
+- `apps/desktop/electron/test/partner-profile.test.ts`
+- `tests/e2e/partner-mode.spec.ts`
+- `docs/features/v0.1.30.md`
+- `docs/ADR/ADR-007-partner-surface-model.md`
+- `docs/FEATURE_LIST.md`
+- `docs/KNOWN_ISSUES.md`
+
+Tests added/updated:
+
+- Partner helper runner validates Partner-only execution, bounded file access, blocked runtime escapes, delivery registration, and policy denial.
+- Partner workspace file tests validate default-closed workspace direct writes, rollback delivery refresh, and rollback delivery removal.
+- Partner delivery/checkpoint store tests validate ancestor symlink rejection before recursive directory creation.
+- Partner delivery/checkpoint schema tests require project roots for list calls.
+- Partner E2E validates arbitrary delivery visibility, workspace rollback, post-rollback registry refresh, and safe copy/reveal actions.
+
+Verification:
+
+- `node --test --import tsx/esm apps/desktop/electron/test/partner-delivery-store.test.ts apps/desktop/electron/test/partner-checkpoint-store.test.ts apps/desktop/electron/test/partner-helper-runner-tool.test.ts apps/desktop/electron/test/partner-workspace-file-tool.test.ts` passed: 18/18.
+- `npm run typecheck` passed.
+- `npm test` passed across workspaces: desktop 1224/1224 and space-ipc-schema 232/232.
+- `npm run build:smoke` passed. Vite reported existing large-chunk and Monaco dynamic/static import warnings.
+- `npx playwright test tests/e2e/partner-mode.spec.ts tests/e2e/partner-layout.spec.ts` passed: 6/6.
+### 016: Partner helper VM exposed host constructors and allowed escape to Node process and unrestricted filesystem
+
+- Priority: High
+- Status: Resolved
+- Introduced: v0.1.30
+- Fixed: v0.1.30
+- Created: 2026-07-10
+- Resolution Date: 2026-07-10
+
+#### Original Problem
+
+Current behavior:
+
+- `run_partner_helper` injected host-realm constructors and callbacks into a Node `vm` context.
+- A helper could evaluate `Date.constructor('return process')()` and obtain the Electron main process.
+- From `process.getBuiltinModule('node:fs')`, the helper could read or write outside the Partner run-output root.
+- Blocking direct `require` and setting `codeGeneration.strings=false` did not close cross-realm host-object escape paths.
+
+Expected behavior:
+
+- Helper code can use JSON input, bounded file operations, logging, ordinary JavaScript, microtasks, and result values.
+- It cannot access host constructors, `process`, environment variables, Node built-ins, dynamic imports, shell, network, or arbitrary filesystem paths.
+- Timeout, size, write-count, delivery-registration, and partial-output behavior remain intact.
+
+#### Context
+
+Affected components:
+
+- `apps/desktop/electron/kodax/partner-helper-runner-tool.ts`
+- `apps/desktop/electron/test/partner-helper-runner-tool.test.ts`
+
+#### Root Cause
+
+Node context code received host-realm values. Disabling string code generation applies to the context's own `Function`, but does not make a host constructor or callback safe when its prototype chain exposes the host `Function` constructor.
+
+#### Resolution
+
+- Moved each helper invocation into a one-shot `worker_threads` isolate so infinite Promise-microtask chains, synchronous loops, ordinary JS heap growth, and worker crashes cannot starve the Electron main thread indefinitely.
+- Removed all host constructors, callbacks, input objects, and file-return values from the helper context.
+- Builds a bounded, symlink-checked run-output snapshot and serializes it into the VM.
+- Creates input, file APIs, encoder/decoder, console/logging, operation journal, and result bridge entirely inside the VM realm.
+- The VM returns one validated serialized payload; the host independently validates path policy, content size, Base64, symlinks, and allowed extensions before applying writes and registering deliveries.
+- Applies V8 heap/stack resource limits, a parent wall-clock deadline followed by awaited `worker.terminate()`, and explicit caps for input/config/snapshot/result/log/payload/journal operations and aggregate writes.
+- Applies the fully validated write journal with conflict-safe exclusive installation so a raced target alias is not followed or overwritten.
+- Expanded escape regressions across Date, file callbacks, input prototypes, log/console, encoder, global/object prototypes, lexical `this`, dynamic import, and the original process/filesystem PoC.
+- Expanded credential path, canonical Base64, prototype-poisoning, output-amplification, alias-race, and infinite-microtask coverage while preserving legitimate pure helpers, Promise/microtask writes, timeout, and partial deliveries.
+
+Files changed:
+
+- `apps/desktop/electron/kodax/partner-helper-runner-tool.ts`
+- `apps/desktop/electron/test/partner-helper-runner-tool.test.ts`
+
+Tests added/updated:
+
+- Original `Date.constructor` process/filesystem escape is rejected through the real handler.
+- Ten constructor/prototype variants report blocked rather than escaped.
+- Dynamic Node import, credential paths, malformed Base64, timeout, infinite microtasks, partial-output, resource caps, alias races, and legitimate helper behavior are covered.
+
+### 017: Partner corrupted Unicode PDF output and could not read PDF or Office sources
+
+- Priority: High
+- Status: Resolved
+- Introduced: v0.1.30
+- Fixed: v0.1.30
+- Created: 2026-07-10
+- Resolution Date: 2026-07-10
+
+#### Original Problem
+
+Current behavior:
+
+- The PDF writer replaced every non-ASCII character with `?`, making Chinese output unusable.
+- Partner Sources treated PDF, DOCX, XLSX, and PPTX as opaque binary files even though those are primary working-agent inputs.
+- Tests checked only file signatures and ZIP entries, not extracted Unicode content or hostile archive behavior.
+- Office outputs had no source/citation content and only the most minimal baseline layout.
+
+Expected behavior:
+
+- Unicode text round-trips through generated PDFs and unsupported glyph coverage fails clearly instead of silently corrupting output.
+- Partner can extract useful bounded content from common PDF/Office sources.
+- Office ZIP parsing resists archive bombs, encrypted entries, duplicate/dangerous paths, and oversized expansion.
+- Generated Office files retain sources/citations and provide a consistent baseline structure without claiming template-grade publishing quality.
+
+#### Root Cause
+
+The PDF implementation used the built-in ASCII Helvetica path and deliberately replaced unsupported characters. The source tool stopped at generic binary detection and had no format-specific bounded parsers.
+
+#### Resolution
+
+- PDF now finds an embeddable TrueType face, subsets needed glyphs, and emits Type0/CIDFontType2, Identity-H, CIDToGIDMap, and ToUnicode data.
+- A font must cover every requested code point; otherwise generation fails with an actionable font error.
+- CI Linux jobs install `fonts-wqy-zenhei`; Windows/macOS search common system fonts and `KODAX_PDF_FONT_PATH` remains an explicit override.
+- Partner Source extraction now supports PDF text, DOCX body, XLSX sheets/formulas, and PPTX slide/notes order with file/result caps.
+- Office ZIP inspection bounds entries, per-entry/total expansion, compression ratio, encryption, duplicate names, and traversal before extraction.
+- DOCX uses real bullet numbering, XLSX adds widths/autofilters, PPTX adds baseline hierarchy/accent styling, and sources/citations are embedded in outputs.
+
+Files changed:
+
+- `.github/workflows/build.yml`
+- `.github/workflows/ci.yml`
+- `.github/workflows/release.yml`
+- `apps/desktop/electron/artifact/office-writers.ts`
+- `apps/desktop/electron/artifact/office-artifact-tool.ts`
+- `apps/desktop/electron/kodax/partner-source-tool.ts`
+- `apps/desktop/electron/test/office-artifact-tool.test.ts`
+- `apps/desktop/electron/test/partner-source-tool.test.ts`
+
+Tests added/updated:
+
+- `pdfjs-dist` extracts the original Chinese text and no repeated `?` replacement.
+- Unsupported glyphs fail rather than producing a visually corrupt PDF.
+- PDF/DOCX/XLSX/PPTX source extraction, citations, structure, and highly compressed ZIP rejection are covered.
+
+### 018: Active queue watcher deleted Partner follow-up overlay before dequeue returned it
+
+- Priority: High
+- Status: Resolved
+- Introduced: v0.1.30
+- Fixed: v0.1.30
+- Created: 2026-07-10
+- Resolution Date: 2026-07-10
+
+#### Original Problem
+
+Current behavior:
+
+- The production queue watcher subscribes to synchronous SDK dequeue events.
+- Its listener deleted `sdkPromptOverlays` before `dequeueNextUserPromptForSession()` read the overlay.
+- Interrupt follow-ups therefore lost Partner route/workbench context even though the no-watcher unit test passed.
+
+Expected behavior:
+
+- Interrupt and after-turn prompts preserve their Partner overlay through consumption.
+- External SDK drains, queue reset/drain, watcher unsubscribe, and SDK queue replacement still clean metadata without leaks or ID reuse.
+
+#### Root Cause
+
+Prompt metadata cleanup was coupled to the UI watcher and happened synchronously inside the queue mutation, before the consumer read its metadata.
+
+#### Resolution
+
+- Captures selected prompt metadata before mutating the SDK queue.
+- Separates permanent SDK metadata cleanup from the UI watcher lifecycle.
+- Keeps cleanup idempotent across normal dequeue, external SDK drains, drain/reset, queue singleton replacement, unsubscribe, and reused message IDs.
+
+Files changed:
+
+- `apps/desktop/electron/ipc/queue.ts`
+- `apps/desktop/electron/test/queue.test.ts`
+
+Tests added/updated:
+
+- Active watcher + interrupt overlay preservation.
+- Unsubscribe, external dequeue, reset/drain, after-turn, UI event, and ID-reuse behavior.
+
+### 019: Partner KB could not search Chinese and could overwrite corrupt durable state
+
+- Priority: High
+- Status: Resolved
+- Introduced: v0.1.30
+- Fixed: v0.1.30
+- Created: 2026-07-10
+- Resolution Date: 2026-07-10
+
+#### Original Problem
+
+Current behavior:
+
+- Search tokenization retained only ASCII letters/numbers, so pure Chinese queries returned no tokens and no results.
+- The feature was described as hybrid search although it was weighted lexical matching.
+- Malformed JSON or schema-invalid KB files loaded as an empty KB; a later mutation could overwrite the original durable state.
+
+Expected behavior:
+
+- Chinese, mixed Chinese/English, punctuation-normalized, and short-term queries find explainable lexical matches.
+- Search terminology matches the implemented backend.
+- Only a genuinely absent file starts empty; corrupt state is preserved and all reads/mutations fail closed.
+
+#### Resolution
+
+- Added NFKC/lowercase normalization, Unicode word runs, CJK phrase tokens, overlapping CJK bigrams, and word-boundary handling for short Latin terms.
+- Preserved existing field weights, reasons, source IDs, ignore config, and bounded token counts.
+- KB JSON/schema failures now throw without populating an empty cache or writing over the source file.
+- Documentation now calls the implementation Unicode-aware weighted lexical search, not semantic/vector hybrid search.
+
+Files changed:
+
+- `apps/desktop/electron/kodax/partner-kb-store.ts`
+- `apps/desktop/electron/test/partner-kb-store.test.ts`
+- `docs/features/v0.1.30.md`
+- `docs/FEATURE_LIST.md`
+
+Tests added/updated:
+
+- Chinese phrase, long CJK run, punctuation, mixed-language, and one-character Latin search.
+- Malformed JSON and invalid schema preserve exact original bytes and reject mutation.
+
+### 020: Partner file paths, writes, decoding, hashing, and durable stores had unsafe edge cases
+
+- Priority: High
+- Status: Resolved
+- Introduced: v0.1.30
+- Fixed: v0.1.30
+- Created: 2026-07-10
+- Resolution Date: 2026-07-10
+
+#### Original Problem
+
+Current behavior:
+
+- Checkpoint and proposal paths checked a base hash, then replaced the file later without a conditional commit; a concurrent user edit in that window could be overwritten.
+- Secret protection covered only a handful of names and missed `.env.*`, cloud credentials, package credentials, state files, and private-key containers.
+- Node's permissive Base64 decoder silently ignored invalid characters and decoded before a strong encoded-size bound.
+- Delivery registration read an entire arbitrary file into memory to hash it and had no generic registration size cap.
+- Delivery, checkpoint, proposal, source, and admin policy/audit JSON stores could start empty after corruption and later overwrite recoverable durable state.
+
+Expected behavior:
+
+- File installation is conditional on the exact version reviewed/snapshotted, including rollback.
+- Sensitive paths stay blocked even when direct workspace writes are explicitly enabled.
+- Binary inputs are canonical and size-bounded before decoding.
+- Registration hashes are streamed from a stable file handle and bounded.
+- Corrupt durable state fails closed and remains byte-for-byte intact.
+
+#### Resolution
+
+- Added a conditional file commit primitive: atomically displace the exact current target, verify its hash, exclusively install the replacement, and restore/preserve conflicting versions rather than overwrite them.
+- Applied it to checkpoint create/update/rollback and proposal apply, with deterministic pre-commit race hooks for regression tests.
+- Expanded sensitive path policy for environment files, SSH/cloud/package credentials, Docker/GnuPG/Kubernetes/Terraform paths, private-key/certificate stores, and credential filenames.
+- Added canonical RFC 4648 Base64 validation with pre-decode encoded-size bounds.
+- Delivery registration rejects files over 50 MB and streams SHA-256 from a file handle while checking size/mtime stability and realpath containment.
+- Delivery, checkpoint, proposal, source, KB, and admin policy/audit stores now create empty state only on `ENOENT`, persist before updating caches, and refuse to overwrite malformed state.
+- Added repository-wide LF policy through `.gitattributes` to remove platform-dependent release diffs.
+
+Files changed:
+
+- `.gitattributes`
+- `apps/desktop/electron/kodax/atomic-file.ts`
+- `apps/desktop/electron/kodax/partner-file-guards.ts`
+- `apps/desktop/electron/kodax/partner-checkpoint-store.ts`
+- `apps/desktop/electron/kodax/partner-file-proposal-store.ts`
+- `apps/desktop/electron/kodax/partner-delivery-store.ts`
+- `apps/desktop/electron/kodax/partner-delivery-tool.ts`
+- `apps/desktop/electron/kodax/partner-workspace-file-tool.ts`
+- `apps/desktop/electron/kodax/partner-source-store.ts`
+- `apps/desktop/electron/kodax/admin-policy-audit-store.ts`
+- Direct store/tool regression tests.
+
+Tests added/updated:
+
+- Deterministic concurrent user edits immediately before checkpoint/proposal commit.
+- Expanded credential paths, malformed/non-canonical Base64, oversized sparse registration, and corrupt JSON preservation.
+- Existing create/update/rollback, valid binary, symlink, policy, and delivery behavior remains covered.
+
+### 021: Partner advertised unavailable SDK Skills and Outputs lacked an in-app delivery preview loop
+
+- Priority: Medium
+- Status: Resolved
+- Introduced: v0.1.30
+- Fixed: v0.1.30
+- Created: 2026-07-10
+- Resolution Date: 2026-07-10
+
+#### Original Problem
+
+Current behavior:
+
+- Partner injected the SDK Skills prompt even though Partner's fail-closed tool policy blocks the SDK `skill` executor and subagent/MCP categories.
+- Workbench prompt playbooks and executable SDK Skills were described with the same terminology.
+- Deliveries exposed metadata/copy/reveal but did not use the existing bounded preview channel, so users had to leave Space to inspect normal outputs.
+- Documentation implied WorkBuddy modes, scheduler behavior, hybrid semantic search, professional Office quality, external systems, and broader governance beyond implemented enforcement.
+
+Expected behavior:
+
+- The model is never instructed to call an unavailable Partner tool.
+- Prompt playbooks are distinguished from executable Skills.
+- Known delivery formats preview through the same bounded readers already used by artifacts/workspace files.
+- v0.1.30 documentation states its actual local workspace-agent boundary and explicitly lists parity gaps.
+
+#### Resolution
+
+- Added surface-aware Skills prompt construction; Partner gets no SDK Skills addendum while Coder behavior remains unchanged.
+- Delivery-backed rich preview now supports text, PDF, Office, image, audio, and video through `partner.deliveries.readBinary` and per-kind size caps.
+- E2E covers delivery preview after checkpoint rollback/registry refresh.
+- Product/docs now use scenario/capability-playbook terminology and explicitly exclude executable Partner Skills, connectors/MCP actions, browser/computer use, scheduled/remote tasks, parallel experts, hosted governance, and template-grade Office design from v0.1.30.
+- Package/workspace versions are aligned to 0.1.30.
+
+Files changed:
+
+- `apps/desktop/electron/kodax/skills-prompt.ts`
+- `apps/desktop/electron/kodax/real-session.ts`
+- `apps/desktop/renderer/src/features/preview/RichPreview.tsx`
+- `apps/desktop/renderer/src/features/partner/DeliveriesPanel.tsx`
+- `apps/desktop/renderer/src/features/partner/partnerWorkbench.ts`
+- `apps/desktop/renderer/src/i18n/messages.ts`
+- `tests/e2e/partner-mode.spec.ts`
+- `docs/features/v0.1.30.md`
+- `docs/ADR/ADR-007-partner-surface-model.md`
+- `docs/FEATURE_LIST.md`
+- Version manifests and lockfile.
+
+Tests added/updated:
+
+- Partner Skills prompt suppression with unchanged Coder discovery.
+- Delivery rich-preview E2E assertion.
+
+### 022: KodaX Runtime lacks a general per-invocation execution service for Partner helper migration
+
+- Priority: Medium
+- Status: Open
+- Introduced: KodaX 0.7.66 adoption
+- Fixed: N/A
+- Created: 2026-07-10
+- Resolution Date: N/A
+
+#### Original Problem
+
+Current behavior:
+
+- Space v0.1.30 resolves KodaX 0.7.66 and safely runs `run_partner_helper` in a Space-owned one-shot Worker, then applies the resulting bounded journal under Space path/policy controls.
+- KodaX 0.7.66 now provides a real `embedded + worker` Runtime with resource limits, hard close, and fail-closed `requirements.hardDispose`. Constructed handlers also run in dedicated Workers with reverse tool RPC and hard timeout termination. Space has compatibility coverage for the published Runtime Worker and packages all required sidecars.
+- `KodaXRuntime` still has no general per-invocation `execution` service for arbitrary helper programs. Daemon/Worker run options are JSON-safe DTOs, so Space cannot send its process-local helper callback or VM bridge across that boundary. Moving the entire Runtime into a Worker is not equivalent to isolating and terminating one helper invocation inside a shared session owner.
+
+Expected behavior:
+
+- Embedded and daemon modes expose the same ID/DTO-based optional isolated-execution contract.
+- Runtime/daemon host owns executor lifecycle, cancellation, hard termination, resource bounds, packaging, and run/session/tool-call attribution.
+- Space continues to own Partner-specific workspace snapshots, path/credential policy, approvals, and final journal application.
+- Worker isolation is described as fault/resource isolation; genuinely hostile third-party code uses a process/OS sandbox backend.
+
+#### Root Cause
+
+The Runtime refactor now centralizes session/run orchestration and provides whole-Runtime Worker isolation. KodaX also has specialized Worker machinery for semantic processing and constructed handlers. What remains missing is a public, protocol-neutral, per-invocation execution plane that can host an arbitrary bounded helper by ID/DTO without moving the entire Runtime owner or serializing host callbacks.
+
+#### Proposed Solution
+
+Add a runtime-owned `ExecutionManager` with serialized `create/start/await/abort/terminate` operations, executor/invocation IDs, `worker` and future `process` backends, capability RPC through runtime-scoped policy/permission brokers, hard deadlines, V8/resource/input/output limits, and awaited shutdown. The daemon protocol must advertise supported isolation modes and fail closed when a requested backend or sidecar is unavailable.
+
+Migration order:
+
+1. Keep the 0.7.66 Runtime/constructed-handler Worker capability and package-sidecar gates green in Space.
+2. Publish a Runtime execution DTO/protocol with executor/invocation IDs, capability negotiation, and Worker/process backend semantics.
+3. Prove invocation-local timeout, abort escalation, crash recovery, resource/output bounds, and daemon responsiveness without terminating unrelated sessions.
+4. Migrate Space's helper onto that SDK service while retaining Space policy/journal application, then delete the duplicate Space Worker lifecycle.
+
+#### Acceptance Criteria
+
+- A normal Partner helper behaves identically in embedded and daemon modes without serializing functions or host objects.
+- Infinite CPU/microtask loops, worker crash, timeout, cancellation, heap/input/output limit, and daemon disconnect tests terminate only the invocation and leave Runtime/daemon responsive.
+- Invocation abort escalates from cooperative abort to hard termination after a bounded grace period without requiring `runtime.close()` to kill the whole private Runtime.
+- Runtime capabilities report isolation support and never silently downgrade `worker`/`process` requests to host execution.
+- The Worker/process security boundary and remaining OS-level limitations are documented.
+
+#### Resolution
+
+Partially addressed upstream in KodaX 0.7.66: whole-Runtime Worker isolation, hard-dispose negotiation, resource limits, constructed-handler Worker execution, reverse tool RPC, hard timeout termination, and sidecar packaging are implemented and verified. The general per-invocation execution service is not implemented yet. This does not reopen Issue 016 or weaken the current Space helper path; its concrete host escape and main-thread starvation paths are fixed. The remaining issue is an explicit migration and duplicate-lifecycle cleanup gate before Space adopts daemon-owned execution for Partner helpers.
+
 ## Summary
 
-- Total: 14
+- Total: 22
 - Open: 1
-- Resolved: 13
-- High: 9
-- Medium: 4
+- Resolved: 21
+- High: 15
+- Medium: 6
 - Low: 1
-- Next to resolve: 006
+- Next to resolve: 022

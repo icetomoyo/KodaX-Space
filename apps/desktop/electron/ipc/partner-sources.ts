@@ -2,11 +2,10 @@ import { promises as fs } from 'node:fs';
 import { canonProjectRoot } from '@kodax-space/space-ipc-schema';
 import { registerChannel } from './register.js';
 import { projectStore } from '../projects/store.js';
-import {
-  resolveInsideProject,
-  toPosixRelative,
-} from './files-core.js';
+import { resolveInsideProject, toPosixRelative } from './files-core.js';
 import { kodaxHost } from '../kodax/host.js';
+import { adminPolicyAuditStore } from '../kodax/admin-policy-audit-store.js';
+import { partnerKbStore } from '../kodax/partner-kb-store.js';
 import { partnerSourceStore } from '../kodax/partner-source-store.js';
 
 const IS_WIN = process.platform === 'win32';
@@ -27,8 +26,15 @@ function assertPartnerSessionIfActive(sessionId: string, projectRoot?: string): 
 
 export function registerPartnerSourceChannels(): void {
   registerChannel('partner.sources.list', async (input) => {
-    assertPartnerSessionIfActive(input.sessionId);
-    return { sources: await partnerSourceStore.list(input.sessionId) };
+    const validatedRoot = await projectStore.assertAllowed(input.projectRoot);
+    assertPartnerSessionIfActive(input.sessionId, validatedRoot);
+    const sources = await partnerSourceStore.list(input.sessionId);
+    return {
+      sources: sources.filter(
+        (source) =>
+          canonProjectRoot(source.projectRoot, IS_WIN) === canonProjectRoot(validatedRoot, IS_WIN),
+      ),
+    };
   });
 
   registerChannel('partner.sources.add', async (input) => {
@@ -42,7 +48,9 @@ export function registerPartnerSourceChannels(): void {
       throw new Error('Partner sources must be regular files or directories');
     }
     if (input.targetKind !== undefined && input.targetKind !== actualTargetKind) {
-      throw new Error(`source targetKind mismatch: expected ${input.targetKind}, got ${actualTargetKind}`);
+      throw new Error(
+        `source targetKind mismatch: expected ${input.targetKind}, got ${actualTargetKind}`,
+      );
     }
     const source = await partnerSourceStore.addWorkspacePath({
       sessionId: input.sessionId,
@@ -51,11 +59,43 @@ export function registerPartnerSourceChannels(): void {
       targetKind: actualTargetKind,
       ...(input.label !== undefined ? { label: input.label } : {}),
     });
+    await partnerKbStore.upsertSourceReference(source);
+    await adminPolicyAuditStore.record({
+      category: 'source',
+      action: 'source.attach',
+      outcome: 'allowed',
+      projectRoot: validatedRoot,
+      sessionId: input.sessionId,
+      resource: source.path,
+      details: { sourceId: source.id, targetKind: source.targetKind, kind: source.kind },
+    });
     return { source };
   });
 
   registerChannel('partner.sources.remove', async (input) => {
-    assertPartnerSessionIfActive(input.sessionId);
-    return { removed: await partnerSourceStore.remove(input.sessionId, input.sourceId) };
+    const validatedRoot = await projectStore.assertAllowed(input.projectRoot);
+    assertPartnerSessionIfActive(input.sessionId, validatedRoot);
+    const existing = (await partnerSourceStore.list(input.sessionId)).find(
+      (source) => source.id === input.sourceId,
+    );
+    if (
+      !existing ||
+      canonProjectRoot(existing.projectRoot, IS_WIN) !== canonProjectRoot(validatedRoot, IS_WIN)
+    ) {
+      return { removed: false };
+    }
+    const removed = await partnerSourceStore.remove(input.sessionId, input.sourceId);
+    if (removed) {
+      await adminPolicyAuditStore.record({
+        category: 'source',
+        action: 'source.remove',
+        outcome: 'allowed',
+        sessionId: input.sessionId,
+        resource: existing?.path ?? input.sourceId,
+        details: { sourceId: input.sourceId },
+        ...(existing?.projectRoot ? { projectRoot: existing.projectRoot } : {}),
+      });
+    }
+    return { removed };
   });
 }

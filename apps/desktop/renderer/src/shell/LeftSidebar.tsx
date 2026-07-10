@@ -254,10 +254,7 @@ function ProjectTree({
   const expandProjectSessionList = useCallback((projectPath: string): void => {
     setProjectSessionLimits((prev) => {
       const current = prev[projectPath] ?? SESSIONS_PER_PROJECT_INITIAL_VISIBLE;
-      const next = Math.min(
-        SESSIONS_PER_PROJECT_INLINE_MAX,
-        current + SESSIONS_PER_PROJECT_STEP,
-      );
+      const next = Math.min(SESSIONS_PER_PROJECT_INLINE_MAX, current + SESSIONS_PER_PROJECT_STEP);
       if (next === current) return prev;
       return { ...prev, [projectPath]: next };
     });
@@ -368,8 +365,7 @@ function ProjectTree({
     const explicit = proj.path in expandedProjects ? expandedProjects[proj.path] : undefined;
     const isExpanded = explicit !== undefined ? explicit : defaultExpanded;
     const projSessions = sessionsByProject.get(projCanon) ?? [];
-    const visibleLimit =
-      projectSessionLimits[proj.path] ?? SESSIONS_PER_PROJECT_INITIAL_VISIBLE;
+    const visibleLimit = projectSessionLimits[proj.path] ?? SESSIONS_PER_PROJECT_INITIAL_VISIBLE;
     const runningCount = projSessions.reduce(
       (acc, s) => (statusMap[s.sessionId] === 'running' ? acc + 1 : acc),
       0,
@@ -904,6 +900,10 @@ function SessionRow({
   const indent = Math.min(depth, 4); // 不无限缩进；4 层就够
   const padLeft = `${1.6 + indent * 0.9}rem`;
   const timeLabel = formatSidebarTime(session.lastActivityAt, effectiveLocale);
+  const runtimeFallbackLabel =
+    session.runtimeMetadataSource === 'current-default-fallback'
+      ? t('session.runtimeFallback')
+      : null;
   const statusLabel =
     status === 'awaiting'
       ? t('sidebar.status.awaiting')
@@ -958,7 +958,7 @@ function SessionRow({
           : 'text-fg-secondary hover:bg-hover-bg hover:text-fg-primary'
       }`}
       style={{ paddingLeft: padLeft }}
-      title={`${session.title ?? session.sessionId} - ${timeLabel}${statusLabel ? ` - ${statusLabel}` : ''} (${t('sidebar.session.renameHint')})`}
+      title={`${session.title ?? session.sessionId} - ${timeLabel}${statusLabel ? ` - ${statusLabel}` : ''}${runtimeFallbackLabel ? ` - ${runtimeFallbackLabel}` : ''} (${t('sidebar.session.renameHint')})`}
     >
       <span className="min-w-0 truncate">{session.title ?? t('sidebar.session.untitled')}</span>
       <span className="flex min-w-0 items-center justify-end gap-1.5 text-[11px] text-fg-muted">

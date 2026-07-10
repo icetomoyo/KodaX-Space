@@ -130,7 +130,12 @@ export function useArtifactRead(
           if (!alive) return;
           if (res.ok) {
             setRef(res.data.ref);
-            setPayload({ content: res.data.content, path: res.data.path });
+            setPayload({
+              content: res.data.content,
+              path: res.data.path,
+              fileSource: res.data.fileSource,
+              contentHash: res.data.contentHash,
+            });
             setError(null);
           } else {
             setRef(null);
@@ -180,7 +185,16 @@ export function useArtifactContent(
       .invoke('artifact.read', version !== undefined ? { id, version } : { id })
       .then((res) => {
         if (!alive) return;
-        setPayload(res.ok ? { content: res.data.content, path: res.data.path } : null);
+        setPayload(
+          res.ok
+            ? {
+                content: res.data.content,
+                path: res.data.path,
+                fileSource: res.data.fileSource,
+                contentHash: res.data.contentHash,
+              }
+            : null,
+        );
         setLoading(false);
       })
       .catch(() => {

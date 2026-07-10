@@ -212,7 +212,7 @@ function buildMetrics(
     metrics.push({
       key: 'agents',
       label: t('taskDock.metric.agents'),
-      value: String(agents.length),
+      value: formatAgentMetricValue(agents, t),
     });
   }
   const activeWorkflowCount =
@@ -233,6 +233,21 @@ function buildMetrics(
     });
   }
   return metrics;
+}
+
+function formatAgentMetricValue(
+  agents: readonly AgentStatusViewModel[],
+  t: (key: MessageKey, vars?: Record<string, string | number>) => string,
+): string {
+  const total = agents.length;
+  const active = agents.filter((agent) => agent.state === 'active').length;
+  const completed = agents.filter((agent) => agent.state === 'completed').length;
+  if (active > 0 && completed > 0) {
+    return t('taskDock.metric.agentsActiveDone', { total, active, completed });
+  }
+  if (active > 0) return t('taskDock.metric.agentsActive', { total, active });
+  if (completed > 0) return t('taskDock.metric.agentsDone', { total, completed });
+  return String(total);
 }
 
 function latestEventKind(

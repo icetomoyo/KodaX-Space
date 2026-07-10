@@ -77,12 +77,18 @@ function ArtifactViewer({
 
   const content = useMemo(
     () =>
-      payload ? toArtifactContent(artifact.kind, payload, projectRoot, artifact.permissions) : null,
-    [payload, artifact.kind, artifact.permissions, projectRoot],
+      payload
+        ? toArtifactContent(artifact.kind, payload, projectRoot, artifact.permissions, {
+            id: artifact.id,
+            version: effectiveVersion,
+          })
+        : null,
+    [payload, artifact.kind, artifact.permissions, projectRoot, artifact.id, effectiveVersion],
   );
 
   const canCopy = payload?.content !== undefined && TEXT_COPY_KINDS.has(artifact.kind);
-  const canSave = payload?.content !== undefined && !isTransient; // content kinds incl. image; doc has no content
+  const canSave =
+    !isTransient && (payload?.content !== undefined || payload?.fileSource === 'artifact-store');
 
   async function onCopy(): Promise<void> {
     if (payload?.content == null) return;
@@ -218,6 +224,7 @@ function transientRefFromSnapshot(
             ...(snapshot.summary !== undefined ? { summary: snapshot.summary } : {}),
             ...(snapshot.content !== undefined ? { content: snapshot.content } : {}),
             ...(snapshot.path !== undefined ? { path: snapshot.path } : {}),
+            ...(snapshot.path !== undefined ? { fileSource: 'workspace' as const } : {}),
           },
         ];
   const version = snapshot.version ?? Math.max(...versions.map((v) => v.v));
@@ -234,6 +241,7 @@ function transientRefFromSnapshot(
       createdAt: now + v.v,
       hasContent: v.content !== undefined,
       ...(v.path !== undefined ? { path: v.path } : {}),
+      ...(v.path !== undefined ? { fileSource: 'workspace' as const } : {}),
       ...(v.summary !== undefined ? { summary: v.summary } : {}),
     })),
     createdAt: now,
@@ -260,6 +268,7 @@ function transientPayloadsFromSnapshot(
       {
         ...(v.content !== undefined ? { content: v.content } : {}),
         ...(v.path !== undefined ? { path: v.path } : {}),
+        ...(v.path !== undefined ? { fileSource: 'workspace' as const } : {}),
       },
     ]),
   );

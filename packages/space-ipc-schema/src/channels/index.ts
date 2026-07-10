@@ -77,6 +77,13 @@ import {
   mcpReloadChannel,
 } from './mcp.js';
 import { kodaxGetDefaultsChannel } from './kodax.js';
+import {
+  adminPolicyGetChannel,
+  adminPolicySetChannel,
+  adminPolicyExportChannel,
+  adminAuditListChannel,
+  adminAuditExportChannel,
+} from './admin.js';
 import { kodaxQueueGetChannel, kodaxQueueChangedChannel } from './queue.js';
 import {
   providerListChannel,
@@ -101,6 +108,39 @@ import {
   partnerSourcesAddChannel,
   partnerSourcesRemoveChannel,
 } from './partner-source.js';
+import {
+  partnerKbSummaryChannel,
+  partnerKbPagesChannel,
+  partnerKbReadPageChannel,
+  partnerKbWritePageChannel,
+  partnerKbSearchChannel,
+  partnerKbRebuildIndexChannel,
+  partnerKbLintChannel,
+  partnerKbConfigGetChannel,
+  partnerKbConfigSetChannel,
+  partnerKbMaintenanceRunChannel,
+  partnerKbMaintenanceLastChannel,
+} from './partner-kb.js';
+import {
+  partnerFileProposalsListChannel,
+  partnerFileProposalsGetChannel,
+  partnerFileProposalsApplyChannel,
+  partnerFileProposalsRejectChannel,
+  partnerFileProposalsExportChannel,
+} from './partner-file-proposal.js';
+import {
+  partnerDeliveriesListChannel,
+  partnerDeliveriesGetChannel,
+  partnerDeliveriesOutputRootChannel,
+  partnerDeliveriesReadBinaryChannel,
+  partnerDeliveriesChangedChannel,
+} from './partner-delivery.js';
+import {
+  partnerCheckpointsListChannel,
+  partnerCheckpointsGetChannel,
+  partnerCheckpointsRollbackChannel,
+  partnerCheckpointsChangedChannel,
+} from './partner-checkpoint.js';
 import { titlebarSetOverlayChannel } from './titlebar.js';
 import {
   settingsGetChannel,
@@ -144,6 +184,7 @@ import {
   artifactCreateChannel,
   artifactListChannel,
   artifactReadChannel,
+  artifactReadBinaryChannel,
   artifactDeleteChannel,
   artifactExportChannel,
   artifactOpenWindowChannel,
@@ -239,6 +280,11 @@ export const invokeChannels = {
   [mcpToolsChannel.name]: mcpToolsChannel,
   [mcpReloadChannel.name]: mcpReloadChannel,
   [kodaxGetDefaultsChannel.name]: kodaxGetDefaultsChannel,
+  [adminPolicyGetChannel.name]: adminPolicyGetChannel,
+  [adminPolicySetChannel.name]: adminPolicySetChannel,
+  [adminPolicyExportChannel.name]: adminPolicyExportChannel,
+  [adminAuditListChannel.name]: adminAuditListChannel,
+  [adminAuditExportChannel.name]: adminAuditExportChannel,
   [kodaxQueueGetChannel.name]: kodaxQueueGetChannel,
   [providerListChannel.name]: providerListChannel,
   [providerSetKeyChannel.name]: providerSetKeyChannel,
@@ -257,6 +303,29 @@ export const invokeChannels = {
   [partnerSourcesListChannel.name]: partnerSourcesListChannel,
   [partnerSourcesAddChannel.name]: partnerSourcesAddChannel,
   [partnerSourcesRemoveChannel.name]: partnerSourcesRemoveChannel,
+  [partnerKbSummaryChannel.name]: partnerKbSummaryChannel,
+  [partnerKbPagesChannel.name]: partnerKbPagesChannel,
+  [partnerKbReadPageChannel.name]: partnerKbReadPageChannel,
+  [partnerKbWritePageChannel.name]: partnerKbWritePageChannel,
+  [partnerKbSearchChannel.name]: partnerKbSearchChannel,
+  [partnerKbRebuildIndexChannel.name]: partnerKbRebuildIndexChannel,
+  [partnerKbLintChannel.name]: partnerKbLintChannel,
+  [partnerKbConfigGetChannel.name]: partnerKbConfigGetChannel,
+  [partnerKbConfigSetChannel.name]: partnerKbConfigSetChannel,
+  [partnerKbMaintenanceRunChannel.name]: partnerKbMaintenanceRunChannel,
+  [partnerKbMaintenanceLastChannel.name]: partnerKbMaintenanceLastChannel,
+  [partnerFileProposalsListChannel.name]: partnerFileProposalsListChannel,
+  [partnerFileProposalsGetChannel.name]: partnerFileProposalsGetChannel,
+  [partnerFileProposalsApplyChannel.name]: partnerFileProposalsApplyChannel,
+  [partnerFileProposalsRejectChannel.name]: partnerFileProposalsRejectChannel,
+  [partnerFileProposalsExportChannel.name]: partnerFileProposalsExportChannel,
+  [partnerDeliveriesListChannel.name]: partnerDeliveriesListChannel,
+  [partnerDeliveriesGetChannel.name]: partnerDeliveriesGetChannel,
+  [partnerDeliveriesOutputRootChannel.name]: partnerDeliveriesOutputRootChannel,
+  [partnerDeliveriesReadBinaryChannel.name]: partnerDeliveriesReadBinaryChannel,
+  [partnerCheckpointsListChannel.name]: partnerCheckpointsListChannel,
+  [partnerCheckpointsGetChannel.name]: partnerCheckpointsGetChannel,
+  [partnerCheckpointsRollbackChannel.name]: partnerCheckpointsRollbackChannel,
   [titlebarSetOverlayChannel.name]: titlebarSetOverlayChannel,
   [settingsGetChannel.name]: settingsGetChannel,
   [settingsSetDefaultWorkspaceChannel.name]: settingsSetDefaultWorkspaceChannel,
@@ -289,6 +358,7 @@ export const invokeChannels = {
   [artifactCreateChannel.name]: artifactCreateChannel,
   [artifactListChannel.name]: artifactListChannel,
   [artifactReadChannel.name]: artifactReadChannel,
+  [artifactReadBinaryChannel.name]: artifactReadBinaryChannel,
   [artifactDeleteChannel.name]: artifactDeleteChannel,
   [artifactExportChannel.name]: artifactExportChannel,
   [artifactOpenWindowChannel.name]: artifactOpenWindowChannel,
@@ -323,6 +393,8 @@ export const invokeChannels = {
 export const pushChannels = {
   [sessionEventChannel.name]: sessionEventChannel,
   [artifactChangedChannel.name]: artifactChangedChannel,
+  [partnerDeliveriesChangedChannel.name]: partnerDeliveriesChangedChannel,
+  [partnerCheckpointsChangedChannel.name]: partnerCheckpointsChangedChannel,
   [permissionRequestChannel.name]: permissionRequestChannel,
   [permissionCancelledChannel.name]: permissionCancelledChannel,
   [askUserRequestChannel.name]: askUserRequestChannel,

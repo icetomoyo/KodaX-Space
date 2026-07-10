@@ -12,13 +12,16 @@
 
 import { promises as fs, readdirSync } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, '..');
 const outDir = path.join(rootDir, 'out');
 const SIZE_LIMIT_BYTES = 200 * 1024 * 1024;
+const require = createRequire(import.meta.url);
+const electronBin = require('electron');
 
 function fail(msg) {
   console.error(`[smoke-pack] FAIL: ${msg}`);
@@ -165,11 +168,41 @@ async function findInstaller() {
     fail(`out/ directory not found: ${err.message}`);
   }
   // 平台对应：Win .exe / mac .dmg / Linux .AppImage (future)
+  const packageMetadata = JSON.parse(
+    await fs.readFile(path.join(rootDir, 'package.json'), 'utf8'),
+  );
+  const currentVersion = String(packageMetadata.version ?? '').trim();
+  if (!/^\d+\.\d+\.\d+(?:[-+].+)?$/.test(currentVersion)) {
+    fail(`package.json has an invalid release version: ${currentVersion || 'empty'}`);
+  }
+
+  // Only current-version files count. Stale files in a developer's out/
+  // directory must not mask a failed or incomplete package build.
   const candidates = entries.filter(
-    (name) => /\.(exe|dmg|AppImage|deb|zip)$/i.test(name) && !/^builder-/.test(name),
+    (name) =>
+      /\.(exe|dmg|AppImage|deb|zip)$/i.test(name) &&
+      name.includes(currentVersion) &&
+      !/^builder-/.test(name),
   );
   if (candidates.length === 0) {
     fail(`no installer artifact in out/ (entries: ${entries.join(', ') || 'empty'})`);
+  }
+
+  const requiredPatterns =
+    process.platform === 'win32'
+      ? [/Setup-.*\.exe$/i, /Portable-.*\.exe$/i]
+      : process.platform === 'darwin'
+        ? [/\.dmg$/i]
+        : process.platform === 'linux'
+          ? [/\.AppImage$/i, /\.deb$/i]
+          : [];
+  for (const pattern of requiredPatterns) {
+    if (!candidates.some((name) => pattern.test(name))) {
+      fail(
+        `required ${currentVersion} platform artifact missing (expected ${pattern}; ` +
+          `found: ${candidates.join(', ')})`,
+      );
+    }
   }
   return candidates.map((name) => path.join(outDir, name));
 }
@@ -241,12 +274,32 @@ async function checkAsarContents(asarPath) {
   const required = [
     '/dist-electron/main.js',
     '/dist-electron/preload.js',
+    '/dist-electron/partner-source-extraction-worker.js',
     '/apps/desktop/dist/index.html',
     '/package.json',
   ];
   for (const req of required) {
     if (!normalized.some((f) => f === req || f.endsWith(req))) {
       fail(`required file missing from asar: ${req}`);
+    }
+    ok(`asar contains ${req}`);
+  }
+
+  // KodaX 0.7.66 adds a public Runtime facade plus Worker sidecars. The SDK
+  // resolves these files relative to its installed dist directory, so an
+  // installer that prunes any one of them can pass compilation and fail only
+  // when Runtime or a constructed handler first starts.
+  const kodaxRuntimeRequired = [
+    '/node_modules/@kodax-ai/kodax/dist/sdk-runtime.js',
+    '/node_modules/@kodax-ai/kodax/dist/runtime-worker.js',
+    '/node_modules/@kodax-ai/kodax/dist/constructed-handler-worker.js',
+    '/node_modules/@kodax-ai/kodax/dist/semantic-worker.js',
+    '/node_modules/@kodax-ai/kodax/dist/provider-capabilities.json',
+    '/node_modules/@kodax-ai/kodax/scripts/kodax-bin.cjs',
+  ];
+  for (const req of kodaxRuntimeRequired) {
+    if (!normalized.some((f) => f === req || f.endsWith(req))) {
+      fail(`KodaX 0.7.66 Runtime dependency missing from asar: ${req}`);
     }
     ok(`asar contains ${req}`);
   }
@@ -357,6 +410,115 @@ async function checkAsarContents(asarPath) {
   }
 }
 
+function checkKodaxWorkersExecuteFromAsar(asarPath) {
+  const runtimeModuleUrl = pathToFileURL(
+    path.join(asarPath, 'node_modules', '@kodax-ai', 'kodax', 'dist', 'sdk-runtime.js'),
+  ).href;
+  const codingModuleUrl = pathToFileURL(
+    path.join(asarPath, 'node_modules', '@kodax-ai', 'kodax', 'dist', 'sdk-coding.js'),
+  ).href;
+  const marker = 'KODAX_ASAR_WORKER_PROBE=';
+  const probeSource = `
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { createKodaXRuntime } from ${JSON.stringify(runtimeModuleUrl)};
+import { loadHandler } from ${JSON.stringify(codingModuleUrl)};
+
+const homeDir = await mkdtemp(path.join(tmpdir(), 'kodax-space-asar-probe-'));
+let runtime;
+try {
+  runtime = await createKodaXRuntime({
+    mode: 'embedded',
+    isolation: 'worker',
+    requirements: { hardDispose: true },
+    homeDir,
+    sessionsDir: path.join(homeDir, 'sessions'),
+    worker: {
+      resourceLimits: { maxOldGenerationSizeMb: 128 },
+      shutdownTimeoutMs: 1500,
+    },
+    clientInfo: { name: 'kodax-space-pack-smoke', version: '0.1.30' },
+  });
+  const created = await runtime.sessions.create({
+    title: 'Packaged Runtime compatibility probe',
+    projectPath: process.cwd(),
+    surface: 'release-probe',
+  });
+  const loaded = await runtime.sessions.load(created.id);
+  const handler = await loadHandler(
+    { name: 'pack-worker-check', version: '1.0.0', cwd: homeDir },
+    {
+      kind: 'script',
+      language: 'javascript',
+      code: "import { isMainThread } from 'node:worker_threads'; export async function handler() { return String(isMainThread); }",
+    },
+    { tools: [] },
+    { timeoutMs: 5_000 },
+  );
+  const handlerResult = await handler({}, {
+    backups: new Map(),
+    executionCwd: homeDir,
+  });
+  const result = {
+    version: runtime.identity.version,
+    mode: runtime.identity.mode,
+    isolation: runtime.identity.isolation,
+    workerThreadId: runtime.identity.workerThreadId,
+    sessionRoundTrip: loaded.id === created.id,
+    constructedHandlerIsMainThread: handlerResult,
+  };
+  if (
+    result.version !== '0.7.66' ||
+    result.mode !== 'embedded' ||
+    result.isolation !== 'worker' ||
+    !Number.isSafeInteger(result.workerThreadId) ||
+    !result.sessionRoundTrip ||
+    result.constructedHandlerIsMainThread !== 'false'
+  ) {
+    throw new Error('unexpected packaged Worker result: ' + JSON.stringify(result));
+  }
+  await runtime.close();
+  runtime = undefined;
+  await rm(homeDir, { recursive: true, force: true });
+  await new Promise((resolve) => {
+    process.stdout.write(${JSON.stringify(marker)} + JSON.stringify(result), resolve);
+  });
+  // loadHandler intentionally keeps its Worker cached for reuse. This probe is
+  // a disposable process, so terminate it after the result has been flushed.
+  process.exit(0);
+} catch (error) {
+  await runtime?.close().catch(() => undefined);
+  await rm(homeDir, { recursive: true, force: true }).catch(() => undefined);
+  console.error(error instanceof Error ? error.stack : String(error));
+  process.exit(1);
+}
+`;
+
+  const result = spawnSync(electronBin, ['--input-type=module', '-'], {
+    cwd: rootDir,
+    input: probeSource,
+    encoding: 'utf8',
+    stdio: ['pipe', 'pipe', 'pipe'],
+    timeout: 60_000,
+    windowsHide: true,
+    env: {
+      ...process.env,
+      ELECTRON_RUN_AS_NODE: '1',
+    },
+  });
+  if (result.error) {
+    fail(`packaged KodaX Worker probe could not start: ${result.error.message}`);
+  }
+  if (result.status !== 0 || !result.stdout.includes(marker)) {
+    fail(
+      `packaged KodaX Worker probe failed (status=${result.status}, signal=${result.signal ?? 'none'}): ` +
+        `${(result.stderr || result.stdout || 'no output').slice(-4_000)}`,
+    );
+  }
+  ok('KodaX 0.7.66 Runtime and constructed-handler Workers execute from packaged asar');
+}
+
 async function main() {
   const installers = await findInstaller();
   for (const installer of installers) {
@@ -364,6 +526,7 @@ async function main() {
   }
   for (const asarPath of await findAsarPaths()) {
     await checkAsarContents(asarPath);
+    checkKodaxWorkersExecuteFromAsar(asarPath);
   }
   console.log('\n[smoke-pack] all checks passed');
 }

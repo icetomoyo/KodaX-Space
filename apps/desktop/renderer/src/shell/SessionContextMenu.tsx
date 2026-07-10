@@ -31,6 +31,7 @@ import { Caret } from '../components/Caret.js';
 import { Portal } from '../components/Portal.js';
 import { requestConfirm } from '../store/confirmStore.js';
 import { useI18n } from '../i18n/I18nProvider.js';
+import { pushToast } from '../store/toastStore.js';
 
 interface SessionContextMenuProps {
   readonly session: SessionMeta;
@@ -161,6 +162,10 @@ export function SessionContextMenu({
     if (r.ok && r.data.deleted) {
       removeSession(session.sessionId);
       window.dispatchEvent(new Event('kodax-space.focus-textarea'));
+    } else if (r.ok && r.data.reason === 'session_running') {
+      pushToast(t('menu.session.deleteBusy'), 'warning');
+    } else if (!r.ok) {
+      pushToast(r.error?.message ?? t('common.unknownError'), 'error');
     }
   }
 
@@ -200,13 +205,7 @@ export function SessionContextMenu({
         />
         <MenuRow label={t('menu.session.rename')} hint="R" onClick={onStartRename} />
         <MenuRow label={t('menu.session.fork')} hint="F" onClick={() => void onFork()} />
-        <MenuRow
-          label={t('menu.session.moveToGroup')}
-          hint=""
-          disabled
-          chevron
-          tip="v0.1.x"
-        />
+        <MenuRow label={t('menu.session.moveToGroup')} hint="" disabled chevron tip="v0.1.x" />
         <MenuRow
           label={t('menu.session.archive')}
           hint="A"
@@ -216,12 +215,7 @@ export function SessionContextMenu({
           }}
         />
         <Divider />
-        <MenuRow
-          label={t('menu.session.delete')}
-          hint="D"
-          onClick={() => void onDelete()}
-          danger
-        />
+        <MenuRow label={t('menu.session.delete')} hint="D" onClick={() => void onDelete()} danger />
       </div>
     </Portal>
   );

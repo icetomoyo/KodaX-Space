@@ -24,7 +24,6 @@ export function SurfaceTabs(): JSX.Element {
     <div className="p-2 flex gap-1 border-b border-border-default flex-shrink-0">
       {TABS.map(({ surface, label, Icon }) => {
         const active = currentSurface === surface;
-        // Partner 暂禁用（产出链路未补齐，见 store/surface.ts PARTNER_ENABLED）：置灰不可点。
         const disabled = surface === 'partner' && !PARTNER_ENABLED;
         return (
           <button

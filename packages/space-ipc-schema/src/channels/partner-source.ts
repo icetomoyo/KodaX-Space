@@ -28,6 +28,7 @@ export const partnerSourcesListChannel = {
   direction: 'invoke',
   input: z.object({
     sessionId: sessionIdSchema,
+    projectRoot: safePathSchema,
   }),
   output: z.object({
     sources: z.array(partnerSourceSchema).max(512),
@@ -55,6 +56,7 @@ export const partnerSourcesRemoveChannel = {
   direction: 'invoke',
   input: z.object({
     sessionId: sessionIdSchema,
+    projectRoot: safePathSchema,
     sourceId: sourceIdSchema,
   }),
   output: z.object({

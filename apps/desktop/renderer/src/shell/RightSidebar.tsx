@@ -233,11 +233,7 @@ function RightSidebarWidthToolbar({
     <div className="flex items-center justify-between gap-2 border-b border-border-default/60 px-2 py-1.5 flex-shrink-0">
       <span className="text-[10px] uppercase tracking-wider text-fg-faint">{t('right.panel')}</span>
       <div className="flex items-center gap-0.5">
-        <RightWidthButton
-          active={mode === 'max'}
-          label={t('right.maxWidth')}
-          onClick={onMaxWidth}
-        >
+        <RightWidthButton active={mode === 'max'} label={t('right.maxWidth')} onClick={onMaxWidth}>
           <Maximize2 size={13} strokeWidth={1.8} aria-hidden />
         </RightWidthButton>
         <RightWidthButton
@@ -318,6 +314,7 @@ interface SectionProps {
   sectionId?: TaskDockSectionId;
   focusRequest?: TaskDockFocusState;
   defaultOpen?: boolean;
+  autoOpenKey?: string | number | null;
   /** When set, the header shows a full-detail button that toggles the matching popout. */
   popoutKind?: PopoutKind;
   children: React.ReactNode;
@@ -361,12 +358,14 @@ function Section({
   sectionId,
   focusRequest,
   defaultOpen = true,
+  autoOpenKey = null,
   popoutKind,
   children,
 }: SectionProps): JSX.Element {
   const { t } = useI18n();
   const [open, setOpenState] = useState(() => readSectionOpen(sectionId, defaultOpen));
   const ref = useRef<HTMLElement | null>(null);
+  const lastAutoOpenKeyRef = useRef<string | number | null>(null);
   // Toggle behavior: if this popout is already active, the button closes it.
   const activePopoutKind = useAppStore((s) => s.activePopoutKind);
   const isThisPopoutActive = popoutKind !== undefined && activePopoutKind === popoutKind;
@@ -389,6 +388,12 @@ function Section({
     });
     return () => cancelAnimationFrame(frame);
   }, [focusRequest?.nonce, focusRequest?.section, sectionId, setOpen]);
+
+  useEffect(() => {
+    if (autoOpenKey === null || autoOpenKey === lastAutoOpenKeyRef.current) return;
+    lastAutoOpenKeyRef.current = autoOpenKey;
+    setOpen(true);
+  }, [autoOpenKey, setOpen]);
 
   return (
     <section
@@ -731,6 +736,10 @@ function AgentSection({
   const runningCount = agents.filter((agent) => agent.state === 'active').length;
   const waitingCount = agents.filter((agent) => agent.state === 'waiting').length;
   const completedCount = agents.filter((agent) => agent.state === 'completed').length;
+  const activeAgentKey = agents
+    .filter((agent) => agent.state === 'active')
+    .map((agent) => agent.id)
+    .join('|');
   // #7 fix: empty active workers does not always mean idle. idleWaiting, child fan-out,
   // and budget approval are still in-progress states, even before worker-tree has
   // concrete active cards. Mirror TasksPanel ordering so compact status is not blank.
@@ -750,7 +759,8 @@ function AgentSection({
       title={t('right.agentsCount', { count: agents.length })}
       sectionId="agents"
       focusRequest={focusRequest}
-      defaultOpen={false}
+      defaultOpen={runningCount > 0}
+      autoOpenKey={activeAgentKey || null}
       popoutKind="tasks"
     >
       {budget && (

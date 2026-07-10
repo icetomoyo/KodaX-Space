@@ -12,7 +12,7 @@
 
 import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import type { SkillLearningProposal, WorkflowLearningHandoff } from '@kodax-ai/kodax/agent';
@@ -26,19 +26,31 @@ import {
   registerSlash,
 } from '../slash/registry.js';
 import { BUILTIN_SLASH_COMMANDS, clearSlashGoalForSession } from '../slash/builtin.js';
+import {
+  SessionRuntimeStore,
+  setSessionRuntimeStoreForTesting,
+} from '../kodax/session-runtime-store.js';
 
 let captured: Array<{ channel: string; payload: unknown }>;
 let tempProjectRoots: string[];
 let originalKodaxHome: string | undefined;
+let runtimeDir = '';
+let runtimeStore: SessionRuntimeStore;
 
 beforeEach(async () => {
   captured = [];
   tempProjectRoots = [];
   originalKodaxHome = process.env.KODAX_HOME;
-  setRendererTarget(() => ({
-    send: (channel: string, payload: unknown) => captured.push({ channel, payload }),
-    isDestroyed: () => false,
-  }) as unknown as Electron.WebContents);
+  runtimeDir = await mkdtemp(path.join(os.tmpdir(), 'kodax-slash-runtime-'));
+  runtimeStore = new SessionRuntimeStore(runtimeDir);
+  setSessionRuntimeStoreForTesting(runtimeStore);
+  setRendererTarget(
+    () =>
+      ({
+        send: (channel: string, payload: unknown) => captured.push({ channel, payload }),
+        isDestroyed: () => false,
+      }) as unknown as Electron.WebContents,
+  );
   await kodaxHost.disposeAll();
   _resetSlashRegistryForTesting();
   for (const cmd of BUILTIN_SLASH_COMMANDS) {
@@ -49,10 +61,12 @@ beforeEach(async () => {
 afterEach(async () => {
   setRendererTarget(() => null);
   setUserConfigImpl(null);
+  setSessionRuntimeStoreForTesting(null);
   await kodaxHost.disposeAll();
   if (originalKodaxHome === undefined) delete process.env.KODAX_HOME;
   else process.env.KODAX_HOME = originalKodaxHome;
   await Promise.all(tempProjectRoots.map((dir) => rm(dir, { recursive: true, force: true })));
+  await rm(runtimeDir, { recursive: true, force: true }).catch(() => {});
   tempProjectRoots = [];
   _resetSlashRegistryForTesting();
 });
@@ -71,7 +85,10 @@ function mockUserConfig(config: Record<string, unknown>): void {
   setUserConfigImpl(impl);
 }
 
-async function createLearningSession(): Promise<{ readonly sessionId: string; readonly projectRoot: string }> {
+async function createLearningSession(): Promise<{
+  readonly sessionId: string;
+  readonly projectRoot: string;
+}> {
   const projectRoot = await mkdtemp(path.join(os.tmpdir(), 'kodax-space-learn-'));
   tempProjectRoots.push(projectRoot);
   process.env.KODAX_HOME = path.join(projectRoot, '.kodax-home');
@@ -117,7 +134,10 @@ function makeWorkflowLearningProposal(proposalId = 'learn-workflow-1'): Workflow
   };
 }
 
-async function seedLearningProposal(projectRoot: string, proposal: SkillLearningProposal | WorkflowLearningHandoff) {
+async function seedLearningProposal(
+  projectRoot: string,
+  proposal: SkillLearningProposal | WorkflowLearningHandoff,
+) {
   const sdk = await import('@kodax-ai/kodax/agent');
   const storePath = sdk.resolveLearningProposalStore(projectRoot);
   const entry = await sdk.upsertLearningProposal(storePath, proposal);
@@ -129,11 +149,47 @@ test('listSlashCommands returns all builtin commands in alpha order', () => {
   // 持续随 KodaX SDK 暴露新命令而增长——做集合包含断言，而不锁死完整数量
   // 避免每次加新内置命令都得改这个测试
   const required = new Set([
-    'agent-mode', 'auto', 'auto-denials', 'auto-engine', 'clear', 'compact', 'copy', 'cost',
-    'delete', 'doctor', 'exit', 'extensions', 'fallback', 'fork', 'goal', 'help', 'history',
-    'learn', 'load', 'mcp', 'memory', 'mode', 'model', 'new', 'paste', 'provider', 'reasoning',
-    'recover', 'reload', 'repointel', 'review', 'rewind', 'save', 'sessions', 'skill', 'skills',
-    'stall-log', 'status', 'thinking', 'verifier-log', 'workflow',
+    'agent-mode',
+    'auto',
+    'auto-denials',
+    'auto-engine',
+    'clear',
+    'compact',
+    'copy',
+    'cost',
+    'delete',
+    'doctor',
+    'exit',
+    'extensions',
+    'fallback',
+    'fork',
+    'goal',
+    'help',
+    'history',
+    'learn',
+    'load',
+    'mcp',
+    'memory',
+    'mode',
+    'model',
+    'new',
+    'paste',
+    'provider',
+    'reasoning',
+    'recover',
+    'reload',
+    'repointel',
+    'review',
+    'rewind',
+    'save',
+    'sessions',
+    'skill',
+    'skills',
+    'stall-log',
+    'status',
+    'thinking',
+    'verifier-log',
+    'workflow',
   ]);
   const sorted = cmds.slice().sort();
   for (const r of required) {
@@ -151,6 +207,45 @@ test('/mode plan switches permission mode', async () => {
   const result = await runCmd('mode', sessionId, ['plan']);
   assert.equal(result.ok, true);
   assert.equal(kodaxHost.get(sessionId)?.permissionMode, 'plan');
+  assert.equal((await runtimeStore.read(sessionId))?.permissionMode, 'plan');
+});
+
+test('/mode rolls back the in-memory change when runtime metadata cannot be persisted', async () => {
+  const { sessionId } = kodaxHost.createSession({
+    projectRoot: '/r',
+    provider: 'mock',
+  });
+  const runtimePath = path.join(runtimeDir, `${sessionId}.json`);
+  const malformed = Buffer.from('{preserve malformed runtime state', 'utf-8');
+  await writeFile(runtimePath, malformed);
+
+  const result = await runCmd('mode', sessionId, ['plan']);
+
+  assert.equal(result.ok, false);
+  assert.match(result.message ?? '', /could not be persisted; change was rolled back/);
+  assert.equal(kodaxHost.get(sessionId)?.permissionMode, 'accept-edits');
+  assert.deepEqual(await readFile(runtimePath), malformed);
+});
+
+test('/auto-engine emits no stale change event when persistence fails and rolls back', async () => {
+  const { sessionId } = kodaxHost.createSession({
+    projectRoot: '/r',
+    provider: 'mock',
+  });
+  await writeFile(path.join(runtimeDir, `${sessionId}.json`), '{malformed');
+
+  const result = await runCmd('auto-engine', sessionId, ['rules']);
+
+  assert.equal(result.ok, false);
+  assert.equal(kodaxHost.get(sessionId)?.autoModeEngine, 'llm');
+  assert.equal(
+    captured.some(
+      (entry) =>
+        entry.channel === 'session.event' &&
+        (entry.payload as { kind?: string }).kind === 'auto_engine_change',
+    ),
+    false,
+  );
 });
 
 test('/mode with no args returns usage', async () => {
@@ -191,8 +286,9 @@ test('/auto-engine rules switches engine + emits auto_engine_change', async () =
   assert.equal(result.ok, true);
   assert.equal(kodaxHost.get(sessionId)?.autoModeEngine, 'rules');
   const ev = captured.find(
-    (c) => c.channel === 'session.event'
-      && (c.payload as { kind: string }).kind === 'auto_engine_change',
+    (c) =>
+      c.channel === 'session.event' &&
+      (c.payload as { kind: string }).kind === 'auto_engine_change',
   );
   assert.ok(ev, 'auto-engine cmd should emit auto_engine_change');
 });
@@ -331,7 +427,11 @@ test('KodaX-compatible aliases resolve to canonical handlers', () => {
     ['bye', 'exit'],
   ];
   for (const [alias, canonical] of aliases) {
-    assert.equal(getSlashHandler(alias)?.name, canonical, `/${alias} should resolve to /${canonical}`);
+    assert.equal(
+      getSlashHandler(alias)?.name,
+      canonical,
+      `/${alias} should resolve to /${canonical}`,
+    );
   }
 });
 
@@ -352,9 +452,11 @@ test('/model default clears the override', async () => {
     provider: 'mock',
   });
   await runCmd('model', sessionId, ['claude-opus-4-7']);
+  assert.equal((await runtimeStore.read(sessionId))?.model, 'claude-opus-4-7');
   const result = await runCmd('model', sessionId, ['default']);
   assert.equal(result.ok, true);
   assert.equal(kodaxHost.get(sessionId)?.model, undefined);
+  assert.equal((await runtimeStore.read(sessionId))?.model, undefined);
 });
 
 test('/model without arg returns usage', async () => {
@@ -426,6 +528,7 @@ test('/thinking on sets thinking=true on session', async () => {
   const result = await runCmd('thinking', sessionId, ['on']);
   assert.equal(result.ok, true);
   assert.equal(kodaxHost.get(sessionId)?.thinking, true);
+  assert.equal((await runtimeStore.read(sessionId))?.thinking, true);
 });
 
 test('/thinking off sets thinking=false on session', async () => {
@@ -478,7 +581,10 @@ test('/learn pending lists SDK learning proposals', async () => {
 
 test('/learn diff and reject operate on SDK learning proposals', async () => {
   const { sessionId, projectRoot } = await createLearningSession();
-  const { storePath } = await seedLearningProposal(projectRoot, makeSkillLearningProposal('learn-reject-1'));
+  const { storePath } = await seedLearningProposal(
+    projectRoot,
+    makeSkillLearningProposal('learn-reject-1'),
+  );
 
   const diff = await runCmd('learn', sessionId, ['diff', 'learn-reject-1']);
   assert.equal(diff.ok, true);

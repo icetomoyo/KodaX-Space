@@ -8,6 +8,8 @@ import type { ArtifactContent } from './artifactContent';
 export interface ArtifactVersionPayload {
   content?: string;
   path?: string;
+  fileSource?: 'workspace' | 'artifact-store';
+  contentHash?: string;
 }
 
 /**
@@ -20,6 +22,7 @@ export function toArtifactContent(
   payload: ArtifactVersionPayload,
   projectRoot: string | null,
   permissions?: ArtifactHtmlPermissionsT,
+  artifactIdentity?: { id: string; version: number },
 ): ArtifactContent | null {
   switch (kind) {
     case 'markdown':
@@ -68,6 +71,19 @@ export function toArtifactContent(
     case 'pdf':
     case 'docx':
     case 'xlsx':
+    case 'pptx':
+      return payload.path !== undefined &&
+        (payload.fileSource === 'artifact-store' || projectRoot !== null)
+        ? {
+            kind,
+            ...(projectRoot !== null ? { projectRoot } : {}),
+            path: payload.path,
+            ...(payload.fileSource !== undefined ? { fileSource: payload.fileSource } : {}),
+            ...(artifactIdentity !== undefined
+              ? { artifactId: artifactIdentity.id, version: artifactIdentity.version }
+              : {}),
+          }
+        : null;
     case 'file':
       return payload.path !== undefined && projectRoot
         ? { kind, projectRoot, path: payload.path }

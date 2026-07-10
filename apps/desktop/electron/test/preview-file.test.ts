@@ -10,11 +10,51 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node
 import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import JSZip from 'jszip';
 import {
+  guardArtifactBinaryPreview,
   inlineMarkdownImageAssets,
   previewKindForContent,
   previewKindForPath,
 } from '../ipc/artifact.js';
+
+test('generated Office artifact preview rejects ZIP bombs before renderer parsing', async () => {
+  const zip = new JSZip();
+  zip.file('[Content_Types].xml', '<Types/>');
+  zip.file('word/document.xml', 'A'.repeat(10 * 1024 * 1024));
+  const bytes = await zip.generateAsync({
+    type: 'nodebuffer',
+    compression: 'DEFLATE',
+    compressionOptions: { level: 9 },
+  });
+
+  await assert.rejects(
+    () => guardArtifactBinaryPreview('docx', 'misleading.txt', bytes, false),
+    /compression-ratio limit/,
+  );
+  await assert.doesNotReject(() =>
+    guardArtifactBinaryPreview('docx', 'misleading.txt', bytes.subarray(0, 16), true),
+  );
+});
+
+test('generated Office artifact preview rejects aggregate ZIP-ratio bypasses', async () => {
+  const zip = new JSZip();
+  zip.file('[Content_Types].xml', '<Types/>');
+  zip.file('ppt/presentation.xml', '<p:presentation/>');
+  for (let index = 1; index <= 9; index += 1) {
+    zip.file(`ppt/slides/slide${index}.xml`, 'A'.repeat(1024 * 1024));
+  }
+  const bytes = await zip.generateAsync({
+    type: 'nodebuffer',
+    compression: 'DEFLATE',
+    compressionOptions: { level: 9 },
+  });
+
+  await assert.rejects(
+    () => guardArtifactBinaryPreview('pptx', 'deck.pptx', bytes, false),
+    /aggregate .*compression-ratio limit/,
+  );
+});
 
 test('previewKindForPath: known preview extensions → corresponding artifact kind', () => {
   assert.equal(previewKindForPath('a/index.html'), 'html');
@@ -26,7 +66,7 @@ test('previewKindForPath: known preview extensions → corresponding artifact ki
   assert.equal(previewKindForPath('photo.JPG'), 'file');
   assert.equal(previewKindForPath('clip.gif'), 'file');
   assert.equal(previewKindForPath('movie.mp4'), 'file');
-  assert.equal(previewKindForPath('deck.pptx'), 'file');
+  assert.equal(previewKindForPath('deck.pptx'), 'pptx');
   assert.equal(previewKindForPath('server.log'), 'file');
   assert.equal(previewKindForPath('config.ini'), 'file');
   assert.equal(previewKindForPath('report.pdf'), 'pdf');
@@ -42,7 +82,10 @@ test('previewKindForPath: known preview extensions → corresponding artifact ki
 test('previewKindForContent promotes script-driven html to interactive-html', () => {
   assert.equal(previewKindForContent('a/index.html', '<h1>static</h1>'), 'html');
   assert.equal(
-    previewKindForContent('a/index.html', '<canvas></canvas><script>requestAnimationFrame(() => {})</script>'),
+    previewKindForContent(
+      'a/index.html',
+      '<canvas></canvas><script>requestAnimationFrame(() => {})</script>',
+    ),
     'interactive-html',
   );
   assert.equal(previewKindForContent('app.ts', '<script>not html path</script>'), 'code');
@@ -71,7 +114,11 @@ test('inlineMarkdownImageAssets inlines local images but blocks symlink escapes'
     assert.match(local, /^!\[logo\]\(data:image\/png;base64,/);
 
     try {
-      symlinkSync(outside, join(project, 'linked-outside'), process.platform === 'win32' ? 'junction' : 'dir');
+      symlinkSync(
+        outside,
+        join(project, 'linked-outside'),
+        process.platform === 'win32' ? 'junction' : 'dir',
+      );
     } catch (err) {
       t.skip(`symlink unavailable: ${err instanceof Error ? err.message : String(err)}`);
       return;

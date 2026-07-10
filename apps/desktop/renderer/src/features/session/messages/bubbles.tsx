@@ -42,6 +42,13 @@ function approxTokens(text: string): number {
   return Math.max(1, Math.round(ascii / 4 + nonAscii));
 }
 
+function formatCompactCount(value: number): string {
+  if (!Number.isFinite(value)) return '0';
+  if (value < 1000) return String(value);
+  const precision = value < 10000 ? 1 : 0;
+  return `${(value / 1000).toFixed(precision).replace(/\.0$/, '')}k`;
+}
+
 function isDiffLike(text: string): boolean {
   // 启发式：unified diff 必含 "@@ " hunk 头，或 >40% 行以 +/- 起头（排除 ---/+++ 头部
   // 与 "- " 这种 markdown bullet / "  - " yaml 列表项 → 通常列表也是 dash-space，但
@@ -134,29 +141,31 @@ function MessageFooter({
 
   const timeStr = sentAt !== undefined ? formatRelativeTime(sentAt, t) : null;
 
-  // 时间 + copy 图标都常驻显示 (dim)；hover copy 按钮时图标右边淡入 "copy" 文字
-  // (group/copy 限制 hover 作用域到本按钮，避免 message bubble 整体 hover 时一直显示)。
-  // 这样用户一眼看见两个 affordance，不再需要鼠标先找到 bubble 才知道有 copy 可用。
+  // 时间 + action 图标都常驻显示 (dim)。hover 到 footer 或单个 action 时展开文字；
+  // 标签保持单行和稳定行高，避免中文在 max-width 动画中换行引发 hover 抖动。
+  const actionButtonClass =
+    'group/action inline-flex h-4 min-w-0 items-center gap-1 whitespace-nowrap leading-none text-fg-muted hover:text-fg-primary transition-colors';
+  const actionLabelClass =
+    'inline-block max-w-0 overflow-hidden whitespace-nowrap leading-none opacity-0 transition-[max-width,opacity] duration-150 group-hover/footer:max-w-[7.5rem] group-hover/footer:opacity-100 group-hover/action:max-w-[7.5rem] group-hover/action:opacity-100 group-focus-visible/action:max-w-[7.5rem] group-focus-visible/action:opacity-100';
+
   return (
-    <div className="mt-1 flex items-center gap-2 text-[11px]">
+    <div className="group/footer mt-1 flex min-h-4 items-center gap-2 text-[11px] leading-none">
       <button
         type="button"
         onClick={() => void copyToClipboard()}
-        className="group/copy flex items-center gap-1 text-fg-muted hover:text-fg-primary transition-colors"
+        className={actionButtonClass}
         title={t('message.copyMessage')}
         aria-label={t('message.copyMessage')}
       >
         {copied ? (
-          <span className="copy-pulse text-ok inline-flex items-center gap-1">
+          <span className="copy-pulse text-ok inline-flex items-center gap-1 whitespace-nowrap leading-none">
             <Check className="w-3 h-3" strokeWidth={2.5} aria-hidden /> {t('message.copied')}
           </span>
         ) : (
           <>
             {/* Lucide icon keeps copy visible across fonts and follows currentColor. */}
             <Copy className="w-3 h-3" strokeWidth={2} aria-hidden />
-            <span className="opacity-0 max-w-0 overflow-hidden group-hover/copy:opacity-100 group-hover/copy:max-w-[40px] transition-all duration-150">
-              {t('message.copy')}
-            </span>
+            <span className={actionLabelClass}>{t('message.copy')}</span>
           </>
         )}
       </button>
@@ -165,17 +174,18 @@ function MessageFooter({
           <button
             type="button"
             onClick={turnActions.onFork}
-            className="inline-flex items-center text-fg-muted hover:text-fg-primary transition-colors"
+            className={actionButtonClass}
             title={t('message.forkFromHere')}
             aria-label={t('message.forkFromHere')}
           >
             <GitFork className="w-3 h-3" strokeWidth={2} aria-hidden />
+            <span className={actionLabelClass}>{t('message.forkFromHere')}</span>
           </button>
           <button
             type="button"
             onClick={turnActions.rewindDisabled ? undefined : turnActions.onRewind}
             disabled={turnActions.rewindDisabled}
-            className="inline-flex items-center text-fg-muted hover:text-fg-primary transition-colors disabled:opacity-35 disabled:hover:text-fg-muted disabled:cursor-not-allowed"
+            className={`${actionButtonClass} disabled:opacity-35 disabled:hover:text-fg-muted disabled:cursor-not-allowed`}
             title={
               turnActions.rewindDisabled ? t('message.alreadyAtTurn') : t('message.rewindToHere')
             }
@@ -184,11 +194,14 @@ function MessageFooter({
             }
           >
             <Undo2 className="w-3 h-3" strokeWidth={2} aria-hidden />
+            <span className={actionLabelClass}>
+              {turnActions.rewindDisabled ? t('message.alreadyAtTurn') : t('message.rewindToHere')}
+            </span>
           </button>
         </>
       )}
       {timeStr && (
-        <span className="text-fg-muted" title={new Date(sentAt!).toLocaleString()}>
+        <span className="text-fg-muted leading-none" title={new Date(sentAt!).toLocaleString()}>
           {timeStr}
         </span>
       )}
@@ -373,6 +386,10 @@ export function AssistantBubble({
 }): JSX.Element {
   const { t } = useI18n();
   const [showThinking, setShowThinking] = useState(false);
+  const thinkingTokenLabel =
+    thinking !== undefined
+      ? t('message.thinkingSummary', { tokens: formatCompactCount(approxTokens(thinking)) })
+      : null;
   const turnActions =
     completed === true && turnIndex !== undefined
       ? {
@@ -390,13 +407,17 @@ export function AssistantBubble({
           type="button"
           onClick={() => setShowThinking((v) => !v)}
           className={[
-            'text-xs font-mono mb-1.5 flex items-center gap-1.5',
-            'dark:text-thinking dark:hover:text-thinking',
-            'text-thinking/80 hover:text-thinking',
+            'mb-1.5 inline-flex max-w-full items-center gap-1.5 rounded-md border px-2 py-1',
+            'border-border-default/70 bg-surface-2/45 font-mono text-[11px] text-fg-muted',
+            'transition-colors hover:border-thinking/35 hover:bg-hover-bg hover:text-fg-primary',
+            'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-border-strong',
           ].join(' ')}
+          aria-expanded={showThinking}
         >
           <Caret open={showThinking} />
-          <span>{t('message.thinkingSummary', { tokens: approxTokens(thinking) })}</span>
+          <span className="rounded border border-thinking/20 bg-thinking/10 px-1.5 py-0.5 text-thinking/90">
+            {thinkingTokenLabel}
+          </span>
         </button>
       )}
       {thinking !== undefined && (
@@ -506,7 +527,11 @@ export function ToolCallCard({
   }, [result, t]);
 
   return (
-    <div ref={cardRef} className={`tool-card-anim rounded border ${colorClass} text-xs font-mono`}>
+    <div
+      ref={cardRef}
+      data-testid="tool-call-card"
+      className={`tool-card-anim rounded border ${colorClass} text-xs font-mono`}
+    >
       {/* 2026-06-18: header 拆成「折叠 toggle」+「文件路径打开」两个**并列** button（不再把可点
           span 嵌进 button —— 嵌套 interactive 在部分浏览器键盘不可达）。input 含文件路径字段时
           右侧渲染裸路径可点击按钮（argSummary 带 "path: " 前缀+空格，不能直接判路径）；否则
@@ -542,8 +567,11 @@ export function ToolCallCard({
         );
       })()}
 
-      <Collapse open={expanded}>
-        <div className="border-t border-border-default px-3 py-2 space-y-2">
+      <Collapse open={expanded} lazyMount>
+        <div
+          data-testid="tool-call-card-details"
+          className="border-t border-border-default px-3 py-2 space-y-2"
+        >
           {/* OC-21 (v0.1.8): tool input 渲染走 toolRegistry 查表分发。任意 toolName 都进
               ToolEditInputView，registry 找不到 / 返 null 就回退到 raw-JSON collapse 视图。
               新 tool 加自己的 renderer 只需 registerToolInputRenderer，不再改本文件。 */}

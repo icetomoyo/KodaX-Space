@@ -24,21 +24,24 @@ beforeEach(async () => {
   captured.length = 0;
   mockState = installSessionStoreMock();
   await kodaxHost.disposeAll();
-  setRendererTarget(() => ({
-    send: (channel: string, payload: unknown) => {
-      captured.push({ channel, payload });
-      // F007: Mock 通过 broker 弹窗才能继续执行工具。测试自动 allow_once。
-      // 危险命令场景的 typed-confirm 由 broker.test.ts 单独验证；这里只关心事件流。
-      if (channel === 'permission.request') {
-        const p = payload as { reqId: string };
-        // 用 setImmediate 模拟 IPC 异步——避免在 push 发送过程中递归调用 resolve
-        setImmediate(() => permissionBroker.resolve(p.reqId, 'allow_once'));
-      }
-    },
-    isDestroyed: () => false,
-    // 我们只用到 send/isDestroyed——其他字段 stub 一下避免类型噪音
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  }) as any);
+  setRendererTarget(
+    () =>
+      ({
+        send: (channel: string, payload: unknown) => {
+          captured.push({ channel, payload });
+          // F007: Mock 通过 broker 弹窗才能继续执行工具。测试自动 allow_once。
+          // 危险命令场景的 typed-confirm 由 broker.test.ts 单独验证；这里只关心事件流。
+          if (channel === 'permission.request') {
+            const p = payload as { reqId: string };
+            // 用 setImmediate 模拟 IPC 异步——避免在 push 发送过程中递归调用 resolve
+            setImmediate(() => permissionBroker.resolve(p.reqId, 'allow_once'));
+          }
+        },
+        isDestroyed: () => false,
+        // 我们只用到 send/isDestroyed——其他字段 stub 一下避免类型噪音
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      }) as any,
+  );
 });
 
 afterEach(async () => {
@@ -48,7 +51,9 @@ afterEach(async () => {
 });
 
 function getEvents(): readonly SessionEvent[] {
-  return captured.filter((c) => c.channel === 'session.event').map((c) => c.payload as SessionEvent);
+  return captured
+    .filter((c) => c.channel === 'session.event')
+    .map((c) => c.payload as SessionEvent);
 }
 
 function waitFor(predicate: () => boolean, timeoutMs = 3000): Promise<void> {
@@ -134,28 +139,33 @@ test('cancel mid-stream emits session_error("cancelled") and aborts further even
     assert.equal(last.error, 'cancelled');
   }
   // session_complete 不应该出现在 cancel 后
-  assert.equal(events.some((e) => e.kind === 'session_complete'), false);
+  assert.equal(
+    events.some((e) => e.kind === 'session_complete'),
+    false,
+  );
 });
 
 test('cancel returns and emits cancelled fallback when adapter cancel never resolves', async () => {
   const never = new Promise<void>(() => {});
-  kodaxHost.setFactory((opts): ManagedSession => ({
-    sessionId: opts.sessionId,
-    projectRoot: opts.projectRoot,
-    provider: opts.provider,
-    reasoningMode: opts.reasoningMode,
-    permissionMode: opts.permissionMode,
-    autoModeEngine: opts.autoModeEngine ?? 'llm',
-    agentMode: opts.agentMode ?? 'ama',
-    surface: opts.surface ?? 'code',
-    createdAt: Date.now(),
-    lastActivityAt: Date.now(),
-    title: undefined,
-    isRunning: () => true,
-    send: async () => ({ queued: false }),
-    cancel: () => never,
-    dispose: async () => {},
-  }));
+  kodaxHost.setFactory(
+    (opts): ManagedSession => ({
+      sessionId: opts.sessionId,
+      projectRoot: opts.projectRoot,
+      provider: opts.provider,
+      reasoningMode: opts.reasoningMode,
+      permissionMode: opts.permissionMode,
+      autoModeEngine: opts.autoModeEngine ?? 'llm',
+      agentMode: opts.agentMode ?? 'ama',
+      surface: opts.surface ?? 'code',
+      createdAt: Date.now(),
+      lastActivityAt: Date.now(),
+      title: undefined,
+      isRunning: () => true,
+      send: async () => ({ queued: false }),
+      cancel: () => never,
+      dispose: async () => {},
+    }),
+  );
   try {
     const { sessionId } = kodaxHost.createSession({ projectRoot: '/r', provider: 'mock' });
     const result = await Promise.race([
@@ -195,6 +205,27 @@ test('delete: removes session from list (in-memory + persisted)', async () => {
   // 旧 in-memory-only 语义（"second delete returns false"）不同；符合 REST DELETE 惯例。
   const second = await kodaxHost.delete(sessionId);
   assert.equal(second, true);
+});
+
+test('delete: returns false and preserves persisted state when SDK reports session_running', async () => {
+  const sessionId = 's_busy_elsewhere';
+  mockState.seed(sessionId, '/r', 'Busy elsewhere');
+  mockState.setDeleteBusy(true);
+
+  const deleted = await kodaxHost.delete(sessionId);
+
+  assert.equal(deleted, false);
+  assert.equal(mockState.has(sessionId), true);
+});
+
+test('delete: reattaches a local session when another KodaX process keeps disk state busy', async () => {
+  const { sessionId } = kodaxHost.createSession({ projectRoot: '/r', provider: 'mock' });
+  mockState.seed(sessionId, '/r', 'Busy local session');
+  mockState.setDeleteBusy(true);
+
+  assert.equal(await kodaxHost.delete(sessionId), false);
+  assert.ok(kodaxHost.get(sessionId), 'busy delete should restore the disposed local session');
+  assert.equal(mockState.has(sessionId), true);
 });
 
 // ---- FEATURE_005: title + filtered list + setTitle ----

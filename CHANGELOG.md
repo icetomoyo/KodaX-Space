@@ -14,6 +14,45 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ## [Unreleased]
 
+## [0.1.30] - 2026-07-10
+
+### Theme
+
+**Partner working-agent foundation: mode-first task entry, workspace-first delivery, controlled writes, durable knowledge, and bounded coding boosts, aligned with KodaX 0.7.66.**
+
+This release re-enables Partner around one composer-first mental model. The user chooses a broad work mode, provides the task and sources, and lets Partner infer the detailed capability playbook and deliverable shape. Outputs are no longer limited to a small format list: Partner has a writable run workspace, an indexed delivery browser, checkpointed project writes, strict review fallback, and small isolated helper scripts when coding materially improves knowledge work.
+
+### Added
+
+- **Mode-first Partner workbench (F095)** - Added document processing, financial services, data analysis and visualization, deep research, product management, slides, design, and email editing modes. Task routes, source use, tools, and output shape are inferred from the selected mode plus the composer request; Advanced remains an override surface.
+- **Workspace-first Partner delivery (F114)** - Added per-session writable run-output roots, arbitrary bounded file delivery, a durable delivery registry, known-format rich preview, and metadata/reveal/copy-path handling for unknown formats.
+- **Checkpointed and reviewed writes (F113/F114)** - Added hash-guarded file checkpoints, diff previews, rollback, and reviewed proposals for strict or sensitive project-file changes. Concurrent user edits fail closed instead of being overwritten.
+- **Office/PDF baseline writers (F109)** - Added deterministic DOCX, XLSX, PPTX, and Unicode PDF generation as convenient structured output paths, without making those formats the Partner ceiling.
+- **Partner Sources and Knowledge Base (F070-F074)** - Sources can be staged before the first Partner session and attached on send. The project-scoped KB adds CJK-aware lexical search, source references, configurable policies, lint/freshness diagnostics, and persisted manual maintenance reports.
+- **Bounded coding boost** - Partner can write task-local JavaScript helpers in its output workspace and execute them through a one-shot Worker plus capability-free VM. Helper inputs, logs, writes, time, memory, and payloads are bounded; shell, package managers, dynamic import, environment access, subagents, and unrestricted filesystem access are absent.
+- **Local policy and audit (F098)** - Added Space-owned policy guards, redacted audit records/export, and a compact local Policy & Audit surface for Partner source, artifact, delivery, proposal, and workspace actions.
+
+### Changed
+
+- **KodaX 0.7.66 SDK catch-up** - Root and desktop workspaces now resolve the exact published `@kodax-ai/kodax@0.7.66` tarball. An isolated compatibility gate exercises the new `/runtime` export without adding it to normal app startup, local linking mirrors it, and package smoke requires the Runtime, semantic, and constructed-handler Worker sidecars.
+- **Runtime adoption boundary** - Space validates `embedded + worker`, `requirements.hardDispose`, protocol metadata, and session-service parity, but does not migrate live 0.1.30 sessions or Partner helpers to the shared daemon. The daemon DTO boundary rejects process-local callbacks, and the SDK does not yet expose a general per-invocation execution service that directly replaces `run_partner_helper`.
+- **Unified Partner composer** - Removed the separate top-level start-task interaction. Sending from the normal composer creates/resumes the Partner session and attaches any staged sources, keeping task start and follow-up conversation in one place.
+- **Output selection is open by default** - The normal path is a run workspace. Office/PDF creation and reviewed workspace text are convenience/strict modes, not fixed output requirements.
+
+### Fixed
+
+- **Partner write and source hardening** - Closed path traversal, symlink/hard-link alias, race, encoding, hashing, and corrupt-store edge cases across source extraction, delivery writes, checkpoints, proposals, and durable stores.
+- **Office/source reliability** - Isolated PDF and Office parsing from Electron main, added ZIP expansion guards and document limits, fixed Unicode PDF output, and moved DOCX/XLSX/PPTX preview parsing into disposable bounded workers.
+- **Node 20 extraction-worker compatibility** - Source-mode document extraction now boots through the programmatic tsx importer, avoiding Node 20's `.ts` Worker entrypoint resolution failure while packaged builds continue to launch the compiled sidecar directly.
+- **Queue and session continuity** - Fixed active queue watchers consuming Partner follow-ups, kept session/runtime metadata coherent through rollback and deletion, and restored a usable composer after Partner session removal.
+- **Partner discoverability honesty** - Suppressed unavailable executable Skills from Partner while preserving Coder discovery, and added in-app preview from the Outputs delivery browser.
+
+### Security
+
+- **Isolated Partner helpers** - Each helper runs in a disposable Worker with hard wall-clock termination and V8 resource limits. A capability-free VM receives only cloned input and a serialized file snapshot; the parent independently validates and applies the write journal.
+- **Fail-closed file mutation** - Sensitive names/extensions, paths outside allowed roots, alias escapes, oversized content, stale hashes, and conflicting rollback targets are rejected. Durable state uses atomic writes and preserves corrupt originals for diagnosis.
+- **KodaX Runtime capability verification** - A compatibility gate proves the published 0.7.66 Worker Runtime satisfies hard-dispose and rejects inline downgrade, while packaged smoke prevents missing Runtime/constructed-handler sidecars.
+
 ## [0.1.29] - 2026-07-08
 
 ### Theme

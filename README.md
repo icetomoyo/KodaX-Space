@@ -13,7 +13,7 @@
   <a href="https://github.com/icetomoyo/KodaX-Space/releases/latest"><img alt="release" src="https://img.shields.io/github/v/release/icetomoyo/KodaX-Space?style=flat-square"></a>
   <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-KAI--FCL-orange?style=flat-square"></a>
   <a href="https://github.com/icetomoyo/KodaX-Space/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/icetomoyo/KodaX-Space/ci.yml?style=flat-square&label=ci"></a>
-  <img alt="KodaX SDK" src="https://img.shields.io/badge/KodaX_SDK-0.7.63-2ecc71?style=flat-square">
+  <img alt="KodaX SDK" src="https://img.shields.io/badge/KodaX_SDK-0.7.66-2ecc71?style=flat-square">
   <img alt="platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-34495e?style=flat-square">
 </p>
 
@@ -89,6 +89,23 @@ npm run dev
 </table>
 
 ## Current Release
+
+**v0.1.30 - Partner Working Agent Foundation**
+
+Release candidate: 2026-07-10
+
+This release re-enables Partner as a mode-first working agent and aligns KodaX Space with `@kodax-ai/kodax@0.7.66`. Users choose a work mode and describe the task once; Partner infers the capability playbook and output shape, works from staged sources and project knowledge, and produces inspectable files in a writable run workspace.
+
+| Area | Summary |
+| --- | --- |
+| Work modes | Document processing, financial services, data analysis and visualization, deep research, product management, slides, design, and email editing share one composer-first flow. |
+| Open deliverables | Arbitrary bounded files can be delivered from a Partner run workspace; Office/PDF writers are convenience paths rather than the output ceiling. |
+| Controlled writes | Checkpointed project writes, diff/rollback, and strict reviewed proposals protect sensitive or existing files. |
+| Sources and knowledge | Sources can be staged before the first session; the local Partner KB supports CJK-aware search, citations, configuration, and maintenance reports. |
+| Lightweight coding | Partner may create and run bounded task-local JavaScript helpers without receiving unrestricted shell, package-manager, subagent, or repository mutation powers. |
+| KodaX 0.7.66 | The published Runtime facade and Worker sidecars are packaged and compatibility-tested. Live Space sessions remain on the proven 0.1.30 host path; daemon migration is intentionally deferred. |
+
+See [CHANGELOG.md](CHANGELOG.md) and [docs/features/v0.1.30.md](docs/features/v0.1.30.md) for the full release notes and capability boundary.
 
 **v0.1.29 - Workspace Environment Hub + Task Dock**
 

@@ -6,6 +6,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { getSpaceDataDir } from './data-paths.js';
+import { replaceFileWithoutFollowingAliases } from './atomic-file.js';
 
 export interface WorkflowPolicy {
   readonly maxAgents: number;
@@ -114,7 +115,10 @@ export class WorkflowPolicyStore {
       }
     } catch (err) {
       if (!(err instanceof Error && 'code' in err && (err as { code: string }).code === 'ENOENT')) {
-        console.warn('[WorkflowPolicy] read failed, using defaults:', err instanceof Error ? err.message : err);
+        console.warn(
+          '[WorkflowPolicy] read failed, using defaults:',
+          err instanceof Error ? err.message : err,
+        );
       }
       this.cached = DEFAULT_WORKFLOW_POLICY;
     }
@@ -142,27 +146,15 @@ export class WorkflowPolicyStore {
     try {
       const dir = path.dirname(this.filePath);
       await fs.mkdir(dir, { recursive: true, mode: 0o700 });
-      const tmp = `${this.filePath}.tmp-${process.pid}`;
       const persisted: PersistedWorkflowPolicy = {
         ...this.cached,
         schemaVersion: POLICY_SCHEMA_VERSION,
       };
-      await fs.writeFile(tmp, JSON.stringify(persisted, null, 2), {
-        encoding: 'utf-8',
-        mode: 0o600,
-      });
-      try {
-        await fs.rename(tmp, this.filePath);
-      } catch (err) {
-        const code = err instanceof Error && 'code' in err ? (err as { code: string }).code : '';
-        if (code === 'EEXIST' || code === 'EPERM') {
-          await fs.copyFile(tmp, this.filePath);
-          await fs.unlink(tmp).catch(() => {});
-        } else {
-          await fs.unlink(tmp).catch(() => {});
-          throw err;
-        }
-      }
+      await replaceFileWithoutFollowingAliases(
+        this.filePath,
+        Buffer.from(JSON.stringify(persisted, null, 2), 'utf8'),
+        'workflow policy changed during atomic replacement',
+      );
     } catch (err) {
       console.warn('[WorkflowPolicy] persist failed:', err instanceof Error ? err.message : err);
     } finally {

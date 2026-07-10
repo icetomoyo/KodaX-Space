@@ -55,23 +55,20 @@ export const SURFACES: Record<Surface, SurfaceSpec> = {
 export const DEFAULT_SURFACE: Surface = 'code';
 
 /**
- * Partner surface 总开关。**暂禁用**：Partner 的「产出交付物」链路不完整——
- * `create_artifact` 的 office 类（pdf/docx/xlsx）要求先 `write` 文件再引用其 path，
- * 而 Partner 工具策略禁 `write`/`edit`/`bash`，且无 `pptx` kind，导致无法真正产出
- * 可交付的 office 文件（只能出 markdown/html/svg/chart 类面板内产物）。
+ * Partner surface availability gate.
  *
- * false 时：SurfaceTabs 的 Partner 按钮置灰不可点（唯一切入口），且持久化的
- * 'partner' 不再从启动恢复（`lsGetSurface` 返回 Coder）。Partner 相关代码
- * （PartnerWorkspace / partner-tools / partner-profile / 测试）全部保留——待产出
- * 链路补齐后翻 true 即恢复。setSurface 原语不动（仅 UI + 启动读取两处 gate）。
+ * Partner is enabled after the v0.1.30 workspace-first redesign landed:
+ * arbitrary run-output deliverables, checkpointed workspace-session writes,
+ * Office/PDF convenience artifacts, reviewed strict fallbacks, KB, sources,
+ * and local policy/audit controls. Partner still does not receive raw
+ * write/edit/bash tools.
  */
-export const PARTNER_ENABLED = false;
+export const PARTNER_ENABLED = true;
 
 // F046: currentSurface 持久化——重启回到上次停留的面（Coder/Partner）。
 // 仅持久化"哪个面"，不持久化"哪个 session"——与 Coder 现状一致（重启都回各面 dashboard）。
 const LS_KEY_SURFACE = 'kodax-space.currentSurface';
-const IS_WIN_SURFACE =
-  typeof navigator !== 'undefined' && /Windows/i.test(navigator.userAgent);
+const IS_WIN_SURFACE = typeof navigator !== 'undefined' && /Windows/i.test(navigator.userAgent);
 
 function sessionSurface(session: SessionMeta): Surface {
   return session.surface ?? 'code';

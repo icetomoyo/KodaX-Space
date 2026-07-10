@@ -17,11 +17,11 @@ export function PartnerWelcome(): JSX.Element {
       <div className="text-[13px] text-fg-secondary max-w-[420px] leading-relaxed">
         {t('partner.welcome.description')}
       </div>
-      <div className="text-[12px] text-fg-muted max-w-[420px]">
-        {currentProjectPath
-          ? t('partner.welcome.startWithProject')
-          : t('partner.welcome.openFolderFirst')}
-      </div>
+      {!currentProjectPath && (
+        <div className="text-[12px] text-fg-muted max-w-[420px]">
+          {t('partner.welcome.openFolderFirst')}
+        </div>
+      )}
     </div>
   );
 }

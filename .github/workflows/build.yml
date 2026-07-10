@@ -31,7 +31,11 @@ jobs:
           cache: 'npm'
 
       - name: Install
-        run: npm ci || npm install
+        run: npm ci
+
+      - name: Install Unicode PDF font (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends fonts-wqy-zenhei
 
       - name: Build packages (needed for typecheck cross-package + tests)
         run: npm run build:packages
@@ -59,6 +63,7 @@ jobs:
         run: |
           test -f dist-electron/main.js || (echo "::error::main.js missing" && exit 1)
           test -f dist-electron/preload.js || (echo "::error::preload.js missing" && exit 1)
+          test -f dist-electron/partner-source-extraction-worker.js || (echo "::error::partner source extraction worker missing" && exit 1)
           test -f apps/desktop/dist/index.html || (echo "::error::renderer index.html missing" && exit 1)
           echo "all build artifacts present"
 

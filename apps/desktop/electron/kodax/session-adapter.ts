@@ -14,7 +14,16 @@
 //   KodaXEvents.onStreamEnd      → emit({ kind:'session_complete', ... })
 //   (catch in agent.run)         → emit({ kind:'session_error',  ... })
 
-import type { AgentMode, AutoModeEngine, InputArtifact, PermissionDecision, PermissionMode, SessionEvent, SessionSendQueueMode, Surface } from '@kodax-space/space-ipc-schema';
+import type {
+  AgentMode,
+  AutoModeEngine,
+  InputArtifact,
+  PermissionDecision,
+  PermissionMode,
+  SessionEvent,
+  SessionSendQueueMode,
+  Surface,
+} from '@kodax-space/space-ipc-schema';
 
 export type PermissionRequestFn = (req: {
   readonly toolId: string;
@@ -56,6 +65,7 @@ export interface SendResult {
 
 export type SendOptions = {
   readonly queueMode?: SessionSendQueueMode;
+  readonly promptOverlay?: string;
 };
 
 export interface ManagedSession {
@@ -146,7 +156,11 @@ export interface ManagedSession {
    * buildPromptMessageContent 会把每张 image 拼成 multimodal content block。
    * 未传时行为等同于"纯文本 prompt"，跟 v0.1.8 之前一致。
    */
-  send(prompt: string, artifacts?: readonly InputArtifact[], options?: SendOptions): Promise<SendResult>;
+  send(
+    prompt: string,
+    artifacts?: readonly InputArtifact[],
+    options?: SendOptions,
+  ): Promise<SendResult>;
 
   /**
    * 中断当前正在跑的 send。

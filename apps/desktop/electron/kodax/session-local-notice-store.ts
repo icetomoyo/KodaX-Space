@@ -4,6 +4,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import type { SessionLocalNotice } from '@kodax-space/space-ipc-schema';
 import { getSpaceDataDir } from './data-paths.js';
+import { replaceFileWithoutFollowingAliases } from './atomic-file.js';
 
 const MAX_LOCAL_NOTICES_PER_SESSION = 1000;
 const MAX_LOCAL_NOTICE_TEXT = 262_144;
@@ -87,7 +88,9 @@ export class SessionLocalNoticeStore {
   async append(sessionId: string, notice: SessionLocalNotice): Promise<void> {
     const filePath = this.filePath(sessionId);
     if (filePath === null) return;
-    await this.enqueueSessionWrite(sessionId, () => this.appendUnlocked(sessionId, filePath, notice));
+    await this.enqueueSessionWrite(sessionId, () =>
+      this.appendUnlocked(sessionId, filePath, notice),
+    );
   }
 
   private async appendUnlocked(
@@ -109,7 +112,9 @@ export class SessionLocalNoticeStore {
   async replace(sessionId: string, notices: readonly SessionLocalNotice[]): Promise<void> {
     const filePath = this.filePath(sessionId);
     if (filePath === null) return;
-    await this.enqueueSessionWrite(sessionId, () => this.replaceUnlocked(sessionId, filePath, notices));
+    await this.enqueueSessionWrite(sessionId, () =>
+      this.replaceUnlocked(sessionId, filePath, notices),
+    );
   }
 
   private async replaceUnlocked(
@@ -157,23 +162,11 @@ export class SessionLocalNoticeStore {
       notices: normalizeNotices(notices),
       updatedAt: new Date().toISOString(),
     };
-    const tmp = `${filePath}.tmp-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
-    await fs.writeFile(tmp, JSON.stringify(persisted, null, 2), {
-      encoding: 'utf-8',
-      mode: 0o600,
-    });
-    try {
-      await fs.rename(tmp, filePath);
-    } catch (err) {
-      const code = err instanceof Error && 'code' in err ? (err as { code: string }).code : '';
-      if (code === 'EEXIST' || code === 'EPERM') {
-        await fs.copyFile(tmp, filePath);
-        await fs.unlink(tmp).catch(() => {});
-      } else {
-        await fs.unlink(tmp).catch(() => {});
-        throw err;
-      }
-    }
+    await replaceFileWithoutFollowingAliases(
+      filePath,
+      Buffer.from(JSON.stringify(persisted, null, 2), 'utf8'),
+      'session local notices changed during atomic replacement',
+    );
   }
 
   private async enqueueSessionWrite(sessionId: string, op: () => Promise<void>): Promise<void> {
@@ -197,8 +190,6 @@ export function getSessionLocalNoticeStore(): SessionLocalNoticeStore {
   return activeSessionLocalNoticeStore;
 }
 
-export function setSessionLocalNoticeStoreForTesting(
-  store: SessionLocalNoticeStore | null,
-): void {
+export function setSessionLocalNoticeStoreForTesting(store: SessionLocalNoticeStore | null): void {
   activeSessionLocalNoticeStore = store ?? defaultSessionLocalNoticeStore;
 }

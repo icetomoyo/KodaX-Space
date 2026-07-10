@@ -12,6 +12,8 @@ export type PartnerToolScope =
   | 'artifact'
   | 'knowledge-base'
   | 'source'
+  | 'workspace-delivery'
+  | 'workspace-file-proposal'
   | 'network-research'
   | 'readonly';
 
@@ -31,21 +33,17 @@ export interface PartnerSpaceToolPolicy {
 }
 
 //
-// Partner doc-workspace 是「读 + 研究」面：允许只读检索 + web 研究，阻断 bash / edit / write
-// 等任何会改文件系统 / 跑 shell / 派生 subagent 的工具。
+// Partner is a gated working surface, not a raw Coder session.
 //
-// **基于 SDK 能力维度元数据**（ADR-007 R3）：2026-06-13 实测 SDK 已暴露
-// `resolveToolCapability(toolName): ToolCapability`（tier = 'read' | 'edit' | 'bash:*' |
-// 'subagent'，未知名 fail-closed 到 'subagent'）。Partner 放行 tier === 'read'，即只读检索
-// （read/grep/glob/repo-intel/symbol... 新增只读工具自动流过，不必维护硬编码名单）。
+// It allows read/search/code-intelligence tools, web research, and explicitly
+// registered Space-owned tools such as artifacts, KB, sources, delivery
+// outputs, reviewed proposals, and checkpointed workspace writes. It does not
+// inherit arbitrary SDK edit/write/bash/subagent tools.
 //
-// web 研究工具（web_fetch/web_search）的 tier 不是 'read'（含网络副作用），但 Partner 研究
-// 场景需要 → 单列显式 allow。这是当前 ToolCapability tier 没有独立 'network' 档的 workaround；
-// 若 SDK 后续把 web 归一个明确只读-网络 tier，可移除此显式集。退场点见 [[kodax_sdk_export_gaps]]。
-//
-// fail-closed：tier 非 'read' 且不在 web allow 集 → 一律阻断（含 SDK 新增的 mutation/shell
-// 工具、未知 MCP 工具），与 plan-mode 的 fail-closed 哲学一致——安全边界宁可过严不可漏。
-
+// SDK tool capability metadata remains the base line: read-tier tools flow
+// through, web tools are explicitly allowed for research, and stateful Partner
+// tools must register a PartnerSpaceToolPolicy. Unknown mutation/shell/subagent
+// tools fail closed unless a Partner policy opts them into a bounded scope.
 /** Partner 显式允许的网络研究工具（tier 非 'read'，但 Partner 研究需要）。 */
 export const PARTNER_NETWORK_ALLOW: ReadonlySet<string> = new Set(['web_fetch', 'web_search']);
 
@@ -55,7 +53,10 @@ export const PARTNER_NETWORK_ALLOW: ReadonlySet<string> = new Set(['web_fetch', 
  * resolveToolCapability 对它 fail-closed 到 'subagent' → 不显式放行就会被拦。Partner 产出
  * 报告/文档/图表正是核心场景,故放行。
  */
-export const PARTNER_SPACE_TOOL_ALLOW: ReadonlySet<string> = new Set(['create_artifact']);
+export const PARTNER_SPACE_TOOL_ALLOW: ReadonlySet<string> = new Set([
+  'create_artifact',
+  'create_office_artifact',
+]);
 
 /**
  * Space-side fallback for Coder plan mode. SDK metadata is still the primary source
@@ -116,7 +117,12 @@ function partnerPolicyAllows(toolName: string): boolean {
   const policy = getPartnerSpaceToolPolicy(toolName);
   if (!policy) return false;
   if (policy.sideEffect === 'readonly' || policy.sideEffect === 'reads-network') return true;
-  if (policy.scope === 'artifact' || policy.scope === 'knowledge-base') {
+  if (
+    policy.scope === 'artifact' ||
+    policy.scope === 'knowledge-base' ||
+    policy.scope === 'workspace-delivery' ||
+    policy.scope === 'workspace-file-proposal'
+  ) {
     return policy.sideEffect === 'mutates-state';
   }
   if (policy.scope === 'network-research') {
@@ -200,7 +206,7 @@ export function computeToolBlockReason(args: {
   } = args;
   if (surface === 'partner') {
     if (!isPartnerToolAllowed(tool, resolveCapability(), resolveRegisteredTool?.())) {
-      return `[partner] tool '${tool}' is not available in the Partner doc-workspace (read / search / web / artifact tools only). Describe the outcome instead of running it.`;
+      return `[partner] tool '${tool}' is not available in the Partner working workspace (read / search / web / delivery / artifact / checkpointed workspace tools only). Describe the outcome instead of running it.`;
     }
     return null; // Partner 白名单已是最严约束；plan-mode 不再二次裁剪（否则误拦 web 研究）
   }

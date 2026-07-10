@@ -17,6 +17,14 @@ export function extForKind(kind: ArtifactKindT): string {
       return 'svg';
     case 'chart':
       return 'json';
+    case 'pdf':
+      return 'pdf';
+    case 'docx':
+      return 'docx';
+    case 'xlsx':
+      return 'xlsx';
+    case 'pptx':
+      return 'pptx';
     default:
       return 'txt';
   }
@@ -54,7 +62,9 @@ export function parseDataUri(uri: string): ParsedDataUri | null {
   const isBase64 = /(^|;)base64$/i.test(header);
   const mime = header.split(';')[0] || 'text/plain';
   try {
-    const data = isBase64 ? Buffer.from(payload, 'base64') : Buffer.from(decodeURIComponent(payload), 'utf8');
+    const data = isBase64
+      ? Buffer.from(payload, 'base64')
+      : Buffer.from(decodeURIComponent(payload), 'utf8');
     return { mime, data };
   } catch {
     return null;

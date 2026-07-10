@@ -15,6 +15,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent,
   type PointerEvent as ReactPointerEvent,
@@ -93,6 +94,7 @@ type SubCluster = {
   id: string;
   title: string;
   tools: ToolCallMsg[];
+  turnIndex?: number;
   /** title 是不是 summarizeTools 兜底生成（"1 read"）而非真正的 assistant 文本。
    *  synthetic=true 时 UI 可以选择性隐藏 title 避免噪音；synthetic=false 时**必须**
    *  显示，否则 assistant 的真实回复内容会从对话流里消失。 */
@@ -107,6 +109,7 @@ type ToolClusterMessage = {
   id: string;
   subClusters: SubCluster[];
   totalTools: number;
+  turnIndex?: number;
   /** 组内折进来的 thinking 估算 token 总量（4 chars ≈ 1 token）。groupTools 里预算一次，
    *  避免 ToolCluster 每次 render 都 reduce 全部 thinking 字符串。0 = 没折进任何推理。 */
   thinkingTokens: number;
@@ -134,6 +137,7 @@ type ThinkingMessage = {
   kind: 'thinking';
   id: string;
   thinking: string;
+  turnIndex?: number;
 };
 
 type ViewMessage =
@@ -141,6 +145,20 @@ type ViewMessage =
   | ToolClusterMessage
   | ArtifactMessage
   | ThinkingMessage;
+
+type ProcessReceiptMessage = Extract<ViewMessage, { kind: 'thinking' | 'tool_cluster' }>;
+type StandardViewMessage = Exclude<ViewMessage, ProcessReceiptMessage>;
+type ConversationRenderItem =
+  | {
+      kind: 'message';
+      id: string;
+      message: StandardViewMessage;
+    }
+  | {
+      kind: 'receipts';
+      id: string;
+      receipts: ProcessReceiptMessage[];
+    };
 
 /**
  * v0.1.4: assistant_text 的 text/thinking 内容都拆成独立 view-message 渲染了
@@ -152,6 +170,108 @@ type ViewMessage =
  * Fallback：按 tool 名汇总 "Ran 3 reads + 1 grep"。
  */
 type Translate = (key: MessageKey, vars?: Record<string, string | number>) => string;
+
+type QueryJumpAnchor = {
+  id: string;
+  content: string;
+  ordinal: number;
+};
+
+type ViewportScrollAnchor = {
+  id: string;
+  offsetTop: number;
+};
+
+type ScrollSnapshot = {
+  scrollTop: number;
+  scrollHeight: number;
+  clientHeight: number;
+  anchor: ViewportScrollAnchor | null;
+  atBottom: boolean;
+};
+
+const QUERY_JUMP_MIN_ANCHORS = 3;
+const QUERY_JUMP_TOP_PADDING_PX = 10;
+const QUERY_JUMP_TITLE_CHARS = 44;
+const QUERY_JUMP_BODY_CHARS = 116;
+
+function compactInlineText(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+function truncateText(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, Math.max(0, maxChars - 1)).trimEnd()}...`;
+}
+
+function formatCompactCount(value: number): string {
+  if (!Number.isFinite(value)) return '0';
+  if (value < 1000) return String(value);
+  const precision = value < 10000 ? 1 : 0;
+  return `${(value / 1000).toFixed(precision).replace(/\.0$/, '')}k`;
+}
+
+function messageTopWithinScroller(scroller: HTMLDivElement, target: HTMLElement): number {
+  return (
+    target.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop
+  );
+}
+
+function findActiveQueryAnchorId(
+  scroller: HTMLDivElement,
+  anchors: readonly QueryJumpAnchor[],
+): string | null {
+  if (anchors.length === 0) return null;
+  const line = scroller.scrollTop + QUERY_JUMP_TOP_PADDING_PX + 1;
+  let activeId = anchors[0].id;
+  for (const anchor of anchors) {
+    const node = scroller.querySelector(`[data-msg-id="${CSS.escape(anchor.id)}"]`);
+    if (!(node instanceof HTMLElement)) continue;
+    if (messageTopWithinScroller(scroller, node) <= line) activeId = anchor.id;
+    else break;
+  }
+  return activeId;
+}
+
+function isProcessReceiptMessage(message: ViewMessage): message is ProcessReceiptMessage {
+  return message.kind === 'thinking' || message.kind === 'tool_cluster';
+}
+
+function makeReceiptRowId(receipts: readonly ProcessReceiptMessage[]): string {
+  return `receipts_${receipts.map((receipt) => receipt.id).join('_')}`;
+}
+
+function buildConversationRenderItems(messages: readonly ViewMessage[]): ConversationRenderItem[] {
+  const items: ConversationRenderItem[] = [];
+  let pendingReceipts: ProcessReceiptMessage[] = [];
+
+  const flushReceipts = (): void => {
+    if (pendingReceipts.length === 0) return;
+    items.push({
+      kind: 'receipts',
+      id: makeReceiptRowId(pendingReceipts),
+      receipts: pendingReceipts,
+    });
+    pendingReceipts = [];
+  };
+
+  for (const message of messages) {
+    if (isProcessReceiptMessage(message)) {
+      pendingReceipts.push(message);
+      continue;
+    }
+    if (message.kind === 'assistant_text' && !message.text.trim() && !message.thinking?.trim()) {
+      continue;
+    }
+
+    flushReceipts();
+    items.push({ kind: 'message', id: message.id, message });
+  }
+
+  flushReceipts();
+
+  return items;
+}
 
 function summarizeTools(tools: readonly ToolCallMsg[], t: Translate): string {
   const counts = new Map<string, number>();
@@ -216,11 +336,13 @@ function groupTools(
       (acc, sc) => acc + (sc.thinking ? approxTokens(sc.thinking) : 0),
       0,
     );
+    const turnIndex = pendingCluster.find((sc) => sc.turnIndex !== undefined)?.turnIndex;
     out.push({
       kind: 'tool_cluster',
       id: `cluster_${clusterCounter++}_${pendingCluster[0].id}`,
       subClusters: pendingCluster,
       totalTools,
+      ...(turnIndex !== undefined ? { turnIndex } : {}),
       thinkingTokens,
     });
     pendingCluster = [];
@@ -260,7 +382,12 @@ function groupTools(
           // 有正文 = 一段有意义的 assistant 回复，**打断**工具组单独渲染（thinking 在其前一行）。
           flushCluster();
           if (hasThinking) {
-            out.push({ kind: 'thinking', id: `${m.id}_thinking`, thinking: m.thinking! });
+            out.push({
+              kind: 'thinking',
+              id: `${m.id}_thinking`,
+              thinking: m.thinking!,
+              ...(m.turnIndex !== undefined ? { turnIndex: m.turnIndex } : {}),
+            });
           }
           // 复用现有 assistant_text view-kind —— AssistantBubble 已经会渲染 markdown + footer
           out.push({
@@ -275,6 +402,7 @@ function groupTools(
             id: m.id,
             title: summarizeTools(tools, t),
             tools,
+            ...(m.turnIndex !== undefined ? { turnIndex: m.turnIndex } : {}),
             syntheticTitle: true,
           });
         } else if (hasThinking && foldThinking) {
@@ -284,6 +412,7 @@ function groupTools(
             id: m.id,
             title: summarizeTools(tools, t),
             tools,
+            ...(m.turnIndex !== undefined ? { turnIndex: m.turnIndex } : {}),
             syntheticTitle: true,
             thinking: m.thinking!,
           });
@@ -291,12 +420,18 @@ function groupTools(
           // thinking/verbose 视图：thinking 仍独立成行（默认展开），每个 step 各自成组。
           if (hasThinking) {
             flushCluster();
-            out.push({ kind: 'thinking', id: `${m.id}_thinking`, thinking: m.thinking! });
+            out.push({
+              kind: 'thinking',
+              id: `${m.id}_thinking`,
+              thinking: m.thinking!,
+              ...(m.turnIndex !== undefined ? { turnIndex: m.turnIndex } : {}),
+            });
           }
           pendingCluster.push({
             id: m.id,
             title: summarizeTools(tools, t),
             tools,
+            ...(m.turnIndex !== undefined ? { turnIndex: m.turnIndex } : {}),
             syntheticTitle: true,
           });
         }
@@ -305,9 +440,24 @@ function groupTools(
         flushCluster();
         const hasThinking = Boolean(m.thinking && m.thinking.length > 0);
         const hasText = m.text.length > 0;
-        if (hasThinking && !hasText) {
-          out.push({ kind: 'thinking', id: `${m.id}_thinking`, thinking: m.thinking! });
-        } else {
+        if (hasThinking) {
+          out.push({
+            kind: 'thinking',
+            id: `${m.id}_thinking`,
+            thinking: m.thinking!,
+            ...(m.turnIndex !== undefined ? { turnIndex: m.turnIndex } : {}),
+          });
+        }
+        if (hasText && hasThinking) {
+          out.push({
+            kind: 'assistant_text',
+            id: `${m.id}_text`,
+            text: m.text,
+            sentAt: m.sentAt,
+            ...(m.turnIndex !== undefined ? { turnIndex: m.turnIndex } : {}),
+            ...(m.completed !== undefined ? { completed: m.completed } : {}),
+          });
+        } else if (hasText || !hasThinking) {
           out.push(m);
         }
       }
@@ -403,6 +553,21 @@ export function ConversationStreamV2(): JSX.Element {
         : viewMessages,
     [viewMessages, transcriptView],
   );
+  const renderItems = useMemo(
+    () => buildConversationRenderItems(displayMessages),
+    [displayMessages],
+  );
+  const queryJumpAnchors = useMemo<readonly QueryJumpAnchor[]>(() => {
+    const anchors: QueryJumpAnchor[] = [];
+    for (const m of displayMessages) {
+      if (m.kind !== 'user' && !(m.kind === 'local_notice' && m.variant === 'echo')) continue;
+      const content = compactInlineText(m.content);
+      if (!content) continue;
+      anchors.push({ id: m.id, content, ordinal: anchors.length + 1 });
+    }
+    return anchors;
+  }, [displayMessages]);
+  const showQueryJumpRail = queryJumpAnchors.length >= QUERY_JUMP_MIN_ANCHORS;
   // verbose 全展开工具组；thinking/verbose 默认展开独立 thinking 行。
   const clustersForceExpand = transcriptView === 'verbose';
   const thinkingForceExpand = transcriptView === 'thinking' || transcriptView === 'verbose';
@@ -410,9 +575,22 @@ export function ConversationStreamV2(): JSX.Element {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const contentRef = useRef<HTMLDivElement | null>(null);
   const wasAtBottomRef = useRef<boolean>(true);
+  const viewportScrollAnchorRef = useRef<ViewportScrollAnchor | null>(null);
+  const scrollSnapshotRef = useRef<ScrollSnapshot | null>(null);
+  const observedScrollerSizeRef = useRef<{ width: number; height: number } | null>(null);
   const touchStartYRef = useRef<number | null>(null);
   const autoFollowRafRef = useRef<number | null>(null);
+  const jumpToBottomRafRef = useRef<number | null>(null);
+  const restoreScrollSnapshotRef = useRef<
+    ((scroller: HTMLDivElement, snapshot: ScrollSnapshot) => boolean) | null
+  >(null);
+  const scheduleAutoFollowRef = useRef<((scroller: HTMLDivElement) => void) | null>(null);
+  const scrollToBottomNowRef = useRef<
+    ((scroller: HTMLDivElement, guardMs?: number) => void) | null
+  >(null);
   const [showJumpToBottom, setShowJumpToBottom] = useState(false);
+  const [activeQueryAnchorId, setActiveQueryAnchorId] = useState<string | null>(null);
+  const [hoverQueryAnchorId, setHoverQueryAnchorId] = useState<string | null>(null);
   // 每个 tool_group 的展开状态；默认折叠
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
@@ -549,18 +727,155 @@ export function ConversationStreamV2(): JSX.Element {
     programmaticScrollIgnoreUntilRef.current = 0;
   }
 
+  function cancelJumpToBottomAnimation(): void {
+    if (jumpToBottomRafRef.current === null) return;
+    cancelAnimationFrame(jumpToBottomRafRef.current);
+    jumpToBottomRafRef.current = null;
+  }
+
   function scrollToBottomNow(
     scroller: HTMLDivElement,
     guardMs = INSTANT_PROGRAMMATIC_SCROLL_GUARD_MS,
   ): void {
+    cancelJumpToBottomAnimation();
     markProgrammaticScroll(guardMs);
     scroller.scrollTop = scroller.scrollHeight;
+    viewportScrollAnchorRef.current = null;
+    scrollSnapshotRef.current = null;
+  }
+
+  function captureViewportScrollAnchor(scroller: HTMLDivElement): ViewportScrollAnchor | null {
+    const nodes = Array.from(scroller.querySelectorAll('[data-msg-id]')).filter(
+      (node): node is HTMLElement => node instanceof HTMLElement && node.offsetParent !== null,
+    );
+    if (nodes.length === 0) return null;
+
+    const viewportTargetY = scroller.scrollTop + scroller.clientHeight * 0.42;
+    let best: { node: HTMLElement; distance: number; top: number } | null = null;
+
+    for (const node of nodes) {
+      const id = node.dataset.msgId;
+      if (!id) continue;
+      const top = messageTopWithinScroller(scroller, node);
+      const distance = Math.abs(top - viewportTargetY);
+      if (!best || distance < best.distance) best = { node, distance, top };
+    }
+
+    const id = best?.node.dataset.msgId;
+    if (!best || !id) return null;
+    return {
+      id,
+      offsetTop: best.top - scroller.scrollTop,
+    };
+  }
+
+  function rememberScrollSnapshot(scroller: HTMLDivElement): ScrollSnapshot {
+    const distance = getDistanceFromBottom(scroller);
+    const atBottom = distance < BOTTOM_DISTANCE_PX;
+    const anchor = atBottom ? null : captureViewportScrollAnchor(scroller);
+    const snapshot: ScrollSnapshot = {
+      scrollTop: scroller.scrollTop,
+      scrollHeight: scroller.scrollHeight,
+      clientHeight: scroller.clientHeight,
+      anchor,
+      atBottom,
+    };
+    viewportScrollAnchorRef.current = anchor;
+    scrollSnapshotRef.current = snapshot;
+    return snapshot;
+  }
+
+  function restoreViewportScrollAnchor(
+    scroller: HTMLDivElement,
+    anchor = viewportScrollAnchorRef.current,
+  ): boolean {
+    if (!anchor) return false;
+    const target = scroller.querySelector(`[data-msg-id="${CSS.escape(anchor.id)}"]`);
+    if (!(target instanceof HTMLElement)) return false;
+
+    const targetTop = messageTopWithinScroller(scroller, target);
+    const maxTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+    const nextTop = Math.max(0, Math.min(maxTop, targetTop - anchor.offsetTop));
+    markProgrammaticScroll();
+    scroller.scrollTop = nextTop;
+    wasAtBottomRef.current = false;
+    setShowJumpToBottom(maxTop - nextTop > JUMP_TO_BOTTOM_DISTANCE_PX);
+    syncActiveQueryAnchorFromScrollPosition(scroller);
+    rememberScrollSnapshot(scroller);
+    return true;
+  }
+
+  function restoreScrollSnapshot(scroller: HTMLDivElement, snapshot: ScrollSnapshot): boolean {
+    if (snapshot.atBottom) return false;
+    if (restoreViewportScrollAnchor(scroller, snapshot.anchor)) return true;
+
+    const previousMaxTop = Math.max(1, snapshot.scrollHeight - snapshot.clientHeight);
+    const nextMaxTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+    const ratio = Math.max(0, Math.min(1, snapshot.scrollTop / previousMaxTop));
+    const nextTop = Math.max(0, Math.min(nextMaxTop, nextMaxTop * ratio));
+    markProgrammaticScroll();
+    scroller.scrollTop = nextTop;
+    wasAtBottomRef.current = false;
+    setShowJumpToBottom(nextMaxTop - nextTop > JUMP_TO_BOTTOM_DISTANCE_PX);
+    syncActiveQueryAnchorFromScrollPosition(scroller);
+    rememberScrollSnapshot(scroller);
+    return true;
+  }
+
+  function animateJumpToBottom(scroller: HTMLDivElement): void {
+    cancelJumpToBottomAnimation();
+
+    const startTop = scroller.scrollTop;
+    const initialTargetTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+    const distance = initialTargetTop - startTop;
+    if (Math.abs(distance) < 2 || window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      scrollToBottomNow(scroller, SMOOTH_PROGRAMMATIC_SCROLL_GUARD_MS);
+      scrollSnapshotRef.current = null;
+      wasAtBottomRef.current = true;
+      setShowJumpToBottom(false);
+      setActiveQueryAnchorId(queryJumpAnchors[queryJumpAnchors.length - 1]?.id ?? null);
+      return;
+    }
+
+    const durationMs = Math.min(760, Math.max(260, Math.abs(distance) * 0.18));
+    const startedAt = performance.now();
+    const easeOutCubic = (t: number): number => 1 - Math.pow(1 - t, 3);
+
+    const step = (now: number): void => {
+      if (scrollRef.current !== scroller) {
+        jumpToBottomRafRef.current = null;
+        return;
+      }
+
+      const progress = Math.min(1, (now - startedAt) / durationMs);
+      const eased = easeOutCubic(progress);
+      const targetTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+      markProgrammaticScroll(120);
+      scroller.scrollTop = startTop + (targetTop - startTop) * eased;
+
+      if (progress < 1) {
+        jumpToBottomRafRef.current = requestAnimationFrame(step);
+        return;
+      }
+
+      jumpToBottomRafRef.current = null;
+      markProgrammaticScroll(INSTANT_PROGRAMMATIC_SCROLL_GUARD_MS);
+      scroller.scrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+      wasAtBottomRef.current = true;
+      viewportScrollAnchorRef.current = null;
+      scrollSnapshotRef.current = null;
+      setShowJumpToBottom(false);
+      setActiveQueryAnchorId(queryJumpAnchors[queryJumpAnchors.length - 1]?.id ?? null);
+    };
+
+    jumpToBottomRafRef.current = requestAnimationFrame(step);
   }
 
   function syncFollowStateFromScrollPosition(el: HTMLDivElement): void {
     const distance = getDistanceFromBottom(el);
     const atBottom = distance < BOTTOM_DISTANCE_PX;
     wasAtBottomRef.current = atBottom;
+    rememberScrollSnapshot(el);
     setShowJumpToBottom(!atBottom && distance > JUMP_TO_BOTTOM_DISTANCE_PX);
   }
 
@@ -568,9 +883,16 @@ export function ConversationStreamV2(): JSX.Element {
     setShowJumpToBottom(getDistanceFromBottom(el) > JUMP_TO_BOTTOM_DISTANCE_PX);
   }
 
+  function syncActiveQueryAnchorFromScrollPosition(el: HTMLDivElement): void {
+    if (!showQueryJumpRail) return;
+    setActiveQueryAnchorId(findActiveQueryAnchorId(el, queryJumpAnchors));
+  }
+
   function disengageFollowForUserScrollIntent(el: HTMLDivElement): void {
     wasAtBottomRef.current = false;
+    rememberScrollSnapshot(el);
     syncJumpButtonFromScrollPosition(el);
+    syncActiveQueryAnchorFromScrollPosition(el);
   }
 
   function syncFollowStateOnNextFrame(scroller: HTMLDivElement): void {
@@ -586,6 +908,7 @@ export function ConversationStreamV2(): JSX.Element {
       autoFollowRafRef.current = null;
       if (scrollRef.current !== scroller) return;
       if (!isDocumentActiveForAutoFollow()) return;
+      if (jumpToBottomRafRef.current !== null) return;
       if (wasAtBottomRef.current) {
         scrollToBottomNow(scroller);
         setShowJumpToBottom(false);
@@ -595,14 +918,20 @@ export function ConversationStreamV2(): JSX.Element {
     });
   }
 
+  restoreScrollSnapshotRef.current = restoreScrollSnapshot;
+  scheduleAutoFollowRef.current = scheduleAutoFollow;
+  scrollToBottomNowRef.current = scrollToBottomNow;
+
   function handleScroll(e: React.UIEvent<HTMLDivElement>): void {
     // 守卫期内的 scroll 事件来自 ResizeObserver / smooth scroll 自己的 scrollTop 赋值，
     // 不视为用户上滚
     if (performance.now() < programmaticScrollIgnoreUntilRef.current) return;
     syncFollowStateFromScrollPosition(e.currentTarget);
+    syncActiveQueryAnchorFromScrollPosition(e.currentTarget);
   }
 
   function handleWheel(e: ReactWheelEvent<HTMLDivElement>): void {
+    cancelJumpToBottomAnimation();
     clearProgrammaticScrollGuard();
     const scroller = e.currentTarget;
     const deltaY = e.deltaY;
@@ -626,6 +955,7 @@ export function ConversationStreamV2(): JSX.Element {
   }
 
   function handleKeyDown(e: ReactKeyboardEvent<HTMLDivElement>): void {
+    cancelJumpToBottomAnimation();
     const scroller = e.currentTarget;
     switch (e.key) {
       case 'ArrowUp':
@@ -646,6 +976,7 @@ export function ConversationStreamV2(): JSX.Element {
   }
 
   function handlePointerDown(e: ReactPointerEvent<HTMLDivElement>): void {
+    cancelJumpToBottomAnimation();
     const scroller = e.currentTarget;
     const scrollbarWidth = scroller.offsetWidth - scroller.clientWidth;
     if (scrollbarWidth <= 0) return;
@@ -656,6 +987,7 @@ export function ConversationStreamV2(): JSX.Element {
   }
 
   function handleTouchStart(e: ReactTouchEvent<HTMLDivElement>): void {
+    cancelJumpToBottomAnimation();
     touchStartYRef.current = e.touches[0]?.clientY ?? null;
   }
 
@@ -684,9 +1016,33 @@ export function ConversationStreamV2(): JSX.Element {
     const scroller = scrollRef.current;
     const content = contentRef.current;
     if (!scroller || !content) return;
+    observedScrollerSizeRef.current = {
+      width: scroller.clientWidth,
+      height: scroller.clientHeight,
+    };
     const ro = new ResizeObserver(() => {
       if (!isDocumentActiveForAutoFollow()) return;
-      scheduleAutoFollow(scroller);
+      const previousSize = observedScrollerSizeRef.current;
+      const nextSize = {
+        width: scroller.clientWidth,
+        height: scroller.clientHeight,
+      };
+      observedScrollerSizeRef.current = nextSize;
+      const viewportResized =
+        previousSize !== null &&
+        (Math.abs(previousSize.width - nextSize.width) > 1 ||
+          Math.abs(previousSize.height - nextSize.height) > 1);
+
+      const snapshot = scrollSnapshotRef.current;
+      if (viewportResized && snapshot && !snapshot.atBottom) {
+        requestAnimationFrame(() => {
+          if (scrollRef.current !== scroller) return;
+          restoreScrollSnapshotRef.current?.(scroller, snapshot);
+        });
+        return;
+      }
+
+      scheduleAutoFollowRef.current?.(scroller);
     });
     // Composer growth shrinks the scroller without changing message content height.
     ro.observe(scroller);
@@ -697,6 +1053,7 @@ export function ConversationStreamV2(): JSX.Element {
         cancelAnimationFrame(autoFollowRafRef.current);
         autoFollowRafRef.current = null;
       }
+      cancelJumpToBottomAnimation();
     };
   }, [currentSessionId]);
 
@@ -705,7 +1062,7 @@ export function ConversationStreamV2(): JSX.Element {
       if (!isDocumentActiveForAutoFollow()) return;
       const scroller = scrollRef.current;
       if (!scroller) return;
-      if (wasAtBottomRef.current) scheduleAutoFollow(scroller);
+      if (wasAtBottomRef.current) scheduleAutoFollowRef.current?.(scroller);
       else syncJumpButtonFromScrollPosition(scroller);
     };
     window.addEventListener('focus', catchUpAfterFocus);
@@ -718,19 +1075,63 @@ export function ConversationStreamV2(): JSX.Element {
 
   useEffect(() => {
     if (scrollRef.current) {
-      scrollToBottomNow(scrollRef.current);
+      scrollToBottomNowRef.current?.(scrollRef.current);
       wasAtBottomRef.current = true;
       setShowJumpToBottom(false);
       setExpanded(new Set());
     }
   }, [currentSessionId]);
 
+  useEffect(() => {
+    if (!showQueryJumpRail) {
+      setActiveQueryAnchorId(null);
+      setHoverQueryAnchorId(null);
+      return;
+    }
+
+    const scroller = scrollRef.current;
+    const fallbackId = queryJumpAnchors[queryJumpAnchors.length - 1]?.id ?? null;
+    if (!scroller || wasAtBottomRef.current) {
+      setActiveQueryAnchorId(fallbackId);
+      return;
+    }
+    setActiveQueryAnchorId(findActiveQueryAnchorId(scroller, queryJumpAnchors));
+  }, [currentSessionId, queryJumpAnchors, showQueryJumpRail]);
+
   function jumpToBottom(): void {
-    if (!scrollRef.current) return;
+    const scroller = scrollRef.current;
+    if (!scroller) return;
     markProgrammaticScroll(SMOOTH_PROGRAMMATIC_SCROLL_GUARD_MS);
     wasAtBottomRef.current = true;
+    viewportScrollAnchorRef.current = null;
     setShowJumpToBottom(false);
-    scrollRef.current.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
+    setActiveQueryAnchorId(queryJumpAnchors[queryJumpAnchors.length - 1]?.id ?? null);
+    animateJumpToBottom(scroller);
+  }
+
+  function jumpToQueryAnchor(id: string): void {
+    const scroller = scrollRef.current;
+    if (!scroller) return;
+    const target = scroller.querySelector(`[data-msg-id="${CSS.escape(id)}"]`);
+    if (!(target instanceof HTMLElement)) return;
+
+    const maxTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+    const targetTop = messageTopWithinScroller(scroller, target);
+    const top = Math.max(0, Math.min(maxTop, targetTop - QUERY_JUMP_TOP_PADDING_PX));
+    markProgrammaticScroll(SMOOTH_PROGRAMMATIC_SCROLL_GUARD_MS);
+    wasAtBottomRef.current = maxTop - top < BOTTOM_DISTANCE_PX;
+    const anchor = wasAtBottomRef.current ? null : { id, offsetTop: targetTop - top };
+    viewportScrollAnchorRef.current = anchor;
+    scrollSnapshotRef.current = {
+      scrollTop: top,
+      scrollHeight: scroller.scrollHeight,
+      clientHeight: scroller.clientHeight,
+      anchor,
+      atBottom: wasAtBottomRef.current,
+    };
+    setShowJumpToBottom(maxTop - top > JUMP_TO_BOTTOM_DISTANCE_PX);
+    setActiveQueryAnchorId(id);
+    scroller.scrollTo({ top, behavior: 'smooth' });
   }
 
   function toggleGroup(id: string): void {
@@ -843,6 +1244,7 @@ export function ConversationStreamV2(): JSX.Element {
     <div className="relative flex-1 overflow-hidden" data-testid="conversation-stream">
       <div
         ref={scrollRef}
+        data-testid="conversation-scroll-container"
         onScroll={handleScroll}
         onWheelCapture={handleWheel}
         onKeyDownCapture={handleKeyDown}
@@ -852,16 +1254,15 @@ export function ConversationStreamV2(): JSX.Element {
         className={`ix-zone h-full overflow-auto px-8 py-5 ${fontClass}`}
       >
         {/* 左右只留几个字符的 padding，不限宽 —— 用户反馈 max-w-3xl 在宽屏留太多空白。
-            左侧时间线 rail = 绝对定位竖线 + 每条消息圆点 marker；`pl-6` 给 marker 让位。*/}
-        <div ref={contentRef} className="relative pl-6">
-          {/* timeline 竖线 —— 仅有可见消息时画，避免空状态出现孤立竖线 */}
-          {displayMessages.length > 0 && (
+            左侧保留 transcript timeline marker，query jump rail 独立悬浮在更靠左的位置。*/}
+        <div ref={contentRef} className="relative pl-10 sm:pl-12">
+          {renderItems.length > 0 && (
             <div
-              className="absolute left-[7px] top-2 bottom-2 w-px bg-border-default/70"
+              className="absolute left-[20px] top-2 bottom-2 w-px bg-border-default/55 sm:left-[28px]"
               aria-hidden
             />
           )}
-          <div className="space-y-4">
+          <div className="space-y-3">
             {displayMessages.length === 0 &&
               (currentSessionMsgCount > 0 ? (
                 // 有 SDK summary msgCount 但 buffer 空 → history IPC 正在 flight,显示骨架
@@ -870,20 +1271,30 @@ export function ConversationStreamV2(): JSX.Element {
               ) : (
                 <div className="text-fg-faint italic text-sm">{t('conversation.emptyPrompt')}</div>
               ))}
-            {displayMessages.map((m, i) => {
-              const isMatch = matchSet.has(m.id);
-              const isCurrent = currentMatchId === m.id;
-              const ringClass = isCurrent
-                ? 'ring-2 ring-warn/80 rounded-md'
-                : isMatch
-                  ? 'ring-1 ring-warn/40 rounded-md'
-                  : '';
+            {renderItems.map((item, i) => {
+              if (item.kind === 'receipts') {
+                return (
+                  <div key={item.id} className="relative">
+                    <TimelineMarker tone={receiptMarkerTone(item.receipts)} />
+                    <ProcessReceiptRow
+                      receipts={item.receipts}
+                      expanded={expanded}
+                      clustersForceExpand={clustersForceExpand}
+                      thinkingForceExpand={thinkingForceExpand}
+                      currentMatchId={currentMatchId}
+                      matchSet={matchSet}
+                      onToggle={toggleGroup}
+                    />
+                  </div>
+                );
+              }
+
+              const m = item.message;
+              const ringClass = searchRingClassFor(m.id, currentMatchId, matchSet);
               let inner: JSX.Element;
-              let markerTone: MarkerTone = 'assistant';
               switch (m.kind) {
                 case 'user':
                   inner = <UserBubble content={m.content} sentAt={m.sentAt} />;
-                  markerTone = 'user';
                   break;
                 case 'local_notice':
                   inner =
@@ -892,11 +1303,9 @@ export function ConversationStreamV2(): JSX.Element {
                     ) : (
                       <LocalNoticeBubble {...m} />
                     );
-                  markerTone = m.variant === 'echo' ? 'user' : 'system';
                   break;
                 case 'queued_user':
                   inner = <QueuedUserBubble {...m} />;
-                  markerTone = 'queued';
                   break;
                 case 'assistant_text':
                   inner = (
@@ -913,57 +1322,41 @@ export function ConversationStreamV2(): JSX.Element {
                       onRewindTurn={(idx) => void rewindToTurn(idx)}
                     />
                   );
-                  markerTone = 'assistant';
                   break;
                 case 'system_notice':
                   inner = <SystemNotice {...m} />;
-                  markerTone = 'system';
                   break;
                 case 'artifact':
                   inner = <ArtifactInlineCallout artifact={m} />;
-                  markerTone = 'artifact';
-                  break;
-                case 'tool_cluster':
-                  inner = (
-                    <ToolCluster
-                      cluster={m}
-                      expanded={expanded.has(m.id) || clustersForceExpand}
-                      onToggle={() => toggleGroup(m.id)}
-                    />
-                  );
-                  markerTone = 'tool';
-                  break;
-                case 'thinking':
-                  inner = (
-                    <ThinkingBlock
-                      thinking={m.thinking}
-                      expanded={expanded.has(m.id) || thinkingForceExpand}
-                      onToggle={() => toggleGroup(m.id)}
-                    />
-                  );
-                  markerTone = 'thinking';
                   break;
               }
               return (
-                <div
-                  key={m.id}
-                  data-msg-id={m.id}
-                  className={`relative search-ring-anim ${ringClass}`}
-                >
-                  <TimelineMarker tone={markerTone} />
-                  <Reveal index={i} className="conversation-message-body">
-                    {inner}
-                  </Reveal>
+                <div key={item.id} className="relative">
+                  <TimelineMarker tone={messageMarkerTone(m)} />
+                  <div data-msg-id={m.id} className={`search-ring-anim ${ringClass}`}>
+                    <Reveal index={i} className="conversation-message-body">
+                      {inner}
+                    </Reveal>
+                  </div>
                 </div>
               );
             })}
-            {/* 流式 spinner —— v0.1.4：从 BottomBar 搬到这里，对齐 VSCode Claude Code
-            把"正在做什么"放在对话流末尾的位置感（更自然，能跟时间线 rail 衔接）。
-            ActivitySpinner 自己 return null 时本块也不渲染 marker。 */}
+            {/* 流式 spinner —— v0.1.4：从 BottomBar 搬到这里，把"正在做什么"
+            放在对话流末尾。ActivitySpinner 自己 return null 时本块也不渲染。 */}
             <StreamingSpinnerRow />
           </div>
         </div>
       </div>
+
+      {showQueryJumpRail && (
+        <QueryJumpRail
+          anchors={queryJumpAnchors}
+          activeId={activeQueryAnchorId}
+          hoverId={hoverQueryAnchorId}
+          onHover={setHoverQueryAnchorId}
+          onJump={jumpToQueryAnchor}
+        />
+      )}
 
       {/* P4a 搜索框 — 右上角浮窗 */}
       {searchOpen && (
@@ -1044,6 +1437,208 @@ export function ConversationStreamV2(): JSX.Element {
         </div>
       )}
     </div>
+  );
+}
+
+interface QueryJumpRailProps {
+  anchors: readonly QueryJumpAnchor[];
+  activeId: string | null;
+  hoverId: string | null;
+  onHover: (id: string | null) => void;
+  onJump: (id: string) => void;
+}
+
+function queryAnchorMetrics(
+  index: number,
+  hoverIndex: number | null,
+  active: boolean,
+): { width: number; opacity: number } {
+  if (hoverIndex === null) return { width: active ? 7 : 5, opacity: active ? 0.72 : 0.26 };
+
+  const distance = Math.abs(index - hoverIndex);
+  if (distance === 0) return { width: 27, opacity: 0.95 };
+  if (distance === 1) return { width: 22, opacity: 0.76 };
+  if (distance === 2) return { width: 16, opacity: 0.56 };
+  if (distance === 3) return { width: 11, opacity: 0.4 };
+  if (distance === 4) return { width: 7, opacity: 0.3 };
+  return { width: 5, opacity: 0.22 };
+}
+
+function QueryJumpRail({
+  anchors,
+  activeId,
+  hoverId,
+  onHover,
+  onJump,
+}: QueryJumpRailProps): JSX.Element | null {
+  if (anchors.length < QUERY_JUMP_MIN_ANCHORS) return null;
+
+  const rawHoverIndex = anchors.findIndex((anchor) => anchor.id === hoverId);
+  const hoverIndex = rawHoverIndex >= 0 ? rawHoverIndex : null;
+
+  return (
+    <nav
+      className="absolute left-3 top-1/2 z-20 -translate-y-1/2"
+      aria-label="User query jump points"
+      onMouseLeave={() => onHover(null)}
+    >
+      <div className="flex flex-col items-start gap-1 py-2">
+        {anchors.map((anchor, index) => {
+          const isActive = anchor.id === activeId;
+          const isHovered = anchor.id === hoverId;
+          const metrics = queryAnchorMetrics(index, hoverIndex, isActive);
+          const previewTitle = truncateText(anchor.content, QUERY_JUMP_TITLE_CHARS);
+          const previewBody = truncateText(anchor.content, QUERY_JUMP_BODY_CHARS);
+          return (
+            <button
+              key={anchor.id}
+              type="button"
+              aria-label={`Jump to query ${anchor.ordinal}`}
+              aria-current={anchor.id === activeId ? 'location' : undefined}
+              onClick={() => onJump(anchor.id)}
+              onFocus={() => onHover(anchor.id)}
+              onBlur={() => onHover(null)}
+              onMouseEnter={() => onHover(anchor.id)}
+              className="group relative flex h-2.5 w-12 items-center justify-start rounded-sm outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-border-strong"
+            >
+              <span
+                className={[
+                  'h-px rounded-full transition-all duration-150 ease-out',
+                  isHovered || isActive ? 'bg-fg-primary' : 'bg-fg-muted group-hover:bg-fg-primary',
+                ].join(' ')}
+                style={{ width: `${metrics.width}px`, opacity: metrics.opacity }}
+                aria-hidden
+              />
+              {isHovered && (
+                <span className="pointer-events-none absolute left-12 top-1/2 z-30 w-80 max-w-[calc(100vw-7rem)] -translate-y-1/2 rounded-lg border border-border-default bg-surface-2/95 px-3 py-2 text-left shadow-2xl backdrop-blur">
+                  <span className="block truncate text-[13px] font-semibold leading-5 text-fg-primary">
+                    {previewTitle}
+                  </span>
+                  <span className="mt-0.5 block line-clamp-2 text-[12px] leading-5 text-fg-muted">
+                    {previewBody}
+                  </span>
+                  <span className="mt-1.5 block font-mono text-[11px] leading-4 text-fg-faint">
+                    #{anchor.ordinal}
+                  </span>
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+    </nav>
+  );
+}
+
+function searchRingClassFor(
+  id: string,
+  currentMatchId: string | undefined,
+  matchSet: ReadonlySet<string>,
+): string {
+  if (currentMatchId === id) return 'ring-2 ring-warn/80 rounded-md';
+  if (matchSet.has(id)) return 'ring-1 ring-warn/40 rounded-md';
+  return '';
+}
+
+function ProcessReceiptRow({
+  receipts,
+  expanded,
+  clustersForceExpand,
+  thinkingForceExpand,
+  currentMatchId,
+  matchSet,
+  onToggle,
+}: {
+  receipts: readonly ProcessReceiptMessage[];
+  expanded: ReadonlySet<string>;
+  clustersForceExpand: boolean;
+  thinkingForceExpand: boolean;
+  currentMatchId: string | undefined;
+  matchSet: ReadonlySet<string>;
+  onToggle: (id: string) => void;
+}): JSX.Element | null {
+  if (receipts.length === 0) return null;
+  // Expanded tool clusters grow below their summary. Keep sibling receipts anchored to that
+  // summary line instead of vertically centering them against the expanded tool details.
+  return (
+    <div
+      className="flex min-w-0 max-w-full flex-wrap content-start items-start gap-1.5 overflow-visible py-px"
+      data-testid="process-receipt-row"
+    >
+      {receipts.map((receipt) => {
+        const ringClass = searchRingClassFor(receipt.id, currentMatchId, matchSet);
+        const receiptStyle: CSSProperties =
+          receipt.kind === 'tool_cluster'
+            ? { flex: '0 1 auto', minWidth: 0, maxWidth: 'min(30rem, 100%)' }
+            : { flex: '0 0 auto', minWidth: 0, maxWidth: '100%' };
+        return (
+          <div
+            key={receipt.id}
+            data-msg-id={receipt.id}
+            data-testid={`process-receipt-${receipt.kind}`}
+            className={`relative min-w-0 max-w-full search-ring-anim hover:z-10 focus-within:z-10 ${ringClass}`}
+            style={receiptStyle}
+          >
+            {receipt.kind === 'tool_cluster' ? (
+              <ToolCluster
+                cluster={receipt}
+                expanded={expanded.has(receipt.id) || clustersForceExpand}
+                onToggle={() => onToggle(receipt.id)}
+              />
+            ) : (
+              <ThinkingBlock
+                thinking={receipt.thinking}
+                expanded={expanded.has(receipt.id) || thinkingForceExpand}
+                onToggle={() => onToggle(receipt.id)}
+              />
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+type MarkerTone = 'user' | 'queued' | 'assistant' | 'system' | 'tool' | 'artifact' | 'thinking';
+
+const MARKER_TONE_CLASS: Record<MarkerTone, string> = {
+  user: 'bg-run',
+  queued: 'bg-warn',
+  assistant: 'bg-ok',
+  system: 'bg-warn',
+  tool: 'bg-fg-faint dark:bg-fg-muted',
+  artifact: 'bg-accent-ink',
+  thinking: 'bg-thinking',
+};
+
+function messageMarkerTone(message: StandardViewMessage): MarkerTone {
+  switch (message.kind) {
+    case 'user':
+      return 'user';
+    case 'local_notice':
+      return message.variant === 'echo' ? 'user' : 'system';
+    case 'queued_user':
+      return 'queued';
+    case 'assistant_text':
+      return 'assistant';
+    case 'system_notice':
+      return 'system';
+    case 'artifact':
+      return 'artifact';
+  }
+}
+
+function receiptMarkerTone(receipts: readonly ProcessReceiptMessage[]): MarkerTone {
+  if (receipts.some((receipt) => receipt.kind === 'thinking')) return 'thinking';
+  return 'tool';
+}
+
+function TimelineMarker({ tone }: { tone: MarkerTone }): JSX.Element {
+  return (
+    <span
+      aria-hidden
+      className={`reveal-marker absolute left-[-25px] top-[0.65rem] z-10 h-2.5 w-2.5 rounded-full border border-surface ring-1 ring-border-default/60 ${MARKER_TONE_CLASS[tone]}`}
+    />
   );
 }
 
@@ -1136,44 +1731,21 @@ function ArtifactInlineCallout({ artifact }: { artifact: ArtifactMessage }): JSX
     </div>
   );
 }
-// Timeline rail marker —— absolute 定位到时间线竖线上，配色按消息 kind 区分
-// 让用户一眼能扫出"哪些是我说的 / 模型说的 / 系统通知 / 工具调用 / 思考"。
-// 直径 9px，与 rail (1px wide @ left:7px) 居中对齐 = marker.left = 3px。
-type MarkerTone = 'user' | 'queued' | 'assistant' | 'system' | 'tool' | 'artifact' | 'thinking';
-const MARKER_TONE_CLASS: Record<MarkerTone, string> = {
-  user: 'bg-run',
-  queued: 'bg-warn',
-  assistant: 'bg-ok',
-  system: 'bg-warn',
-  tool: 'bg-fg-faint dark:bg-fg-muted',
-  artifact: 'bg-accent-ink',
-  thinking: 'bg-thinking',
-};
-function TimelineMarker({ tone }: { tone: MarkerTone }): JSX.Element {
-  return (
-    <span
-      aria-hidden
-      className={`reveal-marker absolute left-[-22px] top-[10px] w-[9px] h-[9px] rounded-full ring-2 ring-surface ${MARKER_TONE_CLASS[tone]}`}
-    />
-  );
-}
 /**
  * 流式 spinner 行 —— 对话流末尾的"正在做什么"指示。
- * 跟其它消息一样在时间线 rail 上挂一个 marker；不在 streaming 时整行返 null。
+ * 不在 streaming 时整行返 null。
  */
 function StreamingSpinnerRow(): JSX.Element | null {
   const isStreaming = useIsStreaming();
   if (!isStreaming) return null;
   return (
     <div className="relative">
-      <TimelineMarker tone="assistant" />
       <ActivitySpinner />
     </div>
   );
 }
 /**
- * ThinkingBlock — 对齐 VSCode Claude Code "Thought for Xs" 折叠行。
- * 折叠态 = 紫色一行 `▸ Thinking · ~N tokens`，展开态 = 多行 pre-wrap 文本。
+ * ThinkingBlock — receipt strip + expandable pre-wrap text.
  * approxTokens 复用 bubbles.tsx 的算法（4 chars ≈ 1 token），但这里 inline 实现避免循环依赖。
  */
 function ThinkingBlock({
@@ -1187,32 +1759,38 @@ function ThinkingBlock({
 }): JSX.Element {
   const { t } = useI18n();
   const tokens = Math.max(1, Math.round(thinking.length / 4));
+  const tokenLabel = t('message.thinkingSummary', { tokens: formatCompactCount(tokens) });
   return (
-    <div>
+    <div className="inline-flex w-fit min-w-0 max-w-full flex-col">
       <button
         type="button"
         onClick={onToggle}
         className={[
-          'text-xs font-mono flex items-center gap-1.5',
-          'dark:text-thinking dark:hover:text-thinking',
-          'text-thinking/80 hover:text-thinking',
+          'inline-flex w-fit max-w-full items-center gap-1.5 whitespace-nowrap rounded-md border px-2 py-1',
+          'border-border-default/70 bg-surface-2/45 font-mono text-[11px] text-fg-muted',
+          'transition-colors hover:border-thinking/35 hover:bg-hover-bg hover:text-fg-primary',
+          'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-border-strong',
         ].join(' ')}
         aria-expanded={expanded}
       >
         <Caret open={expanded} />
-        <span>{t('message.thinkingSummary', { tokens })}</span>
+        <span className="rounded border border-thinking/20 bg-thinking/10 px-1.5 py-0.5 text-thinking/90">
+          {tokenLabel}
+        </span>
       </button>
-      <Collapse open={expanded}>
-        <div
-          className={[
-            'mt-1.5 ml-3 pl-2 border-l text-xs whitespace-pre-wrap',
-            'dark:border-thinking/60 dark:text-thinking/80',
-            'border-thinking/50 text-thinking/90',
-          ].join(' ')}
-        >
-          {thinking}
-        </div>
-      </Collapse>{' '}
+      {expanded ? (
+        <Collapse open={expanded}>
+          <div
+            className={[
+              'mt-1.5 ml-3 pl-2 border-l text-xs whitespace-pre-wrap',
+              'dark:border-thinking/60 dark:text-thinking/80',
+              'border-thinking/50 text-thinking/90',
+            ].join(' ')}
+          >
+            {thinking}
+          </div>
+        </Collapse>
+      ) : null}
     </div>
   );
 }
@@ -1231,7 +1809,7 @@ function approxTokens(text: string): number {
 /**
  * 单层折叠 cluster：一次点击 = 全部展开（thinking + 所有 ToolCallCard），不再有内层 ▸/⌄。
  *
- *   折叠态：`› Ran 6 commands · 💭 ~826 tokens`   ← 💭 段是组内折进来的推理总量，没有 thinking 则不显示
+ *   折叠态：`› Ran 6 commands · bash/read · Thinking (~826 tokens)`
  *   展开态：按 step 顺序，每步先一段紫色 thinking（若有）再该步的工具卡，全部直接可见。
  *
  * 设计取舍（2026-06-08 用户反馈）：连续的 thinking→cmd→thinking→cmd 在 normal 视图下太占地方，
@@ -1243,18 +1821,25 @@ function approxTokens(text: string): number {
 function ToolCluster({ cluster, expanded, onToggle }: ToolClusterProps): JSX.Element {
   const { t } = useI18n();
   const allTools = cluster.subClusters.flatMap((sc) => sc.tools);
-  const allDone = allTools.every((t) => t.status === 'done');
   const running = allTools.find((t) => t.status === 'running');
   const label =
     cluster.totalTools === 1
       ? t('conversation.ranOneCommand')
       : t('conversation.ranCommands', { count: cluster.totalTools });
-  const runningHint = running
-    ? ` · ${t('conversation.runningTool', { tool: running.toolName })}`
-    : '';
   // 组内折进来的 thinking 总 token —— header 给个量级提示，让用户知道"这组里藏了多少推理"。
   // 在 groupTools 里预算好（见 ToolClusterMessage.thinkingTokens），这里直接读。
   const thinkingTokens = cluster.thinkingTokens;
+  const thinkingLabel =
+    thinkingTokens > 0
+      ? t('message.thinkingSummary', { tokens: formatCompactCount(thinkingTokens) })
+      : null;
+  const toolNames = Array.from(new Set(allTools.map((tool) => tool.toolName))).filter(Boolean);
+  const visibleToolNames = toolNames.slice(0, 3);
+  const hiddenToolNameCount = Math.max(0, toolNames.length - visibleToolNames.length);
+  const toolNameSummary =
+    visibleToolNames.length > 0
+      ? `${visibleToolNames.join(' · ')}${hiddenToolNameCount > 0 ? ` +${hiddenToolNameCount}` : ''}`
+      : '';
   // step 标签是否展示：
   //   - syntheticTitle=true ("1 read" 这种 summarizeTools 兜底) 且单 sub-cluster
   //     时省略 —— 跟外层 "Ran 1 command" 信息重复
@@ -1267,60 +1852,79 @@ function ToolCluster({ cluster, expanded, onToggle }: ToolClusterProps): JSX.Ele
   };
 
   return (
-    <div className="text-xs">
+    <div className="inline-flex w-fit min-w-0 max-w-full flex-col items-start text-xs">
       <button
         type="button"
         onClick={onToggle}
-        className="text-fg-muted hover:text-fg-primary flex items-center gap-1.5"
+        className={[
+          'group/receipt inline-flex w-fit min-w-0 max-w-full items-center gap-1.5 overflow-hidden whitespace-nowrap rounded-md border px-2 py-1',
+          'border-border-default/70 bg-surface-2/45 font-mono text-[11px] text-fg-muted',
+          'transition-colors hover:border-border-strong hover:bg-hover-bg hover:text-fg-primary',
+          'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-border-strong',
+        ].join(' ')}
+        aria-expanded={expanded}
       >
         <Caret open={expanded} />
-        <span>{label}</span>
-        {thinkingTokens > 0 && (
-          <span className="text-thinking">
-            · {t('conversation.thinkingTokens', { tokens: thinkingTokens })}
+        <span className="shrink-0 text-fg-secondary group-hover/receipt:text-fg-primary">
+          {label}
+        </span>
+        {toolNameSummary && (
+          <span className="min-w-0 truncate text-fg-faint">
+            <span className="mr-1">·</span>
+            {toolNameSummary}
           </span>
         )}
-        {!allDone && <span className="text-warn">{runningHint}</span>}
+        {thinkingLabel && (
+          <span className="shrink-0 rounded border border-thinking/20 bg-thinking/10 px-1.5 py-0.5 text-thinking/90">
+            {thinkingLabel}
+          </span>
+        )}
+        {running && (
+          <span className="shrink-0 rounded border border-warn/25 bg-warn/10 px-1.5 py-0.5 text-warn">
+            {t('conversation.runningTool', { tool: running.toolName })}
+          </span>
+        )}
       </button>
-      <Collapse open={expanded}>
-        <div className="mt-1.5 ml-3 space-y-2 border-l border-border-default pl-3">
-          {' '}
-          {cluster.subClusters.map((sc) => {
-            const subRunning = sc.tools.find((t) => t.status === 'running');
-            return (
-              <div key={sc.id} className="space-y-1.5">
-                {/* 折进来的 thinking：随 cluster 一起展开，无需二次点击。紫色 quote 块对齐 ThinkingBlock 配色。 */}
-                {sc.thinking && (
-                  <div
-                    className={[
-                      'pl-2 border-l text-xs whitespace-pre-wrap',
-                      'dark:border-thinking/60 dark:text-thinking/80',
-                      'border-thinking/50 text-thinking/90',
-                    ].join(' ')}
-                  >
-                    {sc.thinking}
+      {expanded ? (
+        <Collapse open={expanded}>
+          <div className="mt-1.5 ml-3 space-y-2 border-l border-border-default pl-3">
+            {cluster.subClusters.map((sc) => {
+              const subRunning = sc.tools.find((t) => t.status === 'running');
+              return (
+                <div key={sc.id} className="space-y-1.5">
+                  {/* 折进来的 thinking：随 cluster 一起展开，无需二次点击。紫色 quote 块对齐 ThinkingBlock 配色。 */}
+                  {sc.thinking && (
+                    <div
+                      className={[
+                        'pl-2 border-l text-xs whitespace-pre-wrap',
+                        'dark:border-thinking/60 dark:text-thinking/80',
+                        'border-thinking/50 text-thinking/90',
+                      ].join(' ')}
+                    >
+                      {sc.thinking}
+                    </div>
+                  )}
+                  {showStepLabel(sc) && (
+                    <div className="flex items-start gap-1.5 text-fg-secondary">
+                      <span className="whitespace-pre-wrap break-words">{sc.title}</span>
+                      {subRunning && (
+                        <span className="text-warn text-[11px] flex-shrink-0 mt-px">
+                          · {t('conversation.runningTool', { tool: subRunning.toolName })}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                  <div className="space-y-2">
+                    {sc.tools.map((t) => (
+                      <ToolCallCard key={t.id} {...t} />
+                    ))}
                   </div>
-                )}
-                {showStepLabel(sc) && (
-                  <div className="flex items-start gap-1.5 text-fg-secondary">
-                    <span className="whitespace-pre-wrap break-words">{sc.title}</span>
-                    {subRunning && (
-                      <span className="text-warn text-[11px] flex-shrink-0 mt-px">
-                        · {t('conversation.runningTool', { tool: subRunning.toolName })}
-                      </span>
-                    )}
-                  </div>
-                )}
-                <div className="space-y-2">
-                  {sc.tools.map((t) => (
-                    <ToolCallCard key={t.id} {...t} />
-                  ))}
                 </div>
-              </div>
-            );
-          })}
-        </div>
-      </Collapse>
+              );
+            })}
+          </div>
+        </Collapse>
+      ) : null}
     </div>
   );
 }

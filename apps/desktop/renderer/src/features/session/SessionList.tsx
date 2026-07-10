@@ -16,6 +16,7 @@ import { invokeWithTimeout } from '../../lib/ipcInvokeWithTimeout.js';
 import type { SessionMeta } from '@kodax-space/space-ipc-schema';
 import { useI18n } from '../../i18n/I18nProvider.js';
 import type { MessageKey } from '../../i18n/messages.js';
+import { pushToast } from '../../store/toastStore.js';
 
 // 'mock' 永远保留——FEATURE_003 Mock adapter 的入口，未配 key 时也能跑通整个流程。
 // 真 provider 列表从 store 拉（FEATURE_004 已注入）。
@@ -194,6 +195,13 @@ export function SessionList(): JSX.Element {
     if (result.ok && result.data.deleted) {
       removeSession(sessionId);
       window.dispatchEvent(new Event('kodax-space.focus-textarea'));
+    } else if (result.ok && result.data.reason === 'session_running') {
+      pushToast(t('menu.session.deleteBusy'), 'warning');
+      if (currentProjectPath) {
+        await refreshSessions(currentProjectPath, replaceSessionsForScope, currentSurface);
+      }
+    } else if (!result.ok) {
+      pushToast(result.error?.message ?? t('common.unknownError'), 'error');
     }
   }
 
@@ -290,7 +298,11 @@ export function SessionList(): JSX.Element {
                   ? 'bg-info/15 border-info/40 text-info border'
                   : 'hover:bg-hover-bg text-fg-secondary border border-transparent'
               }`}
-              title={s.sessionId}
+              title={
+                s.runtimeMetadataSource === 'current-default-fallback'
+                  ? `${s.sessionId} \u2014 ${t('session.runtimeFallback')}`
+                  : s.sessionId
+              }
             >
               <div className="flex items-center gap-2">
                 {renaming === s.sessionId ? (
@@ -335,7 +347,16 @@ export function SessionList(): JSX.Element {
                 </span>
               </div>
               <div className="flex items-center gap-2 text-[11px] text-fg-muted">
-                <span>{s.provider}</span>
+                <span
+                  title={
+                    s.runtimeMetadataSource === 'current-default-fallback'
+                      ? t('session.runtimeFallback')
+                      : undefined
+                  }
+                >
+                  {s.provider}
+                  {s.runtimeMetadataSource === 'current-default-fallback' ? ' *' : ''}
+                </span>
                 <span>·</span>
                 <span>{s.reasoningMode}</span>
                 <span>·</span>

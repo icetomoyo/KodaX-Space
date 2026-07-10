@@ -29,6 +29,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   buildSkillsPrompt,
+  buildSkillsPromptForSurface,
   enforceSkillSafetyPolicy,
   _resetSkillsPromptForTests,
   type SafetyScannableRegistry,
@@ -52,12 +53,7 @@ afterEach(async () => {
   }
 });
 
-function writeSkill(
-  baseDir: string,
-  name: string,
-  frontmatter: string,
-  body: string,
-): void {
+function writeSkill(baseDir: string, name: string, frontmatter: string, body: string): void {
   const dir = path.join(baseDir, name);
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, 'SKILL.md'), `---\n${frontmatter}\n---\n${body}\n`);
@@ -69,6 +65,16 @@ test('buildSkillsPrompt: returns a string for an empty project root', async () =
   // We don't pin content because dev machines have ~/.kodax/skills.
   // The point is it must be safe to spread into context.skillsPrompt
   // without injecting an undefined/null value mid-spread.
+});
+
+test('buildSkillsPromptForSurface: Partner does not advertise an unavailable SDK skill tool', async () => {
+  const skillsDir = path.join(tmpRootA, '.kodax', 'skills');
+  fs.mkdirSync(skillsDir, { recursive: true });
+  const name = `tmp-partner-hidden-${Date.now()}`;
+  writeSkill(skillsDir, name, `name: ${name}\ndescription: must remain hidden`, 'body');
+
+  assert.equal(await buildSkillsPromptForSurface('partner', tmpRootA), '');
+  assert.match(await buildSkillsPromptForSurface('code', tmpRootA), new RegExp(name));
 });
 
 test('buildSkillsPrompt: includes project-discovered skill name + description in snippet', async () => {
@@ -105,7 +111,12 @@ test('buildSkillsPrompt: excludes skills with dynamic-context shell tokens from 
     `name: ${unsafe}\ndescription: activate for ${unsafe} tasks`,
     'Current status: !`git status`',
   );
-  writeSkill(skillsDir, safe, `name: ${safe}\ndescription: activate for ${safe} tasks`, 'plain body');
+  writeSkill(
+    skillsDir,
+    safe,
+    `name: ${safe}\ndescription: activate for ${safe} tasks`,
+    'plain body',
+  );
 
   // Security policy: a project containing ANY dynamic-context skill gets its ENTIRE natural-language
   // snippet suppressed (the per-skill flag can't survive the SDK global-singleton re-discover race,
@@ -258,11 +269,18 @@ test('buildSkillsPrompt: previous failure does not block subsequent calls', asyn
 
   // First call: should complete (returns empty or partial).
   const first = await buildSkillsPrompt(tmpRootA);
-  assert.equal(typeof first, 'string', 'first call must resolve to a string even with empty SKILL.md');
+  assert.equal(
+    typeof first,
+    'string',
+    'first call must resolve to a string even with empty SKILL.md',
+  );
 
   // Now add a valid skill and call again. The chain must not be stuck.
   const goodName = `tmp-recovers-${Date.now()}`;
   writeSkill(skillsDir, goodName, `name: ${goodName}\ndescription: recovers ok`, 'body');
   const second = await buildSkillsPrompt(tmpRootA);
-  assert.ok(second.includes(goodName), 'queue is not blocked after prior call; second call discovers new skill');
+  assert.ok(
+    second.includes(goodName),
+    'queue is not blocked after prior call; second call discovers new skill',
+  );
 });

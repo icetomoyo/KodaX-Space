@@ -67,16 +67,17 @@ jobs:
           cache: 'npm'
 
       - name: Install dependencies
-        run: npm ci || npm install
+        run: npm ci
+
+      - name: Install Unicode PDF font (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends fonts-wqy-zenhei
 
       - name: Build workspace packages
         run: npm run build:packages
 
       - name: Typecheck (gate before pack)
         run: npm run typecheck
-        # rootDir cross-reference issue in composeMessages.test (pre-F009 bug,
-        # tracked separately) — allow non-fatal until that's fixed
-        continue-on-error: true
 
       - name: Configure npm script-shell (Windows)
         if: runner.os == 'Windows'

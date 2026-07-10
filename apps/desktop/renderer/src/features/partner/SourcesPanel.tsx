@@ -9,6 +9,19 @@ import { FileText, FolderOpen, Loader2, Plus, Trash2 } from 'lucide-react';
 import { useAppStore } from '../../store/appStore.js';
 import { useI18n } from '../../i18n/I18nProvider.js';
 import { FileTree } from '../code/FileTree.js';
+import { AdminAuditPanel } from './AdminAuditPanel.js';
+import { KnowledgeBasePanel } from './KnowledgeBasePanel.js';
+import {
+  PARTNER_SOURCES_CHANGED_EVENT,
+  readPartnerPendingSources,
+  removePartnerPendingSource,
+  stagePartnerPendingSource,
+  type PartnerWorkbenchPendingSourceRef,
+} from './partnerWorkbench.js';
+
+function notifySourcesChanged(): void {
+  window.dispatchEvent(new Event(PARTNER_SOURCES_CHANGED_EVENT));
+}
 
 export function SourcesPanel(): JSX.Element {
   const { t } = useI18n();
@@ -16,6 +29,9 @@ export function SourcesPanel(): JSX.Element {
   const currentSessionId = useAppStore((s) => s.currentSessionId);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [sources, setSources] = useState<readonly PartnerSourceT[]>([]);
+  const [pendingSources, setPendingSources] = useState<readonly PartnerWorkbenchPendingSourceRef[]>(
+    () => readPartnerPendingSources(useAppStore.getState().currentProjectPath),
+  );
   const [loadingSources, setLoadingSources] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -25,7 +41,7 @@ export function SourcesPanel(): JSX.Element {
 
   const loadSources = useCallback((): (() => void) | void => {
     const bridge = window.kodaxSpace;
-    if (!bridge || !currentSessionId) {
+    if (!bridge || !currentSessionId || !currentProjectPath) {
       setSources([]);
       setLoadingSources(false);
       return;
@@ -34,7 +50,10 @@ export function SourcesPanel(): JSX.Element {
     setLoadingSources(true);
     setError(null);
     bridge
-      .invoke('partner.sources.list', { sessionId: currentSessionId })
+      .invoke('partner.sources.list', {
+        sessionId: currentSessionId,
+        projectRoot: currentProjectPath,
+      })
       .then((result) => {
         if (!alive) return;
         if (result.ok) {
@@ -55,7 +74,11 @@ export function SourcesPanel(): JSX.Element {
     return () => {
       alive = false;
     };
-  }, [currentSessionId]);
+  }, [currentProjectPath, currentSessionId]);
+
+  const loadPendingSources = useCallback((): void => {
+    setPendingSources(readPartnerPendingSources(currentProjectPath));
+  }, [currentProjectPath]);
 
   useEffect(() => {
     setSelectedPath(null);
@@ -63,9 +86,25 @@ export function SourcesPanel(): JSX.Element {
 
   useEffect(() => loadSources(), [loadSources]);
 
+  useEffect(() => loadPendingSources(), [loadPendingSources]);
+
+  useEffect(() => {
+    const onSourcesChanged = (): void => {
+      loadPendingSources();
+    };
+    window.addEventListener(PARTNER_SOURCES_CHANGED_EVENT, onSourcesChanged);
+    return () => window.removeEventListener(PARTNER_SOURCES_CHANGED_EVENT, onSourcesChanged);
+  }, [loadPendingSources]);
+
   async function addSelectedSource(): Promise<void> {
     const bridge = window.kodaxSpace;
-    if (!bridge || !currentSessionId || !currentProjectPath || !selectedPath) return;
+    if (!currentProjectPath || !selectedPath) return;
+    if (!currentSessionId) {
+      setPendingSources(stagePartnerPendingSource(currentProjectPath, { path: selectedPath }));
+      notifySourcesChanged();
+      return;
+    }
+    if (!bridge) return;
     setBusy(true);
     setError(null);
     try {
@@ -81,6 +120,7 @@ export function SourcesPanel(): JSX.Element {
           const others = prev.filter((source) => source.id !== result.data.source.id);
           return [...others, result.data.source];
         });
+        notifySourcesChanged();
       } else {
         setError(result.error.message);
       }
@@ -93,16 +133,24 @@ export function SourcesPanel(): JSX.Element {
 
   async function removeSource(sourceId: string): Promise<void> {
     const bridge = window.kodaxSpace;
-    if (!bridge || !currentSessionId) return;
+    if (!currentProjectPath) return;
+    if (!currentSessionId) {
+      setPendingSources(removePartnerPendingSource(currentProjectPath, sourceId));
+      notifySourcesChanged();
+      return;
+    }
+    if (!bridge) return;
     setBusy(true);
     setError(null);
     try {
       const result = await bridge.invoke('partner.sources.remove', {
         sessionId: currentSessionId,
+        projectRoot: currentProjectPath,
         sourceId,
       });
       if (result.ok && result.data.removed) {
         setSources((prev) => prev.filter((source) => source.id !== sourceId));
+        notifySourcesChanged();
       } else if (!result.ok) {
         setError(result.error.message);
       }
@@ -113,7 +161,23 @@ export function SourcesPanel(): JSX.Element {
     }
   }
 
-  const canAdd = Boolean(currentSessionId && currentProjectPath && selectedPath && !busy);
+  const visibleSources = currentSessionId
+    ? sources.map((source) => ({
+        id: source.id,
+        path: source.path,
+        label: source.label,
+        pending: false,
+      }))
+    : pendingSources.map((source) => ({
+        id: source.path,
+        path: source.path,
+        label: source.label,
+        pending: true,
+      }));
+  const selectedAlreadyAdded = Boolean(
+    selectedPath && visibleSources.some((source) => source.path === selectedPath),
+  );
+  const canAdd = Boolean(currentProjectPath && selectedPath && !busy && !selectedAlreadyAdded);
 
   return (
     <aside
@@ -133,7 +197,11 @@ export function SourcesPanel(): JSX.Element {
             className="text-xs text-fg-secondary flex items-center gap-1.5 px-1 py-0.5"
             title={currentProjectPath ?? ''}
           >
-            <FolderOpen className="w-3.5 h-3.5 flex-shrink-0 text-fg-muted" strokeWidth={1.75} aria-hidden />
+            <FolderOpen
+              className="w-3.5 h-3.5 flex-shrink-0 text-fg-muted"
+              strokeWidth={1.75}
+              aria-hidden
+            />
             <span className="truncate">{folderName}</span>
           </div>
         ) : (
@@ -143,24 +211,35 @@ export function SourcesPanel(): JSX.Element {
         )}
       </div>
 
+      <KnowledgeBasePanel />
+      <AdminAuditPanel />
+
       <div className="flex-shrink-0 border-b border-border-default">
         <div className="px-3 py-2 flex items-center justify-between">
           <span className="text-[11px] uppercase tracking-wider text-fg-muted">
             {t('partner.sources.attached')}
           </span>
           {loadingSources && (
-            <Loader2 className="w-3.5 h-3.5 text-fg-muted animate-spin" strokeWidth={1.75} aria-hidden />
+            <Loader2
+              className="w-3.5 h-3.5 text-fg-muted animate-spin"
+              strokeWidth={1.75}
+              aria-hidden
+            />
           )}
         </div>
         <div className="max-h-36 overflow-y-auto pb-1">
-          {sources.length > 0 ? (
-            sources.map((source) => (
+          {visibleSources.length > 0 ? (
+            visibleSources.map((source) => (
               <div
                 key={source.id}
                 className="group px-2 py-1 flex items-center gap-1.5 text-xs text-fg-secondary"
                 title={source.path}
               >
-                <FileText className="w-3.5 h-3.5 text-fg-muted flex-shrink-0" strokeWidth={1.75} aria-hidden />
+                <FileText
+                  className="w-3.5 h-3.5 text-fg-muted flex-shrink-0"
+                  strokeWidth={1.75}
+                  aria-hidden
+                />
                 <span className="truncate">{source.label ?? source.path}</span>
                 <button
                   type="button"
@@ -175,9 +254,7 @@ export function SourcesPanel(): JSX.Element {
             ))
           ) : (
             <div className="px-3 pb-2 text-[11px] text-fg-faint">
-              {currentSessionId
-                ? t('partner.sources.none')
-                : t('partner.sources.startSession')}
+              {currentSessionId ? t('partner.sources.none') : t('partner.sources.noneStaged')}
             </div>
           )}
         </div>
@@ -209,19 +286,31 @@ export function SourcesPanel(): JSX.Element {
           }`}
           title={
             selectedPath
-              ? t('partner.sources.attachSelectedTitle')
+              ? currentSessionId
+                ? t('partner.sources.attachSelectedTitle')
+                : t('partner.sources.stageSelectedTitle')
               : currentSessionId
                 ? t('partner.sources.selectFile')
-                : t('partner.sources.startSessionFirst')
+                : t('partner.sources.selectFile')
           }
         >
           {busy ? (
-            <Loader2 className="w-3.5 h-3.5 flex-shrink-0 animate-spin" strokeWidth={1.75} aria-hidden />
+            <Loader2
+              className="w-3.5 h-3.5 flex-shrink-0 animate-spin"
+              strokeWidth={1.75}
+              aria-hidden
+            />
           ) : (
             <Plus className="w-3.5 h-3.5 flex-shrink-0" strokeWidth={1.75} aria-hidden />
           )}
           <span className="truncate">
-            {selectedPath ? t('partner.sources.attachSelected') : t('partner.sources.add')}
+            {selectedPath
+              ? currentSessionId
+                ? t('partner.sources.attachSelected')
+                : selectedAlreadyAdded
+                  ? t('partner.sources.alreadyAttached')
+                  : t('partner.sources.stageSelected')
+              : t('partner.sources.add')}
           </span>
         </button>
       </div>

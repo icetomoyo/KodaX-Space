@@ -9,15 +9,6 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import { launchSpace } from './fixtures.js';
 
-// Partner surface is intentionally disabled (PARTNER_ENABLED=false in
-// store/surface.ts, commit c28a0746) until its deliverable chain is complete —
-// the [Partner] tab is greyed out and cannot be switched to, so every flow here
-// (which starts by switching to Partner) can't run. Re-enable this whole file
-// when PARTNER_ENABLED flips back to true.
-test.beforeEach(() => {
-  test.skip(true, 'Partner surface disabled (PARTNER_ENABLED=false) until deliverable chain complete');
-});
-
 interface Rect {
   x: number;
   y: number;
@@ -65,6 +56,7 @@ async function sendPrompt(page: Page, prompt: string): Promise<void> {
     timeout: 10_000,
   });
   await expect(stream.getByText(/Ran 1 command/).first()).toBeVisible({ timeout: 20_000 });
+  await expect(stream.locator('.activity-spinner-comet')).toHaveCount(0, { timeout: 20_000 });
 }
 
 async function saveScreenshot(page: Page, name: string): Promise<void> {
@@ -138,20 +130,32 @@ async function expectUsablePartnerLayout(page: Page): Promise<void> {
   expect(conversation.width, 'conversation needs a readable lane').toBeGreaterThanOrEqual(360);
 
   if (rects.left) {
-    expect(horizontallySeparated(rects.left, workspace), 'left sidebar overlaps workspace').toBe(true);
-  }
-  if (rects.sources) {
-    expect(horizontallySeparated(rects.sources, conversation), 'sources rail overlaps conversation').toBe(true);
-  }
-  if (rects.artifact) {
-    expect(insideViewport(rects.artifact, viewport), 'artifact panel is clipped by viewport').toBe(true);
-    expect(horizontallySeparated(conversation, rects.artifact), 'conversation overlaps artifact rail').toBe(
+    expect(horizontallySeparated(rects.left, workspace), 'left sidebar overlaps workspace').toBe(
       true,
     );
   }
+  if (rects.sources) {
+    expect(
+      horizontallySeparated(rects.sources, conversation),
+      'sources rail overlaps conversation',
+    ).toBe(true);
+  }
+  if (rects.artifact) {
+    expect(insideViewport(rects.artifact, viewport), 'artifact panel is clipped by viewport').toBe(
+      true,
+    );
+    expect(
+      horizontallySeparated(conversation, rects.artifact),
+      'conversation overlaps artifact rail',
+    ).toBe(true);
+  }
 }
 
-async function expectSelectorInViewport(page: Page, selector: string, label: string): Promise<void> {
+async function expectSelectorInViewport(
+  page: Page,
+  selector: string,
+  label: string,
+): Promise<void> {
   const handle = await page.waitForFunction((targetSelector) => {
     const element = document.querySelector(targetSelector);
     if (!element) return false;
@@ -179,11 +183,6 @@ async function expectSelectorInViewport(page: Page, selector: string, label: str
 }
 
 test('Partner layout remains usable without panel overlap across common widths', async () => {
-  test.skip(
-    !!process.env.CI && process.platform === 'win32',
-    'mock assistant turn can stall on Windows CI; keep local and Linux coverage',
-  );
-
   const testId = `partner-layout-${Date.now()}`;
   const projectDir = await createProject(testId);
   const space = await launchSpace(testId);
@@ -195,6 +194,48 @@ test('Partner layout remains usable without panel overlap across common widths',
 
     await page.setViewportSize({ width: 1280, height: 760 });
     await saveScreenshot(page, '01-desktop-welcome');
+    await expect(page.getByTestId('partner-workbench-mode-strip')).toBeVisible();
+    await expect(page.getByTestId('partner-workbench-route-preview')).toBeVisible();
+    const composer = page.locator('textarea').first();
+    await expect(composer).toHaveAttribute(
+      'placeholder',
+      /Document processing task - sending will create a Partner session/,
+    );
+    await page.getByTestId('partner-workbench').getByRole('button', { name: 'Slides' }).click();
+    await expect(composer).toHaveAttribute(
+      'placeholder',
+      /Slides task - sending will create a Partner session/,
+    );
+    await page
+      .getByTestId('partner-workbench')
+      .getByRole('button', { name: 'Data analysis' })
+      .click();
+    await expect(composer).toHaveAttribute(
+      'placeholder',
+      /Data analysis task - sending will create a Partner session/,
+    );
+    await page
+      .getByTestId('partner-workbench')
+      .getByRole('button', { name: 'Document processing' })
+      .click();
+    await expect(page.getByTestId('partner-workbench-brief')).toHaveCount(0);
+    await expect(
+      page.getByTestId('partner-workbench').getByRole('button', { name: /^Start$/ }),
+    ).toHaveCount(0);
+    await expect(page.getByTestId('partner-workbench').getByText('Capabilities:')).toHaveCount(0);
+    await expect(page.getByTestId('partner-workbench').getByText('Deliverables:')).toHaveCount(0);
+    await expect(
+      page.getByTestId('partner-workbench').getByText(/Choose the work mode here/),
+    ).toHaveCount(0);
+    await expect(
+      page.getByTestId('partner-conversation').getByText(/Describe a task below/),
+    ).toHaveCount(0);
+    await page.getByTestId('partner-workbench').getByRole('button', { name: 'Advanced' }).click();
+    await expect(page.getByTestId('partner-workbench').getByText('Capabilities:')).toBeVisible();
+    await expect(page.getByTestId('partner-workbench').getByText('Deliverables:')).toBeVisible();
+    await expect(page.getByTestId('partner-workbench').getByText('Output override')).toBeVisible();
+    await page.getByTestId('partner-workbench').getByRole('button', { name: 'Advanced' }).click();
+    await expect(page.getByTestId('partner-workbench').getByText('Capabilities:')).toHaveCount(0);
     await expect(page.getByTestId('partner-sources-panel')).toBeVisible();
     await expect(page.getByTestId('partner-artifact-panel')).toBeVisible();
     await expectUsablePartnerLayout(page);
@@ -228,11 +269,6 @@ test('Partner layout remains usable without panel overlap across common widths',
 });
 
 test('Partner menu and delete dialog stay above layout and inside the viewport', async () => {
-  test.skip(
-    !!process.env.CI && process.platform === 'win32',
-    'mock assistant turn can stall on Windows CI; keep local and Linux coverage',
-  );
-
   const testId = `partner-overlays-${Date.now()}`;
   const projectDir = await createProject(testId);
   const space = await launchSpace(testId);
@@ -256,11 +292,17 @@ test('Partner menu and delete dialog stay above layout and inside the viewport',
     await expectSelectorInViewport(page, '[role="menu"]', 'session context menu');
     await saveScreenshot(page, '06-session-menu');
 
-    if (!(await deleteMenuItem.isVisible().catch(() => false))) {
+    try {
+      // A late session-list refresh can legitimately remount the row after the
+      // screenshot. Use a short click deadline, then reopen the menu instead of
+      // waiting 30 seconds on a locator that has already disappeared.
+      await deleteMenuItem.click({ timeout: 3_000 });
+    } catch {
       await row.click({ button: 'right' });
-      await expect(page.getByRole('menuitem', { name: /^Delete\b/ })).toBeVisible();
+      const reopenedDeleteMenuItem = page.getByRole('menuitem', { name: /^Delete\b/ });
+      await expect(reopenedDeleteMenuItem).toBeVisible();
+      await reopenedDeleteMenuItem.click();
     }
-    await page.getByRole('menuitem', { name: /^Delete\b/ }).click();
     const dialog = page.getByRole('dialog');
     await expect(dialog).toBeVisible();
     await expectSelectorInViewport(page, '[role="dialog"]', 'delete dialog');

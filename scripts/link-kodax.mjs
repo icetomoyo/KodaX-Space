@@ -13,7 +13,7 @@
 //
 // 本脚本做法：
 //   1. 在 Space/node_modules/@kodax-ai/kodax/ 建一个 staging 目录（不污染 KodaX 仓库）
-//   2. 写一个自己的 package.json — name=@kodax-ai/kodax + 注入 7 个 subpath exports
+//   2. 写一个自己的 package.json — name=@kodax-ai/kodax + 镜像 subpath exports
 //      （与 KodaX/scripts/release.mjs 完全一致；改一次时同步两边）
 //   3. 把 dist/ symlink 到 KodaX/dist/（KodaX `npm run build` 后立即被 Space 看到）
 //   4. 把 node_modules/ symlink 到 KodaX/node_modules/（SDK 内部依赖能找到）
@@ -77,7 +77,7 @@ const stagingPkg = {
   // exports: 直接 borrow KodaX 自己的 exports map（它已指向 ./dist/sdk-*.js，与本 staging 的
   // dist 符号链接一致）。这样 KodaX 新增子路径（如 0.7.58 的 ./media）自动跟上，不再手 sync 漂移
   // —— 缺 ./media 曾导致 dev-link 下 import('@kodax-ai/kodax/media') 抛 ERR_PACKAGE_PATH_NOT_EXPORTED。
-  // kodaxPkg.exports 缺失时回退到显式清单（含 ./media，与 KodaX 0.7.58 对齐）。
+  // kodaxPkg.exports 缺失时回退到显式清单（含 ./runtime，与 KodaX 0.7.66 对齐）。
   exports: kodaxPkg.exports ?? {
     '.': { types: './dist/index.d.ts', import: './dist/index.js' },
     './agent': { types: './dist/sdk-agent.d.ts', import: './dist/sdk-agent.js' },
@@ -88,6 +88,7 @@ const stagingPkg = {
     './skills': { types: './dist/sdk-skills.d.ts', import: './dist/sdk-skills.js' },
     './mcp': { types: './dist/sdk-mcp.d.ts', import: './dist/sdk-mcp.js' },
     './session': { types: './dist/sdk-session.d.ts', import: './dist/sdk-session.js' },
+    './runtime': { types: './dist/sdk-runtime.d.ts', import: './dist/sdk-runtime.js' },
     './package.json': './package.json',
   },
   // 保留 dependencies — Node ESM resolution 需要它们存在以找子依赖

@@ -22,15 +22,16 @@ export function GlassAurora(): JSX.Element | null {
   // 窗口可见且聚焦时才让极光漂移；失焦 / 最小化 / 切后台一律暂停。
   // 仅 full 档有漂移动画需要暂停；balanced 静止、minimal 不渲染，都无需挂监听。
   useEffect(() => {
+    const layer = layerRef.current;
     if (quality !== 'full') {
-      layerRef.current?.classList.remove('is-paused');
+      layer?.classList.remove('is-paused');
       return undefined;
     }
 
     let activity: WindowActivityPayload | null = null;
     const sync = (): void => {
       const paused = shouldPauseAurora(quality, activity, isLocalDocumentActive(document));
-      layerRef.current?.classList.toggle('is-paused', paused);
+      layer?.classList.toggle('is-paused', paused);
     };
     const offWindowActivity = window.kodaxSpace?.on('window.activity', (payload) => {
       activity = payload;
@@ -46,7 +47,7 @@ export function GlassAurora(): JSX.Element | null {
       window.removeEventListener('focus', sync);
       window.removeEventListener('blur', sync);
       document.removeEventListener('visibilitychange', sync);
-      layerRef.current?.classList.remove('is-paused');
+      layer?.classList.remove('is-paused');
     };
   }, [quality]);
 

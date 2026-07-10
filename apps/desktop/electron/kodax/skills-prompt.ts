@@ -56,6 +56,7 @@
 // subpath at runtime (CJS-built main can't statically require subpath
 // "import"-only conditional exports — same constraint that drove
 // `loadSdkCoding` / `loadSdkLlm` in real-session.ts).
+import type { Surface } from '@kodax-space/space-ipc-schema';
 type SdkSkillsModule = typeof import('@kodax-ai/kodax/skills');
 let sdkModuleCache: Promise<SdkSkillsModule | null> | null = null;
 
@@ -237,6 +238,19 @@ export async function buildSkillsPrompt(projectRoot: string): Promise<string> {
   } finally {
     releaseLock();
   }
+}
+
+/**
+ * Partner deliberately does not receive the SDK skills addendum yet. Its tool
+ * policy blocks the SDK `skill` executor, so advertising discovered skills
+ * would instruct the model to call a capability it cannot use. Partner's
+ * workbench capability packs are prompt playbooks, not SDK/plugin skills.
+ */
+export function buildSkillsPromptForSurface(
+  surface: Surface,
+  projectRoot: string,
+): Promise<string> {
+  return surface === 'partner' ? Promise.resolve('') : buildSkillsPrompt(projectRoot);
 }
 
 /**

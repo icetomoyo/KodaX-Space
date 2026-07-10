@@ -16,7 +16,10 @@ import {
 } from '@kodax-space/space-ipc-schema';
 import type { ArtifactStore } from './store.js';
 import { artifactStore } from './store.js';
-import { resolveSessionRunContext, type SdkToolExecutionContextLike } from '../kodax/session-run-context.js';
+import {
+  resolveSessionRunContext,
+  type SdkToolExecutionContextLike,
+} from '../kodax/session-run-context.js';
 import { pushToRenderer } from '../ipc/push.js';
 import { registerPartnerSpaceToolPolicy } from '../kodax/partner-tools.js';
 
@@ -51,13 +54,14 @@ const CREATE_ARTIFACT_KINDS = [
   'pdf',
   'docx',
   'xlsx',
+  'pptx',
   'file',
 ] as const satisfies readonly ArtifactKindT[];
 
 const DESCRIPTION = [
   'Create or update a rich ARTIFACT shown in a dedicated preview panel (not inline in chat).',
   'Use for substantial, self-contained deliverables the user will want to preview, iterate, and export:',
-  'reports/docs (markdown), charts, code, static HTML, interactive HTML, SVG, or referencing a generated pdf/docx/xlsx/media file.',
+  'reports/docs (markdown), charts, code, static HTML, interactive HTML, SVG, or referencing an existing pdf/docx/xlsx/pptx/media file.',
   '',
   'kinds:',
   '- markdown/code/html/interactive-html/svg: pass `content` (the text/source).',
@@ -65,7 +69,7 @@ const DESCRIPTION = [
   '- interactive-html runs in an opaque-origin iframe sandbox with scripts allowed, same-origin disabled, no top-navigation, and an injected CSP. By default it blocks network, external scripts, forms, popups, frames, and objects.',
   '- Optional `permissions` for interactive-html can allow limited HTTPS origins: connect/style/img/media/font/forms arrays contain HTTPS origins; scripts contains exact HTTPS script URLs plus SRI integrity; popups can be "confirm-external" (main-window navigation guards still deny in-app popups and route https externally).',
   '- chart: pass `content` as a JSON string: {"type":"line"|"bar"|"area","xKey":"<field>","data":[{...}],"series":[{"key":"<field>","label"?,"color"?}],"title"?}.',
-  '- pdf/docx/xlsx/file: write the file first, then pass its workspace `path` (no inline content). Use file for images, video, audio, presentations, or other previewable files.',
+  '- pdf/docx/xlsx/pptx/file: reference an existing workspace `path` (no inline content). To generate finished Office/PDF deliverables, use create_office_artifact instead of writing project files.',
   '- image: pass `content` as a data: URI.',
   '',
   'To revise an existing artifact, pass its `artifactId` to append a new version (iterate). Omit it to create a new artifact.',
@@ -74,7 +78,11 @@ const DESCRIPTION = [
 export interface CreateArtifactHandlerDeps {
   store: ArtifactStore;
   /** Called after a successful create/version so the renderer can refetch. */
-  notifyChanged: (payload: { id: string; sessionId: string; reason: 'created' | 'version' }) => void;
+  notifyChanged: (payload: {
+    id: string;
+    sessionId: string;
+    reason: 'created' | 'version';
+  }) => void;
 }
 
 type ToolHandler = (
@@ -98,9 +106,13 @@ export const CREATE_ARTIFACT_TOOL = {
       title: { type: 'string', description: 'Short human title for the artifact.' },
       content: {
         type: 'string',
-        description: 'Inline content for content kinds (for chart: a JSON string of the chart spec).',
+        description:
+          'Inline content for content kinds (for chart: a JSON string of the chart spec).',
       },
-      path: { type: 'string', description: 'Workspace file path for path-backed kinds (pdf/docx/xlsx/file).' },
+      path: {
+        type: 'string',
+        description: 'Workspace file path for path-backed kinds (pdf/docx/xlsx/pptx/file).',
+      },
       summary: { type: 'string', description: 'Optional one-line summary of this version.' },
       artifactId: {
         type: 'string',
@@ -115,12 +127,14 @@ export const CREATE_ARTIFACT_TOOL = {
           connect: {
             type: 'array',
             items: { type: 'string' },
-            description: 'HTTPS origins allowed for fetch/XHR plus matching wss:// WebSocket hosts.',
+            description:
+              'HTTPS origins allowed for fetch/XHR plus matching wss:// WebSocket hosts.',
           },
           style: {
             type: 'array',
             items: { type: 'string' },
-            description: 'HTTPS origins allowed for external stylesheets, in addition to inline styles.',
+            description:
+              'HTTPS origins allowed for external stylesheets, in addition to inline styles.',
           },
           img: {
             type: 'array',
@@ -161,7 +175,8 @@ export const CREATE_ARTIFACT_TOOL = {
           popups: {
             type: 'string',
             enum: ['confirm-external'],
-            description: 'Allow popup attempts; app navigation guards deny in-app windows and route https externally.',
+            description:
+              'Allow popup attempts; app navigation guards deny in-app windows and route https externally.',
           },
         },
       },
@@ -220,7 +235,11 @@ export function makeCreateArtifactHandler(deps: CreateArtifactHandlerDeps): Tool
     try {
       const res = await deps.store.upsert(parsed.data);
       try {
-        deps.notifyChanged({ id: res.id, sessionId: ctx.sessionId, reason: res.created ? 'created' : 'version' });
+        deps.notifyChanged({
+          id: res.id,
+          sessionId: ctx.sessionId,
+          reason: res.created ? 'created' : 'version',
+        });
       } catch {
         // renderer may be closing — artifact is persisted and shows on next load.
       }

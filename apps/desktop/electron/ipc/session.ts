@@ -5,7 +5,12 @@
 
 import { registerChannel } from './register.js';
 import { validateProjectRoot } from './validate.js';
-import { kodaxHost } from '../kodax/host.js';
+import {
+  kodaxHost,
+  modelBelongsToProvider,
+  providerDescriptor,
+  providerIsConfigured,
+} from '../kodax/host.js';
 import { projectStore } from '../projects/store.js';
 
 // v0.1.5: canonProjectRoot 抽到 schema 包共享 util（renderer + main 同一实现），
@@ -51,6 +56,7 @@ import {
   loadKodaxCustomProviders,
   loadKodaxUserDefaults,
   registerKodaxCustomProviders,
+  type KodaxConfigCustomProvider,
 } from '../kodax/user-config.js';
 import { isBuiltinId } from '../providers/catalog.js';
 import { providerConfigStore } from '../providers/config.js';
@@ -70,6 +76,76 @@ import type {
   SessionLocalNotice,
   SessionMeta,
 } from '@kodax-space/space-ipc-schema';
+
+export function resolveHistoricalRuntimeIdentity(input: {
+  readonly persisted?: { readonly provider?: string; readonly model?: string };
+  readonly fallbackProvider: string;
+  readonly fallbackModel?: string;
+  readonly kodaxCustomProviders?: readonly KodaxConfigCustomProvider[];
+}): {
+  readonly provider: string;
+  readonly model?: string;
+  readonly runtimeMetadataSource: 'persisted' | 'current-default-fallback';
+} {
+  const customProviders = input.kodaxCustomProviders ?? [];
+  const persistedProvider = input.persisted?.provider;
+  const providerIsValid =
+    persistedProvider !== undefined && providerIsConfigured(persistedProvider, customProviders);
+  const provider = providerIsValid ? persistedProvider : input.fallbackProvider;
+  const requestedModel = providerIsValid
+    ? (input.persisted?.model ?? providerDescriptor(provider, customProviders)?.defaultModel)
+    : input.fallbackModel;
+  const model =
+    requestedModel && modelBelongsToProvider(provider, requestedModel, customProviders)
+      ? requestedModel
+      : undefined;
+  const exact =
+    providerIsValid &&
+    (provider === 'mock' ||
+      (input.persisted?.model !== undefined && model === input.persisted.model));
+  return {
+    provider,
+    ...(model !== undefined ? { model } : {}),
+    runtimeMetadataSource: exact ? 'persisted' : 'current-default-fallback',
+  };
+}
+
+export interface SessionDeleteOperations {
+  readonly deleteSession: (sessionId: string) => Promise<boolean>;
+  readonly clearGoal: (sessionId: string) => void;
+  readonly deleteRuntime: (sessionId: string) => Promise<void>;
+  readonly deleteLocalNotices: (sessionId: string) => Promise<void>;
+}
+
+export async function deleteSessionForIpc(
+  sessionId: string,
+  operations: SessionDeleteOperations = {
+    deleteSession: (id) => kodaxHost.delete(id),
+    clearGoal: clearSlashGoalForSession,
+    deleteRuntime: (id) => getSessionRuntimeStore().delete(id),
+    deleteLocalNotices: (id) => getSessionLocalNoticeStore().delete(id),
+  },
+): Promise<{ deleted: boolean; reason?: 'session_running' }> {
+  const deleted = await operations.deleteSession(sessionId);
+  if (!deleted) return { deleted: false, reason: 'session_running' };
+  operations.clearGoal(sessionId);
+  await operations.deleteRuntime(sessionId);
+  await operations.deleteLocalNotices(sessionId);
+  return { deleted: true };
+}
+
+async function commitRuntimeMutationForIpc(
+  sessionId: string,
+  mutate: () => boolean,
+): Promise<boolean> {
+  const result = await kodaxHost.commitRuntimeMutation(sessionId, mutate);
+  if (result === 'persist-failed') {
+    throw new Error(
+      `session runtime metadata could not be persisted; change was rolled back: ${sessionId}`,
+    );
+  }
+  return result === 'ok';
+}
 
 // SDK lazy + cached import — 跟其他 SDK 接入点 (agent.ts, queue.ts, catalog.ts) 同模式。
 // listRunningSessions handler 用; main 是 CJS,SDK subpath 是 ESM-only,必须动态 import 一次,
@@ -170,14 +246,6 @@ export function registerSessionChannels(): void {
       surface: input.surface,
       ephemeral: input.ephemeral,
     });
-    if (input.ephemeral !== true) {
-      await getSessionRuntimeStore().set(sessionId, {
-        reasoningMode: runtimeDefaults.reasoningMode,
-        permissionMode: runtimeDefaults.permissionMode,
-        autoModeEngine: runtimeDefaults.autoModeEngine,
-        agentMode: runtimeDefaults.agentMode,
-      });
-    }
     // v0.1.6 cleanup: 用 ~/.kodax/config.json 的 thinking 默认值初始化新 session。
     // 不传 schema 改动——renderer 没必要知道 thinking 默认值，main 直接 fill 即可。
     // model 不在这里 fill：跨 provider 切换时 KodaX config 里的 model 名通常对不上
@@ -193,6 +261,10 @@ export function registerSessionChannels(): void {
         err instanceof Error ? err.message : err,
       );
     }
+    if (input.ephemeral !== true && !(await kodaxHost.persistRuntime(sessionId))) {
+      await kodaxHost.delete(sessionId);
+      throw new Error('session runtime metadata could not be persisted');
+    }
     return {
       sessionId,
       createdAt,
@@ -205,15 +277,6 @@ export function registerSessionChannels(): void {
 
   registerChannel('session.promoteEphemeral', async (input) => {
     const promoted = await kodaxHost.promoteEphemeral(input.sessionId);
-    const session = kodaxHost.get(input.sessionId);
-    if (promoted && session) {
-      await getSessionRuntimeStore().set(input.sessionId, {
-        reasoningMode: session.reasoningMode,
-        permissionMode: session.permissionMode,
-        autoModeEngine: session.autoModeEngine,
-        agentMode: session.agentMode,
-      });
-    }
     return { promoted };
   });
 
@@ -239,6 +302,9 @@ export function registerSessionChannels(): void {
       expectedProjectRoot: input.expectedProjectRoot,
       expectedSurface: input.expectedSurface,
     });
+    if (input.partnerPromptOverlay !== undefined && session.surface !== 'partner') {
+      throw new Error('partnerPromptOverlay is only accepted for Partner sessions');
+    }
     kodaxHost.ensureTitle(input.sessionId, input.prompt);
     // send 是 fire-and-forget——立刻 ACK，事件流通过 push 推
     // send() returns { queued, queueId?, queueMode? }. If the turn is running,
@@ -260,6 +326,9 @@ export function registerSessionChannels(): void {
     await validateInputArtifactsForSession(input.artifacts, session);
     const result = await session.send(input.prompt, input.artifacts, {
       queueMode: input.queueMode,
+      ...(input.partnerPromptOverlay !== undefined
+        ? { promptOverlay: input.partnerPromptOverlay }
+        : {}),
     });
     return {
       accepted: true as const,
@@ -310,6 +379,7 @@ export function registerSessionChannels(): void {
     // 并行 await 两个 promise——它们彼此无依赖，并行版省一个 turn 调度 ms。
     // tryResume 路径走相同 resolution，两边对齐，避免 UI 一闪即变。
     let persistedProviderFallback = 'mock';
+    let persistedModelFallback: string | undefined;
     const [udResult, providerLoadResult] = await Promise.allSettled([
       loadKodaxUserDefaults(),
       providerConfigStore.load(),
@@ -317,6 +387,7 @@ export function registerSessionChannels(): void {
     if (udResult.status === 'fulfilled') {
       const ud = udResult.value;
       if (ud.provider) persistedProviderFallback = ud.provider;
+      if (ud.model) persistedModelFallback = ud.model;
     }
     // Space defaultProviderId 优先级高于 KodaX user defaults——用户在 Space 设过默认 provider
     // 应该胜出；providerConfigStore.load 失败时保留 user-defaults / 'mock'。
@@ -324,6 +395,7 @@ export function registerSessionChannels(): void {
       const defaultId = providerConfigStore.getDefaultProviderId();
       if (defaultId) persistedProviderFallback = defaultId;
     }
+    const kodaxCustomProviders = await loadKodaxCustomProviders().catch(() => []);
     // persisted session 没有 lastActivityAt——用 createdAt 占位（同一时间精度排序）
     const withTs = merged
       .filter((m) => {
@@ -379,14 +451,25 @@ export function registerSessionChannels(): void {
         //
         // msgCount 直接透传 SDK summary 给的值——这是 dashboard 重启后 Messages 数
         // 正确的关键（无需扫 jsonl 内容，SDK 已经 fast-path 缓存了 summary）。
-        const runtimeDefaults = await resolveRuntimeDefaults({
-          sessionId: item.sessionId,
-          includeSessionSidecar: true,
+        const [runtimeDefaults, persistedRuntime] = await Promise.all([
+          resolveRuntimeDefaults({
+            sessionId: item.sessionId,
+            includeSessionSidecar: true,
+          }),
+          getSessionRuntimeStore().read(item.sessionId),
+        ]);
+        const identity = resolveHistoricalRuntimeIdentity({
+          ...(persistedRuntime !== null ? { persisted: persistedRuntime } : {}),
+          fallbackProvider: persistedProviderFallback,
+          ...(persistedModelFallback !== undefined
+            ? { fallbackModel: persistedModelFallback }
+            : {}),
+          kodaxCustomProviders,
         });
         return {
           sessionId: item.sessionId,
           projectRoot: item.projectRoot ?? '/',
-          provider: persistedProviderFallback,
+          provider: identity.provider,
           reasoningMode: runtimeDefaults.reasoningMode,
           permissionMode: runtimeDefaults.permissionMode,
           autoModeEngine: runtimeDefaults.autoModeEngine,
@@ -397,6 +480,8 @@ export function registerSessionChannels(): void {
           createdAt: sortKey,
           lastActivityAt: sortKey,
           msgCount: item.msgCount,
+          model: identity.model,
+          runtimeMetadataSource: identity.runtimeMetadataSource,
         };
       }),
     );
@@ -405,13 +490,7 @@ export function registerSessionChannels(): void {
 
   // session.delete
   registerChannel('session.delete', async (input) => {
-    const deleted = await kodaxHost.delete(input.sessionId);
-    if (deleted) {
-      clearSlashGoalForSession(input.sessionId);
-      await getSessionRuntimeStore().delete(input.sessionId);
-      await getSessionLocalNoticeStore().delete(input.sessionId);
-    }
-    return { deleted };
+    return deleteSessionForIpc(input.sessionId);
   });
 
   // session.setTitle
@@ -422,8 +501,9 @@ export function registerSessionChannels(): void {
 
   // session.setReasoningMode — F008
   registerChannel('session.setReasoningMode', async (input) => {
-    const ok = kodaxHost.setReasoningMode(input.sessionId, input.mode);
-    if (ok) await getSessionRuntimeStore().set(input.sessionId, { reasoningMode: input.mode });
+    const ok = await commitRuntimeMutationForIpc(input.sessionId, () =>
+      kodaxHost.setReasoningMode(input.sessionId, input.mode),
+    );
     return { ok };
   });
 
@@ -433,15 +513,18 @@ export function registerSessionChannels(): void {
     await assertProviderExists(input.providerId);
     await ensureCustomProviderRegistered(input.providerId);
     await ensureProviderKeyInjected(input.providerId);
-    const ok = kodaxHost.setProvider(input.sessionId, input.providerId);
+    const ok = await commitRuntimeMutationForIpc(input.sessionId, () =>
+      kodaxHost.setProvider(input.sessionId, input.providerId),
+    );
     return { ok };
   });
 
   // session.setPermissionMode — FEATURE_029 canonical 3 mode
   // 切 mode 立即生效（下次 tool call broker.request 走新 mode 短路）。
   registerChannel('session.setPermissionMode', async (input) => {
-    const ok = kodaxHost.setPermissionMode(input.sessionId, input.mode);
-    if (ok) await getSessionRuntimeStore().set(input.sessionId, { permissionMode: input.mode });
+    const ok = await commitRuntimeMutationForIpc(input.sessionId, () =>
+      kodaxHost.setPermissionMode(input.sessionId, input.mode),
+    );
     return { ok };
   });
 
@@ -449,8 +532,9 @@ export function registerSessionChannels(): void {
   // 切 auto mode 子档 engine ('llm' | 'rules')。即便当前 mode 不是 'auto' 也接受
   // (用户先选 engine 再切 auto 是合法路径)，下次进入 auto 时按新 engine bootstrap guardrail。
   registerChannel('session.setAutoModeEngine', async (input) => {
-    const ok = kodaxHost.setAutoModeEngine(input.sessionId, input.engine);
-    if (ok) await getSessionRuntimeStore().set(input.sessionId, { autoModeEngine: input.engine });
+    const ok = await commitRuntimeMutationForIpc(input.sessionId, () =>
+      kodaxHost.setAutoModeEngine(input.sessionId, input.engine),
+    );
     return { ok };
   });
 
@@ -458,8 +542,9 @@ export function registerSessionChannels(): void {
   // AMA = 多 agent 协作（KodaX 默认）；SA = 单 agent 降级路径，接口并发受限时使用。
   // 切换不重启 in-flight session，下一条 prompt 走新形态。
   registerChannel('session.setAgentMode', async (input) => {
-    const ok = kodaxHost.setAgentMode(input.sessionId, input.agentMode);
-    if (ok) await getSessionRuntimeStore().set(input.sessionId, { agentMode: input.agentMode });
+    const ok = await commitRuntimeMutationForIpc(input.sessionId, () =>
+      kodaxHost.setAgentMode(input.sessionId, input.agentMode),
+    );
     return { ok };
   });
 

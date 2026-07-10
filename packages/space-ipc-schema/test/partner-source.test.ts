@@ -35,9 +35,24 @@ test('partner source schemas reject control characters in paths', () => {
 });
 
 test('partner source list/remove shapes', () => {
-  assert.equal(partnerSourcesListChannel.input.safeParse({ sessionId: 's1' }).success, true);
+  assert.equal(partnerSourcesListChannel.input.safeParse({ sessionId: 's1' }).success, false);
+  assert.equal(
+    partnerSourcesListChannel.input.safeParse({
+      sessionId: 's1',
+      projectRoot: '/workspace/project',
+    }).success,
+    true,
+  );
   assert.equal(
     partnerSourcesRemoveChannel.input.safeParse({ sessionId: 's1', sourceId: 'src_1' }).success,
+    false,
+  );
+  assert.equal(
+    partnerSourcesRemoveChannel.input.safeParse({
+      sessionId: 's1',
+      projectRoot: '/workspace/project',
+      sourceId: 'src_1',
+    }).success,
     true,
   );
 });

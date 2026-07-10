@@ -70,21 +70,21 @@ test('registered mutating tools remain blocked unless they have Partner policy',
 test('Space Partner tool policy allows scoped state tools', () => {
   _clearPartnerSpaceToolPoliciesForTesting();
   registerPartnerSpaceToolPolicy({
-    name: 'partner_kb_write_page',
-    scope: 'knowledge-base',
+    name: 'write_partner_deliverable',
+    scope: 'workspace-delivery',
     sideEffect: 'mutates-state',
-    description: 'Write a Partner KB wiki page inside the selected KB root.',
+    description: 'Write a Partner deliverable inside the session output workspace.',
   });
   assert.equal(
-    isPartnerToolAllowed('partner_kb_write_page', 'subagent', {
+    isPartnerToolAllowed('write_partner_deliverable', 'subagent', {
       sideEffect: 'mutates-state',
     }),
     true,
   );
-  assert.equal(getPartnerSpaceToolPolicy('partner_kb_write_page')?.scope, 'knowledge-base');
+  assert.equal(getPartnerSpaceToolPolicy('write_partner_deliverable')?.scope, 'workspace-delivery');
   assert.deepEqual(
     listPartnerSpaceToolPolicies().map((p) => p.name),
-    ['partner_kb_write_page'],
+    ['write_partner_deliverable'],
   );
   _clearPartnerSpaceToolPoliciesForTesting();
 });
@@ -116,6 +116,14 @@ test('Partner tool visibility policy mirrors the execution whitelist', () => {
   assert.equal(
     partnerToolVisibilityPolicy({
       name: 'create_artifact',
+      sideEffect: 'mutates-state',
+      planModeAllowed: false,
+    }),
+    true,
+  );
+  assert.equal(
+    partnerToolVisibilityPolicy({
+      name: 'create_office_artifact',
       sideEffect: 'mutates-state',
       planModeAllowed: false,
     }),

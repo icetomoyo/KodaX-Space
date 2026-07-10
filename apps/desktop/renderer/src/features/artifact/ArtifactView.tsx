@@ -73,9 +73,17 @@ export function ArtifactView(props: ArtifactContent): JSX.Element {
     case 'pdf':
     case 'docx':
     case 'xlsx':
+    case 'pptx':
       return (
         <div className="flex-1 min-h-0">
-          <RichPreview projectRoot={props.projectRoot} path={props.path} kind={props.kind} />
+          <RichPreview
+            projectRoot={props.projectRoot}
+            path={props.path}
+            kind={props.kind}
+            fileSource={props.fileSource}
+            artifactId={props.artifactId}
+            version={props.version}
+          />
         </div>
       );
     case 'file': {

@@ -3,11 +3,7 @@ import {
   resolveSessionRunContext,
   type SdkToolExecutionContextLike,
 } from './session-run-context.js';
-import {
-  partnerKbStore,
-  type PartnerKbStore,
-  type PartnerKbPage,
-} from './partner-kb-store.js';
+import { partnerKbStore, type PartnerKbStore, type PartnerKbPage } from './partner-kb-store.js';
 
 const MAX_KB_TOOL_RESULT_CHARS = 180_000;
 
@@ -39,6 +35,35 @@ export const PARTNER_KB_READ_TOOL = {
   },
 };
 
+export const PARTNER_KB_SEARCH_TOOL = {
+  name: 'partner_kb_search_pages',
+  description:
+    'Search current-project Partner KB wiki pages by text query, with match reasons and source ids. Read-only.',
+  sideEffect: 'readonly' as const,
+  input_schema: {
+    type: 'object' as const,
+    properties: {
+      query: { type: 'string', description: 'Search query.' },
+      limit: { type: 'number', description: 'Optional max results, 1-50.' },
+    },
+    required: ['query'],
+  },
+};
+
+export const PARTNER_KB_MAINTENANCE_TOOL = {
+  name: 'partner_kb_run_maintenance',
+  description: [
+    'Run current-project Partner KB maintenance checks and return the report.',
+    'Checks include broken links, uncited key claims, orphan pages, stale source pages, duplicate topics, and config diagnostics.',
+    'This writes Space-owned KB maintenance state only; it does not edit project files.',
+  ].join('\n'),
+  sideEffect: 'mutates-state' as const,
+  input_schema: {
+    type: 'object' as const,
+    properties: {},
+  },
+};
+
 export const PARTNER_KB_WRITE_TOOL = {
   name: 'partner_kb_write_page',
   description: [
@@ -52,7 +77,10 @@ export const PARTNER_KB_WRITE_TOOL = {
     properties: {
       title: { type: 'string', description: 'Human-readable KB page title.' },
       content: { type: 'string', description: 'Markdown page body.' },
-      slug: { type: 'string', description: 'Optional stable slug; derived from title when omitted.' },
+      slug: {
+        type: 'string',
+        description: 'Optional stable slug; derived from title when omitted.',
+      },
     },
     required: ['title', 'content'],
   },
@@ -63,7 +91,8 @@ function requirePartnerContext(
 ): { sessionId: string; projectRoot: string } | string {
   const ctx = resolveSessionRunContext(toolContext);
   if (!ctx) return 'Error: Partner KB tool was called outside an active session run.';
-  if (ctx.surface !== 'partner') return 'Error: Partner KB tools are only available in Partner sessions.';
+  if (ctx.surface !== 'partner')
+    return 'Error: Partner KB tools are only available in Partner sessions.';
   return { sessionId: ctx.sessionId, projectRoot: ctx.projectRoot };
 }
 
@@ -96,9 +125,47 @@ export function makePartnerKbReadHandler(store: PartnerKbStore): ToolHandler {
     const pageId = typeof input.pageId === 'string' ? input.pageId.trim() : undefined;
     const slug = typeof input.slug === 'string' ? input.slug.trim() : undefined;
     if (!pageId && !slug) return 'Error: provide pageId or slug.';
-    const page = await store.get(ctx.projectRoot, { ...(pageId ? { id: pageId } : {}), ...(slug ? { slug } : {}) });
+    const page = await store.get(ctx.projectRoot, {
+      ...(pageId ? { id: pageId } : {}),
+      ...(slug ? { slug } : {}),
+    });
     if (!page) return 'Error: Partner KB page not found in the current project.';
     return cap([pageHeader(page), '', page.content].join('\n'));
+  };
+}
+
+export function makePartnerKbSearchHandler(store: PartnerKbStore): ToolHandler {
+  return async (input, toolContext) => {
+    const ctx = requirePartnerContext(toolContext);
+    if (typeof ctx === 'string') return ctx;
+    const query = typeof input.query === 'string' ? input.query.trim() : '';
+    const limit = typeof input.limit === 'number' ? input.limit : undefined;
+    if (!query) return 'Error: provide query.';
+    const matches = await store.search(ctx.projectRoot, query, limit);
+    if (matches.length === 0) return 'Partner KB search results: none.';
+    return cap(
+      [
+        `Partner KB search results for "${query}":`,
+        ...matches.map(
+          (match) =>
+            `- ${pageHeader(match.page)} | score=${match.score} | reasons=${match.reasons.join(', ')} | sources=${match.sourceIds.join(', ') || 'none'} | fallback=${match.fallback}\n  ${match.snippet.replace(/\s+/g, ' ').slice(0, 500)}`,
+        ),
+      ].join('\n'),
+    );
+  };
+}
+
+export function makePartnerKbMaintenanceHandler(store: PartnerKbStore): ToolHandler {
+  return async (_input, toolContext) => {
+    const ctx = requirePartnerContext(toolContext);
+    if (typeof ctx === 'string') return ctx;
+    const report = await store.runMaintenance(ctx.projectRoot);
+    return cap(
+      [
+        `Partner KB maintenance completed with ${report.issueCount} issue(s).`,
+        report.summaryMarkdown,
+      ].join('\n\n'),
+    );
   };
 }
 
@@ -139,6 +206,8 @@ export function ensurePartnerKbToolsRegistered(sdk: unknown): void {
   }
   reg({ ...PARTNER_KB_LIST_TOOL, handler: makePartnerKbListHandler(partnerKbStore) });
   reg({ ...PARTNER_KB_READ_TOOL, handler: makePartnerKbReadHandler(partnerKbStore) });
+  reg({ ...PARTNER_KB_SEARCH_TOOL, handler: makePartnerKbSearchHandler(partnerKbStore) });
+  reg({ ...PARTNER_KB_MAINTENANCE_TOOL, handler: makePartnerKbMaintenanceHandler(partnerKbStore) });
   reg({ ...PARTNER_KB_WRITE_TOOL, handler: makePartnerKbWriteHandler(partnerKbStore) });
   registerPartnerSpaceToolPolicy({
     name: PARTNER_KB_LIST_TOOL.name,
@@ -151,6 +220,18 @@ export function ensurePartnerKbToolsRegistered(sdk: unknown): void {
     scope: 'knowledge-base',
     sideEffect: PARTNER_KB_READ_TOOL.sideEffect,
     description: 'Reads current-project Partner KB pages.',
+  });
+  registerPartnerSpaceToolPolicy({
+    name: PARTNER_KB_SEARCH_TOOL.name,
+    scope: 'knowledge-base',
+    sideEffect: PARTNER_KB_SEARCH_TOOL.sideEffect,
+    description: 'Searches current-project Partner KB pages.',
+  });
+  registerPartnerSpaceToolPolicy({
+    name: PARTNER_KB_MAINTENANCE_TOOL.name,
+    scope: 'knowledge-base',
+    sideEffect: PARTNER_KB_MAINTENANCE_TOOL.sideEffect,
+    description: 'Runs current-project Partner KB maintenance checks in Space state.',
   });
   registerPartnerSpaceToolPolicy({
     name: PARTNER_KB_WRITE_TOOL.name,

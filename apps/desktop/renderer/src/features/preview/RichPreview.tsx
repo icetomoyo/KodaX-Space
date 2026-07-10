@@ -14,12 +14,24 @@ const TextFileViewer = lazy(() =>
 );
 
 interface Props {
-  readonly projectRoot: string;
+  readonly projectRoot?: string;
   readonly path: string;
   readonly kind: RichPreviewKind;
+  readonly fileSource?: 'workspace' | 'artifact-store' | 'delivery-store';
+  readonly artifactId?: string;
+  readonly deliveryId?: string;
+  readonly version?: number;
 }
 
-export function RichPreview({ projectRoot, path, kind }: Props): JSX.Element {
+export function RichPreview({
+  projectRoot,
+  path,
+  kind,
+  fileSource = 'workspace',
+  artifactId,
+  deliveryId,
+  version,
+}: Props): JSX.Element {
   const { t } = useI18n();
   const [base64, setBase64] = useState<string | null>(null);
   const [truncated, setTruncated] = useState<{ size: number } | null>(null);
@@ -28,18 +40,55 @@ export function RichPreview({ projectRoot, path, kind }: Props): JSX.Element {
 
   useEffect(() => {
     if (!window.kodaxSpace) return;
+    if (fileSource === 'workspace' && !projectRoot) {
+      setBase64(null);
+      setTruncated(null);
+      setBusy(false);
+      setErr(t('preview.failedLoadFile'));
+      return;
+    }
+    if (fileSource === 'artifact-store' && !artifactId) {
+      setBase64(null);
+      setTruncated(null);
+      setBusy(false);
+      setErr(t('preview.failedLoadFile'));
+      return;
+    }
+    if (fileSource === 'delivery-store' && !deliveryId) {
+      setBase64(null);
+      setTruncated(null);
+      setBusy(false);
+      setErr(t('preview.failedLoadFile'));
+      return;
+    }
     let cancelled = false;
     setBusy(true);
     setErr(null);
     setBase64(null);
     setTruncated(null);
 
-    void window.kodaxSpace
-      .invoke('files.readBinary', {
-        projectRoot,
+    const request = (() => {
+      if (fileSource === 'artifact-store') {
+        return window.kodaxSpace.invoke('artifact.readBinary', {
+          id: artifactId!,
+          ...(version !== undefined ? { version } : {}),
+          maxBytes: PREVIEW_SIZE_CAPS[kind],
+        });
+      }
+      if (fileSource === 'delivery-store') {
+        return window.kodaxSpace.invoke('partner.deliveries.readBinary', {
+          id: deliveryId!,
+          maxBytes: PREVIEW_SIZE_CAPS[kind],
+        });
+      }
+      return window.kodaxSpace.invoke('files.readBinary', {
+        projectRoot: projectRoot!,
         path,
         maxBytes: PREVIEW_SIZE_CAPS[kind],
-      })
+      });
+    })();
+
+    void request
       .then((r) => {
         if (cancelled) return;
         if (!r.ok) {
@@ -59,7 +108,7 @@ export function RichPreview({ projectRoot, path, kind }: Props): JSX.Element {
     return () => {
       cancelled = true;
     };
-  }, [projectRoot, path, kind, t]);
+  }, [projectRoot, path, kind, t, fileSource, artifactId, deliveryId, version]);
 
   if (busy && base64 === null) {
     return <div className="p-3 text-xs text-fg-muted">{t('preview.loading')}</div>;

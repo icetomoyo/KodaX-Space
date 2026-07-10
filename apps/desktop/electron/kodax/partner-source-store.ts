@@ -3,6 +3,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import { partnerSourceSchema, type PartnerSourceT } from '@kodax-space/space-ipc-schema';
+import { replaceFileWithoutFollowingAliases } from './atomic-file.js';
 import { getSpaceDataDir } from './data-paths.js';
 
 const MAX_SOURCES_PER_SESSION = 128;
@@ -26,26 +27,19 @@ function defaultLabel(relPath: string): string {
   return path.posix.basename(relPath) || relPath;
 }
 
-function sourceKey(source: Pick<PartnerSourceT, 'sessionId' | 'kind' | 'projectRoot' | 'path'>): string {
+function sourceKey(
+  source: Pick<PartnerSourceT, 'sessionId' | 'kind' | 'projectRoot' | 'path'>,
+): string {
   return `${source.sessionId}\0${source.kind}\0${source.projectRoot}\0${source.path}`;
 }
 
 async function atomicWriteJson(filePath: string, value: PartnerSourcesFile): Promise<void> {
   await fs.mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
-  const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  await fs.writeFile(tmp, JSON.stringify(value, null, 2), { encoding: 'utf-8', mode: 0o600 });
-  try {
-    await fs.rename(tmp, filePath);
-  } catch (err) {
-    const code = err instanceof Error && 'code' in err ? (err as { code: string }).code : '';
-    if (code === 'EEXIST' || code === 'EPERM') {
-      await fs.copyFile(tmp, filePath);
-      await fs.unlink(tmp).catch(() => {});
-      return;
-    }
-    await fs.unlink(tmp).catch(() => {});
-    throw err;
-  }
+  await replaceFileWithoutFollowingAliases(
+    filePath,
+    Buffer.from(JSON.stringify(value, null, 2), 'utf8'),
+    'Partner source registry changed during atomic replacement',
+  );
 }
 
 export class PartnerSourceStore {
@@ -88,7 +82,9 @@ export class PartnerSourceStore {
       };
       const sessionSources = current.filter((item) => item.sessionId === input.sessionId);
       if (sessionSources.length >= MAX_SOURCES_PER_SESSION) {
-        throw new Error(`Partner source limit reached for this session (${MAX_SOURCES_PER_SESSION})`);
+        throw new Error(
+          `Partner source limit reached for this session (${MAX_SOURCES_PER_SESSION})`,
+        );
       }
       return { next: [...current, source], result: source };
     });
@@ -113,22 +109,21 @@ export class PartnerSourceStore {
       const raw = await fs.readFile(this.filePath, 'utf-8');
       const parsed = fileSchema.safeParse(JSON.parse(raw));
       if (!parsed.success) {
-        console.warn(
-          `[PartnerSourceStore] ${this.filePath} schema invalid, starting empty:`,
-          parsed.error.issues.map((issue) => issue.path.join('.')).join(', '),
+        throw new Error(
+          `schema invalid: ${parsed.error.issues.map((issue) => issue.path.join('.')).join(', ')}`,
         );
-        this.cached = [];
       } else {
         this.cached = parsed.data.sources;
       }
     } catch (err) {
-      if (!(err instanceof Error && 'code' in err && (err as { code: string }).code === 'ENOENT')) {
-        console.warn(
-          '[PartnerSourceStore] read failed, starting empty:',
-          err instanceof Error ? err.message : String(err),
+      if (err instanceof Error && 'code' in err && (err as { code: string }).code === 'ENOENT') {
+        this.cached = [];
+      } else {
+        throw new Error(
+          `Partner source store is corrupt or unreadable; refusing to overwrite it: ${err instanceof Error ? err.message : String(err)}`,
+          { cause: err },
         );
       }
-      this.cached = [];
     }
     return [...this.cached];
   }
@@ -145,8 +140,8 @@ export class PartnerSourceStore {
     try {
       const current = await this.load();
       const { next, result } = apply([...current]);
-      this.cached = next;
       await atomicWriteJson(this.filePath, { version: 1, sources: next });
+      this.cached = next;
       return result;
     } finally {
       release();

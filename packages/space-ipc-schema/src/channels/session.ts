@@ -96,6 +96,7 @@ const providerIdSchema = z.union([
 //   `cat` 一个文件、`grep` 一片代码、http response body 都走这里。再大该工具
 //   应该 truncate（KodaX 内核已经做这个）；schema 层兜底拒绝异常巨大值。
 const MAX_PROMPT_BYTES = 1_048_576;
+const MAX_PARTNER_PROMPT_OVERLAY_BYTES = 131_072;
 const MAX_TEXT_CHUNK = 262_144;
 const MAX_TOOL_RESULT = 524_288;
 
@@ -161,6 +162,12 @@ const sessionMetaSchema = z.object({
    * 此字段，留空让 dashboard fallback 到 provider 维度统计。
    */
   model: z.string().max(128).optional(),
+  /**
+   * Whether provider/model came from the Space sidecar or from current defaults
+   * because this legacy session predates runtime identity persistence.
+   * In-flight sessions omit the field because their runtime is authoritative.
+   */
+  runtimeMetadataSource: z.enum(['persisted', 'current-default-fallback']).optional(),
 });
 
 // ---- Invoke: session.create ----
@@ -241,6 +248,7 @@ export const sessionSendChannel = {
   input: z.object({
     sessionId: z.string().min(1),
     prompt: z.string().min(1).max(MAX_PROMPT_BYTES),
+    partnerPromptOverlay: z.string().min(1).max(MAX_PARTNER_PROMPT_OVERLAY_BYTES).optional(),
     /** OC-31 v0.1.9 image paste/drag-drop. 上限 8 张/turn —— 防 DoS；UI 同步限制。 */
     artifacts: z.array(inputArtifactSchema).max(8).optional(),
     /** Renderer-side guardrail: the main process rejects the send if the
@@ -327,6 +335,7 @@ export const sessionDeleteChannel = {
   }),
   output: z.object({
     deleted: z.boolean(),
+    reason: z.literal('session_running').optional(),
   }),
 } as const;
 

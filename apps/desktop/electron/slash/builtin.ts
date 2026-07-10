@@ -3,10 +3,10 @@
 // 第一批 8 个对齐 KodaX REPL：
 //   /mode <plan|accept-edits|auto>      切 permission mode
 //   /auto-engine <llm|rules>            切 auto sub-engine
-//   /model <name>                       (留 placeholder：F029 schema 暂未 model 字段)
+//   /model <name>                       switch the current provider model
 //   /provider <name>                    切 provider (kodaxHost.setProvider)
 //   /reasoning <off|auto|quick|balanced|deep>
-//   /thinking <on|off>                  (留 placeholder：thinking 字段未在 session schema)
+//   /thinking <on|off>                  switch thinking output and reasoning mode
 //   /clear                              主动 emit 'session_clear' (renderer 自决清屏)
 //   /help                               列出所有命令
 //
@@ -34,7 +34,11 @@ import type {
 import type { SlashCommandDef, SlashHandlerContext, SlashHandlerResult } from './registry.js';
 import { kodaxHost } from '../kodax/host.js';
 import { isRepoIntelEntitled } from '../kodax/repo-intel-gate.js';
-import { workflowController, type LaunchSession, type SavedWorkflowLite } from '../kodax/workflow-controller.js';
+import {
+  workflowController,
+  type LaunchSession,
+  type SavedWorkflowLite,
+} from '../kodax/workflow-controller.js';
 import { loadPersistedSession } from '../kodax/session-store.js';
 import {
   createSpaceSdkExtensionRuntime,
@@ -78,6 +82,22 @@ function normalizeAgentMode(s: string): AgentMode | 'toggle' | undefined {
 function nextAgentMode(current: AgentMode): AgentMode {
   const idx = AGENT_MODES.indexOf(current);
   return AGENT_MODES[(idx + 1) % AGENT_MODES.length] ?? 'ama';
+}
+
+async function commitRuntimeSlashMutation(
+  sessionId: string,
+  mutate: () => boolean,
+  successMessage: string,
+): Promise<SlashHandlerResult> {
+  const result = await kodaxHost.commitRuntimeMutation(sessionId, mutate);
+  if (result === 'ok') return { ok: true, message: successMessage };
+  if (result === 'persist-failed') {
+    return {
+      ok: false,
+      message: `runtime metadata could not be persisted; change was rolled back: ${sessionId}`,
+    };
+  }
+  return { ok: false, message: `session not found: ${sessionId}` };
 }
 
 function compactSlashMessage(message: string, max = 1900): string {
@@ -141,7 +161,10 @@ function learningKindLabel(proposal: ReviewableLearningProposal): string {
   }
 }
 
-function learningProposalMatchesFilter(entry: StoredLearningProposal, filter: LearningFilter): boolean {
+function learningProposalMatchesFilter(
+  entry: StoredLearningProposal,
+  filter: LearningFilter,
+): boolean {
   if (filter === 'all') return true;
   const destination = entry.proposal.destination;
   if (filter === 'skill') return destination === 'skill_patch' || destination === 'skill_create';
@@ -149,7 +172,13 @@ function learningProposalMatchesFilter(entry: StoredLearningProposal, filter: Le
   return destination === 'memdir_handoff';
 }
 
-function formatConsumerImpact(impact: { readonly workflowCapsules: readonly string[]; readonly savedWorkflows: readonly string[]; readonly constructedAgents: readonly string[]; readonly promptReferences: readonly string[]; readonly action: string }): string {
+function formatConsumerImpact(impact: {
+  readonly workflowCapsules: readonly string[];
+  readonly savedWorkflows: readonly string[];
+  readonly constructedAgents: readonly string[];
+  readonly promptReferences: readonly string[];
+  readonly action: string;
+}): string {
   const details = [
     impact.workflowCapsules.length ? `workflow capsules: ${impact.workflowCapsules.length}` : '',
     impact.savedWorkflows.length ? `saved workflows: ${impact.savedWorkflows.length}` : '',
@@ -190,10 +219,7 @@ function formatLearningProposalSummary(entry: StoredLearningProposal): string {
       );
       break;
     case 'reasoning_handoff':
-      lines.push(
-        `  Title: ${proposal.title}`,
-        `  Body: ${truncateLearningText(proposal.body)}`,
-      );
+      lines.push(`  Title: ${proposal.title}`, `  Body: ${truncateLearningText(proposal.body)}`);
       break;
   }
 
@@ -202,11 +228,14 @@ function formatLearningProposalSummary(entry: StoredLearningProposal): string {
   } else {
     lines.push('  Apply plan: handoff only');
   }
-  if (entry.rejectedReason) lines.push(`  Rejected reason: ${truncateLearningText(entry.rejectedReason)}`);
+  if (entry.rejectedReason)
+    lines.push(`  Rejected reason: ${truncateLearningText(entry.rejectedReason)}`);
   return lines.join('\n');
 }
 
-async function resolveLearningStoreForSession(sessionId: string): Promise<
+async function resolveLearningStoreForSession(
+  sessionId: string,
+): Promise<
   | { readonly ok: true; readonly storePath: string }
   | { readonly ok: false; readonly message: string }
 > {
@@ -216,7 +245,10 @@ async function resolveLearningStoreForSession(sessionId: string): Promise<
   return { ok: true, storePath: sdk.resolveLearningProposalStore(session.projectRoot) };
 }
 
-function selectLearningProposal(entries: readonly StoredLearningProposal[], target: string):
+function selectLearningProposal(
+  entries: readonly StoredLearningProposal[],
+  target: string,
+):
   | { readonly ok: true; readonly entry: StoredLearningProposal }
   | { readonly ok: false; readonly message: string } {
   const normalized = target.trim().toLowerCase();
@@ -226,12 +258,18 @@ function selectLearningProposal(entries: readonly StoredLearningProposal[], targ
   const matches = entries.filter((entry) => entry.proposalId.toLowerCase().startsWith(normalized));
   if (matches.length === 1) return { ok: true, entry: matches[0]! };
   if (matches.length > 1) {
-    return { ok: false, message: `ambiguous proposal id '${target}': ${matches.map((entry) => entry.proposalId).join(', ')}` };
+    return {
+      ok: false,
+      message: `ambiguous proposal id '${target}': ${matches.map((entry) => entry.proposalId).join(', ')}`,
+    };
   }
   return { ok: false, message: `learning proposal not found: ${target}` };
 }
 
-async function handleLearningPending(ctx: SlashHandlerContext, filter: LearningFilter): Promise<SlashHandlerResult> {
+async function handleLearningPending(
+  ctx: SlashHandlerContext,
+  filter: LearningFilter,
+): Promise<SlashHandlerResult> {
   const resolved = await resolveLearningStoreForSession(ctx.sessionId);
   if (!resolved.ok) return resolved;
   const sdk = await loadAgentSdk();
@@ -240,11 +278,17 @@ async function handleLearningPending(ctx: SlashHandlerContext, filter: LearningF
     .filter((entry) => entry.status === 'pending' && learningProposalMatchesFilter(entry, filter))
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   const lines = pending.length
-    ? [`Pending ${LEARNING_FILTER_LABEL[filter]}: ${pending.length}`, ...pending.map(formatLearningProposalSummary)]
+    ? [
+        `Pending ${LEARNING_FILTER_LABEL[filter]}: ${pending.length}`,
+        ...pending.map(formatLearningProposalSummary),
+      ]
     : [`No pending ${LEARNING_FILTER_LABEL[filter]} for this project.`];
-  if (result.warnings.length) lines.push('Warnings:', ...result.warnings.map((warning) => `  ${warning}`));
+  if (result.warnings.length)
+    lines.push('Warnings:', ...result.warnings.map((warning) => `  ${warning}`));
   if (pending.length) {
-    lines.push('Next: /learn diff <proposal-id>, /learn approve <proposal-id> [--ack-impact], or /learn reject <proposal-id> [reason].');
+    lines.push(
+      'Next: /learn diff <proposal-id>, /learn approve <proposal-id> [--ack-impact], or /learn reject <proposal-id> [reason].',
+    );
   }
   return { ok: true, message: compactSlashMessage(lines.join('\n\n')), echo: true };
 }
@@ -262,7 +306,9 @@ function formatSkillTrustRecord(record: SkillTrustRecord): string {
     `${record.skillName} (${record.source})  ${record.state}`,
     `  ownership=${record.ownership} createdByAgent=${record.createdByAgent} updated=${record.updatedAt}`,
     record.reason ? `  reason=${record.reason}` : '',
-  ].filter(Boolean).join('\n');
+  ]
+    .filter(Boolean)
+    .join('\n');
 }
 
 async function handleLearningLedger(ctx: SlashHandlerContext): Promise<SlashHandlerResult> {
@@ -296,7 +342,12 @@ async function handleLearningLedger(ctx: SlashHandlerContext): Promise<SlashHand
     ...(trustRecords.length ? trustRecords.map(formatSkillTrustRecord) : ['  (none)']),
   ];
   if (usage.warnings.length || trust.warnings.length) {
-    lines.push('', 'Warnings:', ...usage.warnings.map((warning) => `  usage: ${warning}`), ...trust.warnings.map((warning) => `  trust: ${warning}`));
+    lines.push(
+      '',
+      'Warnings:',
+      ...usage.warnings.map((warning) => `  usage: ${warning}`),
+      ...trust.warnings.map((warning) => `  trust: ${warning}`),
+    );
   }
   return { ok: true, message: compactSlashMessage(lines.join('\n'), 3200), echo: true };
 }
@@ -304,7 +355,10 @@ async function handleLearningLedger(ctx: SlashHandlerContext): Promise<SlashHand
 function formatLearningDiff(entry: StoredLearningProposal): string {
   const lines = ['Learning proposal:', formatLearningProposalSummary(entry)];
   if (entry.applyPlan?.kind !== 'skill') {
-    lines.push('', 'No direct apply plan. Approving this records the SDK handoff state; downstream workflow, memory, or reasoning work still needs its dedicated surface.');
+    lines.push(
+      '',
+      'No direct apply plan. Approving this records the SDK handoff state; downstream workflow, memory, or reasoning work still needs its dedicated surface.',
+    );
     return lines.join('\n');
   }
 
@@ -317,7 +371,11 @@ function formatLearningDiff(entry: StoredLearningProposal): string {
   );
   for (const change of plan.changes) {
     if (change.kind === 'write') {
-      lines.push('', `--- write ${change.relativePath} (${change.content.length} chars)`, truncateLearningBlock(change.content));
+      lines.push(
+        '',
+        `--- write ${change.relativePath} (${change.content.length} chars)`,
+        truncateLearningBlock(change.content),
+      );
     } else {
       lines.push('', `--- delete ${change.relativePath}`);
     }
@@ -325,20 +383,27 @@ function formatLearningDiff(entry: StoredLearningProposal): string {
   return lines.join('\n');
 }
 
-function formatLearningApproval(entry: StoredLearningProposal, result: StoredLearningApprovalResult): string {
+function formatLearningApproval(
+  entry: StoredLearningProposal,
+  result: StoredLearningApprovalResult,
+): string {
   switch (result.status) {
     case 'approved_applied':
       return [
         `Approved and applied ${entry.proposalId}.`,
         result.changedPaths.length ? `Changed: ${result.changedPaths.join(', ')}` : '',
         result.snapshotPath ? `Snapshot: ${result.snapshotPath}` : '',
-      ].filter(Boolean).join('\n');
+      ]
+        .filter(Boolean)
+        .join('\n');
     case 'approved_already_applied':
       return [
         `Approved ${entry.proposalId}; changes were already applied.`,
         result.changedPaths.length ? `Changed: ${result.changedPaths.join(', ')}` : '',
         result.snapshotPath ? `Snapshot: ${result.snapshotPath}` : '',
-      ].filter(Boolean).join('\n');
+      ]
+        .filter(Boolean)
+        .join('\n');
     case 'approved_handoff':
       return `Approved ${entry.proposalId}; handoff recorded.`;
     case 'blocked_not_pending':
@@ -377,8 +442,14 @@ async function handleLearningApprove(ctx: SlashHandlerContext): Promise<SlashHan
   const store = await sdk.readLearningProposalStore(resolved.storePath);
   const selected = selectLearningProposal(store.proposals, target);
   if (!selected.ok) return { ok: false, message: selected.message };
-  const approval = await sdk.approveStoredLearningProposal(resolved.storePath, selected.entry, { acknowledgeImpact });
-  return { ok: approval.status.startsWith('approved_'), message: formatLearningApproval(selected.entry, approval), echo: true };
+  const approval = await sdk.approveStoredLearningProposal(resolved.storePath, selected.entry, {
+    acknowledgeImpact,
+  });
+  return {
+    ok: approval.status.startsWith('approved_'),
+    message: formatLearningApproval(selected.entry, approval),
+    echo: true,
+  };
 }
 
 async function handleLearningReject(ctx: SlashHandlerContext): Promise<SlashHandlerResult> {
@@ -391,18 +462,31 @@ async function handleLearningReject(ctx: SlashHandlerContext): Promise<SlashHand
   const selected = selectLearningProposal(store.proposals, target);
   if (!selected.ok) return { ok: false, message: selected.message };
   if (selected.entry.status !== 'pending') {
-    return { ok: false, message: `Cannot reject ${selected.entry.proposalId}; current status is ${selected.entry.status}.` };
+    return {
+      ok: false,
+      message: `Cannot reject ${selected.entry.proposalId}; current status is ${selected.entry.status}.`,
+    };
   }
   const reason = ctx.args.slice(2).join(' ').trim();
-  const updated = await sdk.updateLearningProposalStatus(resolved.storePath, selected.entry.proposalId, 'rejected', {
-    ...(reason ? { rejectedReason: reason } : {}),
-  });
-  return { ok: true, message: `Rejected ${updated.proposalId}${reason ? `: ${reason}` : '.'}`, echo: true };
+  const updated = await sdk.updateLearningProposalStatus(
+    resolved.storePath,
+    selected.entry.proposalId,
+    'rejected',
+    {
+      ...(reason ? { rejectedReason: reason } : {}),
+    },
+  );
+  return {
+    ok: true,
+    message: `Rejected ${updated.proposalId}${reason ? `: ${reason}` : '.'}`,
+    echo: true,
+  };
 }
 
 async function handleLearningCommand(ctx: SlashHandlerContext): Promise<SlashHandlerResult> {
   const sub = ctx.args[0]?.toLowerCase();
-  if (!sub || sub === 'pending' || sub === 'list' || sub === 'ls') return handleLearningPending(ctx, 'all');
+  if (!sub || sub === 'pending' || sub === 'list' || sub === 'ls')
+    return handleLearningPending(ctx, 'all');
   if (sub === 'ledger' || sub === 'ledgers') return handleLearningLedger(ctx);
   if (sub === 'skill' || sub === 'skills') return handleLearningPending(ctx, 'skill');
   if (sub === 'workflow' || sub === 'workflows') return handleLearningPending(ctx, 'workflow');
@@ -410,7 +494,8 @@ async function handleLearningCommand(ctx: SlashHandlerContext): Promise<SlashHan
   if (sub === 'diff' || sub === 'show') return handleLearningDiff(ctx);
   if (sub === 'approve') return handleLearningApprove(ctx);
   if (sub === 'reject') return handleLearningReject(ctx);
-  if (sub === 'help' || sub === '--help' || sub === '-h') return { ok: true, message: learningHelp(), echo: true };
+  if (sub === 'help' || sub === '--help' || sub === '-h')
+    return { ok: true, message: learningHelp(), echo: true };
   return { ok: false, message: learningHelp() };
 }
 
@@ -431,13 +516,23 @@ function memoryHelp(): string {
 function formatMemoryRef(ref: MemoryItemRefT): string {
   const title = ref.title ? `  ${truncateLearningText(ref.title, 96)}` : '';
   const storage = ref.storageUri ? `\n  Path: ${truncateLearningText(ref.storageUri, 140)}` : '';
-  const sources = ref.sourceRefs.length ? `\n  Sources: ${ref.sourceRefs.slice(0, 4).join(', ')}` : '';
+  const sources = ref.sourceRefs.length
+    ? `\n  Sources: ${ref.sourceRefs.slice(0, 4).join(', ')}`
+    : '';
   return `${ref.id}  ${ref.lifecycle}  ${ref.kind}/${ref.scope}${title}${storage}${sources}`;
 }
 
 function formatMemoryProposalSummary(proposal: MemoryActionProposalT): string {
-  const targets = proposal.targetRefs.map((ref) => ref.id).slice(0, 4).join(', ') || '(none)';
-  const sources = proposal.sourceRefs.map((ref) => ref.id).slice(0, 4).join(', ') || '(none)';
+  const targets =
+    proposal.targetRefs
+      .map((ref) => ref.id)
+      .slice(0, 4)
+      .join(', ') || '(none)';
+  const sources =
+    proposal.sourceRefs
+      .map((ref) => ref.id)
+      .slice(0, 4)
+      .join(', ') || '(none)';
   return [
     `${proposal.id}  ${proposal.action}  risk=${proposal.risk}`,
     `  Created: ${proposal.createdAt}`,
@@ -458,18 +553,25 @@ function formatMemoryProposalDetail(proposal: MemoryActionProposalT): string {
     `Preview: ${proposal.preview.summary}`,
     '',
     'Target refs:',
-    ...(proposal.targetRefs.length ? proposal.targetRefs.map((ref) => `  - ${formatMemoryRef(ref).replace(/\n/g, '\n    ')}`) : ['  (none)']),
+    ...(proposal.targetRefs.length
+      ? proposal.targetRefs.map((ref) => `  - ${formatMemoryRef(ref).replace(/\n/g, '\n    ')}`)
+      : ['  (none)']),
     '',
     'Source refs:',
-    ...(proposal.sourceRefs.length ? proposal.sourceRefs.map((ref) => `  - ${formatMemoryRef(ref).replace(/\n/g, '\n    ')}`) : ['  (none)']),
+    ...(proposal.sourceRefs.length
+      ? proposal.sourceRefs.map((ref) => `  - ${formatMemoryRef(ref).replace(/\n/g, '\n    ')}`)
+      : ['  (none)']),
     '',
     'Changed paths:',
-    ...(proposal.preview.changedPaths.length ? proposal.preview.changedPaths.map((p) => `  - ${p}`) : ['  (none)']),
+    ...(proposal.preview.changedPaths.length
+      ? proposal.preview.changedPaths.map((p) => `  - ${p}`)
+      : ['  (none)']),
   ];
   const warnings = proposal.preview.warnings;
   if (warnings.length) lines.push('', 'Warnings:', ...warnings.map((warning) => `  - ${warning}`));
   const fingerprintKeys = Object.keys(proposal.expectedFingerprints);
-  if (fingerprintKeys.length) lines.push('', 'Fingerprint guard:', ...fingerprintKeys.map((key) => `  - ${key}`));
+  if (fingerprintKeys.length)
+    lines.push('', 'Fingerprint guard:', ...fingerprintKeys.map((key) => `  - ${key}`));
   if (proposal.preview.diff) {
     lines.push('', 'Diff preview:', truncateLearningBlock(proposal.preview.diff, 1600));
   }
@@ -482,13 +584,19 @@ function formatMemoryApplyResult(result: MemoryApplyResultT): string {
     return [
       `Approval blocked for ${result.proposalId}: ${result.skippedReason ?? 'not applied'}`,
       'Re-run /memory show before approving if the preview changed.',
-      ...(result.warnings.length ? ['', 'Warnings:', ...result.warnings.map((warning) => `  - ${warning}`)] : []),
+      ...(result.warnings.length
+        ? ['', 'Warnings:', ...result.warnings.map((warning) => `  - ${warning}`)]
+        : []),
     ].join('\n');
   }
   return [
     `Applied ${result.proposalId}.`,
-    ...(result.changedPaths.length ? ['Changed paths:', ...result.changedPaths.map((p) => `  - ${p}`)] : ['No path changes reported.']),
-    ...(result.warnings.length ? ['', 'Warnings:', ...result.warnings.map((warning) => `  - ${warning}`)] : []),
+    ...(result.changedPaths.length
+      ? ['Changed paths:', ...result.changedPaths.map((p) => `  - ${p}`)]
+      : ['No path changes reported.']),
+    ...(result.warnings.length
+      ? ['', 'Warnings:', ...result.warnings.map((warning) => `  - ${warning}`)]
+      : []),
   ].join('\n');
 }
 
@@ -497,7 +605,8 @@ function formatMemoryRejectResult(result: MemoryRejectResultT): string {
     return `Reject skipped for ${result.proposalId}: ${result.skippedReason ?? 'not rejected'}`;
   }
   const lines = [`Rejected ${result.proposalId}.`];
-  if (result.warnings.length) lines.push('', 'Warnings:', ...result.warnings.map((warning) => `  - ${warning}`));
+  if (result.warnings.length)
+    lines.push('', 'Warnings:', ...result.warnings.map((warning) => `  - ${warning}`));
   if (result.review?.warnings.length) {
     lines.push('', 'Review:', ...result.review.warnings.map((warning) => `  - ${warning}`));
   }
@@ -516,14 +625,18 @@ function formatMemoryReport(report: MemoryGovernanceReportT): string {
           return `  - ${finding.kind}/${finding.severity}: ${finding.summary} -> ${finding.suggestedAction}${refs}`;
         })
       : ['  (none)']),
-    ...(report.warnings.length ? ['', 'Warnings:', ...report.warnings.map((warning) => `  - ${warning}`)] : []),
+    ...(report.warnings.length
+      ? ['', 'Warnings:', ...report.warnings.map((warning) => `  - ${warning}`)]
+      : []),
   ].join('\n');
 }
 
 function selectMemoryProposal(
   proposals: readonly MemoryActionProposalT[],
   target: string,
-): { readonly ok: true; readonly proposal: MemoryActionProposalT } | { readonly ok: false; readonly message: string } {
+):
+  | { readonly ok: true; readonly proposal: MemoryActionProposalT }
+  | { readonly ok: false; readonly message: string } {
   const normalized = target.trim().toLowerCase();
   if (!normalized) return { ok: false, message: 'memory proposal id is required' };
   const exact = proposals.find((proposal) => proposal.id.toLowerCase() === normalized);
@@ -531,7 +644,10 @@ function selectMemoryProposal(
   const matches = proposals.filter((proposal) => proposal.id.toLowerCase().startsWith(normalized));
   if (matches.length === 1) return { ok: true, proposal: matches[0]! };
   if (matches.length > 1) {
-    return { ok: false, message: `ambiguous memory proposal id '${target}': ${matches.map((p) => p.id).join(', ')}` };
+    return {
+      ok: false,
+      message: `ambiguous memory proposal id '${target}': ${matches.map((p) => p.id).join(', ')}`,
+    };
   }
   return { ok: false, message: `memory proposal not found: ${target}` };
 }
@@ -539,7 +655,9 @@ function selectMemoryProposal(
 function selectMemoryRef(
   refs: readonly MemoryItemRefT[],
   target: string,
-): { readonly ok: true; readonly ref: MemoryItemRefT } | { readonly ok: false; readonly message: string } {
+):
+  | { readonly ok: true; readonly ref: MemoryItemRefT }
+  | { readonly ok: false; readonly message: string } {
   const normalized = target.trim().toLowerCase();
   if (!normalized) return { ok: false, message: 'memory ref id is required' };
   const exact = refs.find((ref) => ref.id.toLowerCase() === normalized);
@@ -547,7 +665,10 @@ function selectMemoryRef(
   const matches = refs.filter((ref) => ref.id.toLowerCase().startsWith(normalized));
   if (matches.length === 1) return { ok: true, ref: matches[0]! };
   if (matches.length > 1) {
-    return { ok: false, message: `ambiguous memory ref id '${target}': ${matches.map((ref) => ref.id).join(', ')}` };
+    return {
+      ok: false,
+      message: `ambiguous memory ref id '${target}': ${matches.map((ref) => ref.id).join(', ')}`,
+    };
   }
   return { ok: false, message: `memory ref not found: ${target}` };
 }
@@ -561,7 +682,8 @@ async function handleMemoryInbox(ctx: SlashHandlerContext): Promise<SlashHandler
         'Next: /memory show <proposal-id>, /memory approve <proposal-id>, or /memory reject <proposal-id> [reason].',
       ]
     : ['No pending memory proposals for this project.'];
-  if (result.warnings.length) lines.push('', 'Warnings:', ...result.warnings.map((warning) => `  - ${warning}`));
+  if (result.warnings.length)
+    lines.push('', 'Warnings:', ...result.warnings.map((warning) => `  - ${warning}`));
   return { ok: true, message: compactSlashMessage(lines.join('\n\n'), 3200), echo: true };
 }
 
@@ -574,7 +696,8 @@ async function handleMemoryList(ctx: SlashHandlerContext): Promise<SlashHandlerR
   const lines = result.refs.length
     ? [`Memory refs: ${result.refs.length}`, ...result.refs.map(formatMemoryRef)]
     : ['No governed memory refs for this project yet.'];
-  if (result.inbox.length) lines.push('', `Pending proposals: ${result.inbox.length} (run /memory inbox)`);
+  if (result.inbox.length)
+    lines.push('', `Pending proposals: ${result.inbox.length} (run /memory inbox)`);
   return { ok: true, message: compactSlashMessage(lines.join('\n\n'), 3200), echo: true };
 }
 
@@ -584,17 +707,26 @@ async function handleMemoryShow(ctx: SlashHandlerContext): Promise<SlashHandlerR
   const listed = await memoryGovernanceService.list({ sessionId: ctx.sessionId });
   const proposal = selectMemoryProposal(listed.inbox, target);
   if (proposal.ok) {
-    return { ok: true, message: compactSlashMessage(formatMemoryProposalDetail(proposal.proposal), 4200), echo: true };
+    return {
+      ok: true,
+      message: compactSlashMessage(formatMemoryProposalDetail(proposal.proposal), 4200),
+      echo: true,
+    };
   }
   const ref = selectMemoryRef(listed.refs, target);
   if (!ref.ok) return { ok: false, message: `${proposal.message}\n${ref.message}` };
-  const snapshot = await memoryGovernanceService.readRef({ sessionId: ctx.sessionId, ref: ref.ref });
+  const snapshot = await memoryGovernanceService.readRef({
+    sessionId: ctx.sessionId,
+    ref: ref.ref,
+  });
   const lines = [
     'Memory ref',
     formatMemoryRef(snapshot.snapshot.ref),
     `Fingerprint: ${snapshot.snapshot.bodyFingerprint}`,
     `Read at: ${snapshot.snapshot.readAt}`,
-    ...(snapshot.snapshot.warnings.length ? ['', 'Warnings:', ...snapshot.snapshot.warnings.map((warning) => `  - ${warning}`)] : []),
+    ...(snapshot.snapshot.warnings.length
+      ? ['', 'Warnings:', ...snapshot.snapshot.warnings.map((warning) => `  - ${warning}`)]
+      : []),
     '',
     truncateLearningBlock(snapshot.snapshot.body, 2200),
   ];
@@ -640,7 +772,11 @@ async function handleMemoryReject(ctx: SlashHandlerContext): Promise<SlashHandle
 
 async function handleMemoryCurate(ctx: SlashHandlerContext): Promise<SlashHandlerResult> {
   const report = await memoryGovernanceService.curate({ sessionId: ctx.sessionId });
-  return { ok: true, message: compactSlashMessage(formatMemoryReport(report.report), 4200), echo: true };
+  return {
+    ok: true,
+    message: compactSlashMessage(formatMemoryReport(report.report), 4200),
+    echo: true,
+  };
 }
 
 async function handleMemoryCommand(ctx: SlashHandlerContext): Promise<SlashHandlerResult> {
@@ -649,7 +785,8 @@ async function handleMemoryCommand(ctx: SlashHandlerContext): Promise<SlashHandl
   if (session.surface === 'partner') {
     return {
       ok: false,
-      message: 'Memory Governance is available from the Coder surface. Partner KB remains separate.',
+      message:
+        'Memory Governance is available from the Coder surface. Partner KB remains separate.',
     };
   }
   const sub = ctx.args[0]?.toLowerCase();
@@ -660,11 +797,14 @@ async function handleMemoryCommand(ctx: SlashHandlerContext): Promise<SlashHandl
   if (sub === 'reject') return handleMemoryReject(ctx);
   if (sub === 'curate' || sub === 'governance') return handleMemoryCurate(ctx);
   if (sub === 'open') return { ok: true, message: '__action__:show-memory', echo: false };
-  if (sub === 'help' || sub === '--help' || sub === '-h') return { ok: true, message: memoryHelp(), echo: true };
+  if (sub === 'help' || sub === '--help' || sub === '-h')
+    return { ok: true, message: memoryHelp(), echo: true };
   return { ok: false, message: memoryHelp() };
 }
 
-function formatSdkExtensionDiagnostics(diag: Awaited<ReturnType<typeof getSpaceSdkExtensionDiagnostics>>): string[] {
+function formatSdkExtensionDiagnostics(
+  diag: Awaited<ReturnType<typeof getSpaceSdkExtensionDiagnostics>>,
+): string[] {
   if (!diag) return ['Runtime: inactive'];
   return [
     'Runtime: active',
@@ -675,7 +815,12 @@ function formatSdkExtensionDiagnostics(diag: Awaited<ReturnType<typeof getSpaceS
     `Hooks: ${diag.hooks.length}`,
     `Failures: ${diag.failures.length}`,
     ...(diag.failures.length
-      ? ['Recent failures:', ...diag.failures.slice(0, 5).map((failure) => `  - ${failure.stage} ${failure.target}: ${failure.message}`)]
+      ? [
+          'Recent failures:',
+          ...diag.failures
+            .slice(0, 5)
+            .map((failure) => `  - ${failure.stage} ${failure.target}: ${failure.message}`),
+        ]
       : []),
   ];
 }
@@ -686,24 +831,38 @@ async function handleSdkExtensionsCommand(ctx: SlashHandlerContext): Promise<Sla
   const action = ctx.args[1]?.toLowerCase();
   const shouldLoad = action === 'load' || action === 'enable' || action === 'activate';
   const loaded = shouldLoad
-    ? await createSpaceSdkExtensionRuntime({ projectRoot: session.projectRoot, setActive: true }, { env: { KODAX_SPACE_ENABLE_SDK_EXTENSIONS: '1' } })
+    ? await createSpaceSdkExtensionRuntime(
+        { projectRoot: session.projectRoot, setActive: true },
+        { env: { KODAX_SPACE_ENABLE_SDK_EXTENSIONS: '1' } },
+      )
     : undefined;
-  const discovery = loaded?.discovery ?? await discoverSpaceSdkExtensions();
-  const diagnostics = loaded?.diagnostics ?? await getSpaceSdkExtensionDiagnostics();
+  const discovery = loaded?.discovery ?? (await discoverSpaceSdkExtensions());
+  const diagnostics = loaded?.diagnostics ?? (await getSpaceSdkExtensionDiagnostics());
   const lines = [
     'SDK extension discovery',
     `Default dir: ${discovery.defaultDirectory}`,
     `Discovered: ${discovery.paths.length}`,
-    ...(discovery.paths.length ? discovery.paths.slice(0, 12).map((p) => `  - ${p}`) : ['  (none)']),
+    ...(discovery.paths.length
+      ? discovery.paths.slice(0, 12).map((p) => `  - ${p}`)
+      : ['  (none)']),
     ...(discovery.paths.length > 12 ? [`  ... ${discovery.paths.length - 12} more`] : []),
     ...(discovery.skipped.length
-      ? ['', 'Skipped:', ...discovery.skipped.slice(0, 8).map((entry) => `  - ${entry.path}: ${entry.reason} (${entry.message})`)]
+      ? [
+          '',
+          'Skipped:',
+          ...discovery.skipped
+            .slice(0, 8)
+            .map((entry) => `  - ${entry.path}: ${entry.reason} (${entry.message})`),
+        ]
       : []),
     '',
     ...formatSdkExtensionDiagnostics(diagnostics),
   ];
   if (!shouldLoad && !diagnostics) {
-    lines.push('', 'Load explicitly with /extensions sdk load, or set KODAX_SPACE_ENABLE_SDK_EXTENSIONS=1 before launching Space.');
+    lines.push(
+      '',
+      'Load explicitly with /extensions sdk load, or set KODAX_SPACE_ENABLE_SDK_EXTENSIONS=1 before launching Space.',
+    );
   }
   return { ok: true, message: compactSlashMessage(lines.join('\n'), 3200), echo: true };
 }
@@ -725,7 +884,8 @@ function extractMessageText(content: unknown): string {
     if (!block || typeof block !== 'object') continue;
     const candidate = block as { type?: unknown; text?: unknown; thinking?: unknown };
     if (candidate.type === 'text' && typeof candidate.text === 'string') text += candidate.text;
-    if (candidate.type === 'thinking' && typeof candidate.thinking === 'string') text += candidate.thinking;
+    if (candidate.type === 'thinking' && typeof candidate.thinking === 'string')
+      text += candidate.thinking;
   }
   return text;
 }
@@ -734,7 +894,8 @@ async function handleRecoveryCommand(ctx: SlashHandlerContext): Promise<SlashHan
   const session = kodaxHost.get(ctx.sessionId);
   if (!session) return { ok: false, message: `session not found: ${ctx.sessionId}` };
   const sub = ctx.args[0]?.toLowerCase() ?? 'seed';
-  if (sub === 'help' || sub === '--help' || sub === '-h') return { ok: true, message: recoveryHelp(), echo: true };
+  if (sub === 'help' || sub === '--help' || sub === '-h')
+    return { ok: true, message: recoveryHelp(), echo: true };
   if (sub === 'prompt') {
     const agent = await loadAgentSdk();
     const prompt = agent.normalizeRecoveryPrompt(ctx.args.slice(1).join(' ').trim() || undefined);
@@ -743,15 +904,24 @@ async function handleRecoveryCommand(ctx: SlashHandlerContext): Promise<SlashHan
   if (sub === 'candidate') {
     const count = Number(ctx.args[1]);
     const errorText = ctx.args.slice(2).join(' ').trim();
-    if (!Number.isInteger(count) || count < 0 || !errorText) return { ok: false, message: recoveryHelp() };
+    if (!Number.isInteger(count) || count < 0 || !errorText)
+      return { ok: false, message: recoveryHelp() };
     const coding = await loadSpaceSdkCoding();
     const candidate = coding.isSessionRecoveryCandidateError(new Error(errorText), count);
-    return { ok: true, message: `Recovery candidate: ${candidate ? 'yes' : 'no'} (messageCount=${count})`, echo: true };
+    return {
+      ok: true,
+      message: `Recovery candidate: ${candidate ? 'yes' : 'no'} (messageCount=${count})`,
+      echo: true,
+    };
   }
   if (sub !== 'seed') return { ok: false, message: recoveryHelp() };
   const data = await loadPersistedSession(ctx.sessionId);
   if (!data || !Array.isArray(data.messages) || data.messages.length === 0) {
-    return { ok: false, message: 'No persisted transcript is available for this session yet. Send a turn first, then retry /recover seed.' };
+    return {
+      ok: false,
+      message:
+        'No persisted transcript is available for this session yet. Send a turn first, then retry /recover seed.',
+    };
   }
   const agent = await loadAgentSdk();
   const reason = ctx.args.slice(1).join(' ').trim();
@@ -773,9 +943,17 @@ async function handleRecoveryCommand(ctx: SlashHandlerContext): Promise<SlashHan
     `Session: ${ctx.sessionId}`,
     `Source messages: ${data.messages.length}; seed messages: ${seed.messages.length}`,
     `Seed title: ${seed.title}`,
-    `Roles: ${Object.entries(roleCounts).map(([role, count]) => `${role}=${count}`).join(', ') || '(none)'}`,
-    firstUser ? `First user: ${truncateLearningText(extractMessageText(firstUser.content), 180)}` : '',
-    lastAssistant ? `Last assistant: ${truncateLearningText(extractMessageText(lastAssistant.content), 180)}` : '',
+    `Roles: ${
+      Object.entries(roleCounts)
+        .map(([role, count]) => `${role}=${count}`)
+        .join(', ') || '(none)'
+    }`,
+    firstUser
+      ? `First user: ${truncateLearningText(extractMessageText(firstUser.content), 180)}`
+      : '',
+    lastAssistant
+      ? `Last assistant: ${truncateLearningText(extractMessageText(lastAssistant.content), 180)}`
+      : '',
     '',
     'Summary:',
     truncateLearningBlock(seed.summary, 900),
@@ -830,7 +1008,12 @@ type WorkflowInvocation =
   | { readonly kind: 'prune'; readonly rawArgs: readonly string[] }
   | { readonly kind: 'save'; readonly runId: string; readonly name: string }
   | { readonly kind: 'rename'; readonly target: string; readonly newName: string }
-  | { readonly kind: 'revise'; readonly target: string; readonly request: string; readonly replace?: boolean }
+  | {
+      readonly kind: 'revise';
+      readonly target: string;
+      readonly request: string;
+      readonly replace?: boolean;
+    }
   | { readonly kind: 'rerun'; readonly runId: string; readonly rawArgs: string }
   | { readonly kind: 'create'; readonly request: string }
   | { readonly kind: 'start'; readonly name: string; readonly rawArgs: string };
@@ -858,7 +1041,8 @@ export function isPartnerAllowedWorkflowKind(kind: WorkflowInvocation['kind']): 
 const DEFAULT_WORKFLOW_RUNS_LIMIT = 20;
 const DEFAULT_WORKFLOW_PRUNE_KEEP = 50;
 const MAX_WORKFLOW_RUNS_LIMIT = 200;
-const WORKFLOW_ARG_HINT = 'pending | help | list | runs [--all|--limit N] | show [runId] | pause <runId> | resume <runId> | stop [runId] | delete [--force] [--run|--saved] <runId|savedName> | prune --dry-run|--keep N|--older-than Nd | rerun <runId|savedName> [args] | save <runId> <name> | rename <runId|alias|savedName> <newName> | revise [--replace] <runId|alias|savedName> <change> | create <request> | <name> [args]';
+const WORKFLOW_ARG_HINT =
+  'pending | help | list | runs [--all|--limit N] | show [runId] | pause <runId> | resume <runId> | stop [runId] | delete [--force] [--run|--saved] <runId|savedName> | prune --dry-run|--keep N|--older-than Nd | rerun <runId|savedName> [args] | save <runId> <name> | rename <runId|alias|savedName> <newName> | revise [--replace] <runId|alias|savedName> <change> | create <request> | <name> [args]';
 
 function parseWorkflowInvocation(args: readonly string[]): WorkflowInvocation {
   const first = args[0]?.toLowerCase();
@@ -879,7 +1063,8 @@ function parseWorkflowInvocation(args: readonly string[]): WorkflowInvocation {
     const force = rest.includes('--force');
     const saved = rest.includes('--saved');
     const run = rest.includes('--run');
-    const target = rest.find((arg) => arg !== '--force' && arg !== '--saved' && arg !== '--run') ?? '';
+    const target =
+      rest.find((arg) => arg !== '--force' && arg !== '--saved' && arg !== '--run') ?? '';
     const scope = saved && run ? 'conflict' : saved ? 'saved' : run ? 'run' : undefined;
     return {
       kind: 'delete',
@@ -890,7 +1075,8 @@ function parseWorkflowInvocation(args: readonly string[]): WorkflowInvocation {
   }
   if (first === 'prune') return { kind: 'prune', rawArgs: args.slice(1) };
   if (first === 'save') return { kind: 'save', runId: args[1] ?? '', name: args[2] ?? '' };
-  if (first === 'rename') return { kind: 'rename', target: args[1] ?? '', newName: args.slice(2).join(' ').trim() };
+  if (first === 'rename')
+    return { kind: 'rename', target: args[1] ?? '', newName: args.slice(2).join(' ').trim() };
   if (first === 'revise') {
     const raw = args.slice(1);
     const replace = raw.includes('--replace');
@@ -902,7 +1088,8 @@ function parseWorkflowInvocation(args: readonly string[]): WorkflowInvocation {
       ...(replace ? { replace: true } : {}),
     };
   }
-  if (first === 'rerun') return { kind: 'rerun', runId: args[1] ?? '', rawArgs: args.slice(2).join(' ').trim() };
+  if (first === 'rerun')
+    return { kind: 'rerun', runId: args[1] ?? '', rawArgs: args.slice(2).join(' ').trim() };
   if (first === 'create') return { kind: 'create', request: args.slice(1).join(' ').trim() };
   return { kind: 'start', name: args[0]!, rawArgs: args.slice(1).join(' ').trim() };
 }
@@ -950,7 +1137,8 @@ function parseWorkflowRunsOptions(args: readonly string[]): {
     }
     if (arg === '--limit') {
       const parsed = parseNonNegativeInteger(args[index + 1]);
-      if (parsed === undefined || parsed < 1) return { all, limit, error: '--limit expects a positive integer' };
+      if (parsed === undefined || parsed < 1)
+        return { all, limit, error: '--limit expects a positive integer' };
       limit = Math.min(parsed, MAX_WORKFLOW_RUNS_LIMIT);
       index += 1;
       continue;
@@ -984,7 +1172,8 @@ function parseWorkflowPruneOptions(args: readonly string[]): {
     }
     if (arg === '--older-than') {
       const parsed = parseOlderThanMs(args[index + 1]);
-      if (parsed === undefined) return { dryRun, error: '--older-than expects a value like 7d or 24h' };
+      if (parsed === undefined)
+        return { dryRun, error: '--older-than expects a value like 7d or 24h' };
       olderThanDays = Math.ceil(parsed / (24 * 60 * 60 * 1000));
       index += 1;
       continue;
@@ -1055,9 +1244,14 @@ function findWorkflowRun(sessionId: string, target: string): WorkflowRunT | unde
   });
 }
 
-function findSavedWorkflow(saved: readonly SavedWorkflowLite[], target: string): SavedWorkflowLite | undefined {
+function findSavedWorkflow(
+  saved: readonly SavedWorkflowLite[],
+  target: string,
+): SavedWorkflowLite | undefined {
   const lower = target.toLowerCase();
-  return saved.find((w) => w.name === target || w.name.toLowerCase() === lower || w.path === target);
+  return saved.find(
+    (w) => w.name === target || w.name.toLowerCase() === lower || w.path === target,
+  );
 }
 
 function workflowRunDetails(run: WorkflowRunT, full = false): string {
@@ -1068,7 +1262,8 @@ function workflowRunDetails(run: WorkflowRunT, full = false): string {
     run.error ? `Error: ${run.error}` : '',
   ];
   if (full) {
-    if (run.artifacts?.length) lines.push(`Artifacts: ${run.artifacts.map((a) => a.name).join(', ')}`);
+    if (run.artifacts?.length)
+      lines.push(`Artifacts: ${run.artifacts.map((a) => a.name).join(', ')}`);
     if (run.items?.length) {
       lines.push('Items:');
       lines.push(
@@ -1080,12 +1275,17 @@ function workflowRunDetails(run: WorkflowRunT, full = false): string {
   return lines.filter(Boolean).join('\n');
 }
 
-function formatSavedAction(prefix: string, result: { readonly name?: string; readonly path?: string; readonly previousPath?: string }): string {
+function formatSavedAction(
+  prefix: string,
+  result: { readonly name?: string; readonly path?: string; readonly previousPath?: string },
+): string {
   return [
     `${prefix}: ${result.name ?? ''}`.trim(),
     result.path ? `Path: ${result.path}` : '',
     result.previousPath ? `Previous: ${result.previousPath}` : '',
-  ].filter(Boolean).join('\n');
+  ]
+    .filter(Boolean)
+    .join('\n');
 }
 
 type ToggleValue = 'on' | 'off';
@@ -1097,9 +1297,16 @@ function parseToggleValue(value: string | undefined): ToggleValue | undefined {
   return undefined;
 }
 
-function formatSlashCommandUsage(c: { readonly name: string; readonly aliases?: readonly string[]; readonly argsHint?: string; readonly description: string }): string {
+function formatSlashCommandUsage(c: {
+  readonly name: string;
+  readonly aliases?: readonly string[];
+  readonly argsHint?: string;
+  readonly description: string;
+}): string {
   const hint = c.argsHint ? ` ${c.argsHint}` : '';
-  const aliases = c.aliases?.length ? ` (aliases: ${c.aliases.map((a) => `/${a}`).join(', ')})` : '';
+  const aliases = c.aliases?.length
+    ? ` (aliases: ${c.aliases.map((a) => `/${a}`).join(', ')})`
+    : '';
   return `/${c.name}${hint}${aliases} - ${c.description}`;
 }
 
@@ -1123,10 +1330,12 @@ export function clearSlashGoalForSession(sessionId: string): void {
   goalBySession.delete(sessionId);
 }
 
-function parseGoalCreateArgs(args: readonly string[]): {
-  readonly objective: string;
-  readonly tokenBudget: number | null;
-} | { readonly error: string } {
+function parseGoalCreateArgs(args: readonly string[]):
+  | {
+      readonly objective: string;
+      readonly tokenBudget: number | null;
+    }
+  | { readonly error: string } {
   let tokenBudget: number | null = null;
   const objectiveParts: string[] = [];
   for (let index = 0; index < args.length; index += 1) {
@@ -1134,14 +1343,16 @@ function parseGoalCreateArgs(args: readonly string[]): {
     if (arg === '--tokens') {
       const raw = args[index + 1];
       const parsed = raw ? Number(raw) : NaN;
-      if (!Number.isInteger(parsed) || parsed <= 0) return { error: '--tokens requires a positive integer' };
+      if (!Number.isInteger(parsed) || parsed <= 0)
+        return { error: '--tokens requires a positive integer' };
       tokenBudget = parsed;
       index += 1;
       continue;
     }
     if (arg?.startsWith('--tokens=')) {
       const parsed = Number(arg.slice('--tokens='.length));
-      if (!Number.isInteger(parsed) || parsed <= 0) return { error: '--tokens requires a positive integer' };
+      if (!Number.isInteger(parsed) || parsed <= 0)
+        return { error: '--tokens requires a positive integer' };
       tokenBudget = parsed;
       continue;
     }
@@ -1195,11 +1406,16 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
         };
       }
       if (!isPermissionMode(target)) {
-        return { ok: false, message: `unknown mode '${target}'; valid: ${PERMISSION_MODES.join(', ')}` };
+        return {
+          ok: false,
+          message: `unknown mode '${target}'; valid: ${PERMISSION_MODES.join(', ')}`,
+        };
       }
-      const ok = kodaxHost.setPermissionMode(ctx.sessionId, target);
-      if (ok) return { ok: true, message: `mode -> ${target}` };
-      return { ok: false, message: `session not found: ${ctx.sessionId}` };
+      return commitRuntimeSlashMutation(
+        ctx.sessionId,
+        () => kodaxHost.setPermissionMode(ctx.sessionId, target),
+        `mode -> ${target}`,
+      );
     },
   },
 
@@ -1220,12 +1436,16 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
         };
       }
       if (!isAutoEngine(target)) {
-        return { ok: false, message: `unknown engine '${target}'; valid: ${AUTO_ENGINES.join(', ')}` };
+        return {
+          ok: false,
+          message: `unknown engine '${target}'; valid: ${AUTO_ENGINES.join(', ')}`,
+        };
       }
-      const ok = kodaxHost.setAutoModeEngine(ctx.sessionId, target);
-      return ok
-        ? { ok: true, message: `auto-engine -> ${target}` }
-        : { ok: false, message: `session not found: ${ctx.sessionId}` };
+      return commitRuntimeSlashMutation(
+        ctx.sessionId,
+        () => kodaxHost.setAutoModeEngine(ctx.sessionId, target),
+        `auto-engine -> ${target}`,
+      );
     },
   },
 
@@ -1262,7 +1482,9 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
       if (targetProvider !== 'mock' && !isBuiltinId(targetProvider)) {
         await providerConfigStore.load();
         const existsInSpaceStore = Boolean(providerConfigStore.getCustom(targetProvider));
-        const existsInKodaxConfig = (await loadKodaxCustomProviders()).some((p) => p.id === targetProvider);
+        const existsInKodaxConfig = (await loadKodaxCustomProviders()).some(
+          (p) => p.id === targetProvider,
+        );
         if (!existsInSpaceStore && !existsInKodaxConfig) {
           return { ok: false, message: `unknown providerId: ${targetProvider}` };
         }
@@ -1272,17 +1494,24 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
         await registerKodaxCustomProviders(providerConfigStore.listCustom());
       }
       const providerInfo = getBuiltin(targetProvider);
-      if (targetModel && providerInfo?.models?.length && !providerInfo.models.includes(targetModel)) {
+      if (
+        targetModel &&
+        providerInfo?.models?.length &&
+        !providerInfo.models.includes(targetModel)
+      ) {
         return {
           ok: false,
           message: `Unknown model "${targetModel}" for provider ${targetProvider}.\nAvailable: ${providerInfo.models.join(', ')}`,
         };
       }
-      const ok = kodaxHost.setProvider(ctx.sessionId, targetProvider);
-      if (ok) kodaxHost.setModel(ctx.sessionId, targetModel);
-      return ok
-        ? { ok: true, message: `provider -> ${targetProvider}${targetModel ? ` / ${targetModel}` : ''}` }
-        : { ok: false, message: `session not found: ${ctx.sessionId}` };
+      return commitRuntimeSlashMutation(
+        ctx.sessionId,
+        () => {
+          const providerOk = kodaxHost.setProvider(ctx.sessionId, targetProvider);
+          return providerOk && kodaxHost.setModel(ctx.sessionId, targetModel);
+        },
+        `provider -> ${targetProvider}${targetModel ? ` / ${targetModel}` : ''}`,
+      );
     },
   },
 
@@ -1304,12 +1533,16 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
         };
       }
       if (!isReasoningMode(target)) {
-        return { ok: false, message: `unknown reasoning '${target}'; valid: ${REASONING_MODES.join(', ')}` };
+        return {
+          ok: false,
+          message: `unknown reasoning '${target}'; valid: ${REASONING_MODES.join(', ')}`,
+        };
       }
-      const ok = kodaxHost.setReasoningMode(ctx.sessionId, target);
-      return ok
-        ? { ok: true, message: `reasoning -> ${target}` }
-        : { ok: false, message: `session not found: ${ctx.sessionId}` };
+      return commitRuntimeSlashMutation(
+        ctx.sessionId,
+        () => kodaxHost.setReasoningMode(ctx.sessionId, target),
+        `reasoning -> ${target}`,
+      );
     },
   },
 
@@ -1372,7 +1605,9 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
           message: [
             `Models for ${providerId} (${list.length} total):`,
             ...shown.map((m) => `  • ${m}${m === currentModel ? ' ← current' : ''}`),
-            ...(overflow > 0 ? [`  … +${overflow} more (use /model <name> to switch directly)`] : []),
+            ...(overflow > 0
+              ? [`  … +${overflow} more (use /model <name> to switch directly)`]
+              : []),
             `(use /model <name> to switch, /model default to clear)`,
           ].join('\n'),
           echo: true,
@@ -1382,79 +1617,105 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
       // 'default' 清除 override
       const isClear = target === 'default';
       if (isClear) {
-        const ok = kodaxHost.setModel(ctx.sessionId, undefined);
-        if (!ok) return { ok: false, message: `session not found: ${ctx.sessionId}` };
-        return { ok: true, message: 'model -> provider default (cleared override)' };
+        return commitRuntimeSlashMutation(
+          ctx.sessionId,
+          () => kodaxHost.setModel(ctx.sessionId, undefined),
+          'model -> provider default (cleared override)',
+        );
       }
 
       if (target.startsWith('/')) {
         const targetModel = target.slice(1);
         if (!targetModel) return { ok: false, message: 'Usage: /model /<model-name>' };
-        if (providerInfo && providerInfo.models.length > 0 && !providerInfo.models.includes(targetModel)) {
+        if (
+          providerInfo &&
+          providerInfo.models.length > 0 &&
+          !providerInfo.models.includes(targetModel)
+        ) {
           return {
             ok: false,
             message: `Unknown model "${targetModel}" for provider ${providerId}.\nAvailable: ${providerInfo.models.join(', ')}`,
           };
         }
-        const ok = kodaxHost.setModel(ctx.sessionId, targetModel);
-        if (!ok) return { ok: false, message: `session not found: ${ctx.sessionId}` };
-        return { ok: true, message: `model -> ${providerId}/${targetModel} (applies on next send)` };
+        return commitRuntimeSlashMutation(
+          ctx.sessionId,
+          () => kodaxHost.setModel(ctx.sessionId, targetModel),
+          `model -> ${providerId}/${targetModel} (applies on next send)`,
+        );
       }
 
       if (target.includes('/')) {
         const slashIdx = target.indexOf('/');
         const targetProvider = target.slice(0, slashIdx);
         const targetModel = target.slice(slashIdx + 1);
-        if (!targetProvider || !targetModel) return { ok: false, message: 'Usage: /model <provider>/<model>' };
+        if (!targetProvider || !targetModel)
+          return { ok: false, message: 'Usage: /model <provider>/<model>' };
         if (targetProvider !== 'mock' && !isBuiltinId(targetProvider)) {
           await providerConfigStore.load();
           const existsInSpaceStore = Boolean(providerConfigStore.getCustom(targetProvider));
-          const existsInKodaxConfig = (await loadKodaxCustomProviders()).some((p) => p.id === targetProvider);
+          const existsInKodaxConfig = (await loadKodaxCustomProviders()).some(
+            (p) => p.id === targetProvider,
+          );
           if (!existsInSpaceStore && !existsInKodaxConfig) {
             return { ok: false, message: `unknown providerId: ${targetProvider}` };
           }
           await registerKodaxCustomProviders(providerConfigStore.listCustom());
         }
         const targetProviderInfo = getBuiltin(targetProvider);
-        if (targetProviderInfo?.models?.length && !targetProviderInfo.models.includes(targetModel)) {
+        if (
+          targetProviderInfo?.models?.length &&
+          !targetProviderInfo.models.includes(targetModel)
+        ) {
           return {
             ok: false,
             message: `Unknown model "${targetModel}" for provider ${targetProvider}.\nAvailable: ${targetProviderInfo.models.join(', ')}`,
           };
         }
-        const providerOk = kodaxHost.setProvider(ctx.sessionId, targetProvider);
-        const modelOk = providerOk ? kodaxHost.setModel(ctx.sessionId, targetModel) : false;
-        return providerOk && modelOk
-          ? { ok: true, message: `model -> ${targetProvider}/${targetModel} (applies on next send)` }
-          : { ok: false, message: `session not found: ${ctx.sessionId}` };
+        return commitRuntimeSlashMutation(
+          ctx.sessionId,
+          () => {
+            const providerOk = kodaxHost.setProvider(ctx.sessionId, targetProvider);
+            return providerOk && kodaxHost.setModel(ctx.sessionId, targetModel);
+          },
+          `model -> ${targetProvider}/${targetModel} (applies on next send)`,
+        );
       }
 
       if (target === 'mock' || isBuiltinId(target)) {
-        const ok = kodaxHost.setProvider(ctx.sessionId, target);
-        if (!ok) return { ok: false, message: `session not found: ${ctx.sessionId}` };
-        kodaxHost.setModel(ctx.sessionId, undefined);
-        return { ok: true, message: `provider -> ${target} (model cleared to provider default)` };
+        return commitRuntimeSlashMutation(
+          ctx.sessionId,
+          () => {
+            const providerOk = kodaxHost.setProvider(ctx.sessionId, target);
+            return providerOk && kodaxHost.setModel(ctx.sessionId, undefined);
+          },
+          `provider -> ${target} (model cleared to provider default)`,
+        );
       }
 
       // 真实 model 名 — 校验在可用列表里。如果 provider 没暴露列表则放过 (保守 fallback)。
       if (providerInfo && providerInfo.models.length > 0 && !providerInfo.models.includes(target)) {
         // 简单 prefix-match suggest 一个最接近的
         const lower = target.toLowerCase();
-        const suggestion = providerInfo.models.find((m) => m.toLowerCase().startsWith(lower))
-          ?? providerInfo.models.find((m) => m.toLowerCase().includes(lower));
+        const suggestion =
+          providerInfo.models.find((m) => m.toLowerCase().startsWith(lower)) ??
+          providerInfo.models.find((m) => m.toLowerCase().includes(lower));
         return {
           ok: false,
           message: [
             `Unknown model "${target}" for provider ${providerId}.`,
             suggestion ? `Did you mean: ${suggestion}?` : '',
             `Available: ${providerInfo.models.join(', ')}`,
-          ].filter(Boolean).join('\n'),
+          ]
+            .filter(Boolean)
+            .join('\n'),
         };
       }
 
-      const ok = kodaxHost.setModel(ctx.sessionId, target);
-      if (!ok) return { ok: false, message: `session not found: ${ctx.sessionId}` };
-      return { ok: true, message: `model -> ${target} (applies on next send)` };
+      return commitRuntimeSlashMutation(
+        ctx.sessionId,
+        () => kodaxHost.setModel(ctx.sessionId, target),
+        `model -> ${target} (applies on next send)`,
+      );
     },
   },
 
@@ -1476,15 +1737,24 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
         };
       }
       if (target === 'on' || target === 'off') {
-        const thinkingOk = kodaxHost.setThinking(ctx.sessionId, target === 'on');
-        const reasoningOk = kodaxHost.setReasoningMode(ctx.sessionId, target === 'on' ? 'auto' : 'off');
-        if (!thinkingOk || !reasoningOk) return { ok: false, message: `session not found: ${ctx.sessionId}` };
-        return { ok: true, message: `thinking -> ${target}; reasoning -> ${target === 'on' ? 'auto' : 'off'} (applies on next send)` };
+        return commitRuntimeSlashMutation(
+          ctx.sessionId,
+          () => {
+            const thinkingOk = kodaxHost.setThinking(ctx.sessionId, target === 'on');
+            return (
+              thinkingOk &&
+              kodaxHost.setReasoningMode(ctx.sessionId, target === 'on' ? 'auto' : 'off')
+            );
+          },
+          `thinking -> ${target}; reasoning -> ${target === 'on' ? 'auto' : 'off'} (applies on next send)`,
+        );
       }
       if (isReasoningMode(target)) {
-        const ok = kodaxHost.setReasoningMode(ctx.sessionId, target);
-        if (!ok) return { ok: false, message: `session not found: ${ctx.sessionId}` };
-        return { ok: true, message: `reasoning -> ${target} (applies on next send)` };
+        return commitRuntimeSlashMutation(
+          ctx.sessionId,
+          () => kodaxHost.setReasoningMode(ctx.sessionId, target),
+          `reasoning -> ${target} (applies on next send)`,
+        );
       }
       return { ok: false, message: 'Usage: /thinking [on|off|auto|quick|balanced|deep]' };
     },
@@ -1524,13 +1794,17 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
       }
       const parsed = normalizeAgentMode(raw);
       if (!parsed) {
-        return { ok: false, message: `unknown agent mode '${raw}'; valid: ${AGENT_MODES.join(', ')}, ama-workflow, toggle` };
+        return {
+          ok: false,
+          message: `unknown agent mode '${raw}'; valid: ${AGENT_MODES.join(', ')}, ama-workflow, toggle`,
+        };
       }
       const target = parsed === 'toggle' ? nextAgentMode(session.agentMode) : parsed;
-      const ok = kodaxHost.setAgentMode(ctx.sessionId, target);
-      return ok
-        ? { ok: true, message: `agent mode -> ${target}` }
-        : { ok: false, message: `session not found: ${ctx.sessionId}` };
+      return commitRuntimeSlashMutation(
+        ctx.sessionId,
+        () => kodaxHost.setAgentMode(ctx.sessionId, target),
+        `agent mode -> ${target}`,
+      );
     },
   },
 
@@ -1542,7 +1816,8 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
     handler: async (ctx) => {
       const session = kodaxHost.get(ctx.sessionId);
       const launchSession = sessionToLaunchSession(session);
-      if (!session || !launchSession) return { ok: false, message: `session not found: ${ctx.sessionId}` };
+      if (!session || !launchSession)
+        return { ok: false, message: `session not found: ${ctx.sessionId}` };
 
       if (ctx.args[0]?.toLowerCase() === 'pending') return handleLearningPending(ctx, 'workflow');
 
@@ -1578,17 +1853,28 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
         }
         if (library.patterns.length > 0) {
           lines.push('Pattern templates:');
-          lines.push(...library.patterns.slice(0, 12).map((w) => `  ${w.name} (${w.pattern}) - ${w.description}`));
+          lines.push(
+            ...library.patterns
+              .slice(0, 12)
+              .map((w) => `  ${w.name} (${w.pattern}) - ${w.description}`),
+          );
         }
         if (library.saved.length > 0) {
           lines.push('Saved:');
           lines.push(
             ...library.saved
               .slice(0, 12)
-              .map((w) => `  ${w.name}${w.source ? ` (${w.source}${w.execution ? `, ${w.execution}` : ''})` : ''} - ${w.path}`),
+              .map(
+                (w) =>
+                  `  ${w.name}${w.source ? ` (${w.source}${w.execution ? `, ${w.execution}` : ''})` : ''} - ${w.path}`,
+              ),
           );
         }
-        if (library.builtin.length === 0 && library.patterns.length === 0 && library.saved.length === 0) {
+        if (
+          library.builtin.length === 0 &&
+          library.patterns.length === 0 &&
+          library.saved.length === 0
+        ) {
           lines.push('  none found');
         }
         lines.push('Run with: /workflow <name> [args]');
@@ -1597,18 +1883,25 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
 
       if (invocation.kind === 'runs') {
         const options = parseWorkflowRunsOptions(invocation.rawArgs);
-        if (options.error) return { ok: false, message: `Usage: /workflow runs [--all] [--limit N]\n${options.error}` };
+        if (options.error)
+          return {
+            ok: false,
+            message: `Usage: /workflow runs [--all] [--limit N]\n${options.error}`,
+          };
         const runs = workflowRunsForSession(ctx.sessionId);
         if (runs.length === 0) {
           return { ok: true, message: 'No workflow runs for this session.', echo: true };
         }
         const shown = options.all ? runs : runs.slice(0, options.limit);
-        const overflow = !options.all && runs.length > shown.length
-          ? [`... ${runs.length - shown.length} more; use /workflow runs --all`]
-          : [];
+        const overflow =
+          !options.all && runs.length > shown.length
+            ? [`... ${runs.length - shown.length} more; use /workflow runs --all`]
+            : [];
         return {
           ok: true,
-          message: compactSlashMessage(['Workflow runs:', ...shown.map(formatWorkflowRun), ...overflow].join('\n')),
+          message: compactSlashMessage(
+            ['Workflow runs:', ...shown.map(formatWorkflowRun), ...overflow].join('\n'),
+          ),
           echo: true,
         };
       }
@@ -1619,7 +1912,10 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
           : latestWorkflowRun(ctx.sessionId);
         if (!selected) return { ok: false, message: 'No workflow run found for this session.' };
         if (selected.sessionId !== ctx.sessionId) {
-          return { ok: false, message: `workflow run does not belong to this session: ${selected.runId}` };
+          return {
+            ok: false,
+            message: `workflow run does not belong to this session: ${selected.runId}`,
+          };
         }
         return {
           ok: true,
@@ -1628,7 +1924,11 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
         };
       }
 
-      if (invocation.kind === 'pause' || invocation.kind === 'resume' || invocation.kind === 'stop') {
+      if (
+        invocation.kind === 'pause' ||
+        invocation.kind === 'resume' ||
+        invocation.kind === 'stop'
+      ) {
         if (invocation.kind !== 'stop' && !invocation.runId) {
           return { ok: false, message: `Usage: /workflow ${invocation.kind} <runId>` };
         }
@@ -1637,7 +1937,10 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
           : latestWorkflowRun(ctx.sessionId, true);
         if (!selected) return { ok: false, message: 'No workflow run found for this session.' };
         if (selected.sessionId !== ctx.sessionId) {
-          return { ok: false, message: `workflow run does not belong to this session: ${selected.runId}` };
+          return {
+            ok: false,
+            message: `workflow run does not belong to this session: ${selected.runId}`,
+          };
         }
         const ok =
           invocation.kind === 'stop'
@@ -1651,32 +1954,66 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
       }
 
       if (invocation.kind === 'delete') {
-        if (!invocation.target) return { ok: false, message: 'Usage: /workflow delete [--force] [--run|--saved] <runId|savedName>' };
-        if (invocation.scope === 'conflict') return { ok: false, message: 'choose only one delete scope: --run or --saved' };
+        if (!invocation.target)
+          return {
+            ok: false,
+            message: 'Usage: /workflow delete [--force] [--run|--saved] <runId|savedName>',
+          };
+        if (invocation.scope === 'conflict')
+          return { ok: false, message: 'choose only one delete scope: --run or --saved' };
         const library = await workflowController.listLibrary(session.projectRoot);
-        const run = invocation.scope === 'saved' ? undefined : findWorkflowRun(ctx.sessionId, invocation.target);
-        const saved = invocation.scope === 'run' ? undefined : findSavedWorkflow(library.saved, invocation.target);
+        const run =
+          invocation.scope === 'saved'
+            ? undefined
+            : findWorkflowRun(ctx.sessionId, invocation.target);
+        const saved =
+          invocation.scope === 'run'
+            ? undefined
+            : findSavedWorkflow(library.saved, invocation.target);
         if (run && saved && invocation.scope === undefined) {
-          return { ok: false, message: `ambiguous delete target: ${invocation.target}; use --run or --saved` };
+          return {
+            ok: false,
+            message: `ambiguous delete target: ${invocation.target}; use --run or --saved`,
+          };
         }
         if (saved && !run) {
-          const result = await workflowController.deleteSavedWorkflow(saved.name, session.projectRoot, saved.source);
+          const result = await workflowController.deleteSavedWorkflow(
+            saved.name,
+            session.projectRoot,
+            saved.source,
+          );
           return 'error' in result
             ? { ok: false, message: result.error }
-            : { ok: true, message: formatSavedAction('Deleted saved workflow', result), echo: true };
+            : {
+                ok: true,
+                message: formatSavedAction('Deleted saved workflow', result),
+                echo: true,
+              };
         }
         if (!run) return { ok: false, message: `workflow target not found: ${invocation.target}` };
         const ok = await workflowController.deleteRun(run.runId, invocation.force);
         return ok
-          ? { ok: true, message: `Deleted workflow run ${run.runId}${invocation.force ? ' with --force' : ''}.`, echo: true }
+          ? {
+              ok: true,
+              message: `Deleted workflow run ${run.runId}${invocation.force ? ' with --force' : ''}.`,
+              echo: true,
+            }
           : { ok: false, message: `workflow delete failed: ${run.runId}` };
       }
 
       if (invocation.kind === 'prune') {
         const options = parseWorkflowPruneOptions(invocation.rawArgs);
-        if (options.error) return { ok: false, message: `Usage: /workflow prune --dry-run | --keep N | --older-than Nd\n${options.error}` };
+        if (options.error)
+          return {
+            ok: false,
+            message: `Usage: /workflow prune --dry-run | --keep N | --older-than Nd\n${options.error}`,
+          };
         if (!options.dryRun && options.keep === undefined && options.olderThanDays === undefined) {
-          return { ok: false, message: 'Usage: /workflow prune --dry-run | --keep N | --older-than Nd\nNo cleanup rule was provided.' };
+          return {
+            ok: false,
+            message:
+              'Usage: /workflow prune --dry-run | --keep N | --older-than Nd\nNo cleanup rule was provided.',
+          };
         }
         const result = await workflowController.prune(options);
         const lines = [
@@ -1689,46 +2026,78 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
       }
 
       if (invocation.kind === 'save') {
-        if (!invocation.runId || !invocation.name) return { ok: false, message: 'Usage: /workflow save <runId> <name>' };
+        if (!invocation.runId || !invocation.name)
+          return { ok: false, message: 'Usage: /workflow save <runId> <name>' };
         const run = findWorkflowRun(ctx.sessionId, invocation.runId);
         if (!run) return { ok: false, message: `workflow run not found: ${invocation.runId}` };
-        const result = await workflowController.saveGeneratedWorkflowFromRun(run.runId, invocation.name, session.projectRoot);
+        const result = await workflowController.saveGeneratedWorkflowFromRun(
+          run.runId,
+          invocation.name,
+          session.projectRoot,
+        );
         return 'error' in result
           ? { ok: false, message: result.error }
           : { ok: true, message: formatSavedAction('Saved workflow', result), echo: true };
       }
 
       if (invocation.kind === 'rename') {
-        if (!invocation.target || !invocation.newName) return { ok: false, message: 'Usage: /workflow rename <runId|savedName> <newName>' };
+        if (!invocation.target || !invocation.newName)
+          return { ok: false, message: 'Usage: /workflow rename <runId|savedName> <newName>' };
         const library = await workflowController.listLibrary(session.projectRoot);
         const run = findWorkflowRun(ctx.sessionId, invocation.target);
         const saved = findSavedWorkflow(library.saved, invocation.target);
-        if (run && saved) return { ok: false, message: `ambiguous rename target: ${invocation.target}; use the concrete runId or saved workflow name` };
+        if (run && saved)
+          return {
+            ok: false,
+            message: `ambiguous rename target: ${invocation.target}; use the concrete runId or saved workflow name`,
+          };
         if (run) {
           const ok = await workflowController.rename(run.runId, invocation.newName);
           return ok
-            ? { ok: true, message: `Renamed workflow run ${run.runId} to ${invocation.newName}.`, echo: true }
+            ? {
+                ok: true,
+                message: `Renamed workflow run ${run.runId} to ${invocation.newName}.`,
+                echo: true,
+              }
             : { ok: false, message: `workflow rename failed: ${run.runId}` };
         }
         if (saved) {
-          const result = await workflowController.renameSavedWorkflow(saved.name, invocation.newName, session.projectRoot, saved.source);
+          const result = await workflowController.renameSavedWorkflow(
+            saved.name,
+            invocation.newName,
+            session.projectRoot,
+            saved.source,
+          );
           return 'error' in result
             ? { ok: false, message: result.error }
-            : { ok: true, message: formatSavedAction('Renamed saved workflow', result), echo: true };
+            : {
+                ok: true,
+                message: formatSavedAction('Renamed saved workflow', result),
+                echo: true,
+              };
         }
         return { ok: false, message: `workflow target not found: ${invocation.target}` };
       }
 
       if (invocation.kind === 'revise') {
         if (!invocation.target || !invocation.request) {
-          return { ok: false, message: 'Usage: /workflow revise [--replace] <runId|savedName> <change request>' };
+          return {
+            ok: false,
+            message: 'Usage: /workflow revise [--replace] <runId|savedName> <change request>',
+          };
         }
         const library = await workflowController.listLibrary(session.projectRoot);
         const run = findWorkflowRun(ctx.sessionId, invocation.target);
         const saved = findSavedWorkflow(library.saved, invocation.target);
-        if (run && saved) return { ok: false, message: `ambiguous revise target: ${invocation.target}; use the concrete runId or saved workflow name` };
-        if (invocation.replace && !saved) return { ok: false, message: 'revise --replace requires a saved workflow name target' };
-        if (!run && !saved) return { ok: false, message: `workflow target not found: ${invocation.target}` };
+        if (run && saved)
+          return {
+            ok: false,
+            message: `ambiguous revise target: ${invocation.target}; use the concrete runId or saved workflow name`,
+          };
+        if (invocation.replace && !saved)
+          return { ok: false, message: 'revise --replace requires a saved workflow name target' };
+        if (!run && !saved)
+          return { ok: false, message: `workflow target not found: ${invocation.target}` };
         const result = await workflowController.reviseWorkflow({
           target: run?.runId ?? saved!.name,
           request: invocation.request,
@@ -1738,15 +2107,27 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
         });
         return 'error' in result
           ? { ok: false, message: result.error }
-          : { ok: true, message: formatSavedAction(invocation.replace ? 'Replaced saved workflow' : 'Saved workflow revision', result), echo: true };
+          : {
+              ok: true,
+              message: formatSavedAction(
+                invocation.replace ? 'Replaced saved workflow' : 'Saved workflow revision',
+                result,
+              ),
+              echo: true,
+            };
       }
 
       if (invocation.kind === 'rerun') {
-        if (!invocation.runId) return { ok: false, message: 'Usage: /workflow rerun <runId|savedName> [args]' };
+        if (!invocation.runId)
+          return { ok: false, message: 'Usage: /workflow rerun <runId|savedName> [args]' };
         const library = await workflowController.listLibrary(session.projectRoot);
         const run = findWorkflowRun(ctx.sessionId, invocation.runId);
         const saved = findSavedWorkflow(library.saved, invocation.runId);
-        if (run && saved) return { ok: false, message: `ambiguous rerun target: ${invocation.runId}; use /workflow ${saved.name} for saved or a concrete runId` };
+        if (run && saved)
+          return {
+            ok: false,
+            message: `ambiguous rerun target: ${invocation.runId}; use /workflow ${saved.name} for saved or a concrete runId`,
+          };
         const args = parseWorkflowArgs(invocation.rawArgs);
         const result = saved
           ? await workflowController.start({
@@ -1760,12 +2141,19 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
             : { error: `workflow target not found: ${invocation.runId}` };
         return 'error' in result
           ? { ok: false, message: result.error }
-          : { ok: true, message: `workflow started: ${saved?.name ?? run?.workflowName ?? invocation.runId} (${result.runId})`, echo: true };
+          : {
+              ok: true,
+              message: `workflow started: ${saved?.name ?? run?.workflowName ?? invocation.runId} (${result.runId})`,
+              echo: true,
+            };
       }
 
       if (invocation.kind === 'create') {
         if (!invocation.request) return { ok: false, message: 'Usage: /workflow create <request>' };
-        const result = await workflowController.createGeneratedWorkflow(invocation.request, launchSession);
+        const result = await workflowController.createGeneratedWorkflow(
+          invocation.request,
+          launchSession,
+        );
         return 'error' in result
           ? { ok: false, message: result.error }
           : { ok: true, message: `workflow started: generated (${result.runId})`, echo: true };
@@ -1774,8 +2162,13 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
       const library = await workflowController.listLibrary(session.projectRoot);
       const targetName = invocation.name;
       const targetLower = targetName.toLowerCase();
-      const builtin = library.builtin.find((w) => w.name === targetName || w.name.toLowerCase() === targetLower);
-      const saved = library.saved.find((w) => w.name === targetName || w.name.toLowerCase() === targetLower || w.path === targetName);
+      const builtin = library.builtin.find(
+        (w) => w.name === targetName || w.name.toLowerCase() === targetLower,
+      );
+      const saved = library.saved.find(
+        (w) =>
+          w.name === targetName || w.name.toLowerCase() === targetLower || w.path === targetName,
+      );
       if (!builtin && !saved) {
         // SDK parity (FEATURE_246 / ADR-047): `/workflow <free text>` whose first
         // word is neither a subcommand nor a known builtin/saved name is shorthand
@@ -1993,8 +2386,7 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
       if (detailMode === 'mode' || detailMode === 'endpoint' || detailMode === 'bin') {
         return {
           ok: true,
-          message:
-            `[repointel] ${detailMode} is read-only in Space v0.1.22; manage it through KodaX config until a stable SDK setter exists.`,
+          message: `[repointel] ${detailMode} is read-only in Space v0.1.22; manage it through KodaX config until a stable SDK setter exists.`,
           echo: true,
         };
       }
@@ -2040,7 +2432,8 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
         `  Last Active: ${new Date(session.lastActivityAt).toISOString()}`,
       ];
       if (session.parentSessionId) lines.push(`  Parent:      ${session.parentSessionId}`);
-      if (session.forkPointTurnIdx !== undefined) lines.push(`  Fork point:  ${session.forkPointTurnIdx}`);
+      if (session.forkPointTurnIdx !== undefined)
+        lines.push(`  Fork point:  ${session.forkPointTurnIdx}`);
       if (detailMode === 'workspace' || detailMode === 'worktree' || detailMode === 'runtime') {
         lines.push('  Runtime:     KodaX Space desktop host');
       }
@@ -2071,10 +2464,11 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
     handler: async (ctx) => {
       const session = kodaxHost.get(ctx.sessionId);
       if (!session) return { ok: false, message: `session not found: ${ctx.sessionId}` };
-      const ok = kodaxHost.setPermissionMode(ctx.sessionId, 'auto');
-      return ok
-        ? { ok: true, message: `mode -> auto; auto-engine -> ${session.autoModeEngine}` }
-        : { ok: false, message: `session not found: ${ctx.sessionId}` };
+      return commitRuntimeSlashMutation(
+        ctx.sessionId,
+        () => kodaxHost.setPermissionMode(ctx.sessionId, 'auto'),
+        `mode -> auto; auto-engine -> ${session.autoModeEngine}`,
+      );
     },
   },
 
@@ -2122,15 +2516,20 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
       if (!sub || sub === 'status') {
         return {
           ok: true,
-          message: current.length === 0
-            ? 'Child-task provider fallback: off (no chain configured)'
-            : `Child-task provider fallback: on\n  Order: ${current.join(' -> ')}`,
+          message:
+            current.length === 0
+              ? 'Child-task provider fallback: off (no chain configured)'
+              : `Child-task provider fallback: on\n  Order: ${current.join(' -> ')}`,
           echo: true,
         };
       }
       if (sub === 'off' || sub === 'clear' || sub === 'none') {
         delete process.env.KODAX_FALLBACK_PROVIDERS;
-        return { ok: true, message: 'Child-task provider fallback disabled for this Space process.', echo: true };
+        return {
+          ok: true,
+          message: 'Child-task provider fallback disabled for this Space process.',
+          echo: true,
+        };
       }
       const chain = ctx.args
         .join(',')
@@ -2213,16 +2612,22 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
         return { ok: true, message: 'Goal cleared.', echo: true };
       }
       if (sub === 'pause' || sub === 'resume' || sub === 'complete' || sub === 'blocked') {
-        if (!current) return { ok: false, message: 'No goal set. Use /goal <objective> [--tokens N] first.' };
-        const status: GoalStatus = sub === 'resume'
-          ? 'active'
-          : sub === 'pause'
-            ? 'paused'
-            : sub === 'complete'
-              ? 'complete'
-              : 'blocked';
+        if (!current)
+          return { ok: false, message: 'No goal set. Use /goal <objective> [--tokens N] first.' };
+        const status: GoalStatus =
+          sub === 'resume'
+            ? 'active'
+            : sub === 'pause'
+              ? 'paused'
+              : sub === 'complete'
+                ? 'complete'
+                : 'blocked';
         goalBySession.set(ctx.sessionId, { ...current, status, updatedAt: Date.now() });
-        return { ok: true, message: formatGoalStatus(goalBySession.get(ctx.sessionId)), echo: true };
+        return {
+          ok: true,
+          message: formatGoalStatus(goalBySession.get(ctx.sessionId)),
+          echo: true,
+        };
       }
       const parsed = parseGoalCreateArgs(ctx.args);
       if ('error' in parsed) return { ok: false, message: `${goalHelp()}\n${parsed.error}` };
@@ -2267,14 +2672,16 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
       if (!sub || sub === 'help') {
         return {
           ok: true,
-          message: 'Usage: /paste list | /paste show <id>\nKodaX Space currently sends pasted text directly from the composer; no paste registry is exposed yet.',
+          message:
+            'Usage: /paste list | /paste show <id>\nKodaX Space currently sends pasted text directly from the composer; no paste registry is exposed yet.',
           echo: true,
         };
       }
       if (sub === 'list') {
         return {
           ok: true,
-          message: '[paste] No paste registry is active in KodaX Space yet. Text and images pasted in the composer are sent inline.',
+          message:
+            '[paste] No paste registry is active in KodaX Space yet. Text and images pasted in the composer are sent inline.',
           echo: true,
         };
       }
@@ -2308,7 +2715,8 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
         return { ok: false, message: `session not found: ${ctx.sessionId}` };
       }
       const sub = ctx.args[0]?.toLowerCase();
-      if (sub === 'sdk' || sub === 'discover' || sub === 'discovery') return handleSdkExtensionsCommand(ctx);
+      if (sub === 'sdk' || sub === 'discover' || sub === 'discovery')
+        return handleSdkExtensionsCommand(ctx);
       if (sub && sub !== 'status' && sub !== 'refresh') {
         return { ok: false, message: 'Usage: /extensions [status|refresh|sdk [load]]' };
       }
@@ -2352,7 +2760,8 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
       }
       return {
         ok: true,
-        message: 'Session is auto-saved by KodaX Space after each message. Current in-memory state is active.',
+        message:
+          'Session is auto-saved by KodaX Space after each message. Current in-memory state is active.',
         echo: true,
       };
     },
@@ -2364,7 +2773,8 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
     description: 'Load a session by id, or list sessions when no id is provided',
     argsHint: '[session-id]',
     source: 'builtin',
-    handler: async (ctx) => (ctx.args[0] ? shellAction('load-session') : shellAction('list-sessions')),
+    handler: async (ctx) =>
+      ctx.args[0] ? shellAction('load-session') : shellAction('list-sessions'),
   },
 
   {
@@ -2385,7 +2795,11 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
       const target = ctx.args[0];
       if (!target) return shellAction('list-sessions');
       if (target.toLowerCase() === 'all') {
-        return { ok: false, message: '/delete all is intentionally not available from KodaX Space slash commands. Delete sessions individually.' };
+        return {
+          ok: false,
+          message:
+            '/delete all is intentionally not available from KodaX Space slash commands. Delete sessions individually.',
+        };
       }
       return shellAction('delete-session');
     },

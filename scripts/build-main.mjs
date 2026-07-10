@@ -3,6 +3,7 @@
 // 输出：
 //   dist-electron/main.js
 //   dist-electron/preload.js
+//   dist-electron/partner-source-extraction-worker.js
 //
 // main 进程为 CommonJS（Electron 当前更稳定）；preload sandbox 模式下也必须 CJS。
 
@@ -104,6 +105,10 @@ async function buildOne(entry, outfile) {
 await Promise.all([
   buildOne(path.join(electronDir, 'main.ts'), path.join(outDir, 'main.js')),
   buildOne(path.join(electronDir, 'preload.ts'), path.join(outDir, 'preload.js')),
+  buildOne(
+    path.join(electronDir, 'kodax', 'partner-source-extraction-worker.ts'),
+    path.join(outDir, 'partner-source-extraction-worker.js'),
+  ),
 ]);
 
 if (!watch) {

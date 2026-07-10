@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PartnerSourceStore } from '../kodax/partner-source-store.js';
@@ -55,6 +55,27 @@ test('PartnerSourceStore removes sources within the owning session only', async 
     assert.equal(await store.remove('s1', s1.id), true);
     assert.equal((await store.list('s1')).length, 0);
     assert.equal((await store.list('s2'))[0]?.id, s2.id);
+  } finally {
+    store.invalidate();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('PartnerSourceStore fails closed when persisted metadata is corrupt', async () => {
+  const { store, dir } = freshStore();
+  const metadataPath = join(dir, 'partner-sources.json');
+  try {
+    writeFileSync(metadataPath, '{not-json');
+    await assert.rejects(() => store.list('s1'), /corrupt|invalid|failed to read/i);
+    await assert.rejects(() =>
+      store.addWorkspacePath({
+        sessionId: 's1',
+        projectRoot: '/project',
+        path: 'new.md',
+        targetKind: 'file',
+      }),
+    );
+    assert.equal(readFileSync(metadataPath, 'utf8'), '{not-json');
   } finally {
     store.invalidate();
     rmSync(dir, { recursive: true, force: true });

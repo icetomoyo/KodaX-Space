@@ -25,6 +25,11 @@ test('detectKind: xlsx and xls both map to xlsx', () => {
   assert.equal(detectKind('finance/old.xls'), 'xlsx');
 });
 
+test('detectKind: legacy ppt does not claim the Open XML pptx viewer', () => {
+  assert.equal(detectKind('slides/legacy.ppt'), null);
+  assert.equal(detectKind('slides/current.pptx'), 'pptx');
+});
+
 test('detectKind: plain text falls through to null', () => {
   assert.equal(detectKind('src/main.ts'), null);
   assert.equal(detectKind('README.md'), null);

@@ -33,6 +33,7 @@ import { prewarmSdkMcpStore } from './mcp/config-reader.js';
 import { disposeMcpManager } from './mcp/manager.js';
 import { registerKodaxChannels } from './ipc/kodax.js';
 import { registerQueueChannels, startQueueWatch } from './ipc/queue.js';
+import { registerAdminPolicyAuditChannels } from './ipc/admin.js';
 import { prewarmKodaxUserConfig, registerKodaxCustomProviders } from './kodax/user-config.js';
 import { probeKodaxSdk } from './kodax/kodax-sdk-probe.js';
 import { probeSkillRegistry } from './skill/registry.js';
@@ -42,6 +43,10 @@ import { registerProviderChannels, injectAllKeysToEnv } from './ipc/provider.js'
 import { autoActivateProvidersFromEnv } from './providers/auto-activate.js';
 import { registerFilesChannels } from './ipc/files.js';
 import { registerPartnerSourceChannels } from './ipc/partner-sources.js';
+import { registerPartnerKbChannels } from './ipc/partner-kb.js';
+import { registerPartnerDeliveryChannels } from './ipc/partner-deliveries.js';
+import { registerPartnerCheckpointChannels } from './ipc/partner-checkpoints.js';
+import { registerPartnerFileProposalChannels } from './ipc/partner-file-proposals.js';
 import { registerTitlebarChannels } from './ipc/titlebar.js';
 import { registerWindowChannels } from './ipc/window.js';
 import { registerSettingsChannels } from './ipc/settings.js';
@@ -671,6 +676,7 @@ app
     registerAgentChannels();
     registerMcpChannels();
     registerKodaxChannels();
+    registerAdminPolicyAuditChannels();
     registerQueueChannels();
     // v0.1.6 cleanup: 预热 SDK MCP module 让首次 mcp.discover 不命中空 fallback
     // （DEFAULT_IMPL 首次同步调返回 {}，prewarm 异步触发后续调用走真 SDK）
@@ -684,6 +690,10 @@ app
     registerProviderChannels();
     registerFilesChannels();
     registerPartnerSourceChannels();
+    registerPartnerKbChannels();
+    registerPartnerDeliveryChannels();
+    registerPartnerCheckpointChannels();
+    registerPartnerFileProposalChannels();
     registerTitlebarChannels();
     registerWindowChannels(() => (mainWindow && !mainWindow.isDestroyed() ? mainWindow : null));
     registerSettingsChannels();

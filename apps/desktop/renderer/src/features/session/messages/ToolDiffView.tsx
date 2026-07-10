@@ -8,7 +8,7 @@
 // （collapsed 状态下整个 DiffEditor JSX 不出现）。多 ToolCallCard 同屏时
 // 默认全部 collapsed 不烧资源。
 
-import { useMemo, useState, lazy, Suspense } from 'react';
+import { useEffect, useMemo, useState, lazy, Suspense } from 'react';
 import { Eye, FolderOpen } from 'lucide-react';
 import { Caret } from '../../../components/Caret.js';
 import { openFileSmart, isPreviewablePath } from '../../../lib/openPath.js';
@@ -64,6 +64,7 @@ function basenameOf(p: string): string {
 export function ToolDiffView(props: ToolDiffViewProps): JSX.Element {
   const { t } = useI18n();
   const [expanded, setExpanded] = useState(props.defaultExpanded ?? false);
+  const [mountEditor, setMountEditor] = useState(props.defaultExpanded ?? false);
   const summary = useMemo(
     () => summarizeChange(props.before, props.after),
     [props.before, props.after],
@@ -74,8 +75,20 @@ export function ToolDiffView(props: ToolDiffViewProps): JSX.Element {
   const previewable = props.path !== '' && isPreviewablePath(props.path);
   const hasPath = props.path !== '';
 
+  useEffect(() => {
+    if (!expanded) {
+      setMountEditor(false);
+      return;
+    }
+    const id = window.requestAnimationFrame(() => setMountEditor(true));
+    return () => window.cancelAnimationFrame(id);
+  }, [expanded]);
+
   return (
-    <div className="rounded border border-border-default overflow-hidden">
+    <div
+      className="rounded border border-border-default overflow-hidden"
+      data-testid="tool-diff-view"
+    >
       <div
         className={[
           'flex items-center text-xs font-mono',
@@ -123,12 +136,27 @@ export function ToolDiffView(props: ToolDiffViewProps): JSX.Element {
       {expanded && (
         // 固定 maxHeight，内部滚动；DiffEditor height=100% 撑满父容器
         // Monaco 内部 horizontal scroll 也自带，长行不会撑爆 layout
-        <div className="dark:bg-[#09090b] bg-white" style={{ height: '50vh', maxHeight: 480 }}>
-          <Suspense
-            fallback={<div className="text-xs text-fg-muted p-2">{t('toolDiff.loading')}</div>}
-          >
-            <MonacoDiffViewer path={props.path} before={props.before} after={props.after} />
-          </Suspense>
+        <div
+          className="dark:bg-[#09090b] bg-white"
+          style={{ height: '50vh', maxHeight: 480 }}
+          aria-busy={!mountEditor}
+          data-testid="tool-diff-editor-region"
+        >
+          {mountEditor ? (
+            <Suspense
+              fallback={
+                <div className="text-xs text-fg-muted p-2" data-testid="tool-diff-loading">
+                  {t('toolDiff.loading')}
+                </div>
+              }
+            >
+              <MonacoDiffViewer path={props.path} before={props.before} after={props.after} />
+            </Suspense>
+          ) : (
+            <div className="text-xs text-fg-muted p-2" data-testid="tool-diff-loading">
+              {t('toolDiff.loading')}
+            </div>
+          )}
         </div>
       )}
     </div>

@@ -45,6 +45,48 @@ test('task dock run projection routes active worker to agents', () => {
   assert.match(view.headline, /Review worker/);
 });
 
+test('task dock run projection summarizes active and completed agents', () => {
+  const view = buildTaskDockRunView({
+    hasProject: true,
+    hasSession: true,
+    pendingSend: false,
+    managedStatus: {
+      agentMode: 'ama',
+      harnessProfile: 'H2_PLAN_EXECUTE_EVAL',
+      activeWorkerId: 'coding',
+      activeWorkerTitle: 'coding',
+      events: [
+        {
+          key: 'agent-done',
+          kind: 'completed',
+          workerId: 'agent',
+          workerTitle: 'agent',
+          summary: 'agent review complete',
+        },
+        {
+          key: 'repl-done',
+          kind: 'completed',
+          workerId: 'repl',
+          workerTitle: 'repl',
+          summary: 'repl review complete',
+        },
+        {
+          key: 'coding-progress',
+          kind: 'progress',
+          workerId: 'coding',
+          workerTitle: 'coding',
+          summary: 'coding review in progress',
+        },
+      ],
+    },
+  });
+
+  assert.deepEqual(
+    view.metrics.find((metric) => metric.key === 'agents'),
+    { key: 'agents', label: 'Agents', value: '3 / 1 running / 2 done' },
+  );
+});
+
 test('task dock plan metric counts completed items only', () => {
   const view = buildTaskDockRunView({
     hasProject: true,

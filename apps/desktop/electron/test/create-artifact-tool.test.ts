@@ -73,7 +73,8 @@ test('handler: accepts interactive-html and normalizes script-driven html', asyn
       handler({
         kind: 'html',
         title: 'Auto Canvas',
-        content: '<html><body><canvas></canvas><script>requestAnimationFrame(() => {})</script></body></html>',
+        content:
+          '<html><body><canvas></canvas><script>requestAnimationFrame(() => {})</script></body></html>',
       }),
     );
     assert.match(auto, /created/i);
@@ -137,7 +138,6 @@ test('handler: can attribute from SDK tool execution context without ALS', async
     rmSync(dir, { recursive: true, force: true });
   }
 });
-
 
 test('handler: artifactId appends a version (reason=version)', async () => {
   const { store, dir, changes, handler } = harness();
@@ -236,7 +236,12 @@ test('ensureCreateArtifactToolRegistered: idempotent (registers once)', () => {
   _resetCreateArtifactRegistrationForTesting();
   _clearPartnerSpaceToolPoliciesForTesting();
   let calls = 0;
-  const sdk = { registerTool: () => { calls++; return () => {}; } };
+  const sdk = {
+    registerTool: () => {
+      calls++;
+      return () => {};
+    },
+  };
   ensureCreateArtifactToolRegistered(sdk);
   ensureCreateArtifactToolRegistered(sdk);
   assert.equal(calls, 1);
@@ -247,17 +252,31 @@ test('ensureCreateArtifactToolRegistered: no registerTool → soft no-op, can re
   _resetCreateArtifactRegistrationForTesting();
   ensureCreateArtifactToolRegistered({}); // missing registerTool
   let calls = 0;
-  ensureCreateArtifactToolRegistered({ registerTool: () => { calls++; return () => {}; } });
+  ensureCreateArtifactToolRegistered({
+    registerTool: () => {
+      calls++;
+      return () => {};
+    },
+  });
   assert.equal(calls, 1); // flag wasn't locked by the failed attempt
 });
 
 test('ensureCreateArtifactToolRegistered: throwing reg() does not lock out retry', () => {
   _resetCreateArtifactRegistrationForTesting();
   assert.throws(() =>
-    ensureCreateArtifactToolRegistered({ registerTool: () => { throw new Error('boom'); } }),
+    ensureCreateArtifactToolRegistered({
+      registerTool: () => {
+        throw new Error('boom');
+      },
+    }),
   );
   let calls = 0;
-  ensureCreateArtifactToolRegistered({ registerTool: () => { calls++; return () => {}; } });
+  ensureCreateArtifactToolRegistered({
+    registerTool: () => {
+      calls++;
+      return () => {};
+    },
+  });
   assert.equal(calls, 1); // retried successfully after the throw
 });
 
@@ -270,6 +289,7 @@ test('CREATE_ARTIFACT_TOOL: shape + react excluded + mutates-state', () => {
   const kinds = (CREATE_ARTIFACT_TOOL.input_schema.properties.kind as { enum: string[] }).enum;
   assert.ok(kinds.includes('markdown') && kinds.includes('chart'));
   assert.ok(kinds.includes('interactive-html'));
+  assert.ok(kinds.includes('pptx'));
   assert.ok(!kinds.includes('react')); // legacy LiveCanvas/React tier remains unavailable
   assert.ok('permissions' in CREATE_ARTIFACT_TOOL.input_schema.properties);
 });

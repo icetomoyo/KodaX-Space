@@ -23,9 +23,14 @@ test('Partner agent profile steers knowledge work without leaving managed task h
   assert.match(profile.instructions, /knowledge-work surface/);
   assert.match(profile.instructions, /evidence-first/);
   assert.match(profile.instructions, /artifact/);
+  assert.match(profile.instructions, /checkpointed workspace-file tools/);
+  assert.match(profile.instructions, /lightweight working agent/);
+  assert.match(profile.instructions, /small task-local helper tools/);
+  assert.match(profile.instructions, /run_partner_helper/);
+  assert.match(profile.instructions, /Partner run output workspace/);
   assert.match(profile.instructions, /Partner KB tools/);
-  assert.match(profile.instructions, /Do not edit project files/);
-  assert.match(profile.instructions, /run shell commands/);
+  assert.match(profile.instructions, /heavy execution/);
+  assert.match(profile.instructions, /unrestricted shell/);
   assert.equal(profile.verification.rubricFamily, 'partner-research');
   assert.ok(profile.verification.requiredChecks?.includes('source-faithfulness'));
 });
@@ -42,14 +47,14 @@ test('Partner prompt overlay only carries dynamic run context', () => {
 test('Partner tool policy summary exposes Space-owned tool scope and side effect', () => {
   const summary = buildPartnerToolPolicySummary([
     {
-      name: 'partner_kb_write_page',
-      scope: 'knowledge-base',
+      name: 'write_partner_workspace_file',
+      scope: 'workspace-delivery',
       sideEffect: 'mutates-state',
-      description: 'Write a page inside the selected KB root.',
+      description: 'Checkpointed lightweight workspace write.',
     },
   ]);
-  assert.match(summary, /partner_kb_write_page/);
-  assert.match(summary, /scope=knowledge-base/);
+  assert.match(summary, /write_partner_workspace_file/);
+  assert.match(summary, /scope=workspace-delivery/);
   assert.match(summary, /sideEffect=mutates-state/);
 });
 

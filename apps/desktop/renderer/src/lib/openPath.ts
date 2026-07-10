@@ -50,7 +50,7 @@ function hashId(input: string): string {
 }
 
 function pathBackedArtifactKind(kind: RichPreviewKind): ArtifactKindT {
-  return kind === 'pdf' || kind === 'docx' || kind === 'xlsx' ? kind : 'file';
+  return kind === 'pdf' || kind === 'docx' || kind === 'xlsx' || kind === 'pptx' ? kind : 'file';
 }
 
 function filePreviewSnapshot(detail: {

@@ -12,6 +12,7 @@ import { z } from 'zod';
 import { canonProjectRoot } from '@kodax-space/space-ipc-schema';
 import { validateProjectRoot, truncateForError } from '../ipc/validate.js';
 import { getSpaceDataDir } from '../kodax/data-paths.js';
+import { replaceFileWithoutFollowingAliases } from '../kodax/atomic-file.js';
 
 const IS_WIN = process.platform === 'win32';
 
@@ -115,9 +116,7 @@ export class ProjectStore {
     const projects = await this.list();
     const isAllowed = projects.some((p) => canonProjectRoot(p.path, IS_WIN) === targetCanon);
     if (!isAllowed) {
-      throw new Error(
-        `projectRoot not in recent projects allowlist: ${truncateForError(input)}`,
-      );
+      throw new Error(`projectRoot not in recent projects allowlist: ${truncateForError(input)}`);
     }
     return normalized;
   }
@@ -197,9 +196,7 @@ export class ProjectStore {
    * 实现：把整个"读 cache + apply mutation + persist"塞进同一个 lock，
    * lock 用 promise 链。每个调用排到链尾，wait 前一个完成后再跑。
    */
-  private async mutate<R>(
-    apply: (list: Project[]) => { list: Project[]; ret: R },
-  ): Promise<R> {
+  private async mutate<R>(apply: (list: Project[]) => { list: Project[]; ret: R }): Promise<R> {
     const prev = this.writeLock;
     let release: () => void = () => {};
     this.writeLock = new Promise((resolve) => {
@@ -223,25 +220,11 @@ export class ProjectStore {
     // Windows 忽略 mode，POSIX 强制 user-only。
     await fs.mkdir(this.dir, { recursive: true, mode: 0o700 });
     const payload = JSON.stringify({ version: 1, projects: list }, null, 2);
-    const tmp = `${this.filePath}.tmp-${process.pid}-${Date.now()}`;
-    await fs.writeFile(tmp, payload, { encoding: 'utf-8', mode: 0o600 });
-
-    // POSIX 的 rename 是原子覆盖；Windows 的 rename 在目标存在时会 EEXIST / EPERM。
-    // 用 fallback：rename 失败就改 copyFile + unlink（牺牲严格原子性换跨平台）。
-    try {
-      await fs.rename(tmp, this.filePath);
-    } catch (err) {
-      const code = err instanceof Error && 'code' in err ? (err as { code: string }).code : '';
-      if (code === 'EEXIST' || code === 'EPERM') {
-        await fs.copyFile(tmp, this.filePath);
-        await fs.unlink(tmp).catch(() => {
-          /* 删 tmp 失败不影响主写——下次启动会被覆盖 */
-        });
-      } else {
-        await fs.unlink(tmp).catch(() => {});
-        throw err;
-      }
-    }
+    await replaceFileWithoutFollowingAliases(
+      this.filePath,
+      Buffer.from(payload, 'utf8'),
+      'projects registry changed during atomic replacement',
+    );
   }
 }
 

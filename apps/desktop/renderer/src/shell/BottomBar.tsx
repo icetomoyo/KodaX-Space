@@ -44,6 +44,17 @@ import { KodaXDogMascot } from '../components/KodaXDogMascot.js';
 import { KodaXDogSpriteMascot } from '../components/KodaXDogSpriteMascot.js';
 import { useI18n } from '../i18n/I18nProvider.js';
 import type { MessageKey } from '../i18n/messages.js';
+import {
+  PARTNER_SOURCES_CHANGED_EVENT,
+  PARTNER_WORKBENCH_CONTEXT_EVENT,
+  buildPartnerWorkbenchPrompt,
+  clearPartnerPendingSources,
+  getPartnerWorkbenchScenario,
+  readPartnerPendingSources,
+  readPartnerWorkbenchContext,
+  type PartnerWorkbenchContextDetail,
+  type PartnerWorkbenchSourceRef,
+} from '../features/partner/partnerWorkbench.js';
 
 const SLASH_ARGS_MAX = 20;
 
@@ -555,6 +566,11 @@ export function BottomBar(): JSX.Element {
   } | null>(null);
   const slashKeyHandlerRef = useRef<((e: KeyboardEvent) => boolean) | null>(null);
   const atPathKeyHandlerRef = useRef<((e: KeyboardEvent) => boolean) | null>(null);
+  const [partnerWorkbenchContext, setPartnerWorkbenchContext] =
+    useState<PartnerWorkbenchContextDetail | null>(() => readPartnerWorkbenchContext());
+  const handleSendRef = useRef<
+    ((queueMode?: QueueMode, promptOverride?: string) => Promise<void>) | null
+  >(null);
 
   function focusComposerSoon(): void {
     const focusNow = (): void => textareaRef.current?.focus({ preventScroll: true });
@@ -645,12 +661,27 @@ export function BottomBar(): JSX.Element {
     return () => window.removeEventListener('kodax-space.focus-textarea', onFocus);
   }, []);
 
-  // and focus it (caret at end). The user appends the change + sends; the agent
-  // reuses the artifactId in create_artifact to produce a new version.
+  useEffect(() => {
+    const onPartnerWorkbenchContext = (event: Event): void => {
+      setPartnerWorkbenchContext(
+        (event as CustomEvent<PartnerWorkbenchContextDetail>).detail ?? null,
+      );
+    };
+    window.addEventListener(PARTNER_WORKBENCH_CONTEXT_EVENT, onPartnerWorkbenchContext);
+    const latest = readPartnerWorkbenchContext();
+    if (latest) setPartnerWorkbenchContext(latest);
+    return () => {
+      window.removeEventListener(PARTNER_WORKBENCH_CONTEXT_EVENT, onPartnerWorkbenchContext);
+    };
+  }, []);
+
+  // and focus it (caret at end). Callers may also request an immediate submit
+  // when they are launching a structured task through the normal composer path.
 
   useEffect(() => {
     const onPrefill = (e: Event): void => {
-      const detail = (e as CustomEvent<{ text?: string }>).detail;
+      const detail = (e as CustomEvent<{ text?: string; submit?: boolean; queueMode?: QueueMode }>)
+        .detail;
       if (typeof detail?.text !== 'string') return;
       setPrompt(detail.text);
       const len = detail.text.length; // use the known length, not the (maybe-stale) DOM value
@@ -661,6 +692,10 @@ export function BottomBar(): JSX.Element {
         ta.setSelectionRange(len, len);
         setCaret(len);
       });
+      if (detail.submit) {
+        const queueMode = detail.queueMode === 'after-turn' ? 'after-turn' : 'interrupt';
+        void handleSendRef.current?.(queueMode, detail.text);
+      }
     };
     window.addEventListener('kodax-space.compose-prefill', onPrefill);
     return () => window.removeEventListener('kodax-space.compose-prefill', onPrefill);
@@ -779,6 +814,53 @@ export function BottomBar(): JSX.Element {
       return null;
     }
     return applyCreatedSession(result.data, 'foreground');
+  }
+
+  async function attachPendingPartnerSourcesForSend(
+    sessionId: string,
+  ): Promise<readonly PartnerWorkbenchSourceRef[] | null> {
+    const existingSources = partnerWorkbenchContext?.sources ?? [];
+    if (currentSurface !== 'partner' || !currentProjectPath) return existingSources;
+    const pendingSources = partnerWorkbenchContext?.pendingSources?.length
+      ? partnerWorkbenchContext.pendingSources
+      : readPartnerPendingSources(currentProjectPath);
+    if (pendingSources.length === 0) return existingSources;
+
+    const attachedSources: PartnerWorkbenchSourceRef[] = [];
+    for (const source of pendingSources) {
+      const payload: ChannelInput<'partner.sources.add'> = {
+        sessionId,
+        projectRoot: currentProjectPath,
+        path: source.path,
+        ...(source.label ? { label: source.label } : {}),
+      };
+      const result = await invokeComposerIpc('partner.sources.add', payload);
+      if (!result.ok) {
+        setErr(
+          `${result.error?.code ?? 'ERR_UNKNOWN'}: ${result.error?.message ?? t('common.unknownError')}`,
+        );
+        return null;
+      }
+      attachedSources.push({
+        id: result.data.source.id,
+        path: result.data.source.path,
+        label: result.data.source.label,
+      });
+    }
+
+    clearPartnerPendingSources(currentProjectPath);
+    window.dispatchEvent(new Event(PARTNER_SOURCES_CHANGED_EVENT));
+    const mergedSources = [...existingSources];
+    for (const source of attachedSources) {
+      if (
+        !mergedSources.some(
+          (existing) => existing.id === source.id || existing.path === source.path,
+        )
+      ) {
+        mergedSources.push(source);
+      }
+    }
+    return mergedSources;
   }
 
   async function attachImages(blobs: readonly File[], source: InputArtifactSource): Promise<void> {
@@ -1597,7 +1679,12 @@ export function BottomBar(): JSX.Element {
         return;
       }
       if (!r.data.deleted) {
-        appendUserMessage(sessionId, `[delete] session not found: ${target}`);
+        appendUserMessage(
+          sessionId,
+          r.data.reason === 'session_running'
+            ? `[delete] session is still running in another KodaX process: ${target}`
+            : `[delete] session was not deleted: ${target}`,
+        );
         return;
       }
       state.removeSession(target);
@@ -1818,11 +1905,14 @@ export function BottomBar(): JSX.Element {
     }
   }
 
-  async function handleSend(queueMode: QueueMode = 'interrupt'): Promise<void> {
+  async function handleSend(
+    queueMode: QueueMode = 'interrupt',
+    promptOverride?: string,
+  ): Promise<void> {
     if (!window.kodaxSpace) return;
     if (busy) return;
-    const promptAtSend = prompt;
-    const trimmed = prompt.trim();
+    const promptAtSend = promptOverride ?? prompt;
+    const trimmed = promptAtSend.trim();
     const fileRefPrompt = pendingFileReferencePrompt(trimmed, pendingFileRefs);
     const textAndFilePrompt = combinePromptAndFileReferences(trimmed, fileRefPrompt);
     const effectivePrompt =
@@ -1870,6 +1960,21 @@ export function BottomBar(): JSX.Element {
     try {
       const sid = await ensureSession();
       if (!sid) return;
+      const partnerSourcesForOverlay =
+        currentSurface === 'partner' ? await attachPendingPartnerSourcesForSend(sid) : null;
+      if (currentSurface === 'partner' && partnerSourcesForOverlay === null) return;
+      const partnerPromptOverlay =
+        currentSurface === 'partner' && partnerWorkbenchContext
+          ? buildPartnerWorkbenchPrompt({
+              projectRoot: currentProjectPath,
+              hasSession: Boolean(sid),
+              scenarioId: partnerWorkbenchContext.scenarioId,
+              outputPreferenceId: partnerWorkbenchContext.outputPreferenceId,
+              targetPath: partnerWorkbenchContext.targetPath,
+              sources: partnerSourcesForOverlay ?? partnerWorkbenchContext.sources,
+              userBrief: effectivePrompt,
+            })
+          : undefined;
       const promptForAI = effectivePrompt;
       const queuedLocalId = isStreaming
         ? appendQueuedUserMessage(sid, {
@@ -1971,6 +2076,7 @@ export function BottomBar(): JSX.Element {
         queueMode,
         ...(currentProjectPath ? { expectedProjectRoot: currentProjectPath } : {}),
         expectedSurface: currentSurface,
+        ...(partnerPromptOverlay ? { partnerPromptOverlay } : {}),
         ...(artifactsForSend ? { artifacts: artifactsForSend } : {}),
       };
       const result = await invokeComposerIpc('session.send', sendPayload, {
@@ -1992,6 +2098,8 @@ export function BottomBar(): JSX.Element {
       setBusy(false);
     }
   }
+
+  handleSendRef.current = handleSend;
 
   function onSlashPick(item: SlashPickerItem | null): void {
     if (item === null) {
@@ -2138,6 +2246,19 @@ export function BottomBar(): JSX.Element {
       : busy
         ? t('bottom.sendTitle.busy')
         : t('bottom.sendTitle.empty');
+  const partnerModeLabel =
+    currentSurface === 'partner' && partnerWorkbenchContext
+      ? t(getPartnerWorkbenchScenario(partnerWorkbenchContext.scenarioId).labelKey)
+      : 'Partner';
+  const placeholderText = !currentProjectPath
+    ? t('bottom.placeholder.openFolder')
+    : currentSurface === 'partner'
+      ? currentSessionId
+        ? t('bottom.placeholder.partnerWithSession', { mode: partnerModeLabel })
+        : t('bottom.placeholder.partnerNewSession', { mode: partnerModeLabel })
+      : currentSessionId
+        ? t('bottom.placeholder.withSession')
+        : t('bottom.placeholder.newSession');
 
   return (
     <div
@@ -2308,13 +2429,7 @@ export function BottomBar(): JSX.Element {
               aria-disabled={busy}
               readOnly={busy}
               rows={2}
-              placeholder={
-                !currentProjectPath
-                  ? t('bottom.placeholder.openFolder')
-                  : currentSessionId
-                    ? t('bottom.placeholder.withSession')
-                    : t('bottom.placeholder.newSession')
-              }
+              placeholder={placeholderText}
               className={`w-full bg-transparent text-sm text-fg-primary placeholder-fg-muted resize-none focus:outline-none px-0.5 py-1 pr-28 ${
                 busy ? 'opacity-70 cursor-wait' : ''
               }`}
@@ -2361,55 +2476,58 @@ export function BottomBar(): JSX.Element {
 
           <div
             data-testid="composer-footer-toolbar"
-            className="flex min-w-0 items-center gap-2 text-[11px]"
+            className="flex min-w-0 flex-wrap items-center gap-2 text-[11px]"
           >
-            <div className="relative">
-              <button
-                type="button"
-                onClick={() => setAttachOpen((v) => !v)}
-                className="w-6 h-6 rounded-md text-fg-muted hover:bg-hover-bg hover:text-fg-primary flex items-center justify-center"
-                title={t('bottom.attachCommands')}
-                aria-label={t('bottom.openAttachMenu')}
-              >
-                <Plus className="w-4 h-4" />
-              </button>
-              <AttachMenu
-                open={attachOpen}
-                onClose={() => setAttachOpen(false)}
-                onInsertText={(text) => setPrompt((p) => (p ? `${p} ${text}` : text))}
-              />
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setAttachOpen((v) => !v)}
+                  className="w-6 h-6 rounded-md text-fg-muted hover:bg-hover-bg hover:text-fg-primary flex items-center justify-center"
+                  title={t('bottom.attachCommands')}
+                  aria-label={t('bottom.openAttachMenu')}
+                >
+                  <Plus className="w-4 h-4" />
+                </button>
+                <AttachMenu
+                  open={attachOpen}
+                  onClose={() => setAttachOpen(false)}
+                  onInsertText={(text) => setPrompt((p) => (p ? `${p} ${text}` : text))}
+                />
+              </div>
+              {currentSurface !== 'partner' && <AgentPicker insertAtCaret={insertAtCaret} />}
+              <ModeSelector />
+              {currentSurface !== 'partner' && <AgentModeSelector />}
             </div>
-            {currentSurface !== 'partner' && <AgentPicker insertAtCaret={insertAtCaret} />}
-            <ModeSelector />
-            {currentSurface !== 'partner' && <AgentModeSelector />}
-            <span className="ml-auto" />
-            <ContextWindowIndicator />
-            <ModelEffortSelector />
-            {isStreaming ? (
-              <button
-                type="button"
-                onClick={() => void handleCancel()}
-                className="ml-1 w-8 h-8 rounded-lg bg-danger hover:brightness-110 text-white flex items-center justify-center shadow-sm transition-[filter]"
-                title={t('bottom.stopTitle')}
-                aria-label={t('bottom.stopGeneration')}
-              >
-                <span aria-hidden className="block w-2.5 h-2.5 bg-white rounded-[2px]" />
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={() => void handleSend('interrupt')}
-                disabled={!canSend}
-                className={[
-                  'ml-1 w-8 h-8 rounded-lg flex items-center justify-center disabled:cursor-not-allowed',
-                  canSend ? 'btn-accent' : 'bg-surface-3 text-fg-muted',
-                ].join(' ')}
-                title={sendButtonTitle}
-                aria-label={t('bottom.sendMessage')}
-              >
-                <ArrowUp className="w-4 h-4" strokeWidth={2.25} />
-              </button>
-            )}
+            <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">
+              <ContextWindowIndicator />
+              <ModelEffortSelector />
+              {isStreaming ? (
+                <button
+                  type="button"
+                  onClick={() => void handleCancel()}
+                  className="ml-1 w-8 h-8 rounded-lg bg-danger hover:brightness-110 text-white flex items-center justify-center shadow-sm transition-[filter]"
+                  title={t('bottom.stopTitle')}
+                  aria-label={t('bottom.stopGeneration')}
+                >
+                  <span aria-hidden className="block w-2.5 h-2.5 bg-white rounded-[2px]" />
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => void handleSend('interrupt')}
+                  disabled={!canSend}
+                  className={[
+                    'ml-1 w-8 h-8 rounded-lg flex items-center justify-center disabled:cursor-not-allowed',
+                    canSend ? 'btn-accent' : 'bg-surface-3 text-fg-muted',
+                  ].join(' ')}
+                  title={sendButtonTitle}
+                  aria-label={t('bottom.sendMessage')}
+                >
+                  <ArrowUp className="w-4 h-4" strokeWidth={2.25} />
+                </button>
+              )}
+            </div>
           </div>
         </div>
       </div>

@@ -25,6 +25,7 @@ import { detectArtifactKind } from '../artifact/workflow-artifact-bridge.js';
 import { resolveWireEffort, type ReasoningProfileLike } from './reasoning-effort.js';
 import { workflowPolicyStore, buildWorkflowHostPolicy } from './workflow-policy.js';
 import { repoIntelContextFields } from './repo-intel-gate.js';
+import { replaceFileWithoutFollowingAliases } from './atomic-file.js';
 
 // ---- SDK 形状(只取本控制器用到的子集,避免硬依赖 SDK 类型导出) ----
 interface SdkProcessSnapshot {
@@ -1691,9 +1692,11 @@ export class WorkflowController {
       const sdk = await loadCodingSdk();
       const resolveProvider = (
         sdk as unknown as {
-          resolveProvider?: (id: string) => {
-            getReasoningProfile?: (model?: string) => ReasoningProfileLike | undefined;
-          } | undefined;
+          resolveProvider?: (id: string) =>
+            | {
+                getReasoningProfile?: (model?: string) => ReasoningProfileLike | undefined;
+              }
+            | undefined;
         } | null
       )?.resolveProvider;
       reasoningProfile = resolveProvider?.(s.provider)?.getReasoningProfile?.(s.model ?? undefined);
@@ -1703,7 +1706,10 @@ export class WorkflowController {
     // Also exclude efforts the wire layer already rejected this process (parity with the chat path),
     // so a previously-400'd effort isn't re-sent on every workflow run.
     const rejectedEfforts =
-      (await loadAgentEffortCache())?.getCachedRejectedEfforts?.(s.provider, s.model ?? undefined) ?? [];
+      (await loadAgentEffortCache())?.getCachedRejectedEfforts?.(
+        s.provider,
+        s.model ?? undefined,
+      ) ?? [];
     // C2: forward the user-configured Workflow Host Policy so maxAgents/maxConcurrency/tokenBudget
     // caps actually bound explicit /workflow runs (mirrors the AMAW run_workflow path in real-session).
     const policy = workflowPolicyStore.get();
@@ -1962,7 +1968,7 @@ export class WorkflowController {
     }
   }
 
-  /** 序列化写盘(写锁串行化,原子 tmp→rename;Windows EEXIST/EPERM 回退 copyFile)。*/
+  /** 序列化写盘（写锁串行化；跨平台替换不跟随 symlink/hardlink aliases）。 */
   private async persistOrigins(): Promise<void> {
     const prev = this.writeLock;
     let release: () => void = () => {};
@@ -1974,20 +1980,11 @@ export class WorkflowController {
       const payload: OriginsFile = { version: 1, origins: Object.fromEntries(this.origins) };
       const dir = path.dirname(this.originsFile);
       await fs.mkdir(dir, { recursive: true, mode: 0o700 });
-      const tmp = `${this.originsFile}.tmp-${process.pid}`;
-      await fs.writeFile(tmp, JSON.stringify(payload), { encoding: 'utf-8', mode: 0o600 });
-      try {
-        await fs.rename(tmp, this.originsFile);
-      } catch (err) {
-        const code = err instanceof Error && 'code' in err ? (err as { code: string }).code : '';
-        if (code === 'EEXIST' || code === 'EPERM') {
-          await fs.copyFile(tmp, this.originsFile);
-          await fs.unlink(tmp).catch(() => {});
-        } else {
-          await fs.unlink(tmp).catch(() => {});
-          throw err;
-        }
-      }
+      await replaceFileWithoutFollowingAliases(
+        this.originsFile,
+        Buffer.from(JSON.stringify(payload), 'utf8'),
+        'workflow origins changed during atomic replacement',
+      );
     } catch (err) {
       // 归属持久化失败不致命(下次 registerOrigin 再试;最坏重启后该 run 归属丢)。
       console.warn(
@@ -2127,7 +2124,9 @@ async function loadCodingSdk(): Promise<CodingSdkSubset | null> {
 
 // /agent subpath — only for the reasoning-effort rejection cache (same source the chat path uses),
 // so workflow child agents also stop resending a wire-rejected effort. Load failure → empty cache.
-type AgentEffortCache = { getCachedRejectedEfforts?: (provider: string, model?: string) => readonly string[] };
+type AgentEffortCache = {
+  getCachedRejectedEfforts?: (provider: string, model?: string) => readonly string[];
+};
 let agentEffortCache: AgentEffortCache | null = null;
 async function loadAgentEffortCache(): Promise<AgentEffortCache | null> {
   if (agentEffortCache) return agentEffortCache;

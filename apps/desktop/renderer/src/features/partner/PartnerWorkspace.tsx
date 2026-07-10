@@ -97,7 +97,7 @@ export function PartnerWorkspace(): JSX.Element {
   return (
     <div
       ref={workspaceRef}
-      className="center-pane flex-1 flex flex-col min-w-0 relative bg-surface rounded-xl border border-border-default overflow-hidden lift"
+      className="center-pane flex-1 flex flex-col min-h-0 min-w-0 relative bg-surface rounded-xl border border-border-default overflow-hidden lift"
       data-testid="partner-workspace"
     >
       <div className="flex items-center gap-2 px-4 h-10 border-b border-border-default flex-shrink-0">

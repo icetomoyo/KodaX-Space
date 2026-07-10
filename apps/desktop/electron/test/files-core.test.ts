@@ -6,6 +6,7 @@ import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import JSZip from 'jszip';
 import os from 'node:os';
 import {
   resolveInsideProject,
@@ -294,6 +295,24 @@ test('readFileBinaryWithGuards: returns base64 + size for under-cap file', async
   assert.equal(Buffer.from(out.base64, 'base64').toString('hex'), '010203fffe');
 });
 
+test('readFileBinaryWithGuards rejects compressed Open XML bombs before renderer preview', async () => {
+  const zip = new JSZip();
+  zip.file('[Content_Types].xml', '<Types/>');
+  zip.file('word/document.xml', 'A'.repeat(10 * 1024 * 1024));
+  const bytes = await zip.generateAsync({
+    type: 'nodebuffer',
+    compression: 'DEFLATE',
+    compressionOptions: { level: 9 },
+  });
+  const p = path.join(tmpRoot, 'compressed.docx');
+  await fs.writeFile(p, bytes);
+
+  await assert.rejects(
+    () => readFileBinaryWithGuards(p, 10 * 1024 * 1024),
+    /compression-ratio limit/,
+  );
+});
+
 test('readFileBinaryWithGuards: truncated when over maxBytes', async () => {
   const p = path.join(tmpRoot, 'big.bin');
   await fs.writeFile(p, Buffer.alloc(2048, 0xab));
@@ -304,14 +323,9 @@ test('readFileBinaryWithGuards: truncated when over maxBytes', async () => {
 });
 
 test('readFileBinaryWithGuards: rejects directory', async () => {
-  await assert.rejects(
-    () => readFileBinaryWithGuards(tmpRoot, 1024),
-    /not a regular file/,
-  );
+  await assert.rejects(() => readFileBinaryWithGuards(tmpRoot, 1024), /not a regular file/);
 });
 
 test('readFileBinaryWithGuards: rejects missing file with ENOENT', async () => {
-  await assert.rejects(() =>
-    readFileBinaryWithGuards(path.join(tmpRoot, 'nope.bin'), 1024),
-  );
+  await assert.rejects(() => readFileBinaryWithGuards(path.join(tmpRoot, 'nope.bin'), 1024));
 });

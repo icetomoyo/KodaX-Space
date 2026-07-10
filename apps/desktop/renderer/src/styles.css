@@ -782,11 +782,6 @@ html:not(.dark).q-full .center-pane {
 }
 
 /* ===== GlassAurora 极淡柔光背景（克制 · 2 团慢漂，遵循 visionOS「别堆叠花哨元素」）===== */
-.right-sidebar-width-settling .conversation-message-body {
-  content-visibility: auto;
-  contain-intrinsic-size: auto 140px;
-}
-
 .aurora-layer {
   position: absolute;
   inset: 0;

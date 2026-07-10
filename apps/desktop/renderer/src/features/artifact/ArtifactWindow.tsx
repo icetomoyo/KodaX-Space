@@ -82,9 +82,12 @@ export function ArtifactWindow({ params }: { params: ArtifactHashParams }): JSX.
   const content = useMemo(
     () =>
       ref && payload
-        ? toArtifactContent(ref.kind, payload, params.projectRoot, ref.permissions)
+        ? toArtifactContent(ref.kind, payload, params.projectRoot, ref.permissions, {
+            id: ref.id,
+            version: version ?? ref.currentVersion,
+          })
         : null,
-    [ref, payload, params.projectRoot],
+    [ref, payload, params.projectRoot, version],
   );
 
   // 展示标题：ref.title 来自 store（LLM 产出，未净化）→ sanitize 后用于 OS 标题栏 + header。
@@ -96,7 +99,7 @@ export function ArtifactWindow({ params }: { params: ArtifactHashParams }): JSX.
   }, [displayTitle]);
 
   const canCopy = payload?.content !== undefined && ref !== null && TEXT_COPY_KINDS.has(ref.kind);
-  const canSave = payload?.content !== undefined;
+  const canSave = payload?.content !== undefined || payload?.fileSource === 'artifact-store';
   const effectiveVersion = version ?? ref?.currentVersion;
 
   async function onCopy(): Promise<void> {

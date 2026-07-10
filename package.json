@@ -1,6 +1,6 @@
 {
   "name": "kodax-space",
-  "version": "0.1.29",
+  "version": "0.1.30",
   "description": "KodaX Space — Provider-neutral, local-first AI agent desktop client (KodaX 生态桌面客户端)",
   "private": true,
   "type": "module",
@@ -41,13 +41,13 @@
     "unlink:livecanvas": "node scripts/link-livecanvas.mjs --unlink",
     "test": "npm run test --workspaces --if-present",
     "e2e": "npm run build:smoke && npm run e2e:run",
-    "e2e:run": "playwright test",
+    "e2e:run": "node scripts/ensure-sqlite-native.mjs electron && playwright test",
     "e2e:headed": "playwright test --headed",
     "postinstall": "electron-builder install-app-deps || true",
     "smoke:boot": "node e2e/boot-smoke-packaged.mjs"
   },
   "dependencies": {
-    "@kodax-ai/kodax": "0.7.63",
+    "@kodax-ai/kodax": "0.7.66",
     "@napi-rs/keyring": "^1.3.0",
     "better-sqlite3": "12.11.1",
     "react": "19.2.7"

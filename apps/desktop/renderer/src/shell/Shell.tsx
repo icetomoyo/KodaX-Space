@@ -147,7 +147,8 @@ function rightSidebarMaxWidth(
     SHELL_PANEL_HORIZONTAL_PADDING_PX -
     leftSideChrome -
     rightResizeChrome -
-    SHELL_PANEL_GAP_PX * gapCount;
+    SHELL_PANEL_GAP_PX * gapCount -
+    CODER_MIN_CENTER_PX;
   return Math.max(RIGHT_SIDEBAR_MIN_WIDTH, Math.round(width));
 }
 
@@ -612,11 +613,7 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
     }
   }, [fullscreenRead, openRightSidebarAtDefaultWidth, rightSidebarOpen, setRightSidebarOpen]);
 
-  const rightSidebarHalfWidth = rightSidebarOpenWidth(
-    leftSidebarVisible,
-    leftWidth,
-    viewportWidth,
-  );
+  const rightSidebarHalfWidth = rightSidebarOpenWidth(leftSidebarVisible, leftWidth, viewportWidth);
   const rightSidebarMaxAvailableWidth = rightSidebarMaxWidth(
     leftSidebarVisible,
     leftWidth,
@@ -647,9 +644,8 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
             : clampRightSidebarNonMaxWidth(persistedRightWidth);
   const rightSidebarVisible =
     rightSidebarVisibleBeforeLeft &&
-    (rightSidebarWidthMode === 'max' ||
-      coderCenterWidthPx(leftSidebarVisible, leftWidth, true, rightWidth, viewportWidth) >=
-        CODER_MIN_CENTER_PX);
+    coderCenterWidthPx(leftSidebarVisible, leftWidth, true, rightWidth, viewportWidth) >=
+      CODER_MIN_CENTER_PX;
   const platformClass = getRendererPlatformClass();
   const isWindows = platformClass === 'platform-win32';
 

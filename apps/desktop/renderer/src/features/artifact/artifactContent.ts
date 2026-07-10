@@ -12,7 +12,14 @@ export type ArtifactContent =
   | { kind: 'svg'; content: string }
   | { kind: 'image'; src: string; alt?: string }
   | { kind: 'chart'; spec: unknown }
-  | { kind: 'pdf' | 'docx' | 'xlsx'; projectRoot: string; path: string }
+  | {
+      kind: 'pdf' | 'docx' | 'xlsx' | 'pptx';
+      projectRoot?: string;
+      path: string;
+      fileSource?: 'workspace' | 'artifact-store';
+      artifactId?: string;
+      version?: number;
+    }
   | { kind: 'file'; projectRoot: string; path: string }
   // Interactive tier removed (LiveCanvas sandbox extracted to a future feature).
   // Kept as an inert variant so ArtifactView's exhaustive switch still covers it

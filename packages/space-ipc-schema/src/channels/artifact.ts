@@ -22,6 +22,7 @@ export const artifactKindSchema = z.enum([
   'pdf',
   'docx',
   'xlsx',
+  'pptx',
   'file',
   'chart',
   'react',
@@ -64,7 +65,7 @@ const artifactPathSchema = z
   .max(4096)
   .refine((s) => !hasPathControlChar(s), { message: 'path contains control characters' });
 
-const PATH_KINDS = ['pdf', 'docx', 'xlsx', 'file'] as const;
+const PATH_KINDS = ['pdf', 'docx', 'xlsx', 'pptx', 'file'] as const;
 
 function parseUrl(raw: string): URL | null {
   try {
@@ -100,11 +101,11 @@ const artifactPermissionScriptSchema = z.object({
       const url = parseUrl(raw);
       return Boolean(
         url &&
-          url.protocol === 'https:' &&
-          url.username === '' &&
-          url.password === '' &&
-          url.search === '' &&
-          url.hash === '',
+        url.protocol === 'https:' &&
+        url.username === '' &&
+        url.password === '' &&
+        url.search === '' &&
+        url.hash === '',
       );
     }, 'script url must be https without credentials, query, or hash'),
   integrity: z
@@ -116,12 +117,18 @@ const artifactPermissionScriptSchema = z.object({
 
 export const artifactHtmlPermissionsSchema = z
   .object({
-    connect: z.array(artifactPermissionOriginSchema).max(ARTIFACT_PERMISSION_MAX_SOURCES).optional(),
+    connect: z
+      .array(artifactPermissionOriginSchema)
+      .max(ARTIFACT_PERMISSION_MAX_SOURCES)
+      .optional(),
     style: z.array(artifactPermissionOriginSchema).max(ARTIFACT_PERMISSION_MAX_SOURCES).optional(),
     img: z.array(artifactPermissionOriginSchema).max(ARTIFACT_PERMISSION_MAX_SOURCES).optional(),
     media: z.array(artifactPermissionOriginSchema).max(ARTIFACT_PERMISSION_MAX_SOURCES).optional(),
     font: z.array(artifactPermissionOriginSchema).max(ARTIFACT_PERMISSION_MAX_SOURCES).optional(),
-    scripts: z.array(artifactPermissionScriptSchema).max(ARTIFACT_PERMISSION_MAX_SOURCES).optional(),
+    scripts: z
+      .array(artifactPermissionScriptSchema)
+      .max(ARTIFACT_PERMISSION_MAX_SOURCES)
+      .optional(),
     forms: z.array(artifactPermissionOriginSchema).max(ARTIFACT_PERMISSION_MAX_SOURCES).optional(),
     popups: z.enum(['confirm-external']).optional(),
   })
@@ -153,6 +160,10 @@ const artifactVersionMetaSchema = z.object({
   hasContent: z.boolean(),
   /** File reference for path-backed kinds; the file lives on disk in scope. */
   path: z.string().max(4096).optional(),
+  /** Where path-backed bytes are resolved from. Omitted on older workspace refs. */
+  fileSource: z.enum(['workspace', 'artifact-store']).optional(),
+  /** sha256:<hex> for generated artifact-store files. */
+  contentHash: z.string().max(128).optional(),
   summary: z.string().max(512).optional(),
 });
 
@@ -262,6 +273,32 @@ export const artifactReadChannel = {
     version: z.number().int().positive(),
     content: z.string().max(MAX_ARTIFACT_CONTENT_BYTES).optional(),
     path: z.string().max(4096).optional(),
+    fileSource: z.enum(['workspace', 'artifact-store']).optional(),
+    contentHash: z.string().max(128).optional(),
+  }),
+} as const;
+
+// ---- Invoke: artifact.readBinary ----
+// Reads bytes only for generated artifact-store-owned path-backed versions.
+// Workspace path artifacts continue through files.readBinary(projectRoot,path).
+export const artifactReadBinaryChannel = {
+  name: 'artifact.readBinary',
+  direction: 'invoke',
+  input: z.object({
+    id: z.string().min(1).max(128),
+    version: z.number().int().positive().optional(),
+    maxBytes: z
+      .number()
+      .int()
+      .positive()
+      .max(50 * 1024 * 1024),
+  }),
+  output: z.object({
+    base64: z.string(),
+    size: z.number().int().nonnegative(),
+    truncated: z.boolean(),
+    path: z.string().max(4096).optional(),
+    contentHash: z.string().max(128).optional(),
   }),
 } as const;
 
@@ -274,9 +311,8 @@ export const artifactDeleteChannel = {
 } as const;
 
 // ---- Invoke: artifact.export (save a version's content to a user-chosen file) ----
-// Content-backed kinds only (markdown/code/html/svg/chart/image). Doc kinds
-// (pdf/docx/xlsx/file) are already files on disk — exporting them would mean copying an
-// arbitrary stored path (file-exfil vector), so they're not exportable here.
+// Content-backed kinds and generated artifact-store-owned files only. Workspace
+// path artifacts remain non-exportable here to avoid copying arbitrary paths.
 export const artifactExportChannel = {
   name: 'artifact.export',
   direction: 'invoke',

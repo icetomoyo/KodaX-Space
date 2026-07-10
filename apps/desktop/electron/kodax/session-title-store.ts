@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import { z } from 'zod';
 import { getSpaceDataDir } from './data-paths.js';
+import { replaceFileWithoutFollowingAliases } from './atomic-file.js';
 
 const sessionTitleOverrideSchema = z
   .object({
@@ -73,23 +74,11 @@ export class SessionTitleStore implements SessionTitleStoreImpl {
         title,
         updatedAt: new Date().toISOString(),
       };
-      const tmp = `${filePath}.tmp-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
-      await fs.writeFile(tmp, JSON.stringify(persisted, null, 2), {
-        encoding: 'utf-8',
-        mode: 0o600,
-      });
-      try {
-        await fs.rename(tmp, filePath);
-      } catch (err) {
-        const code = err instanceof Error && 'code' in err ? (err as { code: string }).code : '';
-        if (code === 'EEXIST' || code === 'EPERM') {
-          await fs.copyFile(tmp, filePath);
-          await fs.unlink(tmp).catch(() => {});
-        } else {
-          await fs.unlink(tmp).catch(() => {});
-          throw err;
-        }
-      }
+      await replaceFileWithoutFollowingAliases(
+        filePath,
+        Buffer.from(JSON.stringify(persisted, null, 2), 'utf8'),
+        'session title changed during atomic replacement',
+      );
     } catch (err) {
       console.warn(
         `[SessionTitleStore] persist failed for ${sessionId}:`,

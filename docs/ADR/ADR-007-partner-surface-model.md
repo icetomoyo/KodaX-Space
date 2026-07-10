@@ -31,10 +31,26 @@ Partner = 三件套，全部在 Space 侧组装：
 
 全场景 / 全功能（6 层地图）见 [PRD §2.3](../PRD.md#23-partner-全场景--全功能)，本 ADR 只定架构决策。
 
+## 2026-07-09 Amendment: Workspace-First Working Agent
+
+The original ADR framed Partner as `surface spec + skill packs + artifact layer`. That was directionally useful, but both "skill" and the artifact boundary were over-applied. In v0.1.30 the built-in packs are prompt capability playbooks, not executable SDK Skills, and F114 supersedes the fixed artifact boundary.
+
+Partner is now defined as a workspace-first working agent:
+
+1. **Workspace boundary** - Partner may write directly only inside explicit writable roots: a run output workspace by default, and an opt-in workspace session root when checkpointing and policy allow it.
+2. **Delivery registry** - a deliverable is any file or folder Partner creates inside an allowed root. Extension/kind lists are preview affordances, not capability limits.
+3. **Checkpointed writes** - workspace-session mutation must be preceded by a local shadow checkpoint, with diff, changed-file summary, rollback, and single-file restore.
+4. **Review fallback** - source/config edits, destructive operations, sensitive globs, external writes, and enterprise-restricted paths route through explicit approval or F113 proposals.
+5. **Lightweight coding boost** - Partner can use coding capabilities for reading code, summarizing repo context, writing small helper-code deliverables, executing bounded JavaScript transforms/validators through `run_partner_helper`, rendering previews, packaging files, and verifying generated deliverables. It escalates to Coder for implementation, refactors, package/dependency changes, branch/commit/PR flows, or broad codebase mutation.
+
+F109 Office/PDF writers and F113 reviewed file proposals remain valid Partner tools, but they are no longer the ceiling of Partner output. They are modes within the wider working-agent model.
+
+The amendment does not claim Cowork/WorkBuddy parity. v0.1.30 has a local workspace/file foundation; scoped executable Skills, Partner MCP/connectors, browser/computer use, scheduled/remote work, user-visible expert teams, and template-grade Office design remain separate future capabilities. The Partner tool policy intentionally blocks the SDK `skill`, subagent-dispatch, workflow, and MCP mutation surfaces until each has a Partner-scoped authority model.
+
 ## Rationale
 
 - **同构于 Quick Ask**：Quick Ask 已经证明"同一 main 进程 runtime、不同临时 KodaXClient 实例"可行（ADR-004）。Partner 只是把这个模式从 transient popover 升级为持久 surface + 自定义画像。
-- **90% 能力已散落存在**：富格式 IO、web 研究、图像理解、office 生成——这些"引擎"在 Space 现有 skill/MCP 里都有了，缺的只是把它们**组织成一个 surface**，不是新内核。
+- **历史估计已废弃**：原先“90% 能力已散落存在”的判断混淆了 Coder/SDK 全局能力与 Partner 实际可调用能力。v0.1.30 只按 Partner tool policy、真实输入解析、真实产出验证和 UI 闭环计算已交付范围。
 - **解依赖**：把"等内核"缩小为"一条可转交的 SDK 入口需求"，Partner 的进度不再被一个未排期的内核项目绑架。
 - **符合 Shell, not engine / 极简且智能**：Space 不引入新执行语义；Partner 的入口可隐式（拖文件 / 非 git 目录自动判定），不强迫用户先理解 Coder vs Partner 概念分野。
 
@@ -55,7 +71,7 @@ Partner = 三件套，全部在 Space 侧组装：
 - 画像内容（Partner system prompt、工具子集清单）由 Space 维护，需与 KodaX REPL 行为做一致性校验。
 
 ### 获得
-- Partner 的 surface/skill/artifact 三件套可立即起脚手架，不等内核。
+- Partner 的 surface / prompt capability playbook / artifact-workspace 三件套可先行；可执行 Skills 与连接器必须等待独立的 Partner 权限边界。
 - 与 Coder 共用同一 runtime / provider / permission / observability / lineage，零重复。
 - 把模糊的"内核依赖"收敛成 3 条精确、可验收的 SDK 需求（R1–R3，见依赖段）；web 引擎彻底从内核依赖里移出，归 Space 自有。
 

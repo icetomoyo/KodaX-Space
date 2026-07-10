@@ -9,32 +9,49 @@
 
 import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { promises as fs } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { kodaxHost } from '../kodax/host.js';
 import { setRendererTarget } from '../ipc/push.js';
 import { permissionBroker } from '../permission/broker.js';
 import { installSessionStoreMock, type MockSessionState } from './_helpers/session-store-mock.js';
+import {
+  SessionRuntimeStore,
+  setSessionRuntimeStoreForTesting,
+} from '../kodax/session-runtime-store.js';
 
 let mockState: MockSessionState;
+let runtimeDir = '';
+let runtimeStore: SessionRuntimeStore;
 
 beforeEach(async () => {
   mockState = installSessionStoreMock();
+  runtimeDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kodax-fork-runtime-'));
+  runtimeStore = new SessionRuntimeStore(runtimeDir);
+  setSessionRuntimeStoreForTesting(runtimeStore);
   await kodaxHost.disposeAll();
-  setRendererTarget(() => ({
-    send: (channel: string, payload: unknown) => {
-      if (channel === 'permission.request') {
-        const p = payload as { reqId: string };
-        setImmediate(() => permissionBroker.resolve(p.reqId, 'allow_once'));
-      }
-    },
-    isDestroyed: () => false,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  }) as any);
+  setRendererTarget(
+    () =>
+      ({
+        send: (channel: string, payload: unknown) => {
+          if (channel === 'permission.request') {
+            const p = payload as { reqId: string };
+            setImmediate(() => permissionBroker.resolve(p.reqId, 'allow_once'));
+          }
+        },
+        isDestroyed: () => false,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      }) as any,
+  );
 });
 
 afterEach(async () => {
   await kodaxHost.disposeAll();
   setRendererTarget(() => null);
   mockState.reset();
+  setSessionRuntimeStoreForTesting(null);
+  await fs.rm(runtimeDir, { recursive: true, force: true }).catch(() => {});
 });
 
 function seedPersistedSession(id: string, gitRoot: string, title = 'Untitled'): void {
@@ -46,14 +63,16 @@ test('fork: unknown in-memory source returns null', async () => {
   assert.equal(result, null);
 });
 
-test('fork: child inherits provider / reasoningMode / permissionMode / autoModeEngine', async () => {
+test('fork: child inherits and persists the complete runtime identity', async () => {
   const { sessionId: src } = kodaxHost.createSession({
     projectRoot: 'C:\\tmp\\proj',
     provider: 'mock',
     reasoningMode: 'quick',
     permissionMode: 'plan',
     autoModeEngine: 'rules',
+    model: 'mock-model-v2',
   });
+  kodaxHost.setThinking(src, true);
   seedPersistedSession(src, 'C:\\tmp\\proj');
   const result = await kodaxHost.fork(src, 3);
   assert.ok(result, 'fork should succeed');
@@ -64,6 +83,17 @@ test('fork: child inherits provider / reasoningMode / permissionMode / autoModeE
   assert.equal(child.reasoningMode, 'quick');
   assert.equal(child.permissionMode, 'plan');
   assert.equal(child.autoModeEngine, 'rules');
+  assert.equal(child.model, 'mock-model-v2');
+  assert.equal(child.thinking, true);
+  assert.deepEqual(await runtimeStore.read(result.newSessionId), {
+    provider: 'mock',
+    model: 'mock-model-v2',
+    thinking: true,
+    permissionMode: 'plan',
+    autoModeEngine: 'rules',
+    reasoningMode: 'quick',
+    agentMode: 'ama',
+  });
 });
 
 test('fork: child has parentSessionId + forkPointTurnIdx metadata', async () => {
@@ -249,10 +279,30 @@ test('rewind: selector ignores compacted placeholders and rewind markers', async
       payload: { reason: 'rewind' },
       message: { role: 'system', content: '[history]\\n\\n[Rewind]' },
     },
-    { entryId: 'u0', type: 'message', active: true, message: { role: 'user', content: 'first prompt' } },
-    { entryId: 'a0_final', type: 'message', active: true, message: { role: 'assistant', content: 'done' } },
-    { entryId: 'u1', type: 'message', active: true, message: { role: 'user', content: 'second prompt' } },
-    { entryId: 'a1_final', type: 'message', active: true, message: { role: 'assistant', content: 'done 2' } },
+    {
+      entryId: 'u0',
+      type: 'message',
+      active: true,
+      message: { role: 'user', content: 'first prompt' },
+    },
+    {
+      entryId: 'a0_final',
+      type: 'message',
+      active: true,
+      message: { role: 'assistant', content: 'done' },
+    },
+    {
+      entryId: 'u1',
+      type: 'message',
+      active: true,
+      message: { role: 'user', content: 'second prompt' },
+    },
+    {
+      entryId: 'a1_final',
+      type: 'message',
+      active: true,
+      message: { role: 'assistant', content: 'done 2' },
+    },
   ]);
 
   const result = await kodaxHost.rewind(sessionId, 0);
@@ -267,10 +317,30 @@ test('rewind: selector uses active branch when inactive old branch has unique pr
   });
   seedPersistedSession(sessionId, 'C:\\tmp\\proj');
   mockState.seedTranscript(sessionId, [
-    { entryId: 'old_u0', type: 'message', active: false, message: { role: 'user', content: 'old prompt' } },
-    { entryId: 'old_a0', type: 'message', active: false, message: { role: 'assistant', content: 'old answer' } },
-    { entryId: 'u0', type: 'message', active: true, message: { role: 'user', content: 'first active prompt' } },
-    { entryId: 'a0_final', type: 'message', active: true, message: { role: 'assistant', content: 'active answer' } },
+    {
+      entryId: 'old_u0',
+      type: 'message',
+      active: false,
+      message: { role: 'user', content: 'old prompt' },
+    },
+    {
+      entryId: 'old_a0',
+      type: 'message',
+      active: false,
+      message: { role: 'assistant', content: 'old answer' },
+    },
+    {
+      entryId: 'u0',
+      type: 'message',
+      active: true,
+      message: { role: 'user', content: 'first active prompt' },
+    },
+    {
+      entryId: 'a0_final',
+      type: 'message',
+      active: true,
+      message: { role: 'assistant', content: 'active answer' },
+    },
   ]);
 
   const result = await kodaxHost.rewind(sessionId, 0);
@@ -346,17 +416,20 @@ test('rewind: cancels in-flight send and awaits cancel before returning', async 
 test('setPermissionMode→auto mid-run does NOT emit session_error (spinner-kill regression guard)', async () => {
   // 用本地 captured 数组，beforeEach 已经清掉之前的内容
   const captured: Array<{ channel: string; payload: unknown }> = [];
-  setRendererTarget(() => ({
-    send: (channel: string, payload: unknown) => {
-      captured.push({ channel, payload });
-      if (channel === 'permission.request') {
-        const p = payload as { reqId: string };
-        setImmediate(() => permissionBroker.resolve(p.reqId, 'allow_once'));
-      }
-    },
-    isDestroyed: () => false,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  }) as any);
+  setRendererTarget(
+    () =>
+      ({
+        send: (channel: string, payload: unknown) => {
+          captured.push({ channel, payload });
+          if (channel === 'permission.request') {
+            const p = payload as { reqId: string };
+            setImmediate(() => permissionBroker.resolve(p.reqId, 'allow_once'));
+          }
+        },
+        isDestroyed: () => false,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      }) as any,
+  );
 
   const { sessionId } = kodaxHost.createSession({
     projectRoot: 'C:\\tmp\\proj',
@@ -373,21 +446,27 @@ test('setPermissionMode→auto mid-run does NOT emit session_error (spinner-kill
   // 本测试守住该回归：mid-run 切 auto 不得再 emit session_error。
   const sessionErrors = captured.filter(
     (c) =>
-      c.channel === 'session.event'
-      && (c.payload as { kind: string }).kind === 'session_error',
+      c.channel === 'session.event' && (c.payload as { kind: string }).kind === 'session_error',
   );
-  assert.equal(sessionErrors.length, 0, 'mid-run mode→auto must NOT emit session_error (would kill spinner)');
+  assert.equal(
+    sessionErrors.length,
+    0,
+    'mid-run mode→auto must NOT emit session_error (would kill spinner)',
+  );
   // cleanup: cancel in-flight 让测试快速收尾
   await kodaxHost.cancel(sessionId);
 });
 
 test('setPermissionMode→auto when NOT running does not emit mid-run notice', async () => {
   const captured: Array<{ channel: string; payload: unknown }> = [];
-  setRendererTarget(() => ({
-    send: (channel: string, payload: unknown) => captured.push({ channel, payload }),
-    isDestroyed: () => false,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  }) as any);
+  setRendererTarget(
+    () =>
+      ({
+        send: (channel: string, payload: unknown) => captured.push({ channel, payload }),
+        isDestroyed: () => false,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      }) as any,
+  );
 
   const { sessionId } = kodaxHost.createSession({
     projectRoot: 'C:\\tmp\\proj',
@@ -398,25 +477,27 @@ test('setPermissionMode→auto when NOT running does not emit mid-run notice', a
   kodaxHost.setPermissionMode(sessionId, 'auto');
   const notices = captured.filter(
     (c) =>
-      c.channel === 'session.event'
-      && (c.payload as { kind: string }).kind === 'session_error',
+      c.channel === 'session.event' && (c.payload as { kind: string }).kind === 'session_error',
   );
   assert.equal(notices.length, 0);
 });
 
 test('setPermissionMode auto→auto idempotent: no notice', async () => {
   const captured: Array<{ channel: string; payload: unknown }> = [];
-  setRendererTarget(() => ({
-    send: (channel: string, payload: unknown) => {
-      captured.push({ channel, payload });
-      if (channel === 'permission.request') {
-        const p = payload as { reqId: string };
-        setImmediate(() => permissionBroker.resolve(p.reqId, 'allow_once'));
-      }
-    },
-    isDestroyed: () => false,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  }) as any);
+  setRendererTarget(
+    () =>
+      ({
+        send: (channel: string, payload: unknown) => {
+          captured.push({ channel, payload });
+          if (channel === 'permission.request') {
+            const p = payload as { reqId: string };
+            setImmediate(() => permissionBroker.resolve(p.reqId, 'allow_once'));
+          }
+        },
+        isDestroyed: () => false,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      }) as any,
+  );
 
   const { sessionId } = kodaxHost.createSession({
     projectRoot: 'C:\\tmp\\proj',
@@ -428,9 +509,9 @@ test('setPermissionMode auto→auto idempotent: no notice', async () => {
   kodaxHost.setPermissionMode(sessionId, 'auto');
   const notices = captured.filter(
     (c) =>
-      c.channel === 'session.event'
-      && (c.payload as { kind: string }).kind === 'session_error'
-      && ((c.payload as { error: string }).error.includes('mode→auto')),
+      c.channel === 'session.event' &&
+      (c.payload as { kind: string }).kind === 'session_error' &&
+      (c.payload as { error: string }).error.includes('mode→auto'),
   );
   assert.equal(notices.length, 0);
   await kodaxHost.cancel(sessionId);

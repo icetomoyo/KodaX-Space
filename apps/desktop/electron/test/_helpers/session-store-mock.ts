@@ -26,6 +26,9 @@ export interface MockSessionState {
   seedTranscript(id: string, entries: readonly unknown[]): void;
   lastForkSelector(): string | undefined;
   lastRewindSelector(): string | undefined;
+  /** Make SDK delete report that another KodaX process still owns the session. */
+  setDeleteBusy(busy: boolean): void;
+  has(id: string): boolean;
   /** Wipe storage + restore default SDK impl. Call from afterEach. */
   reset(): void;
 }
@@ -43,6 +46,7 @@ export function installSessionStoreMock(): MockSessionState {
   >();
   let lastForkSelectorValue: string | undefined;
   let lastRewindSelectorValue: string | undefined;
+  let deleteBusy = false;
   const titleOverrides = new Map<string, string>();
 
   const impl: SessionStoreImpl = {
@@ -77,6 +81,14 @@ export function installSessionStoreMock(): MockSessionState {
       return { title: s.title, messages: [], gitRoot: s.gitRoot } as never;
     },
     deleteSession: async (id) => {
+      if (deleteBusy) {
+        return {
+          error: {
+            code: 'session_running' as const,
+            runningProcess: { pid: 42, startedAt: 1 },
+          },
+        };
+      }
       storage.delete(id);
       return { ok: true };
     },
@@ -147,11 +159,18 @@ export function installSessionStoreMock(): MockSessionState {
     lastRewindSelector(): string | undefined {
       return lastRewindSelectorValue;
     },
+    setDeleteBusy(busy): void {
+      deleteBusy = busy;
+    },
+    has(id): boolean {
+      return storage.has(id);
+    },
     reset(): void {
       storage.clear();
       titleOverrides.clear();
       lastForkSelectorValue = undefined;
       lastRewindSelectorValue = undefined;
+      deleteBusy = false;
       setSessionStoreImpl(null);
       setSessionTitleStoreForTesting(null);
     },
