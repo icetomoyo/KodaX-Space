@@ -226,8 +226,23 @@ export async function statPath(absPath: string): Promise<StatPathResult> {
 const diffCache = new Map<string, { before: string; after: string }>();
 const DIFF_CACHE_MAX = 100;
 
+function normalizeDiffRoot(projectRoot: string): string {
+  let normalized = path.resolve(projectRoot);
+  if (process.platform === 'win32') {
+    if (/^\\\\\?\\UNC\\/i.test(normalized)) {
+      normalized = `\\\\${normalized.slice(8)}`;
+    } else {
+      normalized = normalized.replace(/^\\\\\?\\/, '');
+    }
+    normalized = normalized.toLowerCase();
+  }
+  return normalized;
+}
+
 function diffKey(projectRoot: string, relativePath: string): string {
-  return `${projectRoot}::${relativePath}`;
+  let normalizedRelativePath = relativePath.replace(/\\/g, '/').replace(/^\/+/, '');
+  if (process.platform === 'win32') normalizedRelativePath = normalizedRelativePath.toLowerCase();
+  return `${normalizeDiffRoot(projectRoot)}::${normalizedRelativePath}`;
 }
 
 export function recordDiff(

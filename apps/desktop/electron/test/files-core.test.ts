@@ -277,6 +277,18 @@ test('recordDiff: different projectRoot keys are isolated', () => {
   assert.equal(getDiff('/p2', 'a.ts')?.before, 'r2');
 });
 
+test(
+  'diff cache normalizes Windows namespace, separators, and path casing',
+  { skip: process.platform !== 'win32' },
+  () => {
+    recordDiff('C:\\Project', 'Docs\\Spec.md', 'before', 'after');
+    assert.deepEqual(getDiff('\\\\?\\c:\\project', 'docs/spec.md'), {
+      before: 'before',
+      after: 'after',
+    });
+  },
+);
+
 // ---- toPosixRelative ----
 test('toPosixRelative: converts native separators to posix', () => {
   const native = path.join('/root', 'a', 'b', 'c.txt');
