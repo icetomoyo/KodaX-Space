@@ -171,9 +171,7 @@ jobs:
 
       - name: Stage release files
         run: |
-          mkdir -p release
-          find artifacts -type f \( -name '*.exe' -o -name '*.dmg' -o -name '*.AppImage' -o -name '*.deb' -o -name '*.zip' -o -name '*.blockmap' -o -name 'latest*.yml' \) -exec mv {} release/ \;
-          ls -la release/
+          node scripts/prepare-release-files.mjs artifacts release "$GITHUB_REF_NAME"
 
       - name: Generate release notes from changelog
         shell: bash

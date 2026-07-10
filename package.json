@@ -39,7 +39,8 @@
     "unlink:kodax": "node scripts/link-kodax.mjs --unlink",
     "link:livecanvas": "node scripts/link-livecanvas.mjs",
     "unlink:livecanvas": "node scripts/link-livecanvas.mjs --unlink",
-    "test": "npm run test --workspaces --if-present",
+    "test": "npm run test:release && npm run test --workspaces --if-present",
+    "test:release": "node --test scripts/test/*.test.mjs",
     "e2e": "npm run build:smoke && npm run e2e:run",
     "e2e:run": "node scripts/ensure-sqlite-native.mjs electron && playwright test",
     "e2e:headed": "playwright test --headed",
@@ -71,7 +72,8 @@
     "prettier": "^3.4.0",
     "tsx": "^4.22.0",
     "typescript": "^5.7.0",
-    "wait-on": "^8.0.1"
+    "wait-on": "^8.0.1",
+    "yaml": "2.9.0"
   },
   "overrides": {
     "@electron/rebuild": {

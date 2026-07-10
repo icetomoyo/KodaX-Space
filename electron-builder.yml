@@ -3,11 +3,12 @@
 # 自家与可信用户使用，OS 首启的 Gatekeeper / SmartScreen 警告由用户手动 Open 接受。
 #
 # 产物（F010）：
-#   - Windows:  out/KodaX Space-Setup-${version}.exe       (NSIS 安装版, x64)
-#               out/KodaX Space-Portable-${version}.exe    (Portable 单文件免安装版, x64)
+#   - Windows:  out/KodaX-Space-Setup-${version}.exe       (NSIS 安装版, x64)
+#               out/KodaX-Space-Portable-${version}.exe    (Portable 单文件免安装版, x64)
 #   - macOS:    out/KodaX-Space-${version}-${arch}.dmg     (DMG, x64 + arm64)
-#   - Linux:    out/KodaX-Space-${version}.AppImage        (AppImage, x64)
-#               out/KodaX-Space_${version}_amd64.deb       (deb, x64)
+#               out/KodaX-Space-${version}-${arch}.zip     (auto-update, x64 + arm64)
+#   - Linux:    out/KodaX-Space-${version}-x86_64.AppImage (AppImage, x64)
+#               out/KodaX-Space-${version}-amd64.deb       (deb, x64)
 #
 # 体积目标：< 200 MB（asar 压缩 + 排除 test/cache/source map）
 
@@ -118,11 +119,12 @@ mac:
   category: public.app-category.developer-tools
   target:
     - target: dmg
+    - target: zip
   # 不签名（FEATURE_027 已 drop）
   identity: null
   hardenedRuntime: false
   icon: resources/icon.png # electron-builder 自动从 PNG 生成 icns
-  artifactName: '${productName}-${version}-${arch}.${ext}'
+  artifactName: 'KodaX-Space-${version}-${arch}.${ext}'
 
 win:
   target:
@@ -149,7 +151,7 @@ nsis:
   # 卸载时清理 %APPDATA%/kodax-space —— 不留 user data 残留
   deleteAppDataOnUninstall: true
   shortcutName: KodaX Space
-  artifactName: '${productName}-Setup-${version}.${ext}'
+  artifactName: 'KodaX-Space-Setup-${version}.${ext}'
 
 # Portable 单文件免安装版（F010 v0.1.9 起）：双击直接运行，无需安装、无写注册表。
 # 数据目录：便携版**与 dev / 安装版一致，都用 ~/.kodax**（不再跟随 exe 目录）。
@@ -157,7 +159,7 @@ nsis:
 # sessions 不跟随 → 便携版里"session 正常、workflow 全空"的半便携不一致。现已取消该重定向
 # （见 apps/desktop/electron/kodax/data-paths.ts）。需要独立数据档用 KODAX_PROFILE_DIR。
 portable:
-  artifactName: '${productName}-Portable-${version}.${ext}'
+  artifactName: 'KodaX-Space-Portable-${version}.${ext}'
 
 linux:
   category: Development
@@ -169,7 +171,7 @@ linux:
       arch:
         - x64
   icon: resources/icon.png
-  artifactName: '${productName}-${version}-${arch}.${ext}'
+  artifactName: 'KodaX-Space-${version}-${arch}.${ext}'
   synopsis: Provider-neutral, local-first AI agent desktop client
   description: KodaX Space — desktop client for the KodaX ecosystem (Coder + Partner dual-panel).
   maintainer: icetomoyo <icetomoyo@gmail.com>

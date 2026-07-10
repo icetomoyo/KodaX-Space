@@ -44,6 +44,7 @@ This release re-enables Partner around one composer-first mental model. The user
 - **Partner write and source hardening** - Closed path traversal, symlink/hard-link alias, race, encoding, hashing, and corrupt-store edge cases across source extraction, delivery writes, checkpoints, proposals, and durable stores.
 - **Office/source reliability** - Isolated PDF and Office parsing from Electron main, added ZIP expansion guards and document limits, fixed Unicode PDF output, and moved DOCX/XLSX/PPTX preview parsing into disposable bounded workers.
 - **Node 20 extraction-worker compatibility** - Source-mode document extraction now boots through the programmatic tsx importer, avoiding Node 20's `.ts` Worker entrypoint resolution failure while packaged builds continue to launch the compiled sidecar directly.
+- **Release and updater integrity** - Normalized installer asset names to `KodaX-Space-*`, added the ZIP payload required by the macOS updater for x64 and arm64, merged both architecture manifests without silent overwrite, and made release staging reject metadata URLs that do not resolve to an identically named asset.
 - **Queue and session continuity** - Fixed active queue watchers consuming Partner follow-ups, kept session/runtime metadata coherent through rollback and deletion, and restored a usable composer after Partner session removal.
 - **Partner discoverability honesty** - Suppressed unavailable executable Skills from Partner while preserving Coder discovery, and added in-app preview from the Outputs delivery browser.
 
