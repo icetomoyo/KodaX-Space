@@ -5,7 +5,6 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
-  realpathSync,
   rmSync,
   symlinkSync,
   unlinkSync,
@@ -48,7 +47,7 @@ test('PartnerFileProposalStore creates a pending proposal and applies it explici
     assert.equal(applied.ok, true);
     assert.equal(readFileSync(target, 'utf-8'), '# Spec\nreviewed output');
     assert.equal((await store.get(proposal.id))?.status, 'applied');
-    assert.equal(getDiff(realpathSync(root), 'docs/spec.md')?.after, '# Spec\nreviewed output');
+    assert.equal(getDiff(root, 'docs/spec.md')?.after, '# Spec\nreviewed output');
   } finally {
     store.invalidate();
     rmSync(dir, { recursive: true, force: true });

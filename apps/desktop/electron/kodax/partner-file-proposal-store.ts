@@ -463,6 +463,7 @@ export class PartnerFileProposalStore {
           proposal.baseContentHash,
         );
         recordDiff(target.realRoot, target.targetPath, existing.content, proposal.content);
+        recordDiff(proposal.projectRoot, target.targetPath, existing.content, proposal.content);
         const now = Date.now();
         const applied: PartnerFileProposalT = {
           ...proposal,
