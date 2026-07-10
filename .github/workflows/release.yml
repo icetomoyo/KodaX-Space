@@ -251,7 +251,7 @@ jobs:
             '',
             '## Verify Checksums',
             '',
-            `SHA256 values are included in the uploaded \`latest*.yml\` electron-updater manifests.${fullChangelog}`,
+            `SHA-512 checksums are included in the uploaded \`latest*.yml\` electron-updater manifests; GitHub also exposes a SHA-256 digest for each release asset.${fullChangelog}`,
           ].join('\n');
 
           fs.writeFileSync('release-notes.md', `${notes.trim()}\n`);
