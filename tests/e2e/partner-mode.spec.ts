@@ -294,6 +294,9 @@ test('Partner supports normal composer use, slash clear, mode shortcut, and resu
     await space.seedProject(projectDir);
 
     await switchSurface(page, 'Partner');
+    await space.app.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()[0]?.setSize(1440, 880);
+    });
     await expect(page.getByTestId('partner-workspace')).toBeVisible({ timeout: 10_000 });
     await expect(page.getByTestId('partner-sources-panel')).toBeVisible();
     await expect(page.getByTestId('partner-artifact-panel')).toBeVisible();
