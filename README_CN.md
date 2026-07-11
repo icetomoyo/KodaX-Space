@@ -13,7 +13,7 @@
   <a href="https://github.com/icetomoyo/KodaX-Space/releases/latest"><img alt="release" src="https://img.shields.io/github/v/release/icetomoyo/KodaX-Space?style=flat-square"></a>
   <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-KAI--FCL-orange?style=flat-square"></a>
   <a href="https://github.com/icetomoyo/KodaX-Space/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/icetomoyo/KodaX-Space/ci.yml?style=flat-square&label=ci"></a>
-  <img alt="KodaX SDK" src="https://img.shields.io/badge/KodaX_SDK-0.7.63-2ecc71?style=flat-square">
+  <img alt="KodaX SDK" src="https://img.shields.io/badge/KodaX_SDK-0.7.67-2ecc71?style=flat-square">
   <img alt="platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-34495e?style=flat-square">
 </p>
 
@@ -88,38 +88,39 @@ npm run dev
   </tr>
 </table>
 
-## 当前版本
+## 当前开发候选版本
 
-**v0.1.29 - Workspace Environment Hub + Task Dock**
+**v0.1.31 - External Agent Orchestration Gateway Foundation**
 
-发布日期：2026-07-08
+候选日期：2026-07-12。在该候选版本正式打 tag 前，最新公开发行版仍为 `v0.1.30`。
 
-本版本对齐 `@kodax-ai/kodax@0.7.63`，并交付 F103 Shell redesign：紧凑 Environment Hub、结构化右侧 Task Dock，以及用于 popout 和阻塞 modal 的共享 Floating Surface Host。
+本版本对齐 `@kodax-ai/kodax@0.7.67`，并把协议中立的 External Agent Executor Plane 接入 Space 现有实时会话和 Workflow Host。
 
-| 领域                   | 摘要                                                                                            |
-| ---------------------- | ----------------------------------------------------------------------------------------------- |
-| Environment Hub        | 将 Changes、Location、Branch、Commit/Push、Sources、Mode/Permission 路由到正确的深层界面。      |
-| Task Dock              | 将 Run、Plan、Agents、Workflow、Changes、Sources、Artifacts、Context 组织成持续可见的任务侧栏。 |
-| Floating Surface Host  | 统一 z-index、backdrop、Escape、focus trap/restore 与 topmost surface 行为。                    |
-| Memory Governance      | 新增 Coder-only Memory popout 和基于 KodaX memory control plane 的 IPC/service surface。        |
-| Scoped Markdown agents | 通过 KodaX 0.7.63 runtime path 启用 scoped project agents。                                     |
-| License                | KodaX Space 0.1.27+ 的官方 KodaX-AI 分发使用 KAI-FCL 或配套客户条款。                           |
+| 领域               | 摘要                                                                                                                        |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| 统一调度           | Worker 与显式 Workflow 共用一个 `agentExecutorPlane`、策略过滤目录、不透明 `agent_id` 路由和持久任务账本。                  |
+| Main 进程治理      | 注册写入、策略、凭据代理、Artifact 边界和持久化均留在 main；renderer 只接收脱敏摘要。                                       |
+| Reference 产品界面 | Runtime 设置页管理和预检注册；Workflow 启动器选择实时默认子 Agent；Task Dock 展示生命周期、审计事件、输入、取消与对账操作。 |
+| 双语验收           | 完整 Reference Agent 界面已适配英文和简体中文，并由 Electron E2E 覆盖。                                                     |
+| 能力真实性         | A2A、MCP Tasks、受治理 HTTP 在各自适配器交付并通过合规验证前保持隐藏。                                                      |
+| KodaX 0.7.67       | 兼容测试覆盖 Runtime Worker hard-dispose，以及外部 Agent 注册、发现、启动和终态结果闭环。                                   |
 
-完整版本说明见 [CHANGELOG.md](CHANGELOG.md) 与 [docs/features/v0.1.29.md](docs/features/v0.1.29.md)。
+完整版本说明见 [CHANGELOG.md](CHANGELOG.md) 与 [docs/features/v0.1.31.md](docs/features/v0.1.31.md)。
 
 ## 产品界面
 
-| 界面               | 用途                                                                                          |
-| ------------------ | --------------------------------------------------------------------------------------------- |
-| Coder workspace    | 主 AI Coding Session 界面，底层由 KodaX SDK runtime 驱动。                                    |
-| Environment Hub    | 紧凑的项目、会话、环境路由器，承载 location、branch、changes、sources、mode context。         |
-| Task Dock          | 右侧常驻任务面，显示 run 状态、plan、agents、workflow、changes、sources、artifacts、context。 |
-| Review workspace   | 用于查看 diff 和文件评审。                                                                    |
-| Artifact workspace | 用于预览、检查、导出生成产物。                                                                |
-| Terminal workspace | 作用域绑定到当前项目的真实 PTY 多 tab 终端。                                                  |
-| MCP 和 Skills      | KodaX MCP servers 与 skills 的桌面管理和展示入口。                                            |
-| Memory Governance  | 评审、批准、拒绝、检查 memory proposals 和 approved references。                              |
-| Partner surface    | 代码已在 flag 后发货，但用户可达的 Partner workflow 会等 deliverable chain 完成后再启用。     |
+| 界面               | 用途                                                                                                                                                         |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Coder workspace    | 主 AI Coding Session 界面，底层由 KodaX SDK runtime 驱动。                                                                                                   |
+| Environment Hub    | 紧凑的项目、会话、环境路由器，承载 location、branch、changes、sources、mode context。                                                                        |
+| Task Dock          | 右侧常驻任务面，显示 run 状态、plan、agents、workflow、changes、sources、artifacts、context。                                                                |
+| Review workspace   | 用于查看 diff 和文件评审。                                                                                                                                   |
+| Artifact workspace | 用于预览、检查、导出生成产物。                                                                                                                               |
+| Terminal workspace | 作用域绑定到当前项目的真实 PTY 多 tab 终端。                                                                                                                 |
+| MCP 和 Skills      | KodaX MCP servers 与 skills 的桌面管理和展示入口。                                                                                                           |
+| Memory Governance  | 评审、批准、拒绝、检查 memory proposals 和 approved references。                                                                                             |
+| Partner surface    | 已启用 workspace-first 知识工作界面，提供 Sources、KB、Outputs、checkpoint 写入、Office/PDF 便利生成与本地 policy/audit。                                    |
+| External Agents    | 提供 KodaX 0.7.67 Reference Agent 管理、Workflow/Worker 路由和会话绑定、竞态安全的 Task Dock 生命周期/干预界面；管理入口仅限主窗口，真实协议适配器继续门控。 |
 
 ## 配置模型
 
@@ -207,7 +208,7 @@ npm run e2e:headed
 | 文档                                                                                                     | 用途                                                        |
 | -------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
 | [README.md](README.md)                                                                                   | 英文 README。                                               |
-| [docs/USER_MANUAL.zh-CN.md](docs/USER_MANUAL.zh-CN.md)                                                   | 面向 KodaX Space 0.1.29 的当前中文用户说明书。              |
+| [docs/USER_MANUAL.zh-CN.md](docs/USER_MANUAL.zh-CN.md)                                                   | 面向 KodaX Space 0.1.31 开发候选版本的当前中文用户说明书。  |
 | [docs/USAGE.md](docs/USAGE.md)                                                                           | 启动、配置复用、slash 命令和已知限制说明。                  |
 | [docs/CODING_AGENT_BEGINNER_BEST_PRACTICES.zh-CN.md](docs/CODING_AGENT_BEGINNER_BEST_PRACTICES.zh-CN.md) | Coding Agent 初学者最佳实践教程，覆盖软件研发和微服务场景。 |
 | [docs/PRD.md](docs/PRD.md)                                                                               | 产品需求和产品定位。                                        |
@@ -221,11 +222,11 @@ npm run e2e:headed
 
 近期计划以 [docs/FEATURE_LIST.md](docs/FEATURE_LIST.md) 为准。当前重点：
 
-| 版本线   | 重点                                                                                                                            |
-| -------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| v0.1.35  | Partner controlled workspace file writes：通过 reviewed proposals 和 explicit apply/export 落地。                               |
-| v0.1.36+ | Workflow、todo、MCP/extension、provider、review 与 beta-hardening。                                                             |
-| v0.2.x   | Partner workbench、connector catalog、local automations、policy/audit pack、remote/self-hosted runner、distribution expansion。 |
+| 版本线   | 重点                                                                                               |
+| -------- | -------------------------------------------------------------------------------------------------- |
+| v0.1.31  | KodaX 0.7.67 Reference External Agent 集成；A2A/MCP Tasks/受治理 HTTP 在上游适配器交付前保持门控。 |
+| v0.1.35+ | Patch reserve，以及后续 Workflow、todo、MCP/extension、provider、review 与 beta-hardening。        |
+| v0.2.x   | Connector catalog、local automations、remote/self-hosted runner、notebook/data 与分发扩展。        |
 
 ## License
 

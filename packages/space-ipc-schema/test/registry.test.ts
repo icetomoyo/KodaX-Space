@@ -55,7 +55,10 @@ test('handoff channels are registered', () => {
 });
 
 test('clipboard.readImage channel is registered and accepts nullable image output', () => {
-  assert.ok(invokeChannels['clipboard.readImage'], 'clipboard.readImage channel must be registered');
+  assert.ok(
+    invokeChannels['clipboard.readImage'],
+    'clipboard.readImage channel must be registered',
+  );
   assert.ok(INVOKE_CHANNEL_NAMES.has('clipboard.readImage'));
   assert.equal(clipboardReadImageChannel.direction, 'invoke');
   assert.equal(
@@ -107,7 +110,7 @@ test('space.version output schema: valid object parses', () => {
     platform: 'win32' as const,
     kodaxSdkVersion: '0.7.52',
     kodaxDependencySpec: '^0.7.52',
-    capabilityContract: 'space-v0.1.25',
+    capabilityContract: 'space-v0.1.31',
     capabilities: [
       {
         id: 'repointel.trace',
@@ -131,7 +134,7 @@ test('space.version output schema: rejects empty string fields', () => {
     platform: 'win32' as const,
     kodaxSdkVersion: '0.7.52',
     kodaxDependencySpec: '^0.7.52',
-    capabilityContract: 'space-v0.1.25',
+    capabilityContract: 'space-v0.1.31',
     capabilities: [
       {
         id: 'repointel.trace',
@@ -154,7 +157,7 @@ test('space.version output schema: rejects unknown platform', () => {
     platform: 'plan9',
     kodaxSdkVersion: '0.7.52',
     kodaxDependencySpec: '^0.7.52',
-    capabilityContract: 'space-v0.1.25',
+    capabilityContract: 'space-v0.1.31',
     capabilities: [
       {
         id: 'repointel.trace',
@@ -177,7 +180,7 @@ test('space.version output schema: rejects unknown capability status', () => {
     platform: 'win32' as const,
     kodaxSdkVersion: '0.7.52',
     kodaxDependencySpec: '^0.7.52',
-    capabilityContract: 'space-v0.1.25',
+    capabilityContract: 'space-v0.1.31',
     capabilities: [
       {
         id: 'quickAsk.sideQuery',

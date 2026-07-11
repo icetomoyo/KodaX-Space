@@ -14,6 +14,46 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ## [Unreleased]
 
+## [0.1.31] - 2026-07-12
+
+### Theme
+
+**KodaX 0.7.67 external-agent foundation: one policy-filtered catalog, executor plane, durable task ledger, and shared Worker/Workflow dispatch path.**
+
+### Added
+
+- **External Agent Gateway foundation (F115)** - Added a Space-owned persistent host for KodaX's protocol-neutral `AgentExecutorPlane`, with redacted registration IPC, live dispatchability projection, durable task/event storage, main-process policy/credential/artifact boundaries, and shutdown-safe lifecycle.
+- **Reference Executor management** - Runtime Settings can create, edit, enable/disable, remove, preflight, and conformance-test Reference Agent registrations. Cards expose only redacted descriptors, live dispatchability, skills, effects, and opaque IDs.
+- **Workflow Agent target selection** - Workflow Launcher can select a live policy-filtered Reference Agent as the default target for ordinary child spawns, performs revision-aware preflight immediately before start, and preserves targets explicitly authored in Workflow source.
+- **External tasks in Task Dock** - External child tasks now have a dedicated lifecycle surface with independent task/cancel states, output and safe artifact/usage summaries, event timeline, input-required continuation, cancellation, and unknown-state reconciliation.
+- **Bilingual product UI** - All Reference Agent management, Workflow routing, lifecycle and intervention copy is available in English and Simplified Chinese, with keyboard-accessible controls and bounded long identifiers.
+- **Worker and Workflow bridge** - Existing live sessions and explicit Workflow launches receive the same `agentExecutorPlane` binding. KodaX Workers can discover agents through `list_dispatchable_agents` and route opaque `agent_id` values through `dispatch_child_task`, `task_output`, and `task_stop` without Space maintaining a second task state machine.
+
+### Changed
+
+- **KodaX 0.7.67 SDK catch-up** - Root and desktop workspaces resolve the exact published `@kodax-ai/kodax@0.7.67` tarball. The compatibility gate now proves both the Worker hard-dispose contract and the external-agent Runtime catalog/start/wait round trip.
+- **Cost-disciplined orchestration** - Space consumes KodaX 0.7.67's focused review/workflow routing, structured handoff, model-tier intent, and route telemetry through the existing SDK execution paths.
+
+### Fixed
+
+- **Reference continuation persistence** - Added a Reference-only reconcile after `sendInput` so a slow durable store cannot retain the intermediate `working` snapshot when the 0.7.67 conformance executor completes in the event-pump handoff microtask. Real protocol adapters keep their native event semantics.
+- **Product acceptance coverage** - Added Electron journeys for management, localization, Workflow selection, input-required continuation, cancellation, and audit visibility; the complete 57-test Electron E2E suite passes.
+- **External-task audit pagination** - Cursor advancement now follows only the bounded page returned to the renderer, and Task Dock follows subsequent pages without skipping long-task audit events.
+- **Catalog identity, window authority, and session scope** - Reference edits require an existing host-issued registration, external-agent administration is restricted to the primary application window, task starts derive project/session attribution from the main-owned KodaX session, and every task read/intervention verifies the stored parent session.
+- **Task Dock race and polling control** - Session changes now clear external-task state immediately, late responses are rejected by captured-session checks, and non-overlapping polling slows for terminal or background views instead of issuing fixed full snapshots every 1.5 seconds.
+- **Workflow routing audit** - Default-target wrappers preserve the SDK Workflow API receiver, and preflight's resolved configuration revision is snapshotted for dispatch and host metadata even when callers omit an expected revision.
+- **Version-safe package smoke** - Packaged Runtime probes now derive Space and KodaX versions from root metadata instead of rejecting every version after 0.1.30 / 0.7.66.
+
+### Documentation
+
+- **Current capability alignment** - README files, user/usage manuals, machine-readable `kodax_manual` topics, PRD/HLD baseline notes, capability ledger, feature ledger, known issues, and F115 acceptance guidance now consistently distinguish the 0.1.31 development candidate from the public 0.1.30 release and state the exact Partner/Reference Agent boundaries.
+
+### Security
+
+- **Fail-closed protocol rollout** - A2A, MCP Tasks, and governed HTTP remain explicitly false in Space capability status because 0.7.67 ships only the neutral plane and Reference Executor. No renderer API receives executor config, credential references, secrets, or mutable SDK plane handles.
+- **Durable local boundary** - External-agent registrations, tasks, and events use bounded, atomic files under `~/.kodax/space/external-agent-plane`; unsafe aliases, oversized store entries, remote artifacts, and credential resolution are denied by default in the Reference tranche.
+- **Renderer capability boundary** - Artifact and auxiliary windows cannot call external-agent administration/task IPC, and task IDs alone are insufficient to read or mutate work outside the main-selected session.
+
 ## [0.1.30] - 2026-07-11
 
 ### Theme

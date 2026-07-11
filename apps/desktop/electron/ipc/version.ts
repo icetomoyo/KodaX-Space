@@ -113,6 +113,14 @@ function buildCapabilityLedger(entitled: boolean): SpaceCapability[] {
         'Space now uses KodaX 0.7.56 media helpers for native clipboard normalization, sandboxed image artifact construction, and provider/model validation. GIF direct-path handling, structured file artifacts, and video follow-ups remain planned.',
       since: '0.1.24',
     },
+    {
+      id: 'externalAgents.reference',
+      label: 'Reference External Agent executor',
+      status: 'supported',
+      detail:
+        'KodaX 0.7.67 Reference Agent registrations, live preflight, Worker/Workflow routing, durable tasks, Task Dock interventions, and audit events are integrated. A2A, MCP Tasks, and governed HTTP remain capability-gated until their adapters ship.',
+      since: '0.1.31',
+    },
   ];
 }
 
@@ -134,7 +142,7 @@ export function registerVersionChannel(): void {
       platform,
       kodaxSdkVersion: readKodaxSdkVersion(),
       kodaxDependencySpec: readKodaxDependencySpec(),
-      capabilityContract: 'space-v0.1.25',
+      capabilityContract: 'space-v0.1.31',
       capabilities: buildCapabilityLedger(entitled),
     };
   });

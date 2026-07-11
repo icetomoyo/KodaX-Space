@@ -134,6 +134,7 @@ export function registerWorkflowChannels(): void {
       target: input.target,
       source: input.source,
       ...(input.args !== undefined ? { args: input.args } : {}),
+      ...(input.agentTarget !== undefined ? { agentTarget: input.agentTarget } : {}),
       session: {
         sessionId: session.sessionId,
         surface: session.surface,

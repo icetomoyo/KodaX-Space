@@ -1,8 +1,8 @@
 # KodaX Space 用户说明书
 
-适用版本：KodaX Space 0.1.29
+适用版本：KodaX Space 0.1.31 开发候选版（最新公开发行版为 0.1.30）
 
-更新日期：2026-07-07
+更新日期：2026-07-12
 
 适用对象：首次使用或评审 KodaX Space 的开发者、技术团队成员、代码相关知识工作者。
 
@@ -218,6 +218,7 @@ KodaX Space 有三种常用权限模式：
 - Run：当前运行、项目、session、权限模式、ask_user、workflow 摘要。
 - Plan：模型当前计划。
 - Agents：子 agent 或 markdown agent 状态。
+- External tasks：第三方 Agent 子任务状态、独立取消状态、输入请求、输出和审计时间线。
 - Workflow：当前 workflow run。
 - Changes：git branch、ahead/behind、变更文件，可打开 diff/preview。
 - Sources：当前 working folder，可在系统文件管理器中打开。
@@ -290,6 +291,7 @@ Workflow manager 可执行：
 - rename/delete run。
 - 将已完成 run 保存为 workflow。
 - 运行 saved workflow，并在启动前做 preflight 和应用内确认。
+- 当 Runtime 提供可调度的 External Agent 时，可为未显式声明 target 的子任务选择默认 Agent；启动前会再次检查实时资格与配置修订。
 
 当前 workflow 面向 Coder session。Partner 入口仍处于开发中。危险工具调用仍遵循权限模式和确认弹窗。
 
@@ -304,7 +306,7 @@ Memory popout 是 Coder-only 的记忆治理界面，需要当前有活跃 Coder
 - Governance：运行 curator/report，发现过期、冲突或可合并信息。
 - Hints：为当前任务构建 memory pack/hints。
 
-Partner 的 Knowledge Base 是另一个产品面，不等同于 Coder memory governance。当前 Partner UI 未开放。
+Partner 的 Knowledge Base 是另一个产品面，不等同于 Coder memory governance。Partner 已启用，并提供 Sources、KB、Outputs、checkpoint 写入和本地 policy/audit 控制。
 
 ## 16. MCP、Extensions、Skills 与 Agents
 
@@ -338,6 +340,15 @@ Agents：
 - `AGENTS.md` 和 markdown agents 给模型补充角色、规则和项目约定。
 - Agent picker 可插入 `@agent-name`。
 - Agent mode 支持 AMA、AMAW、SA，实际能力由 SDK 和当前工具状态决定。
+
+External Agents（0.1.31 Reference 基线）：
+
+- `Settings` -> `Runtime` -> `External Agents` 可创建、编辑、启停、删除和预检本地 Reference Agent 注册。
+- Workflow Launcher 可把实时可调度的 Reference Agent 选为默认子任务目标；Workflow 源码显式声明的 target 仍优先。
+- Task Dock 的 External tasks 支持查看事件、回答 `input-required`、取消任务和对 `unknown` 状态执行 reconcile。
+- 这些任务始终绑定当前会话：切换会话会立即清除旧卡片，迟到响应不会覆盖新会话；main 会在读取和操作前复核任务归属。
+- Reference Executor 是 KodaX 0.7.67 的本地合规适配器，不访问网络、不直接写工作区，也不代表真实 HTTP Agent 已接通。
+- A2A、MCP Tasks 和受治理 HTTP 适配器尚未交付，因此对应注册入口保持隐藏。
 
 ## 17. Environment Hub、Quick Ask 与 Handoff
 
@@ -378,10 +389,12 @@ KodaX Space 的默认原则是本地优先和显式授权。
 
 ## 20. 当前限制
 
-适用于当前 0.1.29 工作树：
+适用于当前 0.1.31 开发候选工作树：
 
-- Partner 面底层代码和只读资料/产物链路存在，但 UI 入口仍置灰，用户暂不能使用。
-- Display Language 主要覆盖高频界面；模型输出、工具日志和部分专业面板仍可能显示英文。
+- Partner 已启用，但 executable Partner Skills、通用 Connector/MCP 动作、浏览器/电脑控制、自动化、远程任务和模板级 Office 排版不属于当前能力。
+- Display Language 覆盖产品 UI，包括 External Agent 管理、Workflow picker 和 Task Dock；模型输出、工具日志和第三方内容仍可能显示英文。
+- External Agent 当前只提供 KodaX 0.7.67 Reference Executor；A2A、MCP Tasks 和受治理 HTTP 不可用。
+- External Agent 管理仅在主应用窗口开放；Artifact 等辅助窗口不获得该管理/任务 IPC 权限。
 - Quick Ask 使用临时 plan-mode session，不是完全无 session 的 side query。
 - React artifact 当前不是可交互 LiveCanvas。
 - GIF、视频和普通文件的结构化输入仍有限；普通文件主要作为路径引用。
@@ -430,9 +443,9 @@ KodaX Space 的默认原则是本地优先和显式授权。
 
 这是权限模式的安全设计。日常推荐 `Accept Edits`，让 AI 可以提出修改，但关键操作由你确认。
 
-### 22.5 为什么 Partner 按钮不可点击
+### 22.5 Partner 有哪些当前边界
 
-当前 Partner UI 入口仍处于开发中，这是预期状态。不要把它当成可用入口。
+Partner 已启用，支持 workspace-first Outputs、Sources、Knowledge Base、checkpointed writes、Office/PDF 便利产物、reviewed strict fallback 和本地 policy/audit。若某个项目中入口不可用，请检查应用版本、当前 surface 和本地状态；不要把尚未交付的 Connector、浏览器控制或自动化能力当成当前功能。
 
 ### 22.6 Quick Ask 为什么不是完全独立查询
 

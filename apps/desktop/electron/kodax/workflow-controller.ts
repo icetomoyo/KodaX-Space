@@ -24,6 +24,7 @@ import { artifactStore } from '../artifact/store.js';
 import { detectArtifactKind } from '../artifact/workflow-artifact-bridge.js';
 import { resolveWireEffort, type ReasoningProfileLike } from './reasoning-effort.js';
 import { workflowPolicyStore, buildWorkflowHostPolicy } from './workflow-policy.js';
+import { externalAgentGateway } from './external-agent-gateway.js';
 import { repoIntelContextFields } from './repo-intel-gate.js';
 import { replaceFileWithoutFollowingAliases } from './atomic-file.js';
 
@@ -94,12 +95,57 @@ export interface LaunchInput {
   readonly target: string;
   readonly source: 'builtin' | 'saved';
   readonly args?: unknown;
+  readonly agentTarget?: {
+    readonly agentId: string;
+    readonly expectedConfigurationRevision?: string;
+  };
   readonly session: LaunchSession;
 }
 export type WorkflowStartResult = { readonly runId: string } | { readonly error: string };
 export type WorkflowSavedResult =
   | { readonly name: string; readonly path: string; readonly previousPath?: string }
   | { readonly error: string };
+
+type WorkflowAgentTargetLite = NonNullable<LaunchInput['agentTarget']>;
+
+/**
+ * Apply a launcher-selected default target without rewriting saved workflow source.
+ * Explicit targets authored by the workflow keep precedence; only ordinary local
+ * child spawns are projected through the selected catalog entry.
+ */
+export function withDefaultWorkflowAgentTarget(
+  module: unknown,
+  target: WorkflowAgentTargetLite | undefined,
+): unknown {
+  if (!target || !module || typeof module !== 'object') return module;
+  const workflowModule = module as {
+    readonly run?: (workflow: object, args: unknown) => unknown;
+    readonly [key: string]: unknown;
+  };
+  if (typeof workflowModule.run !== 'function') return module;
+  return {
+    ...workflowModule,
+    run(workflow: object, args: unknown): unknown {
+      const routed = new Proxy(workflow, {
+        get(source, property, receiver) {
+          const value = Reflect.get(source, property, receiver) as unknown;
+          if (
+            (property === 'spawnAgent' || property === 'runAgent') &&
+            typeof value === 'function'
+          ) {
+            return (input: Record<string, unknown>) =>
+              (value as (next: Record<string, unknown>) => unknown).call(source, {
+                ...input,
+                ...(input.target === undefined ? { target } : {}),
+              });
+          }
+          return typeof value === 'function' ? value.bind(source) : value;
+        },
+      });
+      return workflowModule.run?.(routed, args);
+    },
+  };
+}
 
 // F062 run 生命周期控制——SDK createWorkflowLifecycleController 的子集(只取本控制器用到的)。
 export interface WorkflowRetentionResult {
@@ -1331,13 +1377,34 @@ export class WorkflowController {
     if (!module) return { error: `workflow not found: ${input.target}` };
 
     const s = input.session;
+    const meta = (module as { meta?: { name?: string; readOnly?: boolean } }).meta;
+    let resolvedAgentTarget = input.agentTarget;
+    if (resolvedAgentTarget) {
+      const preflight = await externalAgentGateway.preflight({
+        agentId: resolvedAgentTarget.agentId,
+        projectRoot: s.projectRoot,
+        readOnly: meta?.readOnly !== false,
+        ...(resolvedAgentTarget.expectedConfigurationRevision
+          ? { expectedConfigurationRevision: resolvedAgentTarget.expectedConfigurationRevision }
+          : {}),
+      });
+      if (!preflight.ok || preflight.descriptor === undefined) {
+        return {
+          error: `external agent preflight failed: ${preflight.reasons.join('; ') || preflight.dispatchability.status}`,
+        };
+      }
+      resolvedAgentTarget = {
+        agentId: preflight.descriptor.agentId,
+        expectedConfigurationRevision: preflight.descriptor.configurationRevision,
+      };
+      module = withDefaultWorkflowAgentTarget(module, resolvedAgentTarget);
+    }
     // 精简 options——workflow 子 agent 只需 provider/model/reasoning/agentMode/context + host policy;
     // 不带主对话的 events/storage/compact 等 per-run 状态(那些是 real-session 对话回路专用)。
     // 走同一 launchOptions 保证 effort 解析 / host policy / artifact 归属与其它启动路径一致。
     const options = await this.launchOptions(s);
     const runId = `wf_${randomUUID()}`;
     const runDir = path.join(this.runBaseDir, runId);
-    const meta = (module as { meta?: { name?: string } }).meta;
     try {
       // await:startFromOptions 可能异步（建 run 目录/注册进程/spawn）。不 await 会让
       // 异步错误变 unhandled rejection，且 registerOrigin 抢跑在启动确认之前（ghost run）。
@@ -1352,7 +1419,20 @@ export class WorkflowController {
         processMetadata: {
           displayName: meta?.name,
           source: 'sdk',
-          hostMetadata: this.hostMetadata(s, patternsFromWorkflowModule(module)),
+          hostMetadata: {
+            ...this.hostMetadata(s, patternsFromWorkflowModule(module)),
+            ...(resolvedAgentTarget
+              ? {
+                  externalAgentId: resolvedAgentTarget.agentId,
+                  ...(resolvedAgentTarget.expectedConfigurationRevision
+                    ? {
+                        externalAgentConfigurationRevision:
+                          resolvedAgentTarget.expectedConfigurationRevision,
+                      }
+                    : {}),
+                }
+              : {}),
+          },
         },
       });
     } catch (err) {
@@ -1721,6 +1801,11 @@ export class WorkflowController {
     // key is absent, and the value is threaded to each child via ChildExecutorOptions
     // .parentOptions. repoIntelContextFields() is fail-closed (see repo-intel-gate.ts).
     const repoIntelCtx = await repoIntelContextFields();
+    const externalAgentBinding = await externalAgentGateway.getBinding({
+      actorId: 'space:workflow',
+      projectId: s.projectRoot,
+      parentTaskId: s.sessionId,
+    });
     return {
       provider: s.provider,
       effort: resolveWireEffort(s.reasoningMode, reasoningProfile, rejectedEfforts),
@@ -1735,6 +1820,7 @@ export class WorkflowController {
         agentProfile: { surface: s.surface },
         // Licensed → enable trace (chip lights up); unlicensed → force engine off.
         ...repoIntelCtx,
+        ...(externalAgentBinding !== undefined ? { agentExecutorPlane: externalAgentBinding } : {}),
       },
       // Host policy shape (incl. "tokenBudget 0 = unlimited", KodaX 0.7.59) is single-sourced
       // in buildWorkflowHostPolicy — mirrors the AMAW run_workflow path in real-session.ts.

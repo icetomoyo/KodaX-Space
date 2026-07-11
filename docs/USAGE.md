@@ -1,6 +1,6 @@
-# KodaX Space - Usage Guide (v0.1.22)
+# KodaX Space - Usage Guide (v0.1.31 development candidate)
 
-> Document aligned with v0.1.22 release (2026-06-22): trusted internal custom providers, config-provider compatibility, Space-owned per-session follow-up queue, ask_user modal bridge coverage, View menu appearance shortcuts, artifact transcript callouts, CSS spinner frame stability, Diff loading polish, test-mode Electron userData isolation, and release metadata alignment.
+> Last aligned: 2026-07-12. Repository packages target KodaX Space `0.1.31` with `@kodax-ai/kodax@0.7.67`; the latest public installer release remains `0.1.30` until the candidate is tagged. Older version sections below are retained as historical change notes, not as the current capability boundary.
 
 KodaX Space 是 KodaX SDK 的桌面客户端。设计目标：**不要让用户在 Space 和 KodaX CLI 之间重复配置**。绝大多数 KodaX CLI 已经配好的东西，Space 启动后会自动认。
 
@@ -107,14 +107,31 @@ SDK 0.7.42 的 `/session` 模块统一管理持久化。KodaX CLI 跑过的 sess
 3. 输入 `/provider`，看 KodaX CLI 已经配好的 provider 是否亮起（绿色 = 有 key；灰 = 缺 key）
 4. 若灰：左下角 "设置" 或菜单 File → Settings → Providers → 填 key → Test
 5. 回到 chat，发第一条 prompt
-6. 想用工具？默认是 **plan** 模式（只读 / 分析类工具可用，写文件 / 跑命令需手动改）
-   - `/mode default` — 默认；写工具会触发权限弹窗
-   - `/mode auto` — 走 `auto-rules.jsonc` 自动判
-   - `/mode plan` — 只读
+6. 想用工具时选择明确的权限模式：
+   - `/mode plan` — 计划和只读分析
+   - `/mode accept-edits` — 日常推荐；编辑更顺畅，其它风险操作仍受确认约束
+   - `/mode auto` — 可信项目下按自动策略推进
 
-## 4. v0.1.22 patch + v0.1.20 重点更新
+## 4. 当前能力与历史更新
 
-### 4.0 v0.1.22 patch release
+### 4.0 v0.1.31 / KodaX 0.7.67
+
+- Runtime Settings 提供 Reference External Agent 注册、编辑、启停、删除、实时 preflight 和本地 conformance task。
+- Workflow Launcher 可为普通子任务选择实时可调度的默认 External Agent，并在启动前校验 opaque `agentId` 与配置修订；Workflow 源码显式 target 优先。
+- KodaX Worker 和 Workflow 共用一个 `agentExecutorPlane`、目录和持久 task ledger。
+- Task Dock 显示 External task/cancel 独立状态、输出、审计事件、`input-required` 回复、取消与 `unknown` reconcile。
+- External task 操作必须绑定当前 live session：main 从 session 派生项目/父任务归属并在读取或干预前复核；辅助 Artifact 窗口不具备管理权限。
+- Task Dock 切换会话时立即清空旧任务并拒绝迟到响应；轮询不重入，并在终态或后台视图自动降频。
+- Reference Executor 不访问网络、不直接写工作区。A2A、MCP Tasks 和受治理 HTTP 适配器尚未交付，因此 UI 保持隐藏。
+- External Agent 产品 UI 完整覆盖 English / 简体中文。
+
+### 4.0.1 v0.1.30 Partner workspace-first foundation
+
+- Partner 已启用，提供 Sources、Conversation、Knowledge Base、workspace-first Outputs、checkpoint/diff/rollback、reviewed strict fallback 和本地 policy/audit。
+- 支持 Unicode PDF 与基础 DOCX/XLSX/PPTX 便利写入，以及受限的一次性 JavaScript coding boost。
+- Executable Partner Skills、通用 Connector/MCP 动作、浏览器/电脑控制、自动化、远程任务、并行专家和模板级 Office 设计不属于 0.1.30/0.1.31 当前能力。
+
+### 4.0.2 Historical v0.1.22 patch release
 
 v0.1.22 is a patch release for trusted internal provider workflows and queue correctness:
 
@@ -122,7 +139,7 @@ v0.1.22 is a patch release for trusted internal provider workflows and queue cor
 - Custom providers loaded from KodaX config keep the trusted path, preserving existing direct-config internal provider behavior.
 - Follow-up prompts sent while a session is running use Space's per-session queue and run only after that same session settles.
 - SDK ask-user question/select/input prompts now surface through the Space modal path.
-- Package versions, lockfile metadata, docs, and the runtime capability contract are aligned to `0.1.22` / `space-v0.1.22`.
+- At that release, package versions, lockfile metadata, docs, and the runtime capability contract were aligned to `0.1.22` / `space-v0.1.22`.
 - The top View menu exposes Theme (`Light` / `Dark` / `System`) and Visual Quality (`Minimal` / `Balanced` / `Full`) shortcuts in the active display language.
 - The Thinking spinner no longer shows the inherited blinking streaming caret on the next line.
 - Artifact creation results stay visible as standalone transcript callouts instead of being hidden inside collapsed command runs; click the row to focus the Artifact panel or the corner icon to open a separate window.
@@ -273,11 +290,11 @@ Preview popout（右上 Toolbar 第 1 个图标）输入文件路径自动按 ex
 
 3 个 viewer 都是 **lazy 加载** — 不点开对应文件就不下载依赖；main bundle 不受影响。
 
-## 6. Slash 命令清单 (v0.1.22 builtin)
+## 6. Slash 命令清单（0.1.31 当前常用项）
 
 | 命令                                | 作用                                                |
 | ----------------------------------- | --------------------------------------------------- |
-| `/mode <default\|auto\|plan>`       | 切权限模式                                          |
+| `/mode <plan\|accept-edits\|auto>`  | 切权限模式                                          |
 | `/auto-engine <local\|sdk\|hybrid>` | 控 auto 模式判定引擎                                |
 | `/provider <id>`                    | 切当前 session 的 provider                          |
 | `/model <id\|default>`              | 切模型；`default` 清掉 override 回 provider default |
@@ -288,17 +305,16 @@ Preview popout（右上 Toolbar 第 1 个图标）输入文件路径自动按 ex
 
 除此之外 `/` 触发命令搜索 popover — F035 已经把 SDK skills 也合到这个 picker 里，可以同时搜内建命令 + skill。
 
-## 7. 已知限制 (v0.1.22)
+## 7. 当前已知限制（0.1.31）
 
-- **图片粘贴 + queued path**: SDK MessageQueue 当前只接 prompt string,turn 跑中粘图发送会 fail-loud,需等 turn 完。SDK 暴露 enqueueWithArtifacts 后改通
-- **原生剪贴板 fallback / "+attach image" 按钮**: DOM 粘贴和拖拽图片已支持；当网页剪贴板不给 `File` 时的原生剪贴板读取、文件选择器、GIF 直通、file/video 结构化 artifact 仍是后续工作。KodaX 0.7.56 已公开 media helper，Space 需要补主进程 IPC/UX。
-- **User commands**: KodaX `~/.kodax/commands/` 暂不在 Space 显示。需要适配 SlashCommandDef ↔ KodaXCommand 两个 shape (deferred)
-- **model 默认值不读 KodaX config**: 因为跨 provider 时 model 名通常对不上，session 创建后手动 `/model` 切。后续可能做 provider×model 映射
-- **打包安装**: 不签名（KodaX Space 是自家工具不走公开 Beta）；OS 首启 Gatekeeper / SmartScreen 警告需手动 Open 接受
-- **F015 Repointel warm API**: chip 显示 trace OK，但 standalone warm 入口未实现（留待 SDK 暴露 warm API）
-- **F017 CLI ↔ Space teleport**: Space 侧 handoff inbox / accept receiver 已实现；CLI/REPL writer 仍待 SDK/CLI 接入
-- **F018 Quick Ask vs PRD**: 当前实现走临时 session + plan mode，支持关闭清理与 Continue in Coder；真正无 session 的 sideQuery 仍待 SDK 暴露
-- **F104 Display Language MVP**: 只覆盖高频 chrome。Slash 输出、tool output、历史文档、部分专业面板仍可能是英文，完整 i18n QA 留给 F076/F077/F078
+- **External Agent 协议**：当前只提供 KodaX 0.7.67 Reference Executor。A2A、MCP Tasks 和受治理 HTTP 等到对应上游适配器与 conformance capability 后才显示。
+- **Partner 边界**：Partner 已启用，但 executable Skills、通用 Connector/MCP 动作、浏览器/电脑控制、自动化、远程任务和模板级 Office 设计尚未交付。
+- **Quick Ask**：仍使用临时 plan-mode session，支持关闭清理与 Continue in Coder；不宣称完全无 session。
+- **媒体输入**：PNG/JPEG/WEBP 与普通文件引用已支持；GIF/video 的结构化媒体语义仍有限。
+- **工作位置**：以本地 workspace 为主；完整 worktree/cloud 位置切换仍是后续能力。
+- **语言**：产品 UI 覆盖 English / 简体中文；模型回复、工具日志、文件内容、provider/model 名和第三方内容不会被强制翻译。
+- **安装签名**：安装包未公开签名，SmartScreen / Gatekeeper 可能要求用户确认可信来源。
+- **授权能力**：Repo-intelligence 等能力仍可能受 SDK、license、项目状态与本地 policy 控制。
 
 ## 8. 报问题
 

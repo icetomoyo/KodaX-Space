@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -11,6 +12,7 @@ import { createPortal } from 'react-dom';
 import {
   Archive,
   AlertTriangle,
+  Bot,
   CheckCircle2,
   Database,
   FileArchive,
@@ -19,6 +21,8 @@ import {
   Languages,
   Loader2,
   Network,
+  Pencil,
+  Play,
   Plus,
   RefreshCw,
   Search,
@@ -26,11 +30,14 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   Upload,
+  Trash2,
   X,
   type LucideIcon,
 } from 'lucide-react';
 import type {
+  DispatchableAgentListingT,
   KodaxConfigOverviewT,
+  ExternalAgentRegistrationSummaryT,
   LanguageModeT,
   LicenseStatusT,
   ProviderInfo,
@@ -40,6 +47,7 @@ import { useAppStore } from '../../store/appStore.js';
 import { localeDisplayName, useI18n } from '../../i18n/I18nProvider.js';
 import type { MessageKey } from '../../i18n/messages.js';
 import { pushToast } from '../../store/toastStore.js';
+import { requestConfirm } from '../../store/confirmStore.js';
 import { ProviderCard } from '../provider/ProviderCard.js';
 import { CustomProviderForm } from '../provider/CustomProviderForm.js';
 import { WorkflowPolicySection } from '../workflow/WorkflowPolicySection.js';
@@ -600,6 +608,8 @@ function RuntimePanel(): JSX.Element {
         </div>
       )}
 
+      <ExternalAgentsSection projectRoot={currentProjectPath ?? undefined} />
+
       <SettingsSection
         title={t('settings.kodaxConfig.title')}
         description={t('settings.kodaxConfig.description')}
@@ -817,6 +827,594 @@ function RuntimePanel(): JSX.Element {
       </SettingsSection>
     </div>
   );
+}
+
+interface ExternalAgentEditorState {
+  readonly agentId?: string;
+  readonly displayName: string;
+  readonly description: string;
+  readonly skillsText: string;
+  readonly enabled: boolean;
+  readonly inputRequired: boolean;
+}
+
+function ExternalAgentsSection({
+  projectRoot,
+}: {
+  readonly projectRoot?: string;
+}): JSX.Element | null {
+  const { t } = useI18n();
+  const currentSessionId = useAppStore((s) => s.currentSessionId);
+  const [status, setStatus] = useState<{
+    sdkVersion: string;
+    enabled: boolean;
+    referenceExecutor: boolean;
+    adapters: { a2a: boolean; mcpTasks: boolean; governedHttp: boolean };
+    registrationCount: number;
+    taskCount: number;
+    error?: string;
+  } | null>(null);
+  const [registrations, setRegistrations] = useState<ExternalAgentRegistrationSummaryT[]>([]);
+  const [dispatchable, setDispatchable] = useState<DispatchableAgentListingT[]>([]);
+  const [preflightByAgent, setPreflightByAgent] = useState<
+    Record<string, { ok: boolean; reasons: string[] }>
+  >({});
+  const [editor, setEditor] = useState<ExternalAgentEditorState | null>(null);
+  const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const refreshExternalAgents = useCallback(async (): Promise<void> => {
+    if (!window.kodaxSpace) return;
+    setError(null);
+    const [statusResult, registrationResult, dispatchableResult] = await Promise.all([
+      window.kodaxSpace.invoke('agent.external.status', {}),
+      window.kodaxSpace.invoke('agent.external.registration.list', {}),
+      window.kodaxSpace.invoke('agent.external.dispatchable.list', {
+        ...(projectRoot ? { projectRoot } : {}),
+        readOnly: true,
+      }),
+    ]);
+    if (!statusResult.ok) {
+      setError(statusResult.error.message);
+      return;
+    }
+    setStatus(statusResult.data);
+    if (!statusResult.data.enabled) return;
+    if (!registrationResult.ok) {
+      setError(registrationResult.error.message);
+      return;
+    }
+    setRegistrations(registrationResult.data.registrations);
+    setDispatchable(dispatchableResult.ok ? dispatchableResult.data.agents : []);
+    setPreflightByAgent({});
+  }, [projectRoot]);
+
+  useEffect(() => {
+    void refreshExternalAgents();
+  }, [refreshExternalAgents]);
+
+  function beginCreate(): void {
+    setEditor({
+      displayName: t('settings.externalAgents.referenceName'),
+      description: t('settings.externalAgents.referenceDescription'),
+      skillsText: 'general, conformance',
+      enabled: true,
+      inputRequired: false,
+    });
+  }
+
+  function beginEdit(registration: ExternalAgentRegistrationSummaryT): void {
+    setEditor({
+      agentId: registration.agentId,
+      displayName: registration.displayName,
+      description: registration.description ?? '',
+      skillsText: registration.skills.join(', '),
+      enabled: registration.enabled,
+      inputRequired: registration.inputRequired,
+    });
+  }
+
+  async function saveEditor(): Promise<void> {
+    if (!window.kodaxSpace || !editor) return;
+    const action = editor.agentId ?? 'create';
+    setBusyAction(action);
+    setError(null);
+    try {
+      const skills = [
+        ...new Set(
+          editor.skillsText
+            .split(',')
+            .map((item) => item.trim())
+            .filter(Boolean),
+        ),
+      ];
+      const result = await window.kodaxSpace.invoke('agent.external.reference.upsert', {
+        ...(editor.agentId ? { agentId: editor.agentId } : {}),
+        displayName: editor.displayName.trim(),
+        ...(editor.description.trim() ? { description: editor.description.trim() } : {}),
+        enabled: editor.enabled,
+        skills,
+        inputRequired: editor.inputRequired,
+      });
+      if (!result.ok) {
+        setError(result.error.message);
+        return;
+      }
+      setEditor(null);
+      pushToast(
+        t(editor.agentId ? 'settings.externalAgents.updated' : 'settings.externalAgents.added'),
+        'success',
+        1800,
+      );
+      await refreshExternalAgents();
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function toggleRegistration(
+    registration: ExternalAgentRegistrationSummaryT,
+  ): Promise<void> {
+    setEditor(null);
+    if (!window.kodaxSpace) return;
+    setBusyAction(registration.agentId);
+    const result = await window.kodaxSpace.invoke('agent.external.reference.upsert', {
+      agentId: registration.agentId,
+      displayName: registration.displayName,
+      ...(registration.description ? { description: registration.description } : {}),
+      enabled: !registration.enabled,
+      skills: registration.skills,
+      inputRequired: registration.inputRequired,
+    });
+    setBusyAction(null);
+    if (!result.ok) setError(result.error.message);
+    else await refreshExternalAgents();
+  }
+
+  async function removeRegistration(
+    registration: ExternalAgentRegistrationSummaryT,
+  ): Promise<void> {
+    if (!window.kodaxSpace) return;
+    const confirmed = await requestConfirm({
+      message: t('settings.externalAgents.removeConfirm', { name: registration.displayName }),
+      confirmLabel: t('settings.externalAgents.remove'),
+      danger: true,
+    });
+    if (!confirmed) return;
+    setBusyAction(registration.agentId);
+    const result = await window.kodaxSpace.invoke('agent.external.registration.remove', {
+      agentId: registration.agentId,
+    });
+    setBusyAction(null);
+    if (!result.ok) setError(result.error.message);
+    else await refreshExternalAgents();
+  }
+
+  async function preflightRegistration(
+    registration: ExternalAgentRegistrationSummaryT,
+  ): Promise<boolean> {
+    if (!window.kodaxSpace) return false;
+    setBusyAction(`preflight:${registration.agentId}`);
+    const result = await window.kodaxSpace.invoke('agent.external.preflight', {
+      agentId: registration.agentId,
+      ...(projectRoot ? { projectRoot } : {}),
+      readOnly: true,
+      expectedConfigurationRevision: registration.configurationRevision,
+    });
+    setBusyAction(null);
+    if (!result.ok) {
+      setError(result.error.message);
+      return false;
+    }
+    setPreflightByAgent((current) => ({
+      ...current,
+      [registration.agentId]: { ok: result.data.ok, reasons: result.data.reasons },
+    }));
+    return result.data.ok;
+  }
+
+  async function runConformance(registration: ExternalAgentRegistrationSummaryT): Promise<void> {
+    if (!window.kodaxSpace) return;
+    if (!currentSessionId) {
+      setError(t('settings.externalAgents.selectSessionBeforeTest'));
+      return;
+    }
+    if (!(await preflightRegistration(registration))) return;
+    setBusyAction(`test:${registration.agentId}`);
+    const result = await window.kodaxSpace.invoke('agent.external.task.start', {
+      sessionId: currentSessionId,
+      agentId: registration.agentId,
+      objective: t('settings.externalAgents.testObjective'),
+      readOnly: true,
+      expectedConfigurationRevision: registration.configurationRevision,
+    });
+    setBusyAction(null);
+    if (!result.ok) {
+      setError(result.error.message);
+      return;
+    }
+    pushToast(
+      result.data.state === 'input-required'
+        ? t('settings.externalAgents.testNeedsInput')
+        : t('settings.externalAgents.testStarted'),
+      'success',
+      2200,
+    );
+    await refreshExternalAgents();
+  }
+
+  if (status && !status.enabled) return null;
+
+  return (
+    <SettingsSection
+      title={t('settings.externalAgents.title')}
+      description={t('settings.externalAgents.description')}
+      icon={Bot}
+    >
+      <div className="grid gap-x-6 gap-y-3 text-xs sm:grid-cols-2">
+        <RuntimeField
+          label={t('settings.externalAgents.sdk')}
+          value={status?.sdkVersion ?? t('common.loading')}
+          mono
+        />
+        <RuntimeField
+          label={t('settings.externalAgents.plane')}
+          value={status ? t('settings.externalAgents.ready') : t('common.loading')}
+        />
+        <RuntimeField
+          label={t('settings.externalAgents.catalog')}
+          value={String(status?.registrationCount ?? registrations.length)}
+        />
+        <RuntimeField
+          label={t('settings.externalAgents.tasks')}
+          value={String(status?.taskCount ?? 0)}
+        />
+      </div>
+
+      <div className="mt-3 flex flex-wrap gap-1.5" data-testid="external-agent-adapter-gates">
+        <ExternalAgentGate label="Reference" enabled={status?.referenceExecutor === true} />
+        <ExternalAgentGate label="A2A" enabled={status?.adapters.a2a === true} />
+        <ExternalAgentGate label="MCP Tasks" enabled={status?.adapters.mcpTasks === true} />
+        <ExternalAgentGate label="Governed HTTP" enabled={status?.adapters.governedHttp === true} />
+      </div>
+
+      <div className="mt-3 rounded-lg border border-info/30 bg-info/8 px-3 py-2 text-[11px] leading-5 text-fg-secondary">
+        {t('settings.externalAgents.boundary')}
+      </div>
+      {(error ?? status?.error) && (
+        <div className="mt-3 text-xs leading-5 text-danger">{error ?? status?.error}</div>
+      )}
+
+      {editor && (
+        <ExternalAgentEditor
+          value={editor}
+          busy={busyAction !== null}
+          onChange={setEditor}
+          onCancel={() => setEditor(null)}
+          onSave={() => void saveEditor()}
+        />
+      )}
+
+      <div className="mt-3 space-y-2" data-testid="external-agent-registration-list">
+        {registrations.length === 0 && !editor ? (
+          <div className="rounded-lg border border-dashed border-border-default px-3 py-4 text-center text-xs text-fg-muted">
+            {t('settings.externalAgents.empty')}
+          </div>
+        ) : (
+          registrations.map((registration) => {
+            const live = dispatchable.find(
+              (entry) => entry.descriptor.agentId === registration.agentId,
+            );
+            const preflight = preflightByAgent[registration.agentId];
+            const busy = busyAction?.includes(registration.agentId) === true;
+            return (
+              <article
+                key={registration.agentId}
+                className="rounded-lg border border-border-default bg-surface px-3 py-2.5"
+                data-testid="external-agent-registration-card"
+              >
+                <div className="flex items-start gap-3">
+                  <Bot className="mt-0.5 h-4 w-4 shrink-0 text-info" strokeWidth={1.8} />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2 text-xs font-medium text-fg-primary">
+                      <span>{registration.displayName}</span>
+                      <span className="rounded border border-border-default px-1.5 py-0.5 font-mono text-[10px] text-fg-muted">
+                        reference
+                      </span>
+                      <span
+                        className={`rounded px-1.5 py-0.5 text-[10px] ${registration.enabled ? 'bg-ok/12 text-ok' : 'bg-surface-3 text-fg-muted'}`}
+                      >
+                        {registration.enabled
+                          ? t('settings.externalAgents.enabled')
+                          : t('settings.externalAgents.disabled')}
+                      </span>
+                      {live && (
+                        <span className="rounded bg-info/10 px-1.5 py-0.5 text-[10px] text-info">
+                          {externalDispatchabilityLabel(live.dispatchability.status, t)}
+                        </span>
+                      )}
+                    </div>
+                    {registration.description && (
+                      <p className="mt-1 text-[11px] leading-4 text-fg-secondary">
+                        {registration.description}
+                      </p>
+                    )}
+                    <div className="mt-1 break-all font-mono text-[10px] text-fg-muted">
+                      {registration.agentId}
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-1">
+                      {registration.skills.map((skill) => (
+                        <span
+                          key={skill}
+                          className="rounded border border-border-default bg-surface-2 px-1.5 py-0.5 text-[10px] text-fg-muted"
+                        >
+                          {skill}
+                        </span>
+                      ))}
+                      <span className="rounded border border-border-default bg-surface-2 px-1.5 py-0.5 text-[10px] text-fg-muted">
+                        {registration.inputRequired
+                          ? t('settings.externalAgents.inputRequired')
+                          : t('settings.externalAgents.noInputRequired')}
+                      </span>
+                      <span className="rounded border border-border-default bg-surface-2 px-1.5 py-0.5 text-[10px] text-fg-muted">
+                        {t('settings.externalAgents.noNetwork')}
+                      </span>
+                      <span className="rounded border border-border-default bg-surface-2 px-1.5 py-0.5 text-[10px] text-fg-muted">
+                        {t('settings.externalAgents.noWorkspaceWrite')}
+                      </span>
+                    </div>
+                    {preflight && (
+                      <div
+                        className={`mt-2 rounded px-2 py-1 text-[10px] ${preflight.ok ? 'bg-ok/10 text-ok' : 'bg-danger/10 text-danger'}`}
+                        role="status"
+                      >
+                        {preflight.ok
+                          ? t('settings.externalAgents.preflightPassed')
+                          : t('settings.externalAgents.preflightFailed', {
+                              reason:
+                                preflight.reasons.join('; ') ||
+                                t('settings.externalAgents.unavailable'),
+                            })}
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex shrink-0 items-center gap-0.5">
+                    <ExternalAgentIconButton
+                      icon={Pencil}
+                      label={t('settings.externalAgents.edit')}
+                      disabled={busy}
+                      onClick={() => beginEdit(registration)}
+                    />
+                    <ExternalAgentIconButton
+                      icon={registration.enabled ? X : CheckCircle2}
+                      label={
+                        registration.enabled
+                          ? t('settings.externalAgents.disable')
+                          : t('settings.externalAgents.enable')
+                      }
+                      disabled={busy}
+                      onClick={() => void toggleRegistration(registration)}
+                    />
+                    <ExternalAgentIconButton
+                      icon={Trash2}
+                      label={t('settings.externalAgents.remove')}
+                      disabled={busy}
+                      danger
+                      onClick={() => void removeRegistration(registration)}
+                    />
+                  </div>
+                </div>
+                <div className="mt-2 flex flex-wrap gap-2 border-t border-border-default/60 pt-2">
+                  <button
+                    type="button"
+                    disabled={busy || !registration.enabled}
+                    onClick={() => void preflightRegistration(registration)}
+                    className="inline-flex min-h-7 items-center gap-1.5 rounded border border-border-default bg-surface-2 px-2 text-[11px] text-fg-secondary hover:text-fg-primary disabled:opacity-50"
+                  >
+                    <ShieldCheck className="h-3 w-3" /> {t('settings.externalAgents.preflight')}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy || !registration.enabled || !currentSessionId}
+                    onClick={() => void runConformance(registration)}
+                    className="inline-flex min-h-7 items-center gap-1.5 rounded border border-info/40 bg-info/10 px-2 text-[11px] text-info hover:bg-info/20 disabled:opacity-50"
+                    data-testid="external-agent-test-button"
+                  >
+                    {busyAction === `test:${registration.agentId}` ? (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    ) : (
+                      <Play className="h-3 w-3" />
+                    )}{' '}
+                    {t('settings.externalAgents.runTest')}
+                  </button>
+                </div>
+              </article>
+            );
+          })
+        )}
+      </div>
+
+      <div className="mt-4 flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={beginCreate}
+          disabled={busyAction !== null || editor !== null || status === null}
+          className="inline-flex min-h-8 items-center justify-center gap-2 rounded-lg border border-info/45 bg-info/10 px-3 text-xs font-medium text-info hover:bg-info/20 disabled:opacity-50"
+          data-testid="external-agent-add-button"
+        >
+          <Plus className="h-3.5 w-3.5" strokeWidth={1.8} />{' '}
+          {t('settings.externalAgents.addReference')}
+        </button>
+        <button
+          type="button"
+          onClick={() => void refreshExternalAgents()}
+          disabled={busyAction !== null}
+          className="inline-flex min-h-8 items-center justify-center gap-2 rounded-lg border border-border-default bg-surface-3 px-3 text-xs text-fg-primary hover:bg-hover-bg disabled:opacity-50"
+        >
+          <RefreshCw
+            className={`h-3.5 w-3.5 ${busyAction === 'refresh' ? 'animate-spin' : ''}`}
+            strokeWidth={1.8}
+          />{' '}
+          {t('common.refresh')}
+        </button>
+      </div>
+    </SettingsSection>
+  );
+}
+
+function ExternalAgentGate({
+  label,
+  enabled,
+}: {
+  readonly label: string;
+  readonly enabled: boolean;
+}): JSX.Element {
+  const { t } = useI18n();
+  return (
+    <span
+      className={`rounded-full border px-2 py-1 text-[10px] ${enabled ? 'border-ok/35 bg-ok/10 text-ok' : 'border-border-default bg-surface-2 text-fg-muted'}`}
+    >
+      {label} ·{' '}
+      {enabled ? t('settings.externalAgents.available') : t('settings.externalAgents.hidden')}
+    </span>
+  );
+}
+
+function ExternalAgentEditor({
+  value,
+  busy,
+  onChange,
+  onCancel,
+  onSave,
+}: {
+  readonly value: ExternalAgentEditorState;
+  readonly busy: boolean;
+  readonly onChange: (value: ExternalAgentEditorState) => void;
+  readonly onCancel: () => void;
+  readonly onSave: () => void;
+}): JSX.Element {
+  const { t } = useI18n();
+  return (
+    <div
+      className="mt-3 rounded-lg border border-info/35 bg-surface-2 p-3"
+      data-testid="external-agent-editor"
+    >
+      <div className="mb-3 text-xs font-medium text-fg-primary">
+        {value.agentId
+          ? t('settings.externalAgents.editTitle')
+          : t('settings.externalAgents.createTitle')}
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <label className="text-[11px] text-fg-secondary">
+          {t('settings.externalAgents.displayName')}
+          <input
+            value={value.displayName}
+            onChange={(event) => onChange({ ...value, displayName: event.target.value })}
+            className="mt-1 w-full rounded-md border border-border-default bg-surface px-2 py-1.5 text-xs text-fg-primary outline-none focus:border-info"
+            data-testid="external-agent-name-input"
+          />
+        </label>
+        <label className="text-[11px] text-fg-secondary">
+          {t('settings.externalAgents.skills')}
+          <input
+            value={value.skillsText}
+            onChange={(event) => onChange({ ...value, skillsText: event.target.value })}
+            className="mt-1 w-full rounded-md border border-border-default bg-surface px-2 py-1.5 text-xs text-fg-primary outline-none focus:border-info"
+            placeholder="general, review"
+          />
+        </label>
+        <label className="text-[11px] text-fg-secondary sm:col-span-2">
+          {t('settings.externalAgents.agentDescription')}
+          <textarea
+            value={value.description}
+            onChange={(event) => onChange({ ...value, description: event.target.value })}
+            rows={2}
+            className="mt-1 w-full resize-y rounded-md border border-border-default bg-surface px-2 py-1.5 text-xs text-fg-primary outline-none focus:border-info"
+          />
+        </label>
+      </div>
+      <div className="mt-3 flex flex-wrap gap-4 text-[11px] text-fg-secondary">
+        <label className="inline-flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={value.enabled}
+            onChange={(event) => onChange({ ...value, enabled: event.target.checked })}
+          />{' '}
+          {t('settings.externalAgents.enabled')}
+        </label>
+        <label className="inline-flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={value.inputRequired}
+            onChange={(event) => onChange({ ...value, inputRequired: event.target.checked })}
+          />{' '}
+          {t('settings.externalAgents.simulateInput')}
+        </label>
+      </div>
+      <div className="mt-3 flex gap-2">
+        <button
+          type="button"
+          onClick={onSave}
+          disabled={busy || !value.displayName.trim()}
+          className="rounded-md bg-info px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
+          data-testid="external-agent-save-button"
+        >
+          {t('common.save')}
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          disabled={busy}
+          className="rounded-md border border-border-default px-3 py-1.5 text-xs text-fg-secondary hover:text-fg-primary"
+        >
+          {t('common.cancel')}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ExternalAgentIconButton({
+  icon: Icon,
+  label,
+  disabled,
+  danger = false,
+  onClick,
+}: {
+  readonly icon: LucideIcon;
+  readonly label: string;
+  readonly disabled: boolean;
+  readonly danger?: boolean;
+  readonly onClick: () => void;
+}): JSX.Element {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      className={`inline-flex h-7 w-7 items-center justify-center rounded-md disabled:opacity-50 ${danger ? 'text-fg-muted hover:bg-danger/12 hover:text-danger' : 'text-fg-muted hover:bg-surface-3 hover:text-fg-primary'}`}
+      aria-label={label}
+      title={label}
+    >
+      <Icon className="h-3.5 w-3.5" strokeWidth={1.8} />
+    </button>
+  );
+}
+
+function externalDispatchabilityLabel(
+  status: DispatchableAgentListingT['dispatchability']['status'],
+  t: Translate,
+): string {
+  switch (status) {
+    case 'dispatchable':
+      return t('settings.externalAgents.dispatchability.dispatchable');
+    case 'degraded':
+      return t('settings.externalAgents.dispatchability.degraded');
+    case 'busy':
+      return t('settings.externalAgents.dispatchability.busy');
+    case 'unavailable':
+      return t('settings.externalAgents.dispatchability.unavailable');
+  }
 }
 
 function parseOptionalInt(

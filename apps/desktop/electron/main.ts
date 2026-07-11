@@ -78,6 +78,7 @@ import { getPtyHost } from './terminal/ptyHost.js';
 import { settingsStore } from './settings/store.js';
 import { setRendererTarget } from './ipc/push.js';
 import { kodaxHost } from './kodax/host.js';
+import { externalAgentGateway } from './kodax/external-agent-gateway.js';
 import { permissionRegistry } from './permission/registry.js';
 import { permissionBroker } from './permission/broker.js';
 import { askUserBroker } from './permission/ask-user-broker.js';
@@ -888,6 +889,11 @@ app.on('before-quit', (event) => {
       .disposeAll()
       .catch((err) =>
         console.error('[main] disposeAll on quit:', err instanceof Error ? err.message : err),
+      ),
+    externalAgentGateway
+      .dispose()
+      .catch((err) =>
+        console.warn('[main] external-agent shutdown:', err instanceof Error ? err.message : err),
       ),
   ];
   // FileTracingProcessor.shutdown(): 刷 pending write 到磁盘（opt-in，多数用户为 null）。

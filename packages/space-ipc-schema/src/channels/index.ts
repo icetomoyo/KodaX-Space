@@ -66,7 +66,21 @@ import {
 import { askUserRequestChannel, askUserReplyChannel, askUserCancelledChannel } from './ask-user.js';
 import { slashDiscoverChannel, slashExecChannel } from './slash.js';
 import { skillDiscoverChannel, skillInstallChannel, skillInvokeChannel } from './skill.js';
-import { agentDiscoverChannel } from './agent.js';
+import {
+  agentDiscoverChannel,
+  externalAgentStatusChannel,
+  externalAgentRegistrationListChannel,
+  externalAgentReferenceUpsertChannel,
+  externalAgentRegistrationRemoveChannel,
+  externalAgentDispatchableListChannel,
+  externalAgentPreflightChannel,
+  externalAgentTaskListChannel,
+  externalAgentTaskStartChannel,
+  externalAgentTaskEventsChannel,
+  externalAgentTaskSendInputChannel,
+  externalAgentTaskCancelChannel,
+  externalAgentTaskReconcileChannel,
+} from './agent.js';
 import {
   mcpDiscoverChannel,
   mcpServersChannel,
@@ -272,6 +286,18 @@ export const invokeChannels = {
   [skillInvokeChannel.name]: skillInvokeChannel,
   [skillInstallChannel.name]: skillInstallChannel,
   [agentDiscoverChannel.name]: agentDiscoverChannel,
+  [externalAgentStatusChannel.name]: externalAgentStatusChannel,
+  [externalAgentRegistrationListChannel.name]: externalAgentRegistrationListChannel,
+  [externalAgentReferenceUpsertChannel.name]: externalAgentReferenceUpsertChannel,
+  [externalAgentRegistrationRemoveChannel.name]: externalAgentRegistrationRemoveChannel,
+  [externalAgentDispatchableListChannel.name]: externalAgentDispatchableListChannel,
+  [externalAgentPreflightChannel.name]: externalAgentPreflightChannel,
+  [externalAgentTaskListChannel.name]: externalAgentTaskListChannel,
+  [externalAgentTaskStartChannel.name]: externalAgentTaskStartChannel,
+  [externalAgentTaskEventsChannel.name]: externalAgentTaskEventsChannel,
+  [externalAgentTaskSendInputChannel.name]: externalAgentTaskSendInputChannel,
+  [externalAgentTaskCancelChannel.name]: externalAgentTaskCancelChannel,
+  [externalAgentTaskReconcileChannel.name]: externalAgentTaskReconcileChannel,
   [mcpDiscoverChannel.name]: mcpDiscoverChannel,
   [mcpServersChannel.name]: mcpServersChannel,
   [mcpStartChannel.name]: mcpStartChannel,
