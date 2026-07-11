@@ -487,6 +487,7 @@ function ProjectTree({
             onClick={() => toggleProjectAndRefresh(proj.path, defaultExpanded, isExpanded)}
             className="text-fg-muted flex-shrink-0"
             aria-label={isExpanded ? t('sidebar.collapseProject') : t('sidebar.expandProject')}
+            aria-expanded={isExpanded}
           >
             <Caret open={isExpanded} />
           </button>
@@ -514,6 +515,7 @@ function ProjectTree({
               type="button"
               onClick={() => toggleProjectAndRefresh(proj.path, defaultExpanded, isExpanded)}
               className="flex-1 text-left truncate"
+              aria-expanded={isExpanded}
             >
               {proj.name}
             </button>

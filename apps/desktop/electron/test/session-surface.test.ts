@@ -158,6 +158,43 @@ test('listPersistedSessions: ACP placeholders do not consume the visible session
   );
 });
 
+test('listPersistedSessions: cursor pagination continues until it finds the visible limit', async () => {
+  mockState.setCursorPaginationEnabled(true);
+  for (let index = 0; index < 740; index += 1) {
+    mockState.seedSurface(`acp-page-${index}`, '/r', 'acp', 'ACP Session');
+  }
+  for (let index = 0; index < 205; index += 1) {
+    mockState.seed(`code-page-${index}`, '/r', `Real session ${index}`);
+  }
+
+  const list = await listPersistedSessions({ projectRoot: '/r' });
+
+  assert.equal(list.length, 200);
+  assert.equal(
+    list.every((session) => session.surface === 'code'),
+    true,
+  );
+  assert.equal(mockState.listCallCount(), 2);
+});
+
+test('listPersistedSessions: SDK 0.7.66 falls back when a full first page has no cursor', async () => {
+  for (let index = 0; index < 740; index += 1) {
+    mockState.seedSurface(`legacy-acp-${index}`, '/r', 'acp', 'ACP Session');
+  }
+  for (let index = 0; index < 205; index += 1) {
+    mockState.seed(`legacy-code-${index}`, '/r', `Real session ${index}`);
+  }
+
+  const list = await listPersistedSessions({ projectRoot: '/r' });
+
+  assert.equal(list.length, 200);
+  assert.equal(
+    list.every((session) => session.surface === 'code'),
+    true,
+  );
+  assert.equal(mockState.listCallCount(), 2);
+});
+
 test('listPersistedSessions: explicit limits apply after filtering non-interactive surfaces', async () => {
   mockState.seedSurface('acp-1', '/r', 'acp', 'ACP Session');
   mockState.seed('code-1', '/r', 'First real session');

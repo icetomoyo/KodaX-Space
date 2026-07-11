@@ -43,6 +43,13 @@ export function isEphemeralSessionTag(tag: string | undefined): boolean {
 
 const DEFAULT_VISIBLE_SESSION_LIMIT = 200;
 const MAX_PERSISTED_SESSION_SUMMARIES_TO_SCAN = 50_000;
+const PERSISTED_SESSION_SUMMARY_PAGE_SIZE = 500;
+
+type SdkSessionSummary = Awaited<ReturnType<SdkSessionModule['listSessions']>>[number];
+type CursorSessionSummary = SdkSessionSummary & { readonly cursor?: string };
+type CursorListSessionsOptions = NonNullable<Parameters<SdkSessionModule['listSessions']>[0]> & {
+  readonly cursor?: string;
+};
 
 function isVisibleInteractiveSession(summary: {
   readonly tag?: string;
@@ -215,6 +222,83 @@ export interface PersistedSessionMeta {
   readonly surface: Surface;
 }
 
+function summaryMatchesVisibleScope(
+  summary: CursorSessionSummary,
+  surface: 'code' | 'partner' | undefined,
+): boolean {
+  return (
+    isVisibleInteractiveSession(summary) &&
+    (surface === undefined || sdkTagToSurface(summary.tag) === surface)
+  );
+}
+
+async function listSummaryPage(opts: CursorListSessionsOptions): Promise<CursorSessionSummary[]> {
+  return (await activeImpl.listSessions(opts)) as CursorSessionSummary[];
+}
+
+async function listVisibleSummaryCandidates(opts: {
+  readonly projectRoot?: string;
+  readonly requestedLimit: number;
+  readonly surface?: 'code' | 'partner';
+}): Promise<CursorSessionSummary[]> {
+  const baseOptions = {
+    projectRoot: opts.projectRoot,
+    scope: 'user' as const,
+  };
+  const loadCompatibilityWindow = (): Promise<CursorSessionSummary[]> =>
+    listSummaryPage({
+      ...baseOptions,
+      limit: MAX_PERSISTED_SESSION_SUMMARIES_TO_SCAN,
+    });
+
+  let page = await listSummaryPage({
+    ...baseOptions,
+    limit: PERSISTED_SESSION_SUMMARY_PAGE_SIZE,
+  });
+  if (page.length === 0) return [];
+
+  // KodaX <= 0.7.66 ignores cursor and does not return one. Preserve support
+  // for the published dependency until the cursor-capable SDK is released.
+  if (page.at(-1)?.cursor === undefined) {
+    return page.length < PERSISTED_SESSION_SUMMARY_PAGE_SIZE ? page : loadCompatibilityWindow();
+  }
+
+  const summaries: CursorSessionSummary[] = [];
+  const seenCursors = new Set<string>();
+  let visibleCount = 0;
+  while (page.length > 0 && summaries.length < MAX_PERSISTED_SESSION_SUMMARIES_TO_SCAN) {
+    const cursor = page.at(-1)?.cursor;
+    if (!cursor || seenCursors.has(cursor)) {
+      return loadCompatibilityWindow();
+    }
+    seenCursors.add(cursor);
+
+    const remaining = MAX_PERSISTED_SESSION_SUMMARIES_TO_SCAN - summaries.length;
+    const pageSlice = page.slice(0, remaining);
+    summaries.push(...pageSlice);
+    visibleCount += pageSlice.filter((summary) =>
+      summaryMatchesVisibleScope(summary, opts.surface),
+    ).length;
+    if (visibleCount >= opts.requestedLimit || page.length < PERSISTED_SESSION_SUMMARY_PAGE_SIZE) {
+      break;
+    }
+    if (summaries.length >= MAX_PERSISTED_SESSION_SUMMARIES_TO_SCAN) break;
+
+    page = await listSummaryPage({
+      ...baseOptions,
+      cursor,
+      limit: Math.min(PERSISTED_SESSION_SUMMARY_PAGE_SIZE, remaining),
+    });
+    // A cursor can disappear if another process deletes its session between
+    // pages. Re-read one bounded compatibility window instead of hiding all
+    // older sessions behind that race.
+    if (page.length === 0 && remaining >= PERSISTED_SESSION_SUMMARY_PAGE_SIZE) {
+      return loadCompatibilityWindow();
+    }
+  }
+  return summaries;
+}
+
 /**
  * 拉指定 projectRoot 下的 historical sessions（写盘的）。
  *
@@ -250,22 +334,17 @@ export async function listPersistedSessions(opts: {
     1,
     Math.min(opts.limit ?? DEFAULT_VISIBLE_SESSION_LIMIT, MAX_PERSISTED_SESSION_SUMMARIES_TO_SCAN),
   );
-  // KodaX 0.7.66 cannot filter listSessions by runtimeInfo.surface. Filtering a
-  // 200-row result after the SDK limit lets ACP placeholder sessions consume the
-  // entire result window. Scan a bounded set first, then apply Space visibility
-  // and the caller's limit. The SDK project-scoped slow path already reads and
-  // sorts the full project bucket before slicing, so this does not add disk I/O.
-  const summaries = await activeImpl.listSessions({
+  // Space persists Coder/Partner ownership in SessionSummary.tag, including for
+  // legacy records that have no runtimeInfo.surface. Keep that compatibility
+  // mapping while using the newer SDK cursor when available. ACP and ephemeral
+  // records are filtered before the caller's visible limit is applied.
+  const summaries = await listVisibleSummaryCandidates({
     projectRoot: opts.projectRoot,
-    scope: 'user',
-    limit: MAX_PERSISTED_SESSION_SUMMARIES_TO_SCAN,
+    requestedLimit,
+    surface: opts.surface,
   });
   const visibleSummaries = summaries
-    .filter(
-      (summary) =>
-        isVisibleInteractiveSession(summary) &&
-        (opts.surface === undefined || sdkTagToSurface(summary.tag) === opts.surface),
-    )
+    .filter((summary) => summaryMatchesVisibleScope(summary, opts.surface))
     .slice(0, requestedLimit);
   if (
     summaries.length >= MAX_PERSISTED_SESSION_SUMMARIES_TO_SCAN &&

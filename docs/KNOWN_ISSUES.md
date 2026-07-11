@@ -1692,12 +1692,12 @@ The sibling `_unknown` directory is unrelated data loss: KodaX 0.7.46's per-proj
 
 #### Resolution
 
-- Scan a bounded set of up to 50,000 persisted summaries before applying Space's visible-session limit.
+- Consume SDK cursor pages when available, stopping after Space has enough visible rows; retain a bounded 50,000-summary compatibility read for KodaX 0.7.66 and cursor-invalidated races.
 - Exclude only `runtimeInfo.surface === "acp"` plus existing ephemeral tags; preserve untagged legacy, REPL, Coder, and Partner sessions.
 - Apply the requested 200-row default after ACP and Coder/Partner surface filtering, then warn if the scan ceiling is exhausted before enough visible sessions are found.
 - Keep the 200-row recent list for startup, but let the explicit project session picker request and search a bounded 50,000-row project history on demand.
 - Do not rewrite, move, archive, or delete any existing session JSONL or `_unknown` entry.
-- Add regression coverage with 240 leading ACP summaries followed by 205 real sessions, plus explicit post-filter limit coverage.
+- Add regression coverage with 540 leading ACP summaries followed by 205 real sessions, plus explicit post-filter limit coverage across the SDK cursor boundary.
 
 ### 025: KodaX ACP tests persist fixture sessions into the real user session/runtime directories
 
@@ -1718,6 +1718,13 @@ The sibling `_unknown` directory is unrelated data loss: KodaX 0.7.46's per-proj
 - Add `surface` filtering and cursor pagination to `listSessions` so embedders do not need a large pre-filter scan.
 - Provide a dry-run-first cleanup command for the exact polluted signature. Space must not guess-delete another client's session files.
 
+#### Upstream Validation (Pending Release)
+
+- The local KodaX v0.7.67 working tree now delays ACP persistence until the first valid prompt, isolates both ACP test harnesses under temporary runtime homes, and adds preview-first ACP cleanup.
+- The session, Runtime, and daemon APIs now carry exact `surface` filters and opaque continuation cursors; 129 targeted KodaX tests covering these paths pass locally.
+- Space keeps tag-based Coder/Partner classification because its historical sessions store `code` / `partner` in `SessionSummary.tag`, while ordinary Space runner snapshots do not currently populate `runtimeInfo.surface`. Directly replacing tag filtering with the new exact surface filter would hide legacy and current Space sessions.
+- Keep this issue open until v0.7.67 is published, Space upgrades the package, and the integrated Electron E2E passes against the published artifact.
+
 ### 026: Space E2E test mode isolated app data but left the SDK session home pointed at the real user directory
 
 - Priority: High
@@ -1735,7 +1742,7 @@ The sibling `_unknown` directory is unrelated data loss: KodaX 0.7.46's per-proj
 
 - Force `KODAX_HOME` to the deterministic temporary test root before the SDK is imported whenever `KODAX_TEST_ONBOARDING` is active.
 - Let the test-isolation setting override an inherited user `KODAX_HOME`; an explicit test must never touch user data.
-- Add a real SDK round-trip unit test and an Electron E2E that writes 205 Coder plus 240 ACP fixture sessions only under the temporary test root.
+- Add a real SDK round-trip unit test and an Electron E2E that writes 205 Coder plus 540 ACP fixture sessions only under the temporary test root.
 
 ### 027: A global 200-session window let one busy project make other project histories appear empty
 
@@ -1760,7 +1767,7 @@ The same ordering risk existed between Coder and Partner: the persisted limit wa
 - Apply surface filtering before the limit in the persistence adapter.
 - When a project-scoped SDK summary omits workspace/git-root metadata, retain the validated project filter as its renderer project root instead of grouping it under `/`.
 - Keep the 50,000-row full-history request isolated to the explicit project picker instead of startup.
-- Cover a 205-session project, 240 ACP fixtures, and a second three-session project in an isolated real-SDK Electron E2E.
+- Cover a 205-session project, 540 ACP fixtures, and a second three-session project in an isolated real-SDK Electron E2E.
 
 ## Summary
 

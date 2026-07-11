@@ -7,7 +7,7 @@ import { launchSpace } from './fixtures.js';
 const TEST_ID = `session-history-acp-filter-${Date.now()}`;
 
 test('ACP fixtures cannot hide real history and show-all searches beyond the recent limit', async () => {
-  test.setTimeout(90_000);
+  test.setTimeout(120_000);
   const space = await launchSpace(TEST_ID);
   try {
     const projectDir = path.join(space.testDataDir, 'workspace');
@@ -45,7 +45,7 @@ test('ACP fixtures cannot hide real history and show-all searches beyond the rec
         },
       });
     }
-    for (let index = 0; index < 240; index += 1) {
+    for (let index = 0; index < 540; index += 1) {
       await manager.storage.save(`acp-${index}`, {
         messages: [],
         title: 'ACP Session',
@@ -92,10 +92,12 @@ test('ACP fixtures cannot hide real history and show-all searches beyond the rec
       secondary.data.sessions.every((session) => session.projectRoot === secondaryProjectDir),
     ).toBe(true);
 
-    await space.page
+    const secondaryProjectButton = space.page
       .getByTestId('left-sidebar')
-      .getByRole('button', { name: 'secondary-workspace', exact: true })
-      .click();
+      .getByRole('button', { name: 'secondary-workspace', exact: true });
+    if ((await secondaryProjectButton.getAttribute('aria-expanded')) !== 'true') {
+      await secondaryProjectButton.click();
+    }
     await expect(
       space.page.getByText('Secondary retained session 2', { exact: true }),
     ).toBeVisible();

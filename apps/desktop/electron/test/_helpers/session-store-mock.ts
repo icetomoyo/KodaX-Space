@@ -30,6 +30,9 @@ export interface MockSessionState {
   lastRewindSelector(): string | undefined;
   /** Make SDK delete report that another KodaX process still owns the session. */
   setDeleteBusy(busy: boolean): void;
+  /** Emulate the cursor-bearing listSessions contract introduced after SDK 0.7.66. */
+  setCursorPaginationEnabled(enabled: boolean): void;
+  listCallCount(): number;
   has(id: string): boolean;
   /** Wipe storage + restore default SDK impl. Call from afterEach. */
   reset(): void;
@@ -50,15 +53,26 @@ export function installSessionStoreMock(): MockSessionState {
   let lastForkSelectorValue: string | undefined;
   let lastRewindSelectorValue: string | undefined;
   let deleteBusy = false;
+  let cursorPaginationEnabled = false;
+  let listCalls = 0;
   const titleOverrides = new Map<string, string>();
 
   const impl: SessionStoreImpl = {
     listSessions: async (opts) => {
+      listCalls += 1;
       const root = opts?.projectRoot;
       const all = [...storage.values()];
       const filtered = root === undefined ? all : all.filter((s) => s.gitRoot === root);
-      return filtered.slice(0, opts?.limit ?? filtered.length).map((s) => ({
+      const cursor = (opts as { readonly cursor?: string } | undefined)?.cursor;
+      const cursorIndex = cursor === undefined ? -1 : filtered.findIndex((s) => s.id === cursor);
+      if (cursor !== undefined && cursorIndex < 0) return [];
+      const page = filtered.slice(
+        cursorIndex + 1,
+        cursorIndex + 1 + (opts?.limit ?? filtered.length),
+      );
+      return page.map((s) => ({
         id: s.id,
+        ...(cursorPaginationEnabled ? { cursor: s.id } : {}),
         title: s.title,
         msgCount: 0,
         ...(s.tag !== undefined ? { tag: s.tag } : {}),
@@ -177,6 +191,12 @@ export function installSessionStoreMock(): MockSessionState {
     setDeleteBusy(busy): void {
       deleteBusy = busy;
     },
+    setCursorPaginationEnabled(enabled): void {
+      cursorPaginationEnabled = enabled;
+    },
+    listCallCount(): number {
+      return listCalls;
+    },
     has(id): boolean {
       return storage.has(id);
     },
@@ -186,6 +206,8 @@ export function installSessionStoreMock(): MockSessionState {
       lastForkSelectorValue = undefined;
       lastRewindSelectorValue = undefined;
       deleteBusy = false;
+      cursorPaginationEnabled = false;
+      listCalls = 0;
       setSessionStoreImpl(null);
       setSessionTitleStoreForTesting(null);
     },
