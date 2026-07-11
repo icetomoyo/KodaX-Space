@@ -14,6 +14,7 @@ import {
   createKodaXRuntime,
   KODAX_DAEMON_PROTOCOL_VERSION,
 } from '@kodax-ai/kodax/runtime';
+import { createReferenceAgentExecutorFactory } from '@kodax-ai/kodax/agent';
 
 const homeDir = await mkdtemp(path.join(tmpdir(), 'kodax-space-runtime-child-'));
 let runtime;
@@ -28,7 +29,7 @@ try {
       resourceLimits: { maxOldGenerationSizeMb: 128 },
       shutdownTimeoutMs: 1500,
     },
-    clientInfo: { name: 'kodax-space-runtime-compat', version: '0.1.30' },
+    clientInfo: { name: 'kodax-space-runtime-compat', version: '0.1.31' },
   });
   const created = await runtime.sessions.create({
     title: 'Space SDK compatibility probe',
@@ -48,6 +49,65 @@ try {
   } catch (error) {
     downgradeRejected = /hardDispose|Worker/i.test(String(error));
   }
+  const externalRuntime = await createKodaXRuntime({
+    mode: 'embedded',
+    isolation: 'inline',
+    homeDir: path.join(homeDir, 'external-owner'),
+    externalAgents: {
+      factories: [createReferenceAgentExecutorFactory({
+        executorId: 'space-reference',
+        protocol: 'http',
+      })],
+      policy: ({ registration }) => ({ allowed: registration.enabled }),
+      defaultContext: { actorId: 'kodax-space-runtime-compat' },
+    },
+    requirements: { externalAgents: true },
+  });
+  let externalAgentResult;
+  try {
+    const registration = {
+      agentId: 'external:space-reference',
+      displayName: 'Space Reference Agent',
+      enabled: true,
+      executorId: 'space-reference',
+      protocol: 'http',
+      configurationRevision: 'space-reference-v1',
+      endpointIdentityHash: 'sha256:space-reference',
+      skills: ['conformance'],
+      inputModalities: ['text'],
+      outputModalities: ['text'],
+      capabilities: {
+        streaming: 'supported',
+        durableTasks: 'supported',
+        inputRequired: 'conditional',
+        cancellation: 'supported',
+        artifacts: 'unsupported',
+      },
+      effects: { remote: 'none', workspace: 'none' },
+    };
+    await externalRuntime.admin.agentRegistrations.upsert(registration);
+    const dispatchable = await externalRuntime.agents.listDispatchable({
+      actorId: 'kodax-space-runtime-compat',
+      readOnly: true,
+    });
+    const started = await externalRuntime.agentTasks.start({
+      agentId: registration.agentId,
+      objective: 'space-reference-round-trip',
+      context: { actorId: 'kodax-space-runtime-compat' },
+      readOnly: true,
+      expectedConfigurationRevision: registration.configurationRevision,
+    });
+    const terminal = await externalRuntime.agentTasks.wait(started.taskId, 5_000);
+    externalAgentResult = {
+      capability: externalRuntime.agents.enabled,
+      enabled: externalRuntime.agents.enabled,
+      listed: dispatchable.some((item) => item.descriptor.agentId === registration.agentId),
+      state: terminal.state,
+      output: terminal.output,
+    };
+  } finally {
+    await externalRuntime.close();
+  }
   process.stdout.write('KODAX_RUNTIME_PROBE=' + JSON.stringify({
     createAvailable: typeof createKodaXRuntime === 'function',
     connectAvailable: typeof connectKodaXRuntime === 'function',
@@ -58,6 +118,7 @@ try {
     workerThreadId: runtime.identity.workerThreadId,
     sessionRoundTrip: loaded.id === created.id,
     downgradeRejected,
+    externalAgentResult,
   }));
 } finally {
   await runtime?.close();
@@ -106,11 +167,15 @@ function runPublishedRuntimeWorkerProbe(): Promise<Record<string, unknown>> {
         return;
       }
       try {
-        resolve(JSON.parse(stdout.slice(markerIndex + PROBE_MARKER.length)) as Record<string, unknown>);
+        resolve(
+          JSON.parse(stdout.slice(markerIndex + PROBE_MARKER.length)) as Record<string, unknown>,
+        );
       } catch (error) {
-        reject(new Error(`KodaX Runtime Worker probe returned invalid JSON: ${stdout}`, {
-          cause: error,
-        }));
+        reject(
+          new Error(`KodaX Runtime Worker probe returned invalid JSON: ${stdout}`, {
+            cause: error,
+          }),
+        );
       }
     });
     timeout = setTimeout(() => {
@@ -121,17 +186,28 @@ function runPublishedRuntimeWorkerProbe(): Promise<Record<string, unknown>> {
   });
 }
 
-test('KodaX 0.7.66 Runtime Worker satisfies hard-dispose and session parity', {
-  timeout: PROBE_TIMEOUT_MS + 5_000,
-}, async () => {
-  const result = await runPublishedRuntimeWorkerProbe();
-  assert.equal(result.version, '0.7.66');
-  assert.equal(result.createAvailable, true);
-  assert.equal(result.connectAvailable, true);
-  assert.ok(Number.isSafeInteger(result.protocolVersion));
-  assert.equal(result.mode, 'embedded');
-  assert.equal(result.isolation, 'worker');
-  assert.ok(Number.isSafeInteger(result.workerThreadId));
-  assert.equal(result.sessionRoundTrip, true);
-  assert.equal(result.downgradeRejected, true);
-});
+test(
+  'KodaX 0.7.67 Runtime satisfies Worker and external-agent compatibility',
+  {
+    timeout: PROBE_TIMEOUT_MS + 5_000,
+  },
+  async () => {
+    const result = await runPublishedRuntimeWorkerProbe();
+    assert.equal(result.version, '0.7.67');
+    assert.equal(result.createAvailable, true);
+    assert.equal(result.connectAvailable, true);
+    assert.ok(Number.isSafeInteger(result.protocolVersion));
+    assert.equal(result.mode, 'embedded');
+    assert.equal(result.isolation, 'worker');
+    assert.ok(Number.isSafeInteger(result.workerThreadId));
+    assert.equal(result.sessionRoundTrip, true);
+    assert.equal(result.downgradeRejected, true);
+    assert.deepEqual(result.externalAgentResult, {
+      capability: true,
+      enabled: true,
+      listed: true,
+      state: 'completed',
+      output: 'space-reference-round-trip',
+    });
+  },
+);

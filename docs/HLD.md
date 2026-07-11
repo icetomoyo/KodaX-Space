@@ -1,8 +1,10 @@
 # KodaX Space 高层设计（HLD）
 
-> Last updated: 2026-05-16
-> Status: v1.0 final（架构决策已收敛；中间方案与否决理由见 [ADR/](ADR/)）
+> Last updated: 2026-07-12
+> Status: 核心架构决策仍有效；当前实现基线为 KodaX Space 0.1.31 开发候选版 / KodaX 0.7.67，最新公开发行版为 0.1.30。中间方案与否决理由见 [ADR/](ADR/)；当前能力边界见 [KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md)。
 > Companion doc: [PRD](PRD.md)
+
+> **0.1.31 增量**：Electron main 继续拥有特权边界，并新增一个持久、协议中立的 External Agent Executor Plane。Renderer 仅通过 zod IPC 获取脱敏 Registration/Descriptor/Task/Event 投影；管理入口仅接受主应用窗口，任务创建从 main-owned live Session 派生项目/父任务归属，读取与干预均复核任务所属 Session。实时 Session 与 Workflow 共用同一 KodaX 0.7.67 plane。Reference Executor 已接通，真实 A2A/MCP Tasks/HTTP adapter 仍按 Runtime capability 门控。Partner 自 0.1.30 起已启用 workspace-first Outputs 与 checkpointed writes；后文早期里程碑描述保留历史设计语境。
 
 ---
 
@@ -69,14 +71,14 @@ KodaX Space 不是新 agent，而是**复用 KodaX 内核的 Electron 桌面客�
 
 ### 2.1 进程列表
 
-| 进程 | 角色 | 持久 | 内含 |
-|---|---|---|---|
-| `space-main` | Electron main（Node）| 应用周期 | KodaX runtime + LLM/MCP/tool 调用 + IPC handlers |
-| `space-preload` | Electron preload | 每窗口 | 安全桥（contextBridge）|
-| `space-renderer` | React UI | 每窗口 | UI only，无 KodaX runtime |
-| `quick-ask-window` | 独立 BrowserWindow（M1）| 按需 | Quick Ask popover 的 renderer，共享 main 进程 |
-| MCP server children | MCP server | KodaX 按需 spawn | KodaX 内部管理，Space 不直接接 |
-| Repointel daemon | 系统级（用户提前安装）| 系统周期 | KodaX 内核已通过 loopback HTTP 接，Space 无关 |
+| 进程                | 角色                     | 持久             | 内含                                             |
+| ------------------- | ------------------------ | ---------------- | ------------------------------------------------ |
+| `space-main`        | Electron main（Node）    | 应用周期         | KodaX runtime + LLM/MCP/tool 调用 + IPC handlers |
+| `space-preload`     | Electron preload         | 每窗口           | 安全桥（contextBridge）                          |
+| `space-renderer`    | React UI                 | 每窗口           | UI only，无 KodaX runtime                        |
+| `quick-ask-window`  | 独立 BrowserWindow（M1） | 按需             | Quick Ask popover 的 renderer，共享 main 进程    |
+| MCP server children | MCP server               | KodaX 按需 spawn | KodaX 内部管理，Space 不直接接                   |
+| Repointel daemon    | 系统级（用户提前安装）   | 系统周期         | KodaX 内核已通过 loopback HTTP 接，Space 无关    |
 
 ### 2.2 关键差别（与 sidecar+ACP 模型对比）
 
@@ -87,16 +89,16 @@ KodaX Space 不是新 agent，而是**复用 KodaX 内核的 Electron 桌面客�
 
 ### 2.3 Electron 安全基线
 
-| 项 | 值 |
-|---|---|
-| `contextIsolation` | `true` |
-| `nodeIntegration` | `false` |
-| `sandbox` (renderer) | `true` |
-| `webSecurity` | `true` |
-| `allowRunningInsecureContent` | `false` |
-| 远程模块 | 关闭 |
-| CSP（renderer） | `default-src 'self'; script-src 'self'; connect-src 'self'` |
-| preload | 仅暴露白名单 IPC channel |
+| 项                            | 值                                                          |
+| ----------------------------- | ----------------------------------------------------------- |
+| `contextIsolation`            | `true`                                                      |
+| `nodeIntegration`             | `false`                                                     |
+| `sandbox` (renderer)          | `true`                                                      |
+| `webSecurity`                 | `true`                                                      |
+| `allowRunningInsecureContent` | `false`                                                     |
+| 远程模块                      | 关闭                                                        |
+| CSP（renderer）               | `default-src 'self'; script-src 'self'; connect-src 'self'` |
+| preload                       | 仅暴露白名单 IPC channel                                    |
 
 ---
 
@@ -158,40 +160,21 @@ KodaX-Space/
 // space-main/kodax-host.ts
 
 // Stateful runtime API（agent 执行、tool 调用）
-import {
-  runKodaX,
-  KodaXClient,
-  type KodaXEvents,
-  type KodaXMessage,
-} from '@kodax-ai/coding';
+import { runKodaX, KodaXClient, type KodaXEvents, type KodaXMessage } from '@kodax-ai/coding';
 
 // Stateless utilities + 元数据
-import {
-  estimateTokens,
-  KODAX_PROVIDERS,
-  getProvider,
-  type KodaXProviderId,
-} from '@kodax-ai/llm';
+import { estimateTokens, KODAX_PROVIDERS, getProvider, type KodaXProviderId } from '@kodax-ai/llm';
 
-import {
-  type KodaXToolDefinition,
-  KODAX_TOOL_REQUIRED_PARAMS,
-} from '@kodax-ai/coding';
+import { type KodaXToolDefinition, KODAX_TOOL_REQUIRED_PARAMS } from '@kodax-ai/coding';
 
 // Skill 系统
-import {
-  SkillRegistry,
-  discoverSkills,
-} from '@kodax-ai/skills';
+import { SkillRegistry, discoverSkills } from '@kodax-ai/skills';
 
 // Agent 框架（如需直接用 Runner / runFanOut）
-import {
-  Runner,
-  generateSessionId,
-} from '@kodax-ai/agent';
+import { Runner, generateSessionId } from '@kodax-ai/agent';
 
 // Native 加速器（按需，NAPI-RS）
-import { encode } from '@kodax-ai/native-tokenizer';  // M0 末
+import { encode } from '@kodax-ai/native-tokenizer'; // M0 末
 ```
 
 ### 4.2 Session 生命周期
@@ -203,7 +186,7 @@ const client = new KodaXClient({
   reasoningMode: 'auto',
   session: {
     id: generateSessionId(),
-    storage: new FileSessionStorage(),  // 写到 ~/.kodax/sessions/
+    storage: new FileSessionStorage(), // 写到 ~/.kodax/sessions/
   },
   events: {
     onTextDelta: (text) => mainWindow.webContents.send('session.textDelta', { id, text }),
@@ -228,13 +211,13 @@ events.onPermissionRequest = async (req) => {
 
 ### 4.3 KodaX runtime 失败处理
 
-| 失败 | 处理 |
-|---|---|
+| 失败                   | 处理                                                                             |
+| ---------------------- | -------------------------------------------------------------------------------- |
 | `runKodaX` 抛 uncaught | main 进程 `uncaughtException` handler 兜底；UI 显示错误 + 提供 "restart session" |
-| LLM 网络错误 | KodaX 内核已有重试；Space 仅显示状态 |
-| MCP server 崩溃 | KodaX 内核已有重启逻辑；Space 仅显示状态 |
-| Main 进程崩溃 | Squirrel auto-update 检测；下次启动恢复 session |
-| 长 session 内存压力 | M0 不优化；M2 评估切 utilityProcess（见 ADR-003 reconsider 触发器） |
+| LLM 网络错误           | KodaX 内核已有重试；Space 仅显示状态                                             |
+| MCP server 崩溃        | KodaX 内核已有重启逻辑；Space 仅显示状态                                         |
+| Main 进程崩溃          | Squirrel auto-update 检测；下次启动恢复 session                                  |
+| 长 session 内存压力    | M0 不优化；M2 评估切 utilityProcess（见 ADR-003 reconsider 触发器）              |
 
 ### 4.4 ACP 与 Space 的关系
 
@@ -252,14 +235,14 @@ KodaX ACP 演进（如新增 notification / endpoint）对 Space **没有直接�
 
 ### 5.1 包级用法
 
-| KodaX 包 | Main 进程 import? | Renderer 进程 import? |
-|---|---|---|
-| `@kodax-ai/coding` (runKodaX, KodaXClient, tools) | ✅ 完整 | ❌ 仅类型 |
-| `@kodax-ai/llm` (provider catalog, estimateTokens, types) | ✅ 完整 | ✅ 类型 + 常量（KODAX_PROVIDERS）|
-| `@kodax-ai/skills` (SkillRegistry, discoverSkills) | ✅ | ❌ 仅类型 |
-| `@kodax-ai/agent` (Runner, generateSessionId, types) | ✅ | ✅ 仅类型 |
-| `@kodax-ai/repl` (Ink TUI) | ❌ terminal-only | ❌ |
-| `kodax` (root, CLI binary + `runKodaX` 总入口聚合) | 可选；通常按需 import 各 scoped 包 | ❌ |
+| KodaX 包                                                  | Main 进程 import?                  | Renderer 进程 import?             |
+| --------------------------------------------------------- | ---------------------------------- | --------------------------------- |
+| `@kodax-ai/coding` (runKodaX, KodaXClient, tools)         | ✅ 完整                            | ❌ 仅类型                         |
+| `@kodax-ai/llm` (provider catalog, estimateTokens, types) | ✅ 完整                            | ✅ 类型 + 常量（KODAX_PROVIDERS） |
+| `@kodax-ai/skills` (SkillRegistry, discoverSkills)        | ✅                                 | ❌ 仅类型                         |
+| `@kodax-ai/agent` (Runner, generateSessionId, types)      | ✅                                 | ✅ 仅类型                         |
+| `@kodax-ai/repl` (Ink TUI)                                | ❌ terminal-only                   | ❌                                |
+| `kodax` (root, CLI binary + `runKodaX` 总入口聚合)        | 可选；通常按需 import 各 scoped 包 | ❌                                |
 
 注：KodaX 在 monorepo 中以 `@kodax-ai/*` 多包形式发布，每个包独立 scope，**不是** `@kodax-ai/kodax` 的子路径。
 本仓库中 ADR-003、HLD 早期描述用过 `@kodax-ai/kodax/coding` 这种命名 —— 已经修正为正确的 scoped 包名。
@@ -392,15 +375,15 @@ type Project = {
 
 ### 9.1 Renderer 技术栈
 
-| 选择 | 理由 |
-|---|---|
-| React 18 + TypeScript | 与 KodaX REPL (Ink) 同源 |
-| Vite | HMR 快 |
-| Zustand | 轻量 store |
-| Tailwind + shadcn/ui | 主题与组件库 |
-| Monaco Editor | diff + 只读浏览（非主编辑工作流）|
-| xterm.js + node-pty | 内置终端 |
-| Mermaid / Recharts | session lineage 图、token 仪表盘 |
+| 选择                  | 理由                              |
+| --------------------- | --------------------------------- |
+| React 18 + TypeScript | 与 KodaX REPL (Ink) 同源          |
+| Vite                  | HMR 快                            |
+| Zustand               | 轻量 store                        |
+| Tailwind + shadcn/ui  | 主题与组件库                      |
+| Monaco Editor         | diff + 只读浏览（非主编辑工作流） |
+| xterm.js + node-pty   | 内置终端                          |
+| Mermaid / Recharts    | session lineage 图、token 仪表盘  |
 
 ### 9.2 State 模型
 
@@ -419,6 +402,7 @@ type RootState = {
 ```
 
 事件来源：
+
 - KodaX 事件（`KodaXEvents`）→ main 转发 IPC `session-event` → store reducer
 - 用户 action → IPC `intent` → main 调用 KodaX SDK → 结果回写
 
@@ -444,8 +428,8 @@ interface SurfaceSpec {
   tools: ToolPolicy;
   layout: 'code-workspace' | 'doc-workspace';
   // Partner 专属：作用域不限 git，artifact 为一等产物
-  scope?: 'git-root' | 'any-dir';        // partner = any-dir（含 Documents/Downloads）
-  artifacts?: boolean;                    // partner = true
+  scope?: 'git-root' | 'any-dir'; // partner = any-dir（含 Documents/Downloads）
+  artifacts?: boolean; // partner = true
   // Partner 的自定义画像（instructions + 工具子集 + faithfulness reasoning），
   // 经 SDK「自定义画像 + 完整 harness」入口下发（依赖 R1/R2）。
   agentProfile?: 'coding-default' | 'partner';
@@ -462,8 +446,8 @@ const SURFACES: Record<Surface, SurfaceSpec> = {
   },
   partner: {
     sessionKind: 'partner',
-    tools: 'non-bash-subset',   // read/grep/glob + 富格式 IO + web；默认无 bash
-    layout: 'doc-workspace',    // 三栏：Sources | 对话+任务进度 | Artifact 预览
+    tools: 'non-bash-subset', // read/grep/glob + 富格式 IO + web；默认无 bash
+    layout: 'doc-workspace', // 三栏：Sources | 对话+任务进度 | Artifact 预览
     scope: 'any-dir',
     artifacts: true,
     agentProfile: 'partner',
@@ -533,20 +517,20 @@ Space → CLI:
 
 ## 11. 技术栈决策（最终）
 
-| 层 | 选择 |
-|---|---|
-| Shell | **Electron 30+** ([ADR-001](ADR/ADR-001-shell-electron.md)) |
-| Renderer | **React 18 + Vite + TypeScript + Zustand + Tailwind + shadcn/ui** |
-| Editor 组件 | Monaco（只读 + diff） |
-| 终端组件 | xterm.js + node-pty |
-| KodaX 集成 | **in-process import**（不 ACP，不 sidecar）([ADR-003](ADR/ADR-003-kodax-integration-in-process.md)) |
-| Rust 加速 | **按需 NAPI-RS 热路径模块**（A+C 模式）([ADR-002](ADR/ADR-002-rust-integration-napi.md)) |
-| Native 第一 crate | `@kodax-ai/native-tokenizer`（M0 末，tiktoken-rs 10×）|
-| IPC schema | zod，验证所有 renderer↔main channel |
-| Keychain | `keytar`（Win Credential Manager / macOS Keychain / libsecret） |
-| 自动更新 | Squirrel.Mac + Squirrel.Windows |
-| 安装包 | NSIS (Win) + .dmg + .pkg (macOS notarized) + AppImage/.deb (Linux M3) |
-| 测试 | Vitest（unit）+ Playwright for Electron（E2E）|
+| 层                | 选择                                                                                                |
+| ----------------- | --------------------------------------------------------------------------------------------------- |
+| Shell             | **Electron 30+** ([ADR-001](ADR/ADR-001-shell-electron.md))                                         |
+| Renderer          | **React 18 + Vite + TypeScript + Zustand + Tailwind + shadcn/ui**                                   |
+| Editor 组件       | Monaco（只读 + diff）                                                                               |
+| 终端组件          | xterm.js + node-pty                                                                                 |
+| KodaX 集成        | **in-process import**（不 ACP，不 sidecar）([ADR-003](ADR/ADR-003-kodax-integration-in-process.md)) |
+| Rust 加速         | **按需 NAPI-RS 热路径模块**（A+C 模式）([ADR-002](ADR/ADR-002-rust-integration-napi.md))            |
+| Native 第一 crate | `@kodax-ai/native-tokenizer`（M0 末，tiktoken-rs 10×）                                              |
+| IPC schema        | zod，验证所有 renderer↔main channel                                                                 |
+| Keychain          | `keytar`（Win Credential Manager / macOS Keychain / libsecret）                                     |
+| 自动更新          | Squirrel.Mac + Squirrel.Windows                                                                     |
+| 安装包            | NSIS (Win) + .dmg + .pkg (macOS notarized) + AppImage/.deb (Linux M3)                               |
+| 测试              | Vitest（unit）+ Playwright for Electron（E2E）                                                      |
 
 ### 11.1 不引入
 
@@ -596,14 +580,14 @@ Space → CLI:
 
 ### 13.1 威胁模型（简化 STRIDE）
 
-| 威胁 | 场景 | 缓解 |
-|---|---|---|
-| Spoofing | 假 MCP server 冒充官方 | M2 扩展签名 + 显式列表 |
-| Tampering | 恶意 skill 改用户文件 | Skill sandbox / Permission gating |
-| Repudiation | 用户否认操作 | Tamper-evident audit log + signed transcript |
-| Information disclosure | API key 泄露 | OS keychain + redact in logs |
-| DoS | MCP fork bomb | child_process resource limits + watchdog |
-| Privilege escalation | 利用 IPC 突破 sandbox | contextIsolation + zod schema 校验 |
+| 威胁                   | 场景                   | 缓解                                         |
+| ---------------------- | ---------------------- | -------------------------------------------- |
+| Spoofing               | 假 MCP server 冒充官方 | M2 扩展签名 + 显式列表                       |
+| Tampering              | 恶意 skill 改用户文件  | Skill sandbox / Permission gating            |
+| Repudiation            | 用户否认操作           | Tamper-evident audit log + signed transcript |
+| Information disclosure | API key 泄露           | OS keychain + redact in logs                 |
+| DoS                    | MCP fork bomb          | child_process resource limits + watchdog     |
+| Privilege escalation   | 利用 IPC 突破 sandbox  | contextIsolation + zod schema 校验           |
 
 ### 13.2 IPC 防护
 
@@ -629,12 +613,12 @@ Space → CLI:
 
 ## 14. 可观测性
 
-| 层 | 路径 | 内容 |
-|---|---|---|
+| 层            | 路径                                    | 内容                                        |
+| ------------- | --------------------------------------- | ------------------------------------------- |
 | Electron main | `~/.kodax/space/logs/main-YYYYMMDD.log` | 启动、IPC schema reject、KodaX runtime 异常 |
-| Renderer | 经 IPC 转发到 main 日志 | UI 错误 |
-| KodaX runtime | 复用 KodaX 已有日志栈（同 main 进程） | tool call / LLM 元信息 |
-| Repointel | 由 Repointel daemon 管理 | — |
+| Renderer      | 经 IPC 转发到 main 日志                 | UI 错误                                     |
+| KodaX runtime | 复用 KodaX 已有日志栈（同 main 进程）   | tool call / LLM 元信息                      |
+| Repointel     | 由 Repointel daemon 管理                | —                                           |
 
 - Tracing：KodaX 已有 `@kodax-ai/tracing`；Space 直接订阅 span event 渲染时间线
 - Trace 导出：OTLP JSON（M2）
@@ -664,14 +648,14 @@ Space → CLI:
 
 ### 15.2 平台支持
 
-| 平台 | M0 | M1 | M2 | M3 |
-|---|---|---|---|---|
-| macOS arm64 | ✅ | ✅ | ✅ | ✅ |
-| macOS x64 | ✅ | ✅ | ✅ | ✅ |
-| Windows x64 | ✅ | ✅ | ✅ | ✅ |
-| Windows arm64 | — | ✅ | ✅ | ✅ |
-| Linux x64 | — | — | — | ✅ |
-| Linux arm64 | — | — | — | — |
+| 平台          | M0  | M1  | M2  | M3  |
+| ------------- | --- | --- | --- | --- |
+| macOS arm64   | ✅  | ✅  | ✅  | ✅  |
+| macOS x64     | ✅  | ✅  | ✅  | ✅  |
+| Windows x64   | ✅  | ✅  | ✅  | ✅  |
+| Windows arm64 | —   | ✅  | ✅  | ✅  |
+| Linux x64     | —   | —   | —   | ✅  |
+| Linux arm64   | —   | —   | —   | —   |
 
 ### 15.3 NAPI crate 发布矩阵
 
@@ -693,13 +677,13 @@ CI 用 GitHub Actions matrix per platform 构建。
 
 ## 16. 测试策略
 
-| 层级 | 工具 | 覆盖 |
-|---|---|---|
-| Unit（main + renderer） | Vitest | reducer、zod schema、IPC handler、KodaX runtime wrapper |
-| Integration | Vitest + 真实 KodaX runtime | 起 KodaX session、跑工具、断言事件流 |
-| E2E | Playwright for Electron | 用户旅程 S1–S7（见 PRD §3.2） |
-| Smoke | per-platform install runner | 装包 + 首启 + 跑 1 个 session |
-| Compat | per-OS sample | Anthropic `.mcpb` 抽样跑 |
+| 层级                    | 工具                        | 覆盖                                                    |
+| ----------------------- | --------------------------- | ------------------------------------------------------- |
+| Unit（main + renderer） | Vitest                      | reducer、zod schema、IPC handler、KodaX runtime wrapper |
+| Integration             | Vitest + 真实 KodaX runtime | 起 KodaX session、跑工具、断言事件流                    |
+| E2E                     | Playwright for Electron     | 用户旅程 S1–S7（见 PRD §3.2）                           |
+| Smoke                   | per-platform install runner | 装包 + 首启 + 跑 1 个 session                           |
+| Compat                  | per-OS sample               | Anthropic `.mcpb` 抽样跑                                |
 
 NAPI crate 独立 Rust 单测 + 与 TS wrapper 的集成测。
 
@@ -707,17 +691,17 @@ NAPI crate 独立 Rust 单测 + 与 TS wrapper 的集成测。
 
 ## 17. 与 KodaX 内核 HLD 的对照
 
-| KodaX 内核 HLD 概念 | KodaX Space 中的体现 |
-|---|---|
-| Surfaces | Space 是 KodaX 的 first-party 桌面 surface；不挪用任务逻辑 |
-| Intent Gate / Direct Path | 在 KodaX runtime 内（in-process）；UI 仅看结果 |
-| Scout / AMA Control Plane | 仅以"模式徽标 + Round"体现；不绘制内部图 |
-| Coding Runtime | 全部在 main 进程 KodaX runtime |
-| Durable Task State | 写盘真理面在 KodaX runtime（`~/.kodax/sessions/`）；Space 是读视图 |
-| Skill 集成 | 直接调 `@kodax-ai/skills` API |
-| 证据分层 | UI 在 verdict 卡片浏览，不重新组织 |
-| Project + SA / AMA | UI 用 surface（code / partner）+ mode（plan / edits / auto）；Quick Ask 是固定 `mode=plan` 的 transient session |
-| npm 发布 scoped 包 | Space 把 `@kodax-ai/{coding,llm,agent,skills}` 作为 dependency 按需拉 |
+| KodaX 内核 HLD 概念       | KodaX Space 中的体现                                                                                            |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| Surfaces                  | Space 是 KodaX 的 first-party 桌面 surface；不挪用任务逻辑                                                      |
+| Intent Gate / Direct Path | 在 KodaX runtime 内（in-process）；UI 仅看结果                                                                  |
+| Scout / AMA Control Plane | 仅以"模式徽标 + Round"体现；不绘制内部图                                                                        |
+| Coding Runtime            | 全部在 main 进程 KodaX runtime                                                                                  |
+| Durable Task State        | 写盘真理面在 KodaX runtime（`~/.kodax/sessions/`）；Space 是读视图                                              |
+| Skill 集成                | 直接调 `@kodax-ai/skills` API                                                                                   |
+| 证据分层                  | UI 在 verdict 卡片浏览，不重新组织                                                                              |
+| Project + SA / AMA        | UI 用 surface（code / partner）+ mode（plan / edits / auto）；Quick Ask 是固定 `mode=plan` 的 transient session |
+| npm 发布 scoped 包        | Space 把 `@kodax-ai/{coding,llm,agent,skills}` 作为 dependency 按需拉                                           |
 
 ---
 
@@ -737,6 +721,7 @@ Space 严格遵守：
 ### 19.1 KodaX Partner 接入（M2）
 
 无需新协议层：
+
 - KodaX 内核加 Partner profile（不同 system prompt + 工具白名单 + skill 子集）
 - Space 在 main 进程用同一 KodaX SDK 起 Partner-flavored client
 - Renderer 渲染 Partner surface spec
@@ -744,6 +729,7 @@ Space 严格遵守：
 ### 19.2 Routines / Automations（M3）
 
 不做云托管。本地路径：
+
 - Space 提供 schedule 编辑器
 - 写入 OS 任务（launchd / Task Scheduler / systemd timer）
 - 到期 spawn `kodax --session ... --once` one-shot
@@ -762,63 +748,63 @@ Space 严格遵守：
 
 ### M0 — 内核打通（4-6 周）
 
-| 任务 | 类别 |
-|---|---|
-| Electron 骨架 + Vite + React + TypeScript + Zustand | 工程 |
-| Main 进程 KodaX runtime wrapper（`kodax-host.ts`）| 工程 |
-| IPC schema (zod) | 工程 |
-| 对话流 UI + tool call 折叠 | UI |
-| Work 进度条 + reasoning mode 切换 | UI |
-| Subagent tree 视图 | UI |
-| 文件面板（Monaco read-only / diff） | UI |
-| Provider 配置 GUI（写 keychain） | 工程 |
-| MCP 管理 v1（列表 + 启停） | 工程 |
-| Permission 弹窗组件 | UI |
-| 内置终端（xterm.js + node-pty 单 tab）| 工程 |
+| 任务                                                  | 类别 |
+| ----------------------------------------------------- | ---- |
+| Electron 骨架 + Vite + React + TypeScript + Zustand   | 工程 |
+| Main 进程 KodaX runtime wrapper（`kodax-host.ts`）    | 工程 |
+| IPC schema (zod)                                      | 工程 |
+| 对话流 UI + tool call 折叠                            | UI   |
+| Work 进度条 + reasoning mode 切换                     | UI   |
+| Subagent tree 视图                                    | UI   |
+| 文件面板（Monaco read-only / diff）                   | UI   |
+| Provider 配置 GUI（写 keychain）                      | 工程 |
+| MCP 管理 v1（列表 + 启停）                            | 工程 |
+| Permission 弹窗组件                                   | UI   |
+| 内置终端（xterm.js + node-pty 单 tab）                | 工程 |
 | **第一个 NAPI crate**（`@kodax-ai/native-tokenizer`） | 工程 |
-| 安装包：Win .exe + macOS .dmg unsigned | 发布 |
+| 安装包：Win .exe + macOS .dmg unsigned                | 发布 |
 
 ### M1 — 公开 Beta（6-8 周）
 
-| 任务 | 类别 |
-|---|---|
-| Quick Ask popover（全局热键 + 浮窗 + 临时 plan-mode session） | UI/工程 |
-| Repointel 状态条 + 一键 warm | 工程 |
-| Session lineage 图 | UI |
-| CLI ↔ Space 文件级 teleport | 工程 |
-| `.mcpb` 一键安装 | 工程 |
-| 自动更新（Squirrel） | 工程 |
-| 桌面通知 | 工程 |
-| 内置终端多 tab | 工程 |
-| 文件富预览（PDF / docx / xlsx） | 工程 |
-| 主题（明/暗/跟随） | UI |
-| NAPI: `native-diff` / `native-fuzzy`（按 profile）| 工程 |
-| 代码签名（macOS notarize / Win EV） | 发布 |
-| 隐私政策 + 文档站 | 法务/文档 |
+| 任务                                                          | 类别      |
+| ------------------------------------------------------------- | --------- |
+| Quick Ask popover（全局热键 + 浮窗 + 临时 plan-mode session） | UI/工程   |
+| Repointel 状态条 + 一键 warm                                  | 工程      |
+| Session lineage 图                                            | UI        |
+| CLI ↔ Space 文件级 teleport                                   | 工程      |
+| `.mcpb` 一键安装                                              | 工程      |
+| 自动更新（Squirrel）                                          | 工程      |
+| 桌面通知                                                      | 工程      |
+| 内置终端多 tab                                                | 工程      |
+| 文件富预览（PDF / docx / xlsx）                               | 工程      |
+| 主题（明/暗/跟随）                                            | UI        |
+| NAPI: `native-diff` / `native-fuzzy`（按 profile）            | 工程      |
+| 代码签名（macOS notarize / Win EV）                           | 发布      |
+| 隐私政策 + 文档站                                             | 法务/文档 |
 
 ### M2 — Partner + 拓展（2026-Q4）
 
-| 任务 | 类别 |
-|---|---|
-| Partner 面板骨架 + `[Coder] [Partner]` tab | UI |
-| 非编码 skill 包（3 个起步） | 内容 |
-| Connector：GitHub / GitLab / Slack | 工程 |
-| Automatic Review Agent | 工程 |
-| Hook 编辑器 v1 | UI |
-| Skill 市场（只读浏览） | 工程 |
-| 远端 KodaX runner（SSH/Docker exec） | 工程 |
-| Agent sandbox（worktree 自动复用） | 工程 |
+| 任务                                       | 类别 |
+| ------------------------------------------ | ---- |
+| Partner 面板骨架 + `[Coder] [Partner]` tab | UI   |
+| 非编码 skill 包（3 个起步）                | 内容 |
+| Connector：GitHub / GitLab / Slack         | 工程 |
+| Automatic Review Agent                     | 工程 |
+| Hook 编辑器 v1                             | UI   |
+| Skill 市场（只读浏览）                     | 工程 |
+| 远端 KodaX runner（SSH/Docker exec）       | 工程 |
+| Agent sandbox（worktree 自动复用）         | 工程 |
 
 ### M3 — GA & 企业（2027-Q1）
 
-| 任务 | 类别 |
-|---|---|
+| 任务                                  | 类别 |
+| ------------------------------------- | ---- |
 | 企业策略（provider 网关、扩展白名单） | 工程 |
-| 中央审计（syslog / SIEM 导出） | 工程 |
-| 团队配置文件下发 | 工程 |
+| 中央审计（syslog / SIEM 导出）        | 工程 |
+| 团队配置文件下发                      | 工程 |
 | 本地 Automations（webhook / cron 桥） | 工程 |
-| MSI 安装 + AD/MDM 集成 | 发布 |
-| Linux 支持（AppImage + deb） | 发布 |
+| MSI 安装 + AD/MDM 集成                | 发布 |
+| Linux 支持（AppImage + deb）          | 发布 |
 
 ---
 

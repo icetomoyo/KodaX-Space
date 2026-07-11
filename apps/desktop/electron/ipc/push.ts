@@ -19,13 +19,24 @@ export function setRendererTarget(getter: () => WebContents | null): void {
   targetGetter = getter;
 }
 
+/** True only for the current primary application renderer. */
+export function isRendererTarget(sender: WebContents): boolean {
+  const target = targetGetter?.();
+  return (
+    target !== null && target !== undefined && !target.isDestroyed() && sender.id === target.id
+  );
+}
+
 /**
  * push 一条事件到 renderer。
  * 防御：channel 名必须在 PUSH_CHANNEL_NAMES 里（防 main 端代码顺手用了未注册名）；
  * payload 必须通过对应 channel 的 zod parse（防协议漂移，与 invoke 的出参校验对称）。
  * window 缺席（启动早期、关闭中）静默丢弃——push 是 fire-and-forget。
  */
-export function pushToRenderer<C extends PushChannelName>(channel: C, payload: PushPayload<C>): void {
+export function pushToRenderer<C extends PushChannelName>(
+  channel: C,
+  payload: PushPayload<C>,
+): void {
   if (!PUSH_CHANNEL_NAMES.has(channel)) {
     console.error(`[push] channel not in PUSH_CHANNEL_NAMES: ${channel}`);
     return;

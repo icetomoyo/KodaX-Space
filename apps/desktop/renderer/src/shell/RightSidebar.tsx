@@ -20,17 +20,26 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Check,
+  Bot,
   ChevronRight,
   Eye,
   Folder,
   FolderOpen,
   Maximize2,
+  Loader2,
   Minus,
   PanelRightClose,
   PanelRightOpen,
+  RotateCcw,
+  Send,
+  Square,
   X,
 } from 'lucide-react';
-import type { SessionEvent } from '@kodax-space/space-ipc-schema';
+import type {
+  ExternalAgentTaskEventT,
+  ExternalAgentTaskT,
+  SessionEvent,
+} from '@kodax-space/space-ipc-schema';
 import { useAppStore } from '../store/appStore.js';
 import {
   openFileAsArtifact,
@@ -200,6 +209,7 @@ export function RightSidebar({
           <RunSection focusRequest={effectiveFocusRequest} />
           <PlanSection focusRequest={effectiveFocusRequest} />
           <AgentSection focusRequest={effectiveFocusRequest} />
+          <ExternalAgentTasksSection />
           <WorkflowSection focusRequest={effectiveFocusRequest} />
           <ChangesSection focusRequest={effectiveFocusRequest} />
           <SourcesSection focusRequest={effectiveFocusRequest} />
@@ -804,6 +814,403 @@ function AgentSection({
       )}
     </Section>
   );
+}
+
+function ExternalAgentTasksSection(): JSX.Element | null {
+  const { t } = useI18n();
+  const currentSessionId = useAppStore((s) => s.currentSessionId);
+  const [tasks, setTasks] = useState<ExternalAgentTaskT[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [busyTaskId, setBusyTaskId] = useState<string | null>(null);
+  const [inputByTask, setInputByTask] = useState<Record<string, string>>({});
+  const [eventsByTask, setEventsByTask] = useState<Record<string, ExternalAgentTaskEventT[]>>({});
+  const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null);
+  const activeSessionRef = useRef(currentSessionId);
+  activeSessionRef.current = currentSessionId;
+
+  const refresh = useCallback(async (): Promise<ExternalAgentTaskT[] | null> => {
+    const sessionId = currentSessionId;
+    if (!window.kodaxSpace || !sessionId) return [];
+    const result = await window.kodaxSpace.invoke('agent.external.task.list', {
+      sessionId,
+    });
+    if (activeSessionRef.current !== sessionId) return null;
+    if (!result.ok) {
+      setError(result.error.message);
+      return null;
+    }
+    setError(null);
+    setTasks(result.data.tasks);
+    return result.data.tasks;
+  }, [currentSessionId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer: number | null = null;
+    setTasks([]);
+    setError(null);
+    setEventsByTask({});
+    setExpandedTaskId(null);
+    setBusyTaskId(null);
+    setInputByTask({});
+    if (!currentSessionId) return () => undefined;
+
+    const poll = async (): Promise<void> => {
+      const nextTasks = await refresh();
+      if (cancelled || activeSessionRef.current !== currentSessionId) return;
+      const hasActiveTasks =
+        nextTasks?.some((task) => !isExternalTaskTerminal(task.state)) ?? false;
+      const delayMs = document.hidden ? 10_000 : hasActiveTasks ? 1_500 : 5_000;
+      timer = window.setTimeout(() => void poll(), delayMs);
+    };
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [currentSessionId, refresh]);
+
+  async function loadEvents(taskId: string, sessionId = currentSessionId): Promise<void> {
+    if (!window.kodaxSpace || !sessionId) return;
+    const events: ExternalAgentTaskEventT[] = [];
+    let cursor = 0;
+    for (let page = 0; page < 8; page += 1) {
+      const result = await window.kodaxSpace.invoke('agent.external.task.events', {
+        sessionId,
+        taskId,
+        cursor,
+      });
+      if (activeSessionRef.current !== sessionId) return;
+      if (!result.ok) {
+        setError(result.error.message);
+        return;
+      }
+      events.push(...result.data.events);
+      if (result.data.events.length < 512 || result.data.nextCursor <= cursor) break;
+      cursor = result.data.nextCursor;
+    }
+    setEventsByTask((current) => ({ ...current, [taskId]: events }));
+  }
+
+  async function toggleDetails(taskId: string): Promise<void> {
+    const next = expandedTaskId === taskId ? null : taskId;
+    setExpandedTaskId(next);
+    if (next) await loadEvents(taskId);
+  }
+
+  async function sendInput(taskId: string): Promise<void> {
+    const content = inputByTask[taskId]?.trim();
+    const sessionId = currentSessionId;
+    if (!window.kodaxSpace || !content || !sessionId) return;
+    setBusyTaskId(taskId);
+    const result = await window.kodaxSpace.invoke('agent.external.task.sendInput', {
+      sessionId,
+      taskId,
+      content,
+    });
+    if (activeSessionRef.current !== sessionId) return;
+    setBusyTaskId(null);
+    if (!result.ok) setError(result.error.message);
+    else {
+      setInputByTask((current) => ({ ...current, [taskId]: '' }));
+      await Promise.all([refresh(), loadEvents(taskId, sessionId)]);
+    }
+  }
+
+  async function cancelTask(taskId: string): Promise<void> {
+    const sessionId = currentSessionId;
+    if (!window.kodaxSpace || !sessionId) return;
+    setBusyTaskId(taskId);
+    const result = await window.kodaxSpace.invoke('agent.external.task.cancel', {
+      sessionId,
+      taskId,
+      reason: t('right.externalAgentCancelReason'),
+    });
+    if (activeSessionRef.current !== sessionId) return;
+    setBusyTaskId(null);
+    if (!result.ok) setError(result.error.message);
+    else await Promise.all([refresh(), loadEvents(taskId, sessionId)]);
+  }
+
+  async function reconcileTask(taskId: string): Promise<void> {
+    const sessionId = currentSessionId;
+    if (!window.kodaxSpace || !sessionId) return;
+    setBusyTaskId(taskId);
+    const result = await window.kodaxSpace.invoke('agent.external.task.reconcile', {
+      sessionId,
+      taskId,
+    });
+    if (activeSessionRef.current !== sessionId) return;
+    setBusyTaskId(null);
+    if (!result.ok) setError(result.error.message);
+    else await Promise.all([refresh(), loadEvents(taskId, sessionId)]);
+  }
+
+  if (tasks.length === 0 && !error) return null;
+  const activeCount = tasks.filter((task) => !isExternalTaskTerminal(task.state)).length;
+  return (
+    <Section
+      title={t('right.externalAgentTasksCount', { count: tasks.length })}
+      defaultOpen={activeCount > 0}
+      autoOpenKey={tasks.find((task) => !isExternalTaskTerminal(task.state))?.taskId ?? null}
+    >
+      {error && <div className="mb-2 text-[11px] text-danger">{error}</div>}
+      <div className="space-y-2" data-testid="external-agent-task-list">
+        {tasks.map((task) => {
+          const expanded = expandedTaskId === task.taskId;
+          const busy = busyTaskId === task.taskId;
+          const canCancel = ['submitted', 'working', 'input-required', 'auth-required'].includes(
+            task.state,
+          );
+          return (
+            <article
+              key={task.taskId}
+              className={`rounded-lg border px-2.5 py-2 ${externalTaskCardClass(task.state)}`}
+              data-testid="external-agent-task-card"
+            >
+              <button
+                type="button"
+                onClick={() => void toggleDetails(task.taskId)}
+                className="w-full text-left"
+                aria-expanded={expanded}
+              >
+                <div className="flex items-start gap-2">
+                  <Bot size={13} className="mt-0.5 shrink-0 text-info" aria-hidden />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5">
+                      <span className="line-clamp-2 text-[11px] font-medium text-fg-primary">
+                        {task.objective}
+                      </span>
+                      <span className="ml-auto shrink-0 rounded bg-surface-3 px-1.5 py-0.5 text-[9px] uppercase text-fg-secondary">
+                        {externalTaskStateLabel(task.state, t)}
+                      </span>
+                    </div>
+                    <div className="mt-0.5 truncate font-mono text-[9px] text-fg-faint">
+                      {task.agentId}
+                    </div>
+                    {task.progress?.message && (
+                      <div className="mt-1 text-[10px] text-fg-secondary">
+                        {task.progress.message}
+                      </div>
+                    )}
+                    {task.progress?.percent !== undefined && (
+                      <div className="mt-1 h-1 overflow-hidden rounded bg-surface-3">
+                        <div
+                          className="h-full bg-info"
+                          style={{ width: `${task.progress.percent}%` }}
+                        />
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </button>
+
+              {task.cancellation !== 'none' && (
+                <div className="mt-1.5 rounded bg-warn/10 px-2 py-1 text-[10px] text-warn">
+                  {t('right.externalAgentCancellation', {
+                    state: externalCancellationLabel(task.cancellation, t),
+                  })}
+                </div>
+              )}
+
+              {task.state === 'input-required' && (
+                <div className="mt-2 flex gap-1.5" data-testid="external-agent-input-form">
+                  <input
+                    value={inputByTask[task.taskId] ?? ''}
+                    onChange={(event) =>
+                      setInputByTask((current) => ({
+                        ...current,
+                        [task.taskId]: event.target.value,
+                      }))
+                    }
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') void sendInput(task.taskId);
+                    }}
+                    placeholder={t('right.externalAgentInputPlaceholder')}
+                    className="min-w-0 flex-1 rounded border border-warn/40 bg-surface px-2 py-1 text-[11px] text-fg-primary outline-none focus:border-warn"
+                  />
+                  <button
+                    type="button"
+                    disabled={busy || !inputByTask[task.taskId]?.trim()}
+                    onClick={() => void sendInput(task.taskId)}
+                    className="inline-flex h-7 w-7 items-center justify-center rounded bg-warn/15 text-warn disabled:opacity-50"
+                    aria-label={t('right.externalAgentSendInput')}
+                    title={t('right.externalAgentSendInput')}
+                  >
+                    {busy ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />}
+                  </button>
+                </div>
+              )}
+
+              {task.state === 'auth-required' && (
+                <div className="mt-2 rounded bg-danger/10 px-2 py-1 text-[10px] text-danger">
+                  {t('right.externalAgentAuthRequired')}
+                </div>
+              )}
+
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {canCancel && (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void cancelTask(task.taskId)}
+                    className="inline-flex min-h-6 items-center gap-1 rounded border border-danger/35 bg-danger/10 px-2 text-[10px] text-danger disabled:opacity-50"
+                  >
+                    <Square size={9} /> {t('right.externalAgentCancel')}
+                  </button>
+                )}
+                {task.state === 'unknown' && (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void reconcileTask(task.taskId)}
+                    className="inline-flex min-h-6 items-center gap-1 rounded border border-warn/35 bg-warn/10 px-2 text-[10px] text-warn disabled:opacity-50"
+                  >
+                    <RotateCcw size={10} className={busy ? 'animate-spin' : ''} />{' '}
+                    {t('right.externalAgentReconcile')}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => void toggleDetails(task.taskId)}
+                  className="ml-auto text-[10px] text-fg-muted hover:text-fg-primary"
+                >
+                  {expanded
+                    ? t('right.externalAgentHideDetails')
+                    : t('right.externalAgentShowDetails')}
+                </button>
+              </div>
+
+              {expanded && (
+                <div
+                  className="mt-2 space-y-2 border-t border-border-default/60 pt-2"
+                  data-testid="external-agent-task-details"
+                >
+                  <div className="grid grid-cols-2 gap-1 text-[9px] text-fg-faint">
+                    <span>
+                      {t('right.externalAgentProtocol')}: {task.protocol}
+                    </span>
+                    <span className="break-all">
+                      {t('right.externalAgentRevision')}: {task.configurationRevision}
+                    </span>
+                    {task.runId && (
+                      <span>
+                        {t('right.externalAgentRun')}: {task.runId}
+                      </span>
+                    )}
+                    <span>{new Date(task.updatedAt).toLocaleString()}</span>
+                  </div>
+                  {task.output && (
+                    <pre className="max-h-36 overflow-auto whitespace-pre-wrap break-words rounded bg-surface-3 p-2 text-[10px] text-fg-secondary">
+                      {task.output}
+                    </pre>
+                  )}
+                  {(task.error ?? task.cancellationError) && (
+                    <div className="rounded bg-danger/10 p-2 text-[10px] text-danger">
+                      {task.error ?? task.cancellationError}
+                    </div>
+                  )}
+                  {task.artifacts && task.artifacts.length > 0 && (
+                    <div className="text-[10px] text-fg-secondary">
+                      {t('right.externalAgentArtifacts', { count: task.artifacts.length })}
+                    </div>
+                  )}
+                  {task.usage?.totalTokens !== undefined && (
+                    <div className="text-[10px] text-fg-muted">
+                      {t('right.externalAgentTokens', { count: task.usage.totalTokens })}
+                    </div>
+                  )}
+                  <ExternalAgentEventTimeline events={eventsByTask[task.taskId] ?? []} />
+                </div>
+              )}
+            </article>
+          );
+        })}
+      </div>
+    </Section>
+  );
+}
+
+function ExternalAgentEventTimeline({
+  events,
+}: {
+  readonly events: readonly ExternalAgentTaskEventT[];
+}): JSX.Element {
+  const { t } = useI18n();
+  if (events.length === 0)
+    return <div className="text-[10px] text-fg-faint">{t('right.externalAgentNoEvents')}</div>;
+  return (
+    <ol className="space-y-1" aria-label={t('right.externalAgentEventLog')}>
+      {events.map((event) => (
+        <li key={`${event.taskId}:${event.seq}`} className="flex gap-2 text-[10px] text-fg-muted">
+          <span className="w-5 shrink-0 font-mono text-fg-faint">#{event.seq}</span>
+          <span className="w-16 shrink-0 text-fg-secondary">{event.type}</span>
+          <span className="min-w-0 break-words">
+            {event.progress?.message ??
+              event.output ??
+              event.error ??
+              (event.state ? externalTaskStateLabel(event.state, t) : '')}
+          </span>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function isExternalTaskTerminal(state: ExternalAgentTaskT['state']): boolean {
+  return ['completed', 'failed', 'canceled', 'rejected'].includes(state);
+}
+
+function externalTaskCardClass(state: ExternalAgentTaskT['state']): string {
+  if (state === 'completed') return 'border-ok/35 bg-ok/8';
+  if (state === 'failed' || state === 'rejected') return 'border-danger/40 bg-danger/8';
+  if (state === 'input-required' || state === 'auth-required' || state === 'unknown')
+    return 'border-warn/40 bg-warn/8';
+  if (state === 'canceled') return 'border-border-default bg-surface-2';
+  return 'border-info/35 bg-info/8';
+}
+
+function externalTaskStateLabel(state: ExternalAgentTaskT['state'], t: Translate): string {
+  switch (state) {
+    case 'submitted':
+      return t('right.externalAgentState.submitted');
+    case 'working':
+      return t('right.externalAgentState.working');
+    case 'input-required':
+      return t('right.externalAgentState.inputRequired');
+    case 'auth-required':
+      return t('right.externalAgentState.authRequired');
+    case 'completed':
+      return t('right.externalAgentState.completed');
+    case 'failed':
+      return t('right.externalAgentState.failed');
+    case 'canceled':
+      return t('right.externalAgentState.canceled');
+    case 'rejected':
+      return t('right.externalAgentState.rejected');
+    case 'unknown':
+      return t('right.externalAgentState.unknown');
+  }
+}
+
+function externalCancellationLabel(
+  cancellation: ExternalAgentTaskT['cancellation'],
+  t: Translate,
+): string {
+  switch (cancellation) {
+    case 'none':
+      return t('right.externalAgentCancellationState.none');
+    case 'requested':
+      return t('right.externalAgentCancellationState.requested');
+    case 'confirmed':
+      return t('right.externalAgentCancellationState.confirmed');
+    case 'unsupported':
+      return t('right.externalAgentCancellationState.unsupported');
+    case 'failed':
+      return t('right.externalAgentCancellationState.failed');
+    case 'unknown':
+      return t('right.externalAgentCancellationState.unknown');
+  }
 }
 
 // ---- Changes section: git porcelain file list ----

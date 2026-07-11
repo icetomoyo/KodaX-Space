@@ -10,7 +10,7 @@
 //
 // 这层 smoke 抓的是 build 配置漂移：忘了 bundle main.js / files glob 把 dist 排除 / 误塞超大依赖。
 
-import { promises as fs, readdirSync } from 'node:fs';
+import { promises as fs, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -19,6 +19,9 @@ import { spawnSync } from 'node:child_process';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, '..');
 const outDir = path.join(rootDir, 'out');
+const rootPackage = JSON.parse(readFileSync(path.join(rootDir, 'package.json'), 'utf8'));
+const SPACE_VERSION = String(rootPackage.version ?? '').trim();
+const KODAX_VERSION = String(rootPackage.dependencies?.['@kodax-ai/kodax'] ?? '').trim();
 const SIZE_LIMIT_BYTES = 200 * 1024 * 1024;
 const require = createRequire(import.meta.url);
 const electronBin = require('electron');
@@ -168,9 +171,7 @@ async function findInstaller() {
     fail(`out/ directory not found: ${err.message}`);
   }
   // 平台对应：Win .exe / mac .dmg / Linux .AppImage (future)
-  const packageMetadata = JSON.parse(
-    await fs.readFile(path.join(rootDir, 'package.json'), 'utf8'),
-  );
+  const packageMetadata = JSON.parse(await fs.readFile(path.join(rootDir, 'package.json'), 'utf8'));
   const currentVersion = String(packageMetadata.version ?? '').trim();
   if (!/^\d+\.\d+\.\d+(?:[-+].+)?$/.test(currentVersion)) {
     fail(`package.json has an invalid release version: ${currentVersion || 'empty'}`);
@@ -285,7 +286,7 @@ async function checkAsarContents(asarPath) {
     ok(`asar contains ${req}`);
   }
 
-  // KodaX 0.7.66 adds a public Runtime facade plus Worker sidecars. The SDK
+  // KodaX's public Runtime facade uses Worker sidecars. The SDK
   // resolves these files relative to its installed dist directory, so an
   // installer that prunes any one of them can pass compilation and fail only
   // when Runtime or a constructed handler first starts.
@@ -299,7 +300,7 @@ async function checkAsarContents(asarPath) {
   ];
   for (const req of kodaxRuntimeRequired) {
     if (!normalized.some((f) => f === req || f.endsWith(req))) {
-      fail(`KodaX 0.7.66 Runtime dependency missing from asar: ${req}`);
+      fail(`KodaX ${KODAX_VERSION} Runtime dependency missing from asar: ${req}`);
     }
     ok(`asar contains ${req}`);
   }
@@ -438,7 +439,7 @@ try {
       resourceLimits: { maxOldGenerationSizeMb: 128 },
       shutdownTimeoutMs: 1500,
     },
-    clientInfo: { name: 'kodax-space-pack-smoke', version: '0.1.30' },
+    clientInfo: { name: 'kodax-space-pack-smoke', version: ${JSON.stringify(SPACE_VERSION)} },
   });
   const created = await runtime.sessions.create({
     title: 'Packaged Runtime compatibility probe',
@@ -469,7 +470,7 @@ try {
     constructedHandlerIsMainThread: handlerResult,
   };
   if (
-    result.version !== '0.7.66' ||
+    result.version !== ${JSON.stringify(KODAX_VERSION)} ||
     result.mode !== 'embedded' ||
     result.isolation !== 'worker' ||
     !Number.isSafeInteger(result.workerThreadId) ||
@@ -516,7 +517,7 @@ try {
         `${(result.stderr || result.stdout || 'no output').slice(-4_000)}`,
     );
   }
-  ok('KodaX 0.7.66 Runtime and constructed-handler Workers execute from packaged asar');
+  ok(`KodaX ${KODAX_VERSION} Runtime and constructed-handler Workers execute from packaged asar`);
 }
 
 async function main() {

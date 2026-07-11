@@ -1,6 +1,6 @@
 {
   "name": "@kodax-space/desktop",
-  "version": "0.1.30",
+  "version": "0.1.31",
   "description": "KodaX Space desktop app — Electron main + Vite renderer",
   "private": true,
   "type": "module",
@@ -13,7 +13,7 @@
   "dependencies": {
     "@fontsource-variable/geist": "^5.2.9",
     "@fontsource-variable/jetbrains-mono": "^5.2.8",
-    "@kodax-ai/kodax": "0.7.66",
+    "@kodax-ai/kodax": "0.7.67",
     "@kodax-space/space-ipc-schema": "*",
     "@kodax-space/space-ui-kit": "*",
     "@monaco-editor/react": "^4.7.0",

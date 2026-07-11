@@ -17,6 +17,7 @@ import {
   type ChannelInput,
   type ChannelOutput,
 } from '@kodax-space/space-ipc-schema';
+import type { IpcMainInvokeEvent } from 'electron';
 
 // 惰性拿 ipcMain —— **不**在 top-level `import { ipcMain } from 'electron'`。
 // 否则任何 import 本模块的代码（含测试经 slash.ts / ipc handler 的依赖链）在 tsx/esm
@@ -38,9 +39,29 @@ type Handler<C extends InvokeChannelName> = (
   input: ChannelInput<C>,
 ) => Promise<ChannelOutput<C>> | ChannelOutput<C>;
 
+type EventHandler<C extends InvokeChannelName> = (
+  input: ChannelInput<C>,
+  event: IpcMainInvokeEvent,
+) => Promise<ChannelOutput<C>> | ChannelOutput<C>;
+
 const registeredChannels = new Set<string>();
 
 export function registerChannel<C extends InvokeChannelName>(name: C, handler: Handler<C>): void {
+  registerChannelInternal(name, (input) => handler(input));
+}
+
+/** Register a channel whose authorization needs the Electron sender identity. */
+export function registerChannelWithEvent<C extends InvokeChannelName>(
+  name: C,
+  handler: EventHandler<C>,
+): void {
+  registerChannelInternal(name, handler);
+}
+
+function registerChannelInternal<C extends InvokeChannelName>(
+  name: C,
+  handler: EventHandler<C>,
+): void {
   if (registeredChannels.has(name)) {
     throw new Error(`[ipc] channel already registered: ${name}`);
   }
@@ -53,13 +74,16 @@ export function registerChannel<C extends InvokeChannelName>(name: C, handler: H
       // OC-09 安全：用 truncateZodError 替代 .flatten() —— flatten() 会把所有
       // issue 全塞进去，对大 payload (>1MB prompt) 可能产出 KB 级 details，进而
       // 流到 main 日志 / renderer console。truncateZodError 剥掉原值字段、限到 1KB。
-      return fail('SCHEMA_INVALID', `[${name}] input failed schema validation`,
-        truncateZodError(parsedInput.error));
+      return fail(
+        'SCHEMA_INVALID',
+        `[${name}] input failed schema validation`,
+        truncateZodError(parsedInput.error),
+      );
     }
 
     let result: ChannelOutput<C>;
     try {
-      result = await handler(parsedInput.data as ChannelInput<C>);
+      result = await handler(parsedInput.data as ChannelInput<C>, _event);
     } catch (err) {
       // 不把 err 原对象塞进 envelope——可能携带敏感字段（FEATURE_003 接 LLM 后尤其重要）
       const message = err instanceof Error ? err.message : String(err);
@@ -69,8 +93,11 @@ export function registerChannel<C extends InvokeChannelName>(name: C, handler: H
     const parsedOutput = def.output.safeParse(result);
     if (!parsedOutput.success) {
       // OC-09 同入参：output 也走 truncate，handler 可能返回包含敏感字段的对象
-      return fail('OUTPUT_INVALID', `[${name}] handler returned schema-invalid output`,
-        truncateZodError(parsedOutput.error));
+      return fail(
+        'OUTPUT_INVALID',
+        `[${name}] handler returned schema-invalid output`,
+        truncateZodError(parsedOutput.error),
+      );
     }
 
     return ok(parsedOutput.data as ChannelOutput<C>);

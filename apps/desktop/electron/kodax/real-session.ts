@@ -156,6 +156,7 @@ import {
 import { SPACE_MANUAL_TOPICS, SPACE_PRODUCT_NAME } from './space-manual-topics.js';
 import { workflowPolicyStore, buildWorkflowHostPolicy } from './workflow-policy.js';
 import { workflowController } from './workflow-controller.js';
+import { externalAgentGateway } from './external-agent-gateway.js';
 import { loadKodaxCompactionConfig } from './user-config.js';
 import { pushToRenderer } from '../ipc/push.js';
 import {
@@ -1502,6 +1503,11 @@ export class RealKodaXSession implements ManagedSession {
         );
       }
 
+      const externalAgentBinding = await externalAgentGateway.getBinding({
+        actorId: 'space:session',
+        projectId: this.projectRoot,
+        parentTaskId: sid,
+      });
       const context: NonNullable<KodaXOptions['context']> = {
         // gitRoot 用 projectRoot——Space 不再单独求 git root，KodaX 自己会处理边界
         gitRoot: this.projectRoot,
@@ -1511,6 +1517,7 @@ export class RealKodaXSession implements ManagedSession {
         ...(markdownAgentScopeHandle !== undefined
           ? { agentScope: markdownAgentScopeHandle.scope }
           : {}),
+        ...(externalAgentBinding !== undefined ? { agentExecutorPlane: externalAgentBinding } : {}),
         ...(partnerAgentProfile ? { agentProfile: partnerAgentProfile } : {}),
         ...(partnerAgentProfile ? { toolVisibilityPolicy: partnerToolVisibilityPolicy } : {}),
         ...(combinedPromptOverlay ? { promptOverlay: combinedPromptOverlay } : {}),

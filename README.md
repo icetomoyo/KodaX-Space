@@ -13,7 +13,7 @@
   <a href="https://github.com/icetomoyo/KodaX-Space/releases/latest"><img alt="release" src="https://img.shields.io/github/v/release/icetomoyo/KodaX-Space?style=flat-square"></a>
   <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-KAI--FCL-orange?style=flat-square"></a>
   <a href="https://github.com/icetomoyo/KodaX-Space/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/icetomoyo/KodaX-Space/ci.yml?style=flat-square&label=ci"></a>
-  <img alt="KodaX SDK" src="https://img.shields.io/badge/KodaX_SDK-0.7.66-2ecc71?style=flat-square">
+  <img alt="KodaX SDK" src="https://img.shields.io/badge/KodaX_SDK-0.7.67-2ecc71?style=flat-square">
   <img alt="platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-34495e?style=flat-square">
 </p>
 
@@ -88,24 +88,24 @@ npm run dev
   </tr>
 </table>
 
-## Current Release
+## Current Development Candidate
 
-**v0.1.30 - Partner Working Agent Foundation**
+**v0.1.31 - External Agent Orchestration Gateway Foundation**
 
-Release candidate: 2026-07-10
+Release candidate: 2026-07-12. The latest public release remains `v0.1.30` until this candidate is tagged.
 
-This release re-enables Partner as a mode-first working agent and aligns KodaX Space with `@kodax-ai/kodax@0.7.66`. Users choose a work mode and describe the task once; Partner infers the capability playbook and output shape, works from staged sources and project knowledge, and produces inspectable files in a writable run workspace.
+This release aligns KodaX Space with `@kodax-ai/kodax@0.7.67` and connects its protocol-neutral external-agent substrate to Space's existing live sessions and Workflow host.
 
-| Area | Summary |
-| --- | --- |
-| Work modes | Document processing, financial services, data analysis and visualization, deep research, product management, slides, design, and email editing share one composer-first flow. |
-| Open deliverables | Arbitrary bounded files can be delivered from a Partner run workspace; Office/PDF writers are convenience paths rather than the output ceiling. |
-| Controlled writes | Checkpointed project writes, diff/rollback, and strict reviewed proposals protect sensitive or existing files. |
-| Sources and knowledge | Sources can be staged before the first session; the local Partner KB supports CJK-aware search, citations, configuration, and maintenance reports. |
-| Lightweight coding | Partner may create and run bounded task-local JavaScript helpers without receiving unrestricted shell, package-manager, subagent, or repository mutation powers. |
-| KodaX 0.7.66 | The published Runtime facade and Worker sidecars are packaged and compatibility-tested. Live Space sessions remain on the proven 0.1.30 host path; daemon migration is intentionally deferred. |
+| Area                      | Summary                                                                                                                                                                                         |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Shared dispatch           | Workers and explicit Workflows use one `agentExecutorPlane`, one policy-filtered catalog, opaque `agent_id` routing, and one durable task ledger.                                               |
+| Main-process governance   | Registration writes, policy, credential brokerage, artifact denial/quarantine boundaries, and durable storage stay outside the renderer.                                                        |
+| Reference product surface | Runtime Settings manages and preflights registrations; Workflow Launcher selects a live default child target; Task Dock presents lifecycle, audit events, input, cancel, and reconcile actions. |
+| Bilingual acceptance      | The complete Reference Agent surface is localized in English and Simplified Chinese and covered by Electron E2E.                                                                                |
+| Capability honesty        | A2A, MCP Tasks, and governed HTTP remain hidden until separately delivered adapters advertise support and pass conformance.                                                                     |
+| KodaX 0.7.67              | Compatibility tests cover Runtime Worker hard-dispose plus external registration, discovery, task start, event handling, and terminal results.                                                  |
 
-See [CHANGELOG.md](CHANGELOG.md) and [docs/features/v0.1.30.md](docs/features/v0.1.30.md) for the full release notes and capability boundary.
+See [CHANGELOG.md](CHANGELOG.md) and [docs/features/v0.1.31.md](docs/features/v0.1.31.md) for the full release notes and capability boundary.
 
 **v0.1.29 - Workspace Environment Hub + Task Dock**
 
@@ -126,17 +126,18 @@ See [CHANGELOG.md](CHANGELOG.md) and [docs/features/v0.1.29.md](docs/features/v0
 
 ## Product Surface
 
-| Surface            | Purpose                                                                                                              |
-| ------------------ | -------------------------------------------------------------------------------------------------------------------- |
-| Coder workspace    | Main AI coding session surface, backed by the KodaX SDK runtime.                                                     |
-| Environment Hub    | Compact project/session/environment router for location, branch, changes, sources, and mode context.                 |
-| Task Dock          | Persistent right-side task surface for run status, plan, agents, workflow, changes, sources, artifacts, and context. |
-| Review workspace   | Diff and file-review surface for changes that need inspection.                                                       |
-| Artifact workspace | Preview, inspect, and export generated artifacts.                                                                    |
-| Terminal workspace | Real PTY terminal tabs scoped to the selected project.                                                               |
-| MCP and Skills     | Desktop management and display paths for KodaX MCP servers and skills.                                               |
-| Memory Governance  | Review, approve, reject, and inspect memory proposals and approved references.                                       |
-| Partner surface    | Code exists behind a flag, but the user-facing Partner workflow remains disabled until the deliverable chain lands.  |
+| Surface            | Purpose                                                                                                                                                                                                             |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Coder workspace    | Main AI coding session surface, backed by the KodaX SDK runtime.                                                                                                                                                    |
+| Environment Hub    | Compact project/session/environment router for location, branch, changes, sources, and mode context.                                                                                                                |
+| Task Dock          | Persistent right-side task surface for run status, plan, agents, workflow, changes, sources, artifacts, and context.                                                                                                |
+| Review workspace   | Diff and file-review surface for changes that need inspection.                                                                                                                                                      |
+| Artifact workspace | Preview, inspect, and export generated artifacts.                                                                                                                                                                   |
+| Terminal workspace | Real PTY terminal tabs scoped to the selected project.                                                                                                                                                              |
+| MCP and Skills     | Desktop management and display paths for KodaX MCP servers and skills.                                                                                                                                              |
+| Memory Governance  | Review, approve, reject, and inspect memory proposals and approved references.                                                                                                                                      |
+| Partner surface    | Enabled workspace-first knowledge-work surface with Sources, KB, Outputs, checkpointed writes, Office/PDF convenience writers, and local policy/audit controls.                                                     |
+| External Agents    | KodaX 0.7.67 Reference Agent administration, Workflow/Worker routing, and session-bound, race-safe Task Dock lifecycle/intervention UI; administration is main-window-only and real protocol adapters remain gated. |
 
 ## Configuration Model
 
@@ -224,7 +225,7 @@ npm run e2e:headed
 | Document                                                                                                 | Purpose                                                                                  |
 | -------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
 | [README_CN.md](README_CN.md)                                                                             | Chinese README.                                                                          |
-| [docs/USER_MANUAL.zh-CN.md](docs/USER_MANUAL.zh-CN.md)                                                   | Current Chinese user manual for KodaX Space 0.1.29.                                      |
+| [docs/USER_MANUAL.zh-CN.md](docs/USER_MANUAL.zh-CN.md)                                                   | Current Chinese user manual for the KodaX Space 0.1.31 development candidate.            |
 | [docs/USAGE.md](docs/USAGE.md)                                                                           | Usage notes covering launch, configuration reuse, slash commands, and known limits.      |
 | [docs/CODING_AGENT_BEGINNER_BEST_PRACTICES.zh-CN.md](docs/CODING_AGENT_BEGINNER_BEST_PRACTICES.zh-CN.md) | Chinese beginner guide for coding-agent practice in software and microservice workflows. |
 | [docs/PRD.md](docs/PRD.md)                                                                               | Product requirements and product positioning.                                            |
@@ -238,11 +239,11 @@ npm run e2e:headed
 
 Near-term planned work is tracked in [docs/FEATURE_LIST.md](docs/FEATURE_LIST.md). Current highlights:
 
-| Lane     | Focus                                                                                                                              |
-| -------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| v0.1.35  | Partner controlled workspace file writes through reviewed proposals and explicit apply/export.                                     |
-| v0.1.36+ | Workflow, todo, MCP/extension, provider, review, and beta-hardening lanes.                                                         |
-| v0.2.x   | Partner workbench, connector catalog, local automations, policy/audit pack, remote/self-hosted runner, and distribution expansion. |
+| Lane     | Focus                                                                                                                   |
+| -------- | ----------------------------------------------------------------------------------------------------------------------- |
+| v0.1.31  | KodaX 0.7.67 Reference External Agent integration; A2A/MCP Tasks/governed HTTP stay gated until upstream adapters ship. |
+| v0.1.35+ | Patch reserves followed by workflow, todo, MCP/extension, provider, review, and beta-hardening lanes.                   |
+| v0.2.x   | Connector catalog, local automations, remote/self-hosted runners, notebooks/data, and distribution expansion.           |
 
 ## License
 

@@ -147,9 +147,25 @@ export {
 
 export {
   agentDiscoverChannel,
+  externalAgentStatusChannel,
+  externalAgentRegistrationListChannel,
+  externalAgentReferenceUpsertChannel,
+  externalAgentRegistrationRemoveChannel,
+  externalAgentDispatchableListChannel,
+  externalAgentPreflightChannel,
+  externalAgentTaskListChannel,
+  externalAgentTaskStartChannel,
+  externalAgentTaskEventsChannel,
+  externalAgentTaskSendInputChannel,
+  externalAgentTaskCancelChannel,
+  externalAgentTaskReconcileChannel,
   type AgentMeta,
   type AgentSource,
   type AgentFailure,
+  type ExternalAgentRegistrationSummaryT,
+  type DispatchableAgentListingT,
+  type ExternalAgentTaskT,
+  type ExternalAgentTaskEventT,
 } from './channels/agent.js';
 
 export {

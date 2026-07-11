@@ -371,6 +371,13 @@ export const workflowStartChannel = {
     sessionId: z.string().min(1).max(128),
     /** 透传给工作流脚本的 args（JSON 值）。 */
     args: z.unknown().optional(),
+    /** Default catalog target for workflow child spawns that do not already declare a target. */
+    agentTarget: z
+      .object({
+        agentId: z.string().min(1).max(256),
+        expectedConfigurationRevision: z.string().min(1).max(256).optional(),
+      })
+      .optional(),
   }),
   output: z.object({
     runId: z.string().max(SHORT).optional(),

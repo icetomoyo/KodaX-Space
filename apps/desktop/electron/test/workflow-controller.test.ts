@@ -6,7 +6,11 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { WorkflowController, _setCodingSdkForTesting } from '../kodax/workflow-controller.js';
+import {
+  WorkflowController,
+  _setCodingSdkForTesting,
+  withDefaultWorkflowAgentTarget,
+} from '../kodax/workflow-controller.js';
 import { _setRepoIntelEntitlementForTesting } from '../kodax/repo-intel-gate.js';
 import type {
   WorkflowRunManagerLike,
@@ -90,6 +94,47 @@ function freshFile(): { dir: string; file: string } {
   const dir = mkdtempSync(join(tmpdir(), 'wf-ctrl-'));
   return { dir, file: join(dir, 'workflow-origins.json') };
 }
+
+test('launcher default Agent target is injected while authored targets keep precedence', async () => {
+  const calls: Array<Record<string, unknown>> = [];
+  const receivers: unknown[] = [];
+  const workflow = {
+    async spawnAgent(input: Record<string, unknown>) {
+      receivers.push(this);
+      calls.push(input);
+      return input;
+    },
+    async runAgent(input: Record<string, unknown>) {
+      receivers.push(this);
+      calls.push(input);
+      return input;
+    },
+  };
+  const module = withDefaultWorkflowAgentTarget(
+    {
+      async run(api: typeof workflow) {
+        await api.spawnAgent({ task: 'catalog-default' });
+        await api.runAgent({
+          task: 'authored-override',
+          target: { agentId: 'agent_authored', expectedConfigurationRevision: 'rev-authored' },
+        });
+      },
+    },
+    { agentId: 'agent_catalog', expectedConfigurationRevision: 'rev-catalog' },
+  ) as { run(api: typeof workflow, args?: unknown): Promise<void> };
+
+  await module.run(workflow);
+
+  assert.deepEqual(calls[0]?.target, {
+    agentId: 'agent_catalog',
+    expectedConfigurationRevision: 'rev-catalog',
+  });
+  assert.deepEqual(calls[1]?.target, {
+    agentId: 'agent_authored',
+    expectedConfigurationRevision: 'rev-authored',
+  });
+  assert.deepEqual(receivers, [workflow, workflow]);
+});
 
 test('subscribe forwards process events to renderer (no attribution when origin unknown)', async () => {
   const { dir, file } = freshFile();
@@ -442,7 +487,10 @@ test('list and get recover completed workflow runs from durable events without r
     assert.deepEqual(runs[0]?.patterns, ['fan-out-and-synthesize']);
     assert.equal(runs[0]?.phaseCount, 2);
     assert.equal(runs[0]?.artifacts?.[0]?.name, 'final-report');
-    assert.equal(runs[0]?.items.some((item) => item.title === 'Synthesize report'), true);
+    assert.equal(
+      runs[0]?.items.some((item) => item.title === 'Synthesize report'),
+      true,
+    );
     assert.equal(
       runs[0]?.items.find((item) => item.title === 'Interrupted reviewer')?.status,
       'cancelled',
@@ -451,7 +499,10 @@ test('list and get recover completed workflow runs from durable events without r
       runs[0]?.items.find((item) => item.title === 'History reviewer')?.summary,
       'Recovered digest from events-only run.',
     );
-    assert.equal(await ctrl.readResult(runId), '# Events-only durable report\n\nRecovered from artifact.');
+    assert.equal(
+      await ctrl.readResult(runId),
+      '# Events-only durable report\n\nRecovered from artifact.',
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -1242,9 +1293,8 @@ test('workflow launch forwards tokenBudget unconditionally (0 = unlimited, KodaX
     const mgr = fakeManager();
     await ctrl.init(mgr);
     await ctrl.createGeneratedWorkflow('do a thing', LAUNCH_SESSION);
-    const hostPolicy = (
-      mgr.started[0]!.options as { workflowHostPolicy: Record<string, unknown> }
-    ).workflowHostPolicy;
+    const hostPolicy = (mgr.started[0]!.options as { workflowHostPolicy: Record<string, unknown> })
+      .workflowHostPolicy;
     assert.ok(
       Object.prototype.hasOwnProperty.call(hostPolicy, 'tokenBudget'),
       'tokenBudget must be forwarded (not omitted) so an explicit 0 reaches the SDK as unbounded',

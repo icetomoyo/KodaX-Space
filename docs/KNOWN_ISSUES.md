@@ -1,38 +1,43 @@
 # Known Issues
 
-Last Updated: 2026-07-11
+Last Updated: 2026-07-12
 
 ## Issue Index
 
-| ID | Priority | Status | Title | Introduced | Created |
-|---|---|---|---|---|---|
-| 001 | High | Resolved | Resumed sessions display `glm-5.2` but run with provider default `glm-5`, causing early compaction | v0.1.21 | 2026-06-22 |
-| 002 | High | Resolved | Space used SDK MessageQueue `agentId` for main-thread prompts, preventing runner drain and making prior queue fix incorrect | v0.1.4 | 2026-06-22 |
-| 003 | High | Resolved | SDK `askUser` / `askUserMulti` / `askUserInput` callbacks were not wired to Space UI | v0.1.21 | 2026-06-22 |
-| 004 | Medium | Resolved | MCP manager reload could be overwritten by a stale in-flight initializer | v0.1.x | 2026-06-22 |
-| 005 | Low | Resolved | Context window indicator could keep the previous model cap while the new model cap was loading | v0.1.21 | 2026-06-22 |
-| 006 | Medium | Resolved | Persisted SDK session summaries do not expose exact historical runtime model metadata | pre-v0.1.21 | 2026-06-22 |
-| 007 | High | Resolved | SDK main-thread follow-up owner guard did not protect already-running concurrent sessions | v0.1.21 | 2026-06-22 |
-| 008 | High | Resolved | Real KodaX sessions did not register configured MCP capability provider | v0.1.x | 2026-06-23 |
-| 009 | High | Resolved | Space per-session follow-up queue removed SDK mid-turn queue-query insertion | v0.1.21 | 2026-06-23 |
-| 010 | High | Resolved | Changing current project could keep a stale active session, so agent ran in the previous workspace | v0.1.x | 2026-06-23 |
-| 011 | Medium | Resolved | Streaming transcript auto-follow ignores upward wheel input and locks the view to the bottom | v0.1.23 | 2026-06-24 |
-| 012 | High | Resolved | Mid-turn interrupt prompts stayed visually above the spinner because SDK prompt-consumption events were not surfaced | v0.1.22 | 2026-06-24 |
-| 013 | High | Resolved | Restored KodaX sessions could pair assistant segments with the following user prompt after consecutive user messages | v0.1.29 | 2026-07-08 |
-| 014 | Medium | Resolved | Session rename reverted after switching sessions because manual titles were not persisted outside memory | v0.1.29 | 2026-07-08 |
-| 015 | High | Resolved | Partner capability redesign drift allowed overly broad workspace delivery writes and stale output registry state | v0.1.30 | 2026-07-09 |
-| 016 | High | Resolved | Partner helper VM exposed host constructors and allowed escape to Node process and unrestricted filesystem | v0.1.30 | 2026-07-10 |
-| 017 | High | Resolved | Partner corrupted Unicode PDF output and could not read PDF or Office sources | v0.1.30 | 2026-07-10 |
-| 018 | High | Resolved | Active queue watcher deleted Partner follow-up overlay before dequeue returned it | v0.1.30 | 2026-07-10 |
-| 019 | High | Resolved | Partner KB could not search Chinese and could overwrite corrupt durable state | v0.1.30 | 2026-07-10 |
-| 020 | High | Resolved | Partner file paths, writes, decoding, hashing, and durable stores had unsafe edge cases | v0.1.30 | 2026-07-10 |
-| 021 | Medium | Resolved | Partner advertised unavailable SDK Skills and Outputs lacked an in-app delivery preview loop | v0.1.30 | 2026-07-10 |
-| 022 | Medium | Open | KodaX Runtime lacks a general per-invocation execution service for Partner helper migration | KodaX 0.7.66 adoption | 2026-07-10 |
-| 023 | Medium | Resolved | Composer file picker opened the project-directory dialog and could not select images or files | v0.1.30 | 2026-07-11 |
-| 024 | High | Resolved | ACP placeholder sessions consumed the 200-row Space history window and hid real project sessions | v0.1.30 | 2026-07-11 |
-| 025 | High | Open | KodaX ACP tests persist fixture sessions into the real user session/runtime directories | KodaX 0.7.66 | 2026-07-11 |
-| 026 | High | Resolved | Space E2E test mode isolated app data but left the SDK session home pointed at the real user directory | v0.1.30 | 2026-07-11 |
-| 027 | High | Resolved | A global 200-session window let one busy project make other project histories appear empty | v0.1.30 | 2026-07-11 |
+| ID  | Priority | Status   | Title                                                                                                                       | Introduced            | Created    |
+| --- | -------- | -------- | --------------------------------------------------------------------------------------------------------------------------- | --------------------- | ---------- |
+| 001 | High     | Resolved | Resumed sessions display `glm-5.2` but run with provider default `glm-5`, causing early compaction                          | v0.1.21               | 2026-06-22 |
+| 002 | High     | Resolved | Space used SDK MessageQueue `agentId` for main-thread prompts, preventing runner drain and making prior queue fix incorrect | v0.1.4                | 2026-06-22 |
+| 003 | High     | Resolved | SDK `askUser` / `askUserMulti` / `askUserInput` callbacks were not wired to Space UI                                        | v0.1.21               | 2026-06-22 |
+| 004 | Medium   | Resolved | MCP manager reload could be overwritten by a stale in-flight initializer                                                    | v0.1.x                | 2026-06-22 |
+| 005 | Low      | Resolved | Context window indicator could keep the previous model cap while the new model cap was loading                              | v0.1.21               | 2026-06-22 |
+| 006 | Medium   | Resolved | Persisted SDK session summaries do not expose exact historical runtime model metadata                                       | pre-v0.1.21           | 2026-06-22 |
+| 007 | High     | Resolved | SDK main-thread follow-up owner guard did not protect already-running concurrent sessions                                   | v0.1.21               | 2026-06-22 |
+| 008 | High     | Resolved | Real KodaX sessions did not register configured MCP capability provider                                                     | v0.1.x                | 2026-06-23 |
+| 009 | High     | Resolved | Space per-session follow-up queue removed SDK mid-turn queue-query insertion                                                | v0.1.21               | 2026-06-23 |
+| 010 | High     | Resolved | Changing current project could keep a stale active session, so agent ran in the previous workspace                          | v0.1.x                | 2026-06-23 |
+| 011 | Medium   | Resolved | Streaming transcript auto-follow ignores upward wheel input and locks the view to the bottom                                | v0.1.23               | 2026-06-24 |
+| 012 | High     | Resolved | Mid-turn interrupt prompts stayed visually above the spinner because SDK prompt-consumption events were not surfaced        | v0.1.22               | 2026-06-24 |
+| 013 | High     | Resolved | Restored KodaX sessions could pair assistant segments with the following user prompt after consecutive user messages        | v0.1.29               | 2026-07-08 |
+| 014 | Medium   | Resolved | Session rename reverted after switching sessions because manual titles were not persisted outside memory                    | v0.1.29               | 2026-07-08 |
+| 015 | High     | Resolved | Partner capability redesign drift allowed overly broad workspace delivery writes and stale output registry state            | v0.1.30               | 2026-07-09 |
+| 016 | High     | Resolved | Partner helper VM exposed host constructors and allowed escape to Node process and unrestricted filesystem                  | v0.1.30               | 2026-07-10 |
+| 017 | High     | Resolved | Partner corrupted Unicode PDF output and could not read PDF or Office sources                                               | v0.1.30               | 2026-07-10 |
+| 018 | High     | Resolved | Active queue watcher deleted Partner follow-up overlay before dequeue returned it                                           | v0.1.30               | 2026-07-10 |
+| 019 | High     | Resolved | Partner KB could not search Chinese and could overwrite corrupt durable state                                               | v0.1.30               | 2026-07-10 |
+| 020 | High     | Resolved | Partner file paths, writes, decoding, hashing, and durable stores had unsafe edge cases                                     | v0.1.30               | 2026-07-10 |
+| 021 | Medium   | Resolved | Partner advertised unavailable SDK Skills and Outputs lacked an in-app delivery preview loop                                | v0.1.30               | 2026-07-10 |
+| 022 | Medium   | Open     | KodaX Runtime lacks a general per-invocation execution service for Partner helper migration                                 | KodaX 0.7.66 adoption | 2026-07-10 |
+| 023 | Medium   | Resolved | Composer file picker opened the project-directory dialog and could not select images or files                               | v0.1.30               | 2026-07-11 |
+| 024 | High     | Resolved | ACP placeholder sessions consumed the 200-row Space history window and hid real project sessions                            | v0.1.30               | 2026-07-11 |
+| 025 | High     | Resolved | KodaX ACP tests persist fixture sessions into the real user session/runtime directories                                     | KodaX 0.7.66          | 2026-07-11 |
+| 026 | High     | Resolved | Space E2E test mode isolated app data but left the SDK session home pointed at the real user directory                      | v0.1.30               | 2026-07-11 |
+| 027 | High     | Resolved | A global 200-session window let one busy project make other project histories appear empty                                  | v0.1.30               | 2026-07-11 |
+| 028 | High     | Resolved | External Agent event pagination could skip audit events after the first 512 entries                                         | v0.1.31               | 2026-07-12 |
+| 029 | High     | Resolved | Renderer could supply a new opaque Agent identity to the Reference update path                                              | v0.1.31               | 2026-07-12 |
+| 030 | Medium   | Resolved | Workflow external-target wrapper lost method receiver and did not always audit the resolved revision                        | v0.1.31               | 2026-07-12 |
+| 031 | High     | Resolved | Packaged smoke remained pinned to Space 0.1.30 and KodaX 0.7.66 after the 0.1.31 upgrade                                    | v0.1.31               | 2026-07-12 |
+| 032 | High     | Resolved | External Agent task IPC trusted renderer ownership and Task Dock could show/control stale cross-session tasks               | v0.1.31               | 2026-07-12 |
 
 ## Issue Details
 
@@ -137,15 +142,15 @@ Recommended repair sequence:
 
 File-level plan:
 
-| File | Change Summary | Reason | Expected Outcome | Risks | Tests |
-|---|---|---|---|---|---|
-| `apps/desktop/electron/kodax/host.ts` | Hydrate and validate model in `tryResume()` before `createSession()` | Resume currently drops model | Resumed runtime receives `model: "glm-5.2"` | Invalid stale model could be passed if not validated | Add host resume unit test |
-| `apps/desktop/renderer/src/shell/ModelEffortSelector.tsx` | Prefer runtime `session.model`; compare selected model against runtime model | Picker currently treats display preference as applied runtime | Re-selecting `glm-5.2` repairs unset runtime model | UI labels may need "next" handling | Add component/unit test for drift |
-| `apps/desktop/renderer/src/shell/ContextWindowIndicator.tsx` | Use active session runtime model before pending/default model | Indicator can show 1M while runtime uses 200k | Context cap reflects actual next send | Need careful fallback for no-session state | Add model source test |
-| `apps/desktop/electron/ipc/session.ts` | Ensure in-flight `model` continues to be returned; consider persisted placeholder semantics | Renderer needs runtime model visibility | Store can distinguish runtime vs fallback | Persisted rows still lack historical model | Existing session.list tests plus resume case |
-| `apps/desktop/electron/ipc/workflow.ts` | Verify `toLaunchSession()` receives hydrated model | Workflow workers inherit parent model | AMA/Workflow uses `glm-5.2` | None if parent model is correct | Add workflow launch options test |
-| `apps/desktop/electron/kodax/workflow-controller.ts` | Keep forwarding `s.model`; add regression coverage | Worker options already conditionally include model | No worker fallback to `glm-5` when parent uses `glm-5.2` | None | Add controller launchOptions test |
-| `packages/space-ipc-schema/src/channels/session.ts` | Confirm optional `model` schema semantics; no schema change expected | Existing schema already supports in-flight model | Avoid unnecessary schema churn | Over-documenting stale persisted model | Schema tests only if behavior changes |
+| File                                                         | Change Summary                                                                              | Reason                                                        | Expected Outcome                                         | Risks                                                | Tests                                        |
+| ------------------------------------------------------------ | ------------------------------------------------------------------------------------------- | ------------------------------------------------------------- | -------------------------------------------------------- | ---------------------------------------------------- | -------------------------------------------- |
+| `apps/desktop/electron/kodax/host.ts`                        | Hydrate and validate model in `tryResume()` before `createSession()`                        | Resume currently drops model                                  | Resumed runtime receives `model: "glm-5.2"`              | Invalid stale model could be passed if not validated | Add host resume unit test                    |
+| `apps/desktop/renderer/src/shell/ModelEffortSelector.tsx`    | Prefer runtime `session.model`; compare selected model against runtime model                | Picker currently treats display preference as applied runtime | Re-selecting `glm-5.2` repairs unset runtime model       | UI labels may need "next" handling                   | Add component/unit test for drift            |
+| `apps/desktop/renderer/src/shell/ContextWindowIndicator.tsx` | Use active session runtime model before pending/default model                               | Indicator can show 1M while runtime uses 200k                 | Context cap reflects actual next send                    | Need careful fallback for no-session state           | Add model source test                        |
+| `apps/desktop/electron/ipc/session.ts`                       | Ensure in-flight `model` continues to be returned; consider persisted placeholder semantics | Renderer needs runtime model visibility                       | Store can distinguish runtime vs fallback                | Persisted rows still lack historical model           | Existing session.list tests plus resume case |
+| `apps/desktop/electron/ipc/workflow.ts`                      | Verify `toLaunchSession()` receives hydrated model                                          | Workflow workers inherit parent model                         | AMA/Workflow uses `glm-5.2`                              | None if parent model is correct                      | Add workflow launch options test             |
+| `apps/desktop/electron/kodax/workflow-controller.ts`         | Keep forwarding `s.model`; add regression coverage                                          | Worker options already conditionally include model            | No worker fallback to `glm-5` when parent uses `glm-5.2` | None                                                 | Add controller launchOptions test            |
+| `packages/space-ipc-schema/src/channels/session.ts`          | Confirm optional `model` schema semantics; no schema change expected                        | Existing schema already supports in-flight model              | Avoid unnecessary schema churn                           | Over-documenting stale persisted model               | Schema tests only if behavior changes        |
 
 Mandatory checklist:
 
@@ -259,11 +264,11 @@ Use SDK main-thread prompt semantics and add Space-side ownership protection:
 
 #### Detailed Fix Plan
 
-| File | Change Summary | Reason | Expected Outcome | Risks | Tests |
-|---|---|---|---|---|---|
-| `apps/desktop/electron/ipc/queue.ts` | Omit `agentId`; add `mainThreadPromptOwnerSessionId`; guard enqueue/start/drain/release | Match SDK drain semantics while preventing cross-session stealing | Active runner consumes queued prompt; another session cannot steal it | Global owner can briefly block another session until drain/release | `queue.test.ts` |
-| `apps/desktop/electron/kodax/real-session.ts` | Check queue owner before starting an idle run; release owner after run settles | Idle run from another session could otherwise drain pending main-thread prompts | Cross-session runs wait until pending prompt is consumed | User gets explicit error if they race sessions | Covered through queue unit tests and typecheck |
-| `apps/desktop/electron/test/queue.test.ts` | Assert queued prompt has `agentId === undefined`; assert owner guard blocks another session | Regression coverage for the exact wrong previous fix | Future changes cannot reintroduce `agentId=sessionId` silently | Depends on SDK queue test reset hook | New test |
+| File                                          | Change Summary                                                                              | Reason                                                                          | Expected Outcome                                                      | Risks                                                              | Tests                                          |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- | --------------------------------------------------------------------- | ------------------------------------------------------------------ | ---------------------------------------------- |
+| `apps/desktop/electron/ipc/queue.ts`          | Omit `agentId`; add `mainThreadPromptOwnerSessionId`; guard enqueue/start/drain/release     | Match SDK drain semantics while preventing cross-session stealing               | Active runner consumes queued prompt; another session cannot steal it | Global owner can briefly block another session until drain/release | `queue.test.ts`                                |
+| `apps/desktop/electron/kodax/real-session.ts` | Check queue owner before starting an idle run; release owner after run settles              | Idle run from another session could otherwise drain pending main-thread prompts | Cross-session runs wait until pending prompt is consumed              | User gets explicit error if they race sessions                     | Covered through queue unit tests and typecheck |
+| `apps/desktop/electron/test/queue.test.ts`    | Assert queued prompt has `agentId === undefined`; assert owner guard blocks another session | Regression coverage for the exact wrong previous fix                            | Future changes cannot reintroduce `agentId=sessionId` silently        | Depends on SDK queue test reset hook                               | New test                                       |
 
 #### Acceptance Criteria
 
@@ -327,13 +332,13 @@ Extend the existing ask-user channel rather than creating a parallel queue:
 
 #### Detailed Fix Plan
 
-| File | Change Summary | Reason | Expected Outcome | Risks | Tests |
-|---|---|---|---|---|---|
-| `packages/space-ipc-schema/src/channels/ask-user.ts` | Add union request/reply schemas for guardrail/select/input | IPC needs to represent SDK question answers | Backward-compatible guardrail and new question flow | Renderer/main type mismatches | Schema tests |
-| `apps/desktop/electron/permission/ask-user-broker.ts` | Add `requestQuestion()` and union reply resolution | Broker needs different cancel semantics for guardrail vs questions | Guardrail timeout blocks; question timeout cancels | Incorrect stale reqId handling | Broker tests |
-| `apps/desktop/electron/ipc/ask-user.ts` | Pass full reply object to broker | Broker must distinguish verdict/value/cancel | Correct answer routing | None | Typecheck |
-| `apps/desktop/electron/kodax/real-session.ts` | Wire `askUser`, `askUserMulti`, `askUserInput` in `KodaXEvents` | SDK callbacks need live UI host | `ask_user_question` works in Space | Select with no options cancels | Typecheck |
-| `apps/desktop/renderer/src/features/ask-user/AskUserModal.tsx` | Render guardrail/select/input modes | User needs to answer SDK questions | Modal can submit strings or cancel | UI complexity | Typecheck |
+| File                                                           | Change Summary                                                  | Reason                                                             | Expected Outcome                                    | Risks                          | Tests        |
+| -------------------------------------------------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------ | --------------------------------------------------- | ------------------------------ | ------------ |
+| `packages/space-ipc-schema/src/channels/ask-user.ts`           | Add union request/reply schemas for guardrail/select/input      | IPC needs to represent SDK question answers                        | Backward-compatible guardrail and new question flow | Renderer/main type mismatches  | Schema tests |
+| `apps/desktop/electron/permission/ask-user-broker.ts`          | Add `requestQuestion()` and union reply resolution              | Broker needs different cancel semantics for guardrail vs questions | Guardrail timeout blocks; question timeout cancels  | Incorrect stale reqId handling | Broker tests |
+| `apps/desktop/electron/ipc/ask-user.ts`                        | Pass full reply object to broker                                | Broker must distinguish verdict/value/cancel                       | Correct answer routing                              | None                           | Typecheck    |
+| `apps/desktop/electron/kodax/real-session.ts`                  | Wire `askUser`, `askUserMulti`, `askUserInput` in `KodaXEvents` | SDK callbacks need live UI host                                    | `ask_user_question` works in Space                  | Select with no options cancels | Typecheck    |
+| `apps/desktop/renderer/src/features/ask-user/AskUserModal.tsx` | Render guardrail/select/input modes                             | User needs to answer SDK questions                                 | Modal can submit strings or cancel                  | UI complexity                  | Typecheck    |
 
 #### Acceptance Criteria
 
@@ -462,11 +467,11 @@ Two viable repair paths:
 
 #### Detailed Fix Plan
 
-| File / Layer | Change Summary | Reason | Expected Outcome | Risks | Tests |
-|---|---|---|---|---|---|
-| SDK session summary | Expose provider/model/thinking in persisted summaries | Provides authoritative historical runtime metadata | Space can resume exact historical model | Requires SDK change/release | SDK storage/list tests |
-| Space sidecar metadata | Persist per-session model/provider on create and `/model` | Works even if SDK summary cannot change immediately | Future sessions resume exact model | Must avoid stale metadata when slash fails | Host/session-store tests |
-| Space resume path | Prefer SDK summary or sidecar model, then current defaults | Deterministic fallback ladder | No silent historical model drift for future sessions | Old sessions remain best-effort | Resume regression tests |
+| File / Layer           | Change Summary                                             | Reason                                              | Expected Outcome                                     | Risks                                      | Tests                    |
+| ---------------------- | ---------------------------------------------------------- | --------------------------------------------------- | ---------------------------------------------------- | ------------------------------------------ | ------------------------ |
+| SDK session summary    | Expose provider/model/thinking in persisted summaries      | Provides authoritative historical runtime metadata  | Space can resume exact historical model              | Requires SDK change/release                | SDK storage/list tests   |
+| Space sidecar metadata | Persist per-session model/provider on create and `/model`  | Works even if SDK summary cannot change immediately | Future sessions resume exact model                   | Must avoid stale metadata when slash fails | Host/session-store tests |
+| Space resume path      | Prefer SDK summary or sidecar model, then current defaults | Deterministic fallback ladder                       | No silent historical model drift for future sessions | Old sessions remain best-effort            | Resume regression tests  |
 
 #### Acceptance Criteria
 
@@ -551,11 +556,11 @@ Move Space user follow-up prompts out of the SDK main-thread queue:
 
 #### Detailed Fix Plan
 
-| File | Change Summary | Reason | Expected Outcome | Risks | Tests |
-|---|---|---|---|---|---|
-| `apps/desktop/electron/ipc/queue.ts` | Replace Space prompt use of SDK main-thread queue with a Space-owned `Map<sessionId, QueuedMessage[]>`; keep SDK queue snapshots visible | SDK main-thread queue cannot encode Space session identity | Queued prompts are impossible for another Space session to drain | UI queue now contains both SDK and Space-owned items | `queue.test.ts` |
-| `apps/desktop/electron/kodax/real-session.ts` | Start queued prompts from the same session after the current turn settles | Preserves follow-up UX without global session serialization | Multiple sessions can keep running; each drains only itself | Follow-up prompt starts after current turn rather than SDK mid-turn injection | Typecheck and queue unit tests |
-| `apps/desktop/electron/test/queue.test.ts` | Assert Space prompts do not enter SDK main-thread queue; assert s1/s2 queues are independent | Prevents reintroducing the global drain race | Regression catches both wrong `agentId` and wrong global queue use | Requires renderer push target stub in tests | New tests |
+| File                                          | Change Summary                                                                                                                           | Reason                                                      | Expected Outcome                                                   | Risks                                                                         | Tests                          |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- | ------------------------------------------------------------------ | ----------------------------------------------------------------------------- | ------------------------------ |
+| `apps/desktop/electron/ipc/queue.ts`          | Replace Space prompt use of SDK main-thread queue with a Space-owned `Map<sessionId, QueuedMessage[]>`; keep SDK queue snapshots visible | SDK main-thread queue cannot encode Space session identity  | Queued prompts are impossible for another Space session to drain   | UI queue now contains both SDK and Space-owned items                          | `queue.test.ts`                |
+| `apps/desktop/electron/kodax/real-session.ts` | Start queued prompts from the same session after the current turn settles                                                                | Preserves follow-up UX without global session serialization | Multiple sessions can keep running; each drains only itself        | Follow-up prompt starts after current turn rather than SDK mid-turn injection | Typecheck and queue unit tests |
+| `apps/desktop/electron/test/queue.test.ts`    | Assert Space prompts do not enter SDK main-thread queue; assert s1/s2 queues are independent                                             | Prevents reintroducing the global drain race                | Regression catches both wrong `agentId` and wrong global queue use | Requires renderer push target stub in tests                                   | New tests                      |
 
 #### Acceptance Criteria
 
@@ -896,10 +901,10 @@ Recommended repair sequence:
 
 #### Detailed Fix Plan
 
-| File | Change Summary | Reason | Expected Outcome | Risks | Tests |
-|---|---|---|---|---|---|
+| File                                                       | Change Summary                                                                                                                                          | Reason                                                                      | Expected Outcome                                                                                       | Risks                                                                                                                                             | Tests                                           |
+| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
 | `apps/desktop/renderer/src/shell/ConversationStreamV2.tsx` | Add explicit user scroll-intent handling; keep programmatic guard for resize/smooth-scroll events; make jump-to-bottom explicitly re-enable follow mode | User scroll intent must not be swallowed by the time guard during streaming | Upward wheel/keyboard/touch/scrollbar intent immediately disables auto-follow; bottom/jump restores it | Trackpad momentum could send small mixed deltas; use upward movement as the decisive break signal and sync downward movement from actual position | `npm run typecheck`; manual/e2e smoke if needed |
-| `docs/KNOWN_ISSUES.md` | Track issue 011 through resolution | Preserve root cause and fix rationale | Future regressions can be compared against the documented behavior | Documentation drift if not updated after verification | Review final issue entry |
+| `docs/KNOWN_ISSUES.md`                                     | Track issue 011 through resolution                                                                                                                      | Preserve root cause and fix rationale                                       | Future regressions can be compared against the documented behavior                                     | Documentation drift if not updated after verification                                                                                             | Review final issue entry                        |
 
 Mandatory checklist:
 
@@ -1294,6 +1299,7 @@ Verification:
 - `npm test` passed across workspaces: desktop 1224/1224 and space-ipc-schema 232/232.
 - `npm run build:smoke` passed. Vite reported existing large-chunk and Monaco dynamic/static import warnings.
 - `npx playwright test tests/e2e/partner-mode.spec.ts tests/e2e/partner-layout.spec.ts` passed: 6/6.
+
 ### 016: Partner helper VM exposed host constructors and allowed escape to Node process and unrestricted filesystem
 
 - Priority: High
@@ -1702,9 +1708,11 @@ The sibling `_unknown` directory is unrelated data loss: KodaX 0.7.46's per-proj
 ### 025: KodaX ACP tests persist fixture sessions into the real user session/runtime directories
 
 - Priority: High
-- Status: Open
+- Status: Resolved
 - Introduced: KodaX 0.7.66
+- Fixed: KodaX 0.7.67 / Space v0.1.31
 - Created: 2026-07-11
+- Resolution Date: 2026-07-12
 
 #### Original Problem
 
@@ -1718,12 +1726,12 @@ The sibling `_unknown` directory is unrelated data loss: KodaX 0.7.46's per-proj
 - Add `surface` filtering and cursor pagination to `listSessions` so embedders do not need a large pre-filter scan.
 - Provide a dry-run-first cleanup command for the exact polluted signature. Space must not guess-delete another client's session files.
 
-#### Upstream Validation (Pending Release)
+#### Resolution
 
-- The local KodaX v0.7.67 working tree now delays ACP persistence until the first valid prompt, isolates both ACP test harnesses under temporary runtime homes, and adds preview-first ACP cleanup.
+- Published KodaX v0.7.67 delays ACP persistence until the first valid prompt, isolates both ACP test harnesses under temporary runtime homes, and adds preview-first ACP cleanup.
 - The session, Runtime, and daemon APIs now carry exact `surface` filters and opaque continuation cursors; 129 targeted KodaX tests covering these paths pass locally.
 - Space keeps tag-based Coder/Partner classification because its historical sessions store `code` / `partner` in `SessionSummary.tag`, while ordinary Space runner snapshots do not currently populate `runtimeInfo.surface`. Directly replacing tag filtering with the new exact surface filter would hide legacy and current Space sessions.
-- Keep this issue open until v0.7.67 is published, Space upgrades the package, and the integrated Electron E2E passes against the published artifact.
+- Space now resolves the published 0.7.67 tarball, keeps its isolated Electron test home, and passes the complete 57-test Electron E2E suite against that package.
 
 ### 026: Space E2E test mode isolated app data but left the SDK session home pointed at the real user directory
 
@@ -1769,12 +1777,108 @@ The same ordering risk existed between Coder and Partner: the persisted limit wa
 - Keep the 50,000-row full-history request isolated to the explicit project picker instead of startup.
 - Cover a 205-session project, 540 ACP fixtures, and a second three-session project in an isolated real-SDK Electron E2E.
 
+### 028: External Agent event pagination could skip audit events after the first 512 entries
+
+- Priority: High
+- Status: Resolved
+- Introduced: v0.1.31
+- Fixed: v0.1.31
+- Created: 2026-07-12
+- Resolution Date: 2026-07-12
+
+#### Original Problem
+
+The gateway bounded a task-event response to 512 entries but calculated `nextCursor` from the unbounded SDK result. A consumer following that cursor could skip every event after the first returned page. Task Dock also requested only cursor zero, so a long task could present an incomplete audit trail.
+
+#### Resolution
+
+- Calculate `nextCursor` only from events actually returned to the caller.
+- Page Task Dock event reads with a bounded eight-page loop and monotonic-cursor guard.
+- Add a 520-update event-storm regression proving page two begins immediately after page one.
+
+### 029: Renderer could supply a new opaque Agent identity to the Reference update path
+
+- Priority: High
+- Status: Resolved
+- Introduced: v0.1.31
+- Fixed: v0.1.31
+- Created: 2026-07-12
+- Resolution Date: 2026-07-12
+
+#### Original Problem
+
+The Reference upsert IPC accepted any schema-valid `agentId`. New IDs are supposed to be generated and owned by the main-process catalog, but a tampered renderer could submit an invented ID through the edit path. Settings also retained a successful preflight badge across configuration updates.
+
+#### Resolution
+
+- Require edits to reference an existing main-store registration owned by the Reference executor; new registrations always receive a host-generated opaque ID.
+- Clear cached preflight presentation whenever the live catalog refreshes.
+- Filter Task Dock task-list requests by current `parentTaskId` in main instead of returning all task objectives to the renderer and filtering there.
+
+### 030: Workflow external-target wrapper lost method receiver and did not always audit the resolved revision
+
+- Priority: Medium
+- Status: Resolved
+- Introduced: v0.1.31
+- Fixed: v0.1.31
+- Created: 2026-07-12
+- Resolution Date: 2026-07-12
+
+#### Original Problem
+
+The default-target proxy invoked `spawnAgent`/`runAgent` as detached functions, which could break an SDK implementation that relies on `this`. When an API caller omitted `expectedConfigurationRevision`, preflight resolved a concrete revision but host audit metadata did not record it.
+
+#### Resolution
+
+- Invoke wrapped methods with the original Workflow API receiver.
+- Snapshot the descriptor revision returned by successful preflight and use it for dispatch plus host audit metadata.
+- Extend unit coverage to verify target precedence and receiver identity.
+
+### 031: Packaged smoke remained pinned to Space 0.1.30 and KodaX 0.7.66 after the 0.1.31 upgrade
+
+- Priority: High
+- Status: Resolved
+- Introduced: v0.1.31
+- Fixed: v0.1.31
+- Created: 2026-07-12
+- Resolution Date: 2026-07-12
+
+#### Original Problem
+
+The ordinary production build passed, but `scripts/smoke-pack.mjs` still sent client version `0.1.30` and rejected any packaged Runtime identity other than `0.7.66`. A 0.1.31 installer build using the published 0.7.67 package would therefore fail its final packaging gate.
+
+#### Resolution
+
+- Read Space version and the exact KodaX dependency from root package metadata.
+- Use those values in the packaged Worker probe, expected identity check, and diagnostics so future version bumps do not require another hard-coded edit.
+
+### 032: External Agent task IPC trusted renderer ownership and Task Dock could show/control stale cross-session tasks
+
+- Priority: High
+- Status: Resolved
+- Introduced: v0.1.31
+- Fixed: v0.1.31
+- Created: 2026-07-12
+- Resolution Date: 2026-07-12
+
+#### Original Problem
+
+Task start accepted renderer-supplied project and parent attribution, while event/input/cancel/reconcile calls authorized only by a global task ID. The shared preload also made the external-agent administration catalog available to auxiliary windows. Separately, Task Dock used an overlapping fixed interval and accepted a late response from the previously selected session, so stale task data and controls could briefly replace the active session's cards.
+
+#### Resolution
+
+- Require a live `sessionId` for every task operation; main derives the project root/parent correlation from `kodaxHost` and verifies the stored task parent before reads or lifecycle interventions.
+- Restrict external-agent registration, preflight, catalog, and task IPC to the primary application renderer.
+- Clear all session-scoped Task Dock state immediately on session changes and reject late list/event/action responses whose captured session is no longer active.
+- Replace the fixed interval with one non-overlapping polling loop; poll active foreground tasks at 1.5 seconds, terminal views at 5 seconds, and background views at 10 seconds.
+- Add schema and gateway regressions for mandatory session scope and wrong-parent rejection.
+
 ## Summary
 
-- Total: 27
-- Open: 2
-- Resolved: 25
-- High: 19
-- Medium: 7
+- Total: 32
+- Open: 1
+- Resolved: 31
+- High: 23
+- Medium: 8
 - Low: 1
-- Next to resolve: 025 (upstream KodaX), then 022
+- Next to resolve: 022

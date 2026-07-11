@@ -4,7 +4,8 @@
 // （解决"无 run→无 Section→无入口"的鸡蛋问题：workflow popout 在 CommandToolbar 常驻可达）。
 
 import { useState, type JSX, type ReactNode } from 'react';
-import { Play, ChevronDown, ChevronRight, ShieldCheck, RefreshCw, Lock } from 'lucide-react';
+import { Play, ChevronDown, ChevronRight, ShieldCheck, RefreshCw, Lock, Bot } from 'lucide-react';
+import type { DispatchableAgentListingT } from '@kodax-space/space-ipc-schema';
 import { useAppStore } from '../../store/appStore.js';
 import { pushToast } from '../../store/toastStore.js';
 import { requestConfirm } from '../../store/confirmStore.js';
@@ -31,20 +32,36 @@ export function WorkflowLauncher(): JSX.Element {
   const [loading, setLoading] = useState(false);
   const [builtin, setBuiltin] = useState<MetaLite[]>([]);
   const [saved, setSaved] = useState<SavedLite[]>([]);
+  const [agents, setAgents] = useState<DispatchableAgentListingT[]>([]);
+  const [selectedAgentId, setSelectedAgentId] = useState('');
   const [busyTarget, setBusyTarget] = useState<string | null>(null);
 
   async function loadLibrary(): Promise<void> {
     setLoading(true);
     try {
-      const r = await window.kodaxSpace?.invoke(
-        'workflow.library',
-        projectRoot ? { projectRoot } : {},
-      );
+      const [r, agentResult] = await Promise.all([
+        window.kodaxSpace?.invoke('workflow.library', projectRoot ? { projectRoot } : {}),
+        window.kodaxSpace?.invoke('agent.external.dispatchable.list', {
+          ...(projectRoot ? { projectRoot } : {}),
+          readOnly: true,
+        }),
+      ]);
       if (r?.ok) {
         setBuiltin(r.data.builtin);
         setSaved(r.data.saved);
       } else {
         pushToast(t('workflow.libraryLoadFailed'), 'warning');
+      }
+      if (agentResult?.ok) {
+        setAgents(agentResult.data.agents);
+        setSelectedAgentId((current) =>
+          current && agentResult.data.agents.some((entry) => entry.descriptor.agentId === current)
+            ? current
+            : '',
+        );
+      } else {
+        setAgents([]);
+        setSelectedAgentId('');
       }
     } catch {
       pushToast(t('workflow.libraryLoadFailed'), 'warning');
@@ -96,7 +113,41 @@ export function WorkflowLauncher(): JSX.Element {
           if (!proceed) return;
         }
       }
-      const r = await window.kodaxSpace?.invoke('workflow.start', { target, source, sessionId });
+      const selectedAgent = agents.find((entry) => entry.descriptor.agentId === selectedAgentId);
+      if (selectedAgent) {
+        const preflight = await window.kodaxSpace?.invoke('agent.external.preflight', {
+          agentId: selectedAgent.descriptor.agentId,
+          ...(projectRoot ? { projectRoot } : {}),
+          readOnly: true,
+          expectedConfigurationRevision: selectedAgent.descriptor.configurationRevision,
+        });
+        if (!preflight?.ok || !preflight.data.ok) {
+          const reason = preflight?.ok
+            ? preflight.data.reasons.join('; ')
+            : preflight?.error.message;
+          pushToast(
+            t('workflow.externalAgentPreflightFailed', {
+              reason: reason || t('settings.externalAgents.unavailable'),
+            }),
+            'warning',
+          );
+          await loadLibrary();
+          return;
+        }
+      }
+      const r = await window.kodaxSpace?.invoke('workflow.start', {
+        target,
+        source,
+        sessionId,
+        ...(selectedAgent
+          ? {
+              agentTarget: {
+                agentId: selectedAgent.descriptor.agentId,
+                expectedConfigurationRevision: selectedAgent.descriptor.configurationRevision,
+              },
+            }
+          : {}),
+      });
       if (!r?.ok || !r.data.runId) {
         pushToast(
           r?.ok
@@ -151,6 +202,13 @@ export function WorkflowLauncher(): JSX.Element {
             <div className="text-[11px] text-fg-muted py-1">{t('artifact.loading')}</div>
           ) : (
             <>
+              {agents.length > 0 && (
+                <AgentTargetPicker
+                  agents={agents}
+                  selectedAgentId={selectedAgentId}
+                  onSelect={setSelectedAgentId}
+                />
+              )}
               <LibGroup title={t('workflow.builtin')}>
                 {builtin.length === 0 ? (
                   <EmptyHint text={t('workflow.noBuiltin')} />
@@ -190,6 +248,87 @@ export function WorkflowLauncher(): JSX.Element {
       )}
     </div>
   );
+}
+
+function AgentTargetPicker({
+  agents,
+  selectedAgentId,
+  onSelect,
+}: {
+  readonly agents: readonly DispatchableAgentListingT[];
+  readonly selectedAgentId: string;
+  readonly onSelect: (agentId: string) => void;
+}): JSX.Element {
+  const { t } = useI18n();
+  return (
+    <div data-testid="workflow-agent-target-picker">
+      <div className="px-1 pb-1 text-[10px] font-mono uppercase tracking-wide text-fg-faint">
+        {t('workflow.agentTarget')}
+      </div>
+      <div className="grid gap-1 sm:grid-cols-2">
+        <button
+          type="button"
+          onClick={() => onSelect('')}
+          aria-pressed={selectedAgentId === ''}
+          className={`rounded border px-2 py-1.5 text-left transition-colors ${
+            selectedAgentId === ''
+              ? 'border-accent/60 bg-accent/10 text-fg-primary'
+              : 'border-border-default/60 bg-surface text-fg-secondary hover:bg-surface-3'
+          }`}
+        >
+          <div className="text-[11px] font-medium">{t('workflow.nativeTarget')}</div>
+          <div className="text-[10px] text-fg-muted">{t('workflow.nativeTargetDescription')}</div>
+        </button>
+        {agents.map((entry) => {
+          const selected = selectedAgentId === entry.descriptor.agentId;
+          return (
+            <button
+              key={entry.descriptor.agentId}
+              type="button"
+              onClick={() => onSelect(entry.descriptor.agentId)}
+              aria-pressed={selected}
+              data-testid="workflow-external-agent-option"
+              className={`rounded border px-2 py-1.5 text-left transition-colors ${
+                selected
+                  ? 'border-info/60 bg-info/10 text-fg-primary'
+                  : 'border-border-default/60 bg-surface text-fg-secondary hover:bg-surface-3'
+              }`}
+            >
+              <div className="flex items-center gap-1.5 text-[11px] font-medium">
+                <Bot size={11} className="text-info" aria-hidden />
+                <span className="truncate">{entry.descriptor.displayName}</span>
+                <span className="ml-auto text-[9px] uppercase text-ok">
+                  {dispatchabilityLabel(entry.dispatchability.status, t)}
+                </span>
+              </div>
+              <div className="mt-0.5 truncate text-[10px] text-fg-muted">
+                {entry.descriptor.skills.join(', ') || t('workflow.externalTargetNoSkills')}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+      <div className="mt-1 px-1 text-[10px] leading-4 text-fg-faint">
+        {t('workflow.agentTargetHint')}
+      </div>
+    </div>
+  );
+}
+
+function dispatchabilityLabel(
+  status: DispatchableAgentListingT['dispatchability']['status'],
+  t: ReturnType<typeof useI18n>['t'],
+): string {
+  switch (status) {
+    case 'dispatchable':
+      return t('settings.externalAgents.dispatchability.dispatchable');
+    case 'degraded':
+      return t('settings.externalAgents.dispatchability.degraded');
+    case 'busy':
+      return t('settings.externalAgents.dispatchability.busy');
+    case 'unavailable':
+      return t('settings.externalAgents.dispatchability.unavailable');
+  }
 }
 
 function LibGroup({ title, children }: { title: string; children: ReactNode }): JSX.Element {
