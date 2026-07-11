@@ -469,7 +469,11 @@ export function registerSessionChannels(): void {
         });
         return {
           sessionId: item.sessionId,
-          projectRoot: item.projectRoot ?? '/',
+          // A project-scoped query is authoritative even when an SDK summary omits
+          // runtimeInfo.workspaceRoot/gitRoot (observed on the Linux slow path).
+          // Falling back directly to '/' makes the renderer group valid sessions
+          // outside their project and display that project as empty.
+          projectRoot: item.projectRoot ?? projectFilter ?? '/',
           provider: identity.provider,
           reasoningMode: runtimeDefaults.reasoningMode,
           permissionMode: runtimeDefaults.permissionMode,

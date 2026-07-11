@@ -77,6 +77,21 @@ test('ACP fixtures cannot hide real history and show-all searches beyond the rec
       false,
     );
 
+    const secondary = await space.page.evaluate(async (projectRoot) => {
+      return window.kodaxSpace.invoke('session.list', {
+        projectRoot,
+        surface: 'code',
+      });
+    }, secondaryProjectDir);
+    expect(secondary.ok).toBe(true);
+    if (!secondary.ok) {
+      throw new Error(secondary.error?.message ?? 'secondary session.list failed');
+    }
+    expect(secondary.data.sessions).toHaveLength(3);
+    expect(
+      secondary.data.sessions.every((session) => session.projectRoot === secondaryProjectDir),
+    ).toBe(true);
+
     await space.page
       .getByTestId('left-sidebar')
       .getByRole('button', { name: 'secondary-workspace', exact: true })

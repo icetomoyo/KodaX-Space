@@ -1757,6 +1757,7 @@ The same ordering risk existed between Coder and Partner: the persisted limit wa
 - Query every known project independently and merge each result into the renderer store with `{ projectRoot, surface }` scope.
 - Preserve a separate 200-session recent window for every project and Coder/Partner surface.
 - Apply surface filtering before the limit in the persistence adapter.
+- When a project-scoped SDK summary omits workspace/git-root metadata, retain the validated project filter as its renderer project root instead of grouping it under `/`.
 - Keep the 50,000-row full-history request isolated to the explicit project picker instead of startup.
 - Cover a 205-session project, 240 ACP fixtures, and a second three-session project in an isolated real-SDK Electron E2E.
 
