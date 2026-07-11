@@ -1,6 +1,6 @@
 # Known Issues
 
-Last Updated: 2026-07-10
+Last Updated: 2026-07-11
 
 ## Issue Index
 
@@ -28,6 +28,7 @@ Last Updated: 2026-07-10
 | 020 | High | Resolved | Partner file paths, writes, decoding, hashing, and durable stores had unsafe edge cases | v0.1.30 | 2026-07-10 |
 | 021 | Medium | Resolved | Partner advertised unavailable SDK Skills and Outputs lacked an in-app delivery preview loop | v0.1.30 | 2026-07-10 |
 | 022 | Medium | Open | KodaX Runtime lacks a general per-invocation execution service for Partner helper migration | KodaX 0.7.66 adoption | 2026-07-10 |
+| 023 | Medium | Resolved | Composer file picker opened the project-directory dialog and could not select images or files | v0.1.30 | 2026-07-11 |
 
 ## Issue Details
 
@@ -1646,12 +1647,34 @@ Migration order:
 
 Partially addressed upstream in KodaX 0.7.66: whole-Runtime Worker isolation, hard-dispose negotiation, resource limits, constructed-handler Worker execution, reverse tool RPC, hard timeout termination, and sidecar packaging are implemented and verified. The general per-invocation execution service is not implemented yet. This does not reopen Issue 016 or weaken the current Space helper path; its concrete host escape and main-thread starvation paths are fixed. The remaining issue is an explicit migration and duplicate-lifecycle cleanup gate before Space adopts daemon-owned execution for Partner helpers.
 
+### 023: Composer file picker opened the project-directory dialog and could not select images or files
+
+- Priority: Medium
+- Status: Resolved
+- Introduced: v0.1.30
+- Fixed: v0.1.30
+- Created: 2026-07-11
+- Resolution Date: 2026-07-11
+
+#### Original Problem
+
+The composer action labeled "Add files or photos" invoked `project.openDialog`, whose native dialog only permits directory selection. It could not select images, documents, or other local files, and any returned path was appended as raw prompt text instead of entering the existing attachment pipeline. The adjacent "Add folder" action reused the same project-opening flow and switched the current workspace instead of attaching the selected directory.
+
+#### Resolution
+
+- Added a multi-select file input with no extension/MIME allowlist, so all local file types remain selectable.
+- Routed picker files through the same bounded processing used by drag-drop.
+- Made "Add folder" create a directory reference without changing the current project.
+- PNG/JPEG/WebP become sandboxed input artifacts with previews; SVG/GIF, documents, archives, and unknown formats remain file references.
+- Added MIME normalization and safe extension fallback only for missing/generic MIME metadata.
+- Added unit coverage and an Electron E2E covering menu wiring, PNG preview, SVG/PDF/unknown references, multi-select, and the absence of an `accept` filter.
+
 ## Summary
 
-- Total: 22
+- Total: 23
 - Open: 1
-- Resolved: 21
+- Resolved: 22
 - High: 15
-- Medium: 6
+- Medium: 7
 - Low: 1
 - Next to resolve: 022

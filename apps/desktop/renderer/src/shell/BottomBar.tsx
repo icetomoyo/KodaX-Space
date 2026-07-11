@@ -31,6 +31,7 @@ import {
 import { parseLegacySkillToken, safeSkillSlashText, skillSlashEchoText } from './skillSlash.js';
 import { registerInsertReceiver } from './inputBridge.js';
 import { resolveSessionCreateInputs } from './createSession.js';
+import { inlineImageMediaType, isSupportedInlineImage } from './attachmentFiles.js';
 import { useIsStreaming } from './ActivitySpinner.js';
 import { AgentModeSelector } from './AgentModeSelector.js';
 // Retired StashNotice; file changes now live in RightSidebar.ChangesSection.
@@ -200,8 +201,6 @@ const MAX_PASTE_BYTES = 6 * 1024 * 1024;
 const MAX_PENDING_IMAGES = 8;
 const MAX_PENDING_FILE_REFS = 32;
 
-const INLINE_IMAGE_TYPES: ReadonlySet<string> = new Set(['image/png', 'image/jpeg', 'image/webp']);
-
 function hasDraggedFiles(dataTransfer: DataTransfer): boolean {
   return Array.from(dataTransfer.types).includes('Files');
 }
@@ -305,15 +304,32 @@ function makeDroppedFileRef(
   };
 }
 
+function makeDirectoryRef(
+  directoryPath: string,
+  projectRoot: string,
+  platform: KodaXSpaceBridge['platform'],
+): PendingFileRef {
+  const relativePath = relativeToProject(directoryPath, projectRoot, platform);
+  const name = basenameFromPath(directoryPath);
+  const safeProjectReference =
+    relativePath !== null && isSafeAtPathReference(relativePath)
+      ? `@${toReferencePath(relativePath)}`
+      : null;
+  return {
+    path: directoryPath,
+    name,
+    reference: safeProjectReference ?? formatFileLinkReference(directoryPath, name, platform),
+    scope: relativePath !== null ? 'project' : 'external',
+    kind: 'directory',
+    isImage: false,
+  };
+}
+
 function getDroppedFilePath(file: File): string | null {
   const bridged = window.kodaxSpace?.getPathForFile(file);
   if (bridged) return bridged;
   const legacy = (file as File & { path?: unknown }).path;
   return typeof legacy === 'string' && legacy.length > 0 ? legacy : null;
-}
-
-function isSupportedInlineImage(file: File): boolean {
-  return INLINE_IMAGE_TYPES.has(file.type);
 }
 
 function clipboardImageFiles(data: DataTransfer): File[] {
@@ -554,6 +570,7 @@ export function BottomBar(): JSX.Element {
   const [pendingFileRefs, setPendingFileRefs] = useState<PendingFileRef[]>([]);
   const [draggingFiles, setDraggingFiles] = useState(false);
   const dragDepthRef = useRef(0);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   // Paste/drop warnings are local to the composer.
   const [imageErr, setImageErr] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -870,9 +887,10 @@ export function BottomBar(): JSX.Element {
     setImageErr(null);
 
     // Validate before creating a session for pasted or dropped images.
-    const accepted: File[] = [];
+    const accepted: Array<{ file: File; mediaType: PendingImage['mediaType'] }> = [];
     for (const b of blobs) {
-      if (!/^image\/(png|jpeg|webp)$/.test(b.type)) {
+      const mediaType = inlineImageMediaType(b);
+      if (!mediaType) {
         setImageErr(t('bottom.unsupportedImageType', { type: b.type || t('common.unknownError') }));
         continue;
       }
@@ -889,7 +907,7 @@ export function BottomBar(): JSX.Element {
         setImageErr(t('bottom.maxImages', { max: MAX_PENDING_IMAGES }));
         break;
       }
-      accepted.push(b);
+      accepted.push({ file: b, mediaType });
     }
     if (accepted.length === 0) return;
 
@@ -897,13 +915,13 @@ export function BottomBar(): JSX.Element {
     if (!sid) return;
 
     const saved: PendingImage[] = [];
-    for (const b of accepted) {
+    for (const { file: b, mediaType } of accepted) {
       try {
         const base64 = await blobToBase64(b);
         const r = await invokeComposerIpc('clipboard.saveImage', {
           sessionId: sid,
           base64,
-          mediaType: b.type as PendingImage['mediaType'],
+          mediaType,
         });
         if (!r.ok) {
           setImageErr(`${r.error?.code ?? 'ERR_UNKNOWN'}: ${r.error?.message ?? 'save failed'}`);
@@ -911,16 +929,18 @@ export function BottomBar(): JSX.Element {
         }
         saved.push({
           path: r.data.path,
-          mediaType: b.type as PendingImage['mediaType'],
+          mediaType,
           source,
           bytes: r.data.bytes,
-          dataUrl: `data:${b.type};base64,${base64}`,
+          dataUrl: `data:${mediaType};base64,${base64}`,
           label:
-            b.name && b.name !== 'image.png'
+            source === 'file-picker' && b.name
               ? b.name
-              : source === 'drag-drop'
-                ? t('bottom.droppedImage')
-                : t('bottom.pastedImage'),
+              : b.name && b.name !== 'image.png'
+                ? b.name
+                : source === 'drag-drop'
+                  ? t('bottom.droppedImage')
+                  : t('bottom.pastedImage'),
         });
       } catch (e) {
         setImageErr(e instanceof Error ? e.message : String(e));
@@ -974,7 +994,10 @@ export function BottomBar(): JSX.Element {
     setPendingFileRefs((prev) => prev.filter((_, i) => i !== idx));
   }
 
-  async function attachDroppedFiles(files: readonly File[]): Promise<void> {
+  async function attachLocalFiles(
+    files: readonly File[],
+    source: 'drag-drop' | 'file-picker',
+  ): Promise<void> {
     if (files.length === 0) return;
     if (!currentProjectPath) {
       setErr(t('bottom.openFolderFirstShortcut'));
@@ -1019,12 +1042,44 @@ export function BottomBar(): JSX.Element {
       setPendingFileRefs((prev) => [...prev, ...refs]);
     }
     if (unresolved > 0) {
-      setImageErr(t('bottom.unresolvedDroppedFiles', { count: unresolved }));
+      setImageErr(
+        t(
+          source === 'file-picker'
+            ? 'bottom.unresolvedSelectedFiles'
+            : 'bottom.unresolvedDroppedFiles',
+          { count: unresolved },
+        ),
+      );
     }
 
     if (imageFiles.length > 0) {
-      await attachImages(imageFiles, 'drag-drop');
+      await attachImages(imageFiles, source);
     }
+  }
+
+  async function attachFolder(): Promise<void> {
+    if (!window.kodaxSpace) return;
+    if (!currentProjectPath) {
+      setErr(t('bottom.openFolderFirstShortcut'));
+      return;
+    }
+    if (pendingFileRefs.length >= MAX_PENDING_FILE_REFS) {
+      setImageErr(t('bottom.maxFileRefs', { max: MAX_PENDING_FILE_REFS }));
+      return;
+    }
+
+    setImageErr(null);
+    const result = await window.kodaxSpace.invoke('project.openDialog', undefined);
+    if (!result.ok) {
+      setErr(
+        `${result.error?.code ?? 'ERR_UNKNOWN'}: ${result.error?.message ?? t('common.unknownError')}`,
+      );
+      return;
+    }
+    if (result.data.path === null) return;
+
+    const ref = makeDirectoryRef(result.data.path, currentProjectPath, window.kodaxSpace.platform);
+    setPendingFileRefs((prev) => (prev.length < MAX_PENDING_FILE_REFS ? [...prev, ref] : prev));
   }
 
   function onDragEnter(e: React.DragEvent<HTMLDivElement>): void {
@@ -1052,7 +1107,7 @@ export function BottomBar(): JSX.Element {
     e.preventDefault();
     dragDepthRef.current = 0;
     setDraggingFiles(false);
-    void attachDroppedFiles(Array.from(e.dataTransfer.files));
+    void attachLocalFiles(Array.from(e.dataTransfer.files), 'drag-drop');
   }
 
   const activeSlash = getActiveSlashCompletion(prompt, caret);
@@ -2480,6 +2535,19 @@ export function BottomBar(): JSX.Element {
           >
             <div className="flex min-w-0 flex-wrap items-center gap-2">
               <div className="relative">
+                <input
+                  ref={fileInputRef}
+                  data-testid="file-attachment-input"
+                  type="file"
+                  multiple
+                  className="hidden"
+                  tabIndex={-1}
+                  onChange={(event) => {
+                    const files = Array.from(event.currentTarget.files ?? []);
+                    event.currentTarget.value = '';
+                    void attachLocalFiles(files, 'file-picker');
+                  }}
+                />
                 <button
                   type="button"
                   onClick={() => setAttachOpen((v) => !v)}
@@ -2492,6 +2560,13 @@ export function BottomBar(): JSX.Element {
                 <AttachMenu
                   open={attachOpen}
                   onClose={() => setAttachOpen(false)}
+                  onAddFiles={() => {
+                    const input = fileInputRef.current;
+                    if (!input) return;
+                    input.value = '';
+                    input.click();
+                  }}
+                  onAddFolder={() => void attachFolder()}
                   onInsertText={(text) => setPrompt((p) => (p ? `${p} ${text}` : text))}
                 />
               </div>

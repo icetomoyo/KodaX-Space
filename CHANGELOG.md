@@ -14,7 +14,7 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ## [Unreleased]
 
-## [0.1.30] - 2026-07-10
+## [0.1.30] - 2026-07-11
 
 ### Theme
 
@@ -47,6 +47,7 @@ This release re-enables Partner around one composer-first mental model. The user
 - **Release and updater integrity** - Normalized installer asset names to `KodaX-Space-*`, added the ZIP payload required by the macOS updater for x64 and arm64, merged both architecture manifests without silent overwrite, and made release staging reject metadata URLs that do not resolve to an identically named asset.
 - **Queue and session continuity** - Fixed active queue watchers consuming Partner follow-ups, kept session/runtime metadata coherent through rollback and deletion, and restored a usable composer after Partner session removal.
 - **Partner discoverability honesty** - Suppressed unavailable executable Skills from Partner while preserving Coder discovery, and added in-app preview from the Outputs delivery browser.
+- **Composer local attachments** - "Add files or photos" now supports unrestricted multi-select instead of opening the project-directory picker. PNG/JPEG/WebP use the sandboxed image-artifact path, while documents, other image formats, archives, and unknown extensions remain selectable file references. "Add folder" now attaches a directory reference instead of silently switching the current workspace.
 
 ### Security
 

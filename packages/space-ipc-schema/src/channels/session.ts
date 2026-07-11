@@ -221,13 +221,11 @@ export const sessionCreateChannel = {
 //          also defines image/gif for direct SDK path artifacts; keep GIF as a
 //          later Space persistence/preview follow-up.
 // `source`: KodaX 0.7.56 artifact source union. Older callers that omit it keep
-//          the legacy user-inline default. Current emitters: 'clipboard' (paste)
-//          and 'drag-drop'; both route through clipboard.saveImage so `path` stays
-//          inside the main-owned sandbox enforced by assertArtifactPathInClipboardSandbox.
-//          SECURITY — 'file-picker' is reserved for a future flow and has NO emitter
-//          yet. Before wiring file-picker attachments, the picked path MUST be copied
-//          into the clipboard sandbox (or the sandbox guard extended); do NOT forward a
-//          user-chosen filesystem path in-place, or the path-traversal guard is bypassed.
+//          the legacy user-inline default. Current emitters are 'clipboard' (paste),
+//          'drag-drop', and 'file-picker'. Every image emitter sends bytes through
+//          clipboard.saveImage, so `path` stays inside the main-owned sandbox enforced
+//          by assertArtifactPathInClipboardSandbox. A picker path must never be
+//          forwarded directly as an image artifact.
 const inputArtifactSourceSchema = z.enum(['user-inline', 'clipboard', 'drag-drop', 'file-picker']);
 const inputArtifactSchema = z.object({
   kind: z.literal('image'),
