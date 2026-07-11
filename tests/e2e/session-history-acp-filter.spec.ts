@@ -77,7 +77,10 @@ test('ACP fixtures cannot hide real history and show-all searches beyond the rec
       false,
     );
 
-    await space.page.getByRole('button', { name: 'secondary-workspace', exact: true }).click();
+    await space.page
+      .getByTestId('left-sidebar')
+      .getByRole('button', { name: 'secondary-workspace', exact: true })
+      .click();
     await expect(
       space.page.getByText('Secondary retained session 2', { exact: true }),
     ).toBeVisible();
@@ -85,7 +88,9 @@ test('ACP fixtures cannot hide real history and show-all searches beyond the rec
     for (let index = 0; index < 3; index += 1) {
       await space.page.getByRole('button', { name: 'Show more' }).click();
     }
-    await space.page.getByRole('button', { name: /Browse all \d+ sessions in this project/i }).click();
+    await space.page
+      .getByRole('button', { name: /Browse all \d+ sessions in this project/i })
+      .click();
 
     const dialog = space.page.getByRole('dialog', { name: /Sessions in/ });
     await expect(dialog).toBeVisible();
