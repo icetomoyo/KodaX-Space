@@ -298,6 +298,26 @@ function ProjectTree({
     });
   }, []);
 
+  const toggleProjectAndRefresh = useCallback(
+    (projectPath: string, defaultExpanded: boolean, isExpanded: boolean): void => {
+      toggleProjectExpanded(projectPath, defaultExpanded);
+      if (isExpanded) return;
+      const bridge = window.kodaxSpace;
+      if (!bridge) return;
+      void bridge
+        .invoke('session.list', { projectRoot: projectPath, surface: currentSurface })
+        .then((result) => {
+          if (!result.ok) return;
+          useAppStore.getState().replaceSessionsForScope(result.data.sessions, {
+            projectRoot: projectPath,
+            surface: currentSurface,
+          });
+        })
+        .catch(() => undefined);
+    },
+    [currentSurface, toggleProjectExpanded],
+  );
+
   // refresh local projects from main after IPC mutation
   const refreshProjects = useCallback(async (): Promise<void> => {
     if (!window.kodaxSpace) return;
@@ -464,7 +484,7 @@ function ProjectTree({
         >
           <button
             type="button"
-            onClick={() => toggleProjectExpanded(proj.path, defaultExpanded)}
+            onClick={() => toggleProjectAndRefresh(proj.path, defaultExpanded, isExpanded)}
             className="text-fg-muted flex-shrink-0"
             aria-label={isExpanded ? t('sidebar.collapseProject') : t('sidebar.expandProject')}
           >
@@ -492,7 +512,7 @@ function ProjectTree({
           ) : (
             <button
               type="button"
-              onClick={() => toggleProjectExpanded(proj.path, defaultExpanded)}
+              onClick={() => toggleProjectAndRefresh(proj.path, defaultExpanded, isExpanded)}
               className="flex-1 text-left truncate"
             >
               {proj.name}

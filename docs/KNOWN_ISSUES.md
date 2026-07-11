@@ -1755,6 +1755,7 @@ The same ordering risk existed between Coder and Partner: the persisted limit wa
 #### Resolution
 
 - Query every known project independently and merge each result into the renderer store with `{ projectRoot, surface }` scope.
+- Refresh that same scoped recent window when a collapsed project is explicitly expanded, so project-list hydration cannot leave an expanded project stale or empty.
 - Preserve a separate 200-session recent window for every project and Coder/Partner surface.
 - Apply surface filtering before the limit in the persistence adapter.
 - When a project-scoped SDK summary omits workspace/git-root metadata, retain the validated project filter as its renderer project root instead of grouping it under `/`.
