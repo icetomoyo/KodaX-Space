@@ -14,11 +14,11 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ## [Unreleased]
 
-## [0.1.31] - 2026-07-12
+## [0.1.30] - 2026-07-12
 
 ### Theme
 
-**KodaX 0.7.67 external-agent foundation: one policy-filtered catalog, executor plane, durable task ledger, and shared Worker/Workflow dispatch path.**
+**Partner workspace-first working-agent foundation plus KodaX 0.7.67 external-agent orchestration: one policy-filtered catalog, executor plane, durable task ledger, and shared Worker/Workflow dispatch path.**
 
 ### Added
 
@@ -46,7 +46,7 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ### Documentation
 
-- **Current capability alignment** - README files, user/usage manuals, machine-readable `kodax_manual` topics, PRD/HLD baseline notes, capability ledger, feature ledger, known issues, and F115 acceptance guidance now consistently distinguish the 0.1.31 development candidate from the public 0.1.30 release and state the exact Partner/Reference Agent boundaries.
+- **Current capability alignment** - README files, user/usage manuals, machine-readable `kodax_manual` topics, PRD/HLD baseline notes, capability ledger, feature ledger, known issues, and F115 acceptance guidance now consistently describe 0.1.30 as the KodaX 0.7.67 Partner/Reference Agent release line.
 
 ### Security
 
@@ -54,15 +54,13 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 - **Durable local boundary** - External-agent registrations, tasks, and events use bounded, atomic files under `~/.kodax/space/external-agent-plane`; unsafe aliases, oversized store entries, remote artifacts, and credential resolution are denied by default in the Reference tranche.
 - **Renderer capability boundary** - Artifact and auxiliary windows cannot call external-agent administration/task IPC, and task IDs alone are insufficient to read or mutate work outside the main-selected session.
 
-## [0.1.30] - 2026-07-11
+### Partner workspace-first foundation
 
-### Theme
-
-**Partner working-agent foundation: mode-first task entry, workspace-first delivery, controlled writes, durable knowledge, and bounded coding boosts, aligned with KodaX 0.7.66.**
+**Partner working-agent foundation: mode-first task entry, workspace-first delivery, controlled writes, durable knowledge, and bounded coding boosts; initially validated on KodaX 0.7.66 and shipped on 0.7.67.**
 
 This release re-enables Partner around one composer-first mental model. The user chooses a broad work mode, provides the task and sources, and lets Partner infer the detailed capability playbook and deliverable shape. Outputs are no longer limited to a small format list: Partner has a writable run workspace, an indexed delivery browser, checkpointed project writes, strict review fallback, and small isolated helper scripts when coding materially improves knowledge work.
 
-### Added
+#### Added
 
 - **Mode-first Partner workbench (F095)** - Added document processing, financial services, data analysis and visualization, deep research, product management, slides, design, and email editing modes. Task routes, source use, tools, and output shape are inferred from the selected mode plus the composer request; Advanced remains an override surface.
 - **Workspace-first Partner delivery (F114)** - Added per-session writable run-output roots, arbitrary bounded file delivery, a durable delivery registry, known-format rich preview, and metadata/reveal/copy-path handling for unknown formats.
@@ -72,14 +70,14 @@ This release re-enables Partner around one composer-first mental model. The user
 - **Bounded coding boost** - Partner can write task-local JavaScript helpers in its output workspace and execute them through a one-shot Worker plus capability-free VM. Helper inputs, logs, writes, time, memory, and payloads are bounded; shell, package managers, dynamic import, environment access, subagents, and unrestricted filesystem access are absent.
 - **Local policy and audit (F098)** - Added Space-owned policy guards, redacted audit records/export, and a compact local Policy & Audit surface for Partner source, artifact, delivery, proposal, and workspace actions.
 
-### Changed
+#### Changed
 
-- **KodaX 0.7.66 SDK catch-up** - Root and desktop workspaces now resolve the exact published `@kodax-ai/kodax@0.7.66` tarball. An isolated compatibility gate exercises the new `/runtime` export without adding it to normal app startup, local linking mirrors it, and package smoke requires the Runtime, semantic, and constructed-handler Worker sidecars.
+- **KodaX Runtime foundation** - The initial Partner tranche validated the 0.7.66 `/runtime` export and Worker sidecars; the final 0.1.30 package supersedes that dependency with exact KodaX 0.7.67 and extends the compatibility gate through the external-agent Runtime round trip.
 - **Runtime adoption boundary** - Space validates `embedded + worker`, `requirements.hardDispose`, protocol metadata, and session-service parity, but does not migrate live 0.1.30 sessions or Partner helpers to the shared daemon. The daemon DTO boundary rejects process-local callbacks, and the SDK does not yet expose a general per-invocation execution service that directly replaces `run_partner_helper`.
 - **Unified Partner composer** - Removed the separate top-level start-task interaction. Sending from the normal composer creates/resumes the Partner session and attaches any staged sources, keeping task start and follow-up conversation in one place.
 - **Output selection is open by default** - The normal path is a run workspace. Office/PDF creation and reviewed workspace text are convenience/strict modes, not fixed output requirements.
 
-### Fixed
+#### Fixed
 
 - **Partner write and source hardening** - Closed path traversal, symlink/hard-link alias, race, encoding, hashing, and corrupt-store edge cases across source extraction, delivery writes, checkpoints, proposals, and durable stores.
 - **Office/source reliability** - Isolated PDF and Office parsing from Electron main, added ZIP expansion guards and document limits, fixed Unicode PDF output, and moved DOCX/XLSX/PPTX preview parsing into disposable bounded workers.
@@ -91,11 +89,11 @@ This release re-enables Partner around one composer-first mental model. The user
 - **Session history visibility** - ACP protocol sessions are excluded before Space applies its recent-history limit. The 200-row window is now independent per project and Coder/Partner surface, so one busy project or surface cannot make another appear empty. Cursor-capable SDK builds are consumed page by page, while KodaX 0.7.66 retains a bounded compatibility read; the project session picker loads and searches the complete bounded project history on demand. Existing JSONL records, including the SDK `_unknown` compatibility bucket, remain untouched.
 - **Test data isolation** - `KODAX_TEST_ONBOARDING` now redirects the KodaX SDK home as well as Space and Electron data, preventing Electron E2E runs from reading or writing the real `~/.kodax/sessions` tree.
 
-### Security
+#### Security
 
 - **Isolated Partner helpers** - Each helper runs in a disposable Worker with hard wall-clock termination and V8 resource limits. A capability-free VM receives only cloned input and a serialized file snapshot; the parent independently validates and applies the write journal.
 - **Fail-closed file mutation** - Sensitive names/extensions, paths outside allowed roots, alias escapes, oversized content, stale hashes, and conflicting rollback targets are rejected. Durable state uses atomic writes and preserves corrupt originals for diagnosis.
-- **KodaX Runtime capability verification** - A compatibility gate proves the published 0.7.66 Worker Runtime satisfies hard-dispose and rejects inline downgrade, while packaged smoke prevents missing Runtime/constructed-handler sidecars.
+- **KodaX Runtime capability verification** - A compatibility gate proves the published 0.7.67 Worker Runtime satisfies hard-dispose, rejects inline downgrade, and completes the Reference external-agent round trip, while packaged smoke prevents missing Runtime/constructed-handler sidecars.
 
 ## [0.1.29] - 2026-07-08
 

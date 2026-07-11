@@ -119,7 +119,7 @@ function buildCapabilityLedger(entitled: boolean): SpaceCapability[] {
       status: 'supported',
       detail:
         'KodaX 0.7.67 Reference Agent registrations, live preflight, Worker/Workflow routing, durable tasks, Task Dock interventions, and audit events are integrated. A2A, MCP Tasks, and governed HTTP remain capability-gated until their adapters ship.',
-      since: '0.1.31',
+      since: '0.1.30',
     },
   ];
 }
@@ -142,7 +142,7 @@ export function registerVersionChannel(): void {
       platform,
       kodaxSdkVersion: readKodaxSdkVersion(),
       kodaxDependencySpec: readKodaxDependencySpec(),
-      capabilityContract: 'space-v0.1.31',
+      capabilityContract: 'space-v0.1.30',
       capabilities: buildCapabilityLedger(entitled),
     };
   });

@@ -1,10 +1,10 @@
 # KodaX Space 高层设计（HLD）
 
 > Last updated: 2026-07-12
-> Status: 核心架构决策仍有效；当前实现基线为 KodaX Space 0.1.31 开发候选版 / KodaX 0.7.67，最新公开发行版为 0.1.30。中间方案与否决理由见 [ADR/](ADR/)；当前能力边界见 [KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md)。
+> Status: 核心架构决策仍有效；当前实现基线为 KodaX Space 0.1.30 发布候选版 / KodaX 0.7.67，最终 tag 和 Release 等待验收。中间方案与否决理由见 [ADR/](ADR/)；当前能力边界见 [KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md)。
 > Companion doc: [PRD](PRD.md)
 
-> **0.1.31 增量**：Electron main 继续拥有特权边界，并新增一个持久、协议中立的 External Agent Executor Plane。Renderer 仅通过 zod IPC 获取脱敏 Registration/Descriptor/Task/Event 投影；管理入口仅接受主应用窗口，任务创建从 main-owned live Session 派生项目/父任务归属，读取与干预均复核任务所属 Session。实时 Session 与 Workflow 共用同一 KodaX 0.7.67 plane。Reference Executor 已接通，真实 A2A/MCP Tasks/HTTP adapter 仍按 Runtime capability 门控。Partner 自 0.1.30 起已启用 workspace-first Outputs 与 checkpointed writes；后文早期里程碑描述保留历史设计语境。
+> **0.1.30 增量**：Electron main 继续拥有特权边界，并新增一个持久、协议中立的 External Agent Executor Plane。Renderer 仅通过 zod IPC 获取脱敏 Registration/Descriptor/Task/Event 投影；管理入口仅接受主应用窗口，任务创建从 main-owned live Session 派生项目/父任务归属，读取与干预均复核任务所属 Session。实时 Session 与 Workflow 共用同一 KodaX 0.7.67 plane。Reference Executor 已接通，真实 A2A/MCP Tasks/HTTP adapter 仍按 Runtime capability 门控。Partner 自 0.1.30 起已启用 workspace-first Outputs 与 checkpointed writes；后文早期里程碑描述保留历史设计语境。
 
 ---
 
