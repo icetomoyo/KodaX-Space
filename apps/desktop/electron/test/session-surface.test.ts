@@ -62,7 +62,8 @@ test('schema: sessionMeta defaults surface to "code" when omitted', async () => 
 });
 
 test('schema: create/list input.surface is optional and validates the enum', async () => {
-  const { sessionCreateChannel, sessionListChannel } = await import('@kodax-space/space-ipc-schema');
+  const { sessionCreateChannel, sessionListChannel } =
+    await import('@kodax-space/space-ipc-schema');
   // 缺省合法
   assert.equal(
     sessionCreateChannel.input.safeParse({ projectRoot: '/r', provider: 'mock' }).success,
@@ -70,8 +71,11 @@ test('schema: create/list input.surface is optional and validates the enum', asy
   );
   // 显式 partner 合法
   assert.equal(
-    sessionCreateChannel.input.safeParse({ projectRoot: '/r', provider: 'mock', surface: 'partner' })
-      .success,
+    sessionCreateChannel.input.safeParse({
+      projectRoot: '/r',
+      provider: 'mock',
+      surface: 'partner',
+    }).success,
     true,
   );
   // Quick Ask uses a host-only temporary marker.
@@ -130,6 +134,61 @@ test('listPersistedSessions: hides ephemeral tagged sessions', async () => {
   assert.deepEqual(
     list.map((s) => s.sessionId),
     ['s_code'],
+  );
+});
+
+test('listPersistedSessions: ACP placeholders do not consume the visible session limit', async () => {
+  for (let index = 0; index < 240; index += 1) {
+    mockState.seedSurface(`acp-${index}`, '/r', 'acp', 'ACP Session');
+  }
+  for (let index = 0; index < 205; index += 1) {
+    mockState.seed(`code-${index}`, '/r', `Real session ${index}`);
+  }
+
+  const list = await listPersistedSessions({ projectRoot: '/r' });
+
+  assert.equal(list.length, 200);
+  assert.equal(
+    list.some((session) => session.title === 'ACP Session'),
+    false,
+  );
+  assert.deepEqual(
+    list.slice(0, 3).map((session) => session.sessionId),
+    ['code-0', 'code-1', 'code-2'],
+  );
+});
+
+test('listPersistedSessions: explicit limits apply after filtering non-interactive surfaces', async () => {
+  mockState.seedSurface('acp-1', '/r', 'acp', 'ACP Session');
+  mockState.seed('code-1', '/r', 'First real session');
+  mockState.seedSurface('acp-2', '/r', 'acp', 'ACP Session');
+  mockState.seed('code-2', '/r', 'Second real session');
+
+  const list = await listPersistedSessions({ projectRoot: '/r', limit: 1 });
+  assert.deepEqual(
+    list.map((session) => session.sessionId),
+    ['code-1'],
+  );
+});
+
+test('listPersistedSessions: limits apply after Coder/Partner surface filtering', async () => {
+  for (let index = 0; index < 240; index += 1) {
+    mockState.seedTagged(`code-${index}`, '/r', 'code', `Code ${index}`);
+  }
+  for (let index = 0; index < 205; index += 1) {
+    mockState.seedTagged(`partner-${index}`, '/r', 'partner', `Partner ${index}`);
+  }
+
+  const list = await listPersistedSessions({ projectRoot: '/r', surface: 'partner' });
+
+  assert.equal(list.length, 200);
+  assert.equal(
+    list.every((session) => session.surface === 'partner'),
+    true,
+  );
+  assert.deepEqual(
+    list.slice(0, 3).map((session) => session.sessionId),
+    ['partner-0', 'partner-1', 'partner-2'],
   );
 });
 
@@ -200,10 +259,7 @@ test('listMerged({surface}): filters persisted (tag-derived) sessions and treats
   );
 
   const coder = await kodaxHost.listMerged({ surface: 'code' });
-  assert.deepEqual(
-    coder.map((m) => m.sessionId).sort(),
-    ['s_legacy'],
-  );
+  assert.deepEqual(coder.map((m) => m.sessionId).sort(), ['s_legacy']);
 
   // 不传 surface = 全量（含历史无 tag 的）
   const all = await kodaxHost.listMerged();

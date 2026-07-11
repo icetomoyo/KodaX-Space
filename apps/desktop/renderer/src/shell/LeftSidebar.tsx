@@ -71,6 +71,7 @@ export function LeftSidebar({
 }: LeftSidebarProps): JSX.Element {
   const { t } = useI18n();
   const sessions = useAppStore((s) => s.sessions);
+  const projects = useAppStore((s) => s.projects);
   const currentSessionId = useAppStore((s) => s.currentSessionId);
   const setCurrentSession = useAppStore((s) => s.setCurrentSession);
   const currentProjectPath = useAppStore((s) => s.currentProjectPath);
@@ -81,20 +82,46 @@ export function LeftSidebar({
     [sessions, currentSurface],
   );
 
-  // F040: 不再按 currentProjectPath 过滤拉 session —— 多项目 sidebar 需要全量。
-  // 启动期拉一次；切项目 / 增删 session 触发的"补拉"未来要走显式 refresh 路径。
-  // refetch 触发器：currentProjectPath 变化（开新项目可能带新 session）+ mount。
-  // F045: 加 currentSurface —— Coder / Partner 会话列表彼此独立，切面时按新 surface 重拉。
+  // 多项目 sidebar 的 recent 上限必须按项目计算。一次无 projectRoot 的全局 200 条查询会被
+  // 单个活跃项目吃满，随后让其它项目错误显示“暂无会话”。逐项目拉取后，每个项目都拥有
+  // 自己的 200 条最近窗口；显式“展示全部”再由 ProjectSessionPicker 按需扩大到 50,000。
   useEffect(() => {
     const bridge = window.kodaxSpace;
     if (!bridge) return;
-    void bridge.invoke('session.list', { surface: currentSurface }).then((r) => {
-      if (r.ok)
-        useAppStore
-          .getState()
-          .replaceSessionsForScope(r.data.sessions, { surface: currentSurface });
+    const candidates = [currentProjectPath, ...projects.map((project) => project.path)].filter(
+      (projectPath): projectPath is string => projectPath !== null,
+    );
+    const roots = [
+      ...new Map(
+        candidates.map((projectPath) => [canonProjectRootBrowser(projectPath), projectPath]),
+      ).values(),
+    ];
+    if (roots.length === 0) return;
+
+    let cancelled = false;
+    void Promise.allSettled(
+      roots.map(async (projectRoot) => ({
+        projectRoot,
+        result: await bridge.invoke('session.list', { projectRoot, surface: currentSurface }),
+      })),
+    ).then((settledRows) => {
+      if (cancelled) return;
+      const store = useAppStore.getState();
+      for (const row of settledRows) {
+        if (row.status !== 'fulfilled') continue;
+        const { projectRoot, result } = row.value;
+        if (result.ok) {
+          store.replaceSessionsForScope(result.data.sessions, {
+            projectRoot,
+            surface: currentSurface,
+          });
+        }
+      }
     });
-  }, [currentProjectPath, currentSurface]);
+    return () => {
+      cancelled = true;
+    };
+  }, [currentProjectPath, currentSurface, projects]);
 
   /**
    * + New session：统一首页与新建。不再急建空 session（那会跳进零消息空白对话页，
@@ -228,6 +255,7 @@ function ProjectTree({
   readonly onSelect: (sessionId: string) => void;
 }): JSX.Element | null {
   const { t } = useI18n();
+  const currentSurface = useSurfaceStore((s) => s.currentSurface);
   const projects = useAppStore((s) => s.projects);
   const setProjects = useAppStore((s) => s.setProjects);
   const currentProjectPath = useAppStore((s) => s.currentProjectPath);
@@ -600,7 +628,10 @@ function ProjectTree({
 
       {pickerProject && (
         <ProjectSessionPicker
+          key={`${pickerProject.path}:${currentSurface}`}
           projectName={pickerProject.name}
+          projectPath={pickerProject.path}
+          surface={currentSurface}
           // 把本项目所有 session 按 lastActivityAt desc 排好传进去
           sessions={(sessionsByProject.get(canonProjectRootBrowser(pickerProject.path)) ?? [])
             .slice()

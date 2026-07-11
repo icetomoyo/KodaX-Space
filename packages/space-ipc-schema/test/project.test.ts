@@ -32,7 +32,10 @@ test('project.list input is void; output requires projects array', () => {
 });
 
 test('project.openDialog output: path can be string or null', () => {
-  assert.equal(projectOpenDialogChannel.output.safeParse({ path: '/Users/foo/proj' }).success, true);
+  assert.equal(
+    projectOpenDialogChannel.output.safeParse({ path: '/Users/foo/proj' }).success,
+    true,
+  );
   assert.equal(projectOpenDialogChannel.output.safeParse({ path: null }).success, true);
   assert.equal(projectOpenDialogChannel.output.safeParse({}).success, false);
 });
@@ -71,6 +74,12 @@ test('session.list now accepts optional { projectRoot } filter', () => {
   assert.equal(sessionListChannel.input.safeParse({}).success, true);
   // 传 projectRoot 也行
   assert.equal(sessionListChannel.input.safeParse({ projectRoot: '/r' }).success, true);
+  assert.equal(
+    sessionListChannel.input.safeParse({ projectRoot: '/r', limit: 50_000 }).success,
+    true,
+  );
+  assert.equal(sessionListChannel.input.safeParse({ limit: 50_001 }).success, false);
+  assert.equal(sessionListChannel.input.safeParse({ limit: 0 }).success, false);
 });
 
 test('session.list output: SessionMeta now allows optional title', () => {
@@ -106,8 +115,17 @@ test('session.list output: SessionMeta now allows optional title', () => {
 });
 
 test('session.setTitle: requires sessionId + non-empty title', () => {
-  assert.equal(sessionSetTitleChannel.input.safeParse({ sessionId: 's_1', title: 'hello' }).success, true);
-  assert.equal(sessionSetTitleChannel.input.safeParse({ sessionId: 's_1', title: '' }).success, false);
+  assert.equal(
+    sessionSetTitleChannel.input.safeParse({ sessionId: 's_1', title: 'hello' }).success,
+    true,
+  );
+  assert.equal(
+    sessionSetTitleChannel.input.safeParse({ sessionId: 's_1', title: '' }).success,
+    false,
+  );
   const tooLong = 'x'.repeat(257);
-  assert.equal(sessionSetTitleChannel.input.safeParse({ sessionId: 's_1', title: tooLong }).success, false);
+  assert.equal(
+    sessionSetTitleChannel.input.safeParse({ sessionId: 's_1', title: tooLong }).success,
+    false,
+  );
 });

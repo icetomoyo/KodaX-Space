@@ -7,13 +7,15 @@
 // Enter 选中 + Esc 关。但这里只关心**单项目 session**，不混 actions/files/slash。
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { SessionMeta } from '@kodax-space/space-ipc-schema';
+import type { SessionMeta, Surface } from '@kodax-space/space-ipc-schema';
 import { createMatcher } from '../lib/fuzzy.js';
 import { Portal } from '../components/Portal.js';
 import { useI18n } from '../i18n/I18nProvider.js';
 
 interface ProjectSessionPickerProps {
   readonly projectName: string;
+  readonly projectPath: string;
+  readonly surface: Surface;
   readonly sessions: readonly SessionMeta[]; // 已 sort 好 (按 lastActivityAt desc)
   readonly currentSessionId: string | null;
   readonly onSelect: (sessionId: string) => void;
@@ -40,6 +42,8 @@ function formatAgo(ts: number, now: number, locale: string): string {
 
 export function ProjectSessionPicker({
   projectName,
+  projectPath,
+  surface,
   sessions,
   currentSessionId,
   onSelect,
@@ -48,24 +52,62 @@ export function ProjectSessionPicker({
   const { t, effectiveLocale } = useI18n();
   const [query, setQuery] = useState('');
   const [activeIdx, setActiveIdx] = useState(0);
+  const [availableSessions, setAvailableSessions] = useState<readonly SessionMeta[]>(
+    () => sessions,
+  );
+  const [loadingAll, setLoadingAll] = useState(true);
+  const [loadAllFailed, setLoadAllFailed] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const listRef = useRef<HTMLUListElement | null>(null);
   const matcherRef = useRef(createMatcher());
   // 记当前打开时刻，避免 *秒级* 滚动让 ago label 抖
   const now = useMemo(() => Date.now(), []);
 
+  // 常驻 sidebar 只保留最近 200 条；用户明确打开“展示全部”后，再按项目拉取
+  // 完整候选窗口。搜索始终针对 availableSessions，而不是最近列表的子集。
+  useEffect(() => {
+    let cancelled = false;
+    const bridge = window.kodaxSpace;
+    if (!bridge) {
+      setLoadingAll(false);
+      setLoadAllFailed(true);
+      return;
+    }
+    void bridge
+      .invoke('session.list', { projectRoot: projectPath, surface, limit: 50_000 })
+      .then((result) => {
+        if (cancelled) return;
+        if (!result.ok) {
+          setLoadAllFailed(true);
+          return;
+        }
+        setAvailableSessions(
+          result.data.sessions.slice().sort((a, b) => b.lastActivityAt - a.lastActivityAt),
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setLoadAllFailed(true);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingAll(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectPath, surface]);
+
   // fuzzy filter — query 空时按 lastActivity 原序；非空跑 fzf-lite
   const filtered = useMemo(() => {
     if (query.trim().length === 0) {
-      return sessions.map((s, i) => ({ session: s, score: -i })); // 保留输入顺序
+      return availableSessions.map((s, i) => ({ session: s, score: -i })); // 保留输入顺序
     }
     const matcher = matcherRef.current;
-    matcher.setCandidates(sessions.map((s) => s.title || s.sessionId));
+    matcher.setCandidates(availableSessions.map((s) => s.title || s.sessionId));
     const results = matcher.search(query, 200);
     const out: { session: SessionMeta; score: number }[] = [];
     // FIFO bucket 防同名 collision (F026 review HIGH-2 同款 pattern)
     const buckets = new Map<string, SessionMeta[]>();
-    for (const s of sessions) {
+    for (const s of availableSessions) {
       const k = s.title || s.sessionId;
       const arr = buckets.get(k);
       if (arr === undefined) buckets.set(k, [s]);
@@ -78,7 +120,7 @@ export function ProjectSessionPicker({
       out.push({ session: s, score: r.score });
     }
     return out;
-  }, [query, sessions]);
+  }, [query, availableSessions]);
 
   useEffect(() => {
     setActiveIdx(0);
@@ -162,7 +204,9 @@ export function ProjectSessionPicker({
             >
               {projectName}
             </span>
-            <span className="text-[11px] text-fg-muted font-mono">{sessions.length}</span>
+            <span className="text-[11px] text-fg-muted font-mono">
+              {loadingAll ? t('common.loading') : availableSessions.length}
+            </span>
           </div>
           <div className="border-b border-border-default px-3 py-2">
             <input
@@ -221,6 +265,7 @@ export function ProjectSessionPicker({
             )}
           </ul>
           <div className="border-t border-border-default px-3 py-1.5 text-[11px] text-fg-muted flex gap-3">
+            {loadAllFailed && <span className="text-warning">{t('sessionPicker.loadFailed')}</span>}
             <span>{t('sessionPicker.navigateHint')}</span>
             <span>{t('sessionPicker.openHint')}</span>
             <span>{t('sessionPicker.closeHint')}</span>

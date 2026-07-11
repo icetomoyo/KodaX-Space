@@ -302,6 +302,8 @@ export const sessionListChannel = {
       projectRoot: z.string().min(1).max(4096).optional(),
       /** F045: 只返回该工作面的 session（不传 = 全部，含历史无 tag 的）。 */
       surface: surfaceSchema.optional(),
+      /** 最近列表默认 200；全量会话选择器可按需扩大，仍受主进程硬上限保护。 */
+      limit: z.number().int().min(1).max(50_000).optional(),
     })
     .optional(),
   output: z.object({

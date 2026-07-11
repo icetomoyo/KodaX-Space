@@ -41,6 +41,16 @@ export function isEphemeralSessionTag(tag: string | undefined): boolean {
   return tag === SPACE_EPHEMERAL_SESSION_TAG || tag === 'quick-ask';
 }
 
+const DEFAULT_VISIBLE_SESSION_LIMIT = 200;
+const MAX_PERSISTED_SESSION_SUMMARIES_TO_SCAN = 50_000;
+
+function isVisibleInteractiveSession(summary: {
+  readonly tag?: string;
+  readonly runtimeInfo?: { readonly surface?: string };
+}): boolean {
+  return !isEphemeralSessionTag(summary.tag) && summary.runtimeInfo?.surface !== 'acp';
+}
+
 /**
  * F045: 把 SDK SessionSummary.tag（consumer 私有自由字符串）反推回 Space 的 surface。
  * 只有 tag==='partner' 归 Partner；其余（'code' / 未知值 / 历史无 tag）一律保守归 Coder。
@@ -216,6 +226,7 @@ export interface PersistedSessionMeta {
 export async function listPersistedSessions(opts: {
   readonly projectRoot?: string;
   readonly limit?: number;
+  readonly surface?: 'code' | 'partner';
 }): Promise<PersistedSessionMeta[]> {
   // SDK 0.7.46 (FEATURE_219) 真修了 cross-project filter bug —— storage.ts:1259
   // 现在 `currentGitRoot = gitRoot ?? (hostCwd ? getGitRoot(hostCwd) : null)`,
@@ -235,12 +246,35 @@ export async function listPersistedSessions(opts: {
   //            → 行为没变)
   //   本次: SDK 0.7.46 storage.list 加 `this.hostCwd ?` 守门,不传 hostCwd
   //         就 currentGitRoot=null 走全量 → workaround 彻底不需要,恢复纯净调用
+  const requestedLimit = Math.max(
+    1,
+    Math.min(opts.limit ?? DEFAULT_VISIBLE_SESSION_LIMIT, MAX_PERSISTED_SESSION_SUMMARIES_TO_SCAN),
+  );
+  // KodaX 0.7.66 cannot filter listSessions by runtimeInfo.surface. Filtering a
+  // 200-row result after the SDK limit lets ACP placeholder sessions consume the
+  // entire result window. Scan a bounded set first, then apply Space visibility
+  // and the caller's limit. The SDK project-scoped slow path already reads and
+  // sorts the full project bucket before slicing, so this does not add disk I/O.
   const summaries = await activeImpl.listSessions({
     projectRoot: opts.projectRoot,
     scope: 'user',
-    limit: opts.limit ?? 200,
+    limit: MAX_PERSISTED_SESSION_SUMMARIES_TO_SCAN,
   });
-  const visibleSummaries = summaries.filter((s) => !isEphemeralSessionTag(s.tag));
+  const visibleSummaries = summaries
+    .filter(
+      (summary) =>
+        isVisibleInteractiveSession(summary) &&
+        (opts.surface === undefined || sdkTagToSurface(summary.tag) === opts.surface),
+    )
+    .slice(0, requestedLimit);
+  if (
+    summaries.length >= MAX_PERSISTED_SESSION_SUMMARIES_TO_SCAN &&
+    visibleSummaries.length < requestedLimit
+  ) {
+    console.warn(
+      `[session-store] reached ${MAX_PERSISTED_SESSION_SUMMARIES_TO_SCAN} persisted summaries before finding ${requestedLimit} visible interactive sessions`,
+    );
+  }
   return Promise.all(
     visibleSummaries.map(async (s) => {
       const titleOverride = await getSessionTitleStore().read(s.id);

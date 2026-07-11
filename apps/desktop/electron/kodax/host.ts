@@ -506,10 +506,15 @@ class KodaXHost {
   async listMerged(opts?: {
     projectRoot?: string;
     surface?: ManagedSession['surface'];
+    limit?: number;
   }): Promise<ListMergedItem[]> {
     const inFlight = this.listInFlight().filter((s) => s.ephemeral !== true);
     const inFlightIds = new Set(inFlight.map((s) => s.sessionId));
-    const persisted = await listPersistedSessions({ projectRoot: opts?.projectRoot });
+    const persisted = await listPersistedSessions({
+      projectRoot: opts?.projectRoot,
+      limit: opts?.limit,
+      surface: opts?.surface,
+    });
 
     const items: ListMergedItem[] = inFlight.map((s) => ({
       kind: 'in-flight',

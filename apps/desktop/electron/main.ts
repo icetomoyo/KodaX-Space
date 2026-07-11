@@ -159,7 +159,7 @@ if (process.platform === 'win32') {
 // KODAX_PROFILE_DIR 独立数据档时,把 SDK 数据根(sessions/config/agents)一并搬进该档,
 // 靠设 KODAX_HOME(SDK 的 getAgentConfigHome 只读它,不读 KODAX_SESSIONS_DIR)。必须在任何
 // loadSdkModule() 动态 import 之前(SDK 在模块加载时冻结 <KODAX_HOME>/sessions),所以放在
-// bootstrap 最早期。默认/便携版/测试模式下是 no-op。
+// bootstrap 最早期。测试模式强制隔离到 tmpdir；默认/便携版下是 no-op。
 applySdkHomeEnv();
 
 const scopedUserDataDir = getScopedUserDataDir();

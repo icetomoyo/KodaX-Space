@@ -371,6 +371,7 @@ export function registerSessionChannels(): void {
     const merged = await kodaxHost.listMerged({
       projectRoot: projectFilter,
       surface: input?.surface,
+      limit: input?.limit,
     });
 
     // Persisted session 没有真运行时设置——磁盘上只 SDK lineage + gitRoot。先准备一份

@@ -23,6 +23,8 @@ export interface MockSessionState {
   seed(id: string, gitRoot: string, title?: string): void;
   /** F045: Inject a persisted session carrying a SDK session tag (surface 反推). */
   seedTagged(id: string, gitRoot: string, tag: string | undefined, title?: string): void;
+  /** Inject a summary owned by another SDK surface, such as ACP. */
+  seedSurface(id: string, gitRoot: string, surface: string, title?: string): void;
   seedTranscript(id: string, entries: readonly unknown[]): void;
   lastForkSelector(): string | undefined;
   lastRewindSelector(): string | undefined;
@@ -41,6 +43,7 @@ export function installSessionStoreMock(): MockSessionState {
       title: string;
       gitRoot: string;
       tag?: string;
+      runtimeSurface?: string;
       transcriptEntries?: readonly unknown[];
     }
   >();
@@ -54,12 +57,15 @@ export function installSessionStoreMock(): MockSessionState {
       const root = opts?.projectRoot;
       const all = [...storage.values()];
       const filtered = root === undefined ? all : all.filter((s) => s.gitRoot === root);
-      return filtered.map((s) => ({
+      return filtered.slice(0, opts?.limit ?? filtered.length).map((s) => ({
         id: s.id,
         title: s.title,
         msgCount: 0,
         ...(s.tag !== undefined ? { tag: s.tag } : {}),
-        runtimeInfo: { workspaceRoot: s.gitRoot },
+        runtimeInfo: {
+          workspaceRoot: s.gitRoot,
+          ...(s.runtimeSurface !== undefined ? { surface: s.runtimeSurface } : {}),
+        },
       }));
     },
     forkSession: async (srcId, opts) => {
@@ -109,6 +115,9 @@ export function installSessionStoreMock(): MockSessionState {
         title: data.title,
         gitRoot: data.runtimeInfo?.workspaceRoot ?? data.gitRoot,
         ...(data.tag !== undefined ? { tag: data.tag } : {}),
+        ...(data.runtimeInfo?.surface !== undefined
+          ? { runtimeSurface: data.runtimeInfo.surface }
+          : {}),
       });
       return true;
     },
@@ -143,6 +152,9 @@ export function installSessionStoreMock(): MockSessionState {
     seedTagged(id, gitRoot, tag, title = 'Untitled'): void {
       storage.set(id, { id, title, gitRoot, ...(tag !== undefined ? { tag } : {}) });
     },
+    seedSurface(id, gitRoot, surface, title = 'Untitled'): void {
+      storage.set(id, { id, title, gitRoot, runtimeSurface: surface });
+    },
     seedTranscript(id, entries): void {
       const existing = storage.get(id);
       storage.set(id, {
@@ -150,6 +162,9 @@ export function installSessionStoreMock(): MockSessionState {
         title: existing?.title ?? 'Untitled',
         gitRoot: existing?.gitRoot ?? '',
         ...(existing?.tag !== undefined ? { tag: existing.tag } : {}),
+        ...(existing?.runtimeSurface !== undefined
+          ? { runtimeSurface: existing.runtimeSurface }
+          : {}),
         transcriptEntries: entries,
       });
     },

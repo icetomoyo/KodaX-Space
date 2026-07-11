@@ -125,10 +125,16 @@ export function getScopedUserDataDir(): string | null {
  * `<KODAX_HOME>/sessions` 常量在 SDK 模块首次加载时就冻结,晚设无效 → 重演"Space 数据搬了、
  * SDK sessions 没搬"的半便携不一致。
  *
- * - 默认 / 便携版 / 测试模式:不动 KODAX_HOME,SDK 走它自己的 os.homedir()/.kodax 默认。
+ * - 测试模式:强制把 KODAX_HOME 指到隔离的 tmpdir/kodax-test-<id>，即使调用者 shell
+ *   已经设置 KODAX_HOME 也不能让测试碰真实数据。
+ * - 默认 / 便携版:不动 KODAX_HOME,SDK 走它自己的 os.homedir()/.kodax 默认。
  * - 用户已自行设过 KODAX_HOME:尊重,不覆盖。
  */
 export function applySdkHomeEnv(): void {
+  if (process.env.KODAX_TEST_ONBOARDING) {
+    process.env.KODAX_HOME = getKodaxDir();
+    return;
+  }
   if (profileOverrideDir() === null) return;
   if (process.env.KODAX_HOME && process.env.KODAX_HOME.length > 0) return;
   process.env.KODAX_HOME = getKodaxDir();

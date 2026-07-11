@@ -29,6 +29,10 @@ Last Updated: 2026-07-11
 | 021 | Medium | Resolved | Partner advertised unavailable SDK Skills and Outputs lacked an in-app delivery preview loop | v0.1.30 | 2026-07-10 |
 | 022 | Medium | Open | KodaX Runtime lacks a general per-invocation execution service for Partner helper migration | KodaX 0.7.66 adoption | 2026-07-10 |
 | 023 | Medium | Resolved | Composer file picker opened the project-directory dialog and could not select images or files | v0.1.30 | 2026-07-11 |
+| 024 | High | Resolved | ACP placeholder sessions consumed the 200-row Space history window and hid real project sessions | v0.1.30 | 2026-07-11 |
+| 025 | High | Open | KodaX ACP tests persist fixture sessions into the real user session/runtime directories | KodaX 0.7.66 | 2026-07-11 |
+| 026 | High | Resolved | Space E2E test mode isolated app data but left the SDK session home pointed at the real user directory | v0.1.30 | 2026-07-11 |
+| 027 | High | Resolved | A global 200-session window let one busy project make other project histories appear empty | v0.1.30 | 2026-07-11 |
 
 ## Issue Details
 
@@ -1669,12 +1673,99 @@ The composer action labeled "Add files or photos" invoked `project.openDialog`, 
 - Added MIME normalization and safe extension fallback only for missing/generic MIME metadata.
 - Added unit coverage and an Electron E2E covering menu wiring, PNG preview, SVG/PDF/unknown references, multi-select, and the absence of an `accept` filter.
 
+### 024: ACP placeholder sessions consumed the 200-row Space history window and hid real project sessions
+
+- Priority: High
+- Status: Resolved
+- Introduced: v0.1.30
+- Fixed: v0.1.30
+- Created: 2026-07-11
+- Resolution Date: 2026-07-11
+
+#### Original Problem
+
+KodaX 0.7.66 persists ACP protocol sessions with `scope: user`, `runtimeInfo.surface: acp`, the title `ACP Session`, and no messages. Space requested only the newest 200 user sessions and classified every non-Partner tag as Coder, so the SDK applied its limit before Space could distinguish surfaces. The sidebar and dashboard consequently showed 200 empty ACP rows while hundreds of real Coder/Partner/REPL JSONL records remained intact after the cutoff.
+
+The records initially appeared to be a reconnect burst. Runtime-event correlation and the KodaX source established a more specific upstream cause: `tests/acp_server.test.ts` constructs `KodaXAcpServer` without an isolated `FileSessionStorage` in most harness calls, so tests fall back to the real user store. Each full ACP test run produces a 30-record batch. The fixture evidence includes `tool-bash-write`, `echo test > README.md`, and provider `openai`; 270 strict-empty ACP records were present at diagnosis time.
+
+The sibling `_unknown` directory is unrelated data loss: KodaX 0.7.46's per-project storage migration places legacy sessions there when their metadata has no usable workspace/gitRoot. Those files remain valid historical records and must not be removed.
+
+#### Resolution
+
+- Scan a bounded set of up to 50,000 persisted summaries before applying Space's visible-session limit.
+- Exclude only `runtimeInfo.surface === "acp"` plus existing ephemeral tags; preserve untagged legacy, REPL, Coder, and Partner sessions.
+- Apply the requested 200-row default after ACP and Coder/Partner surface filtering, then warn if the scan ceiling is exhausted before enough visible sessions are found.
+- Keep the 200-row recent list for startup, but let the explicit project session picker request and search a bounded 50,000-row project history on demand.
+- Do not rewrite, move, archive, or delete any existing session JSONL or `_unknown` entry.
+- Add regression coverage with 240 leading ACP summaries followed by 205 real sessions, plus explicit post-filter limit coverage.
+
+### 025: KodaX ACP tests persist fixture sessions into the real user session/runtime directories
+
+- Priority: High
+- Status: Open
+- Introduced: KodaX 0.7.66
+- Created: 2026-07-11
+
+#### Original Problem
+
+`tests/acp_server.test.ts::createHarness()` makes its `storage` option optional and normally constructs `KodaXAcpServer` without one. The server therefore creates its default `FileSessionStorage` under the real `~/.kodax` home. `src/acp_server.ts::newSession()` persists `title: "ACP Session"` and `surface: "acp"` before the first prompt, while `dispose()` does not remove provisional sessions with no messages, lineage, or artifacts. The test suite consequently leaves both session metadata and runtime fixture events in the user's real data directory.
+
+#### Required Upstream Resolution
+
+- Give every ACP test an isolated temporary KodaX home, session storage, and runtime directory, with teardown cleanup.
+- Fail tests immediately if a test storage path resolves under the real user KodaX home.
+- Persist ACP sessions only after the first valid prompt, or remove strictly empty provisional sessions when their connection closes.
+- Add `surface` filtering and cursor pagination to `listSessions` so embedders do not need a large pre-filter scan.
+- Provide a dry-run-first cleanup command for the exact polluted signature. Space must not guess-delete another client's session files.
+
+### 026: Space E2E test mode isolated app data but left the SDK session home pointed at the real user directory
+
+- Priority: High
+- Status: Resolved
+- Introduced: Before v0.1.30
+- Fixed: v0.1.30
+- Created: 2026-07-11
+- Resolution Date: 2026-07-11
+
+#### Original Problem
+
+`KODAX_TEST_ONBOARDING` redirected Space stores and Electron `userData`, but `applySdkHomeEnv()` only handled `KODAX_PROFILE_DIR`. The KodaX SDK therefore retained its default real `~/.kodax` home during Electron E2E. Existing mock-heavy tests normally did not persist SDK sessions, which concealed the split until the ACP history regression gained a real-storage E2E.
+
+#### Resolution
+
+- Force `KODAX_HOME` to the deterministic temporary test root before the SDK is imported whenever `KODAX_TEST_ONBOARDING` is active.
+- Let the test-isolation setting override an inherited user `KODAX_HOME`; an explicit test must never touch user data.
+- Add a real SDK round-trip unit test and an Electron E2E that writes 205 Coder plus 240 ACP fixture sessions only under the temporary test root.
+
+### 027: A global 200-session window let one busy project make other project histories appear empty
+
+- Priority: High
+- Status: Resolved
+- Introduced: Before v0.1.30
+- Fixed: v0.1.30
+- Created: 2026-07-11
+- Resolution Date: 2026-07-11
+
+#### Original Problem
+
+The multi-project sidebar called `session.list` once without `projectRoot`, accepted the newest 200 sessions globally, and only then grouped them by project in the renderer. A project with more than 200 recent sessions could consume the whole response. Other projects consequently rendered “no sessions” even though project-scoped SDK queries still returned intact history; the affected local KodaX-Space project had 26 valid sessions at diagnosis time.
+
+The same ordering risk existed between Coder and Partner: the persisted limit was applied before the requested surface filter, so one surface could consume another surface's project window.
+
+#### Resolution
+
+- Query every known project independently and merge each result into the renderer store with `{ projectRoot, surface }` scope.
+- Preserve a separate 200-session recent window for every project and Coder/Partner surface.
+- Apply surface filtering before the limit in the persistence adapter.
+- Keep the 50,000-row full-history request isolated to the explicit project picker instead of startup.
+- Cover a 205-session project, 240 ACP fixtures, and a second three-session project in an isolated real-SDK Electron E2E.
+
 ## Summary
 
-- Total: 23
-- Open: 1
-- Resolved: 22
-- High: 15
+- Total: 27
+- Open: 2
+- Resolved: 25
+- High: 19
 - Medium: 7
 - Low: 1
-- Next to resolve: 022
+- Next to resolve: 025 (upstream KodaX), then 022

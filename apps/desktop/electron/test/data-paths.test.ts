@@ -99,7 +99,11 @@ test('便携版 PORTABLE_EXECUTABLE_DIR 不再重定向 → 仍走 ~/.kodax (reg
   process.env.PORTABLE_EXECUTABLE_DIR = path.join(os.tmpdir(), 'kodax-portable-fixture');
   assert.equal(getKodaxDir(), homeKodax());
   assert.equal(getSpaceDataDir(), path.join(homeKodax(), 'space'));
-  assert.equal(getScopedUserDataDir(), null, '便携版用 Electron 默认 userData,不再 scope 到 exe 目录');
+  assert.equal(
+    getScopedUserDataDir(),
+    null,
+    '便携版用 Electron 默认 userData,不再 scope 到 exe 目录',
+  );
 });
 
 test('KODAX_PROFILE_DIR=<abs> → 该目录本身即数据根 (sessions/space 直接在其下)', () => {
@@ -147,6 +151,18 @@ test('applySdkHomeEnv: 默认 / 便携版是 no-op (不碰 KODAX_HOME)', () => {
   process.env.PORTABLE_EXECUTABLE_DIR = path.join(os.tmpdir(), 'kodax-portable-fixture');
   applySdkHomeEnv();
   assert.equal(process.env.KODAX_HOME, undefined, '便携版/默认不覆盖 SDK 自己的 home 默认');
+});
+
+test('applySdkHomeEnv: 测试模式强制隔离 SDK home，不继承用户 KODAX_HOME', () => {
+  clearAllDataEnv();
+  process.env.KODAX_TEST_ONBOARDING = 'sdk-home-isolation';
+  process.env.KODAX_HOME = path.join(os.tmpdir(), 'must-not-be-used');
+
+  applySdkHomeEnv();
+
+  const expected = path.join(os.tmpdir(), 'kodax-test-sdk-home-isolation');
+  assert.equal(process.env.KODAX_HOME, expected);
+  assert.equal(getAgentConfigHome(), expected);
 });
 
 test('applySdkHomeEnv: 尊重用户已设的 KODAX_HOME,不覆盖', () => {

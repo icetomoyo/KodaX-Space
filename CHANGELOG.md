@@ -48,6 +48,8 @@ This release re-enables Partner around one composer-first mental model. The user
 - **Queue and session continuity** - Fixed active queue watchers consuming Partner follow-ups, kept session/runtime metadata coherent through rollback and deletion, and restored a usable composer after Partner session removal.
 - **Partner discoverability honesty** - Suppressed unavailable executable Skills from Partner while preserving Coder discovery, and added in-app preview from the Outputs delivery browser.
 - **Composer local attachments** - "Add files or photos" now supports unrestricted multi-select instead of opening the project-directory picker. PNG/JPEG/WebP use the sandboxed image-artifact path, while documents, other image formats, archives, and unknown extensions remain selectable file references. "Add folder" now attaches a directory reference instead of silently switching the current workspace.
+- **Session history visibility** - ACP protocol sessions are excluded before Space applies its recent-history limit. The 200-row window is now independent per project and Coder/Partner surface, so one busy project or surface cannot make another appear empty. The project session picker loads and searches the complete bounded project history on demand. Existing JSONL records, including the SDK `_unknown` compatibility bucket, remain untouched.
+- **Test data isolation** - `KODAX_TEST_ONBOARDING` now redirects the KodaX SDK home as well as Space and Electron data, preventing Electron E2E runs from reading or writing the real `~/.kodax/sessions` tree.
 
 ### Security
 
