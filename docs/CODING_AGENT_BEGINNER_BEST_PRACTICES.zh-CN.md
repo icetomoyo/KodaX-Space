@@ -1,6 +1,6 @@
 # KodaX Space Coding Agent 新手教程：软件与微服务开发最佳实践
 
-适用版本：以实际交付安装包为准。本文已按 KodaX Space 0.1.31 开发候选工作树和 KodaX 0.7.67 生态更新；最新公开发行版仍为 0.1.30。
+适用版本：KodaX Space 0.1.30 发布候选工作树 / KodaX 0.7.67；最终 tag 和 Release 等待验收测试。
 
 适用对象：第一次使用 Coding Agent 的开发者、测试工程师、技术负责人、代码相关知识工作者，以及需要把 KodaX Space 推广给团队成员的客户。
 

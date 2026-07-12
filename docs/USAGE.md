@@ -1,6 +1,6 @@
-# KodaX Space - Usage Guide (v0.1.31 development candidate)
+# KodaX Space - Usage Guide (v0.1.30 release candidate)
 
-> Last aligned: 2026-07-12. Repository packages target KodaX Space `0.1.31` with `@kodax-ai/kodax@0.7.67`; the latest public installer release remains `0.1.30` until the candidate is tagged. Older version sections below are retained as historical change notes, not as the current capability boundary.
+> Last aligned: 2026-07-12. Repository packages target KodaX Space `0.1.30` with exact `@kodax-ai/kodax@0.7.67`. The final tag and GitHub Release are intentionally withheld pending acceptance testing. Older version sections below are retained as historical change notes, not as the current capability boundary.
 
 KodaX Space 是 KodaX SDK 的桌面客户端。设计目标：**不要让用户在 Space 和 KodaX CLI 之间重复配置**。绝大多数 KodaX CLI 已经配好的东西，Space 启动后会自动认。
 
@@ -114,7 +114,7 @@ SDK 0.7.42 的 `/session` 模块统一管理持久化。KodaX CLI 跑过的 sess
 
 ## 4. 当前能力与历史更新
 
-### 4.0 v0.1.31 / KodaX 0.7.67
+### 4.0 v0.1.30 / KodaX 0.7.67
 
 - Runtime Settings 提供 Reference External Agent 注册、编辑、启停、删除、实时 preflight 和本地 conformance task。
 - Workflow Launcher 可为普通子任务选择实时可调度的默认 External Agent，并在启动前校验 opaque `agentId` 与配置修订；Workflow 源码显式 target 优先。
@@ -129,7 +129,7 @@ SDK 0.7.42 的 `/session` 模块统一管理持久化。KodaX CLI 跑过的 sess
 
 - Partner 已启用，提供 Sources、Conversation、Knowledge Base、workspace-first Outputs、checkpoint/diff/rollback、reviewed strict fallback 和本地 policy/audit。
 - 支持 Unicode PDF 与基础 DOCX/XLSX/PPTX 便利写入，以及受限的一次性 JavaScript coding boost。
-- Executable Partner Skills、通用 Connector/MCP 动作、浏览器/电脑控制、自动化、远程任务、并行专家和模板级 Office 设计不属于 0.1.30/0.1.31 当前能力。
+- Executable Partner Skills、通用 Connector/MCP 动作、浏览器/电脑控制、自动化、远程任务、并行专家和模板级 Office 设计不属于 0.1.30 当前能力。
 
 ### 4.0.2 Historical v0.1.22 patch release
 
@@ -290,7 +290,7 @@ Preview popout（右上 Toolbar 第 1 个图标）输入文件路径自动按 ex
 
 3 个 viewer 都是 **lazy 加载** — 不点开对应文件就不下载依赖；main bundle 不受影响。
 
-## 6. Slash 命令清单（0.1.31 当前常用项）
+## 6. Slash 命令清单（0.1.30 当前常用项）
 
 | 命令                                | 作用                                                |
 | ----------------------------------- | --------------------------------------------------- |
@@ -305,7 +305,7 @@ Preview popout（右上 Toolbar 第 1 个图标）输入文件路径自动按 ex
 
 除此之外 `/` 触发命令搜索 popover — F035 已经把 SDK skills 也合到这个 picker 里，可以同时搜内建命令 + skill。
 
-## 7. 当前已知限制（0.1.31）
+## 7. 当前已知限制（0.1.30）
 
 - **External Agent 协议**：当前只提供 KodaX 0.7.67 Reference Executor。A2A、MCP Tasks 和受治理 HTTP 等到对应上游适配器与 conformance capability 后才显示。
 - **Partner 边界**：Partner 已启用，但 executable Skills、通用 Connector/MCP 动作、浏览器/电脑控制、自动化、远程任务和模板级 Office 设计尚未交付。

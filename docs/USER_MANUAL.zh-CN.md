@@ -1,6 +1,6 @@
 # KodaX Space 用户说明书
 
-适用版本：KodaX Space 0.1.31 开发候选版（最新公开发行版为 0.1.30）
+适用版本：KodaX Space 0.1.30 发布候选版（KodaX 0.7.67；最终 tag/Release 等待验收）
 
 更新日期：2026-07-12
 
@@ -341,7 +341,7 @@ Agents：
 - Agent picker 可插入 `@agent-name`。
 - Agent mode 支持 AMA、AMAW、SA，实际能力由 SDK 和当前工具状态决定。
 
-External Agents（0.1.31 Reference 基线）：
+External Agents（0.1.30 Reference 基线）：
 
 - `Settings` -> `Runtime` -> `External Agents` 可创建、编辑、启停、删除和预检本地 Reference Agent 注册。
 - Workflow Launcher 可把实时可调度的 Reference Agent 选为默认子任务目标；Workflow 源码显式声明的 target 仍优先。
@@ -389,7 +389,7 @@ KodaX Space 的默认原则是本地优先和显式授权。
 
 ## 20. 当前限制
 
-适用于当前 0.1.31 开发候选工作树：
+适用于当前 0.1.30 发布候选工作树：
 
 - Partner 已启用，但 executable Partner Skills、通用 Connector/MCP 动作、浏览器/电脑控制、自动化、远程任务和模板级 Office 排版不属于当前能力。
 - Display Language 覆盖产品 UI，包括 External Agent 管理、Workflow picker 和 Task Dock；模型输出、工具日志和第三方内容仍可能显示英文。

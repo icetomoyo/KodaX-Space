@@ -33,11 +33,11 @@ Last Updated: 2026-07-12
 | 025 | High     | Resolved | KodaX ACP tests persist fixture sessions into the real user session/runtime directories                                     | KodaX 0.7.66          | 2026-07-11 |
 | 026 | High     | Resolved | Space E2E test mode isolated app data but left the SDK session home pointed at the real user directory                      | v0.1.30               | 2026-07-11 |
 | 027 | High     | Resolved | A global 200-session window let one busy project make other project histories appear empty                                  | v0.1.30               | 2026-07-11 |
-| 028 | High     | Resolved | External Agent event pagination could skip audit events after the first 512 entries                                         | v0.1.31               | 2026-07-12 |
-| 029 | High     | Resolved | Renderer could supply a new opaque Agent identity to the Reference update path                                              | v0.1.31               | 2026-07-12 |
-| 030 | Medium   | Resolved | Workflow external-target wrapper lost method receiver and did not always audit the resolved revision                        | v0.1.31               | 2026-07-12 |
-| 031 | High     | Resolved | Packaged smoke remained pinned to Space 0.1.30 and KodaX 0.7.66 after the 0.1.31 upgrade                                    | v0.1.31               | 2026-07-12 |
-| 032 | High     | Resolved | External Agent task IPC trusted renderer ownership and Task Dock could show/control stale cross-session tasks               | v0.1.31               | 2026-07-12 |
+| 028 | High     | Resolved | External Agent event pagination could skip audit events after the first 512 entries                                         | v0.1.30               | 2026-07-12 |
+| 029 | High     | Resolved | Renderer could supply a new opaque Agent identity to the Reference update path                                              | v0.1.30               | 2026-07-12 |
+| 030 | Medium   | Resolved | Workflow external-target wrapper lost method receiver and did not always audit the resolved revision                        | v0.1.30               | 2026-07-12 |
+| 031 | High     | Resolved | Packaged smoke still expected KodaX 0.7.66 after the 0.7.67 integration                                                     | v0.1.30               | 2026-07-12 |
+| 032 | High     | Resolved | External Agent task IPC trusted renderer ownership and Task Dock could show/control stale cross-session tasks               | v0.1.30               | 2026-07-12 |
 
 ## Issue Details
 
@@ -1619,7 +1619,7 @@ Tests added/updated:
 
 Current behavior:
 
-- Space v0.1.30 resolves KodaX 0.7.66 and safely runs `run_partner_helper` in a Space-owned one-shot Worker, then applies the resulting bounded journal under Space path/policy controls.
+- Space v0.1.30 resolves KodaX 0.7.67 and safely runs `run_partner_helper` in a Space-owned one-shot Worker, then applies the resulting bounded journal under Space path/policy controls. The relevant Runtime/constructed-handler isolation primitives were introduced in 0.7.66 and remain available in 0.7.67.
 - KodaX 0.7.66 now provides a real `embedded + worker` Runtime with resource limits, hard close, and fail-closed `requirements.hardDispose`. Constructed handlers also run in dedicated Workers with reverse tool RPC and hard timeout termination. Space has compatibility coverage for the published Runtime Worker and packages all required sidecars.
 - `KodaXRuntime` still has no general per-invocation `execution` service for arbitrary helper programs. Daemon/Worker run options are JSON-safe DTOs, so Space cannot send its process-local helper callback or VM bridge across that boundary. Moving the entire Runtime into a Worker is not equivalent to isolating and terminating one helper invocation inside a shared session owner.
 
@@ -1640,7 +1640,7 @@ Add a runtime-owned `ExecutionManager` with serialized `create/start/await/abort
 
 Migration order:
 
-1. Keep the 0.7.66 Runtime/constructed-handler Worker capability and package-sidecar gates green in Space.
+1. Keep the 0.7.67 Runtime/constructed-handler Worker capability and package-sidecar gates green in Space.
 2. Publish a Runtime execution DTO/protocol with executor/invocation IDs, capability negotiation, and Worker/process backend semantics.
 3. Prove invocation-local timeout, abort escalation, crash recovery, resource/output bounds, and daemon responsiveness without terminating unrelated sessions.
 4. Migrate Space's helper onto that SDK service while retaining Space policy/journal application, then delete the duplicate Space Worker lifecycle.
@@ -1710,7 +1710,7 @@ The sibling `_unknown` directory is unrelated data loss: KodaX 0.7.46's per-proj
 - Priority: High
 - Status: Resolved
 - Introduced: KodaX 0.7.66
-- Fixed: KodaX 0.7.67 / Space v0.1.31
+- Fixed: KodaX 0.7.67 / Space v0.1.30
 - Created: 2026-07-11
 - Resolution Date: 2026-07-12
 
@@ -1781,8 +1781,8 @@ The same ordering risk existed between Coder and Partner: the persisted limit wa
 
 - Priority: High
 - Status: Resolved
-- Introduced: v0.1.31
-- Fixed: v0.1.31
+- Introduced: v0.1.30
+- Fixed: v0.1.30
 - Created: 2026-07-12
 - Resolution Date: 2026-07-12
 
@@ -1800,8 +1800,8 @@ The gateway bounded a task-event response to 512 entries but calculated `nextCur
 
 - Priority: High
 - Status: Resolved
-- Introduced: v0.1.31
-- Fixed: v0.1.31
+- Introduced: v0.1.30
+- Fixed: v0.1.30
 - Created: 2026-07-12
 - Resolution Date: 2026-07-12
 
@@ -1819,8 +1819,8 @@ The Reference upsert IPC accepted any schema-valid `agentId`. New IDs are suppos
 
 - Priority: Medium
 - Status: Resolved
-- Introduced: v0.1.31
-- Fixed: v0.1.31
+- Introduced: v0.1.30
+- Fixed: v0.1.30
 - Created: 2026-07-12
 - Resolution Date: 2026-07-12
 
@@ -1834,18 +1834,18 @@ The default-target proxy invoked `spawnAgent`/`runAgent` as detached functions, 
 - Snapshot the descriptor revision returned by successful preflight and use it for dispatch plus host audit metadata.
 - Extend unit coverage to verify target precedence and receiver identity.
 
-### 031: Packaged smoke remained pinned to Space 0.1.30 and KodaX 0.7.66 after the 0.1.31 upgrade
+### 031: Packaged smoke still expected KodaX 0.7.66 after the 0.7.67 integration
 
 - Priority: High
 - Status: Resolved
-- Introduced: v0.1.31
-- Fixed: v0.1.31
+- Introduced: v0.1.30
+- Fixed: v0.1.30
 - Created: 2026-07-12
 - Resolution Date: 2026-07-12
 
 #### Original Problem
 
-The ordinary production build passed, but `scripts/smoke-pack.mjs` still sent client version `0.1.30` and rejected any packaged Runtime identity other than `0.7.66`. A 0.1.31 installer build using the published 0.7.67 package would therefore fail its final packaging gate.
+The ordinary production build passed, but `scripts/smoke-pack.mjs` still rejected any packaged Runtime identity other than `0.7.66`. The final 0.1.30 installer using the published 0.7.67 package would therefore fail its packaging gate despite having the correct application version.
 
 #### Resolution
 
@@ -1856,8 +1856,8 @@ The ordinary production build passed, but `scripts/smoke-pack.mjs` still sent cl
 
 - Priority: High
 - Status: Resolved
-- Introduced: v0.1.31
-- Fixed: v0.1.31
+- Introduced: v0.1.30
+- Fixed: v0.1.30
 - Created: 2026-07-12
 - Resolution Date: 2026-07-12
 

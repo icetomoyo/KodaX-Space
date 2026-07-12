@@ -29,7 +29,7 @@ try {
       resourceLimits: { maxOldGenerationSizeMb: 128 },
       shutdownTimeoutMs: 1500,
     },
-    clientInfo: { name: 'kodax-space-runtime-compat', version: '0.1.31' },
+    clientInfo: { name: 'kodax-space-runtime-compat', version: '0.1.30' },
   });
   const created = await runtime.sessions.create({
     title: 'Space SDK compatibility probe',

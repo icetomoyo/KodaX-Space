@@ -88,11 +88,11 @@ npm run dev
   </tr>
 </table>
 
-## 当前开发候选版本
+## 当前 0.1.30 发布候选版本
 
-**v0.1.31 - External Agent Orchestration Gateway Foundation**
+**v0.1.30 - External Agent Orchestration Gateway Foundation**
 
-候选日期：2026-07-12。在该候选版本正式打 tag 前，最新公开发行版仍为 `v0.1.30`。
+目标发布版本为 `v0.1.30`。最终验收测试期间暂不创建 tag，也不发布 GitHub Release。
 
 本版本对齐 `@kodax-ai/kodax@0.7.67`，并把协议中立的 External Agent Executor Plane 接入 Space 现有实时会话和 Workflow Host。
 
@@ -105,7 +105,7 @@ npm run dev
 | 能力真实性         | A2A、MCP Tasks、受治理 HTTP 在各自适配器交付并通过合规验证前保持隐藏。                                                      |
 | KodaX 0.7.67       | 兼容测试覆盖 Runtime Worker hard-dispose，以及外部 Agent 注册、发现、启动和终态结果闭环。                                   |
 
-完整版本说明见 [CHANGELOG.md](CHANGELOG.md) 与 [docs/features/v0.1.31.md](docs/features/v0.1.31.md)。
+完整版本说明见 [CHANGELOG.md](CHANGELOG.md)、[docs/features/v0.1.30.md](docs/features/v0.1.30.md) 与 [F115 External Agent 设计](docs/features/v0.1.30-external-agents.md)。
 
 ## 产品界面
 
@@ -208,7 +208,7 @@ npm run e2e:headed
 | 文档                                                                                                     | 用途                                                        |
 | -------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
 | [README.md](README.md)                                                                                   | 英文 README。                                               |
-| [docs/USER_MANUAL.zh-CN.md](docs/USER_MANUAL.zh-CN.md)                                                   | 面向 KodaX Space 0.1.31 开发候选版本的当前中文用户说明书。  |
+| [docs/USER_MANUAL.zh-CN.md](docs/USER_MANUAL.zh-CN.md)                                                   | 面向 KodaX Space 0.1.30 发布候选版本的当前中文用户说明书。  |
 | [docs/USAGE.md](docs/USAGE.md)                                                                           | 启动、配置复用、slash 命令和已知限制说明。                  |
 | [docs/CODING_AGENT_BEGINNER_BEST_PRACTICES.zh-CN.md](docs/CODING_AGENT_BEGINNER_BEST_PRACTICES.zh-CN.md) | Coding Agent 初学者最佳实践教程，覆盖软件研发和微服务场景。 |
 | [docs/PRD.md](docs/PRD.md)                                                                               | 产品需求和产品定位。                                        |
@@ -224,7 +224,7 @@ npm run e2e:headed
 
 | 版本线   | 重点                                                                                               |
 | -------- | -------------------------------------------------------------------------------------------------- |
-| v0.1.31  | KodaX 0.7.67 Reference External Agent 集成；A2A/MCP Tasks/受治理 HTTP 在上游适配器交付前保持门控。 |
+| v0.1.30  | KodaX 0.7.67 Reference External Agent 集成；A2A/MCP Tasks/受治理 HTTP 在上游适配器交付前保持门控。 |
 | v0.1.35+ | Patch reserve，以及后续 Workflow、todo、MCP/extension、provider、review 与 beta-hardening。        |
 | v0.2.x   | Connector catalog、local automations、remote/self-hosted runner、notebook/data 与分发扩展。        |
 

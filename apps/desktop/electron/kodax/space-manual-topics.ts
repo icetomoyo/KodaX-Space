@@ -344,7 +344,7 @@ export const SPACE_MANUAL_TOPICS: readonly KodaXManualTopicInput[] = [
     id: 'external-agents',
     title: 'External Agents',
     summary:
-      '0.1.31 接入 KodaX 0.7.67 Reference Agent：Runtime 管理、Workflow/Worker 路由和 Task Dock 干预。',
+      '0.1.30 接入 KodaX 0.7.67 Reference Agent：Runtime 管理、Workflow/Worker 路由和 Task Dock 干预。',
     body: text(
       'Settings -> Runtime -> External Agents 可创建、编辑、启停、删除和实时预检 Reference Agent 注册。Reference 是本地合规适配器，不访问网络、不直接写 Workspace。',
       '',
@@ -757,7 +757,7 @@ export const SPACE_MANUAL_TOPICS: readonly KodaXManualTopicInput[] = [
       '- No provider/key：到 Settings -> Providers 配 key，或确认环境变量。',
       '- AI 读不到文件：确认已打开项目目录，路径引用是否在 workspace 内。',
       '- Partner 不可点：0.1.30+ 正常应启用；检查版本、当前 surface 和本地状态，并查看 DevTools/logs。',
-      '- External Agent 不可选：确认使用 0.1.31 开发候选版、Reference 注册已启用且实时 preflight 通过；A2A/MCP Tasks/HTTP 当前不会出现。',
+      '- External Agent 不可选：确认使用 0.1.30 发布候选版、Reference 注册已启用且实时 preflight 通过；A2A/MCP Tasks/HTTP 当前不会出现。',
       '- Quick Ask 不工作：需要先打开项目；它使用临时 plan-mode session。',
       '- MCP 工具不可见：打开 MCP 面板 Refresh/Reload config，查看 server error/diagnostics。',
       '- 语言切换后仍有英文：模型输出、日志、专业面板和 provider 内容可能仍保留英文。',

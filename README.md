@@ -88,11 +88,11 @@ npm run dev
   </tr>
 </table>
 
-## Current Development Candidate
+## Current 0.1.30 Release Candidate
 
-**v0.1.31 - External Agent Orchestration Gateway Foundation**
+**v0.1.30 - External Agent Orchestration Gateway Foundation**
 
-Release candidate: 2026-07-12. The latest public release remains `v0.1.30` until this candidate is tagged.
+Target release: `v0.1.30`. The tag and GitHub Release are intentionally withheld while final acceptance testing is in progress.
 
 This release aligns KodaX Space with `@kodax-ai/kodax@0.7.67` and connects its protocol-neutral external-agent substrate to Space's existing live sessions and Workflow host.
 
@@ -105,7 +105,7 @@ This release aligns KodaX Space with `@kodax-ai/kodax@0.7.67` and connects its p
 | Capability honesty        | A2A, MCP Tasks, and governed HTTP remain hidden until separately delivered adapters advertise support and pass conformance.                                                                     |
 | KodaX 0.7.67              | Compatibility tests cover Runtime Worker hard-dispose plus external registration, discovery, task start, event handling, and terminal results.                                                  |
 
-See [CHANGELOG.md](CHANGELOG.md) and [docs/features/v0.1.31.md](docs/features/v0.1.31.md) for the full release notes and capability boundary.
+See [CHANGELOG.md](CHANGELOG.md), [docs/features/v0.1.30.md](docs/features/v0.1.30.md), and the [F115 External Agent design](docs/features/v0.1.30-external-agents.md) for the full release notes and capability boundary.
 
 **v0.1.29 - Workspace Environment Hub + Task Dock**
 
@@ -225,7 +225,7 @@ npm run e2e:headed
 | Document                                                                                                 | Purpose                                                                                  |
 | -------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
 | [README_CN.md](README_CN.md)                                                                             | Chinese README.                                                                          |
-| [docs/USER_MANUAL.zh-CN.md](docs/USER_MANUAL.zh-CN.md)                                                   | Current Chinese user manual for the KodaX Space 0.1.31 development candidate.            |
+| [docs/USER_MANUAL.zh-CN.md](docs/USER_MANUAL.zh-CN.md)                                                   | Current Chinese user manual for the KodaX Space 0.1.30 release candidate.                |
 | [docs/USAGE.md](docs/USAGE.md)                                                                           | Usage notes covering launch, configuration reuse, slash commands, and known limits.      |
 | [docs/CODING_AGENT_BEGINNER_BEST_PRACTICES.zh-CN.md](docs/CODING_AGENT_BEGINNER_BEST_PRACTICES.zh-CN.md) | Chinese beginner guide for coding-agent practice in software and microservice workflows. |
 | [docs/PRD.md](docs/PRD.md)                                                                               | Product requirements and product positioning.                                            |
@@ -241,7 +241,7 @@ Near-term planned work is tracked in [docs/FEATURE_LIST.md](docs/FEATURE_LIST.md
 
 | Lane     | Focus                                                                                                                   |
 | -------- | ----------------------------------------------------------------------------------------------------------------------- |
-| v0.1.31  | KodaX 0.7.67 Reference External Agent integration; A2A/MCP Tasks/governed HTTP stay gated until upstream adapters ship. |
+| v0.1.30  | KodaX 0.7.67 Reference External Agent integration; A2A/MCP Tasks/governed HTTP stay gated until upstream adapters ship. |
 | v0.1.35+ | Patch reserves followed by workflow, todo, MCP/extension, provider, review, and beta-hardening lanes.                   |
 | v0.2.x   | Connector catalog, local automations, remote/self-hosted runners, notebooks/data, and distribution expansion.           |
 
