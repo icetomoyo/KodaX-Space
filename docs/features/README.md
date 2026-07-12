@@ -1,6 +1,6 @@
 # Feature Design Guide
 
-`docs/FEATURE_LIST.md` is the active index. This directory holds version designs and historical released designs.
+`docs/FEATURE_LIST.md` is the active index. This directory holds version designs and historical released designs. Start from the [documentation hub](../README.md) when you need current user, product, architecture, or development guidance.
 
 ## Design lifecycle
 

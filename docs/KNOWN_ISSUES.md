@@ -2,6 +2,8 @@
 
 Last Updated: 2026-07-12
 
+> Historical issue details are preserved as investigation evidence. Current public release is v0.1.30; current source baseline is v0.1.31 development. Start from the [documentation hub](README.md) for current behavior and status.
+
 ## Issue Index
 
 | ID  | Priority | Status   | Title                                                                                                                       | Introduced            | Created    |
@@ -40,6 +42,7 @@ Last Updated: 2026-07-12
 | 032 | High     | Resolved | External Agent task IPC trusted renderer ownership and Task Dock could show/control stale cross-session tasks               | v0.1.30               | 2026-07-12 |
 | 033 | Low      | Resolved | Project Session spinner remained visible over already-restored rows after switching surfaces                                | v0.1.30               | 2026-07-12 |
 | 034 | Medium   | Resolved | Task Dock width presets drifted from responsive default, explicit half, and full-workspace behavior                         | v0.1.30               | 2026-07-12 |
+| 035 | Medium   | Resolved | Project Session refresh rescanned the full history tree and made empty Coder/Partner scopes slow                            | v0.1.30               | 2026-07-12 |
 
 ## Issue Details
 
@@ -1944,12 +1947,59 @@ Tests:
 - Targeted sidebar preset Electron E2E.
 - TypeScript typecheck, ESLint, and renderer production build.
 
+### 035: Project Session refresh rescanned the full history tree and made empty Coder/Partner scopes slow
+
+- Priority: Medium
+- Status: Resolved
+- Introduced: v0.1.30
+- Fixed: v0.1.30
+- Created: 2026-07-12
+- Resolution Date: 2026-07-12
+
+#### Original Problem
+
+Switching between Coder and Partner, or collapsing and reopening a project, triggered a fresh `session.list` request. Projects with no Session on the selected surface still showed a prolonged loading state, and repeated switches felt disproportionately slow. The loading indicator itself was acceptable; the problem was that every refresh repeated expensive disk work even when the scoped result was empty.
+
+Expected behavior: project Session refreshes may retain their loading feedback and freshness semantics, but repeated Coder/Partner and expand/collapse refreshes should complete quickly. An empty scoped result must be cacheable without hiding later Session additions.
+
+#### Root Cause
+
+- The sidebar requested each recent project independently on every surface change. KodaX 0.7.67's `projectRoot` list path scans the entire persisted Session JSONL tree before applying the project filter, so several visible projects caused several complete scans.
+- Space paged mixed Coder/Partner summaries and filtered surface ownership afterward. A project with many Coder Sessions and no Partner Session could repeatedly rescan the same files while paging to prove the Partner result was empty.
+- Every persisted row resolved identical global runtime defaults again and read the same per-session runtime sidecar twice: once inside `resolveRuntimeDefaults()` and once for historical provider/model identity.
+- Empty lists and completed summary reads had no short-lived, invalidation-aware cache.
+
+Local reproduction data contained 1,183 Session JSONL files (about 291 MB). Direct SDK measurements took about 1.1–1.3 seconds per project-scoped scan; the global summary-index path took about 0.5–0.7 seconds once and produced the same Session IDs for the sampled KodaX and KodaX-Space projects.
+
+#### Resolution
+
+- Use one bounded global summary-index snapshot for the sidebar's 200-row project windows, then restore project and Coder/Partner scoping in Space. Fall back to the precise project scan if the 50,000-row global bound is saturated before a project receives its requested window.
+- Share the global snapshot across project requests, coalesce identical in-flight requests, and cache scoped results—including empty arrays—for 30 seconds.
+- Invalidate both global and scoped list caches on SDK Session add/change/remove events and Space-owned mutations such as rename, fork, rewind, delete, retag, append, and compact.
+- Push the exact `partner` tag into the SDK on the large-history fallback path so an empty Partner scope does not page through Coder history. Keep Coder compatibility filtering in Space because untagged legacy Sessions belong to Coder.
+- Resolve global runtime defaults once per IPC response and read each persisted Session runtime sidecar only once.
+
+Files changed:
+
+- `apps/desktop/electron/kodax/session-store.ts`
+- `apps/desktop/electron/kodax/host.ts`
+- `apps/desktop/electron/ipc/session.ts`
+- `apps/desktop/electron/test/_helpers/session-store-mock.ts`
+- `apps/desktop/electron/test/session-surface.test.ts`
+
+Tests:
+
+- Session surface/list regressions cover one-snapshot multi-project loading, cached empty scopes, watcher invalidation, cursor fallback, and per-surface limits.
+- Targeted Session runtime/store tests.
+- Electron main build, desktop TypeScript typecheck, targeted ESLint, and `git diff --check`.
+- Read-only real-data comparison verified zero missing/extra Session IDs for sampled KodaX and KodaX-Space project results.
+
 ## Summary
 
-- Total: 34
+- Total: 35
 - Open: 1
-- Resolved: 33
+- Resolved: 34
 - High: 23
-- Medium: 9
+- Medium: 10
 - Low: 2
 - Next to resolve: 022

@@ -108,6 +108,69 @@ try {
   } finally {
     await externalRuntime.close();
   }
+  const inlineHome = path.join(homeDir, 'inline-owner');
+  const inlineRuntime = await createKodaXRuntime({
+    mode: 'embedded',
+    isolation: 'inline',
+    homeDir: inlineHome,
+    sessionsDir: path.join(inlineHome, 'sessions'),
+    clientInfo: { name: 'kodax-space-runtime-inline', version: '0.1.31' },
+  });
+  let inlineManagedResult;
+  try {
+    const inlineSession = await inlineRuntime.sessions.create({
+      title: 'Space inline managed-run probe',
+      projectPath: process.cwd(),
+      surface: 'code',
+      tag: 'code',
+    });
+    const settings = await inlineRuntime.sessions.updateSettings(inlineSession.id, {
+      provider: 'space-probe-missing',
+      permissionMode: 'accept-edits',
+      executionCwd: process.cwd(),
+    });
+    const eventTypes = [];
+    const subscription = inlineRuntime.events.subscribe(
+      { sessionId: inlineSession.id },
+      (event) => eventTypes.push(event.type),
+    );
+    let callbackErrors = 0;
+    let callbackCompletes = 0;
+    try {
+      const handle = await inlineRuntime.runs.start({
+        sessionId: inlineSession.id,
+        prompt: 'exercise managed runtime failure normalization',
+        mode: 'managed_task',
+        permissionBroker: 'client',
+        options: {
+          provider: 'space-probe-missing',
+          agentMode: 'sa',
+          events: {
+            onError: () => { callbackErrors += 1; },
+            onComplete: () => { callbackCompletes += 1; },
+          },
+        },
+      });
+      const result = await handle.result;
+      const failedEvents = await inlineRuntime.events.replay({
+        runId: handle.runId,
+        type: 'run.failed',
+      });
+      inlineManagedResult = {
+        phase: result.phase,
+        error: result.error?.message,
+        failedEventCount: failedEvents.length,
+        eventTypes,
+        callbackErrors,
+        callbackCompletes,
+        settings,
+      };
+    } finally {
+      subscription.close();
+    }
+  } finally {
+    await inlineRuntime.close();
+  }
   process.stdout.write('KODAX_RUNTIME_PROBE=' + JSON.stringify({
     createAvailable: typeof createKodaXRuntime === 'function',
     connectAvailable: typeof connectKodaXRuntime === 'function',
@@ -119,6 +182,7 @@ try {
     sessionRoundTrip: loaded.id === created.id,
     downgradeRejected,
     externalAgentResult,
+    inlineManagedResult,
   }));
 } finally {
   await runtime?.close();
@@ -208,6 +272,32 @@ test(
       listed: true,
       state: 'completed',
       output: 'space-reference-round-trip',
+    });
+    const inlineManagedResult = result.inlineManagedResult as {
+      phase?: unknown;
+      error?: unknown;
+      failedEventCount?: unknown;
+      eventTypes?: unknown;
+      callbackErrors?: unknown;
+      callbackCompletes?: unknown;
+      settings?: Record<string, unknown>;
+    };
+    assert.equal(inlineManagedResult.phase, 'failed');
+    assert.match(String(inlineManagedResult.error), /Unknown provider: space-probe-missing/);
+    assert.equal(inlineManagedResult.failedEventCount, 1);
+    // Provider resolution fails before the coding loop owns callbacks. Space must
+    // therefore normalize RuntimeRunResult.error instead of relying on onError/onComplete.
+    assert.equal(inlineManagedResult.callbackErrors, 0);
+    assert.equal(inlineManagedResult.callbackCompletes, 0);
+    assert.ok(
+      Array.isArray(inlineManagedResult.eventTypes) &&
+        inlineManagedResult.eventTypes.includes('run.started') &&
+        inlineManagedResult.eventTypes.includes('run.failed'),
+    );
+    assert.deepEqual(inlineManagedResult.settings, {
+      provider: 'space-probe-missing',
+      permissionMode: 'accept-edits',
+      executionCwd: process.cwd(),
     });
   },
 );

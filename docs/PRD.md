@@ -1,10 +1,10 @@
 # KodaX Space 产品需求文档（PRD）
 
 > Last updated: 2026-07-12
-> Status: 长期产品方向文档。当前正式发布基线为 KodaX Space 0.1.30 / KodaX 0.7.67。已交付能力与边界以 [USER_MANUAL.zh-CN.md](USER_MANUAL.zh-CN.md)、[KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md) 和 [FEATURE_LIST.md](FEATURE_LIST.md) 为准。
+> Status: 长期产品方向文档。当前正式发布基线为 KodaX Space 0.1.30 / KodaX 0.7.67，当前源码为 v0.1.31 开发基线。已交付能力与边界以 [USER_MANUAL.zh-CN.md](USER_MANUAL.zh-CN.md)、[KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md) 和 [FEATURE_LIST.md](FEATURE_LIST.md) 为准。
 > 对标：Anthropic Claude Desktop（Cowork / Code 双面板）+ OpenAI Codex Desktop App（多 agent 本机壳）
 
-> **当前落地摘要**：Coder 与 Partner 均可用；Partner 已具备 workspace-first Outputs、Sources/KB、checkpointed writes、Office/PDF 便利产物和本地 policy/audit。0.1.30 接入 KodaX 0.7.67 Reference External Agent 管理、Workflow/Worker 路由和 Task Dock 干预；A2A、MCP Tasks、受治理 HTTP、通用 Connector/浏览器控制/自动化/远程任务仍未作为当前能力开放。
+> **当前落地摘要**：Coder 与 Partner 均可用；Partner 已具备 workspace-first Outputs、Sources/KB、checkpointed writes、Office/PDF 便利产物和本地 policy/audit。0.1.30 接入 KodaX 0.7.67 Reference External Agent 管理、Workflow/Worker 路由和 Task Dock 干预；v0.1.31 已实现 inline RuntimeHostAdapter 的 managed run、transcript、compact、fork、rewind，仍待人工验收和发布。A2A、MCP Tasks、受治理 HTTP、通用 Connector/浏览器控制/自动化/远程任务仍未作为当前能力开放。
 >
 > **2026-07-12 路线重置**：从 `v0.1.31` 起，规范路线由 [FEATURE_LIST.md](FEATURE_LIST.md) 的 Runtime alignment、platform trust、workflow/review evidence、task/capability governance、Memory Agent、Learning Center 和 beta completion 版本链管理。旧 M0/M1/M2/M3 里程碑只作为产品演进历史，不再表示未交付状态或版本承诺。
 
@@ -30,7 +30,7 @@ KodaX Space 是 KodaX 生态的**桌面客户端**——不是另一个 IDE，�
   - 不做手机版（Phase 1）
 - **当前版本链**：
   - `v0.1.30`：Coder/Partner 双 surface、workspace-first Partner、Reference External Agents 已发布
-  - `v0.1.31-v0.1.32`：Runtime contract alignment + `app://space`/structured logging
+  - `v0.1.31-v0.1.32`：Runtime contract alignment + `app://space`/structured logging + typed semantic Space control
   - `v0.1.35-v0.1.40`：Workflow/Review、Task/Capability、Memory Agent、Learning Center
   - `v0.1.43`：本地化、诊断、release channel/distribution trust 完成 0.1.x beta gate
   - `v0.2.x`：Governed Browser、正式 Partner packs、Connector read snapshots、local automations、refreshable artifacts
@@ -49,7 +49,7 @@ KodaX Space 是 KodaX 生态的**桌面客户端**——不是另一个 IDE，�
 2. 提供一个面向非纯编码任务（评审、需求拆解、研究、文档、数据转换与交付）的**Partner 面板**；它已在 `v0.1.30` 作为 workspace-first working agent 发布。
 3. 作为本机 MCP / Connector / Skill / Repointel 的**统一宿主**。
 
-辅以**Quick Ask popover**——全局热键（⌘⇧K / Ctrl+Shift+K）唤出的浮动小窗，目标语义是**无 session、无工具、无持久化**，用于"临时问 LLM"场景（M1 起）。在 SDK 暴露真正 `sideQuery` 前，v0.1.20 使用临时 plan-mode session + 关闭清理 + 显式 Continue in Coder 作为过渡实现。
+辅以**Quick Ask popover**——应用内热键（macOS `⌘K`，Windows/Linux `Ctrl+K`）唤出的浮动小窗，目标语义是**无正式 session、无写工具、关闭后不保留**，用于“临时问 LLM”场景（M1 起）。当前实现需要先打开项目，使用临时 plan-mode session + 关闭时 best-effort 清理 + 显式 Continue in Coder；真正全局唤起和 Runtime `sideQuery` 仍是未来目标。
 
 **为什么不做独立 Chat 面板**：浏览器、各 provider 自家产品（claude.ai、智谱 BigModel、Kimi、深度求索 chat 等）已经把 chat 体验做到 polished；桌面 app 的独特价值是"本机文件 + 工具执行"，做独立 chat 面板会稀释这一价值并增加无回报的工作量。临时问答需求由 Quick Ask 这种 popover 形态精确覆盖。
 
@@ -73,12 +73,12 @@ KodaX Space 是 KodaX 生态的**桌面客户端**——不是另一个 IDE，�
   (Space profile)   (Space profile)   External Agents
 ```
 
-| 层                           | 项目                           | 对标           |
-| ---------------------------- | ------------------------------ | -------------- |
-| 内核（CLI/SDK）              | **KodaX**                      | Claude Code    |
-| 知识工作 Surface             | **KodaX Space Partner**（已发布） | Claude Cowork  |
-| 桌面壳（统一应用）           | **KodaX Space**（本文档）      | Claude Desktop |
-| 仓库智能内核                 | **Repointel**（KodaX-private） | — (无对标)     |
+| 层                 | 项目                              | 对标           |
+| ------------------ | --------------------------------- | -------------- |
+| 内核（CLI/SDK）    | **KodaX**                         | Claude Code    |
+| 知识工作 Surface   | **KodaX Space Partner**（已发布） | Claude Cowork  |
+| 桌面壳（统一应用） | **KodaX Space**（本文档）         | Claude Desktop |
+| 仓库智能内核       | **Repointel**（KodaX-private）    | — (无对标)     |
 
 ### 1.3 与现有 KodaX CLI/REPL 的关系
 
@@ -94,26 +94,26 @@ KodaX Space **不取代** CLI/REPL。三者关系：
 
 ### 2.1 Claude Desktop 当前能力（2026 Q1 状态）
 
-| 能力                                               | Claude Desktop                                                   | Codex Desktop App            | KodaX Space 立场                                               |
-| -------------------------------------------------- | ---------------------------------------------------------------- | ---------------------------- | -------------------------------------------------------------- |
-| 面板组织                                           | 三 tab（Chat / Cowork / Code，Code 实际埋在 Chat icon hover 下） | 单壳多 agent                 | **双面板（Code / Partner）+ Quick Ask popover**；不做独立 Chat |
-| MCP server 本地宿主                                | ✅ 原生                                                          | ✅ 通过 plugin/skill         | ✅ 必须对齐                                                    |
-| 桌面扩展（`.mcpb` 一键安装）                       | ✅                                                               | ❌ 不兼容                    | ✅ 必须兼容 `.mcpb` 标准                                       |
-| Skills / Plugins 仓库                              | 内建                                                             | 90+ plugins                  | ✅ 复用 KodaX skills + `.mcpb`                                 |
-| Connector（GitHub/Slack/Notion 等图形化接入）      | ✅                                                               | ✅ 90+                       | `v0.2.3` 先做授权清晰、可撤销的只读 snapshot foundation       |
-| Quick Entry / 全局热键                             | ✅ macOS only                                                    | —                            | ✅ Quick Ask / floating surfaces 已发布，继续做 Runtime 对齐   |
-| 集成终端（应用内 shell）                           | ✅                                                               | ✅ 多 tab                    | ✅ 已发布                                                       |
-| 文件面板（diff / PDF / docx 预览）                 | ✅                                                               | ✅ 富预览                    | ✅ diff、artifact 与 Office/PDF 预览已发布                     |
-| In-app browser plugin（agent 操控本地 dev server） | —                                                                | ✅                           | `v0.2.0` governed Electron browser；不用 MCP 代替 host policy  |
-| Routines / Automations（定时 / 事件触发）          | ✅ 云                                                            | ✅ 复用 thread               | 不做云；`v0.2.6` 建立本地、可见、可审计 scheduler              |
-| 远端 SSH session / devbox                          | ✅                                                               | ✅ alpha                     | 观察清单；没有版本承诺，先明确权限、所有权与恢复模型           |
-| Automatic Review Agent（高风险动作经审阅子 agent） | —                                                                | ✅                           | `v0.1.35` 做 Evidence Review，不创建第二套 Advisor primitive  |
-| 多 agent 并行可视化                                | 较新                                                             | ✅ 卖点                      | ✅ Subagent/Workflow/External Agent 投影已发布                  |
-| Cloud Sandbox / VM 执行                            | —                                                                | ✅ Cloud Tasks               | ❌ 与 ChatGPT Agent 划清                                       |
-| 模型选择                                           | Anthropic only                                                   | OpenAI only                  | **12+ provider + 自定义** ← 关键差异                           |
-| 自托管                                             | ❌                                                               | ❌                           | ✅ ← 关键差异                                                  |
-| 数据本地化                                         | 部分（经 Anthropic 服务器）                                      | 部分（云 task 上行）         | ✅ 默认 ← 关键差异                                             |
-| 开源                                               | ❌                                                               | ❌（CLI 开源、Desktop 闭源） | ✅ KodaX 内核 Apache 2.0                                       |
+| 能力                                               | Claude Desktop                                                   | Codex Desktop App            | KodaX Space 立场                                                                 |
+| -------------------------------------------------- | ---------------------------------------------------------------- | ---------------------------- | -------------------------------------------------------------------------------- |
+| 面板组织                                           | 三 tab（Chat / Cowork / Code，Code 实际埋在 Chat icon hover 下） | 单壳多 agent                 | **双面板（Code / Partner）+ Quick Ask popover**；不做独立 Chat                   |
+| MCP server 本地宿主                                | ✅ 原生                                                          | ✅ 通过 plugin/skill         | ✅ 必须对齐                                                                      |
+| 桌面扩展（`.mcpb` 一键安装）                       | ✅                                                               | ❌ 不兼容                    | ✅ 必须兼容 `.mcpb` 标准                                                         |
+| Skills / Plugins 仓库                              | 内建                                                             | 90+ plugins                  | ✅ 复用 KodaX skills + `.mcpb`                                                   |
+| Connector（GitHub/Slack/Notion 等图形化接入）      | ✅                                                               | ✅ 90+                       | `v0.2.3` 先做授权清晰、可撤销的只读 snapshot foundation                          |
+| Quick Entry / 全局热键                             | ✅ macOS only                                                    | —                            | ✅ Quick Ask / floating surfaces 已发布，继续做 Runtime 对齐                     |
+| 集成终端（应用内 shell）                           | ✅                                                               | ✅ 多 tab                    | ✅ 已发布                                                                        |
+| 文件面板（diff / PDF / docx 预览）                 | ✅                                                               | ✅ 富预览                    | ✅ diff、artifact 与 Office/PDF 预览已发布                                       |
+| In-app browser plugin（agent 操控本地 dev server） | —                                                                | ✅                           | `v0.2.0` governed Electron browser；不用 MCP 代替 host policy                    |
+| Routines / Automations（定时 / 事件触发）          | ✅ 云                                                            | ✅ 复用 thread               | 不做云；`v0.2.6` 建立本地、可见、可审计 scheduler                                |
+| 远端 SSH session / devbox                          | ✅                                                               | ✅ alpha                     | 观察清单；没有版本承诺，先明确权限、所有权与恢复模型                             |
+| Automatic Review Agent（高风险动作经审阅子 agent） | —                                                                | ✅                           | `v0.1.35` 做 Evidence Review，不创建第二套 Advisor primitive                     |
+| 多 agent 并行可视化                                | 较新                                                             | ✅ 卖点                      | ✅ Subagent/Workflow/External Agent 投影已发布                                   |
+| Cloud Sandbox / VM 执行                            | —                                                                | ✅ Cloud Tasks               | ❌ 与 ChatGPT Agent 划清                                                         |
+| 模型选择                                           | Anthropic only                                                   | OpenAI only                  | **12+ provider + 自定义** ← 关键差异                                             |
+| 自托管                                             | ❌                                                               | ❌                           | ✅ ← 关键差异                                                                    |
+| 数据本地化                                         | 部分（经 Anthropic 服务器）                                      | 部分（云 task 上行）         | ✅ 默认 ← 关键差异                                                               |
+| 开源                                               | ❌                                                               | ❌（CLI 开源、Desktop 闭源） | ✅ KodaX 内核 Apache 2.0                                                         |
 | Linux                                              | ❌                                                               | ❌                           | ✅ AppImage + deb release path already ships; channel/signing trust remains F101 |
 
 ### 2.2 与 Cursor / Windsurf / Cline 的差异
@@ -276,20 +276,20 @@ Repointel 的核心调用契约（`status / warm / preturn / context-pack / impa
 
 #### 5.1.2 Quick Ask（全局轻量入口，M1 起）
 
-替代"独立 Chat 面板"。设计目标：用户从任意应用按全局热键唤出一个浮动小窗口，问一个临时问题，发完即关。
+替代“独立 Chat 面板”。长期设计目标是全局唤起；当前已交付的是 KodaX Space 应用内浮动小窗，问一个临时问题，发完即关。
 
 **形态**：
 
-- 全局热键：macOS `⌘⇧K`，Windows / Linux `Ctrl+Shift+K`（用户可改）
+- 当前应用内热键：macOS `⌘K`，Windows / Linux `Ctrl+K`；全局系统热键与自定义映射尚未交付
 - 单输入框 + 单回答区，**无 session 抽屉、无 tool 调用面板、无文件抽屉**
 - 顶部展示当前 provider；可临时切换且**不影响 Coder 面板**正在用的 provider
 - 失焦自动收起；Esc 关闭并丢弃；窗口尺寸约 480 × 360 px
 
 **行为**：
 
-- 通过 `RuntimeHostAdapter` 创建受限的临时会话/运行：固定 `mode='plan'`（read-only，**无 tools、无 MCP**）；是否持久化必须由公开 Runtime contract 明确表达，不能伪造 ACP session
+- 通过现有 Space session bridge 创建受限临时会话：固定 `mode='plan'`；不提供写操作入口。它当前不是 v0.1.31 RuntimeHostAdapter 的正式 managed-run surface
 - 流式回答；用户回车连发可累积一次性对话上下文，但**关闭即销毁**
-- **不写入** `~/.kodax/sessions/`（与 KodaX 内核唯一真理面解耦）
+- 临时 session 可能短暂写入共享 session store；关闭时 best-effort 清理。只有未来公开 `sideQuery` contract 才能承诺严格不落盘
 - 想多聊？提供 "Continue in Coder panel as new session" 按钮：转换为正式 Coder session（此时才落盘）
 
 **为什么不做独立 Chat 面板**：
@@ -301,11 +301,11 @@ Repointel 的核心调用契约（`status / warm / preturn / context-pack / impa
 
 #### 5.1.3 Permission UX
 
-| 模式            | UI 表现                             | KodaX 对应        |
-| --------------- | ----------------------------------- | ----------------- |
-| Plan            | 灰底顶栏 "Read-only planning"       | `plan`            |
-| Accept Edits    | 蓝底顶栏 + "Auto-accept file edits" | `accept-edits`    |
-| Auto in Project | 绿底顶栏 + 项目根目录提示           | `auto-in-project` |
+| 模式         | UI 表现                             | KodaX 对应     |
+| ------------ | ----------------------------------- | -------------- |
+| Plan         | 灰底顶栏 "Read-only planning"       | `plan`         |
+| Accept Edits | 蓝底顶栏 + "Auto-accept file edits" | `accept-edits` |
+| Auto         | 绿底顶栏 + 项目根目录提示           | `auto`         |
 
 权限确认弹窗组件：
 
@@ -444,11 +444,11 @@ File panel 内点击 git diff
 
 ```
 用户在 VS Code 写代码遇到陌生 shell 命令
-  → 按 ⌘⇧K 在任意应用上唤出 Quick Ask 浮窗
+  → 在 Space 内按 ⌘K / Ctrl+K 唤出 Quick Ask 浮窗
   → 输入 "what does `tar xzf -C` do?"
   → 流式回答 3 秒返回
-  → Esc 关闭，记录立刻销毁
-  → 不打扰当前 IDE 工作流，也不在 ~/.kodax/sessions/ 留痕
+  → Esc 关闭，临时 session best-effort 清理
+  → 不打扰当前 Coder session；严格不落盘仍等待 sideQuery contract
 ```
 
 进阶：
@@ -457,7 +457,7 @@ File panel 内点击 git diff
 用户问着问着想动手实现
   → 点击回答下方 "Continue in Coder panel as new session"
   → Quick Ask 浮窗关闭，Coder 面板新建 session 并自动注入刚才对话作为 context
-  → 这时才真正落盘到 ~/.kodax/sessions/<id>.jsonl
+  → 生成可长期保留的正式 Coder session；临时 Quick Ask session 继续 best-effort 清理
 ```
 
 ### 6.5 Partner 预览（M2，对标 Cowork 入口）
@@ -486,7 +486,7 @@ File panel 内点击 git diff
 
 ### 7.2 权限模型
 
-继承 KodaX 内核三模式（plan / accept-edits / auto-in-project），桌面侧追加：
+继承 KodaX 内核三模式（`plan` / `accept-edits` / `auto`），桌面侧追加：
 
 - **写文件**：在项目根之外要二次确认（与 KodaX `isPathInsideProject` 对齐）
 - **bash**：默认按 `Allow patterns` 评估；通配越权要二次确认
@@ -534,31 +534,31 @@ File panel 内点击 git diff
 
 ### 9.2 当前 0.1.x 版本链
 
-| Version lane | Outcome |
-| --- | --- |
-| `v0.1.31` | Runtime Host Adapter 与 capability negotiation；inline-first，保留 Partner/custom-tool/permission parity |
-| `v0.1.32` | `app://space` application origin + structured/redacted logging/diagnostic export |
-| `v0.1.33-v0.1.34` | Runtime/platform trust patch reserve |
-| `v0.1.35` | Workflow same-session replay provenance、timeline、evidence navigation 与 object-attached review receipts |
-| `v0.1.36` | Task Plan/Completion Receipt、Runtime Capability Health、Effort/Assurance/Route facts |
-| `v0.1.37-v0.1.38` | Workflow/governance patch reserve |
-| `v0.1.39` | Memory Agent Desktop Host；硬门槛为已发布、兼容的 KX-F260 contract |
-| `v0.1.40` | Learning Center Desktop Host；硬门槛为已发布的 KX-F266 `runtime.learning` |
-| `v0.1.41-v0.1.42` | Memory/Learning patch reserve |
-| `v0.1.43` | Localization completion、beta diagnostics、release channels/distribution trust |
-| `v0.1.44` | 0.1.x patch/RC reserve |
+| Version lane      | Outcome                                                                                                   |
+| ----------------- | --------------------------------------------------------------------------------------------------------- |
+| `v0.1.31`         | Runtime Host Adapter 与 capability negotiation；inline-first，保留 Partner/custom-tool/permission parity  |
+| `v0.1.32`         | `app://space` origin、structured/redacted diagnostics，以及基于 typed semantic actions 的自然语言 Space 控制 |
+| `v0.1.33-v0.1.34` | Runtime/platform trust patch reserve                                                                      |
+| `v0.1.35`         | Workflow same-session replay provenance、timeline、evidence navigation 与 object-attached review receipts |
+| `v0.1.36`         | Task Plan/Completion Receipt、Runtime Capability Health、Effort/Assurance/Route facts                     |
+| `v0.1.37-v0.1.38` | Workflow/governance patch reserve                                                                         |
+| `v0.1.39`         | Memory Agent Desktop Host；硬门槛为已发布、兼容的 KX-F260 contract                                        |
+| `v0.1.40`         | Learning Center Desktop Host；硬门槛为已发布的 KX-F266 `runtime.learning`                                 |
+| `v0.1.41-v0.1.42` | Memory/Learning patch reserve                                                                             |
+| `v0.1.43`         | Localization completion、beta diagnostics、release channels/distribution trust                            |
+| `v0.1.44`         | 0.1.x patch/RC reserve                                                                                    |
 
 KX-F260/F266 未按时发布时，Space 调换 feature lane，不绕过 capability gate。
 
 ### 9.3 0.2.x Desktop-native expansion
 
-| Version lane | Outcome |
-| --- | --- |
-| `v0.2.0` | Governed Browser Runtime + Partner Document/Research packs |
-| `v0.2.1-v0.2.2` | Connected Partner patch reserve |
-| `v0.2.3` | Connector catalog/auth/read snapshots/provenance/revocation；不含写操作 |
-| `v0.2.4-v0.2.5` | Connector patch reserve |
-| `v0.2.6` | Runtime-backed local automations + refreshable/versioned Partner artifacts |
+| Version lane    | Outcome                                                                    |
+| --------------- | -------------------------------------------------------------------------- |
+| `v0.2.0`        | Governed Browser Runtime + Partner Document/Research packs                 |
+| `v0.2.1-v0.2.2` | Connected Partner patch reserve                                            |
+| `v0.2.3`        | Connector catalog/auth/read snapshots/provenance/revocation；不含写操作    |
+| `v0.2.4-v0.2.5` | Connector patch reserve                                                    |
+| `v0.2.6`        | Runtime-backed local automations + refreshable/versioned Partner artifacts |
 
 Remote runner、Notebook、knowledge graph、desktop screen automation、`zh-Hant`、local workspace isolation 和 Connector 写操作均有价值，但在满足 [FEATURES_ARCHIVED.md](FEATURES_ARCHIVED.md#watchlist-and-reopen-gates) 的 reopen gate 前不是版本承诺。
 
@@ -631,18 +631,18 @@ Remote runner、Notebook、knowledge graph、desktop screen automation、`zh-Han
 
 ## 13. 开放问题（需要早期决策）
 
-| #       | 问题                                                       | 决策                                                                                        |
-| ------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| ~~Q1~~  | ~~Electron vs Tauri？~~                                    | **Electron**，见 [ADR-001](ADR/ADR-001-shell-electron.md)                                   |
-| Q2      | 是否在 Space 内置 Node runtime？                           | 是，与 KodaX bundle 同源                                                                    |
-| Q3      | Linux 当前状态？                                            | AppImage/deb 与 release staging 已存在；签名、channel policy 和持续平台 smoke 由 F101 完成。 |
-| ~~Q4~~  | ~~Chat 面板是否复用 Coder session 后端？~~                 | **作废**：用 Quick Ask popover 替代独立 Chat 面板，见 [ADR-004](ADR/ADR-004-panel-model.md) |
-| Q5      | 是否提供官方"Anthropic 兼容" connectors（GitHub、Slack）？ | 是，M2，作为可选                                                                            |
-| Q6      | 名称 "Partner" 是否最终化？                                | 暂定；M2 前与法务/品牌确认                                                                  |
-| Q7      | 与 Claude Desktop 的 `.mcpb` 是否做到 100% 二进制兼容？    | 是；不兼容时降级为半自动安装                                                                |
-| Q8      | Session 持久化路径是否复用 `~/.kodax/sessions/`？          | 是；Space 不引入新目录                                                                      |
-| ~~Q9~~  | ~~KodaX 集成是 in-process 还是 ACP？~~                     | **in-process**，见 [ADR-003](ADR/ADR-003-kodax-integration-in-process.md)                   |
-| ~~Q10~~ | ~~是否引入 Rust？~~                                        | **按需 NAPI-RS 热路径**，见 [ADR-002](ADR/ADR-002-rust-integration-napi.md)                 |
+| #       | 问题                                                       | 决策                                                                                         |
+| ------- | ---------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| ~~Q1~~  | ~~Electron vs Tauri？~~                                    | **Electron**，见 [ADR-001](ADR/ADR-001-shell-electron.md)                                    |
+| Q2      | 是否在 Space 内置 Node runtime？                           | 是，与 KodaX bundle 同源                                                                     |
+| Q3      | Linux 当前状态？                                           | AppImage/deb 与 release staging 已存在；签名、channel policy 和持续平台 smoke 由 F101 完成。 |
+| ~~Q4~~  | ~~Chat 面板是否复用 Coder session 后端？~~                 | **作废**：用 Quick Ask popover 替代独立 Chat 面板，见 [ADR-004](ADR/ADR-004-panel-model.md)  |
+| Q5      | 是否提供官方"Anthropic 兼容" connectors（GitHub、Slack）？ | 是，M2，作为可选                                                                             |
+| Q6      | 名称 "Partner" 是否最终化？                                | 暂定；M2 前与法务/品牌确认                                                                   |
+| Q7      | 与 Claude Desktop 的 `.mcpb` 是否做到 100% 二进制兼容？    | 是；不兼容时降级为半自动安装                                                                 |
+| Q8      | Session 持久化路径是否复用 `~/.kodax/sessions/`？          | 是；Space 不引入新目录                                                                       |
+| ~~Q9~~  | ~~KodaX 集成是 in-process 还是 ACP？~~                     | **in-process**，见 [ADR-003](ADR/ADR-003-kodax-integration-in-process.md)                    |
+| ~~Q10~~ | ~~是否引入 Rust？~~                                        | **按需 NAPI-RS 热路径**，见 [ADR-002](ADR/ADR-002-rust-integration-napi.md)                  |
 
 ---
 
@@ -758,7 +758,7 @@ M2+ 状态——Partner 上线后顶部出现 tab 切换器：
 
 ### B.4 Quick Ask popover（M1）
 
-按 ⌘⇧K / Ctrl+Shift+K 从任意应用唤出：
+当前在 Space 内按 ⌘K / Ctrl+K 唤出；系统级全局唤起是未来目标：
 
 ```
                                     ┌───────────────────────────────────┐

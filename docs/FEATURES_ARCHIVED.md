@@ -2,6 +2,7 @@
 
 > Created by the 2026-07-12 roadmap rebase.
 > This file preserves the compact historical index and reviewed-out decisions. Per-version design documents and [CHANGELOG.md](../CHANGELOG.md) remain the detailed release record.
+> For current product, architecture, and active roadmap documents, start from the [documentation hub](README.md).
 
 ## Status normalization
 

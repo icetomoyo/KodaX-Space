@@ -56,13 +56,24 @@ export function installSessionStoreMock(): MockSessionState {
   let cursorPaginationEnabled = false;
   let listCalls = 0;
   const titleOverrides = new Map<string, string>();
+  const watchers = new Set<
+    (event: { kind: 'change' | 'add' | 'remove'; sessionId: string }) => void
+  >();
+  const emit = (kind: 'change' | 'add' | 'remove', sessionId: string): void => {
+    for (const watcher of watchers) watcher({ kind, sessionId });
+  };
 
   const impl: SessionStoreImpl = {
     listSessions: async (opts) => {
       listCalls += 1;
       const root = opts?.projectRoot;
       const all = [...storage.values()];
-      const filtered = root === undefined ? all : all.filter((s) => s.gitRoot === root);
+      const filtered = all.filter(
+        (session) =>
+          (root === undefined || session.gitRoot === root) &&
+          (opts?.tag === undefined || session.tag === opts.tag) &&
+          (opts?.surface === undefined || session.runtimeSurface === opts.surface),
+      );
       const cursor = (opts as { readonly cursor?: string } | undefined)?.cursor;
       const cursorIndex = cursor === undefined ? -1 : filtered.findIndex((s) => s.id === cursor);
       if (cursor !== undefined && cursorIndex < 0) return [];
@@ -89,6 +100,7 @@ export function installSessionStoreMock(): MockSessionState {
       const newId = `s_${randomUUID()}`;
       const newData = { id: newId, title: opts?.title ?? src.title, gitRoot: src.gitRoot };
       storage.set(newId, newData);
+      emit('add', newId);
       return {
         sessionId: newId,
         data: { title: newData.title, messages: [], gitRoot: newData.gitRoot } as never,
@@ -110,6 +122,7 @@ export function installSessionStoreMock(): MockSessionState {
         };
       }
       storage.delete(id);
+      emit('remove', id);
       return { ok: true };
     },
     loadSession: async (id) => {
@@ -133,6 +146,7 @@ export function installSessionStoreMock(): MockSessionState {
           ? { runtimeSurface: data.runtimeInfo.surface }
           : {}),
       });
+      emit('change', id);
       return true;
     },
     loadFullTranscript: async (id) => {
@@ -145,7 +159,10 @@ export function installSessionStoreMock(): MockSessionState {
         transcriptEntries: s.transcriptEntries ?? [],
       } as never;
     },
-    watchSessions: () => ({ close: () => undefined }),
+    watchSessions: (callback) => {
+      watchers.add(callback);
+      return { close: () => watchers.delete(callback) };
+    },
   };
 
   setSessionStoreImpl(impl);
@@ -162,12 +179,15 @@ export function installSessionStoreMock(): MockSessionState {
   return {
     seed(id, gitRoot, title = 'Untitled'): void {
       storage.set(id, { id, title, gitRoot });
+      emit('add', id);
     },
     seedTagged(id, gitRoot, tag, title = 'Untitled'): void {
       storage.set(id, { id, title, gitRoot, ...(tag !== undefined ? { tag } : {}) });
+      emit('add', id);
     },
     seedSurface(id, gitRoot, surface, title = 'Untitled'): void {
       storage.set(id, { id, title, gitRoot, runtimeSurface: surface });
+      emit('add', id);
     },
     seedTranscript(id, entries): void {
       const existing = storage.get(id);
@@ -181,6 +201,7 @@ export function installSessionStoreMock(): MockSessionState {
           : {}),
         transcriptEntries: entries,
       });
+      emit(existing === undefined ? 'add' : 'change', id);
     },
     lastForkSelector(): string | undefined {
       return lastForkSelectorValue;
@@ -208,6 +229,7 @@ export function installSessionStoreMock(): MockSessionState {
       deleteBusy = false;
       cursorPaginationEnabled = false;
       listCalls = 0;
+      watchers.clear();
       setSessionStoreImpl(null);
       setSessionTitleStoreForTesting(null);
     },

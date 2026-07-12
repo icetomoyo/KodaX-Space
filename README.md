@@ -107,6 +107,12 @@ This release aligns KodaX Space with `@kodax-ai/kodax@0.7.67` and connects its p
 
 See [CHANGELOG.md](CHANGELOG.md), [docs/features/v0.1.30.md](docs/features/v0.1.30.md), and the [F115 External Agent design](docs/features/v0.1.30-external-agents.md) for the full release notes and capability boundary.
 
+### Next: v0.1.31 development baseline
+
+The current source tree implements F116 Runtime Host Adapter on KodaX 0.7.67. New managed runs, transcript, compact, fork, and rewind use an embedded inline Runtime facade with stable run IDs, event journaling, capability diagnostics, and a restart-only legacy rollback. Workflow, MCP process/log ownership, Partner policy/tools, permissions, artifacts, and the External Agent durable store remain explicit Space bridges.
+
+Automated unit, E2E, typecheck, lint, build, package, and boot-smoke gates pass. v0.1.31 is **not yet a public release**: real-provider manual acceptance, independent review, version bump, and release publication remain. See the [v0.1.31 design](docs/features/v0.1.31.md), [implementation plan](docs/features/v0.1.31-implementation-plan.md), and [test guide](docs/test-guides/FEATURE_116_v0.1.31_TEST_GUIDE.md).
+
 **v0.1.29 - Workspace Environment Hub + Task Dock**
 
 Released: 2026-07-08
@@ -151,6 +157,7 @@ KodaX Space intentionally reuses KodaX ecosystem state where it should, and owns
 | `~/.kodax/skills/` and project skills | Discovered by the KodaX skills runtime.                                                                                                       |
 | API keys                              | Stored through OS keychain when available; environment variables remain supported.                                                            |
 | `~/.kodax/space/`                     | Space-owned preferences, projects, UI state, and desktop-specific metadata.                                                                   |
+| `<profile-root>/.kodax/runtime/`      | v0.1.31 Runtime run/event journal; with the default profile this resolves to `~/.kodax/.kodax/runtime/`.                                      |
 
 ## Architecture
 
@@ -173,16 +180,16 @@ KodaX-Space/
 
 Key technical choices:
 
-| Layer                 | Choice                                                                             |
-| --------------------- | ---------------------------------------------------------------------------------- |
-| Shell                 | Electron 42                                                                        |
-| Renderer              | React 19, Vite, TypeScript, Zustand                                                |
-| UI/runtime separation | Renderer has no direct LLM/tool execution; privileged work stays in Electron main. |
-| KodaX integration     | In-process SDK import through Electron main.                                       |
-| IPC                   | zod-validated contracts from `@kodax-space/space-ipc-schema`.                      |
-| Terminal              | xterm.js + node-pty.                                                               |
-| Preview               | Monaco, pdfjs, mammoth/docx, SheetJS/xlsx.                                         |
-| Tests                 | Node test runner, Playwright, typecheck, smoke packaging checks.                   |
+| Layer                 | Choice                                                                                                                                  |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| Shell                 | Electron 42                                                                                                                             |
+| Renderer              | React 19, Vite, TypeScript, Zustand                                                                                                     |
+| UI/runtime separation | Renderer has no direct LLM/tool execution; privileged work stays in Electron main.                                                      |
+| KodaX integration     | Electron main imports the SDK; v0.1.31 routes managed runs and core session operations through an embedded inline `RuntimeHostAdapter`. |
+| IPC                   | zod-validated contracts from `@kodax-space/space-ipc-schema`.                                                                           |
+| Terminal              | xterm.js + node-pty.                                                                                                                    |
+| Preview               | Monaco, pdfjs, mammoth/docx, SheetJS/xlsx.                                                                                              |
+| Tests                 | Node test runner, Playwright, typecheck, smoke packaging checks.                                                                        |
 
 ## Development
 
@@ -225,8 +232,10 @@ npm run e2e:headed
 | Document                                                                                                 | Purpose                                                                                  |
 | -------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
 | [README_CN.md](README_CN.md)                                                                             | Chinese README.                                                                          |
-| [docs/USER_MANUAL.zh-CN.md](docs/USER_MANUAL.zh-CN.md)                                                   | Current Chinese user manual for the KodaX Space 0.1.30 release.                          |
-| [docs/USAGE.md](docs/USAGE.md)                                                                           | Usage notes covering launch, configuration reuse, slash commands, and known limits.      |
+| [CONTRIBUTING.md](CONTRIBUTING.md)                                                                       | Contribution boundaries, validation, and documentation requirements.                     |
+| [docs/README.md](docs/README.md)                                                                         | Documentation hub and current-vs-historical document map.                                |
+| [docs/USER_MANUAL.zh-CN.md](docs/USER_MANUAL.zh-CN.md)                                                   | Illustrated Chinese user manual covering v0.1.30 and the v0.1.31 development baseline.   |
+| [docs/USAGE.md](docs/USAGE.md)                                                                           | Source launch, profiles, Runtime Host, testing, packaging, and troubleshooting.          |
 | [docs/CODING_AGENT_BEGINNER_BEST_PRACTICES.zh-CN.md](docs/CODING_AGENT_BEGINNER_BEST_PRACTICES.zh-CN.md) | Chinese beginner guide for coding-agent practice in software and microservice workflows. |
 | [docs/PRD.md](docs/PRD.md)                                                                               | Product requirements and product positioning.                                            |
 | [docs/HLD.md](docs/HLD.md)                                                                               | High-level architecture and system design.                                               |
@@ -240,12 +249,13 @@ npm run e2e:headed
 
 Near-term planned work is tracked in [docs/FEATURE_LIST.md](docs/FEATURE_LIST.md). Current highlights:
 
-| Lane | Focus |
-| --- | --- |
-| `v0.1.31-v0.1.32` | Runtime facade/capability alignment followed by `app://space`, structured logging, and diagnostic export. |
-| `v0.1.35-v0.1.40` | Workflow/review evidence, task/capability governance, then SDK-gated Memory Agent and Learning Center hosts. |
-| `v0.1.43` | Localization completion, beta diagnostics, release channels, updater/distribution trust. |
-| `v0.2.x` | Governed browser and Partner packs, read-only connector snapshots, local automations, and refreshable artifacts. |
+| Lane              | Focus                                                                                                            |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `v0.1.31`         | Runtime Host Adapter is implemented; manual real-provider acceptance, independent review, and release remain.    |
+| `v0.1.32`         | `app://space`, structured logging, and diagnostic export.                                                        |
+| `v0.1.35-v0.1.40` | Workflow/review evidence, task/capability governance, then SDK-gated Memory Agent and Learning Center hosts.     |
+| `v0.1.43`         | Localization completion, beta diagnostics, release channels, updater/distribution trust.                         |
+| `v0.2.x`          | Governed browser and Partner packs, read-only connector snapshots, local automations, and refreshable artifacts. |
 
 Remote runners, notebooks, knowledge graphs, desktop screen automation, and unshipped External Agent adapters are reopen-gated watchlist items, not committed release features.
 

@@ -107,6 +107,12 @@ npm run dev
 
 完整版本说明见 [CHANGELOG.md](CHANGELOG.md)、[docs/features/v0.1.30.md](docs/features/v0.1.30.md) 与 [F115 External Agent 设计](docs/features/v0.1.30-external-agents.md)。
 
+### 下一版本：v0.1.31 开发基线
+
+当前源码已经实现 F116 Runtime Host Adapter，并继续使用 KodaX 0.7.67。新的 managed run、transcript、compact、fork、rewind 通过 embedded inline Runtime facade 执行，提供稳定 runId、事件日志、capability 诊断和必须重启的 legacy 回滚。Workflow、MCP 进程/日志、Partner policy/tools、权限、Artifact 与 External Agent durable store 仍是明确的 Space bridge。
+
+单元测试、E2E、typecheck、lint、构建、打包和启动冒烟均已通过。`v0.1.31` **尚未作为公开正式版发布**，还需真实 Provider 人工验收、独立 review、版本号更新和正式发布。详见 [v0.1.31 设计](docs/features/v0.1.31.md)、[实施计划](docs/features/v0.1.31-implementation-plan.md)和[人工测试指导](docs/test-guides/FEATURE_116_v0.1.31_TEST_GUIDE.md)。
+
 ## 产品界面
 
 | 界面               | 用途                                                                                                                                                         |
@@ -134,6 +140,7 @@ KodaX Space 会尽量复用 KodaX 生态状态；桌面 UI 特有状态则由 Sp
 | `~/.kodax/skills/` 和项目 skills | 由 KodaX skills runtime 发现。                                                                              |
 | API keys                         | 优先进入系统 Keychain；仍支持环境变量。                                                                     |
 | `~/.kodax/space/`                | Space 自有偏好、项目、UI 状态和桌面元数据。                                                                 |
+| `<profile-root>/.kodax/runtime/` | v0.1.31 Runtime run/event journal；默认 profile 下实际为 `~/.kodax/.kodax/runtime/`。                       |
 
 ## 架构
 
@@ -156,16 +163,16 @@ KodaX-Space/
 
 关键技术选择：
 
-| 层              | 选择                                                              |
-| --------------- | ----------------------------------------------------------------- |
-| Shell           | Electron 42                                                       |
-| Renderer        | React 19、Vite、TypeScript、Zustand                               |
-| UI/runtime 分离 | Renderer 不直接执行 LLM/tool；特权工作留在 Electron main。        |
-| KodaX 集成      | Electron main 中 in-process SDK import。                          |
-| IPC             | 来自 `@kodax-space/space-ipc-schema` 的 zod-validated contracts。 |
-| Terminal        | xterm.js + node-pty。                                             |
-| Preview         | Monaco、pdfjs、mammoth/docx、SheetJS/xlsx。                       |
-| Tests           | Node test runner、Playwright、typecheck、packaging smoke checks。 |
+| 层              | 选择                                                                                                          |
+| --------------- | ------------------------------------------------------------------------------------------------------------- |
+| Shell           | Electron 42                                                                                                   |
+| Renderer        | React 19、Vite、TypeScript、Zustand                                                                           |
+| UI/runtime 分离 | Renderer 不直接执行 LLM/tool；特权工作留在 Electron main。                                                    |
+| KodaX 集成      | Electron main 中导入 SDK；v0.1.31 通过 embedded inline `RuntimeHostAdapter` 承接 managed run 和核心会话操作。 |
+| IPC             | 来自 `@kodax-space/space-ipc-schema` 的 zod-validated contracts。                                             |
+| Terminal        | xterm.js + node-pty。                                                                                         |
+| Preview         | Monaco、pdfjs、mammoth/docx、SheetJS/xlsx。                                                                   |
+| Tests           | Node test runner、Playwright、typecheck、packaging smoke checks。                                             |
 
 ## 开发
 
@@ -208,8 +215,10 @@ npm run e2e:headed
 | 文档                                                                                                     | 用途                                                        |
 | -------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
 | [README.md](README.md)                                                                                   | 英文 README。                                               |
-| [docs/USER_MANUAL.zh-CN.md](docs/USER_MANUAL.zh-CN.md)                                                   | 面向 KodaX Space 0.1.30 正式版本的当前中文用户说明书。      |
-| [docs/USAGE.md](docs/USAGE.md)                                                                           | 启动、配置复用、slash 命令和已知限制说明。                  |
+| [CONTRIBUTING.md](CONTRIBUTING.md)                                                                       | 贡献边界、验证要求和文档同步规则。                          |
+| [docs/README.md](docs/README.md)                                                                         | 文档中心，以及当前文档/历史文档索引。                       |
+| [docs/USER_MANUAL.zh-CN.md](docs/USER_MANUAL.zh-CN.md)                                                   | 图解中文用户手册，覆盖 v0.1.30 与 v0.1.31 开发基线。        |
+| [docs/USAGE.md](docs/USAGE.md)                                                                           | 源码启动、profile、Runtime Host、测试、打包与排障。         |
 | [docs/CODING_AGENT_BEGINNER_BEST_PRACTICES.zh-CN.md](docs/CODING_AGENT_BEGINNER_BEST_PRACTICES.zh-CN.md) | Coding Agent 初学者最佳实践教程，覆盖软件研发和微服务场景。 |
 | [docs/PRD.md](docs/PRD.md)                                                                               | 产品需求和产品定位。                                        |
 | [docs/HLD.md](docs/HLD.md)                                                                               | 高层架构与系统设计。                                        |
@@ -223,12 +232,13 @@ npm run e2e:headed
 
 近期计划以 [docs/FEATURE_LIST.md](docs/FEATURE_LIST.md) 为准。当前重点：
 
-| 版本线 | 重点 |
-| --- | --- |
-| `v0.1.31-v0.1.32` | Runtime facade/capability 对齐，以及 `app://space`、结构化日志和诊断导出。 |
-| `v0.1.35-v0.1.40` | Workflow/Review 证据面、Task/Capability 治理，以及 SDK-gated Memory Agent/Learning Center host。 |
-| `v0.1.43` | 本地化完成、beta diagnostics、release channel、updater/distribution trust。 |
-| `v0.2.x` | Governed Browser 与 Partner packs、只读 Connector snapshots、本地 Automations、可刷新 Artifacts。 |
+| 版本线            | 重点                                                                                              |
+| ----------------- | ------------------------------------------------------------------------------------------------- |
+| `v0.1.31`         | Runtime Host Adapter 已实现；待真实 Provider 人工验收、独立 review 和正式发布。                   |
+| `v0.1.32`         | `app://space`、结构化日志和诊断导出。                                                             |
+| `v0.1.35-v0.1.40` | Workflow/Review 证据面、Task/Capability 治理，以及 SDK-gated Memory Agent/Learning Center host。  |
+| `v0.1.43`         | 本地化完成、beta diagnostics、release channel、updater/distribution trust。                       |
+| `v0.2.x`          | Governed Browser 与 Partner packs、只读 Connector snapshots、本地 Automations、可刷新 Artifacts。 |
 
 Remote runner、Notebook、Knowledge Graph、桌面 screen automation 和未发布 External Agent adapter 都是带 reopen gate 的 watchlist，不是已承诺版本 feature。
 

@@ -7,6 +7,7 @@ import { createRequire } from 'node:module';
 import { registerChannel } from './register.js';
 import type { SpaceCapability, SpaceVersionOutput } from '@kodax-space/space-ipc-schema';
 import { isRepoIntelEntitled } from '../kodax/repo-intel-gate.js';
+import { runtimeHostAdapter, type RuntimeHostSnapshot } from '../kodax/runtime-host-adapter.js';
 
 function readSpaceVersion(electronApp: App): string {
   // app.getVersion() 读 packaged 应用的 package.json；dev 模式下可能不是 0.1.0-alpha.0
@@ -46,8 +47,35 @@ function readKodaxDependencySpec(): string {
   }
 }
 
-function buildCapabilityLedger(entitled: boolean): SpaceCapability[] {
+function runtimeHostCapability(snapshot: RuntimeHostSnapshot): SpaceCapability {
+  const ready = snapshot.state === 'ready';
+  const legacy = snapshot.state === 'legacy';
+  const failed = snapshot.state === 'failed';
+  const identity = snapshot.identity;
+  const detail = ready
+    ? `KodaX Runtime ${identity?.version ?? 'unknown'} ${identity?.mode ?? 'embedded'}/${identity?.isolation ?? 'inline'} owns managed runs; Space bridges permissions, Partner, MCP process lifecycle, and External Agent storage.`
+    : legacy
+      ? 'The internal legacy rollback host is selected before run start. No Runtime-managed run is active.'
+      : failed
+        ? `The Runtime host failed before run start${snapshot.error ? `: ${snapshot.error}` : '.'} New runs use the bounded legacy rollback path.`
+        : snapshot.state === 'initializing' || snapshot.state === 'uninitialized'
+          ? `The Runtime host is ${snapshot.state}. New runs wait for initialization and use legacy only if it fails before start.`
+          : 'The Runtime host is closed and cannot accept new runs.';
+  return {
+    id: 'runtime.hostAdapter',
+    label: 'Runtime Host Adapter',
+    status: ready ? 'supported' : snapshot.state === 'closed' ? 'blocked' : 'partial',
+    detail,
+    since: '0.1.31',
+  };
+}
+
+function buildCapabilityLedger(
+  entitled: boolean,
+  runtimeSnapshot: RuntimeHostSnapshot,
+): SpaceCapability[] {
   return [
+    runtimeHostCapability(runtimeSnapshot),
     {
       id: 'repointel.trace',
       label: 'Repointel trace',
@@ -142,8 +170,8 @@ export function registerVersionChannel(): void {
       platform,
       kodaxSdkVersion: readKodaxSdkVersion(),
       kodaxDependencySpec: readKodaxDependencySpec(),
-      capabilityContract: 'space-v0.1.30',
-      capabilities: buildCapabilityLedger(entitled),
+      capabilityContract: 'space-v0.1.31',
+      capabilities: buildCapabilityLedger(entitled, runtimeHostAdapter.snapshot()),
     };
   });
 }

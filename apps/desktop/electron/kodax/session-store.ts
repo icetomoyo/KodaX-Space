@@ -24,7 +24,7 @@
 //                                                  (避免 dynamic import 触发 cli-boxes JSON bug)
 //
 // 重置：setSessionStoreImpl(null) 恢复默认。
-import type { Surface } from '@kodax-space/space-ipc-schema';
+import { canonProjectRoot, type Surface } from '@kodax-space/space-ipc-schema';
 import { dedupeTranscriptEntries } from '../ipc/transcript-dedup.js';
 import { getSessionTitleStore } from './session-title-store.js';
 
@@ -44,6 +44,9 @@ export function isEphemeralSessionTag(tag: string | undefined): boolean {
 const DEFAULT_VISIBLE_SESSION_LIMIT = 200;
 const MAX_PERSISTED_SESSION_SUMMARIES_TO_SCAN = 50_000;
 const PERSISTED_SESSION_SUMMARY_PAGE_SIZE = 500;
+const SESSION_LIST_CACHE_TTL_MS = 30_000;
+const SESSION_LIST_CACHE_MAX = 64;
+const IS_WIN_MAIN = process.platform === 'win32';
 
 type SdkSessionSummary = Awaited<ReturnType<SdkSessionModule['listSessions']>>[number];
 type CursorSessionSummary = SdkSessionSummary & { readonly cursor?: string };
@@ -201,8 +204,41 @@ const DEFAULT_IMPL: SessionStoreImpl = {
 
 let activeImpl: SessionStoreImpl = DEFAULT_IMPL;
 
+interface CachedPersistedSessionList {
+  readonly expiresAt: number;
+  readonly sessions: PersistedSessionMeta[];
+}
+
+let sessionListCacheGeneration = 0;
+let sessionListWatcher: { close: () => void } | null = null;
+let globalSummaryCache: {
+  readonly expiresAt: number;
+  readonly summaries: CursorSessionSummary[];
+} | null = null;
+let globalSummaryRequest: Promise<CursorSessionSummary[]> | null = null;
+const persistedSessionListCache = new Map<string, CachedPersistedSessionList>();
+const persistedSessionListRequests = new Map<string, Promise<PersistedSessionMeta[]>>();
+
+/** Clear list/summary caches without evicting recently opened transcripts. */
+export function invalidatePersistedSessionListCache(): void {
+  sessionListCacheGeneration += 1;
+  globalSummaryCache = null;
+  globalSummaryRequest = null;
+  persistedSessionListCache.clear();
+  persistedSessionListRequests.clear();
+}
+
+function ensureSessionListWatcher(): void {
+  if (sessionListWatcher !== null) return;
+  sessionListWatcher = activeImpl.watchSessions(() => {
+    invalidatePersistedSessionListCache();
+  });
+}
+
 /** 测试用：注入 mock SDK 实现。生产代码不调。 */
 export function setSessionStoreImpl(impl: SessionStoreImpl | null): void {
+  sessionListWatcher?.close();
+  sessionListWatcher = null;
   activeImpl = impl ?? DEFAULT_IMPL;
   clearPersistedSessionCache(); // 切 impl 必清缓存，避免 test 之间读到生产值
 }
@@ -241,9 +277,40 @@ async function listVisibleSummaryCandidates(opts: {
   readonly requestedLimit: number;
   readonly surface?: 'code' | 'partner';
 }): Promise<CursorSessionSummary[]> {
+  // KodaX 0.7.67's project-scoped path scans every JSONL file before applying
+  // projectRoot. For the small sidebar window, share one bounded global summary
+  // snapshot across projects and restore the per-project limit in Space. Large
+  // on-demand history picker reads keep the precise project-scoped path below.
+  if (opts.projectRoot !== undefined && opts.requestedLimit <= DEFAULT_VISIBLE_SESSION_LIMIT) {
+    const summaries = await loadGlobalSummarySnapshot();
+    const expectedRoot = canonProjectRoot(opts.projectRoot, IS_WIN_MAIN);
+    const projectSummaries = summaries.filter((summary) => {
+      const summaryRoot = summary.runtimeInfo?.workspaceRoot ?? summary.runtimeInfo?.gitRoot;
+      return (
+        summaryRoot !== undefined && canonProjectRoot(summaryRoot, IS_WIN_MAIN) === expectedRoot
+      );
+    });
+    const visibleCount = projectSummaries.filter((summary) =>
+      summaryMatchesVisibleScope(summary, opts.surface),
+    ).length;
+    // A saturated global bound may have been consumed by unrelated projects.
+    // Fall back rather than letting one busy project hide another's history.
+    if (
+      summaries.length < MAX_PERSISTED_SESSION_SUMMARIES_TO_SCAN ||
+      visibleCount >= opts.requestedLimit
+    ) {
+      return projectSummaries;
+    }
+  }
+
   const baseOptions = {
     projectRoot: opts.projectRoot,
     scope: 'user' as const,
+    // Partner is an exact persisted tag. Filter before cursor pagination so an
+    // empty Partner project does not page through all Coder sessions merely to
+    // establish that the result is empty. Untagged legacy sessions prevent the
+    // same optimization for Coder.
+    ...(opts.surface === 'partner' ? { tag: 'partner' } : {}),
   };
   const loadCompatibilityWindow = (): Promise<CursorSessionSummary[]> =>
     listSummaryPage({
@@ -299,6 +366,35 @@ async function listVisibleSummaryCandidates(opts: {
   return summaries;
 }
 
+async function loadGlobalSummarySnapshot(): Promise<CursorSessionSummary[]> {
+  ensureSessionListWatcher();
+  const now = Date.now();
+  if (globalSummaryCache !== null && globalSummaryCache.expiresAt > now) {
+    return globalSummaryCache.summaries;
+  }
+  if (globalSummaryRequest !== null) return globalSummaryRequest;
+
+  const generation = sessionListCacheGeneration;
+  const request = listSummaryPage({
+    scope: 'user',
+    limit: MAX_PERSISTED_SESSION_SUMMARIES_TO_SCAN,
+  }).then((summaries) => {
+    if (generation === sessionListCacheGeneration) {
+      globalSummaryCache = {
+        expiresAt: Date.now() + SESSION_LIST_CACHE_TTL_MS,
+        summaries,
+      };
+    }
+    return summaries;
+  });
+  globalSummaryRequest = request;
+  try {
+    return await request;
+  } finally {
+    if (globalSummaryRequest === request) globalSummaryRequest = null;
+  }
+}
+
 /**
  * 拉指定 projectRoot 下的 historical sessions（写盘的）。
  *
@@ -308,6 +404,53 @@ async function listVisibleSummaryCandidates(opts: {
  * - limit 缺省 200——大于 F033 in-memory 的常见 100 量级，UI 翻滚也撑得住
  */
 export async function listPersistedSessions(opts: {
+  readonly projectRoot?: string;
+  readonly limit?: number;
+  readonly surface?: 'code' | 'partner';
+}): Promise<PersistedSessionMeta[]> {
+  ensureSessionListWatcher();
+  const key = JSON.stringify([
+    opts.projectRoot === undefined ? null : canonProjectRoot(opts.projectRoot, IS_WIN_MAIN),
+    opts.limit ?? DEFAULT_VISIBLE_SESSION_LIMIT,
+    opts.surface ?? null,
+  ]);
+  const cached = persistedSessionListCache.get(key);
+  if (cached !== undefined && cached.expiresAt > Date.now()) {
+    persistedSessionListCache.delete(key);
+    persistedSessionListCache.set(key, cached);
+    return cached.sessions;
+  }
+  if (cached !== undefined) persistedSessionListCache.delete(key);
+
+  const inFlight = persistedSessionListRequests.get(key);
+  if (inFlight !== undefined) return inFlight;
+
+  const generation = sessionListCacheGeneration;
+  const request = listPersistedSessionsUncached(opts).then((sessions) => {
+    if (generation === sessionListCacheGeneration) {
+      persistedSessionListCache.set(key, {
+        expiresAt: Date.now() + SESSION_LIST_CACHE_TTL_MS,
+        sessions,
+      });
+      while (persistedSessionListCache.size > SESSION_LIST_CACHE_MAX) {
+        const oldestKey = persistedSessionListCache.keys().next().value;
+        if (oldestKey === undefined) break;
+        persistedSessionListCache.delete(oldestKey);
+      }
+    }
+    return sessions;
+  });
+  persistedSessionListRequests.set(key, request);
+  try {
+    return await request;
+  } finally {
+    if (persistedSessionListRequests.get(key) === request) {
+      persistedSessionListRequests.delete(key);
+    }
+  }
+}
+
+async function listPersistedSessionsUncached(opts: {
   readonly projectRoot?: string;
   readonly limit?: number;
   readonly surface?: 'code' | 'partner';
@@ -363,8 +506,9 @@ export async function listPersistedSessions(opts: {
         msgCount: s.msgCount,
         createdAt: s.createdAt,
         projectRoot: s.runtimeInfo?.workspaceRoot ?? s.runtimeInfo?.gitRoot,
-        // F045: 不把 tag 下推给 SDK listSessions（仍按 projectRoot+scope 拉，避开 all-fetch
-        // 致列表不全的历史回退坑 ②B）。这里反推 surface，main 端（host.listMerged）再 filter。
+        // F045: summary.tag remains the compatibility source of truth for Space
+        // surfaces. Partner fallback scans can now push the exact tag into the
+        // SDK; Coder still derives here so untagged legacy sessions remain visible.
         surface: sdkTagToSurface(s.tag),
       };
     }),
@@ -678,12 +822,14 @@ function extractPromptText(content: unknown): string {
 export function invalidatePersistedSessionCache(sessionId: string): void {
   loadCache.delete(sessionId);
   transcriptCache.delete(sessionId);
+  invalidatePersistedSessionListCache();
 }
 
 /** 测试 / setStorageImpl 注入 mock 后清整张缓存。*/
 export function clearPersistedSessionCache(): void {
   loadCache.clear();
   transcriptCache.clear();
+  invalidatePersistedSessionListCache();
 }
 
 /**

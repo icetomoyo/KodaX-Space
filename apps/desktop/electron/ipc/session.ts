@@ -61,6 +61,7 @@ import {
 import { isBuiltinId } from '../providers/catalog.js';
 import { providerConfigStore } from '../providers/config.js';
 import { appendPersistedClientNotice, loadPersistedTranscript } from '../kodax/session-store.js';
+import { runtimeHostAdapter } from '../kodax/runtime-host-adapter.js';
 import { parseTaskCompletedBlocks, selectWorkflowBlocks } from './workflow-result-notice.js';
 import { dedupeTranscriptEntries } from './transcript-dedup.js';
 import { resolveRuntimeDefaults } from '../kodax/runtime-defaults.js';
@@ -381,10 +382,12 @@ export function registerSessionChannels(): void {
     // tryResume 路径走相同 resolution，两边对齐，避免 UI 一闪即变。
     let persistedProviderFallback = 'mock';
     let persistedModelFallback: string | undefined;
-    const [udResult, providerLoadResult] = await Promise.allSettled([
-      loadKodaxUserDefaults(),
-      providerConfigStore.load(),
-    ]);
+    const [[udResult, providerLoadResult], baseRuntimeDefaults, kodaxCustomProviders] =
+      await Promise.all([
+        Promise.allSettled([loadKodaxUserDefaults(), providerConfigStore.load()]),
+        resolveRuntimeDefaults(),
+        loadKodaxCustomProviders().catch(() => []),
+      ]);
     if (udResult.status === 'fulfilled') {
       const ud = udResult.value;
       if (ud.provider) persistedProviderFallback = ud.provider;
@@ -396,7 +399,6 @@ export function registerSessionChannels(): void {
       const defaultId = providerConfigStore.getDefaultProviderId();
       if (defaultId) persistedProviderFallback = defaultId;
     }
-    const kodaxCustomProviders = await loadKodaxCustomProviders().catch(() => []);
     // persisted session 没有 lastActivityAt——用 createdAt 占位（同一时间精度排序）
     const withTs = merged
       .filter((m) => {
@@ -452,13 +454,12 @@ export function registerSessionChannels(): void {
         //
         // msgCount 直接透传 SDK summary 给的值——这是 dashboard 重启后 Messages 数
         // 正确的关键（无需扫 jsonl 内容，SDK 已经 fast-path 缓存了 summary）。
-        const [runtimeDefaults, persistedRuntime] = await Promise.all([
-          resolveRuntimeDefaults({
-            sessionId: item.sessionId,
-            includeSessionSidecar: true,
-          }),
-          getSessionRuntimeStore().read(item.sessionId),
-        ]);
+        // Read the per-session sidecar once. Previously resolveRuntimeDefaults()
+        // read it internally while this mapper read the same file again for the
+        // provider/model identity. The global defaults are identical for every
+        // row in this response, so resolve them once above and overlay the one
+        // session-specific layer here.
+        const persistedRuntime = await getSessionRuntimeStore().read(item.sessionId);
         const identity = resolveHistoricalRuntimeIdentity({
           ...(persistedRuntime !== null ? { persisted: persistedRuntime } : {}),
           fallbackProvider: persistedProviderFallback,
@@ -475,10 +476,10 @@ export function registerSessionChannels(): void {
           // outside their project and display that project as empty.
           projectRoot: item.projectRoot ?? projectFilter ?? '/',
           provider: identity.provider,
-          reasoningMode: runtimeDefaults.reasoningMode,
-          permissionMode: runtimeDefaults.permissionMode,
-          autoModeEngine: runtimeDefaults.autoModeEngine,
-          agentMode: runtimeDefaults.agentMode,
+          reasoningMode: persistedRuntime?.reasoningMode ?? baseRuntimeDefaults.reasoningMode,
+          permissionMode: persistedRuntime?.permissionMode ?? baseRuntimeDefaults.permissionMode,
+          autoModeEngine: persistedRuntime?.autoModeEngine ?? baseRuntimeDefaults.autoModeEngine,
+          agentMode: persistedRuntime?.agentMode ?? baseRuntimeDefaults.agentMode,
           // F045: 真值——来自 SDK summary.tag 反推（host.listMerged 已派生），非占位。
           surface: item.surface,
           title: item.title,
@@ -701,7 +702,9 @@ export function registerSessionChannels(): void {
     };
     // Full append-order transcript (not just the active branch) so pre-compaction
     // turns stay visible in scrollback — fixes "history disappears after compaction".
-    const data = await loadPersistedTranscript(input.sessionId);
+    const data = runtimeHostAdapter.hasReadyRuntime()
+      ? await runtimeHostAdapter.transcript(input.sessionId)
+      : await loadPersistedTranscript(input.sessionId);
     if (!data || !Array.isArray(data.messages)) {
       return withLocalNotices([]);
     }

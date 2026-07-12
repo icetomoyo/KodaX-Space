@@ -79,6 +79,7 @@ import { settingsStore } from './settings/store.js';
 import { setRendererTarget } from './ipc/push.js';
 import { kodaxHost } from './kodax/host.js';
 import { externalAgentGateway } from './kodax/external-agent-gateway.js';
+import { runtimeHostAdapter } from './kodax/runtime-host-adapter.js';
 import { permissionRegistry } from './permission/registry.js';
 import { permissionBroker } from './permission/broker.js';
 import { askUserBroker } from './permission/ask-user-broker.js';
@@ -650,6 +651,15 @@ app
           err instanceof Error ? err.message : err,
         );
       }),
+      // F116: warm the inline Runtime before IPC starts. Initialization failure is
+      // a pre-run rollback condition, not an application-start failure; live sessions
+      // will use the legacy driver and space.version will expose the degraded state.
+      runtimeHostAdapter.initialize(app.getVersion()).catch((err) => {
+        console.warn(
+          '[main] Runtime host initialization failed; legacy rollback remains active:',
+          err instanceof Error ? err.message : err,
+        );
+      }),
     ]);
     // v0.1.10 chore: best-effort 清理早期残留的 ~/.kodax_space 孤儿目录。
     // fire-and-forget,never throws,不阻塞 UI 启动;详见 cleanup-orphan-kodax-space.ts。
@@ -889,6 +899,11 @@ app.on('before-quit', (event) => {
       .disposeAll()
       .catch((err) =>
         console.error('[main] disposeAll on quit:', err instanceof Error ? err.message : err),
+      ),
+    runtimeHostAdapter
+      .close()
+      .catch((err) =>
+        console.warn('[main] Runtime host shutdown:', err instanceof Error ? err.message : err),
       ),
     externalAgentGateway
       .dispose()
