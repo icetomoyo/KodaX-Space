@@ -38,6 +38,8 @@ Last Updated: 2026-07-12
 | 030 | Medium   | Resolved | Workflow external-target wrapper lost method receiver and did not always audit the resolved revision                        | v0.1.30               | 2026-07-12 |
 | 031 | High     | Resolved | Packaged smoke still expected KodaX 0.7.66 after the 0.7.67 integration                                                     | v0.1.30               | 2026-07-12 |
 | 032 | High     | Resolved | External Agent task IPC trusted renderer ownership and Task Dock could show/control stale cross-session tasks               | v0.1.30               | 2026-07-12 |
+| 033 | Low      | Resolved | Project Session spinner remained visible over already-restored rows after switching surfaces                                | v0.1.30               | 2026-07-12 |
+| 034 | Medium   | Resolved | Task Dock width presets drifted from responsive default, explicit half, and full-workspace behavior                         | v0.1.30               | 2026-07-12 |
 
 ## Issue Details
 
@@ -1731,7 +1733,7 @@ The sibling `_unknown` directory is unrelated data loss: KodaX 0.7.46's per-proj
 - Published KodaX v0.7.67 delays ACP persistence until the first valid prompt, isolates both ACP test harnesses under temporary runtime homes, and adds preview-first ACP cleanup.
 - The session, Runtime, and daemon APIs now carry exact `surface` filters and opaque continuation cursors; 129 targeted KodaX tests covering these paths pass locally.
 - Space keeps tag-based Coder/Partner classification because its historical sessions store `code` / `partner` in `SessionSummary.tag`, while ordinary Space runner snapshots do not currently populate `runtimeInfo.surface`. Directly replacing tag filtering with the new exact surface filter would hide legacy and current Space sessions.
-- Space now resolves the published 0.7.67 tarball, keeps its isolated Electron test home, and passes the complete 57-test Electron E2E suite against that package.
+- Space now resolves the published 0.7.67 tarball, keeps its isolated Electron test home, and passes the complete 58-test Electron E2E suite against that package.
 
 ### 026: Space E2E test mode isolated app data but left the SDK session home pointed at the real user directory
 
@@ -1873,12 +1875,81 @@ Task start accepted renderer-supplied project and parent attribution, while even
 - Replace the fixed interval with one non-overlapping polling loop; poll active foreground tasks at 1.5 seconds, terminal views at 5 seconds, and background views at 10 seconds.
 - Add schema and gateway regressions for mandatory session scope and wrong-parent rejection.
 
+### 033: Project Session spinner remained visible over already-restored rows after switching surfaces
+
+- Priority: Low
+- Status: Resolved
+- Introduced: v0.1.30
+- Fixed: v0.1.30
+- Created: 2026-07-12
+- Resolution Date: 2026-07-12
+
+#### Original Problem
+
+After switching from Coder to Partner and back, some projects immediately restored their cached Coder Session rows but kept the project-header loading spinner until the background `session.list` refresh completed. Several refreshes often completed close together, making unrelated project spinners appear to stop as one group instead of reflecting each project's visible data readiness.
+
+Expected behavior: a project-header loading spinner should communicate that the project has no Session data yet. Once that project's Session rows are visible, the spinner should stop even if a non-blocking background refresh remains in flight.
+
+#### Root Cause
+
+The project-header spinner was driven only by the request phase (`loading`). It did not distinguish first hydration with no rows from a background refresh while scoped Session rows were already available in the renderer store.
+
+#### Resolution
+
+- Derive one `isInitialSessionLoad` state from both the request phase and the scoped project's visible Session count.
+- Show the project-header spinner and skeleton rows only while `loading && projectSessions.length === 0`.
+- Keep restored rows stable and visually idle during background refreshes.
+
+Files changed:
+
+- `apps/desktop/renderer/src/shell/LeftSidebar.tsx`
+
+Tests:
+
+- TypeScript typecheck.
+- Renderer ESLint and production build.
+
+### 034: Task Dock width presets drifted from responsive default, explicit half, and full-workspace behavior
+
+- Priority: Medium
+- Status: Resolved
+- Introduced: v0.1.30
+- Fixed: v0.1.30
+- Created: 2026-07-12
+- Resolution Date: 2026-07-12
+
+#### Original Problem
+
+The three Task Dock width buttons are designed as responsive layout presets. Screenshots at restored and maximized window sizes showed three distinct failures: maximum mode left the center workspace as a thin visible strip instead of filling the available area; explicit half mode could make the Task Dock disappear in a restored window; and the default one-third ratio looked too heavy on a 2048px-wide workspace. The earlier implementation also treated `320px` as an absolute target before the first correction rather than a lower comfort bound.
+
+#### Root Cause
+
+The width calculation alone could not produce a true max layout because the center pane and right resize handle remained flex children, leaving their gaps and a collapsed center strip visible. The final `center >= 520px` visibility gate also treated an explicit half-width choice like an automatic layout and removed the Task Dock when the restored window was narrower. Finally, the default one-third ratio scaled too aggressively on high-resolution windows without an upper comfort bound.
+
+#### Resolution
+
+- Compute default width as 30% of the remaining paired workspace, bounded to a `320–520px` comfort range and never wider than half mode.
+- Keep explicit half mode as a `1:1` center/Task Dock split. On a small window, evaluate the selected half width itself and hide the left sidebar first instead of removing the Task Dock.
+- Make the still-visible left-sidebar toggle recoverable: when showing the left sidebar would make half/custom mode violate the `520px` center minimum, downgrade the Task Dock to default width; if even default cannot fit, close the Task Dock so the left sidebar can open.
+- In max mode, preserve the mounted center workspace state but remove the center pane and right resize handle from flex layout, then size the Task Dock across the truly remaining area.
+- Add Electron E2E geometry coverage for restored-width half mode, left-sidebar recovery, and default/max layouts at 1180, 1440, 1600, and 2048px viewports.
+
+Files changed:
+
+- `apps/desktop/renderer/src/shell/Shell.tsx`
+- `tests/e2e/sidebar-resize.spec.ts`
+
+Tests:
+
+- Targeted sidebar preset Electron E2E.
+- TypeScript typecheck, ESLint, and renderer production build.
+
 ## Summary
 
-- Total: 32
+- Total: 34
 - Open: 1
-- Resolved: 31
+- Resolved: 33
 - High: 23
-- Medium: 8
-- Low: 1
+- Medium: 9
+- Low: 2
 - Next to resolve: 022

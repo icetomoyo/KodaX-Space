@@ -37,10 +37,12 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 ### Fixed
 
 - **Reference continuation persistence** - Added a Reference-only reconcile after `sendInput` so a slow durable store cannot retain the intermediate `working` snapshot when the 0.7.67 conformance executor completes in the event-pump handoff microtask. Real protocol adapters keep their native event semantics.
-- **Product acceptance coverage** - Added Electron journeys for management, localization, Workflow selection, input-required continuation, cancellation, and audit visibility; the complete 57-test Electron E2E suite passes.
+- **Product acceptance coverage** - Added Electron journeys for management, localization, Workflow selection, input-required continuation, cancellation, audit visibility, and responsive Task Dock presets; the complete 58-test Electron E2E suite passes.
 - **External-task audit pagination** - Cursor advancement now follows only the bounded page returned to the renderer, and Task Dock follows subsequent pages without skipping long-task audit events.
 - **Catalog identity, window authority, and session scope** - Reference edits require an existing host-issued registration, external-agent administration is restricted to the primary application window, task starts derive project/session attribution from the main-owned KodaX session, and every task read/intervention verifies the stored parent session.
 - **Task Dock race and polling control** - Session changes now clear external-task state immediately, late responses are rejected by captured-session checks, and non-overlapping polling slows for terminal or background views instead of issuing fixed full snapshots every 1.5 seconds.
+- **Project Session loading feedback** - Project/session scopes now distinguish loading, loaded, and failed states, land independent project results without waiting for the slowest request, reject stale surface responses, and show bilingual skeleton/retry UI only while no restored rows are available.
+- **Responsive Task Dock width presets** - Default width now follows a bounded 30% comfort ratio, explicit half mode remains a true center/dock split, and max mode turns Task Dock into the full remaining workspace while keeping the hidden conversation mounted so its scroll state survives restoration.
 - **Workflow routing audit** - Default-target wrappers preserve the SDK Workflow API receiver, and preflight's resolved configuration revision is snapshotted for dispatch and host metadata even when callers omit an expected revision.
 - **Version-safe package smoke** - Packaged Runtime probes now derive Space and KodaX versions from root metadata instead of rejecting every version after 0.1.30 / 0.7.66.
 

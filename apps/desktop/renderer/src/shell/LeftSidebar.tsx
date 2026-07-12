@@ -40,6 +40,13 @@ import type { Project } from '@kodax-space/space-ipc-schema';
 import { useI18n } from '../i18n/I18nProvider.js';
 import { invokeWithTimeout } from '../lib/ipcInvokeWithTimeout.js';
 
+type SessionLoadPhase = 'loading' | 'loaded' | 'error';
+type SessionLoadStateByScope = Readonly<Record<string, SessionLoadPhase | undefined>>;
+
+function sessionLoadScopeKey(projectRoot: string, surface: string): string {
+  return `${surface}:${canonProjectRootBrowser(projectRoot)}`;
+}
+
 // Hover-prefetch: 用户鼠标悬停在 Recents 项上时,后台触发 session.history IPC
 // 让 main 端 5-LRU cache (session-store.ts) 提前 warm 起来。等用户真正点击时,handler 命中
 // cache → 几乎瞬时返回。模块级 Set 避免对同一 session 重复 prefetch。
@@ -82,6 +89,46 @@ export function LeftSidebar({
     [sessions, currentSurface],
   );
 
+  const [sessionLoadStateByScope, setSessionLoadStateByScope] = useState<
+    Record<string, SessionLoadPhase | undefined>
+  >({});
+  const sessionListRequestIds = useRef(new Map<string, number>());
+
+  const loadProjectSessions = useCallback(
+    async (projectRoot: string): Promise<void> => {
+      const bridge = window.kodaxSpace;
+      if (!bridge) return;
+
+      const scopeKey = sessionLoadScopeKey(projectRoot, currentSurface);
+      const requestId = (sessionListRequestIds.current.get(scopeKey) ?? 0) + 1;
+      sessionListRequestIds.current.set(scopeKey, requestId);
+      setSessionLoadStateByScope((current) => ({ ...current, [scopeKey]: 'loading' }));
+
+      try {
+        const result = await bridge.invoke('session.list', {
+          projectRoot,
+          surface: currentSurface,
+        });
+        if (sessionListRequestIds.current.get(scopeKey) !== requestId) return;
+
+        if (!result.ok) {
+          setSessionLoadStateByScope((current) => ({ ...current, [scopeKey]: 'error' }));
+          return;
+        }
+
+        useAppStore.getState().replaceSessionsForScope(result.data.sessions, {
+          projectRoot,
+          surface: currentSurface,
+        });
+        setSessionLoadStateByScope((current) => ({ ...current, [scopeKey]: 'loaded' }));
+      } catch {
+        if (sessionListRequestIds.current.get(scopeKey) !== requestId) return;
+        setSessionLoadStateByScope((current) => ({ ...current, [scopeKey]: 'error' }));
+      }
+    },
+    [currentSurface],
+  );
+
   // 多项目 sidebar 的 recent 上限必须按项目计算。一次无 projectRoot 的全局 200 条查询会被
   // 单个活跃项目吃满，随后让其它项目错误显示“暂无会话”。逐项目拉取后，每个项目都拥有
   // 自己的 200 条最近窗口；显式“展示全部”再由 ProjectSessionPicker 按需扩大到 50,000。
@@ -98,30 +145,10 @@ export function LeftSidebar({
     ];
     if (roots.length === 0) return;
 
-    let cancelled = false;
-    void Promise.allSettled(
-      roots.map(async (projectRoot) => ({
-        projectRoot,
-        result: await bridge.invoke('session.list', { projectRoot, surface: currentSurface }),
-      })),
-    ).then((settledRows) => {
-      if (cancelled) return;
-      const store = useAppStore.getState();
-      for (const row of settledRows) {
-        if (row.status !== 'fulfilled') continue;
-        const { projectRoot, result } = row.value;
-        if (result.ok) {
-          store.replaceSessionsForScope(result.data.sessions, {
-            projectRoot,
-            surface: currentSurface,
-          });
-        }
-      }
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [currentProjectPath, currentSurface, projects]);
+    // Each project lands independently. A slow project must not keep every other
+    // project looking empty while an aggregate Promise waits for the tail.
+    for (const projectRoot of roots) void loadProjectSessions(projectRoot);
+  }, [currentProjectPath, loadProjectSessions, projects]);
 
   /**
    * + New session：统一首页与新建。不再急建空 session（那会跳进零消息空白对话页，
@@ -190,7 +217,7 @@ export function LeftSidebar({
       <RecentsHeader />
 
       <div className="flex-1 overflow-y-auto px-1.5 pb-2">
-        {visibleSessions.length === 0 && (
+        {visibleSessions.length === 0 && projects.length === 0 && (
           <div className="text-xs text-fg-muted px-2 py-3">
             {currentProjectPath ? t('sidebar.noSessionsYet') : t('sidebar.openFolderToStart')}
           </div>
@@ -201,6 +228,8 @@ export function LeftSidebar({
           sessions={visibleSessions}
           currentSessionId={currentSessionId}
           onSelect={setCurrentSession}
+          sessionLoadStateByScope={sessionLoadStateByScope}
+          onRefreshProjectSessions={loadProjectSessions}
         />
       </div>
 
@@ -249,10 +278,14 @@ function ProjectTree({
   sessions,
   currentSessionId,
   onSelect,
+  sessionLoadStateByScope,
+  onRefreshProjectSessions,
 }: {
   readonly sessions: readonly SessionMeta[];
   readonly currentSessionId: string | null;
   readonly onSelect: (sessionId: string) => void;
+  readonly sessionLoadStateByScope: SessionLoadStateByScope;
+  readonly onRefreshProjectSessions: (projectRoot: string) => Promise<void>;
 }): JSX.Element | null {
   const { t } = useI18n();
   const currentSurface = useSurfaceStore((s) => s.currentSurface);
@@ -302,20 +335,9 @@ function ProjectTree({
     (projectPath: string, defaultExpanded: boolean, isExpanded: boolean): void => {
       toggleProjectExpanded(projectPath, defaultExpanded);
       if (isExpanded) return;
-      const bridge = window.kodaxSpace;
-      if (!bridge) return;
-      void bridge
-        .invoke('session.list', { projectRoot: projectPath, surface: currentSurface })
-        .then((result) => {
-          if (!result.ok) return;
-          useAppStore.getState().replaceSessionsForScope(result.data.sessions, {
-            projectRoot: projectPath,
-            surface: currentSurface,
-          });
-        })
-        .catch(() => undefined);
+      void onRefreshProjectSessions(projectPath);
     },
-    [currentSurface, toggleProjectExpanded],
+    [onRefreshProjectSessions, toggleProjectExpanded],
   );
 
   // refresh local projects from main after IPC mutation
@@ -413,6 +435,10 @@ function ProjectTree({
     const explicit = proj.path in expandedProjects ? expandedProjects[proj.path] : undefined;
     const isExpanded = explicit !== undefined ? explicit : defaultExpanded;
     const projSessions = sessionsByProject.get(projCanon) ?? [];
+    const sessionLoadState =
+      sessionLoadStateByScope[sessionLoadScopeKey(proj.path, currentSurface)] ??
+      (window.kodaxSpace ? 'loading' : 'loaded');
+    const isInitialSessionLoad = sessionLoadState === 'loading' && projSessions.length === 0;
     const visibleLimit = projectSessionLimits[proj.path] ?? SESSIONS_PER_PROJECT_INITIAL_VISIBLE;
     const runningCount = projSessions.reduce(
       (acc, s) => (statusMap[s.sessionId] === 'running' ? acc + 1 : acc),
@@ -530,6 +556,13 @@ function ProjectTree({
               {runningCount}
             </span>
           )}
+          {isInitialSessionLoad && runningCount === 0 && !isRenaming && (
+            <span
+              className="sidebar-session-load-spinner"
+              aria-hidden
+              title={t('sidebar.loadingSessions')}
+            />
+          )}
           {/* v0.1.9: hover-only inline buttons — new session + contextmenu (codex 对齐) */}
           {!isRenaming && (
             <span className="flex items-center gap-0.5 opacity-0 group-hover/projectrow:opacity-100 transition-opacity flex-shrink-0">
@@ -567,7 +600,23 @@ function ProjectTree({
         </div>
         {isExpanded && (
           <div className="ml-1">
-            {projSessions.length === 0 ? (
+            {isInitialSessionLoad ? (
+              <SessionListSkeleton label={t('sidebar.loadingSessions')} />
+            ) : sessionLoadState === 'error' && projSessions.length === 0 ? (
+              <div
+                className="flex items-center gap-1.5 px-3 py-1 text-[11px] text-fg-muted"
+                role="alert"
+              >
+                <span>{t('sidebar.sessionsLoadFailed')}</span>
+                <button
+                  type="button"
+                  className="rounded px-1 py-0.5 text-fg-secondary hover:bg-hover-bg hover:text-fg-primary"
+                  onClick={() => void onRefreshProjectSessions(proj.path)}
+                >
+                  {t('sidebar.retrySessions')}
+                </button>
+              </div>
+            ) : projSessions.length === 0 ? (
               <div className="text-[11px] text-fg-muted italic px-3 py-1">
                 {t('sidebar.noProjectSessions')}
               </div>
@@ -666,6 +715,27 @@ function ProjectTree({
           onClose={() => setPickerProject(null)}
         />
       )}
+    </div>
+  );
+}
+
+function SessionListSkeleton({ label }: { readonly label: string }): JSX.Element {
+  const widths = ['72%', '54%', '64%'] as const;
+  return (
+    <div className="space-y-0.5 px-2 py-1" role="status" aria-live="polite">
+      <span className="sr-only">{label}</span>
+      {widths.map((width, index) => (
+        <div key={width} className="flex h-6 items-center gap-2 rounded px-1.5" aria-hidden="true">
+          <span
+            className="sidebar-session-skeleton sidebar-session-skeleton--dot"
+            style={{ animationDelay: `${index * 90}ms` }}
+          />
+          <span
+            className="sidebar-session-skeleton h-2 rounded-full"
+            style={{ width, animationDelay: `${index * 90}ms` }}
+          />
+        </div>
+      ))}
     </div>
   );
 }

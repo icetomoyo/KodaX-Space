@@ -1012,6 +1012,61 @@ html:not(.q-minimal) .notice-in {
   width: 0.58rem;
   height: 0.58rem;
 }
+
+/* Session-list hydration: restrained motion that preserves the real row geometry. */
+@keyframes sidebar-session-shimmer {
+  from {
+    background-position: 180% 0;
+  }
+  to {
+    background-position: -80% 0;
+  }
+}
+
+.sidebar-session-skeleton {
+  display: inline-block;
+  flex-shrink: 0;
+  background: linear-gradient(
+    100deg,
+    rgb(var(--surface-3)) 22%,
+    rgb(var(--border-strong) / 0.64) 42%,
+    rgb(var(--surface-3)) 62%
+  );
+  background-size: 240% 100%;
+  animation: sidebar-session-shimmer 1.35s ease-in-out infinite;
+}
+
+.sidebar-session-skeleton--dot {
+  width: 0.38rem;
+  height: 0.38rem;
+  border-radius: 9999px;
+}
+
+.sidebar-session-load-spinner {
+  display: inline-block;
+  width: 0.58rem;
+  height: 0.58rem;
+  flex-shrink: 0;
+  border-radius: 9999px;
+  background: conic-gradient(
+    from 20deg,
+    rgb(var(--fg-muted) / 0) 0deg,
+    rgb(var(--fg-muted) / 0.3) 145deg,
+    rgb(var(--fg-secondary) / 0.88) 315deg,
+    rgb(var(--fg-muted) / 0) 360deg
+  );
+  -webkit-mask: radial-gradient(
+    farthest-side,
+    transparent calc(100% - 1.7px),
+    #000 calc(100% - 1.45px)
+  );
+  mask: radial-gradient(farthest-side, transparent calc(100% - 1.7px), #000 calc(100% - 1.45px));
+  animation: ks-activity-spin 920ms linear infinite;
+}
+
+html.q-minimal .sidebar-session-skeleton {
+  animation: none;
+}
 /* 工具卡 running→done 状态 crossfade：border-color + background-color 平滑过渡。 */
 .kodax-dog-mascot {
   display: block;
@@ -1224,6 +1279,8 @@ html:not(.q-minimal) .collapse-track {
   html:not(.q-minimal) .notice-in,
   .activity-spinner-comet,
   .sidebar-status-spinner,
+  .sidebar-session-skeleton,
+  .sidebar-session-load-spinner,
   html:not(.q-minimal) .tool-card-anim,
   html:not(.q-minimal) .search-ring-anim,
   html:not(.q-minimal) .context-liquid-gauge__fill,

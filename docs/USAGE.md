@@ -1,6 +1,6 @@
-# KodaX Space - Usage Guide (v0.1.30 release candidate)
+# KodaX Space - Usage Guide (v0.1.30)
 
-> Last aligned: 2026-07-12. Repository packages target KodaX Space `0.1.30` with exact `@kodax-ai/kodax@0.7.67`. The final tag and GitHub Release are intentionally withheld pending acceptance testing. Older version sections below are retained as historical change notes, not as the current capability boundary.
+> Last aligned: 2026-07-12. KodaX Space `0.1.30` is the current release and resolves exact `@kodax-ai/kodax@0.7.67`. Older version sections below are retained as historical change notes, not as the current capability boundary.
 
 KodaX Space 是 KodaX SDK 的桌面客户端。设计目标：**不要让用户在 Space 和 KodaX CLI 之间重复配置**。绝大多数 KodaX CLI 已经配好的东西，Space 启动后会自动认。
 
