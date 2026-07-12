@@ -1,7 +1,7 @@
 # KodaX Space 产品需求文档（PRD）
 
 > Last updated: 2026-07-12
-> Status: 长期产品方向文档。当前实现基线为 KodaX Space 0.1.30 发布候选版 / KodaX 0.7.67；最终 tag 和 Release 等待验收。已交付能力与边界以 [USER_MANUAL.zh-CN.md](USER_MANUAL.zh-CN.md)、[KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md) 和 [FEATURE_LIST.md](FEATURE_LIST.md) 为准。
+> Status: 长期产品方向文档。当前正式发布基线为 KodaX Space 0.1.30 / KodaX 0.7.67。已交付能力与边界以 [USER_MANUAL.zh-CN.md](USER_MANUAL.zh-CN.md)、[KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md) 和 [FEATURE_LIST.md](FEATURE_LIST.md) 为准。
 > 对标：Anthropic Claude Desktop（Cowork / Code 双面板）+ OpenAI Codex Desktop App（多 agent 本机壳）
 
 > **当前落地摘要**：Coder 与 Partner 均可用；Partner 已具备 workspace-first Outputs、Sources/KB、checkpointed writes、Office/PDF 便利产物和本地 policy/audit。0.1.30 接入 KodaX 0.7.67 Reference External Agent 管理、Workflow/Worker 路由和 Task Dock 干预；A2A、MCP Tasks、受治理 HTTP、通用 Connector/浏览器控制/自动化/远程任务仍未作为当前能力开放。本文后续的 M0/M1/M2 图表保留产品演进语境，不应覆盖上述当前事实。

@@ -407,12 +407,10 @@ test('conversation receipt strip stays top-anchored on expand and preserves scro
 
     await page.getByLabel('Max width').click();
     await page.waitForTimeout(420);
-    const afterMax = await getScrollSnapshot(page);
-    expect(afterMax.distanceFromBottom, 'max width should not jump to bottom').toBeGreaterThan(120);
-    expect(
-      Math.abs(afterMax.receiptTop - before.receiptTop),
-      'receipt anchor after max width',
-    ).toBeLessThan(90);
+    // Max mode intentionally removes the conversation pane from layout so Task Dock
+    // becomes the focused workspace. The pane stays mounted; verify its scroll state
+    // after restoring a visible preset instead of reading zero-sized hidden geometry.
+    await expect(page.getByTestId('coder-workspace')).toBeHidden();
 
     await page.getByLabel('Default width').click();
     await page.waitForTimeout(420);
@@ -422,8 +420,8 @@ test('conversation receipt strip stays top-anchored on expand and preserves scro
       'default width should not jump to bottom',
     ).toBeGreaterThan(120);
     expect(
-      Math.abs(afterDefault.receiptTop - afterMax.receiptTop),
-      'receipt anchor after default width',
+      Math.abs(afterDefault.receiptTop - before.receiptTop),
+      'receipt anchor after restoring from max width',
     ).toBeLessThan(90);
 
     await page.getByLabel('Jump to bottom').click();

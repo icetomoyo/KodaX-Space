@@ -88,11 +88,11 @@ npm run dev
   </tr>
 </table>
 
-## 当前 0.1.30 发布候选版本
+## 当前 0.1.30 正式版本
 
 **v0.1.30 - External Agent Orchestration Gateway Foundation**
 
-目标发布版本为 `v0.1.30`。最终验收测试期间暂不创建 tag，也不发布 GitHub Release。
+正式发布：2026-07-12，tag 为 `v0.1.30`。
 
 本版本对齐 `@kodax-ai/kodax@0.7.67`，并把协议中立的 External Agent Executor Plane 接入 Space 现有实时会话和 Workflow Host。
 
@@ -208,7 +208,7 @@ npm run e2e:headed
 | 文档                                                                                                     | 用途                                                        |
 | -------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
 | [README.md](README.md)                                                                                   | 英文 README。                                               |
-| [docs/USER_MANUAL.zh-CN.md](docs/USER_MANUAL.zh-CN.md)                                                   | 面向 KodaX Space 0.1.30 发布候选版本的当前中文用户说明书。  |
+| [docs/USER_MANUAL.zh-CN.md](docs/USER_MANUAL.zh-CN.md)                                                   | 面向 KodaX Space 0.1.30 正式版本的当前中文用户说明书。      |
 | [docs/USAGE.md](docs/USAGE.md)                                                                           | 启动、配置复用、slash 命令和已知限制说明。                  |
 | [docs/CODING_AGENT_BEGINNER_BEST_PRACTICES.zh-CN.md](docs/CODING_AGENT_BEGINNER_BEST_PRACTICES.zh-CN.md) | Coding Agent 初学者最佳实践教程，覆盖软件研发和微服务场景。 |
 | [docs/PRD.md](docs/PRD.md)                                                                               | 产品需求和产品定位。                                        |

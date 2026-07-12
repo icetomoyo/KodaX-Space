@@ -88,11 +88,11 @@ npm run dev
   </tr>
 </table>
 
-## Current 0.1.30 Release Candidate
+## Current 0.1.30 Release
 
 **v0.1.30 - External Agent Orchestration Gateway Foundation**
 
-Target release: `v0.1.30`. The tag and GitHub Release are intentionally withheld while final acceptance testing is in progress.
+Released: 2026-07-12 as `v0.1.30`.
 
 This release aligns KodaX Space with `@kodax-ai/kodax@0.7.67` and connects its protocol-neutral external-agent substrate to Space's existing live sessions and Workflow host.
 
@@ -225,7 +225,7 @@ npm run e2e:headed
 | Document                                                                                                 | Purpose                                                                                  |
 | -------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
 | [README_CN.md](README_CN.md)                                                                             | Chinese README.                                                                          |
-| [docs/USER_MANUAL.zh-CN.md](docs/USER_MANUAL.zh-CN.md)                                                   | Current Chinese user manual for the KodaX Space 0.1.30 release candidate.                |
+| [docs/USER_MANUAL.zh-CN.md](docs/USER_MANUAL.zh-CN.md)                                                   | Current Chinese user manual for the KodaX Space 0.1.30 release.                          |
 | [docs/USAGE.md](docs/USAGE.md)                                                                           | Usage notes covering launch, configuration reuse, slash commands, and known limits.      |
 | [docs/CODING_AGENT_BEGINNER_BEST_PRACTICES.zh-CN.md](docs/CODING_AGENT_BEGINNER_BEST_PRACTICES.zh-CN.md) | Chinese beginner guide for coding-agent practice in software and microservice workflows. |
 | [docs/PRD.md](docs/PRD.md)                                                                               | Product requirements and product positioning.                                            |

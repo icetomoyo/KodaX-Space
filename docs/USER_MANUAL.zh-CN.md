@@ -1,6 +1,6 @@
 # KodaX Space 用户说明书
 
-适用版本：KodaX Space 0.1.30 发布候选版（KodaX 0.7.67；最终 tag/Release 等待验收）
+适用版本：KodaX Space 0.1.30 正式版（KodaX 0.7.67）
 
 更新日期：2026-07-12
 
@@ -389,7 +389,7 @@ KodaX Space 的默认原则是本地优先和显式授权。
 
 ## 20. 当前限制
 
-适用于当前 0.1.30 发布候选工作树：
+适用于当前 0.1.30 正式版本：
 
 - Partner 已启用，但 executable Partner Skills、通用 Connector/MCP 动作、浏览器/电脑控制、自动化、远程任务和模板级 Office 排版不属于当前能力。
 - Display Language 覆盖产品 UI，包括 External Agent 管理、Workflow picker 和 Task Dock；模型输出、工具日志和第三方内容仍可能显示英文。

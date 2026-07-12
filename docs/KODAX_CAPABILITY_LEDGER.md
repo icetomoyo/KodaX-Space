@@ -6,13 +6,13 @@ This file is the Space-side source of truth for capabilities that depend on the 
 
 ## Version Baseline
 
-| Component          | Current baseline         | Notes                                                                                                    |
-| ------------------ | ------------------------ | -------------------------------------------------------------------------------------------------------- |
-| KodaX Space app    | 0.1.30 release candidate | Final tag and GitHub Release are withheld pending acceptance testing.                                    |
-| Desktop package    | 0.1.30                   | `@kodax-space/desktop`.                                                                                  |
-| IPC schema package | 0.1.30                   | Aligned with app package metadata.                                                                       |
-| UI kit package     | 0.1.30                   | Aligned with app package metadata.                                                                       |
-| KodaX SDK          | exact published 0.7.67   | Root, desktop specs and lockfile resolve the same npm tarball; local source linking is development-only. |
+| Component          | Current baseline       | Notes                                                                                                    |
+| ------------------ | ---------------------- | -------------------------------------------------------------------------------------------------------- |
+| KodaX Space app    | 0.1.30 current release | Published as `v0.1.30` from the final `main` release commit.                                             |
+| Desktop package    | 0.1.30                 | `@kodax-space/desktop`.                                                                                  |
+| IPC schema package | 0.1.30                 | Aligned with app package metadata.                                                                       |
+| UI kit package     | 0.1.30                 | Aligned with app package metadata.                                                                       |
+| KodaX SDK          | exact published 0.7.67 | Root, desktop specs and lockfile resolve the same npm tarball; local source linking is development-only. |
 
 ## Capability Contract
 

@@ -92,7 +92,9 @@ interface ShellProps {
 // store 复写 events 是真实成本）。挪到 module 级 process 级共享，跨 HMR 仍保留。
 const restoredSessionIds = new Set<string>();
 
-const RIGHT_SIDEBAR_DEFAULT_WIDTH = 320;
+const RIGHT_SIDEBAR_DEFAULT_MIN_WIDTH = 320;
+const RIGHT_SIDEBAR_DEFAULT_MAX_WIDTH = 520;
+const RIGHT_SIDEBAR_DEFAULT_RATIO = 0.3;
 const RIGHT_SIDEBAR_MIN_WIDTH = 180;
 const SHELL_PANEL_HORIZONTAL_PADDING_PX = 20;
 const SHELL_PANEL_GAP_PX = 10;
@@ -132,23 +134,33 @@ function rightSidebarOpenWidth(
   return clampSidebarWidthPx(Math.round(pairedWidth / 2));
 }
 
+function rightSidebarDefaultWidth(
+  leftSidebarVisible: boolean,
+  leftWidth: number,
+  viewportWidth = getViewportWidth(),
+): number {
+  const halfWidth = rightSidebarOpenWidth(leftSidebarVisible, leftWidth, viewportWidth);
+  const proportionalWidth = Math.round(halfWidth * 2 * RIGHT_SIDEBAR_DEFAULT_RATIO);
+  return Math.min(
+    halfWidth,
+    RIGHT_SIDEBAR_DEFAULT_MAX_WIDTH,
+    Math.max(RIGHT_SIDEBAR_DEFAULT_MIN_WIDTH, proportionalWidth),
+  );
+}
+
 function rightSidebarMaxWidth(
   leftSidebarVisible: boolean,
   leftWidth: number,
   viewportWidth = getViewportWidth(),
 ): number {
+  // Max mode deliberately turns the Task Dock into the primary workspace. Unlike
+  // half/custom modes, it must not reserve CODER_MIN_CENTER_PX for the transcript.
+  // In max mode the center pane and right resize handle are removed from flex layout.
+  // The remaining children are [left, left resize, Task Dock], or only [Task Dock].
   const leftSideChrome = leftSidebarVisible
     ? leftWidth + RESIZE_HANDLE_WIDTH_PX + SHELL_PANEL_GAP_PX * 2
     : 0;
-  const rightResizeChrome = RESIZE_HANDLE_WIDTH_PX;
-  const gapCount = leftSidebarVisible ? 4 : 2;
-  const width =
-    viewportWidth -
-    SHELL_PANEL_HORIZONTAL_PADDING_PX -
-    leftSideChrome -
-    rightResizeChrome -
-    SHELL_PANEL_GAP_PX * gapCount -
-    CODER_MIN_CENTER_PX;
+  const width = viewportWidth - SHELL_PANEL_HORIZONTAL_PADDING_PX - leftSideChrome;
   return Math.max(RIGHT_SIDEBAR_MIN_WIDTH, Math.round(width));
 }
 
@@ -312,18 +324,26 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
   const preferredLeftSidebarVisible = leftSidebarOpen && !fullscreenRead;
   const preferredRightSidebarVisible =
     currentSurface === 'code' && rightSidebarOpen && !fullscreenRead;
-  const preliminaryRightSidebarExpandedWidth = rightSidebarOpenWidth(
+  const preliminaryRightSidebarHalfWidth = rightSidebarOpenWidth(
     preferredLeftSidebarVisible,
     leftWidth,
     viewportWidth,
   );
-  const preliminaryRightWidth = Math.min(
-    clampSidebarWidthPx(rightWidthDraft ?? persistedRightWidth),
-    preliminaryRightSidebarExpandedWidth,
-  );
+  const preliminaryRightWidth =
+    rightWidthDraft !== null
+      ? Math.min(clampSidebarWidthPx(rightWidthDraft), preliminaryRightSidebarHalfWidth)
+      : rightSidebarWidthMode === 'max'
+        ? rightSidebarMaxWidth(preferredLeftSidebarVisible, leftWidth, viewportWidth)
+        : rightSidebarWidthMode === 'half'
+          ? preliminaryRightSidebarHalfWidth
+          : rightSidebarWidthMode === 'default'
+            ? rightSidebarDefaultWidth(preferredLeftSidebarVisible, leftWidth, viewportWidth)
+            : Math.min(clampSidebarWidthPx(persistedRightWidth), preliminaryRightSidebarHalfWidth);
   const responsiveHideRightSidebar =
     currentSurface === 'code' &&
     preferredRightSidebarVisible &&
+    rightSidebarWidthMode !== 'half' &&
+    rightSidebarWidthMode !== 'max' &&
     coderCenterWidthPx(
       preferredLeftSidebarVisible,
       leftWidth,
@@ -335,6 +355,7 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
   const responsiveHideLeftSidebar =
     currentSurface === 'code' &&
     preferredLeftSidebarVisible &&
+    rightSidebarWidthMode !== 'max' &&
     coderCenterWidthPx(
       true,
       leftWidth,
@@ -361,8 +382,7 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
   ]);
 
   const openRightSidebarAtDefaultWidth = useCallback((): void => {
-    const maxComfortWidth = rightSidebarOpenWidth(leftSidebarVisible, leftWidth, viewportWidth);
-    const targetWidth = Math.min(clampSidebarWidthPx(RIGHT_SIDEBAR_DEFAULT_WIDTH), maxComfortWidth);
+    const targetWidth = rightSidebarDefaultWidth(leftSidebarVisible, leftWidth, viewportWidth);
     pulseRightSidebarWidthSettling();
     setRightWidthDraft(null);
     setRightSidebarWidthMode('default');
@@ -383,6 +403,64 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
     setRightSidebarWidthMode('max');
     setRightSidebarOpen(true);
   }, [pulseRightSidebarWidthSettling, setRightSidebarOpen]);
+
+  const showLeftSidebar = useCallback((): void => {
+    if (fullscreenRead) setFullscreenRead(false);
+
+    if (currentSurface === 'code' && rightSidebarOpen && rightSidebarWidthMode !== 'max') {
+      const halfWithLeft = rightSidebarOpenWidth(true, leftWidth, viewportWidth);
+      const currentWidthWithLeft =
+        rightSidebarWidthMode === 'half'
+          ? halfWithLeft
+          : rightSidebarWidthMode === 'default'
+            ? rightSidebarDefaultWidth(true, leftWidth, viewportWidth)
+            : Math.min(clampSidebarWidthPx(persistedRightWidth), halfWithLeft);
+      const currentCenterWithLeft = coderCenterWidthPx(
+        true,
+        leftWidth,
+        true,
+        currentWidthWithLeft,
+        viewportWidth,
+      );
+
+      if (currentCenterWithLeft < CODER_MIN_CENTER_PX) {
+        const defaultWithLeft = rightSidebarDefaultWidth(true, leftWidth, viewportWidth);
+        const defaultCenterWithLeft = coderCenterWidthPx(
+          true,
+          leftWidth,
+          true,
+          defaultWithLeft,
+          viewportWidth,
+        );
+        if (defaultCenterWithLeft >= CODER_MIN_CENTER_PX) {
+          openRightSidebarAtDefaultWidth();
+        } else {
+          setRightSidebarOpen(false);
+        }
+      }
+    }
+
+    setLeftSidebarOpen(true);
+  }, [
+    currentSurface,
+    fullscreenRead,
+    leftWidth,
+    openRightSidebarAtDefaultWidth,
+    persistedRightWidth,
+    rightSidebarOpen,
+    rightSidebarWidthMode,
+    setLeftSidebarOpen,
+    setRightSidebarOpen,
+    viewportWidth,
+  ]);
+
+  const toggleLeftSidebar = useCallback((): void => {
+    if (leftSidebarVisible && !fullscreenRead) {
+      setLeftSidebarOpen(false);
+      return;
+    }
+    showLeftSidebar();
+  }, [fullscreenRead, leftSidebarVisible, setLeftSidebarOpen, showLeftSidebar]);
 
   useEffect(() => {
     const onTaskDockFocus = (event: Event): void => {
@@ -451,14 +529,13 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
 
   useEffect(() => {
     const onOpenFilesWorkspace = (): void => {
-      if (fullscreenRead) setFullscreenRead(false);
+      showLeftSidebar();
       setLeftSidebarMode('files');
-      setLeftSidebarOpen(true);
     };
     window.addEventListener('kodax-space.open-files-workspace', onOpenFilesWorkspace);
     return () =>
       window.removeEventListener('kodax-space.open-files-workspace', onOpenFilesWorkspace);
-  }, [fullscreenRead, setLeftSidebarOpen]);
+  }, [showLeftSidebar]);
 
   // 历史 session 切换时按需从 KodaX SDK 拉持久化对话内容回填 store。
   // events / userMessages buffer 是 in-memory；重启 / 切到 new session 后空 → 调
@@ -512,11 +589,10 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
   const activePopoutKindFromStore = useAppStore((s) => s.activePopoutKind);
   const openFilesInLeftSidebar = useCallback((): void => {
     if (currentSurface !== 'code') return;
-    if (fullscreenRead) setFullscreenRead(false);
+    showLeftSidebar();
     setLeftSidebarMode('files');
-    setLeftSidebarOpen(true);
     setActivePopoutRaw(null);
-  }, [currentSurface, fullscreenRead, setLeftSidebarOpen]);
+  }, [currentSurface, showLeftSidebar]);
   useEffect(() => {
     setActivePopoutKindInStore(activePopout);
   }, [activePopout, setActivePopoutKindInStore]);
@@ -625,7 +701,7 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
   );
   const clampRightSidebarWidth = useCallback(
     (px: number): number => {
-      const finite = Number.isFinite(px) ? px : RIGHT_SIDEBAR_DEFAULT_WIDTH;
+      const finite = Number.isFinite(px) ? px : RIGHT_SIDEBAR_DEFAULT_MIN_WIDTH;
       const max =
         rightSidebarWidthMode === 'max' ? rightSidebarMaxAvailableWidth : rightSidebarHalfWidth;
       return Math.round(Math.min(max, Math.max(RIGHT_SIDEBAR_MIN_WIDTH, finite)));
@@ -640,12 +716,15 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
         : rightSidebarWidthMode === 'half'
           ? rightSidebarHalfWidth
           : rightSidebarWidthMode === 'default'
-            ? Math.min(clampSidebarWidthPx(RIGHT_SIDEBAR_DEFAULT_WIDTH), rightSidebarHalfWidth)
+            ? rightSidebarDefaultWidth(leftSidebarVisible, leftWidth, viewportWidth)
             : clampRightSidebarNonMaxWidth(persistedRightWidth);
   const rightSidebarVisible =
     rightSidebarVisibleBeforeLeft &&
-    coderCenterWidthPx(leftSidebarVisible, leftWidth, true, rightWidth, viewportWidth) >=
-      CODER_MIN_CENTER_PX;
+    (rightSidebarWidthMode === 'half' ||
+      rightSidebarWidthMode === 'max' ||
+      coderCenterWidthPx(leftSidebarVisible, leftWidth, true, rightWidth, viewportWidth) >=
+        CODER_MIN_CENTER_PX);
+  const rightSidebarWorkspaceMode = rightSidebarVisible && rightSidebarWidthMode === 'max';
   const platformClass = getRendererPlatformClass();
   const isWindows = platformClass === 'platform-win32';
 
@@ -667,14 +746,7 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
           rightSidebarOpen={rightSidebarVisible}
           focusMode={fullscreenRead}
           diagnosticsOpen={diagnosticsOpen}
-          onToggleLeftSidebar={() => {
-            if (fullscreenRead) {
-              setFullscreenRead(false);
-              setLeftSidebarOpen(true);
-            } else {
-              setLeftSidebarOpen(!leftSidebarOpen);
-            }
-          }}
+          onToggleLeftSidebar={toggleLeftSidebar}
           onToggleRightSidebar={toggleRightSidebar}
           onToggleFocusMode={() => setFullscreenRead((v) => !v)}
           onToggleDiagnostics={() => setDiagnosticsOpen((v) => !v)}
@@ -764,20 +836,14 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
             <div
               className="center-pane flex-1 flex flex-col min-w-0 relative bg-surface rounded-xl border border-border-default overflow-hidden lift"
               data-testid="coder-workspace"
+              style={rightSidebarWorkspaceMode ? { display: 'none' } : undefined}
             >
               <div className="ix-zone flex items-center px-3 h-10 border-b border-border-default flex-shrink-0 gap-1">
                 {/* 左侧栏切换按钮 — 始终常驻，让收起后仍能一键展开 */}
                 <SidebarToggleButton
                   side="left"
                   open={leftSidebarVisible}
-                  onClick={() => {
-                    if (fullscreenRead) {
-                      setFullscreenRead(false);
-                      setLeftSidebarOpen(true);
-                    } else {
-                      setLeftSidebarOpen(!leftSidebarOpen);
-                    }
-                  }}
+                  onClick={toggleLeftSidebar}
                 />
                 <Breadcrumb />
                 <CommandToolbar active={activePopout} onToggle={setActivePopout} />
@@ -818,17 +884,23 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
 
             {rightSidebarVisible && (
               <>
-                <ResizeHandle
-                  side="right"
-                  width={rightWidth}
-                  defaultWidth={RIGHT_SIDEBAR_DEFAULT_WIDTH}
-                  onPreview={(px) => setRightWidthDraft(clampRightSidebarWidth(px))}
-                  onCommit={(px) => {
-                    setRightWidthDraft(null);
-                    setRightSidebarWidthMode('custom');
-                    setRightSidebarWidth(clampRightSidebarNonMaxWidth(px));
-                  }}
-                />
+                {!rightSidebarWorkspaceMode && (
+                  <ResizeHandle
+                    side="right"
+                    width={rightWidth}
+                    defaultWidth={rightSidebarDefaultWidth(
+                      leftSidebarVisible,
+                      leftWidth,
+                      viewportWidth,
+                    )}
+                    onPreview={(px) => setRightWidthDraft(clampRightSidebarWidth(px))}
+                    onCommit={(px) => {
+                      setRightWidthDraft(null);
+                      setRightSidebarWidthMode('custom');
+                      setRightSidebarWidth(clampRightSidebarNonMaxWidth(px));
+                    }}
+                  />
+                )}
                 <RightSidebar
                   width={rightWidth}
                   widthMode={rightSidebarWidthMode}
