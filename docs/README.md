@@ -1,9 +1,8 @@
 # KodaX Space 文档中心
 
-> 当前代码基线：KodaX Space `v0.1.31` 开发版 / KodaX `0.7.67`<br>
-> 当前公开正式版：KodaX Space `v0.1.30`
+> 当前正式版本：KodaX Space `v0.1.31` / KodaX `0.7.68`
 
-这里是文档的统一入口。`v0.1.31` 的 Runtime Host 实现和自动化验证已完成，仍待真实 Provider 人工验收、版本发布和独立 review；因此文档会同时标明“开发基线”和“公开正式版”，避免把尚未发布的能力当成已交付版本。
+这里是文档的统一入口。`v0.1.31` 的 Runtime Host Adapter、`app://space`、结构化诊断和 Natural-Language Space Control 已发布；正式 KodaX 0.7.68 Memory Agent 运行契约也已适配。完整 F117 桌面体验仍在后续路线中，历史设计和 release 记录保留当时语境。
 
 ## 我想要……
 

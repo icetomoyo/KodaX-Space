@@ -29,6 +29,7 @@ import type { ProviderInfo, SessionMeta } from '@kodax-space/space-ipc-schema';
 import { useAppStore } from '../store/appStore.js';
 import { pushToast } from '../store/toastStore.js';
 import { useI18n } from '../i18n/I18nProvider.js';
+import { setSpaceReasoningDefault } from '../space-control/semanticActions.js';
 import type { MessageKey } from '../i18n/messages.js';
 import { resolveActiveModel } from './resolveActiveModel.js';
 import { sdkEffortToReasoningMode, visibleEffortLadder } from './effortLadder.js';
@@ -207,12 +208,10 @@ export function ModelEffortSelector(): JSX.Element {
         });
         if (r.ok) upsertSession({ ...session, reasoningMode: mode });
       }
-      if (window.kodaxSpace) {
-        const r = await window.kodaxSpace.invoke('settings.setRuntimeDefaults', {
-          runtimeDefaults: { reasoningMode: mode },
-        });
-        if (!r.ok) pushToast(r.error?.message ?? t('modelPicker.saveDefaultsFailed'), 'error');
-        else setRuntimeDefaults(r.data.runtimeDefaults ?? {});
+      if (!(await setSpaceReasoningDefault(mode))) {
+        pushToast(t('modelPicker.saveDefaultsFailed'), 'error');
+      } else {
+        setRuntimeDefaults(useAppStore.getState().runtimeDefaults);
       }
     } catch (err) {
       pushToast(err instanceof Error ? err.message : t('modelPicker.saveDefaultsFailed'), 'error');

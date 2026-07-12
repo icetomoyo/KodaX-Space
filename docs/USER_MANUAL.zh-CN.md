@@ -4,9 +4,7 @@
   <img src="../resources/icon.png" alt="KodaX Space 应用图标" width="96">
 </p>
 
-> 当前代码基线：KodaX Space `v0.1.31` 开发版 / KodaX `0.7.67`
->
-> 当前公开正式版：KodaX Space `v0.1.30`
+> 当前正式版本：KodaX Space `v0.1.31` / KodaX `0.7.68`
 >
 > 更新日期：2026-07-12
 >
@@ -308,6 +306,10 @@ Memory 是 Coder-only 治理界面：
 
 Partner Knowledge Base 与 Coder Memory 是两套不同职责，不能互相替代。
 
+KodaX 0.7.68 新增 FEATURE_260 Memory Agent。它不会创建第二套记忆库，而是在普通 managed run 内复用 F228：已准备好的相关记忆可作为零等待、低权威、默认静默的提示；模型确有需要时可调用只读 `memory_recall({ need })`，但不能自行指定 tenant/user/project 等 scope。任务结束后可形成有界 Outcome Digest，并继续通过 proposal、preview、fingerprint 和 apply 进入现有治理流程。
+
+Space 0.1.31 集成运行契约：启动时验证真实 `/experimental-memory` 导出和 policy，在版本/诊断中如实报告，并记录不含记忆正文的生命周期元数据。普通 recall 不生成“记忆思考”消息；完整 Episodes、Activity、纠正、forget/purge 界面仍属于 F117 计划。现有 Inbox、Refs、Governance、Hints 继续由 F228 提供。
+
 ### MCP 与 `.mcpb`
 
 MCP 面板展示 server 状态、命令/URL、start/stop、工具、日志/诊断和扩展卸载。`v0.1.31` 仍由 Space MCP Manager 负责进程和日志，Runtime 不会启动第二套 MCP manager。只安装可信来源的扩展。
@@ -321,7 +323,7 @@ MCP 面板展示 server 状态、命令/URL、start/stop、工具、日志/诊�
 
 ### External Agents
 
-Settings → Runtime → External Agents 管理 KodaX `0.7.67` Reference Agent。Task Dock 可查看事件、回复 `input-required`、取消或 reconcile 未知状态。当前 Reference Executor 是本地合规适配器：不访问网络、不直接写 workspace。A2A、MCP Tasks 和 governed HTTP 适配器尚未交付。
+Settings → Runtime → External Agents 管理 KodaX `0.7.68` 中保留的 Reference Agent。Task Dock 可查看事件、回复 `input-required`、取消或 reconcile 未知状态。当前 Reference Executor 是本地合规适配器：不访问网络、不直接写 workspace。A2A、MCP Tasks 和 governed HTTP 适配器尚未交付。
 
 ## 15. Quick Ask、Handoff 与 CLI 连续性
 
@@ -413,8 +415,8 @@ flowchart TD
 
 ## 20. 当前限制与诚实边界
 
-- 正式发布版本仍为 `0.1.30`；本文同时覆盖已实现但尚待人工验收/版本发布的 `0.1.31` Runtime Host。
-- Worker、daemon、Runtime Learning Center 和 Memory Agent 尚未成为当前可用桌面能力。
+- `v0.1.31` 已正式采用 inline Runtime Host；Worker/daemon、Runtime-native Workflow/MCP/Skills/Partner 等仍不属于本版本承诺。
+- Worker、daemon 和 Runtime Learning Center 尚未成为当前可用桌面能力。Memory Agent 的 0.7.68 运行契约已经集成；完整 F117 桌面管理体验尚未交付。
 - Partner 浏览器、通用 Connector、远程任务、桌面电脑控制和自动化尚未交付。
 - External Agent 只有本地 Reference Executor；A2A/MCP Tasks/governed HTTP 不可用。
 - Quick Ask 不是完全无 session side query。

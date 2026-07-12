@@ -21,7 +21,12 @@ import {
   removeKodaxConfigCustomProvider,
   updateKodaxConfigCustomProvider,
 } from '../kodax/user-config.js';
-import { BUILTIN_PROVIDERS, isBuiltinId, getBuiltin, type BuiltinProvider } from '../providers/catalog.js';
+import {
+  BUILTIN_PROVIDERS,
+  isBuiltinId,
+  getBuiltin,
+  type BuiltinProvider,
+} from '../providers/catalog.js';
 import { providerConfigStore, type CustomProvider } from '../providers/config.js';
 import {
   setKey,
@@ -37,6 +42,7 @@ import { validateApiKeyEnv } from '../providers/env-guard.js';
 import { computeModelContextWindow } from '../providers/context-window.js';
 import type { ProviderInfo } from '@kodax-space/space-ipc-schema';
 import type { CustomProviderProbe } from '../providers/test-connection.js';
+import { refreshDiagnosticRedactionOptions } from '../diagnostics/runtime.js';
 
 type KnownProvider = BuiltinProvider | CustomProvider | CustomProviderProbe;
 type ConfiguredSource = ProviderInfo['configuredSource'];
@@ -145,7 +151,9 @@ function validateApiKey(key: string): string | null {
  * 而不是静默 drop——便于排查"我配了 key 但 SDK 看不见"
  */
 export function injectAllKeysToEnv(): Promise<void> {
-  const next = injectAllKeysToEnvQueue.then(injectAllKeysToEnvUnlocked, injectAllKeysToEnvUnlocked);
+  const next = injectAllKeysToEnvQueue
+    .then(injectAllKeysToEnvUnlocked, injectAllKeysToEnvUnlocked)
+    .finally(refreshDiagnosticRedactionOptions);
   injectAllKeysToEnvQueue = next.catch(() => undefined);
   return next;
 }
@@ -205,9 +213,7 @@ async function injectAllKeysToEnvUnlocked(): Promise<void> {
   }
 }
 
-async function resolveProviderInfo(
-  id: string,
-): Promise<{ apiKeyEnv: string } | undefined> {
+async function resolveProviderInfo(id: string): Promise<{ apiKeyEnv: string } | undefined> {
   if (isBuiltinId(id)) {
     const b = getBuiltin(id);
     return b ? { apiKeyEnv: b.apiKeyEnv } : undefined;
@@ -393,9 +399,7 @@ export function registerProviderChannels(): void {
       (await hasKey(input.providerId)) ? new Set([input.providerId]) : new Set<string>(),
     );
     if (source === 'none') {
-      throw new Error(
-        'provider is not configured; add an API key before setting it as default',
-      );
+      throw new Error('provider is not configured; add an API key before setting it as default');
     }
     await providerConfigStore.setDefault(input.providerId);
     // 切默认 provider 时重新注入——共享 env 时让它胜出
@@ -467,16 +471,22 @@ export function registerProviderChannels(): void {
       const nextProviderIdCandidate = input.displayName.trim();
       if (nextProviderIdCandidate !== input.providerId) {
         if (isBuiltinId(nextProviderIdCandidate)) {
-          throw new Error(`custom providerId conflicts with built-in provider: ${nextProviderIdCandidate}`);
+          throw new Error(
+            `custom providerId conflicts with built-in provider: ${nextProviderIdCandidate}`,
+          );
         }
         if (providerConfigStore.getCustom(nextProviderIdCandidate)) {
-          throw new Error(`custom providerId conflicts with an existing Space provider: ${nextProviderIdCandidate}`);
+          throw new Error(
+            `custom providerId conflicts with an existing Space provider: ${nextProviderIdCandidate}`,
+          );
         }
         const collidingConfigProvider = (await loadKodaxCustomProviders()).some(
           (provider) => provider.id === nextProviderIdCandidate && provider.id !== input.providerId,
         );
         if (collidingConfigProvider) {
-          throw new Error(`custom providerId conflicts with an existing KodaX config provider: ${nextProviderIdCandidate}`);
+          throw new Error(
+            `custom providerId conflicts with an existing KodaX config provider: ${nextProviderIdCandidate}`,
+          );
         }
       }
 
@@ -557,11 +567,12 @@ export function registerProviderChannels(): void {
       if (input.providerId !== 'mock' && !isBuiltinId(input.providerId)) {
         await refreshSdkCustomProviderRegistry();
       }
-      const [{ resolveProvider }, { resolveContextWindow }, { resolveModelCapabilities }] = await Promise.all([
-        import('@kodax-ai/kodax/coding'),
-        import('@kodax-ai/kodax/agent'),
-        import('@kodax-ai/kodax/llm'),
-      ]);
+      const [{ resolveProvider }, { resolveContextWindow }, { resolveModelCapabilities }] =
+        await Promise.all([
+          import('@kodax-ai/kodax/coding'),
+          import('@kodax-ai/kodax/agent'),
+          import('@kodax-ai/kodax/llm'),
+        ]);
       const provider = resolveProvider(input.providerId);
       const capabilities = resolveModelCapabilities(input.providerId, input.model);
       // 上下文窗口走 SDK runtime-authoritative 级联（= runtime 决定 compaction 触发的同一算法），

@@ -36,6 +36,7 @@ The pre-rebase list used `Completed`, `Done`, `Merged`, `Partial`, `Deferred`, `
 | `v0.1.26`        | F107, F108                                         | [design](features/v0.1.26.md)                                                                                                              |
 | `v0.1.29`        | F088, F103                                         | [F103 design](features/v0.1.29.md), [F088 addendum](features/v0.1.29-memory-governance.md), [CHANGELOG](../CHANGELOG.md#0129---2026-07-08) |
 | `v0.1.30`        | F049, F070-F072, F074, F095, F098, F109, F113-F115 | [Partner design](features/v0.1.30.md), [External Agents](features/v0.1.30-external-agents.md)                                              |
+| `v0.1.31`        | F116                                               | [Runtime Host design](features/v0.1.31.md), [implementation record](features/v0.1.31-implementation-plan.md)                               |
 
 ## Historical merge and carry-forward records
 
@@ -73,7 +74,7 @@ The pre-rebase list used `Completed`, `Done`, `Merged`, `Partial`, `Deferred`, `
 
 The following are not version commitments:
 
-- KodaX F260 Memory Agent and F266 Learning Center until published contracts pass Space compatibility probes.
+- KodaX F266 Learning Center until a published contract passes Space compatibility probes. KodaX F260 is now published in 0.7.68 and tracked as the partial runtime integration plus planned F117 desktop host.
 - KodaX F263/F264 learned Skill/Extension actions until `runtime.learning` advertises them.
 - KodaX F265 assurance/route telemetry until public DTOs exist.
 - A2A, MCP Tasks, and governed HTTP External Agent adapters until KodaX advertises conformant factories.

@@ -24,7 +24,15 @@ const memoryRefKindSchema = z.enum([
   'project_doc',
 ]);
 
-const memoryScopeSchema = z.enum(['turn', 'session', 'project', 'user', 'builtin']);
+const memoryScopeSchema = z.enum([
+  'turn',
+  'session',
+  'project',
+  'workspace',
+  'agent',
+  'user',
+  'builtin',
+]);
 const memoryLifecycleSchema = z.enum([
   'pending',
   'active',
@@ -141,6 +149,7 @@ export const memoryReviewPlanSchema = z.object({
     'explicit_forget',
     'proposal_rejected',
     'conflict_detected',
+    'episode_completed',
   ]),
   createdAt: z.string().max(ID),
   sourceRefs: z.array(z.string().max(ID)).max(MAX_REFS),

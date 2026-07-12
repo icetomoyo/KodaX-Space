@@ -8,6 +8,7 @@ import {
   memoryApproveChannel,
   memoryListChannel,
   memoryReadRefChannel,
+  memoryRejectChannel,
 } from '../src/index.js';
 
 const ref = {
@@ -29,7 +30,14 @@ const proposal = {
   id: 'memory:mem-probe-1',
   action: 'write_memdir' as const,
   targetRefs: [ref],
-  sourceRefs: [{ ...ref, kind: 'learning_proposal' as const, id: 'learning_proposal:mem-probe-1', authority: 'proposal_only' as const }],
+  sourceRefs: [
+    {
+      ...ref,
+      kind: 'learning_proposal' as const,
+      id: 'learning_proposal:mem-probe-1',
+      authority: 'proposal_only' as const,
+    },
+  ],
   expectedFingerprints: { 'memdir:MEMORY.md': 'missing' },
   rationale: 'F224 classified this as project memory.',
   risk: 'medium' as const,
@@ -66,8 +74,46 @@ test('memory action proposal schema accepts 0.7.62 proposal shape', () => {
 });
 
 test('memory.list input and output accept inbox and refs', () => {
-  assert.equal(memoryListChannel.input.safeParse({ sessionId: 's_1', query: 'typecheck' }).success, true);
-  assert.equal(memoryListChannel.output.safeParse({ inbox: [proposal], refs: [ref], warnings: [] }).success, true);
+  assert.equal(
+    memoryListChannel.input.safeParse({ sessionId: 's_1', query: 'typecheck' }).success,
+    true,
+  );
+  assert.equal(
+    memoryListChannel.output.safeParse({ inbox: [proposal], refs: [ref], warnings: [] }).success,
+    true,
+  );
+});
+
+test('memory schemas accept 0.7.68 workspace/agent scopes and episode review trigger', () => {
+  for (const scope of ['workspace', 'agent'] as const) {
+    assert.equal(
+      memoryListChannel.output.safeParse({
+        inbox: [],
+        refs: [{ ...ref, scope }],
+        warnings: [],
+      }).success,
+      true,
+    );
+  }
+
+  assert.equal(
+    memoryRejectChannel.output.safeParse({
+      result: {
+        proposalId: 'memory:episode-1',
+        rejected: true,
+        review: {
+          trigger: 'episode_completed',
+          createdAt: '2026-07-12T12:00:00.000Z',
+          sourceRefs: [],
+          candidateRefs: [],
+          actions: [],
+          warnings: [],
+        },
+        warnings: [],
+      },
+    }).success,
+    true,
+  );
 });
 
 test('memory.approve output models blocked non-throwing approval', () => {

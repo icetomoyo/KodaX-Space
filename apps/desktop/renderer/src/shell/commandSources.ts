@@ -15,6 +15,7 @@ import { pushToast } from '../store/toastStore.js';
 import { useAppStore } from '../store/appStore.js';
 import type { SupportedLocaleT } from '@kodax-space/space-ipc-schema';
 import { slashCommandDescription, type Translate } from './slashCommandDescriptions.js';
+import { setSpaceTheme } from '../space-control/semanticActions.js';
 
 export type CommandKind = 'action' | 'session' | 'file' | 'slash';
 
@@ -72,7 +73,7 @@ function actionCommands(ctx: CommandContext): readonly CommandItem[] {
     searchText: 'theme dark light system appearance toggle',
     onPick: () => {
       ctx.close();
-      store.setTheme(nextTheme(store.theme));
+      setSpaceTheme(nextTheme(store.theme));
     },
   });
 

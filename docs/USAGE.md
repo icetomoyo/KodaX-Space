@@ -2,9 +2,7 @@
 
 > 面向源码使用者、贡献者和发布维护者。普通用户请阅读[用户使用手册](USER_MANUAL.zh-CN.md)。
 >
-> 当前代码基线：KodaX Space `v0.1.31` 开发版 / `@kodax-ai/kodax@0.7.67`
->
-> 当前公开正式版：KodaX Space `v0.1.30`
+> 当前正式版本：KodaX Space `v0.1.31` / `@kodax-ai/kodax@0.7.68`
 
 ## 1. 环境要求
 
@@ -20,6 +18,8 @@ npm install --include=dev
 ```
 
 KodaX Space 是 npm workspace monorepo。不要只在 `apps/desktop` 中安装依赖，否则 workspace package、Electron native module 与根脚本可能不一致。
+
+根、desktop manifest 与 lockfile 都固定到精确 KodaX 0.7.68。`npm ls @kodax-ai/kodax --all` 应只显示同一个 deduped 版本；Runtime compatibility 和 packaged smoke 也会严格核对 0.7.68，依赖树漂移不能通过 release gate。
 
 ## 2. 启动方式
 

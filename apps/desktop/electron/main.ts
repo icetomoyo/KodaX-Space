@@ -17,7 +17,6 @@ import {
 } from 'electron';
 import path from 'node:path';
 import { mkdirSync } from 'node:fs';
-import { pathToFileURL } from 'node:url';
 import { registerVersionChannel } from './ipc/version.js';
 import { registerRepointelChannels } from './ipc/repointel.js';
 import { registerHandoffChannels } from './ipc/handoff.js';
@@ -38,7 +37,7 @@ import { prewarmKodaxUserConfig, registerKodaxCustomProviders } from './kodax/us
 import { probeKodaxSdk } from './kodax/kodax-sdk-probe.js';
 import { probeSkillRegistry } from './skill/registry.js';
 import { hydrateShellEnvOnce } from './kodax/shell-env-hydrate.js';
-import { getScopedUserDataDir, applySdkHomeEnv } from './kodax/data-paths.js';
+import { getKodaxDir, getScopedUserDataDir, applySdkHomeEnv } from './kodax/data-paths.js';
 import { registerProviderChannels, injectAllKeysToEnv } from './ipc/provider.js';
 import { autoActivateProvidersFromEnv } from './providers/auto-activate.js';
 import { registerFilesChannels } from './ipc/files.js';
@@ -84,6 +83,16 @@ import { permissionRegistry } from './permission/registry.js';
 import { permissionBroker } from './permission/broker.js';
 import { askUserBroker } from './permission/ask-user-broker.js';
 import { providerConfigStore } from './providers/config.js';
+import {
+  initializeDiagnostics,
+  flushDiagnostics,
+  refreshDiagnosticRedactionOptions,
+} from './diagnostics/runtime.js';
+import { registerDiagnosticsChannels } from './ipc/diagnostics.js';
+import { registerSpaceControlChannels } from './ipc/space-control.js';
+import { spaceControlRendererBroker } from './space-control/runtime.js';
+import { installAppProtocolHandler, registerAppSchemePrivileges } from './window/app-protocol.js';
+import { APP_PROTOCOL_INDEX_URL, APP_PROTOCOL_ORIGIN } from './window/app-protocol-policy.js';
 
 // CJS 输出（见 scripts/build-main.mjs），__dirname 是原生 Node 全局
 // 不用 import.meta.url（CJS 下不可用）
@@ -93,6 +102,9 @@ const VITE_DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL;
 const isDev = Boolean(VITE_DEV_SERVER_URL);
 const SPACE_APP_NAME = 'KodaX Space';
 const SPACE_APP_USER_MODEL_ID = 'ai.kodax.space';
+
+// Custom-scheme privileges must be registered before Electron becomes ready.
+registerAppSchemePrivileges();
 
 function appendDisabledChromiumFeature(feature: string): void {
   const current = app.commandLine.getSwitchValue('disable-features');
@@ -149,10 +161,6 @@ function installChildProcessDiagnostics(): void {
   });
 }
 
-installHardwareAccelerationOverride();
-installWindowsRenderingGuards();
-installChildProcessDiagnostics();
-
 app.setName(SPACE_APP_NAME);
 if (process.platform === 'win32') {
   app.setAppUserModelId(SPACE_APP_USER_MODEL_ID);
@@ -173,6 +181,17 @@ if (scopedUserDataDir !== null) {
   app.setPath('userData', scopedUserDataDir);
 }
 
+const SPACE_VERSION = process.env.npm_package_version ?? app.getVersion();
+const diagnosticsLogger = initializeDiagnostics({
+  userDataDir: app.getPath('userData'),
+  spaceVersion: SPACE_VERSION,
+  privatePathPrefixes: [getKodaxDir()],
+  fileSinkEnabled: process.env.SPACE_DISABLE_DIAGNOSTIC_FILE_SINK !== '1',
+});
+installHardwareAccelerationOverride();
+installWindowsRenderingGuards();
+installChildProcessDiagnostics();
+
 // 路径：dist-electron 与 apps/desktop/dist 是兄弟目录。
 //
 // dev:      __dirname = <root>/dist-electron      → ../apps/desktop/dist = <root>/apps/desktop/dist ✓
@@ -183,11 +202,6 @@ if (scopedUserDataDir !== null) {
 // app.getAppPath() 会返回 <root>/dist-electron，再拼 apps/desktop/dist 反而错。
 const RENDERER_DIST = path.join(__dirname, '../apps/desktop/dist');
 const PRELOAD_PATH = path.join(__dirname, 'preload.js');
-
-// 用 pathToFileURL 严格构造 file:// 前缀。
-// 关键点：Windows 上 Electron 实际加载的 URL 形如 `file:///C:/...`（三斜杠），手拼 `'file://' + path` 会少一个斜杠。
-// 用 pathToFileURL 拿 href 末尾会带 `/`，再去尾保留作为前缀，能正确匹配子路径。
-const ALLOWED_FILE_PREFIX = pathToFileURL(RENDERER_DIST).href.replace(/\/?$/, '/');
 
 // THEME_BOOTSTRAP_INLINE_HASH 抽到 csp-config.ts 让单测无 electron 依赖也能 import
 import { THEME_BOOTSTRAP_INLINE_HASH } from './csp-config.js';
@@ -291,11 +305,11 @@ function createMainWindow(): void {
 
   // 外链白名单 + in-page 导航锁定 —— 与 artifact 独立窗口共用同一套守卫（F059c），
   // 避免两处窗口的安全策略漂移。理由：renderer 终会渲染 LLM/MCP 产生的内容，必须
-  // 只放行应用自身资源（dev: Vite origin / prod: 打包 file:// 前缀），https 外链走系统
+  // 只放行应用自身资源（dev: Vite origin / prod: 精确 app://space origin），https 外链走系统
   // 浏览器，其余一律 deny（防 LLM 注入 file:///etc/passwd 等任意路径）。
   installNavigationGuards(win.webContents, {
     devServerUrl: VITE_DEV_SERVER_URL,
-    allowedFilePrefix: ALLOWED_FILE_PREFIX,
+    allowedAppOrigin: APP_PROTOCOL_ORIGIN,
     allowedDataUrls: [createBootSplashUrl()],
     openExternal: (url) => void shell.openExternal(url),
   });
@@ -319,7 +333,7 @@ function createMainWindow(): void {
   const appLoadTimeoutMs = isDev ? 20_000 : 12_000;
   const rendererGoneMaxRecoveries = 3;
   const rendererTargetDescription =
-    isDev && VITE_DEV_SERVER_URL ? VITE_DEV_SERVER_URL : path.join(RENDERER_DIST, 'index.html');
+    isDev && VITE_DEV_SERVER_URL ? VITE_DEV_SERVER_URL : APP_PROTOCOL_INDEX_URL;
 
   const clearAppLoadWatchdog = (): void => {
     if (appLoadWatchdog === null) return;
@@ -383,7 +397,7 @@ function createMainWindow(): void {
     const loadPromise =
       isDev && VITE_DEV_SERVER_URL
         ? win.loadURL(VITE_DEV_SERVER_URL)
-        : win.loadFile(path.join(RENDERER_DIST, 'index.html'));
+        : win.loadURL(APP_PROTOCOL_INDEX_URL);
     loadPromise.catch((err: unknown) => {
       const message = err instanceof Error ? err.message : String(err);
       if (message.includes('ERR_ABORTED') || message.includes('(-3)')) {
@@ -630,6 +644,10 @@ app
       },
     ]);
     Menu.setApplicationMenu(menu);
+    installAppProtocolHandler(RENDERER_DIST);
+    diagnosticsLogger?.info('renderer', 'app_protocol_installed', undefined, {
+      origin: APP_PROTOCOL_ORIGIN,
+    });
     applyCsp();
     logGpuFeatureStatus('app-ready');
     // 启动期 3 个 async 任务无强依赖关系，并行跑省 300-800ms 才到窗口创建：
@@ -654,13 +672,21 @@ app
       // F116: warm the inline Runtime before IPC starts. Initialization failure is
       // a pre-run rollback condition, not an application-start failure; live sessions
       // will use the legacy driver and space.version will expose the degraded state.
-      runtimeHostAdapter.initialize(app.getVersion()).catch((err) => {
-        console.warn(
-          '[main] Runtime host initialization failed; legacy rollback remains active:',
-          err instanceof Error ? err.message : err,
-        );
-      }),
+      runtimeHostAdapter
+        .initialize(app.getVersion())
+        .then(() => {
+          diagnosticsLogger?.info('runtime', 'host_initialized');
+        })
+        .catch((err) => {
+          diagnosticsLogger?.warn('runtime', 'host_initialization_failed', undefined, err);
+          console.warn(
+            '[main] Runtime host initialization failed; legacy rollback remains active:',
+            err instanceof Error ? err.message : err,
+          );
+        }),
     ]);
+    // Shell hydration may add provider secrets after diagnostics was initialized.
+    refreshDiagnosticRedactionOptions();
     // v0.1.10 chore: best-effort 清理早期残留的 ~/.kodax_space 孤儿目录。
     // fire-and-forget,never throws,不阻塞 UI 启动;详见 cleanup-orphan-kodax-space.ts。
     void cleanupOrphanKodaxSpaceDirWithLog();
@@ -675,6 +701,11 @@ app
 
     // IPC handlers 必须在窗口创建前注册——否则 renderer 启动后立刻调 invoke 会撞上 "No handler registered"
     registerVersionChannel();
+    registerDiagnosticsChannels({
+      getMainWindow: () => mainWindow,
+      spaceVersion: SPACE_VERSION,
+    });
+    registerSpaceControlChannels();
     registerRepointelChannels();
     registerHandoffChannels();
     registerSessionChannels();
@@ -734,17 +765,20 @@ app
     // F060 Workflow Harness 支持：list/get IPC + 订阅 SDK 进程事件流转发到 renderer（workflow.event）。
     // init 是 best-effort（lazy-load SDK run manager + 加载持久化归属）；失败只降级为"无实时工作流面"。
     registerWorkflowChannels();
-    void workflowController.init().catch((err) => {
-      console.warn(
-        '[main] workflow controller init failed:',
-        err instanceof Error ? err.message : err,
-      );
-    });
+    void workflowController
+      .init()
+      .then(() => diagnosticsLogger?.info('workflow', 'controller_initialized'))
+      .catch((err) => {
+        diagnosticsLogger?.warn('workflow', 'controller_initialization_failed', undefined, err);
+        console.warn(
+          '[main] workflow controller init failed:',
+          err instanceof Error ? err.message : err,
+        );
+      });
     // F064 Workflow Host Policy 已在上面启动期 Promise.all 里 await 加载（早于窗口/首跑）。
     // F059c L3：artifact.openWindow → 独立最大化窗口（复用同一 renderer + preload，走 #artifact hash）。
     registerArtifactWindowChannel({
       preloadPath: PRELOAD_PATH,
-      rendererDist: RENDERER_DIST,
       devServerUrl: VITE_DEV_SERVER_URL,
     });
     // F021 v0.1.5 冷启动 file association：用户双击 .mcpb 启动 Space 时，path 在 process.argv 里。
@@ -870,6 +904,7 @@ app.on('before-quit', (event) => {
   // 同步 + 幂等的清理先做（每次 before-quit 触发都安全重入）。
   permissionBroker.cancelAll('shutdown');
   askUserBroker.cancelAll('shutdown');
+  spaceControlRendererBroker.cancelAll('shutdown');
   // F011: kill all PTYs before exit so shells don't outlive Electron as zombies.
   // disposeAll is synchronous + idempotent, never throws.
   try {
@@ -927,10 +962,12 @@ app.on('before-quit', (event) => {
   }, 2500);
   watchdog.unref?.();
 
-  void Promise.allSettled(disposals).finally(() => {
-    clearTimeout(watchdog);
-    app.exit(0);
-  });
+  void Promise.allSettled(disposals)
+    .then(() => flushDiagnostics())
+    .finally(() => {
+      clearTimeout(watchdog);
+      app.exit(0);
+    });
 });
 
 // 兜底 — 未捕获异常不静默，但**不打印原对象**：

@@ -8,7 +8,7 @@
 **测试日期**：2026-07-12<br>
 **测试人员**：待填写
 
-F116 把 KodaX Space 的 managed run 主链迁移到 KodaX `0.7.67` 公共 Runtime facade。用户仍使用原来的 Coder、Partner、权限弹窗、队列、历史、Workflow、MCP 与 External Agent 界面；主要可见效果是运行、取消、恢复和失败收口更稳定，并产生 Runtime `runId`、事件日志与诊断信息，供后续 Memory、Learning、Automation 和运行健康功能复用。
+F116 把 KodaX Space 的 managed run 主链迁移到公共 Runtime facade；最终 v0.1.31 依赖为 KodaX `0.7.68`。用户仍使用原来的 Coder、Partner、权限弹窗、队列、历史、Workflow、MCP 与 External Agent 界面；主要可见效果是运行、取消、恢复和失败收口更稳定，并产生 Runtime `runId`、事件日志与诊断信息，供后续 Memory、Learning、Automation 和运行健康功能复用。
 
 本版本采用 inline Runtime。Worker 和 daemon 不属于 v0.1.31；Partner 工具、权限决策、MCP 进程生命周期、External Agent durable store 继续由 Space 管理。
 
@@ -16,7 +16,7 @@ F116 把 KodaX Space 的 managed run 主链迁移到 KodaX `0.7.67` 公共 Runti
 
 ### 前置条件
 
-- 使用包含 F116 的 v0.1.31 构建，KodaX 依赖为 `0.7.67`。
+- 使用包含 F116 的 v0.1.31 构建，KodaX 依赖为精确 `0.7.68`。
 - 准备一个可写的测试项目目录和一个可正常调用的 Provider。
 - 测试数据必须使用独立 profile，例如：
   - `$env:KODAX_PROFILE_DIR = "$env:TEMP\kodax-space-f116-manual"`
@@ -222,6 +222,27 @@ F116 把 KodaX Space 的 managed run 主链迁移到 KodaX `0.7.67` 公共 Runti
 - [ ] 重启后应用能正常初始化，不报告重复 Runtime owner。
 - [ ] MCP server 不因 Runtime 接入而出现双实例。
 
+### TC-011：KodaX 0.7.68 Memory Agent 运行契约
+
+**优先级**：高<br>
+**类型**：兼容/隐私/退化测试
+
+**步骤**：
+
+1. 确认 `npm ls @kodax-ai/kodax --all` 只解析出 `0.7.68`。
+2. 启动 Space，检查 `space.version`/诊断导出中的 `memory.agent.experimental`。
+3. 在独立测试 profile 完成一轮有验证证据的 Coder 任务，再打开 Memory Inbox/Refs/Governance/Hints。
+4. 搜索结构化日志中的 `memory review`、`memory outcome digest` 或 `memory review receipt` 事件。
+5. 检查会话滚动区与诊断 ZIP，不附带真实 prompt、记忆正文或凭据进行公开分享。
+
+**预期效果**：
+
+- [ ] 启动 probe 验证 `/experimental-memory` 与 policy `f260-v0.7.68.2`；缺失/shape 漂移会 fail-fast。
+- [ ] capability 状态为 `partial`，说明 runtime integration 已接入、完整 F117 UX 尚未交付。
+- [ ] 普通 recall 不产生逐轮“记忆思考”消息，不打断前台任务。
+- [ ] Memory lifecycle 日志只包含 trigger/outcome/visibility/sequence 和数量，不含 objective、summary、proposal ID、evidence ref 或 body。
+- [ ] F228 Inbox、Refs、Governance、Hints 仍是唯一 durable governance truth；Partner KB 不混入 Coder Memory。
+
 ## 边界用例
 
 ### BC-001：快速连续停止
@@ -240,7 +261,7 @@ F116 把 KodaX Space 的 managed run 主链迁移到 KodaX `0.7.67` 公共 Runti
 
 | 用例数            | 通过 | 失败 | 阻塞 |
 | ----------------- | ---- | ---- | ---- |
-| 10 + 3 个边界用例 | -    | -    | -    |
+| 11 + 3 个边界用例 | -    | -    | -    |
 
 **测试结论**：待填写<br>
 **发现的问题**：待填写
@@ -249,12 +270,13 @@ F116 把 KodaX Space 的 managed run 主链迁移到 KodaX `0.7.67` 公共 Runti
 
 实现阶段已通过以下自动化门槛，人工测试重点验证真实 Provider、UI 反馈、权限交互与应用生命周期：
 
-- Runtime/SDK 兼容性和适配器测试：9/9；
-- 相关 session/workflow/path 回归：141/141；
-- Desktop 全量单元测试：1376/1376；
+- Release 脚本测试：4/4；
+- IPC schema 全量测试：245/245；
+- Desktop 全量单元测试：1417 通过、0 失败、1 个平台权限 skip；
 - Playwright Electron E2E：58/58；
 - TypeScript typecheck：通过；
-- ESLint（0 warnings）：通过。
+- ESLint（0 warnings）：通过；
+- Windows Setup/Portable、asar package smoke、0.7.68 Runtime/constructed-handler Worker 和 packaged `app://space` boot：通过。
 
 ---
 

@@ -1,12 +1,14 @@
 # KodaX Space 高层设计（HLD）
 
 > Last updated: 2026-07-12
-> Status: 核心架构决策仍有效；当前正式发布基线为 KodaX Space 0.1.30 / KodaX 0.7.67，当前源码为 v0.1.31 开发基线。中间方案与否决理由见 [ADR/](ADR/)；当前能力边界见 [KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md)。
+> Status: 核心架构决策仍有效；当前正式发布基线为 KodaX Space 0.1.31 / KodaX 0.7.68。中间方案与否决理由见 [ADR/](ADR/)；当前能力边界见 [KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md)。
 > Companion doc: [PRD](PRD.md)
 
 > **0.1.30 增量**：Electron main 继续拥有特权边界，并新增一个持久、协议中立的 External Agent Executor Plane。Renderer 仅通过 zod IPC 获取脱敏 Registration/Descriptor/Task/Event 投影；管理入口仅接受主应用窗口，任务创建从 main-owned live Session 派生项目/父任务归属，读取与干预均复核任务所属 Session。实时 Session 与 Workflow 共用同一 KodaX 0.7.67 plane。Reference Executor 已接通，真实 A2A/MCP Tasks/HTTP adapter 仍按 Runtime capability 门控。Partner 自 0.1.30 起已启用 workspace-first Outputs 与 checkpointed writes。
 >
 > **2026-07-12 架构重置**：`v0.1.31` 起以 `RuntimeHostAdapter -> @kodax-ai/kodax/runtime` 作为长期 host boundary，先采用 embedded inline facade，再以 capability negotiation 决定 Worker/daemon。旧 `KodaXHost/RealSession/KodaXClient` 路径是迁移基线，不再是长期目标。当前路线见 [FEATURE_LIST.md](FEATURE_LIST.md)。
+>
+> **0.7.68 集成**：KodaX top-level managed coding path 自有 FEATURE_260 Memory Agent 生命周期，复用 F228 durable governance。Space 验证正式 `/experimental-memory` 契约、保留 metadata-only 回调诊断并继续拥有 UI 投影；不创建第二个 Memory Agent/存储/推广策略。完整 F117 仍受 activation/rollback 和桌面 query/action contract 门控。
 
 ---
 
@@ -700,7 +702,8 @@ Space 严格遵守：
 
 ### 19.1 Memory Agent 与 Learning Center
 
-- F117 通过已发布 KX-F260 contract 扩展现有 F088 Memory Governance；F228 仍是 durable governance truth。
+- 0.1.31 已验证 KodaX 0.7.68 `/experimental-memory`、policy shape 和 managed-run lifecycle，并只向 `space.version`/脱敏诊断投影 bounded metadata；KodaX/F228 仍分别是 runtime 与 durable governance owner。
+- F117 通过已发布 KX-F260 contract 扩展现有 F088 Memory Governance；完整 Episodes/Activity/correction/forget/purge 和 activation/rollback 仍受精确 host contract 门控。
 - F118 通过 KX-F266 `runtime.learning` 承载学习生命周期；Space 不写第二套 learning store。
 - KX-F263/F264 的 Skill/Extension action 按 capability 独立启用。
 - 未发布 design 不被当作 SDK；缺失时保持当前功能并显示 unavailable reason。
@@ -730,15 +733,15 @@ Space 严格遵守：
 
 ### 20.1 Active 0.1.x architecture lanes
 
-| Lane      | Architectural change                                                                                                    |
-| --------- | ----------------------------------------------------------------------------------------------------------------------- |
-| `v0.1.31` | `RuntimeHostAdapter` implemented for managed runs/transcript/compact/fork/rewind; manual acceptance and release remain. |
-| `v0.1.32` | Register `app://space`; centralize structured/redacted rotating logs and diagnostic export.                             |
-| `v0.1.35` | Extend Workflow snapshot schema for same-session replay provenance; attach evidence review receipts to objects.         |
-| `v0.1.36` | Derive Task Dock plan/capability/effective-run projections from Runtime facts.                                          |
-| `v0.1.39` | Host KX-F260 Memory Agent over existing F228/F088 governance when published.                                            |
-| `v0.1.40` | Host KX-F266 Learning Center; carrier actions remain capability-gated.                                                  |
-| `v0.1.43` | Complete locale gates, release diagnostics, channels/updater/distribution trust.                                        |
+| Lane      | Architectural change                                                                                                |
+| --------- | ------------------------------------------------------------------------------------------------------------------- |
+| `v0.1.31` | `RuntimeHostAdapter` released for managed runs/transcript/compact/fork/rewind with explicit Space bridge ownership. |
+| `v0.1.32` | Register `app://space`; centralize structured/redacted rotating logs and diagnostic export.                         |
+| `v0.1.35` | Extend Workflow snapshot schema for same-session replay provenance; attach evidence review receipts to objects.     |
+| `v0.1.36` | Derive Task Dock plan/capability/effective-run projections from Runtime facts.                                      |
+| `v0.1.39` | Host KX-F260 Memory Agent over existing F228/F088 governance when published.                                        |
+| `v0.1.40` | Host KX-F266 Learning Center; carrier actions remain capability-gated.                                              |
+| `v0.1.43` | Complete locale gates, release diagnostics, channels/updater/distribution trust.                                    |
 
 ### 20.2 Active 0.2.x architecture lanes
 

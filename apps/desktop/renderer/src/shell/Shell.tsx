@@ -72,7 +72,12 @@ import { pushToast } from '../store/toastStore.js';
 import { useSurfaceStore } from '../store/surface.js';
 import { PartnerWorkspace } from '../features/partner/PartnerWorkspace.js';
 import { HandoffInbox } from './HandoffInbox.js';
-import { SettingsModal } from '../features/settings/SettingsModal.js';
+import { SettingsModal, type SettingsTab } from '../features/settings/SettingsModal.js';
+import {
+  SpaceControlBroker,
+  type TaskDockWidthPreset,
+} from '../space-control/SpaceControlBroker.js';
+import { setSpaceLanguage, setSpaceTheme } from '../space-control/semanticActions.js';
 import { useI18n } from '../i18n/I18nProvider.js';
 import { isPopoutKind, SHELL_POPOUT_EVENT, type ShellPopoutRequest } from './popoutControl.js';
 import {
@@ -220,6 +225,7 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
   const [rightSidebarWidthSettling, setRightSidebarWidthSettling] = useState(false);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>('preferences');
   const [licenseStatus, setLicenseStatus] = useState<LicenseStatusT | null>(null);
   const popoutBoundsRef = useRef<HTMLDivElement | null>(null);
   const rightSidebarWidthSettlingTimerRef = useRef<number | null>(null);
@@ -403,6 +409,20 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
     setRightSidebarWidthMode('max');
     setRightSidebarOpen(true);
   }, [pulseRightSidebarWidthSettling, setRightSidebarOpen]);
+
+  const setTaskDockWidthPreset = useCallback(
+    (mode: TaskDockWidthPreset): void => {
+      if (mode === 'default') openRightSidebarAtDefaultWidth();
+      else if (mode === 'half') openRightSidebarAtBalancedWidth();
+      else openRightSidebarAtMaxWidth();
+    },
+    [openRightSidebarAtBalancedWidth, openRightSidebarAtDefaultWidth, openRightSidebarAtMaxWidth],
+  );
+
+  const openSettingsAt = useCallback((tab: SettingsTab): void => {
+    setSettingsInitialTab(tab);
+    setSettingsOpen(true);
+  }, []);
 
   const showLeftSidebar = useCallback((): void => {
     if (fullscreenRead) setFullscreenRead(false);
@@ -750,7 +770,7 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
           onToggleRightSidebar={toggleRightSidebar}
           onToggleFocusMode={() => setFullscreenRead((v) => !v)}
           onToggleDiagnostics={() => setDiagnosticsOpen((v) => !v)}
-          onOpenSettings={() => setSettingsOpen(true)}
+          onOpenSettings={() => openSettingsAt('preferences')}
         />
         <div className="flex-1" />
         <div className="flex shrink-0 items-center gap-1.5">
@@ -920,8 +940,19 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
       <AskUserModal />
       <ConfirmDialog />
       {settingsOpen && (
-        <SettingsModal initialTab="preferences" onClose={() => setSettingsOpen(false)} />
+        <SettingsModal
+          initialTab={settingsInitialTab}
+          onTabChange={setSettingsInitialTab}
+          onClose={() => setSettingsOpen(false)}
+        />
       )}
+      <SpaceControlBroker
+        settingsOpen={settingsOpen}
+        settingsTab={settingsInitialTab}
+        taskDockWidthMode={rightSidebarWidthMode}
+        onOpenSettings={openSettingsAt}
+        onSetTaskDockWidthMode={setTaskDockWidthPreset}
+      />
       <HelpOverlayController />
       <CommandPaletteController />
 
@@ -1003,7 +1034,6 @@ function AppTopMenu({
   const { languageMode, setLanguageMode, t } = useI18n();
   const theme = useAppStore((s) => s.theme);
   const visualQuality = useAppStore((s) => s.visualQuality);
-  const setTheme = useAppStore((s) => s.setTheme);
   const setVisualQuality = useAppStore((s) => s.setVisualQuality);
   const [openMenu, setOpenMenu] = useState<AppMenuId | null>(null);
   const ref = useRef<HTMLDivElement | null>(null);
@@ -1094,7 +1124,7 @@ function AppTopMenu({
   }, [onOpenSettings, openProject, startNewSession]);
 
   const chooseLanguage = async (mode: LanguageModeT): Promise<void> => {
-    const ok = await setLanguageMode(mode);
+    const ok = await setSpaceLanguage(mode, setLanguageMode);
     if (ok) pushToast(t('toast.languageSaved'), 'success', 1800);
   };
 
@@ -1211,19 +1241,19 @@ function AppTopMenu({
           id: 'theme-light',
           label: t('theme.light'),
           checked: theme === 'light',
-          onSelect: () => setTheme('light'),
+          onSelect: () => setSpaceTheme('light'),
         },
         {
           id: 'theme-dark',
           label: t('theme.dark'),
           checked: theme === 'dark',
-          onSelect: () => setTheme('dark'),
+          onSelect: () => setSpaceTheme('dark'),
         },
         {
           id: 'theme-system',
           label: t('theme.system'),
           checked: theme === 'system',
-          onSelect: () => setTheme('system'),
+          onSelect: () => setSpaceTheme('system'),
         },
         { id: 'view-separator-3', separator: true },
         {

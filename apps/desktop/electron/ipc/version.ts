@@ -8,6 +8,10 @@ import { registerChannel } from './register.js';
 import type { SpaceCapability, SpaceVersionOutput } from '@kodax-space/space-ipc-schema';
 import { isRepoIntelEntitled } from '../kodax/repo-intel-gate.js';
 import { runtimeHostAdapter, type RuntimeHostSnapshot } from '../kodax/runtime-host-adapter.js';
+import {
+  getExperimentalMemorySdkCapability,
+  type ExperimentalMemorySdkCapability,
+} from '../kodax/kodax-sdk-probe.js';
 
 function readSpaceVersion(electronApp: App): string {
   // app.getVersion() 读 packaged 应用的 package.json；dev 模式下可能不是 0.1.0-alpha.0
@@ -70,12 +74,36 @@ function runtimeHostCapability(snapshot: RuntimeHostSnapshot): SpaceCapability {
   };
 }
 
+export function experimentalMemoryCapability(
+  capability: ExperimentalMemorySdkCapability,
+): SpaceCapability {
+  if (capability.status === 'available') {
+    return {
+      id: 'memory.agent.experimental',
+      label: 'KodaX Memory Agent',
+      status: 'partial',
+      detail:
+        `The required KodaX 0.7.68 FEATURE_260 contract is available with policy ${capability.policyVersion}. ` +
+        'KodaX managed runs own silent scoped recall and governed outcome/review persistence over F228; Space v0.1.31 adds compatibility diagnostics while the full F117 Episodes, Activity, correction, and purge UX remains planned.',
+      since: '0.1.31',
+    };
+  }
+  return {
+    id: 'memory.agent.experimental',
+    label: 'KodaX Memory Agent',
+    status: 'planned',
+    detail:
+      'The required /experimental-memory contract has not been probed yet. Existing F228 Memory Governance remains available, and startup will fail closed if the 0.7.68 contract cannot be verified.',
+  };
+}
+
 function buildCapabilityLedger(
   entitled: boolean,
   runtimeSnapshot: RuntimeHostSnapshot,
 ): SpaceCapability[] {
   return [
     runtimeHostCapability(runtimeSnapshot),
+    experimentalMemoryCapability(getExperimentalMemorySdkCapability()),
     {
       id: 'repointel.trace',
       label: 'Repointel trace',
@@ -146,7 +174,7 @@ function buildCapabilityLedger(
       label: 'Reference External Agent executor',
       status: 'supported',
       detail:
-        'KodaX 0.7.67 Reference Agent registrations, live preflight, Worker/Workflow routing, durable tasks, Task Dock interventions, and audit events are integrated. A2A, MCP Tasks, and governed HTTP remain capability-gated until their adapters ship.',
+        'KodaX 0.7.68 Reference Agent registrations, live preflight, Worker/Workflow routing, durable tasks, Task Dock interventions, and audit events are integrated. A2A, MCP Tasks, and governed HTTP remain capability-gated until their adapters ship.',
       since: '0.1.30',
     },
   ];

@@ -28,7 +28,11 @@ let win = null;
 const deadline = Date.now() + 20_000;
 while (Date.now() < deadline) {
   for (const w of app.windows()) {
-    if (w.url().startsWith('http://127.0.0.1:5173') || w.url().startsWith('file://')) {
+    if (
+      w.url().startsWith('http://127.0.0.1:5173') ||
+      w.url().startsWith('app://space/') ||
+      w.url().startsWith('file://')
+    ) {
       win = w;
       break;
     }

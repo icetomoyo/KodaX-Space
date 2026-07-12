@@ -111,4 +111,17 @@ export default [
       ],
     },
   },
+  {
+    files: [
+      'apps/desktop/electron/diagnostics/**/*.{ts,tsx}',
+      'apps/desktop/electron/space-control/**/*.{ts,tsx}',
+      'apps/desktop/electron/window/app-protocol*.ts',
+      'apps/desktop/electron/ipc/diagnostics.ts',
+      'apps/desktop/electron/ipc/space-control.ts',
+    ],
+    ignores: ['apps/desktop/electron/diagnostics/runtime.ts', 'apps/desktop/electron/test/**'],
+    rules: {
+      'no-console': 'error',
+    },
+  },
 ];

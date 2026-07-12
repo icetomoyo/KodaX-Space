@@ -142,6 +142,7 @@ import { ensurePartnerDeliveryToolsRegistered } from './partner-delivery-tool.js
 import { ensurePartnerWorkspaceFileToolsRegistered } from './partner-workspace-file-tool.js';
 import { ensurePartnerFileProposalToolsRegistered } from './partner-file-proposal-tool.js';
 import { ensurePartnerHelperRunnerToolsRegistered } from './partner-helper-runner-tool.js';
+import { ensureSpaceControlToolsRegistered } from '../space-control/tools.js';
 import { partnerSourceStore } from './partner-source-store.js';
 import { withSessionRunContext } from './session-run-context.js';
 import { runWithSessionQueueScope } from './session-queue-guard.js';
@@ -712,6 +713,7 @@ export class RealKodaXSession implements ManagedSession {
     ensurePartnerWorkspaceFileToolsRegistered(sdk);
     ensurePartnerFileProposalToolsRegistered(sdk);
     ensurePartnerHelperRunnerToolsRegistered(sdk);
+    ensureSpaceControlToolsRegistered(sdk);
 
     type SdkAskUserQuestionOptions = Parameters<NonNullable<KodaXEvents['askUser']>>[0];
     type SdkAskUserMultiOptions = Parameters<NonNullable<KodaXEvents['askUserMulti']>>[0];
@@ -1308,6 +1310,30 @@ export class RealKodaXSession implements ManagedSession {
         });
       },
 
+      // ---- KodaX 0.7.68 FEATURE_260 Memory Agent ----
+      // Keep diagnostics metadata-only: objectives, summaries, proposal IDs, evidence
+      // refs, and remembered bodies may contain user content and must not enter logs.
+      onMemoryReview: (plan) => {
+        console.info(
+          `[real-session ${sid}] memory review planned; trigger=${plan.trigger}; candidates=${plan.candidateRefs.length}; actions=${plan.actions.length}; warnings=${plan.warnings.length}`,
+        );
+      },
+      onMemoryNotice: (notice) => {
+        console.info(
+          `[real-session ${sid}] memory change notice; summaries=${notice.summaries.length}; proposals=${notice.proposalIds.length}`,
+        );
+      },
+      onMemoryOutcomeDigest: (digest) => {
+        console.info(
+          `[real-session ${sid}] memory outcome digest; sequence=${digest.sequence}; outcome=${digest.outcome}; visibility=${digest.visibility}; evidence=${digest.evidenceRefs.length}; influence=${digest.memoryInfluence?.length ?? 0}`,
+        );
+      },
+      onMemoryReviewReceipt: (receipt) => {
+        console.info(
+          `[real-session ${sid}] memory review receipt; proposals=${receipt.proposalIds.length}`,
+        );
+      },
+
       // ---- 终止 ----
       // 注意：AMA 路径 onComplete 在 finally 里触发，错误轮也会被调一次（pre-FEATURE_100
       // 行为，见 SDK runner-driven.ts）。所以这里必须用 pendingTerminalError 把错误轮的
@@ -1636,7 +1662,12 @@ export class RealKodaXSession implements ManagedSession {
           // Preserve both Space AsyncLocalStorage scopes. Runtime starts runManagedTask
           // while resolving runs.start(), so the detached SDK run inherits these scopes.
           const handle = await withSessionRunContext(
-            { sessionId: sid, surface: this.surface, projectRoot: this.projectRoot },
+            {
+              sessionId: sid,
+              surface: this.surface,
+              projectRoot: this.projectRoot,
+              permissionMode: this.permissionMode,
+            },
             () =>
               runWithSessionQueueScope(sid, () =>
                 runtimeHostAdapter.startManagedRun({
@@ -1674,7 +1705,12 @@ export class RealKodaXSession implements ManagedSession {
         } else {
           // Legacy rollback driver. Keep until a later release proves Runtime parity.
           await withSessionRunContext(
-            { sessionId: sid, surface: this.surface, projectRoot: this.projectRoot },
+            {
+              sessionId: sid,
+              surface: this.surface,
+              projectRoot: this.projectRoot,
+              permissionMode: this.permissionMode,
+            },
             () => runWithSessionQueueScope(sid, () => sdk.runManagedTask(options, prompt)),
           );
           // SA errors resolve success:false while AMA errors throw; the shared callback

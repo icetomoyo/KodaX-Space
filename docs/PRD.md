@@ -1,10 +1,10 @@
 # KodaX Space 产品需求文档（PRD）
 
 > Last updated: 2026-07-12
-> Status: 长期产品方向文档。当前正式发布基线为 KodaX Space 0.1.30 / KodaX 0.7.67，当前源码为 v0.1.31 开发基线。已交付能力与边界以 [USER_MANUAL.zh-CN.md](USER_MANUAL.zh-CN.md)、[KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md) 和 [FEATURE_LIST.md](FEATURE_LIST.md) 为准。
+> Status: 长期产品方向文档。当前正式发布基线为 KodaX Space 0.1.31 / KodaX 0.7.68；Memory Agent 运行契约已适配，完整 F117 桌面治理体验仍在计划中。已交付能力与边界以 [USER_MANUAL.zh-CN.md](USER_MANUAL.zh-CN.md)、[KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md) 和 [FEATURE_LIST.md](FEATURE_LIST.md) 为准。
 > 对标：Anthropic Claude Desktop（Cowork / Code 双面板）+ OpenAI Codex Desktop App（多 agent 本机壳）
 
-> **当前落地摘要**：Coder 与 Partner 均可用；Partner 已具备 workspace-first Outputs、Sources/KB、checkpointed writes、Office/PDF 便利产物和本地 policy/audit。0.1.30 接入 KodaX 0.7.67 Reference External Agent 管理、Workflow/Worker 路由和 Task Dock 干预；v0.1.31 已实现 inline RuntimeHostAdapter 的 managed run、transcript、compact、fork、rewind，仍待人工验收和发布。A2A、MCP Tasks、受治理 HTTP、通用 Connector/浏览器控制/自动化/远程任务仍未作为当前能力开放。
+> **当前落地摘要**：Coder 与 Partner 均可用；Partner 已具备 workspace-first Outputs、Sources/KB、checkpointed writes、Office/PDF 便利产物和本地 policy/audit。0.1.30 接入 KodaX 0.7.67 Reference External Agent 管理、Workflow/Worker 路由和 Task Dock 干预；v0.1.31 已发布 inline RuntimeHostAdapter 的 managed run、transcript、compact、fork、rewind。A2A、MCP Tasks、受治理 HTTP、通用 Connector/浏览器控制/自动化/远程任务仍未作为当前能力开放。
 >
 > **2026-07-12 路线重置**：从 `v0.1.31` 起，规范路线由 [FEATURE_LIST.md](FEATURE_LIST.md) 的 Runtime alignment、platform trust、workflow/review evidence、task/capability governance、Memory Agent、Learning Center 和 beta completion 版本链管理。旧 M0/M1/M2/M3 里程碑只作为产品演进历史，不再表示未交付状态或版本承诺。
 
@@ -534,19 +534,19 @@ File panel 内点击 git diff
 
 ### 9.2 当前 0.1.x 版本链
 
-| Version lane      | Outcome                                                                                                   |
-| ----------------- | --------------------------------------------------------------------------------------------------------- |
-| `v0.1.31`         | Runtime Host Adapter 与 capability negotiation；inline-first，保留 Partner/custom-tool/permission parity  |
+| Version lane      | Outcome                                                                                                      |
+| ----------------- | ------------------------------------------------------------------------------------------------------------ |
+| `v0.1.31`         | Runtime Host Adapter 与 capability negotiation；inline-first，保留 Partner/custom-tool/permission parity     |
 | `v0.1.32`         | `app://space` origin、structured/redacted diagnostics，以及基于 typed semantic actions 的自然语言 Space 控制 |
-| `v0.1.33-v0.1.34` | Runtime/platform trust patch reserve                                                                      |
-| `v0.1.35`         | Workflow same-session replay provenance、timeline、evidence navigation 与 object-attached review receipts |
-| `v0.1.36`         | Task Plan/Completion Receipt、Runtime Capability Health、Effort/Assurance/Route facts                     |
-| `v0.1.37-v0.1.38` | Workflow/governance patch reserve                                                                         |
-| `v0.1.39`         | Memory Agent Desktop Host；硬门槛为已发布、兼容的 KX-F260 contract                                        |
-| `v0.1.40`         | Learning Center Desktop Host；硬门槛为已发布的 KX-F266 `runtime.learning`                                 |
-| `v0.1.41-v0.1.42` | Memory/Learning patch reserve                                                                             |
-| `v0.1.43`         | Localization completion、beta diagnostics、release channels/distribution trust                            |
-| `v0.1.44`         | 0.1.x patch/RC reserve                                                                                    |
+| `v0.1.33-v0.1.34` | Runtime/platform trust patch reserve                                                                         |
+| `v0.1.35`         | Workflow same-session replay provenance、timeline、evidence navigation 与 object-attached review receipts    |
+| `v0.1.36`         | Task Plan/Completion Receipt、Runtime Capability Health、Effort/Assurance/Route facts                        |
+| `v0.1.37-v0.1.38` | Workflow/governance patch reserve                                                                            |
+| `v0.1.39`         | Memory Agent Desktop Host；硬门槛为已发布、兼容的 KX-F260 contract                                           |
+| `v0.1.40`         | Learning Center Desktop Host；硬门槛为已发布的 KX-F266 `runtime.learning`                                    |
+| `v0.1.41-v0.1.42` | Memory/Learning patch reserve                                                                                |
+| `v0.1.43`         | Localization completion、beta diagnostics、release channels/distribution trust                               |
+| `v0.1.44`         | 0.1.x patch/RC reserve                                                                                       |
 
 KX-F260/F266 未按时发布时，Space 调换 feature lane，不绕过 capability gate。
 

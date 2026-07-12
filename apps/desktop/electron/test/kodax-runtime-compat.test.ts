@@ -4,6 +4,7 @@ import test from 'node:test';
 
 const PROBE_MARKER = 'KODAX_RUNTIME_PROBE=';
 const PROBE_TIMEOUT_MS = 30_000;
+const EXPECTED_KODAX_VERSION = '0.7.68';
 
 const PUBLISHED_RUNTIME_WORKER_PROBE = String.raw`
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -29,7 +30,7 @@ try {
       resourceLimits: { maxOldGenerationSizeMb: 128 },
       shutdownTimeoutMs: 1500,
     },
-    clientInfo: { name: 'kodax-space-runtime-compat', version: '0.1.30' },
+    clientInfo: { name: 'kodax-space-runtime-compat', version: '0.1.31' },
   });
   const created = await runtime.sessions.create({
     title: 'Space SDK compatibility probe',
@@ -251,13 +252,13 @@ function runPublishedRuntimeWorkerProbe(): Promise<Record<string, unknown>> {
 }
 
 test(
-  'KodaX 0.7.67 Runtime satisfies Worker and external-agent compatibility',
+  `KodaX ${EXPECTED_KODAX_VERSION} Runtime satisfies Worker and external-agent compatibility`,
   {
     timeout: PROBE_TIMEOUT_MS + 5_000,
   },
   async () => {
     const result = await runPublishedRuntimeWorkerProbe();
-    assert.equal(result.version, '0.7.67');
+    assert.equal(result.version, EXPECTED_KODAX_VERSION);
     assert.equal(result.createAvailable, true);
     assert.equal(result.connectAvailable, true);
     assert.ok(Number.isSafeInteger(result.protocolVersion));

@@ -2,7 +2,7 @@
 
 Last Updated: 2026-07-12
 
-> Historical issue details are preserved as investigation evidence. Current public release is v0.1.30; current source baseline is v0.1.31 development. Start from the [documentation hub](README.md) for current behavior and status.
+> Historical issue details are preserved as investigation evidence. Current public release is v0.1.31. Start from the [documentation hub](README.md) for current behavior and status.
 
 ## Issue Index
 

@@ -2,10 +2,34 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { probeKodaxSdk } from '../kodax/kodax-sdk-probe.js';
+import {
+  getExperimentalMemorySdkCapability,
+  inspectExperimentalMemoryModule,
+  probeKodaxSdk,
+} from '../kodax/kodax-sdk-probe.js';
 
 test('probeKodaxSdk: real SDK passes (all expected functions / classes exist)', async () => {
   // 不该 throw —— SDK 真的少了任何一个，需要立即更新
   // apps/desktop/electron/kodax/kodax-sdk-types.d.ts 同步对齐
   await assert.doesNotReject(probeKodaxSdk());
+});
+
+test('probeKodaxSdk: optional FEATURE_260 surface is negotiated from exports, not inferred', async () => {
+  await probeKodaxSdk();
+  const capability = getExperimentalMemorySdkCapability();
+  assert.deepEqual(capability, {
+    status: 'available',
+    policyVersion: 'f260-v0.7.68.2',
+  });
+});
+
+test('inspectExperimentalMemoryModule rejects a present but incomplete contract', () => {
+  assert.throws(
+    () =>
+      inspectExperimentalMemoryModule({
+        createMemoryAgent() {},
+        MEMORY_POLICY_VERSION: 'f260-v0.7.68.2',
+      }),
+    /createMemoryControlPlane expected function/,
+  );
 });

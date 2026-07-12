@@ -56,7 +56,11 @@ async function main() {
     const windows = app.windows();
     for (const w of windows) {
       const url = w.url();
-      if (url.startsWith('http://127.0.0.1:5173') || url.startsWith('file://')) {
+      if (
+        url.startsWith('http://127.0.0.1:5173') ||
+        url.startsWith('app://space/') ||
+        url.startsWith('file://')
+      ) {
         win = w;
         break;
       }

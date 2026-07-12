@@ -236,9 +236,14 @@ import {
   memoryCurateChannel,
   memoryPackChannel,
 } from './memory.js';
+import { diagnosticsExportChannel, diagnosticsReportChannel } from './diagnostics.js';
+import { spaceControlRequestedChannel, spaceControlResolveChannel } from './space-control.js';
 
 export const invokeChannels = {
   [versionChannel.name]: versionChannel,
+  [diagnosticsReportChannel.name]: diagnosticsReportChannel,
+  [diagnosticsExportChannel.name]: diagnosticsExportChannel,
+  [spaceControlResolveChannel.name]: spaceControlResolveChannel,
   [repointelStatusChannel.name]: repointelStatusChannel,
   [repointelPrewarmChannel.name]: repointelPrewarmChannel,
   [handoffListChannel.name]: handoffListChannel,
@@ -417,6 +422,7 @@ export const invokeChannels = {
 } as const;
 
 export const pushChannels = {
+  [spaceControlRequestedChannel.name]: spaceControlRequestedChannel,
   [sessionEventChannel.name]: sessionEventChannel,
   [artifactChangedChannel.name]: artifactChangedChannel,
   [partnerDeliveriesChangedChannel.name]: partnerDeliveriesChangedChannel,

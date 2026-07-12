@@ -14,6 +14,7 @@ export type PartnerToolScope =
   | 'source'
   | 'workspace-delivery'
   | 'workspace-file-proposal'
+  | 'space-control'
   | 'network-research'
   | 'readonly';
 
@@ -120,6 +121,7 @@ function partnerPolicyAllows(toolName: string): boolean {
   if (
     policy.scope === 'artifact' ||
     policy.scope === 'knowledge-base' ||
+    policy.scope === 'space-control' ||
     policy.scope === 'workspace-delivery' ||
     policy.scope === 'workspace-file-proposal'
   ) {

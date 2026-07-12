@@ -292,6 +292,7 @@ async function checkAsarContents(asarPath) {
   // when Runtime or a constructed handler first starts.
   const kodaxRuntimeRequired = [
     '/node_modules/@kodax-ai/kodax/dist/sdk-runtime.js',
+    '/node_modules/@kodax-ai/kodax/dist/sdk-experimental-memory.js',
     '/node_modules/@kodax-ai/kodax/dist/runtime-worker.js',
     '/node_modules/@kodax-ai/kodax/dist/constructed-handler-worker.js',
     '/node_modules/@kodax-ai/kodax/dist/semantic-worker.js',

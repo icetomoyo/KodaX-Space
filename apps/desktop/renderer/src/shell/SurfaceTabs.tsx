@@ -10,6 +10,7 @@
 import { Code2, Handshake } from 'lucide-react';
 import { PARTNER_ENABLED, useSurfaceStore, type Surface } from '../store/surface.js';
 import { useI18n } from '../i18n/I18nProvider.js';
+import { setSpaceSurface } from '../space-control/semanticActions.js';
 
 const TABS: readonly { surface: Surface; label: string; Icon: typeof Code2 }[] = [
   { surface: 'code', label: 'Coder', Icon: Code2 },
@@ -32,7 +33,7 @@ export function SurfaceTabs(): JSX.Element {
             disabled={disabled}
             title={disabled ? t('surface.partnerDisabled') : undefined}
             onClick={() => {
-              if (!disabled) useSurfaceStore.getState().setSurface(surface);
+              if (!disabled) setSpaceSurface(surface);
             }}
             aria-pressed={active}
             className={`flex-1 text-xs py-1.5 rounded ${
