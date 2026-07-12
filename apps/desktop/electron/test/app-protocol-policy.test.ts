@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, realpath, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {
@@ -23,11 +23,12 @@ async function fixture(): Promise<{ root: string; outside: string }> {
 
 test('app protocol resolves root and regular renderer assets', async () => {
   const { root } = await fixture();
+  const canonicalRoot = await realpath(root);
   const index = await resolveAppProtocolPath('app://space/', root);
   const asset = await resolveAppProtocolPath('app://space/assets/main.js', root);
 
-  assert.deepEqual(index, { ok: true, filePath: path.join(root, 'index.html') });
-  assert.deepEqual(asset, { ok: true, filePath: path.join(root, 'assets', 'main.js') });
+  assert.deepEqual(index, { ok: true, filePath: path.join(canonicalRoot, 'index.html') });
+  assert.deepEqual(asset, { ok: true, filePath: path.join(canonicalRoot, 'assets', 'main.js') });
   assert.equal(APP_PROTOCOL_INDEX_URL, 'app://space/index.html');
 });
 

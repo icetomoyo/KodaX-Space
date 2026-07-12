@@ -169,7 +169,10 @@ test('renderer broker rejects mismatched and late results and returns truthful t
     summaryKey: 'spaceControl.available',
   };
   assert.equal(broker.resolve(mismatched), false);
-  const result = await pending;
+  // Production deliberately unrefs broker timeouts so they never keep Electron
+  // alive. Keep this test process referenced until that timeout settles.
+  const keepAlive = setInterval(() => undefined, 50);
+  const result = await pending.finally(() => clearInterval(keepAlive));
   assert.equal(result.status, 'unknown');
   assert.equal(result.reasonCode, 'renderer-timeout');
   assert.ok(pushed);
