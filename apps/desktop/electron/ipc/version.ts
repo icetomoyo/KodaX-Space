@@ -7,6 +7,11 @@ import { createRequire } from 'node:module';
 import { registerChannel } from './register.js';
 import type { SpaceCapability, SpaceVersionOutput } from '@kodax-space/space-ipc-schema';
 import { isRepoIntelEntitled } from '../kodax/repo-intel-gate.js';
+import { runtimeHostAdapter, type RuntimeHostSnapshot } from '../kodax/runtime-host-adapter.js';
+import {
+  getExperimentalMemorySdkCapability,
+  type ExperimentalMemorySdkCapability,
+} from '../kodax/kodax-sdk-probe.js';
 
 function readSpaceVersion(electronApp: App): string {
   // app.getVersion() 读 packaged 应用的 package.json；dev 模式下可能不是 0.1.0-alpha.0
@@ -46,8 +51,59 @@ function readKodaxDependencySpec(): string {
   }
 }
 
-function buildCapabilityLedger(entitled: boolean): SpaceCapability[] {
+function runtimeHostCapability(snapshot: RuntimeHostSnapshot): SpaceCapability {
+  const ready = snapshot.state === 'ready';
+  const legacy = snapshot.state === 'legacy';
+  const failed = snapshot.state === 'failed';
+  const identity = snapshot.identity;
+  const detail = ready
+    ? `KodaX Runtime ${identity?.version ?? 'unknown'} ${identity?.mode ?? 'embedded'}/${identity?.isolation ?? 'inline'} owns managed runs; Space bridges permissions, Partner, MCP process lifecycle, and External Agent storage.`
+    : legacy
+      ? 'The internal legacy rollback host is selected before run start. No Runtime-managed run is active.'
+      : failed
+        ? `The Runtime host failed before run start${snapshot.error ? `: ${snapshot.error}` : '.'} New runs use the bounded legacy rollback path.`
+        : snapshot.state === 'initializing' || snapshot.state === 'uninitialized'
+          ? `The Runtime host is ${snapshot.state}. New runs wait for initialization and use legacy only if it fails before start.`
+          : 'The Runtime host is closed and cannot accept new runs.';
+  return {
+    id: 'runtime.hostAdapter',
+    label: 'Runtime Host Adapter',
+    status: ready ? 'supported' : snapshot.state === 'closed' ? 'blocked' : 'partial',
+    detail,
+    since: '0.1.31',
+  };
+}
+
+export function experimentalMemoryCapability(
+  capability: ExperimentalMemorySdkCapability,
+): SpaceCapability {
+  if (capability.status === 'available') {
+    return {
+      id: 'memory.agent.experimental',
+      label: 'KodaX Memory Agent',
+      status: 'partial',
+      detail:
+        `The required KodaX 0.7.68 FEATURE_260 contract is available with policy ${capability.policyVersion}. ` +
+        'KodaX managed runs own silent scoped recall and governed outcome/review persistence over F228; Space v0.1.31 adds compatibility diagnostics while the full F117 Episodes, Activity, correction, and purge UX remains planned.',
+      since: '0.1.31',
+    };
+  }
+  return {
+    id: 'memory.agent.experimental',
+    label: 'KodaX Memory Agent',
+    status: 'planned',
+    detail:
+      'The required /experimental-memory contract has not been probed yet. Existing F228 Memory Governance remains available, and startup will fail closed if the 0.7.68 contract cannot be verified.',
+  };
+}
+
+function buildCapabilityLedger(
+  entitled: boolean,
+  runtimeSnapshot: RuntimeHostSnapshot,
+): SpaceCapability[] {
   return [
+    runtimeHostCapability(runtimeSnapshot),
+    experimentalMemoryCapability(getExperimentalMemorySdkCapability()),
     {
       id: 'repointel.trace',
       label: 'Repointel trace',
@@ -118,7 +174,7 @@ function buildCapabilityLedger(entitled: boolean): SpaceCapability[] {
       label: 'Reference External Agent executor',
       status: 'supported',
       detail:
-        'KodaX 0.7.67 Reference Agent registrations, live preflight, Worker/Workflow routing, durable tasks, Task Dock interventions, and audit events are integrated. A2A, MCP Tasks, and governed HTTP remain capability-gated until their adapters ship.',
+        'KodaX 0.7.68 Reference Agent registrations, live preflight, Worker/Workflow routing, durable tasks, Task Dock interventions, and audit events are integrated. A2A, MCP Tasks, and governed HTTP remain capability-gated until their adapters ship.',
       since: '0.1.30',
     },
   ];
@@ -142,8 +198,8 @@ export function registerVersionChannel(): void {
       platform,
       kodaxSdkVersion: readKodaxSdkVersion(),
       kodaxDependencySpec: readKodaxDependencySpec(),
-      capabilityContract: 'space-v0.1.30',
-      capabilities: buildCapabilityLedger(entitled),
+      capabilityContract: 'space-v0.1.31',
+      capabilities: buildCapabilityLedger(entitled, runtimeHostAdapter.snapshot()),
     };
   });
 }

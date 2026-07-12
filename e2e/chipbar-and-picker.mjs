@@ -42,7 +42,11 @@ async function main() {
   while (Date.now() < deadline) {
     for (const w of app.windows()) {
       const url = w.url();
-      if (url.startsWith('http://127.0.0.1:5173') || url.startsWith('file://')) {
+      if (
+        url.startsWith('http://127.0.0.1:5173') ||
+        url.startsWith('app://space/') ||
+        url.startsWith('file://')
+      ) {
         win = w;
         break;
       }
@@ -56,7 +60,9 @@ async function main() {
   await win.waitForTimeout(2500);
 
   const consoleErrors = [];
-  win.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text()); });
+  win.on('console', (m) => {
+    if (m.type() === 'error') consoleErrors.push(m.text());
+  });
 
   const results = {};
 
@@ -64,7 +70,11 @@ async function main() {
   console.log('[e2e] check ChipBar auto-rendered (default workspace took effect)');
   await win.screenshot({ path: `${SHOT_DIR}/01-boot.png` });
   // Project chip uses 📁 + project name
-  results.chipBarVisible = await win.locator('button[title*=":\\\\"], button[title*="/"]').first().isVisible().catch(() => false);
+  results.chipBarVisible = await win
+    .locator('button[title*=":\\\\"], button[title*="/"]')
+    .first()
+    .isVisible()
+    .catch(() => false);
   // simpler: any button whose text starts with 📁
   const projectBtns = await win.locator('button:has-text("📁")').count();
   results.chipBarVisible = projectBtns > 0;
@@ -75,8 +85,11 @@ async function main() {
   await win.locator('button:has-text("📍")').first().click();
   await win.waitForTimeout(400);
   await win.screenshot({ path: `${SHOT_DIR}/02-local-dropdown.png` });
-  results.localCheck = await win.locator('text=Local').count() >= 2; // chip text + dropdown row
-  results.gearVisible = await win.locator('button[aria-label="Open settings"]').isVisible().catch(() => false);
+  results.localCheck = (await win.locator('text=Local').count()) >= 2; // chip text + dropdown row
+  results.gearVisible = await win
+    .locator('button[aria-label="Open settings"]')
+    .isVisible()
+    .catch(() => false);
   console.log(`[e2e] local dropdown — Local ✓: ${results.localCheck} · ⚙: ${results.gearVisible}`);
 
   // 3) Click ⚙ → SettingsPopover
@@ -85,13 +98,20 @@ async function main() {
     await win.locator('button[aria-label="Open settings"]').first().click();
     await win.waitForTimeout(500);
     await win.screenshot({ path: `${SHOT_DIR}/03-settings-popover.png` });
-    results.settingsTitle = await win.locator('h2:has-text("Settings")').isVisible().catch(() => false);
+    results.settingsTitle = await win
+      .locator('h2:has-text("Settings")')
+      .isVisible()
+      .catch(() => false);
     const pathInput = win.locator('input[placeholder*="kodax_workspace"]');
     const pathValue = await pathInput.inputValue().catch(() => '');
     results.workspacePathFilled = pathValue.length > 0 && pathValue.toLowerCase().includes('kodax');
     console.log(`[e2e] settings: title=${results.settingsTitle} · path="${pathValue}"`);
     // close it
-    await win.locator('button:has-text("Close")').first().click().catch(() => {});
+    await win
+      .locator('button:has-text("Close")')
+      .first()
+      .click()
+      .catch(() => {});
     await win.waitForTimeout(300);
   }
 
@@ -101,9 +121,18 @@ async function main() {
   await win.waitForTimeout(400);
   await win.screenshot({ path: `${SHOT_DIR}/04-project-dropdown.png` });
   // "Recent" appears as a section header — match div directly
-  results.recentLabel = await win.locator('div:text-is("Recent")').first().isVisible().catch(() => false);
-  results.openFolder = await win.locator('button:has-text("Open folder")').isVisible().catch(() => false);
-  console.log(`[e2e] project dropdown — Recent: ${results.recentLabel} · Open folder: ${results.openFolder}`);
+  results.recentLabel = await win
+    .locator('div:text-is("Recent")')
+    .first()
+    .isVisible()
+    .catch(() => false);
+  results.openFolder = await win
+    .locator('button:has-text("Open folder")')
+    .isVisible()
+    .catch(() => false);
+  console.log(
+    `[e2e] project dropdown — Recent: ${results.recentLabel} · Open folder: ${results.openFolder}`,
+  );
   await win.keyboard.press('Escape');
   await win.waitForTimeout(300);
 
@@ -113,10 +142,21 @@ async function main() {
   await win.waitForTimeout(500);
   await win.screenshot({ path: `${SHOT_DIR}/05-picker-open.png` });
   // Headers should both be visible: Provider, Model, Effort
-  results.providerHeader = await win.locator('text=Provider').isVisible().catch(() => false);
-  results.modelHeader = await win.locator('span:text-is("Model")').isVisible().catch(() => false);
-  results.effortHeader = await win.locator('span:text-is("Effort")').isVisible().catch(() => false);
-  console.log(`[e2e] picker headers — Provider: ${results.providerHeader} · Model: ${results.modelHeader} · Effort: ${results.effortHeader}`);
+  results.providerHeader = await win
+    .locator('text=Provider')
+    .isVisible()
+    .catch(() => false);
+  results.modelHeader = await win
+    .locator('span:text-is("Model")')
+    .isVisible()
+    .catch(() => false);
+  results.effortHeader = await win
+    .locator('span:text-is("Effort")')
+    .isVisible()
+    .catch(() => false);
+  console.log(
+    `[e2e] picker headers — Provider: ${results.providerHeader} · Model: ${results.modelHeader} · Effort: ${results.effortHeader}`,
+  );
 
   // 6) Click a different provider → right column should refresh.
   //
@@ -124,7 +164,11 @@ async function main() {
   // 后 popup 易被关掉。每次点 provider 前确认 popup 还开着；若关了重新 Ctrl+I 打开。
   console.log('[e2e] preview different providers');
   async function ensurePickerOpen() {
-    const headerVisible = await win.locator('span:text-is("Provider")').first().isVisible().catch(() => false);
+    const headerVisible = await win
+      .locator('span:text-is("Provider")')
+      .first()
+      .isVisible()
+      .catch(() => false);
     if (!headerVisible) {
       await win.keyboard.press('Control+i');
       await win.waitForTimeout(300);
@@ -142,12 +186,19 @@ async function main() {
     const modelsAfter1 = await win.locator('button > span.font-mono').count();
     if (count >= 2) {
       await ensurePickerOpen();
-      await providerEntries.nth(1).click({ timeout: 5000 }).catch(() => { console.log('[e2e] provider[1] click skipped (popup closed)'); });
+      await providerEntries
+        .nth(1)
+        .click({ timeout: 5000 })
+        .catch(() => {
+          console.log('[e2e] provider[1] click skipped (popup closed)');
+        });
       await win.waitForTimeout(300);
       await win.screenshot({ path: `${SHOT_DIR}/07-provider-2-preview.png` });
       const modelsAfter2 = await win.locator('button > span.font-mono').count();
       results.modelRefreshed = true;
-      console.log(`[e2e] models after provider1: ${modelsAfter1}, after provider2: ${modelsAfter2}`);
+      console.log(
+        `[e2e] models after provider1: ${modelsAfter1}, after provider2: ${modelsAfter2}`,
+      );
     } else {
       results.modelRefreshed = true;
     }

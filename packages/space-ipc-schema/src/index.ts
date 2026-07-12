@@ -34,6 +34,28 @@ export {
 } from './channels/version.js';
 
 export {
+  diagnosticsLevelSchema,
+  diagnosticsComponentSchema,
+  diagnosticsExportCategorySchema,
+  diagnosticsReportChannel,
+  diagnosticsExportChannel,
+  type DiagnosticsExportCategory,
+} from './channels/diagnostics.js';
+
+export {
+  spaceActionIdSchema,
+  spaceActionValueSchema,
+  spaceActionArgsSchema,
+  spaceControlRequestedChannel,
+  spaceControlResultSchema,
+  spaceControlResolveChannel,
+  type SpaceActionIdT,
+  type SpaceActionValueT,
+  type SpaceActionArgsT,
+  type SpaceControlResultT,
+} from './channels/space-control.js';
+
+export {
   repointelStatusChannel,
   repointelPrewarmChannel,
   repointelStatusItemSchema,

@@ -51,11 +51,13 @@ import { requestConfirm } from '../../store/confirmStore.js';
 import { ProviderCard } from '../provider/ProviderCard.js';
 import { CustomProviderForm } from '../provider/CustomProviderForm.js';
 import { WorkflowPolicySection } from '../workflow/WorkflowPolicySection.js';
+import { setSpaceLanguage } from '../../space-control/semanticActions.js';
 
-export type SettingsTab = 'providers' | 'preferences' | 'runtime' | 'license';
+export type SettingsTab = 'providers' | 'preferences' | 'runtime' | 'diagnostics' | 'license';
 
 interface SettingsModalProps {
   readonly initialTab?: SettingsTab;
+  readonly onTabChange?: (tab: SettingsTab) => void;
   readonly onClose: () => void;
 }
 
@@ -93,10 +95,17 @@ const TABS: readonly SettingsTabMeta[] = [
     descriptionKey: 'settings.license.description',
     Icon: ShieldCheck,
   },
+  {
+    id: 'diagnostics',
+    labelKey: 'settings.diagnostics',
+    descriptionKey: 'settings.diagnostics.description',
+    Icon: FileArchive,
+  },
 ];
 
 export function SettingsModal({
   initialTab = 'preferences',
+  onTabChange,
   onClose,
 }: SettingsModalProps): JSX.Element {
   const { t } = useI18n();
@@ -105,10 +114,15 @@ export function SettingsModal({
 
   function selectTab(next: SettingsTab): void {
     setTab(next);
+    onTabChange?.(next);
     window.requestAnimationFrame(() => {
       document.getElementById(`settings-tab-${next}`)?.focus();
     });
   }
+
+  useEffect(() => {
+    setTab(initialTab);
+  }, [initialTab]);
 
   function handleTabListKeyDown(e: ReactKeyboardEvent<HTMLElement>): void {
     const currentIndex = TABS.findIndex((t) => t.id === tab);
@@ -241,6 +255,15 @@ export function SettingsModal({
               <RuntimePanel />
             </div>
             <div
+              id="settings-panel-diagnostics"
+              role="tabpanel"
+              aria-labelledby="settings-tab-diagnostics"
+              hidden={tab !== 'diagnostics'}
+              className="h-full"
+            >
+              <DiagnosticsPanel />
+            </div>
+            <div
               id="settings-panel-license"
               role="tabpanel"
               aria-labelledby="settings-tab-license"
@@ -256,6 +279,64 @@ export function SettingsModal({
   );
 
   return createPortal(modal, document.body);
+}
+
+function DiagnosticsPanel(): JSX.Element {
+  const { t } = useI18n();
+  const [busy, setBusy] = useState(false);
+
+  async function exportDiagnostics(): Promise<void> {
+    if (!window.kodaxSpace || busy) return;
+    setBusy(true);
+    try {
+      const result = await window.kodaxSpace.invoke('diagnostics.export', {
+        categories: ['manifest', 'logs', 'capabilities', 'release', 'degradations'],
+      });
+      if (!result.ok) {
+        pushToast(t('settings.diagnostics.exportFailed'), 'error');
+        return;
+      }
+      if (result.data.status === 'cancelled') return;
+      pushToast(t('settings.diagnostics.exported', { fileName: result.data.fileName }), 'success');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="mx-auto max-w-4xl space-y-4 p-5">
+      <SettingsSection
+        title={t('settings.diagnostics.title')}
+        description={t('settings.diagnostics.description')}
+        icon={FileArchive}
+      >
+        <div className="space-y-3">
+          <div className="rounded-lg border border-border-default bg-surface px-3 py-3 text-xs leading-5 text-fg-secondary">
+            <div className="font-medium text-fg-primary">
+              {t('settings.diagnostics.includesTitle')}
+            </div>
+            <div className="mt-1">{t('settings.diagnostics.includes')}</div>
+          </div>
+          <div className="rounded-lg border border-ok/30 bg-ok/8 px-3 py-3 text-xs leading-5 text-fg-muted">
+            {t('settings.diagnostics.privacy')}
+          </div>
+          <button
+            type="button"
+            onClick={() => void exportDiagnostics()}
+            disabled={busy}
+            className="inline-flex min-h-9 items-center justify-center gap-2 rounded-lg border border-border-default bg-surface-3 px-3 text-xs text-fg-primary hover:bg-hover-bg disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {busy ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={1.8} />
+            ) : (
+              <FileArchive className="h-3.5 w-3.5" strokeWidth={1.8} />
+            )}
+            {t('settings.diagnostics.export')}
+          </button>
+        </div>
+      </SettingsSection>
+    </div>
+  );
 }
 
 function SettingsNavButton({
@@ -1503,7 +1584,7 @@ function LanguageSection(): JSX.Element {
     if (next === languageMode || busy !== null) return;
     setBusy(next);
     try {
-      const ok = await setLanguageMode(next);
+      const ok = await setSpaceLanguage(next, setLanguageMode);
       if (ok) pushToast(t('toast.languageSaved'), 'success', 1800);
       else pushToast(t('toast.languageSaveFailed'), 'error');
     } finally {

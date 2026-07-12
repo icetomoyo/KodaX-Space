@@ -17,6 +17,54 @@
 // 命中 "import" 条件正常工作。probe 改为 async — main.ts 在 app.whenReady().then 内调，
 // 已是 async 上下文。
 
+export type ExperimentalMemorySdkCapability =
+  | { readonly status: 'unprobed' }
+  | { readonly status: 'available'; readonly policyVersion: string };
+
+let experimentalMemoryCapability: ExperimentalMemorySdkCapability = { status: 'unprobed' };
+
+export function getExperimentalMemorySdkCapability(): ExperimentalMemorySdkCapability {
+  return { ...experimentalMemoryCapability };
+}
+
+export function inspectExperimentalMemoryModule(moduleValue: unknown): {
+  readonly policyVersion: string;
+} {
+  if (typeof moduleValue !== 'object' || moduleValue === null) {
+    throw new Error('module namespace is not an object');
+  }
+  const moduleRecord = moduleValue as Record<string, unknown>;
+  const failures: string[] = [];
+  if (typeof moduleRecord.createMemoryAgent !== 'function') {
+    failures.push(
+      `createMemoryAgent expected function, got ${typeof moduleRecord.createMemoryAgent}`,
+    );
+  }
+  if (typeof moduleRecord.createMemoryControlPlane !== 'function') {
+    failures.push(
+      `createMemoryControlPlane expected function, got ${typeof moduleRecord.createMemoryControlPlane}`,
+    );
+  }
+  const policyVersion = moduleRecord.MEMORY_POLICY_VERSION;
+  if (typeof policyVersion !== 'string' || !/^f260-v\d+\.\d+\.\d+\.\d+$/.test(policyVersion)) {
+    failures.push('MEMORY_POLICY_VERSION expected an f260-v<semver>.<revision> string');
+  }
+  if (failures.length > 0) {
+    throw new Error(failures.join('; '));
+  }
+  return { policyVersion: policyVersion as string };
+}
+
+export async function probeExperimentalMemorySdk(): Promise<ExperimentalMemorySdkCapability> {
+  const moduleValue: unknown = await import('@kodax-ai/kodax/experimental-memory');
+  const inspected = inspectExperimentalMemoryModule(moduleValue);
+  experimentalMemoryCapability = {
+    status: 'available',
+    policyVersion: inspected.policyVersion,
+  };
+  return getExperimentalMemorySdkCapability();
+}
+
 /**
  * 一次性检查所有 SDK 入口可用。失败立即 throw —— main.ts 应当在 app.ready 之前调，
  * 让 Electron 启动失败比"用户发第一条 prompt 时白屏"更早被发现。
@@ -30,7 +78,11 @@ export async function probeKodaxSdk(): Promise<void> {
     ['runManagedTask', 'function', codingModule.runManagedTask],
     ['createAutoModeToolGuardrail', 'function', codingModule.createAutoModeToolGuardrail],
     ['formatAgentsForPrompt', 'function', codingModule.formatAgentsForPrompt],
-    ['getBuiltinRegisteredToolDefinition', 'function', codingModule.getBuiltinRegisteredToolDefinition],
+    [
+      'getBuiltinRegisteredToolDefinition',
+      'function',
+      codingModule.getBuiltinRegisteredToolDefinition,
+    ],
     ['getKodaxGlobalDir', 'function', codingModule.getKodaxGlobalDir],
     ['getRegisteredToolDefinition', 'function', codingModule.getRegisteredToolDefinition],
     ['isToolNetworkRead', 'function', codingModule.isToolNetworkRead],
@@ -66,7 +118,7 @@ export async function probeKodaxSdk(): Promise<void> {
   if (typeof llmModule.verifyProviderCredential !== 'function') {
     console.warn(
       '[kodax-sdk-probe] @kodax-ai/kodax/llm.verifyProviderCredential not present in this SDK build. ' +
-      'Provider connection test will be disabled until the SDK is upgraded.',
+        'Provider connection test will be disabled until the SDK is upgraded.',
     );
   }
 
@@ -78,6 +130,14 @@ export async function probeKodaxSdk(): Promise<void> {
     failures.push(
       `@kodax-ai/kodax/agent.resolveContextWindow: expected function, got ${typeof agentModule.resolveContextWindow}`,
     );
+  }
+
+  // FEATURE_260 is part of the exact 0.7.68 release baseline. Missing exports, load errors,
+  // or a malformed public surface are startup contract failures rather than version guesses.
+  try {
+    await probeExperimentalMemorySdk();
+  } catch (error) {
+    failures.push(error instanceof Error ? error.message : String(error));
   }
 
   if (failures.length > 0) {

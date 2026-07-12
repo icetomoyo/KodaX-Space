@@ -23,6 +23,7 @@ import { Sun, Moon, Monitor, type LucideIcon } from 'lucide-react';
 import { useAppStore } from '../store/appStore.js';
 import { useI18n } from '../i18n/I18nProvider.js';
 import type { MessageKey } from '../i18n/messages.js';
+import { setSpaceTheme } from '../space-control/semanticActions.js';
 
 const DARK_OVERLAY = { color: '#0b0b0c', symbolColor: '#a1a1aa' };
 const LIGHT_OVERLAY = { color: '#ffffff', symbolColor: '#3f3f46' };
@@ -60,7 +61,6 @@ export function applyThemeToDocument(theme: ThemeKey): void {
 export function ThemeToggle(): JSX.Element {
   const { t } = useI18n();
   const theme = useAppStore((s) => s.theme);
-  const setTheme = useAppStore((s) => s.setTheme);
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
 
@@ -85,7 +85,7 @@ export function ThemeToggle(): JSX.Element {
         const cur = useAppStore.getState().theme;
         const idx = CYCLE_ORDER.indexOf(cur);
         const next = CYCLE_ORDER[(idx + 1) % CYCLE_ORDER.length];
-        setTheme(next);
+        setSpaceTheme(next);
         return;
       }
       if (e.key === 'Escape') setOpen(false);
@@ -99,7 +99,7 @@ export function ThemeToggle(): JSX.Element {
       window.removeEventListener('keydown', onKey);
       document.removeEventListener('mousedown', onDocDown);
     };
-  }, [setTheme]);
+  }, []);
 
   const current = OPTIONS.find((o) => o.key === theme) ?? OPTIONS[1];
   const currentLabel = t(current.labelKey);
@@ -133,7 +133,7 @@ export function ThemeToggle(): JSX.Element {
                 key={o.key}
                 type="button"
                 onClick={() => {
-                  setTheme(o.key);
+                  setSpaceTheme(o.key);
                   setOpen(false);
                 }}
                 className={`w-full text-left px-3 py-1 hover:bg-hover-bg flex items-center gap-2 ${

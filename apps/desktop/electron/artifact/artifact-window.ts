@@ -8,12 +8,11 @@
 // Lazy electron access (BrowserWindow/shell) mirrors ipc/artifact.ts so this module
 // stays importable under the tsx/esm test loader.
 
-import path from 'node:path';
 import { createRequire } from 'node:module';
-import { pathToFileURL } from 'node:url';
 import { registerChannel } from '../ipc/register.js';
 import { installNavigationGuards } from '../window/navigation-guards.js';
 import { installTopmostGuard } from '../window/topmost-guard.js';
+import { APP_PROTOCOL_INDEX_URL, APP_PROTOCOL_ORIGIN } from '../window/app-protocol-policy.js';
 
 function getElectron(): typeof import('electron') {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -25,8 +24,6 @@ function getElectron(): typeof import('electron') {
 export interface ArtifactWindowDeps {
   /** Absolute path to the renderer preload script (same as the main window). */
   readonly preloadPath: string;
-  /** Absolute path to the packaged renderer dist (holds index.html). */
-  readonly rendererDist: string;
   /** Vite dev-server URL in dev; undefined in production. */
   readonly devServerUrl: string | undefined;
 }
@@ -79,10 +76,9 @@ function openArtifactWindow(input: OpenInput, deps: ArtifactWindowDeps): void {
     },
   });
 
-  const allowedFilePrefix = pathToFileURL(deps.rendererDist).href.replace(/\/?$/, '/');
   installNavigationGuards(win.webContents, {
     devServerUrl: deps.devServerUrl,
-    allowedFilePrefix,
+    allowedAppOrigin: APP_PROTOCOL_ORIGIN,
     openExternal: (url) => void shell.openExternal(url),
   });
 
@@ -90,7 +86,7 @@ function openArtifactWindow(input: OpenInput, deps: ArtifactWindowDeps): void {
   if (deps.devServerUrl) {
     void win.loadURL(`${deps.devServerUrl}#${hash}`);
   } else {
-    void win.loadFile(path.join(deps.rendererDist, 'index.html'), { hash });
+    void win.loadURL(`${APP_PROTOCOL_INDEX_URL}#${hash}`);
   }
 
   openWindows.add(win);

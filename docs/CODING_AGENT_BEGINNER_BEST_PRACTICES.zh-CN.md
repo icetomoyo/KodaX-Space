@@ -1,6 +1,6 @@
 # KodaX Space Coding Agent 新手教程：软件与微服务开发最佳实践
 
-适用版本：KodaX Space 0.1.30 正式版 / KodaX 0.7.67。
+适用版本：KodaX Space v0.1.31 正式版 / KodaX 0.7.68。界面入口以[当前用户手册](USER_MANUAL.zh-CN.md)为准。
 
 适用对象：第一次使用 Coding Agent 的开发者、测试工程师、技术负责人、代码相关知识工作者，以及需要把 KodaX Space 推广给团队成员的客户。
 

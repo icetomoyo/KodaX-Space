@@ -167,9 +167,9 @@ test('listPersistedSessions: cursor pagination continues until it finds the visi
     mockState.seed(`code-page-${index}`, '/r', `Real session ${index}`);
   }
 
-  const list = await listPersistedSessions({ projectRoot: '/r' });
+  const list = await listPersistedSessions({ projectRoot: '/r', limit: 201 });
 
-  assert.equal(list.length, 200);
+  assert.equal(list.length, 201);
   assert.equal(
     list.every((session) => session.surface === 'code'),
     true,
@@ -185,9 +185,9 @@ test('listPersistedSessions: SDK 0.7.66 falls back when a full first page has no
     mockState.seed(`legacy-code-${index}`, '/r', `Real session ${index}`);
   }
 
-  const list = await listPersistedSessions({ projectRoot: '/r' });
+  const list = await listPersistedSessions({ projectRoot: '/r', limit: 201 });
 
-  assert.equal(list.length, 200);
+  assert.equal(list.length, 201);
   assert.equal(
     list.every((session) => session.surface === 'code'),
     true,
@@ -227,6 +227,41 @@ test('listPersistedSessions: limits apply after Coder/Partner surface filtering'
     list.slice(0, 3).map((session) => session.sessionId),
     ['partner-0', 'partner-1', 'partner-2'],
   );
+  assert.equal(mockState.listCallCount(), 1);
+});
+
+test('listPersistedSessions: sidebar scopes share one global snapshot and cache empty results', async () => {
+  mockState.seed('code-a', '/a', 'Code A');
+  mockState.seed('code-b', '/b', 'Code B');
+
+  const firstA = await listPersistedSessions({ projectRoot: '/a', surface: 'partner' });
+  const firstB = await listPersistedSessions({ projectRoot: '/b', surface: 'code' });
+  const secondA = await listPersistedSessions({ projectRoot: '/a', surface: 'partner' });
+
+  assert.deepEqual(firstA, []);
+  assert.deepEqual(secondA, []);
+  assert.deepEqual(firstB.map((session) => session.sessionId), ['code-b']);
+  assert.equal(mockState.listCallCount(), 1);
+});
+
+test('listPersistedSessions: session watcher invalidates shared and scoped caches', async () => {
+  mockState.seed('code-a', '/a', 'Code A');
+  assert.deepEqual(
+    (await listPersistedSessions({ projectRoot: '/a', surface: 'code' })).map(
+      (session) => session.sessionId,
+    ),
+    ['code-a'],
+  );
+  assert.equal(mockState.listCallCount(), 1);
+
+  mockState.seed('code-a-2', '/a', 'Code A2');
+  assert.deepEqual(
+    (await listPersistedSessions({ projectRoot: '/a', surface: 'code' })).map(
+      (session) => session.sessionId,
+    ),
+    ['code-a', 'code-a-2'],
+  );
+  assert.equal(mockState.listCallCount(), 2);
 });
 
 // ---- 4. host.createSession + listMerged 过滤 ----

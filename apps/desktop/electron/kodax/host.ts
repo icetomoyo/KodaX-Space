@@ -27,6 +27,7 @@ import {
   findPersistedTurnEndSelector,
   retagPersistedSession,
   sdkTagToSurface,
+  invalidatePersistedSessionListCache,
 } from './session-store.js';
 import {
   loadKodaxCustomProviders,
@@ -40,6 +41,7 @@ import { getSessionTitleStore } from './session-title-store.js';
 import { providerConfigStore } from '../providers/config.js';
 import { getBuiltin } from '../providers/catalog.js';
 import { cleanupClipboardForSession } from '../ipc/clipboard.js';
+import { runtimeHostAdapter } from './runtime-host-adapter.js';
 
 // alpha.2: Real KodaX 内核 vs Mock 切换。
 //
@@ -549,8 +551,8 @@ class KodaXHost {
     }
 
     // F045: surface filter 在合并后统一做（in-flight 来自 runtime，persisted 来自 mapper
-    // 反推的 tag）。不传 surface = 不过滤（含历史无 tag 的，向后兼容）。tag 不下推给 SDK
-    // 是刻意设计——避开"自维护索引 + all-fetch 致 session 列不全"的历史回退坑（②B）。
+    // 反推的 tag）。不传 surface = 不过滤（含历史无 tag 的，向后兼容）。Partner 的
+    // persisted fallback 可以向 SDK 下推精确 tag；Coder 仍在 Space 层反推，以保留无 tag 历史会话。
     if (opts?.surface !== undefined) {
       return items.filter((it) => it.surface === opts.surface);
     }
@@ -606,11 +608,13 @@ class KodaXHost {
     if (s) {
       s.title = cleaned;
       await getSessionTitleStore().set(sessionId, cleaned);
+      invalidatePersistedSessionListCache();
       return true;
     }
     const persisted = await loadPersistedSession(sessionId);
     if (!persisted) return false;
     await getSessionTitleStore().set(sessionId, cleaned);
+    invalidatePersistedSessionListCache();
     return true;
   }
 
@@ -672,11 +676,21 @@ class KodaXHost {
 
     pushToRenderer('session.event', { kind: 'compact_start', sessionId });
     try {
-      const result = await compactPersistedSession(sessionId, {
+      const compactInput = {
         provider: s.provider,
         ...(s.model !== undefined ? { model: s.model } : {}),
         ...(customInstructions?.trim() ? { customInstructions: customInstructions.trim() } : {}),
-      });
+      };
+      const result = runtimeHostAdapter.hasReadyRuntime()
+        ? await runtimeHostAdapter
+            .compactSession({ sessionId, ...compactInput })
+            .catch((err: unknown) => ({
+              compacted: false,
+              tokensBefore: 0,
+              tokensAfter: 0,
+              reason: err instanceof Error ? err.message : String(err),
+            }))
+        : await compactPersistedSession(sessionId, compactInput);
       if (result.compacted) {
         pushToRenderer('session.event', {
           kind: 'compact_stats',
@@ -780,15 +794,21 @@ class KodaXHost {
 
     const forkTitle = src.title !== undefined ? `${stripForkSuffix(src.title)} (fork)` : undefined;
     const selector = await findPersistedTurnEndSelector(sourceSessionId, forkPointTurnIdx);
-    const sdkResult = await forkPersistedSession({
-      sourceSessionId,
-      ...(selector !== null ? { selector } : {}),
-      title: forkTitle,
-    });
+    const sdkResult = runtimeHostAdapter.hasReadyRuntime()
+      ? await runtimeHostAdapter.forkSession({
+          sessionId: sourceSessionId,
+          ...(selector !== null ? { selector } : {}),
+          ...(forkTitle !== undefined ? { title: forkTitle } : {}),
+        })
+      : await forkPersistedSession({
+          sourceSessionId,
+          ...(selector !== null ? { selector } : {}),
+          title: forkTitle,
+        });
     if (!sdkResult) return null; // SDK 找不到 source（盘上没记录），不视作错误（fork 一个未持久化的全新 session 是合法的）
 
     // 用 SDK 返回的 sessionId 实例化（不走 createSession 因为后者自己 randomUUID）
-    const sessionId = sdkResult.newSessionId;
+    const sessionId = 'newSessionId' in sdkResult ? sdkResult.newSessionId : sdkResult.id;
     const createdAt = Date.now();
     // reviewer HIGH-1：factory 可能抛（MockKodaXSession / RealKodaXSession 构造路径）。
     // SDK 已经写盘，但 factory 失败时 in-memory 实例缺失 → 盘上 orphan session。
@@ -829,7 +849,11 @@ class KodaXHost {
       });
     } catch (err) {
       // best-effort 回滚：擦掉刚写盘的 fork——失败也无所谓，下一次 list/cleanup 会发现
-      await deletePersistedSession({ sessionId }).catch(() => undefined);
+      if (runtimeHostAdapter.hasReadyRuntime()) {
+        await runtimeHostAdapter.deleteSession(sessionId).catch(() => undefined);
+      } else {
+        await deletePersistedSession({ sessionId }).catch(() => undefined);
+      }
       throw err;
     }
     this.sessions.set(sessionId, session);
@@ -838,7 +862,11 @@ class KodaXHost {
     if (!(await this.persistRuntime(sessionId))) {
       await session.dispose().catch(() => undefined);
       this.sessions.delete(sessionId);
-      await deletePersistedSession({ sessionId }).catch(() => undefined);
+      if (runtimeHostAdapter.hasReadyRuntime()) {
+        await runtimeHostAdapter.deleteSession(sessionId).catch(() => undefined);
+      } else {
+        await deletePersistedSession({ sessionId }).catch(() => undefined);
+      }
       throw new Error('fork runtime metadata could not be persisted');
     }
     return { newSessionId: sessionId, createdAt };
@@ -886,10 +914,15 @@ class KodaXHost {
     await s.cancel().catch(() => undefined);
     const selector = await findPersistedTurnEndSelector(sessionId, rewindPastTurnIdx);
     // 持久化截断（NEVER throws；不存在 / 无可退则 no-op；返回 false 让 renderer 知道）
-    const diskRewound = await rewindPersistedSession({
-      sessionId,
-      ...(selector !== null ? { selector } : {}),
-    });
+    const diskRewound = runtimeHostAdapter.hasReadyRuntime()
+      ? (await runtimeHostAdapter.rewindSession({
+          sessionId,
+          ...(selector !== null ? { selector } : {}),
+        })) !== null
+      : await rewindPersistedSession({
+          sessionId,
+          ...(selector !== null ? { selector } : {}),
+        });
     s.lastActivityAt = Date.now();
     // forkPointTurnIdx 不变（rewind 不影响 fork 元数据）
     return { ok: true, diskRewound };

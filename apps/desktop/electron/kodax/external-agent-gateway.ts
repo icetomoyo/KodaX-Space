@@ -26,7 +26,7 @@ import { getSpaceDataDir } from './data-paths.js';
 
 type SdkAgentModule = typeof import('@kodax-ai/kodax/agent');
 
-const KODAX_SDK_VERSION = '0.7.67';
+const KODAX_SDK_VERSION = '0.7.68';
 const REFERENCE_EXECUTOR_ID = 'kodax-space-reference-v1';
 const MAX_STORE_FILE_BYTES = 16 * 1024 * 1024;
 
@@ -547,7 +547,7 @@ export class ExternalAgentGateway {
       credentialBroker: {
         isAvailable: () => false,
         async withCredential(): Promise<never> {
-          throw new Error('The KodaX 0.7.67 Reference Executor does not accept credentials.');
+          throw new Error('The KodaX 0.7.68 Reference Executor does not accept credentials.');
         },
       },
       artifactPolicy: () => ({

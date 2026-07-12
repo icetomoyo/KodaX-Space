@@ -142,6 +142,7 @@ import { ensurePartnerDeliveryToolsRegistered } from './partner-delivery-tool.js
 import { ensurePartnerWorkspaceFileToolsRegistered } from './partner-workspace-file-tool.js';
 import { ensurePartnerFileProposalToolsRegistered } from './partner-file-proposal-tool.js';
 import { ensurePartnerHelperRunnerToolsRegistered } from './partner-helper-runner-tool.js';
+import { ensureSpaceControlToolsRegistered } from '../space-control/tools.js';
 import { partnerSourceStore } from './partner-source-store.js';
 import { withSessionRunContext } from './session-run-context.js';
 import { runWithSessionQueueScope } from './session-queue-guard.js';
@@ -177,6 +178,7 @@ import {
   enqueueUserPrompt,
 } from '../ipc/queue.js';
 import { resolveWireEffort, type ReasoningProfileLike } from './reasoning-effort.js';
+import { runtimeHostAdapter } from './runtime-host-adapter.js';
 
 type SpaceReasoning = 'off' | 'auto' | 'quick' | 'balanced' | 'deep';
 
@@ -491,6 +493,12 @@ export class RealKodaXSession implements ManagedSession {
     if (this.currentAbort) {
       this.currentAbort.abort();
     }
+    await runtimeHostAdapter.abortSessionRun(this.sessionId).catch((err) => {
+      console.warn(
+        `[real-session ${this.sessionId}] Runtime run abort failed:`,
+        err instanceof Error ? err.message : err,
+      );
+    });
     // Stop should also drop queued follow-up prompts so cancel means
     // "do not continue". Drain failure must not block abort.
     await drainQueueForSession(this.sessionId).catch((err) => {
@@ -705,6 +713,7 @@ export class RealKodaXSession implements ManagedSession {
     ensurePartnerWorkspaceFileToolsRegistered(sdk);
     ensurePartnerFileProposalToolsRegistered(sdk);
     ensurePartnerHelperRunnerToolsRegistered(sdk);
+    ensureSpaceControlToolsRegistered(sdk);
 
     type SdkAskUserQuestionOptions = Parameters<NonNullable<KodaXEvents['askUser']>>[0];
     type SdkAskUserMultiOptions = Parameters<NonNullable<KodaXEvents['askUserMulti']>>[0];
@@ -1301,6 +1310,30 @@ export class RealKodaXSession implements ManagedSession {
         });
       },
 
+      // ---- KodaX 0.7.68 FEATURE_260 Memory Agent ----
+      // Keep diagnostics metadata-only: objectives, summaries, proposal IDs, evidence
+      // refs, and remembered bodies may contain user content and must not enter logs.
+      onMemoryReview: (plan) => {
+        console.info(
+          `[real-session ${sid}] memory review planned; trigger=${plan.trigger}; candidates=${plan.candidateRefs.length}; actions=${plan.actions.length}; warnings=${plan.warnings.length}`,
+        );
+      },
+      onMemoryNotice: (notice) => {
+        console.info(
+          `[real-session ${sid}] memory change notice; summaries=${notice.summaries.length}; proposals=${notice.proposalIds.length}`,
+        );
+      },
+      onMemoryOutcomeDigest: (digest) => {
+        console.info(
+          `[real-session ${sid}] memory outcome digest; sequence=${digest.sequence}; outcome=${digest.outcome}; visibility=${digest.visibility}; evidence=${digest.evidenceRefs.length}; influence=${digest.memoryInfluence?.length ?? 0}`,
+        );
+      },
+      onMemoryReviewReceipt: (receipt) => {
+        console.info(
+          `[real-session ${sid}] memory review receipt; proposals=${receipt.proposalIds.length}`,
+        );
+      },
+
       // ---- 终止 ----
       // 注意：AMA 路径 onComplete 在 finally 里触发，错误轮也会被调一次（pre-FEATURE_100
       // 行为，见 SDK runner-driven.ts）。所以这里必须用 pendingTerminalError 把错误轮的
@@ -1603,23 +1636,88 @@ export class RealKodaXSession implements ManagedSession {
       };
 
       try {
-        // runManagedTask（不是 runKodaX）：这是 agentMode-aware 分派器——
-        // agentMode='sa' 走直路，'ama'/'amaw' 走 Scout/Worker 链 + Sidecar Verifier。
-        // runKodaX 是 SA-only 入口、静默忽略 options.agentMode；直接调它会让 agent mode
-        // 选择器空接（每个 turn 都跑 SA、无 verifier → "只报计划就停" 没人拦截）。
-        // 见 task-engine.ts dispatchManagedTask / runner-driven.ts(verifier 挂载点)。
-        // F058: bind artifact attribution context for this run so the
-        // create_artifact tool handler (global registration) knows which
-        // session/surface to attribute to (ALS — concurrency-safe across sessions).
-        await withSessionRunContext(
-          { sessionId: sid, surface: this.surface, projectRoot: this.projectRoot },
-          () => runWithSessionQueueScope(sid, () => sdk.runManagedTask(options, prompt)),
-        );
-        // SA 路径（agentMode='sa'）错误时 onError 触发但 Promise **resolve**（success:false），
-        // 不 throw——外层 catch 不会跑。所以这里 await 之后补发暂存的错误。
-        // AMA 路径错误时会 throw，控制流跳到 catch，这一行不会执行（两条路径互斥）。
-        if (pendingTerminalError !== null && !signal.aborted) {
-          await emitTerminalError(pendingTerminalError);
+        // F116: Runtime is the default run owner, but initialization failure may select
+        // the legacy path before a run starts. Once Runtime has accepted the run there is
+        // deliberately no automatic fallback: replaying on legacy could execute tools twice.
+        let useRuntime = false;
+        if (runtimeHostAdapter.isRuntimeSelected()) {
+          try {
+            await runtimeHostAdapter.initialize();
+            useRuntime = true;
+          } catch (err) {
+            console.warn(
+              `[real-session ${sid}] Runtime host initialization failed; using pre-run legacy rollback:`,
+              err instanceof Error ? err.message : err,
+            );
+          }
+        }
+
+        if (useRuntime) {
+          await runtimeHostAdapter.ensureSession({
+            sessionId: sid,
+            projectRoot: this.projectRoot,
+            surface: this.surface,
+            ephemeral: this.ephemeral,
+          });
+          // Preserve both Space AsyncLocalStorage scopes. Runtime starts runManagedTask
+          // while resolving runs.start(), so the detached SDK run inherits these scopes.
+          const handle = await withSessionRunContext(
+            {
+              sessionId: sid,
+              surface: this.surface,
+              projectRoot: this.projectRoot,
+              permissionMode: this.permissionMode,
+            },
+            () =>
+              runWithSessionQueueScope(sid, () =>
+                runtimeHostAdapter.startManagedRun({
+                  sessionId: sid,
+                  prompt,
+                  mode: 'managed_task',
+                  permissionBroker: 'client',
+                  options,
+                }),
+              ),
+          );
+          const outcome = await handle.result;
+          if ((outcome.phase === 'failed' || outcome.phase === 'interrupted') && !signal.aborted) {
+            await emitTerminalError(
+              outcome.error ??
+                pendingTerminalError ??
+                new Error(`KodaX Runtime run ${outcome.phase}`),
+            );
+          } else if (outcome.phase === 'cancelled' && !signal.aborted && !terminalEmitted) {
+            terminalEmitted = true;
+            flushStreamDeltas(true);
+            emitRawLive(
+              {
+                kind: 'session_error',
+                sessionId: sid,
+                error: 'cancelled',
+                category: 'cancelled',
+                retriable: true,
+              },
+              true,
+            );
+          } else if (pendingTerminalError !== null && !signal.aborted) {
+            await emitTerminalError(pendingTerminalError);
+          }
+        } else {
+          // Legacy rollback driver. Keep until a later release proves Runtime parity.
+          await withSessionRunContext(
+            {
+              sessionId: sid,
+              surface: this.surface,
+              projectRoot: this.projectRoot,
+              permissionMode: this.permissionMode,
+            },
+            () => runWithSessionQueueScope(sid, () => sdk.runManagedTask(options, prompt)),
+          );
+          // SA errors resolve success:false while AMA errors throw; the shared callback
+          // latch normalizes both paths to one Space terminal event.
+          if (pendingTerminalError !== null && !signal.aborted) {
+            await emitTerminalError(pendingTerminalError);
+          }
         }
       } catch (err) {
         if (err instanceof DOMException && err.name === 'AbortError') {

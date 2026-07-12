@@ -14,6 +14,61 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ## [Unreleased]
 
+## [0.1.31] - 2026-07-12
+
+### Theme
+
+**Runtime contract alignment, platform trust, semantic control, and exact KodaX 0.7.68 governed-memory integration, while Space keeps explicit ownership of product-specific bridges.**
+
+### Added
+
+- **Runtime Host Adapter (F116)** - Added a Space-owned adapter over `@kodax-ai/kodax/runtime` with process-singleton initialization, capability/ownership diagnostics, stable Runtime run IDs, abort/dispose handling, and restart-only legacy rollback selection.
+- **Runtime-backed session operations** - Transcript, compact, fork, and rewind now use the public Runtime facade while preserving Space titles, list/resume filtering, notices, cleanup, sidecars, and renderer IPC contracts.
+- **Runtime diagnostics** - `space.version` now reports Runtime identity, selected host mode, isolation, capability state, and explicit Space-bridge ownership without exposing raw Runtime objects or sensitive configuration.
+- **Release documentation** - Added the documentation hub, contribution guide, illustrated Chinese user manual, F116 implementation plan, and a dedicated human acceptance guide covering Runtime, Partner, permissions, Workflow, rollback, failure, profile isolation, and shutdown.
+- **Packaged `app://space` origin (F055)** - Packaged main and artifact windows now load immutable renderer assets through an exact privileged application origin with canonical path, MIME, symlink/alias, navigation, and CSP guards.
+- **Structured diagnostics (F069)** - Added bounded rotating JSONL main-process logs, recursive secret/content/path redaction, safe renderer envelopes, direct Runtime/Workflow/updater/control events, and an explicit Settings ZIP export with reviewed categories and no remote upload.
+- **Natural-language Space control (F120)** - Added governed `space_control_inspect` / `space_control_apply` SDK tools for eight desired-state actions, a complete control classification inventory, primary-renderer execution/readback, short-lived argument-bound preconditions, renderer-reload protection, and idempotent receipts.
+- **KodaX 0.7.68 Memory Agent contract** - Root and desktop workspaces now resolve the exact published npm package. Startup verifies `/experimental-memory`, `createMemoryAgent`, `createMemoryControlPlane`, and policy `f260-v0.7.68.2`; `space.version` and diagnostic export expose a truthful partial capability without inferring it from the version string.
+
+### Changed
+
+- **Managed-run ownership** - New Coder and Partner turns start through Runtime `runs.start()` in embedded inline mode. Existing Space callbacks remain the single renderer event projection and continue to bind Partner profiles/tools, permissions, AskUser, artifacts, extensions, queues, and terminal normalization.
+- **Explicit compatibility bridges** - Workflow lifecycle remains on `WorkflowController`; MCP process/log ownership remains on Space `McpManager`; External Agent durable registration/task/event storage remains on `ExternalAgentGateway`; Skills remain on the current public Skill bridge. Worker and daemon Runtime modes remain unavailable for live Space sessions.
+- **Profile-scoped Runtime journal** - Runtime receives the selected Space/KodaX sessions directory and writes run/event journal data below `<profile-root>/.kodax/runtime`, following `KODAX_HOME`, `KODAX_PROFILE_DIR`, and onboarding-test isolation.
+- **Project session summary loading** - Sidebar project/surface windows now share one bounded global summary-index snapshot, cache completed and empty reads with watcher-driven invalidation, coalesce duplicate requests, and retain a precise fallback when the global bound is saturated.
+- **SDK tool context preservation** - Space now retains SDK `toolCallId` and `taskSurface` (`cli`/`repl`/`plan`) while keeping Coder/Partner attribution separately bound to the authoritative session.
+- **Shared semantic executors** - Deterministic theme, language, Surface, Settings, sidebar/Task Dock, layout preset, and reasoning-default entry points share owner functions with F120 instead of maintaining model-only mutation paths.
+- **Governed-memory lifecycle adaptation** - Top-level managed runs let KodaX own silent scoped recall, read-only `memory_recall`, Outcome Digests, and bounded review over the existing F228 plane. Space attaches metadata-only review/notice/outcome/receipt diagnostics and deliberately leaves the full F117 Episodes, Activity, correction, forget, and purge UX gated.
+
+### Fixed
+
+- **Runtime transcript freshness** - Runtime-backed transcript caches are invalidated after compact, fork, and rewind mutations so follow-up reads cannot project stale history.
+- **Compact and terminal normalization** - Compact failures return one bounded Space error result, and Runtime completion/failure/cancellation produces exactly one renderer terminal event.
+- **Workflow ownership regression** - Reverted an over-eager Runtime Workflow migration that lost Space stop reasons, immediate cancellation projection, durable restart merge, origin metadata, and result/artifact bridges.
+- **Concurrent run race** - Same-session concurrent starts reserve ownership before asynchronous Runtime setup, preventing two accepted runs from bypassing the single-active-run invariant.
+- **Project session scope fidelity** - Project-scoped summaries that omit workspace/git-root metadata retain the validated requested project instead of being grouped under the filesystem root.
+
+### Documentation
+
+- **Current capability truth** - README files, user/developer manuals, application `kodax_manual` topics, PRD, HLD, capability ledger, Feature List, known issues, feature design, and acceptance guidance now consistently describe the Runtime-native slice and Space-owned bridges.
+- **Memory self-knowledge** - `kodax_manual` and release documentation explain the 0.7.68 Memory Agent ownership, silent low-authority recall, read-only deliberate query, F228 governance path, current diagnostics, and the remaining F117 boundary.
+- **User-oriented guidance** - Added Mermaid flows, an interface map, first-task walkthrough, Coder/Partner/Quick Ask selection, permissions, session lineage, Task Dock/popouts, data locations, security boundaries, and troubleshooting.
+
+### Security
+
+- **No mid-run fallback or replay** - Runtime failures never silently replay a prompt on the legacy path, preventing duplicate tool or file side effects. The temporary rollback is selected only before process startup through `KODAX_SPACE_RUNTIME_HOST=legacy` and requires an application restart.
+- **Fail-closed ownership** - Renderer inputs cannot select Runtime endpoints, callback factories, profile directories, credential brokers, or isolation modes. Unsupported Worker/daemon and Runtime-owned bridge claims remain unavailable rather than inferred from the SDK version.
+- **Test profile isolation** - Automated coverage verifies Runtime data follows explicit homes/profiles and that onboarding tests override inherited user homes, preventing CI/E2E writes to the real user profile.
+- **Semantic control fail-closed policy** - Missing tool IDs, stale/expired preconditions, project/session/surface mismatches, renderer reloads, auxiliary senders, conflicting retries, Plan-disallowed actions, malformed arguments, and timeouts cannot silently mutate or replay application state.
+- **Diagnostic privacy boundary** - Prompts, tool/document content, credentials, authorization material, secret-like URLs, environment secrets, and private path prefixes are redacted before every file/export sink; renderer diagnostics cannot choose paths or arbitrary keys.
+- **Memory diagnostics privacy** - Memory lifecycle logs record only categorical state and bounded counts; objectives, summaries, proposal IDs, evidence refs, and remembered bodies never enter ordinary diagnostics.
+
+### Verification
+
+- Exact KodaX 0.7.68 dependency/export/Runtime probes, 4 release-script tests, 245 IPC schema tests, 1417 passing Desktop tests (1 platform-permission skip), TypeScript, ESLint, production build, Windows Setup/Portable packaging, asar/package smoke, and packaged `app://space` boot all pass.
+- Playwright Electron passes 58/58 in one clean serial run. The package smoke executes the 0.7.68 Runtime and constructed-handler Workers from `app.asar` and verifies the required `sdk-experimental-memory.js` entry.
+
 ## [0.1.30] - 2026-07-12
 
 ### Theme
@@ -42,6 +97,7 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 - **Catalog identity, window authority, and session scope** - Reference edits require an existing host-issued registration, external-agent administration is restricted to the primary application window, task starts derive project/session attribution from the main-owned KodaX session, and every task read/intervention verifies the stored parent session.
 - **Task Dock race and polling control** - Session changes now clear external-task state immediately, late responses are rejected by captured-session checks, and non-overlapping polling slows for terminal or background views instead of issuing fixed full snapshots every 1.5 seconds.
 - **Project Session loading feedback** - Project/session scopes now distinguish loading, loaded, and failed states, land independent project results without waiting for the slowest request, reject stale surface responses, and show bilingual skeleton/retry UI only while no restored rows are available.
+- **Project Session refresh performance** - Sidebar scopes now share one bounded global summary-index snapshot instead of rescanning the full JSONL tree once per project, cache empty Coder/Partner results with watcher-driven invalidation, coalesce duplicate reads, and avoid duplicate per-session runtime sidecar work.
 - **Responsive Task Dock width presets** - Default width now follows a bounded 30% comfort ratio, explicit half mode remains a true center/dock split, and max mode turns Task Dock into the full remaining workspace while keeping the hidden conversation mounted so its scroll state survives restoration.
 - **Workflow routing audit** - Default-target wrappers preserve the SDK Workflow API receiver, and preflight's resolved configuration revision is snapshotted for dispatch and host metadata even when callers omit an expected revision.
 - **Version-safe package smoke** - Packaged Runtime probes now derive Space and KodaX versions from root metadata instead of rejecting every version after 0.1.30 / 0.7.66.

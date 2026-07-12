@@ -753,6 +753,18 @@ export const messages = {
     'settings.providers.description': 'Models, API keys, default provider, and custom endpoints.',
     'settings.runtime': 'Runtime',
     'settings.runtime.description': 'KodaX config, MCP storage, skills, and context compaction.',
+    'settings.diagnostics': 'Diagnostics',
+    'settings.diagnostics.title': 'Diagnostic export',
+    'settings.diagnostics.description':
+      'Export bounded, locally generated troubleshooting information.',
+    'settings.diagnostics.includesTitle': 'Included categories',
+    'settings.diagnostics.includes':
+      'Redacted recent logs, Runtime capability state, release/updater facts, and known degradation codes.',
+    'settings.diagnostics.privacy':
+      'Prompts, API keys, authorization values, document bodies, and tool payloads are excluded or redacted before disk and export. Nothing is uploaded automatically.',
+    'settings.diagnostics.export': 'Export diagnostic ZIP',
+    'settings.diagnostics.exported': 'Diagnostics saved as {fileName}',
+    'settings.diagnostics.exportFailed': 'Failed to export diagnostics',
     'settings.license': 'License',
     'settings.license.description': 'Community status and offline enterprise activation.',
     'license.resolveFilePathError': 'Could not resolve the selected license file path.',
@@ -821,7 +833,7 @@ export const messages = {
     'settings.runtime.numberError': '{field} must be an integer from {min} to {max}.',
     'settings.externalAgents.title': 'External agents',
     'settings.externalAgents.description':
-      'KodaX 0.7.67 dispatchable catalog, executor plane, and durable task ledger.',
+      'KodaX 0.7.68 dispatchable catalog, executor plane, and durable task ledger.',
     'settings.externalAgents.sdk': 'KodaX SDK',
     'settings.externalAgents.plane': 'Executor plane',
     'settings.externalAgents.catalog': 'Registrations',
@@ -833,7 +845,7 @@ export const messages = {
     'settings.externalAgents.addReference': 'Add reference agent',
     'settings.externalAgents.referenceName': 'Space Reference Agent',
     'settings.externalAgents.referenceDescription':
-      'Local KodaX 0.7.67 executor-plane conformance target; no remote network request.',
+      'Local KodaX 0.7.68 executor-plane conformance target; no remote network request.',
     'settings.externalAgents.added': 'Reference agent added',
     'settings.externalAgents.remove': 'Remove registration',
     'settings.externalAgents.updated': 'Reference agent updated',
@@ -2771,6 +2783,17 @@ export const messages = {
     'settings.preferences.description': '工作区默认值、自动化、语言和工作流行为。',
     'settings.providers': '服务商',
     'settings.providers.description': '模型、API Key、默认服务商和自定义端点。',
+    'settings.diagnostics': '诊断',
+    'settings.diagnostics.title': '导出诊断包',
+    'settings.diagnostics.description': '导出有界、仅在本地生成的排障信息。',
+    'settings.diagnostics.includesTitle': '包含内容',
+    'settings.diagnostics.includes':
+      '近期脱敏日志、Runtime 能力状态、版本/更新器信息和已知降级代码。',
+    'settings.diagnostics.privacy':
+      'Prompt、API Key、Authorization、文档正文和工具载荷在写盘和导出前会被排除或脱敏；不会自动上传任何内容。',
+    'settings.diagnostics.export': '导出诊断 ZIP',
+    'settings.diagnostics.exported': '诊断包已保存为 {fileName}',
+    'settings.diagnostics.exportFailed': '导出诊断包失败',
     'settings.license': '许可证',
     'settings.license.description': '社区状态与离线企业激活。',
     'license.resolveFilePathError': '无法解析所选许可证文件路径。',
@@ -3898,7 +3921,7 @@ export const messages = {
     'settings.runtime.none': '无',
     'settings.runtime.numberError': '{field} 必须是 {min} 到 {max} 之间的整数。',
     'settings.externalAgents.title': '外部 Agent',
-    'settings.externalAgents.description': 'KodaX 0.7.67 可调度目录、执行平面和持久任务账本。',
+    'settings.externalAgents.description': 'KodaX 0.7.68 可调度目录、执行平面和持久任务账本。',
     'settings.externalAgents.sdk': 'KodaX SDK',
     'settings.externalAgents.plane': '执行平面',
     'settings.externalAgents.catalog': '注册项',
@@ -3910,7 +3933,7 @@ export const messages = {
     'settings.externalAgents.addReference': '添加 Reference Agent',
     'settings.externalAgents.referenceName': 'Space Reference Agent',
     'settings.externalAgents.referenceDescription':
-      '本地 KodaX 0.7.67 执行平面合规目标；不会发起远程网络请求。',
+      '本地 KodaX 0.7.68 执行平面合规目标；不会发起远程网络请求。',
     'settings.externalAgents.added': 'Reference Agent 已添加',
     'settings.externalAgents.remove': '移除注册项',
     'settings.externalAgents.updated': 'Reference Agent 已更新',

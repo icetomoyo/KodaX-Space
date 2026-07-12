@@ -1,7 +1,8 @@
 # F067 — LiveCanvas Artifact Sandbox 重新集成（交互 React tier）
 
-> Status: **Blocked**（blocked on LiveCanvas 包结构稳定）
-> Category: New · Priority: Medium · Version: v0.2.9
+> Status: **Cancelled**（2026-07-12 roadmap rebase）
+> Category: Historical proposal · Version: none
+> Current decision: static artifacts and sandboxed `interactive-html` cover the supported product path. Reopen only if a concrete React-artifact use case cannot be served by those paths; see [FEATURES_ARCHIVED.md](../FEATURES_ARCHIVED.md).
 > 关联记忆：`livecanvas_artifact_plan`、`recharts_v3_and_lc_sandbox_bridge_block`
 
 ## 背景：为什么先被移除（2026-06-17）
@@ -64,7 +65,8 @@ Schema：`artifactSandboxInfoChannel` + `ArtifactSandboxInfo` 类型 + `channels
 
 # F069 — Electron 主进程统一日志（Logger）工程
 
-> Status: **Planned** · Category: Internal · Priority: Low · Version: v0.1.40
+> Status: **Planned** · Category: Internal · Priority: High · Version: v0.1.32
+> Canonical design: [v0.1.32](v0.1.32.md#f069--structured-logging-and-diagnostic-export). The inventory below is the original 2026-06-18 snapshot, not the current file count.
 > 来源：500-error history-scramble 修复的 code-review LOW-3 技术债（2026-06-18）
 > 关联：OC-10（主进程日志 secret 脱敏）、OC-04（per-run 日志轮转）、OC-05（debug 日志 ZIP 导出）
 

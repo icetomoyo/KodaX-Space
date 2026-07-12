@@ -19,6 +19,7 @@ import { app } from 'electron';
 import { registerChannel } from './register.js';
 import { pushToRenderer } from './push.js';
 import type { UpdaterStateT } from '@kodax-space/space-ipc-schema';
+import { getDiagnosticsLogger } from '../diagnostics/runtime.js';
 
 let currentState: UpdaterStateT = { state: 'idle' };
 let autoUpdaterInstance: typeof import('electron-updater').autoUpdater | null = null;
@@ -30,7 +31,8 @@ let initStarted = false;
  * listener 一遍，每个 SDK 事件双重触发 pushState。改成 promise cache 后第二个 caller
  * 直接 await 第一个 in-flight 的初始化。
  */
-let ensureUpdaterPromise: Promise<typeof import('electron-updater').autoUpdater | null> | null = null;
+let ensureUpdaterPromise: Promise<typeof import('electron-updater').autoUpdater | null> | null =
+  null;
 /**
  * v0.1.4 review LOW-4：double-install race guard。
  * 用户在 100ms setTimeout 内连点 "Restart & install" 会触发两次 quitAndInstall →
@@ -39,8 +41,18 @@ let ensureUpdaterPromise: Promise<typeof import('electron-updater').autoUpdater 
  */
 let installing = false;
 
+export function getUpdaterStateForDiagnostics(): UpdaterStateT {
+  return { ...currentState };
+}
+
 function pushState(next: UpdaterStateT): void {
   currentState = next;
+  getDiagnosticsLogger()?.info('updater', 'state_changed', undefined, {
+    state: next.state,
+    ...('version' in next ? { version: next.version } : {}),
+    ...('percent' in next ? { percent: next.percent } : {}),
+    ...('message' in next ? { message: next.message } : {}),
+  });
   pushToRenderer('updater.status', next);
 }
 
@@ -54,11 +66,13 @@ function pushState(next: UpdaterStateT): void {
  * 漏报危害低（前面 280 char slice 兜底），但 cache 路径里能含用户名 / 项目名时仍想 strip。
  */
 function sanitizeErrorMessage(msg: string): string {
-  return msg
-    // Windows 盘符 (大写 + 小写) + UNC + POSIX 路径，一个 union 顶
-    .replace(/([A-Za-z]:[\\/][^\s]+|\\\\[^\s]+|\/[A-Za-z][^\s]+)/g, '<path>')
-    .slice(0, 280)
-    .trim() || 'Update check failed';
+  return (
+    msg
+      // Windows 盘符 (大写 + 小写) + UNC + POSIX 路径，一个 union 顶
+      .replace(/([A-Za-z]:[\\/][^\s]+|\\\\[^\s]+|\/[A-Za-z][^\s]+)/g, '<path>')
+      .slice(0, 280)
+      .trim() || 'Update check failed'
+  );
 }
 
 async function ensureAutoUpdater(): Promise<typeof import('electron-updater').autoUpdater | null> {
@@ -83,9 +97,12 @@ async function ensureAutoUpdater(): Promise<typeof import('electron-updater').au
         pushState({ state: 'idle' });
       });
       autoUpdaterInstance.on('download-progress', (progress) => {
-        const percent = typeof progress.percent === 'number' ? Math.max(0, Math.min(100, progress.percent)) : 0;
+        const percent =
+          typeof progress.percent === 'number' ? Math.max(0, Math.min(100, progress.percent)) : 0;
         const version =
-          currentState.state === 'available' || currentState.state === 'downloading' || currentState.state === 'ready'
+          currentState.state === 'available' ||
+          currentState.state === 'downloading' ||
+          currentState.state === 'ready'
             ? currentState.version
             : 'unknown';
         pushState({ state: 'downloading', version, percent });

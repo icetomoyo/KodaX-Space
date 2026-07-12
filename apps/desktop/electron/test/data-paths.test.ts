@@ -23,6 +23,7 @@ import path from 'node:path';
 import { getAgentConfigHome } from '@kodax-ai/kodax/agent';
 import {
   getKodaxDir,
+  getKodaxRuntimeDir,
   getScopedUserDataDir,
   getSpaceDataDir,
   applySdkHomeEnv,
@@ -63,6 +64,21 @@ test('no env → ~/.kodax', () => {
   assert.equal(getKodaxDir(), homeKodax());
   assert.equal(getSpaceDataDir(), path.join(homeKodax(), 'space'));
   assert.equal(getScopedUserDataDir(), null);
+  assert.equal(getKodaxRuntimeDir(), homeKodax());
+});
+
+test('Runtime data follows an explicit absolute KODAX_HOME', () => {
+  clearAllDataEnv();
+  const sdkHome = path.join(os.tmpdir(), 'kodax-runtime-home-fixture');
+  process.env.KODAX_HOME = sdkHome;
+  assert.equal(getKodaxRuntimeDir(), sdkHome);
+});
+
+test('onboarding isolation takes precedence over inherited KODAX_HOME for Runtime data', () => {
+  clearAllDataEnv();
+  process.env.KODAX_TEST_ONBOARDING = 'runtime-home-isolation';
+  process.env.KODAX_HOME = path.join(os.tmpdir(), 'must-not-be-used-by-runtime');
+  assert.equal(getKodaxRuntimeDir(), path.join(os.tmpdir(), 'kodax-test-runtime-home-isolation'));
 });
 
 test('KODAX_TEST_ONBOARDING=fixture-1 → tmpdir/kodax-test-fixture-1', () => {

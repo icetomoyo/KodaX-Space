@@ -8,7 +8,7 @@ type NavigateHandler = (event: { preventDefault(): void }, url: string) => void;
 
 function installGuard(deps: {
   readonly devServerUrl?: string;
-  readonly allowedFilePrefix?: string;
+  readonly allowedAppOrigin?: string;
   readonly allowedDataUrls?: readonly string[];
   readonly openExternal?: (url: string) => void;
 }): {
@@ -28,7 +28,7 @@ function installGuard(deps: {
 
   installNavigationGuards(wc, {
     devServerUrl: deps.devServerUrl,
-    allowedFilePrefix: deps.allowedFilePrefix ?? 'file:///app/',
+    allowedAppOrigin: deps.allowedAppOrigin ?? 'app://space',
     allowedDataUrls: deps.allowedDataUrls,
     openExternal: deps.openExternal ?? (() => undefined),
   });
@@ -51,6 +51,17 @@ function installGuard(deps: {
     },
   };
 }
+
+test('navigation guard allows the exact packaged app origin and denies lookalikes', () => {
+  const guard = installGuard({});
+
+  assert.equal(guard.navigate('app://space/index.html'), false);
+  assert.equal(guard.navigate('app://space/assets/main.js'), false);
+  assert.equal(guard.navigate('app://other/index.html'), true);
+  assert.equal(guard.navigate('app://space.evil/index.html'), true);
+  assert.equal(guard.navigate('app://user@space/index.html'), true);
+  assert.equal(guard.navigate('file:///app/index.html'), true);
+});
 
 test('navigation guard allows only exact trusted data URLs', () => {
   const allowedDataUrl = 'data:text/html;charset=utf-8,%3C!doctype%20html%3E';
