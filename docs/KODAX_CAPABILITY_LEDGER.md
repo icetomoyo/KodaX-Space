@@ -1,58 +1,106 @@
 # KodaX Capability Ledger
 
-Last reviewed: 2026-07-12
+> Last reviewed: 2026-07-12
+> Space baseline: `v0.1.30`
+> Published SDK baseline: exact `@kodax-ai/kodax@0.7.67`
+> Local KodaX source review: post-`v0.7.67` HEAD, where KX-F260 is in progress and KX-F266/F263/F264/F265 remain planned
 
-This file is the Space-side source of truth for capabilities that depend on the upstream KodaX SDK. It exists to keep desktop feature planning honest: a feature is either supported by the current SDK contract, partially implemented through an available event/API, planned on the Space side, or blocked until KodaX exposes a contract.
+This is the Space-side source of truth for SDK-dependent capability planning. A capability is supported only when a public contract exists and Space has verified/consumed it. A KodaX design document or version number alone is not support.
 
-## Version Baseline
+## Status model
 
-| Component          | Current baseline       | Notes                                                                                                    |
-| ------------------ | ---------------------- | -------------------------------------------------------------------------------------------------------- |
-| KodaX Space app    | 0.1.30 current release | Published as `v0.1.30` from the final `main` release commit.                                             |
-| Desktop package    | 0.1.30                 | `@kodax-space/desktop`.                                                                                  |
-| IPC schema package | 0.1.30                 | Aligned with app package metadata.                                                                       |
-| UI kit package     | 0.1.30                 | Aligned with app package metadata.                                                                       |
-| KodaX SDK          | exact published 0.7.67 | Root, desktop specs and lockfile resolve the same npm tarball; local source linking is development-only. |
+| Contract status | Meaning                                                          |
+| --------------- | ---------------------------------------------------------------- |
+| `published`     | Public export/event/DTO exists in an installable SDK baseline.   |
+| `planned`       | KodaX has an active design but no published compatible contract. |
+| `reviewed-out`  | KodaX explicitly removed/deferred the proposed primitive.        |
 
-## Capability Contract
+| Space adoption | Meaning                                                               |
+| -------------- | --------------------------------------------------------------------- |
+| `supported`    | Contract and Space UX/runtime path are implemented and verified.      |
+| `partial`      | A useful slice exists, but the intended semantics are incomplete.     |
+| `planned`      | Space has an active feature with an explicit gate.                    |
+| `watchlist`    | No version commitment; reopen only when the stated gate passes.       |
+| `not-needed`   | KodaX already owns the capability or no desktop surface is justified. |
 
-Runtime IPC contract: `space-v0.1.30`
+## Runtime and session capabilities
 
-`space.version` now exposes:
+| Capability                       | KodaX source                            | Contract                        | Space adoption     | Gate / next action                                                                                                                                                            |
+| -------------------------------- | --------------------------------------- | ------------------------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Runtime facade                   | KX-F253-F255, `@kodax-ai/kodax/runtime` | published `0.7.66+`             | planned: F116      | Adopt inline-first behind `RuntimeHostAdapter`; verify session/run/event/permission/workflow/catalog/MCP/artifact/status/agent-task parity before removing legacy live paths. |
+| Worker-hosted embedded Runtime   | KX-F256                                 | published `0.7.66+`             | partial            | Release compatibility probe passes. Live Space migration remains gated by transport-safe Partner tools/profile/callback registration. Worker isolation is not an OS sandbox.  |
+| Local daemon Runtime             | KX-F255                                 | published `0.7.66+`             | watchlist          | Reopen for multi-client/background ownership only after F116 inline parity and a concrete desktop continuity/automation need.                                                 |
+| Runtime rich events and replay   | KX-F254                                 | published `0.7.66+`             | planned: F116/F090 | Move projections to ordered Runtime events; preserve zod caps and correlation.                                                                                                |
+| Searchable/paged session listing | KX-F261                                 | published `0.7.67`              | supported/partial  | Space consumes cursor-capable paging and project/surface scopes. Continue UI/search parity through F116 rather than adding a second session index.                            |
+| CLI-to-Space handoff receive     | Space F084                              | published file/session baseline | supported          | Space watches/accepts/dismisses handoff records.                                                                                                                              |
+| Space-to-CLI/CLI writer parity   | none                                    | missing                         | watchlist          | Keep separate from F084. Reopen only when CLI/REPL publishes a writer/pickup contract.                                                                                        |
+| Quick Ask temporary session      | current SDK sessions                    | published                       | supported          | Temporary plan-mode session, close cleanup, and promotion are explicit transitional semantics.                                                                                |
+| True side query                  | none                                    | missing                         | watchlist          | Do not claim isolated non-session side query until KodaX exposes one.                                                                                                         |
 
-| Field                 | Purpose                                                                                |
-| --------------------- | -------------------------------------------------------------------------------------- |
-| `kodaxSdkVersion`     | The installed `@kodax-ai/kodax` package version resolved by the Electron main process. |
-| `kodaxDependencySpec` | The dependency range Space was installed/launched with.                                |
-| `capabilityContract`  | Space's own interpretation contract for SDK-backed desktop features.                   |
-| `capabilities[]`      | Per-feature support ledger consumed by diagnostics UI and later by status panels.      |
+## Workflow, review, and task capabilities
 
-## Current Ledger
+| Capability                                  | KodaX source         | Contract                              | Space adoption       | Gate / next action                                                                                        |
+| ------------------------------------------- | -------------------- | ------------------------------------- | -------------------- | --------------------------------------------------------------------------------------------------------- |
+| Workflow process visibility/lifecycle       | KX-F217/F229         | published                             | supported            | Space renders process snapshots, management, history, results, and artifacts.                             |
+| Pipeline and same-session replay provenance | KX-F246              | published `0.7.58+`                   | planned: F087        | Add `origin`, `replayedAgents`, `resumedFromRunId`, timeline, and evidence navigation.                    |
+| Cross-process Workflow crash replay         | former KX-F231       | reviewed-out/deferred                 | not planned          | F085 superseded. Do not show resumable/crash-replay states without a new public contract.                 |
+| Never-run Workflow draft lifecycle          | former KX-F235       | reviewed-out                          | not-needed           | F086 cancelled. Use existing source preview, preflight, save, revise, replace, and delete.                |
+| Review packets / optimized handoff          | KX-F259              | published `0.7.67`                    | planned: F119        | Attach immutable evidence and verdict receipts to reviewed objects; no Advisor abstraction.               |
+| Advisor/Council primitive                   | former KX-F105       | reviewed-out                          | not planned          | Existing specialist dispatch, judge/Sidecar, Workflow, and governed External Agents cover concrete paths. |
+| Todo current state/drift                    | KX events/extensions | published                             | supported/partial    | Space renders current plan and drift warning. F089 adds bounded timeline/completion receipt.              |
+| Durable todo service/editing                | KX-F113              | planned for later KodaX               | watchlist            | F089 must degrade honestly until a public service exists.                                                 |
+| Effort-first control                        | KX-F233              | published `0.7.57+`                   | supported/partial    | Space maps canonical effort and runtime defaults. F091 consolidates effective receipt.                    |
+| Resolved route/assurance facts              | KX-F259/F265         | partial internal facts / F265 planned | planned: F091, gated | Show “why” only when a public DTO/event exists; do not infer from provider/model names.                   |
 
-| Capability                    | Status     | Evidence / next action                                                                                                                                                                                                                                                                                                                               |
-| ----------------------------- | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `repointel.trace`             | supported  | KodaX SDK session trace events are mapped into `repointel_trace` session events and shown by the chip and `/repointel trace`.                                                                                                                                                                                                                        |
-| `repointel.status`            | supported  | Space exposes local status/doctor/readout for project, git root, trace source, and warm support. Standalone warm remains SDK-gated.                                                                                                                                                                                                                  |
-| `quickAsk.tempSession`        | supported  | Quick Ask uses a temporary plan-mode session, captures events locally, cleans up on close, and can promote the persisted session into Coder.                                                                                                                                                                                                         |
-| `quickAsk.sideQuery`          | blocked    | Current SDK does not expose a true side-query API. Do not claim isolated side-query behavior until KodaX ships it.                                                                                                                                                                                                                                   |
-| `handoff.receive`             | supported  | Space reads, watches, accepts, and dismisses `~/.kodax/handoffs/*.json` files; CLI-side emit remains a separate SDK/CLI integration gate.                                                                                                                                                                                                            |
-| `sidecar.message`             | supported  | KodaX 0.7.53+ exposes `KodaXEvents.onSidecarMessage`; Space maps revise/blocked verifier messages into `sidecar_message` session events and renders them as system notices.                                                                                                                                                                          |
-| `todoDrift.warning`           | supported  | KodaX 0.7.53+ exposes `KodaXEvents.onTodoDriftWarning`; Space maps it into `todo_drift_warning` session events and raises a session-scoped notification.                                                                                                                                                                                             |
-| `workflow.visibility`         | supported  | Space renders workflow management, graph/pattern topology, transcript summaries, and persisted detail/history recovery from SDK workflow events and local run metadata.                                                                                                                                                                              |
-| `displayLanguage.mvp`         | supported  | Space stores `languageMode`, resolves effective locale, and covers the product UI for `zh-CN` and `en-US`, including External Agent management, Workflow target selection, and Task Dock interventions. Model/tool/third-party content is not translated.                                                                                            |
-| `composer.imageArtifacts`     | supported  | Space sends PNG/JPEG/WEBP image artifacts through `KodaXContextOptions.inputArtifacts`, preserves KodaX 0.7.56 source provenance (`clipboard`, `drag-drop`, `file-picker`, `user-inline`), supports native clipboard-image fallback, and preflights image artifacts against the selected provider/model before send.                                 |
-| `composer.mediaHelpers`       | partial    | Space now uses public `@kodax-ai/kodax/media` helpers for clipboard normalization, sandboxed image artifact construction, and model input validation. GIF direct-path handling, structured file artifacts, and video semantics remain planned.                                                                                                       |
-| `sessions.dedupe`             | not-needed | KodaX 0.7.53+ includes the `kodax sessions dedupe` maintenance CLI. Space should not add a desktop button until session hygiene/doctor UX needs it.                                                                                                                                                                                                  |
-| `extension.resumeState`       | planned    | KodaX 0.7.53+ preserves interactive extension/MCP state on host-owned resume. Space does not own that state yet; keep visibility planned under F090.                                                                                                                                                                                                 |
-| `partner.workspaceFirst`      | supported  | Space 0.1.30+ enables Partner Sources, Knowledge Base, workspace-first Outputs, checkpointed writes, Office/PDF convenience writers, bounded coding boost, and local policy/audit. This does not imply executable Partner Skills, connectors, browser/computer use, automations, or remote tasks.                                                    |
-| `externalAgents.reference`    | supported  | KodaX 0.7.67 supplies the protocol-neutral catalog/executor/task ledger plus Reference Executor. Space connects primary-window-only redacted administration, live dispatchability/preflight, main-owned session/task correlation, Worker/Workflow routing, race-safe adaptive Task Dock lifecycle/interventions, durable identity, and bilingual UI. |
-| `externalAgents.a2a`          | blocked    | KodaX 0.7.67 does not ship an A2A adapter. Space keeps all A2A registration and dispatch UI hidden until Runtime advertises the adapter and conformance passes.                                                                                                                                                                                      |
-| `externalAgents.mcpTasks`     | blocked    | Ordinary MCP remains a tool/data integration. No MCP Agent Profile/Tasks adapter is advertised by 0.7.67, so Space does not claim durable MCP-agent support.                                                                                                                                                                                         |
-| `externalAgents.governedHttp` | blocked    | Reference uses an internal HTTP protocol marker but performs no network I/O. A real declarative governed-HTTP adapter is not shipped or exposed.                                                                                                                                                                                                     |
+## Memory and learning capabilities
 
-## Review Rules
+| Capability                        | KodaX source   | Contract                   | Space adoption                        | Gate / next action                                                                                             |
+| --------------------------------- | -------------- | -------------------------- | ------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| Memory Control Plane/governance   | KX-F228        | published `0.7.62+`        | supported: F088                       | Coder-only inbox, approve/reject, refs, curator, and task hints; Partner KB remains separate.                  |
+| Memory Agent                      | KX-F260        | in progress, not published | planned: F117                         | Ship only after public capability/export/DTO/event/ownership/rewind/purge contracts pass compatibility probes. |
+| Learning Center Runtime service   | KX-F266        | planned, not published     | planned: F118                         | Gate the surface on `runtime.learning` or released equivalent. No Space-owned parallel store.                  |
+| Evidence-gated Skill learning     | KX-F263        | planned                    | planned through F118 capability slice | Show review/trust actions only when advertised. Formal product-authored Partner packs remain separate.         |
+| Evidence-gated Extension learning | KX-F264        | planned                    | planned through F118 capability slice | Require exact source/effects/tests/fingerprint and trust-before-execution.                                     |
+| Global prompt self-learning       | former KX-F108 | reviewed-out               | not planned                           | Local learning belongs in Memory/Skills/Extensions; global prompt changes remain engineering-led.              |
 
-- Do not mark an SDK-backed capability as `supported` unless there is a stable API/event path in the current SDK.
-- If a feature is simulated through existing sessions or local files, mark it `partial` unless the UX and cleanup guarantees match the intended contract.
-- If the missing piece is upstream SDK surface, mark it `blocked` and link the later KodaX-side requirement from the feature design.
-- Update this file and `space.version` together when capability status changes.
+## MCP, Extension, Skills, and repository intelligence
+
+| Capability                                       | KodaX source                  | Contract            | Space adoption     | Gate / next action                                                                                   |
+| ------------------------------------------------ | ----------------------------- | ------------------- | ------------------ | ---------------------------------------------------------------------------------------------------- |
+| MCP management                                   | public MCP/runtime services   | published           | supported          | Discovery/list/start/stop/reload/tool catalog exists; F090 unifies health/resume diagnostics.        |
+| Extension/MCP cross-resume state                 | KX-F211                       | published `0.7.53+` | planned: F090      | Consume public Runtime/session state where available; never inspect private REPL state.              |
+| Runtime catalog/extensions reload                | KX-F254 Runtime               | published           | planned: F116/F090 | Move current scattered discovery/reload to Runtime owner.                                            |
+| Skill discovery/invocation                       | public Skill registry/catalog | published           | supported          | Coder and Partner visibility remain profile/policy-controlled.                                       |
+| Built-in repository intelligence                 | KX-F243                       | published `0.7.57+` | supported/partial  | Space uses diagnostics/warm/trace surfaces under its license policy. Avoid private internal objects. |
+| Standalone true warm API / legacy Repointel hook | mixed                         | incomplete          | watchlist          | Track a concrete public API separately; do not bundle with side query/handoff.                       |
+
+## Partner, artifacts, and external agents
+
+| Capability                       | KodaX source              | Contract            | Space adoption  | Gate / next action                                                                                                            |
+| -------------------------------- | ------------------------- | ------------------- | --------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| Partner Agent Profile            | KX-F247                   | published `0.7.58+` | supported       | Identity/instructions/tool visibility/verifier contract are active. Historical F053 is closed within this shipped boundary.   |
+| Partner workspace-first delivery | Space F095/F109/F113/F114 | Space-owned         | supported       | Sources/KB/Outputs/checkpoints/Office-PDF/helpers/policy-audit shipped in `v0.1.30`.                                          |
+| Refreshable artifacts            | Space F110                | Space-owned planned | planned         | Depends on `app://space`, current sandboxed `interactive-html`, explicit data bindings, Runtime refresh, and version history. |
+| External Agent Reference plane   | KX-F258                   | published `0.7.67`  | supported: F115 | Reference registration/preflight/catalog/task ledger/Worker/Workflow routing/Task Dock interventions are wired.               |
+| A2A adapter                      | KX-F258 follow-up only    | missing             | watchlist       | Hide registration/dispatch until Runtime advertises a conformant factory.                                                     |
+| MCP Agent Profile/Tasks adapter  | none                      | missing             | watchlist       | Ordinary MCP remains a tool/data integration.                                                                                 |
+| Governed HTTP adapter            | none                      | missing             | watchlist       | Reference's internal protocol marker is not network execution.                                                                |
+| Browser runtime                  | Space F050                | Space-owned planned | planned         | Threat model and bounded Electron tool contract required; separate from Connector APIs.                                       |
+| Connector read snapshots         | Space F096                | Space-owned planned | planned         | Catalog/auth/provenance/revocation first; writes require a later separate review.                                             |
+
+## Release and compatibility watchlist
+
+| Capability                                        | Source                       | Space action                                                                                                                                           |
+| ------------------------------------------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| KodaX npm install-time/trusted publishing changes | KX-F262 planned for `v0.9.0` | F101/F094 must test downstream `npm ci`, published tarball contents, Worker/native sidecars, and packaging. Space does not implement KodaX publishing. |
+| KodaX Work Fast Path / Coding Assurance           | KX-F265 planned              | F091/F119 may consume public assurance/cost/route facts later; no new user mode or Space router.                                                       |
+| NotebookEdit                                      | KX-F139 planned later        | F100 remains watchlist until published or a concrete Space preview/cell-diff journey is prioritized.                                                   |
+| Official sandbox extension                        | future KodaX design          | Architecture watchlist only. Do not conflate Worker isolation, worktree isolation, and OS security sandboxing.                                         |
+
+## Review rules
+
+- Verify the exact installed package/export and capability flag before changing `planned` to `supported`.
+- Update this file, `space.version`, the active feature design, and diagnostics together.
+- Keep simulated/local-file approximations marked `partial` unless cleanup, ownership, durability, and failure semantics match the intended contract.
+- Missing upstream work belongs here with a reopen gate; it must not consume a version slot merely because a design exists.
+- Public UI must degrade from the actual capability result, never from a hard-coded SDK version comparison alone.

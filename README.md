@@ -232,6 +232,7 @@ npm run e2e:headed
 | [docs/HLD.md](docs/HLD.md)                                                                               | High-level architecture and system design.                                               |
 | [docs/ADR/](docs/ADR/)                                                                                   | Architecture decision records.                                                           |
 | [docs/FEATURE_LIST.md](docs/FEATURE_LIST.md)                                                             | Feature ledger, roadmap, and release planning status.                                    |
+| [docs/FEATURES_ARCHIVED.md](docs/FEATURES_ARCHIVED.md)                                                   | Archived release index, reviewed-out decisions, and reopen gates.                        |
 | [docs/KODAX_CAPABILITY_LEDGER.md](docs/KODAX_CAPABILITY_LEDGER.md)                                       | KodaX SDK capability consumption and fallback notes.                                     |
 | [CHANGELOG.md](CHANGELOG.md)                                                                             | Release history.                                                                         |
 
@@ -239,11 +240,14 @@ npm run e2e:headed
 
 Near-term planned work is tracked in [docs/FEATURE_LIST.md](docs/FEATURE_LIST.md). Current highlights:
 
-| Lane     | Focus                                                                                                                   |
-| -------- | ----------------------------------------------------------------------------------------------------------------------- |
-| v0.1.30  | KodaX 0.7.67 Reference External Agent integration; A2A/MCP Tasks/governed HTTP stay gated until upstream adapters ship. |
-| v0.1.35+ | Patch reserves followed by workflow, todo, MCP/extension, provider, review, and beta-hardening lanes.                   |
-| v0.2.x   | Connector catalog, local automations, remote/self-hosted runners, notebooks/data, and distribution expansion.           |
+| Lane | Focus |
+| --- | --- |
+| `v0.1.31-v0.1.32` | Runtime facade/capability alignment followed by `app://space`, structured logging, and diagnostic export. |
+| `v0.1.35-v0.1.40` | Workflow/review evidence, task/capability governance, then SDK-gated Memory Agent and Learning Center hosts. |
+| `v0.1.43` | Localization completion, beta diagnostics, release channels, updater/distribution trust. |
+| `v0.2.x` | Governed browser and Partner packs, read-only connector snapshots, local automations, and refreshable artifacts. |
+
+Remote runners, notebooks, knowledge graphs, desktop screen automation, and unshipped External Agent adapters are reopen-gated watchlist items, not committed release features.
 
 ## License
 

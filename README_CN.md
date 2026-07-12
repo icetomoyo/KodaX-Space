@@ -215,6 +215,7 @@ npm run e2e:headed
 | [docs/HLD.md](docs/HLD.md)                                                                               | 高层架构与系统设计。                                        |
 | [docs/ADR/](docs/ADR/)                                                                                   | 架构决策记录。                                              |
 | [docs/FEATURE_LIST.md](docs/FEATURE_LIST.md)                                                             | Feature ledger、roadmap 和 release planning 状态。          |
+| [docs/FEATURES_ARCHIVED.md](docs/FEATURES_ARCHIVED.md)                                                   | 已归档版本索引、reviewed-out 决策和 reopen gates。          |
 | [docs/KODAX_CAPABILITY_LEDGER.md](docs/KODAX_CAPABILITY_LEDGER.md)                                       | KodaX SDK 能力消费和降级说明。                              |
 | [CHANGELOG.md](CHANGELOG.md)                                                                             | 版本历史。                                                  |
 
@@ -222,11 +223,14 @@ npm run e2e:headed
 
 近期计划以 [docs/FEATURE_LIST.md](docs/FEATURE_LIST.md) 为准。当前重点：
 
-| 版本线   | 重点                                                                                               |
-| -------- | -------------------------------------------------------------------------------------------------- |
-| v0.1.30  | KodaX 0.7.67 Reference External Agent 集成；A2A/MCP Tasks/受治理 HTTP 在上游适配器交付前保持门控。 |
-| v0.1.35+ | Patch reserve，以及后续 Workflow、todo、MCP/extension、provider、review 与 beta-hardening。        |
-| v0.2.x   | Connector catalog、local automations、remote/self-hosted runner、notebook/data 与分发扩展。        |
+| 版本线 | 重点 |
+| --- | --- |
+| `v0.1.31-v0.1.32` | Runtime facade/capability 对齐，以及 `app://space`、结构化日志和诊断导出。 |
+| `v0.1.35-v0.1.40` | Workflow/Review 证据面、Task/Capability 治理，以及 SDK-gated Memory Agent/Learning Center host。 |
+| `v0.1.43` | 本地化完成、beta diagnostics、release channel、updater/distribution trust。 |
+| `v0.2.x` | Governed Browser 与 Partner packs、只读 Connector snapshots、本地 Automations、可刷新 Artifacts。 |
+
+Remote runner、Notebook、Knowledge Graph、桌面 screen automation 和未发布 External Agent adapter 都是带 reopen gate 的 watchlist，不是已承诺版本 feature。
 
 ## License
 
