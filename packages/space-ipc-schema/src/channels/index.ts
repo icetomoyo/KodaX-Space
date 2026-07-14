@@ -12,6 +12,13 @@
 //   - 显式两个 map 让类型 + 运行时 allowlist 同源派生，preload 拿来直接用
 
 import { versionChannel } from './version.js';
+import {
+  runtimeConnectionChangedChannel,
+  runtimeProfileChangedChannel,
+  runtimeProfileSnapshotChannel,
+  sessionLiveChangedChannel,
+  sessionLiveSnapshotChannel,
+} from './runtime.js';
 import { repointelStatusChannel, repointelPrewarmChannel } from './repointel.js';
 import {
   handoffAcceptChannel,
@@ -241,6 +248,8 @@ import { spaceControlRequestedChannel, spaceControlResolveChannel } from './spac
 
 export const invokeChannels = {
   [versionChannel.name]: versionChannel,
+  [runtimeProfileSnapshotChannel.name]: runtimeProfileSnapshotChannel,
+  [sessionLiveSnapshotChannel.name]: sessionLiveSnapshotChannel,
   [diagnosticsReportChannel.name]: diagnosticsReportChannel,
   [diagnosticsExportChannel.name]: diagnosticsExportChannel,
   [spaceControlResolveChannel.name]: spaceControlResolveChannel,
@@ -422,6 +431,9 @@ export const invokeChannels = {
 } as const;
 
 export const pushChannels = {
+  [runtimeConnectionChangedChannel.name]: runtimeConnectionChangedChannel,
+  [runtimeProfileChangedChannel.name]: runtimeProfileChangedChannel,
+  [sessionLiveChangedChannel.name]: sessionLiveChangedChannel,
   [spaceControlRequestedChannel.name]: spaceControlRequestedChannel,
   [sessionEventChannel.name]: sessionEventChannel,
   [artifactChangedChannel.name]: artifactChangedChannel,

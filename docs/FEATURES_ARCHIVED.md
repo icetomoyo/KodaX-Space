@@ -13,6 +13,12 @@ The pre-rebase list used `Completed`, `Done`, `Merged`, `Partial`, `Deferred`, `
 - `Blocked` work without a stable public contract moved to a capability gate or reviewed-out record.
 - `Deferred` work without a committed release moved to the watchlist.
 
+## Unreleased roadmap rebases
+
+| Date | Previous decision | Replacement |
+| --- | --- | --- |
+| 2026-07-13 | `v0.1.32` was a patch reserve after the consolidated `v0.1.31` release. | The unreleased reserve was replaced by F121 Coder Shared Daemon and Multi-Client Live State. Partner remains embedded inline; `v0.1.33-v0.1.34` remain regression reserves. |
+
 ## Released feature index
 
 | Release          | Feature IDs                                        | Release/design record                                                                                                                      |

@@ -18,6 +18,7 @@ import {
 import path from 'node:path';
 import { mkdirSync } from 'node:fs';
 import { registerVersionChannel } from './ipc/version.js';
+import { registerRuntimeProjectionChannels } from './ipc/runtime.js';
 import { registerRepointelChannels } from './ipc/repointel.js';
 import { registerHandoffChannels } from './ipc/handoff.js';
 import { registerSessionChannels } from './ipc/session.js';
@@ -701,6 +702,9 @@ app
 
     // IPC handlers 必须在窗口创建前注册——否则 renderer 启动后立刻调 invoke 会撞上 "No handler registered"
     registerVersionChannel();
+    // F121 Part 1: explicit SDK-pending snapshot handlers. They report
+    // incompatible until the published daemon adapter replaces the projection.
+    registerRuntimeProjectionChannels();
     registerDiagnosticsChannels({
       getMainWindow: () => mainWindow,
       spaceVersion: SPACE_VERSION,

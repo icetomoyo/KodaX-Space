@@ -25,6 +25,10 @@ import type {
   WorkflowActivityPayload,
   SpaceRuntimeDefaultsT,
   LicenseStatusT,
+  SpaceCoderConnectionProjectionT,
+  SpaceRuntimeProfileProjectionT,
+  SpaceSessionLiveChangedT,
+  SpaceSessionLiveProjectionT,
 } from '@kodax-space/space-ipc-schema';
 import { canonProjectRoot as canonProjectRootShared } from '@kodax-space/space-ipc-schema';
 import {
@@ -42,6 +46,14 @@ import {
 } from '../features/artifact/transientArtifact.js';
 import { applyLiveBudgetFallback } from '../lib/liveTaskProgress.js';
 import { mergeManagedTaskStatus } from '../lib/managedTaskStatusMerge.js';
+import {
+  applySessionLiveChange,
+  createRuntimeProjectionState,
+  replaceRuntimeConnection,
+  replaceRuntimeProfile,
+  replaceSessionLiveProjection as replaceSessionLiveProjectionState,
+  type ApplySessionLiveChangeStatus,
+} from './runtimeProjectionState.js';
 
 export type MascotMode = 'legacy' | 'sprite' | 'off';
 
@@ -203,6 +215,11 @@ interface AppState {
    */
   kodaxDefaults: KodaxUserDefaults | null;
   runtimeDefaults: SpaceRuntimeDefaultsT;
+  /** F121 daemon-derived Coder connection/profile/live truth. Not populated until main publishes it. */
+  runtimeConnection: SpaceCoderConnectionProjectionT;
+  runtimeProfile: SpaceRuntimeProfileProjectionT | null;
+  liveProjectionBySession: Readonly<Record<string, SpaceSessionLiveProjectionT | undefined>>;
+  runtimeSnapshotRequiredBySession: Readonly<Record<string, true | undefined>>;
   /**
    * Keychain backend 状态。'memory' 表示 key 仅在本进程内有效；
    * UI 应显著告警，否则用户以为配了 key 但重启就丢（review M1-sec）。
@@ -517,6 +534,10 @@ interface AppState {
   /** v0.1.6 cleanup: 启动期 main 推 kodax.getDefaults 结果进来。 */
   setKodaxDefaults(defaults: KodaxUserDefaults): void;
   setRuntimeDefaults(defaults: SpaceRuntimeDefaultsT): void;
+  setCoderRuntimeConnection(connection: SpaceCoderConnectionProjectionT): void;
+  replaceRuntimeProfileProjection(profile: SpaceRuntimeProfileProjectionT): void;
+  replaceSessionLiveProjection(projection: SpaceSessionLiveProjectionT): void;
+  applySessionLiveProjectionChange(change: SpaceSessionLiveChangedT): ApplySessionLiveChangeStatus;
   /** 用户在无 session 时点 picker → 暂存到 pending；下次 session.create 优先用。*/
   setPendingProviderId(id: string | null): void;
   setPendingReasoningMode(mode: SessionMeta['reasoningMode'] | null): void;
@@ -1016,6 +1037,7 @@ function promoteQueuedUserMessageForPrompt(
 }
 
 const initialMascotMode = readPersistedMascotMode();
+const initialRuntimeProjectionState = createRuntimeProjectionState();
 
 export const useAppStore = create<AppState>((set) => ({
   projects: [],
@@ -1040,6 +1062,10 @@ export const useAppStore = create<AppState>((set) => ({
   keychainBackend: 'unknown',
   kodaxDefaults: null,
   runtimeDefaults: {},
+  runtimeConnection: initialRuntimeProjectionState.connection,
+  runtimeProfile: initialRuntimeProjectionState.profile,
+  liveProjectionBySession: initialRuntimeProjectionState.liveBySession,
+  runtimeSnapshotRequiredBySession: initialRuntimeProjectionState.snapshotRequiredBySession,
   workBudgetBySession: {},
   harnessProfileBySession: {},
   tokensBySession: {},
@@ -2108,6 +2134,80 @@ export const useAppStore = create<AppState>((set) => ({
 
   setKodaxDefaults: (defaults) => set({ kodaxDefaults: defaults }),
   setRuntimeDefaults: (defaults) => set({ runtimeDefaults: { ...defaults } }),
+  setCoderRuntimeConnection: (connection) =>
+    set((state) => {
+      const next = replaceRuntimeConnection(
+        {
+          connection: state.runtimeConnection,
+          profile: state.runtimeProfile,
+          liveBySession: state.liveProjectionBySession,
+          snapshotRequiredBySession: state.runtimeSnapshotRequiredBySession,
+        },
+        connection,
+      );
+      if (next.connection === state.runtimeConnection) return state;
+      return { runtimeConnection: next.connection };
+    }),
+  replaceRuntimeProfileProjection: (profile) =>
+    set((state) => {
+      const next = replaceRuntimeProfile(
+        {
+          connection: state.runtimeConnection,
+          profile: state.runtimeProfile,
+          liveBySession: state.liveProjectionBySession,
+          snapshotRequiredBySession: state.runtimeSnapshotRequiredBySession,
+        },
+        profile,
+      );
+      return {
+        runtimeConnection: next.connection,
+        runtimeProfile: next.profile,
+        liveProjectionBySession: next.liveBySession,
+        runtimeSnapshotRequiredBySession: next.snapshotRequiredBySession,
+      };
+    }),
+  replaceSessionLiveProjection: (projection) =>
+    set((state) => {
+      const next = replaceSessionLiveProjectionState(
+        {
+          connection: state.runtimeConnection,
+          profile: state.runtimeProfile,
+          liveBySession: state.liveProjectionBySession,
+          snapshotRequiredBySession: state.runtimeSnapshotRequiredBySession,
+        },
+        projection,
+      );
+      return {
+        liveProjectionBySession: next.liveBySession,
+        runtimeSnapshotRequiredBySession: next.snapshotRequiredBySession,
+      };
+    }),
+  applySessionLiveProjectionChange: (change) => {
+    let status: ApplySessionLiveChangeStatus = 'ignored';
+    set((state) => {
+      const result = applySessionLiveChange(
+        {
+          connection: state.runtimeConnection,
+          profile: state.runtimeProfile,
+          liveBySession: state.liveProjectionBySession,
+          snapshotRequiredBySession: state.runtimeSnapshotRequiredBySession,
+        },
+        change,
+      );
+      status = result.status;
+      if (
+        result.state.liveBySession === state.liveProjectionBySession &&
+        result.state.snapshotRequiredBySession === state.runtimeSnapshotRequiredBySession
+      ) {
+        return state;
+      }
+      return {
+        liveProjectionBySession: result.state.liveBySession,
+        runtimeSnapshotRequiredBySession: result.state.snapshotRequiredBySession,
+      };
+    });
+    return status;
+  },
 
   setPendingProviderId: (id) => set({ pendingProviderId: id }),
   setPendingReasoningMode: (mode) => {

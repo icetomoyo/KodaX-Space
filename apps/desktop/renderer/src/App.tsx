@@ -123,6 +123,10 @@ export default function App(): JSX.Element {
   const setProviders = useAppStore((s) => s.setProviders);
   const setKodaxDefaults = useAppStore((s) => s.setKodaxDefaults);
   const setRuntimeDefaults = useAppStore((s) => s.setRuntimeDefaults);
+  const setCoderRuntimeConnection = useAppStore((s) => s.setCoderRuntimeConnection);
+  const replaceRuntimeProfileProjection = useAppStore((s) => s.replaceRuntimeProfileProjection);
+  const replaceSessionLiveProjection = useAppStore((s) => s.replaceSessionLiveProjection);
+  const applySessionLiveProjectionChange = useAppStore((s) => s.applySessionLiveProjectionChange);
   const setPendingReasoningMode = useAppStore((s) => s.setPendingReasoningMode);
   const setPendingPermissionMode = useAppStore((s) => s.setPendingPermissionMode);
   const setPendingAutoModeEngine = useAppStore((s) => s.setPendingAutoModeEngine);
@@ -138,12 +142,50 @@ export default function App(): JSX.Element {
   useEffect(() => {
     const bridge = window.kodaxSpace;
     if (!bridge) return;
+    let disposed = false;
+    const liveSnapshotRequests = new Set<string>();
     const sessionEventBatcher = createSessionEventBatcher(appendEvent);
     const flushSessionEventsIfActive = (): void => {
       if (!document.hidden && document.hasFocus()) sessionEventBatcher.flush();
     };
     window.addEventListener('focus', flushSessionEventsIfActive);
     document.addEventListener('visibilitychange', flushSessionEventsIfActive);
+
+    // F121 Part 1: listener-first Runtime bootstrap. The current main controller
+    // truthfully reports `incompatible` until the published daemon SDK is wired.
+    // No UI capability or Coder routing changes are inferred from channel presence.
+    const requestLiveSnapshot = (sessionId: string): void => {
+      if (liveSnapshotRequests.has(sessionId)) return;
+      liveSnapshotRequests.add(sessionId);
+      void bridge
+        .invoke('session.liveSnapshot', { sessionId })
+        .then((result) => {
+          if (!disposed && result.ok) replaceSessionLiveProjection(result.data);
+        })
+        .catch(() => {})
+        .finally(() => {
+          if (!disposed) liveSnapshotRequests.delete(sessionId);
+        });
+    };
+    unsubsRef.current.push(
+      bridge.on('runtime.connectionChanged', (connection) => {
+        setCoderRuntimeConnection(connection);
+      }),
+      bridge.on('runtime.profileChanged', (profile) => {
+        replaceRuntimeProfileProjection(profile);
+      }),
+      bridge.on('session.liveChanged', (change) => {
+        const status = applySessionLiveProjectionChange(change);
+        if (status !== 'snapshot-required') return;
+        requestLiveSnapshot(change.sessionId);
+      }),
+    );
+    void bridge
+      .invoke('runtime.profileSnapshot', undefined)
+      .then((result) => {
+        if (!disposed && result.ok) replaceRuntimeProfileProjection(result.data);
+      })
+      .catch(() => {});
 
     // 启动期一次性自检 + 订阅事件流
     bridge.invoke('space.version', undefined).then((result) => {
@@ -351,8 +393,10 @@ export default function App(): JSX.Element {
     );
 
     return () => {
+      disposed = true;
       for (const u of unsubsRef.current) u();
       unsubsRef.current = [];
+      liveSnapshotRequests.clear();
       window.removeEventListener('focus', flushSessionEventsIfActive);
       document.removeEventListener('visibilitychange', flushSessionEventsIfActive);
       sessionEventBatcher.flush();
@@ -368,6 +412,10 @@ export default function App(): JSX.Element {
     setProviders,
     setKodaxDefaults,
     setRuntimeDefaults,
+    setCoderRuntimeConnection,
+    replaceRuntimeProfileProjection,
+    replaceSessionLiveProjection,
+    applySessionLiveProjectionChange,
     setPendingReasoningMode,
     setPendingPermissionMode,
     setPendingAutoModeEngine,
