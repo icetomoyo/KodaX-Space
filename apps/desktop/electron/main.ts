@@ -670,9 +670,9 @@ app
           err instanceof Error ? err.message : err,
         );
       }),
-      // F116: warm the inline Runtime before IPC starts. Initialization failure is
-      // a pre-run rollback condition, not an application-start failure; live sessions
-      // will use the legacy driver and space.version will expose the degraded state.
+      // F121: attach/auto-start the shared Coder daemon before IPC starts. Failure is
+      // non-fatal for the application and Partner stays inline, but Coder fails closed;
+      // Space never opens a second inline owner against the same profile.
       runtimeHostAdapter
         .initialize(app.getVersion())
         .then(() => {
@@ -681,7 +681,7 @@ app
         .catch((err) => {
           diagnosticsLogger?.warn('runtime', 'host_initialization_failed', undefined, err);
           console.warn(
-            '[main] Runtime host initialization failed; legacy rollback remains active:',
+            '[main] Shared Coder Runtime initialization failed; Coder is unavailable:',
             err instanceof Error ? err.message : err,
           );
         }),

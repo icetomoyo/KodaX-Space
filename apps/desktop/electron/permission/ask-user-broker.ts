@@ -82,6 +82,17 @@ function normalizeSelectionBound(value: number | undefined): number | undefined 
   return Math.min(20, Math.floor(value));
 }
 
+function isSingleQuestionAnswer(value: unknown): value is AskUserQuestionAnswer {
+  return (
+    typeof value === 'string' ||
+    Array.isArray(value) ||
+    (value !== null &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      (value as { kind?: unknown }).kind === 'customInput')
+  );
+}
+
 class AskUserBroker {
   private readonly pending = new Map<string, PendingAskUser>();
 
@@ -205,7 +216,7 @@ class AskUserBroker {
       return true;
     }
 
-    if (typeof reply !== 'string' && 'value' in reply) {
+    if (typeof reply !== 'string' && 'value' in reply && isSingleQuestionAnswer(reply.value)) {
       entry.resolve(reply.value);
     } else {
       entry.resolve(undefined);

@@ -251,6 +251,24 @@ export async function ensureProviderKeyInjected(providerId: string): Promise<boo
   return true;
 }
 
+/**
+ * Main-process-only credential lookup for the daemon credential broker.
+ * The value is returned only to a trusted callback and never crosses IPC.
+ */
+export async function readProviderCredential(
+  providerId: string,
+): Promise<string | undefined> {
+  if (providerId === 'mock') return undefined;
+  await providerConfigStore.load();
+  const info = await resolveProviderInfo(providerId);
+  if (!info) return undefined;
+  const account = await resolveCredentialAccountForProvider(providerId, info.apiKeyEnv);
+  const stored = account ? await getKey(account) : undefined;
+  if (hasNonEmptyEnvValue(stored)) return stored;
+  const fromEnv = process.env[info.apiKeyEnv];
+  return hasNonEmptyEnvValue(fromEnv) ? fromEnv : undefined;
+}
+
 async function resolveKnownProvider(id: string): Promise<KnownProvider | undefined> {
   if (isBuiltinId(id)) return getBuiltin(id);
   await providerConfigStore.load();

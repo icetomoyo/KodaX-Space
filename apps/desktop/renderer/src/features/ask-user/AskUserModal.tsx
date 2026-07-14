@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   AskUserQuestionAnswer,
+  AskUserReplyValue,
   AskUserRequestPayload,
   AskUserSignal,
   AskUserVerdict,
@@ -31,6 +32,7 @@ function truncate(s: string, max: number): string {
 
 type GuardrailPayload = Extract<AskUserRequestPayload, { toolCall: unknown }>;
 type QuestionPayload = Extract<AskUserRequestPayload, { question: string }>;
+type MultiQuestionPayload = Extract<AskUserRequestPayload, { kind: 'multi' }>;
 type QuestionSelectionAnswer = string | { kind: 'customInput'; value: string };
 
 function isGuardrail(payload: AskUserRequestPayload): payload is GuardrailPayload {
@@ -114,12 +116,31 @@ export function AskUserModal(): JSX.Element | null {
   const [inputValue, setInputValue] = useState('');
   const [customInputValue, setCustomInputValue] = useState('');
   const [selectedValues, setSelectedValues] = useState<ReadonlySet<string>>(new Set());
+  const [multiQuestionIndex, setMultiQuestionIndex] = useState(0);
+  const [multiAnswers, setMultiAnswers] = useState<Readonly<Record<string, AskUserQuestionAnswer>>>({});
   const guardrailAllowButtonRef = useRef<HTMLButtonElement | null>(null);
   const questionInputRef = useRef<HTMLTextAreaElement | null>(null);
 
   const guardrail = head && isGuardrail(head) ? head : null;
-  const question = head && isQuestion(head) ? head : null;
+  const multi: MultiQuestionPayload | null = head?.kind === 'multi' ? head : null;
+  const question = useMemo<QuestionPayload | null>(() => {
+    if (head && isQuestion(head)) return head;
+    const item = multi?.questions[multiQuestionIndex];
+    return item
+      ? {
+          ...item,
+          kind: 'select',
+          reqId: multi.reqId,
+          sessionId: multi.sessionId,
+        }
+      : null;
+  }, [head, multi, multiQuestionIndex]);
   const kind = question ? question.kind : 'guardrail';
+
+  useEffect(() => {
+    setMultiQuestionIndex(0);
+    setMultiAnswers({});
+  }, [head?.reqId]);
 
   useEffect(() => {
     setBusy(false);
@@ -144,7 +165,7 @@ export function AskUserModal(): JSX.Element | null {
 
   const reply = useCallback(
     async (
-      payload: { verdict: AskUserVerdict } | { value: AskUserQuestionAnswer } | { cancelled: true },
+      payload: { verdict: AskUserVerdict } | { value: AskUserReplyValue } | { cancelled: true },
     ): Promise<void> => {
       if (!head || !window.kodaxSpace || busy) return;
       setBusy(true);
@@ -198,8 +219,31 @@ export function AskUserModal(): JSX.Element | null {
       setErr(error);
       return;
     }
-    void reply({ value: question.multiSelect ? values : (values[0] ?? '') });
-  }, [head, kind, inputValue, question, selectedValues, customInputValue, reply, t]);
+    const answer: AskUserQuestionAnswer = question.multiSelect ? values : (values[0] ?? '');
+    if (multi) {
+      const nextAnswers = { ...multiAnswers, [question.question]: answer };
+      if (multiQuestionIndex < multi.questions.length - 1) {
+        setMultiAnswers(nextAnswers);
+        setMultiQuestionIndex((index) => index + 1);
+        return;
+      }
+      void reply({ value: nextAnswers });
+      return;
+    }
+    void reply({ value: answer });
+  }, [
+    head,
+    kind,
+    inputValue,
+    question,
+    selectedValues,
+    customInputValue,
+    reply,
+    t,
+    multi,
+    multiAnswers,
+    multiQuestionIndex,
+  ]);
 
   const cancelQuestion = useCallback((): void => {
     void reply({ cancelled: true });
@@ -342,6 +386,11 @@ export function AskUserModal(): JSX.Element | null {
             </>
           ) : (
             <>
+              {multi && (
+                <div className="text-[11px] font-mono text-fg-muted">
+                  {multiQuestionIndex + 1}/{multi.questions.length}
+                </div>
+              )}
               {question?.header && (
                 <div className="text-[11px] font-mono uppercase text-fg-muted">
                   {truncate(question.header, 96)}
@@ -490,6 +539,16 @@ export function AskUserModal(): JSX.Element | null {
             </>
           ) : (
             <>
+              {multi && multiQuestionIndex > 0 && (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => setMultiQuestionIndex((index) => Math.max(0, index - 1))}
+                  className="px-3 py-1.5 text-xs rounded bg-surface-3 text-fg-primary hover:bg-hover-bg disabled:opacity-50"
+                >
+                  {t('askUser.back')}
+                </button>
+              )}
               <button
                 type="button"
                 disabled={busy}

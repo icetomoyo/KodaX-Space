@@ -3,7 +3,7 @@ import path from 'node:path';
 import test, { afterEach } from 'node:test';
 
 import type {
-  CreateKodaXRuntimeOptions,
+  ConnectKodaXRuntimeOptions,
   KodaXRuntime,
   RuntimeRunHandle,
   RuntimeRunResult,
@@ -19,6 +19,16 @@ afterEach(() => {
   setSessionStoreImpl(null);
 });
 
+const testIdentityStore = {
+  openInstance: async ({ version }: { version: string }) => ({
+    clientId: 'space_test',
+    instanceId: 'space_instance_stable',
+    name: 'kodax-space',
+    title: 'KodaX Space',
+    version,
+  }),
+};
+
 function createFakeRuntime() {
   const calls = {
     created: [] as unknown[],
@@ -30,19 +40,53 @@ function createFakeRuntime() {
     forked: [] as unknown[],
     rewound: [] as unknown[],
     close: 0,
+    observed: [] as string[],
+    settingsUpdates: [] as unknown[],
+    credentialRegistrations: [] as unknown[],
+    credentialBrokers: [] as Array<(request: {
+      provider: string;
+      sessionId: string;
+      runId: string;
+    }) => Promise<string | undefined>>,
+    credentialRevokes: [] as string[],
+    hostToolRegistrations: [] as unknown[],
+    hostToolRevokes: [] as string[],
+    submitted: [] as unknown[],
   };
   const sessions = new Set<string>();
+  const settings = new Map<string, { revision: number; value: Record<string, unknown> }>();
   const pending = new Map<string, (result: RuntimeRunResult) => void>();
   let runSeq = 0;
   const runtime = {
     identity: {
       runtimeId: 'rt_test',
-      mode: 'embedded',
-      profile: 'default',
+      mode: 'daemon',
+      profile: 'coder',
       startedAt: '2026-07-12T00:00:00.000Z',
-      version: '0.7.67',
-      isolation: 'inline',
+      version: '0.7.69',
+      isolation: 'process',
     },
+    capabilities: {
+      operationDeduplication: { version: 1, retentionMs: 900_000 },
+      sessionObservation: { version: 1, maxBufferedEvents: 256 },
+      afterTurnInput: { version: 1 },
+      askUserTransport: { version: 1 },
+      permissionCas: { version: 1 },
+      providerCredentialBroker: { version: 1 },
+      runBoundHostTools: { version: 1 },
+      coderOwnerFencing: { version: 1 },
+      crashOutcomeModel: { version: 1 },
+      coderFeatureMatrix: { version: 1, managedRun: true, todoProjection: true },
+    },
+    grantedScopes: [
+      'session:observe',
+      'session:write',
+      'run:control',
+      'interaction:respond',
+      'permission:respond',
+      'credential:register',
+      'host-tool:register',
+    ],
     sessions: {
       async load(sessionId: string) {
         calls.loaded.push(sessionId);
@@ -53,11 +97,57 @@ function createFakeRuntime() {
         calls.created.push(input);
         const id = input.sessionId ?? `s_${sessions.size + 1}`;
         sessions.add(id);
+        settings.set(id, { revision: 0, value: {} });
         return { id, title: '' };
       },
       async transcript(sessionId: string) {
         calls.transcripts.push(sessionId);
         return { title: '', messages: [] };
+      },
+      async observe(sessionId: string) {
+        calls.observed.push(sessionId);
+        if (!sessions.has(sessionId)) throw new Error(`Session not found: ${sessionId}`);
+        return {
+          snapshot: {
+            runtimeId: 'rt_test',
+            cursor: 0,
+            session: { id: sessionId, title: '', surface: 'code' },
+            transcript: { title: '', messages: [] },
+            settings: settings.get(sessionId) ?? { revision: 0, value: {} },
+            runs: [],
+            pendingPermissions: [],
+            live: {
+              assistantTextByRun: {},
+              thinkingTextByRun: {},
+              activeTools: [],
+              pendingUserInputs: [],
+            },
+          },
+          close() {},
+        };
+      },
+      async getSettings() {
+        return {};
+      },
+      async getSettingsVersioned(sessionId: string) {
+        return settings.get(sessionId) ?? { revision: 0, value: {} };
+      },
+      async updateSettingsVersioned(
+        sessionId: string,
+        patch: Record<string, unknown>,
+        options: { expectedRevision: number },
+      ) {
+        calls.settingsUpdates.push({ sessionId, patch, options });
+        const current = settings.get(sessionId) ?? { revision: 0, value: {} };
+        if (current.revision !== options.expectedRevision) throw new Error('revision conflict');
+        const value = { ...current.value };
+        for (const [key, item] of Object.entries(patch)) {
+          if (item === null) delete value[key];
+          else value[key] = item;
+        }
+        const updated = { revision: current.revision + 1, value };
+        settings.set(sessionId, updated);
+        return updated;
       },
       async compact(input: unknown) {
         calls.compacted.push(input);
@@ -86,15 +176,74 @@ function createFakeRuntime() {
         resolve?.({ runId, sessionId: 's_1', phase: 'cancelled' });
         pending.delete(runId);
       },
+      async list() {
+        return [];
+      },
+      async get(runId: string) {
+        return {
+          runId,
+          sessionId: 's_1',
+          phase: 'running',
+          startedAt: '2026-07-12T00:00:00.000Z',
+          provider: 'anthropic',
+        };
+      },
+      async submitInput(input: unknown) {
+        calls.submitted.push(input);
+        return {
+          accepted: true,
+          runId: `run_${++runSeq}`,
+          sessionId: 's_1',
+          delivery: 'after_turn',
+        };
+      },
     },
     events: { subscribe: () => ({ close() {} }), replay: async () => [] },
-    permissions: {},
+    permissions: { listPending: async () => [] },
+    userInputs: { listPending: async () => [] },
+    credentials: {
+      register: async (options: unknown, broker: (request: {
+        provider: string;
+        sessionId: string;
+        runId: string;
+      }) => Promise<string | undefined>) => {
+        calls.credentialRegistrations.push(options);
+        calls.credentialBrokers.push(broker);
+        return { id: `credential_${calls.credentialRegistrations.length}`, providers: [] };
+      },
+      revoke: async (leaseId: string) => {
+        calls.credentialRevokes.push(leaseId);
+        return true;
+      },
+    },
+    hostTools: {
+      register: async (descriptors: unknown, handlers: unknown) => {
+        calls.hostToolRegistrations.push({ descriptors, handlers });
+        return { id: 'tools_1', tools: [] };
+      },
+      revoke: async (leaseId: string) => {
+        calls.hostToolRevokes.push(leaseId);
+        return true;
+      },
+    },
+    operations: {},
     workflows: {},
     config: {},
     catalog: {},
     mcp: {},
     artifacts: {},
-    status: { snapshot: async () => ({}) },
+    status: {
+      snapshot: async () => ({
+        runtimeId: 'rt_test',
+        mode: 'daemon',
+        profile: 'coder',
+        startedAt: '2026-07-12T00:00:00.000Z',
+        sessions: [...sessions].map((id) => ({ id, title: '', surface: 'code', msgCount: 0 })),
+        runs: [],
+        pendingPermissions: [],
+        workflows: [],
+      }),
+    },
     diagnostics: {},
     admin: { agentRegistrations: {} },
     agents: { enabled: false },
@@ -103,7 +252,7 @@ function createFakeRuntime() {
       calls.close += 1;
     },
   } as unknown as KodaXRuntime;
-  return { runtime, calls, sessions, pending };
+  return { runtime, calls, sessions, pending, settings };
 }
 
 test('resolveRuntimeHostMode defaults to runtime and accepts explicit legacy rollback', () => {
@@ -134,9 +283,9 @@ test('legacy selection never constructs a KodaX Runtime', async () => {
   );
 });
 
-test('runtime selection constructs one inline Runtime with the isolated sessions directory', async () => {
+test('runtime selection attaches one Coder daemon with stable identity and required contracts', async () => {
   const fake = createFakeRuntime();
-  const options: CreateKodaXRuntimeOptions[] = [];
+  const options: ConnectKodaXRuntimeOptions[] = [];
   const profileRoot = path.resolve('C:\\isolated-profile');
   const adapter = new RuntimeHostAdapter({
     mode: 'runtime',
@@ -145,14 +294,27 @@ test('runtime selection constructs one inline Runtime with the isolated sessions
       options.push(input);
       return fake.runtime;
     },
+    identityStore: {
+      openInstance: async () => ({
+        clientId: 'space_test',
+        instanceId: 'space_instance_stable',
+        name: 'kodax-space',
+        title: 'KodaX Space',
+        version: '0.1.30',
+      }),
+    },
   });
 
   await Promise.all([adapter.initialize('0.1.30'), adapter.initialize('ignored-after-start')]);
   assert.equal(options.length, 1);
-  assert.equal(options[0]?.mode, 'embedded');
-  assert.equal(options[0]?.isolation, 'inline');
+  assert.equal(options[0]?.profile, 'coder');
+  assert.equal(options[0]?.autoStart, true);
+  assert.equal(options[0]?.homeDir, profileRoot);
   assert.equal(options[0]?.sessionsDir, path.join(profileRoot, 'sessions'));
   assert.equal(options[0]?.clientInfo?.version, '0.1.30');
+  assert.equal(options[0]?.clientInfo?.instanceId, 'space_instance_stable');
+  assert.equal(options[0]?.requirements?.sessionObservation, 1);
+  assert.equal(options[0]?.requirements?.coderFeatureMatrix, 1);
   assert.equal(adapter.snapshot().state, 'ready');
   assert.equal(adapter.snapshot().identity?.runtimeId, 'rt_test');
   assert.equal(
@@ -177,6 +339,7 @@ test('runtime selection constructs one inline Runtime with the isolated sessions
 
 test('supported session operations use the Runtime facade', async () => {
   const fake = createFakeRuntime();
+  fake.sessions.add('s_1');
   const adapter = new RuntimeHostAdapter({
     mode: 'runtime',
     profileRoot: path.resolve('C:\\isolated-profile'),
@@ -209,6 +372,7 @@ test('Runtime session mutations invalidate the Space transcript compatibility ca
     watchSessions: () => ({ close() {} }),
   } as SessionStoreImpl);
   const fake = createFakeRuntime();
+  fake.sessions.add('s_1');
   const adapter = new RuntimeHostAdapter({
     mode: 'runtime',
     profileRoot: path.resolve('C:\\isolated-profile'),
@@ -228,7 +392,7 @@ test('Runtime session mutations invalidate the Space transcript compatibility ca
   assert.equal(transcriptReads, 3);
 });
 
-test('ensureSession loads first and creates only an absent session', async () => {
+test('ensureSession accepts Coder only and rejects Partner before daemon access', async () => {
   const fake = createFakeRuntime();
   fake.sessions.add('s_existing');
   const adapter = new RuntimeHostAdapter({
@@ -243,10 +407,19 @@ test('ensureSession loads first and creates only an absent session', async () =>
     surface: 'code',
     ephemeral: false,
   });
+  await assert.rejects(
+    adapter.ensureSession({
+      sessionId: 's_partner',
+      projectRoot: 'C:\\repo',
+      surface: 'partner',
+      ephemeral: false,
+    }),
+    /Partner.*inline/i,
+  );
   await adapter.ensureSession({
     sessionId: 's_new',
     projectRoot: 'C:\\repo',
-    surface: 'partner',
+    surface: 'code',
     ephemeral: false,
   });
 
@@ -256,9 +429,8 @@ test('ensureSession loads first and creates only an absent session', async () =>
     sessionId: 's_new',
     projectPath: 'C:\\repo',
     gitRoot: 'C:\\repo',
-    surface: 'partner',
-    profileId: 'kodax-space.partner',
-    tag: 'partner',
+    surface: 'code',
+    tag: 'code',
   });
 });
 
@@ -295,8 +467,9 @@ test('managed run tracking aborts the active Runtime run and close is idempotent
   assert.equal(fake.calls.close, 1);
 });
 
-test('concurrent starts reserve the session before Runtime start resolves', async () => {
+test('same-session starts are delegated to daemon ordering instead of rejected locally', async () => {
   const fake = createFakeRuntime();
+  fake.sessions.add('s_1');
   const adapter = new RuntimeHostAdapter({
     mode: 'runtime',
     profileRoot: path.resolve('C:\\isolated-profile'),
@@ -309,19 +482,14 @@ test('concurrent starts reserve the session before Runtime start resolves', asyn
     prompt: 'first',
     options: { provider: 'mock' },
   });
-  await assert.rejects(
-    adapter.startManagedRun({
-      sessionId: 's_1',
-      prompt: 'second',
-      options: { provider: 'mock' },
-    }),
-    /already has an active Space run/,
-  );
-
-  const handle = await firstStart;
-  assert.equal(fake.calls.started.length, 1);
-  await adapter.abortSessionRun('s_1');
-  await handle.result;
+  const secondStart = adapter.startManagedRun({
+    sessionId: 's_1',
+    prompt: 'second',
+    options: { provider: 'mock' },
+  });
+  const [first, second] = await Promise.all([firstStart, secondStart]);
+  assert.equal(fake.calls.started.length, 2);
+  assert.notEqual(first.runId, second.runId);
 });
 
 test('close racing initialization closes the late Runtime exactly once', async () => {
@@ -334,9 +502,11 @@ test('close racing initialization closes the late Runtime exactly once', async (
       new Promise<KodaXRuntime>((resolve) => {
         releaseFactory = resolve;
       }),
+    identityStore: testIdentityStore,
   });
 
   const initialization = adapter.initialize();
+  await Promise.resolve();
   const closing = adapter.close();
   releaseFactory?.(fake.runtime);
   await Promise.all([initialization, closing]);
@@ -344,4 +514,96 @@ test('close racing initialization closes the late Runtime exactly once', async (
   assert.equal(adapter.snapshot().state, 'closed');
   assert.equal(adapter.hasReadyRuntime(), false);
   assert.equal(fake.calls.close, 1);
+});
+
+test('initialization closes a constructed Runtime when host-tool registration fails', async () => {
+  const fake = createFakeRuntime();
+  fake.runtime.hostTools.register = async () => {
+    throw new Error('host tool registration failed');
+  };
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+  });
+
+  await assert.rejects(adapter.initialize(), /host tool registration failed/);
+  assert.equal(adapter.snapshot().state, 'failed');
+  assert.equal(fake.calls.close, 1);
+});
+
+test('session settings use revisioned CAS and skip unchanged values', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_1');
+  fake.settings.set('s_1', { revision: 2, value: { provider: 'anthropic' } });
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+  });
+
+  await adapter.updateSessionSettings('s_1', { provider: 'anthropic' });
+  assert.equal(fake.calls.settingsUpdates.length, 0);
+  await adapter.updateSessionSettings('s_1', { model: 'claude-next' });
+  assert.deepEqual(fake.calls.settingsUpdates, [
+    {
+      sessionId: 's_1',
+      patch: { model: 'claude-next' },
+      options: { expectedRevision: 2 },
+    },
+  ]);
+});
+
+test('Space-started runs receive scoped credential and host-tool leases', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_1');
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    credentialResolver: async (provider) =>
+      provider === 'anthropic' ? 'secret-from-keychain' : undefined,
+  });
+
+  const handle = await adapter.startManagedRun({
+    sessionId: 's_1',
+    prompt: 'hello',
+    options: { provider: 'anthropic' },
+  });
+  const started = fake.calls.started[0] as {
+    credential?: { leaseId: string; provider: string };
+    hostTools?: { leaseId: string };
+  };
+  assert.deepEqual(started.credential, {
+    leaseId: 'credential_1',
+    provider: 'anthropic',
+  });
+  assert.deepEqual(started.hostTools, { leaseId: 'tools_1' });
+  const registration = fake.calls.hostToolRegistrations[0] as {
+    descriptors: readonly { name: string }[];
+  };
+  assert.ok(registration.descriptors.some((item) => item.name === 'create_artifact'));
+  assert.ok(registration.descriptors.some((item) => item.name === 'create_office_artifact'));
+  const broker = fake.calls.credentialBrokers[0];
+  assert.ok(broker);
+  assert.equal(
+    await broker({ provider: 'anthropic', sessionId: 'wrong', runId: handle.runId }),
+    undefined,
+  );
+  assert.equal(
+    await broker({ provider: 'anthropic', sessionId: 's_1', runId: handle.runId }),
+    'secret-from-keychain',
+  );
+  assert.equal(
+    await broker({ provider: 'anthropic', sessionId: 's_1', runId: 'other_run' }),
+    undefined,
+  );
+  fake.pending.get(handle.runId)?.({
+    runId: handle.runId,
+    sessionId: 's_1',
+    phase: 'completed',
+  });
+  await handle.result;
+  assert.deepEqual(fake.calls.credentialRevokes, ['credential_1']);
 });

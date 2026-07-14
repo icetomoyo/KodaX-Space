@@ -151,9 +151,8 @@ export default function App(): JSX.Element {
     window.addEventListener('focus', flushSessionEventsIfActive);
     document.addEventListener('visibilitychange', flushSessionEventsIfActive);
 
-    // F121 Part 1: listener-first Runtime bootstrap. The current main controller
-    // truthfully reports `incompatible` until the published daemon SDK is wired.
-    // No UI capability or Coder routing changes are inferred from channel presence.
+    // F121: listener-first Runtime bootstrap. A cursor gap requests one atomic
+    // observation snapshot instead of attempting to replay partial daemon events.
     const requestLiveSnapshot = (sessionId: string): void => {
       if (liveSnapshotRequests.has(sessionId)) return;
       liveSnapshotRequests.add(sessionId);
@@ -425,6 +424,29 @@ export default function App(): JSX.Element {
     seedWorkflowRuns,
     appendWorkflowActivity,
   ]);
+
+  // F121: selecting a Coder session installs the daemon observation before
+  // returning its atomic live snapshot. This also restores terminal-started
+  // runs after a renderer reload without restarting the run.
+  useEffect(() => {
+    const bridge = window.kodaxSpace;
+    if (!bridge || !currentSessionId) return;
+    const selected = useAppStore
+      .getState()
+      .sessions.find((session) => session.sessionId === currentSessionId);
+    if (selected?.surface === 'partner') return;
+    if (useAppStore.getState().liveProjectionBySession[currentSessionId]) return;
+    let disposed = false;
+    void bridge
+      .invoke('session.liveSnapshot', { sessionId: currentSessionId })
+      .then((result) => {
+        if (!disposed && result.ok) replaceSessionLiveProjection(result.data);
+      })
+      .catch(() => {});
+    return () => {
+      disposed = true;
+    };
+  }, [currentSessionId, replaceSessionLiveProjection]);
 
   // (Esc 关 settings 面板已下放到 SettingsModal 自己 own —— 见 features/settings/SettingsModal.tsx)
 

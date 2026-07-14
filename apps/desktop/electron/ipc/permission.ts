@@ -8,6 +8,7 @@
 import { registerChannel } from './register.js';
 import { permissionBroker } from '../permission/broker.js';
 import { permissionRegistry } from '../permission/registry.js';
+import { runtimeHostAdapter } from '../kodax/runtime-host-adapter.js';
 
 export function registerPermissionChannels(): void {
   // permission.answer
@@ -23,6 +24,10 @@ export function registerPermissionChannels(): void {
   // 即使 broker 没有这条 pending（renderer 重复点击 / 超时后回答），也返回 accepted:false
   // 而不是 throw——envelope 已是 ok，{ accepted:false } 是业务级"晚到的答案被丢弃"。
   registerChannel('permission.answer', async (input) => {
+    if (runtimeHostAdapter.hasPendingPermission(input.reqId)) {
+      const accepted = await runtimeHostAdapter.respondPermission(input.reqId, input.decision);
+      return { accepted };
+    }
     let effectiveDecision = input.decision;
 
     if (input.decision === 'allow_always') {

@@ -54,6 +54,20 @@ const askUserQuestionAnswerSchema = z.union([
   askUserSelectionAnswerSchema,
   z.array(askUserSelectionAnswerSchema).max(20),
 ]);
+const askUserMultiAnswerSchema = z
+  .record(askUserQuestionAnswerSchema)
+  .superRefine((value, ctx) => {
+    if (Object.keys(value).length > 20) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'multi-question answers cannot contain more than 20 entries',
+      });
+    }
+  });
+const askUserReplyValueSchema = z.union([
+  askUserQuestionAnswerSchema,
+  askUserMultiAnswerSchema,
+]);
 
 const guardrailRequestSchema = z.object({
   kind: z.literal('guardrail').optional(),
@@ -102,11 +116,45 @@ const questionRequestSchema = z
     }
   });
 
+const multiQuestionItemSchema = z
+  .object({
+    question: z.string().min(1).max(2048),
+    header: z.string().min(1).max(96).optional(),
+    options: z.array(askUserQuestionOptionSchema).min(1).max(20),
+    multiSelect: z.boolean().optional(),
+    minSelections: selectionBoundSchema.optional(),
+    maxSelections: selectionBoundSchema.optional(),
+    allowCustomInput: z.boolean().optional(),
+    customInputLabel: z.string().min(1).max(160).optional(),
+    customInputPrompt: z.string().max(512).optional(),
+    customInputDefault: z.string().max(4096).optional(),
+  })
+  .superRefine((payload, ctx) => {
+    if (
+      payload.minSelections !== undefined &&
+      payload.maxSelections !== undefined &&
+      payload.minSelections > payload.maxSelections
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'minSelections cannot exceed maxSelections',
+        path: ['maxSelections'],
+      });
+    }
+  });
+
+const multiQuestionRequestSchema = z.object({
+  kind: z.literal('multi'),
+  reqId: reqIdSchema,
+  sessionId: sessionIdSchema,
+  questions: z.array(multiQuestionItemSchema).min(1).max(20),
+});
+
 // ---- Push: askUser.request ---- (main -> renderer)
 export const askUserRequestChannel = {
   name: 'askUser.request',
   direction: 'push',
-  payload: z.union([guardrailRequestSchema, questionRequestSchema]),
+  payload: z.union([guardrailRequestSchema, questionRequestSchema, multiQuestionRequestSchema]),
 } as const;
 
 const guardrailReplySchema = z.object({
@@ -116,7 +164,7 @@ const guardrailReplySchema = z.object({
 
 const valueReplySchema = z.object({
   reqId: reqIdSchema,
-  value: askUserQuestionAnswerSchema,
+  value: askUserReplyValueSchema,
 });
 
 const cancelReplySchema = z.object({
@@ -150,5 +198,6 @@ export type AskUserSignal = z.infer<typeof askUserSignalSchema>;
 export type AskUserToolCall = z.infer<typeof askUserToolCallSchema>;
 export type AskUserQuestionOption = z.infer<typeof askUserQuestionOptionSchema>;
 export type AskUserQuestionAnswer = z.infer<typeof askUserQuestionAnswerSchema>;
+export type AskUserReplyValue = z.infer<typeof askUserReplyValueSchema>;
 export type AskUserReplyInput = z.infer<typeof askUserReplyChannel.input>;
 export type AskUserRequestPayload = z.infer<typeof askUserRequestChannel.payload>;

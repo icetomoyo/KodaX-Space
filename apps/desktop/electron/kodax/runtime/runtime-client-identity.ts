@@ -10,11 +10,22 @@ import { getSpaceDataDir } from '../data-paths.js';
 const MAX_IDENTITY_BYTES = 4 * 1024;
 const CLIENT_ID_RE =
   /^space_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const INSTANCE_ID_RE =
+  /^space_instance_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-const stableRuntimeClientIdentitySchema = z
+const legacyRuntimeClientIdentitySchema = z
   .object({
     schemaVersion: z.literal(1),
     clientId: z.string().regex(CLIENT_ID_RE),
+    createdAt: z.number().int().nonnegative(),
+  })
+  .strict();
+
+const stableRuntimeClientIdentitySchema = z
+  .object({
+    schemaVersion: z.literal(2),
+    clientId: z.string().regex(CLIENT_ID_RE),
+    instanceId: z.string().regex(INSTANCE_ID_RE),
     createdAt: z.number().int().nonnegative(),
   })
   .strict();
@@ -32,6 +43,11 @@ export interface RuntimeClientInstanceIdentity {
 type IdentityReadResult =
   | { readonly kind: 'absent' }
   | { readonly kind: 'invalid'; readonly hash: string }
+  | {
+      readonly kind: 'legacy';
+      readonly hash: string;
+      readonly identity: z.infer<typeof legacyRuntimeClientIdentitySchema>;
+    }
   | { readonly kind: 'valid'; readonly identity: StableRuntimeClientIdentity };
 
 function sha256(bytes: Buffer): string {
@@ -58,8 +74,9 @@ function identityBytes(identity: StableRuntimeClientIdentity): Buffer {
 /**
  * Owns Space's stable daemon client identity without importing the KodaX SDK.
  *
- * The persistent clientId identifies the installed Space profile. instanceId is
- * deliberately process-local and rotates for every Runtime attachment.
+ * The persistent clientId identifies the installed Space profile. The KodaX
+ * daemon contract also requires clientInfo.instanceId to remain stable for the
+ * Space installation, so both identifiers live in the same protected file.
  */
 export class RuntimeClientIdentityStore {
   readonly #filePath: string;
@@ -96,7 +113,7 @@ export class RuntimeClientIdentityStore {
     const stable = await this.loadOrCreate();
     return {
       clientId: stable.clientId,
-      instanceId: `space_instance_${this.#uuid()}`,
+      instanceId: stable.instanceId,
       name: metadata.name,
       ...(metadata.title === undefined ? {} : { title: metadata.title }),
       version: metadata.version,
@@ -111,9 +128,11 @@ export class RuntimeClientIdentityStore {
       if (current.kind === 'valid') return current.identity;
 
       const candidate: StableRuntimeClientIdentity = {
-        schemaVersion: 1,
-        clientId: `space_${this.#uuid()}`,
-        createdAt: Date.now(),
+        schemaVersion: 2,
+        clientId:
+          current.kind === 'legacy' ? current.identity.clientId : `space_${this.#uuid()}`,
+        instanceId: `space_instance_${this.#uuid()}`,
+        createdAt: current.kind === 'legacy' ? current.identity.createdAt : Date.now(),
       };
       const bytes = identityBytes(candidate);
 
@@ -189,17 +208,26 @@ export class RuntimeClientIdentityStore {
         throw new Error('Runtime client identity is not a safe standalone file.');
       }
 
-      const parsed = stableRuntimeClientIdentitySchema.safeParse(
-        (() => {
-          try {
-            return JSON.parse(bytes.toString('utf8')) as unknown;
-          } catch {
-            return undefined;
-          }
-        })(),
-      );
-      if (!parsed.success) return { kind: 'invalid', hash: sha256(bytes) };
-      return { kind: 'valid', identity: Object.freeze({ ...parsed.data }) };
+      const raw = (() => {
+        try {
+          return JSON.parse(bytes.toString('utf8')) as unknown;
+        } catch {
+          return undefined;
+        }
+      })();
+      const parsed = stableRuntimeClientIdentitySchema.safeParse(raw);
+      if (parsed.success) {
+        return { kind: 'valid', identity: Object.freeze({ ...parsed.data }) };
+      }
+      const legacy = legacyRuntimeClientIdentitySchema.safeParse(raw);
+      if (legacy.success) {
+        return {
+          kind: 'legacy',
+          hash: sha256(bytes),
+          identity: Object.freeze({ ...legacy.data }),
+        };
+      }
+      return { kind: 'invalid', hash: sha256(bytes) };
     } finally {
       await handle.close();
     }

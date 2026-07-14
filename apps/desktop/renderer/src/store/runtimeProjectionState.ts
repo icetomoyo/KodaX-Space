@@ -184,6 +184,8 @@ function applyDomainChange(
       return { ...base, todos: update.change.todos };
     case 'managedTask':
       return { ...base, managedTask: update.change.managedTask ?? undefined };
+    case 'settings':
+      return { ...base, settings: update.change.settings };
     case 'queue':
       return { ...base, queuedInputs: update.change.queuedInputs };
     case 'terminal':

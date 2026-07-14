@@ -262,9 +262,42 @@ const runtimeAskUserQuestionSchema = z
       });
     }
   });
+const runtimeAskUserMultiQuestionSchema = z
+  .object({
+    question: z.string().min(1).max(2048),
+    header: z.string().min(1).max(96).optional(),
+    options: z.array(runtimeAskUserOptionSchema).min(1).max(20),
+    multiSelect: z.boolean().optional(),
+    minSelections: z.number().int().min(0).max(20).optional(),
+    maxSelections: z.number().int().min(0).max(20).optional(),
+    allowCustomInput: z.boolean().optional(),
+    customInputLabel: z.string().min(1).max(160).optional(),
+    customInputPrompt: z.string().max(512).optional(),
+    customInputDefault: z.string().max(4096).optional(),
+  })
+  .superRefine((request, ctx) => {
+    if (
+      request.minSelections !== undefined &&
+      request.maxSelections !== undefined &&
+      request.minSelections > request.maxSelections
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'minSelections cannot exceed maxSelections',
+        path: ['maxSelections'],
+      });
+    }
+  });
+const runtimeAskUserMultiSchema = z.object({
+  kind: z.literal('multi'),
+  reqId: idSchema,
+  sessionId: idSchema,
+  questions: z.array(runtimeAskUserMultiQuestionSchema).min(1).max(20),
+});
 const runtimeAskUserRequestSchema = z.union([
   runtimeAskUserGuardrailSchema,
   runtimeAskUserQuestionSchema,
+  runtimeAskUserMultiSchema,
 ]);
 
 export const spaceRuntimeInteractionSchema = z.discriminatedUnion('kind', [
@@ -364,6 +397,23 @@ export const spaceRuntimeManagedTaskSchema = z
   })
   .strict();
 
+export const spaceRuntimeSessionSettingsSchema = z
+  .object({
+    revision: z.number().int().nonnegative(),
+    value: z
+      .object({
+        provider: z.string().min(1).max(64).optional(),
+        model: z.string().min(1).max(128).optional(),
+        effort: z.string().min(1).max(64).optional(),
+        thinking: z.boolean().optional(),
+        reasoningMode: z.enum(['off', 'auto', 'quick', 'balanced', 'deep']).optional(),
+        permissionMode: z.enum(['plan', 'accept-edits', 'auto']).optional(),
+        executionCwd: z.string().min(1).max(4096).optional(),
+      })
+      .strict(),
+  })
+  .strict();
+
 export const spaceRuntimeQueuedInputSchema = z
   .object({
     inputId: idSchema,
@@ -390,6 +440,7 @@ export const spaceSessionLiveProjectionSchema = z
     activeTools: z.array(spaceRuntimeActiveToolSchema).max(MAX_ACTIVE_TOOLS),
     todos: z.array(spaceRuntimeTodoSchema).max(MAX_TODOS),
     managedTask: spaceRuntimeManagedTaskSchema.optional(),
+    settings: spaceRuntimeSessionSettingsSchema.optional(),
     queuedInputs: z.array(spaceRuntimeQueuedInputSchema).max(MAX_QUEUE_ITEMS),
     interactions: z.array(spaceRuntimeInteractionSchema).max(MAX_INTERACTIONS),
   })
@@ -452,6 +503,12 @@ const managedTaskChangeSchema = z
     managedTask: spaceRuntimeManagedTaskSchema.nullable(),
   })
   .strict();
+const settingsChangeSchema = z
+  .object({
+    domain: z.literal('settings'),
+    settings: spaceRuntimeSessionSettingsSchema,
+  })
+  .strict();
 const queueChangeSchema = z
   .object({
     domain: z.literal('queue'),
@@ -477,6 +534,7 @@ export const spaceSessionLiveDomainChangeSchema = z.discriminatedUnion('domain',
   toolsChangeSchema,
   todosChangeSchema,
   managedTaskChangeSchema,
+  settingsChangeSchema,
   queueChangeSchema,
   terminalChangeSchema,
   interactionChangeSchema,
@@ -581,5 +639,6 @@ export type SpaceRuntimeRunProjectionT = z.infer<typeof spaceRuntimeRunProjectio
 export type SpaceRuntimeInteractionT = z.infer<typeof spaceRuntimeInteractionSchema>;
 export type SpaceRuntimeProfileProjectionT = z.infer<typeof spaceRuntimeProfileProjectionSchema>;
 export type SpaceSessionLiveProjectionT = z.infer<typeof spaceSessionLiveProjectionSchema>;
+export type SpaceRuntimeSessionSettingsT = z.infer<typeof spaceRuntimeSessionSettingsSchema>;
 export type SpaceSessionLiveDomainChangeT = z.infer<typeof spaceSessionLiveDomainChangeSchema>;
 export type SpaceSessionLiveChangedT = z.infer<typeof spaceSessionLiveChangedSchema>;

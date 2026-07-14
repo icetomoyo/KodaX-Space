@@ -5,8 +5,10 @@
 // negotiation; the controller itself never imports the KodaX SDK.
 
 import {
+  spaceCoderConnectionProjectionSchema,
   spaceRuntimeProfileProjectionSchema,
   spaceSessionLiveProjectionSchema,
+  type SpaceCoderConnectionProjectionT,
   type SpaceRuntimeProfileProjectionT,
   type SpaceSessionLiveProjectionT,
 } from '@kodax-space/space-ipc-schema';
@@ -62,7 +64,7 @@ export class RuntimeProjectionController {
       currentRuntimeId === nextRuntimeId &&
       parsed.cursor !== undefined &&
       this.#profile.cursor !== undefined &&
-      parsed.cursor.seq <= this.#profile.cursor.seq
+      parsed.cursor.seq < this.#profile.cursor.seq
     ) {
       return false;
     }
@@ -70,6 +72,31 @@ export class RuntimeProjectionController {
       this.#liveBySession.clear();
     }
     this.#profile = parsed;
+    return true;
+  }
+
+  replaceConnection(connection: SpaceCoderConnectionProjectionT): boolean {
+    const parsed = spaceCoderConnectionProjectionSchema.parse(connection);
+    if (parsed.changedAt < this.#profile.connection.changedAt) return false;
+    if (
+      parsed.changedAt === this.#profile.connection.changedAt &&
+      JSON.stringify(parsed) === JSON.stringify(this.#profile.connection)
+    ) {
+      return false;
+    }
+    const previousRuntimeId = runtimeId(this.#profile);
+    const nextRuntimeId = parsed.runtimeId ?? this.#profile.cursor?.runtimeId;
+    if (
+      previousRuntimeId !== nextRuntimeId ||
+      (parsed.state !== 'ready' && parsed.state !== 'degraded')
+    ) {
+      this.#liveBySession.clear();
+    }
+    this.#profile = spaceRuntimeProfileProjectionSchema.parse({
+      ...this.#profile,
+      connection: parsed,
+      projectionRevision: this.#profile.projectionRevision + 1,
+    });
     return true;
   }
 

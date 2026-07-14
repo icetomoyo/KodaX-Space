@@ -4,6 +4,7 @@ import {
   runtimeProjectionController,
   type RuntimeProjectionController,
 } from '../kodax/runtime/runtime-projection-controller.js';
+import { runtimeHostAdapter } from '../kodax/runtime-host-adapter.js';
 import { registerChannel } from './register.js';
 
 type RuntimeChannelName = Extract<
@@ -19,7 +20,15 @@ type RuntimeChannelRegistrar = <C extends RuntimeChannelName>(
 export function registerRuntimeProjectionChannels(
   controller: RuntimeProjectionController = runtimeProjectionController,
   register: RuntimeChannelRegistrar = registerChannel,
+  ensureObserved: (sessionId: string) => Promise<void> = (sessionId) =>
+    runtimeHostAdapter.ensureObserved(sessionId),
+  publishLegacySnapshot: (sessionId: string) => void = (sessionId) =>
+    runtimeHostAdapter.publishLegacySnapshot(sessionId),
 ): void {
   register('runtime.profileSnapshot', () => controller.profileSnapshot());
-  register('session.liveSnapshot', ({ sessionId }) => controller.sessionLiveSnapshot(sessionId));
+  register('session.liveSnapshot', async ({ sessionId }) => {
+    await ensureObserved(sessionId);
+    publishLegacySnapshot(sessionId);
+    return controller.sessionLiveSnapshot(sessionId);
+  });
 }

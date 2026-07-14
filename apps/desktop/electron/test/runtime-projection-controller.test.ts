@@ -154,6 +154,76 @@ test('controller invalidates rich state when Runtime authority is lost', () => {
   assert.throws(() => controller.sessionLiveSnapshot('s_1'), RuntimeProjectionUnavailableError);
 });
 
+test('connection-only replacement updates bootstrap truth and invalidates stale live state', () => {
+  const controller = createPendingSdkRuntimeProjection(100);
+  controller.replaceProfile({
+    connection: {
+      state: 'ready',
+      changedAt: 101,
+      stale: false,
+      runtimeId: 'rt_1',
+      capabilities: [],
+    },
+    projectionRevision: 1,
+    cursor: { runtimeId: 'rt_1', seq: 1 },
+    sessions: [],
+    interactions: [],
+    notifications: [],
+  });
+  controller.replaceSessionLive({
+    sessionId: 's_1',
+    projectionRevision: 1,
+    cursor: { runtimeId: 'rt_1', seq: 1 },
+    transcriptRevision: 'tx_1',
+    queuedRuns: [],
+    activeTools: [],
+    todos: [],
+    queuedInputs: [],
+    interactions: [],
+  });
+
+  assert.equal(
+    controller.replaceConnection({
+      state: 'reconnecting',
+      changedAt: 102,
+      stale: true,
+      runtimeId: 'rt_1',
+      reason: 'transport closed',
+      capabilities: [],
+    }),
+    true,
+  );
+  assert.equal(controller.profileSnapshot().connection.state, 'reconnecting');
+  assert.throws(() => controller.sessionLiveSnapshot('s_1'), RuntimeProjectionUnavailableError);
+});
+
+test('profile refresh may advance revision at the same daemon cursor', () => {
+  const controller = createPendingSdkRuntimeProjection(100);
+  const first = {
+    connection: {
+      state: 'ready' as const,
+      changedAt: 101,
+      stale: false,
+      runtimeId: 'rt_1',
+      capabilities: [],
+    },
+    projectionRevision: 1,
+    cursor: { runtimeId: 'rt_1', seq: 1 },
+    sessions: [],
+    interactions: [],
+    notifications: [],
+  };
+  assert.equal(controller.replaceProfile(first), true);
+  assert.equal(
+    controller.replaceProfile({
+      ...first,
+      connection: { ...first.connection, changedAt: 102 },
+      projectionRevision: 2,
+    }),
+    true,
+  );
+});
+
 test('controller snapshots cannot mutate its internal authoritative cache', () => {
   const controller = createPendingSdkRuntimeProjection(100);
   const first = controller.profileSnapshot();

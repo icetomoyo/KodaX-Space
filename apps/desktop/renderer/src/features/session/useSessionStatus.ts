@@ -35,9 +35,26 @@ export function useSessionStatus(sessionId: string | null): SessionStatus {
   const errorSeenAt = useAppStore((s) =>
     sessionId ? (s.errorSeenAtBySession[sessionId] ?? 0) : 0,
   );
+  const runtimeLive = useAppStore((s) =>
+    sessionId ? s.liveProjectionBySession[sessionId] : undefined,
+  );
 
   return useMemo<SessionStatus>(() => {
     if (!sessionId) return 'idle';
+    if (
+      runtimeLive?.activeRun?.phase === 'waiting_permission' ||
+      runtimeLive?.activeRun?.phase === 'waiting_user_input' ||
+      runtimeLive?.interactions.some((interaction) => interaction.state === 'pending')
+    ) {
+      return 'awaiting';
+    }
+    if (runtimeLive?.activeRun || (runtimeLive?.queuedRuns.length ?? 0) > 0) return 'running';
+    if (
+      runtimeLive?.lastTerminalRun?.phase === 'failed' ||
+      runtimeLive?.lastTerminalRun?.phase === 'interrupted'
+    ) {
+      return 'error';
+    }
     if (awaitingPermission || awaitingAskUser) return 'awaiting';
     // 倒扫 events 找最近一条 session lifecycle —— complete/error 表示已结束
     if (events) {
@@ -54,7 +71,15 @@ export function useSessionStatus(sessionId: string | null): SessionStatus {
     }
     if (pending) return 'running';
     return 'idle';
-  }, [sessionId, pending, events, awaitingPermission, awaitingAskUser, errorSeenAt]);
+  }, [
+    sessionId,
+    pending,
+    events,
+    awaitingPermission,
+    awaitingAskUser,
+    errorSeenAt,
+    runtimeLive,
+  ]);
 }
 
 /**
@@ -70,12 +95,33 @@ export function useSessionStatusMap(
   const permissionQueue = useAppStore((s) => s.permissionQueue);
   const askUserQueue = useAppStore((s) => s.askUserQueue);
   const errorSeenMap = useAppStore((s) => s.errorSeenAtBySession);
+  const liveProjectionBySession = useAppStore((s) => s.liveProjectionBySession);
 
   return useMemo(() => {
     const permissionSids = new Set(permissionQueue.map((p) => p.sessionId));
     const askUserSids = new Set(askUserQueue.map((p) => p.sessionId));
     const out: Record<string, SessionStatus> = {};
     for (const sid of sessionIds) {
+      const runtimeLive = liveProjectionBySession[sid];
+      if (
+        runtimeLive?.activeRun?.phase === 'waiting_permission' ||
+        runtimeLive?.activeRun?.phase === 'waiting_user_input' ||
+        runtimeLive?.interactions.some((interaction) => interaction.state === 'pending')
+      ) {
+        out[sid] = 'awaiting';
+        continue;
+      }
+      if (runtimeLive?.activeRun || (runtimeLive?.queuedRuns.length ?? 0) > 0) {
+        out[sid] = 'running';
+        continue;
+      }
+      if (
+        runtimeLive?.lastTerminalRun?.phase === 'failed' ||
+        runtimeLive?.lastTerminalRun?.phase === 'interrupted'
+      ) {
+        out[sid] = 'error';
+        continue;
+      }
       if (permissionSids.has(sid) || askUserSids.has(sid)) {
         out[sid] = 'awaiting';
         continue;
@@ -105,5 +151,13 @@ export function useSessionStatusMap(
       out[sid] = status;
     }
     return out;
-  }, [sessionIds, pendingMap, eventsMap, permissionQueue, askUserQueue, errorSeenMap]);
+  }, [
+    sessionIds,
+    pendingMap,
+    eventsMap,
+    permissionQueue,
+    askUserQueue,
+    errorSeenMap,
+    liveProjectionBySession,
+  ]);
 }

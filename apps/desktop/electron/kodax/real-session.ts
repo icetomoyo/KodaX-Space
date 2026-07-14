@@ -116,6 +116,7 @@ import type {
   KodaXSessionStorage,
   ToolCallSignal,
 } from '@kodax-ai/kodax/coding';
+import type { RuntimeInput, RuntimeKodaXOptions } from '@kodax-ai/kodax/runtime';
 import type { InputArtifact, SessionEvent, Surface } from '@kodax-space/space-ipc-schema';
 import { ASK_USER_BACK_SIGNAL } from '@kodax-space/space-ipc-schema';
 
@@ -361,6 +362,57 @@ export class RealKodaXSession implements ManagedSession {
       throw new Error(`[real-session ${this.sessionId}] already disposed`);
     }
 
+    if (this.surface === 'code' && runtimeHostAdapter.isRuntimeSelected()) {
+      await runtimeHostAdapter.initialize();
+      const created = await runtimeHostAdapter.ensureSession({
+        sessionId: this.sessionId,
+        projectRoot: this.projectRoot,
+        surface: 'code',
+        ephemeral: this.ephemeral,
+      });
+      if (created) {
+        await runtimeHostAdapter.updateSessionSettings(this.sessionId, {
+          provider: this.provider,
+          model: this.model ?? null,
+          thinking: this.thinking ?? null,
+          reasoningMode: this.reasoningMode,
+          permissionMode: this.permissionMode,
+          executionCwd: this.projectRoot,
+        });
+      }
+      await runtimeHostAdapter.ensureObserved(this.sessionId);
+      const activeRunId =
+        runtimeHostAdapter.activeRunId(this.sessionId) ??
+        (await runtimeHostAdapter.findActiveRunId(this.sessionId));
+      if (this.currentAbort || activeRunId) {
+        if (!activeRunId) {
+          throw new Error('The Coder daemon is still accepting the current run; retry shortly.');
+        }
+        const queueMode = options?.queueMode ?? 'interrupt';
+        if (queueMode !== 'after-turn') {
+          throw new Error(
+            'Interrupt delivery is not supported by KodaX Runtime 0.7.69; choose after-turn.',
+          );
+        }
+        if (options?.promptOverlay) {
+          throw new Error('A prompt overlay cannot be attached to a daemon continuation.');
+        }
+        const result = await runtimeHostAdapter.submitInput({
+          sessionId: this.sessionId,
+          afterRunId: activeRunId,
+          delivery: 'after_turn',
+          input: this.buildRuntimeInput(prompt, artifacts),
+        });
+        if (!result.accepted) {
+          throw new Error(`The daemon rejected the after-turn input: ${result.reason}.`);
+        }
+        this.lastActivityAt = Date.now();
+        return { queued: true, queueId: result.runId, queueMode: 'after-turn' };
+      }
+      this.startRun(prompt, artifacts, options?.promptOverlay);
+      return { queued: false };
+    }
+
     // Follow-up prompts are queued explicitly: interrupt goes into the SDK
     // main-thread queue for safe mid-turn drains, while after-turn stays in
     // Space's per-session queue until this turn settles.
@@ -382,6 +434,23 @@ export class RealKodaXSession implements ManagedSession {
     }
     this.startRun(prompt, artifacts, options?.promptOverlay);
     return { queued: false };
+  }
+
+  private buildRuntimeInput(
+    prompt: string,
+    artifacts?: readonly InputArtifact[],
+  ): readonly RuntimeInput[] {
+    return [
+      { type: 'text', text: prompt },
+      ...(artifacts ?? []).map(
+        (artifact): RuntimeInput => ({
+          type: 'image',
+          path: artifact.path,
+          mediaType: artifact.mediaType,
+          source: artifact.source,
+        }),
+      ),
+    ];
   }
 
   private startRun(
@@ -493,12 +562,15 @@ export class RealKodaXSession implements ManagedSession {
     if (this.currentAbort) {
       this.currentAbort.abort();
     }
-    await runtimeHostAdapter.abortSessionRun(this.sessionId).catch((err) => {
-      console.warn(
-        `[real-session ${this.sessionId}] Runtime run abort failed:`,
-        err instanceof Error ? err.message : err,
-      );
-    });
+    if (this.surface === 'code' && runtimeHostAdapter.isRuntimeSelected()) {
+      await runtimeHostAdapter.abortSessionRun(this.sessionId).catch((err) => {
+        console.warn(
+          `[real-session ${this.sessionId}] Runtime run abort failed:`,
+          err instanceof Error ? err.message : err,
+        );
+      });
+      return;
+    }
     // Stop should also drop queued follow-up prompts so cancel means
     // "do not continue". Drain failure must not block abort.
     await drainQueueForSession(this.sessionId).catch((err) => {
@@ -592,12 +664,96 @@ export class RealKodaXSession implements ManagedSession {
     };
   }
 
+  private async runCoderDaemon(
+    prompt: string,
+    signal: AbortSignal,
+    artifacts?: readonly InputArtifact[],
+    promptOverlay?: string,
+  ): Promise<void> {
+    const sid = this.sessionId;
+    try {
+      await runtimeHostAdapter.initialize();
+      await runtimeHostAdapter.ensureSession({
+        sessionId: sid,
+        projectRoot: this.projectRoot,
+        surface: 'code',
+        ephemeral: this.ephemeral,
+      });
+      await runtimeHostAdapter.ensureObserved(sid);
+
+      const [skillsPrompt, compaction] = await Promise.all([
+        buildSkillsPromptForSurface('code', this.projectRoot),
+        loadKodaxCompactionConfig(),
+      ]);
+      const workflowPolicy = workflowPolicyStore.get();
+      const options: RuntimeKodaXOptions = {
+        provider: this.provider,
+        reasoningMode: this.reasoningMode,
+        agentMode: this.agentMode,
+        ...(this.model !== undefined ? { model: this.model } : {}),
+        ...(this.thinking !== undefined ? { thinking: this.thinking } : {}),
+        ...(compaction ? { compaction } : {}),
+        context: {
+          gitRoot: this.projectRoot,
+          executionCwd: this.projectRoot,
+          ...(promptOverlay ? { promptOverlay } : {}),
+          ...(skillsPrompt ? { skillsPrompt } : {}),
+        },
+        selfManual: {
+          productName: SPACE_PRODUCT_NAME,
+          baseTopics: [],
+          topics: SPACE_MANUAL_TOPICS,
+        },
+        workflowHostPolicy: buildWorkflowHostPolicy(workflowPolicy),
+        workflowRunsBaseDir: workflowController.getRunBaseDir(),
+        workflow: { maxConcurrency: workflowPolicy.maxConcurrency },
+      };
+      const handle = await runtimeHostAdapter.startManagedRun({
+        sessionId: sid,
+        input: this.buildRuntimeInput(prompt, artifacts),
+        mode: 'managed_task',
+        permissionBroker: 'runtime',
+        options,
+      });
+      if (signal.aborted) {
+        await runtimeHostAdapter.abortSessionRun(sid).catch(() => false);
+      }
+      await handle.result;
+    } catch (error) {
+      if (signal.aborted || this.disposed) return;
+      const retryAfterMs = await extractRetryAfterMs(error);
+      if (signal.aborted || this.disposed) return;
+      const wrapped = wrapSdkError(
+        error,
+        retryAfterMs !== undefined ? { retryAfterMs } : undefined,
+      );
+      const retryAvailableAt =
+        wrapped.retryAfterMs !== undefined ? Date.now() + wrapped.retryAfterMs : undefined;
+      console.warn(
+        `[real-session ${sid}] daemon run error (${wrapped.category}): ${wrapped.debugMessage}`,
+      );
+      this.emit({
+        kind: 'session_error',
+        sessionId: sid,
+        error: wrapped.userMessage,
+        category: wrapped.category,
+        retriable: wrapped.retriable,
+        ...(wrapped.action ? { action: wrapped.action } : {}),
+        ...(retryAvailableAt !== undefined ? { retryAvailableAt } : {}),
+      });
+    }
+  }
+
   private async runRealStream(
     prompt: string,
     signal: AbortSignal,
     artifacts?: readonly InputArtifact[],
     promptOverlay?: string,
   ): Promise<void> {
+    if (this.surface === 'code' && runtimeHostAdapter.isRuntimeSelected()) {
+      await this.runCoderDaemon(prompt, signal, artifacts, promptOverlay);
+      return;
+    }
     const sid = this.sessionId;
     const isStopped = (): boolean => this.disposed || signal.aborted;
     const emitRawLive = (event: SessionEvent, force = false): void => {
@@ -1640,7 +1796,7 @@ export class RealKodaXSession implements ManagedSession {
         // the legacy path before a run starts. Once Runtime has accepted the run there is
         // deliberately no automatic fallback: replaying on legacy could execute tools twice.
         let useRuntime = false;
-        if (runtimeHostAdapter.isRuntimeSelected()) {
+        if (this.surface === 'code' && runtimeHostAdapter.isRuntimeSelected()) {
           try {
             await runtimeHostAdapter.initialize();
             useRuntime = true;

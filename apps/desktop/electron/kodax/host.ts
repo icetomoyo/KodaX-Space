@@ -338,6 +338,20 @@ class KodaXHost {
         return 'session-not-found';
       }
       const autoModeEngineChanged = before.autoModeEngine !== session.autoModeEngine;
+      const runtimePatch = {
+        ...(before.provider !== session.provider ? { provider: session.provider } : {}),
+        ...(before.model !== session.model ? { model: session.model ?? null } : {}),
+        ...(before.thinking !== session.thinking ? { thinking: session.thinking ?? null } : {}),
+        ...(before.reasoningMode !== session.reasoningMode
+          ? { reasoningMode: session.reasoningMode }
+          : {}),
+        ...(before.permissionMode !== session.permissionMode
+          ? { permissionMode: session.permissionMode }
+          : {}),
+      };
+      if (session.surface === 'code' && runtimeHostAdapter.hasReadyRuntime()) {
+        await runtimeHostAdapter.updateSessionSettings(sessionId, runtimePatch);
+      }
       if (await this.persistRuntime(sessionId)) {
         if (autoModeEngineChanged) {
           pushToRenderer('session.event', {
@@ -348,6 +362,22 @@ class KodaXHost {
           });
         }
         return 'ok';
+      }
+      if (session.surface === 'code' && runtimeHostAdapter.hasReadyRuntime()) {
+        const rollbackPatch = {
+          ...(before.provider !== session.provider ? { provider: before.provider } : {}),
+          ...(before.model !== session.model ? { model: before.model ?? null } : {}),
+          ...(before.thinking !== session.thinking ? { thinking: before.thinking ?? null } : {}),
+          ...(before.reasoningMode !== session.reasoningMode
+            ? { reasoningMode: before.reasoningMode }
+            : {}),
+          ...(before.permissionMode !== session.permissionMode
+            ? { permissionMode: before.permissionMode }
+            : {}),
+        };
+        await runtimeHostAdapter
+          .updateSessionSettings(sessionId, rollbackPatch)
+          .catch(() => undefined);
       }
       restore();
       return 'persist-failed';
@@ -574,13 +604,16 @@ class KodaXHost {
     //
     // Stop is a UI control: report the terminal state before any SDK teardown
     // path gets a chance to block.
-    pushToRenderer('session.event', {
-      kind: 'session_error',
-      sessionId,
-      error: 'cancelled',
-      category: 'cancelled',
-      retriable: true,
-    });
+    const daemonCoder = s.surface === 'code' && runtimeHostAdapter.hasReadyRuntime();
+    if (!daemonCoder) {
+      pushToRenderer('session.event', {
+        kind: 'session_error',
+        sessionId,
+        error: 'cancelled',
+        category: 'cancelled',
+        retriable: true,
+      });
+    }
     const cancelPromise = s.cancel().catch((err) => {
       console.warn(
         `[host.cancel] cancel ${sessionId} failed:`,
@@ -681,7 +714,7 @@ class KodaXHost {
         ...(s.model !== undefined ? { model: s.model } : {}),
         ...(customInstructions?.trim() ? { customInstructions: customInstructions.trim() } : {}),
       };
-      const result = runtimeHostAdapter.hasReadyRuntime()
+      const result = s.surface === 'code' && runtimeHostAdapter.hasReadyRuntime()
         ? await runtimeHostAdapter
             .compactSession({ sessionId, ...compactInput })
             .catch((err: unknown) => ({
@@ -794,7 +827,7 @@ class KodaXHost {
 
     const forkTitle = src.title !== undefined ? `${stripForkSuffix(src.title)} (fork)` : undefined;
     const selector = await findPersistedTurnEndSelector(sourceSessionId, forkPointTurnIdx);
-    const sdkResult = runtimeHostAdapter.hasReadyRuntime()
+    const sdkResult = src.surface === 'code' && runtimeHostAdapter.hasReadyRuntime()
       ? await runtimeHostAdapter.forkSession({
           sessionId: sourceSessionId,
           ...(selector !== null ? { selector } : {}),
@@ -849,7 +882,7 @@ class KodaXHost {
       });
     } catch (err) {
       // best-effort 回滚：擦掉刚写盘的 fork——失败也无所谓，下一次 list/cleanup 会发现
-      if (runtimeHostAdapter.hasReadyRuntime()) {
+      if (src.surface === 'code' && runtimeHostAdapter.hasReadyRuntime()) {
         await runtimeHostAdapter.deleteSession(sessionId).catch(() => undefined);
       } else {
         await deletePersistedSession({ sessionId }).catch(() => undefined);
@@ -862,7 +895,7 @@ class KodaXHost {
     if (!(await this.persistRuntime(sessionId))) {
       await session.dispose().catch(() => undefined);
       this.sessions.delete(sessionId);
-      if (runtimeHostAdapter.hasReadyRuntime()) {
+      if (src.surface === 'code' && runtimeHostAdapter.hasReadyRuntime()) {
         await runtimeHostAdapter.deleteSession(sessionId).catch(() => undefined);
       } else {
         await deletePersistedSession({ sessionId }).catch(() => undefined);
@@ -914,7 +947,7 @@ class KodaXHost {
     await s.cancel().catch(() => undefined);
     const selector = await findPersistedTurnEndSelector(sessionId, rewindPastTurnIdx);
     // 持久化截断（NEVER throws；不存在 / 无可退则 no-op；返回 false 让 renderer 知道）
-    const diskRewound = runtimeHostAdapter.hasReadyRuntime()
+    const diskRewound = s.surface === 'code' && runtimeHostAdapter.hasReadyRuntime()
       ? (await runtimeHostAdapter.rewindSession({
           sessionId,
           ...(selector !== null ? { selector } : {}),
@@ -941,6 +974,8 @@ class KodaXHost {
   async delete(sessionId: string): Promise<boolean> {
     await this.runtimeMutationLocks.get(sessionId)?.catch(() => undefined);
     const s = this.sessions.get(sessionId);
+    const persisted = s ? undefined : await loadPersistedSession(sessionId);
+    const surface = s?.surface ?? sdkTagToSurface(persisted?.tag) ?? 'code';
     if (s) {
       permissionBroker.cancelSession(sessionId, 'session_disposed');
       askUserBroker.cancelSession(sessionId, 'session_disposed');
@@ -948,7 +983,13 @@ class KodaXHost {
       this.sessions.delete(sessionId);
     }
     // 持久化擦盘——即便 in-memory 不存在也尝试擦（用户对 historical session 直接删）
-    const diskDeleteResult = await deletePersistedSession({ sessionId });
+    const diskDeleteResult =
+      surface === 'code' && runtimeHostAdapter.hasReadyRuntime()
+        ? await runtimeHostAdapter
+            .deleteSession(sessionId)
+            .then(() => 'ok' as const)
+            .catch(() => 'session_running' as const)
+        : await deletePersistedSession({ sessionId });
     if (diskDeleteResult !== 'ok') {
       if (s) {
         const restored = await this.tryResume(sessionId).catch((error: unknown) => {

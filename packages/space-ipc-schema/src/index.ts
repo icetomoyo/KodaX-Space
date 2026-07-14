@@ -54,6 +54,7 @@ export {
   spaceRuntimeActiveToolSchema,
   spaceRuntimeTodoSchema,
   spaceRuntimeManagedTaskSchema,
+  spaceRuntimeSessionSettingsSchema,
   spaceRuntimeQueuedInputSchema,
   spaceSessionLiveProjectionSchema,
   spaceSessionLiveDomainChangeSchema,
@@ -67,6 +68,7 @@ export {
   type SpaceRuntimeRunProjectionT,
   type SpaceRuntimeInteractionT,
   type SpaceRuntimeProfileProjectionT,
+  type SpaceRuntimeSessionSettingsT,
   type SpaceSessionLiveProjectionT,
   type SpaceSessionLiveDomainChangeT,
   type SpaceSessionLiveChangedT,
@@ -186,6 +188,7 @@ export {
   type AskUserToolCall,
   type AskUserQuestionOption,
   type AskUserQuestionAnswer,
+  type AskUserReplyValue,
   type AskUserReplyInput,
   type AskUserRequestPayload,
 } from './channels/ask-user.js';

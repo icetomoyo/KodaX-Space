@@ -6,9 +6,19 @@
 
 import { registerChannel } from './register.js';
 import { askUserBroker } from '../permission/ask-user-broker.js';
+import { runtimeHostAdapter } from '../kodax/runtime-host-adapter.js';
 
 export function registerAskUserChannels(): void {
-  registerChannel('askUser.reply', (input) => {
+  registerChannel('askUser.reply', async (input) => {
+    if (runtimeHostAdapter.hasPendingUserInput(input.reqId)) {
+      const ok = await runtimeHostAdapter.respondUserInput(
+        input.reqId,
+        'cancelled' in input
+          ? { cancelled: true }
+          : { value: 'value' in input ? input.value : input.verdict },
+      );
+      return { ok };
+    }
     const ok = askUserBroker.resolve(input.reqId, input);
     return { ok };
   });

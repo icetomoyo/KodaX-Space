@@ -12,7 +12,7 @@
 // 不 streaming 且不 pending 时 return null，所以挂在 BottomBar 里零成本。
 
 import { useEffect, useState, type JSX as ReactJSX } from 'react';
-import type { SessionEvent } from '@kodax-space/space-ipc-schema';
+import type { SessionEvent, SpaceSessionLiveProjectionT } from '@kodax-space/space-ipc-schema';
 import { useAppStore } from '../store/appStore.js';
 import { useI18n } from '../i18n/I18nProvider.js';
 import type { MessageKey } from '../i18n/messages.js';
@@ -205,6 +205,45 @@ export function snapshotFromEvents(
   };
 }
 
+export function snapshotFromRuntimeProjection(
+  projection: SpaceSessionLiveProjectionT | undefined,
+): ActivitySnapshot | undefined {
+  if (!projection) return undefined;
+  const run = projection.activeRun;
+  if (!run) {
+    if (projection.queuedRuns.length === 0) return undefined;
+    const queued = projection.queuedRuns[0]!;
+    return {
+      streaming: true,
+      status: 'Queued…',
+      startedAt: queued.queuedAt ?? queued.startedAt ?? Date.now(),
+    };
+  }
+  const activeTodo = projection.todos.find((todo) => todo.status === 'in_progress');
+  const activeTool = projection.activeTools.at(-1);
+  const status =
+    run.phase === 'waiting_permission'
+      ? 'Waiting for permission…'
+      : run.phase === 'waiting_user_input'
+        ? 'Waiting for input…'
+        : activeTodo?.activeForm
+          ? `${activeTodo.activeForm}…`
+          : activeTool
+            ? `Running ${activeTool.name}…`
+            : projection.assistantDraft
+              ? 'Writing…'
+              : projection.thinkingDraft
+                ? 'Thinking…'
+                : projection.managedTask?.phase === 'verifying'
+                  ? 'Verifying…'
+                  : 'Working…';
+  return {
+    streaming: true,
+    status,
+    startedAt: run.startedAt ?? run.queuedAt ?? Date.now(),
+  };
+}
+
 /** Tally a string's ASCII vs non-ASCII chars into an accumulator (for token estimation). */
 function tallyChars(text: string, acc: { ascii: number; nonAscii: number }): void {
   for (let i = 0; i < text.length; i++) {
@@ -275,8 +314,12 @@ export function ActivitySpinner(): ReactJSX.Element | null {
   const managedPhase = useAppStore((s) =>
     currentSessionId ? s.managedTaskStatusBySession[currentSessionId]?.phase : undefined,
   );
+  const runtimeLive = useAppStore((s) =>
+    currentSessionId ? s.liveProjectionBySession[currentSessionId] : undefined,
+  );
 
-  const snap = snapshotFromEvents(events, pending, managedPhase);
+  const snap =
+    snapshotFromRuntimeProjection(runtimeLive) ?? snapshotFromEvents(events, pending, managedPhase);
   // Elapsed display still ticks once per second; spinner motion itself is CSS-driven.
   const [, forceTick] = useState(0);
 
@@ -348,7 +391,12 @@ export function useIsStreaming(): boolean {
   const managedPhase = useAppStore((s) =>
     currentSessionId ? s.managedTaskStatusBySession[currentSessionId]?.phase : undefined,
   );
-  return snapshotFromEvents(events, pending, managedPhase).streaming;
+  const runtimeLive = useAppStore((s) =>
+    currentSessionId ? s.liveProjectionBySession[currentSessionId] : undefined,
+  );
+  return (
+    snapshotFromRuntimeProjection(runtimeLive) ?? snapshotFromEvents(events, pending, managedPhase)
+  ).streaming;
 }
 
 type Translate = (key: MessageKey, vars?: Record<string, string | number>) => string;

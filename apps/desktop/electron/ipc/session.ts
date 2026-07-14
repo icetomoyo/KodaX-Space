@@ -60,7 +60,12 @@ import {
 } from '../kodax/user-config.js';
 import { isBuiltinId } from '../providers/catalog.js';
 import { providerConfigStore } from '../providers/config.js';
-import { appendPersistedClientNotice, loadPersistedTranscript } from '../kodax/session-store.js';
+import {
+  appendPersistedClientNotice,
+  loadPersistedSession,
+  loadPersistedTranscript,
+  sdkTagToSurface,
+} from '../kodax/session-store.js';
 import { runtimeHostAdapter } from '../kodax/runtime-host-adapter.js';
 import { parseTaskCompletedBlocks, selectWorkflowBlocks } from './workflow-result-notice.js';
 import { dedupeTranscriptEntries } from './transcript-dedup.js';
@@ -676,12 +681,24 @@ export function registerSessionChannels(): void {
   registerChannel('session.localNotice.append', async (input) => {
     const payload: Record<string, string> = { id: input.notice.id };
     if (input.notice.variant !== undefined) payload.variant = input.notice.variant;
-    const entry = await appendPersistedClientNotice(input.sessionId, {
-      source: 'space-local-notice',
-      content: input.notice.content,
-      timestamp: isoTimestampFromSentAt(input.notice.sentAt),
-      payload,
-    });
+    const liveSession = kodaxHost.get(input.sessionId);
+    const surface =
+      liveSession?.surface ??
+      sdkTagToSurface((await loadPersistedSession(input.sessionId))?.tag) ??
+      'code';
+    const entry =
+      surface === 'code' && runtimeHostAdapter.hasReadyRuntime()
+        ? await runtimeHostAdapter.appendNotice({
+            sessionId: input.sessionId,
+            source: 'space-local-notice',
+            content: input.notice.content,
+          })
+        : await appendPersistedClientNotice(input.sessionId, {
+            source: 'space-local-notice',
+            content: input.notice.content,
+            timestamp: isoTimestampFromSentAt(input.notice.sentAt),
+            payload,
+          });
     if (entry === null) {
       await getSessionLocalNoticeStore().append(input.sessionId, input.notice);
     }
@@ -702,7 +719,12 @@ export function registerSessionChannels(): void {
     };
     // Full append-order transcript (not just the active branch) so pre-compaction
     // turns stay visible in scrollback — fixes "history disappears after compaction".
-    const data = runtimeHostAdapter.hasReadyRuntime()
+    const liveSession = kodaxHost.get(input.sessionId);
+    const surface =
+      liveSession?.surface ??
+      sdkTagToSurface((await loadPersistedSession(input.sessionId))?.tag) ??
+      'code';
+    const data = surface === 'code' && runtimeHostAdapter.hasReadyRuntime()
       ? await runtimeHostAdapter.transcript(input.sessionId)
       : await loadPersistedTranscript(input.sessionId);
     if (!data || !Array.isArray(data.messages)) {

@@ -12,6 +12,7 @@ import {
 import { getSpaceDataDir } from '../data-paths.js';
 
 const MAX_CONFIG_BYTES = 32 * 1024;
+const TRANSIENT_INSTALL_ALIAS_RETRIES = 4;
 const reasoningModeSchema = z.enum(['off', 'auto', 'quick', 'balanced', 'deep']);
 const permissionModeSchema = z.enum(['plan', 'accept-edits', 'auto']);
 const autoModeEngineSchema = z.enum(['llm', 'rules']);
@@ -291,13 +292,20 @@ export class PartnerEffectiveConfigStore {
     );
   }
 
-  async #read(filePath: string, label: string): Promise<FileRead> {
+  async #read(filePath: string, label: string, aliasRetry = 0): Promise<FileRead> {
     let stat: Awaited<ReturnType<typeof fs.lstat>>;
     try {
       stat = await fs.lstat(filePath);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { kind: 'absent' };
       throw error;
+    }
+    if (stat.nlink > 1 && aliasRetry < TRANSIENT_INSTALL_ALIAS_RETRIES) {
+      // Atomic first-install briefly has two names: the private temp link and
+      // the public target. The writer unlinks the temp immediately after link().
+      // Retry the complete guarded read; a persistent/foreign alias still fails.
+      await new Promise<void>((resolve) => setTimeout(resolve, 2));
+      return this.#read(filePath, label, aliasRetry + 1);
     }
     if (stat.isSymbolicLink() || !stat.isFile() || stat.nlink > 1) {
       throw new Error(`Partner effective config ${label} must be a standalone regular file.`);

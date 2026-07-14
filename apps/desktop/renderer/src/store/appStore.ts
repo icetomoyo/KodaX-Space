@@ -679,6 +679,26 @@ function readPersistedModel(): string | null {
   return v;
 }
 
+function mergeRuntimeSettingsIntoSessions(
+  sessions: readonly SessionMeta[],
+  projection: SpaceSessionLiveProjectionT,
+): readonly SessionMeta[] {
+  const settings = projection.settings?.value;
+  if (!settings) return sessions;
+  return sessions.map((session) => {
+    if (session.sessionId !== projection.sessionId || session.surface !== 'code') return session;
+    const next: SessionMeta = {
+      ...session,
+      ...(settings.provider ? { provider: settings.provider } : {}),
+      ...(settings.reasoningMode ? { reasoningMode: settings.reasoningMode } : {}),
+      ...(settings.permissionMode ? { permissionMode: settings.permissionMode } : {}),
+    };
+    if (settings.model) next.model = settings.model;
+    else delete next.model;
+    return next;
+  });
+}
+
 function readPersistedMascotMode(): MascotMode {
   const mode = lsGet(LS_KEY_MASCOT_MODE);
   if (mode !== null && (MASCOT_MODE_VALUES as readonly string[]).includes(mode)) {
@@ -2159,11 +2179,35 @@ export const useAppStore = create<AppState>((set) => ({
         },
         profile,
       );
+      const codeSessionIds = new Set(next.profile?.sessions.map((session) => session.sessionId));
+      for (const interaction of next.profile?.interactions ?? []) {
+        codeSessionIds.add(interaction.request.sessionId);
+      }
+      const runtimePermissions = (next.profile?.interactions ?? [])
+        .filter(
+          (interaction): interaction is Extract<typeof interaction, { kind: 'permission' }> =>
+            interaction.kind === 'permission' && interaction.state === 'pending',
+        )
+        .map((interaction) => interaction.request);
+      const runtimeAskUser = (next.profile?.interactions ?? [])
+        .filter(
+          (interaction): interaction is Extract<typeof interaction, { kind: 'ask-user' }> =>
+            interaction.kind === 'ask-user' && interaction.state === 'pending',
+        )
+        .map((interaction) => interaction.request);
       return {
         runtimeConnection: next.connection,
         runtimeProfile: next.profile,
         liveProjectionBySession: next.liveBySession,
         runtimeSnapshotRequiredBySession: next.snapshotRequiredBySession,
+        permissionQueue: [
+          ...state.permissionQueue.filter((request) => !codeSessionIds.has(request.sessionId)),
+          ...runtimePermissions,
+        ],
+        askUserQueue: [
+          ...state.askUserQueue.filter((request) => !codeSessionIds.has(request.sessionId)),
+          ...runtimeAskUser,
+        ],
       };
     }),
   replaceSessionLiveProjection: (projection) =>
@@ -2177,9 +2221,30 @@ export const useAppStore = create<AppState>((set) => ({
         },
         projection,
       );
+      const runtimePermissions = projection.interactions
+        .filter(
+          (interaction): interaction is Extract<typeof interaction, { kind: 'permission' }> =>
+            interaction.kind === 'permission' && interaction.state === 'pending',
+        )
+        .map((interaction) => interaction.request);
+      const runtimeAskUser = projection.interactions
+        .filter(
+          (interaction): interaction is Extract<typeof interaction, { kind: 'ask-user' }> =>
+            interaction.kind === 'ask-user' && interaction.state === 'pending',
+        )
+        .map((interaction) => interaction.request);
       return {
+        sessions: mergeRuntimeSettingsIntoSessions(state.sessions, projection),
         liveProjectionBySession: next.liveBySession,
         runtimeSnapshotRequiredBySession: next.snapshotRequiredBySession,
+        permissionQueue: [
+          ...state.permissionQueue.filter((request) => request.sessionId !== projection.sessionId),
+          ...runtimePermissions,
+        ],
+        askUserQueue: [
+          ...state.askUserQueue.filter((request) => request.sessionId !== projection.sessionId),
+          ...runtimeAskUser,
+        ],
       };
     }),
   applySessionLiveProjectionChange: (change) => {
@@ -2201,9 +2266,47 @@ export const useAppStore = create<AppState>((set) => ({
       ) {
         return state;
       }
+      const projection = result.state.liveBySession[change.sessionId];
+      const interactionPatch =
+        change.change.domain === 'interaction' && projection
+          ? {
+              permissionQueue: [
+                ...state.permissionQueue.filter(
+                  (request) => request.sessionId !== change.sessionId,
+                ),
+                ...projection.interactions
+                  .filter(
+                    (interaction): interaction is Extract<
+                      typeof interaction,
+                      { kind: 'permission' }
+                    > => interaction.kind === 'permission' && interaction.state === 'pending',
+                  )
+                  .map((interaction) => interaction.request),
+              ],
+              askUserQueue: [
+                ...state.askUserQueue.filter(
+                  (request) => request.sessionId !== change.sessionId,
+                ),
+                ...projection.interactions
+                  .filter(
+                    (interaction): interaction is Extract<
+                      typeof interaction,
+                      { kind: 'ask-user' }
+                    > => interaction.kind === 'ask-user' && interaction.state === 'pending',
+                  )
+                  .map((interaction) => interaction.request),
+              ],
+            }
+          : {};
+      const settingsPatch =
+        change.change.domain === 'settings' && projection
+          ? { sessions: mergeRuntimeSettingsIntoSessions(state.sessions, projection) }
+          : {};
       return {
         liveProjectionBySession: result.state.liveBySession,
         runtimeSnapshotRequiredBySession: result.state.snapshotRequiredBySession,
+        ...interactionPatch,
+        ...settingsPatch,
       };
     });
     return status;

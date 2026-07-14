@@ -180,3 +180,36 @@ test('askUser.reply input accepts value and cancelled replies', () => {
   assert.equal(askUserReplyChannel.input.safeParse({ reqId: 'r', cancelled: true }).success, true);
   assert.equal(askUserReplyChannel.input.safeParse({ reqId: 'r', cancelled: false }).success, false);
 });
+
+test('askUser channels carry one bounded multi-question request and record answer', () => {
+  assert.equal(
+    askUserRequestChannel.payload.safeParse({
+      kind: 'multi',
+      reqId: 'req-multi',
+      sessionId: 's_1',
+      questions: [
+        {
+          question: 'Choose an implementation',
+          header: 'Implementation',
+          options: [{ label: 'Safe', value: 'safe' }],
+        },
+        {
+          question: 'Choose checks',
+          options: [{ label: 'Unit tests', value: 'unit' }],
+          multiSelect: true,
+        },
+      ],
+    }).success,
+    true,
+  );
+  assert.equal(
+    askUserReplyChannel.input.safeParse({
+      reqId: 'req-multi',
+      value: {
+        'Choose an implementation': 'safe',
+        'Choose checks': ['unit'],
+      },
+    }).success,
+    true,
+  );
+});

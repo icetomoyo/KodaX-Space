@@ -2,7 +2,7 @@
 
 > Last reviewed: 2026-07-14
 > Current release and source baseline: `v0.1.31`
-> Current KodaX SDK baseline: exact published `@kodax-ai/kodax@0.7.68`
+> Current KodaX SDK baseline: local integration candidate `@kodax-ai/kodax@0.7.69` verified from the release tarball; npm publication is still pending
 > Scope: active roadmap, recent completion audit, and reviewed-out decisions. Older release history lives in [FEATURES_ARCHIVED.md](FEATURES_ARCHIVED.md), per-version designs, and [CHANGELOG.md](../CHANGELOG.md).
 
 ## Planning rules

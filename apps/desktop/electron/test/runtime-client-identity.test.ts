@@ -17,7 +17,7 @@ async function tempStore(): Promise<{
   return { dir, file, store: new RuntimeClientIdentityStore(file, dir) };
 }
 
-test('Runtime client identity persists clientId and rotates instanceId per process attachment', async (t) => {
+test('Runtime client identity persists clientId and instanceId for every daemon attachment', async (t) => {
   const { dir, file, store } = await tempStore();
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
 
@@ -29,9 +29,33 @@ test('Runtime client identity persists clientId and rotates instanceId per proce
 
   assert.match(first.clientId, /^space_[0-9a-f-]{36}$/);
   assert.equal(second.clientId, first.clientId);
-  assert.notEqual(second.instanceId, first.instanceId);
+  assert.equal(second.instanceId, first.instanceId);
+  assert.match(first.instanceId, /^space_instance_[0-9a-f-]{36}$/);
   assert.equal(second.name, 'KodaX Space');
   assert.equal(second.version, '0.1.32');
+});
+
+test('schema v1 identities migrate without changing the installed clientId', async (t) => {
+  const { dir, file } = await tempStore();
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const clientId = `space_${randomUUID()}`;
+  await fs.writeFile(
+    file,
+    `${JSON.stringify({ schemaVersion: 1, clientId, createdAt: 123 }, null, 2)}\n`,
+  );
+
+  const identity = await new RuntimeClientIdentityStore(file, dir).loadOrCreate();
+  const persisted = JSON.parse(await fs.readFile(file, 'utf8')) as {
+    schemaVersion: number;
+    clientId: string;
+    instanceId: string;
+  };
+
+  assert.equal(identity.schemaVersion, 2);
+  assert.equal(identity.clientId, clientId);
+  assert.equal(identity.instanceId, persisted.instanceId);
+  assert.equal(persisted.schemaVersion, 2);
+  assert.equal(persisted.clientId, clientId);
 });
 
 test('concurrent first-start stores converge on the identity installed in the file', async (t) => {

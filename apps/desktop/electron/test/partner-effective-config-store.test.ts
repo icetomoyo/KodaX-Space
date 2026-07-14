@@ -155,3 +155,13 @@ test('callers cannot mutate a cached Partner config snapshot outside revision CA
   });
   assert.equal((await store.loadOrSeed(SEED)).snapshot.effective.model, 'claude-sonnet');
 });
+
+test('persistent hard-link aliases are still rejected after the install-race retry window', async (t) => {
+  const { dir, file, backup, store } = await fixture();
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  await store.loadOrSeed(SEED);
+  await fs.link(file, path.join(dir, 'foreign-alias.json'));
+
+  const reloaded = new PartnerEffectiveConfigStore(file, backup);
+  await assert.rejects(() => reloaded.loadOrSeed(SEED), /standalone regular file/i);
+});

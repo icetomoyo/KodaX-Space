@@ -577,7 +577,10 @@ function PlanSection({
   const { t } = useI18n();
   const currentSessionId = useAppStore((s) => s.currentSessionId);
   const todos = useAppStore((s) =>
-    currentSessionId ? s.todoListBySession[currentSessionId] : undefined,
+    currentSessionId
+      ? (s.liveProjectionBySession[currentSessionId]?.todos ??
+        s.todoListBySession[currentSessionId])
+      : undefined,
   );
 
   if (!todos || todos.length === 0) return null;
