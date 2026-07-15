@@ -70,6 +70,7 @@ const sharedOptions = {
     '@kodax-ai/kodax/mcp',
     '@kodax-ai/kodax/llm',
     '@kodax-ai/kodax/agent',
+    '@kodax-ai/kodax/runtime',
     '@kodax-ai/kodax/experimental-memory',
     // ./media is dynamically imported by ipc/{session,clipboard}.ts — the base '@kodax-ai/kodax'
     // external does NOT cover subpaths in esbuild, so it must be listed or the packaged main.js

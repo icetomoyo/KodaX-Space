@@ -226,17 +226,19 @@ export function snapshotFromRuntimeProjection(
       ? 'Waiting for permission…'
       : run.phase === 'waiting_user_input'
         ? 'Waiting for input…'
-        : activeTodo?.activeForm
-          ? `${activeTodo.activeForm}…`
-          : activeTool
-            ? `Running ${activeTool.name}…`
-            : projection.assistantDraft
-              ? 'Writing…'
-              : projection.thinkingDraft
-                ? 'Thinking…'
-                : projection.managedTask?.phase === 'verifying'
-                  ? 'Verifying…'
-                  : 'Working…';
+        : run.requirements?.hostTools === 'waiting_host'
+          ? 'Waiting for Space…'
+          : activeTodo?.activeForm
+            ? `${activeTodo.activeForm}…`
+            : activeTool
+              ? `Running ${activeTool.name}…`
+              : projection.assistantDraft
+                ? 'Writing…'
+                : projection.thinkingDraft
+                  ? 'Thinking…'
+                  : projection.managedTask?.phase === 'verifying'
+                    ? 'Verifying…'
+                    : 'Working…';
   return {
     streaming: true,
     status,

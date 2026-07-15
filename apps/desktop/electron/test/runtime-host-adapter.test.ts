@@ -4,7 +4,8 @@ import test, { afterEach } from 'node:test';
 
 import type {
   ConnectKodaXRuntimeOptions,
-  KodaXRuntime,
+  KodaXDaemonRuntime,
+  RuntimeConnectionState,
   RuntimeRunHandle,
   RuntimeRunResult,
 } from '@kodax-ai/kodax/runtime';
@@ -23,11 +24,17 @@ const testIdentityStore = {
   openInstance: async ({ version }: { version: string }) => ({
     clientId: 'space_test',
     instanceId: 'space_instance_stable',
+    instanceSecret: 'space_secret_stable_0123456789abcdef',
     name: 'kodax-space',
     title: 'KodaX Space',
     version,
   }),
 };
+
+const testRuntimeEventParser = (event: unknown) => ({
+  ok: true as const,
+  event: event as import('@kodax-ai/kodax/runtime').RuntimeTypedEvent,
+});
 
 function createFakeRuntime() {
   const calls = {
@@ -43,11 +50,13 @@ function createFakeRuntime() {
     observed: [] as string[],
     settingsUpdates: [] as unknown[],
     credentialRegistrations: [] as unknown[],
-    credentialBrokers: [] as Array<(request: {
-      provider: string;
-      sessionId: string;
-      runId: string;
-    }) => Promise<string | undefined>>,
+    credentialBrokers: [] as Array<
+      (request: {
+        provider: string;
+        sessionId: string;
+        runId: string;
+      }) => Promise<string | undefined>
+    >,
     credentialRevokes: [] as string[],
     hostToolRegistrations: [] as unknown[],
     hostToolRevokes: [] as string[],
@@ -56,6 +65,14 @@ function createFakeRuntime() {
   const sessions = new Set<string>();
   const settings = new Map<string, { revision: number; value: Record<string, unknown> }>();
   const pending = new Map<string, (result: RuntimeRunResult) => void>();
+  const connectionListeners = new Set<(state: RuntimeConnectionState) => void>();
+  let connectionState: RuntimeConnectionState = {
+    state: 'connected',
+    connectionId: 'connection_1',
+    runtimeEpoch: 'runtime_epoch_1',
+    journalEpoch: 'journal_epoch_1',
+    reconnectable: true,
+  };
   let runSeq = 0;
   const runtime = {
     identity: {
@@ -77,6 +94,13 @@ function createFakeRuntime() {
       coderOwnerFencing: { version: 1 },
       crashOutcomeModel: { version: 1 },
       coderFeatureMatrix: { version: 1, managedRun: true, todoProjection: true },
+      sessionAdmission: { version: 1 },
+      completeObservationSnapshot: { version: 1 },
+      connectionLifecycle: { version: 1 },
+      typedRuntimeEvents: { version: 1 },
+      daemonSafeRunInput: { version: 1 },
+      sharedSessionSettings: { version: 1 },
+      durableRecoveryQueries: { version: 1 },
     },
     grantedScopes: [
       'session:observe',
@@ -111,6 +135,7 @@ function createFakeRuntime() {
           snapshot: {
             runtimeId: 'rt_test',
             cursor: 0,
+            transcriptRevision: `transcript_${sessionId}_0`,
             session: { id: sessionId, title: '', surface: 'code' },
             transcript: { title: '', messages: [] },
             settings: settings.get(sessionId) ?? { revision: 0, value: {} },
@@ -121,6 +146,7 @@ function createFakeRuntime() {
               thinkingTextByRun: {},
               activeTools: [],
               pendingUserInputs: [],
+              managedTasks: [],
             },
           },
           close() {},
@@ -202,11 +228,14 @@ function createFakeRuntime() {
     permissions: { listPending: async () => [] },
     userInputs: { listPending: async () => [] },
     credentials: {
-      register: async (options: unknown, broker: (request: {
-        provider: string;
-        sessionId: string;
-        runId: string;
-      }) => Promise<string | undefined>) => {
+      register: async (
+        options: unknown,
+        broker: (request: {
+          provider: string;
+          sessionId: string;
+          runId: string;
+        }) => Promise<string | undefined>,
+      ) => {
         calls.credentialRegistrations.push(options);
         calls.credentialBrokers.push(broker);
         return { id: `credential_${calls.credentialRegistrations.length}`, providers: [] };
@@ -215,6 +244,7 @@ function createFakeRuntime() {
         calls.credentialRevokes.push(leaseId);
         return true;
       },
+      resume: async (leaseId: string) => ({ id: leaseId, providers: [] }),
     },
     hostTools: {
       register: async (descriptors: unknown, handlers: unknown) => {
@@ -225,8 +255,14 @@ function createFakeRuntime() {
         calls.hostToolRevokes.push(leaseId);
         return true;
       },
+      resume: async (leaseId: string) => ({ id: leaseId, tools: [] }),
+      getInvocation: async () => undefined,
     },
-    operations: {},
+    operations: {
+      get: async () => {
+        throw new Error('operation not found');
+      },
+    },
     workflows: {},
     config: {},
     catalog: {},
@@ -243,6 +279,24 @@ function createFakeRuntime() {
         pendingPermissions: [],
         workflows: [],
       }),
+      preflight: async () => ({
+        runtimeId: 'rt_test',
+        clientCount: 1,
+        activeRuns: [],
+        queuedRuns: [],
+        pendingPermissions: [],
+        pendingUserInputs: [],
+        blockers: ['connected_clients'],
+        canStop: false,
+      }),
+    },
+    connection: {
+      current: () => connectionState,
+      subscribe: (listener: (state: RuntimeConnectionState) => void) => {
+        connectionListeners.add(listener);
+        listener(connectionState);
+        return { close: () => connectionListeners.delete(listener) };
+      },
     },
     diagnostics: {},
     admin: { agentRegistrations: {} },
@@ -251,8 +305,23 @@ function createFakeRuntime() {
     async close() {
       calls.close += 1;
     },
-  } as unknown as KodaXRuntime;
-  return { runtime, calls, sessions, pending, settings };
+  } as unknown as KodaXDaemonRuntime;
+  return {
+    runtime,
+    calls,
+    sessions,
+    pending,
+    settings,
+    disconnect(reconnectable = true) {
+      connectionState = {
+        ...connectionState,
+        state: 'disconnected',
+        reason: 'test transport loss',
+        reconnectable,
+      };
+      for (const listener of connectionListeners) listener(connectionState);
+    },
+  };
 }
 
 test('resolveRuntimeHostMode defaults to runtime and accepts explicit legacy rollback', () => {
@@ -298,6 +367,7 @@ test('runtime selection attaches one Coder daemon with stable identity and requi
       openInstance: async () => ({
         clientId: 'space_test',
         instanceId: 'space_instance_stable',
+        instanceSecret: 'space_secret_stable_0123456789abcdef',
         name: 'kodax-space',
         title: 'KodaX Space',
         version: '0.1.30',
@@ -313,8 +383,16 @@ test('runtime selection attaches one Coder daemon with stable identity and requi
   assert.equal(options[0]?.sessionsDir, path.join(profileRoot, 'sessions'));
   assert.equal(options[0]?.clientInfo?.version, '0.1.30');
   assert.equal(options[0]?.clientInfo?.instanceId, 'space_instance_stable');
+  assert.equal(options[0]?.clientInfo?.instanceSecret, 'space_secret_stable_0123456789abcdef');
   assert.equal(options[0]?.requirements?.sessionObservation, 1);
   assert.equal(options[0]?.requirements?.coderFeatureMatrix, 1);
+  assert.equal(options[0]?.requirements?.sessionAdmission, 1);
+  assert.equal(options[0]?.requirements?.completeObservationSnapshot, 1);
+  assert.equal(options[0]?.requirements?.connectionLifecycle, 1);
+  assert.equal(options[0]?.requirements?.typedRuntimeEvents, 1);
+  assert.equal(options[0]?.requirements?.daemonSafeRunInput, 1);
+  assert.equal(options[0]?.requirements?.sharedSessionSettings, 1);
+  assert.equal(options[0]?.requirements?.durableRecoveryQueries, 1);
   assert.equal(adapter.snapshot().state, 'ready');
   assert.equal(adapter.snapshot().identity?.runtimeId, 'rt_test');
   assert.equal(
@@ -335,6 +413,27 @@ test('runtime selection attaches one Coder daemon with stable identity and requi
     adapter.snapshot().capabilities.find((item) => item.id === 'runtime.externalAgents')?.owner,
     'space-bridge',
   );
+  assert.equal((await adapter.preflightDaemonStop()).canStop, false);
+});
+
+test('daemon connection lifecycle invalidates Runtime authority without waiting for polling', async () => {
+  const fake = createFakeRuntime();
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  await adapter.initialize();
+  fake.disconnect(false);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.equal(adapter.hasReadyRuntime(), false);
+  assert.equal(adapter.snapshot().state, 'failed');
+  assert.match(adapter.snapshot().error ?? '', /transport loss/);
+  await adapter.close();
 });
 
 test('supported session operations use the Runtime facade', async () => {
@@ -344,6 +443,8 @@ test('supported session operations use the Runtime facade', async () => {
     mode: 'runtime',
     profileRoot: path.resolve('C:\\isolated-profile'),
     runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
   });
 
   await adapter.transcript('s_1');
@@ -377,6 +478,7 @@ test('Runtime session mutations invalidate the Space transcript compatibility ca
     mode: 'runtime',
     profileRoot: path.resolve('C:\\isolated-profile'),
     runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
   });
 
   await loadPersistedTranscript('s_1');
@@ -399,6 +501,7 @@ test('ensureSession accepts Coder only and rejects Partner before daemon access'
     mode: 'runtime',
     profileRoot: path.resolve('C:\\isolated-profile'),
     runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
   });
 
   await adapter.ensureSession({
@@ -429,7 +532,7 @@ test('ensureSession accepts Coder only and rejects Partner before daemon access'
     sessionId: 's_new',
     projectPath: 'C:\\repo',
     gitRoot: 'C:\\repo',
-    surface: 'code',
+    surface: 'space-desktop',
     tag: 'code',
   });
 });
@@ -440,6 +543,8 @@ test('managed run tracking aborts the active Runtime run and close is idempotent
     mode: 'runtime',
     profileRoot: path.resolve('C:\\isolated-profile'),
     runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
   });
   await adapter.ensureSession({
     sessionId: 's_1',
@@ -452,7 +557,6 @@ test('managed run tracking aborts the active Runtime run and close is idempotent
     sessionId: 's_1',
     prompt: 'hello',
     mode: 'managed_task',
-    permissionBroker: 'client',
     options: { provider: 'mock' },
   });
   assert.equal(handle.runId, 'run_1');
@@ -465,6 +569,7 @@ test('managed run tracking aborts the active Runtime run and close is idempotent
   await adapter.close();
   await adapter.close();
   assert.equal(fake.calls.close, 1);
+  assert.deepEqual(fake.calls.hostToolRevokes, []);
 });
 
 test('same-session starts are delegated to daemon ordering instead of rejected locally', async () => {
@@ -474,6 +579,8 @@ test('same-session starts are delegated to daemon ordering instead of rejected l
     mode: 'runtime',
     profileRoot: path.resolve('C:\\isolated-profile'),
     runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
   });
   await adapter.initialize();
 
@@ -494,12 +601,12 @@ test('same-session starts are delegated to daemon ordering instead of rejected l
 
 test('close racing initialization closes the late Runtime exactly once', async () => {
   const fake = createFakeRuntime();
-  let releaseFactory: ((runtime: KodaXRuntime) => void) | undefined;
+  let releaseFactory: ((runtime: KodaXDaemonRuntime) => void) | undefined;
   const adapter = new RuntimeHostAdapter({
     mode: 'runtime',
     profileRoot: path.resolve('C:\\isolated-profile'),
     runtimeFactory: () =>
-      new Promise<KodaXRuntime>((resolve) => {
+      new Promise<KodaXDaemonRuntime>((resolve) => {
         releaseFactory = resolve;
       }),
     identityStore: testIdentityStore,
@@ -541,15 +648,20 @@ test('session settings use revisioned CAS and skip unchanged values', async () =
     mode: 'runtime',
     profileRoot: path.resolve('C:\\isolated-profile'),
     runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
   });
 
   await adapter.updateSessionSettings('s_1', { provider: 'anthropic' });
   assert.equal(fake.calls.settingsUpdates.length, 0);
-  await adapter.updateSessionSettings('s_1', { model: 'claude-next' });
+  await adapter.updateSessionSettings('s_1', {
+    model: 'claude-next',
+    agentMode: 'amaw',
+    autoModeEngine: 'rules',
+  });
   assert.deepEqual(fake.calls.settingsUpdates, [
     {
       sessionId: 's_1',
-      patch: { model: 'claude-next' },
+      patch: { model: 'claude-next', agentMode: 'amaw', autoModeEngine: 'rules' },
       options: { expectedRevision: 2 },
     },
   ]);
@@ -562,6 +674,8 @@ test('Space-started runs receive scoped credential and host-tool leases', async 
     mode: 'runtime',
     profileRoot: path.resolve('C:\\isolated-profile'),
     runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
     credentialResolver: async (provider) =>
       provider === 'anthropic' ? 'secret-from-keychain' : undefined,
   });

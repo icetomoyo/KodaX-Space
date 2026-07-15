@@ -2,10 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import type {
-  RuntimeEvent,
   RuntimeSessionObservationSnapshot,
   RuntimeStatusSnapshot,
   RuntimeUserInputRequest,
+  RuntimeTypedEvent,
 } from '@kodax-ai/kodax/runtime';
 import {
   CoderSessionProjectionReducer,
@@ -25,6 +25,7 @@ const running = {
     clientName: 'kodax-space',
     clientVersion: '0.1.32',
   },
+  requirements: { hostTools: { leaseId: 'host_1', state: 'waiting_host' } },
 } as const;
 
 const queued = {
@@ -35,6 +36,13 @@ const queued = {
   queuedAt: '2026-07-14T08:01:00.000Z',
   provider: 'anthropic',
   sessionOrder: 3,
+  continuation: {
+    inputId: 'input_after_turn',
+    afterRunId: 'run_active',
+    delivery: 'after_turn',
+    state: 'queued',
+    contentPreview: 'Also update the tests.',
+  },
 } as const;
 
 const permission = {
@@ -56,9 +64,7 @@ const askUser = {
   kind: 'askUser',
   options: {
     question: 'Pick a strategy',
-    options: [
-      { label: 'Safe', value: 'safe', description: 'Prefer the conservative path.' },
-    ],
+    options: [{ label: 'Safe', value: 'safe', description: 'Prefer the conservative path.' }],
   },
   createdAt: '2026-07-14T08:03:00.000Z',
   expiresAt: '2026-07-14T08:08:00.000Z',
@@ -67,6 +73,7 @@ const askUser = {
 const observation = {
   runtimeId: 'rt_shared',
   cursor: 41,
+  transcriptRevision: 'transcript_rev_41',
   session: {
     id: 's_code',
     title: 'Shared work',
@@ -75,7 +82,10 @@ const observation = {
     createdAt: '2026-07-14T07:59:00.000Z',
   },
   transcript: { title: 'Shared work', messages: [{ role: 'user', content: 'hello' }] },
-  settings: { revision: 3, value: { provider: 'anthropic' } },
+  settings: {
+    revision: 3,
+    value: { provider: 'anthropic', agentMode: 'amaw', autoModeEngine: 'rules' },
+  },
   runs: [running, queued],
   pendingPermissions: [permission],
   live: {
@@ -102,8 +112,19 @@ const observation = {
         },
       ],
     },
-    pendingUserInputs: [
-      { requestId: askUser.id, runId: askUser.runId, detail: askUser },
+    pendingUserInputs: [{ requestId: askUser.id, runId: askUser.runId, detail: askUser }],
+    managedTasks: [
+      {
+        runId: 'run_active',
+        status: {
+          agentMode: 'amaw',
+          harnessProfile: 'H2_PLAN_EXECUTE_EVAL',
+          phase: 'verifying',
+          activeWorkerId: 'worker_1',
+          activeWorkerTitle: 'Evaluator',
+          note: 'Checking the result',
+        },
+      },
     ],
   },
 } as unknown as RuntimeSessionObservationSnapshot;
@@ -115,7 +136,11 @@ test('atomic observation maps run, draft, tool, Todo, and interaction truth', ()
   assert.equal(projection.cursor.seq, 41);
   assert.equal(projection.activeRun?.runId, 'run_active');
   assert.equal(projection.activeRun?.initiatedBy?.name, 'kodax-space');
-  assert.deepEqual(projection.queuedRuns.map((run) => run.runId), ['run_queued']);
+  assert.equal(projection.activeRun?.requirements?.hostTools, 'waiting_host');
+  assert.deepEqual(
+    projection.queuedRuns.map((run) => run.runId),
+    ['run_queued'],
+  );
   assert.equal(projection.assistantDraft?.text, 'partial answer');
   assert.equal(projection.thinkingDraft?.text, 'checking');
   assert.deepEqual(projection.activeTools, [
@@ -137,10 +162,22 @@ test('atomic observation maps run, draft, tool, Todo, and interaction truth', ()
   assert.equal(projection.interactions.length, 2);
   assert.deepEqual(projection.settings, {
     revision: 3,
-    value: { provider: 'anthropic' },
+    value: { provider: 'anthropic', agentMode: 'amaw', autoModeEngine: 'rules' },
   });
-  assert.equal(projection.managedTask, undefined);
-  assert.equal(projection.transcriptRevision, 'rt_shared:41:1');
+  assert.equal(projection.managedTask?.phase, 'verifying');
+  assert.equal(projection.managedTask?.activeWorkerTitle, 'Evaluator');
+  assert.equal(projection.transcriptRevision, 'transcript_rev_41');
+  assert.deepEqual(projection.queuedInputs, [
+    {
+      inputId: 'input_after_turn',
+      sessionId: 's_code',
+      delivery: 'after-turn',
+      state: 'queued',
+      createdAt: Date.parse(queued.queuedAt),
+      position: 1,
+      contentPreview: 'Also update the tests.',
+    },
+  ]);
 });
 
 test('profile projection excludes Partner and attributes active/queued runs', () => {
@@ -180,9 +217,15 @@ test('profile projection excludes Partner and attributes active/queued runs', ()
     capabilities: [{ id: 'runtime.daemon', version: 1, available: true }],
   });
 
-  assert.deepEqual(projection.sessions.map((session) => session.sessionId), ['s_code']);
+  assert.deepEqual(
+    projection.sessions.map((session) => session.sessionId),
+    ['s_code'],
+  );
   assert.equal(projection.sessions[0]?.activeRun?.runId, 'run_active');
-  assert.deepEqual(projection.sessions[0]?.queuedRuns.map((run) => run.runId), ['run_queued']);
+  assert.deepEqual(
+    projection.sessions[0]?.queuedRuns.map((run) => run.runId),
+    ['run_queued'],
+  );
   assert.equal(projection.interactions.length, 2);
 });
 
@@ -201,7 +244,7 @@ test('event reducer advances one semantic domain per Runtime cursor', () => {
     payload: {
       items: [{ id: 'todo_1', subject: 'Run tests', status: 'completed' }],
     },
-  } as RuntimeEvent;
+  } as unknown as RuntimeTypedEvent;
 
   const update = reducer.apply(todoEvent);
   assert.equal(update?.change.domain, 'todos');
@@ -249,7 +292,7 @@ test('projection restores multi-question input and advances revisioned settings'
       revision: 4,
       settings: { provider: 'openai', model: 'gpt-next', permissionMode: 'plan' },
     },
-  } as RuntimeEvent);
+  } as unknown as RuntimeTypedEvent);
   assert.equal(update?.change.domain, 'settings');
   assert.deepEqual(reducer.snapshot().settings, {
     revision: 4,

@@ -5,24 +5,44 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { RuntimeClientIdentityStore } from '../kodax/runtime/runtime-client-identity.js';
+import {
+  RuntimeClientIdentityStore,
+  type RuntimeClientSecretStore,
+} from '../kodax/runtime/runtime-client-identity.js';
+
+function memorySecretStore(): RuntimeClientSecretStore {
+  const values = new Map<string, string>();
+  return {
+    read: async (account) => values.get(account),
+    write: async (account, secret) => {
+      values.set(account, secret);
+    },
+  };
+}
 
 async function tempStore(): Promise<{
   dir: string;
   file: string;
+  secrets: RuntimeClientSecretStore;
   store: RuntimeClientIdentityStore;
 }> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'space-runtime-client-'));
   const file = path.join(dir, 'runtime-client-identity.json');
-  return { dir, file, store: new RuntimeClientIdentityStore(file, dir) };
+  const secrets = memorySecretStore();
+  return {
+    dir,
+    file,
+    secrets,
+    store: new RuntimeClientIdentityStore(file, dir, randomUUID, secrets),
+  };
 }
 
-test('Runtime client identity persists clientId and instanceId for every daemon attachment', async (t) => {
-  const { dir, file, store } = await tempStore();
+test('Runtime client identity persists identity and keychain secret for every daemon attachment', async (t) => {
+  const { dir, file, secrets, store } = await tempStore();
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
 
   const first = await store.openInstance({ name: 'KodaX Space', version: '0.1.32' });
-  const second = await new RuntimeClientIdentityStore(file, dir).openInstance({
+  const second = await new RuntimeClientIdentityStore(file, dir, randomUUID, secrets).openInstance({
     name: 'KodaX Space',
     version: '0.1.32',
   });
@@ -31,12 +51,15 @@ test('Runtime client identity persists clientId and instanceId for every daemon 
   assert.equal(second.clientId, first.clientId);
   assert.equal(second.instanceId, first.instanceId);
   assert.match(first.instanceId, /^space_instance_[0-9a-f-]{36}$/);
+  assert.equal(second.instanceSecret, first.instanceSecret);
+  assert.ok(first.instanceSecret.length >= 32);
+  assert.doesNotMatch(await fs.readFile(file, 'utf8'), new RegExp(first.instanceSecret));
   assert.equal(second.name, 'KodaX Space');
   assert.equal(second.version, '0.1.32');
 });
 
 test('schema v1 identities migrate without changing the installed clientId', async (t) => {
-  const { dir, file } = await tempStore();
+  const { dir, file, secrets } = await tempStore();
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const clientId = `space_${randomUUID()}`;
   await fs.writeFile(
@@ -44,25 +67,30 @@ test('schema v1 identities migrate without changing the installed clientId', asy
     `${JSON.stringify({ schemaVersion: 1, clientId, createdAt: 123 }, null, 2)}\n`,
   );
 
-  const identity = await new RuntimeClientIdentityStore(file, dir).loadOrCreate();
+  const identity = await new RuntimeClientIdentityStore(
+    file,
+    dir,
+    randomUUID,
+    secrets,
+  ).loadOrCreate();
   const persisted = JSON.parse(await fs.readFile(file, 'utf8')) as {
     schemaVersion: number;
     clientId: string;
     instanceId: string;
   };
 
-  assert.equal(identity.schemaVersion, 2);
+  assert.equal(identity.schemaVersion, 3);
   assert.equal(identity.clientId, clientId);
   assert.equal(identity.instanceId, persisted.instanceId);
-  assert.equal(persisted.schemaVersion, 2);
+  assert.equal(persisted.schemaVersion, 3);
   assert.equal(persisted.clientId, clientId);
 });
 
 test('concurrent first-start stores converge on the identity installed in the file', async (t) => {
-  const { dir, file } = await tempStore();
+  const { dir, file, secrets } = await tempStore();
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
-  const a = new RuntimeClientIdentityStore(file, dir);
-  const b = new RuntimeClientIdentityStore(file, dir);
+  const a = new RuntimeClientIdentityStore(file, dir, randomUUID, secrets);
+  const b = new RuntimeClientIdentityStore(file, dir, randomUUID, secrets);
 
   const [first, second] = await Promise.all([a.loadOrCreate(), b.loadOrCreate()]);
   const disk = JSON.parse(await fs.readFile(file, 'utf8')) as { clientId: string };

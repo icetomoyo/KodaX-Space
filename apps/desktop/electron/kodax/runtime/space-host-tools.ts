@@ -46,10 +46,7 @@ function descriptor(definition: SpaceToolDefinition): RuntimeHostToolDescriptor 
 }
 
 export function spaceHostToolDescriptors(): readonly RuntimeHostToolDescriptor[] {
-  const definitions: SpaceToolDefinition[] = [
-    CREATE_ARTIFACT_TOOL,
-    CREATE_OFFICE_ARTIFACT_TOOL,
-  ];
+  const definitions: SpaceToolDefinition[] = [CREATE_ARTIFACT_TOOL, CREATE_OFFICE_ARTIFACT_TOOL];
   if (isSpaceControlToolExposureEnabled()) {
     definitions.push(SPACE_CONTROL_INSPECT_TOOL, SPACE_CONTROL_APPLY_TOOL);
   }
@@ -74,13 +71,14 @@ function buildHandlers(): Readonly<Record<string, SpaceToolHandler>> {
   return handlers;
 }
 
-/** Register connection-bound implementations; possession is still granted per run. */
+/** Register or resume stable-client implementations; possession is still granted per run. */
 export async function registerSpaceHostTools(
   runtime: KodaXRuntime,
+  resumeLeaseId?: string,
 ): Promise<RuntimeHostToolLease> {
   const implementations = buildHandlers();
   const results = new Map<string, Promise<{ content: string }>>();
-  let leaseId: string | undefined;
+  let leaseId: string | undefined = resumeLeaseId;
   const handlers: Record<string, RuntimeHostToolHandler> = {};
 
   for (const [name, implementation] of Object.entries(implementations)) {
@@ -122,7 +120,9 @@ export async function registerSpaceHostTools(
     };
   }
 
-  const lease = await runtime.hostTools.register(spaceHostToolDescriptors(), handlers);
+  const lease = resumeLeaseId
+    ? await runtime.hostTools.resume(resumeLeaseId, handlers)
+    : await runtime.hostTools.register(spaceHostToolDescriptors(), handlers);
   leaseId = lease.id;
   return lease;
 }

@@ -116,7 +116,7 @@ import type {
   KodaXSessionStorage,
   ToolCallSignal,
 } from '@kodax-ai/kodax/coding';
-import type { RuntimeInput, RuntimeKodaXOptions } from '@kodax-ai/kodax/runtime';
+import type { RuntimeDaemonKodaXOptions, RuntimeInput } from '@kodax-ai/kodax/runtime';
 import type { InputArtifact, SessionEvent, Surface } from '@kodax-space/space-ipc-schema';
 import { ASK_USER_BACK_SIGNAL } from '@kodax-space/space-ipc-schema';
 
@@ -378,6 +378,8 @@ export class RealKodaXSession implements ManagedSession {
           reasoningMode: this.reasoningMode,
           permissionMode: this.permissionMode,
           executionCwd: this.projectRoot,
+          agentMode: this.agentMode,
+          autoModeEngine: this.autoModeEngine,
         });
       }
       await runtimeHostAdapter.ensureObserved(this.sessionId);
@@ -686,7 +688,7 @@ export class RealKodaXSession implements ManagedSession {
         loadKodaxCompactionConfig(),
       ]);
       const workflowPolicy = workflowPolicyStore.get();
-      const options: RuntimeKodaXOptions = {
+      const options: RuntimeDaemonKodaXOptions = {
         provider: this.provider,
         reasoningMode: this.reasoningMode,
         agentMode: this.agentMode,
@@ -704,7 +706,6 @@ export class RealKodaXSession implements ManagedSession {
           baseTopics: [],
           topics: SPACE_MANUAL_TOPICS,
         },
-        workflowHostPolicy: buildWorkflowHostPolicy(workflowPolicy),
         workflowRunsBaseDir: workflowController.getRunBaseDir(),
         workflow: { maxConcurrency: workflowPolicy.maxConcurrency },
       };
@@ -712,7 +713,6 @@ export class RealKodaXSession implements ManagedSession {
         sessionId: sid,
         input: this.buildRuntimeInput(prompt, artifacts),
         mode: 'managed_task',
-        permissionBroker: 'runtime',
         options,
       });
       if (signal.aborted) {
@@ -1830,7 +1830,6 @@ export class RealKodaXSession implements ManagedSession {
                   sessionId: sid,
                   prompt,
                   mode: 'managed_task',
-                  permissionBroker: 'client',
                   options,
                 }),
               ),

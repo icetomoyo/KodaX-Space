@@ -2,23 +2,28 @@ import path from 'node:path';
 
 import type {
   ConnectKodaXRuntimeOptions,
-  KodaXRuntime,
+  KodaXDaemonRuntime,
   RuntimeIdentity,
   RuntimeAppendNoticeInput,
   RuntimeCompactSessionInput,
   RuntimeCompactSessionResult,
+  RuntimeCredentialBroker,
+  RuntimeDaemonPreflight,
   RuntimeForkSessionInput,
   RuntimeRewindSessionInput,
   RuntimeRunHandle,
   RuntimeRunStatus,
   RuntimeSessionObservation,
+  RuntimeSessionObservationSnapshot,
   RuntimeSessionFilter,
   RuntimeSessionSettings,
   RuntimeSessionSettingsPatch,
   RuntimeSessionSummary,
-  RuntimeStartRunInput,
+  RuntimeDaemonStartRunInput,
   RuntimeSubmitInput,
+  RuntimeSubscription,
   RuntimeTranscript,
+  RuntimeTypedEvent,
 } from '@kodax-ai/kodax/runtime';
 import { getKodaxRuntimeDir } from './data-paths.js';
 import { invalidatePersistedSessionCache, SPACE_EPHEMERAL_SESSION_TAG } from './session-store.js';
@@ -69,7 +74,12 @@ export interface RuntimeSessionIdentity {
   readonly ephemeral: boolean;
 }
 
-type RuntimeFactory = (options: ConnectKodaXRuntimeOptions) => Promise<KodaXRuntime>;
+type RuntimeFactory = (options: ConnectKodaXRuntimeOptions) => Promise<KodaXDaemonRuntime>;
+type RuntimeEventParser = (
+  event: unknown,
+) =>
+  | { readonly ok: true; readonly event: RuntimeTypedEvent }
+  | { readonly ok: false; readonly error: string };
 
 interface RuntimeProjectionPush {
   (
@@ -84,10 +94,7 @@ interface RuntimeProjectionPush {
     channel: 'session.liveChanged',
     payload: import('@kodax-space/space-ipc-schema').SpaceSessionLiveChangedT,
   ): void;
-  (
-    channel: 'session.event',
-    payload: import('@kodax-space/space-ipc-schema').SessionEvent,
-  ): void;
+  (channel: 'session.event', payload: import('@kodax-space/space-ipc-schema').SessionEvent): void;
 }
 
 interface RuntimeIdentityStoreLike {
@@ -98,10 +105,19 @@ interface RuntimeIdentityStoreLike {
   }): Promise<{
     readonly clientId: string;
     readonly instanceId: string;
+    readonly instanceSecret: string;
     readonly name: string;
     readonly title?: string;
     readonly version: string;
   }>;
+}
+
+interface SpaceCredentialLeaseBinding {
+  readonly leaseId: string;
+  readonly provider: string;
+  readonly sessionId: string;
+  boundRunId?: string;
+  readonly broker: RuntimeCredentialBroker;
 }
 
 export interface RuntimeHostAdapterOptions {
@@ -112,6 +128,7 @@ export interface RuntimeHostAdapterOptions {
   readonly projectionController?: RuntimeProjectionController;
   readonly push?: RuntimeProjectionPush;
   readonly credentialResolver?: (provider: string) => Promise<string | undefined>;
+  readonly runtimeEventParser?: RuntimeEventParser;
 }
 
 const MAX_DIAGNOSTIC_ERROR = 512;
@@ -127,7 +144,9 @@ function sanitizeDiagnosticError(error: unknown): string {
     .slice(0, MAX_DIAGNOSTIC_ERROR);
 }
 
-async function createPublishedRuntime(options: ConnectKodaXRuntimeOptions): Promise<KodaXRuntime> {
+async function createPublishedRuntime(
+  options: ConnectKodaXRuntimeOptions,
+): Promise<KodaXDaemonRuntime> {
   const sdk = await import('@kodax-ai/kodax/runtime');
   return sdk.connectKodaXRuntime(options);
 }
@@ -259,7 +278,7 @@ export class RuntimeHostAdapter {
   private readonly push: RuntimeProjectionPush;
   private readonly credentialResolver: (provider: string) => Promise<string | undefined>;
   private state: RuntimeHostState = 'uninitialized';
-  private runtime: KodaXRuntime | null = null;
+  private runtime: KodaXDaemonRuntime | null = null;
   private initializePromise: Promise<void> | null = null;
   private closePromise: Promise<void> | null = null;
   private lastError: string | undefined;
@@ -273,8 +292,10 @@ export class RuntimeHostAdapter {
     }
   >();
   private readonly observationPromises = new Map<string, Promise<void>>();
+  private readonly desiredObservations = new Set<string>();
   private readonly runProviders = new Map<string, string>();
   private readonly continuationCredentialLeases = new Map<string, string>();
+  private readonly credentialLeases = new Map<string, SpaceCredentialLeaseBinding>();
   private readonly continuationPrompts = new Map<
     string,
     { readonly sessionId: string; readonly content: string }
@@ -283,10 +304,11 @@ export class RuntimeHostAdapter {
   private profileCursor = 0;
   private profileRefreshQueue: Promise<void> = Promise.resolve();
   private hostToolLeaseId: string | undefined;
-  private watchdog: ReturnType<typeof setInterval> | undefined;
+  private readonly hostToolLeaseIds = new Set<string>();
+  private connectionSubscription: RuntimeSubscription | undefined;
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   private reconnectAttempt = 0;
-  private watchdogPoll: Promise<void> | undefined;
+  private readonly runtimeEventParser?: RuntimeEventParser;
 
   constructor(options: RuntimeHostAdapterOptions = {}) {
     this.mode = options.mode ?? resolveRuntimeHostMode(process.env.KODAX_SPACE_RUNTIME_HOST);
@@ -297,13 +319,12 @@ export class RuntimeHostAdapter {
       new RuntimeClientIdentityStore(
         path.join(this.profileRoot, 'space', 'runtime-client-identity.json'),
       );
-    this.projectionController =
-      options.projectionController ?? createPendingSdkRuntimeProjection();
+    this.projectionController = options.projectionController ?? createPendingSdkRuntimeProjection();
     this.push = options.push ?? (() => undefined);
+    this.runtimeEventParser = options.runtimeEventParser;
     this.credentialResolver =
       options.credentialResolver ??
-      (async (provider) =>
-        (await import('../ipc/provider.js')).readProviderCredential(provider));
+      (async (provider) => (await import('../ipc/provider.js')).readProviderCredential(provider));
   }
 
   selectedHost(): RuntimeHostMode {
@@ -338,7 +359,8 @@ export class RuntimeHostAdapter {
     if (this.initializePromise !== null) return this.initializePromise;
     this.state = 'initializing';
     const version = clientVersion?.trim() || '0.1.32';
-    let pendingRuntime: KodaXRuntime | null = null;
+    let pendingRuntime: KodaXDaemonRuntime | null = null;
+    let attachedHostToolLeaseId: string | undefined;
     this.initializePromise = this.identityStore
       .openInstance({ name: 'kodax-space', title: 'KodaX Space', version })
       .then(async (identity) => {
@@ -352,6 +374,7 @@ export class RuntimeHostAdapter {
             ...(identity.title !== undefined ? { title: identity.title } : {}),
             version: identity.version,
             instanceId: identity.instanceId,
+            instanceSecret: identity.instanceSecret,
           },
           capabilities: {
             richEvents: true,
@@ -369,6 +392,13 @@ export class RuntimeHostAdapter {
             coderOwnerFencing: 1,
             crashOutcomeModel: 1,
             coderFeatureMatrix: 1,
+            sessionAdmission: 1,
+            completeObservationSnapshot: 1,
+            connectionLifecycle: 1,
+            typedRuntimeEvents: 1,
+            daemonSafeRunInput: 1,
+            sharedSessionSettings: 1,
+            durableRecoveryQueries: 1,
           },
         });
         pendingRuntime = runtime;
@@ -384,7 +414,15 @@ export class RuntimeHostAdapter {
         }
         this.assertRequiredScopes(runtime);
         const { registerSpaceHostTools } = await import('./runtime/space-host-tools.js');
-        const hostToolLease = await registerSpaceHostTools(runtime);
+        let hostToolLease;
+        if (this.hostToolLeaseId) {
+          hostToolLease = await registerSpaceHostTools(runtime, this.hostToolLeaseId).catch(() =>
+            registerSpaceHostTools(runtime),
+          );
+        } else {
+          hostToolLease = await registerSpaceHostTools(runtime);
+        }
+        attachedHostToolLeaseId = hostToolLease.id;
         if (this.state === 'closed') {
           await runtime.hostTools.revoke(hostToolLease.id).catch(() => false);
           await runtime.close();
@@ -392,23 +430,57 @@ export class RuntimeHostAdapter {
           return;
         }
         this.hostToolLeaseId = hostToolLease.id;
+        this.hostToolLeaseIds.add(hostToolLease.id);
         this.runtime = runtime;
+        if (!runtime.connection) {
+          throw new Error('Coder daemon did not expose the required connection lifecycle.');
+        }
+        const connection = runtime.connection.current();
+        if (connection.state !== 'connected') {
+          throw new Error(connection.reason ?? 'Coder daemon disconnected during initialization.');
+        }
+        this.connectionSubscription?.close();
+        this.connectionSubscription = runtime.connection.subscribe((next) => {
+          if (next.state !== 'disconnected') return;
+          void this.handleConnectionLoss(
+            runtime,
+            new Error(next.reason ?? 'Coder daemon transport disconnected.'),
+            next.reconnectable,
+          );
+        });
         this.state = 'ready';
         this.lastError = undefined;
+        await this.resumeKnownCredentialLeases(runtime);
         await this.refreshProfile(0);
-        this.startWatchdog();
+        for (const sessionId of this.desiredObservations) {
+          if (this.observations.has(sessionId)) continue;
+          try {
+            await this.openObservation(sessionId);
+          } catch (error: unknown) {
+            if (isSessionNotFound(error)) {
+              this.desiredObservations.delete(sessionId);
+              continue;
+            }
+            console.warn(
+              `[runtime] could not restore observation for ${sessionId}: ${sanitizeDiagnosticError(error)}`,
+            );
+          }
+        }
         pendingRuntime = null;
       })
       .catch(async (error: unknown) => {
         const runtime = pendingRuntime;
         pendingRuntime = null;
         if (runtime) {
-          if (this.hostToolLeaseId) {
-            await runtime.hostTools.revoke(this.hostToolLeaseId).catch(() => false);
+          this.connectionSubscription?.close();
+          this.connectionSubscription = undefined;
+          if (attachedHostToolLeaseId) {
+            await runtime.hostTools.revoke(attachedHostToolLeaseId).catch(() => false);
+            this.hostToolLeaseIds.delete(attachedHostToolLeaseId);
           }
           await runtime.close().catch(() => undefined);
           if (this.runtime === runtime) this.runtime = null;
-          this.hostToolLeaseId = undefined;
+          if (this.hostToolLeaseId === attachedHostToolLeaseId) this.hostToolLeaseId = undefined;
         }
         this.initializePromise = null;
         if (this.state === 'closed') throw error;
@@ -420,51 +492,33 @@ export class RuntimeHostAdapter {
     return this.initializePromise;
   }
 
-  private startWatchdog(): void {
-    if (this.watchdog || this.state !== 'ready') return;
-    this.watchdog = setInterval(() => {
-      if (this.watchdogPoll || !this.runtime || this.state !== 'ready') return;
-      const attached = this.runtime;
-      this.watchdogPoll = attached.status
-        .snapshot()
-        .then((status) => {
-          if (status.runtimeId !== attached.identity.runtimeId) {
-            throw new Error('Coder daemon Runtime identity changed unexpectedly.');
-          }
-        })
-        .catch((error: unknown) => this.handleConnectionLoss(attached, error))
-        .finally(() => {
-          this.watchdogPoll = undefined;
-        });
-    }, 5_000);
-    this.watchdog.unref?.();
-  }
-
-  private stopWatchdog(): void {
-    if (this.watchdog) clearInterval(this.watchdog);
-    this.watchdog = undefined;
-  }
-
   private async handleConnectionLoss(
-    attached: KodaXRuntime,
+    attached: KodaXDaemonRuntime,
     error: unknown,
+    reconnectable = true,
   ): Promise<void> {
     if (this.state === 'closed' || this.runtime !== attached) return;
-    this.stopWatchdog();
+    this.connectionSubscription?.close();
+    this.connectionSubscription = undefined;
     this.lastError = sanitizeDiagnosticError(error);
     this.publishUnavailable('reconnecting', this.lastError);
     for (const state of this.observations.values()) state.observation.close();
     this.observations.clear();
     this.observationPromises.clear();
+    // Lease attachment is connection-scoped even though the stable lease IDs
+    // survive in the daemon. Rebuild this set only from successful resume calls
+    // on the replacement connection.
+    this.hostToolLeaseIds.clear();
     this.runtime = null;
-    this.hostToolLeaseId = undefined;
     this.activeRuns.clear();
-    this.continuationCredentialLeases.clear();
-    this.continuationPrompts.clear();
     this.initializePromise = null;
     this.state = 'uninitialized';
     await attached.close().catch(() => undefined);
-    this.scheduleReconnect();
+    if (reconnectable) this.scheduleReconnect();
+    else {
+      this.state = 'failed';
+      this.publishUnavailable('disconnected', this.lastError);
+    }
   }
 
   private scheduleReconnect(): void {
@@ -486,14 +540,14 @@ export class RuntimeHostAdapter {
     this.reconnectTimer.unref?.();
   }
 
-  private async requireRuntime(): Promise<KodaXRuntime> {
+  private async requireRuntime(): Promise<KodaXDaemonRuntime> {
     if (this.mode !== 'runtime') throw new Error('Runtime host is disabled by the legacy selector');
     await this.initialize();
     if (this.runtime === null) throw new Error('Runtime host failed to initialize');
     return this.runtime;
   }
 
-  private assertRequiredScopes(runtime: KodaXRuntime): void {
+  private assertRequiredScopes(runtime: KodaXDaemonRuntime): void {
     const required = [
       'session:observe',
       'session:write',
@@ -510,7 +564,7 @@ export class RuntimeHostAdapter {
     }
   }
 
-  private spaceCapabilities(runtime: KodaXRuntime) {
+  private spaceCapabilities(runtime: KodaXDaemonRuntime) {
     const caps = runtime.capabilities ?? {};
     const version = (name: string): number => {
       const value = caps[name];
@@ -524,6 +578,29 @@ export class RuntimeHostAdapter {
     return [
       { id: 'runtime.daemon', version: 1, available: runtime.identity.mode === 'daemon' },
       { id: 'runtime.live.observe', version: version('sessionObservation'), available: true },
+      {
+        id: 'runtime.live.completeSnapshot',
+        version: version('completeObservationSnapshot'),
+        available: true,
+      },
+      {
+        id: 'runtime.connection.lifecycle',
+        version: version('connectionLifecycle'),
+        available: true,
+      },
+      { id: 'runtime.session.admission', version: version('sessionAdmission'), available: true },
+      { id: 'runtime.events.typed', version: version('typedRuntimeEvents'), available: true },
+      { id: 'runtime.run.daemonSafe', version: version('daemonSafeRunInput'), available: true },
+      {
+        id: 'runtime.settings.shared',
+        version: version('sharedSessionSettings'),
+        available: true,
+      },
+      {
+        id: 'runtime.recovery.queries',
+        version: version('durableRecoveryQueries'),
+        available: true,
+      },
       { id: 'runtime.input.after-turn', version: version('afterTurnInput'), available: true },
       {
         id: 'runtime.input.interrupt',
@@ -537,9 +614,8 @@ export class RuntimeHostAdapter {
       { id: 'runtime.hostTools', version: version('runBoundHostTools'), available: true },
       {
         id: 'runtime.managedTask.snapshot',
-        version: 1,
-        available: false,
-        reason: 'The public observation snapshot has no managed-task live field.',
+        version: version('completeObservationSnapshot'),
+        available: true,
       },
     ] as const;
   }
@@ -552,7 +628,9 @@ export class RuntimeHostAdapter {
       runtime.userInputs.listPending(),
     ]);
     if (status.runtimeId !== runtime.identity.runtimeId) {
-      throw new Error('Coder daemon status runtimeId does not match the attached Runtime identity.');
+      throw new Error(
+        'Coder daemon status runtimeId does not match the attached Runtime identity.',
+      );
     }
     this.profileCursor = Math.max(this.profileCursor, cursor);
     const profile = projectRuntimeProfile({
@@ -594,7 +672,7 @@ export class RuntimeHostAdapter {
     }
   }
 
-  private async assertCoderSession(runtime: KodaXRuntime, sessionId: string): Promise<void> {
+  private async assertCoderSession(runtime: KodaXDaemonRuntime, sessionId: string): Promise<void> {
     const session = await runtime.sessions.load(sessionId);
     if (session.surface === 'partner' || session.profileId === 'kodax-space.partner') {
       throw new Error(`Partner session ${sessionId} must remain on the inline Partner owner.`);
@@ -603,7 +681,9 @@ export class RuntimeHostAdapter {
 
   async ensureSession(input: RuntimeSessionIdentity): Promise<boolean> {
     if (input.surface !== 'code') {
-      throw new Error(`Partner session ${input.sessionId} must remain on the inline Partner owner.`);
+      throw new Error(
+        `Partner session ${input.sessionId} must remain on the inline Partner owner.`,
+      );
     }
     const runtime = await this.requireRuntime();
     try {
@@ -617,7 +697,7 @@ export class RuntimeHostAdapter {
         sessionId: input.sessionId,
         projectPath: input.projectRoot,
         gitRoot: input.projectRoot,
-        surface: 'code',
+        surface: 'space-desktop',
         tag: input.ephemeral ? SPACE_EPHEMERAL_SESSION_TAG : 'code',
       });
     } catch (createError: unknown) {
@@ -636,12 +716,20 @@ export class RuntimeHostAdapter {
     if (filter?.surface === 'partner') {
       throw new Error('Partner sessions are not listed through the Coder daemon.');
     }
-    return (await this.requireRuntime()).sessions.list({ ...filter, surface: 'code' });
+    const { surface: _spaceSurface, ...runtimeFilter } = filter ?? {};
+    return (await this.requireRuntime()).sessions.list(runtimeFilter);
   }
 
   async transcript(sessionId: string): Promise<RuntimeTranscript | null> {
     const runtime = await this.requireRuntime();
     await this.assertCoderSession(runtime, sessionId);
+    const observed = this.observations.get(sessionId);
+    if (
+      observed &&
+      observed.reducer.snapshot().cursor.seq === observed.observation.snapshot.cursor
+    ) {
+      return structuredClone(observed.observation.snapshot.transcript);
+    }
     return runtime.sessions.transcript(sessionId);
   }
 
@@ -701,6 +789,7 @@ export class RuntimeHostAdapter {
   }
 
   ensureObserved(sessionId: string): Promise<void> {
+    this.desiredObservations.add(sessionId);
     if (this.observations.has(sessionId)) return Promise.resolve();
     const existing = this.observationPromises.get(sessionId);
     if (existing) return existing;
@@ -715,11 +804,13 @@ export class RuntimeHostAdapter {
 
   private async openObservation(sessionId: string): Promise<void> {
     const runtime = await this.requireRuntime();
+    const parseRuntimeEvent =
+      this.runtimeEventParser ?? (await import('@kodax-ai/kodax/runtime')).parseRuntimeEvent;
     const session = await runtime.sessions.load(sessionId);
     if (session.surface === 'partner' || session.profileId === 'kodax-space.partner') {
       throw new Error(`Partner session ${sessionId} must remain on the inline Partner owner.`);
     }
-    const buffered: import('@kodax-ai/kodax/runtime').RuntimeEvent[] = [];
+    const buffered: RuntimeTypedEvent[] = [];
     let state:
       | {
           readonly observation: RuntimeSessionObservation;
@@ -728,14 +819,19 @@ export class RuntimeHostAdapter {
         }
       | undefined;
     const observation = await runtime.sessions.observe(sessionId, (event) => {
-      if (!state) {
-        buffered.push(event);
+      const parsed = parseRuntimeEvent(event);
+      if (!parsed.ok) {
+        console.warn(`[runtime] dropped malformed event: ${parsed.error}`);
         return;
       }
-      this.enqueueRuntimeEvent(state, event);
+      if (!state) {
+        buffered.push(parsed.event);
+        return;
+      }
+      this.enqueueRuntimeEvent(state, parsed.event);
     });
-    const userInputs = await runtime.userInputs.listPending({ sessionId });
-    const initial = projectRuntimeSessionSnapshot(observation.snapshot, userInputs);
+    await this.resumeSnapshotBindings(runtime, observation.snapshot);
+    const initial = projectRuntimeSessionSnapshot(observation.snapshot);
     await this.syncSpaceSessionSettings(sessionId, observation.snapshot.settings.value);
     const reducer = new CoderSessionProjectionReducer(initial, observation.snapshot.runs);
     for (const run of observation.snapshot.runs) this.runProviders.set(run.runId, run.provider);
@@ -764,13 +860,66 @@ export class RuntimeHostAdapter {
     }
   }
 
+  private async resumeSnapshotBindings(
+    runtime: KodaXDaemonRuntime,
+    snapshot: RuntimeSessionObservationSnapshot,
+  ): Promise<void> {
+    const { registerSpaceHostTools } = await import('./runtime/space-host-tools.js');
+    for (const run of snapshot.runs) {
+      const credential = run.requirements?.credential;
+      if (
+        credential &&
+        credential.state === 'ready' &&
+        !this.credentialLeases.has(credential.leaseId)
+      ) {
+        const binding: SpaceCredentialLeaseBinding = {
+          leaseId: credential.leaseId,
+          provider: credential.provider,
+          sessionId: run.sessionId,
+          boundRunId: run.runId,
+          broker: async (request) => {
+            if (
+              request.provider !== credential.provider ||
+              request.sessionId !== run.sessionId ||
+              request.runId !== run.runId
+            ) {
+              return undefined;
+            }
+            return this.credentialResolver(credential.provider);
+          },
+        };
+        try {
+          await runtime.credentials.resume(credential.leaseId, binding.broker);
+          this.credentialLeases.set(credential.leaseId, binding);
+        } catch {
+          // A CLI/IDE-owned lease is expected to fail stable-client ownership.
+        }
+      }
+
+      const hostTools = run.requirements?.hostTools;
+      if (
+        hostTools &&
+        hostTools.state !== 'expired' &&
+        hostTools.state !== 'terminal' &&
+        !this.hostToolLeaseIds.has(hostTools.leaseId)
+      ) {
+        try {
+          const lease = await registerSpaceHostTools(runtime, hostTools.leaseId);
+          this.hostToolLeaseIds.add(lease.id);
+        } catch {
+          // Stable-client ownership rejects leases registered by other clients.
+        }
+      }
+    }
+  }
+
   private enqueueRuntimeEvent(
     state: {
       readonly observation: RuntimeSessionObservation;
       readonly reducer: CoderSessionProjectionReducer;
       eventQueue: Promise<void>;
     },
-    event: import('@kodax-ai/kodax/runtime').RuntimeEvent,
+    event: RuntimeTypedEvent,
   ): void {
     state.eventQueue = state.eventQueue
       .then(() => this.applyRuntimeEvent(state, event))
@@ -789,7 +938,7 @@ export class RuntimeHostAdapter {
       readonly reducer: CoderSessionProjectionReducer;
       eventQueue: Promise<void>;
     },
-    event: import('@kodax-ai/kodax/runtime').RuntimeEvent,
+    event: RuntimeTypedEvent,
   ): Promise<void> {
     const runtime = this.runtime;
     if (!runtime || this.state !== 'ready') return;
@@ -842,8 +991,7 @@ export class RuntimeHostAdapter {
       }
       const leaseId = this.continuationCredentialLeases.get(event.runId);
       if (leaseId) {
-        this.continuationCredentialLeases.delete(event.runId);
-        await runtime.credentials.revoke(leaseId).catch(() => false);
+        await this.revokeCredentialLease(runtime, leaseId);
       }
     }
     this.bridgeRuntimeEvent(event);
@@ -878,6 +1026,17 @@ export class RuntimeHostAdapter {
     ) {
       session.permissionMode = settings.permissionMode;
     }
+    if (
+      settings.agentMode === 'ama' ||
+      settings.agentMode === 'amaw' ||
+      settings.agentMode === 'sa'
+    ) {
+      session.agentMode = settings.agentMode;
+    }
+    if (settings.autoModeEngine === 'llm' || settings.autoModeEngine === 'rules') {
+      session.autoModeEngine = settings.autoModeEngine;
+    }
+    await kodaxHost.persistRuntime(sessionId);
   }
 
   publishLegacySnapshot(sessionId: string): void {
@@ -918,7 +1077,7 @@ export class RuntimeHostAdapter {
     });
   }
 
-  private bridgeRuntimeEvent(event: import('@kodax-ai/kodax/runtime').RuntimeEvent): void {
+  private bridgeRuntimeEvent(event: RuntimeTypedEvent): void {
     const payload =
       event.payload !== null && typeof event.payload === 'object'
         ? (event.payload as Readonly<Record<string, unknown>>)
@@ -1106,8 +1265,7 @@ export class RuntimeHostAdapter {
     }
   }
 
-  async startManagedRun(input: RuntimeStartRunInput): Promise<RuntimeRunHandle> {
-    this.assertTransportSafeRunInput(input);
+  async startManagedRun(input: RuntimeDaemonStartRunInput): Promise<RuntimeRunHandle> {
     const runtime = await this.requireRuntime();
     await this.assertCoderSession(runtime, input.sessionId);
     await this.ensureObserved(input.sessionId);
@@ -1128,24 +1286,28 @@ export class RuntimeHostAdapter {
       });
     } catch (error) {
       if (registeredCredential) {
-        await runtime.credentials.revoke(registeredCredential.leaseId).catch(() => false);
+        await this.revokeCredentialLease(runtime, registeredCredential.leaseId);
       }
       throw error;
+    }
+    if (registeredCredential) {
+      const lease = this.credentialLeases.get(registeredCredential.leaseId);
+      if (lease) lease.boundRunId = handle.runId;
     }
     this.activeRuns.set(input.sessionId, handle.runId);
     const result = handle.result.finally(async () => {
       if (this.activeRuns.get(input.sessionId) === handle.runId) {
         this.activeRuns.delete(input.sessionId);
       }
-      if (registeredCredential) {
-        await runtime.credentials.revoke(registeredCredential.leaseId).catch(() => false);
+      if (registeredCredential && this.runtime === runtime && this.state === 'ready') {
+        await this.revokeCredentialLease(runtime, registeredCredential.leaseId);
       }
     });
     return { ...handle, result };
   }
 
   private async registerCredentialLease(
-    runtime: KodaXRuntime,
+    runtime: KodaXDaemonRuntime,
     provider: string,
     sessionId: string,
   ): Promise<
@@ -1156,17 +1318,52 @@ export class RuntimeHostAdapter {
     | undefined
   > {
     if (!(await this.credentialResolver(provider))) return undefined;
-    let boundRunId: string | undefined;
-    const lease = await runtime.credentials.register({ providers: [provider] }, async (request) => {
-      if (request.provider !== provider || request.sessionId !== sessionId) return undefined;
-      if (boundRunId !== undefined && request.runId !== boundRunId) return undefined;
-      boundRunId = request.runId;
-      return this.credentialResolver(provider);
-    });
+    const binding: Omit<SpaceCredentialLeaseBinding, 'leaseId'> & { leaseId?: string } = {
+      provider,
+      sessionId,
+      broker: async (request) => {
+        if (request.provider !== provider || request.sessionId !== sessionId) return undefined;
+        if (binding.boundRunId !== undefined && request.runId !== binding.boundRunId) {
+          return undefined;
+        }
+        binding.boundRunId = request.runId;
+        return this.credentialResolver(provider);
+      },
+    };
+    const lease = await runtime.credentials.register({ providers: [provider] }, binding.broker);
+    const tracked: SpaceCredentialLeaseBinding = {
+      leaseId: lease.id,
+      provider,
+      sessionId,
+      ...(binding.boundRunId ? { boundRunId: binding.boundRunId } : {}),
+      broker: binding.broker,
+    };
+    this.credentialLeases.set(lease.id, tracked);
     return {
       binding: { leaseId: lease.id, provider },
       leaseId: lease.id,
     };
+  }
+
+  private async resumeKnownCredentialLeases(runtime: KodaXDaemonRuntime): Promise<void> {
+    for (const [leaseId, binding] of [...this.credentialLeases]) {
+      try {
+        await runtime.credentials.resume(leaseId, binding.broker);
+      } catch {
+        this.credentialLeases.delete(leaseId);
+        for (const [runId, candidate] of this.continuationCredentialLeases) {
+          if (candidate === leaseId) this.continuationCredentialLeases.delete(runId);
+        }
+      }
+    }
+  }
+
+  private async revokeCredentialLease(runtime: KodaXDaemonRuntime, leaseId: string): Promise<void> {
+    this.credentialLeases.delete(leaseId);
+    for (const [runId, candidate] of this.continuationCredentialLeases) {
+      if (candidate === leaseId) this.continuationCredentialLeases.delete(runId);
+    }
+    await runtime.credentials.revoke(leaseId).catch(() => false);
   }
 
   activeRunId(sessionId: string): string | undefined {
@@ -1181,9 +1378,7 @@ export class RuntimeHostAdapter {
       sessionId,
       phase: ['running', 'waiting_permission', 'waiting_user_input'],
     });
-    return statuses
-      .slice()
-      .sort((a, b) => (b.sessionOrder ?? 0) - (a.sessionOrder ?? 0))[0]?.runId;
+    return statuses.slice().sort((a, b) => (b.sessionOrder ?? 0) - (a.sessionOrder ?? 0))[0]?.runId;
   }
 
   async abortSessionRun(sessionId: string): Promise<boolean> {
@@ -1193,12 +1388,10 @@ export class RuntimeHostAdapter {
       sessionId,
       phase: ['running', 'waiting_permission', 'waiting_user_input', 'queued'],
     });
-    const status = statuses
-      .slice()
-      .sort((a, b) => {
-        const rank = (run: RuntimeRunStatus): number => (run.phase === 'queued' ? 1 : 0);
-        return rank(a) - rank(b) || (a.sessionOrder ?? 0) - (b.sessionOrder ?? 0);
-      })[0];
+    const status = statuses.slice().sort((a, b) => {
+      const rank = (run: RuntimeRunStatus): number => (run.phase === 'queued' ? 1 : 0);
+      return rank(a) - rank(b) || (a.sessionOrder ?? 0) - (b.sessionOrder ?? 0);
+    })[0];
     const runId = status?.runId ?? this.activeRunId(sessionId);
     if (!runId) return false;
     await runtime.runs.abort(runId);
@@ -1225,16 +1418,17 @@ export class RuntimeHostAdapter {
         : {}),
     });
     if ((!result.accepted || result.delivery !== 'after_turn') && registeredCredential) {
-      await runtime.credentials.revoke(registeredCredential.leaseId).catch(() => false);
+      await this.revokeCredentialLease(runtime, registeredCredential.leaseId);
     } else if (result.accepted && registeredCredential) {
+      const lease = this.credentialLeases.get(registeredCredential.leaseId);
+      if (lease) lease.boundRunId = result.runId;
       this.continuationCredentialLeases.set(result.runId, registeredCredential.leaseId);
     }
     if (result.accepted && result.delivery === 'after_turn') {
       const items = Array.isArray(input.input) ? input.input : [input.input];
       const content = items
         .filter(
-          (item): item is Extract<(typeof items)[number], { type: 'text' }> =>
-            item.type === 'text',
+          (item): item is Extract<(typeof items)[number], { type: 'text' }> => item.type === 'text',
         )
         .map((item) => item.text)
         .join('\n');
@@ -1308,56 +1502,33 @@ export class RuntimeHostAdapter {
     return resolution.accepted;
   }
 
-  private assertTransportSafeRunInput(input: RuntimeStartRunInput): void {
-    const forbidden = ['events', 'abortSignal', 'extensionRuntime', 'guardrails'] as const;
-    const options = input.options as Readonly<Record<string, unknown>> | undefined;
-    for (const key of forbidden) {
-      if (options?.[key] !== undefined) {
-        throw new Error(`Coder daemon run options cannot contain inline-only ${key}.`);
-      }
-    }
-    const visit = (value: unknown, pathLabel: string, seen: Set<object>): void => {
-      if (typeof value === 'function' || typeof value === 'symbol' || typeof value === 'bigint') {
-        throw new Error(`Coder daemon run input is not transport-safe at ${pathLabel}.`);
-      }
-      if (value === null || typeof value !== 'object') return;
-      if (seen.has(value)) throw new Error(`Coder daemon run input is cyclic at ${pathLabel}.`);
-      seen.add(value);
-      if (Array.isArray(value)) {
-        value.forEach((item, index) => visit(item, `${pathLabel}[${index}]`, seen));
-      } else {
-        for (const [key, item] of Object.entries(value)) visit(item, `${pathLabel}.${key}`, seen);
-      }
-      seen.delete(value);
-    };
-    visit(input, 'run', new Set());
+  async preflightDaemonStop(): Promise<RuntimeDaemonPreflight> {
+    return (await this.requireRuntime()).status.preflight();
   }
 
   async close(): Promise<void> {
     if (this.closePromise !== null) return this.closePromise;
     const runtime = this.runtime;
-    const hostToolLeaseId = this.hostToolLeaseId;
     const initializing = this.initializePromise;
-    this.stopWatchdog();
+    this.connectionSubscription?.close();
+    this.connectionSubscription = undefined;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = undefined;
     this.runtime = null;
     this.hostToolLeaseId = undefined;
+    this.hostToolLeaseIds.clear();
     this.activeRuns.clear();
     this.runProviders.clear();
     this.continuationCredentialLeases.clear();
+    this.credentialLeases.clear();
     this.continuationPrompts.clear();
     for (const state of this.observations.values()) state.observation.close();
     this.observations.clear();
     this.observationPromises.clear();
+    this.desiredObservations.clear();
     this.state = 'closed';
     this.closePromise = runtime
-      ? (async () => {
-          if (hostToolLeaseId) {
-            await runtime.hostTools.revoke(hostToolLeaseId).catch(() => false);
-          }
-          await runtime.close();
-        })()
+      ? runtime.close()
       : (initializing?.catch(() => undefined) ?? Promise.resolve());
     return this.closePromise;
   }

@@ -1,11 +1,11 @@
 import type {
-  RuntimeEvent,
   RuntimePermissionRequest,
   RuntimeRunStatus,
   RuntimeSessionSettings,
   RuntimeSessionObservationSnapshot,
   RuntimeStatusSnapshot,
   RuntimeUserInputRequest,
+  RuntimeTypedEvent,
 } from '@kodax-ai/kodax/runtime';
 import {
   spaceRuntimeProfileProjectionSchema,
@@ -23,11 +23,7 @@ const MAX_DRAFT = 256 * 1024;
 const MAX_REASON = 512;
 const MAX_TODOS = 1_000;
 const MAX_TOOLS = 128;
-const ACTIVE_PHASES = new Set([
-  'running',
-  'waiting_permission',
-  'waiting_user_input',
-] as const);
+const ACTIVE_PHASES = new Set(['running', 'waiting_permission', 'waiting_user_input'] as const);
 const TERMINAL_PHASES = new Set(['completed', 'failed', 'cancelled', 'interrupted'] as const);
 const TODO_STATUSES = new Set([
   'pending',
@@ -91,10 +87,23 @@ export function projectRuntimeRun(
           },
         }
       : {}),
+    ...(run.requirements?.credential || run.requirements?.hostTools
+      ? {
+          requirements: {
+            ...(run.requirements.credential
+              ? { credential: run.requirements.credential.state }
+              : {}),
+            ...(run.requirements.hostTools ? { hostTools: run.requirements.hostTools.state } : {}),
+          },
+        }
+      : {}),
   };
 }
 
-function runsForSession(runs: readonly RuntimeRunStatus[], sessionId: string): {
+function runsForSession(
+  runs: readonly RuntimeRunStatus[],
+  sessionId: string,
+): {
   activeRun?: SpaceRuntimeRunProjectionT;
   queuedRuns: SpaceRuntimeRunProjectionT[];
   lastTerminalRun?: SpaceRuntimeRunProjectionT;
@@ -108,10 +117,7 @@ function runsForSession(runs: readonly RuntimeRunStatus[], sessionId: string): {
     .sort((a, b) => (a.sessionOrder ?? 0) - (b.sessionOrder ?? 0));
   const terminal = own
     .filter((run) => TERMINAL_PHASES.has(run.phase as never))
-    .sort(
-      (a, b) =>
-        timestamp(b.endedAt ?? b.startedAt) - timestamp(a.endedAt ?? a.startedAt),
-    )[0];
+    .sort((a, b) => timestamp(b.endedAt ?? b.startedAt) - timestamp(a.endedAt ?? a.startedAt))[0];
   return {
     ...(active !== undefined ? { activeRun: projectRuntimeRun(active) } : {}),
     queuedRuns: queued.map((run, index) => projectRuntimeRun(run, index + 1)),
@@ -158,7 +164,10 @@ function normalizeMultiQuestion(value: unknown) {
   const item = record(value);
   const question = text(item?.question, 2_048);
   const normalizedOptions = Array.isArray(item?.options)
-    ? item.options.map(normalizeQuestionOption).filter((option) => option !== null).slice(0, 20)
+    ? item.options
+        .map(normalizeQuestionOption)
+        .filter((option) => option !== null)
+        .slice(0, 20)
     : [];
   if (!question || normalizedOptions.length === 0) return null;
   const minSelections = Number.isInteger(item?.minSelections)
@@ -167,11 +176,7 @@ function normalizeMultiQuestion(value: unknown) {
   const maxSelections = Number.isInteger(item?.maxSelections)
     ? Math.max(0, Math.min(20, Number(item?.maxSelections)))
     : undefined;
-  if (
-    minSelections !== undefined &&
-    maxSelections !== undefined &&
-    minSelections > maxSelections
-  ) {
+  if (minSelections !== undefined && maxSelections !== undefined && minSelections > maxSelections) {
     return null;
   }
   const header = text(item?.header, 96);
@@ -213,7 +218,9 @@ function userInputInteraction(request: RuntimeUserInputRequest): SpaceRuntimeInt
         kind: 'multi',
         reqId: request.id,
         sessionId: request.sessionId,
-        questions: questions.filter((question): question is NonNullable<typeof question> => question !== null),
+        questions: questions.filter(
+          (question): question is NonNullable<typeof question> => question !== null,
+        ),
       },
     };
   }
@@ -221,11 +228,15 @@ function userInputInteraction(request: RuntimeUserInputRequest): SpaceRuntimeInt
   if (!question) return null;
   const kind = request.kind === 'askUserInput' || options?.kind === 'input' ? 'input' : 'select';
   const normalizedOptions = Array.isArray(options?.options)
-    ? options.options.map(normalizeQuestionOption).filter((item) => item !== null).slice(0, 20)
+    ? options.options
+        .map(normalizeQuestionOption)
+        .filter((item) => item !== null)
+        .slice(0, 20)
     : [];
   if (kind === 'select' && normalizedOptions.length === 0) return null;
   const header = text(options?.header, 96);
-  const defaultValue = typeof options?.default === 'string' ? options.default.slice(0, 4_096) : undefined;
+  const defaultValue =
+    typeof options?.default === 'string' ? options.default.slice(0, 4_096) : undefined;
   const minSelections = Number.isInteger(options?.minSelections)
     ? Math.max(0, Math.min(20, Number(options?.minSelections)))
     : undefined;
@@ -245,9 +256,7 @@ function userInputInteraction(request: RuntimeUserInputRequest): SpaceRuntimeInt
       question,
       ...(header ? { header } : {}),
       ...(kind === 'select' ? { options: normalizedOptions } : {}),
-      ...(typeof options?.multiSelect === 'boolean'
-        ? { multiSelect: options.multiSelect }
-        : {}),
+      ...(typeof options?.multiSelect === 'boolean' ? { multiSelect: options.multiSelect } : {}),
       ...(minSelections !== undefined ? { minSelections } : {}),
       ...(maxSelections !== undefined ? { maxSelections } : {}),
       ...(defaultValue !== undefined ? { default: defaultValue } : {}),
@@ -292,7 +301,10 @@ function latestTextForRun(
     .filter(([, value]) => value.length > 0)
     .map(([runId, value]) => {
       const run = runs.find((item) => item.runId === runId);
-      return { text: value.slice(-MAX_DRAFT), startedAt: timestamp(run?.runningAt ?? run?.startedAt) };
+      return {
+        text: value.slice(-MAX_DRAFT),
+        startedAt: timestamp(run?.runningAt ?? run?.startedAt),
+      };
     })
     .sort((a, b) => b.startedAt - a.startedAt);
   return candidates[0];
@@ -351,11 +363,63 @@ function pendingUserInputsFromSnapshot(
   snapshot: RuntimeSessionObservationSnapshot,
 ): RuntimeUserInputRequest[] {
   return snapshot.live.pendingUserInputs
-    .map((item) => item.detail)
-    .filter((item): item is RuntimeUserInputRequest => {
-      const value = record(item);
-      return typeof value?.id === 'string' && typeof value?.kind === 'string';
-    });
+    .map((item): RuntimeUserInputRequest | null => {
+      const value = record(item.detail);
+      if (!value) return null;
+      const kind = value.kind;
+      if (kind !== 'askUser' && kind !== 'askUserMulti' && kind !== 'askUserInput') return null;
+      if (typeof value.id === 'string') return item.detail as RuntimeUserInputRequest;
+
+      // Older emitters use the compact typed event payload. Observation still
+      // carries its authoritative request/run identity; response always reloads
+      // the current request/revision from userInputs.listPending().
+      const run = snapshot.runs.find((candidate) => candidate.runId === item.runId);
+      const createdAt = run?.runningAt ?? run?.startedAt ?? run?.acceptedAt ?? run?.queuedAt;
+      return {
+        id: item.requestId,
+        revision: 0,
+        sessionId: snapshot.session.id,
+        runId: item.runId,
+        ...(item.turnId ? { turnId: item.turnId } : {}),
+        kind,
+        options: value.options,
+        createdAt: createdAt ?? new Date(0).toISOString(),
+        expiresAt: '',
+      };
+    })
+    .filter((item): item is RuntimeUserInputRequest => item !== null);
+}
+
+function queuedInputsProjection(
+  runs: readonly RuntimeRunStatus[],
+  sessionId: string,
+): SpaceSessionLiveProjectionT['queuedInputs'] {
+  return runs
+    .filter(
+      (run) =>
+        run.sessionId === sessionId &&
+        run.continuation?.delivery === 'after_turn' &&
+        run.continuation.state === 'queued',
+    )
+    .sort((a, b) => (a.sessionOrder ?? 0) - (b.sessionOrder ?? 0))
+    .slice(0, 500)
+    .map((run, index) => ({
+      inputId: run.continuation!.inputId,
+      sessionId: run.sessionId,
+      delivery: 'after-turn' as const,
+      state: 'queued' as const,
+      createdAt: timestamp(run.queuedAt ?? run.acceptedAt ?? run.startedAt),
+      position: index + 1,
+      contentPreview: run.continuation!.contentPreview.slice(0, 4_096),
+      ...(run.origin
+        ? {
+            initiatedBy: {
+              clientId: run.origin.principalId.slice(0, 128),
+              name: (run.origin.clientName ?? run.origin.principalId).slice(0, 128),
+            },
+          }
+        : {}),
+    }));
 }
 
 const REASONING_MODES = new Set(['off', 'auto', 'quick', 'balanced', 'deep']);
@@ -374,12 +438,7 @@ function settingsProjection(
       ...(typeof value.thinking === 'boolean' ? { thinking: value.thinking } : {}),
       ...(typeof value.reasoningMode === 'string' && REASONING_MODES.has(value.reasoningMode)
         ? {
-            reasoningMode: value.reasoningMode as
-              | 'off'
-              | 'auto'
-              | 'quick'
-              | 'balanced'
-              | 'deep',
+            reasoningMode: value.reasoningMode as 'off' | 'auto' | 'quick' | 'balanced' | 'deep',
           }
         : {}),
       ...(typeof value.permissionMode === 'string' && PERMISSION_MODES.has(value.permissionMode)
@@ -388,7 +447,46 @@ function settingsProjection(
       ...(text(value.executionCwd, 4_096)
         ? { executionCwd: text(value.executionCwd, 4_096)! }
         : {}),
+      ...(value.agentMode === 'ama' || value.agentMode === 'amaw' || value.agentMode === 'sa'
+        ? { agentMode: value.agentMode }
+        : {}),
+      ...(value.autoModeEngine === 'llm' || value.autoModeEngine === 'rules'
+        ? { autoModeEngine: value.autoModeEngine }
+        : {}),
     },
+  };
+}
+
+function managedTaskProjection(
+  snapshot: RuntimeSessionObservationSnapshot,
+): SpaceSessionLiveProjectionT['managedTask'] {
+  const candidate = snapshot.live.managedTasks
+    .filter((item) => item.runId && snapshot.runs.some((run) => run.runId === item.runId))
+    .sort((a, b) => {
+      const runA = snapshot.runs.find((run) => run.runId === a.runId);
+      const runB = snapshot.runs.find((run) => run.runId === b.runId);
+      return (
+        timestamp(runB?.runningAt ?? runB?.startedAt) -
+        timestamp(runA?.runningAt ?? runA?.startedAt)
+      );
+    })[0];
+  if (!candidate) return undefined;
+  const status = candidate.status;
+  const run = snapshot.runs.find((item) => item.runId === candidate.runId);
+  const phase = text(status.phase ?? status.harnessProfile, 64);
+  if (!phase) return undefined;
+  return {
+    phase,
+    ...(text(status.activeWorkerId, 128)
+      ? { activeWorkerId: text(status.activeWorkerId, 128)! }
+      : {}),
+    ...(text(status.activeWorkerTitle, 256)
+      ? { activeWorkerTitle: text(status.activeWorkerTitle, 256)! }
+      : {}),
+    ...(text(status.note ?? status.detailNote, 1_024)
+      ? { summary: text(status.note ?? status.detailNote, 1_024)! }
+      : {}),
+    updatedAt: timestamp(run?.runningAt ?? run?.startedAt),
   };
 }
 
@@ -399,16 +497,12 @@ export function projectRuntimeSessionSnapshot(
   const runs = runsForSession(snapshot.runs, snapshot.session.id);
   const assistantDraft = latestTextForRun(snapshot.live.assistantTextByRun, snapshot.runs);
   const thinkingDraft = latestTextForRun(snapshot.live.thinkingTextByRun, snapshot.runs);
-  const messageCount = Array.isArray(snapshot.transcript?.messages)
-    ? snapshot.transcript.messages.length
-    : 0;
+  const managedTask = managedTaskProjection(snapshot);
   return spaceSessionLiveProjectionSchema.parse({
     sessionId: snapshot.session.id,
     projectionRevision: 1,
     cursor: { runtimeId: snapshot.runtimeId, seq: snapshot.cursor },
-    // The public v0.7.69 snapshot does not expose a transcript revision. This
-    // cursor-derived token is only an invalidation key, never a claimed SDK id.
-    transcriptRevision: `${snapshot.runtimeId}:${snapshot.cursor}:${messageCount}`,
+    transcriptRevision: snapshot.transcriptRevision,
     ...runs,
     ...(assistantDraft ? { assistantDraft } : {}),
     ...(thinkingDraft ? { thinkingDraft } : {}),
@@ -417,12 +511,14 @@ export function projectRuntimeSessionSnapshot(
       .filter((item): item is NonNullable<typeof item> => item !== null)
       .slice(0, MAX_TOOLS),
     todos: todoProjection(snapshot.live.todo),
+    ...(managedTask ? { managedTask } : {}),
     settings: settingsProjection(snapshot.settings.revision, snapshot.settings.value),
-    // after-turn submissions are durable queued runs in 0.7.69. The public
-    // status omits their continuation/delivery identity, so Space does not
-    // fabricate a distinct queuedInputs projection.
-    queuedInputs: [],
-    interactions: projectRuntimeInteractions(snapshot.pendingPermissions, userInputs, snapshot.session.id),
+    queuedInputs: queuedInputsProjection(snapshot.runs, snapshot.session.id),
+    interactions: projectRuntimeInteractions(
+      snapshot.pendingPermissions,
+      userInputs,
+      snapshot.session.id,
+    ),
   });
 }
 
@@ -469,15 +565,12 @@ export function projectRuntimeProfile(input: {
         ...runs,
       };
     }),
-    interactions: projectRuntimeInteractions(
-      input.status.pendingPermissions,
-      input.userInputs,
-    ),
+    interactions: projectRuntimeInteractions(input.status.pendingPermissions, input.userInputs),
     notifications: [],
   });
 }
 
-function runStatusFromEvent(event: RuntimeEvent): RuntimeRunStatus | undefined {
+function runStatusFromEvent(event: RuntimeTypedEvent): RuntimeRunStatus | undefined {
   const value = record(event.payload);
   if (
     !value ||
@@ -496,10 +589,7 @@ export class CoderSessionProjectionReducer {
   #projection: SpaceSessionLiveProjectionT;
   readonly #runs = new Map<string, RuntimeRunStatus>();
 
-  constructor(
-    projection: SpaceSessionLiveProjectionT,
-    runs: readonly RuntimeRunStatus[] = [],
-  ) {
+  constructor(projection: SpaceSessionLiveProjectionT, runs: readonly RuntimeRunStatus[] = []) {
     this.#projection = spaceSessionLiveProjectionSchema.parse(projection);
     for (const run of runs) this.#runs.set(run.runId, run);
   }
@@ -519,7 +609,7 @@ export class CoderSessionProjectionReducer {
     });
   }
 
-  apply(event: RuntimeEvent): SpaceSessionLiveChangedT | null {
+  apply(event: RuntimeTypedEvent): SpaceSessionLiveChangedT | null {
     if (event.sessionId !== this.#projection.sessionId) return null;
     if (event.seq <= this.#projection.cursor.seq) return null;
     const payload = record(event.payload);
@@ -625,11 +715,19 @@ export class CoderSessionProjectionReducer {
       if (!run) return null;
       this.#runs.set(run.runId, run);
       const runs = runsForSession([...this.#runs.values()], this.#projection.sessionId);
-      return this.#commit(event.seq, {
-        domain: 'run',
-        activeRun: runs.activeRun ?? null,
-        queuedRuns: runs.queuedRuns,
-      }, runs.lastTerminalRun);
+      return this.#commit(
+        event.seq,
+        {
+          domain: 'run',
+          activeRun: runs.activeRun ?? null,
+          queuedRuns: runs.queuedRuns,
+          queuedInputs: queuedInputsProjection(
+            [...this.#runs.values()],
+            this.#projection.sessionId,
+          ),
+        },
+        runs.lastTerminalRun,
+      );
     }
     return null;
   }
@@ -655,6 +753,7 @@ export class CoderSessionProjectionReducer {
           cursor,
           activeRun: change.activeRun ?? undefined,
           queuedRuns: change.queuedRuns,
+          ...(change.queuedInputs ? { queuedInputs: change.queuedInputs } : {}),
           ...(lastTerminalRun ? { lastTerminalRun } : {}),
         };
         break;
@@ -668,7 +767,12 @@ export class CoderSessionProjectionReducer {
         };
         break;
       case 'tools':
-        this.#projection = { ...this.#projection, projectionRevision, cursor, activeTools: change.activeTools };
+        this.#projection = {
+          ...this.#projection,
+          projectionRevision,
+          cursor,
+          activeTools: change.activeTools,
+        };
         break;
       case 'todos':
         this.#projection = { ...this.#projection, projectionRevision, cursor, todos: change.todos };
@@ -698,10 +802,20 @@ export class CoderSessionProjectionReducer {
         };
         break;
       case 'queue':
-        this.#projection = { ...this.#projection, projectionRevision, cursor, queuedInputs: change.queuedInputs };
+        this.#projection = {
+          ...this.#projection,
+          projectionRevision,
+          cursor,
+          queuedInputs: change.queuedInputs,
+        };
         break;
       case 'terminal':
-        this.#projection = { ...this.#projection, projectionRevision, cursor, lastTerminalRun: change.lastTerminalRun };
+        this.#projection = {
+          ...this.#projection,
+          projectionRevision,
+          cursor,
+          lastTerminalRun: change.lastTerminalRun,
+        };
         break;
     }
     this.#projection = spaceSessionLiveProjectionSchema.parse(this.#projection);

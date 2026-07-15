@@ -348,6 +348,10 @@ class KodaXHost {
         ...(before.permissionMode !== session.permissionMode
           ? { permissionMode: session.permissionMode }
           : {}),
+        ...(before.agentMode !== session.agentMode ? { agentMode: session.agentMode } : {}),
+        ...(before.autoModeEngine !== session.autoModeEngine
+          ? { autoModeEngine: session.autoModeEngine }
+          : {}),
       };
       if (session.surface === 'code' && runtimeHostAdapter.hasReadyRuntime()) {
         await runtimeHostAdapter.updateSessionSettings(sessionId, runtimePatch);
@@ -373,6 +377,10 @@ class KodaXHost {
             : {}),
           ...(before.permissionMode !== session.permissionMode
             ? { permissionMode: before.permissionMode }
+            : {}),
+          ...(before.agentMode !== session.agentMode ? { agentMode: before.agentMode } : {}),
+          ...(before.autoModeEngine !== session.autoModeEngine
+            ? { autoModeEngine: before.autoModeEngine }
             : {}),
         };
         await runtimeHostAdapter

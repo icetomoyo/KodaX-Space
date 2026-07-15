@@ -104,6 +104,13 @@ export const spaceRuntimeRunProjectionSchema = z
     queuePosition: z.number().int().positive().max(MAX_QUEUE_ITEMS).optional(),
     terminalReason: z.string().min(1).max(MAX_REASON).optional(),
     initiatedBy: spaceRuntimeInitiatorSchema.optional(),
+    requirements: z
+      .object({
+        credential: z.enum(['ready', 'expired', 'terminal']).optional(),
+        hostTools: z.enum(['ready', 'waiting_host', 'expired', 'terminal']).optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -409,6 +416,8 @@ export const spaceRuntimeSessionSettingsSchema = z
         reasoningMode: z.enum(['off', 'auto', 'quick', 'balanced', 'deep']).optional(),
         permissionMode: z.enum(['plan', 'accept-edits', 'auto']).optional(),
         executionCwd: z.string().min(1).max(4096).optional(),
+        agentMode: z.enum(['ama', 'amaw', 'sa']).optional(),
+        autoModeEngine: z.enum(['llm', 'rules']).optional(),
       })
       .strict(),
   })
@@ -421,6 +430,7 @@ export const spaceRuntimeQueuedInputSchema = z
     delivery: z.enum(['interrupt', 'after-turn']),
     state: z.enum(['queued', 'delivering', 'delivered', 'cancelled', 'failed']),
     createdAt: timestampSchema,
+    contentPreview: z.string().max(4096).optional(),
     position: z.number().int().positive().max(MAX_QUEUE_ITEMS).optional(),
     initiatedBy: spaceRuntimeInitiatorSchema.optional(),
   })
@@ -476,6 +486,7 @@ const runChangeSchema = z
     domain: z.literal('run'),
     activeRun: spaceRuntimeRunProjectionSchema.nullable(),
     queuedRuns: z.array(spaceRuntimeRunProjectionSchema).max(MAX_QUEUE_ITEMS),
+    queuedInputs: z.array(spaceRuntimeQueuedInputSchema).max(MAX_QUEUE_ITEMS).optional(),
   })
   .strict();
 const draftChangeSchema = z
@@ -566,6 +577,13 @@ export const spaceSessionLiveChangedSchema = z
           undefined,
           ctx,
         );
+        if (value.change.queuedInputs?.some((input) => input.sessionId !== value.sessionId)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: 'all queued inputs must belong to the selected session',
+            path: ['change', 'queuedInputs'],
+          });
+        }
         break;
       case 'queue':
         if (value.change.queuedInputs.some((input) => input.sessionId !== value.sessionId)) {
