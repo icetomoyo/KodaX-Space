@@ -43,6 +43,8 @@ beforeEach(() => {
     runtimeProfile: initial.profile,
     liveProjectionBySession: initial.liveBySession,
     runtimeSnapshotRequiredBySession: initial.snapshotRequiredBySession,
+    permissionQueue: [],
+    askUserQueue: [],
   });
 });
 
@@ -99,4 +101,44 @@ test('app store ignores connection events older than its latest Runtime transiti
 
   assert.equal(useAppStore.getState().runtimeConnection.state, 'disconnected');
   assert.equal(useAppStore.getState().runtimeConnection.changedAt, 2);
+});
+
+test('run reset removes terminal Runtime interactions from modal queues', () => {
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  useAppStore.getState().replaceSessionLiveProjection({
+    ...live,
+    interactions: [
+      {
+        kind: 'ask-user',
+        source: 'coder-runtime',
+        runId: 'run_1',
+        createdAt: 1,
+        state: 'pending',
+        request: {
+          kind: 'input',
+          reqId: 'ask_1',
+          sessionId: 's_1',
+          question: 'Continue?',
+        },
+      },
+    ],
+  });
+  assert.equal(useAppStore.getState().askUserQueue.length, 1);
+
+  const status = useAppStore.getState().applySessionLiveProjectionChange({
+    sessionId: 's_1',
+    baseProjectionRevision: 1,
+    projectionRevision: 2,
+    cursor: { runtimeId: 'rt_1', seq: 2 },
+    change: {
+      domain: 'run',
+      activeRun: null,
+      queuedRuns: [],
+      queuedInputs: [],
+      resetRunScopedState: true,
+    },
+  });
+
+  assert.equal(status, 'applied');
+  assert.deepEqual(useAppStore.getState().askUserQueue, []);
 });

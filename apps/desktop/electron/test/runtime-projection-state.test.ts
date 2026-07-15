@@ -90,6 +90,68 @@ test('matching live change advances one domain without rebuilding from events', 
   assert.equal(result.state.snapshotRequiredBySession.s_1, undefined);
 });
 
+test('run changes project queued inputs and reset run-scoped live state atomically', () => {
+  const initialLive: SpaceSessionLiveProjectionT = {
+    ...live('rt_1', 4),
+    assistantDraft: { text: 'old answer', startedAt: 1 },
+    thinkingDraft: { text: 'old thinking', startedAt: 1 },
+    activeTools: [{ toolCallId: 'tool_1', name: 'bash', startedAt: 1 }],
+    managedTask: { phase: 'executing', updatedAt: 1 },
+    interactions: [
+      {
+        kind: 'ask-user',
+        source: 'coder-runtime',
+        runId: 'run_1',
+        createdAt: 1,
+        state: 'pending',
+        request: {
+          kind: 'input',
+          reqId: 'ask_1',
+          sessionId: 's_1',
+          question: 'Continue?',
+        },
+      },
+    ],
+  };
+  const base = replaceSessionLiveProjection(
+    replaceRuntimeProfile(createRuntimeProjectionState(), profile('rt_1', 4)),
+    initialLive,
+  );
+  const result = applySessionLiveChange(base, {
+    sessionId: 's_1',
+    baseProjectionRevision: 4,
+    projectionRevision: 5,
+    cursor: { runtimeId: 'rt_1', seq: 5 },
+    change: {
+      domain: 'run',
+      activeRun: null,
+      queuedRuns: [],
+      queuedInputs: [
+        {
+          inputId: 'input_1',
+          sessionId: 's_1',
+          delivery: 'after-turn',
+          state: 'queued',
+          createdAt: 2,
+          position: 1,
+          contentPreview: 'next',
+        },
+      ],
+      resetRunScopedState: true,
+    },
+  });
+
+  const projection = result.state.liveBySession.s_1;
+  assert.equal(result.status, 'applied');
+  assert.equal(projection?.queuedInputs[0]?.inputId, 'input_1');
+  assert.equal(projection?.assistantDraft, undefined);
+  assert.equal(projection?.thinkingDraft, undefined);
+  assert.deepEqual(projection?.activeTools, []);
+  assert.equal(projection?.managedTask, undefined);
+  assert.deepEqual(projection?.interactions, []);
+  assert.equal(projection?.todos[0]?.id, 'todo_1');
+});
+
 test('revision gaps and Runtime mismatches request a fresh snapshot without partial mutation', () => {
   const base = replaceSessionLiveProjection(
     replaceRuntimeProfile(createRuntimeProjectionState(), profile('rt_1', 4)),

@@ -252,6 +252,62 @@ test('event reducer advances one semantic domain per Runtime cursor', () => {
   assert.equal(reducer.snapshot().todos[0]?.status, 'completed');
 });
 
+test('terminal and next-run events reset run-scoped live state before new deltas', () => {
+  const reducer = new CoderSessionProjectionReducer(
+    projectRuntimeSessionSnapshot(observation, [askUser]),
+    observation.runs,
+  );
+  const terminal = reducer.apply({
+    id: 'event_terminal_42',
+    seq: 42,
+    time: '2026-07-14T08:04:00.000Z',
+    sessionId: 's_code',
+    runId: 'run_active',
+    type: 'run.completed',
+    payload: {
+      ...running,
+      phase: 'completed',
+      endedAt: '2026-07-14T08:04:00.000Z',
+    },
+  } as unknown as RuntimeTypedEvent);
+
+  assert.equal(terminal?.change.domain, 'run');
+  if (terminal?.change.domain === 'run') {
+    assert.equal(terminal.change.resetRunScopedState, true);
+  }
+  assert.equal(reducer.snapshot().assistantDraft, undefined);
+  assert.equal(reducer.snapshot().thinkingDraft, undefined);
+  assert.deepEqual(reducer.snapshot().activeTools, []);
+  assert.equal(reducer.snapshot().managedTask, undefined);
+  assert.deepEqual(reducer.snapshot().interactions, []);
+  assert.equal(reducer.snapshot().todos[0]?.id, 'todo_1');
+
+  reducer.apply({
+    id: 'event_next_run_43',
+    seq: 43,
+    time: '2026-07-14T08:05:00.000Z',
+    sessionId: 's_code',
+    runId: 'run_queued',
+    type: 'run.started',
+    payload: {
+      ...queued,
+      phase: 'running',
+      runningAt: '2026-07-14T08:05:00.000Z',
+    },
+  } as unknown as RuntimeTypedEvent);
+  reducer.apply({
+    id: 'event_next_delta_44',
+    seq: 44,
+    time: '2026-07-14T08:05:01.000Z',
+    sessionId: 's_code',
+    runId: 'run_queued',
+    type: 'assistant.delta',
+    payload: { text: 'new answer' },
+  } as unknown as RuntimeTypedEvent);
+
+  assert.equal(reducer.snapshot().assistantDraft?.text, 'new answer');
+});
+
 test('projection restores multi-question input and advances revisioned settings', () => {
   const multi = {
     ...askUser,

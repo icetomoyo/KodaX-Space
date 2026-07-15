@@ -21,6 +21,7 @@ import type {
   RuntimeSessionSummary,
   RuntimeDaemonStartRunInput,
   RuntimeSubmitInput,
+  RuntimeSubmitInputResult,
   RuntimeSubscription,
   RuntimeTranscript,
   RuntimeTypedEvent,
@@ -116,7 +117,7 @@ interface SpaceCredentialLeaseBinding {
   readonly leaseId: string;
   readonly provider: string;
   readonly sessionId: string;
-  boundRunId?: string;
+  readonly runBinding: { boundRunId?: string };
   readonly broker: RuntimeCredentialBroker;
 }
 
@@ -453,7 +454,7 @@ export class RuntimeHostAdapter {
         await this.resumeKnownCredentialLeases(runtime);
         await this.refreshProfile(0);
         for (const sessionId of this.desiredObservations) {
-          if (this.observations.has(sessionId)) continue;
+          if (this.observations.has(sessionId) || this.observationPromises.has(sessionId)) continue;
           try {
             await this.openObservation(sessionId);
           } catch (error: unknown) {
@@ -769,7 +770,23 @@ export class RuntimeHostAdapter {
     const runtime = await this.requireRuntime();
     await this.assertCoderSession(runtime, sessionId);
     await runtime.sessions.delete(sessionId);
+    this.desiredObservations.delete(sessionId);
+    const observed = this.observations.get(sessionId);
+    if (observed) {
+      observed.observation.close();
+      this.observations.delete(sessionId);
+    }
+    this.activeRuns.delete(sessionId);
+    for (const [runId, continuation] of this.continuationPrompts) {
+      if (continuation.sessionId === sessionId) this.continuationPrompts.delete(runId);
+    }
+    const sessionCredentialLeases = [...this.credentialLeases.values()]
+      .filter((binding) => binding.sessionId === sessionId)
+      .map((binding) => this.revokeCredentialLease(runtime, binding.leaseId));
+    await Promise.all(sessionCredentialLeases);
+    this.projectionController.removeSessionLive(sessionId);
     invalidatePersistedSessionCache(sessionId);
+    this.scheduleProfileRefresh(this.profileCursor);
   }
 
   async updateSessionSettings(
@@ -830,33 +847,45 @@ export class RuntimeHostAdapter {
       }
       this.enqueueRuntimeEvent(state, parsed.event);
     });
-    await this.resumeSnapshotBindings(runtime, observation.snapshot);
-    const initial = projectRuntimeSessionSnapshot(observation.snapshot);
-    await this.syncSpaceSessionSettings(sessionId, observation.snapshot.settings.value);
-    const reducer = new CoderSessionProjectionReducer(initial, observation.snapshot.runs);
-    for (const run of observation.snapshot.runs) this.runProviders.set(run.runId, run.provider);
-    state = { observation, reducer, eventQueue: Promise.resolve() };
-    if (this.runtime !== runtime || this.state !== 'ready') {
-      observation.close();
-      throw new Error('Coder daemon connection changed while opening a session observation.');
-    }
-    this.observations.set(sessionId, state);
-    this.profileCursor = Math.max(this.profileCursor, observation.snapshot.cursor);
-    this.projectionController.replaceSessionLive(initial);
-    for (const run of observation.snapshot.runs) {
-      const continuation = this.continuationPrompts.get(run.runId);
-      if (continuation && run.phase !== 'queued') {
-        this.continuationPrompts.delete(run.runId);
-        this.push('session.event', {
-          kind: 'queued_user_prompt_started',
-          sessionId: continuation.sessionId,
-          queueMode: 'after-turn',
-          content: continuation.content,
-        });
+    let installed = false;
+    try {
+      await this.resumeSnapshotBindings(runtime, observation.snapshot);
+      const initial = projectRuntimeSessionSnapshot(observation.snapshot);
+      await this.syncSpaceSessionSettings(sessionId, observation.snapshot.settings.value);
+      const reducer = new CoderSessionProjectionReducer(initial, observation.snapshot.runs);
+      for (const run of observation.snapshot.runs) this.runProviders.set(run.runId, run.provider);
+      state = { observation, reducer, eventQueue: Promise.resolve() };
+      if (this.runtime !== runtime || this.state !== 'ready') {
+        throw new Error('Coder daemon connection changed while opening a session observation.');
       }
-    }
-    for (const event of buffered) {
-      this.enqueueRuntimeEvent(state, event);
+      if (!this.desiredObservations.has(sessionId)) return;
+      this.observations.set(sessionId, state);
+      installed = true;
+      this.profileCursor = Math.max(this.profileCursor, observation.snapshot.cursor);
+      this.projectionController.replaceSessionLive(initial);
+      for (const run of observation.snapshot.runs) {
+        const continuation = this.continuationPrompts.get(run.runId);
+        if (continuation && run.phase !== 'queued') {
+          this.continuationPrompts.delete(run.runId);
+          this.push('session.event', {
+            kind: 'queued_user_prompt_started',
+            sessionId: continuation.sessionId,
+            queueMode: 'after-turn',
+            content: continuation.content,
+          });
+        }
+      }
+      for (const event of buffered) {
+        this.enqueueRuntimeEvent(state, event);
+      }
+    } catch (error) {
+      if (installed && this.observations.get(sessionId) === state) {
+        this.observations.delete(sessionId);
+      }
+      installed = false;
+      throw error;
+    } finally {
+      if (!installed) observation.close();
     }
   }
 
@@ -876,7 +905,7 @@ export class RuntimeHostAdapter {
           leaseId: credential.leaseId,
           provider: credential.provider,
           sessionId: run.sessionId,
-          boundRunId: run.runId,
+          runBinding: { boundRunId: run.runId },
           broker: async (request) => {
             if (
               request.provider !== credential.provider ||
@@ -941,7 +970,8 @@ export class RuntimeHostAdapter {
     event: RuntimeTypedEvent,
   ): Promise<void> {
     const runtime = this.runtime;
-    if (!runtime || this.state !== 'ready') return;
+    if (!runtime || this.state !== 'ready' || this.observations.get(event.sessionId) !== state)
+      return;
     const eventPayload =
       event.payload !== null && typeof event.payload === 'object'
         ? (event.payload as Readonly<Record<string, unknown>>)
@@ -1292,7 +1322,7 @@ export class RuntimeHostAdapter {
     }
     if (registeredCredential) {
       const lease = this.credentialLeases.get(registeredCredential.leaseId);
-      if (lease) lease.boundRunId = handle.runId;
+      if (lease) lease.runBinding.boundRunId = handle.runId;
     }
     this.activeRuns.set(input.sessionId, handle.runId);
     const result = handle.result.finally(async () => {
@@ -1318,25 +1348,22 @@ export class RuntimeHostAdapter {
     | undefined
   > {
     if (!(await this.credentialResolver(provider))) return undefined;
-    const binding: Omit<SpaceCredentialLeaseBinding, 'leaseId'> & { leaseId?: string } = {
-      provider,
-      sessionId,
-      broker: async (request) => {
-        if (request.provider !== provider || request.sessionId !== sessionId) return undefined;
-        if (binding.boundRunId !== undefined && request.runId !== binding.boundRunId) {
-          return undefined;
-        }
-        binding.boundRunId = request.runId;
-        return this.credentialResolver(provider);
-      },
+    const runBinding: SpaceCredentialLeaseBinding['runBinding'] = {};
+    const broker: RuntimeCredentialBroker = async (request) => {
+      if (request.provider !== provider || request.sessionId !== sessionId) return undefined;
+      if (runBinding.boundRunId !== undefined && request.runId !== runBinding.boundRunId) {
+        return undefined;
+      }
+      runBinding.boundRunId = request.runId;
+      return this.credentialResolver(provider);
     };
-    const lease = await runtime.credentials.register({ providers: [provider] }, binding.broker);
+    const lease = await runtime.credentials.register({ providers: [provider] }, broker);
     const tracked: SpaceCredentialLeaseBinding = {
       leaseId: lease.id,
       provider,
       sessionId,
-      ...(binding.boundRunId ? { boundRunId: binding.boundRunId } : {}),
-      broker: binding.broker,
+      runBinding,
+      broker,
     };
     this.credentialLeases.set(lease.id, tracked);
     return {
@@ -1410,18 +1437,26 @@ export class RuntimeHostAdapter {
       ? await this.registerCredentialLease(runtime, previous.provider, input.sessionId)
       : undefined;
     const credentialBinding = input.credential ?? registeredCredential?.binding;
-    const result = await runtime.runs.submitInput({
-      ...input,
-      ...(credentialBinding ? { credential: credentialBinding } : {}),
-      ...(!input.hostTools && this.hostToolLeaseId
-        ? { hostTools: { leaseId: this.hostToolLeaseId } }
-        : {}),
-    });
+    let result: RuntimeSubmitInputResult;
+    try {
+      result = await runtime.runs.submitInput({
+        ...input,
+        ...(credentialBinding ? { credential: credentialBinding } : {}),
+        ...(!input.hostTools && this.hostToolLeaseId
+          ? { hostTools: { leaseId: this.hostToolLeaseId } }
+          : {}),
+      });
+    } catch (error) {
+      if (registeredCredential) {
+        await this.revokeCredentialLease(runtime, registeredCredential.leaseId);
+      }
+      throw error;
+    }
     if ((!result.accepted || result.delivery !== 'after_turn') && registeredCredential) {
       await this.revokeCredentialLease(runtime, registeredCredential.leaseId);
     } else if (result.accepted && registeredCredential) {
       const lease = this.credentialLeases.get(registeredCredential.leaseId);
-      if (lease) lease.boundRunId = result.runId;
+      if (lease) lease.runBinding.boundRunId = result.runId;
       this.continuationCredentialLeases.set(result.runId, registeredCredential.leaseId);
     }
     if (result.accepted && result.delivery === 'after_turn') {
@@ -1443,23 +1478,11 @@ export class RuntimeHostAdapter {
   }
 
   hasPendingPermission(requestId: string): boolean {
-    const profile = this.projectionController.profileSnapshot();
-    return profile.interactions.some(
-      (interaction) =>
-        interaction.kind === 'permission' &&
-        interaction.state === 'pending' &&
-        interaction.request.reqId === requestId,
-    );
+    return this.projectionController.hasPendingInteraction('permission', requestId);
   }
 
   hasPendingUserInput(requestId: string): boolean {
-    const profile = this.projectionController.profileSnapshot();
-    return profile.interactions.some(
-      (interaction) =>
-        interaction.kind === 'ask-user' &&
-        interaction.state === 'pending' &&
-        interaction.request.reqId === requestId,
-    );
+    return this.projectionController.hasPendingInteraction('ask-user', requestId);
   }
 
   async respondPermission(

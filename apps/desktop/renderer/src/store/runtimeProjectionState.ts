@@ -171,6 +171,18 @@ function applyDomainChange(
         ...base,
         activeRun: update.change.activeRun ?? undefined,
         queuedRuns: update.change.queuedRuns,
+        ...(update.change.queuedInputs !== undefined
+          ? { queuedInputs: update.change.queuedInputs }
+          : {}),
+        ...(update.change.resetRunScopedState
+          ? {
+              assistantDraft: undefined,
+              thinkingDraft: undefined,
+              activeTools: [],
+              managedTask: undefined,
+              interactions: [],
+            }
+          : {}),
       };
     case 'draft':
       return {

@@ -2268,7 +2268,9 @@ export const useAppStore = create<AppState>((set) => ({
       }
       const projection = result.state.liveBySession[change.sessionId];
       const interactionPatch =
-        change.change.domain === 'interaction' && projection
+        (change.change.domain === 'interaction' ||
+          (change.change.domain === 'run' && change.change.resetRunScopedState === true)) &&
+        projection
           ? {
               permissionQueue: [
                 ...state.permissionQueue.filter(

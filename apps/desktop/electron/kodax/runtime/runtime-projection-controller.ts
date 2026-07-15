@@ -49,6 +49,22 @@ export class RuntimeProjectionController {
     return structuredClone(projection);
   }
 
+  hasPendingInteraction(kind: 'permission' | 'ask-user', requestId: string): boolean {
+    const matches = (interaction: SpaceRuntimeProfileProjectionT['interactions'][number]) =>
+      interaction.kind === kind &&
+      interaction.state === 'pending' &&
+      interaction.request.reqId === requestId;
+    if (this.#profile.interactions.some(matches)) return true;
+    for (const projection of this.#liveBySession.values()) {
+      if (projection.interactions.some(matches)) return true;
+    }
+    return false;
+  }
+
+  removeSessionLive(sessionId: string): boolean {
+    return this.#liveBySession.delete(sessionId);
+  }
+
   replaceProfile(profile: SpaceRuntimeProfileProjectionT): boolean {
     const parsed = spaceRuntimeProfileProjectionSchema.parse(profile);
     const currentRuntimeId = runtimeId(this.#profile);

@@ -711,10 +711,15 @@ export class CoderSessionProjectionReducer {
       });
     }
     if (event.type.startsWith('run.')) {
+      const previousActiveRunId = this.#projection.activeRun?.runId;
       const run = runStatusFromEvent(event);
       if (!run) return null;
       this.#runs.set(run.runId, run);
       const runs = runsForSession([...this.#runs.values()], this.#projection.sessionId);
+      const nextActiveRunId = runs.activeRun?.runId;
+      const resetRunScopedState =
+        (TERMINAL_PHASES.has(run.phase as never) && previousActiveRunId === run.runId) ||
+        (nextActiveRunId !== undefined && nextActiveRunId !== previousActiveRunId);
       return this.#commit(
         event.seq,
         {
@@ -725,6 +730,7 @@ export class CoderSessionProjectionReducer {
             [...this.#runs.values()],
             this.#projection.sessionId,
           ),
+          ...(resetRunScopedState ? { resetRunScopedState: true } : {}),
         },
         runs.lastTerminalRun,
       );
@@ -753,7 +759,16 @@ export class CoderSessionProjectionReducer {
           cursor,
           activeRun: change.activeRun ?? undefined,
           queuedRuns: change.queuedRuns,
-          ...(change.queuedInputs ? { queuedInputs: change.queuedInputs } : {}),
+          ...(change.queuedInputs !== undefined ? { queuedInputs: change.queuedInputs } : {}),
+          ...(change.resetRunScopedState
+            ? {
+                assistantDraft: undefined,
+                thinkingDraft: undefined,
+                activeTools: [],
+                managedTask: undefined,
+                interactions: [],
+              }
+            : {}),
           ...(lastTerminalRun ? { lastTerminalRun } : {}),
         };
         break;

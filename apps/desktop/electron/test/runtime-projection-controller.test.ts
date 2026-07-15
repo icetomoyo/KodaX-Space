@@ -69,6 +69,69 @@ test('controller accepts authoritative profile/live replacements for the future 
   assert.equal(controller.sessionLiveSnapshot('s_1').transcriptRevision, 'tx_1');
 });
 
+test('pending interaction lookup includes the newer per-session live cache', () => {
+  const controller = new RuntimeProjectionController(
+    createPendingSdkRuntimeProjection(100).profileSnapshot(),
+  );
+  controller.replaceProfile({
+    connection: {
+      state: 'ready',
+      changedAt: 101,
+      stale: false,
+      runtimeId: 'rt_1',
+      capabilities: [],
+    },
+    projectionRevision: 1,
+    cursor: { runtimeId: 'rt_1', seq: 1 },
+    sessions: [],
+    interactions: [],
+    notifications: [],
+  });
+  controller.replaceSessionLive({
+    sessionId: 's_1',
+    projectionRevision: 1,
+    cursor: { runtimeId: 'rt_1', seq: 2 },
+    transcriptRevision: 'tx_1',
+    queuedRuns: [],
+    activeTools: [],
+    todos: [],
+    queuedInputs: [],
+    interactions: [
+      {
+        kind: 'ask-user',
+        source: 'coder-runtime',
+        runId: 'run_1',
+        createdAt: 1,
+        state: 'pending',
+        request: {
+          kind: 'input',
+          reqId: 'ask_live',
+          sessionId: 's_1',
+          question: 'Choose',
+        },
+      },
+      {
+        kind: 'permission',
+        source: 'coder-runtime',
+        runId: 'run_1',
+        createdAt: 2,
+        state: 'pending',
+        request: {
+          reqId: 'permission_live',
+          sessionId: 's_1',
+          risk: 'high',
+          reason: 'Run tests',
+          toolCall: { toolId: 'tool_1', toolName: 'bash' },
+        },
+      },
+    ],
+  });
+
+  assert.equal(controller.hasPendingInteraction('ask-user', 'ask_live'), true);
+  assert.equal(controller.hasPendingInteraction('permission', 'permission_live'), true);
+  assert.equal(controller.hasPendingInteraction('ask-user', 'missing'), false);
+});
+
 test('runtime IPC bootstrap registers both snapshot handlers against the controller', async () => {
   const controller = createPendingSdkRuntimeProjection(100);
   const handlers = new Map<string, (input: unknown) => unknown>();

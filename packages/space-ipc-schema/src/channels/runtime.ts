@@ -487,6 +487,7 @@ const runChangeSchema = z
     activeRun: spaceRuntimeRunProjectionSchema.nullable(),
     queuedRuns: z.array(spaceRuntimeRunProjectionSchema).max(MAX_QUEUE_ITEMS),
     queuedInputs: z.array(spaceRuntimeQueuedInputSchema).max(MAX_QUEUE_ITEMS).optional(),
+    resetRunScopedState: z.boolean().optional(),
   })
   .strict();
 const draftChangeSchema = z

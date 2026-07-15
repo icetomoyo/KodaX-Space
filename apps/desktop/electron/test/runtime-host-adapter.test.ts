@@ -15,6 +15,11 @@ import {
   setSessionStoreImpl,
   type SessionStoreImpl,
 } from '../kodax/session-store.js';
+import {
+  RuntimeProjectionController,
+  RuntimeProjectionUnavailableError,
+  createPendingSdkRuntimeProjection,
+} from '../kodax/runtime/runtime-projection-controller.js';
 
 afterEach(() => {
   setSessionStoreImpl(null);
@@ -47,6 +52,7 @@ function createFakeRuntime() {
     forked: [] as unknown[],
     rewound: [] as unknown[],
     close: 0,
+    observationCloses: 0,
     observed: [] as string[],
     settingsUpdates: [] as unknown[],
     credentialRegistrations: [] as unknown[],
@@ -149,7 +155,9 @@ function createFakeRuntime() {
               managedTasks: [],
             },
           },
-          close() {},
+          close() {
+            calls.observationCloses += 1;
+          },
         };
       },
       async getSettings() {
@@ -187,7 +195,9 @@ function createFakeRuntime() {
         calls.rewound.push(input);
         return { id: input.sessionId, title: 'rewound' };
       },
-      async delete() {},
+      async delete(sessionId: string) {
+        sessions.delete(sessionId);
+      },
     },
     runs: {
       async start(input: { sessionId: string }): Promise<RuntimeRunHandle> {
@@ -706,12 +716,12 @@ test('Space-started runs receive scoped credential and host-tool leases', async 
     undefined,
   );
   assert.equal(
-    await broker({ provider: 'anthropic', sessionId: 's_1', runId: handle.runId }),
-    'secret-from-keychain',
-  );
-  assert.equal(
     await broker({ provider: 'anthropic', sessionId: 's_1', runId: 'other_run' }),
     undefined,
+  );
+  assert.equal(
+    await broker({ provider: 'anthropic', sessionId: 's_1', runId: handle.runId }),
+    'secret-from-keychain',
   );
   fake.pending.get(handle.runId)?.({
     runId: handle.runId,
@@ -720,4 +730,84 @@ test('Space-started runs receive scoped credential and host-tool leases', async 
   });
   await handle.result;
   assert.deepEqual(fake.calls.credentialRevokes, ['credential_1']);
+});
+
+test('failed after-turn submission revokes its newly registered credential lease', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_1');
+  fake.runtime.runs.submitInput = async () => {
+    throw new Error('transport failed');
+  };
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    credentialResolver: async () => 'secret-from-keychain',
+  });
+
+  await assert.rejects(
+    adapter.submitInput({
+      sessionId: 's_1',
+      afterRunId: 'run_previous',
+      delivery: 'after_turn',
+      input: [{ type: 'text', text: 'next' }],
+    }),
+    /transport failed/,
+  );
+  assert.deepEqual(fake.calls.credentialRevokes, ['credential_1']);
+  await adapter.close();
+});
+
+test('observation bootstrap failure closes the daemon subscription', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_1');
+  const originalObserve = fake.runtime.sessions.observe.bind(fake.runtime.sessions);
+  fake.runtime.sessions.observe = async (...args) => {
+    const observation = await originalObserve(...args);
+    return {
+      ...observation,
+      snapshot: { ...observation.snapshot, transcriptRevision: '' },
+    };
+  };
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  await assert.rejects(adapter.ensureObserved('s_1'));
+  assert.deepEqual(fake.calls.observed, ['s_1']);
+  assert.equal(fake.calls.observationCloses, 1);
+  await adapter.close();
+  assert.equal(fake.calls.observationCloses, 1);
+});
+
+test('deleting a session closes and removes its authoritative live observation', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_1');
+  const controller = new RuntimeProjectionController(
+    createPendingSdkRuntimeProjection(100).profileSnapshot(),
+  );
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    projectionController: controller,
+  });
+
+  await adapter.ensureObserved('s_1');
+  assert.deepEqual(fake.calls.observed, ['s_1']);
+  assert.equal(controller.sessionLiveSnapshot('s_1').sessionId, 's_1');
+  await adapter.deleteSession('s_1');
+
+  assert.equal(fake.calls.observationCloses, 1);
+  assert.throws(() => controller.sessionLiveSnapshot('s_1'), RuntimeProjectionUnavailableError);
+  await adapter.close();
+  assert.equal(fake.calls.observationCloses, 1);
 });
