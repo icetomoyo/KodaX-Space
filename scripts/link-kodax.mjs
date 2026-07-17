@@ -89,6 +89,11 @@ const stagingPkg = {
     './mcp': { types: './dist/sdk-mcp.d.ts', import: './dist/sdk-mcp.js' },
     './session': { types: './dist/sdk-session.d.ts', import: './dist/sdk-session.js' },
     './runtime': { types: './dist/sdk-runtime.d.ts', import: './dist/sdk-runtime.js' },
+    './a2a': { types: './dist/sdk-a2a.d.ts', import: './dist/sdk-a2a.js' },
+    './experimental-memory': {
+      types: './dist/sdk-experimental-memory.d.ts',
+      import: './dist/sdk-experimental-memory.js',
+    },
     './package.json': './package.json',
   },
   // 保留 dependencies — Node ESM resolution 需要它们存在以找子依赖

@@ -46,6 +46,19 @@ test('catalog includes expected anchor providers (anthropic, openai, zhipu-codin
   assert.ok(ids.has('zhipu-coding'));
 });
 
+test('KodaX 0.7.71 Kimi catalog exposes the public K2.7 and K3 context tiers', () => {
+  const kimi = getBuiltin('kimi');
+  assert.ok(kimi);
+  assert.equal(kimi.defaultModel, 'kimi-k2.7-code');
+
+  const kimiCode = getBuiltin('kimi-code');
+  assert.ok(kimiCode);
+  assert.equal(kimiCode.defaultModel, 'kimi-for-coding');
+  assert.ok(kimiCode.models?.includes('k3'));
+  assert.ok(kimiCode.models?.includes('k3-256k'));
+  assert.ok(kimiCode.models?.includes('kimi-for-coding-highspeed'));
+});
+
 test('catalog has fallback data for all 15 anchor providers (disaster recovery)', () => {
   // 这个验证不直接调 buildFallbackProviders（未导出），但通过 BUILTIN_PROVIDERS
   // 间接保证：每个 builtin 都有 apiKeyEnv + defaultModel，无论数据来自 JSON 还是 fallback。

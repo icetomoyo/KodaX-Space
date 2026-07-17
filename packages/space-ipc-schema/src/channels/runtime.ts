@@ -199,12 +199,18 @@ const interactionBaseSchema = z.object({
   state: z.enum(['pending', 'resolved', 'dismissed', 'expired']),
 });
 
-// Restorable Runtime interactions deliberately carry only the fields required
-// by existing modals. Raw tool arguments and daemon-private fields are stripped
+// Restorable Runtime interactions carry only the bounded, display-sanitized
+// fields required by the permission modal. Daemon-private fields are stripped
 // while parsing into the Space-owned projection.
+const runtimeInteractionInputSchema = z
+  .record(z.unknown())
+  .refine((value) => Object.keys(value).length <= 128, 'permission input has too many fields');
 const runtimeInteractionToolCallSchema = z.object({
   toolId: idSchema,
   toolName: z.string().min(1).max(128),
+  input: runtimeInteractionInputSchema.optional(),
+  operation: z.enum(['read', 'write', 'execute', 'network', 'unknown']).optional(),
+  executionCwd: z.string().min(1).max(4096).optional(),
 });
 const runtimePermissionRequestSchema = z.object({
   reqId: idSchema,

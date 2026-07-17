@@ -220,6 +220,14 @@ class KodaXHost {
     /** tryResume 专用：复用磁盘上的 sessionId 而非生成新的。*/
     existingSessionId?: string;
   }): { sessionId: string; createdAt: number } {
+    const surface = opts.surface ?? 'code';
+    if (
+      surface === 'code' &&
+      runtimeHostAdapter.selectedHost() === 'legacy' &&
+      !runtimeHostAdapter.hasLegacyOwner()
+    ) {
+      throw new Error('Space cannot create an inline Coder session without the owner fence.');
+    }
     const sessionId = opts.existingSessionId ?? `s_${randomUUID()}`;
     const session = this.factory({
       sessionId,
@@ -231,7 +239,7 @@ class KodaXHost {
       permissionMode: opts.permissionMode ?? 'accept-edits',
       autoModeEngine: opts.autoModeEngine ?? 'llm',
       agentMode: opts.agentMode ?? 'ama',
-      surface: opts.surface ?? 'code',
+      surface,
       ephemeral: opts.ephemeral ?? false,
       parentSessionId: opts.parentSessionId,
       forkPointTurnIdx: opts.forkPointTurnIdx,
@@ -338,23 +346,30 @@ class KodaXHost {
         return 'session-not-found';
       }
       const autoModeEngineChanged = before.autoModeEngine !== session.autoModeEngine;
-      const runtimePatch = {
-        ...(before.provider !== session.provider ? { provider: session.provider } : {}),
-        ...(before.model !== session.model ? { model: session.model ?? null } : {}),
-        ...(before.thinking !== session.thinking ? { thinking: session.thinking ?? null } : {}),
-        ...(before.reasoningMode !== session.reasoningMode
-          ? { reasoningMode: session.reasoningMode }
-          : {}),
-        ...(before.permissionMode !== session.permissionMode
-          ? { permissionMode: session.permissionMode }
-          : {}),
-        ...(before.agentMode !== session.agentMode ? { agentMode: session.agentMode } : {}),
-        ...(before.autoModeEngine !== session.autoModeEngine
-          ? { autoModeEngine: session.autoModeEngine }
-          : {}),
-      };
       if (session.surface === 'code' && runtimeHostAdapter.hasReadyRuntime()) {
-        await runtimeHostAdapter.updateSessionSettings(sessionId, runtimePatch);
+        // A newly-created Space session is intentionally admitted to the daemon
+        // lazily. Settings can be changed before the first send, so admit it here
+        // as well and seed the complete settings snapshot instead of applying only
+        // the one changed field to an otherwise-empty daemon session.
+        await runtimeHostAdapter.updateSessionSettings(
+          sessionId,
+          {
+            provider: session.provider,
+            model: session.model ?? null,
+            thinking: session.thinking ?? null,
+            reasoningMode: session.reasoningMode,
+            permissionMode: session.permissionMode,
+            executionCwd: session.projectRoot,
+            agentMode: session.agentMode,
+            autoModeEngine: session.autoModeEngine,
+          },
+          {
+            sessionId,
+            projectRoot: session.projectRoot,
+            surface: 'code',
+            ephemeral: session.ephemeral === true,
+          },
+        );
       }
       if (await this.persistRuntime(sessionId)) {
         if (autoModeEngineChanged) {
@@ -722,16 +737,17 @@ class KodaXHost {
         ...(s.model !== undefined ? { model: s.model } : {}),
         ...(customInstructions?.trim() ? { customInstructions: customInstructions.trim() } : {}),
       };
-      const result = s.surface === 'code' && runtimeHostAdapter.hasReadyRuntime()
-        ? await runtimeHostAdapter
-            .compactSession({ sessionId, ...compactInput })
-            .catch((err: unknown) => ({
-              compacted: false,
-              tokensBefore: 0,
-              tokensAfter: 0,
-              reason: err instanceof Error ? err.message : String(err),
-            }))
-        : await compactPersistedSession(sessionId, compactInput);
+      const result =
+        s.surface === 'code' && runtimeHostAdapter.hasReadyRuntime()
+          ? await runtimeHostAdapter
+              .compactSession({ sessionId, ...compactInput })
+              .catch((err: unknown) => ({
+                compacted: false,
+                tokensBefore: 0,
+                tokensAfter: 0,
+                reason: err instanceof Error ? err.message : String(err),
+              }))
+          : await compactPersistedSession(sessionId, compactInput);
       if (result.compacted) {
         pushToRenderer('session.event', {
           kind: 'compact_stats',
@@ -835,17 +851,18 @@ class KodaXHost {
 
     const forkTitle = src.title !== undefined ? `${stripForkSuffix(src.title)} (fork)` : undefined;
     const selector = await findPersistedTurnEndSelector(sourceSessionId, forkPointTurnIdx);
-    const sdkResult = src.surface === 'code' && runtimeHostAdapter.hasReadyRuntime()
-      ? await runtimeHostAdapter.forkSession({
-          sessionId: sourceSessionId,
-          ...(selector !== null ? { selector } : {}),
-          ...(forkTitle !== undefined ? { title: forkTitle } : {}),
-        })
-      : await forkPersistedSession({
-          sourceSessionId,
-          ...(selector !== null ? { selector } : {}),
-          title: forkTitle,
-        });
+    const sdkResult =
+      src.surface === 'code' && runtimeHostAdapter.hasReadyRuntime()
+        ? await runtimeHostAdapter.forkSession({
+            sessionId: sourceSessionId,
+            ...(selector !== null ? { selector } : {}),
+            ...(forkTitle !== undefined ? { title: forkTitle } : {}),
+          })
+        : await forkPersistedSession({
+            sourceSessionId,
+            ...(selector !== null ? { selector } : {}),
+            title: forkTitle,
+          });
     if (!sdkResult) return null; // SDK 找不到 source（盘上没记录），不视作错误（fork 一个未持久化的全新 session 是合法的）
 
     // 用 SDK 返回的 sessionId 实例化（不走 createSession 因为后者自己 randomUUID）
@@ -955,15 +972,16 @@ class KodaXHost {
     await s.cancel().catch(() => undefined);
     const selector = await findPersistedTurnEndSelector(sessionId, rewindPastTurnIdx);
     // 持久化截断（NEVER throws；不存在 / 无可退则 no-op；返回 false 让 renderer 知道）
-    const diskRewound = s.surface === 'code' && runtimeHostAdapter.hasReadyRuntime()
-      ? (await runtimeHostAdapter.rewindSession({
-          sessionId,
-          ...(selector !== null ? { selector } : {}),
-        })) !== null
-      : await rewindPersistedSession({
-          sessionId,
-          ...(selector !== null ? { selector } : {}),
-        });
+    const diskRewound =
+      s.surface === 'code' && runtimeHostAdapter.hasReadyRuntime()
+        ? (await runtimeHostAdapter.rewindSession({
+            sessionId,
+            ...(selector !== null ? { selector } : {}),
+          })) !== null
+        : await rewindPersistedSession({
+            sessionId,
+            ...(selector !== null ? { selector } : {}),
+          });
     s.lastActivityAt = Date.now();
     // forkPointTurnIdx 不变（rewind 不影响 fork 元数据）
     return { ok: true, diskRewound };

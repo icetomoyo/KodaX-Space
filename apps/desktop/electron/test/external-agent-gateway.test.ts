@@ -12,7 +12,7 @@ test('external-agent gateway persists the reference catalog and task ledger', as
   try {
     const registration = await gateway.upsertReference({
       displayName: 'Reference Reviewer',
-      description: 'Local KodaX 0.7.68 conformance target',
+      description: 'Local KodaX 0.7.71 conformance target',
       enabled: true,
       skills: ['code-review'],
       inputRequired: false,
@@ -70,7 +70,7 @@ test('external-agent gateway persists the reference catalog and task ledger', as
   const reloaded = new ExternalAgentGateway(root);
   try {
     const status = await reloaded.status();
-    assert.equal(status.sdkVersion, '0.7.68');
+    assert.equal(status.sdkVersion, '0.7.71');
     assert.equal(status.enabled, true);
     assert.equal(status.referenceExecutor, true);
     assert.deepEqual(status.adapters, { a2a: false, mcpTasks: false, governedHttp: false });
@@ -78,6 +78,37 @@ test('external-agent gateway persists the reference catalog and task ledger', as
     assert.equal(status.taskCount, 1);
   } finally {
     await reloaded.dispose();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('external-agent gateway preserves an admitted route after registration removal', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'kodax-space-external-route-'));
+  const gateway = new ExternalAgentGateway(root);
+  try {
+    const registration = await gateway.upsertReference({
+      displayName: 'Durable Reference',
+      enabled: true,
+      skills: ['durable-route'],
+      inputRequired: true,
+    });
+    const started = await gateway.startTask({
+      agentId: registration.agentId,
+      objective: 'resume after registration removal',
+      readOnly: true,
+      expectedConfigurationRevision: registration.configurationRevision,
+    });
+    assert.equal(started.state, 'input-required');
+    assert.equal(await gateway.remove(registration.agentId), true);
+    const resumed = await gateway.sendTaskInput(started.taskId, 'durable response');
+    assert.equal(resumed.taskId, started.taskId);
+    const binding = await gateway.getBinding({ actorId: 'space:test' });
+    assert.ok(binding);
+    const terminal = await binding.plane.tasks.wait(started.taskId, 2_000);
+    assert.equal(terminal.state, 'completed');
+    assert.equal(terminal.output, 'durable response');
+  } finally {
+    await gateway.dispose();
     await rm(root, { recursive: true, force: true });
   }
 });

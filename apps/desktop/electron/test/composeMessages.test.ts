@@ -1,7 +1,7 @@
 // composeMessages selector tests.
 //
 // 注：selector 文件本身在 renderer 端 (.tsx 旁) 但它是纯函数、零 React 依赖，
-// 可以从 electron/test 直接 import 进 node:test 跑（tsx/esm 处理 .ts/.tsx 转译）。
+// 可以从 electron/test 直接 import 进 node:test 跑（tsx 处理 .ts/.tsx 转译）。
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -66,7 +66,7 @@ test('only user message, no events: returns single user bubble', () => {
   if (out[0].kind === 'user') assert.equal(out[0].content, 'hello');
 });
 
-test('local notice (slash echo/output) does NOT consume a real query\'s events (ordering regression)', () => {
+test("local notice (slash echo/output) does NOT consume a real query's events (ordering regression)", () => {
   // 复现用户报的错位:先跑一条纯本地 slash(/repointel status,无 SDK 回合),再问一个真 query。
   // 真 query 的回答必须挂在真 query 气泡下,而不是被前面没有 events 的本地 slash 抢走。
   const events: SessionEvent[] = [
@@ -139,6 +139,41 @@ test('user + consecutive text_deltas → user bubble + single merged assistant b
   assert.deepEqual(kindsOf(out), ['user', 'assistant_text']);
   const text = out[1];
   if (text.kind === 'assistant_text') assert.equal(text.text, 'Hello world!');
+});
+
+test('assistant blocks use their first stream timestamp instead of reusing the query timestamp', () => {
+  const events: SessionEvent[] = [
+    { kind: 'text_delta', sessionId: sid, text: 'Starting', sentAt: 10_000 },
+    {
+      kind: 'tool_start',
+      sessionId: sid,
+      toolId: 't-time',
+      toolName: 'read',
+      input: { path: 'README.md' },
+    },
+    {
+      kind: 'tool_result',
+      sessionId: sid,
+      toolId: 't-time',
+      toolName: 'read',
+      content: 'done',
+    },
+    { kind: 'text_delta', sessionId: sid, text: 'Fresh result', sentAt: 250_000 },
+    { kind: 'session_complete', sessionId: sid },
+  ];
+  const out = composeMessages({ events, userMessages: [userMsg('u1', 'long task', 1_000)] });
+  const answers = out.filter(
+    (message): message is Extract<ConversationMessage, { kind: 'assistant_text' }> =>
+      message.kind === 'assistant_text',
+  );
+
+  assert.deepEqual(
+    answers.map((answer) => [answer.text, answer.sentAt]),
+    [
+      ['Starting', 10_000],
+      ['Fresh result', 250_000],
+    ],
+  );
 });
 
 test('workflow notices render as workflow system notices, not user bubbles', () => {
@@ -304,15 +339,33 @@ test("worker-scope iteration_end does NOT split the main agent's streaming reply
   // own copy footer). Only main-loop `parent`/undefined scope may end a bubble.
   const events: SessionEvent[] = [
     { kind: 'text_delta', sessionId: sid, text: '我已完成 3 项独立核查（渲染层 confirm' },
-    { kind: 'iteration_end', sessionId: sid, iter: 4, maxIter: 200, tokenCount: 12, scope: 'worker' },
+    {
+      kind: 'iteration_end',
+      sessionId: sid,
+      iter: 4,
+      maxIter: 200,
+      tokenCount: 12,
+      scope: 'worker',
+    },
     { kind: 'text_delta', sessionId: sid, text: '清理、pptx 缺失、Partner 禁用门完整性），这些会' },
-    { kind: 'iteration_end', sessionId: sid, iter: 5, maxIter: 200, tokenCount: 20, scope: 'worker' },
+    {
+      kind: 'iteration_end',
+      sessionId: sid,
+      iter: 5,
+      maxIter: 200,
+      tokenCount: 20,
+      scope: 'worker',
+    },
     { kind: 'text_delta', sessionId: sid, text: '并入最终报告。请稍候。' },
     { kind: 'session_complete', sessionId: sid },
   ];
   const out = composeMessages({ events, userMessages: [userMsg('u1', 'go')] });
   const bubbles = out.filter((m) => m.kind === 'assistant_text');
-  assert.equal(bubbles.length, 1, 'worker iterations must not split the reply into multiple bubbles');
+  assert.equal(
+    bubbles.length,
+    1,
+    'worker iterations must not split the reply into multiple bubbles',
+  );
   if (bubbles[0].kind === 'assistant_text') {
     assert.equal(
       bubbles[0].text,
@@ -321,11 +374,18 @@ test("worker-scope iteration_end does NOT split the main agent's streaming reply
   }
 });
 
-test("parent-scope iteration_end still ends the current assistant bubble", () => {
+test('parent-scope iteration_end still ends the current assistant bubble', () => {
   // Guard-rail: the fix must not merge across genuine main-loop iteration boundaries.
   const events: SessionEvent[] = [
     { kind: 'text_delta', sessionId: sid, text: 'first' },
-    { kind: 'iteration_end', sessionId: sid, iter: 1, maxIter: 30, tokenCount: 10, scope: 'parent' },
+    {
+      kind: 'iteration_end',
+      sessionId: sid,
+      iter: 1,
+      maxIter: 30,
+      tokenCount: 10,
+      scope: 'parent',
+    },
     { kind: 'text_delta', sessionId: sid, text: 'second' },
     { kind: 'session_complete', sessionId: sid },
   ];
@@ -744,7 +804,11 @@ test('re-rooted session: a workflow notice whose run predates all restored messa
     ],
     workflowNotices: [workflowNotice('wf1', '[workflow] completed: review · run-x', T_RUN)],
   });
-  assert.notEqual(out[0]?.kind, 'system_notice', 'notice must NOT be pinned above the conversation');
+  assert.notEqual(
+    out[0]?.kind,
+    'system_notice',
+    'notice must NOT be pinned above the conversation',
+  );
   assert.equal(out[0]?.kind, 'user', 'earliest restored user turn stays first');
   const noticeIdx = out.findIndex((m) => m.kind === 'system_notice');
   assert.ok(noticeIdx > 0, `notice interleaves within the conversation (idx ${noticeIdx})`);

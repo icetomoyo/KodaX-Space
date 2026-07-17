@@ -18,9 +18,12 @@ import {
   type SpaceSessionLiveChangedT,
   type SpaceSessionLiveProjectionT,
 } from '@kodax-space/space-ipc-schema';
+import { assessRisk } from '../../permission/risk.js';
+import { sanitizeForDisplay, sanitizeInputForDisplay } from '../../permission/sanitize.js';
 
 const MAX_DRAFT = 256 * 1024;
 const MAX_REASON = 512;
+const MAX_PERMISSION_INPUT_PREVIEW = 8_192;
 const MAX_TODOS = 1_000;
 const MAX_TOOLS = 128;
 const ACTIVE_PHASES = new Set(['running', 'waiting_permission', 'waiting_user_input'] as const);
@@ -33,6 +36,21 @@ const TODO_STATUSES = new Set([
   'skipped',
   'cancelled',
 ] as const);
+const READ_OPERATIONS = new Set([
+  'read',
+  'read_file',
+  'read_pdf',
+  'grep',
+  'glob',
+  'list',
+  'ls',
+  'search',
+  'view',
+  'web_search',
+]);
+const WRITE_OPERATIONS = new Set(['write', 'edit', 'patch', 'multi_edit', 'apply_diff']);
+const EXECUTE_OPERATIONS = new Set(['bash', 'shell', 'exec', 'skill_dynamic_context']);
+const NETWORK_OPERATIONS = new Set(['fetch', 'http', 'curl', 'network', 'web_fetch']);
 
 function record(value: unknown): Readonly<Record<string, unknown>> | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -125,8 +143,65 @@ function runsForSession(
   };
 }
 
-function permissionInteraction(request: RuntimePermissionRequest): SpaceRuntimeInteractionT {
-  const reason = text(request.reason, 512) ?? `Permission requested for ${request.toolName}`;
+function parsePermissionInput(inputPreview: unknown): Record<string, unknown> | undefined {
+  if (typeof inputPreview !== 'string' || inputPreview.length === 0) return undefined;
+  if (inputPreview.length > MAX_PERMISSION_INPUT_PREVIEW) {
+    return {
+      _inputPreview: '[OMITTED: oversized permission input preview]',
+      __truncated: true,
+    };
+  }
+  try {
+    const parsed = JSON.parse(inputPreview) as unknown;
+    const input = record(parsed);
+    if (!input) {
+      return {
+        _inputPreview: '[OMITTED: non-object permission input preview]',
+        __truncated: true,
+      };
+    }
+    return { ...input };
+  } catch {
+    return {
+      _inputPreview: '[OMITTED: invalid permission input preview]',
+      __truncated: true,
+    };
+  }
+}
+
+function permissionOperation(
+  toolName: string,
+): 'read' | 'write' | 'execute' | 'network' | 'unknown' {
+  const normalized = toolName.toLowerCase();
+  if (READ_OPERATIONS.has(normalized)) return 'read';
+  if (WRITE_OPERATIONS.has(normalized)) return 'write';
+  if (EXECUTE_OPERATIONS.has(normalized)) return 'execute';
+  if (NETWORK_OPERATIONS.has(normalized)) return 'network';
+  return 'unknown';
+}
+
+function permissionInteraction(
+  request: RuntimePermissionRequest,
+  fallbackExecutionCwd?: string,
+): SpaceRuntimeInteractionT {
+  const rawInput = parsePermissionInput(request.inputPreview);
+  const safeInput = sanitizeInputForDisplay(rawInput);
+  const safeToolName = sanitizeForDisplay(request.toolName, 128) || '(unnamed)';
+  const assessment = assessRisk(request.toolName, rawInput);
+  const description =
+    typeof safeInput?.description === 'string' ? safeInput.description : undefined;
+  const reasonSource = assessment.dangerous
+    ? assessment.reason
+    : (text(request.reason, 512) ?? description ?? assessment.reason);
+  const reason =
+    sanitizeForDisplay(reasonSource, 512) || `Permission requested for ${safeToolName}`;
+  const extendedRequest = request as RuntimePermissionRequest & {
+    readonly executionCwd?: unknown;
+  };
+  const executionCwd = sanitizeForDisplay(
+    text(extendedRequest.executionCwd, 4_096) ?? fallbackExecutionCwd ?? '',
+    4_096,
+  );
   return {
     source: 'coder-runtime',
     kind: 'permission',
@@ -136,11 +211,14 @@ function permissionInteraction(request: RuntimePermissionRequest): SpaceRuntimeI
     request: {
       reqId: request.id,
       sessionId: request.sessionId,
-      risk: request.risk ?? 'medium',
+      risk: assessment.dangerous ? 'danger' : (request.risk ?? assessment.risk),
       reason,
       toolCall: {
         toolId: request.toolCallId ?? request.id,
-        toolName: request.toolName,
+        toolName: safeToolName,
+        operation: permissionOperation(request.toolName),
+        ...(executionCwd ? { executionCwd } : {}),
+        ...(safeInput ? { input: safeInput } : {}),
       },
     },
   };
@@ -280,10 +358,11 @@ export function projectRuntimeInteractions(
   permissions: readonly RuntimePermissionRequest[],
   userInputs: readonly RuntimeUserInputRequest[],
   sessionId?: string,
+  executionCwd?: string,
 ): SpaceRuntimeInteractionT[] {
   const permissionItems = permissions
     .filter((request) => sessionId === undefined || request.sessionId === sessionId)
-    .map(permissionInteraction);
+    .map((request) => permissionInteraction(request, executionCwd));
   const inputItems = userInputs
     .filter((request) => sessionId === undefined || request.sessionId === sessionId)
     .map(userInputInteraction)
@@ -518,6 +597,7 @@ export function projectRuntimeSessionSnapshot(
       snapshot.pendingPermissions,
       userInputs,
       snapshot.session.id,
+      snapshot.settings.value.executionCwd,
     ),
   });
 }

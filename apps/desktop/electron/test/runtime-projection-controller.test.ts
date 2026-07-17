@@ -16,7 +16,7 @@ test('pending SDK controller reports an explicit incompatible profile without fa
   assert.equal(snapshot.connection.state, 'incompatible');
   assert.equal(snapshot.connection.stale, true);
   assert.equal(snapshot.connection.runtimeId, undefined);
-  assert.match(snapshot.connection.reason ?? '', /published KodaX daemon SDK/i);
+  assert.match(snapshot.connection.reason ?? '', /published KodaX shared daemon/i);
   assert.equal(snapshot.cursor, undefined);
   assert.deepEqual(snapshot.sessions, []);
 });

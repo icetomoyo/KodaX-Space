@@ -71,6 +71,7 @@ const sharedOptions = {
     '@kodax-ai/kodax/llm',
     '@kodax-ai/kodax/agent',
     '@kodax-ai/kodax/runtime',
+    '@kodax-ai/kodax/a2a',
     '@kodax-ai/kodax/experimental-memory',
     // ./media is dynamically imported by ipc/{session,clipboard}.ts — the base '@kodax-ai/kodax'
     // external does NOT cover subpaths in esbuild, so it must be listed or the packaged main.js
@@ -80,7 +81,7 @@ const sharedOptions = {
   ],
   logLevel: 'info',
   // 双轨 require 模式（register/catalog/ptyHost/artifact 的 `typeof require !== 'undefined' ? ... : import.meta`）：
-  // CJS bundle 里 `require` 永远有定义 → import.meta 分支是死代码、永不求值，仅供 tsx/esm 测试 loader 走。
+  // CJS bundle 里 `require` 永远有定义 → import.meta 分支是死代码、永不求值，仅供 tsx 测试 loader 走。
   // esbuild 静态分析看不出这点，会对每处发 empty-import-meta warning（CJS 下 import.meta 被置空）。
   // 这是该 dual-runtime 模式的预期行为，显式静音以保持 dev/build 输出干净。
   logOverride: { 'empty-import-meta': 'silent' },

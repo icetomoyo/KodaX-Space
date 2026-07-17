@@ -6,6 +6,7 @@ import type {
   ConnectKodaXRuntimeOptions,
   KodaXDaemonRuntime,
   RuntimeConnectionState,
+  RuntimeDaemonManagementState,
   RuntimeRunHandle,
   RuntimeRunResult,
 } from '@kodax-ai/kodax/runtime';
@@ -67,6 +68,8 @@ function createFakeRuntime() {
     hostToolRegistrations: [] as unknown[],
     hostToolRevokes: [] as string[],
     submitted: [] as unknown[],
+    daemonInspections: 0,
+    daemonStops: [] as unknown[],
   };
   const sessions = new Set<string>();
   const settings = new Map<string, { revision: number; value: Record<string, unknown> }>();
@@ -86,10 +89,12 @@ function createFakeRuntime() {
       mode: 'daemon',
       profile: 'coder',
       startedAt: '2026-07-12T00:00:00.000Z',
-      version: '0.7.69',
+      version: '0.7.71',
       isolation: 'process',
     },
     capabilities: {
+      externalAgentAdmin: { version: 1 },
+      a2aConfigReconciler: { version: 1 },
       operationDeduplication: { version: 1, retentionMs: 900_000 },
       sessionObservation: { version: 1, maxBufferedEvents: 256 },
       afterTurnInput: { version: 1 },
@@ -107,6 +112,11 @@ function createFakeRuntime() {
       daemonSafeRunInput: { version: 1 },
       sharedSessionSettings: { version: 1 },
       durableRecoveryQueries: { version: 1 },
+      daemonManagement: {
+        version: 1,
+        reverseBridgeDrainingFence: true,
+        backgroundWorkPreflight: true,
+      },
     },
     grantedScopes: [
       'session:observe',
@@ -116,6 +126,8 @@ function createFakeRuntime() {
       'permission:respond',
       'credential:register',
       'host-tool:register',
+      'owner:admin',
+      'daemon:admin',
     ],
     sessions: {
       async load(sessionId: string) {
@@ -294,11 +306,58 @@ function createFakeRuntime() {
         clientCount: 1,
         activeRuns: [],
         queuedRuns: [],
+        activeWorkflows: [],
+        activeAgentTasks: [],
         pendingPermissions: [],
         pendingUserInputs: [],
-        blockers: ['connected_clients'],
-        canStop: false,
+        blockers: [],
+        canStop: true,
       }),
+    },
+    daemon: {
+      inspect: async (): Promise<RuntimeDaemonManagementState> => {
+        calls.daemonInspections += 1;
+        return {
+          runtimeId: 'rt_test',
+          revision: 7,
+          ownerPolicy: {
+            mode: 'daemon',
+            revision: 2,
+            updatedAt: '2026-07-12T00:00:00.000Z',
+          },
+          owner: {
+            runtimeId: 'rt_test',
+            pid: 123,
+            createdAt: '2026-07-12T00:00:00.000Z',
+            kind: 'daemon',
+          },
+          preflight: {
+            runtimeId: 'rt_test',
+            clientCount: 1,
+            activeRuns: [],
+            queuedRuns: [],
+            activeWorkflows: [],
+            activeAgentTasks: [],
+            pendingPermissions: [],
+            pendingUserInputs: [],
+            blockers: [],
+            canStop: true,
+          },
+        };
+      },
+      stopForInline: async (input: unknown) => {
+        calls.daemonStops.push(input);
+        return {
+          accepted: true as const,
+          runtimeId: 'rt_test',
+          revision: 8,
+          ownerPolicy: {
+            mode: 'inline' as const,
+            revision: 3,
+            updatedAt: '2026-07-12T00:00:01.000Z',
+          },
+        };
+      },
     },
     connection: {
       current: () => connectionState,
@@ -343,6 +402,7 @@ test('resolveRuntimeHostMode defaults to runtime and accepts explicit legacy rol
 
 test('legacy selection never constructs a KodaX Runtime', async () => {
   let factoryCalls = 0;
+  let inlineOwnerCloses = 0;
   const adapter = new RuntimeHostAdapter({
     mode: 'legacy',
     profileRoot: 'C:\\isolated-profile',
@@ -350,16 +410,91 @@ test('legacy selection never constructs a KodaX Runtime', async () => {
       factoryCalls += 1;
       return createFakeRuntime().runtime;
     },
+    ownerControl: {
+      acquireInline: async () => ({
+        profile: 'coder',
+        ownerId: 'inline_test',
+        ownerPolicy: {
+          mode: 'inline',
+          revision: 1,
+          updatedAt: '2026-07-12T00:00:00.000Z',
+        },
+        close: () => {
+          inlineOwnerCloses += 1;
+        },
+      }),
+      getState: async () => ({
+        profile: 'coder',
+        policy: {
+          mode: 'inline',
+          revision: 1,
+          updatedAt: '2026-07-12T00:00:00.000Z',
+        },
+        ownerStatus: 'unowned',
+        owner: null,
+      }),
+      enableDaemon: async () => ({
+        mode: 'daemon',
+        revision: 2,
+        updatedAt: '2026-07-12T00:00:01.000Z',
+      }),
+    },
   });
 
   await adapter.initialize();
   assert.equal(factoryCalls, 0);
+  assert.equal(adapter.hasLegacyOwner(), true);
+  await adapter.ensureLegacyOwner();
   assert.equal(adapter.snapshot().selectedHost, 'legacy');
   assert.equal(adapter.snapshot().state, 'legacy');
   assert.equal(
     adapter.snapshot().capabilities.find((item) => item.id === 'runtime.runs')?.owner,
     'legacy',
   );
+  await adapter.close();
+  assert.equal(inlineOwnerCloses, 1);
+  assert.equal(adapter.hasLegacyOwner(), false);
+  await assert.rejects(adapter.ensureLegacyOwner(), /closed/);
+});
+
+test('legacy owner acquisition failure reports inline Coder as unavailable', async () => {
+  const adapter = new RuntimeHostAdapter({
+    mode: 'legacy',
+    profileRoot: 'C:\\isolated-profile',
+    ownerControl: {
+      acquireInline: async () => {
+        throw new Error('daemon still owns Coder');
+      },
+      getState: async () => ({
+        profile: 'coder',
+        policy: {
+          mode: 'daemon',
+          revision: 1,
+          updatedAt: '2026-07-12T00:00:00.000Z',
+        },
+        ownerStatus: 'owned',
+        owner: null,
+      }),
+      enableDaemon: async () => ({
+        mode: 'daemon',
+        revision: 1,
+        updatedAt: '2026-07-12T00:00:00.000Z',
+      }),
+    },
+  });
+
+  await assert.rejects(adapter.initialize(), /daemon still owns Coder/);
+  const snapshot = adapter.snapshot();
+  assert.equal(snapshot.state, 'failed');
+  assert.equal(
+    snapshot.capabilities.find((item) => item.id === 'runtime.host')?.support,
+    'unavailable',
+  );
+  assert.equal(
+    snapshot.capabilities.find((item) => item.id === 'runtime.runs')?.support,
+    'unavailable',
+  );
+  await adapter.close();
 });
 
 test('runtime selection attaches one Coder daemon with stable identity and required contracts', async () => {
@@ -389,12 +524,19 @@ test('runtime selection attaches one Coder daemon with stable identity and requi
   assert.equal(options.length, 1);
   assert.equal(options[0]?.profile, 'coder');
   assert.equal(options[0]?.autoStart, true);
-  assert.equal(options[0]?.homeDir, profileRoot);
+  assert.equal(
+    options[0]?.homeDir,
+    undefined,
+    'default daemon selection must follow KODAX_HOME instead of treating the .kodax root as CLI homeDir',
+  );
   assert.equal(options[0]?.sessionsDir, path.join(profileRoot, 'sessions'));
   assert.equal(options[0]?.clientInfo?.version, '0.1.30');
   assert.equal(options[0]?.clientInfo?.instanceId, 'space_instance_stable');
   assert.equal(options[0]?.clientInfo?.instanceSecret, 'space_secret_stable_0123456789abcdef');
   assert.equal(options[0]?.requirements?.sessionObservation, 1);
+  assert.equal(options[0]?.requirements?.externalAgents, true);
+  assert.equal(options[0]?.requirements?.externalAgentAdmin, 1);
+  assert.equal(options[0]?.requirements?.a2aConfigReconciler, 1);
   assert.equal(options[0]?.requirements?.coderFeatureMatrix, 1);
   assert.equal(options[0]?.requirements?.sessionAdmission, 1);
   assert.equal(options[0]?.requirements?.completeObservationSnapshot, 1);
@@ -403,6 +545,7 @@ test('runtime selection attaches one Coder daemon with stable identity and requi
   assert.equal(options[0]?.requirements?.daemonSafeRunInput, 1);
   assert.equal(options[0]?.requirements?.sharedSessionSettings, 1);
   assert.equal(options[0]?.requirements?.durableRecoveryQueries, 1);
+  assert.equal(options[0]?.requirements?.daemonManagement, 1);
   assert.equal(adapter.snapshot().state, 'ready');
   assert.equal(adapter.snapshot().identity?.runtimeId, 'rt_test');
   assert.equal(
@@ -421,9 +564,200 @@ test('runtime selection attaches one Coder daemon with stable identity and requi
   );
   assert.equal(
     adapter.snapshot().capabilities.find((item) => item.id === 'runtime.externalAgents')?.owner,
-    'space-bridge',
+    'runtime',
   );
-  assert.equal((await adapter.preflightDaemonStop()).canStop, false);
+  assert.equal((await adapter.preflightDaemonStop()).canStop, true);
+  assert.equal(fake.calls.daemonInspections, 1);
+});
+
+test('daemon rollback commits one inspected revision, waits for release, and restores owner explicitly', async () => {
+  const fake = createFakeRuntime();
+  let inlineOwnerCloses = 0;
+  let daemonRestores = 0;
+  let ownerReleased = false;
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    ownerControl: {
+      acquireInline: async () => ({
+        profile: 'coder',
+        ownerId: 'inline_after_daemon',
+        ownerPolicy: {
+          mode: 'inline',
+          revision: 3,
+          updatedAt: '2026-07-12T00:00:01.000Z',
+        },
+        close: () => {
+          inlineOwnerCloses += 1;
+        },
+      }),
+      getState: async () => ({
+        profile: 'coder',
+        policy: {
+          mode: 'inline',
+          revision: 3,
+          updatedAt: '2026-07-12T00:00:01.000Z',
+        },
+        ownerStatus: ownerReleased ? 'unowned' : 'owned',
+        owner: ownerReleased
+          ? null
+          : {
+              runtimeId: 'rt_test',
+              pid: 123,
+              createdAt: '2026-07-12T00:00:00.000Z',
+              kind: 'daemon',
+            },
+      }),
+      enableDaemon: async () => {
+        daemonRestores += 1;
+        return {
+          mode: 'daemon',
+          revision: 4,
+          updatedAt: '2026-07-12T00:00:02.000Z',
+        };
+      },
+    },
+  });
+  const originalStop = fake.runtime.daemon.stopForInline.bind(fake.runtime.daemon);
+  fake.runtime.daemon.stopForInline = async (input) => {
+    const result = await originalStop(input);
+    ownerReleased = true;
+    return result;
+  };
+
+  await adapter.initialize();
+  const inspection = await adapter.inspectDaemonStop();
+  const rollback = await adapter.prepareInlineRollback('space-operation-1');
+
+  assert.equal(inspection.revision, 7);
+  assert.equal(rollback.accepted, true);
+  assert.deepEqual(fake.calls.daemonStops, [
+    {
+      expectedRuntimeId: 'rt_test',
+      expectedRevision: 7,
+      expectedOwnerPolicyRevision: 2,
+      operation: { operationId: 'space-operation-1' },
+    },
+  ]);
+  assert.equal(adapter.snapshot().state, 'closed');
+  assert.equal(fake.calls.close, 1);
+  assert.equal(inlineOwnerCloses, 0);
+
+  const restored = await adapter.restoreDaemonOwner();
+  assert.equal(restored.mode, 'daemon');
+  assert.equal(daemonRestores, 1);
+  assert.equal(inlineOwnerCloses, 1);
+});
+
+test('daemon rollback restores daemon policy when inline owner acquisition fails after stop', async () => {
+  const fake = createFakeRuntime();
+  let daemonRestores = 0;
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    ownerControl: {
+      acquireInline: async () => {
+        throw new Error('inline acquisition failed');
+      },
+      getState: async () => ({
+        profile: 'coder',
+        policy: {
+          mode: 'inline',
+          revision: 3,
+          updatedAt: '2026-07-12T00:00:01.000Z',
+        },
+        ownerStatus: 'unowned',
+        owner: null,
+      }),
+      enableDaemon: async () => {
+        daemonRestores += 1;
+        return {
+          mode: 'daemon',
+          revision: 4,
+          updatedAt: '2026-07-12T00:00:02.000Z',
+        };
+      },
+    },
+  });
+
+  await adapter.initialize();
+  await assert.rejects(adapter.prepareInlineRollback(), /inline acquisition failed/);
+
+  assert.equal(fake.calls.close, 1);
+  assert.equal(daemonRestores, 1);
+  assert.equal(adapter.snapshot().state, 'closed');
+  assert.equal(adapter.snapshot().error, undefined);
+});
+
+test('daemon owner restoration retains an inline fence and can be retried', async () => {
+  const fake = createFakeRuntime();
+  let inlineOwnerAcquisitions = 0;
+  let inlineOwnerCloses = 0;
+  let daemonRestores = 0;
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    ownerControl: {
+      acquireInline: async () => {
+        inlineOwnerAcquisitions += 1;
+        return {
+          profile: 'coder',
+          ownerId: `inline_after_daemon_${inlineOwnerAcquisitions}`,
+          ownerPolicy: {
+            mode: 'inline',
+            revision: 3,
+            updatedAt: '2026-07-12T00:00:01.000Z',
+          },
+          close: () => {
+            inlineOwnerCloses += 1;
+          },
+        };
+      },
+      getState: async () => ({
+        profile: 'coder',
+        policy: {
+          mode: 'inline',
+          revision: 3,
+          updatedAt: '2026-07-12T00:00:01.000Z',
+        },
+        ownerStatus: 'unowned',
+        owner: null,
+      }),
+      enableDaemon: async () => {
+        daemonRestores += 1;
+        if (daemonRestores === 1) throw new Error('daemon enable failed');
+        return {
+          mode: 'daemon',
+          revision: 4,
+          updatedAt: '2026-07-12T00:00:02.000Z',
+        };
+      },
+    },
+  });
+
+  await adapter.initialize();
+  await adapter.prepareInlineRollback();
+  await assert.rejects(adapter.restoreDaemonOwner(), /daemon enable failed/);
+
+  assert.equal(inlineOwnerAcquisitions, 2);
+  assert.equal(inlineOwnerCloses, 1);
+  assert.equal(adapter.snapshot().state, 'closed');
+  assert.match(adapter.snapshot().error ?? '', /daemon enable failed/);
+
+  const restored = await adapter.restoreDaemonOwner();
+  assert.equal(restored.mode, 'daemon');
+  assert.equal(daemonRestores, 2);
+  assert.equal(inlineOwnerCloses, 2);
+  assert.equal(adapter.snapshot().error, undefined);
 });
 
 test('daemon connection lifecycle invalidates Runtime authority without waiting for polling', async () => {
@@ -443,6 +777,29 @@ test('daemon connection lifecycle invalidates Runtime authority without waiting 
   assert.equal(adapter.hasReadyRuntime(), false);
   assert.equal(adapter.snapshot().state, 'failed');
   assert.match(adapter.snapshot().error ?? '', /transport loss/);
+  await adapter.close();
+});
+
+test('runtime selection accepts an explicit CLI-style base home without moving Space data', async () => {
+  const fake = createFakeRuntime();
+  const options: ConnectKodaXRuntimeOptions[] = [];
+  const profileRoot = path.resolve('C:\\isolated-profile', '.kodax');
+  const runtimeHomeDir = path.resolve('C:\\isolated-profile');
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot,
+    runtimeHomeDir,
+    runtimeFactory: async (input) => {
+      options.push(input);
+      return fake.runtime;
+    },
+    identityStore: testIdentityStore,
+  });
+
+  await adapter.initialize();
+
+  assert.equal(options[0]?.homeDir, runtimeHomeDir);
+  assert.equal(options[0]?.sessionsDir, path.join(profileRoot, 'sessions'));
   await adapter.close();
 });
 
@@ -673,6 +1030,50 @@ test('session settings use revisioned CAS and skip unchanged values', async () =
       sessionId: 's_1',
       patch: { model: 'claude-next', agentMode: 'amaw', autoModeEngine: 'rules' },
       options: { expectedRevision: 2 },
+    },
+  ]);
+});
+
+test('session settings admit a missing Coder session before its first send', async () => {
+  const fake = createFakeRuntime();
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+  });
+  const patch = {
+    provider: 'openai',
+    model: 'gpt-5.4',
+    thinking: null,
+    reasoningMode: 'auto' as const,
+    permissionMode: 'accept-edits' as const,
+    executionCwd: path.resolve('C:\\project'),
+    agentMode: 'ama' as const,
+    autoModeEngine: 'llm' as const,
+  };
+
+  await adapter.updateSessionSettings('s_new', patch, {
+    sessionId: 's_new',
+    projectRoot: path.resolve('C:\\project'),
+    surface: 'code',
+    ephemeral: false,
+  });
+
+  assert.deepEqual(fake.calls.created, [
+    {
+      sessionId: 's_new',
+      projectPath: path.resolve('C:\\project'),
+      gitRoot: path.resolve('C:\\project'),
+      surface: 'space-desktop',
+      tag: 'code',
+    },
+  ]);
+  assert.deepEqual(fake.calls.settingsUpdates, [
+    {
+      sessionId: 's_new',
+      patch,
+      options: { expectedRevision: 0 },
     },
   ]);
 });

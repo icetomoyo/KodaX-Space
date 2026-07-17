@@ -70,6 +70,8 @@ type IdentityReadResult =
     }
   | { readonly kind: 'valid'; readonly identity: StableRuntimeClientIdentity };
 
+class RuntimeClientIdentityAliasError extends Error {}
+
 function sha256(bytes: Buffer): string {
   return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 }
@@ -251,6 +253,25 @@ export class RuntimeClientIdentityStore {
   }
 
   async #read(): Promise<IdentityReadResult> {
+    let aliasError: RuntimeClientIdentityAliasError | undefined;
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      try {
+        return await this.#readOnce();
+      } catch (error) {
+        if (!(error instanceof RuntimeClientIdentityAliasError)) throw error;
+        aliasError = error;
+        if (attempt < 3) {
+          // writeNewFileExclusive installs with a hard link and immediately
+          // removes its private temporary name. A concurrent first-start read
+          // can observe nlink=2 only during that bounded commit window.
+          await new Promise<void>((resolve) => setTimeout(resolve, 5));
+        }
+      }
+    }
+    throw aliasError ?? new Error('Runtime client identity alias check failed.');
+  }
+
+  async #readOnce(): Promise<IdentityReadResult> {
     let before: Awaited<ReturnType<typeof fs.lstat>>;
     try {
       before = await fs.lstat(this.#filePath);
@@ -266,7 +287,9 @@ export class RuntimeClientIdentityStore {
       throw new Error('Runtime client identity must be a regular file.');
     }
     if (before.nlink > 1) {
-      throw new Error('Runtime client identity must not have hard-link aliases.');
+      throw new RuntimeClientIdentityAliasError(
+        'Runtime client identity must not have hard-link aliases.',
+      );
     }
     if (before.size > MAX_IDENTITY_BYTES) {
       throw new Error('Runtime client identity exceeds the safe size limit.');
@@ -289,7 +312,12 @@ export class RuntimeClientIdentityStore {
       if (!opened.isFile() || !sameFile(before, opened, after)) {
         throw new Error('Runtime client identity changed while it was being read.');
       }
-      if (opened.nlink > 1 || bytes.length > MAX_IDENTITY_BYTES) {
+      if (opened.nlink > 1) {
+        throw new RuntimeClientIdentityAliasError(
+          'Runtime client identity must not have hard-link aliases.',
+        );
+      }
+      if (bytes.length > MAX_IDENTITY_BYTES) {
         throw new Error('Runtime client identity is not a safe standalone file.');
       }
 

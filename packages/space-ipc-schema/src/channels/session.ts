@@ -849,11 +849,15 @@ export const sessionEventChannel = {
       kind: z.literal('text_delta'),
       sessionId: z.string().min(1),
       text: z.string().max(MAX_TEXT_CHUNK),
+      /** Optional producer/store timestamp for the first chunk in one assistant text block. */
+      sentAt: z.number().int().nonnegative().optional(),
     }),
     z.object({
       kind: z.literal('thinking_delta'),
       sessionId: z.string().min(1),
       text: z.string().max(MAX_TEXT_CHUNK),
+      /** Optional producer/store timestamp for the first chunk in one assistant thinking block. */
+      sentAt: z.number().int().nonnegative().optional(),
     }),
     z.object({
       kind: z.literal('thinking_end'),

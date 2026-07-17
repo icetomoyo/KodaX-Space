@@ -6,7 +6,10 @@
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { useAppStore } from '../../renderer/src/store/appStore.js';
-import { decideAutoPromote, type SmartPopoutKind } from '../../renderer/src/features/popout-director/rules.js';
+import {
+  decideAutoPromote,
+  type SmartPopoutKind,
+} from '../../renderer/src/features/popout-director/rules.js';
 import { composeMessages } from '../../renderer/src/features/session/composeMessages.js';
 import type { SessionHistoryItem } from '@kodax-space/space-ipc-schema';
 
@@ -40,7 +43,13 @@ beforeEach(() => {
 test('history replay marks diff as promoted when file-mutation tool used (write/edit/multi_edit)', () => {
   const items: SessionHistoryItem[] = [
     { kind: 'user', content: 'edit file' },
-    { kind: 'tool_call', toolId: 't1', toolName: 'write', input: { path: '/x', content: 'hi' }, result: 'ok' },
+    {
+      kind: 'tool_call',
+      toolId: 't1',
+      toolName: 'write',
+      input: { path: '/x', content: 'hi' },
+      result: 'ok',
+    },
   ];
   useAppStore.getState().prependSessionHistory(SID, items, FALLBACK_SENT_AT);
 
@@ -61,14 +70,32 @@ test('history replay marks diff as promoted when file-mutation tool used (write/
 test('history replay marks all 3 popout kinds when historical session had tasks + plan + diff', () => {
   const items: SessionHistoryItem[] = [
     { kind: 'user', content: 'do stuff' },
-    { kind: 'tool_call', toolId: 't1', toolName: 'edit', input: { path: '/y', old_string: 'a', new_string: 'b' }, result: 'ok' },
+    {
+      kind: 'tool_call',
+      toolId: 't1',
+      toolName: 'edit',
+      input: { path: '/y', old_string: 'a', new_string: 'b' },
+      result: 'ok',
+    },
   ];
   // 直接灌一些 todo_update / managed_task_status 进 events 模拟历史 session
   useAppStore.setState({
     eventsBySession: {
       [SID]: [
-        { kind: 'todo_update', sessionId: SID, items: [{ id: 't1', content: 'a', status: 'pending' }] },
-        { kind: 'managed_task_status', sessionId: SID, status: { agentMode: 'ama', harnessProfile: 'H2_PLAN_EXECUTE_EVAL', activeWorkerId: 'w-1' } },
+        {
+          kind: 'todo_update',
+          sessionId: SID,
+          items: [{ id: 't1', content: 'a', status: 'pending' }],
+        },
+        {
+          kind: 'managed_task_status',
+          sessionId: SID,
+          status: {
+            agentMode: 'ama',
+            harnessProfile: 'H2_PLAN_EXECUTE_EVAL',
+            activeWorkerId: 'w-1',
+          },
+        },
       ],
     },
   });
@@ -104,7 +131,13 @@ test('history replay preserves existing promoted marks (user already toggled bef
   });
   const items: SessionHistoryItem[] = [
     { kind: 'user', content: 'edit' },
-    { kind: 'tool_call', toolId: 't1', toolName: 'write', input: { path: '/x', content: 'a' }, result: 'ok' },
+    {
+      kind: 'tool_call',
+      toolId: 't1',
+      toolName: 'write',
+      input: { path: '/x', content: 'a' },
+      result: 'ok',
+    },
   ];
   useAppStore.getState().prependSessionHistory(SID, items, FALLBACK_SENT_AT);
 
@@ -124,6 +157,30 @@ test('history replay with no relevant events leaves promoted untouched', () => {
   // promotedPopoutsBySession[SID] 被设成空 Set (即便没新增 kind, 也会创 entry)
   assert.ok(promoted !== undefined);
   assert.equal(promoted.size, 0);
+});
+
+test('history replay preserves an assistant timestamp distinct from its query timestamp', () => {
+  useAppStore.getState().prependSessionHistory(
+    SID,
+    [
+      { kind: 'user', content: 'long task', sentAt: 1_000 },
+      { kind: 'assistant', text: 'fresh result', sentAt: 241_000 },
+    ],
+    FALLBACK_SENT_AT,
+  );
+
+  const state = useAppStore.getState();
+  const messages = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  });
+  const answer = messages.find(
+    (message): message is Extract<(typeof messages)[number], { kind: 'assistant_text' }> =>
+      message.kind === 'assistant_text',
+  );
+
+  assert.equal(answer?.text, 'fresh result');
+  assert.equal(answer?.sentAt, 241_000);
 });
 
 test('restored conversation keeps real per-message sentAt so workflow notices are not hoisted to the top', () => {
@@ -215,7 +272,11 @@ test('restored conversation keeps real per-message sentAt so workflow notices ar
     'system_notice',
     'clamp: a run-time-earlier notice must NOT pin to the top even when restored messages collapse onto a late createdAt',
   );
-  assert.equal(controlOut[0]?.kind, 'user', 'the first restored user turn stays at the top, not the workflow notice');
+  assert.equal(
+    controlOut[0]?.kind,
+    'user',
+    'the first restored user turn stays at the top, not the workflow notice',
+  );
 });
 
 test('history replay preserves transcript pairing when restored user timestamps move backwards', () => {
@@ -342,7 +403,10 @@ test('history replay restores sidecar verifier messages as sidecar notices', () 
   useAppStore.getState().prependSessionHistory(SID, items, FALLBACK_SENT_AT);
   const state = useAppStore.getState();
   const events = state.eventsBySession[SID] ?? [];
-  assert.equal(events.some((event) => event.kind === 'sidecar_message'), true);
+  assert.equal(
+    events.some((event) => event.kind === 'sidecar_message'),
+    true,
+  );
 
   const out = composeMessages({
     events,
@@ -361,7 +425,11 @@ test('workflow_notice history item restores as a workflow system_notice at its t
   // at the correct position. session.history maps it to a `workflow_notice` item; prependSessionHistory
   // routes it to a position-anchored event so composeMessages renders it exactly where the run ran —
   // NOT hoisted to the top, and independent of the (compaction-collapsed) wall-clock timestamps.
-  useAppStore.setState({ eventsBySession: {}, userMessagesBySession: {}, workflowNoticesBySession: {} });
+  useAppStore.setState({
+    eventsBySession: {},
+    userMessagesBySession: {},
+    workflowNoticesBySession: {},
+  });
   const items: SessionHistoryItem[] = [
     { kind: 'user', content: 'run the workflow', sentAt: 1000 },
     { kind: 'assistant', text: 'kicking it off' },

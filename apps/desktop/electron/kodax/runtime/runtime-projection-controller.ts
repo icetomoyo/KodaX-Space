@@ -149,13 +149,13 @@ export function createPendingSdkRuntimeProjection(
       state: 'incompatible',
       changedAt,
       stale: true,
-      reason: 'Waiting for a published KodaX daemon SDK capability contract.',
+      reason: 'Connecting to the published KodaX shared daemon contract.',
       capabilities: [
         {
           id: 'runtime.daemon',
           version: 1,
           available: false,
-          reason: 'Published daemon SDK integration is pending.',
+          reason: 'Published daemon connection has not completed.',
         },
       ],
     },

@@ -497,7 +497,12 @@ interface AppState {
       readonly sentAt?: number;
     },
   ): string | null;
-  markQueuedUserMessageAccepted(sessionId: string, localId: string, queueId?: string): void;
+  markQueuedUserMessageAccepted(
+    sessionId: string,
+    localId: string,
+    queueId?: string,
+    queueMode?: 'interrupt' | 'after-turn',
+  ): void;
   removeQueuedUserMessage(sessionId: string, localId: string): void;
   promoteQueuedUserMessage(sessionId: string, localId: string, sentAt?: number): void;
   convertLastUserMessageToQueued(
@@ -531,6 +536,8 @@ interface AppState {
     defaultProviderId: string | null,
     keychainBackend: 'keychain' | 'memory' | 'unknown',
   ): void;
+  /** Keep the renderer's provider catalog aligned after provider.setDefault succeeds. */
+  setDefaultProviderId(id: string | null): void;
   /** v0.1.6 cleanup: 启动期 main 推 kodax.getDefaults 结果进来。 */
   setKodaxDefaults(defaults: KodaxUserDefaults): void;
   setRuntimeDefaults(defaults: SpaceRuntimeDefaultsT): void;
@@ -826,12 +833,28 @@ function appendSessionEvent(
   }
   const last = bucket[bucket.length - 1];
   if (event.kind === 'text_delta' && last?.kind === 'text_delta') {
-    return [...bucket.slice(0, -1), { ...last, text: last.text + event.text }];
+    return [
+      ...bucket.slice(0, -1),
+      { ...last, text: last.text + event.text, sentAt: last.sentAt ?? event.sentAt },
+    ];
   }
   if (event.kind === 'thinking_delta' && last?.kind === 'thinking_delta') {
-    return [...bucket.slice(0, -1), { ...last, text: last.text + event.text }];
+    return [
+      ...bucket.slice(0, -1),
+      { ...last, text: last.text + event.text, sentAt: last.sentAt ?? event.sentAt },
+    ];
   }
   return [...bucket, event];
+}
+
+function stampLiveStreamEvent(event: SessionEvent): SessionEvent {
+  if (
+    (event.kind === 'text_delta' || event.kind === 'thinking_delta') &&
+    event.sentAt === undefined
+  ) {
+    return { ...event, sentAt: Date.now() };
+  }
+  return event;
 }
 
 // 粗略 token 估算 — 同 bubbles.tsx / ContextWindowIndicator 公式（ASCII/4 + non-ASCII × 1）。
@@ -1283,7 +1306,7 @@ export const useAppStore = create<AppState>((set) => ({
     return appended ? localId : null;
   },
 
-  markQueuedUserMessageAccepted: (sessionId, localId, queueId) =>
+  markQueuedUserMessageAccepted: (sessionId, localId, queueId, queueMode) =>
     set((state) => {
       const bucket = state.queuedUserMessagesBySession[sessionId];
       if (!bucket) return state;
@@ -1294,6 +1317,7 @@ export const useAppStore = create<AppState>((set) => ({
         return {
           ...entry,
           ...(queueId !== undefined ? { queueId } : {}),
+          ...(queueMode !== undefined ? { queueMode } : {}),
           status: 'queued' as const,
         };
       });
@@ -1515,11 +1539,23 @@ export const useAppStore = create<AppState>((set) => ({
           openUserWithoutAssistant = true;
         } else if (item.kind === 'assistant') {
           ensureLeadingUserSentinel();
+          const assistantSentAt =
+            item.sentAt ?? histMsgs[histMsgs.length - 1]?.sentAt ?? fallbackSentAt;
           if (item.thinking !== undefined && item.thinking.length > 0) {
-            histEvents.push({ kind: 'thinking_delta', sessionId, text: item.thinking });
+            histEvents.push({
+              kind: 'thinking_delta',
+              sessionId,
+              text: item.thinking,
+              sentAt: assistantSentAt,
+            });
           }
           if (item.text.length > 0) {
-            histEvents.push({ kind: 'text_delta', sessionId, text: item.text });
+            histEvents.push({
+              kind: 'text_delta',
+              sessionId,
+              text: item.text,
+              sentAt: assistantSentAt,
+            });
           }
           markTurnHasEvents();
         } else if (item.kind === 'sidecar_message') {
@@ -1736,6 +1772,7 @@ export const useAppStore = create<AppState>((set) => ({
         return state;
       }
       const bucket = state.eventsBySession[event.sessionId] ?? [];
+      const storedEvent = stampLiveStreamEvent(event);
       if (event.kind === 'session_error' && event.error === 'cancelled') {
         // 乐观取消(BottomBar handleCancel)与 main 端真实 cancelled 去重,防同一次取消显示两条。
         // 倒序回溯到本 turn 起点(session_start)为止;命中已存在的 cancelled 即判定重复 drop。
@@ -1755,9 +1792,9 @@ export const useAppStore = create<AppState>((set) => ({
       const next: Partial<AppState> = {
         eventsBySession: {
           ...state.eventsBySession,
-          [event.sessionId]: appendSessionEvent(bucket, event),
+          [event.sessionId]: appendSessionEvent(bucket, storedEvent),
         },
-        lastEvent: event,
+        lastEvent: storedEvent,
       };
       // 只在"运行真正开始/结束"的生命周期事件到达时才清 pendingSend，把 spinner 交给 event-driven 状态。
       // ⚠️ 不能"任一事件到达就清"：repo-intelligence（repointel_trace）/ managed_task_status 等**非生命周期**
@@ -2151,6 +2188,14 @@ export const useAppStore = create<AppState>((set) => ({
 
   setProviders: (providers, defaultProviderId, keychainBackend) =>
     set({ providers, defaultProviderId, keychainBackend }),
+  setDefaultProviderId: (id) =>
+    set((state) => ({
+      defaultProviderId: id,
+      providers: state.providers.map((provider) => {
+        const isDefault = provider.id === id;
+        return provider.isDefault === isDefault ? provider : { ...provider, isDefault };
+      }),
+    })),
 
   setKodaxDefaults: (defaults) => set({ kodaxDefaults: defaults }),
   setRuntimeDefaults: (defaults) => set({ runtimeDefaults: { ...defaults } }),
@@ -2278,23 +2323,21 @@ export const useAppStore = create<AppState>((set) => ({
                 ),
                 ...projection.interactions
                   .filter(
-                    (interaction): interaction is Extract<
-                      typeof interaction,
-                      { kind: 'permission' }
-                    > => interaction.kind === 'permission' && interaction.state === 'pending',
+                    (
+                      interaction,
+                    ): interaction is Extract<typeof interaction, { kind: 'permission' }> =>
+                      interaction.kind === 'permission' && interaction.state === 'pending',
                   )
                   .map((interaction) => interaction.request),
               ],
               askUserQueue: [
-                ...state.askUserQueue.filter(
-                  (request) => request.sessionId !== change.sessionId,
-                ),
+                ...state.askUserQueue.filter((request) => request.sessionId !== change.sessionId),
                 ...projection.interactions
                   .filter(
-                    (interaction): interaction is Extract<
-                      typeof interaction,
-                      { kind: 'ask-user' }
-                    > => interaction.kind === 'ask-user' && interaction.state === 'pending',
+                    (
+                      interaction,
+                    ): interaction is Extract<typeof interaction, { kind: 'ask-user' }> =>
+                      interaction.kind === 'ask-user' && interaction.state === 'pending',
                   )
                   .map((interaction) => interaction.request),
               ],

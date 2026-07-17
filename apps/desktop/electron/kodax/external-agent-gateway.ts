@@ -26,8 +26,9 @@ import { getSpaceDataDir } from './data-paths.js';
 
 type SdkAgentModule = typeof import('@kodax-ai/kodax/agent');
 
-const KODAX_SDK_VERSION = '0.7.68';
+const KODAX_SDK_VERSION = '0.7.71';
 const REFERENCE_EXECUTOR_ID = 'kodax-space-reference-v1';
+const REFERENCE_MANAGEMENT_OWNER = 'kodax-space:reference';
 const MAX_STORE_FILE_BYTES = 16 * 1024 * 1024;
 
 function stableHash(value: string): string {
@@ -40,12 +41,14 @@ function storageKey(value: string): string {
 
 class JsonAgentPlaneStore implements AgentExecutorPlaneStore {
   private readonly registrationsPath: string;
+  private readonly taskRegistrationSnapshotsPath: string;
   private readonly tasksDir: string;
   private readonly eventsDir: string;
   private readonly writes = new Map<string, Promise<void>>();
 
   constructor(rootDir: string) {
     this.registrationsPath = path.join(rootDir, 'registrations.json');
+    this.taskRegistrationSnapshotsPath = path.join(rootDir, 'task-registration-snapshots.json');
     this.tasksDir = path.join(rootDir, 'tasks');
     this.eventsDir = path.join(rootDir, 'events');
   }
@@ -56,6 +59,16 @@ class JsonAgentPlaneStore implements AgentExecutorPlaneStore {
 
   async saveRegistrations(registrations: readonly ExternalAgentRegistration[]): Promise<void> {
     await this.writeJson(this.registrationsPath, registrations);
+  }
+
+  async loadTaskRegistrationSnapshots(): Promise<readonly ExternalAgentRegistration[]> {
+    return this.readJson(this.taskRegistrationSnapshotsPath, []);
+  }
+
+  async saveTaskRegistrationSnapshots(
+    registrations: readonly ExternalAgentRegistration[],
+  ): Promise<void> {
+    await this.writeJson(this.taskRegistrationSnapshotsPath, registrations);
   }
 
   async loadTasks(): Promise<readonly AgentTaskSnapshot[]> {
@@ -349,12 +362,20 @@ export class ExternalAgentGateway {
     skills: string[];
     inputRequired: boolean;
   }): Promise<ExternalAgentRegistrationSummaryT> {
+    const persistedRegistrations = await this.store.loadRegistrations();
+    let existing: ExternalAgentRegistration | undefined;
     if (input.agentId !== undefined) {
-      const existing = (await this.store.loadRegistrations()).find(
+      existing = persistedRegistrations.find(
         (registration) => registration.agentId === input.agentId,
       );
       if (existing === undefined || existing.executorId !== REFERENCE_EXECUTOR_ID) {
         throw new Error('Reference Agent updates require an existing host-issued registration.');
+      }
+      if (
+        existing.managementOwner !== undefined &&
+        existing.managementOwner !== REFERENCE_MANAGEMENT_OWNER
+      ) {
+        throw new Error('Reference Agent registration is owned by another manager.');
       }
     }
     const agentId = input.agentId ?? `external:${randomUUID()}`;
@@ -363,6 +384,7 @@ export class ExternalAgentGateway {
       displayName: input.displayName,
       ...(input.description ? { description: input.description } : {}),
       enabled: input.enabled,
+      managementOwner: REFERENCE_MANAGEMENT_OWNER,
       executorId: REFERENCE_EXECUTOR_ID,
       // The upstream Reference Executor implements an ExternalAgentProtocol
       // contract but performs no network I/O. UI labels it by adapterKind and
@@ -385,14 +407,29 @@ export class ExternalAgentGateway {
       health: { status: 'healthy', checkedAt: new Date().toISOString() },
       maxConcurrency: 4,
     };
-    return projectRegistration(
-      await (await this.ensurePlane()).registrations.upsert(registration),
-      registration,
-    );
+    const summary = await (
+      await this.ensurePlane()
+    ).registrations.upsert(registration, {
+      expectedConfigurationRevision: existing?.configurationRevision ?? null,
+      expectedManagementOwner: existing?.managementOwner ?? null,
+    });
+    return projectRegistration(summary, registration);
   }
 
   async remove(agentId: string): Promise<boolean> {
-    return (await this.ensurePlane()).registrations.remove(agentId);
+    const registrations = (await this.ensurePlane()).registrations;
+    const current = (await registrations.list()).find((item) => item.agentId === agentId);
+    if (!current) return false;
+    if (
+      current.managementOwner !== undefined &&
+      current.managementOwner !== REFERENCE_MANAGEMENT_OWNER
+    ) {
+      throw new Error('Reference Agent registration is owned by another manager.');
+    }
+    return registrations.remove(agentId, {
+      expectedConfigurationRevision: current.configurationRevision,
+      expectedManagementOwner: current.managementOwner ?? null,
+    });
   }
 
   async listDispatchable(input: {
@@ -547,7 +584,7 @@ export class ExternalAgentGateway {
       credentialBroker: {
         isAvailable: () => false,
         async withCredential(): Promise<never> {
-          throw new Error('The KodaX 0.7.68 Reference Executor does not accept credentials.');
+          throw new Error('The KodaX Reference Executor does not accept credentials.');
         },
       },
       artifactPolicy: () => ({
@@ -555,6 +592,10 @@ export class ExternalAgentGateway {
         reason: 'Reference Executor artifacts are disabled until Space quarantine is connected.',
       }),
       store: this.store,
+      closeTimeoutMs: 30_000,
+      onBackgroundError(error, context) {
+        console.warn(`[external-agent] background ${context.operation} failed:`, error.message);
+      },
     });
     return this.withReferenceContinuationReconcile(plane);
   }
@@ -570,12 +611,9 @@ export class ExternalAgentGateway {
       async sendInput(taskId, input) {
         const sent = await rawTasks.sendInput(taskId, input);
         if (sent.registration.executorId !== REFERENCE_EXECUTOR_ID) return sent;
-        // KodaX 0.7.67's Reference Executor can complete in the microtask between
-        // sendInput() and the durable event pump resuming. A slow persistent
-        // store may then retain the intermediate `working` snapshot. Reconcile
-        // the conformance adapter once; real protocol adapters keep native event
-        // semantics and this workaround can be removed when upstream closes the
-        // continuation/event-pump race.
+        // The published 0.7.71 Reference Executor can still complete in the
+        // microtask between sendInput() and its durable event pump. Reconcile
+        // once so Space never leaves the public task snapshot at `working`.
         await new Promise<void>((resolve) => queueMicrotask(resolve));
         return rawTasks.reconcile(taskId);
       },

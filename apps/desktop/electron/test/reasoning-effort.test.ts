@@ -2,27 +2,44 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { resolveWireEffort, type ReasoningProfileLike } from '../kodax/reasoning-effort.js';
 
-// Profiles mirror the real SDK 0.7.58 getReasoningProfile() output (verified empirically).
+// Profiles mirror the real SDK getReasoningProfile() output (verified against 0.7.71).
 const KIMI_CODE: ReasoningProfileLike = {
   supportedEfforts: [
-    { value: 'low' }, { value: 'medium' }, { value: 'high' }, { value: 'xhigh' }, { value: 'max' },
+    { value: 'low' },
+    { value: 'medium' },
+    { value: 'high' },
+    { value: 'xhigh' },
+    { value: 'max' },
   ],
   localRejectEfforts: ['none', 'minimal'],
   defaultEffort: 'high',
 };
 const GLM_CODING: ReasoningProfileLike = {
   supportedEfforts: [
-    { value: 'none' }, { value: 'minimal' }, { value: 'low' }, { value: 'medium' },
-    { value: 'high' }, { value: 'xhigh' }, { value: 'max' },
+    { value: 'none' },
+    { value: 'minimal' },
+    { value: 'low' },
+    { value: 'medium' },
+    { value: 'high' },
+    { value: 'xhigh' },
+    { value: 'max' },
   ],
   // none/minimal are disabledEfforts (fold to off) but NOT localReject — safe to send.
   defaultEffort: 'max',
 };
 const ANTHROPIC: ReasoningProfileLike = {
   supportedEfforts: [
-    { value: 'low' }, { value: 'medium' }, { value: 'high' }, { value: 'xhigh' }, { value: 'max' },
+    { value: 'low' },
+    { value: 'medium' },
+    { value: 'high' },
+    { value: 'xhigh' },
+    { value: 'max' },
   ],
   defaultEffort: 'high',
+};
+const KIMI_K3: ReasoningProfileLike = {
+  supportedEfforts: [{ value: 'none' }, { value: 'low' }, { value: 'high' }, { value: 'max' }],
+  defaultEffort: 'max',
 };
 
 test('C4: "Off" never emits a locally-rejected effort (kimi-code/minimax clamp up, no crash)', () => {
@@ -34,6 +51,12 @@ test('C5: "Deep" reaches the provider ceiling (GLM-5.2 -> max, not a static high
   assert.equal(resolveWireEffort('deep', GLM_CODING), 'max');
   assert.equal(resolveWireEffort('deep', KIMI_CODE), 'max');
   assert.equal(resolveWireEffort('deep', ANTHROPIC), 'max');
+  assert.equal(resolveWireEffort('deep', KIMI_K3), 'max');
+});
+
+test('Kimi K3 keeps explicit thinking-off while its deep tier reaches max', () => {
+  assert.equal(resolveWireEffort('off', KIMI_K3), 'none');
+  assert.equal(resolveWireEffort('deep', KIMI_K3), 'max');
 });
 
 test('no regression: providers that accept "none" for Off still get none', () => {

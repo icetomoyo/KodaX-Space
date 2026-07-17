@@ -21,7 +21,7 @@
 // 真去写 ~/.kodax/sessions/。所以本模块暴露一个可替换的 impl 引用：
 //   - 生产代码不调 setSessionStoreImpl → 走真 SDK（首次调用时 dynamic import 拉起）
 //   - 测试 beforeEach 调 setSessionStoreImpl(mock) → 注入 in-memory mock
-//                                                  (避免 dynamic import 触发 cli-boxes JSON bug)
+//                                                  （避免触碰真实用户 session 持久化状态）
 //
 // 重置：setSessionStoreImpl(null) 恢复默认。
 import { canonProjectRoot, type Surface } from '@kodax-space/space-ipc-schema';

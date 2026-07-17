@@ -390,12 +390,11 @@ export class RealKodaXSession implements ManagedSession {
         if (!activeRunId) {
           throw new Error('The Coder daemon is still accepting the current run; retry shortly.');
         }
-        const queueMode = options?.queueMode ?? 'interrupt';
-        if (queueMode !== 'after-turn') {
-          throw new Error(
-            'Interrupt delivery is not supported by KodaX Runtime 0.7.69; choose after-turn.',
-          );
-        }
+        // Daemon continuations currently expose only after-turn delivery. This is
+        // especially important after Space reconnects: the active run lives in the
+        // daemon, so there is no in-process interrupt queue to target. Treat an
+        // interrupt request as best-effort and preserve the prompt by queueing it
+        // after the recovered run instead of rejecting it at the IPC boundary.
         if (options?.promptOverlay) {
           throw new Error('A prompt overlay cannot be attached to a daemon continuation.');
         }
@@ -753,6 +752,9 @@ export class RealKodaXSession implements ManagedSession {
     if (this.surface === 'code' && runtimeHostAdapter.isRuntimeSelected()) {
       await this.runCoderDaemon(prompt, signal, artifacts, promptOverlay);
       return;
+    }
+    if (this.surface === 'code') {
+      await runtimeHostAdapter.ensureLegacyOwner();
     }
     const sid = this.sessionId;
     const isStopped = (): boolean => this.disposed || signal.aborted;
@@ -1792,20 +1794,13 @@ export class RealKodaXSession implements ManagedSession {
       };
 
       try {
-        // F116: Runtime is the default run owner, but initialization failure may select
-        // the legacy path before a run starts. Once Runtime has accepted the run there is
-        // deliberately no automatic fallback: replaying on legacy could execute tools twice.
+        // Runtime-selected Coder runs fail closed. They must never fall through to the
+        // inline driver because that would bypass the daemon owner fence and could execute
+        // tools twice. Partner and explicitly fenced legacy Coder runs stay on the inline path.
         let useRuntime = false;
         if (this.surface === 'code' && runtimeHostAdapter.isRuntimeSelected()) {
-          try {
-            await runtimeHostAdapter.initialize();
-            useRuntime = true;
-          } catch (err) {
-            console.warn(
-              `[real-session ${sid}] Runtime host initialization failed; using pre-run legacy rollback:`,
-              err instanceof Error ? err.message : err,
-            );
-          }
+          await runtimeHostAdapter.initialize();
+          useRuntime = true;
         }
 
         if (useRuntime) {
@@ -1858,7 +1853,7 @@ export class RealKodaXSession implements ManagedSession {
             await emitTerminalError(pendingTerminalError);
           }
         } else {
-          // Legacy rollback driver. Keep until a later release proves Runtime parity.
+          // Partner inline driver, or the explicitly selected legacy Coder rollback driver.
           await withSessionRunContext(
             {
               sessionId: sid,

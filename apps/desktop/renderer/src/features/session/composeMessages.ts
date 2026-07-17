@@ -318,7 +318,7 @@ function composeAssistantSegment(
             id: `${segmentTag}_text${textBubbleCounter++}`,
             text: '',
             ...(turnIndex !== undefined ? { turnIndex } : {}),
-            sentAt: parentSentAt,
+            sentAt: evt.sentAt ?? parentSentAt,
           };
         }
         currentText.text += evt.text;
@@ -331,7 +331,7 @@ function composeAssistantSegment(
             id: `${segmentTag}_text${textBubbleCounter++}`,
             text: '',
             ...(turnIndex !== undefined ? { turnIndex } : {}),
-            sentAt: parentSentAt,
+            sentAt: evt.sentAt ?? parentSentAt,
           };
         }
         currentText.thinking = (currentText.thinking ?? '') + evt.text;

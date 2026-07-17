@@ -1,9 +1,8 @@
 // FEATURE_038 testing helper.
 //
 // Provide an in-memory SessionStoreImpl that test files inject via
-// setSessionStoreImpl(). Avoids touching real ~/.kodax/sessions/ + sidesteps
-// the cli-boxes JSON-as-JS tsx/esm bug that fires the moment SDK
-// `@kodax-ai/kodax/session` is dynamically imported.
+// setSessionStoreImpl(). This keeps unit tests deterministic and prevents them
+// from touching real ~/.kodax/sessions/ state.
 //
 // Usage in a test file:
 //   import { installSessionStoreMock } from './_helpers/session-store-mock.js';

@@ -61,14 +61,14 @@ function runtimeHostCapability(snapshot: RuntimeHostSnapshot): SpaceCapability {
     : legacy
       ? 'The internal legacy rollback host is selected before run start. No Runtime-managed run is active.'
       : failed
-        ? `The Runtime host failed before run start${snapshot.error ? `: ${snapshot.error}` : '.'} New runs use the bounded legacy rollback path.`
+        ? `The Runtime host failed before run start${snapshot.error ? `: ${snapshot.error}` : '.'} Coder runs are blocked instead of falling back to inline execution; Partner remains available on its inline path.`
         : snapshot.state === 'initializing' || snapshot.state === 'uninitialized'
-          ? `The Runtime host is ${snapshot.state}. New runs wait for initialization and use legacy only if it fails before start.`
+          ? `The Runtime host is ${snapshot.state}. Coder runs wait for initialization and fail closed if it fails; Partner remains available on its inline path.`
           : 'The Runtime host is closed and cannot accept new runs.';
   return {
     id: 'runtime.hostAdapter',
     label: 'Runtime Host Adapter',
-    status: ready ? 'supported' : snapshot.state === 'closed' ? 'blocked' : 'partial',
+    status: ready ? 'supported' : snapshot.state === 'closed' || failed ? 'blocked' : 'partial',
     detail,
     since: '0.1.31',
   };

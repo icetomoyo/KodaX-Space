@@ -260,7 +260,7 @@ test('session-scoped Runtime projections reject cross-session run, queue and int
   }
 });
 
-test('Runtime interaction projections strip raw tool input and unknown transport fields', () => {
+test('Runtime interaction projections preserve bounded display input and strip transport fields', () => {
   const parsed = spaceSessionLiveProjectionSchema.parse({
     sessionId: 's_1',
     projectionRevision: 1,
@@ -285,6 +285,8 @@ test('Runtime interaction projections strip raw tool input and unknown transport
             toolId: 'tool_1',
             toolName: 'bash',
             input: { command: 'echo secret', apiKey: 'secret' },
+            operation: 'execute',
+            executionCwd: 'C:\\repo',
             transportSecret: 'secret',
           },
           daemonInternal: 'secret',
@@ -294,7 +296,12 @@ test('Runtime interaction projections strip raw tool input and unknown transport
   });
   const interaction = parsed.interactions[0];
   assert.ok(interaction?.kind === 'permission');
-  assert.equal('input' in interaction.request.toolCall, false);
+  assert.deepEqual(interaction.request.toolCall.input, {
+    command: 'echo secret',
+    apiKey: 'secret',
+  });
+  assert.equal(interaction.request.toolCall.operation, 'execute');
+  assert.equal(interaction.request.toolCall.executionCwd, 'C:\\repo');
   assert.equal('transportSecret' in interaction.request.toolCall, false);
   assert.equal('daemonInternal' in interaction.request, false);
 

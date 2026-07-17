@@ -11,6 +11,7 @@
 //                                resolveProvider
 //   @kodax-ai/kodax/skills       SkillRegistry (skill/registry.ts 自己也 probe，这里重复防御)
 //   @kodax-ai/kodax/llm          verifyProviderCredential (FEATURE_216 — 测连接)
+//   @kodax-ai/kodax/a2a          authenticated A2A config/server/task-migration public surface
 //
 // **静态 import 改 dynamic**：SDK subpath exports 只声明 "import" 条件（ESM），CJS-built
 // main 进程的静态 require 会撞 ERR_PACKAGE_PATH_NOT_EXPORTED。dynamic import 走 ESM 解析
@@ -130,6 +131,18 @@ export async function probeKodaxSdk(): Promise<void> {
     failures.push(
       `@kodax-ai/kodax/agent.resolveContextWindow: expected function, got ${typeof agentModule.resolveContextWindow}`,
     );
+  }
+
+  const a2aModule = await import('@kodax-ai/kodax/a2a');
+  for (const [name, value] of [
+    ['createBearerEnvA2AAuthentication', a2aModule.createBearerEnvA2AAuthentication],
+    ['createOAuth2JwtA2AAuthentication', a2aModule.createOAuth2JwtA2AAuthentication],
+    ['inspectA2AIntegration', a2aModule.inspectA2AIntegration],
+    ['migrateA2ALegacyTaskOwners', a2aModule.migrateA2ALegacyTaskOwners],
+  ] as const) {
+    if (typeof value !== 'function') {
+      failures.push(`@kodax-ai/kodax/a2a ${name}: expected function, got ${typeof value}`);
+    }
   }
 
   // FEATURE_260 is part of the exact 0.7.68 release baseline. Missing exports, load errors,

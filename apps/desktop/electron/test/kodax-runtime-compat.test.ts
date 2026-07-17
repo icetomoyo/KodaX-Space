@@ -17,6 +17,9 @@ const KODAX_CLI_PATH = path.join(
 );
 
 const SHARED_DAEMON_REQUIREMENTS = {
+  externalAgents: true,
+  externalAgentAdmin: 1,
+  a2aConfigReconciler: 1,
   operationDeduplication: 1,
   sessionObservation: 1,
   afterTurnInput: 1,
@@ -34,6 +37,7 @@ const SHARED_DAEMON_REQUIREMENTS = {
   daemonSafeRunInput: 1,
   sharedSessionSettings: 1,
   durableRecoveryQueries: 1,
+  daemonManagement: 1,
 } as const;
 
 const PUBLISHED_SHARED_DAEMON_PEER_PROBE = String.raw`
@@ -90,6 +94,8 @@ try {
     },
     settingsRevision: updated.revision,
     clientCount: preflight.clientCount,
+    activeWorkflows: Array.isArray(preflight.activeWorkflows),
+    activeAgentTasks: Array.isArray(preflight.activeAgentTasks),
     partnerError,
   }));
 } finally {
@@ -98,9 +104,9 @@ try {
 }
 `;
 
-// Keep the process-distinct daemon probe outside the tsx/esm test loader. KodaX
-// still carries CLI-only dependencies with JSON modules; loading them inside a
-// highly concurrent tsx suite is a known loader hazard unrelated to Runtime.
+// Keep the process-distinct daemon probe outside the tsx test loader so this
+// compatibility gate exercises the published package under plain Node, matching
+// the actual daemon child process rather than the TypeScript test harness.
 const PUBLISHED_SHARED_DAEMON_HOST_PROBE = String.raw`
 import { spawn } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
@@ -225,6 +231,7 @@ try {
     if (event.type === 'session.settings.updated') resolveSettingsEvent(event.type);
   });
   const clientBaseline = await runtime.status.preflight();
+  const managementBaseline = await runtime.daemon.inspect();
   const peer = await runPeer(session.id);
   const eventType = await settingsEvent.finally(() => clearTimeout(eventTimeout));
   const settings = await runtime.sessions.getSettingsVersioned(session.id);
@@ -233,6 +240,10 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 100));
     afterDetach = await runtime.status.preflight();
   }
+  const managementAfterDetach = await runtime.daemon.inspect();
+  const managementCapability = runtime.capabilities.daemonManagement;
+  const externalAgentAdminCapability = runtime.capabilities.externalAgentAdmin;
+  const a2aConfigCapability = runtime.capabilities.a2aConfigReconciler;
   result = {
     version: runtime.identity.version,
     runtimeId: runtime.identity.runtimeId,
@@ -244,6 +255,23 @@ try {
     settings,
     clientBaseline: clientBaseline.clientCount,
     afterDetach: afterDetach.clientCount,
+    management: {
+      baselineRevision: managementBaseline.revision,
+      afterDetachRevision: managementAfterDetach.revision,
+      runtimeId: managementAfterDetach.runtimeId,
+      ownerRuntimeId: managementAfterDetach.owner.runtimeId,
+      ownerKind: managementAfterDetach.owner.kind,
+      ownerPolicyMode: managementAfterDetach.ownerPolicy.mode,
+      ownerPolicyRevision: managementAfterDetach.ownerPolicy.revision,
+      canStop: managementAfterDetach.preflight.canStop,
+      activeWorkflows: Array.isArray(managementAfterDetach.preflight.activeWorkflows),
+      activeAgentTasks: Array.isArray(managementAfterDetach.preflight.activeAgentTasks),
+      backgroundWorkPreflight: managementCapability?.backgroundWorkPreflight === true,
+      reverseBridgeDrainingFence: managementCapability?.reverseBridgeDrainingFence === true,
+      externalAgents: runtime.agents.enabled,
+      externalAgentAdmin: externalAgentAdminCapability?.version === 1,
+      a2aConfigReconciler: a2aConfigCapability?.version === 1,
+    },
   };
 } finally {
   observation?.close();
@@ -264,6 +292,12 @@ import {
   KODAX_DAEMON_PROTOCOL_VERSION,
 } from '@kodax-ai/kodax/runtime';
 import { createReferenceAgentExecutorFactory } from '@kodax-ai/kodax/agent';
+import {
+  createBearerEnvA2AAuthentication,
+  createOAuth2JwtA2AAuthentication,
+  inspectA2AIntegration,
+  migrateA2ALegacyTaskOwners,
+} from '@kodax-ai/kodax/a2a';
 
 const homeDir = await mkdtemp(path.join(tmpdir(), 'kodax-space-runtime-child-'));
 let runtime;
@@ -310,7 +344,7 @@ try {
       policy: ({ registration }) => ({ allowed: registration.enabled }),
       defaultContext: { actorId: 'kodax-space-runtime-compat' },
     },
-    requirements: { externalAgents: true },
+    requirements: { externalAgents: true, externalAgentAdmin: 1 },
   });
   let externalAgentResult;
   try {
@@ -318,6 +352,7 @@ try {
       agentId: 'external:space-reference',
       displayName: 'Space Reference Agent',
       enabled: true,
+      managementOwner: 'kodax-space-runtime-compat',
       executorId: 'space-reference',
       protocol: 'http',
       configurationRevision: 'space-reference-v1',
@@ -334,7 +369,26 @@ try {
       },
       effects: { remote: 'none', workspace: 'none' },
     };
-    await externalRuntime.admin.agentRegistrations.upsert(registration);
+    await externalRuntime.admin.agentRegistrations.upsert(registration, {
+      expectedConfigurationRevision: null,
+      expectedManagementOwner: null,
+    });
+    const disabled = await externalRuntime.admin.agentRegistrations.setEnabled(
+      registration.agentId,
+      false,
+      {
+        expectedConfigurationRevision: registration.configurationRevision,
+        expectedManagementOwner: registration.managementOwner,
+      },
+    );
+    const enabled = await externalRuntime.admin.agentRegistrations.setEnabled(
+      registration.agentId,
+      true,
+      {
+        expectedConfigurationRevision: registration.configurationRevision,
+        expectedManagementOwner: registration.managementOwner,
+      },
+    );
     const dispatchable = await externalRuntime.agents.listDispatchable({
       actorId: 'kodax-space-runtime-compat',
       readOnly: true,
@@ -349,7 +403,9 @@ try {
     const terminal = await externalRuntime.agentTasks.wait(started.taskId, 5_000);
     externalAgentResult = {
       capability: externalRuntime.agents.enabled,
+      disabled: disabled?.enabled === false,
       enabled: externalRuntime.agents.enabled,
+      reenabled: enabled?.enabled === true,
       listed: dispatchable.some((item) => item.descriptor.agentId === registration.agentId),
       state: terminal.state,
       output: terminal.output,
@@ -430,6 +486,12 @@ try {
     workerThreadId: runtime.identity.workerThreadId,
     sessionRoundTrip: loaded.id === created.id,
     downgradeRejected,
+    a2aExports: {
+      bearerAuth: typeof createBearerEnvA2AAuthentication === 'function',
+      oauthJwtAuth: typeof createOAuth2JwtA2AAuthentication === 'function',
+      inspectConfig: typeof inspectA2AIntegration === 'function',
+      migrateTaskOwners: typeof migrateA2ALegacyTaskOwners === 'function',
+    },
     externalAgentResult,
     inlineManagedResult,
   }));
@@ -516,12 +578,31 @@ interface SharedDaemonHostResult {
     };
     readonly settingsRevision: number;
     readonly clientCount: number;
+    readonly activeWorkflows: boolean;
+    readonly activeAgentTasks: boolean;
     readonly partnerError?: { readonly code?: string; readonly message?: string };
   };
   readonly eventType: string;
   readonly settings: { readonly revision: number; readonly value: Record<string, unknown> };
   readonly clientBaseline: number;
   readonly afterDetach: number;
+  readonly management: {
+    readonly baselineRevision: number;
+    readonly afterDetachRevision: number;
+    readonly runtimeId: string;
+    readonly ownerRuntimeId: string;
+    readonly ownerKind?: string;
+    readonly ownerPolicyMode: string;
+    readonly ownerPolicyRevision: number;
+    readonly canStop: boolean;
+    readonly activeWorkflows: boolean;
+    readonly activeAgentTasks: boolean;
+    readonly backgroundWorkPreflight: boolean;
+    readonly reverseBridgeDrainingFence: boolean;
+    readonly externalAgents: boolean;
+    readonly externalAgentAdmin: boolean;
+    readonly a2aConfigReconciler: boolean;
+  };
 }
 
 function runPublishedSharedDaemonProbe(): Promise<SharedDaemonHostResult> {
@@ -603,9 +684,17 @@ test(
     assert.ok(Number.isSafeInteger(result.workerThreadId));
     assert.equal(result.sessionRoundTrip, true);
     assert.equal(result.downgradeRejected, true);
+    assert.deepEqual(result.a2aExports, {
+      bearerAuth: true,
+      oauthJwtAuth: true,
+      inspectConfig: true,
+      migrateTaskOwners: true,
+    });
     assert.deepEqual(result.externalAgentResult, {
       capability: true,
+      disabled: true,
       enabled: true,
+      reenabled: true,
       listed: true,
       state: 'completed',
       output: 'space-reference-round-trip',
@@ -660,11 +749,25 @@ test(
       agentMode: 'amaw',
       autoModeEngine: 'rules',
     });
-    // Compare against the post-auto-start baseline so this probe catches a
-    // peer connection leak independently of the SDK's absolute preflight count.
-    assert.ok(result.clientBaseline >= 1);
-    assert.ok(result.peer.clientCount >= result.clientBaseline + 1);
-    assert.equal(result.afterDetach, result.clientBaseline);
+    assert.equal(result.clientBaseline, 1);
+    assert.equal(result.peer.clientCount, 2);
+    assert.equal(result.afterDetach, 1);
+    assert.equal(result.peer.activeWorkflows, true);
+    assert.equal(result.peer.activeAgentTasks, true);
+    assert.ok(result.management.afterDetachRevision > result.management.baselineRevision);
+    assert.equal(result.management.runtimeId, result.runtimeId);
+    assert.equal(result.management.ownerRuntimeId, result.runtimeId);
+    assert.equal(result.management.ownerKind, 'daemon');
+    assert.equal(result.management.ownerPolicyMode, 'daemon');
+    assert.ok(Number.isSafeInteger(result.management.ownerPolicyRevision));
+    assert.equal(result.management.canStop, true);
+    assert.equal(result.management.activeWorkflows, true);
+    assert.equal(result.management.activeAgentTasks, true);
+    assert.equal(result.management.backgroundWorkPreflight, true);
+    assert.equal(result.management.reverseBridgeDrainingFence, true);
+    assert.equal(result.management.externalAgents, true);
+    assert.equal(result.management.externalAgentAdmin, true);
+    assert.equal(result.management.a2aConfigReconciler, true);
     assert.equal(result.connectionState, 'connected');
     assert.equal(result.peer.partnerError?.code, 'session_not_admitted');
   },

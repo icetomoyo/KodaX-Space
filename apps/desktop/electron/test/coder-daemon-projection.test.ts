@@ -53,6 +53,12 @@ const permission = {
   toolName: 'bash',
   reason: 'Run tests',
   risk: 'high',
+  inputPreview: JSON.stringify({
+    command: 'npm test',
+    description: 'Run the project test suite',
+    apiKey: 'should-not-render',
+  }),
+  executionCwd: 'C:\\repo',
   createdAt: '2026-07-14T08:02:00.000Z',
 } as const;
 
@@ -160,6 +166,22 @@ test('atomic observation maps run, draft, tool, Todo, and interaction truth', ()
     },
   ]);
   assert.equal(projection.interactions.length, 2);
+  const projectedPermission = projection.interactions.find((item) => item.kind === 'permission');
+  assert.equal(projectedPermission?.kind, 'permission');
+  if (projectedPermission?.kind === 'permission') {
+    assert.equal(projectedPermission.request.reason, 'Run tests');
+    assert.deepEqual(projectedPermission.request.toolCall, {
+      toolId: 'tool_1',
+      toolName: 'bash',
+      operation: 'execute',
+      executionCwd: 'C:\\repo',
+      input: {
+        command: 'npm test',
+        description: 'Run the project test suite',
+        apiKey: '[REDACTED]',
+      },
+    });
+  }
   assert.deepEqual(projection.settings, {
     revision: 3,
     value: { provider: 'anthropic', agentMode: 'amaw', autoModeEngine: 'rules' },
@@ -178,6 +200,102 @@ test('atomic observation maps run, draft, tool, Todo, and interaction truth', ()
       contentPreview: 'Also update the tests.',
     },
   ]);
+});
+
+test('permission projection uses sanitized description, assessed risk, and settings cwd as fallbacks', () => {
+  const fallbackObservation = {
+    ...observation,
+    settings: {
+      ...observation.settings,
+      value: { ...observation.settings.value, executionCwd: 'C:\\fallback-project' },
+    },
+    pendingPermissions: [
+      {
+        id: 'permission_fallback',
+        sessionId: 's_code',
+        runId: 'run_active',
+        toolCallId: 'tool_fallback',
+        toolName: 'bash',
+        inputPreview: JSON.stringify({
+          command: 'python -c "print(1)"',
+          description: 'Inspect\u202e Python environment',
+        }),
+        createdAt: '2026-07-14T08:02:00.000Z',
+      },
+    ],
+  } as unknown as RuntimeSessionObservationSnapshot;
+
+  const projected = projectRuntimeSessionSnapshot(fallbackObservation, []);
+  const interaction = projected.interactions[0];
+  assert.equal(interaction?.kind, 'permission');
+  if (interaction?.kind === 'permission') {
+    assert.equal(interaction.request.reason, 'Inspect Python environment');
+    assert.equal(interaction.request.risk, 'medium');
+    assert.equal(interaction.request.toolCall.operation, 'execute');
+    assert.equal(interaction.request.toolCall.executionCwd, 'C:\\fallback-project');
+    assert.equal(interaction.request.toolCall.input?.command, 'python -c "print(1)"');
+  }
+});
+
+test('permission projection does not parse oversized daemon previews', () => {
+  const oversizedObservation = {
+    ...observation,
+    pendingPermissions: [
+      {
+        ...permission,
+        id: 'permission_oversized',
+        inputPreview: JSON.stringify({ command: 'x'.repeat(9_000) }),
+      },
+    ],
+  } as unknown as RuntimeSessionObservationSnapshot;
+
+  const projected = projectRuntimeSessionSnapshot(oversizedObservation, []);
+  const interaction = projected.interactions[0];
+  assert.equal(interaction?.kind, 'permission');
+  if (interaction?.kind === 'permission') {
+    assert.equal(interaction.request.toolCall.input?.command, undefined);
+    assert.equal(interaction.request.toolCall.input?.__truncated, true);
+    assert.equal(typeof interaction.request.toolCall.input?._inputPreview === 'string', true);
+  }
+});
+
+test('permission projection omits non-object previews and marks truncated objects', () => {
+  const malformedObservation = {
+    ...observation,
+    pendingPermissions: [
+      {
+        ...permission,
+        id: 'permission_non_object',
+        inputPreview: JSON.stringify('bare-secret-value'),
+      },
+      {
+        ...permission,
+        id: 'permission_many_keys',
+        inputPreview: JSON.stringify(
+          Object.fromEntries(Array.from({ length: 300 }, (_, index) => [`key-${index}`, index])),
+        ),
+      },
+    ],
+  } as unknown as RuntimeSessionObservationSnapshot;
+
+  const projected = projectRuntimeSessionSnapshot(malformedObservation, []);
+  const [nonObject, manyKeys] = projected.interactions;
+  assert.equal(nonObject?.kind, 'permission');
+  assert.equal(manyKeys?.kind, 'permission');
+  if (nonObject?.kind === 'permission') {
+    assert.equal(
+      nonObject.request.toolCall.input?._inputPreview,
+      '[OMITTED: non-object permission input preview]',
+    );
+    assert.equal(
+      JSON.stringify(nonObject.request.toolCall.input).includes('bare-secret-value'),
+      false,
+    );
+  }
+  if (manyKeys?.kind === 'permission') {
+    assert.equal(Object.keys(manyKeys.request.toolCall.input ?? {}).length, 128);
+    assert.equal(manyKeys.request.toolCall.input?.__truncated, true);
+  }
 });
 
 test('profile projection excludes Partner and attributes active/queued runs', () => {

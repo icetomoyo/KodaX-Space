@@ -724,9 +724,10 @@ export function registerSessionChannels(): void {
       liveSession?.surface ??
       sdkTagToSurface((await loadPersistedSession(input.sessionId))?.tag) ??
       'code';
-    const data = surface === 'code' && runtimeHostAdapter.hasReadyRuntime()
-      ? await runtimeHostAdapter.transcript(input.sessionId)
-      : await loadPersistedTranscript(input.sessionId);
+    const data =
+      surface === 'code' && runtimeHostAdapter.hasReadyRuntime()
+        ? await runtimeHostAdapter.transcript(input.sessionId)
+        : await loadPersistedTranscript(input.sessionId);
     if (!data || !Array.isArray(data.messages)) {
       return withLocalNotices([]);
     }
@@ -914,11 +915,13 @@ export function registerSessionChannels(): void {
         let thinkingBuf = '';
         const flushText = (): void => {
           if (textBuf.length > 0 || thinkingBuf.length > 0) {
-            const it: SessionHistoryItem =
+            const contentItem: SessionHistoryItem =
               thinkingBuf.length > 0
                 ? { kind: 'assistant', text: textBuf, thinking: thinkingBuf }
                 : { kind: 'assistant', text: textBuf };
-            items.push(it);
+            items.push(
+              entrySentAt !== undefined ? { ...contentItem, sentAt: entrySentAt } : contentItem,
+            );
             textBuf = '';
             thinkingBuf = '';
           }

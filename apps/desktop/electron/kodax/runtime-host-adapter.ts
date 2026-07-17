@@ -8,8 +8,13 @@ import type {
   RuntimeCompactSessionInput,
   RuntimeCompactSessionResult,
   RuntimeCredentialBroker,
+  RuntimeDaemonManagementState,
   RuntimeDaemonPreflight,
+  RuntimeDaemonRollbackResult,
   RuntimeForkSessionInput,
+  RuntimeInlineOwnerHandle,
+  RuntimeOwnerPolicyState,
+  RuntimeOwnerState,
   RuntimeRewindSessionInput,
   RuntimeRunHandle,
   RuntimeRunStatus,
@@ -113,6 +118,21 @@ interface RuntimeIdentityStoreLike {
   }>;
 }
 
+interface RuntimeOwnerControl {
+  acquireInline(input: {
+    readonly homeDir?: string;
+    readonly profile: string;
+  }): Promise<RuntimeInlineOwnerHandle>;
+  getState(input: {
+    readonly homeDir?: string;
+    readonly profile: string;
+  }): Promise<RuntimeOwnerState>;
+  enableDaemon(input: {
+    readonly homeDir?: string;
+    readonly profile: string;
+  }): Promise<RuntimeOwnerPolicyState>;
+}
+
 interface SpaceCredentialLeaseBinding {
   readonly leaseId: string;
   readonly provider: string;
@@ -123,13 +143,17 @@ interface SpaceCredentialLeaseBinding {
 
 export interface RuntimeHostAdapterOptions {
   readonly mode?: RuntimeHostMode;
+  /** Direct KodaX data/config root (normally KODAX_HOME), including sessions. */
   readonly profileRoot?: string;
+  /** Optional CLI-style base directory that owns `.kodax`; omit to follow KODAX_HOME. */
+  readonly runtimeHomeDir?: string;
   readonly runtimeFactory?: RuntimeFactory;
   readonly identityStore?: RuntimeIdentityStoreLike;
   readonly projectionController?: RuntimeProjectionController;
   readonly push?: RuntimeProjectionPush;
   readonly credentialResolver?: (provider: string) => Promise<string | undefined>;
   readonly runtimeEventParser?: RuntimeEventParser;
+  readonly ownerControl?: RuntimeOwnerControl;
 }
 
 const MAX_DIAGNOSTIC_ERROR = 512;
@@ -152,6 +176,21 @@ async function createPublishedRuntime(
   return sdk.connectKodaXRuntime(options);
 }
 
+const publishedRuntimeOwnerControl: RuntimeOwnerControl = {
+  async acquireInline(input) {
+    const sdk = await import('@kodax-ai/kodax/runtime');
+    return sdk.acquireKodaXInlineOwner(input);
+  },
+  async getState(input) {
+    const sdk = await import('@kodax-ai/kodax/runtime');
+    return sdk.getKodaXRuntimeOwnerState(input);
+  },
+  async enableDaemon(input) {
+    const sdk = await import('@kodax-ai/kodax/runtime');
+    return sdk.enableKodaXDaemonOwner(input);
+  },
+};
+
 function capability(
   id: string,
   support: RuntimeCapabilitySupport,
@@ -162,7 +201,7 @@ function capability(
 }
 
 function capabilitiesFor(mode: RuntimeHostMode, state: RuntimeHostState): RuntimeHostCapability[] {
-  if (mode === 'legacy' || state === 'legacy') {
+  if ((mode === 'legacy' || state === 'legacy') && state !== 'failed' && state !== 'closed') {
     return [
       capability('runtime.host', 'partial', 'legacy', 'Internal rollback path selected.'),
       capability('runtime.sessions', 'partial', 'legacy'),
@@ -248,8 +287,8 @@ function capabilitiesFor(mode: RuntimeHostMode, state: RuntimeHostState): Runtim
     capability(
       'runtime.externalAgents',
       'partial',
-      'space-bridge',
-      'Space owns the durable executor plane store.',
+      'runtime',
+      'The Coder daemon owns configured A2A agents; Space retains its Reference executor plane as a reviewed host provider for Partner and compatibility actions.',
     ),
     capability(
       'runtime.worker',
@@ -273,11 +312,13 @@ function isSessionNotFound(error: unknown): boolean {
 export class RuntimeHostAdapter {
   private readonly mode: RuntimeHostMode;
   private readonly profileRoot: string;
+  private readonly runtimeHomeDir: string | undefined;
   private readonly runtimeFactory: RuntimeFactory;
   private readonly identityStore: RuntimeIdentityStoreLike;
   private readonly projectionController: RuntimeProjectionController;
   private readonly push: RuntimeProjectionPush;
   private readonly credentialResolver: (provider: string) => Promise<string | undefined>;
+  private readonly ownerControl: RuntimeOwnerControl;
   private state: RuntimeHostState = 'uninitialized';
   private runtime: KodaXDaemonRuntime | null = null;
   private initializePromise: Promise<void> | null = null;
@@ -310,10 +351,14 @@ export class RuntimeHostAdapter {
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   private reconnectAttempt = 0;
   private readonly runtimeEventParser?: RuntimeEventParser;
+  private inlineOwner: RuntimeInlineOwnerHandle | undefined;
+  private rollbackInProgress = false;
 
   constructor(options: RuntimeHostAdapterOptions = {}) {
     this.mode = options.mode ?? resolveRuntimeHostMode(process.env.KODAX_SPACE_RUNTIME_HOST);
     this.profileRoot = path.resolve(options.profileRoot ?? getKodaxRuntimeDir());
+    this.runtimeHomeDir =
+      options.runtimeHomeDir === undefined ? undefined : path.resolve(options.runtimeHomeDir);
     this.runtimeFactory = options.runtimeFactory ?? createPublishedRuntime;
     this.identityStore =
       options.identityStore ??
@@ -323,6 +368,7 @@ export class RuntimeHostAdapter {
     this.projectionController = options.projectionController ?? createPendingSdkRuntimeProjection();
     this.push = options.push ?? (() => undefined);
     this.runtimeEventParser = options.runtimeEventParser;
+    this.ownerControl = options.ownerControl ?? publishedRuntimeOwnerControl;
     this.credentialResolver =
       options.credentialResolver ??
       (async (provider) => (await import('../ipc/provider.js')).readProviderCredential(provider));
@@ -340,6 +386,20 @@ export class RuntimeHostAdapter {
     return this.mode === 'runtime' && this.state === 'ready' && this.runtime !== null;
   }
 
+  hasLegacyOwner(): boolean {
+    return this.mode === 'legacy' && this.state === 'legacy' && this.inlineOwner !== undefined;
+  }
+
+  async ensureLegacyOwner(): Promise<void> {
+    if (this.mode !== 'legacy') {
+      throw new Error('The inline Coder owner is available only in explicit legacy rollback mode.');
+    }
+    await this.initialize();
+    if (!this.hasLegacyOwner()) {
+      throw new Error('Space does not hold the required inline Coder owner fence.');
+    }
+  }
+
   snapshot(): RuntimeHostSnapshot {
     return {
       selectedHost: this.mode,
@@ -352,8 +412,7 @@ export class RuntimeHostAdapter {
 
   initialize(clientVersion?: string): Promise<void> {
     if (this.mode === 'legacy') {
-      this.state = 'legacy';
-      return Promise.resolve();
+      return this.initializeLegacyOwner();
     }
     if (this.state === 'ready') return Promise.resolve();
     if (this.state === 'closed') return Promise.reject(new Error('Runtime host is closed'));
@@ -368,7 +427,7 @@ export class RuntimeHostAdapter {
         const runtime = await this.runtimeFactory({
           profile: 'coder',
           autoStart: true,
-          homeDir: this.profileRoot,
+          ...(this.runtimeHomeDir !== undefined ? { homeDir: this.runtimeHomeDir } : {}),
           sessionsDir: path.join(this.profileRoot, 'sessions'),
           clientInfo: {
             name: identity.name,
@@ -383,6 +442,9 @@ export class RuntimeHostAdapter {
             operationDeduplication: true,
           },
           requirements: {
+            externalAgents: true,
+            externalAgentAdmin: 1,
+            a2aConfigReconciler: 1,
             operationDeduplication: 1,
             sessionObservation: 1,
             afterTurnInput: 1,
@@ -400,6 +462,7 @@ export class RuntimeHostAdapter {
             daemonSafeRunInput: 1,
             sharedSessionSettings: 1,
             durableRecoveryQueries: 1,
+            daemonManagement: 1,
           },
         });
         pendingRuntime = runtime;
@@ -493,6 +556,32 @@ export class RuntimeHostAdapter {
     return this.initializePromise;
   }
 
+  private initializeLegacyOwner(): Promise<void> {
+    if (this.state === 'legacy') return Promise.resolve();
+    if (this.state === 'closed') return Promise.reject(new Error('Runtime host is closed'));
+    if (this.initializePromise !== null) return this.initializePromise;
+    this.state = 'initializing';
+    this.initializePromise = this.ownerControl
+      .acquireInline(this.runtimeOwnerTarget())
+      .then((owner) => {
+        if (this.state === 'closed') {
+          owner.close();
+          return;
+        }
+        this.inlineOwner = owner;
+        this.state = 'legacy';
+        this.lastError = undefined;
+      })
+      .catch((error: unknown) => {
+        this.initializePromise = null;
+        if (this.state === 'closed') throw error;
+        this.state = 'failed';
+        this.lastError = sanitizeDiagnosticError(error);
+        throw error;
+      });
+    return this.initializePromise;
+  }
+
   private async handleConnectionLoss(
     attached: KodaXDaemonRuntime,
     error: unknown,
@@ -515,6 +604,10 @@ export class RuntimeHostAdapter {
     this.initializePromise = null;
     this.state = 'uninitialized';
     await attached.close().catch(() => undefined);
+    if (this.rollbackInProgress) {
+      this.state = 'closed';
+      return;
+    }
     if (reconnectable) this.scheduleReconnect();
     else {
       this.state = 'failed';
@@ -557,6 +650,8 @@ export class RuntimeHostAdapter {
       'permission:respond',
       'credential:register',
       'host-tool:register',
+      'owner:admin',
+      'daemon:admin',
     ] as const;
     const granted = new Set(runtime.grantedScopes ?? []);
     const missing = required.filter((scope) => !granted.has(scope));
@@ -567,6 +662,10 @@ export class RuntimeHostAdapter {
 
   private spaceCapabilities(runtime: KodaXDaemonRuntime) {
     const caps = runtime.capabilities ?? {};
+    const available = (name: string): boolean => {
+      const value = caps[name];
+      return value === true || (value !== null && typeof value === 'object');
+    };
     const version = (name: string): number => {
       const value = caps[name];
       if (value === true) return 1;
@@ -578,6 +677,26 @@ export class RuntimeHostAdapter {
     };
     return [
       { id: 'runtime.daemon', version: 1, available: runtime.identity.mode === 'daemon' },
+      {
+        id: 'runtime.daemon.management',
+        version: version('daemonManagement'),
+        available: true,
+      },
+      {
+        id: 'runtime.externalAgents',
+        version: version('externalAgentAdmin'),
+        available: runtime.agents.enabled && available('externalAgentAdmin'),
+      },
+      {
+        id: 'runtime.externalAgents.admin',
+        version: version('externalAgentAdmin'),
+        available: available('externalAgentAdmin'),
+      },
+      {
+        id: 'runtime.externalAgents.a2aConfig',
+        version: version('a2aConfigReconciler'),
+        available: available('a2aConfigReconciler'),
+      },
       { id: 'runtime.live.observe', version: version('sessionObservation'), available: true },
       {
         id: 'runtime.live.completeSnapshot',
@@ -607,7 +726,7 @@ export class RuntimeHostAdapter {
         id: 'runtime.input.interrupt',
         version: 1,
         available: false,
-        reason: 'KodaX 0.7.69 does not advertise interruptInput.',
+        reason: 'The connected KodaX Runtime does not advertise interruptInput.',
       },
       { id: 'runtime.userInput', version: version('askUserTransport'), available: true },
       { id: 'runtime.permissions', version: version('permissionCas'), available: true },
@@ -792,9 +911,17 @@ export class RuntimeHostAdapter {
   async updateSessionSettings(
     sessionId: string,
     patch: RuntimeSessionSettingsPatch,
+    identity?: RuntimeSessionIdentity,
   ): Promise<void> {
     const runtime = await this.requireRuntime();
-    await this.assertCoderSession(runtime, sessionId);
+    if (identity) {
+      if (identity.sessionId !== sessionId) {
+        throw new Error('Runtime session identity does not match the settings target.');
+      }
+      await this.ensureSession(identity);
+    } else {
+      await this.assertCoderSession(runtime, sessionId);
+    }
     const current = await runtime.sessions.getSettingsVersioned(sessionId);
     const changed = Object.entries(patch).some(
       ([key, value]) => current.value[key as keyof typeof current.value] !== value,
@@ -1430,7 +1557,7 @@ export class RuntimeHostAdapter {
     await this.assertCoderSession(runtime, input.sessionId);
     await this.ensureObserved(input.sessionId);
     if (input.delivery === 'interrupt') {
-      throw new Error('KodaX Runtime 0.7.69 does not support interrupt delivery.');
+      throw new Error('The connected KodaX Runtime does not support interrupt delivery.');
     }
     const previous = await runtime.runs.get(input.afterRunId);
     const registeredCredential = !input.credential
@@ -1526,10 +1653,122 @@ export class RuntimeHostAdapter {
   }
 
   async preflightDaemonStop(): Promise<RuntimeDaemonPreflight> {
-    return (await this.requireRuntime()).status.preflight();
+    return (await this.inspectDaemonStop()).preflight;
+  }
+
+  async inspectDaemonStop(): Promise<RuntimeDaemonManagementState> {
+    const runtime = await this.requireRuntime();
+    const state = await runtime.daemon.inspect();
+    if (state.runtimeId !== runtime.identity.runtimeId) {
+      throw new Error('Coder daemon management Runtime identity changed during inspection.');
+    }
+    return state;
+  }
+
+  async prepareInlineRollback(operationId?: string): Promise<RuntimeDaemonRollbackResult> {
+    const runtime = await this.requireRuntime();
+    const management = await this.inspectDaemonStop();
+    if (!management.preflight.canStop) {
+      const error = new Error(
+        `Coder daemon cannot stop safely: ${management.preflight.blockers.join(', ') || 'unknown blocker'}.`,
+      ) as Error & { code: 'conflict'; data: RuntimeDaemonPreflight };
+      error.code = 'conflict';
+      error.data = management.preflight;
+      throw error;
+    }
+    this.rollbackInProgress = true;
+    let rollback: RuntimeDaemonRollbackResult;
+    try {
+      rollback = await runtime.daemon.stopForInline({
+        expectedRuntimeId: management.runtimeId,
+        expectedRevision: management.revision,
+        expectedOwnerPolicyRevision: management.ownerPolicy.revision,
+        ...(operationId !== undefined ? { operation: { operationId } } : {}),
+      });
+    } catch (error) {
+      this.rollbackInProgress = false;
+      throw error;
+    }
+    try {
+      await this.waitForDaemonOwnerRelease(rollback.runtimeId);
+      await this.close();
+      this.inlineOwner = await this.ownerControl.acquireInline({
+        ...this.runtimeOwnerTarget(),
+      });
+    } catch (error) {
+      // The daemon has already committed the stop at this point. Do not leave the
+      // profile stranded in inline policy just because Space failed to finish
+      // closing its Runtime connection or acquire the replacement owner fence.
+      await this.close().catch(() => undefined);
+      try {
+        await this.restoreDaemonOwner();
+      } catch (restoreError) {
+        throw new AggregateError(
+          [error, restoreError],
+          'Coder daemon stopped, but Space could not complete or recover inline rollback.',
+        );
+      }
+      throw error;
+    }
+    return rollback;
+  }
+
+  async restoreDaemonOwner(): Promise<RuntimeOwnerPolicyState> {
+    if (!this.rollbackInProgress) {
+      throw new Error('Space does not have an inline rollback to restore.');
+    }
+    const inlineOwner = this.inlineOwner;
+    this.inlineOwner = undefined;
+    inlineOwner?.close();
+    try {
+      const policy = await this.ownerControl.enableDaemon({
+        ...this.runtimeOwnerTarget(),
+      });
+      this.rollbackInProgress = false;
+      this.state = 'closed';
+      this.lastError = undefined;
+      return policy;
+    } catch (error) {
+      this.lastError = sanitizeDiagnosticError(error);
+      try {
+        // Enabling daemon policy can fail transiently. Reacquire the inline fence
+        // so the caller can retry without exposing an unowned inline profile.
+        this.inlineOwner = await this.ownerControl.acquireInline({
+          ...this.runtimeOwnerTarget(),
+        });
+        this.state = 'closed';
+      } catch (fenceError) {
+        this.state = 'failed';
+        this.lastError = `${this.lastError}; failed to reacquire inline owner fence: ${sanitizeDiagnosticError(fenceError)}`;
+      }
+      throw error;
+    }
+  }
+
+  private async waitForDaemonOwnerRelease(runtimeId: string): Promise<void> {
+    const deadline = Date.now() + 30_000;
+    while (true) {
+      const state = await this.ownerControl.getState({
+        ...this.runtimeOwnerTarget(),
+      });
+      if (state.ownerStatus === 'unowned') return;
+      if (state.ownerStatus === 'unreadable') {
+        throw new Error('Coder owner state became unreadable during inline rollback.');
+      }
+      if (state.owner?.runtimeId !== runtimeId) {
+        throw new Error('A different Coder owner acquired the profile during inline rollback.');
+      }
+      if (Date.now() >= deadline) {
+        throw new Error('Timed out waiting for the Coder daemon owner to release.');
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 25));
+    }
   }
 
   async close(): Promise<void> {
+    const inlineOwner = this.inlineOwner;
+    this.inlineOwner = undefined;
+    inlineOwner?.close();
     if (this.closePromise !== null) return this.closePromise;
     const runtime = this.runtime;
     const initializing = this.initializePromise;
@@ -1554,6 +1793,13 @@ export class RuntimeHostAdapter {
       ? runtime.close()
       : (initializing?.catch(() => undefined) ?? Promise.resolve());
     return this.closePromise;
+  }
+
+  private runtimeOwnerTarget(): { readonly homeDir?: string; readonly profile: string } {
+    return {
+      profile: 'coder',
+      ...(this.runtimeHomeDir !== undefined ? { homeDir: this.runtimeHomeDir } : {}),
+    };
   }
 }
 

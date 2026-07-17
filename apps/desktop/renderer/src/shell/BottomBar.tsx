@@ -484,18 +484,22 @@ function slashEchoText(name: string, args: readonly string[]): string {
   return `/${name} ${args.join(' ')}`.trim();
 }
 
-function workflowPendingMessage(name: string, args: readonly string[]): string | null {
+function workflowPendingMessage(
+  name: string,
+  args: readonly string[],
+  t: Translate,
+): string | null {
   if (name.toLowerCase() !== 'workflow') return null;
   const first = args[0]?.toLowerCase();
   if (!first) return null;
   if (first === 'create' && (args[1]?.trim().length ?? 0) > 0) {
-    return 'generating workflow...';
+    return t('workflow.generating');
   }
   if (first === 'revise') {
     const request = args[1] === '--replace' ? args[3] : args[2];
-    return request?.trim() ? 'revising workflow...' : null;
+    return request?.trim() ? t('workflow.revising') : null;
   }
-  if (first === 'rerun' && args[1]?.trim()) return 'starting workflow...';
+  if (first === 'rerun' && args[1]?.trim()) return t('workflow.starting');
 
   const nonStartingSubcommands = new Set([
     'help',
@@ -511,7 +515,7 @@ function workflowPendingMessage(name: string, args: readonly string[]): string |
     'save',
     'rename',
   ]);
-  return nonStartingSubcommands.has(first) ? null : 'starting workflow...';
+  return nonStartingSubcommands.has(first) ? null : t('workflow.starting');
 }
 
 // Projects already asked to prewarm repo-intel this app run. Prewarm is best-effort and
@@ -1162,7 +1166,7 @@ export function BottomBar(): JSX.Element {
       appendUserMessage(sessionId, '[slash] IPC unavailable');
       return;
     }
-    const pendingWorkflowMessage = workflowPendingMessage(name, args);
+    const pendingWorkflowMessage = workflowPendingMessage(name, args, t);
     const optimisticWorkflow = pendingWorkflowMessage !== null;
     const commandEcho = slashEchoText(name, args);
     setBusy(true);
@@ -1971,7 +1975,12 @@ export function BottomBar(): JSX.Element {
     } else if (sendResult.data.queued) {
       const acceptedQueueMode = sendResult.data.queueMode ?? queueMode;
       if (queuedLocalId) {
-        markQueuedUserMessageAccepted(sessionId, queuedLocalId, sendResult.data.queueId);
+        markQueuedUserMessageAccepted(
+          sessionId,
+          queuedLocalId,
+          sendResult.data.queueId,
+          acceptedQueueMode,
+        );
       } else {
         const convertedLocalId = convertLastUserMessageToQueued(sessionId, skillEcho, {
           content: skillEcho,
@@ -1979,7 +1988,12 @@ export function BottomBar(): JSX.Element {
           queueMode: acceptedQueueMode,
         });
         if (convertedLocalId) {
-          markQueuedUserMessageAccepted(sessionId, convertedLocalId, sendResult.data.queueId);
+          markQueuedUserMessageAccepted(
+            sessionId,
+            convertedLocalId,
+            sendResult.data.queueId,
+            acceptedQueueMode,
+          );
         }
       }
       pushToast(queuedToastText(acceptedQueueMode, t), 'info');
@@ -2136,7 +2150,7 @@ export function BottomBar(): JSX.Element {
           // queue mode. Keep the current spinner and show a toast.
           const acceptedQueueMode = data.queueMode ?? queueMode;
           if (queuedLocalId) {
-            markQueuedUserMessageAccepted(sid, queuedLocalId, data.queueId);
+            markQueuedUserMessageAccepted(sid, queuedLocalId, data.queueId, acceptedQueueMode);
           } else {
             const convertedLocalId = convertLastUserMessageToQueued(sid, effectivePrompt, {
               content: effectivePrompt,
@@ -2144,7 +2158,7 @@ export function BottomBar(): JSX.Element {
               queueMode: acceptedQueueMode,
             });
             if (convertedLocalId) {
-              markQueuedUserMessageAccepted(sid, convertedLocalId, data.queueId);
+              markQueuedUserMessageAccepted(sid, convertedLocalId, data.queueId, acceptedQueueMode);
             }
           }
           pushToast(queuedToastText(acceptedQueueMode, t), 'info');
@@ -2363,7 +2377,7 @@ export function BottomBar(): JSX.Element {
           <KodaXDogMascot
             className="pointer-events-none absolute -top-1 right-4 z-10 h-7 w-[35px] opacity-90 drop-shadow-[0_4px_6px_rgb(0_0_0_/_0.10)]"
             inputActive={mascotInputActive}
-            working={busy || isStreaming}
+            working={busy || isAttaching || isStreaming}
           />
         )}
         {mascotMode === 'sprite' && (

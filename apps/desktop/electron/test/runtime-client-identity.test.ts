@@ -136,6 +136,18 @@ test('identity store refuses symbolic-link targets', async (t) => {
   await assert.rejects(() => store.loadOrCreate(), /symbolic link/i);
 });
 
+test('identity store still refuses persistent hard-link aliases after bounded commit retry', async (t) => {
+  const { dir, file, secrets, store } = await tempStore();
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  await store.loadOrCreate();
+  await fs.link(file, path.join(dir, 'identity-alias.json'));
+
+  await assert.rejects(
+    () => new RuntimeClientIdentityStore(file, dir, randomUUID, secrets).loadOrCreate(),
+    /hard-link aliases/i,
+  );
+});
+
 test('callers cannot mutate the cached stable Runtime client identity', async (t) => {
   const { dir, store } = await tempStore();
   t.after(() => fs.rm(dir, { recursive: true, force: true }));

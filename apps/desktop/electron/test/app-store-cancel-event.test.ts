@@ -81,7 +81,11 @@ test('appendEvent keeps pendingSend across a pre-session_start non-lifecycle eve
     Boolean(state.pendingSendBySession[SID]),
     undefined,
   );
-  assert.equal(snap.streaming, true, 'spinner must stay visible while pending, even with events present');
+  assert.equal(
+    snap.streaming,
+    true,
+    'spinner must stay visible while pending, even with events present',
+  );
 
   // session_start finally arrives → hands off to event-driven streaming AND clears pendingSend.
   store.appendEvent({ kind: 'session_start', sessionId: SID, provider: 'mock' });
@@ -99,7 +103,11 @@ test('appendEvent still clears pendingSend on a terminal event even if only non-
   store.appendEvent({ kind: 'repointel_trace', sessionId: SID, event: { kind: 'started' } });
   assert.equal(useAppStore.getState().pendingSendBySession[SID], true);
   store.appendEvent({ kind: 'session_error', sessionId: SID, error: 'boom' });
-  assert.equal(useAppStore.getState().pendingSendBySession[SID], undefined, 'terminal clears pendingSend');
+  assert.equal(
+    useAppStore.getState().pendingSendBySession[SID],
+    undefined,
+    'terminal clears pendingSend',
+  );
 });
 
 test('appendEvent accepts a later cancelled event after a new session_start', () => {
@@ -117,8 +125,20 @@ test('appendEvent accepts a later cancelled event after a new session_start', ()
 
 test('appendEvent coalesces adjacent stream deltas without crossing event boundaries', () => {
   const store = useAppStore.getState();
+  const beforeFirstDelta = Date.now();
   store.appendEvent({ kind: 'text_delta', sessionId: SID, text: 'Hel' });
-  store.appendEvent({ kind: 'text_delta', sessionId: SID, text: 'lo' });
+  const firstTextEvent = useAppStore.getState().eventsBySession[SID]?.[0];
+  const firstTextSentAt = firstTextEvent?.kind === 'text_delta' ? firstTextEvent.sentAt : undefined;
+  assert.ok(
+    firstTextSentAt !== undefined && firstTextSentAt >= beforeFirstDelta,
+    'the first live delta is stamped once when it enters the renderer store',
+  );
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'lo',
+    sentAt: firstTextSentAt + 60_000,
+  });
   store.appendEvent({ kind: 'thinking_delta', sessionId: SID, text: 'Plan ' });
   store.appendEvent({ kind: 'thinking_delta', sessionId: SID, text: 'A' });
   store.appendEvent({
@@ -136,7 +156,17 @@ test('appendEvent coalesces adjacent stream deltas without crossing event bounda
     ['text_delta', 'thinking_delta', 'tool_start', 'text_delta'],
   );
   assert.equal(events[0]?.kind === 'text_delta' ? events[0].text : undefined, 'Hello');
+  assert.equal(
+    events[0]?.kind === 'text_delta' ? events[0].sentAt : undefined,
+    firstTextSentAt,
+    'coalescing preserves the first delta timestamp instead of moving it per chunk',
+  );
   assert.equal(events[1]?.kind === 'thinking_delta' ? events[1].text : undefined, 'Plan A');
+  assert.equal(
+    events[1]?.kind === 'thinking_delta' && Number.isFinite(events[1].sentAt),
+    true,
+    'thinking blocks receive the same renderer arrival-time contract',
+  );
   assert.equal(events[3]?.kind === 'text_delta' ? events[3].text : undefined, 'Done');
 });
 
@@ -195,6 +225,22 @@ test('convertLastUserMessageToQueued replaces a normal optimistic bubble after q
   assert.equal(queued?.queueMode, 'interrupt');
   assert.equal(queued?.status, 'queued');
   assert.equal(queued?.sentAt, 1234);
+});
+
+test('queued acknowledgement replaces an optimistic interrupt mode with after-turn', () => {
+  const store = useAppStore.getState();
+  const localId = store.appendQueuedUserMessage(SID, {
+    content: 'follow-up after restart',
+    queueMode: 'interrupt',
+  });
+  assert.ok(localId);
+
+  store.markQueuedUserMessageAccepted(SID, localId, 'run_follow_up', 'after-turn');
+
+  const queued = useAppStore.getState().queuedUserMessagesBySession[SID]?.[0];
+  assert.equal(queued?.queueId, 'run_follow_up');
+  assert.equal(queued?.queueMode, 'after-turn');
+  assert.equal(queued?.status, 'queued');
 });
 
 test('appendLocalNotice stores slash/info output outside real user turns', () => {

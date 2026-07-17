@@ -14,7 +14,7 @@
 // 为什么不 dynamic-import @kodax-ai/kodax 读 KODAX_PROVIDER_SNAPSHOTS：
 //   1. JSON 直读是 SYNC 的，catalog 可以保持模块顶层 const 不需要 init step。
 //   2. 加载整个 SDK runtime 仅为读 13 条 provider 数据是巨大浪费 (transitive deps 几十个)。
-//   3. tsx/esm 测试环境下 SDK 全量加载有 cli-boxes 等深层 dep 解析问题；JSON 直读绕开。
+//   3. 直接读取发布包内的能力 JSON，避免为了静态 catalog 初始化完整 SDK 及其无关依赖。
 //
 // 与 SDK 的 schema 对齐：JSON 的 `models[]` 是 `{ id, displayName, ... }` 对象数组，
 // 这里映射成 string[] (只取 id) 给 UI 用。
@@ -80,7 +80,7 @@ const SPACE_OVERRIDES: Record<string, SpaceOverride> = {
     displayName: 'Kimi (Moonshot)',
     protocol: 'openai',
     fallbackApiKeyEnv: 'KIMI_API_KEY',
-    fallbackDefaultModel: 'kimi-k2.6',
+    fallbackDefaultModel: 'kimi-k2.7-code',
   },
   'kimi-code': {
     displayName: 'Kimi for Coding',
@@ -190,7 +190,7 @@ function resolveCapabilityJsonPath(): string {
   // 永远可解析；从那里推 sibling dist/provider-capabilities.json 路径稳定。
   // ESM 没 require —— createRequire(import.meta.url) 通用兼容，main build (CJS) 也吃得下。
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const meta = (typeof require !== 'undefined' ? null : (import.meta as any));
+  const meta = typeof require !== 'undefined' ? null : (import.meta as any);
   const req = meta ? createRequire(meta.url) : require;
   const pkgPath = req.resolve('@kodax-ai/kodax/package.json');
   return path.join(path.dirname(pkgPath), 'dist', 'provider-capabilities.json');
@@ -204,8 +204,8 @@ function loadProvidersFromJson(): readonly BuiltinProvider[] {
     // 不抛 —— 仍尝试按 v1 shape 解析。若 KodaX 真的 bump 到 v2 且字段不兼容，
     // 这里会在下面 forEach 里因字段缺失抛出更具体的错误。
     console.warn(
-      `[catalog] provider-capabilities.json version=${parsed.version}, expected 1 — `
-      + `Space catalog may need a sync with KodaX schema changes`,
+      `[catalog] provider-capabilities.json version=${parsed.version}, expected 1 — ` +
+        `Space catalog may need a sync with KodaX schema changes`,
     );
   }
   const list: BuiltinProvider[] = [];
@@ -213,8 +213,8 @@ function loadProvidersFromJson(): readonly BuiltinProvider[] {
     const ov = SPACE_OVERRIDES[id];
     if (!ov) {
       console.warn(
-        `[catalog] SDK provider '${id}' has no Space override; using fallback `
-        + `displayName/protocol. Add an entry to SPACE_OVERRIDES in catalog.ts.`,
+        `[catalog] SDK provider '${id}' has no Space override; using fallback ` +
+          `displayName/protocol. Add an entry to SPACE_OVERRIDES in catalog.ts.`,
       );
     }
     // entry.model 缺失时（CLI bridge）走 Space override fallback；都没有则用 id 兜底
@@ -270,8 +270,8 @@ function loadProvidersWithFallback(): readonly BuiltinProvider[] {
     const message = err instanceof Error ? err.message : String(err);
     console.error(
       `[catalog] failed to load provider-capabilities.json — using built-in fallback. ` +
-      `Run \`npm install --force\` or \`npm run link:kodax\` to restore SDK truth. ` +
-      `Error: ${message}`,
+        `Run \`npm install --force\` or \`npm run link:kodax\` to restore SDK truth. ` +
+        `Error: ${message}`,
     );
     return buildFallbackProviders();
   }

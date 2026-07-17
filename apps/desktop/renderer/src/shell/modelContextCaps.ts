@@ -27,6 +27,9 @@ const RULES: readonly CapRule[] = [
   { match: /^deepseek-v3/, cap: 128_000 },
   { match: /^deepseek-/, cap: 1_000_000 },
   // Kimi K2 系列（k2.5 / k2.6 / k2.7-code）与 Kimi for Coding — 均 256k。
+  // KodaX 0.7.71 exposes two local K3 tiers over the same upstream `k3` wire model.
+  { match: /^k3$/, cap: 1_048_576 },
+  { match: /^k3-256k$/, cap: 262_144 },
   { match: /^kimi-k2/, cap: 256_000 },
   { match: /^kimi-for-coding/, cap: 256_000 },
   // Qwen 3.5 — 1M

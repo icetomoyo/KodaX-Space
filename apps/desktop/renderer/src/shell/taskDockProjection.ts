@@ -54,7 +54,7 @@ export function buildTaskDockRunView(input: BuildTaskDockRunInput): TaskDockRunV
   const t = input.t ?? defaultTranslate;
   let agentStatuses: readonly AgentStatusViewModel[] | null = null;
   const getAgents = (): readonly AgentStatusViewModel[] => {
-    if (agentStatuses === null) agentStatuses = buildAgentStatuses(input.managedStatus);
+    if (agentStatuses === null) agentStatuses = buildAgentStatuses(input.managedStatus, t);
     return agentStatuses;
   };
 

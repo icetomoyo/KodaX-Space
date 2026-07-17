@@ -17,7 +17,7 @@ type CapturedSend = { channel: string; payload: unknown };
 const captured: CapturedSend[] = [];
 
 // FEATURE_038: host.delete 现在调 SDK deleteSession；测试注入 mock 避免触发
-// 真 SDK 加载（tsx/esm + cli-boxes JSON-as-JS bug）。
+// 真 SDK 与真实用户持久化状态；这里只验证 host 行为。
 let mockState: MockSessionState;
 
 beforeEach(async () => {

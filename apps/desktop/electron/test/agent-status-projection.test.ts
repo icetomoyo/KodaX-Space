@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildAgentStatuses } from '../../renderer/src/shell/agentStatusProjection.js';
+import { messages, type MessageKey } from '../../renderer/src/i18n/messages.js';
 
 type Status = Parameters<typeof buildAgentStatuses>[0];
 
@@ -50,6 +51,22 @@ test('agent status projection avoids surfacing uuid-like titles', () => {
 
   assert.equal(statuses.length, 1);
   assert.equal(statuses[0].title, 'Worker');
+});
+
+test('agent status projection localizes generated fallback labels', () => {
+  const t = (key: MessageKey): string => messages['zh-CN'][key];
+  const statuses = buildAgentStatuses(
+    makeStatus({
+      activeWorkerId: 'worker-1234567890',
+      activeWorkerTitle: 'abc123def456',
+      events: [],
+    }),
+    t,
+  );
+
+  assert.equal(statuses[0].title, '执行代理');
+  assert.equal(statuses[0].role, '执行代理');
+  assert.equal(statuses[0].responsibility, '执行中');
 });
 
 test('agent status projection reuses cached view for the same status snapshot', () => {

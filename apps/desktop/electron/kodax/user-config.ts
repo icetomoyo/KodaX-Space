@@ -6,7 +6,7 @@
 //                       让 `/provider <name>` 直接可切（即使 Space Provider 面板不展示）
 //
 // 与 mcp/config-reader.ts 同套路：
-//   - lazy load + DI（避开 tsx/esm cli-boxes JSON bug，让 test 跳过 SDK 加载）
+//   - lazy load + DI（避免在模块初始化阶段加载完整 SDK，并允许单元测试注入）
 //   - prewarm 在 main boot 阶段触发，不阻塞窗口
 //
 // **安全契约**：
