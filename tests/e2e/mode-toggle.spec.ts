@@ -23,11 +23,17 @@ test('S4: Shift+Tab cycles permission mode through plan/accept-edits/auto', asyn
     // 先把 project 注入让 ModeSelector / textarea 都活 (fixture 共享 helper)
     await space.seedProject(projectDir);
 
-    // ModeSelector 显示在 ChipBar；初始（无 session）label 为 "Accept edits (next)"
+    // ModeSelector 显示在 ChipBar；无 session 时也只显示模式名，
+    // 不追加会让人误解生效时机的 "(next) / 下次"。
     // 三种 label 任一存在即认为 ModeSelector mount 了
     const initialLabelMatcher = /^(Plan|Accept edits|Auto)/;
-    await expect(space.page.getByText(initialLabelMatcher).first())
-      .toBeVisible({ timeout: 10_000 });
+    await expect(space.page.getByText(initialLabelMatcher).first()).toBeVisible({
+      timeout: 10_000,
+    });
+    const modeButton = space.page.locator('button[title^="Mode:"]');
+    const agentModeButton = space.page.locator('button[title^="Agent:"]');
+    await expect(modeButton).not.toContainText(/\(next\)|（下次）/);
+    await expect(agentModeButton).not.toContainText(/\(next\)|（下次）/);
 
     // 抓初始 label 文本
     const initialText = await space.page.getByText(initialLabelMatcher).first().textContent();
@@ -37,18 +43,22 @@ test('S4: Shift+Tab cycles permission mode through plan/accept-edits/auto', asyn
     await space.page.keyboard.press('Shift+Tab');
 
     // 等 label 真的变了 (用 not.toHaveText 等待 retry)
-    await expect.poll(
-      async () => (await space.page.getByText(initialLabelMatcher).first().textContent()) ?? '',
-      { timeout: 5_000 },
-    ).not.toBe(initialText);
+    await expect
+      .poll(
+        async () => (await space.page.getByText(initialLabelMatcher).first().textContent()) ?? '',
+        { timeout: 5_000 },
+      )
+      .not.toBe(initialText);
 
     // 再切两次回到原态 —— canonical 3-mode 循环
     await space.page.keyboard.press('Shift+Tab');
     await space.page.keyboard.press('Shift+Tab');
-    await expect.poll(
-      async () => (await space.page.getByText(initialLabelMatcher).first().textContent()) ?? '',
-      { timeout: 5_000 },
-    ).toBe(initialText);
+    await expect
+      .poll(
+        async () => (await space.page.getByText(initialLabelMatcher).first().textContent()) ?? '',
+        { timeout: 5_000 },
+      )
+      .toBe(initialText);
   } finally {
     await space.close();
     await fs.rm(projectDir, { recursive: true, force: true }).catch(() => {});

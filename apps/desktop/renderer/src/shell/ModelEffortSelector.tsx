@@ -66,6 +66,7 @@ export function ModelEffortSelector(): JSX.Element {
   const setPendingProviderId = useAppStore((s) => s.setPendingProviderId);
   const setPendingReasoningMode = useAppStore((s) => s.setPendingReasoningMode);
   const setPendingModel = useAppStore((s) => s.setPendingModel);
+  const setDefaultProviderId = useAppStore((s) => s.setDefaultProviderId);
   const setRuntimeDefaults = useAppStore((s) => s.setRuntimeDefaults);
   const upsertSession = useAppStore((s) => s.upsertSession);
 
@@ -147,19 +148,6 @@ export function ModelEffortSelector(): JSX.Element {
     if (busy) return;
     setBusy(true);
     try {
-      // provider 选择持久化到 ~/.kodax/space/provider-config.json（defaultProviderId 是
-      // default provider 的权威持久层）——让下次启动沿用上次选择。pendingProviderId 是
-      // 一次性临时层（session 创建后被 BottomBar/LeftSidebar 清空），不做持久层。
-      // 仅在真的换了 provider 时写（避免重复 IPC + main 侧 injectAllKeysToEnv）；失败不静默吞，
-      // 至少 log 让"重启没沿用"可诊断。
-      if (window.kodaxSpace && providerId !== defaultProviderId) {
-        try {
-          const r = await window.kodaxSpace.invoke('provider.setDefault', { providerId });
-          if (!r.ok) console.warn('[picker] provider.setDefault failed:', r.error);
-        } catch (err) {
-          console.warn('[picker] provider.setDefault threw:', err);
-        }
-      }
       if (session && window.kodaxSpace) {
         const providerChanged = providerId !== session.provider;
         const currentRuntimeModel = providerChanged
@@ -176,18 +164,47 @@ export function ModelEffortSelector(): JSX.Element {
           });
           if (!r.ok) {
             console.warn('[picker] /model failed:', r.error);
+            pushToast(r.error?.message ?? t('modelPicker.saveDefaultsFailed'), 'error');
             return;
           }
           if (!r.data.ok) {
             console.warn('[picker] /model failed:', r.data.message);
+            pushToast(r.data.message ?? t('modelPicker.saveDefaultsFailed'), 'error');
             return;
           }
           upsertSession({ ...session, provider: providerId, model });
-          setPendingModel(model);
         }
+        // The picker also defines the next-Session model preference. Keep this
+        // fresh even when the selected model was already active and no slash
+        // command was necessary.
+        setPendingModel(model);
       } else {
         setPendingProviderId(providerId);
         setPendingModel(model);
+      }
+
+      // Persist only after the current/pending selection has been applied. This
+      // keeps a slow credential/config write from making the picker look inert,
+      // and avoids changing the global default when a live-session switch fails.
+      if (window.kodaxSpace && providerId !== defaultProviderId) {
+        try {
+          const r = await window.kodaxSpace.invoke('provider.setDefault', { providerId });
+          if (!r.ok) {
+            console.warn('[picker] provider.setDefault failed:', r.error);
+            pushToast(r.error?.message ?? t('modelPicker.saveDefaultsFailed'), 'error');
+          } else if (!r.data.ok) {
+            console.warn('[picker] provider.setDefault was not applied');
+            pushToast(t('modelPicker.saveDefaultsFailed'), 'error');
+          } else {
+            setDefaultProviderId(providerId);
+          }
+        } catch (err) {
+          console.warn('[picker] provider.setDefault threw:', err);
+          pushToast(
+            err instanceof Error ? err.message : t('modelPicker.saveDefaultsFailed'),
+            'error',
+          );
+        }
       }
     } finally {
       setBusy(false);

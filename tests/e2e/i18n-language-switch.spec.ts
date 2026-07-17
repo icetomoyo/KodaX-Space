@@ -9,6 +9,8 @@ test('language switch updates settings, sidebar, and command palette copy', asyn
   try {
     const { page } = space;
     await page.waitForTimeout(2000);
+    await expect(page.getByLabel('Runtime diagnostics')).toContainText('Community');
+    await expect(page.getByText('Total tokens', { exact: true })).toBeVisible();
 
     await page.getByTestId('settings-button').click();
     await expect(page.locator('#settings-modal-title')).toHaveText('Settings');
@@ -24,6 +26,8 @@ test('language switch updates settings, sidebar, and command palette copy', asyn
 
     await page.keyboard.press('Escape');
     await expect(page.locator('#settings-modal-title')).toHaveCount(0);
+    await expect(page.getByLabel('运行时诊断')).toContainText('社区版');
+    await expect(page.getByText('Token 总数', { exact: true })).toBeVisible();
     await expect(page.locator('button[aria-label^="主题"]').first()).toBeVisible();
     await page.keyboard.press('Control+Shift+P');
     const palette = page.getByRole('dialog', { name: '命令面板' });
@@ -41,6 +45,7 @@ test('language switch updates settings, sidebar, and command palette copy', asyn
     await expect(page.getByRole('tab', { name: 'License' })).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Workflow host' })).toBeVisible();
     await expect(page.getByTestId('settings-button')).toContainText('Settings');
+    await expect(page.getByLabel('Runtime diagnostics')).toContainText('Community');
     await expect(page.locator('button[aria-label^="Theme"]').first()).toBeVisible();
   } finally {
     await space.close();

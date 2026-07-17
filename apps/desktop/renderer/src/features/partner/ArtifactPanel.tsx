@@ -4,25 +4,27 @@
 // （features/artifact），Coder 的 RightSidebar Artifact section + 全屏 popout 复用同一主体，
 // 让 artifact 真正全局（Coder+Partner）。
 
-import { useState } from 'react';
-import { ArchiveRestore, FileCheck2, FileOutput, PanelRightClose } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { ArchiveRestore, FileCheck2, FileOutput } from 'lucide-react';
 import { ArtifactsView } from '../artifact/ArtifactsView';
+import { FOCUS_ARTIFACT_EVENT } from '../artifact/transientArtifact.js';
 import { useI18n } from '../../i18n/I18nProvider.js';
 import { FileProposalsPanel } from './FileProposalsPanel.js';
 import { DeliveriesPanel } from './DeliveriesPanel.js';
 
-interface ArtifactPanelProps {
-  readonly onClose?: () => void;
-}
-
-export function ArtifactPanel({ onClose }: ArtifactPanelProps): JSX.Element {
+export function ArtifactPanel(): JSX.Element {
   const { t } = useI18n();
   const [activeTab, setActiveTab] = useState<'artifacts' | 'deliveries' | 'fileProposals'>(
     'artifacts',
   );
+  useEffect(() => {
+    const showFocusedArtifact = (): void => setActiveTab('artifacts');
+    window.addEventListener(FOCUS_ARTIFACT_EVENT, showFocusedArtifact);
+    return () => window.removeEventListener(FOCUS_ARTIFACT_EVENT, showFocusedArtifact);
+  }, []);
   return (
     <aside
-      className="w-[23rem] flex-shrink-0 border-l border-border-default flex flex-col bg-surface overflow-hidden"
+      className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-surface"
       data-testid="partner-artifact-panel"
     >
       <div className="px-3 h-9 flex items-center gap-2 border-b border-border-default flex-shrink-0">
@@ -75,18 +77,6 @@ export function ArtifactPanel({ onClose }: ArtifactPanelProps): JSX.Element {
             <span>{t('partner.fileProposals.tab.deliveries')}</span>
           </button>
         </div>
-        {onClose && (
-          <button
-            type="button"
-            onClick={onClose}
-            className="ml-auto h-6 w-6 inline-flex items-center justify-center rounded text-fg-muted hover:bg-hover-bg hover:text-fg-primary"
-            title={t('partner.hideArtifactPanel')}
-            aria-label={t('partner.hideArtifactPanel')}
-            data-testid="partner-artifact-panel-close"
-          >
-            <PanelRightClose className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden />
-          </button>
-        )}
       </div>
       {/* ArtifactsView 根用 h-full：需一个有界高度的 flex 子容器（aside 满高减去 header）。 */}
       <div className="flex-1 min-h-0">

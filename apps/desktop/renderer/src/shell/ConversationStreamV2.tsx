@@ -1471,6 +1471,7 @@ function QueryJumpRail({
   onHover,
   onJump,
 }: QueryJumpRailProps): JSX.Element | null {
+  const { t } = useI18n();
   if (anchors.length < QUERY_JUMP_MIN_ANCHORS) return null;
 
   const rawHoverIndex = anchors.findIndex((anchor) => anchor.id === hoverId);
@@ -1479,7 +1480,7 @@ function QueryJumpRail({
   return (
     <nav
       className="absolute left-3 top-1/2 z-20 -translate-y-1/2"
-      aria-label="User query jump points"
+      aria-label={t('conversation.queryJumpPoints')}
       onMouseLeave={() => onHover(null)}
     >
       <div className="flex flex-col items-start gap-1 py-2">
@@ -1766,7 +1767,7 @@ function ThinkingBlock({
         type="button"
         onClick={onToggle}
         className={[
-          'inline-flex w-fit max-w-full items-center gap-1.5 whitespace-nowrap rounded-md border px-2 py-1',
+          'inline-flex h-8 w-fit max-w-full items-center gap-1.5 whitespace-nowrap rounded-md border px-2 py-1',
           'border-border-default/70 bg-surface-2/45 font-mono text-[11px] text-fg-muted',
           'transition-colors hover:border-thinking/35 hover:bg-hover-bg hover:text-fg-primary',
           'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-border-strong',
@@ -1857,7 +1858,7 @@ function ToolCluster({ cluster, expanded, onToggle }: ToolClusterProps): JSX.Ele
         type="button"
         onClick={onToggle}
         className={[
-          'group/receipt inline-flex w-fit min-w-0 max-w-full items-center gap-1.5 overflow-hidden whitespace-nowrap rounded-md border px-2 py-1',
+          'group/receipt inline-flex h-8 w-fit min-w-0 max-w-full items-center gap-1.5 overflow-hidden whitespace-nowrap rounded-md border px-2 py-1',
           'border-border-default/70 bg-surface-2/45 font-mono text-[11px] text-fg-muted',
           'transition-colors hover:border-border-strong hover:bg-hover-bg hover:text-fg-primary',
           'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-border-strong',

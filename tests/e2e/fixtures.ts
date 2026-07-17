@@ -37,6 +37,8 @@ export interface LaunchSpaceOptions {
   readonly onConsole?: (msg: { type: string; text: string }) => void;
   /** Subscribe to renderer pageerror events; same early-attach guarantee. */
   readonly onPageError?: (err: Error) => void;
+  /** Additional deterministic environment values for the isolated Electron process. */
+  readonly env?: Readonly<Record<string, string>>;
 }
 
 /**
@@ -47,7 +49,10 @@ export interface LaunchSpaceOptions {
  * during the first render pass — listeners attached after this function
  * returns would miss them.
  */
-export async function launchSpace(testId: string, opts?: LaunchSpaceOptions): Promise<SpaceInstance> {
+export async function launchSpace(
+  testId: string,
+  opts?: LaunchSpaceOptions,
+): Promise<SpaceInstance> {
   const testDataDir = path.join(os.tmpdir(), `kodax-test-${testId}`);
   // 清掉可能上一次跑的同名残留 (testId 来自 spec 名 + timestamp，正常情况不冲突)
   await fs.rm(testDataDir, { recursive: true, force: true }).catch(() => {});
@@ -78,6 +83,7 @@ export async function launchSpace(testId: string, opts?: LaunchSpaceOptions): Pr
     args: [ELECTRON_MAIN],
     env: {
       ...baseEnv,
+      ...opts?.env,
       KODAX_TEST_ONBOARDING: testId,
       // 关掉 Sentry / 真实 LLM 网络调，让首启不依赖外部
       KODAX_FORCE_MOCK: '1',
@@ -120,8 +126,9 @@ export async function launchSpace(testId: string, opts?: LaunchSpaceOptions): Pr
       localStorage.setItem('kodax-space.currentProjectPath', p);
     }, projectDir);
     await page.evaluate((p) => {
-      return (window as unknown as { kodaxSpace: { invoke: (n: string, i: unknown) => Promise<unknown> } })
-        .kodaxSpace.invoke('project.recent.add', { path: p });
+      return (
+        window as unknown as { kodaxSpace: { invoke: (n: string, i: unknown) => Promise<unknown> } }
+      ).kodaxSpace.invoke('project.recent.add', { path: p });
     }, projectDir);
     await page.reload();
     await page.waitForLoadState('domcontentloaded');

@@ -71,6 +71,7 @@ import { useAppStore, clampSidebarWidthPx } from '../store/appStore.js';
 import { pushToast } from '../store/toastStore.js';
 import { useSurfaceStore } from '../store/surface.js';
 import { PartnerWorkspace } from '../features/partner/PartnerWorkspace.js';
+import { PartnerRightSidebar } from '../features/partner/PartnerRightSidebar.js';
 import { HandoffInbox } from './HandoffInbox.js';
 import { SettingsModal, type SettingsTab } from '../features/settings/SettingsModal.js';
 import {
@@ -79,6 +80,7 @@ import {
 } from '../space-control/SpaceControlBroker.js';
 import { setSpaceLanguage, setSpaceTheme } from '../space-control/semanticActions.js';
 import { useI18n } from '../i18n/I18nProvider.js';
+import type { MessageKey } from '../i18n/messages.js';
 import { isPopoutKind, SHELL_POPOUT_EVENT, type ShellPopoutRequest } from './popoutControl.js';
 import {
   isTaskDockSectionId,
@@ -86,6 +88,8 @@ import {
   type TaskDockFocusRequest,
   type TaskDockFocusState,
 } from './taskDockControl.js';
+import type { RightSidebarWidthMode } from './RightSidebarFrame.js';
+import { resolveRightSidebarToggleAction } from './sidebarToggle.js';
 
 interface ShellProps {
   readonly version?: SpaceVersionOutput | null;
@@ -105,8 +109,25 @@ const SHELL_PANEL_HORIZONTAL_PADDING_PX = 20;
 const SHELL_PANEL_GAP_PX = 10;
 const RESIZE_HANDLE_WIDTH_PX = 4;
 const CODER_MIN_CENTER_PX = 520;
+const PARTNER_RIGHT_SIDEBAR_OPEN_KEY = 'kodax-space.partnerArtifactOpen';
 type LeftSidebarMode = 'navigation' | 'files';
-type RightSidebarWidthMode = 'default' | 'half' | 'max' | 'custom';
+
+function readPartnerRightSidebarOpen(): boolean {
+  if (typeof window === 'undefined') return true;
+  try {
+    return window.localStorage.getItem(PARTNER_RIGHT_SIDEBAR_OPEN_KEY) !== '0';
+  } catch {
+    return true;
+  }
+}
+
+function persistPartnerRightSidebarOpen(open: boolean): void {
+  try {
+    window.localStorage.setItem(PARTNER_RIGHT_SIDEBAR_OPEN_KEY, open ? '1' : '0');
+  } catch {
+    // Non-critical: the panel remains usable for the current window.
+  }
+}
 
 function getViewportWidth(): number {
   return typeof window !== 'undefined' && window.innerWidth ? window.innerWidth : 1440;
@@ -236,6 +257,19 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
   });
   const [viewportWidth, setViewportWidth] = useState(() => getViewportWidth());
   const leftWidth = clampSidebarWidthPx(leftWidthDraft ?? persistedLeftWidth);
+  const rightSidebarOpenBySurfaceRef = useRef<Record<'code' | 'partner', boolean>>({
+    code: rightSidebarOpen,
+    partner: readPartnerRightSidebarOpen(),
+  });
+  const activeRightSidebarSurfaceRef = useRef<'code' | 'partner' | null>(null);
+  const setRightSidebarOpenForCurrentSurface = useCallback(
+    (open: boolean): void => {
+      rightSidebarOpenBySurfaceRef.current[currentSurface] = open;
+      if (currentSurface === 'partner') persistPartnerRightSidebarOpen(open);
+      setRightSidebarOpen(open);
+    },
+    [currentSurface, setRightSidebarOpen],
+  );
   const closeDiagnostics = useCallback((): void => {
     setDiagnosticsOpen(false);
   }, []);
@@ -274,6 +308,17 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
       }
     };
   }, []);
+
+  useEffect(() => {
+    const previousSurface = activeRightSidebarSurfaceRef.current;
+    if (previousSurface === currentSurface) return;
+    if (previousSurface !== null) {
+      rightSidebarOpenBySurfaceRef.current[previousSurface] =
+        useAppStore.getState().rightSidebarOpen;
+    }
+    activeRightSidebarSurfaceRef.current = currentSurface;
+    setRightSidebarOpen(rightSidebarOpenBySurfaceRef.current[currentSurface]);
+  }, [currentSurface, setRightSidebarOpen]);
 
   useEffect(() => {
     if (currentSurface !== 'code') setLeftSidebarMode('navigation');
@@ -328,8 +373,7 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
   }, [currentSurface]);
 
   const preferredLeftSidebarVisible = leftSidebarOpen && !fullscreenRead;
-  const preferredRightSidebarVisible =
-    currentSurface === 'code' && rightSidebarOpen && !fullscreenRead;
+  const preferredRightSidebarVisible = rightSidebarOpen && !fullscreenRead;
   const preliminaryRightSidebarHalfWidth = rightSidebarOpenWidth(
     preferredLeftSidebarVisible,
     leftWidth,
@@ -346,7 +390,6 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
             ? rightSidebarDefaultWidth(preferredLeftSidebarVisible, leftWidth, viewportWidth)
             : Math.min(clampSidebarWidthPx(persistedRightWidth), preliminaryRightSidebarHalfWidth);
   const responsiveHideRightSidebar =
-    currentSurface === 'code' &&
     preferredRightSidebarVisible &&
     rightSidebarWidthMode !== 'half' &&
     rightSidebarWidthMode !== 'max' &&
@@ -377,13 +420,13 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
     setRightWidthDraft(null);
     setRightSidebarWidthMode('half');
     persistRightSidebarWidthAfterPaint(targetWidth);
-    setRightSidebarOpen(true);
+    setRightSidebarOpenForCurrentSurface(true);
   }, [
     leftSidebarVisible,
     leftWidth,
     persistRightSidebarWidthAfterPaint,
     pulseRightSidebarWidthSettling,
-    setRightSidebarOpen,
+    setRightSidebarOpenForCurrentSurface,
     viewportWidth,
   ]);
 
@@ -393,13 +436,13 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
     setRightWidthDraft(null);
     setRightSidebarWidthMode('default');
     persistRightSidebarWidthAfterPaint(targetWidth);
-    setRightSidebarOpen(true);
+    setRightSidebarOpenForCurrentSurface(true);
   }, [
     leftSidebarVisible,
     leftWidth,
     persistRightSidebarWidthAfterPaint,
     pulseRightSidebarWidthSettling,
-    setRightSidebarOpen,
+    setRightSidebarOpenForCurrentSurface,
     viewportWidth,
   ]);
 
@@ -407,8 +450,8 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
     pulseRightSidebarWidthSettling();
     setRightWidthDraft(null);
     setRightSidebarWidthMode('max');
-    setRightSidebarOpen(true);
-  }, [pulseRightSidebarWidthSettling, setRightSidebarOpen]);
+    setRightSidebarOpenForCurrentSurface(true);
+  }, [pulseRightSidebarWidthSettling, setRightSidebarOpenForCurrentSurface]);
 
   const setTaskDockWidthPreset = useCallback(
     (mode: TaskDockWidthPreset): void => {
@@ -455,7 +498,7 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
         if (defaultCenterWithLeft >= CODER_MIN_CENTER_PX) {
           openRightSidebarAtDefaultWidth();
         } else {
-          setRightSidebarOpen(false);
+          setRightSidebarOpenForCurrentSurface(false);
         }
       }
     }
@@ -470,7 +513,7 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
     rightSidebarOpen,
     rightSidebarWidthMode,
     setLeftSidebarOpen,
-    setRightSidebarOpen,
+    setRightSidebarOpenForCurrentSurface,
     viewportWidth,
   ]);
 
@@ -490,11 +533,16 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
       }
       if (fullscreenRead) setFullscreenRead(false);
       if (!rightSidebarOpen) openRightSidebarAtDefaultWidth();
-      else setRightSidebarOpen(true);
+      else setRightSidebarOpenForCurrentSurface(true);
     };
     window.addEventListener(TASK_DOCK_FOCUS_EVENT, onTaskDockFocus);
     return () => window.removeEventListener(TASK_DOCK_FOCUS_EVENT, onTaskDockFocus);
-  }, [fullscreenRead, openRightSidebarAtDefaultWidth, rightSidebarOpen, setRightSidebarOpen]);
+  }, [
+    fullscreenRead,
+    openRightSidebarAtDefaultWidth,
+    rightSidebarOpen,
+    setRightSidebarOpenForCurrentSurface,
+  ]);
 
   // 右侧栏跟 KodaX 计划列表（todoListBySession）联动：plan 出现 → 自动打开；
   // plan 清空 → 自动折叠。只在 hasPlan 状态切换的瞬间动一次，中间段用户的手动 toggle 不会被打扰。
@@ -502,12 +550,18 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
   const currentSessionIdForPlan = useAppStore((s) => s.currentSessionId);
   const planLength = useAppStore((s) => {
     const sid = s.currentSessionId;
-    return sid ? (s.todoListBySession[sid]?.length ?? 0) : 0;
+    return sid
+      ? (s.liveProjectionBySession[sid]?.todos.length ?? s.todoListBySession[sid]?.length ?? 0)
+      : 0;
   });
   const smartPopoutEnabled = useAppStore((s) => s.smartPopoutEnabled);
   const lastAutoPlanRef = useRef<{ sessionId: string | null; hasPlan: boolean } | null>(null);
   useEffect(() => {
     const hasPlan = planLength > 0;
+    if (currentSurface !== 'code') {
+      lastAutoPlanRef.current = { sessionId: currentSessionIdForPlan, hasPlan };
+      return;
+    }
     const previous = lastAutoPlanRef.current;
     if (previous === null) {
       // 初次：记录但不触发 — 尊重 localStorage 已持久的偏好
@@ -523,9 +577,9 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
     }
     if (hasPlan) {
       if (!rightSidebarOpen) openRightSidebarAtDefaultWidth();
-      else setRightSidebarOpen(true);
+      else setRightSidebarOpenForCurrentSurface(true);
     } else {
-      setRightSidebarOpen(false);
+      setRightSidebarOpenForCurrentSurface(false);
     }
     lastAutoPlanRef.current = { sessionId: currentSessionIdForPlan, hasPlan };
   }, [
@@ -533,8 +587,9 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
     currentSessionIdForPlan,
     openRightSidebarAtDefaultWidth,
     rightSidebarOpen,
-    setRightSidebarOpen,
     smartPopoutEnabled,
+    currentSurface,
+    setRightSidebarOpenForCurrentSurface,
   ]);
 
   // F059c: 对话里点 artifact 卡片 → 若右侧栏关着先打开它（RightSidebar 内部再切到 Artifact
@@ -608,11 +663,10 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
   const setActivePopoutKindInStore = useAppStore((s) => s.setActivePopoutKind);
   const activePopoutKindFromStore = useAppStore((s) => s.activePopoutKind);
   const openFilesInLeftSidebar = useCallback((): void => {
-    if (currentSurface !== 'code') return;
     showLeftSidebar();
     setLeftSidebarMode('files');
     setActivePopoutRaw(null);
-  }, [currentSurface, showLeftSidebar]);
+  }, [showLeftSidebar]);
   useEffect(() => {
     setActivePopoutKindInStore(activePopout);
   }, [activePopout, setActivePopoutKindInStore]);
@@ -698,17 +752,6 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
     }
     setRequestedPopout(null); // 消费完清回 null,允许下次 slash command 再次触发
   }, [requestedPopout, setRequestedPopout, setActivePopout, currentSurface]);
-  const toggleRightSidebar = useCallback((): void => {
-    if (fullscreenRead) {
-      setFullscreenRead(false);
-      openRightSidebarAtDefaultWidth();
-    } else if (rightSidebarOpen) {
-      setRightSidebarOpen(false);
-    } else {
-      openRightSidebarAtDefaultWidth();
-    }
-  }, [fullscreenRead, openRightSidebarAtDefaultWidth, rightSidebarOpen, setRightSidebarOpen]);
-
   const rightSidebarHalfWidth = rightSidebarOpenWidth(leftSidebarVisible, leftWidth, viewportWidth);
   const rightSidebarMaxAvailableWidth = rightSidebarMaxWidth(
     leftSidebarVisible,
@@ -744,6 +787,24 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
       rightSidebarWidthMode === 'max' ||
       coderCenterWidthPx(leftSidebarVisible, leftWidth, true, rightWidth, viewportWidth) >=
         CODER_MIN_CENTER_PX);
+  const toggleRightSidebar = useCallback((): void => {
+    if (fullscreenRead) {
+      setFullscreenRead(false);
+      openRightSidebarAtDefaultWidth();
+    } else {
+      const action = resolveRightSidebarToggleAction(rightSidebarVisible, rightSidebarOpen);
+      if (action === 'close') setRightSidebarOpenForCurrentSurface(false);
+      else if (action === 'open-balanced') openRightSidebarAtBalancedWidth();
+      else openRightSidebarAtDefaultWidth();
+    }
+  }, [
+    fullscreenRead,
+    openRightSidebarAtBalancedWidth,
+    openRightSidebarAtDefaultWidth,
+    rightSidebarOpen,
+    rightSidebarVisible,
+    setRightSidebarOpenForCurrentSurface,
+  ]);
   const rightSidebarWorkspaceMode = rightSidebarVisible && rightSidebarWidthMode === 'max';
   const platformClass = getRendererPlatformClass();
   const isWindows = platformClass === 'platform-win32';
@@ -789,7 +850,7 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
                   licenseStatus.status,
                 )}`}
               >
-                {licenseBadgeText(licenseStatus)}
+                {licenseBadgeText(licenseStatus, t)}
               </span>
             )}
           </button>
@@ -847,89 +908,103 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
 
         {currentSurface === 'partner' ? (
           // F045: Partner surface 只替换主区（对话区）。LeftSidebar 是全局导航
-          // （项目 / session / SurfaceTabs），两 surface 共用，故在本分支外。三栏由 F046 填实。
-          <PartnerWorkspace />
+          // （项目 / session / SurfaceTabs），两 surface 共用；右侧栏外壳也由 Shell 统一托管。
+          <PartnerWorkspace
+            rightSidebarOpen={rightSidebarVisible}
+            workspaceMode={rightSidebarWorkspaceMode}
+            onToggleRightSidebar={toggleRightSidebar}
+          />
         ) : (
-          <>
-            {/* 中央阅读区：悬浮圆角卡片。保持实色（bg-surface）—— aurora 只在卡片四周缝隙
-                透出，对话流不被极光动画触发 re-composite，性能护栏。 */}
-            <div
-              className="center-pane flex-1 flex flex-col min-w-0 relative bg-surface rounded-xl border border-border-default overflow-hidden lift"
-              data-testid="coder-workspace"
-              style={rightSidebarWorkspaceMode ? { display: 'none' } : undefined}
-            >
-              <div className="ix-zone flex items-center px-3 h-10 border-b border-border-default flex-shrink-0 gap-1">
-                {/* 左侧栏切换按钮 — 始终常驻，让收起后仍能一键展开 */}
-                <SidebarToggleButton
-                  side="left"
-                  open={leftSidebarVisible}
-                  onClick={toggleLeftSidebar}
-                />
-                <Breadcrumb />
-                <CommandToolbar active={activePopout} onToggle={setActivePopout} />
-                <EnvironmentHub />
-                {fullscreenRead && (
-                  <button
-                    type="button"
-                    onClick={() => setFullscreenRead(false)}
-                    className="ml-1 text-[11px] px-2 py-0.5 rounded border border-border-default text-fg-muted hover:text-fg-primary"
-                    title={t('shell.exitFocusModeTitle')}
-                  >
-                    ↗ {t('shell.exitFocusMode')}
-                  </button>
-                )}
-                {/* 右侧栏切换按钮 */}
-                <SidebarToggleButton
-                  side="right"
-                  open={rightSidebarVisible}
-                  onClick={toggleRightSidebar}
-                />
-              </div>
-
-              <div ref={popoutBoundsRef} className="relative flex flex-1 min-h-0 flex-col">
-                <PinnedTaskSummary />
-                <ConversationStreamV2 />
-
-                {activePopout !== null && (
-                  <PopoutOverlay
-                    kind={activePopout}
-                    boundsRef={popoutBoundsRef}
-                    onClose={() => setActivePopout(null)}
-                  />
-                )}
-              </div>
-
-              <BottomBar />
+          /* 中央阅读区：悬浮圆角卡片。保持实色（bg-surface）—— aurora 只在卡片四周缝隙
+              透出，对话流不被极光动画触发 re-composite，性能护栏。 */
+          <div
+            className="center-pane flex-1 flex flex-col min-w-0 relative bg-surface rounded-xl border border-border-default overflow-hidden lift"
+            data-testid="coder-workspace"
+            style={rightSidebarWorkspaceMode ? { display: 'none' } : undefined}
+          >
+            <div className="ix-zone flex items-center px-3 h-10 border-b border-border-default flex-shrink-0 gap-1">
+              {/* 左侧栏切换按钮 — 始终常驻，让收起后仍能一键展开 */}
+              <SidebarToggleButton
+                side="left"
+                open={leftSidebarVisible}
+                onClick={toggleLeftSidebar}
+              />
+              <Breadcrumb />
+              <CommandToolbar active={activePopout} onToggle={setActivePopout} />
+              <EnvironmentHub />
+              {fullscreenRead && (
+                <button
+                  type="button"
+                  onClick={() => setFullscreenRead(false)}
+                  className="ml-1 text-[11px] px-2 py-0.5 rounded border border-border-default text-fg-muted hover:text-fg-primary"
+                  title={t('shell.exitFocusModeTitle')}
+                >
+                  ↗ {t('shell.exitFocusMode')}
+                </button>
+              )}
+              {/* 右侧栏切换按钮 */}
+              <SidebarToggleButton
+                side="right"
+                open={rightSidebarVisible}
+                onClick={toggleRightSidebar}
+              />
             </div>
 
-            {rightSidebarVisible && (
-              <>
-                {!rightSidebarWorkspaceMode && (
-                  <ResizeHandle
-                    side="right"
-                    width={rightWidth}
-                    defaultWidth={rightSidebarDefaultWidth(
-                      leftSidebarVisible,
-                      leftWidth,
-                      viewportWidth,
-                    )}
-                    onPreview={(px) => setRightWidthDraft(clampRightSidebarWidth(px))}
-                    onCommit={(px) => {
-                      setRightWidthDraft(null);
-                      setRightSidebarWidthMode('custom');
-                      setRightSidebarWidth(clampRightSidebarNonMaxWidth(px));
-                    }}
-                  />
-                )}
-                <RightSidebar
-                  width={rightWidth}
-                  widthMode={rightSidebarWidthMode}
-                  onDefaultWidth={openRightSidebarAtDefaultWidth}
-                  onHalfWidth={openRightSidebarAtBalancedWidth}
-                  onMaxWidth={openRightSidebarAtMaxWidth}
-                  shellFocusRequest={taskDockFocusRequest}
+            <div ref={popoutBoundsRef} className="relative flex flex-1 min-h-0 flex-col">
+              <PinnedTaskSummary />
+              <ConversationStreamV2 />
+
+              {activePopout !== null && (
+                <PopoutOverlay
+                  kind={activePopout}
+                  boundsRef={popoutBoundsRef}
+                  onClose={() => setActivePopout(null)}
                 />
-              </>
+              )}
+            </div>
+
+            <BottomBar />
+          </div>
+        )}
+
+        {rightSidebarVisible && (
+          <>
+            {!rightSidebarWorkspaceMode && (
+              <ResizeHandle
+                side="right"
+                width={rightWidth}
+                defaultWidth={rightSidebarDefaultWidth(
+                  leftSidebarVisible,
+                  leftWidth,
+                  viewportWidth,
+                )}
+                onPreview={(px) => setRightWidthDraft(clampRightSidebarWidth(px))}
+                onCommit={(px) => {
+                  setRightWidthDraft(null);
+                  setRightSidebarWidthMode('custom');
+                  setRightSidebarWidth(clampRightSidebarNonMaxWidth(px));
+                }}
+              />
+            )}
+            {currentSurface === 'partner' ? (
+              <PartnerRightSidebar
+                width={rightWidth}
+                widthMode={rightSidebarWidthMode}
+                onDefaultWidth={openRightSidebarAtDefaultWidth}
+                onHalfWidth={openRightSidebarAtBalancedWidth}
+                onMaxWidth={openRightSidebarAtMaxWidth}
+                onClose={() => setRightSidebarOpenForCurrentSurface(false)}
+              />
+            ) : (
+              <RightSidebar
+                width={rightWidth}
+                widthMode={rightSidebarWidthMode}
+                onDefaultWidth={openRightSidebarAtDefaultWidth}
+                onHalfWidth={openRightSidebarAtBalancedWidth}
+                onMaxWidth={openRightSidebarAtMaxWidth}
+                onClose={() => setRightSidebarOpenForCurrentSurface(false)}
+                shellFocusRequest={taskDockFocusRequest}
+              />
             )}
           </>
         )}
@@ -1538,15 +1613,30 @@ function statusClass(status: SpaceCapabilityStatus): string {
   }
 }
 
-function licenseBadgeText(status: LicenseStatusT): string {
+type Translate = (key: MessageKey, vars?: Record<string, string | number>) => string;
+
+const LICENSE_EDITION_KEY: Record<LicenseStatusT['edition'], MessageKey> = {
+  community: 'license.edition.community',
+  professional: 'license.edition.professional',
+  enterprise: 'license.edition.enterprise',
+};
+
+const LICENSE_STATUS_KEY: Record<
+  Exclude<LicenseStatusT['status'], 'licensed' | 'community'>,
+  MessageKey
+> = {
+  required: 'license.status.required',
+  expired: 'license.status.expired',
+  invalid: 'license.status.invalid',
+  degraded: 'license.status.degraded',
+};
+
+function licenseBadgeText(status: LicenseStatusT, t: Translate): string {
   if (status.status === 'licensed') {
-    if (status.edition === 'professional') return 'Professional';
-    if (status.edition === 'enterprise') return 'Enterprise';
-    return 'Licensed';
+    return t(LICENSE_EDITION_KEY[status.edition]);
   }
-  if (status.status === 'community') return 'Community';
-  if (status.status === 'required') return 'Required';
-  return status.status[0].toUpperCase() + status.status.slice(1);
+  if (status.status === 'community') return t('license.edition.community');
+  return t(LICENSE_STATUS_KEY[status.status]);
 }
 
 function licenseBadgeClass(status: LicenseStatusT['status']): string {
@@ -1557,10 +1647,10 @@ function licenseBadgeClass(status: LicenseStatusT['status']): string {
   return 'border-danger/40 bg-danger/10 text-danger';
 }
 
-function licenseDiagnosticsText(status: LicenseStatusT): string {
-  const parts = [licenseBadgeText(status)];
-  if (status.customer) parts.push(status.customer);
-  if (status.expiresAt) parts.push(`expires ${shortDate(status.expiresAt)}`);
+function licenseDiagnosticsText(status: LicenseStatusT, t: Translate): string {
+  const parts = [licenseBadgeText(status, t)];
+  if (status.customer) parts.push(t('license.customer', { customer: status.customer }));
+  if (status.expiresAt) parts.push(t('license.expiresOn', { date: shortDate(status.expiresAt) }));
   return parts.join(' / ');
 }
 
@@ -1609,7 +1699,7 @@ function RuntimeDiagnostics({
 
       <div className="mb-2 grid grid-cols-[96px_1fr] gap-x-2 gap-y-1 font-mono text-[11px]">
         <span className="text-fg-faint">{t('shell.license')}</span>
-        <span>{licenseStatus ? licenseDiagnosticsText(licenseStatus) : t('shell.loading')}</span>
+        <span>{licenseStatus ? licenseDiagnosticsText(licenseStatus, t) : t('shell.loading')}</span>
         <span className="text-fg-faint">{t('shell.contract')}</span>
         <span>{version?.capabilityContract ?? t('shell.loading')}</span>
         <span className="text-fg-faint">{t('shell.dependency')}</span>

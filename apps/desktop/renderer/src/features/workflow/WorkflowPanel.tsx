@@ -465,7 +465,7 @@ function WorkflowRunCard({
           data-testid="workflow-details-toggle"
         >
           {detailsOpen ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
-          阶段详情
+          {t('workflow.details')}
         </button>
       )}
 
@@ -601,7 +601,7 @@ function WorkflowResultView({
         data-testid="workflow-result-toggle"
       >
         {open ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
-        完整结果
+        {t('workflow.fullResult')}
       </button>
       {open && (
         <div className="mt-1">

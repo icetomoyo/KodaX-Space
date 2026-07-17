@@ -252,7 +252,7 @@ export function SessionMenu({ sessionId, onClose }: SessionMenuProps): JSX.Eleme
     if (r.data.diskRewound === false) {
       pushToast(
         t('menu.session.rewindRejected', {
-          message: 'disk history was not rewound',
+          message: t('menu.session.rewindDiskNotRewound'),
         }),
         'error',
       );

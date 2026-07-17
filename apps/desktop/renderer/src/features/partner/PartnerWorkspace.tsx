@@ -1,13 +1,13 @@
 // PartnerWorkspace — F045 路由目标 / F046 三栏实体。
 //
 // doc-workspace 三栏（ADR-007 / HLD §9.4）：
-//   Sources（左）| 对话 + 输入（中）| Artifact 预览（右）
+//   Sources（左）| 对话 + 输入（中）| Shell 共用右侧栏中的 Artifact / Outputs（右）
 // 去掉 Coder 的 Subagent tree / 内置 Terminal 抽屉（知识工作不需要）。
 //
 // F046 范围：三栏 shell + 中栏功能可用（真能对话，绑 Partner session）。
 //   - 左栏 Sources：占位（F047 接非 git 作用域目录树 / F052 接 URL 源）
 //   - 中栏 PartnerConversation：复用 ConversationStreamV2 + 裁剪版 BottomBar
-//   - 右栏 Artifact：占位（F048 接 artifact 登记/预览/迭代/导出）
+//   - 右栏 Artifact：由 Shell 托管，与 Coder 共用拖拽、宽度档位和最大化/关闭能力
 //
 // LeftSidebar（项目 / session / SurfaceTabs）是两 surface 共用的全局导航，在本组件之外
 // 由 Shell 渲染。per-surface 当前 session 由 store/surface.ts 的 setSurface 维护。
@@ -17,12 +17,11 @@ import { Handshake, PanelLeft, PanelRightClose, PanelRightOpen } from 'lucide-re
 import { useI18n } from '../../i18n/I18nProvider.js';
 import { SourcesPanel } from './SourcesPanel.js';
 import { PartnerConversation } from './PartnerConversation.js';
-import { ArtifactPanel } from './ArtifactPanel.js';
 
 const LS_KEY_SOURCES_OPEN = 'kodax-space.partnerSourcesOpen';
-const LS_KEY_ARTIFACT_OPEN = 'kodax-space.partnerArtifactOpen';
-const SOURCES_MIN_WORKSPACE_PX = 640;
-const ARTIFACT_MIN_WORKSPACE_PX = 900;
+// With the shared 320px right sidebar, a 1280px window leaves ~632px for Partner.
+// The 240px sources rail still preserves a >= 360px conversation lane there.
+const SOURCES_MIN_WORKSPACE_PX = 620;
 
 function readPanelOpen(key: string): boolean {
   if (typeof window === 'undefined') return true;
@@ -41,12 +40,21 @@ function persistPanelOpen(key: string, open: boolean): void {
   }
 }
 
-export function PartnerWorkspace(): JSX.Element {
+interface PartnerWorkspaceProps {
+  readonly rightSidebarOpen: boolean;
+  readonly workspaceMode?: boolean;
+  readonly onToggleRightSidebar: () => void;
+}
+
+export function PartnerWorkspace({
+  rightSidebarOpen,
+  workspaceMode = false,
+  onToggleRightSidebar,
+}: PartnerWorkspaceProps): JSX.Element {
   const { t } = useI18n();
   const workspaceRef = useRef<HTMLDivElement | null>(null);
   const [workspaceWidth, setWorkspaceWidth] = useState<number | null>(null);
   const [sourcesOpen, setSourcesOpen] = useState(() => readPanelOpen(LS_KEY_SOURCES_OPEN));
-  const [artifactOpen, setArtifactOpen] = useState(() => readPanelOpen(LS_KEY_ARTIFACT_OPEN));
 
   useEffect(() => {
     const node = workspaceRef.current;
@@ -67,38 +75,23 @@ export function PartnerWorkspace(): JSX.Element {
       return next;
     });
   };
-  const toggleArtifact = (): void => {
-    if (workspaceWidth !== null && workspaceWidth < ARTIFACT_MIN_WORKSPACE_PX) return;
-    setArtifactOpen((open) => {
-      const next = !open;
-      persistPanelOpen(LS_KEY_ARTIFACT_OPEN, next);
-      return next;
-    });
-  };
-
   const sourcesAutoHidden =
     sourcesOpen && workspaceWidth !== null && workspaceWidth < SOURCES_MIN_WORKSPACE_PX;
-  const artifactTooNarrow = workspaceWidth !== null && workspaceWidth < ARTIFACT_MIN_WORKSPACE_PX;
-  const artifactAutoHidden = artifactOpen && artifactTooNarrow;
   const showSources = sourcesOpen && !sourcesAutoHidden;
-  const showArtifact = artifactOpen && !artifactAutoHidden;
   const sourcesLabel = sourcesAutoHidden
     ? t('partner.kb.hiddenAtWidth')
     : showSources
       ? t('partner.kb.hide')
       : t('partner.kb.show');
-  const artifactLabel = artifactTooNarrow
-    ? t('partner.artifact.tooNarrow')
-    : showArtifact
-      ? t('partner.artifact.hide')
-      : t('partner.artifact.show');
-  const ArtifactToggleIcon = showArtifact ? PanelRightClose : PanelRightOpen;
+  const artifactLabel = rightSidebarOpen ? t('partner.artifact.hide') : t('partner.artifact.show');
+  const ArtifactToggleIcon = rightSidebarOpen ? PanelRightClose : PanelRightOpen;
 
   return (
     <div
       ref={workspaceRef}
       className="center-pane flex-1 flex flex-col min-h-0 min-w-0 relative bg-surface rounded-xl border border-border-default overflow-hidden lift"
       data-testid="partner-workspace"
+      style={workspaceMode ? { display: 'none' } : undefined}
     >
       <div className="flex items-center gap-2 px-4 h-10 border-b border-border-default flex-shrink-0">
         <button
@@ -119,14 +112,13 @@ export function PartnerWorkspace(): JSX.Element {
         <span className="text-[11px] text-fg-muted min-w-0 truncate">{t('partner.subtitle')}</span>
         <button
           type="button"
-          onClick={toggleArtifact}
+          onClick={onToggleRightSidebar}
           className={`ix-pop ml-auto w-7 h-7 rounded-md flex items-center justify-center flex-shrink-0 hover:bg-hover-bg ${
-            showArtifact ? 'text-fg-primary' : 'text-fg-muted hover:text-fg-primary'
+            rightSidebarOpen ? 'text-fg-primary' : 'text-fg-muted hover:text-fg-primary'
           }`}
           title={artifactLabel}
           aria-label={artifactLabel}
-          aria-pressed={showArtifact}
-          disabled={artifactTooNarrow}
+          aria-pressed={rightSidebarOpen}
           data-testid="partner-artifact-toggle"
         >
           <ArtifactToggleIcon className="w-4 h-4" strokeWidth={1.75} aria-hidden />
@@ -135,21 +127,6 @@ export function PartnerWorkspace(): JSX.Element {
       <div className="flex flex-1 min-h-0">
         {showSources && <SourcesPanel />}
         <PartnerConversation />
-        {showArtifact ? (
-          <ArtifactPanel onClose={toggleArtifact} />
-        ) : (
-          <button
-            type="button"
-            onClick={toggleArtifact}
-            disabled={artifactTooNarrow}
-            className="w-9 flex-shrink-0 border-l border-border-default bg-surface text-fg-muted hover:bg-hover-bg hover:text-fg-primary disabled:pointer-events-none disabled:opacity-35 flex items-start justify-center pt-3"
-            title={artifactLabel}
-            aria-label={artifactLabel}
-            data-testid="partner-artifact-edge-toggle"
-          >
-            <PanelRightOpen className="w-4 h-4" strokeWidth={1.75} aria-hidden />
-          </button>
-        )}
       </div>
     </div>
   );

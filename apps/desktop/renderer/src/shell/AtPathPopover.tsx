@@ -10,6 +10,7 @@
 // 键盘事件: BottomBar onKeyDown 优先派发到本 popover (如果 open); 否则走原逻辑 (history 翻 / send 等)。
 
 import { useEffect, useState } from 'react';
+import { useI18n } from '../i18n/I18nProvider.js';
 
 interface Props {
   /** 当前 textarea 全文 + caret 位置 — BottomBar 传 (在 onChange / focus 时计算)。 */
@@ -53,6 +54,7 @@ export function AtPathPopover({
   onAccept,
   registerKeyHandler,
 }: Props): JSX.Element | null {
+  const { t } = useI18n();
   const token = findAtToken(text, caret);
   const [matches, setMatches] = useState<readonly string[]>([]);
   const [active, setActive] = useState(0);
@@ -144,7 +146,7 @@ export function AtPathPopover({
   return (
     <div className="absolute left-1 bottom-full mb-2 w-80 max-h-72 overflow-auto bg-surface-4 border border-border-default rounded-lg shadow-xl text-[12px] z-50">
       <div className="px-2 py-1 text-[11px] text-fg-muted uppercase tracking-wider border-b border-border-default/60">
-        @ Files {token?.query ? `· "${token.query}"` : ''}
+        {t('atPath.files')} {token?.query ? `· "${token.query}"` : ''}
       </div>
       <ul>
         {matches.map((p, i) => {
@@ -172,7 +174,7 @@ export function AtPathPopover({
         })}
       </ul>
       <div className="px-2 py-1 text-[11px] text-fg-faint border-t border-border-default/60">
-        Tab / Enter to insert · ↑↓ to navigate
+        {t('atPath.insertNavigateHint')}
       </div>
     </div>
   );

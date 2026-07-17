@@ -161,6 +161,20 @@ async function seedPartnerDeliveries(options: {
   await fs.mkdir(path.dirname(runPath), { recursive: true });
   await fs.writeFile(runPath, runContent);
 
+  const markdownRelativePath = 'reports/partner-preview.md';
+  const markdownContent = [
+    '# Partner preview',
+    '',
+    'This delivery should read like a rendered document, not editable source.',
+    '',
+    '| State | Surface |',
+    '| --- | --- |',
+    '| Read only | Artifact preview |',
+    '',
+  ].join('\n');
+  const markdownPath = path.join(runRootPath, ...markdownRelativePath.split('/'));
+  await fs.writeFile(markdownPath, markdownContent, 'utf-8');
+
   const workspaceDelivery = {
     id: 'pd-workspace-e2e',
     sessionId: options.sessionId,
@@ -200,6 +214,25 @@ async function seedPartnerDeliveries(options: {
     createdAt: now + 1,
     updatedAt: now + 1,
   };
+  const markdownDelivery = {
+    id: 'pd-markdown-e2e',
+    sessionId: options.sessionId,
+    projectRoot: options.projectDir,
+    rootKind: 'run-output',
+    rootPath: runRootPath,
+    absolutePath: markdownPath,
+    relativePath: markdownRelativePath,
+    kind: 'file',
+    title: 'partner-preview.md',
+    mime: 'text/markdown',
+    extension: '.md',
+    sizeBytes: Buffer.byteLength(markdownContent),
+    contentHash: sha256(markdownContent),
+    sourceRefs: ['brief.md'],
+    producer: 'write_partner_deliverable',
+    createdAt: now + 2,
+    updatedAt: now + 2,
+  };
   const checkpoint = {
     id: 'pc-e2e',
     sessionId: options.sessionId,
@@ -234,7 +267,11 @@ async function seedPartnerDeliveries(options: {
 
   await fs.writeFile(
     path.join(spaceDir, 'partner-deliveries.json'),
-    JSON.stringify({ version: 1, deliveries: [workspaceDelivery, arbitraryDelivery] }, null, 2),
+    JSON.stringify(
+      { version: 1, deliveries: [workspaceDelivery, arbitraryDelivery, markdownDelivery] },
+      null,
+      2,
+    ),
     'utf-8',
   );
   await fs.writeFile(
@@ -244,7 +281,7 @@ async function seedPartnerDeliveries(options: {
   );
 }
 
-test('Partner artifact rail can be hidden and restored without losing the conversation lane', async () => {
+test('Partner shares Coder sidebar chrome, width controls, max-mode close, and Files access', async () => {
   test.setTimeout(60_000); // Electron boot + window resize settle is slow on Windows CI
   const testId = `partner-artifact-rail-${Date.now()}`;
   const projectDir = await createProject(testId);
@@ -265,18 +302,41 @@ test('Partner artifact rail can be hidden and restored without losing the conver
     });
     await expect(page.getByTestId('partner-artifact-panel')).toBeVisible({ timeout: 15_000 });
 
-    const artifactToggle = page.getByTestId('partner-artifact-toggle');
-    await expect(artifactToggle).toHaveAttribute('aria-pressed', 'true');
+    const sidebar = page.getByTestId('right-sidebar');
+    const workspace = page.getByTestId('partner-workspace');
+    await expect(sidebar).toBeVisible();
+
+    await page.getByLabel('Half width').click();
+    await expect
+      .poll(async () => {
+        const sidebarBox = await sidebar.boundingBox();
+        const workspaceBox = await workspace.boundingBox();
+        return Math.abs((sidebarBox?.width ?? 0) - (workspaceBox?.width ?? 0));
+      })
+      .toBeLessThanOrEqual(2);
+
+    await page.getByLabel('Max width').click();
+    await expect(workspace).toBeHidden();
+    await expect(page.getByTestId('partner-artifact-panel-close')).toBeVisible();
     await page.getByTestId('partner-artifact-panel-close').click();
-    await expect(page.getByTestId('partner-artifact-panel')).toHaveCount(0);
-    await expect(page.getByTestId('partner-conversation')).toBeVisible();
+    await expect(sidebar).toHaveCount(0);
+    await expect(workspace).toBeVisible();
+
+    const artifactToggle = page.getByTestId('partner-artifact-toggle');
     await expect(artifactToggle).toHaveAttribute('aria-pressed', 'false');
 
-    const edgeToggle = page.getByTestId('partner-artifact-edge-toggle');
-    await expect(edgeToggle).toBeVisible();
-    await edgeToggle.click();
+    await expect(page.getByTestId('partner-artifact-edge-toggle')).toHaveCount(0);
+    await artifactToggle.click();
     await expect(page.getByTestId('partner-artifact-panel')).toBeVisible();
     await expect(artifactToggle).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.getByLabel('Default width')).toHaveAttribute('aria-pressed', 'true');
+
+    await page
+      .getByTestId('left-sidebar')
+      .getByRole('button', { name: 'Files', exact: true })
+      .click();
+    await expect(page.getByTestId('files-panel')).toBeVisible();
+    await expect(page.getByTestId('files-panel').getByText('brief.md').first()).toBeVisible();
   } finally {
     await space.close();
     await fs.rm(projectDir, { recursive: true, force: true }).catch(() => {});
@@ -323,8 +383,8 @@ test('Partner supports normal composer use, slash clear, mode shortcut, and resu
     await page.getByTestId('partner-artifact-panel-close').click();
     await expect(page.getByTestId('partner-artifact-panel')).toHaveCount(0);
     await expect(artifactToggle).toHaveAttribute('aria-pressed', 'false');
-    await expect(page.getByTestId('partner-artifact-edge-toggle')).toBeVisible();
-    await page.getByTestId('partner-artifact-edge-toggle').click();
+    await expect(page.getByTestId('partner-artifact-edge-toggle')).toHaveCount(0);
+    await artifactToggle.click();
     await expect(page.getByTestId('partner-artifact-panel')).toBeVisible();
 
     const modeLabel = /^(Plan|Accept edits|Auto)/;
@@ -410,6 +470,7 @@ test('Partner outputs show arbitrary deliveries and rollback checkpointed worksp
     await expect(panel).toBeVisible({ timeout: 10_000 });
     await expect(panel.getByText('src/partner-note.txt').first()).toBeVisible();
     await expect(panel.getByText('reports/custom.weird').first()).toBeVisible();
+    await expect(panel.getByText('reports/partner-preview.md').first()).toBeVisible();
     await expect(panel.getByText('application/octet-stream').first()).toBeVisible();
 
     await panel.getByRole('button', { name: 'Checkpoints' }).click();
@@ -434,6 +495,16 @@ test('Partner outputs show arbitrary deliveries and rollback checkpointed worksp
     await expect(panel.getByTestId('text-file-viewer')).toBeVisible();
     await expect(panel.getByLabel('Copy path')).toBeVisible();
     await expect(panel.getByLabel('Reveal in file manager')).toBeVisible();
+
+    await panel.locator('button', { hasText: 'reports/partner-preview.md' }).first().click();
+    await expect(panel.getByTestId('markdown-file-preview')).toBeVisible();
+    await expect(panel.getByTestId('markdown-artifact-preview')).toBeVisible();
+    await expect(panel.getByTestId('text-file-viewer')).not.toBeVisible();
+    await panel.getByLabel('Open as Artifact').click();
+    await expect(page.getByTestId('artifacts-view')).toBeVisible();
+    await expect(page.getByTestId('artifact-preview-title')).toContainText('partner-preview.md');
+    await expect(page.getByTestId('markdown-file-preview')).toBeVisible();
+    await expect(page.getByTestId('markdown-artifact-preview')).toBeVisible();
   } finally {
     await space.close();
     await fs.rm(projectDir, { recursive: true, force: true }).catch(() => {});

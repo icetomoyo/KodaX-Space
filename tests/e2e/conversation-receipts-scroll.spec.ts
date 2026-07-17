@@ -338,6 +338,10 @@ test('conversation receipt strip stays top-anchored on expand and preserves scro
       Math.abs(layout.thinking.y - layout.tool.y),
       'receipt chips should share a line',
     ).toBeLessThan(6);
+    expect(
+      Math.abs(layout.thinking.height - layout.tool.height),
+      'collapsed command and thinking receipt chips should share one height',
+    ).toBeLessThanOrEqual(1);
     expect(chipGap, 'receipt chips should be visually adjacent').toBeGreaterThanOrEqual(0);
     expect(chipGap, 'receipt chips should not be pushed across the row').toBeLessThanOrEqual(12);
     expect(layout.tool.width, 'tool chip should size to content, not fill the row').toBeLessThan(

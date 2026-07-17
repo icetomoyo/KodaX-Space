@@ -189,10 +189,9 @@ export function ModeSelector(): JSX.Element {
     current === 'auto'
       ? `${t('mode.label.auto')} · ${ENGINE_LABELS[engine]}`
       : t(MODE_LABEL_KEYS[current]);
-  // (next) 仅在真没 active session（welcome screen）时显示——之前判 `!session` 会撞
-  // session.list 替换 sessions[] 把 in-flight stub 短暂 stomp 掉的 race，让对话中也
-  // 误显示 (next)。currentSessionId 是 true source of truth。
-  const statusLabel = currentSessionId ? baseLabel : t('mode.nextSuffix', { label: baseLabel });
+  // 无 session 时这个选择会直接用于即将创建的会话，所以仍显示普通模式名；
+  // 附加“(next) / 下次”会让用户误以为它不会对即将发送的首条消息生效。
+  const statusLabel = baseLabel;
 
   return (
     <div className="relative">

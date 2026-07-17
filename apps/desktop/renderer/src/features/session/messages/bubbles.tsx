@@ -1,8 +1,8 @@
 // Bubble + ToolCallCard + SystemNotice 组件集合。
 // 单文件聚合：每个组件 < 80 行，共享 ConversationMessage 类型，拆分反而提高复杂度。
 
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { Check, Copy, FileText, GitFork, Undo2 } from 'lucide-react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Check, ChevronDown, ChevronUp, Copy, FileText, GitFork, Undo2 } from 'lucide-react';
 import type { ConversationMessage } from '../composeMessages.js';
 import { Markdown } from './Markdown.js';
 import { Caret } from '../../../components/Caret.js';
@@ -281,6 +281,94 @@ function UserMessageContent({ content }: { content: string }): JSX.Element {
 
 // ---- User Bubble ----
 
+const USER_QUERY_PREVIEW_LINES = 4;
+
+function CollapsibleUserMessageContent({ content }: { content: string }): JSX.Element {
+  const { t } = useI18n();
+  const contentId = useId();
+  const measuredContentRef = useRef<HTMLDivElement>(null);
+  const [expanded, setExpanded] = useState(false);
+  const [layout, setLayout] = useState({
+    fullHeight: 0,
+    previewHeight: 0,
+    collapsible: false,
+  });
+
+  useLayoutEffect(() => {
+    const element = measuredContentRef.current;
+    if (!element) return;
+
+    const measure = (): void => {
+      const style = getComputedStyle(element);
+      const parsedLineHeight = Number.parseFloat(style.lineHeight);
+      const parsedFontSize = Number.parseFloat(style.fontSize);
+      const lineHeight = Number.isFinite(parsedLineHeight)
+        ? parsedLineHeight
+        : (Number.isFinite(parsedFontSize) ? parsedFontSize : 13) * 1.6;
+      const previewHeight = Math.ceil(lineHeight * USER_QUERY_PREVIEW_LINES);
+      const fullHeight = Math.ceil(element.scrollHeight);
+      const collapsible = fullHeight > previewHeight + 1;
+
+      setLayout((current) =>
+        current.fullHeight === fullHeight &&
+        current.previewHeight === previewHeight &&
+        current.collapsible === collapsible
+          ? current
+          : { fullHeight, previewHeight, collapsible },
+      );
+      if (!collapsible) setExpanded(false);
+    };
+
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [content]);
+
+  const maxHeight = layout.collapsible
+    ? expanded
+      ? layout.fullHeight
+      : layout.previewHeight
+    : undefined;
+  const toggleLabel = t(expanded ? 'message.collapseQuery' : 'message.expandQuery');
+  const toggle = layout.collapsible ? (
+    <button
+      type="button"
+      data-testid="user-query-toggle"
+      onClick={() => setExpanded((current) => !current)}
+      aria-controls={contentId}
+      aria-expanded={expanded}
+      aria-label={toggleLabel}
+      className="ml-auto my-1 inline-flex h-5 items-center gap-0.5 rounded-md px-1.5 text-[11px] font-medium text-info/75 transition-colors hover:bg-info/10 hover:text-info focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-info/55"
+    >
+      {toggleLabel}
+      {expanded ? (
+        <ChevronUp className="h-3 w-3" strokeWidth={1.8} aria-hidden />
+      ) : (
+        <ChevronDown className="h-3 w-3" strokeWidth={1.8} aria-hidden />
+      )}
+    </button>
+  ) : null;
+
+  return (
+    <>
+      {expanded && toggle}
+      <div
+        id={contentId}
+        data-testid="user-query-content"
+        data-preview-lines={USER_QUERY_PREVIEW_LINES}
+        className="min-w-0 overflow-hidden transition-[max-height] duration-200 ease-out motion-reduce:transition-none"
+        style={maxHeight === undefined ? undefined : { maxHeight: `${maxHeight}px` }}
+      >
+        <div ref={measuredContentRef} className="min-w-0 leading-[1.6]">
+          <UserMessageContent content={content} />
+        </div>
+      </div>
+      {!expanded && toggle}
+    </>
+  );
+}
+
 export function UserBubble({ content, sentAt }: { content: string; sentAt?: number }): JSX.Element {
   // Claude Desktop 风格 ——「对话即文档」单列布局：user pill **左对齐**与 assistant
   // 同列，浅蓝窄底色、收宽到 max-w-[80%]、width 跟内容走 (inline-block) 不撑满。
@@ -293,7 +381,7 @@ export function UserBubble({ content, sentAt }: { content: string; sentAt?: numb
           'bg-info/15 border-info/40 text-info',
         ].join(' ')}
       >
-        <UserMessageContent content={content} />
+        <CollapsibleUserMessageContent content={content} />
       </div>
       <MessageFooter text={content} sentAt={sentAt} />
     </div>
@@ -478,6 +566,9 @@ const FILE_MUTATION_TOOLS_DEFAULT_EXPANDED: ReadonlySet<string> = new Set([
   'insert_after_anchor',
   // F059c: 产物卡片要在对话里直接可见可点，默认展开（input 已紧凑、不 dump content）。
   'create_artifact',
+  'write_partner_deliverable',
+  'write_partner_workspace_file',
+  'run_partner_helper',
 ]);
 
 export function ToolCallCard({

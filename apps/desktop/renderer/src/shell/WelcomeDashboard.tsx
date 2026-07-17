@@ -51,7 +51,7 @@ function dayKey(d: Date): string {
 }
 
 export function WelcomeDashboard(): JSX.Element {
-  const { t } = useI18n();
+  const { effectiveLocale, t } = useI18n();
   const sessions = useAppStore((s) => s.sessions);
   const userMessagesBySession = useAppStore((s) => s.userMessagesBySession);
   // tokensBySession 是派生稳定表 (只在 iteration_end / session_complete 时变)，避免订阅
@@ -195,13 +195,9 @@ export function WelcomeDashboard(): JSX.Element {
     const peakHourStr =
       peakCount === 0
         ? '—'
-        : peakHour === 0
-          ? '12 AM'
-          : peakHour < 12
-            ? `${peakHour} AM`
-            : peakHour === 12
-              ? '12 PM'
-              : `${peakHour - 12} PM`;
+        : new Intl.DateTimeFormat(effectiveLocale, { hour: 'numeric' }).format(
+            new Date(2000, 0, 1, peakHour),
+          );
 
     // Favorite model
     let favModel = '—';
@@ -243,14 +239,14 @@ export function WelcomeDashboard(): JSX.Element {
       messagesPerDay,
       modelBreakdown,
     };
-  }, [filteredSessions, userMessagesBySession, tokensBySession, providers]);
+  }, [effectiveLocale, filteredSessions, userMessagesBySession, tokensBySession, providers]);
 
   // 用户名：从项目路径末尾 segment 抓
   const userName = useMemo(() => {
-    if (!currentProjectPath) return 'there';
+    if (!currentProjectPath) return t('welcome.defaultName');
     const segs = currentProjectPath.split(/[\\/]/).filter(Boolean);
-    return segs[segs.length - 1] ?? 'there';
-  }, [currentProjectPath]);
+    return segs[segs.length - 1] ?? t('welcome.defaultName');
+  }, [currentProjectPath, t]);
 
   // Heatmap：固定 7×26 网格（~6 个月），行=weekday (周日→周六)，列=周
   // 计算：每格按"距今天 N 天"反向定位；今天放在最右列对应 weekday 行；今天之后的
@@ -305,7 +301,7 @@ export function WelcomeDashboard(): JSX.Element {
         <span className="text-warn" aria-hidden>
           ✱
         </span>
-        What&apos;s up next, <span className="font-semibold">{userName}</span>?
+        {t('welcome.greeting', { name: userName })}
       </h1>
 
       {/* Overview 卡 */}
@@ -316,23 +312,35 @@ export function WelcomeDashboard(): JSX.Element {
             <TabButton
               active={view === 'overview'}
               onClick={() => setView('overview')}
-              label="Overview"
+              label={t('welcome.overview')}
             />
             <TabButton
               active={view === 'models'}
               onClick={() => setView('models')}
-              label="Models"
+              label={t('welcome.models')}
             />
             <TabButton
               active={view === 'project'}
               onClick={() => setView('project')}
-              label="Project"
+              label={t('welcome.project')}
             />
           </div>
           <div className="flex gap-1">
-            <RangeButton active={range === 'all'} onClick={() => setRange('all')} label="All" />
-            <RangeButton active={range === '30d'} onClick={() => setRange('30d')} label="30d" />
-            <RangeButton active={range === '7d'} onClick={() => setRange('7d')} label="7d" />
+            <RangeButton
+              active={range === 'all'}
+              onClick={() => setRange('all')}
+              label={t('welcome.rangeAll')}
+            />
+            <RangeButton
+              active={range === '30d'}
+              onClick={() => setRange('30d')}
+              label={t('welcome.range30Days')}
+            />
+            <RangeButton
+              active={range === '7d'}
+              onClick={() => setRange('7d')}
+              label={t('welcome.range7Days')}
+            />
           </div>
         </div>
 
@@ -341,13 +349,19 @@ export function WelcomeDashboard(): JSX.Element {
             {/* Stats — 4 列 × 2 行布局；cells 等宽撑满父容器，与 heatmap 父宽对齐
                 Favorite model 占第 8 cell（col-span-1）但允许内容 wrap 2-3 行。 */}
             <div className="grid grid-cols-4 gap-x-4 gap-y-3 mb-5">
-              <StatCell label="Sessions" value={formatNum(stats.sessions)} />
-              <StatCell label="Messages" value={formatNum(stats.messages)} />
-              <StatCell label="Total tokens" value={formatTokensBig(stats.tokens)} />
-              <StatCell label="Active days" value={String(stats.activeDays)} />
-              <StatCell label="Current streak" value={`${stats.streak}d`} />
-              <StatCell label="Longest streak" value={`${stats.longest}d`} />
-              <StatCell label="Peak hour" value={stats.peakHourStr} />
+              <StatCell label={t('welcome.sessions')} value={formatNum(stats.sessions)} />
+              <StatCell label={t('welcome.messages')} value={formatNum(stats.messages)} />
+              <StatCell label={t('welcome.totalTokens')} value={formatTokensBig(stats.tokens)} />
+              <StatCell label={t('welcome.activeDays')} value={String(stats.activeDays)} />
+              <StatCell
+                label={t('welcome.currentStreak')}
+                value={t('welcome.daysCount', { count: stats.streak })}
+              />
+              <StatCell
+                label={t('welcome.longestStreak')}
+                value={t('welcome.daysCount', { count: stats.longest })}
+              />
+              <StatCell label={t('welcome.peakHour')} value={stats.peakHourStr} />
               <FavoriteModelCell
                 providerLabel={favoriteRender.providerLabel}
                 modelLabel={favoriteRender.modelLabel}
@@ -361,7 +375,7 @@ export function WelcomeDashboard(): JSX.Element {
             {/* 一句话 */}
             {duneMul > 0 ? (
               <div className="text-xs text-fg-muted">
-                You&apos;ve used ~{duneMul}× more tokens than Dune (full novel).
+                {t('welcome.duneComparison', { count: duneMul })}
               </div>
             ) : stats.sessions === 0 ? (
               <div className="text-xs text-fg-muted italic">

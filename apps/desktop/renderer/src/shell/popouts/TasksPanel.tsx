@@ -21,7 +21,7 @@ export function TasksPanel(): JSX.Element {
     currentSessionId ? s.harnessProfileBySession[currentSessionId] : undefined,
   );
 
-  const agents = useMemo(() => buildAgentStatuses(status), [status]);
+  const agents = useMemo(() => buildAgentStatuses(status, t), [status, t]);
   const workerById = useMemo(() => {
     const map = new Map<string, WorkerNode>();
     for (const worker of buildWorkerTree(status)) map.set(worker.workerId, worker);

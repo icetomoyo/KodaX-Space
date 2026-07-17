@@ -61,7 +61,8 @@ export function AgentModeSelector(): JSX.Element {
   const setRuntimeDefaults = useAppStore((s) => s.setRuntimeDefaults);
 
   const session = sessions.find((x) => x.sessionId === currentSessionId);
-  const current: AgentMode = session?.agentMode ?? pendingAgentMode ?? runtimeDefaults.agentMode ?? 'ama';
+  const current: AgentMode =
+    session?.agentMode ?? pendingAgentMode ?? runtimeDefaults.agentMode ?? 'ama';
 
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -113,8 +114,8 @@ export function AgentModeSelector(): JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [current, busy]);
 
-  // 同 ModeSelector：用 currentSessionId 判定，避免 sessions[] race 误显示 (next)
-  const labelText = currentSessionId ? LABELS[current] : `${LABELS[current]} (next)`;
+  // 无 session 时选中的模式就是即将创建会话的模式，无需再标注“(next)”。
+  const labelText = LABELS[current];
 
   return (
     <div className="relative">

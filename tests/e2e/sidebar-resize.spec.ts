@@ -200,6 +200,12 @@ test('right sidebar presets stay responsive and explicit half/max modes remain v
         25,
       );
     }
+
+    // The close action lives in the sidebar chrome, so it remains reachable when
+    // max mode hides the center pane and its ordinary sidebar toggle.
+    await right.getByLabel('Hide right sidebar').click();
+    await expect(right).toHaveCount(0);
+    await expect(center).toBeVisible();
   } finally {
     await space.close();
   }
