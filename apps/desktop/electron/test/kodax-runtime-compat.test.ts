@@ -4,7 +4,7 @@ import test from 'node:test';
 
 const PROBE_MARKER = 'KODAX_RUNTIME_PROBE=';
 const PROBE_TIMEOUT_MS = 30_000;
-const EXPECTED_KODAX_VERSION = '0.7.68';
+const EXPECTED_KODAX_VERSION = '0.7.72-hotfix.0';
 
 const PUBLISHED_RUNTIME_WORKER_PROBE = String.raw`
 import { mkdtemp, rm } from 'node:fs/promises';

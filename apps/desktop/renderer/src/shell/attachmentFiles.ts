@@ -34,3 +34,36 @@ export function inlineImageMediaType(
 export function isSupportedInlineImage(file: Pick<File, 'name' | 'type'>): boolean {
   return inlineImageMediaType(file) !== null;
 }
+
+export interface PendingAttachmentGate {
+  begin(): () => void;
+  isPending(): boolean;
+}
+
+/**
+ * Tracks asynchronous attachment preparation without relying on a React render
+ * to make the pending state observable to keyboard handlers.
+ */
+export function createPendingAttachmentGate(
+  onPendingChange: (pending: boolean) => void,
+): PendingAttachmentGate {
+  let pendingCount = 0;
+
+  return {
+    begin(): () => void {
+      pendingCount += 1;
+      if (pendingCount === 1) onPendingChange(true);
+
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        pendingCount = Math.max(0, pendingCount - 1);
+        if (pendingCount === 0) onPendingChange(false);
+      };
+    },
+    isPending(): boolean {
+      return pendingCount > 0;
+    },
+  };
+}

@@ -11,7 +11,8 @@
 # 让 GitHub 主页不显示 Latest release + electron-updater (releaseType: release) 找不到
 # 任何 release → F022 自动更新实际从来没工作过。Body 里仍保留 unsigned 警告，用户首次
 # 启动看到 OS warning（Gatekeeper / SmartScreen）就够明示了。
-# 真要标 prerelease（v0.x.y-rc.N 这种），手动 workflow_dispatch 时传 mark_as_prerelease=true。
+# 带 SemVer prerelease 后缀的 tag（例如 -rc.N / -hotfix.N）会自动标记为 prerelease；
+# 手动 workflow_dispatch 也可以通过 mark_as_prerelease=true 显式控制。
 
 name: release
 
@@ -262,8 +263,7 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          # tag push → 正式 release；Release body 优先展示 CHANGELOG，安装签名提示放在后置说明。
-          # workflow_dispatch → 用户输入决定（默认 false）
-          prerelease: ${{ github.event.inputs.mark_as_prerelease == 'true' }}
+          # tag push → SemVer 后缀或手动输入决定 prerelease；Release body 优先展示 CHANGELOG。
+          prerelease: ${{ github.event.inputs.mark_as_prerelease == 'true' || contains(github.ref_name, '-') }}
           files: release/*
           body_path: release-notes.md

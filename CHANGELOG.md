@@ -14,6 +14,27 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ## [Unreleased]
 
+## [0.1.32-hotfix.0] - 2026-07-17
+
+### Theme
+
+**Emergency multimodal follow-up reliability hotfix for Ark Coding models.**
+
+### Fixed
+
+- **Ark Coding image preflight** - Upgraded to exact `@kodax-ai/kodax@0.7.72-hotfix.0`, which recognizes image input for `doubao-seed-2.0-code`, `doubao-seed-2.0-pro`, `kimi-k2.7-code`, `kimi-k2.6`, and `minimax-m3` instead of rejecting supported routes as text-only.
+- **Attachment/send race** - Composer send paths now synchronously wait for every clipboard, picker, drag-and-drop, and folder attachment operation to finish. Pressing Enter immediately after adding an image can no longer send the text before the image artifact has been persisted.
+- **SDK compatibility gate** - Updated the published Runtime Worker/external-agent probe to require the exact emergency SDK version.
+
+### Changed
+
+- **Prerelease classification** - SemVer tags with a prerelease suffix, including `v0.1.32-hotfix.0`, are automatically published as GitHub prereleases so the later stable `v0.1.32` remains distinct.
+
+### Verification
+
+- All five Ark Coding routes report image input as supported and pass SDK image-artifact preflight after a clean `npm ci`.
+- Attachment gate tests (6/6), the complete `npm test` suite, TypeScript, targeted ESLint/Prettier, and the production `build:smoke` gate pass.
+
 ## [0.1.31] - 2026-07-12
 
 ### Theme

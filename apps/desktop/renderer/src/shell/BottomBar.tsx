@@ -31,7 +31,12 @@ import {
 import { parseLegacySkillToken, safeSkillSlashText, skillSlashEchoText } from './skillSlash.js';
 import { registerInsertReceiver } from './inputBridge.js';
 import { resolveSessionCreateInputs } from './createSession.js';
-import { inlineImageMediaType, isSupportedInlineImage } from './attachmentFiles.js';
+import {
+  createPendingAttachmentGate,
+  inlineImageMediaType,
+  isSupportedInlineImage,
+  type PendingAttachmentGate,
+} from './attachmentFiles.js';
 import { useIsStreaming } from './ActivitySpinner.js';
 import { AgentModeSelector } from './AgentModeSelector.js';
 // Retired StashNotice; file changes now live in RightSidebar.ChangesSection.
@@ -563,6 +568,7 @@ export function BottomBar(): JSX.Element {
   );
   const [prompt, setPrompt] = useState('');
   const [busy, setBusy] = useState(false);
+  const [isAttaching, setIsAttaching] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [attachOpen, setAttachOpen] = useState(false);
   // Images already persisted to main-process temp storage and awaiting send.
@@ -583,6 +589,10 @@ export function BottomBar(): JSX.Element {
   } | null>(null);
   const slashKeyHandlerRef = useRef<((e: KeyboardEvent) => boolean) | null>(null);
   const atPathKeyHandlerRef = useRef<((e: KeyboardEvent) => boolean) | null>(null);
+  const attachmentGateRef = useRef<PendingAttachmentGate | null>(null);
+  if (attachmentGateRef.current === null) {
+    attachmentGateRef.current = createPendingAttachmentGate(setIsAttaching);
+  }
   const [partnerWorkbenchContext, setPartnerWorkbenchContext] =
     useState<PartnerWorkbenchContextDetail | null>(() => readPartnerWorkbenchContext());
   const handleSendRef = useRef<
@@ -951,6 +961,23 @@ export function BottomBar(): JSX.Element {
     }
   }
 
+  function startAttachmentOperation(operation: () => Promise<void>): void {
+    const release = attachmentGateRef.current!.begin();
+    let pending: Promise<void>;
+    try {
+      pending = operation();
+    } catch (error) {
+      release();
+      setImageErr(error instanceof Error ? error.message : String(error));
+      return;
+    }
+    void pending
+      .catch((error: unknown) => {
+        setImageErr(error instanceof Error ? error.message : String(error));
+      })
+      .finally(release);
+  }
+
   async function attachNativeClipboardImage(): Promise<void> {
     if (!window.kodaxSpace) return;
     if (pendingImages.length >= MAX_PENDING_IMAGES) {
@@ -1107,7 +1134,8 @@ export function BottomBar(): JSX.Element {
     e.preventDefault();
     dragDepthRef.current = 0;
     setDraggingFiles(false);
-    void attachLocalFiles(Array.from(e.dataTransfer.files), 'drag-drop');
+    const files = Array.from(e.dataTransfer.files);
+    startAttachmentOperation(() => attachLocalFiles(files, 'drag-drop'));
   }
 
   const activeSlash = getActiveSlashCompletion(prompt, caret);
@@ -1965,7 +1993,7 @@ export function BottomBar(): JSX.Element {
     promptOverride?: string,
   ): Promise<void> {
     if (!window.kodaxSpace) return;
-    if (busy) return;
+    if (busy || attachmentGateRef.current!.isPending()) return;
     const promptAtSend = promptOverride ?? prompt;
     const trimmed = promptAtSend.trim();
     const fileRefPrompt = pendingFileReferencePrompt(trimmed, pendingFileRefs);
@@ -2238,7 +2266,7 @@ export function BottomBar(): JSX.Element {
     }
 
     if (e.key === 'Enter' && !e.shiftKey) {
-      if (busy) {
+      if (busy || attachmentGateRef.current!.isPending()) {
         e.preventDefault();
         return;
       }
@@ -2291,6 +2319,7 @@ export function BottomBar(): JSX.Element {
   // Send is enabled for text, inline images, or pending file references.
   const canSend =
     !busy &&
+    !isAttaching &&
     !isStreaming &&
     !!currentProjectPath &&
     (prompt.trim().length > 0 || pendingImages.length > 0 || pendingFileRefs.length > 0);
@@ -2298,7 +2327,7 @@ export function BottomBar(): JSX.Element {
     ? t('bottom.sendTitle.ready')
     : !currentProjectPath
       ? t('bottom.openFolderFirst')
-      : busy
+      : busy || isAttaching
         ? t('bottom.sendTitle.busy')
         : t('bottom.sendTitle.empty');
   const partnerModeLabel =
@@ -2474,12 +2503,12 @@ export function BottomBar(): JSX.Element {
                 const images = clipboardImageFiles(data);
                 if (images.length > 0) {
                   e.preventDefault();
-                  void attachImages(images, 'clipboard');
+                  startAttachmentOperation(() => attachImages(images, 'clipboard'));
                   return;
                 }
                 if (!shouldTryNativeClipboardImageFallback(data)) return;
                 e.preventDefault();
-                void attachNativeClipboardImage();
+                startAttachmentOperation(attachNativeClipboardImage);
               }}
               aria-disabled={busy}
               readOnly={busy}
@@ -2545,7 +2574,7 @@ export function BottomBar(): JSX.Element {
                   onChange={(event) => {
                     const files = Array.from(event.currentTarget.files ?? []);
                     event.currentTarget.value = '';
-                    void attachLocalFiles(files, 'file-picker');
+                    startAttachmentOperation(() => attachLocalFiles(files, 'file-picker'));
                   }}
                 />
                 <button
@@ -2566,7 +2595,7 @@ export function BottomBar(): JSX.Element {
                     input.value = '';
                     input.click();
                   }}
-                  onAddFolder={() => void attachFolder()}
+                  onAddFolder={() => startAttachmentOperation(attachFolder)}
                   onInsertText={(text) => setPrompt((p) => (p ? `${p} ${text}` : text))}
                 />
               </div>

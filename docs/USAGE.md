@@ -2,7 +2,7 @@
 
 > 面向源码使用者、贡献者和发布维护者。普通用户请阅读[用户使用手册](USER_MANUAL.zh-CN.md)。
 >
-> 当前正式版本：KodaX Space `v0.1.31` / `@kodax-ai/kodax@0.7.68`
+> 当前紧急预发布版本：KodaX Space `v0.1.32-hotfix.0` / `@kodax-ai/kodax@0.7.72-hotfix.0`；后续正式版仍为 `v0.1.32`。
 
 ## 1. 环境要求
 

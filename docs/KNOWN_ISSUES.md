@@ -1,8 +1,8 @@
 # Known Issues
 
-Last Updated: 2026-07-12
+Last Updated: 2026-07-17
 
-> Historical issue details are preserved as investigation evidence. Current public release is v0.1.31. Start from the [documentation hub](README.md) for current behavior and status.
+> Historical issue details are preserved as investigation evidence. Current emergency prerelease is v0.1.32-hotfix.0; the next stable release remains v0.1.32. Start from the [documentation hub](README.md) for current behavior and status.
 
 ## Issue Index
 
@@ -43,8 +43,28 @@ Last Updated: 2026-07-12
 | 033 | Low      | Resolved | Project Session spinner remained visible over already-restored rows after switching surfaces                                | v0.1.30               | 2026-07-12 |
 | 034 | Medium   | Resolved | Task Dock width presets drifted from responsive default, explicit half, and full-workspace behavior                         | v0.1.30               | 2026-07-12 |
 | 035 | Medium   | Resolved | Project Session refresh rescanned the full history tree and made empty Coder/Partner scopes slow                            | v0.1.30               | 2026-07-12 |
+| 036 | High     | Resolved | Ark multimodal follow-ups could reject supported models or send text before an image artifact finished persisting           | <= v0.1.31            | 2026-07-17 |
 
 ## Issue Details
+
+### 036: Ark multimodal follow-ups could reject supported models or send text before an image artifact finished persisting
+
+- Priority: High
+- Status: Resolved
+- Introduced: <= v0.1.31
+- Fixed: v0.1.32-hotfix.0
+- Created: 2026-07-17
+- Resolution Date: 2026-07-17
+
+#### Original Problem
+
+After a successful image-and-text turn, a user could send a text follow-up, stop generation, then add another image and immediately send. The follow-up could fail with `input artifact preflight failed` for a supported Ark Coding multimodal route. Space also allowed Enter/button/programmatic send to race asynchronous attachment persistence, so a sufficiently fast send could omit the newly added artifact.
+
+#### Resolution
+
+- KodaX SDK `0.7.72-hotfix.0` corrects image capability routing for the supported Ark Coding models.
+- Space tracks pending attachment work synchronously and blocks every send path until all attachment operations settle.
+- Capability and artifact preflight checks cover both Doubao Seed 2.0 routes, Kimi K2.7 Code, Kimi K2.6, and MiniMax M3.
 
 ### 001: Resumed sessions display `glm-5.2` but run with provider default `glm-5`, causing early compaction
 
