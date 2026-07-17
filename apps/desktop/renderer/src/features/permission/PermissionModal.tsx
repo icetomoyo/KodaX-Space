@@ -60,6 +60,14 @@ const RISK_LABEL_KEY: Record<PermissionRisk, MessageKey> = {
   high: 'permission.risk.high',
   danger: 'permission.risk.danger',
 };
+type PermissionOperation = NonNullable<PermissionRequestPayload['toolCall']['operation']>;
+const OPERATION_LABEL_KEY: Record<PermissionOperation, MessageKey> = {
+  read: 'permission.operation.read',
+  write: 'permission.operation.write',
+  execute: 'permission.operation.execute',
+  network: 'permission.operation.network',
+  unknown: 'permission.operation.unknown',
+};
 
 const DANGER_CONFIRM_PHRASE = 'CONFIRM';
 const PERMISSION_SURFACE = floatingSurfaceForBlockingModal(
@@ -74,6 +82,18 @@ const PERMISSION_BATCH_SURFACE = floatingSurfaceForBlockingModal(
 function truncate(s: string, max: number): string {
   if (s.length <= max) return s;
   return s.slice(0, max - 1) + '…';
+}
+
+function permissionCommand(input: Record<string, unknown> | undefined): string | null {
+  if (!input) return null;
+  const value = input.command ?? input.cmd ?? input.script ?? input.shellScript ?? input.shell;
+  return typeof value === 'string' ? truncate(value, 8_192) : null;
+}
+
+function permissionTarget(input: Record<string, unknown> | undefined): string | null {
+  if (!input) return null;
+  const value = input.path ?? input.file ?? input.target;
+  return typeof value === 'string' ? truncate(value, 4_096) : null;
 }
 
 export function PermissionModal(): JSX.Element | null {
@@ -95,12 +115,46 @@ export function PermissionModal(): JSX.Element | null {
     setErr(null);
   }, [head?.reqId]);
 
-  const inputPreview = useMemo(() => {
-    if (!head?.toolCall.input) return null;
+  const display = useMemo(() => {
+    const input = head?.toolCall.input;
+    if (!input) {
+      return { command: null, description: null, target: null, inputPreview: null };
+    }
+    const command = permissionCommand(input);
+    const description =
+      typeof input.description === 'string' ? truncate(input.description, 512) : null;
+    const target = permissionTarget(input);
+    const additionalInput = { ...input };
+    for (const key of [
+      'command',
+      'cmd',
+      'script',
+      'shellScript',
+      'shell',
+      'description',
+      'path',
+      'file',
+      'target',
+    ]) {
+      delete additionalInput[key];
+    }
+    if (Object.keys(additionalInput).length === 0) {
+      return { command, description, target, inputPreview: null };
+    }
     try {
-      return truncate(JSON.stringify(head.toolCall.input, null, 2), 2000);
+      return {
+        command,
+        description,
+        target,
+        inputPreview: truncate(JSON.stringify(additionalInput, null, 2), 2_000),
+      };
     } catch {
-      return t('permission.unserializableInput');
+      return {
+        command,
+        description,
+        target,
+        inputPreview: t('permission.unserializableInput'),
+      };
     }
   }, [head, t]);
 
@@ -197,13 +251,53 @@ export function PermissionModal(): JSX.Element | null {
             <div className="text-sm font-mono text-warn">{head.toolCall.toolName}</div>
           </div>
 
-          {inputPreview && (
+          <div className="grid grid-cols-[7rem_minmax(0,1fr)] gap-x-3 gap-y-2 text-xs">
+            <div className="font-mono uppercase text-fg-muted">{t('permission.operation')}</div>
+            <div className="text-fg-primary">
+              {t(OPERATION_LABEL_KEY[head.toolCall.operation ?? 'unknown'])}
+            </div>
+            {display.description && (
+              <>
+                <div className="font-mono uppercase text-fg-muted">
+                  {t('permission.description')}
+                </div>
+                <div className="text-fg-primary break-words">{display.description}</div>
+              </>
+            )}
+            {head.toolCall.executionCwd && (
+              <>
+                <div className="font-mono uppercase text-fg-muted">
+                  {t('permission.workingDirectory')}
+                </div>
+                <code className="text-fg-primary break-all">{head.toolCall.executionCwd}</code>
+              </>
+            )}
+            {display.target && (
+              <>
+                <div className="font-mono uppercase text-fg-muted">{t('permission.target')}</div>
+                <code className="text-fg-primary break-all">{display.target}</code>
+              </>
+            )}
+          </div>
+
+          {display.command && (
+            <div className="space-y-1">
+              <div className="text-[11px] font-mono uppercase text-fg-muted">
+                {t('permission.command')}
+              </div>
+              <pre className="text-xs font-mono bg-surface border border-border-default rounded p-2 overflow-x-auto max-h-48 whitespace-pre-wrap break-all">
+                {display.command}
+              </pre>
+            </div>
+          )}
+
+          {display.inputPreview && (
             <div className="space-y-1">
               <div className="text-[11px] font-mono uppercase text-fg-muted">
                 {t('permission.input')}
               </div>
               <pre className="text-xs font-mono bg-surface border border-border-default rounded p-2 overflow-x-auto max-h-48">
-                {inputPreview}
+                {display.inputPreview}
               </pre>
             </div>
           )}
@@ -359,41 +453,59 @@ function PermissionBatchView({ items, dequeue }: PermissionBatchViewProps): JSX.
         </div>
 
         <div className="px-5 py-3 flex-1 overflow-y-auto space-y-2">
-          {items.map((it) => (
-            <div
-              key={it.reqId}
-              className="flex items-center gap-2 border border-border-default rounded px-3 py-2 hover:bg-hover-bg"
-            >
-              <span
-                className={`px-1.5 py-0.5 text-[9px] font-mono font-semibold rounded ${RISK_STYLE[it.risk].badge}`}
-                title={t('permission.riskTitle', { risk: t(RISK_LABEL_KEY[it.risk]) })}
+          {items.map((it) => {
+            const command = permissionCommand(it.toolCall.input);
+            const target = permissionTarget(it.toolCall.input);
+            return (
+              <div
+                key={it.reqId}
+                className="flex items-start gap-2 border border-border-default rounded px-3 py-2 hover:bg-hover-bg"
               >
-                {t(RISK_LABEL_KEY[it.risk])}
-              </span>
-              <span className="text-xs font-mono text-warn flex-shrink-0">
-                {it.toolCall.toolName}
-              </span>
-              <span className="text-xs text-fg-muted truncate flex-1" title={it.reason}>
-                {truncate(it.reason, 100)}
-              </span>
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => void answerOne(it.reqId, 'deny')}
-                className="px-2 py-0.5 text-xs rounded dark:bg-surface-3 dark:text-fg-primary dark:hover:bg-hover-bg bg-surface-3 text-fg-secondary hover:bg-hover-bg disabled:opacity-50"
-              >
-                {t('permission.deny')}
-              </button>
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => void answerOne(it.reqId, 'allow_once')}
-                className="px-2 py-0.5 text-xs rounded font-medium bg-ok/15 text-ok border border-ok/50 hover:bg-ok/25 disabled:opacity-50"
-              >
-                {t('permission.allow')}
-              </button>
-            </div>
-          ))}
+                <span
+                  className={`mt-0.5 px-1.5 py-0.5 text-[9px] font-mono font-semibold rounded ${RISK_STYLE[it.risk].badge}`}
+                  title={t('permission.riskTitle', { risk: t(RISK_LABEL_KEY[it.risk]) })}
+                >
+                  {t(RISK_LABEL_KEY[it.risk])}
+                </span>
+                <span className="mt-0.5 text-xs font-mono text-warn flex-shrink-0">
+                  {it.toolCall.toolName}
+                </span>
+                <div className="min-w-0 flex-1 space-y-1">
+                  <div className="text-[10px] font-mono uppercase text-fg-muted break-all">
+                    {t(OPERATION_LABEL_KEY[it.toolCall.operation ?? 'unknown'])}
+                    {it.toolCall.executionCwd ? ` · ${it.toolCall.executionCwd}` : ''}
+                  </div>
+                  <div className="text-xs text-fg-muted break-words" title={it.reason}>
+                    {truncate(it.reason, 200)}
+                  </div>
+                  {command && (
+                    <code className="block text-[11px] text-fg-primary whitespace-pre-wrap break-all">
+                      {command}
+                    </code>
+                  )}
+                  {target && !command && (
+                    <code className="block text-[11px] text-fg-primary break-all">{target}</code>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void answerOne(it.reqId, 'deny')}
+                  className="px-2 py-0.5 text-xs rounded dark:bg-surface-3 dark:text-fg-primary dark:hover:bg-hover-bg bg-surface-3 text-fg-secondary hover:bg-hover-bg disabled:opacity-50"
+                >
+                  {t('permission.deny')}
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void answerOne(it.reqId, 'allow_once')}
+                  className="px-2 py-0.5 text-xs rounded font-medium bg-ok/15 text-ok border border-ok/50 hover:bg-ok/25 disabled:opacity-50"
+                >
+                  {t('permission.allow')}
+                </button>
+              </div>
+            );
+          })}
           {err && <div className="text-xs text-danger font-mono">{err}</div>}
         </div>
 

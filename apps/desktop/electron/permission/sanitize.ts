@@ -28,6 +28,30 @@
 
 const INVISIBLE_CHARS_RE =
   /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g;
+const COMMAND_INVISIBLE_CHARS_RE =
+  /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g;
+const SENSITIVE_FIELD_RE = /(?:api[_-]?key|authorization|cookie|credential|password|secret|token)/i;
+const COMMAND_FIELD_RE = /^(?:command|cmd|script|shellScript|shell)$/i;
+const MAX_INPUT_DEPTH = 4;
+const MAX_COLLECTION_ITEMS = 128;
+const REDACTED = '[REDACTED]';
+
+function redactEmbeddedCredentials(value: string): string {
+  return value
+    .replace(
+      /\b((?=[a-z0-9_]*(?:api[_-]?key|access[_-]?key|access[_-]?token|auth[_-]?token|password|secret|token))[a-z_][a-z0-9_]*)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s;&|]+)/gi,
+      `$1=${REDACTED}`,
+    )
+    .replace(
+      /(--(?:api[_-]?key|authorization|password|secret|token))(?:=|\s+)(?:"[^"]*"|'[^']*'|[^\s;&|]+)/gi,
+      `$1=${REDACTED}`,
+    )
+    .replace(
+      /\b((?:proxy-)?authorization|cookie|x-api-key)(\s*:\s*)(?:bearer\s+|basic\s+)?[^\s"';&|]+/gi,
+      `$1$2${REDACTED}`,
+    )
+    .replace(/(https?:\/\/)[^\s/:@]+:[^\s/@]+@/gi, `$1${REDACTED}@`);
+}
 
 /**
  * 剥控制符 / RTL override / 零宽 / BOM，折叠空白。
@@ -42,10 +66,17 @@ export function sanitizeForDisplay(input: string, maxLen: number): string {
   return scalars.slice(0, maxLen - 1).join('') + '…';
 }
 
+function sanitizeCommandForDisplay(input: string, maxLen: number): string {
+  const stripped = input.replace(/\r\n?/g, '\n').replace(COMMAND_INVISIBLE_CHARS_RE, '');
+  const scalars = Array.from(stripped);
+  if (scalars.length <= maxLen) return scalars.join('');
+  return scalars.slice(0, maxLen - 1).join('') + '…';
+}
+
 /**
  * 递归地清洗 input record 里所有 string 值；非 string 原样保留。
- * 数组 / object 递归一层（不递归到深层嵌套——LLM tool input 通常是浅 record，
- * 真有深嵌套也只清洗第一层避免 stack overflow / 性能问题）。
+ * 数组 / object 最多递归四层，并检测循环引用，避免异常 tool input 导致
+ * stack overflow；敏感字段与命令中的常见凭据在进入 renderer 前脱敏。
  *
  * 单 string 上限 4096：超出长度的字符串通常是 tool output 被 LLM 当 input 回灌
  * （e.g., read 一整个文件然后 write 到另一处），modal 里没意义全部显示；
@@ -56,21 +87,47 @@ export function sanitizeInputForDisplay(
 ): Record<string, unknown> | undefined {
   if (!input) return input;
   const out: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(input)) {
-    out[key] = sanitizeValue(value);
+  const seen = new WeakSet<object>();
+  seen.add(input);
+  const entries = Object.entries(input);
+  const entryLimit =
+    entries.length > MAX_COLLECTION_ITEMS ? MAX_COLLECTION_ITEMS - 1 : MAX_COLLECTION_ITEMS;
+  for (const [key, value] of entries.slice(0, entryLimit)) {
+    out[key] = sanitizeValue(value, key, 0, seen);
   }
+  if (entries.length > MAX_COLLECTION_ITEMS) out.__truncated = true;
   return out;
 }
 
-function sanitizeValue(v: unknown): unknown {
-  if (typeof v === 'string') return sanitizeForDisplay(v, 4096);
-  if (Array.isArray(v)) return v.map(sanitizeValue);
-  if (v && typeof v === 'object') {
+function sanitizeValue(value: unknown, key: string, depth: number, seen: WeakSet<object>): unknown {
+  if (SENSITIVE_FIELD_RE.test(key)) return REDACTED;
+  if (typeof value === 'string') {
+    const redacted = redactEmbeddedCredentials(value);
+    return COMMAND_FIELD_RE.test(key)
+      ? sanitizeCommandForDisplay(redacted, 4096)
+      : sanitizeForDisplay(redacted, 4096);
+  }
+  if (Array.isArray(value)) {
+    if (depth >= MAX_INPUT_DEPTH || seen.has(value)) return '[OMITTED]';
+    seen.add(value);
+    const itemLimit =
+      value.length > MAX_COLLECTION_ITEMS ? MAX_COLLECTION_ITEMS - 1 : MAX_COLLECTION_ITEMS;
+    const items = value.slice(0, itemLimit).map((item) => sanitizeValue(item, '', depth + 1, seen));
+    if (value.length > MAX_COLLECTION_ITEMS) items.push('[TRUNCATED]');
+    return items;
+  }
+  if (value && typeof value === 'object') {
+    if (depth >= MAX_INPUT_DEPTH || seen.has(value)) return '[OMITTED]';
+    seen.add(value);
     const out: Record<string, unknown> = {};
-    for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
-      out[k] = typeof val === 'string' ? sanitizeForDisplay(val, 4096) : val;
+    const entries = Object.entries(value as Record<string, unknown>);
+    const entryLimit =
+      entries.length > MAX_COLLECTION_ITEMS ? MAX_COLLECTION_ITEMS - 1 : MAX_COLLECTION_ITEMS;
+    for (const [nestedKey, nestedValue] of entries.slice(0, entryLimit)) {
+      out[nestedKey] = sanitizeValue(nestedValue, nestedKey, depth + 1, seen);
     }
+    if (entries.length > MAX_COLLECTION_ITEMS) out.__truncated = true;
     return out;
   }
-  return v;
+  return value;
 }

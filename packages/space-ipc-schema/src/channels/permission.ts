@@ -26,10 +26,16 @@ import { z } from 'zod';
 // 共享：tool call 描述。toolName + input + 可选 pattern（如 "bash:rm -rf *"）。
 // 用 z.record(z.unknown()) 而非 z.unknown()——保证 input 是个 object，
 // renderer 渲染时不必再做 typeof / null 兜底。
+const permissionInputSchema = z
+  .record(z.unknown())
+  .refine((value) => Object.keys(value).length <= 128, 'permission input has too many fields');
+const permissionOperationSchema = z.enum(['read', 'write', 'execute', 'network', 'unknown']);
 const permissionToolCallSchema = z.object({
   toolId: z.string().min(1),
   toolName: z.string().min(1),
-  input: z.record(z.unknown()).optional(),
+  input: permissionInputSchema.optional(),
+  operation: permissionOperationSchema.optional(),
+  executionCwd: z.string().min(1).max(4096).optional(),
 });
 
 const riskLevelSchema = z.enum(['low', 'medium', 'high', 'danger']);

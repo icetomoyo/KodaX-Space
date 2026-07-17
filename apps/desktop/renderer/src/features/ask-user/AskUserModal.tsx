@@ -323,7 +323,7 @@ export function AskUserModal(): JSX.Element | null {
       >
         <div className="px-5 py-3 border-b border-border-default flex items-center gap-3 flex-shrink-0">
           <span className="px-2 py-0.5 text-[11px] font-mono font-semibold rounded bg-warn/15 text-warn">
-            ASK
+            {t('askUser.badge')}
           </span>
           <h2 id="ask-user-modal-title" className="text-sm font-semibold text-fg-primary">
             {title}

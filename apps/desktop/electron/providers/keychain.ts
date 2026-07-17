@@ -31,8 +31,18 @@
 // 不直接静态 `import` keyring——它是 native module，在没有对应平台 prebuild 的环境
 // （罕见）/ Linux 无 libsecret 时运行期可能加载或调用失败。运行时动态 `import()` 失败时
 // fallback 到 memory。这里自己声明用到的最小接口（与 keytar 兼容层一致）。
+// macOS v0.1.32+ uses Electron safeStorage as one OS-protected encryption key
+// plus an encrypted Provider record file. Legacy per-Provider `kodax-space`
+// Keychain items are imported only when that Provider is actually used.
+// Windows/Linux keep the native per-Provider keyring layout below.
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import path from 'node:path';
+import { getSpaceDataDir } from '../kodax/data-paths.js';
+import {
+  CredentialVaultCorruptError,
+  EncryptedCredentialVault,
+} from './encrypted-credential-vault.js';
 
 interface KeyringApi {
   getPassword(service: string, account: string): Promise<string | null>;
@@ -43,6 +53,15 @@ interface KeyringApi {
 
 const SERVICE_NAME = 'kodax-space';
 const execFileAsync = promisify(execFile);
+const MACOS_VAULT_FILE = path.join(getSpaceDataDir(), 'provider-credentials.v1.json');
+
+interface SafeStorageApi {
+  isEncryptionAvailable(): boolean;
+  encryptStringAsync(plainText: string): Promise<Buffer>;
+  decryptStringAsync(
+    encrypted: Buffer,
+  ): Promise<{ readonly result: string; readonly shouldReEncrypt: boolean }>;
+}
 
 // @napi-rs/keyring 的 keytar 兼容子入口——导出 getPassword/setPassword/deletePassword/findCredentials。
 // 带 .js 后缀：该包无 `exports` 字段，ESM 动态 import 子路径必须显式扩展名（CJS require 也认）。
@@ -73,11 +92,42 @@ function loadKeyring(): Promise<KeyringApi | null> {
 const memoryStore = new Map<string, string>();
 const keychainSecretCache = new Map<string, string>();
 const keychainReadQueue = new Map<string, Promise<string | undefined>>();
+const skippedMacosReads = new Set<string>();
+
+let macosVaultPromise: Promise<EncryptedCredentialVault | null> | null = null;
+
+function loadMacosVault(): Promise<EncryptedCredentialVault | null> {
+  if (process.platform !== 'darwin') return Promise.resolve(null);
+  if (macosVaultPromise) return macosVaultPromise;
+  macosVaultPromise = (async () => {
+    try {
+      const electron = (await import('electron')) as unknown as { safeStorage?: SafeStorageApi };
+      const safeStorage = electron.safeStorage;
+      if (!safeStorage?.isEncryptionAvailable()) return null;
+      return new EncryptedCredentialVault(MACOS_VAULT_FILE, {
+        encrypt: (plainText) => safeStorage.encryptStringAsync(plainText),
+        decrypt: (encrypted) => safeStorage.decryptStringAsync(encrypted),
+      });
+    } catch (err) {
+      console.warn(
+        `[keychain] macOS encrypted credential vault unavailable: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return null;
+    }
+  })();
+  return macosVaultPromise;
+}
 
 let backendStatus: 'unknown' | 'keychain' | 'memory' = 'unknown';
 
 async function detectBackend(): Promise<'keychain' | 'memory'> {
   if (backendStatus !== 'unknown') return backendStatus;
+  if (process.platform === 'darwin' && (await loadMacosVault())) {
+    backendStatus = 'keychain';
+    return backendStatus;
+  }
   const keyring = await loadKeyring();
   if (!keyring) {
     backendStatus = 'memory';
@@ -123,6 +173,28 @@ export async function setKey(account: string, secret: string): Promise<void> {
     memoryStore.set(account, secret);
     return;
   }
+  if (process.platform === 'darwin') {
+    const vault = await loadMacosVault();
+    if (vault) {
+      try {
+        await vault.set(account, secret);
+        keychainSecretCache.set(account, secret);
+        skippedMacosReads.delete(account);
+        memoryStore.delete(account);
+        return;
+      } catch (err) {
+        if (err instanceof CredentialVaultCorruptError) throw err;
+        console.warn(
+          `[keychain] macOS encrypted credential write failed, falling back to memory: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+        backendStatus = 'memory';
+        memoryStore.set(account, secret);
+        return;
+      }
+    }
+  }
   const keyring = await loadKeyring();
   if (!keyring) {
     memoryStore.set(account, secret);
@@ -158,6 +230,14 @@ export async function getKey(account: string): Promise<string | undefined> {
   if (cached !== undefined) return cached;
   const queued = keychainReadQueue.get(account);
   if (queued) return queued;
+  if (process.platform === 'darwin') {
+    const vault = await loadMacosVault();
+    if (vault) {
+      const read = readMacosCredential(vault, account);
+      keychainReadQueue.set(account, read);
+      return read;
+    }
+  }
   const keyring = await loadKeyring();
   if (!keyring) {
     return memoryStore.get(account);
@@ -182,11 +262,77 @@ export async function getKey(account: string): Promise<string | undefined> {
   return read;
 }
 
+async function readMacosCredential(
+  vault: EncryptedCredentialVault,
+  account: string,
+): Promise<string | undefined> {
+  try {
+    // A cancelled/denied Keychain dialog must not be immediately re-opened by
+    // another caller in the same process. The user can retry after relaunch.
+    if (skippedMacosReads.has(account)) return memoryStore.get(account);
+    const stored = await vault.get(account);
+    if (stored !== undefined) {
+      keychainSecretCache.set(account, stored);
+      return stored;
+    }
+    if (await vault.isLegacyRevoked(account)) {
+      return memoryStore.get(account);
+    }
+
+    // Lazy one-time migration. Provider catalog/status reads never reach this
+    // path, so an old per-Provider Keychain item prompts only when that
+    // Provider is actually used. A denial is remembered for this process.
+    const keyring = await loadKeyring();
+    if (!keyring) return memoryStore.get(account);
+    const legacy = await keyring.getPassword(SERVICE_NAME, account);
+    if (legacy === null) {
+      skippedMacosReads.add(account);
+      return memoryStore.get(account);
+    }
+    await vault.set(account, legacy);
+    keychainSecretCache.set(account, legacy);
+    return legacy;
+  } catch (err) {
+    skippedMacosReads.add(account);
+    console.warn(
+      `[keychain] macOS credential read/migration failed for account=${account}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+    return memoryStore.get(account);
+  } finally {
+    keychainReadQueue.delete(account);
+  }
+}
+
 /** 删 key。返回是否实际删了一条记录。*/
 export async function deleteKey(account: string): Promise<boolean> {
   const backend = await detectBackend();
   if (backend === 'memory') {
     return memoryStore.delete(account);
+  }
+  if (process.platform === 'darwin') {
+    const vault = await loadMacosVault();
+    if (vault) {
+      const vaultHadKey = await vault.has(account);
+      const legacyRevoked = await vault.isLegacyRevoked(account);
+      const legacyHadKey = legacyRevoked
+        ? false
+        : ((await macosHasGenericPassword(account)) ?? false);
+      await vault.delete(account);
+      keychainSecretCache.delete(account);
+      skippedMacosReads.add(account);
+      memoryStore.delete(account);
+      if (legacyHadKey) {
+        const cleaned = await deleteMacosGenericPasswordWithoutReading(account);
+        if (!cleaned) {
+          console.info(
+            `[keychain] legacy account=${account} remains in macOS Keychain but is revoked in Space`,
+          );
+        }
+      }
+      return vaultHadKey || legacyHadKey;
+    }
   }
   const keyring = await loadKeyring();
   if (!keyring) {
@@ -220,6 +366,10 @@ export async function listAccounts(): Promise<readonly string[]> {
   const backend = await detectBackend();
   if (backend === 'memory') {
     return [...memoryStore.keys()];
+  }
+  if (process.platform === 'darwin') {
+    const vault = await loadMacosVault();
+    if (vault) return vault.listAccounts();
   }
   const keyring = await loadKeyring();
   if (!keyring) {
@@ -262,12 +412,37 @@ async function macosHasGenericPassword(account: string): Promise<boolean | undef
   }
 }
 
+async function deleteMacosGenericPasswordWithoutReading(account: string): Promise<boolean> {
+  if (process.platform !== 'darwin') return false;
+  try {
+    await execFileAsync(
+      '/usr/bin/security',
+      ['-q', 'delete-generic-password', '-s', SERVICE_NAME, '-a', account],
+      { timeout: 2500, windowsHide: true },
+    );
+    return true;
+  } catch (err) {
+    const maybe = err as { killed?: boolean; signal?: NodeJS.Signals | null };
+    if (maybe.killed || maybe.signal) {
+      console.warn(`[keychain] timed out cleaning legacy account=${account}`);
+    }
+    return false;
+  }
+}
+
 export async function hasKey(account: string): Promise<boolean> {
   const backend = await detectBackend();
   if (backend === 'memory') {
     return memoryStore.has(account);
   }
   if (keychainSecretCache.has(account)) return true;
+  if (process.platform === 'darwin') {
+    const vault = await loadMacosVault();
+    if (vault) {
+      if (await vault.has(account)) return true;
+      if (await vault.isLegacyRevoked(account)) return false;
+    }
+  }
   const macosResult = await macosHasGenericPassword(account);
   if (macosResult !== undefined) return macosResult;
   return (await listAccounts()).includes(account);
@@ -281,8 +456,14 @@ export async function listConfiguredAccounts(
   }
   const uniqueCandidates = [...new Set(candidateAccounts)];
   if (process.platform === 'darwin') {
+    const vault = await loadMacosVault();
+    const vaultAccounts = new Set(vault ? await vault.listAccounts() : []);
     const results = await Promise.all(
-      uniqueCandidates.map(async (account) => ((await hasKey(account)) ? account : undefined)),
+      uniqueCandidates.map(async (account) => {
+        if (vaultAccounts.has(account) || keychainSecretCache.has(account)) return account;
+        if (vault && (await vault.isLegacyRevoked(account))) return undefined;
+        return (await macosHasGenericPassword(account)) ? account : undefined;
+      }),
     );
     return results.filter((account): account is string => account !== undefined);
   }
@@ -294,6 +475,8 @@ export function _resetMemoryStoreForTesting(): void {
   memoryStore.clear();
   keychainSecretCache.clear();
   keychainReadQueue.clear();
+  skippedMacosReads.clear();
+  macosVaultPromise = null;
   // 跳过 detectBackend：直接锁定 'memory'，detectBackend 早返回
   backendStatus = 'memory';
   // keyringPromise 不重置——keep 它指向 null 或 loaded module 都行，

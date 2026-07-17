@@ -98,3 +98,57 @@ test('long strings in input are truncated to 4096', () => {
   const c = out?.content as string;
   assert.equal(c.length, 4096);
 });
+
+test('sensitive fields are redacted before permission input reaches the renderer', () => {
+  const out = sanitizeInputForDisplay({
+    apiKey: 'sk-secret',
+    nested: { authorization: 'Bearer secret', path: 'src/main.ts' },
+    headers: ['safe'],
+  });
+  assert.equal(out?.apiKey, '[REDACTED]');
+  assert.deepEqual(out?.nested, {
+    authorization: '[REDACTED]',
+    path: 'src/main.ts',
+  });
+});
+
+test('obvious credentials embedded in displayed shell commands are redacted', () => {
+  const out = sanitizeInputForDisplay({
+    command: 'API_KEY=sk-secret curl --authorization="Bearer abc" https://example.test',
+  });
+  assert.equal(
+    out?.command,
+    'API_KEY=[REDACTED] curl --authorization=[REDACTED] https://example.test',
+  );
+});
+
+test('authorization headers and URL userinfo are redacted in displayed commands', () => {
+  const out = sanitizeInputForDisplay({
+    command:
+      'AWS_SECRET_ACCESS_KEY=private curl -H "Authorization: Bearer private" https://user:pass@example.test',
+  });
+  assert.equal(
+    out?.command,
+    'AWS_SECRET_ACCESS_KEY=[REDACTED] curl -H "Authorization: [REDACTED]" https://[REDACTED]@example.test',
+  );
+});
+
+test('displayed commands preserve line and token boundaries', () => {
+  const out = sanitizeInputForDisplay({
+    command: 'echo safe\r\nrm -rf ./tmp\t--dry-run',
+  });
+
+  assert.equal(out?.command, 'echo safe\nrm -rf ./tmp\t--dry-run');
+});
+
+test('nested permission collections are bounded before entering the renderer', () => {
+  const out = sanitizeInputForDisplay({
+    args: Array.from({ length: 300 }, (_, index) => `arg-${index}`),
+    nested: Object.fromEntries(Array.from({ length: 300 }, (_, index) => [`key-${index}`, index])),
+  });
+
+  assert.equal((out?.args as unknown[]).length, 128);
+  assert.equal((out?.args as unknown[]).at(-1), '[TRUNCATED]');
+  assert.equal(Object.keys(out?.nested as Record<string, unknown>).length, 128);
+  assert.equal((out?.nested as Record<string, unknown>).__truncated, true);
+});
