@@ -1,11 +1,13 @@
-// 生成 1024x1024 占位 PNG icon——纯色 + 居中字母 K，避免引依赖。
+// 生成 1024x1024 PNG + Windows 多尺寸 ICO icon——纯色 + 居中字母 K，避免引依赖。
 //
 // 为什么自己拼 PNG 而不是 import canvas / sharp：
 //   - sharp 是 native，安装失败概率高（同 keytar 课）
 //   - 这只是 alpha 的占位 icon，v0.1.5 会替换成真实设计资源
 //   - PNG 文件结构足够简单——纯色 raster + CRC32，自己 60 行能写出来
 //
-// 输出：resources/icon.png（electron-builder 会从这个自动生成 ico/icns）
+// 输出：resources/icon.png + resources/icon.ico。macOS 仍由 electron-builder 从 PNG
+// 生成 icns；Windows 直接使用多尺寸 ICO，避免 portable 外层启动器仅含单个
+// 256px PNG entry 时在部分 Explorer / 缩放组合下显示不稳定。
 //
 // 一次性脚本：跑 `node scripts/gen-icon.mjs` 重新生成。CI 里也跑一次（仓库不 check-in 二进制）。
 
@@ -16,7 +18,8 @@ import { deflateSync } from 'node:zlib';
 import { Buffer } from 'node:buffer';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const SIZE = 1024;
+const PNG_SIZE = 1024;
+const ICO_SIZES = [16, 24, 32, 48, 64, 128, 256];
 
 // CRC32 表
 const CRC_TABLE = (() => {
@@ -110,12 +113,50 @@ function buildPng(size) {
   const sig = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
   const raster = buildRaster(size);
   const compressed = deflateSync(raster);
-  return Buffer.concat([sig, ihdr(size, size), chunk('IDAT', compressed), chunk('IEND', Buffer.alloc(0))]);
+  return Buffer.concat([
+    sig,
+    ihdr(size, size),
+    chunk('IDAT', compressed),
+    chunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+
+function buildIco(sizes) {
+  const images = sizes.map((size) => ({ size, png: buildPng(size) }));
+  const headerSize = 6;
+  const entrySize = 16;
+  let imageOffset = headerSize + entrySize * images.length;
+
+  const header = Buffer.alloc(headerSize);
+  header.writeUInt16LE(0, 0); // reserved
+  header.writeUInt16LE(1, 2); // ICO image
+  header.writeUInt16LE(images.length, 4);
+
+  const directory = Buffer.alloc(entrySize * images.length);
+  for (let i = 0; i < images.length; i++) {
+    const { size, png } = images[i];
+    const offset = i * entrySize;
+    directory[offset] = size === 256 ? 0 : size;
+    directory[offset + 1] = size === 256 ? 0 : size;
+    directory[offset + 2] = 0; // true color
+    directory[offset + 3] = 0;
+    directory.writeUInt16LE(1, offset + 4); // color planes
+    directory.writeUInt16LE(32, offset + 6); // bits per pixel
+    directory.writeUInt32LE(png.length, offset + 8);
+    directory.writeUInt32LE(imageOffset, offset + 12);
+    imageOffset += png.length;
+  }
+
+  return Buffer.concat([header, directory, ...images.map(({ png }) => png)]);
 }
 
 const outDir = resolve(__dirname, '..', 'resources');
 mkdirSync(outDir, { recursive: true });
-const png = buildPng(SIZE);
-const outPath = resolve(outDir, 'icon.png');
-writeFileSync(outPath, png);
-console.log(`[gen-icon] wrote ${outPath} (${png.length} bytes, ${SIZE}x${SIZE})`);
+const png = buildPng(PNG_SIZE);
+const pngPath = resolve(outDir, 'icon.png');
+const ico = buildIco(ICO_SIZES);
+const icoPath = resolve(outDir, 'icon.ico');
+writeFileSync(pngPath, png);
+writeFileSync(icoPath, ico);
+console.log(`[gen-icon] wrote ${pngPath} (${png.length} bytes, ${PNG_SIZE}x${PNG_SIZE})`);
+console.log(`[gen-icon] wrote ${icoPath} (${ico.length} bytes, ${ICO_SIZES.join('/')}px)`);

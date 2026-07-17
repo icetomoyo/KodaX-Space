@@ -28,7 +28,7 @@ const IS_WIN = process.platform === 'win32';
 const IS_MAC = process.platform === 'darwin';
 
 // Lazy load node-pty via createRequire — top-level ESM import would break the
-// tsx/esm test harness (no native binding in CI test env, plus electron rebuilds
+// tsx test harness (no native binding in CI test env, plus electron rebuilds
 // it for Electron's V8 ABI which doesn't match Node's at test time).
 let nodePtyCache: typeof import('node-pty') | null = null;
 function getNodePty(): typeof import('node-pty') {

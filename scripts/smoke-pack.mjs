@@ -21,7 +21,10 @@ const rootDir = path.resolve(__dirname, '..');
 const outDir = path.join(rootDir, 'out');
 const rootPackage = JSON.parse(readFileSync(path.join(rootDir, 'package.json'), 'utf8'));
 const SPACE_VERSION = String(rootPackage.version ?? '').trim();
-const KODAX_VERSION = String(rootPackage.dependencies?.['@kodax-ai/kodax'] ?? '').trim();
+const installedKodaxPackage = JSON.parse(
+  readFileSync(path.join(rootDir, 'node_modules', '@kodax-ai', 'kodax', 'package.json'), 'utf8'),
+);
+const KODAX_VERSION = String(installedKodaxPackage.version ?? '').trim();
 const SIZE_LIMIT_BYTES = 200 * 1024 * 1024;
 const require = createRequire(import.meta.url);
 const electronBin = require('electron');
@@ -215,6 +218,60 @@ async function checkSize(installerPath) {
     fail(`${path.basename(installerPath)} is ${mb} MB — exceeds 200 MB cap`);
   }
   ok(`${path.basename(installerPath)} = ${mb} MB (< 200 MB cap)`);
+}
+
+function readIcoImages(ico) {
+  if (ico.length < 6 || ico.readUInt16LE(0) !== 0 || ico.readUInt16LE(2) !== 1) {
+    fail('resources/icon.ico is not a valid ICO file');
+  }
+  const count = ico.readUInt16LE(4);
+  if (count === 0 || ico.length < 6 + count * 16) {
+    fail('resources/icon.ico has no valid image entries');
+  }
+
+  const images = [];
+  for (let index = 0; index < count; index++) {
+    const entryOffset = 6 + index * 16;
+    const width = ico[entryOffset] === 0 ? 256 : ico[entryOffset];
+    const height = ico[entryOffset + 1] === 0 ? 256 : ico[entryOffset + 1];
+    const size = ico.readUInt32LE(entryOffset + 8);
+    const offset = ico.readUInt32LE(entryOffset + 12);
+    if (size === 0 || offset + size > ico.length) {
+      fail(`resources/icon.ico entry ${index} is out of bounds`);
+    }
+    images.push({ width, height, bytes: ico.subarray(offset, offset + size) });
+  }
+  return images;
+}
+
+async function checkWindowsExecutableIcons(installerPaths) {
+  if (process.platform !== 'win32') return;
+
+  const icoPath = path.join(rootDir, 'resources', 'icon.ico');
+  const ico = await fs.readFile(icoPath);
+  const images = readIcoImages(ico);
+  const requiredSizes = [16, 32, 48, 256];
+  for (const size of requiredSizes) {
+    if (!images.some((image) => image.width === size && image.height === size)) {
+      fail(`resources/icon.ico is missing required ${size}x${size} entry`);
+    }
+  }
+
+  // NSIS and rcedit embed the PNG-compressed ICO image bytes unchanged in the
+  // PE resource table. Requiring the 256px entry catches a portable launcher
+  // that was produced without an application icon while avoiding shell-cache
+  // dependent visual checks on CI.
+  const marker = images.find((image) => image.width === 256 && image.height === 256)?.bytes;
+  if (!marker) fail('resources/icon.ico is missing its 256x256 marker image');
+
+  const executables = installerPaths.filter((installerPath) => /\.exe$/i.test(installerPath));
+  for (const executable of executables) {
+    const bytes = await fs.readFile(executable);
+    if (bytes.indexOf(marker) < 0) {
+      fail(`${path.basename(executable)} does not contain the configured application icon`);
+    }
+    ok(`${path.basename(executable)} contains the configured application icon`);
+  }
 }
 
 async function findAsarPaths() {
@@ -526,6 +583,7 @@ async function main() {
   for (const installer of installers) {
     await checkSize(installer);
   }
+  await checkWindowsExecutableIcons(installers);
   for (const asarPath of await findAsarPaths()) {
     await checkAsarContents(asarPath);
     checkKodaxWorkersExecuteFromAsar(asarPath);

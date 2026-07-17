@@ -1,33 +1,120 @@
-// Boot smoke: 启动打包后的 win-unpacked app，确认主进程不崩、窗口正常创建。
-import { _electron as electron } from 'playwright';
+// Packaged boot smoke: start the real unpacked executable with an isolated
+// profile, then verify the app's own Runtime and renderer readiness records.
+import { spawn, spawnSync } from 'node:child_process';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const exe = path.join(__dirname, '..', 'out', 'win-unpacked', 'KodaX Space.exe');
-const env = { ...process.env };
+const rootDir = path.join(__dirname, '..');
+const exe = path.join(rootDir, 'out', 'win-unpacked', 'KodaX Space.exe');
+const profileDir = await mkdtemp(path.join(tmpdir(), 'kodax-space-boot-smoke-'));
+const diagnosticsPath = path.join(
+  profileDir,
+  'space',
+  'electron-user-data',
+  'diagnostics',
+  'space-main.jsonl',
+);
+const daemonPath = path.join(profileDir, 'runtime', 'daemon', 'coder', 'daemon.json');
+const installedKodax = JSON.parse(
+  await readFile(path.join(rootDir, 'node_modules', '@kodax-ai', 'kodax', 'package.json'), 'utf8'),
+);
+const expectedKodaxVersion = String(installedKodax.version);
+const env = { ...process.env, KODAX_PROFILE_DIR: profileDir };
 delete env.ELECTRON_RUN_AS_NODE;
-try {
-  const app = await electron.launch({ executablePath: exe, env, timeout: 45000 });
-  const win = await app.firstWindow();
-  await win.waitForLoadState('domcontentloaded');
-  await win.waitForTimeout(3000);
-  const url = win.url();
-  if (!url.startsWith('app://space/')) {
-    throw new Error(`unexpected packaged renderer origin: ${url}`);
+
+const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+async function readJson(pathname) {
+  try {
+    return JSON.parse(await readFile(pathname, 'utf8'));
+  } catch {
+    return undefined;
   }
-  const title = await win.title();
-  const hasInput = await win.locator('textarea').count();
+}
+
+async function readDiagnostics() {
+  try {
+    return (await readFile(diagnosticsPath, 'utf8'))
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+  } catch {
+    return [];
+  }
+}
+
+const child = spawn(exe, [], {
+  cwd: path.dirname(exe),
+  env,
+  stdio: 'ignore',
+  windowsHide: true,
+});
+
+try {
+  const deadline = Date.now() + 45_000;
+  let daemon;
+  let diagnostics = [];
+  while (Date.now() < deadline) {
+    if (child.exitCode !== null) {
+      throw new Error(`packaged app exited before readiness (code ${child.exitCode})`);
+    }
+    daemon = await readJson(daemonPath);
+    diagnostics = await readDiagnostics();
+    const runtimeReady = diagnostics.some(
+      (event) => event.component === 'runtime' && event.event === 'host_initialized',
+    );
+    const rendererReady = diagnostics.some(
+      (event) =>
+        event.component === 'legacy-console' &&
+        event.message?.includes('renderer visual-ready') &&
+        event.message?.includes('app://space/index.html'),
+    );
+    if (runtimeReady && rendererReady && daemon?.status === 'ready') break;
+    await sleep(100);
+  }
+
+  if (daemon?.status !== 'ready') throw new Error('packaged Coder daemon did not become ready');
+  if (daemon.version !== expectedKodaxVersion) {
+    throw new Error(`unexpected packaged KodaX version: ${daemon.version}`);
+  }
+  if (path.resolve(daemon.configHome) !== path.resolve(profileDir)) {
+    throw new Error(`packaged daemon used the wrong config home: ${daemon.configHome}`);
+  }
+  const finalDiagnostics = await readDiagnostics();
+  if (
+    !finalDiagnostics.some(
+      (event) => event.component === 'runtime' && event.event === 'host_initialized',
+    )
+  ) {
+    throw new Error('packaged Runtime host did not initialize');
+  }
+  if (
+    !finalDiagnostics.some(
+      (event) =>
+        event.component === 'legacy-console' &&
+        event.message?.includes('renderer visual-ready') &&
+        event.message?.includes('app://space/index.html'),
+    )
+  ) {
+    throw new Error('packaged renderer did not reach app://space visual readiness');
+  }
   console.log(
-    '[boot-smoke] PASS — packaged app 起窗口成功 | origin=',
-    'app://space',
-    '| title=',
-    JSON.stringify(title),
-    '| textarea=',
-    hasInput,
+    `[boot-smoke] PASS | KodaX ${expectedKodaxVersion} daemon ready | Runtime host ready | renderer app://space ready`,
   );
-  await app.close();
-  process.exit(0);
-} catch (e) {
-  console.log('[boot-smoke] FAIL — packaged app 启动失败:', e.message.split('\n')[0]);
-  process.exit(1);
+} catch (error) {
+  console.error('[boot-smoke] FAIL:', error instanceof Error ? error.message : String(error));
+  process.exitCode = 1;
+} finally {
+  if (process.platform === 'win32' && child.pid !== undefined) {
+    spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], {
+      stdio: 'ignore',
+      windowsHide: true,
+    });
+  } else {
+    child.kill('SIGKILL');
+  }
+  await rm(profileDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }

@@ -10,7 +10,7 @@
 //     file:///etc/passwd-style injection).
 //
 // `import type` only — no runtime electron import, so this module is safe to pull
-// into the tsx/esm test loader.
+// into the tsx test loader.
 
 import type { WebContents } from 'electron';
 

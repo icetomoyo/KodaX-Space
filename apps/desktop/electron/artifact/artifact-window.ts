@@ -6,7 +6,7 @@
 // view that reads the artifact by id over IPC) instead of the full <App/>.
 //
 // Lazy electron access (BrowserWindow/shell) mirrors ipc/artifact.ts so this module
-// stays importable under the tsx/esm test loader.
+// stays importable under the tsx test loader.
 
 import { createRequire } from 'node:module';
 import { registerChannel } from '../ipc/register.js';

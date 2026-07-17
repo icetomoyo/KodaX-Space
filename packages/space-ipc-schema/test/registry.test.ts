@@ -1,4 +1,4 @@
-// Schema package unit tests — run with `node --test --import tsx/esm`.
+// Schema package unit tests — run with `node --test --import tsx`.
 //
 // 覆盖：
 // - 有效入参通过 zod.parse

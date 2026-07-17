@@ -20,10 +20,10 @@ import {
 import type { IpcMainInvokeEvent } from 'electron';
 
 // 惰性拿 ipcMain —— **不**在 top-level `import { ipcMain } from 'electron'`。
-// 否则任何 import 本模块的代码（含测试经 slash.ts / ipc handler 的依赖链）在 tsx/esm
+// 否则任何 import 本模块的代码（含测试经 slash.ts / ipc handler 的依赖链）在 tsx
 // 测试环境（无 electron runtime）的 import 期就撞 "electron has no export 'ipcMain'"。
 // 改惰性：仅生产 main 调 registerChannel 时才求值 electron；测试 import 但不注册 channel → 不触发。
-// require/createRequire 双轨同 catalog.ts：main build 输出 CJS 走 require，tsx/esm 走 createRequire。
+// require/createRequire 双轨同 catalog.ts：main build 输出 CJS 走 require，tsx 走 createRequire。
 let ipcMainCache: typeof import('electron').ipcMain | null = null;
 function getIpcMain(): typeof import('electron').ipcMain {
   if (ipcMainCache !== null) return ipcMainCache;

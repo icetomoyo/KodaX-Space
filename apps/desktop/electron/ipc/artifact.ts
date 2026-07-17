@@ -296,7 +296,7 @@ export async function inlineMarkdownImageAssets(
 }
 
 // Lazy electron access (dialog/BrowserWindow) — avoids a top-level 'electron'
-// import so this module stays importable under the tsx/esm test loader.
+// import so this module stays importable under the tsx test loader.
 function getElectron(): typeof import('electron') {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const meta = typeof require !== 'undefined' ? null : (import.meta as any);
