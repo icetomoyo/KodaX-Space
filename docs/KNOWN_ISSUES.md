@@ -43,28 +43,28 @@ Last Updated: 2026-07-17
 | 033 | Low      | Resolved | Project Session spinner remained visible over already-restored rows after switching surfaces                                | v0.1.30               | 2026-07-12 |
 | 034 | Medium   | Resolved | Task Dock width presets drifted from responsive default, explicit half, and full-workspace behavior                         | v0.1.30               | 2026-07-12 |
 | 035 | Medium   | Resolved | Project Session refresh rescanned the full history tree and made empty Coder/Partner scopes slow                            | v0.1.30               | 2026-07-12 |
-| 036 | High     | Resolved | Ark multimodal follow-ups could reject supported models or send text before an image artifact finished persisting           | <= v0.1.31            | 2026-07-17 |
+| 036 | Medium   | Resolved | New Sessions ignored the provider/model most recently selected in the active Session                                        | v0.1.31               | 2026-07-13 |
+| 037 | Medium   | Resolved | Partner output links lost their Delivery identity and were incorrectly resolved as project files                            | v0.1.31               | 2026-07-14 |
+| 038 | Medium   | Resolved | File-backed Markdown opened in Artifact as raw Monaco source instead of a document reading preview                          | v0.1.31               | 2026-07-14 |
+| 039 | Medium   | Resolved | Partner kept a duplicate collapsed-sidebar edge rail alongside the shared header toggle                                     | v0.1.31               | 2026-07-14 |
+| 040 | Low      | Resolved | Adjacent command and thinking receipt chips render at different heights                                                     | v0.1.31               | 2026-07-14 |
+| 041 | Medium   | Resolved | Every assistant text block in a user turn reuses the Query timestamp instead of its own output time                         | v0.1.31               | 2026-07-14 |
+| 042 | High     | Resolved | Interactive HTML Artifact can show only its static shell and keep stale content after a new version                         | v0.1.31               | 2026-07-14 |
+| 043 | High     | Open     | Unsigned macOS releases repeatedly request the login password for Provider Keychain access                                  | v0.1.4                | 2026-07-14 |
+| 044 | Low      | Resolved | Windows portable executable icon can render as missing or inconsistently across shell sizes                                 | v0.1.31               | 2026-07-15 |
+| 045 | Low      | Resolved | New-conversation mode selectors append a confusing `next` suffix                                                            | v0.1.x                | 2026-07-15 |
+| 046 | High     | Resolved | F121 live projection and daemon lease lifecycles could diverge across attached Space clients                                | v0.1.32 development   | 2026-07-15 |
+| 047 | Low      | Resolved | Long user queries consume excessive transcript height without an inline collapse control                                    | v0.1.x                | 2026-07-16 |
+| 048 | Low      | Resolved | Legacy `tsx/esm` test registration corrupts CommonJS JSON imports from the KodaX SDK dependency graph                       | v0.1.x                | 2026-07-17 |
+| 049 | Medium   | Resolved | Provider/model and mode changes rolled back before the first send because the daemon Session was not admitted               | v0.1.32 development   | 2026-07-17 |
+| 050 | Medium   | Open     | Reference Agent continuation can remain `working` after `sendInput` until an explicit reconcile                             | KodaX 0.7.71          | 2026-07-17 |
+| 051 | Low      | Open     | Embedded Runtime omits the working `externalAgentAdmin` service from its public capability metadata                         | KodaX 0.7.71          | 2026-07-17 |
+| 052 | Medium   | Resolved | Composer could send text before an asynchronously attached image entered the artifact payload                               | v0.1.9                | 2026-07-17 |
+| 053 | Medium   | Resolved | Restored daemon runs rejected queued prompts because the composer requested unsupported interrupt delivery                  | v0.1.32 development   | 2026-07-17 |
+| 054 | High     | Resolved | Daemon permission dialogs discarded command, directory, and operation context                                               | v0.1.31               | 2026-07-17 |
+| 055 | High     | Resolved | Ark multimodal follow-ups rejected supported model routes during artifact preflight                                         | <= v0.1.31            | 2026-07-17 |
 
 ## Issue Details
-
-### 036: Ark multimodal follow-ups could reject supported models or send text before an image artifact finished persisting
-
-- Priority: High
-- Status: Resolved
-- Introduced: <= v0.1.31
-- Fixed: v0.1.32-hotfix.0
-- Created: 2026-07-17
-- Resolution Date: 2026-07-17
-
-#### Original Problem
-
-After a successful image-and-text turn, a user could send a text follow-up, stop generation, then add another image and immediately send. The follow-up could fail with `input artifact preflight failed` for a supported Ark Coding multimodal route. Space also allowed Enter/button/programmatic send to race asynchronous attachment persistence, so a sufficiently fast send could omit the newly added artifact.
-
-#### Resolution
-
-- KodaX SDK `0.7.72-hotfix.0` corrects image capability routing for the supported Ark Coding models.
-- Space tracks pending attachment work synchronously and blocks every send path until all attachment operations settle.
-- Capability and artifact preflight checks cover both Doubao Seed 2.0 routes, Kimi K2.7 Code, Kimi K2.6, and MiniMax M3.
 
 ### 001: Resumed sessions display `glm-5.2` but run with provider default `glm-5`, causing early compaction
 
@@ -2014,12 +2014,1277 @@ Tests:
 - Electron main build, desktop TypeScript typecheck, targeted ESLint, and `git diff --check`.
 - Read-only real-data comparison verified zero missing/extra Session IDs for sampled KodaX and KodaX-Space project results.
 
+### 036: New Sessions ignored the provider/model most recently selected in the active Session
+
+- Priority: Medium
+- Status: Resolved
+- Introduced: v0.1.31
+- Fixed: v0.1.31
+- Created: 2026-07-13
+- Resolution Date: 2026-07-13
+
+#### Original Problem
+
+After selecting a provider/model in an active Session, creating a new Session could still start with `zhipu-coding/glm-5.2` instead of the pair that had just been selected.
+
+Expected behavior: a successful provider/model selection should become the preference used by subsequent new Sessions, including another Session created before the desktop app restarts. Selecting the model that is already active should still refresh that next-Session preference.
+
+#### Root Cause
+
+- `ModelEffortSelector` persisted `provider.setDefault` in the main process but did not update the renderer store's `defaultProviderId`. `resolveSessionCreateInputs()` therefore kept using the stale in-memory provider until `provider.list` ran again or the app restarted.
+- The selected model was copied to `pendingModel` only inside the branch that executed `/model`. Selecting the already-active model skipped that branch, so the next-Session preference could remain stale.
+- When the stale provider and pending model did not belong together, the intentional provider/model validation fell back to that provider's default model. With `zhipu-coding` still held in memory, this appeared as a consistent reset to `zhipu-coding/glm-5.2`.
+
+#### Proposed Solution
+
+- Add a renderer-store action that synchronizes `defaultProviderId` and provider `isDefault` flags after `provider.setDefault` succeeds.
+- Persist the selected model as the next-Session preference after a successful picker commit even when no runtime `/model` change is required.
+- Add regression coverage for renderer default-provider synchronization and new-Session input resolution.
+
+#### Acceptance Criteria
+
+- A successful picker change from `zhipu-coding/glm-5.2` to another provider/model immediately changes the next `session.create` provider/model in the same app process.
+- Re-selecting the active model refreshes the next-Session model preference without requiring a redundant runtime command.
+- Failed provider/model changes do not overwrite the corresponding next-Session preference.
+
+#### Resolution
+
+- Added `setDefaultProviderId()` to the renderer store so a successful `provider.setDefault` call immediately updates both `defaultProviderId` and the provider catalog's `isDefault` flags.
+- Updated the model picker to apply that store synchronization after main-process persistence succeeds.
+- Moved the next-Session model preference update outside the runtime-change branch, so selecting the already-active model is still remembered without issuing a redundant `/model` command.
+
+Files changed:
+
+- `apps/desktop/renderer/src/store/appStore.ts`
+- `apps/desktop/renderer/src/shell/ModelEffortSelector.tsx`
+- `apps/desktop/electron/test/app-store-default-provider.test.ts`
+- `docs/KNOWN_ISSUES.md`
+
+Tests added:
+
+- Renderer default-provider state and provider `isDefault` flags synchronize immediately.
+- The synchronized provider/model pair is selected by `resolveSessionCreateInputs()` for the next Session.
+
+Verification:
+
+- Desktop test suite passed: 1,419 passed, 0 failed, 1 platform-dependent symlink test skipped.
+- Root TypeScript typecheck passed.
+- Targeted ESLint and Prettier checks passed.
+
+### 037: Partner output links lost their Delivery identity and were incorrectly resolved as project files
+
+- Priority: Medium
+- Status: Resolved
+- Introduced: v0.1.31
+- Fixed: v0.1.31
+- Created: 2026-07-14
+- Resolution Date: 2026-07-14
+
+#### Original Problem
+
+Partner can successfully create a file with `write_partner_deliverable`, but an assistant reply that exposes the output as a path such as `partner-output/report.md` can still show “file not found” when clicked. The output exists in the session-scoped Partner run directory and is registered with a stable Delivery ID; it is not a project-root file.
+
+Expected behavior:
+
+- Newly generated outputs expose and open through a typed, stable Delivery reference rather than an ambiguous filesystem-looking string.
+- Existing conversations that contain only a legacy path remain openable when the path uniquely identifies an output in the current Partner Session.
+- A missing, stale, cross-project, cross-session, or ambiguous reference fails explicitly without opening an unrelated file.
+- The Partner Outputs browser and Artifact preview surface use the same resolved Delivery record.
+
+#### Root Cause
+
+- `write_partner_deliverable` returned a textual Delivery ID and paths, but the conversation UI had no structured Partner-output result card or generated-resource link protocol.
+- Inline Markdown paths were routed through the generic project-file opener, so `partner-output/...` was first interpreted relative to the project root even though the file lived under the isolated Partner run root.
+- The renderer performed path matching after listing registry records and selected the first match. Resolution was not centralized in the main process and did not explicitly represent missing or ambiguous registry state.
+
+#### Proposed Solution
+
+- Introduce a typed Partner Delivery URI backed by the stable Delivery ID and render successful delivery tool calls as clickable output cards.
+- Add a scoped main-process Delivery-reference resolver for ID and legacy path references, including registry refresh and explicit `found`, `not-found`, `missing`, and `ambiguous` outcomes.
+- Route the reserved `partner-output/` logical namespace to Delivery resolution before project-file resolution, while retaining project-first behavior for ordinary untyped paths.
+- Keep old path-only conversation compatibility, but stop guessing when multiple Sessions match the same path.
+- Add unit and Electron E2E regressions for typed links, legacy links, missing files, ambiguous paths, and project-path shadowing.
+
+#### Resolution
+
+- Added a typed `kodax-space://partner-delivery/<delivery-id>` resource protocol and kept it inside Markdown's URL safety transform without allowing arbitrary custom schemes.
+- Delivery-producing tools now return a canonical machine-readable Delivery reference plus an exact Markdown link. Successful `write_partner_deliverable`, `write_partner_workspace_file`, and `run_partner_helper` results render as clickable output cards in the conversation.
+- Added the scoped `partner.deliveries.resolve` IPC path. Main now resolves by stable ID or legacy path within the active project and optional Session, validates the target before opening, and returns explicit `found`, `not-found`, `missing`, or `ambiguous` outcomes.
+- Missing on-disk targets are removed from the persistent registry and emit a deletion refresh. Cross-project/cross-session IDs are rejected; unscoped duplicate legacy paths fail as ambiguous instead of selecting the newest record.
+- Reserved `partner-output/` references now resolve through Delivery before any project-file lookup, preventing a same-named project file from shadowing a generated output. Ordinary paths retain project-first behavior and only use Delivery as a compatibility fallback.
+- Historical tool results and path-only assistant messages remain supported. The Partner workbench prompt now requires the exact returned output link instead of presenting run-output paths as project files.
+
+Files changed:
+
+- `packages/space-ipc-schema/src/channels/partner-delivery.ts`
+- `packages/space-ipc-schema/src/channels/index.ts`
+- `packages/space-ipc-schema/src/index.ts`
+- `apps/desktop/electron/ipc/partner-deliveries.ts`
+- `apps/desktop/electron/kodax/partner-delivery-store.ts`
+- `apps/desktop/electron/kodax/partner-delivery-reference.ts`
+- `apps/desktop/electron/kodax/partner-delivery-tool.ts`
+- `apps/desktop/electron/kodax/partner-workspace-file-tool.ts`
+- `apps/desktop/electron/kodax/partner-helper-runner-tool.ts`
+- `apps/desktop/renderer/src/lib/generatedResourceRef.ts`
+- `apps/desktop/renderer/src/lib/openPath.ts`
+- `apps/desktop/renderer/src/lib/pathClassify.ts`
+- `apps/desktop/renderer/src/features/session/messages/Markdown.tsx`
+- `apps/desktop/renderer/src/features/session/messages/toolRenderers.tsx`
+- `apps/desktop/renderer/src/features/session/messages/bubbles.tsx`
+- `apps/desktop/renderer/src/features/partner/partnerWorkbench.ts`
+- `apps/desktop/renderer/src/i18n/messages.ts`
+
+Tests added or extended:
+
+- Typed Delivery URI formatting/parsing and Markdown preservation.
+- Canonical and historical single/multi-output tool-result parsing.
+- Project/Session-scoped ID and path resolution.
+- Ambiguous cross-Session legacy paths.
+- Missing-file detection and registry pruning.
+- Stable reference output from all three Partner Delivery producers.
+- Workbench final-response link contract.
+
+Verification:
+
+- Desktop test suite: 1,464 passed, 0 failed, 2 platform-conditional skips.
+- Targeted Delivery/reference suite: 52 passed, 0 failed.
+- Root TypeScript typecheck, targeted ESLint, Prettier, and `git diff --check` passed.
+- Production renderer/main smoke build passed.
+- Partner sidebar/files and Outputs/rollback/Artifact Electron E2E: 2 passed, 0 failed.
+
+### 038: File-backed Markdown opened in Artifact as raw Monaco source instead of a document reading preview
+
+- Priority: Medium
+- Status: Resolved
+- Introduced: v0.1.31
+- Fixed: v0.1.31
+- Created: 2026-07-14
+- Resolution Date: 2026-07-14
+
+#### Original Problem
+
+Markdown stored inline as an Artifact uses the rendered Markdown document view, but a `.md` or `.markdown` file opened from a Partner Delivery or project-file preview is classified as a generic text file. `RichPreview` therefore sends it to `TextFileViewer` and Monaco, making the read-only Artifact panel look like an editor.
+
+Expected behavior:
+
+- Artifact is a reading/preview surface, so Markdown should render as a document regardless of whether its bytes come from the workspace, Artifact store, or Partner Delivery store.
+- Headings, paragraphs, lists, tables, quotes, links, images, and code blocks should use the existing safe Markdown preview presentation.
+- Non-Markdown text/code files must continue to use the current text viewer.
+- Existing sandbox, CSP, size caps, loading, truncation, and error behavior must remain intact.
+
+#### Root Cause
+
+`ArtifactView` correctly routes inline `kind: markdown` content to `MarkdownArtifact`, but file-backed content is represented as `kind: file`. That branch detects `.md` as a generic `text` preview and `RichPreview` has no Markdown-specific presentation mode after loading the bytes.
+
+#### Proposed Solution
+
+- Add an explicit Markdown presentation mode to the file-backed preview pipeline based on the file extension.
+- Decode the already-bounded UTF-8 bytes and reuse `MarkdownArtifact` rather than duplicating Markdown parsing or loading the file again.
+- Keep raw Monaco rendering for all other text/code paths and add regression coverage for the presentation-mode classifier and rendered iframe output.
+
+#### Resolution
+
+- Added an explicit file-presentation classifier: `.md` and `.markdown` use document preview, while every other text and code extension remains in the read-only source viewer.
+- Routed file bytes from workspace, Artifact store, and Partner Delivery store through the same classification after the existing bounded read, so all three sources now behave consistently without a second file load.
+- Reused the existing sandboxed `MarkdownArtifact` renderer, preserving its CSP and URL restrictions instead of introducing a separate parser or less-restricted document surface.
+- Refined the Markdown renderer into a responsive reading canvas with a centered page, comfortable line length, editorial typography, document spacing, and light/dark presentation. Narrow sidebars fall back to an edge-to-edge page without card chrome.
+
+Files changed:
+
+- `apps/desktop/renderer/src/features/preview/previewPresentation.ts`
+- `apps/desktop/renderer/src/features/preview/TextFileViewer.tsx`
+- `apps/desktop/renderer/src/features/preview/RichPreview.tsx`
+- `apps/desktop/renderer/src/features/artifact/renderers/MarkdownArtifact.tsx`
+- `apps/desktop/electron/test/rich-preview-utils.test.ts`
+- `tests/e2e/partner-mode.spec.ts`
+- `docs/KNOWN_ISSUES.md`
+
+Tests added or extended:
+
+- `.md`, `.markdown`, case-insensitive paths, and whitespace-normalized paths select the Markdown document presentation.
+- `.mdx`, source code, and plain-text files remain in the source presentation.
+- A seeded Partner Markdown Delivery renders as Markdown both in Outputs detail and after “Open as Artifact”; a Partner `.txt` Delivery remains in `TextFileViewer`.
+
+Verification:
+
+- Rich-preview utility suite: 14 passed, 0 failed.
+- Root TypeScript typecheck and targeted ESLint passed.
+- Production renderer/main smoke build passed.
+- Targeted Partner Delivery/Artifact Electron E2E passed.
+
+### 039: Partner kept a duplicate collapsed-sidebar edge rail alongside the shared header toggle
+
+- Priority: Medium
+- Status: Resolved
+- Introduced: v0.1.31
+- Fixed: v0.1.31
+- Created: 2026-07-14
+- Resolution Date: 2026-07-14
+
+#### Original Problem
+
+When Partner's right sidebar was closed, the workspace retained both the persistent header toggle and a 36px vertical edge rail containing a second expand button. The duplicate control reduced conversation width and made Partner's right-sidebar interaction inconsistent with Coder.
+
+Expected behavior:
+
+- Partner and Coder expose one persistent right-sidebar toggle in the workspace header.
+- Closing the right sidebar returns its full width to the central workspace without leaving an empty edge rail.
+- The shared sidebar's internal close control remains available while the sidebar is open, including at maximum width.
+
+#### Root Cause
+
+`PartnerWorkspace` independently rendered `partner-artifact-edge-toggle` whenever the shared sidebar was closed. That legacy recovery affordance became redundant after Partner gained the same always-visible header toggle used by Coder.
+
+#### Proposed Solution
+
+- Remove the Partner-only collapsed edge rail and its duplicate expand button.
+- Keep the header toggle as the single open/close entry point and retain the shared `RightSidebarFrame` width and close controls.
+- Update the Partner desktop regression to prove the rail is absent and the header toggle reopens the sidebar after either normal or maximum-width close.
+
+#### Resolution
+
+- Removed the Partner-only 36px collapsed edge rail and its duplicate expand button.
+- Kept the workspace-header right-sidebar toggle as the single persistent open/close entry point, matching Coder and returning the reclaimed width to the conversation.
+- Preserved the shared open-sidebar toolbar, including default/half/max width presets and its close action at maximum width.
+
+Files changed:
+
+- `apps/desktop/renderer/src/features/partner/PartnerWorkspace.tsx`
+- `tests/e2e/partner-mode.spec.ts`
+- `docs/KNOWN_ISSUES.md`
+
+Verification:
+
+- Targeted ESLint and production renderer build passed.
+- Partner sidebar/chrome, normal composer/resume, and Delivery/Artifact Electron E2E: 3 passed, 0 failed.
+
+### 040: Adjacent command and thinking receipt chips render at different heights
+
+- Priority: Low
+- Status: Resolved
+- Introduced: v0.1.31
+- Fixed: v0.1.31
+- Created: 2026-07-14
+- Resolution Date: 2026-07-14
+
+#### Original Problem
+
+When a collapsed command receipt and a collapsed thinking receipt appear on the same process-receipt row, the thinking chip is visibly taller than the command chip.
+
+Expected behavior:
+
+- Adjacent command and thinking receipts share the same outer height and vertical alignment.
+- A command receipt remains the same height whether or not it contains an embedded thinking/status badge.
+- Expanding either receipt must preserve the current top-anchored layout and responsive wrapping behavior.
+
+Reproduction steps:
+
+1. Run a Coder task that alternates tools and thinking so the compact process-receipt strip contains both receipt kinds.
+2. Keep both receipts collapsed.
+3. Compare the adjacent `运行了 N 个命令` and `思考（约 N token）` chips.
+
+#### Context
+
+Affected component:
+
+- `apps/desktop/renderer/src/shell/ConversationStreamV2.tsx`
+
+Existing regression surface:
+
+- `tests/e2e/conversation-receipts-scroll.spec.ts`
+
+#### Root Cause
+
+`ThinkingBlock` and `ToolCluster` use similar outer button classes but have no shared height contract. The thinking button always contains a bordered token badge with `py-0.5`; a tool-cluster button without embedded thinking contains only plain text. Content therefore determines each button's outer height, producing an approximately one spacing-step mismatch even though both use `py-1`.
+
+#### Proposed Solution
+
+- Give both collapsed receipt buttons the same explicit minimum/fixed header height through one shared class or token.
+- Keep badge padding and colors internal to that common header box instead of allowing them to determine its height.
+- Extend the existing receipt-layout E2E to assert equal collapsed header heights, not only shared Y position and horizontal adjacency.
+
+#### Acceptance Criteria
+
+- The collapsed command and thinking buttons differ in rendered height by at most 1 CSS pixel at supported zoom/DPI settings.
+- Command receipts with and without embedded thinking/status badges retain the same header height.
+- Existing expansion, top anchoring, narrow wrapping, hit testing, and scroll-position assertions continue to pass.
+
+#### Resolution
+
+- Both collapsed receipt buttons now use the same explicit `h-8` outer-height contract while retaining their existing internal badge and expansion layouts.
+- The receipt-layout Electron E2E now measures both rendered buttons and permits at most a 1 CSS pixel difference.
+- The production build, targeted type checks, and the full receipt layout assertion sequence passed. On this Windows host, Playwright reached its existing Electron `Close context` hang only after all layout assertions had completed.
+
+Files changed:
+
+- `apps/desktop/renderer/src/shell/ConversationStreamV2.tsx`
+- `tests/e2e/conversation-receipts-scroll.spec.ts`
+- `docs/KNOWN_ISSUES.md`
+
+### 041: Every assistant text block in a user turn reuses the Query timestamp instead of its own output time
+
+- Priority: Medium
+- Status: Resolved
+- Introduced: v0.1.31
+- Fixed: v0.1.31
+- Created: 2026-07-14
+- Resolution Date: 2026-07-14
+
+#### Original Problem
+
+Every assistant text block generated for one user Query receives the same timestamp: the Query's send time. This includes separate text blocks before and after thinking/tool receipts. During a long-running Coder turn, a paragraph that has just appeared can therefore immediately display `4 分钟前` (or another duration close to the whole turn runtime), and all answer blocks for that Query show the same relative time.
+
+Expected behavior:
+
+- A newly created assistant text block displays `刚刚` when it first appears.
+- Separate text blocks emitted before and after tool calls retain their own stable output timestamps.
+- Restoring the Session preserves assistant timestamps instead of replacing them with the user prompt time or the history-load time.
+
+Reproduction steps:
+
+1. Start a task that runs for several minutes and alternates assistant text with tool calls.
+2. Wait until a new assistant paragraph appears after a tool result.
+3. Observe that its footer reports approximately the age of the original user prompt instead of the new paragraph.
+
+#### Context
+
+Affected components:
+
+- `apps/desktop/renderer/src/features/session/composeMessages.ts`
+- `apps/desktop/renderer/src/store/appStore.ts`
+- `apps/desktop/electron/ipc/session.ts`
+- `packages/space-ipc-schema/src/channels/session.ts`
+- `apps/desktop/renderer/src/features/session/messages/bubbles.tsx`
+
+#### Root Cause
+
+- `composeAssistantSegment()` assigns every new assistant text bubble `sentAt: parentSentAt`, where `parentSentAt` is the triggering user message's timestamp.
+- Live `text_delta` and `thinking_delta` events do not carry or retain a renderer arrival timestamp, so a text block created after several minutes has no block-level time to use.
+- The history schema already permits `assistant.sentAt`, but `session.history` currently creates assistant items without forwarding the transcript entry timestamp, and `prependSessionHistory()` converts assistant items back into untimed stream events.
+- `formatRelativeTime()` is calculating the supplied value correctly; this is not a timezone or seconds-versus-milliseconds bug. The wrong timestamp is selected upstream.
+
+#### Proposed Solution
+
+- Add an optional timestamp to stream text/thinking events and stamp missing live events once when they enter the renderer store. Adjacent delta coalescing must preserve the first timestamp for that block.
+- In `composeAssistantSegment()`, prefer the first text/thinking event timestamp and use the parent user timestamp only as a backward-compatible fallback.
+- Forward each persisted assistant transcript entry's timestamp through `session.history` and preserve it when history items are converted into renderer events.
+- Add regression coverage for a multi-minute turn containing text → tool → text and for history restore with distinct user/assistant timestamps.
+
+#### Acceptance Criteria
+
+- A text block first received at time T renders as `刚刚` at T even when its user turn began several minutes earlier.
+- A later block after a tool boundary receives a distinct, stable timestamp.
+- Coalescing adjacent stream deltas does not move a block timestamp forward on every chunk or backward to the user timestamp.
+- History restore retains the persisted assistant timestamp when available and uses the user timestamp only for legacy history without one.
+
+#### Resolution
+
+- Text/thinking stream events can now carry `sentAt`; missing live timestamps are stamped once on renderer arrival, and delta coalescing retains the first timestamp for the block.
+- Assistant bubble composition prefers the block timestamp and falls back to the parent Query time only for legacy data.
+- Session history now forwards persisted assistant timestamps and restores them into stream events instead of replacing them with Query or load time.
+- Targeted store/composition/history tests passed 64/64; the complete IPC-schema suite passed 253/253. Renderer/main type checks, targeted lint, and production builds also passed.
+
+Files changed:
+
+- `packages/space-ipc-schema/src/channels/session.ts`
+- `apps/desktop/renderer/src/store/appStore.ts`
+- `apps/desktop/renderer/src/features/session/composeMessages.ts`
+- `apps/desktop/electron/ipc/session.ts`
+- `apps/desktop/electron/test/app-store-cancel-event.test.ts`
+- `apps/desktop/electron/test/composeMessages.test.ts`
+- `apps/desktop/electron/test/history-replay-no-popout.test.ts`
+- `docs/KNOWN_ISSUES.md`
+
+### 042: Interactive HTML Artifact can show only its static shell and keep stale content after a new version
+
+- Priority: High
+- Status: Resolved
+- Introduced: v0.1.31
+- Fixed: v0.1.31
+- Created: 2026-07-14
+- Resolution Date: 2026-07-14
+
+#### Original Problem
+
+An HTML file renders correctly when opened directly in a browser, but its Artifact preview can show only the navigation/background shell while the main page is blank. Creating a second version intended to remove script-dependent reveal animations can leave the preview blank even though the version selector says `v2 (latest)`.
+
+Expected behavior:
+
+- HTML that contains scripts, canvas, inline handlers, or animation timers runs in the existing opaque-origin, restricted interactive sandbox.
+- Script-driven visibility such as `IntersectionObserver` reveal effects works without granting the document Electron, Node, same-origin, unrestricted network, form, frame, or top-navigation access.
+- When a new Artifact version becomes current, both the version selector and rendered payload update to the same version.
+- Static HTML remains inert and script-disabled.
+
+Reproduction steps:
+
+1. Create or preview an HTML document whose primary content starts with `opacity: 0` and becomes visible from an inline `IntersectionObserver` script.
+2. Open it in Artifact and observe that the fixed navigation/background render while the main content stays invisible.
+3. Add a new version that makes the content visible without the reveal script.
+4. Observe that the selector reports the new latest version while the iframe can continue displaying the previous payload.
+
+#### Context
+
+Affected components:
+
+- `apps/desktop/renderer/src/features/artifact/renderers/HtmlArtifact.tsx`
+- `apps/desktop/renderer/src/features/artifact/htmlSandbox.ts`
+- `apps/desktop/renderer/src/features/artifact/useArtifacts.ts`
+- `apps/desktop/renderer/src/features/artifact/ArtifactsView.tsx`
+- `apps/desktop/electron/main.ts`
+
+#### Root Cause
+
+- Interactive HTML is loaded through `iframe.srcdoc`. In the packaged renderer, the parent response CSP permits only the app's own scripts; the embedded document does not get an independently navigated document boundary suitable for its explicitly restricted inline script policy, so script-driven reveal logic remains blocked while static markup and CSS still render.
+- `useArtifactContent()` loads when `id` or the explicitly selected `version` changes, but it does not subscribe to `artifact.changed`. While following `version === undefined` (current/latest), `artifact.currentVersion` and the selector can advance without re-reading the payload, leaving v1 content under a v2 label.
+
+#### Proposed Solution
+
+- Navigate interactive HTML through a dedicated opaque-origin document URL whose own injected CSP governs the sandboxed document; keep `allow-scripts` but never add `allow-same-origin`.
+- Restrict the parent `frame-src` change to the exact local URL scheme required by that document path, and preserve the existing in-document allowlists for scripts/passive assets/connect/forms/popups.
+- Subscribe current-version content reads to `artifact.changed`, clear or refresh stale payloads safely, and ignore unrelated artifact changes.
+- Add production Electron E2E coverage proving an inline script changes visible DOM inside the Artifact iframe and a current-version update refreshes the rendered payload.
+
+#### Acceptance Criteria
+
+- The supplied city-governance demo shows its hero and subsequent sections inside Artifact without modifying the document's reveal CSS.
+- A sandboxed inline script executes, while the frame still has an opaque origin and cannot access Electron/Node/parent DOM.
+- Advancing an Artifact from v1 to v2 updates both the selector and iframe content to v2 without manual version toggling or reopening.
+- Static HTML continues to use the no-script renderer.
+
+#### Resolution
+
+- Interactive HTML now navigates to one exact local `app://space` bootstrap route, then receives its complete permission-scoped document through `postMessage`. The main renderer keeps its strict CSP; only that child response gets the bootstrap policy, and the injected Artifact document keeps its existing restrictive CSP.
+- The iframe retains `allow-scripts` without `allow-same-origin`, so inline scripts, handlers, observers, animation timers, and canvas can run without Electron/Node or parent-DOM access. Static HTML still uses the inert `sandbox=""` renderer.
+- A deterministic document token forces a fresh child navigation when payload or permissions change.
+- Current-version content now subscribes to matching `artifact.changed` events, clears stale payloads before reads, ignores pinned/unrelated versions, and discards out-of-order read results.
+- Protocol/sandbox tests passed 15/15 with one Windows symlink case skipped. The production Electron trace for the supplied v4 city-governance HTML (verified byte-for-byte by SHA-256 against stored Artifact version 4) passed `下一步`, `96.8%` state update, auto-play start, and auto-play stop assertions; only the known test-fixture `Close context` teardown subsequently timed out.
+
+Files changed:
+
+- `packages/space-ipc-schema/src/channels/artifact.ts`
+- `packages/space-ipc-schema/src/index.ts`
+- `apps/desktop/electron/window/app-protocol-policy.ts`
+- `apps/desktop/electron/window/app-protocol.ts`
+- `apps/desktop/electron/main.ts`
+- `apps/desktop/renderer/src/features/artifact/renderers/HtmlArtifact.tsx`
+- `apps/desktop/renderer/src/features/artifact/useArtifacts.ts`
+- `apps/desktop/electron/test/app-protocol-policy.test.ts`
+- `apps/desktop/electron/test/html-sandbox.test.ts`
+- `tests/e2e/artifact-html-runtime.spec.ts`
+- `docs/KNOWN_ISSUES.md`
+
+### 043: Unsigned macOS releases repeatedly request the login password for Provider Keychain access
+
+- Priority: High
+- Status: Open
+- Introduced: v0.1.4
+- Created: 2026-07-14
+
+#### Original Problem
+
+Customers using the current macOS release are repeatedly asked for their login Keychain password when KodaX Space needs a stored Provider API key. Choosing the system dialog's `Always Allow` action does not reliably stop later prompts, and a user with several stored Provider keys can be asked multiple times. Removing a stored key also asks for the login password.
+
+Expected behavior:
+
+- Normal Provider use is silent after the user has granted the installed app persistent Keychain access.
+- `Always Allow` remains effective after a KodaX Space update from the same release channel.
+- The number of configured Providers does not produce a burst of password dialogs during ordinary startup or settings refresh.
+- Removing a Provider key completes without first asking to reveal that secret when the installed app is already trusted.
+
+Reproduction steps:
+
+1. Install an unsigned KodaX Space macOS DMG and save API keys for one or more Providers.
+2. Restart or update KodaX Space, then use a Provider whose key must be loaded from Keychain.
+3. Enter the macOS login Keychain password and choose `Always Allow`.
+4. Repeat with another configured Provider or a later app build and observe additional password prompts.
+5. Open Provider settings and remove a stored key; observe another Keychain authorization prompt.
+
+#### Context
+
+Affected components:
+
+- `electron-builder.yml`
+- `.github/workflows/release.yml`
+- `apps/desktop/electron/providers/keychain.ts`
+- `apps/desktop/electron/ipc/provider.ts`
+- `apps/desktop/electron/test/provider-keychain.test.ts`
+
+Existing mitigation:
+
+- The main process caches successfully read secrets and coalesces concurrent reads.
+- macOS startup loads only the default Provider key instead of enumerating and revealing every stored credential.
+- Provider-list status checks use non-secret existence probes for known accounts.
+
+Those measures reduce redundant reads within one process but cannot create a stable Keychain trust identity for an unsigned release.
+
+#### Root Cause
+
+There are three interacting causes:
+
+1. `electron-builder.yml` explicitly builds macOS artifacts with `identity: null` and `hardenedRuntime: false`, and the release workflow describes those artifacts as unsigned. macOS therefore cannot use a stable Developer ID code requirement to recognize successive releases as the same trusted application. Keychain `Always Allow` decisions are not reliable across binaries whose application identity changes.
+2. Space stores every Provider under a separate generic-password account in the `kodax-space` service. File-based macOS Keychain access control is attached to each item, so legacy or untrusted entries can each produce a separate authorization dialog.
+3. `@napi-rs/keyring`'s macOS delete path locates the item through a generic-password read before deleting it. As a result, `provider.removeKey` can trigger the same secret-access authorization even though the user only asked to remove the key.
+
+#### Proposed Solution
+
+Treat stable macOS application identity as the release-blocking fix, with credential-layout changes as prompt-count and migration work:
+
+1. Sign macOS stable artifacts with one persistent Developer ID Application identity and notarize them. Enable hardened runtime with the required Electron entitlements, inject credentials only through release secrets, and fail stable release staging when signature/notarization verification is absent.
+2. Introduce one versioned macOS credential-vault entry (or one OS-protected master key with an encrypted on-disk Provider map) so Provider count no longer maps to Keychain authorization count. Keep secrets out of renderer, logs, diagnostics, settings JSON, and plaintext disk.
+3. Migrate legacy per-Provider `kodax-space` entries only after a successful read, record migration durably, and defer cleanup so one denied legacy entry does not block unrelated Providers. Never weaken ACLs to allow every application and never shell out to `security -w` for secret reads.
+4. Make logical Provider-key removal delete only the encrypted Provider record. Keychain access should be required only when the vault must be decrypted or rewritten, not to reveal the individual key solely to locate it.
+5. Retain the current in-process cache/read coalescing and add typed diagnostics that distinguish legacy-entry migration, locked Keychain, denied access, unsigned build identity, and unavailable backend without exposing secrets.
+
+#### Acceptance Criteria
+
+- A signed/notarized macOS release upgraded to the next release signed by the same identity does not ask again for previously granted Keychain access.
+- After migration, startup and Provider settings produce at most one vault authorization interaction regardless of the number of configured Providers, and no repeated prompt after `Always Allow`.
+- Removing one stored Provider key does not perform a read of that legacy per-Provider secret and does not leave the Provider usable through a stale managed environment value.
+- Denying or cancelling migration for one legacy key does not trigger a prompt loop or block Providers backed by environment variables or already-migrated credentials.
+- Packaged macOS tests verify the Developer ID signature, hardened runtime, notarization result, migration behavior, prompt-count contract, deletion, and secret redaction; Windows and Linux key storage behavior remains unchanged.
+
+#### Unsigned-Build Mitigation Implemented
+
+The issue remains Open because an unsigned app update still has no stable macOS code identity, but the non-signing prompt amplification paths have been removed:
+
+- macOS now stores each Provider as a separately encrypted record in `~/.kodax/space/provider-credentials.v1.json`, using Electron `safeStorage` and its single OS-protected application key. The file contains ciphertext and account metadata only; plaintext API keys remain main-process-only.
+- Provider catalog and settings refreshes list encrypted record metadata without decrypting any key. Only the Provider that is actually about to run is decrypted, then cached for the process lifetime.
+- Existing per-Provider `kodax-space` Keychain items migrate lazily on first real use. A cancelled or denied read is suppressed for the rest of that process so concurrent/repeated callers cannot immediately reopen the same password dialog.
+- Removing a migrated/new Provider deletes its encrypted record without decrypting it. Legacy cleanup uses a no-secret-output delete command; a durable revocation tombstone prevents a legacy item from being re-imported if physical cleanup is unavailable.
+- Vault writes are atomic, serialized, permission-restricted, size-bounded, and fail closed on corrupt state. Windows and Linux continue using their existing native keyring implementations.
+
+Files changed:
+
+- `apps/desktop/electron/providers/encrypted-credential-vault.ts`
+- `apps/desktop/electron/providers/keychain.ts`
+- `apps/desktop/electron/test/encrypted-credential-vault.test.ts`
+- `apps/desktop/renderer/src/i18n/messages.ts`
+- `docs/KNOWN_ISSUES.md`
+
+Tests added:
+
+- Ciphertext-only persistence and secret restoration.
+- Metadata listing and deletion without decryption.
+- Durable legacy revocation and replacement behavior.
+- Serialized concurrent writes and safe-storage key rotation.
+- Fail-closed handling for corrupt vault state.
+
+Verification:
+
+- Targeted encrypted-vault, Provider keychain, and Provider environment-injection suites: 22 passed, 0 failed.
+- Electron main and renderer TypeScript checks passed with an explicit 4 GB Node heap after the default heap exhausted on the full main project.
+- Targeted ESLint, Prettier, `git diff --check`, and the production Electron main build passed.
+- A packaged macOS password-dialog count test still requires a macOS host and remains part of the Open issue's release acceptance criteria.
+
+### 044: Windows portable executable icon can render as missing or inconsistently across shell sizes
+
+- Priority: Low
+- Status: Resolved
+- Introduced: v0.1.31
+- Fixed: v0.1.31
+- Created: 2026-07-15
+- Resolution Date: 2026-07-15
+
+#### Original Problem
+
+Current behavior:
+
+- A user reported that the Windows portable build appeared without the KodaX Space application icon.
+- The published v0.1.31 portable executable does contain the K icon, but the generated ICO contains only one 256x256 PNG-compressed image entry, leaving smaller Explorer/taskbar sizes dependent on shell scaling and cache behavior.
+
+Expected behavior:
+
+- The portable outer launcher and unpacked application executable show the KodaX Space icon consistently at common Windows shell sizes.
+- Release verification fails if either Windows executable is produced without the configured icon resource.
+
+Reproduction steps:
+
+1. Download or build `KodaX-Space-Portable-0.1.31.exe`.
+2. View the file in Windows Explorer or launch it and inspect its shell/taskbar icon.
+3. On an affected Windows shell scale or stale icon-cache state, observe a missing or inconsistent icon.
+
+#### Context
+
+Affected components:
+
+- `scripts/gen-icon.mjs`
+- `electron-builder.yml`
+- `scripts/smoke-pack.mjs`
+
+#### Root Cause
+
+The Windows build relied on electron-builder to convert the generated 1024px PNG into an ICO. The resulting release resource contained only a 256px entry. Although the current v0.1.31 artifact embeds that entry correctly, it did not provide explicit small-size images or a release gate proving that the outer portable NSIS launcher contains the configured icon.
+
+#### Resolution
+
+- Generate an explicit Windows ICO containing 16, 24, 32, 48, 64, 128, and 256px PNG entries without adding a native image dependency.
+- Configure Windows packaging to use `resources/icon.ico` directly for both the unpacked app executable and the portable NSIS launcher.
+- Extend package smoke verification to validate the ICO structure and assert that the generated Windows executables contain its 256px image resource.
+
+Files changed:
+
+- `scripts/gen-icon.mjs`
+- `electron-builder.yml`
+- `scripts/smoke-pack.mjs`
+- `docs/KNOWN_ISSUES.md`
+
+Tests added:
+
+- Windows package smoke checks for required ICO sizes and embedded executable icon resources.
+
+Verification:
+
+- Regenerated the complete v0.1.31 Windows Setup and Portable artifacts successfully.
+- Package smoke passed and confirmed both executables contain the configured application icon.
+- The published v0.1.31 portable executable was independently downloaded and inspected; it contains the K icon, so affected users may still need a renamed file or Windows icon-cache refresh for that already-published binary.
+
+### 045: New-conversation mode selectors append a confusing `next` suffix
+
+- Priority: Low
+- Status: Resolved
+- Introduced: v0.1.x
+- Fixed: v0.1.31
+- Created: 2026-07-15
+- Resolution Date: 2026-07-15
+
+#### Original Problem
+
+Current behavior:
+
+- Before a session exists, the permission-mode chip displays labels such as `Auto · llm (next)` / `全自动 · llm（下次）`.
+- The adjacent Agent-mode chip displays `AMA (next)`.
+- Because these selections are used by the conversation created on the first send, `next` makes users question whether the visible choice applies immediately or only after another conversation.
+
+Expected behavior:
+
+- New-conversation chips display only the selected permission/engine and Agent mode names.
+- Pending selection state and session creation behavior remain unchanged.
+
+Reproduction steps:
+
+1. Open a project without selecting or creating a session.
+2. Inspect the permission-mode and Agent-mode chips below the composer.
+3. Observe `(next)` / `（下次）` appended to their labels.
+
+#### Context
+
+Affected components:
+
+- `apps/desktop/renderer/src/shell/ModeSelector.tsx`
+- `apps/desktop/renderer/src/shell/AgentModeSelector.tsx`
+- `tests/e2e/mode-toggle.spec.ts`
+
+#### Root Cause
+
+Both components intentionally distinguished pending new-session state by appending a presentation-only suffix. The pending values already describe the conversation that will be created on the user's first send, so the suffix added ambiguity without conveying a useful state difference.
+
+#### Resolution
+
+- Display the normal permission/engine label when no session exists.
+- Display the normal AMA/AMAW/SA label when no session exists.
+- Keep pending-mode persistence, current-session updates, keyboard shortcuts, and session creation inputs unchanged.
+
+Files changed:
+
+- `apps/desktop/renderer/src/shell/ModeSelector.tsx`
+- `apps/desktop/renderer/src/shell/AgentModeSelector.tsx`
+- `tests/e2e/mode-toggle.spec.ts`
+- `docs/KNOWN_ISSUES.md`
+
+Tests added:
+
+- The mode-toggle E2E scenario now asserts that both targeted mode buttons omit `(next)` / `（下次）` before cycling permission modes.
+
+Verification:
+
+- Renderer TypeScript, targeted ESLint, Prettier, and the production renderer build passed.
+- Playwright trace confirms both new suffix assertions and the existing three-step Shift+Tab mode-cycle assertions completed successfully. The command subsequently timed out only in the pre-existing Electron `Close context` cleanup path, after all product assertions had passed.
+
+### 046: F121 live projection and daemon lease lifecycles could diverge across attached Space clients
+
+- Priority: High
+- Status: Resolved
+- Introduced: v0.1.32 development
+- Fixed: v0.1.32 development
+- Created: 2026-07-15
+- Resolution Date: 2026-07-15
+
+#### Original Problem
+
+Review of the F121 shared-Coder daemon implementation found five related convergence and lifecycle failures:
+
+- `run` projection changes carried durable after-turn `queuedInputs`, but the renderer discarded that field, so an already-attached Space client could retain an empty or stale queue until a full snapshot.
+- Terminal and next-run events updated run status without clearing the previous run's assistant/thinking draft, active tools, managed task, or pending interaction projection. The next assistant delta could therefore append to the previous run's draft.
+- AskUser and Permission reply routing checked only the asynchronously refreshed profile interaction cache even though the modal could already be visible from a newer per-session live projection.
+- Credential brokers closed over one run-binding object while successful starts/submissions updated another, and a throwing after-turn submission did not revoke its newly registered credential lease.
+- Observation bootstrap errors and session deletion did not consistently close/remove daemon subscriptions. A first `ensureObserved()` racing Runtime initialization could also establish a duplicate subscription.
+
+Expected behavior: every attached Space client applies the same queue and run-scoped live truth, daemon interactions remain answerable as soon as they are shown, credential leases stay bound and bounded, and every failed/deleted observation is closed exactly once.
+
+#### Root Cause
+
+The Space IPC run-change contract evolved to carry queue state but its renderer reducer was not updated with the new field. The projection protocol also treated a terminal run transition as run-domain-only even though KodaX atomically removes several run-scoped live domains. Interaction ownership was inferred from a lagging global cache instead of both authoritative caches. Credential tracking copied mutable binding state instead of sharing it with the broker closure. Finally, observation installation had no common cleanup boundary and initialization recovery did not recognize an already in-flight observation promise.
+
+#### Resolution
+
+- Added an explicit `resetRunScopedState` run-change flag and applied queue plus run-scoped resets atomically in the main reducer, renderer reducer, and modal queues while preserving session Todo state.
+- Made pending-interaction lookup consult both profile and per-session live projections, removing the AskUser/Permission routing window.
+- Shared one mutable run-binding scope between each credential broker and its tracked lease, and revoke newly created leases when `submitInput()` throws.
+- Made observation installation exception-safe, ignored events from detached observations, prevented initialization from duplicating an in-flight subscription, and fully removed live observation state after successful session deletion.
+
+Files changed:
+
+- `packages/space-ipc-schema/src/channels/runtime.ts`
+- `apps/desktop/electron/kodax/runtime-host-adapter.ts`
+- `apps/desktop/electron/kodax/runtime/coder-daemon-projection.ts`
+- `apps/desktop/electron/kodax/runtime/runtime-projection-controller.ts`
+- `apps/desktop/renderer/src/store/runtimeProjectionState.ts`
+- `apps/desktop/renderer/src/store/appStore.ts`
+- `apps/desktop/electron/test/app-store-runtime-projection.test.ts`
+- `apps/desktop/electron/test/coder-daemon-projection.test.ts`
+- `apps/desktop/electron/test/runtime-host-adapter.test.ts`
+- `apps/desktop/electron/test/runtime-projection-controller.test.ts`
+- `apps/desktop/electron/test/runtime-projection-state.test.ts`
+- `docs/KNOWN_ISSUES.md`
+
+Tests added or extended:
+
+- Run deltas update queued inputs and atomically reset stale run-scoped state without clearing Todo.
+- A new run's first assistant delta cannot append to the prior run's draft.
+- Terminal reset removes Runtime AskUser entries from renderer modal queues.
+- Per-session live interactions are routable before the global profile refresh.
+- Wrong-run credential requests fail before the intended run's first broker call, and failed submissions revoke their lease.
+- Failed observation bootstrap and session deletion close exactly one subscription; initial observation does not duplicate during Runtime startup.
+
+Verification:
+
+- F121 targeted and published KodaX `0.7.69` process-distinct suites: 51 passed, 0 failed, 1 Windows symlink test skipped.
+- Complete desktop suite: 1,495 passed, 0 failed, 2 platform-conditional skips.
+- Root TypeScript typecheck, targeted ESLint, Prettier, and `git diff --check` passed.
+
+### 047: Long user queries consume excessive transcript height without an inline collapse control
+
+- Priority: Low
+- Status: Resolved
+- Introduced: v0.1.x
+- Fixed: v0.1.31
+- Created: 2026-07-16
+- Resolution Date: 2026-07-16
+
+#### Original Problem
+
+Current behavior:
+
+- A long user query always renders at its full height in the conversation transcript.
+- Detailed prompts can occupy most of the viewport and make previous questions, responses, and tool receipts harder to scan.
+- There is no local control for recovering the full query after a compact transcript presentation.
+
+Expected behavior:
+
+- Queries that exceed a compact preview should show their opening lines by default.
+- The user can expand the full query and collapse it again without leaving the conversation.
+- Short queries remain unchanged and do not gain redundant controls.
+- The behavior is shared by Coder and Partner and remains correct as the transcript width changes.
+
+Reproduction steps:
+
+1. Open either Coder or Partner and send a multi-paragraph prompt that occupies more than four rendered lines.
+2. Observe that the complete prompt consumes a large vertical region in the transcript.
+3. Look for an expand/collapse control and observe that none exists.
+
+#### Context
+
+Affected components:
+
+- `apps/desktop/renderer/src/features/session/messages/bubbles.tsx`
+- `apps/desktop/renderer/src/i18n/messages.ts`
+- `tests/e2e/user-query-collapse.spec.ts`
+
+#### Root Cause
+
+`UserBubble` rendered `UserMessageContent` directly inside the bubble with wrapping and overflow safety but no height policy or local expansion state. Character-count truncation would not have been reliable because the actual height depends on locale, file references, transcript font size, and available pane width.
+
+#### Resolution
+
+- Measure the query's real rendered height and show a four-line opening preview only when that content overflows.
+- Add an inline Expand/Collapse control with a short height transition, keyboard focus treatment, `aria-controls`, `aria-expanded`, and localized accessible labels.
+- Observe content reflow with `ResizeObserver` so the decision stays correct when the transcript width or wrapping changes.
+- Keep short queries unchanged and preserve the complete original content for copy, fork, rewind, and session history behavior.
+
+Files changed:
+
+- `apps/desktop/renderer/src/features/session/messages/bubbles.tsx`
+- `apps/desktop/renderer/src/i18n/messages.ts`
+- `tests/e2e/user-query-collapse.spec.ts`
+- `docs/KNOWN_ISSUES.md`
+
+Tests added:
+
+- An Electron E2E scenario verifies the four-line overflow preview, opening content, localized accessible toggle state, full expansion, and collapse back to the original height.
+
+Verification:
+
+- Renderer TypeScript, targeted ESLint, Prettier, and the production renderer build passed.
+- The Electron trace completed every new product assertion. The command subsequently timed out only in the pre-existing `Close context` teardown path after the final collapsed-state assertion passed.
+
+### 048: Legacy `tsx/esm` test registration corrupts CommonJS JSON imports from the KodaX SDK dependency graph
+
+- Priority: Low
+- Status: Resolved
+- Introduced: v0.1.x
+- Fixed: v0.1.32 development
+- Created: 2026-07-17
+- Resolution Date: 2026-07-17
+
+#### Original Problem
+
+Current behavior:
+
+- Space's Node test commands register `tsx/esm` directly.
+- Importing `@kodax-ai/kodax`, `@kodax-ai/kodax/runtime`, or `@kodax-ai/kodax/a2a` under that legacy registration transforms `cli-boxes/boxes.json` into JavaScript and then asks Node's CommonJS loader to parse the transformed text as JSON.
+- SDK-backed tests either fail with `Unexpected token 'v', "var single"... is not valid JSON` or depend on lazy-load and mock paths that hide the loader failure.
+
+Expected behavior:
+
+- Space tests use the supported `tsx` registration entrypoint.
+- KodaX root and subpath exports import normally under the same loader used by the test suite.
+- Test mocks remain responsible only for state isolation, not for hiding a loader incompatibility.
+
+Reproduction steps:
+
+1. Run `node --import tsx/esm --input-type=module -e "await import('@kodax-ai/kodax/runtime')"`.
+2. Observe the JSON-as-JavaScript parse failure in `cli-boxes/boxes.json`.
+3. Replace the registration with `--import tsx` and observe that the root, Runtime, and A2A entries import successfully.
+
+#### Context
+
+Affected components:
+
+- `apps/desktop/package.json`
+- `packages/space-ipc-schema/package.json`
+- Test-loader comments and mock rationale across Electron and schema tests
+
+#### Root Cause
+
+The repository retained the old `tsx/esm` registration subpath after the installed `tsx` version adopted `tsx` as its supported Node registration entrypoint. The legacy loader transforms JSON required by a CommonJS dependency and conflicts with Node's subsequent JSON parsing. The KodaX package and `cli-boxes/boxes.json` are valid; plain Node, packaged Electron, and the supported `tsx` registration all load them correctly.
+
+#### Resolution
+
+- Changed both formal Node test commands from `--import tsx/esm` to `--import tsx`.
+- Updated current test-harness comments so lazy loading, mocks, and plain-Node daemon probes describe their actual isolation and compatibility responsibilities instead of the removed loader workaround.
+- Preserved `tsx/esm/api` in the Partner extraction runner because that is a separate supported programmatic API, not the obsolete Node registration entrypoint.
+
+Files changed:
+
+- `apps/desktop/package.json`
+- `packages/space-ipc-schema/package.json`
+- `packages/space-ipc-schema/test/registry.test.ts`
+- `scripts/build-main.mjs`
+- Current Electron loader, catalog, mock, and compatibility comments
+- `docs/KNOWN_ISSUES.md`
+
+Tests added:
+
+- No new test file was required; the existing schema and Electron suites now execute through the corrected formal loader entrypoint.
+
+Verification:
+
+- KodaX root, Runtime, and A2A import probe under `node --import tsx`: passed.
+- Space IPC schema suite: 253 passed.
+- Runtime/Session targeted suite including process-distinct daemon sharing: 50 passed.
+- Complete Electron suite with isolated profile and serial execution: 1,499 passed, 0 failed, 2 Windows capability skips.
+
+### 049: Provider/model and mode changes rolled back before the first send because the daemon Session was not admitted
+
+- Priority: Medium
+- Status: Resolved
+- Introduced: v0.1.32 development
+- Fixed: v0.1.32 development
+- Created: 2026-07-17
+- Resolution Date: 2026-07-17
+
+#### Original Problem
+
+Current behavior:
+
+- After creating or selecting a Coder Session, choosing a Provider/model from the bottom-right picker can close the picker without changing its label.
+- The same shared mutation path can reject permission, reasoning, engine, or Agent-mode changes before that Session has sent its first prompt.
+- Repeated clicks keep failing and the UI previously exposed the failure only through a renderer console warning.
+
+Expected behavior:
+
+- Any Space Coder Session can accept runtime-setting changes immediately, including before its first send.
+- The shared Runtime receives a complete settings snapshot when it first admits that Session.
+- A failed selection is visible to the user and must not silently change only the global default Provider.
+
+Reproduction steps:
+
+1. Start Space with the shared Coder Runtime enabled and create a new Coder Session.
+2. Before sending the first prompt, open the bottom-right Provider/model picker.
+3. Select another configured Provider and model.
+4. Observe that the selector remains unchanged and the diagnostics log reports `host.commitRuntimeMutation` followed by `Session not found`.
+
+#### Context
+
+Affected components:
+
+- `apps/desktop/electron/kodax/host.ts`
+- `apps/desktop/electron/kodax/runtime-host-adapter.ts`
+- `apps/desktop/renderer/src/shell/ModelEffortSelector.tsx`
+
+#### Root Cause
+
+Space creates its in-memory `ManagedSession` synchronously, while admission to the shared Coder daemon is intentionally lazy and normally happens when `RealKodaXSession.send()` runs. `commitRuntimeMutation()` saw that the daemon was ready and called `updateSessionSettings()` immediately, but that method assumed the Session already existed in the daemon. A pre-send selection therefore threw `Session not found`; the host rolled the mutation back, while the picker closed and logged the error only to the console. The picker also attempted to persist the global default Provider before the current Session switch succeeded, which could leave the default changed even though the visible Session selection failed.
+
+#### Resolution
+
+- Extended Runtime settings updates with an optional authoritative Session identity. When supplied, the adapter admits a missing Coder Session before reading or updating its revisioned settings.
+- Made host runtime mutations send the complete current Provider/model/reasoning/permission/Agent/engine/execution settings snapshot. This correctly initializes a newly admitted daemon Session instead of leaving every unchanged field empty.
+- Reordered the Provider/model picker so the current or pending selection is applied before global-default persistence. Failed live-session changes no longer alter only the global default.
+- Added visible error toasts for `/model` and Provider-default persistence failures while preserving diagnostic console warnings.
+
+Files changed:
+
+- `apps/desktop/electron/kodax/host.ts`
+- `apps/desktop/electron/kodax/runtime-host-adapter.ts`
+- `apps/desktop/renderer/src/shell/ModelEffortSelector.tsx`
+- `apps/desktop/electron/test/runtime-host-adapter.test.ts`
+- `tests/e2e/fixtures.ts`
+- `tests/e2e/model-picker.spec.ts`
+- `docs/KNOWN_ISSUES.md`
+
+Tests added:
+
+- A Runtime adapter regression verifies that a settings update admits a missing Coder Session before its first send and then performs the revisioned settings update.
+- An Electron interaction scenario covers Provider/model selection both before and after Session creation with two isolated configured Providers.
+
+Verification:
+
+- User diagnostics contained repeated `Session not found` failures at the exact Provider/model selection times, confirming the admission gap.
+- Runtime adapter and Session mutation suites: 33 passed, 0 failed.
+- Desktop TypeScript and targeted ESLint passed.
+- The Electron interaction scenario is checked in; on this Windows host Electron failed before creating its first window because its GPU subprocess repeatedly exited, so no product assertion from that run was evaluated.
+
+### 050: Reference Agent continuation can remain `working` after `sendInput` until an explicit reconcile
+
+- Priority: Medium
+- Status: Open
+- Introduced: KodaX 0.7.71
+- Created: 2026-07-17
+
+#### Original Problem
+
+Current behavior:
+
+- A Reference External Agent task reaches `input-required` and accepts `sendInput()`.
+- The Reference executor can finish between that call and the normal durable event pump, while `tasks.wait()` times out and the persisted task snapshot remains `working`.
+- Calling the public `reconcile(taskId)` operation advances the same task to its terminal state.
+
+Expected behavior:
+
+- Successful input delivery wakes or reconciles the admitted task without requiring every host to schedule a second lifecycle operation.
+- `tasks.wait()` and durable snapshots converge on the executor's terminal state after `sendInput()` within the configured bound.
+
+Reproduction steps:
+
+1. Create a Reference executor task that requests input and completes after receiving it.
+2. Wait for `input-required`, call `sendInput()`, then call `tasks.wait()` without an explicit reconcile.
+3. Observe the wait timeout or stale `working` snapshot; call `reconcile(taskId)` and observe terminal convergence.
+
+#### Context
+
+Affected components:
+
+- Published `@kodax-ai/kodax@0.7.71` Reference executor lifecycle
+- `apps/desktop/electron/kodax/external-agent-gateway.ts`
+- `apps/desktop/electron/test/external-agent-gateway.test.ts`
+
+#### Root Cause
+
+The observable contract has a continuation race between successful input delivery, executor completion, and the durable task event pump. Space does not depend on the SDK's private scheduling mechanism, so the precise internal cause remains upstream; the public evidence is that an immediate reconcile closes the gap.
+
+#### Current Mitigation and Requested SDK Change
+
+Space schedules one microtask after `sendInput()` and invokes the public `reconcile(taskId)` operation. This is bounded and idempotent, preserves task ownership, and keeps the durable snapshot truthful, but it is a compatibility bridge rather than the desired host contract.
+
+KodaX should make successful `sendInput()` wake/reconcile the task lifecycle itself and add a regression that reaches `input-required`, sends input, waits without an explicit host reconcile, and observes both a terminal task and a terminal durable snapshot. Space can remove its bridge after that published behavior is verified.
+
+### 051: Embedded Runtime omits the working `externalAgentAdmin` service from its public capability metadata
+
+- Priority: Low
+- Status: Open
+- Introduced: KodaX 0.7.71
+- Created: 2026-07-17
+
+#### Original Problem
+
+Current behavior:
+
+- `createKodaXRuntime()` in embedded inline mode succeeds with `requirements.externalAgentAdmin = 1`.
+- `runtime.admin.agentRegistrations.setEnabled()` exists and works.
+- The returned `runtime.capabilities.externalAgentAdmin` field is nevertheless absent, so a host cannot truthfully inspect the version it just required and consumed.
+
+Expected behavior:
+
+- A capability that satisfies a versioned requirement and exposes a working public administration service is also present in the returned public capability metadata.
+- Embedded and daemon Runtime surfaces report the same capability name/version semantics where they expose the same service.
+
+Reproduction steps:
+
+1. Create an embedded inline Runtime with an External Agent registration store and `requirements: { externalAgents: true, externalAgentAdmin: 1 }`.
+2. Verify that creation succeeds and `runtime.admin.agentRegistrations.setEnabled()` works.
+3. Inspect `runtime.capabilities.externalAgentAdmin` and observe that it is `undefined`; compare with the daemon capability metadata, which advertises version 1.
+
+#### Context
+
+Affected components:
+
+- Published `@kodax-ai/kodax@0.7.71` embedded Runtime facade
+- Space's inline Reference External Agent host
+
+#### Root Cause
+
+KodaX validates embedded requirements against an internal capability set containing `externalAgentAdmin: { version: 1 }`, but the returned public Runtime object constructs a narrower capability object and omits that entry. The service is functional; the metadata projection is incomplete.
+
+#### Current Mitigation and Requested SDK Change
+
+Space does not gate its already-created inline Reference administration service on the missing top-level field. The Coder daemon path still requires and validates `externalAgentAdmin: 1` and `a2aConfigReconciler: 1`, both of which are advertised correctly by the daemon.
+
+KodaX should include `externalAgentAdmin: { version: 1 }` in the embedded Runtime's returned `capabilities`, keep requirement validation and public metadata derived from one capability source, and add an embedded regression that asserts both the capability flag and the working service.
+
+### 052: Composer could send text before an asynchronously attached image entered the artifact payload
+
+- Priority: Medium
+- Status: Resolved
+- Introduced: v0.1.9
+- Fixed: v0.1.32 development
+- Created: 2026-07-17
+- Resolution Date: 2026-07-17
+
+#### Original Problem
+
+Current behavior:
+
+- Pasting, dropping, or selecting an image starts asynchronous Session creation and clipboard-sandbox persistence without marking the composer busy.
+- If the user submits text before that work finishes, `handleSend()` can observe an empty `pendingImages` array and send a text-only turn.
+- This is easiest to hit in a new Session because image preparation must first wait for `session.create`.
+
+Expected behavior:
+
+- Attachment preparation becomes visible to send guards synchronously, before the first asynchronous wait.
+- Button, keyboard, and programmatic composer sends remain blocked until every concurrent attachment operation has settled.
+- Space continues to pass completed image artifacts through the SDK capability preflight; it does not bypass or duplicate the SDK's Provider/model capability policy.
+
+#### Context
+
+Affected components:
+
+- `apps/desktop/renderer/src/shell/BottomBar.tsx`
+- `apps/desktop/renderer/src/shell/attachmentFiles.ts`
+
+#### Root Cause
+
+Attachment event handlers invoked their asynchronous work fire-and-forget. The only signal that an image was ready was the later React `pendingImages` state update, so neither the synchronous Enter handler nor `handleSend()` could distinguish “no image selected” from “selected image is still being saved.”
+
+#### Resolution
+
+- Added a synchronous, reference-counted pending-attachment gate so overlapping attachment operations cannot re-enable sending prematurely.
+- Routed clipboard image, native clipboard fallback, drag/drop, file picker, and folder attachment entry points through the same gate.
+- Guarded both `handleSend()` and the Enter key with the synchronous gate, while using React state to disable the send button and show working feedback.
+- Preserved attachment errors and the existing SDK artifact preflight behavior.
+
+Files changed:
+
+- `apps/desktop/renderer/src/shell/BottomBar.tsx`
+- `apps/desktop/renderer/src/shell/attachmentFiles.ts`
+- `apps/desktop/electron/test/attachment-files.test.ts`
+- `docs/KNOWN_ISSUES.md`
+
+Tests added:
+
+- The attachment gate becomes pending synchronously and remains pending until all overlapping operations release it.
+- Releasing the same operation more than once is idempotent and cannot corrupt the pending count.
+
+Verification:
+
+- Targeted attachment tests: 6 passed, 0 failed.
+- Full repository TypeScript check passed; targeted ESLint and Prettier checks passed for all changed code and test files.
+
+### 053: Restored daemon runs rejected queued prompts because the composer requested unsupported interrupt delivery
+
+- Priority: Medium
+- Status: Resolved
+- Introduced: v0.1.32 development
+- Fixed: v0.1.32 development
+- Created: 2026-07-17
+- Resolution Date: 2026-07-17
+
+#### Original Problem
+
+Current behavior:
+
+- A Coder turn is interrupted, Space is closed, and the same Space and Session are reopened while the daemon-owned run is still active.
+- Sending a normal queued follow-up makes `session.send` fail with `Interrupt delivery is not supported by the connected KodaX Runtime; choose after-turn`.
+- The rejected prompt is restored to the composer, but it is not accepted into the Runtime continuation queue.
+
+Expected behavior:
+
+- Space preserves a follow-up prompt when the recovered active run cannot accept interrupt delivery.
+- The prompt is queued after the active daemon run and the transcript bubble reflects the delivery mode actually accepted by main.
+- Legacy inline sessions retain their existing interrupt queue behavior.
+
+Reproduction steps:
+
+1. Start a Coder turn through the shared daemon Runtime and interrupt or detach Space while work remains active.
+2. Close Space, reopen the same Space, and select the same Session so live Runtime state is restored.
+3. While the restored turn is still running, submit a follow-up with the composer's normal Enter path.
+4. Observe a `HANDLER_ERROR` because the composer requested `interrupt` while the connected Runtime advertises only `after-turn` input.
+
+#### Context
+
+Affected components:
+
+- `apps/desktop/electron/kodax/real-session.ts`
+- `apps/desktop/renderer/src/shell/BottomBar.tsx`
+- `apps/desktop/renderer/src/store/appStore.ts`
+
+#### Root Cause
+
+The daemon correctly retained and re-exposed the active run across the Space process restart. `RealKodaXSession.send()` discovered that run through `findActiveRunId()`, but the composer still defaulted a normal Enter submission to `queueMode: interrupt`. The connected Runtime does not advertise `interruptInput`, and the daemon continuation path rejected that mode instead of preserving the prompt through its supported `after_turn` submission API.
+
+#### Resolution
+
+- Treat interrupt delivery as best-effort for daemon continuations and downgrade it to the supported after-turn queue instead of throwing from `session.send`.
+- Return the authoritative accepted `queueMode: after-turn` in the send acknowledgement.
+- Update an existing optimistic queued bubble with the accepted mode so its label and waiting-state copy no longer claim that it is awaiting an interrupt safe point.
+- Leave the inline SDK interrupt queue unchanged.
+
+Files changed:
+
+- `apps/desktop/electron/kodax/real-session.ts`
+- `apps/desktop/renderer/src/shell/BottomBar.tsx`
+- `apps/desktop/renderer/src/store/appStore.ts`
+- `apps/desktop/electron/test/real-session-runtime-queue.test.ts`
+- `apps/desktop/electron/test/app-store-cancel-event.test.ts`
+- `docs/KNOWN_ISSUES.md`
+
+Tests added:
+
+- A restored-run regression simulates a new Space process with no local `currentAbort`, discovers the daemon's active run, submits an interrupt-style prompt, and verifies that it is accepted as an after-turn continuation.
+- A renderer-store regression verifies that the queued acknowledgement replaces an optimistic `interrupt` mode with authoritative `after-turn` metadata.
+
+Verification:
+
+- Runtime queue, Session send-scope, Runtime adapter, renderer queue-state, and restored-run tests: 57 passed, 0 failed.
+- Full repository TypeScript check passed.
+
+### 054: Daemon permission dialogs discarded command, directory, and operation context
+
+- Priority: High
+- Status: Resolved
+- Introduced: v0.1.31
+- Fixed: v0.1.32 development
+- Created: 2026-07-17
+- Resolution Date: 2026-07-17
+
+#### Original Problem
+
+When a shared-daemon Coder run requested permission, the modal displayed only
+`Permission requested for bash` and the tool name. It did not show the command,
+working directory, target, operation type, or useful description. A user could
+therefore neither verify a legitimate request nor distinguish a read from a
+write/execute action before authorizing it.
+
+Expected behavior: a permission request must expose enough sanitized context
+for an informed decision, while keeping credentials and transport-only fields
+out of renderer state. Single and batched request views must both show the
+actual command when present.
+
+#### Root Cause
+
+The SDK daemon request already emitted `inputPreview`, reason, and risk, but
+`coder-daemon-projection.ts` projected only `toolName` and a generic fallback
+reason. The Space Runtime IPC schema then stripped any additional tool-call
+display fields. The modal had no operation or execution-directory fields to
+render and its batch branch reduced every item to tool name plus reason.
+
+#### Resolution
+
+- Parse the bounded SDK input preview in Electron main, sanitize it before IPC,
+  derive operation type, assess dangerous commands, and attach the effective
+  execution directory.
+- Preserve only bounded display-safe input, operation, and cwd through the
+  Runtime and permission schemas; unknown transport fields remain stripped.
+- Render description, operation, working directory, target, exact command, and
+  remaining structured input in the single modal; show each command in batch
+  mode as well.
+- Redact sensitive field names and common inline shell credential assignments,
+  while preserving command line breaks and tab-separated token boundaries.
+- Reject previews over 8192 characters before `JSON.parse`, omit malformed raw
+  preview text from error fallbacks, and cap every displayed collection at 128
+  total items including its explicit truncation marker.
+- Apply recursion depth and cycle limits before data reaches the renderer.
+
+Files changed:
+
+- `apps/desktop/electron/kodax/runtime/coder-daemon-projection.ts`
+- `apps/desktop/electron/permission/sanitize.ts`
+- `apps/desktop/renderer/src/features/permission/PermissionModal.tsx`
+- `apps/desktop/renderer/src/i18n/messages.ts`
+- `packages/space-ipc-schema/src/channels/permission.ts`
+- `packages/space-ipc-schema/src/channels/runtime.ts`
+- `apps/desktop/electron/test/coder-daemon-projection.test.ts`
+- `apps/desktop/electron/test/permission-sanitize.test.ts`
+- `packages/space-ipc-schema/test/runtime.test.ts`
+- `docs/KNOWN_ISSUES.md`
+
+Tests added:
+
+- Daemon projection preserves sanitized command/description/cwd and derives
+  execution operation and fallback risk/reason.
+- Permission input sanitization redacts sensitive keys and inline credentials.
+- Multiline command semantics, oversized/non-object preview rejection, and
+  bounded nested collection regressions.
+- Runtime IPC keeps bounded display fields and strips unknown transport data.
+
+Verification:
+
+- Full Space TypeScript check passed.
+- Projection, sanitizer, batching, broker, mode-policy, registry, risk, Runtime
+  adapter/controller, and IPC schema tests passed 152/152.
+
+### 055: Ark multimodal follow-ups rejected supported model routes during artifact preflight
+
+- Priority: High
+- Status: Resolved
+- Introduced: <= v0.1.31
+- Fixed: v0.1.32-hotfix.0
+- Created: 2026-07-17
+- Resolution Date: 2026-07-17
+
+#### Original Problem
+
+After a successful image-and-text turn, a user could send a text follow-up,
+stop generation, then add another image and immediately send. The follow-up
+could fail with `input artifact preflight failed` even when the selected Ark
+Coding route supported image input. The same workflow also exposed the
+asynchronous attachment-persistence race tracked separately as issue 052.
+
+#### Resolution
+
+- KodaX SDK `0.7.72-hotfix.0` corrects image capability routing for the
+  supported Ark Coding models.
+- Capability and artifact preflight checks cover both Doubao Seed 2.0 routes,
+  Kimi K2.7 Code, Kimi K2.6, and MiniMax M3.
+- Space synchronously gates all send paths while attachment persistence is
+  pending, as documented and tested under issue 052.
+
 ## Summary
 
-- Total: 35
-- Open: 1
-- Resolved: 34
-- High: 23
-- Medium: 10
-- Low: 2
-- Next to resolve: 022
+- Total: 55
+- Open: 4
+- Resolved: 51
+- High: 28
+- Medium: 19
+- Low: 8
+- Next to resolve: 043

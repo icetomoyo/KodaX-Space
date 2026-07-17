@@ -31,7 +31,7 @@ KodaX Space 是 KodaX 生态的**桌面客户端**——不是另一个 IDE，�
 - **当前版本链**：
   - `v0.1.30`：Coder/Partner 双 surface、workspace-first Partner、Reference External Agents 已发布
   - `v0.1.31-v0.1.32`：Runtime contract alignment + `app://space`/structured logging + typed semantic Space control
-  - `v0.1.35-v0.1.40`：Workflow/Review、Task/Capability、Memory Agent、Learning Center
+  - `v0.1.35-v0.1.40`：Partner outcome workspace、Workflow/Review、Task/Capability、Memory Agent、Learning Center
   - `v0.1.43`：本地化、诊断、release channel/distribution trust 完成 0.1.x beta gate
   - `v0.2.x`：Governed Browser、正式 Partner packs、Connector read snapshots、local automations、refreshable artifacts
 
@@ -176,11 +176,13 @@ Partner 与 Coder 共用同一引擎，差异只在四件事：
 - 工具白名单：`non-bash-subset`，默认不开 bash；受控放开转换工具
 - Oversight：文档写盘 / web 外呼 / Connector 访问各自的权限确认（复用 Space 现有 permission UX）
 
-**5️⃣ 交互 / UI 层（doc-workspace 布局）**
+**5️⃣ 交互 / UI 层（outcome-first doc workspace）**
 
-- 三栏：`Sources（左）| 对话 + 任务进度（中）| Artifact 预览（右）`，去掉 Coder 的 Subagent/Terminal 抽屉
+- 当前已发布的 `Sources（左）| 对话 + 任务进度（中）| Artifact 预览（右）` 是 F130 之前的兼容基线；`v0.1.35` 默认布局不再保留嵌套 Partner 左栏
+- 新任务可选 `分析报告 / 表格与数据 / PPT 演示 / 文档写作 / 文件整理` 结果入口，也可直接自然语言输入；入口不新增工作模式、Skill 选择器或权限状态
+- 资料通过 `Add material` 按需进入统一上下文抽屉；中间保持对话、澄清与简短回执；右栏固定为 `成果 / 过程 / 文件`
 - 隐式入口（极简且智能）：拖一个 PDF/docx 进来、或在非 git 目录开 session → 自动判定为知识工作并切到 doc-workspace，tab 只作锚点不作唯一入口
-- 任务进度：面向多步文档事务的进度（"读 3 个源 → 抽表 → 生成报告"），对应 Work 但语义不同
+- 多步进度（"读 3 个源 → 抽表 → 生成报告"）进入右栏 `过程`，不得由 assistant 文本臆造，也不长期占用中间对话空间
 
 **6️⃣ 复用层（不重造）**
 
@@ -377,7 +379,8 @@ Repointel 的核心调用契约（`status / warm / preturn / context-pack / impa
 - 文件富预览：PDF / docx / xlsx / pptx 只读渲染（对标 Codex Desktop）
 - Connector foundation：先交付 catalog、授权状态、可撤销的只读 snapshot、provenance 与 Partner KB ingestion；写动作另行建项和威胁建模
 - **Partner surface（当前已发布，继续扩展）** —— 见 [ADR-007](ADR/ADR-007-partner-surface-model.md)：
-  - _Surface spec + doc-workspace 布局_（已交付）：Surface 抽象、三栏布局、受限工具策略、非 git 作用域与隐式入口
+  - _Surface spec + 当前兼容布局_（已交付）：Surface 抽象、F130 前三栏基线、受限工具策略、非 git 作用域与隐式入口
+  - _Outcome-first workspace_（`v0.1.35`）：五个可选结果入口、按需项目资料、对话居中、`成果 / 过程 / 文件` 右栏；不改变 Coder、Auto LLM 或权限/自治契约
   - _Skill packs + Artifact 层_（`v0.2.0` 扩展）：在已发布 artifact/Office writers 上增加 governed browser、document pack 与 research/citation pack
   - _Partner verification contract_（已交付）：Agent Profile、工具可见性、source-faithfulness/citation-completeness 规则；后续只按真实 eval 缺口增强，不再保留 SDK R1/R2 Blocked 占位
   - 全场景全功能见 [§2.3](#23-partner-全场景--全功能)
@@ -534,19 +537,21 @@ File panel 内点击 git diff
 
 ### 9.2 当前 0.1.x 版本链
 
-| Version lane      | Outcome                                                                                                      |
-| ----------------- | ------------------------------------------------------------------------------------------------------------ |
-| `v0.1.31`         | Runtime Host Adapter 与 capability negotiation；inline-first，保留 Partner/custom-tool/permission parity     |
-| `v0.1.32`         | `app://space` origin、structured/redacted diagnostics，以及基于 typed semantic actions 的自然语言 Space 控制 |
-| `v0.1.33-v0.1.34` | Runtime/platform trust patch reserve                                                                         |
-| `v0.1.35`         | Workflow same-session replay provenance、timeline、evidence navigation 与 object-attached review receipts    |
-| `v0.1.36`         | Task Plan/Completion Receipt、Runtime Capability Health、Effort/Assurance/Route facts                        |
-| `v0.1.37-v0.1.38` | Workflow/governance patch reserve                                                                            |
-| `v0.1.39`         | Memory Agent Desktop Host；硬门槛为已发布、兼容的 KX-F260 contract                                           |
-| `v0.1.40`         | Learning Center Desktop Host；硬门槛为已发布的 KX-F266 `runtime.learning`                                    |
-| `v0.1.41-v0.1.42` | Memory/Learning patch reserve                                                                                |
-| `v0.1.43`         | Localization completion、beta diagnostics、release channels/distribution trust                               |
-| `v0.1.44`         | 0.1.x patch/RC reserve                                                                                       |
+| Version lane      | Outcome                                                                                                                        |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `v0.1.31`         | 已交付 Runtime/platform trust、`app://space`、redacted diagnostics 与 typed semantic actions                                   |
+| `v0.1.32`         | Shared Coder daemon/live state，以及 Space-owned Partner 本地 Sources、稳定引用、自动 grounded recall                          |
+| `v0.1.33-v0.1.34` | 扩大后的 v0.1.32 source/parser/citation/retrieval/runtime/control 稳定化预留                                                   |
+| `v0.1.35`         | Partner outcome-first workspace、按需项目资料、成果/过程/文件右栏，以及 Workflow provenance 与 object-attached review receipts |
+| `v0.1.36`         | Task Plan/Completion Receipt、Runtime Capability Health、Effort/Assurance/Route facts                                          |
+| `v0.1.37`         | Partner hybrid retrieval/evidence ranking 与 curated knowledge lifecycle                                                       |
+| `v0.1.38`         | F129 Partner Presentation Project：模板优先、真实预览、可编辑原生 PPTX、Office 引擎验证；用户模板/creative 路径按独立门槛开放  |
+| `v0.1.39`         | Memory Agent Desktop Host；硬门槛为已发布、兼容的 KX-F260 contract                                                             |
+| `v0.1.40`         | Learning Center Desktop Host；硬门槛为已发布的 KX-F266 `runtime.learning`                                                      |
+| `v0.1.41`         | Partner knowledge freshness、conflict 与 access integrity                                                                      |
+| `v0.1.42`         | Partner knowledge integrity 稳定化预留                                                                                         |
+| `v0.1.43`         | Localization、beta/release diagnostics、distribution trust 与 Partner knowledge quality                                        |
+| `v0.1.44`         | 0.1.x patch/RC reserve                                                                                                         |
 
 KX-F260/F266 未按时发布时，Space 调换 feature lane，不绕过 capability gate。
 
