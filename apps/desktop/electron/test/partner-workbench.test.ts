@@ -126,6 +126,8 @@ test('auto output prompt keeps deliverables format-open by default', () => {
   assert.match(prompt, /Do not limit the result to preset document formats/);
   assert.match(prompt, /write_partner_deliverable/);
   assert.match(prompt, /run_partner_helper/);
+  assert.match(prompt, /reuse that link in the final response/);
+  assert.match(prompt, /Do not present a bare run-output path/);
   assert.match(prompt, /partner-output\/research-memo/);
   assert.doesNotMatch(prompt, /Create a workspace-visible md deliverable/);
 });

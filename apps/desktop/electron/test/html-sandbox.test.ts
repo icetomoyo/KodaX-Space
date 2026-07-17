@@ -17,7 +17,9 @@ test('looksLikeInteractiveHtml detects script-driven HTML', () => {
 });
 
 test('buildInteractiveHtmlSrcDoc injects a restrictive in-frame CSP', () => {
-  const out = buildInteractiveHtmlSrcDoc('<!doctype html><html><head><title>x</title></head><body></body></html>');
+  const out = buildInteractiveHtmlSrcDoc(
+    '<!doctype html><html><head><title>x</title></head><body></body></html>',
+  );
   assert.match(out, /Content-Security-Policy/);
   assert.match(out, /connect-src 'none'/);
   assert.match(out, /script-src 'unsafe-inline'/);
@@ -45,7 +47,10 @@ test('buildInteractiveHtmlCsp opens only declared permission sources', () => {
   assert.match(csp, /connect-src https:\/\/api\.example\.com wss:\/\/api\.example\.com/);
   // script-src = 'unsafe-inline' + default CDN allowlist + the declared SRI script.
   assert.match(csp, /script-src 'unsafe-inline'/);
-  assert.ok(csp.includes('https://cdn.example.com/lib/v1.js'), 'declared script present in script-src');
+  assert.ok(
+    csp.includes('https://cdn.example.com/lib/v1.js'),
+    'declared script present in script-src',
+  );
   assert.match(csp, /style-src 'unsafe-inline' https:\/\/styles\.example\.com/);
   assert.match(csp, /img-src data: blob: https:\/\/images\.example\.com/);
   assert.match(csp, /media-src data: blob: https:\/\/media\.example\.com/);
@@ -119,7 +124,11 @@ test('C11: explicit permissions still keep passive resources present in the mark
   );
   assert.match(out, /connect-src https:\/\/api\.example\.com/, 'explicit connect honored');
   assert.match(out, /img-src[^"]*https:\/\/images\.example\.com/, 'inferred img still allowed');
-  assert.match(out, /style-src[^"]*https:\/\/fonts\.googleapis\.com/, 'inferred style still allowed');
+  assert.match(
+    out,
+    /style-src[^"]*https:\/\/fonts\.googleapis\.com/,
+    'inferred style still allowed',
+  );
 });
 
 test('sandboxForInteractiveHtml adds forms and popup tokens only when requested', () => {

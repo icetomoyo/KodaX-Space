@@ -15,7 +15,8 @@ import { FileOutput, Maximize2 } from 'lucide-react';
 import { ToolDiffView } from './ToolDiffView.js';
 import { registerToolInputRenderer, registerToolResultRenderer } from './toolRegistry.js';
 import { useAppStore } from '../../../store/appStore.js';
-import { openFileSmart } from '../../../lib/openPath.js';
+import { openFileSmart, openPartnerDeliveryById } from '../../../lib/openPath.js';
+import { parsePartnerDeliveryToolResults } from '../../../lib/generatedResourceRef.js';
 import {
   parseBashOutputCompression,
   stripBashOutputRecoveryHint,
@@ -277,3 +278,68 @@ registerToolResultRenderer('create_artifact', ({ result, input }) => {
     />
   );
 });
+
+// ---- write_partner_deliverable ----
+
+function PartnerDeliveryToolCard({
+  id,
+  title,
+  relativePath,
+}: {
+  readonly id: string;
+  readonly title: string;
+  readonly relativePath: string | null;
+}): JSX.Element {
+  const { t } = useI18n();
+  return (
+    <button
+      type="button"
+      onClick={() => void openPartnerDeliveryById(id)}
+      title={t('tool.viewPartnerOutput')}
+      className="flex w-full items-center gap-2 rounded border border-border-default bg-surface-2/40 px-2.5 py-2 text-left hover:bg-hover-bg"
+      data-testid="partner-delivery-tool-card"
+    >
+      <FileOutput
+        className="h-4 w-4 flex-shrink-0 text-accent-ink"
+        strokeWidth={1.75}
+        aria-hidden
+      />
+      <span className="min-w-0 flex-1">
+        <span className="block truncate font-sans text-[12px] font-medium text-fg-primary">
+          {title}
+        </span>
+        <span className="block truncate text-[10px] text-fg-muted">{relativePath ?? id}</span>
+      </span>
+      <span className="flex-shrink-0 text-[10px] uppercase tracking-wide text-fg-muted">
+        {t('tool.partnerOutput')}
+      </span>
+    </button>
+  );
+}
+
+function renderPartnerDeliveryToolResult(result: string): JSX.Element | null {
+  const references = parsePartnerDeliveryToolResults(result);
+  if (references.length === 0) return null;
+  return (
+    <div className="space-y-1.5">
+      {references.map((reference) => (
+        <PartnerDeliveryToolCard
+          key={reference.id}
+          id={reference.id}
+          title={reference.title}
+          relativePath={reference.relativePath}
+        />
+      ))}
+    </div>
+  );
+}
+
+registerToolResultRenderer('write_partner_deliverable', ({ result }) =>
+  renderPartnerDeliveryToolResult(result),
+);
+registerToolResultRenderer('write_partner_workspace_file', ({ result }) =>
+  renderPartnerDeliveryToolResult(result),
+);
+registerToolResultRenderer('run_partner_helper', ({ result }) =>
+  renderPartnerDeliveryToolResult(result),
+);

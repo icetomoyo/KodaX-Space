@@ -6,7 +6,12 @@
 // static markup. No JS eval, no LiveCanvas, no dompurify needed (the sandbox is
 // the boundary). Verified by e2e/artifact-static-render.mjs.
 
-import type { ArtifactHtmlPermissionsT } from '@kodax-space/space-ipc-schema';
+import {
+  ARTIFACT_HTML_FRAME_MESSAGE_TYPE,
+  ARTIFACT_HTML_FRAME_URL,
+  type ArtifactHtmlPermissionsT,
+} from '@kodax-space/space-ipc-schema';
+import { useMemo } from 'react';
 import { buildInteractiveHtmlSrcDoc, sandboxForInteractiveHtml } from '../htmlSandbox';
 import { useI18n } from '../../../i18n/I18nProvider';
 
@@ -16,6 +21,15 @@ export interface HtmlArtifactProps {
 
 export interface InteractiveHtmlArtifactProps extends HtmlArtifactProps {
   permissions?: ArtifactHtmlPermissionsT;
+}
+
+function documentVersionToken(documentHtml: string): string {
+  let hash = 2166136261;
+  for (let i = 0; i < documentHtml.length; i += 1) {
+    hash ^= documentHtml.charCodeAt(i);
+    hash = Math.imul(hash, 16777619) >>> 0;
+  }
+  return `${documentHtml.length.toString(36)}-${hash.toString(36)}`;
 }
 
 export function HtmlArtifact({ html }: HtmlArtifactProps): JSX.Element {
@@ -35,12 +49,29 @@ export function InteractiveHtmlArtifact({
   permissions,
 }: InteractiveHtmlArtifactProps): JSX.Element {
   const { t } = useI18n();
+  const documentHtml = useMemo(
+    () => buildInteractiveHtmlSrcDoc(html, permissions),
+    [html, permissions],
+  );
+  const frameUrl = useMemo(
+    () => `${ARTIFACT_HTML_FRAME_URL}?v=${documentVersionToken(documentHtml)}`,
+    [documentHtml],
+  );
   return (
     <iframe
       title={t('artifact.interactiveHtmlTitle')}
-      srcDoc={buildInteractiveHtmlSrcDoc(html, permissions)}
+      src={frameUrl}
       sandbox={sandboxForInteractiveHtml(permissions)}
       referrerPolicy="no-referrer"
+      onLoad={(event) => {
+        event.currentTarget.contentWindow?.postMessage(
+          {
+            type: ARTIFACT_HTML_FRAME_MESSAGE_TYPE,
+            documentHtml,
+          },
+          '*',
+        );
+      }}
       className="w-full h-full flex-1 border-0 bg-white"
     />
   );

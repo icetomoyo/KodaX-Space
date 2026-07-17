@@ -11,6 +11,10 @@ import {
   type SdkToolExecutionContextLike,
 } from './session-run-context.js';
 import { decodePartnerBase64Strict } from './partner-file-guards.js';
+import {
+  partnerDeliveryMarkdownLink,
+  partnerDeliveryReferenceLine,
+} from './partner-delivery-reference.js';
 
 type ToolHandler = (
   input: Record<string, unknown>,
@@ -183,6 +187,9 @@ export function makeWritePartnerWorkspaceFileHandler(
         `Partner workspace file written: ${checkpoint.relativePath}`,
         `Checkpoint id: ${checkpoint.id}`,
         `Delivery id: ${delivery.id}`,
+        `Relative path: ${delivery.relativePath}`,
+        partnerDeliveryReferenceLine(delivery),
+        `Use this exact link when referencing the output: ${partnerDeliveryMarkdownLink(delivery)}`,
         `Operation: ${checkpoint.operation}`,
         `Hash: ${checkpoint.afterHash}`,
         'Rollback is available with rollback_partner_checkpoint while the file remains unchanged.',

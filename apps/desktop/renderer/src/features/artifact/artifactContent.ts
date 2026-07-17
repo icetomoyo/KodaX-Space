@@ -16,11 +16,20 @@ export type ArtifactContent =
       kind: 'pdf' | 'docx' | 'xlsx' | 'pptx';
       projectRoot?: string;
       path: string;
-      fileSource?: 'workspace' | 'artifact-store';
+      fileSource?: 'workspace' | 'artifact-store' | 'delivery-store';
       artifactId?: string;
+      deliveryId?: string;
       version?: number;
     }
-  | { kind: 'file'; projectRoot: string; path: string }
+  | {
+      kind: 'file';
+      projectRoot?: string;
+      path: string;
+      fileSource?: 'workspace' | 'artifact-store' | 'delivery-store';
+      artifactId?: string;
+      deliveryId?: string;
+      version?: number;
+    }
   // Interactive tier removed (LiveCanvas sandbox extracted to a future feature).
   // Kept as an inert variant so ArtifactView's exhaustive switch still covers it
   // (renders an "unavailable" placeholder); nothing constructs it anymore.

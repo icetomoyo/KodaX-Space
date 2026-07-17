@@ -2,7 +2,10 @@ import { protocol } from 'electron';
 import { readFile } from 'node:fs/promises';
 import {
   APP_PROTOCOL_SCHEME,
+  ARTIFACT_HTML_FRAME_BOOTSTRAP,
+  artifactHtmlFrameResponseHeaders,
   appAssetResponseHeaders,
+  isArtifactHtmlFrameUrl,
   resolveAppProtocolPath,
 } from './app-protocol-policy.js';
 
@@ -32,6 +35,12 @@ export function registerAppSchemePrivileges(): void {
 export function installAppProtocolHandler(rendererRoot: string): void {
   if (handlerInstalled) return;
   protocol.handle(APP_PROTOCOL_SCHEME, async (request) => {
+    if (isArtifactHtmlFrameUrl(request.url)) {
+      return new Response(ARTIFACT_HTML_FRAME_BOOTSTRAP, {
+        status: 200,
+        headers: artifactHtmlFrameResponseHeaders(),
+      });
+    }
     const resolved = await resolveAppProtocolPath(request.url, rendererRoot);
     if (!resolved.ok) {
       return new Response(resolved.code, {

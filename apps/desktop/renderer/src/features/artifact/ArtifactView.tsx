@@ -14,22 +14,26 @@ import { HtmlArtifact, InteractiveHtmlArtifact } from './renderers/HtmlArtifact'
 import { MarkdownArtifact } from './renderers/MarkdownArtifact';
 import { ChartArtifact } from './renderers/ChartArtifact';
 import { SvgArtifact, ImageArtifact } from './renderers/MediaArtifact';
+import { useI18n } from '../../i18n/I18nProvider.js';
+import { isTextPreviewPath } from '../../lib/pathClassify.js';
 
 export type { ArtifactContent } from './artifactContent';
 import type { ArtifactContent } from './artifactContent';
 
 function ReactTierUnavailable(): JSX.Element {
+  const { t } = useI18n();
   return (
     <div className="flex-1 flex items-center justify-center p-4 text-[11px] text-fg-muted text-center leading-relaxed">
-      交互式预览暂未启用。
+      {t('artifact.interactiveUnavailable')}
     </div>
   );
 }
 
 function Unsupported({ what }: { what: string }): JSX.Element {
+  const { t } = useI18n();
   return (
     <div className="flex-1 flex items-center justify-center p-4 text-[11px] text-fg-muted text-center leading-relaxed">
-      无法渲染该产物（{what}）。
+      {t('artifact.unsupported', { kind: what })}
     </div>
   );
 }
@@ -82,17 +86,27 @@ export function ArtifactView(props: ArtifactContent): JSX.Element {
             kind={props.kind}
             fileSource={props.fileSource}
             artifactId={props.artifactId}
+            deliveryId={props.deliveryId}
             version={props.version}
           />
         </div>
       );
     case 'file': {
-      const kind = detectKind(props.path);
+      const deliveryText = props.fileSource === 'delivery-store' && isTextPreviewPath(props.path);
+      const kind = detectKind(props.path) ?? (deliveryText ? 'text' : null);
       return kind === null ? (
         <Unsupported what="file" />
       ) : (
         <div className="flex-1 min-h-0">
-          <RichPreview projectRoot={props.projectRoot} path={props.path} kind={kind} />
+          <RichPreview
+            projectRoot={props.projectRoot}
+            path={props.path}
+            kind={kind}
+            fileSource={props.fileSource}
+            artifactId={props.artifactId}
+            deliveryId={props.deliveryId}
+            version={props.version}
+          />
         </div>
       );
     }

@@ -1,10 +1,74 @@
 import { realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
+import {
+  ARTIFACT_HTML_FRAME_MESSAGE_TYPE,
+  ARTIFACT_HTML_FRAME_URL,
+} from '@kodax-space/space-ipc-schema';
 
 export const APP_PROTOCOL_SCHEME = 'app';
 export const APP_PROTOCOL_HOST = 'space';
 export const APP_PROTOCOL_ORIGIN = `${APP_PROTOCOL_SCHEME}://${APP_PROTOCOL_HOST}`;
 export const APP_PROTOCOL_INDEX_URL = `${APP_PROTOCOL_ORIGIN}/index.html`;
+
+// This response belongs only to the sandboxed child frame. It is intentionally
+// broad enough for the child document's injected, permission-specific CSP to be
+// authoritative; it must never be used for the main renderer document.
+export const ARTIFACT_HTML_FRAME_BOOTSTRAP_CSP = [
+  "default-src 'none'",
+  "script-src * 'unsafe-inline'",
+  "style-src * 'unsafe-inline'",
+  'img-src * data: blob:',
+  'font-src * data:',
+  'media-src * data: blob:',
+  'connect-src *',
+  'frame-src *',
+  "object-src 'none'",
+  "base-uri 'none'",
+  'form-action *',
+].join('; ');
+
+export const ARTIFACT_HTML_FRAME_BOOTSTRAP = `<!doctype html>
+<html><head><meta charset="utf-8"><title>Artifact HTML sandbox</title></head>
+<body><script>
+window.addEventListener('message', function receiveArtifact(event) {
+  var payload = event.data;
+  if (event.source !== parent || !payload || payload.type !== ${JSON.stringify(ARTIFACT_HTML_FRAME_MESSAGE_TYPE)} || typeof payload.documentHtml !== 'string') return;
+  window.removeEventListener('message', receiveArtifact);
+  document.open();
+  document.write(payload.documentHtml);
+  document.close();
+});
+</script></body></html>`;
+
+export function isArtifactHtmlFrameUrl(raw: string): boolean {
+  try {
+    const url = new URL(raw);
+    const expected = new URL(ARTIFACT_HTML_FRAME_URL);
+    if (
+      url.protocol !== expected.protocol ||
+      url.host !== expected.host ||
+      url.pathname !== expected.pathname ||
+      url.username ||
+      url.password ||
+      url.port ||
+      url.hash
+    ) {
+      return false;
+    }
+    return Array.from(url.searchParams.keys()).every((key) => key === 'v');
+  } catch {
+    return false;
+  }
+}
+
+export function artifactHtmlFrameResponseHeaders(): Readonly<Record<string, string>> {
+  return {
+    'content-type': 'text/html; charset=utf-8',
+    'content-security-policy': ARTIFACT_HTML_FRAME_BOOTSTRAP_CSP,
+    'x-content-type-options': 'nosniff',
+    'cache-control': 'no-store',
+  };
+}
 
 export type AppProtocolResolution =
   | { readonly ok: true; readonly filePath: string }

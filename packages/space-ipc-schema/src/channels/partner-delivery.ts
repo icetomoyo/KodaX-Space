@@ -11,6 +11,7 @@ function hasPathControlChar(s: string): boolean {
 }
 
 const idSchema = z.string().min(1).max(128);
+const deliveryUriIdSchema = idSchema.regex(/^[A-Za-z0-9_-]+$/);
 const sessionIdSchema = z.string().min(1).max(128);
 const pathSchema = z
   .string()
@@ -19,6 +20,8 @@ const pathSchema = z
   .refine((s) => !hasPathControlChar(s), { message: 'path contains control characters' });
 
 const sha256Schema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
+
+export const PARTNER_DELIVERY_URI_PREFIX = 'kodax-space://partner-delivery/';
 
 export const partnerDeliveryRootKindSchema = z.enum(['run-output', 'workspace-session']);
 export const partnerDeliveryKindSchema = z.enum(['file', 'folder']);
@@ -44,6 +47,70 @@ export const partnerDeliveryRefSchema = z.object({
   updatedAt: z.number().int().nonnegative(),
 });
 
+export const partnerDeliveryReferenceSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('id'), id: idSchema }),
+  z.object({ type: z.literal('path'), path: pathSchema }),
+]);
+
+export const partnerDeliveryResolveStatusSchema = z.enum([
+  'found',
+  'not-found',
+  'missing',
+  'ambiguous',
+]);
+
+export function formatPartnerDeliveryUri(id: string): string {
+  return `${PARTNER_DELIVERY_URI_PREFIX}${encodeURIComponent(deliveryUriIdSchema.parse(id))}`;
+}
+
+export function parsePartnerDeliveryUri(uri: string): string | null {
+  if (!uri.toLowerCase().startsWith(PARTNER_DELIVERY_URI_PREFIX)) return null;
+  const encoded = uri.slice(PARTNER_DELIVERY_URI_PREFIX.length);
+  if (!encoded || /[/?#]/.test(encoded)) return null;
+  try {
+    const parsed = deliveryUriIdSchema.safeParse(decodeURIComponent(encoded));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
+
+function comparableDeliveryPaths(rawPath: string): ReadonlySet<string> {
+  let decoded = rawPath.trim();
+  try {
+    decoded = decodeURIComponent(decoded);
+  } catch {
+    // A literal '%' in an agent-produced path is still a valid filename candidate.
+  }
+  const normalized = decoded.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '');
+  const lower = normalized.toLowerCase();
+  const aliases = new Set([lower]);
+  if (lower.startsWith('partner-output/')) aliases.add(lower.slice('partner-output/'.length));
+  return aliases;
+}
+
+/** True when a chat-visible path belongs to Partner's reserved logical output namespace. */
+export function isPartnerOutputLogicalPath(rawPath: string): boolean {
+  const normalized = rawPath.trim().replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase();
+  return normalized.startsWith('partner-output/');
+}
+
+/** Match a chat-visible Partner output path to its delivery-registry record. */
+export function partnerDeliveryPathMatches(
+  delivery: { readonly relativePath: string; readonly absolutePath: string },
+  rawPath: string,
+): boolean {
+  const targetAliases = comparableDeliveryPaths(rawPath);
+  const deliveryAliases = new Set([
+    ...comparableDeliveryPaths(delivery.relativePath),
+    ...comparableDeliveryPaths(delivery.absolutePath),
+  ]);
+  for (const candidate of targetAliases) {
+    if (deliveryAliases.has(candidate)) return true;
+  }
+  return false;
+}
+
 export const partnerDeliveriesListChannel = {
   name: 'partner.deliveries.list',
   direction: 'invoke',
@@ -62,6 +129,20 @@ export const partnerDeliveriesGetChannel = {
   direction: 'invoke',
   input: z.object({ id: idSchema }),
   output: z.object({ delivery: partnerDeliveryRefSchema.nullable() }),
+} as const;
+
+export const partnerDeliveriesResolveChannel = {
+  name: 'partner.deliveries.resolve',
+  direction: 'invoke',
+  input: z.object({
+    projectRoot: pathSchema,
+    sessionId: sessionIdSchema.optional(),
+    reference: partnerDeliveryReferenceSchema,
+  }),
+  output: z.object({
+    status: partnerDeliveryResolveStatusSchema,
+    delivery: partnerDeliveryRefSchema.nullable(),
+  }),
 } as const;
 
 export const partnerDeliveriesOutputRootChannel = {
@@ -105,3 +186,5 @@ export const partnerDeliveriesChangedChannel = {
 export type PartnerDeliveryRootKindT = z.infer<typeof partnerDeliveryRootKindSchema>;
 export type PartnerDeliveryKindT = z.infer<typeof partnerDeliveryKindSchema>;
 export type PartnerDeliveryRefT = z.infer<typeof partnerDeliveryRefSchema>;
+export type PartnerDeliveryReferenceT = z.infer<typeof partnerDeliveryReferenceSchema>;
+export type PartnerDeliveryResolveStatusT = z.infer<typeof partnerDeliveryResolveStatusSchema>;

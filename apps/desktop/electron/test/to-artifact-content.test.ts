@@ -118,6 +118,26 @@ test('artifact-store generated files do not need projectRoot', () => {
   );
 });
 
+test('Partner delivery files can be previewed without resolving them under projectRoot', () => {
+  assert.deepEqual(
+    toArtifactContent(
+      'file',
+      {
+        path: 'partner-output/report.md',
+        fileSource: 'delivery-store',
+        deliveryId: 'pd-report',
+      },
+      null,
+    ),
+    {
+      kind: 'file',
+      path: 'partner-output/report.md',
+      fileSource: 'delivery-store',
+      deliveryId: 'pd-report',
+    },
+  );
+});
+
 test('image with missing content → null', () => {
   assert.equal(toArtifactContent('image', {}, null), null);
 });

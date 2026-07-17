@@ -7,6 +7,7 @@ import {
   formatBytes,
   PREVIEW_SIZE_CAPS,
 } from '../../renderer/src/features/preview/binaryUtils.js';
+import { textFilePresentation } from '../../renderer/src/features/preview/previewPresentation.js';
 
 test('detectKind: pdf extension (lowercase)', () => {
   assert.equal(detectKind('docs/spec.pdf'), 'pdf');
@@ -40,6 +41,15 @@ test('detectKind: log and config text files map to text preview', () => {
   assert.equal(detectKind('logs/server.LOG'), 'text');
   assert.equal(detectKind('config/app.ini'), 'text');
   assert.equal(detectKind('exports/table.tsv'), 'text');
+});
+
+test('textFilePresentation: Markdown uses document preview while other text remains source', () => {
+  assert.equal(textFilePresentation('partner-output/report.md'), 'markdown');
+  assert.equal(textFilePresentation('docs/RELEASE.NOTES.MARKDOWN'), 'markdown');
+  assert.equal(textFilePresentation(' README.md '), 'markdown');
+  assert.equal(textFilePresentation('docs/component.mdx'), 'source');
+  assert.equal(textFilePresentation('src/main.ts'), 'source');
+  assert.equal(textFilePresentation('notes.txt'), 'source');
 });
 
 test('detectKind: extensions only matched at end', () => {

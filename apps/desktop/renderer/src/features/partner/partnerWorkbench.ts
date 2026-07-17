@@ -1451,6 +1451,7 @@ export function buildPartnerWorkbenchPrompt(config: PartnerWorkbenchConfig): str
     '- Do not use raw write, edit, multi_edit, bash, shell, or unrestricted filesystem mutation.',
     '- Writing small helper tools, scripts, generated apps, validators, renderers, converters, or packagers is allowed when it makes the Partner task faster; keep them as run-output deliverables, and use run_partner_helper for bounded JavaScript transform/validation runs when needed.',
     '- Use write_partner_deliverable for arbitrary run-output files and folders; use run_partner_helper for bounded helper execution over those outputs; use write_partner_workspace_file only for small checkpointed workspace-session writes when policy explicitly allows direct workspace writes.',
+    '- When a delivery tool returns an exact Markdown output link, reuse that link in the final response. Do not present a bare run-output path as though it were a project-relative file.',
     '- Treat create_office_artifact as an Office/PDF convenience writer and file proposals as strict/review fallbacks, not as the ceiling of Partner output.',
     '',
     'Faithfulness checklist',
@@ -1459,6 +1460,6 @@ export function buildPartnerWorkbenchPrompt(config: PartnerWorkbenchConfig): str
     '- Mark inferred recommendations as inference when they are not directly stated in sources.',
     '- List missing evidence, contradictions, or assumptions before the final deliverable summary.',
     '',
-    'Finish by reporting the delivery id, checkpoint id, artifact id, or file proposal id that was created, plus the output kind and source coverage.',
+    'Finish by linking each created output with the exact Delivery/Artifact link returned by its tool, and report the delivery id, checkpoint id, artifact id, or file proposal id plus the output kind and source coverage.',
   ].join('\n');
 }

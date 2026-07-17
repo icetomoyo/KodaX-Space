@@ -4,6 +4,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ArtifactRefT } from '@kodax-space/space-ipc-schema';
 import type { ArtifactVersionPayload } from './toArtifactContent';
+import { useI18n } from '../../i18n/I18nProvider.js';
 
 /** Live list of a session's artifacts; re-fetches on artifact.changed push. */
 export function useArtifacts(sessionId: string | null): {
@@ -11,6 +12,7 @@ export function useArtifacts(sessionId: string | null): {
   loading: boolean;
   error: string | null;
 } {
+  const { t } = useI18n();
   const [artifacts, setArtifacts] = useState<readonly ArtifactRefT[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -35,13 +37,13 @@ export function useArtifacts(sessionId: string | null): {
             setArtifacts(res.data.artifacts);
             setError(null);
           } else {
-            setError(res.error.message || 'Unable to load artifacts');
+            setError(res.error.message || t('artifact.loadFailed'));
           }
           setLoading(false);
         })
         .catch((err: unknown) => {
           if (!alive) return;
-          setError(err instanceof Error ? err.message : 'Unable to load artifacts');
+          setError(err instanceof Error ? err.message : t('artifact.loadFailed'));
           setLoading(false);
         });
     };
@@ -62,7 +64,7 @@ export function useArtifacts(sessionId: string | null): {
       if (timer) clearTimeout(timer);
       off();
     };
-  }, [sessionId]);
+  }, [sessionId, t]);
 
   return { artifacts, loading, error };
 }
@@ -101,6 +103,7 @@ export function useArtifactRead(
   loading: boolean;
   error: string | null;
 } {
+  const { t } = useI18n();
   const [ref, setRef] = useState<ArtifactRefT | null>(null);
   const [payload, setPayload] = useState<ArtifactVersionPayload | null>(null);
   const [loading, setLoading] = useState<boolean>(Boolean(id));
@@ -112,7 +115,7 @@ export function useArtifactRead(
       setRef(null);
       setPayload(null);
       setLoading(false);
-      setError(id ? '运行环境不可用' : null);
+      setError(id ? t('artifact.runtimeUnavailable') : null);
       return;
     }
     let alive = true;
@@ -140,7 +143,7 @@ export function useArtifactRead(
           } else {
             setRef(null);
             setPayload(null);
-            setError('无法加载该 artifact');
+            setError(t('artifact.loadFailed'));
           }
           setLoading(false);
         })
@@ -148,7 +151,7 @@ export function useArtifactRead(
           if (!alive) return;
           setRef(null);
           setPayload(null);
-          setError('无法加载该 artifact');
+          setError(t('artifact.loadFailed'));
           setLoading(false);
         });
     };
@@ -160,7 +163,7 @@ export function useArtifactRead(
       alive = false;
       off();
     };
-  }, [id, version]);
+  }, [id, t, version]);
 
   return { ref, payload, loading, error };
 }
@@ -177,34 +180,48 @@ export function useArtifactContent(
     const bridge = window.kodaxSpace;
     if (!bridge || !id) {
       setPayload(null);
+      setLoading(false);
       return;
     }
     let alive = true;
-    setLoading(true);
-    bridge
-      .invoke('artifact.read', version !== undefined ? { id, version } : { id })
-      .then((res) => {
-        if (!alive) return;
-        setPayload(
-          res.ok
-            ? {
-                content: res.data.content,
-                path: res.data.path,
-                fileSource: res.data.fileSource,
-                contentHash: res.data.contentHash,
-              }
-            : null,
-        );
-        setLoading(false);
-      })
-      .catch(() => {
-        if (alive) {
-          setPayload(null);
+    let requestSequence = 0;
+    const load = (): void => {
+      const request = ++requestSequence;
+      // Never render the previous version under a newly advanced selector label.
+      setPayload(null);
+      setLoading(true);
+      bridge
+        .invoke('artifact.read', version !== undefined ? { id, version } : { id })
+        .then((res) => {
+          if (!alive || request !== requestSequence) return;
+          setPayload(
+            res.ok
+              ? {
+                  content: res.data.content,
+                  path: res.data.path,
+                  fileSource: res.data.fileSource,
+                  contentHash: res.data.contentHash,
+                }
+              : null,
+          );
           setLoading(false);
-        }
-      });
+        })
+        .catch(() => {
+          if (alive && request === requestSequence) {
+            setPayload(null);
+            setLoading(false);
+          }
+        });
+    };
+    load();
+    const off = bridge.on('artifact.changed', (changed) => {
+      // Explicitly pinned historical versions are immutable. Only a reader that
+      // follows "current" must re-read when the store advances that Artifact.
+      if (version === undefined && (changed.id === id || changed.id === undefined)) load();
+    });
     return () => {
       alive = false;
+      off();
     };
   }, [id, version]);
 

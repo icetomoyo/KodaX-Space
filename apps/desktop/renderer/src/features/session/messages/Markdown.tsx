@@ -14,12 +14,24 @@
 // CSP 兼容：rehype-highlight 通过 <span class="hljs-..."> 注入 class，不需要 inline style。
 // 配套的 highlight.js CSS 主题在 styles.css 全局引入。
 
-import { memo, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
-import ReactMarkdown from 'react-markdown';
+import {
+  memo,
+  useState,
+  type JSX,
+  type MouseEvent as ReactMouseEvent,
+  type ReactNode,
+} from 'react';
+import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
-import { openFileSmart, openExternalUrl, looksLikeFilePath } from '../../../lib/openPath.js';
+import {
+  openFileSmart,
+  openExternalUrl,
+  openGeneratedResourceHref,
+  looksLikeFilePath,
+} from '../../../lib/openPath.js';
 import { useI18n } from '../../../i18n/I18nProvider.js';
+import { parsePartnerDeliveryUri } from '@kodax-space/space-ipc-schema';
 
 interface MarkdownProps {
   readonly content: string;
@@ -138,6 +150,10 @@ function extractTextFromNode(node: ReactNode): string {
   return '';
 }
 
+function markdownUrlTransform(url: string): string {
+  return parsePartnerDeliveryUri(url) ? url : defaultUrlTransform(url);
+}
+
 function MarkdownInner({ content }: MarkdownProps): JSX.Element {
   const { effectiveLocale, t } = useI18n();
   // OC-19 module-level LRU 命中即返。命中率高=稳定内容反复 render；流式 delta 不会命中。
@@ -157,6 +173,7 @@ function MarkdownInner({ content }: MarkdownProps): JSX.Element {
     <div className="markdown-body text-fg-primary leading-relaxed text-sm">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
+        urlTransform={markdownUrlTransform}
         // **2026-06 v0.1.9**: detect:false —— LLM 包 git status / 文件路径列表 / shell 输出
         // 等"非代码"内容时,detect:true 会硬猜成 javascript / perl / diff,把 `M filename.js`
         // 第一行识别成 hljs-deletion (粉红色) 而后续行不在 token 内,视觉上第一行颜色与后续
@@ -212,20 +229,26 @@ function MarkdownInner({ content }: MarkdownProps): JSX.Element {
           // 非 http 链接（锚点 / 相对）保持默认 <a> 行为。
           a: ({ children, href, ...props }) => {
             const isHttp = typeof href === 'string' && /^https?:\/\//i.test(href);
+            const isGeneratedResource =
+              typeof href === 'string' && parsePartnerDeliveryUri(href) !== null;
             return (
               <a
                 {...props}
                 href={href}
-                {...(isHttp
+                {...(isHttp || isGeneratedResource
                   ? {
                       onClick: (e: ReactMouseEvent) => {
                         e.preventDefault();
-                        void openExternalUrl(href as string);
+                        if (isGeneratedResource) {
+                          void openGeneratedResourceHref(href as string);
+                        } else {
+                          void openExternalUrl(href as string);
+                        }
                       },
                     }
                   : {})}
-                target="_blank"
-                rel="noopener noreferrer"
+                {...(isHttp ? { target: '_blank', rel: 'noopener noreferrer' } : {})}
+                {...(isGeneratedResource ? { 'data-generated-resource': 'partner-delivery' } : {})}
                 className="text-info/80 hover:text-info underline decoration-info/40 underline-offset-2"
               >
                 {children}

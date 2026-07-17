@@ -9,6 +9,10 @@ import {
 } from './session-run-context.js';
 import { adminPolicyAuditStore, type AdminPolicyAuditStore } from './admin-policy-audit-store.js';
 import { decodePartnerBase64Strict } from './partner-file-guards.js';
+import {
+  partnerDeliveryMarkdownLink,
+  partnerDeliveryReferenceLine,
+} from './partner-delivery-reference.js';
 
 type ToolHandler = (
   input: Record<string, unknown>,
@@ -126,8 +130,9 @@ export function makeWritePartnerDeliverableHandler(
       return [
         `Partner deliverable written: ${delivery.title}`,
         `Delivery id: ${delivery.id}`,
-        `Path: ${delivery.absolutePath}`,
         `Relative path: ${delivery.relativePath}`,
+        partnerDeliveryReferenceLine(delivery),
+        `Use this exact link when referencing the output: ${partnerDeliveryMarkdownLink(delivery)}`,
         `Bytes: ${delivery.sizeBytes ?? 0}`,
         `Hash: ${delivery.contentHash ?? 'n/a'}`,
         'It is recorded in the Partner delivery browser.',

@@ -15,11 +15,13 @@ export interface TransientArtifactSnapshot {
   id: string;
   kind: ArtifactKindT;
   title: string;
-  source?: 'artifact' | 'file-preview';
+  source?: 'artifact' | 'file-preview' | 'delivery-preview';
   version?: number;
   summary?: string;
   content?: string;
   path?: string;
+  fileSource?: 'workspace' | 'artifact-store' | 'delivery-store';
+  deliveryId?: string;
   permissions?: ArtifactHtmlPermissionsT;
   versions?: readonly TransientArtifactVersionSnapshot[];
 }
@@ -29,6 +31,8 @@ export interface TransientArtifactVersionSnapshot {
   summary?: string;
   content?: string;
   path?: string;
+  fileSource?: 'workspace' | 'artifact-store' | 'delivery-store';
+  deliveryId?: string;
 }
 
 export interface FocusArtifactEventDetail {
@@ -50,7 +54,9 @@ function pickString(input: Record<string, unknown> | undefined, key: string): st
   return typeof value === 'string' ? value : null;
 }
 
-function parsePermissions(input: Record<string, unknown> | undefined): ArtifactHtmlPermissionsT | undefined {
+function parsePermissions(
+  input: Record<string, unknown> | undefined,
+): ArtifactHtmlPermissionsT | undefined {
   const parsed = artifactHtmlPermissionsSchema.safeParse(input?.permissions);
   return parsed.success ? parsed.data : undefined;
 }
@@ -121,6 +127,8 @@ function versionsFromSnapshot(
       ...(snapshot.summary !== undefined ? { summary: snapshot.summary } : {}),
       ...(snapshot.content !== undefined ? { content: snapshot.content } : {}),
       ...(snapshot.path !== undefined ? { path: snapshot.path } : {}),
+      ...(snapshot.fileSource !== undefined ? { fileSource: snapshot.fileSource } : {}),
+      ...(snapshot.deliveryId !== undefined ? { deliveryId: snapshot.deliveryId } : {}),
     },
   ];
 }
@@ -129,15 +137,16 @@ export function mergeTransientArtifactSnapshots(
   existing: TransientArtifactSnapshot,
   snapshot: TransientArtifactSnapshot,
 ): TransientArtifactSnapshot {
-  const versions = [
-    ...versionsFromSnapshot(existing),
-    ...versionsFromSnapshot(snapshot),
-  ].sort((a, b) => a.v - b.v);
+  const versions = [...versionsFromSnapshot(existing), ...versionsFromSnapshot(snapshot)].sort(
+    (a, b) => a.v - b.v,
+  );
   const deduped = new Map<number, TransientArtifactVersionSnapshot>();
   for (const version of versions) deduped.set(version.v, version);
 
-  const existingVersion = existing.version ?? Math.max(...versionsFromSnapshot(existing).map((v) => v.v));
-  const snapshotVersion = snapshot.version ?? Math.max(...versionsFromSnapshot(snapshot).map((v) => v.v));
+  const existingVersion =
+    existing.version ?? Math.max(...versionsFromSnapshot(existing).map((v) => v.v));
+  const snapshotVersion =
+    snapshot.version ?? Math.max(...versionsFromSnapshot(snapshot).map((v) => v.v));
   const latest = snapshotVersion >= existingVersion ? snapshot : existing;
 
   return {

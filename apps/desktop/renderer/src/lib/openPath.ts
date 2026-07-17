@@ -20,7 +20,15 @@ import {
 } from '../features/artifact/transientArtifact.js';
 import { detectKind, type RichPreviewKind } from '../features/preview/binaryUtils.js';
 import { isPreviewablePath, isCodePath, toProjectRelative } from './pathClassify.js';
-import type { ArtifactKindT } from '@kodax-space/space-ipc-schema';
+import { partnerDeliveryPreviewVersion } from './generatedResourceRef.js';
+import {
+  isPartnerOutputLogicalPath,
+  parsePartnerDeliveryUri,
+  type ArtifactKindT,
+  type PartnerDeliveryRefT,
+  type PartnerDeliveryReferenceT,
+  type PartnerDeliveryResolveStatusT,
+} from '@kodax-space/space-ipc-schema';
 
 // 纯分类/归一化逻辑在 pathClassify.ts（可被 node:test 单测）；这里转出常用的几个，
 // 让 caller 仍从 openPath import（单一入口）。
@@ -91,6 +99,99 @@ function focusArtifactInSidebar(detail: {
   };
   dispatch();
   window.setTimeout(dispatch, 0);
+}
+
+type PartnerDeliveryOpenResult = PartnerDeliveryResolveStatusT | 'opened' | 'unavailable';
+
+async function openPartnerDeliveryReference(
+  reference: PartnerDeliveryReferenceT,
+  projectRoot: string | null,
+  sessionId: string | null,
+): Promise<PartnerDeliveryOpenResult> {
+  const bridge = window.kodaxSpace;
+  if (!bridge || !projectRoot) return 'unavailable';
+  try {
+    const result = await bridge.invoke('partner.deliveries.resolve', {
+      projectRoot,
+      ...(sessionId ? { sessionId } : {}),
+      reference,
+    });
+    if (!result.ok) return 'unavailable';
+    if (result.data.status !== 'found' || !result.data.delivery) return result.data.status;
+    return (await openPartnerDeliveryAsArtifact(result.data.delivery)) ? 'opened' : 'unavailable';
+  } catch {
+    return 'unavailable';
+  }
+}
+
+function notifyPartnerDeliveryFailure(result: PartnerDeliveryOpenResult): void {
+  if (result === 'opened') return;
+  const key =
+    result === 'ambiguous'
+      ? 'openPath.partnerOutputAmbiguous'
+      : result === 'missing'
+        ? 'openPath.partnerOutputMissing'
+        : result === 'not-found'
+          ? 'openPath.partnerOutputNotFound'
+          : 'openPath.partnerOutputResolveFailed';
+  pushToast(translateMessage(key), result === 'unavailable' ? 'error' : 'warning');
+}
+
+async function openPartnerDeliveryPath(
+  rawPath: string,
+  projectRoot: string | null,
+  sessionId: string | null,
+): Promise<PartnerDeliveryOpenResult> {
+  return openPartnerDeliveryReference({ type: 'path', path: rawPath }, projectRoot, sessionId);
+}
+
+/** Open a Partner output through its stable Delivery identity, scoped to the active context. */
+export async function openPartnerDeliveryById(deliveryId: string, ctx?: OpenCtx): Promise<boolean> {
+  const app = useAppStore.getState();
+  const result = await openPartnerDeliveryReference(
+    { type: 'id', id: deliveryId },
+    ctx?.projectRoot ?? app.currentProjectPath,
+    ctx?.sessionId ?? app.currentSessionId,
+  );
+  notifyPartnerDeliveryFailure(result);
+  return result === 'opened';
+}
+
+/** Handle a typed generated-resource URI. Returns false only when the URI is not ours. */
+export async function openGeneratedResourceHref(href: string, ctx?: OpenCtx): Promise<boolean> {
+  const deliveryId = parsePartnerDeliveryUri(href);
+  if (!deliveryId) return false;
+  await openPartnerDeliveryById(deliveryId, ctx);
+  return true;
+}
+
+/** Promote a registered Partner output into the shared Artifact preview surface. */
+export async function openPartnerDeliveryAsArtifact(
+  delivery: PartnerDeliveryRefT,
+): Promise<boolean> {
+  if (delivery.kind !== 'file') return revealPath(delivery.absolutePath);
+
+  const version = partnerDeliveryPreviewVersion(delivery.updatedAt);
+  const snapshot: TransientArtifactSnapshot = {
+    id: `delivery-preview-${delivery.id}`,
+    kind: 'file',
+    title: delivery.title,
+    source: 'delivery-preview',
+    version,
+    path: delivery.relativePath,
+    fileSource: 'delivery-store',
+    deliveryId: delivery.id,
+    versions: [
+      {
+        v: version,
+        path: delivery.relativePath,
+        fileSource: 'delivery-store',
+        deliveryId: delivery.id,
+      },
+    ],
+  };
+  focusArtifactInSidebar({ id: snapshot.id, snapshot });
+  return true;
 }
 
 async function previewPathBackedFileAsTransient(
@@ -223,12 +324,25 @@ export async function openFileAsArtifact(rawPath: string, ctx?: OpenCtx): Promis
   if (path.length === 0 || path.length > 4096) return false;
 
   const app = useAppStore.getState();
+  const activeSessionId = ctx?.sessionId ?? app.currentSessionId;
   const projectRoot = ctx?.projectRoot ?? app.currentProjectPath;
-  const sessionId = artifactSessionForProjectFiles(
-    ctx?.sessionId ?? app.currentSessionId,
-    projectRoot,
-  );
+  const sessionId = artifactSessionForProjectFiles(activeSessionId, projectRoot);
   const surface = ctx?.surface ?? useSurfaceStore.getState().currentSurface;
+
+  const typedDeliveryId = parsePartnerDeliveryUri(path);
+  if (typedDeliveryId) {
+    return openPartnerDeliveryById(typedDeliveryId, {
+      sessionId: activeSessionId,
+      projectRoot,
+      surface,
+    });
+  }
+
+  if (surface === 'partner' && isPartnerOutputLogicalPath(path)) {
+    const result = await openPartnerDeliveryPath(path, projectRoot, activeSessionId);
+    notifyPartnerDeliveryFailure(result);
+    return result === 'opened';
+  }
 
   if (!projectRoot || !sessionId) {
     pushToast(translateMessage('openPath.previewNoProject'), 'warning');
@@ -328,6 +442,20 @@ export async function openFileSmart(rawPath: string, ctx?: OpenCtx): Promise<voi
   const projectRoot = ctx?.projectRoot ?? app.currentProjectPath;
   const surface = ctx?.surface ?? useSurfaceStore.getState().currentSurface;
 
+  const typedDeliveryId = parsePartnerDeliveryUri(path);
+  if (typedDeliveryId) {
+    await openPartnerDeliveryById(typedDeliveryId, { sessionId, projectRoot, surface });
+    return;
+  }
+
+  // `partner-output/` is a logical Delivery namespace, not a project-relative directory.
+  // Resolve it first so a same-named project file cannot shadow the generated output.
+  if (surface === 'partner' && isPartnerOutputLogicalPath(path)) {
+    const result = await openPartnerDeliveryPath(path, projectRoot, sessionId);
+    notifyPartnerDeliveryFailure(result);
+    return;
+  }
+
   if (isCodePath(path) && projectRoot) {
     const hasDiff = await pathHasDiff(path, projectRoot);
     if (hasDiff === true) {
@@ -338,6 +466,14 @@ export async function openFileSmart(rawPath: string, ctx?: OpenCtx): Promise<voi
       const ok = await previewFileAsArtifact(path, { sessionId, projectRoot, surface });
       if (ok) return;
     }
+    if (surface === 'partner') {
+      const deliveryResult = await openPartnerDeliveryPath(path, projectRoot, sessionId);
+      if (deliveryResult === 'opened') return;
+      if (deliveryResult === 'ambiguous' || deliveryResult === 'missing') {
+        notifyPartnerDeliveryFailure(deliveryResult);
+        return;
+      }
+    }
     await revealPath(path, projectRoot);
     return;
   }
@@ -346,6 +482,15 @@ export async function openFileSmart(rawPath: string, ctx?: OpenCtx): Promise<voi
     const ok = await previewFileAsArtifact(path, { sessionId, projectRoot, surface });
     if (ok) return;
     // 预览失败（二进制/过大/不存在）→ 回退到定位。
+  }
+
+  if (surface === 'partner') {
+    const deliveryResult = await openPartnerDeliveryPath(path, projectRoot, sessionId);
+    if (deliveryResult === 'opened') return;
+    if (deliveryResult === 'ambiguous' || deliveryResult === 'missing') {
+      notifyPartnerDeliveryFailure(deliveryResult);
+      return;
+    }
   }
 
   await revealPath(path, projectRoot);

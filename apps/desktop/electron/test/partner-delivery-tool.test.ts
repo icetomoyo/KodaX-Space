@@ -45,6 +45,8 @@ test('write_partner_deliverable writes an arbitrary file in a Partner run contex
         }),
     );
     assert.match(out, /Partner deliverable written: Brief/);
+    assert.match(out, /Delivery reference: \{"type":"partner-delivery"/);
+    assert.match(out, /kodax-space:\/\/partner-delivery\/pd_/);
     const deliveries = await store.list({ sessionId: 's1' });
     assert.equal(deliveries.length, 1);
     assert.equal(deliveries[0]!.relativePath, 'reports/brief.md');

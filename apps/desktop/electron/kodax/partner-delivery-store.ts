@@ -239,6 +239,46 @@ export class PartnerDeliveryStore {
     return found ? { ...found, sourceRefs: [...found.sourceRefs] } : null;
   }
 
+  /**
+   * Confirm that a registered output still resolves to the same safe file/folder without
+   * rewriting registry metadata. Missing targets are pruned so future path lookups cannot
+   * keep selecting a stale record.
+   */
+  async validate(
+    id: string,
+  ): Promise<
+    { status: 'found'; delivery: PartnerDeliveryRefT } | { status: 'not-found' | 'missing' }
+  > {
+    const delivery = await this.get(id);
+    if (!delivery) return { status: 'not-found' };
+    try {
+      if (!isPathInside(path.resolve(delivery.absolutePath), path.resolve(delivery.rootPath))) {
+        throw new Error('delivery path escapes delivery root');
+      }
+      await assertTargetNotSymlink(delivery.absolutePath, 'delivery target');
+      const stat = await fs.stat(delivery.absolutePath);
+      if (
+        (delivery.kind === 'file' && !stat.isFile()) ||
+        (delivery.kind === 'folder' && !stat.isDirectory())
+      ) {
+        throw new Error('delivery target kind changed');
+      }
+      const realRoot = await fs.realpath(delivery.rootPath);
+      const realTarget = await fs.realpath(delivery.absolutePath);
+      if (!isPathInside(realTarget, realRoot)) {
+        throw new Error('delivery path escapes delivery root via symlink');
+      }
+      return { status: 'found', delivery };
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') {
+        await this.remove(id);
+        return { status: 'missing' };
+      }
+      throw err;
+    }
+  }
+
   async writeRunOutput(input: PartnerDeliveryWriteInput): Promise<PartnerDeliveryRefT> {
     if (input.bytes.length > MAX_PARTNER_DELIVERY_INLINE_BYTES) {
       throw new Error(`delivery content exceeds ${MAX_PARTNER_DELIVERY_INLINE_BYTES} bytes`);
@@ -321,10 +361,14 @@ export class PartnerDeliveryStore {
       );
       const next = [...current];
       if (existingIdx >= 0) {
+        const existing = next[existingIdx]!;
         next[existingIdx] = {
           ...parsed,
-          id: next[existingIdx]!.id,
-          createdAt: next[existingIdx]!.createdAt,
+          id: existing.id,
+          createdAt: existing.createdAt,
+          // Multiple writes can land in the same millisecond. Keep this revision
+          // clock strictly increasing so an already-mounted preview reloads.
+          updatedAt: Math.max(parsed.updatedAt, existing.updatedAt + 1),
         };
         return { next, result: next[existingIdx]! };
       }

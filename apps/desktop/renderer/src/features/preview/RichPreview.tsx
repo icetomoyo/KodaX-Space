@@ -1,6 +1,7 @@
 import { Suspense, lazy, useEffect, useState } from 'react';
 import { PREVIEW_SIZE_CAPS, formatBytes, type RichPreviewKind } from './binaryUtils.js';
 import { useI18n } from '../../i18n/I18nProvider.js';
+import { textFilePresentation } from './previewPresentation.js';
 
 const PdfViewer = lazy(() => import('./PdfViewer.js').then((m) => ({ default: m.PdfViewer })));
 const DocxViewer = lazy(() => import('./DocxViewer.js').then((m) => ({ default: m.DocxViewer })));
@@ -139,7 +140,9 @@ export function RichPreview({
         {kind === 'docx' && <DocxViewer base64={base64} />}
         {kind === 'xlsx' && <XlsxViewer base64={base64} />}
         {kind === 'pptx' && <PptxViewer base64={base64} />}
-        {kind === 'text' && <TextFileViewer base64={base64} path={path} />}
+        {kind === 'text' && (
+          <TextFileViewer base64={base64} path={path} presentation={textFilePresentation(path)} />
+        )}
         {(kind === 'image' || kind === 'video' || kind === 'audio') && (
           <MediaFileViewer base64={base64} path={path} kind={kind} />
         )}

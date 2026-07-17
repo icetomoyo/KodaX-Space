@@ -17,11 +17,13 @@ import {
   Legend,
 } from 'recharts';
 import { parseChartSpec, seriesColor, type ChartSpec } from '../chartSpec';
+import { useI18n } from '../../../i18n/I18nProvider.js';
 
 function ChartFallback({ message }: { message: string }): JSX.Element {
+  const { t } = useI18n();
   return (
     <div className="flex-1 flex items-center justify-center p-4 text-[11px] text-fg-muted text-center leading-relaxed">
-      图表无法渲染：{message}
+      {t('artifact.chartRenderFailed', { message })}
     </div>
   );
 }
@@ -105,7 +107,9 @@ export function ChartArtifact({ spec: raw }: ChartArtifactProps): JSX.Element {
   const spec = parsed.spec;
   return (
     <div className="flex-1 min-h-0 p-3 flex flex-col">
-      {spec.title && <div className="text-[12px] font-medium text-fg-secondary mb-2">{spec.title}</div>}
+      {spec.title && (
+        <div className="text-[12px] font-medium text-fg-secondary mb-2">{spec.title}</div>
+      )}
       <div className="flex-1 min-h-[200px]">
         {/* minHeight floors the height so a flex parent with no definite height
             (height:auto) doesn't collapse ResponsiveContainer's 100% to 0. */}

@@ -77,6 +77,8 @@ test('run_partner_helper executes bounded JavaScript over Partner run-output fil
     assert.match(out, /Partner helper executed: helpers\/summarize\.js/);
     assert.match(out, /rows 3/);
     assert.match(out, /reports\/summary\.json/);
+    assert.match(out, /Delivery reference: \{"type":"partner-delivery"/);
+    assert.match(out, /kodax-space:\/\/partner-delivery\/pd_/);
 
     const delivery = (await store.list({ sessionId: 's1' })).find(
       (item) => item.relativePath === 'reports/summary.json',

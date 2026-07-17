@@ -152,6 +152,7 @@ import {
 import {
   partnerDeliveriesListChannel,
   partnerDeliveriesGetChannel,
+  partnerDeliveriesResolveChannel,
   partnerDeliveriesOutputRootChannel,
   partnerDeliveriesReadBinaryChannel,
   partnerDeliveriesChangedChannel,
@@ -361,6 +362,7 @@ export const invokeChannels = {
   [partnerFileProposalsExportChannel.name]: partnerFileProposalsExportChannel,
   [partnerDeliveriesListChannel.name]: partnerDeliveriesListChannel,
   [partnerDeliveriesGetChannel.name]: partnerDeliveriesGetChannel,
+  [partnerDeliveriesResolveChannel.name]: partnerDeliveriesResolveChannel,
   [partnerDeliveriesOutputRootChannel.name]: partnerDeliveriesOutputRootChannel,
   [partnerDeliveriesReadBinaryChannel.name]: partnerDeliveriesReadBinaryChannel,
   [partnerCheckpointsListChannel.name]: partnerCheckpointsListChannel,

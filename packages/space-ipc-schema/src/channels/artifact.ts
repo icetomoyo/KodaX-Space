@@ -6,6 +6,11 @@
 
 import { z } from 'zod';
 
+/** Isolated document endpoint used by the renderer's sandboxed interactive HTML iframe. */
+export const ARTIFACT_HTML_FRAME_URL = 'app://space/__artifact_html_sandbox__';
+/** Structured-clone message accepted by the isolated frame bootstrap. */
+export const ARTIFACT_HTML_FRAME_MESSAGE_TYPE = 'kodax-space.artifact-html-document';
+
 // ============================================================================
 // F057 — Artifact data layer (LC-free; static tier). Space owns/persists artifacts
 // under ~/.kodax/space/artifacts/. Content is fetched per-version via artifact.read

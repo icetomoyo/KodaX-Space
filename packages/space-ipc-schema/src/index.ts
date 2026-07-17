@@ -393,17 +393,27 @@ export {
 
 export {
   MAX_PARTNER_DELIVERY_INLINE_BYTES,
+  PARTNER_DELIVERY_URI_PREFIX,
   partnerDeliveryRootKindSchema,
   partnerDeliveryKindSchema,
   partnerDeliveryRefSchema,
+  partnerDeliveryReferenceSchema,
+  partnerDeliveryResolveStatusSchema,
+  formatPartnerDeliveryUri,
+  parsePartnerDeliveryUri,
+  isPartnerOutputLogicalPath,
+  partnerDeliveryPathMatches,
   partnerDeliveriesListChannel,
   partnerDeliveriesGetChannel,
+  partnerDeliveriesResolveChannel,
   partnerDeliveriesOutputRootChannel,
   partnerDeliveriesReadBinaryChannel,
   partnerDeliveriesChangedChannel,
   type PartnerDeliveryRootKindT,
   type PartnerDeliveryKindT,
   type PartnerDeliveryRefT,
+  type PartnerDeliveryReferenceT,
+  type PartnerDeliveryResolveStatusT,
 } from './channels/partner-delivery.js';
 
 export {
@@ -527,6 +537,8 @@ export {
   artifactOpenWindowChannel,
   artifactPreviewFileChannel,
   artifactChangedChannel,
+  ARTIFACT_HTML_FRAME_URL,
+  ARTIFACT_HTML_FRAME_MESSAGE_TYPE,
   looksLikeInteractiveHtml,
   MAX_ARTIFACT_CONTENT_BYTES,
   ARTIFACT_MAX_VERSIONS,

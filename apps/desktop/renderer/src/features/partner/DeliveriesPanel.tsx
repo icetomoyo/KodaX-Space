@@ -16,7 +16,7 @@ import {
 import { useAppStore } from '../../store/appStore.js';
 import { useI18n } from '../../i18n/I18nProvider.js';
 import { pushToast } from '../../store/toastStore.js';
-import { revealPath } from '../../lib/openPath.js';
+import { openPartnerDeliveryAsArtifact, revealPath } from '../../lib/openPath.js';
 import { RichPreview } from '../preview/RichPreview.js';
 import { detectKind, type RichPreviewKind } from '../preview/binaryUtils.js';
 
@@ -461,6 +461,17 @@ function DeliveryDetail({
           <HeaderLine title={delivery.relativePath} subtitle={delivery.id} />
         </div>
         <div className="flex flex-shrink-0 items-center gap-1">
+          {delivery.kind === 'file' && (
+            <button
+              type="button"
+              onClick={() => void openPartnerDeliveryAsArtifact(selectedDelivery)}
+              className="h-7 w-7 inline-flex items-center justify-center rounded border border-border-default text-fg-muted hover:bg-hover-bg hover:text-fg-primary"
+              title={t('fileActions.openAsArtifact')}
+              aria-label={t('fileActions.openAsArtifact')}
+            >
+              <FileOutput className="h-3.5 w-3.5" strokeWidth={1.75} aria-hidden />
+            </button>
+          )}
           <button
             type="button"
             onClick={() => void copyPath()}

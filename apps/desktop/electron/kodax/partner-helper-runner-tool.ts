@@ -28,6 +28,10 @@ import {
   type SdkToolExecutionContextLike,
 } from './session-run-context.js';
 import { decodePartnerBase64Strict } from './partner-file-guards.js';
+import {
+  partnerDeliveryMarkdownLink,
+  partnerDeliveryReferenceLine,
+} from './partner-delivery-reference.js';
 
 type ToolHandler = (
   input: Record<string, unknown>,
@@ -1252,6 +1256,9 @@ export function makeRunPartnerHelperHandler(
           ? [
               'Deliveries:',
               ...deliveries.map((delivery) => `- ${delivery.id}: ${delivery.relativePath}`),
+              ...deliveries.map((delivery) => partnerDeliveryReferenceLine(delivery)),
+              'Use these exact links when referencing the outputs:',
+              ...deliveries.map((delivery) => `- ${partnerDeliveryMarkdownLink(delivery)}`),
             ].join('\n')
           : 'Deliveries: none',
       ].join('\n');
@@ -1285,6 +1292,7 @@ export function makeRunPartnerHelperHandler(
           ? [
               'Partial deliveries:',
               ...deliveries.map((delivery) => `- ${delivery.id}: ${delivery.relativePath}`),
+              ...deliveries.map((delivery) => partnerDeliveryReferenceLine(delivery)),
             ].join('\n')
           : 'Partial deliveries: none',
         ...(deliveryRecordError

@@ -5,7 +5,11 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   APP_PROTOCOL_INDEX_URL,
+  ARTIFACT_HTML_FRAME_BOOTSTRAP,
+  ARTIFACT_HTML_FRAME_BOOTSTRAP_CSP,
+  artifactHtmlFrameResponseHeaders,
   appAssetResponseHeaders,
+  isArtifactHtmlFrameUrl,
   mimeTypeForAppAsset,
   resolveAppProtocolPath,
 } from '../window/app-protocol-policy.js';
@@ -109,4 +113,21 @@ test('app protocol MIME and response headers are explicit and immutable-safe', (
     appAssetResponseHeaders('main.js')['cache-control'],
     'public, max-age=31536000, immutable',
   );
+});
+
+test('interactive Artifact HTML has one isolated no-store bootstrap route', () => {
+  assert.equal(isArtifactHtmlFrameUrl('app://space/__artifact_html_sandbox__'), true);
+  assert.equal(isArtifactHtmlFrameUrl('app://space/__artifact_html_sandbox__?v=abc-123'), true);
+  assert.equal(isArtifactHtmlFrameUrl('app://space/__artifact_html_sandbox__?other=1'), false);
+  assert.equal(isArtifactHtmlFrameUrl('app://other/__artifact_html_sandbox__'), false);
+  assert.equal(isArtifactHtmlFrameUrl('app://space/index.html'), false);
+  assert.match(ARTIFACT_HTML_FRAME_BOOTSTRAP, /event\.source !== parent/);
+  assert.match(ARTIFACT_HTML_FRAME_BOOTSTRAP, /document\.write\(payload\.documentHtml\)/);
+  assert.match(ARTIFACT_HTML_FRAME_BOOTSTRAP_CSP, /script-src \* 'unsafe-inline'/);
+  assert.deepEqual(artifactHtmlFrameResponseHeaders(), {
+    'content-type': 'text/html; charset=utf-8',
+    'content-security-policy': ARTIFACT_HTML_FRAME_BOOTSTRAP_CSP,
+    'x-content-type-options': 'nosniff',
+    'cache-control': 'no-store',
+  });
 });

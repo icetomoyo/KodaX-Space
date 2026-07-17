@@ -1,10 +1,13 @@
-import { useMemo } from 'react';
+import { useMemo, type JSX } from 'react';
 import { MonacoViewer } from '../code/MonacoViewer.js';
+import { MarkdownArtifact } from '../artifact/renderers/MarkdownArtifact.js';
 import { base64ToBytes } from './binaryUtils.js';
+import type { TextFilePresentation } from './previewPresentation.js';
 
 interface TextFileViewerProps {
   readonly base64: string;
   readonly path: string;
+  readonly presentation?: TextFilePresentation;
 }
 
 const MONACO_TEXT_LIMIT = 1_000_000;
@@ -13,8 +16,20 @@ function decodeUtf8(base64: string): string {
   return new TextDecoder('utf-8', { fatal: false }).decode(base64ToBytes(base64));
 }
 
-export function TextFileViewer({ base64, path }: TextFileViewerProps): JSX.Element {
+export function TextFileViewer({
+  base64,
+  path,
+  presentation = 'source',
+}: TextFileViewerProps): JSX.Element {
   const content = useMemo(() => decodeUtf8(base64), [base64]);
+
+  if (presentation === 'markdown') {
+    return (
+      <div className="h-full min-h-0" data-testid="markdown-file-preview">
+        <MarkdownArtifact content={content} />
+      </div>
+    );
+  }
 
   if (content.length <= MONACO_TEXT_LIMIT) {
     return (

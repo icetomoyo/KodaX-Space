@@ -224,7 +224,12 @@ function transientRefFromSnapshot(
             ...(snapshot.summary !== undefined ? { summary: snapshot.summary } : {}),
             ...(snapshot.content !== undefined ? { content: snapshot.content } : {}),
             ...(snapshot.path !== undefined ? { path: snapshot.path } : {}),
-            ...(snapshot.path !== undefined ? { fileSource: 'workspace' as const } : {}),
+            ...(snapshot.fileSource !== undefined
+              ? { fileSource: snapshot.fileSource }
+              : snapshot.path !== undefined
+                ? { fileSource: 'workspace' as const }
+                : {}),
+            ...(snapshot.deliveryId !== undefined ? { deliveryId: snapshot.deliveryId } : {}),
           },
         ];
   const version = snapshot.version ?? Math.max(...versions.map((v) => v.v));
@@ -268,14 +273,25 @@ function transientPayloadsFromSnapshot(
       {
         ...(v.content !== undefined ? { content: v.content } : {}),
         ...(v.path !== undefined ? { path: v.path } : {}),
-        ...(v.path !== undefined ? { fileSource: 'workspace' as const } : {}),
+        ...(v.fileSource !== undefined
+          ? { fileSource: v.fileSource }
+          : snapshot.fileSource !== undefined
+            ? { fileSource: snapshot.fileSource }
+            : v.path !== undefined
+              ? { fileSource: 'workspace' as const }
+              : {}),
+        ...(v.deliveryId !== undefined
+          ? { deliveryId: v.deliveryId }
+          : snapshot.deliveryId !== undefined
+            ? { deliveryId: snapshot.deliveryId }
+            : {}),
       },
     ]),
   );
 }
 
 function isFilePreviewSnapshot(snapshot: TransientArtifactSnapshot): boolean {
-  return snapshot.source === 'file-preview';
+  return snapshot.source === 'file-preview' || snapshot.source === 'delivery-preview';
 }
 
 /**

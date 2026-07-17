@@ -5,26 +5,107 @@
 // 路径分类规则有单一真理源。
 
 /** 可在 Artifact 面板内预览的扩展名（sandbox iframe / 语法高亮）。 */
+export { partnerDeliveryPathMatches as deliveryPathMatches } from '@kodax-space/space-ipc-schema';
+
 const MARKUP_PREVIEW_EXTS = new Set(['html', 'htm', 'svg', 'md', 'markdown']);
 
 // 视为"文本/代码"、点击走 App 内 diff 查看器的扩展名。
 // 注意：html/htm/svg/md **不**放进来 —— 它们归 PREVIEWABLE_EXTS。这样无 session（开不了
 // Artifact 预览）时 html 会落到 reveal 分支让 OS 用浏览器打开，而不是在 diff 里看源码。
 export const CODE_EXTS = new Set([
-  'ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs', 'json', 'json5', 'jsonc',
-  'css', 'scss', 'sass', 'less', 'xml', 'vue', 'svelte', 'astro',
-  'py', 'go', 'rs', 'java', 'kt', 'kts', 'c', 'h', 'cpp', 'hpp', 'cc', 'cs',
-  'rb', 'php', 'swift', 'dart', 'lua', 'sh', 'bash', 'zsh', 'fish', 'ps1',
-  'sql', 'yaml', 'yml', 'toml', 'ini', 'cfg', 'conf', 'env', 'properties',
-  'txt', 'log', 'csv', 'tsv', 'gradle', 'makefile', 'mk', 'dockerfile',
+  'ts',
+  'tsx',
+  'js',
+  'jsx',
+  'mjs',
+  'cjs',
+  'json',
+  'json5',
+  'jsonc',
+  'css',
+  'scss',
+  'sass',
+  'less',
+  'xml',
+  'vue',
+  'svelte',
+  'astro',
+  'py',
+  'go',
+  'rs',
+  'java',
+  'kt',
+  'kts',
+  'c',
+  'h',
+  'cpp',
+  'hpp',
+  'cc',
+  'cs',
+  'rb',
+  'php',
+  'swift',
+  'dart',
+  'lua',
+  'sh',
+  'bash',
+  'zsh',
+  'fish',
+  'ps1',
+  'sql',
+  'yaml',
+  'yml',
+  'toml',
+  'ini',
+  'cfg',
+  'conf',
+  'env',
+  'properties',
+  'txt',
+  'log',
+  'csv',
+  'tsv',
+  'gradle',
+  'makefile',
+  'mk',
+  'dockerfile',
 ]);
 
 const RICH_FILE_PREVIEW_EXTS = new Set([
-  'pdf', 'docx', 'xlsx', 'xls',
-  'png', 'jpg', 'jpeg', 'gif', 'webp', 'ico', 'bmp', 'avif',
-  'ppt', 'pptx', 'pptm', 'potx', 'potm', 'ppsx', 'ppsm',
-  'mp4', 'm4v', 'mov', 'webm', 'ogv', 'mkv', 'avi',
-  'mp3', 'wav', 'm4a', 'aac', 'flac', 'opus', 'ogg', 'oga',
+  'pdf',
+  'docx',
+  'xlsx',
+  'xls',
+  'png',
+  'jpg',
+  'jpeg',
+  'gif',
+  'webp',
+  'ico',
+  'bmp',
+  'avif',
+  'ppt',
+  'pptx',
+  'pptm',
+  'potx',
+  'potm',
+  'ppsx',
+  'ppsm',
+  'mp4',
+  'm4v',
+  'mov',
+  'webm',
+  'ogv',
+  'mkv',
+  'avi',
+  'mp3',
+  'wav',
+  'm4a',
+  'aac',
+  'flac',
+  'opus',
+  'ogg',
+  'oga',
 ]);
 
 export const PREVIEWABLE_EXTS = new Set([
@@ -35,9 +116,17 @@ export const PREVIEWABLE_EXTS = new Set([
 
 /** 已知扩展名总集（含上面两类 + 常见二进制/文档）——用于判断 inline code 是否"长得像文件路径"。 */
 export const KNOWN_EXTS = new Set([
-  ...PREVIEWABLE_EXTS, ...CODE_EXTS,
-  'zip', 'tar', 'gz',
-  'lock', 'map', 'wasm', 'ttf', 'woff', 'woff2',
+  ...PREVIEWABLE_EXTS,
+  ...CODE_EXTS,
+  'zip',
+  'tar',
+  'gz',
+  'lock',
+  'map',
+  'wasm',
+  'ttf',
+  'woff',
+  'woff2',
 ]);
 
 /** 抽扩展名（小写，无点）。无扩展名返 ''。 */
@@ -63,6 +152,21 @@ export function isCodePath(p: string): boolean {
     return ['dockerfile', 'makefile', '.gitignore', '.editorconfig', '.env'].includes(base);
   }
   return CODE_EXTS.has(ext);
+}
+
+/** Whether an explicit file-backed preview can safely use the text reader. */
+export function isTextPreviewPath(p: string): boolean {
+  const ext = extOf(p);
+  const base = basenameLower(p);
+  return (
+    isCodePath(p) ||
+    ext === 'md' ||
+    ext === 'markdown' ||
+    ext === 'html' ||
+    ext === 'htm' ||
+    base === '.env' ||
+    base.startsWith('.env.')
+  );
 }
 
 function basenameLower(p: string): string {

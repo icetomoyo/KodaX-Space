@@ -8,7 +8,8 @@ import type { ArtifactContent } from './artifactContent';
 export interface ArtifactVersionPayload {
   content?: string;
   path?: string;
-  fileSource?: 'workspace' | 'artifact-store';
+  fileSource?: 'workspace' | 'artifact-store' | 'delivery-store';
+  deliveryId?: string;
   contentHash?: string;
 }
 
@@ -82,11 +83,22 @@ export function toArtifactContent(
             ...(artifactIdentity !== undefined
               ? { artifactId: artifactIdentity.id, version: artifactIdentity.version }
               : {}),
+            ...(payload.deliveryId !== undefined ? { deliveryId: payload.deliveryId } : {}),
           }
         : null;
     case 'file':
-      return payload.path !== undefined && projectRoot
-        ? { kind, projectRoot, path: payload.path }
+      return payload.path !== undefined &&
+        (projectRoot !== null || payload.fileSource === 'delivery-store')
+        ? {
+            kind,
+            ...(projectRoot !== null ? { projectRoot } : {}),
+            path: payload.path,
+            ...(payload.fileSource !== undefined ? { fileSource: payload.fileSource } : {}),
+            ...(artifactIdentity !== undefined
+              ? { artifactId: artifactIdentity.id, version: artifactIdentity.version }
+              : {}),
+            ...(payload.deliveryId !== undefined ? { deliveryId: payload.deliveryId } : {}),
+          }
         : null;
     case 'react':
       // Interactive tier is not rendered from the static store (gated; not

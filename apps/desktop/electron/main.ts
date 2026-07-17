@@ -93,7 +93,12 @@ import { registerDiagnosticsChannels } from './ipc/diagnostics.js';
 import { registerSpaceControlChannels } from './ipc/space-control.js';
 import { spaceControlRendererBroker } from './space-control/runtime.js';
 import { installAppProtocolHandler, registerAppSchemePrivileges } from './window/app-protocol.js';
-import { APP_PROTOCOL_INDEX_URL, APP_PROTOCOL_ORIGIN } from './window/app-protocol-policy.js';
+import {
+  APP_PROTOCOL_INDEX_URL,
+  APP_PROTOCOL_ORIGIN,
+  ARTIFACT_HTML_FRAME_BOOTSTRAP_CSP,
+  isArtifactHtmlFrameUrl,
+} from './window/app-protocol-policy.js';
 
 // CJS 输出（见 scripts/build-main.mjs），__dirname 是原生 Node 全局
 // 不用 import.meta.url（CJS 下不可用）
@@ -223,33 +228,35 @@ function applyCsp(): void {
     //     hash 跟 inline 脚本字符 1:1 锁定；inline 改了 hash 也要改，否则 csp-hash test 会拦下。
     //     hash 与单测同源派生：apps/desktop/electron/test/csp-inline-hash.test.ts 启动 read +
     //     compute 一遍 assert 匹配，未来 inline 漂移 CI 立刻报错）
-    // frame-src 收紧为 'self'：LC sandbox 的 loopback iframe（路径 D，需 http://127.0.0.1:*）
-    // 已随交互层移除（见 F067）。现存唯一 iframe 是 HtmlArtifact 的 srcdoc（sandbox=""，
-    // 'self' 即可）；artifact-window(F059c L3) 是独立 BrowserWindow 不经 iframe。LC 重接时
-    // 在此重新放行 loopback origin（届时配合 F055 app:// 做 frame-ancestors pinning）。
-    const csp = isDev
-      ? [
-          "default-src 'self'",
-          "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:",
-          "worker-src 'self' blob:",
-          "style-src 'self' 'unsafe-inline'",
-          "img-src 'self' data: blob: https:",
-          "media-src 'self' data: blob:",
-          "font-src 'self' data:",
-          "frame-src 'self'",
-          "connect-src 'self' ws://localhost:* ws://127.0.0.1:* http://localhost:* http://127.0.0.1:*",
-        ].join('; ')
-      : [
-          "default-src 'self'",
-          `script-src 'self' '${THEME_BOOTSTRAP_INLINE_HASH}' blob:`,
-          "worker-src 'self' blob:",
-          "style-src 'self' 'unsafe-inline'",
-          "img-src 'self' data: blob: https:",
-          "media-src 'self' data: blob:",
-          "font-src 'self' data:",
-          "frame-src 'self'",
-          "connect-src 'self'",
-        ].join('; ');
+    // Interactive HTML uses one exact app:// child-frame endpoint. That endpoint
+    // receives a separate bootstrap CSP; the main renderer never receives its
+    // unsafe-inline policy. The iframe omits allow-same-origin and the generated
+    // document adds its own restrictive permission-specific CSP.
+    const csp = isArtifactHtmlFrameUrl(details.url)
+      ? ARTIFACT_HTML_FRAME_BOOTSTRAP_CSP
+      : isDev
+        ? [
+            "default-src 'self'",
+            "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:",
+            "worker-src 'self' blob:",
+            "style-src 'self' 'unsafe-inline'",
+            "img-src 'self' data: blob: https:",
+            "media-src 'self' data: blob:",
+            "font-src 'self' data:",
+            "frame-src 'self' app://space",
+            "connect-src 'self' ws://localhost:* ws://127.0.0.1:* http://localhost:* http://127.0.0.1:*",
+          ].join('; ')
+        : [
+            "default-src 'self'",
+            `script-src 'self' '${THEME_BOOTSTRAP_INLINE_HASH}' blob:`,
+            "worker-src 'self' blob:",
+            "style-src 'self' 'unsafe-inline'",
+            "img-src 'self' data: blob: https:",
+            "media-src 'self' data: blob:",
+            "font-src 'self' data:",
+            "frame-src 'self' app://space",
+            "connect-src 'self'",
+          ].join('; ');
 
     callback({
       responseHeaders: {

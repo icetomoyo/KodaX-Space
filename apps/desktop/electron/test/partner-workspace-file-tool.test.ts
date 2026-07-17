@@ -59,6 +59,8 @@ test('write_partner_workspace_file creates checkpointed workspace delivery and r
         }),
     );
     assert.match(writeOut, /Partner workspace file written: src\/note\.txt/);
+    assert.match(writeOut, /Delivery reference: \{"type":"partner-delivery"/);
+    assert.match(writeOut, /kodax-space:\/\/partner-delivery\/pd_/);
     assert.equal(readFileSync(target, 'utf8'), 'after');
     const checkpoint = (await checkpointStore.list({ sessionId: 's1' }))[0]!;
     const delivery = (await deliveryStore.list({ sessionId: 's1' }))[0]!;
