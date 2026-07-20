@@ -1,8 +1,8 @@
 # KodaX Space 文档中心
 
-> 当前正式版本：KodaX Space `v0.1.31` / KodaX `0.7.68`
+> 当前源码/发布准备基线：KodaX Space `v0.1.32`（package `0.1.32`）/ KodaX `0.7.72`；最近已发布稳定 Space 版本仍为 `v0.1.31`。
 
-这里是文档的统一入口。`v0.1.31` 的 Runtime Host Adapter、`app://space`、结构化诊断和 Natural-Language Space Control 已发布；正式 KodaX 0.7.68 Memory Agent 运行契约也已适配。完整 F117 桌面体验仍在后续路线中，历史设计和 release 记录保留当时语境。
+这里是文档的统一入口。当前源码已采用正式 KodaX 0.7.72：Coder 默认连接共享 daemon，Auto LLM 权限由 Runtime 单点决策，Partner 继续由 Space inline owner 管理；统一 Actor/Turn 与 Learning Center 兼容契约已接入，但完整 F117/F118 桌面管理体验仍在后续路线中。历史设计和 release 记录保留当时语境。
 
 ## 我想要……
 
@@ -10,13 +10,14 @@
 | ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 安装、配置、第一次完成任务          | [用户使用手册](USER_MANUAL.zh-CN.md)                                                                                                                  |
 | 快速理解界面和功能                  | [用户使用手册：界面地图](USER_MANUAL.zh-CN.md#5-界面地图)                                                                                             |
-| 理解 v0.1.31 有什么效果             | [用户使用手册：Runtime Host](USER_MANUAL.zh-CN.md#v0131-的-runtime-host-对用户有什么影响)                                                             |
+| 理解 v0.1.32 的 Runtime 所有权      | [用户使用手册：Runtime Host](USER_MANUAL.zh-CN.md#v0132-的-runtime-host-对用户有什么影响)                                                             |
 | 从源码运行、测试、打包              | [运行与开发指南](USAGE.md)                                                                                                                            |
 | 了解产品目标和边界                  | [PRD](PRD.md)                                                                                                                                         |
 | 理解进程、IPC、Runtime 和数据所有权 | [HLD](HLD.md)                                                                                                                                         |
 | 查看 KodaX 能力是否已接入           | [KodaX 能力台账](KODAX_CAPABILITY_LEDGER.md)                                                                                                          |
 | 查看当前和未来 Feature              | [Feature List](FEATURE_LIST.md)                                                                                                                       |
 | 查看 v0.1.31 的设计与实施           | [版本设计](features/v0.1.31.md) / [实施计划](features/v0.1.31-implementation-plan.md) / [人工测试指导](test-guides/FEATURE_116_v0.1.31_TEST_GUIDE.md) |
+| 查看 v0.1.32 的设计与当前门禁       | [版本设计与实施状态](features/v0.1.32.md) / [Feature List](FEATURE_LIST.md)                                                                           |
 | 报告或核对已知问题                  | [Known Issues](KNOWN_ISSUES.md)                                                                                                                       |
 | 参与贡献                            | [Contributing](../CONTRIBUTING.md)                                                                                                                    |
 

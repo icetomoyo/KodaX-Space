@@ -14,6 +14,34 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ## [Unreleased]
 
+### Added
+
+- **F121 released-action daemon adaptation** - Completed the v0.1.31 Coder action inventory and explicit v0.1.32 owner classification. Shared daemon routes now cover session live/history/mutations, settings convergence, queue, AskUser, revisioned permission grants, Workflow observation/control, Learning Center commands, bounded Skill/slash catalogs, MCP tool discovery/reload, and Runtime-configured External Agent Actor/Turns; remaining Space product responsibilities stay explicit host-provider routes.
+- **F122 Project Source Library and incremental ingestion** - Added a durable project-scoped source catalog with stable logical identities and immutable versions, backed-up v1-to-v2 migration, file and directory ingestion, bounded PDF/DOCX/PPTX/XLSX structured extraction, per-project FTS5 indexing, explicit Available/Selected/Used state, refresh/retry/rename recovery, cancellation safety, and storage-budget enforcement.
+- **F123 stable evidence citations** - Added content-bound citation IDs, immutable evidence snapshots, durable citation and trace metadata independent of the rebuildable index, truthful page/slide/sheet/paragraph/line locators, current/stale/missing access decisions, and an accessible evidence-detail surface that never redirects an old citation to mutable content.
+- **F124 Partner Context Broker** - Added Partner-only automatic grounded recall over permitted project material and accepted project knowledge with `project-grounded`, `selected-only`, and `general` scopes, exact selected/used/version traces, bounded evidence packs, prompt-injection delimiters, conflict and unavailable-retrieval notices, and independent rollback gates without routing Partner through the Coder daemon.
+
+### Changed
+
+- **KodaX SDK registry baseline** - Replaced the local `file:` candidate and the emergency prerelease dependency with the exact published `@kodax-ai/kodax@0.7.72` package in both root and Desktop workspaces. The lockfile now resolves the public Registry tarball and its published integrity instead of a developer-machine path.
+- **Shared Coder contract baseline** - Promoted Runtime Auto LLM guardrails, bounded permission previews, daemon capability upgrades, AMA/SA-only mode handling, strong-signal Workflow exposure, unified Actor/Turn, and Learning Center integration from candidate contracts to the published SDK baseline.
+- **Truthful split ownership** - Updated capability reporting and manuals for the 0.7.72 boundary: Runtime owns only the consumed Coder services, while Partner, MCP process/log management, Workflow library/start/admin, Space Reference Agent execution, and product artifacts remain Space host-provider responsibilities.
+- **Explicit Auto LLM session defaults** - Space now applies KodaX `autoMode.engine`/`classifierModel`/`timeoutMs` config and environment precedence to Runtime sessions and materializes the 0.7.72 20-second classifier timeout instead of relying on the attached daemon's invisible default. Existing values from another trusted client remain authoritative.
+
+### Fixed
+
+- **Reproducible installs** - Fresh CI and contributor installs no longer require the sibling `KodaX` checkout or silently retain a stale local-tarball lock entry.
+- **Daemon child isolation** - Consumed the final `0.7.72` launcher fix that filters test-runner imports/loaders from daemon child `execArgv`, preventing development or test harness state from leaking into the long-lived Runtime process.
+- **Stale Auto LLM timeout after upgrade** - Space rejects daemon identities older than 0.7.72 with an actionable restart diagnostic, so a long-lived 0.7.69 process cannot keep serving the historical eight-second classifier path after the package is updated. `/auto-denials` now reports Runtime version, classifier model and effective timeout.
+- **Multi-client settings race** - Auto LLM default convergence retries bounded revision conflicts against a fresh Runtime snapshot and cannot overwrite a classifier model or timeout concurrently written by another client.
+
+### Verification
+
+- The downloaded Registry tarball and installed package match byte-for-byte across all 120 `dist` files; npm integrity is `sha512-aDKwe006GZC1YKt6o+ArFdOoj/waAavcZZ78nejFSYVY1Gi8va5c+VUiESKd5N2eyKpkBBfe2/sRsEqqrqnNIw==`.
+- F122-F124 pass 41 focused source/index/citation/recall tests and the combined KodaX 0.7.72 Partner/Runtime compatibility gate passes 68/68.
+- Full Space tests pass with 1,858 passing tests and 2 platform-permission skips; the process-distinct daemon gate now explicitly requires and verifies `runtimeAutoModeGuardrail: 1` owned by `session-runtime`.
+- TypeScript, full ESLint, production renderer/main smoke build, changed-code formatting/diff checks, dependency deduplication, and npm audit pass.
+
 ## [0.1.32-hotfix.0] - 2026-07-17
 
 ### Theme

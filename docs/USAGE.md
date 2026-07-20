@@ -2,7 +2,7 @@
 
 > 面向源码使用者、贡献者和发布维护者。普通用户请阅读[用户使用手册](USER_MANUAL.zh-CN.md)。
 >
-> 当前紧急预发布版本：KodaX Space `v0.1.32-hotfix.0` / `@kodax-ai/kodax@0.7.72-hotfix.0`；后续正式版仍为 `v0.1.32`。
+> 当前 Space 包/发布准备基线：`v0.1.32`；SDK 基线为正式发布的 `@kodax-ai/kodax@0.7.72`。
 
 ## 1. 环境要求
 
@@ -19,7 +19,7 @@ npm install --include=dev
 
 KodaX Space 是 npm workspace monorepo。不要只在 `apps/desktop` 中安装依赖，否则 workspace package、Electron native module 与根脚本可能不一致。
 
-根、desktop manifest 与 lockfile 都固定到精确 KodaX 0.7.68。`npm ls @kodax-ai/kodax --all` 应只显示同一个 deduped 版本；Runtime compatibility 和 packaged smoke 也会严格核对 0.7.68，依赖树漂移不能通过 release gate。
+根、desktop manifest 与 lockfile 都固定到精确 KodaX 0.7.72。`npm ls @kodax-ai/kodax --all` 应只显示同一个 deduped 版本；Runtime compatibility 和 packaged smoke 也会严格核对 0.7.72，依赖树漂移不能通过 release gate。
 
 ## 2. 启动方式
 
@@ -49,24 +49,24 @@ npm run dev
 flowchart TD
     Root["profile root<br/>默认 ~/.kodax"] --> Shared["KodaX 共享状态<br/>config / sessions / skills / handoffs"]
     Root --> Space["space/<br/>UI 状态、项目、日志"]
-    Root --> Runtime[".kodax/runtime/<br/>v0.1.31 Runtime run/event journal"]
+    Root --> Runtime[".kodax/runtime/<br/>Runtime daemon run/event journal"]
 ```
 
-| 路径或变量                           | 作用                                 | 说明                                                        |
-| ------------------------------------ | ------------------------------------ | ----------------------------------------------------------- |
-| `~/.kodax/config.json`               | Provider、MCP、permission 等共享配置 | CLI/SDK/Space 共用                                          |
-| `~/.kodax/sessions/`                 | 会话历史                             | CLI/SDK/Space 共用                                          |
-| `~/.kodax/skills/`                   | 用户 Skills                          | 项目也可有项目级 Skills                                     |
-| `~/.kodax/handoffs/`                 | 桌面 handoff inbox                   | 用于上下文连续性                                            |
-| `~/.kodax/space/`                    | Space UI 和桌面专属状态              | 包含 logs、state 等                                         |
-| `<profile-root>/.kodax/runtime/`     | Runtime journal                      | v0.1.31 managed runs；默认实际为 `~/.kodax/.kodax/runtime/` |
-| `KODAX_HOME=<abs>`                   | 改变 SDK 共享数据根                  | 必须在应用启动前设置                                        |
-| `KODAX_PROFILE_DIR=<abs>`            | 让 Space 和 SDK 使用一个独立 profile | 该绝对路径本身就是 profile 根，不再追加 `.kodax`            |
-| `KODAX_TEST_ONBOARDING=1\|<safe-id>` | 测试隔离 profile                     | 强制写入系统临时目录，禁止指向真实用户数据                  |
+| 路径或变量                           | 作用                                 | 说明                                                     |
+| ------------------------------------ | ------------------------------------ | -------------------------------------------------------- |
+| `~/.kodax/config.json`               | Provider、MCP、permission 等共享配置 | CLI/SDK/Space 共用                                       |
+| `~/.kodax/sessions/`                 | 会话历史                             | CLI/SDK/Space 共用                                       |
+| `~/.kodax/skills/`                   | 用户 Skills                          | 项目也可有项目级 Skills                                  |
+| `~/.kodax/handoffs/`                 | 桌面 handoff inbox                   | 用于上下文连续性                                         |
+| `~/.kodax/space/`                    | Space UI 和桌面专属状态              | 包含 logs、state 等                                      |
+| `<profile-root>/.kodax/runtime/`     | Runtime journal                      | Coder daemon runs；默认实际为 `~/.kodax/.kodax/runtime/` |
+| `KODAX_HOME=<abs>`                   | 改变 SDK 共享数据根                  | 必须在应用启动前设置                                     |
+| `KODAX_PROFILE_DIR=<abs>`            | 让 Space 和 SDK 使用一个独立 profile | 该绝对路径本身就是 profile 根，不再追加 `.kodax`         |
+| `KODAX_TEST_ONBOARDING=1\|<safe-id>` | 测试隔离 profile                     | 强制写入系统临时目录，禁止指向真实用户数据               |
 
 若同时使用 `KODAX_PROFILE_DIR`，Space 会在首次加载 SDK 前将 `KODAX_HOME` 对齐到该 profile。相对路径会被忽略；测试模式优先级最高。
 
-## 4. v0.1.31 Runtime Host
+## 4. v0.1.32 Runtime Host
 
 `RuntimeHostAdapter` 是 Electron main 内部边界，不是用户设置：
 
@@ -75,20 +75,22 @@ flowchart LR
     UI["Renderer UI"] --> IPC["zod IPC"]
     IPC --> Host["Electron main"]
     Host --> Adapter["RuntimeHostAdapter"]
-    Adapter --> Runtime["KodaX Runtime<br/>embedded inline"]
-    Host --> Bridges["Space bridges<br/>permissions / Partner / Workflow / MCP / artifacts / external agents"]
+    Adapter --> Runtime["KodaX Runtime daemon<br/>Coder shared truth"]
+    Host --> Partner["Partner embedded inline"]
+    Host --> Bridges["Space host providers<br/>MCP processes/logs / Workflow library+start+admin<br/>Reference Agent / artifacts"]
 ```
 
-v0.1.31 的迁移范围是：
+v0.1.32 的 Coder daemon 路由包括：
 
-- 新 managed run 的 start/cancel/dispose；
-- 稳定 `runId` 与 Runtime event journal；
-- transcript、compact、fork、rewind；
-- capability snapshot 与状态诊断。
+- session/run/transcript/live projection、compact/fork/rewind 与共享设置 CAS；
+- queue、permission grant、AskUser 和 daemon stop preflight；
+- Workflow list/get/event 与 pause/resume/stop；
+- Learning Center 命令、Skill/slash catalog、MCP tool discovery/reload；
+- Runtime 配置 External Agent 的发现、预检和统一 Actor/Turn 任务控制。
 
-以下仍由 Space 管理：renderer 事件投影、permission/AskUser、Partner profile/tools/policy、Workflow Controller、MCP server 进程与日志、Artifact 和 External Agent durable store。不要把这些路径写成 Runtime-native。
+以下仍由 Space 管理：renderer 投影、Partner profile/tools/policy、Workflow library/start/rerun/save/admin/result/artifact、MCP server 进程与日志、Artifact 和 Space Reference Agent durable store。不要把这些路径写成 Runtime-native。
 
-Runtime Host 当前只选择 `inline`。Worker/daemon 会被探测但不启用。短期紧急回滚方式如下，必须在应用启动前设置并重启：
+Coder 缺少必要 Runtime capability 时 fail closed，不会把已接受操作重放到 inline owner。Partner 始终保持 embedded-inline。内部紧急回滚方式如下，必须在没有活动工作时、应用启动前设置并重启：
 
 ```powershell
 $env:KODAX_SPACE_RUNTIME_HOST='legacy'

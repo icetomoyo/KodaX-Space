@@ -1,8 +1,8 @@
 # Known Issues
 
-Last Updated: 2026-07-17
+Last Updated: 2026-07-20
 
-> Historical issue details are preserved as investigation evidence. Current emergency prerelease is v0.1.32-hotfix.0; the next stable release remains v0.1.32. Start from the [documentation hub](README.md) for current behavior and status.
+> Historical issue details are preserved as investigation evidence. The current package/source baseline is v0.1.32 release preparation. Start from the [documentation hub](README.md) for current behavior and status.
 
 ## Issue Index
 
@@ -57,12 +57,18 @@ Last Updated: 2026-07-17
 | 047 | Low      | Resolved | Long user queries consume excessive transcript height without an inline collapse control                                    | v0.1.x                | 2026-07-16 |
 | 048 | Low      | Resolved | Legacy `tsx/esm` test registration corrupts CommonJS JSON imports from the KodaX SDK dependency graph                       | v0.1.x                | 2026-07-17 |
 | 049 | Medium   | Resolved | Provider/model and mode changes rolled back before the first send because the daemon Session was not admitted               | v0.1.32 development   | 2026-07-17 |
-| 050 | Medium   | Open     | Reference Agent continuation can remain `working` after `sendInput` until an explicit reconcile                             | KodaX 0.7.71          | 2026-07-17 |
-| 051 | Low      | Open     | Embedded Runtime omits the working `externalAgentAdmin` service from its public capability metadata                         | KodaX 0.7.71          | 2026-07-17 |
+| 050 | Medium   | Resolved | Reference Agent continuation can remain `working` after `sendInput` until an explicit reconcile                             | KodaX 0.7.72          | 2026-07-17 |
+| 051 | Low      | Resolved | Embedded Runtime omits the working `externalAgentAdmin` service from its public capability metadata                         | KodaX 0.7.72          | 2026-07-17 |
 | 052 | Medium   | Resolved | Composer could send text before an asynchronously attached image entered the artifact payload                               | v0.1.9                | 2026-07-17 |
 | 053 | Medium   | Resolved | Restored daemon runs rejected queued prompts because the composer requested unsupported interrupt delivery                  | v0.1.32 development   | 2026-07-17 |
 | 054 | High     | Resolved | Daemon permission dialogs discarded command, directory, and operation context                                               | v0.1.31               | 2026-07-17 |
 | 055 | High     | Resolved | Ark multimodal follow-ups rejected supported model routes during artifact preflight                                         | <= v0.1.31            | 2026-07-17 |
+| 056 | High     | Resolved | Restored daemon Sessions lost Auto mode, exposed an unwired plan exit, and reset AskUser choices                            | v0.1.32 development   | 2026-07-17 |
+| 057 | High     | Resolved | Auto LLM sent an empty classifier model after daemon observation erased the provider default                                | v0.1.32 development   | 2026-07-19 |
+| 058 | High     | Resolved | Auto LLM diagnosis exposed a stale 8-second process while Space did not seed daemon classifier defaults                     | v0.1.32 development   | 2026-07-19 |
+| 059 | Medium   | Open     | KodaX Runtime does not publish complete effective Auto LLM settings or timeout-phase telemetry                              | KodaX 0.7.72          | 2026-07-19 |
+| 060 | High     | Resolved | Space restart during daemon run admission aborted the accepted Coder run and startup health failures did not reconnect      | v0.1.32 development   | 2026-07-20 |
+| 061 | High     | Resolved | No-Session File Viewer calls `artifact.previewFile` without legacy-required Session fields and cannot open project files    | v0.1.32 development   | 2026-07-20 |
 
 ## Issue Details
 
@@ -2681,7 +2687,7 @@ Both components intentionally distinguished pending new-session state by appendi
 #### Resolution
 
 - Display the normal permission/engine label when no session exists.
-- Display the normal AMA/AMAW/SA label when no session exists.
+- Display the normal Agent-mode label when no session exists (historically AMA/AMAW/SA; current releases expose AMA/SA).
 - Keep pending-mode persistence, current-session updates, keyboard shortcuts, and session creation inputs unchanged.
 
 Files changed:
@@ -2968,9 +2974,11 @@ Verification:
 ### 050: Reference Agent continuation can remain `working` after `sendInput` until an explicit reconcile
 
 - Priority: Medium
-- Status: Open
+- Status: Resolved
 - Introduced: KodaX 0.7.71
+- Fixed: KodaX 0.7.72
 - Created: 2026-07-17
+- Resolution Date: 2026-07-19
 
 #### Original Problem
 
@@ -3003,18 +3011,20 @@ Affected components:
 
 The observable contract has a continuation race between successful input delivery, executor completion, and the durable task event pump. Space does not depend on the SDK's private scheduling mechanism, so the precise internal cause remains upstream; the public evidence is that an immediate reconcile closes the gap.
 
-#### Current Mitigation and Requested SDK Change
+#### Resolution
 
-Space schedules one microtask after `sendInput()` and invokes the public `reconcile(taskId)` operation. This is bounded and idempotent, preserves task ownership, and keeps the durable snapshot truthful, but it is a compatibility bridge rather than the desired host contract.
+KodaX `0.7.72` makes successful Reference `sendInput()` wake and reconcile the admitted task lifecycle. The exact published Registry package reaches a terminal task and terminal durable snapshot through `tasks.wait()` without a second host lifecycle call.
 
-KodaX should make successful `sendInput()` wake/reconcile the task lifecycle itself and add a regression that reaches `input-required`, sends input, waits without an explicit host reconcile, and observes both a terminal task and a terminal durable snapshot. Space can remove its bridge after that published behavior is verified.
+Space removed `withReferenceContinuationReconcile()` and now returns the SDK plane directly. The direct package probe and all six `external-agent-gateway` regression cases pass, including the input-required continuation path; the full Space regression, packaging smoke, and packaged boot also pass.
 
 ### 051: Embedded Runtime omits the working `externalAgentAdmin` service from its public capability metadata
 
 - Priority: Low
-- Status: Open
+- Status: Resolved
 - Introduced: KodaX 0.7.71
+- Fixed: KodaX 0.7.72
 - Created: 2026-07-17
+- Resolution Date: 2026-07-19
 
 #### Original Problem
 
@@ -3046,11 +3056,11 @@ Affected components:
 
 KodaX validates embedded requirements against an internal capability set containing `externalAgentAdmin: { version: 1 }`, but the returned public Runtime object constructs a narrower capability object and omits that entry. The service is functional; the metadata projection is incomplete.
 
-#### Current Mitigation and Requested SDK Change
+#### Resolution
 
-Space does not gate its already-created inline Reference administration service on the missing top-level field. The Coder daemon path still requires and validates `externalAgentAdmin: 1` and `a2aConfigReconciler: 1`, both of which are advertised correctly by the daemon.
+KodaX `0.7.72` includes `externalAgentAdmin: { version: 1 }` in the embedded Runtime's public capability projection and keeps the service available through `runtime.admin.agentRegistrations`.
 
-KodaX should include `externalAgentAdmin: { version: 1 }` in the embedded Runtime's returned `capabilities`, keep requirement validation and public metadata derived from one capability source, and add an embedded regression that asserts both the capability flag and the working service.
+The direct published-package probe creates embedded Runtime with `externalAgentAdmin: 1`, asserts the advertised version, and exercises the administration service. Space's Worker/daemon compatibility suite and full regression also pass with the capability required by the host adapter.
 
 ### 052: Composer could send text before an asynchronously attached image entered the artifact payload
 
@@ -3272,19 +3282,535 @@ asynchronous attachment-persistence race tracked separately as issue 052.
 
 #### Resolution
 
-- KodaX SDK `0.7.72-hotfix.0` corrects image capability routing for the
-  supported Ark Coding models.
+- KodaX SDK `0.7.72-hotfix.0` first corrected image capability routing for the
+  supported Ark Coding models; the published `0.7.72` baseline retains that fix.
 - Capability and artifact preflight checks cover both Doubao Seed 2.0 routes,
   Kimi K2.7 Code, Kimi K2.6, and MiniMax M3.
 - Space synchronously gates all send paths while attachment persistence is
   pending, as documented and tested under issue 052.
 
+### 056: Restored daemon Sessions lost Auto mode, exposed an unwired plan exit, and reset AskUser choices
+
+- Priority: High
+- Status: Resolved
+- Introduced: v0.1.32 development
+- Fixed: v0.1.32 development with KodaX SDK 0.7.72
+- Created: 2026-07-17
+- Resolution Date: 2026-07-19
+
+#### Original Problem
+
+The Coder UI displayed `Auto · llm`, but a restored shared-daemon Session
+prompted for low-risk `read`, ordinary verification `bash`, large `write`, and
+`exit_plan_mode` calls. In Session
+`s_e2be3e5b-5071-4bd7-b287-bd0739f339e3`, run
+`run_mroxwies_2b373716` emitted ten generic permission requests. Its effective
+configuration contained provider/model/reasoning data but omitted both
+`permissionMode` and `autoModeEngine`, and its versioned Session settings file
+did not exist. The same run also showed two interaction failures: daemon
+projection refreshes cleared a selected AskUser option, and `exit_plan_mode`
+opened a generic high-risk permission dialog before failing because no approval
+callback existed.
+
+Expected behavior:
+
+- The mode shown for a Session must be the mode used by every newly admitted or
+  restored daemon run.
+- `Auto · llm` must route tools through the Runtime-owned Auto guardrail; generic
+  permission requests are reserved for explicit guardrail escalation or a
+  deliberate fail-closed non-Auto policy.
+- A daemon run must not advertise a tool whose required interaction bridge is
+  unavailable.
+- Refreshing an unchanged interaction projection must preserve the user's local
+  selection.
+
+#### Root Cause
+
+- `RealKodaXSession.send()` synchronized Runtime settings only when
+  `ensureSession()` reported that the canonical Session was newly created.
+  Canonical Session identity and versioned settings have separate persistence
+  lifecycles, so an existing Session could have missing/stale settings and skip
+  synchronization indefinitely.
+- The daemon transport cannot carry the `exitPlanMode` callback, but the run
+  still exposed `exit_plan_mode`; Runtime therefore treated it as an ordinary
+  permission-controlled tool and execution later produced the interactive-REPL
+  error.
+- `AskUserModal` used the deserialized `question` object identity as a reset
+  dependency. An equivalent projection object reset local selection state.
+- The installed KodaX bundle also lacked the Runtime-owned Auto guardrail and
+  valid bounded permission-preview fixes tracked in KodaX SDK issue 172.
+
+#### Resolution
+
+- Reconcile the complete Runtime settings snapshot once at each daemon run
+  execution boundary and before attaching an after-turn continuation. The
+  revisioned comparison treats `null` deletion and absent values as equivalent,
+  skips unchanged writes, and serializes concurrent updates per Session.
+- Exclude `exit_plan_mode` from Space daemon runs until a dedicated approval
+  transport exists. It therefore cannot become an unknown high-risk permission
+  prompt followed by an interactive-REPL error.
+- Reset AskUser form state by a canonical semantic interaction key rather than
+  projection object identity, preserving selections across equivalent refreshes.
+- Recover only complete, allowlisted top-level display fields from an older
+  SDK's truncated permission preview, then apply the normal credential
+  redaction. Never expose partial file content or nested lookalike fields.
+- Require the KodaX daemon `runtimeAutoModeGuardrail` capability during Runtime
+  connection, and use the SDK-owned, once-consumed tool-call authorization path
+  as the only Coder permission decision owner. Space projects only genuine
+  escalation requests and no longer re-runs a second Coder broker.
+- Install and verify the published KodaX SDK 0.7.72 package containing
+  the Runtime guardrail, bounded permission preview, daemon capability upgrade,
+  Workflow host policy forwarding, and AMA/SA-only mode contract.
+
+Files changed:
+
+- `apps/desktop/electron/kodax/real-session.ts`
+- `apps/desktop/electron/kodax/runtime/coder-daemon-projection.ts`
+- `apps/desktop/renderer/src/features/ask-user/AskUserModal.tsx`
+- `apps/desktop/renderer/src/features/ask-user/ask-user-state.ts`
+- `apps/desktop/electron/test/coder-daemon-projection.test.ts`
+- `apps/desktop/electron/test/real-session-runtime-queue.test.ts`
+- `apps/desktop/electron/test/ask-user-state.test.ts`
+- `docs/KNOWN_ISSUES.md`
+
+Verification:
+
+- Full Space tests against the published Registry package passed: 1,819 passed,
+  2 platform-permission skips, 0 failed. The process-distinct daemon probe
+  explicitly requires and verifies `runtimeAutoModeGuardrail: 1` with owner
+  `session-runtime`.
+- KodaX permission, Auto guardrail, daemon upgrade, Workflow signal, and
+  AMA-migration regressions passed: 792 passed, 1 platform-dependent skip.
+- Space TypeScript check and renderer/main production smoke build passed.
+- The installed Space SDK `dist` matched the built KodaX `dist` byte-for-byte:
+  120 files, 0 missing, 0 extra, 0 hash mismatches.
+- Verified Registry package: `@kodax-ai/kodax@0.7.72`, npm integrity
+  `sha512-aDKwe006GZC1YKt6o+ArFdOoj/waAavcZZ78nejFSYVY1Gi8va5c+VUiESKd5N2eyKpkBBfe2/sRsEqqrqnNIw==`, SHA-256
+  `BC40A7237F0601C47578A07B36CBBA1C7EBF843D747E7ED5BD304AA6F001C949`.
+
+### 057: Auto LLM sent an empty classifier model after daemon observation erased the provider default
+
+- Priority: High
+- Status: Resolved
+- Introduced: v0.1.32 development
+- Fixed: v0.1.32 development
+- Created: 2026-07-19
+- Resolution Date: 2026-07-19
+
+#### Original Problem
+
+With the UI showing `Auto · llm`, a low-risk read-only `bash` command still
+opened a permission dialog. The dialog reason contained a z.ai Coding API 400:
+`[1214][model:The model code cannot be empty.]`. Every subsequent tool request
+could repeat the same 400 and prompt. The affected Session
+`s_ff911c11-2e3f-4ddf-bf44-43e51c24496b` used `zai-coding`; its failed Run
+`run_mrrvpdcm_935803b0` had no model, even though Space's durable sidecar and
+KodaX user configuration both selected `glm-5.2`.
+
+Expected behavior:
+
+- Space must pass a concrete effective model to Runtime-owned side services
+  whenever a provider has a default model.
+- Missing Runtime override fields must not erase a valid provider default while
+  an observation is being admitted.
+- Auto LLM classifier failures must not turn every ordinary tool call into a
+  manual permission prompt.
+
+#### Root Cause
+
+- A newly admitted daemon Session initially exposed an empty versioned settings
+  snapshot. `syncSpaceSessionSettings()` assigned `settings.model` directly to
+  the in-memory Session, so the absent field erased the valid `glm-5.2` model
+  that Space had already resolved and persisted.
+- The next run-boundary reconciliation converted the now-missing model into a
+  `null` deletion in Runtime. The main provider still worked because it applies
+  its own default internally, but the SDK Runtime Auto guardrail inherited the
+  empty Run model and sent it to the classifier API.
+- KodaX SDK 0.7.72 logs a warning for an empty inherited classifier model but
+  still performs the request. Its fail-closed error path then escalates the tool
+  call and its circuit breaker eventually changes the Session engine to rules.
+- Earlier tests proved settings synchronization, Runtime guardrail ownership,
+  and explicit classifier models independently, but did not cover the combined
+  case `provider default + omitted Runtime model + observation bootstrap`.
+
+#### Resolution
+
+- Resolve a concrete provider default model when a Space Session is created.
+- When the provider changes, replace the old model with the new provider's
+  concrete default instead of representing that default as `undefined`.
+- Materialize the effective default in main-process Session creation, UI and
+  slash-command provider switches, and `/model default`; custom providers use
+  the same descriptor resolution instead of falling back to an empty model.
+- Interpret an omitted Runtime settings model as “use the provider default”
+  during daemon projection. Preserve an existing model only as the final
+  fallback for a same-provider custom descriptor that is temporarily missing.
+- Repair the one confirmed affected Session only after verifying it had no
+  active Run or pending permission: Runtime settings revision 2 to 3 now stores
+  `model: glm-5.2` and restores `autoModeEngine: llm`; the Space sidecar received
+  the same values through the normal settings event.
+- Do not modify the KodaX SDK source. Track the remaining SDK hardening request
+  separately for upstream delivery.
+
+Files changed:
+
+- `apps/desktop/electron/kodax/host.ts`
+- `apps/desktop/electron/kodax/runtime-host-adapter.ts`
+- `apps/desktop/electron/ipc/session.ts`
+- `apps/desktop/electron/slash/builtin.ts`
+- `apps/desktop/renderer/src/store/runtimeSessionSettings.ts`
+- `apps/desktop/electron/test/host.test.ts`
+- `apps/desktop/electron/test/host-try-resume.test.ts`
+- `apps/desktop/electron/test/session-setters.test.ts`
+- `apps/desktop/electron/test/runtime-host-adapter.test.ts`
+- `apps/desktop/electron/test/runtime-session-settings.test.ts`
+- `apps/desktop/electron/test/slash-builtin.test.ts`
+- `docs/KNOWN_ISSUES.md`
+
+Tests added:
+
+- Session creation resolves `zai-coding` to the concrete `glm-5.2` default.
+- Provider switching replaces a stale model override with the new provider
+  default.
+- Clearing a model override and switching to a KodaX-config custom provider
+  both persist a concrete provider default.
+- Daemon observation with an omitted Runtime model retains a concrete model for
+  Auto LLM.
+- Renderer projection preserves the effective model for partial settings
+  updates, while a provider change cannot retain the previous provider's model.
+
+Verification:
+
+- Targeted host, resume, setter, slash-command, daemon adapter, and renderer
+  settings regressions passed: 131 passed, 0 failed.
+- Full all-workspace Space tests passed: 1,837 passed, 2 platform-permission
+  skips, 0 failed. TypeScript check and renderer/main production smoke build
+  also passed.
+- The repaired Runtime settings and Space sidecar both report
+  `provider: zai-coding`, `model: glm-5.2`, `permissionMode: auto`, and
+  `autoModeEngine: llm`.
+
+### 058: Auto LLM diagnosis exposed a stale 8-second process while Space did not seed daemon classifier defaults
+
+- Priority: High
+- Status: Resolved
+- Introduced: v0.1.32 development
+- Fixed: v0.1.32 development
+- Created: 2026-07-19
+- Resolution Date: 2026-07-19
+
+#### Original Problem
+
+The Auto LLM side query had previously been extended from eight seconds to 20
+seconds, but a new permission escalation appeared to report another classifier
+timeout. The visible behavior made it unclear whether KodaX 0.7.72 still timed
+out at eight seconds, whether a real 20-second provider request had expired, or
+whether Space was attached to stale code after the dependency update.
+
+Expected behavior:
+
+- a Space 0.1.32 Coder session must never silently use a daemon older than the
+  exact KodaX 0.7.72 release baseline;
+- the Runtime Session snapshot must expose the effective Auto LLM timeout and
+  optional classifier model rather than depending on an invisible SDK default;
+- `autoMode` config and valid `KODAX_AUTO_MODE_*` environment overrides must
+  have the same precedence in Space-started Runtime sessions as in the KodaX
+  REPL;
+- another attached client's explicit Session settings must remain authoritative.
+
+#### Evidence and Root Cause
+
+- The persisted trace
+  `trace-1784371464466-5-ezg0sk.jsonl` records the exact reason
+  `classifier timeout (8000ms exceeded)`. It is therefore not evidence of a
+  20,000ms request expiring. The same trace's abort stack points to the sibling
+  KodaX checkout's `dist/kodax_cli.js`, so the confirmed event came from a
+  long-lived local KodaX CLI process rather than proving that the current Space
+  package emitted it.
+- The machine retained two profile daemon records. The daemon below
+  the Space profile root was KodaX `0.7.69`, PID `16192`, started on
+  2026-07-14; the CLI-style profile daemon was KodaX `0.7.72`, PID `17268`,
+  started on 2026-07-19. Those recorded PIDs were no longer alive at final
+  verification. Older live `electron.exe` entries initially looked related,
+  but their full command lines proved they were isolated `kodax-test-*` E2E
+  daemon fixtures, not the main Space application and not owners of the user
+  profile. Installing or rebuilding a package still cannot replace code already
+  loaded into a long-lived CLI, Electron, or daemon process.
+- KodaX commit `f51ba6be` changed
+  `DEFAULT_CLASSIFIER_TIMEOUT_MS` from eight seconds to 20 seconds and is part
+  of tag `v0.7.72`. `classify()` passes this value to `sideQuery()`, whose one
+  AbortController deadline covers provider queueing, request/first-token time,
+  streaming until completion, and provider retry waits.
+- The KodaX REPL reads `autoMode.engine`, `classifierModel`, and `timeoutMs`
+  from the user config plus `KODAX_AUTO_MODE_*`. The Runtime daemon path instead
+  consumes `RuntimeSessionSettings`. Space projected these fields from Runtime
+  but did not seed them when reconciling a Session, so the effective timeout
+  remained an implicit property of whichever daemon version happened to own
+  the session.
+- A genuine 20-second timeout remains possible on a slow or queued foreground
+  provider because the Auto classifier inherits the main provider/model unless
+  an independent classifier model is configured. That is a different case and
+  should be diagnosed from a literal `20000ms` reason plus provider telemetry.
+
+#### Resolution
+
+- Require daemon identity version `>= 0.7.72` before Runtime readiness. An older
+  or malformed version fails Coder closed with an explicit restart-after-update
+  diagnostic; Space never falls back to a hidden inline Coder owner.
+- Resolve the Runtime-supported KodaX `autoMode` fields (`engine`,
+  `classifierModel`, and `timeoutMs`) plus their valid environment overrides in
+  the main process. Space materializes the 0.7.72 default as an explicit
+  20,000ms Session setting and carries an optional classifier model.
+- Fill only missing Runtime fields. Existing daemon/session values written by
+  another trusted client are not overwritten.
+- Retry revisioned settings convergence after a bounded CAS conflict and
+  re-read the latest snapshot before merging, preserving concurrent client
+  updates.
+- Include Runtime version, effective classifier model, and effective timeout in
+  `/auto-denials` output so an eight-second stale path and a genuine 20-second
+  provider timeout are distinguishable without inspecting private state.
+
+Files changed:
+
+- `apps/desktop/electron/kodax/user-config.ts`
+- `apps/desktop/electron/kodax/runtime-defaults.ts`
+- `apps/desktop/electron/kodax/runtime-host-adapter.ts`
+- `apps/desktop/electron/slash/builtin.ts`
+- `apps/desktop/renderer/src/shell/createSession.ts`
+- `packages/space-ipc-schema/src/channels/kodax.ts`
+- `apps/desktop/electron/test/user-config.test.ts`
+- `apps/desktop/electron/test/runtime-defaults.test.ts`
+- `apps/desktop/electron/test/create-session-inputs.test.ts`
+- `apps/desktop/electron/test/runtime-host-adapter.test.ts`
+- `docs/KNOWN_ISSUES.md`
+
+Tests added:
+
+- KodaX 0.7.72's 20-second default, config mapping, environment precedence,
+  invalid-value fallback, and KodaX Auto engine selection.
+- Old-daemon rejection, first-Session timeout/classifier seeding, preservation
+  of explicit daemon values, and CAS-race convergence without overwrite.
+
+Verification:
+
+- Focused Auto LLM/config/defaults/Runtime adapter regressions pass.
+- Full TypeScript, all-workspace tests, lint, build and release checks are run
+  as part of the final 0.1.32 gate recorded in the changelog.
+
+### 059: KodaX Runtime does not publish complete effective Auto LLM settings or timeout-phase telemetry
+
+- Priority: Medium
+- Status: Open
+- Introduced: KodaX 0.7.72
+- Created: 2026-07-19
+
+#### Original Problem
+
+Space can now prevent an old daemon and explicitly seed the Runtime-supported
+Auto LLM settings, but the public KodaX contracts still cannot answer why a
+genuine 20-second classifier call expired or fully reproduce the REPL config
+path without a local compatibility parser.
+
+Observed contract gaps:
+
+- `loadConfig()` preserves the raw `autoMode` object at runtime but its public
+  return type omits that field. The authoritative `loadAutoModeSettings()`
+  parser is not exported from `@kodax-ai/kodax/repl`, so an SDK host must either
+  cast an undocumented object or duplicate parsing and environment precedence.
+- `RuntimeSessionSettings` carries engine, classifier model and timeout but not
+  `speculativeWindowMs`; the Runtime-owned bootstrap also does not load the
+  REPL config file. A host therefore cannot express the complete documented
+  `autoMode` file configuration per Session.
+- Both the historical eight-second implementation and 0.7.72's 20-second
+  implementation advertise `runtimeAutoModeGuardrail: 1`. Capability
+  negotiation cannot distinguish this behavior change; consumers must inspect
+  the daemon version separately.
+- The timeout trace reports only `classifier timeout (Nms exceeded)`. It omits
+  provider, model, actual elapsed time, retry count/wait, and whether the
+  deadline was spent in provider queue/connect, waiting for first token, or
+  streaming the response. In the confirmed trace the `guardrail:auto-mode`
+  span lasts only 1ms even though the decision says an eight-second classifier
+  timeout, because it records the adopted verdict rather than the classifier
+  operation.
+- `packages/llm/src/side-query.ts` still describes the classifier override as
+  approximately eight seconds even though the implementation is now 20 seconds.
+
+Expected upstream behavior:
+
+- Export one typed, side-effect-bounded Auto mode settings resolver or include
+  `autoMode` in the public config type, and expose every Runtime-supported
+  Session setting needed for REPL parity.
+- Version the Auto guardrail capability when its externally visible default
+  semantics change, or advertise the effective default timeout as structured
+  capability/status data.
+- Emit a prompt-free structured classifier diagnostic containing provider,
+  model, configured timeout, elapsed time, outcome, retry count/wait and the
+  last observable request phase. The classifier span should cover the actual
+  side query, not only the final guardrail decision.
+
+#### Current Space Mitigation
+
+- Space 0.1.32 checks the daemon identity version, parses only the currently
+  supported engine/classifier/timeout fields, explicitly writes the 20-second
+  default, and exposes those effective values through `/auto-denials`.
+- Space cannot infer queue/first-token/retry phase from the current SDK result
+  without patching KodaX internals, and deliberately does not claim support for
+  a per-Session file-configured speculative window that Runtime does not expose.
+
+### 060: Space restart during daemon run admission aborted the accepted Coder run and startup health failures did not reconnect
+
+- Priority: High
+- Status: Resolved
+- Introduced: v0.1.32 development
+- Fixed: v0.1.32 development
+- Created: 2026-07-20
+- Resolution Date: 2026-07-20
+
+#### Original Problem
+
+Immediately after opening the development build, a first Coder send could show
+a generic `HANDLER_ERROR`. The provider picker displayed the default
+`zai-coding / glm-5.2`, so the symptom looked like the earlier empty-model defect
+had survived its fix.
+
+Expected behavior:
+
+- the effective provider model must be concrete even when the user has not
+  manually changed the model picker;
+- a normal Space close or development restart must detach from the shared
+  daemon without aborting an accepted Coder run;
+- a transient daemon-health ownership window must recover in the background
+  rather than leaving Coder failed until a user send happens to retry startup;
+- an explicit Stop/Cancel must continue to abort the authoritative daemon run.
+
+#### Evidence and Root Cause
+
+- Session `20260719_233647` and Run `run_mrsjgd41_4d356bef` both recorded
+  `provider: zai-coding` and `model: glm-5.2`. Runtime settings revision 1 also
+  contained the concrete model before `run.start`. No empty-model request or
+  provider 400 occurred in this reproduction.
+- The Run was accepted at `2026-07-20T01:21:02.639Z`; Space then issued an
+  explicit `run.abort` operation about 1.1 seconds later. The old Electron main
+  process exited and a new development main process initialized immediately
+  afterward, while the daemon process remained alive.
+- `RealKodaXSession.dispose()` correctly marked the local session disposed and
+  aborted its local wait signal. However, if that signal arrived while
+  `runs.start()` was still being acknowledged, `runCoderDaemon()` treated it as
+  a user cancellation and called `abortSessionRun()`. This contradicted F121's
+  detach-only shutdown contract.
+- The preceding startup initially received the SDK's fail-safe error
+  `Runtime daemon is unhealthy; refusing to start a competing owner.` Space
+  published failure but did not schedule its existing bounded reconnect loop.
+  The condition later cleared and a subsequent initialization succeeded, but
+  recovery depended on another caller retrying manually.
+
+#### Resolution
+
+- During daemon run admission, distinguish shutdown detach from destructive
+  session disposal and explicit cancellation. Normal Space shutdown does not
+  send `run.abort`; user deletion and explicit cancellation still terminate a
+  run started by that Space Session.
+- Treat the SDK's exact transient unhealthy-owner refusal as `reconnecting` and
+  schedule the existing exponential-backoff reconnect loop. The health-window
+  retry chain stops if a later attempt reports a permanent failure. Other
+  initialization failures, including version/capability incompatibility, remain
+  fail-closed and are not silently retried as health races.
+- Keep the previous default-model materialization unchanged: the persisted
+  Session/Run evidence confirms that path was active in this reproduction.
+
+Files changed:
+
+- `apps/desktop/electron/kodax/real-session.ts`
+- `apps/desktop/electron/kodax/session-adapter.ts`
+- `apps/desktop/electron/kodax/mock-session.ts`
+- `apps/desktop/electron/kodax/host.ts`
+- `apps/desktop/electron/kodax/runtime-host-adapter.ts`
+- `apps/desktop/electron/main.ts`
+- `apps/desktop/electron/test/real-session-runtime-queue.test.ts`
+- `apps/desktop/electron/test/runtime-host-adapter.test.ts`
+- `docs/KNOWN_ISSUES.md`
+
+Tests added:
+
+- Disposing Space while daemon run admission is pending does not issue an abort,
+  while an explicit cancellation still does.
+- An exact transient unhealthy-daemon startup error automatically retries after
+  the ownership safety window and reaches Runtime ready state.
+- A health-window retry stops after a subsequent permanent incompatibility
+  instead of creating an unbounded retry loop.
+
+### 061: No-Session File Viewer calls `artifact.previewFile` without legacy-required Session fields and cannot open project files
+
+- Priority: High
+- Status: Resolved
+- Introduced: v0.1.32 development
+- Fixed: v0.1.32 development
+- Created: 2026-07-20
+- Resolution Date: 2026-07-20
+
+#### Original Problem
+
+After F131 separated File Viewer from Artifact, opening any project file before
+the first Session failed before the viewer could mount. The renderer displayed
+two error toasts:
+
+`无法预览文件：[artifact.previewFile] input failed schema validation`
+
+Reproduction steps:
+
+1. Open a project that has no Session.
+2. Open a Markdown or other previewable file from the Files panel.
+3. Observe that the right sidebar does not open and schema-validation toasts appear.
+
+Expected behavior:
+
+- File Viewer must require only an allowed project root and file path.
+- It must not depend on a synthetic Session identity or Artifact IPC validation.
+- Existing file read, binary-size, path-boundary and project allowlist guards must remain enforced.
+
+#### Root Cause
+
+The renderer switched `artifact.previewFile` to a new Session-optional schema and
+immediately omitted `sessionId` and `surface`. A running development Electron
+process can hot-reload the renderer while retaining its already-loaded
+main/preload schema, which still requires those fields. The old validator rejects
+the request before the new File Viewer event can be dispatched. More
+fundamentally, the project-scoped File Viewer should not depend on an
+`artifact.*` channel at all.
+
+#### Resolution
+
+- Load content-backed project files through the existing `files.read` channel.
+- Validate path-backed files with `files.stat`, then let the shared `RichPreview`
+  stack load them through `files.readBinary`.
+- Keep the legacy Session-scoped `artifact.previewFile` schema unchanged and remove
+  Artifact IPC from the File Viewer request path.
+- Use monotonic snapshot versions and request keys so late refresh responses cannot
+  replace a newly selected file; keep copy and refresh errors operation-specific.
+
+Files changed:
+
+- `apps/desktop/renderer/src/lib/openPath.ts`
+- `apps/desktop/renderer/src/lib/pathClassify.ts`
+- `apps/desktop/renderer/src/features/preview/FileViewer.tsx`
+- `packages/space-ipc-schema/src/channels/artifact.ts`
+- `packages/space-ipc-schema/test/artifact.test.ts`
+- `apps/desktop/electron/test/open-path-helpers.test.ts`
+- `tests/e2e/artifact-file-preview.spec.ts`
+
+Verification:
+
+- TypeScript, targeted ESLint, 264 IPC schema tests, 14 focused helper/model tests,
+  and the production renderer/main smoke build passed.
+- Electron trace confirms that a no-Session Markdown file opens in File Viewer,
+  exposes no Artifact UI, and shows no schema-validation/preview error. The later
+  runner timeout occurs only in the existing `Close context` cleanup step.
+
 ## Summary
 
-- Total: 55
-- Open: 4
-- Resolved: 51
-- High: 28
-- Medium: 19
+- Total: 61
+- Open: 3
+- Resolved: 58
+- High: 33
+- Medium: 20
 - Low: 8
 - Next to resolve: 043

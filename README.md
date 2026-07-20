@@ -13,7 +13,7 @@
   <a href="https://github.com/icetomoyo/KodaX-Space/releases/latest"><img alt="release" src="https://img.shields.io/github/v/release/icetomoyo/KodaX-Space?style=flat-square"></a>
   <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-KAI--FCL-orange?style=flat-square"></a>
   <a href="https://github.com/icetomoyo/KodaX-Space/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/icetomoyo/KodaX-Space/ci.yml?style=flat-square&label=ci"></a>
-  <img alt="KodaX SDK" src="https://img.shields.io/badge/KodaX_SDK-0.7.68-2ecc71?style=flat-square">
+  <img alt="KodaX SDK" src="https://img.shields.io/badge/KodaX_SDK-0.7.72-2ecc71?style=flat-square">
   <img alt="platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-34495e?style=flat-square">
 </p>
 
@@ -75,7 +75,7 @@ npm run dev
   <tr>
     <td valign="top">
       <h3>KodaX SDK native surface</h3>
-      Space imports the KodaX SDK in-process from Electron main, so the desktop client follows the same sessions, workflows, skills, MCP, and runtime events as KodaX CLI/REPL.
+      Space uses the KodaX Runtime daemon for shared Coder sessions and keeps Partner plus explicit host-provider integrations in Electron main, all through published KodaX contracts.
     </td>
     <td valign="top">
       <h3>Governed automation</h3>
@@ -87,6 +87,12 @@ npm run dev
     </td>
   </tr>
 </table>
+
+## Current Source Baseline
+
+**v0.1.32 release preparation on exact KodaX 0.7.72.** Coder is default-routed to the profile-scoped shared daemon; sessions/runs/settings/interactions, Workflow observation/control, Learning Center operations, catalog discovery, MCP tool discovery/reload, and configured External Agent Actor/Turns use published Runtime services. Partner remains an embedded-inline Space owner. MCP processes/logs, Workflow library/start/admin, Space Reference Agent execution, and product artifacts remain explicit host-provider boundaries.
+
+F122-F124 deliver the Partner project-source, immutable evidence/citation, and automatic grounded-context loop. F121 remains `InProgress` until the final human multi-client release acceptance is complete; missing required daemon capabilities fail Coder closed rather than silently falling back to an inline owner. See the [v0.1.32 release design](docs/features/v0.1.32.md) and [capability ledger](docs/KODAX_CAPABILITY_LEDGER.md).
 
 ## Current Release
 
@@ -148,18 +154,18 @@ See [CHANGELOG.md](CHANGELOG.md) and [docs/features/v0.1.29.md](docs/features/v0
 
 ## Product Surface
 
-| Surface            | Purpose                                                                                                                                                                                                             |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Coder workspace    | Main AI coding session surface, backed by the KodaX SDK runtime.                                                                                                                                                    |
-| Environment Hub    | Compact project/session/environment router for location, branch, changes, sources, and mode context.                                                                                                                |
-| Task Dock          | Persistent right-side task surface for run status, plan, agents, workflow, changes, sources, artifacts, and context.                                                                                                |
-| Review workspace   | Diff and file-review surface for changes that need inspection.                                                                                                                                                      |
-| Artifact workspace | Preview, inspect, and export generated artifacts.                                                                                                                                                                   |
-| Terminal workspace | Real PTY terminal tabs scoped to the selected project.                                                                                                                                                              |
-| MCP and Skills     | Desktop management and display paths for KodaX MCP servers and skills.                                                                                                                                              |
-| Memory Governance  | Review, approve, reject, and inspect memory proposals and approved references.                                                                                                                                      |
-| Partner surface    | Enabled workspace-first knowledge-work surface with Sources, KB, Outputs, checkpointed writes, Office/PDF convenience writers, and local policy/audit controls.                                                     |
-| External Agents    | KodaX 0.7.68 Reference Agent administration, Workflow/Worker routing, and session-bound, race-safe Task Dock lifecycle/intervention UI; administration is main-window-only and real protocol adapters remain gated. |
+| Surface            | Purpose                                                                                                                                                                                                                    |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Coder workspace    | Main AI coding session surface, backed by the KodaX SDK runtime.                                                                                                                                                           |
+| Environment Hub    | Compact project/session/environment router for location, branch, changes, sources, and mode context.                                                                                                                       |
+| Task Dock          | Persistent right-side task surface for run status, plan, agents, workflow, changes, sources, artifacts, and context.                                                                                                       |
+| Review workspace   | Diff and file-review surface for changes that need inspection.                                                                                                                                                             |
+| Artifact workspace | Preview, inspect, and export generated artifacts.                                                                                                                                                                          |
+| Terminal workspace | Real PTY terminal tabs scoped to the selected project.                                                                                                                                                                     |
+| MCP and Skills     | Desktop management and display paths for KodaX MCP servers and skills.                                                                                                                                                     |
+| Memory Governance  | Review, approve, reject, and inspect memory proposals and approved references.                                                                                                                                             |
+| Partner surface    | Enabled workspace-first knowledge-work surface with Sources, KB, Outputs, checkpointed writes, Office/PDF convenience writers, and local policy/audit controls.                                                            |
+| External Agents    | KodaX 0.7.72 Runtime-configured Coder Agents use unified Actor/Turn tasks; Space Reference Agents retain main-window administration and the durable Task Dock intervention path. MCP Tasks and governed HTTP remain gated. |
 
 ## Configuration Model
 
@@ -173,7 +179,7 @@ KodaX Space intentionally reuses KodaX ecosystem state where it should, and owns
 | `~/.kodax/skills/` and project skills | Discovered by the KodaX skills runtime.                                                                                                       |
 | API keys                              | Stored through OS keychain when available; environment variables remain supported.                                                            |
 | `~/.kodax/space/`                     | Space-owned preferences, projects, UI state, and desktop-specific metadata.                                                                   |
-| `<profile-root>/.kodax/runtime/`      | v0.1.31 Runtime run/event journal; with the default profile this resolves to `~/.kodax/.kodax/runtime/`.                                      |
+| `<profile-root>/.kodax/runtime/`      | Runtime daemon run/event journal; with the default profile this resolves to `~/.kodax/.kodax/runtime/`.                                       |
 
 ## Architecture
 
@@ -196,16 +202,16 @@ KodaX-Space/
 
 Key technical choices:
 
-| Layer                 | Choice                                                                                                                                  |
-| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| Shell                 | Electron 42                                                                                                                             |
-| Renderer              | React 19, Vite, TypeScript, Zustand                                                                                                     |
-| UI/runtime separation | Renderer has no direct LLM/tool execution; privileged work stays in Electron main.                                                      |
-| KodaX integration     | Electron main imports the SDK; v0.1.31 routes managed runs and core session operations through an embedded inline `RuntimeHostAdapter`. |
-| IPC                   | zod-validated contracts from `@kodax-space/space-ipc-schema`.                                                                           |
-| Terminal              | xterm.js + node-pty.                                                                                                                    |
-| Preview               | Monaco, pdfjs, mammoth/docx, SheetJS/xlsx.                                                                                              |
-| Tests                 | Node test runner, Playwright, typecheck, smoke packaging checks.                                                                        |
+| Layer                 | Choice                                                                                                                                                       |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Shell                 | Electron 42                                                                                                                                                  |
+| Renderer              | React 19, Vite, TypeScript, Zustand                                                                                                                          |
+| UI/runtime separation | Renderer has no direct LLM/tool execution; privileged work stays in Electron main.                                                                           |
+| KodaX integration     | Electron main uses the public Runtime facade; Coder attaches to the profile daemon while Partner and explicit host-provider services remain embedded inline. |
+| IPC                   | zod-validated contracts from `@kodax-space/space-ipc-schema`.                                                                                                |
+| Terminal              | xterm.js + node-pty.                                                                                                                                         |
+| Preview               | Monaco, pdfjs, mammoth/docx, SheetJS/xlsx.                                                                                                                   |
+| Tests                 | Node test runner, Playwright, typecheck, smoke packaging checks.                                                                                             |
 
 ## Development
 

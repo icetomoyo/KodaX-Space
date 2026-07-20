@@ -13,7 +13,7 @@
   <a href="https://github.com/icetomoyo/KodaX-Space/releases/latest"><img alt="release" src="https://img.shields.io/github/v/release/icetomoyo/KodaX-Space?style=flat-square"></a>
   <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-KAI--FCL-orange?style=flat-square"></a>
   <a href="https://github.com/icetomoyo/KodaX-Space/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/icetomoyo/KodaX-Space/ci.yml?style=flat-square&label=ci"></a>
-  <img alt="KodaX SDK" src="https://img.shields.io/badge/KodaX_SDK-0.7.68-2ecc71?style=flat-square">
+  <img alt="KodaX SDK" src="https://img.shields.io/badge/KodaX_SDK-0.7.72-2ecc71?style=flat-square">
   <img alt="platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-34495e?style=flat-square">
 </p>
 
@@ -88,6 +88,12 @@ npm run dev
   </tr>
 </table>
 
+## 当前源码基线
+
+**v0.1.32 发布准备，精确依赖 KodaX 0.7.72。** Coder 默认连接 profile-scoped shared daemon；会话/运行/共享设置/交互、Workflow 观察与控制、Learning Center 操作、目录发现、MCP 工具发现与 reload，以及已配置 External Agent 的 Actor/Turn 均使用公开 Runtime 服务。Partner 继续由 Space 在 Electron main 中 embedded-inline 承载。MCP 进程/日志、Workflow library/start/admin、Space Reference Agent 执行和产品 Artifact 仍是明确的 host-provider 边界。
+
+F122-F124 已交付 Partner 项目来源库、不可变证据/引用和自动 grounded context 闭环。F121 在最终人工多客户端发布验收完成前保持 `InProgress`；缺少必要 daemon capability 时 Coder fail closed，不会静默退回 inline owner。详见 [v0.1.32 版本设计](docs/features/v0.1.32.md)和[能力台账](docs/KODAX_CAPABILITY_LEDGER.md)。
+
 ## 当前正式版本
 
 **v0.1.31 - Runtime Contract Alignment and Semantic Control**
@@ -131,18 +137,18 @@ npm run dev
 
 ## 产品界面
 
-| 界面               | 用途                                                                                                                                                         |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Coder workspace    | 主 AI Coding Session 界面，底层由 KodaX SDK runtime 驱动。                                                                                                   |
-| Environment Hub    | 紧凑的项目、会话、环境路由器，承载 location、branch、changes、sources、mode context。                                                                        |
-| Task Dock          | 右侧常驻任务面，显示 run 状态、plan、agents、workflow、changes、sources、artifacts、context。                                                                |
-| Review workspace   | 用于查看 diff 和文件评审。                                                                                                                                   |
-| Artifact workspace | 用于预览、检查、导出生成产物。                                                                                                                               |
-| Terminal workspace | 作用域绑定到当前项目的真实 PTY 多 tab 终端。                                                                                                                 |
-| MCP 和 Skills      | KodaX MCP servers 与 skills 的桌面管理和展示入口。                                                                                                           |
-| Memory Governance  | 评审、批准、拒绝、检查 memory proposals 和 approved references。                                                                                             |
-| Partner surface    | 已启用 workspace-first 知识工作界面，提供 Sources、KB、Outputs、checkpoint 写入、Office/PDF 便利生成与本地 policy/audit。                                    |
-| External Agents    | 提供 KodaX 0.7.68 Reference Agent 管理、Workflow/Worker 路由和会话绑定、竞态安全的 Task Dock 生命周期/干预界面；管理入口仅限主窗口，真实协议适配器继续门控。 |
+| 界面               | 用途                                                                                                                                                                    |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Coder workspace    | 主 AI Coding Session 界面，底层由 KodaX SDK runtime 驱动。                                                                                                              |
+| Environment Hub    | 紧凑的项目、会话、环境路由器，承载 location、branch、changes、sources、mode context。                                                                                   |
+| Task Dock          | 右侧常驻任务面，显示 run 状态、plan、agents、workflow、changes、sources、artifacts、context。                                                                           |
+| Review workspace   | 用于查看 diff 和文件评审。                                                                                                                                              |
+| Artifact workspace | 用于预览、检查、导出生成产物。                                                                                                                                          |
+| Terminal workspace | 作用域绑定到当前项目的真实 PTY 多 tab 终端。                                                                                                                            |
+| MCP 和 Skills      | KodaX MCP servers 与 skills 的桌面管理和展示入口。                                                                                                                      |
+| Memory Governance  | 评审、批准、拒绝、检查 memory proposals 和 approved references。                                                                                                        |
+| Partner surface    | 已启用 workspace-first 知识工作界面，提供 Sources、KB、Outputs、checkpoint 写入、Office/PDF 便利生成与本地 policy/audit。                                               |
+| External Agents    | KodaX 0.7.72 Runtime 配置的 Coder Agent 使用统一 Actor/Turn 任务；Space Reference Agent 保留主窗口管理和 durable Task Dock 干预路径。MCP Tasks 与受治理 HTTP 继续门控。 |
 
 ## 配置模型
 
@@ -156,7 +162,7 @@ KodaX Space 会尽量复用 KodaX 生态状态；桌面 UI 特有状态则由 Sp
 | `~/.kodax/skills/` 和项目 skills | 由 KodaX skills runtime 发现。                                                                              |
 | API keys                         | 优先进入系统 Keychain；仍支持环境变量。                                                                     |
 | `~/.kodax/space/`                | Space 自有偏好、项目、UI 状态和桌面元数据。                                                                 |
-| `<profile-root>/.kodax/runtime/` | v0.1.31 Runtime run/event journal；默认 profile 下实际为 `~/.kodax/.kodax/runtime/`。                       |
+| `<profile-root>/.kodax/runtime/` | Runtime daemon run/event journal；默认 profile 下实际为 `~/.kodax/.kodax/runtime/`。                        |
 
 ## 架构
 
@@ -179,16 +185,16 @@ KodaX-Space/
 
 关键技术选择：
 
-| 层              | 选择                                                                                                          |
-| --------------- | ------------------------------------------------------------------------------------------------------------- |
-| Shell           | Electron 42                                                                                                   |
-| Renderer        | React 19、Vite、TypeScript、Zustand                                                                           |
-| UI/runtime 分离 | Renderer 不直接执行 LLM/tool；特权工作留在 Electron main。                                                    |
-| KodaX 集成      | Electron main 中导入 SDK；v0.1.31 通过 embedded inline `RuntimeHostAdapter` 承接 managed run 和核心会话操作。 |
-| IPC             | 来自 `@kodax-space/space-ipc-schema` 的 zod-validated contracts。                                             |
-| Terminal        | xterm.js + node-pty。                                                                                         |
-| Preview         | Monaco、pdfjs、mammoth/docx、SheetJS/xlsx。                                                                   |
-| Tests           | Node test runner、Playwright、typecheck、packaging smoke checks。                                             |
+| 层              | 选择                                                                                                                        |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| Shell           | Electron 42                                                                                                                 |
+| Renderer        | React 19、Vite、TypeScript、Zustand                                                                                         |
+| UI/runtime 分离 | Renderer 不直接执行 LLM/tool；特权工作留在 Electron main。                                                                  |
+| KodaX 集成      | Electron main 使用公开 Runtime facade；Coder 连接 profile daemon，Partner 与明确的 host-provider 服务保持 embedded inline。 |
+| IPC             | 来自 `@kodax-space/space-ipc-schema` 的 zod-validated contracts。                                                           |
+| Terminal        | xterm.js + node-pty。                                                                                                       |
+| Preview         | Monaco、pdfjs、mammoth/docx、SheetJS/xlsx。                                                                                 |
+| Tests           | Node test runner、Playwright、typecheck、packaging smoke checks。                                                           |
 
 ## 开发
 

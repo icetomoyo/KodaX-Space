@@ -5,6 +5,8 @@ This product includes software developed by icetomoyo.
 
 KodaX Space is the Electron desktop client for the KodaX ecosystem
 (see https://github.com/icetomoyo/KodaX). It consumes the public
-`@kodax-ai/coding`, `@kodax-ai/llm`, `@kodax-ai/agent` and
-`@kodax-ai/skills` SDK packages in-process, and ships independently
-of any closed-source KodaX-private components.
+`@kodax-ai/kodax` package and its documented public subpath exports.
+Coder uses the profile-scoped KodaX Runtime daemon while Partner and
+explicit host-provider integrations remain in the Electron main process.
+KodaX Space ships independently of any closed-source KodaX-private
+components.

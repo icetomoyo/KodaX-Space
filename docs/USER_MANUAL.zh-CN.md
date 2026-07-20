@@ -4,9 +4,9 @@
   <img src="../resources/icon.png" alt="KodaX Space 应用图标" width="96">
 </p>
 
-> 当前正式版本：KodaX Space `v0.1.31` / KodaX `0.7.68`
+> 当前源码/发布准备基线：KodaX Space `v0.1.32`（package `0.1.32`）/ KodaX `0.7.72`；最近已发布稳定 Space 版本仍为 `v0.1.31`。
 >
-> 更新日期：2026-07-12
+> 更新日期：2026-07-19
 >
 > 如果你的界面与本文不同，请先在 Settings → License/版本信息中确认构建版本。
 
@@ -142,25 +142,27 @@ npm run dev
 - **Project**：本地工作目录，也是文件工具的主要边界。
 - **Session**：围绕一个项目持续进行的对话，保存 transcript 和上下文。
 - **Turn**：你发送一条消息，到这一轮完成、失败或取消。
-- **Run**：KodaX Runtime 对一轮任务的执行记录；`v0.1.31` 为新运行提供稳定 `runId` 和事件日志。
+- **Run**：KodaX Runtime 对一轮任务的执行记录；Coder daemon 为运行提供稳定 `runId`、有序事件和多客户端共享状态。
 - **Artifact**：独立于项目文件的生成物，例如报告、HTML、SVG、PDF、DOCX、XLSX。
 - **Workflow**：可观察、可暂停/恢复/停止、可保存和复跑的多步骤任务。
 
-### v0.1.31 的 Runtime Host 对用户有什么影响
+### v0.1.32 的 Runtime Host 对用户有什么影响
 
-没有新增“Runtime 模式”开关。默认仍按原来的 Coder/Partner 方式使用，但底层的新 managed run 通过 inline KodaX Runtime 启动：
+没有新增“Runtime 模式”开关。默认仍按原来的 Coder/Partner 方式使用，但底层所有权已经按 surface 拆分：Coder 连接当前 profile 的共享 daemon，Partner 继续在 Space 内 embedded-inline 运行。
 
 ```mermaid
 flowchart LR
     UI["Renderer UI"] --> IPC["受校验的 Space IPC"]
     IPC --> Host["RuntimeHostAdapter"]
-    Host --> RT["KodaX Runtime embedded/inline"]
-    RT --> Run["runId + rich events + result/abort"]
-    Bridge["Space bridges"] --> Host
-    Bridge --- P["Partner / Permissions / AskUser / MCP / Artifacts / External Agent store"]
+    Host --> RT["KodaX Runtime daemon<br/>Coder shared truth"]
+    RT --> Run["session/run/settings/interactions<br/>Workflow observe/control<br/>Learning/catalog/Agent Actor-Turn"]
+    Bridge["Space host providers"] --> Host
+    Bridge --- P["Partner inline / MCP processes+logs<br/>Workflow library+start+admin / Reference Agent / Artifacts"]
 ```
 
-用户可感知的目标是：停止更可靠、失败只收口一次、历史操作保持连续，并为后续运行诊断提供事实。Worker 和 daemon 在本版本不可用；Workflow、MCP 进程和 External Agent durable store 仍由 Space 的兼容层负责。
+多个受信任的 KodaX 客户端可以观察同一 Coder 会话；Space 会同步 provider/model/effort/mode 等共享设置，并通过 Runtime 处理权限 grant、AskUser、队列、Workflow 观察/暂停/恢复/停止、Learning Center 命令、MCP 工具发现/reload 和已配置 External Agent 的 Actor/Turn。Runtime 不可用或能力版本不足时 Coder fail closed，不会在背后重放到 inline owner；Partner 不受该 daemon 可用性影响。
+
+Space 0.1.32 还会核对 daemon 的实际版本，而不只看已经安装的 npm 包：低于 `0.7.72` 的长驻 daemon 会被拒绝并提示重启。Coder Session 会显式保存 Auto LLM 的有效 classifier model（如有配置）和 timeout；未配置时使用 `0.7.72` 的 `20000ms` 默认值。输入 `/auto-denials` 可以查看当前 Runtime 版本、classifier model 和 timeout。若看到的错误文字仍是 `8000ms exceeded`，说明实际执行的仍是升级前进程；若是 `20000ms exceeded`，则表示当前 provider/model 在包含排队、重试等待和完整 side query 的 20 秒 deadline 内没有完成，可配置更快的 `autoMode.classifierModel` 或审视 provider 延迟。
 
 ## 7. 权限：什么时候该允许
 
@@ -226,10 +228,9 @@ Settings 有四个主标签：Preferences、Providers、Runtime、License。
 ### Agent Mode
 
 - **SA**：单 Agent 路径，适合直接、小型任务。
-- **AMA**：显式 managed/multi-agent 工作方式。
-- **AMAW**：允许 KodaX 根据任务自动组织 Workflow/子任务。
+- **AMA**：默认的自适应多 Agent 协作方式。AMAW 已退出并合并到 AMA；旧配置会自动迁移。
 
-不同 Provider、工具和任务并不保证三种模式产生相同效果。不确定时保留默认值；用 `Alt+M` 或 `/agent-mode` 调整。
+Workflow 只在显式 Workflow 强信号、`/workflow`、命名 Workflow 或 SDK 请求下开放，普通复杂任务、并行或审查等弱信号不会自动启动。不同 Provider、工具和任务并不保证两种模式产生相同效果；不确定时保留默认值，用 `Alt+M` 或 `/agent-mode` 调整。
 
 ## 10. 会话历史、Fork、Rewind 与 Compact
 
@@ -308,11 +309,11 @@ Partner Knowledge Base 与 Coder Memory 是两套不同职责，不能互相替�
 
 KodaX 0.7.68 新增 FEATURE_260 Memory Agent。它不会创建第二套记忆库，而是在普通 managed run 内复用 F228：已准备好的相关记忆可作为零等待、低权威、默认静默的提示；模型确有需要时可调用只读 `memory_recall({ need })`，但不能自行指定 tenant/user/project 等 scope。任务结束后可形成有界 Outcome Digest，并继续通过 proposal、preview、fingerprint 和 apply 进入现有治理流程。
 
-Space 0.1.31 集成运行契约：启动时验证真实 `/experimental-memory` 导出和 policy，在版本/诊断中如实报告，并记录不含记忆正文的生命周期元数据。普通 recall 不生成“记忆思考”消息；完整 Episodes、Activity、纠正、forget/purge 界面仍属于 F117 计划。现有 Inbox、Refs、Governance、Hints 继续由 F228 提供。
+Space 0.1.32 保留并验证真实 `/experimental-memory` 导出和 policy，在版本/诊断中如实报告，并记录不含记忆正文的生命周期元数据。普通 recall 不生成“记忆思考”消息；完整 Episodes、Activity、纠正、forget/purge 界面仍属于 F117 计划。现有 Inbox、Refs、Governance、Hints 继续由 F228 提供。
 
 ### MCP 与 `.mcpb`
 
-MCP 面板展示 server 状态、命令/URL、start/stop、工具、日志/诊断和扩展卸载。`v0.1.31` 仍由 Space MCP Manager 负责进程和日志，Runtime 不会启动第二套 MCP manager。只安装可信来源的扩展。
+MCP 面板展示 server 状态、命令/URL、start/stop、工具、日志/诊断和扩展卸载。`v0.1.32` 的 Coder 工具目录与 reload 会同步 Runtime；server 进程、状态和日志仍由 Space MCP Manager 负责，不会启动第二套桌面 manager。只安装可信来源的扩展。
 
 ### Skills 与 Markdown Agents
 
@@ -323,7 +324,7 @@ MCP 面板展示 server 状态、命令/URL、start/stop、工具、日志/诊�
 
 ### External Agents
 
-Settings → Runtime → External Agents 管理 KodaX `0.7.68` 中保留的 Reference Agent。Task Dock 可查看事件、回复 `input-required`、取消或 reconcile 未知状态。当前 Reference Executor 是本地合规适配器：不访问网络、不直接写 workspace。A2A、MCP Tasks 和 governed HTTP 适配器尚未交付。
+Settings → Runtime → External Agents 同时展示 Space Reference Agent 与 Runtime 配置的 External Agent。Reference 项可创建、编辑、启停和删除；Runtime 项由 daemon 的版本化配置持有，Space 只做发现、预检和任务操作。Coder 对 Runtime 项使用统一 Actor/Turn 路径，Task Dock 可查看事件、回复 `input-required`、取消或 reconcile；Reference 任务继续使用本地合规执行器。MCP Tasks 和 governed HTTP 仍不是通用产品承诺。
 
 ## 15. Quick Ask、Handoff 与 CLI 连续性
 
@@ -342,7 +343,7 @@ Settings → Runtime → External Agents 管理 KodaX `0.7.68` 中保留的 Refe
 | `/mode`                                     | 查看或切换权限模式            |
 | `/provider`、`/model`                       | 切换 Provider/Model           |
 | `/reasoning`、`/thinking`                   | 调整 Effort/Thinking          |
-| `/agent-mode`                               | 切换 SA/AMA/AMAW              |
+| `/agent-mode`                               | 切换 SA/AMA                   |
 | `/workflow`                                 | 启动或查看 Workflow           |
 | `/compact`                                  | 立即压缩当前持久会话上下文    |
 | `/tree`、`/history`                         | 查看 lineage 或用户消息历史   |
@@ -415,10 +416,10 @@ flowchart TD
 
 ## 20. 当前限制与诚实边界
 
-- `v0.1.31` 已正式采用 inline Runtime Host；Worker/daemon、Runtime-native Workflow/MCP/Skills/Partner 等仍不属于本版本承诺。
-- Worker、daemon 和 Runtime Learning Center 尚未成为当前可用桌面能力。Memory Agent 的 0.7.68 运行契约已经集成；完整 F117 桌面管理体验尚未交付。
+- 当前 `v0.1.32` 源码默认让 Coder 连接 profile-scoped shared daemon；Partner、其工具、权限、知识与交付仍由 Space embedded inline owner 管理，不会迁入 Coder daemon。
+- Runtime Learning Center 的兼容契约已接入，但完整 F118 管理界面尚未交付；Memory Agent 的 0.7.68 起始运行契约继续由正式 0.7.72 保留，完整 F117 桌面管理体验尚未交付。
 - Partner 浏览器、通用 Connector、远程任务、桌面电脑控制和自动化尚未交付。
-- External Agent 只有本地 Reference Executor；A2A/MCP Tasks/governed HTTP 不可用。
+- External Agent 的本地 Reference Executor 可用；Coder daemon 的 A2A 取决于显式配置与能力协商，MCP Tasks/governed HTTP 尚未作为通用能力开放。
 - Quick Ask 不是完全无 session side query。
 - React artifact 不是可交互 LiveCanvas。
 - Office/PDF writer 是基础可靠输出，不是品牌模板级设计系统。
