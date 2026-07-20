@@ -4,14 +4,16 @@
 // node:test 直接 import（会拖进 window 全局类型）。这些纯函数单独成模块，既可单测，也让
 // 路径分类规则有单一真理源。
 
-/** 可在 Artifact 面板内预览的扩展名（sandbox iframe / 语法高亮）。 */
+import { looksLikeInteractiveHtml, type ArtifactKindT } from '@kodax-space/space-ipc-schema';
+
+/** 可在 File Viewer 内预览的扩展名（sandbox iframe / 语法高亮）。 */
 export { partnerDeliveryPathMatches as deliveryPathMatches } from '@kodax-space/space-ipc-schema';
 
 const MARKUP_PREVIEW_EXTS = new Set(['html', 'htm', 'svg', 'md', 'markdown']);
 
 // 视为"文本/代码"、点击走 App 内 diff 查看器的扩展名。
-// 注意：html/htm/svg/md **不**放进来 —— 它们归 PREVIEWABLE_EXTS。这样无 session（开不了
-// Artifact 预览）时 html 会落到 reveal 分支让 OS 用浏览器打开，而不是在 diff 里看源码。
+// 注意：html/htm/svg/md **不**放进来 —— 它们归 PREVIEWABLE_EXTS，点击时直接进入
+// project-scoped File Viewer，而不是在 diff 里看源码。
 export const CODE_EXTS = new Set([
   'ts',
   'tsx',
@@ -137,7 +139,7 @@ export function extOf(p: string): string {
   return dot > 0 ? base.slice(dot + 1).toLowerCase() : '';
 }
 
-/** 该路径是否可在 Artifact 面板预览（html/svg/md）。 */
+/** 该路径是否可在 File Viewer 预览（html/svg/md）。 */
 export function isPreviewablePath(p: string): boolean {
   return PREVIEWABLE_EXTS.has(extOf(p));
 }
@@ -169,6 +171,22 @@ export function isTextPreviewPath(p: string): boolean {
   );
 }
 
+/** Map a file read through `files.read` to the shared safe renderer kind. */
+export function fileViewerContentKind(path: string, content: string): ArtifactKindT {
+  switch (extOf(path)) {
+    case 'html':
+    case 'htm':
+      return looksLikeInteractiveHtml(content) ? 'interactive-html' : 'html';
+    case 'md':
+    case 'markdown':
+      return 'markdown';
+    case 'svg':
+      return 'svg';
+    default:
+      return 'code';
+  }
+}
+
 function basenameLower(p: string): string {
   const slash = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
   return (slash >= 0 ? p.slice(slash + 1) : p).toLowerCase();
@@ -195,7 +213,7 @@ export function looksLikeFilePath(text: string): boolean {
 }
 
 /**
- * 绝对/混合路径 → 相对 projectRoot 的 posix 路径（artifact.previewFile / files.diff 要相对形态）。
+ * 绝对/混合路径 → 相对 projectRoot 的 posix 路径（files.read / files.diff 要相对形态）。
  * 不在 projectRoot 下的路径原样（去盘符外的前导斜杠），交由 main 端 resolveInsideProject 兜底拒绝。
  */
 export function toProjectRelative(p: string, projectRoot: string | null): string {

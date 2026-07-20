@@ -1,5 +1,6 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { launchSpace, type SpaceInstance } from './fixtures.js';
 
@@ -54,7 +55,8 @@ const CASE_GROUPS: readonly CaseGroup[] = [
     kind: 'image',
     extensions: ['.png', '.jpg', '.jpeg', '.webp', '.bmp', '.svg'],
     maxBytes: 50 * MB,
-    prefer: (file) => (file.ext === '.png' ? 0 : file.ext === '.jpeg' || file.ext === '.jpg' ? 1 : 2),
+    prefer: (file) =>
+      file.ext === '.png' ? 0 : file.ext === '.jpeg' || file.ext === '.jpg' ? 1 : 2,
   },
   {
     label: 'video-mp4',
@@ -67,7 +69,8 @@ const CASE_GROUPS: readonly CaseGroup[] = [
     kind: 'text',
     extensions: ['.log', '.ini', '.conf', '.txt', '.cfg', '.properties', '.csv', '.tsv'],
     maxBytes: 5 * MB,
-    prefer: (file) => (file.ext === '.log' ? 0 : file.ext === '.ini' ? 1 : file.ext === '.conf' ? 2 : 3),
+    prefer: (file) =>
+      file.ext === '.log' ? 0 : file.ext === '.ini' ? 1 : file.ext === '.conf' ? 2 : 3,
   },
   {
     label: 'docx',
@@ -218,14 +221,18 @@ async function openFileViaFilesPanel(page: Page, file: FileCandidate): Promise<v
 }
 
 async function expectNoPreviewError(sidebar: Locator): Promise<void> {
-  await expect(sidebar).not.toContainText(/file too large to preview|Unable to preview|无法 Artifact 预览|无法预览|too large/i, {
-    timeout: 1_000,
-  });
+  await expect(sidebar).not.toContainText(
+    /artifact refresh failed|artifact 刷新失败|input failed schema validation|file too large to preview|Unable to preview|无法 Artifact 预览|无法预览|too large/i,
+    {
+      timeout: 1_000,
+    },
+  );
 }
 
 async function expectMountedPreview(page: Page, previewCase: PreviewCase): Promise<void> {
   const sidebar = page.getByTestId('right-sidebar');
-  await expect(sidebar.getByTestId('artifacts-view')).toBeVisible({ timeout: 10_000 });
+  await expect(sidebar.getByTestId('file-viewer')).toBeVisible({ timeout: 10_000 });
+  await expect(sidebar.getByTestId('right-sidebar-tab-file')).toBeVisible();
   await expect(sidebar.getByTestId('rich-preview')).toHaveAttribute(
     'data-preview-kind',
     previewCase.kind,
@@ -315,17 +322,16 @@ async function expectMountedPreview(page: Page, previewCase: PreviewCase): Promi
     case 'pptx':
       await expect(sidebar.getByTestId('pptx-viewer')).toBeVisible({ timeout: 30_000 });
       break;
-    default:
-      {
-        const exhaustive: never = previewCase.kind;
-        void exhaustive;
-      }
+    default: {
+      const exhaustive: never = previewCase.kind;
+      void exhaustive;
+    }
   }
 
   await expect(sidebar.getByTestId('artifact-selector')).toHaveCount(0);
 }
 
-test('Artifact previews real Downloads files without persisting visited files into the artifact list', async () => {
+test('File Viewer previews real Downloads files without persisting them as Artifacts', async () => {
   const rootStat = await fs.stat(DOWNLOADS_ROOT).catch(() => null);
   test.skip(!rootStat?.isDirectory(), `Downloads test directory not found: ${DOWNLOADS_ROOT}`);
 
@@ -354,7 +360,49 @@ test('Artifact previews real Downloads files without persisting visited files in
   }
 });
 
-test('PDF artifact preview supports keyboard paging after focus', async () => {
+test('File Viewer opens a project file before the first Session without exposing Artifact state', async () => {
+  const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kodax-file-viewer-'));
+  const relPath = 'README.md';
+  const absPath = path.join(projectDir, relPath);
+  await fs.writeFile(absPath, '# File Viewer\n\nNo Session is required.\n', 'utf8');
+  const stat = await fs.stat(absPath);
+
+  const space = await launchSpace(`file-viewer-no-session-${Date.now()}`);
+  try {
+    await space.page.setViewportSize({ width: 1500, height: 900 });
+    await space.seedProject(projectDir);
+    await space.page.evaluate(() => {
+      localStorage.setItem('kodax-space.smartPopoutEnabled', '0');
+      localStorage.setItem('kodax-space.rightSidebarOpen', '0');
+    });
+    await space.page.reload();
+    await space.page.waitForLoadState('domcontentloaded');
+
+    await openFileViaFilesPanel(space.page, {
+      absPath,
+      relPath,
+      ext: '.md',
+      size: stat.size,
+    });
+
+    const sidebar = space.page.getByTestId('right-sidebar');
+    await expect(sidebar.getByTestId('right-sidebar-tab-file')).toBeVisible();
+    await expect(sidebar.getByTestId('right-sidebar-tab-artifact')).toHaveCount(0);
+    await expect(sidebar.getByTestId('file-viewer')).toBeVisible();
+    await expect(sidebar.getByTestId('artifacts-view')).toHaveCount(0);
+    const markdownPreview = sidebar.getByTestId('markdown-artifact-preview');
+    await expect(markdownPreview).toBeVisible();
+    await expect(
+      markdownPreview.contentFrame().getByRole('heading', { name: 'File Viewer' }),
+    ).toBeVisible();
+    await expectNoPreviewError(sidebar);
+  } finally {
+    await space.close();
+    await fs.rm(projectDir, { recursive: true, force: true });
+  }
+});
+
+test('PDF File Viewer supports keyboard paging after focus', async () => {
   const rootStat = await fs.stat(DOWNLOADS_ROOT).catch(() => null);
   test.skip(!rootStat?.isDirectory(), `Downloads test directory not found: ${DOWNLOADS_ROOT}`);
 
@@ -378,7 +426,10 @@ test('PDF artifact preview supports keyboard paging after focus', async () => {
     await expect(pageLabel).toBeVisible({ timeout: 10_000 });
     const initial = (await pageLabel.textContent())?.trim() ?? '';
     const match = /^(\d+)\s*\/\s*(\d+)$/.exec(initial);
-    test.skip(!match || Number(match[2]) < 2, `Selected PDF only has one page: ${pdfCase.file.relPath}`);
+    test.skip(
+      !match || Number(match[2]) < 2,
+      `Selected PDF only has one page: ${pdfCase.file.relPath}`,
+    );
 
     await page.keyboard.press('PageDown');
     await expect

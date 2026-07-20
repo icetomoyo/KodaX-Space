@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { AtSign, Copy, Eye, FolderOpen, GitCompare } from 'lucide-react';
 import { Portal } from '../components/Portal.js';
-import { openFileAsArtifact, openInDiff, revealPath, toProjectRelative } from '../lib/openPath.js';
+import { openFileInViewer, openInDiff, revealPath, toProjectRelative } from '../lib/openPath.js';
 import { useAppStore } from '../store/appStore.js';
 import { pushToast } from '../store/toastStore.js';
 import { useI18n } from '../i18n/I18nProvider.js';
@@ -84,11 +84,11 @@ export function FileActionMenu({
           <>
             <MenuRow
               icon={<Eye className="h-3.5 w-3.5" strokeWidth={1.75} aria-hidden />}
-              label={t('fileActions.openAsArtifact')}
+              label={t('fileActions.openInFileViewer')}
               primary
               onClick={() => {
                 onClose();
-                void openFileAsArtifact(path);
+                void openFileInViewer(path);
               }}
             />
             <MenuRow
@@ -113,10 +113,10 @@ export function FileActionMenu({
             />
             <MenuRow
               icon={<Eye className="h-3.5 w-3.5" strokeWidth={1.75} aria-hidden />}
-              label={t('fileActions.openAsArtifact')}
+              label={t('fileActions.openInFileViewer')}
               onClick={() => {
                 onClose();
-                void openFileAsArtifact(path);
+                void openFileInViewer(path);
               }}
             />
           </>
@@ -168,7 +168,9 @@ function MenuRow({
       onClick={onClick}
       role="menuitem"
       className={`grid w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded px-2.5 py-1.5 text-left ${
-        primary ? 'bg-hover-bg text-fg-primary' : 'text-fg-secondary hover:bg-hover-bg hover:text-fg-primary'
+        primary
+          ? 'bg-hover-bg text-fg-primary'
+          : 'text-fg-secondary hover:bg-hover-bg hover:text-fg-primary'
       }`}
     >
       <span className="flex h-4 w-4 items-center justify-center text-fg-muted">{icon}</span>

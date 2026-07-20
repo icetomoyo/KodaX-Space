@@ -599,7 +599,11 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
       openRightSidebarAtBalancedWidth();
     };
     window.addEventListener('kodax-space.focus-artifact', onFocus);
-    return () => window.removeEventListener('kodax-space.focus-artifact', onFocus);
+    window.addEventListener('kodax-space.open-file-viewer', onFocus);
+    return () => {
+      window.removeEventListener('kodax-space.focus-artifact', onFocus);
+      window.removeEventListener('kodax-space.open-file-viewer', onFocus);
+    };
   }, [openRightSidebarAtBalancedWidth]);
 
   useEffect(() => {

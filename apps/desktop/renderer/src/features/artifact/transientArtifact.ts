@@ -10,6 +10,7 @@ import {
 } from '@kodax-space/space-ipc-schema';
 
 export const FOCUS_ARTIFACT_EVENT = 'kodax-space.focus-artifact';
+export const OPEN_FILE_VIEWER_EVENT = 'kodax-space.open-file-viewer';
 
 export interface TransientArtifactSnapshot {
   id: string;
@@ -20,6 +21,7 @@ export interface TransientArtifactSnapshot {
   summary?: string;
   content?: string;
   path?: string;
+  projectRoot?: string;
   fileSource?: 'workspace' | 'artifact-store' | 'delivery-store';
   deliveryId?: string;
   permissions?: ArtifactHtmlPermissionsT;
@@ -38,6 +40,16 @@ export interface TransientArtifactVersionSnapshot {
 export interface FocusArtifactEventDetail {
   id?: string;
   snapshot?: TransientArtifactSnapshot;
+}
+
+export interface OpenFileViewerEventDetail {
+  snapshot: TransientArtifactSnapshot;
+}
+
+export function isFileViewerSnapshot(
+  snapshot: TransientArtifactSnapshot | null | undefined,
+): boolean {
+  return snapshot?.source === 'file-preview' || snapshot?.source === 'delivery-preview';
 }
 
 interface CreateArtifactToolLike {

@@ -17,7 +17,7 @@
 // 接 surface store）；LeftSidebar 是两 surface 共用的全局导航（项目 / session / surface tab）。
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Plus, ChevronDown, FolderTree, Settings, Pin } from 'lucide-react';
+import { Plus, ChevronDown, Ellipsis, FolderTree, Settings, Pin, SquarePen } from 'lucide-react';
 import { SurfaceTabs } from './SurfaceTabs.js';
 import { useAppStore } from '../store/appStore.js';
 import { useSurfaceStore } from '../store/surface.js';
@@ -563,37 +563,43 @@ function ProjectTree({
               title={t('sidebar.loadingSessions')}
             />
           )}
-          {/* v0.1.9: hover-only inline buttons — new session + contextmenu (codex 对齐) */}
+          {/* F132: Codex-aligned project actions — menu first, then new task. */}
           {!isRenaming && (
-            <span className="flex items-center gap-0.5 opacity-0 group-hover/projectrow:opacity-100 transition-opacity flex-shrink-0">
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  // 切到此项目 + 清 current session → BottomBar.ensureSession 在首发时
-                  // 懒建一个新 session（跟顶部"+ New session"按钮同一路径）
-                  const st = useAppStore.getState();
-                  st.setCurrentProject(proj.path);
-                  st.setCurrentSession(null);
-                }}
-                className="text-fg-muted hover:text-fg-primary px-1 leading-none"
-                aria-label={`${t('sidebar.newSessionInProject')}: ${proj.name}`}
-                title={t('sidebar.newSessionInProject')}
-              >
-                ＋
-              </button>
+            <span
+              className={`flex shrink-0 items-center gap-0.5 transition-opacity ${
+                treatAsCurrent
+                  ? 'opacity-100'
+                  : 'opacity-0 group-hover/projectrow:opacity-100 group-focus-within/projectrow:opacity-100'
+              }`}
+            >
               <button
                 type="button"
                 onClick={(e) => {
                   e.stopPropagation();
                   const rect = (e.currentTarget as HTMLButtonElement).getBoundingClientRect();
-                  setProjCtxMenu({ project: proj, x: rect.right, y: rect.bottom });
+                  setProjCtxMenu({ project: proj, x: rect.left - 16, y: rect.bottom + 4 });
                 }}
-                className="text-fg-muted hover:text-fg-primary px-1 leading-none"
+                className="inline-flex h-6 w-6 items-center justify-center rounded-md text-fg-muted hover:bg-hover-bg hover:text-fg-primary"
                 aria-label={t('sidebar.projectActions', { name: proj.name })}
                 title={t('sidebar.moreActions')}
               >
-                ⋯
+                <Ellipsis className="h-4 w-4" strokeWidth={1.75} aria-hidden />
+              </button>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  // 切到此项目 + 清 current session → BottomBar.ensureSession 在首发时
+                  // 懒建一个新 session（跟顶部 New session 按钮同一路径）。
+                  const state = useAppStore.getState();
+                  state.setCurrentProject(proj.path);
+                  state.setCurrentSession(null);
+                }}
+                className="inline-flex h-6 w-6 items-center justify-center rounded-md text-fg-muted hover:bg-hover-bg hover:text-fg-primary"
+                aria-label={`${t('sidebar.newSessionInProject')}: ${proj.name}`}
+                title={t('sidebar.newSessionInProject')}
+              >
+                <SquarePen className="h-3.5 w-3.5" strokeWidth={1.75} aria-hidden />
               </button>
             </span>
           )}
@@ -689,6 +695,14 @@ function ProjectTree({
           x={projCtxMenu.x}
           y={projCtxMenu.y}
           onClose={() => setProjCtxMenu(null)}
+          onPinProject={() => {
+            const first = ordered[0];
+            if (!first) return;
+            reorderProjects(
+              canonProjectRootBrowser(projCtxMenu.project.path),
+              canonProjectRootBrowser(first.path),
+            );
+          }}
           onStartRename={() => {
             setRenamingPath(projCtxMenu.project.path);
             setProjCtxMenu(null);

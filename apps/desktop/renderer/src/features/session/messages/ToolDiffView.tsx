@@ -70,7 +70,7 @@ export function ToolDiffView(props: ToolDiffViewProps): JSX.Element {
     [props.before, props.after],
   );
   const name = basenameOf(props.path);
-  // 2026-06-18: header 右侧"打开"动作。html/svg/md → 在 Artifact 面板预览；代码 → App 内 diff
+  // 2026-06-18: header 右侧"打开"动作。html/svg/md → 在 File Viewer 预览；代码 → App 内 diff
   // popout；其它 → 文件管理器定位。解决"AI 写完网页文件无法一键预览 / 路径点不动"反馈。
   const previewable = props.path !== '' && isPreviewablePath(props.path);
   const hasPath = props.path !== '';

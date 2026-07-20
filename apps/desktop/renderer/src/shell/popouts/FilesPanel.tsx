@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, File, FileCode, FolderTree, Search } from 'lucide-react';
 import { FileTree } from '../../features/code/FileTree.js';
-import { openFileAsArtifact, toProjectRelative } from '../../lib/openPath.js';
+import { openFileInViewer, toProjectRelative } from '../../lib/openPath.js';
 import { extOf } from '../../lib/pathClassify.js';
 import { useAppStore } from '../../store/appStore.js';
 import { useI18n } from '../../i18n/I18nProvider.js';
@@ -71,7 +71,7 @@ export function FilesPanel({
 
   function selectFile(path: string): void {
     setSelectedPath(path);
-    void openFileAsArtifact(path);
+    void openFileInViewer(path);
   }
 
   if (!projectRoot) {
@@ -88,15 +88,15 @@ export function FilesPanel({
           <FilesPanelBackHeader projectName="" projectRoot="" selectedPath={null} onBack={onBack} />
         )}
         <div className="flex flex-1 items-center justify-center p-6 text-center text-sm text-fg-muted">
-        <div className="max-w-sm">
-          <FolderTree
-            className="mx-auto mb-3 h-8 w-8 text-fg-faint"
-            strokeWidth={1.7}
-            aria-hidden
-          />
-          <div className="font-medium text-fg-primary">{t('files.noProjectTitle')}</div>
-          <div className="mt-1 text-xs leading-relaxed">{t('files.noProjectBody')}</div>
-        </div>
+          <div className="max-w-sm">
+            <FolderTree
+              className="mx-auto mb-3 h-8 w-8 text-fg-faint"
+              strokeWidth={1.7}
+              aria-hidden
+            />
+            <div className="font-medium text-fg-primary">{t('files.noProjectTitle')}</div>
+            <div className="mt-1 text-xs leading-relaxed">{t('files.noProjectBody')}</div>
+          </div>
         </div>
       </div>
     );
@@ -259,7 +259,9 @@ function SearchResultRow({
       title={path}
       data-testid="files-search-result"
       className={`grid w-full grid-cols-[16px_minmax(0,1fr)_minmax(0,1.4fr)] items-center gap-2 rounded px-2 py-1.5 text-left ${
-        selected ? 'bg-surface-3 text-fg-primary' : 'text-fg-secondary hover:bg-hover-bg hover:text-fg-primary'
+        selected
+          ? 'bg-surface-3 text-fg-primary'
+          : 'text-fg-secondary hover:bg-hover-bg hover:text-fg-primary'
       }`}
     >
       <Icon className="h-3.5 w-3.5 text-fg-muted" strokeWidth={1.75} aria-hidden />

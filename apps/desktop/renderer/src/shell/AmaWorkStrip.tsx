@@ -4,7 +4,7 @@
 // 数据来源：managed_task_status 事件（appStore.managedTaskStatusBySession）。
 //
 // 显示规则：
-//   - 仅 session.agentMode === 'ama' / 'amaw' 时渲染
+//   - 仅 session.agentMode === 'ama' 时渲染
 //   - 状态字段都缺时静默隐藏（避免空 strip 占位）
 //   - 部分字段缺时只显示已有的，无 placeholder dash
 //
@@ -42,7 +42,7 @@ export function AmaWorkStrip(): JSX.Element | null {
   );
 
   const session = sessions.find((x) => x.sessionId === currentSessionId);
-  if (!session || (session.agentMode !== 'ama' && session.agentMode !== 'amaw')) return null;
+  if (!session || session.agentMode !== 'ama') return null;
   if (!status) return null;
 
   const parts: string[] = [];

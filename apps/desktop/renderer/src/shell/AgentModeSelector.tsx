@@ -1,15 +1,14 @@
 // AgentModeSelector — KodaX agent 形态切换
 //
-// KodaX 内核三种工作形态：
+// KodaX 0.7.72 起的两种工作形态：
 //   - AMA (默认) — Adaptive Multi-Agent: scout/planner/generator/evaluator 多角色协作，
 //     更聪明，对复杂任务效果好；token 消耗高，需要 provider 并发余量
-//   - AMAW — AMA + natural-language workflow activation.
 //   - SA — Single Agent: 单 agent loop，结构最简单，token + 并发都省。接口并发受限
 //     (rate limit / 多用户共享 quota / fallback to cheaper provider) 时显式降级
 //
 // UI 行为：
-//   - 紧贴 ModeSelector 旁的小 chip：显示 "AMA" / "AMAW" / "SA"
-//   - 点开 popup 列三个选项 + 说明
+//   - 紧贴 ModeSelector 旁的小 chip：显示 "AMA" / "SA"
+//   - 点开 popup 列两个选项 + 说明
 //   - 切换不重启 session — 下一条 prompt 走新形态
 //   - 无 session 时存进 pendingAgentMode；session.create 时入参传给 main
 //
@@ -22,28 +21,25 @@ import { pushToast } from '../store/toastStore.js';
 import { useI18n } from '../i18n/I18nProvider.js';
 import type { MessageKey } from '../i18n/messages.js';
 
-// AMA/AMAW/SA 是协议层面的形态代号（同 provider id / harness profile 一样不做翻译）；
+// AMA/SA 是协议层面的形态代号（同 provider id / harness profile 一样不做翻译）；
 // 完整名称 + 说明才是需要按 locale 切换的用户提示文案（#14 修复：之前 DESCRIPTIONS 混着
 // 中英文，跟当前语言设置无关，导致英文界面下弹出中文 tooltip）。
 const LABELS: Record<AgentMode, string> = {
   ama: 'AMA',
-  amaw: 'AMAW',
   sa: 'SA',
 };
 
 const FULL_NAME_KEYS: Record<AgentMode, MessageKey> = {
   ama: 'agentMode.fullName.ama',
-  amaw: 'agentMode.fullName.amaw',
   sa: 'agentMode.fullName.sa',
 };
 
 const DESCRIPTION_KEYS: Record<AgentMode, MessageKey> = {
   ama: 'agentMode.description.ama',
-  amaw: 'agentMode.description.amaw',
   sa: 'agentMode.description.sa',
 };
 
-const OPTIONS: readonly AgentMode[] = ['ama', 'amaw', 'sa'];
+const OPTIONS: readonly AgentMode[] = ['ama', 'sa'];
 
 function nextAgentMode(current: AgentMode): AgentMode {
   const idx = OPTIONS.indexOf(current);
@@ -101,7 +97,7 @@ export function AgentModeSelector(): JSX.Element {
     }
   }
 
-  // P3: Alt+M cycles AMA / AMAW / SA.
+  // P3: Alt+M cycles AMA / SA.
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if (e.altKey && !e.ctrlKey && !e.shiftKey && (e.key === 'm' || e.key === 'M')) {

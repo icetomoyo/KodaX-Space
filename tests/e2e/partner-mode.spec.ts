@@ -500,9 +500,10 @@ test('Partner outputs show arbitrary deliveries and rollback checkpointed worksp
     await expect(panel.getByTestId('markdown-file-preview')).toBeVisible();
     await expect(panel.getByTestId('markdown-artifact-preview')).toBeVisible();
     await expect(panel.getByTestId('text-file-viewer')).not.toBeVisible();
-    await panel.getByLabel('Open as Artifact').click();
-    await expect(page.getByTestId('artifacts-view')).toBeVisible();
-    await expect(page.getByTestId('artifact-preview-title')).toContainText('partner-preview.md');
+    await panel.getByLabel('Open in File Viewer').click();
+    await expect(page.getByTestId('file-viewer')).toBeVisible();
+    await expect(page.getByTestId('partner-file-viewer-tab')).toBeVisible();
+    await expect(page.getByTestId('file-viewer')).toContainText('partner-preview.md');
     await expect(page.getByTestId('markdown-file-preview')).toBeVisible();
     await expect(page.getByTestId('markdown-artifact-preview')).toBeVisible();
   } finally {

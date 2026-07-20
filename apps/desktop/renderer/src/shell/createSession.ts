@@ -108,13 +108,20 @@ export function resolveSessionCreateInputs(input: CreateSessionInput): CreateSes
   }
 
   const reasoningMode =
-    pendingReasoningMode ?? spaceRuntimeDefaults?.reasoningMode ?? kodaxDefaults?.reasoningMode ?? 'auto';
+    pendingReasoningMode ??
+    spaceRuntimeDefaults?.reasoningMode ??
+    kodaxDefaults?.reasoningMode ??
+    'auto';
   const permissionMode =
     pendingPermissionMode ??
     spaceRuntimeDefaults?.permissionMode ??
     kodaxDefaults?.permissionMode ??
     'accept-edits';
-  const autoModeEngine = pendingAutoModeEngine ?? spaceRuntimeDefaults?.autoModeEngine ?? 'llm';
+  const autoModeEngine =
+    pendingAutoModeEngine ??
+    spaceRuntimeDefaults?.autoModeEngine ??
+    kodaxDefaults?.autoModeEngine ??
+    'llm';
   // Default 'ama' matches the SDK default; SA remains an explicit fallback.
   const agentMode = pendingAgentMode ?? spaceRuntimeDefaults?.agentMode ?? 'ama';
   const explicitReasoningMode = pendingRuntimeOverride(
@@ -129,7 +136,10 @@ export function resolveSessionCreateInputs(input: CreateSessionInput): CreateSes
     pendingAutoModeEngine,
     spaceRuntimeDefaults?.autoModeEngine,
   );
-  const explicitAgentMode = pendingRuntimeOverride(pendingAgentMode, spaceRuntimeDefaults?.agentMode);
+  const explicitAgentMode = pendingRuntimeOverride(
+    pendingAgentMode,
+    spaceRuntimeDefaults?.agentMode,
+  );
   const runtimeOverrides = {
     ...(explicitReasoningMode !== undefined ? { reasoningMode: explicitReasoningMode } : {}),
     ...(explicitPermissionMode !== undefined ? { permissionMode: explicitPermissionMode } : {}),
@@ -150,5 +160,13 @@ export function resolveSessionCreateInputs(input: CreateSessionInput): CreateSes
   // resolveActiveModel 无解时返回 '—' 哨兵 — 别把它当真 model 传出去。
   const model = resolvedModel && resolvedModel !== '—' ? resolvedModel : undefined;
 
-  return { provider, reasoningMode, permissionMode, autoModeEngine, agentMode, runtimeOverrides, model };
+  return {
+    provider,
+    reasoningMode,
+    permissionMode,
+    autoModeEngine,
+    agentMode,
+    runtimeOverrides,
+    model,
+  };
 }

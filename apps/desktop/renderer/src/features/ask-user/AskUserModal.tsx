@@ -16,6 +16,7 @@ import { FloatingSurfaceHost } from '../../shell/FloatingSurfaceHost.js';
 import { floatingSurfaceForBlockingModal } from '../../shell/floatingSurfacePolicy.js';
 import { useI18n } from '../../i18n/I18nProvider.js';
 import type { MessageKey } from '../../i18n/messages.js';
+import { buildAskUserInteractionKey } from './ask-user-state.js';
 
 const SEVERITY_STYLE: Record<AskUserSignal['severity'], string> = {
   info: 'bg-info/12 text-info',
@@ -117,9 +118,12 @@ export function AskUserModal(): JSX.Element | null {
   const [customInputValue, setCustomInputValue] = useState('');
   const [selectedValues, setSelectedValues] = useState<ReadonlySet<string>>(new Set());
   const [multiQuestionIndex, setMultiQuestionIndex] = useState(0);
-  const [multiAnswers, setMultiAnswers] = useState<Readonly<Record<string, AskUserQuestionAnswer>>>({});
+  const [multiAnswers, setMultiAnswers] = useState<Readonly<Record<string, AskUserQuestionAnswer>>>(
+    {},
+  );
   const guardrailAllowButtonRef = useRef<HTMLButtonElement | null>(null);
   const questionInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const initializedInteractionKeyRef = useRef<string | null>(null);
 
   const guardrail = head && isGuardrail(head) ? head : null;
   const multi: MultiQuestionPayload | null = head?.kind === 'multi' ? head : null;
@@ -136,6 +140,12 @@ export function AskUserModal(): JSX.Element | null {
       : null;
   }, [head, multi, multiQuestionIndex]);
   const kind = question ? question.kind : 'guardrail';
+  const interactionKey = buildAskUserInteractionKey({
+    requestId: head?.reqId ?? null,
+    kind,
+    multiQuestionIndex,
+    question,
+  });
 
   useEffect(() => {
     setMultiQuestionIndex(0);
@@ -143,6 +153,11 @@ export function AskUserModal(): JSX.Element | null {
   }, [head?.reqId]);
 
   useEffect(() => {
+    // Store projections can replace `question` with a semantically identical
+    // object while the modal is open. Preserve the user's local selection in
+    // that case, and reset only for a genuinely different interaction.
+    if (initializedInteractionKeyRef.current === interactionKey) return;
+    initializedInteractionKeyRef.current = interactionKey;
     setBusy(false);
     setErr(null);
     setInputValue(question && kind === 'input' ? (question.default ?? '') : '');
@@ -150,7 +165,7 @@ export function AskUserModal(): JSX.Element | null {
     setSelectedValues(
       new Set(question && kind === 'select' && question.default ? [question.default] : []),
     );
-  }, [head?.reqId, kind, question]);
+  }, [interactionKey, kind, question]);
 
   const inputPreview = useMemo(() => {
     if (!guardrail?.toolCall.input) return null;

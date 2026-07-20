@@ -467,7 +467,7 @@ function buildSlashArgSuggestions(
       suggestions = staticOptions(['llm', 'rules']);
       break;
     case 'agent-mode':
-      suggestions = staticOptions(['ama', 'amaw', 'ama-workflow', 'sa', 'toggle']);
+      suggestions = staticOptions(['ama', 'sa', 'toggle']);
       break;
     case 'reasoning':
       suggestions = staticOptions(['off', 'auto', 'quick', 'balanced', 'deep']);

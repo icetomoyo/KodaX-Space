@@ -1200,7 +1200,7 @@ function ExternalAgentsSection({
                     <div className="flex flex-wrap items-center gap-2 text-xs font-medium text-fg-primary">
                       <span>{registration.displayName}</span>
                       <span className="rounded border border-border-default px-1.5 py-0.5 font-mono text-[10px] text-fg-muted">
-                        reference
+                        {registration.adapterKind}
                       </span>
                       <span
                         className={`rounded px-1.5 py-0.5 text-[10px] ${registration.enabled ? 'bg-ok/12 text-ok' : 'bg-surface-3 text-fg-muted'}`}
@@ -1259,31 +1259,33 @@ function ExternalAgentsSection({
                       </div>
                     )}
                   </div>
-                  <div className="flex shrink-0 items-center gap-0.5">
-                    <ExternalAgentIconButton
-                      icon={Pencil}
-                      label={t('settings.externalAgents.edit')}
-                      disabled={busy}
-                      onClick={() => beginEdit(registration)}
-                    />
-                    <ExternalAgentIconButton
-                      icon={registration.enabled ? X : CheckCircle2}
-                      label={
-                        registration.enabled
-                          ? t('settings.externalAgents.disable')
-                          : t('settings.externalAgents.enable')
-                      }
-                      disabled={busy}
-                      onClick={() => void toggleRegistration(registration)}
-                    />
-                    <ExternalAgentIconButton
-                      icon={Trash2}
-                      label={t('settings.externalAgents.remove')}
-                      disabled={busy}
-                      danger
-                      onClick={() => void removeRegistration(registration)}
-                    />
-                  </div>
+                  {registration.adapterKind === 'reference' && (
+                    <div className="flex shrink-0 items-center gap-0.5">
+                      <ExternalAgentIconButton
+                        icon={Pencil}
+                        label={t('settings.externalAgents.edit')}
+                        disabled={busy}
+                        onClick={() => beginEdit(registration)}
+                      />
+                      <ExternalAgentIconButton
+                        icon={registration.enabled ? X : CheckCircle2}
+                        label={
+                          registration.enabled
+                            ? t('settings.externalAgents.disable')
+                            : t('settings.externalAgents.enable')
+                        }
+                        disabled={busy}
+                        onClick={() => void toggleRegistration(registration)}
+                      />
+                      <ExternalAgentIconButton
+                        icon={Trash2}
+                        label={t('settings.externalAgents.remove')}
+                        disabled={busy}
+                        danger
+                        onClick={() => void removeRegistration(registration)}
+                      />
+                    </div>
+                  )}
                 </div>
                 <div className="mt-2 flex flex-wrap gap-2 border-t border-border-default/60 pt-2">
                   <button

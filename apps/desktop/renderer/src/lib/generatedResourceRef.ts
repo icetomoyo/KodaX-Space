@@ -15,7 +15,7 @@ interface CanonicalDeliveryReference {
   readonly uri: string;
 }
 
-/** Convert the Delivery mutation clock into a positive Artifact preview revision. */
+/** Convert the Delivery mutation clock into a positive File Viewer revision. */
 export function partnerDeliveryPreviewVersion(updatedAt: number): number {
   return Number.isSafeInteger(updatedAt) && updatedAt > 0 ? updatedAt : 1;
 }

@@ -1,75 +1,40 @@
-// ProjectContextMenu — F043 (codex 形态对齐)
-//
-// 右键项目节点弹出：
-//   ┌────────────────────────────┐
-//   │ Rename                  R  │
-//   │ Archive (or Unarchive)  A  │
-//   │ Remove from Space       D  │  (红色 — 不删文件夹，只从 recent 列表移除)
-//   └────────────────────────────┘
-//
-// 设计取舍：
-//   - Rename 不在菜单内输入；点 Rename → onClose + 通知父层进入 inline edit 模式
-//     （window.prompt 在 Electron 上不稳定，跟 SessionContextMenu 一致处理）
-//   - Remove 走 confirm() 二次确认：避免误点直接丢失项目历史
-//   - Archive / Unarchive 切 toggle，立即生效，无需确认（用户随时再 toggle 回来）
-
-import { useCallback, useEffect, useRef } from 'react';
+import { FolderOpen, Pencil, Pin, X } from 'lucide-react';
 import type { Project } from '@kodax-space/space-ipc-schema';
+import { openDirectory } from '../lib/openPath.js';
 import { pushToast } from '../store/toastStore.js';
 import { requestConfirm } from '../store/confirmStore.js';
-import { Portal } from '../components/Portal.js';
 import { useI18n } from '../i18n/I18nProvider.js';
+import { SidebarContextMenu, type SidebarContextMenuItem } from './SidebarContextMenu.js';
+import {
+  PROJECT_CONTEXT_MENU_GROUPS,
+  type ProjectContextMenuActionId,
+} from './sidebarContextMenuModel.js';
 
 interface ProjectContextMenuProps {
   readonly project: Project;
   readonly x: number;
   readonly y: number;
   readonly onClose: () => void;
-  /** 父层 inline-edit 入口 — 父收到后把 label 切换成 input */
+  readonly onPinProject: () => void;
   readonly onStartRename: () => void;
-  /** 任一 IPC 改完后通知父层刷新 project list (调 project.list + setProjects) */
   readonly onProjectsChanged: () => Promise<void>;
 }
+
+const ICON_CLASS = 'h-4 w-4';
 
 export function ProjectContextMenu({
   project,
   x,
   y,
   onClose,
+  onPinProject,
   onStartRename,
   onProjectsChanged,
 }: ProjectContextMenuProps): JSX.Element {
   const { t } = useI18n();
-  const ref = useRef<HTMLDivElement | null>(null);
-  const isArchived = project.archived === true;
 
-  // review HIGH-2 fix：用 useCallback 稳定 onToggleArchive / onRemove 引用，且按
-  // 当前 project / isArchived deps 重建。effect 把它们 + onClose/onStartRename
-  // 列进 deps，关掉 eslint-disable，避免 stale closure。
-  const onToggleArchive = useCallback(async (): Promise<void> => {
-    onClose();
+  async function onRemove(): Promise<void> {
     if (!window.kodaxSpace) return;
-    const r = await window.kodaxSpace.invoke('project.recent.setArchived', {
-      path: project.path,
-      archived: !isArchived,
-    });
-    if (!r.ok || !r.data.ok) {
-      pushToast(t('menu.project.archiveUpdateFailed'), 'error');
-      return;
-    }
-    pushToast(
-      isArchived ? t('menu.project.unarchived') : t('menu.project.archived'),
-      'info',
-      1500,
-    );
-    await onProjectsChanged();
-  }, [project.path, isArchived, onClose, onProjectsChanged, t]);
-
-  const onRemove = useCallback(async (): Promise<void> => {
-    if (!window.kodaxSpace) return;
-    // review MED-3：confirm 先于 onClose — 用户取消则菜单仍可见，符合直觉
-    // #1 fix: window.confirm 在 Electron sandbox=true 下会夺走 webContents 键盘焦点且拿不回来
-    // ——改用应用内 requestConfirm。
     const confirmed = await requestConfirm({
       message: t('menu.project.removeConfirm', { name: project.name }),
       danger: true,
@@ -77,105 +42,66 @@ export function ProjectContextMenu({
     });
     if (!confirmed) return;
     onClose();
-    const r = await window.kodaxSpace.invoke('project.recent.remove', { path: project.path });
-    if (!r.ok || !r.data.removed) {
+    const result = await window.kodaxSpace.invoke('project.recent.remove', { path: project.path });
+    if (!result.ok || !result.data.removed) {
       pushToast(t('menu.project.removeFailed'), 'error');
       return;
     }
     pushToast(t('menu.project.removed'), 'info', 1500);
     await onProjectsChanged();
-  }, [project.path, project.name, onClose, onProjectsChanged, t]);
+  }
 
-  useEffect(() => {
-    function onDocDown(e: MouseEvent): void {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
-    }
-    function onKey(e: KeyboardEvent): void {
-      if (e.key === 'Escape') {
+  const actions: Record<ProjectContextMenuActionId, SidebarContextMenuItem> = {
+    'pin-project': {
+      id: 'pin-project',
+      label: t('menu.project.pin'),
+      icon: <Pin className={ICON_CLASS} strokeWidth={1.75} aria-hidden />,
+      onSelect: () => {
+        onPinProject();
         onClose();
-        return;
-      }
-      if (e.key === 'r' || e.key === 'R') {
-        e.preventDefault();
-        onStartRename();
-        return;
-      }
-      if (e.key === 'a' || e.key === 'A') {
-        e.preventDefault();
-        void onToggleArchive();
-        return;
-      }
-      if (e.key === 'd' || e.key === 'D') {
-        e.preventDefault();
-        void onRemove();
-        return;
-      }
-    }
-    document.addEventListener('mousedown', onDocDown);
-    window.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('mousedown', onDocDown);
-      window.removeEventListener('keydown', onKey);
-    };
-  }, [onClose, onStartRename, onToggleArchive, onRemove]);
+        pushToast(t('menu.project.pinned'), 'success', 1400);
+      },
+    },
+    'open-project-folder': {
+      id: 'open-project-folder',
+      label: t('menu.project.openInFileManager'),
+      icon: <FolderOpen className={ICON_CLASS} strokeWidth={1.75} aria-hidden />,
+      onSelect: () => {
+        onClose();
+        void openDirectory(project.path, project.path);
+      },
+    },
+    'rename-project': {
+      id: 'rename-project',
+      label: t('menu.project.rename'),
+      icon: <Pencil className={ICON_CLASS} strokeWidth={1.75} aria-hidden />,
+      onSelect: onStartRename,
+    },
+    'remove-project': {
+      id: 'remove-project',
+      label: t('menu.project.remove'),
+      icon: <X className={ICON_CLASS} strokeWidth={1.75} aria-hidden />,
+      danger: true,
+      onSelect: () => void onRemove(),
+    },
+  };
 
-  // 屏幕边缘 clamp：菜单 ~180×96，若 x+180 > viewport 让它向左展开
-  const left = Math.min(x, window.innerWidth - 200);
-  const top = Math.min(y, window.innerHeight - 110);
+  const groups = PROJECT_CONTEXT_MENU_GROUPS.map((group) =>
+    group
+      .filter((actionId) => project.archived !== true || actionId !== 'pin-project')
+      .map((actionId) => actions[actionId]),
+  ).filter((group) => group.length > 0);
 
   return (
-    <Portal>
-      <div
-        ref={ref}
-        // z-[100] 对齐 SessionContextMenu (一致 z-stack 减少未来万一双 menu 同屏时的层级 bug)
-        className="fixed z-[100] min-w-[180px] bg-surface border border-border-default rounded shadow-2xl text-xs py-1"
-        style={{ left, top }}
-        role="menu"
-        aria-label={t('menu.project.actions', { name: project.name })}
-      >
-        <MenuRow
-          label={t('menu.project.rename')}
-          hint="R"
-          onClick={() => {
-            onStartRename();
-          }}
-        />
-        <MenuRow
-          label={isArchived ? t('menu.project.unarchive') : t('menu.project.archive')}
-          hint="A"
-          onClick={() => void onToggleArchive()}
-        />
-        <div className="my-1 border-t border-border-default/60" />
-        <MenuRow
-          label={t('menu.project.remove')}
-          hint="D"
-          danger
-          onClick={() => void onRemove()}
-        />
-      </div>
-    </Portal>
-  );
-}
-
-interface MenuRowProps {
-  readonly label: string;
-  readonly hint?: string;
-  readonly onClick: () => void;
-  readonly danger?: boolean;
-}
-
-function MenuRow({ label, hint, onClick, danger }: MenuRowProps): JSX.Element {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      role="menuitem"
-      className={`w-full text-left px-3 py-1 flex items-center justify-between hover:bg-hover-bg ${
-        danger ? 'text-danger' : 'text-fg-primary'
-      }`}
-    >
-      <span>{label}</span>
-      {hint && <span className="text-fg-muted text-[11px] ml-3">{hint}</span>}
-    </button>
+    <SidebarContextMenu
+      x={x}
+      y={y}
+      ariaLabel={t('menu.project.actions', { name: project.name })}
+      groups={groups}
+      onClose={onClose}
+      width={208}
+      estimatedHeight={project.archived === true ? 152 : 186}
+      testId="project-context-menu"
+    />
   );
 }

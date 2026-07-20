@@ -54,6 +54,7 @@ import {
   replaceSessionLiveProjection as replaceSessionLiveProjectionState,
   type ApplySessionLiveChangeStatus,
 } from './runtimeProjectionState.js';
+import { mergeRuntimeSettingsIntoSessions } from './runtimeSessionSettings.js';
 
 export type MascotMode = 'legacy' | 'sprite' | 'off';
 
@@ -324,7 +325,7 @@ interface AppState {
   pendingReasoningMode: SessionMeta['reasoningMode'] | null;
   pendingPermissionMode: SessionMeta['permissionMode'] | null;
   pendingAutoModeEngine: SessionMeta['autoModeEngine'] | null;
-  /** Pending agent mode (AMA / AMAW / SA)。默认 'ama'；下次 session.create 时随入参传给 main。*/
+  /** Pending agent mode (AMA / SA)。默认 'ama'；下次 session.create 时随入参传给 main。*/
   pendingAgentMode: SessionMeta['agentMode'] | null;
   /** Pending model — 用户在右下角 picker 选的 model 名 (provider.models 之一)。
    *  无 session 时存这里；session 创建后通过 /model slash 命令应用到 KodaX 运行时。
@@ -653,7 +654,7 @@ const MASCOT_MODE_VALUES = ['legacy', 'sprite', 'off'] as const;
 const PERMISSION_MODE_VALUES = ['plan', 'accept-edits', 'auto'] as const;
 const REASONING_MODE_VALUES = ['off', 'auto', 'quick', 'balanced', 'deep'] as const;
 const AUTO_MODE_ENGINE_VALUES = ['llm', 'rules'] as const;
-const AGENT_MODE_VALUES = ['ama', 'amaw', 'sa'] as const;
+const AGENT_MODE_VALUES = ['ama', 'sa'] as const;
 
 function readPersistedPermissionMode(): SessionMeta['permissionMode'] | null {
   const v = lsGet(LS_KEY_PENDING_PERMISSION);
@@ -675,6 +676,10 @@ function readPersistedAutoModeEngine(): SessionMeta['autoModeEngine'] | null {
 }
 function readPersistedAgentMode(): SessionMeta['agentMode'] | null {
   const v = lsGet(LS_KEY_PENDING_AGENT);
+  if (v === 'amaw' || v === 'ama-workflow') {
+    lsSet(LS_KEY_PENDING_AGENT, 'ama');
+    return 'ama';
+  }
   return v !== null && (AGENT_MODE_VALUES as readonly string[]).includes(v)
     ? (v as SessionMeta['agentMode'])
     : null;
@@ -684,26 +689,6 @@ function readPersistedModel(): string | null {
   if (v === null) return null;
   if (v.length === 0 || v.length > PENDING_MODEL_MAX_LEN) return null;
   return v;
-}
-
-function mergeRuntimeSettingsIntoSessions(
-  sessions: readonly SessionMeta[],
-  projection: SpaceSessionLiveProjectionT,
-): readonly SessionMeta[] {
-  const settings = projection.settings?.value;
-  if (!settings) return sessions;
-  return sessions.map((session) => {
-    if (session.sessionId !== projection.sessionId || session.surface !== 'code') return session;
-    const next: SessionMeta = {
-      ...session,
-      ...(settings.provider ? { provider: settings.provider } : {}),
-      ...(settings.reasoningMode ? { reasoningMode: settings.reasoningMode } : {}),
-      ...(settings.permissionMode ? { permissionMode: settings.permissionMode } : {}),
-    };
-    if (settings.model) next.model = settings.model;
-    else delete next.model;
-    return next;
-  });
 }
 
 function readPersistedMascotMode(): MascotMode {

@@ -32,6 +32,10 @@ import {
 } from '../../../lib/openPath.js';
 import { useI18n } from '../../../i18n/I18nProvider.js';
 import { parsePartnerDeliveryUri } from '@kodax-space/space-ipc-schema';
+import {
+  openPartnerEvidence,
+  parsePartnerCitationHref,
+} from '../../partner/partnerEvidenceEvents.js';
 
 interface MarkdownProps {
   readonly content: string;
@@ -151,7 +155,9 @@ function extractTextFromNode(node: ReactNode): string {
 }
 
 function markdownUrlTransform(url: string): string {
-  return parsePartnerDeliveryUri(url) ? url : defaultUrlTransform(url);
+  return parsePartnerDeliveryUri(url) || parsePartnerCitationHref(url)
+    ? url
+    : defaultUrlTransform(url);
 }
 
 function MarkdownInner({ content }: MarkdownProps): JSX.Element {
@@ -199,7 +205,7 @@ function MarkdownInner({ content }: MarkdownProps): JSX.Element {
               );
             }
             // 2026-06-18: inline code 若"长得像文件路径"（src/index.html、app.tsx…）→ 渲染成
-            // 可点击按钮，点 → openFileSmart（html/svg/md 进 Artifact 预览、代码进 diff、其它定位）。
+            // 可点击按钮，点 → openFileSmart（html/svg/md 进 File Viewer、代码进 diff、其它定位）。
             // 解决用户反馈"AI 回复里的文件路径只是纯文字点不动"。looksLikeFilePath 宁缺毋滥
             // （需以已知扩展名结尾），避免把 `a.b` / `e.g` 误判成路径。
             const inlineText = extractTextFromNode(children);
@@ -231,15 +237,18 @@ function MarkdownInner({ content }: MarkdownProps): JSX.Element {
             const isHttp = typeof href === 'string' && /^https?:\/\//i.test(href);
             const isGeneratedResource =
               typeof href === 'string' && parsePartnerDeliveryUri(href) !== null;
+            const partnerCitationId = parsePartnerCitationHref(href);
             return (
               <a
                 {...props}
                 href={href}
-                {...(isHttp || isGeneratedResource
+                {...(isHttp || isGeneratedResource || partnerCitationId
                   ? {
                       onClick: (e: ReactMouseEvent) => {
                         e.preventDefault();
-                        if (isGeneratedResource) {
+                        if (partnerCitationId) {
+                          openPartnerEvidence(partnerCitationId, e.currentTarget as HTMLElement);
+                        } else if (isGeneratedResource) {
                           void openGeneratedResourceHref(href as string);
                         } else {
                           void openExternalUrl(href as string);
@@ -249,6 +258,7 @@ function MarkdownInner({ content }: MarkdownProps): JSX.Element {
                   : {})}
                 {...(isHttp ? { target: '_blank', rel: 'noopener noreferrer' } : {})}
                 {...(isGeneratedResource ? { 'data-generated-resource': 'partner-delivery' } : {})}
+                {...(partnerCitationId ? { 'data-partner-citation': partnerCitationId } : {})}
                 className="text-info/80 hover:text-info underline decoration-info/40 underline-offset-2"
               >
                 {children}

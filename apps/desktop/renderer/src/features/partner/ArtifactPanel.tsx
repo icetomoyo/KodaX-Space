@@ -5,23 +5,58 @@
 // 让 artifact 真正全局（Coder+Partner）。
 
 import { useEffect, useState } from 'react';
-import { ArchiveRestore, FileCheck2, FileOutput } from 'lucide-react';
+import { ArchiveRestore, FileCheck2, FileOutput, FileSearch } from 'lucide-react';
 import { ArtifactsView } from '../artifact/ArtifactsView';
-import { FOCUS_ARTIFACT_EVENT } from '../artifact/transientArtifact.js';
+import {
+  FOCUS_ARTIFACT_EVENT,
+  OPEN_FILE_VIEWER_EVENT,
+  isFileViewerSnapshot,
+  type FocusArtifactEventDetail,
+  type OpenFileViewerEventDetail,
+  type TransientArtifactSnapshot,
+} from '../artifact/transientArtifact.js';
+import { FileViewer } from '../preview/FileViewer.js';
 import { useI18n } from '../../i18n/I18nProvider.js';
+import { useAppStore } from '../../store/appStore.js';
 import { FileProposalsPanel } from './FileProposalsPanel.js';
 import { DeliveriesPanel } from './DeliveriesPanel.js';
 
 export function ArtifactPanel(): JSX.Element {
   const { t } = useI18n();
-  const [activeTab, setActiveTab] = useState<'artifacts' | 'deliveries' | 'fileProposals'>(
-    'artifacts',
+  const currentProjectPath = useAppStore((state) => state.currentProjectPath);
+  const [activeTab, setActiveTab] = useState<
+    'artifacts' | 'fileViewer' | 'deliveries' | 'fileProposals'
+  >('artifacts');
+  const [fileViewerSnapshot, setFileViewerSnapshot] = useState<TransientArtifactSnapshot | null>(
+    null,
   );
   useEffect(() => {
-    const showFocusedArtifact = (): void => setActiveTab('artifacts');
+    const showFocusedArtifact = (event: Event): void => {
+      const detail = (event as CustomEvent<FocusArtifactEventDetail>).detail;
+      if (isFileViewerSnapshot(detail?.snapshot)) {
+        setFileViewerSnapshot(detail.snapshot ?? null);
+        setActiveTab('fileViewer');
+        return;
+      }
+      setActiveTab('artifacts');
+    };
     window.addEventListener(FOCUS_ARTIFACT_EVENT, showFocusedArtifact);
     return () => window.removeEventListener(FOCUS_ARTIFACT_EVENT, showFocusedArtifact);
   }, []);
+  useEffect(() => {
+    const showFileViewer = (event: Event): void => {
+      const detail = (event as CustomEvent<OpenFileViewerEventDetail>).detail;
+      if (!isFileViewerSnapshot(detail?.snapshot)) return;
+      setFileViewerSnapshot(detail.snapshot);
+      setActiveTab('fileViewer');
+    };
+    window.addEventListener(OPEN_FILE_VIEWER_EVENT, showFileViewer);
+    return () => window.removeEventListener(OPEN_FILE_VIEWER_EVENT, showFileViewer);
+  }, []);
+  useEffect(() => {
+    setFileViewerSnapshot(null);
+    setActiveTab((current) => (current === 'fileViewer' ? 'artifacts' : current));
+  }, [currentProjectPath]);
   return (
     <aside
       className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-surface"
@@ -44,6 +79,24 @@ export function ArtifactPanel(): JSX.Element {
             <FileOutput className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden />
             <span>{t('partner.fileProposals.tab.artifacts')}</span>
           </button>
+          {fileViewerSnapshot && (
+            <button
+              type="button"
+              onClick={() => setActiveTab('fileViewer')}
+              className={`h-6 inline-flex items-center gap-1 rounded px-1.5 text-[11px] ${
+                activeTab === 'fileViewer'
+                  ? 'bg-surface-raised text-fg-primary'
+                  : 'text-fg-muted hover:bg-hover-bg hover:text-fg-primary'
+              }`}
+              title={t('partner.fileViewer.tab')}
+              aria-label={t('partner.fileViewer.tab')}
+              aria-pressed={activeTab === 'fileViewer'}
+              data-testid="partner-file-viewer-tab"
+            >
+              <FileSearch className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden />
+              <span>{t('partner.fileViewer.tab')}</span>
+            </button>
+          )}
           <button
             type="button"
             onClick={() => setActiveTab('fileProposals')}
@@ -80,7 +133,9 @@ export function ArtifactPanel(): JSX.Element {
       </div>
       {/* ArtifactsView 根用 h-full：需一个有界高度的 flex 子容器（aside 满高减去 header）。 */}
       <div className="flex-1 min-h-0">
-        {activeTab === 'artifacts' ? (
+        {activeTab === 'fileViewer' && fileViewerSnapshot ? (
+          <FileViewer snapshot={fileViewerSnapshot} onSnapshotChange={setFileViewerSnapshot} />
+        ) : activeTab === 'artifacts' ? (
           <ArtifactsView />
         ) : activeTab === 'fileProposals' ? (
           <FileProposalsPanel />

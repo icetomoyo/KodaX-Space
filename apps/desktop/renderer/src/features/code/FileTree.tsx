@@ -19,6 +19,7 @@ interface FileTreeProps {
   /** 当前选中文件——高亮显示 */
   selectedPath: string | null;
   onSelect: (path: string) => void;
+  onSelectDirectory?: (path: string) => void;
   onFileContextMenu?: (path: string, x: number, y: number) => void;
 }
 
@@ -26,6 +27,7 @@ export function FileTree({
   projectRoot,
   selectedPath,
   onSelect,
+  onSelectDirectory,
   onFileContextMenu,
 }: FileTreeProps): JSX.Element {
   const { t } = useI18n();
@@ -121,6 +123,7 @@ export function FileTree({
         selectedPath={selectedPath}
         onToggle={(p) => void toggleDir(p)}
         onSelect={onSelect}
+        onSelectDirectory={onSelectDirectory}
         onFileContextMenu={onFileContextMenu}
       />
     </div>
@@ -135,6 +138,7 @@ interface FileTreeLevelProps {
   selectedPath: string | null;
   onToggle: (path: string) => void;
   onSelect: (path: string) => void;
+  onSelectDirectory?: (path: string) => void;
   onFileContextMenu?: (path: string, x: number, y: number) => void;
 }
 
@@ -146,6 +150,7 @@ function FileTreeLevel({
   selectedPath,
   onToggle,
   onSelect,
+  onSelectDirectory,
   onFileContextMenu,
 }: FileTreeLevelProps): JSX.Element {
   return (
@@ -160,6 +165,7 @@ function FileTreeLevel({
           selectedPath={selectedPath}
           onToggle={onToggle}
           onSelect={onSelect}
+          onSelectDirectory={onSelectDirectory}
           onFileContextMenu={onFileContextMenu}
         />
       ))}
@@ -175,6 +181,7 @@ interface FileTreeNodeProps {
   selectedPath: string | null;
   onToggle: (path: string) => void;
   onSelect: (path: string) => void;
+  onSelectDirectory?: (path: string) => void;
   onFileContextMenu?: (path: string, x: number, y: number) => void;
 }
 
@@ -186,13 +193,14 @@ function FileTreeNode({
   selectedPath,
   onToggle,
   onSelect,
+  onSelectDirectory,
   onFileContextMenu,
 }: FileTreeNodeProps): JSX.Element {
   const isDir = node.kind === 'dir';
   const isExpanded = isDir && expanded.has(node.path);
   // dir 子节点优先用 cache（lazy load 后的）；否则用 node.children（initial depth=1 时为空）
   const dirChildren = isDir ? (childrenCache[node.path] ?? node.children ?? []) : [];
-  const isSelected = !isDir && node.path === selectedPath;
+  const isSelected = node.path === selectedPath;
   const padLeft = depth * 12 + 6;
   const FileIcon = isCodeLikePath(node.path) ? FileCode : File;
   const FolderIcon = isExpanded ? FolderOpen : Folder;
@@ -201,7 +209,14 @@ function FileTreeNode({
     <li>
       <button
         type="button"
-        onClick={() => (isDir ? onToggle(node.path) : onSelect(node.path))}
+        onClick={() => {
+          if (isDir) {
+            onToggle(node.path);
+            onSelectDirectory?.(node.path);
+          } else {
+            onSelect(node.path);
+          }
+        }}
         onContextMenu={(e) => {
           if (isDir || !onFileContextMenu) return;
           e.preventDefault();
@@ -234,6 +249,7 @@ function FileTreeNode({
           selectedPath={selectedPath}
           onToggle={onToggle}
           onSelect={onSelect}
+          onSelectDirectory={onSelectDirectory}
           onFileContextMenu={onFileContextMenu}
         />
       )}

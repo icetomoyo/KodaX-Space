@@ -39,19 +39,22 @@ import type {
 } from '@kodax-space/space-ipc-schema';
 import { useAppStore } from '../store/appStore.js';
 import {
-  openFileAsArtifact,
+  openFileInViewer,
   revealPath,
   toProjectRelative,
   isAbsolutePathOutsideProject,
 } from '../lib/openPath.js';
 import { Caret } from '../components/Caret.js';
 import { ArtifactsView } from '../features/artifact/ArtifactsView.js';
-import { artifactSessionForProjectFiles } from '../features/artifact/filePreviewSession.js';
+import { FileViewer } from '../features/preview/FileViewer.js';
 import { useArtifacts, useArtifactCreated } from '../features/artifact/useArtifacts.js';
 import { useTranscriptArtifacts } from '../features/artifact/useTranscriptArtifacts.js';
 import {
   FOCUS_ARTIFACT_EVENT,
+  OPEN_FILE_VIEWER_EVENT,
+  isFileViewerSnapshot,
   type FocusArtifactEventDetail,
+  type OpenFileViewerEventDetail,
   type TransientArtifactSnapshot,
 } from '../features/artifact/transientArtifact.js';
 import { WorkflowPanel, useSessionWorkflowRuns } from '../features/workflow/WorkflowPanel.js';
@@ -110,17 +113,21 @@ export function RightSidebar({
   const { t } = useI18n();
   const currentSessionId = useAppStore((s) => s.currentSessionId);
   const currentProjectPath = useAppStore((s) => s.currentProjectPath);
-  const artifactSessionId = artifactSessionForProjectFiles(currentSessionId, currentProjectPath);
-  const { artifacts, error: artifactError } = useArtifacts(artifactSessionId);
+  const { artifacts, error: artifactError } = useArtifacts(currentSessionId);
   const transcriptArtifacts = useTranscriptArtifacts(currentSessionId);
   const hasArtifacts = artifacts.length > 0;
   const hasTranscriptArtifacts = transcriptArtifacts.length > 0;
   const artifactCount = hasArtifacts ? artifacts.length : transcriptArtifacts.length;
-  const [tab, setTab] = useState<'overview' | 'artifact'>('overview');
-  const hasArtifactSurface =
-    hasArtifacts || hasTranscriptArtifacts || artifactError !== null || tab === 'artifact';
+  const [tab, setTab] = useState<'overview' | 'artifact' | 'file'>('overview');
   const [focusedArtifactSnapshot, setFocusedArtifactSnapshot] =
     useState<TransientArtifactSnapshot | null>(null);
+  const [fileViewerSnapshot, setFileViewerSnapshot] = useState<TransientArtifactSnapshot | null>(
+    null,
+  );
+  const hasArtifactSurface =
+    currentSessionId !== null &&
+    (hasArtifacts || hasTranscriptArtifacts || artifactError !== null || tab === 'artifact');
+  const hasFileViewerSurface = fileViewerSnapshot !== null;
   // Latch the artifact id selected from the transcript so ArtifactsView can claim it
   // after switching from overview to artifact mode.
   const [focusedArtifactId, setFocusedArtifactId] = useState<string | null>(null);
@@ -145,23 +152,33 @@ export function RightSidebar({
       ? shellFocusRequest
       : focusRequest;
 
-  // Reset to overview on session switches so the previous artifact view does not leak.
+  // Artifact focus is Session-scoped. File Viewer remains open across Session changes
+  // because it belongs to the project, not the Session.
   useEffect(() => {
-    setTab('overview');
+    setTab((current) => (current === 'artifact' ? 'overview' : current));
     setFocusedArtifactId(null);
     setFocusedArtifactSnapshot(null);
   }, [currentSessionId]);
+  useEffect(() => {
+    setTab((current) => (current === 'file' ? 'overview' : current));
+    setFileViewerSnapshot(null);
+  }, [currentProjectPath]);
   useEffect(() => {
     if (!hasArtifacts && hasTranscriptArtifacts) setTab('artifact');
   }, [hasArtifacts, hasTranscriptArtifacts, currentSessionId]);
   // New agent-created artifact: switch to Artifact mode. Updates, deletes, and session switches
   // should not trigger this path.
-  useArtifactCreated(artifactSessionId, () => setTab('artifact'));
+  useArtifactCreated(currentSessionId, () => setTab('artifact'));
   // Transcript artifact card click: switch to Artifact mode and remember the target id.
   useEffect(() => {
     const onFocus = (e: Event): void => {
       setTab('artifact');
       const detail = (e as CustomEvent<FocusArtifactEventDetail>).detail;
+      if (isFileViewerSnapshot(detail?.snapshot)) {
+        setFileViewerSnapshot(detail.snapshot ?? null);
+        setTab('file');
+        return;
+      }
       const id = detail?.id;
       if (id) setFocusedArtifactId(id);
       setFocusedArtifactSnapshot(detail?.snapshot ?? null);
@@ -169,9 +186,20 @@ export function RightSidebar({
     window.addEventListener(FOCUS_ARTIFACT_EVENT, onFocus);
     return () => window.removeEventListener(FOCUS_ARTIFACT_EVENT, onFocus);
   }, []);
+  useEffect(() => {
+    const onOpenFile = (event: Event): void => {
+      const detail = (event as CustomEvent<OpenFileViewerEventDetail>).detail;
+      if (!isFileViewerSnapshot(detail?.snapshot)) return;
+      setFileViewerSnapshot(detail.snapshot);
+      setTab('file');
+    };
+    window.addEventListener(OPEN_FILE_VIEWER_EVENT, onOpenFile);
+    return () => window.removeEventListener(OPEN_FILE_VIEWER_EVENT, onOpenFile);
+  }, []);
 
   // If artifacts disappear, overview is the safe fallback.
   const showArtifact = hasArtifactSurface && tab === 'artifact';
+  const showFileViewer = hasFileViewerSurface && tab === 'file';
 
   return (
     <RightSidebarFrame
@@ -184,18 +212,41 @@ export function RightSidebar({
     >
       {/* F059c: when artifacts exist, expose Overview / Artifact tabs. Artifact mode owns
           the full sidebar height instead of being squeezed into a small bottom box. */}
-      {hasArtifactSurface && (
+      {(hasArtifactSurface || hasFileViewerSurface) && (
         <div className="flex items-stretch border-b border-border-default flex-shrink-0">
-          <SidebarTab active={!showArtifact} onClick={() => setTab('overview')}>
+          <SidebarTab
+            active={!showArtifact && !showFileViewer}
+            onClick={() => setTab('overview')}
+            testId="right-sidebar-tab-overview"
+          >
             {t('right.overview')}
           </SidebarTab>
-          <SidebarTab active={showArtifact} onClick={() => setTab('artifact')}>
-            {t('right.artifact')}{' '}
-            {artifactCount > 0 ? `(${artifactCount})` : artifactError ? '(!)' : ''}
-          </SidebarTab>
+          {hasArtifactSurface && (
+            <SidebarTab
+              active={showArtifact}
+              onClick={() => setTab('artifact')}
+              testId="right-sidebar-tab-artifact"
+            >
+              {t('right.artifact')}{' '}
+              {artifactCount > 0 ? `(${artifactCount})` : artifactError ? '(!)' : ''}
+            </SidebarTab>
+          )}
+          {hasFileViewerSurface && (
+            <SidebarTab
+              active={showFileViewer}
+              onClick={() => setTab('file')}
+              testId="right-sidebar-tab-file"
+            >
+              {t('right.fileViewer')}
+            </SidebarTab>
+          )}
         </div>
       )}
-      {showArtifact ? (
+      {showFileViewer && fileViewerSnapshot ? (
+        <div className="flex-1 min-h-0">
+          <FileViewer snapshot={fileViewerSnapshot} onSnapshotChange={setFileViewerSnapshot} />
+        </div>
+      ) : showArtifact ? (
         <div className="flex-1 min-h-0">
           <ArtifactsView focusedId={focusedArtifactId} focusedSnapshot={focusedArtifactSnapshot} />
         </div>
@@ -227,10 +278,12 @@ export function RightSidebar({
 function SidebarTab({
   active,
   onClick,
+  testId,
   children,
 }: {
   active: boolean;
   onClick: () => void;
+  testId?: string;
   children: React.ReactNode;
 }): JSX.Element {
   return (
@@ -238,6 +291,7 @@ function SidebarTab({
       type="button"
       onClick={onClick}
       aria-pressed={active}
+      data-testid={testId}
       className={`flex-1 px-3 py-2 text-[12px] font-medium ${
         active ? 'text-fg-primary bg-surface-2' : 'text-fg-muted hover:text-fg-secondary'
       }`}
@@ -1904,13 +1958,13 @@ function ContextSection({
                 <li key={f}>
                   <button
                     type="button"
-                    onClick={() => void openFileAsArtifact(f)}
+                    onClick={() => void openFileInViewer(f)}
                     onContextMenu={(e) => {
                       e.preventDefault();
                       setFileMenu({ path: f, x: e.clientX, y: e.clientY });
                     }}
                     className="group/ctxfile w-full text-left flex items-center gap-1.5 px-1 py-0.5 rounded hover:bg-hover-bg text-fg-secondary hover:text-fg-primary"
-                    title={t('fileActions.openAsArtifact')}
+                    title={t('fileActions.openInFileViewer')}
                   >
                     <span className="truncate flex-1">{f}</span>
                     <Eye

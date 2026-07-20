@@ -43,7 +43,7 @@ const DYNAMIC_ARG_COMPLETION_COMMANDS = new Set([
 ]);
 
 const STATIC_ARG_OPTIONS: Readonly<Record<string, readonly string[]>> = {
-  'agent-mode': ['ama', 'amaw', 'ama-workflow', 'sa', 'toggle'],
+  'agent-mode': ['ama', 'sa', 'toggle'],
   auto: ['auto'],
   'auto-engine': ['llm', 'rules'],
   extensions: ['status', 'refresh', 'sdk'],

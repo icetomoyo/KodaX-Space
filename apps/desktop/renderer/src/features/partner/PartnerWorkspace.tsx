@@ -17,6 +17,7 @@ import { Handshake, PanelLeft, PanelRightClose, PanelRightOpen } from 'lucide-re
 import { useI18n } from '../../i18n/I18nProvider.js';
 import { SourcesPanel } from './SourcesPanel.js';
 import { PartnerConversation } from './PartnerConversation.js';
+import { PartnerEvidenceDetail } from './PartnerEvidenceDetail.js';
 
 const LS_KEY_SOURCES_OPEN = 'kodax-space.partnerSourcesOpen';
 // With the shared 320px right sidebar, a 1280px window leaves ~632px for Partner.
@@ -128,6 +129,7 @@ export function PartnerWorkspace({
         {showSources && <SourcesPanel />}
         <PartnerConversation />
       </div>
+      <PartnerEvidenceDetail />
     </div>
   );
 }

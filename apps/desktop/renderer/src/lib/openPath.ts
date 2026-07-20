@@ -2,7 +2,7 @@
 //
 // 之前 renderer 里到处展示文件路径却全是死文本（聊天 tool 卡、右侧 Context 栏、diff 头）。
 // 这里给出一条统一入口 openFileSmart(path)，按扩展名智能路由：
-//   - html/svg/md → 在 Artifact 面板里沙盒 iframe 预览（artifact.previewFile）
+//   - html/svg/md → 在 File Viewer 里沙盒 iframe 预览（files.read）
 //   - 代码/文本    → App 内 DiffPanel popout（复用 setLastDiffPath + requestPopout('diff')）
 //   - 其它（图片/pdf/二进制/未知）→ 在系统文件管理器里定位（shell.revealPath）
 //
@@ -13,13 +13,17 @@ import { useAppStore } from '../store/appStore.js';
 import { useSurfaceStore } from '../store/surface.js';
 import { pushToast } from '../store/toastStore.js';
 import { translateMessage } from '../i18n/I18nProvider.js';
-import { artifactSessionForProjectFiles } from '../features/artifact/filePreviewSession.js';
 import {
-  FOCUS_ARTIFACT_EVENT,
+  OPEN_FILE_VIEWER_EVENT,
   type TransientArtifactSnapshot,
 } from '../features/artifact/transientArtifact.js';
+import {
+  fileViewerContentKind,
+  isPreviewablePath,
+  isCodePath,
+  toProjectRelative,
+} from './pathClassify.js';
 import { detectKind, type RichPreviewKind } from '../features/preview/binaryUtils.js';
-import { isPreviewablePath, isCodePath, toProjectRelative } from './pathClassify.js';
 import { partnerDeliveryPreviewVersion } from './generatedResourceRef.js';
 import {
   isPartnerOutputLogicalPath,
@@ -40,11 +44,9 @@ interface OpenCtx {
   readonly surface?: 'code' | 'partner';
 }
 
-/** previewFileAsArtifact 的具体上下文 —— session/project 必须非空（调用方先判好）。 */
+/** File Viewer only needs an allowed project; it is deliberately Session-independent. */
 interface PreviewCtx {
-  readonly sessionId: string;
   readonly projectRoot: string;
-  readonly surface: 'code' | 'partner';
   readonly notifyOnError?: boolean;
 }
 
@@ -57,8 +59,26 @@ function hashId(input: string): string {
   return hash.toString(36);
 }
 
-function pathBackedArtifactKind(kind: RichPreviewKind): ArtifactKindT {
-  return kind === 'pdf' || kind === 'docx' || kind === 'xlsx' || kind === 'pptx' ? kind : 'file';
+let fileViewerRevision = Date.now();
+
+function nextFileViewerRevision(): number {
+  fileViewerRevision = Math.max(fileViewerRevision + 1, Date.now());
+  return fileViewerRevision;
+}
+
+function artifactKindForRichPreview(kind: RichPreviewKind): ArtifactKindT {
+  switch (kind) {
+    case 'pdf':
+    case 'docx':
+    case 'xlsx':
+    case 'pptx':
+      return kind;
+    case 'image':
+    case 'video':
+    case 'audio':
+    case 'text':
+      return 'file';
+  }
 }
 
 function filePreviewSnapshot(detail: {
@@ -69,7 +89,7 @@ function filePreviewSnapshot(detail: {
   readonly content?: string;
   readonly path?: string;
 }): TransientArtifactSnapshot {
-  const version = 1;
+  const version = nextFileViewerRevision();
   const path = detail.path ?? detail.relPath;
   return {
     id: `file-preview-${hashId(`${detail.projectRoot}::${detail.relPath}`)}`,
@@ -77,6 +97,7 @@ function filePreviewSnapshot(detail: {
     title: detail.title,
     source: 'file-preview',
     version,
+    projectRoot: detail.projectRoot,
     ...(detail.content !== undefined ? { content: detail.content } : {}),
     ...(path !== undefined ? { path } : {}),
     versions: [
@@ -89,13 +110,10 @@ function filePreviewSnapshot(detail: {
   };
 }
 
-function focusArtifactInSidebar(detail: {
-  readonly id?: string;
-  readonly snapshot?: TransientArtifactSnapshot;
-}): void {
+function openFileViewerInSidebar(snapshot: TransientArtifactSnapshot): void {
   useAppStore.getState().setRightSidebarOpen(true);
   const dispatch = (): void => {
-    window.dispatchEvent(new CustomEvent(FOCUS_ARTIFACT_EVENT, { detail }));
+    window.dispatchEvent(new CustomEvent(OPEN_FILE_VIEWER_EVENT, { detail: { snapshot } }));
   };
   dispatch();
   window.setTimeout(dispatch, 0);
@@ -118,7 +136,7 @@ async function openPartnerDeliveryReference(
     });
     if (!result.ok) return 'unavailable';
     if (result.data.status !== 'found' || !result.data.delivery) return result.data.status;
-    return (await openPartnerDeliveryAsArtifact(result.data.delivery)) ? 'opened' : 'unavailable';
+    return (await openPartnerDeliveryInViewer(result.data.delivery)) ? 'opened' : 'unavailable';
   } catch {
     return 'unavailable';
   }
@@ -165,10 +183,8 @@ export async function openGeneratedResourceHref(href: string, ctx?: OpenCtx): Pr
   return true;
 }
 
-/** Promote a registered Partner output into the shared Artifact preview surface. */
-export async function openPartnerDeliveryAsArtifact(
-  delivery: PartnerDeliveryRefT,
-): Promise<boolean> {
+/** Open a registered Partner output in the transient File Viewer. */
+export async function openPartnerDeliveryInViewer(delivery: PartnerDeliveryRefT): Promise<boolean> {
   if (delivery.kind !== 'file') return revealPath(delivery.absolutePath);
 
   const version = partnerDeliveryPreviewVersion(delivery.updatedAt);
@@ -190,47 +206,7 @@ export async function openPartnerDeliveryAsArtifact(
       },
     ],
   };
-  focusArtifactInSidebar({ id: snapshot.id, snapshot });
-  return true;
-}
-
-async function previewPathBackedFileAsTransient(
-  relPath: string,
-  ctx: PreviewCtx,
-  kind: RichPreviewKind,
-  notifyFailure: (message: string) => void,
-): Promise<boolean> {
-  const bridge = window.kodaxSpace;
-  if (!bridge) return false;
-
-  try {
-    const stat = await bridge.invoke('files.stat', { projectRoot: ctx.projectRoot, path: relPath });
-    if (!stat.ok) {
-      notifyFailure(stat.error?.message ?? translateMessage('common.unknownError'));
-      return false;
-    }
-    if (!stat.data.exists || stat.data.kind !== 'file') {
-      notifyFailure(translateMessage('openPath.fileNotFound'));
-      return false;
-    }
-  } catch (err) {
-    notifyFailure(
-      err instanceof Error && err.message.trim()
-        ? err.message
-        : translateMessage('common.unknownError'),
-    );
-    return false;
-  }
-
-  const snapshot = filePreviewSnapshot({
-    projectRoot: ctx.projectRoot,
-    relPath,
-    kind: pathBackedArtifactKind(kind),
-    title: relPath,
-    path: relPath,
-  });
-
-  focusArtifactInSidebar({ id: snapshot.id, snapshot });
+  openFileViewerInSidebar(snapshot);
   return true;
 }
 
@@ -274,39 +250,79 @@ export async function revealPath(rawPath: string, projectRoot?: string | null): 
   }
 }
 
-/** 把已写盘的可预览文件灌进 Artifact 面板并聚焦。成功返 true。 */
-export async function previewFileAsArtifact(rawPath: string, ctx: PreviewCtx): Promise<boolean> {
+/** Open an allowlisted directory itself in the system file manager. */
+export async function openDirectory(
+  rawPath: string,
+  projectRoot?: string | null,
+): Promise<boolean> {
   const bridge = window.kodaxSpace;
   if (!bridge) return false;
-  const rel = toProjectRelative(rawPath, ctx.projectRoot);
+  try {
+    const r = await bridge.invoke(
+      'shell.openDirectory',
+      projectRoot ? { path: rawPath, projectRoot } : { path: rawPath },
+    );
+    if (r.ok && r.data.opened) return true;
+    pushToast(translateMessage('openPath.directoryNotFound'), 'warning');
+    return false;
+  } catch {
+    pushToast(translateMessage('openPath.directoryOpenFailed'), 'error');
+    return false;
+  }
+}
+
+/** Load one allowed project file into a transient File Viewer snapshot. */
+export async function loadFileViewerSnapshot(
+  rawPath: string,
+  projectRoot: string,
+): Promise<TransientArtifactSnapshot> {
+  const bridge = window.kodaxSpace;
+  if (!bridge) throw new Error(translateMessage('artifact.runtimeUnavailable'));
+  const rel = toProjectRelative(rawPath, projectRoot);
+  const richKind = detectKind(rel);
+  if (richKind !== null) {
+    const stat = await bridge.invoke('files.stat', { projectRoot, path: rel });
+    if (!stat.ok) {
+      throw new Error(stat.error?.message ?? translateMessage('common.unknownError'));
+    }
+    if (!stat.data.exists || stat.data.kind !== 'file') {
+      throw new Error(translateMessage('openPath.fileNotFound'));
+    }
+    return filePreviewSnapshot({
+      projectRoot,
+      relPath: rel,
+      kind: artifactKindForRichPreview(richKind),
+      title: rel,
+      path: rel,
+    });
+  }
+
+  const r = await bridge.invoke('files.read', {
+    projectRoot,
+    path: rel,
+  });
+  if (!r.ok) throw new Error(r.error?.message ?? translateMessage('common.unknownError'));
+  if (r.data.isBinary) throw new Error('binary file cannot be previewed');
+  if (r.data.truncated) throw new Error('file too large to preview');
+  return filePreviewSnapshot({
+    projectRoot,
+    relPath: rel,
+    kind: fileViewerContentKind(rel, r.data.content),
+    title: rel,
+    content: r.data.content,
+    path: rel,
+  });
+}
+
+/** Open a project file in File Viewer without creating or requiring a Session. */
+export async function previewFileInViewer(rawPath: string, ctx: PreviewCtx): Promise<boolean> {
   const notifyFailure = (message: string): void => {
     if (!ctx.notifyOnError) return;
     pushToast(translateMessage('openPath.previewFailedWithMessage', { message }), 'error');
   };
-  const richKind = detectKind(rel);
-  if (richKind !== null) {
-    return previewPathBackedFileAsTransient(rel, ctx, richKind, notifyFailure);
-  }
   try {
-    const r = await bridge.invoke('artifact.previewFile', {
-      sessionId: ctx.sessionId,
-      surface: ctx.surface,
-      projectRoot: ctx.projectRoot,
-      path: rel,
-    });
-    if (!r.ok) {
-      notifyFailure(r.error?.message ?? translateMessage('common.unknownError'));
-      return false;
-    }
-    const snapshot = filePreviewSnapshot({
-      projectRoot: ctx.projectRoot,
-      relPath: rel,
-      kind: r.data.kind,
-      title: r.data.title,
-      ...(r.data.content !== undefined ? { content: r.data.content } : {}),
-      ...(r.data.path !== undefined ? { path: r.data.path } : {}),
-    });
-    focusArtifactInSidebar({ id: snapshot.id, snapshot });
+    const snapshot = await loadFileViewerSnapshot(rawPath, ctx.projectRoot);
+    openFileViewerInSidebar(snapshot);
     return true;
   } catch (err) {
     notifyFailure(
@@ -318,15 +334,14 @@ export async function previewFileAsArtifact(rawPath: string, ctx: PreviewCtx): P
   }
 }
 
-/** Force a file into Artifact preview, even when smart routing would normally prefer diff. */
-export async function openFileAsArtifact(rawPath: string, ctx?: OpenCtx): Promise<boolean> {
+/** Force a file into File Viewer, even when smart routing would normally prefer diff. */
+export async function openFileInViewer(rawPath: string, ctx?: OpenCtx): Promise<boolean> {
   const path = rawPath.trim();
   if (path.length === 0 || path.length > 4096) return false;
 
   const app = useAppStore.getState();
   const activeSessionId = ctx?.sessionId ?? app.currentSessionId;
   const projectRoot = ctx?.projectRoot ?? app.currentProjectPath;
-  const sessionId = artifactSessionForProjectFiles(activeSessionId, projectRoot);
   const surface = ctx?.surface ?? useSurfaceStore.getState().currentSurface;
 
   const typedDeliveryId = parsePartnerDeliveryUri(path);
@@ -344,12 +359,12 @@ export async function openFileAsArtifact(rawPath: string, ctx?: OpenCtx): Promis
     return result === 'opened';
   }
 
-  if (!projectRoot || !sessionId) {
+  if (!projectRoot) {
     pushToast(translateMessage('openPath.previewNoProject'), 'warning');
     return false;
   }
 
-  return previewFileAsArtifact(path, { sessionId, projectRoot, surface, notifyOnError: true });
+  return previewFileInViewer(path, { projectRoot, notifyOnError: true });
 }
 
 function openDiffPanelForPath(rawPath: string, projectRoot: string): void {
@@ -428,8 +443,8 @@ async function pathHasDiff(rawPath: string, projectRoot: string): Promise<boolea
 
 /**
  * 智能路由：点一个文件路径应该发生什么。ctx 缺省时从 store 读当前 session/project/surface。
- *   代码型有变更 → App 内 diff；代码型无变更/预览型 → Artifact 预览；其它 → 文件管理器定位。
- * 上游分支失败（无 session、文件不存在等）一律优雅回退到 reveal。
+ *   代码型有变更 → App 内 diff；代码型无变更/预览型 → File Viewer；其它 → 文件管理器定位。
+ * 上游分支失败（无项目、文件不存在等）一律优雅回退到 reveal。
  */
 export async function openFileSmart(rawPath: string, ctx?: OpenCtx): Promise<void> {
   const path = rawPath.trim();
@@ -462,10 +477,8 @@ export async function openFileSmart(rawPath: string, ctx?: OpenCtx): Promise<voi
       openDiffPanelForPath(path, projectRoot);
       return;
     }
-    if (sessionId) {
-      const ok = await previewFileAsArtifact(path, { sessionId, projectRoot, surface });
-      if (ok) return;
-    }
+    const ok = await previewFileInViewer(path, { projectRoot });
+    if (ok) return;
     if (surface === 'partner') {
       const deliveryResult = await openPartnerDeliveryPath(path, projectRoot, sessionId);
       if (deliveryResult === 'opened') return;
@@ -478,8 +491,8 @@ export async function openFileSmart(rawPath: string, ctx?: OpenCtx): Promise<voi
     return;
   }
 
-  if (isPreviewablePath(path) && sessionId && projectRoot) {
-    const ok = await previewFileAsArtifact(path, { sessionId, projectRoot, surface });
+  if (isPreviewablePath(path) && projectRoot) {
+    const ok = await previewFileInViewer(path, { projectRoot });
     if (ok) return;
     // 预览失败（二进制/过大/不存在）→ 回退到定位。
   }
