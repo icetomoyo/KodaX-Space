@@ -84,7 +84,7 @@ const externalAgentRegistrationSummarySchema = z.object({
   displayName: z.string().min(1).max(128),
   description: z.string().max(2048).optional(),
   enabled: z.boolean(),
-  adapterKind: z.literal('reference'),
+  adapterKind: z.enum(['reference', 'runtime']),
   configurationRevision: z.string().min(1).max(256),
   credentialConfigured: z.boolean(),
   skills: z.array(z.string().min(1).max(128)).max(64),

@@ -10,6 +10,7 @@ import { kodaxHost } from '../kodax/host.js';
 import { getSkillRegistry, invalidateSkillCache, toSkillMeta } from '../skill/registry.js';
 import { createSkillDynamicContextExecutor } from '../skill/dynamic-context-executor.js';
 import { installSkillFromPath } from '../skill/install.js';
+import { runtimeHostAdapter } from '../kodax/runtime-host-adapter.js';
 
 /**
  * 安全 env：**完全不转发** process.env 给 SDK VariableResolver。
@@ -46,6 +47,26 @@ export function registerSkillChannels(): void {
     // wrapper cache TTL 60s + SDK 单 instance 不 re-scan。
     if (input.forceReload) {
       invalidateSkillCache(input.projectRoot);
+    }
+    if (runtimeHostAdapter.isRuntimeSelected()) {
+      try {
+        const skills = (await runtimeHostAdapter.listRuntimeSkills(input.projectRoot))
+          .map((skill) => ({
+            name: skill.name,
+            description: skill.description.slice(0, 512),
+            ...(skill.argumentHint ? { argumentHint: skill.argumentHint.slice(0, 128) } : {}),
+            source: skill.source,
+            path: skill.path,
+          }))
+          .filter((skill) => skillMetaSchema.safeParse(skill).success)
+          .slice(0, 256);
+        return { skills };
+      } catch (error) {
+        console.warn(
+          '[skill.discover] Coder daemon catalog unavailable; using Space host provider:',
+          error instanceof Error ? error.message : error,
+        );
+      }
     }
     const registry = await getSkillRegistry(input.projectRoot);
     // Per-item validate + drop the invalid (instead of letting one bad skill fail

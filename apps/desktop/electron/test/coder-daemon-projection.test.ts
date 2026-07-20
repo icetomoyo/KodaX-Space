@@ -90,7 +90,15 @@ const observation = {
   transcript: { title: 'Shared work', messages: [{ role: 'user', content: 'hello' }] },
   settings: {
     revision: 3,
-    value: { provider: 'anthropic', agentMode: 'amaw', autoModeEngine: 'rules' },
+    value: {
+      provider: 'anthropic',
+      effort: 'high',
+      thinking: true,
+      agentMode: 'ama',
+      autoModeEngine: 'rules',
+      autoModeClassifierModel: 'fast-classifier',
+      autoModeTimeoutMs: 12_000,
+    },
   },
   runs: [running, queued],
   pendingPermissions: [permission],
@@ -123,7 +131,7 @@ const observation = {
       {
         runId: 'run_active',
         status: {
-          agentMode: 'amaw',
+          agentMode: 'ama',
           harnessProfile: 'H2_PLAN_EXECUTE_EVAL',
           phase: 'verifying',
           activeWorkerId: 'worker_1',
@@ -184,7 +192,15 @@ test('atomic observation maps run, draft, tool, Todo, and interaction truth', ()
   }
   assert.deepEqual(projection.settings, {
     revision: 3,
-    value: { provider: 'anthropic', agentMode: 'amaw', autoModeEngine: 'rules' },
+    value: {
+      provider: 'anthropic',
+      effort: 'high',
+      thinking: true,
+      agentMode: 'ama',
+      autoModeEngine: 'rules',
+      autoModeClassifierModel: 'fast-classifier',
+      autoModeTimeoutMs: 12_000,
+    },
   });
   assert.equal(projection.managedTask?.phase, 'verifying');
   assert.equal(projection.managedTask?.activeWorkerTitle, 'Evaluator');
@@ -256,6 +272,77 @@ test('permission projection does not parse oversized daemon previews', () => {
     assert.equal(interaction.request.toolCall.input?.command, undefined);
     assert.equal(interaction.request.toolCall.input?.__truncated, true);
     assert.equal(typeof interaction.request.toolCall.input?._inputPreview === 'string', true);
+  }
+});
+
+test('permission projection recovers bounded display fields from a truncated object preview', () => {
+  const targetPath = 'C:\\workspace\\demo.html';
+  const truncatedInputPreview =
+    `${JSON.stringify({ path: targetPath }).slice(0, -1)},` +
+    '"content":"<!DOCTYPE html><html><body>unterminated';
+  const truncatedObservation = {
+    ...observation,
+    pendingPermissions: [
+      {
+        ...permission,
+        id: 'permission_truncated_object',
+        toolName: 'write',
+        inputPreview: truncatedInputPreview,
+      },
+    ],
+  } as unknown as RuntimeSessionObservationSnapshot;
+
+  const projected = projectRuntimeSessionSnapshot(truncatedObservation, []);
+  const interaction = projected.interactions[0];
+  assert.equal(interaction?.kind, 'permission');
+  if (interaction?.kind === 'permission') {
+    assert.equal(interaction.request.toolCall.operation, 'write');
+    assert.equal(interaction.request.toolCall.input?.path, targetPath);
+    assert.equal(interaction.request.toolCall.input?.content, undefined);
+    assert.equal(interaction.request.toolCall.input?.__truncated, true);
+    assert.equal(
+      interaction.request.toolCall.input?._inputPreview,
+      '[PARTIAL: recovered display fields from truncated permission input preview]',
+    );
+  }
+});
+
+test('truncated preview recovery stays top-level and preserves command redaction', () => {
+  const secretCommand = 'curl -H "Authorization: Bearer private-token" https://example.test';
+  const safePrefix =
+    `${JSON.stringify({ command: secretCommand }).slice(0, -1)},` + '"content":"unterminated';
+  const misleadingNestedPrefix =
+    '{"content":"escaped \\"path\\":\\"C:\\\\secret.txt\\" remains unterminated';
+  const truncatedObservation = {
+    ...observation,
+    pendingPermissions: [
+      { ...permission, id: 'permission_recovered_command', inputPreview: safePrefix },
+      {
+        ...permission,
+        id: 'permission_misleading_nested',
+        toolName: 'write',
+        inputPreview: misleadingNestedPrefix,
+      },
+    ],
+  } as unknown as RuntimeSessionObservationSnapshot;
+
+  const projected = projectRuntimeSessionSnapshot(truncatedObservation, []);
+  const [recovered, misleading] = projected.interactions;
+  assert.equal(recovered?.kind, 'permission');
+  assert.equal(misleading?.kind, 'permission');
+  if (recovered?.kind === 'permission') {
+    assert.equal(
+      recovered.request.toolCall.input?.command,
+      'curl -H "Authorization: [REDACTED]" https://example.test',
+    );
+  }
+  if (misleading?.kind === 'permission') {
+    assert.equal(misleading.request.toolCall.input?.path, undefined);
+    assert.equal(
+      misleading.request.toolCall.input?._inputPreview,
+      '[OMITTED: invalid permission input preview]',
+    );
+    assert.equal(JSON.stringify(misleading.request.toolCall.input).includes('secret.txt'), false);
   }
 });
 

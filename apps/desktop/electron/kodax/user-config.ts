@@ -43,9 +43,21 @@ export interface KodaxUserDefaults {
   readonly thinking?: boolean;
   readonly reasoningMode?: 'off' | 'auto' | 'quick' | 'balanced' | 'deep';
   readonly permissionMode?: KodaxMappablePermissionMode;
+  readonly autoModeEngine?: 'llm' | 'rules';
+  readonly autoModeClassifierModel?: string;
+  readonly autoModeTimeoutMs?: number;
   /** customProviders 数量；具体配置不暴露给 renderer（SDK runtime 已注册可用）。*/
   readonly customProvidersCount: number;
 }
+
+export interface KodaxAutoModeDefaults {
+  readonly engine: 'llm' | 'rules';
+  readonly classifierModel?: string;
+  readonly timeoutMs: number;
+}
+
+/** KodaX 0.7.72 Auto LLM classifier default. Keep explicit at the Space boundary. */
+export const KODAX_AUTO_MODE_DEFAULT_TIMEOUT_MS = 20_000;
 
 export interface KodaxConfigCustomProvider {
   readonly id: string;
@@ -177,6 +189,22 @@ export async function loadKodaxUserDefaults(): Promise<KodaxUserDefaults> {
   return userDefaultsPromise;
 }
 
+/**
+ * Runtime sessions do not load the REPL's `autoMode` config path themselves.
+ * Resolve the same file/env precedence in Space and always materialize the 0.7.72
+ * timeout so a stale implicit daemon default cannot silently change behaviour.
+ */
+export async function loadKodaxAutoModeDefaults(): Promise<KodaxAutoModeDefaults> {
+  const defaults = await loadKodaxUserDefaults();
+  return {
+    engine: defaults.autoModeEngine ?? 'llm',
+    ...(defaults.autoModeClassifierModel !== undefined
+      ? { classifierModel: defaults.autoModeClassifierModel }
+      : {}),
+    timeoutMs: defaults.autoModeTimeoutMs ?? KODAX_AUTO_MODE_DEFAULT_TIMEOUT_MS,
+  };
+}
+
 async function computeUserDefaults(): Promise<KodaxUserDefaults> {
   // mock 注入 → 直接走；生产首调 await chunk
   if (activeImpl === DEFAULT_IMPL && sdkModuleCache === null) {
@@ -208,6 +236,10 @@ async function computeUserDefaults(): Promise<KodaxUserDefaults> {
   const reasoningMode =
     effortToReasoningMode(raw.effort) ??
     normalizeReasoningMode(raw.reasoningCeiling ?? raw.reasoningMode);
+  const autoMode = normalizeAutoModeDefaults(
+    (raw as unknown as Record<string, unknown>).autoMode,
+    process.env,
+  );
 
   return {
     provider:
@@ -216,6 +248,11 @@ async function computeUserDefaults(): Promise<KodaxUserDefaults> {
     thinking: typeof raw.thinking === 'boolean' ? raw.thinking : undefined,
     reasoningMode,
     permissionMode: normalizePermissionMode(raw.permissionMode),
+    autoModeEngine: autoMode.engine,
+    ...(autoMode.classifierModel !== undefined
+      ? { autoModeClassifierModel: autoMode.classifierModel }
+      : {}),
+    autoModeTimeoutMs: autoMode.timeoutMs,
     customProvidersCount: Array.isArray(raw.customProviders) ? raw.customProviders.length : 0,
   };
 }
@@ -254,9 +291,7 @@ export async function loadKodaxCustomProviders(): Promise<readonly KodaxConfigCu
   return normalizeKodaxConfigCustomProviders(raw.customProviders);
 }
 
-export async function loadKodaxConfigOverview(
-  projectRoot?: string,
-): Promise<KodaxConfigOverviewT> {
+export async function loadKodaxConfigOverview(projectRoot?: string): Promise<KodaxConfigOverviewT> {
   const configPath = getKodaxConfigPath();
   const errors: KodaxConfigOverviewT['errors'] = [];
   const raw = await loadRawConfigForOverview(configPath, errors);
@@ -424,6 +459,46 @@ function normalizePermissionMode(v: unknown): KodaxMappablePermissionMode | unde
   if (typeof v !== 'string') return undefined;
   if (v === 'plan' || v === 'accept-edits') return v;
   return undefined;
+}
+
+function normalizeAutoModeDefaults(raw: unknown, env: NodeJS.ProcessEnv): KodaxAutoModeDefaults {
+  const settings =
+    raw !== null && typeof raw === 'object' && !Array.isArray(raw)
+      ? (raw as Record<string, unknown>)
+      : {};
+  const envEngine = env.KODAX_AUTO_MODE_ENGINE?.trim();
+  const fileEngine = settings.engine;
+  const engine =
+    envEngine === 'llm' || envEngine === 'rules'
+      ? envEngine
+      : fileEngine === 'llm' || fileEngine === 'rules'
+        ? fileEngine
+        : 'llm';
+  const envClassifier = normalizeClassifierModel(env.KODAX_AUTO_MODE_CLASSIFIER_MODEL);
+  const fileClassifier = normalizeClassifierModel(settings.classifierModel);
+  const envTimeout = normalizeAutoModeTimeout(env.KODAX_AUTO_MODE_TIMEOUT_MS);
+  const fileTimeout = normalizeAutoModeTimeout(settings.timeoutMs);
+  const classifierModel = envClassifier ?? fileClassifier;
+  return {
+    engine,
+    ...(classifierModel !== undefined ? { classifierModel } : {}),
+    timeoutMs: envTimeout ?? fileTimeout ?? KODAX_AUTO_MODE_DEFAULT_TIMEOUT_MS,
+  };
+}
+
+function normalizeClassifierModel(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 && trimmed.length <= 128 ? trimmed : undefined;
+}
+
+function normalizeAutoModeTimeout(value: unknown): number | undefined {
+  if (typeof value !== 'number' && typeof value !== 'string') return undefined;
+  if (typeof value === 'string' && value.trim().length === 0) return undefined;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
+  const timeoutMs = Math.floor(parsed);
+  return timeoutMs <= 3_600_000 ? timeoutMs : undefined;
 }
 
 function normalizeKodaxConfigCustomProviders(

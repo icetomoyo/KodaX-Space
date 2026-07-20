@@ -39,6 +39,58 @@ test('SessionRuntimeStore merges partial runtime patches', async () => {
   });
 });
 
+test('SessionRuntimeStore migrates a retired persisted AMAW mode to AMA', async () => {
+  const runtimeDir = path.join(tmpDir, 'runtime');
+  await fs.mkdir(runtimeDir, { recursive: true });
+  await fs.writeFile(
+    path.join(runtimeDir, 's_legacy-amaw.json'),
+    JSON.stringify({
+      version: 1,
+      sessionId: 's_legacy-amaw',
+      agentMode: 'amaw',
+      updatedAt: '2026-07-18T00:00:00.000Z',
+    }),
+    'utf-8',
+  );
+
+  assert.deepEqual(await store.read('s_legacy-amaw'), { agentMode: 'ama' });
+  const migrated = JSON.parse(
+    await fs.readFile(path.join(runtimeDir, 's_legacy-amaw.json'), 'utf-8'),
+  ) as Record<string, unknown>;
+  assert.deepEqual(migrated, {
+    version: 1,
+    sessionId: 's_legacy-amaw',
+    agentMode: 'ama',
+    updatedAt: '2026-07-18T00:00:00.000Z',
+  });
+});
+
+test('SessionRuntimeStore migrates the retired persisted ama-workflow alias to AMA', async () => {
+  const runtimeDir = path.join(tmpDir, 'runtime');
+  await fs.mkdir(runtimeDir, { recursive: true });
+  await fs.writeFile(
+    path.join(runtimeDir, 's_legacy-ama-workflow.json'),
+    JSON.stringify({
+      version: 1,
+      sessionId: 's_legacy-ama-workflow',
+      agentMode: 'ama-workflow',
+      updatedAt: '2026-07-18T00:00:00.000Z',
+    }),
+    'utf-8',
+  );
+
+  assert.deepEqual(await store.read('s_legacy-ama-workflow'), { agentMode: 'ama' });
+  const migrated = JSON.parse(
+    await fs.readFile(path.join(runtimeDir, 's_legacy-ama-workflow.json'), 'utf-8'),
+  ) as Record<string, unknown>;
+  assert.deepEqual(migrated, {
+    version: 1,
+    sessionId: 's_legacy-ama-workflow',
+    agentMode: 'ama',
+    updatedAt: '2026-07-18T00:00:00.000Z',
+  });
+});
+
 test('SessionRuntimeStore preserves malformed and schema-invalid bytes on update', async () => {
   const runtimeDir = path.join(tmpDir, 'runtime');
   await fs.mkdir(runtimeDir, { recursive: true });

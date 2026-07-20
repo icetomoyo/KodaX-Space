@@ -12,7 +12,7 @@ test('external-agent gateway persists the reference catalog and task ledger', as
   try {
     const registration = await gateway.upsertReference({
       displayName: 'Reference Reviewer',
-      description: 'Local KodaX 0.7.71 conformance target',
+      description: 'Local KodaX 0.7.72 conformance target',
       enabled: true,
       skills: ['code-review'],
       inputRequired: false,
@@ -70,7 +70,7 @@ test('external-agent gateway persists the reference catalog and task ledger', as
   const reloaded = new ExternalAgentGateway(root);
   try {
     const status = await reloaded.status();
-    assert.equal(status.sdkVersion, '0.7.71');
+    assert.equal(status.sdkVersion, '0.7.72');
     assert.equal(status.enabled, true);
     assert.equal(status.referenceExecutor, true);
     assert.deepEqual(status.adapters, { a2a: false, mcpTasks: false, governedHttp: false });

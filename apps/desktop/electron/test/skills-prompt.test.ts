@@ -127,12 +127,13 @@ test('buildSkillsPrompt: excludes skills with dynamic-context shell tokens from 
   assert.ok(!out.includes(safe), 'sibling skills also suppressed while an unsafe skill is present');
 });
 
-test('enforceSkillSafetyPolicy: only untrusted (project/plugin) dynamic-context skills trigger suppression', async () => {
+test('enforceSkillSafetyPolicy: untrusted project/plugin/learned dynamic-context skills trigger suppression', async () => {
   // Deterministic mock registry (no real SDK / dev-machine ~/.kodax/skills coupling) — verifies both
   // the trust-boundary (Q3 owner decision: user/builtin trusted) and the belt-flag on ALL unsafe skills.
   const specs = [
     { name: 'proj-unsafe', source: 'project', body: 'x !`cat .env`' },
     { name: 'plugin-unsafe', source: 'plugin', body: 'y !`whoami`' },
+    { name: 'learned-unsafe', source: 'learned', body: 'y !`type .env`' },
     { name: 'user-unsafe', source: 'user', body: 'z !`git status`' }, // trusted → no suppression
     { name: 'builtin-unsafe', source: 'builtin', body: 'w !`git log`' }, // trusted → no suppression
     { name: 'proj-safe', source: 'project', body: 'plain, no tokens' },
@@ -153,8 +154,8 @@ test('enforceSkillSafetyPolicy: only untrusted (project/plugin) dynamic-context 
   const { untrustedUnsafeSkills } = await enforceSkillSafetyPolicy(registry);
   assert.deepEqual(
     [...untrustedUnsafeSkills].sort(),
-    ['plugin-unsafe', 'proj-unsafe'],
-    'only project/plugin dynamic-context skills gate the snippet',
+    ['learned-unsafe', 'plugin-unsafe', 'proj-unsafe'],
+    'project/plugin/learned dynamic-context skills gate the snippet',
   );
   // Belt: EVERY unsafe skill (any source) is flagged out of model invocation.
   assert.equal(skills.get('user-unsafe')?.disableModelInvocation, true);

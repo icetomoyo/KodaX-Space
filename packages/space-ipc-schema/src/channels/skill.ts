@@ -14,11 +14,12 @@
 import { z } from 'zod';
 
 // Skill 来源：跟 SDK SkillSource 严格对齐
-const skillSourceSchema = z.enum(['user', 'project', 'plugin', 'builtin']);
+const skillSourceSchema = z.enum(['user', 'project', 'plugin', 'builtin', 'learned']);
 
 // Skill 元数据（discover 输出）。description 上限同 slash command。
 export const skillMetaSchema = z.object({
-  name: z.string()
+  name: z
+    .string()
     .regex(/^[a-z0-9][a-z0-9._:-]{0,63}$/, {
       message: 'skill name must be kebab-case (allow . : _ -)',
     })
@@ -68,7 +69,11 @@ export const skillInvokeChannel = {
   direction: 'invoke',
   input: z.object({
     sessionId: z.string().min(1),
-    skillName: z.string().regex(/^[a-z0-9][a-z0-9._:-]{0,63}$/).min(1).max(64),
+    skillName: z
+      .string()
+      .regex(/^[a-z0-9][a-z0-9._:-]{0,63}$/)
+      .min(1)
+      .max(64),
     args: z.array(z.string().max(2048)).max(20),
   }),
   output: z.object({
@@ -94,7 +99,12 @@ export const skillInstallChannel = {
     .object({
       cancelled: z.boolean().optional(),
       installed: z.boolean().optional(),
-      name: z.string().regex(/^[a-z0-9][a-z0-9._:-]{0,63}$/).min(1).max(64).optional(),
+      name: z
+        .string()
+        .regex(/^[a-z0-9][a-z0-9._:-]{0,63}$/)
+        .min(1)
+        .max(64)
+        .optional(),
       installDir: z.string().min(1).max(4096).optional(),
       targetDir: z.string().min(1).max(4096).optional(),
     })

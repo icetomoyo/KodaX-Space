@@ -6,7 +6,7 @@ import test from 'node:test';
 
 const PROBE_MARKER = 'KODAX_RUNTIME_PROBE=';
 const PROBE_TIMEOUT_MS = 30_000;
-const EXPECTED_KODAX_VERSION = '0.7.72-hotfix.0';
+const EXPECTED_KODAX_VERSION = '0.7.72';
 const SHARED_DAEMON_TIMEOUT_MS = 45_000;
 const SHARED_DAEMON_MARKER = 'KODAX_SHARED_DAEMON_HOST=';
 const require = createRequire(import.meta.url);
@@ -19,6 +19,8 @@ const KODAX_CLI_PATH = path.join(
 const SHARED_DAEMON_REQUIREMENTS = {
   externalAgents: true,
   externalAgentAdmin: 1,
+  actorControlPlane: 1,
+  learningCenter: 1,
   a2aConfigReconciler: 1,
   operationDeduplication: 1,
   sessionObservation: 1,
@@ -38,6 +40,7 @@ const SHARED_DAEMON_REQUIREMENTS = {
   sharedSessionSettings: 1,
   durableRecoveryQueries: 1,
   daemonManagement: 1,
+  runtimeAutoModeGuardrail: 1,
 } as const;
 
 const PUBLISHED_SHARED_DAEMON_PEER_PROBE = String.raw`
@@ -47,6 +50,7 @@ import { connectKodaXRuntime } from '@kodax-ai/kodax/runtime';
 const requirements = JSON.parse(process.env.KODAX_PROBE_REQUIREMENTS);
 let runtime;
 let observation;
+let readinessSubscription;
 try {
   runtime = await connectKodaXRuntime({
     profile: process.env.KODAX_PROBE_PROFILE,
@@ -56,7 +60,7 @@ try {
     clientInfo: {
       name: 'kodax-cli',
       title: 'KodaX terminal compatibility probe',
-      version: '0.7.72-hotfix.0',
+      version: '0.7.72',
       instanceId: process.env.KODAX_PROBE_INSTANCE_ID,
       instanceSecret: process.env.KODAX_PROBE_INSTANCE_SECRET,
     },
@@ -64,13 +68,20 @@ try {
     requirements,
   });
   observation = await runtime.sessions.observe(process.env.KODAX_PROBE_SESSION_ID, () => {});
+  readinessSubscription = runtime.events.subscribe(
+    { sessionId: process.env.KODAX_PROBE_SESSION_ID },
+    () => {},
+  );
+  const subscriptionReady = readinessSubscription.ready instanceof Promise;
+  await readinessSubscription.ready;
   const current = await runtime.sessions.getSettingsVersioned(process.env.KODAX_PROBE_SESSION_ID);
   const updated = await runtime.sessions.updateSettingsVersioned(
     process.env.KODAX_PROBE_SESSION_ID,
-    { provider: 'published-probe', agentMode: 'amaw', autoModeEngine: 'rules' },
+    { provider: 'published-probe', agentMode: 'ama', autoModeEngine: 'rules' },
     { expectedRevision: current.revision },
   );
   const preflight = await runtime.status.preflight();
+  const learningSnapshot = await runtime.learning.getSnapshot();
   let partnerError;
   try {
     await runtime.sessions.create({
@@ -93,12 +104,18 @@ try {
       pendingUserInputs: Array.isArray(observation.snapshot.live.pendingUserInputs),
     },
     settingsRevision: updated.revision,
+    subscriptionReady,
+    learningSnapshot: {
+      revision: Number.isSafeInteger(learningSnapshot.revision),
+      ready: Number.isSafeInteger(learningSnapshot.ready),
+    },
     clientCount: preflight.clientCount,
     activeWorkflows: Array.isArray(preflight.activeWorkflows),
-    activeAgentTasks: Array.isArray(preflight.activeAgentTasks),
+    activeAgentTurns: Array.isArray(preflight.activeAgentTurns),
     partnerError,
   }));
 } finally {
+  readinessSubscription?.close();
   observation?.close();
   await runtime?.close();
 }
@@ -243,7 +260,10 @@ try {
   const managementAfterDetach = await runtime.daemon.inspect();
   const managementCapability = runtime.capabilities.daemonManagement;
   const externalAgentAdminCapability = runtime.capabilities.externalAgentAdmin;
+  const actorControlPlaneCapability = runtime.capabilities.actorControlPlane;
+  const learningCenterCapability = runtime.capabilities.learningCenter;
   const a2aConfigCapability = runtime.capabilities.a2aConfigReconciler;
+  const runtimeAutoModeGuardrailCapability = runtime.capabilities.runtimeAutoModeGuardrail;
   result = {
     version: runtime.identity.version,
     runtimeId: runtime.identity.runtimeId,
@@ -265,12 +285,17 @@ try {
       ownerPolicyRevision: managementAfterDetach.ownerPolicy.revision,
       canStop: managementAfterDetach.preflight.canStop,
       activeWorkflows: Array.isArray(managementAfterDetach.preflight.activeWorkflows),
-      activeAgentTasks: Array.isArray(managementAfterDetach.preflight.activeAgentTasks),
+      activeAgentTurns: Array.isArray(managementAfterDetach.preflight.activeAgentTurns),
       backgroundWorkPreflight: managementCapability?.backgroundWorkPreflight === true,
       reverseBridgeDrainingFence: managementCapability?.reverseBridgeDrainingFence === true,
       externalAgents: runtime.agents.enabled,
       externalAgentAdmin: externalAgentAdminCapability?.version === 1,
+      actorControlPlane: actorControlPlaneCapability?.version === 1,
+      learningCenter: learningCenterCapability?.version === 1,
       a2aConfigReconciler: a2aConfigCapability?.version === 1,
+      runtimeAutoModeGuardrail:
+        runtimeAutoModeGuardrailCapability?.version === 1 &&
+        runtimeAutoModeGuardrailCapability.owner === 'session-runtime',
     },
   };
 } finally {
@@ -305,7 +330,7 @@ try {
   runtime = await createKodaXRuntime({
     mode: 'embedded',
     isolation: 'worker',
-    requirements: { hardDispose: true },
+    requirements: { hardDispose: true, learningCenter: 1, actorControlPlane: 1 },
     homeDir,
     sessionsDir: path.join(homeDir, 'sessions'),
     worker: {
@@ -320,6 +345,7 @@ try {
     surface: 'release-probe',
   });
   const loaded = await runtime.sessions.load(created.id);
+  const learningSnapshot = await runtime.learning.getSnapshot();
   let downgradeRejected = false;
   try {
     await createKodaXRuntime({
@@ -344,7 +370,7 @@ try {
       policy: ({ registration }) => ({ allowed: registration.enabled }),
       defaultContext: { actorId: 'kodax-space-runtime-compat' },
     },
-    requirements: { externalAgents: true, externalAgentAdmin: 1 },
+    requirements: { externalAgents: true, externalAgentAdmin: 1, actorControlPlane: 1 },
   });
   let externalAgentResult;
   try {
@@ -393,22 +419,44 @@ try {
       actorId: 'kodax-space-runtime-compat',
       readOnly: true,
     });
-    const started = await externalRuntime.agentTasks.start({
-      agentId: registration.agentId,
-      objective: 'space-reference-round-trip',
-      context: { actorId: 'kodax-space-runtime-compat' },
-      readOnly: true,
-      expectedConfigurationRevision: registration.configurationRevision,
+    const externalSession = await externalRuntime.sessions.create({
+      title: 'Space external Actor compatibility probe',
+      projectPath: process.cwd(),
+      surface: 'release-probe',
     });
-    const terminal = await externalRuntime.agentTasks.wait(started.taskId, 5_000);
+    const started = await externalRuntime.agents.spawn(externalSession.id, {
+      taskName: 'reference',
+      kind: 'external',
+      objective: 'space-reference-round-trip',
+      metadata: { agentId: registration.agentId },
+    });
+    const deadline = Date.now() + 5_000;
+    let terminal = await externalRuntime.agents.output(
+      externalSession.id,
+      started.actorPath,
+      started.turnId,
+    );
+    while (terminal.state === 'accepted' || terminal.state === 'running') {
+      if (Date.now() >= deadline) throw new Error('Timed out waiting for the external Actor turn.');
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      terminal = await externalRuntime.agents.output(
+        externalSession.id,
+        started.actorPath,
+        started.turnId,
+      );
+    }
+    const actorEvents = await externalRuntime.agents.events(externalSession.id, 0);
+    const actorControlPlaneCapability = externalRuntime.capabilities.actorControlPlane;
     externalAgentResult = {
       capability: externalRuntime.agents.enabled,
+      actorControlPlane: actorControlPlaneCapability?.version === 1,
       disabled: disabled?.enabled === false,
       enabled: externalRuntime.agents.enabled,
       reenabled: enabled?.enabled === true,
       listed: dispatchable.some((item) => item.descriptor.agentId === registration.agentId),
       state: terminal.state,
       output: terminal.output,
+      events: actorEvents.length > 0,
     };
   } finally {
     await externalRuntime.close();
@@ -485,6 +533,11 @@ try {
     isolation: runtime.identity.isolation,
     workerThreadId: runtime.identity.workerThreadId,
     sessionRoundTrip: loaded.id === created.id,
+    learningCenter: {
+      capability: runtime.capabilities.learningCenter?.version === 1,
+      revision: Number.isSafeInteger(learningSnapshot.revision),
+      ready: Number.isSafeInteger(learningSnapshot.ready),
+    },
     downgradeRejected,
     a2aExports: {
       bearerAuth: typeof createBearerEnvA2AAuthentication === 'function',
@@ -577,9 +630,11 @@ interface SharedDaemonHostResult {
       readonly pendingUserInputs: boolean;
     };
     readonly settingsRevision: number;
+    readonly subscriptionReady: boolean;
+    readonly learningSnapshot: { readonly revision: boolean; readonly ready: boolean };
     readonly clientCount: number;
     readonly activeWorkflows: boolean;
-    readonly activeAgentTasks: boolean;
+    readonly activeAgentTurns: boolean;
     readonly partnerError?: { readonly code?: string; readonly message?: string };
   };
   readonly eventType: string;
@@ -596,12 +651,15 @@ interface SharedDaemonHostResult {
     readonly ownerPolicyRevision: number;
     readonly canStop: boolean;
     readonly activeWorkflows: boolean;
-    readonly activeAgentTasks: boolean;
+    readonly activeAgentTurns: boolean;
     readonly backgroundWorkPreflight: boolean;
     readonly reverseBridgeDrainingFence: boolean;
     readonly externalAgents: boolean;
     readonly externalAgentAdmin: boolean;
+    readonly actorControlPlane: boolean;
+    readonly learningCenter: boolean;
     readonly a2aConfigReconciler: boolean;
+    readonly runtimeAutoModeGuardrail: boolean;
   };
 }
 
@@ -683,6 +741,11 @@ test(
     assert.equal(result.isolation, 'worker');
     assert.ok(Number.isSafeInteger(result.workerThreadId));
     assert.equal(result.sessionRoundTrip, true);
+    assert.deepEqual(result.learningCenter, {
+      capability: true,
+      revision: true,
+      ready: true,
+    });
     assert.equal(result.downgradeRejected, true);
     assert.deepEqual(result.a2aExports, {
       bearerAuth: true,
@@ -692,12 +755,14 @@ test(
     });
     assert.deepEqual(result.externalAgentResult, {
       capability: true,
+      actorControlPlane: true,
       disabled: true,
       enabled: true,
       reenabled: true,
       listed: true,
       state: 'completed',
       output: 'space-reference-round-trip',
+      events: true,
     });
     const inlineManagedResult = result.inlineManagedResult as {
       phase?: unknown;
@@ -729,7 +794,7 @@ test(
 );
 
 test(
-  `published KodaX ${EXPECTED_KODAX_VERSION} daemon shares one Coder session across processes`,
+  `tarball KodaX ${EXPECTED_KODAX_VERSION} daemon shares one Coder session across processes`,
   { timeout: SHARED_DAEMON_TIMEOUT_MS + 15_000 },
   async () => {
     const result = await runPublishedSharedDaemonProbe();
@@ -746,14 +811,16 @@ test(
     assert.equal(result.settings.revision, result.peer.settingsRevision);
     assert.deepEqual(result.settings.value, {
       provider: 'published-probe',
-      agentMode: 'amaw',
+      agentMode: 'ama',
       autoModeEngine: 'rules',
     });
+    assert.equal(result.peer.subscriptionReady, true);
+    assert.deepEqual(result.peer.learningSnapshot, { revision: true, ready: true });
     assert.equal(result.clientBaseline, 1);
     assert.equal(result.peer.clientCount, 2);
     assert.equal(result.afterDetach, 1);
     assert.equal(result.peer.activeWorkflows, true);
-    assert.equal(result.peer.activeAgentTasks, true);
+    assert.equal(result.peer.activeAgentTurns, true);
     assert.ok(result.management.afterDetachRevision > result.management.baselineRevision);
     assert.equal(result.management.runtimeId, result.runtimeId);
     assert.equal(result.management.ownerRuntimeId, result.runtimeId);
@@ -762,12 +829,15 @@ test(
     assert.ok(Number.isSafeInteger(result.management.ownerPolicyRevision));
     assert.equal(result.management.canStop, true);
     assert.equal(result.management.activeWorkflows, true);
-    assert.equal(result.management.activeAgentTasks, true);
+    assert.equal(result.management.activeAgentTurns, true);
     assert.equal(result.management.backgroundWorkPreflight, true);
     assert.equal(result.management.reverseBridgeDrainingFence, true);
     assert.equal(result.management.externalAgents, true);
     assert.equal(result.management.externalAgentAdmin, true);
+    assert.equal(result.management.actorControlPlane, true);
+    assert.equal(result.management.learningCenter, true);
     assert.equal(result.management.a2aConfigReconciler, true);
+    assert.equal(result.management.runtimeAutoModeGuardrail, true);
     assert.equal(result.connectionState, 'connected');
     assert.equal(result.peer.partnerError?.code, 'session_not_admitted');
   },

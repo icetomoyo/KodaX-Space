@@ -43,12 +43,23 @@ import { computeModelContextWindow } from '../providers/context-window.js';
 import type { ProviderInfo } from '@kodax-space/space-ipc-schema';
 import type { CustomProviderProbe } from '../providers/test-connection.js';
 import { refreshDiagnosticRedactionOptions } from '../diagnostics/runtime.js';
+import { runtimeHostAdapter } from '../kodax/runtime-host-adapter.js';
 
 type KnownProvider = BuiltinProvider | CustomProvider | CustomProviderProbe;
 type ConfiguredSource = ProviderInfo['configuredSource'];
 
 const injectedEnvOriginals = new Map<string, string | undefined>();
 let injectAllKeysToEnvQueue: Promise<void> = Promise.resolve();
+
+async function reloadCoderConfigBestEffort(context: string): Promise<void> {
+  if (!runtimeHostAdapter.isRuntimeSelected()) return;
+  await runtimeHostAdapter.reloadRuntimeConfig().catch((error) => {
+    console.warn(
+      `[${context}] Coder daemon config reload failed:`,
+      error instanceof Error ? error.message : error,
+    );
+  });
+}
 
 function hasNonEmptyEnvValue(v: string | undefined): boolean {
   return typeof v === 'string' && v.trim().length > 0;
@@ -255,9 +266,7 @@ export async function ensureProviderKeyInjected(providerId: string): Promise<boo
  * Main-process-only credential lookup for the daemon credential broker.
  * The value is returned only to a trusted callback and never crosses IPC.
  */
-export async function readProviderCredential(
-  providerId: string,
-): Promise<string | undefined> {
+export async function readProviderCredential(providerId: string): Promise<string | undefined> {
   if (providerId === 'mock') return undefined;
   await providerConfigStore.load();
   const info = await resolveProviderInfo(providerId);
@@ -422,6 +431,7 @@ export function registerProviderChannels(): void {
     await providerConfigStore.setDefault(input.providerId);
     // 切默认 provider 时重新注入——共享 env 时让它胜出
     await injectAllKeysToEnv();
+    await reloadCoderConfigBestEffort('provider.setDefault');
     return { ok: true };
   });
 
@@ -452,6 +462,7 @@ export function registerProviderChannels(): void {
       ...(input.reasoning !== undefined ? { reasoning: input.reasoning } : {}),
     });
     await refreshSdkCustomProviderRegistry();
+    await reloadCoderConfigBestEffort('provider.addCustom');
     return { ok: true, providerId: id };
   });
 
@@ -548,6 +559,7 @@ export function registerProviderChannels(): void {
 
     await refreshSdkCustomProviderRegistry();
     await injectAllKeysToEnv();
+    await reloadCoderConfigBestEffort('provider.updateCustom');
     return { ok: true, providerId: nextProviderId };
   });
   // provider.removeCustom
@@ -567,6 +579,7 @@ export function registerProviderChannels(): void {
       if (input.providerId !== 'mock' && !isBuiltinId(input.providerId)) {
         await refreshSdkCustomProviderRegistry();
       }
+      await reloadCoderConfigBestEffort('provider.removeCustom');
     }
     return { ok: removed };
   });

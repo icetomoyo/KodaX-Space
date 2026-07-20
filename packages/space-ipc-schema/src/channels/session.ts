@@ -7,6 +7,7 @@
 // 实际 token / tool call / 结果通过 session.event push 实时推。
 
 import { z } from 'zod';
+import { partnerKnowledgeScopeSchema } from './partner-knowledge.js';
 
 // ---- Reasoning mode (镜像 @kodax-ai/llm 的 KodaXReasoningMode 闭集) ----
 export const reasoningModeSchema = z.enum(['off', 'auto', 'quick', 'balanced', 'deep']);
@@ -46,12 +47,11 @@ export type PermissionMode = z.infer<typeof permissionModeSchema>;
 export const autoModeEngineSchema = z.enum(['llm', 'rules']);
 export type AutoModeEngine = z.infer<typeof autoModeEngineSchema>;
 
-// KodaX agent 形态:
-//   - 'ama' = Adaptive Multi-Agent (KodaX 默认；scout/planner/generator/evaluator 多角色协作)
-//   - 'amaw' = AMA with natural-language workflow activation
+// KodaX agent 形态（0.7.72 起 AMAW 已并入 AMA）:
+//   - 'ama' = Adaptive Multi-Agent（仅显式 Workflow 强信号、显式命令和 SDK Workflow 入口）
 //   - 'sa'  = Single Agent (单 agent loop，资源 / 并发受限时的 fallback)
 // SDK 默认是 'ama'；Space 显式持有该字段，让用户能在 UI 主动切换 / 降级。
-export const agentModeSchema = z.enum(['ama', 'amaw', 'sa']);
+export const agentModeSchema = z.enum(['ama', 'sa']);
 export type AgentMode = z.infer<typeof agentModeSchema>;
 
 // ---- Surface (F045 Partner 批次地基) ----
@@ -247,6 +247,7 @@ export const sessionSendChannel = {
     sessionId: z.string().min(1),
     prompt: z.string().min(1).max(MAX_PROMPT_BYTES),
     partnerPromptOverlay: z.string().min(1).max(MAX_PARTNER_PROMPT_OVERLAY_BYTES).optional(),
+    partnerRetrievalScope: partnerKnowledgeScopeSchema.optional(),
     /** OC-31 v0.1.9 image paste/drag-drop. 上限 8 张/turn —— 防 DoS；UI 同步限制。 */
     artifacts: z.array(inputArtifactSchema).max(8).optional(),
     /** Renderer-side guardrail: the main process rejects the send if the
@@ -373,7 +374,7 @@ export const sessionSetAutoModeEngineChannel = {
 
 // ---- Invoke: session.setAgentMode ----
 //
-// 切 AMA / AMAW / SA。AMAW = AMA with natural-language workflow activation。
+// 切 AMA / SA。Workflow 是否可调用由 KodaX 的强信号策略决定。
 // 切换不重启 session，下一条 prompt 应用新形态。
 export const sessionSetAgentModeChannel = {
   name: 'session.setAgentMode',

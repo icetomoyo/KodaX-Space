@@ -324,8 +324,8 @@ export function registerArtifactChannels(): void {
     return { id: res.id, version: res.version };
   });
 
-  // Read-only preview: opening a file in the Artifact surface must not persist it
-  // into the generated-artifact list.
+  // Legacy read-only Artifact-surface preview. Project File Viewer uses files.*
+  // directly and never enters this Session-scoped compatibility path.
   registerChannel('artifact.previewFile', async (input) => {
     await projectStore.assertAllowed(input.projectRoot);
     const absPath = await resolveInsideProject(input.projectRoot, input.path);

@@ -80,6 +80,14 @@ test('createSession applies default reasoningMode = auto', () => {
   assert.equal(kodaxHost.get(sessionId)?.reasoningMode, 'auto');
 });
 
+test('createSession resolves a concrete provider default model for Runtime side services', () => {
+  const { sessionId } = kodaxHost.createSession({
+    projectRoot: '/r',
+    provider: 'zai-coding',
+  });
+  assert.equal(kodaxHost.get(sessionId)?.model, 'glm-5.2');
+});
+
 test('list: enumerates all created sessions', () => {
   kodaxHost.createSession({ projectRoot: '/r1', provider: 'mock' });
   kodaxHost.createSession({ projectRoot: '/r2', provider: 'mock', reasoningMode: 'deep' });

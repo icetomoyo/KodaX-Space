@@ -79,14 +79,14 @@ test('setProvider updates field; returns true', () => {
   assert.equal(kodaxHost.get(sessionId)?.provider, 'anthropic');
 });
 
-test('setProvider clears a model override when the provider changes', () => {
+test('setProvider replaces a stale override with the new provider default model', () => {
   const { sessionId } = kodaxHost.createSession({
     projectRoot: '/r',
     provider: 'openai',
     model: 'gpt-5.3-codex',
   });
   assert.equal(kodaxHost.setProvider(sessionId, 'anthropic'), true);
-  assert.equal(kodaxHost.get(sessionId)?.model, undefined);
+  assert.equal(kodaxHost.get(sessionId)?.model, 'claude-sonnet-4-6');
 });
 
 test('setProvider preserves a model override when the provider is unchanged', () => {
@@ -97,6 +97,16 @@ test('setProvider preserves a model override when the provider is unchanged', ()
   });
   assert.equal(kodaxHost.setProvider(sessionId, 'openai'), true);
   assert.equal(kodaxHost.get(sessionId)?.model, 'gpt-5.3-codex');
+});
+
+test('setModel materializes the provider default when an override is cleared', () => {
+  const { sessionId } = kodaxHost.createSession({
+    projectRoot: '/r',
+    provider: 'anthropic',
+    model: 'claude-opus-4-7',
+  });
+  assert.equal(kodaxHost.setModel(sessionId, undefined), true);
+  assert.equal(kodaxHost.get(sessionId)?.model, 'claude-sonnet-4-6');
 });
 
 test('setProvider returns false for unknown session', () => {

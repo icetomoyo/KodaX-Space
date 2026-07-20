@@ -4,6 +4,7 @@ import test from 'node:test';
 import { invokeChannels } from '@kodax-space/space-ipc-schema';
 import {
   CODER_ACTION_MANIFEST,
+  CODER_DAEMON_ROUTED_ENTRYPOINTS,
   FROZEN_V0131_CODER_ENTRYPOINTS,
   isCoderEntrypointNamespace,
 } from '../kodax/runtime/coder-action-manifest.js';
@@ -37,15 +38,15 @@ test('Space Artifact and notification entrypoints remain Space-owned', () => {
   }
 });
 
-test('Runtime settings mutations are not misclassified as Space-local UI state', () => {
+test('Space settings mutations remain host projections and explicitly reload daemon config', () => {
   for (const entrypoint of [
     'settings.setRuntimeDefaults',
     'settings.kodaxConfig.setCompaction',
   ] as const) {
     const entry = CODER_ACTION_MANIFEST.find((item) => item.entrypoint === entrypoint);
     assert.ok(entry);
-    assert.equal(entry.targetOwner, 'coder-daemon');
-    assert.equal(entry.requiredCapability, 'runtime.config.cas');
+    assert.equal(entry.targetOwner, 'space-host-provider');
+    assert.equal(entry.requiredCapability, undefined);
   }
 
   const workspace = CODER_ACTION_MANIFEST.find(
@@ -53,6 +54,19 @@ test('Runtime settings mutations are not misclassified as Space-local UI state',
   );
   assert.ok(workspace);
   assert.equal(workspace.targetOwner, 'space-ui-only');
+});
+
+test('0.7.72 daemon-routed GA entrypoints are an explicit reviewed subset', () => {
+  const routed = CODER_ACTION_MANIFEST.filter((entry) => entry.targetOwner === 'coder-daemon');
+  assert.deepEqual(
+    routed.map((entry) => entry.entrypoint).sort(),
+    [...CODER_DAEMON_ROUTED_ENTRYPOINTS].sort(),
+  );
+  for (const entry of routed) {
+    assert.equal(entry.releasedState, 'ga');
+    assert.ok(entry.requiredCapability);
+    assert.equal(entry.unavailableBehavior, 'disable-with-reason');
+  }
 });
 
 test('daemon-dependent experimental routes stay capability-gated', () => {

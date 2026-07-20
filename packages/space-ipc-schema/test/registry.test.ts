@@ -24,6 +24,7 @@ import {
   handoffDismissChannel,
   handoffChangedChannel,
   clipboardReadImageChannel,
+  shellOpenDirectoryChannel,
   ok,
   fail,
   isLicenseActive,
@@ -75,6 +76,19 @@ test('clipboard.readImage channel is registered and accepts nullable image outpu
     true,
   );
   assert.equal(clipboardReadImageChannel.output.safeParse({ image: null }).success, true);
+});
+
+test('shell.openDirectory is present in the typed invoke registry', () => {
+  assert.equal(shellOpenDirectoryChannel.name, 'shell.openDirectory');
+  assert.equal(invokeChannels['shell.openDirectory'], shellOpenDirectoryChannel);
+  assert.ok(INVOKE_CHANNEL_NAMES.has('shell.openDirectory'));
+  assert.equal(
+    shellOpenDirectoryChannel.input.safeParse({
+      path: 'C:/workspace',
+      projectRoot: 'C:/workspace',
+    }).success,
+    true,
+  );
 });
 
 test('INVOKE_CHANNEL_NAMES is derived from invokeChannels keys', () => {

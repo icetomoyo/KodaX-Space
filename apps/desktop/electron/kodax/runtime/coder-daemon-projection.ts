@@ -143,6 +143,113 @@ function runsForSession(
   };
 }
 
+const RECOVERABLE_PERMISSION_INPUT_FIELDS = new Set([
+  'command',
+  'description',
+  'path',
+  'cwd',
+  'url',
+]);
+
+function skipWhitespace(source: string, from: number): number {
+  let index = from;
+  while (index < source.length && /\s/.test(source[index] ?? '')) index += 1;
+  return index;
+}
+
+function jsonStringEnd(source: string, from: number): number | undefined {
+  if (source[from] !== '"') return undefined;
+  let escaped = false;
+  for (let index = from + 1; index < source.length; index += 1) {
+    const character = source[index];
+    if (escaped) {
+      escaped = false;
+    } else if (character === '\\') {
+      escaped = true;
+    } else if (character === '"') {
+      return index + 1;
+    }
+  }
+  return undefined;
+}
+
+function jsonValueEnd(source: string, from: number): number | undefined {
+  const start = skipWhitespace(source, from);
+  if (source[start] === '"') return jsonStringEnd(source, start);
+  if (source[start] === '{' || source[start] === '[') {
+    const stack = [source[start] === '{' ? '}' : ']'];
+    let stringStart: number | undefined;
+    for (let index = start + 1; index < source.length; index += 1) {
+      if (stringStart !== undefined) {
+        const end = jsonStringEnd(source, stringStart);
+        if (end === undefined) return undefined;
+        index = end - 1;
+        stringStart = undefined;
+        continue;
+      }
+      const character = source[index];
+      if (character === '"') stringStart = index;
+      else if (character === '{') stack.push('}');
+      else if (character === '[') stack.push(']');
+      else if (character === stack.at(-1)) {
+        stack.pop();
+        if (stack.length === 0) return index + 1;
+      }
+    }
+    return undefined;
+  }
+  for (let index = start; index < source.length; index += 1) {
+    if (source[index] === ',' || source[index] === '}') return index;
+  }
+  return undefined;
+}
+
+function recoverPermissionInputPrefix(inputPreview: string): Record<string, unknown> | undefined {
+  let index = skipWhitespace(inputPreview, 0);
+  if (inputPreview[index] !== '{') return undefined;
+  index += 1;
+  const recovered: Record<string, unknown> = {};
+
+  while (index < inputPreview.length) {
+    index = skipWhitespace(inputPreview, index);
+    if (inputPreview[index] === ',') {
+      index = skipWhitespace(inputPreview, index + 1);
+    }
+    if (inputPreview[index] === '}') break;
+    const keyEnd = jsonStringEnd(inputPreview, index);
+    if (keyEnd === undefined) break;
+    let key: unknown;
+    try {
+      key = JSON.parse(inputPreview.slice(index, keyEnd)) as unknown;
+    } catch {
+      break;
+    }
+    index = skipWhitespace(inputPreview, keyEnd);
+    if (inputPreview[index] !== ':') break;
+    const valueStart = skipWhitespace(inputPreview, index + 1);
+    const valueEnd = jsonValueEnd(inputPreview, valueStart);
+    if (valueEnd === undefined) break;
+    if (typeof key === 'string' && RECOVERABLE_PERMISSION_INPUT_FIELDS.has(key)) {
+      try {
+        const value = JSON.parse(inputPreview.slice(valueStart, valueEnd)) as unknown;
+        if (typeof value === 'string') recovered[key] = value;
+      } catch {
+        break;
+      }
+    }
+    index = skipWhitespace(inputPreview, valueEnd);
+    if (inputPreview[index] === '}') break;
+    if (inputPreview[index] !== ',') break;
+  }
+
+  if (Object.keys(recovered).length === 0) return undefined;
+  return {
+    ...recovered,
+    _inputPreview: '[PARTIAL: recovered display fields from truncated permission input preview]',
+    __truncated: true,
+  };
+}
+
 function parsePermissionInput(inputPreview: unknown): Record<string, unknown> | undefined {
   if (typeof inputPreview !== 'string' || inputPreview.length === 0) return undefined;
   if (inputPreview.length > MAX_PERMISSION_INPUT_PREVIEW) {
@@ -162,10 +269,12 @@ function parsePermissionInput(inputPreview: unknown): Record<string, unknown> | 
     }
     return { ...input };
   } catch {
-    return {
-      _inputPreview: '[OMITTED: invalid permission input preview]',
-      __truncated: true,
-    };
+    return (
+      recoverPermissionInputPrefix(inputPreview) ?? {
+        _inputPreview: '[OMITTED: invalid permission input preview]',
+        __truncated: true,
+      }
+    );
   }
 }
 
@@ -526,11 +635,20 @@ function settingsProjection(
       ...(text(value.executionCwd, 4_096)
         ? { executionCwd: text(value.executionCwd, 4_096)! }
         : {}),
-      ...(value.agentMode === 'ama' || value.agentMode === 'amaw' || value.agentMode === 'sa'
+      ...(value.agentMode === 'ama' || value.agentMode === 'sa'
         ? { agentMode: value.agentMode }
         : {}),
       ...(value.autoModeEngine === 'llm' || value.autoModeEngine === 'rules'
         ? { autoModeEngine: value.autoModeEngine }
+        : {}),
+      ...(text(value.autoModeClassifierModel, 128)
+        ? { autoModeClassifierModel: text(value.autoModeClassifierModel, 128)! }
+        : {}),
+      ...(typeof value.autoModeTimeoutMs === 'number' &&
+      Number.isInteger(value.autoModeTimeoutMs) &&
+      value.autoModeTimeoutMs > 0 &&
+      value.autoModeTimeoutMs <= 3_600_000
+        ? { autoModeTimeoutMs: value.autoModeTimeoutMs }
         : {}),
     },
   };

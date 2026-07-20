@@ -106,6 +106,52 @@ test('load preserves valid runtime default fields when one field is invalid', as
   });
 });
 
+test('load migrates the retired persisted AMAW default to AMA', async () => {
+  const workspace = path.join(tmpDir, 'workspace');
+  await fs.writeFile(
+    settingsFile,
+    JSON.stringify({
+      version: 2,
+      defaultWorkspace: workspace,
+      languageMode: 'system',
+      runtimeDefaults: { agentMode: 'amaw', futureRuntimeField: { enabled: true } },
+      futureTopLevelField: 'preserved',
+    }),
+    'utf-8',
+  );
+
+  const loaded = await new SettingsStore(settingsFile, tmpDir).load();
+  assert.deepEqual(loaded.runtimeDefaults, { agentMode: 'ama' });
+  const migrated = JSON.parse(await fs.readFile(settingsFile, 'utf-8')) as {
+    runtimeDefaults: { agentMode: string; futureRuntimeField: unknown };
+    futureTopLevelField: string;
+  };
+  assert.equal(migrated.runtimeDefaults.agentMode, 'ama');
+  assert.deepEqual(migrated.runtimeDefaults.futureRuntimeField, { enabled: true });
+  assert.equal(migrated.futureTopLevelField, 'preserved');
+});
+
+test('load migrates the retired persisted ama-workflow default to AMA', async () => {
+  const workspace = path.join(tmpDir, 'workspace-alias');
+  await fs.writeFile(
+    settingsFile,
+    JSON.stringify({
+      version: 2,
+      defaultWorkspace: workspace,
+      languageMode: 'system',
+      runtimeDefaults: { agentMode: 'ama-workflow' },
+    }),
+    'utf-8',
+  );
+
+  const loaded = await new SettingsStore(settingsFile, tmpDir).load();
+  assert.deepEqual(loaded.runtimeDefaults, { agentMode: 'ama' });
+  const migrated = JSON.parse(await fs.readFile(settingsFile, 'utf-8')) as {
+    runtimeDefaults: { agentMode: string };
+  };
+  assert.equal(migrated.runtimeDefaults.agentMode, 'ama');
+});
+
 test('setRuntimeDefaults ignores invalid patch fields without dropping existing values', async () => {
   const store = new SettingsStore(settingsFile, tmpDir);
   await store.setRuntimeDefaults({ permissionMode: 'auto', reasoningMode: 'quick' });

@@ -3,17 +3,47 @@ import assert from 'node:assert/strict';
 import type { SessionEvent } from '@kodax-space/space-ipc-schema';
 import {
   collectTransientArtifactsFromEvents,
+  isFileViewerSnapshot,
   mergeTransientArtifactSnapshots,
   snapshotFromCreateArtifactTool,
   upsertTransientArtifact,
   type TransientArtifactSnapshot,
 } from '../../renderer/src/features/artifact/transientArtifact.js';
 
-function createArtifactStart(
-  toolId: string,
-  content: string,
-  summary: string,
-): SessionEvent {
+test('file and Delivery previews belong to File Viewer, not Artifacts', () => {
+  assert.equal(
+    isFileViewerSnapshot({
+      id: 'file-preview-readme',
+      kind: 'markdown',
+      title: 'README.md',
+      source: 'file-preview',
+      content: '# Readme',
+    }),
+    true,
+  );
+  assert.equal(
+    isFileViewerSnapshot({
+      id: 'delivery-preview-report',
+      kind: 'pdf',
+      title: 'Report.pdf',
+      source: 'delivery-preview',
+      path: 'Report.pdf',
+    }),
+    true,
+  );
+  assert.equal(
+    isFileViewerSnapshot({
+      id: 'artifact-report',
+      kind: 'markdown',
+      title: 'Report',
+      source: 'artifact',
+      content: '# Report',
+    }),
+    false,
+  );
+});
+
+function createArtifactStart(toolId: string, content: string, summary: string): SessionEvent {
   return {
     kind: 'tool_start',
     sessionId: 's1',
@@ -130,5 +160,8 @@ test('mergeTransientArtifactSnapshots preserves transcript versions when focusin
   const merged = mergeTransientArtifactSnapshots(grouped, focused);
 
   assert.equal(merged.version, 3);
-  assert.deepEqual(merged.versions?.map((version) => version.v), [1, 2, 3]);
+  assert.deepEqual(
+    merged.versions?.map((version) => version.v),
+    [1, 2, 3],
+  );
 });

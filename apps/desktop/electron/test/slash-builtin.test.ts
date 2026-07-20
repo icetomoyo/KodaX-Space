@@ -92,7 +92,11 @@ async function createLearningSession(): Promise<{
   const projectRoot = await mkdtemp(path.join(os.tmpdir(), 'kodax-space-learn-'));
   tempProjectRoots.push(projectRoot);
   process.env.KODAX_HOME = path.join(projectRoot, '.kodax-home');
-  const { sessionId } = kodaxHost.createSession({ projectRoot, provider: 'mock' });
+  const { sessionId } = kodaxHost.createSession({
+    projectRoot,
+    provider: 'mock',
+    surface: 'partner',
+  });
   return { sessionId, projectRoot };
 }
 
@@ -353,6 +357,8 @@ test('/provider accepts custom provider from KodaX config.json', async () => {
   const result = await runCmd('provider', sessionId, ['newapi-anthropic']);
   assert.equal(result.ok, true);
   assert.equal(kodaxHost.get(sessionId)?.provider, 'newapi-anthropic');
+  assert.equal(kodaxHost.get(sessionId)?.model, 'claude-sonnet-4-6');
+  assert.equal((await runtimeStore.read(sessionId))?.model, 'claude-sonnet-4-6');
 });
 
 test('/clear returns echo=true + clearStream=true for renderer-side reset', async () => {
@@ -459,6 +465,18 @@ test('/model default clears the override', async () => {
   assert.equal((await runtimeStore.read(sessionId))?.model, undefined);
 });
 
+test('/model default materializes a real provider default for Runtime side services', async () => {
+  const { sessionId } = kodaxHost.createSession({
+    projectRoot: 'C:\\tmp\\proj',
+    provider: 'anthropic',
+    model: 'claude-opus-4-7',
+  });
+  const result = await runCmd('model', sessionId, ['default']);
+  assert.equal(result.ok, true);
+  assert.equal(kodaxHost.get(sessionId)?.model, 'claude-sonnet-4-6');
+  assert.equal((await runtimeStore.read(sessionId))?.model, 'claude-sonnet-4-6');
+});
+
 test('/model without arg returns usage', async () => {
   const { sessionId } = kodaxHost.createSession({
     projectRoot: 'C:\\tmp\\proj',
@@ -541,30 +559,32 @@ test('/thinking off sets thinking=false on session', async () => {
   assert.equal(kodaxHost.get(sessionId)?.thinking, false);
 });
 
-test('/agent-mode accepts amaw and alias', async () => {
+test('/agent-mode rejects retired AMAW inputs with a migration hint', async () => {
   const { sessionId } = kodaxHost.createSession({
     projectRoot: 'C:\\tmp\\proj',
     provider: 'mock',
   });
   const result = await runCmd('agent-mode', sessionId, ['amaw']);
-  assert.equal(result.ok, true);
-  assert.equal(kodaxHost.get(sessionId)?.agentMode, 'amaw');
+  assert.equal(result.ok, false);
+  assert.match(result.message ?? '', /retired.*0\.7\.72.*use AMA/i);
+  assert.equal(kodaxHost.get(sessionId)?.agentMode, 'ama');
 
   const alias = await runCmd('agent-mode', sessionId, ['ama-workflow']);
-  assert.equal(alias.ok, true);
-  assert.equal(kodaxHost.get(sessionId)?.agentMode, 'amaw');
+  assert.equal(alias.ok, false);
+  assert.match(alias.message ?? '', /retired.*0\.7\.72.*use AMA/i);
+  assert.equal(kodaxHost.get(sessionId)?.agentMode, 'ama');
 });
 
-test('/agent-mode toggle cycles AMA -> AMAW -> SA', async () => {
+test('/agent-mode toggle cycles AMA -> SA', async () => {
   const { sessionId } = kodaxHost.createSession({
     projectRoot: 'C:\\tmp\\proj',
     provider: 'mock',
   });
   assert.equal(kodaxHost.get(sessionId)?.agentMode, 'ama');
   assert.equal((await runCmd('agent-mode', sessionId, ['toggle'])).ok, true);
-  assert.equal(kodaxHost.get(sessionId)?.agentMode, 'amaw');
-  assert.equal((await runCmd('agent-mode', sessionId, ['toggle'])).ok, true);
   assert.equal(kodaxHost.get(sessionId)?.agentMode, 'sa');
+  assert.equal((await runCmd('agent-mode', sessionId, ['toggle'])).ok, true);
+  assert.equal(kodaxHost.get(sessionId)?.agentMode, 'ama');
 });
 
 test('/learn pending lists SDK learning proposals', async () => {

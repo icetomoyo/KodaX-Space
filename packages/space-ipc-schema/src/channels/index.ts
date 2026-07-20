@@ -130,6 +130,18 @@ import {
   partnerSourcesRemoveChannel,
 } from './partner-source.js';
 import {
+  partnerCitationResolveChannel,
+  partnerKnowledgeCatalogChannel,
+  partnerKnowledgeRefreshChannel,
+  partnerKnowledgeScopeSetChannel,
+  partnerKnowledgeSelectChannel,
+  partnerKnowledgeTraceReadChannel,
+  partnerMaterialsAdoptChannel,
+  partnerMaterialsCatalogChannel,
+  partnerMaterialsRemoveChannel,
+  partnerMaterialsSelectChannel,
+} from './partner-knowledge.js';
+import {
   partnerKbSummaryChannel,
   partnerKbPagesChannel,
   partnerKbReadPageChannel,
@@ -201,7 +213,11 @@ import {
   clipboardReadImageChannel,
   clipboardCleanupSessionChannel,
 } from './clipboard.js';
-import { shellRevealPathChannel, shellOpenExternalChannel } from './shell.js';
+import {
+  shellRevealPathChannel,
+  shellOpenDirectoryChannel,
+  shellOpenExternalChannel,
+} from './shell.js';
 import {
   artifactCreateChannel,
   artifactListChannel,
@@ -344,6 +360,16 @@ export const invokeChannels = {
   [partnerSourcesListChannel.name]: partnerSourcesListChannel,
   [partnerSourcesAddChannel.name]: partnerSourcesAddChannel,
   [partnerSourcesRemoveChannel.name]: partnerSourcesRemoveChannel,
+  [partnerKnowledgeCatalogChannel.name]: partnerKnowledgeCatalogChannel,
+  [partnerKnowledgeSelectChannel.name]: partnerKnowledgeSelectChannel,
+  [partnerKnowledgeRefreshChannel.name]: partnerKnowledgeRefreshChannel,
+  [partnerKnowledgeScopeSetChannel.name]: partnerKnowledgeScopeSetChannel,
+  [partnerKnowledgeTraceReadChannel.name]: partnerKnowledgeTraceReadChannel,
+  [partnerCitationResolveChannel.name]: partnerCitationResolveChannel,
+  [partnerMaterialsCatalogChannel.name]: partnerMaterialsCatalogChannel,
+  [partnerMaterialsSelectChannel.name]: partnerMaterialsSelectChannel,
+  [partnerMaterialsAdoptChannel.name]: partnerMaterialsAdoptChannel,
+  [partnerMaterialsRemoveChannel.name]: partnerMaterialsRemoveChannel,
   [partnerKbSummaryChannel.name]: partnerKbSummaryChannel,
   [partnerKbPagesChannel.name]: partnerKbPagesChannel,
   [partnerKbReadPageChannel.name]: partnerKbReadPageChannel,
@@ -396,6 +422,7 @@ export const invokeChannels = {
   [clipboardReadImageChannel.name]: clipboardReadImageChannel,
   [clipboardCleanupSessionChannel.name]: clipboardCleanupSessionChannel,
   [shellRevealPathChannel.name]: shellRevealPathChannel,
+  [shellOpenDirectoryChannel.name]: shellOpenDirectoryChannel,
   [shellOpenExternalChannel.name]: shellOpenExternalChannel,
   [artifactCreateChannel.name]: artifactCreateChannel,
   [artifactListChannel.name]: artifactListChannel,

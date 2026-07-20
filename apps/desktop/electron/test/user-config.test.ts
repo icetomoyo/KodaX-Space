@@ -15,6 +15,7 @@ import {
   loadKodaxCompactionConfig,
   loadKodaxConfigOverview,
   loadKodaxCustomProviders,
+  loadKodaxAutoModeDefaults,
   loadKodaxUserDefaults,
   registerKodaxCustomProviders,
   removeKodaxConfigCustomProvider,
@@ -55,7 +56,7 @@ function mockUserConfig(
   setUserConfigImpl(impl);
 }
 
-test('empty config → all undefined + count=0', async () => {
+test('empty config → optional user fields undefined with explicit Auto LLM 0.7.72 defaults', async () => {
   mockUserConfig({});
   const d = await loadKodaxUserDefaults();
   assert.equal(d.provider, undefined);
@@ -63,6 +64,9 @@ test('empty config → all undefined + count=0', async () => {
   assert.equal(d.thinking, undefined);
   assert.equal(d.reasoningMode, undefined);
   assert.equal(d.permissionMode, undefined);
+  assert.equal(d.autoModeEngine, 'llm');
+  assert.equal(d.autoModeClassifierModel, undefined);
+  assert.equal(d.autoModeTimeoutMs, 20_000);
   assert.equal(d.customProvidersCount, 0);
 });
 
@@ -563,6 +567,82 @@ test('load/update KodaX compaction config preserves unrelated config fields', as
   assert.equal(overview.compaction.triggerPercent, 60);
   assert.equal(overview.mcp.globalServers, 1);
 });
+
+test('Auto LLM defaults explicitly pin the KodaX 0.7.72 20 second timeout', async () => {
+  mockUserConfig({});
+
+  assert.deepEqual(await loadKodaxAutoModeDefaults(), {
+    engine: 'llm',
+    timeoutMs: 20_000,
+  });
+});
+
+test('Auto LLM config maps engine, classifier model and timeout', async () => {
+  mockUserConfig({
+    autoMode: {
+      engine: 'rules',
+      classifierModel: ' fast-provider:classifier ',
+      timeoutMs: 35_500.9,
+    },
+  });
+
+  assert.deepEqual(await loadKodaxAutoModeDefaults(), {
+    engine: 'rules',
+    classifierModel: 'fast-provider:classifier',
+    timeoutMs: 35_500,
+  });
+});
+
+test('valid Auto LLM env overrides config while invalid values fall through', async () => {
+  const previous = {
+    engine: process.env.KODAX_AUTO_MODE_ENGINE,
+    classifierModel: process.env.KODAX_AUTO_MODE_CLASSIFIER_MODEL,
+    timeoutMs: process.env.KODAX_AUTO_MODE_TIMEOUT_MS,
+  };
+  try {
+    process.env.KODAX_AUTO_MODE_ENGINE = 'llm';
+    process.env.KODAX_AUTO_MODE_CLASSIFIER_MODEL = 'env-provider:classifier';
+    process.env.KODAX_AUTO_MODE_TIMEOUT_MS = '42000.8';
+    mockUserConfig({
+      autoMode: {
+        engine: 'rules',
+        classifierModel: 'file-provider:classifier',
+        timeoutMs: 31_000,
+      },
+    });
+    assert.deepEqual(await loadKodaxAutoModeDefaults(), {
+      engine: 'llm',
+      classifierModel: 'env-provider:classifier',
+      timeoutMs: 42_000,
+    });
+
+    process.env.KODAX_AUTO_MODE_ENGINE = 'invalid';
+    process.env.KODAX_AUTO_MODE_CLASSIFIER_MODEL = '   ';
+    process.env.KODAX_AUTO_MODE_TIMEOUT_MS = '-1';
+    mockUserConfig({
+      autoMode: {
+        engine: 'rules',
+        classifierModel: 'file-provider:classifier',
+        timeoutMs: 31_000,
+      },
+    });
+    assert.deepEqual(await loadKodaxAutoModeDefaults(), {
+      engine: 'rules',
+      classifierModel: 'file-provider:classifier',
+      timeoutMs: 31_000,
+    });
+  } finally {
+    restoreEnv('KODAX_AUTO_MODE_ENGINE', previous.engine);
+    restoreEnv('KODAX_AUTO_MODE_CLASSIFIER_MODEL', previous.classifierModel);
+    restoreEnv('KODAX_AUTO_MODE_TIMEOUT_MS', previous.timeoutMs);
+    setUserConfigImpl(null);
+  }
+});
+
+function restoreEnv(name: string, value: string | undefined): void {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
+}
 
 test('KodaX config overview ignores invalid compaction values', async () => {
   mockUserConfig({

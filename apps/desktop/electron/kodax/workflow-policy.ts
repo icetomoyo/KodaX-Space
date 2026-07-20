@@ -1,7 +1,7 @@
 // WorkflowPolicyStore (F064): host-owned workflow runtime limits.
 //
 // KodaX 0.7.58 removed host-side natural-language workflow auto-start.
-// AMAW may choose run_workflow from the model layer; /workflow remains the
+// AMA may expose run_workflow after KodaX detects an explicit strong signal; /workflow remains the
 // explicit command path. Space therefore persists only runtime ceilings here.
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -67,7 +67,7 @@ export function normalizeWorkflowPolicy(
 
 /**
  * Build the SDK WorkflowHostPolicy from a WorkflowPolicy. Single-sourced so BOTH launch
- * paths — AMAW run_workflow (real-session.ts) and explicit /workflow (workflow-controller.ts)
+ * paths — AMA run_workflow (real-session.ts) and explicit /workflow (workflow-controller.ts)
  * — forward the identical shape.
  *
  * tokenBudget is forwarded UNCONDITIONALLY, including 0: KodaX 0.7.59 treats a host

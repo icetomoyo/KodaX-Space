@@ -15,6 +15,7 @@ import { registerChannel, registerChannelWithEvent } from './register.js';
 import { isRendererTarget } from './push.js';
 import { externalAgentGateway } from '../kodax/external-agent-gateway.js';
 import { kodaxHost } from '../kodax/host.js';
+import { runtimeHostAdapter } from '../kodax/runtime-host-adapter.js';
 import type { IpcMainInvokeEvent } from 'electron';
 
 type SdkCodingModule = typeof import('@kodax-ai/kodax/coding');
@@ -101,12 +102,40 @@ export function registerAgentChannels(): void {
 
   registerChannelWithEvent('agent.external.status', async (_input, event) => {
     assertPrimaryRenderer(event);
-    return externalAgentGateway.status();
+    const local = await externalAgentGateway.status();
+    if (!runtimeHostAdapter.isRuntimeSelected()) return local;
+    try {
+      const runtimeRegistrations = await runtimeHostAdapter.listRuntimeAgentRegistrations();
+      return {
+        ...local,
+        enabled: local.enabled || runtimeHostAdapter.hasReadyRuntime(),
+        adapters: { ...local.adapters, a2a: true },
+        registrationCount: new Set([
+          ...(await externalAgentGateway.listRegistrations()).map((item) => item.agentId),
+          ...runtimeRegistrations.map((item) => item.agentId),
+        ]).size,
+      };
+    } catch {
+      return local;
+    }
   });
 
   registerChannelWithEvent('agent.external.registration.list', async (_input, event) => {
     assertPrimaryRenderer(event);
-    return { registrations: await externalAgentGateway.listRegistrations() };
+    const local = await externalAgentGateway.listRegistrations();
+    if (!runtimeHostAdapter.isRuntimeSelected()) return { registrations: local };
+    try {
+      const runtime = await runtimeHostAdapter.listRuntimeAgentRegistrations();
+      const runtimeIds = new Set(runtime.map((item) => item.agentId));
+      return {
+        registrations: [...runtime, ...local.filter((item) => !runtimeIds.has(item.agentId))].slice(
+          0,
+          256,
+        ),
+      };
+    } catch {
+      return { registrations: local };
+    }
   });
 
   registerChannelWithEvent('agent.external.reference.upsert', async (input, event) => {
@@ -121,17 +150,54 @@ export function registerAgentChannels(): void {
 
   registerChannelWithEvent('agent.external.dispatchable.list', async (input, event) => {
     assertPrimaryRenderer(event);
-    return { agents: await externalAgentGateway.listDispatchable(input) };
+    const local = await externalAgentGateway.listDispatchable(input);
+    if (!runtimeHostAdapter.isRuntimeSelected()) return { agents: local };
+    try {
+      const runtime = await runtimeHostAdapter.listRuntimeDispatchableAgents(input);
+      const runtimeIds = new Set(runtime.map((item) => item.descriptor.agentId));
+      return {
+        agents: [
+          ...runtime,
+          ...local.filter((item) => !runtimeIds.has(item.descriptor.agentId)),
+        ].slice(0, 256),
+      };
+    } catch {
+      return { agents: local };
+    }
   });
 
   registerChannelWithEvent('agent.external.preflight', async (input, event) => {
     assertPrimaryRenderer(event);
+    if (runtimeHostAdapter.isRuntimeSelected()) {
+      try {
+        const runtimeAgents = await runtimeHostAdapter.listRuntimeDispatchableAgents(input);
+        if (runtimeAgents.some((item) => item.descriptor.agentId === input.agentId)) {
+          return runtimeHostAdapter.preflightRuntimeAgent(input);
+        }
+      } catch {
+        // Reference host-provider registrations remain available below.
+      }
+    }
     return externalAgentGateway.preflight(input);
   });
 
   registerChannelWithEvent('agent.external.task.list', async (input, event) => {
     assertPrimaryRenderer(event);
-    requireSession(input.sessionId);
+    const session = requireSession(input.sessionId);
+    if (session.surface === 'code' && runtimeHostAdapter.isRuntimeSelected()) {
+      const runtimeTasks = await runtimeHostAdapter
+        .listRuntimeActorTasks(input.sessionId, input.agentId)
+        .catch(() => []);
+      const localTasks = await externalAgentGateway.listTasks({
+        parentTaskId: input.sessionId,
+        ...(input.agentId ? { agentId: input.agentId } : {}),
+      });
+      return {
+        tasks: [...runtimeTasks, ...localTasks]
+          .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+          .slice(0, 256),
+      };
+    }
     return {
       tasks: await externalAgentGateway.listTasks({
         parentTaskId: input.sessionId,
@@ -143,6 +209,26 @@ export function registerAgentChannels(): void {
   registerChannelWithEvent('agent.external.task.start', async (input, event) => {
     assertPrimaryRenderer(event);
     const session = requireSession(input.sessionId);
+    if (session.surface === 'code' && runtimeHostAdapter.isRuntimeSelected()) {
+      const runtimeAgents = await runtimeHostAdapter
+        .listRuntimeDispatchableAgents({
+          projectRoot: session.projectRoot,
+          readOnly: input.readOnly,
+        })
+        .catch(() => []);
+      if (runtimeAgents.some((item) => item.descriptor.agentId === input.agentId)) {
+        return runtimeHostAdapter.startRuntimeActorTask({
+          sessionId: input.sessionId,
+          agentId: input.agentId,
+          objective: input.objective,
+          projectRoot: session.projectRoot,
+          readOnly: input.readOnly,
+          ...(input.expectedConfigurationRevision
+            ? { expectedConfigurationRevision: input.expectedConfigurationRevision }
+            : {}),
+        });
+      }
+    }
     return externalAgentGateway.startTask({
       agentId: input.agentId,
       objective: input.objective,
@@ -157,28 +243,60 @@ export function registerAgentChannels(): void {
 
   registerChannelWithEvent('agent.external.task.events', async (input, event) => {
     assertPrimaryRenderer(event);
-    requireSession(input.sessionId);
+    const session = requireSession(input.sessionId);
+    if (
+      session.surface === 'code' &&
+      runtimeHostAdapter.isRuntimeSelected() &&
+      runtimeHostAdapter.ownsRuntimeActorTask(input.taskId)
+    ) {
+      return runtimeHostAdapter.runtimeActorTaskEvents(input.sessionId, input.taskId, input.cursor);
+    }
     await externalAgentGateway.assertTaskParent(input.taskId, input.sessionId);
     return externalAgentGateway.taskEvents(input.taskId, input.cursor);
   });
 
   registerChannelWithEvent('agent.external.task.sendInput', async (input, event) => {
     assertPrimaryRenderer(event);
-    requireSession(input.sessionId);
+    const session = requireSession(input.sessionId);
+    if (
+      session.surface === 'code' &&
+      runtimeHostAdapter.isRuntimeSelected() &&
+      runtimeHostAdapter.ownsRuntimeActorTask(input.taskId)
+    ) {
+      return runtimeHostAdapter.sendRuntimeActorTaskInput(
+        input.sessionId,
+        input.taskId,
+        input.content,
+      );
+    }
     await externalAgentGateway.assertTaskParent(input.taskId, input.sessionId);
     return externalAgentGateway.sendTaskInput(input.taskId, input.content);
   });
 
   registerChannelWithEvent('agent.external.task.cancel', async (input, event) => {
     assertPrimaryRenderer(event);
-    requireSession(input.sessionId);
+    const session = requireSession(input.sessionId);
+    if (
+      session.surface === 'code' &&
+      runtimeHostAdapter.isRuntimeSelected() &&
+      runtimeHostAdapter.ownsRuntimeActorTask(input.taskId)
+    ) {
+      return runtimeHostAdapter.cancelRuntimeActorTask(input.sessionId, input.taskId, input.reason);
+    }
     await externalAgentGateway.assertTaskParent(input.taskId, input.sessionId);
     return externalAgentGateway.cancelTask(input.taskId, input.reason);
   });
 
   registerChannelWithEvent('agent.external.task.reconcile', async (input, event) => {
     assertPrimaryRenderer(event);
-    requireSession(input.sessionId);
+    const session = requireSession(input.sessionId);
+    if (
+      session.surface === 'code' &&
+      runtimeHostAdapter.isRuntimeSelected() &&
+      runtimeHostAdapter.ownsRuntimeActorTask(input.taskId)
+    ) {
+      return runtimeHostAdapter.reconcileRuntimeActorTask(input.sessionId, input.taskId);
+    }
     await externalAgentGateway.assertTaskParent(input.taskId, input.sessionId);
     return externalAgentGateway.reconcileTask(input.taskId);
   });

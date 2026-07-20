@@ -9,10 +9,8 @@ import { registerChannel } from './register.js';
 import { settingsStore } from '../settings/store.js';
 import { validateProjectRoot } from './validate.js';
 import { resolveEffectiveLocale, type SpaceSettingsT } from '@kodax-space/space-ipc-schema';
-import {
-  loadKodaxConfigOverview,
-  updateKodaxCompactionConfig,
-} from '../kodax/user-config.js';
+import { loadKodaxConfigOverview, updateKodaxCompactionConfig } from '../kodax/user-config.js';
+import { runtimeHostAdapter } from '../kodax/runtime-host-adapter.js';
 
 function getPreferredSystemLanguages(): string[] {
   try {
@@ -72,6 +70,15 @@ export function registerSettingsChannels(): void {
 
   registerChannel('settings.kodaxConfig.setCompaction', async ({ projectRoot, compaction }) => {
     const safeProjectRoot = projectRoot ? validateProjectRoot(projectRoot) : undefined;
-    return updateKodaxCompactionConfig(compaction, safeProjectRoot);
+    const result = await updateKodaxCompactionConfig(compaction, safeProjectRoot);
+    if (runtimeHostAdapter.isRuntimeSelected()) {
+      await runtimeHostAdapter.reloadRuntimeConfig().catch((error) => {
+        console.warn(
+          '[settings.kodaxConfig.setCompaction] Coder daemon config reload failed:',
+          error instanceof Error ? error.message : error,
+        );
+      });
+    }
+    return result;
   });
 }

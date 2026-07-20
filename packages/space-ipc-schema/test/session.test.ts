@@ -213,8 +213,8 @@ test('session.create input: rejects bogus reasoningMode', () => {
   assert.equal(result.success, false);
 });
 
-test('agentMode enum accepts AMA, AMAW, and SA only', () => {
-  for (const agentMode of ['ama', 'amaw', 'sa'] as const) {
+test('agentMode enum accepts canonical AMA and SA only', () => {
+  for (const agentMode of ['ama', 'sa'] as const) {
     assert.equal(
       sessionCreateChannel.input.safeParse({ projectRoot: '/r', provider: 'mock', agentMode })
         .success,
@@ -236,6 +236,10 @@ test('agentMode enum accepts AMA, AMAW, and SA only', () => {
       `managed_task_status should accept ${agentMode}`,
     );
   }
+  assert.equal(
+    sessionSetAgentModeChannel.input.safeParse({ sessionId: 's_1', agentMode: 'amaw' }).success,
+    false,
+  );
   assert.equal(
     sessionSetAgentModeChannel.input.safeParse({ sessionId: 's_1', agentMode: 'ama-workflow' })
       .success,

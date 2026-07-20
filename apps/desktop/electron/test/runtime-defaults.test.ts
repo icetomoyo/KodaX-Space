@@ -24,7 +24,7 @@ test('resolveRuntimeDefaults prioritizes explicit over session, Space, KodaX, an
           permissionMode: 'accept-edits',
           autoModeEngine: 'llm',
           reasoningMode: 'deep',
-          agentMode: 'amaw',
+          agentMode: 'ama',
         },
       }),
       loadKodaxDefaults: async () => ({
@@ -106,4 +106,25 @@ test('resolveRuntimeDefaults falls back to builtins when loaders fail', async ()
     reasoningMode: 'builtin',
     agentMode: 'builtin',
   });
+});
+
+test('resolveRuntimeDefaults uses the KodaX autoMode engine before the builtin', async () => {
+  const out = await resolveRuntimeDefaults(
+    {},
+    {
+      loadSettings: async () => ({
+        version: 2,
+        defaultWorkspace: '/workspace',
+        languageMode: 'system',
+        runtimeDefaults: {},
+      }),
+      loadKodaxDefaults: async () => ({
+        autoModeEngine: 'rules',
+        customProvidersCount: 0,
+      }),
+    },
+  );
+
+  assert.equal(out.autoModeEngine, 'rules');
+  assert.equal(out.sources.autoModeEngine, 'kodax');
 });

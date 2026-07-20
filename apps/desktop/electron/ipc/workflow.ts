@@ -9,6 +9,7 @@ import { registerChannel } from './register.js';
 import { workflowController, type LaunchSession } from '../kodax/workflow-controller.js';
 import { workflowPolicyStore } from '../kodax/workflow-policy.js';
 import { kodaxHost } from '../kodax/host.js';
+import { runtimeHostAdapter } from '../kodax/runtime-host-adapter.js';
 
 /**
  * SECURITY（F063）：saved 工作流是可执行 JS——loadSavedWorkflow/loadSavedWorkflowCapsule
@@ -41,28 +42,93 @@ function sameProjectRoot(left: string | undefined, right: string | undefined): b
 }
 
 export function registerWorkflowChannels(): void {
-  registerChannel('workflow.list', (input) => {
-    const runs = workflowController.list(input?.sessionId);
-    return { runs };
+  registerChannel('workflow.list', async (input) => {
+    const localRuns = workflowController.list(input?.sessionId);
+    const session = input?.sessionId ? kodaxHost.get(input.sessionId) : undefined;
+    if (
+      !runtimeHostAdapter.isRuntimeSelected() ||
+      (input?.sessionId !== undefined && session?.surface === 'partner')
+    ) {
+      return { runs: localRuns };
+    }
+    try {
+      const runtimeRuns = await runtimeHostAdapter.listWorkflows(input);
+      const seen = new Set(runtimeRuns.map((run) => run.runId));
+      return {
+        runs: [...runtimeRuns, ...localRuns.filter((run) => !seen.has(run.runId))].slice(0, 500),
+      };
+    } catch (error) {
+      console.warn(
+        '[workflow.list] Coder daemon workflows unavailable:',
+        error instanceof Error ? error.message : error,
+      );
+      return { runs: localRuns };
+    }
   });
 
-  registerChannel('workflow.get', (input) => {
-    const run = workflowController.get(input.runId);
-    return { run };
+  registerChannel('workflow.get', async (input) => {
+    if (runtimeHostAdapter.isRuntimeSelected()) {
+      try {
+        const run = await runtimeHostAdapter.getWorkflow(input.runId);
+        if (run) return { run };
+      } catch (error) {
+        console.warn(
+          '[workflow.get] Coder daemon workflow unavailable:',
+          error instanceof Error ? error.message : error,
+        );
+      }
+    }
+    return { run: workflowController.get(input.runId) };
   });
 
   // F062 run 生命周期控制。控制后状态变化由 workflow.event 自然回流，handler 只回 ok。
-  registerChannel('workflow.stop', async (input) => ({
-    ok: await workflowController.stop(input.runId, input.reason),
-  }));
+  registerChannel('workflow.stop', async (input) => {
+    if (runtimeHostAdapter.isRuntimeSelected()) {
+      try {
+        if (await runtimeHostAdapter.getWorkflow(input.runId)) {
+          return { ok: await runtimeHostAdapter.controlWorkflow('stop', input.runId) };
+        }
+      } catch (error) {
+        console.warn(
+          '[workflow.stop] Coder daemon control unavailable:',
+          error instanceof Error ? error.message : error,
+        );
+      }
+    }
+    return { ok: await workflowController.stop(input.runId, input.reason) };
+  });
 
-  registerChannel('workflow.pause', async (input) => ({
-    ok: await workflowController.pause(input.runId),
-  }));
+  registerChannel('workflow.pause', async (input) => {
+    if (runtimeHostAdapter.isRuntimeSelected()) {
+      try {
+        if (await runtimeHostAdapter.getWorkflow(input.runId)) {
+          return { ok: await runtimeHostAdapter.controlWorkflow('pause', input.runId) };
+        }
+      } catch (error) {
+        console.warn(
+          '[workflow.pause] Coder daemon control unavailable:',
+          error instanceof Error ? error.message : error,
+        );
+      }
+    }
+    return { ok: await workflowController.pause(input.runId) };
+  });
 
-  registerChannel('workflow.resume', async (input) => ({
-    ok: await workflowController.resume(input.runId),
-  }));
+  registerChannel('workflow.resume', async (input) => {
+    if (runtimeHostAdapter.isRuntimeSelected()) {
+      try {
+        if (await runtimeHostAdapter.getWorkflow(input.runId)) {
+          return { ok: await runtimeHostAdapter.controlWorkflow('resume', input.runId) };
+        }
+      } catch (error) {
+        console.warn(
+          '[workflow.resume] Coder daemon control unavailable:',
+          error instanceof Error ? error.message : error,
+        );
+      }
+    }
+    return { ok: await workflowController.resume(input.runId) };
+  });
 
   registerChannel('workflow.rename', async (input) => ({
     ok: await workflowController.rename(input.runId, input.displayName),
@@ -171,7 +237,7 @@ export function registerWorkflowChannels(): void {
     return 'error' in res ? { error: res.error } : { name: res.name, path: res.path };
   });
 
-  // F064 Host policy（AMAW 自启治理 + caps）。
+  // F064 Host policy（AMA 强信号 Workflow + runtime caps）。
   registerChannel('workflow.saved.rename', async (input) => {
     const session = kodaxHost.get(input.sessionId);
     if (!session) return { error: 'session not found' };

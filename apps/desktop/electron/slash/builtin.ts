@@ -30,9 +30,10 @@ import type {
   SkillUsageRecord,
   StoredLearningApprovalResult,
   StoredLearningProposal,
+  LearnedCapabilityRecord,
 } from '@kodax-ai/kodax/agent';
 import type { SlashCommandDef, SlashHandlerContext, SlashHandlerResult } from './registry.js';
-import { kodaxHost } from '../kodax/host.js';
+import { kodaxHost, providerDescriptor } from '../kodax/host.js';
 import { isRepoIntelEntitled } from '../kodax/repo-intel-gate.js';
 import {
   workflowController,
@@ -52,13 +53,14 @@ import { providerConfigStore } from '../providers/config.js';
 import { listSlashCommands } from './registry.js';
 import { getBuiltin } from '../providers/catalog.js';
 import { memoryGovernanceService } from '../memory/memory-service.js';
+import { runtimeHostAdapter } from '../kodax/runtime-host-adapter.js';
 
 const REASONING_MODES = ['off', 'auto', 'quick', 'balanced', 'deep'] as const;
 type ReasoningMode = (typeof REASONING_MODES)[number];
 
 const PERMISSION_MODES: readonly PermissionMode[] = ['plan', 'accept-edits', 'auto'];
 const AUTO_ENGINES: readonly AutoModeEngine[] = ['llm', 'rules'];
-const AGENT_MODES: readonly AgentMode[] = ['ama', 'amaw', 'sa'];
+const AGENT_MODES: readonly AgentMode[] = ['ama', 'sa'];
 
 function isPermissionMode(s: string): s is PermissionMode {
   return PERMISSION_MODES.includes(s as PermissionMode);
@@ -72,10 +74,10 @@ function isReasoningMode(s: string): s is ReasoningMode {
   return REASONING_MODES.includes(s as ReasoningMode);
 }
 
-function normalizeAgentMode(s: string): AgentMode | 'toggle' | undefined {
+function normalizeAgentMode(s: string): AgentMode | 'toggle' | 'retired' | undefined {
   const lower = s.toLowerCase();
   if (lower === 'toggle') return 'toggle';
-  if (lower === 'ama-workflow') return 'amaw';
+  if (lower === 'amaw' || lower === 'ama-workflow') return 'retired';
   return AGENT_MODES.includes(lower as AgentMode) ? (lower as AgentMode) : undefined;
 }
 
@@ -170,6 +172,60 @@ function learningProposalMatchesFilter(
   if (filter === 'skill') return destination === 'skill_patch' || destination === 'skill_create';
   if (filter === 'workflow') return destination === 'workflow_handoff';
   return destination === 'memdir_handoff';
+}
+
+function usesRuntimeLearning(sessionId: string): boolean {
+  const session = kodaxHost.get(sessionId);
+  return session?.surface === 'code' && runtimeHostAdapter.isRuntimeSelected();
+}
+
+function runtimeLearningMatchesFilter(
+  entry: LearnedCapabilityRecord,
+  filter: LearningFilter,
+): boolean {
+  if (filter === 'all') return true;
+  if (filter === 'skill') return entry.carrier === 'skill' || entry.carrier === 'extension';
+  if (filter === 'workflow') return entry.carrier === 'workflow_handoff';
+  return false;
+}
+
+function formatRuntimeLearningRecord(entry: LearnedCapabilityRecord): string {
+  return [
+    `${entry.slug}  ${entry.lifecycle}  ${entry.carrier}`,
+    `  Name: ${entry.displayName}`,
+    `  Revision: ${entry.revision}; updated: ${entry.updatedAt}`,
+    entry.diagnostics?.length ? `  Diagnostics: ${entry.diagnostics.join('; ')}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+async function handleRuntimeLearningPending(filter: LearningFilter): Promise<SlashHandlerResult> {
+  try {
+    const page = await runtimeHostAdapter.listLearnedCapabilities({ limit: 100 });
+    const pending = page.items.filter(
+      (entry) =>
+        runtimeLearningMatchesFilter(entry, filter) &&
+        entry.lifecycle !== 'active_learned' &&
+        entry.lifecycle !== 'promoted_user' &&
+        entry.lifecycle !== 'archived' &&
+        entry.lifecycle !== 'rejected',
+    );
+    const lines = pending.length
+      ? [
+          `Pending ${LEARNING_FILTER_LABEL[filter]}: ${pending.length}`,
+          ...pending.map(formatRuntimeLearningRecord),
+          'Next: /learn diff <name-or-slug>, /learn approve <name-or-slug>, or /learn reject <name-or-slug>.',
+        ]
+      : [`No pending ${LEARNING_FILTER_LABEL[filter]} in the Coder daemon.`];
+    return { ok: true, message: compactSlashMessage(lines.join('\n\n')), echo: true };
+  } catch {
+    return {
+      ok: false,
+      message: 'Coder learning center is unavailable. Restart the Coder daemon and retry.',
+      echo: true,
+    };
+  }
 }
 
 function formatConsumerImpact(impact: {
@@ -270,6 +326,7 @@ async function handleLearningPending(
   ctx: SlashHandlerContext,
   filter: LearningFilter,
 ): Promise<SlashHandlerResult> {
+  if (usesRuntimeLearning(ctx.sessionId)) return handleRuntimeLearningPending(filter);
   const resolved = await resolveLearningStoreForSession(ctx.sessionId);
   if (!resolved.ok) return resolved;
   const sdk = await loadAgentSdk();
@@ -314,6 +371,34 @@ function formatSkillTrustRecord(record: SkillTrustRecord): string {
 async function handleLearningLedger(ctx: SlashHandlerContext): Promise<SlashHandlerResult> {
   const session = kodaxHost.get(ctx.sessionId);
   if (!session) return { ok: false, message: `session not found: ${ctx.sessionId}` };
+  if (usesRuntimeLearning(ctx.sessionId)) {
+    try {
+      const [snapshot, page] = await Promise.all([
+        runtimeHostAdapter.learningSnapshot(),
+        runtimeHostAdapter.listLearnedCapabilities({ limit: 10 }),
+      ]);
+      return {
+        ok: true,
+        echo: true,
+        message: compactSlashMessage(
+          [
+            'Coder daemon learning center',
+            `Revision: ${snapshot.revision}; ready=${snapshot.ready}; newlyActive=${snapshot.newlyActive}; attention=${snapshot.attention}; active=${snapshot.active}`,
+            '',
+            'Recent capabilities:',
+            ...(page.items.length ? page.items.map(formatRuntimeLearningRecord) : ['  (none)']),
+          ].join('\n'),
+          3200,
+        ),
+      };
+    } catch {
+      return {
+        ok: false,
+        message: 'Coder learning center is unavailable. Restart the Coder daemon and retry.',
+        echo: true,
+      };
+    }
+  }
   const sdk = await loadAgentSdk();
   const usagePath = sdk.resolveSkillUsageLedger(session.projectRoot);
   const trustPath = sdk.resolveSkillTrustLedger(session.projectRoot);
@@ -423,6 +508,14 @@ function formatLearningApproval(
 async function handleLearningDiff(ctx: SlashHandlerContext): Promise<SlashHandlerResult> {
   const target = ctx.args[1];
   if (!target) return { ok: false, message: learningHelp() };
+  if (usesRuntimeLearning(ctx.sessionId)) {
+    try {
+      const entry = await runtimeHostAdapter.getLearnedCapability(target);
+      return { ok: true, message: formatRuntimeLearningRecord(entry), echo: true };
+    } catch {
+      return { ok: false, message: `learned capability not found: ${target}`, echo: true };
+    }
+  }
   const resolved = await resolveLearningStoreForSession(ctx.sessionId);
   if (!resolved.ok) return resolved;
   const sdk = await loadAgentSdk();
@@ -436,6 +529,18 @@ async function handleLearningApprove(ctx: SlashHandlerContext): Promise<SlashHan
   const acknowledgeImpact = ctx.args.includes('--ack-impact');
   const target = ctx.args.slice(1).find((arg) => arg !== '--ack-impact');
   if (!target) return { ok: false, message: learningHelp() };
+  if (usesRuntimeLearning(ctx.sessionId)) {
+    try {
+      await runtimeHostAdapter.controlLearnedCapability('trust', target);
+      return { ok: true, message: `Trusted learned capability ${target}.`, echo: true };
+    } catch {
+      return {
+        ok: false,
+        message: `Cannot trust learned capability ${target}; inspect it with /learn diff ${target}.`,
+        echo: true,
+      };
+    }
+  }
   const resolved = await resolveLearningStoreForSession(ctx.sessionId);
   if (!resolved.ok) return resolved;
   const sdk = await loadAgentSdk();
@@ -455,6 +560,14 @@ async function handleLearningApprove(ctx: SlashHandlerContext): Promise<SlashHan
 async function handleLearningReject(ctx: SlashHandlerContext): Promise<SlashHandlerResult> {
   const target = ctx.args[1];
   if (!target) return { ok: false, message: learningHelp() };
+  if (usesRuntimeLearning(ctx.sessionId)) {
+    try {
+      await runtimeHostAdapter.controlLearnedCapability('reject', target);
+      return { ok: true, message: `Rejected learned capability ${target}.`, echo: true };
+    } catch {
+      return { ok: false, message: `Cannot reject learned capability ${target}.`, echo: true };
+    }
+  }
   const resolved = await resolveLearningStoreForSession(ctx.sessionId);
   if (!resolved.ok) return resolved;
   const sdk = await loadAgentSdk();
@@ -1479,12 +1592,12 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
       }
       // 走 session.setProvider 等价的 catalog 检查 (review F008 C1-sec)
       let shouldRefreshCustomRegistry = false;
+      let kodaxCustomProviders: Awaited<ReturnType<typeof loadKodaxCustomProviders>> = [];
       if (targetProvider !== 'mock' && !isBuiltinId(targetProvider)) {
         await providerConfigStore.load();
         const existsInSpaceStore = Boolean(providerConfigStore.getCustom(targetProvider));
-        const existsInKodaxConfig = (await loadKodaxCustomProviders()).some(
-          (p) => p.id === targetProvider,
-        );
+        kodaxCustomProviders = await loadKodaxCustomProviders();
+        const existsInKodaxConfig = kodaxCustomProviders.some((p) => p.id === targetProvider);
         if (!existsInSpaceStore && !existsInKodaxConfig) {
           return { ok: false, message: `unknown providerId: ${targetProvider}` };
         }
@@ -1494,6 +1607,8 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
         await registerKodaxCustomProviders(providerConfigStore.listCustom());
       }
       const providerInfo = getBuiltin(targetProvider);
+      const effectiveTargetModel =
+        targetModel ?? providerDescriptor(targetProvider, kodaxCustomProviders)?.defaultModel;
       if (
         targetModel &&
         providerInfo?.models?.length &&
@@ -1508,7 +1623,7 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
         ctx.sessionId,
         () => {
           const providerOk = kodaxHost.setProvider(ctx.sessionId, targetProvider);
-          return providerOk && kodaxHost.setModel(ctx.sessionId, targetModel);
+          return providerOk && kodaxHost.setModel(ctx.sessionId, effectiveTargetModel);
         },
         `provider -> ${targetProvider}${targetModel ? ` / ${targetModel}` : ''}`,
       );
@@ -1617,9 +1732,13 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
       // 'default' 清除 override
       const isClear = target === 'default';
       if (isClear) {
+        const defaultModel = providerDescriptor(
+          providerId,
+          await loadKodaxCustomProviders(),
+        )?.defaultModel;
         return commitRuntimeSlashMutation(
           ctx.sessionId,
-          () => kodaxHost.setModel(ctx.sessionId, undefined),
+          () => kodaxHost.setModel(ctx.sessionId, defaultModel),
           'model -> provider default (cleared override)',
         );
       }
@@ -1778,8 +1897,8 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
   {
     name: 'agent-mode',
     aliases: ['am'],
-    description: 'Switch agent mode (ama=explicit workflow / amaw=auto workflow / sa=single-agent)',
-    argsHint: '[ama|amaw|ama-workflow|sa|toggle]',
+    description: 'Switch agent mode (ama=adaptive multi-agent / sa=single-agent)',
+    argsHint: '[ama|sa|toggle]',
     source: 'builtin',
     handler: async (ctx) => {
       const session = kodaxHost.get(ctx.sessionId);
@@ -1788,15 +1907,22 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
       if (!raw) {
         return {
           ok: true,
-          message: `Agent mode: ${session.agentMode.toUpperCase()}\nUsage: /agent-mode [ama|amaw|ama-workflow|sa|toggle]`,
+          message: `Agent mode: ${session.agentMode.toUpperCase()}\nUsage: /agent-mode [ama|sa|toggle]`,
           echo: true,
         };
       }
       const parsed = normalizeAgentMode(raw);
+      if (parsed === 'retired') {
+        return {
+          ok: false,
+          message:
+            'AMAW was retired in KodaX 0.7.72; use AMA. Workflow remains available through explicit Workflow intent, /workflow, named patterns, and SDK requests.',
+        };
+      }
       if (!parsed) {
         return {
           ok: false,
-          message: `unknown agent mode '${raw}'; valid: ${AGENT_MODES.join(', ')}, ama-workflow, toggle`,
+          message: `unknown agent mode '${raw}'; valid: ${AGENT_MODES.join(', ')}, toggle`,
         };
       }
       const target = parsed === 'toggle' ? nextAgentMode(session.agentMode) : parsed;
@@ -2173,7 +2299,7 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
         // SDK parity (FEATURE_246 / ADR-047): `/workflow <free text>` whose first
         // word is neither a subcommand nor a known builtin/saved name is shorthand
         // for `create` — author a workflow from the request rather than hard-failing
-        // as "not found". (In an AMAW session, authoring natural-language workflow
+        // as "not found". (In an AMA session, authoring natural-language workflow
         // requests to the Worker via run_workflow is the richer scout-then-author
         // path; this host command uses the SDK generator, its sanctioned fallback.)
         const request = `${targetName} ${invocation.rawArgs}`.trim();
@@ -2486,11 +2612,27 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
           echo: true,
         };
       }
+      const runtimeSnapshot = runtimeHostAdapter.snapshot();
+      const runtimeSettings = runtimeHostAdapter.isRuntimeSelected()
+        ? await runtimeHostAdapter
+            .getSessionSettingsVersioned(ctx.sessionId)
+            .then((snapshot) => snapshot.value)
+            .catch(() => undefined)
+        : undefined;
+      const timeoutMs = runtimeSettings?.autoModeTimeoutMs ?? 20_000;
+      const classifierModel =
+        runtimeSettings?.autoModeClassifierModel ??
+        runtimeSettings?.model ??
+        session.model ??
+        '(provider default)';
       return {
         ok: true,
         message: [
           '[auto-mode classifier stats]',
           `  engine: ${session.autoModeEngine}`,
+          `  runtime: ${runtimeSnapshot.identity?.version ?? runtimeSnapshot.state}`,
+          `  classifier model: ${classifierModel}`,
+          `  timeout: ${timeoutMs}ms${runtimeSettings?.autoModeTimeoutMs === undefined ? ' (0.7.72 default)' : ''}`,
           '  thresholds:',
           '    consecutive blocks: 3',
           '    cumulative blocks: 20',

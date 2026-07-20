@@ -47,6 +47,58 @@ test('Partner effective config seeds a strictly Partner-owned revisioned snapsho
   assert.equal('runtimeId' in disk, false);
 });
 
+test('Partner effective config migrates a retired persisted AMAW mode to AMA', async (t) => {
+  const { dir, file, backup } = await fixture();
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  await fs.writeFile(
+    file,
+    JSON.stringify({
+      schemaVersion: 1,
+      surface: 'partner',
+      profileId: 'kodax-space.partner',
+      revision: 1,
+      updatedAt: 1,
+      source: 'space-settings',
+      effective: { ...SEED, agentMode: 'amaw' },
+    }),
+    'utf-8',
+  );
+
+  const loaded = await new PartnerEffectiveConfigStore(file, backup).loadOrSeed(SEED);
+  assert.equal(loaded.status, 'healthy');
+  assert.equal(loaded.snapshot.effective.agentMode, 'ama');
+  const migrated = JSON.parse(await fs.readFile(file, 'utf8')) as {
+    effective: { agentMode: string };
+  };
+  assert.equal(migrated.effective.agentMode, 'ama');
+});
+
+test('Partner effective config migrates the retired ama-workflow alias to AMA', async (t) => {
+  const { dir, file, backup } = await fixture();
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  await fs.writeFile(
+    file,
+    JSON.stringify({
+      schemaVersion: 1,
+      surface: 'partner',
+      profileId: 'kodax-space.partner',
+      revision: 1,
+      updatedAt: 1,
+      source: 'space-settings',
+      effective: { ...SEED, agentMode: 'ama-workflow' },
+    }),
+    'utf-8',
+  );
+
+  const loaded = await new PartnerEffectiveConfigStore(file, backup).loadOrSeed(SEED);
+  assert.equal(loaded.status, 'healthy');
+  assert.equal(loaded.snapshot.effective.agentMode, 'ama');
+  const migrated = JSON.parse(await fs.readFile(file, 'utf8')) as {
+    effective: { agentMode: string };
+  };
+  assert.equal(migrated.effective.agentMode, 'ama');
+});
+
 test('updates use revision CAS and preserve the previous snapshot as last known good', async (t) => {
   const { dir, backup, store } = await fixture();
   t.after(() => fs.rm(dir, { recursive: true, force: true }));

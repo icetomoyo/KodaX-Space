@@ -67,6 +67,7 @@ import {
   sdkTagToSurface,
 } from '../kodax/session-store.js';
 import { runtimeHostAdapter } from '../kodax/runtime-host-adapter.js';
+import { partnerSourceStore } from '../kodax/partner-source-store.js';
 import { parseTaskCompletedBlocks, selectWorkflowBlocks } from './workflow-result-notice.js';
 import { dedupeTranscriptEntries } from './transcript-dedup.js';
 import { resolveRuntimeDefaults } from '../kodax/runtime-defaults.js';
@@ -230,6 +231,12 @@ export function registerSessionChannels(): void {
     await assertProviderExists(input.provider);
     await ensureCustomProviderRegistered(input.provider);
     await ensureProviderKeyInjected(input.provider);
+    const kodaxCustomProviders =
+      input.provider !== 'mock' && !isBuiltinId(input.provider)
+        ? await loadKodaxCustomProviders()
+        : [];
+    const effectiveModel =
+      input.model ?? providerDescriptor(input.provider, kodaxCustomProviders)?.defaultModel;
     const runtimeDefaults = await resolveRuntimeDefaults({
       explicit: {
         reasoningMode: input.reasoningMode,
@@ -241,9 +248,9 @@ export function registerSessionChannels(): void {
     const { sessionId, createdAt } = kodaxHost.createSession({
       projectRoot,
       provider: input.provider,
-      // 生效 model（renderer 用 resolveActiveModel 解析后带上）→ 让 SDK 应用 per-model 能力
-      // （正确 contextWindow → 压缩窗口），修默认模型下过早压缩（2026-06-15 用户复报）。
-      ...(input.model !== undefined ? { model: input.model } : {}),
+      // Renderer usually supplies resolveActiveModel(), but main must still
+      // materialize the provider default when callers omit an explicit override.
+      ...(effectiveModel !== undefined ? { model: effectiveModel } : {}),
       reasoningMode: runtimeDefaults.reasoningMode,
       permissionMode: runtimeDefaults.permissionMode,
       autoModeEngine: runtimeDefaults.autoModeEngine,
@@ -310,6 +317,16 @@ export function registerSessionChannels(): void {
     });
     if (input.partnerPromptOverlay !== undefined && session.surface !== 'partner') {
       throw new Error('partnerPromptOverlay is only accepted for Partner sessions');
+    }
+    if (input.partnerRetrievalScope !== undefined) {
+      if (session.surface !== 'partner') {
+        throw new Error('partnerRetrievalScope is only accepted for Partner sessions');
+      }
+      await partnerSourceStore.setScope(
+        input.sessionId,
+        session.projectRoot,
+        input.partnerRetrievalScope,
+      );
     }
     kodaxHost.ensureTitle(input.sessionId, input.prompt);
     // send 是 fire-and-forget——立刻 ACK，事件流通过 push 推
@@ -524,14 +541,21 @@ export function registerSessionChannels(): void {
     await assertProviderExists(input.providerId);
     await ensureCustomProviderRegistered(input.providerId);
     await ensureProviderKeyInjected(input.providerId);
-    const ok = await commitRuntimeMutationForIpc(input.sessionId, () =>
-      kodaxHost.setProvider(input.sessionId, input.providerId),
-    );
+    const kodaxCustomProviders =
+      input.providerId !== 'mock' && !isBuiltinId(input.providerId)
+        ? await loadKodaxCustomProviders()
+        : [];
+    const defaultModel = providerDescriptor(input.providerId, kodaxCustomProviders)?.defaultModel;
+    const ok = await commitRuntimeMutationForIpc(input.sessionId, () => {
+      const providerOk = kodaxHost.setProvider(input.sessionId, input.providerId);
+      return providerOk && kodaxHost.setModel(input.sessionId, defaultModel);
+    });
     return { ok };
   });
 
   // session.setPermissionMode — FEATURE_029 canonical 3 mode
-  // 切 mode 立即生效（下次 tool call broker.request 走新 mode 短路）。
+  // Daemon Coder 会把设置提交给 Runtime，下一次具体 tool call 即按新 mode 决策；
+  // embedded / Partner / legacy 的 run-scoped guardrail 从下一轮 send 生效。
   registerChannel('session.setPermissionMode', async (input) => {
     const ok = await commitRuntimeMutationForIpc(input.sessionId, () =>
       kodaxHost.setPermissionMode(input.sessionId, input.mode),
@@ -541,7 +565,8 @@ export function registerSessionChannels(): void {
 
   // session.setAutoModeEngine — FEATURE_029
   // 切 auto mode 子档 engine ('llm' | 'rules')。即便当前 mode 不是 'auto' 也接受
-  // (用户先选 engine 再切 auto 是合法路径)，下次进入 auto 时按新 engine bootstrap guardrail。
+  // (用户先选 engine 再切 auto 是合法路径)。Daemon Coder 的下一次具体 tool call 即读取
+  // 新 engine；embedded / Partner / legacy 从下一轮 send 重新 bootstrap guardrail。
   registerChannel('session.setAutoModeEngine', async (input) => {
     const ok = await commitRuntimeMutationForIpc(input.sessionId, () =>
       kodaxHost.setAutoModeEngine(input.sessionId, input.engine),
@@ -549,7 +574,7 @@ export function registerSessionChannels(): void {
     return { ok };
   });
 
-  // session.setAgentMode — 切 KodaX agent 形态 (AMA / AMAW / SA)。
+  // session.setAgentMode — 切 KodaX agent 形态 (AMA / SA)。
   // AMA = 多 agent 协作（KodaX 默认）；SA = 单 agent 降级路径，接口并发受限时使用。
   // 切换不重启 in-flight session，下一条 prompt 走新形态。
   registerChannel('session.setAgentMode', async (input) => {

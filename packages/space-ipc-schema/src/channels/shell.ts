@@ -9,7 +9,7 @@
 // 为什么只做 reveal + openExternal，不做 shell.openPath（用默认程序打开任意文件）：
 //   showItemInFolder 只是"在 Explorer/Finder 里选中"——**永不执行**目标，哪怕它是 .exe。
 //   openPath 会用 OS 默认程序打开，对 .exe / .bat 等于执行，是 RCE 面，故本版不开。
-//   "在 App 内预览网页" 走 artifact.previewFile（沙盒 iframe），不碰 shell。
+//   "在 App 内预览网页" 走 File Viewer 的 files.read（沙盒 iframe），不碰 shell。
 //
 // 安全：
 //   - revealPath：path 必须绝对（或配 projectRoot 解析为绝对）；main 端 fs.access 存在才 reveal。
@@ -44,6 +44,23 @@ export const shellRevealPathChannel = {
   output: z.object({
     /** true=已 reveal；false=文件不存在或路径非法（main 端静默不抛）。 */
     revealed: z.boolean(),
+  }),
+} as const;
+
+// ---- Invoke: shell.openDirectory ----
+//
+// Open an allowlisted directory itself in Explorer/Finder. The main process
+// verifies that the resolved target exists and is a directory before calling
+// Electron shell.openPath, so this channel cannot execute arbitrary local files.
+export const shellOpenDirectoryChannel = {
+  name: 'shell.openDirectory',
+  direction: 'invoke',
+  input: z.object({
+    path: safePathSchema,
+    projectRoot: safePathSchema.optional(),
+  }),
+  output: z.object({
+    opened: z.boolean(),
   }),
 } as const;
 

@@ -339,9 +339,9 @@ test('list and get restore completed workflow runs from durable run.json', async
   }
 });
 
-test('list/get restore AMAW run_workflow runs whose id has the SDK "run-" prefix (regression)', async () => {
+test('list/get restore model-owned run_workflow runs whose id has the SDK "run-" prefix (regression)', async () => {
   // Regression: the durable-scan filter + run-dir path guard used to require a `wf_` prefix, so
-  // every AMAW run_workflow run (the SDK ids them `run-<...>`) was silently excluded from the
+  // every model-owned run_workflow run (the SDK ids them `run-<...>`) was silently excluded from the
   // disk scan and from get()/result — after a restart those runs, and all their transcript
   // notices + left/right-sidebar UI, disappeared, even though run.json + hostMetadata.sessionId
   // were correctly persisted on disk (the conversation was unaffected: separate SDK transcript).
@@ -376,7 +376,7 @@ test('list/get restore AMAW run_workflow runs whose id has the SDK "run-" prefix
     assert.equal(
       ctrl.list().find((r) => r.runId === runId)?.sessionId,
       's_amaw',
-      'run-<...> AMAW run must appear in list() after restart',
+      'run-<...> model-owned run must appear in list() after restart',
     );
     assert.equal(ctrl.list('s_amaw')[0]?.runId, runId);
     assert.equal(ctrl.get(runId)?.sessionId, 's_amaw');
@@ -1162,6 +1162,7 @@ test('forwarded payload + snapshot pass the IPC zod schema (no drift / field los
       (pushed[0] as { snapshot: unknown }).snapshot,
     );
     assert.ok(snapParsed.success);
+    assert.equal(snapParsed.success && snapParsed.data.source, 'command');
     assert.equal(snapParsed.success && snapParsed.data.tokens?.spent, 1234);
     assert.equal(snapParsed.success && snapParsed.data.hostMetadata?.sessionId, 's1');
   } finally {

@@ -57,7 +57,7 @@ function runtimeHostCapability(snapshot: RuntimeHostSnapshot): SpaceCapability {
   const failed = snapshot.state === 'failed';
   const identity = snapshot.identity;
   const detail = ready
-    ? `KodaX Runtime ${identity?.version ?? 'unknown'} ${identity?.mode ?? 'embedded'}/${identity?.isolation ?? 'inline'} owns managed runs; Space bridges permissions, Partner, MCP process lifecycle, and External Agent storage.`
+    ? `KodaX Runtime ${identity?.version ?? 'unknown'} ${identity?.mode ?? 'embedded'}/${identity?.isolation ?? 'inline'} owns Coder sessions, runs, settings, interactions, Workflow observation/control, Learning Center operations, catalog discovery, MCP tool discovery/reload, and configured External Agent Actor/Turns. Space retains Partner inline execution and the host-provider boundaries for MCP processes/logs, Workflow library/start/admin, Reference Agent execution, and product artifacts.`
     : legacy
       ? 'The internal legacy rollback host is selected before run start. No Runtime-managed run is active.'
       : failed
@@ -84,7 +84,7 @@ export function experimentalMemoryCapability(
       status: 'partial',
       detail:
         `The required KodaX 0.7.68 FEATURE_260 contract is available with policy ${capability.policyVersion}. ` +
-        'KodaX managed runs own silent scoped recall and governed outcome/review persistence over F228; Space v0.1.31 adds compatibility diagnostics while the full F117 Episodes, Activity, correction, and purge UX remains planned.',
+        'KodaX managed runs own silent scoped recall and governed outcome/review persistence over F228; Space v0.1.32 preserves compatibility diagnostics while the full F117 Episodes, Activity, correction, and purge UX remains planned.',
       since: '0.1.31',
     };
   }
@@ -174,7 +174,7 @@ function buildCapabilityLedger(
       label: 'Reference External Agent executor',
       status: 'supported',
       detail:
-        'KodaX 0.7.68 Reference Agent registrations, live preflight, Worker/Workflow routing, durable tasks, Task Dock interventions, and audit events are integrated. A2A, MCP Tasks, and governed HTTP remain capability-gated until their adapters ship.',
+        'KodaX 0.7.72 Runtime-configured External Agents use the daemon Actor/Turn control plane for Coder discovery, preflight, tasks, events, input, interruption, and reconciliation. Space Reference Agents remain a host-provider path with durable Task Dock behavior; MCP Tasks and governed HTTP remain gated until their adapters ship.',
       since: '0.1.30',
     },
   ];
@@ -198,7 +198,7 @@ export function registerVersionChannel(): void {
       platform,
       kodaxSdkVersion: readKodaxSdkVersion(),
       kodaxDependencySpec: readKodaxDependencySpec(),
-      capabilityContract: 'space-v0.1.31',
+      capabilityContract: 'space-v0.1.32',
       capabilities: buildCapabilityLedger(entitled, runtimeHostAdapter.snapshot()),
     };
   });

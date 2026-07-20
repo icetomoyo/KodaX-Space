@@ -1,8 +1,7 @@
-// Shell IPC handlers: reveal a file in the OS file manager / open an external URL.
+// Shell IPC handlers: reveal a file, open an allowed directory, or open an external URL.
 //
-// This deliberately exposes only showItemInFolder plus http(s) openExternal.
-// It does not expose shell.openPath, because opening arbitrary local paths can
-// execute .exe/.bat/etc via OS file associations.
+// openPath is exposed only behind a directory stat check. Arbitrary local files
+// remain blocked because opening .exe/.bat/etc via OS file associations is an RCE surface.
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -17,12 +16,14 @@ export interface ShellHandlerDeps {
   readonly isWin?: boolean;
   readonly realpath: (target: string) => Promise<string>;
   readonly access: (target: string) => Promise<void>;
+  readonly stat: (target: string) => Promise<{ readonly isDirectory: () => boolean }>;
   readonly listProjects: () => Promise<readonly { readonly path: string }[]>;
   readonly assertProjectAllowed: (projectRoot: string) => Promise<void>;
   readonly resolveInsideProject: (projectRoot: string, relativePath: string) => Promise<string>;
   readonly getKodaxDir: () => string;
   readonly getSpaceDataDir: () => string;
   readonly showItemInFolder: (target: string) => void;
+  readonly openPath: (target: string) => Promise<string>;
   readonly openExternal: (url: string) => Promise<void> | void;
 }
 
@@ -90,7 +91,14 @@ async function resolveRevealTarget(
 }
 
 export function createShellHandlers(deps: ShellHandlerDeps): {
-  readonly revealPath: (input: { readonly path: string; readonly projectRoot?: string }) => Promise<{ revealed: boolean }>;
+  readonly revealPath: (input: {
+    readonly path: string;
+    readonly projectRoot?: string;
+  }) => Promise<{ revealed: boolean }>;
+  readonly openDirectory: (input: {
+    readonly path: string;
+    readonly projectRoot?: string;
+  }) => Promise<{ opened: boolean }>;
   readonly openExternal: (input: { readonly url: string }) => Promise<{ opened: boolean }>;
 } {
   return {
@@ -111,6 +119,25 @@ export function createShellHandlers(deps: ShellHandlerDeps): {
       return { revealed: true };
     },
 
+    async openDirectory(input) {
+      let target: string | null;
+      try {
+        target = await resolveRevealTarget(input, deps);
+      } catch {
+        return { opened: false };
+      }
+      if (target === null) return { opened: false };
+
+      try {
+        const targetStat = await deps.stat(target);
+        if (!targetStat.isDirectory()) return { opened: false };
+        const errorMessage = await deps.openPath(target);
+        return { opened: errorMessage.length === 0 };
+      } catch {
+        return { opened: false };
+      }
+    },
+
     async openExternal(input) {
       let parsed: URL;
       try {
@@ -129,6 +156,7 @@ function defaultShellDeps(): ShellHandlerDeps {
   return {
     realpath: fs.realpath,
     access: fs.access,
+    stat: fs.stat,
     listProjects: () => projectStore.list(),
     assertProjectAllowed: async (projectRoot) => {
       await projectStore.assertAllowed(projectRoot);
@@ -137,6 +165,7 @@ function defaultShellDeps(): ShellHandlerDeps {
     getKodaxDir,
     getSpaceDataDir,
     showItemInFolder: (target) => getShell().showItemInFolder(target),
+    openPath: (target) => getShell().openPath(target),
     openExternal: (url) => getShell().openExternal(url),
   };
 }
@@ -145,5 +174,6 @@ export function registerShellChannels(): void {
   const handlers = createShellHandlers(defaultShellDeps());
 
   registerChannel('shell.revealPath', (input) => handlers.revealPath(input));
+  registerChannel('shell.openDirectory', (input) => handlers.openDirectory(input));
   registerChannel('shell.openExternal', (input) => handlers.openExternal(input));
 }

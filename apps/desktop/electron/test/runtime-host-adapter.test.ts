@@ -11,6 +11,11 @@ import type {
   RuntimeRunResult,
 } from '@kodax-ai/kodax/runtime';
 import { RuntimeHostAdapter, resolveRuntimeHostMode } from '../kodax/runtime-host-adapter.js';
+import { kodaxHost } from '../kodax/host.js';
+import {
+  SessionRuntimeStore,
+  setSessionRuntimeStoreForTesting,
+} from '../kodax/session-runtime-store.js';
 import {
   loadPersistedTranscript,
   setSessionStoreImpl,
@@ -21,9 +26,11 @@ import {
   RuntimeProjectionUnavailableError,
   createPendingSdkRuntimeProjection,
 } from '../kodax/runtime/runtime-projection-controller.js';
+import { encodeRuntimeActorTaskId } from '../kodax/runtime/runtime-agent-projection.js';
 
 afterEach(() => {
   setSessionStoreImpl(null);
+  setSessionRuntimeStoreForTesting(null);
 });
 
 const testIdentityStore = {
@@ -55,7 +62,11 @@ function createFakeRuntime() {
     close: 0,
     observationCloses: 0,
     observed: [] as string[],
-    settingsUpdates: [] as unknown[],
+    settingsUpdates: [] as Array<{
+      sessionId: string;
+      patch: Record<string, unknown>;
+      options: { expectedRevision: number };
+    }>,
     credentialRegistrations: [] as unknown[],
     credentialBrokers: [] as Array<
       (request: {
@@ -70,6 +81,9 @@ function createFakeRuntime() {
     submitted: [] as unknown[],
     daemonInspections: 0,
     daemonStops: [] as unknown[],
+    permissionGrantRevokes: [] as Array<{ grantId: string; expectedRevision: number }>,
+    workflowControls: [] as Array<{ action: string; runId: string }>,
+    learningControls: [] as Array<{ action: string; nameOrSlug: string }>,
   };
   const sessions = new Set<string>();
   const settings = new Map<string, { revision: number; value: Record<string, unknown> }>();
@@ -89,11 +103,13 @@ function createFakeRuntime() {
       mode: 'daemon',
       profile: 'coder',
       startedAt: '2026-07-12T00:00:00.000Z',
-      version: '0.7.71',
+      version: '0.7.72',
       isolation: 'process',
     },
     capabilities: {
       externalAgentAdmin: { version: 1 },
+      actorControlPlane: { version: 1, methodNamespace: 'agents' },
+      learningCenter: { version: 1 },
       a2aConfigReconciler: { version: 1 },
       operationDeduplication: { version: 1, retentionMs: 900_000 },
       sessionObservation: { version: 1, maxBufferedEvents: 256 },
@@ -124,6 +140,8 @@ function createFakeRuntime() {
       'run:control',
       'interaction:respond',
       'permission:respond',
+      'learning:read',
+      'learning:control',
       'credential:register',
       'host-tool:register',
       'owner:admin',
@@ -247,7 +265,23 @@ function createFakeRuntime() {
       },
     },
     events: { subscribe: () => ({ close() {} }), replay: async () => [] },
-    permissions: { listPending: async () => [] },
+    permissions: {
+      listPending: async () => [],
+      listGrants: async () => ({
+        revision: 3,
+        value: [
+          {
+            id: 'grant_1',
+            scope: { toolName: 'bash', sessionId: 's_1' },
+            createdAt: '2026-07-12T00:00:00.000Z',
+          },
+        ],
+      }),
+      revokeGrant: async (grantId: string, expectedRevision: number) => {
+        calls.permissionGrantRevokes.push({ grantId, expectedRevision });
+        return true;
+      },
+    },
     userInputs: { listPending: async () => [] },
     credentials: {
       register: async (
@@ -285,7 +319,43 @@ function createFakeRuntime() {
         throw new Error('operation not found');
       },
     },
-    workflows: {},
+    workflows: {
+      list: async () => [],
+      get: async () => undefined,
+      subscribe: () => ({ ready: Promise.resolve(), close() {} }),
+      pause: async (runId: string) => {
+        calls.workflowControls.push({ action: 'pause', runId });
+        return true;
+      },
+      resume: async (runId: string) => {
+        calls.workflowControls.push({ action: 'resume', runId });
+        return true;
+      },
+      stop: async (runId: string) => {
+        calls.workflowControls.push({ action: 'stop', runId });
+        return true;
+      },
+    },
+    learning: {
+      list: async () => ({ items: [], revision: 1 }),
+      get: async (nameOrSlug: string) => ({ slug: nameOrSlug }),
+      getSnapshot: async () => ({ ready: 0, newlyActive: 0, attention: 0, active: 0, revision: 1 }),
+      review: async (nameOrSlug: string) => {
+        calls.learningControls.push({ action: 'review', nameOrSlug });
+      },
+      trust: async (nameOrSlug: string) => {
+        calls.learningControls.push({ action: 'trust', nameOrSlug });
+      },
+      reject: async (nameOrSlug: string) => {
+        calls.learningControls.push({ action: 'reject', nameOrSlug });
+      },
+      disable: async (nameOrSlug: string) => {
+        calls.learningControls.push({ action: 'disable', nameOrSlug });
+      },
+      rollback: async (nameOrSlug: string) => {
+        calls.learningControls.push({ action: 'rollback', nameOrSlug });
+      },
+    },
     config: {},
     catalog: {},
     mcp: {},
@@ -307,7 +377,7 @@ function createFakeRuntime() {
         activeRuns: [],
         queuedRuns: [],
         activeWorkflows: [],
-        activeAgentTasks: [],
+        activeAgentTurns: [],
         pendingPermissions: [],
         pendingUserInputs: [],
         blockers: [],
@@ -337,6 +407,7 @@ function createFakeRuntime() {
             activeRuns: [],
             queuedRuns: [],
             activeWorkflows: [],
+            activeAgentTurns: [],
             activeAgentTasks: [],
             pendingPermissions: [],
             pendingUserInputs: [],
@@ -364,13 +435,12 @@ function createFakeRuntime() {
       subscribe: (listener: (state: RuntimeConnectionState) => void) => {
         connectionListeners.add(listener);
         listener(connectionState);
-        return { close: () => connectionListeners.delete(listener) };
+        return { ready: Promise.resolve(), close: () => connectionListeners.delete(listener) };
       },
     },
     diagnostics: {},
     admin: { agentRegistrations: {} },
     agents: { enabled: false },
-    agentTasks: {},
     async close() {
       calls.close += 1;
     },
@@ -536,6 +606,8 @@ test('runtime selection attaches one Coder daemon with stable identity and requi
   assert.equal(options[0]?.requirements?.sessionObservation, 1);
   assert.equal(options[0]?.requirements?.externalAgents, true);
   assert.equal(options[0]?.requirements?.externalAgentAdmin, 1);
+  assert.equal(options[0]?.requirements?.actorControlPlane, 1);
+  assert.equal(options[0]?.requirements?.learningCenter, 1);
   assert.equal(options[0]?.requirements?.a2aConfigReconciler, 1);
   assert.equal(options[0]?.requirements?.coderFeatureMatrix, 1);
   assert.equal(options[0]?.requirements?.sessionAdmission, 1);
@@ -568,6 +640,66 @@ test('runtime selection attaches one Coder daemon with stable identity and requi
   );
   assert.equal((await adapter.preflightDaemonStop()).canStop, true);
   assert.equal(fake.calls.daemonInspections, 1);
+});
+
+test('transient unhealthy daemon startup retries until the existing safety window clears', async () => {
+  const fake = createFakeRuntime();
+  let factoryCalls = 0;
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => {
+      factoryCalls += 1;
+      if (factoryCalls === 1) {
+        throw new Error('Runtime daemon is unhealthy; refusing to start a competing owner.');
+      }
+      return fake.runtime;
+    },
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+  (adapter as unknown as { reconnectAttempt: number }).reconnectAttempt = -10;
+
+  await assert.rejects(adapter.initialize(), /daemon is unhealthy/);
+  assert.equal(adapter.snapshot().state, 'failed');
+
+  const deadline = Date.now() + 2_000;
+  while (!adapter.hasReadyRuntime() && Date.now() < deadline) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+  }
+
+  assert.equal(factoryCalls, 2);
+  assert.equal(adapter.hasReadyRuntime(), true);
+  await adapter.close();
+});
+
+test('transient startup retry stops if the daemon then reports a permanent incompatibility', async () => {
+  let factoryCalls = 0;
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => {
+      factoryCalls += 1;
+      if (factoryCalls === 1) {
+        throw new Error('Runtime daemon is unhealthy; refusing to start a competing owner.');
+      }
+      throw new Error('Coder daemon capability upgrade required.');
+    },
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+  (adapter as unknown as { reconnectAttempt: number }).reconnectAttempt = -10;
+
+  await assert.rejects(adapter.initialize(), /daemon is unhealthy/);
+  const deadline = Date.now() + 500;
+  while (factoryCalls < 2 && Date.now() < deadline) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  }
+  await new Promise<void>((resolve) => setTimeout(resolve, 50));
+
+  assert.equal(factoryCalls, 2);
+  assert.match(adapter.snapshot().error ?? '', /capability upgrade required/i);
+  await adapter.close();
 });
 
 test('daemon rollback commits one inspected revision, waits for release, and restores owner explicitly', async () => {
@@ -1007,10 +1139,31 @@ test('initialization closes a constructed Runtime when host-tool registration fa
   assert.equal(fake.calls.close, 1);
 });
 
+test('initialization rejects a daemon older than the KodaX 0.7.72 release baseline', async () => {
+  const fake = createFakeRuntime();
+  (fake.runtime.identity as { version: string }).version = '0.7.69';
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+  });
+
+  await assert.rejects(
+    adapter.initialize(),
+    /0\.7\.69.*required 0\.7\.72.*Restart the Coder daemon/i,
+  );
+  assert.equal(adapter.snapshot().state, 'failed');
+  assert.equal(fake.calls.close, 1);
+});
+
 test('session settings use revisioned CAS and skip unchanged values', async () => {
   const fake = createFakeRuntime();
   fake.sessions.add('s_1');
-  fake.settings.set('s_1', { revision: 2, value: { provider: 'anthropic' } });
+  fake.settings.set('s_1', {
+    revision: 2,
+    value: { provider: 'anthropic', autoModeTimeoutMs: 20_000 },
+  });
   const adapter = new RuntimeHostAdapter({
     mode: 'runtime',
     profileRoot: path.resolve('C:\\isolated-profile'),
@@ -1020,18 +1173,58 @@ test('session settings use revisioned CAS and skip unchanged values', async () =
 
   await adapter.updateSessionSettings('s_1', { provider: 'anthropic' });
   assert.equal(fake.calls.settingsUpdates.length, 0);
+  await adapter.updateSessionSettings('s_1', { model: null, thinking: null });
+  assert.equal(
+    fake.calls.settingsUpdates.length,
+    0,
+    'clearing already-absent values must not consume a settings revision',
+  );
   await adapter.updateSessionSettings('s_1', {
     model: 'claude-next',
-    agentMode: 'amaw',
+    agentMode: 'ama',
     autoModeEngine: 'rules',
   });
   assert.deepEqual(fake.calls.settingsUpdates, [
     {
       sessionId: 's_1',
-      patch: { model: 'claude-next', agentMode: 'amaw', autoModeEngine: 'rules' },
+      patch: { model: 'claude-next', agentMode: 'ama', autoModeEngine: 'rules' },
       options: { expectedRevision: 2 },
     },
   ]);
+
+  await adapter.updateSessionSettings('s_1', { model: null, thinking: null });
+  assert.deepEqual(fake.calls.settingsUpdates.at(-1), {
+    sessionId: 's_1',
+    patch: { model: null, thinking: null },
+    options: { expectedRevision: 3 },
+  });
+  assert.equal(fake.settings.get('s_1')?.value.model, undefined);
+});
+
+test('concurrent session settings updates serialize their revisioned CAS writes', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_1');
+  fake.settings.set('s_1', { revision: 2, value: { autoModeTimeoutMs: 20_000 } });
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+  });
+
+  await Promise.all([
+    adapter.updateSessionSettings('s_1', { permissionMode: 'auto' }),
+    adapter.updateSessionSettings('s_1', { autoModeEngine: 'llm' }),
+  ]);
+
+  assert.deepEqual(
+    fake.calls.settingsUpdates.map(({ options }) => options.expectedRevision),
+    [2, 3],
+  );
+  assert.deepEqual(fake.settings.get('s_1'), {
+    revision: 4,
+    value: { autoModeTimeoutMs: 20_000, permissionMode: 'auto', autoModeEngine: 'llm' },
+  });
 });
 
 test('session settings admit a missing Coder session before its first send', async () => {
@@ -1041,6 +1234,11 @@ test('session settings admit a missing Coder session before its first send', asy
     profileRoot: path.resolve('C:\\isolated-profile'),
     runtimeFactory: async () => fake.runtime,
     identityStore: testIdentityStore,
+    autoModeDefaultsResolver: async () => ({
+      engine: 'llm',
+      classifierModel: 'fast-provider:classifier',
+      timeoutMs: 27_000,
+    }),
   });
   const patch = {
     provider: 'openai',
@@ -1072,10 +1270,103 @@ test('session settings admit a missing Coder session before its first send', asy
   assert.deepEqual(fake.calls.settingsUpdates, [
     {
       sessionId: 's_new',
-      patch,
+      patch: {
+        ...patch,
+        autoModeClassifierModel: 'fast-provider:classifier',
+        autoModeTimeoutMs: 27_000,
+      },
       options: { expectedRevision: 0 },
     },
   ]);
+});
+
+test('Auto LLM defaults fill missing settings without overwriting daemon session values', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_1');
+  fake.settings.set('s_1', {
+    revision: 4,
+    value: {
+      provider: 'anthropic',
+      autoModeClassifierModel: 'other-client:classifier',
+      autoModeTimeoutMs: 45_000,
+    },
+  });
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    autoModeDefaultsResolver: async () => ({
+      engine: 'llm',
+      classifierModel: 'space-default:classifier',
+      timeoutMs: 20_000,
+    }),
+  });
+
+  await adapter.updateSessionSettings('s_1', { permissionMode: 'auto' });
+
+  assert.deepEqual(fake.calls.settingsUpdates, [
+    {
+      sessionId: 's_1',
+      patch: { permissionMode: 'auto' },
+      options: { expectedRevision: 4 },
+    },
+  ]);
+  assert.equal(fake.settings.get('s_1')?.value.autoModeClassifierModel, 'other-client:classifier');
+  assert.equal(fake.settings.get('s_1')?.value.autoModeTimeoutMs, 45_000);
+});
+
+test('Auto LLM default reconciliation retries CAS and preserves a concurrent client update', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_1');
+  fake.settings.set('s_1', { revision: 0, value: {} });
+  const update = fake.runtime.sessions.updateSettingsVersioned.bind(fake.runtime.sessions);
+  let raced = false;
+  fake.runtime.sessions.updateSettingsVersioned = async (sessionId, patch, options) => {
+    if (!raced) {
+      raced = true;
+      fake.settings.set(sessionId, {
+        revision: 1,
+        value: {
+          autoModeClassifierModel: 'other-client:classifier',
+          autoModeTimeoutMs: 45_000,
+        },
+      });
+      const error = new Error(
+        `Session settings revision ${options.expectedRevision} is stale; current revision is 1`,
+      ) as Error & { code: string };
+      error.code = 'revision_conflict';
+      throw error;
+    }
+    return update(sessionId, patch, options);
+  };
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    autoModeDefaultsResolver: async () => ({
+      engine: 'llm',
+      classifierModel: 'space-default:classifier',
+      timeoutMs: 20_000,
+    }),
+  });
+
+  await adapter.updateSessionSettings('s_1', { permissionMode: 'auto' });
+
+  assert.deepEqual(fake.settings.get('s_1'), {
+    revision: 2,
+    value: {
+      autoModeClassifierModel: 'other-client:classifier',
+      autoModeTimeoutMs: 45_000,
+      permissionMode: 'auto',
+    },
+  });
+  assert.deepEqual(fake.calls.settingsUpdates.at(-1), {
+    sessionId: 's_1',
+    patch: { permissionMode: 'auto' },
+    options: { expectedRevision: 1 },
+  });
 });
 
 test('Space-started runs receive scoped credential and host-tool leases', async () => {
@@ -1211,4 +1502,221 @@ test('deleting a session closes and removes its authoritative live observation',
   assert.throws(() => controller.sessionLiveSnapshot('s_1'), RuntimeProjectionUnavailableError);
   await adapter.close();
   assert.equal(fake.calls.observationCloses, 1);
+});
+
+test('observation with an omitted model keeps a concrete provider default for Auto LLM', async (t) => {
+  class NoopRuntimeStore extends SessionRuntimeStore {
+    override async set(): Promise<boolean> {
+      return true;
+    }
+  }
+
+  await kodaxHost.disposeAll();
+  setSessionRuntimeStoreForTesting(new NoopRuntimeStore(path.resolve('C:\\unused')));
+  t.after(async () => {
+    setSessionRuntimeStoreForTesting(null);
+    await kodaxHost.disposeAll();
+  });
+  kodaxHost.createSession({
+    existingSessionId: 's_auto_default_model',
+    projectRoot: path.resolve('C:\\project'),
+    provider: 'zai-coding',
+    permissionMode: 'auto',
+    autoModeEngine: 'llm',
+  });
+
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_auto_default_model');
+  fake.settings.set('s_auto_default_model', {
+    revision: 0,
+    value: {
+      provider: 'zai-coding',
+      effort: 'high',
+      permissionMode: 'auto',
+      autoModeEngine: 'llm',
+    },
+  });
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  await adapter.ensureObserved('s_auto_default_model');
+
+  assert.equal(kodaxHost.get('s_auto_default_model')?.model, 'glm-5.2');
+  assert.equal(kodaxHost.get('s_auto_default_model')?.reasoningMode, 'deep');
+  await adapter.close();
+});
+
+test('Runtime permission grants keep their CAS revision for listing and revocation', async () => {
+  const fake = createFakeRuntime();
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+  });
+
+  assert.deepEqual(await adapter.listPermissionGrants(), {
+    revision: 3,
+    value: [
+      {
+        id: 'grant_1',
+        scope: { toolName: 'bash', sessionId: 's_1' },
+        createdAt: '2026-07-12T00:00:00.000Z',
+      },
+    ],
+  });
+  assert.equal(await adapter.revokePermissionGrant('grant_1', 3), true);
+  assert.deepEqual(fake.calls.permissionGrantRevokes, [
+    { grantId: 'grant_1', expectedRevision: 3 },
+  ]);
+  await adapter.close();
+});
+
+test('Runtime workflow reads and lifecycle controls use the daemon service', async () => {
+  const fake = createFakeRuntime();
+  const snapshot = {
+    runId: 'workflow_1',
+    workflowName: 'review',
+    status: 'running',
+    startedAt: '2026-07-12T00:00:00.000Z',
+    updatedAt: '2026-07-12T00:00:01.000Z',
+    hostMetadata: { sessionId: 's_1', surface: 'code', projectRoot: 'C:\\repo' },
+    items: [],
+    counts: { pending: 0, running: 0, completed: 0, failed: 0, cancelled: 0, skipped: 0 },
+    progress: {
+      spawnedAgents: 0,
+      finishedAgents: 0,
+      activeAgents: 0,
+      failedAgents: 0,
+      stoppedAgents: 0,
+    },
+  };
+  fake.runtime.workflows.list = async () => [snapshot] as never;
+  fake.runtime.workflows.get = async (runId: string) =>
+    (runId === snapshot.runId ? snapshot : undefined) as never;
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+  });
+
+  assert.equal((await adapter.listWorkflows({ sessionId: 's_1' }))[0]?.runId, 'workflow_1');
+  assert.equal((await adapter.getWorkflow('workflow_1'))?.projectRoot, 'C:\\repo');
+  assert.equal(await adapter.controlWorkflow('pause', 'workflow_1'), true);
+  assert.deepEqual(fake.calls.workflowControls, [{ action: 'pause', runId: 'workflow_1' }]);
+  await adapter.close();
+});
+
+test('Runtime learning controls are routed through the shared daemon', async () => {
+  const fake = createFakeRuntime();
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+  });
+
+  assert.deepEqual(await adapter.listLearnedCapabilities(), { items: [], revision: 1 });
+  await adapter.controlLearnedCapability('trust', 'learned-capability');
+  assert.deepEqual(fake.calls.learningControls, [
+    { action: 'trust', nameOrSlug: 'learned-capability' },
+  ]);
+  await adapter.close();
+});
+
+test('Runtime external Agent mutations validate session Actor/Turn ownership before control', async () => {
+  const fake = createFakeRuntime();
+  const operations: string[] = [];
+  const detail = {
+    actor: {
+      path: '/external/reviewer',
+      taskName: 'external-reviewer',
+      objective: 'Review the patch',
+      kind: 'external',
+      state: 'running',
+      createdAt: '2026-07-12T00:00:00.000Z',
+      updatedAt: '2026-07-12T00:00:01.000Z',
+    },
+    turns: [
+      {
+        turnId: 'turn_1',
+        objective: 'Review the patch',
+        state: 'running',
+        createdAt: '2026-07-12T00:00:00.000Z',
+        metadata: { agentId: 'reviewer', protocol: 'a2a' },
+      },
+    ],
+  };
+  Object.assign(fake.runtime.agents as unknown as Record<string, unknown>, {
+    detail: async () => {
+      operations.push('detail');
+      return detail;
+    },
+    output: async () => {
+      operations.push('output');
+      return { state: 'running', progress: [] };
+    },
+    send: async () => {
+      operations.push('send');
+    },
+    interrupt: async () => {
+      operations.push('interrupt');
+    },
+  });
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+  });
+  const taskId = encodeRuntimeActorTaskId({
+    actorPath: '/external/reviewer',
+    turnId: 'turn_1',
+  });
+
+  await adapter.sendRuntimeActorTaskInput('s_1', taskId, 'Continue');
+  assert.deepEqual(operations, ['detail', 'send', 'detail', 'output']);
+  operations.length = 0;
+
+  await adapter.cancelRuntimeActorTask('s_1', taskId, 'User requested');
+  assert.deepEqual(operations, ['detail', 'interrupt', 'detail', 'output']);
+  operations.length = 0;
+
+  const unknownTaskId = encodeRuntimeActorTaskId({
+    actorPath: '/external/reviewer',
+    turnId: 'turn_missing',
+  });
+  await assert.rejects(
+    adapter.sendRuntimeActorTaskInput('s_1', unknownTaskId, 'Do not send'),
+    /does not belong to the selected session/,
+  );
+  assert.deepEqual(operations, ['detail']);
+  await adapter.close();
+});
+
+test('daemon capability upgrade failures explain restart and active blockers', async () => {
+  const error = Object.assign(new Error('runtimeAutoModeGuardrail requires a newer daemon'), {
+    code: 'daemon_capability_upgrade_required',
+    recoverable: true,
+    restartRequired: true,
+    preflight: { blockers: ['active_runs', 'pending_interactions'] },
+  });
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => Promise.reject(error),
+    identityStore: testIdentityStore,
+  });
+
+  await assert.rejects(adapter.initialize(), /runtimeAutoModeGuardrail/);
+  assert.match(adapter.snapshot().error ?? '', /capability upgrade required/i);
+  assert.match(adapter.snapshot().error ?? '', /Restart the Coder daemon/i);
+  assert.match(adapter.snapshot().error ?? '', /active_runs, pending_interactions/);
+  await adapter.close();
 });

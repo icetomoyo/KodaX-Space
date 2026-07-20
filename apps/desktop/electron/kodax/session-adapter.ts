@@ -68,6 +68,15 @@ export type SendOptions = {
   readonly promptOverlay?: string;
 };
 
+export type SessionDisposeOptions = {
+  /**
+   * Abort a Coder Runtime run started by this Space session before releasing
+   * local resources. App shutdown sets this to false because the shared daemon
+   * owns accepted run lifetime; user-driven deletion keeps the default true.
+   */
+  readonly abortRuntimeRun?: boolean;
+};
+
 export interface ManagedSession {
   readonly sessionId: string;
   readonly projectRoot: string;
@@ -175,9 +184,10 @@ export interface ManagedSession {
    * 释放 session 持有的所有资源。
    *   - dispose 后该 session 不应再被任何调用方使用（host 已从 Map 删除）。
    *   - 实现**必须**幂等：disposeAll 兜底 + 用户多次 delete 同一 session 都不应 throw。
-   *   - Real adapter 还**必须**关闭 FileSessionStorage 句柄 / HTTP stream / abort 所有 in-flight。
+   *   - Real adapter 还**必须**关闭本地资源。用户删除默认终止本客户端启动的
+   *     Runtime run；正常应用退出可显式选择 detach，让共享 daemon 继续运行。
    */
-  dispose(): Promise<void>;
+  dispose(options?: SessionDisposeOptions): Promise<void>;
 }
 
 /** session 工厂函数签名，便于 KodaXHost 注入不同实现（Mock vs Real）。*/

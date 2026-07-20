@@ -766,7 +766,7 @@ app
     registerTerminalChannels();
     // OC-31 v0.1.9 clipboard image paste — renderer 把粘贴板图片落到 app temp dir
     registerClipboardChannels();
-    // 2026-06-18 shell 出口：shell.revealPath（文件管理器定位）+ shell.openExternal（系统浏览器开 URL）。
+    // Shell exits: reveal files, enter allowlisted directories, and open http(s) URLs.
     // 让 renderer 里到处的文件路径 / URL 死文本变成可点击（用户反馈）。
     registerShellChannels();
     // Artifact 数据层（F057，LC-free）：create/list/read/delete/export + openWindow。
@@ -940,9 +940,11 @@ app.on('before-quit', (event) => {
     disposeMcpManager().catch((err) =>
       console.warn('[main] mcp shutdown:', err instanceof Error ? err.message : err),
     ),
-    // KodaX in-flight session：abort + drain queue（dispose 本身很快，不 await SDK 后台 run）。
+    // KodaX in-flight sessions: detach shared-daemon Coder runs while draining
+    // Space-owned queues and local resources. Accepted run lifetime belongs to
+    // the daemon and must survive a normal Space restart.
     kodaxHost
-      .disposeAll()
+      .disposeAll({ detachRuntimeRuns: true })
       .catch((err) =>
         console.error('[main] disposeAll on quit:', err instanceof Error ? err.message : err),
       ),

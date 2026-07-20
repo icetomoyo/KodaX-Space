@@ -39,7 +39,6 @@ const workflowProcessSummaryStatusSchema = z.enum(['pending', 'result', 'notice'
 
 const workflowProcessSourceSchema = z.enum([
   'command',
-  'amaw',
   'review',
   'sdk',
   'capsule',

@@ -150,3 +150,27 @@ test('resolveSessionCreateInputs ignores stale pending model from another provid
   assert.equal(out.provider, 'space-default');
   assert.equal(out.model, 'space-default-model');
 });
+
+test('resolveSessionCreateInputs reflects the KodaX Auto LLM engine when Space has no override', () => {
+  const out = resolveSessionCreateInputs({
+    projectRoot: '/repo',
+    providers: [provider('kodax-default', true, 'kodax-model')],
+    defaultProviderId: null,
+    kodaxDefaults: {
+      provider: 'kodax-default',
+      model: 'kodax-model',
+      autoModeEngine: 'rules',
+      autoModeTimeoutMs: 20_000,
+      customProvidersCount: 0,
+    },
+    pendingProviderId: null,
+    pendingReasoningMode: null,
+    pendingPermissionMode: null,
+    pendingAutoModeEngine: null,
+    pendingAgentMode: null,
+    pendingModel: null,
+  });
+
+  assert.equal(out.autoModeEngine, 'rules');
+  assert.deepEqual(out.runtimeOverrides, {});
+});

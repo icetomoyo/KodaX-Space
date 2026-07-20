@@ -183,9 +183,9 @@ const MAX_ORIGINS = 500;
 // Path-safety guard for a durable run-dir name / renderer-supplied runId: it must be a single
 // filename token (no separators, no `.`/`..`) so path.join(runBaseDir, runId) can't escape the
 // base dir. It is NOT an "is this a Space-generated id" check — it MUST accept both Space's own
-// `wf_<uuid>` ids and the SDK's AMAW run_workflow ids of the form `run-<...>`.
+// `wf_<uuid>` ids and the SDK's model-owned run_workflow ids of the form `run-<...>`.
 //
-// Regression fix: the old `^wf_...` form silently excluded every `run-...` AMAW run from the
+// Regression fix: the old `^wf_...` form silently excluded every model-owned `run-...` run from the
 // durable disk scan (listDurableWorkflowSnapshots) and the get()/result path resolver — so after
 // a restart those runs, and all their transcript notices + left/right-sidebar UI, disappeared,
 // even though their run.json and hostMetadata.sessionId were correctly persisted on disk. The
@@ -307,12 +307,32 @@ function normalizeWorkflowArtifact(artifact: unknown): unknown {
   return next;
 }
 
+function normalizeWorkflowProcessSource(value: unknown): WorkflowRunT['source'] | undefined {
+  // KodaX 0.7.72 retired AMAW. Historical records remain readable, but their
+  // provenance is exposed through the canonical explicit-command source.
+  if (value === 'amaw') return 'command';
+  if (
+    value === 'command' ||
+    value === 'review' ||
+    value === 'sdk' ||
+    value === 'capsule' ||
+    value === 'extension' ||
+    value === 'automation'
+  ) {
+    return value;
+  }
+  return undefined;
+}
+
 function normalizeWorkflowSnapshot(
   snapshot: SdkProcessSnapshot,
   extraPatterns?: readonly string[],
 ): WorkflowRunT {
   const raw = snapshot as Record<string, unknown>;
   const next: Record<string, unknown> = { ...raw };
+  const source = normalizeWorkflowProcessSource(raw.source);
+  if (source === undefined) delete next.source;
+  else next.source = source;
   for (const key of SNAPSHOT_SHORT_FIELDS) {
     const value = clampPlainText(raw[key], IPC_SHORT_MAX);
     if (value !== undefined) next[key] = value;
@@ -1073,7 +1093,7 @@ export class WorkflowController {
 
   /**
    * 初始化:加载持久化归属 + 订阅 run manager 的进程事件流 + 建生命周期控制器。
-   * manager/lifecycle 缺省 lazy-load 真 SDK(与 AMAW/REPL 共享进程单例);测试注入 fake。
+   * manager/lifecycle 缺省 lazy-load 真 SDK(与 AMA/REPL 共享进程单例);测试注入 fake。
    * 注:仅当 manager 未注入(生产路径)时才自动建真 lifecycle——避免拿 fake manager 去
    * 实例化真 SDK 控制器。测试需要控制能力时显式注入 lifecycle。
    * 幂等:重复 init 先解订阅旧的。
@@ -1791,7 +1811,7 @@ export class WorkflowController {
         s.model ?? undefined,
       ) ?? [];
     // C2: forward the user-configured Workflow Host Policy so maxAgents/maxConcurrency/tokenBudget
-    // caps actually bound explicit /workflow runs (mirrors the AMAW run_workflow path in real-session).
+    // caps actually bound explicit /workflow runs (mirrors the AMA run_workflow path in real-session).
     const policy = workflowPolicyStore.get();
     // Repo-intelligence is a LICENSED capability, and EVERY workflow-launch path funnels
     // through launchOptions() — so this is the single gate for /workflow, the Workflow
@@ -1823,7 +1843,7 @@ export class WorkflowController {
         ...(externalAgentBinding !== undefined ? { agentExecutorPlane: externalAgentBinding } : {}),
       },
       // Host policy shape (incl. "tokenBudget 0 = unlimited", KodaX 0.7.59) is single-sourced
-      // in buildWorkflowHostPolicy — mirrors the AMAW run_workflow path in real-session.ts.
+      // in buildWorkflowHostPolicy — mirrors the AMA run_workflow path in real-session.ts.
       workflowHostPolicy: buildWorkflowHostPolicy(policy),
       workflow: { maxConcurrency: policy.maxConcurrency },
     };
@@ -2232,7 +2252,7 @@ function savedWorkflowDirs(projectRoot?: string): { personal: string; project?: 
   };
 }
 
-/** Lazy-load SDK 的进程级 run manager 单例(与 AMAW/REPL 共享同一实例)。*/
+/** Lazy-load SDK 的进程级 run manager 单例(与 AMA/REPL 共享同一实例)。*/
 function asRecord(value: unknown, label: string): Record<string, unknown> {
   if (typeof value !== 'object' || value === null) {
     throw new Error(`${label} must be an object`);

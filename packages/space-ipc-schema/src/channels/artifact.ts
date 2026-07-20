@@ -374,10 +374,8 @@ const artifactPreviewFilePayloadSchema = z
 
 // ---- Invoke: artifact.previewFile ----
 //
-// Read-only file preview payload for the Artifact surface. This must not write to
-// ArtifactStore: merely opening a project file is a temporary viewer action, not a
-// generated deliverable. Durable list entries are created by artifact.create /
-// create_artifact, or by future explicit "promote" flows.
+// Legacy read-only Artifact-surface preview payload. File Viewer no longer calls
+// this channel; it uses files.read/files.readBinary and therefore needs no Session.
 export const artifactPreviewFileChannel = {
   name: 'artifact.previewFile',
   direction: 'invoke',

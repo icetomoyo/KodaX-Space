@@ -8,6 +8,7 @@ import { getSlashHandler, listSlashCommands, registerSlash } from '../slash/regi
 import { BUILTIN_SLASH_COMMANDS } from '../slash/builtin.js';
 import { kodaxHost } from '../kodax/host.js';
 import { assertSessionSendScope } from './session.js';
+import { runtimeHostAdapter } from '../kodax/runtime-host-adapter.js';
 import type { ChannelInput, ChannelOutput } from '@kodax-space/space-ipc-schema';
 
 /**
@@ -56,9 +57,43 @@ export async function executeSlashCommand(input: SlashExecInput): Promise<SlashE
 }
 export function registerSlashChannels(): void {
   // slash.discover — renderer 取最新命令列表 (builtin + 未来 user/.kodax/commands)
-  registerChannel('slash.discover', () => {
-    // schema 期望 mutable array；registry 返回 readonly。spread 复制成 mutable
-    return { commands: [...listSlashCommands()] };
+  registerChannel('slash.discover', async () => {
+    const local = [...listSlashCommands()];
+    if (!runtimeHostAdapter.isRuntimeSelected()) return { commands: local };
+    try {
+      const runtime = (await runtimeHostAdapter.listRuntimeCommands())
+        .map((command) => ({
+          name: command.name,
+          ...(command.aliases ? { aliases: [...command.aliases].slice(0, 8) } : {}),
+          description: command.description.slice(0, 512),
+          ...(command.argumentHint || command.usage
+            ? { argsHint: (command.argumentHint ?? command.usage)!.slice(0, 2_048) }
+            : {}),
+          source: command.source === 'builtin' ? ('builtin' as const) : ('user' as const),
+        }))
+        .filter(
+          (command) =>
+            /^[a-z][a-z0-9-]{0,63}$/.test(command.name) &&
+            (command.aliases ?? []).every(
+              (alias) => alias === '?' || /^[a-z][a-z0-9-]*$/.test(alias),
+            ),
+        );
+      const localNames = new Set(
+        local.flatMap((command) => [command.name, ...(command.aliases ?? [])]),
+      );
+      return {
+        commands: [...local, ...runtime.filter((command) => !localNames.has(command.name))].slice(
+          0,
+          200,
+        ),
+      };
+    } catch (error) {
+      console.warn(
+        '[slash.discover] Coder daemon catalog unavailable; using Space commands:',
+        error instanceof Error ? error.message : error,
+      );
+      return { commands: local };
+    }
   });
 
   // slash.exec — 执行命令。handler 内部自己做参数校验 + 返回 ok/message/echo。

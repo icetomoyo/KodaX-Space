@@ -24,7 +24,7 @@ test('default policy: conservative caps', () => {
 });
 
 test('buildWorkflowHostPolicy forwards tokenBudget unconditionally (0 = unlimited, KodaX 0.7.59)', () => {
-  // Single-sourced host policy used by BOTH launch paths (AMAW run_workflow in real-session.ts
+  // Single-sourced host policy used by BOTH launch paths (AMA run_workflow in real-session.ts
   // + explicit /workflow in workflow-controller.ts). 0.7.59 treats 0/null/negative as unbounded,
   // so an explicit 0 must be FORWARDED (present), not omitted (the pre-0.7.59 workaround).
   const hp = buildWorkflowHostPolicy(DEFAULT_WORKFLOW_POLICY);
@@ -56,7 +56,11 @@ test('normalize clamps caps to hard ceiling and ignores removed autoStart', () =
 });
 
 test('normalize floors caps at >=1 and ignores non-numeric', () => {
-  const p = normalizeWorkflowPolicy({ maxAgents: 0, maxConcurrency: -5, tokenBudget: 'x' as never });
+  const p = normalizeWorkflowPolicy({
+    maxAgents: 0,
+    maxConcurrency: -5,
+    tokenBudget: 'x' as never,
+  });
   assert.equal(p.maxAgents, 1);
   assert.equal(p.maxConcurrency, 1);
   assert.equal(p.tokenBudget, DEFAULT_WORKFLOW_POLICY.tokenBudget); // 非数字 → 默认

@@ -8,10 +8,14 @@ import * as XLSX from 'xlsx';
 import { validateOfficeZip } from '../artifact/office-zip-guard.js';
 import {
   isPartnerSourceExtractionFormat,
+  MAX_PARTNER_SOURCE_EVIDENCE_UNIT_CHARS,
+  MAX_PARTNER_SOURCE_EVIDENCE_UNITS,
   MAX_PARTNER_SOURCE_EXTRACTED_TEXT_CHARS,
   MAX_PARTNER_SOURCE_EXTRACTION_ERROR_CHARS,
   PARTNER_SOURCE_EXTRACTION_PROTOCOL_VERSION,
   type PartnerSourceExtractionFormat,
+  type PartnerSourceExtractionResult,
+  type PartnerSourceExtractionUnit,
   type PartnerSourceExtractionWorkerRequest,
   type PartnerSourceExtractionWorkerResponse,
 } from './partner-source-extraction-protocol.js';
@@ -401,6 +405,97 @@ async function extract(format: PartnerSourceExtractionFormat, bytes: Buffer): Pr
   }
 }
 
+function unitId(ordinal: number): string {
+  return `unit_${String(ordinal + 1).padStart(8, '0')}`;
+}
+
+function structuredExtraction(
+  format: PartnerSourceExtractionFormat,
+  extractedText: string,
+): PartnerSourceExtractionResult {
+  const text = capExtractedText(extractedText);
+  const units: PartnerSourceExtractionUnit[] = [];
+  const warnings: string[] = [];
+
+  const append = (value: string, locator: PartnerSourceExtractionUnit['locator']): void => {
+    const normalized = value.trim();
+    if (!normalized) return;
+    for (
+      let offset = 0;
+      offset < normalized.length;
+      offset += MAX_PARTNER_SOURCE_EVIDENCE_UNIT_CHARS
+    ) {
+      if (units.length >= MAX_PARTNER_SOURCE_EVIDENCE_UNITS) {
+        if (!warnings.includes('evidence_unit_limit_reached')) {
+          warnings.push('evidence_unit_limit_reached');
+        }
+        return;
+      }
+      const ordinal = units.length;
+      units.push({
+        id: unitId(ordinal),
+        ordinal,
+        text: normalized.slice(offset, offset + MAX_PARTNER_SOURCE_EVIDENCE_UNIT_CHARS),
+        locator,
+      });
+    }
+  };
+
+  switch (format) {
+    case 'PDF': {
+      for (const match of text.matchAll(
+        /(?:^|\n\n)\[Page (\d+)\]\n([\s\S]*?)(?=\n\n\[Page \d+\]\n|\n\n\[PDF truncated|$)/g,
+      )) {
+        append(match[2] ?? '', { kind: 'pdf_page', page: Number(match[1]) });
+      }
+      break;
+    }
+    case 'DOCX': {
+      const paragraphs = text
+        .split(/\n+/)
+        .map((value) => value.trim())
+        .filter(Boolean);
+      paragraphs.forEach((paragraph, index) => {
+        append(paragraph, { kind: 'docx_paragraph', paragraph: index + 1 });
+      });
+      break;
+    }
+    case 'PPTX': {
+      for (const match of text.matchAll(
+        /(?:^|\n\n)\[Slide (\d+)\]\n([\s\S]*?)(?=\n\n\[Slide \d+\]\n|$)/g,
+      )) {
+        append(match[2] ?? '', { kind: 'pptx_slide', slide: Number(match[1]) });
+      }
+      break;
+    }
+    case 'XLSX': {
+      for (const match of text.matchAll(
+        /(?:^|\n\n)\[Sheet: ([^\]]+)\]\n([\s\S]*?)(?=\n\n\[Sheet: |$)/g,
+      )) {
+        const sheet = (match[1] ?? '').slice(0, 256);
+        for (const row of (match[2] ?? '').split('\n')) {
+          const addresses = [...row.matchAll(/\b([A-Z]+[1-9][0-9]*)=/g)].map((cell) => cell[1]!);
+          if (addresses.length === 0) continue;
+          const range =
+            addresses.length === 1
+              ? addresses[0]!
+              : `${addresses[0]!}:${addresses[addresses.length - 1]!}`;
+          append(row, { kind: 'xlsx_range', sheet, range });
+        }
+      }
+      break;
+    }
+  }
+
+  if (text.length >= MAX_PARTNER_SOURCE_EXTRACTED_TEXT_CHARS) {
+    warnings.push('extracted_text_truncated');
+  }
+  if (text && units.length === 0) {
+    append(text, { kind: 'file', reason: 'unsupported_exact_locator' });
+  }
+  return { text, units, warnings };
+}
+
 function parseRequest(value: unknown): PartnerSourceExtractionWorkerRequest {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('extraction worker received an invalid request');
@@ -426,12 +521,17 @@ function postResponse(response: PartnerSourceExtractionWorkerResponse): void {
 async function runWorker(): Promise<void> {
   try {
     const request = parseRequest(workerData);
-    const text = await extract(request.format, Buffer.from(request.bytes));
+    const result = structuredExtraction(
+      request.format,
+      await extract(request.format, Buffer.from(request.bytes)),
+    );
     postResponse({
       version: PARTNER_SOURCE_EXTRACTION_PROTOCOL_VERSION,
       ok: true,
       format: request.format,
-      text: capExtractedText(text),
+      text: result.text,
+      units: result.units,
+      warnings: result.warnings,
     });
   } catch (error) {
     postResponse({

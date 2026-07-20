@@ -422,8 +422,10 @@ export const spaceRuntimeSessionSettingsSchema = z
         reasoningMode: z.enum(['off', 'auto', 'quick', 'balanced', 'deep']).optional(),
         permissionMode: z.enum(['plan', 'accept-edits', 'auto']).optional(),
         executionCwd: z.string().min(1).max(4096).optional(),
-        agentMode: z.enum(['ama', 'amaw', 'sa']).optional(),
+        agentMode: z.enum(['ama', 'sa']).optional(),
         autoModeEngine: z.enum(['llm', 'rules']).optional(),
+        autoModeClassifierModel: z.string().min(1).max(128).optional(),
+        autoModeTimeoutMs: z.number().int().positive().max(3_600_000).optional(),
       })
       .strict(),
   })

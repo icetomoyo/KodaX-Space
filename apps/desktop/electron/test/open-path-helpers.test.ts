@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   deliveryPathMatches,
   extOf,
+  fileViewerContentKind,
   isCodePath,
   isPreviewablePath,
   isTextPreviewPath,
@@ -81,6 +82,16 @@ test('isTextPreviewPath: Delivery text preview reuses the full source classifier
   for (const p of ['photo.png', 'document.pdf', 'archive.zip']) {
     assert.equal(isTextPreviewPath(p), false, p);
   }
+});
+
+test('fileViewerContentKind maps files.read content without Artifact IPC', () => {
+  assert.equal(fileViewerContentKind('README.md', '# Readme'), 'markdown');
+  assert.equal(fileViewerContentKind('index.html', '<main>Static</main>'), 'html');
+  assert.equal(
+    fileViewerContentKind('app.html', '<button onclick="run()">Run</button>'),
+    'interactive-html',
+  );
+  assert.equal(fileViewerContentKind('src/app.ts', 'export const value = 1;'), 'code');
 });
 
 test('looksLikeFilePath: conservative path auto-linking', () => {

@@ -106,7 +106,7 @@ interface MutableSkillMetadata {
 // so such a skill is already non-functional there, and (b) widening to `user` would couple this
 // path to whatever global skills the running machine happens to have. Full closure of the residual
 // is an SDK ask (route the skill tool's dynamic-context through the host broker), tracked separately.
-const UNTRUSTED_SKILL_SOURCES: ReadonlySet<string> = new Set(['project', 'plugin']);
+const UNTRUSTED_SKILL_SOURCES: ReadonlySet<string> = new Set(['project', 'plugin', 'learned']);
 interface MutableFullSkill {
   content?: string;
   rawContent?: string;

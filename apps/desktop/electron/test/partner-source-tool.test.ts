@@ -12,7 +12,10 @@ import {
   PARTNER_SOURCE_READ_TOOL,
   _resetPartnerSourceToolRegistrationForTesting,
 } from '../kodax/partner-source-tool.js';
-import { runPartnerSourceExtractionWorker } from '../kodax/partner-source-extraction-runner.js';
+import {
+  runPartnerSourceExtractionWorker,
+  runPartnerSourceStructuredExtractionWorker,
+} from '../kodax/partner-source-extraction-runner.js';
 import { PartnerSourceStore } from '../kodax/partner-source-store.js';
 import { withSessionRunContext } from '../kodax/session-run-context.js';
 import {
@@ -198,6 +201,65 @@ test('partner source extraction bounds the worker response at 180k characters', 
   assert.equal(text.length, 180_000);
 });
 
+test('partner source extraction returns truthful structured locators for supported formats', async () => {
+  const fixtures = [
+    {
+      format: 'PDF' as const,
+      expectedKind: 'pdf_page',
+      fixture: await createOfficeArtifactBytes({
+        kind: 'pdf',
+        title: 'PDF locator',
+        content: 'page evidence',
+      }),
+    },
+    {
+      format: 'DOCX' as const,
+      expectedKind: 'docx_paragraph',
+      fixture: await createOfficeArtifactBytes({
+        kind: 'docx',
+        title: 'DOCX locator',
+        content: 'paragraph evidence',
+      }),
+    },
+    {
+      format: 'XLSX' as const,
+      expectedKind: 'xlsx_range',
+      fixture: await createOfficeArtifactBytes({
+        kind: 'xlsx',
+        title: 'XLSX locator',
+        workbook: {
+          sheets: [
+            {
+              name: 'Facts',
+              rows: [
+                ['key', 'value'],
+                ['answer', 42],
+              ],
+            },
+          ],
+        },
+      }),
+    },
+    {
+      format: 'PPTX' as const,
+      expectedKind: 'pptx_slide',
+      fixture: await createOfficeArtifactBytes({
+        kind: 'pptx',
+        title: 'PPTX locator',
+        presentation: { slides: [{ title: 'Evidence slide', bullets: ['grounded fact'] }] },
+      }),
+    },
+  ];
+
+  for (const { format, expectedKind, fixture } of fixtures) {
+    const result = await runPartnerSourceStructuredExtractionWorker(format, fixture.bytes);
+    assert.ok(result.text.length > 0);
+    assert.ok(result.units.length > 0);
+    assert.equal(result.units[0]?.locator.kind, expectedKind);
+    assert.equal(result.units[0]?.ordinal, 0);
+  }
+});
+
 test('partner_source_read handles a sparse XLSX with a full-grid !ref without expanding it', async () => {
   const { dir, root, store, handler } = harness();
   try {
@@ -267,6 +329,20 @@ test('partner source extraction hard deadline terminates a CPU-bound worker', as
     /exceeded its 50 ms hard deadline/,
   );
   assert.ok(Date.now() - startedAt < 2_000, 'deadline must not leave the worker running');
+});
+
+test('partner source extraction abort terminates a running worker', async () => {
+  const hangingWorker = new URL(`data:text/javascript,${encodeURIComponent('while (true) {}')}`);
+  const controller = new AbortController();
+  const startedAt = Date.now();
+  const extraction = runPartnerSourceExtractionWorker('PDF', Buffer.from('%PDF-1.7'), {
+    workerEntrypoint: hangingWorker,
+    timeoutMs: 10_000,
+    signal: controller.signal,
+  });
+  controller.abort();
+  await assert.rejects(extraction, /cancelled/i);
+  assert.ok(Date.now() - startedAt < 2_000, 'abort must not leave the worker running');
 });
 
 test('partner source extraction reaps a crashed worker before rejecting', async () => {

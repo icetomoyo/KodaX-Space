@@ -64,12 +64,38 @@ export function registerPermissionChannels(): void {
   // permission.list
   registerChannel('permission.list', async () => {
     await permissionRegistry.load();
-    return { rules: permissionRegistry.list().map((r) => ({ pattern: r.pattern, createdAt: r.createdAt })) };
+    const localRules = permissionRegistry.list().map((rule) => ({
+      pattern: rule.pattern,
+      createdAt: rule.createdAt,
+      origin: 'space' as const,
+    }));
+    if (!runtimeHostAdapter.isRuntimeSelected()) return { rules: localRules };
+    try {
+      const grants = await runtimeHostAdapter.listPermissionGrants();
+      const runtimeRules = grants.value.map((grant) => ({
+        pattern: `${grant.scope.toolName ?? 'all tools'}${grant.scope.sessionId ? ` (session ${grant.scope.sessionId})` : ''}`,
+        createdAt: Math.max(0, Date.parse(grant.createdAt) || 0),
+        origin: 'runtime' as const,
+        grantId: grant.id,
+        revision: grants.revision,
+        ...(grant.scope.toolName ? { toolName: grant.scope.toolName } : {}),
+        ...(grant.scope.sessionId ? { sessionId: grant.scope.sessionId } : {}),
+      }));
+      return { rules: [...runtimeRules, ...localRules] };
+    } catch (error) {
+      console.warn(
+        '[permission.list] Runtime grants unavailable:',
+        error instanceof Error ? error.message : error,
+      );
+      return { rules: localRules };
+    }
   });
 
   // permission.revoke
   registerChannel('permission.revoke', async (input) => {
-    const removed = await permissionRegistry.remove(input.pattern);
+    const removed = input.grantId
+      ? await runtimeHostAdapter.revokePermissionGrant(input.grantId, input.revision!)
+      : await permissionRegistry.remove(input.pattern!);
     return { removed };
   });
 }

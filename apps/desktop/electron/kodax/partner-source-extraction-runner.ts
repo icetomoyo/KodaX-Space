@@ -4,12 +4,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Worker } from 'node:worker_threads';
+import { partnerEvidenceLocatorSchema } from '@kodax-space/space-ipc-schema';
 import {
   isPartnerSourceExtractionFormat,
+  MAX_PARTNER_SOURCE_EVIDENCE_UNIT_CHARS,
+  MAX_PARTNER_SOURCE_EVIDENCE_UNITS,
   MAX_PARTNER_SOURCE_EXTRACTED_TEXT_CHARS,
   MAX_PARTNER_SOURCE_EXTRACTION_ERROR_CHARS,
   PARTNER_SOURCE_EXTRACTION_PROTOCOL_VERSION,
   type PartnerSourceExtractionFormat,
+  type PartnerSourceExtractionResult,
   type PartnerSourceExtractionWorkerRequest,
   type PartnerSourceExtractionWorkerResponse,
 } from './partner-source-extraction-protocol.js';
@@ -26,6 +30,8 @@ export interface PartnerSourceExtractionRunnerOptions {
   readonly workerEntrypoint?: string | URL;
   /** Test-only deadline override. */
   readonly timeoutMs?: number;
+  /** Cancels the isolated worker without allowing a partial extraction result. */
+  readonly signal?: AbortSignal;
 }
 
 interface ResolvedWorkerEntrypoint {
@@ -110,7 +116,24 @@ function parseWorkerResponse(
     isPartnerSourceExtractionFormat(response.format) &&
     response.format === expectedFormat &&
     typeof response.text === 'string' &&
-    response.text.length <= MAX_PARTNER_SOURCE_EXTRACTED_TEXT_CHARS
+    response.text.length <= MAX_PARTNER_SOURCE_EXTRACTED_TEXT_CHARS &&
+    Array.isArray(response.units) &&
+    response.units.length <= MAX_PARTNER_SOURCE_EVIDENCE_UNITS &&
+    response.units.every(
+      (unit, ordinal) =>
+        Boolean(unit) &&
+        typeof unit === 'object' &&
+        typeof unit.id === 'string' &&
+        /^unit_[A-Za-z0-9_-]{8,}$/.test(unit.id) &&
+        unit.ordinal === ordinal &&
+        typeof unit.text === 'string' &&
+        unit.text.length > 0 &&
+        unit.text.length <= MAX_PARTNER_SOURCE_EVIDENCE_UNIT_CHARS &&
+        partnerEvidenceLocatorSchema.safeParse(unit.locator).success,
+    ) &&
+    Array.isArray(response.warnings) &&
+    response.warnings.length <= 32 &&
+    response.warnings.every((warning) => typeof warning === 'string' && warning.length <= 300)
   ) {
     return response as Extract<PartnerSourceExtractionWorkerResponse, { ok: true }>;
   }
@@ -128,11 +151,11 @@ function parseWorkerResponse(
  * Run one document parser in one V8 isolate. The promise settles only after the
  * worker has exited or terminate() has completed, including error and timeout paths.
  */
-export function runPartnerSourceExtractionWorker(
+export function runPartnerSourceStructuredExtractionWorker(
   format: PartnerSourceExtractionFormat,
   bytes: Buffer,
   options: PartnerSourceExtractionRunnerOptions = {},
-): Promise<string> {
+): Promise<PartnerSourceExtractionResult> {
   const entrypoint = resolveWorkerEntrypoint(options.workerEntrypoint);
   const timeoutMs = extractionTimeout(options.timeoutMs);
   const ownedBytes = transferableBytes(bytes);
@@ -141,6 +164,14 @@ export function runPartnerSourceExtractionWorker(
     format,
     bytes: ownedBytes,
   };
+
+  if (options.signal?.aborted) {
+    return Promise.reject(
+      Object.assign(new Error('Partner source extraction was cancelled'), {
+        code: 'INGESTION_CANCELLED',
+      }),
+    );
+  }
 
   return new Promise((resolve, reject) => {
     let worker: Worker;
@@ -163,18 +194,20 @@ export function runPartnerSourceExtractionWorker(
 
     let finalizing = false;
     let deadline: NodeJS.Timeout | undefined;
+    let onAbort: () => void = () => undefined;
 
     const finish = (
       outcome:
-        | { readonly kind: 'resolve'; readonly text: string }
+        | { readonly kind: 'resolve'; readonly result: PartnerSourceExtractionResult }
         | { readonly kind: 'reject'; readonly error: Error },
     ): void => {
       if (finalizing) return;
       finalizing = true;
       if (deadline) clearTimeout(deadline);
+      options.signal?.removeEventListener('abort', onAbort);
       void worker.terminate().then(
         () => {
-          if (outcome.kind === 'resolve') resolve(outcome.text);
+          if (outcome.kind === 'resolve') resolve(outcome.result);
           else reject(outcome.error);
         },
         (terminationError: unknown) => {
@@ -186,12 +219,28 @@ export function runPartnerSourceExtractionWorker(
         },
       );
     };
+    onAbort = (): void => {
+      finish({
+        kind: 'reject',
+        error: Object.assign(new Error('Partner source extraction was cancelled'), {
+          code: 'INGESTION_CANCELLED',
+        }),
+      });
+    };
 
     worker.once('message', (rawResponse: unknown) => {
       try {
         const response = parseWorkerResponse(rawResponse, format);
-        if (response.ok) finish({ kind: 'resolve', text: response.text });
-        else finish({ kind: 'reject', error: new Error(response.error) });
+        if (response.ok) {
+          finish({
+            kind: 'resolve',
+            result: {
+              text: response.text,
+              units: response.units,
+              warnings: response.warnings,
+            },
+          });
+        } else finish({ kind: 'reject', error: new Error(response.error) });
       } catch (error) {
         finish({
           kind: 'reject',
@@ -208,6 +257,8 @@ export function runPartnerSourceExtractionWorker(
       });
     });
 
+    options.signal?.addEventListener('abort', onAbort, { once: true });
+
     deadline = setTimeout(() => {
       finish({
         kind: 'reject',
@@ -215,4 +266,13 @@ export function runPartnerSourceExtractionWorker(
       });
     }, timeoutMs);
   });
+}
+
+/** Compatibility view used by the existing explicit Partner source tool. */
+export async function runPartnerSourceExtractionWorker(
+  format: PartnerSourceExtractionFormat,
+  bytes: Buffer,
+  options: PartnerSourceExtractionRunnerOptions = {},
+): Promise<string> {
+  return (await runPartnerSourceStructuredExtractionWorker(format, bytes, options)).text;
 }

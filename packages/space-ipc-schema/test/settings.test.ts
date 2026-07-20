@@ -88,10 +88,16 @@ test('settings.setRuntimeDefaults accepts runtime defaults and rejects unknown k
         permissionMode: 'plan',
         autoModeEngine: 'rules',
         reasoningMode: 'quick',
-        agentMode: 'amaw',
+        agentMode: 'ama',
       },
     }).success,
     true,
+  );
+  assert.equal(
+    settingsSetRuntimeDefaultsChannel.input.safeParse({
+      runtimeDefaults: { agentMode: 'amaw' },
+    }).success,
+    false,
   );
   assert.equal(
     settingsSetRuntimeDefaultsChannel.input.safeParse({

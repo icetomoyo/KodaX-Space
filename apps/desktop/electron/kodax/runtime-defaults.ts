@@ -126,6 +126,7 @@ export async function resolveRuntimeDefaults(
       [input.explicit?.autoModeEngine, 'explicit'],
       [sessionRuntime?.autoModeEngine, 'session'],
       [spaceDefaults.autoModeEngine, 'space'],
+      [kodaxDefaults.autoModeEngine, 'kodax'],
     ],
     BUILTIN.autoModeEngine,
   );

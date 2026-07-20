@@ -16,7 +16,10 @@ const TRANSIENT_INSTALL_ALIAS_RETRIES = 4;
 const reasoningModeSchema = z.enum(['off', 'auto', 'quick', 'balanced', 'deep']);
 const permissionModeSchema = z.enum(['plan', 'accept-edits', 'auto']);
 const autoModeEngineSchema = z.enum(['llm', 'rules']);
-const agentModeSchema = z.enum(['ama', 'amaw', 'sa']);
+const agentModeSchema = z.preprocess(
+  (value) => (value === 'amaw' || value === 'ama-workflow' ? 'ama' : value),
+  z.enum(['ama', 'sa']),
+);
 
 const partnerEffectiveConfigSchema = z
   .object({
@@ -62,6 +65,7 @@ type FileRead =
   | {
       readonly kind: 'valid';
       readonly snapshot: PartnerEffectiveConfigSnapshot;
+      readonly needsAgentModeMigration: boolean;
       readonly hash: string;
     };
 
@@ -103,6 +107,14 @@ function recoveredLoad(
 
 function encode(snapshot: PartnerEffectiveConfigSnapshot): Buffer {
   return Buffer.from(`${JSON.stringify(snapshot, null, 2)}\n`, 'utf8');
+}
+
+function hasRetiredAgentMode(raw: unknown): boolean {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false;
+  const effective = (raw as Record<string, unknown>).effective;
+  if (!effective || typeof effective !== 'object' || Array.isArray(effective)) return false;
+  const agentMode = (effective as Record<string, unknown>).agentMode;
+  return agentMode === 'amaw' || agentMode === 'ama-workflow';
 }
 
 /**
@@ -209,9 +221,13 @@ export class PartnerEffectiveConfigStore {
   }
 
   async #loadOrSeed(seed: PartnerEffectiveConfigSeed): Promise<PartnerEffectiveConfigLoad> {
-    const [primary, backup] = await Promise.all([
+    const [readPrimary, readBackup] = await Promise.all([
       this.#read(this.#primaryPath, 'primary'),
       this.#read(this.#lastKnownGoodPath, 'last-known-good'),
+    ]);
+    const [primary, backup] = await Promise.all([
+      this.#migrateRetiredAgentMode(this.#primaryPath, 'primary', readPrimary),
+      this.#migrateRetiredAgentMode(this.#lastKnownGoodPath, 'last-known-good', readBackup),
     ]);
 
     if (primary.kind === 'valid') {
@@ -292,6 +308,34 @@ export class PartnerEffectiveConfigStore {
     );
   }
 
+  async #migrateRetiredAgentMode(
+    filePath: string,
+    label: string,
+    state: FileRead,
+  ): Promise<FileRead> {
+    if (state.kind !== 'valid' || !state.needsAgentModeMigration) return state;
+    try {
+      await replaceFileIfUnchanged(
+        filePath,
+        encode(state.snapshot),
+        state.hash,
+        `Partner effective config ${label} changed during retired agent-mode migration.`,
+        MAX_CONFIG_BYTES,
+      );
+    } catch (error) {
+      const latest = await this.#read(filePath, label);
+      if (latest.kind === 'valid' && !latest.needsAgentModeMigration) return latest;
+      throw new Error(`Partner effective config ${label} agent-mode migration failed.`, {
+        cause: error,
+      });
+    }
+    const migrated = await this.#read(filePath, label);
+    if (migrated.kind !== 'valid' || migrated.needsAgentModeMigration) {
+      throw new Error(`Partner effective config ${label} agent-mode migration was not durable.`);
+    }
+    return migrated;
+  }
+
   async #read(filePath: string, label: string, aliasRetry = 0): Promise<FileRead> {
     let stat: Awaited<ReturnType<typeof fs.lstat>>;
     try {
@@ -350,6 +394,7 @@ export class PartnerEffectiveConfigStore {
       return {
         kind: 'valid',
         snapshot: freezeSnapshot(parsed.data),
+        needsAgentModeMigration: hasRetiredAgentMode(decoded),
         hash: sha256(bytes),
       };
     } finally {

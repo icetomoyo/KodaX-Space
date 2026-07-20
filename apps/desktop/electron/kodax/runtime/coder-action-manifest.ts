@@ -1,4 +1,4 @@
-// F121 frozen Coder entrypoint disposition for the released v0.1.31 Space surface.
+// F121 frozen Coder entrypoint disposition for the v0.1.32 release surface.
 //
 // Keep this list explicit. The companion test compares it with the registered
 // Coder-related IPC namespaces so a new action cannot inherit an owner by accident.
@@ -146,7 +146,49 @@ export const FROZEN_V0131_CODER_ENTRYPOINTS = [
   'workflow.stop',
 ] as const satisfies readonly InvokeChannelName[];
 
+export const CODER_DAEMON_ROUTED_ENTRYPOINTS = [
+  'agent.external.dispatchable.list',
+  'agent.external.preflight',
+  'agent.external.task.cancel',
+  'agent.external.task.events',
+  'agent.external.task.list',
+  'agent.external.task.reconcile',
+  'agent.external.task.sendInput',
+  'agent.external.task.start',
+  'askUser.reply',
+  'kodax.queueGet',
+  'mcp.reload',
+  'mcp.tools',
+  'permission.answer',
+  'permission.list',
+  'permission.revoke',
+  'runtime.profileSnapshot',
+  'session.cancel',
+  'session.create',
+  'session.delete',
+  'session.fork',
+  'session.history',
+  'session.liveSnapshot',
+  'session.rewind',
+  'session.send',
+  'session.setAgentMode',
+  'session.setAutoModeEngine',
+  'session.setPermissionMode',
+  'session.setProvider',
+  'session.setReasoningMode',
+  'skill.discover',
+  'slash.discover',
+  'workflow.get',
+  'workflow.list',
+  'workflow.pause',
+  'workflow.resume',
+  'workflow.stop',
+] as const satisfies readonly InvokeChannelName[];
+
+const CODER_DAEMON_ROUTED = new Set<InvokeChannelName>(CODER_DAEMON_ROUTED_ENTRYPOINTS);
+
 function targetOwnerFor(entrypoint: InvokeChannelName): CoderActionTargetOwner {
+  if (CODER_DAEMON_ROUTED.has(entrypoint)) return 'coder-daemon';
   if (
     entrypoint.startsWith('artifact.') ||
     entrypoint.startsWith('diagnostics.') ||
@@ -166,7 +208,7 @@ function targetOwnerFor(entrypoint: InvokeChannelName): CoderActionTargetOwner {
   ) {
     return 'space-ui-only';
   }
-  return 'coder-daemon';
+  return 'space-host-provider';
 }
 
 function capabilityFor(entrypoint: InvokeChannelName): string | undefined {
@@ -205,13 +247,17 @@ function releasedStateFor(entrypoint: InvokeChannelName): CoderActionReleasedSta
 function dispositionFor(entrypoint: InvokeChannelName): CoderActionDisposition {
   const targetOwner = targetOwnerFor(entrypoint);
   const requiredCapability = capabilityFor(entrypoint);
+  const releasedState = releasedStateFor(entrypoint);
   return {
     actionId: `f121:${entrypoint}`,
     entrypoint,
-    releasedState: releasedStateFor(entrypoint),
+    releasedState,
     targetOwner,
     ...(requiredCapability !== undefined ? { requiredCapability } : {}),
-    unavailableBehavior: targetOwner === 'coder-daemon' ? 'disable-with-reason' : 'not-applicable',
+    unavailableBehavior:
+      targetOwner === 'coder-daemon' || releasedState === 'capability-gated'
+        ? 'disable-with-reason'
+        : 'not-applicable',
     regressionFixture: `v0.1.31:${entrypoint}`,
   };
 }

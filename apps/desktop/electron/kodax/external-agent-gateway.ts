@@ -8,7 +8,6 @@ import type {
   AgentExecutorPlaneBinding,
   AgentExecutorPlaneStore,
   AgentTaskEvent,
-  AgentTaskService,
   AgentTaskSnapshot,
   DispatchableAgentListing,
   ExternalAgentRegistration,
@@ -26,7 +25,7 @@ import { getSpaceDataDir } from './data-paths.js';
 
 type SdkAgentModule = typeof import('@kodax-ai/kodax/agent');
 
-const KODAX_SDK_VERSION = '0.7.71';
+const KODAX_SDK_VERSION = '0.7.72';
 const REFERENCE_EXECUTOR_ID = 'kodax-space-reference-v1';
 const REFERENCE_MANAGEMENT_OWNER = 'kodax-space:reference';
 const MAX_STORE_FILE_BYTES = 16 * 1024 * 1024;
@@ -597,38 +596,7 @@ export class ExternalAgentGateway {
         console.warn(`[external-agent] background ${context.operation} failed:`, error.message);
       },
     });
-    return this.withReferenceContinuationReconcile(plane);
-  }
-
-  private withReferenceContinuationReconcile(plane: AgentExecutorPlane): AgentExecutorPlane {
-    const rawTasks = plane.tasks;
-    const tasks: AgentTaskService = {
-      start: (input) => rawTasks.start(input),
-      list: (filter) => rawTasks.list(filter),
-      get: (taskId) => rawTasks.get(taskId),
-      events: (taskId, cursor) => rawTasks.events(taskId, cursor),
-      wait: (taskId, timeoutMs) => rawTasks.wait(taskId, timeoutMs),
-      async sendInput(taskId, input) {
-        const sent = await rawTasks.sendInput(taskId, input);
-        if (sent.registration.executorId !== REFERENCE_EXECUTOR_ID) return sent;
-        // The published 0.7.71 Reference Executor can still complete in the
-        // microtask between sendInput() and its durable event pump. Reconcile
-        // once so Space never leaves the public task snapshot at `working`.
-        await new Promise<void>((resolve) => queueMicrotask(resolve));
-        return rawTasks.reconcile(taskId);
-      },
-      cancel: (taskId, reason) => rawTasks.cancel(taskId, reason),
-      reconcile: (taskId) => rawTasks.reconcile(taskId),
-      recordLocal: (input) => rawTasks.recordLocal(input),
-      updateLocal: (taskId, update) => rawTasks.updateLocal(taskId, update),
-    };
-    return new Proxy(plane, {
-      get(target, property) {
-        if (property === 'tasks') return tasks;
-        const value = Reflect.get(target, property, target) as unknown;
-        return typeof value === 'function' ? value.bind(target) : value;
-      },
-    });
+    return plane;
   }
 }
 

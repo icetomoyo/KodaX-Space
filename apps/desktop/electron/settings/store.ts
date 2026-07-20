@@ -11,25 +11,33 @@
 // 这里**只**写标量配置 — secrets / API keys 走 keychain，永远不进 settings.json。
 
 import { promises as fs } from 'node:fs';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { z } from 'zod';
 import type { SpaceRuntimeDefaultsT } from '@kodax-space/space-ipc-schema';
+import { replaceFileIfUnchanged } from '../kodax/atomic-file.js';
 
 const execFileAsync = promisify(execFile);
+
+const persistedAgentModeSchema = z.preprocess(
+  (value) => (value === 'amaw' || value === 'ama-workflow' ? 'ama' : value),
+  z.enum(['ama', 'sa']),
+);
 
 // OC-12 测试模式 (KODAX_TEST_ONBOARDING) 下重定向到 tmpdir/kodax-test-<id>/space
 import { getSpaceDataDir } from '../kodax/data-paths.js';
 const SPACE_DATA_DIR = getSpaceDataDir();
 const SETTINGS_FILE = path.join(SPACE_DATA_DIR, 'settings.json');
+const MAX_SETTINGS_MIGRATION_BYTES = 1024 * 1024;
 
 const runtimeDefaultFieldSchemas = {
   permissionMode: z.enum(['plan', 'accept-edits', 'auto']).optional(),
   autoModeEngine: z.enum(['llm', 'rules']).optional(),
   reasoningMode: z.enum(['off', 'auto', 'quick', 'balanced', 'deep']).optional(),
-  agentMode: z.enum(['ama', 'amaw', 'sa']).optional(),
+  agentMode: persistedAgentModeSchema.optional(),
 } as const;
 
 const fileV1Schema = z.object({
@@ -78,6 +86,30 @@ function normalizeSettings(raw: unknown): SpaceSettings | null {
   return null;
 }
 
+function hasRetiredAgentMode(raw: unknown): boolean {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false;
+  const runtimeDefaults = (raw as Record<string, unknown>).runtimeDefaults;
+  if (!runtimeDefaults || typeof runtimeDefaults !== 'object' || Array.isArray(runtimeDefaults)) {
+    return false;
+  }
+  const agentMode = (runtimeDefaults as Record<string, unknown>).agentMode;
+  return agentMode === 'amaw' || agentMode === 'ama-workflow';
+}
+
+function migrateRetiredAgentMode(raw: unknown): unknown {
+  if (!hasRetiredAgentMode(raw)) return raw;
+  const settings = raw as Record<string, unknown>;
+  const runtimeDefaults = settings.runtimeDefaults as Record<string, unknown>;
+  return {
+    ...settings,
+    runtimeDefaults: { ...runtimeDefaults, agentMode: 'ama' },
+  };
+}
+
+function sha256(bytes: Buffer): string {
+  return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+}
+
 function cleanRuntimeDefaults(defaults: unknown): SpaceRuntimeDefaultsT {
   if (!defaults || typeof defaults !== 'object' || Array.isArray(defaults)) return {};
   const raw = defaults as Record<string, unknown>;
@@ -115,10 +147,23 @@ export class SettingsStore {
   async load(): Promise<SpaceSettings> {
     if (this.cached) return { ...this.cached, runtimeDefaults: { ...this.cached.runtimeDefaults } };
     try {
-      const raw = await fs.readFile(this.filePath, 'utf-8');
-      const parsed = normalizeSettings(JSON.parse(raw));
+      const raw = await fs.readFile(this.filePath);
+      const decoded = JSON.parse(raw.toString('utf-8')) as unknown;
+      const parsed = normalizeSettings(decoded);
       if (parsed) {
         this.cached = parsed;
+        if (hasRetiredAgentMode(decoded)) {
+          // Match KodaX v0.7.72: retire the legacy mode on disk exactly once.
+          // Replace only the exact bytes read above, so a concurrent Space instance
+          // cannot lose newer settings. Failure is non-fatal; a later launch retries.
+          try {
+            await this.migrateRetiredAgentMode(decoded, raw);
+          } catch (err) {
+            console.warn(
+              `[SettingsStore] retired agent-mode migration failed: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
+        }
         return { ...this.cached, runtimeDefaults: { ...this.cached.runtimeDefaults } };
       }
       console.warn(`[SettingsStore] ${this.filePath} schema invalid, falling back to defaults`);
@@ -213,14 +258,35 @@ export class SettingsStore {
   private async write(next: SpaceSettings): Promise<SpaceSettings> {
     this.cached = next;
     // serialize 写
-    this.writeLock = this.writeLock.then(async () => {
-      await fs.mkdir(this.dir, { recursive: true });
-      const tmp = this.filePath + '.tmp';
-      await fs.writeFile(tmp, JSON.stringify(next, null, 2), 'utf-8');
-      await fs.rename(tmp, this.filePath);
-    });
+    this.writeLock = this.writeLock
+      .catch(() => undefined)
+      .then(async () => {
+        await fs.mkdir(this.dir, { recursive: true });
+        const tmp = this.filePath + '.tmp';
+        await fs.writeFile(tmp, JSON.stringify(next, null, 2), 'utf-8');
+        await fs.rename(tmp, this.filePath);
+      });
     await this.writeLock;
     return { ...next, runtimeDefaults: { ...next.runtimeDefaults } };
+  }
+
+  private async migrateRetiredAgentMode(decoded: unknown, originalBytes: Buffer): Promise<void> {
+    const migratedBytes = Buffer.from(
+      JSON.stringify(migrateRetiredAgentMode(decoded), null, 2),
+      'utf-8',
+    );
+    this.writeLock = this.writeLock
+      .catch(() => undefined)
+      .then(async () => {
+        await replaceFileIfUnchanged(
+          this.filePath,
+          migratedBytes,
+          sha256(originalBytes),
+          'settings changed during retired agent-mode migration',
+          MAX_SETTINGS_MIGRATION_BYTES,
+        );
+      });
+    await this.writeLock;
   }
 }
 

@@ -161,6 +161,12 @@ export {
 } from './channels/clipboard.js';
 
 export {
+  shellRevealPathChannel,
+  shellOpenDirectoryChannel,
+  shellOpenExternalChannel,
+} from './channels/shell.js';
+
+export {
   projectListChannel,
   projectOpenDialogChannel,
   projectRecentAddChannel,
@@ -330,6 +336,54 @@ export {
   type PartnerSourceTargetKindT,
   type PartnerSourceT,
 } from './channels/partner-source.js';
+
+export {
+  partnerCitationResolveChannel,
+  partnerCitationResolutionSchema,
+  partnerEvidenceLocatorSchema,
+  partnerEvidenceUnitSchema,
+  partnerIngestionStatusSchema,
+  partnerKnowledgeCatalogChannel,
+  partnerKnowledgeRefreshChannel,
+  partnerKnowledgeScopeSchema,
+  partnerKnowledgeScopeSetChannel,
+  partnerKnowledgeSelectChannel,
+  partnerKnowledgeTraceItemSchema,
+  partnerKnowledgeTraceReadChannel,
+  partnerKnowledgeTraceSchema,
+  partnerMaterialsAdoptChannel,
+  partnerMaterialsCatalogChannel,
+  partnerMaterialsRemoveChannel,
+  partnerMaterialsSelectChannel,
+  partnerMaterialSelectionSchema,
+  partnerProjectMaterialRelationSchema,
+  partnerProjectMaterialTargetSchema,
+  partnerEvidenceAccessDecisionSchema,
+  partnerEvidenceAccessObservationSchema,
+  partnerEvidenceOwnerIdentitySchema,
+  partnerEvidenceOwnerVersionRefSchema,
+  partnerEvidenceSelectionRefSchema,
+  partnerEvidenceVersionSelectorSchema,
+  partnerProjectSourceSchema,
+  partnerSourceErrorSchema,
+  partnerSourceVersionSchema,
+  type PartnerCitationResolutionT,
+  type PartnerEvidenceLocatorT,
+  type PartnerEvidenceUnitT,
+  type PartnerIngestionStatusT,
+  type PartnerKnowledgeScopeT,
+  type PartnerKnowledgeTraceT,
+  type PartnerProjectSourceT,
+  type PartnerSourceVersionT,
+  type PartnerEvidenceAccessDecisionT,
+  type PartnerEvidenceAccessObservationT,
+  type PartnerEvidenceOwnerIdentityT,
+  type PartnerEvidenceOwnerVersionRefT,
+  type PartnerEvidenceVersionSelectorT,
+  type PartnerMaterialSelectionT,
+  type PartnerProjectMaterialRelationT,
+  type PartnerProjectMaterialTargetT,
+} from './channels/partner-knowledge.js';
 
 export {
   partnerKbSummaryChannel,

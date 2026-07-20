@@ -48,6 +48,13 @@ const decisionSchema = z.enum(['deny', 'allow_once', 'allow_always']);
 const permissionRuleSchema = z.object({
   pattern: z.string().min(1),
   createdAt: z.number().int().nonnegative(),
+  /** Omitted by pre-0.1.32 clients; identifies the authority that owns revocation. */
+  origin: z.enum(['space', 'runtime']).optional(),
+  /** Runtime grant identity/CAS fields. Never synthesize these for Space-owned rules. */
+  grantId: z.string().min(1).max(256).optional(),
+  revision: z.number().int().nonnegative().optional(),
+  toolName: z.string().min(1).max(256).optional(),
+  sessionId: z.string().min(1).max(256).optional(),
 });
 
 // ---- Push: permission.request ----
@@ -116,9 +123,22 @@ export const permissionListChannel = {
 export const permissionRevokeChannel = {
   name: 'permission.revoke',
   direction: 'invoke',
-  input: z.object({
-    pattern: z.string().min(1).max(512),
-  }),
+  input: z
+    .object({
+      pattern: z.string().min(1).max(512).optional(),
+      grantId: z.string().min(1).max(256).optional(),
+      revision: z.number().int().nonnegative().optional(),
+    })
+    .superRefine((value, ctx) => {
+      const local = value.pattern !== undefined;
+      const runtime = value.grantId !== undefined && value.revision !== undefined;
+      if (local === runtime) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'provide either pattern or grantId with revision',
+        });
+      }
+    }),
   output: z.object({
     removed: z.boolean(),
   }),

@@ -29,6 +29,12 @@ const kodaxUserDefaultsSchema = z.object({
   reasoningMode: reasoningModeSchema.optional(),
   /** 仅 'plan' / 'accept-edits'；KodaX 'default' / 'bypass-permissions' 走 undefined */
   permissionMode: kodaxPermissionModeSchema.optional(),
+  /** KodaX `autoMode.engine`（环境变量覆盖已由 main 端解析）。 */
+  autoModeEngine: z.enum(['llm', 'rules']).optional(),
+  /** Auto LLM classifier model spec；不包含 credential。 */
+  autoModeClassifierModel: z.string().min(1).max(128).optional(),
+  /** Auto LLM side-query 的有效超时；0.7.72 默认 20 秒。 */
+  autoModeTimeoutMs: z.number().int().positive().max(3_600_000).optional(),
   /** customProviders 个数 — 详细配置不暴露 renderer (apiKeyEnv 等敏感 hint 保守隐藏)。
    *  registerKodaxCustomProviders 已在 main boot 把这些注册到 SDK runtime；
    *  renderer 只用此 count 做 UI hint "你有 N 个 KodaX 自定义 provider 已可用，用 /provider <name> 切"。*/

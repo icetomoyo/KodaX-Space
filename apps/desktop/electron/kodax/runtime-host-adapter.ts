@@ -31,7 +31,13 @@ import type {
   RuntimeTranscript,
   RuntimeTypedEvent,
 } from '@kodax-ai/kodax/runtime';
+import { effortToReasoningMode } from './reasoning-effort.js';
 import { getKodaxRuntimeDir } from './data-paths.js';
+import {
+  KODAX_AUTO_MODE_DEFAULT_TIMEOUT_MS,
+  loadKodaxAutoModeDefaults,
+  type KodaxAutoModeDefaults,
+} from './user-config.js';
 import { invalidatePersistedSessionCache, SPACE_EPHEMERAL_SESSION_TAG } from './session-store.js';
 import { RuntimeClientIdentityStore } from './runtime/runtime-client-identity.js';
 import {
@@ -45,7 +51,26 @@ import {
   type RuntimeProjectionController,
 } from './runtime/runtime-projection-controller.js';
 import { pushToRenderer } from '../ipc/push.js';
-import { sessionEventChannel } from '@kodax-space/space-ipc-schema';
+import {
+  sessionEventChannel,
+  workflowProcessSnapshotSchema,
+  workflowRunSchema,
+  type WorkflowEventPayload,
+  type WorkflowRunT,
+  type DispatchableAgentListingT,
+  type ExternalAgentRegistrationSummaryT,
+  type ExternalAgentTaskEventT,
+  type ExternalAgentTaskT,
+} from '@kodax-space/space-ipc-schema';
+import {
+  decodeRuntimeActorTaskId,
+  isRuntimeActorTaskId,
+  projectRuntimeActorEvent,
+  projectRuntimeActorTask,
+  projectRuntimeDispatchable,
+  projectRuntimeDispatchability,
+  projectRuntimeRegistration,
+} from './runtime/runtime-agent-projection.js';
 
 export type RuntimeHostMode = 'legacy' | 'runtime';
 export type RuntimeHostState =
@@ -101,6 +126,7 @@ interface RuntimeProjectionPush {
     payload: import('@kodax-space/space-ipc-schema').SpaceSessionLiveChangedT,
   ): void;
   (channel: 'session.event', payload: import('@kodax-space/space-ipc-schema').SessionEvent): void;
+  (channel: 'workflow.event', payload: WorkflowEventPayload): void;
 }
 
 interface RuntimeIdentityStoreLike {
@@ -154,12 +180,30 @@ export interface RuntimeHostAdapterOptions {
   readonly credentialResolver?: (provider: string) => Promise<string | undefined>;
   readonly runtimeEventParser?: RuntimeEventParser;
   readonly ownerControl?: RuntimeOwnerControl;
+  readonly autoModeDefaultsResolver?: () => Promise<KodaxAutoModeDefaults>;
 }
 
 const MAX_DIAGNOSTIC_ERROR = 512;
+const MINIMUM_KODAX_RUNTIME_VERSION = [0, 7, 72] as const;
 
 export function resolveRuntimeHostMode(value: string | undefined): RuntimeHostMode {
   return value?.trim().toLowerCase() === 'legacy' ? 'legacy' : 'runtime';
+}
+
+function assertMinimumRuntimeVersion(version: string): void {
+  const match = /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(version.trim());
+  if (match) {
+    const actual = match.slice(1, 4).map(Number);
+    for (let index = 0; index < MINIMUM_KODAX_RUNTIME_VERSION.length; index += 1) {
+      if (actual[index]! > MINIMUM_KODAX_RUNTIME_VERSION[index]!) return;
+      if (actual[index]! < MINIMUM_KODAX_RUNTIME_VERSION[index]!) break;
+      if (index === MINIMUM_KODAX_RUNTIME_VERSION.length - 1) return;
+    }
+  }
+  throw new Error(
+    `KodaX Runtime ${version || '(unknown)'} is older than the required 0.7.72 baseline. ` +
+      'Restart the Coder daemon after updating KodaX; Space will not reuse an older daemon.',
+  );
 }
 
 function sanitizeDiagnosticError(error: unknown): string {
@@ -167,6 +211,48 @@ function sanitizeDiagnosticError(error: unknown): string {
   return message
     .replace(/([A-Za-z]:[\\/][^\s]+|\\\\[^\s]+|\/[A-Za-z][^\s]+)/g, '<path>')
     .slice(0, MAX_DIAGNOSTIC_ERROR);
+}
+
+function runtimeInitializationDiagnostic(error: unknown): string {
+  const diagnostic = sanitizeDiagnosticError(error);
+  if (
+    !error ||
+    typeof error !== 'object' ||
+    (error as { code?: unknown }).code !== 'daemon_capability_upgrade_required'
+  ) {
+    return diagnostic;
+  }
+  const preflight = (error as { preflight?: { blockers?: readonly string[] } }).preflight;
+  const blockers = preflight?.blockers?.length
+    ? ` Blockers: ${preflight.blockers.join(', ')}.`
+    : '';
+  return `Coder daemon capability upgrade required. Restart the Coder daemon and retry.${blockers} ${diagnostic}`.slice(
+    0,
+    MAX_DIAGNOSTIC_ERROR,
+  );
+}
+
+function isTransientDaemonHealthFailure(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /^Runtime daemon is unhealthy; refusing to start a competing owner\.?$/i.test(
+    message.trim(),
+  );
+}
+
+function projectRuntimeWorkflow(snapshot: unknown): WorkflowRunT | undefined {
+  const base = workflowProcessSnapshotSchema.safeParse(snapshot);
+  if (!base.success) return undefined;
+  const metadata = base.data.hostMetadata;
+  const candidate = {
+    ...base.data,
+    ...(metadata?.sessionId ? { sessionId: metadata.sessionId } : {}),
+    ...(metadata?.surface === 'code' || metadata?.surface === 'partner'
+      ? { surface: metadata.surface }
+      : {}),
+    ...(metadata?.projectRoot ? { projectRoot: metadata.projectRoot } : {}),
+  };
+  const parsed = workflowRunSchema.safeParse(candidate);
+  return parsed.success ? parsed.data : undefined;
 }
 
 async function createPublishedRuntime(
@@ -309,10 +395,22 @@ function isSessionNotFound(error: unknown): boolean {
   return /Session not found:/i.test(error instanceof Error ? error.message : String(error));
 }
 
+function isSessionSettingsRevisionConflict(error: unknown): boolean {
+  const code =
+    error && typeof error === 'object' && 'code' in error
+      ? (error as { code?: unknown }).code
+      : undefined;
+  if (code === 'revision_conflict') return true;
+  return /(?:session settings revision .* stale|revision[_ ]conflict)/i.test(
+    error instanceof Error ? error.message : String(error),
+  );
+}
+
 export class RuntimeHostAdapter {
   private readonly mode: RuntimeHostMode;
   private readonly profileRoot: string;
   private readonly runtimeHomeDir: string | undefined;
+  private readonly autoModeDefaultsResolver: () => Promise<KodaxAutoModeDefaults>;
   private readonly runtimeFactory: RuntimeFactory;
   private readonly identityStore: RuntimeIdentityStoreLike;
   private readonly projectionController: RuntimeProjectionController;
@@ -335,6 +433,7 @@ export class RuntimeHostAdapter {
   >();
   private readonly observationPromises = new Map<string, Promise<void>>();
   private readonly desiredObservations = new Set<string>();
+  private readonly settingsUpdateLocks = new Map<string, Promise<void>>();
   private readonly runProviders = new Map<string, string>();
   private readonly continuationCredentialLeases = new Map<string, string>();
   private readonly credentialLeases = new Map<string, SpaceCredentialLeaseBinding>();
@@ -348,6 +447,7 @@ export class RuntimeHostAdapter {
   private hostToolLeaseId: string | undefined;
   private readonly hostToolLeaseIds = new Set<string>();
   private connectionSubscription: RuntimeSubscription | undefined;
+  private workflowSubscription: RuntimeSubscription | undefined;
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   private reconnectAttempt = 0;
   private readonly runtimeEventParser?: RuntimeEventParser;
@@ -359,6 +459,7 @@ export class RuntimeHostAdapter {
     this.profileRoot = path.resolve(options.profileRoot ?? getKodaxRuntimeDir());
     this.runtimeHomeDir =
       options.runtimeHomeDir === undefined ? undefined : path.resolve(options.runtimeHomeDir);
+    this.autoModeDefaultsResolver = options.autoModeDefaultsResolver ?? loadKodaxAutoModeDefaults;
     this.runtimeFactory = options.runtimeFactory ?? createPublishedRuntime;
     this.identityStore =
       options.identityStore ??
@@ -444,6 +545,8 @@ export class RuntimeHostAdapter {
           requirements: {
             externalAgents: true,
             externalAgentAdmin: 1,
+            actorControlPlane: 1,
+            learningCenter: 1,
             a2aConfigReconciler: 1,
             operationDeduplication: 1,
             sessionObservation: 1,
@@ -463,6 +566,7 @@ export class RuntimeHostAdapter {
             sharedSessionSettings: 1,
             durableRecoveryQueries: 1,
             daemonManagement: 1,
+            runtimeAutoModeGuardrail: 1,
           },
         });
         pendingRuntime = runtime;
@@ -476,6 +580,7 @@ export class RuntimeHostAdapter {
           pendingRuntime = null;
           return;
         }
+        assertMinimumRuntimeVersion(runtime.identity.version);
         this.assertRequiredScopes(runtime);
         const { registerSpaceHostTools } = await import('./runtime/space-host-tools.js');
         let hostToolLease;
@@ -512,8 +617,31 @@ export class RuntimeHostAdapter {
             next.reconnectable,
           );
         });
+        await this.connectionSubscription.ready;
+        this.workflowSubscription?.close();
+        this.workflowSubscription = runtime.workflows.subscribe({}, (event) => {
+          const snapshot = projectRuntimeWorkflow(event.snapshot);
+          if (!snapshot) {
+            console.warn('[runtime] ignored malformed workflow snapshot from Coder daemon');
+            return;
+          }
+          const { sessionId, surface, projectRoot, ...processSnapshot } = snapshot;
+          const message = 'message' in event ? event.message : undefined;
+          this.push('workflow.event', {
+            type: event.type,
+            snapshot: processSnapshot,
+            ...(message !== undefined ? { message: message.slice(0, 8_192) } : {}),
+            ...(sessionId !== undefined ? { sessionId } : {}),
+            ...(surface !== undefined ? { surface } : {}),
+            ...(projectRoot !== undefined ? { projectRoot } : {}),
+          });
+        });
+        await this.workflowSubscription.ready;
         this.state = 'ready';
         this.lastError = undefined;
+        if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = undefined;
+        this.reconnectAttempt = 0;
         await this.resumeKnownCredentialLeases(runtime);
         await this.refreshProfile(0);
         for (const sessionId of this.desiredObservations) {
@@ -538,6 +666,8 @@ export class RuntimeHostAdapter {
         if (runtime) {
           this.connectionSubscription?.close();
           this.connectionSubscription = undefined;
+          this.workflowSubscription?.close();
+          this.workflowSubscription = undefined;
           if (attachedHostToolLeaseId) {
             await runtime.hostTools.revoke(attachedHostToolLeaseId).catch(() => false);
             this.hostToolLeaseIds.delete(attachedHostToolLeaseId);
@@ -549,8 +679,18 @@ export class RuntimeHostAdapter {
         this.initializePromise = null;
         if (this.state === 'closed') throw error;
         this.state = 'failed';
-        this.lastError = sanitizeDiagnosticError(error);
-        this.publishUnavailable('incompatible', this.lastError);
+        this.lastError = runtimeInitializationDiagnostic(error);
+        const retryableHealthFailure = isTransientDaemonHealthFailure(error);
+        this.publishUnavailable(
+          retryableHealthFailure ? 'reconnecting' : 'incompatible',
+          this.lastError,
+        );
+        // The SDK deliberately refuses to start a competing daemon while a
+        // previous owner's health record is still within its safety window.
+        // That condition can clear without user action, so keep probing through
+        // the existing bounded backoff instead of leaving Coder permanently in
+        // a failed state until the first send happens to retry initialize().
+        if (retryableHealthFailure) this.scheduleReconnect(true);
         throw error;
       });
     return this.initializePromise;
@@ -590,6 +730,8 @@ export class RuntimeHostAdapter {
     if (this.state === 'closed' || this.runtime !== attached) return;
     this.connectionSubscription?.close();
     this.connectionSubscription = undefined;
+    this.workflowSubscription?.close();
+    this.workflowSubscription = undefined;
     this.lastError = sanitizeDiagnosticError(error);
     this.publishUnavailable('reconnecting', this.lastError);
     for (const state of this.observations.values()) state.observation.close();
@@ -615,18 +757,30 @@ export class RuntimeHostAdapter {
     }
   }
 
-  private scheduleReconnect(): void {
+  private scheduleReconnect(retryOnlyTransientHealthFailure = false): void {
     if (this.state === 'closed' || this.reconnectTimer) return;
     const delay = Math.min(30_000, 1_000 * 2 ** Math.min(this.reconnectAttempt, 5));
     this.reconnectTimer = setTimeout(() => {
-      this.reconnectTimer = undefined;
-      if (this.state === 'closed') return;
+      if (this.state === 'closed') {
+        this.reconnectTimer = undefined;
+        return;
+      }
       void this.initialize()
         .then(() => {
+          this.reconnectTimer = undefined;
           this.reconnectAttempt = 0;
         })
         .catch((error: unknown) => {
+          // Keep the timer registered until initialize() settles. Its own error
+          // path may observe the same transient health failure and request a
+          // retry; retaining this handle prevents two retry chains from racing.
+          this.reconnectTimer = undefined;
           this.reconnectAttempt += 1;
+          if (retryOnlyTransientHealthFailure) {
+            if (!isTransientDaemonHealthFailure(error)) return;
+            this.scheduleReconnect(true);
+            return;
+          }
           this.publishUnavailable('disconnected', sanitizeDiagnosticError(error));
           this.scheduleReconnect();
         });
@@ -648,6 +802,8 @@ export class RuntimeHostAdapter {
       'run:control',
       'interaction:respond',
       'permission:respond',
+      'learning:read',
+      'learning:control',
       'credential:register',
       'host-tool:register',
       'owner:admin',
@@ -691,6 +847,16 @@ export class RuntimeHostAdapter {
         id: 'runtime.externalAgents.admin',
         version: version('externalAgentAdmin'),
         available: available('externalAgentAdmin'),
+      },
+      {
+        id: 'runtime.externalAgents.actors',
+        version: version('actorControlPlane'),
+        available: available('actorControlPlane'),
+      },
+      {
+        id: 'runtime.learning',
+        version: version('learningCenter'),
+        available: available('learningCenter'),
       },
       {
         id: 'runtime.externalAgents.a2aConfig',
@@ -913,6 +1079,31 @@ export class RuntimeHostAdapter {
     patch: RuntimeSessionSettingsPatch,
     identity?: RuntimeSessionIdentity,
   ): Promise<void> {
+    const previous = this.settingsUpdateLocks.get(sessionId) ?? Promise.resolve();
+    const current = previous
+      .catch(() => undefined)
+      .then(() => this.updateSessionSettingsUnlocked(sessionId, patch, identity));
+    this.settingsUpdateLocks.set(sessionId, current);
+    try {
+      await current;
+    } finally {
+      if (this.settingsUpdateLocks.get(sessionId) === current) {
+        this.settingsUpdateLocks.delete(sessionId);
+      }
+    }
+  }
+
+  async getSessionSettingsVersioned(sessionId: string) {
+    const runtime = await this.requireRuntime();
+    await this.assertCoderSession(runtime, sessionId);
+    return runtime.sessions.getSettingsVersioned(sessionId);
+  }
+
+  private async updateSessionSettingsUnlocked(
+    sessionId: string,
+    patch: RuntimeSessionSettingsPatch,
+    identity?: RuntimeSessionIdentity,
+  ): Promise<void> {
     const runtime = await this.requireRuntime();
     if (identity) {
       if (identity.sessionId !== sessionId) {
@@ -922,14 +1113,59 @@ export class RuntimeHostAdapter {
     } else {
       await this.assertCoderSession(runtime, sessionId);
     }
-    const current = await runtime.sessions.getSettingsVersioned(sessionId);
-    const changed = Object.entries(patch).some(
-      ([key, value]) => current.value[key as keyof typeof current.value] !== value,
-    );
-    if (!changed) return;
-    await runtime.sessions.updateSettingsVersioned(sessionId, patch, {
-      expectedRevision: current.revision,
-    });
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const current = await runtime.sessions.getSettingsVersioned(sessionId);
+      const effectivePatch = await this.withMissingAutoModeDefaults(current.value, patch);
+      const changed = Object.entries(effectivePatch).some(([key, value]) => {
+        const currentValue = current.value[key as keyof typeof current.value];
+        // Runtime patch `null` means delete, whereas a settings snapshot represents
+        // an absent value as `undefined`. Treating null and undefined as different
+        // caused every send/run boundary to issue a redundant revisioned write.
+        return value === null ? currentValue !== undefined : currentValue !== value;
+      });
+      if (!changed) return;
+      try {
+        await runtime.sessions.updateSettingsVersioned(sessionId, effectivePatch, {
+          expectedRevision: current.revision,
+        });
+        return;
+      } catch (error) {
+        if (attempt === 2 || !isSessionSettingsRevisionConflict(error)) throw error;
+      }
+    }
+  }
+
+  private async withMissingAutoModeDefaults(
+    current: RuntimeSessionSettings,
+    patch: RuntimeSessionSettingsPatch,
+  ): Promise<RuntimeSessionSettingsPatch> {
+    if (
+      current.autoModeTimeoutMs !== undefined &&
+      (current.autoModeClassifierModel !== undefined || patch.autoModeClassifierModel !== undefined)
+    ) {
+      return patch;
+    }
+    let defaults: KodaxAutoModeDefaults;
+    try {
+      defaults = await this.autoModeDefaultsResolver();
+    } catch (error) {
+      console.warn(
+        '[runtime] Auto LLM defaults load failed; using the KodaX 0.7.72 timeout:',
+        sanitizeDiagnosticError(error),
+      );
+      defaults = { engine: 'llm', timeoutMs: KODAX_AUTO_MODE_DEFAULT_TIMEOUT_MS };
+    }
+    return {
+      ...patch,
+      ...(current.autoModeClassifierModel === undefined &&
+      patch.autoModeClassifierModel === undefined &&
+      defaults.classifierModel !== undefined
+        ? { autoModeClassifierModel: defaults.classifierModel }
+        : {}),
+      ...(current.autoModeTimeoutMs === undefined && patch.autoModeTimeoutMs === undefined
+        ? { autoModeTimeoutMs: defaults.timeoutMs }
+        : {}),
+    };
   }
 
   ensureObserved(sessionId: string): Promise<void> {
@@ -1159,13 +1395,20 @@ export class RuntimeHostAdapter {
     sessionId: string,
     settings: RuntimeSessionSettings,
   ): Promise<void> {
-    const { kodaxHost } = await import('./host.js');
+    const { kodaxHost, resolveEffectiveProviderModel } = await import('./host.js');
     const session = kodaxHost.get(sessionId);
     if (!session || session.surface !== 'code') return;
+    const previousProvider = session.provider;
     if (typeof settings.provider === 'string' && settings.provider.length > 0) {
       session.provider = settings.provider;
     }
-    session.model = settings.model;
+    // Runtime settings are an override snapshot: an absent model means "use
+    // the provider default", not "send an empty model to provider sidecars".
+    // Preserve the current model only as a final fallback for a custom provider
+    // whose descriptor is temporarily unavailable during observation startup.
+    session.model =
+      resolveEffectiveProviderModel(session.provider, settings.model) ??
+      (session.provider === previousProvider ? session.model : undefined);
     session.thinking = settings.thinking;
     if (
       settings.reasoningMode === 'off' ||
@@ -1175,6 +1418,9 @@ export class RuntimeHostAdapter {
       settings.reasoningMode === 'deep'
     ) {
       session.reasoningMode = settings.reasoningMode;
+    } else {
+      const effortMode = effortToReasoningMode(settings.effort);
+      if (effortMode !== undefined) session.reasoningMode = effortMode;
     }
     if (
       settings.permissionMode === 'plan' ||
@@ -1183,11 +1429,7 @@ export class RuntimeHostAdapter {
     ) {
       session.permissionMode = settings.permissionMode;
     }
-    if (
-      settings.agentMode === 'ama' ||
-      settings.agentMode === 'amaw' ||
-      settings.agentMode === 'sa'
-    ) {
+    if (settings.agentMode === 'ama' || settings.agentMode === 'sa') {
       session.agentMode = settings.agentMode;
     }
     if (settings.autoModeEngine === 'llm' || settings.autoModeEngine === 'rules') {
@@ -1633,6 +1875,283 @@ export class RuntimeHostAdapter {
     );
   }
 
+  async listPermissionGrants() {
+    const runtime = await this.requireRuntime();
+    return runtime.permissions.listGrants();
+  }
+
+  async revokePermissionGrant(grantId: string, expectedRevision: number): Promise<boolean> {
+    const runtime = await this.requireRuntime();
+    return runtime.permissions.revokeGrant(grantId, expectedRevision);
+  }
+
+  async listWorkflows(input?: { readonly sessionId?: string }): Promise<WorkflowRunT[]> {
+    const runtime = await this.requireRuntime();
+    const snapshots = await runtime.workflows.list({ limit: 500 });
+    return snapshots
+      .map(projectRuntimeWorkflow)
+      .filter((item): item is WorkflowRunT => item !== undefined)
+      .filter((item) => input?.sessionId === undefined || item.sessionId === input.sessionId)
+      .slice(0, 500);
+  }
+
+  async getWorkflow(runId: string): Promise<WorkflowRunT | undefined> {
+    const runtime = await this.requireRuntime();
+    return projectRuntimeWorkflow(await runtime.workflows.get(runId));
+  }
+
+  async controlWorkflow(action: 'pause' | 'resume' | 'stop', runId: string): Promise<boolean> {
+    const runtime = await this.requireRuntime();
+    return runtime.workflows[action](runId);
+  }
+
+  async listLearnedCapabilities(query?: Parameters<KodaXDaemonRuntime['learning']['list']>[0]) {
+    const runtime = await this.requireRuntime();
+    return runtime.learning.list(query);
+  }
+
+  async getLearnedCapability(nameOrSlug: string) {
+    const runtime = await this.requireRuntime();
+    return runtime.learning.get(nameOrSlug);
+  }
+
+  async learningSnapshot() {
+    const runtime = await this.requireRuntime();
+    return runtime.learning.getSnapshot();
+  }
+
+  async controlLearnedCapability(
+    action: 'review' | 'trust' | 'reject' | 'disable' | 'rollback',
+    nameOrSlug: string,
+  ): Promise<void> {
+    const runtime = await this.requireRuntime();
+    await runtime.learning[action](nameOrSlug);
+  }
+
+  async reloadRuntimeConfig(): Promise<void> {
+    const runtime = await this.requireRuntime();
+    await runtime.config.reload();
+  }
+
+  async reloadRuntimeMcp() {
+    const runtime = await this.requireRuntime();
+    return runtime.mcp.reloadServers();
+  }
+
+  async listRuntimeMcpTools(server: string, forceRefresh?: boolean) {
+    const runtime = await this.requireRuntime();
+    const lists = await runtime.mcp.listTools({
+      server,
+      ...(forceRefresh ? { forceRefresh } : {}),
+    });
+    return lists.find((item) => item.serverId === server) ?? { serverId: server, tools: [] };
+  }
+
+  async listRuntimeSkills(projectRoot: string) {
+    const runtime = await this.requireRuntime();
+    return runtime.catalog.skills({ projectRoot, userInvocableOnly: true });
+  }
+
+  async listRuntimeCommands(projectRoot?: string) {
+    const runtime = await this.requireRuntime();
+    return runtime.catalog.commands(projectRoot);
+  }
+
+  async listRuntimeAgentRegistrations(input?: {
+    readonly projectRoot?: string;
+  }): Promise<ExternalAgentRegistrationSummaryT[]> {
+    const runtime = await this.requireRuntime();
+    const query = {
+      actorId: 'space:renderer',
+      ...(input?.projectRoot ? { projectId: input.projectRoot } : {}),
+      readOnly: true,
+    };
+    const [registrations, dispatchable] = await Promise.all([
+      runtime.admin.agentRegistrations.list(),
+      runtime.agents.listDispatchable(query),
+    ]);
+    const listings = new Map(dispatchable.map((item) => [item.descriptor.agentId, item]));
+    return registrations.map((registration) =>
+      projectRuntimeRegistration(registration, listings.get(registration.agentId)),
+    );
+  }
+
+  async listRuntimeDispatchableAgents(input: {
+    readonly projectRoot?: string;
+    readonly readOnly: boolean;
+  }): Promise<DispatchableAgentListingT[]> {
+    const runtime = await this.requireRuntime();
+    const listings = await runtime.agents.listDispatchable({
+      actorId: 'space:renderer',
+      ...(input.projectRoot ? { projectId: input.projectRoot } : {}),
+      readOnly: input.readOnly,
+    });
+    return listings.map(projectRuntimeDispatchable).slice(0, 256);
+  }
+
+  async preflightRuntimeAgent(input: {
+    readonly agentId: string;
+    readonly projectRoot?: string;
+    readonly readOnly: boolean;
+    readonly expectedConfigurationRevision?: string;
+  }) {
+    const runtime = await this.requireRuntime();
+    const result = await runtime.agents.preflight({
+      agentId: input.agentId,
+      query: {
+        actorId: 'space:renderer',
+        ...(input.projectRoot ? { projectId: input.projectRoot } : {}),
+        readOnly: input.readOnly,
+      },
+      ...(input.expectedConfigurationRevision
+        ? { expectedConfigurationRevision: input.expectedConfigurationRevision }
+        : {}),
+    });
+    return {
+      ok: result.ok,
+      ...(result.descriptor
+        ? {
+            descriptor: projectRuntimeDispatchable({
+              descriptor: result.descriptor,
+              dispatchability: result.dispatchability,
+            }).descriptor,
+          }
+        : {}),
+      dispatchability: projectRuntimeDispatchability(result.dispatchability),
+      reasons: [...result.reasons].slice(0, 32),
+    };
+  }
+
+  async listRuntimeActorTasks(sessionId: string, agentId?: string): Promise<ExternalAgentTaskT[]> {
+    const runtime = await this.requireRuntime();
+    const tree = await runtime.agents.tree(sessionId);
+    const details = await Promise.all(
+      tree.actors
+        .filter((actor) => actor.kind === 'external')
+        .map((actor) => runtime.agents.detail(sessionId, actor.path)),
+    );
+    const tasks = details.flatMap((detail) =>
+      detail.turns
+        .filter((turn) => {
+          const candidate = turn.metadata?.agentId;
+          return agentId === undefined || candidate === agentId;
+        })
+        .map((turn) => projectRuntimeActorTask(sessionId, detail, turn)),
+    );
+    return tasks.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)).slice(0, 256);
+  }
+
+  async startRuntimeActorTask(input: {
+    readonly sessionId: string;
+    readonly agentId: string;
+    readonly objective: string;
+    readonly projectRoot?: string;
+    readonly readOnly: boolean;
+    readonly expectedConfigurationRevision?: string;
+  }): Promise<ExternalAgentTaskT> {
+    const runtime = await this.requireRuntime();
+    const preflight = await runtime.agents.preflight({
+      agentId: input.agentId,
+      query: {
+        actorId: 'space:renderer',
+        ...(input.projectRoot ? { projectId: input.projectRoot } : {}),
+        parentTaskId: input.sessionId,
+        readOnly: input.readOnly,
+      },
+      ...(input.expectedConfigurationRevision
+        ? { expectedConfigurationRevision: input.expectedConfigurationRevision }
+        : {}),
+    });
+    if (!preflight.ok || !preflight.descriptor) {
+      throw new Error(preflight.reasons.join('; ') || 'external agent is not dispatchable');
+    }
+    const taskName = `external-${input.agentId.replace(/[^a-zA-Z0-9_-]+/g, '-').slice(0, 48)}`;
+    const started = await runtime.agents.spawn(input.sessionId, {
+      taskName,
+      objective: input.objective,
+      kind: 'external',
+      metadata: {
+        agentId: input.agentId,
+        configurationRevision: preflight.descriptor.configurationRevision,
+        protocol: preflight.descriptor.protocol,
+        readOnly: input.readOnly,
+      },
+    });
+    const detail = await runtime.agents.detail(input.sessionId, started.actorPath);
+    const turn = detail.turns.find((item) => item.turnId === started.turnId);
+    if (!turn) throw new Error('Coder daemon did not retain the accepted external Agent turn.');
+    return projectRuntimeActorTask(input.sessionId, detail, turn);
+  }
+
+  async runtimeActorTaskEvents(
+    sessionId: string,
+    taskId: string,
+    cursor: number,
+  ): Promise<{ events: ExternalAgentTaskEventT[]; nextCursor: number }> {
+    const { runtime, identity } = await this.runtimeActorTaskContext(sessionId, taskId);
+    const events = await runtime.agents.events(sessionId, cursor);
+    return {
+      events: events
+        .filter(
+          (event) =>
+            event.actorPath === identity.actorPath &&
+            (event.turnId === undefined || event.turnId === identity.turnId),
+        )
+        .map(projectRuntimeActorEvent)
+        .filter((event): event is ExternalAgentTaskEventT => event !== undefined)
+        .slice(0, 512),
+      nextCursor: events.reduce((next, event) => Math.max(next, event.sequence), cursor),
+    };
+  }
+
+  private async runtimeActorTask(sessionId: string, taskId: string): Promise<ExternalAgentTaskT> {
+    const { runtime, identity, detail, turn } = await this.runtimeActorTaskContext(
+      sessionId,
+      taskId,
+    );
+    const output = await runtime.agents.output(sessionId, identity.actorPath, identity.turnId);
+    return projectRuntimeActorTask(sessionId, detail, turn, output);
+  }
+
+  private async runtimeActorTaskContext(sessionId: string, taskId: string) {
+    const runtime = await this.requireRuntime();
+    const identity = decodeRuntimeActorTaskId(taskId);
+    const detail = await runtime.agents.detail(sessionId, identity.actorPath);
+    const turn = detail.turns.find((item) => item.turnId === identity.turnId);
+    if (!turn || detail.actor.kind !== 'external') {
+      throw new Error('external Agent turn does not belong to the selected session');
+    }
+    return { runtime, identity, detail, turn };
+  }
+
+  async sendRuntimeActorTaskInput(
+    sessionId: string,
+    taskId: string,
+    content: string,
+  ): Promise<ExternalAgentTaskT> {
+    const { runtime, identity } = await this.runtimeActorTaskContext(sessionId, taskId);
+    await runtime.agents.send(sessionId, identity.actorPath, content, 'internal');
+    return this.runtimeActorTask(sessionId, taskId);
+  }
+
+  async cancelRuntimeActorTask(
+    sessionId: string,
+    taskId: string,
+    reason?: string,
+  ): Promise<ExternalAgentTaskT> {
+    const { runtime, identity } = await this.runtimeActorTaskContext(sessionId, taskId);
+    await runtime.agents.interrupt(sessionId, identity.actorPath, reason);
+    return this.runtimeActorTask(sessionId, taskId);
+  }
+
+  async reconcileRuntimeActorTask(sessionId: string, taskId: string): Promise<ExternalAgentTaskT> {
+    return this.runtimeActorTask(sessionId, taskId);
+  }
+
+  ownsRuntimeActorTask(taskId: string): boolean {
+    return isRuntimeActorTaskId(taskId);
+  }
+
   async respondUserInput(
     requestId: string,
     reply: { readonly cancelled?: true; readonly value?: unknown },
@@ -1774,6 +2293,8 @@ export class RuntimeHostAdapter {
     const initializing = this.initializePromise;
     this.connectionSubscription?.close();
     this.connectionSubscription = undefined;
+    this.workflowSubscription?.close();
+    this.workflowSubscription = undefined;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = undefined;
     this.runtime = null;

@@ -8,13 +8,13 @@
 //     todo/managed-task-status/compaction/retry/repointel/session-start/iteration-start/
 //     stream-end/thinking-end/tool-input-delta/provider-recovery
 //
-// 关键架构：Permission 统一指向 Space。
-//   ❌ 旧方案"双 broker"：KodaX 内部一套 + Space 一套
-//   ✅ 现方案：KodaX 暴露 events.beforeToolExecute 钩子 → 转 Space PermissionBroker
-//      → broker 据 session.permissionMode 短路或弹 modal → 决策回流 KodaX
-//      KodaX 看到 false 就跳过工具，看到 true 就执行。
-//      Plan-mode 由 context.planModeBlockCheck 把 write 工具拦在 KodaX 入口处。
-//      Exit plan mode 由 events.exitPlanMode 让 Space 弹 modal（v0.1.x 中先 stub allow）。
+// 关键架构：每条执行路径只有一个 Permission 决策者，禁止“双 broker”。
+//   - daemon Coder：KodaX Runtime 持有 Auto guardrail；只有升级请求才投影到 Space modal。
+//     Runtime 用 tool-call 授权令牌绑定并一次性消费 allow，Space 不再重复分类。
+//   - embedded / Partner / legacy：events.beforeToolExecute 转 Space PermissionBroker，
+//     broker 按 session.permissionMode 决策后把结果回流 KodaX。
+//   - daemon transport 不支持 exitPlanMode 交互，所以从工具集中排除 exit_plan_mode；
+//     embedded 路径仍由 planModeBlockCheck + exitPlanMode fail-closed。
 
 // **静态 import 改 dynamic**：SDK subpath exports 只有 "import" 条件，CJS main require 会撞
 // ERR_PACKAGE_PATH_NOT_EXPORTED。下面用 lazy load + cache，type-only 用 type import 不产生 runtime require。
@@ -110,6 +110,7 @@ import type {
   AutoModeAskUserVerdict,
   AutoModeEngine,
   Guardrail,
+  KodaXAgentMode,
   KodaXOptions,
   KodaXEvents,
   KodaXInputArtifact,
@@ -145,6 +146,8 @@ import { ensurePartnerFileProposalToolsRegistered } from './partner-file-proposa
 import { ensurePartnerHelperRunnerToolsRegistered } from './partner-helper-runner-tool.js';
 import { ensureSpaceControlToolsRegistered } from '../space-control/tools.js';
 import { partnerSourceStore } from './partner-source-store.js';
+import { retrievePartnerEvidenceForTurn } from './partner-context-broker.js';
+import { partnerKnowledgeFeatures } from './partner-knowledge-features.js';
 import { withSessionRunContext } from './session-run-context.js';
 import { runWithSessionQueueScope } from './session-queue-guard.js';
 import { getSessionStorageHandle, SPACE_EPHEMERAL_SESSION_TAG } from './session-store.js';
@@ -172,6 +175,7 @@ import type {
   SendOptions,
   SendResult,
   SessionCreateOptions,
+  SessionDisposeOptions,
 } from './session-adapter.js';
 import {
   dequeueNextUserPromptForSession,
@@ -182,6 +186,10 @@ import { resolveWireEffort, type ReasoningProfileLike } from './reasoning-effort
 import { runtimeHostAdapter } from './runtime-host-adapter.js';
 
 type SpaceReasoning = 'off' | 'auto' | 'quick' | 'balanced' | 'deep';
+
+function canonicalAgentMode(mode: KodaXAgentMode): 'ama' | 'sa' {
+  return mode === 'sa' ? 'sa' : 'ama';
+}
 
 interface AgentProfileEventSummary {
   readonly surface?: string;
@@ -301,7 +309,7 @@ export class RealKodaXSession implements ManagedSession {
   permissionMode: ManagedSession['permissionMode'];
   /** FEATURE_029：auto mode 子档；非 auto mode 时持有也无害（下次切 auto 时生效）。*/
   autoModeEngine: ManagedSession['autoModeEngine'];
-  /** AMA / AMAW / SA agent mode. */
+  /** AMA / SA agent mode. */
   agentMode: ManagedSession['agentMode'];
   /**
    * F045: 工作面归属（'code' = Coder / 'partner' = Partner）。session 创建时定死，
@@ -325,6 +333,7 @@ export class RealKodaXSession implements ManagedSession {
   private readonly requestPermission: PermissionRequestFn;
   private currentAbort: AbortController | null = null;
   private disposed = false;
+  private abortRuntimeRunOnDispose = false;
   private extensionRuntimeHandle: SpaceSdkExtensionRuntimeHandle | undefined = undefined;
   private extensionRuntimeLoad: Promise<SpaceSdkExtensionRuntimeHandle | undefined> | null = null;
   private extensionRuntimeGeneration: number | null = null;
@@ -353,6 +362,19 @@ export class RealKodaXSession implements ManagedSession {
     return this.currentAbort !== null;
   }
 
+  private async syncRuntimeSessionSettings(): Promise<void> {
+    await runtimeHostAdapter.updateSessionSettings(this.sessionId, {
+      provider: this.provider,
+      model: this.model ?? null,
+      thinking: this.thinking ?? null,
+      reasoningMode: this.reasoningMode,
+      permissionMode: this.permissionMode,
+      executionCwd: this.projectRoot,
+      agentMode: this.agentMode,
+      autoModeEngine: this.autoModeEngine,
+    });
+  }
+
   async send(
     prompt: string,
     artifacts?: readonly InputArtifact[],
@@ -364,24 +386,12 @@ export class RealKodaXSession implements ManagedSession {
 
     if (this.surface === 'code' && runtimeHostAdapter.isRuntimeSelected()) {
       await runtimeHostAdapter.initialize();
-      const created = await runtimeHostAdapter.ensureSession({
+      await runtimeHostAdapter.ensureSession({
         sessionId: this.sessionId,
         projectRoot: this.projectRoot,
         surface: 'code',
         ephemeral: this.ephemeral,
       });
-      if (created) {
-        await runtimeHostAdapter.updateSessionSettings(this.sessionId, {
-          provider: this.provider,
-          model: this.model ?? null,
-          thinking: this.thinking ?? null,
-          reasoningMode: this.reasoningMode,
-          permissionMode: this.permissionMode,
-          executionCwd: this.projectRoot,
-          agentMode: this.agentMode,
-          autoModeEngine: this.autoModeEngine,
-        });
-      }
       await runtimeHostAdapter.ensureObserved(this.sessionId);
       const activeRunId =
         runtimeHostAdapter.activeRunId(this.sessionId) ??
@@ -390,6 +400,10 @@ export class RealKodaXSession implements ManagedSession {
         if (!activeRunId) {
           throw new Error('The Coder daemon is still accepting the current run; retry shortly.');
         }
+        // A daemon session may outlive Space while its local settings sidecar is
+        // missing or stale. Reconcile before attaching a continuation; a fresh run
+        // performs the same one-time reconciliation at its execution boundary.
+        await this.syncRuntimeSessionSettings();
         // Daemon continuations currently expose only after-turn delivery. This is
         // especially important after Space reconnects: the active run lives in the
         // daemon, so there is no in-process interrupt queue to target. Treat an
@@ -582,9 +596,28 @@ export class RealKodaXSession implements ManagedSession {
     });
   }
 
-  async dispose(): Promise<void> {
+  async dispose(options?: SessionDisposeOptions): Promise<void> {
+    const abortRuntimeRun = options?.abortRuntimeRun ?? true;
+    const hadCurrentRun = this.currentAbort !== null;
+    if (abortRuntimeRun) this.abortRuntimeRunOnDispose = true;
     this.disposed = true;
     if (this.currentAbort) this.currentAbort.abort();
+    if (
+      abortRuntimeRun &&
+      hadCurrentRun &&
+      this.surface === 'code' &&
+      runtimeHostAdapter.isRuntimeSelected()
+    ) {
+      // A run may already be active, in which case the immediate abort handles
+      // it. If runs.start() is still being acknowledged, runCoderDaemon repeats
+      // the idempotent abort after admission completes.
+      await runtimeHostAdapter.abortSessionRun(this.sessionId).catch((err) => {
+        console.warn(
+          `[real-session ${this.sessionId}] Runtime run abort on dispose failed:`,
+          err instanceof Error ? err.message : err,
+        );
+      });
+    }
     // Dispose removes this session from the host map; drop any remaining
     // Space-owned queued prompts for the same session.
     await drainQueueForSession(this.sessionId).catch((err) => {
@@ -680,6 +713,9 @@ export class RealKodaXSession implements ManagedSession {
         surface: 'code',
         ephemeral: this.ephemeral,
       });
+      // Keep the execution boundary self-contained as queued/restored runs can enter
+      // here without a fresh renderer-driven session creation.
+      await this.syncRuntimeSessionSettings();
       await runtimeHostAdapter.ensureObserved(sid);
 
       const [skillsPrompt, compaction] = await Promise.all([
@@ -697,6 +733,10 @@ export class RealKodaXSession implements ManagedSession {
         context: {
           gitRoot: this.projectRoot,
           executionCwd: this.projectRoot,
+          // Runtime daemon transport has no exitPlanMode approval callback. Hiding
+          // the unusable tool prevents a generic permission prompt followed by the
+          // inevitable "Only available in interactive REPL" tool error.
+          excludeTools: ['exit_plan_mode'],
           ...(promptOverlay ? { promptOverlay } : {}),
           ...(skillsPrompt ? { skillsPrompt } : {}),
         },
@@ -705,6 +745,7 @@ export class RealKodaXSession implements ManagedSession {
           baseTopics: [],
           topics: SPACE_MANUAL_TOPICS,
         },
+        workflowHostPolicy: buildWorkflowHostPolicy(workflowPolicy),
         workflowRunsBaseDir: workflowController.getRunBaseDir(),
         workflow: { maxConcurrency: workflowPolicy.maxConcurrency },
       };
@@ -714,7 +755,12 @@ export class RealKodaXSession implements ManagedSession {
         mode: 'managed_task',
         options,
       });
-      if (signal.aborted) {
+      // Normal Space shutdown detaches from the shared daemon. dispose() marks
+      // the local Session as disposed before aborting its local wait signal, so
+      // do not turn that detach into a daemon run.abort while runs.start() is
+      // still being acknowledged. Explicit user cancellation keeps disposed=false
+      // and continues to abort the authoritative daemon run.
+      if (signal.aborted && (!this.disposed || this.abortRuntimeRunOnDispose)) {
         await runtimeHostAdapter.abortSessionRun(sid).catch(() => false);
       }
       await handle.result;
@@ -1028,7 +1074,8 @@ export class RealKodaXSession implements ManagedSession {
       return answers;
     };
 
-    // Permission 统一钩子。KodaX 在工具实际执行前调这个，返回 false → 跳过执行，
+    // Embedded / Partner / legacy 路径的 Permission 钩子。Daemon Coder 在更早处直接
+    // 交给 Runtime-owned guardrail，不会进入这里。KodaX 在工具实际执行前调这个，返回 false → 跳过执行，
     // 返回 true → 正常执行，返回 string → 直接当作 tool result（覆盖执行）。
     // Space PermissionBroker 据当前 mode (FEATURE_029 canonical 3 mode) 短路：
     //   - plan         → 全 deny
@@ -1036,8 +1083,7 @@ export class RealKodaXSession implements ManagedSession {
     //   - auto         → guardrail 内部决策 (FEATURE_030 注入后接管该路径)，
     //                    F030 前先 fallback 到 accept-edits 行为
     //
-    // 这是替代"KodaX 内部 permission + Space PermissionBroker 双 broker"方案的关键钩子——
-    // 现在只有**一套** permission 决策路径：Space broker。KodaX 看决策结果执行/跳过。
+    // 这是 embedded 路径替代双 broker 的唯一决策点；daemon 路径的唯一决策点在 Runtime。
     //
     // 防御：planModeBlockCheck 与本钩子之间存在 TOCTOU 窗口——LLM 决定 tool name 时
     // mode 是 'plan' → planModeBlockCheck 放行 (因为该 tool 不在 blocklist)，
@@ -1428,8 +1474,8 @@ export class RealKodaXSession implements ManagedSession {
           kind: 'managed_task_status',
           sessionId: sid,
           status: {
-            // Space now keeps the SDK's three agent modes intact: ama / amaw / sa.
-            agentMode: status.agentMode,
+            // KodaX 0.7.72 exposes the canonical ama / sa modes.
+            agentMode: canonicalAgentMode(status.agentMode),
             harnessProfile: status.harnessProfile,
             ...(toAgentProfileSummary((status as { agentProfile?: unknown }).agentProfile)
               ? {
@@ -1518,7 +1564,7 @@ export class RealKodaXSession implements ManagedSession {
           kind: 'effective_config',
           sessionId: sid,
           config: {
-            agentMode: config.agentMode,
+            agentMode: canonicalAgentMode(config.agentMode),
             ...(toAgentProfileSummary(config.agentProfile)
               ? { agentProfile: toAgentProfileSummary(config.agentProfile)! }
               : {}),
@@ -1656,7 +1702,24 @@ export class RealKodaXSession implements ManagedSession {
       this.surface === 'partner'
         ? buildPartnerRuntimeContextOverlay({ sources: partnerSources })
         : undefined;
-    const combinedPromptOverlay = [partnerRuntimeContextOverlay, promptOverlay]
+    const partnerEvidencePack = await retrievePartnerEvidenceForTurn({
+      surface: this.surface,
+      automaticRecall: partnerKnowledgeFeatures.automaticRecall,
+      sessionId: this.sessionId,
+      projectRoot: this.projectRoot,
+      query: prompt,
+    }).catch((err) => {
+      console.warn(
+        `[real-session ${sid}] Partner automatic recall degraded to explicit tools:`,
+        err instanceof Error ? err.message : err,
+      );
+      return null;
+    });
+    const combinedPromptOverlay = [
+      partnerRuntimeContextOverlay,
+      partnerEvidencePack?.overlay,
+      promptOverlay,
+    ]
       .filter((part): part is string => typeof part === 'string' && part.trim().length > 0)
       .join('\n\n');
     const extensionRuntimeHandle = await this.ensureExtensionRuntime();
@@ -1743,7 +1806,7 @@ export class RealKodaXSession implements ManagedSession {
       const options: KodaXOptions = {
         provider: this.provider,
         effort: wireEffort,
-        // KodaX agent 形态：AMA / AMAW / SA。显式传以便用户切换生效。
+        // KodaX agent 形态：AMA / SA。显式传以便用户切换生效。
         agentMode: this.agentMode,
         // SDK 0.7.42 wired (P0): /model + /thinking 设置在下一 turn 生效
         ...(this.model !== undefined ? { model: this.model } : {}),
@@ -1785,8 +1848,8 @@ export class RealKodaXSession implements ManagedSession {
           baseTopics: [],
           topics: SPACE_MANUAL_TOPICS,
         },
-        // KodaX 0.7.58 removed host-side natural-language workflow auto-start. Space passes only
-        // runtime caps plus the durable run dir for AMAW run_workflow. Host policy shape (incl.
+        // KodaX owns strong-signal Workflow activation in AMA. Space passes only
+        // runtime caps plus the durable run dir for run_workflow. Host policy shape (incl.
         // "tokenBudget 0 = unlimited", KodaX 0.7.59) is single-sourced in buildWorkflowHostPolicy.
         workflowHostPolicy: buildWorkflowHostPolicy(workflowPolicy),
         workflowRunsBaseDir: workflowController.getRunBaseDir(),

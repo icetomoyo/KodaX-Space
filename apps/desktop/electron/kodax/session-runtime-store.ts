@@ -12,6 +12,10 @@ import { getSpaceDataDir } from './data-paths.js';
 import { replaceFileIfUnchanged, writeNewFileExclusive } from './atomic-file.js';
 
 const MAX_RUNTIME_FILE_BYTES = 64 * 1024;
+const persistedAgentModeSchema = z.preprocess(
+  (value) => (value === 'amaw' || value === 'ama-workflow' ? 'ama' : value),
+  z.enum(['ama', 'sa']),
+);
 
 const sessionRuntimeSchema = z
   .object({
@@ -23,7 +27,7 @@ const sessionRuntimeSchema = z
     permissionMode: z.enum(['plan', 'accept-edits', 'auto']).optional(),
     autoModeEngine: z.enum(['llm', 'rules']).optional(),
     reasoningMode: z.enum(['off', 'auto', 'quick', 'balanced', 'deep']).optional(),
-    agentMode: z.enum(['ama', 'amaw', 'sa']).optional(),
+    agentMode: persistedAgentModeSchema.optional(),
     updatedAt: z.string().min(1),
   })
   .strict();
@@ -53,6 +57,8 @@ type RuntimeFileState =
   | {
       readonly kind: 'valid';
       readonly settings: SessionRuntimeSettings;
+      readonly updatedAt: string;
+      readonly needsAgentModeMigration: boolean;
       readonly hash: string;
     }
   | { readonly kind: 'invalid'; readonly reason: string };
@@ -70,6 +76,31 @@ function settingsFromParsed(parsed: z.infer<typeof sessionRuntimeSchema>): Sessi
     ...(parsed.autoModeEngine !== undefined ? { autoModeEngine: parsed.autoModeEngine } : {}),
     ...(parsed.reasoningMode !== undefined ? { reasoningMode: parsed.reasoningMode } : {}),
     ...(parsed.agentMode !== undefined ? { agentMode: parsed.agentMode } : {}),
+  };
+}
+
+function hasRetiredAgentMode(raw: unknown): boolean {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false;
+  const agentMode = (raw as Record<string, unknown>).agentMode;
+  return agentMode === 'amaw' || agentMode === 'ama-workflow';
+}
+
+function buildSessionRuntimeFile(
+  sessionId: string,
+  settings: SessionRuntimeSettings,
+  updatedAt: string,
+): SessionRuntimeFile {
+  return {
+    version: 1,
+    sessionId,
+    ...(settings.provider !== undefined ? { provider: settings.provider } : {}),
+    ...(settings.model !== undefined ? { model: settings.model } : {}),
+    ...(settings.thinking !== undefined ? { thinking: settings.thinking } : {}),
+    ...(settings.permissionMode !== undefined ? { permissionMode: settings.permissionMode } : {}),
+    ...(settings.autoModeEngine !== undefined ? { autoModeEngine: settings.autoModeEngine } : {}),
+    ...(settings.reasoningMode !== undefined ? { reasoningMode: settings.reasoningMode } : {}),
+    ...(settings.agentMode !== undefined ? { agentMode: settings.agentMode } : {}),
+    updatedAt,
   };
 }
 
@@ -106,6 +137,8 @@ export class SessionRuntimeStore {
       return {
         kind: 'valid',
         settings: settingsFromParsed(parsed.data),
+        updatedAt: parsed.data.updatedAt,
+        needsAgentModeMigration: hasRetiredAgentMode(json),
         hash: sha256(bytes),
       };
     } catch (err) {
@@ -122,7 +155,21 @@ export class SessionRuntimeStore {
     const filePath = this.filePath(sessionId);
     if (!filePath) return null;
     const state = await this.inspect(sessionId, filePath);
-    if (state.kind === 'valid') return state.settings;
+    if (state.kind === 'valid') {
+      if (state.needsAgentModeMigration) {
+        await this.enqueueSessionWrite(sessionId, async () => {
+          try {
+            await this.migrateRetiredAgentModeUnlocked(sessionId, filePath);
+          } catch (err) {
+            console.warn(
+              `[SessionRuntimeStore] retired agent-mode migration failed for ${sessionId}:`,
+              err instanceof Error ? err.message : err,
+            );
+          }
+        });
+      }
+      return state.settings;
+    }
     if (state.kind === 'invalid') {
       console.warn(`[SessionRuntimeStore] read failed for ${sessionId}:`, state.reason);
     }
@@ -150,18 +197,7 @@ export class SessionRuntimeStore {
         throw new Error(`refusing to overwrite invalid state: ${previous.reason}`);
       }
       const merged = { ...(previous.kind === 'valid' ? previous.settings : {}), ...patch };
-      const next: SessionRuntimeFile = {
-        version: 1,
-        sessionId,
-        ...(merged.provider !== undefined ? { provider: merged.provider } : {}),
-        ...(merged.model !== undefined ? { model: merged.model } : {}),
-        ...(merged.thinking !== undefined ? { thinking: merged.thinking } : {}),
-        ...(merged.permissionMode !== undefined ? { permissionMode: merged.permissionMode } : {}),
-        ...(merged.autoModeEngine !== undefined ? { autoModeEngine: merged.autoModeEngine } : {}),
-        ...(merged.reasoningMode !== undefined ? { reasoningMode: merged.reasoningMode } : {}),
-        ...(merged.agentMode !== undefined ? { agentMode: merged.agentMode } : {}),
-        updatedAt: new Date().toISOString(),
-      };
+      const next = buildSessionRuntimeFile(sessionId, merged, new Date().toISOString());
       await fs.mkdir(this.dir, { recursive: true, mode: 0o700 });
       const bytes = Buffer.from(JSON.stringify(next, null, 2), 'utf-8');
       if (previous.kind === 'missing') {
@@ -183,6 +219,29 @@ export class SessionRuntimeStore {
       );
       return false;
     }
+  }
+
+  private async migrateRetiredAgentModeUnlocked(
+    sessionId: string,
+    filePath: string,
+  ): Promise<void> {
+    const current = await this.inspect(sessionId, filePath);
+    if (current.kind !== 'valid' || !current.needsAgentModeMigration) return;
+    const bytes = Buffer.from(
+      JSON.stringify(
+        buildSessionRuntimeFile(sessionId, current.settings, current.updatedAt),
+        null,
+        2,
+      ),
+      'utf-8',
+    );
+    await replaceFileIfUnchanged(
+      filePath,
+      bytes,
+      current.hash,
+      'session runtime state changed during retired agent-mode migration',
+      MAX_RUNTIME_FILE_BYTES,
+    );
   }
 
   async delete(sessionId: string): Promise<void> {

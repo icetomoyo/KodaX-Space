@@ -59,6 +59,12 @@ test('KodaX 0.7.71 Kimi catalog exposes the public K2.7 and K3 context tiers', (
   assert.ok(kimiCode.models?.includes('kimi-for-coding-highspeed'));
 });
 
+test('KodaX 0.7.72 MiniMax Coding defaults to MiniMax M3', () => {
+  const minimax = getBuiltin('minimax-coding');
+  assert.ok(minimax);
+  assert.equal(minimax.defaultModel, 'MiniMax-M3');
+});
+
 test('catalog has fallback data for all 15 anchor providers (disaster recovery)', () => {
   // 这个验证不直接调 buildFallbackProviders（未导出），但通过 BUILTIN_PROVIDERS
   // 间接保证：每个 builtin 都有 apiKeyEnv + defaultModel，无论数据来自 JSON 还是 fallback。

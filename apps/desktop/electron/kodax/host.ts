@@ -90,6 +90,22 @@ export function providerDescriptor(
   return kodaxCustomProviders.find((provider) => provider.id === providerId);
 }
 
+/**
+ * Resolve the concrete model Space must persist and pass to Runtime-owned
+ * services. The main provider can tolerate an omitted model by applying its
+ * own default, but side services such as the Auto LLM classifier require the
+ * effective model to be explicit.
+ */
+export function resolveEffectiveProviderModel(
+  providerId: string,
+  model?: string,
+  kodaxCustomProviders: readonly KodaxConfigCustomProvider[] = [],
+): string | undefined {
+  const explicitModel = model?.trim();
+  if (explicitModel) return explicitModel;
+  return providerDescriptor(providerId, kodaxCustomProviders)?.defaultModel;
+}
+
 export function modelBelongsToProvider(
   providerId: string,
   model: string,
@@ -229,11 +245,12 @@ class KodaXHost {
       throw new Error('Space cannot create an inline Coder session without the owner fence.');
     }
     const sessionId = opts.existingSessionId ?? `s_${randomUUID()}`;
+    const effectiveModel = resolveEffectiveProviderModel(opts.provider, opts.model);
     const session = this.factory({
       sessionId,
       projectRoot: opts.projectRoot,
       provider: opts.provider,
-      ...(opts.model !== undefined ? { model: opts.model } : {}),
+      ...(effectiveModel !== undefined ? { model: effectiveModel } : {}),
       reasoningMode: opts.reasoningMode ?? 'auto',
       // FEATURE_029: canonical 缺省 'accept-edits' — 与 sessionMetaSchema.default 同步
       permissionMode: opts.permissionMode ?? 'accept-edits',
@@ -278,8 +295,11 @@ class KodaXHost {
     if (!session) return false;
     await providerConfigStore.load().catch(() => undefined);
     const kodaxCustomProviders = await loadKodaxCustomProviders().catch(() => []);
-    const effectiveModel =
-      session.model ?? providerDescriptor(session.provider, kodaxCustomProviders)?.defaultModel;
+    const effectiveModel = resolveEffectiveProviderModel(
+      session.provider,
+      session.model,
+      kodaxCustomProviders,
+    );
     return getSessionRuntimeStore().set(sessionId, {
       provider: session.provider,
       model: effectiveModel,
@@ -686,19 +706,24 @@ class KodaXHost {
   setProvider(sessionId: string, providerId: string): boolean {
     const s = this.sessions.get(sessionId);
     if (!s) return false;
-    if (s.provider !== providerId) s.model = undefined;
+    if (s.provider !== providerId) {
+      s.model = resolveEffectiveProviderModel(providerId);
+    }
     s.provider = providerId;
     return true;
   }
 
   /**
    * v0.7.42 wired (P0): 切 model 覆盖 provider 默认。不重启 session——下一条 prompt
-   * 通过 runKodaX options.model 生效。传 undefined 清除 override（回到 provider 默认）。
+   * 通过 runKodaX options.model 生效。传 undefined 清除 override 时立即物化 provider
+   * 默认模型，避免 Runtime-owned side services 把“没有 override”误读成空模型。
    */
   setModel(sessionId: string, model: string | undefined): boolean {
     const s = this.sessions.get(sessionId);
     if (!s) return false;
-    s.model = model;
+    const effectiveModel = resolveEffectiveProviderModel(s.provider, model);
+    s.model =
+      effectiveModel ?? (model === undefined && s.provider !== 'mock' ? s.model : undefined);
     return true;
   }
 
@@ -769,12 +794,11 @@ class KodaXHost {
   }
 
   /**
-   * FEATURE_029: 切 permission mode (canonical 3)。立即生效——下一次 tool call broker.request 走新 mode 短路。
+   * FEATURE_029: 切 permission mode (canonical 3)。
    *
-   * Reviewer batch HIGH-3：切到 'auto' 时若 session 正在跑 (isRunning())，AutoModeToolGuardrail
-   * bootstrap 不会立即注入（bootstrap 在 runRealStream 顶端读一次 permissionMode 后就锁定）；
-   * 当前这一轮 LLM 跑完前 broker 仍走"非 guardrail 路径"——edit/write 仍按 accept-edits 短路、
-   * bash/network/MCP 仍走 user confirm modal。下一轮 send 才会正常 bootstrap guardrail。
+   * Daemon Coder：运行时设置提交给 KodaX Runtime，Runtime guardrail 在下一次具体 tool call
+   * 重新读取，因此同一 turn 内也按新 mode / engine 决策。Embedded / Partner / legacy：
+   * guardrail 仍是 run-scoped bootstrap，切换从下一轮 send 生效。
    *
    * v0.1.4 修复：之前这里 push 一条 session_error event 当"informational 提示"，
    * 但 session_error 是"session 结束"语义 —— ActivitySpinner 看到立即把 streaming
@@ -1038,7 +1062,7 @@ class KodaXHost {
   }
 
   /** 测试 / 关闭流程用：清空所有 session。*/
-  async disposeAll(): Promise<void> {
+  async disposeAll(options?: { readonly detachRuntimeRuns?: boolean }): Promise<void> {
     await Promise.all(
       [...this.runtimeMutationLocks.values()].map((pending) => pending.catch(() => undefined)),
     );
@@ -1047,7 +1071,11 @@ class KodaXHost {
       permissionBroker.cancelSession(sid, 'shutdown');
       askUserBroker.cancelSession(sid, 'shutdown');
     }
-    await Promise.all([...this.sessions.values()].map((s) => s.dispose()));
+    await Promise.all(
+      [...this.sessions.values()].map((s) =>
+        s.dispose({ abortRuntimeRun: !(options?.detachRuntimeRuns ?? false) }),
+      ),
+    );
     this.sessions.clear();
     // OC-31 v0.1.9: 同 delete()，进程关掉时把所有 session 的 clipboard 暂存清掉
     await Promise.all(sids.map((sid) => cleanupClipboardForSession(sid)));

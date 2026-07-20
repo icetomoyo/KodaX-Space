@@ -26,8 +26,8 @@ test('skill.discover input requires projectRoot', () => {
   assert.equal(skillDiscoverChannel.input.safeParse({ projectRoot: '' }).success, false);
 });
 
-test('skill.discover output accepts user/project/plugin/builtin sources', () => {
-  for (const source of ['user', 'project', 'plugin', 'builtin'] as const) {
+test('skill.discover output accepts user/project/plugin/builtin/learned sources', () => {
+  for (const source of ['user', 'project', 'plugin', 'builtin', 'learned'] as const) {
     const out = {
       skills: [{ name: 'foo', description: 'desc', source, path: '/skills/foo' }],
     };
@@ -44,7 +44,16 @@ test('skill.discover output rejects unknown source', () => {
 
 test('skill name regex allows kebab + . : _ but no slashes', () => {
   // valid
-  for (const n of ['foo', 'foo-bar', 'foo.bar', 'foo:bar', 'foo_bar', 'feature-list-tracker', 'a1', 'x']) {
+  for (const n of [
+    'foo',
+    'foo-bar',
+    'foo.bar',
+    'foo:bar',
+    'foo_bar',
+    'feature-list-tracker',
+    'a1',
+    'x',
+  ]) {
     assert.equal(
       skillDiscoverChannel.output.safeParse({
         skills: [{ name: n, description: '', source: 'user', path: '/x' }],

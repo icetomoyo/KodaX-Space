@@ -18,6 +18,7 @@ import type {
   PermissionRequestFn,
   SendOptions,
   SendResult,
+  SessionDisposeOptions,
   SessionCreateOptions,
 } from './session-adapter.js';
 import { sanitizeForDisplay } from '../permission/sanitize.js';
@@ -51,7 +52,11 @@ const ACCEPT_EDITS_AUTO_ALLOWED_TOOLS = new Set([
  */
 function pickMockToolCall(prompt: string): { toolName: string; input: Record<string, unknown> } {
   const lower = prompt.toLowerCase();
-  if (lower.includes('rm -rf') || lower.includes('delete the database') || lower.includes('drop table')) {
+  if (
+    lower.includes('rm -rf') ||
+    lower.includes('delete the database') ||
+    lower.includes('drop table')
+  ) {
     return {
       toolName: 'bash',
       input: { command: lower.includes('rm') ? 'rm -rf /tmp/test' : 'DROP TABLE users' },
@@ -172,7 +177,11 @@ export class MockKodaXSession implements ManagedSession {
 
   // OC-31 v0.1.9 — `artifacts` 在 mock 路径下被忽略。mock 只回放预录脚本，
   // 没法真把 image 喂给一个 LLM；保留参数让 ManagedSession 接口一致 & 单测可注入。
-  async send(prompt: string, _artifacts?: readonly InputArtifact[], _options?: SendOptions): Promise<SendResult> {
+  async send(
+    prompt: string,
+    _artifacts?: readonly InputArtifact[],
+    _options?: SendOptions,
+  ): Promise<SendResult> {
     if (this.disposed) throw new Error(`[mock-session ${this.sessionId}] already disposed`);
     if (this.currentAbort) {
       // Mock does not model queued follow-up prompts; production uses
@@ -197,7 +206,7 @@ export class MockKodaXSession implements ManagedSession {
     }
   }
 
-  async dispose(): Promise<void> {
+  async dispose(_options?: SessionDisposeOptions): Promise<void> {
     this.disposed = true;
     if (this.currentAbort) this.currentAbort.abort();
   }
@@ -299,11 +308,14 @@ export class MockKodaXSession implements ManagedSession {
 
       // F009: write/edit 工具完成时把 before/after 写入 diff cache，让 FilePanel 自动跳 diff
       if ((toolName === 'write' || toolName === 'edit') && typeof input.path === 'string') {
-        const after = toolName === 'write'
-          ? typeof input.content === 'string' ? input.content : ''
-          : `[mock-edited content of ${input.path}]\n${
-              typeof input.new_string === 'string' ? input.new_string : ''
-            }\n`;
+        const after =
+          toolName === 'write'
+            ? typeof input.content === 'string'
+              ? input.content
+              : ''
+            : `[mock-edited content of ${input.path}]\n${
+                typeof input.new_string === 'string' ? input.new_string : ''
+              }\n`;
         // 注：v0.1.0 阶段 before 用"文件原内容 OR 空"——真实 adapter 会从 KodaX runtime 拿
         const before = toolName === 'write' ? '' : '[mock-original]\nTODO\n';
         recordDiff(this.projectRoot, input.path, before, after);

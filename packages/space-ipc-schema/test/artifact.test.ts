@@ -35,6 +35,19 @@ test('artifact.previewFile output is a read-only preview payload', () => {
   );
 });
 
+test('legacy artifact.previewFile keeps its Session-scoped compatibility contract', () => {
+  const fileOnly = { projectRoot: 'C:/project', path: 'README.md' };
+  assert.equal(artifactPreviewFileChannel.input.safeParse(fileOnly).success, false);
+  assert.equal(
+    artifactPreviewFileChannel.input.safeParse({
+      ...fileOnly,
+      sessionId: 's1',
+      surface: 'code',
+    }).success,
+    true,
+  );
+});
+
 test('artifact.previewFile output rejects old persisted artifact shape', () => {
   assert.equal(
     artifactPreviewFileChannel.output.safeParse({

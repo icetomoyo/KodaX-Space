@@ -179,7 +179,7 @@ test('tryResume accepts an arbitrary persisted model for a custom provider witho
   assert.equal(kodaxHost.get(id)?.model, 'runtime-model-v2');
 });
 
-test('tryResume ignores configured model when it does not belong to the resolved provider', async () => {
+test('tryResume falls back to the resolved provider default when configured model does not belong', async () => {
   mockUserConfig({ provider: 'zhipu-coding', model: 'mimo-v2.5-pro' });
   const id = 's_resume-stale-model';
   mockState.seed(id, 'C:/proj/example', 'stale model');
@@ -189,7 +189,7 @@ test('tryResume ignores configured model when it does not belong to the resolved
   const resumed = kodaxHost.get(id);
   assert.ok(resumed);
   assert.equal(resumed.provider, 'zhipu-coding');
-  assert.equal(resumed.model, undefined);
+  assert.equal(resumed.model, 'glm-5.2');
 });
 
 test('tryResume registers Space custom default provider before rehydrating session', async () => {
