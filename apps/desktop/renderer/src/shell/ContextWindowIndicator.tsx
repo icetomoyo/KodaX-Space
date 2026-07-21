@@ -13,6 +13,10 @@
 import { useEffect, useState, type CSSProperties } from 'react';
 import { useI18n } from '../i18n/I18nProvider.js';
 import { useAppStore } from '../store/appStore.js';
+import {
+  resolveContextWindowReading,
+  type ResolvedContextWindowReading,
+} from './contextWindowReading.js';
 import { getModelContextCap } from './modelContextCaps.js';
 import { resolveActiveModel } from './resolveActiveModel.js';
 
@@ -26,20 +30,14 @@ type ContextGaugeStyle = CSSProperties & {
   '--cw-level-height': string;
 };
 
-interface ResolvedContextWindow {
-  readonly contextWindow: number;
-  readonly triggerPercent: number;
-  readonly triggerTokens?: number;
-}
-
 /** 后台查 SDK 拿 contextWindow + cache; UI 同步 fallback 到硬编码表先渲染避免抖动。*/
 function useResolvedContextWindow(
   providerId: string | null,
   model: string | null,
   hardcodedFallback: number,
-): ResolvedContextWindow {
+): ResolvedContextWindowReading {
   const [configRevision, setConfigRevision] = useState(0);
-  const [resolved, setResolved] = useState<ResolvedContextWindow>({
+  const [resolved, setResolved] = useState<ResolvedContextWindowReading>({
     contextWindow: hardcodedFallback,
     triggerPercent: DEFAULT_COMPACTION_TRIGGER_PERCENT,
   });
@@ -73,25 +71,14 @@ function useResolvedContextWindow(
       .invoke('provider.modelContextWindow', { providerId, model })
       .then((r) => {
         if (cancelled) return;
-        // source === 'fallback' 表示 SDK 没真正拿到 provider-advertised window
-        // (常见原因：该 provider 没配 API key,resolveProvider 直接 throw)。
-        // 此时不要信 SDK 给的 200k——回退到 renderer 端 hardcoded table，因为它至少
-        // 有按 model 名前缀的真实信息 (gpt-5 → 1M、deepseek-v3.2 → 1M).
-        let value: number;
-        let triggerPercent = DEFAULT_COMPACTION_TRIGGER_PERCENT;
-        let triggerTokens: number | undefined;
         if (!r.ok) {
-          value = hardcodedFallback;
-        } else if (r.data.source === 'fallback') {
-          value = hardcodedFallback;
-          triggerPercent = r.data.compactionTriggerPercent;
-          triggerTokens = r.data.compactionTriggerTokens;
-        } else {
-          value = r.data.contextWindow > 0 ? r.data.contextWindow : hardcodedFallback;
-          triggerPercent = r.data.compactionTriggerPercent;
-          triggerTokens = r.data.compactionTriggerTokens;
+          setResolved({
+            contextWindow: hardcodedFallback,
+            triggerPercent: DEFAULT_COMPACTION_TRIGGER_PERCENT,
+          });
+          return;
         }
-        setResolved({ contextWindow: value, triggerPercent, triggerTokens });
+        setResolved(resolveContextWindowReading(r.data, hardcodedFallback));
       })
       .catch(() => {
         if (cancelled) return;
@@ -151,11 +138,12 @@ export function ContextWindowIndicator(): JSX.Element | null {
   const resolvedWindow = useResolvedContextWindow(activeProviderId, activeModel, hardcodedCap);
   const cap = resolvedWindow.contextWindow;
   const triggerPercent = resolvedWindow.triggerPercent;
-  const percentageThreshold = Math.max(1, Math.round((cap * triggerPercent) / 100));
-  const autoCompactThreshold =
+  const percentageThreshold = Math.max(1, Math.floor((cap * triggerPercent) / 100));
+  const configuredThreshold =
     resolvedWindow.triggerTokens && resolvedWindow.triggerTokens > 0
       ? Math.min(percentageThreshold, resolvedWindow.triggerTokens)
       : percentageThreshold;
+  const autoCompactThreshold = resolvedWindow.effectiveTriggerTokens ?? configuredThreshold;
 
   const tokenCount = tokenInfo?.tokens ?? 0;
   const lastCompaction = tokenInfo?.lastCompaction;

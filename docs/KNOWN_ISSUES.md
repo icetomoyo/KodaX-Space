@@ -4820,12 +4820,67 @@ Verification:
 - Exact 0.7.74 Runtime compatibility check passed.
 - Desktop TypeScript check and production smoke build passed.
 
+### 076: Effective compaction threshold can be paired with a different fallback context window
+
+- Priority: High
+- Status: Resolved
+- Introduced: v0.1.32 development
+- Created: 2026-07-21
+- Resolved: 2026-07-21
+
+#### Original Problem
+
+Current behavior:
+
+- The provider IPC can return KodaX 0.7.74's final effective compaction threshold calculated from
+  the SDK fallback context window.
+- When the provider does not advertise a context window, the renderer replaces that SDK fallback
+  window with its model-name table but keeps the SDK-derived threshold.
+- The context gauge can therefore combine, for example, a 1M displayed capacity with a threshold
+  calculated from 200k, making the percentage and remaining-token explanation internally
+  inconsistent.
+
+Expected behavior:
+
+- Whenever the SDK provides a final effective threshold, the displayed context capacity and the
+  threshold use the same runtime-authoritative window.
+- Older/error responses without the effective field retain the renderer's model-name fallback.
+
+#### Root Cause
+
+The renderer treated `source: fallback` as an unconditional reason to replace the IPC context
+window. That was valid before the IPC exposed the final runtime policy, but it became invalid once
+the effective threshold was calculated against the IPC window.
+
+#### Proposed Solution
+
+- Resolve the IPC response through one pure presentation helper.
+- Keep the IPC context window together with its effective threshold as one atomic policy snapshot.
+- Use the legacy renderer fallback only when no effective threshold is available.
+- Cover provider, current fallback, and legacy fallback responses with focused regressions.
+
+#### Resolution
+
+- The provider IPC now exposes KodaX 0.7.74's final compaction threshold after percentage,
+  absolute-token, and physical-capacity limits.
+- The renderer treats that threshold and its SDK-resolved context window as one policy snapshot;
+  only legacy/error responses continue to use the model-name fallback.
+- Persisted and newly entered percentage values are normalized to the SDK's 15-90 range, so the
+  setting, runtime, and indicator use the same effective value.
+
+Verification:
+
+- Focused context-window, settings, and user-config suite: 48 passed, 0 failed.
+- Desktop and package TypeScript checks passed.
+- Changed-file ESLint and production smoke build passed.
+- Git whitespace validation passed.
+
 ## Summary
 
-- Total: 75
+- Total: 76
 - Open: 2
-- Resolved: 73
-- High: 40
+- Resolved: 74
+- High: 41
 - Medium: 27
 - Low: 8
 - Next to resolve: 043

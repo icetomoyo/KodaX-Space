@@ -59,12 +59,6 @@ test('KodaX config overview channels accept compaction and storage summaries', (
     }).success,
     false,
   );
-  assert.equal(
-    settingsKodaxConfigSetCompactionChannel.input.safeParse({
-      compaction: { triggerPercent: 101 },
-    }).success,
-    false,
-  );
   for (const triggerPercent of [15, 90]) {
     assert.equal(
       settingsKodaxConfigSetCompactionChannel.input.safeParse({
@@ -73,13 +67,16 @@ test('KodaX config overview channels accept compaction and storage summaries', (
       true,
     );
   }
-  for (const triggerPercent of [14, 91]) {
-    assert.equal(
-      settingsKodaxConfigSetCompactionChannel.input.safeParse({
-        compaction: { enabled: true, triggerPercent },
-      }).success,
-      false,
-    );
+  for (const [triggerPercent, expected] of [
+    [14, 15],
+    [91, 90],
+    [101, 90],
+  ]) {
+    const parsed = settingsKodaxConfigSetCompactionChannel.input.safeParse({
+      compaction: { enabled: true, triggerPercent },
+    });
+    assert.equal(parsed.success, true);
+    if (parsed.success) assert.equal(parsed.data.compaction.triggerPercent, expected);
   }
   for (const triggerTokens of [0, 120_000]) {
     assert.equal(

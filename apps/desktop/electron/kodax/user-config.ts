@@ -674,13 +674,11 @@ function normalizeCompactionSettings(raw: unknown): KodaxCompactionSettingsT {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { enabled: true };
   const record = raw as Record<string, unknown>;
   const out: KodaxCompactionSettingsT = { enabled: true };
-  if (
-    typeof record.triggerPercent === 'number' &&
-    Number.isInteger(record.triggerPercent) &&
-    record.triggerPercent >= KODAX_COMPACTION_TRIGGER_PERCENT_MIN &&
-    record.triggerPercent <= KODAX_COMPACTION_TRIGGER_PERCENT_MAX
-  ) {
-    out.triggerPercent = record.triggerPercent;
+  if (typeof record.triggerPercent === 'number' && Number.isSafeInteger(record.triggerPercent)) {
+    out.triggerPercent = Math.min(
+      KODAX_COMPACTION_TRIGGER_PERCENT_MAX,
+      Math.max(KODAX_COMPACTION_TRIGGER_PERCENT_MIN, record.triggerPercent),
+    );
   }
   if (
     typeof record.contextWindow === 'number' &&

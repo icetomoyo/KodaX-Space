@@ -581,13 +581,20 @@ function RuntimePanel(): JSX.Element {
     setErr(null);
     setSaved(false);
     try {
-      const trigger = parseOptionalInt(
+      const parsedTrigger = parseOptionalInt(
         triggerPercent,
         t('settings.compaction.triggerPercent'),
-        KODAX_COMPACTION_TRIGGER_PERCENT_MIN,
-        KODAX_COMPACTION_TRIGGER_PERCENT_MAX,
+        Number.MIN_SAFE_INTEGER,
+        Number.MAX_SAFE_INTEGER,
         t,
       );
+      const trigger =
+        parsedTrigger === undefined
+          ? undefined
+          : Math.min(
+              KODAX_COMPACTION_TRIGGER_PERCENT_MAX,
+              Math.max(KODAX_COMPACTION_TRIGGER_PERCENT_MIN, parsedTrigger),
+            );
       const windowTokens = parseOptionalInt(
         contextWindow,
         t('settings.compaction.contextWindow'),

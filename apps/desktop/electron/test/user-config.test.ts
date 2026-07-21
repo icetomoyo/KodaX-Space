@@ -568,7 +568,7 @@ test('load/update KodaX compaction config preserves unrelated config fields', as
   assert.equal(overview.mcp.globalServers, 1);
 });
 
-test('KodaX compaction stays enabled and ignores thresholds outside 15-90', async () => {
+test('KodaX compaction stays enabled and clamps thresholds to 15-90', async () => {
   mockUserConfig({
     compaction: {
       enabled: false,
@@ -576,9 +576,9 @@ test('KodaX compaction stays enabled and ignores thresholds outside 15-90', asyn
     },
   });
 
-  assert.deepEqual(await loadKodaxCompactionConfig(), { enabled: true });
+  assert.deepEqual(await loadKodaxCompactionConfig(), { enabled: true, triggerPercent: 90 });
   const overview = await loadKodaxConfigOverview();
-  assert.deepEqual(overview.compaction, { enabled: true });
+  assert.deepEqual(overview.compaction, { enabled: true, triggerPercent: 90 });
 });
 
 test('Auto LLM defaults explicitly pin the KodaX 0.7.73 timeout', async () => {
@@ -667,7 +667,7 @@ function restoreEnv(name: string, value: string | undefined): void {
   else process.env[name] = value;
 }
 
-test('KodaX config overview ignores invalid compaction values', async () => {
+test('KodaX config overview clamps out-of-range compaction percentages', async () => {
   mockUserConfig({
     compaction: {
       enabled: true,
@@ -677,7 +677,7 @@ test('KodaX config overview ignores invalid compaction values', async () => {
   });
 
   const overview = await loadKodaxConfigOverview();
-  assert.deepEqual(overview.compaction, { enabled: true });
+  assert.deepEqual(overview.compaction, { enabled: true, triggerPercent: 90 });
 });
 
 // NOTE: reasoning is a Space-form-MODELED field (the form pre-fills it from the record and

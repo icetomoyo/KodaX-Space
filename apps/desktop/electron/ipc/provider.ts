@@ -610,12 +610,15 @@ export function registerProviderChannels(): void {
       if (input.providerId !== 'mock' && !isBuiltinId(input.providerId)) {
         await refreshSdkCustomProviderRegistry();
       }
-      const [{ resolveProvider }, { resolveContextWindow }, { resolveModelCapabilities }] =
-        await Promise.all([
-          import('@kodax-ai/kodax/coding'),
-          import('@kodax-ai/kodax/agent'),
-          import('@kodax-ai/kodax/llm'),
-        ]);
+      const [
+        { resolveProvider },
+        { calculateMaxContextInputTokens, resolveCompactionPolicy, resolveContextWindow },
+        { resolveModelCapabilities },
+      ] = await Promise.all([
+        import('@kodax-ai/kodax/coding'),
+        import('@kodax-ai/kodax/agent'),
+        import('@kodax-ai/kodax/llm'),
+      ]);
       const provider = resolveProvider(input.providerId);
       const capabilities = resolveModelCapabilities(input.providerId, input.model);
       // 上下文窗口走 SDK runtime-authoritative 级联（= runtime 决定 compaction 触发的同一算法），
@@ -626,6 +629,18 @@ export function registerProviderChannels(): void {
         input.model,
         resolveContextWindow,
         compaction,
+      );
+      const reservedResponseTokens =
+        (
+          provider as { getEffectiveMaxOutputTokens?: (model?: string) => number }
+        ).getEffectiveMaxOutputTokens?.(input.model) ?? 0;
+      const effectiveTriggerTokens = Math.max(
+        1,
+        resolveCompactionPolicy(
+          compaction,
+          cw,
+          calculateMaxContextInputTokens(cw, reservedResponseTokens),
+        ).triggerTokens,
       );
       // Reasoning 效力档同理走 provider.getReasoningProfile(model)（走 model 级 descriptor,
       // 不受 0.7.58 default-model bug 影响）；capabilities.reasoningProfile 仅作 provider 无此
@@ -654,9 +669,8 @@ export function registerProviderChannels(): void {
         contextWindow: cw,
         source,
         compactionTriggerPercent: compaction.triggerPercent,
-        ...(compaction.triggerTokens
-          ? { compactionTriggerTokens: compaction.triggerTokens }
-          : {}),
+        ...(compaction.triggerTokens ? { compactionTriggerTokens: compaction.triggerTokens } : {}),
+        compactionEffectiveTriggerTokens: effectiveTriggerTokens,
         ...(supportedEfforts && supportedEfforts.length > 0 ? { supportedEfforts } : {}),
         ...(defaultEffort ? { defaultEffort } : {}),
         canDisableThinking,
@@ -673,9 +687,7 @@ export function registerProviderChannels(): void {
         contextWindow: compaction.contextWindow ?? 200_000,
         source: compaction.contextWindow !== undefined ? 'provider' : 'fallback',
         compactionTriggerPercent: compaction.triggerPercent,
-        ...(compaction.triggerTokens
-          ? { compactionTriggerTokens: compaction.triggerTokens }
-          : {}),
+        ...(compaction.triggerTokens ? { compactionTriggerTokens: compaction.triggerTokens } : {}),
       };
     }
   });
