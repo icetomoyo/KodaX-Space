@@ -2,7 +2,11 @@
 // (F059). Pure + testable. Returns null when the version can't be rendered
 // (missing content / unsupported kind), so the panel shows a graceful fallback.
 
-import type { ArtifactHtmlPermissionsT, ArtifactKindT } from '@kodax-space/space-ipc-schema';
+import {
+  looksLikeInteractiveHtml,
+  type ArtifactHtmlPermissionsT,
+  type ArtifactKindT,
+} from '@kodax-space/space-ipc-schema';
 import type { ArtifactContent } from './artifactContent';
 
 export interface ArtifactVersionPayload {
@@ -39,7 +43,10 @@ export function toArtifactContent(
     case 'html':
       return payload.content !== undefined
         ? {
-            kind: permissions !== undefined ? 'interactive-html' : 'html',
+            kind:
+              permissions !== undefined || looksLikeInteractiveHtml(payload.content)
+                ? 'interactive-html'
+                : 'html',
             content: payload.content,
             ...(permissions !== undefined ? { permissions } : {}),
           }

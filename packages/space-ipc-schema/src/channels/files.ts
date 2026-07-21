@@ -17,6 +17,9 @@ export const MAX_FILE_BYTES = 5 * 1024 * 1024;
 // 单次 tree 请求最大节点数——防 monorepo 巨型仓库一次拉爆 renderer
 export const MAX_TREE_NODES = 5000;
 
+/** Structured-clone message emitted by isolated HTML preview diagnostics. */
+export const WEB_PREVIEW_DIAGNOSTIC_MESSAGE_TYPE = 'kodax-space.web-preview-diagnostic';
+
 // path 字段共享 schema：长度限制 + 拒控制字符 (\0 \r \n) + 不允许结尾点/空白（Windows trap）
 const safePathSchema = z
   .string()
@@ -135,6 +138,27 @@ export const filesStatChannel = {
     exists: z.boolean(),
     kind: fileStatKindSchema.nullable(),
     size: z.number().int().nonnegative().optional(),
+  }),
+} as const;
+
+// ---- files.webPreview ----
+//
+// Creates an in-memory capability URL for a workspace HTML file. The URL does not
+// reveal the native project path; Electron main validates and scopes every request.
+export const filesWebPreviewChannel = {
+  name: 'files.webPreview',
+  direction: 'invoke',
+  input: z.object({
+    projectRoot: safePathSchema,
+    path: safePathSchema,
+    networkAccess: z.boolean(),
+  }),
+  output: z.object({
+    url: z
+      .string()
+      .max(8192)
+      .regex(/^app:\/\/preview-[a-f0-9]{32}\//, 'invalid project web preview URL'),
+    networkAccess: z.boolean(),
   }),
 } as const;
 

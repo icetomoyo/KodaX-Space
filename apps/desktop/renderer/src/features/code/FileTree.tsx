@@ -7,12 +7,13 @@
 //   - 渲染 5k 节点用普通 DOM 就够；超过再考虑虚拟化（v0.1.0 暂不引 react-window）
 //   - 展开状态用 Set<path> 跟踪——避免在 node 上加 mutable expanded 字段
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { File, FileCode, Folder, FolderOpen } from 'lucide-react';
 import type { FileNodeT } from '@kodax-space/space-ipc-schema';
 import { Caret } from '../../components/Caret.js';
 import { useI18n } from '../../i18n/I18nProvider.js';
 import { extOf } from '../../lib/pathClassify.js';
+import { fileTreeRefreshPaths, splitFileTreeLabel } from './fileTreeModel.js';
 
 interface FileTreeProps {
   projectRoot: string;
@@ -21,6 +22,8 @@ interface FileTreeProps {
   onSelect: (path: string) => void;
   onSelectDirectory?: (path: string) => void;
   onFileContextMenu?: (path: string, x: number, y: number) => void;
+  /** Changing this token refreshes the root and all currently expanded directories. */
+  refreshToken?: number;
 }
 
 export function FileTree({
@@ -29,6 +32,7 @@ export function FileTree({
   onSelect,
   onSelectDirectory,
   onFileContextMenu,
+  refreshToken,
 }: FileTreeProps): JSX.Element {
   const { t } = useI18n();
   const [rootNodes, setRootNodes] = useState<readonly FileNodeT[]>([]);
@@ -38,11 +42,19 @@ export function FileTree({
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   // 缓存已加载的子树：path → children
   const [childrenCache, setChildrenCache] = useState<Record<string, readonly FileNodeT[]>>({});
+  const expandedRef = useRef<Set<string>>(new Set());
+  const loadGenerationRef = useRef(0);
+  const lastRefreshTokenRef = useRef(refreshToken);
+
+  useEffect(() => {
+    expandedRef.current = expanded;
+  }, [expanded]);
 
   // 项目根变了：重新拉树
   useEffect(() => {
     if (!projectRoot) return;
     let cancelled = false;
+    const generation = ++loadGenerationRef.current;
     setLoading(true);
     setErr(null);
     setRootNodes([]);
@@ -58,7 +70,7 @@ export function FileTree({
     bridge
       .invoke('files.tree', { projectRoot, depth: 1 })
       .then((result) => {
-        if (cancelled) return;
+        if (cancelled || generation !== loadGenerationRef.current) return;
         if (result.ok) {
           setRootNodes(result.data.tree);
           setTruncated(result.data.truncated);
@@ -67,13 +79,66 @@ export function FileTree({
         }
       })
       .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (!cancelled && generation === loadGenerationRef.current) setLoading(false);
       });
 
     return () => {
       cancelled = true;
     };
   }, [projectRoot, t]);
+
+  useEffect(() => {
+    if (refreshToken === undefined || refreshToken === lastRefreshTokenRef.current) return;
+    lastRefreshTokenRef.current = refreshToken;
+
+    const bridge = window.kodaxSpace;
+    if (!projectRoot || !bridge) return;
+    let cancelled = false;
+    const generation = ++loadGenerationRef.current;
+    const refreshPaths = fileTreeRefreshPaths(expandedRef.current);
+
+    void Promise.all(
+      refreshPaths.map((subPath) =>
+        bridge.invoke(
+          'files.tree',
+          subPath === null ? { projectRoot, depth: 1 } : { projectRoot, subPath, depth: 1 },
+        ),
+      ),
+    )
+      .then((results) => {
+        if (cancelled || generation !== loadGenerationRef.current) return;
+        const rootResult = results[0];
+        if (!rootResult?.ok) {
+          if (rootResult) setErr(`${rootResult.error.code}: ${rootResult.error.message}`);
+          return;
+        }
+
+        setRootNodes(rootResult.data.tree);
+        setTruncated(rootResult.data.truncated);
+        setErr(null);
+
+        const refreshedChildren: Record<string, readonly FileNodeT[]> = {};
+        for (let index = 1; index < results.length; index += 1) {
+          const result = results[index];
+          const path = refreshPaths[index];
+          if (path !== null && result?.ok) refreshedChildren[path] = result.data.tree;
+        }
+        if (Object.keys(refreshedChildren).length > 0) {
+          setChildrenCache((current) => ({ ...current, ...refreshedChildren }));
+        }
+      })
+      .catch((error: unknown) => {
+        if (cancelled || generation !== loadGenerationRef.current) return;
+        setErr(error instanceof Error ? error.message : t('common.unknownError'));
+      })
+      .finally(() => {
+        if (!cancelled && generation === loadGenerationRef.current) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [projectRoot, refreshToken, t]);
 
   async function toggleDir(path: string): Promise<void> {
     const next = new Set(expanded);
@@ -204,6 +269,7 @@ function FileTreeNode({
   const padLeft = depth * 12 + 6;
   const FileIcon = isCodeLikePath(node.path) ? FileCode : File;
   const FolderIcon = isExpanded ? FolderOpen : Folder;
+  const label = splitFileTreeLabel(node.name, node.kind);
 
   return (
     <li>
@@ -238,7 +304,10 @@ function FileTreeNode({
             <FileIcon className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden />
           )}
         </span>
-        <span className="truncate">{node.name}</span>
+        <span className="flex min-w-0 flex-1 items-baseline overflow-hidden">
+          <span className="min-w-0 flex-1 truncate">{label.leading}</span>
+          {label.trailing && <span className="flex-shrink-0">{label.trailing}</span>}
+        </span>
       </button>
       {isDir && isExpanded && dirChildren.length > 0 && (
         <FileTreeLevel

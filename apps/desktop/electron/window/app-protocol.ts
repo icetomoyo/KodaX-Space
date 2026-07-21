@@ -8,6 +8,15 @@ import {
   isArtifactHtmlFrameUrl,
   resolveAppProtocolPath,
 } from './app-protocol-policy.js';
+import {
+  PROJECT_WEB_PREVIEW_RUNTIME,
+  PROJECT_WEB_PREVIEW_RUNTIME_PATH,
+  inferProjectWebPreviewSources,
+  injectProjectWebPreviewRuntime,
+  isProjectWebPreviewUrl,
+  projectWebPreviewRegistry,
+  projectWebPreviewResponseHeaders,
+} from './project-web-preview.js';
 
 let privilegesRegistered = false;
 let handlerInstalled = false;
@@ -40,6 +49,57 @@ export function installAppProtocolHandler(rendererRoot: string): void {
         status: 200,
         headers: artifactHtmlFrameResponseHeaders(),
       });
+    }
+    if (isProjectWebPreviewUrl(request.url)) {
+      const resolved = await projectWebPreviewRegistry.resolve(request.url, request.method);
+      if (!resolved.ok) {
+        return new Response(resolved.code, {
+          status: resolved.status,
+          headers: {
+            'content-type': 'text/plain; charset=utf-8',
+            'cache-control': 'no-store',
+            'x-content-type-options': 'nosniff',
+          },
+        });
+      }
+      if (resolved.kind === 'runtime') {
+        return new Response(request.method === 'HEAD' ? null : PROJECT_WEB_PREVIEW_RUNTIME, {
+          status: 200,
+          headers: projectWebPreviewResponseHeaders(
+            PROJECT_WEB_PREVIEW_RUNTIME_PATH,
+            resolved.networkAccess,
+          ),
+        });
+      }
+      if (request.method === 'HEAD') {
+        return new Response(null, {
+          status: 200,
+          headers: projectWebPreviewResponseHeaders(resolved.filePath, resolved.networkAccess),
+        });
+      }
+      try {
+        const bytes = await readFile(resolved.filePath);
+        const isHtml = /\.html?$/i.test(resolved.filePath);
+        const html = isHtml ? bytes.toString('utf8') : null;
+        const body = html !== null ? injectProjectWebPreviewRuntime(html) : new Uint8Array(bytes);
+        return new Response(body, {
+          status: 200,
+          headers: projectWebPreviewResponseHeaders(
+            resolved.filePath,
+            resolved.networkAccess,
+            html !== null ? inferProjectWebPreviewSources(html) : undefined,
+          ),
+        });
+      } catch {
+        return new Response('read-failed', {
+          status: 500,
+          headers: {
+            'content-type': 'text/plain; charset=utf-8',
+            'cache-control': 'no-store',
+            'x-content-type-options': 'nosniff',
+          },
+        });
+      }
     }
     const resolved = await resolveAppProtocolPath(request.url, rendererRoot);
     if (!resolved.ok) {

@@ -245,7 +245,10 @@ interface AppState {
    * 未出现在表里的 session：从未点开 (eventsBuffer 空) → 走 dashboard 那边 msgCount × 1500 估算路径。
    */
   tokensBySession: Readonly<
-    Record<string, { tokens: number; source: 'iteration_end' | 'estimate' } | undefined>
+    Record<
+      string,
+      { tokens: number; source: 'iteration_end' | 'compact_stats' | 'estimate' } | undefined
+    >
   >;
   /**
    * Derived: transient (transcript-only) artifacts per session, minted from
@@ -1562,6 +1565,18 @@ export const useAppStore = create<AppState>((set) => ({
             noticeKind: item.noticeKind,
             text: item.text,
           });
+          if (
+            item.noticeKind === 'compaction' &&
+            item.tokensBefore !== undefined &&
+            item.tokensAfter !== undefined
+          ) {
+            histEvents.push({
+              kind: 'compact_stats',
+              sessionId,
+              tokensBefore: item.tokensBefore,
+              tokensAfter: item.tokensAfter,
+            });
+          }
           markTurnHasEvents();
         } else if (item.kind === 'workflow_notice') {
           // Workflow 结果/失败提示条:SDK 把它作为 `<task-completed>` 合成消息存进 transcript,
@@ -1606,6 +1621,34 @@ export const useAppStore = create<AppState>((set) => ({
       const currentMsgs = state.userMessagesBySession[sessionId] ?? [];
       const currentEvents = state.eventsBySession[sessionId] ?? [];
       const currentLocalNotices = state.localNoticesBySession[sessionId] ?? [];
+      const combinedMsgs = [...histMsgs, ...currentMsgs];
+      const combinedEvents = [...histEvents, ...currentEvents];
+      let restoredTokenInfo = state.tokensBySession[sessionId];
+      if (restoredTokenInfo === undefined) {
+        const latestCompactStats = [...histEvents]
+          .reverse()
+          .find(
+            (event): event is Extract<SessionEvent, { kind: 'compact_stats' }> =>
+              event.kind === 'compact_stats',
+          );
+        if (latestCompactStats) {
+          restoredTokenInfo = {
+            tokens: latestCompactStats.tokensAfter,
+            source: 'compact_stats',
+          };
+        } else {
+          let total = 0;
+          for (const message of combinedMsgs) total += approxTokensForStats(message.content);
+          for (const event of combinedEvents) {
+            if (event.kind === 'text_delta' || event.kind === 'thinking_delta') {
+              total += approxTokensForStats(event.text);
+            } else if (event.kind === 'tool_result') {
+              total += approxTokensForStats(event.content);
+            }
+          }
+          if (total > 0) restoredTokenInfo = { tokens: total, source: 'estimate' };
+        }
+      }
       // v0.1.9 fix: 历史 events 已经发生过,director 不应该再"自动展开"那些信号触发的
       // popout (用户点已有 session 不该弹 worker/diff/plan popout)。 扫一遍 histEvents,
       // 提前 mark 该 session 已经"促发"过的 SmartPopoutKind,让 director 视为 already
@@ -1630,11 +1673,11 @@ export const useAppStore = create<AppState>((set) => ({
         userMessagesBySession: {
           ...state.userMessagesBySession,
           // 历史前置——若 race 期 user 已 append 了 Q3,结果是 [hist..., Q3]
-          [sessionId]: [...histMsgs, ...currentMsgs],
+          [sessionId]: combinedMsgs,
         },
         eventsBySession: {
           ...state.eventsBySession,
-          [sessionId]: [...histEvents, ...currentEvents],
+          [sessionId]: combinedEvents,
         },
         localNoticesBySession: {
           ...state.localNoticesBySession,
@@ -1642,8 +1685,16 @@ export const useAppStore = create<AppState>((set) => ({
         },
         transientArtifactsBySession: {
           ...state.transientArtifactsBySession,
-          [sessionId]: collectTransientArtifactsFromEvents([...histEvents, ...currentEvents]),
+          [sessionId]: collectTransientArtifactsFromEvents(combinedEvents),
         },
+        ...(restoredTokenInfo
+          ? {
+              tokensBySession: {
+                ...state.tokensBySession,
+                [sessionId]: restoredTokenInfo,
+              },
+            }
+          : {}),
         promotedPopoutsBySession: {
           ...state.promotedPopoutsBySession,
           [sessionId]: histPromoted,
@@ -1822,6 +1873,13 @@ export const useAppStore = create<AppState>((set) => ({
         next.tokensBySession = {
           ...state.tokensBySession,
           [event.sessionId]: { tokens: event.tokenCount, source: 'iteration_end' },
+        };
+      } else if (event.kind === 'compact_stats') {
+        // Compaction changes the active model context without deleting visible scrollback.
+        // Keep the authoritative post-compaction value separate from transcript history.
+        next.tokensBySession = {
+          ...state.tokensBySession,
+          [event.sessionId]: { tokens: event.tokensAfter, source: 'compact_stats' },
         };
       } else if (event.kind === 'session_complete') {
         if (!isSessionVisiblyOpen(state, event.sessionId)) {

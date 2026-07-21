@@ -402,6 +402,132 @@ test('File Viewer opens a project file before the first Session without exposing
   }
 });
 
+test('Project HTML File Viewer runs relative modules, assets, local fetch, storage, and workers in isolation', async () => {
+  const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kodax-project-web-preview-'));
+  const relPath = 'web/index.html';
+  const absPath = path.join(projectDir, relPath);
+  await fs.mkdir(path.dirname(absPath), { recursive: true });
+  await fs.writeFile(
+    absPath,
+    `<!doctype html><html><head>
+      <link rel="stylesheet" href="./style.css">
+      <link rel="stylesheet" href="https://preview-assets.test/theme.css">
+    </head><body>
+      <button id="advance">Advance</button>
+      <output id="state">waiting</output>
+      <div id="authored-resource">authored-waiting</div>
+      <div id="fetch-state">fetch-waiting</div>
+      <div id="worker-state">worker-waiting</div>
+      <div id="storage-state">storage-waiting</div>
+      <script type="module" src="./app.js"></script>
+      <script src="https://preview-assets.test/presentation.js"></script>
+    </body></html>`,
+    'utf8',
+  );
+  await fs.writeFile(
+    path.join(projectDir, 'web', 'style.css'),
+    'body { color: rgb(12, 120, 74); } #state { display: block; }',
+    'utf8',
+  );
+  await fs.writeFile(
+    path.join(projectDir, 'web', 'data.json'),
+    '{"label":"local-fetch-ok"}',
+    'utf8',
+  );
+  await fs.writeFile(
+    path.join(projectDir, 'web', 'worker.js'),
+    'postMessage("worker-ok");',
+    'utf8',
+  );
+  await fs.writeFile(
+    path.join(projectDir, 'web', 'app.js'),
+    `const state = document.querySelector('#state');
+     document.querySelector('#advance').addEventListener('click', () => { state.textContent = 'clicked'; });
+     const visits = Number(localStorage.getItem('visits') || '0') + 1;
+     localStorage.setItem('visits', String(visits));
+     document.querySelector('#storage-state').textContent = 'storage-' + visits;
+     fetch('./data.json').then((r) => r.json()).then((data) => { document.querySelector('#fetch-state').textContent = data.label; });
+     const worker = new Worker('./worker.js');
+     worker.onmessage = (event) => { document.querySelector('#worker-state').textContent = event.data; worker.terminate(); };`,
+    'utf8',
+  );
+  const stat = await fs.stat(absPath);
+
+  const space = await launchSpace(`project-web-preview-${Date.now()}`);
+  try {
+    await space.page.route('https://preview-assets.test/**', async (route) => {
+      if (route.request().url().endsWith('/theme.css')) {
+        await route.fulfill({
+          contentType: 'text/css',
+          body: '#authored-resource { background-color: rgb(31, 41, 55); }',
+        });
+        return;
+      }
+      await route.fulfill({
+        contentType: 'text/javascript',
+        body: `document.querySelector('#authored-resource').textContent = 'authored-script-ok';`,
+      });
+    });
+    await space.page.setViewportSize({ width: 1500, height: 900 });
+    await space.seedProject(projectDir);
+    await space.page.evaluate(() => {
+      localStorage.setItem('kodax-space.smartPopoutEnabled', '0');
+      localStorage.setItem('kodax-space.rightSidebarOpen', '0');
+    });
+    await space.page.reload();
+    await space.page.waitForLoadState('domcontentloaded');
+
+    await openFileViaFilesPanel(space.page, {
+      absPath,
+      relPath,
+      ext: '.html',
+      size: stat.size,
+    });
+
+    const sidebar = space.page.getByTestId('right-sidebar');
+    const preview = sidebar.getByTestId('project-web-preview');
+    await expect(preview).toBeVisible({ timeout: 10_000 });
+    const frame = preview.locator('iframe').contentFrame();
+    await expect(frame.locator('body')).toHaveCSS('color', 'rgb(12, 120, 74)');
+    await expect(frame.locator('#fetch-state')).toHaveText('local-fetch-ok');
+    await expect(frame.locator('#worker-state')).toHaveText('worker-ok');
+    await expect(frame.locator('#storage-state')).toHaveText('storage-1');
+    await expect(frame.locator('#authored-resource')).toHaveText('authored-script-ok');
+    await expect(frame.locator('#authored-resource')).toHaveCSS(
+      'background-color',
+      'rgb(31, 41, 55)',
+    );
+    await frame.getByRole('button', { name: 'Advance' }).click();
+    await expect(frame.locator('#state')).toHaveText('clicked');
+    expect(await frame.locator('body').evaluate(() => typeof window.kodaxSpace)).toBe('undefined');
+    expect(
+      await frame.locator('body').evaluate(() => {
+        try {
+          return parent.document.title;
+        } catch {
+          return 'cross-origin-blocked';
+        }
+      }),
+    ).toBe('cross-origin-blocked');
+
+    const network = sidebar.getByRole('button', {
+      name: 'Allow additional HTTPS/WSS requests for this trusted page',
+    });
+    await expect(network).toHaveAttribute('aria-pressed', 'false');
+    await network.click();
+    await expect(
+      sidebar.getByRole('button', {
+        name: 'Limit this page to local and authored display resources',
+      }),
+    ).toHaveAttribute('aria-pressed', 'true');
+    await expect(sidebar.getByTestId('web-preview-diagnostic')).toHaveCount(0);
+    await expectNoPreviewError(sidebar);
+  } finally {
+    await space.close();
+    await fs.rm(projectDir, { recursive: true, force: true });
+  }
+});
+
 test('PDF File Viewer supports keyboard paging after focus', async () => {
   const rootStat = await fs.stat(DOWNLOADS_ROOT).catch(() => null);
   test.skip(!rootStat?.isDirectory(), `Downloads test directory not found: ${DOWNLOADS_ROOT}`);

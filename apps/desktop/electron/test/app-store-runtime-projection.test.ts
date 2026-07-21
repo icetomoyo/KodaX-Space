@@ -103,6 +103,26 @@ test('app store ignores connection events older than its latest Runtime transiti
   assert.equal(useAppStore.getState().runtimeConnection.changedAt, 2);
 });
 
+test('compact_stats replaces transcript estimates with the active post-compaction context', () => {
+  useAppStore.setState({
+    currentSessionId: 's_1',
+    eventsBySession: { s_1: [] },
+    tokensBySession: { s_1: { tokens: 483_200, source: 'estimate' } },
+  });
+
+  useAppStore.getState().appendEvent({
+    kind: 'compact_stats',
+    sessionId: 's_1',
+    tokensBefore: 322_973,
+    tokensAfter: 222_460,
+  });
+
+  assert.deepEqual(useAppStore.getState().tokensBySession.s_1, {
+    tokens: 222_460,
+    source: 'compact_stats',
+  });
+});
+
 test('run reset removes terminal Runtime interactions from modal queues', () => {
   useAppStore.getState().replaceRuntimeProfileProjection(profile);
   useAppStore.getState().replaceSessionLiveProjection({

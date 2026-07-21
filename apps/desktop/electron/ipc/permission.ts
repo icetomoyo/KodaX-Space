@@ -73,7 +73,9 @@ export function registerPermissionChannels(): void {
     try {
       const grants = await runtimeHostAdapter.listPermissionGrants();
       const runtimeRules = grants.value.map((grant) => ({
-        pattern: `${grant.scope.toolName ?? 'all tools'}${grant.scope.sessionId ? ` (session ${grant.scope.sessionId})` : ''}`,
+        pattern:
+          grant.label ??
+          `${grant.scope.toolName ?? 'all tools'}${grant.scope.sessionId ? ` (session ${grant.scope.sessionId})` : ''}`,
         createdAt: Math.max(0, Date.parse(grant.createdAt) || 0),
         origin: 'runtime' as const,
         grantId: grant.id,

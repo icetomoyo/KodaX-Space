@@ -142,18 +142,21 @@ export const artifactHtmlPermissionsSchema = z
 export type ArtifactHtmlPermissionsT = z.infer<typeof artifactHtmlPermissionsSchema>;
 
 /**
- * Heuristic for HTML that needs a script-capable sandbox to be useful. This is
- * intentionally conservative in the "make it usable" direction: if generated
- * HTML includes scripts, canvas, or inline DOM handlers, the renderer should use
- * the interactive HTML tier instead of the static no-script tier.
+ * Heuristic for HTML that needs the isolated compatibility renderer to be useful.
+ * Artifact content is already bounded to 1 MB, so inspect the complete value:
+ * conventional documents put their scripts at the end and a prefix scan can turn
+ * reveal-on-load presentations into an apparently blank static document.
  */
 export function looksLikeInteractiveHtml(content: string): boolean {
-  const head = content.slice(0, Math.min(content.length, 64_000));
   return (
-    /<script\b/i.test(head) ||
-    /<canvas\b/i.test(head) ||
-    /\son[a-z]+\s*=/i.test(head) ||
-    /\b(requestAnimationFrame|setInterval|setTimeout)\s*\(/i.test(head)
+    /<script\b/i.test(content) ||
+    /<canvas\b/i.test(content) ||
+    /\son[a-z]+\s*=/i.test(content) ||
+    /\b(requestAnimationFrame|setInterval|setTimeout)\s*\(/i.test(content) ||
+    /<(?:link|img|image|video|audio|source)\b[^>]*\b(?:src|href|srcset)\s*=\s*(?:["']\s*)?(?:https?:|\/\/)/i.test(
+      content,
+    ) ||
+    /@(?:import|font-face)\b[^;{}]*(?:https?:|\/\/)/i.test(content)
   );
 }
 

@@ -34,6 +34,7 @@ const PRIORITY: readonly string[] = [
   'ark-coding',
   'minimax-coding',
   'mimo-coding',
+  'qwen-token-plan',
   'qwen',
   'zhipu',
   'kimi',
@@ -72,7 +73,7 @@ export async function autoActivateProvidersFromEnv(): Promise<void> {
   if (envActive.length === 0) return;
 
   // 按 PRIORITY 顺序找第一个命中的
-  let picked: typeof envActive[number] | null = null;
+  let picked: (typeof envActive)[number] | null = null;
   for (const id of PRIORITY) {
     const found = envActive.find((b) => b.id === id);
     if (found) {
@@ -85,9 +86,7 @@ export async function autoActivateProvidersFromEnv(): Promise<void> {
 
   await providerConfigStore.setDefault(picked.id);
   autoActivatedThisBoot = envActive.map((b) => b.id);
-  console.info(
-    `[auto-activate] detected ${envActive.length} env key(s); default → ${picked.id}`,
-  );
+  console.info(`[auto-activate] detected ${envActive.length} env key(s); default → ${picked.id}`);
 }
 
 export function getAutoActivatedThisBoot(): readonly string[] {

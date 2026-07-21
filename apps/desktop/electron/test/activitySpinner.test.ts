@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { SessionEvent, SpaceSessionLiveProjectionT } from '@kodax-space/space-ipc-schema';
 import {
+  selectActivitySnapshot,
   snapshotFromEvents,
   snapshotFromRuntimeProjection,
 } from '../../renderer/src/shell/ActivitySpinner.js';
@@ -25,6 +26,78 @@ test('queued_user_prompt_started keeps spinner alive before the next session_sta
 
   assert.equal(snapshot.streaming, true);
   assert.equal(snapshot.status.startsWith('Thinking'), true);
+});
+
+test('manual compaction after a completed run keeps an animated compacting state until compact_end', () => {
+  const base: SessionEvent[] = [
+    { kind: 'session_start', sessionId: sid, provider: 'mock' },
+    { kind: 'session_complete', sessionId: sid },
+    { kind: 'compact_start', sessionId: sid },
+  ];
+
+  const active = snapshotFromEvents(base, false, undefined);
+  assert.equal(active.streaming, true);
+  assert.equal(active.status, 'Compacting context…');
+
+  const finished = snapshotFromEvents(
+    [
+      ...base,
+      { kind: 'compact_stats', sessionId: sid, tokensBefore: 320_000, tokensAfter: 220_000 },
+      { kind: 'compact_end', sessionId: sid },
+    ],
+    false,
+    undefined,
+  );
+  assert.equal(finished.streaming, false);
+});
+
+test('automatic compaction completion does not stop the still-running session spinner', () => {
+  const snapshot = snapshotFromEvents(
+    [
+      { kind: 'session_start', sessionId: sid, provider: 'mock' },
+      { kind: 'compact_start', sessionId: sid },
+      { kind: 'compact_stats', sessionId: sid, tokensBefore: 490_000, tokensAfter: 292_000 },
+      { kind: 'compact_end', sessionId: sid },
+    ],
+    false,
+    undefined,
+  );
+
+  assert.equal(snapshot.streaming, true);
+  assert.equal(snapshot.status.startsWith('Thinking'), true);
+});
+
+test('active compaction status overrides an ordinary daemon running projection', () => {
+  const projection: SpaceSessionLiveProjectionT = {
+    sessionId: sid,
+    projectionRevision: 1,
+    cursor: { runtimeId: 'rt_1', seq: 3 },
+    transcriptRevision: 'transcript_3',
+    activeRun: {
+      runId: 'run_1',
+      sessionId: sid,
+      phase: 'running',
+      startedAt: 10,
+    },
+    queuedRuns: [],
+    activeTools: [],
+    todos: [],
+    queuedInputs: [],
+    interactions: [],
+  };
+
+  const snapshot = selectActivitySnapshot(
+    projection,
+    [
+      { kind: 'session_start', sessionId: sid, provider: 'mock' },
+      { kind: 'compact_start', sessionId: sid },
+    ],
+    false,
+    undefined,
+  );
+
+  assert.equal(snapshot.streaming, true);
+  assert.equal(snapshot.status, 'Compacting context…');
 });
 
 test('Runtime host-tool wait is rendered from daemon requirements', () => {

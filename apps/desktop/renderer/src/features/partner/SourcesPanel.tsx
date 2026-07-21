@@ -17,9 +17,11 @@ import {
 } from 'lucide-react';
 import { useAppStore } from '../../store/appStore.js';
 import { useI18n } from '../../i18n/I18nProvider.js';
+import { previewFileInViewer } from '../../lib/openPath.js';
 import { FileTree } from '../code/FileTree.js';
 import { AdminAuditPanel } from './AdminAuditPanel.js';
 import { KnowledgeBasePanel } from './KnowledgeBasePanel.js';
+import { activatePartnerProjectFile } from './partnerProjectFileActivation.js';
 import {
   PARTNER_SOURCES_CHANGED_EVENT,
   readPartnerPendingSources,
@@ -499,8 +501,18 @@ export function SourcesPanel(): JSX.Element {
             projectRoot={currentProjectPath}
             selectedPath={selectedPath}
             onSelect={(path) => {
-              setSelectedPath(path);
-              setSelectedTargetKind('file');
+              activatePartnerProjectFile(path, {
+                selectFile: (selectedFile) => {
+                  setSelectedPath(selectedFile);
+                  setSelectedTargetKind('file');
+                },
+                openFile: (selectedFile) => {
+                  void previewFileInViewer(selectedFile, {
+                    projectRoot: currentProjectPath,
+                    notifyOnError: true,
+                  });
+                },
+              });
             }}
             onSelectDirectory={(path) => {
               setSelectedPath(path);

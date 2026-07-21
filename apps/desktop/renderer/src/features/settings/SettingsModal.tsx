@@ -34,14 +34,16 @@ import {
   X,
   type LucideIcon,
 } from 'lucide-react';
-import type {
-  DispatchableAgentListingT,
-  KodaxConfigOverviewT,
-  ExternalAgentRegistrationSummaryT,
-  LanguageModeT,
-  LicenseStatusT,
-  ProviderInfo,
-  SupportedLocaleT,
+import {
+  KODAX_COMPACTION_TRIGGER_PERCENT_MAX,
+  KODAX_COMPACTION_TRIGGER_PERCENT_MIN,
+  type DispatchableAgentListingT,
+  type KodaxConfigOverviewT,
+  type ExternalAgentRegistrationSummaryT,
+  type LanguageModeT,
+  type LicenseStatusT,
+  type ProviderInfo,
+  type SupportedLocaleT,
 } from '@kodax-space/space-ipc-schema';
 import { useAppStore } from '../../store/appStore.js';
 import { localeDisplayName, useI18n } from '../../i18n/I18nProvider.js';
@@ -537,14 +539,12 @@ function RuntimePanel(): JSX.Element {
   const [saving, setSaving] = useState(false);
   const [mcpReloading, setMcpReloading] = useState(false);
   const [installing, setInstalling] = useState<SkillInstallBusy | null>(null);
-  const [compactionEnabled, setCompactionEnabled] = useState(true);
   const [triggerPercent, setTriggerPercent] = useState('');
   const [contextWindow, setContextWindow] = useState('');
   const [err, setErr] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
 
   function syncCompactionForm(next: KodaxConfigOverviewT): void {
-    setCompactionEnabled(next.compaction.enabled ?? true);
     setTriggerPercent(next.compaction.triggerPercent?.toString() ?? '');
     setContextWindow(next.compaction.contextWindow?.toString() ?? '');
   }
@@ -582,8 +582,8 @@ function RuntimePanel(): JSX.Element {
       const trigger = parseOptionalInt(
         triggerPercent,
         t('settings.compaction.triggerPercent'),
-        1,
-        100,
+        KODAX_COMPACTION_TRIGGER_PERCENT_MIN,
+        KODAX_COMPACTION_TRIGGER_PERCENT_MAX,
         t,
       );
       const windowTokens = parseOptionalInt(
@@ -596,7 +596,7 @@ function RuntimePanel(): JSX.Element {
       const result = await window.kodaxSpace.invoke('settings.kodaxConfig.setCompaction', {
         ...(currentProjectPath ? { projectRoot: currentProjectPath } : {}),
         compaction: {
-          enabled: compactionEnabled,
+          enabled: true,
           ...(trigger !== undefined ? { triggerPercent: trigger } : {}),
           ...(windowTokens !== undefined ? { contextWindow: windowTokens } : {}),
         },
@@ -607,6 +607,7 @@ function RuntimePanel(): JSX.Element {
       }
       setOverview(result.data);
       syncCompactionForm(result.data);
+      window.dispatchEvent(new Event('kodax:compaction-config-changed'));
       setSaved(true);
       pushToast(t('settings.compaction.saved'), 'success', 1800);
     } catch (e) {
@@ -741,41 +742,21 @@ function RuntimePanel(): JSX.Element {
         description={t('settings.compaction.description')}
         icon={Archive}
       >
-        <label className="flex cursor-pointer items-start gap-3">
-          <input
-            type="checkbox"
-            checked={compactionEnabled}
-            onChange={(e) => {
-              setCompactionEnabled(e.target.checked);
-              setSaved(false);
-            }}
-            className="mt-1 h-4 w-4 accent-ok"
-          />
-          <span className="min-w-0">
-            <span className="block text-sm font-medium text-fg-primary">
-              {t('settings.compaction.enabled')}
-            </span>
-            <span className="mt-1 block text-xs leading-5 text-fg-muted">
-              {t('settings.compaction.enabledHint')}
-            </span>
-          </span>
-        </label>
-
-        <div className="mt-4 grid gap-3 sm:grid-cols-2">
+        <div className="grid gap-3 sm:grid-cols-2">
           <label className="block">
             <span className="text-[11px] font-medium uppercase tracking-wide text-fg-muted">
               {t('settings.compaction.triggerPercent')}
             </span>
             <input
               type="number"
-              min={1}
-              max={100}
+              min={KODAX_COMPACTION_TRIGGER_PERCENT_MIN}
+              max={KODAX_COMPACTION_TRIGGER_PERCENT_MAX}
               value={triggerPercent}
               onChange={(e) => {
                 setTriggerPercent(e.target.value);
                 setSaved(false);
               }}
-              placeholder="75"
+              placeholder="50"
               className="mt-2 h-9 w-full rounded-lg border border-border-default bg-surface px-3 text-xs text-fg-primary outline-none focus:border-info"
             />
             <span className="mt-1 block text-[11px] leading-5 text-fg-muted">

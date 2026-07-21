@@ -1,7 +1,7 @@
 # KodaX Space 高层设计（HLD）
 
-> Last updated: 2026-07-19
-> Status: 核心架构决策仍有效；当前源码/发布准备基线为 KodaX Space 0.1.32（package 0.1.32）/ 正式 KodaX 0.7.72。中间方案与否决理由见 [ADR/](ADR/)；当前能力边界见 [KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md)。
+> Last updated: 2026-07-21
+> Status: 核心架构决策仍有效；当前源码/发布准备基线为 KodaX Space 0.1.32（package 0.1.32）/ 正式 KodaX 0.7.73。中间方案与否决理由见 [ADR/](ADR/)；当前能力边界见 [KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md)。
 > Companion doc: [PRD](PRD.md)
 
 > **0.1.30 增量**：Electron main 继续拥有特权边界，并新增一个持久、协议中立的 External Agent Executor Plane。Renderer 仅通过 zod IPC 获取脱敏 Registration/Descriptor/Task/Event 投影；管理入口仅接受主应用窗口，任务创建从 main-owned live Session 派生项目/父任务归属，读取与干预均复核任务所属 Session。实时 Session 与 Workflow 共用同一 KodaX 0.7.67 plane。Reference Executor 已接通，真实 A2A/MCP Tasks/HTTP adapter 仍按 Runtime capability 门控。Partner 自 0.1.30 起已启用 workspace-first Outputs 与 checkpointed writes。
@@ -10,7 +10,7 @@
 >
 > **2026-07-13 `v0.1.32` 架构边界（2026-07-19 已实现）**：F121 只把 Coder 迁入 profile-scoped shared daemon，使 Space、CLI 与 IDE 共享同一 session/run/live-state truth；Partner 明确保留 Space-owned embedded inline。Space 通过 surface router/adapter 拆分 owner，不再用 Partner 的进程内 callback/tool 约束阻塞 Coder daemon。完整合同、迁移与回滚规则见 [v0.1.32](features/v0.1.32.md)。
 >
-> **2026-07-19 `0.7.72` 正式集成**：根与 Desktop workspace 已锁定 Registry 正式包。Coder daemon 要求 Runtime-owned Auto LLM guardrail、统一 Actor/Turn、Learning Center、共享设置和 daemon management 能力；缺少能力时 fail closed，不回退到隐藏 inline owner。AMAW 已并入 AMA，Workflow 只由显式命令或 KodaX 强信号策略触发。
+> **2026-07-21 `0.7.73` 正式集成**：根与 Desktop workspace 已锁定 Registry 正式包。Coder daemon 要求 Runtime-owned Auto LLM guardrail v3、公开的有效设置/时序契约、统一 Actor/Turn、Learning Center、共享设置、精确 `grantSuggestions` 和 daemon management 能力；缺少能力时 fail closed，不回退到隐藏 inline owner。AMAW 已并入 AMA，Workflow 只由显式命令或 KodaX 强信号策略触发。
 >
 > **0.7.68 集成**：KodaX top-level managed coding path 自有 FEATURE_260 Memory Agent 生命周期，复用 F228 durable governance。Space 验证正式 `/experimental-memory` 契约、保留 metadata-only 回调诊断并继续拥有 UI 投影；不创建第二个 Memory Agent/存储/推广策略。完整 F117 仍受 activation/rollback 和桌面 query/action contract 门控。
 
@@ -355,7 +355,7 @@ type Project = {
 ### 8.1 三层权限
 
 1. **KodaX 内核层**（`confirmTools` / `Allow patterns` / 危险命令黑名单——已存在）
-2. **Space UI 层**（弹窗与录入；F121 的 Coder `Always allow` 通过 daemon grant service 持久化，Partner 保留 inline policy path）
+2. **Space UI 层**（弹窗与录入；F121 的 Coder `Always allow` 仅回传 Runtime 给出的不透明精确 grant suggestion，绝不由 UI 扩大工具或 shell 范围；Partner 保留 inline policy path）
 3. **OS 层**（写入 keychain、利用 Win Credential Manager / macOS Keychain）
 
 唯一真理面在 KodaX。Space 是显示器 + 录入器。

@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, File, FileCode, FolderTree, Search } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { ArrowLeft, File, FileCode, FolderTree, RefreshCw, Search } from 'lucide-react';
 import { FileTree } from '../../features/code/FileTree.js';
+import { splitFileTreeLabel } from '../../features/code/fileTreeModel.js';
 import { openFileInViewer, toProjectRelative } from '../../lib/openPath.js';
 import { extOf } from '../../lib/pathClassify.js';
 import { useAppStore } from '../../store/appStore.js';
@@ -26,16 +27,61 @@ export function FilesPanel({
 }: FilesPanelProps = {}): JSX.Element {
   const { t } = useI18n();
   const projectRoot = useAppStore((s) => s.currentProjectPath);
+  const currentSessionId = useAppStore((s) => s.currentSessionId);
+  const lastFileMutationMarker = useAppStore((s) => {
+    if (!currentSessionId) return null;
+    const events = s.eventsBySession[currentSessionId] ?? [];
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = events[index];
+      if (event.kind === 'session_start') return null;
+      if (event.kind !== 'tool_result') continue;
+      const toolName = event.toolName;
+      if (
+        toolName === 'write' ||
+        toolName === 'edit' ||
+        toolName === 'bash' ||
+        toolName === 'multiedit'
+      ) {
+        return event.toolId;
+      }
+    }
+    return null;
+  });
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [searchResults, setSearchResults] = useState<readonly string[]>([]);
   const [searching, setSearching] = useState(false);
   const [fileMenu, setFileMenu] = useState<FileMenuState | null>(null);
+  const [treeRefreshToken, setTreeRefreshToken] = useState(0);
   const projectName = useMemo(
     () => projectRoot?.split(/[\\/]/).filter(Boolean).pop() ?? '',
     [projectRoot],
   );
   const trimmedQuery = query.trim();
+  const refreshTree = useCallback((): void => {
+    setTreeRefreshToken((token) => token + 1);
+  }, []);
+
+  useEffect(() => {
+    if (!projectRoot || lastFileMutationMarker === null) return;
+    const timer = window.setTimeout(refreshTree, 600);
+    return () => window.clearTimeout(timer);
+  }, [lastFileMutationMarker, projectRoot, refreshTree]);
+
+  useEffect(() => {
+    if (!projectRoot) return;
+    const refreshWhenVisible = (): void => {
+      if (document.visibilityState === 'visible') refreshTree();
+    };
+    window.addEventListener('focus', refreshWhenVisible);
+    document.addEventListener('visibilitychange', refreshWhenVisible);
+    const interval = window.setInterval(refreshWhenVisible, 10_000);
+    return () => {
+      window.removeEventListener('focus', refreshWhenVisible);
+      document.removeEventListener('visibilitychange', refreshWhenVisible);
+      window.clearInterval(interval);
+    };
+  }, [projectRoot, refreshTree]);
 
   useEffect(() => {
     let cancelled = false;
@@ -67,7 +113,7 @@ export function FilesPanel({
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [projectRoot, trimmedQuery]);
+  }, [projectRoot, treeRefreshToken, trimmedQuery]);
 
   function selectFile(path: string): void {
     setSelectedPath(path);
@@ -117,6 +163,7 @@ export function FilesPanel({
         projectRoot={projectRoot}
         selectedPath={selectedPath}
         onBack={onBack}
+        onRefresh={refreshTree}
       />
 
       <div className="flex-shrink-0 px-3 py-2">
@@ -147,6 +194,7 @@ export function FilesPanel({
             selectedPath={selectedPath}
             onSelect={selectFile}
             onFileContextMenu={(path, x, y) => setFileMenu({ path, x, y })}
+            refreshToken={treeRefreshToken}
           />
         ) : searchResults.length > 0 ? (
           <div className="space-y-0.5 text-[12px] font-mono">
@@ -188,11 +236,13 @@ function FilesPanelBackHeader({
   projectRoot,
   selectedPath,
   onBack,
+  onRefresh,
 }: {
   readonly projectName: string;
   readonly projectRoot: string;
   readonly selectedPath: string | null;
   readonly onBack?: () => void;
+  readonly onRefresh?: () => void;
 }): JSX.Element {
   const { t } = useI18n();
   return (
@@ -221,6 +271,18 @@ function FilesPanelBackHeader({
             {projectName}
           </span>
         )}
+        {onRefresh && (
+          <button
+            type="button"
+            onClick={onRefresh}
+            data-testid="files-refresh-button"
+            className="ml-auto inline-flex h-6 w-6 flex-shrink-0 items-center justify-center rounded text-fg-muted hover:bg-hover-bg hover:text-fg-primary"
+            title={t('common.refresh')}
+            aria-label={t('common.refresh')}
+          >
+            <RefreshCw className="h-3.5 w-3.5" strokeWidth={1.8} aria-hidden />
+          </button>
+        )}
       </div>
       {selectedPath && (
         <code
@@ -248,6 +310,7 @@ function SearchResultRow({
   const name = path.slice(path.lastIndexOf('/') + 1);
   const dir = path.slice(0, Math.max(0, path.length - name.length - 1));
   const Icon = isCodeLikePath(path) ? FileCode : File;
+  const label = splitFileTreeLabel(name, 'file');
   return (
     <button
       type="button"
@@ -265,7 +328,10 @@ function SearchResultRow({
       }`}
     >
       <Icon className="h-3.5 w-3.5 text-fg-muted" strokeWidth={1.75} aria-hidden />
-      <span className="truncate">{name}</span>
+      <span className="flex min-w-0 items-baseline overflow-hidden">
+        <span className="min-w-0 flex-1 truncate">{label.leading}</span>
+        {label.trailing && <span className="flex-shrink-0">{label.trailing}</span>}
+      </span>
       <span className="truncate text-[11px] text-fg-muted">
         {dir.length > 0 ? toProjectRelative(dir, null) : ''}
       </span>

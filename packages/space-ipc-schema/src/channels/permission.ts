@@ -40,6 +40,13 @@ const permissionToolCallSchema = z.object({
 
 const riskLevelSchema = z.enum(['low', 'medium', 'high', 'danger']);
 const decisionSchema = z.enum(['deny', 'allow_once', 'allow_always']);
+const permissionAllowAlwaysScopeSchema = z
+  .object({
+    /** Display-only metadata for a Runtime-issued, concrete persistent grant suggestion. */
+    kind: z.literal('runtime_persistent'),
+    label: z.string().min(1).max(512),
+  })
+  .strict();
 
 // Always-allow rule. pattern 形如 "<toolName>" 或 "<toolName>:<input-fingerprint>"。
 //   - "<toolName>" 单独：批准该工具所有调用（如 "read"）
@@ -71,6 +78,12 @@ export const permissionRequestChannel = {
     toolCall: permissionToolCallSchema,
     /** 已生成的 pattern 候选，给 "Always allow" 选项预填，renderer 决定要不要带 pattern。*/
     suggestedPattern: z.string().min(1).max(512).optional(),
+    /**
+     * Space-owned description of the persistent grant that main can safely create.
+     * This is display metadata only; renderer still submits only the decision and
+     * main derives the trusted Runtime scope from the pending request.
+     */
+    allowAlwaysScope: permissionAllowAlwaysScopeSchema.optional(),
   }),
 } as const;
 

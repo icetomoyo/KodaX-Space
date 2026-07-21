@@ -76,6 +76,7 @@ import { getSessionLocalNoticeStore } from '../kodax/session-local-notice-store.
 import { assertArtifactPathInClipboardSandbox } from './clipboard.js';
 import { clearSlashGoalForSession } from '../slash/builtin.js';
 import { ensureProviderKeyInjected } from './provider.js';
+import { buildAttachmentPathOverlay } from '../kodax/attachment-path-overlay.js';
 import type {
   AgentsFileMeta,
   InputArtifact,
@@ -345,13 +346,22 @@ export function registerSessionChannels(): void {
         await assertArtifactPathInClipboardSandbox(input.sessionId, a.path);
       }
     }
+    if (input.attachmentPaths) {
+      for (const attachment of input.attachmentPaths) {
+        if (!path.isAbsolute(attachment.path)) {
+          throw new Error(`attachment path must be absolute: ${attachment.path}`);
+        }
+      }
+    }
     await ensureProviderKeyInjected(session.provider);
     await validateInputArtifactsForSession(input.artifacts, session);
+    const attachmentPathOverlay = buildAttachmentPathOverlay(input.attachmentPaths);
+    const promptOverlay = [input.partnerPromptOverlay, attachmentPathOverlay]
+      .filter((part): part is string => part !== undefined)
+      .join('\n\n');
     const result = await session.send(input.prompt, input.artifacts, {
       queueMode: input.queueMode,
-      ...(input.partnerPromptOverlay !== undefined
-        ? { promptOverlay: input.partnerPromptOverlay }
-        : {}),
+      ...(promptOverlay ? { promptOverlay } : {}),
     });
     return {
       accepted: true as const,
@@ -846,7 +856,25 @@ export function registerSessionChannels(): void {
             : extractUserText((entry.message as { content?: unknown }).content);
         const text = rawSummary.trim();
         if (text.length > 0) {
-          items.push({ kind: 'lineage_notice', noticeKind: entry.type, text });
+          const compactionPayload = isRecord(entry.payload) ? entry.payload : undefined;
+          const tokensBefore = compactionPayload?.tokensBefore;
+          const tokensAfter = compactionPayload?.tokensAfter;
+          const hasCompactStats =
+            entry.type === 'compaction' &&
+            typeof tokensBefore === 'number' &&
+            Number.isInteger(tokensBefore) &&
+            tokensBefore >= 0 &&
+            tokensBefore <= 10_000_000 &&
+            typeof tokensAfter === 'number' &&
+            Number.isInteger(tokensAfter) &&
+            tokensAfter >= 0 &&
+            tokensAfter <= 10_000_000;
+          items.push({
+            kind: 'lineage_notice',
+            noticeKind: entry.type,
+            text,
+            ...(hasCompactStats ? { tokensBefore, tokensAfter } : {}),
+          });
         }
         if (items.length >= 2000) break;
         continue;

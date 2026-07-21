@@ -242,6 +242,8 @@ export const providerModelContextWindowChannel = {
     contextWindow: z.number().int().positive(),
     /** SDK fallback (200k) vs provider-advertised 区分；UI 显示用 "≈" 提示。*/
     source: z.enum(['provider', 'fallback']),
+    /** Effective KodaX Runtime early-compaction trigger. `100` means capacity-only. */
+    compactionTriggerPercent: z.number().int().min(1).max(100),
     supportedEfforts: z.array(z.string().min(1).max(32)).max(16).optional(),
     defaultEffort: z.string().min(1).max(32).optional(),
     /**

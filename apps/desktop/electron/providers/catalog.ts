@@ -94,6 +94,12 @@ const SPACE_OVERRIDES: Record<string, SpaceOverride> = {
     fallbackApiKeyEnv: 'QWEN_API_KEY',
     fallbackDefaultModel: 'qwen3.5-plus',
   },
+  'qwen-token-plan': {
+    displayName: 'Qwen Token Plan',
+    protocol: 'anthropic',
+    fallbackApiKeyEnv: 'QWEN_TOKEN_API_KEY',
+    fallbackDefaultModel: 'qwen3.8-max-preview',
+  },
   zhipu: {
     displayName: 'Zhipu (BigModel)',
     protocol: 'openai',

@@ -48,11 +48,26 @@ export function snapshotFromEvents(
 
   // 倒序扫到最近的 lifecycle 事件，确定 streaming
   let streaming = false;
+  let compacting = false;
+  let completedCompactions = 0;
   let startedAt: number | null = null;
   // session_start 不带时间戳；用 events 数组在 store 里追加顺序近似——精确不可用时用
   // Date.now() 作为下限（只影响 elapsed s 显示，业务无依赖）。
   for (let i = events.length - 1; i >= 0; i--) {
     const ev = events[i];
+    if (ev.kind === 'compact_end') {
+      completedCompactions += 1;
+      continue;
+    }
+    if (ev.kind === 'compact_start') {
+      if (completedCompactions > 0) {
+        completedCompactions -= 1;
+        continue;
+      }
+      streaming = true;
+      compacting = true;
+      break;
+    }
     if (ev.kind === 'session_complete' || ev.kind === 'session_error') {
       streaming = false;
       break;
@@ -73,7 +88,7 @@ export function snapshotFromEvents(
   startedAt = resolveStartedAtMemo(events);
 
   // 从倒序的"内容"事件推断当前在干什么 + 取最新 iter / tokens
-  let status = 'Thinking…';
+  let status = compacting ? 'Compacting context…' : 'Thinking…';
   let iter: { current: number; max: number } | undefined;
   let tokens: number | undefined;
   let activeToolId: string | undefined;
@@ -81,7 +96,7 @@ export function snapshotFromEvents(
   for (let i = events.length - 1; i >= 0; i--) {
     const ev = events[i];
     // 状态文案 — 只用最新一条匹配的（外层 break 前先抓 iter/tokens）
-    if (status === 'Thinking…') {
+    if (!compacting && status === 'Thinking…') {
       if (
         ev.kind === 'tool_start' ||
         ev.kind === 'tool_input_delta' ||
@@ -96,12 +111,6 @@ export function snapshotFromEvents(
         status = 'Thinking…';
       } else if (ev.kind === 'text_delta') {
         status = 'Writing…';
-      } else if (
-        ev.kind === 'compact_start' ||
-        ev.kind === 'compact_stats' ||
-        ev.kind === 'compact_end'
-      ) {
-        status = 'Compacting context…';
       } else if (ev.kind === 'mid_turn_user_prompt' || ev.kind === 'queued_user_prompt_started') {
         break;
       }
@@ -246,6 +255,22 @@ export function snapshotFromRuntimeProjection(
   };
 }
 
+export function selectActivitySnapshot(
+  projection: SpaceSessionLiveProjectionT | undefined,
+  events: readonly SessionEvent[],
+  pending: boolean,
+  managedPhase: string | undefined,
+): ActivitySnapshot {
+  const eventSnapshot = snapshotFromEvents(events, pending, managedPhase);
+  // Compaction is a nested Runtime activity and is not represented by activeRun requirements.
+  // Prefer its explicit lifecycle while active; otherwise the daemon live projection remains the
+  // authority for ordinary queued/running/waiting states.
+  if (eventSnapshot.streaming && eventSnapshot.status === 'Compacting context…') {
+    return eventSnapshot;
+  }
+  return snapshotFromRuntimeProjection(projection) ?? eventSnapshot;
+}
+
 /** Tally a string's ASCII vs non-ASCII chars into an accumulator (for token estimation). */
 function tallyChars(text: string, acc: { ascii: number; nonAscii: number }): void {
   for (let i = 0; i < text.length; i++) {
@@ -320,8 +345,7 @@ export function ActivitySpinner(): ReactJSX.Element | null {
     currentSessionId ? s.liveProjectionBySession[currentSessionId] : undefined,
   );
 
-  const snap =
-    snapshotFromRuntimeProjection(runtimeLive) ?? snapshotFromEvents(events, pending, managedPhase);
+  const snap = selectActivitySnapshot(runtimeLive, events, pending, managedPhase);
   // Elapsed display still ticks once per second; spinner motion itself is CSS-driven.
   const [, forceTick] = useState(0);
 
@@ -396,9 +420,7 @@ export function useIsStreaming(): boolean {
   const runtimeLive = useAppStore((s) =>
     currentSessionId ? s.liveProjectionBySession[currentSessionId] : undefined,
   );
-  return (
-    snapshotFromRuntimeProjection(runtimeLive) ?? snapshotFromEvents(events, pending, managedPhase)
-  ).streaming;
+  return selectActivitySnapshot(runtimeLive, events, pending, managedPhase).streaming;
 }
 
 type Translate = (key: MessageKey, vars?: Record<string, string | number>) => string;

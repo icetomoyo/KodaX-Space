@@ -107,7 +107,11 @@ export async function saveClipboardImage(
     readonly mediaType: 'image/png' | 'image/jpeg' | 'image/webp';
   },
   sdk: Pick<MediaSdk, 'normalizePastedImage'> | undefined = undefined,
-): Promise<{ path: string; bytes: number }> {
+): Promise<{
+  path: string;
+  mediaType: 'image/png' | 'image/jpeg' | 'image/webp';
+  bytes: number;
+}> {
   const dir = await sessionDir(input.sessionId);
   // review HIGH-1 fix: 显式 0o700 而非依赖 umask —— 多用户系统下默认 0o755 让 sessionId
   // 文件名 (含时间戳泄露使用窗口) 在 ls 可见，是元数据泄露。0o700 仅 owner 可读/进入。
@@ -157,13 +161,15 @@ export async function saveClipboardImage(
   const filePath = path.join(dir, filename);
   await fs.writeFile(filePath, outBuf, { mode: 0o600 });
 
-  return { path: filePath, bytes: outBuf.length };
+  return { path: filePath, mediaType: outMediaType, bytes: outBuf.length };
 }
 
 /** Read a native OS clipboard image and persist it into the Space session sandbox. */
 export async function readNativeClipboardImage(
   input: { readonly sessionId: string },
-  sdk: Pick<MediaSdk, 'readAndNormalizeClipboardImage' | 'persistImageAsBlock'> | undefined = undefined,
+  sdk:
+    | Pick<MediaSdk, 'readAndNormalizeClipboardImage' | 'persistImageAsBlock'>
+    | undefined = undefined,
 ): Promise<{
   image: {
     path: string;

@@ -11,9 +11,13 @@ import {
   ARTIFACT_HTML_FRAME_URL,
   type ArtifactHtmlPermissionsT,
 } from '@kodax-space/space-ipc-schema';
-import { useMemo } from 'react';
+import { useMemo, useRef } from 'react';
 import { buildInteractiveHtmlSrcDoc, sandboxForInteractiveHtml } from '../htmlSandbox';
 import { useI18n } from '../../../i18n/I18nProvider';
+import {
+  WebPreviewDiagnosticBanner,
+  useWebPreviewDiagnostics,
+} from '../../preview/WebPreviewDiagnosticBanner.js';
 
 export interface HtmlArtifactProps {
   html: string;
@@ -57,22 +61,28 @@ export function InteractiveHtmlArtifact({
     () => `${ARTIFACT_HTML_FRAME_URL}?v=${documentVersionToken(documentHtml)}`,
     [documentHtml],
   );
+  const frameRef = useRef<HTMLIFrameElement>(null);
+  const [diagnostics, dismissDiagnostics] = useWebPreviewDiagnostics(frameRef, frameUrl);
   return (
-    <iframe
-      title={t('artifact.interactiveHtmlTitle')}
-      src={frameUrl}
-      sandbox={sandboxForInteractiveHtml(permissions)}
-      referrerPolicy="no-referrer"
-      onLoad={(event) => {
-        event.currentTarget.contentWindow?.postMessage(
-          {
-            type: ARTIFACT_HTML_FRAME_MESSAGE_TYPE,
-            documentHtml,
-          },
-          '*',
-        );
-      }}
-      className="w-full h-full flex-1 border-0 bg-white"
-    />
+    <div className="flex min-h-0 flex-1 flex-col">
+      <WebPreviewDiagnosticBanner diagnostics={diagnostics} onDismiss={dismissDiagnostics} />
+      <iframe
+        ref={frameRef}
+        title={t('artifact.interactiveHtmlTitle')}
+        src={frameUrl}
+        sandbox={sandboxForInteractiveHtml(permissions)}
+        referrerPolicy="no-referrer"
+        onLoad={(event) => {
+          event.currentTarget.contentWindow?.postMessage(
+            {
+              type: ARTIFACT_HTML_FRAME_MESSAGE_TYPE,
+              documentHtml,
+            },
+            '*',
+          );
+        }}
+        className="h-full min-h-0 w-full flex-1 border-0 bg-white"
+      />
+    </div>
   );
 }

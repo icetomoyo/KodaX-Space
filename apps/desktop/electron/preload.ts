@@ -12,7 +12,7 @@ const ALLOWED_LISTEN_CHANNELS = PUSH_CHANNEL_NAMES;
 // Freeze process.platform into a primitive before exposing it through the bridge.
 const platformValue: NodeJS.Platform = process.platform;
 
-contextBridge.exposeInMainWorld('kodaxSpace', {
+const kodaxSpaceBridge = {
   /**
    * Invoke a main-process channel. Unknown channels fail before reaching IPC.
    */
@@ -72,6 +72,19 @@ contextBridge.exposeInMainWorld('kodaxSpace', {
       webFrame.setZoomFactor(safe);
     },
   },
-});
+};
+
+const trustedRendererFrame =
+  process.isMainFrame &&
+  ((location.protocol === 'app:' && location.host === 'space') ||
+    (location.protocol === 'http:' &&
+      (location.hostname === 'localhost' ||
+        location.hostname === '127.0.0.1' ||
+        location.hostname === '[::1]')));
+
+// Project previews use distinct app://preview-<capability> origins. Even if a
+// future regression navigates one into a top-level frame, it must never receive
+// Space's IPC bridge.
+if (trustedRendererFrame) contextBridge.exposeInMainWorld('kodaxSpace', kodaxSpaceBridge);
 
 // Renderer-side global types live in apps/desktop/renderer/src/types/global.d.ts.

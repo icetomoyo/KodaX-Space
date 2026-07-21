@@ -14,33 +14,37 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ## [Unreleased]
 
+## [0.1.32] - 2026-07-21
+
 ### Added
 
 - **F121 released-action daemon adaptation** - Completed the v0.1.31 Coder action inventory and explicit v0.1.32 owner classification. Shared daemon routes now cover session live/history/mutations, settings convergence, queue, AskUser, revisioned permission grants, Workflow observation/control, Learning Center commands, bounded Skill/slash catalogs, MCP tool discovery/reload, and Runtime-configured External Agent Actor/Turns; remaining Space product responsibilities stay explicit host-provider routes.
 - **F122 Project Source Library and incremental ingestion** - Added a durable project-scoped source catalog with stable logical identities and immutable versions, backed-up v1-to-v2 migration, file and directory ingestion, bounded PDF/DOCX/PPTX/XLSX structured extraction, per-project FTS5 indexing, explicit Available/Selected/Used state, refresh/retry/rename recovery, cancellation safety, and storage-budget enforcement.
 - **F123 stable evidence citations** - Added content-bound citation IDs, immutable evidence snapshots, durable citation and trace metadata independent of the rebuildable index, truthful page/slide/sheet/paragraph/line locators, current/stale/missing access decisions, and an accessible evidence-detail surface that never redirects an old citation to mutable content.
 - **F124 Partner Context Broker** - Added Partner-only automatic grounded recall over permitted project material and accepted project knowledge with `project-grounded`, `selected-only`, and `general` scopes, exact selected/used/version traces, bounded evidence packs, prompt-injection delimiters, conflict and unavailable-retrieval notices, and independent rollback gates without routing Partner through the Coder daemon.
+- **Runtime-issued exact permission grants** - Coder permission prompts now surface `Allow always` only when KodaX supplies a safe concrete grant suggestion. Space preserves the opaque suggestion ID, presents only a redacted label, and never expands it into a broad shell, tool, or session rule.
+- **Reliable attachment projection** - The visible transcript keeps file links while Coder receives Electron-validated native absolute paths; pasted-image artifacts now carry the final normalized media type so mixed clipboard and picker images remain valid multimodal input.
 
 ### Changed
 
-- **KodaX SDK registry baseline** - Replaced the local `file:` candidate and the emergency prerelease dependency with the exact published `@kodax-ai/kodax@0.7.72` package in both root and Desktop workspaces. The lockfile now resolves the public Registry tarball and its published integrity instead of a developer-machine path.
-- **Shared Coder contract baseline** - Promoted Runtime Auto LLM guardrails, bounded permission previews, daemon capability upgrades, AMA/SA-only mode handling, strong-signal Workflow exposure, unified Actor/Turn, and Learning Center integration from candidate contracts to the published SDK baseline.
-- **Truthful split ownership** - Updated capability reporting and manuals for the 0.7.72 boundary: Runtime owns only the consumed Coder services, while Partner, MCP process/log management, Workflow library/start/admin, Space Reference Agent execution, and product artifacts remain Space host-provider responsibilities.
-- **Explicit Auto LLM session defaults** - Space now applies KodaX `autoMode.engine`/`classifierModel`/`timeoutMs` config and environment precedence to Runtime sessions and materializes the 0.7.72 20-second classifier timeout instead of relying on the attached daemon's invisible default. Existing values from another trusted client remain authoritative.
+- **KodaX SDK registry baseline** - Updated both root and Desktop workspaces to the exact published `@kodax-ai/kodax@0.7.73` package. The lockfile resolves the public Registry tarball and its published integrity instead of a developer-machine path.
+- **Shared Coder contract baseline** - Requires KodaX 0.7.73, Runtime Auto LLM guardrail v3, `permission:grant-admin`, unified Actor/Turn, Learning Center, and the released daemon capability surface; missing contracts fail closed rather than selecting a hidden inline Coder owner.
+- **Truthful split ownership** - Updated capability reporting, manuals, and the application `kodax_manual` self-description for the 0.7.73 boundary: Runtime owns the consumed Coder services and exact grant candidates, while Partner, MCP process/log management, Workflow library/start/admin, Space Reference Agent execution, and product artifacts remain Space host-provider responsibilities.
+- **Explicit Auto LLM session settings** - Space now uses KodaX's typed `resolveAutoModeSettings()` resolver for engine, classifier model, timeout, and `speculativeWindowMs`; it projects missing values into revisioned Runtime settings, preserves another trusted client's explicit value, and exposes bounded timing/terminal-phase diagnostics.
 
 ### Fixed
 
 - **Reproducible installs** - Fresh CI and contributor installs no longer require the sibling `KodaX` checkout or silently retain a stale local-tarball lock entry.
-- **Daemon child isolation** - Consumed the final `0.7.72` launcher fix that filters test-runner imports/loaders from daemon child `execArgv`, preventing development or test harness state from leaking into the long-lived Runtime process.
-- **Stale Auto LLM timeout after upgrade** - Space rejects daemon identities older than 0.7.72 with an actionable restart diagnostic, so a long-lived 0.7.69 process cannot keep serving the historical eight-second classifier path after the package is updated. `/auto-denials` now reports Runtime version, classifier model and effective timeout.
-- **Multi-client settings race** - Auto LLM default convergence retries bounded revision conflicts against a fresh Runtime snapshot and cannot overwrite a classifier model or timeout concurrently written by another client.
+- **Daemon child isolation and admission recovery** - The published launcher filters test-runner imports/loaders from daemon child `execArgv`; normal Space shutdown no longer aborts an accepted daemon run during admission, and transient unhealthy-owner startup windows now reconnect with bounded backoff.
+- **Stale Auto LLM behavior after upgrade** - Space rejects daemon identities older than 0.7.73 with an actionable restart diagnostic. `/auto-denials` now reports the effective Runtime version, classifier model, timeout, speculative window, and bounded classifier timing facts.
+- **Multi-client settings race** - Auto LLM convergence retries bounded revision conflicts against a fresh Runtime snapshot and cannot overwrite another trusted client's classifier configuration or speculative window.
+- **No-session file review and attachment MIME mismatch** - Project files now use the file-viewer path without synthetic Artifact/session fields, while image persistence returns the canonical media type rather than a stale clipboard MIME label.
 
 ### Verification
 
-- The downloaded Registry tarball and installed package match byte-for-byte across all 120 `dist` files; npm integrity is `sha512-aDKwe006GZC1YKt6o+ArFdOoj/waAavcZZ78nejFSYVY1Gi8va5c+VUiESKd5N2eyKpkBBfe2/sRsEqqrqnNIw==`.
-- F122-F124 pass 41 focused source/index/citation/recall tests and the combined KodaX 0.7.72 Partner/Runtime compatibility gate passes 68/68.
-- Full Space tests pass with 1,858 passing tests and 2 platform-permission skips; the process-distinct daemon gate now explicitly requires and verifies `runtimeAutoModeGuardrail: 1` owned by `session-runtime`.
-- TypeScript, full ESLint, production renderer/main smoke build, changed-code formatting/diff checks, dependency deduplication, and npm audit pass.
+- The published-package compatibility probe requires KodaX 0.7.73, `runtimeAutoModeGuardrail: 3`, `permission:grant-admin`, typed Auto LLM resolution, and exact concrete-grant reuse.
+- Focused Runtime, permission, attachment, clipboard, schema, provider-catalog, and queue regressions cover the 0.7.73 contracts alongside the F122-F124 source/index/citation/recall suite.
+- Release verification requires workspace type checks, lint, full tests, production renderer/main smoke build, dependency deduplication, packaging, and packaged Electron boot before the `v0.1.32` tag is created.
 
 ## [0.1.32-hotfix.0] - 2026-07-17
 

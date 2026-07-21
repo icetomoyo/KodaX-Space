@@ -59,6 +59,14 @@ const permission = {
     apiKey: 'should-not-render',
   }),
   executionCwd: 'C:\\repo',
+  grantSuggestions: [
+    { id: 'session_scope', kind: 'session', label: 'Allow this exact command for this task' },
+    {
+      id: 'persistent_scope',
+      kind: 'persistent',
+      label: 'Always allow this exact command: npm test',
+    },
+  ],
   createdAt: '2026-07-14T08:02:00.000Z',
 } as const;
 
@@ -178,6 +186,10 @@ test('atomic observation maps run, draft, tool, Todo, and interaction truth', ()
   assert.equal(projectedPermission?.kind, 'permission');
   if (projectedPermission?.kind === 'permission') {
     assert.equal(projectedPermission.request.reason, 'Run tests');
+    assert.deepEqual(projectedPermission.request.allowAlwaysScope, {
+      kind: 'runtime_persistent',
+      label: 'Always allow this exact command: npm test',
+    });
     assert.deepEqual(projectedPermission.request.toolCall, {
       toolId: 'tool_1',
       toolName: 'bash',
@@ -250,6 +262,47 @@ test('permission projection uses sanitized description, assessed risk, and setti
     assert.equal(interaction.request.toolCall.operation, 'execute');
     assert.equal(interaction.request.toolCall.executionCwd, 'C:\\fallback-project');
     assert.equal(interaction.request.toolCall.input?.command, 'python -c "print(1)"');
+  }
+});
+
+test('permission projection never offers a persistent grant for dangerous commands', () => {
+  const dangerousObservation = {
+    ...observation,
+    pendingPermissions: [
+      {
+        ...permission,
+        id: 'permission_dangerous',
+        inputPreview: JSON.stringify({ command: 'rm -rf /' }),
+      },
+    ],
+  } as unknown as RuntimeSessionObservationSnapshot;
+
+  const projected = projectRuntimeSessionSnapshot(dangerousObservation, []);
+  const interaction = projected.interactions[0];
+  assert.equal(interaction?.kind, 'permission');
+  if (interaction?.kind === 'permission') {
+    assert.equal(interaction.request.risk, 'danger');
+    assert.equal(interaction.request.allowAlwaysScope, undefined);
+  }
+});
+
+test('permission projection hides Always allow when Runtime omits a persistent suggestion', () => {
+  const sessionOnlyObservation = {
+    ...observation,
+    pendingPermissions: [
+      {
+        ...permission,
+        id: 'permission_session_only',
+        grantSuggestions: [permission.grantSuggestions[0]],
+      },
+    ],
+  } as unknown as RuntimeSessionObservationSnapshot;
+
+  const projected = projectRuntimeSessionSnapshot(sessionOnlyObservation, []);
+  const interaction = projected.interactions[0];
+  assert.equal(interaction?.kind, 'permission');
+  if (interaction?.kind === 'permission') {
+    assert.equal(interaction.request.allowAlwaysScope, undefined);
   }
 });
 

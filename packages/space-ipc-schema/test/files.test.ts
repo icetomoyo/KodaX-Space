@@ -11,19 +11,58 @@ import {
   filesReadBinaryChannel,
   filesDiffChannel,
   filesStatChannel,
+  filesWebPreviewChannel,
   fileNodeSchema,
   MAX_FILE_BYTES,
 } from '../src/index.js';
 
 test('all files invoke channels are registered', () => {
-  for (const name of ['files.tree', 'files.read', 'files.readBinary', 'files.stat', 'files.diff']) {
-    assert.ok(invokeChannels[name as keyof typeof invokeChannels], `${name} should be in invokeChannels`);
+  for (const name of [
+    'files.tree',
+    'files.read',
+    'files.readBinary',
+    'files.stat',
+    'files.diff',
+    'files.webPreview',
+  ]) {
+    assert.ok(
+      invokeChannels[name as keyof typeof invokeChannels],
+      `${name} should be in invokeChannels`,
+    );
     assert.ok(INVOKE_CHANNEL_NAMES.has(name), `${name} should be in INVOKE_CHANNEL_NAMES`);
   }
 });
 
+test('files.webPreview requires a scoped HTML path and explicit network mode', () => {
+  assert.equal(
+    filesWebPreviewChannel.input.safeParse({
+      projectRoot: 'C:\\work',
+      path: 'site/index.html',
+      networkAccess: false,
+    }).success,
+    true,
+  );
+  assert.equal(
+    filesWebPreviewChannel.input.safeParse({
+      projectRoot: 'C:\\work',
+      path: 'site/index.html',
+    }).success,
+    false,
+  );
+  assert.equal(
+    filesWebPreviewChannel.output.safeParse({
+      url: 'app://preview-00000000000000000000000000000001/index.html',
+      networkAccess: false,
+    }).success,
+    true,
+  );
+});
+
 test('fileNodeSchema accepts file and dir', () => {
-  assert.equal(fileNodeSchema.safeParse({ name: 'a.ts', path: 'src/a.ts', kind: 'file', size: 100 }).success, true);
+  assert.equal(
+    fileNodeSchema.safeParse({ name: 'a.ts', path: 'src/a.ts', kind: 'file', size: 100 }).success,
+    true,
+  );
   assert.equal(fileNodeSchema.safeParse({ name: 'src', path: 'src', kind: 'dir' }).success, true);
 });
 

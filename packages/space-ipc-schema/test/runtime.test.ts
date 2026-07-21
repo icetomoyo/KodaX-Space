@@ -281,6 +281,10 @@ test('Runtime interaction projections preserve bounded display input and strip t
           sessionId: 's_1',
           risk: 'high',
           reason: 'Run command',
+          allowAlwaysScope: {
+            kind: 'runtime_persistent',
+            label: 'Always allow this exact command: npm test',
+          },
           toolCall: {
             toolId: 'tool_1',
             toolName: 'bash',
@@ -302,6 +306,10 @@ test('Runtime interaction projections preserve bounded display input and strip t
   });
   assert.equal(interaction.request.toolCall.operation, 'execute');
   assert.equal(interaction.request.toolCall.executionCwd, 'C:\\repo');
+  assert.deepEqual(interaction.request.allowAlwaysScope, {
+    kind: 'runtime_persistent',
+    label: 'Always allow this exact command: npm test',
+  });
   assert.equal('transportSecret' in interaction.request.toolCall, false);
   assert.equal('daemonInternal' in interaction.request, false);
 

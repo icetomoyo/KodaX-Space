@@ -13,7 +13,7 @@
   <a href="https://github.com/icetomoyo/KodaX-Space/releases/latest"><img alt="release" src="https://img.shields.io/github/v/release/icetomoyo/KodaX-Space?style=flat-square"></a>
   <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-KAI--FCL-orange?style=flat-square"></a>
   <a href="https://github.com/icetomoyo/KodaX-Space/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/icetomoyo/KodaX-Space/ci.yml?style=flat-square&label=ci"></a>
-  <img alt="KodaX SDK" src="https://img.shields.io/badge/KodaX_SDK-0.7.72-2ecc71?style=flat-square">
+  <img alt="KodaX SDK" src="https://img.shields.io/badge/KodaX_SDK-0.7.73-2ecc71?style=flat-square">
   <img alt="platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-34495e?style=flat-square">
 </p>
 
@@ -90,7 +90,7 @@ npm run dev
 
 ## Current Source Baseline
 
-**v0.1.32 release preparation on exact KodaX 0.7.72.** Coder is default-routed to the profile-scoped shared daemon; sessions/runs/settings/interactions, Workflow observation/control, Learning Center operations, catalog discovery, MCP tool discovery/reload, and configured External Agent Actor/Turns use published Runtime services. Partner remains an embedded-inline Space owner. MCP processes/logs, Workflow library/start/admin, Space Reference Agent execution, and product artifacts remain explicit host-provider boundaries.
+**v0.1.32 release preparation on exact KodaX 0.7.73.** Coder is default-routed to the profile-scoped shared daemon; sessions/runs/settings/interactions, Workflow observation/control, Learning Center operations, catalog discovery, MCP tool discovery/reload, and configured External Agent Actor/Turns use published Runtime services. The released Runtime contract also supplies typed Auto LLM resolution and telemetry, including the speculative window, plus bounded concrete permission-grant suggestions. Partner remains an embedded-inline Space owner. MCP processes/logs, Workflow library/start/admin, Space Reference Agent execution, and product artifacts remain explicit host-provider boundaries.
 
 F122-F124 deliver the Partner project-source, immutable evidence/citation, and automatic grounded-context loop. F121 remains `InProgress` until the final human multi-client release acceptance is complete; missing required daemon capabilities fail Coder closed rather than silently falling back to an inline owner. See the [v0.1.32 release design](docs/features/v0.1.32.md) and [capability ledger](docs/KODAX_CAPABILITY_LEDGER.md).
 
@@ -165,7 +165,7 @@ See [CHANGELOG.md](CHANGELOG.md) and [docs/features/v0.1.29.md](docs/features/v0
 | MCP and Skills     | Desktop management and display paths for KodaX MCP servers and skills.                                                                                                                                                     |
 | Memory Governance  | Review, approve, reject, and inspect memory proposals and approved references.                                                                                                                                             |
 | Partner surface    | Enabled workspace-first knowledge-work surface with Sources, KB, Outputs, checkpointed writes, Office/PDF convenience writers, and local policy/audit controls.                                                            |
-| External Agents    | KodaX 0.7.72 Runtime-configured Coder Agents use unified Actor/Turn tasks; Space Reference Agents retain main-window administration and the durable Task Dock intervention path. MCP Tasks and governed HTTP remain gated. |
+| External Agents    | KodaX 0.7.73 Runtime-configured Coder Agents use unified Actor/Turn tasks; Space Reference Agents retain main-window administration and the durable Task Dock intervention path. MCP Tasks and governed HTTP remain gated. |
 
 ## Configuration Model
 

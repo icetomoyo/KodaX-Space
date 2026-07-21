@@ -99,6 +99,7 @@ import {
   ARTIFACT_HTML_FRAME_BOOTSTRAP_CSP,
   isArtifactHtmlFrameUrl,
 } from './window/app-protocol-policy.js';
+import { isProjectWebPreviewUrl } from './window/project-web-preview.js';
 
 // CJS 输出（见 scripts/build-main.mjs），__dirname 是原生 Node 全局
 // 不用 import.meta.url（CJS 下不可用）
@@ -220,6 +221,13 @@ function applyCsp(): void {
   // 注：style-src 'unsafe-inline' 保留——React/shadcn/Radix 的内联 style props 需要；
   // 风险面在 Electron 本地环境足够小（无第三方 CSS 注入向量）。
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    // Capability-scoped project previews supply their own mode-specific CSP in
+    // the protocol response. Replacing it with the app-shell policy would both
+    // disable authored scripts and accidentally widen access to renderer assets.
+    if (isProjectWebPreviewUrl(details.url)) {
+      callback({ responseHeaders: details.responseHeaders });
+      return;
+    }
     // F009 CSP 扩项：
     //   - worker-src 'self' blob:  → Monaco editor 用 Web Worker（dev 走 module worker；prod 走 blob）
     //   - script-src 加 blob:       → 同上，Monaco esm worker 通过 blob URL 起
@@ -243,7 +251,7 @@ function applyCsp(): void {
             "img-src 'self' data: blob: https:",
             "media-src 'self' data: blob:",
             "font-src 'self' data:",
-            "frame-src 'self' app://space",
+            "frame-src 'self' app:",
             "connect-src 'self' ws://localhost:* ws://127.0.0.1:* http://localhost:* http://127.0.0.1:*",
           ].join('; ')
         : [
@@ -254,7 +262,7 @@ function applyCsp(): void {
             "img-src 'self' data: blob: https:",
             "media-src 'self' data: blob:",
             "font-src 'self' data:",
-            "frame-src 'self' app://space",
+            "frame-src 'self' app:",
             "connect-src 'self'",
           ].join('; ');
 

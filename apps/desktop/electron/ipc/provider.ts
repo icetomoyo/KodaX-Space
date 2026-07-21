@@ -17,6 +17,7 @@
 import { registerChannel } from './register.js';
 import {
   loadKodaxCustomProviders,
+  loadKodaxCompactionConfig,
   registerKodaxCustomProviders,
   removeKodaxConfigCustomProvider,
   updateKodaxConfigCustomProvider,
@@ -594,6 +595,14 @@ export function registerProviderChannels(): void {
   // Lazy SDK import — main bundle 是 CJS，SDK 是 ESM-only subpath；必须 `await import`
   // 否则撞 ERR_PACKAGE_PATH_NOT_EXPORTED（同 sdk-providers.ts 的处理）。
   registerChannel('provider.modelContextWindow', async (input) => {
+    const configuredCompaction = await loadKodaxCompactionConfig();
+    const compaction = {
+      enabled: configuredCompaction?.enabled ?? true,
+      triggerPercent: configuredCompaction?.triggerPercent ?? 100,
+      ...(configuredCompaction?.contextWindow !== undefined
+        ? { contextWindow: configuredCompaction.contextWindow }
+        : {}),
+    };
     try {
       if (input.providerId !== 'mock' && !isBuiltinId(input.providerId)) {
         await refreshSdkCustomProviderRegistry();
@@ -613,6 +622,7 @@ export function registerProviderChannels(): void {
         provider as { getEffectiveContextWindow?: unknown; getContextWindow?: unknown },
         input.model,
         resolveContextWindow,
+        compaction,
       );
       // Reasoning 效力档同理走 provider.getReasoningProfile(model)（走 model 级 descriptor,
       // 不受 0.7.58 default-model bug 影响）；capabilities.reasoningProfile 仅作 provider 无此
@@ -640,6 +650,7 @@ export function registerProviderChannels(): void {
       return {
         contextWindow: cw,
         source,
+        compactionTriggerPercent: compaction.triggerPercent,
         ...(supportedEfforts && supportedEfforts.length > 0 ? { supportedEfforts } : {}),
         ...(defaultEffort ? { defaultEffort } : {}),
         canDisableThinking,
@@ -652,7 +663,11 @@ export function registerProviderChannels(): void {
         `[provider.modelContextWindow] SDK resolve failed for ${input.providerId}/${input.model}:`,
         err instanceof Error ? err.message : err,
       );
-      return { contextWindow: 200_000, source: 'fallback' };
+      return {
+        contextWindow: compaction.contextWindow ?? 200_000,
+        source: compaction.contextWindow !== undefined ? 'provider' : 'fallback',
+        compactionTriggerPercent: compaction.triggerPercent,
+      };
     }
   });
 }

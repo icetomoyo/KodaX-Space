@@ -52,7 +52,7 @@ test('KodaX config overview channels accept compaction and storage summaries', (
     settingsKodaxConfigSetCompactionChannel.input.safeParse({
       compaction: { enabled: false, triggerPercent: 60 },
     }).success,
-    true,
+    false,
   );
   assert.equal(
     settingsKodaxConfigSetCompactionChannel.input.safeParse({
@@ -60,6 +60,22 @@ test('KodaX config overview channels accept compaction and storage summaries', (
     }).success,
     false,
   );
+  for (const triggerPercent of [15, 90]) {
+    assert.equal(
+      settingsKodaxConfigSetCompactionChannel.input.safeParse({
+        compaction: { enabled: true, triggerPercent },
+      }).success,
+      true,
+    );
+  }
+  for (const triggerPercent of [14, 91]) {
+    assert.equal(
+      settingsKodaxConfigSetCompactionChannel.input.safeParse({
+        compaction: { enabled: true, triggerPercent },
+      }).success,
+      false,
+    );
+  }
 });
 
 test('settings output includes language preference and effective locale', () => {

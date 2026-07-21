@@ -4,9 +4,9 @@
   <img src="../resources/icon.png" alt="KodaX Space 应用图标" width="96">
 </p>
 
-> 当前源码/发布准备基线：KodaX Space `v0.1.32`（package `0.1.32`）/ KodaX `0.7.72`；最近已发布稳定 Space 版本仍为 `v0.1.31`。
+> 当前源码/发布准备基线：KodaX Space `v0.1.32`（package `0.1.32`）/ KodaX `0.7.73`；最近已发布稳定 Space 版本仍为 `v0.1.31`。
 >
-> 更新日期：2026-07-19
+> 更新日期：2026-07-21
 >
 > 如果你的界面与本文不同，请先在 Settings → License/版本信息中确认构建版本。
 
@@ -162,7 +162,7 @@ flowchart LR
 
 多个受信任的 KodaX 客户端可以观察同一 Coder 会话；Space 会同步 provider/model/effort/mode 等共享设置，并通过 Runtime 处理权限 grant、AskUser、队列、Workflow 观察/暂停/恢复/停止、Learning Center 命令、MCP 工具发现/reload 和已配置 External Agent 的 Actor/Turn。Runtime 不可用或能力版本不足时 Coder fail closed，不会在背后重放到 inline owner；Partner 不受该 daemon 可用性影响。
 
-Space 0.1.32 还会核对 daemon 的实际版本，而不只看已经安装的 npm 包：低于 `0.7.72` 的长驻 daemon 会被拒绝并提示重启。Coder Session 会显式保存 Auto LLM 的有效 classifier model（如有配置）和 timeout；未配置时使用 `0.7.72` 的 `20000ms` 默认值。输入 `/auto-denials` 可以查看当前 Runtime 版本、classifier model 和 timeout。若看到的错误文字仍是 `8000ms exceeded`，说明实际执行的仍是升级前进程；若是 `20000ms exceeded`，则表示当前 provider/model 在包含排队、重试等待和完整 side query 的 20 秒 deadline 内没有完成，可配置更快的 `autoMode.classifierModel` 或审视 provider 延迟。
+Space 0.1.32 还会核对 daemon 的实际版本，而不只看已经安装的 npm 包：低于 `0.7.73` 的长驻 daemon 会被拒绝并提示重启。Coder Session 使用 KodaX 的公开 `resolveAutoModeSettings()` 解析 `engine`、classifier model、timeout 与 `speculativeWindowMs`，并把缺失值写入可修订的 Runtime 设置；`0` 是有效的 speculative window 值。未配置时 classifier timeout 为 `20000ms`。输入 `/auto-denials` 可以查看当前 Runtime 版本、classifier model、timeout、speculative window 及不含提示正文的 classifier 时序/终止阶段。若看到 `8000ms exceeded`，说明实际执行的仍是升级前进程；若是 `20000ms exceeded`，则表示当前 provider/model 在包含排队、重试等待和完整 side query 的 20 秒 deadline 内没有完成，可配置更快的 `autoMode.classifierModel` 或审视 provider 延迟。
 
 ## 7. 权限：什么时候该允许
 
@@ -189,7 +189,7 @@ flowchart TD
     N --> S["返回拒绝，任务可调整"]
 ```
 
-不要只看按钮颜色。允许前检查：工具名称、命令、目标路径、是否访问网络、是否会删除/覆盖数据。Auto 不是 OS 安全沙箱，也不是“允许一切”。
+不要只看按钮颜色。允许前检查：工具名称、命令、目标路径、是否访问网络、是否会删除/覆盖数据。`Allow always` 仅在 Runtime 为当前安全操作给出具体授权建议时显示；它只记住所示的精确命令/工作目录/解释器/后台组合，或精确工具/路径范围，危险或动态 shell 操作仍只能单次确认。Auto 不是 OS 安全沙箱，也不是“允许一切”。
 
 ## 8. Composer、附件与排队
 
@@ -417,7 +417,7 @@ flowchart TD
 ## 20. 当前限制与诚实边界
 
 - 当前 `v0.1.32` 源码默认让 Coder 连接 profile-scoped shared daemon；Partner、其工具、权限、知识与交付仍由 Space embedded inline owner 管理，不会迁入 Coder daemon。
-- Runtime Learning Center 的兼容契约已接入，但完整 F118 管理界面尚未交付；Memory Agent 的 0.7.68 起始运行契约继续由正式 0.7.72 保留，完整 F117 桌面管理体验尚未交付。
+- Runtime Learning Center 的兼容契约已接入，但完整 F118 管理界面尚未交付；Memory Agent 的 0.7.68 起始运行契约继续由正式 0.7.73 保留，完整 F117 桌面管理体验尚未交付。
 - Partner 浏览器、通用 Connector、远程任务、桌面电脑控制和自动化尚未交付。
 - External Agent 的本地 Reference Executor 可用；Coder daemon 的 A2A 取决于显式配置与能力协商，MCP Tasks/governed HTTP 尚未作为通用能力开放。
 - Quick Ask 不是完全无 session side query。

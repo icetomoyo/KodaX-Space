@@ -23,13 +23,19 @@ export interface ProviderContextWindowShape {
  * 本 helper 刻意不引 SDK 类型（解耦 + 避开 ESM-only type 麻烦），用 any 承接该 seam。
  */
 export type ResolveContextWindowFn = (
-  config: { enabled: boolean; triggerPercent: number },
+  config: { enabled: boolean; triggerPercent: number; contextWindow?: number },
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   provider: any,
   model: string,
 ) => number;
 
 export type ContextWindowSource = 'provider' | 'fallback';
+
+export interface EffectiveCompactionWindowConfig {
+  readonly enabled: boolean;
+  readonly triggerPercent: number;
+  readonly contextWindow?: number;
+}
 
 export interface ModelContextWindow {
   readonly contextWindow: number;
@@ -50,12 +56,9 @@ export function computeModelContextWindow(
   provider: ProviderContextWindowShape,
   model: string,
   resolveContextWindow: ResolveContextWindowFn,
+  compaction: EffectiveCompactionWindowConfig = { enabled: true, triggerPercent: 100 },
 ): ModelContextWindow {
-  const contextWindow = resolveContextWindow(
-    { enabled: false, triggerPercent: 80 },
-    provider,
-    model,
-  );
+  const contextWindow = resolveContextWindow(compaction, provider, model);
   // source: cw 是 provider-advertised 还是 200k hard fallback？
   //   200k 且 provider 既无 getEffectiveContextWindow 也无 getContextWindow → 纯兜底，标 'fallback'
   //   （renderer 收到 'fallback' 会改用自己的 hardcoded 表，对 custom_* / 未配 key 的 provider 更准）；

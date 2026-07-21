@@ -109,6 +109,22 @@ test('session.history output accepts restored local slash notices', () => {
   );
 });
 
+test('session.history carries persisted compaction token statistics', () => {
+  const parsed = sessionHistoryChannel.output.safeParse({
+    items: [
+      {
+        kind: 'lineage_notice',
+        noticeKind: 'compaction',
+        text: 'summary',
+        tokensBefore: 322_973,
+        tokensAfter: 222_460,
+      },
+    ],
+  });
+
+  assert.equal(parsed.success, true);
+});
+
 test('session local notice persistence channels are registered and bounded', () => {
   for (const name of ['session.localNotice.append', 'session.localNotice.replace'] as const) {
     assert.ok(invokeChannels[name]);
@@ -433,6 +449,30 @@ test('session.send image artifacts reject unknown source values', () => {
     ],
   });
   assert.equal(result.success, false);
+});
+
+test('session.send accepts bounded native attachment paths for model-only context', () => {
+  const result = sessionSendChannel.input.safeParse({
+    sessionId: 's_1',
+    prompt: 'inspect the attached files',
+    attachmentPaths: [
+      { kind: 'file', path: 'D:\\notes\\KodaX Fabric\\design.md' },
+      { kind: 'directory', path: '/Users/alice/Project Notes' },
+    ],
+  });
+  assert.equal(result.success, true);
+
+  assert.equal(
+    sessionSendChannel.input.safeParse({
+      sessionId: 's_1',
+      prompt: 'too many attachments',
+      attachmentPaths: Array.from({ length: 33 }, (_, index) => ({
+        kind: 'file',
+        path: `/tmp/file-${index}`,
+      })),
+    }).success,
+    false,
+  );
 });
 
 test('session.cancel and session.delete have ok-style booleans', () => {

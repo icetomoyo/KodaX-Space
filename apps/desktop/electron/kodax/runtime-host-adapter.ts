@@ -61,6 +61,7 @@ import {
   type ExternalAgentRegistrationSummaryT,
   type ExternalAgentTaskEventT,
   type ExternalAgentTaskT,
+  type SessionEvent,
 } from '@kodax-space/space-ipc-schema';
 import {
   decodeRuntimeActorTaskId,
@@ -74,12 +75,7 @@ import {
 
 export type RuntimeHostMode = 'legacy' | 'runtime';
 export type RuntimeHostState =
-  | 'uninitialized'
-  | 'initializing'
-  | 'legacy'
-  | 'ready'
-  | 'failed'
-  | 'closed';
+  'uninitialized' | 'initializing' | 'legacy' | 'ready' | 'failed' | 'closed';
 export type RuntimeCapabilityOwner = 'runtime' | 'space-bridge' | 'legacy' | 'unavailable';
 export type RuntimeCapabilitySupport = 'supported' | 'partial' | 'unavailable';
 
@@ -103,6 +99,64 @@ export interface RuntimeSessionIdentity {
   readonly projectRoot: string;
   readonly surface: 'code' | 'partner';
   readonly ephemeral: boolean;
+}
+
+function runtimeEventRecord(value: unknown): Readonly<Record<string, unknown>> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Readonly<Record<string, unknown>>)
+    : undefined;
+}
+
+/**
+ * Project Runtime-owned context telemetry into the narrow renderer protocol. The daemon emits
+ * these events as generic records, so every value is validated by the shared session-event schema
+ * before it can affect the context gauge or activity state.
+ */
+export function projectRuntimeContextSessionEvent(
+  event: RuntimeTypedEvent,
+): SessionEvent | undefined {
+  const payload = runtimeEventRecord(event.payload);
+  let candidate: unknown;
+
+  if (event.type === 'run.progress' && payload?.kind === 'iteration_start') {
+    candidate = {
+      kind: 'iteration_start',
+      sessionId: event.sessionId,
+      iter: payload.iter,
+      maxIter: payload.maxIter,
+    };
+  } else if (event.type === 'run.progress' && payload?.kind === 'iteration_end') {
+    const info = runtimeEventRecord(payload.info);
+    if (!info) return undefined;
+    candidate = {
+      kind: 'iteration_end',
+      sessionId: event.sessionId,
+      iter: info.iter,
+      maxIter: info.maxIter,
+      tokenCount: info.tokenCount,
+      ...(info.tokenSource === 'api' || info.tokenSource === 'estimate'
+        ? { tokenSource: info.tokenSource }
+        : {}),
+      ...(info.scope === 'parent' || info.scope === 'worker' ? { scope: info.scope } : {}),
+      ...(runtimeEventRecord(info.usage) ? { usage: info.usage } : {}),
+    };
+  } else if (event.type === 'context.compaction.started') {
+    candidate = { kind: 'compact_start', sessionId: event.sessionId };
+  } else if (event.type === 'context.compaction.stats') {
+    candidate = {
+      kind: 'compact_stats',
+      sessionId: event.sessionId,
+      tokensBefore: payload?.tokensBefore,
+      tokensAfter: payload?.tokensAfter,
+    };
+  } else if (event.type === 'context.compaction.ended') {
+    candidate = { kind: 'compact_end', sessionId: event.sessionId };
+  } else {
+    return undefined;
+  }
+
+  const parsed = sessionEventChannel.payload.safeParse(candidate);
+  return parsed.success ? parsed.data : undefined;
 }
 
 type RuntimeFactory = (options: ConnectKodaXRuntimeOptions) => Promise<KodaXDaemonRuntime>;
@@ -184,7 +238,7 @@ export interface RuntimeHostAdapterOptions {
 }
 
 const MAX_DIAGNOSTIC_ERROR = 512;
-const MINIMUM_KODAX_RUNTIME_VERSION = [0, 7, 72] as const;
+const MINIMUM_KODAX_RUNTIME_VERSION = [0, 7, 73] as const;
 
 export function resolveRuntimeHostMode(value: string | undefined): RuntimeHostMode {
   return value?.trim().toLowerCase() === 'legacy' ? 'legacy' : 'runtime';
@@ -201,7 +255,7 @@ function assertMinimumRuntimeVersion(version: string): void {
     }
   }
   throw new Error(
-    `KodaX Runtime ${version || '(unknown)'} is older than the required 0.7.72 baseline. ` +
+    `KodaX Runtime ${version || '(unknown)'} is older than the required 0.7.73 baseline. ` +
       'Restart the Coder daemon after updating KodaX; Space will not reuse an older daemon.',
   );
 }
@@ -566,7 +620,7 @@ export class RuntimeHostAdapter {
             sharedSessionSettings: 1,
             durableRecoveryQueries: 1,
             daemonManagement: 1,
-            runtimeAutoModeGuardrail: 1,
+            runtimeAutoModeGuardrail: 3,
           },
         });
         pendingRuntime = runtime;
@@ -802,6 +856,7 @@ export class RuntimeHostAdapter {
       'run:control',
       'interaction:respond',
       'permission:respond',
+      'permission:grant-admin',
       'learning:read',
       'learning:control',
       'credential:register',
@@ -890,9 +945,11 @@ export class RuntimeHostAdapter {
       { id: 'runtime.input.after-turn', version: version('afterTurnInput'), available: true },
       {
         id: 'runtime.input.interrupt',
-        version: 1,
-        available: false,
-        reason: 'The connected KodaX Runtime does not advertise interruptInput.',
+        version: version('interruptInput'),
+        available: available('interruptInput'),
+        ...(!available('interruptInput')
+          ? { reason: 'The connected KodaX Runtime does not advertise interruptInput.' }
+          : {}),
       },
       { id: 'runtime.userInput', version: version('askUserTransport'), available: true },
       { id: 'runtime.permissions', version: version('permissionCas'), available: true },
@@ -1141,7 +1198,10 @@ export class RuntimeHostAdapter {
   ): Promise<RuntimeSessionSettingsPatch> {
     if (
       current.autoModeTimeoutMs !== undefined &&
-      (current.autoModeClassifierModel !== undefined || patch.autoModeClassifierModel !== undefined)
+      (current.autoModeClassifierModel !== undefined ||
+        patch.autoModeClassifierModel !== undefined) &&
+      (current.autoModeSpeculativeWindowMs !== undefined ||
+        patch.autoModeSpeculativeWindowMs !== undefined)
     ) {
       return patch;
     }
@@ -1150,10 +1210,13 @@ export class RuntimeHostAdapter {
       defaults = await this.autoModeDefaultsResolver();
     } catch (error) {
       console.warn(
-        '[runtime] Auto LLM defaults load failed; using the KodaX 0.7.72 timeout:',
+        '[runtime] Auto LLM defaults load failed; using the KodaX 0.7.73 defaults:',
         sanitizeDiagnosticError(error),
       );
-      defaults = { engine: 'llm', timeoutMs: KODAX_AUTO_MODE_DEFAULT_TIMEOUT_MS };
+      defaults = {
+        engine: 'llm',
+        timeoutMs: KODAX_AUTO_MODE_DEFAULT_TIMEOUT_MS,
+      };
     }
     return {
       ...patch,
@@ -1164,6 +1227,11 @@ export class RuntimeHostAdapter {
         : {}),
       ...(current.autoModeTimeoutMs === undefined && patch.autoModeTimeoutMs === undefined
         ? { autoModeTimeoutMs: defaults.timeoutMs }
+        : {}),
+      ...(current.autoModeSpeculativeWindowMs === undefined &&
+      patch.autoModeSpeculativeWindowMs === undefined &&
+      defaults.speculativeWindowMs !== undefined
+        ? { autoModeSpeculativeWindowMs: defaults.speculativeWindowMs }
         : {}),
     };
   }
@@ -1481,6 +1549,11 @@ export class RuntimeHostAdapter {
       event.payload !== null && typeof event.payload === 'object'
         ? (event.payload as Readonly<Record<string, unknown>>)
         : undefined;
+    const contextEvent = projectRuntimeContextSessionEvent(event);
+    if (contextEvent) {
+      this.push('session.event', contextEvent);
+      return;
+    }
     if (event.type === 'assistant.delta' && typeof payload?.text === 'string') {
       this.push('session.event', {
         kind: 'text_delta',
@@ -1798,9 +1871,6 @@ export class RuntimeHostAdapter {
     const runtime = await this.requireRuntime();
     await this.assertCoderSession(runtime, input.sessionId);
     await this.ensureObserved(input.sessionId);
-    if (input.delivery === 'interrupt') {
-      throw new Error('The connected KodaX Runtime does not support interrupt delivery.');
-    }
     const previous = await runtime.runs.get(input.afterRunId);
     const registeredCredential = !input.credential
       ? await this.registerCredentialLease(runtime, previous.provider, input.sessionId)
@@ -1861,12 +1931,16 @@ export class RuntimeHostAdapter {
     const runtime = await this.requireRuntime();
     const request = (await runtime.permissions.listPending()).find((item) => item.id === requestId);
     if (!request) return false;
+    const persistentSuggestion = request.grantSuggestions?.find(
+      (suggestion) => suggestion.kind === 'persistent',
+    );
+    if (decision === 'allow_always' && !persistentSuggestion) return false;
     return runtime.permissions.respond(
       requestId,
       decision === 'allow_always'
         ? {
             type: 'allow_always',
-            scope: { toolName: request.toolName, sessionId: request.sessionId },
+            suggestionId: persistentSuggestion!.id,
           }
         : decision === 'allow_once'
           ? { type: 'allow_once' }

@@ -212,6 +212,12 @@ const runtimeInteractionToolCallSchema = z.object({
   operation: z.enum(['read', 'write', 'execute', 'network', 'unknown']).optional(),
   executionCwd: z.string().min(1).max(4096).optional(),
 });
+const runtimePermissionAllowAlwaysScopeSchema = z
+  .object({
+    kind: z.literal('runtime_persistent'),
+    label: z.string().min(1).max(512),
+  })
+  .strict();
 const runtimePermissionRequestSchema = z.object({
   reqId: idSchema,
   sessionId: idSchema,
@@ -219,6 +225,7 @@ const runtimePermissionRequestSchema = z.object({
   reason: z.string().max(512),
   toolCall: runtimeInteractionToolCallSchema,
   suggestedPattern: z.string().min(1).max(512).optional(),
+  allowAlwaysScope: runtimePermissionAllowAlwaysScopeSchema.optional(),
 });
 const runtimeAskUserSignalSchema = z.object({
   type: z.string().min(1).max(64),

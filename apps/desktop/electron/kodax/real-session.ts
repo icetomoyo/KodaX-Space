@@ -404,25 +404,43 @@ export class RealKodaXSession implements ManagedSession {
         // missing or stale. Reconcile before attaching a continuation; a fresh run
         // performs the same one-time reconciliation at its execution boundary.
         await this.syncRuntimeSessionSettings();
-        // Daemon continuations currently expose only after-turn delivery. This is
-        // especially important after Space reconnects: the active run lives in the
-        // daemon, so there is no in-process interrupt queue to target. Treat an
-        // interrupt request as best-effort and preserve the prompt by queueing it
-        // after the recovered run instead of rejecting it at the IPC boundary.
-        if (options?.promptOverlay) {
-          throw new Error('A prompt overlay cannot be attached to a daemon continuation.');
-        }
+        // Preserve the delivery mode selected by the user. In particular, normal
+        // Enter means interrupt while Ctrl/Cmd+Enter means after-turn. A Runtime
+        // that does not advertise interruptInput must reject that request
+        // factually; silently creating an after-turn continuation changes both the
+        // delivery boundary and batching semantics.
+        // Daemon after-turn inputs do not expose per-input prompt overlays yet.
+        // Preserve attachment/Partner context by placing the overlay beside the
+        // queued prompt only on this compatibility path. Fresh runs and the
+        // embedded queue keep it in system context via options.context.
+        const continuationPrompt = options?.promptOverlay
+          ? `${prompt}\n\n${options.promptOverlay}`
+          : prompt;
+        const queueMode = options?.queueMode ?? 'interrupt';
+        const delivery = queueMode === 'after-turn' ? 'after_turn' : 'interrupt';
         const result = await runtimeHostAdapter.submitInput({
           sessionId: this.sessionId,
           afterRunId: activeRunId,
-          delivery: 'after_turn',
-          input: this.buildRuntimeInput(prompt, artifacts),
+          delivery,
+          input: this.buildRuntimeInput(continuationPrompt, artifacts),
         });
         if (!result.accepted) {
-          throw new Error(`The daemon rejected the after-turn input: ${result.reason}.`);
+          if (delivery === 'interrupt' && result.reason === 'unsupported_capability') {
+            throw new Error(
+              'The connected KodaX Runtime does not support mid-turn interrupt input. ' +
+                'Use Ctrl/Cmd+Enter to queue after the current turn.',
+            );
+          }
+          throw new Error(`The daemon rejected the ${queueMode} input: ${result.reason}.`);
+        }
+        if (result.delivery !== delivery) {
+          throw new Error(
+            `The daemon changed input delivery from ${delivery} to ${result.delivery}; ` +
+              'the prompt was not accepted with altered semantics.',
+          );
         }
         this.lastActivityAt = Date.now();
-        return { queued: true, queueId: result.runId, queueMode: 'after-turn' };
+        return { queued: true, queueId: result.runId, queueMode };
       }
       this.startRun(prompt, artifacts, options?.promptOverlay);
       return { queued: false };
@@ -457,14 +475,12 @@ export class RealKodaXSession implements ManagedSession {
   ): readonly RuntimeInput[] {
     return [
       { type: 'text', text: prompt },
-      ...(artifacts ?? []).map(
-        (artifact): RuntimeInput => ({
-          type: 'image',
-          path: artifact.path,
-          mediaType: artifact.mediaType,
-          source: artifact.source,
-        }),
-      ),
+      ...(artifacts ?? []).map((artifact): RuntimeInput => ({
+        type: 'image',
+        path: artifact.path,
+        mediaType: artifact.mediaType,
+        source: artifact.source,
+      })),
     ];
   }
 

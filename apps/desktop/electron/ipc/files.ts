@@ -20,6 +20,7 @@ import {
   truncate,
 } from './files-core.js';
 import { MAX_TREE_NODES } from '@kodax-space/space-ipc-schema';
+import { projectWebPreviewRegistry } from '../window/project-web-preview.js';
 
 // 重新导出给 session adapter / mock-session 写入 diff cache 用
 export const recordDiff = recordDiffCore;
@@ -30,9 +31,7 @@ export function registerFilesChannels(): void {
     // F005 v0.1.5：必须是 allowlist 项目（用户显式打开过）
     const validatedRoot = await projectStore.assertAllowed(input.projectRoot);
     const realRoot = await fs.realpath(validatedRoot);
-    const startDir = input.subPath
-      ? await resolveInsideProject(realRoot, input.subPath)
-      : realRoot;
+    const startDir = input.subPath ? await resolveInsideProject(realRoot, input.subPath) : realRoot;
     const depth = input.depth ?? 1;
     const counter = { count: 0 };
     const tree = await walkTree(realRoot, startDir, depth, counter);
@@ -78,6 +77,16 @@ export function registerFilesChannels(): void {
     const validatedRoot = await projectStore.assertAllowed(input.projectRoot);
     const absPath = await resolveInsideProject(validatedRoot, input.path);
     return await statPath(absPath);
+  });
+
+  // files.webPreview - capability-scoped dynamic HTML preview, independent of Session/Artifact.
+  registerChannel('files.webPreview', async (input) => {
+    const validatedRoot = await projectStore.assertAllowed(input.projectRoot);
+    return await projectWebPreviewRegistry.create({
+      projectRoot: validatedRoot,
+      entryPath: input.path,
+      networkAccess: input.networkAccess,
+    });
   });
 
   // files.diff

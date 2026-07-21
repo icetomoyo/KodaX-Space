@@ -122,6 +122,7 @@ import {
   filesReadChannel,
   filesReadBinaryChannel,
   filesStatChannel,
+  filesWebPreviewChannel,
   filesDiffChannel,
 } from './files.js';
 import {
@@ -356,6 +357,7 @@ export const invokeChannels = {
   [filesReadChannel.name]: filesReadChannel,
   [filesReadBinaryChannel.name]: filesReadBinaryChannel,
   [filesStatChannel.name]: filesStatChannel,
+  [filesWebPreviewChannel.name]: filesWebPreviewChannel,
   [filesDiffChannel.name]: filesDiffChannel,
   [partnerSourcesListChannel.name]: partnerSourcesListChannel,
   [partnerSourcesAddChannel.name]: partnerSourcesAddChannel,
