@@ -7,6 +7,7 @@ import type { ConversationMessage } from '../composeMessages.js';
 import { Markdown } from './Markdown.js';
 import { Caret } from '../../../components/Caret.js';
 import { Collapse } from '../../../components/Collapse.js';
+import { FileNameText } from '../../../components/FileNameText.js';
 import { EASE_EXPO, usePrefersReducedMotion } from '../../../lib/motion.js';
 import { openFileSmart, looksLikeFilePath } from '../../../lib/openPath.js';
 import { parseFileReferences, type ParsedFileReference } from '../../../lib/fileReferences.js';
@@ -251,7 +252,7 @@ function FileReferenceLink({ file }: { file: ParsedFileReference }): JSX.Element
     >
       <FileText className="h-3.5 w-3.5 shrink-0 text-info/75" strokeWidth={1.8} aria-hidden />
       <span className="min-w-0 max-w-[360px]">
-        <span className="block truncate text-[12px] font-medium leading-4">{file.label}</span>
+        <FileNameText name={file.label} className="text-[12px] font-medium leading-4" />
         <span className="block truncate text-[10px] leading-3 text-info/70">{file.detail}</span>
       </span>
     </button>
@@ -648,9 +649,9 @@ export function ToolCallCard({
                 type="button"
                 onClick={() => void openFileSmart(pathArg)}
                 title={t('markdown.openInlinePath', { path: pathArg })}
-                className="min-w-0 flex-1 text-left truncate text-info/80 hover:text-info underline decoration-info/40 underline-offset-2 cursor-pointer"
+                className="min-w-0 flex-1 text-left text-info/80 hover:text-info underline decoration-info/40 underline-offset-2 cursor-pointer"
               >
-                {pathArg}
+                <FileNameText name={pathArg} />
               </button>
             )}
             <StatusBadge status={status} />

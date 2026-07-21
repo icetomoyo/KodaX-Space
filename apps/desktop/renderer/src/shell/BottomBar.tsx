@@ -45,9 +45,10 @@ import { NotificationsSurface } from './NotificationsSurface.js';
 import { pushToast } from '../store/toastStore.js';
 import { sessionMatchesScope } from '../lib/sessionScope.js';
 import { shouldActivateSessionForCurrentScope } from '../lib/sessionActivation.js';
-import { compactPathForDisplay } from '../lib/fileReferences.js';
+import { collectAbsoluteAttachmentPaths, compactPathForDisplay } from '../lib/fileReferences.js';
 import { KodaXDogMascot } from '../components/KodaXDogMascot.js';
 import { KodaXDogSpriteMascot } from '../components/KodaXDogSpriteMascot.js';
+import { FileNameText } from '../components/FileNameText.js';
 import { useI18n } from '../i18n/I18nProvider.js';
 import type { MessageKey } from '../i18n/messages.js';
 import {
@@ -572,6 +573,7 @@ export function BottomBar(): JSX.Element {
   );
   const [prompt, setPrompt] = useState('');
   const [busy, setBusy] = useState(false);
+  const [busySlashName, setBusySlashName] = useState<string | null>(null);
   const [isAttaching, setIsAttaching] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [attachOpen, setAttachOpen] = useState(false);
@@ -943,7 +945,7 @@ export function BottomBar(): JSX.Element {
         }
         saved.push({
           path: r.data.path,
-          mediaType,
+          mediaType: r.data.mediaType,
           source,
           bytes: r.data.bytes,
           dataUrl: `data:${mediaType};base64,${base64}`,
@@ -1168,21 +1170,29 @@ export function BottomBar(): JSX.Element {
     }
     const pendingWorkflowMessage = workflowPendingMessage(name, args, t);
     const optimisticWorkflow = pendingWorkflowMessage !== null;
+    const immediateEcho = optimisticWorkflow || name === 'compact';
     const commandEcho = slashEchoText(name, args);
     setBusy(true);
+    setBusySlashName(name);
     setErr(null);
-    if (optimisticWorkflow) {
+    if (immediateEcho) {
       appendUserMessage(sessionId, commandEcho);
+    }
+    if (optimisticWorkflow) {
       appendWorkflowNotice(sessionId, `[workflow] ${pendingWorkflowMessage}`);
     }
     try {
-      const result = await invokeComposerIpc('slash.exec', {
-        sessionId,
-        name,
-        args,
-        ...(currentProjectPath ? { expectedProjectRoot: currentProjectPath } : {}),
-        expectedSurface: currentSurface,
-      });
+      const result = await invokeComposerIpc(
+        'slash.exec',
+        {
+          sessionId,
+          name,
+          args,
+          ...(currentProjectPath ? { expectedProjectRoot: currentProjectPath } : {}),
+          expectedSurface: currentSurface,
+        },
+        name === 'compact' ? { timeoutMs: null } : {},
+      );
       if (!result.ok) {
         if (optimisticWorkflow) {
           appendWorkflowNotice(
@@ -1206,7 +1216,7 @@ export function BottomBar(): JSX.Element {
       }
       if (echo && message) {
         // F031: show the command and the handler feedback in the conversation stream.
-        if (!optimisticWorkflow) appendUserMessage(sessionId, commandEcho);
+        if (!immediateEcho) appendUserMessage(sessionId, commandEcho);
         if (!clearStream) {
           if (optimisticWorkflow) appendWorkflowNotice(sessionId, message);
           else appendUserMessage(sessionId, message);
@@ -1222,6 +1232,7 @@ export function BottomBar(): JSX.Element {
         if (optimisticWorkflow) appendWorkflowNotice(sessionId, message);
       }
     } finally {
+      setBusySlashName(null);
       setBusy(false);
     }
   }
@@ -1287,7 +1298,7 @@ export function BottomBar(): JSX.Element {
       let lastIter = 0;
       let maxIter = 0;
       for (const ev of events) {
-        if (ev.kind === 'iteration_end') {
+        if (ev.kind === 'iteration_end' && ev.contextKind !== 'child') {
           const e = ev as {
             iter?: number;
             maxIter?: number;
@@ -2057,6 +2068,11 @@ export function BottomBar(): JSX.Element {
     try {
       const sid = await ensureSession();
       if (!sid) return;
+      const attachmentPathsForSend = collectAbsoluteAttachmentPaths(
+        effectivePrompt,
+        pendingFileRefs,
+        window.kodaxSpace.platform,
+      );
       const partnerSourcesForOverlay =
         currentSurface === 'partner' ? await attachPendingPartnerSourcesForSend(sid) : null;
       if (currentSurface === 'partner' && partnerSourcesForOverlay === null) return;
@@ -2174,6 +2190,9 @@ export function BottomBar(): JSX.Element {
         ...(currentProjectPath ? { expectedProjectRoot: currentProjectPath } : {}),
         expectedSurface: currentSurface,
         ...(partnerPromptOverlay ? { partnerPromptOverlay } : {}),
+        ...(attachmentPathsForSend.length > 0
+          ? { attachmentPaths: [...attachmentPathsForSend] }
+          : {}),
         ...(artifactsForSend ? { artifacts: artifactsForSend } : {}),
       };
       const result = await invokeComposerIpc('session.send', sendPayload, {
@@ -2273,7 +2292,7 @@ export function BottomBar(): JSX.Element {
   }
 
   function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>): void {
-    if (e.key === 'Escape' && isStreaming && !slashMode && !attachOpen) {
+    if (e.key === 'Escape' && isStreaming && !compactingSlash && !slashMode && !attachOpen) {
       e.preventDefault();
       handleCancel();
       return;
@@ -2327,6 +2346,8 @@ export function BottomBar(): JSX.Element {
   }
 
   const isStreaming = useIsStreaming();
+  const compactingSlash = busy && busySlashName === 'compact';
+  const composerReadOnly = busy && !compactingSlash;
   const mascotInputActive =
     prompt.trim().length > 0 || pendingImages.length > 0 || pendingFileRefs.length > 0;
   const mascotInputActivityKey = `${prompt.length}:${pendingImages.length}:${pendingFileRefs.length}`;
@@ -2415,7 +2436,7 @@ export function BottomBar(): JSX.Element {
                         alt={img.label}
                         className="w-7 h-7 rounded object-cover flex-shrink-0"
                       />
-                      <span className="max-w-[120px] truncate">{img.label}</span>
+                      <FileNameText name={img.label} className="max-w-[120px]" />
                       <span className="text-fg-muted">{formatBytes(img.bytes)}</span>
                       <button
                         type="button"
@@ -2446,9 +2467,10 @@ export function BottomBar(): JSX.Element {
                       >
                         <Icon className="w-3.5 h-3.5 text-fg-muted flex-shrink-0" />
                         <span className="min-w-0 max-w-[220px]">
-                          <span className="block truncate font-medium text-fg-secondary">
-                            {file.name}
-                          </span>
+                          <FileNameText
+                            name={file.name}
+                            className="font-medium text-fg-secondary"
+                          />
                           <span className="block truncate text-[11px] text-fg-muted">{detail}</span>
                         </span>
                         {file.bytes !== undefined && (
@@ -2508,7 +2530,7 @@ export function BottomBar(): JSX.Element {
                 });
               }}
               onPaste={(e) => {
-                if (busy) {
+                if (composerReadOnly) {
                   e.preventDefault();
                   return;
                 }
@@ -2524,12 +2546,12 @@ export function BottomBar(): JSX.Element {
                 e.preventDefault();
                 startAttachmentOperation(attachNativeClipboardImage);
               }}
-              aria-disabled={busy}
-              readOnly={busy}
+              aria-disabled={composerReadOnly}
+              readOnly={composerReadOnly}
               rows={2}
               placeholder={placeholderText}
               className={`w-full bg-transparent text-sm text-fg-primary placeholder-fg-muted resize-none focus:outline-none px-0.5 py-1 pr-28 ${
-                busy ? 'opacity-70 cursor-wait' : ''
+                composerReadOnly ? 'opacity-70 cursor-wait' : ''
               }`}
             />
             <div className="absolute right-1 bottom-1 pointer-events-auto flex items-center gap-2">
@@ -2620,7 +2642,7 @@ export function BottomBar(): JSX.Element {
             <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">
               <ContextWindowIndicator />
               <ModelEffortSelector />
-              {isStreaming ? (
+              {isStreaming && !compactingSlash ? (
                 <button
                   type="button"
                   onClick={() => void handleCancel()}

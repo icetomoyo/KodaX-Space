@@ -1,6 +1,6 @@
 # Known Issues
 
-Last Updated: 2026-07-20
+Last Updated: 2026-07-21
 
 > Historical issue details are preserved as investigation evidence. The current package/source baseline is v0.1.32 release preparation. Start from the [documentation hub](README.md) for current behavior and status.
 
@@ -66,9 +66,22 @@ Last Updated: 2026-07-20
 | 056 | High     | Resolved | Restored daemon Sessions lost Auto mode, exposed an unwired plan exit, and reset AskUser choices                            | v0.1.32 development   | 2026-07-17 |
 | 057 | High     | Resolved | Auto LLM sent an empty classifier model after daemon observation erased the provider default                                | v0.1.32 development   | 2026-07-19 |
 | 058 | High     | Resolved | Auto LLM diagnosis exposed a stale 8-second process while Space did not seed daemon classifier defaults                     | v0.1.32 development   | 2026-07-19 |
-| 059 | Medium   | Open     | KodaX Runtime does not publish complete effective Auto LLM settings or timeout-phase telemetry                              | KodaX 0.7.72          | 2026-07-19 |
+| 059 | Medium   | Resolved | KodaX Runtime does not publish complete effective Auto LLM settings or timeout-phase telemetry                              | KodaX 0.7.72          | 2026-07-19 |
 | 060 | High     | Resolved | Space restart during daemon run admission aborted the accepted Coder run and startup health failures did not reconnect      | v0.1.32 development   | 2026-07-20 |
 | 061 | High     | Resolved | No-Session File Viewer calls `artifact.previewFile` without legacy-required Session fields and cannot open project files    | v0.1.32 development   | 2026-07-20 |
+| 062 | Medium   | Resolved | Composer sent renderer `file://` attachment links to the model instead of exact native filesystem paths                     | v0.1.30               | 2026-07-20 |
+| 063 | Medium   | Resolved | Pasted image normalization could send JPEG bytes with a stale PNG media type and make mixed image attachments fail          | v0.1.32-hotfix.0      | 2026-07-20 |
+| 064 | Medium   | Resolved | Space ignored Runtime-issued concrete permission grants, so Always allow was absent or rejected                             | KodaX 0.7.73 adoption | 2026-07-20 |
+| 065 | Medium   | Resolved | Project Files sidebar hides file extensions and keeps a stale directory tree                                                | v0.1.32               | 2026-07-21 |
+| 066 | Medium   | Resolved | Changes panel displayed non-ASCII Git paths as octal escapes and could not open their diffs                                 | v0.1.4                | 2026-07-21 |
+| 067 | Medium   | Resolved | Partner project-file rows select an attachment target but do not open the file viewer                                       | v0.1.32               | 2026-07-21 |
+| 068 | High     | Resolved | Project HTML preview loses relative assets and hides sandbox/runtime failures that work in a browser                        | v0.1.32               | 2026-07-21 |
+| 069 | High     | Resolved | Coder daemon converted interrupt follow-ups into separate sequential after-turn runs                                        | v0.1.32 development   | 2026-07-21 |
+| 070 | High     | Resolved | Large or dependency-backed HTML Artifacts can be misclassified as static and render blank or incomplete                     | v0.1.32               | 2026-07-21 |
+| 071 | High     | Resolved | Daemon compaction telemetry is dropped, so `/compact` appears frozen and context usage grows past a stale threshold         | v0.1.32 development   | 2026-07-21 |
+| 072 | High     | Resolved | E2E cleanup hangs until timeout because the isolated shared daemon keeps Electron test pipes open                           | v0.1.32 development   | 2026-07-21 |
+| 073 | Medium   | Resolved | Artifact HTML E2E scenarios focus Session-owned Artifacts before creating a Session                                         | v0.1.32 development   | 2026-07-21 |
+| 074 | High     | Resolved | Artifact bootstrap CSP blocks Blob workers that the in-document preview policy explicitly allows                            | v0.1.32 development   | 2026-07-21 |
 
 ## Issue Details
 
@@ -3599,9 +3612,11 @@ Verification:
 ### 059: KodaX Runtime does not publish complete effective Auto LLM settings or timeout-phase telemetry
 
 - Priority: Medium
-- Status: Open
+- Status: Resolved
 - Introduced: KodaX 0.7.72
+- Fixed: KodaX 0.7.73 / v0.1.32 development
 - Created: 2026-07-19
+- Resolution Date: 2026-07-20
 
 #### Original Problem
 
@@ -3647,14 +3662,37 @@ Expected upstream behavior:
   last observable request phase. The classifier span should cover the actual
   side query, not only the final guardrail decision.
 
-#### Current Space Mitigation
+#### Resolution
 
-- Space 0.1.32 checks the daemon identity version, parses only the currently
-  supported engine/classifier/timeout fields, explicitly writes the 20-second
-  default, and exposes those effective values through `/auto-denials`.
-- Space cannot infer queue/first-token/retry phase from the current SDK result
-  without patching KodaX internals, and deliberately does not claim support for
-  a per-Session file-configured speculative window that Runtime does not expose.
+KodaX 0.7.73 closes the public-contract gaps:
+
+- The root and REPL entries export the pure typed
+  `resolveAutoModeSettings()` resolver, and `loadConfig().autoMode` is declared.
+- Runtime Session settings now carry `autoModeSpeculativeWindowMs`, including
+  the meaningful value `0`.
+- `runtimeAutoModeGuardrail` v2 publishes effective timeout/window defaults,
+  bounded-input and diagnostics metadata; the concrete-grant contract extends
+  the current daemon to v3. Capability negotiation is monotonic and safely
+  upgrades only an idle old daemon.
+- Public side-query results include provider, model, configured timeout,
+  elapsed time, retry count/wait, first-output/stream timing and terminal phase.
+  Timeout reasons and spans now cover the awaited classifier operation.
+
+Space now consumes the SDK resolver instead of maintaining a compatibility
+parser, projects the speculative window into revisioned Session settings, and
+requires guardrail v3 plus the 0.7.73 Runtime baseline.
+
+Verification:
+
+- Resolver precedence/default and `speculativeWindowMs: 0` regressions pass.
+- Session CAS tests cover configured speculative-window propagation and
+  preservation of a concurrent daemon value.
+- The published-package compatibility probe confirms the 0.7.73 daemon and
+  guardrail v3 contract across processes.
+- The npm-published 0.7.73 build includes KodaX commits `a6f022f0` and
+  `bab0c689`: omitted Auto engines resolve to `llm`, persisted engines are not
+  overwritten by a fresh REPL, configured classifier models remain observable,
+  and the Space public-API probe needs no client-side fallback.
 
 ### 060: Space restart during daemon run admission aborted the accepted Coder run and startup health failures did not reconnect
 
@@ -3805,12 +3843,989 @@ Verification:
   exposes no Artifact UI, and shows no schema-validation/preview error. The later
   runner timeout occurs only in the existing `Close context` cleanup step.
 
+### 062: Composer sent renderer `file://` attachment links to the model instead of exact native filesystem paths
+
+- Priority: Medium
+- Status: Resolved
+- Introduced: v0.1.30
+- Fixed: v0.1.32 development
+- Created: 2026-07-20
+- Resolution Date: 2026-07-20
+
+#### Original Problem
+
+Dragging a non-image file into the composer produced a useful clickable chip in
+the user message, but the first model turn received that same Markdown
+`file://` URL as its only file reference. The model then had to infer a local
+filesystem path from a URL-encoded display value. On Windows this could turn a
+drive path or UNC path into the wrong slash/root form; spaces and non-ASCII
+segments made the failure more visible. macOS and Linux used a different POSIX
+absolute-path shape and depended on the same guesswork.
+
+Expected behavior:
+
+- The transcript keeps the clickable attachment link and compact chip.
+- The model receives the exact native absolute path returned by Electron.
+- Windows drive paths, Windows UNC paths, macOS paths, and Linux paths retain
+  their platform-native spelling and separators.
+- Retrying a restored attachment link recovers the native path again.
+
+#### Root Cause
+
+The renderer used one `effectivePrompt` for two different concerns: transcript
+presentation and model filesystem context. Space passed that prompt unchanged
+through `session.send`; the SDK did not rewrite the path. The defect was
+therefore in the Space composer/IPC boundary, not in KodaX SDK path handling.
+
+#### Resolution
+
+- Keep the existing `file://` Markdown link only in the visible and persisted
+  user prompt.
+- Send bounded structured attachment paths over `session.send`, validate that
+  they are absolute in the Electron main process, and render them as a JSON
+  model-only prompt overlay.
+- Recover native paths from restored file links when the transient attachment
+  state no longer exists.
+- Preserve the overlay through fresh daemon runs and embedded follow-up queues;
+  for a daemon after-turn continuation, include it beside that queued input
+  because the current daemon input API has no per-input overlay field.
+
+Files changed:
+
+- `apps/desktop/renderer/src/shell/BottomBar.tsx`
+- `apps/desktop/renderer/src/lib/fileReferences.ts`
+- `packages/space-ipc-schema/src/channels/session.ts`
+- `apps/desktop/electron/ipc/session.ts`
+- `apps/desktop/electron/kodax/attachment-path-overlay.ts`
+- `apps/desktop/electron/kodax/real-session.ts`
+- related schema, path, overlay, and daemon-queue tests
+
+Verification:
+
+- Cross-platform path regressions cover Windows drive and UNC paths, macOS,
+  Linux, spaces, Unicode, and restored file links.
+- TypeScript and the full desktop test suite pass.
+
+### 063: Pasted image normalization could send JPEG bytes with a stale PNG media type and make mixed image attachments fail
+
+- Priority: Medium
+- Status: Resolved
+- Introduced: v0.1.32-hotfix.0
+- Fixed: v0.1.32 development
+- Created: 2026-07-20
+- Resolution Date: 2026-07-20
+
+#### Original Problem
+
+A customer pasted one image from the OS clipboard, selected another image with
+the file picker, and received an image-format error after sending both. Sending
+the same turn with two file-picker images succeeded. The failure was especially
+likely for large clipboard bitmaps exposed as PNG.
+
+Expected behavior:
+
+- Paste, drag/drop, and file-picker images can be mixed in one request.
+- The media type sent to KodaX matches the bytes persisted by Space.
+- SDK normalization from PNG or WebP to JPEG remains transparent to the user.
+
+#### Root Cause
+
+Space correctly called `normalizePastedImage` and chose the persisted file
+extension from the normalized result. However, `clipboard.saveImage` returned
+only the path and byte count. The renderer therefore retained the source
+clipboard MIME type. When normalization changed a large PNG bitmap to JPEG,
+Space sent JPEG bytes while declaring the artifact as `image/png`; the provider
+could then reject or fail to decode it. KodaX SDK already returned the canonical
+media type and supported multi-image PNG/JPEG input, so no SDK change was
+required.
+
+#### Resolution
+
+- Make the `clipboard.saveImage` output contract require the final persisted
+  `mediaType`.
+- Return the canonical media type from the main-process normalization handler.
+- Build pending and outgoing image artifacts from that returned type instead of
+  the original renderer MIME type.
+- Keep the original base64/MIME pair only for the local composer preview.
+
+Files changed:
+
+- `packages/space-ipc-schema/src/channels/clipboard.ts`
+- `apps/desktop/electron/ipc/clipboard.ts`
+- `apps/desktop/renderer/src/shell/BottomBar.tsx`
+- `packages/space-ipc-schema/test/registry.test.ts`
+- `apps/desktop/electron/test/clipboard-save-image.test.ts`
+
+Verification:
+
+- Handler regressions cover PNG output, PNG-to-JPEG normalization, and the
+  normalization-failure WebP fallback.
+- IPC schema regression rejects save responses that omit the final media type.
+- Full schema and desktop test suites, renderer strict TypeScript checking, and
+  the desktop production build pass.
+
+### 064: Space ignored Runtime-issued concrete permission grants, so Always allow was absent or rejected
+
+- Priority: Medium
+- Status: Resolved
+- Introduced: KodaX 0.7.73 adoption
+- Fixed: v0.1.32 development
+- Created: 2026-07-20
+- Resolution Date: 2026-07-20
+
+#### Original Problem
+
+Coder Runtime permission dialogs showed only one-time execution and cancel, or
+could submit an Always-allow response that the upgraded Runtime rejected. The
+UI could not honestly tell the user which future operation would be remembered.
+
+Expected behavior:
+
+- Show Always allow only when Runtime offers a safe persistent candidate.
+- Remember the exact normalized command/cwd/shell/background combination or
+  the exact normalized tool/path scope, never an entire shell tool.
+- Keep dangerous, dynamic-shell and unsupported generic calls one-time only.
+
+#### Root Cause
+
+KodaX 0.7.73 introduced Runtime-issued `grantSuggestions` with opaque IDs and
+concrete matchers. Space ignored those suggestions and constructed the
+deprecated broad `{ toolName, sessionId }` scope itself. That widened the
+operator's intent and no longer matched the Runtime-issued candidate, so the
+new SDK correctly rejected it.
+
+#### Resolution
+
+- Require the 0.7.73 Runtime, guardrail v3 and `permission:grant-admin` scope.
+- Project only the bounded, redacted label of a Runtime persistent suggestion
+  to the renderer; keep its opaque ID in Electron main.
+- On approval, re-read the pending request and return exactly the Runtime-issued
+  persistent suggestion ID. Fail closed if it is absent or expired.
+- Hide Always allow when Runtime omits a persistent candidate or Space's
+  independent risk assessment marks the command dangerous.
+- Display Runtime grant labels in permission settings and add the new Qwen
+  Token Plan provider metadata shipped by the same SDK update.
+
+Verification:
+
+- Projection/UI tests cover safe, session-only and dangerous requests.
+- Adapter tests prove the opaque suggestion ID is returned unchanged and no
+  response is sent without a persistent candidate.
+- A real 0.7.73 Runtime probe creates an `exact-command` persistent grant for
+  `npm test`; its matcher contains only a fingerprint, not the raw command.
+- The npm-published 0.7.73 tarball (SHA-256
+  `D7CF6F22F70FAEA192E9A5439AC98DF97B909F47A8062FF7764DA333D61F3330`)
+  reuses that exact grant, offers no persistent candidate for dynamic
+  PowerShell, and no longer authorizes concrete calls through matcherless
+  legacy grants.
+- Shared-daemon compatibility tests confirm guardrail v3 and grant-admin scope.
+
+### 065: Project Files sidebar hides file extensions and keeps a stale directory tree
+
+- Priority: Medium
+- Status: Resolved
+- Introduced: v0.1.32
+- Created: 2026-07-21
+- Fixed: v0.1.32 development
+- Resolution Date: 2026-07-21
+
+#### Original Problem
+
+Current behavior:
+
+- Every long file and directory name uses the same trailing ellipsis treatment.
+- Long file names therefore hide the final extension, making similarly named Markdown, PDF, Office, and other files hard to distinguish.
+- The Project Files tree loads only when the project changes. Expanded directories retain their first lazy-load result indefinitely.
+- There is no visible refresh action; users must leave the panel and return to force a new tree instance.
+
+Expected behavior:
+
+- A truncated file name keeps the complete suffix after its final dot visible.
+- A directory name may keep the conventional leading-name truncation because it has no file-type suffix.
+- A visible refresh button reloads the root and every currently expanded directory without collapsing the user's navigation state.
+- File-producing tool completions refresh promptly, while focus/visibility changes and bounded polling recover external filesystem changes.
+
+Reproduction steps:
+
+1. Open Project Files for a project containing several long, similarly prefixed file names with different extensions.
+2. Observe that the narrow sidebar hides the extensions.
+3. Create, rename, or remove a file while the panel remains open.
+4. Observe that the tree and expanded-directory cache remain unchanged until leaving and reopening the panel.
+
+#### Context
+
+Affected components:
+
+- `apps/desktop/renderer/src/features/code/FileTree.tsx`
+- `apps/desktop/renderer/src/shell/popouts/FilesPanel.tsx`
+
+#### Root Cause
+
+`FileTreeNode` renders every node name through one Tailwind `truncate` span, without separating a file's basename from its extension. `FileTree` requests the root only from a project-change effect and lazy-loads each directory once into `childrenCache`; no refresh signal can invalidate or repopulate either data source.
+
+#### Proposed Solution
+
+- Add a pure label model that splits files at the final dot while leaving directories intact.
+- Render the basename as the flexible truncated segment and the extension as the fixed trailing segment.
+- Add a refresh token to `FileTree`; on change, reload the root and currently expanded directories while preserving expansion.
+- Add a refresh control to Project Files and advance the token after relevant tool results, focus/visibility recovery, and a fallback interval.
+
+#### Resolution
+
+- Added a shared file-tree label model that keeps the complete suffix after the final dot visible while the basename truncates. Directories, dotfiles, and extensionless files retain the conventional leading-name treatment.
+- Added a visible refresh button to Project Files. Refreshing reloads the root and all expanded directories without collapsing the tree, and generation guards prevent stale requests from overwriting newer results.
+- Added automatic refresh after file-mutating tool results, on window focus or visibility recovery, and through a ten-second visible-panel fallback interval. Search results use the same refresh signal.
+
+Files changed:
+
+- `apps/desktop/renderer/src/features/code/fileTreeModel.ts`
+- `apps/desktop/renderer/src/features/code/FileTree.tsx`
+- `apps/desktop/renderer/src/shell/popouts/FilesPanel.tsx`
+- `apps/desktop/electron/test/file-tree-model.test.ts`
+
+Verification:
+
+- File-tree model tests pass, including final-extension preservation and expanded-directory refresh planning.
+- The focused file test suite passes (41 tests).
+- Desktop renderer TypeScript, targeted ESLint and Prettier checks, and the production renderer build pass.
+
+### 066: Changes panel displayed non-ASCII Git paths as octal escapes and could not open their diffs
+
+- Priority: Medium
+- Status: Resolved
+- Introduced: v0.1.4
+- Created: 2026-07-21
+- Fixed: v0.1.32 development
+- Resolution Date: 2026-07-21
+
+#### Original Problem
+
+The Changes panel displayed Chinese file names as quoted octal escape sequences,
+for example `"docs/\345\237\272...txt"`, instead of their actual names. The same
+escaped text was retained as the file path, so selecting the entry could not load
+the corresponding diff.
+
+Expected behavior:
+
+- Changes displays the exact repository-relative file name.
+- Unicode paths and paths containing spaces remain valid inputs to file diff.
+- Renames display and open the destination path.
+
+#### Root Cause
+
+`project.gitChanges` parsed the newline-delimited output of
+`git status --porcelain=v1 -b` as if every path were literal. Git's default
+`core.quotePath` behavior C-quotes non-ASCII bytes, while paths requiring quotes
+also retain surrounding quote syntax. The renderer therefore received display
+syntax rather than a filesystem path.
+
+#### Resolution
+
+- Request porcelain v1 with `-z`, Git's NUL-delimited machine format, so paths
+  are emitted as raw UTF-8 without C-style quoting.
+- Parse NUL-delimited records and consume the extra source-path record emitted
+  for rename/copy entries while retaining the destination path.
+- Keep the existing file-count, path-length, traversal, and NUL safety bounds.
+
+Files changed:
+
+- `apps/desktop/electron/ipc/project-git-changes.ts`
+- `apps/desktop/electron/ipc/project.ts`
+- `apps/desktop/electron/test/project-git-changes.test.ts`
+
+Verification:
+
+- Real Git repository regressions cover an untracked Chinese path containing
+  spaces and a staged Chinese rename.
+- Strict TypeScript, targeted ESLint, and Prettier checks pass.
+- The previously failing Session test and the new Git regressions pass together
+  after restoring the test environment's Node-native SQLite ABI.
+
+### 067: Partner project-file rows select an attachment target but do not open the file viewer
+
+- Priority: Medium
+- Status: Resolved
+- Introduced: v0.1.32
+- Created: 2026-07-21
+- Fixed: v0.1.32 development
+- Resolution Date: 2026-07-21
+
+#### Original Problem
+
+Current behavior:
+
+- Clicking a file in the Project Materials file tree at the bottom-left of Partner only changes the orange selection state.
+- No file preview opens, so the row appears interactive but produces no visible result beyond selection.
+- Users expect the same file-opening behavior as the expanded Project Files sidebar while retaining the ability to attach the selected path as a Partner source.
+
+Expected behavior:
+
+- Clicking a file selects it as the current Partner source target and opens it in the existing File Viewer.
+- Directory clicks continue to expand or select directories without attempting to preview them as files.
+- Existing source attachment behavior remains available after previewing.
+
+Reproduction steps:
+
+1. Open a project in Partner mode.
+2. Expand the Project Materials file tree in the bottom-left panel.
+3. Click a file such as Markdown, HTML, or DOCX.
+4. Observe that the row becomes selected but the file viewer does not open.
+
+#### Context
+
+Affected components:
+
+- `apps/desktop/renderer/src/features/partner/SourcesPanel.tsx`
+- Shared File Viewer routing in `apps/desktop/renderer/src/lib/openPath.ts`
+
+#### Root Cause
+
+`SourcesPanel` provides `FileTree.onSelect`, but its callback only updates `selectedPath` and `selectedTargetKind` for the source-attachment flow. Unlike `FilesPanel`, it never invokes the shared File Viewer routing function.
+
+#### Proposed Solution
+
+- Define the Partner project-file activation contract as both selecting the attachment target and requesting a file preview.
+- Reuse the existing File Viewer route for file nodes only.
+- Preserve directory selection and source-attachment behavior unchanged.
+
+#### Resolution
+
+- Connected Partner project-file activation to the shared project File Viewer while retaining the existing source-target selection state.
+- Kept directory activation unchanged, so directory rows still expand or become directory source targets without attempting file preview.
+- Used the project-file preview route directly, ensuring project files are not confused with Partner's logical delivery namespace.
+
+Files changed:
+
+- `apps/desktop/renderer/src/features/partner/SourcesPanel.tsx`
+- `apps/desktop/renderer/src/features/partner/partnerProjectFileActivation.ts`
+- `apps/desktop/electron/test/partner-project-file-activation.test.ts`
+
+Tests added:
+
+- A regression test verifies that one Partner file activation performs both source selection and preview opening, in that order.
+
+Verification:
+
+- The focused regression test passes.
+- Renderer and Electron TypeScript checks pass.
+- Targeted ESLint and Prettier checks pass.
+- The production renderer build passes.
+
+### 068: Project HTML preview loses relative assets and hides sandbox/runtime failures that work in a browser
+
+- Priority: High
+- Status: Resolved
+- Introduced: v0.1.32
+- Created: 2026-07-21
+- Fixed: v0.1.32 development
+- Resolution Date: 2026-07-21
+
+#### Original Problem
+
+Current behavior:
+
+- HTML that works in a normal browser can render an empty shell or partially styled page in
+  Artifact/File Viewer.
+- Relative scripts, styles, modules, media, local fetches and browser storage do not have the
+  selected file's directory/origin semantics.
+- Blocked network requests, resource failures and runtime exceptions usually leave no visible
+  explanation, so a broken interaction looks like a rendering bug.
+
+Expected behavior:
+
+- Workspace HTML opened in File Viewer runs local web assets and ordinary browser-side
+  interactions while remaining isolated from Electron and the rest of the filesystem.
+- External network remains a deliberate user decision rather than an implicit privilege.
+- Artifact HTML keeps its stricter generated-content trust model.
+- Runtime/resource/policy failures appear inside the preview with enough information to act.
+
+Reproduction steps:
+
+1. Open a project HTML file that imports `./app.js` and `./style.css`, or fetches adjacent JSON.
+2. Observe missing content, styling, controls, or animation in File Viewer.
+3. Open the same file from its directory in a browser and observe the expected behavior.
+4. Trigger a script or CSP failure and observe that File Viewer provides no actionable error.
+
+#### Context
+
+Affected components:
+
+- `apps/desktop/electron/window/app-protocol.ts`
+- `apps/desktop/electron/window/app-protocol-policy.ts`
+- `apps/desktop/electron/ipc/files.ts`
+- `apps/desktop/renderer/src/features/preview/FileViewer.tsx`
+- `apps/desktop/renderer/src/features/artifact/renderers/HtmlArtifact.tsx`
+
+#### Root Cause
+
+Both surfaces reuse a single-document iframe renderer. Project files are copied into `srcdoc`
+or posted into a fixed sandbox document, so relative URLs resolve against Space's sandbox
+endpoint instead of the file directory. The restrictive CSP and opaque origin correctly block
+undeclared network/storage behavior, but the File Viewer has no project-resource origin or
+visible runtime diagnostics.
+
+#### Proposed Solution
+
+- Implement F133's bounded capability-scoped project preview origin.
+- Keep network disabled by default and require an explicit trusted-page toggle.
+- Preserve the stricter Artifact sandbox and add bounded diagnostics to both dynamic paths.
+
+#### Resolution
+
+- Added a typed File Viewer preview channel that creates an unguessable, expiring capability URL
+  only after project allow-list and canonical path validation.
+- Served project HTML and supported adjacent assets from a dedicated origin, enabling relative
+  styles/scripts/modules, local fetch, storage, workers, controls and animation without exposing
+  Electron, Node or Space IPC.
+- Added a per-file network switch. Local-only mode is the default; enabled mode permits secure
+  HTTPS/WSS resources while CSP, iframe sandboxing and navigation guards continue to block frames,
+  popups, top navigation and project-scope escape.
+- Preserved static Artifact HTML and the stricter opaque-origin interactive Artifact tier, and
+  added bounded resource/runtime/CSP diagnostics to both dynamic preview paths.
+- Added capability expiry/LRU limits, a 50 MB resource cap, sensitive-file/extension/method checks,
+  symlink-escape protection, no-store responses and top-level-only preload bridge exposure.
+
+Files changed:
+
+- `apps/desktop/electron/window/project-web-preview.ts`
+- `apps/desktop/electron/window/app-protocol.ts`
+- `apps/desktop/electron/window/navigation-guards.ts`
+- `apps/desktop/electron/preload.ts`
+- `apps/desktop/electron/ipc/files.ts`
+- `apps/desktop/renderer/src/features/preview/ProjectWebPreview.tsx`
+- `apps/desktop/renderer/src/features/preview/WebPreviewDiagnosticBanner.tsx`
+- `apps/desktop/renderer/src/features/preview/FileViewer.tsx`
+- `apps/desktop/renderer/src/features/artifact/renderers/HtmlArtifact.tsx`
+- `packages/space-ipc-schema/src/channels/files.ts`
+
+Tests added or extended:
+
+- Capability creation/resolution, path/method/secret/extension/size/expiry/LRU/CSP/runtime policy.
+- Child-frame navigation and preload-origin confinement.
+- Diagnostic message validation, bounding and deduplication.
+- A File Viewer interaction scenario for CSS, ES modules, JSON fetch, localStorage, workers and
+  button behavior, including the absence of Space IPC and parent-DOM access.
+
+Verification:
+
+- 60 focused schema, sandbox, navigation, capability and diagnostics tests pass.
+- Renderer and Electron TypeScript checks pass.
+- Targeted ESLint, Prettier and `git diff --check` pass.
+- The full production `build:smoke` passes.
+
+- The Playwright trace reaches and passes every feature assertion; the pre-existing fixture
+  `Close context` cleanup timeout occurs only afterward and is not a preview failure.
+
+### 069: Coder daemon converted interrupt follow-ups into separate sequential after-turn runs
+
+- Priority: High
+- Status: Resolved
+- Introduced: v0.1.32 development
+- Fixed: v0.1.32 development
+- Created: 2026-07-21
+- Resolution Date: 2026-07-21
+
+#### Original Problem
+
+Current behavior:
+
+- Normal Enter and the composer send button request `queueMode: interrupt` while a Coder run is active.
+- The daemon path ignored that requested mode and always called `runtime.runs.submitInput()` with `delivery: after_turn`.
+- A prompt submitted during an active run therefore did not reach the next safe LLM boundary; it started only after the complete managed run terminated.
+- Two queued prompts became two continuation runs with distinct run IDs and `sessionOrder` values, so the second prompt waited for the first continuation run to finish instead of entering the same next LLM call.
+
+Expected behavior:
+
+- Space preserves the delivery mode explicitly selected by the user.
+- `interrupt` is never silently converted into `after_turn` because the modes have different timing and batching semantics.
+- When the connected Runtime does not advertise or accept `interruptInput`, Space rejects the unsupported request with an actionable message and restores the composer input.
+- Explicit Ctrl/Cmd+Enter after-turn submission remains supported.
+
+Reproduction steps:
+
+1. Start a Coder managed run through the shared daemon Runtime.
+2. While the run is executing, submit two follow-up prompts with normal Enter.
+3. Observe that both bubbles change to after-turn state.
+4. Observe in Runtime events that each prompt creates a separate after-turn continuation run and starts only after its predecessor terminates.
+
+#### Context
+
+Affected components:
+
+- `apps/desktop/electron/kodax/real-session.ts`
+- `apps/desktop/electron/kodax/runtime-host-adapter.ts`
+- `apps/desktop/renderer/src/shell/BottomBar.tsx`
+- KodaX Runtime `runs.submitInput()` and `interruptInput` capability
+
+#### Root Cause
+
+The v0.1.32 Coder daemon migration replaced the inline SDK `MessageQueue` path. KodaX 0.7.73 does not advertise `interruptInput`, but Space treated normal Enter as a best-effort request and unconditionally submitted it through the supported after-turn API. The acknowledgement truthfully updated the bubble label, but the main process had already changed the user's delivery intent. Each Runtime after-turn submission owns one continuation run, so immediate per-prompt submission also removed the inline queue's same-boundary batch drain behavior.
+
+#### Resolution
+
+- Preserve `queueMode` across the daemon boundary and map it directly to `delivery: interrupt | after_turn`.
+- Remove the adapter's hard-coded interrupt rejection so the Runtime capability/result contract remains authoritative.
+- Project `runtime.input.interrupt` from the daemon's actual `interruptInput` advertisement instead of always reporting it unavailable.
+- Reject `unsupported_capability` for interrupt input with an actionable Ctrl/Cmd+Enter after-turn alternative; do not create work with altered delivery semantics.
+- Fail closed if a Runtime ever reports an accepted delivery different from the requested delivery.
+- Reuse the active run's credential and host-tool bindings for interrupt input; never attach continuation-run replacement bindings that KodaX correctly rejects.
+- Keep explicit after-turn submission and the Partner/legacy inline queue unchanged.
+
+SDK integration status:
+
+- The local KodaX 0.7.74 source worktree now implements daemon `interruptInput`, FIFO same-boundary batching, queued/delivered status, and one ordered `run.input.delivered` event; its focused interrupt tests pass.
+- The implementation is packaged locally as KodaX 0.7.74 and Space now pins that exact tarball
+  integrity for validation. Registry publication remains pending, so a clean Registry-only install
+  is intentionally blocked until the same artifact is published; the live Coder daemon must still
+  be replaced after adoption.
+
+Files changed:
+
+- `apps/desktop/electron/kodax/real-session.ts`
+- `apps/desktop/electron/kodax/runtime-host-adapter.ts`
+- `apps/desktop/electron/test/real-session-runtime-queue.test.ts`
+- `apps/desktop/electron/test/runtime-host-adapter.test.ts`
+- `docs/KNOWN_ISSUES.md`
+
+Tests added or updated:
+
+- Active daemon interrupt intent is preserved and unsupported capability is surfaced without after-turn downgrade.
+- Explicit after-turn input remains accepted and returns the requested queue mode.
+- Runtime adapter forwards interrupt delivery and returns the Runtime's factual capability result.
+- Runtime adapter does not register or attach replacement credential/host-tool bindings for interrupt delivery and rejects explicit replacements locally.
+- Runtime interrupt capability projection follows the advertised version and availability.
+
+Verification:
+
+- Focused Space queue and Runtime adapter suite: 43 passed, 0 failed.
+- Focused KodaX interrupt/runtime-event/daemon suite: 12 passed, 0 failed.
+- Electron TypeScript check passed.
+- Targeted ESLint and Prettier checks plus `git diff --check` passed.
+
+### 070: Large or dependency-backed HTML Artifacts can be misclassified as static and render blank or incomplete
+
+- Priority: High
+- Status: Resolved
+- Introduced: v0.1.32
+- Created: 2026-07-21
+- Fixed: v0.1.32 development
+- Resolution Date: 2026-07-21
+
+#### Original Problem
+
+Current behavior:
+
+- HTML interaction detection inspects only the first 64,000 characters. Conventional documents
+  place scripts near `</body>`, so a larger page can be classified as static even though its
+  presentation depends on JavaScript.
+- Legacy or bypassed Artifact metadata marked as `html` is trusted at render time and is not
+  corrected from the actual content.
+- Static classification disables the script that reveals content, constructs controls or starts
+  animation, producing an empty or partial page even when the same file works in a browser.
+- External authored scripts, CSS imports, blob workers and opaque-origin storage assumptions can
+  create additional avoidable browser-compatibility failures.
+
+Expected behavior:
+
+- Interaction and remote display-dependency detection examines the complete bounded Artifact.
+- Render-time classification recovers old or incorrect `html` metadata from the actual content.
+- Authored browser presentation dependencies run inside the existing isolated Artifact sandbox
+  whenever they do not require Electron, parent-page or unrestricted network privileges.
+- Restrictions remain visible diagnostics rather than unexplained missing content.
+
+Reproduction steps:
+
+1. Create an HTML Artifact larger than 64,000 characters with reveal CSS near the beginning and
+   its `<script>` near the end.
+2. Open it as an Artifact and observe that it is rendered in the static, script-disabled tier.
+3. Observe hidden sections, absent navigation controls and inactive animation.
+4. Open the same document in a browser and observe the complete interactive presentation.
+
+#### Context
+
+Affected components:
+
+- `packages/space-ipc-schema/src/channels/artifact.ts`
+- `apps/desktop/renderer/src/features/artifact/toArtifactContent.ts`
+- `apps/desktop/renderer/src/features/artifact/htmlSandbox.ts`
+- `apps/desktop/renderer/src/features/artifact/renderers/HtmlArtifact.tsx`
+
+#### Root Cause
+
+The classifier's 64,000-character prefix optimization is smaller than the allowed 1 MB Artifact
+content and misses normal end-of-body scripts. In addition, the renderer assumes stored kind
+metadata is always current, while the sandbox compatibility policy handles passive resources but
+not every authored script/worker/storage pattern needed to construct the visible page.
+
+#### Proposed Solution
+
+- Scan the complete bounded HTML value and recognize remote display dependencies.
+- Reclassify legacy `html` payloads at render time.
+- Expand only sandbox-contained compatibility capabilities: authored HTTPS script origins, blob
+  workers and ephemeral storage; keep Electron/IPC, frames, top navigation and undeclared data
+  connections blocked.
+- Add large-document and compatibility regression coverage.
+
+#### Resolution
+
+- Removed the 64,000-character prefix classification limit. The complete schema-bounded Artifact
+  is inspected, so ordinary end-of-body scripts and remote presentation dependencies select the
+  compatibility renderer.
+- Added render-time recovery for legacy or bypassed `html` metadata instead of trusting stale kind
+  data that would disable required scripts.
+- Expanded the opaque Artifact sandbox with authored HTTPS script origins, CSS `@import`, icons and
+  preloaded media, blob workers, and in-memory `localStorage`/`sessionStorage` compatibility.
+- Kept arbitrary connections, frames, Electron/IPC, parent access and child navigation blocked;
+  runtime/resource/CSP failures remain visible diagnostics.
+- Changed File Viewer local mode to allow only HTTPS display dependencies already authored into
+  the document. General HTTPS/WSS requests remain behind the trusted-page toolbar control.
+
+Files changed:
+
+- `packages/space-ipc-schema/src/channels/artifact.ts`
+- `apps/desktop/renderer/src/features/artifact/toArtifactContent.ts`
+- `apps/desktop/renderer/src/features/artifact/htmlSandbox.ts`
+- `apps/desktop/electron/window/project-web-preview.ts`
+- `apps/desktop/electron/window/app-protocol.ts`
+- `apps/desktop/renderer/src/features/preview/WebPreviewDiagnosticBanner.tsx`
+- `apps/desktop/renderer/src/i18n/messages.ts`
+
+Tests added or extended:
+
+- Large end-of-body script and legacy metadata classification.
+- Remote stylesheets, CSS imports, authored scripts and local-only File Viewer CSP behavior.
+- Artifact storage/Blob Worker compatibility and File Viewer authored-resource interaction E2E.
+
+Verification:
+
+- 36 focused Artifact, File Viewer, CSP, navigation and schema tests pass.
+- The supplied 69,682-character presentation renders 18 slides and 18 navigation controls in the
+  Artifact sandbox with no runtime errors; ephemeral storage and a Blob Worker also complete.
+- Renderer and Electron TypeScript checks, targeted ESLint, Prettier and `git diff --check` pass.
+- The full production `build:smoke` passes.
+
+### 071: Daemon compaction telemetry is dropped, so `/compact` appears frozen and context usage grows past a stale threshold
+
+- Priority: High
+- Status: Resolved
+- Introduced: v0.1.32 development
+- Created: 2026-07-21
+- Fixed: v0.1.32 development
+- Resolution Date: 2026-07-21
+
+#### Original Problem
+
+Current behavior:
+
+- `/compact` keeps the composer in a global busy/read-only state while the Runtime performs a
+  potentially minute-long model summary, but Space does not show the command or compaction progress
+  until the request returns.
+- The context indicator hard-codes a 50% automatic-compaction threshold even when Runtime settings
+  use another value such as 40%.
+- The daemon event bridge drops main-run iteration token telemetry and automatic-compaction
+  lifecycle/statistics events.
+- Without authoritative telemetry, the indicator sums the complete visible transcript. Compacted
+  history is intentionally retained for scrollback, so the displayed estimate continues to grow
+  and can appear to exceed the configured threshold after a successful compaction.
+- The Runtime persists manual compaction with the SDK-owned reason `automatic_compaction`, making
+  manual and automatic provenance indistinguishable in stored metadata.
+
+Expected behavior:
+
+- Space shows `/compact` and an explicit in-progress state immediately without making the composer
+  look hung.
+- The indicator uses the effective Runtime compaction setting and current model context window.
+- Main-run iteration and compaction statistics update the current-context count without deleting or
+  miscounting retained transcript history.
+- A completed compaction immediately shows its before/after token result and updated context usage.
+- Space documents the remaining SDK provenance limitation instead of inferring an incorrect reason.
+
+Reproduction steps:
+
+1. Configure automatic compaction to 40% for a model with a 1,048,576-token context window.
+2. Run a long daemon-backed Coder session, then execute `/compact`.
+3. Observe that the composer becomes read-only with no immediate progress and remains that way while
+   the compaction summary is generated.
+4. After completion, observe a 50% / 524.3k threshold and a growing approximate usage such as 451k
+   or 483k even though Runtime compaction statistics report a lower active context.
+
+#### Context
+
+Affected components:
+
+- `apps/desktop/electron/kodax/runtime-host-adapter.ts`
+- `apps/desktop/electron/kodax/real-session.ts`
+- `apps/desktop/renderer/src/store/appStore.ts`
+- `apps/desktop/renderer/src/shell/ContextWindowIndicator.tsx`
+- `apps/desktop/renderer/src/shell/ActivitySpinner.tsx`
+- `apps/desktop/renderer/src/shell/BottomBar.tsx`
+- `packages/space-ipc-schema/src/channels/provider.ts`
+- KodaX Runtime compaction event and persisted-reason contracts
+
+#### Root Cause
+
+The v0.1.32 daemon bridge projects assistant, tool and run-lifecycle events but not
+`run.progress` iteration telemetry or `context.compaction.*` events. The renderer therefore falls
+back to a transcript-size estimate that cannot account for the Runtime's compacted active message
+set. Independently, the context indicator retained an old 50% UI constant and the slash-command
+path waits synchronously with no immediate command echo or progress state. KodaX SDK 0.7.73's
+imperative compact API does perform the compaction, but its persisted compaction anchor hard-codes
+the automatic reason and does not accept a caller reason.
+
+#### Proposed Solution
+
+- Bridge validated main-run iteration and compaction lifecycle/statistics events to renderer session
+  events.
+- Update the per-session token table from both iteration completion and compaction statistics, then
+  make the indicator consume that table rather than rescanning retained transcript history.
+- Resolve the context window and automatic threshold from the effective Runtime compaction config;
+  refresh the indicator when settings change.
+- Echo `/compact` immediately, surface the compaction lifecycle, and allow composing the next prompt
+  while sending remains disabled until the operation safely completes.
+- Add focused event-bridge, store, threshold and activity-state regressions.
+
+#### Resolution
+
+- Project daemon main-run iteration telemetry and the complete compaction lifecycle into validated
+  renderer session events.
+- Treat iteration completion and `compact_stats.tokensAfter` as authoritative per-session usage,
+  including restoration from persisted compaction history instead of summing retained scrollback.
+- Resolve the context window and automatic-compaction threshold from the effective Runtime config
+  and refresh the indicator when the setting changes.
+- Echo `/compact` immediately, keep an explicit animated `Compacting` state active, leave the
+  composer editable for drafting, and disable sending or misleading cancellation until compaction
+  completes.
+- Report formatted before/after tokens and reduction percentage when manual compaction completes.
+- Verified with 103 focused tests, desktop TypeScript checks, targeted ESLint and formatting/diff
+  checks. KodaX SDK 0.7.73 still labels imperative compaction anchors as
+  `automatic_compaction`; Space no longer relies on that value for live behavior.
+
+### 072: E2E cleanup hangs until timeout because the isolated shared daemon keeps Electron test pipes open
+
+- Priority: High
+- Status: Resolved
+- Introduced: v0.1.32 development
+- Created: 2026-07-21
+- Resolved: 2026-07-21
+
+#### Original Problem
+
+Current behavior:
+
+- Product assertions in Electron E2E scenarios complete successfully in about eight seconds, but
+  `SpaceInstance.close()` remains inside Playwright's `ElectronApplication.close()` until the
+  180-second test timeout.
+- Each timed-out scenario leaves its isolated KodaX Coder daemon running under the temporary test
+  data directory.
+- Running several preview scenarios therefore appears to hang and accumulates orphan test daemons.
+
+Expected behavior:
+
+- Test cleanup terminates only the daemon whose descriptor belongs to that fixture's isolated test
+  directory, closes Electron promptly, and removes the temporary data.
+- Production shared daemons remain durable across normal Space restarts.
+
+Reproduction steps:
+
+1. Build the desktop app and run the File Viewer E2E scenario that opens a project file before the
+   first Session.
+2. Observe all UI assertions pass in the Playwright trace by about eight seconds.
+3. Observe the final `Close context` action hang until the 180-second timeout while the daemon PID
+   from the fixture's `runtime/daemon/coder/daemon.json` remains alive.
+
+#### Context
+
+Affected components:
+
+- `tests/e2e/fixtures.ts`
+- KodaX 0.7.73 shared-daemon test lifecycle
+- All Playwright Electron scenarios using the default Runtime host
+
+#### Root Cause
+
+The production contract intentionally detaches from the shared daemon during Space shutdown. In
+isolated Playwright runs, that daemon inherits the Electron launch pipes. Playwright waits for those
+pipes while closing the Electron application, so the persistent test daemon prevents close from
+settling even though the renderer assertions and main-process shutdown are complete.
+
+#### Proposed Solution
+
+- During fixture cleanup only, read and validate the daemon descriptor under the exact test data
+  directory and terminate that PID before awaiting `ElectronApplication.close()`.
+- Bound the close wait and retain a hard process fallback so cleanup cannot consume the entire test
+  timeout.
+- Add focused tests for descriptor validation and idempotent cleanup behavior.
+
+#### Resolution
+
+- Fixture cleanup validates the exact isolated test-data directory, daemon profile, and PID before
+  signalling the test-owned process; production daemons are outside that ownership boundary.
+- Electron close is bounded to ten seconds with a main-process fallback, so a failed cleanup cannot
+  consume the complete Playwright timeout.
+- Two focused lifecycle tests pass, and both four-scenario Artifact/File Viewer E2E suites now exit
+  normally in under forty seconds.
+
+### 073: Artifact HTML E2E scenarios focus Session-owned Artifacts before creating a Session
+
+- Priority: Medium
+- Status: Resolved
+- Introduced: v0.1.32 development
+- Created: 2026-07-21
+- Resolved: 2026-07-21
+
+#### Original Problem
+
+Current behavior:
+
+- The new dynamic Artifact E2E scenarios launch an empty project and dispatch
+  `kodax-space.focus-artifact` while `currentSessionId` is still null.
+- Artifact is intentionally Session-scoped, so the right sidebar correctly remains on Overview and
+  the tests time out looking for an iframe that was never mounted.
+- The persistent-version scenario also writes under a synthetic file-preview Session id that the
+  current Artifact surface does not own.
+
+Expected behavior:
+
+- Artifact runtime tests first create and activate a real Coder Session, then create/focus Artifacts
+  under that exact Session id.
+- The assertions exercise iframe scripts, controls, storage, workers, and version refresh rather
+  than an invalid no-Session setup.
+
+Reproduction steps:
+
+1. Run `tests/e2e/artifact-html-runtime.spec.ts`.
+2. Observe the right sidebar remain on Overview with no Artifact tab.
+3. Observe all iframe locators fail because the test never established Artifact ownership.
+
+#### Context
+
+Affected components:
+
+- `tests/e2e/artifact-html-runtime.spec.ts`
+- Session-scoped Artifact test setup
+
+#### Root Cause
+
+The E2E fixture reused the no-Session File Viewer launch pattern even though File Viewer is
+project-scoped and Artifact is Session-scoped. The test therefore violated the product's ownership
+contract before reaching the HTML runtime behavior it intended to validate.
+
+#### Proposed Solution
+
+- Create a real Session through the composer during Artifact fixture setup.
+- Return and reuse that Session id for persistent Artifact creation.
+- Keep the no-Session behavior test exclusively in File Viewer coverage.
+
+#### Resolution
+
+- Artifact runtime setup now creates and activates a real Coder Session through the composer,
+  dismisses any seed-run permission modal, and reuses the observed Session id for durable Artifact
+  versions.
+- No-Session coverage remains project-scoped in the File Viewer suite.
+- All four Artifact HTML E2E scenarios pass.
+
+### 074: Artifact bootstrap CSP blocks Blob workers that the in-document preview policy explicitly allows
+
+- Priority: High
+- Status: Resolved
+- Introduced: v0.1.32 development
+- Created: 2026-07-21
+- Resolved: 2026-07-21
+
+#### Original Problem
+
+Current behavior:
+
+- An interactive HTML Artifact can render its markup while leaving script-driven presentation
+  state hidden or incomplete when the page creates a Worker from a Blob URL.
+- The preview diagnostic banner reports that `worker-src` was blocked even though the injected
+  document policy explicitly contains `worker-src blob:`.
+
+Expected behavior:
+
+- Blob workers allowed by the restricted in-document policy run inside the opaque iframe without
+  adding same-origin, Electron, parent-page, or undeclared network access.
+- The outer bootstrap response and inner document CSP enforce compatible restrictions.
+
+#### Root Cause
+
+The Artifact bootstrap response did not declare `worker-src`. Its `script-src *` fallback does not
+include the `blob:` scheme, so Chromium intersects that response policy with the injected document
+policy and blocks the Worker before the page can finish initializing.
+
+#### Proposed Solution
+
+- Add the same narrow `worker-src blob:` capability to the bootstrap response CSP.
+- Assert the outer policy in a focused regression and rerun the dynamic Artifact E2E scenarios.
+
+#### Resolution
+
+- The bootstrap response now declares `worker-src blob:`, matching the narrower inner document
+  policy without granting same-origin access or additional network destinations.
+- The focused CSP regression and all four dynamic Artifact E2E scenarios pass, including the large
+  legacy presentation with storage fallback and a Blob Worker.
+
+### 075: Runtime manual compaction duplicates canonical events and permits stale token projection
+
+- Priority: High
+- Status: Resolved
+- Introduced: v0.1.32 development
+- Created: 2026-07-21
+- Resolved: 2026-07-21
+
+#### Original Problem
+
+Current behavior:
+
+- KodaX 0.7.74 emits context-owned compaction lifecycle events with stable context identity and
+  revision, but Space discards unchanged outcomes and most of the canonical result metadata.
+- `requestCompact` also synthesizes start/stats/end around the Runtime call. Those compatibility
+  events can duplicate the SDK lifecycle and the synthetic stats have no context revision.
+- A late iteration or duplicate compatibility event can therefore replace the authoritative
+  post-compaction root token value, making the gauge appear to grow past the configured threshold.
+
+Expected behavior:
+
+- Runtime-backed compaction projects exactly one SDK-owned lifecycle, including committed and
+  unchanged outcomes.
+- Root token accounting is monotonic within the same context revision stream; child contexts and
+  stale compatibility events cannot overwrite it.
+- Embedded/legacy sessions retain their compatibility lifecycle.
+
+#### Root Cause
+
+Space treated the pre-0.7.74 callback projection and host-synthesized manual lifecycle as two
+independent sources of truth. The renderer stored only token counts and did not use context identity
+or revision to reject stale updates.
+
+#### Solution Implemented
+
+- Observe the Runtime session before invoking compaction and rely on its canonical lifecycle.
+- Preserve the 0.7.74 finished-outcome metadata through validated IPC.
+- Reject child/stale context observations in the root projection and keep legacy compatibility
+  lifecycle events only for non-Runtime sessions.
+- Reconstruct transcripts through the 0.7.74 page/chunk APIs so oversized observations never
+  require the legacy monolithic payload.
+
+Files changed:
+
+- Runtime host/session adapter and validated session-event schema.
+- Root context projection, compacting indicator, usage/cost selection, and settings copy.
+- Runtime compatibility, telemetry, transcript paging, store, and spinner regressions.
+
+Verification:
+
+- Space IPC schema build passed.
+- Focused Space compaction/telemetry/adapter/settings suite: 74 passed, 0 failed.
+- Exact 0.7.74 Runtime compatibility check passed.
+- Desktop TypeScript check and production smoke build passed.
+
 ## Summary
 
-- Total: 61
-- Open: 3
-- Resolved: 58
-- High: 33
-- Medium: 20
+- Total: 75
+- Open: 2
+- Resolved: 73
+- High: 40
+- Medium: 27
 - Low: 8
 - Next to resolve: 043

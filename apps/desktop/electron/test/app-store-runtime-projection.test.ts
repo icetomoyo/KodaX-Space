@@ -45,6 +45,9 @@ beforeEach(() => {
     runtimeSnapshotRequiredBySession: initial.snapshotRequiredBySession,
     permissionQueue: [],
     askUserQueue: [],
+    currentSessionId: null,
+    eventsBySession: {},
+    tokensBySession: {},
   });
 });
 
@@ -101,6 +104,137 @@ test('app store ignores connection events older than its latest Runtime transiti
 
   assert.equal(useAppStore.getState().runtimeConnection.state, 'disconnected');
   assert.equal(useAppStore.getState().runtimeConnection.changedAt, 2);
+});
+
+test('compact_stats replaces transcript estimates with the active post-compaction context', () => {
+  useAppStore.setState({
+    currentSessionId: 's_1',
+    eventsBySession: { s_1: [] },
+    tokensBySession: { s_1: { tokens: 483_200, source: 'estimate' } },
+  });
+
+  useAppStore.getState().appendEvent({
+    kind: 'compact_stats',
+    sessionId: 's_1',
+    tokensBefore: 322_973,
+    tokensAfter: 222_460,
+    committed: true,
+    source: 'manual',
+  });
+
+  assert.deepEqual(useAppStore.getState().tokensBySession.s_1, {
+    tokens: 222_460,
+    source: 'compact_stats',
+    compactedFrom: 322_973,
+    lastCompaction: {
+      committed: true,
+      tokensBefore: 322_973,
+      tokensAfter: 222_460,
+      source: 'manual',
+    },
+  });
+
+  useAppStore.getState().appendEvent({
+    kind: 'compact_stats',
+    sessionId: 's_1',
+    tokensBefore: 40_000,
+    tokensAfter: 8_000,
+    contextId: 's_1/agent/reviewer',
+    contextKind: 'child',
+    parentContextId: 's_1',
+    agentId: 'reviewer',
+    contextRevision: 1,
+  });
+  assert.deepEqual(useAppStore.getState().tokensBySession.s_1, {
+    tokens: 222_460,
+    source: 'compact_stats',
+    compactedFrom: 322_973,
+    lastCompaction: {
+      committed: true,
+      tokensBefore: 322_973,
+      tokensAfter: 222_460,
+      source: 'manual',
+    },
+  });
+});
+
+test('root context revisions reject stale iteration and revision-less compatibility updates', () => {
+  useAppStore.setState({ currentSessionId: 's_1', eventsBySession: { s_1: [] } });
+
+  useAppStore.getState().appendEvent({
+    kind: 'compact_stats',
+    sessionId: 's_1',
+    tokensBefore: 489_491,
+    tokensAfter: 291_718,
+    contextId: 's_1',
+    contextKind: 'root',
+    contextRevision: 3,
+    beforeRevision: 2,
+    afterRevision: 3,
+    source: 'automatic_threshold',
+    committed: true,
+  });
+  useAppStore.getState().appendEvent({
+    kind: 'iteration_end',
+    sessionId: 's_1',
+    iter: 10,
+    maxIter: 500,
+    tokenCount: 483_200,
+    contextId: 's_1',
+    contextKind: 'root',
+    contextRevision: 2,
+  });
+  useAppStore.getState().appendEvent({
+    kind: 'compact_stats',
+    sessionId: 's_1',
+    tokensBefore: 489_491,
+    tokensAfter: 483_200,
+  });
+
+  assert.equal(useAppStore.getState().tokensBySession.s_1?.tokens, 291_718);
+  assert.equal(useAppStore.getState().tokensBySession.s_1?.contextRevision, 3);
+
+  useAppStore.getState().appendEvent({
+    kind: 'iteration_end',
+    sessionId: 's_1',
+    iter: 11,
+    maxIter: 500,
+    tokenCount: 300_000,
+    contextId: 's_1',
+    contextKind: 'root',
+    contextRevision: 3,
+  });
+  assert.equal(useAppStore.getState().tokensBySession.s_1?.tokens, 300_000);
+});
+
+test('unchanged canonical compaction updates the gauge without claiming a reduction', () => {
+  useAppStore.setState({ currentSessionId: 's_1', eventsBySession: { s_1: [] } });
+  useAppStore.getState().appendEvent({
+    kind: 'compact_stats',
+    sessionId: 's_1',
+    tokensBefore: 205_000,
+    tokensAfter: 205_000,
+    contextId: 's_1',
+    contextKind: 'root',
+    contextRevision: 4,
+    committed: false,
+    source: 'manual',
+    elapsedMs: 90,
+  });
+
+  assert.deepEqual(useAppStore.getState().tokensBySession.s_1, {
+    tokens: 205_000,
+    source: 'compact_stats',
+    contextId: 's_1',
+    contextRevision: 4,
+    lastCompaction: {
+      committed: false,
+      tokensBefore: 205_000,
+      tokensAfter: 205_000,
+      source: 'manual',
+      elapsedMs: 90,
+    },
+  });
 });
 
 test('run reset removes terminal Runtime interactions from modal queues', () => {

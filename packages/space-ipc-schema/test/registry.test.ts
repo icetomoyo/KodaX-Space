@@ -23,6 +23,7 @@ import {
   handoffAcceptChannel,
   handoffDismissChannel,
   handoffChangedChannel,
+  clipboardSaveImageChannel,
   clipboardReadImageChannel,
   shellOpenDirectoryChannel,
   ok,
@@ -76,6 +77,21 @@ test('clipboard.readImage channel is registered and accepts nullable image outpu
     true,
   );
   assert.equal(clipboardReadImageChannel.output.safeParse({ image: null }).success, true);
+});
+
+test('clipboard.saveImage output requires the normalized media type', () => {
+  const normalized = {
+    path: '/tmp/kodax-space/clipboard/s_1/normalized.jpg',
+    mediaType: 'image/jpeg',
+    bytes: 4,
+  };
+
+  assert.equal(clipboardSaveImageChannel.output.safeParse(normalized).success, true);
+  assert.equal(
+    clipboardSaveImageChannel.output.safeParse({ path: normalized.path, bytes: normalized.bytes })
+      .success,
+    false,
+  );
 });
 
 test('shell.openDirectory is present in the typed invoke registry', () => {

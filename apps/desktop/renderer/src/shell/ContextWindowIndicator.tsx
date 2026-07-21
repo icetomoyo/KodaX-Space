@@ -11,17 +11,13 @@
 //   - 历史 fallback: 查询期间 / IPC 失败时仍用 modelContextCaps 硬编码表兜底，避免空窗显示
 
 import { useEffect, useState, type CSSProperties } from 'react';
-import type { SessionEvent } from '@kodax-space/space-ipc-schema';
 import { useI18n } from '../i18n/I18nProvider.js';
-import { useAppStore, type UserMessage } from '../store/appStore.js';
+import { useAppStore } from '../store/appStore.js';
 import { getModelContextCap } from './modelContextCaps.js';
 import { resolveActiveModel } from './resolveActiveModel.js';
 
-const EMPTY_EVENTS: readonly SessionEvent[] = [];
-const EMPTY_USER_MESSAGES: readonly UserMessage[] = [];
-// Mirrors the current KodaX auto-compaction default. If the user-configured
-// value is exposed to the renderer later, only this fallback needs replacing.
-const AUTO_COMPACT_TRIGGER_PERCENT = 50;
+const DEFAULT_COMPACTION_TRIGGER_PERCENT = 75;
+export const COMPACTION_CONFIG_CHANGED_EVENT = 'kodax:compaction-config-changed';
 
 type ContextGaugeStyle = CSSProperties & {
   '--cw-level': string;
@@ -30,27 +26,10 @@ type ContextGaugeStyle = CSSProperties & {
   '--cw-level-height': string;
 };
 
-/**
- * 粗略 token 估算——历史 session restore 后没有 iteration_end 事件，
- * 否则 context window 一直显示 0/cap (0%)。同 bubbles.tsx#approxTokens 同公式。
- *   - ASCII: 4 chars / 1 token
- *   - non-ASCII (CJK / emoji): 1 token / char
- */
-function approxTokens(text: string): number {
-  let ascii = 0;
-  let nonAscii = 0;
-  for (let i = 0; i < text.length; i++) {
-    if (text.charCodeAt(i) < 128) ascii++;
-    else nonAscii++;
-  }
-  return Math.max(0, Math.round(ascii / 4 + nonAscii));
-}
-
-// 模块级 cache —— per (providerId, model) 唯一 contextWindow，跨 session 共享，
-// 切 model 时不会重新查 IPC（除非缓存里没有）。值为 null 代表"正在查询中"，避免并发重复请求。
-const contextWindowCache = new Map<string, number | null>();
-function cacheKey(providerId: string, model: string): string {
-  return `${providerId}|${model}`;
+interface ResolvedContextWindow {
+  readonly contextWindow: number;
+  readonly triggerPercent: number;
+  readonly triggerTokens?: number;
 }
 
 /** 后台查 SDK 拿 contextWindow + cache; UI 同步 fallback 到硬编码表先渲染避免抖动。*/
@@ -58,37 +37,36 @@ function useResolvedContextWindow(
   providerId: string | null,
   model: string | null,
   hardcodedFallback: number,
-): number {
-  const [resolved, setResolved] = useState<number | null>(
-    providerId && model ? (contextWindowCache.get(cacheKey(providerId, model)) ?? null) : null,
-  );
+): ResolvedContextWindow {
+  const [configRevision, setConfigRevision] = useState(0);
+  const [resolved, setResolved] = useState<ResolvedContextWindow>({
+    contextWindow: hardcodedFallback,
+    triggerPercent: DEFAULT_COMPACTION_TRIGGER_PERCENT,
+  });
+
+  useEffect(() => {
+    const onChanged = (): void => setConfigRevision((revision) => revision + 1);
+    window.addEventListener(COMPACTION_CONFIG_CHANGED_EVENT, onChanged);
+    return () => window.removeEventListener(COMPACTION_CONFIG_CHANGED_EVENT, onChanged);
+  }, []);
 
   useEffect(() => {
     if (!providerId || !model) {
-      setResolved(null);
+      setResolved({
+        contextWindow: hardcodedFallback,
+        triggerPercent: DEFAULT_COMPACTION_TRIGGER_PERCENT,
+      });
       return;
     }
-    const key = cacheKey(providerId, model);
-    const cached = contextWindowCache.get(key);
-    // cached === number → 已查过，setState 同步把值刷新到本组件
-    if (typeof cached === 'number') {
-      setResolved(cached);
-      return;
-    }
-    // cached === null → 正在查；订阅一次性 setState（其他实例会一起更新）。
-    // 这里简化：每个组件都查一次，IPC 端处理重复请求成本 50ms 以内可忽略。
-    if (cached === null) {
-      setResolved(null);
-      return;
-    }
-    setResolved(null);
-    contextWindowCache.set(key, null); // pending sentinel
+    setResolved((current) => ({ ...current, contextWindow: hardcodedFallback }));
     let cancelled = false;
     // window.kodaxSpace 在 preload 注入；prod 永远 defined，但 type 上是 optional
     const api = window.kodaxSpace;
     if (!api) {
-      setResolved(hardcodedFallback);
-      contextWindowCache.set(key, hardcodedFallback);
+      setResolved({
+        contextWindow: hardcodedFallback,
+        triggerPercent: DEFAULT_COMPACTION_TRIGGER_PERCENT,
+      });
       return;
     }
     void api
@@ -100,40 +78,41 @@ function useResolvedContextWindow(
         // 此时不要信 SDK 给的 200k——回退到 renderer 端 hardcoded table，因为它至少
         // 有按 model 名前缀的真实信息 (gpt-5 → 1M、deepseek-v3.2 → 1M).
         let value: number;
+        let triggerPercent = DEFAULT_COMPACTION_TRIGGER_PERCENT;
+        let triggerTokens: number | undefined;
         if (!r.ok) {
           value = hardcodedFallback;
         } else if (r.data.source === 'fallback') {
           value = hardcodedFallback;
+          triggerPercent = r.data.compactionTriggerPercent;
+          triggerTokens = r.data.compactionTriggerTokens;
         } else {
           value = r.data.contextWindow > 0 ? r.data.contextWindow : hardcodedFallback;
+          triggerPercent = r.data.compactionTriggerPercent;
+          triggerTokens = r.data.compactionTriggerTokens;
         }
-        contextWindowCache.set(key, value);
-        setResolved(value);
+        setResolved({ contextWindow: value, triggerPercent, triggerTokens });
       })
       .catch(() => {
         if (cancelled) return;
-        // 失败时记 hardcoded fallback 进 cache，避免每次 render 都重试
-        contextWindowCache.set(key, hardcodedFallback);
-        setResolved(hardcodedFallback);
+        setResolved({
+          contextWindow: hardcodedFallback,
+          triggerPercent: DEFAULT_COMPACTION_TRIGGER_PERCENT,
+        });
       });
     return () => {
       cancelled = true;
     };
-  }, [providerId, model, hardcodedFallback]);
+  }, [providerId, model, hardcodedFallback, configRevision]);
 
-  return resolved ?? hardcodedFallback;
+  return resolved;
 }
 
 export function ContextWindowIndicator(): JSX.Element | null {
   const { t } = useI18n();
   const currentSessionId = useAppStore((s) => s.currentSessionId);
-  const events = useAppStore((s) =>
-    currentSessionId ? (s.eventsBySession[currentSessionId] ?? EMPTY_EVENTS) : EMPTY_EVENTS,
-  );
-  const userMessages = useAppStore((s) =>
-    currentSessionId
-      ? (s.userMessagesBySession[currentSessionId] ?? EMPTY_USER_MESSAGES)
-      : EMPTY_USER_MESSAGES,
+  const tokenInfo = useAppStore((s) =>
+    currentSessionId ? s.tokensBySession[currentSessionId] : undefined,
   );
   // 当前 active model — session 优先；无 session 时用 pendingModel / kodaxDefaults / provider 默认
   const sessions = useAppStore((s) => s.sessions);
@@ -169,37 +148,30 @@ export function ContextWindowIndicator(): JSX.Element | null {
       ? preferredModel
       : null;
   const hardcodedCap = getModelContextCap(activeModel);
-  const cap = useResolvedContextWindow(activeProviderId, activeModel, hardcodedCap);
-  const autoCompactThreshold = Math.max(1, Math.round((cap * AUTO_COMPACT_TRIGGER_PERCENT) / 100));
+  const resolvedWindow = useResolvedContextWindow(activeProviderId, activeModel, hardcodedCap);
+  const cap = resolvedWindow.contextWindow;
+  const triggerPercent = resolvedWindow.triggerPercent;
+  const percentageThreshold = Math.max(1, Math.round((cap * triggerPercent) / 100));
+  const autoCompactThreshold =
+    resolvedWindow.triggerTokens && resolvedWindow.triggerTokens > 0
+      ? Math.min(percentageThreshold, resolvedWindow.triggerTokens)
+      : percentageThreshold;
 
-  let tokenCount = 0;
-  let isEstimate = false;
-  for (let i = events.length - 1; i >= 0; i--) {
-    const ev = events[i];
-    if (ev.kind === 'iteration_end') {
-      tokenCount = ev.tokenCount;
-      break;
-    }
-  }
-  // Fallback: history restore 后没有 iteration_end → 自己估算累计 token。
-  // 累加 user 消息 + assistant text/thinking + tool result（占 LLM 上下文的全部 string 内容）。
-  if (tokenCount === 0 && (events.length > 0 || userMessages.length > 0)) {
-    let total = 0;
-    for (const um of userMessages) total += approxTokens(um.content);
-    for (const ev of events) {
-      if (ev.kind === 'text_delta' || ev.kind === 'thinking_delta') {
-        total += approxTokens(ev.text);
-      } else if (ev.kind === 'tool_result') {
-        total += approxTokens(ev.content);
-      } else if (ev.kind === 'thinking_end') {
-        // thinking_end 携带完整 thinking text；若之前已经累加过 thinking_delta 会双算——
-        // 但 history restore 的 emit 只走 thinking_delta，session 实时跑也通常 delta 给完了
-        // 才 end。保守不重复加。
-      }
-    }
-    tokenCount = total;
-    isEstimate = true;
-  }
+  const tokenCount = tokenInfo?.tokens ?? 0;
+  const lastCompaction = tokenInfo?.lastCompaction;
+  const compactionSourceLabel =
+    lastCompaction?.source === 'manual'
+      ? t('contextWindow.compactionSource.manual')
+      : lastCompaction?.source === 'automatic_threshold'
+        ? t('contextWindow.compactionSource.automatic')
+        : lastCompaction?.source === 'physical_capacity'
+          ? t('contextWindow.compactionSource.capacity')
+          : null;
+  const compactionDuration =
+    lastCompaction?.elapsedMs !== undefined
+      ? `${(lastCompaction.elapsedMs / 1_000).toFixed(1)}s`
+      : null;
+  const isEstimate = tokenInfo?.source === 'estimate';
   const autoCompactPercent = (tokenCount / autoCompactThreshold) * 100;
   const displayPercent = Math.min(100, autoCompactPercent);
   // 历史恢复时是 estimate（无 iteration_end）— 加 "~" 前缀让用户知道是近似
@@ -296,10 +268,30 @@ export function ContextWindowIndicator(): JSX.Element | null {
 
           <div className="mt-3 border-t border-border-default pt-2 text-[11px] text-fg-muted leading-relaxed">
             {t('contextWindow.thresholdNote', {
-              triggerPercent: AUTO_COMPACT_TRIGGER_PERCENT,
+              triggerPercent,
               cap: capStr,
+              threshold: thresholdStr,
               model: activeModel ? ` (${activeModel})` : '',
             })}
+            <div className="mt-1">{t('contextWindow.activeInputNote')}</div>
+            {lastCompaction && (
+              <div className="mt-1 text-fg-secondary">
+                {lastCompaction.committed
+                  ? t('contextWindow.lastCompaction', {
+                      before: formatTokens(lastCompaction.tokensBefore),
+                      after: formatTokens(lastCompaction.tokensAfter),
+                    })
+                  : t('contextWindow.lastCompactionUnchanged', {
+                      tokens: formatTokens(lastCompaction.tokensAfter),
+                    })}
+                {(compactionSourceLabel || compactionDuration) && (
+                  <span className="text-fg-muted">
+                    {' · '}
+                    {[compactionSourceLabel, compactionDuration].filter(Boolean).join(' · ')}
+                  </span>
+                )}
+              </div>
+            )}
           </div>
         </div>
       )}

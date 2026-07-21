@@ -30,6 +30,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { useAppStore } from '../../store/appStore.js';
+import { FileNameText } from '../../components/FileNameText.js';
 import { pushToast } from '../../store/toastStore.js';
 import { Caret } from '../../components/Caret.js';
 import { openExternalUrl, revealPath } from '../../lib/openPath.js';
@@ -612,7 +613,7 @@ export function McpPanel(): JSX.Element {
                     title={t('mcp.revealConfigErrorPath', { path: e.path })}
                     className="w-full text-left flex items-center gap-1 hover:text-warn"
                   >
-                    <span className="truncate flex-1">{e.path}</span>
+                    <FileNameText name={e.path} className="flex-1" />
                     <FolderOpen
                       className="w-3 h-3 flex-shrink-0 opacity-70"
                       strokeWidth={1.75}

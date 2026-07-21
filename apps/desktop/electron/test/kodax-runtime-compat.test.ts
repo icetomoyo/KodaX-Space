@@ -6,7 +6,7 @@ import test from 'node:test';
 
 const PROBE_MARKER = 'KODAX_RUNTIME_PROBE=';
 const PROBE_TIMEOUT_MS = 30_000;
-const EXPECTED_KODAX_VERSION = '0.7.72';
+const EXPECTED_KODAX_VERSION = '0.7.74';
 const SHARED_DAEMON_TIMEOUT_MS = 45_000;
 const SHARED_DAEMON_MARKER = 'KODAX_SHARED_DAEMON_HOST=';
 const require = createRequire(import.meta.url);
@@ -34,13 +34,15 @@ const SHARED_DAEMON_REQUIREMENTS = {
   coderFeatureMatrix: 1,
   sessionAdmission: 1,
   completeObservationSnapshot: 1,
+  contextCompaction: 2,
+  transcriptPaging: 1,
   connectionLifecycle: 1,
   typedRuntimeEvents: 1,
   daemonSafeRunInput: 1,
   sharedSessionSettings: 1,
   durableRecoveryQueries: 1,
   daemonManagement: 1,
-  runtimeAutoModeGuardrail: 1,
+  runtimeAutoModeGuardrail: 3,
 } as const;
 
 const PUBLISHED_SHARED_DAEMON_PEER_PROBE = String.raw`
@@ -60,7 +62,7 @@ try {
     clientInfo: {
       name: 'kodax-cli',
       title: 'KodaX terminal compatibility probe',
-      version: '0.7.72',
+      version: '0.7.74',
       instanceId: process.env.KODAX_PROBE_INSTANCE_ID,
       instanceSecret: process.env.KODAX_PROBE_INSTANCE_SECRET,
     },
@@ -293,8 +295,9 @@ try {
       actorControlPlane: actorControlPlaneCapability?.version === 1,
       learningCenter: learningCenterCapability?.version === 1,
       a2aConfigReconciler: a2aConfigCapability?.version === 1,
+      permissionGrantAdmin: runtime.grantedScopes?.includes('permission:grant-admin') === true,
       runtimeAutoModeGuardrail:
-        runtimeAutoModeGuardrailCapability?.version === 1 &&
+        runtimeAutoModeGuardrailCapability?.version === 3 &&
         runtimeAutoModeGuardrailCapability.owner === 'session-runtime',
     },
   };
@@ -659,6 +662,7 @@ interface SharedDaemonHostResult {
     readonly actorControlPlane: boolean;
     readonly learningCenter: boolean;
     readonly a2aConfigReconciler: boolean;
+    readonly permissionGrantAdmin: boolean;
     readonly runtimeAutoModeGuardrail: boolean;
   };
 }
@@ -837,6 +841,7 @@ test(
     assert.equal(result.management.actorControlPlane, true);
     assert.equal(result.management.learningCenter, true);
     assert.equal(result.management.a2aConfigReconciler, true);
+    assert.equal(result.management.permissionGrantAdmin, true);
     assert.equal(result.management.runtimeAutoModeGuardrail, true);
     assert.equal(result.connectionState, 'connected');
     assert.equal(result.peer.partnerError?.code, 'session_not_admitted');

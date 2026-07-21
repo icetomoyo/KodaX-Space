@@ -31,12 +31,17 @@ export const clipboardSaveImageChannel = {
     /** 绑定到哪个 session — main 用 sessionId 拆子目录，方便 dispose 清理。*/
     sessionId: z.string().min(1).max(128),
     /** base64 编码的原始 image bytes (renderer 端 FileReader.readAsDataURL 后剥 data URI 头)。 */
-    base64: z.string().min(1).max(MAX_IMAGE_BYTES * 2),
+    base64: z
+      .string()
+      .min(1)
+      .max(MAX_IMAGE_BYTES * 2),
     mediaType: z.enum(['image/png', 'image/jpeg', 'image/webp']),
   }),
   output: z.object({
     /** main 写盘后的绝对路径；renderer 后续把它塞进 session.send.artifacts[].path */
     path: z.string().min(1).max(4096),
+    /** SDK 规范化并落盘后的真实媒体类型；可能与 renderer 传入值不同。 */
+    mediaType: z.enum(['image/png', 'image/jpeg', 'image/webp']),
     /** 文件落盘后实际字节数 — UI 显示 "230 KB" 等。*/
     bytes: z.number().int().positive().max(MAX_IMAGE_BYTES),
   }),
@@ -53,7 +58,10 @@ export const clipboardReadImageChannel = {
       .object({
         path: z.string().min(1).max(4096),
         mediaType: z.enum(['image/png', 'image/jpeg']),
-        base64: z.string().min(1).max(MAX_IMAGE_BYTES * 2),
+        base64: z
+          .string()
+          .min(1)
+          .max(MAX_IMAGE_BYTES * 2),
         bytes: z.number().int().positive().max(MAX_IMAGE_BYTES),
         width: z.number().int().positive().max(100_000),
         height: z.number().int().positive().max(100_000),

@@ -18,10 +18,12 @@
 
 import { promises as fsp } from 'node:fs';
 import path from 'node:path';
-import type {
-  CustomProviderReasoning,
-  KodaxCompactionSettingsT,
-  KodaxConfigOverviewT,
+import {
+  KODAX_COMPACTION_TRIGGER_PERCENT_MAX,
+  KODAX_COMPACTION_TRIGGER_PERCENT_MIN,
+  type CustomProviderReasoning,
+  type KodaxCompactionSettingsT,
+  type KodaxConfigOverviewT,
 } from '@kodax-space/space-ipc-schema';
 import { validateApiKeyEnv } from '../providers/env-guard.js';
 import { validateBaseUrl } from '../providers/url-guard.js';
@@ -46,6 +48,7 @@ export interface KodaxUserDefaults {
   readonly autoModeEngine?: 'llm' | 'rules';
   readonly autoModeClassifierModel?: string;
   readonly autoModeTimeoutMs?: number;
+  readonly autoModeSpeculativeWindowMs?: number;
   /** customProviders 数量；具体配置不暴露给 renderer（SDK runtime 已注册可用）。*/
   readonly customProvidersCount: number;
 }
@@ -54,9 +57,10 @@ export interface KodaxAutoModeDefaults {
   readonly engine: 'llm' | 'rules';
   readonly classifierModel?: string;
   readonly timeoutMs: number;
+  readonly speculativeWindowMs?: number;
 }
 
-/** KodaX 0.7.72 Auto LLM classifier default. Keep explicit at the Space boundary. */
+/** KodaX 0.7.73 Auto LLM defaults. Keep explicit at the Space/Session boundary. */
 export const KODAX_AUTO_MODE_DEFAULT_TIMEOUT_MS = 20_000;
 
 export interface KodaxConfigCustomProvider {
@@ -202,6 +206,9 @@ export async function loadKodaxAutoModeDefaults(): Promise<KodaxAutoModeDefaults
       ? { classifierModel: defaults.autoModeClassifierModel }
       : {}),
     timeoutMs: defaults.autoModeTimeoutMs ?? KODAX_AUTO_MODE_DEFAULT_TIMEOUT_MS,
+    ...(defaults.autoModeSpeculativeWindowMs !== undefined
+      ? { speculativeWindowMs: defaults.autoModeSpeculativeWindowMs }
+      : {}),
   };
 }
 
@@ -236,10 +243,10 @@ async function computeUserDefaults(): Promise<KodaxUserDefaults> {
   const reasoningMode =
     effortToReasoningMode(raw.effort) ??
     normalizeReasoningMode(raw.reasoningCeiling ?? raw.reasoningMode);
-  const autoMode = normalizeAutoModeDefaults(
-    (raw as unknown as Record<string, unknown>).autoMode,
-    process.env,
-  );
+  const autoMode = (await loadSdkRootModule()).resolveAutoModeSettings({
+    settings: raw.autoMode,
+    env: process.env,
+  });
 
   return {
     provider:
@@ -249,10 +256,13 @@ async function computeUserDefaults(): Promise<KodaxUserDefaults> {
     reasoningMode,
     permissionMode: normalizePermissionMode(raw.permissionMode),
     autoModeEngine: autoMode.engine,
-    ...(autoMode.classifierModel !== undefined
-      ? { autoModeClassifierModel: autoMode.classifierModel }
+    ...(autoMode.classifierModelEnv !== undefined || autoMode.classifierModel !== undefined
+      ? { autoModeClassifierModel: autoMode.classifierModelEnv ?? autoMode.classifierModel }
       : {}),
-    autoModeTimeoutMs: autoMode.timeoutMs,
+    autoModeTimeoutMs: autoMode.timeoutMs ?? KODAX_AUTO_MODE_DEFAULT_TIMEOUT_MS,
+    ...(autoMode.speculativeWindowMs !== undefined
+      ? { autoModeSpeculativeWindowMs: autoMode.speculativeWindowMs }
+      : {}),
     customProvidersCount: Array.isArray(raw.customProviders) ? raw.customProviders.length : 0,
   };
 }
@@ -314,13 +324,13 @@ export async function loadKodaxCompactionConfig(): Promise<KodaxCompactionSettin
   try {
     const raw = (await loadWritableKodaxConfig()) as SdkWritableConfig;
     const normalized = normalizeCompactionSettings(raw.compaction);
-    return Object.keys(normalized).length > 0 ? normalized : undefined;
+    return normalized;
   } catch (err) {
     console.warn(
       '[kodax-user-config] compaction config ignored:',
       err instanceof Error ? err.message : err,
     );
-    return undefined;
+    return { enabled: true };
   }
 }
 
@@ -461,46 +471,6 @@ function normalizePermissionMode(v: unknown): KodaxMappablePermissionMode | unde
   return undefined;
 }
 
-function normalizeAutoModeDefaults(raw: unknown, env: NodeJS.ProcessEnv): KodaxAutoModeDefaults {
-  const settings =
-    raw !== null && typeof raw === 'object' && !Array.isArray(raw)
-      ? (raw as Record<string, unknown>)
-      : {};
-  const envEngine = env.KODAX_AUTO_MODE_ENGINE?.trim();
-  const fileEngine = settings.engine;
-  const engine =
-    envEngine === 'llm' || envEngine === 'rules'
-      ? envEngine
-      : fileEngine === 'llm' || fileEngine === 'rules'
-        ? fileEngine
-        : 'llm';
-  const envClassifier = normalizeClassifierModel(env.KODAX_AUTO_MODE_CLASSIFIER_MODEL);
-  const fileClassifier = normalizeClassifierModel(settings.classifierModel);
-  const envTimeout = normalizeAutoModeTimeout(env.KODAX_AUTO_MODE_TIMEOUT_MS);
-  const fileTimeout = normalizeAutoModeTimeout(settings.timeoutMs);
-  const classifierModel = envClassifier ?? fileClassifier;
-  return {
-    engine,
-    ...(classifierModel !== undefined ? { classifierModel } : {}),
-    timeoutMs: envTimeout ?? fileTimeout ?? KODAX_AUTO_MODE_DEFAULT_TIMEOUT_MS,
-  };
-}
-
-function normalizeClassifierModel(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const trimmed = value.trim();
-  return trimmed.length > 0 && trimmed.length <= 128 ? trimmed : undefined;
-}
-
-function normalizeAutoModeTimeout(value: unknown): number | undefined {
-  if (typeof value !== 'number' && typeof value !== 'string') return undefined;
-  if (typeof value === 'string' && value.trim().length === 0) return undefined;
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
-  const timeoutMs = Math.floor(parsed);
-  return timeoutMs <= 3_600_000 ? timeoutMs : undefined;
-}
-
 function normalizeKodaxConfigCustomProviders(
   providers: SdkLoadConfigReturn['customProviders'],
 ): readonly KodaxConfigCustomProvider[] {
@@ -629,7 +599,12 @@ function saveWritableKodaxConfig(config: SdkLoadConfigReturn): void {
 }
 
 const MAX_CONFIG_BYTES = 1_048_576;
-const MODELED_COMPACTION_KEYS = new Set(['enabled', 'triggerPercent', 'contextWindow']);
+const MODELED_COMPACTION_KEYS = new Set([
+  'enabled',
+  'triggerPercent',
+  'triggerTokens',
+  'contextWindow',
+]);
 
 function getKodaxConfigPath(): string {
   return path.join(getKodaxRuntimeDir(), 'config.json');
@@ -696,15 +671,14 @@ async function buildKodaxConfigOverview(
 }
 
 function normalizeCompactionSettings(raw: unknown): KodaxCompactionSettingsT {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { enabled: true };
   const record = raw as Record<string, unknown>;
-  const out: KodaxCompactionSettingsT = {};
-  if (typeof record.enabled === 'boolean') out.enabled = record.enabled;
+  const out: KodaxCompactionSettingsT = { enabled: true };
   if (
     typeof record.triggerPercent === 'number' &&
     Number.isInteger(record.triggerPercent) &&
-    record.triggerPercent >= 1 &&
-    record.triggerPercent <= 100
+    record.triggerPercent >= KODAX_COMPACTION_TRIGGER_PERCENT_MIN &&
+    record.triggerPercent <= KODAX_COMPACTION_TRIGGER_PERCENT_MAX
   ) {
     out.triggerPercent = record.triggerPercent;
   }
@@ -715,6 +689,14 @@ function normalizeCompactionSettings(raw: unknown): KodaxCompactionSettingsT {
     record.contextWindow <= 10_000_000
   ) {
     out.contextWindow = record.contextWindow;
+  }
+  if (
+    typeof record.triggerTokens === 'number' &&
+    Number.isInteger(record.triggerTokens) &&
+    record.triggerTokens >= 0 &&
+    record.triggerTokens <= 10_000_000
+  ) {
+    out.triggerTokens = record.triggerTokens;
   }
   return out;
 }

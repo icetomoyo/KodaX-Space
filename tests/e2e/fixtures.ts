@@ -8,12 +8,34 @@ import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { stopOwnedTestDaemon } from './fixture-daemon-cleanup.js';
 
 // ESM-compatible __dirname derivation (Playwright transpiles to ESM)
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const REPO_ROOT = path.resolve(__dirname, '../..');
 const ELECTRON_MAIN = path.join(REPO_ROOT, 'dist-electron', 'main.js');
+const ELECTRON_CLOSE_TIMEOUT_MS = 10_000;
+
+async function closeElectronBounded(app: ElectronApplication): Promise<void> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<'timeout'>((resolve) => {
+    timeout = setTimeout(() => resolve('timeout'), ELECTRON_CLOSE_TIMEOUT_MS);
+    timeout.unref?.();
+  });
+  const closed = app.close().then(
+    () => 'closed' as const,
+    () => 'failed' as const,
+  );
+  const outcome = await Promise.race([closed, timedOut]);
+  if (timeout !== undefined) clearTimeout(timeout);
+  if (outcome === 'closed') return;
+  try {
+    app.process().kill();
+  } catch {
+    // The process may already have exited while Playwright was closing its transport.
+  }
+}
 
 export interface SpaceInstance {
   readonly app: ElectronApplication;
@@ -140,7 +162,11 @@ export async function launchSpace(
     testDataDir,
     seedProject,
     async close() {
-      await app.close().catch(() => {});
+      // Production keeps its shared daemon alive across Space restarts. This fixture owns an
+      // isolated daemon, so stop only the PID whose descriptor is rooted in this testDataDir;
+      // otherwise its inherited launch pipes keep Playwright's app.close pending for 180 seconds.
+      await stopOwnedTestDaemon(testDataDir).catch(() => {});
+      await closeElectronBounded(app);
       await fs.rm(testDataDir, { recursive: true, force: true }).catch(() => {});
     },
   };

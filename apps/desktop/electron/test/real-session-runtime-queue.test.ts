@@ -4,7 +4,7 @@ import test from 'node:test';
 import { RealKodaXSession } from '../kodax/real-session.js';
 import { runtimeHostAdapter } from '../kodax/runtime-host-adapter.js';
 
-test('restored daemon run downgrades an unsupported interrupt prompt to after-turn', async (t) => {
+test('active daemon run preserves interrupt intent and requires explicit after-turn fallback', async (t) => {
   const adapter = runtimeHostAdapter as unknown as Record<string, unknown>;
   const patchedMethods = new Map<string, { readonly existed: boolean; readonly value: unknown }>();
   const patchMethod = (name: string, value: unknown): void => {
@@ -23,8 +23,7 @@ test('restored daemon run downgrades an unsupported interrupt prompt to after-tu
 
   let submittedInput: Record<string, unknown> | undefined;
   let settingsUpdate:
-    | { readonly sessionId: string; readonly patch: Record<string, unknown> }
-    | undefined;
+    { readonly sessionId: string; readonly patch: Record<string, unknown> } | undefined;
   patchMethod('isRuntimeSelected', () => true);
   patchMethod('initialize', async () => undefined);
   patchMethod('ensureSession', async () => false);
@@ -35,11 +34,19 @@ test('restored daemon run downgrades an unsupported interrupt prompt to after-tu
     },
   );
   patchMethod('ensureObserved', async () => undefined);
-  patchMethod('activeRunId', () => undefined);
-  patchMethod('findActiveRunId', async () => 'run_restored');
+  patchMethod('activeRunId', () => 'run_active');
+  patchMethod('findActiveRunId', async () => {
+    throw new Error('active run lookup should use the live projection');
+  });
   patchMethod('submitInput', async (input: Record<string, unknown>) => {
     submittedInput = input;
-    return { accepted: true, delivery: 'after_turn', runId: 'run_follow_up' };
+    return {
+      accepted: false,
+      delivery: 'interrupt',
+      sessionId: 'session_restored',
+      afterRunId: 'run_active',
+      reason: 'unsupported_capability',
+    };
   });
 
   const session = new RealKodaXSession({
@@ -53,10 +60,27 @@ test('restored daemon run downgrades an unsupported interrupt prompt to after-tu
     requestPermission: async () => 'allow_once',
   });
 
-  const result = await session.send('follow-up after restart', undefined, {
-    queueMode: 'interrupt',
+  await assert.rejects(
+    session.send('follow-up while active', undefined, {
+      queueMode: 'interrupt',
+      promptOverlay: 'attachment path overlay',
+    }),
+    /does not support mid-turn interrupt input.*Ctrl\/Cmd\+Enter/,
+  );
+  assert.deepEqual(submittedInput, {
+    sessionId: 'session_restored',
+    afterRunId: 'run_active',
+    delivery: 'interrupt',
+    input: [{ type: 'text', text: 'follow-up while active\n\nattachment path overlay' }],
   });
 
+  adapter.submitInput = async (input: Record<string, unknown>) => {
+    submittedInput = input;
+    return { accepted: true, delivery: 'after_turn', runId: 'run_follow_up' };
+  };
+  const result = await session.send('explicit after-turn follow-up', undefined, {
+    queueMode: 'after-turn',
+  });
   assert.deepEqual(result, {
     queued: true,
     queueId: 'run_follow_up',
@@ -64,9 +88,9 @@ test('restored daemon run downgrades an unsupported interrupt prompt to after-tu
   });
   assert.deepEqual(submittedInput, {
     sessionId: 'session_restored',
-    afterRunId: 'run_restored',
+    afterRunId: 'run_active',
     delivery: 'after_turn',
-    input: [{ type: 'text', text: 'follow-up after restart' }],
+    input: [{ type: 'text', text: 'explicit after-turn follow-up' }],
   });
   assert.deepEqual(settingsUpdate, {
     sessionId: 'session_restored',
@@ -101,8 +125,7 @@ test('daemon run refreshes settings and hides exit_plan_mode without an approval
   });
 
   let settingsUpdate:
-    | { readonly sessionId: string; readonly patch: Record<string, unknown> }
-    | undefined;
+    { readonly sessionId: string; readonly patch: Record<string, unknown> } | undefined;
   let managedRunInput: Record<string, unknown> | undefined;
   patchMethod('initialize', async () => undefined);
   patchMethod('ensureSession', async () => false);
@@ -161,8 +184,7 @@ test('daemon run refreshes settings and hides exit_plan_mode without an approval
     },
   });
   const options = managedRunInput?.options as
-    | { readonly context?: { readonly excludeTools?: readonly string[] } }
-    | undefined;
+    { readonly context?: { readonly excludeTools?: readonly string[] } } | undefined;
   assert.ok(options?.context?.excludeTools?.includes('exit_plan_mode'));
 });
 

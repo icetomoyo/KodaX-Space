@@ -8,12 +8,26 @@ import {
   looksLikeInteractiveHtml,
   sandboxForInteractiveHtml,
 } from '../../renderer/src/features/artifact/htmlSandbox.js';
+import { WEB_PREVIEW_DIAGNOSTIC_MESSAGE_TYPE } from '@kodax-space/space-ipc-schema';
+import { ARTIFACT_HTML_FRAME_BOOTSTRAP_CSP } from '../window/app-protocol-policy.js';
 
 test('looksLikeInteractiveHtml detects script-driven HTML', () => {
   assert.equal(looksLikeInteractiveHtml('<h1>static</h1>'), false);
   assert.equal(looksLikeInteractiveHtml('<canvas id="c"></canvas>'), true);
   assert.equal(looksLikeInteractiveHtml('<script>requestAnimationFrame(() => {})</script>'), true);
   assert.equal(looksLikeInteractiveHtml('<button onclick="go()">Go</button>'), true);
+  assert.equal(
+    looksLikeInteractiveHtml(
+      `<style>.reveal{opacity:0}</style>${'x'.repeat(70_000)}<script>reveal()</script>`,
+    ),
+    true,
+  );
+  assert.equal(
+    looksLikeInteractiveHtml(
+      '<link rel="stylesheet" href="https://styles.example.com/presentation.css">',
+    ),
+    true,
+  );
 });
 
 test('buildInteractiveHtmlSrcDoc injects a restrictive in-frame CSP', () => {
@@ -23,9 +37,17 @@ test('buildInteractiveHtmlSrcDoc injects a restrictive in-frame CSP', () => {
   assert.match(out, /Content-Security-Policy/);
   assert.match(out, /connect-src 'none'/);
   assert.match(out, /script-src 'unsafe-inline'/);
+  assert.match(out, /worker-src blob:/);
   assert.match(out, /object-src 'none'/);
+  assert.match(out, /Object\.defineProperty\(window,name/);
+  assert.match(out, new RegExp(WEB_PREVIEW_DIAGNOSTIC_MESSAGE_TYPE));
+  assert.match(out, /securitypolicyviolation/);
   assert.ok(out.indexOf('Content-Security-Policy') < out.indexOf('<title>x</title>'));
   assert.equal(INTERACTIVE_HTML_CSP.includes('allow-same-origin'), false);
+});
+
+test('Artifact bootstrap policy preserves the inner document Blob worker capability', () => {
+  assert.match(ARTIFACT_HTML_FRAME_BOOTSTRAP_CSP, /worker-src blob:/);
 });
 
 test('buildInteractiveHtmlCsp opens only declared permission sources', () => {
@@ -60,18 +82,18 @@ test('buildInteractiveHtmlCsp opens only declared permission sources', () => {
   assert.match(csp, /object-src 'none'/);
 });
 
-test('inferPassiveHtmlPermissions allows declared passive resources but not scripts/connect', () => {
+test('inferPassiveHtmlPermissions allows declared passive resources but not connect', () => {
   const html = `
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter">
     <link rel="stylesheet" href="https://cdn.example.com/app.css">
     <img src="https://images.example.com/hero.png">
     <video poster="https://images.example.com/poster.jpg" src="https://media.example.com/demo.mp4"></video>
-    <style>@font-face{src:url("https://static.example.com/app.woff2")} body{background:url(https://static.example.com/bg.png)}</style>
+    <style>@import url("https://theme.example.com/base.css"); @font-face{src:url("https://static.example.com/app.woff2")} body{background:url(https://static.example.com/bg.png)}</style>
     <script src="https://scripts.example.com/app.js"></script>
   `;
 
   assert.deepEqual(inferPassiveHtmlPermissions(html), {
-    style: ['https://fonts.googleapis.com', 'https://cdn.example.com'],
+    style: ['https://fonts.googleapis.com', 'https://cdn.example.com', 'https://theme.example.com'],
     img: ['https://images.example.com', 'https://static.example.com'],
     media: ['https://media.example.com'],
     font: ['https://fonts.gstatic.com', 'https://static.example.com'],
@@ -85,7 +107,7 @@ test('buildInteractiveHtmlSrcDoc infers passive resources when no explicit permi
 
   assert.match(out, /style-src[^"]*https:\/\/cdn\.example\.com/);
   assert.match(out, /img-src[^"]*https:\/\/images\.example\.com/);
-  assert.doesNotMatch(out, /script-src[^"]*https:\/\/scripts\.example\.com/);
+  assert.match(out, /script-src[^"]*https:\/\/scripts\.example\.com/);
   assert.match(out, /connect-src 'none'/);
 });
 

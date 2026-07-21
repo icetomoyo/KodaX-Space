@@ -56,7 +56,7 @@ function mockUserConfig(
   setUserConfigImpl(impl);
 }
 
-test('empty config → optional user fields undefined with explicit Auto LLM 0.7.72 defaults', async () => {
+test('empty config → optional user fields undefined with explicit Auto LLM 0.7.73 defaults', async () => {
   mockUserConfig({});
   const d = await loadKodaxUserDefaults();
   assert.equal(d.provider, undefined);
@@ -552,7 +552,7 @@ test('load/update KodaX compaction config preserves unrelated config fields', as
   const overview = await updateKodaxCompactionConfig({
     enabled: false,
     triggerPercent: 60,
-  });
+  } as unknown as Parameters<typeof updateKodaxCompactionConfig>[0]);
 
   assert.equal(saveCalls.length, 1);
   assert.equal(config.provider, 'zhipu-coding');
@@ -560,15 +560,28 @@ test('load/update KodaX compaction config preserves unrelated config fields', as
   assert.deepEqual(config.compaction, {
     pruningGapRatio: 0.8,
     customFutureField: 'keep-me',
-    enabled: false,
+    enabled: true,
     triggerPercent: 60,
   });
-  assert.equal(overview.compaction.enabled, false);
+  assert.equal(overview.compaction.enabled, true);
   assert.equal(overview.compaction.triggerPercent, 60);
   assert.equal(overview.mcp.globalServers, 1);
 });
 
-test('Auto LLM defaults explicitly pin the KodaX 0.7.72 20 second timeout', async () => {
+test('KodaX compaction stays enabled and ignores thresholds outside 15-90', async () => {
+  mockUserConfig({
+    compaction: {
+      enabled: false,
+      triggerPercent: 95,
+    },
+  });
+
+  assert.deepEqual(await loadKodaxCompactionConfig(), { enabled: true });
+  const overview = await loadKodaxConfigOverview();
+  assert.deepEqual(overview.compaction, { enabled: true });
+});
+
+test('Auto LLM defaults explicitly pin the KodaX 0.7.73 timeout', async () => {
   mockUserConfig({});
 
   assert.deepEqual(await loadKodaxAutoModeDefaults(), {
@@ -583,6 +596,7 @@ test('Auto LLM config maps engine, classifier model and timeout', async () => {
       engine: 'rules',
       classifierModel: ' fast-provider:classifier ',
       timeoutMs: 35_500.9,
+      speculativeWindowMs: 750,
     },
   });
 
@@ -590,6 +604,7 @@ test('Auto LLM config maps engine, classifier model and timeout', async () => {
     engine: 'rules',
     classifierModel: 'fast-provider:classifier',
     timeoutMs: 35_500,
+    speculativeWindowMs: 750,
   });
 });
 
@@ -598,43 +613,51 @@ test('valid Auto LLM env overrides config while invalid values fall through', as
     engine: process.env.KODAX_AUTO_MODE_ENGINE,
     classifierModel: process.env.KODAX_AUTO_MODE_CLASSIFIER_MODEL,
     timeoutMs: process.env.KODAX_AUTO_MODE_TIMEOUT_MS,
+    speculativeWindowMs: process.env.KODAX_AUTO_SPECULATIVE_WINDOW_MS,
   };
   try {
     process.env.KODAX_AUTO_MODE_ENGINE = 'llm';
     process.env.KODAX_AUTO_MODE_CLASSIFIER_MODEL = 'env-provider:classifier';
     process.env.KODAX_AUTO_MODE_TIMEOUT_MS = '42000.8';
+    process.env.KODAX_AUTO_SPECULATIVE_WINDOW_MS = '0';
     mockUserConfig({
       autoMode: {
         engine: 'rules',
         classifierModel: 'file-provider:classifier',
         timeoutMs: 31_000,
+        speculativeWindowMs: 640,
       },
     });
     assert.deepEqual(await loadKodaxAutoModeDefaults(), {
       engine: 'llm',
       classifierModel: 'env-provider:classifier',
       timeoutMs: 42_000,
+      speculativeWindowMs: 0,
     });
 
     process.env.KODAX_AUTO_MODE_ENGINE = 'invalid';
     process.env.KODAX_AUTO_MODE_CLASSIFIER_MODEL = '   ';
     process.env.KODAX_AUTO_MODE_TIMEOUT_MS = '-1';
+    process.env.KODAX_AUTO_SPECULATIVE_WINDOW_MS = 'invalid';
     mockUserConfig({
       autoMode: {
         engine: 'rules',
         classifierModel: 'file-provider:classifier',
         timeoutMs: 31_000,
+        speculativeWindowMs: 640,
       },
     });
     assert.deepEqual(await loadKodaxAutoModeDefaults(), {
       engine: 'rules',
       classifierModel: 'file-provider:classifier',
       timeoutMs: 31_000,
+      speculativeWindowMs: 640,
     });
   } finally {
     restoreEnv('KODAX_AUTO_MODE_ENGINE', previous.engine);
     restoreEnv('KODAX_AUTO_MODE_CLASSIFIER_MODEL', previous.classifierModel);
     restoreEnv('KODAX_AUTO_MODE_TIMEOUT_MS', previous.timeoutMs);
+    restoreEnv('KODAX_AUTO_SPECULATIVE_WINDOW_MS', previous.speculativeWindowMs);
     setUserConfigImpl(null);
   }
 });

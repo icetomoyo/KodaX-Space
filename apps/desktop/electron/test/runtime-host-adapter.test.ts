@@ -82,11 +82,17 @@ function createFakeRuntime() {
     daemonInspections: 0,
     daemonStops: [] as unknown[],
     permissionGrantRevokes: [] as Array<{ grantId: string; expectedRevision: number }>,
+    permissionResponses: [] as Array<{
+      requestId: string;
+      decision: unknown;
+      options: unknown;
+    }>,
     workflowControls: [] as Array<{ action: string; runId: string }>,
     learningControls: [] as Array<{ action: string; nameOrSlug: string }>,
   };
   const sessions = new Set<string>();
   const settings = new Map<string, { revision: number; value: Record<string, unknown> }>();
+  const permissionRequests: import('@kodax-ai/kodax/runtime').RuntimePermissionRequest[] = [];
   const pending = new Map<string, (result: RuntimeRunResult) => void>();
   const connectionListeners = new Set<(state: RuntimeConnectionState) => void>();
   let connectionState: RuntimeConnectionState = {
@@ -103,7 +109,7 @@ function createFakeRuntime() {
       mode: 'daemon',
       profile: 'coder',
       startedAt: '2026-07-12T00:00:00.000Z',
-      version: '0.7.72',
+      version: '0.7.74',
       isolation: 'process',
     },
     capabilities: {
@@ -123,6 +129,8 @@ function createFakeRuntime() {
       coderFeatureMatrix: { version: 1, managedRun: true, todoProjection: true },
       sessionAdmission: { version: 1 },
       completeObservationSnapshot: { version: 1 },
+      contextCompaction: { version: 2 },
+      transcriptPaging: { version: 1 },
       connectionLifecycle: { version: 1 },
       typedRuntimeEvents: { version: 1 },
       daemonSafeRunInput: { version: 1 },
@@ -133,6 +141,7 @@ function createFakeRuntime() {
         reverseBridgeDrainingFence: true,
         backgroundWorkPreflight: true,
       },
+      runtimeAutoModeGuardrail: { version: 3, owner: 'session-runtime' },
     },
     grantedScopes: [
       'session:observe',
@@ -140,6 +149,7 @@ function createFakeRuntime() {
       'run:control',
       'interaction:respond',
       'permission:respond',
+      'permission:grant-admin',
       'learning:read',
       'learning:control',
       'credential:register',
@@ -163,6 +173,12 @@ function createFakeRuntime() {
       async transcript(sessionId: string) {
         calls.transcripts.push(sessionId);
         return { title: '', messages: [] };
+      },
+      async transcriptPage() {
+        return null;
+      },
+      async transcriptEntryChunk() {
+        return null;
       },
       async observe(sessionId: string) {
         calls.observed.push(sessionId);
@@ -266,7 +282,11 @@ function createFakeRuntime() {
     },
     events: { subscribe: () => ({ close() {} }), replay: async () => [] },
     permissions: {
-      listPending: async () => [],
+      listPending: async () => permissionRequests,
+      respond: async (requestId: string, decision: unknown, options: unknown) => {
+        calls.permissionResponses.push({ requestId, decision, options });
+        return true;
+      },
       listGrants: async () => ({
         revision: 3,
         value: [
@@ -451,6 +471,7 @@ function createFakeRuntime() {
     sessions,
     pending,
     settings,
+    permissionRequests,
     disconnect(reconnectable = true) {
       connectionState = {
         ...connectionState,
@@ -612,6 +633,8 @@ test('runtime selection attaches one Coder daemon with stable identity and requi
   assert.equal(options[0]?.requirements?.coderFeatureMatrix, 1);
   assert.equal(options[0]?.requirements?.sessionAdmission, 1);
   assert.equal(options[0]?.requirements?.completeObservationSnapshot, 1);
+  assert.equal(options[0]?.requirements?.contextCompaction, 2);
+  assert.equal(options[0]?.requirements?.transcriptPaging, 1);
   assert.equal(options[0]?.requirements?.connectionLifecycle, 1);
   assert.equal(options[0]?.requirements?.typedRuntimeEvents, 1);
   assert.equal(options[0]?.requirements?.daemonSafeRunInput, 1);
@@ -951,10 +974,86 @@ test('supported session operations use the Runtime facade', async () => {
   await adapter.forkSession({ sessionId: 's_1', selector: 'entry_1' });
   await adapter.rewindSession({ sessionId: 's_1', selector: 'entry_0' });
 
-  assert.deepEqual(fake.calls.transcripts, ['s_1']);
+  assert.deepEqual(fake.calls.transcripts, []);
   assert.deepEqual(fake.calls.compacted, [{ sessionId: 's_1', provider: 'mock' }]);
+  assert.deepEqual(fake.calls.observed, ['s_1']);
   assert.deepEqual(fake.calls.forked, [{ sessionId: 's_1', selector: 'entry_1' }]);
   assert.deepEqual(fake.calls.rewound, [{ sessionId: 's_1', selector: 'entry_0' }]);
+});
+
+test('oversized daemon transcripts are rebuilt from bounded pages and entry chunks', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_paged');
+  const older = {
+    entryId: 'entry_older',
+    parentId: null,
+    logicalId: 'logical_older',
+    timestamp: '2026-07-21T00:00:00.000Z',
+    type: 'message' as const,
+    source: 'user' as const,
+    message: { role: 'user' as const, content: 'older' },
+    active: true,
+  };
+  const newer = {
+    entryId: 'entry_newer',
+    parentId: 'entry_older',
+    logicalId: 'logical_newer',
+    timestamp: '2026-07-21T00:01:00.000Z',
+    type: 'message' as const,
+    source: 'assistant' as const,
+    message: { role: 'assistant' as const, content: 'newer' },
+    active: true,
+  };
+  let legacyTranscriptCalled = false;
+  Object.assign(fake.runtime.sessions, {
+    transcript: async () => {
+      legacyTranscriptCalled = true;
+      throw new Error('use session.transcript.page and session.transcript.entryChunk');
+    },
+    transcriptPage: async (input: { cursor?: string }) =>
+      input.cursor
+        ? {
+            revision: 'rev_1',
+            entries: [
+              { index: 0, entryId: older.entryId, byteLength: 100, oversized: false, entry: older },
+            ],
+            hasMore: false,
+          }
+        : {
+            revision: 'rev_1',
+            entries: [{ index: 1, entryId: newer.entryId, byteLength: 200_000, oversized: true }],
+            hasMore: true,
+            nextCursor: 'older-page',
+          },
+    transcriptEntryChunk: async () => ({
+      revision: 'rev_1',
+      entryIndex: 1,
+      entryId: newer.entryId,
+      encoding: 'base64-json' as const,
+      data: Buffer.from(JSON.stringify(newer), 'utf8').toString('base64'),
+      hasMore: false,
+    }),
+  });
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  const transcript = await adapter.transcript('s_paged');
+
+  assert.deepEqual(
+    transcript?.transcriptEntries.map((entry) => entry.entryId),
+    ['entry_older', 'entry_newer'],
+  );
+  assert.deepEqual(
+    transcript?.messages.map((message) => message.content),
+    ['older', 'newer'],
+  );
+  assert.equal(legacyTranscriptCalled, false);
+  await adapter.close();
 });
 
 test('Runtime session mutations invalidate the Space transcript compatibility cache', async () => {
@@ -1139,7 +1238,7 @@ test('initialization closes a constructed Runtime when host-tool registration fa
   assert.equal(fake.calls.close, 1);
 });
 
-test('initialization rejects a daemon older than the KodaX 0.7.72 release baseline', async () => {
+test('initialization rejects a daemon older than the KodaX 0.7.74 release baseline', async () => {
   const fake = createFakeRuntime();
   (fake.runtime.identity as { version: string }).version = '0.7.69';
   const adapter = new RuntimeHostAdapter({
@@ -1151,7 +1250,7 @@ test('initialization rejects a daemon older than the KodaX 0.7.72 release baseli
 
   await assert.rejects(
     adapter.initialize(),
-    /0\.7\.69.*required 0\.7\.72.*Restart the Coder daemon/i,
+    /0\.7\.69.*required 0\.7\.74.*Restart the Coder daemon/i,
   );
   assert.equal(adapter.snapshot().state, 'failed');
   assert.equal(fake.calls.close, 1);
@@ -1238,6 +1337,7 @@ test('session settings admit a missing Coder session before its first send', asy
       engine: 'llm',
       classifierModel: 'fast-provider:classifier',
       timeoutMs: 27_000,
+      speculativeWindowMs: 640,
     }),
   });
   const patch = {
@@ -1274,6 +1374,7 @@ test('session settings admit a missing Coder session before its first send', asy
         ...patch,
         autoModeClassifierModel: 'fast-provider:classifier',
         autoModeTimeoutMs: 27_000,
+        autoModeSpeculativeWindowMs: 640,
       },
       options: { expectedRevision: 0 },
     },
@@ -1289,6 +1390,7 @@ test('Auto LLM defaults fill missing settings without overwriting daemon session
       provider: 'anthropic',
       autoModeClassifierModel: 'other-client:classifier',
       autoModeTimeoutMs: 45_000,
+      autoModeSpeculativeWindowMs: 750,
     },
   });
   const adapter = new RuntimeHostAdapter({
@@ -1300,6 +1402,7 @@ test('Auto LLM defaults fill missing settings without overwriting daemon session
       engine: 'llm',
       classifierModel: 'space-default:classifier',
       timeoutMs: 20_000,
+      speculativeWindowMs: 640,
     }),
   });
 
@@ -1314,6 +1417,7 @@ test('Auto LLM defaults fill missing settings without overwriting daemon session
   ]);
   assert.equal(fake.settings.get('s_1')?.value.autoModeClassifierModel, 'other-client:classifier');
   assert.equal(fake.settings.get('s_1')?.value.autoModeTimeoutMs, 45_000);
+  assert.equal(fake.settings.get('s_1')?.value.autoModeSpeculativeWindowMs, 750);
 });
 
 test('Auto LLM default reconciliation retries CAS and preserves a concurrent client update', async () => {
@@ -1330,6 +1434,7 @@ test('Auto LLM default reconciliation retries CAS and preserves a concurrent cli
         value: {
           autoModeClassifierModel: 'other-client:classifier',
           autoModeTimeoutMs: 45_000,
+          autoModeSpeculativeWindowMs: 750,
         },
       });
       const error = new Error(
@@ -1349,6 +1454,7 @@ test('Auto LLM default reconciliation retries CAS and preserves a concurrent cli
       engine: 'llm',
       classifierModel: 'space-default:classifier',
       timeoutMs: 20_000,
+      speculativeWindowMs: 640,
     }),
   });
 
@@ -1359,6 +1465,7 @@ test('Auto LLM default reconciliation retries CAS and preserves a concurrent cli
     value: {
       autoModeClassifierModel: 'other-client:classifier',
       autoModeTimeoutMs: 45_000,
+      autoModeSpeculativeWindowMs: 750,
       permissionMode: 'auto',
     },
   });
@@ -1450,6 +1557,126 @@ test('failed after-turn submission revokes its newly registered credential lease
   );
   assert.deepEqual(fake.calls.credentialRevokes, ['credential_1']);
   await adapter.close();
+});
+
+test('interrupt submission reuses the active run bindings and returns the factual Runtime result', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_1');
+  fake.runtime.runs.submitInput = async (input) => {
+    fake.calls.submitted.push(input);
+    return {
+      accepted: true,
+      delivery: 'interrupt',
+      inputId: 'input_1',
+      runId: 'run_previous',
+      sessionId: 's_1',
+      afterRunId: 'run_previous',
+      sessionOrder: 1,
+    };
+  };
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    credentialResolver: async () => 'secret-from-keychain',
+  });
+
+  const result = await adapter.submitInput({
+    sessionId: 's_1',
+    afterRunId: 'run_previous',
+    delivery: 'interrupt',
+    input: [{ type: 'text', text: 'steer now' }],
+  });
+
+  assert.deepEqual(result, {
+    accepted: true,
+    delivery: 'interrupt',
+    inputId: 'input_1',
+    runId: 'run_previous',
+    sessionId: 's_1',
+    afterRunId: 'run_previous',
+    sessionOrder: 1,
+  });
+  assert.deepEqual(fake.calls.submitted, [
+    {
+      sessionId: 's_1',
+      afterRunId: 'run_previous',
+      delivery: 'interrupt',
+      input: [{ type: 'text', text: 'steer now' }],
+    },
+  ]);
+  assert.deepEqual(fake.calls.credentialRegistrations, []);
+  assert.deepEqual(fake.calls.credentialRevokes, []);
+  await adapter.close();
+});
+
+test('interrupt submission rejects replacement bindings before reaching Runtime', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_1');
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  await assert.rejects(
+    adapter.submitInput({
+      sessionId: 's_1',
+      afterRunId: 'run_previous',
+      delivery: 'interrupt',
+      input: [{ type: 'text', text: 'steer now' }],
+      hostTools: { leaseId: 'replacement_tools' },
+    }),
+    /must reuse the active run credential and host-tool bindings/,
+  );
+  assert.deepEqual(fake.calls.submitted, []);
+  assert.deepEqual(fake.calls.credentialRegistrations, []);
+  await adapter.close();
+});
+
+test('Runtime input capability projection follows interruptInput advertisement', () => {
+  const fake = createFakeRuntime();
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+  const projectCapabilities = (
+    adapter as unknown as {
+      spaceCapabilities(runtime: KodaXDaemonRuntime): readonly {
+        id: string;
+        version: number;
+        available: boolean;
+        reason?: string;
+      }[];
+    }
+  ).spaceCapabilities.bind(adapter);
+
+  assert.deepEqual(
+    projectCapabilities(fake.runtime).find((item) => item.id === 'runtime.input.interrupt'),
+    {
+      id: 'runtime.input.interrupt',
+      version: 1,
+      available: false,
+      reason: 'The connected KodaX Runtime does not advertise interruptInput.',
+    },
+  );
+
+  (fake.runtime.capabilities as Record<string, unknown>).interruptInput = { version: 2 };
+  assert.deepEqual(
+    projectCapabilities(fake.runtime).find((item) => item.id === 'runtime.input.interrupt'),
+    {
+      id: 'runtime.input.interrupt',
+      version: 2,
+      available: true,
+    },
+  );
 });
 
 test('observation bootstrap failure closes the daemon subscription', async () => {
@@ -1574,6 +1801,68 @@ test('Runtime permission grants keep their CAS revision for listing and revocati
   assert.deepEqual(fake.calls.permissionGrantRevokes, [
     { grantId: 'grant_1', expectedRevision: 3 },
   ]);
+  await adapter.close();
+});
+
+test('Runtime persistent permission responses return only the Runtime-issued suggestion ID', async () => {
+  const fake = createFakeRuntime();
+  fake.permissionRequests.push({
+    id: 'permission_1',
+    sessionId: 's_1',
+    runId: 'run_1',
+    toolCallId: 'tool_1',
+    toolName: 'bash',
+    inputPreview: JSON.stringify({ command: 'npm test' }),
+    executionCwd: path.resolve('C:\\project'),
+    grantSuggestions: [
+      { id: 'session_scope', kind: 'session', label: 'Allow this exact command for this task' },
+      {
+        id: 'persistent_scope',
+        kind: 'persistent',
+        label: 'Always allow this exact command: npm test',
+      },
+    ],
+    createdAt: '2026-07-20T00:00:00.000Z',
+  });
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+  });
+
+  assert.equal(await adapter.respondPermission('permission_1', 'allow_always'), true);
+  assert.deepEqual(fake.calls.permissionResponses, [
+    {
+      requestId: 'permission_1',
+      decision: { type: 'allow_always', suggestionId: 'persistent_scope' },
+      options: { runId: 'run_1' },
+    },
+  ]);
+  await adapter.close();
+});
+
+test('Runtime persistent permission responses fail closed without a persistent suggestion', async () => {
+  const fake = createFakeRuntime();
+  fake.permissionRequests.push({
+    id: 'permission_session_only',
+    sessionId: 's_1',
+    runId: 'run_1',
+    toolName: 'bash',
+    grantSuggestions: [
+      { id: 'session_scope', kind: 'session', label: 'Allow this exact command for this task' },
+    ],
+    createdAt: '2026-07-20T00:00:00.000Z',
+  });
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+  });
+
+  assert.equal(await adapter.respondPermission('permission_session_only', 'allow_always'), false);
+  assert.deepEqual(fake.calls.permissionResponses, []);
   await adapter.close();
 });
 

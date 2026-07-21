@@ -27,6 +27,27 @@ test('computeModelContextWindow: 200k with NO resolver methods is flagged "fallb
   assert.deepEqual(r, { contextWindow: 200_000, source: 'fallback' });
 });
 
+test('computeModelContextWindow: effective compaction context override reaches the SDK resolver', () => {
+  let received: unknown;
+  const r = computeModelContextWindow(
+    { getEffectiveContextWindow: () => 1_000_000 },
+    'k3',
+    (config) => {
+      received = config;
+      return config.contextWindow ?? 1_000_000;
+    },
+    { enabled: true, triggerPercent: 40, triggerTokens: 120_000, contextWindow: 400_000 },
+  );
+
+  assert.deepEqual(received, {
+    enabled: true,
+    triggerPercent: 40,
+    triggerTokens: 120_000,
+    contextWindow: 400_000,
+  });
+  assert.equal(r.contextWindow, 400_000);
+});
+
 // ---- Real SDK regression guard -------------------------------------------
 //
 // Guards the exact "反复出问题" regression: GLM-5.2 on the coding-plan providers
@@ -66,7 +87,11 @@ test('real SDK: resolveModelCapabilities default-model context bug is FIXED in 0
   const llm = await import('@kodax-ai/kodax/llm');
   const wasBuggy = llm.resolveModelCapabilities('zhipu-coding', 'glm-5.2');
   const healthy = llm.resolveModelCapabilities('zhipu', 'glm-5.2');
-  assert.equal(healthy?.contextWindow, 1_000_000, 'zhipu (default=glm-5) reads model-level correctly');
+  assert.equal(
+    healthy?.contextWindow,
+    1_000_000,
+    'zhipu (default=glm-5) reads model-level correctly',
+  );
   assert.equal(
     wasBuggy?.contextWindow,
     1_000_000,

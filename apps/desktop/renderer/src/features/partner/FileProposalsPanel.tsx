@@ -18,6 +18,7 @@ import {
   X,
 } from 'lucide-react';
 import { useAppStore } from '../../store/appStore.js';
+import { FileNameText } from '../../components/FileNameText.js';
 import { pushToast } from '../../store/toastStore.js';
 import { useI18n } from '../../i18n/I18nProvider.js';
 import type { MessageKey } from '../../i18n/messages.js';
@@ -435,9 +436,10 @@ export function FileProposalsPanel(): JSX.Element {
               title={proposal.targetPath}
             >
               <div className="flex items-center gap-2">
-                <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-fg-secondary">
-                  {proposal.targetPath}
-                </span>
+                <FileNameText
+                  name={proposal.targetPath}
+                  className="flex-1 font-mono text-[11px] text-fg-secondary"
+                />
                 <span
                   className={`rounded border px-1.5 py-0.5 text-[10px] ${statusClass(proposal.status)}`}
                 >

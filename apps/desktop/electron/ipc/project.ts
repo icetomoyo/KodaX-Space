@@ -9,6 +9,11 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { registerChannel } from './register.js';
 import { validateProjectRoot } from './validate.js';
+import {
+  GIT_CHANGES_STATUS_ARGS,
+  parseGitChangesStatus,
+  type GitChangeFile,
+} from './project-git-changes.js';
 import { projectStore } from '../projects/store.js';
 import { resolveInsideProject, toPosixRelative } from './files-core.js';
 import type { ProjectGitStatsDaily } from '@kodax-space/space-ipc-schema';
@@ -280,7 +285,7 @@ export function registerProjectChannels(): void {
 
   // project.gitChanges — F041 v0.1.4 右侧栏 Changes 节用
   //
-  // 同 project.gitStatus 跑 `git status --porcelain=v1 -b`，但**带路径**返回。
+  // 跑 `git status --porcelain=v1 -b -z`，用 NUL 分隔保证路径不被 Git 引号/转义。
   // 200 上限 + truncated 标志；走 projectStore.assertAllowed allowlist + runGit + 5s TTL cache。
   registerChannel('project.gitChanges', async (input) => {
     const projectRoot = await projectStore.assertAllowed(input.projectRoot);
@@ -299,7 +304,7 @@ export function registerProjectChannels(): void {
       return fallback;
     }
 
-    const status = await runGit(projectRoot, ['status', '--porcelain=v1', '-b']);
+    const status = await runGit(projectRoot, GIT_CHANGES_STATUS_ARGS);
     if (!status.ok) {
       const fallback: GitChangesOutput = {
         isGitRepo: true,
@@ -311,73 +316,7 @@ export function registerProjectChannels(): void {
       return fallback;
     }
 
-    type FileEntry = { path: string; status: 'M' | 'A' | 'D' | 'R' | 'U'; staged: boolean };
-    const files: FileEntry[] = [];
-    let branch: string | null = null;
-    let truncated = false;
-    const MAX_FILES = 200;
-    const MAX_PATH = 2048;
-
-    const lines = status.stdout.split('\n');
-    for (const rawLine of lines) {
-      if (!rawLine) continue;
-      if (rawLine.startsWith('## ')) {
-        const body = rawLine.slice(3);
-        const dotsIdx = body.indexOf('...');
-        const bracketIdx = body.indexOf(' [');
-        const branchEnd = dotsIdx >= 0 ? dotsIdx : bracketIdx >= 0 ? bracketIdx : body.length;
-        const rawBranch = body.slice(0, branchEnd).trim();
-        branch = rawBranch.length > 0 ? rawBranch.slice(0, 256) : 'HEAD';
-        continue;
-      }
-      if (files.length >= MAX_FILES) {
-        truncated = true;
-        break;
-      }
-      // porcelain v1: 'XY <path>' (或 'XY orig -> new' for renames)
-      // XY = 2 chars status, separator = ' ', 后面是 path
-      if (rawLine.length < 4) continue;
-      const x = rawLine.charAt(0);
-      const y = rawLine.charAt(1);
-      let restPath = rawLine.slice(3);
-      // rename: 'R  orig -> new' —— 显示 new 路径
-      if (x === 'R' || y === 'R') {
-        const arrow = restPath.indexOf(' -> ');
-        if (arrow >= 0) restPath = restPath.slice(arrow + 4);
-      }
-      if (restPath.length === 0 || restPath.length > MAX_PATH) continue;
-      // F041 security review MED-2: defense-in-depth —— 恶意 git 输出（如 post-index-change
-      // hook）可能塞 'R real.txt ->  ../../etc/passwd' 让 ..-prefix 路径流到 renderer。
-      // files.diff 的 isPathInside 已挡实际读，但在 parse 处一并 reject 更干净，且省一次
-      // IPC round-trip 才发现的体验。NUL 字节同套思路：合法 git 路径绝不应含 \x00。
-      if (restPath.startsWith('..') || restPath.includes('\x00')) continue;
-
-      let statusChar: 'M' | 'A' | 'D' | 'R' | 'U';
-      let staged: boolean;
-      if (rawLine.startsWith('??')) {
-        statusChar = 'U';
-        staged = false;
-      } else if (x === 'A' || y === 'A') {
-        statusChar = 'A';
-        staged = x === 'A';
-      } else if (x === 'D' || y === 'D') {
-        statusChar = 'D';
-        staged = x === 'D';
-      } else if (x === 'R' || y === 'R') {
-        statusChar = 'R';
-        staged = x === 'R';
-      } else if (x === 'M' || y === 'M') {
-        statusChar = 'M';
-        staged = x === 'M';
-      } else {
-        // 其它 (C/?/!/ ) —— 归一化为 M (modified) 兜底，避免遗漏
-        statusChar = 'M';
-        staged = x !== ' ' && x !== '?';
-      }
-      files.push({ path: restPath, status: statusChar, staged });
-    }
-
-    const result = { isGitRepo: true, branch, files, truncated };
+    const result = { isGitRepo: true, ...parseGitChangesStatus(status.stdout) };
     writeGitChangesCache(projectRoot, result);
     return result;
   });
@@ -704,7 +643,7 @@ function writeGitStatusCache(projectRoot: string, data: GitStatusOutput): void {
 type GitChangesOutput = {
   isGitRepo: boolean;
   branch: string | null;
-  files: Array<{ path: string; status: 'M' | 'A' | 'D' | 'R' | 'U'; staged: boolean }>;
+  files: GitChangeFile[];
   truncated: boolean;
 };
 const GIT_CHANGES_TTL_MS = 5_000;
@@ -763,9 +702,9 @@ async function runGit(cwd: string, args: readonly string[]): Promise<GitRunResul
       resolve({ ok: false, stdout });
     }, 5_000);
 
-    child.stdout?.on('data', (chunk: Buffer) => {
+    child.stdout?.setEncoding('utf8');
+    child.stdout?.on('data', (text: string) => {
       if (truncated) return;
-      const text = chunk.toString('utf8');
       if (stdout.length + text.length > MAX_BYTES) {
         stdout += text.slice(0, MAX_BYTES - stdout.length);
         truncated = true;

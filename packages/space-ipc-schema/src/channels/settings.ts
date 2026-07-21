@@ -64,10 +64,19 @@ const spaceSettingsSchema = z.object({
 
 export type SpaceSettingsT = z.infer<typeof spaceSettingsSchema>;
 
+export const KODAX_COMPACTION_TRIGGER_PERCENT_MIN = 15;
+export const KODAX_COMPACTION_TRIGGER_PERCENT_MAX = 90;
+
 export const kodaxCompactionSettingsSchema = z
   .object({
-    enabled: z.boolean().optional(),
-    triggerPercent: z.number().int().min(1).max(100).optional(),
+    enabled: z.literal(true).default(true),
+    triggerPercent: z
+      .number()
+      .int()
+      .min(KODAX_COMPACTION_TRIGGER_PERCENT_MIN)
+      .max(KODAX_COMPACTION_TRIGGER_PERCENT_MAX)
+      .optional(),
+    triggerTokens: z.number().int().min(0).max(10_000_000).optional(),
     contextWindow: z.number().int().min(1024).max(10_000_000).optional(),
   })
   .strict();

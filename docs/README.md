@@ -1,8 +1,8 @@
 # KodaX Space 文档中心
 
-> 当前源码/发布准备基线：KodaX Space `v0.1.32`（package `0.1.32`）/ KodaX `0.7.72`；最近已发布稳定 Space 版本仍为 `v0.1.31`。
+> 当前源码/发布准备基线：KodaX Space `v0.1.32`（package `0.1.32`）/ KodaX `0.7.73`；最近已发布稳定 Space 版本仍为 `v0.1.31`。
 
-这里是文档的统一入口。当前源码已采用正式 KodaX 0.7.72：Coder 默认连接共享 daemon，Auto LLM 权限由 Runtime 单点决策，Partner 继续由 Space inline owner 管理；统一 Actor/Turn 与 Learning Center 兼容契约已接入，但完整 F117/F118 桌面管理体验仍在后续路线中。历史设计和 release 记录保留当时语境。
+这里是文档的统一入口。当前源码已采用正式 KodaX 0.7.73：Coder 默认连接共享 daemon，Auto LLM 由 Runtime 单点决策并公开有效配置/遥测，持久授权只接受 Runtime 给出的精确建议；Partner 继续由 Space inline owner 管理。统一 Actor/Turn 与 Learning Center 兼容契约已接入，但完整 F117/F118 桌面管理体验仍在后续路线中。历史设计和 release 记录保留当时语境。
 
 ## 我想要……
 

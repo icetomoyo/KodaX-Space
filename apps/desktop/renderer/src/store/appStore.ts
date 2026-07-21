@@ -58,6 +58,26 @@ import { mergeRuntimeSettingsIntoSessions } from './runtimeSessionSettings.js';
 
 export type MascotMode = 'legacy' | 'sprite' | 'off';
 
+export interface SessionCompactionOutcome {
+  readonly committed: boolean;
+  readonly tokensBefore: number;
+  readonly tokensAfter: number;
+  readonly source?: 'manual' | 'automatic_threshold' | 'physical_capacity';
+  readonly elapsedMs?: number;
+  readonly strategy?: 'full_prefix' | 'map_reduce';
+  readonly effectiveTriggerTokens?: number;
+  readonly reason?: string;
+}
+
+export interface SessionTokenInfo {
+  readonly tokens: number;
+  readonly source: 'iteration_end' | 'compact_stats' | 'estimate';
+  readonly compactedFrom?: number;
+  readonly contextId?: string;
+  readonly contextRevision?: number;
+  readonly lastCompaction?: SessionCompactionOutcome;
+}
+
 /**
  * Persistent inline notification (NotificationsSurface 渲染源)。
  *   - id: dedupe key (eg `ctx-warn:${sessionId}` / `auto-fallback:${sessionId}:${reason}`)
@@ -244,9 +264,7 @@ interface AppState {
    *
    * 未出现在表里的 session：从未点开 (eventsBuffer 空) → 走 dashboard 那边 msgCount × 1500 估算路径。
    */
-  tokensBySession: Readonly<
-    Record<string, { tokens: number; source: 'iteration_end' | 'estimate' } | undefined>
-  >;
+  tokensBySession: Readonly<Record<string, SessionTokenInfo | undefined>>;
   /**
    * Derived: transient (transcript-only) artifacts per session, minted from
    * completed `create_artifact` tool calls. Updated incrementally on tool_result
@@ -840,6 +858,47 @@ function stampLiveStreamEvent(event: SessionEvent): SessionEvent {
     return { ...event, sentAt: Date.now() };
   }
   return event;
+}
+
+function acceptsRootContextUpdate(
+  current: SessionTokenInfo | undefined,
+  contextId: string | undefined,
+  contextRevision: number | undefined,
+): boolean {
+  if (!current) return true;
+  if (current.contextId && contextId && current.contextId !== contextId) return true;
+  if (current.contextRevision === undefined) return true;
+  // Once the 0.7.74 revisioned stream is established, a revision-less compatibility event must
+  // not be allowed to roll it back. Equal revisions remain valid because token use grows between
+  // iterations inside one context revision.
+  return contextRevision !== undefined && contextRevision >= current.contextRevision;
+}
+
+function tokenInfoFromCompaction(
+  event: Extract<SessionEvent, { kind: 'compact_stats' }>,
+): SessionTokenInfo {
+  const committed = event.committed !== false;
+  return {
+    tokens: event.tokensAfter,
+    source: 'compact_stats',
+    ...(committed ? { compactedFrom: event.tokensBefore } : {}),
+    ...(event.contextId ? { contextId: event.contextId } : {}),
+    ...((event.afterRevision ?? event.contextRevision) !== undefined
+      ? { contextRevision: event.afterRevision ?? event.contextRevision }
+      : {}),
+    lastCompaction: {
+      committed,
+      tokensBefore: event.tokensBefore,
+      tokensAfter: event.tokensAfter,
+      ...(event.source ? { source: event.source } : {}),
+      ...(event.elapsedMs !== undefined ? { elapsedMs: event.elapsedMs } : {}),
+      ...(event.strategy ? { strategy: event.strategy } : {}),
+      ...(event.effectiveTriggerTokens !== undefined
+        ? { effectiveTriggerTokens: event.effectiveTriggerTokens }
+        : {}),
+      ...(event.reason ? { reason: event.reason } : {}),
+    },
+  };
 }
 
 // 粗略 token 估算 — 同 bubbles.tsx / ContextWindowIndicator 公式（ASCII/4 + non-ASCII × 1）。
@@ -1562,6 +1621,18 @@ export const useAppStore = create<AppState>((set) => ({
             noticeKind: item.noticeKind,
             text: item.text,
           });
+          if (
+            item.noticeKind === 'compaction' &&
+            item.tokensBefore !== undefined &&
+            item.tokensAfter !== undefined
+          ) {
+            histEvents.push({
+              kind: 'compact_stats',
+              sessionId,
+              tokensBefore: item.tokensBefore,
+              tokensAfter: item.tokensAfter,
+            });
+          }
           markTurnHasEvents();
         } else if (item.kind === 'workflow_notice') {
           // Workflow 结果/失败提示条:SDK 把它作为 `<task-completed>` 合成消息存进 transcript,
@@ -1606,6 +1677,31 @@ export const useAppStore = create<AppState>((set) => ({
       const currentMsgs = state.userMessagesBySession[sessionId] ?? [];
       const currentEvents = state.eventsBySession[sessionId] ?? [];
       const currentLocalNotices = state.localNoticesBySession[sessionId] ?? [];
+      const combinedMsgs = [...histMsgs, ...currentMsgs];
+      const combinedEvents = [...histEvents, ...currentEvents];
+      let restoredTokenInfo = state.tokensBySession[sessionId];
+      if (restoredTokenInfo === undefined) {
+        const latestCompactStats = [...histEvents]
+          .reverse()
+          .find(
+            (event): event is Extract<SessionEvent, { kind: 'compact_stats' }> =>
+              event.kind === 'compact_stats' && event.contextKind !== 'child',
+          );
+        if (latestCompactStats) {
+          restoredTokenInfo = tokenInfoFromCompaction(latestCompactStats);
+        } else {
+          let total = 0;
+          for (const message of combinedMsgs) total += approxTokensForStats(message.content);
+          for (const event of combinedEvents) {
+            if (event.kind === 'text_delta' || event.kind === 'thinking_delta') {
+              total += approxTokensForStats(event.text);
+            } else if (event.kind === 'tool_result') {
+              total += approxTokensForStats(event.content);
+            }
+          }
+          if (total > 0) restoredTokenInfo = { tokens: total, source: 'estimate' };
+        }
+      }
       // v0.1.9 fix: 历史 events 已经发生过,director 不应该再"自动展开"那些信号触发的
       // popout (用户点已有 session 不该弹 worker/diff/plan popout)。 扫一遍 histEvents,
       // 提前 mark 该 session 已经"促发"过的 SmartPopoutKind,让 director 视为 already
@@ -1630,11 +1726,11 @@ export const useAppStore = create<AppState>((set) => ({
         userMessagesBySession: {
           ...state.userMessagesBySession,
           // 历史前置——若 race 期 user 已 append 了 Q3,结果是 [hist..., Q3]
-          [sessionId]: [...histMsgs, ...currentMsgs],
+          [sessionId]: combinedMsgs,
         },
         eventsBySession: {
           ...state.eventsBySession,
-          [sessionId]: [...histEvents, ...currentEvents],
+          [sessionId]: combinedEvents,
         },
         localNoticesBySession: {
           ...state.localNoticesBySession,
@@ -1642,8 +1738,16 @@ export const useAppStore = create<AppState>((set) => ({
         },
         transientArtifactsBySession: {
           ...state.transientArtifactsBySession,
-          [sessionId]: collectTransientArtifactsFromEvents([...histEvents, ...currentEvents]),
+          [sessionId]: collectTransientArtifactsFromEvents(combinedEvents),
         },
+        ...(restoredTokenInfo
+          ? {
+              tokensBySession: {
+                ...state.tokensBySession,
+                [sessionId]: restoredTokenInfo,
+              },
+            }
+          : {}),
         promotedPopoutsBySession: {
           ...state.promotedPopoutsBySession,
           [sessionId]: histPromoted,
@@ -1817,12 +1921,34 @@ export const useAppStore = create<AppState>((set) => ({
       }
       // F008: 同步抽取 work_budget / harness_profile 到 derived maps
       // —— 视图不必每次 scan 整条 bucket
-      if (event.kind === 'iteration_end') {
+      if (event.kind === 'iteration_end' && event.contextKind !== 'child') {
         // 权威 token 计数派生表 — Dashboard 订阅这里，避免每个 text_delta 都触发 dashboard 重算
-        next.tokensBySession = {
-          ...state.tokensBySession,
-          [event.sessionId]: { tokens: event.tokenCount, source: 'iteration_end' },
-        };
+        const current = state.tokensBySession[event.sessionId];
+        if (acceptsRootContextUpdate(current, event.contextId, event.contextRevision)) {
+          next.tokensBySession = {
+            ...state.tokensBySession,
+            [event.sessionId]: {
+              tokens: event.tokenCount,
+              source: 'iteration_end',
+              ...(event.contextId ? { contextId: event.contextId } : {}),
+              ...(event.contextRevision !== undefined
+                ? { contextRevision: event.contextRevision }
+                : {}),
+              ...(current?.lastCompaction ? { lastCompaction: current.lastCompaction } : {}),
+            },
+          };
+        }
+      } else if (event.kind === 'compact_stats' && event.contextKind !== 'child') {
+        // Compaction changes the active model context without deleting visible scrollback.
+        // Keep the authoritative post-compaction value separate from transcript history.
+        const current = state.tokensBySession[event.sessionId];
+        const contextRevision = event.afterRevision ?? event.contextRevision;
+        if (acceptsRootContextUpdate(current, event.contextId, contextRevision)) {
+          next.tokensBySession = {
+            ...state.tokensBySession,
+            [event.sessionId]: tokenInfoFromCompaction(event),
+          };
+        }
       } else if (event.kind === 'session_complete') {
         if (!isSessionVisiblyOpen(state, event.sessionId)) {
           const unreadFlags = setSessionFlagValue(

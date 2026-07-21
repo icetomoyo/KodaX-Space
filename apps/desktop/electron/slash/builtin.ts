@@ -2389,11 +2389,13 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
           echo: true,
         };
       }
+      const tokensBefore = result.tokensBefore ?? 0;
+      const tokensAfter = result.tokensAfter ?? 0;
+      const reductionPercent =
+        tokensBefore > 0 ? Math.max(0, ((tokensBefore - tokensAfter) / tokensBefore) * 100) : 0;
       return {
         ok: true,
-        message: `Compacted context: ${result.tokensBefore ?? 0} -> ${
-          result.tokensAfter ?? 0
-        } tokens.`,
+        message: `Compacted context: ${tokensBefore.toLocaleString('en-US')} → ${tokensAfter.toLocaleString('en-US')} tokens (${reductionPercent.toFixed(1)}% reduction).`,
         echo: true,
       };
     },

@@ -404,25 +404,43 @@ export class RealKodaXSession implements ManagedSession {
         // missing or stale. Reconcile before attaching a continuation; a fresh run
         // performs the same one-time reconciliation at its execution boundary.
         await this.syncRuntimeSessionSettings();
-        // Daemon continuations currently expose only after-turn delivery. This is
-        // especially important after Space reconnects: the active run lives in the
-        // daemon, so there is no in-process interrupt queue to target. Treat an
-        // interrupt request as best-effort and preserve the prompt by queueing it
-        // after the recovered run instead of rejecting it at the IPC boundary.
-        if (options?.promptOverlay) {
-          throw new Error('A prompt overlay cannot be attached to a daemon continuation.');
-        }
+        // Preserve the delivery mode selected by the user. In particular, normal
+        // Enter means interrupt while Ctrl/Cmd+Enter means after-turn. A Runtime
+        // that does not advertise interruptInput must reject that request
+        // factually; silently creating an after-turn continuation changes both the
+        // delivery boundary and batching semantics.
+        // Daemon after-turn inputs do not expose per-input prompt overlays yet.
+        // Preserve attachment/Partner context by placing the overlay beside the
+        // queued prompt only on this compatibility path. Fresh runs and the
+        // embedded queue keep it in system context via options.context.
+        const continuationPrompt = options?.promptOverlay
+          ? `${prompt}\n\n${options.promptOverlay}`
+          : prompt;
+        const queueMode = options?.queueMode ?? 'interrupt';
+        const delivery = queueMode === 'after-turn' ? 'after_turn' : 'interrupt';
         const result = await runtimeHostAdapter.submitInput({
           sessionId: this.sessionId,
           afterRunId: activeRunId,
-          delivery: 'after_turn',
-          input: this.buildRuntimeInput(prompt, artifacts),
+          delivery,
+          input: this.buildRuntimeInput(continuationPrompt, artifacts),
         });
         if (!result.accepted) {
-          throw new Error(`The daemon rejected the after-turn input: ${result.reason}.`);
+          if (delivery === 'interrupt' && result.reason === 'unsupported_capability') {
+            throw new Error(
+              'The connected KodaX Runtime does not support mid-turn interrupt input. ' +
+                'Use Ctrl/Cmd+Enter to queue after the current turn.',
+            );
+          }
+          throw new Error(`The daemon rejected the ${queueMode} input: ${result.reason}.`);
+        }
+        if (result.delivery !== delivery) {
+          throw new Error(
+            `The daemon changed input delivery from ${delivery} to ${result.delivery}; ` +
+              'the prompt was not accepted with altered semantics.',
+          );
         }
         this.lastActivityAt = Date.now();
-        return { queued: true, queueId: result.runId, queueMode: 'after-turn' };
+        return { queued: true, queueId: result.runId, queueMode };
       }
       this.startRun(prompt, artifacts, options?.promptOverlay);
       return { queued: false };
@@ -457,14 +475,12 @@ export class RealKodaXSession implements ManagedSession {
   ): readonly RuntimeInput[] {
     return [
       { type: 'text', text: prompt },
-      ...(artifacts ?? []).map(
-        (artifact): RuntimeInput => ({
-          type: 'image',
-          path: artifact.path,
-          mediaType: artifact.mediaType,
-          source: artifact.source,
-        }),
-      ),
+      ...(artifacts ?? []).map((artifact): RuntimeInput => ({
+        type: 'image',
+        path: artifact.path,
+        mediaType: artifact.mediaType,
+        source: artifact.source,
+      })),
     ];
   }
 
@@ -1273,15 +1289,15 @@ export class RealKodaXSession implements ManagedSession {
         emitLive({ kind: 'iteration_start', sessionId: sid, iter, maxIter });
       },
       onIterationEnd: (info) => {
-        // Sub-agent (workflow / dispatch_child_task) iterations are forwarded to the
-        // PARENT handler tagged only with `scope: 'worker'` — the SDK gives iteration
-        // events no `liveOnly`/`childAgentId` meta, so isTransientChildEvent can't catch
-        // them. Emitting them into the main stream makes composeMessages flush the
-        // in-flight assistant bubble on every worker iteration, chopping one streaming
-        // reply into several mid-sentence bubbles while a workflow's N sub-agents run in
-        // parallel. Only the main loop's `parent` (or legacy undefined) scope belongs in
-        // the main transcript / status indicators.
-        if (info.scope === 'worker') return;
+        // Stable context ownership supersedes the legacy worker heuristic: a root worker
+        // still belongs to this transcript, while child-agent telemetry must not flush or
+        // overwrite the root UI. Keep the heuristic only for pre-v0.7.74 callbacks.
+        if (
+          info.contextKind === 'child' ||
+          (info.contextKind === undefined && info.scope === 'worker')
+        ) {
+          return;
+        }
         emitLive({
           kind: 'iteration_end',
           sessionId: sid,
@@ -1290,6 +1306,11 @@ export class RealKodaXSession implements ManagedSession {
           tokenCount: info.tokenCount,
           tokenSource: info.tokenSource,
           scope: info.scope,
+          contextId: info.contextId,
+          contextKind: info.contextKind,
+          parentContextId: info.parentContextId,
+          agentId: info.agentId,
+          contextRevision: info.contextRevision,
           usage: info.usage
             ? {
                 inputTokens: info.usage.inputTokens,
@@ -1313,19 +1334,51 @@ export class RealKodaXSession implements ManagedSession {
       },
 
       // ---- Context compaction ----
-      onCompactStart: () => {
-        emitLive({ kind: 'compact_start', sessionId: sid });
+      onCompactStart: (meta) => {
+        emitLive({
+          kind: 'compact_start',
+          sessionId: sid,
+          contextId: meta?.contextId,
+          contextKind: meta?.contextKind,
+          parentContextId: meta?.parentContextId,
+          agentId: meta?.agentId,
+          contextRevision: meta?.contextRevision,
+        });
       },
-      onCompactStats: (info) => {
+      onContextCompactionFinished: (info) => {
         emitLive({
           kind: 'compact_stats',
           sessionId: sid,
           tokensBefore: info.tokensBefore,
           tokensAfter: info.tokensAfter,
+          contextId: info.contextId,
+          contextKind: info.contextKind,
+          parentContextId: info.parentContextId,
+          agentId: info.agentId,
+          contextRevision: info.contextRevision,
+          source: info.source,
+          committed: info.committed,
+          elapsedMs: info.elapsedMs,
+          strategy: info.strategy,
+          effectiveTriggerTokens: info.effectiveTriggerTokens,
+          protectedBudgetTokens: info.protectedBudgetTokens,
+          fixedInputTokens: info.fixedInputTokens,
+          eligibleTokens: info.eligibleTokens,
+          rawTailTokens: info.rawTailTokens,
+          summaryTokens: info.summaryTokens,
+          queryLedgerTokens: info.queryLedgerTokens,
         });
       },
-      onCompactEnd: () => {
-        emitLive({ kind: 'compact_end', sessionId: sid });
+      onCompactEnd: (meta) => {
+        emitLive({
+          kind: 'compact_end',
+          sessionId: sid,
+          contextId: meta?.contextId,
+          contextKind: meta?.contextKind,
+          parentContextId: meta?.parentContextId,
+          agentId: meta?.agentId,
+          contextRevision: meta?.contextRevision,
+        });
       },
 
       // ---- Provider retry / recovery ----

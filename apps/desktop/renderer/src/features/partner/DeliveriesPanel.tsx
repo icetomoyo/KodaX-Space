@@ -14,6 +14,7 @@ import {
   RotateCcw,
 } from 'lucide-react';
 import { useAppStore } from '../../store/appStore.js';
+import { FileNameText } from '../../components/FileNameText.js';
 import { useI18n } from '../../i18n/I18nProvider.js';
 import { pushToast } from '../../store/toastStore.js';
 import { openPartnerDeliveryInViewer, revealPath } from '../../lib/openPath.js';
@@ -327,9 +328,10 @@ function DeliveryList({
                 strokeWidth={1.75}
                 aria-hidden
               />
-              <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-fg-secondary">
-                {delivery.relativePath}
-              </span>
+              <FileNameText
+                name={delivery.relativePath}
+                className="flex-1 font-mono text-[11px] text-fg-secondary"
+              />
               <span className="rounded border border-border-default px-1.5 py-0.5 text-[10px] text-fg-muted">
                 {delivery.rootKind === 'run-output'
                   ? t('partner.deliveries.root.runOutput')
@@ -391,9 +393,10 @@ function CheckpointList({
                 strokeWidth={1.75}
                 aria-hidden
               />
-              <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-fg-secondary">
-                {checkpoint.relativePath}
-              </span>
+              <FileNameText
+                name={checkpoint.relativePath}
+                className="flex-1 font-mono text-[11px] text-fg-secondary"
+              />
               <span
                 className={`rounded border px-1.5 py-0.5 text-[10px] ${
                   active ? 'border-ok/40 bg-ok/10 text-ok' : 'border-border-default text-fg-muted'

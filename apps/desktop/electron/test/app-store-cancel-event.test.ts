@@ -32,6 +32,7 @@ beforeEach(() => {
     userMessagesBySession: {},
     queuedUserMessagesBySession: {},
     localNoticesBySession: {},
+    tokensBySession: {},
     notifications: [],
     workflowRuns: {},
     workflowNoticesBySession: {},
@@ -299,6 +300,32 @@ test('prependSessionHistory restores local notices outside real user turns', () 
       { content: '/repointel status', variant: 'echo' },
       { content: '[repointel] status: ok', variant: 'output' },
     ],
+  );
+});
+
+test('prependSessionHistory restores the persisted post-compaction context instead of summing old scrollback', () => {
+  const items: SessionHistoryItem[] = [
+    { kind: 'user', content: 'large old context' },
+    { kind: 'assistant', text: 'large old answer' },
+    {
+      kind: 'lineage_notice',
+      noticeKind: 'compaction',
+      text: 'summary',
+      tokensBefore: 322_973,
+      tokensAfter: 222_460,
+    },
+  ];
+
+  useAppStore.getState().prependSessionHistory(SID, items, 999);
+
+  const state = useAppStore.getState();
+  assert.deepEqual(state.tokensBySession[SID], {
+    tokens: 222_460,
+    source: 'compact_stats',
+  });
+  assert.equal(
+    state.eventsBySession[SID]?.some((event) => event.kind === 'compact_stats'),
+    true,
   );
 });
 

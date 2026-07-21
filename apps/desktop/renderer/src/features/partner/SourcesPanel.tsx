@@ -17,9 +17,12 @@ import {
 } from 'lucide-react';
 import { useAppStore } from '../../store/appStore.js';
 import { useI18n } from '../../i18n/I18nProvider.js';
+import { FileNameText } from '../../components/FileNameText.js';
+import { previewFileInViewer } from '../../lib/openPath.js';
 import { FileTree } from '../code/FileTree.js';
 import { AdminAuditPanel } from './AdminAuditPanel.js';
 import { KnowledgeBasePanel } from './KnowledgeBasePanel.js';
+import { activatePartnerProjectFile } from './partnerProjectFileActivation.js';
 import {
   PARTNER_SOURCES_CHANGED_EVENT,
   readPartnerPendingSources,
@@ -302,6 +305,7 @@ export function SourcesPanel(): JSX.Element {
         available: activeSourceIds.has(source.id),
         used: usedSourceIds.has(source.id),
         pending: false,
+        targetKind: source.targetKind,
       }))
     : pendingSources.map((source) => ({
         id: source.path,
@@ -312,6 +316,7 @@ export function SourcesPanel(): JSX.Element {
         available: false,
         used: false,
         pending: true,
+        targetKind: null,
       }));
   const selectedAlreadyAdded = Boolean(
     selectedPath &&
@@ -398,7 +403,11 @@ export function SourcesPanel(): JSX.Element {
                   strokeWidth={1.75}
                   aria-hidden
                 />
-                <span className="truncate">{source.label ?? source.path}</span>
+                {source.targetKind === 'file' ? (
+                  <FileNameText name={source.label ?? source.path} className="flex-1" />
+                ) : (
+                  <span className="min-w-0 flex-1 truncate">{source.label ?? source.path}</span>
+                )}
                 <span className="flex flex-wrap gap-1 text-[10px]">
                   <span
                     className={
@@ -499,8 +508,18 @@ export function SourcesPanel(): JSX.Element {
             projectRoot={currentProjectPath}
             selectedPath={selectedPath}
             onSelect={(path) => {
-              setSelectedPath(path);
-              setSelectedTargetKind('file');
+              activatePartnerProjectFile(path, {
+                selectFile: (selectedFile) => {
+                  setSelectedPath(selectedFile);
+                  setSelectedTargetKind('file');
+                },
+                openFile: (selectedFile) => {
+                  void previewFileInViewer(selectedFile, {
+                    projectRoot: currentProjectPath,
+                    notifyOnError: true,
+                  });
+                },
+              });
             }}
             onSelectDirectory={(path) => {
               setSelectedPath(path);

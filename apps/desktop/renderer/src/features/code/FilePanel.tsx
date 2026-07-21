@@ -15,6 +15,7 @@ import { FileTree } from './FileTree.js';
 import { MonacoViewer } from './MonacoViewer.js';
 import { MonacoDiffViewer } from './MonacoDiffViewer.js';
 import { useI18n } from '../../i18n/I18nProvider.js';
+import { FileNameText } from '../../components/FileNameText.js';
 
 type ViewMode = 'read' | 'diff';
 
@@ -129,9 +130,7 @@ export function FilePanel(): JSX.Element | null {
         {selectedPath && (
           <>
             <span className="text-fg-faint">·</span>
-            <code className="font-mono truncate flex-1 text-fg-muted" title={selectedPath}>
-              {selectedPath}
-            </code>
+            <FileNameText name={selectedPath} className="flex-1 font-mono text-fg-muted" />
             <button
               type="button"
               className={`px-1.5 py-0.5 rounded text-[11px] ${

@@ -11,6 +11,7 @@
 import { useEffect, useMemo, useState, lazy, Suspense } from 'react';
 import { Eye, FolderOpen } from 'lucide-react';
 import { Caret } from '../../../components/Caret.js';
+import { FileNameText } from '../../../components/FileNameText.js';
 import { openFileSmart, isPreviewablePath } from '../../../lib/openPath.js';
 import { useI18n } from '../../../i18n/I18nProvider.js';
 
@@ -102,9 +103,7 @@ export function ToolDiffView(props: ToolDiffViewProps): JSX.Element {
           aria-expanded={expanded}
         >
           <Caret open={expanded} />
-          <span className="truncate flex-1" title={props.path}>
-            {name}
-          </span>
+          <FileNameText name={name} className="flex-1" title={props.path} />
           {summary.plus > 0 && <span className="text-ok font-semibold">+{summary.plus}</span>}
           {summary.minus > 0 && <span className="text-danger font-semibold">−{summary.minus}</span>}
           {/* review C3-HIGH-2: 多集合 diff 算出 0/0 但 before !== after 是"行只是被

@@ -5,6 +5,12 @@ import { installNavigationGuards } from '../window/navigation-guards.js';
 
 type WindowOpenHandler = (details: { url: string }) => { action: 'deny' };
 type NavigateHandler = (event: { preventDefault(): void }, url: string) => void;
+type FrameNavigateHandler = (details: {
+  url: string;
+  isMainFrame: boolean;
+  frame: { url: string } | null;
+  preventDefault(): void;
+}) => void;
 
 function installGuard(deps: {
   readonly devServerUrl?: string;
@@ -14,15 +20,20 @@ function installGuard(deps: {
 }): {
   readonly openHandler: WindowOpenHandler;
   readonly navigate: (url: string) => boolean;
+  readonly frameNavigate: (url: string, currentUrl?: string) => boolean;
 } {
   let openHandler: WindowOpenHandler | null = null;
   let navigateHandler: NavigateHandler | null = null;
+  let frameNavigateHandler: FrameNavigateHandler | null = null;
   const wc = {
     setWindowOpenHandler(handler: WindowOpenHandler) {
       openHandler = handler;
     },
-    on(event: string, handler: NavigateHandler) {
-      if (event === 'will-navigate') navigateHandler = handler;
+    on(event: string, handler: NavigateHandler | FrameNavigateHandler) {
+      if (event === 'will-navigate') navigateHandler = handler as NavigateHandler;
+      if (event === 'will-frame-navigate') {
+        frameNavigateHandler = handler as FrameNavigateHandler;
+      }
     },
   } as unknown as WebContents;
 
@@ -35,6 +46,7 @@ function installGuard(deps: {
 
   assert.ok(openHandler);
   assert.ok(navigateHandler);
+  assert.ok(frameNavigateHandler);
   return {
     openHandler,
     navigate(url: string): boolean {
@@ -47,6 +59,18 @@ function installGuard(deps: {
         },
         url,
       );
+      return prevented;
+    },
+    frameNavigate(url: string, currentUrl = 'about:blank'): boolean {
+      let prevented = false;
+      frameNavigateHandler?.({
+        url,
+        isMainFrame: false,
+        frame: { url: currentUrl },
+        preventDefault() {
+          prevented = true;
+        },
+      });
       return prevented;
     },
   };
@@ -83,4 +107,18 @@ test('navigation guard denies window.open and routes https externally', () => {
   assert.deepEqual(opened, ['https://example.com']);
   assert.deepEqual(guard.openHandler({ url: 'file:///etc/passwd' }), { action: 'deny' });
   assert.deepEqual(opened, ['https://example.com']);
+});
+
+test('navigation guard confines child frames to preview endpoints', () => {
+  const opened: string[] = [];
+  const guard = installGuard({ openExternal: (url) => opened.push(url) });
+  const preview = 'app://preview-00000000000000000000000000000001/index.html';
+
+  assert.equal(guard.frameNavigate(preview), false);
+  assert.equal(guard.frameNavigate(new URL('./page.html', preview).toString(), preview), false);
+  assert.equal(guard.frameNavigate('app://space/__artifact_html_sandbox__'), false);
+  assert.equal(guard.frameNavigate('app://space/index.html', preview), true);
+  assert.equal(guard.frameNavigate('file:///etc/passwd', preview), true);
+  assert.equal(guard.frameNavigate('https://example.com', preview), true);
+  assert.deepEqual(opened, []);
 });

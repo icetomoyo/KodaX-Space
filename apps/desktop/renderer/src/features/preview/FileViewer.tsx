@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Check, Copy, FileText, RefreshCw } from 'lucide-react';
+import { Check, Copy, FileText, RefreshCw, Wifi, WifiOff } from 'lucide-react';
 import { useAppStore } from '../../store/appStore.js';
 import { useI18n } from '../../i18n/I18nProvider.js';
 import { ArtifactView } from '../artifact/ArtifactView.js';
 import { toArtifactContent, type ArtifactVersionPayload } from '../artifact/toArtifactContent.js';
 import type { TransientArtifactSnapshot } from '../artifact/transientArtifact.js';
 import { loadFileViewerSnapshot } from '../../lib/openPath.js';
+import { ProjectWebPreview } from './ProjectWebPreview.js';
+import { FileNameText } from '../../components/FileNameText.js';
 
 interface FileViewerProps {
   readonly snapshot: TransientArtifactSnapshot;
@@ -54,6 +56,7 @@ export function FileViewer({ snapshot, onSnapshotChange }: FileViewerProps): JSX
   const [refreshing, setRefreshing] = useState(false);
   const [operationError, setOperationError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [networkAccess, setNetworkAccess] = useState(false);
   const { version, payload } = currentSnapshotPayload(snapshot);
   const snapshotKey = `${snapshot.id}:${version}:${snapshot.path ?? ''}:${projectRoot ?? ''}`;
   const activeSnapshotKeyRef = useRef(snapshotKey);
@@ -66,6 +69,7 @@ export function FileViewer({ snapshot, onSnapshotChange }: FileViewerProps): JSX
     if (copiedTimerRef.current !== null) window.clearTimeout(copiedTimerRef.current);
     copiedTimerRef.current = null;
   }, [snapshotKey]);
+  useEffect(() => setNetworkAccess(false), [snapshot.id]);
   useEffect(
     () => () => {
       if (copiedTimerRef.current !== null) window.clearTimeout(copiedTimerRef.current);
@@ -81,6 +85,11 @@ export function FileViewer({ snapshot, onSnapshotChange }: FileViewerProps): JSX
     [payload, projectRoot, snapshot.id, snapshot.kind, snapshot.permissions, version],
   );
   const displayPath = snapshot.path ?? snapshot.title;
+  const isProjectHtml =
+    snapshot.source === 'file-preview' &&
+    projectRoot !== null &&
+    snapshot.path !== undefined &&
+    /\.html?$/i.test(snapshot.path);
   const canRefresh =
     snapshot.source === 'file-preview' && projectRoot !== null && snapshot.path !== undefined;
 
@@ -129,13 +138,33 @@ export function FileViewer({ snapshot, onSnapshotChange }: FileViewerProps): JSX
           strokeWidth={1.65}
           aria-hidden
         />
-        <span
-          className="min-w-0 flex-1 truncate font-mono text-[11px] text-fg-secondary"
-          title={displayPath}
-        >
-          {displayPath}
-        </span>
+        <FileNameText
+          name={displayPath}
+          className="flex-1 font-mono text-[11px] text-fg-secondary"
+        />
         <div className="flex items-center gap-0.5">
+          {isProjectHtml && (
+            <button
+              type="button"
+              onClick={() => setNetworkAccess((current) => !current)}
+              aria-pressed={networkAccess}
+              className={`inline-flex h-6 w-6 items-center justify-center rounded hover:bg-surface-3 ${
+                networkAccess
+                  ? 'bg-accent/10 text-accent-ink'
+                  : 'text-fg-muted hover:text-fg-primary'
+              }`}
+              title={networkAccess ? t('fileViewer.disableNetwork') : t('fileViewer.enableNetwork')}
+              aria-label={
+                networkAccess ? t('fileViewer.disableNetwork') : t('fileViewer.enableNetwork')
+              }
+            >
+              {networkAccess ? (
+                <Wifi className="h-3.5 w-3.5" strokeWidth={1.75} aria-hidden />
+              ) : (
+                <WifiOff className="h-3.5 w-3.5" strokeWidth={1.75} aria-hidden />
+              )}
+            </button>
+          )}
           {canRefresh && (
             <button
               type="button"
@@ -175,7 +204,14 @@ export function FileViewer({ snapshot, onSnapshotChange }: FileViewerProps): JSX
           {operationError}
         </div>
       )}
-      {content ? (
+      {isProjectHtml && projectRoot && snapshot.path ? (
+        <ProjectWebPreview
+          projectRoot={projectRoot}
+          path={snapshot.path}
+          revision={version}
+          networkAccess={networkAccess}
+        />
+      ) : content ? (
         <ArtifactView {...content} />
       ) : (
         <div className="flex flex-1 items-center justify-center p-4 text-center text-[11px] text-fg-muted">

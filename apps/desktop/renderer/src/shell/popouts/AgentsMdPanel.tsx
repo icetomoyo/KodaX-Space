@@ -11,6 +11,7 @@ import { useEffect, useRef, useState } from 'react';
 import { FileText, Bot } from 'lucide-react';
 import type { AgentsFileMeta, AgentMeta, AgentFailure } from '@kodax-space/space-ipc-schema';
 import { useAppStore } from '../../store/appStore.js';
+import { FileNameText } from '../../components/FileNameText.js';
 import { useI18n } from '../../i18n/I18nProvider.js';
 import type { MessageKey } from '../../i18n/messages.js';
 
@@ -203,12 +204,10 @@ function ContextTab(): JSX.Element {
               {t('agents.editing', { scope: scopeLabel(editing.scope, t) })}
             </span>
             {editing.sourcePath && (
-              <span
-                className="text-[11px] text-fg-muted font-mono truncate"
-                title={editing.sourcePath}
-              >
-                {editing.sourcePath}
-              </span>
+              <FileNameText
+                name={editing.sourcePath}
+                className="max-w-[240px] font-mono text-[11px] text-fg-muted"
+              />
             )}
           </div>
           <div className="flex items-center gap-1.5">
@@ -377,9 +376,11 @@ function ContextTab(): JSX.Element {
         </div>
       )}
 
-      <div className="px-3 py-1.5 text-[11px] text-fg-muted font-mono truncate" title={active.path}>
-        <span className={SCOPE_COLORS[active.scope]}>{scopeLabel(active.scope, t)}</span>{' '}
-        {active.path}
+      <div className="flex min-w-0 items-center gap-1 px-3 py-1.5 font-mono text-[11px] text-fg-muted">
+        <span className={`flex-shrink-0 ${SCOPE_COLORS[active.scope]}`}>
+          {scopeLabel(active.scope, t)}
+        </span>
+        <FileNameText name={active.path} className="flex-1" />
       </div>
 
       <pre className="flex-1 overflow-auto px-3 pb-3 text-xs text-fg-secondary whitespace-pre-wrap font-mono leading-relaxed">
@@ -535,11 +536,11 @@ function CustomAgentsTab(): JSX.Element {
             <div className="flex flex-col gap-2">
               <div>
                 <div className="text-xs text-fg-primary font-mono">{active.name}</div>
-                <div className="text-[11px] text-fg-muted font-mono truncate" title={active.path}>
-                  <span className={AGENT_SOURCE_COLORS[active.source]}>
+                <div className="flex min-w-0 items-center gap-1 font-mono text-[11px] text-fg-muted">
+                  <span className={`flex-shrink-0 ${AGENT_SOURCE_COLORS[active.source]}`}>
                     {agentSourceLabel(active.source, t)}
-                  </span>{' '}
-                  {active.path}
+                  </span>
+                  <FileNameText name={active.path} className="flex-1" />
                 </div>
               </div>
               <div className="text-xs text-fg-secondary whitespace-pre-wrap leading-relaxed">

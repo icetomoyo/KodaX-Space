@@ -234,6 +234,12 @@ const inputArtifactSchema = z.object({
   source: inputArtifactSourceSchema.default('user-inline'),
 });
 export type InputArtifact = z.infer<typeof inputArtifactSchema>;
+
+const attachmentPathSchema = z.object({
+  kind: z.enum(['file', 'directory']),
+  /** Exact absolute path returned by Electron for the user-selected entry. */
+  path: z.string().min(1).max(4096),
+});
 export type InputArtifactSource = z.infer<typeof inputArtifactSourceSchema>;
 
 const sessionSendQueueModeSchema = z.enum(['interrupt', 'after-turn']);
@@ -247,6 +253,13 @@ export const sessionSendChannel = {
     sessionId: z.string().min(1),
     prompt: z.string().min(1).max(MAX_PROMPT_BYTES),
     partnerPromptOverlay: z.string().min(1).max(MAX_PARTNER_PROMPT_OVERLAY_BYTES).optional(),
+    /**
+     * Non-image attachments keep a file:// link in the visible user message,
+     * while these native OS paths are supplied to the model through a prompt
+     * overlay. This prevents drive-letter/UNC/POSIX paths from being guessed
+     * back from a display URL.
+     */
+    attachmentPaths: z.array(attachmentPathSchema).max(32).optional(),
     partnerRetrievalScope: partnerKnowledgeScopeSchema.optional(),
     /** OC-31 v0.1.9 image paste/drag-drop. 上限 8 张/turn —— 防 DoS；UI 同步限制。 */
     artifacts: z.array(inputArtifactSchema).max(8).optional(),
@@ -546,6 +559,8 @@ const historyLineageNoticeSchema = z.object({
   kind: z.literal('lineage_notice'),
   noticeKind: z.enum(['branch_summary', 'compaction']),
   text: z.string().max(MAX_TEXT_CHUNK),
+  tokensBefore: z.number().int().nonnegative().max(10_000_000).optional(),
+  tokensAfter: z.number().int().nonnegative().max(10_000_000).optional(),
 });
 
 /**
@@ -931,6 +946,11 @@ export const sessionEventChannel = {
       tokenSource: z.enum(['api', 'estimate']).optional(),
       scope: z.enum(['parent', 'worker']).optional(),
       usage: tokenUsageSchema,
+      contextId: z.string().min(1).max(512).optional(),
+      contextKind: z.enum(['root', 'child']).optional(),
+      parentContextId: z.string().min(1).max(512).optional(),
+      agentId: z.string().min(1).max(256).optional(),
+      contextRevision: z.number().int().nonnegative().optional(),
     }),
     z.object({
       kind: z.literal('session_complete'),
@@ -974,16 +994,45 @@ export const sessionEventChannel = {
     z.object({
       kind: z.literal('compact_start'),
       sessionId: z.string().min(1),
+      contextId: z.string().min(1).max(512).optional(),
+      contextKind: z.enum(['root', 'child']).optional(),
+      parentContextId: z.string().min(1).max(512).optional(),
+      agentId: z.string().min(1).max(256).optional(),
+      contextRevision: z.number().int().nonnegative().optional(),
     }),
     z.object({
       kind: z.literal('compact_stats'),
       sessionId: z.string().min(1),
       tokensBefore: z.number().int().nonnegative().max(10_000_000),
       tokensAfter: z.number().int().nonnegative().max(10_000_000),
+      contextId: z.string().min(1).max(512).optional(),
+      contextKind: z.enum(['root', 'child']).optional(),
+      parentContextId: z.string().min(1).max(512).optional(),
+      agentId: z.string().min(1).max(256).optional(),
+      contextRevision: z.number().int().nonnegative().optional(),
+      source: z.enum(['manual', 'automatic_threshold', 'physical_capacity']).optional(),
+      committed: z.boolean().optional(),
+      elapsedMs: z.number().int().nonnegative().max(86_400_000).optional(),
+      strategy: z.enum(['full_prefix', 'map_reduce']).optional(),
+      effectiveTriggerTokens: z.number().int().nonnegative().max(10_000_000).optional(),
+      protectedBudgetTokens: z.number().int().nonnegative().max(10_000_000).optional(),
+      fixedInputTokens: z.number().int().nonnegative().max(10_000_000).optional(),
+      eligibleTokens: z.number().int().nonnegative().max(10_000_000).optional(),
+      rawTailTokens: z.number().int().nonnegative().max(10_000_000).optional(),
+      summaryTokens: z.number().int().nonnegative().max(10_000_000).optional(),
+      queryLedgerTokens: z.number().int().nonnegative().max(10_000_000).optional(),
+      beforeRevision: z.number().int().nonnegative().optional(),
+      afterRevision: z.number().int().nonnegative().optional(),
+      reason: z.string().max(2_000).optional(),
     }),
     z.object({
       kind: z.literal('compact_end'),
       sessionId: z.string().min(1),
+      contextId: z.string().min(1).max(512).optional(),
+      contextKind: z.enum(['root', 'child']).optional(),
+      parentContextId: z.string().min(1).max(512).optional(),
+      agentId: z.string().min(1).max(256).optional(),
+      contextRevision: z.number().int().nonnegative().optional(),
     }),
     // ---- Provider retry / recovery ----
     z.object({

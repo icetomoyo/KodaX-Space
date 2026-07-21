@@ -311,6 +311,12 @@ function permissionInteraction(
     text(extendedRequest.executionCwd, 4_096) ?? fallbackExecutionCwd ?? '',
     4_096,
   );
+  const persistentGrantSuggestion = request.grantSuggestions?.find(
+    (suggestion) => suggestion.kind === 'persistent',
+  );
+  const persistentGrantLabel = persistentGrantSuggestion
+    ? sanitizeForDisplay(persistentGrantSuggestion.label, 512)
+    : '';
   return {
     source: 'coder-runtime',
     kind: 'permission',
@@ -329,6 +335,14 @@ function permissionInteraction(
         ...(executionCwd ? { executionCwd } : {}),
         ...(safeInput ? { input: safeInput } : {}),
       },
+      ...(!assessment.dangerous && persistentGrantLabel
+        ? {
+            allowAlwaysScope: {
+              kind: 'runtime_persistent' as const,
+              label: persistentGrantLabel,
+            },
+          }
+        : {}),
     },
   };
 }

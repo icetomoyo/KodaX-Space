@@ -6,6 +6,7 @@
 import { useEffect, useState } from 'react';
 import { Copy, FolderOpen } from 'lucide-react';
 import { useAppStore } from '../../store/appStore.js';
+import { FileNameText } from '../../components/FileNameText.js';
 import { MonacoDiffViewer } from '../../features/code/MonacoDiffViewer.js';
 import { revealPath } from '../../lib/openPath.js';
 import { pushToast } from '../../store/toastStore.js';
@@ -140,9 +141,7 @@ export function DiffPanel(): JSX.Element {
           <span className="px-1.5 py-0.5 rounded text-[11px] font-medium flex-shrink-0 bg-surface-3 text-fg-muted">
             {t('popout.diff.loading')}
           </span>
-          <span className="truncate flex-1" title={path}>
-            {path}
-          </span>
+          <FileNameText name={path} className="flex-1" />
         </div>
         <div className="p-3 text-xs text-fg-muted flex items-center gap-2">
           <span className="activity-spinner-comet" aria-hidden />
@@ -170,9 +169,7 @@ export function DiffPanel(): JSX.Element {
         >
           {sourcePill.text}
         </span>
-        <span className="truncate flex-1" title={path}>
-          {path}
-        </span>
+        <FileNameText name={path} className="flex-1" />
         {/* 2026-06-18: 路径不再是死文本 —— 复制 + 在文件管理器中定位。 */}
         <button
           type="button"

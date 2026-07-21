@@ -13,6 +13,8 @@
 // into the tsx test loader.
 
 import type { WebContents } from 'electron';
+import { isArtifactHtmlFrameUrl } from './app-protocol-policy.js';
+import { isProjectWebPreviewUrl } from './project-web-preview.js';
 
 export interface NavGuardDeps {
   /** Vite dev-server URL when running in dev; undefined in production. */
@@ -56,5 +58,15 @@ export function installNavigationGuards(wc: WebContents, deps: NavGuardDeps): vo
 
     event.preventDefault();
     if (url.startsWith('https://')) deps.openExternal(url);
+  });
+
+  // A project preview intentionally has a same-origin child document so local
+  // modules/storage work. Confine every subframe navigation to capability URLs;
+  // otherwise authored code could navigate itself to app://space and become
+  // same-origin with the privileged parent renderer.
+  wc.on('will-frame-navigate', (details) => {
+    if (details.isMainFrame) return;
+    if (isProjectWebPreviewUrl(details.url) || isArtifactHtmlFrameUrl(details.url)) return;
+    details.preventDefault();
   });
 }

@@ -56,6 +56,7 @@ test('saveImage: writes file, extension follows the NORMALIZED mediaType (C6)', 
   );
   assert.ok(path.isAbsolute(out.path), 'returned path should be absolute');
   assert.ok(out.path.endsWith('.png'), 'png ext from normalized mediaType');
+  assert.equal(out.mediaType, 'image/png', 'response exposes normalized mediaType');
   assert.ok(out.path.includes('sess-A'), 'path should be under sessionId subdir');
   assert.ok(out.bytes > 0, 'bytes > 0');
 
@@ -69,6 +70,7 @@ test('saveImage: normalization result drives extension + bytes (jpeg)', async ()
     NORMALIZE_TO_JPEG,
   );
   assert.ok(out.path.endsWith('.jpg'), 'ext follows normalized image/jpeg, not the declared type');
+  assert.equal(out.mediaType, 'image/jpeg', 'response exposes normalized JPEG mediaType');
   assert.equal(out.bytes, 4, 'bytes come from the normalized buffer');
 });
 
@@ -78,6 +80,7 @@ test('saveImage: webp is canonicalized to the normalized type (never writes .web
     NORMALIZE_TO_PNG,
   );
   assert.ok(out.path.endsWith('.png'), 'webp input normalizes to png');
+  assert.equal(out.mediaType, 'image/png', 'canonicalized response reports PNG mediaType');
 });
 
 test('saveImage: normalization failure falls back to the declared mediaType', async () => {
@@ -86,6 +89,7 @@ test('saveImage: normalization failure falls back to the declared mediaType', as
     NORMALIZE_THROWS,
   );
   assert.ok(out.path.endsWith('.webp'), 'fallback keeps the declared mediaType extension');
+  assert.equal(out.mediaType, 'image/webp', 'fallback response keeps the declared mediaType');
   assert.ok(out.bytes > 0);
 });
 

@@ -222,7 +222,7 @@ export const providerRemoveCustomChannel = {
 //   1. renderer ContextWindowIndicator 拿到 activeProviderId + activeModel
 //   2. invoke('provider.modelContextWindow', { providerId, model })
 //   3. main 调 `resolveProvider(providerId)` 拿 KodaXBaseProvider 实例
-//   4. main 调 `resolveContextWindow({ enabled: false, triggerPercent: 80 }, provider, model)`
+//   4. main 调 `resolveContextWindow({ enabled: true, triggerPercent: 80 }, provider, model)`
 //      → SDK 内部四步级联：CompactionConfig.contextWindow → provider.getEffectiveContextWindow(model)
 //        → provider.getContextWindow() → 200_000 hard fallback
 //   5. renderer cache 在 Map<`${providerId}|${model}`, number> 里，model 切换时再查
@@ -242,6 +242,9 @@ export const providerModelContextWindowChannel = {
     contextWindow: z.number().int().positive(),
     /** SDK fallback (200k) vs provider-advertised 区分；UI 显示用 "≈" 提示。*/
     source: z.enum(['provider', 'fallback']),
+    /** Effective KodaX Runtime early-compaction trigger. `100` means capacity-only. */
+    compactionTriggerPercent: z.number().int().min(1).max(100),
+    compactionTriggerTokens: z.number().int().positive().max(10_000_000).optional(),
     supportedEfforts: z.array(z.string().min(1).max(32)).max(16).optional(),
     defaultEffort: z.string().min(1).max(32).optional(),
     /**

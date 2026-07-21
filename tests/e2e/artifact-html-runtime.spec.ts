@@ -11,19 +11,14 @@ interface InvokeEnvelope<T> {
   readonly error?: { readonly message?: string };
 }
 
-function projectFilePreviewSessionId(projectRoot: string): string {
-  const normalized = projectRoot.trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
-  let hash = 2166136261;
-  for (let i = 0; i < normalized.length; i += 1) {
-    hash ^= normalized.charCodeAt(i);
-    hash = Math.imul(hash, 16777619) >>> 0;
-  }
-  return `__project_file_preview___${hash.toString(36)}`;
+interface SessionListEnvelope {
+  readonly ok: boolean;
+  readonly data?: { readonly sessions?: ReadonlyArray<{ readonly sessionId: string }> };
 }
 
 async function launchArtifactSpace(
   testId: string,
-): Promise<{ space: SpaceInstance; projectDir: string }> {
+): Promise<{ space: SpaceInstance; projectDir: string; sessionId: string }> {
   const space = await launchSpace(testId);
   const projectDir = path.join(space.testDataDir, 'artifact-html-project');
   await fs.mkdir(projectDir, { recursive: true });
@@ -33,9 +28,39 @@ async function launchArtifactSpace(
   });
   await space.page.reload();
   await space.page.waitForLoadState('domcontentloaded');
+  const composer = space.page.locator('textarea').first();
+  await expect(composer).toBeEnabled({ timeout: 10_000 });
+  await composer.fill('seed artifact runtime e2e session');
+  await composer.press('Enter');
+  await expect(
+    space.page
+      .getByTestId('conversation-stream')
+      .getByText('seed artifact runtime e2e session')
+      .first(),
+  ).toBeVisible({ timeout: 10_000 });
+  const readSessionId = () =>
+    space.page.evaluate(async () => {
+      const bridge = (
+        window as unknown as {
+          kodaxSpace: {
+            invoke: (name: string, input: unknown) => Promise<SessionListEnvelope>;
+          };
+        }
+      ).kodaxSpace;
+      const result = await bridge.invoke('session.list', { surface: 'code' });
+      return result.ok ? (result.data?.sessions?.[0]?.sessionId ?? null) : null;
+    });
+  await expect.poll(readSessionId, { timeout: 20_000 }).not.toBeNull();
+  const sessionId = await readSessionId();
+  if (!sessionId) throw new Error('Artifact E2E Session was not created');
+  const permissionBackdrop = space.page.getByTestId('floating-surface-backdrop');
+  if (await permissionBackdrop.isVisible().catch(() => false)) {
+    await space.page.keyboard.press('Escape');
+    await expect(permissionBackdrop).not.toBeVisible({ timeout: 10_000 });
+  }
   await space.page.getByRole('button', { name: 'Show right sidebar' }).click();
   await expect(space.page.getByTestId('right-sidebar')).toBeVisible({ timeout: 10_000 });
-  return { space, projectDir };
+  return { space, projectDir, sessionId };
 }
 
 async function focusArtifact(space: SpaceInstance, detail: Record<string, unknown>): Promise<void> {
@@ -133,12 +158,48 @@ test('interactive HTML Artifact keeps inline controls and timer-driven playback 
   }
 });
 
+test('legacy static metadata recovers a large end-script presentation with storage and workers', async () => {
+  const { space } = await launchArtifactSpace(`artifact-html-large-compat-${Date.now()}`);
+  try {
+    const content = `<!doctype html><html><head><style>#compat-state{opacity:0}</style></head><body>
+      <main id="compat-state">waiting</main><!--${'x'.repeat(70_000)}-->
+      <script>
+        localStorage.setItem('compat-state', 'storage-ok');
+        const state = document.getElementById('compat-state');
+        const workerUrl = URL.createObjectURL(new Blob(['postMessage("worker-ok")'], {type:'text/javascript'}));
+        const worker = new Worker(workerUrl);
+        worker.onmessage = (event) => {
+          state.textContent = localStorage.getItem('compat-state') + ':' + event.data;
+          state.style.opacity = '1';
+          worker.terminate(); URL.revokeObjectURL(workerUrl);
+        };
+      </script></body></html>`;
+
+    await focusArtifact(space, {
+      id: 'legacy-large-html',
+      snapshot: {
+        id: 'legacy-large-html',
+        kind: 'html',
+        title: 'Legacy Large HTML',
+        content,
+      },
+    });
+
+    const frame = space.page.frameLocator('iframe[title="Interactive HTML artifact"]');
+    await expect(frame.locator('#compat-state')).toHaveText('storage-ok:worker-ok', {
+      timeout: 10_000,
+    });
+    await expect(frame.locator('#compat-state')).toHaveCSS('opacity', '1');
+  } finally {
+    await space.close();
+  }
+});
+
 test('current Artifact payload refreshes when a new version becomes latest', async () => {
-  const { space, projectDir } = await launchArtifactSpace(
+  const { space, sessionId } = await launchArtifactSpace(
     `artifact-html-current-version-${Date.now()}`,
   );
   try {
-    const sessionId = projectFilePreviewSessionId(projectDir);
     const first = await invokeArtifactCreate(space, {
       sessionId,
       surface: 'code',

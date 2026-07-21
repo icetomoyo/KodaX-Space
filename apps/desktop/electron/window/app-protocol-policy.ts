@@ -16,6 +16,7 @@ export const APP_PROTOCOL_INDEX_URL = `${APP_PROTOCOL_ORIGIN}/index.html`;
 export const ARTIFACT_HTML_FRAME_BOOTSTRAP_CSP = [
   "default-src 'none'",
   "script-src * 'unsafe-inline'",
+  'worker-src blob:',
   "style-src * 'unsafe-inline'",
   'img-src * data: blob:',
   'font-src * data:',

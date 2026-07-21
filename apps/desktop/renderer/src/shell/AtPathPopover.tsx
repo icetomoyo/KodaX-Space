@@ -10,6 +10,7 @@
 // 键盘事件: BottomBar onKeyDown 优先派发到本 popover (如果 open); 否则走原逻辑 (history 翻 / send 等)。
 
 import { useEffect, useState } from 'react';
+import { FileNameText } from '../components/FileNameText.js';
 import { useI18n } from '../i18n/I18nProvider.js';
 
 interface Props {
@@ -161,13 +162,17 @@ export function AtPathPopover({
                 onClick={() => {
                   if (token) onAccept(`@${p} `, token.start, caret);
                 }}
-                className={`w-full text-left px-2 py-1 font-mono truncate ${
+                className={`flex w-full min-w-0 items-center gap-1 px-2 py-1 text-left font-mono ${
                   isActive ? 'bg-surface-3 text-fg-primary' : 'text-fg-muted hover:bg-hover-bg'
                 }`}
                 title={p}
               >
-                <span className="text-fg-primary">{basename}</span>
-                {dirname && <span className="text-fg-muted"> · {dirname.replace(/\/$/, '')}</span>}
+                <FileNameText name={basename} className="flex-1 text-fg-primary" title={p} />
+                {dirname && (
+                  <span className="max-w-[45%] flex-shrink truncate text-fg-muted">
+                    · {dirname.replace(/\/$/, '')}
+                  </span>
+                )}
               </button>
             </li>
           );

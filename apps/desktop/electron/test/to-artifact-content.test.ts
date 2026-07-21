@@ -30,10 +30,18 @@ test('content kinds map content through; missing content → null', () => {
   assert.equal(toArtifactContent('markdown', {}, null), null);
 });
 
-test('stored html with scripts stays static unless the store marked it interactive', () => {
-  const content = '<html><body><canvas></canvas><script>draw()</script></body></html>';
+test('stored html is promoted from its actual content even when legacy metadata says static', () => {
+  const content = `<html><body>${'x'.repeat(70_000)}<script>draw()</script></body></html>`;
   assert.deepEqual(toArtifactContent('html', { content }, null), {
-    kind: 'html',
+    kind: 'interactive-html',
+    content,
+  });
+});
+
+test('stored html with remote display dependencies uses the isolated compatibility renderer', () => {
+  const content = '<link rel="stylesheet" href="https://styles.example.com/presentation.css">';
+  assert.deepEqual(toArtifactContent('html', { content }, null), {
+    kind: 'interactive-html',
     content,
   });
 });

@@ -232,6 +232,18 @@ export const messages = {
     'fileViewer.pathCopied': 'File path copied',
     'fileViewer.copyFailed': 'Could not copy the file path',
     'fileViewer.cannotPreview': 'This file cannot be previewed here.',
+    'fileViewer.enableNetwork': 'Allow additional HTTPS/WSS requests for this trusted page',
+    'fileViewer.disableNetwork': 'Limit this page to local and authored display resources',
+    'webPreview.projectTitle': 'Interactive project web preview',
+    'webPreview.loading': 'Loading interactive preview...',
+    'webPreview.loadFailed': 'Could not load the web preview: {message}',
+    'webPreview.policyBlocked': 'Preview security policy blocked {directive}.',
+    'webPreview.resourceFailed': 'A page resource failed to load: {resource}',
+    'webPreview.runtimeFailed': 'The page reported a runtime error: {message}',
+    'webPreview.enableNetworkHint':
+      'Authored display resources are allowed; enable additional requests only if you trust this page.',
+    'webPreview.moreDiagnostics': '{count} more preview diagnostic(s)',
+    'webPreview.dismissDiagnostics': 'Dismiss preview diagnostics',
     'artifact.version': 'Version',
     'artifact.latestSuffix': ' (latest)',
     'artifact.copyFailed': 'Copy failed',
@@ -947,13 +959,13 @@ export const messages = {
       'Runtime-owned settings stay in ~/.kodax/config.json; Space-only UI preferences stay in ~/.kodax/space/settings.json.',
     'settings.compaction.title': 'Context compaction',
     'settings.compaction.description':
-      'Controls when KodaX automatically summarizes long context for new turns.',
-    'settings.compaction.enabled': 'Enable auto-compaction',
-    'settings.compaction.enabledHint':
-      'Disabling this affects automatic compaction only. Manual /compact remains available.',
+      'Auto-compaction is always enabled. Configure when KodaX summarizes long context for new turns.',
     'settings.compaction.triggerPercent': 'Trigger percent',
     'settings.compaction.triggerPercentHint':
-      'Blank uses KodaX adaptive defaults. Smaller values compact earlier.',
+      'Range: 15%-90%. Blank uses the 75% default; smaller values compact earlier.',
+    'settings.compaction.triggerTokens': 'Absolute token threshold',
+    'settings.compaction.triggerTokensHint':
+      'Optional. Zero or blank disables the absolute threshold; KodaX uses whichever active threshold is smaller.',
     'settings.compaction.contextWindow': 'Context window override',
     'settings.compaction.contextWindowPlaceholder': 'model default',
     'settings.compaction.contextWindowHint':
@@ -1469,7 +1481,15 @@ export const messages = {
     'contextWindow.progressToAutoCompact': '{percent}% to auto-compact',
     'contextWindow.remainingTokens': '{tokens} remaining',
     'contextWindow.thresholdNote':
-      'Auto-compact threshold is {triggerPercent}% of {cap}{model}; updates when you switch.',
+      'Effective auto-compact threshold: {threshold}. Percentage policy: {triggerPercent}% of {cap}{model}.',
+    'contextWindow.activeInputNote':
+      'This meter is the root model input context, not the complete visible transcript.',
+    'contextWindow.lastCompaction': 'Last root compaction: {before} → {after}',
+    'contextWindow.lastCompactionUnchanged':
+      'Last root compaction completed without replacing context ({tokens}).',
+    'contextWindow.compactionSource.manual': 'manual',
+    'contextWindow.compactionSource.automatic': 'automatic threshold',
+    'contextWindow.compactionSource.capacity': 'physical capacity',
     'sidebar.newSession': 'New session',
     'sidebar.openFolderFirst': 'Open a folder first',
     'sidebar.openFolderToStart': 'Open a folder to start.',
@@ -2007,6 +2027,9 @@ export const messages = {
     'permission.denyEsc': 'Deny (Esc)',
     'permission.alwaysAllowTitle': 'Add {pattern} to allow-rules and skip prompt next time',
     'permission.alwaysAllow': 'Always allow',
+    'permission.alwaysAllowRuntime': 'Always allow: {scope}',
+    'permission.alwaysAllowRuntimeTitle':
+      'The Runtime will remember only this exact permission scope: {scope}',
     'permission.allowDanger': 'Allow (danger)',
     'permission.allowOnceEnter': 'Allow once (Enter)',
     'permission.batchTitle': '{count} tool calls pending - batch decision',
@@ -2163,6 +2186,9 @@ export const messages = {
     'mode.footer': 'Auto is governed by the KodaX guardrail.',
   },
   'zh-CN': {
+    'settings.compaction.triggerTokens': '绝对 Token 阈值',
+    'settings.compaction.triggerTokensHint':
+      '可选。0 或留空表示不启用绝对阈值；百分比与绝对值同时生效时取较小者。',
     'common.cancel': '取消',
     'common.confirm': '确认',
     'common.close': '关闭',
@@ -2390,6 +2416,18 @@ export const messages = {
     'fileViewer.pathCopied': '已复制文件路径',
     'fileViewer.copyFailed': '无法复制文件路径',
     'fileViewer.cannotPreview': '无法在此处预览这个文件。',
+    'fileViewer.enableNetwork': '允许这个受信任网页发起额外的 HTTPS/WSS 请求',
+    'fileViewer.disableNetwork': '仅允许本地资源和网页已声明的展示资源',
+    'webPreview.projectTitle': '项目网页交互预览',
+    'webPreview.loading': '正在加载交互预览…',
+    'webPreview.loadFailed': '无法加载网页预览：{message}',
+    'webPreview.policyBlocked': '预览安全策略阻止了 {directive}。',
+    'webPreview.resourceFailed': '网页资源加载失败：{resource}',
+    'webPreview.runtimeFailed': '网页运行错误：{message}',
+    'webPreview.enableNetworkHint':
+      '网页已声明的展示资源可以加载；只有信任该网页时才允许额外请求。',
+    'webPreview.moreDiagnostics': '还有 {count} 条预览诊断',
+    'webPreview.dismissDiagnostics': '关闭预览诊断',
     'artifact.version': '版本',
     'artifact.latestSuffix': '（最新）',
     'artifact.copyFailed': '复制失败',
@@ -3461,7 +3499,14 @@ export const messages = {
     'contextWindow.progressToAutoCompact': '自动压缩进度 {percent}%',
     'contextWindow.remainingTokens': '还剩 {tokens}',
     'contextWindow.thresholdNote':
-      '自动压缩阈值为 {cap} 的 {triggerPercent}%{model}；切换模型后会更新。',
+      '当前自动压缩有效阈值：{threshold}。百分比策略为 {cap} 的 {triggerPercent}%{model}。',
+    'contextWindow.activeInputNote':
+      '此处显示主 Agent 的模型输入上下文，不是界面中可见的完整历史记录。',
+    'contextWindow.lastCompaction': '最近一次主上下文压缩：{before} → {after}',
+    'contextWindow.lastCompactionUnchanged': '最近一次主上下文压缩未替换上下文（{tokens}）。',
+    'contextWindow.compactionSource.manual': '手动',
+    'contextWindow.compactionSource.automatic': '自动阈值',
+    'contextWindow.compactionSource.capacity': '物理容量保护',
     'sidebar.newSession': '新对话',
     'sidebar.openFolderFirst': '请先打开文件夹',
     'sidebar.openFolderToStart': '打开文件夹以开始。',
@@ -3992,6 +4037,8 @@ export const messages = {
     'permission.denyEsc': '拒绝（Esc）',
     'permission.alwaysAllowTitle': '将 {pattern} 加入允许规则，下次不再提示',
     'permission.alwaysAllow': '始终允许',
+    'permission.alwaysAllowRuntime': '始终允许：{scope}',
+    'permission.alwaysAllowRuntimeTitle': 'Runtime 只会记住这一个精确权限范围：{scope}',
     'permission.allowDanger': '允许（危险）',
     'permission.allowOnceEnter': '仅允许一次（Enter）',
     'permission.batchTitle': '{count} 个工具调用待处理 - 批量决策',
@@ -4207,11 +4254,11 @@ export const messages = {
     'settings.kodaxConfig.sharedScope':
       '运行时配置保存在 ~/.kodax/config.json；仅 Space UI 使用的偏好保存在 ~/.kodax/space/settings.json。',
     'settings.compaction.title': '上下文压缩',
-    'settings.compaction.description': '控制 KodaX 在新一轮对话前何时自动总结长上下文。',
-    'settings.compaction.enabled': '启用自动压缩',
-    'settings.compaction.enabledHint': '关闭后只影响自动压缩；手动 /compact 仍然可用。',
+    'settings.compaction.description':
+      '自动压缩始终开启；可设置 KodaX 在新一轮对话前何时总结长上下文。',
     'settings.compaction.triggerPercent': '触发阈值',
-    'settings.compaction.triggerPercentHint': '留空使用 KodaX 自适应默认值。数值越小越早压缩。',
+    'settings.compaction.triggerPercentHint':
+      '范围 15%–90%。留空使用 75% 默认值；数值越小越早压缩。',
     'settings.compaction.contextWindow': '上下文窗口覆盖',
     'settings.compaction.contextWindowPlaceholder': '模型默认值',
     'settings.compaction.contextWindowHint': '可选的 token 窗口覆盖。留空则使用当前模型能力。',

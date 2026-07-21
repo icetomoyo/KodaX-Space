@@ -27,6 +27,7 @@ import { floatingSurfaceForBlockingModal } from '../../shell/floatingSurfacePoli
 import { selectPermissionBatch } from './permissionBatching.js';
 import { useI18n } from '../../i18n/I18nProvider.js';
 import type { MessageKey } from '../../i18n/messages.js';
+import { permissionGrantPresentation } from './permissionGrantPresentation.js';
 
 // Risk badge 颜色. Dark 模式: 深色实底 + 淡色文字 (经典 badge 风);
 // Light 模式: 淡色实底 + 深色文字 — 视觉等价倒置, 在白底卡片上仍清晰.
@@ -162,6 +163,7 @@ export function PermissionModal(): JSX.Element | null {
   const style = head ? RISK_STYLE[head.risk] : null;
   const isDanger = head?.risk === 'danger';
   const dangerConfirmed = !isDanger || confirmText.trim() === DANGER_CONFIRM_PHRASE;
+  const persistentGrant = head ? permissionGrantPresentation(head) : null;
   const dangerInputRef = useRef<HTMLInputElement | null>(null);
   const allowOnceButtonRef = useRef<HTMLButtonElement | null>(null);
 
@@ -333,16 +335,24 @@ export function PermissionModal(): JSX.Element | null {
             {t('permission.denyEsc')}
           </button>
           {/* danger 永不出 Always allow——危险命令不能进白名单 */}
-          {!isDanger && head.suggestedPattern && (
+          {!isDanger && persistentGrant && (
             <button
               type="button"
               disabled={busy}
               onClick={() => void answer('allow_always')}
-              title={t('permission.alwaysAllowTitle', { pattern: head.suggestedPattern })}
+              title={
+                persistentGrant.kind === 'runtime_persistent'
+                  ? t('permission.alwaysAllowRuntimeTitle', { scope: persistentGrant.target })
+                  : t('permission.alwaysAllowTitle', { pattern: persistentGrant.target })
+              }
               className="px-3 py-1.5 text-xs rounded font-medium border border-ok text-ok hover:bg-ok/15 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {t('permission.alwaysAllow')}{' '}
-              <code className="font-mono text-xs text-warn">{head.suggestedPattern}</code>
+              {persistentGrant.kind === 'runtime_persistent'
+                ? t('permission.alwaysAllowRuntime', { scope: persistentGrant.target })
+                : t('permission.alwaysAllow')}{' '}
+              {persistentGrant.kind === 'pattern' && (
+                <code className="font-mono text-xs text-warn">{persistentGrant.target}</code>
+              )}
             </button>
           )}
           <button
