@@ -76,6 +76,7 @@ export const kodaxCompactionSettingsSchema = z
       .min(KODAX_COMPACTION_TRIGGER_PERCENT_MIN)
       .max(KODAX_COMPACTION_TRIGGER_PERCENT_MAX)
       .optional(),
+    triggerTokens: z.number().int().min(0).max(10_000_000).optional(),
     contextWindow: z.number().int().min(1024).max(10_000_000).optional(),
   })
   .strict();

@@ -598,7 +598,10 @@ export function registerProviderChannels(): void {
     const configuredCompaction = await loadKodaxCompactionConfig();
     const compaction = {
       enabled: configuredCompaction?.enabled ?? true,
-      triggerPercent: configuredCompaction?.triggerPercent ?? 100,
+      triggerPercent: configuredCompaction?.triggerPercent ?? 75,
+      ...(configuredCompaction?.triggerTokens
+        ? { triggerTokens: configuredCompaction.triggerTokens }
+        : {}),
       ...(configuredCompaction?.contextWindow !== undefined
         ? { contextWindow: configuredCompaction.contextWindow }
         : {}),
@@ -651,6 +654,9 @@ export function registerProviderChannels(): void {
         contextWindow: cw,
         source,
         compactionTriggerPercent: compaction.triggerPercent,
+        ...(compaction.triggerTokens
+          ? { compactionTriggerTokens: compaction.triggerTokens }
+          : {}),
         ...(supportedEfforts && supportedEfforts.length > 0 ? { supportedEfforts } : {}),
         ...(defaultEffort ? { defaultEffort } : {}),
         canDisableThinking,
@@ -667,6 +673,9 @@ export function registerProviderChannels(): void {
         contextWindow: compaction.contextWindow ?? 200_000,
         source: compaction.contextWindow !== undefined ? 'provider' : 'fallback',
         compactionTriggerPercent: compaction.triggerPercent,
+        ...(compaction.triggerTokens
+          ? { compactionTriggerTokens: compaction.triggerTokens }
+          : {}),
       };
     }
   });

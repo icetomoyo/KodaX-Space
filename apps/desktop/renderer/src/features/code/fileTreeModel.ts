@@ -1,4 +1,5 @@
 import type { FileNodeT } from '@kodax-space/space-ipc-schema';
+import { splitFileName } from '../../lib/fileName.js';
 
 export interface FileTreeLabelParts {
   readonly leading: string;
@@ -12,14 +13,7 @@ export interface FileTreeLabelParts {
  */
 export function splitFileTreeLabel(name: string, kind: FileNodeT['kind']): FileTreeLabelParts {
   if (kind === 'dir') return { leading: name, trailing: '' };
-  const finalDot = name.lastIndexOf('.');
-  if (finalDot <= 0 || finalDot === name.length - 1) {
-    return { leading: name, trailing: '' };
-  }
-  return {
-    leading: name.slice(0, finalDot),
-    trailing: name.slice(finalDot),
-  };
+  return splitFileName(name);
 }
 
 /** Root is represented by null; expanded directories retain insertion order. */

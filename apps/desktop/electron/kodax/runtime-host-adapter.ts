@@ -29,6 +29,7 @@ import type {
   RuntimeSubmitInputResult,
   RuntimeSubscription,
   RuntimeTranscript,
+  RuntimeTranscriptSliceEntry,
   RuntimeTypedEvent,
 } from '@kodax-ai/kodax/runtime';
 import { effortToReasoningMode } from './reasoning-effort.js';
@@ -107,6 +108,98 @@ function runtimeEventRecord(value: unknown): Readonly<Record<string, unknown>> |
     : undefined;
 }
 
+function projectContextIdentity(value: unknown): {
+  readonly contextId?: string;
+  readonly contextKind?: 'root' | 'child';
+  readonly parentContextId?: string;
+  readonly agentId?: string;
+  readonly contextRevision?: number;
+} {
+  const record = runtimeEventRecord(value);
+  if (!record) return {};
+  return {
+    ...(typeof record.contextId === 'string' ? { contextId: record.contextId } : {}),
+    ...(record.contextKind === 'root' || record.contextKind === 'child'
+      ? { contextKind: record.contextKind }
+      : {}),
+    ...(typeof record.parentContextId === 'string'
+      ? { parentContextId: record.parentContextId }
+      : {}),
+    ...(typeof record.agentId === 'string' ? { agentId: record.agentId } : {}),
+    ...(typeof record.contextRevision === 'number'
+      ? { contextRevision: record.contextRevision }
+      : {}),
+  };
+}
+
+type RuntimeTranscriptEntry = RuntimeTranscript['transcriptEntries'][number];
+
+async function readPagedTranscriptEntry(
+  runtime: KodaXDaemonRuntime,
+  sessionId: string,
+  revision: string,
+  descriptor: RuntimeTranscriptSliceEntry,
+): Promise<RuntimeTranscriptEntry> {
+  if (descriptor.entry) return descriptor.entry;
+  const chunks: Buffer[] = [];
+  let cursor: string | undefined;
+  do {
+    const chunk = await runtime.sessions.transcriptEntryChunk({
+      sessionId,
+      revision,
+      entryIndex: descriptor.index,
+      ...(cursor ? { cursor } : {}),
+    });
+    if (!chunk) throw new Error(`Transcript entry ${descriptor.index} is unavailable.`);
+    chunks.push(Buffer.from(chunk.data, 'base64'));
+    cursor = chunk.hasMore ? chunk.nextCursor : undefined;
+    if (chunk.hasMore && !cursor) {
+      throw new Error(`Transcript entry ${descriptor.index} omitted its continuation cursor.`);
+    }
+  } while (cursor);
+  const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  if (typeof parsed !== 'object' || parsed === null) {
+    throw new Error(`Transcript entry ${descriptor.index} is malformed.`);
+  }
+  return parsed as RuntimeTranscriptEntry;
+}
+
+async function readPagedRuntimeTranscript(
+  runtime: KodaXDaemonRuntime,
+  sessionId: string,
+): Promise<RuntimeTranscript | null> {
+  const session = await runtime.sessions.load(sessionId);
+  if (!session) return null;
+  const transcriptEntries: RuntimeTranscriptEntry[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await runtime.sessions.transcriptPage({
+      sessionId,
+      ...(cursor ? { cursor } : {}),
+    });
+    if (!page) return null;
+    const pageEntries = await Promise.all(
+      page.entries.map((descriptor) =>
+        readPagedTranscriptEntry(runtime, sessionId, page.revision, descriptor),
+      ),
+    );
+    transcriptEntries.unshift(...pageEntries);
+    cursor = page.hasMore ? page.nextCursor : undefined;
+    if (page.hasMore && !cursor) {
+      throw new Error('Transcript page omitted its continuation cursor.');
+    }
+  } while (cursor);
+
+  const visibleEntries = transcriptEntries.filter((entry) => entry.type !== 'rewind_marker');
+  return {
+    title: session.title,
+    gitRoot: session.gitRoot ?? session.workspaceRoot ?? '',
+    messages: visibleEntries.map((entry) => entry.message),
+    activeMessages: visibleEntries.filter((entry) => entry.active).map((entry) => entry.message),
+    transcriptEntries,
+  };
+}
+
 /**
  * Project Runtime-owned context telemetry into the narrow renderer protocol. The daemon emits
  * these events as generic records, so every value is validated by the shared session-event schema
@@ -139,18 +232,82 @@ export function projectRuntimeContextSessionEvent(
         : {}),
       ...(info.scope === 'parent' || info.scope === 'worker' ? { scope: info.scope } : {}),
       ...(runtimeEventRecord(info.usage) ? { usage: info.usage } : {}),
+      ...(typeof info.contextId === 'string' ? { contextId: info.contextId } : {}),
+      ...(info.contextKind === 'root' || info.contextKind === 'child'
+        ? { contextKind: info.contextKind }
+        : {}),
+      ...(typeof info.parentContextId === 'string'
+        ? { parentContextId: info.parentContextId }
+        : {}),
+      ...(typeof info.agentId === 'string' ? { agentId: info.agentId } : {}),
+      ...(typeof info.contextRevision === 'number'
+        ? { contextRevision: info.contextRevision }
+        : {}),
     };
   } else if (event.type === 'context.compaction.started') {
-    candidate = { kind: 'compact_start', sessionId: event.sessionId };
-  } else if (event.type === 'context.compaction.stats') {
+    candidate = {
+      kind: 'compact_start',
+      sessionId: event.sessionId,
+      ...projectContextIdentity(payload?.meta),
+    };
+  } else if (event.type === 'context.compaction.finished') {
     candidate = {
       kind: 'compact_stats',
       sessionId: event.sessionId,
       tokensBefore: payload?.tokensBefore,
       tokensAfter: payload?.tokensAfter,
+      contextId: payload?.contextId,
+      contextKind: payload?.contextKind,
+      contextRevision: payload?.contextRevision,
+      ...(typeof payload?.parentContextId === 'string'
+        ? { parentContextId: payload.parentContextId }
+        : {}),
+      ...(typeof payload?.agentId === 'string' ? { agentId: payload.agentId } : {}),
+      ...(payload?.source === 'manual' ||
+      payload?.source === 'automatic_threshold' ||
+      payload?.source === 'physical_capacity'
+        ? { source: payload.source }
+        : {}),
+      ...(typeof payload?.committed === 'boolean' ? { committed: payload.committed } : {}),
+      ...(typeof payload?.elapsedMs === 'number' ? { elapsedMs: payload.elapsedMs } : {}),
+      ...(payload?.strategy === 'full_prefix' || payload?.strategy === 'map_reduce'
+        ? { strategy: payload.strategy }
+        : {}),
+      ...(typeof payload?.effectiveTriggerTokens === 'number'
+        ? { effectiveTriggerTokens: payload.effectiveTriggerTokens }
+        : {}),
+      ...(typeof payload?.protectedBudgetTokens === 'number'
+        ? { protectedBudgetTokens: payload.protectedBudgetTokens }
+        : {}),
+      ...(typeof payload?.fixedInputTokens === 'number'
+        ? { fixedInputTokens: payload.fixedInputTokens }
+        : {}),
+      ...(typeof payload?.eligibleTokens === 'number'
+        ? { eligibleTokens: payload.eligibleTokens }
+        : {}),
+      ...(typeof payload?.rawTailTokens === 'number'
+        ? { rawTailTokens: payload.rawTailTokens }
+        : {}),
+      ...(typeof payload?.summaryTokens === 'number'
+        ? { summaryTokens: payload.summaryTokens }
+        : {}),
+      ...(typeof payload?.queryLedgerTokens === 'number'
+        ? { queryLedgerTokens: payload.queryLedgerTokens }
+        : {}),
+      ...(typeof payload?.beforeRevision === 'number'
+        ? { beforeRevision: payload.beforeRevision }
+        : {}),
+      ...(typeof payload?.afterRevision === 'number'
+        ? { afterRevision: payload.afterRevision }
+        : {}),
+      ...(typeof payload?.reason === 'string' ? { reason: payload.reason } : {}),
     };
   } else if (event.type === 'context.compaction.ended') {
-    candidate = { kind: 'compact_end', sessionId: event.sessionId };
+    candidate = {
+      kind: 'compact_end',
+      sessionId: event.sessionId,
+      ...projectContextIdentity(payload?.meta),
+    };
   } else {
     return undefined;
   }
@@ -238,7 +395,7 @@ export interface RuntimeHostAdapterOptions {
 }
 
 const MAX_DIAGNOSTIC_ERROR = 512;
-const MINIMUM_KODAX_RUNTIME_VERSION = [0, 7, 73] as const;
+const MINIMUM_KODAX_RUNTIME_VERSION = [0, 7, 74] as const;
 
 export function resolveRuntimeHostMode(value: string | undefined): RuntimeHostMode {
   return value?.trim().toLowerCase() === 'legacy' ? 'legacy' : 'runtime';
@@ -255,7 +412,7 @@ function assertMinimumRuntimeVersion(version: string): void {
     }
   }
   throw new Error(
-    `KodaX Runtime ${version || '(unknown)'} is older than the required 0.7.73 baseline. ` +
+    `KodaX Runtime ${version || '(unknown)'} is older than the required 0.7.74 baseline. ` +
       'Restart the Coder daemon after updating KodaX; Space will not reuse an older daemon.',
   );
 }
@@ -614,6 +771,8 @@ export class RuntimeHostAdapter {
             coderFeatureMatrix: 1,
             sessionAdmission: 1,
             completeObservationSnapshot: 1,
+            contextCompaction: 2,
+            transcriptPaging: 1,
             connectionLifecycle: 1,
             typedRuntimeEvents: 1,
             daemonSafeRunInput: 1,
@@ -925,6 +1084,16 @@ export class RuntimeHostAdapter {
         available: true,
       },
       {
+        id: 'runtime.context.compaction',
+        version: version('contextCompaction'),
+        available: available('contextCompaction'),
+      },
+      {
+        id: 'runtime.transcript.paging',
+        version: version('transcriptPaging'),
+        available: available('transcriptPaging'),
+      },
+      {
         id: 'runtime.connection.lifecycle',
         version: version('connectionLifecycle'),
         available: true,
@@ -1066,14 +1235,7 @@ export class RuntimeHostAdapter {
   async transcript(sessionId: string): Promise<RuntimeTranscript | null> {
     const runtime = await this.requireRuntime();
     await this.assertCoderSession(runtime, sessionId);
-    const observed = this.observations.get(sessionId);
-    if (
-      observed &&
-      observed.reducer.snapshot().cursor.seq === observed.observation.snapshot.cursor
-    ) {
-      return structuredClone(observed.observation.snapshot.transcript);
-    }
-    return runtime.sessions.transcript(sessionId);
+    return readPagedRuntimeTranscript(runtime, sessionId);
   }
 
   async appendNotice(input: RuntimeAppendNoticeInput) {
@@ -1087,6 +1249,10 @@ export class RuntimeHostAdapter {
   async compactSession(input: RuntimeCompactSessionInput): Promise<RuntimeCompactSessionResult> {
     const runtime = await this.requireRuntime();
     await this.assertCoderSession(runtime, input.sessionId);
+    // Compaction lifecycle is Runtime-owned. Subscribe before issuing the command so the
+    // renderer cannot miss the canonical start/finished/end sequence and the host does not need
+    // to synthesize a second, revision-less compatibility sequence.
+    await this.ensureObserved(input.sessionId);
     const result = await runtime.sessions.compact(input);
     if (result.compacted) invalidatePersistedSessionCache(input.sessionId);
     return result;
@@ -1210,7 +1376,7 @@ export class RuntimeHostAdapter {
       defaults = await this.autoModeDefaultsResolver();
     } catch (error) {
       console.warn(
-        '[runtime] Auto LLM defaults load failed; using the KodaX 0.7.73 defaults:',
+        '[runtime] Auto LLM defaults load failed; using the KodaX 0.7.74 defaults:',
         sanitizeDiagnosticError(error),
       );
       defaults = {
@@ -1871,17 +2037,27 @@ export class RuntimeHostAdapter {
     const runtime = await this.requireRuntime();
     await this.assertCoderSession(runtime, input.sessionId);
     await this.ensureObserved(input.sessionId);
-    const previous = await runtime.runs.get(input.afterRunId);
-    const registeredCredential = !input.credential
-      ? await this.registerCredentialLease(runtime, previous.provider, input.sessionId)
-      : undefined;
+    const isInterrupt = input.delivery === 'interrupt';
+    if (isInterrupt && (input.credential !== undefined || input.hostTools !== undefined)) {
+      throw new Error(
+        'Interrupt input must reuse the active run credential and host-tool bindings.',
+      );
+    }
+    const registeredCredential =
+      !isInterrupt && !input.credential
+        ? await this.registerCredentialLease(
+            runtime,
+            (await runtime.runs.get(input.afterRunId)).provider,
+            input.sessionId,
+          )
+        : undefined;
     const credentialBinding = input.credential ?? registeredCredential?.binding;
     let result: RuntimeSubmitInputResult;
     try {
       result = await runtime.runs.submitInput({
         ...input,
-        ...(credentialBinding ? { credential: credentialBinding } : {}),
-        ...(!input.hostTools && this.hostToolLeaseId
+        ...(!isInterrupt && credentialBinding ? { credential: credentialBinding } : {}),
+        ...(!isInterrupt && !input.hostTools && this.hostToolLeaseId
           ? { hostTools: { leaseId: this.hostToolLeaseId } }
           : {}),
       });

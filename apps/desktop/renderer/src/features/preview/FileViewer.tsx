@@ -7,6 +7,7 @@ import { toArtifactContent, type ArtifactVersionPayload } from '../artifact/toAr
 import type { TransientArtifactSnapshot } from '../artifact/transientArtifact.js';
 import { loadFileViewerSnapshot } from '../../lib/openPath.js';
 import { ProjectWebPreview } from './ProjectWebPreview.js';
+import { FileNameText } from '../../components/FileNameText.js';
 
 interface FileViewerProps {
   readonly snapshot: TransientArtifactSnapshot;
@@ -137,12 +138,10 @@ export function FileViewer({ snapshot, onSnapshotChange }: FileViewerProps): JSX
           strokeWidth={1.65}
           aria-hidden
         />
-        <span
-          className="min-w-0 flex-1 truncate font-mono text-[11px] text-fg-secondary"
-          title={displayPath}
-        >
-          {displayPath}
-        </span>
+        <FileNameText
+          name={displayPath}
+          className="flex-1 font-mono text-[11px] text-fg-secondary"
+        />
         <div className="flex items-center gap-0.5">
           {isProjectHtml && (
             <button

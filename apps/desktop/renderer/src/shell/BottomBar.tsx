@@ -48,6 +48,7 @@ import { shouldActivateSessionForCurrentScope } from '../lib/sessionActivation.j
 import { collectAbsoluteAttachmentPaths, compactPathForDisplay } from '../lib/fileReferences.js';
 import { KodaXDogMascot } from '../components/KodaXDogMascot.js';
 import { KodaXDogSpriteMascot } from '../components/KodaXDogSpriteMascot.js';
+import { FileNameText } from '../components/FileNameText.js';
 import { useI18n } from '../i18n/I18nProvider.js';
 import type { MessageKey } from '../i18n/messages.js';
 import {
@@ -1297,7 +1298,7 @@ export function BottomBar(): JSX.Element {
       let lastIter = 0;
       let maxIter = 0;
       for (const ev of events) {
-        if (ev.kind === 'iteration_end') {
+        if (ev.kind === 'iteration_end' && ev.contextKind !== 'child') {
           const e = ev as {
             iter?: number;
             maxIter?: number;
@@ -2435,7 +2436,7 @@ export function BottomBar(): JSX.Element {
                         alt={img.label}
                         className="w-7 h-7 rounded object-cover flex-shrink-0"
                       />
-                      <span className="max-w-[120px] truncate">{img.label}</span>
+                      <FileNameText name={img.label} className="max-w-[120px]" />
                       <span className="text-fg-muted">{formatBytes(img.bytes)}</span>
                       <button
                         type="button"
@@ -2466,9 +2467,10 @@ export function BottomBar(): JSX.Element {
                       >
                         <Icon className="w-3.5 h-3.5 text-fg-muted flex-shrink-0" />
                         <span className="min-w-0 max-w-[220px]">
-                          <span className="block truncate font-medium text-fg-secondary">
-                            {file.name}
-                          </span>
+                          <FileNameText
+                            name={file.name}
+                            className="font-medium text-fg-secondary"
+                          />
                           <span className="block truncate text-[11px] text-fg-muted">{detail}</span>
                         </span>
                         {file.bytes !== undefined && (

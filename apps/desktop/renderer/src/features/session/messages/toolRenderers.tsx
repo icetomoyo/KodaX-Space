@@ -12,6 +12,7 @@
 
 import { useState } from 'react';
 import { FileOutput, Maximize2 } from 'lucide-react';
+import { FileNameText } from '../../../components/FileNameText.js';
 import { ToolDiffView } from './ToolDiffView.js';
 import { registerToolInputRenderer, registerToolResultRenderer } from './toolRegistry.js';
 import { useAppStore } from '../../../store/appStore.js';
@@ -308,7 +309,11 @@ function PartnerDeliveryToolCard({
         <span className="block truncate font-sans text-[12px] font-medium text-fg-primary">
           {title}
         </span>
-        <span className="block truncate text-[10px] text-fg-muted">{relativePath ?? id}</span>
+        {relativePath ? (
+          <FileNameText name={relativePath} className="text-[10px] text-fg-muted" />
+        ) : (
+          <span className="block truncate text-[10px] text-fg-muted">{id}</span>
+        )}
       </span>
       <span className="flex-shrink-0 text-[10px] uppercase tracking-wide text-fg-muted">
         {t('tool.partnerOutput')}

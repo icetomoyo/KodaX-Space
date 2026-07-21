@@ -962,7 +962,10 @@ export const messages = {
       'Auto-compaction is always enabled. Configure when KodaX summarizes long context for new turns.',
     'settings.compaction.triggerPercent': 'Trigger percent',
     'settings.compaction.triggerPercentHint':
-      'Recommended range: 15%-90%. Blank uses KodaX adaptive defaults; smaller values compact earlier.',
+      'Range: 15%-90%. Blank uses the 75% default; smaller values compact earlier.',
+    'settings.compaction.triggerTokens': 'Absolute token threshold',
+    'settings.compaction.triggerTokensHint':
+      'Optional. Zero or blank disables the absolute threshold; KodaX uses whichever active threshold is smaller.',
     'settings.compaction.contextWindow': 'Context window override',
     'settings.compaction.contextWindowPlaceholder': 'model default',
     'settings.compaction.contextWindowHint':
@@ -1478,7 +1481,15 @@ export const messages = {
     'contextWindow.progressToAutoCompact': '{percent}% to auto-compact',
     'contextWindow.remainingTokens': '{tokens} remaining',
     'contextWindow.thresholdNote':
-      'Auto-compact threshold is {triggerPercent}% of {cap}{model}; updates when you switch.',
+      'Effective auto-compact threshold: {threshold}. Percentage policy: {triggerPercent}% of {cap}{model}.',
+    'contextWindow.activeInputNote':
+      'This meter is the root model input context, not the complete visible transcript.',
+    'contextWindow.lastCompaction': 'Last root compaction: {before} → {after}',
+    'contextWindow.lastCompactionUnchanged':
+      'Last root compaction completed without replacing context ({tokens}).',
+    'contextWindow.compactionSource.manual': 'manual',
+    'contextWindow.compactionSource.automatic': 'automatic threshold',
+    'contextWindow.compactionSource.capacity': 'physical capacity',
     'sidebar.newSession': 'New session',
     'sidebar.openFolderFirst': 'Open a folder first',
     'sidebar.openFolderToStart': 'Open a folder to start.',
@@ -2175,6 +2186,9 @@ export const messages = {
     'mode.footer': 'Auto is governed by the KodaX guardrail.',
   },
   'zh-CN': {
+    'settings.compaction.triggerTokens': '绝对 Token 阈值',
+    'settings.compaction.triggerTokensHint':
+      '可选。0 或留空表示不启用绝对阈值；百分比与绝对值同时生效时取较小者。',
     'common.cancel': '取消',
     'common.confirm': '确认',
     'common.close': '关闭',
@@ -3485,7 +3499,14 @@ export const messages = {
     'contextWindow.progressToAutoCompact': '自动压缩进度 {percent}%',
     'contextWindow.remainingTokens': '还剩 {tokens}',
     'contextWindow.thresholdNote':
-      '自动压缩阈值为 {cap} 的 {triggerPercent}%{model}；切换模型后会更新。',
+      '当前自动压缩有效阈值：{threshold}。百分比策略为 {cap} 的 {triggerPercent}%{model}。',
+    'contextWindow.activeInputNote':
+      '此处显示主 Agent 的模型输入上下文，不是界面中可见的完整历史记录。',
+    'contextWindow.lastCompaction': '最近一次主上下文压缩：{before} → {after}',
+    'contextWindow.lastCompactionUnchanged': '最近一次主上下文压缩未替换上下文（{tokens}）。',
+    'contextWindow.compactionSource.manual': '手动',
+    'contextWindow.compactionSource.automatic': '自动阈值',
+    'contextWindow.compactionSource.capacity': '物理容量保护',
     'sidebar.newSession': '新对话',
     'sidebar.openFolderFirst': '请先打开文件夹',
     'sidebar.openFolderToStart': '打开文件夹以开始。',
@@ -4237,7 +4258,7 @@ export const messages = {
       '自动压缩始终开启；可设置 KodaX 在新一轮对话前何时总结长上下文。',
     'settings.compaction.triggerPercent': '触发阈值',
     'settings.compaction.triggerPercentHint':
-      '建议设置在 15%–90% 之间。留空使用 KodaX 自适应默认值；数值越小越早压缩。',
+      '范围 15%–90%。留空使用 75% 默认值；数值越小越早压缩。',
     'settings.compaction.contextWindow': '上下文窗口覆盖',
     'settings.compaction.contextWindowPlaceholder': '模型默认值',
     'settings.compaction.contextWindowHint': '可选的 token 窗口覆盖。留空则使用当前模型能力。',

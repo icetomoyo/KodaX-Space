@@ -4368,11 +4368,16 @@ The v0.1.32 Coder daemon migration replaced the inline SDK `MessageQueue` path. 
 - Project `runtime.input.interrupt` from the daemon's actual `interruptInput` advertisement instead of always reporting it unavailable.
 - Reject `unsupported_capability` for interrupt input with an actionable Ctrl/Cmd+Enter after-turn alternative; do not create work with altered delivery semantics.
 - Fail closed if a Runtime ever reports an accepted delivery different from the requested delivery.
+- Reuse the active run's credential and host-tool bindings for interrupt input; never attach continuation-run replacement bindings that KodaX correctly rejects.
 - Keep explicit after-turn submission and the Partner/legacy inline queue unchanged.
 
-Remaining SDK dependency:
+SDK integration status:
 
-- Full restoration of the earlier behavior requires daemon `interruptInput`: transport the prompt into the active run, drain all currently pending interrupt prompts in queue order at the next safe Runner boundary, insert them into one next LLM call, and emit one ordered consumption event containing the complete drained batch.
+- The local KodaX 0.7.74 source worktree now implements daemon `interruptInput`, FIFO same-boundary batching, queued/delivered status, and one ordered `run.input.delivered` event; its focused interrupt tests pass.
+- The implementation is packaged locally as KodaX 0.7.74 and Space now pins that exact tarball
+  integrity for validation. Registry publication remains pending, so a clean Registry-only install
+  is intentionally blocked until the same artifact is published; the live Coder daemon must still
+  be replaced after adoption.
 
 Files changed:
 
@@ -4387,13 +4392,15 @@ Tests added or updated:
 - Active daemon interrupt intent is preserved and unsupported capability is surfaced without after-turn downgrade.
 - Explicit after-turn input remains accepted and returns the requested queue mode.
 - Runtime adapter forwards interrupt delivery and returns the Runtime's factual capability result.
+- Runtime adapter does not register or attach replacement credential/host-tool bindings for interrupt delivery and rejects explicit replacements locally.
 - Runtime interrupt capability projection follows the advertised version and availability.
 
 Verification:
 
-- Focused queue and Runtime adapter suite: 51 passed, 0 failed.
+- Focused Space queue and Runtime adapter suite: 43 passed, 0 failed.
+- Focused KodaX interrupt/runtime-event/daemon suite: 12 passed, 0 failed.
 - Electron TypeScript check passed.
-- Targeted Prettier check and `git diff --check` passed.
+- Targeted ESLint and Prettier checks plus `git diff --check` passed.
 
 ### 070: Large or dependency-backed HTML Artifacts can be misclassified as static and render blank or incomplete
 
@@ -4758,12 +4765,67 @@ policy and blocks the Worker before the page can finish initializing.
 - The focused CSP regression and all four dynamic Artifact E2E scenarios pass, including the large
   legacy presentation with storage fallback and a Blob Worker.
 
+### 075: Runtime manual compaction duplicates canonical events and permits stale token projection
+
+- Priority: High
+- Status: Resolved
+- Introduced: v0.1.32 development
+- Created: 2026-07-21
+- Resolved: 2026-07-21
+
+#### Original Problem
+
+Current behavior:
+
+- KodaX 0.7.74 emits context-owned compaction lifecycle events with stable context identity and
+  revision, but Space discards unchanged outcomes and most of the canonical result metadata.
+- `requestCompact` also synthesizes start/stats/end around the Runtime call. Those compatibility
+  events can duplicate the SDK lifecycle and the synthetic stats have no context revision.
+- A late iteration or duplicate compatibility event can therefore replace the authoritative
+  post-compaction root token value, making the gauge appear to grow past the configured threshold.
+
+Expected behavior:
+
+- Runtime-backed compaction projects exactly one SDK-owned lifecycle, including committed and
+  unchanged outcomes.
+- Root token accounting is monotonic within the same context revision stream; child contexts and
+  stale compatibility events cannot overwrite it.
+- Embedded/legacy sessions retain their compatibility lifecycle.
+
+#### Root Cause
+
+Space treated the pre-0.7.74 callback projection and host-synthesized manual lifecycle as two
+independent sources of truth. The renderer stored only token counts and did not use context identity
+or revision to reject stale updates.
+
+#### Solution Implemented
+
+- Observe the Runtime session before invoking compaction and rely on its canonical lifecycle.
+- Preserve the 0.7.74 finished-outcome metadata through validated IPC.
+- Reject child/stale context observations in the root projection and keep legacy compatibility
+  lifecycle events only for non-Runtime sessions.
+- Reconstruct transcripts through the 0.7.74 page/chunk APIs so oversized observations never
+  require the legacy monolithic payload.
+
+Files changed:
+
+- Runtime host/session adapter and validated session-event schema.
+- Root context projection, compacting indicator, usage/cost selection, and settings copy.
+- Runtime compatibility, telemetry, transcript paging, store, and spinner regressions.
+
+Verification:
+
+- Space IPC schema build passed.
+- Focused Space compaction/telemetry/adapter/settings suite: 74 passed, 0 failed.
+- Exact 0.7.74 Runtime compatibility check passed.
+- Desktop TypeScript check and production smoke build passed.
+
 ## Summary
 
-- Total: 74
+- Total: 75
 - Open: 2
-- Resolved: 72
-- High: 39
+- Resolved: 73
+- High: 40
 - Medium: 27
 - Low: 8
 - Next to resolve: 043

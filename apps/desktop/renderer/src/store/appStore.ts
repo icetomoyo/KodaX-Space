@@ -58,6 +58,26 @@ import { mergeRuntimeSettingsIntoSessions } from './runtimeSessionSettings.js';
 
 export type MascotMode = 'legacy' | 'sprite' | 'off';
 
+export interface SessionCompactionOutcome {
+  readonly committed: boolean;
+  readonly tokensBefore: number;
+  readonly tokensAfter: number;
+  readonly source?: 'manual' | 'automatic_threshold' | 'physical_capacity';
+  readonly elapsedMs?: number;
+  readonly strategy?: 'full_prefix' | 'map_reduce';
+  readonly effectiveTriggerTokens?: number;
+  readonly reason?: string;
+}
+
+export interface SessionTokenInfo {
+  readonly tokens: number;
+  readonly source: 'iteration_end' | 'compact_stats' | 'estimate';
+  readonly compactedFrom?: number;
+  readonly contextId?: string;
+  readonly contextRevision?: number;
+  readonly lastCompaction?: SessionCompactionOutcome;
+}
+
 /**
  * Persistent inline notification (NotificationsSurface 渲染源)。
  *   - id: dedupe key (eg `ctx-warn:${sessionId}` / `auto-fallback:${sessionId}:${reason}`)
@@ -244,12 +264,7 @@ interface AppState {
    *
    * 未出现在表里的 session：从未点开 (eventsBuffer 空) → 走 dashboard 那边 msgCount × 1500 估算路径。
    */
-  tokensBySession: Readonly<
-    Record<
-      string,
-      { tokens: number; source: 'iteration_end' | 'compact_stats' | 'estimate' } | undefined
-    >
-  >;
+  tokensBySession: Readonly<Record<string, SessionTokenInfo | undefined>>;
   /**
    * Derived: transient (transcript-only) artifacts per session, minted from
    * completed `create_artifact` tool calls. Updated incrementally on tool_result
@@ -843,6 +858,47 @@ function stampLiveStreamEvent(event: SessionEvent): SessionEvent {
     return { ...event, sentAt: Date.now() };
   }
   return event;
+}
+
+function acceptsRootContextUpdate(
+  current: SessionTokenInfo | undefined,
+  contextId: string | undefined,
+  contextRevision: number | undefined,
+): boolean {
+  if (!current) return true;
+  if (current.contextId && contextId && current.contextId !== contextId) return true;
+  if (current.contextRevision === undefined) return true;
+  // Once the 0.7.74 revisioned stream is established, a revision-less compatibility event must
+  // not be allowed to roll it back. Equal revisions remain valid because token use grows between
+  // iterations inside one context revision.
+  return contextRevision !== undefined && contextRevision >= current.contextRevision;
+}
+
+function tokenInfoFromCompaction(
+  event: Extract<SessionEvent, { kind: 'compact_stats' }>,
+): SessionTokenInfo {
+  const committed = event.committed !== false;
+  return {
+    tokens: event.tokensAfter,
+    source: 'compact_stats',
+    ...(committed ? { compactedFrom: event.tokensBefore } : {}),
+    ...(event.contextId ? { contextId: event.contextId } : {}),
+    ...((event.afterRevision ?? event.contextRevision) !== undefined
+      ? { contextRevision: event.afterRevision ?? event.contextRevision }
+      : {}),
+    lastCompaction: {
+      committed,
+      tokensBefore: event.tokensBefore,
+      tokensAfter: event.tokensAfter,
+      ...(event.source ? { source: event.source } : {}),
+      ...(event.elapsedMs !== undefined ? { elapsedMs: event.elapsedMs } : {}),
+      ...(event.strategy ? { strategy: event.strategy } : {}),
+      ...(event.effectiveTriggerTokens !== undefined
+        ? { effectiveTriggerTokens: event.effectiveTriggerTokens }
+        : {}),
+      ...(event.reason ? { reason: event.reason } : {}),
+    },
+  };
 }
 
 // 粗略 token 估算 — 同 bubbles.tsx / ContextWindowIndicator 公式（ASCII/4 + non-ASCII × 1）。
@@ -1629,13 +1685,10 @@ export const useAppStore = create<AppState>((set) => ({
           .reverse()
           .find(
             (event): event is Extract<SessionEvent, { kind: 'compact_stats' }> =>
-              event.kind === 'compact_stats',
+              event.kind === 'compact_stats' && event.contextKind !== 'child',
           );
         if (latestCompactStats) {
-          restoredTokenInfo = {
-            tokens: latestCompactStats.tokensAfter,
-            source: 'compact_stats',
-          };
+          restoredTokenInfo = tokenInfoFromCompaction(latestCompactStats);
         } else {
           let total = 0;
           for (const message of combinedMsgs) total += approxTokensForStats(message.content);
@@ -1868,19 +1921,34 @@ export const useAppStore = create<AppState>((set) => ({
       }
       // F008: 同步抽取 work_budget / harness_profile 到 derived maps
       // —— 视图不必每次 scan 整条 bucket
-      if (event.kind === 'iteration_end') {
+      if (event.kind === 'iteration_end' && event.contextKind !== 'child') {
         // 权威 token 计数派生表 — Dashboard 订阅这里，避免每个 text_delta 都触发 dashboard 重算
-        next.tokensBySession = {
-          ...state.tokensBySession,
-          [event.sessionId]: { tokens: event.tokenCount, source: 'iteration_end' },
-        };
-      } else if (event.kind === 'compact_stats') {
+        const current = state.tokensBySession[event.sessionId];
+        if (acceptsRootContextUpdate(current, event.contextId, event.contextRevision)) {
+          next.tokensBySession = {
+            ...state.tokensBySession,
+            [event.sessionId]: {
+              tokens: event.tokenCount,
+              source: 'iteration_end',
+              ...(event.contextId ? { contextId: event.contextId } : {}),
+              ...(event.contextRevision !== undefined
+                ? { contextRevision: event.contextRevision }
+                : {}),
+              ...(current?.lastCompaction ? { lastCompaction: current.lastCompaction } : {}),
+            },
+          };
+        }
+      } else if (event.kind === 'compact_stats' && event.contextKind !== 'child') {
         // Compaction changes the active model context without deleting visible scrollback.
         // Keep the authoritative post-compaction value separate from transcript history.
-        next.tokensBySession = {
-          ...state.tokensBySession,
-          [event.sessionId]: { tokens: event.tokensAfter, source: 'compact_stats' },
-        };
+        const current = state.tokensBySession[event.sessionId];
+        const contextRevision = event.afterRevision ?? event.contextRevision;
+        if (acceptsRootContextUpdate(current, event.contextId, contextRevision)) {
+          next.tokensBySession = {
+            ...state.tokensBySession,
+            [event.sessionId]: tokenInfoFromCompaction(event),
+          };
+        }
       } else if (event.kind === 'session_complete') {
         if (!isSessionVisiblyOpen(state, event.sessionId)) {
           const unreadFlags = setSessionFlagValue(

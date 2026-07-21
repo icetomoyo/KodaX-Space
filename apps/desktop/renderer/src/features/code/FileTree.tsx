@@ -11,9 +11,10 @@ import { useEffect, useRef, useState } from 'react';
 import { File, FileCode, Folder, FolderOpen } from 'lucide-react';
 import type { FileNodeT } from '@kodax-space/space-ipc-schema';
 import { Caret } from '../../components/Caret.js';
+import { FileNameText } from '../../components/FileNameText.js';
 import { useI18n } from '../../i18n/I18nProvider.js';
 import { extOf } from '../../lib/pathClassify.js';
-import { fileTreeRefreshPaths, splitFileTreeLabel } from './fileTreeModel.js';
+import { fileTreeRefreshPaths } from './fileTreeModel.js';
 
 interface FileTreeProps {
   projectRoot: string;
@@ -269,7 +270,6 @@ function FileTreeNode({
   const padLeft = depth * 12 + 6;
   const FileIcon = isCodeLikePath(node.path) ? FileCode : File;
   const FolderIcon = isExpanded ? FolderOpen : Folder;
-  const label = splitFileTreeLabel(node.name, node.kind);
 
   return (
     <li>
@@ -304,10 +304,11 @@ function FileTreeNode({
             <FileIcon className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden />
           )}
         </span>
-        <span className="flex min-w-0 flex-1 items-baseline overflow-hidden">
-          <span className="min-w-0 flex-1 truncate">{label.leading}</span>
-          {label.trailing && <span className="flex-shrink-0">{label.trailing}</span>}
-        </span>
+        {isDir ? (
+          <span className="min-w-0 flex-1 truncate">{node.name}</span>
+        ) : (
+          <FileNameText name={node.name} className="flex-1" title={node.path} />
+        )}
       </button>
       {isDir && isExpanded && dirChildren.length > 0 && (
         <FileTreeLevel

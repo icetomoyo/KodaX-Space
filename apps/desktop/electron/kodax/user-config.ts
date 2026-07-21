@@ -599,7 +599,12 @@ function saveWritableKodaxConfig(config: SdkLoadConfigReturn): void {
 }
 
 const MAX_CONFIG_BYTES = 1_048_576;
-const MODELED_COMPACTION_KEYS = new Set(['enabled', 'triggerPercent', 'contextWindow']);
+const MODELED_COMPACTION_KEYS = new Set([
+  'enabled',
+  'triggerPercent',
+  'triggerTokens',
+  'contextWindow',
+]);
 
 function getKodaxConfigPath(): string {
   return path.join(getKodaxRuntimeDir(), 'config.json');
@@ -684,6 +689,14 @@ function normalizeCompactionSettings(raw: unknown): KodaxCompactionSettingsT {
     record.contextWindow <= 10_000_000
   ) {
     out.contextWindow = record.contextWindow;
+  }
+  if (
+    typeof record.triggerTokens === 'number' &&
+    Number.isInteger(record.triggerTokens) &&
+    record.triggerTokens >= 0 &&
+    record.triggerTokens <= 10_000_000
+  ) {
+    out.triggerTokens = record.triggerTokens;
   }
   return out;
 }

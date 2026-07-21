@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { base64ToBytes, mimeForPath, type RichPreviewKind } from './binaryUtils.js';
 import { useI18n } from '../../i18n/I18nProvider.js';
+import { FileNameText } from '../../components/FileNameText.js';
 
 interface MediaFileViewerProps {
   readonly base64: string;
@@ -170,9 +171,7 @@ export function MediaFileViewer({ base64, path, kind }: MediaFileViewerProps): J
       data-testid="media-audio-viewer"
     >
       <div className="w-full max-w-2xl rounded-md border border-border-default bg-surface p-4 shadow-sm">
-        <div className="mb-3 truncate text-sm font-medium text-fg-primary" title={label}>
-          {label}
-        </div>
+        <FileNameText name={label} className="mb-3 text-sm font-medium text-fg-primary" />
         <audio
           src={url}
           controls
@@ -200,9 +199,7 @@ function LargeAnimatedGifFallback({
       data-testid="media-large-gif-fallback"
     >
       <div className="max-w-md rounded-md border border-border-default bg-surface p-4 text-center shadow-sm">
-        <div className="truncate text-sm font-medium text-fg-primary" title={label}>
-          {label}
-        </div>
+        <FileNameText name={label} className="justify-center text-sm font-medium text-fg-primary" />
         <div className="mt-2 text-xs leading-relaxed text-fg-muted">
           {t('preview.largeAnimatedGif', {
             width: stats.width,

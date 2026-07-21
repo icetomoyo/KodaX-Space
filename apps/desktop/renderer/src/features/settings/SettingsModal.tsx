@@ -540,12 +540,14 @@ function RuntimePanel(): JSX.Element {
   const [mcpReloading, setMcpReloading] = useState(false);
   const [installing, setInstalling] = useState<SkillInstallBusy | null>(null);
   const [triggerPercent, setTriggerPercent] = useState('');
+  const [triggerTokens, setTriggerTokens] = useState('');
   const [contextWindow, setContextWindow] = useState('');
   const [err, setErr] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
 
   function syncCompactionForm(next: KodaxConfigOverviewT): void {
     setTriggerPercent(next.compaction.triggerPercent?.toString() ?? '');
+    setTriggerTokens(next.compaction.triggerTokens?.toString() ?? '');
     setContextWindow(next.compaction.contextWindow?.toString() ?? '');
   }
 
@@ -593,11 +595,19 @@ function RuntimePanel(): JSX.Element {
         10_000_000,
         t,
       );
+      const absoluteTrigger = parseOptionalInt(
+        triggerTokens,
+        t('settings.compaction.triggerTokens'),
+        0,
+        10_000_000,
+        t,
+      );
       const result = await window.kodaxSpace.invoke('settings.kodaxConfig.setCompaction', {
         ...(currentProjectPath ? { projectRoot: currentProjectPath } : {}),
         compaction: {
           enabled: true,
           ...(trigger !== undefined ? { triggerPercent: trigger } : {}),
+          ...(absoluteTrigger !== undefined ? { triggerTokens: absoluteTrigger } : {}),
           ...(windowTokens !== undefined ? { contextWindow: windowTokens } : {}),
         },
       });
@@ -756,11 +766,31 @@ function RuntimePanel(): JSX.Element {
                 setTriggerPercent(e.target.value);
                 setSaved(false);
               }}
-              placeholder="50"
+              placeholder="75"
               className="mt-2 h-9 w-full rounded-lg border border-border-default bg-surface px-3 text-xs text-fg-primary outline-none focus:border-info"
             />
             <span className="mt-1 block text-[11px] leading-5 text-fg-muted">
               {t('settings.compaction.triggerPercentHint')}
+            </span>
+          </label>
+          <label className="block">
+            <span className="text-[11px] font-medium uppercase tracking-wide text-fg-muted">
+              {t('settings.compaction.triggerTokens')}
+            </span>
+            <input
+              type="number"
+              min={0}
+              max={10_000_000}
+              value={triggerTokens}
+              onChange={(e) => {
+                setTriggerTokens(e.target.value);
+                setSaved(false);
+              }}
+              placeholder="0"
+              className="mt-2 h-9 w-full rounded-lg border border-border-default bg-surface px-3 text-xs text-fg-primary outline-none focus:border-info"
+            />
+            <span className="mt-1 block text-[11px] leading-5 text-fg-muted">
+              {t('settings.compaction.triggerTokensHint')}
             </span>
           </label>
           <label className="block">

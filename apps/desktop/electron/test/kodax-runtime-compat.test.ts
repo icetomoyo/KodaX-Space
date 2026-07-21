@@ -6,7 +6,7 @@ import test from 'node:test';
 
 const PROBE_MARKER = 'KODAX_RUNTIME_PROBE=';
 const PROBE_TIMEOUT_MS = 30_000;
-const EXPECTED_KODAX_VERSION = '0.7.73';
+const EXPECTED_KODAX_VERSION = '0.7.74';
 const SHARED_DAEMON_TIMEOUT_MS = 45_000;
 const SHARED_DAEMON_MARKER = 'KODAX_SHARED_DAEMON_HOST=';
 const require = createRequire(import.meta.url);
@@ -34,6 +34,8 @@ const SHARED_DAEMON_REQUIREMENTS = {
   coderFeatureMatrix: 1,
   sessionAdmission: 1,
   completeObservationSnapshot: 1,
+  contextCompaction: 2,
+  transcriptPaging: 1,
   connectionLifecycle: 1,
   typedRuntimeEvents: 1,
   daemonSafeRunInput: 1,
@@ -60,7 +62,7 @@ try {
     clientInfo: {
       name: 'kodax-cli',
       title: 'KodaX terminal compatibility probe',
-      version: '0.7.73',
+      version: '0.7.74',
       instanceId: process.env.KODAX_PROBE_INSTANCE_ID,
       instanceSecret: process.env.KODAX_PROBE_INSTANCE_SECRET,
     },

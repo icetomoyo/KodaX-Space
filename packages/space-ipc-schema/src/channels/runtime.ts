@@ -433,6 +433,8 @@ export const spaceRuntimeSessionSettingsSchema = z
         autoModeEngine: z.enum(['llm', 'rules']).optional(),
         autoModeClassifierModel: z.string().min(1).max(128).optional(),
         autoModeTimeoutMs: z.number().int().positive().max(3_600_000).optional(),
+        compactionTriggerPercent: z.number().min(15).max(90).optional(),
+        compactionTriggerTokens: z.number().int().positive().max(10_000_000).optional(),
       })
       .strict(),
   })

@@ -755,30 +755,34 @@ class KodaXHost {
     const s = this.sessions.get(sessionId);
     if (!s) return { ok: false, reason: `session not found: ${sessionId}` };
 
-    pushToRenderer('session.event', { kind: 'compact_start', sessionId });
+    const usesRuntime = s.surface === 'code' && runtimeHostAdapter.hasReadyRuntime();
+    // Runtime-backed sessions emit their own revisioned lifecycle. The compatibility events below
+    // are retained only for embedded/legacy sessions, which do not have a daemon observation.
+    if (!usesRuntime) pushToRenderer('session.event', { kind: 'compact_start', sessionId });
     try {
       const compactInput = {
         provider: s.provider,
         ...(s.model !== undefined ? { model: s.model } : {}),
         ...(customInstructions?.trim() ? { customInstructions: customInstructions.trim() } : {}),
       };
-      const result =
-        s.surface === 'code' && runtimeHostAdapter.hasReadyRuntime()
-          ? await runtimeHostAdapter
-              .compactSession({ sessionId, ...compactInput })
-              .catch((err: unknown) => ({
-                compacted: false,
-                tokensBefore: 0,
-                tokensAfter: 0,
-                reason: err instanceof Error ? err.message : String(err),
-              }))
-          : await compactPersistedSession(sessionId, compactInput);
-      if (result.compacted) {
+      const result = usesRuntime
+        ? await runtimeHostAdapter
+            .compactSession({ sessionId, ...compactInput })
+            .catch((err: unknown) => ({
+              compacted: false,
+              tokensBefore: 0,
+              tokensAfter: 0,
+              reason: err instanceof Error ? err.message : String(err),
+            }))
+        : await compactPersistedSession(sessionId, compactInput);
+      if (!usesRuntime && result.compacted) {
         pushToRenderer('session.event', {
           kind: 'compact_stats',
           sessionId,
           tokensBefore: result.tokensBefore,
           tokensAfter: result.tokensAfter,
+          source: 'manual',
+          committed: true,
         });
       }
       return {
@@ -789,7 +793,7 @@ class KodaXHost {
         ...(result.reason ? { reason: result.reason } : {}),
       };
     } finally {
-      pushToRenderer('session.event', { kind: 'compact_end', sessionId });
+      if (!usesRuntime) pushToRenderer('session.event', { kind: 'compact_end', sessionId });
     }
   }
 

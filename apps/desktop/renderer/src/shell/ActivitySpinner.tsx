@@ -14,6 +14,7 @@
 import { useEffect, useState, type JSX as ReactJSX } from 'react';
 import type { SessionEvent, SpaceSessionLiveProjectionT } from '@kodax-space/space-ipc-schema';
 import { useAppStore } from '../store/appStore.js';
+import { FileNameText } from '../components/FileNameText.js';
 import { useI18n } from '../i18n/I18nProvider.js';
 import type { MessageKey } from '../i18n/messages.js';
 
@@ -39,7 +40,14 @@ export function snapshotFromEvents(
   pending: boolean,
   managedPhase: string | undefined,
 ): ActivitySnapshot {
-  if (events.length === 0) {
+  // Child contexts share the session event stream but not the root context
+  // gauge/activity lifecycle. Letting a short reviewer iteration or compact
+  // overwrite this snapshot recreates the exact stale/oscillating UI that the
+  // context identity fields are intended to prevent.
+  const visibleEvents = events.filter((event) => !(
+    'contextKind' in event && event.contextKind === 'child'
+  ));
+  if (visibleEvents.length === 0) {
     // pending 但还没事件 → 显示 "Sending…" 占位，让 spinner 在 invoke 瞬间就亮
     return pending
       ? { streaming: true, status: 'Sending…', startedAt: Date.now() }
@@ -53,8 +61,8 @@ export function snapshotFromEvents(
   let startedAt: number | null = null;
   // session_start 不带时间戳；用 events 数组在 store 里追加顺序近似——精确不可用时用
   // Date.now() 作为下限（只影响 elapsed s 显示，业务无依赖）。
-  for (let i = events.length - 1; i >= 0; i--) {
-    const ev = events[i];
+  for (let i = visibleEvents.length - 1; i >= 0; i--) {
+    const ev = visibleEvents[i];
     if (ev.kind === 'compact_end') {
       completedCompactions += 1;
       continue;
@@ -85,7 +93,7 @@ export function snapshotFromEvents(
   // streaming 中：取最新 session_start 索引近似 startedAt。store 不存时间戳，
   // 这里只做"第一次见到 session_start 时记一次"——用模块级 WeakMap 缓存（session 切换重置）。
   // 简化：用 events.length 比较，第一次为新流时 reset
-  startedAt = resolveStartedAtMemo(events);
+  startedAt = resolveStartedAtMemo(visibleEvents);
 
   // 从倒序的"内容"事件推断当前在干什么 + 取最新 iter / tokens
   let status = compacting ? 'Compacting context…' : 'Thinking…';
@@ -93,8 +101,8 @@ export function snapshotFromEvents(
   let tokens: number | undefined;
   let activeToolId: string | undefined;
 
-  for (let i = events.length - 1; i >= 0; i--) {
-    const ev = events[i];
+  for (let i = visibleEvents.length - 1; i >= 0; i--) {
+    const ev = visibleEvents[i];
     // 状态文案 — 只用最新一条匹配的（外层 break 前先抓 iter/tokens）
     if (!compacting && status === 'Thinking…') {
       if (
@@ -128,8 +136,8 @@ export function snapshotFromEvents(
   // 倒扫匹配 toolId 的 tool_start (input 已包含 path/file_path)。
   let toolPath: string | undefined;
   if (activeToolId) {
-    for (let i = events.length - 1; i >= 0; i--) {
-      const ev = events[i];
+    for (let i = visibleEvents.length - 1; i >= 0; i--) {
+      const ev = visibleEvents[i];
       if (ev.kind === 'tool_start' && (ev as { toolId?: string }).toolId === activeToolId) {
         const input = (ev as { input?: Record<string, unknown> }).input;
         const raw = input?.path ?? input?.file_path;
@@ -149,8 +157,8 @@ export function snapshotFromEvents(
   let thinkingTokens: number | undefined;
   if (status === 'Thinking…' || status === 'Writing…') {
     const acc = { ascii: 0, nonAscii: 0 };
-    for (let i = events.length - 1; i >= 0; i--) {
-      const ev = events[i];
+    for (let i = visibleEvents.length - 1; i >= 0; i--) {
+      const ev = visibleEvents[i];
       if (ev.kind === 'thinking_delta') {
         tallyChars(ev.text, acc);
       } else if (ev.kind === 'thinking_end') {
@@ -179,8 +187,8 @@ export function snapshotFromEvents(
   let toolInputTokens: number | undefined;
   if (activeToolId) {
     const acc = { ascii: 0, nonAscii: 0 };
-    for (let i = events.length - 1; i >= 0; i--) {
-      const ev = events[i];
+    for (let i = visibleEvents.length - 1; i >= 0; i--) {
+      const ev = visibleEvents[i];
       if (ev.kind === 'tool_input_delta' && (ev as { toolId?: string }).toolId === activeToolId) {
         tallyChars(ev.partialJson, acc);
       } else if (ev.kind === 'tool_start' && (ev as { toolId?: string }).toolId === activeToolId) {
@@ -396,9 +404,11 @@ export function ActivitySpinner(): ReactJSX.Element | null {
       <span className="activity-spinner-comet" aria-hidden />
       <span className="text-fg-secondary">{statusBase}</span>
       {toolBase && (
-        <span className="text-fg-muted truncate max-w-[280px]" title={snap.toolPath ?? undefined}>
-          {toolBase}
-        </span>
+        <FileNameText
+          name={toolBase}
+          className="max-w-[280px] text-fg-muted"
+          title={snap.toolPath}
+        />
       )}
       {tail && <span className="text-fg-muted">· {tail}</span>}
     </div>

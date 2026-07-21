@@ -1289,15 +1289,15 @@ export class RealKodaXSession implements ManagedSession {
         emitLive({ kind: 'iteration_start', sessionId: sid, iter, maxIter });
       },
       onIterationEnd: (info) => {
-        // Sub-agent (workflow / dispatch_child_task) iterations are forwarded to the
-        // PARENT handler tagged only with `scope: 'worker'` — the SDK gives iteration
-        // events no `liveOnly`/`childAgentId` meta, so isTransientChildEvent can't catch
-        // them. Emitting them into the main stream makes composeMessages flush the
-        // in-flight assistant bubble on every worker iteration, chopping one streaming
-        // reply into several mid-sentence bubbles while a workflow's N sub-agents run in
-        // parallel. Only the main loop's `parent` (or legacy undefined) scope belongs in
-        // the main transcript / status indicators.
-        if (info.scope === 'worker') return;
+        // Stable context ownership supersedes the legacy worker heuristic: a root worker
+        // still belongs to this transcript, while child-agent telemetry must not flush or
+        // overwrite the root UI. Keep the heuristic only for pre-v0.7.74 callbacks.
+        if (
+          info.contextKind === 'child' ||
+          (info.contextKind === undefined && info.scope === 'worker')
+        ) {
+          return;
+        }
         emitLive({
           kind: 'iteration_end',
           sessionId: sid,
@@ -1306,6 +1306,11 @@ export class RealKodaXSession implements ManagedSession {
           tokenCount: info.tokenCount,
           tokenSource: info.tokenSource,
           scope: info.scope,
+          contextId: info.contextId,
+          contextKind: info.contextKind,
+          parentContextId: info.parentContextId,
+          agentId: info.agentId,
+          contextRevision: info.contextRevision,
           usage: info.usage
             ? {
                 inputTokens: info.usage.inputTokens,
@@ -1329,19 +1334,51 @@ export class RealKodaXSession implements ManagedSession {
       },
 
       // ---- Context compaction ----
-      onCompactStart: () => {
-        emitLive({ kind: 'compact_start', sessionId: sid });
+      onCompactStart: (meta) => {
+        emitLive({
+          kind: 'compact_start',
+          sessionId: sid,
+          contextId: meta?.contextId,
+          contextKind: meta?.contextKind,
+          parentContextId: meta?.parentContextId,
+          agentId: meta?.agentId,
+          contextRevision: meta?.contextRevision,
+        });
       },
-      onCompactStats: (info) => {
+      onContextCompactionFinished: (info) => {
         emitLive({
           kind: 'compact_stats',
           sessionId: sid,
           tokensBefore: info.tokensBefore,
           tokensAfter: info.tokensAfter,
+          contextId: info.contextId,
+          contextKind: info.contextKind,
+          parentContextId: info.parentContextId,
+          agentId: info.agentId,
+          contextRevision: info.contextRevision,
+          source: info.source,
+          committed: info.committed,
+          elapsedMs: info.elapsedMs,
+          strategy: info.strategy,
+          effectiveTriggerTokens: info.effectiveTriggerTokens,
+          protectedBudgetTokens: info.protectedBudgetTokens,
+          fixedInputTokens: info.fixedInputTokens,
+          eligibleTokens: info.eligibleTokens,
+          rawTailTokens: info.rawTailTokens,
+          summaryTokens: info.summaryTokens,
+          queryLedgerTokens: info.queryLedgerTokens,
         });
       },
-      onCompactEnd: () => {
-        emitLive({ kind: 'compact_end', sessionId: sid });
+      onCompactEnd: (meta) => {
+        emitLive({
+          kind: 'compact_end',
+          sessionId: sid,
+          contextId: meta?.contextId,
+          contextKind: meta?.contextKind,
+          parentContextId: meta?.parentContextId,
+          agentId: meta?.agentId,
+          contextRevision: meta?.contextRevision,
+        });
       },
 
       // ---- Provider retry / recovery ----

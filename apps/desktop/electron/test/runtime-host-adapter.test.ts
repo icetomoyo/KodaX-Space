@@ -109,7 +109,7 @@ function createFakeRuntime() {
       mode: 'daemon',
       profile: 'coder',
       startedAt: '2026-07-12T00:00:00.000Z',
-      version: '0.7.73',
+      version: '0.7.74',
       isolation: 'process',
     },
     capabilities: {
@@ -129,6 +129,8 @@ function createFakeRuntime() {
       coderFeatureMatrix: { version: 1, managedRun: true, todoProjection: true },
       sessionAdmission: { version: 1 },
       completeObservationSnapshot: { version: 1 },
+      contextCompaction: { version: 2 },
+      transcriptPaging: { version: 1 },
       connectionLifecycle: { version: 1 },
       typedRuntimeEvents: { version: 1 },
       daemonSafeRunInput: { version: 1 },
@@ -171,6 +173,12 @@ function createFakeRuntime() {
       async transcript(sessionId: string) {
         calls.transcripts.push(sessionId);
         return { title: '', messages: [] };
+      },
+      async transcriptPage() {
+        return null;
+      },
+      async transcriptEntryChunk() {
+        return null;
       },
       async observe(sessionId: string) {
         calls.observed.push(sessionId);
@@ -625,6 +633,8 @@ test('runtime selection attaches one Coder daemon with stable identity and requi
   assert.equal(options[0]?.requirements?.coderFeatureMatrix, 1);
   assert.equal(options[0]?.requirements?.sessionAdmission, 1);
   assert.equal(options[0]?.requirements?.completeObservationSnapshot, 1);
+  assert.equal(options[0]?.requirements?.contextCompaction, 2);
+  assert.equal(options[0]?.requirements?.transcriptPaging, 1);
   assert.equal(options[0]?.requirements?.connectionLifecycle, 1);
   assert.equal(options[0]?.requirements?.typedRuntimeEvents, 1);
   assert.equal(options[0]?.requirements?.daemonSafeRunInput, 1);
@@ -964,10 +974,86 @@ test('supported session operations use the Runtime facade', async () => {
   await adapter.forkSession({ sessionId: 's_1', selector: 'entry_1' });
   await adapter.rewindSession({ sessionId: 's_1', selector: 'entry_0' });
 
-  assert.deepEqual(fake.calls.transcripts, ['s_1']);
+  assert.deepEqual(fake.calls.transcripts, []);
   assert.deepEqual(fake.calls.compacted, [{ sessionId: 's_1', provider: 'mock' }]);
+  assert.deepEqual(fake.calls.observed, ['s_1']);
   assert.deepEqual(fake.calls.forked, [{ sessionId: 's_1', selector: 'entry_1' }]);
   assert.deepEqual(fake.calls.rewound, [{ sessionId: 's_1', selector: 'entry_0' }]);
+});
+
+test('oversized daemon transcripts are rebuilt from bounded pages and entry chunks', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_paged');
+  const older = {
+    entryId: 'entry_older',
+    parentId: null,
+    logicalId: 'logical_older',
+    timestamp: '2026-07-21T00:00:00.000Z',
+    type: 'message' as const,
+    source: 'user' as const,
+    message: { role: 'user' as const, content: 'older' },
+    active: true,
+  };
+  const newer = {
+    entryId: 'entry_newer',
+    parentId: 'entry_older',
+    logicalId: 'logical_newer',
+    timestamp: '2026-07-21T00:01:00.000Z',
+    type: 'message' as const,
+    source: 'assistant' as const,
+    message: { role: 'assistant' as const, content: 'newer' },
+    active: true,
+  };
+  let legacyTranscriptCalled = false;
+  Object.assign(fake.runtime.sessions, {
+    transcript: async () => {
+      legacyTranscriptCalled = true;
+      throw new Error('use session.transcript.page and session.transcript.entryChunk');
+    },
+    transcriptPage: async (input: { cursor?: string }) =>
+      input.cursor
+        ? {
+            revision: 'rev_1',
+            entries: [
+              { index: 0, entryId: older.entryId, byteLength: 100, oversized: false, entry: older },
+            ],
+            hasMore: false,
+          }
+        : {
+            revision: 'rev_1',
+            entries: [{ index: 1, entryId: newer.entryId, byteLength: 200_000, oversized: true }],
+            hasMore: true,
+            nextCursor: 'older-page',
+          },
+    transcriptEntryChunk: async () => ({
+      revision: 'rev_1',
+      entryIndex: 1,
+      entryId: newer.entryId,
+      encoding: 'base64-json' as const,
+      data: Buffer.from(JSON.stringify(newer), 'utf8').toString('base64'),
+      hasMore: false,
+    }),
+  });
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  const transcript = await adapter.transcript('s_paged');
+
+  assert.deepEqual(
+    transcript?.transcriptEntries.map((entry) => entry.entryId),
+    ['entry_older', 'entry_newer'],
+  );
+  assert.deepEqual(
+    transcript?.messages.map((message) => message.content),
+    ['older', 'newer'],
+  );
+  assert.equal(legacyTranscriptCalled, false);
+  await adapter.close();
 });
 
 test('Runtime session mutations invalidate the Space transcript compatibility cache', async () => {
@@ -1152,7 +1238,7 @@ test('initialization closes a constructed Runtime when host-tool registration fa
   assert.equal(fake.calls.close, 1);
 });
 
-test('initialization rejects a daemon older than the KodaX 0.7.73 release baseline', async () => {
+test('initialization rejects a daemon older than the KodaX 0.7.74 release baseline', async () => {
   const fake = createFakeRuntime();
   (fake.runtime.identity as { version: string }).version = '0.7.69';
   const adapter = new RuntimeHostAdapter({
@@ -1164,7 +1250,7 @@ test('initialization rejects a daemon older than the KodaX 0.7.73 release baseli
 
   await assert.rejects(
     adapter.initialize(),
-    /0\.7\.69.*required 0\.7\.73.*Restart the Coder daemon/i,
+    /0\.7\.69.*required 0\.7\.74.*Restart the Coder daemon/i,
   );
   assert.equal(adapter.snapshot().state, 'failed');
   assert.equal(fake.calls.close, 1);
@@ -1473,17 +1559,19 @@ test('failed after-turn submission revokes its newly registered credential lease
   await adapter.close();
 });
 
-test('interrupt submission reaches Runtime and returns its factual capability result', async () => {
+test('interrupt submission reuses the active run bindings and returns the factual Runtime result', async () => {
   const fake = createFakeRuntime();
   fake.sessions.add('s_1');
   fake.runtime.runs.submitInput = async (input) => {
     fake.calls.submitted.push(input);
     return {
-      accepted: false,
+      accepted: true,
       delivery: 'interrupt',
+      inputId: 'input_1',
+      runId: 'run_previous',
       sessionId: 's_1',
       afterRunId: 'run_previous',
-      reason: 'unsupported_capability',
+      sessionOrder: 1,
     };
   };
   const adapter = new RuntimeHostAdapter({
@@ -1503,14 +1591,50 @@ test('interrupt submission reaches Runtime and returns its factual capability re
   });
 
   assert.deepEqual(result, {
-    accepted: false,
+    accepted: true,
     delivery: 'interrupt',
+    inputId: 'input_1',
+    runId: 'run_previous',
     sessionId: 's_1',
     afterRunId: 'run_previous',
-    reason: 'unsupported_capability',
+    sessionOrder: 1,
   });
-  assert.equal((fake.calls.submitted[0] as { delivery?: string }).delivery, 'interrupt');
-  assert.deepEqual(fake.calls.credentialRevokes, ['credential_1']);
+  assert.deepEqual(fake.calls.submitted, [
+    {
+      sessionId: 's_1',
+      afterRunId: 'run_previous',
+      delivery: 'interrupt',
+      input: [{ type: 'text', text: 'steer now' }],
+    },
+  ]);
+  assert.deepEqual(fake.calls.credentialRegistrations, []);
+  assert.deepEqual(fake.calls.credentialRevokes, []);
+  await adapter.close();
+});
+
+test('interrupt submission rejects replacement bindings before reaching Runtime', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_1');
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  await assert.rejects(
+    adapter.submitInput({
+      sessionId: 's_1',
+      afterRunId: 'run_previous',
+      delivery: 'interrupt',
+      input: [{ type: 'text', text: 'steer now' }],
+      hostTools: { leaseId: 'replacement_tools' },
+    }),
+    /must reuse the active run credential and host-tool bindings/,
+  );
+  assert.deepEqual(fake.calls.submitted, []);
+  assert.deepEqual(fake.calls.credentialRegistrations, []);
   await adapter.close();
 });
 

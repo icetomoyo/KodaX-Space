@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, File, FileCode, FolderTree, RefreshCw, Search } from 'lucide-react';
+import { FileNameText } from '../../components/FileNameText.js';
 import { FileTree } from '../../features/code/FileTree.js';
-import { splitFileTreeLabel } from '../../features/code/fileTreeModel.js';
 import { openFileInViewer, toProjectRelative } from '../../lib/openPath.js';
 import { extOf } from '../../lib/pathClassify.js';
 import { useAppStore } from '../../store/appStore.js';
@@ -285,12 +285,10 @@ function FilesPanelBackHeader({
         )}
       </div>
       {selectedPath && (
-        <code
-          className="mt-1 block truncate pl-6 font-mono text-[11px] leading-4 text-fg-faint"
-          title={selectedPath}
-        >
-          {selectedPath}
-        </code>
+        <FileNameText
+          name={selectedPath}
+          className="mt-1 pl-6 font-mono text-[11px] leading-4 text-fg-faint"
+        />
       )}
     </div>
   );
@@ -310,7 +308,6 @@ function SearchResultRow({
   const name = path.slice(path.lastIndexOf('/') + 1);
   const dir = path.slice(0, Math.max(0, path.length - name.length - 1));
   const Icon = isCodeLikePath(path) ? FileCode : File;
-  const label = splitFileTreeLabel(name, 'file');
   return (
     <button
       type="button"
@@ -328,10 +325,7 @@ function SearchResultRow({
       }`}
     >
       <Icon className="h-3.5 w-3.5 text-fg-muted" strokeWidth={1.75} aria-hidden />
-      <span className="flex min-w-0 items-baseline overflow-hidden">
-        <span className="min-w-0 flex-1 truncate">{label.leading}</span>
-        {label.trailing && <span className="flex-shrink-0">{label.trailing}</span>}
-      </span>
+      <FileNameText name={name} />
       <span className="truncate text-[11px] text-fg-muted">
         {dir.length > 0 ? toProjectRelative(dir, null) : ''}
       </span>

@@ -45,6 +45,7 @@ import {
   isAbsolutePathOutsideProject,
 } from '../lib/openPath.js';
 import { Caret } from '../components/Caret.js';
+import { FileNameText } from '../components/FileNameText.js';
 import { ArtifactsView } from '../features/artifact/ArtifactsView.js';
 import { FileViewer } from '../features/preview/FileViewer.js';
 import { useArtifacts, useArtifactCreated } from '../features/artifact/useArtifacts.js';
@@ -1563,11 +1564,6 @@ interface ChangeTreeNode {
   count: number;
 }
 
-function basename(p: string): string {
-  const i = p.lastIndexOf('/');
-  return i >= 0 ? p.slice(i + 1) : p;
-}
-
 /**
  * Build a directory tree from a flat changed-file list:
  *   1) split paths on '/' and attach files to their containing directory
@@ -1694,7 +1690,11 @@ function ChangeTreeView({
             data-testid="task-dock-change-file"
           >
             <StatusBadge status={f.status} staged={f.staged} />
-            <span className="truncate flex-1">{basename(f.path)}</span>
+            <FileNameText
+              name={f.path.slice(f.path.lastIndexOf('/') + 1)}
+              className="flex-1"
+              title={f.path}
+            />
           </button>
         </li>
       ))}
@@ -1966,7 +1966,7 @@ function ContextSection({
                     className="group/ctxfile w-full text-left flex items-center gap-1.5 px-1 py-0.5 rounded hover:bg-hover-bg text-fg-secondary hover:text-fg-primary"
                     title={t('fileActions.openInFileViewer')}
                   >
-                    <span className="truncate flex-1">{f}</span>
+                    <FileNameText name={f} className="flex-1" />
                     <Eye
                       className="w-3 h-3 flex-shrink-0 text-fg-faint opacity-0 group-hover/ctxfile:opacity-100"
                       strokeWidth={1.75}

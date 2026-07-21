@@ -36,12 +36,13 @@ test('computeModelContextWindow: effective compaction context override reaches t
       received = config;
       return config.contextWindow ?? 1_000_000;
     },
-    { enabled: true, triggerPercent: 40, contextWindow: 400_000 },
+    { enabled: true, triggerPercent: 40, triggerTokens: 120_000, contextWindow: 400_000 },
   );
 
   assert.deepEqual(received, {
     enabled: true,
     triggerPercent: 40,
+    triggerTokens: 120_000,
     contextWindow: 400_000,
   });
   assert.equal(r.contextWindow, 400_000);

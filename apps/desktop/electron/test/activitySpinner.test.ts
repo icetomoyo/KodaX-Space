@@ -67,6 +67,45 @@ test('automatic compaction completion does not stop the still-running session sp
   assert.equal(snapshot.status.startsWith('Thinking'), true);
 });
 
+test('child compaction and iteration telemetry never replace root activity state', () => {
+  const snapshot = snapshotFromEvents(
+    [
+      { kind: 'session_start', sessionId: sid, provider: 'mock' },
+      {
+        kind: 'iteration_end',
+        sessionId: sid,
+        iter: 2,
+        maxIter: 20,
+        tokenCount: 88_000,
+        contextKind: 'root',
+      },
+      {
+        kind: 'compact_start',
+        sessionId: sid,
+        contextId: `${sid}/agent/reviewer`,
+        contextKind: 'child',
+        parentContextId: sid,
+        agentId: 'reviewer',
+      },
+      {
+        kind: 'iteration_end',
+        sessionId: sid,
+        iter: 1,
+        maxIter: 5,
+        tokenCount: 4_000,
+        contextKind: 'child',
+        contextId: `${sid}/agent/reviewer`,
+      },
+    ],
+    false,
+    undefined,
+  );
+
+  assert.equal(snapshot.status.startsWith('Thinking'), true);
+  assert.deepEqual(snapshot.iter, { current: 2, max: 20 });
+  assert.equal(snapshot.tokens, 88_000);
+});
+
 test('active compaction status overrides an ordinary daemon running projection', () => {
   const projection: SpaceSessionLiveProjectionT = {
     sessionId: sid,

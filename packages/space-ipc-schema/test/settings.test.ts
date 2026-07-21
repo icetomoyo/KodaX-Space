@@ -31,7 +31,12 @@ test('KodaX config overview channels accept compaction and storage summaries', (
   const output = {
     configPath: 'C:\\Users\\you\\.kodax\\config.json',
     configExists: true,
-    compaction: { enabled: true, triggerPercent: 65, contextWindow: 200_000 },
+    compaction: {
+      enabled: true,
+      triggerPercent: 65,
+      triggerTokens: 120_000,
+      contextWindow: 200_000,
+    },
     mcp: {
       globalPath: 'C:\\Users\\you\\.kodax\\config.json',
       projectPath: 'C:\\repo\\.kodax\\config.json',
@@ -72,6 +77,22 @@ test('KodaX config overview channels accept compaction and storage summaries', (
     assert.equal(
       settingsKodaxConfigSetCompactionChannel.input.safeParse({
         compaction: { enabled: true, triggerPercent },
+      }).success,
+      false,
+    );
+  }
+  for (const triggerTokens of [0, 120_000]) {
+    assert.equal(
+      settingsKodaxConfigSetCompactionChannel.input.safeParse({
+        compaction: { enabled: true, triggerTokens },
+      }).success,
+      true,
+    );
+  }
+  for (const triggerTokens of [-1, 1.5]) {
+    assert.equal(
+      settingsKodaxConfigSetCompactionChannel.input.safeParse({
+        compaction: { enabled: true, triggerTokens },
       }).success,
       false,
     );

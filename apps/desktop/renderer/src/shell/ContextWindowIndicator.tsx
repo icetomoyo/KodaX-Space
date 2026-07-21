@@ -16,7 +16,7 @@ import { useAppStore } from '../store/appStore.js';
 import { getModelContextCap } from './modelContextCaps.js';
 import { resolveActiveModel } from './resolveActiveModel.js';
 
-const DEFAULT_COMPACTION_TRIGGER_PERCENT = 100;
+const DEFAULT_COMPACTION_TRIGGER_PERCENT = 75;
 export const COMPACTION_CONFIG_CHANGED_EVENT = 'kodax:compaction-config-changed';
 
 type ContextGaugeStyle = CSSProperties & {
@@ -29,6 +29,7 @@ type ContextGaugeStyle = CSSProperties & {
 interface ResolvedContextWindow {
   readonly contextWindow: number;
   readonly triggerPercent: number;
+  readonly triggerTokens?: number;
 }
 
 /** 后台查 SDK 拿 contextWindow + cache; UI 同步 fallback 到硬编码表先渲染避免抖动。*/
@@ -78,16 +79,19 @@ function useResolvedContextWindow(
         // 有按 model 名前缀的真实信息 (gpt-5 → 1M、deepseek-v3.2 → 1M).
         let value: number;
         let triggerPercent = DEFAULT_COMPACTION_TRIGGER_PERCENT;
+        let triggerTokens: number | undefined;
         if (!r.ok) {
           value = hardcodedFallback;
         } else if (r.data.source === 'fallback') {
           value = hardcodedFallback;
           triggerPercent = r.data.compactionTriggerPercent;
+          triggerTokens = r.data.compactionTriggerTokens;
         } else {
           value = r.data.contextWindow > 0 ? r.data.contextWindow : hardcodedFallback;
           triggerPercent = r.data.compactionTriggerPercent;
+          triggerTokens = r.data.compactionTriggerTokens;
         }
-        setResolved({ contextWindow: value, triggerPercent });
+        setResolved({ contextWindow: value, triggerPercent, triggerTokens });
       })
       .catch(() => {
         if (cancelled) return;
@@ -147,9 +151,26 @@ export function ContextWindowIndicator(): JSX.Element | null {
   const resolvedWindow = useResolvedContextWindow(activeProviderId, activeModel, hardcodedCap);
   const cap = resolvedWindow.contextWindow;
   const triggerPercent = resolvedWindow.triggerPercent;
-  const autoCompactThreshold = Math.max(1, Math.round((cap * triggerPercent) / 100));
+  const percentageThreshold = Math.max(1, Math.round((cap * triggerPercent) / 100));
+  const autoCompactThreshold =
+    resolvedWindow.triggerTokens && resolvedWindow.triggerTokens > 0
+      ? Math.min(percentageThreshold, resolvedWindow.triggerTokens)
+      : percentageThreshold;
 
   const tokenCount = tokenInfo?.tokens ?? 0;
+  const lastCompaction = tokenInfo?.lastCompaction;
+  const compactionSourceLabel =
+    lastCompaction?.source === 'manual'
+      ? t('contextWindow.compactionSource.manual')
+      : lastCompaction?.source === 'automatic_threshold'
+        ? t('contextWindow.compactionSource.automatic')
+        : lastCompaction?.source === 'physical_capacity'
+          ? t('contextWindow.compactionSource.capacity')
+          : null;
+  const compactionDuration =
+    lastCompaction?.elapsedMs !== undefined
+      ? `${(lastCompaction.elapsedMs / 1_000).toFixed(1)}s`
+      : null;
   const isEstimate = tokenInfo?.source === 'estimate';
   const autoCompactPercent = (tokenCount / autoCompactThreshold) * 100;
   const displayPercent = Math.min(100, autoCompactPercent);
@@ -249,8 +270,28 @@ export function ContextWindowIndicator(): JSX.Element | null {
             {t('contextWindow.thresholdNote', {
               triggerPercent,
               cap: capStr,
+              threshold: thresholdStr,
               model: activeModel ? ` (${activeModel})` : '',
             })}
+            <div className="mt-1">{t('contextWindow.activeInputNote')}</div>
+            {lastCompaction && (
+              <div className="mt-1 text-fg-secondary">
+                {lastCompaction.committed
+                  ? t('contextWindow.lastCompaction', {
+                      before: formatTokens(lastCompaction.tokensBefore),
+                      after: formatTokens(lastCompaction.tokensAfter),
+                    })
+                  : t('contextWindow.lastCompactionUnchanged', {
+                      tokens: formatTokens(lastCompaction.tokensAfter),
+                    })}
+                {(compactionSourceLabel || compactionDuration) && (
+                  <span className="text-fg-muted">
+                    {' · '}
+                    {[compactionSourceLabel, compactionDuration].filter(Boolean).join(' · ')}
+                  </span>
+                )}
+              </div>
+            )}
           </div>
         </div>
       )}
