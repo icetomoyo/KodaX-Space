@@ -322,6 +322,12 @@ test('prependSessionHistory restores the persisted post-compaction context inste
   assert.deepEqual(state.tokensBySession[SID], {
     tokens: 222_460,
     source: 'compact_stats',
+    compactedFrom: 322_973,
+    lastCompaction: {
+      committed: true,
+      tokensBefore: 322_973,
+      tokensAfter: 222_460,
+    },
   });
   assert.equal(
     state.eventsBySession[SID]?.some((event) => event.kind === 'compact_stats'),

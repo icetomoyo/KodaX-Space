@@ -4875,12 +4875,106 @@ Verification:
 - Changed-file ESLint and production smoke build passed.
 - Git whitespace validation passed.
 
+### 077: Repacked KodaX 0.7.74 leaves the release lockfile with stale integrity
+
+- Priority: High
+- Status: Resolved
+- Introduced: v0.1.32 development
+- Fixed: v0.1.32
+- Created: 2026-07-21
+- Resolved: 2026-07-21
+
+#### Original Problem
+
+Current behavior:
+
+- The rebuilt `kodax-ai-kodax-0.7.74.tgz` installs and reports version 0.7.74, but its SHA-512
+  differs from the earlier package with the same version.
+- `package-lock.json` still records the earlier tarball integrity while resolving the future npm
+  Registry URL for 0.7.74.
+- A clean install of the newly published tarball would reject it as not matching the lockfile.
+
+Expected behavior:
+
+- The lockfile integrity matches the exact 0.7.74 tarball intended for publication.
+- The dependency remains a normal Registry dependency and does not capture a developer-machine
+  `file:` path.
+
+#### Root Cause
+
+Repacking a version changes the tarball bytes and therefore its integrity digest. The local
+`--no-save --package-lock=false` install correctly avoided recording an absolute path, but it also
+left the previous package digest untouched.
+
+#### Proposed Solution
+
+- Replace only the KodaX 0.7.74 integrity value with the digest of the newly supplied tarball.
+- Keep the version, Registry resolution, dependency metadata, and all other lock entries intact.
+- Recheck the digest, focused compatibility suite, typecheck, and production build.
+
+#### Resolution
+
+- Replaced only the KodaX package integrity with the digest of the newly supplied 0.7.74 tgz.
+- Preserved the Registry URL and avoided recording any local `file:` dependency.
+- Verified the lock value byte-for-byte against the supplied tarball.
+
+Verification:
+
+- KodaX/Space compaction, daemon, transcript, settings, and telemetry suite: 116 passed, 0 failed.
+- Package and desktop TypeScript checks passed.
+- Production smoke build and Git whitespace validation passed.
+
+### 078: History restore regression asserts the pre-canonical compaction token shape
+
+- Priority: Medium
+- Status: Resolved
+- Introduced: v0.1.32 development
+- Fixed: v0.1.32
+- Created: 2026-07-21
+- Resolved: 2026-07-21
+
+#### Original Problem
+
+Current behavior:
+
+- The history-restore regression fails after restoring a persisted compaction notice even though
+  the restored token count is correct.
+- Its exact-object assertion predates canonical compaction outcomes and rejects the intentionally
+  preserved `compactedFrom` and `lastCompaction` facts.
+- Other current store regressions require those same facts for the gauge and compaction detail UI.
+
+Expected behavior:
+
+- History restoration preserves the canonical before/after/committed outcome.
+- The regression verifies that complete contract instead of requiring metadata to be discarded.
+
+#### Root Cause
+
+The canonical compaction projection was added to both live events and persisted history, but this
+one older exact-object assertion was not updated with the richer token-info contract.
+
+#### Proposed Solution
+
+- Update only the stale expected value to include the canonical restored compaction outcome.
+- Rerun the spinner, store projection, and history restoration suites together.
+
+#### Resolution
+
+- The history-restore regression now verifies `compactedFrom` and the canonical committed
+  before/after outcome already produced by the store.
+- No production behavior was weakened or changed.
+
+Verification:
+
+- Spinner, Runtime store projection, and persisted-history suite: 36 passed, 0 failed.
+- Changed-test ESLint and Git whitespace validation passed.
+
 ## Summary
 
-- Total: 76
+- Total: 78
 - Open: 2
-- Resolved: 74
-- High: 41
-- Medium: 27
+- Resolved: 76
+- High: 42
+- Medium: 28
 - Low: 8
 - Next to resolve: 043
