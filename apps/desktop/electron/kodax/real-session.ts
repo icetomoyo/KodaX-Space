@@ -431,6 +431,14 @@ export class RealKodaXSession implements ManagedSession {
                 'Use Ctrl/Cmd+Enter to queue after the current turn.',
             );
           }
+          // Keep Space source-compatible with the immediately preceding Runtime package while
+          // recognizing the more specific rejection reason once the patched Runtime is installed.
+          if (delivery === 'interrupt' && String(result.reason) === 'interrupt_window_closed') {
+            throw new Error(
+              'The active run has already passed its final safe insertion point. ' +
+                'This message was not sent; retry after the run finishes.',
+            );
+          }
           throw new Error(`The daemon rejected the ${queueMode} input: ${result.reason}.`);
         }
         if (result.delivery !== delivery) {
@@ -440,7 +448,11 @@ export class RealKodaXSession implements ManagedSession {
           );
         }
         this.lastActivityAt = Date.now();
-        return { queued: true, queueId: result.runId, queueMode };
+        return {
+          queued: true,
+          queueId: result.delivery === 'interrupt' ? result.inputId : result.runId,
+          queueMode,
+        };
       }
       this.startRun(prompt, artifacts, options?.promptOverlay);
       return { queued: false };

@@ -38,7 +38,8 @@ export type ConversationMessage =
       id: string;
       content: string;
       queueMode: 'interrupt' | 'after-turn';
-      status: 'pending-ack' | 'queued';
+      status: 'pending-ack' | 'queued' | 'failed';
+      failureReason?: QueuedUserMessage['failureReason'];
       sentAt: number;
     }
   | {
@@ -220,6 +221,7 @@ export function composeMessages({
       content: queued.content,
       queueMode: queued.queueMode,
       status: queued.status,
+      ...(queued.failureReason !== undefined ? { failureReason: queued.failureReason } : {}),
       sentAt: queued.sentAt,
     });
   }
@@ -476,6 +478,9 @@ function composeAssistantSegment(
       case 'queued_user_prompt_started': {
         flushTextBubble();
         lastTextBubble = null;
+        break;
+      }
+      case 'queued_user_prompt_failed': {
         break;
       }
     }

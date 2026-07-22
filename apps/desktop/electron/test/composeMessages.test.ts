@@ -127,6 +127,26 @@ test('pending queued user messages render as queued_user, not normal user bubble
   }
 });
 
+test('failed queued user message keeps its terminal reason for the actionable bubble', () => {
+  const failed: QueuedUserMessage = {
+    ...queuedMsg('qu-failed', 'copy me and retry'),
+    status: 'failed',
+    failureReason: 'run_completed',
+  };
+  const out = composeMessages({ events: [], userMessages: [], queuedUserMessages: [failed] });
+
+  assert.equal(out.length, 1);
+  assert.deepEqual(out[0], {
+    kind: 'queued_user',
+    id: 'qu-failed',
+    content: 'copy me and retry',
+    queueMode: 'interrupt',
+    status: 'failed',
+    failureReason: 'run_completed',
+    sentAt: 1002,
+  });
+});
+
 test('user + consecutive text_deltas → user bubble + single merged assistant bubble', () => {
   const events: SessionEvent[] = [
     { kind: 'text_delta', sessionId: sid, text: 'Hello ' },

@@ -102,10 +102,35 @@ export interface RuntimeSessionIdentity {
   readonly ephemeral: boolean;
 }
 
+type QueuedUserPromptFailureReason = Extract<
+  SessionEvent,
+  { kind: 'queued_user_prompt_failed' }
+>['reason'];
+
 function runtimeEventRecord(value: unknown): Readonly<Record<string, unknown>> | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? (value as Readonly<Record<string, unknown>>)
     : undefined;
+}
+
+function runtimeInputText(value: unknown): string | undefined {
+  const items = Array.isArray(value) ? value : [value];
+  const text = items
+    .map((item) => runtimeEventRecord(item))
+    .filter(
+      (item): item is Readonly<Record<string, unknown>> =>
+        item?.type === 'text' && typeof item.text === 'string',
+    )
+    .map((item) => item.text as string)
+    .join('\n');
+  return text.trim() === '' ? undefined : text;
+}
+
+const MAX_RUNTIME_PROMPT_EVENT_TEXT = 262_144;
+
+function clampRuntimePromptEventText(value: string): string {
+  if (value.length <= MAX_RUNTIME_PROMPT_EVENT_TEXT) return value;
+  return `${value.slice(0, MAX_RUNTIME_PROMPT_EVENT_TEXT - 24)}\n\n[truncated]`;
 }
 
 function projectContextIdentity(value: unknown): {
@@ -762,6 +787,7 @@ export class RuntimeHostAdapter {
             operationDeduplication: 1,
             sessionObservation: 1,
             afterTurnInput: 1,
+            interruptInput: 1,
             askUserTransport: 1,
             permissionCas: 1,
             providerCredentialBroker: 1,
@@ -1846,6 +1872,31 @@ export class RuntimeHostAdapter {
       }
       return;
     }
+    if (event.type === 'run.input.delivered') {
+      const inputs = Array.isArray(payload?.inputs) ? payload.inputs : [];
+      for (const value of inputs) {
+        const delivered = runtimeEventRecord(value);
+        const content = runtimeInputText(delivered?.input);
+        if (!content) continue;
+        const queueId =
+          typeof delivered?.inputId === 'string' && delivered.inputId.length <= 128
+            ? delivered.inputId
+            : undefined;
+        const parsed = sessionEventChannel.payload.safeParse({
+          kind: 'mid_turn_user_prompt',
+          sessionId: event.sessionId,
+          ...(queueId ? { queueId } : {}),
+          content: clampRuntimePromptEventText(content),
+        });
+        if (parsed.success) this.push('session.event', parsed.data);
+      }
+      return;
+    }
+    // `run.input.delivered` is the canonical daemon interrupt-consumption event. Runtime emits a
+    // legacy progress mirror immediately afterward, but that mirror has MessageQueue ids rather
+    // than the public per-input ids returned by submitInput. Do not project both into the
+    // transcript or one Runtime delivery would create two user boundaries.
+    if (event.type === 'run.progress' && payload?.kind === 'mid_turn_user_messages') return;
     if (event.type === 'run.progress' && payload?.kind === 'managed_task_status') {
       const parsed = sessionEventChannel.payload.safeParse({
         kind: 'managed_task_status',
@@ -1862,6 +1913,7 @@ export class RuntimeHostAdapter {
         this.push('session.event', {
           kind: 'queued_user_prompt_started',
           sessionId: continuation.sessionId,
+          queueId: event.runId,
           queueMode: 'after-turn',
           content: continuation.content,
         });
@@ -1877,6 +1929,7 @@ export class RuntimeHostAdapter {
       return;
     }
     if (event.type === 'run.completed') {
+      this.pushTerminalInterruptFailures(event.sessionId, payload, 'run_completed');
       this.push('session.event', { kind: 'session_complete', sessionId: event.sessionId });
       return;
     }
@@ -1885,6 +1938,15 @@ export class RuntimeHostAdapter {
       event.type === 'run.cancelled' ||
       event.type === 'run.interrupted'
     ) {
+      this.pushTerminalInterruptFailures(
+        event.sessionId,
+        payload,
+        event.type === 'run.failed'
+          ? 'run_failed'
+          : event.type === 'run.cancelled'
+            ? 'run_cancelled'
+            : 'run_interrupted',
+      );
       const error =
         typeof payload?.error === 'string'
           ? payload.error
@@ -1900,6 +1962,27 @@ export class RuntimeHostAdapter {
         category: event.type === 'run.cancelled' ? 'cancelled' : 'unknown',
         retriable: event.type !== 'run.failed',
       });
+    }
+  }
+
+  private pushTerminalInterruptFailures(
+    sessionId: string,
+    payload: Readonly<Record<string, unknown>> | undefined,
+    reason: QueuedUserPromptFailureReason,
+  ): void {
+    const interruptInputs = Array.isArray(payload?.interruptInputs) ? payload.interruptInputs : [];
+    for (const value of interruptInputs) {
+      const input = runtimeEventRecord(value);
+      if (input?.state !== 'terminal') continue;
+      const parsed = sessionEventChannel.payload.safeParse({
+        kind: 'queued_user_prompt_failed',
+        sessionId,
+        queueId: input.inputId,
+        queueMode: 'interrupt',
+        content: input.contentPreview,
+        reason,
+      });
+      if (parsed.success) this.push('session.event', parsed.data);
     }
   }
 

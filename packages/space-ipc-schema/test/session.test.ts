@@ -500,7 +500,12 @@ test('session.event payload: text_delta variant', () => {
 });
 
 test('session.event payload: mid_turn_user_prompt variant', () => {
-  const evt = { kind: 'mid_turn_user_prompt' as const, sessionId: 's_1', content: 'follow up' };
+  const evt = {
+    kind: 'mid_turn_user_prompt' as const,
+    sessionId: 's_1',
+    queueId: 'input_1',
+    content: 'follow up',
+  };
   assert.equal(sessionEventChannel.payload.safeParse(evt).success, true);
 });
 
@@ -508,10 +513,28 @@ test('session.event payload: queued_user_prompt_started variant', () => {
   const evt = {
     kind: 'queued_user_prompt_started' as const,
     sessionId: 's_1',
+    queueId: 'run_queued_1',
     queueMode: 'after-turn' as const,
     content: 'follow up',
   };
   assert.equal(sessionEventChannel.payload.safeParse(evt).success, true);
+});
+
+test('session.event payload: queued_user_prompt_failed variant is bounded and interrupt-only', () => {
+  const evt = {
+    kind: 'queued_user_prompt_failed' as const,
+    sessionId: 's_1',
+    queueId: 'input_1',
+    queueMode: 'interrupt' as const,
+    content: 'follow up',
+    reason: 'run_completed' as const,
+  };
+  assert.equal(sessionEventChannel.payload.safeParse(evt).success, true);
+  assert.equal(
+    sessionEventChannel.payload.safeParse({ ...evt, queueMode: 'after-turn' }).success,
+    false,
+  );
+  assert.equal(sessionEventChannel.payload.safeParse({ ...evt, reason: 'unknown' }).success, false);
 });
 
 test('session.event payload: tool_start with input', () => {

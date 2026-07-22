@@ -161,7 +161,8 @@ export interface QueuedUserMessage {
   readonly content: string;
   readonly matchContent: string;
   readonly queueMode: 'interrupt' | 'after-turn';
-  readonly status: 'pending-ack' | 'queued';
+  readonly status: 'pending-ack' | 'queued' | 'failed';
+  readonly failureReason?: Extract<SessionEvent, { kind: 'queued_user_prompt_failed' }>['reason'];
   readonly sentAt: number;
 }
 
@@ -1069,7 +1070,8 @@ function persistLocalNoticeReplace(
 
 function normalizeQueuedMatchContent(content: string): string {
   const marker = '\n\n[truncated]';
-  return content.endsWith(marker) ? content.slice(0, -marker.length) : content;
+  if (content.endsWith(marker)) return content.slice(0, -marker.length);
+  return content.endsWith('…') ? content.slice(0, -1) : content;
 }
 
 function queuedMessageMatches(entry: QueuedUserMessage, matchContent: string): boolean {
@@ -1079,7 +1081,9 @@ function queuedMessageMatches(entry: QueuedUserMessage, matchContent: string): b
     entry.content === matchContent ||
     entry.matchContent === normalized ||
     entry.content === normalized ||
-    entry.matchContent.startsWith(normalized)
+    entry.matchContent.startsWith(normalized) ||
+    normalized.startsWith(`${entry.matchContent}\n\n`) ||
+    normalized.startsWith(`${entry.content}\n\n`)
   );
 }
 
@@ -1088,11 +1092,22 @@ function promoteQueuedUserMessageForPrompt(
   sessionId: string,
   queueMode: QueuedUserMessage['queueMode'],
   matchContent: string,
+  queueId?: string,
 ): Partial<AppState> {
   const queued = state.queuedUserMessagesBySession[sessionId] ?? [];
-  const idx = queued.findIndex(
-    (entry) => entry.queueMode === queueMode && queuedMessageMatches(entry, matchContent),
-  );
+  const queueIdIndex =
+    queueId === undefined
+      ? -1
+      : queued.findIndex((entry) => entry.queueMode === queueMode && entry.queueId === queueId);
+  const idx =
+    queueIdIndex !== -1
+      ? queueIdIndex
+      : queued.findIndex(
+          (entry) =>
+            entry.queueMode === queueMode &&
+            (queueId === undefined || entry.queueId === undefined) &&
+            queuedMessageMatches(entry, matchContent),
+        );
   const userBucket = state.userMessagesBySession[sessionId] ?? [];
 
   if (idx === -1) {
@@ -1119,6 +1134,48 @@ function promoteQueuedUserMessageForPrompt(
     userMessagesBySession: {
       ...state.userMessagesBySession,
       [sessionId]: [...userBucket, createUserMessage(sessionId, entry.content)],
+    },
+  };
+}
+
+function failQueuedUserMessageForPrompt(
+  state: AppState,
+  event: Extract<SessionEvent, { kind: 'queued_user_prompt_failed' }>,
+): Partial<AppState> {
+  const queued = state.queuedUserMessagesBySession[event.sessionId] ?? [];
+  const queueIdIndex = queued.findIndex(
+    (entry) => entry.queueMode === event.queueMode && entry.queueId === event.queueId,
+  );
+  const idx =
+    queueIdIndex !== -1
+      ? queueIdIndex
+      : queued.findIndex(
+          (entry) =>
+            entry.queueMode === event.queueMode &&
+            entry.queueId === undefined &&
+            queuedMessageMatches(entry, event.content),
+        );
+  if (idx === -1) return {};
+
+  const entry = queued[idx]!;
+  if (
+    entry.status === 'failed' &&
+    entry.queueId === event.queueId &&
+    entry.failureReason === event.reason
+  ) {
+    return {};
+  }
+  const nextQueued = queued.slice();
+  nextQueued[idx] = {
+    ...entry,
+    queueId: event.queueId,
+    status: 'failed',
+    failureReason: event.reason,
+  };
+  return {
+    queuedUserMessagesBySession: {
+      ...state.queuedUserMessagesBySession,
+      [event.sessionId]: nextQueued,
     },
   };
 }
@@ -1362,7 +1419,7 @@ export const useAppStore = create<AppState>((set) => ({
           ...entry,
           ...(queueId !== undefined ? { queueId } : {}),
           ...(queueMode !== undefined ? { queueMode } : {}),
-          status: 'queued' as const,
+          status: entry.status === 'failed' ? ('failed' as const) : ('queued' as const),
         };
       });
       if (!changed) return state;
@@ -1903,19 +1960,34 @@ export const useAppStore = create<AppState>((set) => ({
       if (event.kind === 'mid_turn_user_prompt') {
         Object.assign(
           next,
-          promoteQueuedUserMessageForPrompt(state, event.sessionId, 'interrupt', event.content),
+          promoteQueuedUserMessageForPrompt(
+            state,
+            event.sessionId,
+            'interrupt',
+            event.content,
+            event.queueId,
+          ),
         );
       } else if (event.kind === 'queued_user_prompt_started') {
         Object.assign(
           next,
-          promoteQueuedUserMessageForPrompt(state, event.sessionId, event.queueMode, event.content),
+          promoteQueuedUserMessageForPrompt(
+            state,
+            event.sessionId,
+            event.queueMode,
+            event.content,
+            event.queueId,
+          ),
         );
+      } else if (event.kind === 'queued_user_prompt_failed') {
+        Object.assign(next, failQueuedUserMessageForPrompt(state, event));
       } else if (event.kind === 'session_error' && event.error === 'cancelled') {
         const queued = state.queuedUserMessagesBySession[event.sessionId];
         if (queued && queued.length > 0) {
+          const retained = queued.filter((entry) => entry.status === 'failed');
           next.queuedUserMessagesBySession = {
             ...state.queuedUserMessagesBySession,
-            [event.sessionId]: [],
+            [event.sessionId]: retained,
           };
         }
       }

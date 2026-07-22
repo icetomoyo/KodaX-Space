@@ -74,6 +74,61 @@ test('active daemon run preserves interrupt intent and requires explicit after-t
     input: [{ type: 'text', text: 'follow-up while active\n\nattachment path overlay' }],
   });
 
+  adapter.submitInput = async () => ({
+    accepted: false,
+    delivery: 'interrupt',
+    sessionId: 'session_restored',
+    afterRunId: 'run_active',
+    reason: 'interrupt_window_closed',
+  });
+  await assert.rejects(
+    session.send('too late for this run', undefined, { queueMode: 'interrupt' }),
+    /passed its final safe insertion point.*was not sent.*retry/i,
+  );
+
+  let acceptedInterruptCount = 0;
+  adapter.submitInput = async (input: Record<string, unknown>) => {
+    submittedInput = input;
+    acceptedInterruptCount += 1;
+    return {
+      accepted: true,
+      delivery: 'interrupt',
+      inputId: `input_interrupt_${acceptedInterruptCount}`,
+      runId: 'run_active',
+      sessionId: 'session_restored',
+      afterRunId: 'run_active',
+      sessionOrder: acceptedInterruptCount,
+    };
+  };
+  const interruptResult = await session.send('accepted interrupt follow-up', undefined, {
+    queueMode: 'interrupt',
+  });
+  assert.deepEqual(interruptResult, {
+    queued: true,
+    queueId: 'input_interrupt_1',
+    queueMode: 'interrupt',
+  });
+  assert.deepEqual(submittedInput, {
+    sessionId: 'session_restored',
+    afterRunId: 'run_active',
+    delivery: 'interrupt',
+    input: [{ type: 'text', text: 'accepted interrupt follow-up' }],
+  });
+  const secondInterruptResult = await session.send('second accepted interrupt', undefined, {
+    queueMode: 'interrupt',
+  });
+  assert.deepEqual(secondInterruptResult, {
+    queued: true,
+    queueId: 'input_interrupt_2',
+    queueMode: 'interrupt',
+  });
+  assert.deepEqual(submittedInput, {
+    sessionId: 'session_restored',
+    afterRunId: 'run_active',
+    delivery: 'interrupt',
+    input: [{ type: 'text', text: 'second accepted interrupt' }],
+  });
+
   adapter.submitInput = async (input: Record<string, unknown>) => {
     submittedInput = input;
     return { accepted: true, delivery: 'after_turn', runId: 'run_follow_up' };

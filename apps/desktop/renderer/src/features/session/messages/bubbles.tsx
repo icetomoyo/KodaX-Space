@@ -425,23 +425,39 @@ export function QueuedUserBubble({
   sentAt,
 }: Extract<ConversationMessage, { kind: 'queued_user' }>): JSX.Element {
   const { t } = useI18n();
-  const label =
-    queueMode === 'after-turn' ? t('message.queue.afterTurn') : t('message.queue.interrupt');
-  const detail =
-    status === 'pending-ack'
+  const failed = status === 'failed';
+  const label = failed
+    ? t('message.queue.failed')
+    : queueMode === 'after-turn'
+      ? t('message.queue.afterTurn')
+      : t('message.queue.interrupt');
+  const detail = failed
+    ? t('message.queue.failedDetail')
+    : status === 'pending-ack'
       ? t('message.queue.sending')
       : queueMode === 'after-turn'
         ? t('message.queue.waitingTurn')
         : t('message.queue.waitingSafePoint');
   return (
-    <div className="group flex flex-col items-start" data-testid="queued-user-message-bubble">
+    <div
+      className="group flex flex-col items-start"
+      data-testid="queued-user-message-bubble"
+      data-status={status}
+    >
       <div
         className={[
           'inline-block min-w-0 max-w-[min(80%,100%)] overflow-hidden rounded-2xl px-3 py-2 text-[13px] whitespace-pre-wrap break-words [overflow-wrap:anywhere] border border-dashed',
-          'bg-warn/10 border-warn/45 text-fg-secondary',
+          failed
+            ? 'bg-danger/10 border-danger/55 text-fg-secondary'
+            : 'bg-warn/10 border-warn/45 text-fg-secondary',
         ].join(' ')}
       >
-        <div className="mb-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] font-mono text-warn">
+        <div
+          className={[
+            'mb-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] font-mono',
+            failed ? 'text-danger' : 'text-warn',
+          ].join(' ')}
+        >
           <span className="uppercase tracking-[0.12em]">{label}</span>
           <span className="text-fg-muted normal-case">{detail}</span>
         </div>

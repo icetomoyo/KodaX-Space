@@ -923,13 +923,23 @@ export const sessionEventChannel = {
     z.object({
       kind: z.literal('mid_turn_user_prompt'),
       sessionId: z.string().min(1),
+      queueId: z.string().min(1).max(128).optional(),
       content: z.string().min(1).max(MAX_PROMPT_BYTES),
     }),
     z.object({
       kind: z.literal('queued_user_prompt_started'),
       sessionId: z.string().min(1),
+      queueId: z.string().min(1).max(128).optional(),
       queueMode: sessionSendQueueModeSchema,
       content: z.string().min(1).max(MAX_PROMPT_BYTES),
+    }),
+    z.object({
+      kind: z.literal('queued_user_prompt_failed'),
+      sessionId: z.string().min(1),
+      queueId: z.string().min(1).max(128),
+      queueMode: z.literal('interrupt'),
+      content: z.string().min(1).max(MAX_PROMPT_BYTES),
+      reason: z.enum(['run_completed', 'run_failed', 'run_cancelled', 'run_interrupted']),
     }),
     z.object({
       kind: z.literal('iteration_start'),

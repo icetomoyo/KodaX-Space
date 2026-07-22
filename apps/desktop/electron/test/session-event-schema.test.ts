@@ -7,6 +7,7 @@ test('session.event accepts SDK mid-turn user prompt boundaries', () => {
     sessionEventChannel.payload.safeParse({
       kind: 'mid_turn_user_prompt',
       sessionId: 's_1',
+      queueId: 'input_1',
       content: 'Please also check the tests.',
     }).success,
     true,
@@ -18,8 +19,23 @@ test('session.event accepts queued user prompt started boundaries', () => {
     sessionEventChannel.payload.safeParse({
       kind: 'queued_user_prompt_started',
       sessionId: 's_1',
+      queueId: 'run_queued_1',
       queueMode: 'after-turn',
       content: 'Please run this after the current turn.',
+    }).success,
+    true,
+  );
+});
+
+test('session.event accepts queued interrupt failure boundaries', () => {
+  assert.equal(
+    sessionEventChannel.payload.safeParse({
+      kind: 'queued_user_prompt_failed',
+      sessionId: 's_1',
+      queueId: 'input_1',
+      queueMode: 'interrupt',
+      content: 'Please run this before the current turn ends.',
+      reason: 'run_completed',
     }).success,
     true,
   );

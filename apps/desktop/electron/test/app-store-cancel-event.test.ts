@@ -186,6 +186,141 @@ test('mid_turn_user_prompt promotes a pending interrupt queued message', () => {
   assert.equal(state.userMessagesBySession[SID]?.at(-1)?.content, 'q2');
 });
 
+test('mid_turn_user_prompt consumes the matching queue id without rendering its host overlay', () => {
+  const store = useAppStore.getState();
+  const firstId = store.appendQueuedUserMessage(SID, {
+    content: 'review the document',
+    queueMode: 'interrupt',
+  });
+  const secondId = store.appendQueuedUserMessage(SID, {
+    content: 'review the document',
+    queueMode: 'interrupt',
+  });
+  assert.ok(firstId);
+  assert.ok(secondId);
+  store.markQueuedUserMessageAccepted(SID, firstId, 'input-1', 'interrupt');
+  store.markQueuedUserMessageAccepted(SID, secondId, 'input-2', 'interrupt');
+
+  store.appendEvent({
+    kind: 'mid_turn_user_prompt',
+    sessionId: SID,
+    queueId: 'input-2',
+    content: 'review the document\n\n<attachment-paths>internal</attachment-paths>',
+  });
+
+  const state = useAppStore.getState();
+  assert.deepEqual(
+    (state.queuedUserMessagesBySession[SID] ?? []).map((entry) => entry.queueId),
+    ['input-1'],
+  );
+  assert.equal(state.userMessagesBySession[SID]?.at(-1)?.content, 'review the document');
+});
+
+test('mid_turn_user_prompt matches a host-overlay suffix when delivery wins the ack race', () => {
+  const store = useAppStore.getState();
+  const localId = store.appendQueuedUserMessage(SID, {
+    content: 'review the document',
+    queueMode: 'interrupt',
+  });
+  assert.ok(localId);
+
+  store.appendEvent({
+    kind: 'mid_turn_user_prompt',
+    sessionId: SID,
+    queueId: 'input-before-ack',
+    content: 'review the document\n\n<attachment-paths>internal</attachment-paths>',
+  });
+
+  let state = useAppStore.getState();
+  assert.equal(state.queuedUserMessagesBySession[SID]?.length ?? 0, 0);
+  assert.equal(state.userMessagesBySession[SID]?.at(-1)?.content, 'review the document');
+
+  store.appendEvent({ kind: 'session_complete', sessionId: SID });
+  state = useAppStore.getState();
+  assert.equal(
+    state.queuedUserMessagesBySession[SID]?.length ?? 0,
+    0,
+    'the consumed overlay stays gone after the run completes',
+  );
+});
+
+test('queued interrupt terminal event fails only its public queue id and survives session completion', () => {
+  const store = useAppStore.getState();
+  const firstId = store.appendQueuedUserMessage(SID, {
+    content: 'same prompt',
+    queueMode: 'interrupt',
+  });
+  const secondId = store.appendQueuedUserMessage(SID, {
+    content: 'same prompt',
+    queueMode: 'interrupt',
+  });
+  assert.ok(firstId);
+  assert.ok(secondId);
+  store.markQueuedUserMessageAccepted(SID, firstId, 'input-1', 'interrupt');
+  store.markQueuedUserMessageAccepted(SID, secondId, 'input-2', 'interrupt');
+
+  store.appendEvent({
+    kind: 'queued_user_prompt_failed',
+    sessionId: SID,
+    queueId: 'input-2',
+    queueMode: 'interrupt',
+    content: 'same prompt',
+    reason: 'run_completed',
+  });
+  store.appendEvent({ kind: 'session_complete', sessionId: SID });
+
+  const queued = useAppStore.getState().queuedUserMessagesBySession[SID] ?? [];
+  assert.deepEqual(
+    queued.map((entry) => ({ queueId: entry.queueId, status: entry.status })),
+    [
+      { queueId: 'input-1', status: 'queued' },
+      { queueId: 'input-2', status: 'failed' },
+    ],
+  );
+  assert.equal(queued[1]?.failureReason, 'run_completed');
+});
+
+test('queued interrupt terminal event wins an event-before-ack race by preview content', () => {
+  const store = useAppStore.getState();
+  const longPrompt = `${'review this carefully '.repeat(80)}private tail`;
+  const localId = store.appendQueuedUserMessage(SID, {
+    content: longPrompt,
+    matchContent: `${longPrompt}\n\n<attachment-paths>internal</attachment-paths>`,
+    queueMode: 'interrupt',
+  });
+  assert.ok(localId);
+
+  store.appendEvent({
+    kind: 'queued_user_prompt_failed',
+    sessionId: SID,
+    queueId: 'input-before-ack',
+    queueMode: 'interrupt',
+    content: `${longPrompt.slice(0, 1023)}…`,
+    reason: 'run_cancelled',
+  });
+  store.markQueuedUserMessageAccepted(SID, localId, 'input-before-ack', 'interrupt');
+
+  const queued = useAppStore.getState().queuedUserMessagesBySession[SID] ?? [];
+  assert.equal(queued.length, 1);
+  assert.equal(queued[0]?.queueId, 'input-before-ack');
+  assert.equal(queued[0]?.status, 'failed', 'a late acknowledgement must not revive the bubble');
+  assert.equal(queued[0]?.failureReason, 'run_cancelled');
+  assert.equal(queued[0]?.content, longPrompt, 'the full local prompt remains available to copy');
+
+  store.appendEvent({
+    kind: 'session_error',
+    sessionId: SID,
+    error: 'cancelled',
+    category: 'cancelled',
+    retriable: true,
+  });
+  assert.equal(
+    useAppStore.getState().queuedUserMessagesBySession[SID]?.[0]?.status,
+    'failed',
+    'the following cancellation boundary must retain the actionable failure bubble',
+  );
+});
+
 test('queued_user_prompt_started promotes a pending after-turn queued message', () => {
   const store = useAppStore.getState();
   const localId = store.appendQueuedUserMessage(SID, {

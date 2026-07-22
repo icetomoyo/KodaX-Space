@@ -625,6 +625,7 @@ test('runtime selection attaches one Coder daemon with stable identity and requi
   assert.equal(options[0]?.clientInfo?.instanceId, 'space_instance_stable');
   assert.equal(options[0]?.clientInfo?.instanceSecret, 'space_secret_stable_0123456789abcdef');
   assert.equal(options[0]?.requirements?.sessionObservation, 1);
+  assert.equal(options[0]?.requirements?.interruptInput, 1);
   assert.equal(options[0]?.requirements?.externalAgents, true);
   assert.equal(options[0]?.requirements?.externalAgentAdmin, 1);
   assert.equal(options[0]?.requirements?.actorControlPlane, 1);
@@ -1636,6 +1637,152 @@ test('interrupt submission rejects replacement bindings before reaching Runtime'
   assert.deepEqual(fake.calls.submitted, []);
   assert.deepEqual(fake.calls.credentialRegistrations, []);
   await adapter.close();
+});
+
+test('daemon delivered interrupt batch becomes ordered queue-addressable session events', async () => {
+  const pushed: unknown[] = [];
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    push: (channel, payload) => {
+      if (channel === 'session.event') pushed.push(payload);
+    },
+  });
+  const bridgeRuntimeEvent = (
+    adapter as unknown as {
+      bridgeRuntimeEvent(event: import('@kodax-ai/kodax/runtime').RuntimeTypedEvent): void;
+    }
+  ).bridgeRuntimeEvent.bind(adapter);
+
+  bridgeRuntimeEvent({
+    id: 'event_interrupt_batch',
+    seq: 1,
+    time: '2026-07-21T00:00:00.000Z',
+    type: 'run.input.delivered',
+    sessionId: 's_1',
+    runId: 'run_active',
+    payload: {
+      inputs: [
+        {
+          inputId: 'input-1',
+          afterRunId: 'run_active',
+          input: [{ type: 'text', text: 'first interrupt\n\nattachment overlay' }],
+          queuedAt: '2026-07-21T00:00:00.000Z',
+          deliveredAt: '2026-07-21T00:00:01.000Z',
+        },
+        {
+          inputId: 'input-2',
+          afterRunId: 'run_active',
+          input: [{ type: 'text', text: 'second interrupt' }],
+          queuedAt: '2026-07-21T00:00:00.000Z',
+          deliveredAt: '2026-07-21T00:00:01.000Z',
+        },
+      ],
+    },
+  });
+  bridgeRuntimeEvent({
+    id: 'event_interrupt_progress_mirror',
+    seq: 2,
+    time: '2026-07-21T00:00:01.000Z',
+    type: 'run.progress',
+    sessionId: 's_1',
+    runId: 'run_active',
+    payload: {
+      kind: 'mid_turn_user_messages',
+      contents: ['first interrupt\n\nattachment overlay', 'second interrupt'],
+      meta: { queuedMessageIds: ['msg-1', 'msg-2'] },
+    },
+  });
+
+  assert.deepEqual(pushed, [
+    {
+      kind: 'mid_turn_user_prompt',
+      sessionId: 's_1',
+      queueId: 'input-1',
+      content: 'first interrupt\n\nattachment overlay',
+    },
+    {
+      kind: 'mid_turn_user_prompt',
+      sessionId: 's_1',
+      queueId: 'input-2',
+      content: 'second interrupt',
+    },
+  ]);
+  await adapter.close();
+});
+
+test('terminal Runtime events fail only undelivered interrupt inputs before closing the session', async () => {
+  const terminalTypes = [
+    ['run.completed', 'completed', 'run_completed', 'session_complete'],
+    ['run.failed', 'failed', 'run_failed', 'session_error'],
+    ['run.cancelled', 'cancelled', 'run_cancelled', 'session_error'],
+    ['run.interrupted', 'interrupted', 'run_interrupted', 'session_error'],
+  ] as const;
+
+  for (const [type, phase, reason, sessionTerminalKind] of terminalTypes) {
+    const pushed: unknown[] = [];
+    const adapter = new RuntimeHostAdapter({
+      mode: 'runtime',
+      push: (channel, payload) => {
+        if (channel === 'session.event') pushed.push(payload);
+      },
+    });
+    const bridgeRuntimeEvent = (
+      adapter as unknown as {
+        bridgeRuntimeEvent(event: import('@kodax-ai/kodax/runtime').RuntimeTypedEvent): void;
+      }
+    ).bridgeRuntimeEvent.bind(adapter);
+
+    bridgeRuntimeEvent({
+      id: `event_${type}`,
+      seq: 1,
+      time: '2026-07-21T00:00:02.000Z',
+      type,
+      sessionId: 's_1',
+      runId: 'run_active',
+      payload: {
+        runId: 'run_active',
+        sessionId: 's_1',
+        phase,
+        startedAt: '2026-07-21T00:00:00.000Z',
+        provider: 'mock',
+        interruptInputs: [
+          {
+            inputId: 'input-delivered',
+            afterRunId: 'run_active',
+            delivery: 'interrupt',
+            state: 'delivered',
+            contentPreview: 'already delivered',
+            queuedAt: '2026-07-21T00:00:00.000Z',
+            deliveredAt: '2026-07-21T00:00:01.000Z',
+          },
+          {
+            inputId: 'input-terminal',
+            afterRunId: 'run_active',
+            delivery: 'interrupt',
+            state: 'terminal',
+            contentPreview: 'never delivered',
+            queuedAt: '2026-07-21T00:00:01.500Z',
+          },
+        ],
+      },
+    });
+
+    assert.deepEqual(pushed[0], {
+      kind: 'queued_user_prompt_failed',
+      sessionId: 's_1',
+      queueId: 'input-terminal',
+      queueMode: 'interrupt',
+      content: 'never delivered',
+      reason,
+    });
+    assert.equal(
+      (pushed[1] as { kind?: string } | undefined)?.kind,
+      sessionTerminalKind,
+      `${type} must project the queue failure before the session terminal boundary`,
+    );
+    assert.equal(pushed.length, 2, `${type} must ignore already-delivered interrupts`);
+    await adapter.close();
+  }
 });
 
 test('Runtime input capability projection follows interruptInput advertisement', () => {
