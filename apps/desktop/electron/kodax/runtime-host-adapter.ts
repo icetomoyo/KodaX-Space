@@ -56,6 +56,7 @@ import {
   sessionEventChannel,
   workflowProcessSnapshotSchema,
   workflowRunSchema,
+  type WorkflowActivityPayload,
   type WorkflowEventPayload,
   type WorkflowRunT,
   type DispatchableAgentListingT,
@@ -73,6 +74,7 @@ import {
   projectRuntimeDispatchability,
   projectRuntimeRegistration,
 } from './runtime/runtime-agent-projection.js';
+import { buildChildActivity, isTransientChildEvent, type ChildMeta } from './workflow-activity.js';
 
 export type RuntimeHostMode = 'legacy' | 'runtime';
 export type RuntimeHostState =
@@ -362,6 +364,7 @@ interface RuntimeProjectionPush {
     payload: import('@kodax-space/space-ipc-schema').SpaceSessionLiveChangedT,
   ): void;
   (channel: 'session.event', payload: import('@kodax-space/space-ipc-schema').SessionEvent): void;
+  (channel: 'workflow.activity', payload: WorkflowActivityPayload): void;
   (channel: 'workflow.event', payload: WorkflowEventPayload): void;
 }
 
@@ -1746,6 +1749,36 @@ export class RuntimeHostAdapter {
       this.push('session.event', contextEvent);
       return;
     }
+    const activityMeta = runtimeEventRecord(payload?.meta) as ChildMeta;
+    if (isTransientChildEvent(activityMeta)) {
+      if (event.type === 'tool.started') {
+        const tool = runtimeEventRecord(payload?.tool);
+        this.pushRuntimeChildActivity(activityMeta, 'tool_use', {
+          ...(typeof tool?.name === 'string' ? { toolName: tool.name } : {}),
+        });
+        return;
+      }
+      if (event.type === 'tool.finished') {
+        const result = runtimeEventRecord(payload?.result);
+        this.pushRuntimeChildActivity(activityMeta, 'tool_result', {
+          ...(typeof result?.name === 'string' ? { toolName: result.name } : {}),
+        });
+        return;
+      }
+      if (event.type === 'child_activity.finished') {
+        this.pushRuntimeChildActivity(activityMeta, 'end', {});
+        return;
+      }
+      if (
+        event.type === 'assistant.delta' ||
+        event.type === 'thinking.delta' ||
+        event.type === 'thinking.finished' ||
+        event.type === 'tool.progress' ||
+        event.type === 'todo.updated'
+      ) {
+        return;
+      }
+    }
     if (event.type === 'assistant.delta' && typeof payload?.text === 'string') {
       this.push('session.event', {
         kind: 'text_delta',
@@ -1963,6 +1996,15 @@ export class RuntimeHostAdapter {
         retriable: event.type !== 'run.failed',
       });
     }
+  }
+
+  private pushRuntimeChildActivity(
+    meta: ChildMeta,
+    kind: 'tool_use' | 'tool_result' | 'end',
+    extra: { toolName?: string },
+  ): void {
+    const activity = buildChildActivity(meta, kind, extra);
+    if (activity) this.push('workflow.activity', activity);
   }
 
   private pushTerminalInterruptFailures(

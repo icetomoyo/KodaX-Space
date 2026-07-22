@@ -510,6 +510,95 @@ test('event reducer advances one semantic domain per Runtime cursor', () => {
   assert.equal(reducer.snapshot().todos[0]?.status, 'completed');
 });
 
+test('event reducer keeps child activity out of the primary live projection', () => {
+  const reducer = new CoderSessionProjectionReducer(
+    projectRuntimeSessionSnapshot(observation, [askUser]),
+    observation.runs,
+  );
+  const childMeta = {
+    contextKind: 'child',
+    contextId: 'child_context_1',
+    parentContextId: 's_code',
+    childAgentId: 'child_1',
+    liveOnly: true,
+    toolCallId: 'child_tool',
+  } as const;
+
+  assert.equal(
+    reducer.apply({
+      id: 'event_child_text_42',
+      seq: 42,
+      time: '2026-07-14T08:04:00.000Z',
+      sessionId: 's_code',
+      runId: 'run_active',
+      type: 'assistant.delta',
+      payload: { text: 'child answer', meta: childMeta },
+    } as unknown as RuntimeTypedEvent),
+    null,
+  );
+  assert.equal(
+    reducer.apply({
+      id: 'event_child_thinking_43',
+      seq: 43,
+      time: '2026-07-14T08:04:01.000Z',
+      sessionId: 's_code',
+      runId: 'run_active',
+      type: 'thinking.delta',
+      payload: { text: 'child reasoning', meta: childMeta },
+    } as unknown as RuntimeTypedEvent),
+    null,
+  );
+  assert.equal(
+    reducer.apply({
+      id: 'event_child_tool_44',
+      seq: 44,
+      time: '2026-07-14T08:04:02.000Z',
+      sessionId: 's_code',
+      runId: 'run_active',
+      type: 'tool.started',
+      payload: { tool: { id: 'child_tool', name: 'read' }, meta: childMeta },
+    } as unknown as RuntimeTypedEvent),
+    null,
+  );
+  assert.equal(
+    reducer.apply({
+      id: 'event_child_todo_45',
+      seq: 45,
+      time: '2026-07-14T08:04:03.000Z',
+      sessionId: 's_code',
+      runId: 'run_active',
+      type: 'todo.updated',
+      payload: {
+        items: [{ id: 'child_todo', subject: 'Child work', status: 'in_progress' }],
+        meta: childMeta,
+      },
+    } as unknown as RuntimeTypedEvent),
+    null,
+  );
+
+  const unchanged = reducer.snapshot();
+  assert.equal(unchanged.cursor.seq, 41);
+  assert.equal(unchanged.assistantDraft?.text, 'partial answer');
+  assert.equal(unchanged.thinkingDraft?.text, 'checking');
+  assert.deepEqual(
+    unchanged.activeTools.map((tool) => tool.toolCallId),
+    ['tool_1'],
+  );
+  assert.equal(unchanged.todos[0]?.id, 'todo_1');
+
+  reducer.apply({
+    id: 'event_root_text_46',
+    seq: 46,
+    time: '2026-07-14T08:04:04.000Z',
+    sessionId: 's_code',
+    runId: 'run_active',
+    type: 'assistant.delta',
+    payload: { text: ' root continuation', meta: { contextKind: 'root' } },
+  } as unknown as RuntimeTypedEvent);
+  assert.equal(reducer.snapshot().assistantDraft?.text, 'partial answer root continuation');
+  assert.equal(reducer.snapshot().cursor.seq, 46);
+});
+
 test('terminal and next-run events reset run-scoped live state before new deltas', () => {
   const reducer = new CoderSessionProjectionReducer(
     projectRuntimeSessionSnapshot(observation, [askUser]),

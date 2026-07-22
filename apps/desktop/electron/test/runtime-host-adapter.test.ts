@@ -1710,6 +1710,137 @@ test('daemon delivered interrupt batch becomes ordered queue-addressable session
   await adapter.close();
 });
 
+test('daemon bridge routes child activity without inserting it into the primary transcript', async () => {
+  const sessionEvents: unknown[] = [];
+  const workflowActivities: unknown[] = [];
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    push: (channel, payload) => {
+      if (channel === 'session.event') sessionEvents.push(payload);
+      if (channel === 'workflow.activity') workflowActivities.push(payload);
+    },
+  });
+  const bridgeRuntimeEvent = (
+    adapter as unknown as {
+      bridgeRuntimeEvent(event: import('@kodax-ai/kodax/runtime').RuntimeTypedEvent): void;
+    }
+  ).bridgeRuntimeEvent.bind(adapter);
+  const childMeta = {
+    contextKind: 'child',
+    contextId: 'child_context_1',
+    parentContextId: 's_1',
+    childAgentId: 'child_1',
+    childAgentName: 'Researcher',
+    liveOnly: true,
+    workflowCorrelation: { workflowRunId: 'workflow_1', childAgentId: 'child_1' },
+  } as const;
+
+  const emit = (
+    seq: number,
+    type: import('@kodax-ai/kodax/runtime').RuntimeTypedEvent['type'],
+    payload: unknown,
+  ) => {
+    bridgeRuntimeEvent({
+      id: `event_${seq}`,
+      seq,
+      time: '2026-07-22T00:00:00.000Z',
+      type,
+      sessionId: 's_1',
+      runId: 'run_1',
+      payload,
+    } as import('@kodax-ai/kodax/runtime').RuntimeTypedEvent);
+  };
+
+  emit(1, 'assistant.delta', { text: 'child answer must stay out', meta: childMeta });
+  emit(2, 'thinking.delta', { text: 'child reasoning must stay out', meta: childMeta });
+  emit(3, 'thinking.finished', { thinking: 'child reasoning done', meta: childMeta });
+  emit(4, 'tool.started', {
+    tool: { id: 'child_tool', name: 'read', input: { path: 'notes.md' } },
+    meta: { ...childMeta, toolCallId: 'child_tool' },
+  });
+  emit(5, 'tool.progress', {
+    update: { id: 'child_tool', message: 'reading' },
+    meta: { ...childMeta, toolCallId: 'child_tool' },
+  });
+  emit(6, 'tool.finished', {
+    result: { id: 'child_tool', name: 'read', content: 'done' },
+    meta: { ...childMeta, toolCallId: 'child_tool' },
+  });
+  emit(7, 'todo.updated', {
+    items: [{ id: 'child_todo', subject: 'Child work', status: 'completed' }],
+    meta: childMeta,
+  });
+  emit(8, 'child_activity.finished', { meta: childMeta });
+
+  emit(9, 'assistant.delta', { text: 'root answer', meta: { contextKind: 'root' } });
+  emit(10, 'thinking.delta', { text: 'root reasoning', meta: { contextKind: 'root' } });
+  emit(11, 'thinking.finished', {
+    thinking: 'root reasoning done',
+    meta: { contextKind: 'root' },
+  });
+  emit(12, 'tool.started', {
+    tool: { id: 'root_tool', name: 'bash', input: { command: 'npm test' } },
+    meta: { contextKind: 'root', toolCallId: 'root_tool' },
+  });
+  emit(13, 'tool.progress', {
+    update: { id: 'root_tool', message: 'running' },
+    meta: { contextKind: 'root', toolCallId: 'root_tool' },
+  });
+  emit(14, 'tool.finished', {
+    result: { id: 'root_tool', name: 'bash', content: 'passed' },
+    meta: { contextKind: 'root', toolCallId: 'root_tool' },
+  });
+
+  assert.deepEqual(sessionEvents, [
+    { kind: 'text_delta', sessionId: 's_1', text: 'root answer' },
+    { kind: 'thinking_delta', sessionId: 's_1', text: 'root reasoning' },
+    { kind: 'thinking_end', sessionId: 's_1', thinking: 'root reasoning done' },
+    {
+      kind: 'tool_start',
+      sessionId: 's_1',
+      toolId: 'root_tool',
+      toolName: 'bash',
+      input: { command: 'npm test' },
+    },
+    {
+      kind: 'tool_progress',
+      sessionId: 's_1',
+      toolId: 'root_tool',
+      message: 'running',
+    },
+    {
+      kind: 'tool_result',
+      sessionId: 's_1',
+      toolId: 'root_tool',
+      toolName: 'bash',
+      content: 'passed',
+    },
+  ]);
+  assert.deepEqual(workflowActivities, [
+    {
+      runId: 'workflow_1',
+      childAgentId: 'child_1',
+      childAgentName: 'Researcher',
+      kind: 'tool_use',
+      toolName: 'read',
+    },
+    {
+      runId: 'workflow_1',
+      childAgentId: 'child_1',
+      childAgentName: 'Researcher',
+      kind: 'tool_result',
+      toolName: 'read',
+    },
+    {
+      runId: 'workflow_1',
+      childAgentId: 'child_1',
+      childAgentName: 'Researcher',
+      kind: 'end',
+    },
+  ]);
+  await adapter.close();
+});
+
 test('terminal Runtime events fail only undelivered interrupt inputs before closing the session', async () => {
   const terminalTypes = [
     ['run.completed', 'completed', 'run_completed', 'session_complete'],

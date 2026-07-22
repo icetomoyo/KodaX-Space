@@ -20,6 +20,7 @@ import {
 } from '@kodax-space/space-ipc-schema';
 import { assessRisk } from '../../permission/risk.js';
 import { sanitizeForDisplay, sanitizeInputForDisplay } from '../../permission/sanitize.js';
+import { isTransientChildEvent, type ChildMeta } from '../workflow-activity.js';
 
 const MAX_DRAFT = 256 * 1024;
 const MAX_REASON = 512;
@@ -825,6 +826,19 @@ export class CoderSessionProjectionReducer {
     if (event.sessionId !== this.#projection.sessionId) return null;
     if (event.seq <= this.#projection.cursor.seq) return null;
     const payload = record(event.payload);
+    const activityMeta = record(payload?.meta) as ChildMeta;
+    if (
+      isTransientChildEvent(activityMeta) &&
+      (event.type === 'assistant.delta' ||
+        event.type === 'thinking.delta' ||
+        event.type === 'thinking.finished' ||
+        event.type === 'tool.started' ||
+        event.type === 'tool.progress' ||
+        event.type === 'tool.finished' ||
+        event.type === 'todo.updated')
+    ) {
+      return null;
+    }
     if (event.type === 'assistant.delta' && typeof payload?.text === 'string') {
       const current = this.#projection.assistantDraft?.text ?? '';
       const startedAt = this.#runStartedAt(event.runId, event.time);

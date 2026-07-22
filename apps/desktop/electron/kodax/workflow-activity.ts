@@ -8,6 +8,7 @@ import type { WorkflowActivityPayload } from '@kodax-space/space-ipc-schema';
 
 export type ChildMeta =
   | {
+      contextKind?: 'root' | 'child';
       workflowCorrelation?: { workflowRunId?: string; childAgentId?: string };
       childAgentId?: string;
       childAgentName?: string;
@@ -31,12 +32,13 @@ export function childRunId(meta: ChildMeta): string | undefined {
  * 之前只认 workflowCorrelation.workflowRunId（run_workflow 工作流子 agent），漏了
  * `dispatch_child_task` 派生的子 agent：它们带 `childAgentId` + SDK 的 `liveOnly` 标，但
  * 不带 workflowCorrelation，于是其流式文本/工具事件穿透到主对话，和主 agent 一样刷屏。
- * 现按 SDK 设计：`liveOnly` 是"仅 live、不落 transcript"的权威信号；`childAgentId` 是子
- * agent 身份。主 agent 事件两者皆无，故不受影响。子 agent 概览仍由 managed_task_status
- * 事件驱动「子智能体」面板呈现。
+ * 现按稳定 `contextKind`、子 agent identity 与 workflow correlation 归属事件；
+ * `liveOnly` 只是「仅 live、不落主 transcript」的渲染提示，不能单独证明子上下文。
+ * 主 agent 事件没有这些子上下文信号，故不受影响。子 agent 概览仍由
+ * managed_task_status 事件驱动面板呈现。
  */
 export function isTransientChildEvent(meta: ChildMeta): boolean {
-  if (meta?.liveOnly === true) return true;
+  if (meta?.contextKind === 'child') return true;
   if (childRunId(meta) !== undefined) return true;
   const childId = meta?.childAgentId ?? meta?.workflowCorrelation?.childAgentId;
   return typeof childId === 'string' && childId.length > 0;

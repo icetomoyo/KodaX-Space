@@ -6,6 +6,7 @@ import {
   childRunId,
   buildChildActivity,
   buildWorkflowDigestActivity,
+  isTransientChildEvent,
 } from '../kodax/workflow-activity.js';
 
 test('childRunId: 带 workflowRunId 的 meta 识别为子事件；否则 undefined', () => {
@@ -14,6 +15,21 @@ test('childRunId: 带 workflowRunId 的 meta 识别为子事件；否则 undefin
   assert.equal(childRunId({}), undefined);
   assert.equal(childRunId(undefined), undefined);
   assert.equal(childRunId({ workflowCorrelation: { workflowRunId: '' } }), undefined); // 空串不算
+});
+
+test('isTransientChildEvent: recognizes every child ownership signal without hiding root events', () => {
+  assert.equal(isTransientChildEvent(undefined), false);
+  assert.equal(isTransientChildEvent({}), false);
+  assert.equal(isTransientChildEvent({ contextKind: 'root' }), false);
+
+  assert.equal(isTransientChildEvent({ contextKind: 'child' }), true);
+  assert.equal(isTransientChildEvent({ liveOnly: true }), false);
+  assert.equal(isTransientChildEvent({ childAgentId: 'child_1' }), true);
+  assert.equal(
+    isTransientChildEvent({ workflowCorrelation: { workflowRunId: 'workflow_1' } }),
+    true,
+  );
+  assert.equal(isTransientChildEvent({ workflowCorrelation: { childAgentId: 'child_2' } }), true);
 });
 
 test('buildChildActivity: 子事件构造完整 payload（含 childAgentId/Name/toolName）', () => {

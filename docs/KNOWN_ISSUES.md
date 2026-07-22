@@ -1,6 +1,6 @@
 # Known Issues
 
-Last Updated: 2026-07-21
+Last Updated: 2026-07-22
 
 > Historical issue details are preserved as investigation evidence. The current package/source baseline is v0.1.32 release preparation. Start from the [documentation hub](README.md) for current behavior and status.
 
@@ -82,6 +82,7 @@ Last Updated: 2026-07-21
 | 072 | High     | Resolved | E2E cleanup hangs until timeout because the isolated shared daemon keeps Electron test pipes open                           | v0.1.32 development   | 2026-07-21 |
 | 073 | Medium   | Resolved | Artifact HTML E2E scenarios focus Session-owned Artifacts before creating a Session                                         | v0.1.32 development   | 2026-07-21 |
 | 074 | High     | Resolved | Artifact bootstrap CSP blocks Blob workers that the in-document preview policy explicitly allows                            | v0.1.32 development   | 2026-07-21 |
+| 084 | High     | Resolved | Daemon child-agent prose, thinking, and tools are merged into the parent transcript and live snapshot                       | v0.1.32 development   | 2026-07-22 |
 
 ## Issue Details
 
@@ -4969,12 +4970,117 @@ Verification:
 - Spinner, Runtime store projection, and persisted-history suite: 36 passed, 0 failed.
 - Changed-test ESLint and Git whitespace validation passed.
 
+### 084: Daemon child-agent prose, thinking, and tools are merged into the parent transcript and live snapshot
+
+- Priority: High
+- Status: Resolved
+- Introduced: v0.1.32 development
+- Fixed: v0.1.32 source with the post-0.7.74 KodaX Runtime source fix
+- Created: 2026-07-22
+- Resolution Date: 2026-07-22
+
+#### Original Problem
+
+Current behavior:
+
+- During a daemon-backed Coder run, a parent assistant can emit one formal report paragraph,
+  call `wait_agent`, and then appear to resume with another formal paragraph.
+- The second paragraph can actually be a child agent's live `assistant.delta`. Child thinking and
+  child tools can likewise appear between two parent-authored transcript segments.
+- A refresh or reconnect can reproduce the same ownership error through the Runtime live
+  observation snapshot even after the direct event bridge is corrected.
+
+Expected behavior:
+
+- The normal transcript and primary live draft contain only root-agent prose, thinking, tools,
+  and Todo state.
+- Child activity remains observable through bounded child/workflow activity surfaces and raw
+  Runtime events, but it never appears as if the parent assistant authored it.
+- Root events with `contextKind: root` continue to stream without suppression.
+
+#### Session Evidence
+
+The supplied screenshot and durable Runtime log show the ownership boundary directly:
+
+- The parent emits `Artifact 文档已生成...现在等后台运营 SaaS 调研回来...` and starts the
+  root `wait_agent` tool.
+- The later `assistant.delta` beginning with `演进——用户定义目标...` carries
+  `childAgentId: /root/backoffice-saas-research` and `liveOnly: true`.
+- Space nevertheless projected that child delta as a normal root `text_delta`, so the renderer's
+  correct tool boundary split made the ownership leak visible between two report sections.
+
+#### Root Cause
+
+KodaX raw Runtime events already carry child ownership through stable context identity,
+`childAgentId`, workflow correlation, and the `liveOnly` rendering hint. The daemon Space adapter
+flattened every assistant/thinking/tool/Todo event into the root `session.event` stream without
+checking those fields. Its incremental live reducer repeated the same merge. Separately, KodaX's
+Runtime observation reducer aggregated child events into the root-oriented `assistantTextByRun`,
+`thinkingTextByRun`, `activeTools`, and Todo snapshot, losing ownership before Space could filter a
+reconnect snapshot.
+
+The renderer is not the cause: it correctly closes the current text bubble when a root tool starts.
+The LLM is also not the cause: the leaked text was emitted by a different, explicitly identified
+child context.
+
+#### Resolution
+
+- Extend Space's shared child-event predicate to recognize stable `contextKind: child` in addition
+  to child identity and workflow correlation. Keep `liveOnly` as a non-authoritative rendering hint
+  so it cannot hide a root event by itself.
+- Filter child assistant, thinking, tool, and Todo events in both the daemon transcript bridge and
+  the incremental Space live reducer. Root events remain unchanged.
+- Preserve workflow child observability by routing discrete child tool start/result/end facts to
+  `workflow.activity`; high-volume child prose and thinking are not inserted into the transcript.
+- Filter the same child-owned event classes before KodaX builds its atomic Runtime live
+  observation projection, while retaining the attributed raw events for dedicated consumers.
+
+Files changed:
+
+- `apps/desktop/electron/kodax/workflow-activity.ts`
+- `apps/desktop/electron/kodax/runtime-host-adapter.ts`
+- `apps/desktop/electron/kodax/runtime/coder-daemon-projection.ts`
+- `apps/desktop/electron/test/workflow-activity.test.ts`
+- `apps/desktop/electron/test/runtime-host-adapter.test.ts`
+- `apps/desktop/electron/test/coder-daemon-projection.test.ts`
+- `../KodaX/src/sdk-runtime.ts`
+- `../KodaX/src/sdk-runtime.test.ts`
+
+Tests added or updated:
+
+- Every supported child-ownership signal is recognized while root, unscoped, and `liveOnly`-only
+  events remain visible.
+- Child prose, thinking, tools, and Todo updates cannot enter the daemon root transcript bridge or
+  Space primary live projection; root continuation still advances normally.
+- Workflow child tool start/result/end facts remain available through the activity channel.
+- Atomic KodaX observation snapshots retain root drafts/tools/Todo and exclude child-owned state
+  across stable context, child identity, and workflow correlation inputs.
+
+Verification:
+
+- Focused Space Runtime bridge/projection/activity suite: 64 passed, 0 failed.
+- Direct complete desktop Electron test command passed; three isolated orphan test daemons were
+  identified by exact temporary profile and removed afterward.
+- Focused KodaX Runtime observation/replay/tool suite: 5 passed, 0 failed.
+- Space package/renderer/Electron TypeScript checks and KodaX package TypeScript build passed.
+- Targeted Space ESLint and both-repository Git whitespace checks passed. KodaX does not currently
+  provide an ESLint configuration.
+- The complete 125-test KodaX `sdk-runtime` file exceeded the 304-second command limit without a
+  reported assertion failure; it is recorded as timed out, not passed.
+
+Distribution note:
+
+- The Space-side streaming and incremental-projection guards are present in this source tree.
+- The atomic reconnect-snapshot guard requires the next KodaX package synchronization after
+  0.7.74. This fix intentionally does not republish or silently repack the already released version
+  number while other KodaX release work is in progress.
+
 ## Summary
 
-- Total: 78
+- Total: 79
 - Open: 2
-- Resolved: 76
-- High: 42
+- Resolved: 77
+- High: 43
 - Medium: 28
 - Low: 8
 - Next to resolve: 043
