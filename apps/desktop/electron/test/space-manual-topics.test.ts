@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import { SPACE_MANUAL_TOPICS } from '../kodax/space-manual-topics.js';
 
-test('Space kodax_manual documents the required KodaX 0.7.74 capability boundary', () => {
+test('Space kodax_manual documents the required KodaX 0.7.75 capability boundary', () => {
   const topics = new Map(SPACE_MANUAL_TOPICS.map((topic) => [topic.id, topic]));
   const ids = [...topics.keys()];
 
