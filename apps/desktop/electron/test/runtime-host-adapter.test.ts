@@ -1749,6 +1749,55 @@ test('daemon delivered interrupt batch becomes ordered queue-addressable session
   await adapter.close();
 });
 
+test('daemon run failure falls back to the structured terminal message', async () => {
+  const pushed: unknown[] = [];
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    push: (channel, payload) => {
+      if (channel === 'session.event') pushed.push(payload);
+    },
+  });
+  const bridgeRuntimeEvent = (
+    adapter as unknown as {
+      bridgeRuntimeEvent(event: import('@kodax-ai/kodax/runtime').RuntimeTypedEvent): void;
+    }
+  ).bridgeRuntimeEvent.bind(adapter);
+
+  bridgeRuntimeEvent({
+    id: 'event_run_failed_with_terminal_reason',
+    seq: 1,
+    time: '2026-07-24T02:30:16.281Z',
+    type: 'run.failed',
+    sessionId: 's_1',
+    runId: 'run_blocked_without_sidecar',
+    payload: {
+      runId: 'run_blocked_without_sidecar',
+      sessionId: 's_1',
+      phase: 'failed',
+      startedAt: '2026-07-24T02:26:35.310Z',
+      provider: 'mock',
+      terminal: {
+        revision: 1,
+        kind: 'failed',
+        code: 'run_failed',
+        effectOutcome: 'known',
+        message: 'Choose the target API version.',
+      },
+    },
+  });
+
+  assert.deepEqual(pushed, [
+    {
+      kind: 'session_error',
+      sessionId: 's_1',
+      error: 'Choose the target API version.',
+      category: 'unknown',
+      retriable: false,
+    },
+  ]);
+  await adapter.close();
+});
+
 test('daemon bridge routes child activity without inserting it into the primary transcript', async () => {
   const sessionEvents: unknown[] = [];
   const workflowActivities: unknown[] = [];

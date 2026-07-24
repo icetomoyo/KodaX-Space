@@ -2072,14 +2072,21 @@ export class RuntimeHostAdapter {
         this.push('session.event', { kind: 'session_complete', sessionId: event.sessionId });
         return;
       }
+      const terminal = runtimeEventRecord(payload?.terminal);
+      const terminalMessage =
+        event.type === 'run.failed' && typeof terminal?.message === 'string'
+          ? terminal.message.trim() || undefined
+          : undefined;
       const error =
         typeof payload?.error === 'string'
           ? payload.error
-          : event.type === 'run.cancelled'
-            ? 'cancelled'
-            : event.type === 'run.interrupted'
-              ? 'Runtime run interrupted'
-              : 'Runtime run failed';
+          : terminalMessage !== undefined
+            ? terminalMessage
+            : event.type === 'run.cancelled'
+              ? 'cancelled'
+              : event.type === 'run.interrupted'
+                ? 'Runtime run interrupted'
+                : 'Runtime run failed';
       this.push('session.event', {
         kind: 'session_error',
         sessionId: event.sessionId,
