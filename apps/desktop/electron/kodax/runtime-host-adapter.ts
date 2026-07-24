@@ -674,6 +674,7 @@ export class RuntimeHostAdapter {
   private readonly desiredObservations = new Set<string>();
   private readonly settingsUpdateLocks = new Map<string, Promise<void>>();
   private readonly runProviders = new Map<string, string>();
+  private readonly terminalSidecarBlockRuns = new Map<string, string>();
   private readonly continuationCredentialLeases = new Map<string, string>();
   private readonly credentialLeases = new Map<string, SpaceCredentialLeaseBinding>();
   private readonly continuationPrompts = new Map<
@@ -1317,6 +1318,9 @@ export class RuntimeHostAdapter {
     for (const [runId, continuation] of this.continuationPrompts) {
       if (continuation.sessionId === sessionId) this.continuationPrompts.delete(runId);
     }
+    for (const [runId, blockedSessionId] of this.terminalSidecarBlockRuns) {
+      if (blockedSessionId === sessionId) this.terminalSidecarBlockRuns.delete(runId);
+    }
     const sessionCredentialLeases = [...this.credentialLeases.values()]
       .filter((binding) => binding.sessionId === sessionId)
       .map((binding) => this.revokeCredentialLease(runtime, binding.leaseId));
@@ -1905,6 +1909,23 @@ export class RuntimeHostAdapter {
       }
       return;
     }
+    if (event.type === 'sidecar.message') {
+      const parsed = sessionEventChannel.payload.safeParse({
+        kind: 'sidecar_message',
+        sessionId: event.sessionId,
+        message: payload,
+      });
+      if (!parsed.success || parsed.data.kind !== 'sidecar_message') return;
+      this.push('session.event', parsed.data);
+      if (
+        parsed.data.message.verdict === 'blocked' &&
+        parsed.data.message.recipient === 'user' &&
+        parsed.data.message.delivery === 'terminal-block'
+      ) {
+        this.terminalSidecarBlockRuns.set(event.runId, event.sessionId);
+      }
+      return;
+    }
     if (event.type === 'run.input.delivered') {
       const inputs = Array.isArray(payload?.inputs) ? payload.inputs : [];
       for (const value of inputs) {
@@ -1962,6 +1983,7 @@ export class RuntimeHostAdapter {
       return;
     }
     if (event.type === 'run.completed') {
+      this.terminalSidecarBlockRuns.delete(event.runId);
       this.pushTerminalInterruptFailures(event.sessionId, payload, 'run_completed');
       this.push('session.event', { kind: 'session_complete', sessionId: event.sessionId });
       return;
@@ -1980,6 +2002,14 @@ export class RuntimeHostAdapter {
             ? 'run_cancelled'
             : 'run_interrupted',
       );
+      const terminalSidecarBlock =
+        event.type === 'run.failed' &&
+        this.terminalSidecarBlockRuns.get(event.runId) === event.sessionId;
+      this.terminalSidecarBlockRuns.delete(event.runId);
+      if (terminalSidecarBlock) {
+        this.push('session.event', { kind: 'session_complete', sessionId: event.sessionId });
+        return;
+      }
       const error =
         typeof payload?.error === 'string'
           ? payload.error
@@ -2677,6 +2707,7 @@ export class RuntimeHostAdapter {
     this.hostToolLeaseIds.clear();
     this.activeRuns.clear();
     this.runProviders.clear();
+    this.terminalSidecarBlockRuns.clear();
     this.continuationCredentialLeases.clear();
     this.credentialLeases.clear();
     this.continuationPrompts.clear();

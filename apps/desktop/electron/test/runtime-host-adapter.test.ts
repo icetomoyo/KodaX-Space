@@ -1916,6 +1916,84 @@ test('terminal Runtime events fail only undelivered interrupt inputs before clos
   }
 });
 
+test('daemon terminal sidecar block is surfaced as a notice and closes without a generic failure', async () => {
+  const pushed: unknown[] = [];
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    push: (channel, payload) => {
+      if (channel === 'session.event') pushed.push(payload);
+    },
+  });
+  const bridgeRuntimeEvent = (
+    adapter as unknown as {
+      bridgeRuntimeEvent(event: import('@kodax-ai/kodax/runtime').RuntimeTypedEvent): void;
+    }
+  ).bridgeRuntimeEvent.bind(adapter);
+
+  bridgeRuntimeEvent({
+    id: 'event_sidecar_blocked',
+    seq: 1,
+    time: '2026-07-24T02:30:13.157Z',
+    type: 'sidecar.message',
+    sessionId: 's_1',
+    runId: 'run_blocked',
+    payload: {
+      source: 'sidecar-verifier',
+      verdict: 'blocked',
+      recipient: 'user',
+      delivery: 'terminal-block',
+      content: 'Please confirm the next step.',
+      suggestedFix: 'Reply with approval to continue.',
+      trace: 'verifier_ok',
+      sessionId: 's_1',
+      seq: 91083,
+    },
+  });
+  bridgeRuntimeEvent({
+    id: 'event_run_failed_after_block',
+    seq: 2,
+    time: '2026-07-24T02:30:16.281Z',
+    type: 'run.failed',
+    sessionId: 's_1',
+    runId: 'run_blocked',
+    payload: {
+      runId: 'run_blocked',
+      sessionId: 's_1',
+      phase: 'failed',
+      startedAt: '2026-07-24T02:26:35.310Z',
+      endedAt: '2026-07-24T02:30:16.279Z',
+      provider: 'mock',
+      terminal: {
+        revision: 1,
+        kind: 'failed',
+        code: 'run_failed',
+        effectOutcome: 'known',
+      },
+    },
+  });
+
+  assert.deepEqual(pushed, [
+    {
+      kind: 'sidecar_message',
+      sessionId: 's_1',
+      message: {
+        source: 'sidecar-verifier',
+        verdict: 'blocked',
+        recipient: 'user',
+        delivery: 'terminal-block',
+        content: 'Please confirm the next step.',
+        suggestedFix: 'Reply with approval to continue.',
+        trace: 'verifier_ok',
+      },
+    },
+    {
+      kind: 'session_complete',
+      sessionId: 's_1',
+    },
+  ]);
+  await adapter.close();
+});
+
 test('Runtime input capability projection follows interruptInput advertisement', () => {
   const fake = createFakeRuntime();
   const adapter = new RuntimeHostAdapter({
