@@ -924,8 +924,8 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
             onToggleRightSidebar={toggleRightSidebar}
           />
         ) : (
-          /* 中央阅读区：悬浮圆角卡片。保持实色（bg-surface）—— aurora 只在卡片四周缝隙
-              透出，对话流不被极光动画触发 re-composite，性能护栏。 */
+          /* 中央阅读区：默认实色；全特效档使用半透明玻璃，并在滚动/拖拽期间临时卸下
+              大面积 backdrop-filter，避免内容位移和极光动画叠加触发 re-composite。 */
           <div
             className="center-pane flex-1 flex flex-col min-w-0 relative bg-surface rounded-xl border border-border-default overflow-hidden lift"
             data-testid="coder-workspace"

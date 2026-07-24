@@ -5,17 +5,22 @@
 // 不移动任何布局，根治「整面板倾斜导致误点」。本 hook 只更新 CSS 变量 --mx/--my + .lit class。
 //
 // 两种聚光模式（按视觉质量档分流）：
-//   · balanced（默认）→ 单卡聚光：每帧只点亮离光标最近的一块面板。鼠标移动最多触发一块
-//     backdrop-filter 玻璃重绘，是「鼠标移动 → 核显拉满」的关键省点，观感近 Linear/Cursor。
-//   · full（全特效）   → 多面板晕染：点亮 160px 内的所有面板（旧版观感，部分客户偏爱的弥漫感）。
-//     full 本就是「要最强特效、接受更高开销」的档位，故在此恢复多面板。
-// 公共：rAF 节流，pointermove passive；几何（querySelectorAll + rect）只在指针移动那一帧读，
-// 空闲 / 纯流式输出时完全不跑。仅 balanced/full 档挂监听（minimal 不挂，高光 opacity 恒为 0）。
+//   · balanced（默认）→ 单卡聚光：保持「160px 内最近一块」的现有观感，每帧最多点亮一块。
+//   · full（全特效）   → 多面板晕染：继续点亮 160px 内所有面板，但将跟随频率限制到 30fps。
+// 公共：面板 rect 只在布局实际变化时刷新，指针帧只做缓存数字计算，不再逐帧
+// querySelectorAll + getBoundingClientRect。拖拽时暂停高光；空闲 / 流式输出时完全不跑。
 
 import { useEffect } from 'react';
 import { useAppStore } from '../store/appStore.js';
 
 const NEAR = 160; // 光标进入面板外扩 160px 视为「近」，开始显高光
+const FULL_FRAME_MS = 1000 / 30;
+
+function distanceToRect(x: number, y: number, rect: DOMRectReadOnly): number {
+  const dx = Math.max(rect.left - x, 0, x - rect.right);
+  const dy = Math.max(rect.top - y, 0, y - rect.bottom);
+  return Math.hypot(dx, dy);
+}
 
 export function useSpotlight(): void {
   const quality = useAppStore((s) => s.visualQuality);
@@ -25,9 +30,16 @@ export function useSpotlight(): void {
     const multi = quality === 'full'; // full：多面板晕染；balanced：单卡聚光
 
     let raf = 0;
+    let throttleTimer = 0;
+    let lastApplyAt = 0;
     let lastX = 0;
     let lastY = 0;
+    let pointerDragging = false;
     let litEl: HTMLElement | null = null; // 仅单卡模式追踪当前点亮的那块
+    let panels: HTMLElement[] = [];
+    let panelRects = new Map<HTMLElement, DOMRectReadOnly>();
+    let observedPanels = new Set<HTMLElement>();
+    let geometryDirty = true;
 
     const clearAllLit = (): void => {
       document
@@ -36,19 +48,43 @@ export function useSpotlight(): void {
       litEl = null;
     };
 
-    const lightPanel = (p: HTMLElement, r: DOMRect): void => {
+    const lightPanel = (p: HTMLElement, r: DOMRectReadOnly): void => {
       p.style.setProperty('--mx', `${(lastX - r.left).toFixed(0)}px`);
       p.style.setProperty('--my', `${(lastY - r.top).toFixed(0)}px`);
     };
 
-    const apply = (): void => {
+    const markGeometryDirty = (): void => {
+      geometryDirty = true;
+    };
+    const resizeObserver = new ResizeObserver(markGeometryDirty);
+    const mutationObserver = new MutationObserver(markGeometryDirty);
+
+    const refreshGeometry = (): void => {
+      const nextPanels = Array.from(document.querySelectorAll<HTMLElement>('.glass'));
+      const nextObserved = new Set(nextPanels);
+      for (const panel of observedPanels) {
+        if (!nextObserved.has(panel)) resizeObserver.unobserve(panel);
+      }
+      for (const panel of nextPanels) {
+        if (!observedPanels.has(panel)) resizeObserver.observe(panel);
+      }
+      panels = nextPanels;
+      observedPanels = nextObserved;
+      panelRects = new Map(panels.map((panel) => [panel, panel.getBoundingClientRect()]));
+      if (litEl && !observedPanels.has(litEl)) litEl = null;
+      geometryDirty = false;
+    };
+
+    const apply = (now: number): void => {
       raf = 0;
-      const panels = document.querySelectorAll<HTMLElement>('.glass');
+      lastApplyAt = now;
+      if (geometryDirty) refreshGeometry();
 
       if (multi) {
-        // 多面板：每块独立判定是否在 NEAR 内，各自点亮（toggle 自动清掉离开的那些）。
+        // 多面板观感保持不变：每块独立判断 NEAR，只是 rect 来自布局变化时生成的缓存。
         for (const p of panels) {
-          const r = p.getBoundingClientRect();
+          const r = panelRects.get(p);
+          if (!r) continue;
           const near =
             lastX > r.left - NEAR &&
             lastX < r.right + NEAR &&
@@ -62,13 +98,12 @@ export function useSpotlight(): void {
 
       // 单卡：找离光标最近、且在 NEAR 阈值内的单块面板（rect 内距离为 0）。
       let best: HTMLElement | null = null;
-      let bestRect: DOMRect | null = null;
+      let bestRect: DOMRectReadOnly | null = null;
       let bestDist = Infinity;
       for (const p of panels) {
-        const r = p.getBoundingClientRect();
-        const dx = Math.max(r.left - lastX, 0, lastX - r.right);
-        const dy = Math.max(r.top - lastY, 0, lastY - r.bottom);
-        const dist = Math.hypot(dx, dy);
+        const r = panelRects.get(p);
+        if (!r) continue;
+        const dist = distanceToRect(lastX, lastY, r);
         if (dist <= NEAR && dist < bestDist) {
           bestDist = dist;
           best = p;
@@ -83,20 +118,67 @@ export function useSpotlight(): void {
       if (litEl && bestRect) lightPanel(litEl, bestRect);
     };
 
+    const scheduleApply = (): void => {
+      if (raf !== 0 || throttleTimer !== 0) return;
+      if (!multi) {
+        raf = requestAnimationFrame(apply);
+        return;
+      }
+      const remaining = FULL_FRAME_MS - (performance.now() - lastApplyAt);
+      if (remaining <= 0) {
+        raf = requestAnimationFrame(apply);
+        return;
+      }
+      throttleTimer = window.setTimeout(() => {
+        throttleTimer = 0;
+        raf = requestAnimationFrame(apply);
+      }, remaining);
+    };
+
+    const cancelScheduledApply = (): void => {
+      if (raf !== 0) cancelAnimationFrame(raf);
+      if (throttleTimer !== 0) window.clearTimeout(throttleTimer);
+      raf = 0;
+      throttleTimer = 0;
+    };
+
     const onMove = (e: PointerEvent): void => {
       lastX = e.clientX;
       lastY = e.clientY;
-      if (raf === 0) raf = requestAnimationFrame(apply);
+      if (e.buttons !== 0) {
+        if (!pointerDragging) {
+          pointerDragging = true;
+          markGeometryDirty();
+          cancelScheduledApply();
+          clearAllLit();
+        }
+        return;
+      }
+      if (pointerDragging) {
+        pointerDragging = false;
+        markGeometryDirty();
+      }
+      scheduleApply();
     };
-    const onLeave = (): void => clearAllLit();
+    const onLeave = (): void => {
+      cancelScheduledApply();
+      clearAllLit();
+    };
 
+    mutationObserver.observe(document.body, { childList: true, subtree: true });
+    window.addEventListener('resize', markGeometryDirty, { passive: true });
+    document.addEventListener('scroll', markGeometryDirty, { capture: true, passive: true });
     window.addEventListener('pointermove', onMove, { passive: true });
     document.addEventListener('pointerleave', onLeave);
 
     return () => {
+      mutationObserver.disconnect();
+      resizeObserver.disconnect();
+      window.removeEventListener('resize', markGeometryDirty);
+      document.removeEventListener('scroll', markGeometryDirty, { capture: true });
       window.removeEventListener('pointermove', onMove);
       document.removeEventListener('pointerleave', onLeave);
-      if (raf) cancelAnimationFrame(raf);
+      cancelScheduledApply();
       clearAllLit();
     };
   }, [quality]);

@@ -11,8 +11,10 @@ export function shouldPauseAurora(
   quality: VisualQuality,
   activity: WindowActivityPayload | null,
   localActive: boolean,
+  interactionActive = false,
 ): boolean {
   if (quality !== 'full') return false;
+  if (interactionActive) return true;
   if (!localActive) return true;
   return activity !== null && activity.state !== 'active';
 }
