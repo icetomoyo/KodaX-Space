@@ -147,6 +147,34 @@ test('failed queued user message keeps its terminal reason for the actionable bu
   });
 });
 
+test('failed queued user message stays at its failure-time position before later turns', () => {
+  const failed: QueuedUserMessage = {
+    ...queuedMsg('qu-failed', 'copy me and retry', 'interrupt', 2000),
+    status: 'failed',
+    failureReason: 'run_completed',
+  };
+  const out = composeMessages({
+    events: [
+      { kind: 'text_delta', sessionId: sid, text: 'first reply' },
+      { kind: 'session_complete', sessionId: sid },
+      { kind: 'text_delta', sessionId: sid, text: 'later reply' },
+      { kind: 'session_complete', sessionId: sid },
+    ],
+    userMessages: [userMsg('u1', 'first query', 1000), userMsg('u2', 'later query', 3000)],
+    queuedUserMessages: [failed],
+  });
+
+  assert.deepEqual(kindsOf(out), [
+    'user',
+    'assistant_text',
+    'queued_user',
+    'user',
+    'assistant_text',
+  ]);
+  assert.equal(out[2]?.kind === 'queued_user' && out[2].id, 'qu-failed');
+  assert.equal(out[3]?.kind === 'user' && out[3].id, 'u2');
+});
+
 test('user + consecutive text_deltas → user bubble + single merged assistant bubble', () => {
   const events: SessionEvent[] = [
     { kind: 'text_delta', sessionId: sid, text: 'Hello ' },

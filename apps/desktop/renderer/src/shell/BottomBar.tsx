@@ -28,6 +28,11 @@ import {
   replaceActiveSlashCompletion,
   shouldOpenSlashCompletion,
 } from './slashInput.js';
+import {
+  inputHistoryTargetIndex,
+  isAtInputHistoryBoundary,
+  type InputHistoryDirection,
+} from './inputHistoryNavigation.js';
 import { parseLegacySkillToken, safeSkillSlashText, skillSlashEchoText } from './skillSlash.js';
 import { registerInsertReceiver } from './inputBridge.js';
 import { resolveSessionCreateInputs } from './createSession.js';
@@ -2291,33 +2296,31 @@ export function BottomBar(): JSX.Element {
       return;
     }
 
-    // Browse input history only at the first/last textarea line.
+    // Let the textarea handle movement between visual lines (including soft wraps). History
+    // navigation starts only after the collapsed caret reaches the absolute text boundary.
     if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && inputHistory.length > 0) {
       const ta = e.currentTarget;
       const value = ta.value;
-      const caret = ta.selectionStart ?? 0;
-      const firstLineEnd = value.indexOf('\n');
-      const isOnFirstLine = firstLineEnd === -1 || caret <= firstLineEnd;
-      const isOnLastLine = caret >= value.lastIndexOf('\n') + 1 || value.indexOf('\n') === -1;
+      const direction: InputHistoryDirection = e.key === 'ArrowUp' ? 'up' : 'down';
+      const selectionStart = ta.selectionStart ?? 0;
+      const selectionEnd = ta.selectionEnd ?? selectionStart;
 
-      if (e.key === 'ArrowUp' && isOnFirstLine) {
-        if (historyIdx === -1) draftRef.current = value;
-        const nextIdx = historyIdx === -1 ? inputHistory.length - 1 : Math.max(0, historyIdx - 1);
+      if (isAtInputHistoryBoundary(direction, value, selectionStart, selectionEnd)) {
+        const nextIdx = inputHistoryTargetIndex(direction, historyIdx, inputHistory.length);
+        if (nextIdx === null) return;
         e.preventDefault();
+
+        if (direction === 'up' && historyIdx === -1) draftRef.current = value;
+        const nextPrompt = nextIdx === -1 ? draftRef.current : inputHistory[nextIdx];
         setHistoryIdx(nextIdx);
-        setPrompt(inputHistory[nextIdx]);
-        return;
-      }
-      if (e.key === 'ArrowDown' && isOnLastLine && historyIdx !== -1) {
-        e.preventDefault();
-        if (historyIdx + 1 >= inputHistory.length) {
-          setHistoryIdx(-1);
-          setPrompt(draftRef.current);
-        } else {
-          const nextIdx = historyIdx + 1;
-          setHistoryIdx(nextIdx);
-          setPrompt(inputHistory[nextIdx]);
-        }
+        setPrompt(nextPrompt);
+        const nextCaret = direction === 'up' ? 0 : nextPrompt.length;
+        requestAnimationFrame(() => {
+          const live = textareaRef.current;
+          if (!live) return;
+          live.setSelectionRange(nextCaret, nextCaret);
+          setCaret(nextCaret);
+        });
         return;
       }
     }

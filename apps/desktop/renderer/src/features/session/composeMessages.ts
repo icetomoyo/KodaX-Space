@@ -144,6 +144,8 @@ export function composeMessages({
     earliestUserSentAt !== undefined && Number.isFinite(sentAt)
       ? Math.max(sentAt, earliestUserSentAt)
       : sentAt;
+  const failedQueuedMessages = queuedUserMessages.filter((queued) => queued.status === 'failed');
+  const liveQueuedMessages = queuedUserMessages.filter((queued) => queued.status !== 'failed');
 
   let cursor = 0;
   const localMessages = [
@@ -164,6 +166,12 @@ export function composeMessages({
       sentAt: noticeSortAt(notice.sentAt),
       order: userMessages.length + localNotices.length + order,
       notice,
+    })),
+    ...failedQueuedMessages.map((queued, order) => ({
+      kind: 'failed_queued_user' as const,
+      sentAt: queued.sentAt,
+      order: userMessages.length + localNotices.length + workflowNotices.length + order,
+      queued,
     })),
   ].sort((a, b) => a.sentAt - b.sentAt || a.order - b.order);
 
@@ -192,6 +200,11 @@ export function composeMessages({
       continue;
     }
 
+    if (local.kind === 'failed_queued_user') {
+      result.push(toQueuedConversationMessage(local.queued));
+      continue;
+    }
+
     const userMsg = local.userMsg;
     if (userMsg.hiddenHistoryAnchor !== true) {
       result.push({
@@ -216,19 +229,25 @@ export function composeMessages({
     composeAssistantSegment(events.slice(cursor), result);
   }
 
-  for (const queued of [...queuedUserMessages].sort((a, b) => a.sentAt - b.sentAt)) {
-    result.push({
-      kind: 'queued_user',
-      id: queued.id,
-      content: queued.content,
-      queueMode: queued.queueMode,
-      status: queued.status,
-      ...(queued.failureReason !== undefined ? { failureReason: queued.failureReason } : {}),
-      sentAt: queued.sentAt,
-    });
+  for (const queued of [...liveQueuedMessages].sort((a, b) => a.sentAt - b.sentAt)) {
+    result.push(toQueuedConversationMessage(queued));
   }
 
   return result;
+}
+
+function toQueuedConversationMessage(
+  queued: QueuedUserMessage,
+): Extract<ConversationMessage, { kind: 'queued_user' }> {
+  return {
+    kind: 'queued_user',
+    id: queued.id,
+    content: queued.content,
+    queueMode: queued.queueMode,
+    status: queued.status,
+    ...(queued.failureReason !== undefined ? { failureReason: queued.failureReason } : {}),
+    sentAt: queued.sentAt,
+  };
 }
 
 /** events[cursor..] 里找下一段的结束位置（不包含）：到 session_complete / session_error 之后 */
