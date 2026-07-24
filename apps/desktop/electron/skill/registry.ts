@@ -20,9 +20,13 @@
 // shape probe 改为 export async function，main.ts boot 时调一次。
 
 import path from 'node:path';
+import { isSpaceBuiltinSkillPath } from './space-builtins.js';
 
 // `import type`：仅 compile-time，runtime 不生 require —— 配合 dynamic import 命中 "import" 条件。
-import type { SkillRegistry as SkillRegistryT, SkillMetadata as SdkSkillMetadata } from '@kodax-ai/kodax/skills';
+import type {
+  SkillRegistry as SkillRegistryT,
+  SkillMetadata as SdkSkillMetadata,
+} from '@kodax-ai/kodax/skills';
 export type SkillMetadata = SdkSkillMetadata;
 type SdkSkillsModule = typeof import('@kodax-ai/kodax/skills');
 
@@ -44,7 +48,14 @@ const TTL_MS = 30_000;
 export async function probeSkillRegistry(): Promise<void> {
   const sdk = await loadSdkSkills();
   const probe = new sdk.SkillRegistry('/tmp');
-  for (const m of ['discover', 'list', 'listUserInvocable', 'loadFull', 'invoke', 'reload'] as const) {
+  for (const m of [
+    'discover',
+    'list',
+    'listUserInvocable',
+    'loadFull',
+    'invoke',
+    'reload',
+  ] as const) {
     const fn = (probe as unknown as Record<string, unknown>)[m];
     if (typeof fn !== 'function') {
       throw new Error(
@@ -113,7 +124,7 @@ export function toSkillMeta(m: SkillMetadata): {
     name: clamp(m.name, 64),
     description: clamp(m.description ?? '', 512),
     argumentHint: m.argumentHint ? clamp(m.argumentHint, 128) : undefined,
-    source: m.source,
+    source: isSpaceBuiltinSkillPath(m.path) ? 'builtin' : m.source,
     path: clamp(m.path, 4096),
   };
 }
@@ -144,7 +155,7 @@ export async function refuseIfUnsafeContent(
   // `!` + backtick + 任何内容 + closing backtick（最短匹配以兼容代码块包内的 ! 出现）
   if (/!`[^`]+`/.test(hay)) {
     return (
-      `skill '${skillName}' contains dynamic-context shell tokens (\`!\`...\``+
+      `skill '${skillName}' contains dynamic-context shell tokens (\`!\`...\`` +
       `); blocked by KodaX Space safety policy. ` +
       `These tokens would execute shell commands outside the permission broker.`
     );

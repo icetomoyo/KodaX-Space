@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
@@ -25,6 +27,7 @@ const SHARED_DAEMON_REQUIREMENTS = {
   operationDeduplication: 1,
   sessionObservation: 1,
   afterTurnInput: 1,
+  interruptInput: 1,
   askUserTransport: 1,
   permissionCas: 1,
   providerCredentialBroker: 1,
@@ -34,8 +37,9 @@ const SHARED_DAEMON_REQUIREMENTS = {
   coderFeatureMatrix: 1,
   sessionAdmission: 1,
   completeObservationSnapshot: 1,
-  contextCompaction: 2,
+  contextCompaction: 3,
   transcriptPaging: 1,
+  transcriptSearch: 1,
   connectionLifecycle: 1,
   typedRuntimeEvents: 1,
   daemonSafeRunInput: 1,
@@ -796,6 +800,195 @@ test(
     });
   },
 );
+
+test(`KodaX ${EXPECTED_KODAX_VERSION} Auto guardrail keeps the required permission semantics`, async () => {
+  const projectRoot = await mkdtemp(path.join(tmpdir(), 'kodax-space-auto-guardrail-'));
+  const previousKodaxHome = process.env.KODAX_HOME;
+  process.env.KODAX_HOME = path.join(projectRoot, '.isolated-kodax-home');
+
+  try {
+    const [{ bootstrapAutoMode }, { createKodaXRuntime }] = await Promise.all([
+      import('@kodax-ai/kodax/repl'),
+      import('@kodax-ai/kodax/runtime'),
+    ]);
+    const context = { agent: {} as never };
+    let rulesPrompts = 0;
+    const rulesBootstrap = await bootstrapAutoMode({
+      askUser: async () => {
+        rulesPrompts += 1;
+        return 'block';
+      },
+      projectRoot,
+      executionCwd: projectRoot,
+      getCurrentProviderName: () => 'unused-rules-provider',
+      getCurrentModel: () => 'unused-rules-model',
+      getCurrentPermissionMode: () => 'auto',
+      autoModeSettings: { engine: 'rules', timeoutMs: 20_000 },
+      log: () => {},
+    });
+    const rulesGuardrail = rulesBootstrap.getGuardrail();
+    const rulesBeforeTool = rulesGuardrail.beforeTool?.bind(rulesGuardrail);
+    assert.ok(rulesBeforeTool);
+
+    const workspaceEdit = await rulesBeforeTool(
+      {
+        id: 'workspace-edit',
+        name: 'edit',
+        input: {
+          path: path.join(projectRoot, 'inside-workspace.txt'),
+          old_string: 'before',
+          new_string: 'after',
+        },
+      },
+      context,
+    );
+    assert.deepEqual(workspaceEdit, { action: 'allow' });
+    assert.equal(rulesPrompts, 0, 'workspace edit must not request user confirmation');
+
+    const outsideEdit = await rulesBeforeTool(
+      {
+        id: 'outside-edit',
+        name: 'edit',
+        input: {
+          path: path.join(
+            path.parse(projectRoot).root,
+            `kodax-space-outside-${path.basename(projectRoot)}.txt`,
+          ),
+          old_string: 'before',
+          new_string: 'after',
+        },
+      },
+      context,
+    );
+    assert.equal(outsideEdit.action, 'block');
+    assert.equal(rulesPrompts, 1, 'outside-workspace edit must still escalate');
+    assert.equal(rulesGuardrail.getEngine(), 'rules');
+
+    const bracketWildcard = await rulesBeforeTool(
+      {
+        id: 'powershell-bracket-wildcard',
+        name: 'bash',
+        input: {
+          command: 'Set-Content -Path "[.]kodax/config.json" -Value data',
+        },
+      },
+      context,
+    );
+    assert.equal(bracketWildcard.action, 'block');
+    assert.equal(rulesPrompts, 2, 'PowerShell bracket wildcards on path parameters must escalate');
+
+    const bracketLiteral = await rulesBeforeTool(
+      {
+        id: 'powershell-bracket-literal',
+        name: 'bash',
+        input: {
+          command: 'Set-Content -LiteralPath "build/file[12].txt" -Value data',
+        },
+      },
+      context,
+    );
+    assert.deepEqual(bracketLiteral, { action: 'allow' });
+    assert.equal(
+      rulesPrompts,
+      2,
+      'an exact LiteralPath filename containing brackets must stay fully modeled',
+    );
+
+    let llmPrompts = 0;
+    const llmBootstrap = await bootstrapAutoMode({
+      askUser: async () => {
+        llmPrompts += 1;
+        return 'allow';
+      },
+      projectRoot,
+      executionCwd: projectRoot,
+      getCurrentProviderName: () => 'missing-provider-must-not-be-resolved',
+      getCurrentModel: () => '',
+      getCurrentPermissionMode: () => 'auto',
+      autoModeSettings: { engine: 'llm', timeoutMs: 20_000 },
+      log: () => {},
+    });
+    const llmGuardrail = llmBootstrap.getGuardrail();
+    const llmBeforeTool = llmGuardrail.beforeTool?.bind(llmGuardrail);
+    assert.ok(llmBeforeTool);
+
+    const missingModel = await llmBeforeTool(
+      { id: 'missing-model', name: 'bash', input: { command: 'python verify.py' } },
+      context,
+    );
+    assert.equal(missingModel.action, 'block');
+    assert.match(
+      'reason' in missingModel ? missingModel.reason : '',
+      /classifier model is not configured/i,
+    );
+    assert.equal(llmPrompts, 0, 'missing classifier model must not request user confirmation');
+    assert.equal(llmGuardrail.getEngine(), 'llm');
+    assert.deepEqual(llmGuardrail.getStats().denials, { consecutive: 0, cumulative: 0 });
+    assert.deepEqual(llmGuardrail.getStats().breaker.timestamps, []);
+
+    const runtimeHome = path.join(projectRoot, 'runtime-home');
+    const runtime = await createKodaXRuntime({
+      mode: 'embedded',
+      isolation: 'inline',
+      homeDir: runtimeHome,
+      sessionsDir: path.join(runtimeHome, 'sessions'),
+      defaultProvider: 'missing-provider-must-not-be-resolved',
+      sharedDaemonHost: true,
+      requirements: { runtimeAutoModeGuardrail: 3 },
+    });
+    try {
+      const session = await runtime.sessions.create({
+        title: 'Space missing Auto LLM model compatibility probe',
+        projectPath: projectRoot,
+        surface: 'space-desktop',
+        tag: 'code',
+      });
+      await runtime.sessions.updateSettings(session.id, {
+        permissionMode: 'auto',
+        autoModeEngine: 'llm',
+        executionCwd: projectRoot,
+      });
+      await assert.rejects(
+        runtime.runs.start({ sessionId: session.id, prompt: 'inspect the workspace' }),
+        (error: unknown) => {
+          assert.equal((error as { code?: unknown }).code, 'auto_mode_classifier_model_required');
+          assert.equal((error as { recoverable?: unknown }).recoverable, true);
+          return true;
+        },
+      );
+      assert.deepEqual(await runtime.permissions.listPending({ sessionId: session.id }), []);
+    } finally {
+      await runtime.close();
+    }
+  } finally {
+    if (previousKodaxHome === undefined) delete process.env.KODAX_HOME;
+    else process.env.KODAX_HOME = previousKodaxHome;
+    await rm(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test(`KodaX ${EXPECTED_KODAX_VERSION} exports a bounded non-empty auto-resume selector`, async () => {
+  const { findMostRecentResumableSession } = await import('@kodax-ai/kodax/repl');
+  let requestedRoot: string | undefined;
+  let requestedLimit: number | undefined;
+  const found = await findMostRecentResumableSession(
+    {
+      async list(root?: string, options?: { limit?: number }) {
+        requestedRoot = root;
+        requestedLimit = options?.limit;
+        return [
+          { id: 'empty-acp-placeholder', msgCount: 0 },
+          { id: 'latest-real-conversation', msgCount: 3 },
+        ];
+      },
+    },
+    'C:\\workspace',
+  );
+
+  assert.deepEqual(found, { id: 'latest-real-conversation', msgCount: 3 });
+  assert.equal(requestedRoot, 'C:\\workspace');
+  assert.equal(requestedLimit, 1000);
+});
 
 test(
   `tarball KodaX ${EXPECTED_KODAX_VERSION} daemon shares one Coder session across processes`,

@@ -34,6 +34,7 @@ import type {
 } from '@kodax-ai/kodax/runtime';
 import { effortToReasoningMode } from './reasoning-effort.js';
 import { getKodaxRuntimeDir } from './data-paths.js';
+import { stopCoderDaemonWhenSafe, type SafeDaemonStopResult } from './runtime-daemon-control.js';
 import {
   KODAX_AUTO_MODE_DEFAULT_TIMEOUT_MS,
   loadKodaxAutoModeDefaults,
@@ -78,7 +79,12 @@ import { buildChildActivity, isTransientChildEvent, type ChildMeta } from './wor
 
 export type RuntimeHostMode = 'legacy' | 'runtime';
 export type RuntimeHostState =
-  'uninitialized' | 'initializing' | 'legacy' | 'ready' | 'failed' | 'closed';
+  | 'uninitialized'
+  | 'initializing'
+  | 'legacy'
+  | 'ready'
+  | 'failed'
+  | 'closed';
 export type RuntimeCapabilityOwner = 'runtime' | 'space-bridge' | 'legacy' | 'unavailable';
 export type RuntimeCapabilitySupport = 'supported' | 'partial' | 'unavailable';
 
@@ -420,6 +426,7 @@ export interface RuntimeHostAdapterOptions {
   readonly runtimeEventParser?: RuntimeEventParser;
   readonly ownerControl?: RuntimeOwnerControl;
   readonly autoModeDefaultsResolver?: () => Promise<KodaxAutoModeDefaults>;
+  readonly idleDaemonStop?: () => Promise<SafeDaemonStopResult>;
 }
 
 const MAX_DIAGNOSTIC_ERROR = 512;
@@ -463,12 +470,28 @@ function runtimeInitializationDiagnostic(error: unknown): string {
   }
   const preflight = (error as { preflight?: { blockers?: readonly string[] } }).preflight;
   const blockers = preflight?.blockers?.length
-    ? ` Blockers: ${preflight.blockers.join(', ')}.`
-    : '';
-  return `Coder daemon capability upgrade required. Restart the Coder daemon and retry.${blockers} ${diagnostic}`.slice(
+    ? ` Safe automatic restart is blocked by: ${preflight.blockers.join(', ')}.`
+    : ' Space will safely retire the idle stale daemon and reconnect automatically.';
+  return `Coder daemon capability upgrade required.${blockers} ${diagnostic}`.slice(
     0,
     MAX_DIAGNOSTIC_ERROR,
   );
+}
+
+function isDaemonCapabilityUpgradeFailure(error: unknown): boolean {
+  return (
+    error !== null &&
+    typeof error === 'object' &&
+    (error as { code?: unknown }).code === 'daemon_capability_upgrade_required'
+  );
+}
+
+function capabilityUpgradeBlockers(error: unknown): readonly string[] {
+  if (!isDaemonCapabilityUpgradeFailure(error)) return [];
+  const blockers = (error as { preflight?: { blockers?: unknown } }).preflight?.blockers;
+  return Array.isArray(blockers)
+    ? blockers.filter((blocker): blocker is string => typeof blocker === 'string')
+    : [];
 }
 
 function isTransientDaemonHealthFailure(error: unknown): boolean {
@@ -656,6 +679,7 @@ export class RuntimeHostAdapter {
   private readonly push: RuntimeProjectionPush;
   private readonly credentialResolver: (provider: string) => Promise<string | undefined>;
   private readonly ownerControl: RuntimeOwnerControl;
+  private readonly idleDaemonStop: () => Promise<SafeDaemonStopResult>;
   private state: RuntimeHostState = 'uninitialized';
   private runtime: KodaXDaemonRuntime | null = null;
   private initializePromise: Promise<void> | null = null;
@@ -710,6 +734,7 @@ export class RuntimeHostAdapter {
     this.push = options.push ?? (() => undefined);
     this.runtimeEventParser = options.runtimeEventParser;
     this.ownerControl = options.ownerControl ?? publishedRuntimeOwnerControl;
+    this.idleDaemonStop = options.idleDaemonStop ?? (() => stopCoderDaemonWhenSafe());
     this.credentialResolver =
       options.credentialResolver ??
       (async (provider) => (await import('../ipc/provider.js')).readProviderCredential(provider));
@@ -801,8 +826,9 @@ export class RuntimeHostAdapter {
             coderFeatureMatrix: 1,
             sessionAdmission: 1,
             completeObservationSnapshot: 1,
-            contextCompaction: 2,
+            contextCompaction: 3,
             transcriptPaging: 1,
+            transcriptSearch: 1,
             connectionLifecycle: 1,
             typedRuntimeEvents: 1,
             daemonSafeRunInput: 1,
@@ -919,13 +945,36 @@ export class RuntimeHostAdapter {
           if (this.runtime === runtime) this.runtime = null;
           if (this.hostToolLeaseId === attachedHostToolLeaseId) this.hostToolLeaseId = undefined;
         }
+        const capabilityUpgrade = isDaemonCapabilityUpgradeFailure(error);
+        const upgradeBlockers = capabilityUpgradeBlockers(error);
+        let capabilityRecoveryReady = false;
+        if (
+          capabilityUpgrade &&
+          upgradeBlockers.length === 0 &&
+          (this.state as RuntimeHostState) !== 'closed'
+        ) {
+          try {
+            const stopped = await this.idleDaemonStop();
+            capabilityRecoveryReady = stopped.stopped || stopped.reason === 'missing';
+            if (!capabilityRecoveryReady) {
+              console.warn(
+                `[runtime] stale Coder daemon could not be retired safely (${stopped.reason ?? 'unknown'}).`,
+              );
+            }
+          } catch (stopError) {
+            console.warn(
+              `[runtime] stale Coder daemon retirement failed: ${sanitizeDiagnosticError(stopError)}`,
+            );
+          }
+        }
+
         this.initializePromise = null;
         if (this.state === 'closed') throw error;
-        this.state = 'failed';
         this.lastError = runtimeInitializationDiagnostic(error);
         const retryableHealthFailure = isTransientDaemonHealthFailure(error);
+        this.state = capabilityRecoveryReady ? 'uninitialized' : 'failed';
         this.publishUnavailable(
-          retryableHealthFailure ? 'reconnecting' : 'incompatible',
+          retryableHealthFailure || capabilityRecoveryReady ? 'reconnecting' : 'incompatible',
           this.lastError,
         );
         // The SDK deliberately refuses to start a competing daemon while a
@@ -933,7 +982,8 @@ export class RuntimeHostAdapter {
         // That condition can clear without user action, so keep probing through
         // the existing bounded backoff instead of leaving Coder permanently in
         // a failed state until the first send happens to retry initialize().
-        if (retryableHealthFailure) this.scheduleReconnect(true);
+        if (capabilityRecoveryReady) this.scheduleReconnect();
+        else if (retryableHealthFailure) this.scheduleReconnect(true);
         throw error;
       });
     return this.initializePromise;
@@ -1124,6 +1174,11 @@ export class RuntimeHostAdapter {
         available: available('transcriptPaging'),
       },
       {
+        id: 'runtime.transcript.search',
+        version: version('transcriptSearch'),
+        available: available('transcriptSearch'),
+      },
+      {
         id: 'runtime.connection.lifecycle',
         version: version('connectionLifecycle'),
         available: true,
@@ -1304,10 +1359,16 @@ export class RuntimeHostAdapter {
     return result;
   }
 
-  async deleteSession(sessionId: string): Promise<void> {
+  async deleteSession(sessionId: string): Promise<'deleted' | 'not_found'> {
     const runtime = await this.requireRuntime();
-    await this.assertCoderSession(runtime, sessionId);
-    await runtime.sessions.delete(sessionId);
+    let outcome: 'deleted' | 'not_found' = 'deleted';
+    try {
+      await this.assertCoderSession(runtime, sessionId);
+      await runtime.sessions.delete(sessionId);
+    } catch (error) {
+      if (!isSessionNotFound(error)) throw error;
+      outcome = 'not_found';
+    }
     this.desiredObservations.delete(sessionId);
     const observed = this.observations.get(sessionId);
     if (observed) {
@@ -1328,6 +1389,7 @@ export class RuntimeHostAdapter {
     this.projectionController.removeSessionLive(sessionId);
     invalidatePersistedSessionCache(sessionId);
     this.scheduleProfileRefresh(this.profileCursor);
+    return outcome;
   }
 
   async updateSessionSettings(

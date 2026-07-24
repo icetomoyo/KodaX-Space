@@ -18,6 +18,9 @@ export default [
       '**/dist-electron/**',
       '**/out/**',
       '**/build/**',
+      // Generated, integrity-locked upstream snapshots. Lint the synchronizer
+      // and Space patches; do not rewrite vendored source and invalidate hashes.
+      'resources/builtin-skills/**',
       '**/*.config.{js,cjs,mjs}',
     ],
   },

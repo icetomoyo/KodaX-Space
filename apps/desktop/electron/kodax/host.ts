@@ -1041,8 +1041,18 @@ class KodaXHost {
       surface === 'code' && runtimeHostAdapter.hasReadyRuntime()
         ? await runtimeHostAdapter
             .deleteSession(sessionId)
-            .then(() => 'ok' as const)
-            .catch(() => 'session_running' as const)
+            .then((outcome) =>
+              outcome === 'not_found'
+                ? deletePersistedSession({ sessionId })
+                : Promise.resolve('ok' as const),
+            )
+            .catch((error: unknown) => {
+              console.warn(
+                `[host.delete] Runtime rejected deletion for ${sessionId}:`,
+                error instanceof Error ? error.message : String(error),
+              );
+              return 'session_running' as const;
+            })
         : await deletePersistedSession({ sessionId });
     if (diskDeleteResult !== 'ok') {
       if (s) {

@@ -1,0 +1,79 @@
+diff --git a/SKILL.md b/SKILL.md
+--- a/SKILL.md
++++ b/SKILL.md
+@@ -350 +350 @@
+-   - **（终渲后）AI看片评审**：`python3 scripts/ai-review-video.py <成片> [导演稿.md]` 出结构化报告（黑帧/死段/hero贯穿/过渡类型/音效空打），流程与局限见 `references/ai-video-review.md`
++   - **（终渲后）AI看片评审**：`uv run <skill-path>/scripts/ai-review-video.py --video <成片> [--context <导演稿.md>]` 出结构化报告（黑帧/死段/hero贯穿/过渡类型/音效空打），流程与局限见 `references/ai-video-review.md`
+diff --git a/scripts/ai-review-video.py b/scripts/ai-review-video.py
+--- a/scripts/ai-review-video.py
++++ b/scripts/ai-review-video.py
+@@ -26 +26 @@
+-API key：只从 .env 读 ARK_API_KEY（写作/.env），绝不硬编码。
++API key：从进程环境、项目 .env 或 skill .env 读取 ARK_API_KEY，绝不硬编码。
+@@ -45,4 +45,4 @@
+ ENV_PATHS = [
+-    Path("/Users/alchain/Documents/写作/.env"),
+-    Path(__file__).resolve().parents[4] / "Documents/写作/.env",
++    Path.cwd() / ".env",
++    Path(__file__).resolve().parent.parent / ".env",
+ ]
+@@ -88 +88 @@
+-        sys.exit("Error: ARK_API_KEY 未配置（写作/.env），拒绝继续。不编造评审结果。")
++        sys.exit("Error: ARK_API_KEY 未配置（环境变量、项目 .env 或 skill .env），拒绝继续。不编造评审结果。")
+diff --git a/references/ai-video-review.md b/references/ai-video-review.md
+--- a/references/ai-video-review.md
++++ b/references/ai-video-review.md
+@@ -17 +17 @@
+-uv run ~/.claude/skills/huashu-design/scripts/ai-review-video.py \
++uv run <skill-path>/scripts/ai-review-video.py \
+diff --git a/references/verification.md b/references/verification.md
+--- a/references/verification.md
++++ b/references/verification.md
+@@ -24 +24 @@
+-python ~/.claude/skills/huashu-design/scripts/verify.py path/to/design.html
++python <skill-path>/scripts/verify.py path/to/design.html
+diff --git a/references/slide-decks.md b/references/slide-decks.md
+--- a/references/slide-decks.md
++++ b/references/slide-decks.md
+@@ -175 +175 @@
+-原因：ESM 模块解析从脚本所在位置向上找 `node_modules`。脚本在 `~/.claude/skills/huashu-design/scripts/`，那里没依赖。
++原因：ESM 模块解析从脚本所在位置向上找 `node_modules`。脚本位于 skill 的 `scripts/` 目录，那里通常没有项目依赖。
+diff --git a/assets/personal-asset-index.example.json b/assets/personal-asset-index.example.json
+--- a/assets/personal-asset-index.example.json
++++ b/assets/personal-asset-index.example.json
+@@ -4 +4 @@
+-    "how_to_use": "1. 复制此文件到 ~/.claude/memory/personal-asset-index.json  2. 填入你的真实信息  3. design-philosophy skill 会自动读取",
++    "how_to_use": "1. 复制此文件到当前 runtime 的私有 memory/config 目录并命名为 personal-asset-index.json  2. 填入你的真实信息  3. 使用 huashu-design skill 时提供该文件路径",
+diff --git a/assets/showcases/INDEX.md b/assets/showcases/INDEX.md
+--- a/assets/showcases/INDEX.md
++++ b/assets/showcases/INDEX.md
+@@ -115 +115 @@
+-**适用于**：design-philosophy skill Phase 3 推荐环节
++**适用于**：huashu-design skill Phase 3 推荐环节
+diff --git a/references/hyperframes-backend.md b/references/hyperframes-backend.md
+--- a/references/hyperframes-backend.md
++++ b/references/hyperframes-backend.md
+@@ -27 +27 @@
+-生成 index.html / hyperframes.json / meta.json / package.json（pin 了 CLI 版本）+ 项目级 CLAUDE.md。init 会把 19 个 hyperframes skill 装到 `~/.claude/skills/`（本机已装）。合成写法契约读 hyperframes-core skill 的 SKILL.md（init 装到各 runtime 的 skill 目录，Claude Code 默认 `~/.claude/skills/`；无 skill 机制的 runtime 直接读 `npx hyperframes docs` 本地文档替代），本地文档 `npx hyperframes docs <topic>`（data-attributes / gsap / rendering / troubleshooting）。
++生成 index.html / hyperframes.json / meta.json / package.json（pin 了 CLI 版本）+ 项目级 CLAUDE.md。init 会按支持情况把 19 个 hyperframes skill 安装到当前 runtime 的 skill 目录。合成写法契约读 hyperframes-core skill 的 SKILL.md；当前 runtime 未自动安装时，直接读 `npx hyperframes docs` 本地文档替代。本地文档：`npx hyperframes docs <topic>`（data-attributes / gsap / rendering / troubleshooting）。
+@@ -39 +39 @@
+-- Three.js 走 `hf-seek` 事件适配器（`~/.claude/skills/hyperframes-animation/adapters/three.md`），根容器必须显式 `data-duration`
++- Three.js 走 `hf-seek` 事件适配器（说明位于 hyperframes-animation skill 的 `adapters/three.md`，按当前 runtime 的 skill 根目录解析），根容器必须显式 `data-duration`
+diff --git a/references/video-export.md b/references/video-export.md
+--- a/references/video-export.md
++++ b/references/video-export.md
+@@ -37 +37 @@
+-NODE_PATH=$(npm root -g) node /path/to/claude-design/scripts/render-video.js <html文件>
++NODE_PATH=$(npm root -g) node <skill-path>/scripts/render-video.js <html文件>
+@@ -89 +89 @@
+-bash /path/to/claude-design/scripts/convert-formats.sh <input.mp4> [gif_width] [--minterpolate]
++bash <skill-path>/scripts/convert-formats.sh <input.mp4> [gif_width] [--minterpolate]
+@@ -117 +117 @@
+-NODE_PATH=$(npm root -g) node /path/to/claude-design/scripts/render-video-seek.js <html文件> --fps=60
++NODE_PATH=$(npm root -g) node <skill-path>/scripts/render-video-seek.js <html文件> --fps=60
+diff --git a/references/hero-animation-case-study.md b/references/hero-animation-case-study.md
+--- a/references/hero-animation-case-study.md
++++ b/references/hero-animation-case-study.md
+@@ -5 +5 @@
+-> 实战参考：[demos/hero-animation-v9.mp4](../demos/hero-animation-v9.mp4) · [https://www.huasheng.ai/huashu-design-hero/](https://www.huasheng.ai/huashu-design-hero/)
++> 在线实战参考：[https://www.huasheng.ai/huashu-design-hero/](https://www.huasheng.ai/huashu-design-hero/)

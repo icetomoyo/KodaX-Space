@@ -1,0 +1,79 @@
+diff --git a/SKILL.md b/SKILL.md
+--- a/SKILL.md
++++ b/SKILL.md
+@@ -519,3 +519,3 @@
+-## Skill 推广水印（仅动画产出）
++## KodaX Space 内置版水印规则
+ 
+-**只在动画产出**（HTML 动画 → MP4 / GIF）默认带「**Created by Huashu-Design**」水印；**幻灯片 / 信息图 / 原型 / 网页一律不加**——加了干扰使用。第三方品牌的非官方致敬动画前缀「非官方出品 · 」防 IP 争议；用户说不要就移除。JSX 水印模板见 `references/video-export.md` 末节。
++所有产出（包括 HTML 动画、MP4、GIF、幻灯片、信息图、原型和网页）默认**不添加 Huashu-Design、KodaX Space 或其他工具推广水印/署名**。仅当用户明确要求品牌标识或水印时，才添加用户指定的内容；第三方品牌的非官方致敬动画仍可按需加「非官方出品 · 」前缀以避免 IP 误解。
+diff --git a/references/video-export.md b/references/video-export.md
+--- a/references/video-export.md
++++ b/references/video-export.md
+@@ -198,7 +198,7 @@ bash <skill-path>/scripts/add-music.sh \
+ - [ ] Duration 参数与 HTML 里的实际动画时长匹配
+ - [ ] HTML 中 Stage 检测 `window.__recording` 强制 loop=false（手写 Stage 必查；用 `assets/animations.jsx` 自带）
+ - [ ] 结尾 Sprite 的 `fadeOut={0}`（视频末帧不淡出）
+-- [ ] 含「Created by Huashu-Design」水印（仅动画场景必加；第三方品牌作品加「非官方出品 · 」前缀。详见 SKILL.md §「Skill 推广水印」）
++- [ ] 未添加 Huashu-Design、KodaX Space 或其他工具推广水印/署名（用户明确指定的品牌内容除外）
+ 
+ ## 交付时附带的说明
+ 
+@@ -231,17 +231,6 @@ bash <skill-path>/scripts/add-music.sh \
+ | 「要透明背景」 | MP4 不支持 alpha；用 WebM VP9 + alpha 或 APNG |
+ | 「要无损」 | CRF 改 0 + preset veryslow（文件会大 10 倍） |
+ 
+-## Skill 推广水印模板（仅动画导出用）
++## KodaX Space 内置版水印规则
+ 
+-SKILL.md 规定动画 MP4/GIF 默认带水印，模板如下（深底改用 `rgba(255,255,255,0.35)`；第三方品牌动画前缀「非官方出品 · 」）：
+-
+-```jsx
+-<div style={{
+-  position: 'absolute', bottom: 24, right: 32,
+-  fontSize: 11, color: 'rgba(0,0,0,0.4)',
+-  letterSpacing: '0.15em', fontFamily: 'monospace',
+-  pointerEvents: 'none', zIndex: 100,
+-}}>
+-  Created by Huashu-Design
+-</div>
+-```
++默认不添加 Huashu-Design、KodaX Space 或其他工具推广水印/署名。用户明确提出「加水印」时，只使用用户指定的文字、Logo 或品牌资产；不要自行加入工具名称。
+diff --git a/demos/hero-animation-v10-en.html b/demos/hero-animation-v10-en.html
+--- a/demos/hero-animation-v10-en.html
++++ b/demos/hero-animation-v10-en.html
+@@ -759,8 +759,6 @@
+ <body>
+ 
+ <div class="stage" id="stage">
+-
+-  <div class="watermark" id="watermark">Created by Huashu-Design</div>
+ 
+   <!-- ========== Act 0: Claude Design 致敬 ========== -->
+   <div class="scene act0" id="act0ClaudeDesign">
+diff --git "a/demos/voiceover-demo/\344\273\200\344\271\210\346\230\257token.html" "b/demos/voiceover-demo/\344\273\200\344\271\210\346\230\257token.html"
+--- "a/demos/voiceover-demo/\344\273\200\344\271\210\346\230\257token.html"
++++ "b/demos/voiceover-demo/\344\273\200\344\271\210\346\230\257token.html"
+@@ -189,9 +189,4 @@ const App = () => (
+     </Scene>
+-
+-    {/* 全局水印 */}
+-    <div style={{ position: 'absolute', bottom: 24, right: 32, fontSize: 11, color: 'rgba(255,255,255,0.35)', letterSpacing: '0.15em', fontFamily: 'monospace', pointerEvents: 'none', zIndex: 100 }}>
+-      Created by Huashu-Design
+-    </div>
+   </NarrationStage>
+ );
+ 
+diff --git a/demos/md-html-narration/md-html-demo.html b/demos/md-html-narration/md-html-demo.html
+--- a/demos/md-html-narration/md-html-demo.html
++++ b/demos/md-html-narration/md-html-demo.html
+@@ -603,9 +603,6 @@ function App() {
+     <ClosingAux />
+     {/* 字幕条放最上层（z-index 自然在 DOM 顺序最后），盖住下方内容 */}
+     <Subtitles />
+-    <div style={{ position: 'absolute', bottom: 24, right: 36, fontSize: 11, color: 'rgba(26,26,26,0.35)', letterSpacing: '0.2em', fontFamily: F.mono, pointerEvents: 'none' }}>
+-      Created by Huashu-Design
+-    </div>
+   </NarrationStage>
+ );
+ 

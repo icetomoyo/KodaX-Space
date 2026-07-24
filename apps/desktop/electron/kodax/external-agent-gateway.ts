@@ -25,7 +25,7 @@ import { getSpaceDataDir } from './data-paths.js';
 
 type SdkAgentModule = typeof import('@kodax-ai/kodax/agent');
 
-const KODAX_SDK_VERSION = '0.7.72';
+const KODAX_SDK_VERSION = '0.7.74';
 const REFERENCE_EXECUTOR_ID = 'kodax-space-reference-v1';
 const REFERENCE_MANAGEMENT_OWNER = 'kodax-space:reference';
 const MAX_STORE_FILE_BYTES = 16 * 1024 * 1024;
@@ -527,7 +527,35 @@ export class ExternalAgentGateway {
     events: ExternalAgentTaskEventT[];
     nextCursor: number;
   }> {
-    const events = (await (await this.ensurePlane()).tasks.events(taskId, cursor)).slice(0, 512);
+    const plane = await this.ensurePlane();
+    const [task, persistedEvents] = await Promise.all([
+      plane.tasks.get(taskId),
+      plane.tasks.events(taskId, 0),
+    ]);
+    const terminalStates = new Set<AgentTaskSnapshot['state']>([
+      'completed',
+      'failed',
+      'canceled',
+      'rejected',
+    ]);
+    const allEvents = [...persistedEvents];
+    if (
+      terminalStates.has(task.state) &&
+      !allEvents.some((event) => event.type === 'state' && event.state === task.state)
+    ) {
+      // KodaX 0.7.74 can persist the terminal task snapshot immediately after
+      // the output event without a matching terminal state event. Derive one
+      // from the durable snapshot so the audit stream cannot stop one entry
+      // short. Its sequence is stable across paginated reads.
+      allEvents.push({
+        taskId,
+        seq: allEvents.reduce((next, event) => Math.max(next, event.seq), 0) + 1,
+        timestamp: task.updatedAt,
+        type: 'state',
+        state: task.state,
+      });
+    }
+    const events = allEvents.filter((event) => event.seq > cursor).slice(0, 512);
     return {
       events: events.map(projectTaskEvent),
       nextCursor: events.reduce((next, event) => Math.max(next, event.seq), cursor),

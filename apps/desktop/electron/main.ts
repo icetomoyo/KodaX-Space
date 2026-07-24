@@ -9,11 +9,13 @@ import {
   app,
   BrowserWindow,
   Menu,
+  Tray,
   shell,
   session,
   dialog,
   ipcMain,
   type IpcMainEvent,
+  type MenuItemConstructorOptions,
 } from 'electron';
 import path from 'node:path';
 import { mkdirSync } from 'node:fs';
@@ -37,6 +39,10 @@ import { registerAdminPolicyAuditChannels } from './ipc/admin.js';
 import { prewarmKodaxUserConfig, registerKodaxCustomProviders } from './kodax/user-config.js';
 import { probeKodaxSdk } from './kodax/kodax-sdk-probe.js';
 import { probeSkillRegistry } from './skill/registry.js';
+import {
+  registerSpaceBuiltinSkills,
+  resolveSpaceBuiltinSkillsPath,
+} from './skill/space-builtins.js';
 import { hydrateShellEnvOnce } from './kodax/shell-env-hydrate.js';
 import { getKodaxDir, getScopedUserDataDir, applySdkHomeEnv } from './kodax/data-paths.js';
 import { registerProviderChannels, injectAllKeysToEnv } from './ipc/provider.js';
@@ -66,6 +72,7 @@ import { registerArtifactWindowChannel } from './artifact/artifact-window.js';
 import { installNavigationGuards } from './window/navigation-guards.js';
 import { installWindowActivityPublisher } from './window/activity.js';
 import { installTopmostGuard } from './window/topmost-guard.js';
+import { resolveWindowIconPath } from './window/window-icon.js';
 import {
   BOOT_SPLASH_URL_PREFIX,
   bootStatusScript,
@@ -80,6 +87,7 @@ import { setRendererTarget } from './ipc/push.js';
 import { kodaxHost } from './kodax/host.js';
 import { externalAgentGateway } from './kodax/external-agent-gateway.js';
 import { runtimeHostAdapter } from './kodax/runtime-host-adapter.js';
+import { stopCoderDaemonWhenSafe } from './kodax/runtime-daemon-control.js';
 import { permissionRegistry } from './permission/registry.js';
 import { permissionBroker } from './permission/broker.js';
 import { askUserBroker } from './permission/ask-user-broker.js';
@@ -100,6 +108,12 @@ import {
   isArtifactHtmlFrameUrl,
 } from './window/app-protocol-policy.js';
 import { isProjectWebPreviewUrl } from './window/project-web-preview.js';
+import {
+  buildBackgroundTrayPresentation,
+  resolveBackgroundTrayLocale,
+  type BackgroundRuntimeStatus,
+  type BackgroundTrayLocale,
+} from './window/background-tray-model.js';
 
 // CJS 输出（见 scripts/build-main.mjs），__dirname 是原生 Node 全局
 // 不用 import.meta.url（CJS 下不可用）
@@ -209,11 +223,26 @@ installChildProcessDiagnostics();
 // app.getAppPath() 会返回 <root>/dist-electron，再拼 apps/desktop/dist 反而错。
 const RENDERER_DIST = path.join(__dirname, '../apps/desktop/dist');
 const PRELOAD_PATH = path.join(__dirname, 'preload.js');
+const WINDOW_ICON_PATH = resolveWindowIconPath({
+  platform: process.platform,
+  isPackaged: app.isPackaged,
+  resourcesPath: process.resourcesPath,
+  bundleDir: __dirname,
+});
 
 // THEME_BOOTSTRAP_INLINE_HASH 抽到 csp-config.ts 让单测无 electron 依赖也能 import
 import { THEME_BOOTSTRAP_INLINE_HASH } from './csp-config.js';
 
 let mainWindow: BrowserWindow | null = null;
+const WINDOWS_BACKGROUND_TRAY_ENABLED =
+  process.platform === 'win32' && process.env.SPACE_DISABLE_TRAY !== '1';
+let backgroundTray: Tray | null = null;
+let backgroundTrayRefreshTimer: ReturnType<typeof setInterval> | null = null;
+let backgroundTrayRefreshing = false;
+let backgroundTrayLocale: BackgroundTrayLocale = 'en-US';
+let backgroundCloseNoticeShown = false;
+let stopDaemonOnQuit = false;
+let completeExitRequested = false;
 setRendererTarget(() => (mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null));
 
 function applyCsp(): void {
@@ -275,7 +304,7 @@ function applyCsp(): void {
   });
 }
 
-function createMainWindow(): void {
+function createMainWindow(): BrowserWindow {
   // 自定义 titlebar — 对齐 VSCode / Discord / Slack 现代 chrome：
   //   - titleBarStyle: 'hidden' 把系统标题栏隐掉
   //   - Windows: renderer 自绘 VS Code 风格 close/min/max（hover/press 更清晰）
@@ -290,6 +319,7 @@ function createMainWindow(): void {
     minWidth: 960,
     minHeight: 600,
     title: 'KodaX Space',
+    icon: WINDOW_ICON_PATH,
     backgroundColor: '#0b0b0c',
     show: false,
     alwaysOnTop: false,
@@ -313,7 +343,7 @@ function createMainWindow(): void {
   installWindowActivityPublisher(win);
   const uninstallTopmostGuard = installTopmostGuard(win, { label: 'main window' });
   const invalidateMainWindow = (): void => {
-    if (!win.isDestroyed()) win.webContents.invalidate();
+    if (!win.isDestroyed() && !win.webContents.isDestroyed()) win.webContents.invalidate();
   };
   win.on('show', invalidateMainWindow);
   win.on('focus', invalidateMainWindow);
@@ -330,9 +360,10 @@ function createMainWindow(): void {
     openExternal: (url) => void shell.openExternal(url),
   });
 
+  const isWindowUnavailable = (): boolean => win.isDestroyed() || win.webContents.isDestroyed();
   let windowShown = false;
   const revealWindow = (source: string): void => {
-    if (windowShown || win.isDestroyed()) return;
+    if (windowShown || isWindowUnavailable()) return;
     windowShown = true;
     win.show();
     win.webContents.setBackgroundThrottling(true);
@@ -358,12 +389,13 @@ function createMainWindow(): void {
   };
 
   const setBootStatus = (message: string): void => {
+    if (isWindowUnavailable()) return;
     if (!win.webContents.getURL().startsWith(BOOT_SPLASH_URL_PREFIX)) return;
     void win.webContents.executeJavaScript(bootStatusScript(message), true).catch(() => undefined);
   };
 
   const markAppLoadCommitted = (source: string): void => {
-    if (win.isDestroyed()) return;
+    if (isWindowUnavailable()) return;
     const url = win.webContents.getURL();
     if (url.startsWith(BOOT_SPLASH_URL_PREFIX)) return;
     if (appLoadCommitted) return;
@@ -382,7 +414,7 @@ function createMainWindow(): void {
   ipcMain.on('boot.rendererReady', rendererReadyListener);
 
   function retryAppLoad(reason: string): void {
-    if (win.isDestroyed() || appLoadCommitted) return;
+    if (isWindowUnavailable() || appLoadCommitted) return;
     clearAppLoadWatchdog();
     if (appLoadAttempt >= appLoadMaxAttempts) {
       console.error(`[main] renderer did not commit after ${appLoadAttempt} attempt(s): ${reason}`);
@@ -402,7 +434,7 @@ function createMainWindow(): void {
   }
 
   function loadAppRenderer(reason: string): void {
-    if (win.isDestroyed()) return;
+    if (isWindowUnavailable()) return;
     appLoadAttempt += 1;
     appLoadCommitted = false;
     clearAppLoadWatchdog();
@@ -430,7 +462,7 @@ function createMainWindow(): void {
   }
 
   const startAppLoadAfterBoot = (source: string): void => {
-    if (bootStartedAppLoad || win.isDestroyed()) return;
+    if (bootStartedAppLoad || isWindowUnavailable()) return;
     bootStartedAppLoad = true;
     clearTimeout(bootFallbackTimer);
     revealWindow(source);
@@ -513,6 +545,31 @@ function createMainWindow(): void {
     clearAppLoadWatchdog();
     clearTimeout(revealTimer);
     if (mainWindow === win) mainWindow = null;
+    if (
+      WINDOWS_BACKGROUND_TRAY_ENABLED &&
+      backgroundTray !== null &&
+      !backgroundTray.isDestroyed() &&
+      !_quitting &&
+      !backgroundCloseNoticeShown
+    ) {
+      backgroundCloseNoticeShown = true;
+      const zh = backgroundTrayLocale === 'zh-CN';
+      try {
+        backgroundTray.displayBalloon({
+          title: zh ? 'KodaX Space 正在后台运行' : 'KodaX Space is running in the background',
+          content: zh
+            ? '界面已关闭，Runtime 仍在运行。点击托盘图标可重新打开，右键可彻底退出。'
+            : 'The window is closed while Runtime keeps running. Click the tray icon to reopen, or right-click to quit completely.',
+          iconType: 'info',
+        });
+      } catch (error) {
+        console.warn(
+          '[main] background tray notice failed:',
+          error instanceof Error ? error.message : error,
+        );
+      }
+    }
+    void refreshWindowsBackgroundTray();
   });
 
   if (isDev && VITE_DEV_SERVER_URL) {
@@ -534,6 +591,228 @@ function createMainWindow(): void {
       startAppLoadAfterBoot('boot-load-rejected');
     });
   }
+  return win;
+}
+
+function showOrCreateMainWindow(): BrowserWindow {
+  const existing = mainWindow;
+  if (existing && !existing.isDestroyed()) {
+    if (existing.isMinimized()) existing.restore();
+    existing.show();
+    existing.focus();
+    return existing;
+  }
+  return createMainWindow();
+}
+
+function activateMainWindow(): void {
+  if (app.isReady()) {
+    showOrCreateMainWindow();
+    return;
+  }
+  void app.whenReady().then(() => showOrCreateMainWindow());
+}
+
+async function resolveCurrentTrayLocale(): Promise<BackgroundTrayLocale> {
+  try {
+    const settings = await settingsStore.load();
+    return resolveBackgroundTrayLocale(settings.languageMode, app.getPreferredSystemLanguages());
+  } catch {
+    return resolveBackgroundTrayLocale('system', app.getPreferredSystemLanguages());
+  }
+}
+
+async function collectBackgroundRuntimeStatus(): Promise<BackgroundRuntimeStatus> {
+  if (!runtimeHostAdapter.hasReadyRuntime()) {
+    return {
+      state: runtimeHostAdapter.snapshot().state === 'initializing' ? 'checking' : 'unavailable',
+      activeWork: 0,
+      otherClients: 0,
+      canStop: false,
+      blockers: [],
+    };
+  }
+  try {
+    const management = await runtimeHostAdapter.inspectDaemonStop();
+    const preflight = management.preflight;
+    return {
+      state: 'ready',
+      activeWork:
+        preflight.activeRuns.length +
+        preflight.queuedRuns.length +
+        preflight.activeWorkflows.length +
+        preflight.activeAgentTurns.length +
+        preflight.pendingPermissions.length +
+        preflight.pendingUserInputs.length,
+      otherClients: Math.max(0, preflight.clientCount - 1),
+      canStop: preflight.canStop,
+      blockers: preflight.blockers,
+    };
+  } catch (error) {
+    console.warn(
+      '[main] background Runtime inspection failed:',
+      error instanceof Error ? error.message : error,
+    );
+    return {
+      state: 'unavailable',
+      activeWork: 0,
+      otherClients: 0,
+      canStop: false,
+      blockers: [],
+    };
+  }
+}
+
+function quitSpaceKeepingRuntime(): void {
+  stopDaemonOnQuit = false;
+  app.quit();
+}
+
+async function requestCompleteExit(): Promise<void> {
+  if (completeExitRequested) return;
+  completeExitRequested = true;
+  try {
+    const locale = await resolveCurrentTrayLocale();
+    const runtime = await collectBackgroundRuntimeStatus();
+    if (runtime.state === 'ready' && !runtime.canStop) {
+      const blockers = runtime.blockers.join(', ') || 'background work';
+      const zh = locale === 'zh-CN';
+      const choice = await dialog.showMessageBox({
+        type: 'warning',
+        title: zh ? 'Runtime 仍在使用中' : 'Runtime is still in use',
+        message: zh
+          ? '当前不能安全停止 KodaX Runtime'
+          : 'KodaX Runtime cannot be stopped safely right now',
+        detail: zh
+          ? `仍有任务、交互或其他客户端持有 Runtime（${blockers}）。可以只退出 Space 并保留后台任务，或取消后稍后重试。`
+          : `Runtime is still held by work, interactions, or other clients (${blockers}). You can quit Space while preserving that work, or cancel and retry later.`,
+        buttons: zh
+          ? ['仅退出 Space，保留 Runtime', '取消']
+          : ['Quit Space, keep Runtime', 'Cancel'],
+        defaultId: 1,
+        cancelId: 1,
+        noLink: true,
+      });
+      if (choice.response === 0) quitSpaceKeepingRuntime();
+      return;
+    }
+    if (runtime.state !== 'ready') {
+      const zh = locale === 'zh-CN';
+      const choice = await dialog.showMessageBox({
+        type: 'warning',
+        title: zh ? '安全尝试彻底退出' : 'Safely attempt complete exit',
+        message: zh
+          ? '暂时无法确认 Runtime 状态'
+          : 'The Runtime state cannot be confirmed right now',
+        detail: zh
+          ? '退出时会通过 Runtime 自身的安全检查尝试停止 daemon；若仍有任务或其他客户端，daemon 会拒绝停止并继续运行。'
+          : 'Space will ask Runtime to stop through its own safety gate. If work or other clients remain, the daemon will refuse and keep running.',
+        buttons: zh ? ['安全尝试彻底退出', '取消'] : ['Attempt complete exit safely', 'Cancel'],
+        defaultId: 1,
+        cancelId: 1,
+        noLink: true,
+      });
+      if (choice.response !== 0) return;
+    }
+    stopDaemonOnQuit = true;
+    app.quit();
+  } finally {
+    completeExitRequested = false;
+  }
+}
+
+function updateWindowsBackgroundTrayMenu(runtime: BackgroundRuntimeStatus): void {
+  const tray = backgroundTray;
+  if (tray === null || tray.isDestroyed()) return;
+  const copy = buildBackgroundTrayPresentation(backgroundTrayLocale, runtime);
+  tray.setToolTip(copy.tooltip);
+  const template: MenuItemConstructorOptions[] = [
+    { label: copy.status, enabled: false },
+    { label: copy.details, enabled: false },
+    { type: 'separator' },
+    { label: copy.open, click: activateMainWindow },
+    {
+      label: copy.closeWindow,
+      enabled: mainWindow !== null && !mainWindow.isDestroyed(),
+      click: () => {
+        const win = mainWindow;
+        if (win && !win.isDestroyed()) win.close();
+      },
+    },
+    { type: 'separator' },
+    { label: copy.quitKeepRuntime, click: quitSpaceKeepingRuntime },
+    { label: copy.quitCompletely, click: () => void requestCompleteExit() },
+  ];
+  tray.setContextMenu(Menu.buildFromTemplate(template));
+}
+
+async function refreshWindowsBackgroundTray(): Promise<void> {
+  if (!WINDOWS_BACKGROUND_TRAY_ENABLED || backgroundTray === null || backgroundTrayRefreshing) {
+    return;
+  }
+  backgroundTrayRefreshing = true;
+  try {
+    backgroundTrayLocale = await resolveCurrentTrayLocale();
+    updateWindowsBackgroundTrayMenu(await collectBackgroundRuntimeStatus());
+  } catch (error) {
+    console.warn(
+      '[main] Windows background tray refresh failed:',
+      error instanceof Error ? error.message : String(error),
+    );
+  } finally {
+    backgroundTrayRefreshing = false;
+  }
+}
+
+function installWindowsBackgroundTray(): void {
+  if (!WINDOWS_BACKGROUND_TRAY_ENABLED || backgroundTray !== null) return;
+  if (!WINDOW_ICON_PATH) {
+    console.warn('[main] Windows background tray disabled because no runtime icon was resolved.');
+    return;
+  }
+  try {
+    const tray = new Tray(WINDOW_ICON_PATH);
+    backgroundTray = tray;
+    tray.on('click', activateMainWindow);
+    tray.on('double-click', activateMainWindow);
+    updateWindowsBackgroundTrayMenu({
+      state: 'checking',
+      activeWork: 0,
+      otherClients: 0,
+      canStop: false,
+      blockers: [],
+    });
+    void refreshWindowsBackgroundTray();
+    backgroundTrayRefreshTimer = setInterval(() => void refreshWindowsBackgroundTray(), 5_000);
+    backgroundTrayRefreshTimer.unref?.();
+  } catch (error) {
+    // Tray support is a Windows convenience, not a startup dependency. If the
+    // shell rejects the icon or tray object, keep the normal window lifecycle:
+    // window-all-closed will then quit instead of leaving an invisible process.
+    console.warn(
+      '[main] Windows background tray unavailable; falling back to normal window exit:',
+      error instanceof Error ? error.message : String(error),
+    );
+    disposeWindowsBackgroundTray();
+  }
+}
+
+function disposeWindowsBackgroundTray(): void {
+  if (backgroundTrayRefreshTimer !== null) {
+    clearInterval(backgroundTrayRefreshTimer);
+    backgroundTrayRefreshTimer = null;
+  }
+  if (backgroundTray !== null) {
+    try {
+      backgroundTray.destroy();
+    } catch (error) {
+      console.warn(
+        '[main] Windows background tray cleanup failed:',
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+    backgroundTray = null;
+  }
 }
 
 // OC-01 单实例锁：HLD §10.3「No-duplicate-session-truth」要求同时只能有一个 Space 进程
@@ -545,11 +824,7 @@ if (!gotInstanceLock) {
   app.quit();
 } else {
   app.on('second-instance', (_event, argv) => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.show();
-      mainWindow.focus();
-    }
+    activateMainWindow();
     // F021 v0.1.5：Windows / Linux 上"双击 .mcpb"会以 second-instance 启动并把 path
     // 塞进 argv。第一个进程在这里挑出 mcpb-like 路径转给 installer。
     // argv 第 0 项是 electron / Space binary 自身，1 之后才是用户传入。
@@ -666,6 +941,29 @@ app
     });
     applyCsp();
     logGpuFeatureStatus('app-ready');
+    const spaceBuiltinSkillsRoot = resolveSpaceBuiltinSkillsPath({
+      isPackaged: app.isPackaged,
+      mainDirectory: __dirname,
+      resourcesPath: process.resourcesPath,
+    });
+    try {
+      const spaceBuiltinSkills = await registerSpaceBuiltinSkills(spaceBuiltinSkillsRoot);
+      diagnosticsLogger?.info('skills', 'space_builtins_registered', undefined, {
+        root: spaceBuiltinSkills.root,
+        skillNames: spaceBuiltinSkills.skillNames,
+      });
+    } catch (err) {
+      // A damaged optional resource must not brick the whole app. Release smoke
+      // catches this before shipping; an installed copy degrades to SDK/user skills.
+      diagnosticsLogger?.warn('skills', 'space_builtins_registration_failed', undefined, {
+        root: spaceBuiltinSkillsRoot,
+        error: err,
+      });
+      console.warn(
+        '[main] Space builtin skills are unavailable:',
+        err instanceof Error ? err.message : err,
+      );
+    }
     // 启动期 3 个 async 任务无强依赖关系，并行跑省 300-800ms 才到窗口创建：
     //   - hydrateShellEnvOnce: 读 user shell rc 把 export 的 API key 流进 process.env
     //   - probeKodaxSdk: SDK shape 漂移 fail-fast (FEATURE shipper guard)
@@ -799,6 +1097,7 @@ app
     registerArtifactWindowChannel({
       preloadPath: PRELOAD_PATH,
       devServerUrl: VITE_DEV_SERVER_URL,
+      iconPath: WINDOW_ICON_PATH,
     });
     // F021 v0.1.5 冷启动 file association：用户双击 .mcpb 启动 Space 时，path 在 process.argv 里。
     // mainWindow 还没创建，但 installMcpbFromOsHandoff 内部会拉 BrowserWindow.getAllWindows()[0]
@@ -838,11 +1137,12 @@ app
           err instanceof Error ? err.message : err,
         );
       });
-    createMainWindow();
+    installWindowsBackgroundTray();
+    showOrCreateMainWindow();
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {
-        createMainWindow();
+        showOrCreateMainWindow();
       }
     });
   })
@@ -866,7 +1166,8 @@ app
     }
     if (BrowserWindow.getAllWindows().length === 0) {
       try {
-        createMainWindow();
+        installWindowsBackgroundTray();
+        showOrCreateMainWindow();
       } catch (e) {
         console.error('[main] createMainWindow() in startup catch also failed:', sanitizeError(e));
       }
@@ -874,7 +1175,9 @@ app
   });
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
+  const hasBackgroundTray =
+    WINDOWS_BACKGROUND_TRAY_ENABLED && backgroundTray !== null && !backgroundTray.isDestroyed();
+  if (process.platform !== 'darwin' && !hasBackgroundTray) {
     app.quit();
   }
 });
@@ -935,6 +1238,7 @@ app.on('before-quit', (event) => {
   // 第二次 before-quit（理论上不会——app.exit 跳过 before-quit；防 electron quirk）直接放行。
   if (_quitting) return;
   _quitting = true;
+  disposeWindowsBackgroundTray();
   // 异步清理需要 await 完才能让进程死，否则子进程 kill 与进程退出赛跑 → 孤儿残留。
   event.preventDefault();
 
@@ -977,13 +1281,29 @@ app.on('before-quit', (event) => {
   }
 
   // 兜底看门狗：任一清理卡死也不让 app 永远不退。unref 不让它本身把 event loop 拖住。
+  const watchdogMs = stopDaemonOnQuit ? 8_000 : 2_500;
   const watchdog = setTimeout(() => {
-    console.warn('[main] shutdown disposals exceeded 2.5s; forcing exit');
+    console.warn(`[main] shutdown disposals exceeded ${watchdogMs}ms; forcing exit`);
     app.exit(0);
-  }, 2500);
+  }, watchdogMs);
   watchdog.unref?.();
 
   void Promise.allSettled(disposals)
+    .then(async () => {
+      if (!stopDaemonOnQuit) return;
+      const result = await stopCoderDaemonWhenSafe({ timeoutMs: 4_000 }).catch((error) => ({
+        stopped: false,
+        reason: 'command_failed',
+        message: error instanceof Error ? error.message : String(error),
+      }));
+      if (result.stopped || result.reason === 'missing') {
+        console.info('[main] complete exit safely stopped the idle Coder daemon.');
+        return;
+      }
+      console.warn(
+        `[main] complete exit preserved the Coder daemon because it could not stop safely (${result.reason ?? 'unknown'}).`,
+      );
+    })
     .then(() => flushDiagnostics())
     .finally(() => {
       clearTimeout(watchdog);

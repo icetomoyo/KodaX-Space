@@ -129,8 +129,9 @@ function createFakeRuntime() {
       coderFeatureMatrix: { version: 1, managedRun: true, todoProjection: true },
       sessionAdmission: { version: 1 },
       completeObservationSnapshot: { version: 1 },
-      contextCompaction: { version: 2 },
+      contextCompaction: { version: 3 },
       transcriptPaging: { version: 1 },
+      transcriptSearch: { version: 1 },
       connectionLifecycle: { version: 1 },
       typedRuntimeEvents: { version: 1 },
       daemonSafeRunInput: { version: 1 },
@@ -634,8 +635,9 @@ test('runtime selection attaches one Coder daemon with stable identity and requi
   assert.equal(options[0]?.requirements?.coderFeatureMatrix, 1);
   assert.equal(options[0]?.requirements?.sessionAdmission, 1);
   assert.equal(options[0]?.requirements?.completeObservationSnapshot, 1);
-  assert.equal(options[0]?.requirements?.contextCompaction, 2);
+  assert.equal(options[0]?.requirements?.contextCompaction, 3);
   assert.equal(options[0]?.requirements?.transcriptPaging, 1);
+  assert.equal(options[0]?.requirements?.transcriptSearch, 1);
   assert.equal(options[0]?.requirements?.connectionLifecycle, 1);
   assert.equal(options[0]?.requirements?.typedRuntimeEvents, 1);
   assert.equal(options[0]?.requirements?.daemonSafeRunInput, 1);
@@ -723,6 +725,43 @@ test('transient startup retry stops if the daemon then reports a permanent incom
 
   assert.equal(factoryCalls, 2);
   assert.match(adapter.snapshot().error ?? '', /capability upgrade required/i);
+  await adapter.close();
+});
+
+test('idle stale daemon capability mismatch is retired safely and reconnects', async () => {
+  const fake = createFakeRuntime();
+  let factoryCalls = 0;
+  let safeStopCalls = 0;
+  const upgradeError = Object.assign(new Error('contextCompaction requires a newer daemon'), {
+    code: 'daemon_capability_upgrade_required',
+    preflight: { blockers: [] },
+  });
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => {
+      factoryCalls += 1;
+      if (factoryCalls === 1) throw upgradeError;
+      return fake.runtime;
+    },
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    idleDaemonStop: async () => {
+      safeStopCalls += 1;
+      return { stopped: true };
+    },
+  });
+  (adapter as unknown as { reconnectAttempt: number }).reconnectAttempt = -10;
+
+  await assert.rejects(adapter.initialize(), /contextCompaction/);
+  const deadline = Date.now() + 2_000;
+  while (!adapter.hasReadyRuntime() && Date.now() < deadline) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+  }
+
+  assert.equal(safeStopCalls, 1);
+  assert.equal(factoryCalls, 2);
+  assert.equal(adapter.hasReadyRuntime(), true);
   await adapter.close();
 });
 
@@ -2035,6 +2074,43 @@ test('Runtime input capability projection follows interruptInput advertisement',
   );
 });
 
+test('Runtime exact-history capabilities expose compaction, paging, and search separately', () => {
+  const fake = createFakeRuntime();
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+  const capabilities = (
+    adapter as unknown as {
+      spaceCapabilities(runtime: KodaXDaemonRuntime): readonly {
+        id: string;
+        version: number;
+        available: boolean;
+      }[];
+    }
+  ).spaceCapabilities(fake.runtime);
+
+  assert.deepEqual(
+    capabilities
+      .filter((item) =>
+        [
+          'runtime.context.compaction',
+          'runtime.transcript.paging',
+          'runtime.transcript.search',
+        ].includes(item.id),
+      )
+      .map(({ id, version, available }) => ({ id, version, available })),
+    [
+      { id: 'runtime.context.compaction', version: 3, available: true },
+      { id: 'runtime.transcript.paging', version: 1, available: true },
+      { id: 'runtime.transcript.search', version: 1, available: true },
+    ],
+  );
+});
+
 test('observation bootstrap failure closes the daemon subscription', async () => {
   const fake = createFakeRuntime();
   fake.sessions.add('s_1');
@@ -2085,6 +2161,20 @@ test('deleting a session closes and removes its authoritative live observation',
   assert.throws(() => controller.sessionLiveSnapshot('s_1'), RuntimeProjectionUnavailableError);
   await adapter.close();
   assert.equal(fake.calls.observationCloses, 1);
+});
+
+test('deleting a Runtime-missing session is idempotent and allows legacy cleanup', async () => {
+  const fake = createFakeRuntime();
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  assert.equal(await adapter.deleteSession('s_missing'), 'not_found');
+  await adapter.close();
 });
 
 test('observation with an omitted model keeps a concrete provider default for Auto LLM', async (t) => {
@@ -2357,11 +2447,14 @@ test('daemon capability upgrade failures explain restart and active blockers', a
     profileRoot: path.resolve('C:\\isolated-profile'),
     runtimeFactory: async () => Promise.reject(error),
     identityStore: testIdentityStore,
+    idleDaemonStop: async () => {
+      throw new Error('must not attempt to stop a daemon with known blockers');
+    },
   });
 
   await assert.rejects(adapter.initialize(), /runtimeAutoModeGuardrail/);
   assert.match(adapter.snapshot().error ?? '', /capability upgrade required/i);
-  assert.match(adapter.snapshot().error ?? '', /Restart the Coder daemon/i);
+  assert.match(adapter.snapshot().error ?? '', /automatic restart is blocked/i);
   assert.match(adapter.snapshot().error ?? '', /active_runs, pending_interactions/);
   await adapter.close();
 });

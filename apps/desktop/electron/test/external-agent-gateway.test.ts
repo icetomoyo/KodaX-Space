@@ -12,7 +12,7 @@ test('external-agent gateway persists the reference catalog and task ledger', as
   try {
     const registration = await gateway.upsertReference({
       displayName: 'Reference Reviewer',
-      description: 'Local KodaX 0.7.72 conformance target',
+      description: 'Local KodaX 0.7.74 conformance target',
       enabled: true,
       skills: ['code-review'],
       inputRequired: false,
@@ -63,6 +63,8 @@ test('external-agent gateway persists the reference catalog and task ledger', as
     const events = await gateway.taskEvents(started.taskId, 0);
     assert.ok(events.events.length >= 2);
     assert.ok(events.nextCursor >= events.events.length);
+    assert.equal(events.events.at(-1)?.type, 'state');
+    assert.equal(events.events.at(-1)?.state, 'completed');
   } finally {
     await gateway.dispose();
   }
@@ -70,7 +72,7 @@ test('external-agent gateway persists the reference catalog and task ledger', as
   const reloaded = new ExternalAgentGateway(root);
   try {
     const status = await reloaded.status();
-    assert.equal(status.sdkVersion, '0.7.72');
+    assert.equal(status.sdkVersion, '0.7.74');
     assert.equal(status.enabled, true);
     assert.equal(status.referenceExecutor, true);
     assert.deepEqual(status.adapters, { a2a: false, mcpTasks: false, governedHttp: false });
@@ -189,6 +191,8 @@ test('external-agent gateway keeps input-required on the same durable task ident
     const terminal = await binding.plane.tasks.wait(started.taskId, 2_000);
     assert.equal(terminal.state, 'completed');
     assert.equal(terminal.output, 'approved');
+    const events = await gateway.taskEvents(started.taskId, 0);
+    assert.equal(events.events.at(-1)?.state, 'completed');
   } finally {
     await gateway.dispose();
     await rm(root, { recursive: true, force: true });

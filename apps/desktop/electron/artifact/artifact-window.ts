@@ -26,6 +26,8 @@ export interface ArtifactWindowDeps {
   readonly preloadPath: string;
   /** Vite dev-server URL in dev; undefined in production. */
   readonly devServerUrl: string | undefined;
+  /** Explicit Windows native-window icon used by the taskbar and Alt+Tab. */
+  readonly iconPath?: string;
 }
 
 interface OpenInput {
@@ -62,6 +64,7 @@ function openArtifactWindow(input: OpenInput, deps: ArtifactWindowDeps): void {
     minWidth: 560,
     minHeight: 420,
     title: (input.title ?? 'Artifact').replace(BIDI_CONTROLS, ''),
+    icon: deps.iconPath,
     backgroundColor: '#0b0b0c',
     show: false,
     alwaysOnTop: false,

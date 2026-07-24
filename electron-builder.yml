@@ -46,6 +46,13 @@ files:
   - 'node_modules/bindings/**/*'
   - 'node_modules/file-uri-to-path/**/*'
   - 'package.json'
+  # KodaX builtin skills are runtime resources, not documentation. Restore
+  # SKILL.md plus Markdown support files after the broad Markdown exclusion
+  # below; otherwise development discovers them but packaged apps do not.
+  - from: node_modules/@kodax-ai/kodax/dist/builtin
+    to: node_modules/@kodax-ai/kodax/dist/builtin
+    filter:
+      - '**/*.{md,markdown}'
   - '!**/node_modules/*/{CHANGELOG.md,README.md,readme.md,HISTORY.md,LICENSE,license,*.d.ts.map}'
   - '!**/node_modules/.cache/**'
   # 只排除 100% 测试框架约定目录（jest 的 __tests__/__mocks__，永不属于运行时）。
@@ -81,6 +88,19 @@ electronLanguages:
 extraResources:
   - from: resources/kodax-license-policy.json
     to: kodax-license-policy.json
+  # BrowserWindow needs a real runtime path for the native Windows
+  # taskbar/Alt+Tab icon; embedding the ICO in PE resources is not sufficient
+  # for every Windows shell/custom-titlebar path. Shipping this tiny file on all
+  # targets keeps platform overrides from shadowing the shared resource list.
+  - from: resources/icon.ico
+    to: icon.ico
+  # Space-owned builtin skills stay outside app.asar so their Python/Node/shell
+  # scripts and binary assets have normal filesystem paths. They are still
+  # installer-owned and registered automatically during main-process startup.
+  - from: resources/builtin-skills
+    to: builtin-skills
+    filter:
+      - '**/*'
   # Built-in Terminal uses node-pty from the desktop workspace. Keeping it as an
   # extra resource avoids electron-builder trying to rebuild this workspace-only
   # native dependency while still placing it on Node's runtime module path

@@ -1,0 +1,1372 @@
+diff --git a/assets/director-notes-samples/launch-film-30s-sample.md b/assets/director-notes-samples/launch-film-30s-sample.md
+index f45b546..5634589 100644
+--- a/assets/director-notes-samples/launch-film-30s-sample.md
++++ b/assets/director-notes-samples/launch-film-30s-sample.md
+@@ -221,7 +221,7 @@ Caret          (block 3px wide)      —         typing cursor               —
+ 
+ **关键安全区**：
+ - 顶部 60px 内：chrome 元素区（capability counter, version chip）
+-- 底部 60px 内：watermark / metadata 区
++- 底部 60px 内：用户指定的 metadata 区；默认不放工具推广署名
+ - 中央 800×600 区域：主内容禁区（每一镜的 hero 元素必须落在此区域内）
+ 
+ ## 2.4 动画系统
+@@ -303,16 +303,6 @@ scene 之间过渡            300ms 重叠    cross-dissolve + scale
+ - 一条横线连接 6 个名字，进度点（●）随时间从左滑到右
+ - 入场：07s 时整条 fade-in 500ms
+ 
+-**Chrome D · bottom-right · watermark（持续）**
+-
+-```
+-   CREATED BY HUASHU-DESIGN
+-```
+-
+-- 字体：JetBrains Mono 10px，letter-spacing 0.24em
+-- 颜色：rgba(26,26,26,0.32)
+-- 完全静态，不动
+-
+ **Chrome E · 极淡 paper texture（持续）**
+ 
+ - SVG 噪点 + 极慢的 0.3% scale 呼吸
+@@ -705,7 +695,6 @@ morph 的设计哲学：**从 mono 到 serif，是从「我在打字」到「我
+ - A（top-left capability counter）: ON, 显示 `CAPABILITY · 01`, 第一个 dot 实心
+ - B（version chip）: ON, 持续显示
+ - C（timeline ticker）: OFF (会在 SHOT 05 入场)
+-- D（watermark）: ON, 永远 ON
+ - E（paper texture）: ON
+ 
+ **[ANTI-SLOP]**
+@@ -1407,7 +1396,6 @@ md 是源代码，万物是产物。
+ **[CHROME]**
+ 
+ - B: ON, version chip 持续
+-- D: ON, watermark 持续
+ - E: ON
+ - md 印章 (top-left): ON
+ 
+@@ -1456,12 +1444,9 @@ md 是源代码，万物是产物。
+ 
+                                             md.                   ← Newsreader 600, 88px, Ink + Terracotta dot
+                                           ───                     ← Terracotta rule, 120×2px
+-
+-                                                                                CREATED BY HUASHU-DESIGN
+-                                                                                              (bottom-right watermark)
+ ```
+ 
+-整个画面只有 4 个元素：md 印章、accent rule、top-right chrome、bottom-right watermark。所有其他全空。
++整个画面只有 3 个元素：md 印章、accent rule、top-right chrome。所有其他全空。
+ 
+ **[TYPE]**
+ 
+diff --git a/demos/c1-ios-prototype-en.html b/demos/c1-ios-prototype-en.html
+index df3a605..b5040a5 100644
+--- a/demos/c1-ios-prototype-en.html
++++ b/demos/c1-ios-prototype-en.html
+@@ -2,7 +2,7 @@
+ <html lang="en">
+ <head>
+ <meta charset="utf-8" />
+-<title>huashu-design V2 · c1-ios-prototype · EN</title>
++<title>Design Demo · iOS Prototype · EN</title>
+ <link rel="preconnect" href="https://fonts.googleapis.com">
+ <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+ <link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,300..700;1,8..60,300..700&family=Noto+Serif+SC:wght@300;400;500;600&family=Inter:wght@100;200;300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+@@ -57,21 +57,6 @@
+     z-index: 200;
+   }
+ 
+-  /* Watermark — always on top, adapts in brand reveal (handled by JS) */
+-  .watermark {
+-    position: absolute;
+-    top: 36px; left: 48px;
+-    font-family: var(--mono);
+-    font-size: 13px;
+-    letter-spacing: 0.2em;
+-    color: rgba(255,255,255,0.16);
+-    text-transform: uppercase;
+-    z-index: 400;
+-    pointer-events: none;
+-    transition: color 0.4s;
+-  }
+-  .watermark.on-light { color: rgba(26,25,24,0.22); }
+-
+   /* ============ Terminal (left) ============ */
+   .terminal {
+     position: absolute;
+@@ -634,8 +619,6 @@
+ 
+ <div class="stage" id="stage">
+ 
+-  <div class="watermark">HUASHU · DESIGN</div>
+-
+   <!-- Terminal -->
+   <div class="terminal" id="terminal">
+     <div class="tty-head">
+@@ -802,7 +785,7 @@
+ 
+   <!-- Brand reveal -->
+   <div class="brand-wall" id="brandWall">
+-    <div class="brand-wordmark" id="brandWord">huashu<span class="dot">·</span>design</div>
++    <div class="brand-wordmark" id="brandWord">your<span class="dot">·</span>brand</div>
+     <div class="brand-underline" id="brandLine"></div>
+     <div class="brand-cn" id="brandCn">Say it. Get an app.</div>
+   </div>
+@@ -1062,9 +1045,6 @@
+       const k = expoOut(seg(t, 7.9, 8.6));
+       brandWall.style.transform = `translateY(${lerp(100, 0, k)}%)`;
+       brandWall.style.opacity = k > 0 ? '1' : '0';
+-      const watermark = document.querySelector('.watermark');
+-      if (k > 0.6) watermark.classList.add('on-light');
+-      else watermark.classList.remove('on-light');
+     }
+     // Wordmark appears
+     {
+@@ -1114,7 +1094,6 @@
+           terminal.style.opacity = '0';
+           phoneWrap.style.opacity = '0';
+           connector.style.opacity = '0';
+-          document.querySelector('.watermark').classList.remove('on-light');
+           raf = requestAnimationFrame(tick);
+         }, 600);
+       }
+diff --git a/demos/c1-ios-prototype.html b/demos/c1-ios-prototype.html
+index fecc506..2c17000 100644
+--- a/demos/c1-ios-prototype.html
++++ b/demos/c1-ios-prototype.html
+@@ -2,7 +2,7 @@
+ <html lang="zh-Hans">
+ <head>
+ <meta charset="utf-8" />
+-<title>huashu-design V2 · c1-ios-prototype · 中文版</title>
++<title>Design Demo · iOS Prototype · 中文版</title>
+ <link rel="preconnect" href="https://fonts.googleapis.com">
+ <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+ <link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,300..700;1,8..60,300..700&family=Noto+Serif+SC:wght@300;400;500;600&family=Inter:wght@100;200;300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+@@ -57,21 +57,6 @@
+     z-index: 200;
+   }
+ 
+-  /* Watermark — always on top, adapts in brand reveal (handled by JS) */
+-  .watermark {
+-    position: absolute;
+-    top: 36px; left: 48px;
+-    font-family: var(--mono);
+-    font-size: 13px;
+-    letter-spacing: 0.2em;
+-    color: rgba(255,255,255,0.16);
+-    text-transform: uppercase;
+-    z-index: 400;
+-    pointer-events: none;
+-    transition: color 0.4s;
+-  }
+-  .watermark.on-light { color: rgba(26,25,24,0.22); }
+-
+   /* ============ Terminal (left) ============ */
+   .terminal {
+     position: absolute;
+@@ -631,8 +616,6 @@
+ 
+ <div class="stage" id="stage">
+ 
+-  <div class="watermark">HUASHU · DESIGN</div>
+-
+   <!-- Terminal -->
+   <div class="terminal" id="terminal">
+     <div class="tty-head">
+@@ -799,7 +782,7 @@
+ 
+   <!-- Brand reveal -->
+   <div class="brand-wall" id="brandWall">
+-    <div class="brand-wordmark" id="brandWord">huashu<span class="dot">·</span>design</div>
++    <div class="brand-wordmark" id="brandWord">your<span class="dot">·</span>brand</div>
+     <div class="brand-underline" id="brandLine"></div>
+     <div class="brand-cn" id="brandCn">说一句话 · 拿回一个 App</div>
+   </div>
+@@ -1059,9 +1042,6 @@
+       const k = expoOut(seg(t, 7.9, 8.6));
+       brandWall.style.transform = `translateY(${lerp(100, 0, k)}%)`;
+       brandWall.style.opacity = k > 0 ? '1' : '0';
+-      const watermark = document.querySelector('.watermark');
+-      if (k > 0.6) watermark.classList.add('on-light');
+-      else watermark.classList.remove('on-light');
+     }
+     // Wordmark appears
+     {
+@@ -1111,7 +1091,6 @@
+           terminal.style.opacity = '0';
+           phoneWrap.style.opacity = '0';
+           connector.style.opacity = '0';
+-          document.querySelector('.watermark').classList.remove('on-light');
+           raf = requestAnimationFrame(tick);
+         }, 600);
+       }
+diff --git a/demos/c2-slides-pptx-en.html b/demos/c2-slides-pptx-en.html
+index b403574..a68fd98 100644
+--- a/demos/c2-slides-pptx-en.html
++++ b/demos/c2-slides-pptx-en.html
+@@ -58,18 +58,6 @@
+     z-index: 200;
+   }
+ 
+-  .watermark-tl {
+-    position: absolute;
+-    top: 40px; left: 56px;
+-    font-family: var(--mono);
+-    font-size: 14px;
+-    letter-spacing: 0.2em;
+-    text-transform: uppercase;
+-    color: rgba(255,255,255,0.16);
+-    z-index: 180;
+-    pointer-events: none;
+-  }
+-
+   /* ====== Beat 1: browser-fullscreen deck ====== */
+   .beat1 {
+     position: absolute; inset: 0;
+@@ -587,8 +575,6 @@
+ <body>
+ 
+ <div class="stage" id="stage">
+-  <div class="watermark-tl">HUASHU · DESIGN</div>
+-
+   <!-- ====== Beat 1 ====== -->
+   <div class="beat1" id="beat1">
+     <div class="deck-window" id="deckWindow">
+@@ -702,7 +688,7 @@
+   <!-- ====== Brand Reveal (米色面板 · hero-v10 signature) ====== -->
+   <div class="brand-panel" id="brandPanel"></div>
+   <div class="brand-reveal" id="brandReveal">
+-    <div class="brand-wordmark" id="wordmark">huashu<span class="accent">-</span>design</div>
++    <div class="brand-wordmark" id="wordmark">your<span class="accent">-</span>brand</div>
+     <div class="brand-line" id="brandLine"></div>
+   </div>
+ 
+diff --git a/demos/c2-slides-pptx.html b/demos/c2-slides-pptx.html
+index 05e7b4f..3672e69 100644
+--- a/demos/c2-slides-pptx.html
++++ b/demos/c2-slides-pptx.html
+@@ -58,18 +58,6 @@
+     z-index: 200;
+   }
+ 
+-  .watermark-tl {
+-    position: absolute;
+-    top: 40px; left: 56px;
+-    font-family: var(--mono);
+-    font-size: 14px;
+-    letter-spacing: 0.2em;
+-    text-transform: uppercase;
+-    color: rgba(255,255,255,0.16);
+-    z-index: 180;
+-    pointer-events: none;
+-  }
+-
+   /* ====== Beat 1: browser-fullscreen deck ====== */
+   .beat1 {
+     position: absolute; inset: 0;
+@@ -587,8 +575,6 @@
+ <body>
+ 
+ <div class="stage" id="stage">
+-  <div class="watermark-tl">HUASHU · DESIGN</div>
+-
+   <!-- ====== Beat 1 ====== -->
+   <div class="beat1" id="beat1">
+     <div class="deck-window" id="deckWindow">
+@@ -702,7 +688,7 @@
+   <!-- ====== Brand Reveal (米色面板 · hero-v10 signature) ====== -->
+   <div class="brand-panel" id="brandPanel"></div>
+   <div class="brand-reveal" id="brandReveal">
+-    <div class="brand-wordmark" id="wordmark">huashu<span class="accent">-</span>design</div>
++    <div class="brand-wordmark" id="wordmark">your<span class="accent">-</span>brand</div>
+     <div class="brand-line" id="brandLine"></div>
+   </div>
+ 
+diff --git a/demos/c3-motion-design-en.html b/demos/c3-motion-design-en.html
+index ef44882..e23b897 100644
+--- a/demos/c3-motion-design-en.html
++++ b/demos/c3-motion-design-en.html
+@@ -2,7 +2,7 @@
+ <html lang="en">
+ <head>
+ <meta charset="utf-8" />
+-<title>huashu-design · c3 motion design (EN)</title>
++<title>Design Demo · Motion Design · EN</title>
+ <link rel="preconnect" href="https://fonts.googleapis.com">
+ <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+ <link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,300..700;1,8..60,300..700&family=Noto+Serif+SC:wght@300;400;500;600;700&family=Inter:wght@100;200;300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+@@ -55,32 +55,6 @@ html, body {
+   z-index: 200;
+ }
+ 
+-/* Watermark */
+-.watermark-tl {
+-  position: absolute;
+-  top: 40px; left: 56px;
+-  font-family: var(--mono);
+-  font-size: 14px;
+-  letter-spacing: 0.2em;
+-  color: rgba(255,255,255,0.16);
+-  z-index: 50;
+-  text-transform: none;
+-  font-weight: 500;
+-}
+-.watermark-br {
+-  position: absolute;
+-  bottom: 32px; right: 48px;
+-  font-family: var(--mono);
+-  font-size: 10px;
+-  letter-spacing: 0.24em;
+-  color: rgba(255,255,255,0.22);
+-  z-index: 100;
+-  text-transform: uppercase;
+-  opacity: 0;
+-  transition: opacity 0.6s;
+-}
+-.watermark-br.visible { opacity: 1; }
+-
+ /* Scene container */
+ .scene {
+   position: absolute; inset: 0;
+@@ -567,9 +541,6 @@ html, body {
+ 
+ <div class="stage" id="stage">
+ 
+-  <!-- Top-left watermark (always on) -->
+-  <div class="watermark-tl">HUASHU · DESIGN</div>
+-
+   <!-- ============ Scene 0: Intro (0 → 1.6s) ============ -->
+   <div class="scene scene-intro" id="scene-intro">
+     <div class="title" id="introTitle">Timeline <span class="accent">=</span> Code</div>
+@@ -731,13 +702,10 @@ html, body {
+   <!-- ============ Scene 2: Brand reveal (米色面板, 8.0 → 10s) ============ -->
+   <div class="scene scene-brand" id="scene-brand">
+     <div class="brand-panel" id="brandPanel"></div>
+-    <div class="brand-wordmark" id="wordmark">huashu<span class="accent">-</span>design</div>
++    <div class="brand-wordmark" id="wordmark">your<span class="accent">-</span>brand</div>
+     <div class="brand-line" id="brandLine"></div>
+   </div>
+ 
+-  <!-- Bottom-right watermark -->
+-  <div class="watermark-br" id="watermarkBR">V2 · 2026</div>
+-
+   <!-- Replay button (hidden during recording) -->
+   <button class="replay-btn no-record" id="replayBtn">REPLAY</button>
+ 
+@@ -841,7 +809,6 @@ html, body {
+   const wordmark = document.getElementById('wordmark');
+   const brandLine = document.getElementById('brandLine');
+   const brandPanel = document.getElementById('brandPanel');
+-  const watermarkBR = document.getElementById('watermarkBR');
+   const replayBtn = document.getElementById('replayBtn');
+ 
+   // Build 24 sprites (6x4 grid)
+@@ -1047,12 +1014,6 @@ html, body {
+       brandLine.style.width = '0px';
+     }
+ 
+-    // Watermark visible from start of main until end
+-    if (t >= T.main_in[0] && t < T.DURATION - 0.15) {
+-      watermarkBR.classList.add('visible');
+-    } else {
+-      watermarkBR.classList.remove('visible');
+-    }
+   }
+ 
+   function setLit(capsule, stem, state) {
+diff --git a/demos/c3-motion-design.html b/demos/c3-motion-design.html
+index 79f106e..a252696 100644
+--- a/demos/c3-motion-design.html
++++ b/demos/c3-motion-design.html
+@@ -2,7 +2,7 @@
+ <html lang="zh-Hans">
+ <head>
+ <meta charset="utf-8" />
+-<title>huashu-design · c3 motion design（中文版）</title>
++<title>Design Demo · Motion Design · 中文版</title>
+ <link rel="preconnect" href="https://fonts.googleapis.com">
+ <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+ <link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,300..700;1,8..60,300..700&family=Noto+Serif+SC:wght@300;400;500;600;700&family=Inter:wght@100;200;300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+@@ -55,32 +55,6 @@ html, body {
+   z-index: 200;
+ }
+ 
+-/* Watermark */
+-.watermark-tl {
+-  position: absolute;
+-  top: 40px; left: 56px;
+-  font-family: var(--mono);
+-  font-size: 14px;
+-  letter-spacing: 0.2em;
+-  color: rgba(255,255,255,0.16);
+-  z-index: 50;
+-  text-transform: none;
+-  font-weight: 500;
+-}
+-.watermark-br {
+-  position: absolute;
+-  bottom: 32px; right: 48px;
+-  font-family: var(--mono);
+-  font-size: 10px;
+-  letter-spacing: 0.24em;
+-  color: rgba(255,255,255,0.22);
+-  z-index: 100;
+-  text-transform: uppercase;
+-  opacity: 0;
+-  transition: opacity 0.6s;
+-}
+-.watermark-br.visible { opacity: 1; }
+-
+ /* Scene container */
+ .scene {
+   position: absolute; inset: 0;
+@@ -567,9 +541,6 @@ html, body {
+ 
+ <div class="stage" id="stage">
+ 
+-  <!-- Top-left watermark (always on) -->
+-  <div class="watermark-tl">HUASHU · DESIGN</div>
+-
+   <!-- ============ Scene 0: Intro (0 → 1.6s) ============ -->
+   <div class="scene scene-intro" id="scene-intro">
+     <div class="title" id="introTitle">时间轴 <span class="accent">=</span> 代码</div>
+@@ -731,13 +702,10 @@ html, body {
+   <!-- ============ Scene 2: Brand reveal (米色面板, 8.0 → 10s) ============ -->
+   <div class="scene scene-brand" id="scene-brand">
+     <div class="brand-panel" id="brandPanel"></div>
+-    <div class="brand-wordmark" id="wordmark">huashu<span class="accent">-</span>design</div>
++    <div class="brand-wordmark" id="wordmark">your<span class="accent">-</span>brand</div>
+     <div class="brand-line" id="brandLine"></div>
+   </div>
+ 
+-  <!-- Bottom-right watermark -->
+-  <div class="watermark-br" id="watermarkBR">V2 · 2026</div>
+-
+   <!-- Replay button (hidden during recording) -->
+   <button class="replay-btn no-record" id="replayBtn">REPLAY</button>
+ 
+@@ -841,7 +809,6 @@ html, body {
+   const wordmark = document.getElementById('wordmark');
+   const brandLine = document.getElementById('brandLine');
+   const brandPanel = document.getElementById('brandPanel');
+-  const watermarkBR = document.getElementById('watermarkBR');
+   const replayBtn = document.getElementById('replayBtn');
+ 
+   // Build 24 sprites (6x4 grid)
+@@ -1047,12 +1014,6 @@ html, body {
+       brandLine.style.width = '0px';
+     }
+ 
+-    // Watermark visible from start of main until end
+-    if (t >= T.main_in[0] && t < T.DURATION - 0.15) {
+-      watermarkBR.classList.add('visible');
+-    } else {
+-      watermarkBR.classList.remove('visible');
+-    }
+   }
+ 
+   function setLit(capsule, stem, state) {
+diff --git a/demos/c4-tweaks-en.html b/demos/c4-tweaks-en.html
+index 284e47d..549b751 100644
+--- a/demos/c4-tweaks-en.html
++++ b/demos/c4-tweaks-en.html
+@@ -69,28 +69,6 @@
+     z-index: 2;
+   }
+ 
+-  /* Watermark */
+-  .watermark {
+-    position: absolute;
+-    top: 44px; left: 56px;
+-    font-family: var(--mono);
+-    font-size: 14px;
+-    font-weight: 500;
+-    letter-spacing: 0.2em;
+-    color: rgba(255,255,255,0.16);
+-    z-index: 10;
+-  }
+-
+-  .version-mark {
+-    position: absolute;
+-    bottom: 44px; right: 56px;
+-    font-family: var(--mono);
+-    font-size: 12px;
+-    letter-spacing: 0.2em;
+-    color: rgba(255,255,255,0.12);
+-    z-index: 10;
+-  }
+-
+   /* ============ Main composition ============ */
+   .composition {
+     position: absolute;
+@@ -492,9 +470,6 @@
+ <div class="stage" id="stage">
+ 
+   <div class="grain"></div>
+-  <div class="watermark">HUASHU · DESIGN</div>
+-  <div class="version-mark">V2 · 2026</div>
+-
+   <div class="composition">
+ 
+     <!-- LEFT: design preview -->
+@@ -629,7 +604,7 @@
+ 
+   <!-- Brand reveal layer -->
+   <div class="brand-panel" id="brandPanel">
+-    <div class="brand-wordmark" id="brandMark">huashu<span class="accent">-</span>design</div>
++    <div class="brand-wordmark" id="brandMark">your<span class="accent">-</span>brand</div>
+     <div class="brand-line" id="brandLine"></div>
+   </div>
+ 
+diff --git a/demos/c4-tweaks.html b/demos/c4-tweaks.html
+index 640c41a..9fcbc5b 100644
+--- a/demos/c4-tweaks.html
++++ b/demos/c4-tweaks.html
+@@ -69,28 +69,6 @@
+     z-index: 2;
+   }
+ 
+-  /* Watermark */
+-  .watermark {
+-    position: absolute;
+-    top: 44px; left: 56px;
+-    font-family: var(--mono);
+-    font-size: 14px;
+-    font-weight: 500;
+-    letter-spacing: 0.2em;
+-    color: rgba(255,255,255,0.16);
+-    z-index: 10;
+-  }
+-
+-  .version-mark {
+-    position: absolute;
+-    bottom: 44px; right: 56px;
+-    font-family: var(--mono);
+-    font-size: 12px;
+-    letter-spacing: 0.2em;
+-    color: rgba(255,255,255,0.12);
+-    z-index: 10;
+-  }
+-
+   /* ============ Main composition ============ */
+   .composition {
+     position: absolute;
+@@ -492,9 +470,6 @@
+ <div class="stage" id="stage">
+ 
+   <div class="grain"></div>
+-  <div class="watermark">HUASHU · DESIGN</div>
+-  <div class="version-mark">V2 · 2026</div>
+-
+   <div class="composition">
+ 
+     <!-- LEFT: design preview -->
+@@ -629,7 +604,7 @@
+ 
+   <!-- Brand reveal layer -->
+   <div class="brand-panel" id="brandPanel">
+-    <div class="brand-wordmark" id="brandMark">huashu<span class="accent">-</span>design</div>
++    <div class="brand-wordmark" id="brandMark">your<span class="accent">-</span>brand</div>
+     <div class="brand-line" id="brandLine"></div>
+   </div>
+ 
+diff --git a/demos/c5-infographic-en.html b/demos/c5-infographic-en.html
+index c016679..f84e150 100644
+--- a/demos/c5-infographic-en.html
++++ b/demos/c5-infographic-en.html
+@@ -55,31 +55,6 @@
+       radial-gradient(ellipse at 80% 70%, rgba(217,119,87,0.018), transparent 55%);
+   }
+ 
+-  .watermark {
+-    position: absolute;
+-    top: 40px; left: 48px;
+-    font-family: var(--mono);
+-    font-size: 12px;
+-    letter-spacing: 0.2em;
+-    color: var(--ink);
+-    opacity: 0.16;
+-    text-transform: uppercase;
+-    z-index: 400;
+-    transition: color 0.3s ease;
+-  }
+-  .watermark.on-light { color: var(--cd-ink); opacity: 0.35; }
+-
+-  .v2-mark {
+-    position: absolute;
+-    bottom: 40px; right: 48px;
+-    font-family: var(--mono);
+-    font-size: 11px;
+-    letter-spacing: 0.2em;
+-    color: var(--ink);
+-    opacity: 0.16;
+-    z-index: 400;
+-  }
+-
+   /* ============ Split layout ============ */
+   .split-left {
+     position: absolute;
+@@ -430,9 +405,6 @@
+ 
+ <div class="stage" id="stage">
+ 
+-  <div class="watermark" id="watermark">HUASHU · DESIGN</div>
+-  <div class="v2-mark">V2 · 2026</div>
+-
+   <!-- Left: JSON data -->
+   <div class="split-left" id="splitLeft" style="opacity:0">
+     <div class="json-label" id="jsonLabel">DATA &#8594; benchmarks.json</div>
+@@ -523,7 +495,7 @@
+ 
+   <!-- Brand Reveal -->
+   <div class="brand-wall" id="brandWall">
+-    <div class="brand-wordmark" id="brandWord">huashu<span class="dot">·</span>design</div>
++    <div class="brand-wordmark" id="brandWord">your<span class="dot">·</span>brand</div>
+     <div class="brand-underline" id="brandLine"></div>
+     <div class="brand-cn" id="brandCn">D A T A &#183; T Y P O G R A P H Y</div>
+   </div>
+@@ -577,7 +549,6 @@
+   const brandWord = document.getElementById('brandWord');
+   const brandLine = document.getElementById('brandLine');
+   const brandCn = document.getElementById('brandCn');
+-  const watermark = document.getElementById('watermark');
+ 
+   // ---------- JSON content (for progressive reveal) ----------
+   const jsonRaw = [
+@@ -740,8 +711,6 @@
+       const k = expoOut(seg(t, 8.1, 8.7));
+       brandWall.style.transform = `translateY(${lerp(t, 8.1, 8.7, 100, 0, expoOut)}%)`;
+       brandWall.style.opacity = k > 0 ? '1' : '0';
+-      if (k > 0.55) watermark.classList.add('on-light');
+-      else watermark.classList.remove('on-light');
+     }
+     // Wordmark
+     {
+@@ -790,7 +759,6 @@
+           brandWord.style.opacity = '0';
+           brandLine.style.width = '0';
+           brandCn.style.opacity = '0';
+-          watermark.classList.remove('on-light');
+           raf = requestAnimationFrame(tick);
+         }, 800);
+       }
+diff --git a/demos/c5-infographic.html b/demos/c5-infographic.html
+index 619e419..3de79a2 100644
+--- a/demos/c5-infographic.html
++++ b/demos/c5-infographic.html
+@@ -55,31 +55,6 @@
+       radial-gradient(ellipse at 80% 70%, rgba(217,119,87,0.018), transparent 55%);
+   }
+ 
+-  .watermark {
+-    position: absolute;
+-    top: 40px; left: 48px;
+-    font-family: var(--mono);
+-    font-size: 12px;
+-    letter-spacing: 0.2em;
+-    color: var(--ink);
+-    opacity: 0.16;
+-    text-transform: uppercase;
+-    z-index: 400;
+-    transition: color 0.3s ease;
+-  }
+-  .watermark.on-light { color: var(--cd-ink); opacity: 0.35; }
+-
+-  .v2-mark {
+-    position: absolute;
+-    bottom: 40px; right: 48px;
+-    font-family: var(--mono);
+-    font-size: 11px;
+-    letter-spacing: 0.2em;
+-    color: var(--ink);
+-    opacity: 0.16;
+-    z-index: 400;
+-  }
+-
+   /* ============ Split layout ============ */
+   .split-left {
+     position: absolute;
+@@ -427,9 +402,6 @@
+ 
+ <div class="stage" id="stage">
+ 
+-  <div class="watermark" id="watermark">HUASHU · DESIGN</div>
+-  <div class="v2-mark">V2 · 2026</div>
+-
+   <!-- Left: JSON data -->
+   <div class="split-left" id="splitLeft" style="opacity:0">
+     <div class="json-label" id="jsonLabel">DATA · benchmarks.json</div>
+@@ -520,7 +492,7 @@
+ 
+   <!-- Brand Reveal -->
+   <div class="brand-wall" id="brandWall">
+-    <div class="brand-wordmark" id="brandWord">huashu<span class="dot">·</span>design</div>
++    <div class="brand-wordmark" id="brandWord">your<span class="dot">·</span>brand</div>
+     <div class="brand-underline" id="brandLine"></div>
+     <div class="brand-cn" id="brandCn">数 据 · 印 刷 级 排 版</div>
+   </div>
+@@ -574,7 +546,6 @@
+   const brandWord = document.getElementById('brandWord');
+   const brandLine = document.getElementById('brandLine');
+   const brandCn = document.getElementById('brandCn');
+-  const watermark = document.getElementById('watermark');
+ 
+   // ---------- JSON content (for progressive reveal) ----------
+   const jsonRaw = [
+@@ -737,8 +708,6 @@
+       const k = expoOut(seg(t, 8.1, 8.7));
+       brandWall.style.transform = `translateY(${lerp(t, 8.1, 8.7, 100, 0, expoOut)}%)`;
+       brandWall.style.opacity = k > 0 ? '1' : '0';
+-      if (k > 0.55) watermark.classList.add('on-light');
+-      else watermark.classList.remove('on-light');
+     }
+     // Wordmark
+     {
+@@ -787,7 +756,6 @@
+           brandWord.style.opacity = '0';
+           brandLine.style.width = '0';
+           brandCn.style.opacity = '0';
+-          watermark.classList.remove('on-light');
+           raf = requestAnimationFrame(tick);
+         }, 800);
+       }
+diff --git a/demos/c6-expert-review-en.html b/demos/c6-expert-review-en.html
+index 6471b2f..b073fb5 100644
+--- a/demos/c6-expert-review-en.html
++++ b/demos/c6-expert-review-en.html
+@@ -56,30 +56,6 @@
+     z-index: 100;
+   }
+ 
+-  /* Chrome */
+-  .mark {
+-    position: absolute;
+-    top: 48px; left: 64px;
+-    font-family: var(--mono);
+-    font-size: 13px;
+-    letter-spacing: 0.2em;
+-    color: rgba(255,255,255,1);
+-    opacity: 0.16;
+-    pointer-events: none;
+-    z-index: 50;
+-  }
+-  .mark-right {
+-    position: absolute;
+-    top: 48px; right: 64px;
+-    font-family: var(--mono);
+-    font-size: 13px;
+-    letter-spacing: 0.2em;
+-    color: rgba(255,255,255,1);
+-    opacity: 0.16;
+-    pointer-events: none;
+-    z-index: 50;
+-  }
+-
+   /* Title */
+   .title-line {
+     position: absolute;
+@@ -523,9 +499,6 @@
+ </head>
+ <body>
+   <div class="stage" id="stage">
+-    <div class="mark">HUASHU · DESIGN</div>
+-    <div class="mark-right">V2 · 2026</div>
+-
+     <div class="title-line" id="titleLine">c6 · Expert Review · Five Axes</div>
+ 
+     <div class="camera" id="camera">
+@@ -600,7 +573,7 @@
+     <!-- Brand Reveal (hero-v10 signature) -->
+     <div class="stage-dimmer" id="stageDimmer"></div>
+     <div class="brand-panel" id="brandPanel">
+-      <div class="brand-wordmark" id="brandMark">huashu<span class="accent">-</span>design</div>
++      <div class="brand-wordmark" id="brandMark">your<span class="accent">-</span>brand</div>
+       <div class="brand-line" id="brandLine"></div>
+     </div>
+   </div>
+diff --git a/demos/c6-expert-review.html b/demos/c6-expert-review.html
+index ab3489d..350f8df 100644
+--- a/demos/c6-expert-review.html
++++ b/demos/c6-expert-review.html
+@@ -56,30 +56,6 @@
+     z-index: 100;
+   }
+ 
+-  /* Chrome */
+-  .mark {
+-    position: absolute;
+-    top: 48px; left: 64px;
+-    font-family: var(--mono);
+-    font-size: 13px;
+-    letter-spacing: 0.2em;
+-    color: rgba(255,255,255,1);
+-    opacity: 0.16;
+-    pointer-events: none;
+-    z-index: 50;
+-  }
+-  .mark-right {
+-    position: absolute;
+-    top: 48px; right: 64px;
+-    font-family: var(--mono);
+-    font-size: 13px;
+-    letter-spacing: 0.2em;
+-    color: rgba(255,255,255,1);
+-    opacity: 0.16;
+-    pointer-events: none;
+-    z-index: 50;
+-  }
+-
+   /* Title */
+   .title-line {
+     position: absolute;
+@@ -520,9 +496,6 @@
+ </head>
+ <body>
+   <div class="stage" id="stage">
+-    <div class="mark">HUASHU · DESIGN</div>
+-    <div class="mark-right">V2 · 2026</div>
+-
+     <div class="title-line" id="titleLine">c6 · 专家评审 · 五个维度</div>
+ 
+     <div class="camera" id="camera">
+@@ -597,7 +570,7 @@
+     <!-- Brand Reveal (hero-v10 signature) -->
+     <div class="stage-dimmer" id="stageDimmer"></div>
+     <div class="brand-panel" id="brandPanel">
+-      <div class="brand-wordmark" id="brandMark">huashu<span class="accent">-</span>design</div>
++      <div class="brand-wordmark" id="brandMark">your<span class="accent">-</span>brand</div>
+       <div class="brand-line" id="brandLine"></div>
+     </div>
+   </div>
+diff --git a/demos/hero-animation-v10-en.html b/demos/hero-animation-v10-en.html
+index 8b92316..fad3987 100644
+--- a/demos/hero-animation-v10-en.html
++++ b/demos/hero-animation-v10-en.html
+@@ -2,7 +2,7 @@
+ <html lang="en">
+ <head>
+ <meta charset="utf-8" />
+-<title>Huashu Design · Here's to the Agents (v10)</title>
++<title>Design Demo · Here's to the Agents</title>
+ <link rel="preconnect" href="https://fonts.googleapis.com">
+ <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+ <link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,300..700;1,8..60,300..700&family=Noto+Serif+SC:wght@300;400;500;600&family=Inter:wght@100;200;300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+@@ -371,23 +371,6 @@
+     text-align: center;
+   }
+ 
+-  /* Watermark (subtle, always on during Act 2/3) */
+-  .watermark {
+-    position: absolute;
+-    bottom: 28px;
+-    right: 36px;
+-    font-family: var(--mono);
+-    font-size: 10px;
+-    letter-spacing: 0.24em;
+-    text-transform: uppercase;
+-    color: rgba(255,255,255,0.22);
+-    z-index: 100;
+-    opacity: 0;
+-    transition: opacity 0.6s;
+-    pointer-events: none;
+-  }
+-  .watermark.visible { opacity: 1; }
+-
+   /* ============ Act 0 — Claude Design 致敬（+讽刺） ============ */
+   .act0 {
+     background: #0a0a0a;
+@@ -906,7 +889,7 @@
+         <span class="d red"></span>
+         <span class="d yellow"></span>
+         <span class="d green"></span>
+-        <span class="tty-title">huashu — claude code</span>
++        <span class="tty-title">design demo — agent</span>
+       </div>
+       <div class="tty-body">
+         <span class="prompt">$</span><span class="typed" id="typed"></span><span class="cursor" id="cursor"></span>
+@@ -936,10 +919,10 @@
+   </div>
+ 
+   <div class="scene act3" id="act3Brand">
+-    <div class="brand-wordmark" id="wordmark">huashu<span class="accent">-</span>design</div>
++    <div class="brand-wordmark" id="wordmark">your<span class="accent">-</span>brand</div>
+     <div class="farewell-quote" id="farewell">For them, we built this.</div>
+     <div class="farewell-cn" id="farewellCn">· 为 他 们 · 我 们 造 了 这 个 ·</div>
+-    <div class="brand-url" id="url">huasheng.ai/huashu-design-hero</div>
++    <div class="brand-url" id="url">example.com/product</div>
+   </div>
+ 
+ </div>
+@@ -1112,8 +1095,6 @@
+   const farewell = document.getElementById('farewell');
+   const farewellCn = document.getElementById('farewellCn');
+   const urlEl = document.getElementById('url');
+-  const watermark = document.getElementById('watermark');
+-
+   const COMMAND = '/huashu-design 做一份发布会PPT';
+ 
+   // ---------- Gallery transforms ----------
+@@ -1449,12 +1430,6 @@
+       showScene('a3brand', 0);
+     }
+ 
+-    // Watermark: visible during Act 2-3
+-    if (t >= T.a2tty_in[0] && t < T.DURATION - 0.2) {
+-      watermark.classList.add('visible');
+-    } else {
+-      watermark.classList.remove('visible');
+-    }
+   }
+ 
+   // ---------- Driver ----------
+diff --git a/demos/w1-brand-protocol-en.html b/demos/w1-brand-protocol-en.html
+index 2eb967b..e31673a 100644
+--- a/demos/w1-brand-protocol-en.html
++++ b/demos/w1-brand-protocol-en.html
+@@ -56,30 +56,6 @@
+     z-index: 100;
+   }
+ 
+-  /* Chrome · watermark */
+-  .mark {
+-    position: absolute;
+-    top: 48px; left: 64px;
+-    font-family: var(--mono);
+-    font-size: 13px;
+-    letter-spacing: 0.2em;
+-    color: rgba(255,255,255,1);
+-    opacity: 0.16;
+-    pointer-events: none;
+-    z-index: 50;
+-  }
+-  .mark-right {
+-    position: absolute;
+-    top: 48px; right: 64px;
+-    font-family: var(--mono);
+-    font-size: 13px;
+-    letter-spacing: 0.2em;
+-    color: rgba(255,255,255,1);
+-    opacity: 0.16;
+-    pointer-events: none;
+-    z-index: 50;
+-  }
+-
+   /* ====== Title (centered, small, top) ====== */
+   .title-line {
+     position: absolute;
+@@ -435,9 +411,6 @@
+ </head>
+ <body>
+   <div class="stage" id="stage">
+-    <div class="mark">HUASHU · DESIGN</div>
+-    <div class="mark-right">V2 · 2026</div>
+-
+     <div class="title-line" id="titleLine">w1 · brand protocol</div>
+ 
+     <div class="chain">
+@@ -525,7 +498,7 @@
+ 
+     <div class="brand-sheet" id="brandSheet"></div>
+     <div class="brand-reveal" id="brandReveal">
+-      <div class="wordmark">huashu<span class="accent"> · </span>design</div>
++      <div class="wordmark">your<span class="accent"> · </span>brand</div>
+       <div class="underline" id="brandUnderline"></div>
+     </div>
+   </div>
+diff --git a/demos/w1-brand-protocol.html b/demos/w1-brand-protocol.html
+index dc38e4d..b4fade1 100644
+--- a/demos/w1-brand-protocol.html
++++ b/demos/w1-brand-protocol.html
+@@ -56,30 +56,6 @@
+     z-index: 100;
+   }
+ 
+-  /* Chrome · watermark */
+-  .mark {
+-    position: absolute;
+-    top: 48px; left: 64px;
+-    font-family: var(--mono);
+-    font-size: 13px;
+-    letter-spacing: 0.2em;
+-    color: rgba(255,255,255,1);
+-    opacity: 0.16;
+-    pointer-events: none;
+-    z-index: 50;
+-  }
+-  .mark-right {
+-    position: absolute;
+-    top: 48px; right: 64px;
+-    font-family: var(--mono);
+-    font-size: 13px;
+-    letter-spacing: 0.2em;
+-    color: rgba(255,255,255,1);
+-    opacity: 0.16;
+-    pointer-events: none;
+-    z-index: 50;
+-  }
+-
+   /* ====== Title (centered, small, top) ====== */
+   .title-line {
+     position: absolute;
+@@ -442,9 +418,6 @@
+ </head>
+ <body>
+   <div class="stage" id="stage">
+-    <div class="mark">HUASHU · DESIGN</div>
+-    <div class="mark-right">V2 · 2026</div>
+-
+     <div class="title-line" id="titleLine">w1 · 品牌协议</div>
+ 
+     <div class="chain">
+@@ -537,7 +510,7 @@
+ 
+     <div class="brand-sheet" id="brandSheet"></div>
+     <div class="brand-reveal" id="brandReveal">
+-      <div class="wordmark">huashu<span class="accent"> · </span>design</div>
++      <div class="wordmark">your<span class="accent"> · </span>brand</div>
+       <div class="underline" id="brandUnderline"></div>
+     </div>
+   </div>
+diff --git a/demos/w2-junior-designer-en.html b/demos/w2-junior-designer-en.html
+index 88438f8..efe173b 100644
+--- a/demos/w2-junior-designer-en.html
++++ b/demos/w2-junior-designer-en.html
+@@ -59,30 +59,6 @@
+     z-index: 100;
+   }
+ 
+-  /* Chrome · watermark */
+-  .mark {
+-    position: absolute;
+-    top: 48px; left: 64px;
+-    font-family: var(--mono);
+-    font-size: 13px;
+-    letter-spacing: 0.2em;
+-    color: rgba(255,255,255,1);
+-    opacity: 0.16;
+-    pointer-events: none;
+-    z-index: 50;
+-  }
+-  .mark-right {
+-    position: absolute;
+-    top: 48px; right: 64px;
+-    font-family: var(--mono);
+-    font-size: 13px;
+-    letter-spacing: 0.2em;
+-    color: rgba(255,255,255,1);
+-    opacity: 0.16;
+-    pointer-events: none;
+-    z-index: 50;
+-  }
+-
+   /* Title */
+   .title-line {
+     position: absolute;
+@@ -553,9 +529,6 @@
+ </head>
+ <body>
+   <div class="stage" id="stage">
+-    <div class="mark">HUASHU · DESIGN</div>
+-    <div class="mark-right">V2 · 2026</div>
+-
+     <div class="title-line" id="titleLine">w2 · rough draft now beats perfect draft later</div>
+ 
+     <!-- Splitter -->
+@@ -702,7 +675,7 @@
+     <!-- Brand reveal -->
+     <div class="brand-sheet" id="brandSheet"></div>
+     <div class="brand-reveal" id="brandReveal">
+-      <div class="wordmark">huashu<span class="accent"> · </span>design</div>
++      <div class="wordmark">your<span class="accent"> · </span>brand</div>
+       <div class="underline" id="brandUnderline"></div>
+     </div>
+   </div>
+diff --git a/demos/w2-junior-designer.html b/demos/w2-junior-designer.html
+index 097bbb7..d7edae3 100644
+--- a/demos/w2-junior-designer.html
++++ b/demos/w2-junior-designer.html
+@@ -59,30 +59,6 @@
+     z-index: 100;
+   }
+ 
+-  /* Chrome · watermark */
+-  .mark {
+-    position: absolute;
+-    top: 48px; left: 64px;
+-    font-family: var(--mono);
+-    font-size: 13px;
+-    letter-spacing: 0.2em;
+-    color: rgba(255,255,255,1);
+-    opacity: 0.16;
+-    pointer-events: none;
+-    z-index: 50;
+-  }
+-  .mark-right {
+-    position: absolute;
+-    top: 48px; right: 64px;
+-    font-family: var(--mono);
+-    font-size: 13px;
+-    letter-spacing: 0.2em;
+-    color: rgba(255,255,255,1);
+-    opacity: 0.16;
+-    pointer-events: none;
+-    z-index: 50;
+-  }
+-
+   /* Title */
+   .title-line {
+     position: absolute;
+@@ -553,9 +529,6 @@
+ </head>
+ <body>
+   <div class="stage" id="stage">
+-    <div class="mark">HUASHU · DESIGN</div>
+-    <div class="mark-right">V2 · 2026</div>
+-
+     <div class="title-line" id="titleLine">w2 · 粗糙的第一版，好过完美的大招</div>
+ 
+     <!-- Splitter -->
+@@ -708,7 +681,7 @@
+     <!-- Brand reveal -->
+     <div class="brand-sheet" id="brandSheet"></div>
+     <div class="brand-reveal" id="brandReveal">
+-      <div class="wordmark">huashu<span class="accent"> · </span>design</div>
++      <div class="wordmark">your<span class="accent"> · </span>brand</div>
+       <div class="underline" id="brandUnderline"></div>
+     </div>
+   </div>
+diff --git a/demos/w3-fallback-advisor-en.html b/demos/w3-fallback-advisor-en.html
+index b3363c2..c759b39 100644
+--- a/demos/w3-fallback-advisor-en.html
++++ b/demos/w3-fallback-advisor-en.html
+@@ -43,30 +43,6 @@
+     overflow: hidden;
+   }
+ 
+-  /* Watermarks */
+-  .watermark-tl {
+-    position: absolute;
+-    top: 40px; left: 56px;
+-    font-family: var(--mono);
+-    font-size: 12px;
+-    letter-spacing: 0.2em;
+-    color: rgba(255,255,255,0.16);
+-    z-index: 200;
+-    pointer-events: none;
+-    text-transform: uppercase;
+-  }
+-  .watermark-br {
+-    position: absolute;
+-    bottom: 32px; right: 40px;
+-    font-family: var(--mono);
+-    font-size: 10px;
+-    letter-spacing: 0.24em;
+-    color: rgba(255,255,255,0.14);
+-    z-index: 200;
+-    pointer-events: none;
+-    text-transform: uppercase;
+-  }
+-
+   /* Top title — English uses Serif Display */
+   .top-title {
+     position: absolute;
+@@ -321,9 +297,6 @@
+ 
+ <div class="stage" id="stage">
+ 
+-  <div class="watermark-tl">HUASHU · DESIGN</div>
+-  <div class="watermark-br">V2 · 2026 · w3</div>
+-
+   <!-- English version: parallel rewrite, fewer words, more breathing room -->
+   <div class="top-title" id="topTitle">
+     Not sure? <span class="accent">Here are 3 roads.</span>
+@@ -375,7 +348,7 @@
+   </div>
+ 
+   <div class="brand-panel" id="brandPanel">
+-    <div class="brand-mark" id="brandMark">huashu<span class="dot">·</span><span class="accent">design</span></div>
++    <div class="brand-mark" id="brandMark">your<span class="dot">·</span><span class="accent">brand</span></div>
+     <div class="brand-underline" id="brandUnderline"></div>
+     <div class="brand-tag" id="brandTag">HTML as Designer's Medium</div>
+   </div>
+diff --git a/demos/w3-fallback-advisor.html b/demos/w3-fallback-advisor.html
+index 43ce90b..b9d9310 100644
+--- a/demos/w3-fallback-advisor.html
++++ b/demos/w3-fallback-advisor.html
+@@ -44,30 +44,6 @@
+     overflow: hidden;
+   }
+ 
+-  /* ============ Watermark ============ */
+-  .watermark-tl {
+-    position: absolute;
+-    top: 40px; left: 56px;
+-    font-family: var(--mono);
+-    font-size: 12px;
+-    letter-spacing: 0.2em;
+-    color: rgba(255,255,255,0.16);
+-    z-index: 200;
+-    pointer-events: none;
+-    text-transform: uppercase;
+-  }
+-  .watermark-br {
+-    position: absolute;
+-    bottom: 32px; right: 40px;
+-    font-family: var(--mono);
+-    font-size: 10px;
+-    letter-spacing: 0.24em;
+-    color: rgba(255,255,255,0.14);
+-    z-index: 200;
+-    pointer-events: none;
+-    text-transform: uppercase;
+-  }
+-
+   /* ============ Top Title ============ */
+   .top-title {
+     position: absolute;
+@@ -323,10 +299,6 @@
+ 
+ <div class="stage" id="stage">
+ 
+-  <!-- 水印 -->
+-  <div class="watermark-tl">HUASHU · DESIGN</div>
+-  <div class="watermark-br">V2 · 2026 · w3</div>
+-
+   <!-- 顶部标题 -->
+   <div class="top-title" id="topTitle">
+     不知道要什么？<span class="accent">先给你 3 个方向</span>
+@@ -385,7 +357,7 @@
+ 
+   <!-- Brand Reveal -->
+   <div class="brand-panel" id="brandPanel">
+-    <div class="brand-mark" id="brandMark">huashu<span class="dot">·</span><span class="accent">design</span></div>
++    <div class="brand-mark" id="brandMark">your<span class="dot">·</span><span class="accent">brand</span></div>
+     <div class="brand-underline" id="brandUnderline"></div>
+     <div class="brand-tag" id="brandTag">HTML as Designer's Medium</div>
+   </div>
+diff --git a/references/animation-pitfalls.md b/references/animation-pitfalls.md
+index 8ffbdd1..6589c31 100644
+--- a/references/animation-pitfalls.md
++++ b/references/animation-pitfalls.md
+@@ -347,11 +347,11 @@ bash convert-formats.sh input.mp4 --minterpolate
+ 
+ ## 16. 跨 scene 反色上下文 —— 画面内元素不要硬编码颜色
+ 
+-**踩的坑**：做多场景动画时，`ChapterLabel` / `SceneNumber` / `Watermark` 等**跨 scene 都出现**的元素，在组件里写死 `color: '#1A1A1A'`（深色文字）。前 4 个 scene 浅底 OK，到第 5 个黑底 scene 时"05"和水印直接消失——不报错、不触发任何检查、关键信息隐形。
++**踩的坑**：做多场景动画时，`ChapterLabel` / `SceneNumber` / `Timecode` 等**跨 scene 都出现**的元素，在组件里写死 `color: '#1A1A1A'`（深色文字）。前 4 个 scene 浅底 OK，到第 5 个黑底 scene 时编号和时间码直接消失——不报错、不触发任何检查、关键信息隐形。
+ 
+ **规则**：
+ 
+-- **跨多 scene 复用的画面内元素**（chapter 标签 / scene 编号 / 时间码 / 水印 / 版权条）**禁止硬编码颜色值**
++- **跨多 scene 复用的画面内元素**（chapter 标签 / scene 编号 / 时间码 / 用户指定的版权条）**禁止硬编码颜色值**
+ - 改用三种方式之一：
+   1. **`currentColor` 继承**：元素只写 `color: currentColor`，父 scene 容器设 `color: 计算值`
+   2. **invert prop**：组件接受 `<ChapterLabel invert />` 手动切换深浅
+@@ -383,7 +383,7 @@ bash convert-formats.sh input.mp4 --minterpolate
+ 
+ ## 18. 【HyperFrames】CSS transition + class 切换在 seek 渲染下不确定
+ 
+-CSS `transition` 走的是墙钟，不是时间轴。逐帧 seek 渲染时每帧都是独立截图，transition 的中间态取决于「seek 到这帧时过了多久墙钟时间」——完全不确定，可能永远停在起始值，也可能随机停在中间。c3 迁移实测（2026-07-17）：`.watermark-br` 用 `transition: opacity 0.6s` + class 切换，seek 渲染下透明度不听话。
++CSS `transition` 走的是墙钟，不是时间轴。逐帧 seek 渲染时每帧都是独立截图，transition 的中间态取决于「seek 到这帧时过了多久墙钟时间」——完全不确定，可能永远停在起始值，也可能随机停在中间。c3 迁移实测（2026-07-17）：一个跨场景标签用 `transition: opacity 0.6s` + class 切换，seek 渲染下透明度不听话。
+ 
+ **修法**：渲染路径上的一切状态变化都用 tween 或 t 的纯函数表达。迁移老 demo 时全文搜 `transition:`，逐个改成 `render(t)` 里的 lerp；新写合成从一开始就不写 transition。hover 等交互态的 transition 无所谓（渲染时不触发）。
+ 
+@@ -395,7 +395,7 @@ CSS `transition` 走的是墙钟，不是时间轴。逐帧 seek 渲染时每帧
+ 
+ ## 20. 【HyperFrames】contrast 门与暗色电影风冲突 —— 用 `--no-contrast`，其余四门必须 0 error
+ 
+-`npm run check` 的 contrast 门按 WCAG AA 4.5:1 检查所有文字。暗色 cinematic 设计里 16-40% 透明度的水印、mono 标签、装饰性文字是**刻意的**低对比（电影感的一部分），会成片报错，且框架没有逐元素豁免机制。c3 实测 42 个 contrast error 全部是设计本意。
++`npm run check` 的 contrast 门按 WCAG AA 4.5:1 检查所有文字。暗色 cinematic 设计里 16-40% 透明度的 mono 标签、装饰性文字是**刻意的**低对比（电影感的一部分），会成片报错，且框架没有逐元素豁免机制。c3 实测 42 个 contrast error 全部是设计本意。
+ 
+ **修法**：暗色电影风产出用 `npx hyperframes check --no-contrast`，lint/runtime/layout/motion 四门仍必须 0 error。**亮底信息型产出不要跳 contrast**——那种场景下的报错通常是真的可读性问题（可读性硬底线见 SKILL.md Fallback 节）。
+ 
+@@ -422,7 +422,7 @@ GSAP 的 `fromTo()` 默认 `immediateRender: true`：build timeline 时就把 fr
+ - [ ] 导出后抽第 0 帧 + 末帧验证是动画初始/最终状态？
+ - [ ] 涉及具体品牌（Stripe/Anthropic/Lovart/...）：走完了「品牌资产协议」（SKILL.md §1.a 五步）？有没有写 `brand-spec.md`？
+ - [ ] 单文件交付的 HTML：`animations.jsx` 是内联的，不是 `src="..."`？（file:// 下 external .jsx 会 CORS 黑屏）
+-- [ ] 跨 scene 出现的元素（chapter 标签/水印/scene 编号）没有硬编码颜色？在每个 scene 底色下都可见？
++- [ ] 跨 scene 出现的元素（chapter 标签/时间码/scene 编号）没有硬编码颜色？在每个 scene 底色下都可见？
+ - [ ] 要离线/真自包含：React+ReactDOM 本地内联、**app 和 `animations.jsx` 引擎都过 Babel transpile**、字体用系统字体？（见坑 #17；引擎含 JSX，漏 transpile 必报 `Unexpected token '<'`）
+ - [ ] 【HyperFrames】渲染路径上没有 CSS `transition`？状态变化全是 tween 或 t 的纯函数？（坑 #18）
+ - [ ] 【HyperFrames】代理 tween 场景注册后补了 `render(0)`？（坑 #19）
+diff --git a/references/apple-gallery-showcase.md b/references/apple-gallery-showcase.md
+index e0be624..78074a8 100644
+--- a/references/apple-gallery-showcase.md
++++ b/references/apple-gallery-showcase.md
+@@ -275,15 +275,18 @@ requestAnimationFrame(function tick(now) {
+ 
+ 看上去没区别，去掉就知道有了。
+ 
+-### 2. 角落品牌标识
++### 2. 可选的用户品牌标识
+ 
+ ```html
+ <div class="corner-brand">
+   <div class="mark"></div>
+-  <div>HUASHU · DESIGN</div>
++  <div>YOUR BRAND</div>
+ </div>
+ ```
+ 
++仅当用户明确要求并提供品牌内容时使用；默认产出省略整个
++`corner-brand`，不要替换成工具或 skill 名称。
++
+ ```css
+ .corner-brand {
+   position: absolute; top: 48px; left: 72px;
+diff --git a/references/hero-animation-case-study.md b/references/hero-animation-case-study.md
+index d2e62f2..8ae7225 100644
+--- a/references/hero-animation-case-study.md
++++ b/references/hero-animation-case-study.md
+@@ -2,7 +2,7 @@
+ 
+ > 从 huashu-design hero 动画 v9（25 秒，8 场景）里提炼出的**一种可复用的视觉编排结构**。
+ > 不是动画制作流水线，是**什么场景下这种编排是"对的"**。
+-> 在线实战参考：[https://www.huasheng.ai/huashu-design-hero/](https://www.huasheng.ai/huashu-design-hero/)
++> 本文保留可复用的视觉编排方法；内置版不依赖外部品牌演示站点。
+ 
+ ## 一句话先行
+ 
+@@ -200,16 +200,18 @@ Brand wordmark 从 Thin → Bold 用 0.9s 渐变，配合 letter-spacing 微调
+ 
+ **限制**：必须用支持 variable font 的字体（Inter/Roboto Flex/Recursive 等）。普通静态字体只能拟态（切换几个固定 weight 有跳变）。
+ 
+-### 5. **Corner Brand 低强度持续签名**
++### 5. **可选的用户品牌 anchor**
+ 
+-Gallery 阶段左上角有个 `HUASHU · DESIGN` 小标识，16% opacity 色值，12px 字号，宽字距。
++仅当用户明确要求并提供品牌内容时，Gallery 阶段可在左上角加入
++16% opacity、12px、宽字距的小标识。默认省略，不要加入工具或 skill
++推广署名。
+ 
+ **为什么加这个**：
+ - Ripple 爆发后观众容易"失焦"不记得在看什么，左上角轻标示帮助 anchor
+-- 比全屏大 logo 更高级——做品牌的人知道，品牌签名不需要喊
+-- 在 GIF 被截屏分享时仍留下归属信号
++- 用户品牌存在时，比全屏大 logo 更克制
++- 用户明确需要传播归属时，在 GIF 截屏里保留其品牌信号
+ 
+-**规则**：只在中段（画面 busy）出现，开场关闭（不遮 terminal），结尾关闭（brand reveal 是主角）。
++**规则**：没有用户品牌要求就不创建；需要时只在中段（画面 busy）出现，开场关闭（不遮 terminal），结尾关闭（brand reveal 是主角）。
+ 
+ ---
+ 
+@@ -247,4 +249,4 @@ Gallery 阶段左上角有个 `HUASHU · DESIGN` 小标识，16% opacity 色值
+ - 动画导出流水线：[references/video-export.md](video-export.md)
+ - 音频配置（BGM + SFX 双轨）：[references/audio-design-rules.md](audio-design-rules.md)
+ - Apple 画廊风格的横向参考：[references/apple-gallery-showcase.md](apple-gallery-showcase.md)
+-- 源 HTML（v6 + 音频集成版）：`www.huasheng.ai/huashu-design-hero/index.html`
++- 源 HTML：按本文配方在当前项目内生成，不依赖外部品牌演示站点
+diff --git a/references/launch-film-director-notes.md b/references/launch-film-director-notes.md
+index da3dd0e..9860844 100644
+--- a/references/launch-film-director-notes.md
++++ b/references/launch-film-director-notes.md
+@@ -61,7 +61,7 @@
+ - **字体系统**：至少 6 个字号层级，每层级含字体名 + weight + size + letter-spacing + 用途
+ - **网格系统**：画布尺寸 + 外边距 + column grid + baseline grid + 关键安全区 + 黄金分割锚点
+ - **动画系统**：easing 库（4 条以内）+ duration 字典 + stagger 法则 + scene 过渡规则
+-- **Chrome 元素**：贯穿全片的小细节（counter / chip / ticker / watermark / texture），每个含位置 + 入退场时机
++- **Chrome 元素**：贯穿全片的小细节（counter / chip / ticker / texture），每个含位置 + 入退场时机；除非用户明确要求，不添加水印或工具署名
+ - **音频系统**：BGM 30 秒走向曲线（分层）+ SFX 字典（10+ cues 含时间码 + 音量 + 频段隔离）
+ - **反 AI slop checklist**：per-shot 自检表（10-15 项）
+ 
