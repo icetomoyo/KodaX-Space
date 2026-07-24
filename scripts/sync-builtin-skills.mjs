@@ -325,20 +325,42 @@ async function updateSnapshot(sources) {
         revision = `installed:${sha256(await fs.readFile(path.join(checkoutRoot, 'SKILL.md')))}`;
       } else {
         checkoutRoot = path.join(temporaryRoot, skill.name);
+        await fs.mkdir(checkoutRoot, { recursive: true });
+        runGit(['init', '--quiet'], checkoutRoot);
+        runGit(['remote', 'add', 'origin', skill.repository], checkoutRoot);
         runGit(
           [
-            'clone',
+            '-c',
+            'core.autocrlf=false',
+            '-c',
+            'core.eol=lf',
+            'fetch',
             '--depth',
             '1',
-            '--branch',
+            'origin',
             skill.ref,
-            '--single-branch',
-            skill.repository,
-            checkoutRoot,
           ],
-          repoRoot,
+          checkoutRoot,
+        );
+        runGit(
+          [
+            '-c',
+            'core.autocrlf=false',
+            '-c',
+            'core.eol=lf',
+            'checkout',
+            '--quiet',
+            '--detach',
+            'FETCH_HEAD',
+          ],
+          checkoutRoot,
         );
         revision = runGit(['rev-parse', 'HEAD'], checkoutRoot);
+        if (revision !== skill.ref) {
+          throw new Error(
+            `${skill.name}: fetched revision ${revision} differs from pinned ref ${skill.ref}`,
+          );
+        }
       }
 
       const licenseSource = safeJoin(checkoutRoot, skill.license.sourcePath);

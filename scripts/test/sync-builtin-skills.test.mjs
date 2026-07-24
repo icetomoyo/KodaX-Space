@@ -21,6 +21,20 @@ function runCheck(...extraArgs) {
   });
 }
 
+function runUpdate(extraEnv = {}) {
+  return spawnSync(process.execPath, [fixtureScript, '--update'], {
+    cwd: fixtureRoot,
+    encoding: 'utf8',
+    env: { ...process.env, ...extraEnv },
+  });
+}
+
+function runGit(cwd, ...args) {
+  const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  return result.stdout.trim();
+}
+
 async function writeLock(
   revision,
   skillContent = '---\nname: test-skill\ndescription: fixture skill\n---\nfixture body\n',
@@ -87,7 +101,14 @@ before(async () => {
 });
 
 after(async () => {
-  if (fixtureRoot) await fs.rm(fixtureRoot, { recursive: true, force: true });
+  if (fixtureRoot) {
+    await fs.rm(fixtureRoot, {
+      recursive: true,
+      force: true,
+      maxRetries: process.platform === 'win32' ? 8 : 2,
+      retryDelay: 100,
+    });
+  }
 });
 
 test('release check accepts an exact snapshot pinned to an auditable Git commit', async () => {
@@ -135,4 +156,60 @@ test('snapshot check rejects forbidden text regardless of letter case', async ()
   const result = runCheck();
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /forbidden text "created by huashu-design"/);
+});
+
+test('snapshot update checks out an exact commit with canonical LF bytes on Windows', async () => {
+  const sourceRoot = path.join(fixtureRoot, 'source-repository');
+  const skillContent =
+    '---\nname: test-skill\ndescription: fixture skill\n---\ncanonical line endings\n';
+  const licenseContent = 'fixture license\n';
+  await fs.mkdir(sourceRoot, { recursive: true });
+  runGit(sourceRoot, 'init', '--quiet');
+  runGit(sourceRoot, 'config', 'user.name', 'KodaX Space Test');
+  runGit(sourceRoot, 'config', 'user.email', 'test@kodax.space');
+  runGit(sourceRoot, 'config', 'core.autocrlf', 'true');
+  await fs.writeFile(path.join(sourceRoot, 'SKILL.md'), skillContent, 'utf8');
+  await fs.writeFile(path.join(sourceRoot, 'LICENSE'), licenseContent, 'utf8');
+  runGit(sourceRoot, 'add', 'SKILL.md', 'LICENSE');
+  runGit(sourceRoot, 'commit', '--quiet', '-m', 'fixture');
+  const revision = runGit(sourceRoot, 'rev-parse', 'HEAD');
+  const sources = {
+    schemaVersion: 1,
+    skills: [
+      {
+        name: 'test-skill',
+        repository: sourceRoot,
+        ref: revision,
+        installedPath: 'test-skill',
+        sourceSubdir: '.',
+        license: {
+          sourcePath: 'LICENSE',
+          destinationPath: 'LICENSE',
+          sha256: sha256(licenseContent),
+        },
+        exclude: ['.git/**'],
+      },
+    ],
+  };
+  await fs.writeFile(
+    path.join(fixtureRoot, 'resources', 'builtin-skills.sources.json'),
+    `${JSON.stringify(sources, null, 2)}\n`,
+    'utf8',
+  );
+
+  const updateResult = runUpdate({
+    GIT_CONFIG_COUNT: '1',
+    GIT_CONFIG_KEY_0: 'core.autocrlf',
+    GIT_CONFIG_VALUE_0: 'true',
+  });
+  assert.equal(updateResult.status, 0, updateResult.stderr);
+
+  const installedSkill = await fs.readFile(
+    path.join(fixtureRoot, 'resources', 'builtin-skills', 'test-skill', 'SKILL.md'),
+  );
+  assert.equal(installedSkill.includes(Buffer.from('\r\n')), false);
+  assert.equal(installedSkill.toString('utf8'), skillContent);
+  const lock = JSON.parse(await fs.readFile(fixtureLockPath, 'utf8'));
+  assert.equal(lock.skills[0].revision, revision);
+  assert.equal(runCheck().status, 0);
 });

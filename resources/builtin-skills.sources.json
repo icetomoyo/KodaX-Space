@@ -4,26 +4,26 @@
     {
       "name": "frontend-slides",
       "repository": "https://github.com/zarazhangrui/frontend-slides.git",
-      "ref": "main",
+      "ref": "9906a34d640d2111f724544cbc50f7f130569ae1",
       "installedPath": "frontend-slides",
       "sourceSubdir": "plugins/frontend-slides/skills/frontend-slides",
       "license": {
         "sourcePath": "LICENSE",
         "destinationPath": "LICENSE",
-        "sha256": "1e2322478caf6fb00fa4b35d7a890782197be49dd4812d30b9cde94e4c7d9938"
+        "sha256": "62928eb197fe4662d1efc3af0735b3ba5df3c0308badd9a2baf2b619009f5366"
       },
       "exclude": []
     },
     {
       "name": "huashu-design",
       "repository": "https://github.com/alchaincyf/huashu-design.git",
-      "ref": "master",
+      "ref": "c9b06710b057a45fe6165e52aa8690f55182ea13",
       "installedPath": "huashu-design",
       "sourceSubdir": ".",
       "license": {
         "sourcePath": "LICENSE",
         "destinationPath": "LICENSE",
-        "sha256": "fd164d60e753fd14343e54d03b0c104a292546761bc5866e371de4a02035659c"
+        "sha256": "6d6a2a9caf2e6d2b76974050427053b2892d8aa4c33fd168ce63a537fcee9d96"
       },
       "exclude": [".git/**", ".gitignore", "README.md", "README.en.md", "test-prompts.json"],
       "patches": [
