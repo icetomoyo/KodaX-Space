@@ -15,10 +15,13 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, '..');
-const outDir = path.join(rootDir, 'out');
+// Release candidates can be verified without replacing a developer's current
+// out/ artifacts. Relative overrides remain anchored to the repository root.
+const outDir = path.resolve(rootDir, process.env.SPACE_PACK_OUT_DIR || 'out');
 const rootPackage = JSON.parse(readFileSync(path.join(rootDir, 'package.json'), 'utf8'));
 const SPACE_VERSION = String(rootPackage.version ?? '').trim();
 const installedKodaxPackage = JSON.parse(
@@ -265,6 +268,10 @@ async function checkWindowsExecutableIcons(installerPaths) {
   if (!marker) fail('resources/icon.ico is missing its 256x256 marker image');
 
   const executables = installerPaths.filter((installerPath) => /\.exe$/i.test(installerPath));
+  const unpackedExecutable = path.join(outDir, 'win-unpacked', 'KodaX Space.exe');
+  if (await pathExists(unpackedExecutable)) {
+    executables.push(unpackedExecutable);
+  }
   for (const executable of executables) {
     const bytes = await fs.readFile(executable);
     if (bytes.indexOf(marker) < 0) {
@@ -299,6 +306,16 @@ async function findAsarPaths() {
 
 async function checkAsarContents(asarPath) {
   ok(`app.asar located at ${asarPath}`);
+
+  if (asarPath.replace(/\\/g, '/').includes('/win-unpacked/')) {
+    const sourceIcon = await fs.readFile(path.join(rootDir, 'resources', 'icon.ico'));
+    const packagedIconPath = path.join(path.dirname(asarPath), 'icon.ico');
+    const packagedIcon = await fs.readFile(packagedIconPath).catch(() => null);
+    if (!packagedIcon || !packagedIcon.equals(sourceIcon)) {
+      fail(`Windows BrowserWindow runtime icon is missing or differs: ${packagedIconPath}`);
+    }
+    ok('Windows BrowserWindow runtime icon matches resources/icon.ico');
+  }
 
   // 用 @electron/asar 的程序化 API 列内容——避免 spawn .cmd 的 Windows EUNKNOWN 坑
   // electron-builder 传递依赖了 @electron/asar
@@ -353,6 +370,9 @@ async function checkAsarContents(asarPath) {
     '/node_modules/@kodax-ai/kodax/dist/runtime-worker.js',
     '/node_modules/@kodax-ai/kodax/dist/constructed-handler-worker.js',
     '/node_modules/@kodax-ai/kodax/dist/semantic-worker.js',
+    // Windows tray "quit completely" and stale-daemon recovery launch this
+    // trusted CLI entry in Electron's Node mode after releasing Space's client.
+    '/node_modules/@kodax-ai/kodax/dist/kodax_cli.js',
     '/node_modules/@kodax-ai/kodax/dist/provider-capabilities.json',
     '/node_modules/@kodax-ai/kodax/scripts/kodax-bin.cjs',
   ];
@@ -362,6 +382,97 @@ async function checkAsarContents(asarPath) {
     }
     ok(`asar contains ${req}`);
   }
+
+  // Builtin skills are loaded from Markdown at runtime. The main files glob
+  // intentionally removes package documentation, so verify the dedicated
+  // KodaX builtin FileSet restored every shipped skill Markdown resource.
+  const kodaxBuiltinSourceDir = path.join(
+    rootDir,
+    'node_modules',
+    '@kodax-ai',
+    'kodax',
+    'dist',
+    'builtin',
+  );
+  const kodaxBuiltinMarkdownFiles = (await listFilesRecursive(kodaxBuiltinSourceDir)).filter(
+    (file) => /\.(?:md|markdown)$/i.test(file),
+  );
+  if (kodaxBuiltinMarkdownFiles.length === 0) {
+    fail(`KodaX ${KODAX_VERSION} SDK contains no builtin skill Markdown resources`);
+  }
+  for (const sourceFile of kodaxBuiltinMarkdownFiles) {
+    const relative = path.relative(kodaxBuiltinSourceDir, sourceFile).replace(/\\/g, '/');
+    const req = `/node_modules/@kodax-ai/kodax/dist/builtin/${relative}`;
+    if (!normalized.some((file) => file === req || file.endsWith(req))) {
+      fail(`KodaX ${KODAX_VERSION} builtin skill resource missing from asar: ${req}`);
+    }
+  }
+  ok(
+    `asar contains all ${kodaxBuiltinMarkdownFiles.length} KodaX ${KODAX_VERSION} ` +
+      'builtin skill Markdown resources',
+  );
+
+  // Space-owned builtins deliberately live beside app.asar, not inside it:
+  // external tools must be able to execute their Python/Node/shell scripts and
+  // read binary assets through normal filesystem paths. Compare every packaged
+  // file against the checked-in integrity lock so broad documentation filters,
+  // stale snapshots, or a lost watermark patch cannot silently ship.
+  const spaceBuiltinLock = JSON.parse(
+    await fs.readFile(path.join(rootDir, 'resources', 'builtin-skills.lock.json'), 'utf8'),
+  );
+  const packagedSpaceBuiltinRoot = path.join(path.dirname(asarPath), 'builtin-skills');
+  const expectedSpaceBuiltinFiles = new Set();
+  for (const skill of spaceBuiltinLock.skills ?? []) {
+    for (const file of skill.files ?? []) {
+      expectedSpaceBuiltinFiles.add(`${skill.name}/${file.path}`);
+    }
+  }
+  const actualSpaceBuiltinFiles = new Set(
+    (await listFilesRecursive(packagedSpaceBuiltinRoot)).map((file) =>
+      path.relative(packagedSpaceBuiltinRoot, file).replace(/\\/g, '/'),
+    ),
+  );
+  const missingSpaceBuiltinFiles = [...expectedSpaceBuiltinFiles].filter(
+    (file) => !actualSpaceBuiltinFiles.has(file),
+  );
+  const unexpectedSpaceBuiltinFiles = [...actualSpaceBuiltinFiles].filter(
+    (file) => !expectedSpaceBuiltinFiles.has(file),
+  );
+  if (missingSpaceBuiltinFiles.length > 0) {
+    fail(`Space builtin resources missing outside asar: ${missingSpaceBuiltinFiles.join(', ')}`);
+  }
+  if (unexpectedSpaceBuiltinFiles.length > 0) {
+    fail(
+      `Unexpected Space builtin resources found outside asar: ` +
+        unexpectedSpaceBuiltinFiles.join(', '),
+    );
+  }
+  let verifiedSpaceBuiltinFiles = 0;
+  for (const skill of spaceBuiltinLock.skills ?? []) {
+    for (const file of skill.files ?? []) {
+      const packagedFile = path.join(packagedSpaceBuiltinRoot, skill.name, file.path);
+      let content;
+      try {
+        content = await fs.readFile(packagedFile);
+      } catch (err) {
+        fail(
+          `Space builtin resource missing outside asar: ${skill.name}/${file.path} ` +
+            `(${err instanceof Error ? err.message : String(err)})`,
+        );
+      }
+      const digest = createHash('sha256').update(content).digest('hex');
+      if (content.byteLength !== file.bytes || digest !== file.sha256) {
+        fail(`Space builtin resource differs from lock: ${skill.name}/${file.path}`);
+      }
+      verifiedSpaceBuiltinFiles += 1;
+    }
+  }
+  if (verifiedSpaceBuiltinFiles === 0) {
+    fail('resources/builtin-skills.lock.json contains no Space builtin files');
+  }
+  ok(
+    `filesystem resources contain all ${verifiedSpaceBuiltinFiles} locked Space builtin skill files`,
+  );
 
   // Runtime dependency guards: fail the package smoke when dynamic/native
   // modules needed at app startup are missing from asar or app.asar.unpacked.

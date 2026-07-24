@@ -74,7 +74,9 @@ test('file picker accepts images, documents, and unknown file types', async () =
     }, folderPath);
     await page.getByRole('button', { name: 'Open attach menu' }).click();
     await page.getByRole('button', { name: 'Add folder' }).click();
-    await expect(page.getByText('selected-folder', { exact: true })).toBeVisible();
+    await expect(
+      page.locator('span[aria-hidden="true"]', { hasText: /^selected-folder$/ }),
+    ).toBeVisible();
     expect(await page.evaluate(() => localStorage.getItem('kodax-space.currentProjectPath'))).toBe(
       projectDir,
     );

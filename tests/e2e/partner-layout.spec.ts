@@ -252,6 +252,9 @@ test('Partner layout remains usable without panel overlap across common widths',
 
     const sourcesPanel = page.getByTestId('partner-sources-panel');
     await sourcesPanel.getByRole('button', { name: 'brief.md' }).click();
+    await expect(page.getByTestId('file-viewer')).toBeVisible();
+    await page.getByTestId('partner-artifact-toggle').click();
+    await expect(sourcesPanel).toBeVisible();
     await sourcesPanel.getByRole('button', { name: 'Attach selected file' }).click();
     await expect(sourcesPanel.getByText('brief.md').first()).toBeVisible();
     await saveScreenshot(page, '04-source-attached');
@@ -259,7 +262,7 @@ test('Partner layout remains usable without panel overlap across common widths',
 
     await page.setViewportSize({ width: 820, height: 620 });
     await saveScreenshot(page, '05-compact-width');
-    await expect(page.getByTestId('partner-sources-panel')).toHaveCount(0);
+    await expect(page.getByTestId('partner-sources-panel')).toBeHidden();
     await expect(page.getByTestId('partner-artifact-panel')).toHaveCount(0);
     await expectUsablePartnerLayout(page);
   } finally {

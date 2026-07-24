@@ -5,10 +5,12 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { cleanupRuntimeClientCredentialForTestProfile } from '../scripts/runtime-test-credential-cleanup.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.join(__dirname, '..');
-const exe = path.join(rootDir, 'out', 'win-unpacked', 'KodaX Space.exe');
+const outDir = path.resolve(rootDir, process.env.SPACE_PACK_OUT_DIR || 'out');
+const exe = path.join(outDir, 'win-unpacked', 'KodaX Space.exe');
 const profileDir = await mkdtemp(path.join(tmpdir(), 'kodax-space-boot-smoke-'));
 const diagnosticsPath = path.join(
   profileDir,
@@ -106,6 +108,13 @@ try {
   );
 } catch (error) {
   console.error('[boot-smoke] FAIL:', error instanceof Error ? error.message : String(error));
+  const diagnostics = await readDiagnostics();
+  const runtimeFailure = diagnostics.find(
+    (event) => event.component === 'runtime' && event.event === 'host_initialization_failed',
+  );
+  if (runtimeFailure?.data?.message) {
+    console.error(`[boot-smoke] Runtime initialization: ${runtimeFailure.data.message}`);
+  }
   process.exitCode = 1;
 } finally {
   if (process.platform === 'win32' && child.pid !== undefined) {
@@ -116,5 +125,11 @@ try {
   } else {
     child.kill('SIGKILL');
   }
+  await cleanupRuntimeClientCredentialForTestProfile(profileDir).catch((error) => {
+    console.warn(
+      '[boot-smoke] Runtime test credential cleanup failed:',
+      error instanceof Error ? error.message : String(error),
+    );
+  });
   await rm(profileDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }

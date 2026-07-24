@@ -50,9 +50,20 @@ test('S4: Shift+Tab cycles permission mode through plan/accept-edits/auto', asyn
       )
       .not.toBe(initialText);
 
-    // 再切两次回到原态 —— canonical 3-mode 循环
-    await space.page.keyboard.press('Shift+Tab');
-    await space.page.keyboard.press('Shift+Tab');
+    // 同一 renderer task 内连续切两次，验证快速操作不会被 busy gate 丢弃，
+    // 且最终状态遵循最后一次用户动作。连同上面的一次正好回到原态。
+    await space.page.evaluate(() => {
+      for (let index = 0; index < 2; index += 1) {
+        window.dispatchEvent(
+          new KeyboardEvent('keydown', {
+            key: 'Tab',
+            shiftKey: true,
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+      }
+    });
     await expect
       .poll(
         async () => (await space.page.getByText(initialLabelMatcher).first().textContent()) ?? '',

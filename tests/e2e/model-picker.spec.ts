@@ -37,7 +37,9 @@ test('provider/model picker applies selections before and after session creation
     await expect(textarea).toBeEnabled({ timeout: 10_000 });
     await textarea.fill('model picker active-session check');
     await textarea.press('Enter');
-    await expect(selector).toHaveAttribute('aria-label', /Active session/, { timeout: 15_000 });
+    await expect(selector).toHaveAttribute('aria-label', 'Change provider, model, and effort', {
+      timeout: 15_000,
+    });
 
     await selector.click();
     await space.page.locator('button[title="Anthropic"]').click();

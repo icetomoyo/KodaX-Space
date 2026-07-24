@@ -83,7 +83,7 @@ test('Reference Agent management, localization, and Workflow picker are product-
     await expect(page.getByRole('heading', { name: 'External agents' })).toBeVisible();
     const gates = page.getByTestId('external-agent-adapter-gates');
     await expect(gates).toContainText('Reference · available');
-    await expect(gates).toContainText('A2A · hidden');
+    await expect(gates).toContainText('A2A · available');
     await expect(gates).toContainText('MCP Tasks · hidden');
     await expect(gates).toContainText('Governed HTTP · hidden');
 
@@ -116,11 +116,9 @@ test('Reference Agent management, localization, and Workflow picker are product-
     await expect(picker).toBeVisible();
     await expect(picker).toContainText('KodaX native child');
     await expect(picker).toContainText('E2E Reference Reviewer');
-    await picker.getByTestId('workflow-external-agent-option').click();
-    await expect(picker.getByTestId('workflow-external-agent-option')).toHaveAttribute(
-      'aria-pressed',
-      'true',
-    );
+    const referenceOption = picker.getByRole('button', { name: 'E2E Reference Reviewer' });
+    await referenceOption.click();
+    await expect(referenceOption).toHaveAttribute('aria-pressed', 'true');
   } finally {
     await space.close();
   }
@@ -190,6 +188,22 @@ test('Task Dock continues input-required tasks and preserves independent cancell
     await taskCard.getByPlaceholder('Reply to the external Agent…').fill('approved by e2e');
     await taskCard.getByRole('button', { name: 'Send input' }).click();
     await expect(taskCard).toContainText('Completed', { timeout: 10_000 });
+    await expect
+      .poll(
+        async () => {
+          const result = await invoke<{
+            events: Array<{ state?: string }>;
+          }>(page, 'agent.external.task.events', {
+            sessionId,
+            taskId: started.data.taskId,
+            cursor: 0,
+          });
+          if (!result.ok) throw new Error(result.error.message);
+          return result.data.events.map((event) => event.state);
+        },
+        { timeout: 10_000 },
+      )
+      .toContain('completed');
     await taskCard.getByText('Show audit').click();
     await expect(taskCard.getByTestId('external-agent-task-details')).toContainText(
       'approved by e2e',

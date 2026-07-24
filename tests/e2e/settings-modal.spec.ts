@@ -7,10 +7,34 @@
 //      smartPopoutEnabled 状态,toggle 后 lsKey 'kodax-space.smartPopoutEnabled' 写入正确
 
 import { test, expect } from '@playwright/test';
+import { promises as fs } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { launchSpace } from './fixtures.js';
 
 const TEST_ID = `settings-modal-${Date.now()}`;
 const TASK_FOCUS_TOGGLE = 'Auto-focus Task Dock and Review paths';
+
+test('Project Files sidebar keeps the Settings footer visible and functional', async () => {
+  const projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'kodax-settings-files-'));
+  const space = await launchSpace(`${TEST_ID}-files-sidebar`);
+  try {
+    const { page } = space;
+    await space.seedProject(projectRoot);
+    await page.evaluate(() => {
+      window.dispatchEvent(new Event('kodax-space.open-files-workspace'));
+    });
+
+    await expect(page.getByTestId('files-panel')).toBeVisible({ timeout: 10_000 });
+    const settingsButton = page.getByTestId('settings-button');
+    await expect(settingsButton).toBeVisible();
+    await settingsButton.click();
+    await expect(page.locator('#settings-modal-title')).toBeVisible();
+  } finally {
+    await space.close();
+    await fs.rm(projectRoot, { recursive: true, force: true });
+  }
+});
 
 test('SettingsModal opens via sidebar, Esc closes, Task Dock focus toggle persists', async () => {
   const space = await launchSpace(TEST_ID);

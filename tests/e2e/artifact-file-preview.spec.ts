@@ -514,12 +514,19 @@ test('Project HTML File Viewer runs relative modules, assets, local fetch, stora
       name: 'Allow additional HTTPS/WSS requests for this trusted page',
     });
     await expect(network).toHaveAttribute('aria-pressed', 'false');
+    await expect(network).toHaveAttribute(
+      'title',
+      'Current: Limited to local and page-authored display resources',
+    );
     await network.click();
-    await expect(
-      sidebar.getByRole('button', {
-        name: 'Limit this page to local and authored display resources',
-      }),
-    ).toHaveAttribute('aria-pressed', 'true');
+    const enabledNetwork = sidebar.getByRole('button', {
+      name: 'Limit this page to local and authored display resources',
+    });
+    await expect(enabledNetwork).toHaveAttribute('aria-pressed', 'true');
+    await expect(enabledNetwork).toHaveAttribute(
+      'title',
+      'Current: Additional HTTPS/WSS requests are allowed for this page',
+    );
     await expect(sidebar.getByTestId('web-preview-diagnostic')).toHaveCount(0);
     await expectNoPreviewError(sidebar);
   } finally {

@@ -512,6 +512,36 @@ test('Partner outputs show arbitrary deliveries and rollback checkpointed worksp
   }
 });
 
+test('Partner project files open in File Viewer and keep their selection after responsive hiding', async () => {
+  const testId = `partner-project-preview-${Date.now()}`;
+  const projectDir = await createProject(testId);
+  const space = await launchSpace(testId);
+
+  try {
+    const { page } = space;
+    await space.seedProject(projectDir);
+    await switchSurface(page, 'Partner');
+    await space.app.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()[0]?.setSize(1440, 880);
+    });
+
+    const sourcesPanel = page.getByTestId('partner-sources-panel');
+    await expect(sourcesPanel).toBeVisible({ timeout: 10_000 });
+    await sourcesPanel.getByRole('button', { name: 'brief.md' }).click();
+    await expect(page.getByTestId('file-viewer')).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByTestId('file-viewer')).toContainText('brief.md');
+
+    await page.getByTestId('partner-artifact-toggle').click();
+    await expect(sourcesPanel).toBeVisible({ timeout: 10_000 });
+    await expect(
+      sourcesPanel.getByRole('button', { name: 'Stage for first message' }),
+    ).toBeEnabled();
+  } finally {
+    await space.close();
+    await fs.rm(projectDir, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
 test('Partner sources can be attached and removed, and deleting the session recovers composer', async () => {
   const testId = `partner-sources-delete-${Date.now()}`;
   const projectDir = await createProject(testId);
@@ -528,6 +558,9 @@ test('Partner sources can be attached and removed, and deleting the session reco
 
     const sourcesPanel = page.getByTestId('partner-sources-panel');
     await sourcesPanel.getByRole('button', { name: 'brief.md' }).click();
+    await expect(page.getByTestId('file-viewer')).toBeVisible();
+    await page.getByTestId('partner-artifact-toggle').click();
+    await expect(sourcesPanel).toBeVisible();
     await sourcesPanel.getByRole('button', { name: 'Attach selected file' }).click();
     await expect
       .poll(() => readPartnerSources(page, sessionId, projectDir), { timeout: 10_000 })
@@ -541,16 +574,40 @@ test('Partner sources can be attached and removed, and deleting the session reco
     const contextAfterAttach = await readPartnerWorkbenchContext(page);
     expect(contextAfterAttach?.sources?.[0]?.path.replace(/\\/g, '/')).toMatch(/(^|\/)brief\.md$/);
 
-    await sourcesPanel.locator('button[title="Remove source"]').click();
+    await sourcesPanel.locator('button[title="Remove from project materials"]').click();
+    await page
+      .getByRole('dialog')
+      .getByRole('button', { name: 'Remove from project materials' })
+      .click();
+    await expect(sourcesPanel.getByText('removed', { exact: true })).toBeVisible();
+    await expect
+      .poll(
+        () =>
+          page.evaluate(
+            async ({ sid, root }) => {
+              const result = await window.kodaxSpace.invoke('partner.materials.catalog', {
+                sessionId: sid,
+                projectRoot: root,
+              });
+              if (!result.ok) throw new Error(result.error.message);
+              return result.data.relations.filter((relation) => relation.lifecycle === 'active')
+                .length;
+            },
+            { sid: sessionId, root: projectDir },
+          ),
+        { timeout: 10_000 },
+      )
+      .toBe(0);
+    // Project-material removal is lifecycle/audit preserving: the current
+    // task selection remains available for replay until the session is deleted.
     await expect
       .poll(() => readPartnerSources(page, sessionId, projectDir), { timeout: 10_000 })
-      .toHaveLength(0);
-    await expect(sourcesPanel.getByText('No sources attached')).toBeVisible();
+      .toHaveLength(1);
     await expect
       .poll(async () => (await readPartnerWorkbenchContext(page))?.sources?.length ?? -1, {
         timeout: 10_000,
       })
-      .toBe(0);
+      .toBe(1);
 
     const row = page.getByTestId('sidebar-session-row').filter({ hasText: prompt }).first();
     await expect(row).toBeVisible();
@@ -592,6 +649,9 @@ test('Partner can stage sources before the first composer send creates the sessi
     const sourcesPanel = page.getByTestId('partner-sources-panel');
     await expect(sourcesPanel.getByText(/No staged sources/)).toBeVisible();
     await sourcesPanel.getByRole('button', { name: 'brief.md' }).click();
+    await expect(page.getByTestId('file-viewer')).toBeVisible();
+    await page.getByTestId('partner-artifact-toggle').click();
+    await expect(sourcesPanel).toBeVisible();
     await sourcesPanel.getByRole('button', { name: 'Stage for first message' }).click();
     await expect(sourcesPanel.getByText('brief.md').first()).toBeVisible();
     await expect

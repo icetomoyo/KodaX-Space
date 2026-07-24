@@ -247,7 +247,10 @@ test('Smart Popout signals focus Task Dock instead of opening a plan popout', as
       'Plan should focus the Task Dock',
       { timeout: 5_000 },
     );
-    await page.getByLabel('Hide right sidebar').click();
+    await page
+      .getByTestId('right-sidebar')
+      .getByRole('button', { name: 'Hide right sidebar' })
+      .click();
     await expect(page.getByTestId('right-sidebar')).toHaveCount(0);
     await planChip.click();
     await expect(page.getByTestId('right-sidebar')).toBeVisible({ timeout: 5_000 });

@@ -80,6 +80,9 @@ jobs:
       - name: Typecheck (gate before pack)
         run: npm run typecheck
 
+      - name: Lint (gate before pack)
+        run: npm run lint
+
       - name: Configure npm script-shell (Windows)
         if: runner.os == 'Windows'
         # npm 默认在 Windows 用 cmd.exe 跑 script —— cmd 不展开 `electron/test/*.test.ts`
