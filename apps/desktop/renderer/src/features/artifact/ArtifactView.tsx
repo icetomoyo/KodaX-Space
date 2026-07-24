@@ -51,7 +51,7 @@ function isSafeImageSrc(src: string): boolean {
 export function ArtifactView(props: ArtifactContent): JSX.Element {
   switch (props.kind) {
     case 'markdown':
-      return <MarkdownArtifact content={props.content} />;
+      return <MarkdownArtifact content={props.content} resourceContext={props.resourceContext} />;
     case 'code':
       return (
         <div className="flex-1 min-h-0">

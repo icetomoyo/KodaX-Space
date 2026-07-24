@@ -8,6 +8,7 @@ import {
   PREVIEW_SIZE_CAPS,
 } from '../../renderer/src/features/preview/binaryUtils.js';
 import { textFilePresentation } from '../../renderer/src/features/preview/previewPresentation.js';
+import { resolveMarkdownWorkspacePath } from '../../renderer/src/features/artifact/renderers/markdownResources.js';
 
 test('detectKind: pdf extension (lowercase)', () => {
   assert.equal(detectKind('docs/spec.pdf'), 'pdf');
@@ -50,6 +51,36 @@ test('textFilePresentation: Markdown uses document preview while other text rema
   assert.equal(textFilePresentation('docs/component.mdx'), 'source');
   assert.equal(textFilePresentation('src/main.ts'), 'source');
   assert.equal(textFilePresentation('notes.txt'), 'source');
+});
+
+test('resolveMarkdownWorkspacePath: resolves document-relative and project-root resources', () => {
+  assert.equal(
+    resolveMarkdownWorkspacePath('docs/guides/start.md', '../assets/flow%20chart.png'),
+    'docs/assets/flow chart.png',
+  );
+  assert.equal(
+    resolveMarkdownWorkspacePath('docs/guides/start.md', '/assets/logo.svg#dark'),
+    'assets/logo.svg',
+  );
+  assert.equal(
+    resolveMarkdownWorkspacePath('docs/guides/start.md', './next.md?view=preview#section'),
+    'docs/guides/next.md',
+  );
+  assert.equal(
+    resolveMarkdownWorkspacePath('docs/guides/start.md', '.\\assets\\preview.png'),
+    'docs/guides/assets/preview.png',
+  );
+});
+
+test('resolveMarkdownWorkspacePath: rejects remote, active, anchor, and escaping URLs', () => {
+  assert.equal(resolveMarkdownWorkspacePath('README.md', 'https://example.test/image.png'), null);
+  assert.equal(resolveMarkdownWorkspacePath('README.md', 'javascript:alert(1)'), null);
+  assert.equal(resolveMarkdownWorkspacePath('README.md', '#section'), null);
+  assert.equal(resolveMarkdownWorkspacePath('README.md', '../outside.png'), null);
+  assert.equal(resolveMarkdownWorkspacePath('README.md', '\\\\server\\share\\image.png'), null);
+  assert.equal(resolveMarkdownWorkspacePath('../README.md', './image.png'), null);
+  assert.equal(resolveMarkdownWorkspacePath('C:\\project\\README.md', './image.png'), null);
+  assert.equal(resolveMarkdownWorkspacePath('README.md', '%E0%A4%A'), null);
 });
 
 test('detectKind: extensions only matched at end', () => {

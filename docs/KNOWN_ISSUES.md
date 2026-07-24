@@ -1,6 +1,6 @@
 # Known Issues
 
-Last Updated: 2026-07-23
+Last Updated: 2026-07-24
 
 > Historical issue details are preserved as investigation evidence. Resolved items older than 30 days move to [ISSUES_ARCHIVED.md](ISSUES_ARCHIVED.md) without losing their investigation record. The current package/source baseline is v0.1.32 release preparation. Start from the [documentation hub](README.md) for current behavior and status.
 
@@ -92,6 +92,8 @@ Last Updated: 2026-07-23
 | 089 | High     | Resolved | A same-version stale daemon could fail the required capability gate and leave Coder unusable                             | v0.1.32 development   | 2026-07-23 |
 | 090 | Medium   | Resolved | Closing the last Space window left the daemon running without a visible or controllable background surface               | v0.1.x                | 2026-07-23 |
 | 091 | Medium   | Open     | Ordinary Windows queries can flash several short-lived command windows from KodaX Runtime child processes                | KodaX 0.7.74 adoption | 2026-07-23 |
+| 092 | Medium   | Resolved | Isolated Electron tests leaked Runtime client credentials into the OS keychain                                          | v0.1.32 development   | 2026-07-23 |
+| 093 | Medium   | Resolved | Artifact and File Viewer Markdown omitted Mermaid and document-local resource support                                    | v0.1.31               | 2026-07-24 |
 
 ## Issue Details
 
@@ -5411,12 +5413,94 @@ Files changed:
 - `tests/e2e/fixtures.ts`
 - `e2e/boot-smoke-packaged.mjs`
 
+### 093: Artifact and File Viewer Markdown omitted Mermaid and document-local resource support
+
+- Priority: Medium
+- Status: Resolved
+- Introduced: v0.1.31
+- Fixed: v0.1.32
+- Created: 2026-07-24
+- Resolution Date: 2026-07-24
+
+#### Original Problem
+
+Markdown shown in Artifact or File Viewer left fenced Mermaid definitions as
+plain code. The same document surface also lacked mathematical notation,
+explicit-language syntax highlighting, heading anchors, and working
+document-relative images or links. Invalid diagrams had no contained fallback,
+and the renderer gallery accidentally exercised the separate conversation
+Markdown component rather than the production Artifact renderer.
+
+Expected behavior:
+
+- Standard Mermaid fences render as diagrams without enabling authored scripts.
+- Invalid diagrams preserve their source and do not discard the rest of the
+  document.
+- Workspace-backed Markdown resolves bounded local images and document links
+  relative to the source file while preserving project-root scope checks.
+- Math, GFM, code highlighting, copy controls, heading anchors, footnotes, and
+  light/dark themes behave consistently in Artifact and File Viewer.
+- Large or rapidly replaced documents cannot queue unbounded Mermaid/highlight
+  work, and raw document-level HTML cannot navigate the preview.
+
+#### Root Cause
+
+`MarkdownArtifact` converted Micromark plus GFM output directly into a
+script-disabled `srcdoc` iframe. It had no diagram/math/highlight enhancement
+stage and received only content, so it could not resolve workspace resources.
+The tests asserted a heading from the conversation renderer and therefore did
+not exercise this capability gap.
+
+#### Resolution
+
+- Added KaTeX math, explicit-language highlighting, copy controls, stable
+  heading IDs, localized Mermaid success/error/source states, and
+  `securityLevel: strict` Mermaid rendering to inert SVG.
+- Kept the iframe scriptless through sandbox and CSP, removed raw document-level
+  navigation/embed elements before first paint, and verified inline event
+  handlers cannot reach the parent.
+- Propagated workspace source context through inline Artifact and File Viewer
+  paths, resolved normalized relative paths defensively, embedded bounded local
+  images through the existing scope-checked binary IPC, and routed relative
+  links through the shared file opener.
+- Reused one sanitized parse result, prevented stale enhanced documents from
+  flashing after content changes, cancelled obsolete enhancement batches, and
+  bounded image, highlight, Mermaid text, edge, and diagram counts.
+- Replaced the stale gallery fixture with the production renderer and added
+  browser/Electron coverage for Mermaid, invalid fallback, math, highlighting,
+  footnotes, local resources, relative navigation, CSP isolation, and blocked
+  meta-refresh navigation.
+
+Files changed:
+
+- `apps/desktop/renderer/src/features/artifact/renderers/MarkdownArtifact.tsx`
+- `apps/desktop/renderer/src/features/artifact/renderers/markdownResources.ts`
+- `apps/desktop/renderer/src/features/artifact/ArtifactView.tsx`
+- `apps/desktop/renderer/src/features/artifact/artifactContent.ts`
+- `apps/desktop/renderer/src/features/artifact/toArtifactContent.ts`
+- `apps/desktop/renderer/src/features/preview/RichPreview.tsx`
+- `apps/desktop/renderer/src/features/preview/TextFileViewer.tsx`
+- `apps/desktop/renderer/src/i18n/messages.ts`
+- `apps/desktop/package.json`
+- `package-lock.json`
+- `apps/desktop/electron/test/rich-preview-utils.test.ts`
+- `apps/desktop/electron/test/to-artifact-content.test.ts`
+- `e2e/gallery/main.tsx`
+- `e2e/artifact-renderers.mjs`
+- `tests/e2e/artifact-file-preview.spec.ts`
+
+Tests added:
+
+- Path normalization and workspace/resource-context unit coverage.
+- Standalone Chromium renderer gallery assertions.
+- Production Electron File Viewer regression with no Session.
+
 ## Summary
 
-- Total: 85
+- Total: 86
 - Open: 3
-- Resolved: 82
+- Resolved: 83
 - High: 43
-- Medium: 35
+- Medium: 36
 - Low: 7
 - Next to resolve: 043

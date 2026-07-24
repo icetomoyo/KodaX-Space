@@ -141,7 +141,13 @@ export function RichPreview({
         {kind === 'xlsx' && <XlsxViewer base64={base64} />}
         {kind === 'pptx' && <PptxViewer base64={base64} />}
         {kind === 'text' && (
-          <TextFileViewer base64={base64} path={path} presentation={textFilePresentation(path)} />
+          <TextFileViewer
+            base64={base64}
+            path={path}
+            presentation={textFilePresentation(path)}
+            projectRoot={projectRoot}
+            fileSource={fileSource}
+          />
         )}
         {(kind === 'image' || kind === 'video' || kind === 'audio') && (
           <MediaFileViewer base64={base64} path={path} kind={kind} />

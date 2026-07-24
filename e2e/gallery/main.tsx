@@ -1,20 +1,41 @@
 // Gallery entry: render the Space static artifact renderers with sample data so
 // the e2e (artifact-renderers.mjs) can assert each produces real DOM in a browser.
 // Imports the actual renderer components from the app source (no copies).
+// InteractiveHtmlArtifact requires Electron's app://space protocol and is covered
+// separately by tests/e2e/artifact-html-runtime.spec.ts.
 
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { ChartArtifact } from '../../apps/desktop/renderer/src/features/artifact/renderers/ChartArtifact';
+import { HtmlArtifact } from '../../apps/desktop/renderer/src/features/artifact/renderers/HtmlArtifact';
 import {
-  HtmlArtifact,
-  InteractiveHtmlArtifact,
-} from '../../apps/desktop/renderer/src/features/artifact/renderers/HtmlArtifact';
-import { SvgArtifact, ImageArtifact } from '../../apps/desktop/renderer/src/features/artifact/renderers/MediaArtifact';
-// markdown artifact path: ArtifactView renders <Markdown content/> in a div, so
-// testing the Markdown component directly faithfully covers it.
-import { Markdown } from '../../apps/desktop/renderer/src/features/session/messages/Markdown';
+  SvgArtifact,
+  ImageArtifact,
+} from '../../apps/desktop/renderer/src/features/artifact/renderers/MediaArtifact';
+import { MarkdownArtifact } from '../../apps/desktop/renderer/src/features/artifact/renderers/MarkdownArtifact';
+import { I18nProvider } from '../../apps/desktop/renderer/src/i18n/I18nProvider';
 
-const MARKDOWN = '# Gallery MD\n\nSome **bold** text.\n\n- one\n- two\n\n```js\nconst x = 1;\n```';
+const MARKDOWN = `# Gallery MD
+
+Some **bold** text with inline math $E = mc^2$.
+
+- [x] GFM task
+- [ ] another task
+
+\`\`\`js
+const x = 1;
+\`\`\`
+
+\`\`\`mermaid
+flowchart LR
+  A[Markdown] --> B[Rendered diagram]
+\`\`\`
+
+\`\`\`mermaid
+this is not a valid mermaid diagram
+\`\`\`
+
+<meta http-equiv="refresh" content="0;url=https://example.com/">`;
 
 const chartSpec = {
   type: 'line',
@@ -31,24 +52,6 @@ const chartSpec = {
 const svg =
   '<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48"><rect width="48" height="48" fill="#f59e0b"/></svg>';
 
-const interactiveHtml = `<!doctype html>
-<html>
-  <body style="margin:0;background:#111827;color:white">
-    <canvas id="c" width="120" height="80"></canvas>
-    <b id="ran">waiting</b>
-    <script>
-      try { window.parent.__ARTIFACT_PARENT_PWNED__ = true; } catch (e) {}
-      const canvas = document.getElementById('c');
-      const ctx = canvas.getContext('2d');
-      ctx.fillStyle = '#111827';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.fillStyle = '#f59e0b';
-      ctx.fillRect(12, 10, 70, 42);
-      document.getElementById('ran').textContent = 'ran';
-    </script>
-  </body>
-</html>`;
-
 function App(): JSX.Element {
   return (
     <div>
@@ -61,17 +64,14 @@ function App(): JSX.Element {
       <div data-testid="html" style={{ width: 460, height: 160, display: 'flex' }}>
         <HtmlArtifact html={'<h1 id="hdr">Hello HTML</h1><p>static body</p>'} />
       </div>
-      <div data-testid="interactive-html" style={{ width: 460, height: 160, display: 'flex' }}>
-        <InteractiveHtmlArtifact html={interactiveHtml} />
-      </div>
       <div data-testid="svg" style={{ width: 200, height: 200, display: 'flex' }}>
         <SvgArtifact svg={svg} />
       </div>
       <div data-testid="image" style={{ width: 200, height: 200, display: 'flex' }}>
         <ImageArtifact src={`data:image/svg+xml;utf8,${encodeURIComponent(svg)}`} />
       </div>
-      <div data-testid="markdown" style={{ width: 460 }}>
-        <Markdown content={MARKDOWN} />
+      <div data-testid="markdown" style={{ width: 640, height: 640, display: 'flex' }}>
+        <MarkdownArtifact content={MARKDOWN} />
       </div>
     </div>
   );
@@ -79,6 +79,8 @@ function App(): JSX.Element {
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <App />
+    <I18nProvider>
+      <App />
+    </I18nProvider>
   </StrictMode>,
 );

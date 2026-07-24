@@ -8,6 +8,8 @@ interface TextFileViewerProps {
   readonly base64: string;
   readonly path: string;
   readonly presentation?: TextFilePresentation;
+  readonly projectRoot?: string;
+  readonly fileSource?: 'workspace' | 'artifact-store' | 'delivery-store';
 }
 
 const MONACO_TEXT_LIMIT = 1_000_000;
@@ -20,13 +22,20 @@ export function TextFileViewer({
   base64,
   path,
   presentation = 'source',
+  projectRoot,
+  fileSource = 'workspace',
 }: TextFileViewerProps): JSX.Element {
   const content = useMemo(() => decodeUtf8(base64), [base64]);
 
   if (presentation === 'markdown') {
     return (
       <div className="h-full min-h-0" data-testid="markdown-file-preview">
-        <MarkdownArtifact content={content} />
+        <MarkdownArtifact
+          content={content}
+          {...(fileSource === 'workspace' && projectRoot
+            ? { resourceContext: { projectRoot, path } }
+            : {})}
+        />
       </div>
     );
   }

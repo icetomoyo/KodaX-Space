@@ -1,7 +1,9 @@
-// E2E (F059): the Space static artifact renderers (Chart/Html/Media) produce real
+// E2E (F059): the Space static artifact renderers (Chart/Html/Media/Markdown) produce real
 // DOM in a real browser. Builds a standalone gallery (no app/session needed) and
 // asserts: recharts <svg> from a chart spec, invalid spec → fallback (not crash),
 // sandboxed <iframe> rendering static HTML, SVG/image via <img>.
+// Interactive HTML depends on Electron's app://space protocol and is covered by
+// tests/e2e/artifact-html-runtime.spec.ts.
 //
 // 这覆盖 F056/F059 渲染器的"真渲染"边界(feedback_mock_fidelity)。code/doc 渲染器
 // (Monaco worker / IPC readBinary) 依赖完整应用,留作人工/打包验证。
@@ -63,7 +65,9 @@ async function main() {
       res.end();
       return;
     }
-    res.writeHead(200, { 'Content-Type': MIME[extname(abs).toLowerCase()] ?? 'application/octet-stream' });
+    res.writeHead(200, {
+      'Content-Type': MIME[extname(abs).toLowerCase()] ?? 'application/octet-stream',
+    });
     res.end(readFileSync(abs));
   });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
@@ -105,33 +109,48 @@ async function main() {
 
     // SvgArtifact + ImageArtifact → <img> with data: src.
     const svgImg = page.locator('[data-testid="svg"] img');
-    ok((await svgImg.count()) === 1 && (await svgImg.getAttribute('src'))?.startsWith('data:image/svg+xml'), 'SvgArtifact rendered <img> data URI');
+    ok(
+      (await svgImg.count()) === 1 &&
+        (await svgImg.getAttribute('src'))?.startsWith('data:image/svg+xml'),
+      'SvgArtifact rendered <img> data URI',
+    );
     const imgEl = page.locator('[data-testid="image"] img');
     ok((await imgEl.count()) === 1, 'ImageArtifact rendered <img>');
 
-    // Markdown (most common artifact kind) → react-markdown DOM (heading, bold, code block).
-    const mdH1 = page.locator('[data-testid="markdown"] h1');
+    // Markdown uses the production isolated document renderer, including its
+    // pre-rendered Mermaid, KaTeX, and syntax-highlight enhancement path.
+    const markdownIframe = page.locator('[data-testid="markdown"] iframe');
+    ok(
+      (await markdownIframe.getAttribute('sandbox')) === 'allow-same-origin',
+      'Markdown iframe remains scriptless and parent-readable',
+    );
+    const markdownFrame = page.frameLocator('[data-testid="markdown"] iframe');
+    const mdH1 = markdownFrame.locator('h1');
     await mdH1.waitFor({ state: 'attached', timeout: 10_000 });
     ok((await mdH1.innerText()).includes('Gallery MD'), 'Markdown rendered <h1>');
-    ok((await page.locator('[data-testid="markdown"] strong').count()) >= 1, 'Markdown rendered <strong> (bold)');
-    ok((await page.locator('[data-testid="markdown"] pre code').count()) >= 1, 'Markdown rendered a fenced code block');
-
-    const interactiveIframe = page.locator('[data-testid="interactive-html"] iframe');
-    ok((await interactiveIframe.count()) === 1, 'InteractiveHtmlArtifact rendered an <iframe>');
-    const interactiveSandbox = await interactiveIframe.getAttribute('sandbox');
-    ok(interactiveSandbox === 'allow-scripts', `interactive iframe sandbox is script-only (${interactiveSandbox})`);
-    const interactiveFrame = page.frameLocator('[data-testid="interactive-html"] iframe');
-    await interactiveFrame.locator('#ran').waitFor({ state: 'attached', timeout: 10_000 });
-    ok((await interactiveFrame.locator('#ran').innerText()) === 'ran', 'interactive iframe script executed');
-    const parentPolluted = await page.evaluate(() => Boolean(window.__ARTIFACT_PARENT_PWNED__));
-    ok(parentPolluted === false, 'interactive iframe did not write parent window');
-    const pixel = await interactiveFrame.locator('#c').evaluate((canvas) => {
-      const ctx = canvas.getContext('2d');
-      return Array.from(ctx.getImageData(20, 20, 1, 1).data);
-    });
+    ok((await markdownFrame.locator('strong').count()) >= 1, 'Markdown rendered <strong> (bold)');
     ok(
-      pixel[0] > 200 && pixel[1] > 100 && pixel[2] < 80 && pixel[3] === 255,
-      `interactive canvas drew visible pixels (${pixel.join(',')})`,
+      (await markdownFrame.locator('pre code.hljs').count()) >= 1,
+      'Markdown syntax-highlighted a fenced code block',
+    );
+    ok((await markdownFrame.locator('.katex').count()) >= 1, 'Markdown rendered KaTeX math');
+    await markdownFrame.locator('[data-testid="mermaid-diagram"] svg').waitFor({
+      state: 'attached',
+      timeout: 15_000,
+    });
+    ok(true, 'Markdown rendered a Mermaid diagram to inert SVG');
+    ok(
+      (await markdownFrame.locator('.mermaid-error').count()) === 1,
+      'Invalid Mermaid shows an inline fallback without dropping the document',
+    );
+    ok(
+      (await markdownFrame.locator('meta[http-equiv="refresh"]').count()) === 0,
+      'Markdown removes raw document-navigation metadata',
+    );
+    ok(
+      (await markdownIframe.evaluate((frame) => frame.contentWindow?.location.href)) ===
+        'about:srcdoc',
+      'Markdown iframe stayed on its inert srcdoc',
     );
 
     ok(consoleErrors.length === 0, `no browser console/page errors (${consoleErrors.length})`);
@@ -144,7 +163,11 @@ async function main() {
 
 main()
   .then(() => {
-    console.log(failures === 0 ? '\nPASS: artifact renderers render in-browser' : `\nFAIL: ${failures} assertion(s)`);
+    console.log(
+      failures === 0
+        ? '\nPASS: artifact renderers render in-browser'
+        : `\nFAIL: ${failures} assertion(s)`,
+    );
     process.exit(failures === 0 ? 0 : 1);
   })
   .catch((err) => {

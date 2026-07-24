@@ -5,7 +5,11 @@
 import type { ArtifactHtmlPermissionsT } from '@kodax-space/space-ipc-schema';
 
 export type ArtifactContent =
-  | { kind: 'markdown'; content: string }
+  | {
+      kind: 'markdown';
+      content: string;
+      resourceContext?: { projectRoot: string; path: string };
+    }
   | { kind: 'code'; content: string; filename?: string }
   | { kind: 'html'; content: string }
   | { kind: 'interactive-html'; content: string; permissions?: ArtifactHtmlPermissionsT }

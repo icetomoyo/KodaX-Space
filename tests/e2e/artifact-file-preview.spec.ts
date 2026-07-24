@@ -364,7 +364,52 @@ test('File Viewer opens a project file before the first Session without exposing
   const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kodax-file-viewer-'));
   const relPath = 'README.md';
   const absPath = path.join(projectDir, relPath);
-  await fs.writeFile(absPath, '# File Viewer\n\nNo Session is required.\n', 'utf8');
+  await fs.mkdir(path.join(projectDir, 'assets'), { recursive: true });
+  await fs.writeFile(
+    path.join(projectDir, 'assets', 'pixel.png'),
+    Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+      'base64',
+    ),
+  );
+  await fs.writeFile(path.join(projectDir, 'RELATED.md'), '# Related document\n', 'utf8');
+  await fs.writeFile(
+    absPath,
+    `# File Viewer
+
+No Session is required. Inline math: $E = mc^2$.
+
+## Details
+
+- [x] GFM task list
+
+\`\`\`ts
+const viewer: string = 'highlighted';
+\`\`\`
+
+\`\`\`mermaid
+flowchart LR
+  Markdown --> Mermaid
+\`\`\`
+
+\`\`\`mermaid
+not a valid diagram
+\`\`\`
+
+![Local pixel](./assets/pixel.png)
+
+[Open related](./RELATED.md)
+
+Footnote reference.[^1]
+
+[^1]: Footnote content.
+
+<img src="./missing.png" onerror="parent.__kodaxMarkdownScriptRan = true">
+
+<meta http-equiv="refresh" content="0;url=https://example.com/">
+`,
+    'utf8',
+  );
   const stat = await fs.stat(absPath);
 
   const space = await launchSpace(`file-viewer-no-session-${Date.now()}`);
@@ -395,7 +440,42 @@ test('File Viewer opens a project file before the first Session without exposing
     await expect(
       markdownPreview.contentFrame().getByRole('heading', { name: 'File Viewer' }),
     ).toBeVisible();
+    const markdownFrame = markdownPreview.contentFrame();
+    await expect(markdownFrame.locator('h2#details')).toBeVisible();
+    await expect(markdownFrame.locator('pre code.hljs')).toContainText('highlighted');
+    await expect(markdownFrame.locator('.katex')).toBeVisible();
+    await expect(markdownFrame.getByTestId('mermaid-diagram').locator('svg')).toBeVisible();
+    await expect(markdownFrame.locator('.mermaid-error')).toContainText('not a valid diagram');
+    await expect(
+      markdownFrame.locator('img[data-markdown-resource="assets/pixel.png"]'),
+    ).toBeVisible();
+    await expect(markdownFrame.locator('.footnotes')).toContainText('Footnote content');
+    await expect(markdownFrame.locator('meta[http-equiv="refresh"]')).toHaveCount(0);
+    await expect
+      .poll(() =>
+        markdownPreview.evaluate(
+          (frame) => (frame as HTMLIFrameElement).contentWindow?.location.href,
+        ),
+      )
+      .toBe('about:srcdoc');
+    await expect
+      .poll(() =>
+        space.page.evaluate(
+          () =>
+            (window as typeof window & { __kodaxMarkdownScriptRan?: boolean })
+              .__kodaxMarkdownScriptRan,
+        ),
+      )
+      .toBeUndefined();
     await expectNoPreviewError(sidebar);
+
+    await markdownFrame.getByRole('link', { name: 'Open related' }).click();
+    await expect(
+      sidebar
+        .getByTestId('markdown-artifact-preview')
+        .contentFrame()
+        .getByRole('heading', { name: 'Related document' }),
+    ).toBeVisible();
   } finally {
     await space.close();
     await fs.rm(projectDir, { recursive: true, force: true });

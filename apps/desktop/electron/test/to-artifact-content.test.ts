@@ -11,6 +11,18 @@ test('content kinds map content through; missing content → null', () => {
     kind: 'markdown',
     content: '# x',
   });
+  assert.deepEqual(
+    toArtifactContent(
+      'markdown',
+      { content: '# x', path: 'docs/readme.md', fileSource: 'workspace' },
+      '/project',
+    ),
+    {
+      kind: 'markdown',
+      content: '# x',
+      resourceContext: { projectRoot: '/project', path: 'docs/readme.md' },
+    },
+  );
   assert.deepEqual(toArtifactContent('code', { content: 'a=1' }, null), {
     kind: 'code',
     content: 'a=1',

@@ -31,7 +31,17 @@ export function toArtifactContent(
 ): ArtifactContent | null {
   switch (kind) {
     case 'markdown':
-      return payload.content !== undefined ? { kind: 'markdown', content: payload.content } : null;
+      return payload.content !== undefined
+        ? {
+            kind: 'markdown',
+            content: payload.content,
+            ...(payload.path !== undefined &&
+            projectRoot !== null &&
+            (payload.fileSource === undefined || payload.fileSource === 'workspace')
+              ? { resourceContext: { projectRoot, path: payload.path } }
+              : {}),
+          }
+        : null;
     case 'code':
       return payload.content !== undefined
         ? {
