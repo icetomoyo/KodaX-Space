@@ -15,10 +15,11 @@ KodaX Space 是 npm workspace monorepo。请从仓库根目录运行安装、测
 
 - Electron renderer 不直接执行 LLM、文件、shell、MCP 或其他特权操作；通过 typed/zod IPC 调用 main。
 - Space 是 KodaX 的桌面 host，不复制一套 agent engine。使用 public SDK/Runtime contract，并通过 capability negotiation 表达可用性。
-- 明确数据和生命周期 owner。当前 v0.1.31 中 RuntimeHostAdapter 负责 managed runs、transcript、compact、fork、rewind；Workflow、MCP 进程/日志、Partner policy/tools、permissions、artifacts、External Agent durable store 仍是 Space bridge。
+- 明确数据和生命周期 owner。当前 v0.1.32 中 Coder daemon 负责 sessions/runs/settings/interactions、Workflow 观察/控制、Learning/catalog、MCP tool discovery/reload 和已配置 External Agent Actor/Turn；Partner、renderer 投影、MCP 进程/日志、Workflow library/start/admin、artifacts 与 Space Reference Agent 仍是 Space host-provider bridge。
 - 不依据版本号推断能力；验证实际 export、DTO、event、capability 和发布包。
 - 不夸大未发布、未验收或 capability-gated 的功能。
 - 保持 IPC payload 有界、脱敏、可验证；凭据不得进入 renderer、日志或测试 fixture。
+- 修改 Space builtin skill 时，先阅读 [builtin 维护说明](docs/BUILTIN_SKILLS.md)。只接受允许复制、修改和再分发的来源；上游 revision、许可哈希、补丁与完整性 lock 必须一起审阅，不能直接手改生成目录。
 
 ## 验证
 
@@ -36,6 +37,7 @@ npm run build:smoke
 ```bash
 npm run e2e
 npm run smoke:pack
+npm run smoke:boot
 ```
 
 高风险 Feature 按对应 `docs/test-guides/` 完成人工验收。不要使用真实用户 profile 做自动化测试；使用 `KODAX_TEST_ONBOARDING` 或独立的绝对 `KODAX_PROFILE_DIR`。
@@ -47,9 +49,12 @@ npm run smoke:pack
 1. [用户使用手册](docs/USER_MANUAL.zh-CN.md)；
 2. 应用内 `apps/desktop/electron/kodax/space-manual-topics.ts`；
 3. 需要时更新 PRD、HLD、能力台账、Feature List、版本设计和测试指导；
-4. 只有正式发布后才更新 CHANGELOG 的发布状态和 README 的当前正式版。
+4. 发布准备可以先组装对应 CHANGELOG section 和 release checklist；只有正式发布后才把 README/文档中的“当前正式版”改为新版本。
 
 历史 release design 和 ADR 是当时决策证据，不要静默重写；用 correction note、superseded 状态或当前文档链接说明变化。
+
+发布维护者还应使用对应版本的 release-readiness 文档；`v0.1.32` 见
+[发布就绪清单](docs/releases/v0.1.32-release-readiness.md)。
 
 ## 提交说明
 

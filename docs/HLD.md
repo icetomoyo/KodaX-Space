@@ -1,16 +1,20 @@
 # KodaX Space 高层设计（HLD）
 
-> Last updated: 2026-07-21
-> Status: 核心架构决策仍有效；当前源码/发布准备基线为 KodaX Space 0.1.32（package 0.1.32）/ 正式 KodaX 0.7.73。中间方案与否决理由见 [ADR/](ADR/)；当前能力边界见 [KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md)。
+> Last updated: 2026-07-23
+> Status: 核心架构决策仍有效；当前源码/发布准备基线为 KodaX Space 0.1.32（package 0.1.32）/ npm 正式发布的 KodaX 0.7.74。中间方案与否决理由见 [ADR/](ADR/)；当前能力边界见 [KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md)。
 > Companion doc: [PRD](PRD.md)
 
-> **0.1.30 增量**：Electron main 继续拥有特权边界，并新增一个持久、协议中立的 External Agent Executor Plane。Renderer 仅通过 zod IPC 获取脱敏 Registration/Descriptor/Task/Event 投影；管理入口仅接受主应用窗口，任务创建从 main-owned live Session 派生项目/父任务归属，读取与干预均复核任务所属 Session。实时 Session 与 Workflow 共用同一 KodaX 0.7.67 plane。Reference Executor 已接通，真实 A2A/MCP Tasks/HTTP adapter 仍按 Runtime capability 门控。Partner 自 0.1.30 起已启用 workspace-first Outputs 与 checkpointed writes。
+> **0.1.30 增量**：Electron main 继续拥有特权边界，并新增一个持久、协议中立的 External Agent Executor Plane。Renderer 仅通过 zod IPC 获取脱敏 Registration/Descriptor/Task/Event 投影；管理入口仅接受主应用窗口，任务创建从 main-owned live Session 派生项目/父任务归属，读取与干预均复核任务所属 Session。实时 Session 与 Workflow 共用同一 KodaX 0.7.67 plane。Reference Executor 已接通；v0.1.32 起，Runtime 配置的 A2A 由 KodaX 0.7.74 Coder daemon 持有并按能力协商开放，MCP Tasks/受治理 HTTP 仍按 Runtime capability 门控。Partner 自 0.1.30 起已启用 workspace-first Outputs 与 checkpointed writes。
 >
 > **2026-07-12 架构重置**：`v0.1.31` 起以 `RuntimeHostAdapter -> @kodax-ai/kodax/runtime` 作为长期 host boundary，先采用 embedded inline facade，再以 capability negotiation 决定 Worker/daemon。旧 `KodaXHost/RealSession/KodaXClient` 路径是迁移基线，不再是长期目标。当前路线见 [FEATURE_LIST.md](FEATURE_LIST.md)。
 >
 > **2026-07-13 `v0.1.32` 架构边界（2026-07-19 已实现）**：F121 只把 Coder 迁入 profile-scoped shared daemon，使 Space、CLI 与 IDE 共享同一 session/run/live-state truth；Partner 明确保留 Space-owned embedded inline。Space 通过 surface router/adapter 拆分 owner，不再用 Partner 的进程内 callback/tool 约束阻塞 Coder daemon。完整合同、迁移与回滚规则见 [v0.1.32](features/v0.1.32.md)。
 >
-> **2026-07-21 `0.7.73` 正式集成**：根与 Desktop workspace 已锁定 Registry 正式包。Coder daemon 要求 Runtime-owned Auto LLM guardrail v3、公开的有效设置/时序契约、统一 Actor/Turn、Learning Center、共享设置、精确 `grantSuggestions` 和 daemon management 能力；缺少能力时 fail closed，不回退到隐藏 inline owner。AMAW 已并入 AMA，Workflow 只由显式命令或 KodaX 强信号策略触发。
+> **2026-07-21 `0.7.74` 集成（2026-07-23 已切正式包）**：根与 Desktop workspace 锁定精确版本，lockfile 现匹配 npm Registry 正式 SRI。Coder daemon 要求 Runtime-owned Auto LLM guardrail v3、公开的有效设置/时序契约、工作区编辑确定性规则、缺失 classifier model 的 prompt-free 本地拒绝、统一 Actor/Turn、Learning Center、共享设置、精确 `grantSuggestions`、interrupt input 和 daemon management 能力；缺少能力时 fail closed，不回退到隐藏 inline owner。AMAW 已并入 AMA，Workflow 只由显式命令或 KodaX 强信号策略触发。
+>
+> **2026-07-23 `0.7.74` 正式发布同步**：lockfile 精确绑定官方 Registry URL/SRI，安装目录的 133 个发布文件与 Registry tarball 全部一致。Coder daemon 继续要求 `contextCompaction:3`、`transcriptPaging:1` 和 `transcriptSearch:1`；模型侧 `wait_agent` 是 mailbox yield，UI/SDK 继续消费 Actor progress telemetry。idle-yield 用户提示、未确认 root completion、Goal 常驻工具和 root live-only 投影均由 KodaX Runtime 契约持有，Space 只记录/投影，不创建第二套协调状态机。正式版在不提升 capability 版本的前提下补齐精确 checkpoint/命令式 compaction lineage、PowerShell 方括号路径升级确认、完整交互式 auto-resume、确定性 Auto 设置写入，以及 durable interrupt delivery 失败后的队列保留。
+>
+> **2026-07-23 F135 builtin 分发**：Space 通过公开 Skill plugin 注册接口加载安装包外置的 `frontend-slides` 与 `huashu-design`，来源 revision、许可证、补丁和逐文件哈希全部可审计；`huashu-design` 默认去除推广水印/签名。本机 `pdf`/`pptx`/`xlsx`/`docx` skill 的当前许可不允许再分发，因此不进入安装包。
 >
 > **0.7.68 集成**：KodaX top-level managed coding path 自有 FEATURE_260 Memory Agent 生命周期，复用 F228 durable governance。Space 验证正式 `/experimental-memory` 契约、保留 metadata-only 回调诊断并继续拥有 UI 投影；不创建第二个 Memory Agent/存储/推广策略。完整 F117 仍受 activation/rollback 和桌面 query/action contract 门控。
 
@@ -25,7 +29,7 @@ KodaX Space 不是新 agent，而是**复用 KodaX 内核的 Electron 桌面客�
 3. **Shell 选择** = Electron。理由见 [ADR-001](ADR/ADR-001-shell-electron.md)（含 OpenCode 反向迁移实证）。
 4. **Native 集成** = 仅在 profile 证明 JS/Worker 路径存在实质热瓶颈时引入 NAPI-RS；历史 native-helper 提案已移入 watchlist。见 [ADR-002](ADR/ADR-002-rust-integration-napi.md)。
 5. **面板模型** = 双面板（Code / Partner）+ Quick Ask popover。无独立 Chat 面板。见 [ADR-004](ADR/ADR-004-panel-model.md)。
-6. **数据持久层** = 复用 KodaX 已有的 `~/.kodax/`，Space UI 偏好位于 `~/.kodax/space/`；v0.1.31 Runtime journal 位于 `<profile-root>/.kodax/runtime/`。Quick Ask 的最终目标是不落盘；当前仍使用临时 plan-mode session，并在关闭时 best-effort 清理。
+6. **数据持久层** = 复用 KodaX 已有的 `~/.kodax/`，Space UI 偏好位于 `~/.kodax/space/`；v0.1.32 shared daemon 状态/journal 位于 `<profile-root>/runtime/`（默认 `~/.kodax/runtime/`）。v0.1.31 embedded Runtime 的历史 journal 可能仍位于 `<profile-root>/.kodax/runtime/`，但不是当前 daemon 真理源。Quick Ask 的最终目标是不落盘；当前仍使用临时 plan-mode session，并在关闭时 best-effort 清理。
 7. **CLI ↔ Space session 协同** = Coder 通过 shared daemon 的 atomic live snapshot + ordered events 实时协同；handoff 仍用于显式上下文连续性。两者都不走 ACP，Partner 不进入该共享路径。
 
 **ACP 在 KodaX 生态的定位**：KodaX 内核继续维护 ACP server，服务**第三方 host**（Zed / Claude Code Desktop / 未来 IDE）。Space 是 KodaX 的 first-party UI，**不通过 ACP 接 KodaX**。
@@ -82,15 +86,15 @@ Space Artifact/Control handlers, keychain, BrowserWindow and OS integration.
 
 ### 2.1 进程列表
 
-| 进程                 | 角色                   | 持久             | 内含                                                               |
-| -------------------- | ---------------------- | ---------------- | ------------------------------------------------------------------ |
-| `space-main`         | Electron main（Node）  | 应用周期         | IPC、Coder daemon client、Partner inline Runtime、Space host tools |
-| `space-preload`      | Electron preload       | 每窗口           | 安全桥（contextBridge）                                            |
-| `space-renderer`     | React UI               | 每窗口           | UI only，无 KodaX runtime                                          |
-| `quick-ask-window`   | 独立 BrowserWindow     | 按需             | Quick Ask renderer；Coder session 由 daemon 拥有                   |
-| KodaX Runtime daemon | Coder Runtime owner    | profile 周期     | Coder session/run/live truth；供 Space/CLI/IDE 共享                |
-| MCP server children  | MCP server             | owner 按需 spawn | Coder 由 daemon 管；Partner/Space residual 由 main 管              |
-| Repointel daemon     | 系统级（用户提前安装） | 系统周期         | KodaX 内核已通过 loopback HTTP 接，Space 无关                      |
+| 进程                 | 角色                   | 持久                  | 内含                                                                         |
+| -------------------- | ---------------------- | --------------------- | ---------------------------------------------------------------------------- |
+| `space-main`         | Electron main（Node）  | 应用/Windows 托盘周期 | IPC、Coder daemon client、Partner inline Runtime、Space host tools、后台托盘 |
+| `space-preload`      | Electron preload       | 每窗口                | 安全桥（contextBridge）                                                      |
+| `space-renderer`     | React UI               | 每窗口                | UI only，无 KodaX runtime                                                    |
+| `quick-ask-window`   | 独立 BrowserWindow     | 按需                  | Quick Ask renderer；Coder session 由 daemon 拥有                             |
+| KodaX Runtime daemon | Coder Runtime owner    | profile 周期          | Coder session/run/live truth；供 Space/CLI/IDE 共享                          |
+| MCP server children  | MCP server             | owner 按需 spawn      | Coder 由 daemon 管；Partner/Space residual 由 main 管                        |
+| Repointel daemon     | 系统级（用户提前安装） | 系统周期              | KodaX 内核已通过 loopback HTTP 接，Space 无关                                |
 
 ### 2.2 关键差别（与 sidecar+ACP 模型对比）
 
@@ -98,6 +102,7 @@ Space Artifact/Control handlers, keychain, BrowserWindow and OS integration.
 - **没有 stdio + ACP 协议层**——main 通过公开 Runtime facade 接入 daemon；renderer 仍只看 Space zod IPC
 - **MCP lifecycle 按 surface 单 owner**——Coder children 由 daemon 管；Partner/Space-owned residual 才由 Space MCP Manager 管
 - **Repointel daemon 是独立系统服务**——KodaX 内核连接它，Space 透过 KodaX 看其状态
+- **Windows close-to-tray 销毁窗口而非隐藏窗口**——BrowserWindow/renderer 按窗口周期释放；Electron main 作为可见托盘 owner 继续持有 Runtime client。`v0.1.32` 没有独立 tray helper，因此不声称关闭窗口后 main 也已退出
 
 ### 2.3 Electron 安全基线
 
@@ -125,6 +130,7 @@ KodaX-Space/
 │       │   ├── preload.ts           ← contextBridge
 │       │   ├── kodax/runtime-host-adapter.ts ← inline Runtime owner、能力快照、runId/abort、回滚选择
 │       │   ├── kodax/host.ts        ← Space session registry 与兼容投影
+│       │   ├── skill/space-builtins.ts ← Space builtin 注册、路径解析与启动隔离
 │       │   ├── ipc/                 ← zod-validated IPC handlers
 │       │   │   ├── session.ts
 │       │   │   ├── permission.ts
@@ -152,6 +158,11 @@ KodaX-Space/
 ├── packages/
 │   ├── space-ipc-schema/            ← zod schemas (renderer↔main 通信契约)
 │   └── space-ui-kit/                ← design system
+├── resources/
+│   ├── builtin-skills/               ← 生成的可再分发 builtin 快照
+│   ├── builtin-skill-patches/        ← Space 审查补丁
+│   ├── builtin-skills.sources.json   ← 上游/许可声明
+│   └── builtin-skills.lock.json      ← revision + 逐文件完整性
 ├── scripts/
 └── docs/
     ├── PRD.md
@@ -190,11 +201,22 @@ const runtime: KodaXRuntime = await createKodaXRuntime({
 - Coder daemon initialization/identity, capability validation, subscription readiness and detach-only close;
 - Coder session/run/live projection, transcript, compact, fork, rewind, queue and shared settings routes;
 - Runtime interaction, Workflow read/control, Learning, catalog/MCP and configured Agent Actor/Turn services;
+- compaction v3 durability, revision-bound transcript paging/search, and root/child history ownership;
+- mailbox-driven model coordination while Space keeps Actor progress on the UI/SDK telemetry path;
 - Partner inline initialization plus the temporary process-start-only legacy rollback boundary.
 
 The adapter does **not** claim every public Runtime service as a migrated Space route. For Coder, Runtime owns sessions/runs/settings/interactions, Workflow observation/control, Learning operations, catalog discovery, MCP tool discovery/reload, and configured External Agent Actor/Turns. Space remains authoritative for renderer projection, Partner tools/profile/policy, MCP process lifecycle/logs, Workflow library/start/admin, artifacts, and the Reference Agent executor-plane store. These residual paths are reported as host providers, not Runtime-native support.
 
 The `v0.1.32` adapter attaches Coder to the profile daemon and keeps Partner inline because Partner injects process-local tools, profiles, callbacks and policy. Missing required Coder capability fails closed; it never creates a hidden inline Coder owner. No user-facing arbitrary Runtime endpoint or mixed-owner preference is added.
+
+On Windows, F136 keeps the adapter connection in the lightweight Electron main
+process after the last BrowserWindow is destroyed. Tray activation recreates a
+window against the same main-process services. **Quit Space, keep Runtime**
+performs detach-only close; **Complete exit** inspects daemon management,
+disconnects Space, and invokes the published CLI stop path only when Runtime's
+idle/no-peer safety gate allows it. A same-version stale daemon may be replaced
+through the same fail-closed gate. Tray creation failure restores ordinary
+quit-on-close behavior so no invisible owner remains.
 
 ### 4.2 Session and run lifecycle
 
@@ -219,18 +241,26 @@ const outcome = await run.result;
 
 Coder rich events are reduced into one bounded main-process live projection and pushed through Space IPC with cursor/gap recovery; the renderer never consumes the raw Runtime stream. Partner retains the existing callback translator. Both paths normalize completion/failure/cancellation into one terminal UI outcome.
 
-Session transcript persistence remains KodaX-owned. Space stores UI preferences, compatibility projections/caches, Space-only session settings, Partner artifacts/KB/deliveries/policy records, and correlation metadata only where those are explicitly Space responsibilities.
+Permission and AskUser queues remain durable across Session switches, but renderer presentation is
+Session-scoped: foreground modals select only the active Session's requests. Sidebar attention is a
+separate projection that prioritizes the current Session and then every background Session waiting
+for a human before applying the bounded list cap. `awaiting_user` outranks transient run/error frames,
+and answering one request never consumes another Session's queue entry.
+
+Session transcript persistence remains KodaX-owned. Before large compaction evicts raw context, compaction v3 durably commits the exact lineage; the canonical producer checkpoint bytes, recovery guidance, first-kept pointer, and post-compact attachments remain on one active path, while legacy suffix-free checkpoints remain readable. Space consumes revision-bound pages/chunks/search and never lets child or live-only state replace the root transcript projection. Model `wait_agent` and SDK `runtime.agents.wait()` deliberately have different semantics: the first waits for mailbox/user/interruption/timeout control signals, while the second remains event telemetry for UI and diagnostics. Space stores UI preferences, compatibility projections/caches, Space-only session settings, Partner artifacts/KB/deliveries/policy records, and correlation metadata only where those are explicitly Space responsibilities.
 
 ### 4.3 Runtime failure and degradation
 
-| Failure                       | Handling                                                                                                           |
-| ----------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| Missing Runtime capability    | Fail closed; hide/disable the action and expose a redacted reason in capability health/diagnostics.                |
-| LLM/provider network error    | KodaX owns retry/recovery semantics; Space renders structured state/action.                                        |
-| MCP/Extension degradation     | Space bridge reports its owned health/reload result; Runtime capability diagnostics must not claim a second owner. |
-| Coder daemon unavailable      | Fail Coder closed with a redacted diagnostic; never silently replay or downgrade accepted work to inline.          |
-| Main process crash            | On restart, recover KodaX sessions and Space-owned durable stores; do not claim cross-process Workflow replay.     |
-| Long-session/context pressure | Consume Runtime context-budget/compaction events; do not add a second compaction policy.                           |
+| Failure                       | Handling                                                                                                               |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| Missing Runtime capability    | Fail closed; hide/disable the action and expose a redacted reason in capability health/diagnostics.                    |
+| LLM/provider network error    | KodaX owns retry/recovery semantics; Space renders structured state/action.                                            |
+| MCP/Extension degradation     | Space bridge reports its owned health/reload result; Runtime capability diagnostics must not claim a second owner.     |
+| Coder daemon unavailable      | Fail Coder closed with a redacted diagnostic; never silently replay or downgrade accepted work to inline.              |
+| Main process crash            | On restart, recover KodaX sessions and Space-owned durable stores; do not claim cross-process Workflow replay.         |
+| Long-session/context pressure | Consume Runtime context-budget/compaction events; do not add a second compaction policy.                               |
+| Stale same-version daemon     | Inspect advertised capabilities; retire and reconnect only when no work, pending interaction, or other client remains. |
+| Windows tray unavailable      | Fall back to quit-on-close; never retain an invisible Electron main owner.                                             |
 
 ### 4.4 ACP 与 Space 的关系
 
@@ -312,9 +342,17 @@ Connector 不是 “OAuth-flavored MCP” 的同义词。F096 定义 provider-sp
 
 Skill 继续通过 KodaX public Skill API 与 Space compatibility bridge 管理；F116 不迁移 Runtime catalog：
 
-- Skill 发现路径：`~/.kodax/skills/`、`<project>/.kodax/skills/`、Space 内置
+- Skill 发现路径：`~/.kodax/skills/`、`<project>/.kodax/skills/`、Space 内置；用户/项目同名项保持 KodaX 既有优先级，不修改安装包内容
 - UI 提供 Skill 浏览器和安装入口；目录发现/调用保持现有 public Skill bridge
 - 自然语言触发逻辑在 KodaX；Space 在触发后显示 `skill-active` 标签
+- F135 把 `frontend-slides` 与 `huashu-design` 作为 Space-owned plugin root 注册，并在 UI 中映射为 `builtin`。资源位于安装包 `resources/builtin-skills` 而非 `app.asar`，使 Python/Node/shell/二进制资产获得普通文件系统路径；启动注册 best-effort，单个 builtin 故障不会阻止应用启动
+- builtin 来源由上游 Git revision、许可哈希、Space 补丁和逐文件 SHA-256 lock 固定；同步拒绝许可漂移、symlink、secret/dynamic shell 风险和 release 中的 `installed:` 临时 revision，package smoke 要求文件集与字节完全一致
+- `huashu-design` 依次应用 no-watermark、builtin portability、remaining-signature-removal 三个可审查补丁；分发默认不含推广水印/签名标记、指令或悬空代码，但保留上游 MIT 许可与作者信息。其可选浏览器/视频/TTS/AI-review pipeline 仍由外部依赖和凭据提供，不伪装成安装包已内嵌能力
+- 本地 `pdf`/`pptx`/`xlsx`/`docx` skill 的当前许可不允许再分发，因此不进入 Space builtin；文件预览/现有 Office writer 与是否分发同名 skill 是独立能力
+
+Space 将 plugin-root 内容标成 `builtin` 只是产品来源分类，不降低信任边界：权限、
+工具副作用和可执行脚本仍按第三方 Skill 的保守策略处理。完整维护流程见
+[BUILTIN_SKILLS.md](BUILTIN_SKILLS.md)。
 
 统一到 Runtime catalog/extensions reload 留给 F090 或后续有明确 parity 的版本，不能因 public facade 存在就宣称已经迁移。
 
@@ -641,16 +679,17 @@ Space → CLI:
 
 ```text
 1. exact npm workspace install and lockfile verification
-2. typecheck/lint/unit/E2E/build
-3. Electron renderer (Vite) + main/preload sidecar builds
-4. swap/verify the exact published KodaX tarball; reject local links
-5. electron-builder package:
+2. verify Space builtin source/license/patch/per-file locks; reject local installed revisions
+3. typecheck/lint/unit/E2E/build
+4. Electron renderer (Vite) + main/preload sidecar builds
+5. swap/verify the exact published KodaX tarball; reject local links
+6. electron-builder package:
    - macOS DMG + updater ZIP (x64/arm64)
    - Windows NSIS installer
    - Linux AppImage + deb (x64)
-6. packaged smoke verifies app.asar, node-pty/keyring/native/Runtime Worker sidecars, boot, and core journeys
-7. stage/validate updater manifests, asset names, checksums, and architecture merge
-8. publish GitHub Release according to F101 channel/signing policy
+7. packaged smoke verifies app.asar, restored KodaX builtin Markdown, the exact external Space builtin tree, node-pty/keyring/native/Runtime Worker sidecars, boot, and core journeys
+8. stage/validate updater manifests, asset names, checksums, and architecture merge
+9. publish GitHub Release according to F101 channel/signing policy
 ```
 
 ### 15.2 平台支持
@@ -672,13 +711,13 @@ Space currently packages required native dependencies such as node-pty and `@nap
 
 ## 16. 测试策略
 
-| 层级                    | 工具                        | 覆盖                                                    |
-| ----------------------- | --------------------------- | ------------------------------------------------------- |
-| Unit（main + renderer） | Vitest                      | reducer、zod schema、IPC handler、KodaX runtime wrapper |
-| Integration             | Vitest + 真实 KodaX runtime | 起 KodaX session、跑工具、断言事件流                    |
-| E2E                     | Playwright for Electron     | 用户旅程 S1–S7（见 PRD §3.2）                           |
-| Smoke                   | per-platform install runner | 装包 + 首启 + 跑 1 个 session                           |
-| Compat                  | per-OS sample               | Anthropic `.mcpb` 抽样跑                                |
+| 层级                    | 工具                           | 覆盖                                                    |
+| ----------------------- | ------------------------------ | ------------------------------------------------------- |
+| Unit（main + renderer） | Node test runner + `tsx`       | reducer、zod schema、IPC handler、KodaX runtime wrapper |
+| Integration             | Node test + 真实 KodaX runtime | 起 KodaX session、跑工具、断言事件流                    |
+| E2E                     | Playwright for Electron        | 用户旅程 S1–S7（见 PRD §3.2）                           |
+| Smoke                   | per-platform install runner    | 装包 + 首启 + 跑 1 个 session                           |
+| Compat                  | per-OS sample                  | Anthropic `.mcpb` 抽样跑                                |
 
 NAPI crate 独立 Rust 单测 + 与 TS wrapper 的集成测。
 
@@ -693,7 +732,7 @@ NAPI crate 独立 Rust 单测 + 与 TS wrapper 的集成测。
 | Scout / AMA Control Plane | 仅以"模式徽标 + Round"体现；不绘制内部图                                                                        |
 | Coding Runtime            | F121 起 Coder 在 profile daemon；Partner 保留 main inline                                                       |
 | Durable Task State        | 写盘真理面在 KodaX runtime（`~/.kodax/sessions/`）；Space 是读视图                                              |
-| Skill 集成                | 直接调 `@kodax-ai/skills` API                                                                                   |
+| Skill 集成                | 通过 public Skill registry/catalog；F135 以 SDK plugin API 注册审定的 Space builtin root                        |
 | 证据分层                  | UI 在 verdict 卡片浏览，不重新组织                                                                              |
 | Project + SA / AMA        | UI 用 surface（code / partner）+ mode（plan / edits / auto）；Quick Ask 是固定 `mode=plan` 的 transient session |
 | npm 发布 scoped 包        | Space 把 `@kodax-ai/{coding,llm,agent,skills}` 作为 dependency 按需拉                                           |

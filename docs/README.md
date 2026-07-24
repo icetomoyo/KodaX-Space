@@ -1,8 +1,8 @@
 # KodaX Space 文档中心
 
-> 当前源码/发布准备基线：KodaX Space `v0.1.32`（package `0.1.32`）/ KodaX `0.7.73`；最近已发布稳定 Space 版本仍为 `v0.1.31`。
+> 当前源码/发布准备基线：KodaX Space `v0.1.32`（package `0.1.32`）/ npm 正式发布的 KodaX `0.7.74`；最近已发布稳定 Space 版本仍为 `v0.1.31`。
 
-这里是文档的统一入口。当前源码已采用正式 KodaX 0.7.73：Coder 默认连接共享 daemon，Auto LLM 由 Runtime 单点决策并公开有效配置/遥测，持久授权只接受 Runtime 给出的精确建议；Partner 继续由 Space inline owner 管理。统一 Actor/Turn 与 Learning Center 兼容契约已接入，但完整 F117/F118 桌面管理体验仍在后续路线中。历史设计和 release 记录保留当时语境。
+这里是文档的统一入口。当前源码已采用 npm 正式发布的 KodaX 0.7.74：Coder 默认连接共享 daemon，并强制 compaction v3、transcript paging/search、interrupt input、Actor/Turn v1 和 Auto LLM guardrail v3。正式版还提供 mailbox-driven Agent 协调、idle-yield 用户提示的 transcript 回填、Goal 工具常驻、root/child 投影隔离、crash-recoverable completion delivery、精确 checkpoint 活动 lineage、PowerShell 方括号路径的 fail-closed 分析、跳过空 ACP 占位且完整恢复交互状态的 CLI 自动恢复、确定性的 Auto 切换、命令式压缩 lineage 对齐、interrupt delivery 持久化失败时的队列保留，以及 Windows 可见托盘/重开/安全彻底退出；Partner 继续由 Space inline owner 管理。完整 F117/F118 桌面管理体验仍在后续路线中。历史设计和 release 记录保留当时语境。
 
 ## 我想要……
 
@@ -11,14 +11,16 @@
 | 安装、配置、第一次完成任务          | [用户使用手册](USER_MANUAL.zh-CN.md)                                                                                                                  |
 | 快速理解界面和功能                  | [用户使用手册：界面地图](USER_MANUAL.zh-CN.md#5-界面地图)                                                                                             |
 | 理解 v0.1.32 的 Runtime 所有权      | [用户使用手册：Runtime Host](USER_MANUAL.zh-CN.md#v0132-的-runtime-host-对用户有什么影响)                                                             |
+| 理解 Windows 关闭与后台退出语义     | [用户使用手册：后台托盘](USER_MANUAL.zh-CN.md#windows-关闭窗口后台托盘与彻底退出)                                                                     |
 | 从源码运行、测试、打包              | [运行与开发指南](USAGE.md)                                                                                                                            |
 | 了解产品目标和边界                  | [PRD](PRD.md)                                                                                                                                         |
 | 理解进程、IPC、Runtime 和数据所有权 | [HLD](HLD.md)                                                                                                                                         |
 | 查看 KodaX 能力是否已接入           | [KodaX 能力台账](KODAX_CAPABILITY_LEDGER.md)                                                                                                          |
 | 查看当前和未来 Feature              | [Feature List](FEATURE_LIST.md)                                                                                                                       |
 | 查看 v0.1.31 的设计与实施           | [版本设计](features/v0.1.31.md) / [实施计划](features/v0.1.31-implementation-plan.md) / [人工测试指导](test-guides/FEATURE_116_v0.1.31_TEST_GUIDE.md) |
-| 查看 v0.1.32 的设计与当前门禁       | [版本设计与实施状态](features/v0.1.32.md) / [Feature List](FEATURE_LIST.md)                                                                           |
-| 报告或核对已知问题                  | [Known Issues](KNOWN_ISSUES.md)                                                                                                                       |
+| 查看 v0.1.32 的设计与当前门禁       | [版本设计与实施状态](features/v0.1.32.md) / [发布就绪清单](releases/v0.1.32-release-readiness.md) / [Feature List](FEATURE_LIST.md)                   |
+| 维护或更新 Space builtin skills     | [Builtin skill 维护说明](BUILTIN_SKILLS.md)                                                                                                           |
+| 报告或核对已知问题                  | [Known Issues](KNOWN_ISSUES.md) / [已归档问题](ISSUES_ARCHIVED.md)                                                                                    |
 | 参与贡献                            | [Contributing](../CONTRIBUTING.md)                                                                                                                    |
 
 ## 当前有效文档
@@ -33,6 +35,8 @@
 | `KODAX_CAPABILITY_LEDGER.md`                         | 能力接入事实     | 每次 SDK/Runtime 接入后更新状态与证据          |
 | `FEATURE_LIST.md`                                    | 版本路线图       | 只有可交付、可验证的版本项进入 active list     |
 | `KNOWN_ISSUES.md`                                    | 当前问题         | 已解决项保留结论，新增问题需有复现和状态       |
+| `BUILTIN_SKILLS.md`                                  | builtin 分发维护 | 固定来源、许可、补丁、更新和打包完整性         |
+| `releases/v0.1.32-release-readiness.md`              | 发布前门禁       | 只记录可验证状态、人工阻塞项和执行顺序         |
 | `apps/desktop/electron/kodax/space-manual-topics.ts` | 应用内 AI 自说明 | 与用户手册同步更新，防止 AI 给出旧操作说明     |
 
 ## 历史文档
@@ -43,6 +47,7 @@
 - `features/v*.md`：对应版本当时的目标、决策和验收；
 - `ADR/`：架构决策及其 superseded/rejected 状态；
 - `FEATURES_ARCHIVED.md`：已经交付、取消或进入 watchlist 的 Feature；
+- `ISSUES_ARCHIVED.md`：超过 30 天且已解决问题的完整调查证据；
 - `docs/known-issues/`：具体问题的调查与修复记录。
 
 阅读历史文档时，请以文档日期和版本为准，不要用它判断当前 UI。当前事实优先看用户手册、HLD、能力台账和 Feature List。
