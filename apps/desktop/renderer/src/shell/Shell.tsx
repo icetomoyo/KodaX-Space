@@ -466,6 +466,9 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
     setSettingsInitialTab(tab);
     setSettingsOpen(true);
   }, []);
+  const openPreferencesSettings = useCallback((): void => {
+    openSettingsAt('preferences');
+  }, [openSettingsAt]);
 
   const showLeftSidebar = useCallback((): void => {
     if (fullscreenRead) setFullscreenRead(false);
@@ -889,12 +892,14 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
                 width={leftWidth}
                 asSidebar
                 onBack={() => setLeftSidebarMode('navigation')}
+                onOpenSettings={openPreferencesSettings}
               />
             ) : (
               <LeftSidebar
                 width={leftWidth}
                 filesActive={false}
                 onOpenFiles={openFilesInLeftSidebar}
+                onOpenSettings={openPreferencesSettings}
               />
             )}
             <ResizeHandle

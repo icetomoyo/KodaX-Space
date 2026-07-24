@@ -183,6 +183,44 @@ test('history replay preserves an assistant timestamp distinct from its query ti
   assert.equal(answer?.sentAt, 241_000);
 });
 
+test('history replay hides its alignment anchor when the transcript starts with assistant output', () => {
+  useAppStore.setState({
+    eventsBySession: {},
+    userMessagesBySession: {},
+    localNoticesBySession: {},
+    workflowNoticesBySession: {},
+  });
+
+  useAppStore
+    .getState()
+    .prependSessionHistory(
+      SID,
+      [{ kind: 'assistant', text: 'restored assistant output', sentAt: 2_000 }],
+      FALLBACK_SENT_AT,
+    );
+
+  const state = useAppStore.getState();
+  const userMessages = state.userMessagesBySession[SID] ?? [];
+  assert.equal(userMessages.length, 1, 'the internal anchor still preserves segment alignment');
+  assert.equal(userMessages[0]?.hiddenHistoryAnchor, true);
+
+  const out = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages,
+  });
+  assert.equal(
+    out.some((message) => message.kind === 'user'),
+    false,
+  );
+  assert.equal(
+    out.some(
+      (message) =>
+        message.kind === 'assistant_text' && message.text === 'restored assistant output',
+    ),
+    true,
+  );
+});
+
 test('restored conversation keeps real per-message sentAt so workflow notices are not hoisted to the top', () => {
   // Root-cause regression for "workflow content jumps above the whole conversation after restart".
   // The SDK persists per-message timestamps (SessionTranscriptEntry.timestamp); the session.history

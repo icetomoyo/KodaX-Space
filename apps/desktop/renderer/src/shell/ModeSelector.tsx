@@ -17,7 +17,7 @@
 // 切 engine 同上 — 即便当前 mode 不是 auto 也接受（下次切到 auto 时按新 engine bootstrap guardrail）。
 // Shift-Tab / Ctrl+M 循环 3 档；数字键 1/2/3 直接切。
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { AutoModeEngine, PermissionMode } from '@kodax-space/space-ipc-schema';
 import { useAppStore } from '../store/appStore.js';
 import { pushToast } from '../store/toastStore.js';
@@ -52,6 +52,40 @@ const ENGINE_DESCRIPTION_KEYS: Record<AutoModeEngine, MessageKey> = {
   rules: 'mode.engineDescription.rules',
 };
 
+interface OptimisticMutationState<T> {
+  acknowledged: T;
+  intended: T;
+  latestSequence: number;
+  pending: number;
+  tail: Promise<void>;
+}
+
+function mutationStateFor<T>(
+  states: Map<string, OptimisticMutationState<T>>,
+  key: string,
+  authoritative: T,
+): OptimisticMutationState<T> {
+  const existing = states.get(key);
+  if (!existing) {
+    const created = {
+      acknowledged: authoritative,
+      intended: authoritative,
+      latestSequence: 0,
+      pending: 0,
+      tail: Promise.resolve(),
+    };
+    states.set(key, created);
+    return created;
+  }
+  // Store updates received while no local mutation is pending are authoritative
+  // (for example an automatic Auto[RULES] fallback published by Runtime).
+  if (existing.pending === 0 && existing.intended !== authoritative) {
+    existing.acknowledged = authoritative;
+    existing.intended = authoritative;
+  }
+  return existing;
+}
+
 export function ModeSelector(): JSX.Element {
   const { t } = useI18n();
   const sessions = useAppStore((s) => s.sessions);
@@ -67,7 +101,8 @@ export function ModeSelector(): JSX.Element {
   const session = sessions.find((x) => x.sessionId === currentSessionId);
 
   const [open, setOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
+  const modeMutations = useRef(new Map<string, OptimisticMutationState<PermissionMode>>());
+  const engineMutations = useRef(new Map<string, OptimisticMutationState<AutoModeEngine>>());
   // v0.1.4：spinner 修复 —— "切 auto 时 session 还在跑"的提示从 main 端 push
   // session_error 改成 renderer 端 pushToast，避免 ActivitySpinner 误判 session 已结束
   const isStreaming = useIsStreaming();
@@ -81,6 +116,9 @@ export function ModeSelector(): JSX.Element {
     'accept-edits';
   const engine: AutoModeEngine =
     session?.autoModeEngine ?? pendingAutoModeEngine ?? runtimeDefaults.autoModeEngine ?? 'llm';
+  const mutationKey = session?.sessionId ?? '__next-session__';
+  mutationStateFor(modeMutations.current, mutationKey, current);
+  mutationStateFor(engineMutations.current, mutationKey, engine);
 
   // Ctrl+M 切换打开；数字键 1/2/3 切 mode；L/R 切 engine（auto 时）
   // Shift+Tab 循环 mode（对齐 KodaX TUI）。
@@ -95,7 +133,14 @@ export function ModeSelector(): JSX.Element {
       // P3: Shift+Tab 在任意位置循环 permission mode（含 input 框 — 用户切完继续打字）
       if (e.shiftKey && e.key === 'Tab') {
         e.preventDefault();
-        const idx = MODE_ORDER.indexOf(current);
+        // The effect closure can still hold the previous render's `current` when
+        // multiple key events arrive in one browser task. The mutation state was
+        // initialized during render and is updated synchronously before IPC, so
+        // read it directly here instead of reconciling against that stale value.
+        const activeMutation =
+          modeMutations.current.get(mutationKey) ??
+          mutationStateFor(modeMutations.current, mutationKey, current);
+        const idx = MODE_ORDER.indexOf(activeMutation.intended);
         const next = MODE_ORDER[(idx + 1) % MODE_ORDER.length];
         void setMode(next);
         return;
@@ -111,7 +156,7 @@ export function ModeSelector(): JSX.Element {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session, open, current]);
+  }, [session, open, current, mutationKey]);
 
   async function persistRuntimeDefaults(runtimeDefaults: {
     readonly permissionMode?: PermissionMode;
@@ -131,63 +176,148 @@ export function ModeSelector(): JSX.Element {
   }
 
   async function setMode(mode: PermissionMode): Promise<void> {
-    if (busy || mode === current) return;
-    setBusy(true);
+    const state =
+      modeMutations.current.get(mutationKey) ??
+      mutationStateFor(modeMutations.current, mutationKey, current);
+    if (mode === state.intended) return;
+    state.intended = mode;
+    state.latestSequence += 1;
+    state.pending += 1;
+    const sequence = state.latestSequence;
+    const enteredAuto = mode === 'auto' && state.acknowledged !== 'auto';
     if (mode !== 'auto') setOpen(false);
     // Always update pending as the user's next-session preference.
     setPendingPermissionMode(mode);
-    try {
-      if (session && window.kodaxSpace) {
-        // Optimistically update the current session first.
-        upsertSession({ ...session, permissionMode: mode });
-        const r = await window.kodaxSpace.invoke('session.setPermissionMode', {
-          sessionId: session.sessionId,
-          mode,
-        });
-        if (!r.ok) {
-          upsertSession({ ...session, permissionMode: current });
-          pushToast(r.error?.message ?? t('mode.sessionModeUpdateFailed'), 'error');
-        } else if (mode === 'auto' && current !== 'auto' && isStreaming) {
-          // Keep this as a toast instead of a session_error event; the current run
-          // continues under its existing permission flow until the next send.
-          pushToast(t('mode.autoGuardrailNextSend'), 'info', 6000);
-        }
-      }
-      // Persist the global default best-effort WITHOUT holding the busy lock:
-      // awaiting this IPC kept busy=true across the round-trip, which dropped
-      // rapid Shift+Tab cycles (mode-toggle e2e S4 back-to-back presses).
-      void persistRuntimeDefaults({ permissionMode: mode });
-    } finally {
-      setBusy(false);
+    if (session) {
+      const latestSession = useAppStore
+        .getState()
+        .sessions.find((candidate) => candidate.sessionId === session.sessionId);
+      if (latestSession) upsertSession({ ...latestSession, permissionMode: mode });
     }
+    // Keep the next-Session preference in the same user-action order. The main
+    // settings store serializes writes, so a later action cannot be overwritten
+    // by an earlier response.
+    void persistRuntimeDefaults({ permissionMode: mode });
+    const operation = state.tail.then(async () => {
+      try {
+        if (session && window.kodaxSpace) {
+          const r = await window.kodaxSpace.invoke('session.setPermissionMode', {
+            sessionId: session.sessionId,
+            mode,
+          });
+          if (!r.ok) {
+            if (sequence === state.latestSequence) {
+              state.intended = state.acknowledged;
+              const latestSession = useAppStore
+                .getState()
+                .sessions.find((candidate) => candidate.sessionId === session.sessionId);
+              if (latestSession) {
+                upsertSession({ ...latestSession, permissionMode: state.acknowledged });
+              }
+            }
+            pushToast(r.error?.message ?? t('mode.sessionModeUpdateFailed'), 'error');
+          } else {
+            state.acknowledged = mode;
+          }
+          if (r.ok && enteredAuto && isStreaming) {
+            // Keep this as a toast instead of a session_error event; the current run
+            // continues under its existing permission flow until the next send.
+            pushToast(t('mode.autoGuardrailNextSend'), 'info', 6000);
+          }
+        } else {
+          state.acknowledged = mode;
+        }
+      } catch (error) {
+        if (sequence === state.latestSequence) {
+          state.intended = state.acknowledged;
+          const latestSession = useAppStore
+            .getState()
+            .sessions.find((candidate) => candidate.sessionId === session?.sessionId);
+          if (latestSession) {
+            upsertSession({ ...latestSession, permissionMode: state.acknowledged });
+          }
+        }
+        pushToast(
+          error instanceof Error ? error.message : t('mode.sessionModeUpdateFailed'),
+          'error',
+        );
+      } finally {
+        state.pending = Math.max(0, state.pending - 1);
+      }
+    });
+    // Session mutations must reach Runtime in click/key order. Without this
+    // queue, an older IPC response could finish last and silently overwrite the
+    // user's newest rapid Shift+Tab choice.
+    state.tail = operation;
+    await operation;
   }
 
   async function setEngine(next: AutoModeEngine): Promise<void> {
-    if (busy || next === engine) return;
-    setBusy(true);
+    const state =
+      engineMutations.current.get(mutationKey) ??
+      mutationStateFor(engineMutations.current, mutationKey, engine);
+    if (next === state.intended) return;
+    state.intended = next;
+    state.latestSequence += 1;
+    state.pending += 1;
+    const sequence = state.latestSequence;
     setPendingAutoModeEngine(next);
-    try {
-      if (session && window.kodaxSpace) {
-        upsertSession({ ...session, autoModeEngine: next });
-        const r = await window.kodaxSpace.invoke('session.setAutoModeEngine', {
-          sessionId: session.sessionId,
-          engine: next,
-        });
-        if (!r.ok) {
-          upsertSession({ ...session, autoModeEngine: engine });
-          pushToast(r.error?.message ?? t('mode.autoEngineUpdateFailed'), 'error');
-        }
-      }
-      // Best-effort global default; do not hold the busy lock on the IPC.
-      void persistRuntimeDefaults({ autoModeEngine: next });
-    } finally {
-      setBusy(false);
+    if (session) {
+      const latestSession = useAppStore
+        .getState()
+        .sessions.find((candidate) => candidate.sessionId === session.sessionId);
+      if (latestSession) upsertSession({ ...latestSession, autoModeEngine: next });
     }
+    void persistRuntimeDefaults({ autoModeEngine: next });
+    const operation = state.tail.then(async () => {
+      try {
+        if (session && window.kodaxSpace) {
+          const r = await window.kodaxSpace.invoke('session.setAutoModeEngine', {
+            sessionId: session.sessionId,
+            engine: next,
+          });
+          if (!r.ok) {
+            if (sequence === state.latestSequence) {
+              state.intended = state.acknowledged;
+              const latestSession = useAppStore
+                .getState()
+                .sessions.find((candidate) => candidate.sessionId === session.sessionId);
+              if (latestSession) {
+                upsertSession({ ...latestSession, autoModeEngine: state.acknowledged });
+              }
+            }
+            pushToast(r.error?.message ?? t('mode.autoEngineUpdateFailed'), 'error');
+          } else {
+            state.acknowledged = next;
+          }
+        } else {
+          state.acknowledged = next;
+        }
+      } catch (error) {
+        if (sequence === state.latestSequence) {
+          state.intended = state.acknowledged;
+          const latestSession = useAppStore
+            .getState()
+            .sessions.find((candidate) => candidate.sessionId === session?.sessionId);
+          if (latestSession) {
+            upsertSession({ ...latestSession, autoModeEngine: state.acknowledged });
+          }
+        }
+        pushToast(
+          error instanceof Error ? error.message : t('mode.autoEngineUpdateFailed'),
+          'error',
+        );
+      } finally {
+        state.pending = Math.max(0, state.pending - 1);
+      }
+    });
+    state.tail = operation;
+    await operation;
   }
 
   const baseLabel =
     current === 'auto'
-      ? `${t('mode.label.auto')} · ${ENGINE_LABELS[engine]}`
+      ? `${t('mode.label.auto')}[${ENGINE_LABELS[engine].toUpperCase()}]`
       : t(MODE_LABEL_KEYS[current]);
   // 无 session 时这个选择会直接用于即将创建的会话，所以仍显示普通模式名；
   // 附加“(next) / 下次”会让用户误以为它不会对即将发送的首条消息生效。

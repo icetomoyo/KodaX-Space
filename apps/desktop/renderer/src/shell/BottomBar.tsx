@@ -32,6 +32,7 @@ import { parseLegacySkillToken, safeSkillSlashText, skillSlashEchoText } from '.
 import { registerInsertReceiver } from './inputBridge.js';
 import { resolveSessionCreateInputs } from './createSession.js';
 import {
+  clipboardImageFiles,
   createPendingAttachmentGate,
   inlineImageMediaType,
   isSupportedInlineImage,
@@ -336,25 +337,6 @@ function getDroppedFilePath(file: File): string | null {
   if (bridged) return bridged;
   const legacy = (file as File & { path?: unknown }).path;
   return typeof legacy === 'string' && legacy.length > 0 ? legacy : null;
-}
-
-function clipboardImageFiles(data: DataTransfer): File[] {
-  const images: File[] = [];
-  const seen = new Set<string>();
-  const add = (file: File | null): void => {
-    if (!file || !file.type.startsWith('image/')) return;
-    const key = `${file.name}:${file.size}:${file.type}:${file.lastModified}`;
-    if (seen.has(key)) return;
-    seen.add(key);
-    images.push(file);
-  };
-
-  for (let i = 0; i < data.files.length; i++) add(data.files.item(i));
-  for (let i = 0; i < data.items.length; i++) {
-    const item = data.items[i];
-    if (item?.kind === 'file' && item.type.startsWith('image/')) add(item.getAsFile());
-  }
-  return images;
 }
 
 function shouldTryNativeClipboardImageFallback(data: DataTransfer): boolean {

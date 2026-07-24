@@ -153,7 +153,11 @@ export function FileViewer({ snapshot, onSnapshotChange }: FileViewerProps): JSX
                   ? 'bg-accent/10 text-accent-ink'
                   : 'text-fg-muted hover:text-fg-primary'
               }`}
-              title={networkAccess ? t('fileViewer.disableNetwork') : t('fileViewer.enableNetwork')}
+              title={
+                networkAccess
+                  ? t('fileViewer.networkAllowedStatus')
+                  : t('fileViewer.networkRestrictedStatus')
+              }
               aria-label={
                 networkAccess ? t('fileViewer.disableNetwork') : t('fileViewer.enableNetwork')
               }

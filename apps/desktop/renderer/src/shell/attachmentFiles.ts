@@ -35,6 +35,41 @@ export function isSupportedInlineImage(file: Pick<File, 'name' | 'type'>): boole
   return inlineImageMediaType(file) !== null;
 }
 
+function uniqueImageFiles(files: ArrayLike<File | null>): File[] {
+  const images: File[] = [];
+  const seen = new Set<string>();
+  for (let index = 0; index < files.length; index += 1) {
+    const file = files[index];
+    if (!file || !file.type.startsWith('image/')) continue;
+    const key = `${file.name}:${file.size}:${file.type}:${file.lastModified}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    images.push(file);
+  }
+  return images;
+}
+
+/**
+ * Read image files from one canonical clipboard representation.
+ * Chromium can expose the same pasted bitmap through both `files` and `items`,
+ * with different generated names or timestamps. Merging both lists therefore
+ * creates two pending artifacts for a single paste. Prefer `files`, then fall
+ * back to `items` for clipboard implementations that leave `files` empty.
+ */
+export function clipboardImageFiles(data: Pick<DataTransfer, 'files' | 'items'>): File[] {
+  const files = uniqueImageFiles(data.files);
+  if (files.length > 0) return files;
+
+  const itemFiles: Array<File | null> = [];
+  for (let index = 0; index < data.items.length; index += 1) {
+    const item = data.items[index];
+    if (item?.kind === 'file' && item.type.startsWith('image/')) {
+      itemFiles.push(item.getAsFile());
+    }
+  }
+  return uniqueImageFiles(itemFiles);
+}
+
 export interface PendingAttachmentGate {
   begin(): () => void;
   isPending(): boolean;

@@ -126,7 +126,11 @@ export function PartnerWorkspace({
         </button>
       </div>
       <div className="flex flex-1 min-h-0">
-        {showSources && <SourcesPanel />}
+        {sourcesOpen && (
+          <div className={sourcesAutoHidden ? 'hidden' : 'contents'}>
+            <SourcesPanel />
+          </div>
+        )}
         <PartnerConversation />
       </div>
       <PartnerEvidenceDetail />

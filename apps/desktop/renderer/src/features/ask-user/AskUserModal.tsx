@@ -17,6 +17,7 @@ import { floatingSurfaceForBlockingModal } from '../../shell/floatingSurfacePoli
 import { useI18n } from '../../i18n/I18nProvider.js';
 import type { MessageKey } from '../../i18n/messages.js';
 import { buildAskUserInteractionKey } from './ask-user-state.js';
+import { interactionsForSession } from '../session/sessionInteractionRouting.js';
 
 const SEVERITY_STYLE: Record<AskUserSignal['severity'], string> = {
   info: 'bg-info/12 text-info',
@@ -109,8 +110,13 @@ function customInputLabel(question: QuestionPayload, t: Translate): string {
 export function AskUserModal(): JSX.Element | null {
   const { t } = useI18n();
   const queue = useAppStore((s) => s.askUserQueue);
+  const currentSessionId = useAppStore((s) => s.currentSessionId);
   const dequeue = useAppStore((s) => s.dequeueAskUser);
-  const head = queue[0] ?? null;
+  const sessionQueue = useMemo(
+    () => interactionsForSession(queue, currentSessionId),
+    [queue, currentSessionId],
+  );
+  const head = sessionQueue[0] ?? null;
 
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -343,9 +349,9 @@ export function AskUserModal(): JSX.Element | null {
           <h2 id="ask-user-modal-title" className="text-sm font-semibold text-fg-primary">
             {title}
           </h2>
-          {queue.length > 1 && (
+          {sessionQueue.length > 1 && (
             <span className="ml-auto text-[11px] font-mono text-fg-muted">
-              {t('askUser.pendingCount', { count: queue.length - 1 })}
+              {t('askUser.pendingCount', { count: sessionQueue.length - 1 })}
             </span>
           )}
         </div>

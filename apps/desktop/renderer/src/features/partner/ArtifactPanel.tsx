@@ -10,6 +10,7 @@ import { ArtifactsView } from '../artifact/ArtifactsView';
 import {
   FOCUS_ARTIFACT_EVENT,
   OPEN_FILE_VIEWER_EVENT,
+  getLastOpenedFileViewerSnapshot,
   isFileViewerSnapshot,
   type FocusArtifactEventDetail,
   type OpenFileViewerEventDetail,
@@ -56,6 +57,12 @@ export function ArtifactPanel(): JSX.Element {
   useEffect(() => {
     setFileViewerSnapshot(null);
     setActiveTab((current) => (current === 'fileViewer' ? 'artifacts' : current));
+  }, [currentProjectPath]);
+  useEffect(() => {
+    const snapshot = getLastOpenedFileViewerSnapshot(currentProjectPath);
+    if (!snapshot) return;
+    setFileViewerSnapshot(snapshot);
+    setActiveTab('fileViewer');
   }, [currentProjectPath]);
   return (
     <aside

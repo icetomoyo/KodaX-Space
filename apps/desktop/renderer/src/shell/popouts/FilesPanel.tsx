@@ -7,6 +7,7 @@ import { extOf } from '../../lib/pathClassify.js';
 import { useAppStore } from '../../store/appStore.js';
 import { useI18n } from '../../i18n/I18nProvider.js';
 import { FileActionMenu } from '../FileActionMenu.js';
+import { SidebarFooter } from '../SidebarFooter.js';
 
 interface FileMenuState {
   readonly path: string;
@@ -18,12 +19,14 @@ interface FilesPanelProps {
   readonly width?: number;
   readonly asSidebar?: boolean;
   readonly onBack?: () => void;
+  readonly onOpenSettings?: () => void;
 }
 
 export function FilesPanel({
   width,
   asSidebar = false,
   onBack,
+  onOpenSettings,
 }: FilesPanelProps = {}): JSX.Element {
   const { t } = useI18n();
   const projectRoot = useAppStore((s) => s.currentProjectPath);
@@ -144,6 +147,7 @@ export function FilesPanel({
             <div className="mt-1 text-xs leading-relaxed">{t('files.noProjectBody')}</div>
           </div>
         </div>
+        {asSidebar && onOpenSettings && <SidebarFooter onOpenSettings={onOpenSettings} />}
       </div>
     );
   }
@@ -217,6 +221,8 @@ export function FilesPanel({
           </div>
         )}
       </div>
+
+      {asSidebar && onOpenSettings && <SidebarFooter onOpenSettings={onOpenSettings} />}
 
       {fileMenu && (
         <FileActionMenu

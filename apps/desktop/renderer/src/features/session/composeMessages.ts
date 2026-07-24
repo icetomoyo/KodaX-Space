@@ -193,12 +193,14 @@ export function composeMessages({
     }
 
     const userMsg = local.userMsg;
-    result.push({
-      kind: 'user',
-      id: userMsg.id,
-      content: userMsg.content,
-      sentAt: userMsg.sentAt,
-    });
+    if (userMsg.hiddenHistoryAnchor !== true) {
+      result.push({
+        kind: 'user',
+        id: userMsg.id,
+        content: userMsg.content,
+        sentAt: userMsg.sentAt,
+      });
+    }
     if (userMsg.historyNoAssistantSegment === true) {
       continue;
     }

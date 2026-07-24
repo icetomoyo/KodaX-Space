@@ -46,6 +46,31 @@ export interface OpenFileViewerEventDetail {
   snapshot: TransientArtifactSnapshot;
 }
 
+let lastOpenedFileViewerSnapshot: TransientArtifactSnapshot | null = null;
+
+/**
+ * Publish a File Viewer request and retain it across a responsive sidebar mount.
+ *
+ * Partner can auto-hide its right sidebar at narrower widths. In that state the
+ * first event has no mounted listener, so an event-only handoff loses the file
+ * and the newly opened sidebar falls back to its default Artifacts tab.
+ */
+export function dispatchOpenFileViewer(snapshot: TransientArtifactSnapshot): void {
+  lastOpenedFileViewerSnapshot = snapshot;
+  window.dispatchEvent(new CustomEvent(OPEN_FILE_VIEWER_EVENT, { detail: { snapshot } }));
+}
+
+export function getLastOpenedFileViewerSnapshot(
+  projectRoot: string | null,
+): TransientArtifactSnapshot | null {
+  const snapshot = lastOpenedFileViewerSnapshot;
+  if (!snapshot) return null;
+  if (!projectRoot || !snapshot.projectRoot) return snapshot;
+  return snapshot.projectRoot.localeCompare(projectRoot, undefined, { sensitivity: 'accent' }) === 0
+    ? snapshot
+    : null;
+}
+
 export function isFileViewerSnapshot(
   snapshot: TransientArtifactSnapshot | null | undefined,
 ): boolean {

@@ -48,6 +48,9 @@ export function useSessionStatus(sessionId: string | null): SessionStatus {
     ) {
       return 'awaiting';
     }
+    // Renderer queues can arrive one frame before the Runtime projection catches up. Human input
+    // must still outrank running/error so the sidebar never loses the actionable signal.
+    if (awaitingPermission || awaitingAskUser) return 'awaiting';
     if (runtimeLive?.activeRun || (runtimeLive?.queuedRuns.length ?? 0) > 0) return 'running';
     if (
       runtimeLive?.lastTerminalRun?.phase === 'failed' ||
@@ -55,7 +58,6 @@ export function useSessionStatus(sessionId: string | null): SessionStatus {
     ) {
       return 'error';
     }
-    if (awaitingPermission || awaitingAskUser) return 'awaiting';
     // 倒扫 events 找最近一条 session lifecycle —— complete/error 表示已结束
     if (events) {
       for (let i = events.length - 1; i >= 0; i--) {
@@ -71,15 +73,7 @@ export function useSessionStatus(sessionId: string | null): SessionStatus {
     }
     if (pending) return 'running';
     return 'idle';
-  }, [
-    sessionId,
-    pending,
-    events,
-    awaitingPermission,
-    awaitingAskUser,
-    errorSeenAt,
-    runtimeLive,
-  ]);
+  }, [sessionId, pending, events, awaitingPermission, awaitingAskUser, errorSeenAt, runtimeLive]);
 }
 
 /**
@@ -111,6 +105,10 @@ export function useSessionStatusMap(
         out[sid] = 'awaiting';
         continue;
       }
+      if (permissionSids.has(sid) || askUserSids.has(sid)) {
+        out[sid] = 'awaiting';
+        continue;
+      }
       if (runtimeLive?.activeRun || (runtimeLive?.queuedRuns.length ?? 0) > 0) {
         out[sid] = 'running';
         continue;
@@ -120,10 +118,6 @@ export function useSessionStatusMap(
         runtimeLive?.lastTerminalRun?.phase === 'interrupted'
       ) {
         out[sid] = 'error';
-        continue;
-      }
-      if (permissionSids.has(sid) || askUserSids.has(sid)) {
-        out[sid] = 'awaiting';
         continue;
       }
       const events = eventsMap[sid];

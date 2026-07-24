@@ -28,6 +28,7 @@ import { selectPermissionBatch } from './permissionBatching.js';
 import { useI18n } from '../../i18n/I18nProvider.js';
 import type { MessageKey } from '../../i18n/messages.js';
 import { permissionGrantPresentation } from './permissionGrantPresentation.js';
+import { interactionsForSession } from '../session/sessionInteractionRouting.js';
 
 // Risk badge 颜色. Dark 模式: 深色实底 + 淡色文字 (经典 badge 风);
 // Light 模式: 淡色实底 + 深色文字 — 视觉等价倒置, 在白底卡片上仍清晰.
@@ -100,9 +101,14 @@ function permissionTarget(input: Record<string, unknown> | undefined): string | 
 export function PermissionModal(): JSX.Element | null {
   const { t } = useI18n();
   const queue = useAppStore((s) => s.permissionQueue);
+  const currentSessionId = useAppStore((s) => s.currentSessionId);
   const dequeue = useAppStore((s) => s.dequeuePermission);
+  const sessionQueue = useMemo(
+    () => interactionsForSession(queue, currentSessionId),
+    [queue, currentSessionId],
+  );
   // KX-I-05: queue 头部"同 session + 非 danger"连续 ≥ 2 条时合并成 batch 视图。
-  const selection = useMemo(() => selectPermissionBatch(queue), [queue]);
+  const selection = useMemo(() => selectPermissionBatch(sessionQueue), [sessionQueue]);
   const head = selection.mode === 'single' ? selection.head : selection.items[0]!;
 
   // 每次切换 head（新弹窗）重置本地状态
@@ -236,9 +242,9 @@ export function PermissionModal(): JSX.Element | null {
           <h2 id="permission-modal-title" className="text-sm font-semibold text-fg-primary">
             {t('permission.title')}
           </h2>
-          {queue.length > 1 && (
+          {sessionQueue.length > 1 && (
             <span className="ml-auto text-[11px] font-mono text-fg-muted">
-              {t('permission.pendingCount', { count: queue.length - 1 })}
+              {t('permission.pendingCount', { count: sessionQueue.length - 1 })}
             </span>
           )}
         </div>

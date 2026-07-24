@@ -19,6 +19,7 @@ import { useAppStore } from '../../store/appStore.js';
 import { useI18n } from '../../i18n/I18nProvider.js';
 import { FileNameText } from '../../components/FileNameText.js';
 import { previewFileInViewer } from '../../lib/openPath.js';
+import { requestConfirm } from '../../store/confirmStore.js';
 import { FileTree } from '../code/FileTree.js';
 import { AdminAuditPanel } from './AdminAuditPanel.js';
 import { KnowledgeBasePanel } from './KnowledgeBasePanel.js';
@@ -242,7 +243,12 @@ export function SourcesPanel(): JSX.Element {
   async function removeProjectMaterial(sourceId: string): Promise<void> {
     const bridge = window.kodaxSpace;
     if (!bridge || !currentProjectPath || !currentSessionId) return;
-    const confirmed = window.confirm(t('partner.sources.removeProjectConfirm'));
+    const confirmed = await requestConfirm({
+      title: t('partner.sources.removeProject'),
+      message: t('partner.sources.removeProjectConfirm'),
+      confirmLabel: t('partner.sources.removeProject'),
+      danger: true,
+    });
     if (!confirmed) return;
     setBusy(true);
     setError(null);

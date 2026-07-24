@@ -17,7 +17,7 @@
 // 接 surface store）；LeftSidebar 是两 surface 共用的全局导航（项目 / session / surface tab）。
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Plus, ChevronDown, Ellipsis, FolderTree, Settings, Pin, SquarePen } from 'lucide-react';
+import { Plus, ChevronDown, Ellipsis, FolderTree, Monitor, Pin, SquarePen } from 'lucide-react';
 import { SurfaceTabs } from './SurfaceTabs.js';
 import { useAppStore } from '../store/appStore.js';
 import { useSurfaceStore } from '../store/surface.js';
@@ -32,13 +32,16 @@ import { SessionContextMenu } from './SessionContextMenu.js';
 import { ProjectContextMenu } from './ProjectContextMenu.js';
 import { ProjectSessionPicker } from './ProjectSessionPicker.js';
 import { RecentsFilterMenu } from './RecentsFilterMenu.js';
-import { SettingsModal } from '../features/settings/SettingsModal.js';
+import { SidebarFooter } from './SidebarFooter.js';
 import { WorkflowNavPanel } from '../features/workflow/WorkflowNavPanel.js';
 import { useSessionStatusMap, type SessionStatus } from '../features/session/useSessionStatus.js';
+import { SessionAwaitingIndicator } from '../features/session/SessionAwaitingIndicator.js';
+import { prioritizeAttentionItems } from '../features/session/sessionInteractionRouting.js';
 import { pushToast } from '../store/toastStore.js';
 import type { Project } from '@kodax-space/space-ipc-schema';
 import { useI18n } from '../i18n/I18nProvider.js';
 import { invokeWithTimeout } from '../lib/ipcInvokeWithTimeout.js';
+import { runningPeerAction } from './runningPeerAction.js';
 
 type SessionLoadPhase = 'loading' | 'loaded' | 'error';
 type SessionLoadStateByScope = Readonly<Record<string, SessionLoadPhase | undefined>>;
@@ -69,12 +72,14 @@ interface LeftSidebarProps {
   width?: number;
   readonly filesActive?: boolean;
   readonly onOpenFiles?: () => void;
+  readonly onOpenSettings: () => void;
 }
 
 export function LeftSidebar({
   width,
   filesActive = false,
   onOpenFiles,
+  onOpenSettings,
 }: LeftSidebarProps): JSX.Element {
   const { t } = useI18n();
   const sessions = useAppStore((s) => s.sessions);
@@ -165,9 +170,6 @@ export function LeftSidebar({
     onOpenFiles?.();
   }
 
-  // OC-29: 底栏 ⚙ 打开 unified SettingsModal (默认 Preferences tab)
-  const [settingsOpen, setSettingsOpen] = useState(false);
-
   // open/setOpen 由 Shell 顶层 breadcrumb 行的 SidebarToggleButton 直接管理；
   // open=false 时 Shell 不会渲染本组件（不再保留竖条占位 — 避免无信息密度的 dead zone）
 
@@ -233,24 +235,7 @@ export function LeftSidebar({
         />
       </div>
 
-      {/* Bottom: app label + settings entry */}
-      <div className="border-t border-border-default px-3 py-2 text-[11px] text-fg-muted flex items-center justify-between gap-2 flex-shrink-0">
-        <span className="min-w-0 truncate">KodaX Space</span>
-        <button
-          type="button"
-          onClick={() => setSettingsOpen(true)}
-          data-testid="settings-button"
-          className="ix-pop inline-flex shrink-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-fg-secondary hover:bg-hover-bg hover:text-fg-primary"
-          aria-label={t('common.settings')}
-          title={t('common.settings')}
-        >
-          <Settings className="w-4 h-4" strokeWidth={1.75} aria-hidden />
-          <span>{t('common.settings')}</span>
-        </button>
-      </div>
-      {settingsOpen && (
-        <SettingsModal initialTab="preferences" onClose={() => setSettingsOpen(false)} />
-      )}
+      <SidebarFooter onOpenSettings={onOpenSettings} />
     </aside>
   );
 }
@@ -444,6 +429,10 @@ function ProjectTree({
       (acc, s) => (statusMap[s.sessionId] === 'running' ? acc + 1 : acc),
       0,
     );
+    const awaitingCount = projSessions.reduce(
+      (acc, s) => (statusMap[s.sessionId] === 'awaiting' ? acc + 1 : acc),
+      0,
+    );
     const isRenaming = renamingPath === proj.path;
 
     // v0.1.9 Step 7 — DnD: 项目 row 整行 draggable。archived 项目不参与排序(语义上"已归档"
@@ -546,6 +535,20 @@ function ProjectTree({
               {proj.name}
             </button>
           )}
+          {awaitingCount > 0 && !isRenaming && (
+            <span
+              className="text-warn text-[11px] flex-shrink-0 font-mono inline-flex items-center gap-1"
+              aria-label={t('sidebar.awaitingCountAria', { count: awaitingCount })}
+              title={t('sidebar.awaitingCountTitle', { count: awaitingCount })}
+            >
+              <SessionAwaitingIndicator
+                mini
+                decorative
+                label={t('sidebar.awaitingCountTitle', { count: awaitingCount })}
+              />
+              {awaitingCount}
+            </span>
+          )}
           {runningCount > 0 && !isRenaming && (
             <span
               className="text-run text-[11px] flex-shrink-0 font-mono inline-flex items-center gap-1"
@@ -556,7 +559,7 @@ function ProjectTree({
               {runningCount}
             </span>
           )}
-          {isInitialSessionLoad && runningCount === 0 && !isRenaming && (
+          {isInitialSessionLoad && runningCount === 0 && awaitingCount === 0 && !isRenaming && (
             <span
               className="sidebar-session-load-spinner"
               aria-hidden
@@ -861,20 +864,17 @@ function SessionTree({
   // 内联 rename：哪个 session 正在编辑（点 Rename / 双击触发）
   const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
 
-  // cap visible 行数。规则：
-  //  1. 没设 maxVisible → 全显（legacy）
-  //  2. 设了 maxVisible → 取前 maxVisible 条；如果 currentSessionId 在 rendered 里但
-  //     不在 maxVisible 前缀，用 current 替换末尾一条（用户至少能看到自己当前选中的那条，
-  //     同时仍遵守内联数量上限）。
+  // cap visible 行数。当前 Session 优先，其次是正在等待用户处理的 Session，避免关键交互
+  // 被默认展示上限藏住；其余行仍保持原有顺序。
   const cappedRendered = useMemo(() => {
     if (maxVisible === undefined || rendered.length <= maxVisible) return rendered;
-    const head = rendered.slice(0, maxVisible);
-    if (currentSessionId === null) return head;
-    if (head.some((n) => n.session.sessionId === currentSessionId)) return head;
-    const currentNode = rendered.find((n) => n.session.sessionId === currentSessionId);
-    if (currentNode === undefined) return head;
-    return [currentNode, ...head.slice(0, Math.max(maxVisible - 1, 0))];
-  }, [rendered, maxVisible, currentSessionId]);
+    return prioritizeAttentionItems(rendered, {
+      maxVisible,
+      currentId: currentSessionId,
+      getId: (node) => node.session.sessionId,
+      isAwaiting: (node) => statusFor?.(node.session.sessionId) === 'awaiting',
+    });
+  }, [rendered, maxVisible, currentSessionId, statusFor]);
   const overflowCount = maxVisible !== undefined ? rendered.length - cappedRendered.length : 0;
   const effectiveInitialVisible = initialVisible ?? maxVisible ?? rendered.length;
   const effectiveMaxInlineVisible = maxInlineVisible ?? maxVisible ?? rendered.length;
@@ -1110,11 +1110,12 @@ function SessionRow({
                 title={t('sidebar.status.unread')}
               />
             )}
-            {status && status !== 'idle' && (
+            {status === 'awaiting' && statusLabel && (
+              <SessionAwaitingIndicator label={statusLabel} />
+            )}
+            {status === 'error' && (
               <span
-                className={`h-1.5 w-1.5 rounded-full ${
-                  status === 'awaiting' ? 'bg-warn' : 'bg-danger'
-                }`}
+                className="h-1.5 w-1.5 rounded-full bg-danger"
                 aria-label={statusLabel ?? undefined}
                 title={statusLabel ?? undefined}
               />
@@ -1190,15 +1191,19 @@ function RenameInput({
 // F017 Running peers panel — 列其他 KodaX 进程当前活动的 session。
 //   - 数据源：SDK listRunningSessions() 通过 session.listRunning IPC
 //   - 轮询：10s 一次（cheap — 走 instance-state 文件读，不开 socket）
-//   - 点击有 sessionId 的 peer → setCurrentSession (Space tryResume 会从 disk 读 jsonl)
-//     注：CLI 还在跑时 Space 接管会和 CLI 双写 jsonl；KodaX storage 有 serializedWrite
-//     队列防腐败，但内容会乱序。v1 当"只读 / passive resume"语义；显式 takeover SDK 没出
+//   - 只允许打开 renderer 权威 session 列表中已经存在的 session；未知 peer 只给解释提示，
+//     避免把孤立 id 写入 currentSessionId 后进入空白会话
 //   - peers 为空时 panel 不渲染（不占侧栏空间）
 function RunningPeersPanel(): JSX.Element | null {
   const { t } = useI18n();
   const [peers, setPeers] = useState<readonly RunningSessionInfoT[]>(EMPTY_PEERS);
+  const sessions = useAppStore((s) => s.sessions);
   const setCurrentSession = useAppStore((s) => s.setCurrentSession);
   const currentSessionId = useAppStore((s) => s.currentSessionId);
+  const knownSessionIds = useMemo(
+    () => new Set(sessions.map((session) => session.sessionId)),
+    [sessions],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -1236,6 +1241,9 @@ function RunningPeersPanel(): JSX.Element | null {
         <span aria-hidden className="w-1.5 h-1.5 rounded-full bg-ok" />
         <span>{t('sidebar.runningPeers.count', { count: peers.length })}</span>
       </div>
+      <div className="mb-1 px-1 text-[10px] leading-4 text-fg-faint">
+        {t('sidebar.runningPeers.hint')}
+      </div>
       {peers.map((p) => {
         const cwdName = (p.cwd.split(/[\\/]/).filter(Boolean).pop() ?? p.cwd).slice(0, 32);
         const ageSec = Math.max(0, Math.floor((Date.now() - p.startedAt) / 1000));
@@ -1245,35 +1253,41 @@ function RunningPeersPanel(): JSX.Element | null {
             : ageSec < 3600
               ? `${Math.floor(ageSec / 60)}m`
               : `${Math.floor(ageSec / 3600)}h`;
-        const isClickable = p.sessionId !== undefined && p.sessionId !== currentSessionId;
+        const action = runningPeerAction(p.sessionId, currentSessionId, knownSessionIds);
         return (
           <button
             key={`${p.pid}-${p.sessionId ?? 'bootstrapping'}`}
             type="button"
-            onClick={() => p.sessionId && setCurrentSession(p.sessionId)}
-            disabled={!isClickable}
+            onClick={() => {
+              if (action === 'open' && p.sessionId) {
+                setCurrentSession(p.sessionId);
+                return;
+              }
+              if (action === 'explain') {
+                pushToast(t('sidebar.runningPeers.continueInPeer'), 'info', 5000);
+              }
+            }}
+            disabled={action === 'none'}
             className={[
               'w-full text-left text-xs px-1.5 py-1 rounded flex items-center gap-1.5',
-              isClickable
+              action !== 'none'
                 ? 'hover:bg-hover-bg text-fg-secondary cursor-pointer'
                 : 'text-fg-muted cursor-default',
             ].join(' ')}
             title={
-              p.sessionId
+              action === 'open' && p.sessionId
                 ? t('sidebar.runningPeers.openTitle', {
                     pid: p.pid,
                     sessionId: p.sessionId,
                     cwd: p.cwd,
                   })
-                : t('sidebar.runningPeers.bootstrappingTitle', {
+                : t('sidebar.runningPeers.instanceTitle', {
                     pid: p.pid,
                     cwd: p.cwd,
                   })
             }
           >
-            <span aria-hidden className="text-fg-faint font-mono flex-shrink-0">
-              ⚙
-            </span>
+            <Monitor size={12} aria-hidden className="flex-shrink-0 text-fg-faint" />
             <span className="truncate flex-1">{cwdName}</span>
             <span className="text-[9px] text-fg-muted font-mono flex-shrink-0">{ageLabel}</span>
           </button>

@@ -53,6 +53,7 @@ import { useTranscriptArtifacts } from '../features/artifact/useTranscriptArtifa
 import {
   FOCUS_ARTIFACT_EVENT,
   OPEN_FILE_VIEWER_EVENT,
+  getLastOpenedFileViewerSnapshot,
   isFileViewerSnapshot,
   type FocusArtifactEventDetail,
   type OpenFileViewerEventDetail,
@@ -197,6 +198,12 @@ export function RightSidebar({
     window.addEventListener(OPEN_FILE_VIEWER_EVENT, onOpenFile);
     return () => window.removeEventListener(OPEN_FILE_VIEWER_EVENT, onOpenFile);
   }, []);
+  useEffect(() => {
+    const snapshot = getLastOpenedFileViewerSnapshot(currentProjectPath);
+    if (!snapshot) return;
+    setFileViewerSnapshot(snapshot);
+    setTab('file');
+  }, [currentProjectPath]);
 
   // If artifacts disappear, overview is the safe fallback.
   const showArtifact = hasArtifactSurface && tab === 'artifact';
@@ -858,27 +865,58 @@ function ExternalAgentTasksSection(): JSX.Element | null {
     };
   }, [currentSessionId, refresh]);
 
-  async function loadEvents(taskId: string, sessionId = currentSessionId): Promise<void> {
-    if (!window.kodaxSpace || !sessionId) return;
-    const events: ExternalAgentTaskEventT[] = [];
-    let cursor = 0;
-    for (let page = 0; page < 8; page += 1) {
-      const result = await window.kodaxSpace.invoke('agent.external.task.events', {
-        sessionId,
-        taskId,
-        cursor,
-      });
-      if (activeSessionRef.current !== sessionId) return;
-      if (!result.ok) {
-        setError(result.error.message);
-        return;
+  const loadEvents = useCallback(
+    async (
+      taskId: string,
+      sessionId = currentSessionId,
+    ): Promise<ExternalAgentTaskEventT[] | null> => {
+      if (!window.kodaxSpace || !sessionId) return null;
+      const events: ExternalAgentTaskEventT[] = [];
+      let cursor = 0;
+      for (let page = 0; page < 8; page += 1) {
+        const result = await window.kodaxSpace.invoke('agent.external.task.events', {
+          sessionId,
+          taskId,
+          cursor,
+        });
+        if (activeSessionRef.current !== sessionId) return null;
+        if (!result.ok) {
+          setError(result.error.message);
+          return null;
+        }
+        events.push(...result.data.events);
+        if (result.data.events.length < 512 || result.data.nextCursor <= cursor) break;
+        cursor = result.data.nextCursor;
       }
-      events.push(...result.data.events);
-      if (result.data.events.length < 512 || result.data.nextCursor <= cursor) break;
-      cursor = result.data.nextCursor;
+      setEventsByTask((current) => ({ ...current, [taskId]: events }));
+      return events;
+    },
+    [currentSessionId],
+  );
+
+  const expandedTask = tasks.find((task) => task.taskId === expandedTaskId);
+  const expandedTaskUpdatedAt = expandedTask?.updatedAt ?? null;
+  const expandedTaskState = expandedTask?.state ?? null;
+  useEffect(() => {
+    if (!expandedTaskId || !currentSessionId || !expandedTaskUpdatedAt || !expandedTaskState) {
+      return;
     }
-    setEventsByTask((current) => ({ ...current, [taskId]: events }));
-  }
+    let cancelled = false;
+    let timer: number | null = null;
+    const refreshAudit = async (attempt: number): Promise<void> => {
+      const events = await loadEvents(expandedTaskId, currentSessionId);
+      if (cancelled || !events || !isExternalTaskTerminal(expandedTaskState)) return;
+      const hasTerminalEvent = events.some((event) => event.state === expandedTaskState);
+      if (hasTerminalEvent || attempt >= 7) return;
+      const delayMs = Math.min(250 * 2 ** attempt, 2_000);
+      timer = window.setTimeout(() => void refreshAudit(attempt + 1), delayMs);
+    };
+    void refreshAudit(0);
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [currentSessionId, expandedTaskId, expandedTaskState, expandedTaskUpdatedAt, loadEvents]);
 
   async function toggleDetails(taskId: string): Promise<void> {
     const next = expandedTaskId === taskId ? null : taskId;
@@ -1108,7 +1146,9 @@ function ExternalAgentTasksSection(): JSX.Element | null {
                       {t('right.externalAgentTokens', { count: task.usage.totalTokens })}
                     </div>
                   )}
-                  <ExternalAgentEventTimeline events={eventsByTask[task.taskId] ?? []} />
+                  <ExternalAgentEventTimeline
+                    events={projectExternalAgentAudit(task, eventsByTask[task.taskId] ?? [])}
+                  />
                 </div>
               )}
             </article>
@@ -1130,7 +1170,10 @@ function ExternalAgentEventTimeline({
   return (
     <ol className="space-y-1" aria-label={t('right.externalAgentEventLog')}>
       {events.map((event) => (
-        <li key={`${event.taskId}:${event.seq}`} className="flex gap-2 text-[10px] text-fg-muted">
+        <li
+          key={`${event.taskId}:${event.seq}:${event.type}`}
+          className="flex gap-2 text-[10px] text-fg-muted"
+        >
           <span className="w-5 shrink-0 font-mono text-fg-faint">#{event.seq}</span>
           <span className="w-16 shrink-0 text-fg-secondary">{event.type}</span>
           <span className="min-w-0 break-words">
@@ -1143,6 +1186,30 @@ function ExternalAgentEventTimeline({
       ))}
     </ol>
   );
+}
+
+function projectExternalAgentAudit(
+  task: ExternalAgentTaskT,
+  events: readonly ExternalAgentTaskEventT[],
+): readonly ExternalAgentTaskEventT[] {
+  if (
+    !isExternalTaskTerminal(task.state) ||
+    events.some((event) => event.type === 'state' && event.state === task.state)
+  ) {
+    return events;
+  }
+  // The durable task snapshot is authoritative even when KodaX 0.7.74 writes
+  // its terminal snapshot immediately after output without a final state event.
+  return [
+    ...events,
+    {
+      taskId: task.taskId,
+      seq: events.reduce((next, event) => Math.max(next, event.seq), 0) + 1,
+      timestamp: task.updatedAt,
+      type: 'state',
+      state: task.state,
+    },
+  ];
 }
 
 function isExternalTaskTerminal(state: ExternalAgentTaskT['state']): boolean {

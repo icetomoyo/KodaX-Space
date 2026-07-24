@@ -14,7 +14,7 @@ import { useSurfaceStore } from '../store/surface.js';
 import { pushToast } from '../store/toastStore.js';
 import { translateMessage } from '../i18n/I18nProvider.js';
 import {
-  OPEN_FILE_VIEWER_EVENT,
+  dispatchOpenFileViewer,
   type TransientArtifactSnapshot,
 } from '../features/artifact/transientArtifact.js';
 import {
@@ -112,11 +112,7 @@ function filePreviewSnapshot(detail: {
 
 function openFileViewerInSidebar(snapshot: TransientArtifactSnapshot): void {
   useAppStore.getState().setRightSidebarOpen(true);
-  const dispatch = (): void => {
-    window.dispatchEvent(new CustomEvent(OPEN_FILE_VIEWER_EVENT, { detail: { snapshot } }));
-  };
-  dispatch();
-  window.setTimeout(dispatch, 0);
+  dispatchOpenFileViewer(snapshot);
 }
 
 type PartnerDeliveryOpenResult = PartnerDeliveryResolveStatusT | 'opened' | 'unavailable';

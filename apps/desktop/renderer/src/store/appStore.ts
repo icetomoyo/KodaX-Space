@@ -133,6 +133,11 @@ export interface UserMessage {
   readonly content: string;
   readonly sentAt: number;
   readonly historyNoAssistantSegment?: boolean;
+  /**
+   * Internal replay anchor for transcripts that begin with assistant/tool output.
+   * It keeps event segments aligned without presenting a fabricated empty user bubble.
+   */
+  readonly hiddenHistoryAnchor?: boolean;
 }
 
 export interface LocalNoticeMessage {
@@ -1614,12 +1619,17 @@ export const useAppStore = create<AppState>((set) => ({
       // composeMessages 按 userMessages 索引配对 events 段。如果 items 以 assistant
       // 或 tool_call 开头 (KodaX 偶尔会有 greeting / initiative turn 没有 user prompt),
       // 这些前置 events 会落到 tail 块,把后续真正 turn 的 (user, events) 配对全推错位。
-      // 解决: 第一条非 user item 触发前如果 histMsgs 还空,先塞一条空 user 占位 (sentAt
-      // 用 fallback),让索引对齐。这条占位用户能看到一个空白 user 气泡,体验比错位好。
-      const ensureLeadingUserSentinel = (): void => {
+      // 解决: 第一条非 user item 触发前如果 histMsgs 还空,先塞一条隐藏的历史锚点
+      // (sentAt 用 fallback),让索引对齐，但不把内部锚点渲染成空白 user 气泡。
+      const ensureLeadingHistoryAnchor = (): void => {
         if (histMsgs.length === 0) {
           const id = `u_${sessionId}_${++userMessageCounter}`;
-          histMsgs.push({ id, content: '', sentAt: nextHistoricalUserSentAt(fallbackSentAt) });
+          histMsgs.push({
+            id,
+            content: '',
+            sentAt: nextHistoricalUserSentAt(fallbackSentAt),
+            hiddenHistoryAnchor: true,
+          });
           openUserWithoutAssistant = true;
         }
       };
@@ -1639,7 +1649,7 @@ export const useAppStore = create<AppState>((set) => ({
           });
           openUserWithoutAssistant = true;
         } else if (item.kind === 'assistant') {
-          ensureLeadingUserSentinel();
+          ensureLeadingHistoryAnchor();
           const assistantSentAt =
             item.sentAt ?? histMsgs[histMsgs.length - 1]?.sentAt ?? fallbackSentAt;
           if (item.thinking !== undefined && item.thinking.length > 0) {
@@ -1660,7 +1670,7 @@ export const useAppStore = create<AppState>((set) => ({
           }
           markTurnHasEvents();
         } else if (item.kind === 'sidecar_message') {
-          ensureLeadingUserSentinel();
+          ensureLeadingHistoryAnchor();
           histEvents.push({
             kind: 'sidecar_message',
             sessionId,
@@ -1671,7 +1681,7 @@ export const useAppStore = create<AppState>((set) => ({
           // #3 fix: fork/rewind 产生的 branch_summary / compaction 摘要——不是用户消息，
           // 路由到非 user 的 lineage_notice 事件，composeMessages 渲染成 system_notice
           // (variant='lineage')，不再显示成假的用户气泡。
-          ensureLeadingUserSentinel();
+          ensureLeadingHistoryAnchor();
           histEvents.push({
             kind: 'lineage_notice',
             sessionId,
@@ -1695,7 +1705,7 @@ export const useAppStore = create<AppState>((set) => ({
           // Workflow 结果/失败提示条:SDK 把它作为 `<task-completed>` 合成消息存进 transcript,
           // session.history 识别后发这个 kind。路由成 workflow_notice 事件 → composeMessages
           // 原位渲染成 system_notice(variant='workflow'),不再走侧存储按 wall-clock 重排。
-          ensureLeadingUserSentinel();
+          ensureLeadingHistoryAnchor();
           histEvents.push({ kind: 'workflow_notice', sessionId, text: item.text });
           markTurnHasEvents();
         } else if (item.kind === 'local_notice') {
@@ -1708,7 +1718,7 @@ export const useAppStore = create<AppState>((set) => ({
         } else {
           // tool_call: emit tool_start + (optional) tool_result。 result 缺失时 (history 损坏
           // 或 tool_use 没匹配上 tool_result) 仍 emit tool_start 让 UI 显示一张 "running" 卡片。
-          ensureLeadingUserSentinel();
+          ensureLeadingHistoryAnchor();
           histEvents.push({
             kind: 'tool_start',
             sessionId,
