@@ -430,7 +430,7 @@ export interface RuntimeHostAdapterOptions {
 }
 
 const MAX_DIAGNOSTIC_ERROR = 512;
-const MINIMUM_KODAX_RUNTIME_VERSION = [0, 7, 74] as const;
+const MINIMUM_KODAX_RUNTIME_VERSION = [0, 7, 75] as const;
 
 export function resolveRuntimeHostMode(value: string | undefined): RuntimeHostMode {
   return value?.trim().toLowerCase() === 'legacy' ? 'legacy' : 'runtime';
@@ -447,7 +447,7 @@ function assertMinimumRuntimeVersion(version: string): void {
     }
   }
   throw new Error(
-    `KodaX Runtime ${version || '(unknown)'} is older than the required 0.7.74 baseline. ` +
+    `KodaX Runtime ${version || '(unknown)'} is older than the required 0.7.75 baseline. ` +
       'Restart the Coder daemon after updating KodaX; Space will not reuse an older daemon.',
   );
 }
@@ -1471,7 +1471,7 @@ export class RuntimeHostAdapter {
       defaults = await this.autoModeDefaultsResolver();
     } catch (error) {
       console.warn(
-        '[runtime] Auto LLM defaults load failed; using the KodaX 0.7.74 defaults:',
+        '[runtime] Auto LLM defaults load failed; using the KodaX 0.7.75 defaults:',
         sanitizeDiagnosticError(error),
       );
       defaults = {
@@ -2262,6 +2262,21 @@ export class RuntimeHostAdapter {
     await this.assertCoderSession(runtime, input.sessionId);
     await this.ensureObserved(input.sessionId);
     const isInterrupt = input.delivery === 'interrupt';
+    const managedTaskPhase = this.observations.get(input.sessionId)?.reducer.snapshot()
+      .managedTask?.phase;
+    if (isInterrupt && (managedTaskPhase === 'verifying' || managedTaskPhase === 'completed')) {
+      // KodaX 0.7.75 keeps Runtime interrupt admission open through managed-task
+      // verification, after the final root queue-drain boundary has already passed.
+      // Reject locally with the Runtime's factual reason instead of allowing an
+      // accepted input to be terminalized without a run.input.delivered event.
+      return {
+        accepted: false,
+        delivery: input.delivery,
+        sessionId: input.sessionId,
+        afterRunId: input.afterRunId,
+        reason: 'interrupt_window_closed',
+      } satisfies RuntimeSubmitInputResult;
+    }
     if (isInterrupt && (input.credential !== undefined || input.hostTools !== undefined)) {
       throw new Error(
         'Interrupt input must reuse the active run credential and host-tool bindings.',

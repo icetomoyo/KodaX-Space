@@ -93,6 +93,10 @@ function createFakeRuntime() {
   const sessions = new Set<string>();
   const settings = new Map<string, { revision: number; value: Record<string, unknown> }>();
   const permissionRequests: import('@kodax-ai/kodax/runtime').RuntimePermissionRequest[] = [];
+  const observationListeners = new Map<
+    string,
+    (event: import('@kodax-ai/kodax/runtime').RuntimeTypedEvent) => void
+  >();
   const pending = new Map<string, (result: RuntimeRunResult) => void>();
   const connectionListeners = new Set<(state: RuntimeConnectionState) => void>();
   let connectionState: RuntimeConnectionState = {
@@ -109,7 +113,7 @@ function createFakeRuntime() {
       mode: 'daemon',
       profile: 'coder',
       startedAt: '2026-07-12T00:00:00.000Z',
-      version: '0.7.74',
+      version: '0.7.75',
       isolation: 'process',
     },
     capabilities: {
@@ -181,9 +185,13 @@ function createFakeRuntime() {
       async transcriptEntryChunk() {
         return null;
       },
-      async observe(sessionId: string) {
+      async observe(
+        sessionId: string,
+        listener?: (event: import('@kodax-ai/kodax/runtime').RuntimeTypedEvent) => void,
+      ) {
         calls.observed.push(sessionId);
         if (!sessions.has(sessionId)) throw new Error(`Session not found: ${sessionId}`);
+        if (listener) observationListeners.set(sessionId, listener);
         return {
           snapshot: {
             runtimeId: 'rt_test',
@@ -203,6 +211,9 @@ function createFakeRuntime() {
             },
           },
           close() {
+            if (listener && observationListeners.get(sessionId) === listener) {
+              observationListeners.delete(sessionId);
+            }
             calls.observationCloses += 1;
           },
         };
@@ -473,6 +484,9 @@ function createFakeRuntime() {
     pending,
     settings,
     permissionRequests,
+    emit(event: import('@kodax-ai/kodax/runtime').RuntimeTypedEvent) {
+      observationListeners.get(event.sessionId)?.(event);
+    },
     disconnect(reconnectable = true) {
       connectionState = {
         ...connectionState,
@@ -1278,9 +1292,9 @@ test('initialization closes a constructed Runtime when host-tool registration fa
   assert.equal(fake.calls.close, 1);
 });
 
-test('initialization rejects a daemon older than the KodaX 0.7.74 release baseline', async () => {
+test('initialization rejects a daemon older than the KodaX 0.7.75 release baseline', async () => {
   const fake = createFakeRuntime();
-  (fake.runtime.identity as { version: string }).version = '0.7.69';
+  (fake.runtime.identity as { version: string }).version = '0.7.74';
   const adapter = new RuntimeHostAdapter({
     mode: 'runtime',
     profileRoot: path.resolve('C:\\isolated-profile'),
@@ -1290,7 +1304,7 @@ test('initialization rejects a daemon older than the KodaX 0.7.74 release baseli
 
   await assert.rejects(
     adapter.initialize(),
-    /0\.7\.69.*required 0\.7\.74.*Restart the Coder daemon/i,
+    /0\.7\.74.*required 0\.7\.75.*Restart the Coder daemon/i,
   );
   assert.equal(adapter.snapshot().state, 'failed');
   assert.equal(fake.calls.close, 1);
@@ -1649,6 +1663,70 @@ test('interrupt submission reuses the active run bindings and returns the factua
   ]);
   assert.deepEqual(fake.calls.credentialRegistrations, []);
   assert.deepEqual(fake.calls.credentialRevokes, []);
+  await adapter.close();
+});
+
+test('managed-task verification closes Space interrupt admission before Runtime accepts it', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_1');
+  fake.runtime.runs.submitInput = async (input) => {
+    fake.calls.submitted.push(input);
+    return {
+      accepted: true,
+      delivery: 'interrupt',
+      inputId: 'input_1',
+      runId: 'run_previous',
+      sessionId: 's_1',
+      afterRunId: 'run_previous',
+      sessionOrder: 1,
+    };
+  };
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  await adapter.initialize();
+  await adapter.ensureObserved('s_1');
+  fake.emit({
+    id: 'event_verifying',
+    seq: 1,
+    time: '2026-07-24T08:44:30.324Z',
+    type: 'run.progress',
+    sessionId: 's_1',
+    runId: 'run_previous',
+    payload: {
+      kind: 'managed_task_status',
+      status: {
+        agentMode: 'ama',
+        harnessProfile: 'H2_PLAN_EXECUTE_EVAL',
+        currentRound: 1,
+        maxRounds: 1,
+        upgradeCeiling: 'H2_PLAN_EXECUTE_EVAL',
+        phase: 'verifying',
+      },
+    },
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  const result = await adapter.submitInput({
+    sessionId: 's_1',
+    afterRunId: 'run_previous',
+    delivery: 'interrupt',
+    input: [{ type: 'text', text: 'too late for this root turn' }],
+  });
+
+  assert.deepEqual(result, {
+    accepted: false,
+    delivery: 'interrupt',
+    sessionId: 's_1',
+    afterRunId: 'run_previous',
+    reason: 'interrupt_window_closed',
+  });
+  assert.deepEqual(fake.calls.submitted, []);
   await adapter.close();
 });
 
