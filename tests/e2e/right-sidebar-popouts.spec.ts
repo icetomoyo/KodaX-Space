@@ -197,6 +197,32 @@ async function expectSectionPopoutToggle(
   await expect(target.getByLabel('Open in full panel')).toBeVisible({ timeout: 2_000 });
 }
 
+test('Changes expands a fully untracked directory into reviewable file rows', async () => {
+  const testId = `right-sidebar-untracked-${Date.now()}`;
+  const projectDir = await createGitProject(testId);
+  const docs = ['HLD.md', 'PRD.md', 'ProductDraft.md', 'UI_DESIGN.md'];
+  await fs.mkdir(path.join(projectDir, 'docs'));
+  await Promise.all(
+    docs.map((name) => fs.writeFile(path.join(projectDir, 'docs', name), `${name}\n`, 'utf-8')),
+  );
+  const space = await launchSpace(testId);
+  try {
+    await space.seedProject(projectDir);
+    const page = space.page;
+    await page.getByLabel('Show right sidebar').click();
+
+    const changes = section(page.getByTestId('right-sidebar'), /^Changes\b/);
+    await expect(changes).toBeVisible({ timeout: 10_000 });
+    await expect(changes).toContainText('Changes (5)');
+    for (const name of docs) {
+      await expect(changes.locator(`button[title="docs/${name}"]`)).toBeVisible();
+    }
+  } finally {
+    await space.close();
+    await fs.rm(projectDir, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
 test('right sidebar full-panel buttons open and close promptly while a session streams', async () => {
   // Quarantined on the Windows CI runner only. Seeding + rendering the sidebar
   // signals while a session streams intermittently stalls on the Windows runner

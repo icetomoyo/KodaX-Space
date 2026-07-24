@@ -53,6 +53,50 @@ test('preserves an untracked Unicode path with spaces', async () => {
   assert.equal(parsed.truncated, false);
 });
 
+test('expands a fully untracked directory into its individual files', async () => {
+  const relativePaths = ['docs/HLD.md', 'docs/PRD.md', 'docs/ProductDraft.md', 'docs/UI_DESIGN.md'];
+  await fs.mkdir(path.join(testRoot, 'docs'));
+  await Promise.all(
+    relativePaths.map((relativePath) => fs.writeFile(path.join(testRoot, relativePath), 'new\n')),
+  );
+
+  const status = await runGit(testRoot, GIT_CHANGES_STATUS_ARGS);
+  assert.equal(status.ok, true);
+
+  const parsed = parseGitChangesStatus(status.stdout);
+  assert.deepEqual(
+    parsed.files,
+    relativePaths.map((relativePath) => ({
+      path: relativePath,
+      status: 'U',
+      staged: false,
+    })),
+  );
+  assert.equal(parsed.truncated, false);
+});
+
+test('keeps the 200-file response guard after expanding untracked directories', async () => {
+  const relativePaths = Array.from(
+    { length: 205 },
+    (_, index) => `generated/file-${String(index).padStart(3, '0')}.txt`,
+  );
+  await fs.mkdir(path.join(testRoot, 'generated'));
+  await Promise.all(
+    relativePaths.map((relativePath) => fs.writeFile(path.join(testRoot, relativePath), 'new\n')),
+  );
+
+  const status = await runGit(testRoot, GIT_CHANGES_STATUS_ARGS);
+  assert.equal(status.ok, true);
+
+  const parsed = parseGitChangesStatus(status.stdout);
+  assert.equal(parsed.files.length, 200);
+  assert.equal(parsed.truncated, true);
+  assert.equal(
+    parsed.files.every((file) => file.status === 'U' && file.staged === false),
+    true,
+  );
+});
+
 test('uses the destination path for a staged Unicode rename', async () => {
   const originalPath = '旧 文件.txt';
   const renamedPath = '新 文件.txt';

@@ -1,4 +1,10 @@
-export const GIT_CHANGES_STATUS_ARGS = ['status', '--porcelain=v1', '-b', '-z'] as const;
+export const GIT_CHANGES_STATUS_ARGS = [
+  'status',
+  '--porcelain=v1',
+  '-b',
+  '-z',
+  '--untracked-files=all',
+] as const;
 
 export type GitChangeFile = {
   path: string;
