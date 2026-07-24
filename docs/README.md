@@ -1,8 +1,8 @@
 # KodaX Space 文档中心
 
-> 当前源码/发布准备基线：KodaX Space `v0.1.32`（package `0.1.32`）/ npm 正式发布的 KodaX `0.7.74`；最近已发布稳定 Space 版本仍为 `v0.1.31`。
+> 当前源码/发布基线：KodaX Space `v0.1.32`（package `0.1.32`）/ npm 正式发布的 KodaX `0.7.75`；稳定 tag 与 GitHub Release 由本次发布流程创建。
 
-这里是文档的统一入口。当前源码已采用 npm 正式发布的 KodaX 0.7.74：Coder 默认连接共享 daemon，并强制 compaction v3、transcript paging/search、interrupt input、Actor/Turn v1 和 Auto LLM guardrail v3。正式版还提供 mailbox-driven Agent 协调、idle-yield 用户提示的 transcript 回填、Goal 工具常驻、root/child 投影隔离、crash-recoverable completion delivery、精确 checkpoint 活动 lineage、PowerShell 方括号路径的 fail-closed 分析、跳过空 ACP 占位且完整恢复交互状态的 CLI 自动恢复、确定性的 Auto 切换、命令式压缩 lineage 对齐、interrupt delivery 持久化失败时的队列保留，以及 Windows 可见托盘/重开/安全彻底退出；Partner 继续由 Space inline owner 管理。完整 F117/F118 桌面管理体验仍在后续路线中。历史设计和 release 记录保留当时语境。
+这里是文档的统一入口。当前源码已采用 npm 正式发布的 KodaX 0.7.75：Coder 默认连接共享 daemon，并强制 compaction v3、transcript paging/search、interrupt input、Actor/Turn v1 和 Auto LLM guardrail v3。0.7.75 进一步修正 Sidecar 可选后续工作/预算终态，并系统隐藏 Windows GUI host 的非交互子进程；Space 在 managed-task `verifying` 阶段本地关闭 interrupt 准入，避免已错过 root drain boundary 的输入先被接受再未投递终结。正式版还提供 mailbox-driven Agent 协调、idle-yield 用户提示的 transcript 回填、Goal 工具常驻、root/child 投影隔离、精确 checkpoint 活动 lineage、确定性的 Auto 切换，以及 Windows 可见托盘/重开/安全彻底退出；Partner 继续由 Space inline owner 管理。完整 F117/F118 桌面管理体验仍在后续路线中。历史设计和 release 记录保留当时语境。
 
 ## 我想要……
 

@@ -13,7 +13,7 @@
   <a href="https://github.com/icetomoyo/KodaX-Space/releases/latest"><img alt="release" src="https://img.shields.io/github/v/release/icetomoyo/KodaX-Space?style=flat-square"></a>
   <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-KAI--FCL-orange?style=flat-square"></a>
   <a href="https://github.com/icetomoyo/KodaX-Space/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/icetomoyo/KodaX-Space/ci.yml?style=flat-square&label=ci"></a>
-  <img alt="KodaX SDK" src="https://img.shields.io/badge/KodaX_SDK-0.7.74-2ecc71?style=flat-square">
+  <img alt="KodaX SDK" src="https://img.shields.io/badge/KodaX_SDK-0.7.75-2ecc71?style=flat-square">
   <img alt="platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-34495e?style=flat-square">
 </p>
 
@@ -90,7 +90,7 @@ npm run dev
 
 ## 当前源码基线
 
-**v0.1.32 发布准备，精确依赖 npm 正式发布的 KodaX 0.7.74。** Coder 默认连接 profile-scoped shared daemon；会话/运行/共享设置/交互、Workflow 观察与控制、Learning Center 操作、目录发现、MCP 工具发现与 reload，以及已配置 External Agent 的 Actor/Turn 均使用 Runtime 服务。Space 要求 `contextCompaction:3`、`transcriptPaging:1`、`transcriptSearch:1` 以获得耐久化精确历史恢复，同时要求 `interruptInput:1`、Auto LLM guardrail v3 和 `actorControlPlane:1`。正式版把模型 mailbox 等待与 UI/SDK 进度遥测分离，保证子 Agent idle-yield 期间排队的真实用户提示进入 transcript，让 Goal 生命周期工具保持常驻，阻止 child live-only 状态覆盖 root 投影，把精确 checkpoint/恢复指引字节保留在活动 compaction lineage 上，对 PowerShell 方括号通配符升级确认但继续支持 `LiteralPath` 中的精确方括号文件名，并在 CLI 各入口选择最近的非空可恢复会话。最终发布还完整恢复交互式会话状态，使快速 Auto 切换按最后一次动作收敛并保留粘性的 `Auto[RULES]`，让命令式压缩先从精确 flat history 对齐 lineage，并在 interrupt delivery 事件持久化失败时继续保留队列输入。Partner 继续由 Space 在 Electron main 中 embedded-inline 承载。MCP 进程/日志、Workflow library/start/admin、Space Reference Agent 执行和产品 Artifact 仍是明确的 host-provider 边界。
+**v0.1.32 发布基线精确依赖 npm 正式发布的 KodaX 0.7.75。** Coder 默认连接 profile-scoped shared daemon；会话/运行/共享设置/交互、Workflow 观察与控制、Learning Center 操作、目录发现、MCP 工具发现与 reload，以及已配置 External Agent 的 Actor/Turn 均使用 Runtime 服务。Space 要求 `contextCompaction:3`、`transcriptPaging:1`、`transcriptSearch:1` 以获得耐久化精确历史恢复，同时要求 `interruptInput:1`、Auto LLM guardrail v3 和 `actorControlPlane:1`。KodaX 0.7.75 增加经过审计的 Windows 后台子进程隐藏，并修正 Sidecar 可选后续工作与预算终态语义；Space 还在验证开始后本地关闭剩余的 managed-task interrupt 窗口，明确拒绝已错过安全投递点的输入，不再允许它先被接受、随后未投递终结。正式版把模型 mailbox 等待与 UI/SDK 进度遥测分离，保证子 Agent idle-yield 期间排队的真实用户提示进入 transcript，让 Goal 生命周期工具保持常驻，阻止 child live-only 状态覆盖 root 投影，并把精确 checkpoint/恢复指引字节保留在活动 compaction lineage 上。Partner 继续由 Space 在 Electron main 中 embedded-inline 承载。MCP 进程/日志、Workflow library/start/admin、Space Reference Agent 执行和产品 Artifact 仍是明确的 host-provider 边界。
 
 F122-F124 已交付 Partner 项目来源库、不可变证据/引用和自动 grounded context 闭环。F121 在最终人工多客户端发布验收完成前保持 `InProgress`；缺少必要 daemon capability 时 Coder fail closed，不会静默退回 inline owner。详见 [v0.1.32 版本设计](docs/features/v0.1.32.md)和[能力台账](docs/KODAX_CAPABILITY_LEDGER.md)。
 
@@ -136,7 +136,7 @@ F136 让 Windows 后台 owner 变得可见、可控。关闭最后一个窗口�
 | Main 进程治理      | 注册写入、策略、凭据代理、Artifact 边界和持久化均留在 main；renderer 只接收脱敏摘要。                                                  |
 | Reference 产品界面 | Runtime 设置页管理和预检注册；Workflow 启动器选择实时默认子 Agent；Task Dock 展示生命周期、审计事件、输入、取消与对账操作。            |
 | 双语验收           | 完整 Reference Agent 界面已适配英文和简体中文，并由 Electron E2E 覆盖。                                                                |
-| 能力真实性         | Runtime 配置的 A2A 在 KodaX 0.7.74 Coder daemon 能力协商通过后可用；MCP Tasks 与受治理 HTTP 在各自适配器交付并通过合规验证前保持隐藏。 |
+| 能力真实性         | Runtime 配置的 A2A 在 KodaX 0.7.75 Coder daemon 能力协商通过后可用；MCP Tasks 与受治理 HTTP 在各自适配器交付并通过合规验证前保持隐藏。 |
 | KodaX 0.7.67       | 兼容测试覆盖 Runtime Worker hard-dispose，以及外部 Agent 注册、发现、启动和终态结果闭环。                                              |
 
 完整版本说明见 [CHANGELOG.md](CHANGELOG.md)、[docs/features/v0.1.30.md](docs/features/v0.1.30.md) 与 [F115 External Agent 设计](docs/features/v0.1.30-external-agents.md)。
@@ -154,7 +154,7 @@ F136 让 Windows 后台 owner 变得可见、可控。关闭最后一个窗口�
 | MCP 和 Skills      | KodaX MCP servers 与 skills 的桌面管理和展示入口，并随包提供经审查的 `frontend-slides` 与 `huashu-design` builtin。                                                     |
 | Memory Governance  | 评审、批准、拒绝、检查 memory proposals 和 approved references。                                                                                                        |
 | Partner surface    | 已启用 workspace-first 知识工作界面，提供 Sources、KB、Outputs、checkpoint 写入、Office/PDF 便利生成与本地 policy/audit。                                               |
-| External Agents    | KodaX 0.7.74 Runtime 配置的 Coder Agent 使用统一 Actor/Turn 任务；Space Reference Agent 保留主窗口管理和 durable Task Dock 干预路径。MCP Tasks 与受治理 HTTP 继续门控。 |
+| External Agents    | KodaX 0.7.75 Runtime 配置的 Coder Agent 使用统一 Actor/Turn 任务；Space Reference Agent 保留主窗口管理和 durable Task Dock 干预路径。MCP Tasks 与受治理 HTTP 继续门控。 |
 
 ## 配置模型
 
@@ -245,7 +245,7 @@ npm run e2e:headed
 | [README.md](README.md)                                                                                   | 英文 README。                                               |
 | [CONTRIBUTING.md](CONTRIBUTING.md)                                                                       | 贡献边界、验证要求和文档同步规则。                          |
 | [docs/README.md](docs/README.md)                                                                         | 文档中心，以及当前文档/历史文档索引。                       |
-| [docs/USER_MANUAL.zh-CN.md](docs/USER_MANUAL.zh-CN.md)                                                   | 面向当前 v0.1.32 发布准备基线的图解中文用户手册。           |
+| [docs/USER_MANUAL.zh-CN.md](docs/USER_MANUAL.zh-CN.md)                                                   | 面向当前 v0.1.32 发布基线的图解中文用户手册。               |
 | [docs/USAGE.md](docs/USAGE.md)                                                                           | 源码启动、profile、Runtime Host、测试、打包与排障。         |
 | [docs/BUILTIN_SKILLS.md](docs/BUILTIN_SKILLS.md)                                                         | builtin skill 的来源、许可、更新、补丁和打包完整性流程。    |
 | [docs/releases/v0.1.32-release-readiness.md](docs/releases/v0.1.32-release-readiness.md)                 | v0.1.32 的发布门禁、产物要求、人工验收与发布步骤。          |

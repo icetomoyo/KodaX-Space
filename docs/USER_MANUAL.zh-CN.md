@@ -4,7 +4,7 @@
   <img src="../resources/icon.png" alt="KodaX Space 应用图标" width="96">
 </p>
 
-> 当前源码/发布准备基线：KodaX Space `v0.1.32`（package `0.1.32`）/ npm 正式发布的 KodaX `0.7.74`；最近已发布稳定 Space 版本仍为 `v0.1.31`。
+> 当前源码/发布基线：KodaX Space `v0.1.32`（package `0.1.32`）/ npm 正式发布的 KodaX `0.7.75`。
 >
 > 更新日期：2026-07-23
 >
@@ -164,7 +164,7 @@ flowchart LR
 
 多个受信任的 KodaX 客户端可以观察同一 Coder 会话；Space 会同步 provider/model/effort/mode 等共享设置，并通过 Runtime 处理权限 grant、AskUser、队列、Workflow 观察/暂停/恢复/停止、Learning Center 命令、MCP 工具发现/reload 和已配置 External Agent 的 Actor/Turn。Space 要求 `interruptInput:1`、`actorControlPlane:1`、`contextCompaction:3`、`transcriptPaging:1`、`transcriptSearch:1` 与 Auto LLM guardrail v3；Runtime 不可用或能力版本不足时 Coder fail closed，不会在背后重放到 inline owner。Partner 不受该 daemon 可用性影响。
 
-Space 0.1.32 还会核对 daemon 的实际版本和能力，而不只看已经安装的 npm 包：低于 `0.7.74` 或缺少上述契约的长驻 daemon 会被拒绝并提示重启。compaction v3 会先耐久化精确 pre-compaction lineage，再缩减活动上下文；正式版还会复用精确 checkpoint/恢复指引字节，并在命令式手动压缩前把精确 flat Session history 对齐进 lineage，使 compaction entry、first-kept pointer 与压缩后附件留在同一 active path，同时继续读取旧的无后缀 checkpoint。Space 使用 revision-bound page/chunk/search 恢复可见历史，root 与持久 child 的历史保持隔离。Coder Session 使用 KodaX 的公开 `resolveAutoModeSettings()` 解析 `engine`、classifier model、timeout 与 `speculativeWindowMs`，并把缺失值写入可修订的 Runtime 设置；`0` 是有效的 speculative window 值。未配置时 classifier timeout 为 `20000ms`。底部会直接显示 `Auto[LLM]` 或 `Auto[RULES]`；快速连续切换按最后一次动作收敛，自动降级或手动选择后的 `Auto[RULES]` 保持粘性，需用 `/auto-engine llm` 显式切回。Auto[rules] 会对工作区内可完整建模的编辑直接放行，对工作区外、受保护、动态或无法完整建模的效果继续请求确认；Auto[LLM] 缺失 classifier model 时在本地拒绝，不请求 Provider、不弹权限窗、也不触发 rules 降级。输入 `/auto-denials` 可以查看当前 Runtime 版本、classifier model、timeout、speculative window 及不含提示正文的 classifier 时序/终止阶段。若看到 `8000ms exceeded`，说明实际执行的仍是升级前进程；若是 `20000ms exceeded`，则表示当前 provider/model 在包含排队、重试等待和完整 side query 的 20 秒 deadline 内没有完成，可配置更快的 `autoMode.classifierModel` 或审视 provider 延迟。
+Space 0.1.32 还会核对 daemon 的实际版本和能力，而不只看已经安装的 npm 包：低于 `0.7.75` 或缺少上述契约的长驻 daemon 会被拒绝并提示重启。compaction v3 会先耐久化精确 pre-compaction lineage，再缩减活动上下文；正式版还会复用精确 checkpoint/恢复指引字节，并在命令式手动压缩前把精确 flat Session history 对齐进 lineage，使 compaction entry、first-kept pointer 与压缩后附件留在同一 active path，同时继续读取旧的无后缀 checkpoint。Space 使用 revision-bound page/chunk/search 恢复可见历史，root 与持久 child 的历史保持隔离。Coder Session 使用 KodaX 的公开 `resolveAutoModeSettings()` 解析 `engine`、classifier model、timeout 与 `speculativeWindowMs`，并把缺失值写入可修订的 Runtime 设置；`0` 是有效的 speculative window 值。未配置时 classifier timeout 为 `20000ms`。底部会直接显示 `Auto[LLM]` 或 `Auto[RULES]`；快速连续切换按最后一次动作收敛，自动降级或手动选择后的 `Auto[RULES]` 保持粘性，需用 `/auto-engine llm` 显式切回。Auto[rules] 会对工作区内可完整建模的编辑直接放行，对工作区外、受保护、动态或无法完整建模的效果继续请求确认；Auto[LLM] 缺失 classifier model 时在本地拒绝，不请求 Provider、不弹权限窗、也不触发 rules 降级。输入 `/auto-denials` 可以查看当前 Runtime 版本、classifier model、timeout、speculative window 及不含提示正文的 classifier 时序/终止阶段。
 
 ### Windows 关闭窗口、后台托盘与彻底退出
 
@@ -281,7 +281,7 @@ Workflow 只在显式 Workflow 强信号、`/workflow`、命名 Workflow 或 SDK
 | Compact | 压缩长会话上下文       | UI 仍回放完整 append-order 历史  |
 | Delete  | 删除会话               | 先确认没有其他 KodaX 进程占用    |
 
-Compact 只缩减下一次模型请求使用的活动上下文，不等于删除完整历史。0.7.74 的 compaction v3 采用 durable-before-evict：精确历史先写入 lineage/sidecar，再发布精简快照；正式版同时保证精确 checkpoint/恢复指引、first-kept pointer 和压缩后附件位于同一活动 lineage，命令式手动压缩也会先从精确 flat Session history 对齐 lineage，旧的无后缀 checkpoint 仍能恢复。Space 通过有界 page/chunk/search 读取，历史搜索结果绑定具体 revision。旧版已经丢弃且从未保存的字节无法凭空恢复。
+Compact 只缩减下一次模型请求使用的活动上下文，不等于删除完整历史。0.7.75 保留 compaction v3 的 durable-before-evict 语义：精确历史先写入 lineage/sidecar，再发布精简快照；精确 checkpoint/恢复指引、first-kept pointer 和压缩后附件位于同一活动 lineage，命令式手动压缩也会先从精确 flat Session history 对齐 lineage，旧的无后缀 checkpoint 仍能恢复。Space 通过有界 page/chunk/search 读取，历史搜索结果绑定具体 revision。旧版已经丢弃且从未保存的字节无法凭空恢复。
 
 Space 与 KodaX CLI/REPL 共用 `~/.kodax/sessions/`。KodaX CLI 的 `-c`/auto-resume 会在最近 1000 个候选中跳过空 ACP 占位，只选择最近的非空会话；全部为空时不创建虚假的恢复结果，显式 session ID 始终优先。交互式恢复会在下一轮前恢复保存的 workspace runtime、messages、UI history、lineage、artifacts、extensions、title、tag 和 session identity。Space 左侧栏仍使用自己的显式项目/会话选择入口。如果 CLI 改写了正在显示的同一 session，Space 不保证实时文件级同步；切换会话或重启可重新读取。
 
@@ -468,14 +468,14 @@ flowchart TD
 ## 20. 当前限制与诚实边界
 
 - 当前 `v0.1.32` 源码默认让 Coder 连接 profile-scoped shared daemon；Partner、其工具、权限、知识与交付仍由 Space embedded inline owner 管理，不会迁入 Coder daemon。
-- Runtime Learning Center 的兼容契约已接入，但完整 F118 管理界面尚未交付；Memory Agent 的 0.7.68 起始运行契约继续由正式 0.7.74 包保留，完整 F117 桌面管理体验尚未交付。
+- Runtime Learning Center 的兼容契约已接入，但完整 F118 管理界面尚未交付；Memory Agent 的 0.7.68 起始运行契约继续由正式 0.7.75 包保留，完整 F117 桌面管理体验尚未交付。
 - Partner 浏览器、通用 Connector、远程任务、桌面电脑控制和自动化尚未交付。
 - External Agent 的本地 Reference Executor 可用；Coder daemon 的 A2A 取决于显式配置与能力协商，MCP Tasks/governed HTTP 尚未作为通用能力开放。
 - Quick Ask 不是完全无 session side query。
 - React artifact 不是可交互 LiveCanvas。
 - Office/PDF writer 是基础可靠输出，不是品牌模板级设计系统。
 - 安装包签名、release channel 与诊断导出仍在后续版本计划中。
-- 当前 KodaX 0.7.74 在 Windows 上仍可能让普通 Coder query 闪出短暂 `cmd.exe`/console 窗口；这是稳定版 0.1.32 的发布阻断项，修复由 KodaX 维护线程提供，Space 仅更新正式依赖并复验。
+- KodaX 0.7.75 已系统隐藏 Runtime Worker 可达的非交互 Windows 子进程；显式 editor、terminal 与 PTY 交互保持不变。若普通 Coder query 仍闪出 `cmd.exe`/console 窗口，请记录 Space/KodaX 版本、触发操作与进程名并作为回归报告。
 
 ## 21. 获取帮助与反馈
 

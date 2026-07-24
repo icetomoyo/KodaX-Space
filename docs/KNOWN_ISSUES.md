@@ -1,6 +1,6 @@
 # Known Issues
 
-Last Updated: 2026-07-24
+Last Updated: 2026-07-25
 
 > Historical issue details are preserved as investigation evidence. Resolved items older than 30 days move to [ISSUES_ARCHIVED.md](ISSUES_ARCHIVED.md) without losing their investigation record. The current package/source baseline is v0.1.32 release preparation. Start from the [documentation hub](README.md) for current behavior and status.
 
@@ -87,13 +87,15 @@ Last Updated: 2026-07-24
 | 084 | High     | Resolved | Daemon child-agent prose, thinking, and tools are merged into the parent transcript and live snapshot                    | v0.1.32 development   | 2026-07-22 |
 | 085 | High     | Resolved | Background Session prompts could block the visible Session while their sidebar owner remained hidden                     | v0.1.32 development   | 2026-07-23 |
 | 086 | Medium   | Resolved | Assistant/tool-leading restored history rendered a fabricated empty user message                                         | v0.1.x                | 2026-07-23 |
-| 087 | Medium   | Resolved | Windows 11 taskbar could show a blank generic document icon for the live Space window                                    | v0.1.x                | 2026-07-23 |
+| 087 | Medium   | Resolved | Windows 10/11 taskbar could ignore the live Space window icon or reuse stale Portable identity                           | v0.1.x                | 2026-07-23 |
 | 088 | Medium   | Resolved | Other KodaX instance indicator could route an unknown peer into a blank orphan Session                                   | v0.1.x                | 2026-07-23 |
 | 089 | High     | Resolved | A same-version stale daemon could fail the required capability gate and leave Coder unusable                             | v0.1.32 development   | 2026-07-23 |
 | 090 | Medium   | Resolved | Closing the last Space window left the daemon running without a visible or controllable background surface               | v0.1.x                | 2026-07-23 |
-| 091 | Medium   | Open     | Ordinary Windows queries can flash several short-lived command windows from KodaX Runtime child processes                | KodaX 0.7.74 adoption | 2026-07-23 |
-| 092 | Medium   | Resolved | Isolated Electron tests leaked Runtime client credentials into the OS keychain                                          | v0.1.32 development   | 2026-07-23 |
+| 091 | Medium   | Resolved | Ordinary Windows queries can flash several short-lived command windows from KodaX Runtime child processes                | KodaX 0.7.74 adoption | 2026-07-23 |
+| 092 | Medium   | Resolved | Isolated Electron tests leaked Runtime client credentials into the OS keychain                                           | v0.1.32 development   | 2026-07-23 |
 | 093 | Medium   | Resolved | Artifact and File Viewer Markdown omitted Mermaid and document-local resource support                                    | v0.1.31               | 2026-07-24 |
+| 094 | Medium   | Resolved | Failed interrupt bubble followed the transcript tail instead of staying at its failure-time position                     | v0.1.32 development   | 2026-07-24 |
+| 095 | Medium   | Resolved | Changes panel collapsed a fully untracked directory into one row and hid its individual files                            | v0.1.x                | 2026-07-24 |
 
 ## Issue Details
 
@@ -4787,9 +4789,11 @@ Verification:
 - Priority: High
 - Status: Resolved
 - Introduced: v0.1.32 development
+- Prior Fix: v0.1.32 (incomplete)
 - Fixed: v0.1.32
 - Created: 2026-07-22
-- Resolution Date: 2026-07-22
+- Resolution Date: 2026-07-24
+- Reopened: 2026-07-24
 
 #### Original Problem
 
@@ -4922,6 +4926,39 @@ Validation:
 - Space desktop: 110 directly affected tests passed; the complete desktop test command passed.
 - Space TypeScript, targeted ESLint, Git whitespace validation, and production `build:smoke`
   passed. Vite reported only the existing Monaco import and large-chunk warnings.
+
+#### Reopened Regression Evidence
+
+Session `s_b0569457-5ef4-4928-9c2c-451b77cbbe06`, Run
+`run_mryp08yx_aa5e3c13`, and interrupt `input_mryp242m_38505cf8` exposed a deterministic
+admission window that the prior fix did not cover:
+
+- `2026-07-24T08:44:30.304Z`: the root assistant stream and iteration ended.
+- `2026-07-24T08:44:30.324Z`: the managed task entered `verifying`.
+- `2026-07-24T08:44:32.196Z`: Runtime accepted the interrupt and emitted
+  `run.input.queued`.
+- `2026-07-24T08:44:38.513Z`: the managed task finally emitted `phase: completed`, which is
+  where the current Runtime closes `interruptInputOpen`.
+- `2026-07-24T08:44:41.155Z`: `run.completed` terminalized the still-queued input without any
+  `run.input.delivered` event.
+
+The current Runtime guard closes interrupt admission only on managed-task `completed`, after the
+last root Runner consumption boundary has already passed. The existing regression test submits
+after the synthetic `completed` status and therefore misses the real `verifying`-phase window.
+Runtime must bind admission to actual root Runner consumption availability, closing it while
+verification/finalization has no root drain point and reopening it only when another root round
+starts.
+
+#### Regression Resolution
+
+- Space now reads the authoritative managed-task phase from its daemon observation before
+  submitting an interrupt.
+- `verifying` and `completed` close Space interrupt admission locally and return the Runtime's
+  factual `interrupt_window_closed` reason without calling `runtime.runs.submitInput()`.
+- The existing RealSession rejection path tells the user that the message was not sent and can be
+  retried after the Run finishes; Space does not silently alter interrupt delivery into after-turn.
+- Added an adapter regression that emits the exact `verifying` phase, submits an interrupt, and
+  proves Runtime never receives it.
 
 ### 084: Daemon child-agent prose, thinking, and tools are merged into the parent transcript and live snapshot
 
@@ -5106,14 +5143,15 @@ Files changed:
 - `apps/desktop/renderer/src/features/session/composeMessages.ts`
 - `apps/desktop/electron/test/history-replay-no-popout.test.ts`
 
-### 087: Windows 11 taskbar could show a blank generic document icon for the live Space window
+### 087: Windows 10/11 taskbar could ignore the live Space window icon or reuse stale Portable identity
 
 - Priority: Medium
 - Status: Resolved
 - Introduced: v0.1.x
 - Fixed: v0.1.32
 - Created: 2026-07-23
-- Resolution Date: 2026-07-23
+- Reopened: 2026-07-25
+- Resolution Date: 2026-07-25
 
 #### Original Problem
 
@@ -5141,12 +5179,46 @@ window/document icon, especially on Portable and cache-sensitive paths.
 - Add deterministic path-resolution tests for development, packaged Windows,
   and non-Windows behavior.
 
+#### Windows 10 Follow-Up
+
+The first fix closed the generic-document fallback, but a Windows 10 Portable
+candidate could still show Electron's atom in the taskbar while its tray icon,
+`WM_SETICON` handles, outer Portable executable, and extracted inner executable
+all showed the correct KodaX K.
+
+The remaining cause was Windows taskbar identity rather than image generation.
+The stable `ai.kodax.space` AppUserModelID matched a Start Menu shortcut whose
+relaunch target was an old Portable extraction path under `%TEMP%`. That path no
+longer existed. `BrowserWindow.icon` correctly set the native window icon, but
+Space had not supplied window-level relaunch metadata, so the shell could prefer
+the stale shortcut identity and fall back to Electron branding.
+
+The follow-up resolution:
+
+- Applies Electron `setAppDetails()` to both main and standalone Artifact
+  windows with the exact AppUserModelID, relaunch icon, command, and display
+  name.
+- Uses electron-builder's `PORTABLE_EXECUTABLE_FILE` as the persistent Portable
+  relaunch/icon source instead of the disposable extracted inner executable.
+- Repairs an existing `KodaX Space.lnk` only when its target is missing, named
+  exactly `KodaX Space.exe`, and located beneath the Windows temporary
+  directory. Valid or arbitrary user shortcuts are never rewritten.
+- Covers Portable, installed, development, non-Windows, and stale-shortcut
+  boundaries with deterministic unit tests.
+- Verified a freshly packaged Portable repaired the observed stale shortcut to
+  the outer candidate executable; package smoke and packaged boot both passed
+  with KodaX 0.7.75. The release checklist still retains a separate human
+  taskbar observation because automated Windows capture returned unsupported
+  API error `0x80004002` on this Windows 10 host.
+
 Files changed:
 
 - `apps/desktop/electron/window/window-icon.ts`
+- `apps/desktop/electron/window/windows-taskbar-identity.ts`
 - `apps/desktop/electron/main.ts`
 - `apps/desktop/electron/artifact/artifact-window.ts`
 - `apps/desktop/electron/test/window-icon.test.ts`
+- `apps/desktop/electron/test/windows-taskbar-identity.test.ts`
 - `electron-builder.yml`
 - `scripts/smoke-pack.mjs`
 
@@ -5299,9 +5371,11 @@ Tests added:
 ### 091: Ordinary Windows queries can flash several short-lived command windows from KodaX Runtime child processes
 
 - Priority: Medium
-- Status: Open
+- Status: Resolved
 - Introduced: Upstream child-process paths predate KodaX 0.7.68; exposed consistently by the v0.1.32 shared-daemon host
+- Fixed: KodaX 0.7.75 / KodaX Space v0.1.32
 - Created: 2026-07-23
+- Resolution Date: 2026-07-24
 
 #### Original Problem
 
@@ -5339,20 +5413,16 @@ Affected upstream paths include:
 - `packages/coding/src/lsp/spawn.ts`
 - `packages/agent/src/memory/paths.ts`
 
-#### Proposed Solution
+#### Resolution
 
-- KodaX should centrally force `windowsHide: true` for non-interactive
+- KodaX 0.7.75 centrally forces `windowsHide: true` for non-interactive
   `spawn`, `execFile`, `execFileSync`, `exec`, and `execSync` calls under a
   Windows GUI host while preserving explicit PTY behavior.
-- Add unit assertions for every spawn/exec wrapper and a Win10/Win11 GUI-host
-  regression that sends repeated ordinary queries without visible
-  cmd/PowerShell/conhost windows.
-- Publish a fixed KodaX package; Space should then update only its pinned
-  dependency and rerun the Windows package matrix.
-
-Release status:
-
-- Upstream fix required before the stable v0.1.32 tag.
+- Its release gates audit statically identifiable Runtime Worker child-process
+  calls and exercise 20 ordinary packaged-host queries with a Win32
+  console-visibility probe.
+- Space pins only the official Registry package, raises its daemon minimum to
+  0.7.75, and keeps explicit editor, terminal, and PTY interaction unchanged.
 - No KodaX source or installed package is patched inside the Space repository.
 
 ### 092: Isolated Electron tests leaked Runtime client credentials into the OS keychain
@@ -5495,12 +5565,141 @@ Tests added:
 - Standalone Chromium renderer gallery assertions.
 - Production Electron File Viewer regression with no Session.
 
+### 094: Failed interrupt bubble followed the transcript tail instead of staying at its failure-time position
+
+- Priority: Medium
+- Status: Resolved
+- Introduced: v0.1.32 development
+- Fixed: v0.1.32
+- Created: 2026-07-24
+- Resolution Date: 2026-07-24
+
+#### Original Problem
+
+Current behavior:
+
+- When Runtime terminalized an accepted but undelivered interrupt, Space retained a red failed
+  prompt bubble with the original text and retry guidance.
+- `composeMessages()` appended every queued overlay after all canonical transcript messages and
+  events, regardless of the overlay's `sentAt`.
+- As later turns produced user, assistant, tool, or progress history, the old failed bubble kept
+  moving to the transcript tail, occupied the active viewport, and appeared to belong to the
+  current Run.
+
+Expected behavior:
+
+- A terminal failed prompt is historical evidence and must remain fixed at its original failure-time
+  position before later user turns.
+- Pending and accepted live queue overlays must retain their current tail placement so users still
+  see immediate queue state beside the active Run.
+- Pinning the failed bubble must not consume an assistant event segment or alter user-to-assistant
+  turn pairing.
+
+#### Context
+
+Session `s_b0569457-5ef4-4928-9c2c-451b77cbbe06` showed failed interrupt
+`input_mryp242m_38505cf8` below later work even though its local `sentAt` preceded the next user
+turn. The red warning itself was clear; only its continually moving transcript position was wrong.
+
+#### Root Cause
+
+Queued overlays were deliberately kept outside the local-message merge so pending queue state always
+rendered at the transcript tail. The same unconditional append path was reused after an overlay
+became terminal `failed`, even though a failed item has stable time and no longer represents live
+queue state.
+
+#### Resolution
+
+- Split queued overlays into terminal failed items and live pending/queued items.
+- Merge only failed items into the existing timestamp-ordered local-message stream. Like local and
+  workflow notices, they do not consume assistant event segments.
+- Continue appending live pending/queued overlays after the composed transcript, preserving current
+  active-queue behavior.
+- Added a two-turn regression proving that a failed item between the turns stays before the later
+  user and assistant messages.
+
+Files changed:
+
+- `apps/desktop/renderer/src/features/session/composeMessages.ts`
+- `apps/desktop/electron/test/composeMessages.test.ts`
+- `docs/KNOWN_ISSUES.md`
+
+Validation:
+
+- `node --test --import tsx/esm electron/test/composeMessages.test.ts` from `apps/desktop` passed:
+  34/34.
+- `npm run typecheck` passed.
+- Targeted ESLint, Prettier, and Git whitespace validation passed.
+
+### 095: Changes panel collapsed a fully untracked directory into one row and hid its individual files
+
+- Priority: Medium
+- Status: Resolved
+- Introduced: v0.1.x
+- Fixed: v0.1.32
+- Created: 2026-07-24
+- Resolution Date: 2026-07-24
+
+#### Original Problem
+
+Current behavior:
+
+- In a repository where the entire `docs/` directory was untracked, the right-side Changes panel
+  showed one `docs` directory row and `.gitignore`, reporting only two changes.
+- The real repository contained four independent untracked files under `docs/`, so users could not
+  inspect or open those files from the Changes tree.
+
+Expected behavior:
+
+- The Changes panel must list every changed file, including each file inside a fully untracked
+  directory.
+- Directory nodes remain a visual grouping only; they must not replace the underlying file rows or
+  reduce the displayed change count.
+
+#### Context
+
+The issue was reproduced against `C:\Works\GitWorks\KodaX-author\KodaX-Fabric`, where
+`git status --short --untracked-files=all` reported `.gitignore` plus
+`docs/HLD.md`, `docs/PRD.md`, `docs/ProductDraft.md`, and `docs/UI_DESIGN.md`, while Space displayed
+only `.gitignore` and `docs/`.
+
+#### Root Cause
+
+`project.gitChanges` invoked `git status --porcelain=v1 -b -z` without an explicit untracked-file
+mode. Git's default `normal` mode coalesces a wholly untracked directory into a single `docs/`
+record. The parser and renderer then behaved correctly for the incomplete input they received.
+
+#### Resolution
+
+- Added `--untracked-files=all` to the NUL-delimited status command used by `project.gitChanges`.
+- Preserved the existing Unicode-safe parser, rename handling, 200-row UI guard, and directory tree
+  grouping.
+- Added real temporary-repository regressions proving that four files in a wholly untracked
+  `docs/` directory are returned as four individual `U` entries and that expansion still truncates
+  the response at 200 files.
+
+Files changed:
+
+- `apps/desktop/electron/ipc/project-git-changes.ts`
+- `apps/desktop/electron/test/project-git-changes.test.ts`
+- `tests/e2e/right-sidebar-popouts.spec.ts`
+- `docs/KNOWN_ISSUES.md`
+
+Validation:
+
+- `node --test --import tsx apps/desktop/electron/test/project-git-changes.test.ts` passed: 4/4.
+- The focused Electron regression passed and displayed `Changes (5)`, a four-file expanded `docs`
+  tree, and the independent root file.
+- The exact KodaX-Fabric reproduction reports five untracked files with
+  `git status --short --untracked-files=all`.
+- Targeted Prettier validation passed.
+
 ## Summary
 
-- Total: 86
-- Open: 3
-- Resolved: 83
+- Total: 88
+- Open: 2
+- Resolved: 86
 - High: 43
-- Medium: 36
+- Medium: 38
 - Low: 7
 - Next to resolve: 043
