@@ -41,8 +41,6 @@ export interface AskUserQuestionRequestInput {
   readonly customInputLabel?: string;
   readonly customInputPrompt?: string;
   readonly customInputDefault?: string;
-  /** Test-only override. */
-  readonly timeoutMs?: number;
 }
 
 type PendingAskUser =
@@ -58,7 +56,6 @@ type PendingAskUser =
       readonly reqId: string;
       readonly sessionId: string;
       readonly resolve: (answer: AskUserQuestionAnswer | undefined) => void;
-      readonly timer: NodeJS.Timeout;
     };
 
 /** Mirrors the askUser.request push schema's `.max(20)` on options[] and signals[]. */
@@ -140,7 +137,7 @@ class AskUserBroker {
     });
   }
 
-  /** SDK ask_user_question prompt. Timeout/cancel resolves to undefined. */
+  /** SDK ask_user_question prompt. It remains pending until answered or explicitly cancelled. */
   requestQuestion(req: AskUserQuestionRequestInput): Promise<AskUserQuestionAnswer | undefined> {
     if (req.kind === 'select' && (!req.options || req.options.length === 0)) {
       console.warn('[ask-user-broker] select question requested without options; cancelling prompt');
@@ -150,16 +147,11 @@ class AskUserBroker {
     const reqId = randomUUID();
 
     return new Promise<AskUserQuestionAnswer | undefined>((resolve) => {
-      const timer = this.createTimer(reqId, req.sessionId, req.timeoutMs, () => resolve(undefined));
       this.pending.set(reqId, {
         kind: 'question',
         reqId,
         sessionId: req.sessionId,
-        resolve: (answer) => {
-          clearTimeout(timer);
-          resolve(answer);
-        },
-        timer,
+        resolve,
       });
 
       const minSelections = normalizeSelectionBound(req.minSelections);
@@ -203,7 +195,7 @@ class AskUserBroker {
     const entry = this.pending.get(reqId);
     if (!entry) return false;
     this.pending.delete(reqId);
-    clearTimeout(entry.timer);
+    if (entry.kind === 'guardrail') clearTimeout(entry.timer);
 
     if (entry.kind === 'guardrail') {
       if (reply === 'allow' || reply === 'block') {
@@ -272,7 +264,7 @@ class AskUserBroker {
     reason: 'session_cancelled' | 'session_disposed' | 'shutdown',
   ): void {
     this.pending.delete(entry.reqId);
-    clearTimeout(entry.timer);
+    if (entry.kind === 'guardrail') clearTimeout(entry.timer);
     pushToRenderer('askUser.cancelled', {
       reqId: entry.reqId,
       sessionId: entry.sessionId,

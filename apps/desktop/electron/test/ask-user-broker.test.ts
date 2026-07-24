@@ -373,18 +373,34 @@ test('requestQuestion input resolves undefined when cancelled', async () => {
   assert.equal(await pending, undefined);
 });
 
-test('requestQuestion timeout resolves undefined + pushes cancelled', async () => {
+test('requestQuestion remains pending past the former timeout until the user answers', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   const pending = askUserBroker.requestQuestion({
     sessionId: 's_question_timeout',
     kind: 'input',
-    question: 'will timeout',
-    timeoutMs: 300,
+    question: 'wait for an explicit answer',
   });
-  const result = await pending;
-  assert.equal(result, undefined);
-  const cancelled = captured.find(
-    (c) => c.channel === 'askUser.cancelled'
-      && (c.payload as { reason: string }).reason === 'timeout',
+  const { reqId } = lastRequest();
+  let settled = false;
+  void pending.then(() => {
+    settled = true;
+  });
+  t.mock.timers.tick(60_001);
+  await Promise.resolve();
+
+  assert.equal(settled, false);
+  assert.equal(
+    captured.some(
+      (event) =>
+        event.channel === 'askUser.cancelled' &&
+        (event.payload as { reason: string }).reason === 'timeout',
+    ),
+    false,
   );
-  assert.ok(cancelled, 'must push cancelled with reason=timeout');
+
+  assert.equal(
+    askUserBroker.resolve(reqId, { reqId, value: 'explicit answer' }),
+    true,
+  );
+  assert.equal(await pending, 'explicit answer');
 });
