@@ -18,7 +18,8 @@ import {
   type MenuItemConstructorOptions,
 } from 'electron';
 import path from 'node:path';
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
+import os from 'node:os';
 import { registerVersionChannel } from './ipc/version.js';
 import { registerRuntimeProjectionChannels } from './ipc/runtime.js';
 import { registerRepointelChannels } from './ipc/repointel.js';
@@ -73,6 +74,10 @@ import { installNavigationGuards } from './window/navigation-guards.js';
 import { installWindowActivityPublisher } from './window/activity.js';
 import { installTopmostGuard } from './window/topmost-guard.js';
 import { resolveWindowIconPath } from './window/window-icon.js';
+import {
+  isStalePortableShortcut,
+  resolveWindowsTaskbarIdentity,
+} from './window/windows-taskbar-identity.js';
 import {
   BOOT_SPLASH_URL_PREFIX,
   bootStatusScript,
@@ -229,6 +234,72 @@ const WINDOW_ICON_PATH = resolveWindowIconPath({
   resourcesPath: process.resourcesPath,
   bundleDir: __dirname,
 });
+const WINDOWS_TASKBAR_IDENTITY = resolveWindowsTaskbarIdentity({
+  platform: process.platform,
+  isPackaged: app.isPackaged,
+  appId: SPACE_APP_USER_MODEL_ID,
+  appName: SPACE_APP_NAME,
+  windowIconPath: WINDOW_ICON_PATH,
+  execPath: process.execPath,
+  portableExecutableFile: process.env.PORTABLE_EXECUTABLE_FILE,
+});
+
+function repairStaleWindowsPortableShortcut(): void {
+  const relaunchExecutable = WINDOWS_TASKBAR_IDENTITY?.relaunchExecutable;
+  if (
+    process.platform !== 'win32' ||
+    !app.isPackaged ||
+    !process.env.PORTABLE_EXECUTABLE_FILE ||
+    !relaunchExecutable ||
+    !existsSync(relaunchExecutable)
+  ) {
+    return;
+  }
+
+  const shortcutPath = path.join(
+    app.getPath('appData'),
+    'Microsoft',
+    'Windows',
+    'Start Menu',
+    'Programs',
+    `${SPACE_APP_NAME}.lnk`,
+  );
+  if (!existsSync(shortcutPath)) return;
+
+  try {
+    const shortcut = shell.readShortcutLink(shortcutPath);
+    if (
+      !isStalePortableShortcut({
+        shortcutTarget: shortcut.target,
+        shortcutTargetExists: existsSync(shortcut.target),
+        expectedExecutableName: `${SPACE_APP_NAME}.exe`,
+        tempDir: os.tmpdir(),
+      })
+    ) {
+      return;
+    }
+
+    const repaired = shell.writeShortcutLink(shortcutPath, 'replace', {
+      target: relaunchExecutable,
+      cwd: path.dirname(relaunchExecutable),
+      description: SPACE_APP_NAME,
+      icon: relaunchExecutable,
+      iconIndex: 0,
+      appUserModelId: SPACE_APP_USER_MODEL_ID,
+    });
+    if (repaired) {
+      console.info(`[main] repaired stale portable Start Menu shortcut: ${shortcutPath}`);
+    } else {
+      console.warn(`[main] failed to repair stale portable Start Menu shortcut: ${shortcutPath}`);
+    }
+  } catch (error) {
+    console.warn(
+      `[main] could not inspect stale portable Start Menu shortcut: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+}
 
 // THEME_BOOTSTRAP_INLINE_HASH 抽到 csp-config.ts 让单测无 electron 依赖也能 import
 import { THEME_BOOTSTRAP_INLINE_HASH } from './csp-config.js';
@@ -339,6 +410,9 @@ function createMainWindow(): BrowserWindow {
       backgroundThrottling: false,
     },
   });
+  if (WINDOWS_TASKBAR_IDENTITY) {
+    win.setAppDetails(WINDOWS_TASKBAR_IDENTITY.appDetails);
+  }
   mainWindow = win;
   installWindowActivityPublisher(win);
   const uninstallTopmostGuard = installTopmostGuard(win, { label: 'main window' });
@@ -1098,6 +1172,7 @@ app
       preloadPath: PRELOAD_PATH,
       devServerUrl: VITE_DEV_SERVER_URL,
       iconPath: WINDOW_ICON_PATH,
+      taskbarAppDetails: WINDOWS_TASKBAR_IDENTITY?.appDetails,
     });
     // F021 v0.1.5 冷启动 file association：用户双击 .mcpb 启动 Space 时，path 在 process.argv 里。
     // mainWindow 还没创建，但 installMcpbFromOsHandoff 内部会拉 BrowserWindow.getAllWindows()[0]
@@ -1137,6 +1212,7 @@ app
           err instanceof Error ? err.message : err,
         );
       });
+    repairStaleWindowsPortableShortcut();
     installWindowsBackgroundTray();
     showOrCreateMainWindow();
 

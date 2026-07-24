@@ -13,6 +13,7 @@ import { registerChannel } from '../ipc/register.js';
 import { installNavigationGuards } from '../window/navigation-guards.js';
 import { installTopmostGuard } from '../window/topmost-guard.js';
 import { APP_PROTOCOL_INDEX_URL, APP_PROTOCOL_ORIGIN } from '../window/app-protocol-policy.js';
+import type { WindowsTaskbarAppDetails } from '../window/windows-taskbar-identity.js';
 
 function getElectron(): typeof import('electron') {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -28,6 +29,8 @@ export interface ArtifactWindowDeps {
   readonly devServerUrl: string | undefined;
   /** Explicit Windows native-window icon used by the taskbar and Alt+Tab. */
   readonly iconPath?: string;
+  /** Explicit Windows taskbar identity, relaunch command, and relaunch icon. */
+  readonly taskbarAppDetails?: WindowsTaskbarAppDetails;
 }
 
 interface OpenInput {
@@ -78,6 +81,9 @@ function openArtifactWindow(input: OpenInput, deps: ArtifactWindowDeps): void {
       allowRunningInsecureContent: false,
     },
   });
+  if (deps.taskbarAppDetails) {
+    win.setAppDetails(deps.taskbarAppDetails);
+  }
 
   installNavigationGuards(win.webContents, {
     devServerUrl: deps.devServerUrl,
