@@ -128,14 +128,16 @@ test('interactive HTML Artifact keeps inline controls and timer-driven playback 
     const content = fixturePath
       ? await fs.readFile(fixturePath, 'utf8')
       : `<!doctype html><html><body>
-          <button id="next" onclick="next()">开始演示 ▶</button>
-          <button id="auto" onclick="toggleAuto()">⏯ 自动</button>
+          <button id="next">开始演示 ▶</button>
+          <button id="auto">⏯ 自动</button>
           <div id="sAcc">—</div><div id="step">0</div>
           <script>
             var cur=0, auto=false, autoT=null;
             function render(){document.getElementById('step').textContent=String(cur);document.getElementById('sAcc').textContent=cur>=1?'96.8%':'—'}
-            function next(){cur+=1;render()}
-            function toggleAuto(){auto=!auto;document.getElementById('auto').classList.toggle('on',auto);if(auto){next();autoT=setInterval(next,4500)}else{clearInterval(autoT);autoT=null}}
+            function advanceDemo(){cur+=1;render()}
+            function toggleAuto(){auto=!auto;document.getElementById('auto').classList.toggle('on',auto);if(auto){advanceDemo();autoT=setInterval(advanceDemo,4500)}else{clearInterval(autoT);autoT=null}}
+            document.getElementById('next').addEventListener('click',advanceDemo);
+            document.getElementById('auto').addEventListener('click',toggleAuto);
             render();
           </script>
         </body></html>`;
