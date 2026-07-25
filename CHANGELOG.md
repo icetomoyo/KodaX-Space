@@ -45,6 +45,7 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ### Fixed
 
+- **Interactive Artifact first-input readiness** - Interactive HTML frames now remain non-interactive until their authored document finishes parsing and reports readiness. Slow Windows runners and machines can no longer lose the first click between a visible control being parsed and its later script handler being installed; the Electron journey uses the same explicit readiness contract without arbitrary sleeps.
 - **Single-click Task Dock opening on narrow windows** - The manual right-sidebar toggle now checks the real viewport before selecting its width mode. On a 1024-pixel Windows runner the first click opens a balanced dock instead of choosing the default width and being hidden immediately by responsive layout.
 - **Clean-build Windows tray icon** - Runtime icon generation is now a prerequisite of the shared Electron main build, covering clean development, smoke, E2E, and release builds. A fresh checkout can no longer disable the Windows background tray because ignored generated icon files were absent.
 - **Windows extraction Worker teardown** - A successful PDF or Office extraction now lets its Worker exit naturally before the caller settles, with a bounded termination fallback for a stuck Worker. This removes a Windows native-module teardown race that could crash the unit-test process with `0xC0000005` after every assertion had passed.

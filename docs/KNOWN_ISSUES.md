@@ -95,6 +95,7 @@ Last Updated: 2026-07-25
 | 097 | Medium   | Resolved | Successful document extraction forcibly terminated its Worker during Windows native-module cleanup                       | v0.1.32 development   | 2026-07-25 |
 | 098 | Medium   | Resolved | A narrow Windows viewport required two clicks to open the right-side Task Dock                                           | v0.1.32 development   | 2026-07-25 |
 | 099 | Medium   | Resolved | Clean Electron main builds omitted generated runtime icons and disabled the Windows tray                                 | v0.1.32 development   | 2026-07-25 |
+| 100 | Medium   | Resolved | Interactive HTML Artifact could accept its first click before document controls were initialized                         | v0.1.32 development   | 2026-07-25 |
 
 ## Issue Details
 
@@ -5417,12 +5418,60 @@ Validation:
 - Combined sidebar, Artifact, Changes, and tray regression run passed 4/4.
 - Smoke build, ESLint, Prettier, and Git whitespace checks passed.
 
+### 100: Interactive HTML Artifact could accept its first click before document controls were initialized
+
+- Priority: Medium
+- Status: Resolved
+- Introduced: v0.1.32 development
+- Fixed: v0.1.32
+- Created: 2026-07-25
+- Resolution Date: 2026-07-25
+
+#### Original Problem
+
+The interactive HTML Artifact control journey intermittently failed on a slow Windows GitHub
+runner. Playwright found and clicked the visible **Next** button, but the authored click handler did
+not advance the presentation. The same scenario passed locally and the initial authored render
+still completed, making the failure look like a lost first input rather than a script or sandbox
+failure.
+
+Expected behavior:
+
+- Visible Artifact controls must not accept mouse or keyboard input until the authored document has
+  completed synchronous parsing and installed its control handlers.
+- The readiness boundary must be observable by product code and tests without arbitrary sleeps.
+
+#### Root Cause
+
+The Artifact bootstrap streams authored markup through `document.write()`. A button in the body can
+be parsed and become visible before a script later in the document registers its event listeners.
+The injected diagnostic runtime sent its existing `ready` message immediately from the document
+head, and the parent diagnostic hook ignored that message. On a slower Windows runner, the first
+click could therefore land in the interval between button creation and handler registration.
+
+#### Resolution
+
+- Send the sandbox `ready` diagnostic only after `DOMContentLoaded`, or immediately when the
+  document was already parsed.
+- Project that readiness into the Artifact iframe and disable pointer and keyboard focus until the
+  matching document reports ready.
+- Make the Electron journey wait for the explicit product readiness contract before interacting;
+  no timeout sleep or retry hides the race.
+
+Validation:
+
+- HTML sandbox unit coverage passes 10/10 and asserts the deferred readiness boundary.
+- The affected Electron control journey passes 5/5 consecutive local runs.
+- TypeScript, focused ESLint, changed-file Prettier, Git whitespace checks, and the production
+  renderer/main smoke build pass.
+- Final Windows GitHub Actions verification remains part of the v0.1.32 release gate.
+
 ## Summary
 
-- Total: 87
+- Total: 88
 - Open: 2
-- Resolved: 85
+- Resolved: 86
 - High: 39
-- Medium: 41
+- Medium: 42
 - Low: 7
 - Next to resolve: 043
