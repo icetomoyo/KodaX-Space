@@ -1,10 +1,10 @@
 # KodaX Space 高层设计（HLD）
 
 > Last updated: 2026-07-24
-> Status: 核心架构决策仍有效；当前源码/发布基线为 KodaX Space 0.1.32（package 0.1.32）/ npm 正式发布的 KodaX 0.7.75。中间方案与否决理由见 [ADR/](ADR/)；当前能力边界见 [KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md)。
+> Status: 核心架构决策仍有效；当前源码/发布基线为 KodaX Space 0.1.32（package 0.1.32）/ npm 正式发布的 KodaX 0.7.76。中间方案与否决理由见 [ADR/](ADR/)；当前能力边界见 [KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md)。
 > Companion doc: [PRD](PRD.md)
 
-> **0.1.30 增量**：Electron main 继续拥有特权边界，并新增一个持久、协议中立的 External Agent Executor Plane。Renderer 仅通过 zod IPC 获取脱敏 Registration/Descriptor/Task/Event 投影；管理入口仅接受主应用窗口，任务创建从 main-owned live Session 派生项目/父任务归属，读取与干预均复核任务所属 Session。实时 Session 与 Workflow 共用同一 KodaX 0.7.67 plane。Reference Executor 已接通；v0.1.32 起，Runtime 配置的 A2A 由 KodaX 0.7.75 Coder daemon 持有并按能力协商开放，MCP Tasks/受治理 HTTP 仍按 Runtime capability 门控。Partner 自 0.1.30 起已启用 workspace-first Outputs 与 checkpointed writes。
+> **0.1.30 增量**：Electron main 继续拥有特权边界，并新增一个持久、协议中立的 External Agent Executor Plane。Renderer 仅通过 zod IPC 获取脱敏 Registration/Descriptor/Task/Event 投影；管理入口仅接受主应用窗口，任务创建从 main-owned live Session 派生项目/父任务归属，读取与干预均复核任务所属 Session。实时 Session 与 Workflow 共用同一 KodaX 0.7.67 plane。Reference Executor 已接通；v0.1.32 起，Runtime 配置的 A2A 由 KodaX 0.7.76 Coder daemon 持有并按能力协商开放，MCP Tasks/受治理 HTTP 仍按 Runtime capability 门控。Partner 自 0.1.30 起已启用 workspace-first Outputs 与 checkpointed writes。
 >
 > **2026-07-12 架构重置**：`v0.1.31` 起以 `RuntimeHostAdapter -> @kodax-ai/kodax/runtime` 作为长期 host boundary，先采用 embedded inline facade，再以 capability negotiation 决定 Worker/daemon。旧 `KodaXHost/RealSession/KodaXClient` 路径是迁移基线，不再是长期目标。当前路线见 [FEATURE_LIST.md](FEATURE_LIST.md)。
 >
@@ -14,7 +14,7 @@
 >
 > **2026-07-23 `0.7.74` 正式发布同步**：lockfile 精确绑定官方 Registry URL/SRI，安装目录的 133 个发布文件与 Registry tarball 全部一致。Coder daemon 继续要求 `contextCompaction:3`、`transcriptPaging:1` 和 `transcriptSearch:1`；模型侧 `wait_agent` 是 mailbox yield，UI/SDK 继续消费 Actor progress telemetry。idle-yield 用户提示、未确认 root completion、Goal 常驻工具和 root live-only 投影均由 KodaX Runtime 契约持有，Space 只记录/投影，不创建第二套协调状态机。正式版在不提升 capability 版本的前提下补齐精确 checkpoint/命令式 compaction lineage、PowerShell 方括号路径升级确认、完整交互式 auto-resume、确定性 Auto 设置写入，以及 durable interrupt delivery 失败后的队列保留。
 >
-> **2026-07-24 `0.7.75` 发布对齐**：根与 Desktop workspace 更新到官方 Registry 包。Runtime 提供 Sidecar 可选后续工作/预算终态修正和 Windows GUI host 非交互子进程隐藏；Space 仍保持 owner split，并在 managed-task `verifying/completed` 投影上本地拒绝 interrupt，弥补 Runtime 关闭准入晚于最后 root drain boundary 的剩余窗口。
+> **2026-07-25 `0.7.76` 发布对齐**：根与 Desktop workspace 更新到官方 Registry 包。Runtime 保留 Sidecar 可选后续工作/预算终态修正和 Windows GUI host 非交互子进程隐藏，并将 Kimi Code 默认模型改为直连 `k3-256k`；Space 仍保持 owner split，并在 managed-task `verifying/completed` 投影上本地拒绝 interrupt，弥补 Runtime 关闭准入晚于最后 root drain boundary 的剩余窗口。
 >
 > **2026-07-23 F135 builtin 分发**：Space 通过公开 Skill plugin 注册接口加载安装包外置的 `frontend-slides` 与 `huashu-design`，来源 revision、许可证、补丁和逐文件哈希全部可审计；`huashu-design` 默认去除推广水印/签名。本机 `pdf`/`pptx`/`xlsx`/`docx` skill 的当前许可不允许再分发，因此不进入安装包。
 >

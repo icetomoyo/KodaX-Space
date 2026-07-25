@@ -1,10 +1,10 @@
 # KodaX Space 产品需求文档（PRD）
 
 > Last updated: 2026-07-24
-> Status: 长期产品方向文档。当前源码/发布基线为 KodaX Space 0.1.32（package 0.1.32）/ npm 正式发布的 KodaX 0.7.75；Coder shared daemon、compaction v3 与精确 checkpoint/history 恢复、mailbox-driven Agent 协调、运行中输入、root/child 投影隔离、Goal 工具常驻、Runtime-owned Auto LLM 权限、Sidecar 终态修正、Windows 后台子进程隐藏、精确持久授权、有来源/许可/补丁/完整性门禁的 Space builtin skills，以及 Windows 可见、可重开的后台托盘与安全彻底退出已接入，完整 F117/F118 桌面治理体验仍在计划中。已交付能力与边界以 [USER_MANUAL.zh-CN.md](USER_MANUAL.zh-CN.md)、[KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md) 和 [FEATURE_LIST.md](FEATURE_LIST.md) 为准。
+> Status: 长期产品方向文档。当前源码/发布基线为 KodaX Space 0.1.32（package 0.1.32）/ npm 正式发布的 KodaX 0.7.76；Coder shared daemon、compaction v3 与精确 checkpoint/history 恢复、mailbox-driven Agent 协调、运行中输入、root/child 投影隔离、Goal 工具常驻、Runtime-owned Auto LLM 权限、Sidecar 终态修正、Windows 后台子进程隐藏、Kimi Code 直连 K3 256K 默认路由、精确持久授权、有来源/许可/补丁/完整性门禁的 Space builtin skills，以及 Windows 可见、可重开的后台托盘与安全彻底退出已接入，完整 F117/F118 桌面治理体验仍在计划中。已交付能力与边界以 [USER_MANUAL.zh-CN.md](USER_MANUAL.zh-CN.md)、[KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md) 和 [FEATURE_LIST.md](FEATURE_LIST.md) 为准。
 > 对标：Anthropic Claude Desktop（Cowork / Code 双面板）+ OpenAI Codex Desktop App（多 agent 本机壳）
 
-> **当前落地摘要**：Coder 与 Partner 均可用；Partner 已具备 workspace-first Outputs、Sources/KB、checkpointed writes、Office/PDF 便利产物和本地 policy/audit。0.1.30 接入 KodaX 0.7.67 Reference External Agent 管理、Workflow/Worker 路由和 Task Dock 干预；v0.1.31 已发布 inline RuntimeHostAdapter 的 managed run、transcript、compact、fork、rewind；v0.1.32 由 KodaX 0.7.75 Coder daemon 在能力协商通过后提供 Runtime 配置的 A2A。MCP Tasks、受治理 HTTP、通用 Connector/浏览器控制/自动化/远程任务仍未作为当前能力开放。
+> **当前落地摘要**：Coder 与 Partner 均可用；Partner 已具备 workspace-first Outputs、Sources/KB、checkpointed writes、Office/PDF 便利产物和本地 policy/audit。0.1.30 接入 KodaX 0.7.67 Reference External Agent 管理、Workflow/Worker 路由和 Task Dock 干预；v0.1.31 已发布 inline RuntimeHostAdapter 的 managed run、transcript、compact、fork、rewind；v0.1.32 由 KodaX 0.7.76 Coder daemon 在能力协商通过后提供 Runtime 配置的 A2A。MCP Tasks、受治理 HTTP、通用 Connector/浏览器控制/自动化/远程任务仍未作为当前能力开放。
 >
 > **2026-07-12 路线重置**：从 `v0.1.31` 起，规范路线由 [FEATURE_LIST.md](FEATURE_LIST.md) 的 Runtime alignment、platform trust、workflow/review evidence、task/capability governance、Memory Agent、Learning Center 和 beta completion 版本链管理。旧 M0/M1/M2/M3 里程碑只作为产品演进历史，不再表示未交付状态或版本承诺。
 

@@ -1,8 +1,8 @@
 # KodaX Space 文档中心
 
-> 当前源码/发布基线：KodaX Space `v0.1.32`（package `0.1.32`）/ npm 正式发布的 KodaX `0.7.75`；稳定 tag 与 GitHub Release 由本次发布流程创建。
+> 当前源码/发布基线：KodaX Space `v0.1.32`（package `0.1.32`）/ npm 正式发布的 KodaX `0.7.76`；稳定 tag 与 GitHub Release 由本次发布流程创建。
 
-这里是文档的统一入口。当前源码已采用 npm 正式发布的 KodaX 0.7.75：Coder 默认连接共享 daemon，并强制 compaction v3、transcript paging/search、interrupt input、Actor/Turn v1 和 Auto LLM guardrail v3。0.7.75 进一步修正 Sidecar 可选后续工作/预算终态，并系统隐藏 Windows GUI host 的非交互子进程；Space 在 managed-task `verifying` 阶段本地关闭 interrupt 准入，避免已错过 root drain boundary 的输入先被接受再未投递终结。正式版还提供 mailbox-driven Agent 协调、idle-yield 用户提示的 transcript 回填、Goal 工具常驻、root/child 投影隔离、精确 checkpoint 活动 lineage、确定性的 Auto 切换，以及 Windows 可见托盘/重开/安全彻底退出；Partner 继续由 Space inline owner 管理。完整 F117/F118 桌面管理体验仍在后续路线中。历史设计和 release 记录保留当时语境。
+这里是文档的统一入口。当前源码已采用 npm 正式发布的 KodaX 0.7.76：Coder 默认连接共享 daemon，并强制 compaction v3、transcript paging/search、interrupt input、Actor/Turn v1 和 Auto LLM guardrail v3。0.7.76 保留 Sidecar 可选后续工作/预算终态修正和 Windows GUI host 非交互子进程隐藏，并将 Kimi Code 默认模型改为直连 `k3-256k`、K3 默认推理档改为 `high`；Space 在 managed-task `verifying` 阶段本地关闭 interrupt 准入，避免已错过 root drain boundary 的输入先被接受再未投递终结。正式版还提供 mailbox-driven Agent 协调、idle-yield 用户提示的 transcript 回填、Goal 工具常驻、root/child 投影隔离、精确 checkpoint 活动 lineage、确定性的 Auto 切换，以及 Windows 可见托盘/重开/安全彻底退出；Partner 继续由 Space inline owner 管理。完整 F117/F118 桌面管理体验仍在后续路线中。历史设计和 release 记录保留当时语境。
 
 ## 我想要……
 

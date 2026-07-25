@@ -2,7 +2,7 @@
 
 > 面向源码使用者、贡献者和发布维护者。普通用户请阅读[用户使用手册](USER_MANUAL.zh-CN.md)。
 >
-> 当前 Space 发布基线：`v0.1.32`；SDK 基线为 npm Registry 正式发布的精确 `@kodax-ai/kodax@0.7.75`。
+> 当前 Space 发布基线：`v0.1.32`；SDK 基线为 npm Registry 正式发布的精确 `@kodax-ai/kodax@0.7.76`。
 
 ## 1. 环境要求
 
@@ -19,7 +19,7 @@ npm install --include=dev
 
 KodaX Space 是 npm workspace monorepo。不要只在 `apps/desktop` 中安装依赖，否则 workspace package、Electron native module 与根脚本可能不一致。
 
-根、desktop manifest 与 lockfile 都固定到精确 KodaX 0.7.75。官方包 URL 为 `https://registry.npmjs.org/@kodax-ai/kodax/-/kodax-0.7.75.tgz`，SRI 为 `sha512-a/Xt+LpQq17qGt1DWLNytrax381BVec1GXjgofBEMCyJ+UVE1Q5I+evTVKL0k2waYa+2Vr8FX+NTw+fXfonNMg==`，SHA256 为 `A940D527814A665D147AE99F15475FB658B63EB6707362E18C128E87D721C72A`。`npm ls @kodax-ai/kodax --all` 应只显示同一个 deduped 版本；Runtime compatibility 会严格要求 guardrail v3、`permission:grant-admin`、`interruptInput:1`、`actorControlPlane:1`、`contextCompaction:3`、`transcriptPaging:1` 和 `transcriptSearch:1`，并直接验证 Windows 后台子进程、Sidecar 终态、PowerShell 方括号路径边界、非空 auto-resume 导出和跨进程共享。干净安装应使用 `npm ci`，不得改回本地 tgz。
+根、desktop manifest 与 lockfile 都固定到精确 KodaX 0.7.76。官方包 URL 为 `https://registry.npmjs.org/@kodax-ai/kodax/-/kodax-0.7.76.tgz`，SRI 为 `sha512-SgMNwa5S5m0vrJazYfRCqacEYkJ8wTZRKt9+1ad0lEw4zE0GvFoNrR2okqPHqdjH7jxK85HOWNRuGO2kWzN0lw==`，SHA256 为 `F247511A43A5DE2EFEB0FF917923714E44DAACADAEC23F669926B61F0E299021`。`npm ls @kodax-ai/kodax --all` 应只显示同一个 deduped 版本；Runtime compatibility 会严格要求 guardrail v3、`permission:grant-admin`、`interruptInput:1`、`actorControlPlane:1`、`contextCompaction:3`、`transcriptPaging:1` 和 `transcriptSearch:1`，并直接验证 Windows 后台子进程、Sidecar 终态、PowerShell 方括号路径边界、非空 auto-resume 导出和跨进程共享。Provider catalog 还要求 `kimi-code` 默认直连 `k3-256k`，保留 K3 1M 与两个 K2.7 Code 路由。干净安装应使用 `npm ci`，不得改回本地 tgz。
 
 ## 2. 启动方式
 

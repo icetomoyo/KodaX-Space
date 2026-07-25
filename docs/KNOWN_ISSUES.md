@@ -5207,7 +5207,7 @@ The follow-up resolution:
   boundaries with deterministic unit tests.
 - Verified a freshly packaged Portable repaired the observed stale shortcut to
   the outer candidate executable; package smoke and packaged boot both passed
-  with KodaX 0.7.75. The release checklist still retains a separate human
+  with KodaX 0.7.75. The 0.7.76 final release checklist still retains a separate human
   taskbar observation because automated Windows capture returned unsupported
   API error `0x80004002` on this Windows 10 host.
 
@@ -5421,8 +5421,8 @@ Affected upstream paths include:
 - Its release gates audit statically identifiable Runtime Worker child-process
   calls and exercise 20 ordinary packaged-host queries with a Win32
   console-visibility probe.
-- Space pins only the official Registry package, raises its daemon minimum to
-  0.7.75, and keeps explicit editor, terminal, and PTY interaction unchanged.
+- Space pins only the official Registry package, raises its final release daemon
+  minimum to 0.7.76, and keeps explicit editor, terminal, and PTY interaction unchanged.
 - No KodaX source or installed package is patched inside the Space repository.
 
 ### 092: Isolated Electron tests leaked Runtime client credentials into the OS keychain
