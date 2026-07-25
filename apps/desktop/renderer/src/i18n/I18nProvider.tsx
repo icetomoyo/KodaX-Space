@@ -67,6 +67,10 @@ function writeCachedLanguageMode(mode: LanguageModeT): void {
   }
 }
 
+function readNavigatorLanguages(): readonly string[] {
+  return typeof navigator === 'undefined' ? [] : (navigator.languages ?? []);
+}
+
 function interpolate(message: string, vars?: Record<string, string | number>): string {
   if (!vars) return message;
   return message.replace(/\{([a-zA-Z0-9_]+)\}/g, (match, key) => {
@@ -77,7 +81,7 @@ function interpolate(message: string, vars?: Record<string, string | number>): s
 
 export function translateMessage(key: MessageKey, vars?: Record<string, string | number>): string {
   const mode = readCachedLanguageMode();
-  const locale = resolveEffectiveLocale(mode, navigator.languages ?? []);
+  const locale = resolveEffectiveLocale(mode, readNavigatorLanguages());
   return interpolate(messages[locale][key], vars);
 }
 
@@ -85,7 +89,7 @@ export function I18nProvider({ children }: { readonly children: ReactNode }): JS
   const initialMode = readCachedLanguageMode();
   const [languageMode, setLanguageModeState] = useState<LanguageModeT>(initialMode);
   const [effectiveLocale, setEffectiveLocale] = useState<SupportedLocaleT>(() =>
-    resolveEffectiveLocale(initialMode, navigator.languages ?? []),
+    resolveEffectiveLocale(initialMode, readNavigatorLanguages()),
   );
 
   useEffect(() => {

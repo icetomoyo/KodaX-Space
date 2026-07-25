@@ -181,15 +181,25 @@ test('Delivery tool-result parser upgrades historical single and helper results'
 });
 
 test('Markdown preserves typed Partner Delivery links as generated-resource anchors', () => {
-  const uri = formatPartnerDeliveryUri('pd_markdown');
-  const html = renderToStaticMarkup(
-    createElement(
-      I18nProvider,
-      null,
-      createElement(Markdown, { content: `[Open report](<${uri}>)` }),
-    ),
-  );
-  assert.match(html, /href="kodax-space:\/\/partner-delivery\/pd_markdown"/);
-  assert.match(html, /data-generated-resource="partner-delivery"/);
-  assert.match(html, />Open report<\/a>/);
+  const navigatorDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: undefined });
+  try {
+    const uri = formatPartnerDeliveryUri('pd_markdown');
+    const html = renderToStaticMarkup(
+      createElement(
+        I18nProvider,
+        null,
+        createElement(Markdown, { content: `[Open report](<${uri}>)` }),
+      ),
+    );
+    assert.match(html, /href="kodax-space:\/\/partner-delivery\/pd_markdown"/);
+    assert.match(html, /data-generated-resource="partner-delivery"/);
+    assert.match(html, />Open report<\/a>/);
+  } finally {
+    if (navigatorDescriptor) {
+      Object.defineProperty(globalThis, 'navigator', navigatorDescriptor);
+    } else {
+      delete (globalThis as { navigator?: Navigator }).navigator;
+    }
+  }
 });
