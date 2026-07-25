@@ -93,6 +93,8 @@ Last Updated: 2026-07-25
 | 095 | Medium   | Resolved | Changes panel collapsed a fully untracked directory into one row and hid its individual files                            | v0.1.x                | 2026-07-24 |
 | 096 | Medium   | Resolved | Linux CI lacked an OS keychain and silently projected Runtime A2A as hidden                                              | v0.1.32 development   | 2026-07-25 |
 | 097 | Medium   | Resolved | Successful document extraction forcibly terminated its Worker during Windows native-module cleanup                       | v0.1.32 development   | 2026-07-25 |
+| 098 | Medium   | Resolved | A narrow Windows viewport required two clicks to open the right-side Task Dock                                           | v0.1.32 development   | 2026-07-25 |
+| 099 | Medium   | Resolved | Clean Electron main builds omitted generated runtime icons and disabled the Windows tray                                 | v0.1.32 development   | 2026-07-25 |
 
 ## Issue Details
 
@@ -5339,12 +5341,88 @@ Validation:
 - TypeScript and targeted ESLint passed; full local and cross-platform CI results are recorded in
   the v0.1.32 release-readiness document.
 
+### 098: A narrow Windows viewport required two clicks to open the right-side Task Dock
+
+- Priority: Medium
+- Status: Resolved
+- Introduced: v0.1.32 development
+- Fixed: v0.1.32
+- Created: 2026-07-25
+- Resolution Date: 2026-07-25
+
+#### Original Problem
+
+The first click on **Show right sidebar** could leave the right sidebar absent on a 1024x728 Windows
+runner, while a second click opened it. Artifact and Changes E2E journeys then failed in their
+common sidebar-opening helper before reaching their feature assertions.
+
+#### Root Cause
+
+The Windows runner clamped the requested BrowserWindow to the 1024-pixel display width. The first
+manual click selected the 320-pixel default dock because no explicit open intent existed yet. With
+the 260-pixel left sidebar and window chrome, the remaining center pane fell below the responsive
+minimum and immediately hid the dock. The second click used the now-persisted open intent and
+selected balanced mode, so it appeared.
+
+#### Resolution
+
+- Evaluate whether the default dock width fits the actual viewport and current left-sidebar intent.
+- Select balanced mode on the first click when the default width cannot fit; preserve default mode
+  on wider windows and explicit close semantics.
+- Cover a 1024x728 first-click layout and verify the center and dock remain visible without overlap.
+- Close the Electron fixture when Artifact setup fails so one assertion cannot cascade into Worker
+  teardown timeouts.
+
+Validation:
+
+- New 1024x728 first-click Electron E2E: 1 passed.
+- Representative Artifact and complete-untracked-directory Changes journeys: 2 passed.
+- Combined sidebar, Artifact, Changes, and tray regression run: 4/4 passed.
+- TypeScript, focused unit, smoke build, ESLint, Prettier, and Git whitespace checks passed.
+
+### 099: Clean Electron main builds omitted generated runtime icons and disabled the Windows tray
+
+- Priority: Medium
+- Status: Resolved
+- Introduced: v0.1.32 development
+- Fixed: v0.1.32
+- Created: 2026-07-25
+- Resolution Date: 2026-07-25
+
+#### Original Problem
+
+The real Windows tray lifecycle E2E passed on the development workstation but failed in a clean
+GitHub Actions checkout. Electron logged that it could not load `resources/icon.ico`; tray
+initialization therefore failed, the documented fallback quit after closing the last window, and
+Playwright subsequently reported a closed target.
+
+#### Root Cause
+
+`resources/icon.ico` and `resources/icon.png` are intentionally generated and ignored. Platform
+release scripts generated them, but the shared Electron main build used by clean development,
+smoke, and E2E builds did not. Local historical files masked the missing prerequisite.
+
+#### Resolution
+
+- Make runtime icon generation a prerequisite of the shared Electron main build.
+- Remove duplicate generation from platform packaging commands; all build paths now share one
+  source of truth.
+- Keep the production tray lifecycle assertion unchanged so it continues to test real Electron
+  Tray behavior.
+
+Validation:
+
+- Moving both generated icons aside and running the main build recreated their exact hashes.
+- The original Windows tray lifecycle E2E passed 3/3.
+- Combined sidebar, Artifact, Changes, and tray regression run passed 4/4.
+- Smoke build, ESLint, Prettier, and Git whitespace checks passed.
+
 ## Summary
 
-- Total: 85
+- Total: 87
 - Open: 2
-- Resolved: 83
+- Resolved: 85
 - High: 39
-- Medium: 39
+- Medium: 41
 - Low: 7
 - Next to resolve: 043
