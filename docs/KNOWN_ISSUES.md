@@ -98,6 +98,7 @@ Last Updated: 2026-07-25
 | 100 | Medium   | Resolved | Interactive HTML Artifact could accept its first click before document controls were initialized                         | v0.1.32 development   | 2026-07-25 |
 | 101 | Medium   | Resolved | Project HTML File Viewer could accept its first click before module controls were initialized                            | v0.1.32 development   | 2026-07-25 |
 | 102 | Medium   | Resolved | Partner PDF text Workers could unload an unused native Canvas module with a Windows access violation                     | v0.1.32 development   | 2026-07-25 |
+| 103 | Medium   | Resolved | Shared-daemon release probe started its event deadline before the peer performed its settings mutation                   | v0.1.32 development   | 2026-07-25 |
 
 ## Issue Details
 
@@ -5604,12 +5605,61 @@ Validation:
   `Promise.withResolvers` and verifies the Node 20 capability polyfill.
 - Two clean Windows main jobs and the four-platform release matrix remain the final proof.
 
+### 103: Shared-daemon release probe started its event deadline before the peer performed its settings mutation
+
+- Priority: Medium
+- Status: Resolved
+- Introduced: v0.1.32 development
+- Fixed: v0.1.32
+- Created: 2026-07-25
+- Resolution Date: 2026-07-25
+
+#### Original Problem
+
+The first manual four-platform release dispatch `30145184829` passed Windows, Ubuntu, and macOS
+arm64. Its macOS Intel job failed the published-package compatibility test with
+`Space did not receive the peer settings event.` The remaining 1697 Desktop tests passed and the
+same process-distinct daemon test passed on the other platforms.
+
+Expected behavior:
+
+- Slow runner startup, dependency loading, preflight, and daemon inspection must not consume the
+  deadline intended to verify event delivery after a peer mutation.
+- A missing live settings event must still fail within a bounded interval after the peer has
+  confirmed the mutation.
+
+#### Root Cause
+
+The host probe created an eight-second rejection timer before it attached the observer, collected
+the client and daemon baselines, launched the peer process, and loaded the published SDK in that
+process. On a loaded macOS Intel runner those prerequisites could exceed eight seconds before the
+peer called `updateSettingsVersioned()`. The already-rejected promise then reported an event failure
+even though the event-delivery interval had not started.
+
+This was a Space release-test timing defect, not evidence of a KodaX SDK or Sidecar event-delivery
+failure.
+
+#### Resolution
+
+- Attach the live observer without starting an absolute startup timer.
+- Run the process-distinct peer through its existing bounded timeout.
+- Start a ten-second event-delivery deadline only after the peer has confirmed its settings
+  mutation; an event delivered earlier resolves immediately, while a genuinely missing event still
+  fails closed.
+
+Validation:
+
+- The focused published KodaX 0.7.76 shared-daemon compatibility test passes 5/5 consecutive local
+  runs.
+- Complete `npm test`, TypeScript, focused ESLint/Prettier, and Git whitespace checks pass.
+- A new four-platform release dispatch from the reviewed candidate remains the final proof.
+
 ## Summary
 
-- Total: 90
+- Total: 91
 - Open: 2
-- Resolved: 88
+- Resolved: 89
 - High: 39
-- Medium: 44
+- Medium: 45
 - Low: 7
 - Next to resolve: 043
