@@ -42,7 +42,11 @@ async function extractPdfText(bytes: Buffer): Promise<string> {
   if (bytes.subarray(0, 5).toString('ascii') !== '%PDF-') {
     throw new Error('file has no PDF signature');
   }
-  const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
+  // The legacy Node build eagerly loads @napi-rs/canvas even though text extraction never renders
+  // a page. Unloading that native module from short-lived Windows Worker isolates can terminate the
+  // test or host process with 0xC0000005. The standard build loads Canvas only if rendering asks for
+  // it, so this text-only path stays pure JS while retaining the same PDF parser and limits.
+  const pdfjs = await import('pdfjs-dist/build/pdf.mjs');
   const loadingTask = pdfjs.getDocument({
     data: new Uint8Array(bytes),
     disableFontFace: true,
