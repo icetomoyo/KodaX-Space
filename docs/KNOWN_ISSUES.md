@@ -5452,14 +5452,19 @@ head, and the parent diagnostic hook ignored that message. On a slower Windows r
 click could therefore land in the interval between button creation and handler registration.
 The first readiness fix also kept a plain boolean in React state. When an Artifact version changed,
 the old `true` remained observable until a post-render effect reset it, and the reused iframe could
-still deliver a late message from the preceding document.
+still deliver a late message from the preceding document. After that state race was closed, main CI
+run `30144213761` proved a second boundary: React updated `data-ready` and removed
+`pointer-events:none` together, but Chromium's cross-process iframe hit-test state could lag the DOM
+attribute observed by Playwright. The click API returned successfully while the authored handler
+still received no event.
 
 #### Resolution
 
-- Send the sandbox `ready` diagnostic only after `DOMContentLoaded`, or immediately when the
-  document was already parsed.
-- Project that readiness into the Artifact iframe and disable pointer and keyboard focus until the
-  matching document reports ready.
+- Install a capture-phase gate inside the authored document before its markup parses. It blocks
+  trusted pointer, keyboard, form, input, context-menu, and wheel events until the next event-loop
+  task after `DOMContentLoaded`, then removes itself before sending `ready`.
+- Project readiness into the Artifact iframe for keyboard focus without dynamically changing the
+  parent iframe's pointer hit-testing.
 - Store the exact ready document key instead of a reusable boolean, and key the iframe by its
   versioned URL so a preceding document and `contentWindow` cannot unlock its replacement.
 - Make the Electron journey wait for the explicit product readiness contract before interacting;
@@ -5467,15 +5472,17 @@ still deliver a late message from the preceding document.
 
 Validation:
 
-- HTML sandbox unit coverage passes 10/10 and asserts the deferred readiness boundary.
+- HTML sandbox unit coverage passes 10/10 and asserts the in-document gate, deferred readiness task,
+  and gate removal.
 - The affected control journey and Artifact version-refresh journey pass 20/20 local runs in a
-  two-worker, zero-retry stress run shared with the Project Preview regression.
+  two-worker, zero-retry stress run shared with the deterministic Project Preview gate regression.
 - TypeScript, focused ESLint, changed-file Prettier, Git whitespace checks, and the production
   renderer/main smoke build pass.
 - Main CI run `30142397054` passed the affected Windows shard 1/2 with 30 passes and 6 intentional
   skips; the original control regression did not retry. Later Ubuntu runs reproduced the residual
-  stale-document form, which candidate `7449d695` closes; a retry-free main run remains the release
-  gate.
+  stale-document form. Main run `30144213761` then reproduced the residual parent hit-test race on
+  Windows twice before its second retry passed. Candidate `343219db` moves the gate into the
+  document; a retry-free main run remains the release gate.
 
 ### 101: Project HTML File Viewer could accept its first click before module controls were initialized
 
@@ -5507,14 +5514,18 @@ injected runtime sent that message immediately from the document head. The rende
 diagnostic failures and left the iframe interactive. A body button could therefore appear before
 the later `type="module"` script registered its click handler. The initial renderer fix then exposed
 the same residual stale-state window: a new URL could render while the hook still projected the
-preceding document's boolean `ready=true`, and React reused the iframe node.
+preceding document's boolean `ready=true`, and React reused the iframe node. Binding state and
+remounting removed that window, but parent-side `pointer-events` still required Chromium to update
+the out-of-process iframe hit-test region. Main run `30144213761` observed `data-ready=true` before
+that region converged, so the click completed without reaching the button.
 
 #### Resolution
 
-- Defer Project Preview readiness until `DOMContentLoaded`, which waits for the authored module
-  graph to execute.
-- Reuse the shared renderer readiness projection and keep the Project Preview iframe out of pointer
-  and keyboard interaction until ready.
+- Capture trusted input inside Project Preview from the injected head runtime until the next task
+  after `DOMContentLoaded`, which waits for the authored module graph and all synchronous
+  `DOMContentLoaded` listeners.
+- Remove the capture gate before sending `ready`; keep keyboard focus gated in the parent without a
+  dynamic iframe `pointer-events` transition.
 - Bind readiness to the exact Preview URL and key the iframe by that URL, so switching revision or
   network policy immediately returns to not-ready and rejects messages from the prior
   `contentWindow`.
@@ -5525,13 +5536,17 @@ Validation:
 
 - Project Preview and HTML sandbox focused unit coverage passes 16/16.
 - The full Project HTML File Viewer resource/isolation/click journey passes 10/10 consecutive local
-  runs with two Electron workers and Playwright retries disabled.
+  runs with two Electron workers and Playwright retries disabled. Every run holds an authored
+  module response, proves a trusted pre-ready click is blocked, releases the module, and proves the
+  first post-ready click succeeds.
 - TypeScript, focused ESLint, changed-file Prettier, Git whitespace checks, and the production
   renderer/main smoke build pass.
 - Main CI runs `30143508131` and `30143521566` finished green but respectively exposed two and one
   Ubuntu retries across this journey and the shared Artifact readiness path. Candidate `7449d695`
-  binds both consumers to the exact document; a clean, retry-free main CI run remains the v0.1.32
-  release gate.
+  bound both consumers to the exact document, but main run `30144213761` still recorded one Ubuntu
+  Project retry and two Windows Artifact attempts before success. Candidate `343219db` removes the
+  shared parent hit-test transition; a clean, retry-free main CI run remains the v0.1.32 release
+  gate.
 
 ### 102: Partner PDF text Workers could unload an unused native Canvas module with a Windows access violation
 
