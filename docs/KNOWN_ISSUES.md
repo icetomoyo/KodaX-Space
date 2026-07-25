@@ -99,6 +99,7 @@ Last Updated: 2026-07-25
 | 101 | Medium   | Resolved | Project HTML File Viewer could accept its first click before module controls were initialized                            | v0.1.32 development   | 2026-07-25 |
 | 102 | Medium   | Resolved | Partner PDF text Workers could unload an unused native Canvas module with a Windows access violation                     | v0.1.32 development   | 2026-07-25 |
 | 103 | Medium   | Resolved | Shared-daemon release probe started its event deadline before the peer performed its settings mutation                   | v0.1.32 development   | 2026-07-25 |
+| 104 | Medium   | Resolved | Interactive HTML could report ready before its out-of-process frame committed an interactive hit-test surface            | v0.1.32 development   | 2026-07-25 |
 
 ## Issue Details
 
@@ -5654,12 +5655,63 @@ Validation:
 - Complete `npm test`, TypeScript, focused ESLint/Prettier, and Git whitespace checks pass.
 - A new four-platform release dispatch from the reviewed candidate remains the final proof.
 
+### 104: Interactive HTML could report ready before its out-of-process frame committed an interactive hit-test surface
+
+- Priority: Medium
+- Status: Resolved
+- Introduced: v0.1.32 development
+- Fixed: v0.1.32
+- Created: 2026-07-25
+- Resolution Date: 2026-07-25
+
+#### Original Problem
+
+Final-candidate main CI `30146786957` was classified green, but full log review found that the
+Windows `interactive HTML Artifact keeps inline controls and timer-driven playback working` journey
+failed its initial attempt and passed on retry #1. The authored script had rendered its initial
+state and the frame reported `data-ready=true`, yet the first Playwright click did not reach the
+button handler.
+
+Expected behavior:
+
+- `data-ready=true` must mean the authored document is initialized, painted, and able to receive its
+  first trusted pointer or keyboard event.
+- Release CI must not use Playwright retry to hide a lost first interaction.
+
+#### Root Cause
+
+Issue 100 moved the trusted-input gate inside the iframe and removed the parent `pointer-events`
+transition, but the child sent `ready` in the first task after `DOMContentLoaded`. On a loaded
+Windows runner, the out-of-process iframe could deliver that message before Chromium committed its
+paint and hit-test surface to the parent compositor. The parent then published `data-ready=true`
+immediately, leaving a narrow window in which a coordinate click completed without reaching the
+already-installed authored handler.
+
+#### Resolution
+
+- Keep trusted input gated through two child-document animation frames after `DOMContentLoaded`,
+  then remove the gate and send the ready diagnostic in the following task.
+- After receiving ready, wait two parent animation frames before publishing `data-ready=true`.
+- Cancel pending parent readiness frames when the document key changes or the observer unmounts, so
+  an old frame cannot unlock its replacement.
+- Apply the same paint-committed contract to Interactive Artifacts and Project HTML Preview.
+
+Validation:
+
+- Focused readiness/runtime unit coverage passes 18/18.
+- The affected Artifact controls and Project HTML journeys each pass 30/30 local runs with two
+  Electron workers and Playwright retries disabled; Artifact version refresh passes 10/10 after the
+  formal Electron native-ABI setup.
+- Complete `npm test`, TypeScript, focused ESLint/Prettier, Git whitespace checks, and production
+  renderer/main smoke build pass.
+- A retry-free main CI and replacement four-platform release dispatch remain the final proof.
+
 ## Summary
 
-- Total: 91
+- Total: 92
 - Open: 2
-- Resolved: 89
+- Resolved: 90
 - High: 39
-- Medium: 45
+- Medium: 46
 - Low: 7
 - Next to resolve: 043
