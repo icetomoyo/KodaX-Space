@@ -7,6 +7,12 @@
 //
 // main 进程为 CommonJS（Electron 当前更稳定）；preload sandbox 模式下也必须 CJS。
 
+// Runtime window/tray icons are generated artifacts. Build them here so every
+// clean path that can launch or package the Electron main process (dev, E2E,
+// smoke, and release) shares one prerequisite instead of relying on stale
+// local files or repeating the generator in platform-specific scripts.
+import './gen-icon.mjs';
+
 import esbuild from 'esbuild';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
