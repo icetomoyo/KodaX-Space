@@ -15,8 +15,9 @@
 # historically the flakiest combo. Build matrix in release.yml still includes
 # macOS so we don't lose macOS-specific build coverage.
 #
-# Total runtime budget: ~10-12 min per platform (npm ci + native ABI switches +
-# build + the current 53-test Electron e2e suite). Adjust as the suite grows.
+# The Electron suite stays single-worker because multiple app/daemon/keychain
+# lifecycles can collide inside one host. CI shards the suite across separate
+# runners instead, preserving OS-level isolation while reducing wall-clock time.
 
 name: ci
 
@@ -35,14 +36,26 @@ env:
 
 jobs:
   test:
-    name: ${{ matrix.os }}
+    name: ${{ matrix.os }} / E2E shard ${{ matrix.shard }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        # windows-2022 pins VS 2022 (v17); windows-latest moved to VS 18 which
-        # bundled node-gyp cannot detect, breaking the better-sqlite3 rebuild.
-        os: [windows-2022, ubuntu-latest]
+        include:
+          # windows-2022 pins VS 2022 (v17); windows-latest moved to VS 18 which
+          # bundled node-gyp cannot detect, breaking the better-sqlite3 rebuild.
+          - os: windows-2022
+            shard: 1/2
+            shard_index: 1
+          - os: windows-2022
+            shard: 2/2
+            shard_index: 2
+          - os: ubuntu-latest
+            shard: 1/2
+            shard_index: 1
+          - os: ubuntu-latest
+            shard: 2/2
+            shard_index: 2
     steps:
       - uses: actions/checkout@v4
 
@@ -65,9 +78,11 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y xvfb fonts-wqy-zenhei gnome-keyring libsecret-1-0
 
       - name: Build workspace packages
+        if: matrix.shard_index == 1
         run: npm run build:packages
 
       - name: Typecheck
+        if: matrix.shard_index == 1
         run: npm run typecheck
 
       - name: Configure npm script-shell (Windows)
@@ -76,6 +91,7 @@ jobs:
         run: npm config set script-shell bash
 
       - name: Unit tests
+        if: matrix.shard_index == 1
         shell: bash
         env:
           SKIP_PTY_TESTS: '1'
@@ -91,7 +107,7 @@ jobs:
         shell: bash
         # e2e:run restores better-sqlite3 from the unit-test Node ABI to the
         # Electron ABI before launching Playwright.
-        run: npm run e2e:run
+        run: npm run e2e:run -- --shard=${{ matrix.shard }}
 
       - name: Run e2e (Linux)
         if: runner.os == 'Linux'
@@ -100,7 +116,7 @@ jobs:
           dbus-run-session -- bash -euo pipefail -c '
             printf "%s\n" "kodax-space-ci" |
               gnome-keyring-daemon --unlock --components=secrets >/dev/null
-            xvfb-run --auto-servernum --server-args="-screen 0 1280x800x24" npm run e2e:run
+            xvfb-run --auto-servernum --server-args="-screen 0 1280x800x24" npm run e2e:run -- --shard=${{ matrix.shard }}
           '
 
       # Upload trace + screenshots on failure (already gitignored locally)
@@ -108,7 +124,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-results-${{ matrix.os }}
+          name: playwright-results-${{ matrix.os }}-shard-${{ matrix.shard_index }}
           path: |
             test-results/
             playwright-report/
