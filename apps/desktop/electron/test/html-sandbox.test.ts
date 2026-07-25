@@ -45,7 +45,10 @@ test('buildInteractiveHtmlSrcDoc injects a restrictive in-frame CSP', () => {
   assert.match(out, /DOMContentLoaded/);
   assert.match(out, /document\.readyState==='loading'/);
   assert.match(out, /stopImmediatePropagation/);
-  assert.match(out, /setTimeout\(ready,0\)/);
+  assert.match(
+    out,
+    /requestAnimationFrame\(\(\)=>requestAnimationFrame\(\(\)=>setTimeout\(ready,0\)\)\)/,
+  );
   assert.match(out, /removeEventListener/);
   assert.ok(out.indexOf('Content-Security-Policy') < out.indexOf('<title>x</title>'));
   assert.equal(INTERACTIVE_HTML_CSP.includes('allow-same-origin'), false);

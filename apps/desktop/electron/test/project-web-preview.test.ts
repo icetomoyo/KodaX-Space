@@ -216,6 +216,7 @@ test('project preview exposes a fixed diagnostics runtime and mode-specific CSP'
   assert.match(PROJECT_WEB_PREVIEW_RUNTIME, /DOMContentLoaded/);
   assert.match(PROJECT_WEB_PREVIEW_RUNTIME, /document\.readyState === 'loading'/);
   assert.match(PROJECT_WEB_PREVIEW_RUNTIME, /stopImmediatePropagation/);
+  assert.match(PROJECT_WEB_PREVIEW_RUNTIME, /requestAnimationFrame/);
   assert.match(PROJECT_WEB_PREVIEW_RUNTIME, /setTimeout\(ready, 0\)/);
   assert.match(PROJECT_WEB_PREVIEW_RUNTIME, /removeEventListener/);
 });

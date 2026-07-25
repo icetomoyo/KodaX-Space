@@ -20,12 +20,25 @@ export function useWebPreviewDiagnostics(
     setDiagnostics([]);
   }, [resetKey]);
   useEffect(() => {
+    let firstReadyFrame: number | null = null;
+    let secondReadyFrame: number | null = null;
     const receive = (event: MessageEvent<unknown>): void => {
       if (!frameRef.current || event.source !== frameRef.current.contentWindow) return;
       const diagnostic = parseWebPreviewDiagnostic(event.data);
       if (!diagnostic) return;
       if (diagnostic.kind === 'ready') {
-        setReadyKey(resetKey);
+        if (firstReadyFrame !== null) window.cancelAnimationFrame(firstReadyFrame);
+        if (secondReadyFrame !== null) window.cancelAnimationFrame(secondReadyFrame);
+        firstReadyFrame = null;
+        secondReadyFrame = null;
+        const source = event.source;
+        firstReadyFrame = window.requestAnimationFrame(() => {
+          firstReadyFrame = null;
+          secondReadyFrame = window.requestAnimationFrame(() => {
+            secondReadyFrame = null;
+            if (frameRef.current?.contentWindow === source) setReadyKey(resetKey);
+          });
+        });
         return;
       }
       setDiagnostics((current) => {
@@ -35,7 +48,11 @@ export function useWebPreviewDiagnostics(
       });
     };
     window.addEventListener('message', receive);
-    return () => window.removeEventListener('message', receive);
+    return () => {
+      window.removeEventListener('message', receive);
+      if (firstReadyFrame !== null) window.cancelAnimationFrame(firstReadyFrame);
+      if (secondReadyFrame !== null) window.cancelAnimationFrame(secondReadyFrame);
+    };
   }, [frameRef, resetKey]);
 
   return [diagnostics, () => setDiagnostics([]), readyKey === resetKey] as const;

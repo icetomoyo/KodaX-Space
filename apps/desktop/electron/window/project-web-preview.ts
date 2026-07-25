@@ -417,7 +417,8 @@ export const PROJECT_WEB_PREVIEW_RUNTIME = `(() => {
     }
     send('ready', '');
   };
-  const scheduleReady = () => setTimeout(ready, 0);
+  const scheduleReady = () =>
+    requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(ready, 0)));
   if (document.readyState === 'loading') {
     addEventListener('DOMContentLoaded', scheduleReady, { once: true });
   } else {
