@@ -16,6 +16,7 @@ import {
   runPartnerSourceExtractionWorker,
   runPartnerSourceStructuredExtractionWorker,
 } from '../kodax/partner-source-extraction-runner.js';
+import { ensurePromiseWithResolvers } from '../kodax/partner-source-extraction-worker.js';
 import { PARTNER_SOURCE_EXTRACTION_PROTOCOL_VERSION } from '../kodax/partner-source-extraction-protocol.js';
 import { PartnerSourceStore } from '../kodax/partner-source-store.js';
 import { withSessionRunContext } from '../kodax/session-run-context.js';
@@ -66,6 +67,28 @@ async function makeMinimalXlsx(sheetXml: string): Promise<Buffer> {
   zip.file('xl/worksheets/sheet1.xml', sheetXml);
   return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
 }
+
+test('Partner PDF parser installs the Promise capability required on Node 20', async () => {
+  const descriptor = Object.getOwnPropertyDescriptor(Promise, 'withResolvers');
+  const constructor = Promise as PromiseConstructor & {
+    withResolvers?<T>(): {
+      promise: Promise<T>;
+      resolve: (value: T | PromiseLike<T>) => void;
+      reject: (reason?: unknown) => void;
+    };
+  };
+  try {
+    Reflect.deleteProperty(Promise, 'withResolvers');
+    ensurePromiseWithResolvers();
+    assert.equal(typeof constructor.withResolvers, 'function');
+    const capability = constructor.withResolvers!<string>();
+    capability.resolve('ready');
+    assert.equal(await capability.promise, 'ready');
+  } finally {
+    Reflect.deleteProperty(Promise, 'withResolvers');
+    if (descriptor) Object.defineProperty(Promise, 'withResolvers', descriptor);
+  }
+});
 
 test('partner_source_read reads an attached file in a Partner run context', async () => {
   const { dir, root, store, handler } = harness();

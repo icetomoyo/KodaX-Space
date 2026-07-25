@@ -27,6 +27,26 @@ const MAX_XLSX_CELLS = 100_000;
 const MAX_XLSX_SHEET_KEYS = MAX_XLSX_CELLS + 32;
 const MAX_XLSX_CELL_TEXT_CHARS = 4_096;
 
+export function ensurePromiseWithResolvers(): void {
+  const constructor = Promise as PromiseConstructor & {
+    withResolvers?<T>(): {
+      promise: Promise<T>;
+      resolve: (value: T | PromiseLike<T>) => void;
+      reject: (reason?: unknown) => void;
+    };
+  };
+  if (constructor.withResolvers) return;
+  constructor.withResolvers = <T>() => {
+    let resolve!: (value: T | PromiseLike<T>) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((onResolve, onReject) => {
+      resolve = onResolve;
+      reject = onReject;
+    });
+    return { promise, resolve, reject };
+  };
+}
+
 function capExtractedText(text: string): string {
   return text.length <= MAX_PARTNER_SOURCE_EXTRACTED_TEXT_CHARS
     ? text
@@ -46,6 +66,9 @@ async function extractPdfText(bytes: Buffer): Promise<string> {
   // a page. Unloading that native module from short-lived Windows Worker isolates can terminate the
   // test or host process with 0xC0000005. The standard build loads Canvas only if rendering asks for
   // it, so this text-only path stays pure JS while retaining the same PDF parser and limits.
+  // GitHub's Node 20 release runners do not yet expose the ES2024 Promise capability helper used by
+  // the standard build, so install the equivalent inside this isolated Worker before importing it.
+  ensurePromiseWithResolvers();
   const pdfjs = await import('pdfjs-dist/build/pdf.mjs');
   const loadingTask = pdfjs.getDocument({
     data: new Uint8Array(bytes),
