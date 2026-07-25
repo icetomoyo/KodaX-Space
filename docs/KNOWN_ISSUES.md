@@ -5553,6 +5553,8 @@ each text Worker exited. Under Windows runner timing it could terminate the test
 
 - Use pdfjs's standard parser build inside the isolated Partner text Worker. It loads Canvas only if
   rendering actually requests one, while `getTextContent()` remains a pure-JavaScript path.
+- Install the standard `Promise.withResolvers` capability inside the isolated Worker when the
+  release runtime is Node 20; newer runtimes retain their native implementation.
 - Keep the same pdfjs parser, PDF signature/page/size limits, structured locators, hard deadline,
   Worker memory limits, and natural-exit/termination lifecycle.
 - Add a local type bridge to reuse the package's legacy-build declarations for the equivalent
@@ -5567,6 +5569,8 @@ Validation:
   race rather than an assertion failure.
 - Complete `npm test`, typecheck, focused ESLint/Prettier, Git whitespace checks, and Electron main
   bundling pass.
+- Focused coverage passes 21/21, including a regression that removes the host's native
+  `Promise.withResolvers` and verifies the Node 20 capability polyfill.
 - Two clean Windows main jobs and the four-platform release matrix remain the final proof.
 
 ## Summary
