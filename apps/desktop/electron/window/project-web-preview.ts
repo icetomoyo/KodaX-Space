@@ -398,7 +398,12 @@ export const PROJECT_WEB_PREVIEW_RUNTIME = `(() => {
   addEventListener('securitypolicyviolation', (event) => {
     send('policy', '', event.effectiveDirective || event.violatedDirective || 'content-security-policy');
   });
-  send('ready', '');
+  const ready = () => send('ready', '');
+  if (document.readyState === 'loading') {
+    addEventListener('DOMContentLoaded', ready, { once: true });
+  } else {
+    ready();
+  }
 })();`;
 
 export function injectProjectWebPreviewRuntime(html: string): string {

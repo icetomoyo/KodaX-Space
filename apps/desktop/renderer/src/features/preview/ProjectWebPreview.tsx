@@ -30,7 +30,10 @@ export function ProjectWebPreview({
   const [url, setUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const requestKey = `${projectRoot}\u0000${path}\u0000${revision}\u0000${networkAccess}`;
-  const [diagnostics, dismissDiagnostics] = useWebPreviewDiagnostics(frameRef, url ?? requestKey);
+  const [diagnostics, dismissDiagnostics, documentReady] = useWebPreviewDiagnostics(
+    frameRef,
+    url ?? requestKey,
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -95,7 +98,12 @@ export function ProjectWebPreview({
         src={url}
         sandbox="allow-scripts allow-same-origin allow-forms"
         referrerPolicy="no-referrer"
-        className="h-full min-h-0 w-full flex-1 border-0 bg-white"
+        aria-busy={!documentReady}
+        data-ready={documentReady ? 'true' : 'false'}
+        tabIndex={documentReady ? 0 : -1}
+        className={`h-full min-h-0 w-full flex-1 border-0 bg-white ${
+          documentReady ? '' : 'pointer-events-none'
+        }`}
       />
     </div>
   );

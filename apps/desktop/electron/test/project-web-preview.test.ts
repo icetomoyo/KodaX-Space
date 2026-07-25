@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, realpath, symlink, truncate, writeFile } from 'node:fs/
 import os from 'node:os';
 import path from 'node:path';
 import {
+  PROJECT_WEB_PREVIEW_RUNTIME,
   PROJECT_WEB_PREVIEW_RUNTIME_PATH,
   MAX_PROJECT_WEB_PREVIEW_FILE_BYTES,
   ProjectWebPreviewRegistry,
@@ -212,6 +213,8 @@ test('project preview exposes a fixed diagnostics runtime and mode-specific CSP'
     injectProjectWebPreviewRuntime(injected).match(/data-kodax-preview-runtime/g)?.length,
     1,
   );
+  assert.match(PROJECT_WEB_PREVIEW_RUNTIME, /DOMContentLoaded/);
+  assert.match(PROJECT_WEB_PREVIEW_RUNTIME, /document\.readyState === 'loading'/);
 });
 
 test('local-only preview loads authored display dependencies without opening data connections', () => {

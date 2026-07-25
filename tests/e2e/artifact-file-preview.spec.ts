@@ -567,7 +567,9 @@ test('Project HTML File Viewer runs relative modules, assets, local fetch, stora
     const sidebar = space.page.getByTestId('right-sidebar');
     const preview = sidebar.getByTestId('project-web-preview');
     await expect(preview).toBeVisible({ timeout: 10_000 });
-    const frame = preview.locator('iframe').contentFrame();
+    const frameHost = preview.locator('iframe');
+    await expect(frameHost).toHaveAttribute('data-ready', 'true', { timeout: 10_000 });
+    const frame = frameHost.contentFrame();
     await expect(frame.locator('body')).toHaveCSS('color', 'rgb(12, 120, 74)');
     await expect(frame.locator('#fetch-state')).toHaveText('local-fetch-ok');
     await expect(frame.locator('#worker-state')).toHaveText('worker-ok');
