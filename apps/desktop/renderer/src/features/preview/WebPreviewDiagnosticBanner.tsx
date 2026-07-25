@@ -14,11 +14,10 @@ export function useWebPreviewDiagnostics(
   resetKey: string,
 ): readonly [readonly WebPreviewDiagnostic[], () => void, boolean] {
   const [diagnostics, setDiagnostics] = useState<readonly WebPreviewDiagnostic[]>([]);
-  const [ready, setReady] = useState(false);
+  const [readyKey, setReadyKey] = useState<string | null>(null);
 
   useEffect(() => {
     setDiagnostics([]);
-    setReady(false);
   }, [resetKey]);
   useEffect(() => {
     const receive = (event: MessageEvent<unknown>): void => {
@@ -26,7 +25,7 @@ export function useWebPreviewDiagnostics(
       const diagnostic = parseWebPreviewDiagnostic(event.data);
       if (!diagnostic) return;
       if (diagnostic.kind === 'ready') {
-        setReady(true);
+        setReadyKey(resetKey);
         return;
       }
       setDiagnostics((current) => {
@@ -37,9 +36,9 @@ export function useWebPreviewDiagnostics(
     };
     window.addEventListener('message', receive);
     return () => window.removeEventListener('message', receive);
-  }, [frameRef]);
+  }, [frameRef, resetKey]);
 
-  return [diagnostics, () => setDiagnostics([]), ready] as const;
+  return [diagnostics, () => setDiagnostics([]), readyKey === resetKey] as const;
 }
 
 interface WebPreviewDiagnosticBannerProps {

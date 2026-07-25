@@ -70,6 +70,7 @@ export function InteractiveHtmlArtifact({
     <div className="flex min-h-0 flex-1 flex-col">
       <WebPreviewDiagnosticBanner diagnostics={diagnostics} onDismiss={dismissDiagnostics} />
       <iframe
+        key={frameUrl}
         ref={frameRef}
         title={t('artifact.interactiveHtmlTitle')}
         src={frameUrl}

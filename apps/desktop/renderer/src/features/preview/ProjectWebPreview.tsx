@@ -93,6 +93,7 @@ export function ProjectWebPreview({
         onDismiss={dismissDiagnostics}
       />
       <iframe
+        key={url}
         ref={frameRef}
         title={t('webPreview.projectTitle')}
         src={url}
