@@ -447,7 +447,7 @@ function assertMinimumRuntimeVersion(version: string): void {
     }
   }
   throw new Error(
-    `KodaX Runtime ${version || '(unknown)'} is older than the required 0.7.75 baseline. ` +
+    `KodaX Runtime ${version || '(unknown)'} is older than the required 0.7.76 baseline. ` +
       'Restart the Coder daemon after updating KodaX; Space will not reuse an older daemon.',
   );
 }
@@ -1471,7 +1471,7 @@ export class RuntimeHostAdapter {
       defaults = await this.autoModeDefaultsResolver();
     } catch (error) {
       console.warn(
-        '[runtime] Auto LLM defaults load failed; using the KodaX 0.7.75 defaults:',
+        '[runtime] Auto LLM defaults load failed; using the KodaX 0.7.76 defaults:',
         sanitizeDiagnosticError(error),
       );
       defaults = {
@@ -2265,7 +2265,7 @@ export class RuntimeHostAdapter {
     const managedTaskPhase = this.observations.get(input.sessionId)?.reducer.snapshot()
       .managedTask?.phase;
     if (isInterrupt && (managedTaskPhase === 'verifying' || managedTaskPhase === 'completed')) {
-      // KodaX 0.7.75 keeps Runtime interrupt admission open through managed-task
+      // KodaX 0.7.76 keeps Runtime interrupt admission open through managed-task
       // verification, after the final root queue-drain boundary has already passed.
       // Reject locally with the Runtime's factual reason instead of allowing an
       // accepted input to be terminalized without a run.input.delivered event.

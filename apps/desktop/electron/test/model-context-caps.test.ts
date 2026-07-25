@@ -18,7 +18,7 @@ test('Kimi K2 fallback caps track KodaX 0.7.58 provider capabilities (256k)', ()
   assert.equal(getModelContextCap('kimi-k2.6'), 256_000);
 });
 
-test('Kimi Code K3 fallback caps track KodaX 0.7.71 local context tiers', () => {
+test('Kimi Code K3 fallback caps track KodaX 0.7.76 direct context tiers', () => {
   assert.equal(getModelContextCap('k3'), 1_048_576);
   assert.equal(getModelContextCap('k3-256k'), 262_144);
 });

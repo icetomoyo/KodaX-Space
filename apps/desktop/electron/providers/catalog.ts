@@ -86,7 +86,7 @@ const SPACE_OVERRIDES: Record<string, SpaceOverride> = {
     displayName: 'Kimi for Coding',
     protocol: 'anthropic',
     fallbackApiKeyEnv: 'KIMI_CODE_API_KEY',
-    fallbackDefaultModel: 'kimi-for-coding',
+    fallbackDefaultModel: 'k3-256k',
   },
   qwen: {
     displayName: 'Qwen (Alibaba)',

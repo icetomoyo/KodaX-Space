@@ -113,7 +113,7 @@ function createFakeRuntime() {
       mode: 'daemon',
       profile: 'coder',
       startedAt: '2026-07-12T00:00:00.000Z',
-      version: '0.7.75',
+      version: '0.7.76',
       isolation: 'process',
     },
     capabilities: {
@@ -1292,7 +1292,7 @@ test('initialization closes a constructed Runtime when host-tool registration fa
   assert.equal(fake.calls.close, 1);
 });
 
-test('initialization rejects a daemon older than the KodaX 0.7.75 release baseline', async () => {
+test('initialization rejects a daemon older than the KodaX 0.7.76 release baseline', async () => {
   const fake = createFakeRuntime();
   (fake.runtime.identity as { version: string }).version = '0.7.74';
   const adapter = new RuntimeHostAdapter({
@@ -1304,7 +1304,7 @@ test('initialization rejects a daemon older than the KodaX 0.7.75 release baseli
 
   await assert.rejects(
     adapter.initialize(),
-    /0\.7\.74.*required 0\.7\.75.*Restart the Coder daemon/i,
+    /0\.7\.74.*required 0\.7\.76.*Restart the Coder daemon/i,
   );
   assert.equal(adapter.snapshot().state, 'failed');
   assert.equal(fake.calls.close, 1);

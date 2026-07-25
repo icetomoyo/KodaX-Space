@@ -909,7 +909,7 @@ export const messages = {
     'settings.runtime.numberError': '{field} must be an integer from {min} to {max}.',
     'settings.externalAgents.title': 'External agents',
     'settings.externalAgents.description':
-      'KodaX 0.7.75 dispatchable catalog, executor plane, and durable task ledger.',
+      'KodaX 0.7.76 dispatchable catalog, executor plane, and durable task ledger.',
     'settings.externalAgents.sdk': 'KodaX SDK',
     'settings.externalAgents.plane': 'Executor plane',
     'settings.externalAgents.catalog': 'Registrations',
@@ -921,7 +921,7 @@ export const messages = {
     'settings.externalAgents.addReference': 'Add reference agent',
     'settings.externalAgents.referenceName': 'Space Reference Agent',
     'settings.externalAgents.referenceDescription':
-      'Local KodaX 0.7.75 executor-plane conformance target; no remote network request.',
+      'Local KodaX 0.7.76 executor-plane conformance target; no remote network request.',
     'settings.externalAgents.added': 'Reference agent added',
     'settings.externalAgents.remove': 'Remove registration',
     'settings.externalAgents.updated': 'Reference agent updated',
@@ -4226,7 +4226,7 @@ export const messages = {
     'settings.runtime.none': '无',
     'settings.runtime.numberError': '{field} 必须是 {min} 到 {max} 之间的整数。',
     'settings.externalAgents.title': '外部 Agent',
-    'settings.externalAgents.description': 'KodaX 0.7.75 可调度目录、执行平面和持久任务账本。',
+    'settings.externalAgents.description': 'KodaX 0.7.76 可调度目录、执行平面和持久任务账本。',
     'settings.externalAgents.sdk': 'KodaX SDK',
     'settings.externalAgents.plane': '执行平面',
     'settings.externalAgents.catalog': '注册项',
@@ -4238,7 +4238,7 @@ export const messages = {
     'settings.externalAgents.addReference': '添加 Reference Agent',
     'settings.externalAgents.referenceName': 'Space Reference Agent',
     'settings.externalAgents.referenceDescription':
-      '本地 KodaX 0.7.75 执行平面合规目标；不会发起远程网络请求。',
+      '本地 KodaX 0.7.76 执行平面合规目标；不会发起远程网络请求。',
     'settings.externalAgents.added': 'Reference Agent 已添加',
     'settings.externalAgents.remove': '移除注册项',
     'settings.externalAgents.updated': 'Reference Agent 已更新',
