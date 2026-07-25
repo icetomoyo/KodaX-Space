@@ -19,6 +19,7 @@ import {
 } from './partner-source-extraction-protocol.js';
 
 const DEFAULT_EXTRACTION_TIMEOUT_MS = 15_000;
+const SUCCESSFUL_WORKER_EXIT_GRACE_MS = 1_000;
 const EXTRACTION_WORKER_RESOURCE_LIMITS = Object.freeze({
   maxOldGenerationSizeMb: 256,
   maxYoungGenerationSizeMb: 32,
@@ -196,15 +197,19 @@ export function runPartnerSourceStructuredExtractionWorker(
     let deadline: NodeJS.Timeout | undefined;
     let onAbort: () => void = () => undefined;
 
-    const finish = (
+    const clearPendingControls = (): void => {
+      if (deadline) clearTimeout(deadline);
+      options.signal?.removeEventListener('abort', onAbort);
+    };
+
+    const finishWithTermination = (
       outcome:
         | { readonly kind: 'resolve'; readonly result: PartnerSourceExtractionResult }
         | { readonly kind: 'reject'; readonly error: Error },
     ): void => {
       if (finalizing) return;
       finalizing = true;
-      if (deadline) clearTimeout(deadline);
-      options.signal?.removeEventListener('abort', onAbort);
+      clearPendingControls();
       void worker.terminate().then(
         () => {
           if (outcome.kind === 'resolve') resolve(outcome.result);
@@ -219,8 +224,57 @@ export function runPartnerSourceStructuredExtractionWorker(
         },
       );
     };
+
+    const finishAfterNaturalExit = (
+      outcome:
+        | { readonly kind: 'resolve'; readonly result: PartnerSourceExtractionResult }
+        | { readonly kind: 'reject'; readonly error: Error },
+    ): void => {
+      if (finalizing) return;
+      finalizing = true;
+      clearPendingControls();
+
+      let settled = false;
+      let forcedTermination = false;
+      const settle = (
+        finalOutcome:
+          | { readonly kind: 'resolve'; readonly result: PartnerSourceExtractionResult }
+          | { readonly kind: 'reject'; readonly error: Error },
+      ): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(exitGrace);
+        if (finalOutcome.kind === 'resolve') resolve(finalOutcome.result);
+        else reject(finalOutcome.error);
+      };
+      const exitGrace = setTimeout(() => {
+        forcedTermination = true;
+        void worker.terminate().then(
+          () => settle(outcome),
+          (terminationError: unknown) =>
+            settle({
+              kind: 'reject',
+              error:
+                terminationError instanceof Error
+                  ? terminationError
+                  : new Error('failed to terminate extraction worker'),
+            }),
+        );
+      }, SUCCESSFUL_WORKER_EXIT_GRACE_MS);
+      exitGrace.unref?.();
+      worker.once('exit', (code) => {
+        if (forcedTermination) return;
+        if (code === 0) settle(outcome);
+        else
+          settle({
+            kind: 'reject',
+            error: new Error(`extraction worker exited after returning a result (code ${code})`),
+          });
+      });
+    };
+
     onAbort = (): void => {
-      finish({
+      finishWithTermination({
         kind: 'reject',
         error: Object.assign(new Error('Partner source extraction was cancelled'), {
           code: 'INGESTION_CANCELLED',
@@ -232,7 +286,7 @@ export function runPartnerSourceStructuredExtractionWorker(
       try {
         const response = parseWorkerResponse(rawResponse, format);
         if (response.ok) {
-          finish({
+          finishAfterNaturalExit({
             kind: 'resolve',
             result: {
               text: response.text,
@@ -240,18 +294,18 @@ export function runPartnerSourceStructuredExtractionWorker(
               warnings: response.warnings,
             },
           });
-        } else finish({ kind: 'reject', error: new Error(response.error) });
+        } else finishAfterNaturalExit({ kind: 'reject', error: new Error(response.error) });
       } catch (error) {
-        finish({
+        finishWithTermination({
           kind: 'reject',
           error: error instanceof Error ? error : new Error('invalid extraction worker response'),
         });
       }
     });
-    worker.once('error', (error) => finish({ kind: 'reject', error }));
+    worker.once('error', (error) => finishWithTermination({ kind: 'reject', error }));
     worker.once('exit', (code) => {
       if (finalizing) return;
-      finish({
+      finishWithTermination({
         kind: 'reject',
         error: new Error(`extraction worker exited before returning a result (code ${code})`),
       });
@@ -260,7 +314,7 @@ export function runPartnerSourceStructuredExtractionWorker(
     options.signal?.addEventListener('abort', onAbort, { once: true });
 
     deadline = setTimeout(() => {
-      finish({
+      finishWithTermination({
         kind: 'reject',
         error: new Error(`extraction worker exceeded its ${timeoutMs} ms hard deadline`),
       });

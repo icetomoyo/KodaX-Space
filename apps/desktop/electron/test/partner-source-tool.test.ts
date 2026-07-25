@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import JSZip from 'jszip';
@@ -16,6 +16,7 @@ import {
   runPartnerSourceExtractionWorker,
   runPartnerSourceStructuredExtractionWorker,
 } from '../kodax/partner-source-extraction-runner.js';
+import { PARTNER_SOURCE_EXTRACTION_PROTOCOL_VERSION } from '../kodax/partner-source-extraction-protocol.js';
 import { PartnerSourceStore } from '../kodax/partner-source-store.js';
 import { withSessionRunContext } from '../kodax/session-run-context.js';
 import {
@@ -199,6 +200,40 @@ test('partner source extraction bounds the worker response at 180k characters', 
   });
   const text = await runPartnerSourceExtractionWorker('DOCX', fixture.bytes);
   assert.equal(text.length, 180_000);
+});
+
+test('partner source extraction lets a successful worker finish cleanup before settling', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'partner-source-worker-cleanup-'));
+  const marker = join(dir, 'cleanup-complete');
+  const workerSource = [
+    "import { writeFileSync } from 'node:fs';",
+    "import { parentPort, workerData } from 'node:worker_threads';",
+    'parentPort.postMessage({',
+    `  version: ${PARTNER_SOURCE_EXTRACTION_PROTOCOL_VERSION},`,
+    '  ok: true,',
+    '  format: workerData.format,',
+    "  text: 'cleanup result',",
+    '  units: [],',
+    '  warnings: [],',
+    '});',
+    'setTimeout(() => {',
+    `  writeFileSync(${JSON.stringify(marker)}, 'complete');`,
+    '  parentPort.close();',
+    '}, 50);',
+  ].join('\n');
+  const cleanupWorker = new URL(`data:text/javascript,${encodeURIComponent(workerSource)}`);
+
+  try {
+    const result = await runPartnerSourceStructuredExtractionWorker(
+      'PDF',
+      Buffer.from('%PDF-1.4'),
+      { workerEntrypoint: cleanupWorker, timeoutMs: 2_000 },
+    );
+    assert.equal(result.text, 'cleanup result');
+    assert.equal(existsSync(marker), true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('partner source extraction returns truthful structured locators for supported formats', async () => {
