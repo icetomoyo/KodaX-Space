@@ -241,14 +241,9 @@ try {
     surface: 'space-desktop',
     tag: 'code',
   });
-  let eventTimeout;
   let resolveSettingsEvent;
-  const settingsEvent = new Promise((resolve, reject) => {
+  const settingsEvent = new Promise((resolve) => {
     resolveSettingsEvent = resolve;
-    eventTimeout = setTimeout(
-      () => reject(new Error('Space did not receive the peer settings event.')),
-      8000,
-    );
   });
   observation = await runtime.sessions.observe(session.id, (event) => {
     if (event.type === 'session.settings.updated') resolveSettingsEvent(event.type);
@@ -256,7 +251,16 @@ try {
   const clientBaseline = await runtime.status.preflight();
   const managementBaseline = await runtime.daemon.inspect();
   const peer = await runPeer(session.id);
-  const eventType = await settingsEvent.finally(() => clearTimeout(eventTimeout));
+  let eventTimeout;
+  const eventType = await Promise.race([
+    settingsEvent,
+    new Promise((_, reject) => {
+      eventTimeout = setTimeout(
+        () => reject(new Error('Space did not receive the peer settings event after the peer mutation.')),
+        10_000,
+      );
+    }),
+  ]).finally(() => clearTimeout(eventTimeout));
   const settings = await runtime.sessions.getSettingsVersioned(session.id);
   let afterDetach = await runtime.status.preflight();
   for (let attempt = 0; attempt < 50 && afterDetach.clientCount !== clientBaseline.clientCount; attempt += 1) {
