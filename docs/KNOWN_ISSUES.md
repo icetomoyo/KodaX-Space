@@ -78,7 +78,7 @@ Last Updated: 2026-07-25
 | 080 | Medium   | Resolved | One clipboard image can enter the composer twice through duplicate Web clipboard representations                         | v0.1.25               | 2026-07-22 |
 | 081 | Medium   | Resolved | Project Files mode removes the persistent Settings row from the left sidebar                                             | v0.1.29               | 2026-07-22 |
 | 082 | Medium   | Resolved | Consumed daemon interrupt prompt can remain as a duplicate queued bubble when Runtime appends a prompt overlay           | v0.1.32 development   | 2026-07-22 |
-| 083 | High     | Resolved | Late accepted daemon interrupt can be terminalized without delivery when its Run finishes during finalization            | v0.1.32 development   | 2026-07-22 |
+| 083 | High     | In Progress | Late accepted daemon interrupt can be terminalized without delivery when its Run finishes during finalization         | v0.1.32 development   | 2026-07-22 |
 | 084 | High     | Resolved | Daemon child-agent prose, thinking, and tools are merged into the parent transcript and live snapshot                    | v0.1.32 development   | 2026-07-22 |
 | 085 | High     | Resolved | Background Session prompts could block the visible Session while their sidebar owner remained hidden                     | v0.1.32 development   | 2026-07-23 |
 | 086 | Medium   | Resolved | Assistant/tool-leading restored history rendered a fabricated empty user message                                         | v0.1.x                | 2026-07-23 |
@@ -4311,13 +4311,13 @@ Verification:
 ### 083: Late accepted daemon interrupt can be terminalized without delivery when its Run finishes during finalization
 
 - Priority: High
-- Status: Resolved
+- Status: In Progress
 - Introduced: v0.1.32 development
 - Prior Fix: v0.1.32 (incomplete)
-- Fixed: v0.1.32
+- Fixed: KodaX source; pending npm package integration
 - Created: 2026-07-22
-- Resolution Date: 2026-07-24
-- Reopened: 2026-07-24
+- Resolution Date: Pending
+- Reopened: 2026-07-24, 2026-07-25
 
 #### Original Problem
 
@@ -4483,6 +4483,58 @@ starts.
   retried after the Run finishes; Space does not silently alter interrupt delivery into after-turn.
 - Added an adapter regression that emits the exact `verifying` phase, submits an interrupt, and
   proves Runtime never receives it.
+
+#### Second Reopened Regression Evidence
+
+Session `s_7f8b4e93-6e8b-477b-badb-d35ee174b61f`, Run
+`run_ms0feppg_3030a1a4`, and interrupt `input_ms0ffc5r_85028678` proved that the
+Space-side `verifying` fence was still not the owning fix:
+
+- `2026-07-25T13:50:25.361Z`: Runtime accepted the interrupt while the final
+  root no-tool LLM request was already in flight.
+- `2026-07-25T13:50:34.253Z`: the Runner emitted `iteration_end` without
+  another `beforeNextTurn` queue drain.
+- `2026-07-25T13:50:40.109Z`: the managed task completed.
+- `2026-07-25T13:50:40.821Z`: `run.completed` terminalized the queued input
+  without a `run.input.delivered` event.
+
+The managed Runner intentionally called `beforeNextTurn` only after tool-using
+iterations. Its no-tool terminal branch returned before the queue drain. That
+behavior is correct for the REPL, whose outer `runQueuedPromptSequence` owns a
+fresh follow-up round, but incorrect for Runtime: Runtime had promised delivery
+inside the active Run and has no REPL outer sequence. Ordinary coding had the
+same ownership mismatch at its `hasQueuedFollowUp` terminal return.
+
+#### Upstream Source Fix
+
+- Runtime now injects a run-owned interrupt admission controller into coding
+  execution.
+- Managed Runner terminal candidates close admission synchronously, drain every
+  already-accepted FIFO prompt, reserve a continuation turn at the iteration
+  ceiling, and continue the same Run before Sidecar verification. Admission
+  reopens only when a next model turn is guaranteed; managed idle-yield is such
+  a boundary.
+- Ordinary coding applies the same rule at no-tool, terminal-signal, and
+  post-tool follow-up boundaries. It rotates Live Turn attribution for the
+  queued prompt and commits the preceding assistant response before continuing
+  after COMPLETE.
+- Failure, cancellation, and terminal cleanup close admission before
+  asynchronous teardown, so no newly accepted input can enter after the last
+  consumable boundary.
+- REPL behavior is unchanged because it does not opt into Runtime terminal
+  continuation; its outer fresh-round queue owner remains authoritative.
+- Deterministic tests cover the final no-tool request window, configured
+  iteration ceiling, terminal tools, idle-yield wakeup, failure cleanup,
+  stop-hook reanimation, COMPLETE transcript ordering, queued Live Turn
+  rotation, Runtime admission bridge, and multimodal interrupt artifacts. The
+  focused KodaX suite passes 280 tests with two existing todos; the isolated
+  TypeScript project and full publish build pass.
+- Space validation against that isolated KodaX build passes 52 Runtime
+  adapter/queue tests, the complete TypeScript check, and the Electron main
+  process build.
+
+The source fix must be published in the next KodaX npm package and then pinned
+by Space before the packaged desktop application can be marked resolved.
 
 ### 084: Daemon child-agent prose, thinking, and tools are merged into the parent transcript and live snapshot
 
