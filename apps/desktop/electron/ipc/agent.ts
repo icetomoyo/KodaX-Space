@@ -115,8 +115,16 @@ export function registerAgentChannels(): void {
           ...runtimeRegistrations.map((item) => item.agentId),
         ]).size,
       };
-    } catch {
-      return local;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn('[external-agent] Runtime status unavailable:', message);
+      const detail =
+        runtimeHostAdapter.snapshot().error ??
+        'The Runtime external-agent query failed. Check the main-process diagnostics.';
+      return {
+        ...local,
+        error: `KodaX Runtime external agents unavailable: ${detail}`.slice(0, 2_048),
+      };
     }
   });
 

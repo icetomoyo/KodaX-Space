@@ -27,6 +27,15 @@ interface SessionCreateResult {
   readonly sessionId: string;
 }
 
+interface ExternalAgentStatus {
+  readonly adapters: {
+    readonly a2a: boolean;
+    readonly mcpTasks: boolean;
+    readonly governedHttp: boolean;
+  };
+  readonly error?: string;
+}
+
 async function invoke<T>(page: Page, name: string, input: unknown): Promise<InvokeEnvelope<T>> {
   return page.evaluate(
     async ({ channel, payload }) =>
@@ -77,6 +86,22 @@ test('Reference Agent management, localization, and Workflow picker are product-
   try {
     const { page } = space;
     await page.setViewportSize({ width: 1280, height: 800 });
+
+    await expect
+      .poll(
+        async () => {
+          const result = await invoke<ExternalAgentStatus>(page, 'agent.external.status', {});
+          if (!result.ok) return `IPC error: ${result.error?.message ?? 'unknown'}`;
+          if (result.data.error) return `Runtime error: ${result.data.error}`;
+          return result.data.adapters.a2a ? 'available' : 'hidden';
+        },
+        {
+          message: 'KodaX Runtime should negotiate the A2A adapter before settings are inspected',
+          timeout: 20_000,
+        },
+      )
+      .toBe('available');
+
     await page.getByTestId('settings-button').click();
     await page.locator('#settings-tab-runtime').click();
 
