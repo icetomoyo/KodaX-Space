@@ -1,6 +1,6 @@
 # KodaX Space 文档中心
 
-> 当前源码/发布基线：KodaX Space `v0.1.32`（package `0.1.32`）/ npm 正式发布的 KodaX `0.7.76`；稳定 tag 与 GitHub Release 由本次发布流程创建。
+> 当前源码/发布基线：KodaX Space [`v0.1.32`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.32)（package `0.1.32`）/ npm 正式发布的 KodaX `0.7.76`；稳定 tag 与 18 个跨平台资产已于 2026-07-25 发布。
 
 这里是文档的统一入口。当前源码已采用 npm 正式发布的 KodaX 0.7.76：Coder 默认连接共享 daemon，并强制 compaction v3、transcript paging/search、interrupt input、Actor/Turn v1 和 Auto LLM guardrail v3。0.7.76 保留 Sidecar 可选后续工作/预算终态修正和 Windows GUI host 非交互子进程隐藏，并将 Kimi Code 默认模型改为直连 `k3-256k`、K3 默认推理档改为 `high`；Space 在 managed-task `verifying` 阶段本地关闭 interrupt 准入，避免已错过 root drain boundary 的输入先被接受再未投递终结。正式版还提供 mailbox-driven Agent 协调、idle-yield 用户提示的 transcript 回填、Goal 工具常驻、root/child 投影隔离、精确 checkpoint 活动 lineage、确定性的 Auto 切换，以及 Windows 可见托盘/重开/安全彻底退出；Partner 继续由 Space inline owner 管理。完整 F117/F118 桌面管理体验仍在后续路线中。历史设计和 release 记录保留当时语境。
 
@@ -18,7 +18,7 @@
 | 查看 KodaX 能力是否已接入           | [KodaX 能力台账](KODAX_CAPABILITY_LEDGER.md)                                                                                                          |
 | 查看当前和未来 Feature              | [Feature List](FEATURE_LIST.md)                                                                                                                       |
 | 查看 v0.1.31 的设计与实施           | [版本设计](features/v0.1.31.md) / [实施计划](features/v0.1.31-implementation-plan.md) / [人工测试指导](test-guides/FEATURE_116_v0.1.31_TEST_GUIDE.md) |
-| 查看 v0.1.32 的设计与当前门禁       | [版本设计与实施状态](features/v0.1.32.md) / [发布就绪清单](releases/v0.1.32-release-readiness.md) / [Feature List](FEATURE_LIST.md)                   |
+| 查看 v0.1.32 的设计与发布证据       | [版本设计与实施状态](features/v0.1.32.md) / [发布记录](releases/v0.1.32-release-readiness.md) / [Feature List](FEATURE_LIST.md)                       |
 | 维护或更新 Space builtin skills     | [Builtin skill 维护说明](BUILTIN_SKILLS.md)                                                                                                           |
 | 报告或核对已知问题                  | [Known Issues](KNOWN_ISSUES.md) / [已归档问题](ISSUES_ARCHIVED.md)                                                                                    |
 | 参与贡献                            | [Contributing](../CONTRIBUTING.md)                                                                                                                    |
@@ -36,7 +36,7 @@
 | `FEATURE_LIST.md`                                    | 版本路线图       | 只有可交付、可验证的版本项进入 active list     |
 | `KNOWN_ISSUES.md`                                    | 当前问题         | 已解决项保留结论，新增问题需有复现和状态       |
 | `BUILTIN_SKILLS.md`                                  | builtin 分发维护 | 固定来源、许可、补丁、更新和打包完整性         |
-| `releases/v0.1.32-release-readiness.md`              | 发布前门禁       | 只记录可验证状态、人工阻塞项和执行顺序         |
+| `releases/v0.1.32-release-readiness.md`              | 发布记录         | 记录门禁、生产工作流、产物哈希和未执行人工项   |
 | `apps/desktop/electron/kodax/space-manual-topics.ts` | 应用内 AI 自说明 | 与用户手册同步更新，防止 AI 给出旧操作说明     |
 
 ## 历史文档

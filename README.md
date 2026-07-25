@@ -98,35 +98,38 @@ F135 also packages the redistributable `frontend-slides` and `huashu-design` ski
 
 F136 makes the Windows background owner visible and controllable. Closing the last window destroys its renderer but leaves a notification-area icon that can reopen Space, show bounded Runtime/task/other-client status, quit Space while preserving Runtime, or request a complete exit. Complete exit asks Runtime to stop only after Space disconnects and only when no active/queued/pending work or other client remains. The lightweight Electron main process still owns the tray in 0.1.32; moving it to a separate helper is future optimization.
 
-Known pre-release blocker: ordinary Windows Coder queries can flash short-lived
-console windows from KodaX child-process paths. The calls predate KodaX 0.7.68,
-but v0.1.32's independent daemon exposes them consistently where v0.1.31's
-embedded-inline host did not. The fix belongs in KodaX; Space does not vendor an
-unreviewed SDK source patch. See [Issue 091](docs/KNOWN_ISSUES.md#091-ordinary-windows-queries-can-flash-several-short-lived-command-windows-from-kodax-runtime-child-processes).
+Resolved release blocker: KodaX 0.7.76 retains the centralized Windows
+`windowsHide` hardening introduced in 0.7.75, so ordinary daemon-backed Coder
+queries no longer flash short-lived child-process consoles. Space consumes the
+official Registry package without vendoring an SDK patch. See
+[Issue 091](docs/KNOWN_ISSUES.md#091-ordinary-windows-queries-can-flash-several-short-lived-command-windows-from-kodax-runtime-child-processes).
 
 ## Current Release
 
-**v0.1.31 - Runtime Contract Alignment and Semantic Control**
+**v0.1.32 - Shared Coder and Usable Partner Knowledge**
 
-Released: 2026-07-12 as `v0.1.31`. F116, F055, F069, and F120 ship together on exact KodaX 0.7.68.
+Released: 2026-07-25 as [`v0.1.32`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.32), aligned to the exact npm-published KodaX 0.7.76 package.
 
-This release adopts the public KodaX Runtime facade as Space's managed-run boundary while preserving explicit Space ownership for product-specific behavior.
+This release moves Coder to a profile-scoped shared daemon while keeping Partner and product-specific boundaries explicitly Space-owned.
 
-| Area                 | Summary                                                                                                                                                                                                                                                          |
-| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Runtime Host Adapter | Coder and Partner use the embedded-inline Runtime facade in v0.1.31; shared daemon mode is not available for live Space sessions in that release.                                                                                                                |
-| Semantic control     | F120 adds a bounded typed action registry shared by deterministic UI entry points and KodaX inspect/apply tools; sensitive and destructive controls remain user-only.                                                                                            |
-| Platform trust       | F055 moves packaged renderer assets to guarded `app://space`; F069 adds bounded redacted structured diagnostics and explicit local export.                                                                                                                       |
-| KodaX 0.7.68         | Root and desktop workspaces resolve the exact npm package. Startup verifies `/experimental-memory` and policy `f260-v0.7.68.2`; managed runs keep memory lifecycle in KodaX while Space records metadata-only diagnostics. Full F117 desktop UX remains planned. |
-| Session operations   | Transcript, compact, fork, and rewind use Runtime services while Space retains title/list/resume, cleanup, sidecars, notices, and stable renderer IPC.                                                                                                           |
-| Ownership honesty    | Workflow, MCP processes/logs, Partner policy/tools, permissions, artifacts, Skills, and External Agent durable storage remain explicit Space bridges.                                                                                                            |
-| Session loading      | Project/surface history windows share a bounded summary index with invalidation-aware caching and precise saturation fallback.                                                                                                                                   |
-| Reliability          | Review fixed stale transcript cache, compact failure normalization, over-eager Workflow routing, and a same-session concurrent-start race.                                                                                                                       |
-| Verification         | The combined Runtime, origin, diagnostics, semantic-control, and exact KodaX 0.7.68 compatibility gates must pass before the `v0.1.31` tag is created.                                                                                                           |
+| Area                   | Summary                                                                                                                                                                                                  |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Shared Coder Runtime   | Sessions, runs, settings, interactions, exact transcript recovery, Workflow control, Learning/catalog/MCP discovery, and configured Actor/Turns converge on one daemon truth.                            |
+| Partner knowledge      | F122-F124 add durable project sources, local FTS5 retrieval, immutable evidence, stable citations, exact usage traces, and automatic Partner grounding without moving Partner into the daemon.           |
+| Review and reliability | Artifact/File Viewer separation, truthful Changes projection, secure web previews, responsive compaction, Sidecar terminal correction, and finalization-safe interrupt handling close the release races. |
+| Builtins and Windows   | Audited redistributable builtins package reproducibly; Windows Setup/Portable use the KodaX icon, expose a controllable tray owner, and hide noninteractive SDK child processes.                         |
+| KodaX 0.7.76           | The exact Registry package provides direct Kimi Code `k3-256k`, K3 `high` reasoning by default, mailbox-safe Agent coordination, compaction v3, transcript paging/search, and Auto LLM guardrail v3.     |
+| Verification           | Final main CI and Build passed without test retries; the four-platform production workflow published 18 validated Windows, Linux, and macOS x64/arm64 assets.                                            |
 
-See [CHANGELOG.md](CHANGELOG.md), the [v0.1.31 design](docs/features/v0.1.31.md), the [F116 implementation record](docs/features/v0.1.31-implementation-plan.md), the [F120 implementation plan](docs/features/v0.1.31-f120-implementation-plan.md), and the [F116 acceptance guide](docs/test-guides/FEATURE_116_v0.1.31_TEST_GUIDE.md).
+See [CHANGELOG.md](CHANGELOG.md), the [v0.1.32 design](docs/features/v0.1.32.md), and the [v0.1.32 release record](docs/releases/v0.1.32-release-readiness.md). The record keeps unexecuted human journeys unchecked; Issue 043 (unsigned macOS prompts) and Issue 022 (future Partner Runtime migration) remain disclosed boundaries.
 
 ## Previous Releases
+
+**v0.1.31 - Runtime Contract Alignment and Semantic Control**
+
+Released: 2026-07-12 as `v0.1.31`. F116, F055, F069, and F120 shipped together on exact KodaX 0.7.68.
+
+This release adopted the public KodaX Runtime facade as Space's managed-run boundary while preserving explicit Space ownership for product-specific behavior. See the [v0.1.31 design](docs/features/v0.1.31.md) and [F116 implementation record](docs/features/v0.1.31-implementation-plan.md).
 
 **v0.1.30 - External Agent Orchestration Gateway Foundation**
 
@@ -266,10 +269,10 @@ npm run e2e:headed
 | [README_CN.md](README_CN.md)                                                                             | Chinese README.                                                                          |
 | [CONTRIBUTING.md](CONTRIBUTING.md)                                                                       | Contribution boundaries, validation, and documentation requirements.                     |
 | [docs/README.md](docs/README.md)                                                                         | Documentation hub and current-vs-historical document map.                                |
-| [docs/USER_MANUAL.zh-CN.md](docs/USER_MANUAL.zh-CN.md)                                                   | Illustrated Chinese user manual for the current v0.1.32 release-preparation baseline.    |
+| [docs/USER_MANUAL.zh-CN.md](docs/USER_MANUAL.zh-CN.md)                                                   | Illustrated Chinese user manual for the published v0.1.32 baseline.                      |
 | [docs/USAGE.md](docs/USAGE.md)                                                                           | Source launch, profiles, Runtime Host, testing, packaging, and troubleshooting.          |
 | [docs/BUILTIN_SKILLS.md](docs/BUILTIN_SKILLS.md)                                                         | Builtin skill provenance, licensing, update, patch, and package-integrity workflow.      |
-| [docs/releases/v0.1.32-release-readiness.md](docs/releases/v0.1.32-release-readiness.md)                 | v0.1.32 pre-release gates, artifact expectations, manual acceptance, and release steps.  |
+| [docs/releases/v0.1.32-release-readiness.md](docs/releases/v0.1.32-release-readiness.md)                 | v0.1.32 gates, production evidence, artifact hashes, and recorded manual acceptance.     |
 | [docs/CODING_AGENT_BEGINNER_BEST_PRACTICES.zh-CN.md](docs/CODING_AGENT_BEGINNER_BEST_PRACTICES.zh-CN.md) | Chinese beginner guide for coding-agent practice in software and microservice workflows. |
 | [docs/PRD.md](docs/PRD.md)                                                                               | Product requirements and product positioning.                                            |
 | [docs/HLD.md](docs/HLD.md)                                                                               | High-level architecture and system design.                                               |
@@ -283,12 +286,12 @@ npm run e2e:headed
 
 Near-term planned work is tracked in [docs/FEATURE_LIST.md](docs/FEATURE_LIST.md). Current highlights:
 
-| Lane              | Focus                                                                                                                                  |
-| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `v0.1.32`         | Shared-daemon Coder, Partner project knowledge/citations, vetted builtins, exact-history UX, Windows icon/tray, and release hardening. |
-| `v0.1.35-v0.1.40` | Workflow/review evidence, task/capability governance, then SDK-gated Memory Agent and Learning Center hosts.                           |
-| `v0.1.43`         | Localization completion, beta diagnostics, release channels, updater/distribution trust.                                               |
-| `v0.2.x`          | Governed browser and Partner packs, read-only connector snapshots, local automations, and refreshable artifacts.                       |
+| Lane              | Focus                                                                                                                                            |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `v0.1.32`         | Published shared-daemon Coder, Partner project knowledge/citations, vetted builtins, exact-history UX, Windows icon/tray, and release hardening. |
+| `v0.1.35-v0.1.40` | Workflow/review evidence, task/capability governance, then SDK-gated Memory Agent and Learning Center hosts.                                     |
+| `v0.1.43`         | Localization completion, beta diagnostics, release channels, updater/distribution trust.                                                         |
+| `v0.2.x`          | Governed browser and Partner packs, read-only connector snapshots, local automations, and refreshable artifacts.                                 |
 
 Remote runners, notebooks, knowledge graphs, desktop screen automation, and unshipped External Agent adapters are reopen-gated watchlist items, not committed release features.
 

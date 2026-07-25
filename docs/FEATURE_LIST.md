@@ -1,7 +1,7 @@
 # KodaX Space Feature List
 
-> Last reviewed: 2026-07-24
-> Current release and source baseline: `v0.1.32` (`0.1.32` package baseline)
+> Last reviewed: 2026-07-25
+> Current release and source baseline: published [`v0.1.32`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.32) (`0.1.32` package baseline)
 > Current KodaX SDK baseline: npm-published `@kodax-ai/kodax@0.7.76` (`SHA256 F247511A…0E299021`), installed in both workspaces and pinned by official Registry SRI; F121/F134 require mailbox-safe Actor semantics, `contextCompaction: 3`, `transcriptPaging: 1`, `transcriptSearch: 1`, interrupt input with Space finalization fencing, exact checkpoint/manual-compaction lineage, Windows background-process hardening, corrected Sidecar terminal semantics, direct Kimi Code K3 routing, and the existing Runtime/guardrail gates
 > Scope: active roadmap, recent completion audit, and reviewed-out decisions. Older release history lives in [FEATURES_ARCHIVED.md](FEATURES_ARCHIVED.md), per-version designs, and [CHANGELOG.md](../CHANGELOG.md).
 
@@ -22,7 +22,7 @@
 | Planned                 | 22                                                                                                                                                                              |
 | InProgress              | 3                                                                                                                                                                               |
 | Recent Completed        | 24                                                                                                                                                                              |
-| Next feature release    | `v0.1.32`                                                                                                                                                                       |
+| Next feature release    | `v0.1.35` (`v0.1.33-v0.1.34` remain patch reserves)                                                                                                                             |
 | 0.1.x completion target | `v0.1.43`, followed by `v0.1.44` patch/RC reserve                                                                                                                               |
 | Far-future candidates   | Managed in [KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md) and [FEATURES_ARCHIVED.md](FEATURES_ARCHIVED.md#watchlist-and-reopen-gates), not promised as versioned work |
 

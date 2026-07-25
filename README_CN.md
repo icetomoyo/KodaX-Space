@@ -98,31 +98,32 @@ F135 还会把许可证允许再分发的 `frontend-slides` 与 `huashu-design` 
 
 F136 让 Windows 后台 owner 变得可见、可控。关闭最后一个窗口会销毁 renderer，但保留任务栏通知区域图标；用户可以重新打开 Space、查看有界的 Runtime/任务/其他客户端状态、只退出 Space 并保留 Runtime，或请求“彻底退出”。彻底退出会先断开 Space，再仅在没有 active/queued/pending 工作和其他客户端时请求 Runtime 安全停止。0.1.32 的托盘仍由轻量 Electron main 持有；拆成独立 helper 以便 main 也退出属于后续优化。
 
-当前预发布阻断项：Windows 上发送普通 Coder query 时，KodaX 的部分子进程路径可能闪出短暂控制台窗口。这些调用早于 KodaX 0.7.68 已存在，但 0.1.32 的独立 daemon 会稳定暴露它们，而 0.1.31 的 embedded-inline host 不会。修复应在 KodaX 完成；Space 不会内置未经 review 的 SDK 源码补丁。详见 [Issue 091](docs/KNOWN_ISSUES.md#091-ordinary-windows-queries-can-flash-several-short-lived-command-windows-from-kodax-runtime-child-processes)。
+已解决的发布阻断项：KodaX 0.7.76 保留 0.7.75 引入的集中式 Windows `windowsHide` 加固，普通 daemon-backed Coder query 不再闪出短暂子进程控制台。Space 只消费官方 Registry 包，没有内置 SDK 源码补丁。详见 [Issue 091](docs/KNOWN_ISSUES.md#091-ordinary-windows-queries-can-flash-several-short-lived-command-windows-from-kodax-runtime-child-processes)。
 
 ## 当前正式版本
 
-**v0.1.31 - Runtime Contract Alignment and Semantic Control**
+**v0.1.32 - Shared Coder and Usable Partner Knowledge**
 
-正式发布：2026-07-12，tag 为 `v0.1.31`。F116、F055、F069、F120 在精确 KodaX 0.7.68 基线上一并交付。
+正式发布：2026-07-25，tag 为 [`v0.1.32`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.32)，精确对齐 npm 正式发布的 KodaX 0.7.76。
 
-本版本将公开 KodaX Runtime facade 作为 Space 的 managed-run 边界，同时保留产品特有能力的明确 Space 所有权。
+本版本把 Coder 迁移到 profile-scoped shared daemon，同时继续由 Space 明确持有 Partner 与产品特有边界。
 
-| 领域                 | 摘要                                                                                                                                                                                                         |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Runtime Host Adapter | v0.1.31 的 Coder 与 Partner 都使用 embedded-inline Runtime facade；该版本尚不支持让 Space live session 使用 shared daemon。                                                                                  |
-| Semantic control     | F120 已提供由确定性 UI 入口与 KodaX inspect/apply 工具共享的受限 typed action registry；敏感及破坏性控制仍仅允许用户操作。                                                                                   |
-| 平台可信边界         | F055 将打包 renderer 迁移到受保护的 `app://space`；F069 提供有界脱敏结构化诊断和显式本地导出。                                                                                                               |
-| KodaX 0.7.68         | 根与 desktop workspace 已固定到正式 npm 包；启动时验证 `/experimental-memory` 与策略 `f260-v0.7.68.2`，managed run 的 memory 生命周期仍由 KodaX 持有，Space 只记录元数据诊断。完整 F117 桌面体验仍在计划中。 |
-| 会话操作             | Transcript、compact、fork、rewind 使用 Runtime service；标题/列表/恢复、清理、sidecar、notice 和 renderer IPC 继续由 Space 保持。                                                                            |
-| 所有权真实性         | Workflow、MCP 进程/日志、Partner policy/tools、权限、Artifact、Skills 和 External Agent durable store 仍是明确的 Space bridge。                                                                              |
-| Session 加载         | Project/surface 历史窗口共享有界 summary index、失效感知缓存和达到上限后的精确回退。                                                                                                                         |
-| 稳定性               | Review 修复 transcript stale cache、compact 失败收口、过度 Workflow 路由和同 session 并发启动竞态。                                                                                                          |
-| 验证                 | 创建 `v0.1.31` tag 前必须通过 Runtime、应用 origin、诊断、语义控制和精确 KodaX 0.7.68 兼容联合门禁。                                                                                                         |
+| 领域               | 摘要                                                                                                                                                           |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Shared Coder       | Session、run、共享设置、交互、精确历史恢复、Workflow 控制、Learning/catalog/MCP 发现和已配置 Actor/Turn 收敛到一个 daemon 真理源。                             |
+| Partner knowledge  | F122-F124 提供耐久项目来源、本地 FTS5 检索、不可变证据、稳定引用、精确使用轨迹和自动 Partner grounding；Partner 不迁移到 daemon。                              |
+| Review 与可靠性    | Artifact/File Viewer 分离、真实 Changes 投影、安全 Web Preview、响应式 compact、Sidecar 终态修正和 finalization-safe interrupt 关闭本次发布竞态。              |
+| Builtin 与 Windows | 受审且可再分发的 builtin 可复现打包；Windows Setup/Portable 使用 KodaX 图标、提供可控托盘 owner，并隐藏 SDK 非交互子进程。                                     |
+| KodaX 0.7.76       | 精确 Registry 包提供直连 Kimi Code `k3-256k`、默认 K3 `high` 推理、mailbox-safe Agent 协调、compaction v3、transcript paging/search 与 Auto LLM guardrail v3。 |
+| 验证               | 最终 main CI 与 Build 全绿且没有测试重试；四平台生产发布工作流发布了 18 个通过校验的 Windows、Linux、macOS x64/arm64 资产。                                    |
 
-完整说明见 [CHANGELOG.md](CHANGELOG.md)、[v0.1.31 设计](docs/features/v0.1.31.md)、[F116 实施记录](docs/features/v0.1.31-implementation-plan.md)、[F120 实施计划](docs/features/v0.1.31-f120-implementation-plan.md)和[F116 验收指导](docs/test-guides/FEATURE_116_v0.1.31_TEST_GUIDE.md)。
+完整说明见 [CHANGELOG.md](CHANGELOG.md)、[v0.1.32 设计](docs/features/v0.1.32.md)和[v0.1.32 发布记录](docs/releases/v0.1.32-release-readiness.md)。发布记录继续如实保留未执行的人工 journey；Issue 043（未签名 macOS 提示）与 Issue 022（未来 Partner Runtime 迁移）仍是已披露边界。
 
 ## 历史正式版本
+
+**v0.1.31 - Runtime Contract Alignment and Semantic Control**
+
+正式发布：2026-07-12，tag 为 `v0.1.31`。F116、F055、F069、F120 在精确 KodaX 0.7.68 基线上一并交付。详见 [v0.1.31 设计](docs/features/v0.1.31.md)和[F116 实施记录](docs/features/v0.1.31-implementation-plan.md)。
 
 **v0.1.30 - External Agent Orchestration Gateway Foundation**
 
@@ -262,12 +263,12 @@ npm run e2e:headed
 
 近期计划以 [docs/FEATURE_LIST.md](docs/FEATURE_LIST.md) 为准。当前重点：
 
-| 版本线            | 重点                                                                                                  |
-| ----------------- | ----------------------------------------------------------------------------------------------------- |
-| `v0.1.32`         | Shared-daemon Coder、Partner 项目知识/引用、受审 builtin、精确历史体验、Windows 图标/托盘与发布加固。 |
-| `v0.1.35-v0.1.40` | Workflow/Review 证据面、Task/Capability 治理，以及 SDK-gated Memory Agent/Learning Center host。      |
-| `v0.1.43`         | 本地化完成、beta diagnostics、release channel、updater/distribution trust。                           |
-| `v0.2.x`          | Governed Browser 与 Partner packs、只读 Connector snapshots、本地 Automations、可刷新 Artifacts。     |
+| 版本线            | 重点                                                                                                         |
+| ----------------- | ------------------------------------------------------------------------------------------------------------ |
+| `v0.1.32`         | 已发布 Shared-daemon Coder、Partner 项目知识/引用、受审 builtin、精确历史体验、Windows 图标/托盘与发布加固。 |
+| `v0.1.35-v0.1.40` | Workflow/Review 证据面、Task/Capability 治理，以及 SDK-gated Memory Agent/Learning Center host。             |
+| `v0.1.43`         | 本地化完成、beta diagnostics、release channel、updater/distribution trust。                                  |
+| `v0.2.x`          | Governed Browser 与 Partner packs、只读 Connector snapshots、本地 Automations、可刷新 Artifacts。            |
 
 Remote runner、Notebook、Knowledge Graph、桌面 screen automation 和未发布 External Agent adapter 都是带 reopen gate 的 watchlist，不是已承诺版本 feature。
 
