@@ -92,6 +92,7 @@ Last Updated: 2026-07-25
 | 094 | Medium   | Resolved | Failed interrupt bubble followed the transcript tail instead of staying at its failure-time position                     | v0.1.32 development   | 2026-07-24 |
 | 095 | Medium   | Resolved | Changes panel collapsed a fully untracked directory into one row and hid its individual files                            | v0.1.x                | 2026-07-24 |
 | 096 | Medium   | Resolved | Linux CI lacked an OS keychain and silently projected Runtime A2A as hidden                                              | v0.1.32 development   | 2026-07-25 |
+| 097 | Medium   | Resolved | Successful document extraction forcibly terminated its Worker during Windows native-module cleanup                       | v0.1.32 development   | 2026-07-25 |
 
 ## Issue Details
 
@@ -5271,12 +5272,79 @@ Validation:
 - Focused Windows Electron coverage passed 2/2 with the real Credential Manager, negotiated A2A, Reference Agent management, and Task Dock lifecycle.
 - Ubuntu CI now owns the same production keychain requirement through an ephemeral gnome-keyring session; the final cross-platform result is recorded in the v0.1.32 release-readiness document.
 
+### 097: Successful document extraction forcibly terminated its Worker during Windows native-module cleanup
+
+- Priority: Medium
+- Status: Resolved
+- Introduced: v0.1.32 development
+- Fixed: v0.1.32
+- Created: 2026-07-25
+- Resolution Date: 2026-07-25
+
+#### Original Problem
+
+Current behavior:
+
+- The Windows unit job completed all visible Partner source assertions, then the Node test-file
+  subprocess exited with native access violation `0xC0000005`.
+- The failure was intermittent and occurred during process cleanup rather than while parsing or
+  asserting PDF and Office extraction results.
+
+Expected behavior:
+
+- A Worker that has already returned a valid extraction result must be allowed to finish its own
+  parser/native-module cleanup before the caller settles.
+- Cancellation, hard deadlines, invalid responses, and early failures must retain bounded forced
+  termination.
+- A successful Worker that does not exit naturally must still be bounded by a short termination
+  fallback.
+
+#### Context
+
+GitHub Actions Windows job `89626507302` exposed the failure after every visible test in
+`partner-source-tool.test.ts` passed. The same source had passed earlier Windows jobs, identifying a
+timing-sensitive teardown path rather than a deterministic extraction assertion failure.
+
+#### Root Cause
+
+`runPartnerSourceStructuredExtractionWorker()` called `worker.terminate()` immediately after
+receiving a valid response. The production extraction Worker had already closed its message port
+and was prepared to exit naturally, but immediate termination could interrupt PDF or Office
+dependency teardown inside the Worker. On Windows that race could surface as a native access
+violation in the test subprocess after all assertions completed.
+
+#### Resolution
+
+- Wait for a successful or structured-error Worker to exit naturally after its response.
+- Settle the caller only after exit, preserving cleanup ordering.
+- Retain immediate forced termination for cancellation, timeout, invalid protocol data, startup
+  errors, and exit-before-response paths.
+- Add a one-second grace fallback so a Worker cannot keep the operation alive indefinitely.
+- Add a regression Worker that reports success, performs delayed cleanup, writes a marker, and
+  closes its port; the extraction call must not resolve before that marker exists.
+
+Files changed:
+
+- `apps/desktop/electron/kodax/partner-source-extraction-runner.ts`
+- `apps/desktop/electron/test/partner-source-tool.test.ts`
+- `CHANGELOG.md`
+- `docs/KNOWN_ISSUES.md`
+- `docs/releases/v0.1.32-release-readiness.md`
+
+Validation:
+
+- Focused Partner source coverage passed 20/20.
+- The focused test file passed five additional consecutive runs (100/100 assertions) without a
+  teardown crash.
+- TypeScript and targeted ESLint passed; full local and cross-platform CI results are recorded in
+  the v0.1.32 release-readiness document.
+
 ## Summary
 
-- Total: 84
+- Total: 85
 - Open: 2
-- Resolved: 82
+- Resolved: 83
 - High: 39
-- Medium: 38
+- Medium: 39
 - Low: 7
 - Next to resolve: 043
