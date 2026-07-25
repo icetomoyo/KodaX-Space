@@ -97,6 +97,7 @@ Last Updated: 2026-07-25
 | 099 | Medium   | Resolved | Clean Electron main builds omitted generated runtime icons and disabled the Windows tray                                 | v0.1.32 development   | 2026-07-25 |
 | 100 | Medium   | Resolved | Interactive HTML Artifact could accept its first click before document controls were initialized                         | v0.1.32 development   | 2026-07-25 |
 | 101 | Medium   | Resolved | Project HTML File Viewer could accept its first click before module controls were initialized                            | v0.1.32 development   | 2026-07-25 |
+| 102 | Medium   | Resolved | Partner PDF text Workers could unload an unused native Canvas module with a Windows access violation                     | v0.1.32 development   | 2026-07-25 |
 
 ## Issue Details
 
@@ -5516,12 +5517,64 @@ Validation:
   renderer/main smoke build pass.
 - A clean, retry-free main CI run remains the v0.1.32 release gate.
 
+### 102: Partner PDF text Workers could unload an unused native Canvas module with a Windows access violation
+
+- Priority: Medium
+- Status: Resolved
+- Introduced: v0.1.32 development
+- Fixed: v0.1.32
+- Created: 2026-07-25
+- Resolution Date: 2026-07-25
+
+#### Original Problem
+
+Two Windows jobs for main commit `0988f81e` failed the complete unit suite after all preceding
+Partner source assertions had passed. The `partner-source-tool.test.ts` child ended with unsigned
+exit code `3221225477` (`0xC0000005`) instead of a JavaScript assertion or exception. The same tree
+passed both Windows jobs in the immediately preceding run and passed locally, so a blind retry could
+hide the native teardown fault.
+
+Expected behavior:
+
+- Repeated PDF text extraction in short-lived Worker isolates must not load native rendering code it
+  never uses.
+- Windows unit and release jobs must exit cleanly without relying on retrying an access violation.
+
+#### Root Cause
+
+Partner source extraction uses pdfjs only for `getTextContent()`, with font and image rendering
+disabled. The imported `pdfjs-dist/legacy` Node build nevertheless loads `@napi-rs/canvas` eagerly
+at module initialization to provide rendering globals. The earlier Worker lifecycle fix stopped
+forcibly terminating successful isolates, but this unnecessary N-API module still had to unload when
+each text Worker exited. Under Windows runner timing it could terminate the test child with
+`0xC0000005`.
+
+#### Resolution
+
+- Use pdfjs's standard parser build inside the isolated Partner text Worker. It loads Canvas only if
+  rendering actually requests one, while `getTextContent()` remains a pure-JavaScript path.
+- Keep the same pdfjs parser, PDF signature/page/size limits, structured locators, hard deadline,
+  Worker memory limits, and natural-exit/termination lifecycle.
+- Add a local type bridge to reuse the package's legacy-build declarations for the equivalent
+  standard-build API.
+
+Validation:
+
+- A real Space-generated Unicode PDF extracts title and page text through the standard build without
+  loading native Canvas.
+- The full Partner source tool suite passes 10/10 consecutive runs after the change; the unchanged
+  legacy path also passed 10/10 locally, confirming the CI fault is an intermittent native teardown
+  race rather than an assertion failure.
+- Complete `npm test`, typecheck, focused ESLint/Prettier, Git whitespace checks, and Electron main
+  bundling pass.
+- Two clean Windows main jobs and the four-platform release matrix remain the final proof.
+
 ## Summary
 
-- Total: 89
+- Total: 90
 - Open: 2
-- Resolved: 87
+- Resolved: 88
 - High: 39
-- Medium: 43
+- Medium: 44
 - Low: 7
 - Next to resolve: 043
