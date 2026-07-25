@@ -45,6 +45,7 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ### Fixed
 
+- **Cross-platform Runtime identity verification** - Ubuntu Electron E2E now runs inside an ephemeral D-Bus Secret Service with a real gnome-keyring, so the suite exercises the same fail-closed OS-keychain boundary as production instead of silently running without the shared Coder Runtime. External-agent status also preserves a bounded Runtime diagnostic, and the A2A regression requires successful capability negotiation before inspecting Settings.
 - **Auto permission semantics** - Auto[rules] now allows modeled edits inside the workspace without a confirmation dialog while outside/protected/unmodelled effects remain fail-closed. Auto[LLM] rejects a missing classifier model locally without a Provider request, AskUser prompt, denial/circuit-breaker mutation, or downgrade to rules.
 - **Published dependency integrity** - The 0.7.76 lock entry matches the official npm Registry package and contains no sibling-checkout path; clean Registry-only installation is reproducible.
 - **Daemon child isolation and admission recovery** - The published launcher filters test-runner imports/loaders from daemon child `execArgv`; normal Space shutdown no longer aborts an accepted daemon run during admission, and transient unhealthy-owner startup windows now reconnect with bounded backoff.
