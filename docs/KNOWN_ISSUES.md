@@ -5450,6 +5450,9 @@ be parsed and become visible before a script later in the document registers its
 The injected diagnostic runtime sent its existing `ready` message immediately from the document
 head, and the parent diagnostic hook ignored that message. On a slower Windows runner, the first
 click could therefore land in the interval between button creation and handler registration.
+The first readiness fix also kept a plain boolean in React state. When an Artifact version changed,
+the old `true` remained observable until a post-render effect reset it, and the reused iframe could
+still deliver a late message from the preceding document.
 
 #### Resolution
 
@@ -5457,17 +5460,22 @@ click could therefore land in the interval between button creation and handler r
   document was already parsed.
 - Project that readiness into the Artifact iframe and disable pointer and keyboard focus until the
   matching document reports ready.
+- Store the exact ready document key instead of a reusable boolean, and key the iframe by its
+  versioned URL so a preceding document and `contentWindow` cannot unlock its replacement.
 - Make the Electron journey wait for the explicit product readiness contract before interacting;
   no timeout sleep or retry hides the race.
 
 Validation:
 
 - HTML sandbox unit coverage passes 10/10 and asserts the deferred readiness boundary.
-- The affected Electron control journey passes 5/5 consecutive local runs.
+- The affected control journey and Artifact version-refresh journey pass 20/20 local runs in a
+  two-worker, zero-retry stress run shared with the Project Preview regression.
 - TypeScript, focused ESLint, changed-file Prettier, Git whitespace checks, and the production
   renderer/main smoke build pass.
 - Main CI run `30142397054` passed the affected Windows shard 1/2 with 30 passes and 6 intentional
-  skips; the original control regression did not retry.
+  skips; the original control regression did not retry. Later Ubuntu runs reproduced the residual
+  stale-document form, which candidate `7449d695` closes; a retry-free main run remains the release
+  gate.
 
 ### 101: Project HTML File Viewer could accept its first click before module controls were initialized
 
@@ -5497,7 +5505,9 @@ Expected behavior:
 Project Preview already emitted the same typed `ready` diagnostic as interactive Artifacts, but its
 injected runtime sent that message immediately from the document head. The renderer consumed only
 diagnostic failures and left the iframe interactive. A body button could therefore appear before
-the later `type="module"` script registered its click handler.
+the later `type="module"` script registered its click handler. The initial renderer fix then exposed
+the same residual stale-state window: a new URL could render while the hook still projected the
+preceding document's boolean `ready=true`, and React reused the iframe node.
 
 #### Resolution
 
@@ -5505,17 +5515,23 @@ the later `type="module"` script registered its click handler.
   graph to execute.
 - Reuse the shared renderer readiness projection and keep the Project Preview iframe out of pointer
   and keyboard interaction until ready.
+- Bind readiness to the exact Preview URL and key the iframe by that URL, so switching revision or
+  network policy immediately returns to not-ready and rejects messages from the prior
+  `contentWindow`.
 - Require the File Viewer Electron journey to observe that explicit readiness state before its first
   interaction.
 
 Validation:
 
 - Project Preview and HTML sandbox focused unit coverage passes 16/16.
-- The full Project HTML File Viewer resource/isolation/click journey passes 5/5 consecutive local
-  runs.
+- The full Project HTML File Viewer resource/isolation/click journey passes 10/10 consecutive local
+  runs with two Electron workers and Playwright retries disabled.
 - TypeScript, focused ESLint, changed-file Prettier, Git whitespace checks, and the production
   renderer/main smoke build pass.
-- A clean, retry-free main CI run remains the v0.1.32 release gate.
+- Main CI runs `30143508131` and `30143521566` finished green but respectively exposed two and one
+  Ubuntu retries across this journey and the shared Artifact readiness path. Candidate `7449d695`
+  binds both consumers to the exact document; a clean, retry-free main CI run remains the v0.1.32
+  release gate.
 
 ### 102: Partner PDF text Workers could unload an unused native Canvas module with a Windows access violation
 
