@@ -12,15 +12,23 @@ const MAX_DIAGNOSTICS = 8;
 export function useWebPreviewDiagnostics(
   frameRef: RefObject<HTMLIFrameElement | null>,
   resetKey: string,
-): readonly [readonly WebPreviewDiagnostic[], () => void] {
+): readonly [readonly WebPreviewDiagnostic[], () => void, boolean] {
   const [diagnostics, setDiagnostics] = useState<readonly WebPreviewDiagnostic[]>([]);
+  const [ready, setReady] = useState(false);
 
-  useEffect(() => setDiagnostics([]), [resetKey]);
+  useEffect(() => {
+    setDiagnostics([]);
+    setReady(false);
+  }, [resetKey]);
   useEffect(() => {
     const receive = (event: MessageEvent<unknown>): void => {
       if (!frameRef.current || event.source !== frameRef.current.contentWindow) return;
       const diagnostic = parseWebPreviewDiagnostic(event.data);
-      if (!diagnostic || diagnostic.kind === 'ready') return;
+      if (!diagnostic) return;
+      if (diagnostic.kind === 'ready') {
+        setReady(true);
+        return;
+      }
       setDiagnostics((current) => {
         const key = webPreviewDiagnosticKey(diagnostic);
         if (current.some((item) => webPreviewDiagnosticKey(item) === key)) return current;
@@ -31,7 +39,7 @@ export function useWebPreviewDiagnostics(
     return () => window.removeEventListener('message', receive);
   }, [frameRef]);
 
-  return [diagnostics, () => setDiagnostics([])] as const;
+  return [diagnostics, () => setDiagnostics([]), ready] as const;
 }
 
 interface WebPreviewDiagnosticBannerProps {

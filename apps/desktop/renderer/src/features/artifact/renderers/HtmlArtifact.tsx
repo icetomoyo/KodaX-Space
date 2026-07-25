@@ -62,7 +62,10 @@ export function InteractiveHtmlArtifact({
     [documentHtml],
   );
   const frameRef = useRef<HTMLIFrameElement>(null);
-  const [diagnostics, dismissDiagnostics] = useWebPreviewDiagnostics(frameRef, frameUrl);
+  const [diagnostics, dismissDiagnostics, documentReady] = useWebPreviewDiagnostics(
+    frameRef,
+    frameUrl,
+  );
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <WebPreviewDiagnosticBanner diagnostics={diagnostics} onDismiss={dismissDiagnostics} />
@@ -72,6 +75,10 @@ export function InteractiveHtmlArtifact({
         src={frameUrl}
         sandbox={sandboxForInteractiveHtml(permissions)}
         referrerPolicy="no-referrer"
+        aria-busy={!documentReady}
+        data-ready={documentReady ? 'true' : 'false'}
+        data-testid="interactive-html-frame"
+        tabIndex={documentReady ? 0 : -1}
         onLoad={(event) => {
           event.currentTarget.contentWindow?.postMessage(
             {
@@ -81,7 +88,9 @@ export function InteractiveHtmlArtifact({
             '*',
           );
         }}
-        className="h-full min-h-0 w-full flex-1 border-0 bg-white"
+        className={`h-full min-h-0 w-full flex-1 border-0 bg-white ${
+          documentReady ? '' : 'pointer-events-none'
+        }`}
       />
     </div>
   );

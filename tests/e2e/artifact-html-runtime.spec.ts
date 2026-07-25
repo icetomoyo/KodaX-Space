@@ -152,6 +152,8 @@ test('interactive HTML Artifact keeps inline controls and timer-driven playback 
       },
     });
 
+    const frameHost = space.page.locator('iframe[title="Interactive HTML artifact"]');
+    await expect(frameHost).toHaveAttribute('data-ready', 'true', { timeout: 10_000 });
     const frame = space.page.frameLocator('iframe[title="Interactive HTML artifact"]');
     await frame.locator('#next').click();
     await expect(frame.locator('#sAcc')).toHaveText('96.8%', { timeout: 10_000 });
