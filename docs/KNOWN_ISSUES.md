@@ -96,6 +96,7 @@ Last Updated: 2026-07-25
 | 098 | Medium   | Resolved | A narrow Windows viewport required two clicks to open the right-side Task Dock                                           | v0.1.32 development   | 2026-07-25 |
 | 099 | Medium   | Resolved | Clean Electron main builds omitted generated runtime icons and disabled the Windows tray                                 | v0.1.32 development   | 2026-07-25 |
 | 100 | Medium   | Resolved | Interactive HTML Artifact could accept its first click before document controls were initialized                         | v0.1.32 development   | 2026-07-25 |
+| 101 | Medium   | Resolved | Project HTML File Viewer could accept its first click before module controls were initialized                            | v0.1.32 development   | 2026-07-25 |
 
 ## Issue Details
 
@@ -5464,14 +5465,63 @@ Validation:
 - The affected Electron control journey passes 5/5 consecutive local runs.
 - TypeScript, focused ESLint, changed-file Prettier, Git whitespace checks, and the production
   renderer/main smoke build pass.
-- Final Windows GitHub Actions verification remains part of the v0.1.32 release gate.
+- Main CI run `30142397054` passed the affected Windows shard 1/2 with 30 passes and 6 intentional
+  skips; the original control regression did not retry.
+
+### 101: Project HTML File Viewer could accept its first click before module controls were initialized
+
+- Priority: Medium
+- Status: Resolved
+- Introduced: v0.1.32 development
+- Fixed: v0.1.32
+- Created: 2026-07-25
+- Resolution Date: 2026-07-25
+
+#### Original Problem
+
+Main CI run `30142397054` concluded successfully, but its Ubuntu shard 1/2 needed a Playwright retry
+for the Project HTML File Viewer journey. The page had already loaded styles, local fetch, storage,
+Worker output, and an authored remote script; Playwright then clicked the visible **Advance**
+button, but the state remained `waiting`. The retry passed, so the green workflow still contained a
+real first-input flake.
+
+Expected behavior:
+
+- A Project HTML File Viewer must not accept input until its authored classic and module scripts
+  have finished synchronous initialization.
+- A green release gate must not depend on Playwright retries hiding a lost first click.
+
+#### Root Cause
+
+Project Preview already emitted the same typed `ready` diagnostic as interactive Artifacts, but its
+injected runtime sent that message immediately from the document head. The renderer consumed only
+diagnostic failures and left the iframe interactive. A body button could therefore appear before
+the later `type="module"` script registered its click handler.
+
+#### Resolution
+
+- Defer Project Preview readiness until `DOMContentLoaded`, which waits for the authored module
+  graph to execute.
+- Reuse the shared renderer readiness projection and keep the Project Preview iframe out of pointer
+  and keyboard interaction until ready.
+- Require the File Viewer Electron journey to observe that explicit readiness state before its first
+  interaction.
+
+Validation:
+
+- Project Preview and HTML sandbox focused unit coverage passes 16/16.
+- The full Project HTML File Viewer resource/isolation/click journey passes 5/5 consecutive local
+  runs.
+- TypeScript, focused ESLint, changed-file Prettier, Git whitespace checks, and the production
+  renderer/main smoke build pass.
+- A clean, retry-free main CI run remains the v0.1.32 release gate.
 
 ## Summary
 
-- Total: 88
+- Total: 89
 - Open: 2
-- Resolved: 86
+- Resolved: 87
 - High: 39
-- Medium: 42
+- Medium: 43
 - Low: 7
 - Next to resolve: 043
