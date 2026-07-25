@@ -379,6 +379,19 @@ export const PROJECT_WEB_PREVIEW_RUNTIME = `(() => {
   const send = (kind, message, directive) => {
     try { parent.postMessage({ type, kind, message: clean(message), directive: clean(directive) }, '*'); } catch {}
   };
+  const guardedInteractions = [
+    'pointerdown', 'pointerup', 'mousedown', 'mouseup', 'touchstart', 'touchend',
+    'click', 'dblclick', 'contextmenu', 'keydown', 'keyup', 'beforeinput',
+    'input', 'change', 'submit', 'wheel'
+  ];
+  const blockInteraction = (event) => {
+    if (!event.isTrusted) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  };
+  for (const eventName of guardedInteractions) {
+    addEventListener(eventName, blockInteraction, { capture: true, passive: false });
+  }
   addEventListener('error', (event) => {
     const target = event.target;
     if (target && target !== window) {
@@ -398,11 +411,17 @@ export const PROJECT_WEB_PREVIEW_RUNTIME = `(() => {
   addEventListener('securitypolicyviolation', (event) => {
     send('policy', '', event.effectiveDirective || event.violatedDirective || 'content-security-policy');
   });
-  const ready = () => send('ready', '');
+  const ready = () => {
+    for (const eventName of guardedInteractions) {
+      removeEventListener(eventName, blockInteraction, { capture: true });
+    }
+    send('ready', '');
+  };
+  const scheduleReady = () => setTimeout(ready, 0);
   if (document.readyState === 'loading') {
-    addEventListener('DOMContentLoaded', ready, { once: true });
+    addEventListener('DOMContentLoaded', scheduleReady, { once: true });
   } else {
-    ready();
+    scheduleReady();
   }
 })();`;
 

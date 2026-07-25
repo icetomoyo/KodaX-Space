@@ -89,9 +89,7 @@ export function InteractiveHtmlArtifact({
             '*',
           );
         }}
-        className={`h-full min-h-0 w-full flex-1 border-0 bg-white ${
-          documentReady ? '' : 'pointer-events-none'
-        }`}
+        className="h-full min-h-0 w-full flex-1 border-0 bg-white"
       />
     </div>
   );

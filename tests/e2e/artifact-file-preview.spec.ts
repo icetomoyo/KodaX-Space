@@ -500,6 +500,7 @@ test('Project HTML File Viewer runs relative modules, assets, local fetch, stora
       <div id="worker-state">worker-waiting</div>
       <div id="storage-state">storage-waiting</div>
       <script type="module" src="./app.js"></script>
+      <script type="module" src="https://preview-assets.test/ready-gate.js"></script>
       <script src="https://preview-assets.test/presentation.js"></script>
     </body></html>`,
     'utf8',
@@ -532,10 +533,27 @@ test('Project HTML File Viewer runs relative modules, assets, local fetch, stora
     'utf8',
   );
   const stat = await fs.stat(absPath);
+  let releaseReadyGate = (): void => undefined;
+  let reportReadyGateRequest = (): void => undefined;
+  const readyGateResponse = new Promise<void>((resolve) => {
+    releaseReadyGate = resolve;
+  });
+  const readyGateRequested = new Promise<void>((resolve) => {
+    reportReadyGateRequest = resolve;
+  });
 
   const space = await launchSpace(`project-web-preview-${Date.now()}`);
   try {
     await space.page.route('https://preview-assets.test/**', async (route) => {
+      if (route.request().url().endsWith('/ready-gate.js')) {
+        reportReadyGateRequest();
+        await readyGateResponse;
+        await route.fulfill({
+          contentType: 'text/javascript',
+          body: 'document.documentElement.dataset.readyGateLoaded = "true";',
+        });
+        return;
+      }
       if (route.request().url().endsWith('/theme.css')) {
         await route.fulfill({
           contentType: 'text/css',
@@ -568,8 +586,16 @@ test('Project HTML File Viewer runs relative modules, assets, local fetch, stora
     const preview = sidebar.getByTestId('project-web-preview');
     await expect(preview).toBeVisible({ timeout: 10_000 });
     const frameHost = preview.locator('iframe');
-    await expect(frameHost).toHaveAttribute('data-ready', 'true', { timeout: 10_000 });
     const frame = frameHost.contentFrame();
+    await readyGateRequested;
+    await expect(frame.locator('#storage-state')).toHaveText('storage-1');
+    await expect(frameHost).toHaveAttribute('data-ready', 'false');
+    await frame.getByRole('button', { name: 'Advance' }).click();
+    await expect(frame.locator('#state')).toHaveText('waiting');
+
+    releaseReadyGate();
+    await expect(frameHost).toHaveAttribute('data-ready', 'true', { timeout: 10_000 });
+    await expect(frame.locator('html')).toHaveAttribute('data-ready-gate-loaded', 'true');
     await expect(frame.locator('body')).toHaveCSS('color', 'rgb(12, 120, 74)');
     await expect(frame.locator('#fetch-state')).toHaveText('local-fetch-ok');
     await expect(frame.locator('#worker-state')).toHaveText('worker-ok');
@@ -612,6 +638,7 @@ test('Project HTML File Viewer runs relative modules, assets, local fetch, stora
     await expect(sidebar.getByTestId('web-preview-diagnostic')).toHaveCount(0);
     await expectNoPreviewError(sidebar);
   } finally {
+    releaseReadyGate();
     await space.close();
     await fs.rm(projectDir, { recursive: true, force: true });
   }

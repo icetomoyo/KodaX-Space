@@ -102,9 +102,7 @@ export function ProjectWebPreview({
         aria-busy={!documentReady}
         data-ready={documentReady ? 'true' : 'false'}
         tabIndex={documentReady ? 0 : -1}
-        className={`h-full min-h-0 w-full flex-1 border-0 bg-white ${
-          documentReady ? '' : 'pointer-events-none'
-        }`}
+        className="h-full min-h-0 w-full flex-1 border-0 bg-white"
       />
     </div>
   );
