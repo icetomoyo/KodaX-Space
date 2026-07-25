@@ -7,7 +7,8 @@ export type RightSidebarToggleAction = 'close' | 'open-default' | 'open-balanced
 export function resolveRightSidebarToggleAction(
   visible: boolean,
   desiredOpen: boolean,
+  defaultWidthFits = true,
 ): RightSidebarToggleAction {
   if (visible) return 'close';
-  return desiredOpen ? 'open-balanced' : 'open-default';
+  return desiredOpen || !defaultWidthFits ? 'open-balanced' : 'open-default';
 }

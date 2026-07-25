@@ -794,20 +794,29 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
       rightSidebarWidthMode === 'max' ||
       coderCenterWidthPx(leftSidebarVisible, leftWidth, true, rightWidth, viewportWidth) >=
         CODER_MIN_CENTER_PX);
+  const rightSidebarDefaultWidthFits =
+    coderCenterWidthPx(
+      leftSidebarOpen,
+      leftWidth,
+      true,
+      rightSidebarDefaultWidth(leftSidebarOpen, leftWidth, viewportWidth),
+      viewportWidth,
+    ) >= CODER_MIN_CENTER_PX;
   const toggleRightSidebar = useCallback((): void => {
-    if (fullscreenRead) {
-      setFullscreenRead(false);
-      openRightSidebarAtDefaultWidth();
-    } else {
-      const action = resolveRightSidebarToggleAction(rightSidebarVisible, rightSidebarOpen);
-      if (action === 'close') setRightSidebarOpenForCurrentSurface(false);
-      else if (action === 'open-balanced') openRightSidebarAtBalancedWidth();
-      else openRightSidebarAtDefaultWidth();
-    }
+    if (fullscreenRead) setFullscreenRead(false);
+    const action = resolveRightSidebarToggleAction(
+      rightSidebarVisible,
+      rightSidebarOpen,
+      rightSidebarDefaultWidthFits,
+    );
+    if (action === 'close') setRightSidebarOpenForCurrentSurface(false);
+    else if (action === 'open-balanced') openRightSidebarAtBalancedWidth();
+    else openRightSidebarAtDefaultWidth();
   }, [
     fullscreenRead,
     openRightSidebarAtBalancedWidth,
     openRightSidebarAtDefaultWidth,
+    rightSidebarDefaultWidthFits,
     rightSidebarOpen,
     rightSidebarVisible,
     setRightSidebarOpenForCurrentSurface,

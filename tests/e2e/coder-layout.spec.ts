@@ -103,6 +103,47 @@ function horizontallySeparated(left: Rect, right: Rect): boolean {
   return left.right <= right.x + 0.5;
 }
 
+test('a manual right-sidebar toggle opens on the first click at a narrow viewport', async () => {
+  const testId = `coder-narrow-sidebar-toggle-${Date.now()}`;
+  const projectDir = await createProject(testId);
+  const space = await launchSpace(testId);
+
+  try {
+    const { page } = space;
+    await space.seedProject(projectDir);
+    await page.evaluate(() => {
+      window.localStorage.setItem('kodax-space.currentSurface', 'code');
+      window.localStorage.setItem('kodax-space.leftSidebarOpen', '1');
+      window.localStorage.setItem('kodax-space.leftSidebarWidth', '260');
+      window.localStorage.setItem('kodax-space.rightSidebarOpen', '0');
+      window.localStorage.setItem('kodax-space.rightSidebarWidth', '320');
+    });
+    await page.reload();
+    await page.waitForLoadState('domcontentloaded');
+    await page.setViewportSize({ width: 1024, height: 728 });
+
+    await waitForCoderWorkspace(page);
+    await expect(page.getByTestId('left-sidebar')).toBeVisible();
+    await expect(page.getByTestId('right-sidebar')).toHaveCount(0);
+
+    await page.getByRole('button', { name: 'Show right sidebar' }).click();
+
+    await expect(page.getByTestId('right-sidebar')).toBeVisible({ timeout: 5_000 });
+    await expect(
+      page.getByTestId('coder-workspace').getByRole('button', { name: 'Hide right sidebar' }),
+    ).toBeVisible();
+    const { viewport, rects } = await snapshot(page);
+    expect(rects.center, 'Coder workspace remains available').not.toBeNull();
+    expect(rects.right, 'right sidebar opens after one click').not.toBeNull();
+    expect(insideViewport(rects.center!, viewport), 'center pane is clipped').toBe(true);
+    expect(insideViewport(rects.right!, viewport), 'right sidebar is clipped').toBe(true);
+    expect(horizontallySeparated(rects.center!, rects.right!), 'sidebars overlap').toBe(true);
+  } finally {
+    await space.close();
+    await fs.rm(projectDir, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
 async function expectUsableCoderLayout(
   page: Page,
   options: { requireStream?: boolean } = {},

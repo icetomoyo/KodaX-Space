@@ -20,47 +20,52 @@ async function launchArtifactSpace(
   testId: string,
 ): Promise<{ space: SpaceInstance; projectDir: string; sessionId: string }> {
   const space = await launchSpace(testId);
-  const projectDir = path.join(space.testDataDir, 'artifact-html-project');
-  await fs.mkdir(projectDir, { recursive: true });
-  await space.seedProject(projectDir);
-  await space.page.evaluate(() => {
-    localStorage.setItem('kodax-space.smartPopoutEnabled', '0');
-  });
-  await space.page.reload();
-  await space.page.waitForLoadState('domcontentloaded');
-  const composer = space.page.locator('textarea').first();
-  await expect(composer).toBeEnabled({ timeout: 10_000 });
-  await composer.fill('seed artifact runtime e2e session');
-  await composer.press('Enter');
-  await expect(
-    space.page
-      .getByTestId('conversation-stream')
-      .getByText('seed artifact runtime e2e session')
-      .first(),
-  ).toBeVisible({ timeout: 10_000 });
-  const readSessionId = () =>
-    space.page.evaluate(async () => {
-      const bridge = (
-        window as unknown as {
-          kodaxSpace: {
-            invoke: (name: string, input: unknown) => Promise<SessionListEnvelope>;
-          };
-        }
-      ).kodaxSpace;
-      const result = await bridge.invoke('session.list', { surface: 'code' });
-      return result.ok ? (result.data?.sessions?.[0]?.sessionId ?? null) : null;
+  try {
+    const projectDir = path.join(space.testDataDir, 'artifact-html-project');
+    await fs.mkdir(projectDir, { recursive: true });
+    await space.seedProject(projectDir);
+    await space.page.evaluate(() => {
+      localStorage.setItem('kodax-space.smartPopoutEnabled', '0');
     });
-  await expect.poll(readSessionId, { timeout: 20_000 }).not.toBeNull();
-  const sessionId = await readSessionId();
-  if (!sessionId) throw new Error('Artifact E2E Session was not created');
-  const permissionBackdrop = space.page.getByTestId('floating-surface-backdrop');
-  if (await permissionBackdrop.isVisible().catch(() => false)) {
-    await space.page.keyboard.press('Escape');
-    await expect(permissionBackdrop).not.toBeVisible({ timeout: 10_000 });
+    await space.page.reload();
+    await space.page.waitForLoadState('domcontentloaded');
+    const composer = space.page.locator('textarea').first();
+    await expect(composer).toBeEnabled({ timeout: 10_000 });
+    await composer.fill('seed artifact runtime e2e session');
+    await composer.press('Enter');
+    await expect(
+      space.page
+        .getByTestId('conversation-stream')
+        .getByText('seed artifact runtime e2e session')
+        .first(),
+    ).toBeVisible({ timeout: 10_000 });
+    const readSessionId = () =>
+      space.page.evaluate(async () => {
+        const bridge = (
+          window as unknown as {
+            kodaxSpace: {
+              invoke: (name: string, input: unknown) => Promise<SessionListEnvelope>;
+            };
+          }
+        ).kodaxSpace;
+        const result = await bridge.invoke('session.list', { surface: 'code' });
+        return result.ok ? (result.data?.sessions?.[0]?.sessionId ?? null) : null;
+      });
+    await expect.poll(readSessionId, { timeout: 20_000 }).not.toBeNull();
+    const sessionId = await readSessionId();
+    if (!sessionId) throw new Error('Artifact E2E Session was not created');
+    const permissionBackdrop = space.page.getByTestId('floating-surface-backdrop');
+    if (await permissionBackdrop.isVisible().catch(() => false)) {
+      await space.page.keyboard.press('Escape');
+      await expect(permissionBackdrop).not.toBeVisible({ timeout: 10_000 });
+    }
+    await space.page.getByRole('button', { name: 'Show right sidebar' }).click();
+    await expect(space.page.getByTestId('right-sidebar')).toBeVisible({ timeout: 10_000 });
+    return { space, projectDir, sessionId };
+  } catch (error) {
+    await space.close();
+    throw error;
   }
-  await space.page.getByRole('button', { name: 'Show right sidebar' }).click();
-  await expect(space.page.getByTestId('right-sidebar')).toBeVisible({ timeout: 10_000 });
-  return { space, projectDir, sessionId };
 }
 
 async function focusArtifact(space: SpaceInstance, detail: Record<string, unknown>): Promise<void> {

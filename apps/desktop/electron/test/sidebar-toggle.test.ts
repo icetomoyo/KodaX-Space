@@ -6,4 +6,5 @@ test('right sidebar toggle distinguishes responsive hiding from an explicit clos
   assert.equal(resolveRightSidebarToggleAction(true, true), 'close');
   assert.equal(resolveRightSidebarToggleAction(false, false), 'open-default');
   assert.equal(resolveRightSidebarToggleAction(false, true), 'open-balanced');
+  assert.equal(resolveRightSidebarToggleAction(false, false, false), 'open-balanced');
 });
