@@ -70,6 +70,14 @@
     --warn: 201 138 9; /* 警告/脏状态 ← amber(警告语境)/orange */
     --danger: 220 77 77; /* 错误/失败 ← red/rose */
 
+    /* Context 构成专用六色：在 7px 图例点与 11px 堆叠条上仍保持可辨识。 */
+    --context-system: 147 51 234;
+    --context-tools: 37 99 235;
+    --context-skills: 13 148 136;
+    --context-transcript: 31 157 82;
+    --context-request: 220 77 77;
+    --context-results: 166 106 0;
+
     /* —— 代码 / diff / 语法 (atom-one-light) —— */
     --code-bg: 246 246 248;
     --content-material-bg: rgba(255, 255, 255, 0.62);
@@ -134,6 +142,13 @@
     --thinking: 192 132 252;
     --warn: 251 191 36;
     --danger: 248 113 113;
+
+    --context-system: 192 132 252;
+    --context-tools: 96 165 250;
+    --context-skills: 45 212 191;
+    --context-transcript: 74 222 128;
+    --context-request: 248 113 113;
+    --context-results: 251 191 36;
 
     --code-bg: 14 14 16;
     --content-material-bg: rgba(21, 21, 24, 0.56);

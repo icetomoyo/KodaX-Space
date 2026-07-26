@@ -226,38 +226,38 @@ export function ContextWindowIndicator(): JSX.Element | null {
           key: 'system',
           label: t('contextWindow.breakdown.systemPrompt'),
           tokens: contextBudget.tokenBreakdown.systemPrompt,
-          color: 'rgb(var(--thinking))',
+          color: 'rgb(var(--context-system))',
         },
         {
           key: 'tools',
           label: t('contextWindow.breakdown.toolSchemas'),
           tokens: contextBudget.tokenBreakdown.toolSchemas,
-          color: 'rgb(var(--info))',
+          color: 'rgb(var(--context-tools))',
         },
         {
           key: 'skills',
           label: t('contextWindow.breakdown.skillCatalog'),
           tokens:
             contextBudget.tokenBreakdown.skillCatalog + contextBudget.tokenBreakdown.mcpCatalog,
-          color: 'rgb(var(--run))',
+          color: 'rgb(var(--context-skills))',
         },
         {
           key: 'transcript',
           label: t('contextWindow.breakdown.transcript'),
           tokens: contextBudget.tokenBreakdown.transcript,
-          color: 'rgb(var(--accent))',
+          color: 'rgb(var(--context-transcript))',
         },
         {
           key: 'pending',
           label: t('contextWindow.breakdown.pendingInput'),
           tokens: contextBudget.tokenBreakdown.pendingInput,
-          color: 'rgb(var(--danger))',
+          color: 'rgb(var(--context-request))',
         },
         {
           key: 'results',
           label: t('contextWindow.breakdown.recentToolResults'),
           tokens: contextBudget.tokenBreakdown.recentToolResults,
-          color: 'rgb(var(--warn))',
+          color: 'rgb(var(--context-results))',
         },
       ]
     : [];
