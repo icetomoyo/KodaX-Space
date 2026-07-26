@@ -4,13 +4,14 @@
   <img src="../resources/icon.png" alt="KodaX Space 应用图标" width="96">
 </p>
 
-> 当前源码/发布基线：KodaX Space `v0.1.32`（package `0.1.32`）/ npm 正式发布的 KodaX `0.7.76`。
+> 当前发布基线：KodaX Space `v0.1.32`（package `0.1.32`）/ npm 正式发布的 KodaX `0.7.76`。当前源码另已对齐尚未发布到 npm 的 KodaX `0.7.77` 候选包。
 >
-> 更新日期：2026-07-23
+> 更新日期：2026-07-26
 >
 > 如果你的界面与本文不同，请先在 Settings → License/版本信息中确认构建版本。
+> 当前手册同时描述 `v0.1.32` 发布后的未发布源码维护；稳定版安装包可能暂时没有最新的双 Token 指标。
 
-这份手册面向第一次使用 KodaX Space 的开发者、技术团队成员和代码相关知识工作者。它以“完成一件真实工作”为主线；架构和开发细节分别放在 [HLD](HLD.md) 与 [USAGE](USAGE.md)。
+这份手册面向第一次使用 KodaX Space 的开发者、技术团队成员和代码相关知识工作者。它以“完成一件真实工作”为主线；架构和开发细节分别放在 [HLD](HLD.md) 与 [USAGE](USAGE.md)。文中的实拍界面使用隔离的 mock 数据和示例项目生成，不包含真实 API Key、会话内容或本地路径。
 
 ## 1. 先用一句话理解 KodaX Space
 
@@ -111,6 +112,22 @@ npm run dev
 
 ## 5. 界面地图
 
+所有可用按钮现在使用一致的轻扫光、边缘亮起和按下反馈；颜色仍跟随动作语义，危险操作不会伪装成普通信息按钮。键盘操作时会出现稳定焦点环；如果系统启用了“减少动态效果”，扫光移动会停用，但焦点和状态提示仍保留。Windows 窗口控制、编辑器和终端继续使用各自的原生交互。
+
+### 5.1 Coder 主工作台实拍
+
+![KodaX Space Coder 主工作台：左侧为项目与会话导航，中间为欢迎/对话区，底部为任务输入与发送区](assets/user-manual/coder-workspace.png)
+
+_图 1：已打开示例项目但尚未创建会话时的 Coder 工作台。实际项目名、分支名和模型状态会因你的环境而不同。_
+
+按图从左到右、从上到下认识界面：
+
+1. **Coder / Partner 切换**：Coder 面向代码与项目任务；Partner 面向来源、知识库和可交付成果。
+2. **左侧栏**：新建或切换会话，打开 Workflow、Files 与 Settings。
+3. **中央区域**：新会话显示概览；发送后这里依次显示你的消息、Agent 回复、工具调用和确认请求。
+4. **顶部项目栏**：确认当前 workspace、会话和分支；任务前先核对这里是否是目标项目。
+5. **底部 Composer**：添加附件、选择 Agent/模型/推理档和权限模式，输入任务后点击右下角发送。首次使用建议保留 **Plan** 或 **Accept Edits**，不要直接开启 Auto。
+
 ```text
 ┌──────────────────────────────────────────────────────────────────────┐
 │ 顶部：Environment Hub │ 活动入口 │ Handoff │ Settings               │
@@ -135,9 +152,48 @@ npm run dev
 | Composer        | 输入任务、添加图片/文件、选择 Provider/Model、Effort、Agent Mode 和权限模式                |
 | Popout          | 深入查看 Preview、Diff、Terminal、Agents、MCP、Memory、Workflow、Tasks、Artifact           |
 
-按 `?` 打开应用内快捷键帮助；按 `Ctrl/Cmd+Shift+P` 打开命令面板。
+按 `?` 打开应用内快捷键帮助；按 `Ctrl/Cmd+Shift+P` 打开命令面板。图 1 是定位入口的快速参考；右侧 Task Dock 会在有 Run、Plan、Diff、Artifact 或 Workflow 信息时显示相应的任务分区。
 
 如果后台 Session 正在等待权限或 AskUser 回答，左侧栏会显示醒目的等待标记和项目级数量，并在有界列表中优先保留这些 Session。阻塞弹窗只显示当前可见 Session 的请求；切换到带标记的 Session 后才会看到并回答它。请求仍保存在全局耐久队列中，切换 Session 不会丢失或误消费。
+
+### 5.2 上下文窗口与会话 Token 用量
+
+当前源码在 Composer 右下角提供两个相邻但含义不同的指标：
+
+| 指标                | 回答的问题                                  | 统计范围                                 | 典型变化                                           |
+| ------------------- | ------------------------------------------- | ---------------------------------------- | -------------------------------------------------- |
+| **上下文窗口**      | 主 Agent 距离自动压缩还有多远？             | 当前主 Agent 下一次模型输入              | 新消息/工具结果会增加；压缩后可下降                |
+| **会话 Token 用量** | 这个 Session 到目前为止实际用了多少 Token？ | 根 Agent 与所有子 Agent 的 Provider 调用 | 累计增加；压缩不会把已经发生的 Provider 用量减回去 |
+
+#### 上下文窗口
+
+点击绿色上下文指示器会打开“上下文窗口”：
+
+- 主数字是“当前活动输入 / 自动压缩阈值”，进度百分比也以**当前生效的自动压缩阈值**为分母，而不是以模型物理最大上下文为分母。
+- “模型最大上下文”与“自动压缩阈值”是两个独立事实。例如模型允许最大 1M，并不表示当前 320k 阈值一定由 50% 算出；绝对值策略、Provider/Runtime 最终解析结果都可能决定当前阈值。
+- “最近一次模型输入构成”固定列出系统提示词、工具定义、Skills / MCP、对话消息、本次请求输入和近期工具结果六项，数值为 0 的类别也会保留。
+- “本次请求输入”表示最近一次模型调用发出的当前轮输入，不是仍在等待处理的队列。后续模型调用时，已经完成的用户/助手内容会进入“对话消息”，工具返回会进入“近期工具结果”。
+- 各项百分比同样按自动压缩阈值计算。
+- 为下一次模型回复保留的输出容量不是活动输入，也不是“自动压缩阈值前剩余空间”，因此不在构成或进度条中强调。Provider 的根上下文计数可用时以它为准；只剩 Runtime budget fallback 时，Space 会先减掉这部分回复预留。
+- “距自动压缩还剩”表示当前活动输入到阈值的差值。它不表示模型还能输出多少 Token。
+- 压缩只改变后续模型请求的活动输入，不删除 UI 中可回放的完整历史，所以滚动区很长而上下文占用较低是正常现象。
+
+详细构成来自 KodaX 的 context diagnostics，只跨 IPC 传递分类 Token 数量，不包含系统提示词、消息、工具输入或工具输出正文。新的 Session 要在至少一次模型请求后才会出现精确构成。
+
+#### 会话 Token 用量
+
+点击旁边带环形分类图标的 Token 数字，会看到整个 Session 的累计用量：
+
+- **会话总量 = 累计输入 + 累计输出**，来源是 Provider 对每次物理模型调用返回的 usage。
+- 在当前 0.7.77 源码中，Space 按完成态诊断的 `requestId` 去重，覆盖根/子 Agent、重试、fallback、结构化修复、工作流摘要和压缩摘要请求；旧 Runtime/mock 才在诊断出现前回退到 `iteration_end`。
+- 根 Agent 和子 Agent 都计入会话总量；弹窗同时给出 root/child Provider 调用次数，便于理解多 Agent 任务为什么比当前主上下文数字大。
+- 弹窗先显示输入总量；Provider 有报告时，再分成未缓存输入、缓存命中输入和缓存创建输入。缓存命中与缓存创建都是输入子集，不会在会话总量之外再加一次。
+- 不同 Provider 的 tokenizer 与缓存字段口径可能不同。跨模型应比较输入总量和输出；缓存拆分只反映 Provider 实际返回的字段。
+- 累计与最近一次缓存命中率是诊断信息，不等于节省金额。不同 Provider 可能不提供全部缓存字段，缺失时显示 `—`。
+- `/cost` 使用同一份累计 usage。当前只展示 Token，不根据不稳定的价格表推算货币金额。
+- 会话累计量保存在 Space 本地状态中，重开应用不会因为 UI 重建而归零；删除 Session 时会一并清理。它不是 Provider 账单真理源，最终计费仍以 Provider 账单为准。
+
+两个弹窗及其标签已同时配置英文和简体中文，跟随 Settings → Preferences 的界面语言切换。模型输出、Provider 名称和第三方日志不会因此被强制翻译。
 
 ## 6. 理解项目、会话和一次运行
 
@@ -164,7 +220,7 @@ flowchart LR
 
 多个受信任的 KodaX 客户端可以观察同一 Coder 会话；Space 会同步 provider/model/effort/mode 等共享设置，并通过 Runtime 处理权限 grant、AskUser、队列、Workflow 观察/暂停/恢复/停止、Learning Center 命令、MCP 工具发现/reload 和已配置 External Agent 的 Actor/Turn。Space 要求 `interruptInput:1`、`actorControlPlane:1`、`contextCompaction:3`、`transcriptPaging:1`、`transcriptSearch:1` 与 Auto LLM guardrail v3；Runtime 不可用或能力版本不足时 Coder fail closed，不会在背后重放到 inline owner。Partner 不受该 daemon 可用性影响。
 
-Space 0.1.32 还会核对 daemon 的实际版本和能力，而不只看已经安装的 npm 包：低于 `0.7.76` 或缺少上述契约的长驻 daemon 会被拒绝并提示重启。compaction v3 会先耐久化精确 pre-compaction lineage，再缩减活动上下文；正式版还会复用精确 checkpoint/恢复指引字节，并在命令式手动压缩前把精确 flat Session history 对齐进 lineage，使 compaction entry、first-kept pointer 与压缩后附件留在同一 active path，同时继续读取旧的无后缀 checkpoint。Space 使用 revision-bound page/chunk/search 恢复可见历史，root 与持久 child 的历史保持隔离。Coder Session 使用 KodaX 的公开 `resolveAutoModeSettings()` 解析 `engine`、classifier model、timeout 与 `speculativeWindowMs`，并把缺失值写入可修订的 Runtime 设置；`0` 是有效的 speculative window 值。未配置时 classifier timeout 为 `20000ms`。底部会直接显示 `Auto[LLM]` 或 `Auto[RULES]`；快速连续切换按最后一次动作收敛，自动降级或手动选择后的 `Auto[RULES]` 保持粘性，需用 `/auto-engine llm` 显式切回。Auto[rules] 会对工作区内可完整建模的编辑直接放行，对工作区外、受保护、动态或无法完整建模的效果继续请求确认；Auto[LLM] 缺失 classifier model 时在本地拒绝，不请求 Provider、不弹权限窗、也不触发 rules 降级。输入 `/auto-denials` 可以查看当前 Runtime 版本、classifier model、timeout、speculative window 及不含提示正文的 classifier 时序/终止阶段。
+当前源码还会核对 daemon 的实际版本和能力，而不只看已经安装的 npm 包：低于 `0.7.77` 或缺少上述契约的长驻 daemon 会被拒绝并提示重启。compaction v3 会先耐久化精确 pre-compaction lineage，再缩减活动上下文；Runtime 会复用精确 checkpoint/恢复指引字节，并在命令式手动压缩前把精确 flat Session history 对齐进 lineage，使 compaction entry、first-kept pointer 与压缩后附件留在同一 active path，同时继续读取旧的无后缀 checkpoint。Space 使用 revision-bound page/chunk/search 恢复可见历史，root 与持久 child 的历史保持隔离。Coder Session 使用 KodaX 的公开 `resolveAutoModeSettings()` 解析 `engine`、classifier model、timeout 与 `speculativeWindowMs`，并把缺失值写入可修订的 Runtime 设置；`0` 是有效的 speculative window 值。未配置时 classifier timeout 为 `20000ms`。底部会直接显示 `Auto[LLM]` 或 `Auto[RULES]`；快速连续切换按最后一次动作收敛，自动降级或手动选择后的 `Auto[RULES]` 保持粘性，需用 `/auto-engine llm` 显式切回。Auto[rules] 会对工作区内可完整建模的编辑直接放行，对工作区外、受保护、动态或无法完整建模的效果继续请求确认；Auto[LLM] 缺失 classifier model 时在本地拒绝，不请求 Provider、不弹权限窗、也不触发 rules 降级。输入 `/auto-denials` 可以查看当前 Runtime 版本、classifier model、timeout、speculative window 及不含提示正文的 classifier 时序/终止阶段。
 
 ### Windows 关闭窗口、后台托盘与彻底退出
 
@@ -281,7 +337,9 @@ Workflow 只在显式 Workflow 强信号、`/workflow`、命名 Workflow 或 SDK
 | Compact | 压缩长会话上下文       | UI 仍回放完整 append-order 历史  |
 | Delete  | 删除会话               | 先确认没有其他 KodaX 进程占用    |
 
-Compact 只缩减下一次模型请求使用的活动上下文，不等于删除完整历史。0.7.76 保留 compaction v3 的 durable-before-evict 语义：精确历史先写入 lineage/sidecar，再发布精简快照；精确 checkpoint/恢复指引、first-kept pointer 和压缩后附件位于同一活动 lineage，命令式手动压缩也会先从精确 flat Session history 对齐 lineage，旧的无后缀 checkpoint 仍能恢复。Space 通过有界 page/chunk/search 读取，历史搜索结果绑定具体 revision。旧版已经丢弃且从未保存的字节无法凭空恢复。
+Compact 只缩减下一次模型请求使用的活动上下文，不等于删除完整历史。0.7.77 保留 compaction v3 的 durable-before-evict 语义：精确历史先写入 lineage/sidecar，再发布精简快照；精确 checkpoint/恢复指引、first-kept pointer 和压缩后附件位于同一活动 lineage，命令式手动压缩也会先从精确 flat Session history 对齐 lineage，旧的无后缀 checkpoint 仍能恢复。Space 通过有界 page/chunk/search 读取，历史搜索结果绑定具体 revision。旧版已经丢弃且从未保存的字节无法凭空恢复。
+
+底部“上下文窗口”显示压缩影响的当前主 Agent 活动输入；“会话 Token 用量”是已经发生的根/子 Agent Provider 调用累计值，不会因 Compact 回退。两者的完整区别见[上下文窗口与会话 Token 用量](#52-上下文窗口与会话-token-用量)。
 
 Space 与 KodaX CLI/REPL 共用 `~/.kodax/sessions/`。KodaX CLI 的 `-c`/auto-resume 会在最近 1000 个候选中跳过空 ACP 占位，只选择最近的非空会话；全部为空时不创建虚假的恢复结果，显式 session ID 始终优先。交互式恢复会在下一轮前恢复保存的 workspace runtime、messages、UI history、lineage、artifacts、extensions、title、tag 和 session identity。Space 左侧栏仍使用自己的显式项目/会话选择入口。如果 CLI 改写了正在显示的同一 session，Space 不保证实时文件级同步；切换会话或重启可重新读取。
 
@@ -438,44 +496,50 @@ flowchart TD
 
 - Renderer 不直接执行 LLM、文件工具或 shell。
 - API Key 不应进入 renderer、普通 IPC 列表、日志或错误消息。
+- 上下文构成 IPC 只包含分类 Token 数；Prompt cache 诊断只包含哈希、计数、模型/Provider 和 Provider usage，不包含提示词、消息或工具正文。
+- 系统文件管理器定位只允许已登记项目、KodaX 数据目录和 Space 数据目录；授权范围外、文件不存在和系统定位失败会显示不同提示，但不会借此开放任意路径探测。
 - Terminal 会剥离常见 `*_KEY`、`*_TOKEN` 环境变量。
 - 第三方 Provider 会收到你实际提交给模型的内容；敏感代码仍应遵循组织政策。
 - Worker isolation 不是 OS sandbox；本版本的 Coder 由独立 shared daemon 持有，Partner 仍由 Electron main 中的 embedded-inline Runtime 持有。
 
 ## 19. 常见问题
 
-| 问题                        | 建议检查                                                                                                                                                                 |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Provider 显示 No key        | Settings → Providers、环境变量名、Keychain 可用性                                                                                                                        |
-| Test connection 失败        | Base URL、协议、模型名、网络代理、服务端鉴权                                                                                                                             |
-| AI 看不到文件               | 是否已打开正确项目、路径是否在 workspace、是否正确使用 `@path`                                                                                                           |
-| 为什么一直弹权限            | 当前 Mode、工具风险、Allow always 的 scope、项目是否可信                                                                                                                 |
-| 停止后仍看到旧输出          | 等待取消终态；若持续出现，记录 session、时间和日志报告问题                                                                                                               |
-| 排队气泡一直不消失          | 核对 transcript 是否已有对应用户消息或“未送达”状态；记录 session/run/inputId                                                                                             |
-| 子 Agent 进度反复唤醒父模型 | 普通 progress 不应结束 `wait_agent`；记录 actorPath/turnId 和 Runtime 日志                                                                                               |
-| 子 Agent 正文混入父回复     | 检查 Agents/Workflow 活动面；主 transcript 只应显示 root 内容                                                                                                            |
-| 历史看起来不完整            | 重开 session；检查是否 compact/rewind；确认 CLI 是否同时改写                                                                                                             |
-| PowerShell 方括号路径被确认 | `-Path` 的 `[]` 是通配符；精确文件名改用 `-LiteralPath`/`-PSPath`                                                                                                        |
-| CLI 自动恢复到了空会话      | 新版会跳过空 ACP 占位；核对实际包 SHA256、版本和是否仍有旧进程                                                                                                           |
-| 普通 query 会闪出多个 cmd   | 这是 v0.1.32 shared daemon 稳定暴露的 KodaX 上游 Windows 子进程隐藏缺口；0.1.31 embedded-inline 路径不明显。发布前需安装修复后的 KodaX 包，Space 不内置未审 SDK 源码补丁 |
-| MCP 工具不可见              | MCP 面板 Refresh/Reload、server 状态、PATH、配置来源和 diagnostics                                                                                                       |
-| Partner 没有浏览器/邮件发送 | 当前未交付，不是配置错误                                                                                                                                                 |
-| External Agent 不可选       | Reference 注册需 enabled 且 preflight 通过；真实网络适配器尚未交付                                                                                                       |
-| Quick Ask 不能打开          | 先打开项目；使用 `Mod+K`，不要与命令面板混淆                                                                                                                             |
-| 语言切换后仍有英文          | 模型输出、工具日志、文件内容和第三方数据不会被强制翻译                                                                                                                   |
-| UI 白屏或状态异常           | 记录版本、打开 DevTools、查看 `~/.kodax/space/logs`，不要直接删除整个 `~/.kodax`                                                                                         |
+| 问题                        | 建议检查                                                                                                    |
+| --------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| Provider 显示 No key        | Settings → Providers、环境变量名、Keychain 可用性                                                           |
+| Test connection 失败        | Base URL、协议、模型名、网络代理、服务端鉴权                                                                |
+| AI 看不到文件               | 是否已打开正确项目、路径是否在 workspace、是否正确使用 `@path`                                              |
+| 为什么一直弹权限            | 当前 Mode、工具风险、Allow always 的 scope、项目是否可信                                                    |
+| 停止后仍看到旧输出          | 等待取消终态；若持续出现，记录 session、时间和日志报告问题                                                  |
+| 排队气泡一直不消失          | 核对 transcript 是否已有对应用户消息或“未送达”状态；记录 session/run/inputId                                |
+| 子 Agent 进度反复唤醒父模型 | 普通 progress 不应结束 `wait_agent`；记录 actorPath/turnId 和 Runtime 日志                                  |
+| 子 Agent 正文混入父回复     | 检查 Agents/Workflow 活动面；主 transcript 只应显示 root 内容                                               |
+| 上下文百分比与 1M 对不上    | 百分比按当前自动压缩阈值计算；弹窗中的模型最大上下文与阈值是两个独立事实                                    |
+| 上下文构成为空              | 先完成一次模型请求；只有收到当前 Provider/Model 的根上下文诊断后才显示分类                                  |
+| 会话 Token 与上下文不同     | 正常：会话用量累计根/子 Agent 的全部物理调用，上下文窗口只看当前主 Agent 活动输入                           |
+| 历史看起来不完整            | 重开 session；检查是否 compact/rewind；确认 CLI 是否同时改写                                                |
+| 文件存在但无法定位          | 若提示“不在 KodaX 已授权目录”，请打开正确项目或先把文件纳入受支持的项目/Delivery 边界；不要把它当成文件丢失 |
+| PowerShell 方括号路径被确认 | `-Path` 的 `[]` 是通配符；精确文件名改用 `-LiteralPath`/`-PSPath`                                           |
+| CLI 自动恢复到了空会话      | 新版会跳过空 ACP 占位；核对实际包 SHA256、版本和是否仍有旧进程                                              |
+| 普通 query 会闪出多个 cmd   | 0.7.77 保留非交互子进程隐藏；若仍出现，请记录 Space/KodaX 版本、进程名和触发操作，按回归问题报告            |
+| MCP 工具不可见              | MCP 面板 Refresh/Reload、server 状态、PATH、配置来源和 diagnostics                                          |
+| Partner 没有浏览器/邮件发送 | 当前未交付，不是配置错误                                                                                    |
+| External Agent 不可选       | Reference 注册需 enabled 且 preflight 通过；真实网络适配器尚未交付                                          |
+| Quick Ask 不能打开          | 先打开项目；使用 `Mod+K`，不要与命令面板混淆                                                                |
+| 语言切换后仍有英文          | 模型输出、工具日志、文件内容和第三方数据不会被强制翻译                                                      |
+| UI 白屏或状态异常           | 记录版本、打开 DevTools、查看 `~/.kodax/space/logs`，不要直接删除整个 `~/.kodax`                            |
 
 ## 20. 当前限制与诚实边界
 
 - 当前 `v0.1.32` 源码默认让 Coder 连接 profile-scoped shared daemon；Partner、其工具、权限、知识与交付仍由 Space embedded inline owner 管理，不会迁入 Coder daemon。
-- Runtime Learning Center 的兼容契约已接入，但完整 F118 管理界面尚未交付；Memory Agent 的 0.7.68 起始运行契约继续由正式 0.7.76 包保留，完整 F117 桌面管理体验尚未交付。
+- Runtime Learning Center 的兼容契约已接入，但完整 F118 管理界面尚未交付；Memory Agent 的 0.7.68 起始运行契约和 0.7.77 governed intervention 仍由 Runtime 持有，完整 F117 桌面管理体验尚未交付。
 - Partner 浏览器、通用 Connector、远程任务、桌面电脑控制和自动化尚未交付。
 - External Agent 的本地 Reference Executor 可用；Coder daemon 的 A2A 取决于显式配置与能力协商，MCP Tasks/governed HTTP 尚未作为通用能力开放。
 - Quick Ask 不是完全无 session side query。
 - React artifact 不是可交互 LiveCanvas。
 - Office/PDF writer 是基础可靠输出，不是品牌模板级设计系统。
 - 安装包签名、release channel 与诊断导出仍在后续版本计划中。
-- KodaX 0.7.76 保留 Runtime Worker 可达的非交互 Windows 子进程隐藏；显式 editor、terminal 与 PTY 交互保持不变。若普通 Coder query 仍闪出 `cmd.exe`/console 窗口，请记录 Space/KodaX 版本、触发操作与进程名并作为回归报告。
+- KodaX 0.7.77 保留 Runtime Worker 可达的非交互 Windows 子进程隐藏；显式 editor、terminal 与 PTY 交互保持不变。若普通 Coder query 仍闪出 `cmd.exe`/console 窗口，请记录 Space/KodaX 版本、触发操作与进程名并作为回归报告。
 
 - Kimi Code 订阅默认使用直连 `k3-256k`（256K context），K3 推理默认档为 `high`；模型选择器仍保留 `k3`（1M）、`kimi-for-coding`（K2.7 Code）和 `kimi-for-coding-highspeed`。Space 从 SDK provider catalog 读取这些模型，不在本地改写 wire model。
 

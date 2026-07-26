@@ -159,6 +159,532 @@ test('history replay with no relevant events leaves promoted untouched', () => {
   assert.equal(promoted.size, 0);
 });
 
+test('history replay folds a completed turn already present from the live stream', () => {
+  useAppStore.getState().appendUserMessage(SID, 'one query only', 10_000);
+  useAppStore.getState().appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+  });
+  useAppStore.getState().appendEvent({
+    kind: 'thinking_delta',
+    sessionId: SID,
+    text: 'reasoning ',
+    sentAt: 10_100,
+  });
+  useAppStore.getState().appendEvent({
+    kind: 'thinking_delta',
+    sessionId: SID,
+    text: 'once',
+    sentAt: 10_101,
+  });
+  useAppStore.getState().appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'one ',
+    sentAt: 10_200,
+  });
+  useAppStore.getState().appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'answer',
+    sentAt: 10_201,
+  });
+  useAppStore.getState().appendEvent({ kind: 'session_complete', sessionId: SID });
+
+  const restoredItems: SessionHistoryItem[] = [
+    { kind: 'user', content: 'one query only', sentAt: 10_050 },
+    { kind: 'assistant', thinking: 'reasoning once', text: 'one answer', sentAt: 10_200 },
+  ];
+  useAppStore.getState().prependSessionHistory(SID, restoredItems, FALLBACK_SENT_AT);
+  useAppStore.getState().prependSessionHistory(SID, restoredItems, FALLBACK_SENT_AT);
+
+  const state = useAppStore.getState();
+  const out = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  });
+  assert.equal(
+    out.filter((message) => message.kind === 'user' && message.content === 'one query only').length,
+    1,
+  );
+  assert.equal(
+    out.filter((message) => message.kind === 'assistant_text' && message.text === 'one answer')
+      .length,
+    1,
+  );
+});
+
+test('history replay keeps a deliberately repeated identical turn with a distinct send time', () => {
+  useAppStore.getState().appendUserMessage(SID, 'repeat me', 20_000);
+  useAppStore
+    .getState()
+    .appendEvent({ kind: 'text_delta', sessionId: SID, text: 'same answer', sentAt: 20_100 });
+  useAppStore.getState().appendEvent({ kind: 'session_complete', sessionId: SID });
+
+  useAppStore.getState().prependSessionHistory(
+    SID,
+    [
+      { kind: 'user', content: 'repeat me', sentAt: 10_000 },
+      { kind: 'assistant', text: 'same answer', sentAt: 10_100 },
+    ],
+    FALLBACK_SENT_AT,
+  );
+
+  const state = useAppStore.getState();
+  const out = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  });
+  assert.equal(
+    out.filter((message) => message.kind === 'user' && message.content === 'repeat me').length,
+    2,
+  );
+  assert.equal(
+    out.filter((message) => message.kind === 'assistant_text' && message.text === 'same answer')
+      .length,
+    2,
+  );
+});
+
+test('history overlap keeps earlier restored turns in order before the matching live suffix', () => {
+  useAppStore.getState().appendUserMessage(SID, 'second query', 20_050);
+  useAppStore
+    .getState()
+    .appendEvent({ kind: 'text_delta', sessionId: SID, text: 'second answer', sentAt: 20_100 });
+  useAppStore.getState().appendEvent({ kind: 'session_complete', sessionId: SID });
+
+  useAppStore.getState().prependSessionHistory(
+    SID,
+    [
+      { kind: 'user', content: 'first query', sentAt: 10_000 },
+      { kind: 'assistant', text: 'first answer', sentAt: 10_100 },
+      { kind: 'user', content: 'second query', sentAt: 20_000 },
+      { kind: 'assistant', text: 'second answer', sentAt: 20_100 },
+    ],
+    FALLBACK_SENT_AT,
+  );
+
+  const state = useAppStore.getState();
+  const out = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  });
+  assert.deepEqual(
+    out.flatMap((message) => {
+      if (message.kind === 'user') return [`user:${message.content}`];
+      if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+      return [];
+    }),
+    ['user:first query', 'assistant:first answer', 'user:second query', 'assistant:second answer'],
+  );
+});
+
+test('history overlap preserves an empty consecutive-user segment before the matching live turn', () => {
+  useAppStore.getState().appendUserMessage(SID, 'effective prompt', 20_050);
+  useAppStore
+    .getState()
+    .appendEvent({ kind: 'text_delta', sessionId: SID, text: 'shared answer', sentAt: 20_100 });
+  useAppStore.getState().appendEvent({ kind: 'session_complete', sessionId: SID });
+
+  useAppStore.getState().prependSessionHistory(
+    SID,
+    [
+      { kind: 'user', content: 'earlier clarification', sentAt: 19_000 },
+      { kind: 'user', content: 'effective prompt', sentAt: 20_000 },
+      { kind: 'assistant', text: 'shared answer', sentAt: 20_100 },
+    ],
+    FALLBACK_SENT_AT,
+  );
+
+  const state = useAppStore.getState();
+  const out = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  });
+  assert.deepEqual(
+    out.flatMap((message) => {
+      if (message.kind === 'user') return [`user:${message.content}`];
+      if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+      return [];
+    }),
+    ['user:earlier clarification', 'user:effective prompt', 'assistant:shared answer'],
+  );
+});
+
+test('history overlap never removes a complete restored turn based on an incomplete live turn', () => {
+  useAppStore.getState().appendUserMessage(SID, 'same canonical query', 10_000);
+  useAppStore
+    .getState()
+    .appendEvent({ kind: 'text_delta', sessionId: SID, text: 'partial', sentAt: 10_100 });
+
+  useAppStore.getState().prependSessionHistory(
+    SID,
+    [
+      { kind: 'user', content: 'same canonical query', sentAt: 10_050 },
+      { kind: 'assistant', text: 'complete restored answer', sentAt: 10_200 },
+    ],
+    FALLBACK_SENT_AT,
+  );
+
+  const state = useAppStore.getState();
+  const out = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  });
+  assert.equal(
+    out.some(
+      (message) => message.kind === 'assistant_text' && message.text === 'complete restored answer',
+    ),
+    true,
+    'the complete durable answer must not be discarded by a partial live prefix',
+  );
+});
+
+test('history-first race waits for the matching live terminal, then folds the restored copy', () => {
+  useAppStore.getState().appendUserMessage(SID, 'history won the race', 10_000);
+  useAppStore.getState().prependSessionHistory(
+    SID,
+    [
+      { kind: 'user', content: 'earlier durable query', sentAt: 5_000 },
+      { kind: 'assistant', text: 'earlier durable answer', sentAt: 5_100 },
+      { kind: 'user', content: 'history won the race', sentAt: 10_050 },
+      {
+        kind: 'assistant',
+        thinking: 'same reasoning',
+        text: 'same complete answer',
+        sentAt: 10_200,
+      },
+    ],
+    FALLBACK_SENT_AT,
+  );
+
+  let state = useAppStore.getState();
+  let out = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  });
+  assert.equal(
+    out.filter((message) => message.kind === 'user' && message.content === 'history won the race')
+      .length,
+    2,
+    'the durable turn is retained while the live copy is incomplete',
+  );
+  assert.equal(
+    out.some(
+      (message) => message.kind === 'assistant_text' && message.text === 'same complete answer',
+    ),
+    true,
+  );
+
+  useAppStore.getState().appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+  });
+  useAppStore.getState().appendEvent({
+    kind: 'thinking_delta',
+    sessionId: SID,
+    text: 'same reasoning',
+    sentAt: 10_200,
+  });
+  useAppStore.getState().appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'same complete answer',
+    sentAt: 10_300,
+  });
+  useAppStore.getState().appendEvent({ kind: 'session_complete', sessionId: SID });
+
+  state = useAppStore.getState();
+  out = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  });
+  assert.equal(
+    out.filter((message) => message.kind === 'user' && message.content === 'history won the race')
+      .length,
+    1,
+  );
+  assert.equal(
+    out.filter(
+      (message) => message.kind === 'assistant_text' && message.text === 'same complete answer',
+    ).length,
+    1,
+  );
+  assert.deepEqual(
+    out.flatMap((message) => {
+      if (message.kind === 'user') return [`user:${message.content}`];
+      if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+      return [];
+    }),
+    [
+      'user:earlier durable query',
+      'assistant:earlier durable answer',
+      'user:history won the race',
+      'assistant:same complete answer',
+    ],
+    'folding the boundary must not reorder or remove the earlier durable prefix',
+  );
+});
+
+test('history-first race keeps both turns when the eventual live semantics diverge', () => {
+  useAppStore.getState().appendUserMessage(SID, 'same query, divergent result', 10_000);
+  useAppStore.getState().prependSessionHistory(
+    SID,
+    [
+      { kind: 'user', content: 'same query, divergent result', sentAt: 10_050 },
+      { kind: 'assistant', text: 'durable complete answer', sentAt: 10_200 },
+    ],
+    FALLBACK_SENT_AT,
+  );
+
+  useAppStore.getState().appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'different live answer',
+    sentAt: 10_200,
+  });
+  useAppStore.getState().appendEvent({ kind: 'session_complete', sessionId: SID });
+
+  const state = useAppStore.getState();
+  const out = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  });
+  assert.equal(
+    out.filter(
+      (message) => message.kind === 'user' && message.content === 'same query, divergent result',
+    ).length,
+    2,
+  );
+  assert.equal(
+    out.some(
+      (message) => message.kind === 'assistant_text' && message.text === 'durable complete answer',
+    ),
+    true,
+  );
+  assert.equal(
+    out.some(
+      (message) => message.kind === 'assistant_text' && message.text === 'different live answer',
+    ),
+    true,
+  );
+});
+
+test('an identical legal repeat sent after history was applied is never folded', () => {
+  useAppStore.getState().prependSessionHistory(
+    SID,
+    [
+      { kind: 'user', content: 'repeat after restore', sentAt: 10_000 },
+      { kind: 'assistant', text: 'same answer', sentAt: 10_050 },
+    ],
+    FALLBACK_SENT_AT,
+  );
+
+  // Deliberately inside the narrow timestamp skew window. Causality, not text similarity,
+  // protects this turn: it did not exist at the history/live merge boundary.
+  useAppStore.getState().appendUserMessage(SID, 'repeat after restore', 10_100);
+  useAppStore.getState().appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'same answer',
+    sentAt: 10_150,
+  });
+  useAppStore.getState().appendEvent({ kind: 'session_complete', sessionId: SID });
+
+  const state = useAppStore.getState();
+  const out = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  });
+  assert.equal(
+    out.filter((message) => message.kind === 'user' && message.content === 'repeat after restore')
+      .length,
+    2,
+  );
+  assert.equal(
+    out.filter((message) => message.kind === 'assistant_text' && message.text === 'same answer')
+      .length,
+    2,
+  );
+});
+
+test('history overlap preserves turns whose text and tools match but visible order differs', () => {
+  useAppStore.getState().appendUserMessage(SID, 'preserve block order', 10_000);
+  useAppStore.getState().appendEvent({
+    kind: 'tool_start',
+    sessionId: SID,
+    toolId: 'tool-order',
+    toolName: 'read',
+    input: { path: '/tmp/order.txt' },
+  });
+  useAppStore.getState().appendEvent({
+    kind: 'tool_result',
+    sessionId: SID,
+    toolId: 'tool-order',
+    toolName: 'read',
+    content: 'body',
+  });
+  useAppStore.getState().appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'beforeafter',
+    sentAt: 10_100,
+  });
+  useAppStore.getState().appendEvent({ kind: 'session_complete', sessionId: SID });
+
+  useAppStore.getState().prependSessionHistory(
+    SID,
+    [
+      { kind: 'user', content: 'preserve block order', sentAt: 10_050 },
+      { kind: 'assistant', text: 'before', sentAt: 10_100 },
+      {
+        kind: 'tool_call',
+        toolId: 'tool-order',
+        toolName: 'read',
+        input: { path: '/tmp/order.txt' },
+        result: 'body',
+      },
+      { kind: 'assistant', text: 'after', sentAt: 10_200 },
+    ],
+    FALLBACK_SENT_AT,
+  );
+
+  const state = useAppStore.getState();
+  assert.equal(
+    (state.userMessagesBySession[SID] ?? []).filter(
+      (message) => message.content === 'preserve block order',
+    ).length,
+    2,
+    'structurally different turns must not be collapsed into one reordered turn',
+  );
+});
+
+test('history overlap never removes restored notices absent from a terminal live turn', () => {
+  useAppStore.getState().appendUserMessage(SID, 'run review', 10_000);
+  useAppStore
+    .getState()
+    .appendEvent({ kind: 'text_delta', sessionId: SID, text: 'review done', sentAt: 10_100 });
+  useAppStore.getState().appendEvent({ kind: 'session_complete', sessionId: SID });
+
+  useAppStore.getState().prependSessionHistory(
+    SID,
+    [
+      { kind: 'user', content: 'run review', sentAt: 10_050 },
+      { kind: 'assistant', text: 'review done', sentAt: 10_100 },
+      { kind: 'workflow_notice', text: 'durable workflow result' },
+    ],
+    FALLBACK_SENT_AT,
+  );
+
+  const state = useAppStore.getState();
+  const out = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  });
+  assert.equal(
+    out.some(
+      (message) =>
+        message.kind === 'system_notice' &&
+        message.variant === 'workflow' &&
+        message.text === 'durable workflow result',
+    ),
+    true,
+  );
+});
+
+test('history overlap folds identical terminal tool turns without losing the receipt', () => {
+  useAppStore.getState().appendUserMessage(SID, 'read file', 10_000);
+  useAppStore.getState().appendEvent({
+    kind: 'tool_start',
+    sessionId: SID,
+    toolId: 'tool-1',
+    toolName: 'read',
+    input: { path: '/tmp/a.txt' },
+  });
+  useAppStore.getState().appendEvent({
+    kind: 'tool_result',
+    sessionId: SID,
+    toolId: 'tool-1',
+    toolName: 'read',
+    content: 'file body',
+  });
+  useAppStore.getState().appendEvent({ kind: 'session_complete', sessionId: SID });
+
+  const restoredItems: SessionHistoryItem[] = [
+    { kind: 'user', content: 'read file', sentAt: 10_050 },
+    {
+      kind: 'tool_call',
+      toolId: 'tool-1',
+      toolName: 'read',
+      input: { path: '/tmp/a.txt' },
+      result: 'file body',
+    },
+  ];
+  useAppStore.getState().prependSessionHistory(SID, restoredItems, FALLBACK_SENT_AT);
+
+  const state = useAppStore.getState();
+  const out = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  });
+  const tools = out.filter((message) => message.kind === 'tool_call');
+  assert.equal(tools.length, 1);
+  assert.equal(tools[0]?.kind === 'tool_call' ? tools[0].result : undefined, 'file body');
+});
+
+test('history-first overlap keeps the complete live tool receipt after folding', () => {
+  useAppStore.getState().appendUserMessage(SID, 'read after early history', 10_000);
+  const restoredItems: SessionHistoryItem[] = [
+    { kind: 'user', content: 'read after early history', sentAt: 10_050 },
+    {
+      kind: 'tool_call',
+      toolId: 'tool-history-first',
+      toolName: 'read',
+      input: { path: '/tmp/history-first.txt' },
+      result: 'durable body',
+    },
+  ];
+  useAppStore.getState().prependSessionHistory(SID, restoredItems, FALLBACK_SENT_AT);
+
+  useAppStore.getState().appendEvent({
+    kind: 'tool_start',
+    sessionId: SID,
+    toolId: 'tool-history-first',
+    toolName: 'read',
+    input: { path: '/tmp/history-first.txt' },
+  });
+  useAppStore.getState().appendEvent({
+    kind: 'tool_result',
+    sessionId: SID,
+    toolId: 'tool-history-first',
+    toolName: 'read',
+    content: 'durable body',
+  });
+  useAppStore.getState().appendEvent({ kind: 'session_complete', sessionId: SID });
+
+  const state = useAppStore.getState();
+  const events = state.eventsBySession[SID] ?? [];
+  const out = composeMessages({
+    events,
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  });
+  const tools = out.filter((message) => message.kind === 'tool_call');
+  assert.equal(
+    events.filter((event) => event.kind === 'tool_start' && event.toolId === 'tool-history-first')
+      .length,
+    1,
+  );
+  assert.equal(
+    events.filter((event) => event.kind === 'tool_result' && event.toolId === 'tool-history-first')
+      .length,
+    1,
+  );
+  assert.equal(tools.length, 1);
+  assert.equal(tools[0]?.kind === 'tool_call' ? tools[0].result : undefined, 'durable body');
+});
+
 test('history replay preserves an assistant timestamp distinct from its query timestamp', () => {
   useAppStore.getState().prependSessionHistory(
     SID,

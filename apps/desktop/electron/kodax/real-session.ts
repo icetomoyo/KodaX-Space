@@ -761,6 +761,7 @@ export class RealKodaXSession implements ManagedSession {
         context: {
           gitRoot: this.projectRoot,
           executionCwd: this.projectRoot,
+          contextDiagnostics: true,
           // Runtime daemon transport has no exitPlanMode approval callback. Hiding
           // the unusable tool prevents a generic permission prompt followed by the
           // inevitable "Only available in interactive REPL" tool error.
@@ -1301,15 +1302,8 @@ export class RealKodaXSession implements ManagedSession {
         emitLive({ kind: 'iteration_start', sessionId: sid, iter, maxIter });
       },
       onIterationEnd: (info) => {
-        // Stable context ownership supersedes the legacy worker heuristic: a root worker
-        // still belongs to this transcript, while child-agent telemetry must not flush or
-        // overwrite the root UI. Keep the heuristic only for pre-v0.7.74 callbacks.
-        if (
-          info.contextKind === 'child' ||
-          (info.contextKind === undefined && info.scope === 'worker')
-        ) {
-          return;
-        }
+        // Forward root and child Agent Provider usage. The renderer keeps child iterations
+        // out of the root context gauge while still including their usage in the session total.
         emitLive({
           kind: 'iteration_end',
           sessionId: sid,
@@ -1343,6 +1337,81 @@ export class RealKodaXSession implements ManagedSession {
             content: clamped,
           });
         }
+      },
+
+      // ---- Context budget diagnostics ----
+      // SDK 只提供每类 token 数量，不包含 prompt / tool input / tool output 原文。
+      onContextBudgetSnapshot: (snapshot) => {
+        if (snapshot.contextKind === 'child') return;
+        emitLive({
+          kind: 'context_budget_snapshot',
+          sessionId: sid,
+          contextId: snapshot.contextId,
+          contextKind: snapshot.contextKind,
+          parentContextId: snapshot.parentContextId,
+          agentId: snapshot.agentId,
+          provider: snapshot.provider,
+          model: snapshot.model,
+          profile: snapshot.profile,
+          contextWindow: snapshot.contextWindow,
+          smallWindow: snapshot.smallWindow,
+          pressure: snapshot.pressure,
+          tokenBreakdown: {
+            systemPrompt: snapshot.tokenBreakdown.systemPrompt,
+            toolSchemas: snapshot.tokenBreakdown.toolSchemas,
+            skillCatalog: snapshot.tokenBreakdown.skillCatalog,
+            mcpCatalog: snapshot.tokenBreakdown.mcpCatalog,
+            transcript: snapshot.tokenBreakdown.transcript,
+            pendingInput: snapshot.tokenBreakdown.pendingInput,
+            recentToolResults: snapshot.tokenBreakdown.recentToolResults,
+            reservedResponse: snapshot.tokenBreakdown.reservedResponse,
+            total: snapshot.tokenBreakdown.total,
+          },
+          usedTokens: snapshot.usedTokens,
+          availableTokens: snapshot.availableTokens,
+          usedRatio: snapshot.usedRatio,
+          toolSchemaRatio: snapshot.toolSchemaRatio,
+          createdAt: snapshot.createdAt,
+        });
+      },
+      onPromptCacheDiagnostics: (diagnostic) => {
+        if (diagnostic.phase !== 'response' || !diagnostic.completedAt) {
+          return;
+        }
+        emitLive({
+          kind: 'provider_cache_diagnostic',
+          sessionId: sid,
+          contextId: diagnostic.contextId,
+          contextKind: diagnostic.contextKind,
+          parentContextId: diagnostic.parentContextId,
+          agentId: diagnostic.agentId,
+          requestId: diagnostic.requestId,
+          requestedAt: diagnostic.requestedAt,
+          completedAt: diagnostic.completedAt,
+          transport: diagnostic.transport,
+          provider: diagnostic.provider,
+          model: diagnostic.model,
+          wireModel: diagnostic.wireModel,
+          reasoningHash: diagnostic.reasoningHash,
+          maxOutputTokens: diagnostic.maxOutputTokens,
+          kodaxPromptCacheEnabled: diagnostic.kodaxPromptCacheEnabled,
+          endpoint: diagnostic.endpoint,
+          endpointPathHash: diagnostic.endpointPathHash,
+          attempt: diagnostic.attempt,
+          systemPromptHash: diagnostic.systemPromptHash,
+          toolSchemaHash: diagnostic.toolSchemaHash,
+          messagePrefixHash: diagnostic.messagePrefixHash,
+          messagePrefixCount: diagnostic.messagePrefixCount,
+          requestMessagesHash: diagnostic.requestMessagesHash,
+          requestEnvelopeHash: diagnostic.requestEnvelopeHash,
+          ephemeralSuffixHash: diagnostic.ephemeralSuffixHash,
+          messageCount: diagnostic.messageCount,
+          toolCount: diagnostic.toolCount,
+          inputTokens: diagnostic.inputTokens,
+          outputTokens: diagnostic.outputTokens,
+          cacheReadInputTokens: diagnostic.cachedReadTokens,
+          cacheWriteInputTokens: diagnostic.cachedWriteTokens,
+        });
       },
 
       // ---- Context compaction ----
@@ -1831,6 +1900,7 @@ export class RealKodaXSession implements ManagedSession {
         // gitRoot 用 projectRoot——Space 不再单独求 git root，KodaX 自己会处理边界
         gitRoot: this.projectRoot,
         executionCwd: this.projectRoot,
+        contextDiagnostics: true,
         planModeBlockCheck,
         ...repoIntelCtx,
         ...(markdownAgentScopeHandle !== undefined

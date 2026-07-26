@@ -60,7 +60,7 @@ export interface KodaxAutoModeDefaults {
   readonly speculativeWindowMs?: number;
 }
 
-/** KodaX 0.7.76 Auto LLM defaults. Keep explicit at the Space/Session boundary. */
+/** KodaX 0.7.77 Auto LLM defaults. Keep explicit at the Space/Session boundary. */
 export const KODAX_AUTO_MODE_DEFAULT_TIMEOUT_MS = 20_000;
 
 export interface KodaxConfigCustomProvider {

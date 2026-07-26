@@ -46,10 +46,11 @@ test('catalog includes expected anchor providers (anthropic, openai, zhipu-codin
   assert.ok(ids.has('zhipu-coding'));
 });
 
-test('KodaX 0.7.76 Kimi catalog defaults to direct K3 256K and preserves all public tiers', () => {
+test('KodaX 0.7.77 Kimi catalog exposes public K3 and preserves Kimi Code tiers', () => {
   const kimi = getBuiltin('kimi');
   assert.ok(kimi);
   assert.equal(kimi.defaultModel, 'kimi-k2.7-code');
+  assert.ok(kimi.models?.includes('kimi-k3'));
 
   const kimiCode = getBuiltin('kimi-code');
   assert.ok(kimiCode);

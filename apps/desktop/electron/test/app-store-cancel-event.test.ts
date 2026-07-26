@@ -33,6 +33,9 @@ beforeEach(() => {
     queuedUserMessagesBySession: {},
     localNoticesBySession: {},
     tokensBySession: {},
+    sessionTokenUsageBySession: {},
+    contextBudgetBySession: {},
+    providerCacheDiagnosticBySession: {},
     notifications: [],
     workflowRuns: {},
     workflowNoticesBySession: {},
@@ -468,6 +471,161 @@ test('prependSessionHistory restores the persisted post-compaction context inste
     state.eventsBySession[SID]?.some((event) => event.kind === 'compact_stats'),
     true,
   );
+});
+
+test('appendEvent accumulates root and child Agent Provider usage without changing root context', () => {
+  const store = useAppStore.getState();
+  store.appendEvent({
+    kind: 'iteration_end',
+    sessionId: SID,
+    iter: 1,
+    maxIter: 30,
+    tokenCount: 1_280,
+    usage: {
+      inputTokens: 980,
+      outputTokens: 300,
+      cacheReadInputTokens: 640,
+      cacheWriteInputTokens: 96,
+    },
+  });
+  store.appendEvent({
+    kind: 'iteration_end',
+    sessionId: SID,
+    iter: 2,
+    maxIter: 30,
+    tokenCount: 1_600,
+    usage: {
+      inputTokens: 1_200,
+      outputTokens: 400,
+      cacheReadInputTokens: 800,
+    },
+  });
+  store.appendEvent({
+    kind: 'iteration_end',
+    sessionId: SID,
+    iter: 1,
+    maxIter: 10,
+    tokenCount: 500,
+    contextKind: 'child',
+    usage: {
+      inputTokens: 450,
+      outputTokens: 50,
+      cacheReadInputTokens: 400,
+    },
+  });
+
+  assert.deepEqual(useAppStore.getState().sessionTokenUsageBySession[SID], {
+    inputTokens: 2_630,
+    outputTokens: 750,
+    cacheReadInputTokens: 1_840,
+    cacheWriteInputTokens: 96,
+    sampleCount: 3,
+    childSampleCount: 1,
+    accountingSource: 'iteration',
+  });
+  assert.deepEqual(useAppStore.getState().tokensBySession[SID], {
+    tokens: 1_600,
+    source: 'iteration_end',
+  });
+});
+
+test('appendEvent totals deduped root and child physical Provider diagnostics', () => {
+  const store = useAppStore.getState();
+  const hash = 'c'.repeat(64);
+  const diagnostic = {
+    kind: 'provider_cache_diagnostic' as const,
+    sessionId: SID,
+    requestId: 'request-root',
+    requestedAt: '2026-07-26T03:12:00.000Z',
+    completedAt: '2026-07-26T03:12:01.000Z',
+    transport: 'stream' as const,
+    provider: 'zai-coding',
+    model: 'glm-5.2',
+    attempt: 1,
+    systemPromptHash: hash,
+    toolSchemaHash: hash,
+    messagePrefixHash: hash,
+    messagePrefixCount: 42,
+    requestMessagesHash: hash,
+    requestEnvelopeHash: hash,
+    messageCount: 44,
+    toolCount: 12,
+    inputTokens: 145_226,
+    outputTokens: 779,
+    cacheReadInputTokens: 144_512,
+  };
+  store.appendEvent(diagnostic);
+  store.appendEvent(diagnostic);
+  store.appendEvent({
+    ...diagnostic,
+    requestId: 'request-child',
+    contextKind: 'child',
+    inputTokens: 450,
+    outputTokens: 50,
+    cacheReadInputTokens: 400,
+  });
+  store.appendEvent({
+    kind: 'iteration_end',
+    sessionId: SID,
+    iter: 2,
+    maxIter: 30,
+    tokenCount: 145_226,
+    usage: {
+      inputTokens: 145_226,
+      outputTokens: 779,
+      cacheReadInputTokens: 144_512,
+    },
+  });
+
+  assert.deepEqual(useAppStore.getState().providerCacheDiagnosticBySession[SID], diagnostic);
+  assert.deepEqual(useAppStore.getState().sessionTokenUsageBySession[SID], {
+    inputTokens: 145_676,
+    outputTokens: 829,
+    cacheReadInputTokens: 144_912,
+    sampleCount: 2,
+    childSampleCount: 1,
+    accountingSource: 'provider_diagnostic',
+    recentRequestIds: ['request-root', 'request-child'],
+  });
+});
+
+test('appendEvent keeps only the latest root context composition snapshot', () => {
+  const snapshot = {
+    kind: 'context_budget_snapshot' as const,
+    sessionId: SID,
+    provider: 'mock',
+    model: 'mock-model',
+    profile: 'report_only' as const,
+    contextWindow: 200_000,
+    smallWindow: false,
+    pressure: 'low' as const,
+    tokenBreakdown: {
+      systemPrompt: 100,
+      toolSchemas: 200,
+      skillCatalog: 30,
+      mcpCatalog: 20,
+      transcript: 500,
+      pendingInput: 50,
+      recentToolResults: 100,
+      reservedResponse: 280,
+      total: 1_280,
+    },
+    usedTokens: 1_280,
+    availableTokens: 198_720,
+    usedRatio: 0.0064,
+    toolSchemaRatio: 0.001,
+    createdAt: '2026-07-25T14:09:23.713Z',
+  };
+  const store = useAppStore.getState();
+  store.appendEvent(snapshot);
+  store.appendEvent({
+    ...snapshot,
+    contextKind: 'child',
+    contextId: `${SID}/agent/reviewer`,
+    usedTokens: 999,
+  });
+
+  assert.deepEqual(useAppStore.getState().contextBudgetBySession[SID], snapshot);
 });
 
 test('appendLocalNotice keeps generated ids within the IPC schema bound', () => {

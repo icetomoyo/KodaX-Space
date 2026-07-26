@@ -2,11 +2,12 @@
 
 > 面向源码使用者、贡献者和发布维护者。普通用户请阅读[用户使用手册](USER_MANUAL.zh-CN.md)。
 >
-> 当前 Space 发布基线：`v0.1.32`；SDK 基线为 npm Registry 正式发布的精确 `@kodax-ai/kodax@0.7.76`。
+> 当前 Space 发布基线：`v0.1.32`；该发布使用 npm Registry 的精确 `@kodax-ai/kodax@0.7.76`。
+> 当前源码已对齐本地 `0.7.77` 候选 tgz，并包含尚未重新发布的 context/session usage、builtin catalog、file reveal 和 Node/build 工具链维护；0.7.77 尚未进入 npm Registry，不要把本地验证反向写成正式发布证据。
 
 ## 1. 环境要求
 
-- Node.js 20+（建议使用项目 CI 对齐的当前 LTS）。
+- Node.js 22.12+（项目通过 `.nvmrc` 固定到 22.23.1，CI 读取同一文件）。
 - npm 10+。
 - Windows、macOS 或 Linux 桌面环境。
 - 安装 native dependencies 所需的系统构建工具；Windows 通常需要 Visual Studio Build Tools。
@@ -19,7 +20,7 @@ npm install --include=dev
 
 KodaX Space 是 npm workspace monorepo。不要只在 `apps/desktop` 中安装依赖，否则 workspace package、Electron native module 与根脚本可能不一致。
 
-根、desktop manifest 与 lockfile 都固定到精确 KodaX 0.7.76。官方包 URL 为 `https://registry.npmjs.org/@kodax-ai/kodax/-/kodax-0.7.76.tgz`，SRI 为 `sha512-SgMNwa5S5m0vrJazYfRCqacEYkJ8wTZRKt9+1ad0lEw4zE0GvFoNrR2okqPHqdjH7jxK85HOWNRuGO2kWzN0lw==`，SHA256 为 `F247511A43A5DE2EFEB0FF917923714E44DAACADAEC23F669926B61F0E299021`。`npm ls @kodax-ai/kodax --all` 应只显示同一个 deduped 版本；Runtime compatibility 会严格要求 guardrail v3、`permission:grant-admin`、`interruptInput:1`、`actorControlPlane:1`、`contextCompaction:3`、`transcriptPaging:1` 和 `transcriptSearch:1`，并直接验证 Windows 后台子进程、Sidecar 终态、PowerShell 方括号路径边界、非空 auto-resume 导出和跨进程共享。Provider catalog 还要求 `kimi-code` 默认直连 `k3-256k`，保留 K3 1M 与两个 K2.7 Code 路由。干净安装应使用 `npm ci`，不得改回本地 tgz。
+根、desktop manifest 与 lockfile 当前都固定到精确 KodaX 0.7.77。已审查候选 tgz 的 SRI 为 `sha512-6UtpdL84pkBdzKGu+t9IJqyzjufk46VTMAUNnLwxa+B/LyKitGb/gQ9quhpw/6A0gSrTuDu69oj4tDtJmcSdfQ==`，SHA256 为 `95DB1DA510840A918A3B55105F6CCF81D2871C363A2D21D2F20223382BCB17A8`。`npm ls @kodax-ai/kodax --all` 应只显示一个 deduped 0.7.77；Runtime compatibility 会拒绝更旧 daemon，并继续要求 guardrail v3、`permission:grant-admin`、`interruptInput:1`、`actorControlPlane:1`、`contextCompaction:3`、`transcriptPaging:1` 和 `transcriptSearch:1`。Provider catalog 还要求 public `kimi-k3` 1M 路由与 Kimi Code 既有 tiers。npm publication 完成前，只能从受审查的本地 tgz 安装候选版；`npm ci` 会因 Registry 404 失败。正式发布必须先上传完全相同的 bytes，再验证 lockfile SRI，不能提交开发机 `file:` 依赖。
 
 ## 2. 启动方式
 
@@ -95,6 +96,8 @@ v0.1.32 的 Coder daemon 路由包括：
 - 交互式 resume 恢复 workspace runtime、messages、UI history、lineage、artifacts、extensions、title、tag 与 session identity；
 - 快速 Auto 设置写入按 Session 串行且 last-action-wins，`Auto[RULES]` 保持粘性，显式 `/auto-engine llm` 才切回 LLM；
 - imperative manual compaction 先把精确 flat Session history 对齐进 lineage；durable interrupt-delivery 持久化失败时输入保持 queued，并只发出不含用户正文的有界 warning。
+- `contextDiagnostics` 只投影根上下文分类 Token 数；Renderer 以最终自动压缩阈值为有效分母，并把模型最大上下文作为独立事实。Provider 根计数优先，budget fallback 会减去 reserved response capacity。
+- KodaX 0.7.77 的完成态 hash-only cache diagnostic 是 Session usage 的权威物理调用源，按 `requestId` 去重并覆盖 root/child、retry、fallback、repair、workflow digest 与 compaction summary；`iteration_end.usage` 仅是旧 Runtime/mock 在诊断激活前的回退。
 
 以下仍由 Space 管理：renderer 投影、Partner profile/tools/policy、Workflow library/start/rerun/save/admin/result/artifact、MCP server 进程与日志、Artifact 和 Space Reference Agent durable store。不要把这些路径写成 Runtime-native。
 
@@ -172,6 +175,10 @@ node scripts/ensure-sqlite-native.mjs electron
 
 不要并行运行会把同一个 native module 重建成不同 ABI 的测试/构建任务。典型症状是 `better-sqlite3` 或其他 native addon 报 `NODE_MODULE_VERSION` 不匹配。出现时，停止并行进程，再通过目标命令让脚本重建到正确 ABI。
 
+`.npmrc` 启用 `engine-strict`，因此低于 Node 22.12 的安装会直接失败。Electron 与
+electron-builder 二进制下载使用项目配置的镜像；若组织网络要求自建镜像，请在受控 CI
+环境中覆盖对应 npm 配置，不要提交临时开发机路径。
+
 ## 7. 构建与打包
 
 ```bash
@@ -188,8 +195,13 @@ npm run build:linux
 4. `npm run skills:check` 通过，打包后的 Space builtin 文件集/字节与 lock 完全一致，Huashu 三个有序补丁及大小写不敏感的推广签名禁词门禁有效，SDK builtin Markdown 也仍在 `app.asar`；
 5. Provider、创建会话、发送消息、后台 Session 权限/AskUser、session restore、fork/rewind/compact 完成人工冒烟；
 6. Windows 本地产物和 CI 的 Windows/macOS/Linux 产物均通过 package/boot smoke；
-7. Windows 人工验证主/Artifact 窗口图标、托盘关闭/重开/两种退出语义，以及重复查询时不出现瞬时 console 窗口；后者需要 KodaX 上游修复后再关闭门禁；
+7. Windows 人工验证主/Artifact 窗口图标、托盘关闭/重开/两种退出语义，以及重复查询时不出现瞬时 console 窗口；KodaX 0.7.77 保留非交互子进程隐藏，任何重现都按回归处理；
 8. 正式发布后再把文档中的“开发基线”改成“公开正式版”。
+
+当前源码使用 `electron-builder@26.15.3` 和 `node-gyp@12.2.0`，Windows CI 可运行在
+`windows-latest` 的 Visual Studio 2026 工具链上。`afterPack` 通过固定的
+`resedit@1.7.2` 直接修改 PE icon/version resources，不再扫描或启动缓存中的
+`rcedit.exe`。相关依赖和资源门禁失败必须让安装/打包失败，不能用 `|| true` 吞掉。
 
 `v0.1.32` 的可执行门禁、目标产物、人工验收、已知风险和 tag 后步骤集中在
 [发布就绪清单](releases/v0.1.32-release-readiness.md)。在该清单关闭之前，不应创建

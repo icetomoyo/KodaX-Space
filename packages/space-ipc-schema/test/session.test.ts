@@ -555,9 +555,97 @@ test('session.event payload: iteration_end with usage', () => {
     iter: 1,
     maxIter: 30,
     tokenCount: 1280,
-    usage: { inputTokens: 980, outputTokens: 300 },
+    usage: {
+      inputTokens: 980,
+      outputTokens: 300,
+      cacheReadInputTokens: 640,
+      cacheWriteInputTokens: 96,
+    },
   };
   assert.equal(sessionEventChannel.payload.safeParse(evt).success, true);
+});
+
+test('session.event payload: context budget snapshot is bounded and content-free', () => {
+  const evt = {
+    kind: 'context_budget_snapshot' as const,
+    sessionId: 's_1',
+    provider: 'anthropic',
+    model: 'claude-sonnet',
+    profile: 'report_only' as const,
+    contextWindow: 200_000,
+    smallWindow: false,
+    pressure: 'low' as const,
+    tokenBreakdown: {
+      systemPrompt: 1_000,
+      toolSchemas: 2_000,
+      skillCatalog: 500,
+      mcpCatalog: 250,
+      transcript: 10_000,
+      pendingInput: 300,
+      recentToolResults: 1_500,
+      reservedResponse: 8_000,
+      total: 23_550,
+    },
+    usedTokens: 23_550,
+    availableTokens: 176_450,
+    usedRatio: 0.11775,
+    toolSchemaRatio: 0.01,
+    createdAt: '2026-07-25T14:09:23.713Z',
+  };
+  assert.equal(sessionEventChannel.payload.safeParse(evt).success, true);
+  assert.equal(
+    sessionEventChannel.payload.safeParse({
+      ...evt,
+      tokenBreakdown: { ...evt.tokenBreakdown, transcript: -1 },
+    }).success,
+    false,
+  );
+});
+
+test('session.event payload: provider cache diagnostic is hash-only and provider-reported', () => {
+  const hash = 'a'.repeat(64);
+  const parsed = sessionEventChannel.payload.safeParse({
+    kind: 'provider_cache_diagnostic',
+    sessionId: 's_1',
+    requestId: 'request-1',
+    requestedAt: '2026-07-26T03:12:00.000Z',
+    completedAt: '2026-07-26T03:12:01.000Z',
+    transport: 'stream',
+    provider: 'zai-coding',
+    model: 'glm-5.2',
+    wireModel: 'glm-5',
+    attempt: 1,
+    systemPromptHash: hash,
+    toolSchemaHash: hash,
+    messagePrefixHash: hash,
+    messagePrefixCount: 42,
+    requestMessagesHash: hash,
+    requestEnvelopeHash: hash,
+    ephemeralSuffixHash: hash,
+    messageCount: 44,
+    toolCount: 12,
+    inputTokens: 145_226,
+    outputTokens: 779,
+    cacheReadInputTokens: 144_512,
+    rawPrompt: 'must be stripped at the IPC boundary',
+  });
+  assert.equal(parsed.success, true);
+  assert.equal(
+    JSON.stringify(parsed.success ? parsed.data : null).includes('must be stripped'),
+    false,
+  );
+  assert.equal(
+    parsed.success && parsed.data.kind === 'provider_cache_diagnostic'
+      ? parsed.data.requestEnvelopeHash
+      : undefined,
+    hash,
+  );
+  assert.equal(
+    parsed.success && parsed.data.kind === 'provider_cache_diagnostic'
+      ? parsed.data.ephemeralSuffixHash
+      : undefined,
+    hash,
+  );
 });
 
 test('session.event payload: rejects unknown kind (discriminated union locked)', () => {

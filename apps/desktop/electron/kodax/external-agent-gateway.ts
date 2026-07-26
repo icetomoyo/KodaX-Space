@@ -25,7 +25,7 @@ import { getSpaceDataDir } from './data-paths.js';
 
 type SdkAgentModule = typeof import('@kodax-ai/kodax/agent');
 
-const KODAX_SDK_VERSION = '0.7.76';
+const KODAX_SDK_VERSION = '0.7.77';
 const REFERENCE_EXECUTOR_ID = 'kodax-space-reference-v1';
 const REFERENCE_MANAGEMENT_OWNER = 'kodax-space:reference';
 const MAX_STORE_FILE_BYTES = 16 * 1024 * 1024;
@@ -543,7 +543,7 @@ export class ExternalAgentGateway {
       terminalStates.has(task.state) &&
       !allEvents.some((event) => event.type === 'state' && event.state === task.state)
     ) {
-      // KodaX 0.7.76 can persist the terminal task snapshot immediately after
+      // KodaX 0.7.77 can persist the terminal task snapshot immediately after
       // the output event without a matching terminal state event. Derive one
       // from the durable snapshot so the audit stream cannot stop one entry
       // short. Its sequence is stable across paginated reads.

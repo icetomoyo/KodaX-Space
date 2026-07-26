@@ -12,8 +12,8 @@
 //   "在 App 内预览网页" 走 File Viewer 的 files.read（沙盒 iframe），不碰 shell。
 //
 // 安全：
-//   - revealPath：path 必须绝对（或配 projectRoot 解析为绝对）；main 端 fs.access 存在才 reveal。
-//     reveal 不执行目标，风险面仅"暴露某路径存在"——paths 来自本进程自己的 session/config，可接受。
+//   - revealPath：path 必须绝对（或配 projectRoot 解析为绝对）；绝对路径仅放行已登记项目和 KodaX
+//     数据目录，main 端 fs.access 存在才 reveal。
 //   - openExternal：main 端只放行 http/https（schema + handler 双重）；其它协议（file:/javascript:/
 //     vbscript: 等）一律拒，杜绝 openExternal 被当作本地命令执行入口。
 
@@ -30,9 +30,10 @@ const safePathSchema = z
 // ---- Invoke: shell.revealPath ----
 //
 // 在系统文件管理器里定位高亮一个文件/目录。两种入参形态：
-//   - 绝对 path：直接 reveal（MCP config 路径等可能在项目外，如 ~/.kodax/mcp.json）。
+//   - 绝对 path：仅在已登记项目或 KodaX 数据目录内 reveal（如 ~/.kodax/mcp.json）。
 //   - 相对 path + projectRoot：main 端 resolveInsideProject 解析为项目内绝对路径再 reveal。
-// found=false：文件不存在 / 解析失败（renderer 据此可提示或静默）。
+// revealed=false 时 reason 区分文件不存在、授权范围外和系统定位失败。
+// reason 保持 optional，以兼容 renderer 热更新后仍在运行的旧 main/preload 进程。
 export const shellRevealPathChannel = {
   name: 'shell.revealPath',
   direction: 'invoke',
@@ -42,8 +43,9 @@ export const shellRevealPathChannel = {
     projectRoot: safePathSchema.optional(),
   }),
   output: z.object({
-    /** true=已 reveal；false=文件不存在或路径非法（main 端静默不抛）。 */
+    /** true=已 reveal；false=未定位，具体原因见 reason。 */
     revealed: z.boolean(),
+    reason: z.enum(['not-found', 'not-allowed', 'failed']).optional(),
   }),
 } as const;
 

@@ -113,7 +113,7 @@ function createFakeRuntime() {
       mode: 'daemon',
       profile: 'coder',
       startedAt: '2026-07-12T00:00:00.000Z',
-      version: '0.7.76',
+      version: '0.7.77',
       isolation: 'process',
     },
     capabilities: {
@@ -1292,9 +1292,9 @@ test('initialization closes a constructed Runtime when host-tool registration fa
   assert.equal(fake.calls.close, 1);
 });
 
-test('initialization rejects a daemon older than the KodaX 0.7.76 release baseline', async () => {
+test('initialization rejects a daemon older than the KodaX 0.7.77 release baseline', async () => {
   const fake = createFakeRuntime();
-  (fake.runtime.identity as { version: string }).version = '0.7.74';
+  (fake.runtime.identity as { version: string }).version = '0.7.76';
   const adapter = new RuntimeHostAdapter({
     mode: 'runtime',
     profileRoot: path.resolve('C:\\isolated-profile'),
@@ -1304,7 +1304,7 @@ test('initialization rejects a daemon older than the KodaX 0.7.76 release baseli
 
   await assert.rejects(
     adapter.initialize(),
-    /0\.7\.74.*required 0\.7\.76.*Restart the Coder daemon/i,
+    /0\.7\.76.*required 0\.7\.77.*Restart the Coder daemon/i,
   );
   assert.equal(adapter.snapshot().state, 'failed');
   assert.equal(fake.calls.close, 1);
@@ -1666,19 +1666,17 @@ test('interrupt submission reuses the active run bindings and returns the factua
   await adapter.close();
 });
 
-test('managed-task verification closes Space interrupt admission before Runtime accepts it', async () => {
+test('managed-task verification delegates interrupt admission to KodaX Runtime', async () => {
   const fake = createFakeRuntime();
   fake.sessions.add('s_1');
   fake.runtime.runs.submitInput = async (input) => {
     fake.calls.submitted.push(input);
     return {
-      accepted: true,
+      accepted: false,
       delivery: 'interrupt',
-      inputId: 'input_1',
-      runId: 'run_previous',
       sessionId: 's_1',
       afterRunId: 'run_previous',
-      sessionOrder: 1,
+      reason: 'interrupt_window_closed',
     };
   };
   const adapter = new RuntimeHostAdapter({
@@ -1726,7 +1724,14 @@ test('managed-task verification closes Space interrupt admission before Runtime 
     afterRunId: 'run_previous',
     reason: 'interrupt_window_closed',
   });
-  assert.deepEqual(fake.calls.submitted, []);
+  assert.deepEqual(fake.calls.submitted, [
+    {
+      sessionId: 's_1',
+      afterRunId: 'run_previous',
+      delivery: 'interrupt',
+      input: [{ type: 'text', text: 'too late for this root turn' }],
+    },
+  ]);
   await adapter.close();
 });
 

@@ -76,6 +76,20 @@ test('real SDK: GLM-5.2 on coding-plan providers resolves to 1M via Space helper
   }
 });
 
+test('real SDK 0.7.77: public Kimi K3 resolves to 1,048,576 tokens', async () => {
+  const coding = await import('@kodax-ai/kodax/coding');
+  const agent = await import('@kodax-ai/kodax/agent');
+  const provider = coding.resolveProvider('kimi') as {
+    getEffectiveContextWindow?: unknown;
+    getContextWindow?: unknown;
+  };
+
+  assert.deepEqual(computeModelContextWindow(provider, 'kimi-k3', agent.resolveContextWindow), {
+    contextWindow: 1_048_576,
+    source: 'provider',
+  });
+});
+
 test('real SDK: resolveModelCapabilities default-model context bug is FIXED in 0.7.59', async () => {
   // Historically (SDK 0.7.58) resolveModelCapabilities('zhipu-coding', 'glm-5.2')
   // returned the provider-level default (200k) whenever the queried model equaled

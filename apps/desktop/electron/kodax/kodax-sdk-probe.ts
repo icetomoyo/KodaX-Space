@@ -47,8 +47,13 @@ export function inspectExperimentalMemoryModule(moduleValue: unknown): {
     );
   }
   const policyVersion = moduleRecord.MEMORY_POLICY_VERSION;
-  if (typeof policyVersion !== 'string' || !/^f260-v\d+\.\d+\.\d+\.\d+$/.test(policyVersion)) {
-    failures.push('MEMORY_POLICY_VERSION expected an f260-v<semver>.<revision> string');
+  if (
+    typeof policyVersion !== 'string' ||
+    !/^f[1-9]\d*-v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/.test(
+      policyVersion,
+    )
+  ) {
+    failures.push('MEMORY_POLICY_VERSION expected an f<feature>-v<semver>.<revision> string');
   }
   if (failures.length > 0) {
     throw new Error(failures.join('; '));
@@ -145,8 +150,9 @@ export async function probeKodaxSdk(): Promise<void> {
     }
   }
 
-  // FEATURE_260 is part of the exact 0.7.68 release baseline. Missing exports, load errors,
-  // or a malformed public surface are startup contract failures rather than version guesses.
+  // The feature identifier is owned by KodaX and may advance independently of Space.
+  // Missing exports, load errors, or a malformed public surface remain startup contract
+  // failures; capability is negotiated from the exported shape rather than a hard-coded ID.
   try {
     await probeExperimentalMemorySdk();
   } catch (error) {

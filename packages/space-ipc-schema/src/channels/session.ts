@@ -744,6 +744,20 @@ const tokenUsageSchema = z
   })
   .optional();
 
+const contextBudgetTokenBreakdownSchema = z.object({
+  systemPrompt: z.number().int().nonnegative().max(10_000_000),
+  toolSchemas: z.number().int().nonnegative().max(10_000_000),
+  skillCatalog: z.number().int().nonnegative().max(10_000_000),
+  mcpCatalog: z.number().int().nonnegative().max(10_000_000),
+  transcript: z.number().int().nonnegative().max(10_000_000),
+  pendingInput: z.number().int().nonnegative().max(10_000_000),
+  recentToolResults: z.number().int().nonnegative().max(10_000_000),
+  reservedResponse: z.number().int().nonnegative().max(10_000_000),
+  total: z.number().int().nonnegative().max(10_000_000),
+});
+
+const sha256HexSchema = z.string().regex(/^[a-f0-9]{64}$/);
+
 // alpha.1 KodaX 0.7.40 全 surface 接通 — todo / managed_task_status / compact_* / retry_after /
 // repointel_trace / session_start / iteration_start / stream_end / thinking_end / tool_input_delta /
 // provider_recovery — payload shape 对照 KodaX packages/coding/src/types.ts KodaXEvents 抽取（subset；
@@ -999,6 +1013,64 @@ export const sessionEventChannel = {
        *  上限：Date.now() + 1 小时 ≈ 1768000000000ish；下限：0 也接受 (虽然语义古怪)。
        *  超出上限走 `.catch` clamp 而非 reject —— 不让 1 个异常 header 把整条 error event 丢掉。*/
       retryAvailableAt: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
+    }),
+    // ---- Context budget diagnostics（KodaX RuntimeContextBudgetSnapshot）----
+    // 仅包含 token 数量与类别，不携带 prompt / tool input / tool output 原文。
+    z.object({
+      kind: z.literal('context_budget_snapshot'),
+      sessionId: z.string().min(1),
+      contextId: z.string().min(1).max(512).optional(),
+      contextKind: z.enum(['root', 'child']).optional(),
+      parentContextId: z.string().min(1).max(512).optional(),
+      agentId: z.string().min(1).max(256).optional(),
+      provider: z.string().min(1).max(64).optional(),
+      model: z.string().min(1).max(256).optional(),
+      profile: z.enum(['off', 'report_only', 'balanced', 'small_window', 'aggressive']),
+      contextWindow: z.number().int().positive().max(10_000_000),
+      smallWindow: z.boolean(),
+      pressure: z.enum(['low', 'medium', 'high', 'critical']),
+      tokenBreakdown: contextBudgetTokenBreakdownSchema,
+      usedTokens: z.number().int().nonnegative().max(10_000_000),
+      availableTokens: z.number().int().nonnegative().max(10_000_000),
+      usedRatio: z.number().finite().nonnegative().max(100),
+      toolSchemaRatio: z.number().finite().nonnegative().max(100),
+      createdAt: z.string().datetime(),
+    }),
+    // ---- Provider prompt-cache diagnostics（KodaX 0.7.77）----
+    // Hash-only request identity + Provider-reported usage. No prompt/message text crosses IPC.
+    z.object({
+      kind: z.literal('provider_cache_diagnostic'),
+      sessionId: z.string().min(1),
+      contextId: z.string().min(1).max(512).optional(),
+      contextKind: z.enum(['root', 'child']).optional(),
+      parentContextId: z.string().min(1).max(512).optional(),
+      agentId: z.string().min(1).max(256).optional(),
+      requestId: z.string().min(1).max(128),
+      requestedAt: z.string().datetime(),
+      completedAt: z.string().datetime(),
+      transport: z.enum(['stream', 'complete']).optional(),
+      provider: z.string().min(1).max(128),
+      model: z.string().min(1).max(256),
+      wireModel: z.string().min(1).max(256).optional(),
+      reasoningHash: sha256HexSchema.optional(),
+      maxOutputTokens: z.number().int().nonnegative().max(10_000_000).optional(),
+      kodaxPromptCacheEnabled: z.boolean().optional(),
+      endpoint: z.string().max(2_048).optional(),
+      endpointPathHash: sha256HexSchema.optional(),
+      attempt: z.number().int().positive().max(10_000),
+      systemPromptHash: sha256HexSchema,
+      toolSchemaHash: sha256HexSchema,
+      messagePrefixHash: sha256HexSchema,
+      messagePrefixCount: z.number().int().nonnegative().max(10_000_000),
+      requestMessagesHash: sha256HexSchema,
+      requestEnvelopeHash: sha256HexSchema,
+      ephemeralSuffixHash: sha256HexSchema.optional(),
+      messageCount: z.number().int().nonnegative().max(10_000_000),
+      toolCount: z.number().int().nonnegative().max(100_000),
+      inputTokens: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+      outputTokens: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+      cacheReadInputTokens: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+      cacheWriteInputTokens: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
     }),
     // ---- Context compaction（KodaX onCompact* 系列）----
     z.object({

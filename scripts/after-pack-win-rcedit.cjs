@@ -1,8 +1,6 @@
-const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
-const { appBuilderPath } = require('app-builder-bin');
+const ResEdit = require('resedit');
 
 function valueOrFallback(value, fallback) {
   return value == null || value === '' ? fallback : String(value);
@@ -16,96 +14,69 @@ async function resolveIconPath(packager) {
   return iconPath && fs.existsSync(iconPath) ? iconPath : null;
 }
 
-function getCacheRoots() {
-  return [
-    process.env.ELECTRON_BUILDER_CACHE,
-    process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'electron-builder', 'Cache') : null,
-    path.join(os.homedir(), 'AppData', 'Local', 'electron-builder', 'Cache'),
-    path.join(os.homedir(), '.cache', 'electron-builder'),
-  ].filter(Boolean);
-}
-
-function findCachedRcedit() {
-  const binaryName = process.arch === 'ia32' ? 'rcedit-ia32.exe' : 'rcedit-x64.exe';
-  const matches = [];
-
-  for (const root of getCacheRoots()) {
-    const start = path.join(root, 'winCodeSign');
-    if (!fs.existsSync(start)) {
-      continue;
-    }
-
-    const stack = [start];
-    while (stack.length > 0) {
-      const dir = stack.pop();
-      let entries;
-      try {
-        entries = fs.readdirSync(dir, { withFileTypes: true });
-      } catch {
-        continue;
-      }
-      for (const entry of entries) {
-        const fullPath = path.join(dir, entry.name);
-        if (entry.isDirectory()) {
-          stack.push(fullPath);
-        } else if (entry.isFile() && entry.name === binaryName) {
-          matches.push({ path: fullPath, mtimeMs: fs.statSync(fullPath).mtimeMs });
-        }
-      }
-    }
-  }
-
-  matches.sort((a, b) => b.mtimeMs - a.mtimeMs);
-  return matches[0]?.path ?? null;
-}
-
-function resolveSevenZipDir() {
-  try {
-    const packageDir = path.dirname(require.resolve('7zip-bin/package.json'));
-    if (process.platform === 'win32') {
-      return path.join(packageDir, 'win', process.arch === 'ia32' ? 'ia32' : 'x64');
-    }
-  } catch {
-    return null;
-  }
-  return null;
-}
-
-function runDirectRcedit(rceditPath, args) {
-  try {
-    execFileSync(rceditPath, args, { stdio: 'pipe' });
-  } catch (error) {
-    const stderr = error.stderr ? String(error.stderr).trim() : '';
-    const detail = stderr || error.message;
-    throw new Error(`[afterPack] rcedit failed: ${detail}`);
-  }
-}
-
-function bootstrapRcedit(args) {
-  const sevenZipDir = resolveSevenZipDir();
-  const env = { ...process.env };
-  if (sevenZipDir) {
-    env.PATH = `${sevenZipDir}${path.delimiter}${env.PATH ?? ''}`;
-  }
-
-  try {
-    execFileSync(appBuilderPath, ['rcedit', '--args', JSON.stringify(args)], {
-      env,
-      stdio: 'pipe',
+function toWindowsVersion(value) {
+  const parts = String(value)
+    .split('.')
+    .slice(0, 4)
+    .map((part) => {
+      const parsed = Number.parseInt(part, 10);
+      return Number.isFinite(parsed) ? Math.max(0, Math.min(65535, parsed)) : 0;
     });
-    return true;
-  } catch {
-    return false;
+  while (parts.length < 4) {
+    parts.push(0);
   }
+  return parts;
+}
+
+function patchExecutable({ exePath, iconPath, fileVersion, productVersion, stringValues }) {
+  const executable = ResEdit.NtExecutable.from(fs.readFileSync(exePath));
+  const resources = ResEdit.NtExecutableResource.from(executable);
+  const versionInfos = ResEdit.Resource.VersionInfo.fromEntries(resources.entries);
+
+  if (versionInfos.length === 0) {
+    throw new Error(`[afterPack] cannot patch Windows version resources; none found in ${exePath}`);
+  }
+
+  const fileVersionParts = toWindowsVersion(fileVersion);
+  const productVersionParts = toWindowsVersion(productVersion);
+
+  for (const versionInfo of versionInfos) {
+    const translations = versionInfo.getAllLanguagesForStringValues();
+    const targets =
+      translations.length > 0
+        ? translations
+        : [
+            {
+              lang: typeof versionInfo.lang === 'number' ? versionInfo.lang : 1033,
+              codepage: 1200,
+            },
+          ];
+
+    for (const translation of targets) {
+      versionInfo.setFileVersion(...fileVersionParts, translation.lang);
+      versionInfo.setProductVersion(...productVersionParts, translation.lang);
+      versionInfo.setStringValues(translation, stringValues);
+    }
+    versionInfo.outputToResourceEntries(resources.entries);
+  }
+
+  if (iconPath) {
+    const iconFile = ResEdit.Data.IconFile.from(fs.readFileSync(iconPath));
+    const existingGroup = ResEdit.Resource.IconGroupEntry.fromEntries(resources.entries)[0];
+    ResEdit.Resource.IconGroupEntry.replaceIconsForResource(
+      resources.entries,
+      existingGroup?.id ?? 1,
+      existingGroup?.lang ?? 1033,
+      iconFile.icons.map((item) => item.data),
+    );
+  }
+
+  resources.outputResource(executable);
+  fs.writeFileSync(exePath, Buffer.from(executable.generate()));
 }
 
 module.exports = async function afterPack(context) {
   if (context.electronPlatformName !== 'win32') {
-    return;
-  }
-
-  if (process.platform !== 'win32' && process.platform !== 'darwin') {
-    console.warn('[afterPack] skip Windows exe resource patch: rcedit is only wired for win32/darwin hosts.');
     return;
   }
 
@@ -127,48 +98,25 @@ module.exports = async function afterPack(context) {
       : shortVersion,
   );
 
-  const args = [
-    exePath,
-    '--set-version-string',
-    'FileDescription',
-    productName,
-    '--set-version-string',
-    'ProductName',
-    productName,
-    '--set-version-string',
-    'LegalCopyright',
-    valueOrFallback(appInfo.copyright, ''),
-    '--set-file-version',
-    shortVersion,
-    '--set-product-version',
-    productVersion,
-    '--set-version-string',
-    'InternalName',
-    path.basename(exeFileName, '.exe'),
-    '--set-version-string',
-    'OriginalFilename',
-    '',
-  ];
-
+  const stringValues = {
+    FileDescription: productName,
+    ProductName: productName,
+    LegalCopyright: valueOrFallback(appInfo.copyright, ''),
+    InternalName: path.basename(exeFileName, '.exe'),
+    OriginalFilename: '',
+  };
   if (appInfo.companyName) {
-    args.push('--set-version-string', 'CompanyName', String(appInfo.companyName));
+    stringValues.CompanyName = String(appInfo.companyName);
   }
 
   const iconPath = await resolveIconPath(context.packager);
-  if (iconPath) {
-    args.push('--set-icon', iconPath);
-  }
-
-  const cachedRcedit = findCachedRcedit();
-  if (cachedRcedit) {
-    runDirectRcedit(cachedRcedit, args);
-  } else if (!bootstrapRcedit(args)) {
-    const bootstrappedRcedit = findCachedRcedit();
-    if (!bootstrappedRcedit) {
-      throw new Error('[afterPack] failed to locate rcedit after app-builder bootstrap.');
-    }
-    runDirectRcedit(bootstrappedRcedit, args);
-  }
+  patchExecutable({
+    exePath,
+    iconPath,
+    fileVersion: shortVersion,
+    productVersion,
+    stringValues,
+  });
 
   console.log(`[afterPack] patched Windows exe resources: ${exePath}`);
 };

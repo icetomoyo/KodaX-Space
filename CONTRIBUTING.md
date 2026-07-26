@@ -10,6 +10,7 @@ npm run dev
 ```
 
 KodaX Space 是 npm workspace monorepo。请从仓库根目录运行安装、测试和构建命令；native module 的 Node/Electron ABI 由项目脚本协调，避免并行执行会重建同一 native addon 的命令。
+开发环境要求 Node.js 22.12+；优先让版本管理器读取 `.nvmrc`（当前固定 22.23.1），与 CI 保持一致。
 
 ## 改动原则
 

@@ -83,7 +83,7 @@ export function experimentalMemoryCapability(
       label: 'KodaX Memory Agent',
       status: 'partial',
       detail:
-        `The required KodaX 0.7.68 FEATURE_260 contract is available with policy ${capability.policyVersion}. ` +
+        `The required KodaX experimental-memory contract is available with policy ${capability.policyVersion}. ` +
         'KodaX managed runs own silent scoped recall and governed outcome/review persistence over F228; Space v0.1.32 preserves compatibility diagnostics while the full F117 Episodes, Activity, correction, and purge UX remains planned.',
       since: '0.1.31',
     };
@@ -93,7 +93,7 @@ export function experimentalMemoryCapability(
     label: 'KodaX Memory Agent',
     status: 'planned',
     detail:
-      'The required /experimental-memory contract has not been probed yet. Existing F228 Memory Governance remains available, and startup will fail closed if the 0.7.68 contract cannot be verified.',
+      'The required /experimental-memory contract has not been probed yet. Existing F228 Memory Governance remains available, and startup will fail closed if the exported contract cannot be verified.',
   };
 }
 

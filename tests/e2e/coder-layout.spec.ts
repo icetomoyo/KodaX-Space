@@ -233,6 +233,42 @@ test('Coder preserves a usable workspace as persisted sidebars meet narrower scr
     await sendPrompt(page, 'coder responsive layout audit prompt');
     await saveScreenshot(page, '03-coder-medium-after-send');
     await expectUsableCoderLayout(page, { requireStream: true });
+    await expect(page.getByTestId('session-token-total')).toContainText('1.3k');
+    await page.getByTestId('context-window-indicator').click();
+    await expect(page.getByTestId('context-window-breakdown')).toBeVisible();
+    await expect(page.getByTestId('context-composition')).toBeVisible();
+    const effectiveThreshold = Number(
+      await page.getByTestId('context-effective-window-bar').getAttribute('aria-valuemax'),
+    );
+    expect(Number.isSafeInteger(effectiveThreshold)).toBe(true);
+    expect(effectiveThreshold).toBeGreaterThan(1_280);
+    await expect(page.getByTestId('context-window-facts')).toBeVisible();
+    await expect(page.getByTestId('context-composition')).toContainText(
+      /Request input|本次请求输入/,
+    );
+    await expect(page.getByTestId('context-composition')).toContainText(/Messages|对话消息/);
+    await expect(page.getByTestId('context-composition')).toContainText(
+      /Recent tool results|近期工具结果/,
+    );
+    await expect(page.locator('[data-testid^="context-composition-row-"]')).toHaveCount(6);
+    await expect(page.getByTestId('context-window-breakdown')).not.toContainText(
+      /Reserved response|预留输出|Auto-compact reserve|自动压缩保护区/,
+    );
+    await expect(page.getByTestId('context-window-breakdown')).toHaveCSS('opacity', '1');
+    await expect(page.getByTestId('session-token-breakdown')).toHaveCount(0);
+    await saveScreenshot(page, '03b-coder-context-breakdown');
+    await page
+      .getByTestId('context-window-breakdown')
+      .screenshot({ path: path.join(AUDIT_DIR, '03b-coder-context-breakdown-panel.png') });
+    await page.getByTestId('context-window-indicator').click();
+    await page.getByTestId('session-token-indicator').click();
+    await expect(page.getByTestId('session-token-breakdown')).toBeVisible();
+    await expect(page.getByTestId('session-token-input-total')).toBeVisible();
+    await expect(page.getByTestId('session-token-breakdown')).toContainText('640');
+    await expect(page.getByTestId('session-token-breakdown')).toContainText('244');
+    await expect(page.getByTestId('context-window-breakdown')).toHaveCount(0);
+    await saveScreenshot(page, '03c-coder-session-token-breakdown');
+    await page.getByTestId('session-token-indicator').click();
 
     await page.setViewportSize({ width: 760, height: 620 });
     await waitForCoderWorkspace(page);

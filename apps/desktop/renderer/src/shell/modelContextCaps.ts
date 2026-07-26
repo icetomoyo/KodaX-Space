@@ -27,7 +27,8 @@ const RULES: readonly CapRule[] = [
   { match: /^deepseek-v3/, cap: 128_000 },
   { match: /^deepseek-/, cap: 1_000_000 },
   // Kimi K2 系列（k2.5 / k2.6 / k2.7-code）与 Kimi for Coding — 均 256k。
-  // KodaX 0.7.76 sends each K3 context tier with its direct upstream model id.
+  // KodaX 0.7.77 exposes public Kimi K3 as `kimi-k3` and keeps Kimi Code tier ids.
+  { match: /^kimi-k3$/, cap: 1_048_576 },
   { match: /^k3$/, cap: 1_048_576 },
   { match: /^k3-256k$/, cap: 262_144 },
   { match: /^kimi-k2/, cap: 256_000 },

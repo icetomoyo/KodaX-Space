@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { resolveContextWindowReading } from '../../renderer/src/shell/contextWindowReading.js';
+import {
+  resolveActiveInputTokens,
+  resolveContextWindowReading,
+} from '../../renderer/src/shell/contextWindowReading.js';
 
 test('provider policy uses the provider window and final KodaX threshold', () => {
   assert.deepEqual(
@@ -56,5 +59,25 @@ test('legacy fallback without a final threshold keeps the model-name window', ()
       triggerPercent: 40,
       triggerTokens: 350_000,
     },
+  );
+});
+
+test('context budget fallback excludes reserved response capacity from active input', () => {
+  assert.equal(
+    resolveActiveInputTokens(undefined, {
+      total: 200_100,
+      reservedResponse: 131_100,
+    }),
+    69_000,
+  );
+});
+
+test('provider token count remains authoritative when both readings exist', () => {
+  assert.equal(
+    resolveActiveInputTokens(70_000, {
+      total: 200_100,
+      reservedResponse: 131_100,
+    }),
+    70_000,
   );
 });

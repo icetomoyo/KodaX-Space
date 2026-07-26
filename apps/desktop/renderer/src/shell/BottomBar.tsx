@@ -1279,9 +1279,6 @@ export function BottomBar(): JSX.Element {
     }
 
     if (action === 'show-cost') {
-      let inputTokens = 0;
-      let outputTokens = 0;
-      let totalTokens = 0;
       let lastIter = 0;
       let maxIter = 0;
       for (const ev of events) {
@@ -1289,22 +1286,28 @@ export function BottomBar(): JSX.Element {
           const e = ev as {
             iter?: number;
             maxIter?: number;
-            tokenCount?: number;
-            usage?: { inputTokens?: number; outputTokens?: number };
           };
           if (typeof e.iter === 'number') lastIter = e.iter;
           if (typeof e.maxIter === 'number') maxIter = e.maxIter;
-          if (typeof e.tokenCount === 'number') totalTokens = e.tokenCount;
-          if (e.usage) {
-            if (typeof e.usage.inputTokens === 'number') inputTokens = e.usage.inputTokens;
-            if (typeof e.usage.outputTokens === 'number') outputTokens = e.usage.outputTokens;
-          }
         }
       }
+      const usage = state.sessionTokenUsageBySession[sessionId];
+      const inputTokens = usage?.inputTokens ?? 0;
+      const outputTokens = usage?.outputTokens ?? 0;
+      const cacheReadTokens = usage?.cacheReadInputTokens;
+      const cacheWriteTokens = usage?.cacheWriteInputTokens;
+      const regularInputTokens = Math.max(
+        0,
+        inputTokens - (cacheReadTokens ?? 0) - (cacheWriteTokens ?? 0),
+      );
+      const hasCacheBreakdown = cacheReadTokens !== undefined || cacheWriteTokens !== undefined;
+      const totalTokens = inputTokens + outputTokens;
       const lines = [
         `[cost] session: ${sessionId.slice(0, 12)}...`,
         `  iterations: ${lastIter}/${maxIter || '?'}`,
-        `  input tokens: ${inputTokens.toLocaleString()}`,
+        `  input tokens${hasCacheBreakdown ? ' (regular)' : ''}: ${regularInputTokens.toLocaleString()}`,
+        `  cached input: ${cacheReadTokens?.toLocaleString() ?? 'not reported'}`,
+        `  cache writes: ${cacheWriteTokens?.toLocaleString() ?? 'not reported'}`,
         `  output tokens: ${outputTokens.toLocaleString()}`,
         `  total: ${totalTokens.toLocaleString()}`,
         '  (cost estimate requires per-model pricing - v0.1.7+)',

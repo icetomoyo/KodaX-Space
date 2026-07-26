@@ -62,7 +62,7 @@ function tryRun(cmd, args, label, options = {}) {
 
 function checkRuntime(runtime) {
   const checkScript =
-    "const Database = require('better-sqlite3'); const db = new Database(':memory:'); db.close();";
+    "try { const Database = require('better-sqlite3'); const db = new Database(':memory:'); db.close(); process.exit(0); } catch (error) { console.error(error instanceof Error ? error.stack : String(error)); process.exit(1); }";
   if (runtime === 'node') {
     return spawnSync(NODE, ['-e', checkScript], {
       cwd: root,

@@ -26,7 +26,13 @@ test('daemon main-worker iteration telemetry reaches the renderer token protocol
         tokenCount: 233_067,
         tokenSource: 'api',
         scope: 'worker',
-        usage: { inputTokens: 232_838, outputTokens: 229, totalTokens: 233_067 },
+        usage: {
+          inputTokens: 232_838,
+          outputTokens: 229,
+          totalTokens: 233_067,
+          cachedReadTokens: 200_000,
+          cachedWriteTokens: 4_000,
+        },
       },
     }),
   );
@@ -39,8 +45,226 @@ test('daemon main-worker iteration telemetry reaches the renderer token protocol
     tokenCount: 233_067,
     tokenSource: 'api',
     scope: 'worker',
-    usage: { inputTokens: 232_838, outputTokens: 229 },
+    usage: {
+      inputTokens: 232_838,
+      outputTokens: 229,
+      cacheReadInputTokens: 200_000,
+      cacheWriteInputTokens: 4_000,
+    },
   });
+});
+
+test('daemon child Agent Provider usage keeps its context attribution', () => {
+  const projected = projectRuntimeContextSessionEvent(
+    runtimeEvent('run.progress', {
+      kind: 'iteration_end',
+      info: {
+        iter: 2,
+        maxIter: 30,
+        tokenCount: 42_600,
+        tokenSource: 'api',
+        scope: 'worker',
+        contextId: 'child_ctx_1',
+        contextKind: 'child',
+        parentContextId: 's_1',
+        agentId: 'researcher',
+        usage: {
+          inputTokens: 40_000,
+          outputTokens: 2_600,
+          totalTokens: 42_600,
+          cachedReadTokens: 36_000,
+          cachedWriteTokens: 1_000,
+        },
+      },
+    }),
+  );
+
+  assert.deepEqual(projected, {
+    kind: 'iteration_end',
+    sessionId: 's_1',
+    iter: 2,
+    maxIter: 30,
+    tokenCount: 42_600,
+    tokenSource: 'api',
+    scope: 'worker',
+    usage: {
+      inputTokens: 40_000,
+      outputTokens: 2_600,
+      cacheReadInputTokens: 36_000,
+      cacheWriteInputTokens: 1_000,
+    },
+    contextId: 'child_ctx_1',
+    contextKind: 'child',
+    parentContextId: 's_1',
+    agentId: 'researcher',
+  });
+});
+
+test('daemon context budget diagnostics reach the renderer breakdown protocol', () => {
+  const payload = {
+    sessionId: 's_1',
+    provider: 'zhipu',
+    model: 'glm-5.2',
+    profile: 'report_only',
+    contextWindow: 1_000_000,
+    smallWindow: false,
+    pressure: 'low',
+    tokenBreakdown: {
+      systemPrompt: 1_000,
+      toolSchemas: 2_000,
+      skillCatalog: 500,
+      mcpCatalog: 250,
+      transcript: 10_000,
+      pendingInput: 300,
+      recentToolResults: 1_500,
+      reservedResponse: 8_000,
+      total: 23_550,
+    },
+    usedTokens: 23_550,
+    availableTokens: 976_450,
+    usedRatio: 0.02355,
+    toolSchemaRatio: 0.002,
+    recommendations: [],
+    createdAt: '2026-07-25T14:09:23.713Z',
+  };
+  assert.deepEqual(
+    projectRuntimeContextSessionEvent(runtimeEvent('context.budget.snapshot', payload)),
+    {
+      kind: 'context_budget_snapshot',
+      sessionId: 's_1',
+      provider: 'zhipu',
+      model: 'glm-5.2',
+      profile: 'report_only',
+      contextWindow: 1_000_000,
+      smallWindow: false,
+      pressure: 'low',
+      tokenBreakdown: payload.tokenBreakdown,
+      usedTokens: 23_550,
+      availableTokens: 976_450,
+      usedRatio: 0.02355,
+      toolSchemaRatio: 0.002,
+      createdAt: '2026-07-25T14:09:23.713Z',
+    },
+  );
+});
+
+test('daemon provider cache diagnostics expose the latest physical request without prompt text', () => {
+  const hash = 'b'.repeat(64);
+  assert.deepEqual(
+    projectRuntimeContextSessionEvent(
+      runtimeEvent('provider.cache.diagnostics', {
+        phase: 'response',
+        requestId: 'request-1',
+        requestedAt: '2026-07-26T03:12:00.000Z',
+        completedAt: '2026-07-26T03:12:01.000Z',
+        transport: 'stream',
+        provider: 'zai-coding',
+        model: 'glm-5.2',
+        wireModel: 'glm-5',
+        maxOutputTokens: 8_000,
+        kodaxPromptCacheEnabled: true,
+        endpoint: 'https://api.example.test',
+        attempt: 1,
+        systemPromptHash: hash,
+        toolSchemaHash: hash,
+        messagePrefixHash: hash,
+        messagePrefixCount: 42,
+        requestMessagesHash: hash,
+        requestEnvelopeHash: hash,
+        ephemeralSuffixHash: hash,
+        messageCount: 44,
+        toolCount: 12,
+        inputTokens: 145_226,
+        outputTokens: 779,
+        cachedReadTokens: 144_512,
+        secretPrompt: 'must not cross IPC',
+      }),
+    ),
+    {
+      kind: 'provider_cache_diagnostic',
+      sessionId: 's_1',
+      requestId: 'request-1',
+      requestedAt: '2026-07-26T03:12:00.000Z',
+      completedAt: '2026-07-26T03:12:01.000Z',
+      transport: 'stream',
+      provider: 'zai-coding',
+      model: 'glm-5.2',
+      wireModel: 'glm-5',
+      maxOutputTokens: 8_000,
+      kodaxPromptCacheEnabled: true,
+      endpoint: 'https://api.example.test',
+      attempt: 1,
+      systemPromptHash: hash,
+      toolSchemaHash: hash,
+      messagePrefixHash: hash,
+      messagePrefixCount: 42,
+      requestMessagesHash: hash,
+      requestEnvelopeHash: hash,
+      ephemeralSuffixHash: hash,
+      messageCount: 44,
+      toolCount: 12,
+      inputTokens: 145_226,
+      outputTokens: 779,
+      cacheReadInputTokens: 144_512,
+    },
+  );
+});
+
+test('daemon child Provider cache diagnostics retain child attribution and envelope identity', () => {
+  const hash = 'd'.repeat(64);
+  assert.deepEqual(
+    projectRuntimeContextSessionEvent(
+      runtimeEvent('provider.cache.diagnostics', {
+        phase: 'response',
+        contextKind: 'child',
+        agentId: 'agent_1',
+        requestId: 'request-child',
+        requestedAt: '2026-07-26T03:12:00.000Z',
+        completedAt: '2026-07-26T03:12:01.000Z',
+        transport: 'complete',
+        provider: 'anthropic',
+        model: 'claude-sonnet',
+        attempt: 2,
+        systemPromptHash: hash,
+        toolSchemaHash: hash,
+        messagePrefixHash: hash,
+        messagePrefixCount: 4,
+        requestMessagesHash: hash,
+        requestEnvelopeHash: hash,
+        messageCount: 5,
+        toolCount: 3,
+        inputTokens: 10_000,
+        outputTokens: 500,
+        cachedReadTokens: 8_000,
+        cachedWriteTokens: 1_000,
+      }),
+    ),
+    {
+      kind: 'provider_cache_diagnostic',
+      sessionId: 's_1',
+      contextKind: 'child',
+      agentId: 'agent_1',
+      requestId: 'request-child',
+      requestedAt: '2026-07-26T03:12:00.000Z',
+      completedAt: '2026-07-26T03:12:01.000Z',
+      transport: 'complete',
+      provider: 'anthropic',
+      model: 'claude-sonnet',
+      attempt: 2,
+      systemPromptHash: hash,
+      toolSchemaHash: hash,
+      messagePrefixHash: hash,
+      messagePrefixCount: 4,
+      requestMessagesHash: hash,
+      requestEnvelopeHash: hash,
+      messageCount: 5,
+      toolCount: 3,
+      inputTokens: 10_000,
+      outputTokens: 500,
+      cacheReadInputTokens: 8_000,
+      cacheWriteInputTokens: 1_000,
+    },
+  );
 });
 
 test('daemon canonical compaction facts keep root context ownership', () => {

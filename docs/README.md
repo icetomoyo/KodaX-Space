@@ -1,8 +1,10 @@
 # KodaX Space 文档中心
 
-> 当前源码/发布基线：KodaX Space [`v0.1.32`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.32)（package `0.1.32`）/ npm 正式发布的 KodaX `0.7.76`；稳定 tag 与 18 个跨平台资产已于 2026-07-25 发布。
+> 发布基线：KodaX Space [`v0.1.32`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.32)（package `0.1.32`）/ npm 正式发布的 KodaX `0.7.76`；稳定 tag 与 18 个跨平台资产已于 2026-07-25 发布。当前源码另对齐尚未 npm 发布的 KodaX `0.7.77` 候选包，并含 2026-07-26 起的未发布维护改进，见 [CHANGELOG 的 Unreleased](../CHANGELOG.md#unreleased)。
 
-这里是文档的统一入口。当前源码已采用 npm 正式发布的 KodaX 0.7.76：Coder 默认连接共享 daemon，并强制 compaction v3、transcript paging/search、interrupt input、Actor/Turn v1 和 Auto LLM guardrail v3。0.7.76 保留 Sidecar 可选后续工作/预算终态修正和 Windows GUI host 非交互子进程隐藏，并将 Kimi Code 默认模型改为直连 `k3-256k`、K3 默认推理档改为 `high`；Space 在 managed-task `verifying` 阶段本地关闭 interrupt 准入，避免已错过 root drain boundary 的输入先被接受再未投递终结。正式版还提供 mailbox-driven Agent 协调、idle-yield 用户提示的 transcript 回填、Goal 工具常驻、root/child 投影隔离、精确 checkpoint 活动 lineage、确定性的 Auto 切换，以及 Windows 可见托盘/重开/安全彻底退出；Partner 继续由 Space inline owner 管理。完整 F117/F118 桌面管理体验仍在后续路线中。历史设计和 release 记录保留当时语境。
+这里是文档的统一入口。当前源码要求 KodaX 0.7.77 候选 Runtime：Coder 默认连接共享 daemon，并强制 compaction v3、transcript paging/search、interrupt input、Actor/Turn v1 和 Auto LLM guardrail v3。0.7.77 保留既有 Sidecar、Windows 后台进程、mailbox、Goal、精确 lineage 与 Auto 契约，增加 public Kimi K3 和完整 root/child 物理请求诊断，并由 Runtime 原子关闭 interrupt finalization 窗口；Space 不再维护第二套验证阶段 fence。npm publication 尚未完成，所以本地对齐不能视为 Registry 发布证据。Partner 继续由 Space inline owner 管理，完整 F117/F118 桌面管理体验仍在后续路线中。历史设计和 release 记录保留当时语境。
+
+当前源码维护把底部“上下文窗口”改为按最终自动压缩阈值计算的有效窗口，并把模型最大上下文、自动压缩阈值、最近一次模型输入构成和距压缩剩余量分层展示；“会话 Token 用量”则独立累计根/子 Agent 的 Provider 调用与缓存分类。两者不能互换：前者是最近一次主模型请求的输入压力快照，后者是整个 Session 已发生的累计用量。
 
 ## 我想要……
 
@@ -10,6 +12,7 @@
 | ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 安装、配置、第一次完成任务          | [用户使用手册](USER_MANUAL.zh-CN.md)                                                                                                                  |
 | 快速理解界面和功能                  | [用户使用手册：界面地图](USER_MANUAL.zh-CN.md#5-界面地图)                                                                                             |
+| 理解上下文窗口与会话 Token 的区别   | [用户使用手册：上下文窗口与会话 Token](USER_MANUAL.zh-CN.md#52-上下文窗口与会话-token-用量)                                                           |
 | 理解 v0.1.32 的 Runtime 所有权      | [用户使用手册：Runtime Host](USER_MANUAL.zh-CN.md#v0132-的-runtime-host-对用户有什么影响)                                                             |
 | 理解 Windows 关闭与后台退出语义     | [用户使用手册：后台托盘](USER_MANUAL.zh-CN.md#windows-关闭窗口后台托盘与彻底退出)                                                                     |
 | 从源码运行、测试、打包              | [运行与开发指南](USAGE.md)                                                                                                                            |
@@ -19,6 +22,7 @@
 | 查看当前和未来 Feature              | [Feature List](FEATURE_LIST.md)                                                                                                                       |
 | 查看 v0.1.31 的设计与实施           | [版本设计](features/v0.1.31.md) / [实施计划](features/v0.1.31-implementation-plan.md) / [人工测试指导](test-guides/FEATURE_116_v0.1.31_TEST_GUIDE.md) |
 | 查看 v0.1.32 的设计与发布证据       | [版本设计与实施状态](features/v0.1.32.md) / [发布记录](releases/v0.1.32-release-readiness.md) / [Feature List](FEATURE_LIST.md)                       |
+| 查看 v0.1.33 文档 Skill 套件设计    | [F137 DOCX/PDF/XLSX/PPTX 设计](features/v0.1.33.md)                                                                                                   |
 | 维护或更新 Space builtin skills     | [Builtin skill 维护说明](BUILTIN_SKILLS.md)                                                                                                           |
 | 报告或核对已知问题                  | [Known Issues](KNOWN_ISSUES.md) / [已归档问题](ISSUES_ARCHIVED.md)                                                                                    |
 | 参与贡献                            | [Contributing](../CONTRIBUTING.md)                                                                                                                    |

@@ -9,7 +9,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { skillMetaSchema } from '@kodax-space/space-ipc-schema';
-import { toSkillMeta, type SkillMetadata } from '../skill/registry.js';
+import { mergeSkillMetas, toSkillMeta, type SkillMetadata } from '../skill/registry.js';
 
 function fakeSkill(over: Partial<SkillMetadata>): SkillMetadata {
   // Minimal SkillMetadata shape; cast covers SDK-only fields the mapper ignores.
@@ -47,4 +47,52 @@ test('a skill with a missing description maps to "" (still valid)', () => {
   const meta = toSkillMeta(fakeSkill({ description: undefined as unknown as string }));
   assert.equal(meta.description, '');
   assert.ok(skillMetaSchema.safeParse(meta).success);
+});
+
+test('Space builtin metadata wins daemon name collisions without duplicate slash rows', () => {
+  const spaceBuiltin = toSkillMeta(
+    fakeSkill({
+      name: 'frontend-slides',
+      source: 'plugin',
+      path: '/space/builtin-skills/frontend-slides',
+    }),
+  );
+  const daemonDuplicate = toSkillMeta(
+    fakeSkill({
+      name: 'frontend-slides',
+      source: 'builtin',
+      path: '/daemon/builtin/frontend-slides',
+    }),
+  );
+  const daemonOnly = toSkillMeta(
+    fakeSkill({
+      name: 'runtime-skill',
+      source: 'builtin',
+      path: '/daemon/builtin/runtime-skill',
+    }),
+  );
+
+  const merged = mergeSkillMetas([spaceBuiltin], [daemonDuplicate, daemonOnly]);
+  assert.deepEqual(
+    merged.map((skill) => skill.name),
+    ['frontend-slides', 'runtime-skill'],
+  );
+  assert.equal(merged[0].path, spaceBuiltin.path);
+});
+
+test('skill catalog merge reserves the IPC limit for preferred Space builtins', () => {
+  const preferred = [
+    toSkillMeta(fakeSkill({ name: 'frontend-slides' })),
+    toSkillMeta(fakeSkill({ name: 'huashu-design' })),
+  ];
+  const daemon = [
+    toSkillMeta(fakeSkill({ name: 'runtime-one' })),
+    toSkillMeta(fakeSkill({ name: 'runtime-two' })),
+  ];
+
+  assert.deepEqual(
+    mergeSkillMetas(preferred, daemon, 3).map((skill) => skill.name),
+    ['frontend-slides', 'huashu-design', 'runtime-one'],
+  );
+  assert.deepEqual(mergeSkillMetas(preferred, daemon, 0), []);
 });

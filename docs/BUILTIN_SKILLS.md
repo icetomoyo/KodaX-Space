@@ -12,6 +12,22 @@ Node/Python packages, Playwright browser binaries, `ffmpeg`, a POSIX-compatible
 shell, or API credentials. Builtin delivery does not embed those external
 command runtimes.
 
+## Discovery with the Coder daemon
+
+When Coder uses the shared Runtime daemon, Composer discovery merges two bounded catalogs:
+
+1. the installer-owned Space builtin subset; and
+2. the Runtime daemon Skill catalog.
+
+The merge is by exact Skill name. A Space builtin is emitted first and wins a collision so the
+entry shown in slash completion resolves through the same local registry used by `skill.invoke`;
+duplicate rows are never shown. User/project precedence remains the KodaX registry's responsibility
+and is not changed by this merge.
+
+Failure remains fail-soft for discovery: if the local builtin subset cannot be read, Space returns
+the daemon catalog; if daemon discovery fails, Space falls back to the complete local registry. The
+IPC result still validates each item and keeps the existing 256-entry cap.
+
 ## Source of truth
 
 - `resources/builtin-skills.sources.json` declares the upstream repository,
@@ -105,3 +121,15 @@ terms that explicitly prohibit retaining, copying, modifying, or distributing
 the materials outside the service. Those copies must not be vendored into
 KodaX Space. Use a redistributable implementation or obtain explicit
 redistribution permission before adding equivalent builtin skills.
+
+F137 plans independent Chinese-first `docx`, `pdf`, `xlsx`, and `pptx`
+implementations for `v0.1.33`. Their design starts from Space's own document
+contracts and public format/library documentation; a later capability-only
+comparison is recorded without copying or translating proprietary prompts,
+code, examples, assets, tests, or structure. GA is scoped to a shared sandboxed
+inspection/job/validation foundation plus one controlled create/edit vertical
+slice per format. High-fidelity PPTX remains on the F129 pipeline, and gated
+OCR/recalculation/template capabilities remain unavailable until their adapters,
+platform matrix, and fixtures qualify. First-party authored sources are kept
+separate from generated builtin snapshots. See
+[the v0.1.33 design](features/v0.1.33.md).

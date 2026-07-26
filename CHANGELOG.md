@@ -14,6 +14,28 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ## [Unreleased]
 
+### Added
+
+- **Context composition diagnostics** - The Coder context popover now shows a privacy-safe six-part root-input breakdown for system prompt, tool schemas, combined Skills / MCP, messages, request input, and recent tool results. Only category counts cross Space IPC; no prompt, message, tool-input, or tool-output body is projected.
+- **Cumulative Session token usage** - Added a separate bottom-bar indicator for Provider-reported usage across root and child Agents. On KodaX 0.7.77 it counts completed physical-request diagnostics once by request ID, including child, retry, fallback, repair, workflow-digest, and compaction-summary calls; older/mocked paths retain the iteration-summary fallback. Its popover leads with total input and distinguishes uncached input, cache-read input, output, optional cache-creation input, root/child call counts, and aggregate/latest cache-hit rates; `/cost` consumes the same cumulative source.
+- **Public Kimi K3 route** - Space consumes the KodaX 0.7.77 public `kimi/kimi-k3` catalog entry and its 1,048,576-token context while preserving the existing Kimi and Kimi Code defaults.
+
+### Changed
+
+- **KodaX 0.7.77 candidate alignment** - Root and Desktop manifests now require the exact 0.7.77 SDK candidate supplied as a local tarball. Space consumes its complete request-envelope/ephemeral-suffix hashes and delegates interrupt-finalization admission to Runtime. The package is not yet npm-published, so clean Registry installation remains a release gate.
+- **Effective context-window presentation** - The Context window meter and composition percentages now use the final automatic-compaction threshold as their denominator. Model maximum context and auto-compact threshold are presented as independent facts, remaining space is explicitly “until auto-compact,” and reserved response capacity is excluded from active input instead of being shown as compaction headroom.
+- **Unified button interaction language** - All enabled application buttons now inherit the Token-usage control's soft semantic sweep, luminous edge, active feedback, and visible keyboard focus treatment. Primary, success, warning, reasoning, and dangerous actions retain distinct colors; portal-mounted dialogs are covered while Windows window controls, Monaco, xterm, disabled controls, and explicit opt-outs keep their own contracts.
+- **Current-source toolchain baseline** - Development and CI now read Node 22.23.1 from `.nvmrc` with a Node 22.12 engine floor, `electron-builder` 26.15.3, `node-gyp` 12.2, and `windows-latest`. Windows PE icon/version resource editing uses the pinned pure-JavaScript `resedit` path instead of probing a cached `rcedit` executable.
+- **Experimental-memory capability probing** - Space continues to fail fast on a missing or malformed `/experimental-memory` export, but it no longer treats one fixed upstream feature number as the capability identity. The exported contract and bounded policy-version shape are authoritative.
+
+### Fixed
+
+- **Daemon-backed Space builtin discovery** - Composer discovery merges installer-owned `frontend-slides` and `huashu-design` with the Runtime daemon catalog by name, preferring the Space entry on collisions without duplicate slash rows and retaining both failure fallbacks.
+- **File-reveal failure truthfulness** - `shell.revealPath` now distinguishes an allowed path that is missing, a path outside registered project/KodaX/Space roots, and an OS reveal failure. The renderer shows a dedicated authorization-scope message without widening the filesystem allowlist or adding an arbitrary-path existence oracle.
+- **Native SQLite ABI verification** - The Node/Electron `better-sqlite3` probe now catches load failures explicitly and exits nonzero, preventing Electron versions that report an uncaught `-e` exception with status 0 from being mistaken for a compatible native binding or producing a broken package.
+- **Cross-Provider token breakdown clarity** - Session usage now leads with total input and labels Provider-reported subsets as uncached, cache-read, and cache-creation input. It explicitly warns that tokenizer and cache-field conventions differ, so a Qwen Anthropic-compatible cold-cache response cannot make a 25k input request look like a six-token request.
+- **Context composition snapshot semantics** - The popover now calls `pendingInput` "request input", identifies the breakdown as the latest root-model request snapshot, and keeps six categories visible at zero, with Skills and MCP combined. Completed messages and tool results no longer appear to have been replaced by a still-pending queue.
+
 ## [0.1.32] - 2026-07-25
 
 ### Added

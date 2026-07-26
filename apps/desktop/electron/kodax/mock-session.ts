@@ -343,7 +343,38 @@ export class MockKodaXSession implements ManagedSession {
         iter: 1,
         maxIter: 30,
         tokenCount: 1280,
-        usage: { inputTokens: 980, outputTokens: 300 },
+        usage: {
+          inputTokens: 980,
+          outputTokens: 300,
+          cacheReadInputTokens: 640,
+          cacheWriteInputTokens: 96,
+        },
+      });
+      this.emit({
+        kind: 'context_budget_snapshot',
+        sessionId: sid,
+        provider: this.provider,
+        model: this.model,
+        profile: 'report_only',
+        contextWindow: 200_000,
+        smallWindow: false,
+        pressure: 'low',
+        tokenBreakdown: {
+          systemPrompt: 240,
+          toolSchemas: 180,
+          skillCatalog: 80,
+          mcpCatalog: 40,
+          transcript: 360,
+          pendingInput: 120,
+          recentToolResults: 60,
+          reservedResponse: 200,
+          total: 1_280,
+        },
+        usedTokens: 1_280,
+        availableTokens: 198_720,
+        usedRatio: 0.0064,
+        toolSchemaRatio: 0.0009,
+        createdAt: new Date().toISOString(),
       });
       await sleep(CHUNK_DELAY_MS, signal);
 

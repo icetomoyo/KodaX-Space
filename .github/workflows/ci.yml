@@ -42,12 +42,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # windows-2022 pins VS 2022 (v17); windows-latest moved to VS 18 which
-          # bundled node-gyp cannot detect, breaking the better-sqlite3 rebuild.
-          - os: windows-2022
+          # node-gyp 12.2+ recognizes the VS 2026 (v18) toolchain shipped by
+          # windows-latest.
+          - os: windows-latest
             shard: 1/2
             shard_index: 1
-          - os: windows-2022
+          - os: windows-latest
             shard: 2/2
             shard_index: 2
           - os: ubuntu-latest
@@ -59,10 +59,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Node 20
+      - name: Setup Node from .nvmrc
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version-file: '.nvmrc'
           cache: 'npm'
 
       - name: Install dependencies

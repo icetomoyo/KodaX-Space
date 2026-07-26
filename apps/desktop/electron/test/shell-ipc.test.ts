@@ -110,7 +110,10 @@ test('shell.revealPath rejects allowlist-external absolute paths', async () => {
   const handlers = createShellHandlers(deps);
   const target = path.join(outsideRoot, 'secret.txt');
 
-  assert.deepEqual(await handlers.revealPath({ path: target }), { revealed: false });
+  assert.deepEqual(await handlers.revealPath({ path: target }), {
+    revealed: false,
+    reason: 'not-allowed',
+  });
   assert.deepEqual(shown, []);
 });
 
@@ -125,7 +128,10 @@ test('shell.revealPath rejects symlink-style realpath escapes', async () => {
   const handlers = createShellHandlers(deps);
   const target = path.join(projectRoot, 'link.txt');
 
-  assert.deepEqual(await handlers.revealPath({ path: target }), { revealed: false });
+  assert.deepEqual(await handlers.revealPath({ path: target }), {
+    revealed: false,
+    reason: 'not-allowed',
+  });
   assert.deepEqual(shown, []);
   assert.ok(outsideRoot.length > 0);
 });
@@ -134,14 +140,47 @@ test('shell.revealPath rejects network paths and missing files', async () => {
   const missing = path.join(process.cwd(), 'tmp-shell-project', 'missing.txt');
   const { deps, shown } = makeDeps({
     access: async (target) => {
-      if (target === missing) throw new Error('ENOENT');
+      if (target === missing) {
+        throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+      }
     },
   });
   const handlers = createShellHandlers(deps);
 
   assert.deepEqual(await handlers.revealPath({ path: '\\\\server\\share\\secret.txt' }), {
     revealed: false,
+    reason: 'not-allowed',
   });
-  assert.deepEqual(await handlers.revealPath({ path: missing }), { revealed: false });
+  assert.deepEqual(await handlers.revealPath({ path: missing }), {
+    revealed: false,
+    reason: 'not-found',
+  });
   assert.deepEqual(shown, []);
+});
+
+test('shell.revealPath distinguishes permission and shell failures from missing files', async () => {
+  const permissionError = Object.assign(new Error('access denied'), { code: 'EACCES' });
+  const { deps, projectRoot } = makeDeps({
+    access: async () => {
+      throw permissionError;
+    },
+  });
+  const target = path.join(projectRoot, 'report.docx');
+
+  assert.deepEqual(await createShellHandlers(deps).revealPath({ path: target }), {
+    revealed: false,
+    reason: 'not-allowed',
+  });
+
+  const shellFailure = createShellHandlers({
+    ...deps,
+    access: async () => {},
+    showItemInFolder: () => {
+      throw new Error('shell unavailable');
+    },
+  });
+  assert.deepEqual(await shellFailure.revealPath({ path: target }), {
+    revealed: false,
+    reason: 'failed',
+  });
 });

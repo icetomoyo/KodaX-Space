@@ -238,6 +238,14 @@ export async function revealPath(rawPath: string, projectRoot?: string | null): 
       projectRoot ? { path: rawPath, projectRoot } : { path: rawPath },
     );
     if (r.ok && r.data.revealed) return true;
+    if (r.ok && r.data.reason === 'not-allowed') {
+      pushToast(translateMessage('openPath.pathNotAllowed'), 'warning');
+      return false;
+    }
+    if (r.ok && r.data.reason === 'failed') {
+      pushToast(translateMessage('openPath.revealFailed'), 'error');
+      return false;
+    }
     pushToast(translateMessage('openPath.fileNotFound'), 'warning');
     return false;
   } catch {

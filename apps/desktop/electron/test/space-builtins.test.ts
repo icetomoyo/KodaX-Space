@@ -65,6 +65,35 @@ test('registerSpaceBuiltinSkills is idempotent and makes the installer-owned pat
   assert.equal(isSpaceBuiltinSkillPath(`${builtinRoot}-sibling/space-test-skill`), false);
 });
 
+test('repository builtin snapshot contains the two supported design skills', async () => {
+  const repositoryBuiltinRoot = path.resolve(
+    import.meta.dirname,
+    '..',
+    '..',
+    '..',
+    '..',
+    'resources',
+    'builtin-skills',
+  );
+  const result = await registerSpaceBuiltinSkills(repositoryBuiltinRoot);
+
+  assert.deepEqual(result.skillNames, ['frontend-slides', 'huashu-design']);
+
+  const sdk = await import('@kodax-ai/kodax/skills');
+  const registry = new sdk.SkillRegistry(temporaryRoot);
+  await registry.discover();
+  const discovered = registry
+    .listUserInvocable()
+    // A developer machine may already have a same-name user/project override.
+    // KodaX precedence must keep that override; the installer root is verified above
+    // through registration and result.skillNames rather than by defeating precedence.
+    .filter((skill) => result.skillNames.includes(skill.name))
+    .map((skill) => skill.name)
+    .sort();
+  assert.deepEqual(discovered, result.skillNames);
+  await Promise.all(result.skillNames.map((name) => registry.loadFull(name)));
+});
+
 test('registerSpaceBuiltinSkills rejects an empty or damaged resource tree without trusting it', async () => {
   fs.rmSync(path.join(builtinRoot, 'space-test-skill', 'SKILL.md'));
 

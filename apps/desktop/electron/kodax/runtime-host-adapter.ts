@@ -79,12 +79,7 @@ import { buildChildActivity, isTransientChildEvent, type ChildMeta } from './wor
 
 export type RuntimeHostMode = 'legacy' | 'runtime';
 export type RuntimeHostState =
-  | 'uninitialized'
-  | 'initializing'
-  | 'legacy'
-  | 'ready'
-  | 'failed'
-  | 'closed';
+  'uninitialized' | 'initializing' | 'legacy' | 'ready' | 'failed' | 'closed';
 export type RuntimeCapabilityOwner = 'runtime' | 'space-bridge' | 'legacy' | 'unavailable';
 export type RuntimeCapabilitySupport = 'supported' | 'partial' | 'unavailable';
 
@@ -163,6 +158,40 @@ function projectContextIdentity(value: unknown): {
       ? { contextRevision: record.contextRevision }
       : {}),
   };
+}
+
+function projectRuntimeContextBudgetSnapshot(
+  sessionId: string,
+  value: unknown,
+): SessionEvent | undefined {
+  const snapshot = runtimeEventRecord(value);
+  if (!snapshot) return undefined;
+  const parsed = sessionEventChannel.payload.safeParse({
+    ...snapshot,
+    kind: 'context_budget_snapshot',
+    sessionId,
+  });
+  return parsed.success ? parsed.data : undefined;
+}
+
+function projectRuntimeProviderCacheDiagnostic(
+  sessionId: string,
+  value: unknown,
+): SessionEvent | undefined {
+  const diagnostic = runtimeEventRecord(value);
+  if (!diagnostic || diagnostic.phase !== 'response') return undefined;
+  const parsed = sessionEventChannel.payload.safeParse({
+    ...diagnostic,
+    kind: 'provider_cache_diagnostic',
+    sessionId,
+    ...(typeof diagnostic.cachedReadTokens === 'number'
+      ? { cacheReadInputTokens: diagnostic.cachedReadTokens }
+      : {}),
+    ...(typeof diagnostic.cachedWriteTokens === 'number'
+      ? { cacheWriteInputTokens: diagnostic.cachedWriteTokens }
+      : {}),
+  });
+  return parsed.success ? parsed.data : undefined;
 }
 
 type RuntimeTranscriptEntry = RuntimeTranscript['transcriptEntries'][number];
@@ -244,6 +273,12 @@ export function projectRuntimeContextSessionEvent(
   const payload = runtimeEventRecord(event.payload);
   let candidate: unknown;
 
+  if (event.type === 'context.budget.snapshot') {
+    return projectRuntimeContextBudgetSnapshot(event.sessionId, payload);
+  }
+  if (event.type === 'provider.cache.diagnostics') {
+    return projectRuntimeProviderCacheDiagnostic(event.sessionId, payload);
+  }
   if (event.type === 'run.progress' && payload?.kind === 'iteration_start') {
     candidate = {
       kind: 'iteration_start',
@@ -264,7 +299,16 @@ export function projectRuntimeContextSessionEvent(
         ? { tokenSource: info.tokenSource }
         : {}),
       ...(info.scope === 'parent' || info.scope === 'worker' ? { scope: info.scope } : {}),
-      ...(runtimeEventRecord(info.usage) ? { usage: info.usage } : {}),
+      ...(runtimeEventRecord(info.usage)
+        ? {
+            usage: {
+              inputTokens: runtimeEventRecord(info.usage)?.inputTokens,
+              outputTokens: runtimeEventRecord(info.usage)?.outputTokens,
+              cacheReadInputTokens: runtimeEventRecord(info.usage)?.cachedReadTokens,
+              cacheWriteInputTokens: runtimeEventRecord(info.usage)?.cachedWriteTokens,
+            },
+          }
+        : {}),
       ...(typeof info.contextId === 'string' ? { contextId: info.contextId } : {}),
       ...(info.contextKind === 'root' || info.contextKind === 'child'
         ? { contextKind: info.contextKind }
@@ -430,7 +474,7 @@ export interface RuntimeHostAdapterOptions {
 }
 
 const MAX_DIAGNOSTIC_ERROR = 512;
-const MINIMUM_KODAX_RUNTIME_VERSION = [0, 7, 75] as const;
+const MINIMUM_KODAX_RUNTIME_VERSION = [0, 7, 77] as const;
 
 export function resolveRuntimeHostMode(value: string | undefined): RuntimeHostMode {
   return value?.trim().toLowerCase() === 'legacy' ? 'legacy' : 'runtime';
@@ -447,7 +491,7 @@ function assertMinimumRuntimeVersion(version: string): void {
     }
   }
   throw new Error(
-    `KodaX Runtime ${version || '(unknown)'} is older than the required 0.7.76 baseline. ` +
+    `KodaX Runtime ${version || '(unknown)'} is older than the required 0.7.77 baseline. ` +
       'Restart the Coder daemon after updating KodaX; Space will not reuse an older daemon.',
   );
 }
@@ -805,6 +849,7 @@ export class RuntimeHostAdapter {
           capabilities: {
             richEvents: true,
             permissionPrompts: true,
+            contextDiagnostics: true,
             operationDeduplication: true,
           },
           requirements: {
@@ -1471,7 +1516,7 @@ export class RuntimeHostAdapter {
       defaults = await this.autoModeDefaultsResolver();
     } catch (error) {
       console.warn(
-        '[runtime] Auto LLM defaults load failed; using the KodaX 0.7.76 defaults:',
+        '[runtime] Auto LLM defaults load failed; using the KodaX 0.7.77 defaults:',
         sanitizeDiagnosticError(error),
       );
       defaults = {
@@ -2262,21 +2307,6 @@ export class RuntimeHostAdapter {
     await this.assertCoderSession(runtime, input.sessionId);
     await this.ensureObserved(input.sessionId);
     const isInterrupt = input.delivery === 'interrupt';
-    const managedTaskPhase = this.observations.get(input.sessionId)?.reducer.snapshot()
-      .managedTask?.phase;
-    if (isInterrupt && (managedTaskPhase === 'verifying' || managedTaskPhase === 'completed')) {
-      // KodaX 0.7.76 keeps Runtime interrupt admission open through managed-task
-      // verification, after the final root queue-drain boundary has already passed.
-      // Reject locally with the Runtime's factual reason instead of allowing an
-      // accepted input to be terminalized without a run.input.delivered event.
-      return {
-        accepted: false,
-        delivery: input.delivery,
-        sessionId: input.sessionId,
-        afterRunId: input.afterRunId,
-        reason: 'interrupt_window_closed',
-      } satisfies RuntimeSubmitInputResult;
-    }
     if (isInterrupt && (input.credential !== undefined || input.hostTools !== undefined)) {
       throw new Error(
         'Interrupt input must reuse the active run credential and host-tool bindings.',

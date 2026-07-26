@@ -1,105 +1,112 @@
 # Known Issues
 
-Last Updated: 2026-07-25
+Last Updated: 2026-07-26
 
-> Historical issue details are preserved as investigation evidence. Resolved items older than 30 days move to [ISSUES_ARCHIVED.md](ISSUES_ARCHIVED.md) without losing their investigation record. The current package/source baseline is the published v0.1.32 release. Start from the [documentation hub](README.md) for current behavior and status.
+> Historical issue details are preserved as investigation evidence. Resolved items older than 30 days move to [ISSUES_ARCHIVED.md](ISSUES_ARCHIVED.md) without losing their investigation record. The current published package baseline is v0.1.32; fixes marked `Unreleased source` are present only in current source until a later package ships. Start from the [documentation hub](README.md) for current behavior and status.
 
 ## Issue Index
 
-| ID  | Priority | Status   | Title                                                                                                                    | Introduced            | Created    |
-| --- | -------- | -------- | ------------------------------------------------------------------------------------------------------------------------ | --------------------- | ---------- |
-| 013 | High     | Resolved | Restored KodaX sessions could pair assistant segments with the following user prompt after consecutive user messages     | v0.1.29               | 2026-07-08 |
-| 014 | Medium   | Resolved | Session rename reverted after switching sessions because manual titles were not persisted outside memory                 | v0.1.29               | 2026-07-08 |
-| 015 | High     | Resolved | Partner capability redesign drift allowed overly broad workspace delivery writes and stale output registry state         | v0.1.30               | 2026-07-09 |
-| 016 | High     | Resolved | Partner helper VM exposed host constructors and allowed escape to Node process and unrestricted filesystem               | v0.1.30               | 2026-07-10 |
-| 017 | High     | Resolved | Partner corrupted Unicode PDF output and could not read PDF or Office sources                                            | v0.1.30               | 2026-07-10 |
-| 018 | High     | Resolved | Active queue watcher deleted Partner follow-up overlay before dequeue returned it                                        | v0.1.30               | 2026-07-10 |
-| 019 | High     | Resolved | Partner KB could not search Chinese and could overwrite corrupt durable state                                            | v0.1.30               | 2026-07-10 |
-| 020 | High     | Resolved | Partner file paths, writes, decoding, hashing, and durable stores had unsafe edge cases                                  | v0.1.30               | 2026-07-10 |
-| 021 | Medium   | Resolved | Partner advertised unavailable SDK Skills and Outputs lacked an in-app delivery preview loop                             | v0.1.30               | 2026-07-10 |
-| 022 | Medium   | Open     | KodaX Runtime lacks a general per-invocation execution service for Partner helper migration                              | KodaX 0.7.66 adoption | 2026-07-10 |
-| 023 | Medium   | Resolved | Composer file picker opened the project-directory dialog and could not select images or files                            | v0.1.30               | 2026-07-11 |
-| 024 | High     | Resolved | ACP placeholder sessions consumed the 200-row Space history window and hid real project sessions                         | v0.1.30               | 2026-07-11 |
-| 025 | High     | Resolved | KodaX ACP tests persist fixture sessions into the real user session/runtime directories                                  | KodaX 0.7.66          | 2026-07-11 |
-| 026 | High     | Resolved | Space E2E test mode isolated app data but left the SDK session home pointed at the real user directory                   | v0.1.30               | 2026-07-11 |
-| 027 | High     | Resolved | A global 200-session window let one busy project make other project histories appear empty                               | v0.1.30               | 2026-07-11 |
-| 028 | High     | Resolved | External Agent event pagination could skip audit events after the first 512 entries                                      | v0.1.30               | 2026-07-12 |
-| 029 | High     | Resolved | Renderer could supply a new opaque Agent identity to the Reference update path                                           | v0.1.30               | 2026-07-12 |
-| 030 | Medium   | Resolved | Workflow external-target wrapper lost method receiver and did not always audit the resolved revision                     | v0.1.30               | 2026-07-12 |
-| 031 | High     | Resolved | Packaged smoke still expected KodaX 0.7.66 after the 0.7.67 integration                                                  | v0.1.30               | 2026-07-12 |
-| 032 | High     | Resolved | External Agent task IPC trusted renderer ownership and Task Dock could show/control stale cross-session tasks            | v0.1.30               | 2026-07-12 |
-| 033 | Low      | Resolved | Project Session spinner remained visible over already-restored rows after switching surfaces                             | v0.1.30               | 2026-07-12 |
-| 034 | Medium   | Resolved | Task Dock width presets drifted from responsive default, explicit half, and full-workspace behavior                      | v0.1.30               | 2026-07-12 |
-| 035 | Medium   | Resolved | Project Session refresh rescanned the full history tree and made empty Coder/Partner scopes slow                         | v0.1.30               | 2026-07-12 |
-| 036 | Medium   | Resolved | New Sessions ignored the provider/model most recently selected in the active Session                                     | v0.1.31               | 2026-07-13 |
-| 037 | Medium   | Resolved | Partner output links lost their Delivery identity and were incorrectly resolved as project files                         | v0.1.31               | 2026-07-14 |
-| 038 | Medium   | Resolved | File-backed Markdown opened in Artifact as raw Monaco source instead of a document reading preview                       | v0.1.31               | 2026-07-14 |
-| 039 | Medium   | Resolved | Partner kept a duplicate collapsed-sidebar edge rail alongside the shared header toggle                                  | v0.1.31               | 2026-07-14 |
-| 040 | Low      | Resolved | Adjacent command and thinking receipt chips render at different heights                                                  | v0.1.31               | 2026-07-14 |
-| 041 | Medium   | Resolved | Every assistant text block in a user turn reuses the Query timestamp instead of its own output time                      | v0.1.31               | 2026-07-14 |
-| 042 | High     | Resolved | Interactive HTML Artifact can show only its static shell and keep stale content after a new version                      | v0.1.31               | 2026-07-14 |
-| 043 | High     | Open     | Unsigned macOS releases repeatedly request the login password for Provider Keychain access                               | v0.1.4                | 2026-07-14 |
-| 044 | Low      | Resolved | Windows portable executable icon can render as missing or inconsistently across shell sizes                              | v0.1.31               | 2026-07-15 |
-| 045 | Low      | Resolved | New-conversation mode selectors append a confusing `next` suffix                                                         | v0.1.x                | 2026-07-15 |
-| 046 | High     | Resolved | F121 live projection and daemon lease lifecycles could diverge across attached Space clients                             | v0.1.32 development   | 2026-07-15 |
-| 047 | Low      | Resolved | Long user queries consume excessive transcript height without an inline collapse control                                 | v0.1.x                | 2026-07-16 |
-| 048 | Low      | Resolved | Legacy `tsx/esm` test registration corrupts CommonJS JSON imports from the KodaX SDK dependency graph                    | v0.1.x                | 2026-07-17 |
-| 049 | Medium   | Resolved | Provider/model and mode changes rolled back before the first send because the daemon Session was not admitted            | v0.1.32 development   | 2026-07-17 |
-| 050 | Medium   | Resolved | Reference Agent continuation can remain `working` after `sendInput` until an explicit reconcile                          | KodaX 0.7.72          | 2026-07-17 |
-| 051 | Low      | Resolved | Embedded Runtime omits the working `externalAgentAdmin` service from its public capability metadata                      | KodaX 0.7.72          | 2026-07-17 |
-| 052 | Medium   | Resolved | Composer could send text before an asynchronously attached image entered the artifact payload                            | v0.1.9                | 2026-07-17 |
-| 053 | Medium   | Resolved | Restored daemon runs rejected queued prompts because the composer requested unsupported interrupt delivery               | v0.1.32 development   | 2026-07-17 |
-| 054 | High     | Resolved | Daemon permission dialogs discarded command, directory, and operation context                                            | v0.1.31               | 2026-07-17 |
-| 055 | High     | Resolved | Ark multimodal follow-ups rejected supported model routes during artifact preflight                                      | <= v0.1.31            | 2026-07-17 |
-| 056 | High     | Resolved | Restored daemon Sessions lost Auto mode, exposed an unwired plan exit, and reset AskUser choices                         | v0.1.32 development   | 2026-07-17 |
-| 057 | High     | Resolved | Auto LLM sent an empty classifier model after daemon observation erased the provider default                             | v0.1.32 development   | 2026-07-19 |
-| 058 | High     | Resolved | Auto LLM diagnosis exposed a stale 8-second process while Space did not seed daemon classifier defaults                  | v0.1.32 development   | 2026-07-19 |
-| 059 | Medium   | Resolved | KodaX Runtime does not publish complete effective Auto LLM settings or timeout-phase telemetry                           | KodaX 0.7.72          | 2026-07-19 |
-| 060 | High     | Resolved | Space restart during daemon run admission aborted the accepted Coder run and startup health failures did not reconnect   | v0.1.32 development   | 2026-07-20 |
-| 061 | High     | Resolved | No-Session File Viewer calls `artifact.previewFile` without legacy-required Session fields and cannot open project files | v0.1.32 development   | 2026-07-20 |
-| 062 | Medium   | Resolved | Composer sent renderer `file://` attachment links to the model instead of exact native filesystem paths                  | v0.1.30               | 2026-07-20 |
-| 063 | Medium   | Resolved | Pasted image normalization could send JPEG bytes with a stale PNG media type and make mixed image attachments fail       | v0.1.32-hotfix.0      | 2026-07-20 |
-| 064 | Medium   | Resolved | Space ignored Runtime-issued concrete permission grants, so Always allow was absent or rejected                          | KodaX 0.7.73 adoption | 2026-07-20 |
-| 065 | Medium   | Resolved | Project Files sidebar hides file extensions and keeps a stale directory tree                                             | v0.1.32               | 2026-07-21 |
-| 066 | Medium   | Resolved | Changes panel displayed non-ASCII Git paths as octal escapes and could not open their diffs                              | v0.1.4                | 2026-07-21 |
-| 067 | Medium   | Resolved | Partner project-file rows select an attachment target but do not open the file viewer                                    | v0.1.32               | 2026-07-21 |
-| 068 | High     | Resolved | Project HTML preview loses relative assets and hides sandbox/runtime failures that work in a browser                     | v0.1.32               | 2026-07-21 |
-| 069 | High     | Resolved | Coder daemon converted interrupt follow-ups into separate sequential after-turn runs                                     | v0.1.32 development   | 2026-07-21 |
-| 070 | High     | Resolved | Large or dependency-backed HTML Artifacts can be misclassified as static and render blank or incomplete                  | v0.1.32               | 2026-07-21 |
-| 071 | High     | Resolved | Daemon compaction telemetry is dropped, so `/compact` appears frozen and context usage grows past a stale threshold      | v0.1.32 development   | 2026-07-21 |
-| 072 | High     | Resolved | E2E cleanup hangs until timeout because the isolated shared daemon keeps Electron test pipes open                        | v0.1.32 development   | 2026-07-21 |
-| 073 | Medium   | Resolved | Artifact HTML E2E scenarios focus Session-owned Artifacts before creating a Session                                      | v0.1.32 development   | 2026-07-21 |
-| 074 | High     | Resolved | Artifact bootstrap CSP blocks Blob workers that the in-document preview policy explicitly allows                         | v0.1.32 development   | 2026-07-21 |
-| 075 | High     | Resolved | Runtime manual compaction duplicates canonical events and permits stale token projection                                 | v0.1.32 development   | 2026-07-21 |
-| 076 | High     | Resolved | Effective compaction threshold can be paired with a different fallback context window                                    | v0.1.32 development   | 2026-07-21 |
-| 077 | High     | Resolved | Repacked KodaX 0.7.74 leaves the release lockfile with stale integrity                                                   | v0.1.32 development   | 2026-07-21 |
-| 078 | Medium   | Resolved | History restore regression asserts the pre-canonical compaction token shape                                              | v0.1.32 development   | 2026-07-21 |
-| 079 | High     | Resolved | Space compatibility gate did not prove the KodaX 0.7.74 Auto permission semantics                                        | v0.1.32 development   | 2026-07-21 |
-| 080 | Medium   | Resolved | One clipboard image can enter the composer twice through duplicate Web clipboard representations                         | v0.1.25               | 2026-07-22 |
-| 081 | Medium   | Resolved | Project Files mode removes the persistent Settings row from the left sidebar                                             | v0.1.29               | 2026-07-22 |
-| 082 | Medium   | Resolved | Consumed daemon interrupt prompt can remain as a duplicate queued bubble when Runtime appends a prompt overlay           | v0.1.32 development   | 2026-07-22 |
-| 083 | High     | In Progress | Late accepted daemon interrupt can be terminalized without delivery when its Run finishes during finalization         | v0.1.32 development   | 2026-07-22 |
-| 084 | High     | Resolved | Daemon child-agent prose, thinking, and tools are merged into the parent transcript and live snapshot                    | v0.1.32 development   | 2026-07-22 |
-| 085 | High     | Resolved | Background Session prompts could block the visible Session while their sidebar owner remained hidden                     | v0.1.32 development   | 2026-07-23 |
-| 086 | Medium   | Resolved | Assistant/tool-leading restored history rendered a fabricated empty user message                                         | v0.1.x                | 2026-07-23 |
-| 087 | Medium   | Resolved | Windows 10/11 taskbar could ignore the live Space window icon or reuse stale Portable identity                           | v0.1.x                | 2026-07-23 |
-| 088 | Medium   | Resolved | Other KodaX instance indicator could route an unknown peer into a blank orphan Session                                   | v0.1.x                | 2026-07-23 |
-| 089 | High     | Resolved | A same-version stale daemon could fail the required capability gate and leave Coder unusable                             | v0.1.32 development   | 2026-07-23 |
-| 090 | Medium   | Resolved | Closing the last Space window left the daemon running without a visible or controllable background surface               | v0.1.x                | 2026-07-23 |
-| 091 | Medium   | Resolved | Ordinary Windows queries can flash several short-lived command windows from KodaX Runtime child processes                | KodaX 0.7.74 adoption | 2026-07-23 |
-| 092 | Medium   | Resolved | Isolated Electron tests leaked Runtime client credentials into the OS keychain                                           | v0.1.32 development   | 2026-07-23 |
-| 093 | Medium   | Resolved | Artifact and File Viewer Markdown omitted Mermaid and document-local resource support                                    | v0.1.31               | 2026-07-24 |
-| 094 | Medium   | Resolved | Failed interrupt bubble followed the transcript tail instead of staying at its failure-time position                     | v0.1.32 development   | 2026-07-24 |
-| 095 | Medium   | Resolved | Changes panel collapsed a fully untracked directory into one row and hid its individual files                            | v0.1.x                | 2026-07-24 |
-| 096 | Medium   | Resolved | Linux CI lacked an OS keychain and silently projected Runtime A2A as hidden                                              | v0.1.32 development   | 2026-07-25 |
-| 097 | Medium   | Resolved | Successful document extraction forcibly terminated its Worker during Windows native-module cleanup                       | v0.1.32 development   | 2026-07-25 |
-| 098 | Medium   | Resolved | A narrow Windows viewport required two clicks to open the right-side Task Dock                                           | v0.1.32 development   | 2026-07-25 |
-| 099 | Medium   | Resolved | Clean Electron main builds omitted generated runtime icons and disabled the Windows tray                                 | v0.1.32 development   | 2026-07-25 |
-| 100 | Medium   | Resolved | Interactive HTML Artifact could accept its first click before document controls were initialized                         | v0.1.32 development   | 2026-07-25 |
-| 101 | Medium   | Resolved | Project HTML File Viewer could accept its first click before module controls were initialized                            | v0.1.32 development   | 2026-07-25 |
-| 102 | Medium   | Resolved | Partner PDF text Workers could unload an unused native Canvas module with a Windows access violation                     | v0.1.32 development   | 2026-07-25 |
-| 103 | Medium   | Resolved | Shared-daemon release probe started its event deadline before the peer performed its settings mutation                   | v0.1.32 development   | 2026-07-25 |
-| 104 | Medium   | Resolved | Interactive HTML could report ready before its out-of-process frame committed an interactive hit-test surface            | v0.1.32 development   | 2026-07-25 |
+| ID  | Priority | Status      | Title                                                                                                                    | Introduced            | Created    |
+| --- | -------- | ----------- | ------------------------------------------------------------------------------------------------------------------------ | --------------------- | ---------- |
+| 013 | High     | Resolved    | Restored KodaX sessions could pair assistant segments with the following user prompt after consecutive user messages     | v0.1.29               | 2026-07-08 |
+| 014 | Medium   | Resolved    | Session rename reverted after switching sessions because manual titles were not persisted outside memory                 | v0.1.29               | 2026-07-08 |
+| 015 | High     | Resolved    | Partner capability redesign drift allowed overly broad workspace delivery writes and stale output registry state         | v0.1.30               | 2026-07-09 |
+| 016 | High     | Resolved    | Partner helper VM exposed host constructors and allowed escape to Node process and unrestricted filesystem               | v0.1.30               | 2026-07-10 |
+| 017 | High     | Resolved    | Partner corrupted Unicode PDF output and could not read PDF or Office sources                                            | v0.1.30               | 2026-07-10 |
+| 018 | High     | Resolved    | Active queue watcher deleted Partner follow-up overlay before dequeue returned it                                        | v0.1.30               | 2026-07-10 |
+| 019 | High     | Resolved    | Partner KB could not search Chinese and could overwrite corrupt durable state                                            | v0.1.30               | 2026-07-10 |
+| 020 | High     | Resolved    | Partner file paths, writes, decoding, hashing, and durable stores had unsafe edge cases                                  | v0.1.30               | 2026-07-10 |
+| 021 | Medium   | Resolved    | Partner advertised unavailable SDK Skills and Outputs lacked an in-app delivery preview loop                             | v0.1.30               | 2026-07-10 |
+| 022 | Medium   | Open        | KodaX Runtime lacks a general per-invocation execution service for Partner helper migration                              | KodaX 0.7.66 adoption | 2026-07-10 |
+| 023 | Medium   | Resolved    | Composer file picker opened the project-directory dialog and could not select images or files                            | v0.1.30               | 2026-07-11 |
+| 024 | High     | Resolved    | ACP placeholder sessions consumed the 200-row Space history window and hid real project sessions                         | v0.1.30               | 2026-07-11 |
+| 025 | High     | Resolved    | KodaX ACP tests persist fixture sessions into the real user session/runtime directories                                  | KodaX 0.7.66          | 2026-07-11 |
+| 026 | High     | Resolved    | Space E2E test mode isolated app data but left the SDK session home pointed at the real user directory                   | v0.1.30               | 2026-07-11 |
+| 027 | High     | Resolved    | A global 200-session window let one busy project make other project histories appear empty                               | v0.1.30               | 2026-07-11 |
+| 028 | High     | Resolved    | External Agent event pagination could skip audit events after the first 512 entries                                      | v0.1.30               | 2026-07-12 |
+| 029 | High     | Resolved    | Renderer could supply a new opaque Agent identity to the Reference update path                                           | v0.1.30               | 2026-07-12 |
+| 030 | Medium   | Resolved    | Workflow external-target wrapper lost method receiver and did not always audit the resolved revision                     | v0.1.30               | 2026-07-12 |
+| 031 | High     | Resolved    | Packaged smoke still expected KodaX 0.7.66 after the 0.7.67 integration                                                  | v0.1.30               | 2026-07-12 |
+| 032 | High     | Resolved    | External Agent task IPC trusted renderer ownership and Task Dock could show/control stale cross-session tasks            | v0.1.30               | 2026-07-12 |
+| 033 | Low      | Resolved    | Project Session spinner remained visible over already-restored rows after switching surfaces                             | v0.1.30               | 2026-07-12 |
+| 034 | Medium   | Resolved    | Task Dock width presets drifted from responsive default, explicit half, and full-workspace behavior                      | v0.1.30               | 2026-07-12 |
+| 035 | Medium   | Resolved    | Project Session refresh rescanned the full history tree and made empty Coder/Partner scopes slow                         | v0.1.30               | 2026-07-12 |
+| 036 | Medium   | Resolved    | New Sessions ignored the provider/model most recently selected in the active Session                                     | v0.1.31               | 2026-07-13 |
+| 037 | Medium   | Resolved    | Partner output links lost their Delivery identity and were incorrectly resolved as project files                         | v0.1.31               | 2026-07-14 |
+| 038 | Medium   | Resolved    | File-backed Markdown opened in Artifact as raw Monaco source instead of a document reading preview                       | v0.1.31               | 2026-07-14 |
+| 039 | Medium   | Resolved    | Partner kept a duplicate collapsed-sidebar edge rail alongside the shared header toggle                                  | v0.1.31               | 2026-07-14 |
+| 040 | Low      | Resolved    | Adjacent command and thinking receipt chips render at different heights                                                  | v0.1.31               | 2026-07-14 |
+| 041 | Medium   | Resolved    | Every assistant text block in a user turn reuses the Query timestamp instead of its own output time                      | v0.1.31               | 2026-07-14 |
+| 042 | High     | Resolved    | Interactive HTML Artifact can show only its static shell and keep stale content after a new version                      | v0.1.31               | 2026-07-14 |
+| 043 | High     | Open        | Unsigned macOS releases repeatedly request the login password for Provider Keychain access                               | v0.1.4                | 2026-07-14 |
+| 044 | Low      | Resolved    | Windows portable executable icon can render as missing or inconsistently across shell sizes                              | v0.1.31               | 2026-07-15 |
+| 045 | Low      | Resolved    | New-conversation mode selectors append a confusing `next` suffix                                                         | v0.1.x                | 2026-07-15 |
+| 046 | High     | Resolved    | F121 live projection and daemon lease lifecycles could diverge across attached Space clients                             | v0.1.32 development   | 2026-07-15 |
+| 047 | Low      | Resolved    | Long user queries consume excessive transcript height without an inline collapse control                                 | v0.1.x                | 2026-07-16 |
+| 048 | Low      | Resolved    | Legacy `tsx/esm` test registration corrupts CommonJS JSON imports from the KodaX SDK dependency graph                    | v0.1.x                | 2026-07-17 |
+| 049 | Medium   | Resolved    | Provider/model and mode changes rolled back before the first send because the daemon Session was not admitted            | v0.1.32 development   | 2026-07-17 |
+| 050 | Medium   | Resolved    | Reference Agent continuation can remain `working` after `sendInput` until an explicit reconcile                          | KodaX 0.7.72          | 2026-07-17 |
+| 051 | Low      | Resolved    | Embedded Runtime omits the working `externalAgentAdmin` service from its public capability metadata                      | KodaX 0.7.72          | 2026-07-17 |
+| 052 | Medium   | Resolved    | Composer could send text before an asynchronously attached image entered the artifact payload                            | v0.1.9                | 2026-07-17 |
+| 053 | Medium   | Resolved    | Restored daemon runs rejected queued prompts because the composer requested unsupported interrupt delivery               | v0.1.32 development   | 2026-07-17 |
+| 054 | High     | Resolved    | Daemon permission dialogs discarded command, directory, and operation context                                            | v0.1.31               | 2026-07-17 |
+| 055 | High     | Resolved    | Ark multimodal follow-ups rejected supported model routes during artifact preflight                                      | <= v0.1.31            | 2026-07-17 |
+| 056 | High     | Resolved    | Restored daemon Sessions lost Auto mode, exposed an unwired plan exit, and reset AskUser choices                         | v0.1.32 development   | 2026-07-17 |
+| 057 | High     | Resolved    | Auto LLM sent an empty classifier model after daemon observation erased the provider default                             | v0.1.32 development   | 2026-07-19 |
+| 058 | High     | Resolved    | Auto LLM diagnosis exposed a stale 8-second process while Space did not seed daemon classifier defaults                  | v0.1.32 development   | 2026-07-19 |
+| 059 | Medium   | Resolved    | KodaX Runtime does not publish complete effective Auto LLM settings or timeout-phase telemetry                           | KodaX 0.7.72          | 2026-07-19 |
+| 060 | High     | Resolved    | Space restart during daemon run admission aborted the accepted Coder run and startup health failures did not reconnect   | v0.1.32 development   | 2026-07-20 |
+| 061 | High     | Resolved    | No-Session File Viewer calls `artifact.previewFile` without legacy-required Session fields and cannot open project files | v0.1.32 development   | 2026-07-20 |
+| 062 | Medium   | Resolved    | Composer sent renderer `file://` attachment links to the model instead of exact native filesystem paths                  | v0.1.30               | 2026-07-20 |
+| 063 | Medium   | Resolved    | Pasted image normalization could send JPEG bytes with a stale PNG media type and make mixed image attachments fail       | v0.1.32-hotfix.0      | 2026-07-20 |
+| 064 | Medium   | Resolved    | Space ignored Runtime-issued concrete permission grants, so Always allow was absent or rejected                          | KodaX 0.7.73 adoption | 2026-07-20 |
+| 065 | Medium   | Resolved    | Project Files sidebar hides file extensions and keeps a stale directory tree                                             | v0.1.32               | 2026-07-21 |
+| 066 | Medium   | Resolved    | Changes panel displayed non-ASCII Git paths as octal escapes and could not open their diffs                              | v0.1.4                | 2026-07-21 |
+| 067 | Medium   | Resolved    | Partner project-file rows select an attachment target but do not open the file viewer                                    | v0.1.32               | 2026-07-21 |
+| 068 | High     | Resolved    | Project HTML preview loses relative assets and hides sandbox/runtime failures that work in a browser                     | v0.1.32               | 2026-07-21 |
+| 069 | High     | Resolved    | Coder daemon converted interrupt follow-ups into separate sequential after-turn runs                                     | v0.1.32 development   | 2026-07-21 |
+| 070 | High     | Resolved    | Large or dependency-backed HTML Artifacts can be misclassified as static and render blank or incomplete                  | v0.1.32               | 2026-07-21 |
+| 071 | High     | Resolved    | Daemon compaction telemetry is dropped, so `/compact` appears frozen and context usage grows past a stale threshold      | v0.1.32 development   | 2026-07-21 |
+| 072 | High     | Resolved    | E2E cleanup hangs until timeout because the isolated shared daemon keeps Electron test pipes open                        | v0.1.32 development   | 2026-07-21 |
+| 073 | Medium   | Resolved    | Artifact HTML E2E scenarios focus Session-owned Artifacts before creating a Session                                      | v0.1.32 development   | 2026-07-21 |
+| 074 | High     | Resolved    | Artifact bootstrap CSP blocks Blob workers that the in-document preview policy explicitly allows                         | v0.1.32 development   | 2026-07-21 |
+| 075 | High     | Resolved    | Runtime manual compaction duplicates canonical events and permits stale token projection                                 | v0.1.32 development   | 2026-07-21 |
+| 076 | High     | Resolved    | Effective compaction threshold can be paired with a different fallback context window                                    | v0.1.32 development   | 2026-07-21 |
+| 077 | High     | Resolved    | Repacked KodaX 0.7.74 leaves the release lockfile with stale integrity                                                   | v0.1.32 development   | 2026-07-21 |
+| 078 | Medium   | Resolved    | History restore regression asserts the pre-canonical compaction token shape                                              | v0.1.32 development   | 2026-07-21 |
+| 079 | High     | Resolved    | Space compatibility gate did not prove the KodaX 0.7.74 Auto permission semantics                                        | v0.1.32 development   | 2026-07-21 |
+| 080 | Medium   | Resolved    | One clipboard image can enter the composer twice through duplicate Web clipboard representations                         | v0.1.25               | 2026-07-22 |
+| 081 | Medium   | Resolved    | Project Files mode removes the persistent Settings row from the left sidebar                                             | v0.1.29               | 2026-07-22 |
+| 082 | Medium   | Resolved    | Consumed daemon interrupt prompt can remain as a duplicate queued bubble when Runtime appends a prompt overlay           | v0.1.32 development   | 2026-07-22 |
+| 083 | High     | In Progress | Late accepted daemon interrupt can be terminalized without delivery when its Run finishes during finalization            | v0.1.32 development   | 2026-07-22 |
+| 084 | High     | Resolved    | Daemon child-agent prose, thinking, and tools are merged into the parent transcript and live snapshot                    | v0.1.32 development   | 2026-07-22 |
+| 085 | High     | Resolved    | Background Session prompts could block the visible Session while their sidebar owner remained hidden                     | v0.1.32 development   | 2026-07-23 |
+| 086 | Medium   | Resolved    | Assistant/tool-leading restored history rendered a fabricated empty user message                                         | v0.1.x                | 2026-07-23 |
+| 087 | Medium   | Resolved    | Windows 10/11 taskbar could ignore the live Space window icon or reuse stale Portable identity                           | v0.1.x                | 2026-07-23 |
+| 088 | Medium   | Resolved    | Other KodaX instance indicator could route an unknown peer into a blank orphan Session                                   | v0.1.x                | 2026-07-23 |
+| 089 | High     | Resolved    | A same-version stale daemon could fail the required capability gate and leave Coder unusable                             | v0.1.32 development   | 2026-07-23 |
+| 090 | Medium   | Resolved    | Closing the last Space window left the daemon running without a visible or controllable background surface               | v0.1.x                | 2026-07-23 |
+| 091 | Medium   | Resolved    | Ordinary Windows queries can flash several short-lived command windows from KodaX Runtime child processes                | KodaX 0.7.74 adoption | 2026-07-23 |
+| 092 | Medium   | Resolved    | Isolated Electron tests leaked Runtime client credentials into the OS keychain                                           | v0.1.32 development   | 2026-07-23 |
+| 093 | Medium   | Resolved    | Artifact and File Viewer Markdown omitted Mermaid and document-local resource support                                    | v0.1.31               | 2026-07-24 |
+| 094 | Medium   | Resolved    | Failed interrupt bubble followed the transcript tail instead of staying at its failure-time position                     | v0.1.32 development   | 2026-07-24 |
+| 095 | Medium   | Resolved    | Changes panel collapsed a fully untracked directory into one row and hid its individual files                            | v0.1.x                | 2026-07-24 |
+| 096 | Medium   | Resolved    | Linux CI lacked an OS keychain and silently projected Runtime A2A as hidden                                              | v0.1.32 development   | 2026-07-25 |
+| 097 | Medium   | Resolved    | Successful document extraction forcibly terminated its Worker during Windows native-module cleanup                       | v0.1.32 development   | 2026-07-25 |
+| 098 | Medium   | Resolved    | A narrow Windows viewport required two clicks to open the right-side Task Dock                                           | v0.1.32 development   | 2026-07-25 |
+| 099 | Medium   | Resolved    | Clean Electron main builds omitted generated runtime icons and disabled the Windows tray                                 | v0.1.32 development   | 2026-07-25 |
+| 100 | Medium   | Resolved    | Interactive HTML Artifact could accept its first click before document controls were initialized                         | v0.1.32 development   | 2026-07-25 |
+| 101 | Medium   | Resolved    | Project HTML File Viewer could accept its first click before module controls were initialized                            | v0.1.32 development   | 2026-07-25 |
+| 102 | Medium   | Resolved    | Partner PDF text Workers could unload an unused native Canvas module with a Windows access violation                     | v0.1.32 development   | 2026-07-25 |
+| 103 | Medium   | Resolved    | Shared-daemon release probe started its event deadline before the peer performed its settings mutation                   | v0.1.32 development   | 2026-07-25 |
+| 104 | Medium   | Resolved    | Interactive HTML could report ready before its out-of-process frame committed an interactive hit-test surface            | v0.1.32 development   | 2026-07-25 |
+| 105 | Medium   | Resolved    | Space builtin skills disappeared from slash completion when the Coder daemon runtime was selected                        | v0.1.32               | 2026-07-26 |
+| 106 | Medium   | Resolved    | File Viewer fallback reported authorization-scope rejection as though an existing external file were missing             | v0.1.32               | 2026-07-26 |
+| 107 | Medium   | Resolved    | Context-window popover mixed physical capacity, automatic-compaction headroom, and reserved response capacity            | v0.1.32               | 2026-07-26 |
+| 108 | High     | Resolved    | Electron native-binding probe could report an incompatible better-sqlite3 ABI as healthy                                 | v0.1.32               | 2026-07-26 |
+| 109 | Medium   | Resolved    | Cross-Provider cache field semantics made a 25k Qwen input look like six ordinary tokens                                 | v0.1.32               | 2026-07-26 |
+| 110 | High     | Resolved    | Restored Session history can render one complete user/assistant turn twice                                               | v0.1.32               | 2026-07-26 |
+| 111 | Medium   | Resolved    | Latest-request input was labeled as a still-pending queue while zero context categories disappeared                      | v0.1.32               | 2026-07-26 |
 
 ## Issue Details
 
@@ -5760,12 +5767,451 @@ Validation:
 - Replacement release dispatch `30148001236` passes Windows, Ubuntu, macOS arm64, and macOS Intel;
   all four platform packages and the 18-file release staging gate pass.
 
+### 105: Space builtin skills disappeared from slash completion when the Coder daemon runtime was selected
+
+- Priority: Medium
+- Status: Resolved
+- Introduced: v0.1.32
+- Fixed: v0.1.32
+- Created: 2026-07-26
+- Resolution Date: 2026-07-26
+
+#### Original Problem
+
+Space ships `huashu-design` and `frontend-slides` under its installer-owned builtin skill root, but
+neither skill appears in the Composer slash completion list while the Coder daemon runtime is
+selected. Newly bundled Space-owned skills would have the same behavior.
+
+Expected behavior:
+
+- Slash completion must contain the daemon runtime catalog and Space-owned builtin skills.
+- A name collision must resolve deterministically without duplicating rows.
+- Runtime failure must retain the existing local registry fallback.
+
+#### Context
+
+Affected components:
+
+- `skill.discover` Electron IPC catalog assembly
+- Space builtin skill registration and metadata mapping
+- Composer skill/slash completion
+
+#### Root Cause
+
+The runtime-selected branch of `skill.discover` returns immediately after
+`runtimeHostAdapter.listRuntimeSkills()`. It never reads or merges the local SDK registry where
+Space registers its installer-owned builtin root.
+
+#### Resolution
+
+- Merge the validated daemon catalog with the validated Space-owned builtin subset from the local
+  registry.
+- Put Space-owned entries first so they win a same-name collision without producing duplicate
+  completion rows, while preserving the 256-item IPC cap.
+- If local builtin discovery fails, retain the daemon catalog; if the daemon request fails, retain
+  the complete local-registry fallback.
+- Keep the packaged builtin set limited to `huashu-design` and `frontend-slides`; candidate design
+  skills were not added while their trigger overlap remains unresolved.
+
+Files changed:
+
+- `apps/desktop/electron/ipc/skill.ts`
+- `apps/desktop/electron/skill/registry.ts`
+- `apps/desktop/electron/test/skill-meta.test.ts`
+- `apps/desktop/electron/test/space-builtins.test.ts`
+- `docs/FEATURE_LIST.md`
+- `docs/HLD.md`
+- `docs/KODAX_CAPABILITY_LEDGER.md`
+- `docs/features/v0.1.32.md`
+- `docs/releases/v0.1.32-release-readiness.md`
+- `docs/KNOWN_ISSUES.md`
+
+Validation:
+
+- Focused skill discovery/registry/snapshot coverage passes 28/28.
+- TypeScript, focused ESLint/Prettier, the Desktop suite with PTY isolated, and the standalone PTY
+  suite pass.
+- Windows Setup/Portable packaging and package smoke verification pass; the packaged snapshot
+  contains all 260 locked files for the two intended Space builtin skills.
+
+### 106: File Viewer fallback reported authorization-scope rejection as though an existing external file were missing
+
+- Priority: Medium
+- Status: Resolved
+- Introduced: v0.1.32
+- Fixed: v0.1.32
+- Created: 2026-07-26
+- Resolution Date: 2026-07-26
+
+#### Original Problem
+
+Clicking a transcript file path such as
+`C:\Users\<user>\Downloads\report.docx` while another project was active did not open File Viewer.
+The fallback reveal action then displayed “File not found; cannot reveal it” even when the file
+existed.
+
+Expected behavior:
+
+- The project and Delivery boundaries of File Viewer remain enforced.
+- An existing path outside KodaX's authorized roots is identified as out of scope, not missing.
+- A genuinely missing allowed file still receives the file-not-found message.
+- An OS shell failure receives a separate reveal-failed message.
+
+#### Context
+
+Affected components:
+
+- Transcript file-link smart routing
+- Project-scoped File Viewer fallback
+- `shell.revealPath` IPC result contract
+- File reveal localization and diagnostics
+
+#### Root Cause
+
+`shell.revealPath` returned only `{ revealed: boolean }`. Its `false` value represented several
+different states: an absent file, an absolute path outside the project/KodaX allowlist, a symlink
+escape, an OS permission failure, or a shell integration failure. The renderer mapped every
+non-success response to `openPath.fileNotFound`, erasing the security-boundary decision and
+misreporting valid external files as absent.
+
+#### Resolution
+
+- Extended the typed reveal response with the backward-compatible optional reasons `not-found`,
+  `not-allowed`, and `failed`.
+- Classify absolute paths against lexical and canonical allowed roots before resolving the target,
+  preserving the allowlist and symlink-escape protections without adding an arbitrary-path
+  existence oracle.
+- Map authorization-scope rejection to a dedicated message explaining that the path is outside
+  KodaX's authorized locations.
+- Keep genuine missing files on the existing file-not-found message and route shell integration
+  failures to the existing reveal-failed message.
+
+Files changed:
+
+- `packages/space-ipc-schema/src/channels/shell.ts`
+- `packages/space-ipc-schema/test/registry.test.ts`
+- `apps/desktop/electron/ipc/shell.ts`
+- `apps/desktop/electron/test/shell-ipc.test.ts`
+- `apps/desktop/renderer/src/lib/openPath.ts`
+- `apps/desktop/renderer/src/i18n/messages.ts`
+- `docs/KNOWN_ISSUES.md`
+
+Tests added:
+
+- IPC schema coverage accepts only the bounded reveal failure reasons while retaining legacy
+  reason-less response compatibility.
+- Shell handler coverage distinguishes external/symlink scope rejection, missing files, OS
+  permission denial, and shell integration failure.
+
+### 107: Context-window popover mixed physical capacity, automatic-compaction headroom, and reserved response capacity
+
+- Priority: Medium
+- Status: Resolved
+- Introduced: v0.1.32
+- Fixed: Unreleased source
+- Created: 2026-07-26
+- Resolution Date: 2026-07-26
+
+#### Original Problem
+
+The popover presented the current root input against the model's physical maximum context while its
+primary purpose was to answer how close the Session was to automatic compaction. It also showed
+reserved response capacity and physical headroom as though they were input categories or protected
+space before the automatic threshold.
+
+One explanatory sentence compounded the problem by describing a 320k effective threshold as a
+percentage of a 1M model maximum even when the Runtime's final absolute threshold was authoritative.
+
+Expected behavior:
+
+- The primary percentage answers “how much of the effective automatic-compaction window is used?”
+- Model maximum context and current automatic-compaction threshold are independent facts.
+- Capacity reserved for the next response is not active input and is not labeled as compaction
+  headroom.
+- Cumulative Provider usage is visible but cannot be confused with current root-context pressure.
+
+#### Root Cause
+
+The UI reused the physical context cap as the denominator for its main progress and composition,
+even after Space had resolved the Runtime's final effective threshold. The Runtime budget `total`
+also includes `reservedResponse`; using it directly as a fallback advanced the input meter with
+capacity that had not been sent as input. Session-wide root/child Provider usage had no separate
+surface, encouraging one indicator to answer two different questions.
+
+#### Resolution
+
+- Normalize the primary progress and every composition percentage to the final
+  `autoCompactThreshold`.
+- Keep Provider root `tokenCount` authoritative; when only a context-budget fallback exists, subtract
+  `reservedResponse` before calculating active input.
+- Show only current-input categories in the segmented bar and legend. Remove reserved-response,
+  physical-headroom, and synthetic auto-compact-reserve segments.
+- Present model maximum context and auto-compact threshold as two independent facts without
+  inventing a percentage relationship.
+- Add a separate Session-usage indicator that accumulates each Provider-reported root/child call
+  once and exposes cache subsets without double counting.
+- Add matching `en-US` and `zh-CN` copy and document the privacy boundary: category counts and
+  hash-only cache diagnostics contain no prompt/message/tool bodies.
+
+Validation:
+
+- Context-reading unit coverage proves reserved-response exclusion and Provider-count precedence.
+- Desktop TypeScript and production renderer build pass.
+- Focused Electron E2E verifies the semantic threshold maximum, current-input composition, policy
+  facts, absence of reserve labels, mutual exclusion of the two popovers, and stable screenshots.
+- The [Product Design QA comparison](../design-qa.md) passes and records the intentional “Context
+  window” title plus removal of output reservation.
+
+### 108: Electron native-binding probe could report an incompatible better-sqlite3 ABI as healthy
+
+- Priority: High
+- Status: Resolved
+- Introduced: v0.1.32
+- Fixed: Unreleased source
+- Created: 2026-07-26
+- Resolution Date: 2026-07-26
+
+#### Original Problem
+
+After unit tests rebuilt `better-sqlite3` for plain Node, a later Electron development or packaging
+flow could accept that Node-ABI binary as compatible. The resulting application could fail during
+startup even though the preflight script printed a successful native-runtime check.
+
+#### Root Cause
+
+The probe launched Electron with `ELECTRON_RUN_AS_NODE=1` and an inline `-e` script, then trusted only
+the child-process exit status. Electron 42 can print an uncaught native-module load exception for
+that invocation while still returning status 0, so the probe mistook the ABI mismatch for success.
+
+#### Resolution
+
+- Wrap the native load and in-memory database open in an explicit `try/catch`.
+- Exit 0 only after the database opens and closes successfully.
+- Print the caught failure and explicitly exit 1 so the existing rebuild path runs, or packaging
+  fails closed instead of emitting a broken artifact.
+
+Validation:
+
+- The probe detects an Electron ABI 146 binding from Node ABI 127 and rebuilds it for Node.
+- The same probe then detects the Node ABI binding from Electron and restores the Electron ABI 146
+  prebuild.
+- Both post-rebuild runtime checks return success.
+
+### 109: Cross-Provider cache field semantics made a 25k Qwen input look like six ordinary tokens
+
+- Priority: Medium
+- Status: Resolved
+- Introduced: v0.1.32
+- Fixed: Unreleased source
+- Created: 2026-07-26
+- Resolution Date: 2026-07-26
+
+#### Original Problem
+
+Three equivalent first-turn Sessions reported visibly different usage breakdowns. Qwen Token Plan
+showed six "regular input" tokens and about 25.4k cache-write tokens, while GLM and Kimi showed
+roughly 23k-24k input tokens without the same split. Although the Session total was arithmetically
+correct, the cards made the Qwen request look implausibly small and encouraged invalid
+cross-Provider comparisons.
+
+#### Root Cause
+
+Qwen Token Plan uses an Anthropic-compatible endpoint. Its cold-cache response reported six
+`input_tokens` plus 25,408 `cache_creation_input_tokens`; KodaX correctly normalized their sum to
+25,414 total input. GLM and Kimi exposed different cache dimensions and tokenizers. Space labeled
+the residual field "regular input" and did not lead with total input or explain that cache-field
+availability and token counts are Provider-specific.
+
+#### Resolution
+
+- Present Provider-reported total input before its cache breakdown.
+- Rename the residual category to "uncached input" and cache write to "cache creation input".
+- State that cache creation is already included in total input.
+- Add an explicit cross-Provider note directing model comparisons to total input and output.
+- Keep all original Provider values and Session-total arithmetic unchanged.
+
+Files changed:
+
+- `apps/desktop/renderer/src/shell/ContextWindowIndicator.tsx`
+- `apps/desktop/renderer/src/i18n/messages.ts`
+- `apps/desktop/renderer/src/store/appStore.ts`
+- `apps/desktop/electron/kodax/space-manual-topics.ts`
+- `apps/desktop/electron/test/space-manual-topics.test.ts`
+- `tests/e2e/coder-layout.spec.ts`
+- `docs/USER_MANUAL.zh-CN.md`
+- `docs/features/v0.1.32-context-compaction-experience.md`
+- `CHANGELOG.md`
+- `docs/KNOWN_ISSUES.md`
+
+Validation:
+
+- Runtime event evidence confirms Qwen's normalized `25,414 = 6 + 25,408` total input and
+  `30,097 = 25,414 + 4,683` Session total.
+- The comparable GLM and Kimi events report totals of 33,565 and 24,473 respectively; their
+  differences are attributable to Provider tokenization, reported cache fields, and output length.
+- Localization, manual-topic, TypeScript, lint, and production-renderer checks cover the revised
+  semantics.
+
+### 110: Restored Session history can render one complete user/assistant turn twice
+
+- Priority: High
+- Status: Resolved
+- Introduced: v0.1.32
+- Fixed: Unreleased source
+- Created: 2026-07-26
+- Resolution Date: 2026-07-26
+
+#### Original Problem
+
+Current behavior:
+
+- Session `s_16145973-baa1-4822-9d79-b635a9d9e144` displays the same user query, thinking receipt,
+  and assistant response twice even though the query was submitted only once.
+- The duplicate is visible after restoring Session history, with matching content and timestamps
+  across both copies of the complete turn.
+
+Expected behavior:
+
+- A persisted user prompt and its assistant response render exactly once.
+- Restoring history remains stable when the same canonical event is observable through more than
+  one Runtime history source or page.
+
+#### Context
+
+Affected components:
+
+- Coder Session history restore
+- Runtime event normalization and transcript projection
+- Renderer transcript row identity
+
+#### Root Cause
+
+The canonical Session JSONL contained one real user message and one assistant message, and the
+Runtime event log contained one `turn.started` / `turn.completed` pair. The duplicate therefore did
+not originate in Provider execution or durable transcript storage.
+
+The renderer can retain the complete turn from the live `session.event` stream while a later
+`session.history` restore reads the same canonical turn. `prependSessionHistory` unconditionally
+concatenated the restored buckets before the existing live buckets. A renderer/Shell remount or a
+history request completing after live delivery therefore projected the same user, thinking, and
+assistant content twice.
+
+The inverse ordering is also possible: `session.history` can return after the renderer-owned user
+message exists but before the matching live assistant stream reaches its terminal event. Treating
+the partial live prefix as a duplicate immediately would risk deleting the only complete durable
+copy; waiting without a boundary identity would leave the duplicate after the live turn finishes.
+
+#### Resolution
+
+- Reconcile both race directions at the restored-history/live-stream boundary:
+  - If the live turn is already terminal when history arrives, remove only the matching restored
+    suffix before concatenation.
+  - If history arrives first, retain both copies and mark only the renderer-owned live message that
+    already existed at that merge boundary. Re-evaluate that exact pair when its terminal event
+    arrives, then retain the richer live event segment and remove the restored copy only after a
+    complete match.
+- Require terminal state, identical user content, a deliberately narrow 250 ms
+  renderer-send/SDK-persist timestamp window, exact thinking and assistant text, exact
+  tool-call/result receipts, notices, compaction metadata, and the same visible block order.
+- Treat provenance and causality as part of identity. A same-content prompt sent after history was
+  applied is never a candidate, even if its timestamp and final answer are identical.
+- Preserve both copies whenever the live turn is partial, fails, diverges, changes tool/notice
+  structure, changes visible order, or has an ambiguous timestamp. This intentionally favors a
+  temporary duplicate over missing or reordered transcript content.
+- Recompute token estimates and transient-artifact projections from the reconciled buffers so the
+  display fix cannot leave double-counted derived state.
+
+Files changed:
+
+- `apps/desktop/renderer/src/store/appStore.ts`
+- `apps/desktop/electron/test/history-replay-no-popout.test.ts`
+- `docs/KNOWN_ISSUES.md`
+
+Tests added:
+
+- A completed turn already present through the live stream remains one user message and one
+  assistant response after history restore.
+- An identical prompt and response sent again at a distinct time remains two legitimate turns.
+- A history-first race retains the complete durable turn while live output is partial, folds only
+  after an identical terminal arrives, and preserves the earlier durable prefix in order.
+- A divergent live terminal, an identical legal repeat sent after restore, missing notices, and
+  text/tool blocks with different visible order are never folded.
+- Identical tool turns fold in both race directions without losing the tool result receipt.
+
+Validation:
+
+- The supplied Session and Runtime files prove one canonical user/assistant turn and one Runtime
+  execution.
+- Focused history, store, composition, queue/cancellation, and transcript-dedup coverage passes
+  101/101.
+- Renderer and Electron TypeScript, focused ESLint, Prettier, and Git whitespace checks pass.
+- All desktop tests pass when the Windows ConPTY file is isolated: the non-PTY suite passes
+  1726/1728 with 2 skips, and `pty-host.test.ts` passes 8/8 alone (1734 passes total). Running every
+  file in one parallel Node invocation can still crash that unrelated native PTY test process with
+  exit `0xC0000374`; no history/store test fails in that run.
+
+### 111: Latest-request input was labeled as a still-pending queue while zero context categories disappeared
+
+- Priority: Medium
+- Status: Resolved
+- Introduced: v0.1.32
+- Fixed: Unreleased source
+- Created: 2026-07-26
+- Resolution Date: 2026-07-26
+
+#### Original Problem
+
+After a first-turn response completed, the context popover showed "pending input" but omitted
+Messages and Recent tool results. This made the completed user prompt look as though it were still
+waiting in a queue and made context categories appear to replace one another between requests.
+
+#### Root Cause
+
+KodaX's `pendingInput` budget field describes the current-turn input segment at the instant of the
+captured model request. On the first request it contains the user prompt; on later requests,
+completed content is classified as transcript and tool-return blocks as recent tool results. Space
+retained the last request snapshot after completion but translated the field literally as
+"pending", and filtered every zero-valued category out of the legend.
+
+#### Resolution
+
+- Rename the field to "Request input" / "本次请求输入".
+- Rename the section to "Latest model input composition" / "最近一次模型输入构成".
+- Explain that this is the latest root-model request snapshot, not an unprocessed queue or the
+  complete visible transcript.
+- Keep all six composition categories visible even when their current value is zero, combining
+  Skills and MCP into one row, so Messages
+  and Recent tool results no longer appear to disappear.
+- Update the manual and context-compaction documentation with the request-to-request category
+  transition.
+
+Files changed:
+
+- `apps/desktop/renderer/src/shell/ContextWindowIndicator.tsx`
+- `apps/desktop/renderer/src/i18n/messages.ts`
+- `apps/desktop/electron/kodax/space-manual-topics.ts`
+- `apps/desktop/electron/test/space-manual-topics.test.ts`
+- `tests/e2e/coder-layout.spec.ts`
+- `docs/README.md`
+- `docs/USER_MANUAL.zh-CN.md`
+- `docs/features/v0.1.32-context-compaction-experience.md`
+- `CHANGELOG.md`
+- `docs/KNOWN_ISSUES.md`
+
+Validation:
+
+- KodaX source inspection confirms that the current-turn segment maps to `pendingInput`, completed
+  ordinary messages map to `transcript`, and tool-result blocks map to `recentToolResults`.
+- Manual-topic tests, TypeScript, lint, formatting, diff checks, and the production renderer build
+  cover the revised presentation.
+
 ## Summary
 
-- Total: 92
+- Total: 99
 - Open: 2
-- Resolved: 90
-- High: 39
-- Medium: 46
+- In Progress: 1
+- Resolved: 96
+- High: 40
+- Medium: 51
 - Low: 7
 - Next to resolve: 043

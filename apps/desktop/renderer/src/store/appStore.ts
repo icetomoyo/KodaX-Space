@@ -78,6 +78,36 @@ export interface SessionTokenInfo {
   readonly lastCompaction?: SessionCompactionOutcome;
 }
 
+export interface SessionTokenUsageInfo {
+  /** Provider-reported total input tokens. Cache reads and cache creation are subsets when known. */
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  /** Undefined means that no provider in this session has reported this dimension yet. */
+  readonly cacheReadInputTokens?: number;
+  readonly cacheWriteInputTokens?: number;
+  /** All Provider calls attributed to this session, including child Agents. */
+  readonly sampleCount: number;
+  /** Calls explicitly attributed to a child Agent by the SDK. */
+  readonly childSampleCount: number;
+  /**
+   * KodaX 0.7.77 provider diagnostics cover every physical request. Older Runtime builds and
+   * mock sessions fall back to iteration summaries until the first diagnostic is observed.
+   */
+  readonly accountingSource?: 'iteration' | 'provider_diagnostic';
+  /** Bounded completed request ids retained across renderer reloads for replay deduplication. */
+  readonly recentRequestIds?: readonly string[];
+}
+
+export type SessionContextBudgetSnapshot = Extract<
+  SessionEvent,
+  { kind: 'context_budget_snapshot' }
+>;
+
+export type SessionProviderCacheDiagnostic = Extract<
+  SessionEvent,
+  { kind: 'provider_cache_diagnostic' }
+>;
+
 /**
  * Persistent inline notification (NotificationsSurface 渲染源)。
  *   - id: dedupe key (eg `ctx-warn:${sessionId}` / `auto-fallback:${sessionId}:${reason}`)
@@ -133,6 +163,13 @@ export interface UserMessage {
   readonly content: string;
   readonly sentAt: number;
   readonly historyNoAssistantSegment?: boolean;
+  /** Internal provenance used only to reconcile the session.history/live-stream boundary. */
+  readonly restoredFromHistory?: true;
+  /**
+   * A history response can win the race while the matching live turn is still incomplete.
+   * Keep both copies until the live terminal arrives, then compare their complete semantics.
+   */
+  readonly pendingRestoredTurnId?: string;
   /**
    * Internal replay anchor for transcripts that begin with assistant/tool output.
    * It keeps event segments aligned without presenting a fabricated empty user bubble.
@@ -271,6 +308,17 @@ interface AppState {
    * 未出现在表里的 session：从未点开 (eventsBuffer 空) → 走 dashboard 那边 msgCount × 1500 估算路径。
    */
   tokensBySession: Readonly<Record<string, SessionTokenInfo | undefined>>;
+  /**
+   * Provider-reported cumulative usage for the whole session. KodaX 0.7.77 uses deduplicated
+   * completed physical-request diagnostics; legacy/mock paths use iteration summaries.
+   */
+  sessionTokenUsageBySession: Readonly<Record<string, SessionTokenUsageInfo | undefined>>;
+  /** Latest privacy-safe SDK context composition snapshot for each root session. */
+  contextBudgetBySession: Readonly<Record<string, SessionContextBudgetSnapshot | undefined>>;
+  /** Latest completed physical Provider request, containing hashes and Provider-reported usage only. */
+  providerCacheDiagnosticBySession: Readonly<
+    Record<string, SessionProviderCacheDiagnostic | undefined>
+  >;
   /**
    * Derived: transient (transcript-only) artifacts per session, minted from
    * completed `create_artifact` tool calls. Updated incrementally on tool_result
@@ -671,6 +719,7 @@ const LS_KEY_MASCOT_MODE = 'kodax-space.mascotMode';
 const LS_KEY_MASCOT_ENABLED = 'kodax-space.mascotEnabled';
 const LS_KEY_SMART_POPOUT = 'kodax-space.smartPopoutEnabled';
 const LS_KEY_NATIVE_COMPLETION_NOTIFICATIONS = 'kodax-space.nativeCompletionNotificationsEnabled';
+const LS_KEY_SESSION_TOKEN_USAGE = 'kodax-space.sessionTokenUsage.v1';
 const PENDING_MODEL_MAX_LEN = 256;
 const MASCOT_MODE_VALUES = ['legacy', 'sprite', 'off'] as const;
 
@@ -856,6 +905,429 @@ function appendSessionEvent(
   return [...bucket, event];
 }
 
+// Deliberately narrow: this is only the renderer-send → SDK-persist skew for one turn, not a
+// general "nearby messages are duplicates" window. A wider window risks folding a fast retry.
+const HISTORY_LIVE_TURN_TIMESTAMP_TOLERANCE_MS = 250;
+
+interface TranscriptTurnSnapshot {
+  readonly messageId: string;
+  readonly userIndex: number;
+  readonly eventStart: number;
+  readonly eventEnd: number;
+  readonly content: string;
+  readonly sentAt: number;
+  readonly restoredFromHistory: boolean;
+  readonly pendingRestoredTurnId?: string;
+  readonly terminal: boolean;
+  readonly thinking: string;
+  readonly text: string;
+  readonly tools: readonly {
+    readonly toolId: string;
+    readonly toolName: string;
+    readonly input: string;
+    readonly result?: string;
+  }[];
+  readonly notices: readonly string[];
+  readonly visibleSequence: readonly string[];
+}
+
+interface RestoredHistoryPrefix {
+  readonly userMessages: readonly UserMessage[];
+  readonly events: readonly SessionEvent[];
+}
+
+/**
+ * A history IPC can finish after the same turn has already arrived through the live event stream,
+ * or it can be applied twice after a renderer remount. In both cases the durable history suffix
+ * and the renderer's live prefix describe the same canonical turn.
+ *
+ * Fold only that cross-source boundary overlap. Repeated turns inside either source are preserved,
+ * and the user timestamps must identify the same send (within the persistence/IPC skew window), so
+ * a user deliberately repeating the same prompt and receiving the same answer remains visible.
+ */
+function trimRestoredHistoryOverlappingLivePrefix(
+  restoredUserMessages: readonly UserMessage[],
+  restoredEvents: readonly SessionEvent[],
+  liveUserMessages: readonly UserMessage[],
+  liveEvents: readonly SessionEvent[],
+): RestoredHistoryPrefix {
+  if (restoredUserMessages.length === 0 || liveUserMessages.length === 0) {
+    return { userMessages: restoredUserMessages, events: restoredEvents };
+  }
+
+  const restoredTurns = transcriptTurnSnapshots(restoredUserMessages, restoredEvents);
+  const liveTurns = transcriptTurnSnapshots(liveUserMessages, liveEvents);
+  const maxOverlap = Math.min(restoredTurns.length, liveTurns.length);
+  let overlap = 0;
+  for (let candidate = 1; candidate <= maxOverlap; candidate++) {
+    const restoredStart = restoredTurns.length - candidate;
+    let matches = true;
+    for (let offset = 0; offset < candidate; offset++) {
+      if (
+        !restoredTurnIsPrefixOfLiveTurn(restoredTurns[restoredStart + offset]!, liveTurns[offset]!)
+      ) {
+        matches = false;
+        break;
+      }
+    }
+    if (matches) overlap = candidate;
+  }
+  if (overlap === 0) {
+    return { userMessages: restoredUserMessages, events: restoredEvents };
+  }
+
+  const firstOverlappingTurn = restoredTurns[restoredTurns.length - overlap]!;
+  return {
+    userMessages: restoredUserMessages.slice(0, firstOverlappingTurn.userIndex),
+    events: restoredEvents.slice(0, firstOverlappingTurn.eventStart),
+  };
+}
+
+/**
+ * When history wins the race but a renderer-owned user message already exists, remember only
+ * that exact cross-source boundary pair. We intentionally do not remove either copy yet: the
+ * live turn may still fail, diverge, or gain a tool/notice that the durable turn did not have.
+ */
+function markPendingHistoryLiveBoundaryOverlap(
+  restoredUserMessages: readonly UserMessage[],
+  restoredEvents: readonly SessionEvent[],
+  liveUserMessages: readonly UserMessage[],
+  liveEvents: readonly SessionEvent[],
+): readonly UserMessage[] {
+  if (restoredUserMessages.length === 0 || liveUserMessages.length === 0) return liveUserMessages;
+  const restoredTurns = transcriptTurnSnapshots(restoredUserMessages, restoredEvents);
+  const liveTurns = transcriptTurnSnapshots(liveUserMessages, liveEvents);
+  const restoredTurn = restoredTurns[restoredTurns.length - 1];
+  const liveTurn = liveTurns[0];
+  if (
+    !restoredTurn ||
+    !liveTurn ||
+    liveTurn.terminal ||
+    liveTurn.restoredFromHistory ||
+    !turnIdentityMatches(restoredTurn, liveTurn)
+  ) {
+    return liveUserMessages;
+  }
+  const liveMessage = liveUserMessages[liveTurn.userIndex];
+  if (!liveMessage || liveMessage.pendingRestoredTurnId === restoredTurn.messageId) {
+    return liveUserMessages;
+  }
+  return liveUserMessages.map((message, index) =>
+    index === liveTurn.userIndex
+      ? { ...message, pendingRestoredTurnId: restoredTurn.messageId }
+      : message,
+  );
+}
+
+interface ReconciledTranscriptBuffers {
+  readonly userMessages: readonly UserMessage[];
+  readonly events: readonly SessionEvent[];
+}
+
+/**
+ * Complete the history-first half of the race. Only the live turn that was already present when
+ * history was applied can carry a candidate marker. At terminal, remove the restored copy only
+ * when both adjacent turns have identical complete visible semantics; otherwise keep both.
+ *
+ * The live copy is retained because it can contain richer non-durable runtime events. This
+ * function never removes an unmarked turn and never folds two history turns or two live turns.
+ */
+function reconcileCompletedHistoryLiveBoundary(
+  userMessages: readonly UserMessage[],
+  events: readonly SessionEvent[],
+): ReconciledTranscriptBuffers {
+  const turns = transcriptTurnSnapshots(userMessages, events);
+  const liveTurn = turns.find((turn) => turn.pendingRestoredTurnId !== undefined && turn.terminal);
+  if (!liveTurn || liveTurn.pendingRestoredTurnId === undefined) {
+    return { userMessages, events };
+  }
+
+  const restoredTurnIndex = turns.findIndex(
+    (turn) =>
+      turn.messageId === liveTurn.pendingRestoredTurnId && turn.restoredFromHistory === true,
+  );
+  const liveTurnIndex = turns.indexOf(liveTurn);
+  const restoredTurn = restoredTurnIndex >= 0 ? turns[restoredTurnIndex] : undefined;
+  const isAdjacentBoundary =
+    restoredTurn !== undefined &&
+    restoredTurnIndex + 1 === liveTurnIndex &&
+    restoredTurn.userIndex + 1 === liveTurn.userIndex &&
+    restoredTurn.eventEnd === liveTurn.eventStart;
+
+  const clearCandidate = (message: UserMessage): UserMessage => {
+    if (message.id !== liveTurn.messageId || message.pendingRestoredTurnId === undefined) {
+      return message;
+    }
+    const { pendingRestoredTurnId: _drop, ...rest } = message;
+    return rest;
+  };
+
+  if (
+    !isAdjacentBoundary ||
+    !restoredTurn ||
+    !restoredTurnIsPrefixOfLiveTurn(restoredTurn, liveTurn)
+  ) {
+    return {
+      userMessages: userMessages.map(clearCandidate),
+      events,
+    };
+  }
+
+  return {
+    userMessages: userMessages
+      .filter((_, index) => index !== restoredTurn.userIndex)
+      .map(clearCandidate),
+    events: [...events.slice(0, restoredTurn.eventStart), ...events.slice(restoredTurn.eventEnd)],
+  };
+}
+
+function transcriptTurnSnapshots(
+  userMessages: readonly UserMessage[],
+  events: readonly SessionEvent[],
+): TranscriptTurnSnapshot[] {
+  const turns: TranscriptTurnSnapshot[] = [];
+  let eventCursor = 0;
+  for (let userIndex = 0; userIndex < userMessages.length; userIndex++) {
+    const message = userMessages[userIndex]!;
+    if (message.hiddenHistoryAnchor === true) {
+      const eventEnd =
+        message.historyNoAssistantSegment === true
+          ? eventCursor
+          : transcriptSegmentEnd(events, eventCursor);
+      eventCursor = eventEnd;
+      continue;
+    }
+    const eventStart = eventCursor;
+    const eventEnd =
+      message.historyNoAssistantSegment === true
+        ? eventCursor
+        : transcriptSegmentEnd(events, eventCursor);
+    const semantic = transcriptSegmentSemantic(events.slice(eventStart, eventEnd));
+    turns.push({
+      messageId: message.id,
+      userIndex,
+      eventStart,
+      eventEnd,
+      content: message.content,
+      sentAt: message.sentAt,
+      restoredFromHistory: message.restoredFromHistory === true,
+      ...(message.pendingRestoredTurnId !== undefined
+        ? { pendingRestoredTurnId: message.pendingRestoredTurnId }
+        : {}),
+      ...semantic,
+    });
+    eventCursor = eventEnd;
+  }
+  return turns;
+}
+
+function transcriptSegmentEnd(events: readonly SessionEvent[], cursor: number): number {
+  for (let index = cursor; index < events.length; index++) {
+    const event = events[index]!;
+    if (
+      index > cursor &&
+      (event.kind === 'mid_turn_user_prompt' || event.kind === 'queued_user_prompt_started')
+    ) {
+      return index;
+    }
+    if (event.kind === 'session_complete' || event.kind === 'session_error') {
+      let end = index + 1;
+      while (
+        end < events.length &&
+        (events[end]!.kind === 'session_complete' || events[end]!.kind === 'session_error')
+      ) {
+        end++;
+      }
+      return end;
+    }
+  }
+  return events.length;
+}
+
+function transcriptSegmentSemantic(
+  events: readonly SessionEvent[],
+): Pick<
+  TranscriptTurnSnapshot,
+  'terminal' | 'thinking' | 'text' | 'tools' | 'notices' | 'visibleSequence'
+> {
+  let terminal = false;
+  let thinking = '';
+  let text = '';
+  const tools: Array<{
+    toolId: string;
+    toolName: string;
+    input: string;
+    result?: string;
+  }> = [];
+  const toolIndexById = new Map<string, number>();
+  const notices: string[] = [];
+  const visibleSequence: string[] = [];
+  const pushVisibleText = (kind: 'thinking' | 'text', value: string): void => {
+    const prefix = `${kind}:`;
+    const last = visibleSequence[visibleSequence.length - 1];
+    if (last?.startsWith(prefix)) {
+      visibleSequence[visibleSequence.length - 1] = `${last}${value}`;
+    } else {
+      visibleSequence.push(`${prefix}${value}`);
+    }
+  };
+  for (const event of events) {
+    if (event.kind === 'session_complete' || event.kind === 'session_error') {
+      terminal = true;
+      if (event.kind === 'session_error') {
+        const error = `error:${event.error}`;
+        notices.push(error);
+        visibleSequence.push(error);
+      }
+    } else if (event.kind === 'thinking_delta') {
+      thinking += event.text;
+      pushVisibleText('thinking', event.text);
+    } else if (event.kind === 'text_delta') {
+      text += event.text;
+      pushVisibleText('text', event.text);
+    } else if (event.kind === 'tool_start') {
+      toolIndexById.set(event.toolId, tools.length);
+      const tool = {
+        toolId: event.toolId,
+        toolName: event.toolName,
+        input: stableJson(event.input ?? {}),
+      };
+      tools.push(tool);
+      visibleSequence.push(`tool-start:${stableJson(tool)}`);
+    } else if (event.kind === 'tool_result') {
+      const toolIndex = toolIndexById.get(event.toolId);
+      if (toolIndex !== undefined) {
+        tools[toolIndex] = { ...tools[toolIndex]!, result: event.content };
+      }
+      visibleSequence.push(
+        `tool-result:${stableJson({
+          toolId: event.toolId,
+          toolName: event.toolName,
+          content: event.content,
+        })}`,
+      );
+    } else if (event.kind === 'sidecar_message') {
+      const notice = `sidecar:${stableJson(event.message)}`;
+      notices.push(notice);
+      visibleSequence.push(notice);
+    } else if (event.kind === 'lineage_notice') {
+      const notice = `lineage:${event.noticeKind}:${event.text}`;
+      notices.push(notice);
+      visibleSequence.push(notice);
+    } else if (event.kind === 'workflow_notice') {
+      const notice = `workflow:${event.text}`;
+      notices.push(notice);
+      visibleSequence.push(notice);
+    } else if (event.kind === 'compact_stats' && event.contextKind !== 'child') {
+      visibleSequence.push(
+        `compact:${stableJson({
+          tokensBefore: event.tokensBefore,
+          tokensAfter: event.tokensAfter,
+          contextId: event.contextId,
+          contextRevision: event.contextRevision,
+          afterRevision: event.afterRevision,
+          committed: event.committed,
+        })}`,
+      );
+    }
+  }
+  return { terminal, thinking, text, tools, notices, visibleSequence };
+}
+
+function turnIdentityMatches(a: TranscriptTurnSnapshot, b: TranscriptTurnSnapshot): boolean {
+  if (a.content !== b.content) return false;
+  return !(
+    !Number.isFinite(a.sentAt) ||
+    !Number.isFinite(b.sentAt) ||
+    Math.abs(a.sentAt - b.sentAt) > HISTORY_LIVE_TURN_TIMESTAMP_TOLERANCE_MS
+  );
+}
+
+/**
+ * History can snapshot an in-flight turn after the user entry and only some assistant/tool
+ * blocks have reached durable storage. Its restored projection is therefore a strict prefix of
+ * the renderer's eventual terminal live turn, not an exact duplicate.
+ *
+ * This relation is intentionally directional and narrow: only the restored side may be shorter,
+ * the live side must be terminal, the same user-send identity must match, and every durable
+ * visible block/tool/notice must appear in the same order with identical content. The only
+ * partially comparable values are the final adjacent text/thinking block and a tool result that
+ * was not durable yet. Any divergence keeps both copies.
+ */
+function restoredTurnIsPrefixOfLiveTurn(
+  restored: TranscriptTurnSnapshot,
+  live: TranscriptTurnSnapshot,
+): boolean {
+  if (!live.terminal || !turnIdentityMatches(restored, live)) return false;
+  if (
+    !stringIsPrefix(restored.thinking, live.thinking) ||
+    !stringIsPrefix(restored.text, live.text)
+  ) {
+    return false;
+  }
+  if (
+    !arrayIsPrefix(restored.notices, live.notices, (left, right) => left === right) ||
+    !arrayIsPrefix(restored.tools, live.tools, (left, right) => {
+      if (
+        left.toolId !== right.toolId ||
+        left.toolName !== right.toolName ||
+        left.input !== right.input
+      ) {
+        return false;
+      }
+      return left.result === undefined || left.result === right.result;
+    })
+  ) {
+    return false;
+  }
+  return visibleSequenceIsPrefix(restored.visibleSequence, live.visibleSequence);
+}
+
+function stringIsPrefix(prefix: string, complete: string): boolean {
+  return complete.startsWith(prefix);
+}
+
+function arrayIsPrefix<T>(
+  prefix: readonly T[],
+  complete: readonly T[],
+  equals: (left: T, right: T) => boolean,
+): boolean {
+  if (prefix.length > complete.length) return false;
+  for (let index = 0; index < prefix.length; index++) {
+    if (!equals(prefix[index]!, complete[index]!)) return false;
+  }
+  return true;
+}
+
+function visibleSequenceIsPrefix(prefix: readonly string[], complete: readonly string[]): boolean {
+  if (prefix.length > complete.length) return false;
+  for (let index = 0; index < prefix.length; index++) {
+    const prefixBlock = prefix[index]!;
+    const completeBlock = complete[index]!;
+    if (prefixBlock === completeBlock) continue;
+    const isFinalPrefixBlock = index === prefix.length - 1;
+    const isPartialTextBlock =
+      (prefixBlock.startsWith('text:') && completeBlock.startsWith('text:')) ||
+      (prefixBlock.startsWith('thinking:') && completeBlock.startsWith('thinking:'));
+    if (!isFinalPrefixBlock || !isPartialTextBlock || !completeBlock.startsWith(prefixBlock)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    const record = value as Readonly<Record<string, unknown>>;
+    return `{${Object.keys(record)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'undefined';
+}
+
 function stampLiveStreamEvent(event: SessionEvent): SessionEvent {
   if (
     (event.kind === 'text_delta' || event.kind === 'thinking_delta') &&
@@ -940,6 +1412,161 @@ function lsSet(key: string, value: string | null): void {
   } catch {
     // localStorage 不可用（隐私模式 / 配额满）—— 静默；store 仍能跑，只是不持久化
   }
+}
+
+const MAX_PERSISTED_SESSION_USAGE = 500;
+const MAX_RECENT_USAGE_REQUEST_IDS = 256;
+
+function isNonNegativeSafeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+function readPersistedSessionTokenUsage(): Record<string, SessionTokenUsageInfo | undefined> {
+  const raw = lsGet(LS_KEY_SESSION_TOKEN_USAGE);
+  if (!raw) return {};
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const entries = Object.entries(parsed as Record<string, unknown>).slice(
+      -MAX_PERSISTED_SESSION_USAGE,
+    );
+    const result: Record<string, SessionTokenUsageInfo> = {};
+    for (const [sessionId, value] of entries) {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+      const record = value as Record<string, unknown>;
+      if (
+        !isNonNegativeSafeInteger(record.inputTokens) ||
+        !isNonNegativeSafeInteger(record.outputTokens) ||
+        !isNonNegativeSafeInteger(record.sampleCount)
+      ) {
+        continue;
+      }
+      if (
+        record.cacheReadInputTokens !== undefined &&
+        !isNonNegativeSafeInteger(record.cacheReadInputTokens)
+      ) {
+        continue;
+      }
+      if (
+        record.cacheWriteInputTokens !== undefined &&
+        !isNonNegativeSafeInteger(record.cacheWriteInputTokens)
+      ) {
+        continue;
+      }
+      result[sessionId] = {
+        inputTokens: record.inputTokens,
+        outputTokens: record.outputTokens,
+        sampleCount: record.sampleCount,
+        childSampleCount: isNonNegativeSafeInteger(record.childSampleCount)
+          ? Math.min(record.childSampleCount, record.sampleCount)
+          : 0,
+        ...(record.cacheReadInputTokens !== undefined
+          ? { cacheReadInputTokens: record.cacheReadInputTokens }
+          : {}),
+        ...(record.cacheWriteInputTokens !== undefined
+          ? { cacheWriteInputTokens: record.cacheWriteInputTokens }
+          : {}),
+        ...(record.accountingSource === 'iteration' ||
+        record.accountingSource === 'provider_diagnostic'
+          ? { accountingSource: record.accountingSource }
+          : {}),
+        ...(Array.isArray(record.recentRequestIds)
+          ? {
+              recentRequestIds: record.recentRequestIds
+                .filter(
+                  (requestId): requestId is string =>
+                    typeof requestId === 'string' &&
+                    requestId.length > 0 &&
+                    requestId.length <= 128,
+                )
+                .slice(-MAX_RECENT_USAGE_REQUEST_IDS),
+            }
+          : {}),
+      };
+    }
+    return result;
+  } catch {
+    return {};
+  }
+}
+
+function persistSessionTokenUsage(
+  usageBySession: Readonly<Record<string, SessionTokenUsageInfo | undefined>>,
+): void {
+  const entries = Object.entries(usageBySession)
+    .filter((entry): entry is [string, SessionTokenUsageInfo] => entry[1] !== undefined)
+    .slice(-MAX_PERSISTED_SESSION_USAGE);
+  lsSet(
+    LS_KEY_SESSION_TOKEN_USAGE,
+    entries.length > 0 ? JSON.stringify(Object.fromEntries(entries)) : null,
+  );
+}
+
+function safeTokenSum(left: number, right: number): number {
+  return Math.min(Number.MAX_SAFE_INTEGER, left + right);
+}
+
+function accumulateSessionTokenUsage(
+  current: SessionTokenUsageInfo | undefined,
+  usage: NonNullable<Extract<SessionEvent, { kind: 'iteration_end' }>['usage']>,
+  isChildAgent: boolean,
+  options: {
+    readonly source: 'iteration' | 'provider_diagnostic';
+    readonly requestId?: string;
+    readonly countWhenUsageMissing?: boolean;
+  },
+): SessionTokenUsageInfo | undefined {
+  if (
+    options.source === 'provider_diagnostic' &&
+    options.requestId &&
+    current?.recentRequestIds?.includes(options.requestId)
+  ) {
+    return current;
+  }
+  const hasReportedValue =
+    usage.inputTokens !== undefined ||
+    usage.outputTokens !== undefined ||
+    usage.cacheReadInputTokens !== undefined ||
+    usage.cacheWriteInputTokens !== undefined;
+  if (!hasReportedValue && !options.countWhenUsageMissing) return current;
+
+  const cacheReadKnown =
+    current?.cacheReadInputTokens !== undefined || usage.cacheReadInputTokens !== undefined;
+  const cacheWriteKnown =
+    current?.cacheWriteInputTokens !== undefined || usage.cacheWriteInputTokens !== undefined;
+  const recentRequestIds =
+    options.source === 'provider_diagnostic' && options.requestId
+      ? [...(current?.recentRequestIds ?? []), options.requestId].slice(
+          -MAX_RECENT_USAGE_REQUEST_IDS,
+        )
+      : current?.recentRequestIds;
+  return {
+    inputTokens: safeTokenSum(current?.inputTokens ?? 0, usage.inputTokens ?? 0),
+    outputTokens: safeTokenSum(current?.outputTokens ?? 0, usage.outputTokens ?? 0),
+    sampleCount: safeTokenSum(current?.sampleCount ?? 0, 1),
+    childSampleCount: safeTokenSum(current?.childSampleCount ?? 0, isChildAgent ? 1 : 0),
+    accountingSource:
+      options.source === 'provider_diagnostic'
+        ? 'provider_diagnostic'
+        : (current?.accountingSource ?? 'iteration'),
+    ...(recentRequestIds ? { recentRequestIds } : {}),
+    ...(cacheReadKnown
+      ? {
+          cacheReadInputTokens: safeTokenSum(
+            current?.cacheReadInputTokens ?? 0,
+            usage.cacheReadInputTokens ?? 0,
+          ),
+        }
+      : {}),
+    ...(cacheWriteKnown
+      ? {
+          cacheWriteInputTokens: safeTokenSum(
+            current?.cacheWriteInputTokens ?? 0,
+            usage.cacheWriteInputTokens ?? 0,
+          ),
+        }
+      : {}),
+  };
 }
 
 // v0.1.9 Step 7 — 模块加载时一次性算 IS_WIN, 跟 LeftSidebar `IS_WIN` 同源 (review
@@ -1218,6 +1845,9 @@ export const useAppStore = create<AppState>((set) => ({
   workBudgetBySession: {},
   harnessProfileBySession: {},
   tokensBySession: {},
+  sessionTokenUsageBySession: readPersistedSessionTokenUsage(),
+  contextBudgetBySession: {},
+  providerCacheDiagnosticBySession: {},
   todoListBySession: {},
   managedTaskStatusBySession: {},
   workflowRuns: {},
@@ -1628,6 +2258,7 @@ export const useAppStore = create<AppState>((set) => ({
             id,
             content: '',
             sentAt: nextHistoricalUserSentAt(fallbackSentAt),
+            restoredFromHistory: true,
             hiddenHistoryAnchor: true,
           });
           openUserWithoutAssistant = true;
@@ -1646,6 +2277,7 @@ export const useAppStore = create<AppState>((set) => ({
             id,
             content: item.content,
             sentAt: nextHistoricalUserSentAt(item.sentAt),
+            restoredFromHistory: true,
           });
           openUserWithoutAssistant = true;
         } else if (item.kind === 'assistant') {
@@ -1744,8 +2376,20 @@ export const useAppStore = create<AppState>((set) => ({
       const currentMsgs = state.userMessagesBySession[sessionId] ?? [];
       const currentEvents = state.eventsBySession[sessionId] ?? [];
       const currentLocalNotices = state.localNoticesBySession[sessionId] ?? [];
-      const combinedMsgs = [...histMsgs, ...currentMsgs];
-      const combinedEvents = [...histEvents, ...currentEvents];
+      const restoredPrefix = trimRestoredHistoryOverlappingLivePrefix(
+        histMsgs,
+        histEvents,
+        currentMsgs,
+        currentEvents,
+      );
+      const markedCurrentMsgs = markPendingHistoryLiveBoundaryOverlap(
+        restoredPrefix.userMessages,
+        restoredPrefix.events,
+        currentMsgs,
+        currentEvents,
+      );
+      const combinedMsgs = [...restoredPrefix.userMessages, ...markedCurrentMsgs];
+      const combinedEvents = [...restoredPrefix.events, ...currentEvents];
       let restoredTokenInfo = state.tokensBySession[sessionId];
       if (restoredTokenInfo === undefined) {
         const latestCompactStats = [...histEvents]
@@ -1945,11 +2589,39 @@ export const useAppStore = create<AppState>((set) => ({
           if (previous.kind === 'session_error' && previous.error === 'cancelled') return state;
         }
       }
+      const appendedEvents = appendSessionEvent(bucket, storedEvent);
+      const completedBoundary =
+        event.kind === 'session_complete' || event.kind === 'session_error'
+          ? reconcileCompletedHistoryLiveBoundary(
+              state.userMessagesBySession[event.sessionId] ?? [],
+              appendedEvents,
+            )
+          : {
+              userMessages: state.userMessagesBySession[event.sessionId] ?? [],
+              events: appendedEvents,
+            };
+      const foldedHistoryBoundary = completedBoundary.events !== appendedEvents;
       const next: Partial<AppState> = {
         eventsBySession: {
           ...state.eventsBySession,
-          [event.sessionId]: appendSessionEvent(bucket, storedEvent),
+          [event.sessionId]: completedBoundary.events,
         },
+        ...(completedBoundary.userMessages !== state.userMessagesBySession[event.sessionId]
+          ? {
+              userMessagesBySession: {
+                ...state.userMessagesBySession,
+                [event.sessionId]: completedBoundary.userMessages,
+              },
+            }
+          : {}),
+        ...(foldedHistoryBoundary
+          ? {
+              transientArtifactsBySession: {
+                ...state.transientArtifactsBySession,
+                [event.sessionId]: collectTransientArtifactsFromEvents(completedBoundary.events),
+              },
+            }
+          : {}),
         lastEvent: storedEvent,
       };
       // 只在"运行真正开始/结束"的生命周期事件到达时才清 pendingSend，把 spinner 交给 event-driven 状态。
@@ -2003,21 +2675,75 @@ export const useAppStore = create<AppState>((set) => ({
       }
       // F008: 同步抽取 work_budget / harness_profile 到 derived maps
       // —— 视图不必每次 scan 整条 bucket
-      if (event.kind === 'iteration_end' && event.contextKind !== 'child') {
-        // 权威 token 计数派生表 — Dashboard 订阅这里，避免每个 text_delta 都触发 dashboard 重算
-        const current = state.tokensBySession[event.sessionId];
-        if (acceptsRootContextUpdate(current, event.contextId, event.contextRevision)) {
-          next.tokensBySession = {
-            ...state.tokensBySession,
-            [event.sessionId]: {
-              tokens: event.tokenCount,
-              source: 'iteration_end',
-              ...(event.contextId ? { contextId: event.contextId } : {}),
-              ...(event.contextRevision !== undefined
-                ? { contextRevision: event.contextRevision }
-                : {}),
-              ...(current?.lastCompaction ? { lastCompaction: current.lastCompaction } : {}),
-            },
+      if (event.kind === 'iteration_end') {
+        if (event.contextKind !== 'child') {
+          // Context window belongs to the root Agent only. Child context sizes must never
+          // overwrite the gauge, even though their Provider usage contributes to session cost.
+          const current = state.tokensBySession[event.sessionId];
+          if (acceptsRootContextUpdate(current, event.contextId, event.contextRevision)) {
+            next.tokensBySession = {
+              ...state.tokensBySession,
+              [event.sessionId]: {
+                tokens: event.tokenCount,
+                source: 'iteration_end',
+                ...(event.contextId ? { contextId: event.contextId } : {}),
+                ...(event.contextRevision !== undefined
+                  ? { contextRevision: event.contextRevision }
+                  : {}),
+                ...(current?.lastCompaction ? { lastCompaction: current.lastCompaction } : {}),
+              },
+            };
+          }
+        }
+
+        // KodaX 0.7.77 diagnostics are emitted before iteration_end and cover physical calls
+        // that have no iteration summary (child/retry/fallback/repair/compaction helpers).
+        // Keep iteration_end only as the compatibility source until diagnostics activate.
+        const currentUsage = state.sessionTokenUsageBySession[event.sessionId];
+        if (event.usage && currentUsage?.accountingSource !== 'provider_diagnostic') {
+          const accumulated = accumulateSessionTokenUsage(
+            currentUsage,
+            event.usage,
+            event.contextKind === 'child',
+            { source: 'iteration' },
+          );
+          if (accumulated) {
+            const usageBySession = {
+              ...state.sessionTokenUsageBySession,
+              [event.sessionId]: accumulated,
+            };
+            next.sessionTokenUsageBySession = usageBySession;
+            persistSessionTokenUsage(usageBySession);
+          }
+        }
+      } else if (event.kind === 'context_budget_snapshot' && event.contextKind !== 'child') {
+        next.contextBudgetBySession = {
+          ...state.contextBudgetBySession,
+          [event.sessionId]: event,
+        };
+      } else if (event.kind === 'provider_cache_diagnostic') {
+        const accumulated = accumulateSessionTokenUsage(
+          state.sessionTokenUsageBySession[event.sessionId],
+          event,
+          event.contextKind === 'child',
+          {
+            source: 'provider_diagnostic',
+            requestId: event.requestId,
+            countWhenUsageMissing: true,
+          },
+        );
+        if (accumulated !== state.sessionTokenUsageBySession[event.sessionId]) {
+          const usageBySession = {
+            ...state.sessionTokenUsageBySession,
+            [event.sessionId]: accumulated,
+          };
+          next.sessionTokenUsageBySession = usageBySession;
+          persistSessionTokenUsage(usageBySession);
+        }
+        if (event.contextKind !== 'child') {
+          next.providerCacheDiagnosticBySession = {
+            ...state.providerCacheDiagnosticBySession,
+            [event.sessionId]: event,
           };
         }
       } else if (event.kind === 'compact_stats' && event.contextKind !== 'child') {
@@ -2044,13 +2770,14 @@ export const useAppStore = create<AppState>((set) => ({
         // History restore 的 terminal — 若到此还没有 iteration_end 写入 tokensBySession，
         // 从已有 buffer 累加一次给 dashboard 用。只算一次（已有真实 tokens 时不覆盖）。
         const existing = state.tokensBySession[event.sessionId];
-        if (existing === undefined) {
-          // 这里 bucket 是"新事件还没并入"的旧 events——补加 ev 本身 = session_complete，
-          // text 类已经在前序 text_delta 时累计在 bucket 里。把累计扫一遍。
+        if (existing === undefined || (foldedHistoryBoundary && existing.source === 'estimate')) {
+          // Count the reconciled buffers. In the history-first race the pre-terminal state
+          // temporarily contains both copies; counting `state`/`bucket` would double the
+          // estimate even though this terminal atomically folds the duplicate boundary.
           let total = 0;
-          const userMsgs = state.userMessagesBySession[event.sessionId] ?? [];
+          const userMsgs = completedBoundary.userMessages;
           for (const um of userMsgs) total += approxTokensForStats(um.content);
-          for (const ev of bucket) {
+          for (const ev of completedBoundary.events) {
             if (ev.kind === 'text_delta' || ev.kind === 'thinking_delta') {
               total += approxTokensForStats(ev.text);
             } else if (ev.kind === 'tool_result') {
@@ -2316,6 +3043,11 @@ export const useAppStore = create<AppState>((set) => ({
       const { [sessionId]: _todo, ...restTodos } = state.todoListBySession;
       const { [sessionId]: _mts, ...restMts } = state.managedTaskStatusBySession;
       const { [sessionId]: _tok, ...restTokens } = state.tokensBySession;
+      const { [sessionId]: _usage, ...restUsage } = state.sessionTokenUsageBySession;
+      const { [sessionId]: _contextBudget, ...restContextBudgets } = state.contextBudgetBySession;
+      const { [sessionId]: _providerCache, ...restProviderCacheDiagnostics } =
+        state.providerCacheDiagnosticBySession;
+      persistSessionTokenUsage(restUsage);
       // KX-I-02 review HIGH-3 — director 的 per-session promoted set 同样跟着 session
       // 走,session 删了就清掉,避免 long-lived 进程下泄漏。
       const { [sessionId]: _prom, ...restPromoted } = state.promotedPopoutsBySession;
@@ -2342,6 +3074,9 @@ export const useAppStore = create<AppState>((set) => ({
         todoListBySession: restTodos,
         managedTaskStatusBySession: restMts,
         tokensBySession: restTokens,
+        sessionTokenUsageBySession: restUsage,
+        contextBudgetBySession: restContextBudgets,
+        providerCacheDiagnosticBySession: restProviderCacheDiagnostics,
         promotedPopoutsBySession: restPromoted,
         inputHistoryBySession: restHistory,
         pendingSendBySession: restPending,
@@ -2754,6 +3489,8 @@ export const useAppStore = create<AppState>((set) => ({
       workBudgetBySession: {},
       harnessProfileBySession: {},
       tokensBySession: {},
+      contextBudgetBySession: {},
+      providerCacheDiagnosticBySession: {},
       todoListBySession: {},
       managedTaskStatusBySession: {},
       sessions: [],
@@ -2782,6 +3519,14 @@ export const useAppStore = create<AppState>((set) => ({
         queuedUserMessagesBySession: { ...state.queuedUserMessagesBySession, [sessionId]: [] },
         localNoticesBySession: { ...state.localNoticesBySession, [sessionId]: [] },
         workflowNoticesBySession: { ...state.workflowNoticesBySession, [sessionId]: [] },
+        contextBudgetBySession: {
+          ...state.contextBudgetBySession,
+          [sessionId]: undefined,
+        },
+        providerCacheDiagnosticBySession: {
+          ...state.providerCacheDiagnosticBySession,
+          [sessionId]: undefined,
+        },
         pendingToolPaths: nextPending,
       };
     });
@@ -2880,6 +3625,9 @@ export const useAppStore = create<AppState>((set) => ({
       const { [sessionId]: _mts, ...restMts } = state.managedTaskStatusBySession;
       const { [sessionId]: _prof, ...restProfiles } = state.harnessProfileBySession;
       const { [sessionId]: _tok, ...restTokens } = state.tokensBySession;
+      const { [sessionId]: _contextBudget, ...restContextBudgets } = state.contextBudgetBySession;
+      const { [sessionId]: _providerCache, ...restProviderCacheDiagnostics } =
+        state.providerCacheDiagnosticBySession;
       return {
         userMessagesBySession: { ...state.userMessagesBySession, [sessionId]: newMsgs },
         queuedUserMessagesBySession: { ...state.queuedUserMessagesBySession, [sessionId]: [] },
@@ -2901,6 +3649,8 @@ export const useAppStore = create<AppState>((set) => ({
         managedTaskStatusBySession: restMts,
         harnessProfileBySession: restProfiles,
         tokensBySession: restTokens,
+        contextBudgetBySession: restContextBudgets,
+        providerCacheDiagnosticBySession: restProviderCacheDiagnostics,
       };
     });
     if (persistedLocalNotices !== null) {

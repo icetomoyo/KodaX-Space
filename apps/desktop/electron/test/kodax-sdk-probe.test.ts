@@ -14,13 +14,14 @@ test('probeKodaxSdk: real SDK passes (all expected functions / classes exist)', 
   await assert.doesNotReject(probeKodaxSdk());
 });
 
-test('probeKodaxSdk: optional FEATURE_260 surface is negotiated from exports, not inferred', async () => {
+test('probeKodaxSdk: experimental memory surface is negotiated from exports, not inferred', async () => {
   await probeKodaxSdk();
   const capability = getExperimentalMemorySdkCapability();
-  assert.deepEqual(capability, {
-    status: 'available',
-    policyVersion: 'f260-v0.7.68.2',
-  });
+  assert.equal(capability.status, 'available');
+  assert.match(
+    capability.policyVersion,
+    /^f[1-9]\d*-v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/,
+  );
 });
 
 test('inspectExperimentalMemoryModule rejects a present but incomplete contract', () => {
@@ -28,8 +29,31 @@ test('inspectExperimentalMemoryModule rejects a present but incomplete contract'
     () =>
       inspectExperimentalMemoryModule({
         createMemoryAgent() {},
-        MEMORY_POLICY_VERSION: 'f260-v0.7.68.2',
+        MEMORY_POLICY_VERSION: 'f275-v0.7.77.1',
       }),
     /createMemoryControlPlane expected function/,
+  );
+});
+
+test('inspectExperimentalMemoryModule accepts a newer feature policy identifier', () => {
+  assert.deepEqual(
+    inspectExperimentalMemoryModule({
+      createMemoryAgent() {},
+      createMemoryControlPlane() {},
+      MEMORY_POLICY_VERSION: 'f275-v0.7.77.1',
+    }),
+    { policyVersion: 'f275-v0.7.77.1' },
+  );
+});
+
+test('inspectExperimentalMemoryModule rejects malformed policy versions', () => {
+  assert.throws(
+    () =>
+      inspectExperimentalMemoryModule({
+        createMemoryAgent() {},
+        createMemoryControlPlane() {},
+        MEMORY_POLICY_VERSION: 'f275-v0.7.77',
+      }),
+    /f<feature>-v<semver>\.<revision>/,
   );
 });

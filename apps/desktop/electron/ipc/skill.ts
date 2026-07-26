@@ -7,10 +7,17 @@ import { skillMetaSchema } from '@kodax-space/space-ipc-schema';
 import { registerChannel } from './register.js';
 import { validateProjectRoot } from './validate.js';
 import { kodaxHost } from '../kodax/host.js';
-import { getSkillRegistry, invalidateSkillCache, toSkillMeta } from '../skill/registry.js';
+import {
+  getSkillRegistry,
+  invalidateSkillCache,
+  mergeSkillMetas,
+  toSkillMeta,
+  type SkillMeta,
+} from '../skill/registry.js';
 import { createSkillDynamicContextExecutor } from '../skill/dynamic-context-executor.js';
 import { installSkillFromPath } from '../skill/install.js';
 import { runtimeHostAdapter } from '../kodax/runtime-host-adapter.js';
+import { isSpaceBuiltinSkillPath } from '../skill/space-builtins.js';
 
 /**
  * 安全 env：**完全不转发** process.env 给 SDK VariableResolver。
@@ -35,6 +42,14 @@ function joinArgs(args: readonly string[]): string {
   return args.join(' ');
 }
 
+function keepValidSkillMetas(skills: readonly SkillMeta[]): SkillMeta[] {
+  return skills.filter((skill) => {
+    const ok = skillMetaSchema.safeParse(skill).success;
+    if (!ok) console.warn(`[skill.discover] dropping schema-invalid skill: ${skill.name}`);
+    return ok;
+  });
+}
+
 export function registerSkillChannels(): void {
   // skill.discover
   // 列 user-invocable skill（不含 disableModelInvocation 的）。
@@ -50,17 +65,31 @@ export function registerSkillChannels(): void {
     }
     if (runtimeHostAdapter.isRuntimeSelected()) {
       try {
-        const skills = (await runtimeHostAdapter.listRuntimeSkills(input.projectRoot))
-          .map((skill) => ({
+        const runtimeSkills = keepValidSkillMetas(
+          (await runtimeHostAdapter.listRuntimeSkills(input.projectRoot)).map((skill) => ({
             name: skill.name,
             description: skill.description.slice(0, 512),
             ...(skill.argumentHint ? { argumentHint: skill.argumentHint.slice(0, 128) } : {}),
             source: skill.source,
             path: skill.path,
-          }))
-          .filter((skill) => skillMetaSchema.safeParse(skill).success)
-          .slice(0, 256);
-        return { skills };
+          })),
+        );
+        try {
+          const registry = await getSkillRegistry(input.projectRoot);
+          const spaceBuiltinSkills = keepValidSkillMetas(
+            registry
+              .listUserInvocable()
+              .filter((skill) => isSpaceBuiltinSkillPath(skill.path))
+              .map(toSkillMeta),
+          );
+          return { skills: mergeSkillMetas(spaceBuiltinSkills, runtimeSkills) };
+        } catch (error) {
+          console.warn(
+            '[skill.discover] Space builtin catalog unavailable; using Coder daemon catalog:',
+            error instanceof Error ? error.message : error,
+          );
+          return { skills: runtimeSkills.slice(0, 256) };
+        }
       } catch (error) {
         console.warn(
           '[skill.discover] Coder daemon catalog unavailable; using Space host provider:',
@@ -73,15 +102,7 @@ export function registerSkillChannels(): void {
     // the whole array via OUTPUT_INVALID). toSkillMeta already clamps the common
     // overflow (long descriptions); this catches anything still off-spec (e.g. a
     // SKILL.md with a non-kebab name) so the picker/slash list degrade gracefully.
-    const skills = registry
-      .listUserInvocable()
-      .map(toSkillMeta)
-      .filter((m) => {
-        const ok = skillMetaSchema.safeParse(m).success;
-        if (!ok) console.warn(`[skill.discover] dropping schema-invalid skill: ${m.name}`);
-        return ok;
-      })
-      .slice(0, 256); // schema caps the array at 256
+    const skills = keepValidSkillMetas(registry.listUserInvocable().map(toSkillMeta)).slice(0, 256); // schema caps the array at 256
     return { skills };
   });
 

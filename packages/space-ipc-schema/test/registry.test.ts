@@ -25,6 +25,7 @@ import {
   handoffChangedChannel,
   clipboardSaveImageChannel,
   clipboardReadImageChannel,
+  shellRevealPathChannel,
   shellOpenDirectoryChannel,
   ok,
   fail,
@@ -104,6 +105,23 @@ test('shell.openDirectory is present in the typed invoke registry', () => {
       projectRoot: 'C:/workspace',
     }).success,
     true,
+  );
+});
+
+test('shell.revealPath accepts bounded failure reasons and legacy responses', () => {
+  assert.equal(invokeChannels['shell.revealPath'], shellRevealPathChannel);
+  for (const output of [
+    { revealed: true },
+    { revealed: false },
+    { revealed: false, reason: 'not-found' },
+    { revealed: false, reason: 'not-allowed' },
+    { revealed: false, reason: 'failed' },
+  ]) {
+    assert.equal(shellRevealPathChannel.output.safeParse(output).success, true);
+  }
+  assert.equal(
+    shellRevealPathChannel.output.safeParse({ revealed: false, reason: 'outside-project' }).success,
+    false,
   );
 });
 

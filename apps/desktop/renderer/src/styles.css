@@ -647,6 +647,150 @@ html:not(.dark) .glass::after {
       .monaco-editor·.xterm 嵌入组件硬豁免（绝不误伤编辑器·终端）。
    2) 显式 .ix / .ix-pop（覆盖·特例）：给不在 zone 内、或要特殊形态（图标放大）的元素单独标。
    ============================================================ */
+/* All app buttons share the Token-usage button's soft sweep language.
+   This layer only paints above each button's own background, so semantic fills,
+   existing shadows and component-specific hover colors remain intact.
+   - semantic classes automatically tint the sweep;
+   - wide menu/list rows use a quieter edge;
+   - native window controls, editor controls and explicit opt-outs stay untouched. */
+:where(body) button {
+  --button-interaction-rgb: var(--info);
+  --button-sheen-opacity: 0.58;
+  --button-edge-opacity: 0.15;
+  --button-focus-opacity: 0.72;
+}
+
+:where(body)
+  button:is([class*='text-accent'], [class*='bg-accent'], [class*='border-accent'], .btn-accent) {
+  --button-interaction-rgb: var(--accent);
+  --button-sheen-opacity: 0.72;
+  --button-edge-opacity: 0.2;
+}
+
+:where(body) button:is([class*='text-ok'], [class*='bg-ok'], [class*='border-ok']) {
+  --button-interaction-rgb: var(--ok);
+  --button-sheen-opacity: 0.66;
+  --button-edge-opacity: 0.18;
+}
+
+:where(body) button:is([class*='text-warn'], [class*='bg-warn'], [class*='border-warn']) {
+  --button-interaction-rgb: var(--warn);
+  --button-sheen-opacity: 0.68;
+  --button-edge-opacity: 0.18;
+}
+
+:where(body)
+  button:is([class*='text-thinking'], [class*='bg-thinking'], [class*='border-thinking']) {
+  --button-interaction-rgb: var(--thinking);
+  --button-sheen-opacity: 0.66;
+  --button-edge-opacity: 0.18;
+}
+
+:where(body) button:is([class*='text-danger'], [class*='bg-danger'], [class*='border-danger']) {
+  --button-interaction-rgb: var(--danger);
+  --button-sheen-opacity: 0.7;
+  --button-edge-opacity: 0.2;
+}
+
+:where(body) button:is([role='menuitem'], [class~='w-full']) {
+  --button-sheen-opacity: 0.42;
+  --button-edge-opacity: 0.07;
+}
+
+:where(body)
+  button:not(.no-ix):not(.no-button-sheen):not(.window-control-button):not(
+    .session-token-indicator
+  ):not([class~='absolute']):not([class~='fixed']):not([class~='sticky']):not(:disabled) {
+  position: relative;
+}
+
+:where(body)
+  button:not(.no-ix):not(.no-button-sheen):not(.window-control-button):not(
+    .session-token-indicator
+  ):not(:disabled)::before {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  content: '';
+  pointer-events: none;
+  opacity: 0;
+  background: linear-gradient(
+    105deg,
+    transparent 27%,
+    rgb(var(--button-interaction-rgb) / 0.08) 40%,
+    rgb(255 255 255 / 0.24) 49%,
+    rgb(var(--button-interaction-rgb) / 0.2) 55%,
+    transparent 69%
+  );
+  background-position: 125% 50%;
+  background-size: 240% 100%;
+  box-shadow:
+    inset 0 0 0 1px rgb(var(--button-interaction-rgb) / var(--button-edge-opacity)),
+    inset 0 1px 0 rgb(255 255 255 / 0.11);
+}
+
+html:not(.q-minimal)
+  :where(body)
+  button:not(.no-ix):not(.no-button-sheen):not(.window-control-button):not(
+    .session-token-indicator
+  ):not(:disabled)::before {
+  transition:
+    background-position 560ms var(--ease-expo),
+    opacity var(--motion-fast) var(--ease-expo);
+}
+
+:where(body)
+  button:not(.no-ix):not(.no-button-sheen):not(.window-control-button):not(
+    .session-token-indicator
+  ):not(:disabled):hover::before {
+  opacity: var(--button-sheen-opacity);
+  background-position: -125% 50%;
+}
+
+:where(body)
+  button:not(.no-ix):not(.no-button-sheen):not(.window-control-button):not(
+    .session-token-indicator
+  ):not(:disabled):active::before {
+  opacity: 0.86;
+  background-position: 50% 50%;
+  transition-duration: 80ms;
+}
+
+:where(body)
+  button:not(.no-ix):not(.no-button-sheen):not(.window-control-button):not(
+    :disabled
+  ):focus-visible {
+  outline: 2px solid rgb(var(--button-interaction-rgb) / var(--button-focus-opacity));
+  outline-offset: 2px;
+}
+
+:where(body)
+  button:not(.no-ix):not(.no-button-sheen):not(.window-control-button):not(
+    .session-token-indicator
+  ):not(:disabled):focus-visible::before {
+  opacity: 0.4;
+  background-position: 50% 50%;
+}
+
+:where(body)
+  button[aria-pressed='true']:not(.no-ix):not(.no-button-sheen):not(.window-control-button):not(
+    .session-token-indicator
+  ):not(:disabled)::before {
+  opacity: 0.18;
+  background-position: 50% 50%;
+}
+
+.monaco-editor button::before,
+.xterm button::before {
+  display: none;
+}
+
+.monaco-editor button:focus-visible,
+.xterm button:focus-visible {
+  outline: revert;
+  outline-offset: revert;
+}
+
 .ix {
   transition:
     transform 0.16s var(--ease),
@@ -674,6 +818,13 @@ html:not(.q-minimal) .ix-pop:active {
   transform: scale(0.9);
 }
 @media (prefers-reduced-motion: reduce) {
+  :where(body)
+    button:not(.no-ix):not(.no-button-sheen):not(.window-control-button):not(
+      .session-token-indicator
+    ):not(:disabled)::before {
+    transition: none;
+    background-position: 50% 50%;
+  }
   .ix:hover,
   .ix:active,
   .ix-pop:hover,
@@ -1338,6 +1489,178 @@ html.q-full .context-liquid-gauge__wave {
   animation: ks-context-liquid-wave 2.6s var(--ease) infinite;
 }
 
+.context-window-popover {
+  transform-origin: calc(100% - 1.5rem) 100%;
+  background:
+    radial-gradient(circle at 88% 8%, rgb(var(--ok) / 0.055), transparent 34%),
+    rgb(var(--surface-4));
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.045),
+    0 18px 48px rgb(0 0 0 / 0.34),
+    0 2px 10px rgb(0 0 0 / 0.2);
+}
+
+html:not(.q-minimal) .context-window-popover {
+  animation: ks-context-popover-in var(--motion-normal) var(--ease-expo);
+}
+
+.context-effective-window-bar {
+  border: 1px solid rgb(var(--border-default) / 0.48);
+  box-shadow:
+    inset 0 1px 2px rgb(0 0 0 / 0.18),
+    0 1px 0 rgb(255 255 255 / 0.025);
+}
+
+.context-effective-window-segment {
+  height: 100%;
+  flex: 0 0 auto;
+  transform-origin: left center;
+}
+
+html:not(.q-minimal) .context-effective-window-segment {
+  animation: ks-context-segment-in var(--motion-slow) var(--ease-expo) both;
+}
+
+.context-window-facts {
+  background: linear-gradient(180deg, rgb(var(--surface-3) / 0.7), rgb(var(--surface-3) / 0.42));
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.025);
+}
+
+@keyframes ks-context-popover-in {
+  from {
+    opacity: 0;
+    transform: translateY(5px) scale(0.975);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes ks-context-segment-in {
+  from {
+    opacity: 0.5;
+    transform: scaleX(0);
+  }
+  to {
+    opacity: 1;
+    transform: scaleX(1);
+  }
+}
+
+.session-token-indicator {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 22% 20%, rgb(var(--info) / 0.09), transparent 42%),
+    linear-gradient(180deg, rgb(var(--surface-4) / 0.66), rgb(var(--surface-3) / 0.42));
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.06),
+    0 1px 5px rgb(0 0 0 / 0.12);
+}
+
+.session-token-indicator::before {
+  position: absolute;
+  z-index: 0;
+  inset: -80% -30%;
+  content: '';
+  pointer-events: none;
+  opacity: 0;
+  transform: translateX(-34%) rotate(-14deg);
+  background: linear-gradient(
+    105deg,
+    transparent 38%,
+    rgb(var(--info) / 0.2) 47%,
+    rgb(255 255 255 / 0.18) 50%,
+    rgb(var(--ok) / 0.16) 53%,
+    transparent 62%
+  );
+}
+
+html:not(.q-minimal) .session-token-indicator {
+  transition:
+    color var(--motion-fast) var(--ease-expo),
+    border-color var(--motion-fast) var(--ease-expo),
+    box-shadow var(--motion-fast) var(--ease-expo);
+}
+
+html:not(.q-minimal) .session-token-indicator::before {
+  transition:
+    transform 560ms var(--ease-expo),
+    opacity var(--motion-fast) var(--ease-expo);
+}
+
+.session-token-indicator:hover {
+  border-color: rgb(var(--info) / 0.44);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.08),
+    0 0 0 1px rgb(var(--info) / 0.1),
+    0 2px 10px rgb(var(--info) / 0.12);
+}
+
+.session-token-indicator:hover::before {
+  opacity: 1;
+  transform: translateX(34%) rotate(-14deg);
+}
+
+.token-usage-orbit {
+  display: grid;
+  width: 1.55rem;
+  height: 1.55rem;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 999px;
+  background: rgb(var(--surface-4) / 0.82);
+  box-shadow:
+    0 0 0 1px rgb(var(--border-default) / 0.4),
+    inset 0 1px 1px rgb(255 255 255 / 0.08);
+}
+
+.token-usage-orbit__ring {
+  position: absolute;
+  inset: 1px;
+  border-radius: inherit;
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 0);
+  mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 0);
+  filter: drop-shadow(0 0 2px rgb(var(--info) / 0.2));
+}
+
+.token-usage-orbit__coin {
+  width: 0.9rem;
+  height: 0.9rem;
+  color: rgb(var(--fg-secondary));
+  stroke: currentcolor;
+  stroke-width: 1.05;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+html.q-full .session-token-indicator:hover .token-usage-orbit__ring {
+  animation: ks-token-orbit 2.4s linear infinite;
+}
+
+html:not(.q-minimal) .session-token-total {
+  animation: ks-token-count-in 280ms var(--ease-expo);
+}
+
+@keyframes ks-token-orbit {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes ks-token-count-in {
+  from {
+    opacity: 0.45;
+    transform: translateY(2px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
 @keyframes ks-context-liquid-wave {
   0% {
     transform: translateX(-9%);
@@ -1380,6 +1703,12 @@ html:not(.q-minimal) .collapse-track {
   html:not(.q-minimal) .context-liquid-gauge__fill,
   html:not(.q-minimal) .context-liquid-gauge__surface,
   html:not(.q-minimal) .context-liquid-gauge__wave,
+  html:not(.q-minimal) .context-window-popover,
+  html:not(.q-minimal) .context-effective-window-segment,
+  html:not(.q-minimal) .session-token-indicator,
+  html:not(.q-minimal) .session-token-indicator::before,
+  html:not(.q-minimal) .session-token-total,
+  html.q-full .session-token-indicator:hover .token-usage-orbit__ring,
   html:not(.q-minimal) .kodax-dog-mascot__motion,
   html:not(.q-minimal) .kodax-dog-sprite-mascot__motion,
   html:not(.q-minimal) .collapse-track {

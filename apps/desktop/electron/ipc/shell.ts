@@ -50,8 +50,30 @@ function isWithin(child: string, parent: string, isWin = IS_WIN): boolean {
   return c.startsWith(p.endsWith(path.sep) ? p : p + path.sep);
 }
 
-async function isAbsoluteRevealAllowed(target: string, deps: ShellHandlerDeps): Promise<boolean> {
-  if (isNetworkPath(target)) return false;
+type RevealFailureReason = 'not-found' | 'not-allowed' | 'failed';
+
+type ResolveRevealTargetResult =
+  | { readonly ok: true; readonly target: string }
+  | { readonly ok: false; readonly reason: RevealFailureReason };
+
+function fsFailureReason(error: unknown): RevealFailureReason {
+  const code =
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    typeof (error as { readonly code?: unknown }).code === 'string'
+      ? (error as { readonly code: string }).code
+      : null;
+  if (code === 'ENOENT' || code === 'ENOTDIR') return 'not-found';
+  if (code === 'EACCES' || code === 'EPERM') return 'not-allowed';
+  return 'failed';
+}
+
+async function resolveAbsoluteRevealTarget(
+  target: string,
+  deps: ShellHandlerDeps,
+): Promise<ResolveRevealTargetResult> {
+  if (isNetworkPath(target)) return { ok: false, reason: 'not-allowed' };
 
   const roots = [deps.getKodaxDir(), deps.getSpaceDataDir()];
   try {
@@ -60,41 +82,61 @@ async function isAbsoluteRevealAllowed(target: string, deps: ShellHandlerDeps): 
     // A stale project allowlist should not widen access.
   }
 
-  let realTarget: string;
-  try {
-    realTarget = await deps.realpath(target);
-  } catch {
-    return false;
-  }
-  if (isNetworkPath(realTarget)) return false;
-
+  const allowedRoots: { readonly lexical: string; readonly real: string }[] = [];
   for (const root of roots) {
     try {
-      if (isWithin(realTarget, await deps.realpath(root), deps.isWin ?? IS_WIN)) return true;
+      allowedRoots.push({ lexical: root, real: await deps.realpath(root) });
     } catch {
       // Stale roots are ignored.
     }
   }
-  return false;
+
+  const isLexicallyAllowed = allowedRoots.some(
+    (root) =>
+      isWithin(target, root.lexical, deps.isWin ?? IS_WIN) ||
+      isWithin(target, root.real, deps.isWin ?? IS_WIN),
+  );
+  if (!isLexicallyAllowed) return { ok: false, reason: 'not-allowed' };
+
+  let realTarget: string;
+  try {
+    realTarget = await deps.realpath(target);
+  } catch (error) {
+    return { ok: false, reason: fsFailureReason(error) };
+  }
+  if (isNetworkPath(realTarget)) return { ok: false, reason: 'not-allowed' };
+
+  if (allowedRoots.some((root) => isWithin(realTarget, root.real, deps.isWin ?? IS_WIN))) {
+    return { ok: true, target };
+  }
+  return { ok: false, reason: 'not-allowed' };
 }
 
 async function resolveRevealTarget(
   input: { readonly path: string; readonly projectRoot?: string },
   deps: ShellHandlerDeps,
-): Promise<string | null> {
+): Promise<ResolveRevealTargetResult> {
   if (path.isAbsolute(input.path)) {
-    return (await isAbsoluteRevealAllowed(input.path, deps)) ? input.path : null;
+    return resolveAbsoluteRevealTarget(input.path, deps);
   }
-  if (input.projectRoot === undefined) return null;
-  await deps.assertProjectAllowed(input.projectRoot);
-  return deps.resolveInsideProject(input.projectRoot, input.path);
+  if (input.projectRoot === undefined) return { ok: false, reason: 'not-allowed' };
+  try {
+    await deps.assertProjectAllowed(input.projectRoot);
+    return {
+      ok: true,
+      target: await deps.resolveInsideProject(input.projectRoot, input.path),
+    };
+  } catch (error) {
+    const reason = fsFailureReason(error);
+    return { ok: false, reason: reason === 'failed' ? 'not-allowed' : reason };
+  }
 }
 
 export function createShellHandlers(deps: ShellHandlerDeps): {
   readonly revealPath: (input: {
     readonly path: string;
     readonly projectRoot?: string;
-  }) => Promise<{ revealed: boolean }>;
+  }) => Promise<{ readonly revealed: boolean; readonly reason?: RevealFailureReason }>;
   readonly openDirectory: (input: {
     readonly path: string;
     readonly projectRoot?: string;
@@ -103,35 +145,29 @@ export function createShellHandlers(deps: ShellHandlerDeps): {
 } {
   return {
     async revealPath(input) {
-      let target: string | null;
+      const resolved = await resolveRevealTarget(input, deps);
+      if (!resolved.ok) return { revealed: false, reason: resolved.reason };
       try {
-        target = await resolveRevealTarget(input, deps);
-      } catch {
-        return { revealed: false };
+        await deps.access(resolved.target);
+      } catch (error) {
+        return { revealed: false, reason: fsFailureReason(error) };
       }
-      if (target === null) return { revealed: false };
       try {
-        await deps.access(target);
+        deps.showItemInFolder(resolved.target);
       } catch {
-        return { revealed: false };
+        return { revealed: false, reason: 'failed' };
       }
-      deps.showItemInFolder(target);
       return { revealed: true };
     },
 
     async openDirectory(input) {
-      let target: string | null;
-      try {
-        target = await resolveRevealTarget(input, deps);
-      } catch {
-        return { opened: false };
-      }
-      if (target === null) return { opened: false };
+      const resolved = await resolveRevealTarget(input, deps);
+      if (!resolved.ok) return { opened: false };
 
       try {
-        const targetStat = await deps.stat(target);
+        const targetStat = await deps.stat(resolved.target);
         if (!targetStat.isDirectory()) return { opened: false };
-        const errorMessage = await deps.openPath(target);
+        const errorMessage = await deps.openPath(resolved.target);
         return { opened: errorMessage.length === 0 };
       } catch {
         return { opened: false };
