@@ -2,7 +2,7 @@
 // (saveClipboardImage / cleanupClipboardSession / cleanupClipboardForSession).
 // 不走 IPC layer / registerChannel —— 那条路要 Electron ipcMain，单测不需要。
 
-import { test, beforeEach } from 'node:test';
+import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
@@ -12,19 +12,58 @@ import {
   readNativeClipboardImage,
   cleanupClipboardSession,
   cleanupClipboardForSession,
+  cleanupPendingClipboardArtifacts,
   assertArtifactPathInClipboardSandbox,
+  discardPendingClipboardImage,
+  finalizePendingClipboardArtifacts,
+  prepareClipboardArtifactsForSend,
 } from '../ipc/clipboard.js';
+import {
+  _resetDataPathsCacheForTesting,
+  getKodaxDir,
+  getSpaceDataDir,
+} from '../kodax/data-paths.js';
 
 // 1×1 transparent PNG, base64 — used as a tiny valid image payload.
 const TINY_PNG_BASE64 =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
 
-const TEST_ROOT = path.join(os.tmpdir(), 'kodax-space', 'clipboard');
+const ORIGINAL_TEST_PROFILE = process.env.KODAX_TEST_ONBOARDING;
+let testCounter = 0;
+let testProfileRoot = '';
+let durableTestRoot = '';
+let pendingTestRoot = '';
+let legacyTestRoot = '';
 
 beforeEach(async () => {
   // 清前一次跑剩下的 (tests 之间互不污染)
-  await fs.rm(TEST_ROOT, { recursive: true, force: true }).catch(() => {});
+  testCounter += 1;
+  process.env.KODAX_TEST_ONBOARDING = `clipboard-${process.pid}-${testCounter}`;
+  _resetDataPathsCacheForTesting();
+  testProfileRoot = getKodaxDir();
+  durableTestRoot = path.join(getSpaceDataDir(), 'session-attachments');
+  pendingTestRoot = path.join(getSpaceDataDir(), 'test-pending-attachments');
+  legacyTestRoot = path.join(getSpaceDataDir(), 'test-legacy-clipboard');
 });
+
+afterEach(async () => {
+  const expectedParent = path.resolve(os.tmpdir());
+  const resolvedRoot = path.resolve(testProfileRoot);
+  assert.equal(path.dirname(resolvedRoot), expectedParent);
+  assert.match(path.basename(resolvedRoot), /^kodax-test-clipboard-/);
+  await fs.rm(resolvedRoot, { recursive: true, force: true });
+  if (ORIGINAL_TEST_PROFILE === undefined) delete process.env.KODAX_TEST_ONBOARDING;
+  else process.env.KODAX_TEST_ONBOARDING = ORIGINAL_TEST_PROFILE;
+  _resetDataPathsCacheForTesting();
+});
+
+async function writeLegacyImage(sessionId: string, filename = 'legacy.png'): Promise<string> {
+  const dir = path.join(legacyTestRoot, sessionId);
+  await fs.mkdir(dir, { recursive: true });
+  const filePath = path.join(dir, filename);
+  await fs.writeFile(filePath, Buffer.from(TINY_PNG_BASE64, 'base64'));
+  return filePath;
+}
 
 // Deterministic normalization mocks (avoid depending on the native `sharp` binding in test).
 const NORMALIZE_TO_PNG = {
@@ -55,6 +94,7 @@ test('saveImage: writes file, extension follows the NORMALIZED mediaType (C6)', 
     NORMALIZE_TO_PNG,
   );
   assert.ok(path.isAbsolute(out.path), 'returned path should be absolute');
+  assert.ok(out.path.startsWith(pendingTestRoot + path.sep), 'draft image should use pending data');
   assert.ok(out.path.endsWith('.png'), 'png ext from normalized mediaType');
   assert.equal(out.mediaType, 'image/png', 'response exposes normalized mediaType');
   assert.ok(out.path.includes('sess-A'), 'path should be under sessionId subdir');
@@ -235,13 +275,17 @@ test('saveImage: multiple pastes in same session produce unique filenames', asyn
   assert.equal(entries.length, 2);
 });
 
-test('cleanupSession: removes the per-session subdir', async () => {
-  await saveClipboardImage({
+test('cleanupSession: removes only pending drafts and preserves all historical attachments', async () => {
+  const draft = await saveClipboardImage({
     sessionId: 'sess-F',
     base64: TINY_PNG_BASE64,
     mediaType: 'image/png',
   });
-  const dir = path.join(TEST_ROOT, 'sess-F');
+  const [durable] = await prepareClipboardArtifactsForSend('sess-F', [
+    { kind: 'image', path: draft.path, mediaType: draft.mediaType },
+  ]);
+  const legacyPath = await writeLegacyImage('sess-F');
+  const dir = path.dirname(draft.path);
   assert.ok(
     await fs
       .stat(dir)
@@ -257,7 +301,17 @@ test('cleanupSession: removes the per-session subdir', async () => {
     .stat(dir)
     .then(() => true)
     .catch(() => false);
-  assert.equal(stillThere, false, 'dir gone after cleanup');
+  assert.equal(stillThere, false, 'pending dir gone after cleanup');
+  for (const historicalPath of [durable!.path, legacyPath]) {
+    assert.equal(
+      await fs
+        .stat(historicalPath)
+        .then(() => true)
+        .catch(() => false),
+      true,
+      'renderer-accessible cleanup must not remove historical attachments',
+    );
+  }
 });
 
 test('cleanupSession: silent no-op when session never wrote any image', async () => {
@@ -278,20 +332,25 @@ test('cleanupClipboardForSession (host helper): silent on bad sessionId', async 
   await cleanupClipboardForSession('with/slash');
 });
 
-test('cleanupClipboardForSession (host helper): removes valid session subdir', async () => {
-  await saveClipboardImage({
+test('cleanupClipboardForSession (host helper): removes durable and legacy session subdirs', async () => {
+  const draft = await saveClipboardImage({
     sessionId: 'sess-G',
     base64: TINY_PNG_BASE64,
     mediaType: 'image/png',
   });
+  const [durable] = await prepareClipboardArtifactsForSend('sess-G', [
+    { kind: 'image', path: draft.path, mediaType: draft.mediaType },
+  ]);
+  const legacyPath = await writeLegacyImage('sess-G');
   await cleanupClipboardForSession('sess-G');
 
-  const dir = path.join(TEST_ROOT, 'sess-G');
-  const stillThere = await fs
-    .stat(dir)
-    .then(() => true)
-    .catch(() => false);
-  assert.equal(stillThere, false);
+  for (const filePath of [draft.path, durable!.path, legacyPath]) {
+    const stillThere = await fs
+      .stat(filePath)
+      .then(() => true)
+      .catch(() => false);
+    assert.equal(stillThere, false);
+  }
 });
 
 test('files are written with 0o600 mode (owner read/write only)', async () => {
@@ -312,12 +371,12 @@ test('files are written with 0o600 mode (owner read/write only)', async () => {
 test('per-session dir is created with mode 0o700 (owner-only)', async () => {
   if (process.platform === 'win32') return;
 
-  await saveClipboardImage({
+  const out = await saveClipboardImage({
     sessionId: 'sess-I',
     base64: TINY_PNG_BASE64,
     mediaType: 'image/png',
   });
-  const dirStat = await fs.stat(path.join(TEST_ROOT, 'sess-I'));
+  const dirStat = await fs.stat(path.dirname(out.path));
   assert.equal(dirStat.mode & 0o777, 0o700);
 });
 
@@ -348,6 +407,156 @@ test('assertArtifactPathInClipboardSandbox: accepts path from saveClipboardImage
   await assertArtifactPathInClipboardSandbox('sess-J', out.path);
 });
 
+test('assertArtifactPathInClipboardSandbox: accepts an existing legacy temporary path', async () => {
+  const legacyPath = await writeLegacyImage('sess-legacy');
+  await assertArtifactPathInClipboardSandbox('sess-legacy', legacyPath);
+});
+
+test('prepareClipboardArtifactsForSend: promotes a draft into KODAX_HOME and finalizes only the draft', async () => {
+  const previousTestProfile = process.env.KODAX_TEST_ONBOARDING;
+  const previousKodaxHome = process.env.KODAX_HOME;
+  const explicitHome = path.join(os.tmpdir(), `kodax-explicit-home-${process.pid}-${testCounter}`);
+  delete process.env.KODAX_TEST_ONBOARDING;
+  process.env.KODAX_HOME = explicitHome;
+  _resetDataPathsCacheForTesting();
+
+  try {
+    const draft = await saveClipboardImage({
+      sessionId: 'sess-home',
+      base64: TINY_PNG_BASE64,
+      mediaType: 'image/png',
+    });
+    const [promoted] = await prepareClipboardArtifactsForSend('sess-home', [
+      { kind: 'image', path: draft.path, mediaType: draft.mediaType },
+    ]);
+    assert.ok(
+      promoted!.path.startsWith(path.join(explicitHome, 'space', 'session-attachments') + path.sep),
+    );
+    await finalizePendingClipboardArtifacts('sess-home', [
+      { kind: 'image', path: draft.path, mediaType: draft.mediaType },
+    ]);
+    await assert.rejects(() => fs.stat(draft.path), { code: 'ENOENT' });
+    await fs.stat(promoted!.path);
+  } finally {
+    await cleanupPendingClipboardArtifacts();
+    if (previousTestProfile === undefined) delete process.env.KODAX_TEST_ONBOARDING;
+    else process.env.KODAX_TEST_ONBOARDING = previousTestProfile;
+    if (previousKodaxHome === undefined) delete process.env.KODAX_HOME;
+    else process.env.KODAX_HOME = previousKodaxHome;
+    _resetDataPathsCacheForTesting();
+    await fs.rm(explicitHome, { recursive: true, force: true });
+  }
+});
+
+test('discardPendingClipboardImage: removes one draft but refuses historical paths', async () => {
+  const first = await saveClipboardImage({
+    sessionId: 'sess-discard',
+    base64: TINY_PNG_BASE64,
+    mediaType: 'image/png',
+  });
+  const second = await saveClipboardImage({
+    sessionId: 'sess-discard',
+    base64: TINY_PNG_BASE64,
+    mediaType: 'image/png',
+  });
+  const [durable] = await prepareClipboardArtifactsForSend('sess-discard', [
+    { kind: 'image', path: second.path, mediaType: second.mediaType },
+  ]);
+
+  assert.deepEqual(
+    await discardPendingClipboardImage({ sessionId: 'sess-discard', path: first.path }),
+    { removed: true },
+  );
+  await assert.rejects(() => fs.stat(first.path), { code: 'ENOENT' });
+  await fs.stat(second.path);
+  await assert.rejects(
+    () => discardPendingClipboardImage({ sessionId: 'sess-discard', path: durable!.path }),
+    /only pending images/,
+  );
+  await fs.stat(durable!.path);
+});
+
+test('assertArtifactPathInClipboardSandbox: rejects a Session-directory junction escape', async (t) => {
+  const externalDir = path.join(testProfileRoot, 'outside-session-root');
+  const externalFile = path.join(externalDir, 'secret.png');
+  const linkedSessionDir = path.join(durableTestRoot, 'sess-junction');
+  await fs.mkdir(externalDir, { recursive: true });
+  await fs.mkdir(durableTestRoot, { recursive: true });
+  await fs.writeFile(externalFile, Buffer.from(TINY_PNG_BASE64, 'base64'));
+  try {
+    await fs.symlink(
+      externalDir,
+      linkedSessionDir,
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'EPERM') {
+      t.skip('creating a junction/symlink is not permitted on this host');
+      return;
+    }
+    throw err;
+  }
+
+  await assert.rejects(
+    () =>
+      assertArtifactPathInClipboardSandbox(
+        'sess-junction',
+        path.join(linkedSessionDir, 'secret.png'),
+      ),
+    /outside clipboard sandbox/,
+  );
+});
+
+test('assertArtifactPathInClipboardSandbox: permits an application-root junction', async (t) => {
+  const linkedRootTarget = path.join(testProfileRoot, 'linked-durable-root-target');
+  const sessionDir = path.join(linkedRootTarget, 'sess-root-link');
+  const imagePath = path.join(sessionDir, 'image.png');
+  await fs.mkdir(sessionDir, { recursive: true });
+  await fs.writeFile(imagePath, Buffer.from(TINY_PNG_BASE64, 'base64'));
+  await fs.rm(durableTestRoot, { recursive: true, force: true });
+  await fs.mkdir(path.dirname(durableTestRoot), { recursive: true });
+  try {
+    await fs.symlink(
+      linkedRootTarget,
+      durableTestRoot,
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'EPERM') {
+      t.skip('creating a root junction/symlink is not permitted on this host');
+      return;
+    }
+    throw err;
+  }
+
+  await assertArtifactPathInClipboardSandbox(
+    'sess-root-link',
+    path.join(durableTestRoot, 'sess-root-link', 'image.png'),
+  );
+});
+
+test('assertArtifactPathInClipboardSandbox: rejects a file symlink escape', async (t) => {
+  const sessionDir = path.join(durableTestRoot, 'sess-file-link');
+  const externalFile = path.join(testProfileRoot, 'outside-file.png');
+  const linkedFile = path.join(sessionDir, 'linked.png');
+  await fs.mkdir(sessionDir, { recursive: true });
+  await fs.writeFile(externalFile, Buffer.from(TINY_PNG_BASE64, 'base64'));
+  try {
+    await fs.symlink(externalFile, linkedFile, 'file');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'EPERM') {
+      t.skip('creating a file symlink is not permitted on this host');
+      return;
+    }
+    throw err;
+  }
+
+  await assert.rejects(
+    () => assertArtifactPathInClipboardSandbox('sess-file-link', linkedFile),
+    /outside clipboard sandbox/,
+  );
+});
+
 test('assertArtifactPathInClipboardSandbox: rejects /etc/passwd-style abs path outside sandbox', async () => {
   const evilPath =
     process.platform === 'win32' ? 'C:\\Windows\\System32\\config\\SAM' : '/etc/passwd';
@@ -366,6 +575,18 @@ test('assertArtifactPathInClipboardSandbox: rejects path from a different sessio
   });
   await assert.rejects(
     () => assertArtifactPathInClipboardSandbox('sess-M', out.path),
+    /outside clipboard sandbox/,
+  );
+});
+
+test('assertArtifactPathInClipboardSandbox: rejects a sibling with a matching path prefix', async () => {
+  const siblingDir = path.join(durableTestRoot, 'sess-prefix-evil');
+  await fs.mkdir(siblingDir, { recursive: true });
+  const siblingPath = path.join(siblingDir, 'image.png');
+  await fs.writeFile(siblingPath, Buffer.from(TINY_PNG_BASE64, 'base64'));
+
+  await assert.rejects(
+    () => assertArtifactPathInClipboardSandbox('sess-prefix', siblingPath),
     /outside clipboard sandbox/,
   );
 });

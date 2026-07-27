@@ -158,6 +158,7 @@ export {
   clipboardSaveImageChannel,
   clipboardReadImageChannel,
   clipboardCleanupSessionChannel,
+  clipboardDiscardImageChannel,
 } from './channels/clipboard.js';
 
 export {

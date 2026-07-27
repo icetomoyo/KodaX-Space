@@ -5,10 +5,19 @@
 
 import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { promises as fs } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import type { SessionEvent } from '@kodax-space/space-ipc-schema';
 import { kodaxHost } from '../kodax/host.js';
 import type { ManagedSession } from '../kodax/session-adapter.js';
 import { setRendererTarget } from '../ipc/push.js';
+import {
+  finalizePendingClipboardArtifacts,
+  prepareClipboardArtifactsForSend,
+  saveClipboardImage,
+} from '../ipc/clipboard.js';
+import { _resetDataPathsCacheForTesting, getKodaxDir } from '../kodax/data-paths.js';
 import { permissionBroker } from '../permission/broker.js';
 import { installSessionStoreMock, type MockSessionState } from './_helpers/session-store-mock.js';
 
@@ -215,6 +224,89 @@ test('delete: removes session from list (in-memory + persisted)', async () => {
   assert.equal(second, true);
 });
 
+test('disposeAll preserves durable attachments until the Session is deleted', async () => {
+  const previousTestProfile = process.env.KODAX_TEST_ONBOARDING;
+  process.env.KODAX_TEST_ONBOARDING = `host-attachments-${process.pid}`;
+  _resetDataPathsCacheForTesting();
+  const isolatedRoot = getKodaxDir();
+
+  try {
+    const { sessionId } = kodaxHost.createSession({ projectRoot: '/r', provider: 'mock' });
+    const draft = await saveClipboardImage(
+      {
+        sessionId,
+        base64:
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=',
+        mediaType: 'image/png',
+      },
+      {
+        normalizePastedImage: async (buffer) => ({
+          buffer,
+          mediaType: 'image/png',
+          width: 1,
+          height: 1,
+        }),
+      },
+    );
+    const [attachment] = await prepareClipboardArtifactsForSend(sessionId, [
+      { kind: 'image', path: draft.path, mediaType: draft.mediaType },
+    ]);
+    await finalizePendingClipboardArtifacts(sessionId, [
+      { kind: 'image', path: draft.path, mediaType: draft.mediaType },
+    ]);
+
+    await kodaxHost.disposeAll();
+    await fs.stat(attachment!.path);
+
+    assert.equal(await kodaxHost.delete(sessionId), true);
+    await assert.rejects(() => fs.stat(attachment!.path), { code: 'ENOENT' });
+  } finally {
+    if (previousTestProfile === undefined) delete process.env.KODAX_TEST_ONBOARDING;
+    else process.env.KODAX_TEST_ONBOARDING = previousTestProfile;
+    _resetDataPathsCacheForTesting();
+
+    const resolvedRoot = path.resolve(isolatedRoot);
+    assert.equal(path.dirname(resolvedRoot), path.resolve(os.tmpdir()));
+    assert.match(path.basename(resolvedRoot), /^kodax-test-host-attachments-/);
+    await fs.rm(resolvedRoot, { recursive: true, force: true });
+  }
+});
+
+test('disposeAll removes unsent draft attachments', async () => {
+  const previousTestProfile = process.env.KODAX_TEST_ONBOARDING;
+  process.env.KODAX_TEST_ONBOARDING = `host-drafts-${process.pid}`;
+  _resetDataPathsCacheForTesting();
+  const isolatedRoot = getKodaxDir();
+
+  try {
+    const { sessionId } = kodaxHost.createSession({ projectRoot: '/r', provider: 'mock' });
+    const draft = await saveClipboardImage(
+      {
+        sessionId,
+        base64:
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=',
+        mediaType: 'image/png',
+      },
+      {
+        normalizePastedImage: async (buffer) => ({
+          buffer,
+          mediaType: 'image/png',
+          width: 1,
+          height: 1,
+        }),
+      },
+    );
+
+    await kodaxHost.disposeAll();
+    await assert.rejects(() => fs.stat(draft.path), { code: 'ENOENT' });
+  } finally {
+    if (previousTestProfile === undefined) delete process.env.KODAX_TEST_ONBOARDING;
+    else process.env.KODAX_TEST_ONBOARDING = previousTestProfile;
+    _resetDataPathsCacheForTesting();
+    await fs.rm(isolatedRoot, { recursive: true, force: true });
+  }
+});
+
 test('delete: returns false and preserves persisted state when SDK reports session_running', async () => {
   const sessionId = 's_busy_elsewhere';
   mockState.seed(sessionId, '/r', 'Busy elsewhere');
@@ -224,6 +316,52 @@ test('delete: returns false and preserves persisted state when SDK reports sessi
 
   assert.equal(deleted, false);
   assert.equal(mockState.has(sessionId), true);
+});
+
+test('delete: preserves committed attachments while SDK reports session_running', async () => {
+  const previousTestProfile = process.env.KODAX_TEST_ONBOARDING;
+  process.env.KODAX_TEST_ONBOARDING = `host-busy-attachments-${process.pid}`;
+  _resetDataPathsCacheForTesting();
+  const isolatedRoot = getKodaxDir();
+
+  try {
+    const { sessionId } = kodaxHost.createSession({ projectRoot: '/r', provider: 'mock' });
+    const draft = await saveClipboardImage(
+      {
+        sessionId,
+        base64:
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=',
+        mediaType: 'image/png',
+      },
+      {
+        normalizePastedImage: async (buffer) => ({
+          buffer,
+          mediaType: 'image/png',
+          width: 1,
+          height: 1,
+        }),
+      },
+    );
+    const [attachment] = await prepareClipboardArtifactsForSend(sessionId, [
+      { kind: 'image', path: draft.path, mediaType: draft.mediaType },
+    ]);
+    await finalizePendingClipboardArtifacts(sessionId, [
+      { kind: 'image', path: draft.path, mediaType: draft.mediaType },
+    ]);
+    mockState.setDeleteBusy(true);
+
+    assert.equal(await kodaxHost.delete(sessionId), false);
+    await fs.stat(attachment!.path);
+
+    mockState.setDeleteBusy(false);
+    assert.equal(await kodaxHost.delete(sessionId), true);
+    await assert.rejects(() => fs.stat(attachment!.path), { code: 'ENOENT' });
+  } finally {
+    if (previousTestProfile === undefined) delete process.env.KODAX_TEST_ONBOARDING;
+    else process.env.KODAX_TEST_ONBOARDING = previousTestProfile;
+    _resetDataPathsCacheForTesting();
+    await fs.rm(isolatedRoot, { recursive: true, force: true });
+  }
 });
 
 test('delete: reattaches a local session when another KodaX process keeps disk state busy', async () => {

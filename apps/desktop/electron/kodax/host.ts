@@ -40,7 +40,7 @@ import { getSessionRuntimeStore } from './session-runtime-store.js';
 import { getSessionTitleStore } from './session-title-store.js';
 import { providerConfigStore } from '../providers/config.js';
 import { getBuiltin } from '../providers/catalog.js';
-import { cleanupClipboardForSession } from '../ipc/clipboard.js';
+import { cleanupClipboardForSession, cleanupPendingClipboardArtifacts } from '../ipc/clipboard.js';
 import { runtimeHostAdapter } from './runtime-host-adapter.js';
 
 // alpha.2: Real KodaX 内核 vs Mock 切换。
@@ -1067,10 +1067,8 @@ class KodaXHost {
       return false;
     }
     await getSessionTitleStore().delete(sessionId);
-    // OC-31 v0.1.9: 清掉本 session 的 clipboard image 暂存目录（best-effort，
-    // ENOENT 静默；KodaX SDK 已经把 image path 序列化进 message history 文本里，
-    // 删图本身不影响 historical content，下次 resume 时 path 指向"已不存在"也只会
-    // 让 SDK provider transport 跳过这张图，不会让整 turn fail）。
+    // Attachments are durable Session-owned data. Delete them only after the
+    // SDK confirms that the durable Session itself was deleted.
     await cleanupClipboardForSession(sessionId);
     return true;
   }
@@ -1091,8 +1089,7 @@ class KodaXHost {
       ),
     );
     this.sessions.clear();
-    // OC-31 v0.1.9: 同 delete()，进程关掉时把所有 session 的 clipboard 暂存清掉
-    await Promise.all(sids.map((sid) => cleanupClipboardForSession(sid)));
+    await cleanupPendingClipboardArtifacts();
   }
 }
 

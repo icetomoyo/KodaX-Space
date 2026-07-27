@@ -73,7 +73,11 @@ import { dedupeTranscriptEntries } from './transcript-dedup.js';
 import { resolveRuntimeDefaults } from '../kodax/runtime-defaults.js';
 import { getSessionRuntimeStore } from '../kodax/session-runtime-store.js';
 import { getSessionLocalNoticeStore } from '../kodax/session-local-notice-store.js';
-import { assertArtifactPathInClipboardSandbox } from './clipboard.js';
+import {
+  assertArtifactPathInClipboardSandbox,
+  finalizePendingClipboardArtifacts,
+  prepareClipboardArtifactsForSend,
+} from './clipboard.js';
 import { clearSlashGoalForSession } from '../slash/builtin.js';
 import { ensureProviderKeyInjected } from './provider.js';
 import { buildAttachmentPathOverlay } from '../kodax/attachment-path-overlay.js';
@@ -339,8 +343,8 @@ export function registerSessionChannels(): void {
     //
     // review HIGH-2 fix: renderer 可能传任意 path 进 artifacts (eg /etc/passwd) 让 SDK
     // 把任意文件读进 multimodal content 发给 LLM。这里在调 session.send 前对每个 artifact
-    // path 做沙箱校验——必须落在 <app temp>/kodax-space/clipboard/<sid>/ 之内，且 sid
-    // 等于本次 send 的 sessionId (不许跨 session 引用图)。
+    // path 做沙箱校验——必须落在持久 Session attachment 目录或兼容的旧版临时
+    // clipboard 目录之内，且 sid 等于本次 send 的 sessionId (不许跨 session 引用图)。
     if (input.artifacts && input.artifacts.length > 0) {
       for (const a of input.artifacts) {
         await assertArtifactPathInClipboardSandbox(input.sessionId, a.path);
@@ -355,14 +359,29 @@ export function registerSessionChannels(): void {
     }
     await ensureProviderKeyInjected(session.provider);
     await validateInputArtifactsForSession(input.artifacts, session);
+    const preparedArtifacts =
+      input.artifacts && input.artifacts.length > 0
+        ? await prepareClipboardArtifactsForSend(input.sessionId, input.artifacts)
+        : undefined;
     const attachmentPathOverlay = buildAttachmentPathOverlay(input.attachmentPaths);
     const promptOverlay = [input.partnerPromptOverlay, attachmentPathOverlay]
       .filter((part): part is string => part !== undefined)
       .join('\n\n');
-    const result = await session.send(input.prompt, input.artifacts, {
+    const result = await session.send(input.prompt, preparedArtifacts, {
       queueMode: input.queueMode,
       ...(promptOverlay ? { promptOverlay } : {}),
     });
+    if (input.artifacts && input.artifacts.length > 0) {
+      await finalizePendingClipboardArtifacts(input.sessionId, input.artifacts).catch(
+        (error: unknown) => {
+          console.warn(
+            `[session.send] accepted prompt but failed to remove draft attachments: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        },
+      );
+    }
     return {
       accepted: true as const,
       ...(result.queued

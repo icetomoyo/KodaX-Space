@@ -1145,7 +1145,9 @@ app
     // F011 内置终端 (xterm.js + node-pty) — terminal.create/write/resize/kill + output/exit push
     registerTerminalChannels();
     // OC-31 v0.1.9 clipboard image paste — renderer 把粘贴板图片落到 app temp dir
-    registerClipboardChannels();
+    registerClipboardChannels({
+      sessionExists: (sessionId) => kodaxHost.get(sessionId) !== undefined,
+    });
     // Shell exits: reveal files, enter allowlisted directories, and open http(s) URLs.
     // 让 renderer 里到处的文件路径 / URL 死文本变成可点击（用户反馈）。
     registerShellChannels();

@@ -1,20 +1,25 @@
 // Clipboard IPC handlers — OC-31 v0.1.9.
 //
-// 把 renderer 给的 base64 image 落到 app temp dir，返回绝对路径供 session.send.artifacts 引用。
-// session dispose 时清掉 per-session 子目录。
+// 把 renderer 给的 base64 image 先落到隔离的草稿目录，返回绝对路径供
+// session.send.artifacts 引用；send 接受前复制到持久目录。只有 durable Session
+// 删除成功后才清掉历史附件子目录。
 //
 // 安全:
 //   - sessionId 用作子目录名，先 strict regex 校验 ([A-Za-z0-9_-]+，最大 128 字符）
 //     防 path traversal (`../` / NUL / 反斜杠等)
 //   - 落盘文件名是单调时间戳，renderer 不能控制
-//   - 落盘根目录 = app.getPath('temp')/kodax-space/clipboard/，进程独占
+//   - 草稿根目录 = app temp/kodax-space/pending-attachments/<profile>/<process>/
+//   - 历史根目录 = <KODAX_HOME>/space/session-attachments/
+//   - 旧版 app temp 路径只用于兼容已有历史附件
 //   - 写盘体积上限同 schema (6 MiB) —— Zod 已先于此 handler 拦
 //   - mediaType → 扩展名固定查表（png/jpg/webp），不让 renderer 指定文件后缀
 
-import { promises as fs } from 'node:fs';
+import { constants as fsConstants, promises as fs } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
 import { registerChannel } from './register.js';
+import { getKodaxRuntimeDir } from '../kodax/data-paths.js';
 
 const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 
@@ -66,31 +71,71 @@ const EXT_BY_MEDIA: Record<string, string> = {
 // (Date.now() 在 Workflow harness 里被禁，但 IPC handler 跑在 main 进程，
 //  Electron main 不在 Workflow 沙箱里 —— 这里 Date.now() 完全可用)
 let monotonicCounter = 0;
+const pendingProcessScope = `${process.pid}-${randomUUID()}`;
 
 // 懒加载 `app` —— electron 模块在 node --test 没原生 binary 时不暴露 `app`，
 // 而 host.test.ts → host.ts → 这里的 module load 链不应当因此而崩。registerClipboardChannels
 // 才是会被 main 调的入口，到时候 electron 已经在 main 进程里跑起来了。
-async function clipboardRoot(): Promise<string> {
+function durableClipboardRoot(): string {
+  return path.join(getKodaxRuntimeDir(), 'space', 'session-attachments');
+}
+
+async function electronTempDir(): Promise<string> {
+  if (process.env.KODAX_TEST_ONBOARDING) {
+    return path.join(getKodaxRuntimeDir(), 'space', 'test-temp');
+  }
   if (!process.versions.electron) {
-    return path.join(os.tmpdir(), 'kodax-space', 'clipboard');
+    return os.tmpdir();
   }
   try {
     const electron = await import('electron');
-    const tempDir = electron.app.getPath('temp');
-    return path.join(tempDir, 'kodax-space', 'clipboard');
+    return electron.app.getPath('temp');
   } catch {
-    // Fallback for non-Electron (test harness): os.tmpdir()。tests 永远不会用到
-    // 实际写盘路径，但 cleanupClipboardForSession 走的是 best-effort + rm，
-    // ENOENT 是正常路径，不该让 host.dispose 抛错。
-    return path.join(os.tmpdir(), 'kodax-space', 'clipboard');
+    return os.tmpdir();
   }
 }
 
-async function sessionDir(sessionId: string): Promise<string> {
+async function legacyClipboardRoot(): Promise<string> {
+  if (process.env.KODAX_TEST_ONBOARDING) {
+    return path.join(getKodaxRuntimeDir(), 'space', 'test-legacy-clipboard');
+  }
+  return path.join(await electronTempDir(), 'kodax-space', 'clipboard');
+}
+
+async function pendingClipboardBaseRoot(): Promise<string> {
+  if (process.env.KODAX_TEST_ONBOARDING) {
+    return path.join(getKodaxRuntimeDir(), 'space', 'test-pending-attachments');
+  }
+  const profileScope = createHash('sha256')
+    .update(path.resolve(getKodaxRuntimeDir()))
+    .digest('hex')
+    .slice(0, 16);
+  return path.join(await electronTempDir(), 'kodax-space', 'pending-attachments', profileScope);
+}
+
+async function pendingClipboardRoot(): Promise<string> {
+  return path.join(await pendingClipboardBaseRoot(), pendingProcessScope);
+}
+
+function durableSessionDir(sessionId: string): string {
   if (!SESSION_ID_RE.test(sessionId)) {
     throw new Error('clipboard.saveImage: invalid sessionId');
   }
-  return path.join(await clipboardRoot(), sessionId);
+  return path.join(durableClipboardRoot(), sessionId);
+}
+
+async function pendingSessionDir(sessionId: string): Promise<string> {
+  if (!SESSION_ID_RE.test(sessionId)) {
+    throw new Error('clipboard.saveImage: invalid sessionId');
+  }
+  return path.join(await pendingClipboardRoot(), sessionId);
+}
+
+async function legacySessionDir(sessionId: string): Promise<string> {
+  if (!SESSION_ID_RE.test(sessionId)) {
+    throw new Error('clipboard.saveImage: invalid sessionId');
+  }
+  return path.join(await legacyClipboardRoot(), sessionId);
 }
 
 // review HIGH-1 fix: 解码后 image 大小硬上限。schema 的 base64 string 上限会让上
@@ -112,7 +157,7 @@ export async function saveClipboardImage(
   mediaType: 'image/png' | 'image/jpeg' | 'image/webp';
   bytes: number;
 }> {
-  const dir = await sessionDir(input.sessionId);
+  const dir = await pendingSessionDir(input.sessionId);
   // review HIGH-1 fix: 显式 0o700 而非依赖 umask —— 多用户系统下默认 0o755 让 sessionId
   // 文件名 (含时间戳泄露使用窗口) 在 ls 可见，是元数据泄露。0o700 仅 owner 可读/进入。
   // Windows 上 mode 不起 effect，但 POSIX 上必须。注意 `recursive: true` 只对**新建**
@@ -180,7 +225,7 @@ export async function readNativeClipboardImage(
     height: number;
   } | null;
 }> {
-  const dir = await sessionDir(input.sessionId);
+  const dir = await pendingSessionDir(input.sessionId);
   await fs.mkdir(dir, { recursive: true, mode: 0o700 });
 
   const media = sdk ?? (await loadMediaSdk());
@@ -223,7 +268,7 @@ export async function readNativeClipboardImage(
 export async function cleanupClipboardSession(input: {
   readonly sessionId: string;
 }): Promise<{ removed: number }> {
-  const dir = await sessionDir(input.sessionId);
+  const dir = await pendingSessionDir(input.sessionId);
   let removed = 0;
   try {
     const entries = await fs.readdir(dir);
@@ -237,10 +282,41 @@ export async function cleanupClipboardSession(input: {
   return { removed };
 }
 
-export function registerClipboardChannels(): void {
-  registerChannel('clipboard.saveImage', saveClipboardImage);
-  registerChannel('clipboard.readImage', readNativeClipboardImage);
+export async function discardPendingClipboardImage(input: {
+  readonly sessionId: string;
+  readonly path: string;
+}): Promise<{ removed: boolean }> {
+  const location = await resolveArtifactLocation(input.sessionId, input.path);
+  if (location.kind !== 'pending') {
+    throw new Error('clipboard.discardImage: only pending images may be discarded');
+  }
+  await fs.rm(location.realArtifact, { force: true });
+  await fs.rmdir(location.realSandbox).catch((err: unknown) => {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT' && code !== 'ENOTEMPTY') throw err;
+  });
+  return { removed: true };
+}
+
+export function registerClipboardChannels(options: {
+  readonly sessionExists: (sessionId: string) => boolean;
+}): void {
+  const assertSessionExists = (sessionId: string): void => {
+    if (!options.sessionExists(sessionId)) {
+      throw new Error('clipboard image owner Session does not exist');
+    }
+  };
+  registerChannel('clipboard.saveImage', async (input) => {
+    assertSessionExists(input.sessionId);
+    return saveClipboardImage(input);
+  });
+  registerChannel('clipboard.readImage', async (input) => {
+    assertSessionExists(input.sessionId);
+    return readNativeClipboardImage(input);
+  });
   registerChannel('clipboard.cleanupSession', cleanupClipboardSession);
+  registerChannel('clipboard.discardImage', discardPendingClipboardImage);
+  void cleanupStalePendingClipboardRoots();
 }
 
 /**
@@ -256,6 +332,20 @@ export async function assertArtifactPathInClipboardSandbox(
   sessionId: string,
   artifactPath: string,
 ): Promise<void> {
+  await resolveArtifactLocation(sessionId, artifactPath);
+}
+
+type ArtifactLocation = {
+  readonly kind: 'durable' | 'legacy' | 'pending';
+  readonly realRoot: string;
+  readonly realSandbox: string;
+  readonly realArtifact: string;
+};
+
+async function resolveArtifactLocation(
+  sessionId: string,
+  artifactPath: string,
+): Promise<ArtifactLocation> {
   if (!SESSION_ID_RE.test(sessionId)) {
     throw new Error('artifact validation: invalid sessionId');
   }
@@ -263,19 +353,185 @@ export async function assertArtifactPathInClipboardSandbox(
     throw new Error(`artifact path must be absolute: ${artifactPath}`);
   }
   const normalized = path.normalize(artifactPath);
-  // path.normalize 在 Windows 上会保留盘符 / Windows separator。下面 sandbox 已经经
-  // path.join → 同样平台风格，startsWith 比较是安全的（同进程同平台）。
-  const sandbox = path.join(await clipboardRoot(), sessionId) + path.sep;
-  if (!normalized.startsWith(sandbox)) {
+  const sandboxes = [
+    {
+      kind: 'durable' as const,
+      root: durableClipboardRoot(),
+      sandbox: durableSessionDir(sessionId),
+    },
+    {
+      kind: 'legacy' as const,
+      root: await legacyClipboardRoot(),
+      sandbox: await legacySessionDir(sessionId),
+    },
+    {
+      kind: 'pending' as const,
+      root: await pendingClipboardRoot(),
+      sandbox: await pendingSessionDir(sessionId),
+    },
+  ];
+  const selected = sandboxes.find((candidate) => isPathInside(candidate.sandbox, normalized));
+  if (selected === undefined) {
     throw new Error(`artifact path outside clipboard sandbox (sid=${sessionId}): ${artifactPath}`);
   }
+
+  const [realRoot, realSandbox, realArtifact] = await Promise.all([
+    fs.realpath(selected.root),
+    fs.realpath(selected.sandbox),
+    fs.realpath(normalized),
+  ]);
+  // Resolving sandbox + artifact together is insufficient: a Session directory
+  // junction could move both outside the application-owned root. Require the
+  // resolved Session directory to remain the named direct child of that root.
+  if (path.relative(realRoot, realSandbox) !== sessionId) {
+    throw new Error(`artifact path outside clipboard sandbox (sid=${sessionId}): ${artifactPath}`);
+  }
+  if (!isPathInside(realSandbox, realArtifact)) {
+    throw new Error(`artifact path outside clipboard sandbox (sid=${sessionId}): ${artifactPath}`);
+  }
+  const stat = await fs.stat(realArtifact);
+  if (!stat.isFile()) {
+    throw new Error(`artifact path must reference a file: ${artifactPath}`);
+  }
+  return { kind: selected.kind, realRoot, realSandbox, realArtifact };
 }
 
-/** main 端 host.dispose 直接调，跳 IPC 层；renderer 看不见 sessionId 不需经 Zod。*/
-export async function cleanupClipboardForSession(sessionId: string): Promise<void> {
-  if (!SESSION_ID_RE.test(sessionId)) return; // 静默丢弃 — disposeAll 不应因坏 id 抛错
-  const dir = path.join(await clipboardRoot(), sessionId);
-  await fs.rm(dir, { recursive: true, force: true }).catch(() => {
-    // ENOENT / 权限错误都不应当 throw —— dispose 路径只做 best-effort 清理
+function isPathInside(parent: string, candidate: string): boolean {
+  const relative = path.relative(parent, candidate);
+  return (
+    relative.length > 0 &&
+    relative !== '..' &&
+    !relative.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(relative)
+  );
+}
+
+type ClipboardArtifact = {
+  readonly kind: 'image';
+  readonly path: string;
+  readonly mediaType: 'image/png' | 'image/jpeg' | 'image/webp';
+  readonly source?: 'user-inline' | 'clipboard' | 'drag-drop' | 'file-picker';
+};
+
+/**
+ * Copy draft/legacy images into the durable Session sandbox before handing
+ * them to KodaX. Draft sources remain available for a retry until send()
+ * confirms acceptance.
+ */
+export async function prepareClipboardArtifactsForSend<T extends ClipboardArtifact>(
+  sessionId: string,
+  artifacts: readonly T[],
+): Promise<T[]> {
+  const durableDir = durableSessionDir(sessionId);
+  const prepared: T[] = [];
+
+  for (const artifact of artifacts) {
+    const location = await resolveArtifactLocation(sessionId, artifact.path);
+    if (location.kind === 'durable') {
+      prepared.push(artifact);
+      continue;
+    }
+
+    await fs.mkdir(durableDir, { recursive: true, mode: 0o700 });
+    const sourceKey = createHash('sha256')
+      .update(path.normalize(location.realArtifact))
+      .digest('hex')
+      .slice(0, 16);
+    const destination = path.join(
+      durableDir,
+      `${sourceKey}-${path.basename(location.realArtifact)}`,
+    );
+    try {
+      await fs.copyFile(location.realArtifact, destination, fsConstants.COPYFILE_EXCL);
+      await fs.chmod(destination, 0o600).catch(() => {});
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+      const [sourceBytes, destinationBytes] = await Promise.all([
+        fs.readFile(location.realArtifact),
+        fs.readFile(destination),
+      ]);
+      if (!sourceBytes.equals(destinationBytes)) {
+        throw new Error('clipboard artifact promotion collision');
+      }
+    }
+    await resolveArtifactLocation(sessionId, destination);
+    prepared.push({ ...artifact, path: destination });
+  }
+
+  return prepared;
+}
+
+/** Remove accepted draft copies; durable copies remain Session-owned. */
+export async function finalizePendingClipboardArtifacts(
+  sessionId: string,
+  artifacts: readonly ClipboardArtifact[],
+): Promise<void> {
+  for (const artifact of artifacts) {
+    let location: ArtifactLocation;
+    try {
+      location = await resolveArtifactLocation(sessionId, artifact.path);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      throw err;
+    }
+    if (location.kind !== 'pending') continue;
+    await fs.rm(location.realArtifact, { force: true });
+  }
+  await fs.rmdir(await pendingSessionDir(sessionId)).catch((err: unknown) => {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT' && code !== 'ENOTEMPTY') throw err;
   });
+}
+
+/** App shutdown removes only draft files owned by this process. */
+export async function cleanupPendingClipboardArtifacts(): Promise<void> {
+  await fs.rm(await pendingClipboardRoot(), { recursive: true, force: true });
+}
+
+async function cleanupStalePendingClipboardRoots(): Promise<void> {
+  const base = await pendingClipboardBaseRoot();
+  let entries: Array<{ readonly name: string; isDirectory(): boolean }>;
+  try {
+    entries = await fs.readdir(base, { withFileTypes: true, encoding: 'utf8' });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+    console.warn(
+      `[clipboard.cleanup] failed to inspect stale draft attachments: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+    return;
+  }
+  await Promise.all(
+    entries
+      .filter((entry) => entry.isDirectory() && entry.name !== pendingProcessScope)
+      .map((entry) => fs.rm(path.join(base, entry.name), { recursive: true, force: true })),
+  ).catch((err: unknown) => {
+    console.warn(
+      `[clipboard.cleanup] failed to remove stale draft attachments: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  });
+}
+
+/** Main host calls this only after the durable Session was successfully deleted. */
+export async function cleanupClipboardForSession(sessionId: string): Promise<void> {
+  if (!SESSION_ID_RE.test(sessionId)) return;
+  const dirs = [
+    durableSessionDir(sessionId),
+    await legacySessionDir(sessionId),
+    await pendingSessionDir(sessionId),
+  ];
+  const results = await Promise.allSettled(
+    dirs.map(async (dir) => {
+      await fs.rm(dir, { recursive: true, force: true });
+    }),
+  );
+  const failures = results
+    .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+    .map((result) => result.reason);
+  if (failures.length > 0) {
+    throw new AggregateError(failures, 'failed to remove all Session attachments');
+  }
 }

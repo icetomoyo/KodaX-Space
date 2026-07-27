@@ -191,6 +191,7 @@ async function invokeComposerIpc<C extends InvokeChannelName>(
 
 const TITLE_MAX_CHARS = 50;
 interface PendingImage {
+  readonly sessionId: string;
   readonly path: string;
   readonly mediaType: 'image/png' | 'image/jpeg' | 'image/webp';
   readonly source: InputArtifactSource;
@@ -931,6 +932,7 @@ export function BottomBar(): JSX.Element {
           continue;
         }
         saved.push({
+          sessionId: sid,
           path: r.data.path,
           mediaType: r.data.mediaType,
           source,
@@ -995,6 +997,7 @@ export function BottomBar(): JSX.Element {
       return [
         ...prev,
         {
+          sessionId: sid,
           path: image.path,
           mediaType: image.mediaType,
           source: 'clipboard',
@@ -1007,6 +1010,19 @@ export function BottomBar(): JSX.Element {
   }
 
   function removePendingImage(idx: number): void {
+    const image = pendingImages[idx];
+    if (image) {
+      void invokeComposerIpc('clipboard.discardImage', {
+        sessionId: image.sessionId,
+        path: image.path,
+      }).then((result) => {
+        if (!result.ok) {
+          setImageErr(
+            `${result.error?.code ?? 'ERR_UNKNOWN'}: ${result.error?.message ?? 'discard failed'}`,
+          );
+        }
+      });
+    }
     setPendingImages((prev) => prev.filter((_, i) => i !== idx));
   }
 
@@ -2037,6 +2053,21 @@ export function BottomBar(): JSX.Element {
       }
       if (!sid) return; // err is already set
       setPrompt('');
+      if (pendingImages.length > 0) {
+        for (const ownerSessionId of new Set(pendingImages.map((image) => image.sessionId))) {
+          void invokeComposerIpc('clipboard.cleanupSession', {
+            sessionId: ownerSessionId,
+          }).then((result) => {
+            if (!result.ok) {
+              setImageErr(
+                `${result.error?.code ?? 'ERR_UNKNOWN'}: ${
+                  result.error?.message ?? 'draft cleanup failed'
+                }`,
+              );
+            }
+          });
+        }
+      }
       setPendingImages([]);
       setPendingFileRefs([]);
       setImageErr(null);

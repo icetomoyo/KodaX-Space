@@ -214,9 +214,10 @@ export const sessionCreateChannel = {
 // buildPromptMessageContent(prompt, artifacts) 把每个 image 转成 multimodal
 // content block ({type:'image', path, mediaType}) 拼到 user message。
 //
-// `path`: main 端写到 app temp dir 的绝对路径 (Electron app.getPath('temp')/kodax-space/clipboard/<sid>/<ts>.png)
+// `path`: main 端写到 pending temp sandbox 的绝对路径；session.send 接受前由 main
+//          复制到 <KODAX_HOME>/space/session-attachments/<sid>/。
 //          ── renderer 不能传任意路径，path 必须是 clipboard.saveImage IPC 返回的
-//          ── 受信任值；schema 这层只做长度兜底，路径合法性由 main 端 saveImage 保证。
+//          ── 受信任值；schema 只做长度兜底，main 会做路径/realpath 边界校验。
 // `mediaType`: Space saveImage currently persists PNG/JPEG/WEBP. KodaX 0.7.56
 //          also defines image/gif for direct SDK path artifacts; keep GIF as a
 //          later Space persistence/preview follow-up.

@@ -7,12 +7,12 @@
 //
 // 为什么不直接在 renderer 写盘：
 //   - renderer 没有文件系统权限（CSP / sandbox）
-//   - 写到哪里需要主进程决策 (app.getPath('temp') / per-session 目录) — 不让 renderer
+//   - 写到哪里需要主进程决策 (Space data / per-session 目录) — 不让 renderer
 //     传任意路径，避免 path traversal 攻击面
 //
-// 临时文件位置：
-//   Electron app.getPath('temp')/kodax-space/clipboard/<sessionId>/<timestamp>.<ext>
-//   session dispose 时由 main 端清理整个 sessionId 子目录。
+// 草稿先写到 main-owned pending temp sandbox；session.send 接受时复制到：
+//   <KODAX_HOME>/space/session-attachments/<sessionId>/<timestamp>.<ext>
+// 只有 durable Session 删除成功后，main 才清理历史附件目录。
 
 import { z } from 'zod';
 
@@ -23,7 +23,7 @@ const MAX_IMAGE_BYTES = 6 * 1024 * 1024;
 // ---- Invoke: clipboard.saveImage ----
 //
 // renderer 把 PNG/JPEG/WEBP buffer (base64 编码) + 该绑定的 sessionId 传过来。
-// main 写到 app temp dir，返回绝对路径。
+// main 写到隔离的草稿目录，返回绝对路径。session.send 接受前会提升到持久目录。
 export const clipboardSaveImageChannel = {
   name: 'clipboard.saveImage',
   direction: 'invoke',
@@ -72,9 +72,8 @@ export const clipboardReadImageChannel = {
 
 // ---- Invoke: clipboard.cleanupSession ----
 //
-// session dispose 时调用 — 删该 sessionId 下所有暂存 image 文件。
-// renderer 当前不调，main 端 host.dispose 路径调；声明 channel 是为了未来
-// renderer 端关闭 session 选项 ("delete + cleanup attachments") 也能用。
+// 清理当前进程中该 Session 尚未发送的草稿图片。它不会删除 legacy 或持久历史
+// 附件；历史附件只能在 durable Session 删除成功后由 main 端 host.delete 清理。
 export const clipboardCleanupSessionChannel = {
   name: 'clipboard.cleanupSession',
   direction: 'invoke',
@@ -84,5 +83,21 @@ export const clipboardCleanupSessionChannel = {
   output: z.object({
     /** 删了多少个文件。0 表示该 session 没贴过图。*/
     removed: z.number().int().nonnegative(),
+  }),
+} as const;
+
+// ---- Invoke: clipboard.discardImage ----
+//
+// 只允许移除当前进程 pending sandbox 内的一张草稿图片；持久和 legacy 历史附件
+// 永远不能通过 renderer channel 删除。
+export const clipboardDiscardImageChannel = {
+  name: 'clipboard.discardImage',
+  direction: 'invoke',
+  input: z.object({
+    sessionId: z.string().min(1).max(128),
+    path: z.string().min(1).max(4096),
+  }),
+  output: z.object({
+    removed: z.boolean(),
   }),
 } as const;

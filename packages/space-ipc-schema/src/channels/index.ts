@@ -213,6 +213,7 @@ import {
   clipboardSaveImageChannel,
   clipboardReadImageChannel,
   clipboardCleanupSessionChannel,
+  clipboardDiscardImageChannel,
 } from './clipboard.js';
 import {
   shellRevealPathChannel,
@@ -423,6 +424,7 @@ export const invokeChannels = {
   [clipboardSaveImageChannel.name]: clipboardSaveImageChannel,
   [clipboardReadImageChannel.name]: clipboardReadImageChannel,
   [clipboardCleanupSessionChannel.name]: clipboardCleanupSessionChannel,
+  [clipboardDiscardImageChannel.name]: clipboardDiscardImageChannel,
   [shellRevealPathChannel.name]: shellRevealPathChannel,
   [shellOpenDirectoryChannel.name]: shellOpenDirectoryChannel,
   [shellOpenExternalChannel.name]: shellOpenExternalChannel,
