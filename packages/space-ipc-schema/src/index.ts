@@ -319,6 +319,8 @@ export {
   providerRemoveCustomChannel,
   providerModelContextWindowChannel,
   customProviderReasoningSchema,
+  CUSTOM_PROVIDER_CONTEXT_WINDOW_MIN,
+  CUSTOM_PROVIDER_CONTEXT_WINDOW_MAX,
   type ProviderInfo,
   type ProviderProtocol,
   type CustomProviderReasoning,

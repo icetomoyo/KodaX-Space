@@ -8,7 +8,10 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { ProviderConfigStore } from '../providers/config.js';
+import {
+  ProviderConfigStore,
+  type ProviderConfigPersist,
+} from '../providers/config.js';
 
 let tmpDir = '';
 let spaceFile = '';
@@ -28,8 +31,13 @@ afterEach(async () => {
   }
 });
 
-function newStore(): ProviderConfigStore {
-  return new ProviderConfigStore(spaceFile, tmpDir, customFile, tmpDir);
+function newStore(persist?: ProviderConfigPersist): ProviderConfigStore {
+  return new ProviderConfigStore(spaceFile, tmpDir, customFile, tmpDir, persist);
+}
+
+async function directPersist(dir: string, filePath: string, data: string): Promise<void> {
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(filePath, data, 'utf8');
 }
 
 test('load: empty when files do not exist', async () => {
@@ -90,6 +98,7 @@ test('addCustom persists provider with all fields', async () => {
     defaultModel: 'claude-3',
     models: ['claude-3', 'claude-3-haiku'],
     promptCacheAffinity: true,
+    contextWindow: 131_072,
   });
   const list = store.listCustom();
   assert.equal(list.length, 1);
@@ -99,6 +108,7 @@ test('addCustom persists provider with all fields', async () => {
   assert.equal(list[0].baseUrl, 'https://api.example.com/v1');
   assert.deepEqual(list[0].models, ['claude-3', 'claude-3-haiku']);
   assert.equal(list[0].promptCacheAffinity, true);
+  assert.equal(list[0].contextWindow, 131_072);
 });
 
 test('updateCustom replaces editable fields while preserving id and createdAt', async () => {
@@ -123,6 +133,7 @@ test('updateCustom replaces editable fields while preserving id and createdAt', 
       defaultModel: 'new-model',
       models: ['new-model', 'new-alt'],
       promptCacheAffinity: true,
+      contextWindow: 262_144,
     }),
     true,
   );
@@ -136,6 +147,7 @@ test('updateCustom replaces editable fields while preserving id and createdAt', 
   assert.equal(updated?.apiKeyEnv, 'NEW_KEY');
   assert.deepEqual(updated?.models, ['new-model', 'new-alt']);
   assert.equal(updated?.promptCacheAffinity, true);
+  assert.equal(updated?.contextWindow, 262_144);
 });
 test('removeCustom returns true for existing, false for missing', async () => {
   const store = newStore();
@@ -269,4 +281,104 @@ test('concurrent addCustom: no lost update', async () => {
   const store2 = newStore();
   await store2.load();
   assert.equal(store2.listCustom().length, 3);
+});
+
+test('failed add persistence does not publish a ghost provider to the cache', async () => {
+  const store = newStore(async () => {
+    throw new Error('custom provider write failed');
+  });
+  await store.load();
+
+  await assert.rejects(
+    store.addCustom({
+      displayName: 'Ghost',
+      protocol: 'openai',
+      baseUrl: 'https://ghost.example/v1',
+      apiKeyEnv: 'GHOST_KEY',
+      defaultModel: 'ghost',
+    }),
+    /custom provider write failed/,
+  );
+
+  assert.deepEqual(store.listCustom(), []);
+  const reloaded = newStore();
+  await reloaded.load();
+  assert.deepEqual(reloaded.listCustom(), []);
+});
+
+test('failed update persistence keeps both cache and disk on the previous provider', async () => {
+  let customWrites = 0;
+  const store = newStore(async (dir, filePath, data) => {
+    if (filePath === customFile && ++customWrites === 2) {
+      throw new Error('provider update write failed');
+    }
+    await directPersist(dir, filePath, data);
+  });
+  await store.load();
+  const id = await store.addCustom({
+    displayName: 'Before',
+    protocol: 'openai',
+    baseUrl: 'https://before.example/v1',
+    apiKeyEnv: 'BEFORE_KEY',
+    defaultModel: 'before',
+  });
+
+  await assert.rejects(
+    store.updateCustom(id, {
+      displayName: 'After',
+      protocol: 'openai',
+      baseUrl: 'https://after.example/v1',
+      apiKeyEnv: 'AFTER_KEY',
+      defaultModel: 'after',
+    }),
+    /provider update write failed/,
+  );
+
+  assert.equal(store.getCustom(id)?.displayName, 'Before');
+  const reloaded = newStore();
+  await reloaded.load();
+  assert.equal(reloaded.getCustom(id)?.displayName, 'Before');
+});
+
+test('failed default persistence leaves the cached default unchanged', async () => {
+  const store = newStore(async (dir, filePath, data) => {
+    if (filePath === spaceFile) throw new Error('default write failed');
+    await directPersist(dir, filePath, data);
+  });
+  await store.load();
+
+  await assert.rejects(store.setDefault('openai'), /default write failed/);
+
+  assert.equal(store.getDefaultProviderId(), null);
+  const reloaded = newStore();
+  await reloaded.load();
+  assert.equal(reloaded.getDefaultProviderId(), null);
+});
+
+test('removing the default provider compensates the first file when the second write fails', async () => {
+  let spaceWrites = 0;
+  const store = newStore(async (dir, filePath, data) => {
+    if (filePath === spaceFile && ++spaceWrites === 2) {
+      throw new Error('default clear write failed');
+    }
+    await directPersist(dir, filePath, data);
+  });
+  await store.load();
+  const id = await store.addCustom({
+    displayName: 'Default',
+    protocol: 'openai',
+    baseUrl: 'https://default.example/v1',
+    apiKeyEnv: 'DEFAULT_KEY',
+    defaultModel: 'default',
+  });
+  await store.setDefault(id);
+
+  await assert.rejects(store.removeCustom(id), /default clear write failed/);
+
+  assert.equal(store.getCustom(id)?.displayName, 'Default');
+  assert.equal(store.getDefaultProviderId(), id);
+  const reloaded = newStore();
+  await reloaded.load();
+  assert.equal(reloaded.getCustom(id)?.displayName, 'Default');
+  assert.equal(reloaded.getDefaultProviderId(), id);
 });

@@ -115,6 +115,8 @@ Last Updated: 2026-07-27
 | 117 | High     | Resolved    | Image attachment fails when the selected persisted Session has not been lazily resumed                                    | v0.1.32                         | 2026-07-27 |
 | 118 | Medium   | In Progress | Space rejects large source images before KodaX can normalize them                                                         | v0.1.9                          | 2026-07-27 |
 | 119 | Medium   | Resolved    | Restored history exposes overlapping internal compaction summaries as giant yellow notices                               | v0.1.x                          | 2026-07-27 |
+| 120 | High     | Resolved    | Space custom Providers were invisible to the shared Coder daemon and failed as unknown Providers                          | v0.1.32                         | 2026-07-27 |
+| 121 | Medium   | Resolved    | Custom Provider settings could not declare the endpoint context window                                                    | v0.1.x                          | 2026-07-27 |
 
 ## Issue Details
 
@@ -6941,13 +6943,166 @@ Validation:
 - Related transcript-dedup, message-composition, store, and history-replay tests pass 107/107.
 - Full project typecheck, targeted ESLint, targeted code Prettier, and Git whitespace checks pass.
 
+### 120: Space custom Providers were invisible to the shared Coder daemon and failed as unknown Providers
+
+- Priority: High
+- Status: Resolved
+- Introduced: v0.1.32
+- Fixed: v0.1.34
+- Created: 2026-07-27
+- Resolution Date: 2026-07-27
+
+#### Original Problem
+
+An OpenAI-compatible Provider configured in Space for local Ollama could pass direct endpoint and
+SDK Provider tests but fail every real Coder run with:
+
+`Provider run failed while using a run-scoped credential.`
+
+The underlying Runtime Session error was:
+
+`Unknown provider: custom_….`
+
+Expected behavior:
+
+- A Space-created custom Provider is immediately runnable by the shared Coder daemon.
+- Existing Space custom Providers are runnable after upgrading or restarting.
+- Add, edit, and delete cannot leave the Space store and daemon catalog in a silent split-brain
+  state.
+
+#### Root Cause
+
+Space persisted custom Providers in `~/.kodax/custom-providers.json` and registered them through
+`registerConfiguredCustomProviders`, which only updated the Electron main process's SDK registry.
+Coder runs execute in a separate KodaX Runtime daemon, whose Provider registry and process memory
+are independent. The run-scoped credential lease worked, but the daemon failed Provider resolution
+before it could use the credential; Runtime then deliberately replaced the detailed Provider error
+with its credential-safe generic message.
+
+The KodaX SDK already exposes the correct daemon-connected integration surface through
+`runtime.catalog.upsertCustomProvider` and `deleteCustomProvider`, so no SDK change was required.
+
+#### Resolution
+
+- Added Runtime Host Adapter catalog methods and a Space-to-Runtime reconciliation layer using the
+  public KodaX Runtime catalog API.
+- Startup now awaits best-effort reconciliation of every existing Space custom Provider before
+  Provider IPC and the main window become available.
+- Add, edit, and delete operations are serialized through a separately tested transaction
+  coordinator across the Space store and daemon catalog.
+- Runtime updates merge only Space-owned fields into the daemon's complete record. CLI/SDK-only
+  fields and retained model descriptors survive, and failed mutations restore an exact pre-write
+  catalog snapshot.
+- The Electron main-process SDK registry uses the same merge, so Coder, Partner, Provider tests,
+  and context-window queries observe consistent advanced metadata.
+- Store caches are published only after durable writes succeed. Removing a default custom Provider
+  treats the Provider file and default-selection file as one compensated operation.
+- Failed catalog or store writes trigger compensating Runtime/store mutations; incomplete rollback
+  is reported as an aggregate failure instead of returning a false success.
+- KodaX-config-defined custom Providers continue to use their existing config reload path, while
+  Space-store Providers use the daemon catalog path intended for connected settings UIs.
+
+Files changed:
+
+- `apps/desktop/electron/kodax/runtime-host-adapter.ts`
+- `apps/desktop/electron/kodax/user-config.ts`
+- `apps/desktop/electron/providers/config.ts`
+- `apps/desktop/electron/providers/custom-provider-mutations.ts`
+- `apps/desktop/electron/providers/runtime-catalog.ts`
+- `apps/desktop/electron/ipc/provider.ts`
+- `apps/desktop/electron/main.ts`
+- `apps/desktop/electron/test/custom-provider-mutations.test.ts`
+- `apps/desktop/electron/test/provider-config.test.ts`
+- `apps/desktop/electron/test/runtime-host-adapter.test.ts`
+- `apps/desktop/electron/test/runtime-provider-catalog.test.ts`
+- `apps/desktop/electron/test/user-config.test.ts`
+
+Validation:
+
+- Catalog and transaction regression tests verify sequential startup reconciliation, daemon proxy
+  calls, exact-snapshot rollback, failure aggregation, mutation ordering, durable-store failure
+  atomicity, and preservation of Runtime-only Provider/model metadata.
+- Direct local Ollama probes for `ornith:35b` previously passed `/v1/models`, chat completion,
+  streaming, and tool-call execution; the failure was isolated to daemon catalog visibility.
+- The focused Provider/Runtime/config regression suite passes 128/128.
+- Full workspace tests, TypeScript checks, ESLint, Git whitespace checks, and the production build
+  smoke test pass.
+
+### 121: Custom Provider settings could not declare the endpoint context window
+
+- Priority: Medium
+- Status: Resolved
+- Introduced: v0.1.x
+- Fixed: v0.1.34
+- Created: 2026-07-27
+- Resolution Date: 2026-07-27
+
+#### Original Problem
+
+Space's custom Provider form exposed protocol, endpoint, model, reasoning, and cache-affinity
+settings but no context-window field. A local model could therefore run with a real endpoint
+context different from KodaX's metadata or fallback, producing an incorrect context budget and
+compaction threshold.
+
+Expected behavior:
+
+- Users can optionally declare the Provider-level context window in tokens.
+- The value survives list/edit/restart and reaches both the main-process SDK registry and daemon
+  Runtime catalog.
+- Empty values preserve SDK inference/fallback behavior, while invalid or unreasonable values are
+  rejected consistently.
+
+#### Root Cause
+
+KodaX 0.7.77 already models `KodaXCustomProviderConfig.contextWindow`, but Space's narrower custom
+Provider schema omitted it from the renderer form, IPC contracts, durable store, config
+normalization, Provider list projection, and SDK conversion.
+
+#### Resolution
+
+- Added an optional integer `contextWindow` field, bounded to 1,024–10,000,000 tokens, across the
+  public IPC schema, durable Provider schema, KodaX config adapter, Provider list, and Runtime
+  catalog conversion.
+- Added a localized numeric form field that distinguishes an empty SDK-derived value from an
+  explicit endpoint limit and validates before submission.
+- Marked `contextWindow` as Space-form-modeled when editing KodaX config Providers, so clearing the
+  field actually removes a prior value while unrelated CLI-only fields remain preserved.
+- The existing model-context query now receives the declared value through the same SDK Provider
+  resolution path used by compaction.
+
+Files changed:
+
+- `packages/space-ipc-schema/src/channels/provider.ts`
+- `packages/space-ipc-schema/src/index.ts`
+- `packages/space-ipc-schema/test/provider.test.ts`
+- `apps/desktop/electron/providers/config.ts`
+- `apps/desktop/electron/kodax/user-config.ts`
+- `apps/desktop/electron/ipc/provider.ts`
+- `apps/desktop/electron/providers/runtime-catalog.ts`
+- `apps/desktop/renderer/src/features/provider/CustomProviderForm.tsx`
+- `apps/desktop/renderer/src/i18n/messages.ts`
+- `apps/desktop/electron/test/provider-config.test.ts`
+- `apps/desktop/electron/test/user-config.test.ts`
+- `apps/desktop/electron/test/runtime-provider-catalog.test.ts`
+
+Validation:
+
+- Schema tests accept valid add/update values and reject fractional and out-of-range values.
+- Store and config-adapter tests verify persistence, SDK registration, update, clear, and
+  unmodeled-field preservation.
+- The reported Ollama model currently runs with a 131,072-token loaded context, so `131072` is the
+  correct explicit Space value unless the Ollama runtime is reconfigured.
+- The focused Provider/Runtime/config regression suite passes 128/128.
+- Full workspace tests, TypeScript checks, ESLint, Git whitespace checks, and the production build
+  smoke test pass.
+
 ## Summary
 
-- Total: 107
+- Total: 109
 - Open: 1
 - In Progress: 3
-- Resolved: 103
-- High: 45
-- Medium: 55
+- Resolved: 105
+- High: 46
+- Medium: 56
 - Low: 7
 - Next to resolve: 043

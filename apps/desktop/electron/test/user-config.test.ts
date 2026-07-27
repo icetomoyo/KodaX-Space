@@ -174,6 +174,7 @@ test('loadKodaxCustomProviders exposes SDK config custom providers as Space summ
         model: 'claude-sonnet-4-6',
         models: ['claude-sonnet-4-6', { id: 'claude-opus-4-7' }],
         promptCacheAffinity: true,
+        contextWindow: 131_072,
       },
       {
         name: 'unsafe/provider',
@@ -211,6 +212,7 @@ test('loadKodaxCustomProviders exposes SDK config custom providers as Space summ
       defaultModel: 'claude-sonnet-4-6',
       models: ['claude-sonnet-4-6', 'claude-opus-4-7'],
       promptCacheAffinity: true,
+      contextWindow: 131_072,
     },
     {
       id: 'metadata-ssrf',
@@ -236,6 +238,7 @@ test('registerKodaxCustomProviders forwards customProviders array to SDK', async
           apiKeyEnv: 'P1_API_KEY',
           model: 'claude-sonnet-4-6',
           promptCacheAffinity: true,
+          contextWindow: 200_000,
         },
         {
           name: 'bad-env',
@@ -265,6 +268,7 @@ test('registerKodaxCustomProviders forwards customProviders array to SDK', async
       apiKeyEnv: 'P1_API_KEY',
       model: 'claude-sonnet-4-6',
       promptCacheAffinity: true,
+      contextWindow: 200_000,
     },
     {
       name: 'bad-url',
@@ -287,6 +291,22 @@ test('registerKodaxCustomProviders merges Space custom providers into SDK regist
           baseUrl: 'https://sdk.example.com/v1',
           apiKeyEnv: 'SDK_API_KEY',
           model: 'sdk-model',
+          models: [{ id: 'sdk-model', contextWindow: 64_000 }],
+          verifyStrategy: 'openai-models',
+        },
+        {
+          name: 'custom_0123456789abcdef',
+          protocol: 'openai',
+          baseUrl: 'https://old-space.example.com/v1',
+          apiKeyEnv: 'OLD_SPACE_API_KEY',
+          model: 'space-model',
+          models: [
+            { id: 'space-model', contextWindow: 262_144, maxOutputTokens: 16_384 },
+            { id: 'removed-space-model', contextWindow: 32_768 },
+          ],
+          capabilityProfile: { supportsTools: true },
+          maxOutputTokens: 32_768,
+          reasoning: { effortStrategy: 'openai-chat-effort', defaultEffort: 'high' },
         },
       ],
     },
@@ -302,6 +322,7 @@ test('registerKodaxCustomProviders merges Space custom providers into SDK regist
       defaultModel: 'space-model',
       models: ['space-model', 'space-alt'],
       promptCacheAffinity: true,
+      contextWindow: 131_072,
     },
     {
       id: 'custom_1111111111111111',
@@ -327,6 +348,8 @@ test('registerKodaxCustomProviders merges Space custom providers into SDK regist
       baseUrl: 'https://sdk.example.com/v1',
       apiKeyEnv: 'SDK_API_KEY',
       model: 'sdk-model',
+      models: [{ id: 'sdk-model', contextWindow: 64_000 }],
+      verifyStrategy: 'openai-models',
     },
     {
       name: 'custom_0123456789abcdef',
@@ -334,8 +357,15 @@ test('registerKodaxCustomProviders merges Space custom providers into SDK regist
       baseUrl: 'https://space.example.com/v1',
       apiKeyEnv: 'SPACE_API_KEY',
       model: 'space-model',
-      models: ['space-model', 'space-alt'],
+      models: [
+        { id: 'space-model', contextWindow: 262_144, maxOutputTokens: 16_384 },
+        'space-alt',
+      ],
       promptCacheAffinity: true,
+      contextWindow: 131_072,
+      capabilityProfile: { supportsTools: true },
+      maxOutputTokens: 32_768,
+      reasoning: { effortStrategy: 'openai-chat-effort', defaultEffort: 'high' },
     },
   ]);
 });
@@ -400,6 +430,7 @@ test('updateKodaxConfigCustomProvider writes back custom provider and renames se
     apiKeyEnv: 'NEW_API_KEY',
     defaultModel: 'new-model',
     models: ['new-model', 'new-alt'],
+    contextWindow: 262_144,
   });
 
   assert.deepEqual(result, { updated: true, providerId: 'sdk-renamed' });
@@ -414,6 +445,7 @@ test('updateKodaxConfigCustomProvider writes back custom provider and renames se
       apiKeyEnv: 'NEW_API_KEY',
       model: 'new-model',
       models: ['new-model', 'new-alt'],
+      contextWindow: 262_144,
     },
   ]);
 });
@@ -429,7 +461,12 @@ test('updateKodaxConfigCustomProvider clears modeled opt-ins but preserves unmod
         baseUrl: 'https://old.example.com/v1',
         apiKeyEnv: 'OLD_API_KEY',
         model: 'old-model',
+        models: [
+          { id: 'old-model', contextWindow: 131_072, maxOutputTokens: 8_192 },
+          { id: 'removed-model', contextWindow: 16_384 },
+        ],
         promptCacheAffinity: true,
+        contextWindow: 200_000,
         reasoning: { efforts: ['low', 'high'], default: 'high' },
         reasoningProfile: { effortStrategy: 'openai-chat-effort' },
         supportsThinking: true,
@@ -460,6 +497,10 @@ test('updateKodaxConfigCustomProvider clears modeled opt-ins but preserves unmod
     false,
     'promptCacheAffinity must be cleared, not preserved',
   );
+  assert.equal('contextWindow' in p, false, 'contextWindow must be cleared, not preserved');
+  assert.deepEqual(p.models, [
+    { id: 'old-model', contextWindow: 131_072, maxOutputTokens: 8_192 },
+  ]);
   // unmodeled CLI fields survive:
   assert.deepEqual(p.reasoningProfile, { effortStrategy: 'openai-chat-effort' });
   assert.equal(p.supportsThinking, true);
@@ -707,6 +748,7 @@ test('updateKodaxConfigCustomProvider keeps unmodeled CLI fields while updating 
         model: 'm1',
         // unmodeled field set outside Space (e.g. hand-edited config.json / CLI)
         customHeaders: { 'x-team': 'a' },
+        reasoning: { effortStrategy: 'openai-chat-effort', defaultEffort: 'high' },
       },
     ],
   };
@@ -726,6 +768,10 @@ test('updateKodaxConfigCustomProvider keeps unmodeled CLI fields while updating 
   assert.equal(saved.model, 'm2');
   // Unmodeled field preserved (not clobbered by the rebuild):
   assert.deepEqual(saved.customHeaders, { 'x-team': 'a' });
+  assert.deepEqual(saved.reasoning, {
+    effortStrategy: 'openai-chat-effort',
+    defaultEffort: 'high',
+  });
 });
 
 test('updateKodaxConfigCustomProvider applies a form-supplied reasoning declaration', async () => {

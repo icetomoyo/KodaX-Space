@@ -45,12 +45,19 @@ import type { ProviderInfo } from '@kodax-space/space-ipc-schema';
 import type { CustomProviderProbe } from '../providers/test-connection.js';
 import { refreshDiagnosticRedactionOptions } from '../diagnostics/runtime.js';
 import { runtimeHostAdapter } from '../kodax/runtime-host-adapter.js';
+import {
+  addSpaceCustomProvider,
+  CustomProviderMutationQueue,
+  removeSpaceCustomProvider,
+  updateSpaceCustomProvider,
+} from '../providers/custom-provider-mutations.js';
 
 type KnownProvider = BuiltinProvider | CustomProvider | CustomProviderProbe;
 type ConfiguredSource = ProviderInfo['configuredSource'];
 
 const injectedEnvOriginals = new Map<string, string | undefined>();
 let injectAllKeysToEnvQueue: Promise<void> = Promise.resolve();
+const customProviderMutationQueue = new CustomProviderMutationQueue();
 
 async function reloadCoderConfigBestEffort(context: string): Promise<void> {
   if (!runtimeHostAdapter.isRuntimeSelected()) return;
@@ -343,6 +350,7 @@ export function registerProviderChannels(): void {
         baseUrl: c.baseUrl,
         skipBaseUrlValidation: c.skipBaseUrlValidation,
         ...(c.promptCacheAffinity === true ? { promptCacheAffinity: true } : {}),
+        ...(c.contextWindow !== undefined ? { contextWindow: c.contextWindow } : {}),
         ...(c.reasoning !== undefined ? { reasoning: c.reasoning } : {}),
       });
     }
@@ -364,6 +372,7 @@ export function registerProviderChannels(): void {
         baseUrl: c.baseUrl,
         skipBaseUrlValidation: c.skipBaseUrlValidation,
         ...(c.promptCacheAffinity === true ? { promptCacheAffinity: true } : {}),
+        ...(c.contextWindow !== undefined ? { contextWindow: c.contextWindow } : {}),
         ...(c.reasoning !== undefined ? { reasoning: c.reasoning } : {}),
       });
     }
@@ -444,150 +453,163 @@ export function registerProviderChannels(): void {
   //   1) baseUrl 必须是 https://、不是 IP literal、hostname 不在内网黑名单（C1-sec SSRF）
   //   2) apiKeyEnv 是合法的 env var 名 + 不在 reserved blocklist（H2-sec NODE_OPTIONS 注入）
   //   3) displayName / defaultModel 由 schema 已经限了长度
-  registerChannel('provider.addCustom', async (input) => {
-    const urlCheck = validateBaseUrl(input.baseUrl, {
-      skipValidation: input.skipBaseUrlValidation === true,
-    });
-    if (!urlCheck.ok || !urlCheck.normalizedUrl) {
-      throw new Error(`baseUrl rejected: ${urlCheck.error}`);
-    }
-    const envErr = validateApiKeyEnv(input.apiKeyEnv);
-    if (envErr) throw new Error(envErr);
+  registerChannel('provider.addCustom', (input) =>
+    customProviderMutationQueue.run(async () => {
+      const urlCheck = validateBaseUrl(input.baseUrl, {
+        skipValidation: input.skipBaseUrlValidation === true,
+      });
+      if (!urlCheck.ok || !urlCheck.normalizedUrl) {
+        throw new Error(`baseUrl rejected: ${urlCheck.error}`);
+      }
+      const envErr = validateApiKeyEnv(input.apiKeyEnv);
+      if (envErr) throw new Error(envErr);
 
-    const id = await providerConfigStore.addCustom({
-      displayName: input.displayName,
-      protocol: input.protocol,
-      baseUrl: urlCheck.normalizedUrl,
-      skipBaseUrlValidation: input.skipBaseUrlValidation === true ? true : undefined,
-      apiKeyEnv: input.apiKeyEnv,
-      defaultModel: input.defaultModel,
-      models: input.models,
-      ...(input.promptCacheAffinity === true ? { promptCacheAffinity: true } : {}),
-      ...(input.reasoning !== undefined ? { reasoning: input.reasoning } : {}),
-    });
-    await refreshSdkCustomProviderRegistry();
-    await reloadCoderConfigBestEffort('provider.addCustom');
-    return { ok: true, providerId: id };
-  });
+      const id = await addSpaceCustomProvider({
+        displayName: input.displayName,
+        protocol: input.protocol,
+        baseUrl: urlCheck.normalizedUrl,
+        skipBaseUrlValidation: input.skipBaseUrlValidation === true ? true : undefined,
+        apiKeyEnv: input.apiKeyEnv,
+        defaultModel: input.defaultModel,
+        models: input.models,
+        ...(input.promptCacheAffinity === true ? { promptCacheAffinity: true } : {}),
+        ...(input.contextWindow !== undefined ? { contextWindow: input.contextWindow } : {}),
+        ...(input.reasoning !== undefined ? { reasoning: input.reasoning } : {}),
+      });
+
+      await refreshSdkCustomProviderRegistry();
+      return { ok: true, providerId: id };
+    }),
+  );
 
   // provider.updateCustom
-  registerChannel('provider.updateCustom', async (input) => {
-    await providerConfigStore.load();
+  registerChannel('provider.updateCustom', (input) =>
+    customProviderMutationQueue.run(async () => {
+      await providerConfigStore.load();
 
-    const urlCheck = validateBaseUrl(input.baseUrl, {
-      skipValidation: input.skipBaseUrlValidation === true,
-    });
-    if (!urlCheck.ok || !urlCheck.normalizedUrl) {
-      throw new Error(`baseUrl rejected: ${urlCheck.error}`);
-    }
-    const envErr = validateApiKeyEnv(input.apiKeyEnv);
-    if (envErr) throw new Error(envErr);
-
-    const update = {
-      displayName: input.displayName,
-      protocol: input.protocol,
-      baseUrl: urlCheck.normalizedUrl,
-      skipBaseUrlValidation: input.skipBaseUrlValidation === true ? true : undefined,
-      apiKeyEnv: input.apiKeyEnv,
-      defaultModel: input.defaultModel,
-      models: input.models,
-      ...(input.promptCacheAffinity === true ? { promptCacheAffinity: true } : {}),
-      ...(input.reasoning !== undefined ? { reasoning: input.reasoning } : {}),
-    };
-
-    let nextProviderId = input.providerId;
-    if (providerConfigStore.getCustom(input.providerId)) {
-      const updated = await providerConfigStore.updateCustom(input.providerId, update);
-      if (!updated) {
-        throw new Error('unknown writable custom providerId');
+      const urlCheck = validateBaseUrl(input.baseUrl, {
+        skipValidation: input.skipBaseUrlValidation === true,
+      });
+      if (!urlCheck.ok || !urlCheck.normalizedUrl) {
+        throw new Error(`baseUrl rejected: ${urlCheck.error}`);
       }
-    } else {
-      const nextProviderIdCandidate = input.displayName.trim();
-      if (nextProviderIdCandidate !== input.providerId) {
-        if (isBuiltinId(nextProviderIdCandidate)) {
-          throw new Error(
-            `custom providerId conflicts with built-in provider: ${nextProviderIdCandidate}`,
-          );
-        }
-        if (providerConfigStore.getCustom(nextProviderIdCandidate)) {
-          throw new Error(
-            `custom providerId conflicts with an existing Space provider: ${nextProviderIdCandidate}`,
-          );
-        }
-        const collidingConfigProvider = (await loadKodaxCustomProviders()).some(
-          (provider) => provider.id === nextProviderIdCandidate && provider.id !== input.providerId,
-        );
-        if (collidingConfigProvider) {
-          throw new Error(
-            `custom providerId conflicts with an existing KodaX config provider: ${nextProviderIdCandidate}`,
-          );
-        }
-      }
+      const envErr = validateApiKeyEnv(input.apiKeyEnv);
+      if (envErr) throw new Error(envErr);
 
-      const existingKey =
-        nextProviderIdCandidate !== input.providerId ? await getKey(input.providerId) : undefined;
-      let keyMoved = false;
-      if (existingKey) {
-        await setKey(nextProviderIdCandidate, existingKey);
-        const oldKeyRemoved = await deleteKey(input.providerId);
-        if (!oldKeyRemoved) {
-          await deleteKey(nextProviderIdCandidate).catch(() => undefined);
-          throw new Error('failed to remove old provider key during rename');
-        }
-        keyMoved = true;
-      }
+      const update = {
+        displayName: input.displayName,
+        protocol: input.protocol,
+        baseUrl: urlCheck.normalizedUrl,
+        skipBaseUrlValidation: input.skipBaseUrlValidation === true ? true : undefined,
+        apiKeyEnv: input.apiKeyEnv,
+        defaultModel: input.defaultModel,
+        models: input.models,
+        ...(input.promptCacheAffinity === true ? { promptCacheAffinity: true } : {}),
+        ...(input.contextWindow !== undefined ? { contextWindow: input.contextWindow } : {}),
+        ...(input.reasoning !== undefined ? { reasoning: input.reasoning } : {}),
+      };
 
-      let updated: Awaited<ReturnType<typeof updateKodaxConfigCustomProvider>>;
-      try {
-        updated = await updateKodaxConfigCustomProvider(input.providerId, update);
-        if (!updated.updated) {
+      let nextProviderId = input.providerId;
+      if (providerConfigStore.getCustom(input.providerId)) {
+        const updated = await updateSpaceCustomProvider(input.providerId, update);
+        if (!updated) {
           throw new Error('unknown writable custom providerId');
         }
-      } catch (err) {
-        if (keyMoved && existingKey) {
-          await setKey(input.providerId, existingKey).catch(() => undefined);
-          await deleteKey(nextProviderIdCandidate).catch(() => undefined);
+      } else {
+        const nextProviderIdCandidate = input.displayName.trim();
+        if (nextProviderIdCandidate !== input.providerId) {
+          if (isBuiltinId(nextProviderIdCandidate)) {
+            throw new Error(
+              `custom providerId conflicts with built-in provider: ${nextProviderIdCandidate}`,
+            );
+          }
+          if (providerConfigStore.getCustom(nextProviderIdCandidate)) {
+            throw new Error(
+              `custom providerId conflicts with an existing Space provider: ${nextProviderIdCandidate}`,
+            );
+          }
+          const collidingConfigProvider = (await loadKodaxCustomProviders()).some(
+            (provider) =>
+              provider.id === nextProviderIdCandidate && provider.id !== input.providerId,
+          );
+          if (collidingConfigProvider) {
+            throw new Error(
+              `custom providerId conflicts with an existing KodaX config provider: ${nextProviderIdCandidate}`,
+            );
+          }
         }
-        throw err;
-      }
-      nextProviderId = updated.providerId;
-      if (nextProviderId !== input.providerId) {
-        if (keyMoved && nextProviderId !== nextProviderIdCandidate && existingKey) {
-          await setKey(nextProviderId, existingKey);
-          await deleteKey(nextProviderIdCandidate).catch(() => undefined);
-        }
-        if (providerConfigStore.getDefaultProviderId() === input.providerId) {
-          await providerConfigStore.setDefault(nextProviderId);
-        }
-      }
-    }
 
-    await refreshSdkCustomProviderRegistry();
-    await injectAllKeysToEnv();
-    await reloadCoderConfigBestEffort('provider.updateCustom');
-    return { ok: true, providerId: nextProviderId };
-  });
-  // provider.removeCustom
-  registerChannel('provider.removeCustom', async (input) => {
-    await providerConfigStore.load();
-    let removed = await providerConfigStore.removeCustom(input.providerId);
-    if (!removed) {
-      removed = await removeKodaxConfigCustomProvider(input.providerId);
-      if (removed && providerConfigStore.getDefaultProviderId() === input.providerId) {
-        await providerConfigStore.clearDefault();
+        const existingKey =
+          nextProviderIdCandidate !== input.providerId ? await getKey(input.providerId) : undefined;
+        let keyMoved = false;
+        if (existingKey) {
+          await setKey(nextProviderIdCandidate, existingKey);
+          const oldKeyRemoved = await deleteKey(input.providerId);
+          if (!oldKeyRemoved) {
+            await deleteKey(nextProviderIdCandidate).catch(() => undefined);
+            throw new Error('failed to remove old provider key during rename');
+          }
+          keyMoved = true;
+        }
+
+        let updated: Awaited<ReturnType<typeof updateKodaxConfigCustomProvider>>;
+        try {
+          updated = await updateKodaxConfigCustomProvider(input.providerId, update);
+          if (!updated.updated) {
+            throw new Error('unknown writable custom providerId');
+          }
+        } catch (err) {
+          if (keyMoved && existingKey) {
+            await setKey(input.providerId, existingKey).catch(() => undefined);
+            await deleteKey(nextProviderIdCandidate).catch(() => undefined);
+          }
+          throw err;
+        }
+        nextProviderId = updated.providerId;
+        if (nextProviderId !== input.providerId) {
+          if (keyMoved && nextProviderId !== nextProviderIdCandidate && existingKey) {
+            await setKey(nextProviderId, existingKey);
+            await deleteKey(nextProviderIdCandidate).catch(() => undefined);
+          }
+          if (providerConfigStore.getDefaultProviderId() === input.providerId) {
+            await providerConfigStore.setDefault(nextProviderId);
+          }
+        }
       }
-    }
-    if (removed) {
-      // 删 custom 时同步删 keychain 中的 key
-      await deleteKey(input.providerId);
+
+      await refreshSdkCustomProviderRegistry();
       await injectAllKeysToEnv();
-      if (input.providerId !== 'mock' && !isBuiltinId(input.providerId)) {
-        await refreshSdkCustomProviderRegistry();
+      await reloadCoderConfigBestEffort('provider.updateCustom');
+      return { ok: true, providerId: nextProviderId };
+    }),
+  );
+  // provider.removeCustom
+  registerChannel('provider.removeCustom', (input) =>
+    customProviderMutationQueue.run(async () => {
+      await providerConfigStore.load();
+      let removed = false;
+
+      if (providerConfigStore.getCustom(input.providerId)) {
+        removed = await removeSpaceCustomProvider(input.providerId);
+      } else {
+        removed = await removeKodaxConfigCustomProvider(input.providerId);
+        if (removed && providerConfigStore.getDefaultProviderId() === input.providerId) {
+          await providerConfigStore.clearDefault();
+        }
       }
-      await reloadCoderConfigBestEffort('provider.removeCustom');
-    }
-    return { ok: removed };
-  });
+
+      if (removed) {
+        // 删 custom 时同步删 keychain 中的 key
+        await deleteKey(input.providerId);
+        await injectAllKeysToEnv();
+        if (input.providerId !== 'mock' && !isBuiltinId(input.providerId)) {
+          await refreshSdkCustomProviderRegistry();
+        }
+        await reloadCoderConfigBestEffort('provider.removeCustom');
+      }
+      return { ok: removed };
+    }),
+  );
   // provider.modelContextWindow — SDK-driven 上下文窗口查询
   //
   // 替代之前 renderer 端 modelContextCaps.ts 的硬编码表。SDK runtime 用 resolveContextWindow

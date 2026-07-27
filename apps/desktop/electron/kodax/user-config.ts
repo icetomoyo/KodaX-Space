@@ -19,6 +19,8 @@
 import { promises as fsp } from 'node:fs';
 import path from 'node:path';
 import {
+  CUSTOM_PROVIDER_CONTEXT_WINDOW_MAX,
+  CUSTOM_PROVIDER_CONTEXT_WINDOW_MIN,
   KODAX_COMPACTION_TRIGGER_PERCENT_MAX,
   KODAX_COMPACTION_TRIGGER_PERCENT_MIN,
   type CustomProviderReasoning,
@@ -33,7 +35,7 @@ import { effortToReasoningMode, isSpaceReasoningMode } from './reasoning-effort.
 type SdkRootModule = typeof import('@kodax-ai/kodax');
 type SdkLoadConfigReturn = ReturnType<SdkRootModule['loadConfig']>;
 type SdkWritableConfig = SdkLoadConfigReturn & Record<string, unknown>;
-type SdkCustomProviderConfig = NonNullable<SdkLoadConfigReturn['customProviders']>[number];
+export type SdkCustomProviderConfig = NonNullable<SdkLoadConfigReturn['customProviders']>[number];
 
 /** KodaX permissionMode 中能映射到 Space 的子集（'plan' / 'accept-edits'；其它 → undefined）。*/
 type KodaxMappablePermissionMode = 'plan' | 'accept-edits';
@@ -73,6 +75,7 @@ export interface KodaxConfigCustomProvider {
   readonly defaultModel: string;
   readonly models?: readonly string[];
   readonly promptCacheAffinity?: boolean;
+  readonly contextWindow?: number;
   readonly reasoning?: CustomProviderReasoning;
 }
 
@@ -85,6 +88,7 @@ export interface KodaxConfigCustomProviderUpdate {
   readonly defaultModel: string;
   readonly models?: readonly string[];
   readonly promptCacheAffinity?: boolean;
+  readonly contextWindow?: number;
   readonly reasoning?: CustomProviderReasoning;
 }
 export interface SpaceCustomProviderForSdk {
@@ -96,6 +100,7 @@ export interface SpaceCustomProviderForSdk {
   readonly defaultModel: string;
   readonly models?: readonly string[];
   readonly promptCacheAffinity?: boolean;
+  readonly contextWindow?: number;
   readonly reasoning?: CustomProviderReasoning;
 }
 
@@ -365,16 +370,10 @@ export async function updateKodaxConfigCustomProvider(
   // the form owns) are fully replaced by the rebuild, so clearing them (e.g. emptying the
   // model list or the reasoning declaration) actually takes effect; every other field on
   // the existing record is preserved.
-  const existing = providers[index] as unknown as Record<string, unknown>;
-  const rebuilt = customProviderUpdateToSdk(nextProviderId, update) as unknown as Record<
-    string,
-    unknown
-  >;
-  const preserved: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(existing)) {
-    if (!CUSTOM_PROVIDER_MODELED_KEYS.has(key)) preserved[key] = value;
-  }
-  providers[index] = { ...preserved, ...rebuilt } as unknown as SdkCustomProviderConfig;
+  providers[index] = mergeSdkCustomProviderConfig(
+    providers[index],
+    customProviderUpdateToSdk(nextProviderId, update),
+  );
   const nextConfig = {
     ...raw,
     provider: raw.provider === providerId ? nextProviderId : raw.provider,
@@ -426,12 +425,22 @@ export async function registerKodaxCustomProviders(
   }
 
   const mergedByName = new Map<string, SdkCustomProviderConfig>();
-  for (const provider of normalizeKodaxConfigCustomProviders(rawProviders)) {
-    mergedByName.set(provider.id, spaceCustomProviderToSdk(provider));
+  for (const rawProvider of Array.isArray(rawProviders) ? rawProviders : []) {
+    const provider = normalizeKodaxConfigCustomProvider(rawProvider);
+    if (!provider) continue;
+    mergedByName.set(
+      provider.id,
+      mergeSdkCustomProviderConfig(rawProvider, spaceCustomProviderToSdk(provider)),
+    );
   }
   for (const provider of spaceCustomProviders) {
     const normalized = normalizeSpaceCustomProviderForSdk(provider);
-    if (normalized) mergedByName.set(provider.id, normalized);
+    if (normalized) {
+      mergedByName.set(
+        provider.id,
+        mergeSdkCustomProviderConfig(mergedByName.get(provider.id), normalized),
+      );
+    }
   }
 
   const customProviders = [...mergedByName.values()];
@@ -514,6 +523,7 @@ function normalizeKodaxConfigCustomProvider(
 
   const models = normalizeModelList(raw.models);
   const promptCacheAffinity = raw.promptCacheAffinity === true ? true : undefined;
+  const contextWindow = normalizeCustomProviderContextWindow(raw.contextWindow);
   const reasoning = normalizeReasoningConfig(raw.reasoning);
   return {
     id: name,
@@ -525,6 +535,7 @@ function normalizeKodaxConfigCustomProvider(
     defaultModel: model,
     ...(models ? { models } : {}),
     ...(promptCacheAffinity ? { promptCacheAffinity } : {}),
+    ...(contextWindow !== undefined ? { contextWindow } : {}),
     ...(reasoning ? { reasoning } : {}),
   };
 }
@@ -547,6 +558,15 @@ function normalizeReasoningConfig(raw: unknown): CustomProviderReasoning | undef
   return { efforts: cleaned, ...(defaultEffort ? { default: defaultEffort } : {}) };
 }
 
+function normalizeCustomProviderContextWindow(raw: unknown): number | undefined {
+  return typeof raw === 'number' &&
+    Number.isInteger(raw) &&
+    raw >= CUSTOM_PROVIDER_CONTEXT_WINDOW_MIN &&
+    raw <= CUSTOM_PROVIDER_CONTEXT_WINDOW_MAX
+    ? raw
+    : undefined;
+}
+
 function spaceCustomProviderToSdk(provider: SpaceCustomProviderForSdk): SdkCustomProviderConfig {
   const config: Record<string, unknown> = {
     name: provider.id,
@@ -560,6 +580,9 @@ function spaceCustomProviderToSdk(provider: SpaceCustomProviderForSdk): SdkCusto
   }
   if (provider.promptCacheAffinity === true) {
     config.promptCacheAffinity = true;
+  }
+  if (provider.contextWindow !== undefined) {
+    config.contextWindow = provider.contextWindow;
   }
   // Canonical SDK friendly form: reasoning: { efforts, default } | 'none'.
   if (provider.reasoning !== undefined) {
@@ -576,11 +599,17 @@ function spaceCustomProviderToSdk(provider: SpaceCustomProviderForSdk): SdkCusto
   return config as unknown as SdkCustomProviderConfig;
 }
 
-function normalizeSpaceCustomProviderForSdk(
+export function normalizeSpaceCustomProviderForSdk(
   provider: SpaceCustomProviderForSdk,
 ): SdkCustomProviderConfig | null {
   const envErr = validateApiKeyEnv(provider.apiKeyEnv);
   if (envErr) return null;
+  if (
+    provider.contextWindow !== undefined &&
+    normalizeCustomProviderContextWindow(provider.contextWindow) === undefined
+  ) {
+    return null;
+  }
   const urlCheck = validateBaseUrl(provider.baseUrl, {
     skipValidation: provider.skipBaseUrlValidation === true,
   });
@@ -837,12 +866,66 @@ const CUSTOM_PROVIDER_MODELED_KEYS: ReadonlySet<string> = new Set([
   'model',
   'models',
   'promptCacheAffinity',
+  'contextWindow',
   // 'reasoning' 是 Space 表单建模并作为其权威编辑器的字段（表单会用现有值预填,见
   // CustomProviderForm reasoningNone/reasoningEfforts/reasoningDefault）。必须纳入 modeled
   // keys,否则 merge 永远保留旧值 → 用户清空 reasoning 无效（C3 bug）。注意：SDK 侧的
   // reasoningProfile / supportsThinking 是 **另外的** key,不由表单建模,仍走 preserved 保留。
   'reasoning',
 ]);
+
+function customProviderModelId(model: unknown): string | undefined {
+  if (typeof model === 'string') return model;
+  if (!model || typeof model !== 'object') return undefined;
+  const id = (model as { readonly id?: unknown }).id;
+  return typeof id === 'string' ? id : undefined;
+}
+
+/**
+ * Apply the fields owned by Space without discarding Runtime/CLI-only provider
+ * metadata. Model descriptors are preserved for model ids that remain selected
+ * in Space, while removed model ids are still removed authoritatively.
+ */
+export function mergeSdkCustomProviderConfig(
+  existing: SdkCustomProviderConfig | undefined,
+  rebuilt: SdkCustomProviderConfig,
+): SdkCustomProviderConfig {
+  if (!existing) return rebuilt;
+
+  const existingRecord = existing as unknown as Record<string, unknown>;
+  const rebuiltRecord = rebuilt as unknown as Record<string, unknown>;
+  const preserved: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(existingRecord)) {
+    if (!CUSTOM_PROVIDER_MODELED_KEYS.has(key)) preserved[key] = value;
+  }
+  const preserveAdvancedReasoning =
+    existingRecord.reasoning !== undefined &&
+    normalizeReasoningConfig(existingRecord.reasoning) === undefined &&
+    !Object.prototype.hasOwnProperty.call(rebuiltRecord, 'reasoning');
+  if (preserveAdvancedReasoning) {
+    preserved.reasoning = existingRecord.reasoning;
+  }
+
+  const rebuiltModels = Array.isArray(rebuiltRecord.models) ? rebuiltRecord.models : undefined;
+  const existingModels = Array.isArray(existingRecord.models) ? existingRecord.models : [];
+  const existingModelsById = new Map<string, unknown>();
+  for (const model of existingModels) {
+    const id = customProviderModelId(model);
+    if (id && typeof model === 'object' && model !== null) {
+      existingModelsById.set(id, model);
+    }
+  }
+  const mergedModels = rebuiltModels?.map((model) => {
+    const id = customProviderModelId(model);
+    return (id && existingModelsById.get(id)) ?? model;
+  });
+
+  return {
+    ...preserved,
+    ...rebuiltRecord,
+    ...(mergedModels ? { models: mergedModels } : {}),
+  } as unknown as SdkCustomProviderConfig;
+}
 
 function customProviderUpdateToSdk(
   providerId: string,
@@ -857,6 +940,7 @@ function customProviderUpdateToSdk(
     defaultModel: update.defaultModel,
     models: update.models,
     promptCacheAffinity: update.promptCacheAffinity,
+    contextWindow: update.contextWindow,
     ...(update.reasoning !== undefined ? { reasoning: update.reasoning } : {}),
   });
 }

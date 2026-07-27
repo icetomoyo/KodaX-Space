@@ -18,7 +18,11 @@ import { promises as fs } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { z } from 'zod';
-import { customProviderReasoningSchema } from '@kodax-space/space-ipc-schema';
+import {
+  CUSTOM_PROVIDER_CONTEXT_WINDOW_MAX,
+  CUSTOM_PROVIDER_CONTEXT_WINDOW_MIN,
+  customProviderReasoningSchema,
+} from '@kodax-space/space-ipc-schema';
 import { isBuiltinId } from './catalog.js';
 import { getKodaxDir, getSpaceDataDir } from '../kodax/data-paths.js';
 
@@ -58,11 +62,22 @@ const customProviderSchema = z.object({
   defaultModel: z.string().min(1).max(128),
   models: z.array(z.string().min(1).max(128)).max(64).optional(),
   promptCacheAffinity: z.boolean().optional(),
+  contextWindow: z
+    .number()
+    .int()
+    .min(CUSTOM_PROVIDER_CONTEXT_WINDOW_MIN)
+    .max(CUSTOM_PROVIDER_CONTEXT_WINDOW_MAX)
+    .optional(),
   reasoning: customProviderReasoningSchema.optional(),
   createdAt: z.number().int().nonnegative(),
 });
 
 export type CustomProvider = z.infer<typeof customProviderSchema>;
+export type ProviderConfigPersist = (
+  dir: string,
+  filePath: string,
+  data: string,
+) => Promise<void>;
 
 const customProvidersFileSchema = z.object({
   version: z.literal(1),
@@ -90,6 +105,7 @@ export class ProviderConfigStore {
     private readonly spaceDir: string = SPACE_CONFIG_DIR,
     private readonly customFile: string = CUSTOM_PROVIDERS_FILE,
     private readonly customDir: string = KODAX_DIR,
+    private readonly persist: ProviderConfigPersist = persistAtomic,
   ) {}
 
   async load(): Promise<void> {
@@ -143,22 +159,67 @@ export class ProviderConfigStore {
   }
   async removeCustom(id: string): Promise<boolean> {
     if (isBuiltinId(id)) return false; // built-in 不可删
+
     let removed = false;
-    await this.mutateCustom((rules) => {
-      const next = rules.filter((r) => {
-        if (r.id === id) {
-          removed = true;
-          return false;
-        }
-        return true;
-      });
-      return next;
-    });
-    if (removed) {
-      await this.mutateSpace((cfg) =>
-        cfg.defaultProviderId === id ? { ...cfg, defaultProviderId: null } : cfg,
+    const next = this.writeLock.then(async () => {
+      if (this.customCache === null) this.customCache = await this.readCustomProviders();
+      if (this.spaceCache === null) this.spaceCache = await this.readSpaceConfig();
+
+      const previousCustom = this.customCache;
+      const previousSpace = this.spaceCache;
+      const updatedCustom = previousCustom.filter((provider) => provider.id !== id);
+      if (updatedCustom.length === previousCustom.length) return;
+      removed = true;
+
+      const updatedSpace =
+        previousSpace.defaultProviderId === id
+          ? { ...previousSpace, defaultProviderId: null }
+          : previousSpace;
+      const previousCustomPayload: z.infer<typeof customProvidersFileSchema> = {
+        version: 1,
+        providers: previousCustom,
+      };
+      const updatedCustomPayload: z.infer<typeof customProvidersFileSchema> = {
+        version: 1,
+        providers: updatedCustom,
+      };
+
+      await this.persist(
+        this.customDir,
+        this.customFile,
+        JSON.stringify(updatedCustomPayload, null, 2),
       );
-    }
+      try {
+        if (updatedSpace !== previousSpace) {
+          await this.persist(
+            this.spaceDir,
+            this.spaceFile,
+            JSON.stringify(updatedSpace, null, 2),
+          );
+        }
+      } catch (spaceError) {
+        try {
+          await this.persist(
+            this.customDir,
+            this.customFile,
+            JSON.stringify(previousCustomPayload, null, 2),
+          );
+        } catch (rollbackError) {
+          this.customCache = null;
+          this.spaceCache = null;
+          throw new AggregateError(
+            [spaceError, rollbackError],
+            `failed to clear the default custom provider and restore ${id}`,
+          );
+        }
+        throw spaceError;
+      }
+
+      this.customCache = updatedCustom.slice();
+      this.spaceCache = updatedSpace;
+    });
+    this.writeLock = next.catch(() => undefined);
+    await next;
     return removed;
   }
 
@@ -215,8 +276,8 @@ export class ProviderConfigStore {
       if (this.spaceCache === null) this.spaceCache = await this.readSpaceConfig();
       const updated = apply(this.spaceCache);
       if (updated === this.spaceCache) return;
+      await this.persist(this.spaceDir, this.spaceFile, JSON.stringify(updated, null, 2));
       this.spaceCache = updated;
-      await persistAtomic(this.spaceDir, this.spaceFile, JSON.stringify(updated, null, 2));
     });
     this.writeLock = next.catch(() => undefined);
     return next;
@@ -226,12 +287,12 @@ export class ProviderConfigStore {
     const next = this.writeLock.then(async () => {
       if (this.customCache === null) this.customCache = await this.readCustomProviders();
       const updated = apply(this.customCache);
-      this.customCache = updated.slice();
       const payload: z.infer<typeof customProvidersFileSchema> = {
         version: 1,
         providers: updated,
       };
-      await persistAtomic(this.customDir, this.customFile, JSON.stringify(payload, null, 2));
+      await this.persist(this.customDir, this.customFile, JSON.stringify(payload, null, 2));
+      this.customCache = updated.slice();
     });
     this.writeLock = next.catch(() => undefined);
     return next;

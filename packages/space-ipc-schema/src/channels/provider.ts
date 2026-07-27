@@ -31,6 +31,14 @@ export const customProviderReasoningSchema = z.union([
 ]);
 export type CustomProviderReasoning = z.infer<typeof customProviderReasoningSchema>;
 
+export const CUSTOM_PROVIDER_CONTEXT_WINDOW_MIN = 1_024;
+export const CUSTOM_PROVIDER_CONTEXT_WINDOW_MAX = 10_000_000;
+const customProviderContextWindowSchema = z
+  .number()
+  .int()
+  .min(CUSTOM_PROVIDER_CONTEXT_WINDOW_MIN)
+  .max(CUSTOM_PROVIDER_CONTEXT_WINDOW_MAX);
+
 // --- 共享：单个 provider 描述 ---
 //
 // `id` 是稳定的标识符（如 'anthropic'、'zhipu-coding'）
@@ -54,6 +62,7 @@ const providerInfoSchema = z.object({
   baseUrl: z.string().min(1).max(512).optional(),
   skipBaseUrlValidation: z.boolean().optional(),
   promptCacheAffinity: z.boolean().optional(),
+  contextWindow: customProviderContextWindowSchema.optional(),
   // 自定义 provider 的 reasoning 声明（friendly 形态）；缺省 = 未声明（走 SDK 默认能力表）
   reasoning: customProviderReasoningSchema.optional(),
 });
@@ -158,6 +167,7 @@ const customProviderConfigInputSchema = z.object({
   defaultModel: z.string().min(1).max(128),
   models: z.array(z.string().min(1).max(128)).max(64).optional(),
   promptCacheAffinity: z.boolean().optional(),
+  contextWindow: customProviderContextWindowSchema.optional(),
   reasoning: customProviderReasoningSchema.optional(),
 });
 

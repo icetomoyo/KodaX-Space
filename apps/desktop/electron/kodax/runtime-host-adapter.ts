@@ -39,6 +39,7 @@ import {
   KODAX_AUTO_MODE_DEFAULT_TIMEOUT_MS,
   loadKodaxAutoModeDefaults,
   type KodaxAutoModeDefaults,
+  type SdkCustomProviderConfig,
 } from './user-config.js';
 import { invalidatePersistedSessionCache, SPACE_EPHEMERAL_SESSION_TAG } from './session-store.js';
 import { RuntimeClientIdentityStore } from './runtime/runtime-client-identity.js';
@@ -2626,6 +2627,23 @@ export class RuntimeHostAdapter {
   async reloadRuntimeConfig(): Promise<void> {
     const runtime = await this.requireRuntime();
     await runtime.config.reload();
+  }
+
+  async listRuntimeCustomProviders(): Promise<readonly SdkCustomProviderConfig[]> {
+    const runtime = await this.requireRuntime();
+    return runtime.catalog.customProviders();
+  }
+
+  async upsertRuntimeCustomProvider(
+    config: SdkCustomProviderConfig,
+  ): Promise<SdkCustomProviderConfig> {
+    const runtime = await this.requireRuntime();
+    return runtime.catalog.upsertCustomProvider(config);
+  }
+
+  async deleteRuntimeCustomProvider(name: string): Promise<boolean> {
+    const runtime = await this.requireRuntime();
+    return runtime.catalog.deleteCustomProvider(name);
   }
 
   async reloadRuntimeMcp() {

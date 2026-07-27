@@ -8,7 +8,12 @@ import {
   type ReactNode,
 } from 'react';
 import { Check, Eye, EyeOff, KeyRound, Loader2, Plus, Save, Server } from 'lucide-react';
-import type { CustomProviderReasoning, ProviderInfo } from '@kodax-space/space-ipc-schema';
+import {
+  CUSTOM_PROVIDER_CONTEXT_WINDOW_MAX,
+  CUSTOM_PROVIDER_CONTEXT_WINDOW_MIN,
+  type CustomProviderReasoning,
+  type ProviderInfo,
+} from '@kodax-space/space-ipc-schema';
 import { useI18n } from '../../i18n/I18nProvider.js';
 import type { MessageKey } from '../../i18n/messages.js';
 
@@ -92,6 +97,16 @@ function normalizeModels(defaultModel: string, csv: string): string[] | undefine
   return models;
 }
 
+function parseContextWindow(value: string): number | undefined {
+  if (value.trim().length === 0) return undefined;
+  const parsed = Number(value);
+  return Number.isInteger(parsed) &&
+    parsed >= CUSTOM_PROVIDER_CONTEXT_WINDOW_MIN &&
+    parsed <= CUSTOM_PROVIDER_CONTEXT_WINDOW_MAX
+    ? parsed
+    : undefined;
+}
+
 const MODEL_PLACEHOLDERS: Record<
   CustomProtocol,
   { readonly defaultModel: string; readonly models: string }
@@ -123,6 +138,8 @@ const FIELD_IDS = {
   apiKeyEnvHint: 'custom-provider-api-key-env-hint',
   defaultModel: 'custom-provider-default-model',
   defaultModelHint: 'custom-provider-default-model-hint',
+  contextWindow: 'custom-provider-context-window',
+  contextWindowHint: 'custom-provider-context-window-hint',
   models: 'custom-provider-models',
   modelsHint: 'custom-provider-models-hint',
   reasoningHint: 'custom-provider-reasoning-hint',
@@ -158,6 +175,9 @@ export function CustomProviderForm({
   );
   const [apiKeyEnv, setApiKeyEnv] = useState(provider?.apiKeyEnv ?? '');
   const [defaultModel, setDefaultModel] = useState(provider?.defaultModel ?? '');
+  const [contextWindow, setContextWindow] = useState(
+    provider?.contextWindow !== undefined ? String(provider.contextWindow) : '',
+  );
   const [modelsCsv, setModelsCsv] = useState(initialModelsCsv);
   const [reasoningNone, setReasoningNone] = useState(provider?.reasoning === 'none');
   const [reasoningEfforts, setReasoningEfforts] = useState(reasoningEffortsCsv(provider?.reasoning));
@@ -192,6 +212,15 @@ export function CustomProviderForm({
     try {
       const trimmedDefaultModel = defaultModel.trim();
       const models = normalizeModels(trimmedDefaultModel, modelsCsv);
+      const parsedContextWindow = parseContextWindow(contextWindow);
+      if (contextWindow.trim().length > 0 && parsedContextWindow === undefined) {
+        throw new Error(
+          t('customProvider.contextWindow.invalid', {
+            min: CUSTOM_PROVIDER_CONTEXT_WINDOW_MIN,
+            max: CUSTOM_PROVIDER_CONTEXT_WINDOW_MAX,
+          }),
+        );
+      }
       const reasoning = buildReasoning(reasoningNone, reasoningEfforts, reasoningDefault);
       const config = {
         displayName: displayName.trim(),
@@ -202,6 +231,7 @@ export function CustomProviderForm({
         defaultModel: trimmedDefaultModel,
         models,
         promptCacheAffinity: promptCacheAffinity ? true : undefined,
+        ...(parsedContextWindow !== undefined ? { contextWindow: parsedContextWindow } : {}),
         ...(reasoning !== undefined ? { reasoning } : {}),
       };
 
@@ -322,11 +352,14 @@ export function CustomProviderForm({
     credentialMode === 'apiKey'
       ? hasDraftKey || (isEditing && hasExistingManagedKey)
       : apiKeyEnv.trim().length > 0;
+  const contextWindowValid =
+    contextWindow.trim().length === 0 || parseContextWindow(contextWindow) !== undefined;
   const valid =
     displayName.trim().length > 0 &&
     baseUrl.trim().length > 0 &&
     credentialValid &&
-    defaultModel.trim().length > 0;
+    defaultModel.trim().length > 0 &&
+    contextWindowValid;
   const canSubmit = valid && !createdProviderId;
   const formLocked = busy || createdProviderId !== null;
   const modelPlaceholders = MODEL_PLACEHOLDERS[protocol];
@@ -546,6 +579,27 @@ export function CustomProviderForm({
             required
             disabled={formLocked}
             aria-describedby={FIELD_IDS.defaultModelHint}
+          />
+        </Field>
+
+        <Field
+          label={t('customProvider.contextWindow.label')}
+          hint={t('customProvider.contextWindow.hint')}
+          inputId={FIELD_IDS.contextWindow}
+          hintId={FIELD_IDS.contextWindowHint}
+        >
+          <input
+            id={FIELD_IDS.contextWindow}
+            type="number"
+            min={CUSTOM_PROVIDER_CONTEXT_WINDOW_MIN}
+            max={CUSTOM_PROVIDER_CONTEXT_WINDOW_MAX}
+            step={1}
+            value={contextWindow}
+            onChange={(e) => setContextWindow(e.target.value)}
+            placeholder="131072"
+            className={`${inputClass} font-mono`}
+            disabled={formLocked}
+            aria-describedby={FIELD_IDS.contextWindowHint}
           />
         </Field>
 

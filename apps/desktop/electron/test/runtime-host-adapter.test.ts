@@ -101,6 +101,8 @@ function createFakeRuntime() {
     agentTrees: [] as string[],
     agentEvents: [] as Array<{ sessionId: string; afterSequence: number }>,
     agentWaits: [] as Array<{ sessionId: string; afterSequence: number }>,
+    customProviderUpserts: [] as Array<Record<string, unknown>>,
+    customProviderDeletes: [] as string[],
   };
   const sessions = new Set<string>();
   const settings = new Map<string, { revision: number; value: Record<string, unknown> }>();
@@ -113,6 +115,7 @@ function createFakeRuntime() {
   const connectionListeners = new Set<(state: RuntimeConnectionState) => void>();
   const actorEvents = new Map<string, AgentEvent[]>();
   const actorTrees = new Map<string, AgentTreeSnapshot>();
+  const customProviders = new Map<string, Record<string, unknown>>();
   const actorWaiters = new Set<{
     readonly sessionId: string;
     readonly afterSequence: number;
@@ -455,7 +458,20 @@ function createFakeRuntime() {
       },
     },
     config: {},
-    catalog: {},
+    catalog: {
+      customProviders: async () =>
+        [...customProviders.values()].map((config) => structuredClone(config)),
+      upsertCustomProvider: async (config: Record<string, unknown>) => {
+        const cloned = structuredClone(config);
+        calls.customProviderUpserts.push(cloned);
+        customProviders.set(String(config.name), cloned);
+        return structuredClone(cloned);
+      },
+      deleteCustomProvider: async (name: string) => {
+        calls.customProviderDeletes.push(name);
+        return customProviders.delete(name);
+      },
+    },
     mcp: {},
     artifacts: {},
     status: {
@@ -779,6 +795,35 @@ test('runtime selection attaches one Coder daemon with stable identity and requi
   );
   assert.equal((await adapter.preflightDaemonStop()).canStop, true);
   assert.equal(fake.calls.daemonInspections, 1);
+});
+
+test('runtime custom provider catalog methods proxy through the connected daemon', async () => {
+  const fake = createFakeRuntime();
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+  await adapter.initialize();
+
+  await adapter.upsertRuntimeCustomProvider({
+    name: 'custom_0123456789abcdef',
+    protocol: 'openai',
+    baseUrl: 'http://127.0.0.1:11434/v1',
+    apiKeyEnv: 'OLLAMA_API_KEY',
+    model: 'ornith:35b',
+    contextWindow: 131_072,
+  });
+
+  assert.equal(fake.calls.customProviderUpserts.length, 1);
+  assert.equal(fake.calls.customProviderUpserts[0]?.contextWindow, 131_072);
+  assert.equal((await adapter.listRuntimeCustomProviders())[0]?.name, 'custom_0123456789abcdef');
+  assert.equal(await adapter.deleteRuntimeCustomProvider('custom_0123456789abcdef'), true);
+  assert.deepEqual(fake.calls.customProviderDeletes, ['custom_0123456789abcdef']);
+  assert.deepEqual(await adapter.listRuntimeCustomProviders(), []);
+  await adapter.close();
 });
 
 test('transient unhealthy daemon startup retries until the existing safety window clears', async () => {

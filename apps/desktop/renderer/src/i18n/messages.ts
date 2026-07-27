@@ -1454,6 +1454,11 @@ export const messages = {
       'Name of an existing env var that already contains the API key. Space does not write to your shell environment.',
     'customProvider.defaultModel.label': 'Default model',
     'customProvider.defaultModel.hint': 'Required. Used when a session starts with this provider.',
+    'customProvider.contextWindow.label': 'Context window (tokens)',
+    'customProvider.contextWindow.hint':
+      'Optional. Set this to the context size the endpoint actually serves; leave blank to use KodaX model metadata or its fallback.',
+    'customProvider.contextWindow.invalid':
+      'Context window must be a whole number from {min} to {max} tokens.',
     'customProvider.models.label': 'Model list',
     'customProvider.models.hint':
       'Optional, comma-separated. These appear in the model picker; the default model is included automatically.',
@@ -3560,6 +3565,10 @@ export const messages = {
       '填写已经包含 API Key 的环境变量名。Space 不会把 API Key 写入你的 shell 环境。',
     'customProvider.defaultModel.label': '默认模型',
     'customProvider.defaultModel.hint': '必填。用此服务商启动会话时使用。',
+    'customProvider.contextWindow.label': '上下文窗口（Token）',
+    'customProvider.contextWindow.hint':
+      '可选。请填写该端点实际提供的上下文大小；留空时使用 KodaX 的模型元数据或后备值。',
+    'customProvider.contextWindow.invalid': '上下文窗口必须是 {min} 到 {max} 之间的整数 Token 数。',
     'customProvider.models.label': '模型列表',
     'customProvider.models.hint': '可选，逗号分隔，供模型选择器展示；默认模型会自动包含在列表中。',
     'customProvider.reasoning.label': '推理（思考）',

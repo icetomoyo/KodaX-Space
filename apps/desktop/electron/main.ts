@@ -47,6 +47,7 @@ import {
 import { hydrateShellEnvOnce } from './kodax/shell-env-hydrate.js';
 import { getKodaxDir, getScopedUserDataDir, applySdkHomeEnv } from './kodax/data-paths.js';
 import { registerProviderChannels, injectAllKeysToEnv } from './ipc/provider.js';
+import { syncSpaceCustomProvidersToRuntime } from './providers/runtime-catalog.js';
 import { autoActivateProvidersFromEnv } from './providers/auto-activate.js';
 import { registerFilesChannels } from './ipc/files.js';
 import { registerPartnerSourceChannels } from './ipc/partner-sources.js';
@@ -1263,9 +1264,17 @@ app
     // v0.1.6 cleanup: 同上，预热 root SDK module + 把 ~/.kodax/config.json 的 customProviders
     // 注册进 SDK runtime LLM registry。完成后 `/provider <name>` 可切到 KodaX-CLI 配的
     // 自定义 provider（如用户的 newapi-anthropic / openrouter-xxx）。失败不阻塞启动。
-    void prewarmKodaxUserConfig()
-      .then(() => providerConfigStore.load())
-      .then(() => registerKodaxCustomProviders(providerConfigStore.listCustom()));
+    try {
+      await prewarmKodaxUserConfig();
+      await providerConfigStore.load();
+      await registerKodaxCustomProviders(providerConfigStore.listCustom());
+      await syncSpaceCustomProvidersToRuntime(providerConfigStore.listCustom());
+    } catch (err) {
+      console.warn(
+        '[main] Custom provider bootstrap failed:',
+        err instanceof Error ? err.message : err,
+      );
+    }
     registerProviderChannels();
     registerFilesChannels();
     registerPartnerSourceChannels();
