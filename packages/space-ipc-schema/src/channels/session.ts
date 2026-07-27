@@ -877,12 +877,27 @@ const todoDriftWarningSchema = z.object({
   firstPendingTodoSubject: z.string().max(2048).optional(),
 });
 
+const runtimeSessionEventOriginSchema = z.object({
+  runtimeId: z.string().min(1).max(128),
+  runId: z.string().min(1).max(128),
+  seq: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+});
+
+const runtimeSessionEventOriginShape = {
+  /**
+   * Runtime provenance is optional for legacy/mock/history events. Daemon-backed live events use
+   * it as the causal barrier against an authoritative cumulative session.liveSnapshot cursor.
+   */
+  runtimeEvent: runtimeSessionEventOriginSchema.optional(),
+} as const;
+
 export const sessionEventChannel = {
   name: 'session.event',
   direction: 'push',
   payload: z.discriminatedUnion('kind', [
     // ---- 流式输出（v0.1.0-alpha.0 已有）----
     z.object({
+      ...runtimeSessionEventOriginShape,
       kind: z.literal('text_delta'),
       sessionId: z.string().min(1),
       text: z.string().max(MAX_TEXT_CHUNK),
@@ -890,6 +905,7 @@ export const sessionEventChannel = {
       sentAt: z.number().int().nonnegative().optional(),
     }),
     z.object({
+      ...runtimeSessionEventOriginShape,
       kind: z.literal('thinking_delta'),
       sessionId: z.string().min(1),
       text: z.string().max(MAX_TEXT_CHUNK),
@@ -897,6 +913,7 @@ export const sessionEventChannel = {
       sentAt: z.number().int().nonnegative().optional(),
     }),
     z.object({
+      ...runtimeSessionEventOriginShape,
       kind: z.literal('thinking_end'),
       sessionId: z.string().min(1),
       // 全量 thinking trace 在大 reasoning session 可能不小，但比 tool_result 小一档。
@@ -905,6 +922,7 @@ export const sessionEventChannel = {
       thinking: z.string().max(MAX_TEXT_CHUNK),
     }),
     z.object({
+      ...runtimeSessionEventOriginShape,
       kind: z.literal('tool_start'),
       sessionId: z.string().min(1),
       toolId: z.string().min(1),
@@ -912,6 +930,7 @@ export const sessionEventChannel = {
       input: toolInputSchema.optional(),
     }),
     z.object({
+      ...runtimeSessionEventOriginShape,
       kind: z.literal('tool_input_delta'),
       sessionId: z.string().min(1),
       toolId: z.string().min(1).optional(),
@@ -919,12 +938,14 @@ export const sessionEventChannel = {
       partialJson: z.string().max(MAX_TEXT_CHUNK),
     }),
     z.object({
+      ...runtimeSessionEventOriginShape,
       kind: z.literal('tool_progress'),
       sessionId: z.string().min(1),
       toolId: z.string().min(1),
       message: z.string().max(MAX_TEXT_CHUNK),
     }),
     z.object({
+      ...runtimeSessionEventOriginShape,
       kind: z.literal('tool_result'),
       sessionId: z.string().min(1),
       toolId: z.string().min(1),
@@ -937,6 +958,7 @@ export const sessionEventChannel = {
     }),
     // ---- session/iteration lifecycle ----
     z.object({
+      ...runtimeSessionEventOriginShape,
       kind: z.literal('session_start'),
       sessionId: z.string().min(1),
       provider: z.string().min(1).max(64),
@@ -987,11 +1009,13 @@ export const sessionEventChannel = {
       contextRevision: z.number().int().nonnegative().optional(),
     }),
     z.object({
+      ...runtimeSessionEventOriginShape,
       kind: z.literal('session_complete'),
       sessionId: z.string().min(1),
       turnId: z.string().min(1).max(128).optional(),
     }),
     z.object({
+      ...runtimeSessionEventOriginShape,
       kind: z.literal('session_error'),
       sessionId: z.string().min(1),
       turnId: z.string().min(1).max(128).optional(),

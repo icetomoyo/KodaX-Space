@@ -174,6 +174,18 @@ function runtimeEventRecord(value: unknown): Readonly<Record<string, unknown>> |
     : undefined;
 }
 
+export function runtimeSessionEventOrigin(runtimeId: string | undefined, event: RuntimeTypedEvent) {
+  return runtimeId
+    ? {
+        runtimeEvent: {
+          runtimeId,
+          runId: event.runId,
+          seq: event.seq,
+        },
+      }
+    : {};
+}
+
 function runtimeInputText(value: unknown): string | undefined {
   const items = Array.isArray(value) ? value : [value];
   const text = items
@@ -1968,7 +1980,7 @@ export class RuntimeHostAdapter {
         await this.revokeCredentialLease(runtime, leaseId);
       }
     }
-    this.bridgeRuntimeEvent(event);
+    this.bridgeRuntimeEvent(event, runtime.identity.runtimeId);
     if (runtimeEventChangesProfile(event.type)) {
       this.scheduleProfileRefresh(event.seq);
     }
@@ -2021,7 +2033,7 @@ export class RuntimeHostAdapter {
     await kodaxHost.persistRuntime(sessionId);
   }
 
-  private bridgeRuntimeEvent(event: RuntimeTypedEvent): void {
+  private bridgeRuntimeEvent(event: RuntimeTypedEvent, runtimeId?: string): void {
     const payload =
       event.payload !== null && typeof event.payload === 'object'
         ? (event.payload as Readonly<Record<string, unknown>>)
@@ -2063,6 +2075,7 @@ export class RuntimeHostAdapter {
     }
     if (event.type === 'assistant.delta' && typeof payload?.text === 'string') {
       this.push('session.event', {
+        ...runtimeSessionEventOrigin(runtimeId, event),
         kind: 'text_delta',
         sessionId: event.sessionId,
         text: payload.text,
@@ -2071,6 +2084,7 @@ export class RuntimeHostAdapter {
     }
     if (event.type === 'thinking.delta' && typeof payload?.text === 'string') {
       this.push('session.event', {
+        ...runtimeSessionEventOrigin(runtimeId, event),
         kind: 'thinking_delta',
         sessionId: event.sessionId,
         text: payload.text,
@@ -2079,6 +2093,7 @@ export class RuntimeHostAdapter {
     }
     if (event.type === 'thinking.finished' && typeof payload?.thinking === 'string') {
       this.push('session.event', {
+        ...runtimeSessionEventOrigin(runtimeId, event),
         kind: 'thinking_end',
         sessionId: event.sessionId,
         thinking: payload.thinking,
@@ -2106,6 +2121,7 @@ export class RuntimeHostAdapter {
           ? (tool.input as Record<string, unknown>)
           : {};
       this.push('session.event', {
+        ...runtimeSessionEventOrigin(runtimeId, event),
         kind: 'tool_start',
         sessionId: event.sessionId,
         toolId,
@@ -2129,6 +2145,7 @@ export class RuntimeHostAdapter {
         event.id;
       if (typeof update?.message === 'string') {
         this.push('session.event', {
+          ...runtimeSessionEventOrigin(runtimeId, event),
           kind: 'tool_progress',
           sessionId: event.sessionId,
           toolId,
@@ -2136,6 +2153,7 @@ export class RuntimeHostAdapter {
         });
       } else if (typeof payload?.partialJson === 'string') {
         this.push('session.event', {
+          ...runtimeSessionEventOrigin(runtimeId, event),
           kind: 'tool_input_delta',
           sessionId: event.sessionId,
           toolId,
@@ -2168,6 +2186,7 @@ export class RuntimeHostAdapter {
             ? payload.result
             : '';
       this.push('session.event', {
+        ...runtimeSessionEventOrigin(runtimeId, event),
         kind: 'tool_result',
         sessionId: event.sessionId,
         toolId,
@@ -2248,6 +2267,7 @@ export class RuntimeHostAdapter {
         event.turnId ?? (typeof payload?.turnId === 'string' ? payload.turnId : undefined);
       if (!turnId) return;
       this.push('session.event', {
+        ...runtimeSessionEventOrigin(runtimeId, event),
         kind: 'session_start',
         sessionId: event.sessionId,
         provider: this.runProviders.get(event.runId) ?? 'unknown',
@@ -2274,6 +2294,7 @@ export class RuntimeHostAdapter {
         'unknown';
       if (provider !== 'unknown') this.runProviders.set(event.runId, provider);
       this.push('session.event', {
+        ...runtimeSessionEventOrigin(runtimeId, event),
         kind: 'session_start',
         sessionId: event.sessionId,
         provider,
@@ -2285,6 +2306,7 @@ export class RuntimeHostAdapter {
       this.terminalSidecarBlockRuns.delete(event.runId);
       this.pushTerminalInterruptFailures(event.sessionId, payload, 'run_completed');
       this.push('session.event', {
+        ...runtimeSessionEventOrigin(runtimeId, event),
         kind: 'session_complete',
         sessionId: event.sessionId,
         ...(event.turnId ? { turnId: event.turnId } : {}),
@@ -2311,6 +2333,7 @@ export class RuntimeHostAdapter {
       this.terminalSidecarBlockRuns.delete(event.runId);
       if (terminalSidecarBlock) {
         this.push('session.event', {
+          ...runtimeSessionEventOrigin(runtimeId, event),
           kind: 'session_complete',
           sessionId: event.sessionId,
           ...(event.turnId ? { turnId: event.turnId } : {}),
@@ -2333,6 +2356,7 @@ export class RuntimeHostAdapter {
                 ? 'Runtime run interrupted'
                 : 'Runtime run failed';
       this.push('session.event', {
+        ...runtimeSessionEventOrigin(runtimeId, event),
         kind: 'session_error',
         sessionId: event.sessionId,
         ...(event.turnId ? { turnId: event.turnId } : {}),

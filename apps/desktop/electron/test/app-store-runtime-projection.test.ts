@@ -9,6 +9,7 @@ import type {
 } from '@kodax-space/space-ipc-schema';
 import { useAppStore } from '../../renderer/src/store/appStore.js';
 import { createRuntimeProjectionState } from '../../renderer/src/store/runtimeProjectionState.js';
+import { runtimeDeltasShareSnapshotSide } from '../../renderer/src/store/runtimeSnapshotHydration.js';
 
 const profile: SpaceRuntimeProfileProjectionT = {
   connection: {
@@ -46,6 +47,7 @@ beforeEach(() => {
     liveProjectionBySession: initial.liveBySession,
     agentActorSnapshotBySession: {},
     runtimeSnapshotRequiredBySession: initial.snapshotRequiredBySession,
+    runtimeSnapshotCursorBySession: {},
     permissionQueue: [],
     askUserQueue: [],
     currentSessionId: null,
@@ -144,9 +146,7 @@ test('cumulative live snapshots hydrate missing state once without replaying tex
     },
     thinkingDraft: { text: 'plan carefully', startedAt: 10 },
     assistantDraft: { text: 'Hello world', startedAt: 10 },
-    activeTools: [
-      { toolCallId: 'tool_1', name: 'read_file', startedAt: 11, progress: 'reading' },
-    ],
+    activeTools: [{ toolCallId: 'tool_1', name: 'read_file', startedAt: 11, progress: 'reading' }],
   };
 
   useAppStore.getState().replaceSessionLiveProjection(streaming);
@@ -179,6 +179,518 @@ test('cumulative live snapshots hydrate missing state once without replaying tex
   );
   assert.equal(events.filter((event) => event.kind === 'tool_start').length, 1);
   assert.equal(events.filter((event) => event.kind === 'tool_progress').length, 1);
+});
+
+test('snapshot cursor reconciles a delivered suffix and rejects a covered late delta', () => {
+  useAppStore.setState({ currentSessionId: 's_1', eventsBySession: { s_1: [] } });
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  useAppStore.getState().appendEvent({
+    kind: 'text_delta',
+    sessionId: 's_1',
+    text: 'c',
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_1', seq: 3 },
+  });
+
+  const snapshot: SpaceSessionLiveProjectionT = {
+    ...live,
+    projectionRevision: 2,
+    cursor: { runtimeId: 'rt_1', seq: 3 },
+    activeRun: {
+      runId: 'run_1',
+      sessionId: 's_1',
+      phase: 'running',
+      startedAt: 10,
+    },
+    assistantDraft: { text: 'abc', startedAt: 10 },
+  };
+  useAppStore.getState().replaceSessionLiveProjection(snapshot);
+  useAppStore.getState().appendEvent({
+    kind: 'text_delta',
+    sessionId: 's_1',
+    text: 'c',
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_1', seq: 3 },
+  });
+  useAppStore.getState().appendEvent({
+    kind: 'text_delta',
+    sessionId: 's_1',
+    text: 'd',
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_1', seq: 4 },
+  });
+
+  const events = useAppStore.getState().eventsBySession.s_1 ?? [];
+  assert.equal(
+    events
+      .filter(
+        (event): event is Extract<SessionEvent, { kind: 'text_delta' }> =>
+          event.kind === 'text_delta',
+      )
+      .map((event) => event.text)
+      .join(''),
+    'abcd',
+  );
+  assert.deepEqual(useAppStore.getState().runtimeSnapshotCursorBySession.s_1, {
+    runtimeId: 'rt_1',
+    seq: 3,
+    runId: 'run_1',
+    assistantDraftSeq: 3,
+  });
+});
+
+test('snapshot-first delivery drops an included delta but admits the next cursor', () => {
+  useAppStore.setState({ currentSessionId: 's_1', eventsBySession: { s_1: [] } });
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  useAppStore.getState().replaceSessionLiveProjection({
+    ...live,
+    projectionRevision: 2,
+    cursor: { runtimeId: 'rt_1', seq: 3 },
+    activeRun: {
+      runId: 'run_1',
+      sessionId: 's_1',
+      phase: 'running',
+      startedAt: 10,
+    },
+    assistantDraft: { text: 'abc', startedAt: 10 },
+  });
+  useAppStore.getState().appendEvent({
+    kind: 'text_delta',
+    sessionId: 's_1',
+    text: 'c',
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_1', seq: 3 },
+  });
+  useAppStore.getState().appendEvent({
+    kind: 'text_delta',
+    sessionId: 's_1',
+    text: 'd',
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_1', seq: 4 },
+  });
+
+  const text = (useAppStore.getState().eventsBySession.s_1 ?? [])
+    .filter(
+      (event): event is Extract<SessionEvent, { kind: 'text_delta' }> =>
+        event.kind === 'text_delta',
+    )
+    .map((event) => event.text)
+    .join('');
+  assert.equal(text, 'abcd');
+});
+
+test('snapshot recovery fills a missing middle delta without replaying delivered chunks', () => {
+  useAppStore.setState({ currentSessionId: 's_1', eventsBySession: { s_1: [] } });
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  useAppStore.getState().appendEvent({
+    kind: 'text_delta',
+    sessionId: 's_1',
+    text: 'a',
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_1', seq: 2 },
+  });
+  useAppStore.getState().appendEvent({
+    kind: 'text_delta',
+    sessionId: 's_1',
+    text: 'c',
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_1', seq: 4 },
+  });
+
+  const snapshot: SpaceSessionLiveProjectionT = {
+    ...live,
+    projectionRevision: 2,
+    cursor: { runtimeId: 'rt_1', seq: 4 },
+    activeRun: {
+      runId: 'run_1',
+      sessionId: 's_1',
+      phase: 'running',
+      startedAt: 10,
+    },
+    assistantDraft: { text: 'abc', startedAt: 10 },
+  };
+  useAppStore.getState().replaceSessionLiveProjection(snapshot);
+  useAppStore.getState().replaceSessionLiveProjection({
+    ...snapshot,
+    projectionRevision: 3,
+    cursor: { runtimeId: 'rt_1', seq: 5 },
+  });
+
+  assert.equal(
+    (useAppStore.getState().eventsBySession.s_1 ?? [])
+      .filter(
+        (event): event is Extract<SessionEvent, { kind: 'text_delta' }> =>
+          event.kind === 'text_delta',
+      )
+      .map((event) => event.text)
+      .join(''),
+    'abc',
+  );
+});
+
+test('snapshot recovery never treats another run text as current-run cumulative coverage', () => {
+  useAppStore.setState({ currentSessionId: 's_1', eventsBySession: { s_1: [] } });
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  useAppStore.getState().appendEvent({
+    kind: 'text_delta',
+    sessionId: 's_1',
+    text: 'sa',
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_old', seq: 2 },
+  });
+  useAppStore.getState().appendEvent({
+    kind: 'text_delta',
+    sessionId: 's_1',
+    text: 'me',
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_2', seq: 4 },
+  });
+
+  useAppStore.getState().replaceSessionLiveProjection({
+    ...live,
+    projectionRevision: 2,
+    cursor: { runtimeId: 'rt_1', seq: 4 },
+    activeRun: {
+      runId: 'run_2',
+      sessionId: 's_1',
+      phase: 'running',
+      startedAt: 10,
+    },
+    assistantDraft: { text: 'same', startedAt: 10 },
+  });
+
+  const currentRunText = (useAppStore.getState().eventsBySession.s_1 ?? [])
+    .filter(
+      (event): event is Extract<SessionEvent, { kind: 'text_delta' }> =>
+        event.kind === 'text_delta' && event.runtimeEvent?.runId === 'run_2',
+    )
+    .map((event) => event.text)
+    .join('');
+  assert.equal(currentRunText, 'same');
+});
+
+test('snapshot barrier remains scoped to its run when the next run starts', () => {
+  useAppStore.setState({ currentSessionId: 's_1', eventsBySession: { s_1: [] } });
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  useAppStore.getState().replaceSessionLiveProjection({
+    ...live,
+    projectionRevision: 2,
+    cursor: { runtimeId: 'rt_1', seq: 3 },
+    activeRun: {
+      runId: 'run_1',
+      sessionId: 's_1',
+      phase: 'running',
+      startedAt: 10,
+    },
+    assistantDraft: { text: 'first', startedAt: 10 },
+  });
+  useAppStore.getState().appendEvent({
+    kind: 'text_delta',
+    sessionId: 's_1',
+    text: '-late-old',
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_1', seq: 3 },
+  });
+  useAppStore.getState().appendEvent({
+    kind: 'text_delta',
+    sessionId: 's_1',
+    text: '-new-run',
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_2', seq: 2 },
+  });
+
+  const text = (useAppStore.getState().eventsBySession.s_1 ?? [])
+    .filter(
+      (event): event is Extract<SessionEvent, { kind: 'text_delta' }> =>
+        event.kind === 'text_delta',
+    )
+    .map((event) => event.text)
+    .join('');
+  assert.equal(text, 'first-new-run');
+});
+
+test('stream batching never merges covered and post-snapshot Runtime deltas', () => {
+  const covered = {
+    kind: 'text_delta' as const,
+    sessionId: 's_1',
+    text: 'c',
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_1', seq: 3 },
+  };
+  const after = {
+    ...covered,
+    text: 'd',
+    runtimeEvent: { ...covered.runtimeEvent, seq: 4 },
+  };
+  const later = {
+    ...after,
+    text: 'e',
+    runtimeEvent: { ...after.runtimeEvent, seq: 5 },
+  };
+  const cursor = { runtimeId: 'rt_1', runId: 'run_1', seq: 3, assistantDraftSeq: 3 };
+
+  assert.equal(runtimeDeltasShareSnapshotSide(covered, after, cursor), false);
+  assert.equal(runtimeDeltasShareSnapshotSide(after, later, cursor), true);
+});
+
+test('snapshot inserts a missing tool start before orphan progress and remains idempotent', () => {
+  useAppStore.setState({ currentSessionId: 's_1', eventsBySession: { s_1: [] } });
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  useAppStore.getState().appendEvent({
+    kind: 'tool_progress',
+    sessionId: 's_1',
+    toolId: 'tool_1',
+    message: 'reading',
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_1', seq: 3 },
+  });
+
+  const snapshot: SpaceSessionLiveProjectionT = {
+    ...live,
+    projectionRevision: 2,
+    cursor: { runtimeId: 'rt_1', seq: 3 },
+    activeRun: {
+      runId: 'run_1',
+      sessionId: 's_1',
+      phase: 'running',
+      startedAt: 10,
+    },
+    activeTools: [{ toolCallId: 'tool_1', name: 'read_file', startedAt: 11, progress: 'reading' }],
+  };
+  useAppStore.getState().replaceSessionLiveProjection(snapshot);
+  useAppStore.getState().replaceSessionLiveProjection({
+    ...snapshot,
+    projectionRevision: 3,
+  });
+
+  const toolEvents = (useAppStore.getState().eventsBySession.s_1 ?? []).filter(
+    (event) =>
+      (event.kind === 'tool_start' || event.kind === 'tool_progress') && event.toolId === 'tool_1',
+  );
+  assert.deepEqual(
+    toolEvents.map((event) => event.kind),
+    ['tool_start', 'tool_progress'],
+  );
+  assert.equal(toolEvents.filter((event) => event.kind === 'tool_start').length, 1);
+  assert.equal(toolEvents.filter((event) => event.kind === 'tool_progress').length, 1);
+});
+
+test('authoritative active-tool set removes covered orphan running cards', () => {
+  useAppStore.setState({ currentSessionId: 's_1', eventsBySession: { s_1: [] } });
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  useAppStore.getState().appendEvent({
+    kind: 'tool_start',
+    sessionId: 's_1',
+    toolId: 'tool_stale',
+    toolName: 'read_file',
+    input: {},
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_1', seq: 2 },
+  });
+  useAppStore.getState().appendEvent({
+    kind: 'tool_progress',
+    sessionId: 's_1',
+    toolId: 'tool_stale',
+    message: 'reading',
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_1', seq: 3 },
+  });
+  useAppStore.getState().replaceSessionLiveProjection({
+    ...live,
+    projectionRevision: 2,
+    cursor: { runtimeId: 'rt_1', seq: 4 },
+    activeRun: {
+      runId: 'run_1',
+      sessionId: 's_1',
+      phase: 'running',
+      startedAt: 10,
+    },
+    activeTools: [],
+  });
+
+  assert.equal(
+    (useAppStore.getState().eventsBySession.s_1 ?? []).some(
+      (event) =>
+        (event.kind === 'tool_start' || event.kind === 'tool_progress') &&
+        event.toolId === 'tool_stale',
+    ),
+    false,
+  );
+});
+
+test('terminal snapshot closes stale tools without moving or replaying completed text', () => {
+  useAppStore.setState({
+    currentSessionId: 's_1',
+    eventsBySession: {
+      s_1: [
+        {
+          kind: 'session_start',
+          sessionId: 's_1',
+          provider: 'custom',
+          runtimeEvent: { runtimeId: 'rt_1', runId: 'run_1', seq: 1 },
+        },
+        {
+          kind: 'text_delta',
+          sessionId: 's_1',
+          text: 'abc',
+          runtimeEvent: { runtimeId: 'rt_1', runId: 'run_1', seq: 2 },
+        },
+        {
+          kind: 'tool_start',
+          sessionId: 's_1',
+          toolId: 'tool_stale',
+          toolName: 'read_file',
+          input: {},
+          runtimeEvent: { runtimeId: 'rt_1', runId: 'run_1', seq: 3 },
+        },
+        {
+          kind: 'session_complete',
+          sessionId: 's_1',
+          runtimeEvent: { runtimeId: 'rt_1', runId: 'run_1', seq: 4 },
+        },
+      ],
+    },
+  });
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  useAppStore.getState().replaceSessionLiveProjection({
+    ...live,
+    projectionRevision: 2,
+    cursor: { runtimeId: 'rt_1', seq: 4 },
+    assistantDraft: { text: 'abc', startedAt: 10 },
+    lastTerminalRun: {
+      runId: 'run_1',
+      sessionId: 's_1',
+      phase: 'completed',
+      startedAt: 10,
+      completedAt: 20,
+    },
+    activeTools: [],
+  });
+
+  const events = useAppStore.getState().eventsBySession.s_1 ?? [];
+  assert.equal(
+    events
+      .filter(
+        (event): event is Extract<SessionEvent, { kind: 'text_delta' }> =>
+          event.kind === 'text_delta',
+      )
+      .map((event) => event.text)
+      .join(''),
+    'abc',
+  );
+  assert.equal(
+    events.some((event) => event.kind === 'tool_start'),
+    false,
+  );
+  assert.equal(events.at(-1)?.kind, 'session_complete');
+});
+
+test('terminal snapshot without drafts does not discard covered deltas still queued in the renderer', () => {
+  useAppStore.setState({ currentSessionId: 's_1', eventsBySession: { s_1: [] } });
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  const state = useAppStore.getState();
+  state.replaceSessionLiveProjection({
+    ...live,
+    projectionRevision: 2,
+    cursor: { runtimeId: 'rt_1', seq: 42 },
+    lastTerminalRun: {
+      runId: 'run_terminal_queue',
+      sessionId: 's_1',
+      phase: 'completed',
+      startedAt: 10,
+      completedAt: 20,
+    },
+    activeTools: [],
+  });
+
+  state.appendEvent({
+    kind: 'thinking_delta',
+    sessionId: 's_1',
+    text: 'queued thought',
+    runtimeEvent: {
+      runtimeId: 'rt_1',
+      runId: 'run_terminal_queue',
+      seq: 40,
+    },
+  });
+  state.appendEvent({
+    kind: 'text_delta',
+    sessionId: 's_1',
+    text: 'queued answer',
+    runtimeEvent: {
+      runtimeId: 'rt_1',
+      runId: 'run_terminal_queue',
+      seq: 41,
+    },
+  });
+
+  assert.equal(
+    useAppStore
+      .getState()
+      .eventsBySession.s_1?.filter((event) => event.kind === 'thinking_delta')
+      .map((event) => event.text)
+      .join(''),
+    'queued thought',
+  );
+  assert.equal(
+    useAppStore
+      .getState()
+      .eventsBySession.s_1?.filter((event) => event.kind === 'text_delta')
+      .map((event) => event.text)
+      .join(''),
+    'queued answer',
+  );
+});
+
+test('terminal snapshot preserves only the earlier draft coverage watermark for the same run', () => {
+  useAppStore.setState({ currentSessionId: 's_1', eventsBySession: { s_1: [] } });
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  const state = useAppStore.getState();
+  const activeRun = {
+    runId: 'run_terminal_rerun',
+    sessionId: 's_1',
+    phase: 'running' as const,
+    startedAt: 10,
+  };
+  state.replaceSessionLiveProjection({
+    ...live,
+    projectionRevision: 2,
+    cursor: { runtimeId: 'rt_1', seq: 10 },
+    activeRun,
+    assistantDraft: { text: 'covered', startedAt: 10 },
+  });
+  state.replaceSessionLiveProjection({
+    ...live,
+    projectionRevision: 3,
+    cursor: { runtimeId: 'rt_1', seq: 20 },
+    lastTerminalRun: {
+      ...activeRun,
+      phase: 'completed',
+      completedAt: 20,
+    },
+  });
+
+  assert.deepEqual(useAppStore.getState().runtimeSnapshotCursorBySession.s_1, {
+    runtimeId: 'rt_1',
+    seq: 20,
+    runId: 'run_terminal_rerun',
+    assistantDraftSeq: 10,
+  });
+
+  state.appendEvent({
+    kind: 'text_delta',
+    sessionId: 's_1',
+    text: 'covered',
+    runtimeEvent: {
+      runtimeId: 'rt_1',
+      runId: 'run_terminal_rerun',
+      seq: 9,
+    },
+  });
+  state.appendEvent({
+    kind: 'text_delta',
+    sessionId: 's_1',
+    text: ' post',
+    runtimeEvent: {
+      runtimeId: 'rt_1',
+      runId: 'run_terminal_rerun',
+      seq: 15,
+    },
+  });
+
+  assert.equal(
+    useAppStore
+      .getState()
+      .eventsBySession.s_1?.filter((event) => event.kind === 'text_delta')
+      .map((event) => event.text)
+      .join(''),
+    'covered post',
+  );
 });
 
 test('authoritative run and terminal projections clear stale pending-send state', () => {

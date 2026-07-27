@@ -16,6 +16,7 @@ import {
 import {
   runtimeConnectionSemanticallyEqual,
   runtimeEventChangesProfile,
+  runtimeSessionEventOrigin,
 } from '../kodax/runtime-host-adapter.js';
 
 test('profile refresh classification excludes transcript hot-path events', () => {
@@ -77,6 +78,23 @@ test('Runtime connection equality ignores refresh timestamps but detects authori
     }),
     false,
   );
+});
+
+test('Runtime transcript events carry the daemon cursor used by snapshot reconciliation', () => {
+  const event = {
+    id: 'event_7',
+    seq: 7,
+    time: '2026-07-28T00:00:00.000Z',
+    type: 'assistant.delta',
+    sessionId: 's_1',
+    runId: 'run_1',
+    payload: { text: 'hello' },
+  } satisfies RuntimeTypedEvent<'assistant.delta'>;
+
+  assert.deepEqual(runtimeSessionEventOrigin('rt_1', event), {
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_1', seq: 7 },
+  });
+  assert.deepEqual(runtimeSessionEventOrigin(undefined, event), {});
 });
 
 const running = {

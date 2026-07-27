@@ -10,11 +10,7 @@
 //   - layout 结构——由 shell/* 接管
 
 import { useEffect, useRef, useState } from 'react';
-import type {
-  SessionEvent,
-  SpaceRuntimeDefaultsT,
-  SpaceVersionOutput,
-} from '@kodax-space/space-ipc-schema';
+import type { SpaceRuntimeDefaultsT, SpaceVersionOutput } from '@kodax-space/space-ipc-schema';
 import { useAppStore } from './store/appStore.js';
 import { pushToast } from './store/toastStore.js';
 import { useI18n } from './i18n/I18nProvider.js';
@@ -28,90 +24,13 @@ import {
   shouldReconcileRuntimeConnection,
   shouldRequestSessionLiveSnapshot,
 } from './store/runtimeProjectionState.js';
+import { createSessionEventBatcher } from './store/sessionEventBatcher.js';
+import { invokeWithTimeout } from './lib/ipcInvokeWithTimeout.js';
 
 // Shell owns the visible layout; App keeps process-wide bootstrapping and global listeners.
-const HIDDEN_SESSION_EVENT_FLUSH_MS = 100;
-
 // Workflow notice dedup lives in appendEvent keyed workflow_notice events, not a module
 // Set here. The notices must share the session.event stream with assistant text so a
 // workflow result lands before the main-agent report that follows it.
-
-type SessionEventAppender = (event: SessionEvent) => void;
-type StreamDeltaEvent = Extract<SessionEvent, { kind: 'text_delta' | 'thinking_delta' }>;
-
-function isStreamDeltaEvent(event: SessionEvent): event is StreamDeltaEvent {
-  return event.kind === 'text_delta' || event.kind === 'thinking_delta';
-}
-
-function mergeAdjacentStreamDeltas(events: readonly SessionEvent[]): SessionEvent[] {
-  const merged: SessionEvent[] = [];
-  for (const event of events) {
-    const previous = merged.at(-1);
-    if (
-      previous !== undefined &&
-      isStreamDeltaEvent(previous) &&
-      isStreamDeltaEvent(event) &&
-      previous.sessionId === event.sessionId &&
-      previous.kind === event.kind &&
-      previous.text.length + event.text.length <= 256 * 1024
-    ) {
-      merged[merged.length - 1] = { ...event, text: previous.text + event.text };
-    } else {
-      merged.push(event);
-    }
-  }
-  return merged;
-}
-
-function createSessionEventBatcher(appendEvent: SessionEventAppender): {
-  push(event: SessionEvent): void;
-  flush(): void;
-  dispose(): void;
-} {
-  let queue: SessionEvent[] = [];
-  let rafId: number | null = null;
-  let timerId: number | null = null;
-
-  const clearScheduled = (): void => {
-    if (rafId !== null) {
-      window.cancelAnimationFrame(rafId);
-      rafId = null;
-    }
-    if (timerId !== null) {
-      window.clearTimeout(timerId);
-      timerId = null;
-    }
-  };
-
-  const flush = (): void => {
-    clearScheduled();
-    if (queue.length === 0) return;
-    const pending = mergeAdjacentStreamDeltas(queue);
-    queue = [];
-    for (const event of pending) appendEvent(event);
-  };
-
-  const schedule = (): void => {
-    if (rafId !== null || timerId !== null) return;
-    if (document.hidden || !document.hasFocus()) {
-      timerId = window.setTimeout(flush, HIDDEN_SESSION_EVENT_FLUSH_MS);
-      return;
-    }
-    rafId = window.requestAnimationFrame(flush);
-  };
-
-  return {
-    push(event) {
-      queue.push(event);
-      schedule();
-    },
-    flush,
-    dispose() {
-      clearScheduled();
-      queue = [];
-    },
-  };
-}
 
 export default function App(): JSX.Element {
   const [version, setVersion] = useState<SpaceVersionOutput | null>(null);
@@ -162,7 +81,10 @@ export default function App(): JSX.Element {
     let disposed = false;
     const liveSnapshotRequests = new Set<string>();
     const liveSnapshotReruns = new Set<string>();
-    const sessionEventBatcher = createSessionEventBatcher(appendEvent);
+    const sessionEventBatcher = createSessionEventBatcher(appendEvent, {
+      snapshotCursor: (sessionId) =>
+        useAppStore.getState().runtimeSnapshotCursorBySession[sessionId],
+    });
 
     // F121: listener-first Runtime bootstrap. A cursor gap requests one atomic
     // observation snapshot instead of attempting to replay partial daemon events.
@@ -173,14 +95,17 @@ export default function App(): JSX.Element {
         return;
       }
       liveSnapshotRequests.add(sessionId);
-      void bridge
-        .invoke('session.liveSnapshot', { sessionId })
+      // Hold this Session's cursor-bearing Runtime events until the authoritative snapshot cursor
+      // arrives. Draining the held events in raw order before reconciliation preserves lifecycle
+      // and tool positions; the accepted per-draft watermark rejects only later covered replays.
+      sessionEventBatcher.pause(sessionId);
+      void invokeWithTimeout(bridge, 'session.liveSnapshot', { sessionId })
         .then((result) => {
           if (!disposed && result.ok) {
-            // IPC push delivery can race the snapshot response while animation-frame batching
-            // still owns preceding incremental deltas. Commit those deltas first, then reconcile
-            // the cumulative snapshot against the store atomically.
-            sessionEventBatcher.flush();
+            // Drain this paused Session first so lifecycle/tool events retain their causal position.
+            // The drain is intentionally unbatched: the new snapshot cursor is not installed yet,
+            // so coalescing could hide the boundary between covered and post-cursor deltas.
+            sessionEventBatcher.drain(sessionId);
             replaceSessionLiveProjection(result.data);
           }
         })
@@ -188,7 +113,11 @@ export default function App(): JSX.Element {
         .finally(() => {
           if (disposed) return;
           liveSnapshotRequests.delete(sessionId);
-          if (liveSnapshotReruns.delete(sessionId)) requestLiveSnapshot(sessionId);
+          if (liveSnapshotReruns.delete(sessionId)) {
+            requestLiveSnapshot(sessionId);
+          } else {
+            sessionEventBatcher.resume(sessionId);
+          }
         });
     };
     requestCoderLiveSnapshotRef.current = requestLiveSnapshot;
@@ -214,10 +143,7 @@ export default function App(): JSX.Element {
         const previous = useAppStore.getState().runtimeConnection;
         setCoderRuntimeConnection(connection);
         const accepted = useAppStore.getState().runtimeConnection;
-        if (
-          accepted !== previous &&
-          shouldReconcileRuntimeConnection(previous, accepted)
-        ) {
+        if (accepted !== previous && shouldReconcileRuntimeConnection(previous, accepted)) {
           requestCurrentCoderLiveSnapshot();
         }
       }),
@@ -234,6 +160,16 @@ export default function App(): JSX.Element {
         replaceAgentActorSnapshot(snapshot);
       }),
     );
+    const mountedConnection = useAppStore.getState().runtimeConnection;
+    if (
+      (mountedConnection.state === 'ready' || mountedConnection.state === 'degraded') &&
+      mountedConnection.runtimeId !== undefined
+    ) {
+      // This process-wide effect also rebuilds when i18n dependencies change. An older in-flight
+      // snapshot is intentionally ignored after cleanup, so the new coordinator must seed the
+      // selected Session again even when coderRuntimeReady itself did not transition.
+      requestCurrentCoderLiveSnapshot();
+    }
     void bridge
       .invoke('runtime.profileSnapshot', undefined)
       .then((result) => {
@@ -453,6 +389,11 @@ export default function App(): JSX.Element {
       disposed = true;
       for (const u of unsubsRef.current) u();
       unsubsRef.current = [];
+      // An i18n/dependency-driven effect rebuild can happen while snapshots are in flight. Preserve
+      // every paused Session event before disposing this batcher; flush() intentionally skips them.
+      for (const sessionId of liveSnapshotRequests) {
+        sessionEventBatcher.drain(sessionId);
+      }
       liveSnapshotRequests.clear();
       liveSnapshotReruns.clear();
       requestCoderLiveSnapshotRef.current = () => {};
@@ -491,12 +432,7 @@ export default function App(): JSX.Element {
   // runs after a renderer reload without restarting the run.
   useEffect(() => {
     const bridge = window.kodaxSpace;
-    if (
-      !bridge ||
-      !currentSessionId ||
-      !coderRuntimeReady ||
-      hasCurrentLiveProjection
-    ) {
+    if (!bridge || !currentSessionId || !coderRuntimeReady || hasCurrentLiveProjection) {
       return;
     }
     const selected = useAppStore

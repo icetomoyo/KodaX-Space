@@ -27,6 +27,7 @@ import type {
   LicenseStatusT,
   SpaceCoderConnectionProjectionT,
   SpaceRuntimeProfileProjectionT,
+  SpaceRuntimeCursorT,
   SpaceSessionLiveChangedT,
   SpaceSessionLiveProjectionT,
   AgentActorTreeSnapshotT,
@@ -220,6 +221,16 @@ export interface QueuedUserMessage {
   readonly sentAt: number;
 }
 
+interface RuntimeSnapshotEventBarrier extends SpaceRuntimeCursorT {
+  readonly runId: string;
+  /**
+   * Terminal Runtime projections intentionally clear run-scoped drafts. A cursor only covers a
+   * queued delta up to the latest accepted snapshot that actually carried that cumulative draft.
+   */
+  readonly assistantDraftSeq?: number;
+  readonly thinkingDraftSeq?: number;
+}
+
 interface AppState {
   // ----- 数据 -----
   projects: readonly Project[];
@@ -296,6 +307,8 @@ interface AppState {
   runtimeProfile: SpaceRuntimeProfileProjectionT | null;
   liveProjectionBySession: Readonly<Record<string, SpaceSessionLiveProjectionT | undefined>>;
   runtimeSnapshotRequiredBySession: Readonly<Record<string, true | undefined>>;
+  /** Latest accepted cumulative live-snapshot cursor; covered Runtime deltas must not replay. */
+  runtimeSnapshotCursorBySession: Readonly<Record<string, RuntimeSnapshotEventBarrier | undefined>>;
   /**
    * Keychain backend 状态。'memory' 表示 key 仅在本进程内有效；
    * UI 应显著告警，否则用户以为配了 key 但重启就丢（review M1-sec）。
@@ -908,20 +921,65 @@ function appendSessionEvent(
       );
     }
   }
+  if (event.kind === 'tool_start' && event.runtimeEvent !== undefined) {
+    for (let index = bucket.length - 1; index >= 0; index--) {
+      const previous = bucket[index]!;
+      if (previous.kind === 'session_complete' || previous.kind === 'session_error') break;
+      if (
+        previous.kind === 'tool_start' &&
+        previous.toolId === event.toolId &&
+        previous.runtimeEvent?.runtimeId === event.runtimeEvent.runtimeId &&
+        previous.runtimeEvent.runId === event.runtimeEvent.runId
+      ) {
+        return bucket.map((item, itemIndex) => (itemIndex === index ? event : item));
+      }
+    }
+  }
   const last = bucket[bucket.length - 1];
-  if (event.kind === 'text_delta' && last?.kind === 'text_delta') {
+  if (
+    event.kind === 'text_delta' &&
+    last?.kind === 'text_delta' &&
+    event.runtimeEvent === undefined &&
+    last.runtimeEvent === undefined
+  ) {
     return [
       ...bucket.slice(0, -1),
-      { ...last, text: last.text + event.text, sentAt: last.sentAt ?? event.sentAt },
+      { ...event, text: last.text + event.text, sentAt: last.sentAt ?? event.sentAt },
     ];
   }
-  if (event.kind === 'thinking_delta' && last?.kind === 'thinking_delta') {
+  if (
+    event.kind === 'thinking_delta' &&
+    last?.kind === 'thinking_delta' &&
+    event.runtimeEvent === undefined &&
+    last.runtimeEvent === undefined
+  ) {
     return [
       ...bucket.slice(0, -1),
-      { ...last, text: last.text + event.text, sentAt: last.sentAt ?? event.sentAt },
+      { ...event, text: last.text + event.text, sentAt: last.sentAt ?? event.sentAt },
     ];
   }
   return [...bucket, event];
+}
+
+function snapshotCoversRuntimeDraftEvent(state: AppState, event: SessionEvent): boolean {
+  if (
+    event.kind !== 'text_delta' &&
+    event.kind !== 'thinking_delta' &&
+    event.kind !== 'thinking_end'
+  ) {
+    return false;
+  }
+  const origin = event.runtimeEvent;
+  if (!origin) return false;
+  const barrier = state.runtimeSnapshotCursorBySession[event.sessionId];
+  const coveredSeq =
+    event.kind === 'text_delta' ? barrier?.assistantDraftSeq : barrier?.thinkingDraftSeq;
+  return (
+    barrier?.runtimeId === origin.runtimeId &&
+    barrier.runId === origin.runId &&
+    coveredSeq !== undefined &&
+    origin.seq <= coveredSeq
+  );
 }
 
 interface TranscriptTurnSnapshot {
@@ -2095,6 +2153,7 @@ export const useAppStore = create<AppState>((set) => ({
   runtimeProfile: initialRuntimeProjectionState.profile,
   liveProjectionBySession: initialRuntimeProjectionState.liveBySession,
   runtimeSnapshotRequiredBySession: initialRuntimeProjectionState.snapshotRequiredBySession,
+  runtimeSnapshotCursorBySession: {},
   workBudgetBySession: {},
   harnessProfileBySession: {},
   tokensBySession: {},
@@ -2845,6 +2904,7 @@ export const useAppStore = create<AppState>((set) => ({
         }
       }
       const bucket = state.eventsBySession[event.sessionId] ?? [];
+      if (snapshotCoversRuntimeDraftEvent(state, event)) return state;
       const storedEvent = stampLiveStreamEvent(event);
       if (event.kind === 'session_error' && event.error === 'cancelled') {
         // 乐观取消(BottomBar handleCancel)与 main 端真实 cancelled 去重,防同一次取消显示两条。
@@ -3395,6 +3455,8 @@ export const useAppStore = create<AppState>((set) => ({
       const { [sessionId]: _todo, ...restTodos } = state.todoListBySession;
       const { [sessionId]: _mts, ...restMts } = state.managedTaskStatusBySession;
       const { [sessionId]: _actors, ...restActorSnapshots } = state.agentActorSnapshotBySession;
+      const { [sessionId]: _snapshotCursor, ...restSnapshotCursors } =
+        state.runtimeSnapshotCursorBySession;
       const { [sessionId]: _tok, ...restTokens } = state.tokensBySession;
       const { [sessionId]: _usage, ...restUsage } = state.sessionTokenUsageBySession;
       const { [sessionId]: _contextBudget, ...restContextBudgets } = state.contextBudgetBySession;
@@ -3427,6 +3489,7 @@ export const useAppStore = create<AppState>((set) => ({
         todoListBySession: restTodos,
         managedTaskStatusBySession: restMts,
         agentActorSnapshotBySession: restActorSnapshots,
+        runtimeSnapshotCursorBySession: restSnapshotCursors,
         tokensBySession: restTokens,
         sessionTokenUsageBySession: restUsage,
         contextBudgetBySession: restContextBudgets,
@@ -3499,7 +3562,12 @@ export const useAppStore = create<AppState>((set) => ({
         next.connection.runtimeId === state.runtimeConnection.runtimeId;
       return {
         runtimeConnection: next.connection,
-        ...(keepActorSnapshots ? {} : { agentActorSnapshotBySession: {} }),
+        ...(keepActorSnapshots
+          ? {}
+          : {
+              agentActorSnapshotBySession: {},
+              runtimeSnapshotCursorBySession: {},
+            }),
       };
     }),
   replaceAgentActorSnapshot: (snapshot) =>
@@ -3558,6 +3626,12 @@ export const useAppStore = create<AppState>((set) => ({
         runtimeProfile: next.profile,
         liveProjectionBySession: next.liveBySession,
         runtimeSnapshotRequiredBySession: next.snapshotRequiredBySession,
+        runtimeSnapshotCursorBySession:
+          next.connection.runtimeId !== undefined &&
+          next.connection.runtimeId === state.runtimeConnection.runtimeId &&
+          (next.connection.state === 'ready' || next.connection.state === 'degraded')
+            ? state.runtimeSnapshotCursorBySession
+            : {},
         agentActorSnapshotBySession:
           next.connection.runtimeId !== undefined &&
           next.connection.runtimeId === state.runtimeConnection.runtimeId &&
@@ -3587,6 +3661,12 @@ export const useAppStore = create<AppState>((set) => ({
         projection,
       );
       const acceptedProjection = next.liveBySession[projection.sessionId] === projection;
+      const snapshotRun = projection.activeRun ?? projection.lastTerminalRun;
+      const previousBarrier = state.runtimeSnapshotCursorBySession[projection.sessionId];
+      const sameBarrierRun =
+        snapshotRun !== undefined &&
+        previousBarrier?.runtimeId === projection.cursor.runtimeId &&
+        previousBarrier.runId === snapshotRun.runId;
       const currentEvents = state.eventsBySession[projection.sessionId] ?? [];
       const hydratedEvents = acceptedProjection
         ? hydrateSessionEventsFromLiveSnapshot(currentEvents, projection)
@@ -3617,6 +3697,27 @@ export const useAppStore = create<AppState>((set) => ({
         sessions: mergeRuntimeSettingsIntoSessions(state.sessions, projection),
         liveProjectionBySession: next.liveBySession,
         runtimeSnapshotRequiredBySession: next.snapshotRequiredBySession,
+        ...(acceptedProjection && snapshotRun
+          ? {
+              runtimeSnapshotCursorBySession: {
+                ...state.runtimeSnapshotCursorBySession,
+                [projection.sessionId]: {
+                  ...projection.cursor,
+                  runId: snapshotRun.runId,
+                  ...(projection.assistantDraft !== undefined
+                    ? { assistantDraftSeq: projection.cursor.seq }
+                    : sameBarrierRun && previousBarrier.assistantDraftSeq !== undefined
+                      ? { assistantDraftSeq: previousBarrier.assistantDraftSeq }
+                      : {}),
+                  ...(projection.thinkingDraft !== undefined
+                    ? { thinkingDraftSeq: projection.cursor.seq }
+                    : sameBarrierRun && previousBarrier.thinkingDraftSeq !== undefined
+                      ? { thinkingDraftSeq: previousBarrier.thinkingDraftSeq }
+                      : {}),
+                },
+              },
+            }
+          : {}),
         ...(hydratedEvents !== currentEvents
           ? {
               eventsBySession: {
@@ -3660,7 +3761,10 @@ export const useAppStore = create<AppState>((set) => ({
         result.status === 'applied' &&
         projection !== undefined &&
         Boolean(state.pendingSendBySession[change.sessionId]) &&
-        liveProjectionClearsPendingSend(state.liveProjectionBySession[change.sessionId], projection);
+        liveProjectionClearsPendingSend(
+          state.liveProjectionBySession[change.sessionId],
+          projection,
+        );
       const pendingSendPatch = clearsPendingSend
         ? (() => {
             const { [change.sessionId]: _drop, ...rest } = state.pendingSendBySession;
@@ -3922,6 +4026,7 @@ export const useAppStore = create<AppState>((set) => ({
       todoListBySession: {},
       managedTaskStatusBySession: {},
       agentActorSnapshotBySession: {},
+      runtimeSnapshotCursorBySession: {},
       sessions: [],
       lastDiffPath: null,
       pendingToolPaths: {},
@@ -3954,6 +4059,10 @@ export const useAppStore = create<AppState>((set) => ({
         },
         providerCacheDiagnosticBySession: {
           ...state.providerCacheDiagnosticBySession,
+          [sessionId]: undefined,
+        },
+        runtimeSnapshotCursorBySession: {
+          ...state.runtimeSnapshotCursorBySession,
           [sessionId]: undefined,
         },
         pendingToolPaths: nextPending,

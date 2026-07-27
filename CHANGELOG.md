@@ -16,12 +16,15 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ### Fixed
 
-- **Idempotent daemon live reconciliation** - Runtime live-snapshot reads are now pure and
-  cumulative drafts hydrate only missing assistant/thinking suffixes and active-tool state.
-  Unchanged profile refreshes no longer masquerade as connection transitions, and transcript
-  hot-path events no longer rebuild the complete Runtime profile for every token. This removes
-  repeated Coder output across Ollama and hosted Providers while retaining reload, reconnect,
-  focus, revision-gap, and terminal recovery.
+- **Causally idempotent daemon live reconciliation** - Runtime live-snapshot reads are now pure.
+  Daemon transcript events carry their Runtime/run cursor, and each Session pauses delivery across
+  a bounded snapshot request. Its held lifecycle, tool, and delta events are drained in original
+  order before the cumulative projection is reconciled; per-draft cursor watermarks then reject
+  only content the snapshot actually carried. Active tools are restored in causal order and stale
+  running cards are removed from the authoritative set. Unchanged profile refreshes no longer
+  masquerade as connection transitions, and transcript hot-path events no longer rebuild the
+  complete Runtime profile for every token. This removes repeated Coder output across Ollama and
+  hosted Providers while retaining reload, reconnect, focus, revision-gap, and terminal recovery.
 
 ## [0.1.33] - 2026-07-27
 

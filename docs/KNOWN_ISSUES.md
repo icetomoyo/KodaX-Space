@@ -111,13 +111,13 @@ Last Updated: 2026-07-27
 | 113 | Medium   | Resolved    | Native child Agent lifecycle is not synchronized into Task Dock and right-sidebar status                                 | v0.1.32 / KodaX 0.7.72 adoption | 2026-07-27 |
 | 114 | Medium   | Resolved    | Delivered mid-turn prompt could jump above the preceding interrupt response                                              | v0.1.32                         | 2026-07-27 |
 | 115 | High     | Resolved    | Missing temporary clipboard images can permanently poison restored Provider runs                                         | v0.1.9                          | 2026-07-27 |
-| 116 | High     | Resolved    | Completed daemon Session can remain stuck on Processing result in the renderer                                            | v0.1.32                         | 2026-07-27 |
-| 117 | High     | Resolved    | Image attachment fails when the selected persisted Session has not been lazily resumed                                    | v0.1.32                         | 2026-07-27 |
-| 118 | Medium   | In Progress | Space rejects large source images before KodaX can normalize them                                                         | v0.1.9                          | 2026-07-27 |
+| 116 | High     | Resolved    | Completed daemon Session can remain stuck on Processing result in the renderer                                           | v0.1.32                         | 2026-07-27 |
+| 117 | High     | Resolved    | Image attachment fails when the selected persisted Session has not been lazily resumed                                   | v0.1.32                         | 2026-07-27 |
+| 118 | Medium   | In Progress | Space rejects large source images before KodaX can normalize them                                                        | v0.1.9                          | 2026-07-27 |
 | 119 | Medium   | Resolved    | Restored history exposes overlapping internal compaction summaries as giant yellow notices                               | v0.1.x                          | 2026-07-27 |
-| 120 | High     | Resolved    | Space custom Providers were invisible to the shared Coder daemon and failed as unknown Providers                          | v0.1.32                         | 2026-07-27 |
-| 121 | Medium   | Resolved    | Custom Provider settings could not declare the endpoint context window                                                    | v0.1.x                          | 2026-07-27 |
-| 122 | High     | Resolved    | Cumulative Runtime snapshots replayed streamed assistant output, thinking, and active tools in the renderer               | v0.1.33                         | 2026-07-27 |
+| 120 | High     | Resolved    | Space custom Providers were invisible to the shared Coder daemon and failed as unknown Providers                         | v0.1.32                         | 2026-07-27 |
+| 121 | Medium   | Resolved    | Custom Provider settings could not declare the endpoint context window                                                   | v0.1.x                          | 2026-07-27 |
+| 122 | High     | Resolved    | Cumulative Runtime snapshots replayed streamed assistant output, thinking, and active tools in the renderer              | v0.1.33                         | 2026-07-27 |
 
 ## Issue Details
 
@@ -6070,7 +6070,7 @@ Validation:
 - Introduced: v0.1.32
 - Fixed: v0.1.33
 - Created: 2026-07-26
-- Resolution Date: 2026-07-27
+- Resolution Date: 2026-07-28
 
 #### Original Problem
 
@@ -6297,7 +6297,7 @@ Validation:
 - Introduced: v0.1.x / KodaX 0.7.76
 - Fixed: v0.1.33 with npm-published KodaX 0.7.77
 - Created: 2026-07-27
-- Resolution Date: 2026-07-27
+- Resolution Date: 2026-07-28
 
 #### Original Problem
 
@@ -6925,7 +6925,7 @@ yellow transcript blocks.
   superseded solely because an active compaction exists elsewhere in the append order.
 - Keep compaction events as compact history boundaries but remove their internal summaries from
   visible message text.
-- Coalesce only consecutive *visible* compaction notices when no user, assistant, tool, branch, or
+- Coalesce only consecutive _visible_ compaction notices when no user, assistant, tool, branch, or
   workflow content appears between them. Underlying lineage records and `compact_stats` events
   remain intact.
 - Render localized boundary labels (`Conversation compacted` / `上下文已压缩`) while leaving
@@ -7169,10 +7169,20 @@ the duplicated visible text. No KodaX SDK change is required for this Space proj
 - Made `session.liveSnapshot` a pure query: it ensures observation and returns the authoritative
   projection without pushing any legacy transcript events.
 - Removed the cumulative-to-incremental `publishLegacySnapshot()` bridge.
-- Added renderer-owned, idempotent snapshot hydration. It appends only a missing assistant or
-  thinking suffix and restores only missing active tool/progress state.
-- Flushes queued incremental events before applying a snapshot response, covering the IPC
-  push/response race without duplicating newer text.
+- Added Runtime/run cursor provenance to daemon-backed transcript events. The renderer records the
+  latest accepted snapshot cursor per Session/run and separate assistant/thinking draft coverage
+  watermarks, so a terminal snapshot that intentionally cleared its drafts cannot discard queued
+  output it never contained.
+- Added a per-Session causal delivery barrier: while a snapshot request is in flight, that
+  Session's events remain queued while unrelated Sessions continue flushing. On success, the held
+  lifecycle, tool, and delta events drain in their raw causal order before snapshot reconciliation;
+  on failure or the bounded 10-second timeout, the Session always resumes.
+- Snapshot text recovery handles an already-delivered prefix, suffix, overlap, or non-contiguous
+  chunk sequence and remains idempotent on repeated reads. Runtime deltas are not merged a second
+  time in the store, so their cursor boundary remains observable during recovery.
+- Active tools are restored in causal order, so an orphan progress event is placed after its
+  reconstructed start. Covered unresolved tools absent from the authoritative active set are
+  removed instead of remaining visibly running after reconnect or terminal recovery.
 - Treats Runtime connection pushes as edge-triggered reconciliation: initial authority, Runtime
   identity changes, reconnect, and ready/degraded transitions request a snapshot; timestamp-only
   refreshes do not.
@@ -7190,16 +7200,27 @@ Files changed:
 - `apps/desktop/renderer/src/store/appStore.ts`
 - `apps/desktop/renderer/src/store/runtimeProjectionState.ts`
 - `apps/desktop/renderer/src/store/runtimeSnapshotHydration.ts`
+- `apps/desktop/renderer/src/store/sessionEventBatcher.ts`
+- `packages/space-ipc-schema/src/channels/session.ts`
 - `apps/desktop/electron/test/app-store-runtime-projection.test.ts`
 - `apps/desktop/electron/test/coder-daemon-projection.test.ts`
 - `apps/desktop/electron/test/runtime-projection-controller.test.ts`
 - `apps/desktop/electron/test/runtime-projection-state.test.ts`
+- `apps/desktop/electron/test/session-event-batcher.test.ts`
+- `packages/space-ipc-schema/test/session.test.ts`
 
 Validation:
 
 - Regression coverage verifies pure snapshot IPC, connection-edge classification, hot-path profile
-  filtering, timestamp-insensitive connection equality, cumulative text/thinking suffix hydration,
-  and active-tool idempotency.
+  filtering, timestamp-insensitive connection equality, both push/snapshot delivery orders,
+  suffix-first bootstrap, missing-middle recovery, covered-versus-post-cursor batching, run-scoped
+  late-event rejection, cumulative text/thinking hydration, raw lifecycle/tool drain ordering,
+  progress-before-start repair, stale-tool removal, terminal draft coverage, terminal tool
+  ordering, and active-tool idempotency.
+- Two independent sub-Agent reviews reproduced suffix-first and missing-middle text races,
+  progress-before-start/stale-tool gaps, terminal draft loss, lifecycle/tool inversion, and a
+  potentially permanent paused queue in successive revisions of the fix; the per-draft cursor
+  barrier, ordered drain, timeout, and adversarial tests above close those findings before release.
 - The focused projection suite passes.
 - Full workspace tests, TypeScript checks, ESLint, Git diff checks, and the production build smoke
   test pass.
