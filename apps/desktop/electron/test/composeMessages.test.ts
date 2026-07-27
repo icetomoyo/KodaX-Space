@@ -66,6 +66,94 @@ test('only user message, no events: returns single user bubble', () => {
   if (out[0].kind === 'user') assert.equal(out[0].content, 'hello');
 });
 
+test('compaction lineage hides its cumulative internal summary while branch lineage stays readable', () => {
+  const compactionSummary = 'Conversation compacted: very large cumulative internal summary';
+  const out = composeMessages({
+    events: [
+      {
+        kind: 'lineage_notice',
+        sessionId: sid,
+        noticeKind: 'compaction',
+        text: compactionSummary,
+      },
+      {
+        kind: 'lineage_notice',
+        sessionId: sid,
+        noticeKind: 'branch_summary',
+        text: 'Kept the alternate implementation notes.',
+      },
+    ],
+    userMessages: [],
+  });
+
+  assert.equal(out.length, 2);
+  assert.deepEqual(
+    out.map((message) =>
+      message.kind === 'system_notice'
+        ? {
+            variant: message.variant,
+            lineageKind: message.lineageKind,
+            text: message.text,
+          }
+        : { kind: message.kind },
+    ),
+    [
+      { variant: 'lineage', lineageKind: 'compaction', text: '' },
+      {
+        variant: 'lineage',
+        lineageKind: 'branch_summary',
+        text: 'Kept the alternate implementation notes.',
+      },
+    ],
+  );
+  assert.equal(JSON.stringify(out).includes(compactionSummary), false);
+});
+
+test('visibly adjacent compactions coalesce without deleting lineage or compact stats upstream', () => {
+  const out = composeMessages({
+    events: [
+      {
+        kind: 'lineage_notice',
+        sessionId: sid,
+        noticeKind: 'compaction',
+        text: 'older inactive cumulative summary',
+      },
+      {
+        kind: 'compact_stats',
+        sessionId: sid,
+        tokensBefore: 203_065,
+        tokensAfter: 71_113,
+      },
+      {
+        kind: 'lineage_notice',
+        sessionId: sid,
+        noticeKind: 'compaction',
+        text: 'current active cumulative summary',
+      },
+      {
+        kind: 'compact_stats',
+        sessionId: sid,
+        tokensBefore: 201_270,
+        tokensAfter: 62_551,
+      },
+    ],
+    userMessages: [],
+  });
+
+  assert.deepEqual(
+    out.map((message) =>
+      message.kind === 'system_notice'
+        ? {
+            variant: message.variant,
+            lineageKind: message.lineageKind,
+            text: message.text,
+          }
+        : { kind: message.kind },
+    ),
+    [{ variant: 'lineage', lineageKind: 'compaction', text: '' }],
+  );
+});
+
 test("local notice (slash echo/output) does NOT consume a real query's events (ordering regression)", () => {
   // 复现用户报的错位:先跑一条纯本地 slash(/repointel status,无 SDK 回合),再问一个真 query。
   // 真 query 的回答必须挂在真 query 气泡下,而不是被前面没有 events 的本地 slash 抢走。

@@ -810,6 +810,7 @@ function useRetryCountdown(retryAvailableAt: number | undefined): number {
 export function SystemNotice({
   variant,
   text,
+  lineageKind,
   action,
   retryAvailableAt,
   sentAt,
@@ -829,9 +830,13 @@ export function SystemNotice({
   // 而不烤入英文标签；这里（有 useI18n）按 locale 拼出中性的"历史记录"前缀。Live 事件
   // （historical 缺省）的 text 已经在 composeMessages 里烤好完整文案，原样展示不变。
   const displayText =
-    variant === 'sidecar' && historical === true
-      ? `${t('session.sidecarHistoricalLabel')}: ${text}`
-      : text;
+    variant === 'lineage' && lineageKind === 'compaction'
+      ? t('session.compactionHistoryLabel')
+      : variant === 'lineage' && lineageKind === 'branch_summary'
+        ? `${t('session.branchSummaryHistoryLabel')}: ${text}`
+        : variant === 'sidecar' && historical === true
+          ? `${t('session.sidecarHistoricalLabel')}: ${text}`
+          : text;
 
   if (isWorkflow) {
     return (

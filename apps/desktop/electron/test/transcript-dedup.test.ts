@@ -69,6 +69,34 @@ test('新 session:跳过 [compacted] 占位,保留活动分支 + 各岛摘要', 
   );
 });
 
+test('活动压缩之前或之后的 inactive 压缩都保留，避免猜测 fork/rewind 谱系', () => {
+  const entries = [
+    {
+      type: 'compaction',
+      active: false,
+      summary: '较早旁支摘要',
+      message: { role: 'system', content: '较早旁支摘要' },
+    },
+    {
+      type: 'compaction',
+      active: true,
+      summary: '活动摘要',
+      message: { role: 'system', content: '活动摘要' },
+    },
+    {
+      type: 'compaction',
+      active: false,
+      summary: '较晚废弃分支摘要',
+      message: { role: 'system', content: '较晚废弃分支摘要' },
+    },
+  ];
+
+  assert.deepEqual(
+    dedupeTranscriptEntries(entries).map((entry) => entry.summary),
+    ['较早旁支摘要', '活动摘要', '较晚废弃分支摘要'],
+  );
+});
+
 test('旧 session:inactive 旧岛的真内容 re-clone 按内容折叠,保留一份(active)', () => {
   // 同一条消息 3 份:2 inactive(旧克隆)+ 1 active。全真内容、内容相同。
   const dup = (active: boolean, id: string) => ({ entryId: id, type: 'message', active, message: { role: 'user', content: '请你用workflow做review' } });

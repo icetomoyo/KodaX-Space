@@ -73,10 +73,12 @@ export type ConversationMessage =
       id: string;
       variant: 'iteration' | 'error' | 'sidecar' | 'workflow' | 'lineage';
       /** iteration: "iter 1/30 · 1280 tokens"; error: 错误文本；sidecar: verifier 可读消息；
-       *  lineage: fork/rewind branch_summary 或 compaction 摘要的历史提示条（v0.1.x）。
+       *  lineage: fork/rewind branch_summary 或 compaction 的历史提示条（v0.1.x）。
        *  v0.1.x: 'complete' variant 已废弃——assistant bubble footer 自带 "Xd ago"，
        *  原来的横条 "✓ complete" 视觉太重、对每轮都打断阅读节奏。 */
       text: string;
+      /** lineage variant 专用。compaction 的内部累计摘要不会进入可见 text。 */
+      lineageKind?: 'branch_summary' | 'compaction';
       /** sidecar variant 专用：true 表示这条是 session.history 回放（main 无法持久化真实
        *  verdict/delivery），渲染方应该用中性"历史记录"标签而非断言具体 verdict（v0.1.x #12）。*/
       historical?: boolean;
@@ -446,17 +448,26 @@ function composeAssistantSegment(
       }
       case 'lineage_notice': {
         // #3 fix: branch_summary/compaction lineage entry 的历史提示条——不是用户消息,
-        // 复用 sidecar 的视觉样式(SystemNotice 的 warn 配色),文案区分是分支摘要还是压缩摘要。
+        // 复用 sidecar 的视觉样式(SystemNotice 的 warn 配色)。compaction 的完整摘要是
+        // Runtime 内部上下文，通常有上万字符且多次压缩之间高度重叠；只显示本地化边界标签。
+        // 多次压缩之间若没有任何可见内容，只合成一个可见边界。底层 lineage 与 compact_stats
+        // 仍完整保留，避免根据 active/时间顺序猜测 fork/rewind 的祖先关系。
         flushTextBubble();
-        const label =
-          evt.noticeKind === 'branch_summary'
-            ? 'Returned from another branch'
-            : 'Conversation compacted';
+        const previousMessage = out[out.length - 1];
+        if (
+          evt.noticeKind === 'compaction' &&
+          previousMessage?.kind === 'system_notice' &&
+          previousMessage.variant === 'lineage' &&
+          previousMessage.lineageKind === 'compaction'
+        ) {
+          break;
+        }
         out.push({
           kind: 'system_notice',
           id: `${segmentTag}_lineage${noticeCounter++}`,
           variant: 'lineage',
-          text: `${label}: ${evt.text}`,
+          lineageKind: evt.noticeKind,
+          text: evt.noticeKind === 'branch_summary' ? evt.text : '',
         });
         break;
       }
