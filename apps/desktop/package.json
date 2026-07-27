@@ -8,7 +8,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node ../../scripts/ensure-sqlite-native.mjs node && node --test --import tsx electron/test/*.test.ts"
+    "test": "node ../../scripts/ensure-sqlite-native.mjs node && node --test --test-concurrency=1 --import tsx electron/test/*.test.ts"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.2.9",
