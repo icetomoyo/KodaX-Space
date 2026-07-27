@@ -2,9 +2,11 @@ node_modules
 dist
 dist-electron
 out
+out-*
 build
 coverage
 *.tsbuildinfo
 package-lock.json
 yarn.lock
 pnpm-lock.yaml
+vendor

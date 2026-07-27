@@ -7,6 +7,7 @@ node_modules/
 dist/
 dist-electron/
 out/
+out-*/
 build/
 *.tsbuildinfo
 
@@ -90,3 +91,4 @@ tmp/
 
 # UI-audit working dirs (screenshots / html previews from responsive + partner audits)
 artifacts/
+vendor/
