@@ -609,6 +609,14 @@ export function ContextWindowIndicator(): JSX.Element | null {
                   })}
                 </div>
               )}
+              {latestProviderCacheDiagnostic?.promptCacheAffinityHash && (
+                <div
+                  data-testid="session-token-cache-affinity"
+                  className="mt-1 text-[10px] text-fg-muted"
+                >
+                  {t('sessionTokens.cacheAffinityActive')}
+                </div>
+              )}
               <div className="mt-1.5 text-[10px] text-fg-muted">
                 {t(
                   sessionUsage.accountingSource === 'provider_diagnostic'

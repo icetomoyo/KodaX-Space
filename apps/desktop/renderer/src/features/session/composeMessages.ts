@@ -208,7 +208,7 @@ export function composeMessages({
     }
 
     const userMsg = local.userMsg;
-    if (userMsg.hiddenHistoryAnchor !== true) {
+    if (userMsg.hiddenHistoryAnchor !== true && userMsg.hiddenProjectionDuplicate !== true) {
       result.push({
         kind: 'user',
         id: userMsg.id,
@@ -225,7 +225,9 @@ export function composeMessages({
     const segmentEnd = findSegmentEnd(events, cursor);
     const segment = events.slice(cursor, segmentEnd);
     cursor = segmentEnd;
-    composeAssistantSegment(segment, result, userMsg.sentAt, local.order);
+    if (userMsg.hiddenProjectionDuplicate !== true) {
+      composeAssistantSegment(segment, result, userMsg.sentAt, local.order);
+    }
   }
   if (cursor < events.length) {
     composeAssistantSegment(events.slice(cursor), result);

@@ -228,7 +228,9 @@ export function snapshotFromRuntimeProjection(
   if (!projection) return undefined;
   const run = projection.activeRun;
   if (!run) {
-    if (projection.queuedRuns.length === 0) return undefined;
+    if (projection.queuedRuns.length === 0) {
+      return { streaming: false, status: '', startedAt: null };
+    }
     const queued = projection.queuedRuns[0]!;
     return {
       streaming: true,
@@ -270,13 +272,20 @@ export function selectActivitySnapshot(
   managedPhase: string | undefined,
 ): ActivitySnapshot {
   const eventSnapshot = snapshotFromEvents(events, pending, managedPhase);
+  const runtimeSnapshot = snapshotFromRuntimeProjection(projection);
   // Compaction is a nested Runtime activity and is not represented by activeRun requirements.
   // Prefer its explicit lifecycle while active; otherwise the daemon live projection remains the
   // authority for ordinary queued/running/waiting states.
   if (eventSnapshot.streaming && eventSnapshot.status === 'Compacting context…') {
     return eventSnapshot;
   }
-  return snapshotFromRuntimeProjection(projection) ?? eventSnapshot;
+  // Runtime admission is authoritative once it reports a queued or active run, even if the
+  // renderer missed the lifecycle event that normally clears its optimistic pending marker.
+  if (runtimeSnapshot?.streaming) return runtimeSnapshot;
+  // A local send begins before Runtime admission can update the last projection.
+  // Preserve that short pending state even when the previous authoritative snapshot was idle.
+  if (pending) return eventSnapshot;
+  return runtimeSnapshot ?? eventSnapshot;
 }
 
 /** Tally a string's ASCII vs non-ASCII chars into an accumulator (for token estimation). */

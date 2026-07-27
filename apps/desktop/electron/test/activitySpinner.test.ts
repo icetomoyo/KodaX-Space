@@ -9,6 +9,21 @@ import {
 
 const sid = 's_activity_spinner';
 
+function idleProjection(): SpaceSessionLiveProjectionT {
+  return {
+    sessionId: sid,
+    projectionRevision: 2,
+    cursor: { runtimeId: 'rt_1', seq: 9 },
+    transcriptRevision: 'transcript_9',
+    activeRun: undefined,
+    queuedRuns: [],
+    activeTools: [],
+    todos: [],
+    queuedInputs: [],
+    interactions: [],
+  };
+}
+
 test('queued_user_prompt_started keeps spinner alive before the next session_start arrives', () => {
   const events: SessionEvent[] = [
     { kind: 'session_start', sessionId: sid, provider: 'mock' },
@@ -137,6 +152,67 @@ test('active compaction status overrides an ordinary daemon running projection',
 
   assert.equal(snapshot.streaming, true);
   assert.equal(snapshot.status, 'Compacting context…');
+});
+
+test('an authoritative idle Runtime projection clears stale legacy activity telemetry', () => {
+  const staleEvents: SessionEvent[] = [
+    { kind: 'session_start', sessionId: sid, provider: 'mock' },
+    {
+      kind: 'tool_result',
+      sessionId: sid,
+      toolId: 'tool_1',
+      toolName: 'wait_agent',
+      content: 'finished',
+    },
+    {
+      kind: 'iteration_end',
+      sessionId: sid,
+      iter: 5,
+      maxIter: 500,
+      tokenCount: 52_600,
+    },
+  ];
+
+  const snapshot = selectActivitySnapshot(idleProjection(), staleEvents, false, undefined);
+
+  assert.deepEqual(snapshot, { streaming: false, status: '', startedAt: null });
+});
+
+test('pending admission still renders while the last Runtime projection is idle', () => {
+  const snapshot = selectActivitySnapshot(idleProjection(), [], true, undefined);
+
+  assert.equal(snapshot.streaming, true);
+  assert.notEqual(snapshot.status, '');
+});
+
+test('an admitted Runtime run outranks a stale pending-send marker', () => {
+  const projection: SpaceSessionLiveProjectionT = {
+    ...idleProjection(),
+    projectionRevision: 3,
+    cursor: { runtimeId: 'rt_1', seq: 10 },
+    activeRun: {
+      runId: 'run_admitted',
+      sessionId: sid,
+      phase: 'running',
+      startedAt: 10,
+    },
+  };
+
+  const snapshot = selectActivitySnapshot(projection, [], true, undefined);
+
+  assert.equal(snapshot.streaming, true);
+  assert.notEqual(snapshot.status, 'Sending…');
+});
+
+test('legacy activity remains the fallback until a Runtime projection has been hydrated', () => {
+  const snapshot = selectActivitySnapshot(
+    undefined,
+    [{ kind: 'session_start', sessionId: sid, provider: 'mock' }],
+    false,
+    undefined,
+  );
+
+  assert.equal(snapshot.streaming, true);
 });
 
 test('Runtime host-tool wait is rendered from daemon requirements', () => {

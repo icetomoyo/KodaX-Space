@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { beforeEach, test } from 'node:test';
 
 import type {
+  AgentActorTreeSnapshotT,
   SpaceRuntimeProfileProjectionT,
   SpaceSessionLiveProjectionT,
 } from '@kodax-space/space-ipc-schema';
@@ -42,13 +43,55 @@ beforeEach(() => {
     runtimeConnection: initial.connection,
     runtimeProfile: initial.profile,
     liveProjectionBySession: initial.liveBySession,
+    agentActorSnapshotBySession: {},
     runtimeSnapshotRequiredBySession: initial.snapshotRequiredBySession,
     permissionQueue: [],
     askUserQueue: [],
     currentSessionId: null,
     eventsBySession: {},
     tokensBySession: {},
+    pendingSendBySession: {},
   });
+});
+
+test('app store keeps only monotonic Actor snapshots from the active Runtime', () => {
+  const snapshot: AgentActorTreeSnapshotT = {
+    runtimeId: 'rt_1',
+    sessionId: 's_1',
+    rootPath: '/root',
+    revision: 2,
+    eventCursor: 5,
+    activeNonRootTurns: 0,
+    maxConcurrentThreads: 4,
+    actors: [],
+  };
+
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  useAppStore.getState().replaceAgentActorSnapshot(snapshot);
+  useAppStore.getState().replaceAgentActorSnapshot({
+    ...snapshot,
+    revision: 1,
+    eventCursor: 99,
+  });
+  useAppStore.getState().replaceAgentActorSnapshot({
+    ...snapshot,
+    runtimeId: 'rt_stale',
+    revision: 9,
+  });
+
+  assert.strictEqual(useAppStore.getState().agentActorSnapshotBySession.s_1, snapshot);
+
+  const next = { ...snapshot, revision: 3, eventCursor: 6 };
+  useAppStore.getState().replaceAgentActorSnapshot(next);
+  assert.strictEqual(useAppStore.getState().agentActorSnapshotBySession.s_1, next);
+
+  useAppStore.getState().setCoderRuntimeConnection({
+    state: 'disconnected',
+    changedAt: 2,
+    stale: true,
+    capabilities: [],
+  });
+  assert.deepEqual(useAppStore.getState().agentActorSnapshotBySession, {});
 });
 
 test('app store exposes snapshot replacement and revision-safe live patch actions', () => {
@@ -72,6 +115,48 @@ test('app store exposes snapshot replacement and revision-safe live patch action
   assert.equal(state.runtimeProfile?.projectionRevision, 1);
   assert.equal(state.liveProjectionBySession.s_1?.projectionRevision, 2);
   assert.equal(state.liveProjectionBySession.s_1?.todos[0]?.status, 'completed');
+});
+
+test('authoritative run and terminal projections clear stale pending-send state', () => {
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  useAppStore.getState().replaceSessionLiveProjection(live);
+  useAppStore.getState().setPendingSend('s_1', true);
+
+  const admitted = useAppStore.getState().applySessionLiveProjectionChange({
+    sessionId: 's_1',
+    baseProjectionRevision: 1,
+    projectionRevision: 2,
+    cursor: { runtimeId: 'rt_1', seq: 2 },
+    change: {
+      domain: 'run',
+      activeRun: {
+        runId: 'run_1',
+        sessionId: 's_1',
+        phase: 'running',
+        startedAt: 10,
+      },
+      queuedRuns: [],
+    },
+  });
+
+  assert.equal(admitted, 'applied');
+  assert.equal(useAppStore.getState().pendingSendBySession.s_1, undefined);
+
+  useAppStore.getState().setPendingSend('s_1', true);
+  useAppStore.getState().replaceSessionLiveProjection({
+    ...live,
+    projectionRevision: 3,
+    cursor: { runtimeId: 'rt_1', seq: 3 },
+    lastTerminalRun: {
+      runId: 'run_1',
+      sessionId: 's_1',
+      phase: 'completed',
+      startedAt: 10,
+      completedAt: 20,
+    },
+  });
+
+  assert.equal(useAppStore.getState().pendingSendBySession.s_1, undefined);
 });
 
 test('app store marks revision gaps for snapshot reload without mutating live data', () => {

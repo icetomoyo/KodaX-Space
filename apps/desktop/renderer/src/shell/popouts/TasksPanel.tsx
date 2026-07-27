@@ -7,12 +7,16 @@ import { useI18n } from '../../i18n/I18nProvider.js';
 import type { MessageKey } from '../../i18n/messages.js';
 
 type ManagedLiveKind = WorkerNode['latestKind'];
+type AgentTraceKind = NonNullable<AgentStatusViewModel['trace']>[number]['kind'];
 
 export function TasksPanel(): JSX.Element {
   const { t } = useI18n();
   const currentSessionId = useAppStore((s) => s.currentSessionId);
   const status = useAppStore((s) =>
     currentSessionId ? s.managedTaskStatusBySession[currentSessionId] : undefined,
+  );
+  const actorSnapshot = useAppStore((s) =>
+    currentSessionId ? s.agentActorSnapshotBySession[currentSessionId] : undefined,
   );
   const budget = useAppStore((s) =>
     currentSessionId ? s.workBudgetBySession[currentSessionId] : undefined,
@@ -21,7 +25,10 @@ export function TasksPanel(): JSX.Element {
     currentSessionId ? s.harnessProfileBySession[currentSessionId] : undefined,
   );
 
-  const agents = useMemo(() => buildAgentStatuses(status, t), [status, t]);
+  const agents = useMemo(
+    () => buildAgentStatuses(status, t, actorSnapshot),
+    [actorSnapshot, status, t],
+  );
   const workerById = useMemo(() => {
     const map = new Map<string, WorkerNode>();
     for (const worker of buildWorkerTree(status)) map.set(worker.workerId, worker);
@@ -38,9 +45,10 @@ export function TasksPanel(): JSX.Element {
 
   const runningCount = agents.filter((agent) => agent.state === 'active').length;
   const completedCount = agents.filter((agent) => agent.state === 'completed').length;
+  const interruptedCount = agents.filter((agent) => agent.state === 'interrupted').length;
   const waitingText = status?.idleWaiting
     ? t('tasks.waitingPendingResults', { count: status.idleWaitingPendingCount ?? 0 })
-    : status?.childFanoutCount !== undefined && status.childFanoutCount > 0
+    : !actorSnapshot && status?.childFanoutCount !== undefined && status.childFanoutCount > 0
       ? status.childFanoutClass
         ? t('right.agentFanoutWithClass', {
             count: status.childFanoutCount,
@@ -66,6 +74,9 @@ export function TasksPanel(): JSX.Element {
           <div className="flex flex-wrap justify-end gap-1">
             {runningCount > 0 && <Metric label={t('right.running')} value={runningCount} />}
             {completedCount > 0 && <Metric label={t('right.done')} value={completedCount} />}
+            {interruptedCount > 0 && (
+              <Metric label={t('right.interrupted')} value={interruptedCount} />
+            )}
             {waitingText && <Metric label={t('tasks.state')} value={waitingText} />}
           </div>
         </div>
@@ -240,7 +251,26 @@ function AgentPanelRow({
               <span>{t('right.traceEventsCount', { count: agent.traceCount })}</span>
             )}
           </div>
-          {worker && worker.events.length > 0 ? (
+          {agent.trace && agent.trace.length > 0 ? (
+            <ul className="space-y-1 border-l border-border-default/60 pl-2">
+              {agent.trace.map((event) => (
+                <li key={event.id} className="flex items-start gap-2">
+                  <span
+                    className={`mt-1.5 h-1 w-1 flex-shrink-0 rounded-full ${actorTraceDotClass(
+                      event.kind,
+                    )}`}
+                    aria-hidden
+                  />
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-fg-secondary">{event.summary}</span>
+                    <span className="block text-[11px] text-fg-faint">
+                      {new Date(event.createdAt).toLocaleTimeString()}
+                    </span>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : worker && worker.events.length > 0 ? (
             <ul className="space-y-1 border-l border-border-default/60 pl-2">
               {worker.events.map((event) => (
                 <li key={event.key} className="flex items-start gap-2">
@@ -293,6 +323,8 @@ function agentBorderClass(state: AgentStatusViewModel['state']): string {
       return 'border-warn/40';
     case 'completed':
       return 'border-ok/35';
+    case 'interrupted':
+      return 'border-warn/40';
     case 'error':
       return 'border-danger/40';
     case 'idle':
@@ -308,10 +340,23 @@ function agentDotClass(state: AgentStatusViewModel['state']): string {
       return 'bg-warn';
     case 'completed':
       return 'bg-ok';
+    case 'interrupted':
+      return 'bg-warn';
     case 'error':
       return 'bg-danger';
     case 'idle':
       return 'bg-fg-faint';
+  }
+}
+
+function actorTraceDotClass(kind: AgentTraceKind): string {
+  switch (kind) {
+    case 'tool':
+      return 'bg-run';
+    case 'assistant':
+      return 'bg-ok';
+    case 'status':
+      return 'bg-fg-muted';
   }
 }
 
@@ -338,6 +383,8 @@ function agentStateLabelKey(state: AgentStatusViewModel['state']): MessageKey {
       return 'right.waiting';
     case 'completed':
       return 'right.done';
+    case 'interrupted':
+      return 'right.interrupted';
     case 'error':
       return 'right.issue';
     case 'idle':

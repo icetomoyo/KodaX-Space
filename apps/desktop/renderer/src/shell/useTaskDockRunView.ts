@@ -37,6 +37,9 @@ export function useTaskDockRunView(): UseTaskDockRunViewResult {
   const managedStatus = useAppStore((s) =>
     currentSessionId ? s.managedTaskStatusBySession[currentSessionId] : undefined,
   );
+  const actorSnapshot = useAppStore((s) =>
+    currentSessionId ? s.agentActorSnapshotBySession[currentSessionId] : undefined,
+  );
   const budget = useAppStore((s) =>
     currentSessionId ? s.workBudgetBySession[currentSessionId] : undefined,
   );
@@ -65,6 +68,7 @@ export function useTaskDockRunView(): UseTaskDockRunViewResult {
         pendingSend,
         todos,
         managedStatus,
+        actorSnapshot,
         workflowRuns,
         events,
         budget,
@@ -78,6 +82,7 @@ export function useTaskDockRunView(): UseTaskDockRunViewResult {
       pendingSend,
       todos,
       managedStatus,
+      actorSnapshot,
       workflowRuns,
       events,
       budget,
@@ -106,6 +111,7 @@ function sameRunViewInput(a: BuildTaskDockRunInput, b: BuildTaskDockRunInput): b
     a.pendingSend === b.pendingSend &&
     a.todos === b.todos &&
     a.managedStatus === b.managedStatus &&
+    a.actorSnapshot === b.actorSnapshot &&
     sameArrayItems(a.workflowRuns, b.workflowRuns) &&
     a.events === b.events &&
     a.budget === b.budget &&
@@ -115,10 +121,7 @@ function sameRunViewInput(a: BuildTaskDockRunInput, b: BuildTaskDockRunInput): b
   );
 }
 
-function sameArrayItems<T>(
-  a: readonly T[] | undefined,
-  b: readonly T[] | undefined,
-): boolean {
+function sameArrayItems<T>(a: readonly T[] | undefined, b: readonly T[] | undefined): boolean {
   if (a === b) return true;
   if (!a || !b || a.length !== b.length) return false;
   return a.every((item, index) => item === b[index]);

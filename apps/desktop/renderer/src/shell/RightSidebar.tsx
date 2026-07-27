@@ -7,7 +7,7 @@
 // Data sources:
 //   - Run:      taskDockProjection from session/task/workflow/agent state
 //   - Plan:     todoListBySession, same source as PlanPanel
-//   - Agents:   managedTaskStatusBySession projected to semantic agent cards
+//   - Agents:   Runtime Actor tree, with managed task status as the legacy fallback
 //   - Changes:  project.gitChanges IPC, 200-file cap
 //   - Working folder: currentProjectPath
 //   - Context:  eventsBySession[sid].tool_start projection
@@ -404,17 +404,21 @@ function Section({
       data-testid={popoutKind ? `right-sidebar-section-${popoutKind}` : undefined}
       data-task-dock-section={sectionId}
     >
-      <div className="w-full px-3 py-2 flex items-center justify-between text-xs uppercase tracking-wider text-fg-muted">
+      <div
+        className="flex min-h-8 w-full items-stretch text-xs uppercase tracking-wider text-fg-muted"
+        data-testid="task-dock-section-header"
+      >
         <button
           type="button"
           onClick={() => setOpen((v) => !v)}
-          className="flex-1 text-left hover:text-fg-primary flex items-center gap-1.5"
+          className="flex min-w-0 flex-1 items-center px-3 py-2 text-left hover:bg-hover-bg hover:text-fg-primary"
           aria-expanded={open}
+          data-testid="task-dock-section-toggle"
         >
-          <span>{title}</span>
+          <span className="truncate">{title}</span>
         </button>
-        {/* Larger hit targets and SVG icons avoid ambiguous Unicode controls. */}
-        <div className="flex items-center gap-0.5 -mr-1">
+        {/* Keep every visible control at least 28px tall; the title trigger owns the rest of the row. */}
+        <div className="flex items-center gap-0.5 px-1.5">
           {popoutKind && (
             <button
               type="button"
@@ -426,7 +430,7 @@ function Section({
                   requestShellPopout(popoutKind);
                 }
               }}
-              className="w-5 h-5 inline-flex items-center justify-center rounded text-fg-muted hover:text-fg-primary hover:bg-surface-3"
+              className="inline-flex h-7 w-7 items-center justify-center rounded text-fg-muted hover:bg-surface-3 hover:text-fg-primary"
               title={isThisPopoutActive ? t('right.closePopout') : t('right.openFullPanel')}
               aria-label={isThisPopoutActive ? t('right.closePopout') : t('right.openFullPanel')}
               aria-pressed={isThisPopoutActive}
@@ -469,7 +473,7 @@ function Section({
           <button
             type="button"
             onClick={() => setOpen((v) => !v)}
-            className="w-5 h-5 inline-flex items-center justify-center rounded text-fg-muted hover:text-fg-primary hover:bg-surface-3"
+            className="inline-flex h-7 w-7 items-center justify-center rounded text-fg-muted hover:bg-surface-3 hover:text-fg-primary"
             title={open ? t('right.collapseSection') : t('right.expandSection')}
             aria-label={open ? t('right.collapseSection') : t('right.expandSection')}
             aria-expanded={open}
@@ -728,11 +732,17 @@ function AgentSection({
   const status = useAppStore((s) =>
     currentSessionId ? s.managedTaskStatusBySession[currentSessionId] : undefined,
   );
+  const actorSnapshot = useAppStore((s) =>
+    currentSessionId ? s.agentActorSnapshotBySession[currentSessionId] : undefined,
+  );
   const budget = useAppStore((s) =>
     currentSessionId ? s.workBudgetBySession[currentSessionId] : undefined,
   );
 
-  const agents = useMemo(() => buildAgentStatuses(status, t), [status, t]);
+  const agents = useMemo(
+    () => buildAgentStatuses(status, t, actorSnapshot),
+    [actorSnapshot, status, t],
+  );
 
   // Hide empty agent content, matching the no-content strategy used by PlanSection.
   if (agents.length === 0 && !budget) return null;
@@ -741,6 +751,7 @@ function AgentSection({
   const runningCount = agents.filter((agent) => agent.state === 'active').length;
   const waitingCount = agents.filter((agent) => agent.state === 'waiting').length;
   const completedCount = agents.filter((agent) => agent.state === 'completed').length;
+  const interruptedCount = agents.filter((agent) => agent.state === 'interrupted').length;
   const activeAgentKey = agents
     .filter((agent) => agent.state === 'active')
     .map((agent) => agent.id)
@@ -750,7 +761,7 @@ function AgentSection({
   // concrete active cards. Mirror TasksPanel ordering so compact status is not blank.
 
   const fanoutLabel =
-    status?.childFanoutCount !== undefined && status.childFanoutCount > 0
+    !actorSnapshot && status?.childFanoutCount !== undefined && status.childFanoutCount > 0
       ? status.childFanoutClass
         ? t('right.agentFanoutWithClass', {
             count: status.childFanoutCount,
@@ -789,6 +800,9 @@ function AgentSection({
           {runningCount > 0 && <AgentMetric label={t('right.running')} value={runningCount} />}
           {waitingCount > 0 && <AgentMetric label={t('right.waiting')} value={waitingCount} />}
           {completedCount > 0 && <AgentMetric label={t('right.done')} value={completedCount} />}
+          {interruptedCount > 0 && (
+            <AgentMetric label={t('right.interrupted')} value={interruptedCount} />
+          )}
           {fanoutLabel && <AgentMetric label={t('right.fanout')} value={fanoutLabel} />}
         </div>
       )}
@@ -1362,6 +1376,8 @@ function agentCardClass(state: AgentStatusViewModel['state']): string {
       return 'border-warn/40 bg-warn/10';
     case 'completed':
       return 'border-ok/35 bg-ok/10';
+    case 'interrupted':
+      return 'border-warn/40 bg-warn/10';
     case 'error':
       return 'border-danger/40 bg-danger/10';
     case 'idle':
@@ -1377,6 +1393,8 @@ function agentDotClass(state: AgentStatusViewModel['state']): string {
       return 'bg-warn';
     case 'completed':
       return 'bg-ok';
+    case 'interrupted':
+      return 'bg-warn';
     case 'error':
       return 'bg-danger';
     case 'idle':
@@ -1392,6 +1410,8 @@ function agentStateLabel(state: AgentStatusViewModel['state'], t: Translate): st
       return t('right.waiting');
     case 'completed':
       return t('right.done');
+    case 'interrupted':
+      return t('right.interrupted');
     case 'error':
       return t('right.issue');
     case 'idle':
@@ -2020,7 +2040,7 @@ function ContextSection({
               <span>{t('right.filesReferenced')}</span>
               <span className="font-mono normal-case tracking-normal">{visibleFiles.length}</span>
             </div>
-            <ul className="max-h-48 space-y-0.5 overflow-y-auto rounded-md border border-border-default/70 bg-surface-2/60 p-1 text-xs font-mono">
+            <ul className="max-h-48 space-y-0.5 overflow-y-auto rounded-md border border-border-default/70 bg-surface-3/35 p-1 text-xs font-mono">
               {visibleFiles.map((f) => (
                 <li key={f}>
                   <button

@@ -1,4 +1,8 @@
-import type { SessionEvent, WorkflowRunT } from '@kodax-space/space-ipc-schema';
+import type {
+  AgentActorTreeSnapshotT,
+  SessionEvent,
+  WorkflowRunT,
+} from '@kodax-space/space-ipc-schema';
 import { summarizeTodoProgress } from '../lib/liveTaskProgress.js';
 import { buildAgentStatuses, type AgentStatusViewModel } from './agentStatusProjection.js';
 import { messages, type MessageKey } from '../i18n/messages.js';
@@ -42,6 +46,7 @@ export interface BuildTaskDockRunInput {
   readonly pendingSend: boolean;
   readonly todos?: readonly TodoItem[];
   readonly managedStatus?: ManagedTaskStatus;
+  readonly actorSnapshot?: AgentActorTreeSnapshotT;
   readonly workflowRuns?: readonly WorkflowRunT[];
   readonly events?: readonly SessionEvent[];
   readonly budget?: { readonly used: number; readonly cap: number };
@@ -54,7 +59,9 @@ export function buildTaskDockRunView(input: BuildTaskDockRunInput): TaskDockRunV
   const t = input.t ?? defaultTranslate;
   let agentStatuses: readonly AgentStatusViewModel[] | null = null;
   const getAgents = (): readonly AgentStatusViewModel[] => {
-    if (agentStatuses === null) agentStatuses = buildAgentStatuses(input.managedStatus, t);
+    if (agentStatuses === null) {
+      agentStatuses = buildAgentStatuses(input.managedStatus, t, input.actorSnapshot);
+    }
     return agentStatuses;
   };
 
@@ -112,7 +119,9 @@ export function buildTaskDockRunView(input: BuildTaskDockRunInput): TaskDockRunV
   }
 
   const agents = getAgents();
-  const activeAgent = agents.find((agent) => agent.state === 'active');
+  const activeAgent =
+    agents.find((agent) => agent.state === 'active' && agent.id !== '/root') ??
+    agents.find((agent) => agent.state === 'active');
   if (activeAgent) {
     return {
       mode: 'running',

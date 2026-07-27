@@ -5,7 +5,7 @@ import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { promisify } from 'node:util';
 import { launchSpace, type SpaceInstance } from './fixtures.js';
-import type { SessionEvent } from '@kodax-space/space-ipc-schema';
+import type { AgentActorTreeSnapshotT, SessionEvent } from '@kodax-space/space-ipc-schema';
 
 const execFileAsync = promisify(execFile);
 
@@ -103,6 +103,40 @@ async function emitSessionEvent(space: SpaceInstance, event: SessionEvent): Prom
     if (!win) throw new Error('No BrowserWindow available');
     win.webContents.send('session.event', payload);
   }, event);
+}
+
+async function emitActorSnapshot(
+  space: SpaceInstance,
+  snapshot: AgentActorTreeSnapshotT,
+): Promise<void> {
+  await space.app.evaluate(({ BrowserWindow }, payload) => {
+    const win = BrowserWindow.getAllWindows()[0];
+    if (!win) throw new Error('No BrowserWindow available');
+    win.webContents.send('agent.actor.changed', payload);
+  }, snapshot);
+}
+
+async function readRuntimeId(page: Page): Promise<string> {
+  const runtimeId = await page.evaluate(async () => {
+    const bridge = (
+      window as unknown as {
+        kodaxSpace: {
+          invoke: (
+            name: string,
+            input: unknown,
+          ) => Promise<{
+            ok: boolean;
+            data?: { connection?: { runtimeId?: string; state?: string } };
+          }>;
+        };
+      }
+    ).kodaxSpace;
+    const result = await bridge.invoke('runtime.profileSnapshot', undefined);
+    if (!result.ok) return null;
+    return result.data?.connection?.runtimeId ?? null;
+  });
+  if (!runtimeId) throw new Error('Coder Runtime was not ready for Actor telemetry');
+  return runtimeId;
 }
 
 test('Task Dock stays closed on startup even with a stale open preference', async () => {
@@ -272,6 +306,7 @@ test('Task Dock presents semantic agent status and opens the full Agents panel',
   try {
     const { page } = space;
     const sessionId = await createSession(space, 'seed task dock agent status');
+    const runtimeId = await readRuntimeId(page);
 
     await emitSessionEvent(space, {
       kind: 'managed_task_status',
@@ -279,43 +314,89 @@ test('Task Dock presents semantic agent status and opens the full Agents panel',
       status: {
         agentMode: 'ama',
         harnessProfile: 'H2_PLAN_EXECUTE_EVAL',
-        activeWorkerId: 'research-1',
-        activeWorkerTitle: 'Research agent',
-        childFanoutClass: 'source review',
-        childFanoutCount: 1,
         currentRound: 1,
         maxRounds: 2,
-        phase: 'source_review',
         globalWorkBudget: 6,
         budgetUsage: 2,
+        activeWorkerId: 'worker',
+        activeWorkerTitle: 'Worker',
         events: [
           {
-            key: 'research-1-progress',
+            key: 'root-progress',
             kind: 'progress',
-            phase: 'source_review',
-            workerId: 'research-1',
-            workerTitle: 'Research agent',
-            summary: 'Confirmed changes should route to Review workspace',
+            workerId: 'worker',
+            workerTitle: 'Worker',
+            phase: 'coordination',
+            summary: 'Coordinating delegated work',
           },
         ],
       },
     });
+    const runningSnapshot: AgentActorTreeSnapshotT = {
+      runtimeId,
+      sessionId,
+      rootPath: '/root',
+      revision: 10_000,
+      eventCursor: 10_000,
+      activeNonRootTurns: 1,
+      maxConcurrentThreads: 4,
+      actors: [
+        {
+          path: '/root',
+          taskName: 'root',
+          kind: 'native',
+          state: 'running',
+          createdAt: '2026-07-27T00:00:00.000Z',
+          updatedAt: '2026-07-27T00:00:02.000Z',
+          revision: 2,
+        },
+        {
+          path: '/root/research',
+          taskName: 'Research agent',
+          parentPath: '/root',
+          kind: 'native',
+          state: 'running',
+          currentTurnId: 'turn-research',
+          createdAt: '2026-07-27T00:00:01.000Z',
+          updatedAt: '2026-07-27T00:00:02.000Z',
+          revision: 2,
+          latestTurn: {
+            turnId: 'turn-research',
+            state: 'running',
+            summary: 'Reviewing sources',
+            summaryTruncated: false,
+            recentActivity: [
+              {
+                sequence: 10_000,
+                kind: 'tool',
+                summary: 'Confirmed changes should route to Review workspace',
+                createdAt: '2026-07-27T00:00:02.000Z',
+              },
+            ],
+          },
+        },
+      ],
+    };
+    await emitActorSnapshot(space, runningSnapshot);
 
     const summary = page.getByTestId('pinned-task-summary');
     await expect(summary).toBeVisible({ timeout: 5_000 });
     await expect(summary).toContainText('Research agent is working');
     const agentsChip = page.getByTestId('pinned-summary-agents');
-    await expect(agentsChip).toHaveText(/Agents\s*1/);
+    await expect(agentsChip).toHaveText(/Agents\s*2\s*\/\s*2 running/);
     await agentsChip.click();
 
     await expect(page.getByTestId('right-sidebar')).toBeVisible({ timeout: 5_000 });
     const agentsSection = page.locator('[data-task-dock-section="agents"]');
     await expect(agentsSection).toBeVisible({ timeout: 5_000 });
 
-    const card = agentsSection.getByTestId('task-dock-agent-card').first();
+    await expect(agentsSection.getByTestId('task-dock-agent-card')).toHaveCount(2);
+    const card = agentsSection
+      .getByTestId('task-dock-agent-card')
+      .filter({ hasText: 'Research agent' });
     await expect(card).toContainText('Research agent', { timeout: 5_000 });
     await expect(card).toContainText('Running');
-    await expect(card).toContainText('Source review');
+    await expect(card).toContainText('research');
     await expect(card).toContainText('Confirmed changes should route to Review workspace');
     await expect(card).toContainText('1 trace events');
 
@@ -323,10 +404,46 @@ test('Task Dock presents semantic agent status and opens the full Agents panel',
     const fullPanel = page.getByTestId('popout-tasks');
     await expect(fullPanel).toBeVisible({ timeout: 5_000 });
     await expect(fullPanel).toHaveAttribute('data-surface-kind', 'dock_sheet');
-    await expect(fullPanel.getByTestId('task-panel-agent-card')).toContainText('Research agent');
-    await expect(fullPanel.getByTestId('task-panel-agent-card')).toContainText(
+    const fullResearchCard = fullPanel
+      .getByTestId('task-panel-agent-card')
+      .filter({ hasText: 'Research agent' });
+    await expect(fullResearchCard).toContainText('Research agent');
+    await expect(fullResearchCard).toContainText(
       'Confirmed changes should route to Review workspace',
     );
+
+    await emitActorSnapshot(space, {
+      ...runningSnapshot,
+      revision: 10_001,
+      eventCursor: 10_001,
+      activeNonRootTurns: 0,
+      actors: [
+        runningSnapshot.actors[0]!,
+        {
+          ...runningSnapshot.actors[1]!,
+          state: 'idle',
+          currentTurnId: undefined,
+          revision: 3,
+          latestTurn: {
+            turnId: 'turn-research',
+            state: 'completed',
+            summary: 'Research complete',
+            summaryTruncated: false,
+            recentActivity: [
+              {
+                sequence: 10_001,
+                kind: 'assistant',
+                summary: 'Research complete',
+                createdAt: '2026-07-27T00:00:03.000Z',
+              },
+            ],
+          },
+        },
+      ],
+    });
+    await expect(agentsChip).toHaveText(/Agents\s*2\s*\/\s*1 running\s*\/\s*1 done/);
+    await expect(card).toContainText('Done');
+    await expect(fullResearchCard).toContainText('Research complete');
   } finally {
     await space.close();
     await fs.rm(projectDir, { recursive: true, force: true }).catch(() => {});

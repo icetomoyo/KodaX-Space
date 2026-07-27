@@ -24,6 +24,12 @@ export type ApplySessionLiveChangeStatus =
   | 'snapshot-required'
   | 'snapshot-pending';
 
+export function shouldRequestSessionLiveSnapshot(
+  status: ApplySessionLiveChangeStatus,
+): boolean {
+  return status === 'snapshot-required' || status === 'snapshot-pending';
+}
+
 export interface ApplySessionLiveChangeResult {
   readonly state: RuntimeProjectionState;
   readonly status: ApplySessionLiveChangeStatus;

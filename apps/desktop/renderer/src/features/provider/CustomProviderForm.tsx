@@ -115,6 +115,8 @@ const FIELD_IDS = {
   baseUrlHint: 'custom-provider-base-url-hint',
   skipBaseUrlValidation: 'custom-provider-skip-base-url-validation',
   skipBaseUrlValidationHint: 'custom-provider-skip-base-url-validation-hint',
+  promptCacheAffinity: 'custom-provider-prompt-cache-affinity',
+  promptCacheAffinityHint: 'custom-provider-prompt-cache-affinity-hint',
   credentialModeLabel: 'custom-provider-credential-mode-label',
   credentialModeHint: 'custom-provider-credential-mode-hint',
   apiKeyEnv: 'custom-provider-api-key-env',
@@ -150,6 +152,9 @@ export function CustomProviderForm({
   const [baseUrl, setBaseUrl] = useState(provider?.baseUrl ?? '');
   const [skipBaseUrlValidation, setSkipBaseUrlValidation] = useState(
     provider?.skipBaseUrlValidation ?? false,
+  );
+  const [promptCacheAffinity, setPromptCacheAffinity] = useState(
+    provider?.promptCacheAffinity ?? false,
   );
   const [apiKeyEnv, setApiKeyEnv] = useState(provider?.apiKeyEnv ?? '');
   const [defaultModel, setDefaultModel] = useState(provider?.defaultModel ?? '');
@@ -196,6 +201,7 @@ export function CustomProviderForm({
         apiKeyEnv: effectiveApiKeyEnv,
         defaultModel: trimmedDefaultModel,
         models,
+        promptCacheAffinity: promptCacheAffinity ? true : undefined,
         ...(reasoning !== undefined ? { reasoning } : {}),
       };
 
@@ -435,6 +441,32 @@ export function CustomProviderForm({
               className="mt-0.5 block text-[11px] leading-5 text-fg-muted"
             >
               {t('customProvider.skipBaseUrlValidation.description')}
+            </span>
+          </span>
+        </label>
+
+        <label
+          htmlFor={FIELD_IDS.promptCacheAffinity}
+          className="flex cursor-pointer items-start gap-3 rounded-lg border border-info/35 bg-info/10 px-3 py-3 lg:col-span-2"
+        >
+          <input
+            id={FIELD_IDS.promptCacheAffinity}
+            type="checkbox"
+            checked={promptCacheAffinity}
+            onChange={(e) => setPromptCacheAffinity(e.target.checked)}
+            className="mt-1 h-4 w-4 accent-info"
+            disabled={formLocked}
+            aria-describedby={FIELD_IDS.promptCacheAffinityHint}
+          />
+          <span className="min-w-0">
+            <span className="block text-xs font-medium text-fg-primary">
+              {t('customProvider.promptCacheAffinity.title')}
+            </span>
+            <span
+              id={FIELD_IDS.promptCacheAffinityHint}
+              className="mt-0.5 block text-[11px] leading-5 text-fg-muted"
+            >
+              {t('customProvider.promptCacheAffinity.description')}
             </span>
           </span>
         </label>

@@ -29,6 +29,7 @@ import type {
   SpaceRuntimeProfileProjectionT,
   SpaceSessionLiveChangedT,
   SpaceSessionLiveProjectionT,
+  AgentActorTreeSnapshotT,
 } from '@kodax-space/space-ipc-schema';
 import { canonProjectRoot as canonProjectRootShared } from '@kodax-space/space-ipc-schema';
 import {
@@ -162,17 +163,24 @@ export interface UserMessage {
   readonly id: string;
   readonly content: string;
   readonly sentAt: number;
+  /** Stable canonical boundary identity supplied by KodaX Runtime/history. */
+  readonly turnId?: string;
+  readonly turnUserOrdinal?: number;
+  /** Internal idempotency identity for a Runtime-delivered queued prompt. */
+  readonly deliveryQueueId?: string;
+  readonly deliveryQueueMode?: QueuedUserMessage['queueMode'];
   readonly historyNoAssistantSegment?: boolean;
   /** Internal provenance used only to reconcile the session.history/live-stream boundary. */
   readonly restoredFromHistory?: true;
   /**
-   * A history response can win the race while the matching live turn is still incomplete.
-   * Keep both copies until the live terminal arrives, then compare their complete semantics.
+   * A complete durable projection is already visible for this canonical boundary, but the live
+   * projection still needs a segment owner until its terminal arrives. Consume its events without
+   * rendering a second user/assistant copy; terminal reconciliation removes this placeholder.
    */
-  readonly pendingRestoredTurnId?: string;
+  readonly hiddenProjectionDuplicate?: true;
   /**
-   * Internal replay anchor for transcripts that begin with assistant/tool output.
-   * It keeps event segments aligned without presenting a fabricated empty user bubble.
+   * Internal alignment anchor for assistant/tool-leading history and history/live segment gaps.
+   * It keeps positional event owners aligned without presenting a fabricated empty user bubble.
    */
   readonly hiddenHistoryAnchor?: boolean;
 }
@@ -363,6 +371,12 @@ interface AppState {
   managedTaskStatusBySession: Readonly<
     Record<string, Extract<SessionEvent, { kind: 'managed_task_status' }>['status'] | undefined>
   >;
+  /**
+   * Canonical KodaX Actor/Turn tree. Unlike managedTaskStatusBySession this
+   * contains native, recursive, Workflow-owned, constructed, and external
+   * Actor lifecycle state and survives root-run terminal events.
+   */
+  agentActorSnapshotBySession: Readonly<Record<string, AgentActorTreeSnapshotT | undefined>>;
   /**
    * Workflow Harness（F060）：已知 / 进行中的工作流 run，按 runId 扁平存（带 host 归属的 snapshot）。
    * push `workflow.event` 覆盖式 upsert（每事件带全量 snapshot，无需折叠）；切 session 时 workflow.list 播种。
@@ -615,6 +629,7 @@ interface AppState {
   setKodaxDefaults(defaults: KodaxUserDefaults): void;
   setRuntimeDefaults(defaults: SpaceRuntimeDefaultsT): void;
   setCoderRuntimeConnection(connection: SpaceCoderConnectionProjectionT): void;
+  replaceAgentActorSnapshot(snapshot: AgentActorTreeSnapshotT): void;
   replaceRuntimeProfileProjection(profile: SpaceRuntimeProfileProjectionT): void;
   replaceSessionLiveProjection(projection: SpaceSessionLiveProjectionT): void;
   applySessionLiveProjectionChange(change: SpaceSessionLiveChangedT): ApplySessionLiveChangeStatus;
@@ -905,20 +920,18 @@ function appendSessionEvent(
   return [...bucket, event];
 }
 
-// Deliberately narrow: this is only the renderer-send → SDK-persist skew for one turn, not a
-// general "nearby messages are duplicates" window. A wider window risks folding a fast retry.
-const HISTORY_LIVE_TURN_TIMESTAMP_TOLERANCE_MS = 250;
-
 interface TranscriptTurnSnapshot {
   readonly messageId: string;
   readonly userIndex: number;
   readonly eventStart: number;
   readonly eventEnd: number;
-  readonly content: string;
   readonly sentAt: number;
+  readonly turnId?: string;
+  readonly turnUserOrdinal?: number;
   readonly restoredFromHistory: boolean;
-  readonly pendingRestoredTurnId?: string;
   readonly terminal: boolean;
+  readonly terminalTurnId?: string;
+  readonly closed: boolean;
   readonly thinking: string;
   readonly text: string;
   readonly tools: readonly {
@@ -931,154 +944,9 @@ interface TranscriptTurnSnapshot {
   readonly visibleSequence: readonly string[];
 }
 
-interface RestoredHistoryPrefix {
-  readonly userMessages: readonly UserMessage[];
-  readonly events: readonly SessionEvent[];
-}
-
-/**
- * A history IPC can finish after the same turn has already arrived through the live event stream,
- * or it can be applied twice after a renderer remount. In both cases the durable history suffix
- * and the renderer's live prefix describe the same canonical turn.
- *
- * Fold only that cross-source boundary overlap. Repeated turns inside either source are preserved,
- * and the user timestamps must identify the same send (within the persistence/IPC skew window), so
- * a user deliberately repeating the same prompt and receiving the same answer remains visible.
- */
-function trimRestoredHistoryOverlappingLivePrefix(
-  restoredUserMessages: readonly UserMessage[],
-  restoredEvents: readonly SessionEvent[],
-  liveUserMessages: readonly UserMessage[],
-  liveEvents: readonly SessionEvent[],
-): RestoredHistoryPrefix {
-  if (restoredUserMessages.length === 0 || liveUserMessages.length === 0) {
-    return { userMessages: restoredUserMessages, events: restoredEvents };
-  }
-
-  const restoredTurns = transcriptTurnSnapshots(restoredUserMessages, restoredEvents);
-  const liveTurns = transcriptTurnSnapshots(liveUserMessages, liveEvents);
-  const maxOverlap = Math.min(restoredTurns.length, liveTurns.length);
-  let overlap = 0;
-  for (let candidate = 1; candidate <= maxOverlap; candidate++) {
-    const restoredStart = restoredTurns.length - candidate;
-    let matches = true;
-    for (let offset = 0; offset < candidate; offset++) {
-      if (
-        !restoredTurnIsPrefixOfLiveTurn(restoredTurns[restoredStart + offset]!, liveTurns[offset]!)
-      ) {
-        matches = false;
-        break;
-      }
-    }
-    if (matches) overlap = candidate;
-  }
-  if (overlap === 0) {
-    return { userMessages: restoredUserMessages, events: restoredEvents };
-  }
-
-  const firstOverlappingTurn = restoredTurns[restoredTurns.length - overlap]!;
-  return {
-    userMessages: restoredUserMessages.slice(0, firstOverlappingTurn.userIndex),
-    events: restoredEvents.slice(0, firstOverlappingTurn.eventStart),
-  };
-}
-
-/**
- * When history wins the race but a renderer-owned user message already exists, remember only
- * that exact cross-source boundary pair. We intentionally do not remove either copy yet: the
- * live turn may still fail, diverge, or gain a tool/notice that the durable turn did not have.
- */
-function markPendingHistoryLiveBoundaryOverlap(
-  restoredUserMessages: readonly UserMessage[],
-  restoredEvents: readonly SessionEvent[],
-  liveUserMessages: readonly UserMessage[],
-  liveEvents: readonly SessionEvent[],
-): readonly UserMessage[] {
-  if (restoredUserMessages.length === 0 || liveUserMessages.length === 0) return liveUserMessages;
-  const restoredTurns = transcriptTurnSnapshots(restoredUserMessages, restoredEvents);
-  const liveTurns = transcriptTurnSnapshots(liveUserMessages, liveEvents);
-  const restoredTurn = restoredTurns[restoredTurns.length - 1];
-  const liveTurn = liveTurns[0];
-  if (
-    !restoredTurn ||
-    !liveTurn ||
-    liveTurn.terminal ||
-    liveTurn.restoredFromHistory ||
-    !turnIdentityMatches(restoredTurn, liveTurn)
-  ) {
-    return liveUserMessages;
-  }
-  const liveMessage = liveUserMessages[liveTurn.userIndex];
-  if (!liveMessage || liveMessage.pendingRestoredTurnId === restoredTurn.messageId) {
-    return liveUserMessages;
-  }
-  return liveUserMessages.map((message, index) =>
-    index === liveTurn.userIndex
-      ? { ...message, pendingRestoredTurnId: restoredTurn.messageId }
-      : message,
-  );
-}
-
 interface ReconciledTranscriptBuffers {
   readonly userMessages: readonly UserMessage[];
   readonly events: readonly SessionEvent[];
-}
-
-/**
- * Complete the history-first half of the race. Only the live turn that was already present when
- * history was applied can carry a candidate marker. At terminal, remove the restored copy only
- * when both adjacent turns have identical complete visible semantics; otherwise keep both.
- *
- * The live copy is retained because it can contain richer non-durable runtime events. This
- * function never removes an unmarked turn and never folds two history turns or two live turns.
- */
-function reconcileCompletedHistoryLiveBoundary(
-  userMessages: readonly UserMessage[],
-  events: readonly SessionEvent[],
-): ReconciledTranscriptBuffers {
-  const turns = transcriptTurnSnapshots(userMessages, events);
-  const liveTurn = turns.find((turn) => turn.pendingRestoredTurnId !== undefined && turn.terminal);
-  if (!liveTurn || liveTurn.pendingRestoredTurnId === undefined) {
-    return { userMessages, events };
-  }
-
-  const restoredTurnIndex = turns.findIndex(
-    (turn) =>
-      turn.messageId === liveTurn.pendingRestoredTurnId && turn.restoredFromHistory === true,
-  );
-  const liveTurnIndex = turns.indexOf(liveTurn);
-  const restoredTurn = restoredTurnIndex >= 0 ? turns[restoredTurnIndex] : undefined;
-  const isAdjacentBoundary =
-    restoredTurn !== undefined &&
-    restoredTurnIndex + 1 === liveTurnIndex &&
-    restoredTurn.userIndex + 1 === liveTurn.userIndex &&
-    restoredTurn.eventEnd === liveTurn.eventStart;
-
-  const clearCandidate = (message: UserMessage): UserMessage => {
-    if (message.id !== liveTurn.messageId || message.pendingRestoredTurnId === undefined) {
-      return message;
-    }
-    const { pendingRestoredTurnId: _drop, ...rest } = message;
-    return rest;
-  };
-
-  if (
-    !isAdjacentBoundary ||
-    !restoredTurn ||
-    !restoredTurnIsPrefixOfLiveTurn(restoredTurn, liveTurn)
-  ) {
-    return {
-      userMessages: userMessages.map(clearCandidate),
-      events,
-    };
-  }
-
-  return {
-    userMessages: userMessages
-      .filter((_, index) => index !== restoredTurn.userIndex)
-      .map(clearCandidate),
-    events: [...events.slice(0, restoredTurn.eventStart), ...events.slice(restoredTurn.eventEnd)],
-  };
 }
 
 function transcriptTurnSnapshots(
@@ -1108,13 +976,14 @@ function transcriptTurnSnapshots(
       userIndex,
       eventStart,
       eventEnd,
-      content: message.content,
       sentAt: message.sentAt,
-      restoredFromHistory: message.restoredFromHistory === true,
-      ...(message.pendingRestoredTurnId !== undefined
-        ? { pendingRestoredTurnId: message.pendingRestoredTurnId }
+      ...(message.turnId !== undefined ? { turnId: message.turnId } : {}),
+      ...(message.turnUserOrdinal !== undefined
+        ? { turnUserOrdinal: message.turnUserOrdinal }
         : {}),
+      restoredFromHistory: message.restoredFromHistory === true,
       ...semantic,
+      closed: semantic.terminal || eventEnd < events.length || userIndex < userMessages.length - 1,
     });
     eventCursor = eventEnd;
   }
@@ -1144,13 +1013,64 @@ function transcriptSegmentEnd(events: readonly SessionEvent[], cursor: number): 
   return events.length;
 }
 
+/**
+ * A history-first observation can place Runtime-only events between the restored history suffix
+ * and the first live delivery marker. Those events still need a positional segment owner: without
+ * one, the promoted live user consumes the pre-delivery segment, is considered closed at its own
+ * marker, and a later prompt steals the response that follows that marker.
+ *
+ * Add invisible owners only for the proven segment deficit before the marker. The anchors still
+ * compose their segment, so an unmatched live-only tool/text prefix remains visible; they merely
+ * prevent later user boundaries from shifting left.
+ */
+function alignSegmentOwnersBeforePrompt(
+  sessionId: string,
+  userMessages: readonly UserMessage[],
+  events: readonly SessionEvent[],
+  deliveryBoundaryIndex: number,
+): readonly UserMessage[] {
+  if (
+    deliveryBoundaryIndex < 0 ||
+    deliveryBoundaryIndex >= events.length ||
+    (events[deliveryBoundaryIndex]?.kind !== 'mid_turn_user_prompt' &&
+      events[deliveryBoundaryIndex]?.kind !== 'queued_user_prompt_started')
+  ) {
+    return userMessages;
+  }
+
+  let eventCursor = 0;
+  let requiredOwners = 0;
+  while (eventCursor < deliveryBoundaryIndex) {
+    const eventEnd = transcriptSegmentEnd(events, eventCursor);
+    if (eventEnd <= eventCursor || eventEnd > deliveryBoundaryIndex) break;
+    requiredOwners++;
+    eventCursor = eventEnd;
+  }
+  const existingOwners = userMessages.reduce(
+    (count, message) => count + (message.historyNoAssistantSegment === true ? 0 : 1),
+    0,
+  );
+  const missingOwners = requiredOwners - existingOwners;
+  if (missingOwners <= 0) return userMessages;
+
+  const aligned = [...userMessages];
+  for (let index = 0; index < missingOwners; index++) {
+    aligned.push({
+      ...createUserMessage(sessionId, '', nextUserMessageSentAtAfter(aligned)),
+      hiddenHistoryAnchor: true,
+    });
+  }
+  return aligned;
+}
+
 function transcriptSegmentSemantic(
   events: readonly SessionEvent[],
 ): Pick<
   TranscriptTurnSnapshot,
-  'terminal' | 'thinking' | 'text' | 'tools' | 'notices' | 'visibleSequence'
+  'terminal' | 'terminalTurnId' | 'thinking' | 'text' | 'tools' | 'notices' | 'visibleSequence'
 > {
   let terminal = false;
+  let terminalTurnId: string | undefined;
   let thinking = '';
   let text = '';
   const tools: Array<{
@@ -1174,6 +1094,7 @@ function transcriptSegmentSemantic(
   for (const event of events) {
     if (event.kind === 'session_complete' || event.kind === 'session_error') {
       terminal = true;
+      terminalTurnId = event.turnId;
       if (event.kind === 'session_error') {
         const error = `error:${event.error}`;
         notices.push(error);
@@ -1231,89 +1152,291 @@ function transcriptSegmentSemantic(
       );
     }
   }
-  return { terminal, thinking, text, tools, notices, visibleSequence };
+  return {
+    terminal,
+    ...(terminalTurnId !== undefined ? { terminalTurnId } : {}),
+    thinking,
+    text,
+    tools,
+    notices,
+    visibleSequence,
+  };
 }
 
-function turnIdentityMatches(a: TranscriptTurnSnapshot, b: TranscriptTurnSnapshot): boolean {
-  if (a.content !== b.content) return false;
-  return !(
-    !Number.isFinite(a.sentAt) ||
-    !Number.isFinite(b.sentAt) ||
-    Math.abs(a.sentAt - b.sentAt) > HISTORY_LIVE_TURN_TIMESTAMP_TOLERANCE_MS
+function hasStrongTurnIdentity(
+  turn: TranscriptTurnSnapshot,
+): turn is TranscriptTurnSnapshot & { readonly turnId: string; readonly turnUserOrdinal: number } {
+  return turn.turnId !== undefined && turn.turnUserOrdinal !== undefined;
+}
+
+function strongTurnIdentityMatches(
+  left: TranscriptTurnSnapshot,
+  right: TranscriptTurnSnapshot,
+): boolean {
+  return (
+    hasStrongTurnIdentity(left) &&
+    hasStrongTurnIdentity(right) &&
+    left.turnId === right.turnId &&
+    left.turnUserOrdinal === right.turnUserOrdinal
   );
 }
 
+function projectedEventText(
+  events: readonly SessionEvent[],
+  kind: 'text_delta' | 'thinking_delta',
+): string {
+  return events
+    .filter((event): event is Extract<SessionEvent, { kind: typeof kind }> => event.kind === kind)
+    .map((event) => event.text)
+    .join('');
+}
+
+function projectionTextSuffix(durable: string, live: string): string {
+  if (live.length === 0 || durable.includes(live)) return '';
+  if (live.startsWith(durable)) return live.slice(durable.length);
+  let overlap = Math.min(durable.length, live.length);
+  while (overlap > 0 && durable.slice(-overlap) !== live.slice(0, overlap)) overlap--;
+  return live.slice(overlap);
+}
+
+function projectionNoticeKey(event: SessionEvent): string | undefined {
+  if (event.kind === 'sidecar_message') return `sidecar:${stableJson(event.message)}`;
+  if (event.kind === 'lineage_notice') {
+    return `lineage:${event.noticeKind}:${event.text}`;
+  }
+  if (event.kind === 'workflow_notice') return `workflow:${event.text}`;
+  return undefined;
+}
+
 /**
- * History can snapshot an in-flight turn after the user entry and only some assistant/tool
- * blocks have reached durable storage. Its restored projection is therefore a strict prefix of
- * the renderer's eventual terminal live turn, not an exact duplicate.
- *
- * This relation is intentionally directional and narrow: only the restored side may be shorter,
- * the live side must be terminal, the same user-send identity must match, and every durable
- * visible block/tool/notice must appear in the same order with identical content. The only
- * partially comparable values are the final adjacent text/thinking block and a tool result that
- * was not durable yet. Any divergence keeps both copies.
+ * Durable history and Runtime live events are two projections of one canonical turn. History
+ * contains canonical root tool calls (including todo tools); live contains runtime-only state
+ * such as artifacts, diagnostics and todo snapshots. Keep the durable visible ordering, add only
+ * live-visible information that history does not contain, and retain every live-only state event.
  */
-function restoredTurnIsPrefixOfLiveTurn(
-  restored: TranscriptTurnSnapshot,
-  live: TranscriptTurnSnapshot,
-): boolean {
-  if (!live.terminal || !turnIdentityMatches(restored, live)) return false;
-  if (
-    !stringIsPrefix(restored.thinking, live.thinking) ||
-    !stringIsPrefix(restored.text, live.text)
-  ) {
-    return false;
+function mergeCanonicalTurnProjections(
+  durableEvents: readonly SessionEvent[],
+  liveEvents: readonly SessionEvent[],
+): SessionEvent[] {
+  const isTerminal = (
+    event: SessionEvent,
+  ): event is Extract<SessionEvent, { kind: 'session_complete' | 'session_error' }> =>
+    event.kind === 'session_complete' || event.kind === 'session_error';
+  const liveTerminal = [...liveEvents].reverse().find(isTerminal);
+  const durableTerminal = [...durableEvents].reverse().find(isTerminal);
+  const durableBody = durableEvents.filter((event) => !isTerminal(event));
+  const mergedBody = [...durableBody];
+  const durableToolStarts = new Set(
+    durableBody
+      .filter(
+        (event): event is Extract<SessionEvent, { kind: 'tool_start' }> =>
+          event.kind === 'tool_start',
+      )
+      .map((event) => event.toolId),
+  );
+  const durableToolResultIndex = new Map<string, number>();
+  const durableNoticeKeys = new Set<string>();
+  for (let index = 0; index < mergedBody.length; index++) {
+    const event = mergedBody[index]!;
+    if (event.kind === 'tool_result') durableToolResultIndex.set(event.toolId, index);
+    const noticeKey = projectionNoticeKey(event);
+    if (noticeKey !== undefined) durableNoticeKeys.add(noticeKey);
   }
-  if (
-    !arrayIsPrefix(restored.notices, live.notices, (left, right) => left === right) ||
-    !arrayIsPrefix(restored.tools, live.tools, (left, right) => {
-      if (
-        left.toolId !== right.toolId ||
-        left.toolName !== right.toolName ||
-        left.input !== right.input
-      ) {
-        return false;
+
+  const liveExtras: SessionEvent[] = [];
+  for (const event of liveEvents) {
+    if (isTerminal(event) || event.kind === 'text_delta' || event.kind === 'thinking_delta') {
+      continue;
+    }
+    if (event.kind === 'tool_start') {
+      if (!durableToolStarts.has(event.toolId)) {
+        durableToolStarts.add(event.toolId);
+        liveExtras.push(event);
       }
-      return left.result === undefined || left.result === right.result;
-    })
-  ) {
-    return false;
+      continue;
+    }
+    if (event.kind === 'tool_result') {
+      const durableIndex = durableToolResultIndex.get(event.toolId);
+      if (durableIndex === undefined) {
+        liveExtras.push(event);
+      } else {
+        const durableResult = mergedBody[durableIndex];
+        if (
+          durableResult?.kind === 'tool_result' &&
+          (durableResult.content !== event.content || durableResult.toolName !== event.toolName)
+        ) {
+          // The live receipt is later than an in-flight history snapshot. Replace in place so
+          // the tool card keeps canonical ordering and receives the final result exactly once.
+          mergedBody[durableIndex] = event;
+        }
+      }
+      continue;
+    }
+    const noticeKey = projectionNoticeKey(event);
+    if (noticeKey !== undefined) {
+      if (!durableNoticeKeys.has(noticeKey)) {
+        durableNoticeKeys.add(noticeKey);
+        liveExtras.push(event);
+      }
+      continue;
+    }
+    // Lifecycle, tool progress, artifact/todo/context diagnostics and other runtime-only events
+    // are not reconstructed by session.history. Retain them without trying to content-normalize.
+    liveExtras.push(event);
   }
-  return visibleSequenceIsPrefix(restored.visibleSequence, live.visibleSequence);
-}
 
-function stringIsPrefix(prefix: string, complete: string): boolean {
-  return complete.startsWith(prefix);
-}
-
-function arrayIsPrefix<T>(
-  prefix: readonly T[],
-  complete: readonly T[],
-  equals: (left: T, right: T) => boolean,
-): boolean {
-  if (prefix.length > complete.length) return false;
-  for (let index = 0; index < prefix.length; index++) {
-    if (!equals(prefix[index]!, complete[index]!)) return false;
+  const textSuffix = projectionTextSuffix(
+    projectedEventText(durableEvents, 'text_delta'),
+    projectedEventText(liveEvents, 'text_delta'),
+  );
+  const thinkingSuffix = projectionTextSuffix(
+    projectedEventText(durableEvents, 'thinking_delta'),
+    projectedEventText(liveEvents, 'thinking_delta'),
+  );
+  const liveTextEvent = liveEvents.find((event) => event.kind === 'text_delta');
+  const liveThinkingEvent = liveEvents.find((event) => event.kind === 'thinking_delta');
+  if (thinkingSuffix.length > 0) {
+    liveExtras.push({
+      kind: 'thinking_delta',
+      sessionId: liveEvents[0]?.sessionId ?? durableEvents[0]?.sessionId ?? '',
+      text: thinkingSuffix,
+      ...(liveThinkingEvent?.kind === 'thinking_delta' && liveThinkingEvent.sentAt !== undefined
+        ? { sentAt: liveThinkingEvent.sentAt }
+        : {}),
+    });
   }
-  return true;
+  if (textSuffix.length > 0) {
+    liveExtras.push({
+      kind: 'text_delta',
+      sessionId: liveEvents[0]?.sessionId ?? durableEvents[0]?.sessionId ?? '',
+      text: textSuffix,
+      ...(liveTextEvent?.kind === 'text_delta' && liveTextEvent.sentAt !== undefined
+        ? { sentAt: liveTextEvent.sentAt }
+        : {}),
+    });
+  }
+
+  const terminal = liveTerminal ?? durableTerminal;
+  return terminal !== undefined
+    ? [...mergedBody, ...liveExtras, terminal]
+    : [...mergedBody, ...liveExtras];
 }
 
-function visibleSequenceIsPrefix(prefix: readonly string[], complete: readonly string[]): boolean {
-  if (prefix.length > complete.length) return false;
-  for (let index = 0; index < prefix.length; index++) {
-    const prefixBlock = prefix[index]!;
-    const completeBlock = complete[index]!;
-    if (prefixBlock === completeBlock) continue;
-    const isFinalPrefixBlock = index === prefix.length - 1;
-    const isPartialTextBlock =
-      (prefixBlock.startsWith('text:') && completeBlock.startsWith('text:')) ||
-      (prefixBlock.startsWith('thinking:') && completeBlock.startsWith('thinking:'));
-    if (!isFinalPrefixBlock || !isPartialTextBlock || !completeBlock.startsWith(prefixBlock)) {
-      return false;
+function liveTurnCanFold(turn: TranscriptTurnSnapshot): boolean {
+  if (!turn.closed) return false;
+  if (!turn.terminal) return true;
+  if (turn.restoredFromHistory) return true;
+  return turn.turnId !== undefined && turn.terminalTurnId === turn.turnId;
+}
+
+/**
+ * Fold duplicate projections only with canonical identity. No content/timestamp heuristic is
+ * allowed here: a fast, intentional repeat must remain a distinct turn even when its text and
+ * answer are identical. The loop also handles multi-turn history snapshots whose last turn is
+ * still in flight; every already-closed identity is folded independently.
+ */
+function foldStrongIdentityDuplicateTurns(
+  userMessages: readonly UserMessage[],
+  events: readonly SessionEvent[],
+): ReconciledTranscriptBuffers {
+  let nextUsers = [...userMessages];
+  let nextEvents = [...events];
+  let didFold = false;
+  for (;;) {
+    const turns = transcriptTurnSnapshots(nextUsers, nextEvents);
+    let pair:
+      | {
+          readonly durable: TranscriptTurnSnapshot;
+          readonly duplicate: TranscriptTurnSnapshot;
+        }
+      | undefined;
+
+    for (let duplicateIndex = 0; duplicateIndex < turns.length && !pair; duplicateIndex++) {
+      const duplicate = turns[duplicateIndex]!;
+      if (!hasStrongTurnIdentity(duplicate) || !liveTurnCanFold(duplicate)) continue;
+      for (let durableIndex = 0; durableIndex < duplicateIndex; durableIndex++) {
+        const durable = turns[durableIndex]!;
+        if (
+          !durable.restoredFromHistory ||
+          !strongTurnIdentityMatches(durable, duplicate) ||
+          (!duplicate.restoredFromHistory && !liveTurnCanFold(duplicate))
+        ) {
+          continue;
+        }
+        pair = { durable, duplicate };
+        break;
+      }
+    }
+    if (!pair) break;
+
+    const durableSegment = nextEvents.slice(pair.durable.eventStart, pair.durable.eventEnd);
+    const duplicateSegment = nextEvents.slice(pair.duplicate.eventStart, pair.duplicate.eventEnd);
+    const mergedSegment = mergeCanonicalTurnProjections(durableSegment, duplicateSegment);
+    const duplicateMessage = nextUsers[pair.duplicate.userIndex];
+    didFold = true;
+    nextEvents = [
+      ...nextEvents.slice(0, pair.durable.eventStart),
+      ...mergedSegment,
+      ...nextEvents.slice(pair.durable.eventEnd, pair.duplicate.eventStart),
+      ...nextEvents.slice(pair.duplicate.eventEnd),
+    ];
+
+    nextUsers = nextUsers
+      .filter((_, index) => index !== pair.duplicate.userIndex)
+      .map((message, index) => {
+        if (index !== pair.durable.userIndex) return message;
+        const { historyNoAssistantSegment: _emptySegment, ...rest } = message;
+        const deliveryQueueId = rest.deliveryQueueId ?? duplicateMessage?.deliveryQueueId;
+        const deliveryQueueMode = rest.deliveryQueueMode ?? duplicateMessage?.deliveryQueueMode;
+        const reconciled = {
+          ...rest,
+          ...(deliveryQueueId !== undefined ? { deliveryQueueId } : {}),
+          ...(deliveryQueueMode !== undefined ? { deliveryQueueMode } : {}),
+        };
+        return mergedSegment.length > 0
+          ? reconciled
+          : { ...reconciled, historyNoAssistantSegment: true };
+      });
+  }
+  return didFold ? { userMessages: nextUsers, events: nextEvents } : { userMessages, events };
+}
+
+function hideOpenStrongIdentityDuplicateProjection(
+  userMessages: readonly UserMessage[],
+  events: readonly SessionEvent[],
+): readonly UserMessage[] {
+  const turns = transcriptTurnSnapshots(userMessages, events);
+  const sentAtByMessageId = new Map<string, number>();
+  for (let liveIndex = 0; liveIndex < turns.length; liveIndex++) {
+    const live = turns[liveIndex]!;
+    if (live.restoredFromHistory || live.closed || !hasStrongTurnIdentity(live)) continue;
+    const durable = turns
+      .slice(0, liveIndex)
+      .reverse()
+      .find(
+        (candidate) =>
+          candidate.restoredFromHistory &&
+          candidate.closed &&
+          strongTurnIdentityMatches(candidate, live),
+      );
+    if (durable) {
+      sentAtByMessageId.set(live.messageId, Math.max(live.sentAt, durable.sentAt + 1));
     }
   }
-  return true;
+  let changed = false;
+  const reconciled = userMessages.map((message) => {
+    const sentAt = sentAtByMessageId.get(message.id);
+    if (sentAt !== undefined) {
+      if (message.sentAt === sentAt && message.hiddenProjectionDuplicate === true) return message;
+      changed = true;
+      return { ...message, sentAt, hiddenProjectionDuplicate: true as const };
+    }
+    if (message.hiddenProjectionDuplicate !== true) return message;
+    changed = true;
+    const { hiddenProjectionDuplicate: _hidden, ...visibleMessage } = message;
+    return visibleMessage;
+  });
+  return changed ? reconciled : userMessages;
 }
 
 function stableJson(value: unknown): string {
@@ -1616,12 +1739,123 @@ function nextLocalTranscriptSentAt(): number {
   return next;
 }
 
-function createUserMessage(sessionId: string, content: string, sentAt?: number): UserMessage {
+function nextUserMessageSentAtAfter(userMessages: readonly UserMessage[]): number {
+  let latestMessageSentAt = Number.NEGATIVE_INFINITY;
+  for (const message of userMessages) {
+    if (Number.isFinite(message.sentAt) && message.sentAt > latestMessageSentAt) {
+      latestMessageSentAt = message.sentAt;
+    }
+  }
+  const next = Math.max(nextLocalTranscriptSentAt(), latestMessageSentAt + 1);
+  lastLocalTranscriptSentAt = Math.max(lastLocalTranscriptSentAt, next);
+  return next;
+}
+
+interface StrongUserTurnIdentity {
+  readonly turnId: string;
+  readonly turnUserOrdinal: number;
+}
+
+function createUserMessage(
+  sessionId: string,
+  content: string,
+  sentAt?: number,
+  identity?: StrongUserTurnIdentity,
+): UserMessage {
   return {
     id: `u_${sessionId}_${++userMessageCounter}`,
     content,
     sentAt: sentAt ?? nextLocalTranscriptSentAt(),
+    ...(identity ?? {}),
   };
+}
+
+function liveProjectionClearsPendingSend(
+  current: SpaceSessionLiveProjectionT | undefined,
+  projection: SpaceSessionLiveProjectionT,
+): boolean {
+  if (projection.activeRun || projection.queuedRuns.length > 0) return true;
+  const terminal = projection.lastTerminalRun;
+  if (!terminal) return false;
+  const currentTerminal = current?.lastTerminalRun;
+  return (
+    currentTerminal?.runId !== terminal.runId ||
+    currentTerminal.phase !== terminal.phase ||
+    currentTerminal.completedAt !== terminal.completedAt
+  );
+}
+
+function bindInitialLiveUserTurnIdentity(
+  userMessages: readonly UserMessage[],
+  turnId: string,
+): readonly UserMessage[] {
+  if (
+    userMessages.some(
+      (message) =>
+        !message.restoredFromHistory && message.turnId === turnId && message.turnUserOrdinal === 0,
+    )
+  ) {
+    return userMessages;
+  }
+  for (let index = userMessages.length - 1; index >= 0; index--) {
+    const message = userMessages[index]!;
+    if (
+      message.restoredFromHistory ||
+      message.hiddenHistoryAnchor ||
+      message.turnId !== undefined
+    ) {
+      continue;
+    }
+    const next = userMessages.slice();
+    next[index] = { ...message, turnId, turnUserOrdinal: 0 };
+    return next;
+  }
+  return userMessages;
+}
+
+function resolveLiveUserOrdinal(
+  userMessages: readonly UserMessage[],
+  turnId: string,
+  content: string,
+): number {
+  const liveOrdinals = new Set(
+    userMessages
+      .filter(
+        (message) =>
+          !message.restoredFromHistory &&
+          message.turnId === turnId &&
+          message.turnUserOrdinal !== undefined,
+      )
+      .map((message) => message.turnUserOrdinal!),
+  );
+  const unmatchedRestored = userMessages.find(
+    (message) =>
+      message.restoredFromHistory &&
+      message.turnId === turnId &&
+      message.content === content &&
+      message.turnUserOrdinal !== undefined &&
+      !liveOrdinals.has(message.turnUserOrdinal),
+  );
+  if (unmatchedRestored?.turnUserOrdinal !== undefined) {
+    return unmatchedRestored.turnUserOrdinal;
+  }
+
+  // Never assign an arbitrary restored ordinal when the canonical prompt text does not match.
+  // In one long Runtime turn, a genuinely new interrupt can follow already-folded history/live
+  // projections; reusing an older "unmatched" ordinal would give the new prompt a false strong
+  // identity and let duplicate reconciliation delete it. Fail open with a fresh ordinal instead:
+  // a lossy/clamped replay may remain visible twice, but a legal new user boundary is never lost.
+  let maxOrdinal = -1;
+  for (const message of userMessages) {
+    if (
+      message.turnId === turnId &&
+      message.turnUserOrdinal !== undefined &&
+      message.turnUserOrdinal > maxOrdinal
+    ) {
+      maxOrdinal = message.turnUserOrdinal;
+    }
+  }
+  return maxOrdinal + 1;
 }
 
 function normalizeLocalNoticeOptions(
@@ -1725,6 +1959,7 @@ function promoteQueuedUserMessageForPrompt(
   queueMode: QueuedUserMessage['queueMode'],
   matchContent: string,
   queueId?: string,
+  identity?: StrongUserTurnIdentity,
 ): Partial<AppState> {
   const queued = state.queuedUserMessagesBySession[sessionId] ?? [];
   const queueIdIndex =
@@ -1741,23 +1976,43 @@ function promoteQueuedUserMessageForPrompt(
             queuedMessageMatches(entry, matchContent),
         );
   const userBucket = state.userMessagesBySession[sessionId] ?? [];
+  const createPromotedUserMessage = (content: string): UserMessage => ({
+    ...createUserMessage(sessionId, content, nextUserMessageSentAtAfter(userBucket), identity),
+    ...(queueId !== undefined ? { deliveryQueueId: queueId, deliveryQueueMode: queueMode } : {}),
+  });
 
   if (idx === -1) {
     const normalized = normalizeQueuedMatchContent(matchContent);
-    const alreadyRendered = userBucket.some(
-      (message) => message.content === matchContent || message.content === normalized,
-    );
+    const alreadyRendered =
+      identity !== undefined
+        ? userBucket.some(
+            (message) =>
+              !message.restoredFromHistory &&
+              message.turnId === identity.turnId &&
+              message.turnUserOrdinal === identity.turnUserOrdinal,
+          )
+        : userBucket.some(
+            (message) => message.content === matchContent || message.content === normalized,
+          );
     if (alreadyRendered) return {};
     return {
       userMessagesBySession: {
         ...state.userMessagesBySession,
-        [sessionId]: [...userBucket, createUserMessage(sessionId, matchContent)],
+        [sessionId]: [...userBucket, createPromotedUserMessage(matchContent)],
       },
     };
   }
 
   const entry = queued[idx]!;
   const nextQueued = [...queued.slice(0, idx), ...queued.slice(idx + 1)];
+  const alreadyLiveByIdentity =
+    identity !== undefined &&
+    userBucket.some(
+      (message) =>
+        !message.restoredFromHistory &&
+        message.turnId === identity.turnId &&
+        message.turnUserOrdinal === identity.turnUserOrdinal,
+    );
   return {
     queuedUserMessagesBySession: {
       ...state.queuedUserMessagesBySession,
@@ -1765,7 +2020,9 @@ function promoteQueuedUserMessageForPrompt(
     },
     userMessagesBySession: {
       ...state.userMessagesBySession,
-      [sessionId]: [...userBucket, createUserMessage(sessionId, entry.content)],
+      [sessionId]: alreadyLiveByIdentity
+        ? userBucket
+        : [...userBucket, createPromotedUserMessage(entry.content)],
     },
   };
 }
@@ -1850,6 +2107,7 @@ export const useAppStore = create<AppState>((set) => ({
   providerCacheDiagnosticBySession: {},
   todoListBySession: {},
   managedTaskStatusBySession: {},
+  agentActorSnapshotBySession: {},
   workflowRuns: {},
   workflowActivityByRun: {},
   lastDiffPath: null,
@@ -2278,6 +2536,10 @@ export const useAppStore = create<AppState>((set) => ({
             content: item.content,
             sentAt: nextHistoricalUserSentAt(item.sentAt),
             restoredFromHistory: true,
+            ...(item.turnId !== undefined ? { turnId: item.turnId } : {}),
+            ...(item.turnUserOrdinal !== undefined
+              ? { turnUserOrdinal: item.turnUserOrdinal }
+              : {}),
           });
           openUserWithoutAssistant = true;
         } else if (item.kind === 'assistant') {
@@ -2376,20 +2638,15 @@ export const useAppStore = create<AppState>((set) => ({
       const currentMsgs = state.userMessagesBySession[sessionId] ?? [];
       const currentEvents = state.eventsBySession[sessionId] ?? [];
       const currentLocalNotices = state.localNoticesBySession[sessionId] ?? [];
-      const restoredPrefix = trimRestoredHistoryOverlappingLivePrefix(
-        histMsgs,
-        histEvents,
-        currentMsgs,
-        currentEvents,
+      const folded = foldStrongIdentityDuplicateTurns(
+        [...histMsgs, ...currentMsgs],
+        [...histEvents, ...currentEvents],
       );
-      const markedCurrentMsgs = markPendingHistoryLiveBoundaryOverlap(
-        restoredPrefix.userMessages,
-        restoredPrefix.events,
-        currentMsgs,
-        currentEvents,
+      const combinedEvents = folded.events;
+      const combinedMsgs = hideOpenStrongIdentityDuplicateProjection(
+        folded.userMessages,
+        combinedEvents,
       );
-      const combinedMsgs = [...restoredPrefix.userMessages, ...markedCurrentMsgs];
-      const combinedEvents = [...restoredPrefix.events, ...currentEvents];
       let restoredTokenInfo = state.tokensBySession[sessionId];
       if (restoredTokenInfo === undefined) {
         const latestCompactStats = [...histEvents]
@@ -2571,6 +2828,26 @@ export const useAppStore = create<AppState>((set) => ({
       ) {
         return state;
       }
+      const currentUsers = state.userMessagesBySession[event.sessionId] ?? [];
+      if (
+        (event.kind === 'mid_turn_user_prompt' || event.kind === 'queued_user_prompt_started') &&
+        event.queueId !== undefined
+      ) {
+        const deliveryQueueMode =
+          event.kind === 'mid_turn_user_prompt' ? 'interrupt' : event.queueMode;
+        if (
+          currentUsers.some(
+            (message) =>
+              message.deliveryQueueId === event.queueId &&
+              message.deliveryQueueMode === deliveryQueueMode,
+          )
+        ) {
+          // Reconnect/replay may redeliver an already-consumed Runtime input. Drop the entire
+          // boundary event: suppressing only the user bubble would still shift every later event
+          // segment to the next visible prompt.
+          return state;
+        }
+      }
       const bucket = state.eventsBySession[event.sessionId] ?? [];
       const storedEvent = stampLiveStreamEvent(event);
       if (event.kind === 'session_error' && event.error === 'cancelled') {
@@ -2590,35 +2867,20 @@ export const useAppStore = create<AppState>((set) => ({
         }
       }
       const appendedEvents = appendSessionEvent(bucket, storedEvent);
-      const completedBoundary =
-        event.kind === 'session_complete' || event.kind === 'session_error'
-          ? reconcileCompletedHistoryLiveBoundary(
-              state.userMessagesBySession[event.sessionId] ?? [],
-              appendedEvents,
-            )
-          : {
-              userMessages: state.userMessagesBySession[event.sessionId] ?? [],
-              events: appendedEvents,
-            };
-      const foldedHistoryBoundary = completedBoundary.events !== appendedEvents;
+      const lifecycleBoundUsers =
+        event.kind === 'session_start' && event.turnId !== undefined
+          ? bindInitialLiveUserTurnIdentity(currentUsers, event.turnId)
+          : currentUsers;
       const next: Partial<AppState> = {
         eventsBySession: {
           ...state.eventsBySession,
-          [event.sessionId]: completedBoundary.events,
+          [event.sessionId]: appendedEvents,
         },
-        ...(completedBoundary.userMessages !== state.userMessagesBySession[event.sessionId]
+        ...(lifecycleBoundUsers !== currentUsers
           ? {
               userMessagesBySession: {
                 ...state.userMessagesBySession,
-                [event.sessionId]: completedBoundary.userMessages,
-              },
-            }
-          : {}),
-        ...(foldedHistoryBoundary
-          ? {
-              transientArtifactsBySession: {
-                ...state.transientArtifactsBySession,
-                [event.sessionId]: collectTransientArtifactsFromEvents(completedBoundary.events),
+                [event.sessionId]: lifecycleBoundUsers,
               },
             }
           : {}),
@@ -2640,25 +2902,81 @@ export const useAppStore = create<AppState>((set) => ({
         next.pendingSendBySession = restPending;
       }
       if (event.kind === 'mid_turn_user_prompt') {
+        const currentPromptUsers =
+          next.userMessagesBySession?.[event.sessionId] ??
+          state.userMessagesBySession[event.sessionId] ??
+          [];
+        const userMessages = alignSegmentOwnersBeforePrompt(
+          event.sessionId,
+          currentPromptUsers,
+          appendedEvents,
+          appendedEvents.length - 1,
+        );
+        const identity =
+          event.turnId !== undefined
+            ? {
+                turnId: event.turnId,
+                turnUserOrdinal: resolveLiveUserOrdinal(userMessages, event.turnId, event.content),
+              }
+            : undefined;
+        const promotionState =
+          userMessages === state.userMessagesBySession[event.sessionId]
+            ? state
+            : ({
+                ...state,
+                userMessagesBySession: {
+                  ...state.userMessagesBySession,
+                  [event.sessionId]: userMessages,
+                },
+              } as AppState);
         Object.assign(
           next,
           promoteQueuedUserMessageForPrompt(
-            state,
+            promotionState,
             event.sessionId,
             'interrupt',
             event.content,
             event.queueId,
+            identity,
           ),
         );
       } else if (event.kind === 'queued_user_prompt_started') {
+        const currentPromptUsers =
+          next.userMessagesBySession?.[event.sessionId] ??
+          state.userMessagesBySession[event.sessionId] ??
+          [];
+        const userMessages = alignSegmentOwnersBeforePrompt(
+          event.sessionId,
+          currentPromptUsers,
+          appendedEvents,
+          appendedEvents.length - 1,
+        );
+        const identity =
+          event.turnId !== undefined
+            ? {
+                turnId: event.turnId,
+                turnUserOrdinal: resolveLiveUserOrdinal(userMessages, event.turnId, event.content),
+              }
+            : undefined;
+        const promotionState =
+          userMessages === state.userMessagesBySession[event.sessionId]
+            ? state
+            : ({
+                ...state,
+                userMessagesBySession: {
+                  ...state.userMessagesBySession,
+                  [event.sessionId]: userMessages,
+                },
+              } as AppState);
         Object.assign(
           next,
           promoteQueuedUserMessageForPrompt(
-            state,
+            promotionState,
             event.sessionId,
             event.queueMode,
             event.content,
             event.queueId,
+            identity,
           ),
         );
       } else if (event.kind === 'queued_user_prompt_failed') {
@@ -2670,6 +2988,39 @@ export const useAppStore = create<AppState>((set) => ({
           next.queuedUserMessagesBySession = {
             ...state.queuedUserMessagesBySession,
             [event.sessionId]: retained,
+          };
+        }
+      }
+      if (
+        event.kind === 'session_start' ||
+        event.kind === 'mid_turn_user_prompt' ||
+        event.kind === 'queued_user_prompt_started' ||
+        event.kind === 'session_complete' ||
+        event.kind === 'session_error'
+      ) {
+        const candidateUsers =
+          next.userMessagesBySession?.[event.sessionId] ??
+          state.userMessagesBySession[event.sessionId] ??
+          [];
+        const folded = foldStrongIdentityDuplicateTurns(candidateUsers, appendedEvents);
+        const reconciledUsers = hideOpenStrongIdentityDuplicateProjection(
+          folded.userMessages,
+          folded.events,
+        );
+        if (folded.events !== appendedEvents) {
+          next.eventsBySession = {
+            ...state.eventsBySession,
+            [event.sessionId]: folded.events,
+          };
+          next.transientArtifactsBySession = {
+            ...state.transientArtifactsBySession,
+            [event.sessionId]: collectTransientArtifactsFromEvents(folded.events),
+          };
+        }
+        if (reconciledUsers !== candidateUsers) {
+          next.userMessagesBySession = {
+            ...state.userMessagesBySession,
+            [event.sessionId]: reconciledUsers,
           };
         }
       }
@@ -2770,14 +3121,19 @@ export const useAppStore = create<AppState>((set) => ({
         // History restore 的 terminal — 若到此还没有 iteration_end 写入 tokensBySession，
         // 从已有 buffer 累加一次给 dashboard 用。只算一次（已有真实 tokens 时不覆盖）。
         const existing = state.tokensBySession[event.sessionId];
+        const terminalUsers =
+          next.userMessagesBySession?.[event.sessionId] ??
+          state.userMessagesBySession[event.sessionId] ??
+          [];
+        const terminalEvents = next.eventsBySession?.[event.sessionId] ?? appendedEvents;
+        const foldedHistoryBoundary = terminalEvents !== appendedEvents;
         if (existing === undefined || (foldedHistoryBoundary && existing.source === 'estimate')) {
           // Count the reconciled buffers. In the history-first race the pre-terminal state
           // temporarily contains both copies; counting `state`/`bucket` would double the
           // estimate even though this terminal atomically folds the duplicate boundary.
           let total = 0;
-          const userMsgs = completedBoundary.userMessages;
-          for (const um of userMsgs) total += approxTokensForStats(um.content);
-          for (const ev of completedBoundary.events) {
+          for (const um of terminalUsers) total += approxTokensForStats(um.content);
+          for (const ev of terminalEvents) {
             if (ev.kind === 'text_delta' || ev.kind === 'thinking_delta') {
               total += approxTokensForStats(ev.text);
             } else if (ev.kind === 'tool_result') {
@@ -3042,6 +3398,7 @@ export const useAppStore = create<AppState>((set) => ({
       const { [sessionId]: _prof, ...restProfiles } = state.harnessProfileBySession;
       const { [sessionId]: _todo, ...restTodos } = state.todoListBySession;
       const { [sessionId]: _mts, ...restMts } = state.managedTaskStatusBySession;
+      const { [sessionId]: _actors, ...restActorSnapshots } = state.agentActorSnapshotBySession;
       const { [sessionId]: _tok, ...restTokens } = state.tokensBySession;
       const { [sessionId]: _usage, ...restUsage } = state.sessionTokenUsageBySession;
       const { [sessionId]: _contextBudget, ...restContextBudgets } = state.contextBudgetBySession;
@@ -3073,6 +3430,7 @@ export const useAppStore = create<AppState>((set) => ({
         harnessProfileBySession: restProfiles,
         todoListBySession: restTodos,
         managedTaskStatusBySession: restMts,
+        agentActorSnapshotBySession: restActorSnapshots,
         tokensBySession: restTokens,
         sessionTokenUsageBySession: restUsage,
         contextBudgetBySession: restContextBudgets,
@@ -3139,7 +3497,38 @@ export const useAppStore = create<AppState>((set) => ({
         connection,
       );
       if (next.connection === state.runtimeConnection) return state;
-      return { runtimeConnection: next.connection };
+      const keepActorSnapshots =
+        (next.connection.state === 'ready' || next.connection.state === 'degraded') &&
+        next.connection.runtimeId !== undefined &&
+        next.connection.runtimeId === state.runtimeConnection.runtimeId;
+      return {
+        runtimeConnection: next.connection,
+        ...(keepActorSnapshots ? {} : { agentActorSnapshotBySession: {} }),
+      };
+    }),
+  replaceAgentActorSnapshot: (snapshot) =>
+    set((state) => {
+      if (
+        (state.runtimeConnection.state !== 'ready' &&
+          state.runtimeConnection.state !== 'degraded') ||
+        state.runtimeConnection.runtimeId !== snapshot.runtimeId
+      ) {
+        return state;
+      }
+      const current = state.agentActorSnapshotBySession[snapshot.sessionId];
+      if (
+        current?.runtimeId === snapshot.runtimeId &&
+        (current.revision > snapshot.revision ||
+          (current.revision === snapshot.revision && current.eventCursor >= snapshot.eventCursor))
+      ) {
+        return state;
+      }
+      return {
+        agentActorSnapshotBySession: {
+          ...state.agentActorSnapshotBySession,
+          [snapshot.sessionId]: snapshot,
+        },
+      };
     }),
   replaceRuntimeProfileProjection: (profile) =>
     set((state) => {
@@ -3173,6 +3562,12 @@ export const useAppStore = create<AppState>((set) => ({
         runtimeProfile: next.profile,
         liveProjectionBySession: next.liveBySession,
         runtimeSnapshotRequiredBySession: next.snapshotRequiredBySession,
+        agentActorSnapshotBySession:
+          next.connection.runtimeId !== undefined &&
+          next.connection.runtimeId === state.runtimeConnection.runtimeId &&
+          (next.connection.state === 'ready' || next.connection.state === 'degraded')
+            ? state.agentActorSnapshotBySession
+            : {},
         permissionQueue: [
           ...state.permissionQueue.filter((request) => !codeSessionIds.has(request.sessionId)),
           ...runtimePermissions,
@@ -3185,6 +3580,7 @@ export const useAppStore = create<AppState>((set) => ({
     }),
   replaceSessionLiveProjection: (projection) =>
     set((state) => {
+      const currentProjection = state.liveProjectionBySession[projection.sessionId];
       const next = replaceSessionLiveProjectionState(
         {
           connection: state.runtimeConnection,
@@ -3194,6 +3590,17 @@ export const useAppStore = create<AppState>((set) => ({
         },
         projection,
       );
+      const acceptedProjection = next.liveBySession[projection.sessionId] === projection;
+      const clearsPendingSend =
+        acceptedProjection &&
+        Boolean(state.pendingSendBySession[projection.sessionId]) &&
+        liveProjectionClearsPendingSend(currentProjection, projection);
+      const pendingSendPatch = clearsPendingSend
+        ? (() => {
+            const { [projection.sessionId]: _drop, ...rest } = state.pendingSendBySession;
+            return { pendingSendBySession: rest };
+          })()
+        : {};
       const runtimePermissions = projection.interactions
         .filter(
           (interaction): interaction is Extract<typeof interaction, { kind: 'permission' }> =>
@@ -3218,6 +3625,7 @@ export const useAppStore = create<AppState>((set) => ({
           ...state.askUserQueue.filter((request) => request.sessionId !== projection.sessionId),
           ...runtimeAskUser,
         ],
+        ...pendingSendPatch,
       };
     }),
   applySessionLiveProjectionChange: (change) => {
@@ -3240,6 +3648,17 @@ export const useAppStore = create<AppState>((set) => ({
         return state;
       }
       const projection = result.state.liveBySession[change.sessionId];
+      const clearsPendingSend =
+        result.status === 'applied' &&
+        projection !== undefined &&
+        Boolean(state.pendingSendBySession[change.sessionId]) &&
+        liveProjectionClearsPendingSend(state.liveProjectionBySession[change.sessionId], projection);
+      const pendingSendPatch = clearsPendingSend
+        ? (() => {
+            const { [change.sessionId]: _drop, ...rest } = state.pendingSendBySession;
+            return { pendingSendBySession: rest };
+          })()
+        : {};
       const interactionPatch =
         (change.change.domain === 'interaction' ||
           (change.change.domain === 'run' && change.change.resetRunScopedState === true)) &&
@@ -3280,6 +3699,7 @@ export const useAppStore = create<AppState>((set) => ({
         runtimeSnapshotRequiredBySession: result.state.snapshotRequiredBySession,
         ...interactionPatch,
         ...settingsPatch,
+        ...pendingSendPatch,
       };
     });
     return status;
@@ -3493,6 +3913,7 @@ export const useAppStore = create<AppState>((set) => ({
       providerCacheDiagnosticBySession: {},
       todoListBySession: {},
       managedTaskStatusBySession: {},
+      agentActorSnapshotBySession: {},
       sessions: [],
       lastDiffPath: null,
       pendingToolPaths: {},
@@ -3623,6 +4044,7 @@ export const useAppStore = create<AppState>((set) => ({
       const { [sessionId]: _todo, ...restTodos } = state.todoListBySession;
       const { [sessionId]: _bud, ...restBudgets } = state.workBudgetBySession;
       const { [sessionId]: _mts, ...restMts } = state.managedTaskStatusBySession;
+      const { [sessionId]: _actors, ...restActorSnapshots } = state.agentActorSnapshotBySession;
       const { [sessionId]: _prof, ...restProfiles } = state.harnessProfileBySession;
       const { [sessionId]: _tok, ...restTokens } = state.tokensBySession;
       const { [sessionId]: _contextBudget, ...restContextBudgets } = state.contextBudgetBySession;
@@ -3647,6 +4069,7 @@ export const useAppStore = create<AppState>((set) => ({
         todoListBySession: restTodos,
         workBudgetBySession: restBudgets,
         managedTaskStatusBySession: restMts,
+        agentActorSnapshotBySession: restActorSnapshots,
         harnessProfileBySession: restProfiles,
         tokensBySession: restTokens,
         contextBudgetBySession: restContextBudgets,

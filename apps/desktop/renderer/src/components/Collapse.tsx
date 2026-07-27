@@ -23,7 +23,7 @@ interface CollapseProps {
 
 /**
  * 高度折叠包装。grid-rows 0fr↔1fr + opacity 0↔1，transition 由 styles.css .collapse-track 控制。
- * 内层 overflow:hidden 防止折叠态内容溢出。
+ * 内层 overflow:clip 防止折叠态内容溢出，同时不创建会截断后代 sticky 的滚动容器。
  */
 export function Collapse({ open, lazyMount = false, children }: CollapseProps): JSX.Element {
   // 可访问性：折叠态把内容移出 accessibility tree 与 Tab 序——aria-hidden + inert。
@@ -53,7 +53,7 @@ export function Collapse({ open, lazyMount = false, children }: CollapseProps): 
         opacity: open ? 1 : 0,
       }}
     >
-      <div ref={contentRef} aria-hidden={!open} style={{ overflow: 'hidden', minHeight: 0 }}>
+      <div ref={contentRef} aria-hidden={!open} style={{ overflow: 'clip', minHeight: 0 }}>
         {hasMounted ? children : null}
       </div>
     </div>

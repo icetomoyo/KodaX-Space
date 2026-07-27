@@ -14,6 +14,13 @@ test('Windows tray keeps only the background host and can recreate a closed Spac
     mainStderr += chunk.toString('utf8');
   });
   try {
+    const closePreference = await space.page.evaluate(() =>
+      window.kodaxSpace?.invoke('settings.setWindowCloseBehavior', {
+        windowCloseBehavior: 'minimize-to-tray',
+      }),
+    );
+    expect(closePreference?.ok).toBe(true);
+
     await space.page.close();
     await expect.poll(() => space.app.windows().length).toBe(0);
     expect(space.app.process().exitCode).toBeNull();

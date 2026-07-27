@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { WorkflowRunT } from '@kodax-space/space-ipc-schema';
+import type { AgentActorTreeSnapshotT, WorkflowRunT } from '@kodax-space/space-ipc-schema';
 import type { MessageKey } from '../../renderer/src/i18n/messages.js';
 import { buildTaskDockRunView } from '../../renderer/src/shell/taskDockProjection.js';
 import { getCachedTaskDockRunView } from '../../renderer/src/shell/useTaskDockRunView.js';
@@ -84,6 +84,77 @@ test('task dock run projection summarizes active and completed agents', () => {
   assert.deepEqual(
     view.metrics.find((metric) => metric.key === 'agents'),
     { key: 'agents', label: 'Agents', value: '3 / 1 running / 2 done' },
+  );
+});
+
+test('task dock run projection uses the Runtime Actor tree for root and child status', () => {
+  const actorSnapshot: AgentActorTreeSnapshotT = {
+    runtimeId: 'rt_1',
+    sessionId: 's_1',
+    rootPath: '/root',
+    revision: 3,
+    eventCursor: 4,
+    activeNonRootTurns: 1,
+    maxConcurrentThreads: 4,
+    actors: [
+      {
+        path: '/root',
+        taskName: 'root',
+        kind: 'native',
+        state: 'running',
+        createdAt: '2026-07-27T00:00:00.000Z',
+        updatedAt: '2026-07-27T00:00:02.000Z',
+        revision: 2,
+      },
+      {
+        path: '/root/reviewer',
+        taskName: 'Review Agent',
+        parentPath: '/root',
+        kind: 'native',
+        state: 'running',
+        currentTurnId: 'turn_review',
+        createdAt: '2026-07-27T00:00:01.000Z',
+        updatedAt: '2026-07-27T00:00:02.000Z',
+        revision: 2,
+        latestTurn: {
+          turnId: 'turn_review',
+          state: 'running',
+          summary: 'Reviewing the patch',
+          summaryTruncated: false,
+          recentActivity: [],
+        },
+      },
+    ],
+  };
+  const view = buildTaskDockRunView({
+    hasProject: true,
+    hasSession: true,
+    pendingSend: false,
+    actorSnapshot,
+    managedStatus: {
+      agentMode: 'ama',
+      harnessProfile: 'H2_PLAN_EXECUTE_EVAL',
+      activeWorkerId: 'worker',
+      activeWorkerTitle: 'Worker',
+      childFanoutCount: 99,
+      events: [
+        {
+          key: 'root-progress',
+          kind: 'progress',
+          workerId: 'worker',
+          workerTitle: 'Worker',
+          summary: 'Coordinating delegated work',
+        },
+      ],
+    },
+  });
+
+  assert.equal(view.mode, 'running');
+  assert.equal(view.primaryTarget, 'agents');
+  assert.match(view.headline, /Review Agent/);
+  assert.deepEqual(
+    view.metrics.find((metric) => metric.key === 'agents'),
+    { key: 'agents', label: 'Agents', value: '2 / 2 running' },
   );
 });
 

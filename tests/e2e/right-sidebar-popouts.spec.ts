@@ -214,6 +214,20 @@ test('Changes expands a fully untracked directory into reviewable file rows', as
     const changes = section(page.getByTestId('right-sidebar'), /^Changes\b/);
     await expect(changes).toBeVisible({ timeout: 10_000 });
     await expect(changes).toContainText('Changes (5)');
+
+    const header = changes.getByTestId('task-dock-section-header');
+    const toggle = changes.getByTestId('task-dock-section-toggle');
+    const [headerBox, toggleBox] = await Promise.all([header.boundingBox(), toggle.boundingBox()]);
+    if (!headerBox || !toggleBox) throw new Error('Changes section header geometry was unavailable');
+    expect(toggleBox.height).toBeGreaterThanOrEqual(32);
+    expect(Math.abs(toggleBox.height - headerBox.height)).toBeLessThanOrEqual(1);
+
+    // The formerly dead top/bottom padding now belongs to the title toggle.
+    await page.mouse.click(headerBox.x + 12, headerBox.y + 3);
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await page.mouse.click(headerBox.x + 12, headerBox.y + headerBox.height - 3);
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+
     for (const name of docs) {
       await expect(changes.locator(`button[title="docs/${name}"]`)).toBeVisible();
     }

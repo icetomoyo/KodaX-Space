@@ -1,4 +1,4 @@
-import type { SessionEvent } from '@kodax-space/space-ipc-schema';
+import type { AgentActorTreeSnapshotT, SessionEvent } from '@kodax-space/space-ipc-schema';
 import { buildWorkerTree } from './popouts/worker-tree.js';
 import { messages, type MessageKey } from '../i18n/messages.js';
 
@@ -11,22 +11,47 @@ const AGENT_STATUS_CACHE = new WeakMap<
   NonNullable<ManagedTaskStatus>,
   Map<Translate, readonly AgentStatusViewModel[]>
 >();
+interface ActorStatusCacheEntry {
+  withoutManaged?: readonly AgentStatusViewModel[];
+  readonly byManaged: WeakMap<NonNullable<ManagedTaskStatus>, readonly AgentStatusViewModel[]>;
+}
+const ACTOR_STATUS_CACHE = new WeakMap<
+  AgentActorTreeSnapshotT,
+  Map<Translate, ActorStatusCacheEntry>
+>();
+
+export interface AgentTraceViewModel {
+  readonly id: string;
+  readonly kind: 'status' | 'tool' | 'assistant';
+  readonly summary: string;
+  readonly createdAt: string;
+}
 
 export interface AgentStatusViewModel {
   readonly id: string;
   readonly title: string;
   readonly role?: string;
-  readonly state: 'active' | 'waiting' | 'idle' | 'completed' | 'error';
+  readonly state: 'active' | 'waiting' | 'idle' | 'completed' | 'interrupted' | 'error';
   readonly responsibility?: string;
   readonly phase?: string;
   readonly latest?: string;
   readonly evidenceCount?: number;
   readonly traceCount?: number;
+  readonly trace?: readonly AgentTraceViewModel[];
 }
 
 export function buildAgentStatuses(
   status: ManagedTaskStatus | undefined,
   t: Translate = DEFAULT_TRANSLATE,
+  actorSnapshot?: AgentActorTreeSnapshotT,
+): readonly AgentStatusViewModel[] {
+  if (actorSnapshot) return buildActorStatuses(actorSnapshot, t, status);
+  return buildLegacyAgentStatuses(status, t);
+}
+
+function buildLegacyAgentStatuses(
+  status: ManagedTaskStatus | undefined,
+  t: Translate,
 ): readonly AgentStatusViewModel[] {
   if (!status) return EMPTY_AGENT_STATUSES;
   const cached = AGENT_STATUS_CACHE.get(status)?.get(t);
@@ -70,6 +95,98 @@ export function buildAgentStatuses(
   byTranslate.set(t, view);
   AGENT_STATUS_CACHE.set(status, byTranslate);
   return view;
+}
+
+function buildActorStatuses(
+  snapshot: AgentActorTreeSnapshotT,
+  t: Translate,
+  managedStatus: ManagedTaskStatus | undefined,
+): readonly AgentStatusViewModel[] {
+  const byTranslate = ACTOR_STATUS_CACHE.get(snapshot) ?? new Map();
+  const cacheEntry = byTranslate.get(t);
+  const cached = managedStatus
+    ? cacheEntry?.byManaged.get(managedStatus)
+    : cacheEntry?.withoutManaged;
+  if (cached) return cached;
+  const foregroundRootStatus = selectForegroundRootStatus(managedStatus, t);
+  const view = snapshot.actors.map((actor) => {
+    const latestTurn = actor.latestTurn;
+    const trace = latestTurn?.recentActivity.map((activity) => ({
+      id: `${actor.path}:${latestTurn.turnId}:${activity.sequence}`,
+      kind: activity.kind,
+      summary: activity.summary,
+      createdAt: activity.createdAt,
+    }));
+    const latestActivity = trace?.at(-1)?.summary;
+    const state: AgentStatusViewModel['state'] =
+      actor.currentTurnId !== undefined ||
+      latestTurn?.state === 'accepted' ||
+      latestTurn?.state === 'running'
+        ? 'active'
+        : latestTurn?.state === 'failed'
+          ? 'error'
+          : latestTurn?.state === 'interrupted'
+            ? 'interrupted'
+            : latestTurn?.state === 'completed'
+              ? 'completed'
+              : 'idle';
+    const isRoot = actor.path === snapshot.rootPath;
+    const actorStatus: AgentStatusViewModel = {
+      id: actor.path,
+      title: isRoot ? t('agent.rootTitle') : sanitizeWorkerTitle(actor.taskName, t),
+      role: isRoot ? t('agent.role.main') : inferRole(actor.taskName, actor.kind, t),
+      state,
+      responsibility:
+        state === 'active' && (isRoot || actor.kind === 'native')
+          ? t('agent.working')
+          : actor.kind === 'native'
+            ? undefined
+            : humanizePhase(actor.kind),
+      phase: latestTurn?.state ?? actor.state,
+      latest:
+        latestActivity ??
+        (latestTurn?.summary && latestTurn.summary !== latestTurn.state
+          ? latestTurn.summary
+          : undefined),
+      traceCount: trace?.length,
+      trace,
+    };
+    if (!isRoot || !foregroundRootStatus) return actorStatus;
+
+    // KodaX's /root Actor is a permanent control Actor: it stays `running` and
+    // deliberately owns no Turn. The foreground managed Worker remains the
+    // canonical source for the root task's live phase, activity and completion.
+    // Only merge it into /root; recursive/non-root lifecycle stays Actor-owned.
+    return {
+      ...actorStatus,
+      state: foregroundRootStatus.state,
+      responsibility: foregroundRootStatus.responsibility,
+      phase: foregroundRootStatus.phase,
+      latest: foregroundRootStatus.latest,
+      evidenceCount: foregroundRootStatus.evidenceCount,
+      traceCount: foregroundRootStatus.traceCount,
+    };
+  });
+  const nextCacheEntry: ActorStatusCacheEntry = cacheEntry ?? {
+    byManaged: new WeakMap(),
+  };
+  if (managedStatus) nextCacheEntry.byManaged.set(managedStatus, view);
+  else nextCacheEntry.withoutManaged = view;
+  byTranslate.set(t, nextCacheEntry);
+  ACTOR_STATUS_CACHE.set(snapshot, byTranslate);
+  return view;
+}
+
+function selectForegroundRootStatus(
+  status: ManagedTaskStatus | undefined,
+  t: Translate,
+): AgentStatusViewModel | undefined {
+  const legacyStatuses = buildLegacyAgentStatuses(status, t);
+  return (
+    legacyStatuses.find((worker) => worker.state === 'active') ??
+    legacyStatuses.find((worker) => worker.state === 'waiting') ??
+    legacyStatuses[0]
+  );
 }
 
 function sanitizeWorkerTitle(title: string, t: Translate): string {

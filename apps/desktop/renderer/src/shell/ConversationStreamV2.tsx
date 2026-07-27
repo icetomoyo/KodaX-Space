@@ -71,6 +71,7 @@ import { ActivitySpinner, useIsStreaming } from './ActivitySpinner.js';
 import { Caret } from '../components/Caret.js';
 import { Reveal } from '../components/Reveal.js';
 import { Collapse } from '../components/Collapse.js';
+import { ScrollCapBox } from '../components/ScrollCapBox.js';
 import { ChevronDown, FileOutput, Maximize2 } from 'lucide-react';
 import { shouldActivateSessionForCurrentScope } from '../lib/sessionActivation.js';
 import { useSurfaceStore } from '../store/surface.js';
@@ -487,6 +488,7 @@ function groupTools(
 
 export function ConversationStreamV2(): JSX.Element {
   const { t } = useI18n();
+  const isStreaming = useIsStreaming();
   const currentSessionId = useAppStore((s) => s.currentSessionId);
   const events = useAppStore((s) =>
     currentSessionId ? (s.eventsBySession[currentSessionId] ?? EMPTY_EVENTS) : EMPTY_EVENTS,
@@ -931,6 +933,18 @@ export function ConversationStreamV2(): JSX.Element {
   }
 
   function handleWheel(e: ReactWheelEvent<HTMLDivElement>): void {
+    const nestedScroller =
+      e.target instanceof Element ? e.target.closest<HTMLElement>('[data-scrollcapbox]') : null;
+    if (
+      nestedScroller &&
+      ((e.deltaY < 0 && nestedScroller.scrollTop > 1) ||
+        (e.deltaY > 0 &&
+          nestedScroller.scrollTop + nestedScroller.clientHeight < nestedScroller.scrollHeight - 1))
+    ) {
+      // The nested block consumes this gesture. The transcript itself has not
+      // moved, so this must not disengage transcript auto-follow.
+      return;
+    }
     cancelJumpToBottomAnimation();
     clearProgrammaticScrollGuard();
     const scroller = e.currentTarget;
@@ -1278,6 +1292,7 @@ export function ConversationStreamV2(): JSX.Element {
                     <TimelineMarker tone={receiptMarkerTone(item.receipts)} />
                     <ProcessReceiptRow
                       receipts={item.receipts}
+                      followTail={isStreaming && i === renderItems.length - 1}
                       expanded={expanded}
                       clustersForceExpand={clustersForceExpand}
                       thinkingForceExpand={thinkingForceExpand}
@@ -1543,6 +1558,7 @@ function searchRingClassFor(
 
 function ProcessReceiptRow({
   receipts,
+  followTail,
   expanded,
   clustersForceExpand,
   thinkingForceExpand,
@@ -1551,6 +1567,7 @@ function ProcessReceiptRow({
   onToggle,
 }: {
   receipts: readonly ProcessReceiptMessage[];
+  followTail: boolean;
   expanded: ReadonlySet<string>;
   clustersForceExpand: boolean;
   thinkingForceExpand: boolean;
@@ -1583,12 +1600,14 @@ function ProcessReceiptRow({
             {receipt.kind === 'tool_cluster' ? (
               <ToolCluster
                 cluster={receipt}
+                followTail={followTail && receipt === receipts.at(-1)}
                 expanded={expanded.has(receipt.id) || clustersForceExpand}
                 onToggle={() => onToggle(receipt.id)}
               />
             ) : (
               <ThinkingBlock
                 thinking={receipt.thinking}
+                followTail={followTail && receipt === receipts.at(-1)}
                 expanded={expanded.has(receipt.id) || thinkingForceExpand}
                 onToggle={() => onToggle(receipt.id)}
               />
@@ -1751,10 +1770,12 @@ function StreamingSpinnerRow(): JSX.Element | null {
  */
 function ThinkingBlock({
   thinking,
+  followTail,
   expanded,
   onToggle,
 }: {
   thinking: string;
+  followTail: boolean;
   expanded: boolean;
   onToggle: () => void;
 }): JSX.Element {
@@ -1781,7 +1802,14 @@ function ThinkingBlock({
       </button>
       {expanded ? (
         <Collapse open={expanded}>
-          <div
+          <ScrollCapBox
+            onCollapse={onToggle}
+            followTail={followTail}
+            labels={{
+              collapse: t('message.collapse'),
+              expandAll: t('message.expandAll'),
+              restoreCap: t('message.restoreCap'),
+            }}
             className={[
               'mt-1.5 ml-3 pl-2 border-l text-xs whitespace-pre-wrap',
               'dark:border-thinking/60 dark:text-thinking/80',
@@ -1789,7 +1817,7 @@ function ThinkingBlock({
             ].join(' ')}
           >
             {thinking}
-          </div>
+          </ScrollCapBox>
         </Collapse>
       ) : null}
     </div>
@@ -1798,6 +1826,7 @@ function ThinkingBlock({
 
 interface ToolClusterProps {
   cluster: ToolClusterMessage;
+  followTail: boolean;
   expanded: boolean;
   onToggle: () => void;
 }
@@ -1819,7 +1848,7 @@ function approxTokens(text: string): number {
  *
  * 历史：v0.1.0 起曾两层折叠（外+内 sub-cluster），用户 2026-06-02 反馈两层不直观，降回单层。
  */
-function ToolCluster({ cluster, expanded, onToggle }: ToolClusterProps): JSX.Element {
+function ToolCluster({ cluster, followTail, expanded, onToggle }: ToolClusterProps): JSX.Element {
   const { t } = useI18n();
   const allTools = cluster.subClusters.flatMap((sc) => sc.tools);
   const running = allTools.find((t) => t.status === 'running');
@@ -1888,7 +1917,17 @@ function ToolCluster({ cluster, expanded, onToggle }: ToolClusterProps): JSX.Ele
       </button>
       {expanded ? (
         <Collapse open={expanded}>
-          <div className="mt-1.5 ml-3 space-y-2 border-l border-border-default pl-3">
+          <ScrollCapBox
+            onCollapse={onToggle}
+            followTail={followTail}
+            labels={{
+              collapse: t('message.collapse'),
+              expandAll: t('message.expandAll'),
+              restoreCap: t('message.restoreCap'),
+            }}
+            className="mt-1.5 ml-3 border-l border-border-default pl-3"
+            contentClassName="space-y-2"
+          >
             {cluster.subClusters.map((sc) => {
               const subRunning = sc.tools.find((t) => t.status === 'running');
               return (
@@ -1923,7 +1962,7 @@ function ToolCluster({ cluster, expanded, onToggle }: ToolClusterProps): JSX.Ele
                 </div>
               );
             })}
-          </div>
+          </ScrollCapBox>
         </Collapse>
       ) : null}
     </div>

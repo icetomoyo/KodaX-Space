@@ -142,6 +142,7 @@ export const messages = {
     'right.running': 'Running',
     'right.waiting': 'Waiting',
     'right.done': 'Done',
+    'right.interrupted': 'Interrupted',
     'right.issue': 'Issue',
     'right.idle': 'Idle',
     'right.fanout': 'Fan-out',
@@ -868,6 +869,7 @@ export const messages = {
     'atPath.insertNavigateHint': 'Tab / Enter to insert · ↑↓ to navigate',
 
     'agent.fallbackTitle': 'Worker',
+    'agent.rootTitle': 'Root Agent',
     'agent.role.main': 'main agent',
     'agent.role.research': 'research',
     'agent.role.review': 'review',
@@ -889,6 +891,29 @@ export const messages = {
       'Choose the display language for app chrome and common controls.',
     'settings.language.help':
       'This changes KodaX Space UI text only. Model replies, tool output, files, and artifacts stay unchanged.',
+    'settings.terminalShell.title': 'Terminal shell',
+    'settings.terminalShell.description':
+      'Choose the shell used by new built-in terminal tabs and startup PATH discovery.',
+    'settings.terminalShell.label': 'Preferred shell',
+    'settings.terminalShell.auto': 'Automatic (PowerShell preferred on Windows)',
+    'settings.terminalShell.pwsh': 'PowerShell 7 (pwsh)',
+    'settings.terminalShell.powershell': 'Windows PowerShell',
+    'settings.terminalShell.cmd': 'Command Prompt (cmd)',
+    'settings.terminalShell.bash': 'Bash',
+    'settings.terminalShell.zsh': 'Zsh',
+    'settings.terminalShell.hint':
+      'Unavailable shells fall back safely. Space loads the selected shell profile for new terminal tabs and Coder runs, so PATH-based version managers such as fnm, Volta, nvm, asdf, and pyenv work without manager-specific integration; an already-running turn keeps its current execution environment.',
+    'settings.terminalShell.saveFailed': 'Could not save the terminal shell preference.',
+    'settings.windowCloseBehavior.title': 'Close button behavior',
+    'settings.windowCloseBehavior.description':
+      'Choose what KodaX Space does when you close the main window.',
+    'settings.windowCloseBehavior.label': 'When closing the main window',
+    'settings.windowCloseBehavior.ask': 'Ask every time',
+    'settings.windowCloseBehavior.minimizeToTray': 'Minimize to tray and keep Runtime',
+    'settings.windowCloseBehavior.quitCompletely': 'Quit completely',
+    'settings.windowCloseBehavior.hint':
+      'Complete exit safely stops only an idle, unshared Runtime. Active work and other clients are never force-stopped.',
+    'settings.windowCloseBehavior.saveFailed': 'Could not save the close button behavior.',
     'settings.workspace.title': 'Workspace',
     'settings.workspace.description':
       'Choose where new sessions start and where default project files live.',
@@ -1416,6 +1441,9 @@ export const messages = {
     'customProvider.skipBaseUrlValidation.title': 'Skip URL safety checks',
     'customProvider.skipBaseUrlValidation.description':
       'Use only for trusted internal gateways. Space will pass this URL directly to the SDK.',
+    'customProvider.promptCacheAffinity.title': 'Enable stable prompt-cache routing',
+    'customProvider.promptCacheAffinity.description':
+      'Enable only when this exact endpoint accepts the protocol cache-affinity field. Strict compatible gateways may reject it.',
     'customProvider.credentialMode.label': 'Credential source',
     'customProvider.credentialMode.hint':
       'Choose one: protect a pasted key with OS credential storage, or point to an environment variable you already set.',
@@ -1531,6 +1559,8 @@ export const messages = {
     'sessionTokens.cacheHitRates': 'Cache hit rate: aggregate {aggregate} · latest {latest}',
     'sessionTokens.latestProviderCall':
       'Latest root physical request: {provider}/{model} · {count} cached-prefix messages',
+    'sessionTokens.cacheAffinityActive':
+      'Stable Provider cache routing is active for the latest root request.',
     'sessionTokens.providerDiagnosticNote':
       '{count} completed physical Provider requests, counted once by request ID.',
     'sessionTokens.iterationFallbackNote':
@@ -1956,6 +1986,8 @@ export const messages = {
     'message.showFull': 'Show full ({lines} lines)',
     'message.expandQuery': 'Expand query',
     'message.collapseQuery': 'Collapse query',
+    'message.expandAll': 'View all',
+    'message.restoreCap': 'Restore height cap',
     'message.moreLinesExtremelyLarge':
       '...({count} more lines - extremely large; use Show full to see)',
     'message.queue.afterTurn': 'After-turn queued',
@@ -2029,7 +2061,8 @@ export const messages = {
     'bottom.sessionCreatedInBackground': 'Session finished creating in the background',
     'bottom.sendAcceptedInBackground': 'Send was accepted in the background',
     'bottom.unsupportedImageType': 'Unsupported image type: {type}. PNG / JPEG / WEBP only.',
-    'bottom.imageTooLarge': 'Image too large: {size}. Max {max}.',
+    'bottom.imageTooLarge':
+      'Image source is {size}; the temporary processing limit is {max}. Final size is checked after conversion.',
     'bottom.maxImages': 'Max {max} images per send.',
     'bottom.droppedImage': 'Dropped image',
     'bottom.pastedImage': 'Pasted image',
@@ -2380,6 +2413,7 @@ export const messages = {
     'right.running': '运行中',
     'right.waiting': '等待中',
     'right.done': '已完成',
+    'right.interrupted': '已中断',
     'right.issue': '有问题',
     'right.idle': '空闲',
     'right.fanout': '派发',
@@ -3087,6 +3121,7 @@ export const messages = {
     'atPath.insertNavigateHint': 'Tab / Enter 插入 · ↑↓ 导航',
 
     'agent.fallbackTitle': '执行代理',
+    'agent.rootTitle': '根 Agent',
     'agent.role.main': '主代理',
     'agent.role.research': '调研',
     'agent.role.review': '复核',
@@ -3107,6 +3142,27 @@ export const messages = {
     'settings.language.description': '选择应用控件和常用界面的显示语言。',
     'settings.language.help':
       '这里只改变 KodaX Space 的界面文案。模型回复、工具输出、文件和 artifact 不会被翻译。',
+    'settings.terminalShell.title': '终端 Shell',
+    'settings.terminalShell.description': '选择新建内置终端及启动期 PATH 解析所使用的 Shell。',
+    'settings.terminalShell.label': '首选 Shell',
+    'settings.terminalShell.auto': '自动（Windows 优先 PowerShell）',
+    'settings.terminalShell.pwsh': 'PowerShell 7（pwsh）',
+    'settings.terminalShell.powershell': 'Windows PowerShell',
+    'settings.terminalShell.cmd': '命令提示符（cmd）',
+    'settings.terminalShell.bash': 'Bash',
+    'settings.terminalShell.zsh': 'Zsh',
+    'settings.terminalShell.hint':
+      '所选 Shell 不可用时会安全回退。Space 会为新终端标签和新的 Coder 运行加载所选 Shell 的配置，因此 fnm、Volta、nvm、asdf、pyenv 等依赖 PATH 的版本管理器无需专用适配；已经运行中的任务会保留当前执行环境。',
+    'settings.terminalShell.saveFailed': '无法保存终端 Shell 设置。',
+    'settings.windowCloseBehavior.title': '关闭按钮行为',
+    'settings.windowCloseBehavior.description': '选择关闭主窗口时 KodaX Space 应执行的操作。',
+    'settings.windowCloseBehavior.label': '关闭主窗口时',
+    'settings.windowCloseBehavior.ask': '每次询问',
+    'settings.windowCloseBehavior.minimizeToTray': '最小化到托盘并保留 Runtime',
+    'settings.windowCloseBehavior.quitCompletely': '彻底退出',
+    'settings.windowCloseBehavior.hint':
+      '彻底退出只会安全停止空闲且未被其他客户端使用的 Runtime；不会强制停止正在执行的任务。',
+    'settings.windowCloseBehavior.saveFailed': '无法保存关闭按钮行为。',
     'settings.workspace.title': '工作区',
     'settings.workspace.description': '选择新会话启动位置，以及默认项目文件所在目录。',
     'settings.workspace.default': '默认工作区',
@@ -3491,6 +3547,9 @@ export const messages = {
     'customProvider.skipBaseUrlValidation.title': '跳过 URL 安全校验',
     'customProvider.skipBaseUrlValidation.description':
       '仅用于可信内网网关。Space 会直接把该地址交给 SDK 测试和使用。',
+    'customProvider.promptCacheAffinity.title': '启用稳定的提示词缓存路由',
+    'customProvider.promptCacheAffinity.description':
+      '仅在确认该端点支持协议缓存路由字段时启用；严格兼容网关可能拒绝未知字段。',
     'customProvider.credentialMode.label': '凭证来源',
     'customProvider.credentialMode.hint':
       '二选一：用系统凭据存储保护粘贴的 API Key，或引用你已经设置好的环境变量。',
@@ -3596,6 +3655,7 @@ export const messages = {
     'sessionTokens.cacheHitRates': '缓存命中率：累计 {aggregate} · 最近一次 {latest}',
     'sessionTokens.latestProviderCall':
       '最近一次根 Agent 物理请求：{provider}/{model} · 可复用前缀 {count} 条消息',
+    'sessionTokens.cacheAffinityActive': '最近一次根 Agent 请求已启用稳定的 Provider 缓存路由。',
     'sessionTokens.providerDiagnosticNote':
       '已按请求 ID 去重累计 {count} 次完成的 Provider 物理请求。',
     'sessionTokens.iterationFallbackNote': '累计自 Provider 返回的 {count} 次迭代用量摘要。',
@@ -4017,6 +4077,8 @@ export const messages = {
     'message.showFull': '显示完整内容（{lines} 行）',
     'message.expandQuery': '展开',
     'message.collapseQuery': '收起',
+    'message.expandAll': '查看全部',
+    'message.restoreCap': '恢复限高',
     'message.moreLinesExtremelyLarge': '...（还有 {count} 行，内容过大；可用“显示完整内容”查看）',
     'message.queue.afterTurn': '排队到当前轮次后',
     'message.queue.interrupt': '排队为中断消息',
@@ -4087,7 +4149,8 @@ export const messages = {
     'bottom.sessionCreatedInBackground': '会话已在后台创建完成',
     'bottom.sendAcceptedInBackground': '发送请求已在后台接受',
     'bottom.unsupportedImageType': '不支持的图片类型：{type}。仅支持 PNG / JPEG / WEBP。',
-    'bottom.imageTooLarge': '图片过大：{size}。最大 {max}。',
+    'bottom.imageTooLarge':
+      '图片源文件为 {size}，超过当前临时处理上限 {max}；最终大小会在转换后另行检查。',
     'bottom.maxImages': '每次最多发送 {max} 张图片。',
     'bottom.droppedImage': '拖入的图片',
     'bottom.pastedImage': '粘贴的图片',

@@ -7,6 +7,7 @@ import type { ConversationMessage } from '../composeMessages.js';
 import { Markdown } from './Markdown.js';
 import { Caret } from '../../../components/Caret.js';
 import { Collapse } from '../../../components/Collapse.js';
+import { ScrollCapBox } from '../../../components/ScrollCapBox.js';
 import { FileNameText } from '../../../components/FileNameText.js';
 import { EASE_EXPO, usePrefersReducedMotion } from '../../../lib/motion.js';
 import { openFileSmart, looksLikeFilePath } from '../../../lib/openPath.js';
@@ -527,7 +528,14 @@ export function AssistantBubble({
       )}
       {thinking !== undefined && (
         <Collapse open={showThinking}>
-          <div
+          <ScrollCapBox
+            onCollapse={() => setShowThinking(false)}
+            followTail={completed === false}
+            labels={{
+              collapse: t('message.collapse'),
+              expandAll: t('message.expandAll'),
+              restoreCap: t('message.restoreCap'),
+            }}
             className={[
               'mb-2 ml-3 pl-2 border-l text-xs whitespace-pre-wrap',
               'dark:border-thinking/60 dark:text-thinking/80',
@@ -535,7 +543,7 @@ export function AssistantBubble({
             ].join(' ')}
           >
             {thinking}
-          </div>
+          </ScrollCapBox>
         </Collapse>
       )}
       <div className="text-sm leading-relaxed text-fg-primary">

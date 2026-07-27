@@ -20,6 +20,7 @@ import {
   KeyRound,
   Languages,
   Loader2,
+  LogOut,
   Network,
   Pencil,
   Play,
@@ -29,6 +30,7 @@ import {
   Settings2,
   ShieldCheck,
   SlidersHorizontal,
+  SquareTerminal,
   Upload,
   Trash2,
   X,
@@ -44,6 +46,8 @@ import {
   type LicenseStatusT,
   type ProviderInfo,
   type SupportedLocaleT,
+  type TerminalShellPreferenceT,
+  type WindowCloseBehaviorT,
 } from '@kodax-space/space-ipc-schema';
 import { useAppStore } from '../../store/appStore.js';
 import { localeDisplayName, useI18n } from '../../i18n/I18nProvider.js';
@@ -446,6 +450,8 @@ function PreferencesPanel(): JSX.Element {
   return (
     <div className="mx-auto max-w-4xl space-y-4 p-5">
       <LanguageSection />
+      <TerminalShellSection />
+      {window.kodaxSpace?.platform === 'win32' && <WindowCloseBehaviorSection />}
 
       <SettingsSection
         title={t('settings.workspace.title')}
@@ -526,6 +532,201 @@ function PreferencesPanel(): JSX.Element {
         <WorkflowPolicySection />
       </SettingsSection>
     </div>
+  );
+}
+
+const TERMINAL_SHELL_OPTIONS: readonly {
+  readonly value: TerminalShellPreferenceT;
+  readonly labelKey: MessageKey;
+}[] = [
+  { value: 'auto', labelKey: 'settings.terminalShell.auto' },
+  { value: 'pwsh', labelKey: 'settings.terminalShell.pwsh' },
+  { value: 'powershell', labelKey: 'settings.terminalShell.powershell' },
+  { value: 'cmd', labelKey: 'settings.terminalShell.cmd' },
+  { value: 'bash', labelKey: 'settings.terminalShell.bash' },
+  { value: 'zsh', labelKey: 'settings.terminalShell.zsh' },
+];
+
+function TerminalShellSection(): JSX.Element {
+  const { t } = useI18n();
+  const [terminalShell, setTerminalShell] = useState<TerminalShellPreferenceT>('auto');
+  const [loaded, setLoaded] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (!window.kodaxSpace) return;
+    let cancelled = false;
+    void window.kodaxSpace
+      .invoke('settings.get', {})
+      .then((result) => {
+        if (cancelled) return;
+        if (!result.ok) {
+          pushToast(t('settings.terminalShell.saveFailed'), 'error');
+          return;
+        }
+        setTerminalShell(result.data.terminalShell);
+        setLoaded(true);
+      })
+      .catch(() => {
+        if (!cancelled) pushToast(t('settings.terminalShell.saveFailed'), 'error');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [t]);
+
+  async function updateTerminalShell(next: TerminalShellPreferenceT): Promise<void> {
+    if (!window.kodaxSpace || busy || next === terminalShell) return;
+    const previous = terminalShell;
+    setTerminalShell(next);
+    setBusy(true);
+    try {
+      const result = await window.kodaxSpace.invoke('settings.setTerminalShell', {
+        terminalShell: next,
+      });
+      if (!result.ok) {
+        setTerminalShell(previous);
+        pushToast(t('settings.terminalShell.saveFailed'), 'error');
+        return;
+      }
+      setTerminalShell(result.data.terminalShell);
+    } catch {
+      setTerminalShell(previous);
+      pushToast(t('settings.terminalShell.saveFailed'), 'error');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <SettingsSection
+      title={t('settings.terminalShell.title')}
+      description={t('settings.terminalShell.description')}
+      icon={SquareTerminal}
+    >
+      <label
+        htmlFor="settings-terminal-shell"
+        className="block text-[11px] font-medium uppercase tracking-wide text-fg-muted"
+      >
+        {t('settings.terminalShell.label')}
+      </label>
+      <select
+        id="settings-terminal-shell"
+        value={terminalShell}
+        disabled={!loaded || busy}
+        onChange={(event) =>
+          void updateTerminalShell(event.target.value as TerminalShellPreferenceT)
+        }
+        className="mt-2 min-h-9 w-full rounded-lg border border-border-default bg-surface px-3 py-2 text-xs text-fg-primary outline-none focus:border-info disabled:cursor-not-allowed disabled:opacity-60"
+      >
+        {TERMINAL_SHELL_OPTIONS.map((option) => (
+          <option key={option.value} value={option.value}>
+            {t(option.labelKey)}
+          </option>
+        ))}
+      </select>
+      <p className="mt-2 text-[11px] leading-5 text-fg-muted">{t('settings.terminalShell.hint')}</p>
+    </SettingsSection>
+  );
+}
+
+const WINDOW_CLOSE_BEHAVIOR_OPTIONS: readonly {
+  readonly value: WindowCloseBehaviorT;
+  readonly labelKey: MessageKey;
+}[] = [
+  { value: 'ask', labelKey: 'settings.windowCloseBehavior.ask' },
+  {
+    value: 'minimize-to-tray',
+    labelKey: 'settings.windowCloseBehavior.minimizeToTray',
+  },
+  {
+    value: 'quit-completely',
+    labelKey: 'settings.windowCloseBehavior.quitCompletely',
+  },
+];
+
+function WindowCloseBehaviorSection(): JSX.Element {
+  const { t } = useI18n();
+  const [windowCloseBehavior, setWindowCloseBehavior] = useState<WindowCloseBehaviorT>('ask');
+  const [loaded, setLoaded] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (!window.kodaxSpace) return;
+    let cancelled = false;
+    void window.kodaxSpace
+      .invoke('settings.get', {})
+      .then((result) => {
+        if (cancelled) return;
+        if (!result.ok) {
+          pushToast(t('settings.windowCloseBehavior.saveFailed'), 'error');
+          return;
+        }
+        setWindowCloseBehavior(result.data.windowCloseBehavior);
+        setLoaded(true);
+      })
+      .catch(() => {
+        if (!cancelled) pushToast(t('settings.windowCloseBehavior.saveFailed'), 'error');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [t]);
+
+  async function updateWindowCloseBehavior(next: WindowCloseBehaviorT): Promise<void> {
+    if (!window.kodaxSpace || busy || next === windowCloseBehavior) return;
+    const previous = windowCloseBehavior;
+    setWindowCloseBehavior(next);
+    setBusy(true);
+    try {
+      const result = await window.kodaxSpace.invoke('settings.setWindowCloseBehavior', {
+        windowCloseBehavior: next,
+      });
+      if (!result.ok) {
+        setWindowCloseBehavior(previous);
+        pushToast(t('settings.windowCloseBehavior.saveFailed'), 'error');
+        return;
+      }
+      setWindowCloseBehavior(result.data.windowCloseBehavior);
+    } catch {
+      setWindowCloseBehavior(previous);
+      pushToast(t('settings.windowCloseBehavior.saveFailed'), 'error');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <SettingsSection
+      title={t('settings.windowCloseBehavior.title')}
+      description={t('settings.windowCloseBehavior.description')}
+      icon={LogOut}
+    >
+      <label
+        htmlFor="settings-window-close-behavior"
+        className="block text-[11px] font-medium uppercase tracking-wide text-fg-muted"
+      >
+        {t('settings.windowCloseBehavior.label')}
+      </label>
+      <select
+        id="settings-window-close-behavior"
+        value={windowCloseBehavior}
+        disabled={!loaded || busy}
+        onChange={(event) =>
+          void updateWindowCloseBehavior(event.target.value as WindowCloseBehaviorT)
+        }
+        className="mt-2 min-h-9 w-full rounded-lg border border-border-default bg-surface px-3 py-2 text-xs text-fg-primary outline-none focus:border-info disabled:cursor-not-allowed disabled:opacity-60"
+      >
+        {WINDOW_CLOSE_BEHAVIOR_OPTIONS.map((option) => (
+          <option key={option.value} value={option.value}>
+            {t(option.labelKey)}
+          </option>
+        ))}
+      </select>
+      <p className="mt-2 text-[11px] leading-5 text-fg-muted">
+        {t('settings.windowCloseBehavior.hint')}
+      </p>
+    </SettingsSection>
   );
 }
 

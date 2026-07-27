@@ -12,6 +12,7 @@ import {
   replaceRuntimeConnection,
   replaceRuntimeProfile,
   replaceSessionLiveProjection,
+  shouldRequestSessionLiveSnapshot,
 } from '../../renderer/src/store/runtimeProjectionState.js';
 
 function profile(runtimeId: string, projectionRevision: number): SpaceRuntimeProfileProjectionT {
@@ -45,6 +46,13 @@ function live(runtimeId: string, projectionRevision: number): SpaceSessionLivePr
     interactions: [],
   };
 }
+
+test('snapshot-required and snapshot-pending both request authoritative reconciliation', () => {
+  assert.equal(shouldRequestSessionLiveSnapshot('snapshot-required'), true);
+  assert.equal(shouldRequestSessionLiveSnapshot('snapshot-pending'), true);
+  assert.equal(shouldRequestSessionLiveSnapshot('applied'), false);
+  assert.equal(shouldRequestSessionLiveSnapshot('ignored'), false);
+});
 
 test('profile replacement ignores stale revisions and clears live state on Runtime restart', () => {
   const initial = createRuntimeProjectionState();

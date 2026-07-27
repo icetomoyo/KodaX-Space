@@ -24,6 +24,7 @@ import { useSessionCompleteNotification } from './features/notifications/useSess
 import { Shell } from './shell/Shell.js';
 import { formatWorkflowEventNotices } from './features/workflow/workflowNotices.js';
 import { requestTaskDockFocus } from './shell/taskDockControl.js';
+import { shouldRequestSessionLiveSnapshot } from './store/runtimeProjectionState.js';
 
 // Shell owns the visible layout; App keeps process-wide bootstrapping and global listeners.
 const HIDDEN_SESSION_EVENT_FLUSH_MS = 100;
@@ -124,6 +125,7 @@ export default function App(): JSX.Element {
   const setKodaxDefaults = useAppStore((s) => s.setKodaxDefaults);
   const setRuntimeDefaults = useAppStore((s) => s.setRuntimeDefaults);
   const setCoderRuntimeConnection = useAppStore((s) => s.setCoderRuntimeConnection);
+  const replaceAgentActorSnapshot = useAppStore((s) => s.replaceAgentActorSnapshot);
   const replaceRuntimeProfileProjection = useAppStore((s) => s.replaceRuntimeProfileProjection);
   const replaceSessionLiveProjection = useAppStore((s) => s.replaceSessionLiveProjection);
   const applySessionLiveProjectionChange = useAppStore((s) => s.applySessionLiveProjectionChange);
@@ -136,6 +138,17 @@ export default function App(): JSX.Element {
   const seedWorkflowRuns = useAppStore((s) => s.seedWorkflowRuns);
   const appendWorkflowActivity = useAppStore((s) => s.appendWorkflowActivity);
   const currentSessionId = useAppStore((s) => s.currentSessionId);
+  const coderRuntimeReady = useAppStore(
+    (s) =>
+      (s.runtimeConnection.state === 'ready' || s.runtimeConnection.state === 'degraded') &&
+      Boolean(s.runtimeConnection.runtimeId),
+  );
+  const hasCurrentLiveProjection = useAppStore((s) =>
+    currentSessionId ? Boolean(s.liveProjectionBySession[currentSessionId]) : false,
+  );
+  const hasCurrentActorSnapshot = useAppStore((s) =>
+    currentSessionId ? Boolean(s.agentActorSnapshotBySession[currentSessionId]) : false,
+  );
   const setSessionFlag = useAppStore((s) => s.setSessionFlag);
   const unsubsRef = useRef<Array<() => void>>([]);
 
@@ -144,17 +157,17 @@ export default function App(): JSX.Element {
     if (!bridge) return;
     let disposed = false;
     const liveSnapshotRequests = new Set<string>();
+    const liveSnapshotReruns = new Set<string>();
     const sessionEventBatcher = createSessionEventBatcher(appendEvent);
-    const flushSessionEventsIfActive = (): void => {
-      if (!document.hidden && document.hasFocus()) sessionEventBatcher.flush();
-    };
-    window.addEventListener('focus', flushSessionEventsIfActive);
-    document.addEventListener('visibilitychange', flushSessionEventsIfActive);
 
     // F121: listener-first Runtime bootstrap. A cursor gap requests one atomic
     // observation snapshot instead of attempting to replay partial daemon events.
     const requestLiveSnapshot = (sessionId: string): void => {
-      if (liveSnapshotRequests.has(sessionId)) return;
+      if (liveSnapshotRequests.has(sessionId)) {
+        // Do not lose a terminal/focus reconciliation that races an older bootstrap read.
+        liveSnapshotReruns.add(sessionId);
+        return;
+      }
       liveSnapshotRequests.add(sessionId);
       void bridge
         .invoke('session.liveSnapshot', { sessionId })
@@ -163,20 +176,49 @@ export default function App(): JSX.Element {
         })
         .catch(() => {})
         .finally(() => {
-          if (!disposed) liveSnapshotRequests.delete(sessionId);
+          if (disposed) return;
+          liveSnapshotRequests.delete(sessionId);
+          if (liveSnapshotReruns.delete(sessionId)) requestLiveSnapshot(sessionId);
         });
     };
+    const requestCurrentCoderLiveSnapshot = (): void => {
+      const state = useAppStore.getState();
+      const sessionId = state.currentSessionId;
+      if (!sessionId) return;
+      const selected = state.sessions.find((session) => session.sessionId === sessionId);
+      if (selected?.surface === 'partner') return;
+      requestLiveSnapshot(sessionId);
+    };
+    const flushSessionEventsIfActive = (): void => {
+      if (document.hidden || !document.hasFocus()) return;
+      sessionEventBatcher.flush();
+      // Focus/visibility is a cheap reconciliation boundary for a renderer that
+      // may have missed the daemon's terminal liveChanged notification.
+      requestCurrentCoderLiveSnapshot();
+    };
+    window.addEventListener('focus', flushSessionEventsIfActive);
+    document.addEventListener('visibilitychange', flushSessionEventsIfActive);
     unsubsRef.current.push(
       bridge.on('runtime.connectionChanged', (connection) => {
         setCoderRuntimeConnection(connection);
+        if (
+          (connection.state === 'ready' || connection.state === 'degraded') &&
+          connection.runtimeId
+        ) {
+          requestCurrentCoderLiveSnapshot();
+        }
       }),
       bridge.on('runtime.profileChanged', (profile) => {
         replaceRuntimeProfileProjection(profile);
       }),
       bridge.on('session.liveChanged', (change) => {
         const status = applySessionLiveProjectionChange(change);
-        if (status !== 'snapshot-required') return;
-        requestLiveSnapshot(change.sessionId);
+        if (shouldRequestSessionLiveSnapshot(status)) {
+          requestLiveSnapshot(change.sessionId);
+        }
+      }),
+      bridge.on('agent.actor.changed', (snapshot) => {
+        replaceAgentActorSnapshot(snapshot);
       }),
     );
     void bridge
@@ -291,6 +333,9 @@ export default function App(): JSX.Element {
     unsubsRef.current.push(
       bridge.on('session.event', (event) => {
         sessionEventBatcher.push(event);
+        if (event.kind === 'session_complete' || event.kind === 'session_error') {
+          requestLiveSnapshot(event.sessionId);
+        }
       }),
     );
 
@@ -396,6 +441,7 @@ export default function App(): JSX.Element {
       for (const u of unsubsRef.current) u();
       unsubsRef.current = [];
       liveSnapshotRequests.clear();
+      liveSnapshotReruns.clear();
       window.removeEventListener('focus', flushSessionEventsIfActive);
       document.removeEventListener('visibilitychange', flushSessionEventsIfActive);
       sessionEventBatcher.flush();
@@ -413,6 +459,7 @@ export default function App(): JSX.Element {
     setRuntimeDefaults,
     setCoderRuntimeConnection,
     replaceRuntimeProfileProjection,
+    replaceAgentActorSnapshot,
     replaceSessionLiveProjection,
     applySessionLiveProjectionChange,
     setPendingReasoningMode,
@@ -430,12 +477,18 @@ export default function App(): JSX.Element {
   // runs after a renderer reload without restarting the run.
   useEffect(() => {
     const bridge = window.kodaxSpace;
-    if (!bridge || !currentSessionId) return;
+    if (
+      !bridge ||
+      !currentSessionId ||
+      !coderRuntimeReady ||
+      hasCurrentLiveProjection
+    ) {
+      return;
+    }
     const selected = useAppStore
       .getState()
       .sessions.find((session) => session.sessionId === currentSessionId);
     if (selected?.surface === 'partner') return;
-    if (useAppStore.getState().liveProjectionBySession[currentSessionId]) return;
     let disposed = false;
     void bridge
       .invoke('session.liveSnapshot', { sessionId: currentSessionId })
@@ -446,7 +499,27 @@ export default function App(): JSX.Element {
     return () => {
       disposed = true;
     };
-  }, [currentSessionId, replaceSessionLiveProjection]);
+  }, [coderRuntimeReady, currentSessionId, hasCurrentLiveProjection, replaceSessionLiveProjection]);
+
+  // Actor telemetry has an independent Runtime cursor. Seed it explicitly on
+  // renderer reload; subsequent changes arrive through agent.actor.changed.
+  useEffect(() => {
+    const bridge = window.kodaxSpace;
+    if (!bridge || !currentSessionId || !coderRuntimeReady || hasCurrentActorSnapshot) return;
+    const state = useAppStore.getState();
+    const selected = state.sessions.find((session) => session.sessionId === currentSessionId);
+    if (selected?.surface === 'partner') return;
+    let disposed = false;
+    void bridge
+      .invoke('agent.actor.snapshot', { sessionId: currentSessionId })
+      .then((result) => {
+        if (!disposed && result.ok) replaceAgentActorSnapshot(result.data);
+      })
+      .catch(() => {});
+    return () => {
+      disposed = true;
+    };
+  }, [coderRuntimeReady, currentSessionId, hasCurrentActorSnapshot, replaceAgentActorSnapshot]);
 
   // (Esc 关 settings 面板已下放到 SettingsModal 自己 own —— 见 features/settings/SettingsModal.tsx)
 

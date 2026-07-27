@@ -3,14 +3,15 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { ArrowUp, FileText, Folder, Plus, X } from 'lucide-react';
-import type {
-  ChannelInput,
-  ChannelOutput,
-  InputArtifact,
-  InputArtifactSource,
-  InvokeChannelName,
-  IpcResult,
-  SessionMeta,
+import {
+  MAX_SOURCE_IMAGE_BYTES,
+  type ChannelInput,
+  type ChannelOutput,
+  type InputArtifact,
+  type InputArtifactSource,
+  type InvokeChannelName,
+  type IpcResult,
+  type SessionMeta,
 } from '@kodax-space/space-ipc-schema';
 import { useAppStore } from '../store/appStore.js';
 import { useSurfaceStore } from '../store/surface.js';
@@ -210,7 +211,6 @@ interface PendingFileRef {
   readonly isImage: boolean;
 }
 
-const MAX_PASTE_BYTES = 6 * 1024 * 1024;
 const MAX_PENDING_IMAGES = 8;
 const MAX_PENDING_FILE_REFS = 32;
 
@@ -898,11 +898,11 @@ export function BottomBar(): JSX.Element {
         setImageErr(t('bottom.unsupportedImageType', { type: b.type || t('common.unknownError') }));
         continue;
       }
-      if (b.size > MAX_PASTE_BYTES) {
+      if (b.size > MAX_SOURCE_IMAGE_BYTES) {
         setImageErr(
           t('bottom.imageTooLarge', {
             size: formatBytes(b.size),
-            max: formatBytes(MAX_PASTE_BYTES),
+            max: formatBytes(MAX_SOURCE_IMAGE_BYTES),
           }),
         );
         continue;
