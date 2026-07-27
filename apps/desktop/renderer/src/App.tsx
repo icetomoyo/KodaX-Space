@@ -24,7 +24,10 @@ import { useSessionCompleteNotification } from './features/notifications/useSess
 import { Shell } from './shell/Shell.js';
 import { formatWorkflowEventNotices } from './features/workflow/workflowNotices.js';
 import { requestTaskDockFocus } from './shell/taskDockControl.js';
-import { shouldRequestSessionLiveSnapshot } from './store/runtimeProjectionState.js';
+import {
+  shouldReconcileRuntimeConnection,
+  shouldRequestSessionLiveSnapshot,
+} from './store/runtimeProjectionState.js';
 
 // Shell owns the visible layout; App keeps process-wide bootstrapping and global listeners.
 const HIDDEN_SESSION_EVENT_FLUSH_MS = 100;
@@ -151,6 +154,7 @@ export default function App(): JSX.Element {
   );
   const setSessionFlag = useAppStore((s) => s.setSessionFlag);
   const unsubsRef = useRef<Array<() => void>>([]);
+  const requestCoderLiveSnapshotRef = useRef<(sessionId: string) => void>(() => {});
 
   useEffect(() => {
     const bridge = window.kodaxSpace;
@@ -172,7 +176,13 @@ export default function App(): JSX.Element {
       void bridge
         .invoke('session.liveSnapshot', { sessionId })
         .then((result) => {
-          if (!disposed && result.ok) replaceSessionLiveProjection(result.data);
+          if (!disposed && result.ok) {
+            // IPC push delivery can race the snapshot response while animation-frame batching
+            // still owns preceding incremental deltas. Commit those deltas first, then reconcile
+            // the cumulative snapshot against the store atomically.
+            sessionEventBatcher.flush();
+            replaceSessionLiveProjection(result.data);
+          }
         })
         .catch(() => {})
         .finally(() => {
@@ -181,6 +191,7 @@ export default function App(): JSX.Element {
           if (liveSnapshotReruns.delete(sessionId)) requestLiveSnapshot(sessionId);
         });
     };
+    requestCoderLiveSnapshotRef.current = requestLiveSnapshot;
     const requestCurrentCoderLiveSnapshot = (): void => {
       const state = useAppStore.getState();
       const sessionId = state.currentSessionId;
@@ -200,10 +211,12 @@ export default function App(): JSX.Element {
     document.addEventListener('visibilitychange', flushSessionEventsIfActive);
     unsubsRef.current.push(
       bridge.on('runtime.connectionChanged', (connection) => {
+        const previous = useAppStore.getState().runtimeConnection;
         setCoderRuntimeConnection(connection);
+        const accepted = useAppStore.getState().runtimeConnection;
         if (
-          (connection.state === 'ready' || connection.state === 'degraded') &&
-          connection.runtimeId
+          accepted !== previous &&
+          shouldReconcileRuntimeConnection(previous, accepted)
         ) {
           requestCurrentCoderLiveSnapshot();
         }
@@ -442,6 +455,7 @@ export default function App(): JSX.Element {
       unsubsRef.current = [];
       liveSnapshotRequests.clear();
       liveSnapshotReruns.clear();
+      requestCoderLiveSnapshotRef.current = () => {};
       window.removeEventListener('focus', flushSessionEventsIfActive);
       document.removeEventListener('visibilitychange', flushSessionEventsIfActive);
       sessionEventBatcher.flush();
@@ -489,16 +503,7 @@ export default function App(): JSX.Element {
       .getState()
       .sessions.find((session) => session.sessionId === currentSessionId);
     if (selected?.surface === 'partner') return;
-    let disposed = false;
-    void bridge
-      .invoke('session.liveSnapshot', { sessionId: currentSessionId })
-      .then((result) => {
-        if (!disposed && result.ok) replaceSessionLiveProjection(result.data);
-      })
-      .catch(() => {});
-    return () => {
-      disposed = true;
-    };
+    requestCoderLiveSnapshotRef.current(currentSessionId);
   }, [coderRuntimeReady, currentSessionId, hasCurrentLiveProjection, replaceSessionLiveProjection]);
 
   // Actor telemetry has an independent Runtime cursor. Seed it explicitly on

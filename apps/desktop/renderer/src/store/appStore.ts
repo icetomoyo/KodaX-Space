@@ -55,6 +55,10 @@ import {
   replaceSessionLiveProjection as replaceSessionLiveProjectionState,
   type ApplySessionLiveChangeStatus,
 } from './runtimeProjectionState.js';
+import {
+  hydrateSessionEventsFromLiveSnapshot,
+  projectionTextSuffix,
+} from './runtimeSnapshotHydration.js';
 import { mergeRuntimeSettingsIntoSessions } from './runtimeSessionSettings.js';
 
 export type MascotMode = 'legacy' | 'sprite' | 'off';
@@ -1189,14 +1193,6 @@ function projectedEventText(
     .filter((event): event is Extract<SessionEvent, { kind: typeof kind }> => event.kind === kind)
     .map((event) => event.text)
     .join('');
-}
-
-function projectionTextSuffix(durable: string, live: string): string {
-  if (live.length === 0 || durable.includes(live)) return '';
-  if (live.startsWith(durable)) return live.slice(durable.length);
-  let overlap = Math.min(durable.length, live.length);
-  while (overlap > 0 && durable.slice(-overlap) !== live.slice(0, overlap)) overlap--;
-  return live.slice(overlap);
 }
 
 function projectionNoticeKey(event: SessionEvent): string | undefined {
@@ -3591,6 +3587,10 @@ export const useAppStore = create<AppState>((set) => ({
         projection,
       );
       const acceptedProjection = next.liveBySession[projection.sessionId] === projection;
+      const currentEvents = state.eventsBySession[projection.sessionId] ?? [];
+      const hydratedEvents = acceptedProjection
+        ? hydrateSessionEventsFromLiveSnapshot(currentEvents, projection)
+        : currentEvents;
       const clearsPendingSend =
         acceptedProjection &&
         Boolean(state.pendingSendBySession[projection.sessionId]) &&
@@ -3617,6 +3617,14 @@ export const useAppStore = create<AppState>((set) => ({
         sessions: mergeRuntimeSettingsIntoSessions(state.sessions, projection),
         liveProjectionBySession: next.liveBySession,
         runtimeSnapshotRequiredBySession: next.snapshotRequiredBySession,
+        ...(hydratedEvents !== currentEvents
+          ? {
+              eventsBySession: {
+                ...state.eventsBySession,
+                [projection.sessionId]: hydratedEvents,
+              },
+            }
+          : {}),
         permissionQueue: [
           ...state.permissionQueue.filter((request) => request.sessionId !== projection.sessionId),
           ...runtimePermissions,

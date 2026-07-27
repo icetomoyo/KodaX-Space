@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import type { InvokeChannelName } from '@kodax-space/space-ipc-schema';
+import type {
+  InvokeChannelName,
+  SpaceSessionLiveProjectionT,
+} from '@kodax-space/space-ipc-schema';
 import {
   RuntimeProjectionController,
   RuntimeProjectionUnavailableError,
@@ -133,13 +136,44 @@ test('pending interaction lookup includes the newer per-session live cache', () 
 });
 
 test('runtime IPC bootstrap registers both snapshot handlers against the controller', async () => {
-  const controller = createPendingSdkRuntimeProjection(100);
+  const controller = new RuntimeProjectionController(
+    createPendingSdkRuntimeProjection(100).profileSnapshot(),
+  );
+  controller.replaceProfile({
+    connection: {
+      state: 'ready',
+      changedAt: 101,
+      stale: false,
+      runtimeId: 'rt_1',
+      capabilities: [],
+    },
+    projectionRevision: 1,
+    cursor: { runtimeId: 'rt_1', seq: 1 },
+    sessions: [],
+    interactions: [],
+    notifications: [],
+  });
+  const live: SpaceSessionLiveProjectionT = {
+    sessionId: 's_1',
+    projectionRevision: 1,
+    cursor: { runtimeId: 'rt_1', seq: 1 },
+    transcriptRevision: 'tx_1',
+    queuedRuns: [],
+    activeTools: [],
+    todos: [],
+    queuedInputs: [],
+    interactions: [],
+  };
+  controller.replaceSessionLive(live);
   const handlers = new Map<string, (input: unknown) => unknown>();
   const register = ((name: InvokeChannelName, handler: (input: unknown) => unknown) => {
     handlers.set(name, handler);
   }) as never;
+  const observed: string[] = [];
 
-  registerRuntimeProjectionChannels(controller, register);
+  registerRuntimeProjectionChannels(controller, register, async (sessionId) => {
+    observed.push(sessionId);
+  });
 
   assert.deepEqual([...handlers.keys()].sort(), [
     'runtime.profileSnapshot',
@@ -148,7 +182,12 @@ test('runtime IPC bootstrap registers both snapshot handlers against the control
   const profileHandler = handlers.get('runtime.profileSnapshot');
   assert.ok(profileHandler);
   const profile = await profileHandler(undefined);
-  assert.equal((profile as { connection: { state: string } }).connection.state, 'incompatible');
+  assert.equal((profile as { connection: { state: string } }).connection.state, 'ready');
+
+  const liveHandler = handlers.get('session.liveSnapshot');
+  assert.ok(liveHandler);
+  assert.deepEqual(await liveHandler({ sessionId: 's_1' }), live);
+  assert.deepEqual(observed, ['s_1']);
 });
 
 test('controller rejects rich snapshots before a ready matching Runtime profile exists', () => {

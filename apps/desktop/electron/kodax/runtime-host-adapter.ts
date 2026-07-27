@@ -67,6 +67,7 @@ import {
   type ExternalAgentTaskEventT,
   type ExternalAgentTaskT,
   type SessionEvent,
+  type SpaceCoderConnectionProjectionT,
 } from '@kodax-space/space-ipc-schema';
 import {
   decodeRuntimeActorTaskId,
@@ -117,6 +118,55 @@ type QueuedUserPromptFailureReason = Extract<
   SessionEvent,
   { kind: 'queued_user_prompt_failed' }
 >['reason'];
+
+const PROFILE_CHANGING_RUNTIME_EVENTS: ReadonlySet<RuntimeTypedEvent['type']> = new Set([
+  'session.created',
+  'run.queued',
+  'run.started',
+  'run.updated',
+  'run.input.queued',
+  'run.input.delivered',
+  'user_input.requested',
+  'user_input.resolved',
+  'permission.requested',
+  'permission.resolved',
+  'run.completed',
+  'run.failed',
+  'run.cancelled',
+  'run.interrupted',
+]);
+
+/**
+ * Profile snapshots contain Session/Run/interaction summaries, not transcript deltas.
+ * Refreshing them for every streamed token is both expensive and semantically misleading.
+ */
+export function runtimeEventChangesProfile(type: RuntimeTypedEvent['type']): boolean {
+  return PROFILE_CHANGING_RUNTIME_EVENTS.has(type);
+}
+
+export function runtimeConnectionSemanticallyEqual(
+  left: SpaceCoderConnectionProjectionT,
+  right: SpaceCoderConnectionProjectionT,
+): boolean {
+  return (
+    left.state === right.state &&
+    left.stale === right.stale &&
+    left.runtimeId === right.runtimeId &&
+    left.profile === right.profile &&
+    left.reason === right.reason &&
+    left.capabilities.length === right.capabilities.length &&
+    left.capabilities.every((capability, index) => {
+      const other = right.capabilities[index];
+      return (
+        other !== undefined &&
+        capability.id === other.id &&
+        capability.version === other.version &&
+        capability.available === other.available &&
+        capability.reason === other.reason
+      );
+    })
+  );
+}
 
 function runtimeEventRecord(value: unknown): Readonly<Record<string, unknown>> | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -1286,6 +1336,7 @@ export class RuntimeHostAdapter {
   private async refreshProfile(cursor: number): Promise<void> {
     const runtime = this.runtime;
     if (!runtime || this.state !== 'ready') return;
+    const previousConnection = this.projectionController.profileSnapshot().connection;
     const [status, userInputs] = await Promise.all([
       runtime.status.snapshot(),
       runtime.userInputs.listPending(),
@@ -1296,7 +1347,7 @@ export class RuntimeHostAdapter {
       );
     }
     this.profileCursor = Math.max(this.profileCursor, cursor);
-    const profile = projectRuntimeProfile({
+    const projectedProfile = projectRuntimeProfile({
       status,
       userInputs,
       cursor: this.profileCursor,
@@ -1304,8 +1355,17 @@ export class RuntimeHostAdapter {
       changedAt: Date.now(),
       capabilities: [...this.spaceCapabilities(runtime)],
     });
+    const connectionChanged = !runtimeConnectionSemanticallyEqual(
+      previousConnection,
+      projectedProfile.connection,
+    );
+    const profile = connectionChanged
+      ? projectedProfile
+      : { ...projectedProfile, connection: previousConnection };
     if (!this.projectionController.replaceProfile(profile)) return;
-    this.push('runtime.connectionChanged', profile.connection);
+    if (connectionChanged) {
+      this.push('runtime.connectionChanged', profile.connection);
+    }
     this.push('runtime.profileChanged', profile);
   }
 
@@ -1909,7 +1969,9 @@ export class RuntimeHostAdapter {
       }
     }
     this.bridgeRuntimeEvent(event);
-    this.scheduleProfileRefresh(event.seq);
+    if (runtimeEventChangesProfile(event.type)) {
+      this.scheduleProfileRefresh(event.seq);
+    }
   }
 
   private async syncSpaceSessionSettings(
@@ -1957,44 +2019,6 @@ export class RuntimeHostAdapter {
       session.autoModeEngine = settings.autoModeEngine;
     }
     await kodaxHost.persistRuntime(sessionId);
-  }
-
-  publishLegacySnapshot(sessionId: string): void {
-    const projection = this.observations.get(sessionId)?.reducer.snapshot();
-    if (!projection?.activeRun) return;
-    this.push('session.event', {
-      kind: 'session_start',
-      sessionId,
-      provider: this.runProviders.get(projection.activeRun.runId) ?? 'unknown',
-    });
-    if (projection.thinkingDraft?.text) {
-      this.push('session.event', {
-        kind: 'thinking_delta',
-        sessionId,
-        text: projection.thinkingDraft.text,
-      });
-    }
-    if (projection.assistantDraft?.text) {
-      this.push('session.event', {
-        kind: 'text_delta',
-        sessionId,
-        text: projection.assistantDraft.text,
-      });
-    }
-    for (const tool of projection.activeTools) {
-      this.push('session.event', {
-        kind: 'tool_start',
-        sessionId,
-        toolId: tool.toolCallId,
-        toolName: tool.name,
-        input: {},
-      });
-    }
-    this.push('session.event', {
-      kind: 'todo_update',
-      sessionId,
-      items: projection.todos,
-    });
   }
 
   private bridgeRuntimeEvent(event: RuntimeTypedEvent): void {

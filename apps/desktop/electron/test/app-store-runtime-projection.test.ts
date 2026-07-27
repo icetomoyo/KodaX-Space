@@ -3,6 +3,7 @@ import { beforeEach, test } from 'node:test';
 
 import type {
   AgentActorTreeSnapshotT,
+  SessionEvent,
   SpaceRuntimeProfileProjectionT,
   SpaceSessionLiveProjectionT,
 } from '@kodax-space/space-ipc-schema';
@@ -115,6 +116,69 @@ test('app store exposes snapshot replacement and revision-safe live patch action
   assert.equal(state.runtimeProfile?.projectionRevision, 1);
   assert.equal(state.liveProjectionBySession.s_1?.projectionRevision, 2);
   assert.equal(state.liveProjectionBySession.s_1?.todos[0]?.status, 'completed');
+});
+
+test('cumulative live snapshots hydrate missing state once without replaying text, thinking, or tools', () => {
+  useAppStore.setState({
+    currentSessionId: 's_1',
+    eventsBySession: {
+      s_1: [
+        { kind: 'session_complete', sessionId: 's_1' },
+        { kind: 'session_start', sessionId: 's_1', provider: 'custom' },
+        { kind: 'thinking_delta', sessionId: 's_1', text: 'plan' },
+        { kind: 'text_delta', sessionId: 's_1', text: 'Hello' },
+      ],
+    },
+  });
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+
+  const streaming: SpaceSessionLiveProjectionT = {
+    ...live,
+    projectionRevision: 2,
+    cursor: { runtimeId: 'rt_1', seq: 2 },
+    activeRun: {
+      runId: 'run_1',
+      sessionId: 's_1',
+      phase: 'running',
+      startedAt: 10,
+    },
+    thinkingDraft: { text: 'plan carefully', startedAt: 10 },
+    assistantDraft: { text: 'Hello world', startedAt: 10 },
+    activeTools: [
+      { toolCallId: 'tool_1', name: 'read_file', startedAt: 11, progress: 'reading' },
+    ],
+  };
+
+  useAppStore.getState().replaceSessionLiveProjection(streaming);
+  useAppStore.getState().replaceSessionLiveProjection({
+    ...streaming,
+    projectionRevision: 3,
+    cursor: { runtimeId: 'rt_1', seq: 3 },
+  });
+
+  const events = useAppStore.getState().eventsBySession.s_1 ?? [];
+  assert.equal(
+    events
+      .filter(
+        (event): event is Extract<SessionEvent, { kind: 'thinking_delta' }> =>
+          event.kind === 'thinking_delta',
+      )
+      .map((event) => event.text)
+      .join(''),
+    'plan carefully',
+  );
+  assert.equal(
+    events
+      .filter(
+        (event): event is Extract<SessionEvent, { kind: 'text_delta' }> =>
+          event.kind === 'text_delta',
+      )
+      .map((event) => event.text)
+      .join(''),
+    'Hello world',
+  );
+  assert.equal(events.filter((event) => event.kind === 'tool_start').length, 1);
+  assert.equal(events.filter((event) => event.kind === 'tool_progress').length, 1);
 });
 
 test('authoritative run and terminal projections clear stale pending-send state', () => {

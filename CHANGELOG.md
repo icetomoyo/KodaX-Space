@@ -14,6 +14,15 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ## [Unreleased]
 
+### Fixed
+
+- **Idempotent daemon live reconciliation** - Runtime live-snapshot reads are now pure and
+  cumulative drafts hydrate only missing assistant/thinking suffixes and active-tool state.
+  Unchanged profile refreshes no longer masquerade as connection transitions, and transcript
+  hot-path events no longer rebuild the complete Runtime profile for every token. This removes
+  repeated Coder output across Ollama and hosted Providers while retaining reload, reconnect,
+  focus, revision-gap, and terminal recovery.
+
 ## [0.1.33] - 2026-07-27
 
 ### Added

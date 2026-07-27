@@ -117,6 +117,7 @@ Last Updated: 2026-07-27
 | 119 | Medium   | Resolved    | Restored history exposes overlapping internal compaction summaries as giant yellow notices                               | v0.1.x                          | 2026-07-27 |
 | 120 | High     | Resolved    | Space custom Providers were invisible to the shared Coder daemon and failed as unknown Providers                          | v0.1.32                         | 2026-07-27 |
 | 121 | Medium   | Resolved    | Custom Provider settings could not declare the endpoint context window                                                    | v0.1.x                          | 2026-07-27 |
+| 122 | High     | Resolved    | Cumulative Runtime snapshots replayed streamed assistant output, thinking, and active tools in the renderer               | v0.1.33                         | 2026-07-27 |
 
 ## Issue Details
 
@@ -7096,13 +7097,122 @@ Validation:
 - Full workspace tests, TypeScript checks, ESLint, Git whitespace checks, and the production build
   smoke test pass.
 
+### 122: Cumulative Runtime snapshots replayed streamed assistant output, thinking, and active tools in the renderer
+
+- Priority: High
+- Status: Resolved
+- Introduced: v0.1.33
+- Fixed: v0.1.34
+- Created: 2026-07-27
+- Resolution Date: 2026-07-27
+
+#### Original Problem
+
+Coder replies could visibly repeat the same growing answer many times in v0.1.33. The problem
+reproduced with both a local Ollama `ornith:9b` OpenAI-compatible Provider and a non-Ollama
+`glm-5.2` Provider. Thinking receipts could also report far more visible text than the daemon
+actually emitted, and active tool cards could be duplicated or left looking active.
+
+Expected behavior:
+
+- Every `assistant.delta` and `thinking.delta` is appended exactly once.
+- Reading the authoritative cumulative live snapshot is side-effect free and idempotent.
+- Renderer reload, focus recovery, revision gaps, Runtime reconnect, and terminal reconciliation
+  still recover an in-progress Session without leaving it stuck as Processing.
+- Transcript hot-path events do not rebuild and rebroadcast an unchanged Runtime connection
+  profile for every token.
+
+#### Investigation Evidence
+
+- Direct non-streaming and streaming calls to Ollama returned one greeting. Ollama's OpenAI stream
+  emitted normal incremental chunks rather than cumulative prefixes.
+- The affected Ollama Session JSONL persisted one 17-character greeting even though the renderer
+  showed it four times.
+- The affected GLM Session persisted one 299-character answer. Its daemon journal contained 158
+  assistant delta events whose concatenation was exactly those 299 characters and contained the
+  repeated screenshot phrase once.
+- The GLM daemon journal also contained 80 thinking delta events totaling 156 characters, while
+  the polluted renderer showed a roughly 936-token thinking receipt.
+- KodaX's observation contract defines live snapshot draft strings as cumulative and subscription
+  events after the observation cursor as incremental. The daemon projection and durable transcript
+  followed that contract.
+
+#### Root Cause and Introduction Timeline
+
+The failure was a Space feedback loop, not a Provider or model-streaming defect:
+
+1. Commit `33447978` (shared daemon integration, first shipped in v0.1.32) added
+   `publishLegacySnapshot()`. A `session.liveSnapshot` read therefore had an undocumented side
+   effect: it pushed the snapshot's cumulative assistant/thinking drafts and active tools through
+   the legacy incremental `session.event` channel.
+2. The same adapter refreshed the whole Runtime profile for every daemon event and emitted
+   `runtime.connectionChanged` even when only the profile cursor/timestamp advanced. This made a
+   transition-named channel behave like a per-token level notification.
+3. Commit `a776cb4` on 2026-07-27 fixed Issue 116 by reconciling the selected live snapshot on every
+   ready/degraded connection push, focus boundary, and terminal event. That was released in
+   v0.1.33.
+4. Each streamed token consequently scheduled another profile refresh, emitted another unchanged
+   connection notification, requested another snapshot, and replayed a larger cumulative prefix
+   as fresh deltas. The renderer correctly appended those alleged deltas, producing the triangular
+   repetition visible in the screenshots.
+
+The unsafe snapshot side effect was latent in v0.1.32, but the v0.1.33 reconciliation change made
+it systematic. Issue 116's recovery requirement remains valid, so simply removing reconciliation
+would have restored the earlier stuck-Processing bug.
+
+The Ollama `ornith:9b` run that hallucinated repository contents without using tools is a separate
+model/agent-capability behavior. It explains that run's verifier retries and final error, but not
+the duplicated visible text. No KodaX SDK change is required for this Space projection defect.
+
+#### Resolution
+
+- Made `session.liveSnapshot` a pure query: it ensures observation and returns the authoritative
+  projection without pushing any legacy transcript events.
+- Removed the cumulative-to-incremental `publishLegacySnapshot()` bridge.
+- Added renderer-owned, idempotent snapshot hydration. It appends only a missing assistant or
+  thinking suffix and restores only missing active tool/progress state.
+- Flushes queued incremental events before applying a snapshot response, covering the IPC
+  push/response race without duplicating newer text.
+- Treats Runtime connection pushes as edge-triggered reconciliation: initial authority, Runtime
+  identity changes, reconnect, and ready/degraded transitions request a snapshot; timestamp-only
+  refreshes do not.
+- Preserves the original connection `changedAt` and suppresses `runtime.connectionChanged` when
+  Runtime identity, state, staleness, profile, reason, and capabilities are unchanged.
+- Restricts expensive Runtime profile refreshes to Session/Run/interaction events that can
+  actually change the profile. Assistant/thinking/tool/Todo/diagnostic hot-path events continue
+  through their dedicated live projection and transcript channels.
+
+Files changed:
+
+- `apps/desktop/electron/ipc/runtime.ts`
+- `apps/desktop/electron/kodax/runtime-host-adapter.ts`
+- `apps/desktop/renderer/src/App.tsx`
+- `apps/desktop/renderer/src/store/appStore.ts`
+- `apps/desktop/renderer/src/store/runtimeProjectionState.ts`
+- `apps/desktop/renderer/src/store/runtimeSnapshotHydration.ts`
+- `apps/desktop/electron/test/app-store-runtime-projection.test.ts`
+- `apps/desktop/electron/test/coder-daemon-projection.test.ts`
+- `apps/desktop/electron/test/runtime-projection-controller.test.ts`
+- `apps/desktop/electron/test/runtime-projection-state.test.ts`
+
+Validation:
+
+- Regression coverage verifies pure snapshot IPC, connection-edge classification, hot-path profile
+  filtering, timestamp-insensitive connection equality, cumulative text/thinking suffix hydration,
+  and active-tool idempotency.
+- The focused projection suite passes.
+- Full workspace tests, TypeScript checks, ESLint, Git diff checks, and the production build smoke
+  test pass.
+- The repository-wide Prettier check still reports the existing formatting baseline outside this
+  fix; no unrelated files were reformatted.
+
 ## Summary
 
-- Total: 109
-- Open: 1
-- In Progress: 3
-- Resolved: 105
-- High: 46
+- Total: 110
+- Open: 2
+- In Progress: 2
+- Resolved: 106
+- High: 47
 - Medium: 56
 - Low: 7
 - Next to resolve: 043

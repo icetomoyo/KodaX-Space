@@ -57,6 +57,23 @@ function connectionAcceptsLive(connection: SpaceCoderConnectionProjectionT): boo
   return connection.state === 'ready' || connection.state === 'degraded';
 }
 
+/**
+ * A Runtime connection push is an edge notification. Repeated profile refreshes with a newer
+ * timestamp but the same authority must not trigger another selected-Session snapshot read.
+ */
+export function shouldReconcileRuntimeConnection(
+  previous: SpaceCoderConnectionProjectionT,
+  next: SpaceCoderConnectionProjectionT,
+): boolean {
+  if (!connectionAcceptsLive(next) || next.runtimeId === undefined) return false;
+  return (
+    !connectionAcceptsLive(previous) ||
+    previous.runtimeId !== next.runtimeId ||
+    previous.state !== next.state ||
+    previous.stale !== next.stale
+  );
+}
+
 export function replaceRuntimeConnection(
   state: RuntimeProjectionState,
   connection: SpaceCoderConnectionProjectionT,

@@ -7,11 +7,77 @@ import type {
   RuntimeUserInputRequest,
   RuntimeTypedEvent,
 } from '@kodax-ai/kodax/runtime';
+import type { SpaceCoderConnectionProjectionT } from '@kodax-space/space-ipc-schema';
 import {
   CoderSessionProjectionReducer,
   projectRuntimeProfile,
   projectRuntimeSessionSnapshot,
 } from '../kodax/runtime/coder-daemon-projection.js';
+import {
+  runtimeConnectionSemanticallyEqual,
+  runtimeEventChangesProfile,
+} from '../kodax/runtime-host-adapter.js';
+
+test('profile refresh classification excludes transcript hot-path events', () => {
+  for (const type of [
+    'assistant.delta',
+    'thinking.delta',
+    'thinking.finished',
+    'tool.started',
+    'tool.progress',
+    'tool.finished',
+    'run.progress',
+    'todo.updated',
+    'provider.cache.diagnostics',
+  ] as const) {
+    assert.equal(runtimeEventChangesProfile(type), false, type);
+  }
+  for (const type of [
+    'session.created',
+    'run.queued',
+    'run.started',
+    'run.updated',
+    'run.input.queued',
+    'permission.requested',
+    'user_input.requested',
+    'run.completed',
+    'run.failed',
+  ] as const) {
+    assert.equal(runtimeEventChangesProfile(type), true, type);
+  }
+});
+
+test('Runtime connection equality ignores refresh timestamps but detects authority changes', () => {
+  const connection: SpaceCoderConnectionProjectionT = {
+    state: 'ready',
+    changedAt: 1,
+    stale: false,
+    runtimeId: 'rt_1',
+    profile: 'coder',
+    capabilities: [{ id: 'runtime.live.observe', version: 1, available: true }],
+  };
+
+  assert.equal(
+    runtimeConnectionSemanticallyEqual(connection, { ...connection, changedAt: 2 }),
+    true,
+  );
+  assert.equal(
+    runtimeConnectionSemanticallyEqual(connection, {
+      ...connection,
+      runtimeId: 'rt_2',
+      changedAt: 2,
+    }),
+    false,
+  );
+  assert.equal(
+    runtimeConnectionSemanticallyEqual(connection, {
+      ...connection,
+      capabilities: [{ id: 'runtime.live.observe', version: 2, available: true }],
+      changedAt: 2,
+    }),
+    false,
+  );
+});
 
 const running = {
   runId: 'run_active',

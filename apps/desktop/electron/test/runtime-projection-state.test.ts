@@ -12,6 +12,7 @@ import {
   replaceRuntimeConnection,
   replaceRuntimeProfile,
   replaceSessionLiveProjection,
+  shouldReconcileRuntimeConnection,
   shouldRequestSessionLiveSnapshot,
 } from '../../renderer/src/store/runtimeProjectionState.js';
 
@@ -52,6 +53,46 @@ test('snapshot-required and snapshot-pending both request authoritative reconcil
   assert.equal(shouldRequestSessionLiveSnapshot('snapshot-pending'), true);
   assert.equal(shouldRequestSessionLiveSnapshot('applied'), false);
   assert.equal(shouldRequestSessionLiveSnapshot('ignored'), false);
+});
+
+test('connection reconciliation is edge-triggered instead of timestamp-triggered', () => {
+  const ready = profile('rt_1', 1).connection;
+
+  assert.equal(
+    shouldReconcileRuntimeConnection(createRuntimeProjectionState().connection, ready),
+    true,
+  );
+  assert.equal(
+    shouldReconcileRuntimeConnection(ready, { ...ready, changedAt: ready.changedAt + 1 }),
+    false,
+  );
+  assert.equal(
+    shouldReconcileRuntimeConnection(ready, {
+      ...ready,
+      runtimeId: 'rt_2',
+      changedAt: ready.changedAt + 1,
+    }),
+    true,
+  );
+  assert.equal(
+    shouldReconcileRuntimeConnection(ready, {
+      ...ready,
+      state: 'degraded',
+      stale: true,
+      reason: 'transport recovering',
+      changedAt: ready.changedAt + 1,
+    }),
+    true,
+  );
+  assert.equal(
+    shouldReconcileRuntimeConnection(ready, {
+      state: 'reconnecting',
+      changedAt: ready.changedAt + 1,
+      stale: true,
+      capabilities: [],
+    }),
+    false,
+  );
 });
 
 test('profile replacement ignores stale revisions and clears live state on Runtime restart', () => {

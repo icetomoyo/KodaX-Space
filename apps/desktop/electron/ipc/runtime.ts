@@ -22,13 +22,10 @@ export function registerRuntimeProjectionChannels(
   register: RuntimeChannelRegistrar = registerChannel,
   ensureObserved: (sessionId: string) => Promise<void> = (sessionId) =>
     runtimeHostAdapter.ensureObserved(sessionId),
-  publishLegacySnapshot: (sessionId: string) => void = (sessionId) =>
-    runtimeHostAdapter.publishLegacySnapshot(sessionId),
 ): void {
   register('runtime.profileSnapshot', () => controller.profileSnapshot());
   register('session.liveSnapshot', async ({ sessionId }) => {
     await ensureObserved(sessionId);
-    publishLegacySnapshot(sessionId);
     return controller.sessionLiveSnapshot(sessionId);
   });
 }
