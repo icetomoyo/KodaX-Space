@@ -189,17 +189,24 @@ export async function launchSpace(
     // 抽到这里避免 3 个 spec 都拷一份相同 4 行代码 (review LOW: dedup)
     const seedProject = async (projectDir: string): Promise<void> => {
       await page.evaluate((p) => {
-        localStorage.setItem('kodax-space.currentProjectPath', p);
-      }, projectDir);
-      await page.evaluate((p) => {
         return (
           window as unknown as {
             kodaxSpace: { invoke: (n: string, i: unknown) => Promise<unknown> };
           }
         ).kodaxSpace.invoke('project.recent.add', { path: p });
       }, projectDir);
+      // project.recent.add can push the still-hydrated default workspace back
+      // through renderer state. Persist the selected test project only after
+      // that main-process mutation has completed so reload cannot race it.
+      await page.evaluate((p) => {
+        localStorage.setItem('kodax-space.currentProjectPath', p);
+      }, projectDir);
       await page.reload();
       await page.waitForLoadState('domcontentloaded');
+      await page.waitForFunction(
+        (p) => localStorage.getItem('kodax-space.currentProjectPath') === p,
+        projectDir,
+      );
     };
 
     return {

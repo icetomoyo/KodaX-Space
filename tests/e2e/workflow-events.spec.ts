@@ -497,7 +497,7 @@ test('workflow push events update the sidebar and transcript through completion'
     await expect(finalWorkflowNotice).toBeVisible({ timeout: 5_000 });
     await expect(finalWorkflowNotice).toHaveCount(1);
     await expect(finalWorkflowNotice.getByLabel('Copy message')).toBeVisible();
-    await expect(finalWorkflowNotice).toContainText(/just now|\d+[smhdwy] ago/);
+    await expect(finalWorkflowNotice).toContainText(/just now|\d+(?:s|m|h|d|w|mo|y) ago/);
     await expect(stream).toContainText('# Final workflow report');
     await expect(stream).toContainText('TAIL_MARKER_VISIBLE_IN_FULL_REPORT');
     await expect(sidebar).not.toContainText('TAIL_MARKER_VISIBLE_IN_FULL_REPORT');
