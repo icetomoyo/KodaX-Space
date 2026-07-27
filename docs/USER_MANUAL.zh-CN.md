@@ -4,12 +4,12 @@
   <img src="../resources/icon.png" alt="KodaX Space 应用图标" width="96">
 </p>
 
-> 当前发布基线：KodaX Space `v0.1.32`（package `0.1.32`）/ npm 正式发布的 KodaX `0.7.76`。当前源码已正式对齐 npm 发布的精确 KodaX `0.7.77`。
+> 当前发布基线：KodaX Space `v0.1.33`（package `0.1.33`）/ npm 正式发布的精确 KodaX `0.7.77`。
 >
-> 更新日期：2026-07-26
+> 更新日期：2026-07-27
 >
 > 如果你的界面与本文不同，请先在 Settings → License/版本信息中确认构建版本。
-> 当前手册同时描述 `v0.1.32` 发布后的未发布源码维护；稳定版安装包可能暂时没有最新的双 Token 指标。
+> 本手册描述 `v0.1.33` 正式版；历史版本的界面与行为可能不同。
 
 这份手册面向第一次使用 KodaX Space 的开发者、技术团队成员和代码相关知识工作者。它以“完成一件真实工作”为主线；架构和开发细节分别放在 [HLD](HLD.md) 与 [USAGE](USAGE.md)。文中的实拍界面使用隔离的 mock 数据和示例项目生成，不包含真实 API Key、会话内容或本地路径。
 
@@ -204,7 +204,7 @@ _图 1：已打开示例项目但尚未创建会话时的 Coder 工作台。实�
 - **Artifact**：独立于项目文件的生成物，例如报告、HTML、SVG、PDF、DOCX、XLSX。
 - **Workflow**：可观察、可暂停/恢复/停止、可保存和复跑的多步骤任务。
 
-### v0.1.32 的 Runtime Host 对用户有什么影响
+### v0.1.33 的 Runtime Host 对用户有什么影响
 
 没有新增“Runtime 模式”开关。默认仍按原来的 Coder/Partner 方式使用，但底层所有权已经按 surface 拆分：Coder 连接当前 profile 的共享 daemon，Partner 继续在 Space 内 embedded-inline 运行。
 
@@ -220,25 +220,29 @@ flowchart LR
 
 多个受信任的 KodaX 客户端可以观察同一 Coder 会话；Space 会同步 provider/model/effort/mode 等共享设置，并通过 Runtime 处理权限 grant、AskUser、队列、Workflow 观察/暂停/恢复/停止、Learning Center 命令、MCP 工具发现/reload 和已配置 External Agent 的 Actor/Turn。Space 要求 `interruptInput:1`、`actorControlPlane:1`、`contextCompaction:3`、`transcriptPaging:1`、`transcriptSearch:1` 与 Auto LLM guardrail v3；Runtime 不可用或能力版本不足时 Coder fail closed，不会在背后重放到 inline owner。Partner 不受该 daemon 可用性影响。
 
-当前源码还会核对 daemon 的实际版本和能力，而不只看已经安装的 npm 包：低于 `0.7.77` 或缺少上述契约的长驻 daemon 会被拒绝并提示重启。compaction v3 会先耐久化精确 pre-compaction lineage，再缩减活动上下文；Runtime 会复用精确 checkpoint/恢复指引字节，并在命令式手动压缩前把精确 flat Session history 对齐进 lineage，使 compaction entry、first-kept pointer 与压缩后附件留在同一 active path，同时继续读取旧的无后缀 checkpoint。Space 使用 revision-bound page/chunk/search 恢复可见历史，root 与持久 child 的历史保持隔离。Coder Session 使用 KodaX 的公开 `resolveAutoModeSettings()` 解析 `engine`、classifier model、timeout 与 `speculativeWindowMs`，并把缺失值写入可修订的 Runtime 设置；`0` 是有效的 speculative window 值。未配置时 classifier timeout 为 `20000ms`。底部会直接显示 `Auto[LLM]` 或 `Auto[RULES]`；快速连续切换按最后一次动作收敛，自动降级或手动选择后的 `Auto[RULES]` 保持粘性，需用 `/auto-engine llm` 显式切回。Auto[rules] 会对工作区内可完整建模的编辑直接放行，对工作区外、受保护、动态或无法完整建模的效果继续请求确认；Auto[LLM] 缺失 classifier model 时在本地拒绝，不请求 Provider、不弹权限窗、也不触发 rules 降级。输入 `/auto-denials` 可以查看当前 Runtime 版本、classifier model、timeout、speculative window 及不含提示正文的 classifier 时序/终止阶段。
+Space 还会核对 daemon 的实际版本和能力，而不只看已经安装的 npm 包：低于 `0.7.77` 或缺少上述契约的长驻 daemon 会被拒绝并提示重启。compaction v3 会先耐久化精确 pre-compaction lineage，再缩减活动上下文；Runtime 会复用精确 checkpoint/恢复指引字节，并在命令式手动压缩前把精确 flat Session history 对齐进 lineage，使 compaction entry、first-kept pointer 与压缩后附件留在同一 active path，同时继续读取旧的无后缀 checkpoint。Space 使用 revision-bound page/chunk/search 恢复可见历史，root 与持久 child 的历史保持隔离。Coder Session 使用 KodaX 的公开 `resolveAutoModeSettings()` 解析 `engine`、classifier model、timeout 与 `speculativeWindowMs`，并把缺失值写入可修订的 Runtime 设置；`0` 是有效的 speculative window 值。未配置时 classifier timeout 为 `20000ms`。底部会直接显示 `Auto[LLM]` 或 `Auto[RULES]`；快速连续切换按最后一次动作收敛，自动降级或手动选择后的 `Auto[RULES]` 保持粘性，需用 `/auto-engine llm` 显式切回。Auto[rules] 会对工作区内可完整建模的编辑直接放行，对工作区外、受保护、动态或无法完整建模的效果继续请求确认；Auto[LLM] 缺失 classifier model 时在本地拒绝，不请求 Provider、不弹权限窗、也不触发 rules 降级。输入 `/auto-denials` 可以查看当前 Runtime 版本、classifier model、timeout、speculative window 及不含提示正文的 classifier 时序/终止阶段。
 
 ### Windows 关闭窗口、后台托盘与彻底退出
 
-Windows 上点击右上角关闭会销毁主窗口和 renderer，不会默认停止共享
-Runtime。任务栏右下角的 KodaX Space 托盘图标就是后台 owner 的可见控制面：
+Windows 上点击右上角关闭时，默认会先询问“最小化到托盘并保留 Runtime”还是
+“彻底退出”，并可勾选记住选择。Settings → Preferences → Close button behavior
+可随时改为每次询问、最小化到托盘，或彻底退出。取消对话框会保持窗口和偏好不变；
+重复点击关闭不会打开多个对话框。任务栏右下角的 KodaX Space 托盘图标就是后台
+owner 的可见控制面：
 
 - 单击托盘图标或选择“打开 KodaX Space”会重建主窗口；
-- “关闭窗口”只关闭界面；
+- “关闭窗口”只关闭界面并保留托盘/Runtime，不读取主窗口关闭偏好；
 - “退出 Space，保留 Runtime”会退出 Electron，但让 daemon 继续服务其他
   KodaX 客户端或后台任务；
 - “彻底退出”会先断开 Space，再通过 Runtime 自身的安全检查尝试停止 daemon。
   如果仍有 active/queued 任务、待处理交互或其他客户端，daemon 会保留；
 - 菜单只显示有界的任务/连接数量，不展示提示词、项目路径或凭据。
 
-  0.1.32 的托盘仍由轻量 Electron main 持有，因此关闭窗口后主进程还在，但
-  BrowserWindow/React renderer 的主要资源已经释放。要让 Electron main 也退出，需要
-  未来增加独立托盘 helper；当前版本没有伪装成已经做到这一点。若托盘初始化失败，
-  Space 会退回普通的关闭即退出，避免留下不可见后台进程。
+选择最小化到托盘时，v0.1.33 的托盘仍由轻量 Electron main 持有，因此关闭窗口后
+主进程还在，但 BrowserWindow/React renderer 的主要资源已经释放。要让 Electron
+main 也退出，需要未来增加独立托盘 helper；当前版本没有伪装成已经做到这一点。
+若托盘初始化失败，Space 会退回普通的关闭即退出，不显示关闭偏好对话框，避免留下
+不可见后台进程。
 
 升级后若驻留着“版本号相同但能力较旧”的 daemon，Space 只会在确认它完全空闲、
 没有其他客户端后安全替换并重连；否则明确保留，不会强制结束别人的任务。
@@ -363,6 +367,10 @@ Quick Ask 的临时 session 会尽力在关闭时清理；选择 Continue in Cod
 
 Smart Popout Director 在首次出现 plan、diff 或 task 信号时自动打开一次对应面板。可在 Settings → Preferences 关闭。
 
+Settings → Preferences → Terminal Shell 可选择 Space PTY 与 Coder 命令工具共同使用的
+shell。Space 会从所选 shell 的登录环境解析 `PATH`，再剥离常见 `*_KEY`、`*_TOKEN`
+变量；若 shell 不可用会显示诊断，不会静默换成另一个 shell。
+
 ## 12. Partner：从来源到可交付成果
 
 Partner 适合把资料整理成可复核的工作成果。推荐流程：
@@ -410,11 +418,11 @@ Partner Knowledge Base 与 Coder Memory 是两套不同职责，不能互相替�
 
 KodaX 0.7.68 新增 FEATURE_260 Memory Agent。它不会创建第二套记忆库，而是在普通 managed run 内复用 F228：已准备好的相关记忆可作为零等待、低权威、默认静默的提示；模型确有需要时可调用只读 `memory_recall({ need })`，但不能自行指定 tenant/user/project 等 scope。任务结束后可形成有界 Outcome Digest，并继续通过 proposal、preview、fingerprint 和 apply 进入现有治理流程。
 
-Space 0.1.32 保留并验证真实 `/experimental-memory` 导出和 policy，在版本/诊断中如实报告，并记录不含记忆正文的生命周期元数据。普通 recall 不生成“记忆思考”消息；完整 Episodes、Activity、纠正、forget/purge 界面仍属于 F117 计划。现有 Inbox、Refs、Governance、Hints 继续由 F228 提供。
+Space 0.1.33 保留并验证真实 `/experimental-memory` 导出和 policy，在版本/诊断中如实报告，并记录不含记忆正文的生命周期元数据。普通 recall 不生成“记忆思考”消息；完整 Episodes、Activity、纠正、forget/purge 界面仍属于 F117 计划。现有 Inbox、Refs、Governance、Hints 继续由 F228 提供。
 
 ### MCP 与 `.mcpb`
 
-MCP 面板展示 server 状态、命令/URL、start/stop、工具、日志/诊断和扩展卸载。`v0.1.32` 的 Coder 工具目录与 reload 会同步 Runtime；server 进程、状态和日志仍由 Space MCP Manager 负责，不会启动第二套桌面 manager。只安装可信来源的扩展。
+MCP 面板展示 server 状态、命令/URL、start/stop、工具、日志/诊断和扩展卸载。`v0.1.33` 的 Coder 工具目录与 reload 会同步 Runtime；server 进程、状态和日志仍由 Space MCP Manager 负责，不会启动第二套桌面 manager。只安装可信来源的扩展。
 
 ### Skills 与 Markdown Agents
 
@@ -494,7 +502,7 @@ flowchart TD
     Keychain["OS Keychain"] --> Secret["Provider credentials"]
 ```
 
-说明：默认 profile 根是 `~/.kodax`；因此 0.1.32 shared daemon 的 Runtime 状态/journal 实际默认位置是 `~/.kodax/runtime`。自定义 `KODAX_HOME` 或 `KODAX_PROFILE_DIR` 时路径随 profile 移动。0.1.31 embedded Runtime 可能留下历史的 `~/.kodax/.kodax/runtime`，0.1.32 不再把它作为当前 daemon 真理源。
+说明：默认 profile 根是 `~/.kodax`；因此 0.1.33 shared daemon 的 Runtime 状态/journal 实际默认位置是 `~/.kodax/runtime`。自定义 `KODAX_HOME` 或 `KODAX_PROFILE_DIR` 时路径随 profile 移动。0.1.31 embedded Runtime 可能留下历史的 `~/.kodax/.kodax/runtime`，0.1.32 起不再把它作为当前 daemon 真理源。
 
 - Renderer 不直接执行 LLM、文件工具或 shell。
 - API Key 不应进入 renderer、普通 IPC 列表、日志或错误消息。
@@ -525,6 +533,8 @@ flowchart TD
 | CLI 自动恢复到了空会话      | 新版会跳过空 ACP 占位；核对实际包 SHA256、版本和是否仍有旧进程                                              |
 | 普通 query 会闪出多个 cmd   | 0.7.77 保留非交互子进程隐藏；若仍出现，请记录 Space/KodaX 版本、进程名和触发操作，按回归问题报告            |
 | MCP 工具不可见              | MCP 面板 Refresh/Reload、server 状态、PATH、配置来源和 diagnostics                                          |
+| 关闭按钮行为不符合预期      | Settings → Preferences → Close button behavior；托盘禁用或初始化失败时会回退关闭即退出                      |
+| Terminal 找不到命令         | Settings → Preferences → Terminal Shell；确认所选 shell 的登录环境包含该命令                                |
 | Partner 没有浏览器/邮件发送 | 当前未交付，不是配置错误                                                                                    |
 | External Agent 不可选       | Reference 注册需 enabled 且 preflight 通过；真实网络适配器尚未交付                                          |
 | Quick Ask 不能打开          | 先打开项目；使用 `Mod+K`，不要与命令面板混淆                                                                |
@@ -533,7 +543,7 @@ flowchart TD
 
 ## 20. 当前限制与诚实边界
 
-- 当前 `v0.1.32` 源码默认让 Coder 连接 profile-scoped shared daemon；Partner、其工具、权限、知识与交付仍由 Space embedded inline owner 管理，不会迁入 Coder daemon。
+- 当前 `v0.1.33` 默认让 Coder 连接 profile-scoped shared daemon；Partner、其工具、权限、知识与交付仍由 Space embedded inline owner 管理，不会迁入 Coder daemon。
 - Runtime Learning Center 的兼容契约已接入，但完整 F118 管理界面尚未交付；Memory Agent 的 0.7.68 起始运行契约和 0.7.77 governed intervention 仍由 Runtime 持有，完整 F117 桌面管理体验尚未交付。
 - Partner 浏览器、通用 Connector、远程任务、桌面电脑控制和自动化尚未交付。
 - External Agent 的本地 Reference Executor 可用；Coder daemon 的 A2A 取决于显式配置与能力协商，MCP Tasks/governed HTTP 尚未作为通用能力开放。

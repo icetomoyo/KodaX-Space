@@ -112,7 +112,7 @@ resource, stale patch, invalid link, or changed byte fails validation instead
 of producing a partially working release.
 
 The current release gate and artifact expectations are tracked in the
-[v0.1.32 release-readiness checklist](releases/v0.1.32-release-readiness.md).
+[v0.1.33 release-readiness checklist](releases/v0.1.33-release-readiness.md).
 
 ## Current license exclusion
 

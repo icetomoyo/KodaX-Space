@@ -84,7 +84,7 @@ export function experimentalMemoryCapability(
       status: 'partial',
       detail:
         `The required KodaX experimental-memory contract is available with policy ${capability.policyVersion}. ` +
-        'KodaX managed runs own silent scoped recall and governed outcome/review persistence over F228; Space v0.1.32 preserves compatibility diagnostics while the full F117 Episodes, Activity, correction, and purge UX remains planned.',
+        'KodaX managed runs own silent scoped recall and governed outcome/review persistence over F228; Space v0.1.33 preserves compatibility diagnostics while the full F117 Episodes, Activity, correction, and purge UX remains planned.',
       since: '0.1.31',
     };
   }
@@ -198,7 +198,7 @@ export function registerVersionChannel(): void {
       platform,
       kodaxSdkVersion: readKodaxSdkVersion(),
       kodaxDependencySpec: readKodaxDependencySpec(),
-      capabilityContract: 'space-v0.1.32',
+      capabilityContract: 'space-v0.1.33',
       capabilities: buildCapabilityLedger(entitled, runtimeHostAdapter.snapshot()),
     };
   });

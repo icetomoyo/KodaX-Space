@@ -16,7 +16,7 @@ KodaX Space 是 npm workspace monorepo。请从仓库根目录运行安装、测
 
 - Electron renderer 不直接执行 LLM、文件、shell、MCP 或其他特权操作；通过 typed/zod IPC 调用 main。
 - Space 是 KodaX 的桌面 host，不复制一套 agent engine。使用 public SDK/Runtime contract，并通过 capability negotiation 表达可用性。
-- 明确数据和生命周期 owner。当前 v0.1.32 中 Coder daemon 负责 sessions/runs/settings/interactions、Workflow 观察/控制、Learning/catalog、MCP tool discovery/reload 和已配置 External Agent Actor/Turn；Partner、renderer 投影、MCP 进程/日志、Workflow library/start/admin、artifacts 与 Space Reference Agent 仍是 Space host-provider bridge。
+- 明确数据和生命周期 owner。当前 v0.1.33 中 Coder daemon 负责 sessions/runs/settings/interactions、Workflow 观察/控制、Learning/catalog、MCP tool discovery/reload 和已配置 External Agent Actor/Turn；Partner、renderer 投影、MCP 进程/日志、Workflow library/start/admin、artifacts 与 Space Reference Agent 仍是 Space host-provider bridge。
 - 不依据版本号推断能力；验证实际 export、DTO、event、capability 和发布包。
 - 不夸大未发布、未验收或 capability-gated 的功能。
 - 保持 IPC payload 有界、脱敏、可验证；凭据不得进入 renderer、日志或测试 fixture。
@@ -54,8 +54,8 @@ npm run smoke:boot
 
 历史 release design 和 ADR 是当时决策证据，不要静默重写；用 correction note、superseded 状态或当前文档链接说明变化。
 
-发布维护者还应使用对应版本的 release-readiness 文档；`v0.1.32` 见
-[发布就绪清单](docs/releases/v0.1.32-release-readiness.md)。
+发布维护者还应使用对应版本的 release-readiness 文档；`v0.1.33` 见
+[发布就绪清单](docs/releases/v0.1.33-release-readiness.md)。
 
 ## 提交说明
 

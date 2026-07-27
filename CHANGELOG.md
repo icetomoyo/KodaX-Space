@@ -14,12 +14,16 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ## [Unreleased]
 
+## [0.1.33] - 2026-07-27
+
 ### Added
 
 - **Context composition diagnostics** - The Coder context popover now shows a privacy-safe six-part root-input breakdown for system prompt, tool schemas, combined Skills / MCP, messages, request input, and recent tool results. Only category counts cross Space IPC; no prompt, message, tool-input, or tool-output body is projected.
 - **Cumulative Session token usage** - Added a separate bottom-bar indicator for Provider-reported usage across root and child Agents. On KodaX 0.7.77 it counts completed physical-request diagnostics once by request ID, including child, retry, fallback, repair, workflow-digest, and compaction-summary calls; older/mocked paths retain the iteration-summary fallback. Its popover leads with total input and distinguishes uncached input, cache-read input, output, optional cache-creation input, root/child call counts, and aggregate/latest cache-hit rates; `/cost` consumes the same cumulative source.
 - **Stable prompt-cache routing visibility** - The latest root Provider diagnostic now carries KodaX's hash-only cache-affinity identity through Space IPC and reports when stable routing is active without exposing the key. Custom compatible Providers gain an explicit, default-off opt-in because strict gateways can reject unknown protocol fields.
 - **Public Kimi K3 route** - Space consumes the KodaX 0.7.77 public `kimi/kimi-k3` catalog entry and its 1,048,576-token context while preserving the existing Kimi and Kimi Code defaults.
+- **Canonical Agent Actor tree** - Runtime-backed Coder Sessions now expose bounded, revisioned native/constructed/Workflow/external Actor and Turn state through validated IPC. Task Dock and Agents surfaces use the canonical tree without leaking child transcript bodies into the root conversation.
+- **Configurable main-window close behavior (F140)** - Preferences now offers ask every time, keep running in the tray, or request a safety-gated complete exit. The ask flow can remember a choice; complete exit still refuses to stop active/queued/pending Runtime work or a daemon retained by another client.
 
 ### Changed
 
@@ -28,6 +32,8 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 - **Unified button interaction language** - All enabled application buttons now inherit the Token-usage control's soft semantic sweep, luminous edge, active feedback, and visible keyboard focus treatment. Primary, success, warning, reasoning, and dangerous actions retain distinct colors; portal-mounted dialogs are covered while Windows window controls, Monaco, xterm, disabled controls, and explicit opt-outs keep their own contracts.
 - **Current-source toolchain baseline** - Development and CI now read Node 22.23.1 from `.nvmrc` with a Node 22.12 engine floor, `electron-builder` 26.15.3, `node-gyp` 12.2, and `windows-latest`. Windows PE icon/version resource editing uses the pinned pure-JavaScript `resedit` path instead of probing a cached `rcedit` executable.
 - **Experimental-memory capability probing** - Space continues to fail fast on a missing or malformed `/experimental-memory` export, but it no longer treats one fixed upstream feature number as the capability identity. The exported contract and bounded policy-version shape are authoritative.
+- **Shared Shell execution contract** - Terminal tabs and daemon-backed Coder command tools now resolve the same selected Shell and profile-derived PATH. Windows supports Auto, PowerShell 7, Windows PowerShell, and cmd without accepting arbitrary executables; macOS/Linux keep platform-safe login-shell behavior and sensitive environment variables remain outside the PTY projection.
+- **Bounded dense-surface scrolling** - Task/Agent panels use capped scroll containers with explicit edge affordances and stable active-state emphasis, preserving responsive layout without letting long Runtime trees expand the whole sidebar.
 
 ### Fixed
 
@@ -36,6 +42,11 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 - **Native SQLite ABI verification** - The Node/Electron `better-sqlite3` probe now catches load failures explicitly and exits nonzero, preventing Electron versions that report an uncaught `-e` exception with status 0 from being mistaken for a compatible native binding or producing a broken package.
 - **Cross-Provider token breakdown clarity** - Session usage now leads with total input and labels Provider-reported subsets as uncached, cache-read, and cache-creation input. It explicitly warns that tokenizer and cache-field conventions differ, so a Qwen Anthropic-compatible cold-cache response cannot make a 25k input request look like a six-token request.
 - **Context composition snapshot semantics** - The popover now calls `pendingInput` "request input", identifies the breakdown as the latest root-model request snapshot, and keeps six categories visible at zero, with Skills and MCP combined. Completed messages and tool results no longer appear to have been replaced by a still-pending queue.
+- **Exact history/live reconciliation** - Durable history and live Runtime events now fold by canonical Turn identity while preserving Runtime-only lifecycle, tool, Artifact, Todo, context and notice events. Restored compaction notices deduplicate, assistant/tool-leading history keeps structural anchors, and reconnect/replay cannot duplicate a delivered user prompt or child output.
+- **Session resume and mutation races** - Resume, delete, dispose and persisted-session cache invalidation are single-flight and generation-fenced. A stale asynchronous load cannot repopulate pre-mutation state, and authoritative Runtime running/terminal projections clear stale pending-send or legacy activity indicators.
+- **Clipboard image persistence** - Pasted images separate bounded source bytes from the normalized persisted result, validate safe Session ownership without eagerly resuming Provider state, and retain the canonical normalized media type/path across Session recovery.
+- **Native desktop test stability** - Desktop tests remain serialized around native SQLite/PTY lifecycle, PTY tests explicitly select the lightweight platform shell where rapid PowerShell ConPTY teardown would otherwise introduce an unrelated helper race, and isolated E2E project seeding now waits for the main-process recent-project mutation before persisting the selected workspace.
+- **Calendar-safe Workflow E2E** - Workflow completion receipts accept every supported relative-time unit, including months, so the release gate does not fail when a fixed fixture crosses a calendar-month boundary.
 
 ## [0.1.32] - 2026-07-25
 

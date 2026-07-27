@@ -2,7 +2,7 @@
 
 Last Updated: 2026-07-27
 
-> Historical issue details are preserved as investigation evidence. Resolved items older than 30 days move to [ISSUES_ARCHIVED.md](ISSUES_ARCHIVED.md) without losing their investigation record. The current published package baseline is v0.1.32; fixes marked `Unreleased source` are present only in current source until a later package ships. Start from the [documentation hub](README.md) for current behavior and status.
+> Historical issue details are preserved as investigation evidence. Resolved items older than 30 days move to [ISSUES_ARCHIVED.md](ISSUES_ARCHIVED.md) without losing their investigation record. The current published package baseline is v0.1.33; fixes marked `Fixed: v0.1.33` ship in that release. Start from the [documentation hub](README.md) for current behavior and status.
 
 ## Issue Index
 
@@ -5916,7 +5916,7 @@ Tests added:
 - Priority: Medium
 - Status: Resolved
 - Introduced: v0.1.32
-- Fixed: Unreleased source
+- Fixed: v0.1.33
 - Created: 2026-07-26
 - Resolution Date: 2026-07-26
 
@@ -5975,7 +5975,7 @@ Validation:
 - Priority: High
 - Status: Resolved
 - Introduced: v0.1.32
-- Fixed: Unreleased source
+- Fixed: v0.1.33
 - Created: 2026-07-26
 - Resolution Date: 2026-07-26
 
@@ -6010,7 +6010,7 @@ Validation:
 - Priority: Medium
 - Status: Resolved
 - Introduced: v0.1.32
-- Fixed: Unreleased source
+- Fixed: v0.1.33
 - Created: 2026-07-26
 - Resolution Date: 2026-07-26
 
@@ -6065,7 +6065,7 @@ Validation:
 - Priority: High
 - Status: Resolved
 - Introduced: v0.1.32
-- Fixed: Unreleased source
+- Fixed: v0.1.33
 - Created: 2026-07-26
 - Resolution Date: 2026-07-27
 
@@ -6237,7 +6237,7 @@ Additional validation:
 - Priority: Medium
 - Status: Resolved
 - Introduced: v0.1.32
-- Fixed: Unreleased source
+- Fixed: v0.1.33
 - Created: 2026-07-26
 - Resolution Date: 2026-07-26
 
@@ -6292,7 +6292,7 @@ Validation:
 - Priority: High
 - Status: Resolved
 - Introduced: v0.1.x / KodaX 0.7.76
-- Fixed: Unreleased Space source with npm-published KodaX 0.7.77
+- Fixed: v0.1.33 with npm-published KodaX 0.7.77
 - Created: 2026-07-27
 - Resolution Date: 2026-07-27
 
@@ -6376,7 +6376,7 @@ Release note:
 - Priority: Medium
 - Status: Resolved
 - Introduced: v0.1.32 / KodaX 0.7.72 adoption
-- Fixed: Unreleased source
+- Fixed: v0.1.33
 - Created: 2026-07-27
 - Resolution Date: 2026-07-27
 
@@ -6449,14 +6449,14 @@ Validation:
   active Actor behind 300 historical entries.
 - Production `build:smoke` and the Electron Task Dock/right-sidebar/full-panel E2E scenario passed.
 - The existing `out/win-unpacked` package remains the reported 0.1.32 artifact; a later Windows
-  package build is required to ship this `Unreleased source` fix.
+  package build is required to ship this fix in `v0.1.33`.
 
 ### 114: Delivered mid-turn prompt could jump above the preceding interrupt response
 
 - Priority: Medium
 - Status: Resolved
 - Introduced: v0.1.32
-- Fixed: Unreleased source
+- Fixed: v0.1.33
 - Created: 2026-07-27
 - Resolution Date: 2026-07-27
 
@@ -6528,7 +6528,7 @@ Tests added:
 - Priority: High
 - Status: Resolved
 - Introduced: v0.1.9
-- Fixed: Unreleased source / KodaX 0.7.77 repack
+- Fixed: v0.1.33 / KodaX 0.7.77
 - Created: 2026-07-27
 - Resolution Date: 2026-07-27
 
@@ -6629,7 +6629,7 @@ Validation:
 - Priority: High
 - Status: Resolved
 - Introduced: v0.1.32
-- Fixed: Unreleased source
+- Fixed: v0.1.33
 - Created: 2026-07-27
 - Resolution Date: 2026-07-27
 
@@ -6709,7 +6709,7 @@ Validation:
 - Priority: High
 - Status: Resolved
 - Introduced: v0.1.32
-- Fixed: Unreleased source
+- Fixed: v0.1.33
 - Created: 2026-07-27
 - Resolution Date: 2026-07-27
 
@@ -6878,7 +6878,7 @@ Validation:
 - Priority: Medium
 - Status: Resolved
 - Introduced: v0.1.x
-- Fixed: Unreleased source
+- Fixed: v0.1.33
 - Created: 2026-07-27
 - Resolution Date: 2026-07-27
 

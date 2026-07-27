@@ -846,7 +846,7 @@ export class RuntimeHostAdapter {
     if (this.state === 'closed') return Promise.reject(new Error('Runtime host is closed'));
     if (this.initializePromise !== null) return this.initializePromise;
     this.state = 'initializing';
-    const version = clientVersion?.trim() || '0.1.32';
+    const version = clientVersion?.trim() || '0.1.33';
     let pendingRuntime: KodaXDaemonRuntime | null = null;
     let attachedHostToolLeaseId: string | undefined;
     this.initializePromise = this.identityStore

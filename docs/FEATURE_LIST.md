@@ -1,8 +1,8 @@
 # KodaX Space Feature List
 
 > Last reviewed: 2026-07-27
-> Current release baseline: published [`v0.1.32`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.32) (`0.1.32` package baseline); current source also contains the explicitly documented `Unreleased` maintenance slices
-> Current KodaX SDK baseline: released Space `v0.1.32` used npm-published `@kodax-ai/kodax@0.7.76`; current source requires the exact npm-published `0.7.77` (`SHA256 E30B4470…C846F63C`). F121/F134 consume Runtime-owned interrupt finalization, complete root/child physical-request diagnostics, stable prompt-cache affinity, normalized CLI cache usage, `contextCompaction: 3`, `transcriptPaging: 1`, `transcriptSearch: 1`, exact checkpoint/manual-compaction lineage, public Kimi K3, and the existing Runtime/guardrail gates.
+> Current release baseline: published [`v0.1.33`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.33) (`0.1.33` package baseline)
+> Current KodaX SDK baseline: released Space `v0.1.33` requires the exact npm-published `@kodax-ai/kodax@0.7.77` (`SHA256 E30B4470…C846F63C`). F121/F134 consume Runtime-owned interrupt finalization, complete root/child physical-request diagnostics, stable prompt-cache affinity, normalized CLI cache usage, `contextCompaction: 3`, `transcriptPaging: 1`, `transcriptSearch: 1`, exact checkpoint/manual-compaction lineage, public Kimi K3, and the existing Runtime/guardrail gates.
 > Scope: active roadmap, recent completion audit, and reviewed-out decisions. Older release history lives in [FEATURES_ARCHIVED.md](FEATURES_ARCHIVED.md), per-version designs, and [CHANGELOG.md](../CHANGELOG.md).
 
 ## Planning rules
@@ -22,7 +22,7 @@
 | Planned                 | 25                                                                                                                                                                                                                |
 | InProgress              | 2                                                                                                                                                                                                                 |
 | Recent Completed        | 24                                                                                                                                                                                                                |
-| Next feature release    | `v0.1.33` (source-complete F140 configurable main-window close behavior; bounded stabilization of the F136 background-runtime lifecycle)                                                                          |
+| Next feature release    | `v0.1.34` (F137 Chinese-first native document skills and F139 semantic motion/scroll stabilization)                                                                                                                |
 | 0.1.x completion target | `v0.1.43`, followed by `v0.1.44` patch/RC reserve                                                                                                                                                                 |
 | Far-future candidates   | F138 is explicitly deferred until after `v0.5.x`; other candidates remain in [KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md) and [FEATURES_ARCHIVED.md](FEATURES_ARCHIVED.md#watchlist-and-reopen-gates) |
 
@@ -175,7 +175,7 @@
 - F136 keeps a lightweight Windows tray owner after the last Space window closes, while destroying the BrowserWindow and renderer resources.
 - The tray exposes Runtime/task/other-client status, reopens the Space window, closes only the UI, quits Space while retaining Runtime, or requests a complete exit.
 - Complete exit disconnects the Space client first and stops the daemon only through Runtime's own idle/no-peer safety checks. Active/queued work, pending interactions, or another attached client preserve the daemon instead of being force-killed.
-- The current release keeps Electron main alive as the tray owner; moving the tray into a separate helper so the main process can also exit is a future optimization, not a hidden v0.1.32 claim.
+- The v0.1.32 release keeps Electron main alive as the tray owner; moving the tray into a separate helper so the main process can also exit is a future optimization, not a hidden v0.1.32 claim.
 
 ### Current-source maintenance - 2026-07-26: unify button interaction feedback
 

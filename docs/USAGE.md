@@ -2,8 +2,8 @@
 
 > 面向源码使用者、贡献者和发布维护者。普通用户请阅读[用户使用手册](USER_MANUAL.zh-CN.md)。
 >
-> 当前 Space 发布基线：`v0.1.32`；该发布使用 npm Registry 的精确 `@kodax-ai/kodax@0.7.76`。
-> 当前源码已正式对齐 npm 发布的精确 `0.7.77`，并包含尚未发布 Space 新版本的 context/session usage、稳定缓存亲和诊断、builtin catalog、file reveal 和 Node/build 工具链维护。
+> 当前 Space 发布基线：`v0.1.33`；该发布使用 npm Registry 的精确 `@kodax-ai/kodax@0.7.77`。
+> 本版本包含 canonical Actor/Turn 投影、精确 history/live 对齐、context/session usage、稳定缓存亲和诊断、可配置 Shell、F140 关闭行为，以及 builtin catalog、file reveal 和 Node/build 工具链维护。
 
 ## 1. 环境要求
 
@@ -50,7 +50,7 @@ npm run dev
 flowchart TD
     Root["profile root<br/>默认 ~/.kodax"] --> Shared["KodaX 共享状态<br/>config / sessions / skills / handoffs"]
     Root --> Space["space/<br/>UI 状态、项目、日志"]
-    Root --> Runtime[".kodax/runtime/<br/>Runtime daemon run/event journal"]
+    Root --> Runtime["runtime/<br/>Runtime daemon run/event journal"]
 ```
 
 | 路径或变量                           | 作用                                 | 说明                                              |
@@ -67,7 +67,7 @@ flowchart TD
 
 若同时使用 `KODAX_PROFILE_DIR`，Space 会在首次加载 SDK 前将 `KODAX_HOME` 对齐到该 profile。相对路径会被忽略；测试模式优先级最高。
 
-## 4. v0.1.32 Runtime Host
+## 4. v0.1.33 Runtime Host
 
 `RuntimeHostAdapter` 是 Electron main 内部边界，不是用户设置：
 
@@ -81,7 +81,7 @@ flowchart LR
     Host --> Bridges["Space host providers<br/>MCP processes/logs / Workflow library+start+admin<br/>Reference Agent / artifacts"]
 ```
 
-v0.1.32 的 Coder daemon 路由包括：
+v0.1.33 的 Coder daemon 路由包括：
 
 - session/run/transcript/live projection、compact/fork/rewind 与共享设置 CAS；
 - queue、permission grant、AskUser 和 daemon stop preflight；
@@ -119,14 +119,20 @@ npm run dev
 
 ### Windows 后台托盘
 
-Windows 默认启用后台托盘。关闭最后一个主窗口会销毁 BrowserWindow/renderer，
-但保留轻量 Electron main、托盘和 Runtime 客户端连接。托盘可重建窗口、只退出
-Space 并保留 daemon，或请求安全的彻底退出。
+Windows 默认启用后台托盘。F140 让主窗口关闭行为可在 Settings → Preferences 中设为
+每次询问、最小化到托盘并保留 Runtime，或请求安全彻底退出；首次关闭默认询问，
+并可记住选择。最小化到托盘会销毁 BrowserWindow/renderer，但保留轻量 Electron
+main、托盘和 Runtime 客户端连接。托盘可重建窗口、只退出 Space 并保留 daemon，
+或请求安全的彻底退出。
 
 彻底退出必须先断开 Space，再通过发布版 KodaX CLI 的 daemon stop 安全门执行；
 active/queued/pending 工作或其他客户端会阻止 daemon 停止。自动化 fixture 可设置
 `SPACE_DISABLE_TRAY=1` 获得确定性的关闭即退出行为；这不是 renderer 可写的产品偏好。
 若托盘初始化失败，应用同样退回关闭即退出，避免不可见驻留。
+
+Settings → Preferences 的 Terminal Shell 选择会同时作用于 Space PTY 与 Coder
+命令工具。Electron main 从选中 shell 的登录环境解析 `PATH`，剥离常见密钥变量后再
+建立执行环境；若 shell 不可用则显示明确诊断，不静默切到不同的执行语义。
 
 ## 5. 常用开发命令
 
@@ -203,9 +209,9 @@ npm run build:linux
 `resedit@1.7.2` 直接修改 PE icon/version resources，不再扫描或启动缓存中的
 `rcedit.exe`。相关依赖和资源门禁失败必须让安装/打包失败，不能用 `|| true` 吞掉。
 
-`v0.1.32` 的可执行门禁、目标产物、人工验收、已知风险和 tag 后步骤集中在
-[发布就绪清单](releases/v0.1.32-release-readiness.md)。在该清单关闭之前，不应创建
-稳定版 `v0.1.32` tag。
+`v0.1.33` 的可执行门禁、目标产物、人工验收、已知风险和 tag 后步骤集中在
+[发布就绪清单](releases/v0.1.33-release-readiness.md)。在该清单关闭之前，不应创建
+稳定版 `v0.1.33` tag。
 
 ## 8. 排障
 
@@ -230,5 +236,5 @@ npm run build:linux
 - [KodaX 能力台账](KODAX_CAPABILITY_LEDGER.md)
 - [Feature 路线图](FEATURE_LIST.md)
 - [Builtin skill 维护说明](BUILTIN_SKILLS.md)
-- [v0.1.32 发布就绪清单](releases/v0.1.32-release-readiness.md)
+- [v0.1.33 发布就绪清单](releases/v0.1.33-release-readiness.md)
 - [贡献指南](../CONTRIBUTING.md)
