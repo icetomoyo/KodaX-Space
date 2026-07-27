@@ -30,6 +30,8 @@ test('load backfills languageMode for older settings files', async () => {
 
   assert.equal(loaded.defaultWorkspace, path.join(tmpDir, 'workspace'));
   assert.equal(loaded.languageMode, 'system');
+  assert.equal(loaded.terminalShell, 'auto');
+  assert.equal(loaded.windowCloseBehavior, 'ask');
   assert.deepEqual(loaded.runtimeDefaults, {});
 });
 
@@ -45,6 +47,111 @@ test('setLanguageMode persists without changing defaultWorkspace', async () => {
   const reloaded = await new SettingsStore(settingsFile, tmpDir).load();
   assert.equal(reloaded.defaultWorkspace, workspace);
   assert.equal(reloaded.languageMode, 'en-US');
+});
+
+test('setTerminalShell persists without changing workspace or language', async () => {
+  const workspace = path.join(tmpDir, 'workspace');
+  const store = new SettingsStore(settingsFile, tmpDir);
+  await store.setDefaultWorkspace(workspace);
+  await store.setLanguageMode('zh-CN');
+
+  const next = await store.setTerminalShell('powershell');
+  assert.equal(next.defaultWorkspace, workspace);
+  assert.equal(next.languageMode, 'zh-CN');
+  assert.equal(next.terminalShell, 'powershell');
+
+  const reloaded = await new SettingsStore(settingsFile, tmpDir).load();
+  assert.equal(reloaded.terminalShell, 'powershell');
+});
+
+test('setWindowCloseBehavior persists without changing other preferences', async () => {
+  const workspace = path.join(tmpDir, 'workspace');
+  const store = new SettingsStore(settingsFile, tmpDir);
+  await store.setDefaultWorkspace(workspace);
+  await store.setLanguageMode('zh-CN');
+  await store.setTerminalShell('pwsh');
+
+  const next = await store.setWindowCloseBehavior('quit-completely');
+  assert.equal(next.defaultWorkspace, workspace);
+  assert.equal(next.languageMode, 'zh-CN');
+  assert.equal(next.terminalShell, 'pwsh');
+  assert.equal(next.windowCloseBehavior, 'quit-completely');
+
+  const reloaded = await new SettingsStore(settingsFile, tmpDir).load();
+  assert.equal(reloaded.windowCloseBehavior, 'quit-completely');
+});
+
+test('concurrent preference setters merge against the latest committed settings', async () => {
+  const store = new SettingsStore(settingsFile, tmpDir);
+
+  await Promise.all([
+    store.setLanguageMode('zh-CN'),
+    store.setWindowCloseBehavior('quit-completely'),
+    store.setTerminalShell('pwsh'),
+  ]);
+
+  const reloaded = await new SettingsStore(settingsFile, tmpDir).load();
+  assert.equal(reloaded.languageMode, 'zh-CN');
+  assert.equal(reloaded.windowCloseBehavior, 'quit-completely');
+  assert.equal(reloaded.terminalShell, 'pwsh');
+});
+
+test('a failed settings write leaves the last committed value in memory', async () => {
+  const store = new SettingsStore(settingsFile, tmpDir);
+  const initial = await store.load();
+  assert.equal(initial.windowCloseBehavior, 'ask');
+
+  await fs.mkdir(settingsFile);
+  await assert.rejects(store.setWindowCloseBehavior('quit-completely'));
+
+  const afterFailure = await store.load();
+  assert.equal(afterFailure.windowCloseBehavior, 'ask');
+});
+
+test('load normalizes an invalid window close behavior without dropping valid settings', async () => {
+  const workspace = path.join(tmpDir, 'workspace');
+  await fs.writeFile(
+    settingsFile,
+    JSON.stringify({
+      version: 2,
+      defaultWorkspace: workspace,
+      languageMode: 'en-US',
+      terminalShell: 'bash',
+      windowCloseBehavior: 'force-kill',
+      runtimeDefaults: { permissionMode: 'auto' },
+    }),
+    'utf-8',
+  );
+
+  const loaded = await new SettingsStore(settingsFile, tmpDir).load();
+  assert.equal(loaded.defaultWorkspace, workspace);
+  assert.equal(loaded.languageMode, 'en-US');
+  assert.equal(loaded.terminalShell, 'bash');
+  assert.equal(loaded.windowCloseBehavior, 'ask');
+  assert.deepEqual(loaded.runtimeDefaults, { permissionMode: 'auto' });
+});
+
+test('load normalizes an invalid terminal shell without dropping valid settings', async () => {
+  const workspace = path.join(tmpDir, 'workspace');
+  await fs.writeFile(
+    settingsFile,
+    JSON.stringify({
+      version: 2,
+      defaultWorkspace: workspace,
+      languageMode: 'en-US',
+      terminalShell: 'fish',
+      windowCloseBehavior: 'minimize-to-tray',
+      runtimeDefaults: { permissionMode: 'auto' },
+    }),
+    'utf-8',
+  );
+
+  const loaded = await new SettingsStore(settingsFile, tmpDir).load();
+  assert.equal(loaded.defaultWorkspace, workspace);
+  assert.equal(loaded.languageMode, 'en-US');
+  assert.equal(loaded.terminalShell, 'auto');
+  assert.equal(loaded.windowCloseBehavior, 'minimize-to-tray');
+  assert.deepEqual(loaded.runtimeDefaults, { permissionMode: 'auto' });
 });
 
 test('setRuntimeDefaults merges and persists runtime defaults', async () => {

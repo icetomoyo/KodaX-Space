@@ -34,6 +34,7 @@ export function isCoderEntrypointNamespace(name: string): name is InvokeChannelN
 }
 
 export const FROZEN_V0131_CODER_ENTRYPOINTS = [
+  'agent.actor.snapshot',
   'agent.discover',
   'agent.external.dispatchable.list',
   'agent.external.preflight',
@@ -121,6 +122,8 @@ export const FROZEN_V0131_CODER_ENTRYPOINTS = [
   'settings.setDefaultWorkspace',
   'settings.setLanguageMode',
   'settings.setRuntimeDefaults',
+  'settings.setTerminalShell',
+  'settings.setWindowCloseBehavior',
   'skill.discover',
   'skill.install',
   'skill.invoke',
@@ -147,6 +150,7 @@ export const FROZEN_V0131_CODER_ENTRYPOINTS = [
 ] as const satisfies readonly InvokeChannelName[];
 
 export const CODER_DAEMON_ROUTED_ENTRYPOINTS = [
+  'agent.actor.snapshot',
   'agent.external.dispatchable.list',
   'agent.external.preflight',
   'agent.external.task.cancel',
@@ -204,7 +208,9 @@ function targetOwnerFor(entrypoint: InvokeChannelName): CoderActionTargetOwner {
     entrypoint.startsWith('session.localNotice.') ||
     entrypoint === 'settings.get' ||
     entrypoint === 'settings.setDefaultWorkspace' ||
-    entrypoint === 'settings.setLanguageMode'
+    entrypoint === 'settings.setLanguageMode' ||
+    entrypoint === 'settings.setTerminalShell' ||
+    entrypoint === 'settings.setWindowCloseBehavior'
   ) {
     return 'space-ui-only';
   }

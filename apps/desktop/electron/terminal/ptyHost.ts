@@ -23,9 +23,9 @@ import { createRequire } from 'node:module';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import type { IPty } from 'node-pty';
+import { resolveTerminalShell, type TerminalShellPreference } from './shell.js';
 
 const IS_WIN = process.platform === 'win32';
-const IS_MAC = process.platform === 'darwin';
 
 // Lazy load node-pty via createRequire — top-level ESM import would break the
 // tsx test harness (no native binding in CI test env, plus electron rebuilds
@@ -44,11 +44,11 @@ function getNodePty(): typeof import('node-pty') {
  * Env allowlist — only these keys propagate from main's env to the spawned shell.
  *
  * SECURITY: Do NOT add `*_KEY` / `*_TOKEN` / `*_SECRET` entries here.
- * `hydrateShellEnvOnce()` injects user shell rc env (potentially including API keys
- * like ANTHROPIC_API_KEY / OPENAI_API_KEY / GH_TOKEN) into main's `process.env`
- * at startup so KodaX SDK can use them. THIS allowlist is what keeps those out
- * of every PTY shell the user spawns — if it grew, every `echo $XXX_API_KEY`
- * from inside the terminal would leak the secret.
+ * POSIX SDK hydration and provider keychain setup may inject API keys like
+ * ANTHROPIC_API_KEY / OPENAI_API_KEY / GH_TOKEN into main's `process.env`.
+ * Windows shell-profile hydration projects PATH only. THIS allowlist is what
+ * keeps secrets out of every PTY shell the user spawns — if it grew, every
+ * `echo $XXX_API_KEY` from inside the terminal would leak the secret.
  */
 const ENV_ALLOWLIST: readonly string[] = [
   'PATH',
@@ -69,6 +69,7 @@ const ENV_ALLOWLIST: readonly string[] = [
   'PROGRAMFILES',
   'PROGRAMFILES(X86)',
   'PROGRAMDATA',
+  'PATHEXT',
   'TEMP',
   'TMP',
   'COMSPEC',
@@ -77,30 +78,26 @@ const ENV_ALLOWLIST: readonly string[] = [
   'HOMEPATH',
 ];
 
-function curatedEnv(): Record<string, string> {
+export function buildPtyEnvironment(
+  environment: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): Record<string, string> {
   const out: Record<string, string> = {};
+  const isWindows = platform === 'win32';
   for (const key of ENV_ALLOWLIST) {
-    const v = process.env[key];
+    // Windows environment keys are case-insensitive, but a plain object lookup
+    // is not reliable after PATH has been refreshed from a shell profile
+    // (`Path` is the common persisted spelling). Preserve the allowlist while
+    // resolving the actual key casing used by the host process.
+    const actualKey = isWindows
+      ? Object.keys(environment).find((candidate) => candidate.toUpperCase() === key)
+      : key;
+    const v = actualKey ? environment[actualKey] : undefined;
     if (typeof v === 'string' && v.length > 0) out[key] = v;
   }
   // Always-on:
   out.TERM = out.TERM ?? 'xterm-256color';
   return out;
-}
-
-/** Pick a shell per platform. Renderer cannot override — eliminates arg-injection.
- *  Tampered $SHELL/$COMSPEC that aren't absolute paths fall back to known-good defaults. */
-function defaultShell(): { program: string; args: readonly string[] } {
-  if (IS_WIN) {
-    // Prefer cmd.exe — faster startup than PowerShell; pwsh might not be installed.
-    const cmd = process.env.COMSPEC;
-    const safe = typeof cmd === 'string' && path.isAbsolute(cmd) ? cmd : 'cmd.exe';
-    return { program: safe, args: [] };
-  }
-  const sh = process.env.SHELL;
-  const fallback = IS_MAC ? '/bin/zsh' : '/bin/bash';
-  const safe = typeof sh === 'string' && path.isAbsolute(sh) ? sh : fallback;
-  return { program: safe, args: [] };
 }
 
 const MAX_OUTPUT_CHUNK = 65_536;
@@ -120,6 +117,7 @@ export interface CreateOptions {
   readonly cwd: string;
   readonly cols: number;
   readonly rows: number;
+  readonly shellPreference?: TerminalShellPreference;
 }
 
 export interface CreatedTerminal {
@@ -159,14 +157,14 @@ export class PtyHost {
     if (!path.isAbsolute(cwd)) {
       throw new Error('cwd must be absolute');
     }
-    const shell = defaultShell();
+    const shell = resolveTerminalShell(opts.shellPreference);
     const terminalId = randomUUID();
     const pty = getNodePty().spawn(shell.program, [...shell.args], {
       name: 'xterm-256color',
       cwd,
       cols: clampDim(opts.cols),
       rows: clampDim(opts.rows),
-      env: curatedEnv(),
+      env: buildPtyEnvironment(),
       // useConpty:  default (true on Win10+ if available); falls back to winpty if not.
     });
 

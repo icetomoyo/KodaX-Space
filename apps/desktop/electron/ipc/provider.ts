@@ -342,6 +342,7 @@ export function registerProviderChannels(): void {
         isCustom: true,
         baseUrl: c.baseUrl,
         skipBaseUrlValidation: c.skipBaseUrlValidation,
+        ...(c.promptCacheAffinity === true ? { promptCacheAffinity: true } : {}),
         ...(c.reasoning !== undefined ? { reasoning: c.reasoning } : {}),
       });
     }
@@ -362,6 +363,7 @@ export function registerProviderChannels(): void {
         isCustom: true,
         baseUrl: c.baseUrl,
         skipBaseUrlValidation: c.skipBaseUrlValidation,
+        ...(c.promptCacheAffinity === true ? { promptCacheAffinity: true } : {}),
         ...(c.reasoning !== undefined ? { reasoning: c.reasoning } : {}),
       });
     }
@@ -460,6 +462,7 @@ export function registerProviderChannels(): void {
       apiKeyEnv: input.apiKeyEnv,
       defaultModel: input.defaultModel,
       models: input.models,
+      ...(input.promptCacheAffinity === true ? { promptCacheAffinity: true } : {}),
       ...(input.reasoning !== undefined ? { reasoning: input.reasoning } : {}),
     });
     await refreshSdkCustomProviderRegistry();
@@ -488,6 +491,7 @@ export function registerProviderChannels(): void {
       apiKeyEnv: input.apiKeyEnv,
       defaultModel: input.defaultModel,
       models: input.models,
+      ...(input.promptCacheAffinity === true ? { promptCacheAffinity: true } : {}),
       ...(input.reasoning !== undefined ? { reasoning: input.reasoning } : {}),
     };
 

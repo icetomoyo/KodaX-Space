@@ -114,6 +114,7 @@ import type {
   KodaXOptions,
   KodaXEvents,
   KodaXInputArtifact,
+  KodaXShellExecutionContract,
   KodaXSessionStorage,
   ToolCallSignal,
 } from '@kodax-ai/kodax/coding';
@@ -160,6 +161,8 @@ import {
 } from './sdk-extensions.js';
 import { SPACE_MANUAL_TOPICS, SPACE_PRODUCT_NAME } from './space-manual-topics.js';
 import { workflowPolicyStore, buildWorkflowHostPolicy } from './workflow-policy.js';
+import { resolveKodaXShellExecutionContract } from './shell-execution.js';
+import { settingsStore } from '../settings/store.js';
 import { workflowController } from './workflow-controller.js';
 import { externalAgentGateway } from './external-agent-gateway.js';
 import { loadKodaxCompactionConfig } from './user-config.js';
@@ -338,6 +341,7 @@ export class RealKodaXSession implements ManagedSession {
   private extensionRuntimeLoad: Promise<SpaceSdkExtensionRuntimeHandle | undefined> | null = null;
   private extensionRuntimeGeneration: number | null = null;
   private readonly extensionRuntimeDisposePromises = new WeakMap<object, Promise<void>>();
+  private shellExecutionFingerprint: string | undefined;
 
   constructor(opts: SessionCreateOptions) {
     this.sessionId = opts.sessionId;
@@ -362,7 +366,13 @@ export class RealKodaXSession implements ManagedSession {
     return this.currentAbort !== null;
   }
 
-  private async syncRuntimeSessionSettings(): Promise<void> {
+  private async syncRuntimeSessionSettings(): Promise<KodaXShellExecutionContract | undefined> {
+    const { terminalShell } = await settingsStore.load();
+    const shellExecution = await resolveKodaXShellExecutionContract(terminalShell, {
+      cwd: this.projectRoot,
+    });
+    const shellExecutionFingerprint = JSON.stringify(shellExecution ?? null);
+    const shellExecutionChanged = this.shellExecutionFingerprint !== shellExecutionFingerprint;
     await runtimeHostAdapter.updateSessionSettings(this.sessionId, {
       provider: this.provider,
       model: this.model ?? null,
@@ -370,9 +380,24 @@ export class RealKodaXSession implements ManagedSession {
       reasoningMode: this.reasoningMode,
       permissionMode: this.permissionMode,
       executionCwd: this.projectRoot,
+      // Reconcile this at every execution boundary: the daemon session may have
+      // been recreated while this Space-side object (and its fingerprint)
+      // survived. `null` carries delete semantics; the adapter's versioned
+      // no-op check avoids a write when the Runtime value already matches.
+      shellExecution: shellExecution ?? null,
       agentMode: this.agentMode,
       autoModeEngine: this.autoModeEngine,
     });
+    if (shellExecutionChanged) {
+      this.shellExecutionFingerprint = shellExecutionFingerprint;
+      if (!shellExecution) {
+        console.warn(
+          `[real-session ${this.sessionId}] shell-execution contract unavailable; ` +
+            'the daemon falls back to its inherited command environment.',
+        );
+      }
+    }
+    return shellExecution;
   }
 
   async send(
@@ -487,12 +512,14 @@ export class RealKodaXSession implements ManagedSession {
   ): readonly RuntimeInput[] {
     return [
       { type: 'text', text: prompt },
-      ...(artifacts ?? []).map((artifact): RuntimeInput => ({
-        type: 'image',
-        path: artifact.path,
-        mediaType: artifact.mediaType,
-        source: artifact.source,
-      })),
+      ...(artifacts ?? []).map(
+        (artifact): RuntimeInput => ({
+          type: 'image',
+          path: artifact.path,
+          mediaType: artifact.mediaType,
+          source: artifact.source,
+        }),
+      ),
     ];
   }
 
@@ -743,7 +770,7 @@ export class RealKodaXSession implements ManagedSession {
       });
       // Keep the execution boundary self-contained as queued/restored runs can enter
       // here without a fresh renderer-driven session creation.
-      await this.syncRuntimeSessionSettings();
+      const shellExecution = await this.syncRuntimeSessionSettings();
       await runtimeHostAdapter.ensureObserved(sid);
 
       const [skillsPrompt, compaction] = await Promise.all([
@@ -761,6 +788,7 @@ export class RealKodaXSession implements ManagedSession {
         context: {
           gitRoot: this.projectRoot,
           executionCwd: this.projectRoot,
+          ...(shellExecution ? { shellExecution } : {}),
           contextDiagnostics: true,
           // Runtime daemon transport has no exitPlanMode approval callback. Hiding
           // the unusable tool prevents a generic permission prompt followed by the
@@ -1296,6 +1324,7 @@ export class RealKodaXSession implements ManagedSession {
           kind: 'session_start',
           sessionId: sid,
           provider: info.provider,
+          ...(info.turnId ? { turnId: info.turnId } : {}),
         });
       },
       onIterationStart: (iter, maxIter) => {
@@ -1405,6 +1434,7 @@ export class RealKodaXSession implements ManagedSession {
           requestMessagesHash: diagnostic.requestMessagesHash,
           requestEnvelopeHash: diagnostic.requestEnvelopeHash,
           ephemeralSuffixHash: diagnostic.ephemeralSuffixHash,
+          promptCacheAffinityHash: diagnostic.promptCacheAffinityHash,
           messageCount: diagnostic.messageCount,
           toolCount: diagnostic.toolCount,
           inputTokens: diagnostic.inputTokens,
@@ -1896,10 +1926,15 @@ export class RealKodaXSession implements ManagedSession {
         projectId: this.projectRoot,
         parentTaskId: sid,
       });
+      const { terminalShell } = await settingsStore.load();
+      const shellExecution = await resolveKodaXShellExecutionContract(terminalShell, {
+        cwd: this.projectRoot,
+      });
       const context: NonNullable<KodaXOptions['context']> = {
         // gitRoot 用 projectRoot——Space 不再单独求 git root，KodaX 自己会处理边界
         gitRoot: this.projectRoot,
         executionCwd: this.projectRoot,
+        ...(shellExecution ? { shellExecution } : {}),
         contextDiagnostics: true,
         planModeBlockCheck,
         ...repoIntelCtx,

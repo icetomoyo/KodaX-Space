@@ -119,6 +119,11 @@ import {
   type BackgroundRuntimeStatus,
   type BackgroundTrayLocale,
 } from './window/background-tray-model.js';
+import {
+  parseWindowClosePromptResult,
+  resolveWindowCloseAction,
+  type WindowClosePromptAction,
+} from './window/window-close-behavior.js';
 
 // CJS 输出（见 scripts/build-main.mjs），__dirname 是原生 Node 全局
 // 不用 import.meta.url（CJS 下不可用）
@@ -314,6 +319,8 @@ let backgroundTrayLocale: BackgroundTrayLocale = 'en-US';
 let backgroundCloseNoticeShown = false;
 let stopDaemonOnQuit = false;
 let completeExitRequested = false;
+let closeDecisionPending = false;
+const backgroundCloseBypass = new WeakSet<BrowserWindow>();
 setRendererTarget(() => (mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null));
 
 function applyCsp(): void {
@@ -422,6 +429,35 @@ function createMainWindow(): BrowserWindow {
   win.on('show', invalidateMainWindow);
   win.on('focus', invalidateMainWindow);
   win.on('restore', invalidateMainWindow);
+  // Windows fires query-session-end before logoff/shutdown, but another
+  // application can veto the shutdown afterwards. Without the timeout reset a
+  // vetoed shutdown would bypass the close-behavior policy on every later
+  // close of this window.
+  let systemSessionEnding = false;
+  let systemSessionEndingTimer: NodeJS.Timeout | undefined;
+  const markSystemSessionEnding = (): void => {
+    systemSessionEnding = true;
+    if (systemSessionEndingTimer) clearTimeout(systemSessionEndingTimer);
+    systemSessionEndingTimer = setTimeout(() => {
+      systemSessionEnding = false;
+      systemSessionEndingTimer = undefined;
+    }, 10_000);
+    systemSessionEndingTimer.unref();
+  };
+  win.on('query-session-end', markSystemSessionEnding);
+  win.on('session-end', markSystemSessionEnding);
+  win.on('close', (event) => {
+    if (_quitting || systemSessionEnding) return;
+    if (backgroundCloseBypass.delete(win)) return;
+    if (!hasUsableWindowsBackgroundTray()) return;
+    event.preventDefault();
+    void handleMainWindowCloseRequest(win).catch((error) => {
+      console.warn(
+        '[main] window close decision failed:',
+        error instanceof Error ? error.message : String(error),
+      );
+    });
+  });
 
   // 外链白名单 + in-page 导航锁定 —— 与 artifact 独立窗口共用同一套守卫（F059c），
   // 避免两处窗口的安全策略漂移。理由：renderer 终会渲染 LLM/MCP 产生的内容，必须
@@ -696,6 +732,113 @@ async function resolveCurrentTrayLocale(): Promise<BackgroundTrayLocale> {
   }
 }
 
+function hasUsableWindowsBackgroundTray(): boolean {
+  return (
+    WINDOWS_BACKGROUND_TRAY_ENABLED && backgroundTray !== null && !backgroundTray.isDestroyed()
+  );
+}
+
+function closeMainWindowToBackground(win: BrowserWindow): void {
+  if (win.isDestroyed()) return;
+  backgroundCloseBypass.add(win);
+  try {
+    win.close();
+  } catch (error) {
+    backgroundCloseBypass.delete(win);
+    console.warn(
+      '[main] close-to-tray failed:',
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+}
+
+async function promptForWindowCloseAction(win: BrowserWindow): Promise<WindowClosePromptAction> {
+  const locale = await resolveCurrentTrayLocale();
+  const zh = locale === 'zh-CN';
+  const result = await dialog.showMessageBox(win, {
+    type: 'question',
+    title: zh ? '关闭 KodaX Space' : 'Close KodaX Space',
+    message: zh
+      ? '点击关闭按钮时，KodaX Space 应该怎么做？'
+      : 'What should KodaX Space do when you close the window?',
+    detail: zh
+      ? '你可以保留托盘和 Runtime 在后台运行，也可以安全尝试彻底退出。正在执行的任务或其他客户端仍会受到 Runtime 安全检查保护。'
+      : 'You can keep the tray and Runtime running in the background, or safely attempt a complete exit. Active work and other clients remain protected by the Runtime safety check.',
+    buttons: zh
+      ? ['最小化到托盘', '彻底退出', '取消']
+      : ['Minimize to tray', 'Quit completely', 'Cancel'],
+    defaultId: 0,
+    cancelId: 2,
+    noLink: true,
+    checkboxLabel: zh ? '记住我的选择' : 'Remember my choice',
+    checkboxChecked: false,
+  });
+  const parsed = parseWindowClosePromptResult(result);
+  if ('rememberedBehavior' in parsed && parsed.rememberedBehavior !== undefined) {
+    try {
+      await settingsStore.setWindowCloseBehavior(parsed.rememberedBehavior);
+    } catch (error) {
+      console.warn(
+        '[main] could not persist the remembered window close behavior:',
+        error instanceof Error ? error.message : String(error),
+      );
+      if (!win.isDestroyed()) {
+        try {
+          await dialog.showMessageBox(win, {
+            type: 'warning',
+            title: zh ? '无法记住此选择' : 'Could not remember this choice',
+            message: zh ? '退出偏好未能保存' : 'The close preference could not be saved',
+            detail: zh
+              ? '本次操作仍会执行；下次关闭窗口时，KodaX Space 会再次询问。'
+              : 'This action will still run once. KodaX Space will ask again the next time you close the window.',
+            buttons: [zh ? '确定' : 'OK'],
+            defaultId: 0,
+            noLink: true,
+          });
+        } catch (warningError) {
+          console.warn(
+            '[main] could not show the close-preference save warning:',
+            warningError instanceof Error ? warningError.message : String(warningError),
+          );
+        }
+      }
+    }
+  }
+  return parsed.action;
+}
+
+async function handleMainWindowCloseRequest(win: BrowserWindow): Promise<void> {
+  if (closeDecisionPending || win.isDestroyed()) return;
+  closeDecisionPending = true;
+  try {
+    let behavior: Awaited<ReturnType<typeof settingsStore.load>>['windowCloseBehavior'] = 'ask';
+    try {
+      behavior = (await settingsStore.load()).windowCloseBehavior;
+    } catch (error) {
+      console.warn(
+        '[main] could not load the window close behavior; asking this time:',
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+
+    let action: WindowClosePromptAction | 'allow-close' | 'prompt' = resolveWindowCloseAction(
+      behavior,
+      hasUsableWindowsBackgroundTray(),
+    );
+    if (action === 'prompt') {
+      action = await promptForWindowCloseAction(win);
+    }
+
+    if (action === 'allow-close' || action === 'minimize-to-tray') {
+      closeMainWindowToBackground(win);
+    } else if (action === 'quit-completely') {
+      await requestCompleteExit();
+    }
+  } finally {
+    closeDecisionPending = false;
+  }
+}
+
 async function collectBackgroundRuntimeStatus(): Promise<BackgroundRuntimeStatus> {
   if (!runtimeHostAdapter.hasReadyRuntime()) {
     return {
@@ -810,7 +953,7 @@ function updateWindowsBackgroundTrayMenu(runtime: BackgroundRuntimeStatus): void
       enabled: mainWindow !== null && !mainWindow.isDestroyed(),
       click: () => {
         const win = mainWindow;
-        if (win && !win.isDestroyed()) win.close();
+        if (win && !win.isDestroyed()) closeMainWindowToBackground(win);
       },
     },
     { type: 'separator' },
@@ -1038,15 +1181,18 @@ app
         err instanceof Error ? err.message : err,
       );
     }
-    // 启动期 3 个 async 任务无强依赖关系，并行跑省 300-800ms 才到窗口创建：
-    //   - hydrateShellEnvOnce: 读 user shell rc 把 export 的 API key 流进 process.env
-    //   - probeKodaxSdk: SDK shape 漂移 fail-fast (FEATURE shipper guard)
-    //   - probeSkillRegistry: SkillRegistry subpath fail-fast
-    // 三个都是 fail-fast 类，只决定"是否致命错误终止启动"，没有 ordering 依赖。
-    // shell env hydration 与 keychain key 注入的 ordering 还是保留——后者跟在
-    // providerConfigStore.load 后面，本块完成时一定还没跑到，env 已经填好可读。
+    // Shell PATH must be ready before the shared Coder daemon starts. On Windows
+    // version managers commonly initialize only from a PowerShell/bash profile;
+    // starting Runtime in parallel would permanently give the daemon the stale
+    // Explorer PATH even if hydration completed a few milliseconds later.
+    const startupSettings = await settingsStore.load();
+    await hydrateShellEnvOnce({
+      preference: startupSettings.terminalShell,
+      cwd: startupSettings.defaultWorkspace,
+    });
+
+    // The remaining startup probes and stores are independent and can run in parallel.
     await Promise.all([
-      hydrateShellEnvOnce(),
       probeKodaxSdk(),
       probeSkillRegistry(),
       // F064: 在窗口/首跑前 await 加载 Workflow Host Policy——real-session 同步 get() 读缓存，
@@ -1073,7 +1219,7 @@ app
           );
         }),
     ]);
-    // Shell hydration may add provider secrets after diagnostics was initialized.
+    // POSIX SDK hydration may add provider secrets after diagnostics was initialized.
     refreshDiagnosticRedactionOptions();
     // v0.1.10 chore: best-effort 清理早期残留的 ~/.kodax_space 孤儿目录。
     // fire-and-forget,never throws,不阻塞 UI 启动;详见 cleanup-orphan-kodax-space.ts。
@@ -1145,9 +1291,9 @@ app
     // F011 内置终端 (xterm.js + node-pty) — terminal.create/write/resize/kill + output/exit push
     registerTerminalChannels();
     // OC-31 v0.1.9 clipboard image paste — renderer 把粘贴板图片落到 app temp dir
-    registerClipboardChannels({
-      sessionExists: (sessionId) => kodaxHost.get(sessionId) !== undefined,
-    });
+  registerClipboardChannels({
+    sessionExists: (sessionId) => kodaxHost.hasSession(sessionId),
+  });
     // Shell exits: reveal files, enter allowlisted directories, and open http(s) URLs.
     // 让 renderer 里到处的文件路径 / URL 死文本变成可点击（用户反馈）。
     registerShellChannels();
@@ -1253,9 +1399,7 @@ app
   });
 
 app.on('window-all-closed', () => {
-  const hasBackgroundTray =
-    WINDOWS_BACKGROUND_TRAY_ENABLED && backgroundTray !== null && !backgroundTray.isDestroyed();
-  if (process.platform !== 'darwin' && !hasBackgroundTray) {
+  if (process.platform !== 'darwin' && !hasUsableWindowsBackgroundTray()) {
     app.quit();
   }
 });

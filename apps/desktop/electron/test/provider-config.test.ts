@@ -89,6 +89,7 @@ test('addCustom persists provider with all fields', async () => {
     apiKeyEnv: 'MY_KEY',
     defaultModel: 'claude-3',
     models: ['claude-3', 'claude-3-haiku'],
+    promptCacheAffinity: true,
   });
   const list = store.listCustom();
   assert.equal(list.length, 1);
@@ -97,6 +98,7 @@ test('addCustom persists provider with all fields', async () => {
   assert.equal(list[0].protocol, 'anthropic');
   assert.equal(list[0].baseUrl, 'https://api.example.com/v1');
   assert.deepEqual(list[0].models, ['claude-3', 'claude-3-haiku']);
+  assert.equal(list[0].promptCacheAffinity, true);
 });
 
 test('updateCustom replaces editable fields while preserving id and createdAt', async () => {
@@ -120,6 +122,7 @@ test('updateCustom replaces editable fields while preserving id and createdAt', 
       apiKeyEnv: 'NEW_KEY',
       defaultModel: 'new-model',
       models: ['new-model', 'new-alt'],
+      promptCacheAffinity: true,
     }),
     true,
   );
@@ -132,6 +135,7 @@ test('updateCustom replaces editable fields while preserving id and createdAt', 
   assert.equal(updated?.baseUrl, 'https://new.example.com/v1');
   assert.equal(updated?.apiKeyEnv, 'NEW_KEY');
   assert.deepEqual(updated?.models, ['new-model', 'new-alt']);
+  assert.equal(updated?.promptCacheAffinity, true);
 });
 test('removeCustom returns true for existing, false for missing', async () => {
   const store = newStore();

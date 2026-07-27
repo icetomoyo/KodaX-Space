@@ -49,11 +49,16 @@ test('Space settings mutations remain host projections and explicitly reload dae
     assert.equal(entry.requiredCapability, undefined);
   }
 
-  const workspace = CODER_ACTION_MANIFEST.find(
-    (item) => item.entrypoint === 'settings.setDefaultWorkspace',
-  );
-  assert.ok(workspace);
-  assert.equal(workspace.targetOwner, 'space-ui-only');
+  for (const entrypoint of [
+    'settings.setDefaultWorkspace',
+    'settings.setLanguageMode',
+    'settings.setTerminalShell',
+    'settings.setWindowCloseBehavior',
+  ] as const) {
+    const entry = CODER_ACTION_MANIFEST.find((item) => item.entrypoint === entrypoint);
+    assert.ok(entry);
+    assert.equal(entry.targetOwner, 'space-ui-only');
+  }
 });
 
 test('0.7.72 daemon-routed GA entrypoints are an explicit reviewed subset', () => {

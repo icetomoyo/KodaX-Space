@@ -9,6 +9,7 @@ import { registerChannel } from './register.js';
 import { pushToRenderer } from './push.js';
 import { projectStore } from '../projects/store.js';
 import { getPtyHost } from '../terminal/ptyHost.js';
+import { settingsStore } from '../settings/store.js';
 
 let listenersBound = false;
 
@@ -52,7 +53,13 @@ export function registerTerminalChannels(): void {
       // 解析出与原路径不同的真实路径 → 再过一次 allowlist
       await projectStore.assertAllowed(realCwd);
     }
-    const created = host.create({ cwd: realCwd, cols: input.cols, rows: input.rows });
+    const settings = await settingsStore.load();
+    const created = host.create({
+      cwd: realCwd,
+      cols: input.cols,
+      rows: input.rows,
+      shellPreference: settings.terminalShell,
+    });
     return { terminalId: created.terminalId, shell: created.shell, pid: created.pid };
   });
 

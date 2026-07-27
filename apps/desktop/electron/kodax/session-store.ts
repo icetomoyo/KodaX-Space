@@ -631,25 +631,33 @@ type PersistedClientNoticeEntry = Awaited<ReturnType<SdkSessionModule['appendCli
 
 const LOAD_CACHE_MAX = 5;
 const loadCache = new Map<string, LoadedSessionData>();
+let persistedSessionCacheEpoch = 0;
 
 export async function loadPersistedSession(sessionId: string): Promise<LoadedSessionData | null> {
-  const cached = loadCache.get(sessionId);
-  if (cached !== undefined) {
-    // LRU recency bump: 删后重 set 让 Map iteration 顺序刷新（Map insertion order = 最近使用）
-    loadCache.delete(sessionId);
-    loadCache.set(sessionId, cached);
-    return cached;
+  for (;;) {
+    const cached = loadCache.get(sessionId);
+    if (cached !== undefined) {
+      // LRU recency bump: 删后重 set 让 Map iteration 顺序刷新（Map insertion order = 最近使用）
+      loadCache.delete(sessionId);
+      loadCache.set(sessionId, cached);
+      return cached;
+    }
+    const loadEpoch = persistedSessionCacheEpoch;
+    const data = await activeImpl.loadSession(sessionId);
+    // A mutation may have invalidated this Session while the asynchronous read
+    // was in flight. Re-read instead of repopulating the cache with a stale
+    // pre-mutation snapshot.
+    if (loadEpoch !== persistedSessionCacheEpoch) continue;
+    if (data === null) return null;
+    loadCache.set(sessionId, data);
+    // Evict oldest 一直保持 <= MAX
+    while (loadCache.size > LOAD_CACHE_MAX) {
+      const oldestKey = loadCache.keys().next().value;
+      if (oldestKey === undefined) break;
+      loadCache.delete(oldestKey);
+    }
+    return data;
   }
-  const data = await activeImpl.loadSession(sessionId);
-  if (data === null) return null;
-  loadCache.set(sessionId, data);
-  // Evict oldest 一直保持 <= MAX
-  while (loadCache.size > LOAD_CACHE_MAX) {
-    const oldestKey = loadCache.keys().next().value;
-    if (oldestKey === undefined) break;
-    loadCache.delete(oldestKey);
-  }
-  return data;
 }
 
 export async function retagPersistedSession(opts: {
@@ -701,35 +709,39 @@ type TranscriptData =
 const transcriptCache = new Map<string, TranscriptData>();
 
 export async function loadPersistedTranscript(sessionId: string): Promise<TranscriptData | null> {
-  const cached = transcriptCache.get(sessionId);
-  if (cached !== undefined) {
-    transcriptCache.delete(sessionId);
-    transcriptCache.set(sessionId, cached);
-    return cached;
-  }
-  let data: TranscriptData | null = null;
-  if (activeImpl.loadFullTranscript) {
-    try {
-      data = await activeImpl.loadFullTranscript(sessionId);
-    } catch (err) {
-      console.warn(
-        `[session-store] loadFullTranscript failed, falling back to active branch: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      data = null;
+  for (;;) {
+    const cached = transcriptCache.get(sessionId);
+    if (cached !== undefined) {
+      transcriptCache.delete(sessionId);
+      transcriptCache.set(sessionId, cached);
+      return cached;
     }
+    const loadEpoch = persistedSessionCacheEpoch;
+    let data: TranscriptData | null = null;
+    if (activeImpl.loadFullTranscript) {
+      try {
+        data = await activeImpl.loadFullTranscript(sessionId);
+      } catch (err) {
+        console.warn(
+          `[session-store] loadFullTranscript failed, falling back to active branch: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        data = null;
+      }
+    }
+    // Fallback: full transcript unavailable (old SDK / mock) → active branch only.
+    if (data === null) {
+      data = await activeImpl.loadSession(sessionId);
+    }
+    if (loadEpoch !== persistedSessionCacheEpoch) continue;
+    if (data === null) return null;
+    transcriptCache.set(sessionId, data);
+    while (transcriptCache.size > LOAD_CACHE_MAX) {
+      const oldestKey = transcriptCache.keys().next().value;
+      if (oldestKey === undefined) break;
+      transcriptCache.delete(oldestKey);
+    }
+    return data;
   }
-  // Fallback: full transcript unavailable (old SDK / mock) → active branch only.
-  if (data === null) {
-    data = await activeImpl.loadSession(sessionId);
-  }
-  if (data === null) return null;
-  transcriptCache.set(sessionId, data);
-  while (transcriptCache.size > LOAD_CACHE_MAX) {
-    const oldestKey = transcriptCache.keys().next().value;
-    if (oldestKey === undefined) break;
-    transcriptCache.delete(oldestKey);
-  }
-  return data;
 }
 
 type TranscriptSelectorEntry = {
@@ -760,7 +772,10 @@ export async function findPersistedTurnEndSelector(
   if (!Array.isArray(rawEntries)) return null;
   const dedupedEntries = dedupeTranscriptEntries(rawEntries as readonly TranscriptSelectorEntry[]);
   const hasActiveBranchMarkers = rawEntries.some(
-    (entry) => entry && typeof entry === 'object' && (entry as { readonly active?: unknown }).active === true,
+    (entry) =>
+      entry &&
+      typeof entry === 'object' &&
+      (entry as { readonly active?: unknown }).active === true,
   );
   const entries = hasActiveBranchMarkers
     ? dedupedEntries.filter((entry) => entry.active === true)
@@ -820,6 +835,7 @@ function extractPromptText(content: unknown): string {
 
 /** Mutator 调用——deletePersistedSession / fork / rewind 后清对应缓存项。*/
 export function invalidatePersistedSessionCache(sessionId: string): void {
+  persistedSessionCacheEpoch += 1;
   loadCache.delete(sessionId);
   transcriptCache.delete(sessionId);
   invalidatePersistedSessionListCache();
@@ -827,6 +843,7 @@ export function invalidatePersistedSessionCache(sessionId: string): void {
 
 /** 测试 / setStorageImpl 注入 mock 后清整张缓存。*/
 export function clearPersistedSessionCache(): void {
+  persistedSessionCacheEpoch += 1;
   loadCache.clear();
   transcriptCache.clear();
   invalidatePersistedSessionListCache();

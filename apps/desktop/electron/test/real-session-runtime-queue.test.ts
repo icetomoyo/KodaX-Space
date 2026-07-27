@@ -23,7 +23,12 @@ test('active daemon run preserves interrupt intent and requires explicit after-t
 
   let submittedInput: Record<string, unknown> | undefined;
   let settingsUpdate:
-    { readonly sessionId: string; readonly patch: Record<string, unknown> } | undefined;
+    | { readonly sessionId: string; readonly patch: Record<string, unknown> }
+    | undefined;
+  const settingsUpdates: Array<{
+    readonly sessionId: string;
+    readonly patch: Record<string, unknown>;
+  }> = [];
   patchMethod('isRuntimeSelected', () => true);
   patchMethod('initialize', async () => undefined);
   patchMethod('ensureSession', async () => false);
@@ -31,6 +36,7 @@ test('active daemon run preserves interrupt intent and requires explicit after-t
     'updateSessionSettings',
     async (sessionId: string, patch: Record<string, unknown>) => {
       settingsUpdate = { sessionId, patch };
+      settingsUpdates.push({ sessionId, patch });
     },
   );
   patchMethod('ensureObserved', async () => undefined);
@@ -147,19 +153,36 @@ test('active daemon run preserves interrupt intent and requires explicit after-t
     delivery: 'after_turn',
     input: [{ type: 'text', text: 'explicit after-turn follow-up' }],
   });
-  assert.deepEqual(settingsUpdate, {
-    sessionId: 'session_restored',
-    patch: {
-      provider: 'test-provider',
-      model: null,
-      thinking: null,
-      reasoningMode: 'balanced',
-      permissionMode: 'accept-edits',
-      executionCwd: process.cwd(),
-      agentMode: 'ama',
-      autoModeEngine: 'llm',
+  assert.ok(settingsUpdate);
+  const { shellExecution: latestShellExecution, ...latestSettingsPatch } = settingsUpdate.patch;
+  assert.deepEqual(
+    {
+      sessionId: settingsUpdate.sessionId,
+      patch: latestSettingsPatch,
     },
-  });
+    {
+      sessionId: 'session_restored',
+      patch: {
+        provider: 'test-provider',
+        model: null,
+        thinking: null,
+        reasoningMode: 'balanced',
+        permissionMode: 'accept-edits',
+        executionCwd: process.cwd(),
+        agentMode: 'ama',
+        autoModeEngine: 'llm',
+      },
+    },
+  );
+  assert.equal((latestShellExecution as { version?: unknown } | undefined)?.version, 1);
+  assert.equal(
+    settingsUpdates.filter(({ patch }) => patch.shellExecution !== undefined).length,
+    settingsUpdates.length,
+  );
+  assert.equal(
+    (settingsUpdates[0]?.patch.shellExecution as { version?: unknown } | undefined)?.version,
+    1,
+  );
 });
 
 test('daemon run refreshes settings and hides exit_plan_mode without an approval bridge', async (t) => {
@@ -180,7 +203,8 @@ test('daemon run refreshes settings and hides exit_plan_mode without an approval
   });
 
   let settingsUpdate:
-    { readonly sessionId: string; readonly patch: Record<string, unknown> } | undefined;
+    | { readonly sessionId: string; readonly patch: Record<string, unknown> }
+    | undefined;
   let managedRunInput: Record<string, unknown> | undefined;
   patchMethod('initialize', async () => undefined);
   patchMethod('ensureSession', async () => false);
@@ -225,22 +249,38 @@ test('daemon run refreshes settings and hides exit_plan_mode without an approval
     }
   ).runCoderDaemon('inspect', new AbortController().signal);
 
-  assert.deepEqual(settingsUpdate, {
-    sessionId: 'session_daemon',
-    patch: {
-      provider: 'test-provider',
-      model: null,
-      thinking: null,
-      reasoningMode: 'deep',
-      permissionMode: 'auto',
-      executionCwd: process.cwd(),
-      agentMode: 'ama',
-      autoModeEngine: 'llm',
+  assert.ok(settingsUpdate);
+  const { shellExecution, ...settingsPatch } = settingsUpdate.patch;
+  assert.deepEqual(
+    {
+      sessionId: settingsUpdate.sessionId,
+      patch: settingsPatch,
     },
-  });
+    {
+      sessionId: 'session_daemon',
+      patch: {
+        provider: 'test-provider',
+        model: null,
+        thinking: null,
+        reasoningMode: 'deep',
+        permissionMode: 'auto',
+        executionCwd: process.cwd(),
+        agentMode: 'ama',
+        autoModeEngine: 'llm',
+      },
+    },
+  );
+  assert.equal((shellExecution as { version?: unknown } | undefined)?.version, 1);
   const options = managedRunInput?.options as
-    { readonly context?: { readonly excludeTools?: readonly string[] } } | undefined;
+    | {
+        readonly context?: {
+          readonly excludeTools?: readonly string[];
+          readonly shellExecution?: unknown;
+        };
+      }
+    | undefined;
   assert.ok(options?.context?.excludeTools?.includes('exit_plan_mode'));
+  assert.deepEqual(options?.context?.shellExecution, shellExecution);
 });
 
 test('disposing Space during daemon run admission detaches without aborting the accepted run', async (t) => {

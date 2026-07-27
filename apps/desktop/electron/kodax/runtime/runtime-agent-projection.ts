@@ -2,11 +2,13 @@ import type {
   AgentDetail,
   AgentEvent,
   AgentOutput,
+  AgentTreeSnapshot,
   AgentTurn,
   DispatchableAgentListing,
   ExternalAgentRegistrationSummary,
 } from '@kodax-ai/kodax/agent';
 import type {
+  AgentActorTreeSnapshotT,
   DispatchableAgentListingT,
   ExternalAgentRegistrationSummaryT,
   ExternalAgentTaskEventT,
@@ -14,6 +16,95 @@ import type {
 } from '@kodax-space/space-ipc-schema';
 
 const TASK_ID_PREFIX = 'runtime-actor:';
+const MAX_ACTOR_PATH = 2_048;
+const MAX_ACTOR_TASK_NAME = 256;
+const MAX_ACTOR_TURN_ID = 256;
+const MAX_ACTOR_ACTIVITY = 32;
+const MAX_ACTOR_SUMMARY = 4_096;
+
+function boundedText(value: string, max: number): string {
+  return value.length <= max ? value : value.slice(0, max);
+}
+
+export function projectRuntimeActorTreeSnapshot(
+  runtimeId: string,
+  sessionId: string,
+  tree: AgentTreeSnapshot,
+  eventCursor: number,
+): AgentActorTreeSnapshotT {
+  const visibleActors = tree.actors.filter(
+    (actor) =>
+      actor.path.length > 0 &&
+      actor.path.length <= MAX_ACTOR_PATH &&
+      (actor.parentPath === undefined || actor.parentPath.length <= MAX_ACTOR_PATH),
+  );
+  const root = visibleActors.find((actor) => actor.path === tree.rootPath);
+  const prioritizedActors = visibleActors
+    .filter((actor) => actor !== root)
+    .sort((left, right) => {
+      const leftActive =
+        left.currentTurnId !== undefined ||
+        left.latestTurn?.state === 'accepted' ||
+        left.latestTurn?.state === 'running';
+      const rightActive =
+        right.currentTurnId !== undefined ||
+        right.latestTurn?.state === 'accepted' ||
+        right.latestTurn?.state === 'running';
+      if (leftActive !== rightActive) return leftActive ? -1 : 1;
+      if (left.updatedAt !== right.updatedAt) return right.updatedAt.localeCompare(left.updatedAt);
+      if (left.revision !== right.revision) return right.revision - left.revision;
+      return left.path.localeCompare(right.path);
+    });
+  const selectedActors = root
+    ? [root, ...prioritizedActors.slice(0, 255)]
+    : prioritizedActors.slice(0, 256);
+
+  return {
+    runtimeId: boundedText(runtimeId, 256),
+    sessionId: boundedText(sessionId, 256),
+    rootPath: '/root',
+    revision: tree.revision,
+    eventCursor,
+    activeNonRootTurns: tree.activeNonRootTurns,
+    maxConcurrentThreads: tree.maxConcurrentThreads,
+    actors: selectedActors.map((actor) => ({
+      path: actor.path,
+      taskName: boundedText(
+        actor.taskName || actor.path.split('/').at(-1) || 'Agent',
+        MAX_ACTOR_TASK_NAME,
+      ),
+      ...(actor.parentPath ? { parentPath: actor.parentPath } : {}),
+      kind: actor.kind,
+      state: actor.state,
+      ...(actor.currentTurnId
+        ? { currentTurnId: boundedText(actor.currentTurnId, MAX_ACTOR_TURN_ID) }
+        : {}),
+      createdAt: boundedText(actor.createdAt, 128),
+      updatedAt: boundedText(actor.updatedAt, 128),
+      revision: actor.revision,
+      ...(actor.latestTurn
+        ? {
+            latestTurn: {
+              turnId: boundedText(actor.latestTurn.turnId, MAX_ACTOR_TURN_ID),
+              state: actor.latestTurn.state,
+              summary: boundedText(actor.latestTurn.summary, MAX_ACTOR_SUMMARY),
+              summaryTruncated:
+                actor.latestTurn.summaryTruncated ||
+                actor.latestTurn.summary.length > MAX_ACTOR_SUMMARY,
+              recentActivity: actor.latestTurn.recentActivity
+                .slice(-MAX_ACTOR_ACTIVITY)
+                .map((activity) => ({
+                  sequence: activity.sequence,
+                  kind: activity.kind,
+                  summary: boundedText(activity.summary, MAX_ACTOR_SUMMARY),
+                  createdAt: boundedText(activity.createdAt, 128),
+                })),
+            },
+          }
+        : {}),
+    })),
+  };
+}
 
 export function isRuntimeActorTaskId(taskId: string): boolean {
   return taskId.startsWith(TASK_ID_PREFIX);

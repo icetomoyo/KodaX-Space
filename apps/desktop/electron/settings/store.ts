@@ -17,7 +17,13 @@ import os from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { z } from 'zod';
-import type { SpaceRuntimeDefaultsT } from '@kodax-space/space-ipc-schema';
+import {
+  terminalShellPreferenceSchema,
+  windowCloseBehaviorSchema,
+  type SpaceRuntimeDefaultsT,
+  type TerminalShellPreferenceT,
+  type WindowCloseBehaviorT,
+} from '@kodax-space/space-ipc-schema';
 import { replaceFileIfUnchanged } from '../kodax/atomic-file.js';
 
 const execFileAsync = promisify(execFile);
@@ -50,6 +56,8 @@ const fileV2LooseSchema = z.object({
   version: z.literal(2),
   defaultWorkspace: z.string().min(1).max(4096),
   languageMode: z.enum(['system', 'zh-CN', 'en-US']).default('system'),
+  terminalShell: terminalShellPreferenceSchema.catch('auto').default('auto'),
+  windowCloseBehavior: windowCloseBehaviorSchema.catch('ask').default('ask'),
   runtimeDefaults: z.unknown().optional(),
 });
 
@@ -57,6 +65,8 @@ export interface SpaceSettings {
   readonly version: 2;
   readonly defaultWorkspace: string;
   readonly languageMode: 'system' | 'zh-CN' | 'en-US';
+  readonly terminalShell: TerminalShellPreferenceT;
+  readonly windowCloseBehavior: WindowCloseBehaviorT;
   readonly runtimeDefaults: SpaceRuntimeDefaultsT;
 }
 
@@ -69,6 +79,8 @@ function normalizeSettings(raw: unknown): SpaceSettings | null {
       version: 2,
       defaultWorkspace: v2.data.defaultWorkspace,
       languageMode: v2.data.languageMode,
+      terminalShell: v2.data.terminalShell,
+      windowCloseBehavior: v2.data.windowCloseBehavior,
       runtimeDefaults: cleanRuntimeDefaults(v2.data.runtimeDefaults),
     };
   }
@@ -79,6 +91,8 @@ function normalizeSettings(raw: unknown): SpaceSettings | null {
       version: 2,
       defaultWorkspace: v1.data.defaultWorkspace,
       languageMode: v1.data.languageMode,
+      terminalShell: 'auto',
+      windowCloseBehavior: 'ask',
       runtimeDefaults: {},
     };
   }
@@ -137,7 +151,7 @@ function cleanRuntimeDefaults(defaults: unknown): SpaceRuntimeDefaultsT {
 
 export class SettingsStore {
   private cached: SpaceSettings | null = null;
-  private writeLock: Promise<void> = Promise.resolve();
+  private writeLock: Promise<SpaceSettings | void> = Promise.resolve();
 
   constructor(
     private readonly filePath: string = SETTINGS_FILE,
@@ -178,6 +192,8 @@ export class SettingsStore {
       version: 2,
       defaultWorkspace: DEFAULT_WORKSPACE,
       languageMode: 'system',
+      terminalShell: 'auto',
+      windowCloseBehavior: 'ask',
       runtimeDefaults: {},
     };
     return { ...this.cached, runtimeDefaults: { ...this.cached.runtimeDefaults } };
@@ -232,42 +248,61 @@ export class SettingsStore {
   }
 
   async setDefaultWorkspace(absPath: string): Promise<SpaceSettings> {
-    const cur = await this.load();
-    const next: SpaceSettings = { ...cur, defaultWorkspace: absPath };
-    return this.write(next);
+    return this.update((current) => ({ ...current, defaultWorkspace: absPath }));
   }
 
   async setLanguageMode(languageMode: SpaceSettings['languageMode']): Promise<SpaceSettings> {
-    const cur = await this.load();
-    const next: SpaceSettings = { ...cur, languageMode };
-    return this.write(next);
+    return this.update((current) => ({ ...current, languageMode }));
+  }
+
+  async setTerminalShell(terminalShell: TerminalShellPreferenceT): Promise<SpaceSettings> {
+    return this.update((current) => ({ ...current, terminalShell }));
+  }
+
+  async setWindowCloseBehavior(windowCloseBehavior: WindowCloseBehaviorT): Promise<SpaceSettings> {
+    return this.update((current) => ({ ...current, windowCloseBehavior }));
   }
 
   async setRuntimeDefaults(
     runtimeDefaults: Partial<SpaceRuntimeDefaultsT>,
   ): Promise<SpaceSettings> {
-    const cur = await this.load();
-    const nextDefaults = {
-      ...cleanRuntimeDefaults(cur.runtimeDefaults),
-      ...cleanRuntimeDefaults(runtimeDefaults),
-    };
-    const next: SpaceSettings = { ...cur, runtimeDefaults: nextDefaults };
-    return this.write(next);
+    return this.update((current) => ({
+      ...current,
+      runtimeDefaults: {
+        ...cleanRuntimeDefaults(current.runtimeDefaults),
+        ...cleanRuntimeDefaults(runtimeDefaults),
+      },
+    }));
   }
 
-  private async write(next: SpaceSettings): Promise<SpaceSettings> {
-    this.cached = next;
-    // serialize 写
-    this.writeLock = this.writeLock
+  private async update(updater: (current: SpaceSettings) => SpaceSettings): Promise<SpaceSettings> {
+    // Initialize the cache before entering the write queue. Each updater then
+    // derives from the latest successfully committed state inside that queue,
+    // so concurrent setters cannot overwrite one another.
+    await this.load();
+
+    const operation = this.writeLock
       .catch(() => undefined)
       .then(async () => {
+        const current = this.cached;
+        if (!current) throw new Error('settings cache is unavailable');
+        const next = updater({
+          ...current,
+          runtimeDefaults: { ...current.runtimeDefaults },
+        });
+
         await fs.mkdir(this.dir, { recursive: true });
         const tmp = this.filePath + '.tmp';
         await fs.writeFile(tmp, JSON.stringify(next, null, 2), 'utf-8');
         await fs.rename(tmp, this.filePath);
+
+        // A failed write must not make the in-memory value look persisted.
+        this.cached = next;
+        return next;
       });
-    await this.writeLock;
-    return { ...next, runtimeDefaults: { ...next.runtimeDefaults } };
+    this.writeLock = operation;
+    const committed = await operation;
+    return { ...committed, runtimeDefaults: { ...committed.runtimeDefaults } };
   }
 
   private async migrateRetiredAgentMode(decoded: unknown, originalBytes: Buffer): Promise<void> {

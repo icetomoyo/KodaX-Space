@@ -57,6 +57,7 @@ import {
   sessionEventChannel,
   workflowProcessSnapshotSchema,
   workflowRunSchema,
+  type AgentActorTreeSnapshotT,
   type WorkflowActivityPayload,
   type WorkflowEventPayload,
   type WorkflowRunT,
@@ -75,11 +76,17 @@ import {
   projectRuntimeDispatchability,
   projectRuntimeRegistration,
 } from './runtime/runtime-agent-projection.js';
+import { RuntimeAgentTreeObserver } from './runtime/runtime-agent-tree-observer.js';
 import { buildChildActivity, isTransientChildEvent, type ChildMeta } from './workflow-activity.js';
 
 export type RuntimeHostMode = 'legacy' | 'runtime';
 export type RuntimeHostState =
-  'uninitialized' | 'initializing' | 'legacy' | 'ready' | 'failed' | 'closed';
+  | 'uninitialized'
+  | 'initializing'
+  | 'legacy'
+  | 'ready'
+  | 'failed'
+  | 'closed';
 export type RuntimeCapabilityOwner = 'runtime' | 'space-bridge' | 'legacy' | 'unavailable';
 export type RuntimeCapabilitySupport = 'supported' | 'partial' | 'unavailable';
 
@@ -414,6 +421,10 @@ interface RuntimeProjectionPush {
     payload: import('@kodax-space/space-ipc-schema').SpaceSessionLiveChangedT,
   ): void;
   (channel: 'session.event', payload: import('@kodax-space/space-ipc-schema').SessionEvent): void;
+  (
+    channel: 'agent.actor.changed',
+    payload: import('@kodax-space/space-ipc-schema').AgentActorTreeSnapshotT,
+  ): void;
   (channel: 'workflow.activity', payload: WorkflowActivityPayload): void;
   (channel: 'workflow.event', payload: WorkflowEventPayload): void;
 }
@@ -454,6 +465,11 @@ interface SpaceCredentialLeaseBinding {
   readonly sessionId: string;
   readonly runBinding: { boundRunId?: string };
   readonly broker: RuntimeCredentialBroker;
+}
+
+interface RuntimeActorObservationState {
+  readonly runtime: KodaXDaemonRuntime;
+  readonly observer: RuntimeAgentTreeObserver;
 }
 
 export interface RuntimeHostAdapterOptions {
@@ -740,6 +756,8 @@ export class RuntimeHostAdapter {
   >();
   private readonly observationPromises = new Map<string, Promise<void>>();
   private readonly desiredObservations = new Set<string>();
+  private readonly actorObservations = new Map<string, RuntimeActorObservationState>();
+  private readonly actorSnapshots = new Map<string, AgentActorTreeSnapshotT>();
   private readonly settingsUpdateLocks = new Map<string, Promise<void>>();
   private readonly runProviders = new Map<string, string>();
   private readonly terminalSidecarBlockRuns = new Map<string, string>();
@@ -1075,6 +1093,7 @@ export class RuntimeHostAdapter {
     for (const state of this.observations.values()) state.observation.close();
     this.observations.clear();
     this.observationPromises.clear();
+    this.stopAllActorObservations();
     // Lease attachment is connection-scoped even though the stable lease IDs
     // survive in the daemon. Rebuild this set only from successful resume calls
     // on the replacement connection.
@@ -1138,6 +1157,7 @@ export class RuntimeHostAdapter {
       'session:observe',
       'session:write',
       'run:control',
+      'agent:control',
       'interaction:respond',
       'permission:respond',
       'permission:grant-admin',
@@ -1400,7 +1420,29 @@ export class RuntimeHostAdapter {
     const runtime = await this.requireRuntime();
     await this.assertCoderSession(runtime, input.sessionId);
     const result = await runtime.sessions.rewind(input);
-    if (result !== null) invalidatePersistedSessionCache(input.sessionId);
+    if (result !== null) {
+      invalidatePersistedSessionCache(input.sessionId);
+      // Rewind can replace Actor state without producing a new Actor event.
+      // Drop the cached cursor so renderer reload/rewind cannot resurrect the
+      // pre-rewind child tree.
+      this.stopActorObservation(input.sessionId);
+      if (
+        this.runtime === runtime &&
+        this.state === 'ready' &&
+        this.desiredObservations.has(input.sessionId)
+      ) {
+        // Actor telemetry is best-effort here: a daemon without the agents
+        // plane must not fail the completed rewind.
+        try {
+          await this.ensureActorObserved(runtime, input.sessionId);
+        } catch (error) {
+          console.warn(
+            '[runtime] Agent Actor observation after rewind failed:',
+            sanitizeDiagnosticError(error),
+          );
+        }
+      }
+    }
     return result;
   }
 
@@ -1415,6 +1457,7 @@ export class RuntimeHostAdapter {
       outcome = 'not_found';
     }
     this.desiredObservations.delete(sessionId);
+    this.stopActorObservation(sessionId);
     const observed = this.observations.get(sessionId);
     if (observed) {
       observed.observation.close();
@@ -1556,6 +1599,22 @@ export class RuntimeHostAdapter {
     return pending;
   }
 
+  async actorTreeSnapshot(sessionId: string): Promise<AgentActorTreeSnapshotT> {
+    let runtime = await this.requireRuntime();
+    await this.assertCoderSession(runtime, sessionId);
+    await this.ensureObserved(sessionId);
+    // ensureObserved may reconnect the daemon. Never attach the Actor cursor to
+    // the pre-reconnect client captured above.
+    runtime = await this.requireRuntime();
+    await this.assertCoderSession(runtime, sessionId);
+    const state = await this.ensureActorObserved(runtime, sessionId);
+    const snapshot = state.observer.current() ?? (await state.observer.refreshNow());
+    if (!snapshot) {
+      throw new Error(`Coder daemon did not return an Agent Actor snapshot for ${sessionId}.`);
+    }
+    return snapshot;
+  }
+
   private async openObservation(sessionId: string): Promise<void> {
     const runtime = await this.requireRuntime();
     const parseRuntimeEvent =
@@ -1600,6 +1659,18 @@ export class RuntimeHostAdapter {
       installed = true;
       this.profileCursor = Math.max(this.profileCursor, observation.snapshot.cursor);
       this.projectionController.replaceSessionLive(initial);
+      // Actor telemetry is best-effort: a daemon without the agents plane (or a
+      // telemetry attach failure) must not fail session observation — the same
+      // policy as the post-rewind re-attach below. actorTreeSnapshot still
+      // surfaces the factual error to the renderer on demand.
+      try {
+        await this.ensureActorObserved(runtime, sessionId);
+      } catch (error) {
+        console.warn(
+          '[runtime] Agent Actor observation attach failed:',
+          sanitizeDiagnosticError(error),
+        );
+      }
       for (const run of observation.snapshot.runs) {
         const continuation = this.continuationPrompts.get(run.runId);
         if (continuation && run.phase !== 'queued') {
@@ -1624,6 +1695,80 @@ export class RuntimeHostAdapter {
     } finally {
       if (!installed) observation.close();
     }
+  }
+
+  private async ensureActorObserved(
+    runtime: KodaXDaemonRuntime,
+    sessionId: string,
+  ): Promise<RuntimeActorObservationState> {
+    const existing = this.actorObservations.get(sessionId);
+    if (existing?.runtime === runtime) return existing;
+    if (!runtime.agents.enabled) {
+      // Without this guard a daemon with the agents plane disabled would attach
+      // an observer whose every refresh fails and retries forever.
+      throw new Error(
+        'This Coder daemon does not enable the agents plane; Agent Actor telemetry is unavailable.',
+      );
+    }
+    this.stopActorObservation(sessionId);
+
+    let state: RuntimeActorObservationState;
+    const observer = new RuntimeAgentTreeObserver({
+      runtimeId: runtime.identity.runtimeId,
+      sessionId,
+      source: runtime.agents,
+      onSnapshot: (snapshot) => {
+        if (
+          this.actorObservations.get(sessionId) !== state ||
+          this.runtime !== runtime ||
+          this.state !== 'ready'
+        ) {
+          return;
+        }
+        const previous = this.actorSnapshots.get(sessionId);
+        if (
+          previous?.runtimeId === snapshot.runtimeId &&
+          previous.revision === snapshot.revision &&
+          previous.eventCursor >= snapshot.eventCursor
+        ) {
+          return;
+        }
+        this.actorSnapshots.set(sessionId, snapshot);
+        this.push('agent.actor.changed', snapshot);
+      },
+      shouldRetry: (error) => !isSessionNotFound(error) && this.state !== 'closed',
+      onError: (error, consecutiveFailures, retryDelayMs) => {
+        if (consecutiveFailures !== 1 && consecutiveFailures % 10 !== 0) return;
+        console.warn(
+          `[runtime] Agent Actor observation for ${sessionId} failed ` +
+            `(attempt ${consecutiveFailures}, retry ${retryDelayMs}ms): ` +
+            sanitizeDiagnosticError(error),
+        );
+      },
+    });
+    state = { runtime, observer };
+    this.actorObservations.set(sessionId, state);
+    try {
+      await observer.start();
+    } catch (error) {
+      if (this.actorObservations.get(sessionId) === state) {
+        this.stopActorObservation(sessionId);
+      }
+      throw error;
+    }
+    return state;
+  }
+
+  private stopActorObservation(sessionId: string): void {
+    this.actorObservations.get(sessionId)?.observer.stop();
+    this.actorObservations.delete(sessionId);
+    this.actorSnapshots.delete(sessionId);
+  }
+
+  private stopAllActorObservations(): void {
+    for (const state of this.actorObservations.values()) state.observer.stop();
+    this.actorObservations.clear();
+    this.actorSnapshots.clear();
   }
 
   private async resumeSnapshotBindings(
@@ -1754,6 +1899,7 @@ export class RuntimeHostAdapter {
           sessionId: continuation.sessionId,
           queueMode: 'after-turn',
           content: continuation.content,
+          ...(event.turnId ? { turnId: event.turnId } : {}),
         });
       }
       const leaseId = this.continuationCredentialLeases.get(event.runId);
@@ -2048,6 +2194,7 @@ export class RuntimeHostAdapter {
           sessionId: event.sessionId,
           ...(queueId ? { queueId } : {}),
           content: clampRuntimePromptEventText(content),
+          ...(event.turnId ? { turnId: event.turnId } : {}),
         });
         if (parsed.success) this.push('session.event', parsed.data);
       }
@@ -2067,6 +2214,22 @@ export class RuntimeHostAdapter {
       if (parsed.success) this.push('session.event', parsed.data);
       return;
     }
+    // Runtime allocates canonical turn identity after run admission. Real daemon
+    // run.started events therefore have no turnId; turn.started is the first
+    // lifecycle event that can bind the optimistic renderer turn to durable history.
+    if (event.type === 'turn.started') {
+      if (payload?.contextKind === 'child') return;
+      const turnId =
+        event.turnId ?? (typeof payload?.turnId === 'string' ? payload.turnId : undefined);
+      if (!turnId) return;
+      this.push('session.event', {
+        kind: 'session_start',
+        sessionId: event.sessionId,
+        provider: this.runProviders.get(event.runId) ?? 'unknown',
+        turnId,
+      });
+      return;
+    }
     if (event.type === 'run.started') {
       const continuation = this.continuationPrompts.get(event.runId);
       if (continuation) {
@@ -2077,22 +2240,30 @@ export class RuntimeHostAdapter {
           queueId: event.runId,
           queueMode: 'after-turn',
           content: continuation.content,
+          ...(event.turnId ? { turnId: event.turnId } : {}),
         });
       }
+      const provider =
+        (typeof payload?.provider === 'string' ? payload.provider : undefined) ??
+        this.runProviders.get(event.runId) ??
+        'unknown';
+      if (provider !== 'unknown') this.runProviders.set(event.runId, provider);
       this.push('session.event', {
         kind: 'session_start',
         sessionId: event.sessionId,
-        provider:
-          (typeof payload?.provider === 'string' ? payload.provider : undefined) ??
-          this.runProviders.get(event.runId) ??
-          'unknown',
+        provider,
+        ...(event.turnId ? { turnId: event.turnId } : {}),
       });
       return;
     }
     if (event.type === 'run.completed') {
       this.terminalSidecarBlockRuns.delete(event.runId);
       this.pushTerminalInterruptFailures(event.sessionId, payload, 'run_completed');
-      this.push('session.event', { kind: 'session_complete', sessionId: event.sessionId });
+      this.push('session.event', {
+        kind: 'session_complete',
+        sessionId: event.sessionId,
+        ...(event.turnId ? { turnId: event.turnId } : {}),
+      });
       return;
     }
     if (
@@ -2114,7 +2285,11 @@ export class RuntimeHostAdapter {
         this.terminalSidecarBlockRuns.get(event.runId) === event.sessionId;
       this.terminalSidecarBlockRuns.delete(event.runId);
       if (terminalSidecarBlock) {
-        this.push('session.event', { kind: 'session_complete', sessionId: event.sessionId });
+        this.push('session.event', {
+          kind: 'session_complete',
+          sessionId: event.sessionId,
+          ...(event.turnId ? { turnId: event.turnId } : {}),
+        });
         return;
       }
       const terminal = runtimeEventRecord(payload?.terminal);
@@ -2135,6 +2310,7 @@ export class RuntimeHostAdapter {
       this.push('session.event', {
         kind: 'session_error',
         sessionId: event.sessionId,
+        ...(event.turnId ? { turnId: event.turnId } : {}),
         error,
         category: event.type === 'run.cancelled' ? 'cancelled' : 'unknown',
         retriable: event.type !== 'run.failed',
@@ -2825,6 +3001,7 @@ export class RuntimeHostAdapter {
     this.continuationCredentialLeases.clear();
     this.credentialLeases.clear();
     this.continuationPrompts.clear();
+    this.stopAllActorObservations();
     for (const state of this.observations.values()) state.observation.close();
     this.observations.clear();
     this.observationPromises.clear();

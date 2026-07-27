@@ -27,12 +27,16 @@ function getPreferredSystemLanguages(): string[] {
 function toSettingsOutput(settings: {
   readonly defaultWorkspace: string;
   readonly languageMode: SpaceSettingsT['languageMode'];
+  readonly terminalShell: SpaceSettingsT['terminalShell'];
+  readonly windowCloseBehavior: SpaceSettingsT['windowCloseBehavior'];
   readonly runtimeDefaults?: SpaceSettingsT['runtimeDefaults'];
 }): SpaceSettingsT {
   const preferredSystemLanguages = getPreferredSystemLanguages();
   return {
     defaultWorkspace: settings.defaultWorkspace,
     languageMode: settings.languageMode,
+    terminalShell: settings.terminalShell,
+    windowCloseBehavior: settings.windowCloseBehavior,
     effectiveLocale: resolveEffectiveLocale(settings.languageMode, preferredSystemLanguages),
     preferredSystemLanguages,
     runtimeDefaults: settings.runtimeDefaults ?? {},
@@ -55,6 +59,16 @@ export function registerSettingsChannels(): void {
 
   registerChannel('settings.setLanguageMode', async ({ languageMode }) => {
     const next = await settingsStore.setLanguageMode(languageMode);
+    return toSettingsOutput(next);
+  });
+
+  registerChannel('settings.setTerminalShell', async ({ terminalShell }) => {
+    const next = await settingsStore.setTerminalShell(terminalShell);
+    return toSettingsOutput(next);
+  });
+
+  registerChannel('settings.setWindowCloseBehavior', async ({ windowCloseBehavior }) => {
+    const next = await settingsStore.setWindowCloseBehavior(windowCloseBehavior);
     return toSettingsOutput(next);
   });
 

@@ -81,9 +81,36 @@ try {
   const subscriptionReady = readinessSubscription.ready instanceof Promise;
   await readinessSubscription.ready;
   const current = await runtime.sessions.getSettingsVersioned(process.env.KODAX_PROBE_SESSION_ID);
+  const shellExecution = {
+    version: 1,
+    shell: process.platform === 'win32'
+      ? {
+          kind: 'powershell',
+          executable: path.join(
+            process.env.SystemRoot ?? 'C:\\Windows',
+            'System32',
+            'WindowsPowerShell',
+            'v1.0',
+            'powershell.exe',
+          ),
+          profile: 'default',
+        }
+      : { kind: 'bash', executable: '/bin/bash', profile: 'login-interactive' },
+    environment: {
+      inherit: 'filtered',
+      ...(process.platform === 'win32' ? { windowsPath: 'registry' } : {}),
+    },
+    cache: { ttlMs: 30000, refreshToken: 'space-compatibility-probe' },
+    probeTimeoutMs: 10000,
+  };
   const updated = await runtime.sessions.updateSettingsVersioned(
     process.env.KODAX_PROBE_SESSION_ID,
-    { provider: 'published-probe', agentMode: 'ama', autoModeEngine: 'rules' },
+    {
+      provider: 'published-probe',
+      agentMode: 'ama',
+      autoModeEngine: 'rules',
+      shellExecution,
+    },
     { expectedRevision: current.revision },
   );
   const preflight = await runtime.status.preflight();
@@ -1010,10 +1037,34 @@ test(
     });
     assert.equal(result.eventType, 'session.settings.updated');
     assert.equal(result.settings.revision, result.peer.settingsRevision);
-    assert.deepEqual(result.settings.value, {
+    const { shellExecution, ...settings } = result.settings.value;
+    assert.deepEqual(settings, {
       provider: 'published-probe',
       agentMode: 'ama',
       autoModeEngine: 'rules',
+    });
+    assert.deepEqual(shellExecution, {
+      version: 1,
+      shell:
+        process.platform === 'win32'
+          ? {
+              kind: 'powershell',
+              executable: path.join(
+                process.env.SystemRoot ?? 'C:\\Windows',
+                'System32',
+                'WindowsPowerShell',
+                'v1.0',
+                'powershell.exe',
+              ),
+              profile: 'default',
+            }
+          : { kind: 'bash', executable: '/bin/bash', profile: 'login-interactive' },
+      environment: {
+        inherit: 'filtered',
+        ...(process.platform === 'win32' ? { windowsPath: 'registry' } : {}),
+      },
+      cache: { ttlMs: 30_000, refreshToken: 'space-compatibility-probe' },
+      probeTimeoutMs: 10_000,
     });
     assert.equal(result.peer.subscriptionReady, true);
     assert.deepEqual(result.peer.learningSnapshot, { revision: true, ready: true });

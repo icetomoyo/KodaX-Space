@@ -196,10 +196,17 @@ export type ListMergedItem =
       readonly surface: ManagedSession['surface'];
     };
 
+const SAFE_SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+
 class KodaXHost {
   private readonly sessions = new Map<string, ManagedSession>();
+  private readonly resumePromises = new Map<string, Promise<boolean>>();
+  private readonly sessionProbePromises = new Map<string, Promise<boolean>>();
+  private readonly deletePromises = new Map<string, Promise<boolean>>();
   private readonly runtimeMutationLocks = new Map<string, Promise<void>>();
   private readonly runtimeMutationsInProgress = new Set<string>();
+  private disposePromise: Promise<void> | null = null;
+  private disposeEpoch = 0;
   private factory: SessionFactory = defaultFactory;
 
   /**
@@ -236,6 +243,9 @@ class KodaXHost {
     /** tryResume 专用：复用磁盘上的 sessionId 而非生成新的。*/
     existingSessionId?: string;
   }): { sessionId: string; createdAt: number } {
+    if (this.disposePromise !== null) {
+      throw new Error('Space cannot create a Session while the host is disposing.');
+    }
     const surface = opts.surface ?? 'code';
     if (
       surface === 'code' &&
@@ -451,6 +461,29 @@ class KodaXHost {
    * 这是 v0.1.x trade-off；要精确还原，得 SDK 把 runtime 设置也落盘。
    */
   async tryResume(sessionId: string): Promise<boolean> {
+    if (!SAFE_SESSION_ID_RE.test(sessionId)) return false;
+    if (this.disposePromise !== null || this.deletePromises.has(sessionId)) return false;
+    if (this.sessions.has(sessionId)) return true;
+    const pending = this.resumePromises.get(sessionId);
+    if (pending) return pending;
+    const resume = this.resumePersistedSession(sessionId, this.disposeEpoch);
+    this.resumePromises.set(sessionId, resume);
+    try {
+      return await resume;
+    } finally {
+      if (this.resumePromises.get(sessionId) === resume) {
+        this.resumePromises.delete(sessionId);
+      }
+    }
+  }
+
+  private async resumePersistedSession(
+    sessionId: string,
+    resumeEpoch: number,
+    options?: { readonly ignoreDeleteFence?: boolean },
+  ): Promise<boolean> {
+    // A Session may have been admitted between the public fast path and this
+    // single-flight operation being installed.
     if (this.sessions.has(sessionId)) return true;
     const data = await loadPersistedSession(sessionId);
     if (!data) return false;
@@ -520,6 +553,13 @@ class KodaXHost {
         `[host.tryResume] ignoring model "${requestedModel}" because it does not belong to provider "${provider}"`,
       );
     }
+    if (
+      this.disposePromise !== null ||
+      this.disposeEpoch !== resumeEpoch ||
+      (!options?.ignoreDeleteFence && this.deletePromises.has(sessionId))
+    ) {
+      return false;
+    }
     // Persisted mock sessions still resume through the real adapter because mock
     // sessions do not attach to the SDK's on-disk lineage.
     this.createSession({
@@ -551,6 +591,40 @@ class KodaXHost {
       return false;
     }
     return true;
+  }
+
+  /**
+   * Side-effect-free ownership probe for attachment preparation. Persisted
+   * Sessions are valid owners, but saving a draft must not instantiate their
+   * provider/runtime state before the user actually sends it.
+   */
+  async hasSession(sessionId: string): Promise<boolean> {
+    if (!SAFE_SESSION_ID_RE.test(sessionId)) return false;
+    if (this.disposePromise !== null || this.deletePromises.has(sessionId)) return false;
+    if (this.sessions.has(sessionId)) return true;
+    const pending = this.sessionProbePromises.get(sessionId);
+    if (pending) return pending;
+    const probe = this.probePersistedSession(sessionId, this.disposeEpoch);
+    this.sessionProbePromises.set(sessionId, probe);
+    try {
+      return await probe;
+    } finally {
+      if (this.sessionProbePromises.get(sessionId) === probe) {
+        this.sessionProbePromises.delete(sessionId);
+      }
+    }
+  }
+
+  private async probePersistedSession(sessionId: string, probeEpoch: number): Promise<boolean> {
+    const data = await loadPersistedSession(sessionId);
+    if (
+      this.disposePromise !== null ||
+      this.disposeEpoch !== probeEpoch ||
+      this.deletePromises.has(sessionId)
+    ) {
+      return false;
+    }
+    return data !== null;
   }
 
   /**
@@ -1026,6 +1100,23 @@ class KodaXHost {
    * session 尚未删除，调用方也不得清理它的 runtime/title/notice 等 sidecar。
    */
   async delete(sessionId: string): Promise<boolean> {
+    if (!SAFE_SESSION_ID_RE.test(sessionId) || this.disposePromise !== null) return false;
+    const pending = this.deletePromises.get(sessionId);
+    if (pending) return pending;
+    const deletion = this.deleteSessionExclusive(sessionId);
+    this.deletePromises.set(sessionId, deletion);
+    try {
+      return await deletion;
+    } finally {
+      if (this.deletePromises.get(sessionId) === deletion) {
+        this.deletePromises.delete(sessionId);
+      }
+    }
+  }
+
+  private async deleteSessionExclusive(sessionId: string): Promise<boolean> {
+    await this.sessionProbePromises.get(sessionId)?.catch(() => undefined);
+    await this.resumePromises.get(sessionId)?.catch(() => undefined);
     await this.runtimeMutationLocks.get(sessionId)?.catch(() => undefined);
     const s = this.sessions.get(sessionId);
     const persisted = s ? undefined : await loadPersistedSession(sessionId);
@@ -1056,7 +1147,9 @@ class KodaXHost {
         : await deletePersistedSession({ sessionId });
     if (diskDeleteResult !== 'ok') {
       if (s) {
-        const restored = await this.tryResume(sessionId).catch((error: unknown) => {
+        const restored = await this.resumePersistedSession(sessionId, this.disposeEpoch, {
+          ignoreDeleteFence: true,
+        }).catch((error: unknown) => {
           console.warn(`[host.delete] failed to restore busy session ${sessionId}:`, error);
           return false;
         });
@@ -1075,6 +1168,29 @@ class KodaXHost {
 
   /** 测试 / 关闭流程用：清空所有 session。*/
   async disposeAll(options?: { readonly detachRuntimeRuns?: boolean }): Promise<void> {
+    if (this.disposePromise !== null) return this.disposePromise;
+    const disposal = this.disposeAllExclusive(options);
+    this.disposePromise = disposal;
+    try {
+      await disposal;
+    } finally {
+      if (this.disposePromise === disposal) this.disposePromise = null;
+    }
+  }
+
+  private async disposeAllExclusive(options?: {
+    readonly detachRuntimeRuns?: boolean;
+  }): Promise<void> {
+    this.disposeEpoch += 1;
+    await Promise.all(
+      [...this.sessionProbePromises.values()].map((pending) => pending.catch(() => false)),
+    );
+    await Promise.all(
+      [...this.resumePromises.values()].map((pending) => pending.catch(() => false)),
+    );
+    await Promise.all(
+      [...this.deletePromises.values()].map((pending) => pending.catch(() => false)),
+    );
     await Promise.all(
       [...this.runtimeMutationLocks.values()].map((pending) => pending.catch(() => undefined)),
     );

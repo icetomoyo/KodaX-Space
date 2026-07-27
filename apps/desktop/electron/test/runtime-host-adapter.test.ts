@@ -10,6 +10,7 @@ import type {
   RuntimeRunHandle,
   RuntimeRunResult,
 } from '@kodax-ai/kodax/runtime';
+import type { AgentEvent, AgentTreeSnapshot } from '@kodax-ai/kodax/agent';
 import { RuntimeHostAdapter, resolveRuntimeHostMode } from '../kodax/runtime-host-adapter.js';
 import { kodaxHost } from '../kodax/host.js';
 import {
@@ -48,6 +49,14 @@ const testRuntimeEventParser = (event: unknown) => ({
   ok: true as const,
   event: event as import('@kodax-ai/kodax/runtime').RuntimeTypedEvent,
 });
+
+async function waitForTest(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error('condition timed out');
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+}
 
 function createFakeRuntime() {
   const calls = {
@@ -89,6 +98,9 @@ function createFakeRuntime() {
     }>,
     workflowControls: [] as Array<{ action: string; runId: string }>,
     learningControls: [] as Array<{ action: string; nameOrSlug: string }>,
+    agentTrees: [] as string[],
+    agentEvents: [] as Array<{ sessionId: string; afterSequence: number }>,
+    agentWaits: [] as Array<{ sessionId: string; afterSequence: number }>,
   };
   const sessions = new Set<string>();
   const settings = new Map<string, { revision: number; value: Record<string, unknown> }>();
@@ -99,6 +111,54 @@ function createFakeRuntime() {
   >();
   const pending = new Map<string, (result: RuntimeRunResult) => void>();
   const connectionListeners = new Set<(state: RuntimeConnectionState) => void>();
+  const actorEvents = new Map<string, AgentEvent[]>();
+  const actorTrees = new Map<string, AgentTreeSnapshot>();
+  const actorWaiters = new Set<{
+    readonly sessionId: string;
+    readonly afterSequence: number;
+    readonly resolve: (event: AgentEvent | undefined) => void;
+  }>();
+  const makeRootActorTree = (revision = 0): AgentTreeSnapshot => ({
+    rootPath: '/root',
+    actors: [
+      {
+        path: '/root',
+        taskName: 'root',
+        kind: 'native',
+        state: 'idle',
+        capabilities: {
+          tools: [],
+          filesystem: 'write',
+          network: true,
+          providers: [],
+          canAskUser: true,
+        },
+        turnIds: [],
+        mailboxCursor: 0,
+        createdAt: '2026-07-12T00:00:00.000Z',
+        updatedAt: '2026-07-12T00:00:00.000Z',
+        revision,
+      },
+    ],
+    activeNonRootTurns: 0,
+    maxConcurrentThreads: 4,
+    revision,
+  });
+  const ensureActorState = (sessionId: string): void => {
+    if (!sessions.has(sessionId)) throw new Error(`Session not found: ${sessionId}`);
+    if (!actorTrees.has(sessionId)) actorTrees.set(sessionId, makeRootActorTree());
+    if (!actorEvents.has(sessionId)) actorEvents.set(sessionId, []);
+  };
+  const resolveActorWaiters = (sessionId?: string): void => {
+    for (const waiter of actorWaiters) {
+      if (sessionId && waiter.sessionId !== sessionId) continue;
+      actorWaiters.delete(waiter);
+      const event = actorEvents
+        .get(waiter.sessionId)
+        ?.find((item) => item.sequence > waiter.afterSequence);
+      waiter.resolve(event);
+    }
+  };
   let connectionState: RuntimeConnectionState = {
     state: 'connected',
     connectionId: 'connection_1',
@@ -152,6 +212,7 @@ function createFakeRuntime() {
       'session:observe',
       'session:write',
       'run:control',
+      'agent:control',
       'interaction:respond',
       'permission:respond',
       'permission:grant-admin',
@@ -173,6 +234,8 @@ function createFakeRuntime() {
         const id = input.sessionId ?? `s_${sessions.size + 1}`;
         sessions.add(id);
         settings.set(id, { revision: 0, value: {} });
+        actorTrees.set(id, makeRootActorTree());
+        actorEvents.set(id, []);
         return { id, title: '' };
       },
       async transcript(sessionId: string) {
@@ -255,6 +318,9 @@ function createFakeRuntime() {
       },
       async delete(sessionId: string) {
         sessions.delete(sessionId);
+        actorTrees.delete(sessionId);
+        actorEvents.delete(sessionId);
+        resolveActorWaiters(sessionId);
       },
     },
     runs: {
@@ -472,9 +538,35 @@ function createFakeRuntime() {
     },
     diagnostics: {},
     admin: { agentRegistrations: {} },
-    agents: { enabled: false },
+    agents: {
+      enabled: true,
+      async tree(sessionId: string) {
+        calls.agentTrees.push(sessionId);
+        ensureActorState(sessionId);
+        const tree = actorTrees.get(sessionId);
+        if (!tree) throw new Error(`Agent tree unavailable: ${sessionId}`);
+        return tree;
+      },
+      async events(sessionId: string, afterSequence = 0) {
+        calls.agentEvents.push({ sessionId, afterSequence });
+        ensureActorState(sessionId);
+        return (actorEvents.get(sessionId) ?? []).filter((event) => event.sequence > afterSequence);
+      },
+      async wait(sessionId: string, afterSequence = 0) {
+        calls.agentWaits.push({ sessionId, afterSequence });
+        ensureActorState(sessionId);
+        const available = actorEvents
+          .get(sessionId)
+          ?.find((event) => event.sequence > afterSequence);
+        if (available) return available;
+        return new Promise<AgentEvent | undefined>((resolve) => {
+          actorWaiters.add({ sessionId, afterSequence, resolve });
+        });
+      },
+    },
     async close() {
       calls.close += 1;
+      resolveActorWaiters();
     },
   } as unknown as KodaXDaemonRuntime;
   return {
@@ -487,6 +579,12 @@ function createFakeRuntime() {
     emit(event: import('@kodax-ai/kodax/runtime').RuntimeTypedEvent) {
       observationListeners.get(event.sessionId)?.(event);
     },
+    emitActor(sessionId: string, event: AgentEvent, tree: AgentTreeSnapshot) {
+      ensureActorState(sessionId);
+      actorEvents.get(sessionId)?.push(event);
+      actorTrees.set(sessionId, tree);
+      resolveActorWaiters(sessionId);
+    },
     disconnect(reconnectable = true) {
       connectionState = {
         ...connectionState,
@@ -495,6 +593,7 @@ function createFakeRuntime() {
         reconnectable,
       };
       for (const listener of connectionListeners) listener(connectionState);
+      resolveActorWaiters();
     },
   };
 }
@@ -1782,6 +1881,7 @@ test('daemon delivered interrupt batch becomes ordered queue-addressable session
     type: 'run.input.delivered',
     sessionId: 's_1',
     runId: 'run_active',
+    turnId: 'turn_active',
     payload: {
       inputs: [
         {
@@ -1821,14 +1921,136 @@ test('daemon delivered interrupt batch becomes ordered queue-addressable session
       sessionId: 's_1',
       queueId: 'input-1',
       content: 'first interrupt\n\nattachment overlay',
+      turnId: 'turn_active',
     },
     {
       kind: 'mid_turn_user_prompt',
       sessionId: 's_1',
       queueId: 'input-2',
       content: 'second interrupt',
+      turnId: 'turn_active',
     },
   ]);
+  await adapter.close();
+});
+
+test('daemon run lifecycle preserves canonical turn identity in renderer events', async () => {
+  const pushed: unknown[] = [];
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    push: (channel, payload) => {
+      if (channel === 'session.event') pushed.push(payload);
+    },
+  });
+  const bridgeRuntimeEvent = (
+    adapter as unknown as {
+      bridgeRuntimeEvent(event: import('@kodax-ai/kodax/runtime').RuntimeTypedEvent): void;
+    }
+  ).bridgeRuntimeEvent.bind(adapter);
+
+  bridgeRuntimeEvent({
+    id: 'event_run_started_identity',
+    seq: 1,
+    time: '2026-07-26T00:00:00.000Z',
+    type: 'run.started',
+    sessionId: 's_1',
+    runId: 'run_identity',
+    payload: {
+      runId: 'run_identity',
+      sessionId: 's_1',
+      phase: 'running',
+      startedAt: '2026-07-26T00:00:00.000Z',
+      provider: 'mock',
+    },
+  });
+  bridgeRuntimeEvent({
+    id: 'event_turn_started_identity',
+    seq: 2,
+    time: '2026-07-26T00:00:00.100Z',
+    type: 'turn.started',
+    sessionId: 's_1',
+    runId: 'run_identity',
+    turnId: 'turn_identity',
+    payload: {
+      sessionId: 's_1',
+      seq: 1,
+      turnId: 'turn_identity',
+      deliveryKind: 'initial',
+      contextKind: 'root',
+    },
+  });
+  bridgeRuntimeEvent({
+    id: 'event_run_completed_identity',
+    seq: 3,
+    time: '2026-07-26T00:00:01.000Z',
+    type: 'run.completed',
+    sessionId: 's_1',
+    runId: 'run_identity',
+    turnId: 'turn_identity',
+    payload: {
+      runId: 'run_identity',
+      sessionId: 's_1',
+      phase: 'completed',
+      startedAt: '2026-07-26T00:00:00.000Z',
+      provider: 'mock',
+    },
+  });
+
+  assert.deepEqual(pushed, [
+    {
+      kind: 'session_start',
+      sessionId: 's_1',
+      provider: 'mock',
+    },
+    {
+      kind: 'session_start',
+      sessionId: 's_1',
+      provider: 'mock',
+      turnId: 'turn_identity',
+    },
+    {
+      kind: 'session_complete',
+      sessionId: 's_1',
+      turnId: 'turn_identity',
+    },
+  ]);
+  await adapter.close();
+});
+
+test('daemon child turn lifecycle cannot bind the root renderer turn identity', async () => {
+  const pushed: unknown[] = [];
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    push: (channel, payload) => {
+      if (channel === 'session.event') pushed.push(payload);
+    },
+  });
+  const bridgeRuntimeEvent = (
+    adapter as unknown as {
+      bridgeRuntimeEvent(event: import('@kodax-ai/kodax/runtime').RuntimeTypedEvent): void;
+    }
+  ).bridgeRuntimeEvent.bind(adapter);
+
+  bridgeRuntimeEvent({
+    id: 'event_child_turn_started',
+    seq: 1,
+    time: '2026-07-26T00:00:00.100Z',
+    type: 'turn.started',
+    sessionId: 's_1',
+    runId: 'run_identity',
+    turnId: 'turn_child',
+    payload: {
+      sessionId: 's_1',
+      seq: 1,
+      turnId: 'turn_child',
+      deliveryKind: 'initial',
+      contextKind: 'child',
+      contextId: 's_1/agent/reviewer',
+      agentId: 'reviewer',
+    },
+  });
+
+  assert.deepEqual(pushed, []);
   await adapter.close();
 });
 
@@ -2267,6 +2489,108 @@ test('observation bootstrap failure closes the daemon subscription', async () =>
   assert.equal(fake.calls.observationCloses, 1);
   await adapter.close();
   assert.equal(fake.calls.observationCloses, 1);
+});
+
+test('Coder observation pushes canonical Actor tree changes with an independent cursor', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_1');
+  const pushed: unknown[] = [];
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    push: (channel, payload) => {
+      if (channel === 'agent.actor.changed') pushed.push(payload);
+    },
+  });
+
+  await adapter.ensureObserved('s_1');
+  assert.equal(pushed.length, 1);
+  assert.equal((pushed[0] as { eventCursor: number }).eventCursor, 0);
+
+  const changedTree: AgentTreeSnapshot = {
+    rootPath: '/root',
+    actors: [
+      {
+        path: '/root',
+        taskName: 'root',
+        kind: 'native',
+        state: 'running',
+        capabilities: {
+          tools: [],
+          filesystem: 'write',
+          network: true,
+          providers: [],
+          canAskUser: true,
+        },
+        turnIds: ['turn_root'],
+        currentTurnId: 'turn_root',
+        mailboxCursor: 0,
+        createdAt: '2026-07-27T00:00:00.000Z',
+        updatedAt: '2026-07-27T00:00:02.000Z',
+        revision: 2,
+      },
+      {
+        path: '/root/reviewer',
+        taskName: 'reviewer',
+        parentPath: '/root',
+        kind: 'native',
+        state: 'running',
+        capabilities: {
+          tools: [],
+          filesystem: 'read',
+          network: false,
+          providers: [],
+          canAskUser: false,
+        },
+        turnIds: ['turn_review'],
+        currentTurnId: 'turn_review',
+        mailboxCursor: 0,
+        createdAt: '2026-07-27T00:00:01.000Z',
+        updatedAt: '2026-07-27T00:00:02.000Z',
+        revision: 2,
+        latestTurn: {
+          turnId: 'turn_review',
+          state: 'running',
+          summary: 'Reviewing the patch',
+          summaryTruncated: false,
+          recentActivity: [],
+        },
+      },
+    ],
+    activeNonRootTurns: 1,
+    maxConcurrentThreads: 4,
+    revision: 2,
+  };
+  fake.emitActor(
+    's_1',
+    {
+      sequence: 1,
+      kind: 'turn_started',
+      actorPath: '/root/reviewer',
+      turnId: 'turn_review',
+      createdAt: '2026-07-27T00:00:02.000Z',
+    },
+    changedTree,
+  );
+  await waitForTest(() => pushed.length === 2);
+
+  const snapshot = pushed[1] as {
+    eventCursor: number;
+    activeNonRootTurns: number;
+    actors: Array<{ path: string; currentTurnId?: string }>;
+  };
+  assert.equal(snapshot.eventCursor, 1);
+  assert.equal(snapshot.activeNonRootTurns, 1);
+  assert.equal(snapshot.actors[1]?.path, '/root/reviewer');
+  assert.equal(snapshot.actors[1]?.currentTurnId, 'turn_review');
+  assert.deepEqual(fake.calls.agentEvents.slice(0, 2), [
+    { sessionId: 's_1', afterSequence: 0 },
+    { sessionId: 's_1', afterSequence: 0 },
+  ]);
+  await adapter.close();
 });
 
 test('deleting a session closes and removes its authoritative live observation', async () => {

@@ -173,6 +173,7 @@ test('loadKodaxCustomProviders exposes SDK config custom providers as Space summ
         apiKeyEnv: 'NEWAPI_API_KEY',
         model: 'claude-sonnet-4-6',
         models: ['claude-sonnet-4-6', { id: 'claude-opus-4-7' }],
+        promptCacheAffinity: true,
       },
       {
         name: 'unsafe/provider',
@@ -209,6 +210,7 @@ test('loadKodaxCustomProviders exposes SDK config custom providers as Space summ
       apiKeyEnv: 'NEWAPI_API_KEY',
       defaultModel: 'claude-sonnet-4-6',
       models: ['claude-sonnet-4-6', 'claude-opus-4-7'],
+      promptCacheAffinity: true,
     },
     {
       id: 'metadata-ssrf',
@@ -233,6 +235,7 @@ test('registerKodaxCustomProviders forwards customProviders array to SDK', async
           baseUrl: 'https://p1.example.com/v1/',
           apiKeyEnv: 'P1_API_KEY',
           model: 'claude-sonnet-4-6',
+          promptCacheAffinity: true,
         },
         {
           name: 'bad-env',
@@ -261,6 +264,7 @@ test('registerKodaxCustomProviders forwards customProviders array to SDK', async
       baseUrl: 'https://p1.example.com/v1',
       apiKeyEnv: 'P1_API_KEY',
       model: 'claude-sonnet-4-6',
+      promptCacheAffinity: true,
     },
     {
       name: 'bad-url',
@@ -297,6 +301,7 @@ test('registerKodaxCustomProviders merges Space custom providers into SDK regist
       apiKeyEnv: 'SPACE_API_KEY',
       defaultModel: 'space-model',
       models: ['space-model', 'space-alt'],
+      promptCacheAffinity: true,
     },
     {
       id: 'custom_1111111111111111',
@@ -330,6 +335,7 @@ test('registerKodaxCustomProviders merges Space custom providers into SDK regist
       apiKeyEnv: 'SPACE_API_KEY',
       model: 'space-model',
       models: ['space-model', 'space-alt'],
+      promptCacheAffinity: true,
     },
   ]);
 });
@@ -411,10 +417,10 @@ test('updateKodaxConfigCustomProvider writes back custom provider and renames se
     },
   ]);
 });
-test('updateKodaxConfigCustomProvider clears the reasoning declaration but preserves unmodeled CLI fields', async () => {
-  // C3 regression: reasoning is a Space-form-modeled field, so omitting it in the update
-  // (user cleared it) must remove it; unmodeled fields the KodaX CLI set (reasoningProfile,
-  // custom headers, supportsThinking) must survive the merge.
+test('updateKodaxConfigCustomProvider clears modeled opt-ins but preserves unmodeled CLI fields', async () => {
+  // Space-form-modeled fields must disappear when omitted by an update (the user cleared
+  // them); unmodeled fields the KodaX CLI set (reasoningProfile, custom headers,
+  // supportsThinking) must survive the merge.
   const config: Record<string, unknown> = {
     customProviders: [
       {
@@ -423,6 +429,7 @@ test('updateKodaxConfigCustomProvider clears the reasoning declaration but prese
         baseUrl: 'https://old.example.com/v1',
         apiKeyEnv: 'OLD_API_KEY',
         model: 'old-model',
+        promptCacheAffinity: true,
         reasoning: { efforts: ['low', 'high'], default: 'high' },
         reasoningProfile: { effortStrategy: 'openai-chat-effort' },
         supportsThinking: true,
@@ -433,7 +440,7 @@ test('updateKodaxConfigCustomProvider clears the reasoning declaration but prese
   const saveCalls: unknown[] = [];
   mockUserConfig(config, { saveCalls });
 
-  // update omits `reasoning` → user cleared it in the form
+  // update omits both modeled opt-ins → user cleared them in the form
   const result = await updateKodaxConfigCustomProvider('sdk-custom', {
     displayName: 'sdk-custom',
     protocol: 'openai',
@@ -448,6 +455,11 @@ test('updateKodaxConfigCustomProvider clears the reasoning declaration but prese
   assert.equal(providers.length, 1);
   const p = providers[0];
   assert.equal('reasoning' in p, false, 'reasoning must be cleared, not preserved');
+  assert.equal(
+    'promptCacheAffinity' in p,
+    false,
+    'promptCacheAffinity must be cleared, not preserved',
+  );
   // unmodeled CLI fields survive:
   assert.deepEqual(p.reasoningProfile, { effortStrategy: 'openai-chat-effort' });
   assert.equal(p.supportsThinking, true);

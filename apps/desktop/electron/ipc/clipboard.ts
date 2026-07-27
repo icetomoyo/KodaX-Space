@@ -11,13 +11,17 @@
 //   - 草稿根目录 = app temp/kodax-space/pending-attachments/<profile>/<process>/
 //   - 历史根目录 = <KODAX_HOME>/space/session-attachments/
 //   - 旧版 app temp 路径只用于兼容已有历史附件
-//   - 写盘体积上限同 schema (6 MiB) —— Zod 已先于此 handler 拦
+//   - 当前 base64 IPC 源图临时处理上限 12 MiB；经 KodaX 归一化后的写盘上限仍为 6 MiB
 //   - mediaType → 扩展名固定查表（png/jpg/webp），不让 renderer 指定文件后缀
 
 import { constants as fsConstants, promises as fs } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
+import {
+  MAX_NORMALIZED_IMAGE_BYTES,
+  MAX_SOURCE_IMAGE_BYTES,
+} from '@kodax-space/space-ipc-schema';
 import { registerChannel } from './register.js';
 import { getKodaxRuntimeDir } from '../kodax/data-paths.js';
 
@@ -138,12 +142,6 @@ async function legacySessionDir(sessionId: string): Promise<string> {
   return path.join(await legacyClipboardRoot(), sessionId);
 }
 
-// review HIGH-1 fix: 解码后 image 大小硬上限。schema 的 base64 string 上限会让上
-// 一个 ~8 MiB 的 base64 串通过 — decoded 后落地约 6 MiB，超过 MAX_IMAGE_BYTES。
-// 把 MAX_IMAGE_BYTES 与上面 schema 的 MAX_IMAGE_BYTES (6 MiB) 对齐，主进程 handler
-// 再 enforce 一次 — schema 是 string 长度防 IPC 边界 DoS；这里是 decoded 防写盘 DoS。
-const MAX_DECODED_IMAGE_BYTES = 6 * 1024 * 1024;
-
 /** 单纯写盘逻辑 — registerClipboardChannels 和单元测试共用。sdk 参数供测试注入。*/
 export async function saveClipboardImage(
   input: {
@@ -168,11 +166,9 @@ export async function saveClipboardImage(
   if (rawBuf.length === 0) {
     throw new Error('clipboard.saveImage: empty image bytes after base64 decode');
   }
-  if (rawBuf.length > MAX_DECODED_IMAGE_BYTES) {
-    // review MEDIUM-5 fix: schema string max 算的是 base64 编码后的长度，decoded 后可能仍
-    // 超过 6 MiB 上限 (base64 有 ~33% 膨胀)。这里再 enforce 真实字节数，硬拒。
+  if (rawBuf.length > MAX_SOURCE_IMAGE_BYTES) {
     throw new Error(
-      `clipboard.saveImage: image too large after decode: ${rawBuf.length} bytes (max ${MAX_DECODED_IMAGE_BYTES})`,
+      `clipboard.saveImage: source image too large after decode: ${rawBuf.length} bytes (max ${MAX_SOURCE_IMAGE_BYTES})`,
     );
   }
 
@@ -190,8 +186,21 @@ export async function saveClipboardImage(
       outMediaType = normalized.mediaType;
     }
   } catch (err) {
+    if (rawBuf.length > MAX_NORMALIZED_IMAGE_BYTES) {
+      throw new Error(
+        `clipboard.saveImage: image normalization failed for ${rawBuf.length} source bytes: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+        { cause: err },
+      );
+    }
     console.warn(
       `[clipboard.saveImage] normalizePastedImage failed; writing raw buffer: ${err instanceof Error ? err.message : err}`,
+    );
+  }
+  if (outBuf.length > MAX_NORMALIZED_IMAGE_BYTES) {
+    throw new Error(
+      `clipboard.saveImage: normalized image too large: ${outBuf.length} bytes (max ${MAX_NORMALIZED_IMAGE_BYTES})`,
     );
   }
 
@@ -234,9 +243,9 @@ export async function readNativeClipboardImage(
   if (image.buffer.length === 0) {
     throw new Error('clipboard.readImage: empty image bytes after native clipboard read');
   }
-  if (image.buffer.length > MAX_DECODED_IMAGE_BYTES) {
+  if (image.buffer.length > MAX_NORMALIZED_IMAGE_BYTES) {
     throw new Error(
-      `clipboard.readImage: image too large after decode: ${image.buffer.length} bytes (max ${MAX_DECODED_IMAGE_BYTES})`,
+      `clipboard.readImage: normalized image too large: ${image.buffer.length} bytes (max ${MAX_NORMALIZED_IMAGE_BYTES})`,
     );
   }
 
@@ -298,20 +307,27 @@ export async function discardPendingClipboardImage(input: {
   return { removed: true };
 }
 
+export async function assertClipboardImageOwnerSession(
+  sessionId: string,
+  sessionExists: (sessionId: string) => boolean | Promise<boolean>,
+): Promise<void> {
+  if (!SESSION_ID_RE.test(sessionId)) {
+    throw new Error('clipboard image owner Session does not exist');
+  }
+  if (!(await sessionExists(sessionId))) {
+    throw new Error('clipboard image owner Session does not exist');
+  }
+}
+
 export function registerClipboardChannels(options: {
-  readonly sessionExists: (sessionId: string) => boolean;
+  readonly sessionExists: (sessionId: string) => boolean | Promise<boolean>;
 }): void {
-  const assertSessionExists = (sessionId: string): void => {
-    if (!options.sessionExists(sessionId)) {
-      throw new Error('clipboard image owner Session does not exist');
-    }
-  };
   registerChannel('clipboard.saveImage', async (input) => {
-    assertSessionExists(input.sessionId);
+    await assertClipboardImageOwnerSession(input.sessionId, options.sessionExists);
     return saveClipboardImage(input);
   });
   registerChannel('clipboard.readImage', async (input) => {
-    assertSessionExists(input.sessionId);
+    await assertClipboardImageOwnerSession(input.sessionId, options.sessionExists);
     return readNativeClipboardImage(input);
   });
   registerChannel('clipboard.cleanupSession', cleanupClipboardSession);

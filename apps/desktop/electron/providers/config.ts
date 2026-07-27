@@ -57,6 +57,7 @@ const customProviderSchema = z.object({
   apiKeyEnv: z.string().min(1).max(128),
   defaultModel: z.string().min(1).max(128),
   models: z.array(z.string().min(1).max(128)).max(64).optional(),
+  promptCacheAffinity: z.boolean().optional(),
   reasoning: customProviderReasoningSchema.optional(),
   createdAt: z.number().int().nonnegative(),
 });

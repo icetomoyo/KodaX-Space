@@ -9,7 +9,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { PtyHost } from '../terminal/ptyHost.js';
+import { buildPtyEnvironment, PtyHost } from '../terminal/ptyHost.js';
 
 const SKIP = process.env.SKIP_PTY_TESTS === '1';
 const ifAvailable = SKIP ? test.skip.bind(test) : test;
@@ -27,10 +27,40 @@ async function waitUntil(predicate: () => boolean, timeoutMs = 3000): Promise<bo
   return predicate();
 }
 
+function createTestPty(host: PtyHost, overrides: Partial<Parameters<PtyHost['create']>[0]> = {}) {
+  return host.create({
+    cwd: process.cwd(),
+    cols: 80,
+    rows: 24,
+    // Rapid PowerShell create/kill loops trigger a node-pty ConPTY helper race
+    // that is unrelated to PtyHost lifecycle behavior. Shell selection itself
+    // is covered by terminal-shell.test.ts and a real single-PTY smoke probe.
+    shellPreference: process.platform === 'win32' ? 'cmd' : 'auto',
+    ...overrides,
+  });
+}
+
+test('buildPtyEnvironment: preserves Windows PATH resolution without leaking secrets', () => {
+  const environment = buildPtyEnvironment(
+    {
+      Path: 'C:\\tools\\node',
+      Pathext: '.COM;.EXE;.CMD',
+      USERPROFILE: 'C:\\Users\\tester',
+      OPENAI_API_KEY: 'must-not-leak',
+    },
+    'win32',
+  );
+
+  assert.equal(environment.PATH, 'C:\\tools\\node');
+  assert.equal(environment.PATHEXT, '.COM;.EXE;.CMD');
+  assert.equal(environment.USERPROFILE, 'C:\\Users\\tester');
+  assert.equal(environment.OPENAI_API_KEY, undefined);
+});
+
 ifAvailable('PtyHost: create returns a unique uuid + non-zero pid', async () => {
   const host = new PtyHost();
-  const a = host.create({ cwd: process.cwd(), cols: 80, rows: 24 });
-  const b = host.create({ cwd: process.cwd(), cols: 80, rows: 24 });
+  const a = createTestPty(host);
+  const b = createTestPty(host);
   try {
     assert.notEqual(a.terminalId, b.terminalId, 'ids should be unique');
     assert.match(a.terminalId, /^[0-9a-f-]{36}$/i, 'terminalId is a uuid');
@@ -45,10 +75,7 @@ ifAvailable('PtyHost: create returns a unique uuid + non-zero pid', async () => 
 ifAvailable('PtyHost: create rejects relative cwd', () => {
   const host = new PtyHost();
   try {
-    assert.throws(
-      () => host.create({ cwd: './relative', cols: 80, rows: 24 }),
-      /absolute/
-    );
+    assert.throws(() => createTestPty(host, { cwd: './relative' }), /absolute/);
   } finally {
     host.disposeAll();
   }
@@ -79,7 +106,7 @@ ifAvailable('PtyHost: kill is idempotent and returns true for unknown id', () =>
   try {
     const ok1 = host.kill('00000000-0000-4000-8000-000000000000');
     assert.equal(ok1, true, 'unknown id kill returns true (idempotent)');
-    const created = host.create({ cwd: process.cwd(), cols: 80, rows: 24 });
+    const created = createTestPty(host);
     const ok2 = host.kill(created.terminalId);
     assert.equal(ok2, true);
     // 第二次 kill 同一个 id 还是 true（已 killed=true, 不再走 SIGKILL path）
@@ -101,15 +128,13 @@ ifAvailable('PtyHost: onOutput fires with terminalId + non-empty data', async ()
     },
     onExit: () => {},
   });
-  const created = host.create({ cwd: process.cwd(), cols: 80, rows: 24 });
+  const created = createTestPty(host);
   const marker = '__KODAX_PTY_TEST__';
   // Do not rely on an initial shell prompt: cmd.exe can start quietly under
   // concurrent node:test workers. Write a deterministic command instead.
   host.write(
     created.terminalId,
-    process.platform === 'win32'
-      ? `echo ${marker}\r`
-      : `printf '${marker}\\n'\n`,
+    process.platform === 'win32' ? `echo ${marker}\r` : `printf '${marker}\\n'\n`,
   );
   const sawMarker = await waitUntil(() => receivedData.includes(marker));
   try {
@@ -132,7 +157,7 @@ ifAvailable('PtyHost: onExit fires after kill', async () => {
       exitId = ev.terminalId;
     },
   });
-  const created = host.create({ cwd: process.cwd(), cols: 80, rows: 24 });
+  const created = createTestPty(host);
   host.kill(created.terminalId);
   // Give the kernel a moment to deliver the SIGTERM + node-pty to emit exit
   await delay(1500);
@@ -145,8 +170,8 @@ ifAvailable('PtyHost: onExit fires after kill', async () => {
 ifAvailable('PtyHost: disposeAll clears count', () => {
   const host = new PtyHost();
   host.setListeners({ onOutput: () => {}, onExit: () => {} });
-  host.create({ cwd: process.cwd(), cols: 80, rows: 24 });
-  host.create({ cwd: process.cwd(), cols: 80, rows: 24 });
+  createTestPty(host);
+  createTestPty(host);
   assert.equal(host.count(), 2);
   host.disposeAll();
   assert.equal(host.count(), 0);

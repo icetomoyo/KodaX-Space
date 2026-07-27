@@ -8,6 +8,10 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
+  MAX_NORMALIZED_IMAGE_BYTES,
+  MAX_SOURCE_IMAGE_BYTES,
+} from '@kodax-space/space-ipc-schema';
+import {
   saveClipboardImage,
   readNativeClipboardImage,
   cleanupClipboardSession,
@@ -17,6 +21,7 @@ import {
   discardPendingClipboardImage,
   finalizePendingClipboardArtifacts,
   prepareClipboardArtifactsForSend,
+  assertClipboardImageOwnerSession,
 } from '../ipc/clipboard.js';
 import {
   _resetDataPathsCacheForTesting,
@@ -87,6 +92,41 @@ const NORMALIZE_THROWS = {
     throw new Error('no sharp in test');
   },
 };
+
+test('clipboard owner admission accepts loaded and asynchronously resumed Sessions', async () => {
+  await assertClipboardImageOwnerSession('sess-loaded', (sessionId) => {
+    assert.equal(sessionId, 'sess-loaded');
+    return true;
+  });
+
+  let resumedSessionId: string | undefined;
+  await assertClipboardImageOwnerSession('sess-persisted', async (sessionId) => {
+    resumedSessionId = sessionId;
+    await Promise.resolve();
+    return true;
+  });
+  assert.equal(resumedSessionId, 'sess-persisted');
+});
+
+test('clipboard owner admission remains fail-closed for an unknown Session', async () => {
+  await assert.rejects(
+    () => assertClipboardImageOwnerSession('sess-missing', async () => false),
+    /clipboard image owner Session does not exist/,
+  );
+});
+
+test('clipboard owner admission rejects an unsafe Session ID before probing storage', async () => {
+  let probed = false;
+  await assert.rejects(
+    () =>
+      assertClipboardImageOwnerSession('../persisted-session', async () => {
+        probed = true;
+        return true;
+      }),
+    /clipboard image owner Session does not exist/,
+  );
+  assert.equal(probed, false);
+});
 
 test('saveImage: writes file, extension follows the NORMALIZED mediaType (C6)', async () => {
   const out = await saveClipboardImage(
@@ -201,7 +241,7 @@ test('readNativeClipboardImage: rejects SDK image blocks outside the session san
   );
 });
 
-test('readNativeClipboardImage: rejects native images larger than 6 MiB before returning base64', async () => {
+test('readNativeClipboardImage: rejects normalized images larger than 6 MiB', async () => {
   const image = {
     buffer: Buffer.alloc(7 * 1024 * 1024, 0xff),
     mediaType: 'image/png' as const,
@@ -220,7 +260,7 @@ test('readNativeClipboardImage: rejects native images larger than 6 MiB before r
           },
         },
       ),
-    /image too large after decode/,
+    /normalized image too large/,
   );
 });
 
@@ -380,19 +420,93 @@ test('per-session dir is created with mode 0o700 (owner-only)', async () => {
   assert.equal(dirStat.mode & 0o777, 0o700);
 });
 
-// review MEDIUM-5 fix — decoded buffer size enforced even if schema string fits
-test('saveImage: rejects images larger than 6 MiB after base64 decode', async () => {
-  // 7 MiB of 0xff bytes encoded base64 — schema string max is 12 MiB so it fits
-  // through Zod, but the handler must reject because decoded > 6 MiB.
-  const big = Buffer.alloc(7 * 1024 * 1024, 0xff);
+test('saveImage: normalizes a source above the final 6 MiB limit before persisting', async () => {
+  const source = Buffer.alloc(MAX_NORMALIZED_IMAGE_BYTES + 1, 0xff);
+  const normalized = Buffer.from(TINY_PNG_BASE64, 'base64');
+  const out = await saveClipboardImage(
+    {
+      sessionId: 'sess-normalize-large-source',
+      base64: source.toString('base64'),
+      mediaType: 'image/png',
+    },
+    {
+      normalizePastedImage: async () => ({
+        buffer: normalized,
+        mediaType: 'image/png',
+        width: 1,
+        height: 1,
+      }),
+    },
+  );
+
+  assert.equal(out.bytes, normalized.length);
+  assert.deepEqual(await fs.readFile(out.path), normalized);
+});
+
+test('saveImage: rejects a source above 12 MiB before normalization', async () => {
+  const source = Buffer.alloc(MAX_SOURCE_IMAGE_BYTES + 1, 0xff);
+  let normalized = false;
   await assert.rejects(
     () =>
-      saveClipboardImage({
-        sessionId: 'sess-too-big',
-        base64: big.toString('base64'),
-        mediaType: 'image/png',
-      }),
-    /image too large after decode/,
+      saveClipboardImage(
+        {
+          sessionId: 'sess-source-too-big',
+          base64: source.toString('base64'),
+          mediaType: 'image/png',
+        },
+        {
+          normalizePastedImage: async () => {
+            normalized = true;
+            return {
+              buffer: Buffer.from(TINY_PNG_BASE64, 'base64'),
+              mediaType: 'image/png',
+              width: 1,
+              height: 1,
+            };
+          },
+        },
+      ),
+    /source image too large after decode/,
+  );
+  assert.equal(normalized, false);
+});
+
+test('saveImage: does not fall back to an oversized raw source when normalization fails', async () => {
+  const source = Buffer.alloc(MAX_NORMALIZED_IMAGE_BYTES + 1, 0xff);
+  await assert.rejects(
+    () =>
+      saveClipboardImage(
+        {
+          sessionId: 'sess-large-normalization-failed',
+          base64: source.toString('base64'),
+          mediaType: 'image/png',
+        },
+        NORMALIZE_THROWS,
+      ),
+    /image normalization failed/,
+  );
+});
+
+test('saveImage: rejects a normalizer result above the final 6 MiB limit', async () => {
+  const normalized = Buffer.alloc(MAX_NORMALIZED_IMAGE_BYTES + 1, 0xff);
+  await assert.rejects(
+    () =>
+      saveClipboardImage(
+        {
+          sessionId: 'sess-normalized-too-big',
+          base64: TINY_PNG_BASE64,
+          mediaType: 'image/png',
+        },
+        {
+          normalizePastedImage: async () => ({
+            buffer: normalized,
+            mediaType: 'image/png',
+            width: 1,
+            height: 1,
+          }),
+        },
+      ),
+    /normalized image too large/,
   );
 });
 

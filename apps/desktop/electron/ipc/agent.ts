@@ -100,6 +100,11 @@ export function registerAgentChannels(): void {
     return { agents, failed };
   });
 
+  registerChannelWithEvent('agent.actor.snapshot', async (input, event) => {
+    assertPrimaryRenderer(event);
+    return runtimeHostAdapter.actorTreeSnapshot(input.sessionId);
+  });
+
   registerChannelWithEvent('agent.external.status', async (_input, event) => {
     assertPrimaryRenderer(event);
     const local = await externalAgentGateway.status();

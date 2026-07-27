@@ -31,6 +31,10 @@ export interface MockSessionState {
   setDeleteBusy(busy: boolean): void;
   /** Emulate the cursor-bearing listSessions contract introduced after SDK 0.7.66. */
   setCursorPaginationEnabled(enabled: boolean): void;
+  /** Deterministically pause loadSession for lifecycle-race tests. */
+  setLoadSessionHook(hook: (() => Promise<void>) | null): void;
+  /** Pause after loadSession captured its storage snapshot. */
+  setLoadSessionAfterReadHook(hook: (() => Promise<void>) | null): void;
   listCallCount(): number;
   has(id: string): boolean;
   /** Wipe storage + restore default SDK impl. Call from afterEach. */
@@ -53,6 +57,8 @@ export function installSessionStoreMock(): MockSessionState {
   let lastRewindSelectorValue: string | undefined;
   let deleteBusy = false;
   let cursorPaginationEnabled = false;
+  let loadSessionHook: (() => Promise<void>) | null = null;
+  let loadSessionAfterReadHook: (() => Promise<void>) | null = null;
   let listCalls = 0;
   const titleOverrides = new Map<string, string>();
   const watchers = new Set<
@@ -125,7 +131,9 @@ export function installSessionStoreMock(): MockSessionState {
       return { ok: true };
     },
     loadSession: async (id) => {
+      await loadSessionHook?.();
       const s = storage.get(id);
+      await loadSessionAfterReadHook?.();
       if (!s) return null;
       // F045: 回带 tag，让 host.tryResume 能从持久化数据反推 surface。
       return {
@@ -214,6 +222,12 @@ export function installSessionStoreMock(): MockSessionState {
     setCursorPaginationEnabled(enabled): void {
       cursorPaginationEnabled = enabled;
     },
+    setLoadSessionHook(hook): void {
+      loadSessionHook = hook;
+    },
+    setLoadSessionAfterReadHook(hook): void {
+      loadSessionAfterReadHook = hook;
+    },
     listCallCount(): number {
       return listCalls;
     },
@@ -227,6 +241,8 @@ export function installSessionStoreMock(): MockSessionState {
       lastRewindSelectorValue = undefined;
       deleteBusy = false;
       cursorPaginationEnabled = false;
+      loadSessionHook = null;
+      loadSessionAfterReadHook = null;
       listCalls = 0;
       watchers.clear();
       setSessionStoreImpl(null);

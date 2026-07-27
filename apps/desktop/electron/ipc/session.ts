@@ -852,6 +852,7 @@ export function registerSessionChannels(): void {
     // 同一条 `<task-completed>` 会重复出现(旧的侧存储按 finished:runId:status 去重、只显一份;approach A
     // 改按 transcript 位置渲染后丢了去重 → 同一份报告显示多次)。按 runId 去重、保留**首次**出现的位置。
     const seenWorkflowRunIds = new Set<string>();
+    const visibleUserCountByTurnId = new Map<string, number>();
     // 整段对话重复渲染修复:loadFullTranscript 返回全谱系。① 新 session:旧岛消息被 evict 成
     // "[compacted]" 占位 → 跳过;② 旧 session(更早 SDK 写的):旧岛保留真内容、每次压缩逐字节克隆一份
     // → 按内容折叠。去重**限定在 inactive 旧岛**,活动分支一条不碰(不折叠合法重复的活动消息)。
@@ -971,6 +972,10 @@ export function registerSessionChannels(): void {
         // 则 text === '',不 emit user item (但 tool_results map 已经在第一步抽走了)
         const userText = extractUserText(msg.content);
         if (userText.length > 0) {
+          const messageTurnId = isRecord(msg) ? stringField(msg.turnId) : undefined;
+          const turnId = stringField(entry.turnId) ?? messageTurnId;
+          const turnUserOrdinal =
+            turnId !== undefined ? (visibleUserCountByTurnId.get(turnId) ?? 0) : undefined;
           items.push({
             kind: 'user',
             content: userText,
@@ -978,7 +983,11 @@ export function registerSessionChannels(): void {
             // needs it: it becomes a UserMessage whose sentAt drives composeMessages' merge
             // with workflow notices; assistant/tool items become events that inherit the turn.
             ...(entrySentAt !== undefined ? { sentAt: entrySentAt } : {}),
+            ...(turnId !== undefined ? { turnId, turnUserOrdinal: turnUserOrdinal! } : {}),
           });
+          if (turnId !== undefined) {
+            visibleUserCountByTurnId.set(turnId, turnUserOrdinal! + 1);
+          }
         }
       } else if (msg.role === 'assistant') {
         // assistant: 按 content blocks 顺序逐个发 — text/thinking 累积到下次 tool_use 边界

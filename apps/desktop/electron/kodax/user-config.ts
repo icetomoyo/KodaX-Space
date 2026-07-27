@@ -72,6 +72,7 @@ export interface KodaxConfigCustomProvider {
   readonly apiKeyEnv: string;
   readonly defaultModel: string;
   readonly models?: readonly string[];
+  readonly promptCacheAffinity?: boolean;
   readonly reasoning?: CustomProviderReasoning;
 }
 
@@ -83,6 +84,7 @@ export interface KodaxConfigCustomProviderUpdate {
   readonly apiKeyEnv: string;
   readonly defaultModel: string;
   readonly models?: readonly string[];
+  readonly promptCacheAffinity?: boolean;
   readonly reasoning?: CustomProviderReasoning;
 }
 export interface SpaceCustomProviderForSdk {
@@ -93,6 +95,7 @@ export interface SpaceCustomProviderForSdk {
   readonly apiKeyEnv: string;
   readonly defaultModel: string;
   readonly models?: readonly string[];
+  readonly promptCacheAffinity?: boolean;
   readonly reasoning?: CustomProviderReasoning;
 }
 
@@ -510,6 +513,7 @@ function normalizeKodaxConfigCustomProvider(
   if (!urlCheck.ok || !urlCheck.normalizedUrl) return null;
 
   const models = normalizeModelList(raw.models);
+  const promptCacheAffinity = raw.promptCacheAffinity === true ? true : undefined;
   const reasoning = normalizeReasoningConfig(raw.reasoning);
   return {
     id: name,
@@ -520,6 +524,7 @@ function normalizeKodaxConfigCustomProvider(
     apiKeyEnv,
     defaultModel: model,
     ...(models ? { models } : {}),
+    ...(promptCacheAffinity ? { promptCacheAffinity } : {}),
     ...(reasoning ? { reasoning } : {}),
   };
 }
@@ -552,6 +557,9 @@ function spaceCustomProviderToSdk(provider: SpaceCustomProviderForSdk): SdkCusto
   };
   if (provider.models && provider.models.length > 0) {
     config.models = [...provider.models];
+  }
+  if (provider.promptCacheAffinity === true) {
+    config.promptCacheAffinity = true;
   }
   // Canonical SDK friendly form: reasoning: { efforts, default } | 'none'.
   if (provider.reasoning !== undefined) {
@@ -828,6 +836,7 @@ const CUSTOM_PROVIDER_MODELED_KEYS: ReadonlySet<string> = new Set([
   'apiKeyEnv',
   'model',
   'models',
+  'promptCacheAffinity',
   // 'reasoning' 是 Space 表单建模并作为其权威编辑器的字段（表单会用现有值预填,见
   // CustomProviderForm reasoningNone/reasoningEfforts/reasoningDefault）。必须纳入 modeled
   // keys,否则 merge 永远保留旧值 → 用户清空 reasoning 无效（C3 bug）。注意：SDK 侧的
@@ -847,6 +856,7 @@ function customProviderUpdateToSdk(
     apiKeyEnv: update.apiKeyEnv,
     defaultModel: update.defaultModel,
     models: update.models,
+    promptCacheAffinity: update.promptCacheAffinity,
     ...(update.reasoning !== undefined ? { reasoning: update.reasoning } : {}),
   });
 }

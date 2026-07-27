@@ -10,10 +10,13 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { kodaxHost } from '../kodax/host.js';
+import { deletePersistedSession, loadPersistedSession } from '../kodax/session-store.js';
+import { assertClipboardImageOwnerSession } from '../ipc/clipboard.js';
 import { setRendererTarget } from '../ipc/push.js';
 import { installSessionStoreMock, type MockSessionState } from './_helpers/session-store-mock.js';
 import { setUserConfigImpl, type KodaxUserConfigImpl } from '../kodax/user-config.js';
 import { providerConfigStore } from '../providers/config.js';
+import type { ManagedSession } from '../kodax/session-adapter.js';
 import {
   SessionRuntimeStore,
   setSessionRuntimeStoreForTesting,
@@ -81,6 +84,11 @@ test('tryResume returns false for sessionId that exists neither in-flight nor on
   assert.equal(kodaxHost.get('s_does-not-exist'), undefined);
 });
 
+test('tryResume rejects an unsafe Session ID before persisted lookup', async () => {
+  assert.equal(await kodaxHost.tryResume('../session'), false);
+  assert.equal(await kodaxHost.hasSession('../session'), false);
+});
+
 test('tryResume returns true immediately when session is already in-flight (no-op)', async () => {
   // Use mock provider 走 Mock factory，不依赖真 SDK 加载
   const { sessionId } = kodaxHost.createSession({
@@ -110,6 +118,201 @@ test('tryResume rehydrates a persisted-only session into the in-flight Map', asy
   assert.equal(resumed!.projectRoot, 'C:/proj/example');
   // title 从 persisted 拉过来
   assert.equal(resumed!.title, '你好');
+});
+
+test('concurrent tryResume calls share one Session construction', async () => {
+  const id = 's_concurrent-resume';
+  mockState.seed(id, 'C:/proj/example', 'concurrent resume');
+  let creates = 0;
+  let disposes = 0;
+  kodaxHost.setFactory((opts): ManagedSession => {
+    creates += 1;
+    return {
+      sessionId: opts.sessionId,
+      projectRoot: opts.projectRoot,
+      provider: opts.provider,
+      reasoningMode: opts.reasoningMode,
+      permissionMode: opts.permissionMode,
+      autoModeEngine: opts.autoModeEngine ?? 'llm',
+      agentMode: opts.agentMode ?? 'ama',
+      surface: opts.surface ?? 'code',
+      ephemeral: opts.ephemeral,
+      model: opts.model,
+      createdAt: Date.now(),
+      lastActivityAt: Date.now(),
+      title: undefined,
+      isRunning: () => false,
+      send: async () => ({ queued: false }),
+      cancel: async () => {},
+      dispose: async () => {
+        disposes += 1;
+      },
+    };
+  });
+  try {
+    const results = await Promise.all([kodaxHost.tryResume(id), kodaxHost.tryResume(id)]);
+    assert.deepEqual(results, [true, true]);
+    assert.equal(creates, 1);
+    assert.equal(kodaxHost.get(id)?.sessionId, id);
+  } finally {
+    await kodaxHost.disposeAll();
+    kodaxHost.setFactory(null);
+  }
+  assert.equal(disposes, 1);
+});
+
+test('delete serializes with an in-flight tryResume and prevents Session resurrection', async () => {
+  const id = 's_delete-resume-race';
+  mockState.seed(id, 'C:/proj/example', 'delete resume race');
+  let notifyLoadEntered: () => void = () => {};
+  let releaseLoad: () => void = () => {};
+  const loadEntered = new Promise<void>((resolve) => {
+    notifyLoadEntered = resolve;
+  });
+  const loadRelease = new Promise<void>((resolve) => {
+    releaseLoad = resolve;
+  });
+  mockState.setLoadSessionHook(async () => {
+    notifyLoadEntered();
+    await loadRelease;
+  });
+
+  const resume = kodaxHost.tryResume(id);
+  await loadEntered;
+  const deletion = kodaxHost.delete(id);
+  releaseLoad();
+
+  assert.equal(await resume, false);
+  assert.equal(await deletion, true);
+  assert.equal(kodaxHost.get(id), undefined);
+  assert.equal(mockState.has(id), false);
+  mockState.setLoadSessionHook(null);
+});
+
+test('persisted load invalidation cannot repopulate a deleted Session from a stale snapshot', async () => {
+  const id = 's_delete-cache-race';
+  mockState.seed(id, 'C:/proj/example', 'delete cache race');
+  let notifyLoadEntered: () => void = () => {};
+  let releaseLoad: () => void = () => {};
+  const loadEntered = new Promise<void>((resolve) => {
+    notifyLoadEntered = resolve;
+  });
+  const loadRelease = new Promise<void>((resolve) => {
+    releaseLoad = resolve;
+  });
+  let loadCalls = 0;
+  mockState.setLoadSessionAfterReadHook(async () => {
+    loadCalls += 1;
+    if (loadCalls !== 1) return;
+    notifyLoadEntered();
+    await loadRelease;
+  });
+
+  const staleLoad = loadPersistedSession(id);
+  await loadEntered;
+  assert.equal(await deletePersistedSession({ sessionId: id }), 'ok');
+  releaseLoad();
+
+  assert.equal(await staleLoad, null);
+  assert.equal(loadCalls, 2, 'the invalidated in-flight read should be retried once');
+  assert.equal(await loadPersistedSession(id), null);
+  assert.equal(loadCalls, 3, 'a null result must not be cached as a durable Session');
+  mockState.setLoadSessionAfterReadHook(null);
+});
+
+test('delete drains an in-flight ownership probe and rejects its stale result', async () => {
+  const id = 's_owner-delete-race';
+  mockState.seed(id, 'C:/proj/example', 'owner delete race');
+  let notifyLoadEntered: () => void = () => {};
+  let releaseLoad: () => void = () => {};
+  const loadEntered = new Promise<void>((resolve) => {
+    notifyLoadEntered = resolve;
+  });
+  const loadRelease = new Promise<void>((resolve) => {
+    releaseLoad = resolve;
+  });
+  mockState.setLoadSessionAfterReadHook(async () => {
+    notifyLoadEntered();
+    await loadRelease;
+  });
+
+  const ownership = kodaxHost.hasSession(id);
+  await loadEntered;
+  const deletion = kodaxHost.delete(id);
+  releaseLoad();
+
+  assert.equal(await ownership, false);
+  assert.equal(await deletion, true);
+  assert.equal(await kodaxHost.hasSession(id), false);
+  assert.equal(mockState.has(id), false);
+  mockState.setLoadSessionAfterReadHook(null);
+});
+
+test('disposeAll drains an in-flight tryResume and leaves the Host empty', async () => {
+  const id = 's_dispose-resume-race';
+  mockState.seed(id, 'C:/proj/example', 'dispose resume race');
+  let notifyLoadEntered: () => void = () => {};
+  let releaseLoad: () => void = () => {};
+  const loadEntered = new Promise<void>((resolve) => {
+    notifyLoadEntered = resolve;
+  });
+  const loadRelease = new Promise<void>((resolve) => {
+    releaseLoad = resolve;
+  });
+  mockState.setLoadSessionHook(async () => {
+    notifyLoadEntered();
+    await loadRelease;
+  });
+
+  const resume = kodaxHost.tryResume(id);
+  await loadEntered;
+  const disposal = kodaxHost.disposeAll();
+  releaseLoad();
+
+  assert.equal(await resume, false);
+  await disposal;
+  assert.equal(kodaxHost.get(id), undefined);
+  assert.equal(kodaxHost.listInFlight().length, 0);
+  assert.equal(mockState.has(id), true, 'shutdown must preserve the durable Session');
+  mockState.setLoadSessionHook(null);
+});
+
+test('disposeAll drains an in-flight ownership probe and rejects its stale result', async () => {
+  const id = 's_owner-dispose-race';
+  mockState.seed(id, 'C:/proj/example', 'owner dispose race');
+  let notifyLoadEntered: () => void = () => {};
+  let releaseLoad: () => void = () => {};
+  const loadEntered = new Promise<void>((resolve) => {
+    notifyLoadEntered = resolve;
+  });
+  const loadRelease = new Promise<void>((resolve) => {
+    releaseLoad = resolve;
+  });
+  mockState.setLoadSessionAfterReadHook(async () => {
+    notifyLoadEntered();
+    await loadRelease;
+  });
+
+  const ownership = kodaxHost.hasSession(id);
+  await loadEntered;
+  const disposal = kodaxHost.disposeAll();
+  releaseLoad();
+
+  assert.equal(await ownership, false);
+  await disposal;
+  assert.equal(kodaxHost.get(id), undefined);
+  assert.equal(mockState.has(id), true, 'shutdown must preserve the durable Session');
+  mockState.setLoadSessionAfterReadHook(null);
+});
+
+test('clipboard ownership accepts a persisted Session without instantiating its Runtime', async () => {
+  const id = 's_persisted-attachment-owner';
+  mockState.seed(id, 'C:/proj/example', 'attachment owner');
+  assert.equal(kodaxHost.get(id), undefined, 'precondition: selected Session is persisted only');
+
+  await assertClipboardImageOwnerSession(id, (sessionId) => kodaxHost.hasSession(sessionId));
+
+  assert.equal(kodaxHost.get(id), undefined);
 });
 
 test('tryResume hydrates configured model when it belongs to the resolved provider', async () => {
