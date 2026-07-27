@@ -4,7 +4,7 @@
   <img src="../resources/icon.png" alt="KodaX Space 应用图标" width="96">
 </p>
 
-> 当前发布基线：KodaX Space `v0.1.32`（package `0.1.32`）/ npm 正式发布的 KodaX `0.7.76`。当前源码另已对齐尚未发布到 npm 的 KodaX `0.7.77` 候选包。
+> 当前发布基线：KodaX Space `v0.1.32`（package `0.1.32`）/ npm 正式发布的 KodaX `0.7.76`。当前源码已正式对齐 npm 发布的精确 KodaX `0.7.77`。
 >
 > 更新日期：2026-07-26
 >
@@ -287,7 +287,7 @@ PowerShell 的 `-Path` 支持 `[...]` 通配符。最新版 KodaX 会把这类�
 
 附件规则：
 
-- PNG/JPEG/WEBP 可粘贴或拖入，单轮最多 8 张、单张约 6 MiB。
+- PNG/JPEG/WEBP 可粘贴或拖入；当前 base64/IPC 路径的临时源文件处理上限为单张 12 MiB（它不是压缩能力阈值）。Space 会调用 KodaX 将最大边压到 2000 px，并要求最终文件不超过 6 MiB。单轮最多 8 张。
 - 项目内文件优先成为 `@relative/path` 引用。
 - 项目外文件以受控文件引用处理，不会自动变成项目文件。
 - PDF、DOCX、XLS/XLSX 和文本/代码文件可在 Preview 查看；大文件受大小和单元格数量限制。
@@ -303,6 +303,8 @@ Settings 有四个主标签：Preferences、Providers、Runtime、License。
 ### Provider
 
 内置 Provider 和自定义 OpenAI-compatible/Anthropic-compatible Provider 都从 Providers 管理。环境变量也可提供凭据；UI 会尽量说明凭据来源。自定义 Provider 的 Base URL、协议和模型名必须与服务端实际兼容。
+
+KodaX 0.7.77 会为确认兼容的内置 Provider 建立稳定的提示词缓存路由：同一逻辑 Session 在连续 run、retry、fallback、resume 和 compaction 后保持稳定，子 Agent 按其规范路径隔离。自定义兼容端点默认不启用；只有确认网关接受相应协议字段时，才在 Provider 表单勾选“启用稳定的提示词缓存路由”。严格兼容网关可能拒绝未知字段，因此这个开关不会自动推断。
 
 ### Model 与 Reasoning Effort
 

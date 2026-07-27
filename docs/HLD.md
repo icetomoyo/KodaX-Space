@@ -18,7 +18,7 @@
 >
 > **2026-07-26 上下文与用量投影维护（Unreleased）**：Space 启用 KodaX `contextDiagnostics`，把不含正文的根上下文分类计数和 hash-only Provider cache 诊断投影到受校验 IPC。Renderer 用最终自动压缩阈值计算主 Agent 有效窗口，把模型最大上下文与阈值分开，并以独立累计表统计根/子 Agent 的 Provider usage。输出容量预留不属于活动输入，也不再作为压缩前空间展示。
 >
-> **2026-07-26 `0.7.77` 候选包对齐（Unreleased）**：根与 Desktop workspace 已安装同一 tgz bytes 并把最低 daemon 版本提升到 0.7.77。Runtime 现导出 root/child、retry、fallback、repair、workflow digest 与 compaction summary 的完成态物理请求诊断；Space 按 `requestId` 去重累计，保留有界重放 ID，并只在诊断尚未激活时回退 `iteration_end.usage`。完整 request-envelope/ephemeral-suffix 哈希通过无正文 IPC，interrupt finalization 完全回归 Runtime owner。npm publication 尚未完成，因此该对齐不是 Registry 发布证据。
+> **2026-07-27 `0.7.77` npm 正式包对齐（Unreleased）**：根与 Desktop workspace 已锁定同一 Registry tarball 并把最低 daemon 版本提升到 0.7.77。Runtime 现导出 root/child、retry、fallback、repair、workflow digest 与 compaction summary 的完成态物理请求诊断；Space 按 `requestId` 去重累计，保留有界重放 ID，并只在诊断尚未激活时回退 `iteration_end.usage`。完整 request-envelope/ephemeral-suffix/cache-affinity 哈希通过无正文 IPC，interrupt finalization 完全回归 Runtime owner。KodaX 还为逻辑 Session、retry、fallback、resume 与 compaction 提供稳定的 Provider 缓存亲和键，并归一化 CLI bridge 的缓存读取/写入用量；自定义兼容端点须由用户显式启用。
 >
 > **2026-07-26 全局按钮交互维护（Unreleased）**：Renderer 以 Session Token 控件的柔和扫光与边缘亮起为视觉基准，在 `body` 级交互层统一普通、语义、弹层和键盘焦点反馈。语义色继续来自既有 token；全宽列表降低强度；Windows 窗口控件、Monaco、xterm、disabled 与显式 opt-out 保持各自契约。该层仅绘制伪元素，不改变布局、业务 action、权限或 Runtime owner。
 >
@@ -416,6 +416,16 @@ type Project = {
 - Renderer 显示的文件读取限定在 `Project.rootPath` 子树（main 侧防 path traversal）
 - 拖拽外部文件要求二次确认才注入 session
 - Workspace/worktree isolation 不是当前承诺，也不等同安全 sandbox；只有独立 feature/threat model 通过 reopen gate 后才实现。
+
+### 7.4 文档与原生工具执行
+
+- F137/F129 的解析、Office render/recalculation 和 OCR 不占用 Electron main：纯 JS 解析走
+  有 heap/输入/时间限制的 Worker，原生 adapter 走 job-scoped 子进程、私有 staging/profile、
+  禁宏/链接更新、取消和整树清理。
+- 该基线用于先完成功能和故障隔离，不宣称 OS 层文件系统/网络/进程/native-resource
+  containment，也不因缺少 OS backend 禁用已经通过功能/保真测试的 adapter。
+- F138 在 `post-v0.5.x` 以可替换 backend 增加平台强制隔离；它不要求 KodaX SDK 改动，也
+  不回溯改变 Document Job、Presentation Project 或 Delivery 契约。
 
 ---
 

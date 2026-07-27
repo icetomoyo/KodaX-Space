@@ -3,7 +3,7 @@
 > 面向源码使用者、贡献者和发布维护者。普通用户请阅读[用户使用手册](USER_MANUAL.zh-CN.md)。
 >
 > 当前 Space 发布基线：`v0.1.32`；该发布使用 npm Registry 的精确 `@kodax-ai/kodax@0.7.76`。
-> 当前源码已对齐本地 `0.7.77` 候选 tgz，并包含尚未重新发布的 context/session usage、builtin catalog、file reveal 和 Node/build 工具链维护；0.7.77 尚未进入 npm Registry，不要把本地验证反向写成正式发布证据。
+> 当前源码已正式对齐 npm 发布的精确 `0.7.77`，并包含尚未发布 Space 新版本的 context/session usage、稳定缓存亲和诊断、builtin catalog、file reveal 和 Node/build 工具链维护。
 
 ## 1. 环境要求
 
@@ -20,7 +20,7 @@ npm install --include=dev
 
 KodaX Space 是 npm workspace monorepo。不要只在 `apps/desktop` 中安装依赖，否则 workspace package、Electron native module 与根脚本可能不一致。
 
-根、desktop manifest 与 lockfile 当前都固定到精确 KodaX 0.7.77。已审查候选 tgz 的 SRI 为 `sha512-6UtpdL84pkBdzKGu+t9IJqyzjufk46VTMAUNnLwxa+B/LyKitGb/gQ9quhpw/6A0gSrTuDu69oj4tDtJmcSdfQ==`，SHA256 为 `95DB1DA510840A918A3B55105F6CCF81D2871C363A2D21D2F20223382BCB17A8`。`npm ls @kodax-ai/kodax --all` 应只显示一个 deduped 0.7.77；Runtime compatibility 会拒绝更旧 daemon，并继续要求 guardrail v3、`permission:grant-admin`、`interruptInput:1`、`actorControlPlane:1`、`contextCompaction:3`、`transcriptPaging:1` 和 `transcriptSearch:1`。Provider catalog 还要求 public `kimi-k3` 1M 路由与 Kimi Code 既有 tiers。npm publication 完成前，只能从受审查的本地 tgz 安装候选版；`npm ci` 会因 Registry 404 失败。正式发布必须先上传完全相同的 bytes，再验证 lockfile SRI，不能提交开发机 `file:` 依赖。
+根、desktop manifest 与 lockfile 当前都固定到 npm 正式发布的精确 KodaX 0.7.77。官方 Registry tarball 的 SRI 为 `sha512-doAvH966LlOk/fBvmMZCmVSBbvLNPHKWtMaEQ6C2Vqvzs6ninQEs290ECGNHvAP/dMuRh2gD6Dso76HUgzLfzw==`，SHA256 为 `E30B447059F1C237B81E5896E51698D3FFD7987A8C5E1CF15F9F2354C846F63C`。`npm ls @kodax-ai/kodax --all` 应只显示一个 deduped 0.7.77；Runtime compatibility 会拒绝更旧 daemon，并继续要求 guardrail v3、`permission:grant-admin`、`interruptInput:1`、`actorControlPlane:1`、`contextCompaction:3`、`transcriptPaging:1` 和 `transcriptSearch:1`。Provider catalog 还要求 public `kimi-k3` 1M 路由与 Kimi Code 既有 tiers。依赖必须保持 Registry URL 与上述 lockfile SRI，不能提交开发机 `file:` 依赖。
 
 ## 2. 启动方式
 

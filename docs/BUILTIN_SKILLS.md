@@ -123,13 +123,15 @@ KodaX Space. Use a redistributable implementation or obtain explicit
 redistribution permission before adding equivalent builtin skills.
 
 F137 plans independent Chinese-first `docx`, `pdf`, `xlsx`, and `pptx`
-implementations for `v0.1.33`. Their design starts from Space's own document
+implementations for `v0.1.34`. Their design starts from Space's own document
 contracts and public format/library documentation; a later capability-only
 comparison is recorded without copying or translating proprietary prompts,
-code, examples, assets, tests, or structure. GA is scoped to a shared sandboxed
-inspection/job/validation foundation plus one controlled create/edit vertical
-slice per format. High-fidelity PPTX remains on the F129 pipeline, and gated
-OCR/recalculation/template capabilities remain unavailable until their adapters,
-platform matrix, and fixtures qualify. First-party authored sources are kept
-separate from generated builtin snapshots. See
-[the v0.1.33 design](features/v0.1.33.md).
+code, examples, assets, tests, or structure. GA uses bounded Worker/child-process
+inspection and execution, cancellable jobs, and truthful validation while
+delivering complete format workflows. F137 owns reusable native PPTX mechanics;
+F129 later reuses them for Studio and target-Office verification. Adapter-backed
+OCR/recalculation/render operations remain unavailable only when their adapters
+or functional/fidelity fixtures do not qualify; the post-v0.5.x F138 OS sandbox
+is not a prerequisite. First-party authored sources are kept separate from
+generated builtin snapshots. See
+[the v0.1.34 design](features/v0.1.34.md).

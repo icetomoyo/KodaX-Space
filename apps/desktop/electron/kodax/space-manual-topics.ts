@@ -207,7 +207,7 @@ export const SPACE_MANUAL_TOPICS: readonly KodaXManualTopicInput[] = [
       '- 已接受的 interrupt 以公开 inputId 跟踪：交付后黄色排队气泡必须由真实用户 transcript 边界替换；若最终安全窗口已经关闭，发送会被拒绝并恢复草稿；极端终态仍未交付时会保留“未送达”失败气泡，不能无限显示为排队中。',
       '- durable run.input.delivered 事件若持久化失败，Runtime 会保留 queued input、返回错误并只记录不含用户正文的有界 runtime.warning；Space 恢复草稿，不能把 warning 或旧气泡当作已交付。',
       '- 输入 / 打开 slash command 和 skill 补全；输入 @ 打开项目路径补全；上下键在补全和历史消息中导航。',
-      '- 粘贴或拖入 PNG/JPEG/WEBP 图片会生成图片 chip，单张约 6 MiB，上限 8 张。',
+      '- 粘贴或拖入 PNG/JPEG/WEBP 图片会生成图片 chip；当前 base64/IPC 路径的临时源文件处理上限为 12 MiB，Space 调用 KodaX 将最大边压到 2000 px，并要求最终文件不超过 6 MiB；单轮上限 8 张。',
       '- 拖入或通过 + 菜单添加文件/文件夹：项目内优先插入 @relative/path，项目外插入 file:// 链接；可见消息保留链接，但发送给模型的是经 Electron 校验的原生绝对路径；草稿最多 32 个文件引用。',
       '- + 菜单还可插入 slash command、打开 connectors/MCP、查看 skills。Agent picker 会插入 @agent-name。',
       '- 底部控件可切 provider/model/reasoning、permission mode、agent mode；“上下文窗口”显示主 Agent 到自动压缩阈值的活动输入压力，旁边的“会话 Token 用量”累计根 Agent 与子 Agent 的 Provider 调用，两者不是同一个指标。',
@@ -447,7 +447,7 @@ export const SPACE_MANUAL_TOPICS: readonly KodaXManualTopicInput[] = [
     body: text(
       'Preview 面板用于检查文件内容。PDF、DOCX、XLS/XLSX 会用专门 viewer；其它文本/代码文件用 Monaco 只读查看；超大或不支持文件会显示错误/截断提示。',
       '',
-      'Terminal 面板是真实 PTY，多 tab，可在项目 cwd 中运行命令。Windows 默认 cmd.exe，macOS/Linux 走系统 shell。终端环境会剥离常见 *_KEY、*_TOKEN 等敏感变量，降低泄漏风险。',
+      'Terminal 面板是真实 PTY，多 tab，可在项目 cwd 中运行命令。Windows 自动模式依次优先 PowerShell 7、Windows PowerShell、cmd，macOS/Linux 走系统 shell；也可在设置中显式选择。新终端与 Coder 命令工具会加载同一个所选 Shell 配置，使 fnm、Volta、nvm、asdf、pyenv 等依赖 PATH 的版本管理器无需专用适配。终端与命令工具仍会剥离常见 *_KEY、*_TOKEN 等敏感变量，降低泄漏风险。',
       '',
       'Preview 适合审阅文件，Terminal 适合用户自己操作环境；AI 需要执行 shell 时仍会走工具权限系统。',
     ),
@@ -802,7 +802,7 @@ export const SPACE_MANUAL_TOPICS: readonly KodaXManualTopicInput[] = [
     body: text(
       '在 composer 中直接粘贴截图或拖入 PNG/JPEG/WEBP 图片，会显示缩略图 chip。发送时 Space 将图片作为 input artifact 传给 SDK，支持 vision 的 provider/model 会收到 multimodal content；若 SDK 将图片规范化为另一种格式，Space 使用持久化字节对应的最终 media type，而不会沿用旧的 PNG/JPEG 标签。',
       '',
-      '限制：单张约 6 MiB，单轮最多 8 张。GIF/视频不保证作为动态图或视频处理。发送前可移除图片 chip。',
+      '限制：当前 base64/IPC 路径的临时源文件处理上限为单张 12 MiB；它不是压缩能力阈值。Space 会先调用 KodaX 转换，再要求最终图片不超过 6 MiB。单轮最多 8 张。GIF/视频不保证作为动态图或视频处理。发送前可移除图片 chip。',
     ),
     aliases: [
       '粘图',

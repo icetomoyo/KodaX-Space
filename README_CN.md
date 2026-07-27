@@ -13,7 +13,7 @@
   <a href="https://github.com/icetomoyo/KodaX-Space/releases/latest"><img alt="release" src="https://img.shields.io/github/v/release/icetomoyo/KodaX-Space?style=flat-square"></a>
   <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-KAI--FCL-orange?style=flat-square"></a>
   <a href="https://github.com/icetomoyo/KodaX-Space/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/icetomoyo/KodaX-Space/ci.yml?style=flat-square&label=ci"></a>
-  <img alt="KodaX SDK" src="https://img.shields.io/badge/KodaX_SDK-0.7.77_candidate-f0a020?style=flat-square">
+  <img alt="KodaX SDK" src="https://img.shields.io/badge/KodaX_SDK-0.7.77-f0a020?style=flat-square">
   <img alt="platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-34495e?style=flat-square">
 </p>
 
@@ -92,11 +92,11 @@ npm run dev
 
 **v0.1.32 发布基线精确依赖 npm 正式发布的 KodaX 0.7.76。** Coder 默认连接 profile-scoped shared daemon；会话/运行/共享设置/交互、Workflow 观察与控制、Learning Center 操作、目录发现、MCP 工具发现与 reload，以及已配置 External Agent 的 Actor/Turn 均使用 Runtime 服务。Space 要求 `contextCompaction:3`、`transcriptPaging:1`、`transcriptSearch:1` 以获得耐久化精确历史恢复，同时要求 `interruptInput:1`、Auto LLM guardrail v3 和 `actorControlPlane:1`。KodaX 0.7.76 保留经过审计的 Windows 后台子进程隐藏和 Sidecar 终态修正，并将 Kimi Code 默认路由改为直连 `k3-256k`，K3 默认推理档调整为 `high`；Space 还在验证开始后本地关闭剩余的 managed-task interrupt 窗口，明确拒绝已错过安全投递点的输入，不再允许它先被接受、随后未投递终结。正式版把模型 mailbox 等待与 UI/SDK 进度遥测分离，保证子 Agent idle-yield 期间排队的真实用户提示进入 transcript，让 Goal 生命周期工具保持常驻，阻止 child live-only 状态覆盖 root 投影，并把精确 checkpoint/恢复指引字节保留在活动 compaction lineage 上。Partner 继续由 Space 在 Electron main 中 embedded-inline 承载。MCP 进程/日志、Workflow library/start/admin、Space Reference Agent 执行和产品 Artifact 仍是明确的 host-provider 边界。
 
-> **v0.1.32 正式 tag 之后的未发布源码维护：**当前源码要求精确的本地 KodaX 0.7.77 候选包；它尚未发布到 npm。底部状态区把主 Agent 上下文与整个 Session 累计 Token 分开显示；完成态物理请求诊断按 request ID 去重，覆盖 root、child、retry、fallback、repair、workflow digest 和 compaction summary。“上下文窗口”使用最终自动压缩阈值及不含正文的构成。Space 还接入 public `kimi/kimi-k3`，把已修正的 interrupt finalization 边界交还 Runtime，修复 daemon 模式下 Space builtin 的 slash 发现、文件 reveal 错误分类，并对齐 Node 22 工具链。上述维护仍属于 **Unreleased**；完全相同的 0.7.77 bytes 发布前，干净 Registry 安装保持阻塞。
+> **v0.1.32 正式 tag 之后的未发布源码维护：**当前源码要求 npm 正式发布的精确 KodaX 0.7.77。底部状态区把主 Agent 上下文与整个 Session 累计 Token 分开显示；完成态物理请求诊断按 request ID 去重，覆盖 root、child、retry、fallback、repair、workflow digest 和 compaction summary。“上下文窗口”使用最终自动压缩阈值及不含正文的构成。Space 还接入稳定的提示词缓存路由诊断和 CLI 缓存用量归一化，为兼容的自定义 Provider 提供默认关闭的缓存亲和开关，接入 public `kimi/kimi-k3`，把已修正的 interrupt finalization 边界交还 Runtime，修复 daemon 模式下 Space builtin 的 slash 发现、文件 reveal 错误分类，并对齐 Node 22 工具链。上述维护仍属于 **Unreleased**。
 
 F122-F124 已交付 Partner 项目来源库、不可变证据/引用和自动 grounded context 闭环。F121 在最终人工多客户端发布验收完成前保持 `InProgress`；缺少必要 daemon capability 时 Coder fail closed，不会静默退回 inline owner。详见 [v0.1.32 版本设计](docs/features/v0.1.32.md)和[能力台账](docs/KODAX_CAPABILITY_LEDGER.md)。
 
-F135 还会把许可证允许再分发的 `frontend-slides` 与 `huashu-design` 作为经审查的 Space builtin 一起打包，用户无需另行安装；Space 分发的 Huashu 适配会移除默认推广水印/签名的标记和指令，同时保留上游 MIT 许可证与作者信息。浏览器、视频、TTS、AI 评审等可选流程仍需其文档列出的外部 runtime 或凭据。本机的 `pdf`、`pptx`、`xlsx`、`docx` skill 因现有许可证禁止再分发，不进入安装包。F137 已为 `v0.1.33` 规划四个由 Space 独立创作、中文优先的替代 Skill，使用 Space 自有的文档操作与验证链，不复制或翻译 proprietary 材料。详见 [v0.1.33 设计](docs/features/v0.1.33.md)、[builtin skill 文档](docs/BUILTIN_SKILLS.md)和 [v0.1.32 发布就绪清单](docs/releases/v0.1.32-release-readiness.md)。
+F135 还会把许可证允许再分发的 `frontend-slides` 与 `huashu-design` 作为经审查的 Space builtin 一起打包，用户无需另行安装；Space 分发的 Huashu 适配会移除默认推广水印/签名的标记和指令，同时保留上游 MIT 许可证与作者信息。浏览器、视频、TTS、AI 评审等可选流程仍需其文档列出的外部 runtime 或凭据。本机的 `pdf`、`pptx`、`xlsx`、`docx` skill 因现有许可证禁止再分发，不进入安装包。F137 已为 `v0.1.34` 规划四个由 Space 独立创作、中文优先的替代 Skill，使用 Space 自有的文档操作与验证链，不复制或翻译 proprietary 材料。详见 [v0.1.34 设计](docs/features/v0.1.34.md)、[builtin skill 文档](docs/BUILTIN_SKILLS.md)和 [v0.1.32 发布就绪清单](docs/releases/v0.1.32-release-readiness.md)。
 
 F136 让 Windows 后台 owner 变得可见、可控。关闭最后一个窗口会销毁 renderer，但保留任务栏通知区域图标；用户可以重新打开 Space、查看有界的 Runtime/任务/其他客户端状态、只退出 Space 并保留 Runtime，或请求“彻底退出”。彻底退出会先断开 Space，再仅在没有 active/queued/pending 工作和其他客户端时请求 Runtime 安全停止。0.1.32 的托盘仍由轻量 Electron main 持有；拆成独立 helper 以便 main 也退出属于后续优化。
 
@@ -270,7 +270,8 @@ npm run e2e:headed
 | 版本线            | 重点                                                                                                         |
 | ----------------- | ------------------------------------------------------------------------------------------------------------ |
 | `v0.1.32`         | 已发布 Shared-daemon Coder、Partner 项目知识/引用、受审 builtin、精确历史体验、Windows 图标/托盘与发布加固。 |
-| `v0.1.33`         | 独立创作、中文优先的 DOCX/PDF/XLSX/PPTX builtin：隔离检查、受控创建/编辑纵切和如实验证 receipt。          |
+| `v0.1.33`         | 扩大后的 v0.1.32 source/parser/citation/retrieval/runtime/control 稳定化预留。                           |
+| `v0.1.34`         | 独立创作、中文优先的 DOCX/PDF/XLSX/PPTX builtin 与语义 UI polish：有界执行和如实验证 receipt。          |
 | `v0.1.35-v0.1.40` | Workflow/Review 证据面、Task/Capability 治理，以及 SDK-gated Memory Agent/Learning Center host。             |
 | `v0.1.43`         | 本地化完成、beta diagnostics、release channel、updater/distribution trust。                                  |
 | `v0.2.x`          | Governed Browser 与 Partner packs、只读 Connector snapshots、本地 Automations、可刷新 Artifacts。            |
