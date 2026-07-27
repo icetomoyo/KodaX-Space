@@ -16,9 +16,18 @@
 
 import { z } from 'zod';
 
-// 6 MiB 是 Anthropic / OpenAI 对 base64 image 的常见上限分位 (≈8 MiB base64
-// 编码后) — 留点余量。过大的截图 / 高分辨率照片这里直接拒绝，让用户先压缩。
-const MAX_IMAGE_BYTES = 6 * 1024 * 1024;
+// Source bytes cross Electron IPC before KodaX can decode and normalize them, so keep a temporary,
+// conservative local-memory ceiling distinct from the provider-safe persisted result. This is not
+// a compression-capability threshold. KodaX 0.7.77 normalizes to a 3.75 MiB target; Space retains
+// a 6 MiB hard ceiling for the final sandbox file.
+export const MAX_SOURCE_IMAGE_BYTES = 12 * 1024 * 1024;
+export const MAX_NORMALIZED_IMAGE_BYTES = 6 * 1024 * 1024;
+export const MAX_SOURCE_IMAGE_BASE64_LENGTH = 4 * Math.ceil(MAX_SOURCE_IMAGE_BYTES / 3);
+export const MAX_NORMALIZED_IMAGE_BASE64_LENGTH =
+  4 * Math.ceil(MAX_NORMALIZED_IMAGE_BYTES / 3);
+const clipboardSessionIdSchema = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/, {
+  message: 'sessionId must be a safe Session token',
+});
 
 // ---- Invoke: clipboard.saveImage ----
 //
@@ -29,12 +38,12 @@ export const clipboardSaveImageChannel = {
   direction: 'invoke',
   input: z.object({
     /** 绑定到哪个 session — main 用 sessionId 拆子目录，方便 dispose 清理。*/
-    sessionId: z.string().min(1).max(128),
+    sessionId: clipboardSessionIdSchema,
     /** base64 编码的原始 image bytes (renderer 端 FileReader.readAsDataURL 后剥 data URI 头)。 */
     base64: z
       .string()
       .min(1)
-      .max(MAX_IMAGE_BYTES * 2),
+      .max(MAX_SOURCE_IMAGE_BASE64_LENGTH),
     mediaType: z.enum(['image/png', 'image/jpeg', 'image/webp']),
   }),
   output: z.object({
@@ -43,7 +52,7 @@ export const clipboardSaveImageChannel = {
     /** SDK 规范化并落盘后的真实媒体类型；可能与 renderer 传入值不同。 */
     mediaType: z.enum(['image/png', 'image/jpeg', 'image/webp']),
     /** 文件落盘后实际字节数 — UI 显示 "230 KB" 等。*/
-    bytes: z.number().int().positive().max(MAX_IMAGE_BYTES),
+    bytes: z.number().int().positive().max(MAX_NORMALIZED_IMAGE_BYTES),
   }),
 } as const;
 
@@ -51,7 +60,7 @@ export const clipboardReadImageChannel = {
   name: 'clipboard.readImage',
   direction: 'invoke',
   input: z.object({
-    sessionId: z.string().min(1).max(128),
+    sessionId: clipboardSessionIdSchema,
   }),
   output: z.object({
     image: z
@@ -61,8 +70,8 @@ export const clipboardReadImageChannel = {
         base64: z
           .string()
           .min(1)
-          .max(MAX_IMAGE_BYTES * 2),
-        bytes: z.number().int().positive().max(MAX_IMAGE_BYTES),
+          .max(MAX_NORMALIZED_IMAGE_BASE64_LENGTH),
+        bytes: z.number().int().positive().max(MAX_NORMALIZED_IMAGE_BYTES),
         width: z.number().int().positive().max(100_000),
         height: z.number().int().positive().max(100_000),
       })
@@ -78,7 +87,7 @@ export const clipboardCleanupSessionChannel = {
   name: 'clipboard.cleanupSession',
   direction: 'invoke',
   input: z.object({
-    sessionId: z.string().min(1).max(128),
+    sessionId: clipboardSessionIdSchema,
   }),
   output: z.object({
     /** 删了多少个文件。0 表示该 session 没贴过图。*/
@@ -94,7 +103,7 @@ export const clipboardDiscardImageChannel = {
   name: 'clipboard.discardImage',
   direction: 'invoke',
   input: z.object({
-    sessionId: z.string().min(1).max(128),
+    sessionId: clipboardSessionIdSchema,
     path: z.string().min(1).max(4096),
   }),
   output: z.object({

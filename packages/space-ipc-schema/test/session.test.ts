@@ -85,6 +85,35 @@ test('session.history output accepts restored sidecar verifier messages', () => 
   );
 });
 
+test('session.history carries bounded canonical user-boundary identity', () => {
+  assert.equal(
+    sessionHistoryChannel.output.safeParse({
+      items: [
+        {
+          kind: 'user',
+          content: 'q',
+          turnId: 'turn_1',
+          turnUserOrdinal: 1,
+        },
+      ],
+    }).success,
+    true,
+  );
+  assert.equal(
+    sessionHistoryChannel.output.safeParse({
+      items: [
+        {
+          kind: 'user',
+          content: 'q',
+          turnId: '',
+          turnUserOrdinal: -1,
+        },
+      ],
+    }).success,
+    false,
+  );
+});
+
 test('session.history output accepts restored local slash notices', () => {
   assert.equal(
     sessionHistoryChannel.output.safeParse({
@@ -505,6 +534,7 @@ test('session.event payload: mid_turn_user_prompt variant', () => {
     sessionId: 's_1',
     queueId: 'input_1',
     content: 'follow up',
+    turnId: 'turn_1',
   };
   assert.equal(sessionEventChannel.payload.safeParse(evt).success, true);
 });
@@ -516,6 +546,7 @@ test('session.event payload: queued_user_prompt_started variant', () => {
     queueId: 'run_queued_1',
     queueMode: 'after-turn' as const,
     content: 'follow up',
+    turnId: 'turn_2',
   };
   assert.equal(sessionEventChannel.payload.safeParse(evt).success, true);
 });
@@ -622,6 +653,7 @@ test('session.event payload: provider cache diagnostic is hash-only and provider
     requestMessagesHash: hash,
     requestEnvelopeHash: hash,
     ephemeralSuffixHash: hash,
+    promptCacheAffinityHash: hash,
     messageCount: 44,
     toolCount: 12,
     inputTokens: 145_226,
@@ -643,6 +675,12 @@ test('session.event payload: provider cache diagnostic is hash-only and provider
   assert.equal(
     parsed.success && parsed.data.kind === 'provider_cache_diagnostic'
       ? parsed.data.ephemeralSuffixHash
+      : undefined,
+    hash,
+  );
+  assert.equal(
+    parsed.success && parsed.data.kind === 'provider_cache_diagnostic'
+      ? parsed.data.promptCacheAffinityHash
       : undefined,
     hash,
   );

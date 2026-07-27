@@ -20,6 +20,19 @@ export type SupportedLocaleT = z.infer<typeof supportedLocaleSchema>;
 export const languageModeSchema = z.enum(['system', 'zh-CN', 'en-US']);
 export type LanguageModeT = z.infer<typeof languageModeSchema>;
 
+export const terminalShellPreferenceSchema = z.enum([
+  'auto',
+  'pwsh',
+  'powershell',
+  'cmd',
+  'bash',
+  'zsh',
+]);
+export type TerminalShellPreferenceT = z.infer<typeof terminalShellPreferenceSchema>;
+
+export const windowCloseBehaviorSchema = z.enum(['ask', 'minimize-to-tray', 'quit-completely']);
+export type WindowCloseBehaviorT = z.infer<typeof windowCloseBehaviorSchema>;
+
 const spaceRuntimeDefaultsSchema = z
   .object({
     permissionMode: permissionModeSchema.optional(),
@@ -57,6 +70,8 @@ export function resolveEffectiveLocale(
 const spaceSettingsSchema = z.object({
   defaultWorkspace: z.string().min(1).max(4096),
   languageMode: languageModeSchema,
+  terminalShell: terminalShellPreferenceSchema,
+  windowCloseBehavior: windowCloseBehaviorSchema,
   effectiveLocale: supportedLocaleSchema,
   preferredSystemLanguages: z.array(z.string().min(1).max(128)),
   runtimeDefaults: spaceRuntimeDefaultsSchema.default({}),
@@ -147,6 +162,28 @@ export const settingsSetLanguageModeChannel = {
   input: z.object({
     languageMode: languageModeSchema,
   }),
+  output: spaceSettingsSchema,
+} as const;
+
+export const settingsSetTerminalShellChannel = {
+  name: 'settings.setTerminalShell',
+  direction: 'invoke',
+  input: z
+    .object({
+      terminalShell: terminalShellPreferenceSchema,
+    })
+    .strict(),
+  output: spaceSettingsSchema,
+} as const;
+
+export const settingsSetWindowCloseBehaviorChannel = {
+  name: 'settings.setWindowCloseBehavior',
+  direction: 'invoke',
+  input: z
+    .object({
+      windowCloseBehavior: windowCloseBehaviorSchema,
+    })
+    .strict(),
   output: spaceSettingsSchema,
 } as const;
 

@@ -155,6 +155,10 @@ export {
 } from './channels/session.js';
 
 export {
+  MAX_SOURCE_IMAGE_BYTES,
+  MAX_NORMALIZED_IMAGE_BYTES,
+  MAX_SOURCE_IMAGE_BASE64_LENGTH,
+  MAX_NORMALIZED_IMAGE_BASE64_LENGTH,
   clipboardSaveImageChannel,
   clipboardReadImageChannel,
   clipboardCleanupSessionChannel,
@@ -218,6 +222,9 @@ export {
 
 export {
   agentDiscoverChannel,
+  agentActorTreeSnapshotSchema,
+  agentActorSnapshotChannel,
+  agentActorChangedChannel,
   externalAgentStatusChannel,
   externalAgentRegistrationListChannel,
   externalAgentReferenceUpsertChannel,
@@ -233,6 +240,10 @@ export {
   type AgentMeta,
   type AgentSource,
   type AgentFailure,
+  type AgentActorTreeSnapshotT,
+  type AgentActorSummaryT,
+  type AgentActorLatestTurnT,
+  type AgentActorProgressItemT,
   type ExternalAgentRegistrationSummaryT,
   type DispatchableAgentListingT,
   type ExternalAgentTaskT,
@@ -497,11 +508,15 @@ export {
   settingsKodaxConfigSetCompactionChannel,
   settingsSetDefaultWorkspaceChannel,
   settingsSetLanguageModeChannel,
+  settingsSetTerminalShellChannel,
+  settingsSetWindowCloseBehaviorChannel,
   settingsSetRuntimeDefaultsChannel,
   kodaxCompactionSettingsSchema,
   KODAX_COMPACTION_TRIGGER_PERCENT_MAX,
   KODAX_COMPACTION_TRIGGER_PERCENT_MIN,
   languageModeSchema,
+  terminalShellPreferenceSchema,
+  windowCloseBehaviorSchema,
   supportedLocaleSchema,
   resolveEffectiveLocale,
   type KodaxCompactionSettingsT,
@@ -509,6 +524,8 @@ export {
   type SpaceSettingsT,
   type SpaceRuntimeDefaultsT,
   type LanguageModeT,
+  type TerminalShellPreferenceT,
+  type WindowCloseBehaviorT,
   type SupportedLocaleT,
 } from './channels/settings.js';
 

@@ -10,6 +10,8 @@ import {
   settingsKodaxConfigSetCompactionChannel,
   settingsSetDefaultWorkspaceChannel,
   settingsSetLanguageModeChannel,
+  settingsSetTerminalShellChannel,
+  settingsSetWindowCloseBehaviorChannel,
   settingsSetRuntimeDefaultsChannel,
 } from '../src/index.js';
 
@@ -18,6 +20,8 @@ test('settings channels are registered', () => {
     'settings.get',
     'settings.setDefaultWorkspace',
     'settings.setLanguageMode',
+    'settings.setTerminalShell',
+    'settings.setWindowCloseBehavior',
     'settings.setRuntimeDefaults',
     'settings.kodaxConfig.get',
     'settings.kodaxConfig.setCompaction',
@@ -100,6 +104,8 @@ test('settings output includes language preference and effective locale', () => 
   const output = {
     defaultWorkspace: '/tmp/kodax',
     languageMode: 'system',
+    terminalShell: 'auto',
+    windowCloseBehavior: 'ask',
     effectiveLocale: 'zh-CN',
     preferredSystemLanguages: ['zh-CN', 'en-US'],
     runtimeDefaults: {
@@ -112,6 +118,8 @@ test('settings output includes language preference and effective locale', () => 
   assert.equal(settingsGetChannel.output.safeParse(output).success, true);
   assert.equal(settingsSetDefaultWorkspaceChannel.output.safeParse(output).success, true);
   assert.equal(settingsSetLanguageModeChannel.output.safeParse(output).success, true);
+  assert.equal(settingsSetTerminalShellChannel.output.safeParse(output).success, true);
+  assert.equal(settingsSetWindowCloseBehaviorChannel.output.safeParse(output).success, true);
   assert.equal(settingsSetRuntimeDefaultsChannel.output.safeParse(output).success, true);
 });
 
@@ -162,6 +170,33 @@ test('settings.setLanguageMode accepts only supported language modes', () => {
   );
   assert.equal(
     settingsSetLanguageModeChannel.input.safeParse({ languageMode: 'zh-Hant' }).success,
+    false,
+  );
+});
+
+test('settings.setTerminalShell accepts supported shells and rejects arbitrary executables', () => {
+  for (const terminalShell of ['auto', 'pwsh', 'powershell', 'cmd', 'bash', 'zsh']) {
+    assert.equal(settingsSetTerminalShellChannel.input.safeParse({ terminalShell }).success, true);
+  }
+  assert.equal(
+    settingsSetTerminalShellChannel.input.safeParse({
+      terminalShell: 'C:\\Temp\\untrusted-shell.exe',
+    }).success,
+    false,
+  );
+});
+
+test('settings.setWindowCloseBehavior accepts only supported close policies', () => {
+  for (const windowCloseBehavior of ['ask', 'minimize-to-tray', 'quit-completely']) {
+    assert.equal(
+      settingsSetWindowCloseBehaviorChannel.input.safeParse({ windowCloseBehavior }).success,
+      true,
+    );
+  }
+  assert.equal(
+    settingsSetWindowCloseBehaviorChannel.input.safeParse({
+      windowCloseBehavior: 'force-kill',
+    }).success,
     false,
   );
 });

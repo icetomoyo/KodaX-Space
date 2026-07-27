@@ -596,6 +596,12 @@ const sessionHistoryItemSchema = z.discriminatedUnion('kind', [
     /** SDK 持久化的消息时间戳 (epoch ms)；缺失时 renderer fallback 到 sessionMeta.createdAt。
      *  让历史恢复的消息 footer "Xd ago" 显示真实时间而不是恢复瞬间 "just now"。 */
     sentAt: z.number().int().nonnegative().optional(),
+    /**
+     * Stable Runtime identity for this visible user boundary. A Runtime turn may consume more
+     * than one real user message, so turnId alone is not unique.
+     */
+    turnId: z.string().min(1).max(128).optional(),
+    turnUserOrdinal: z.number().int().nonnegative().max(1_000_000).optional(),
   }),
   z.object({
     kind: z.literal('assistant'),
@@ -934,12 +940,14 @@ export const sessionEventChannel = {
       kind: z.literal('session_start'),
       sessionId: z.string().min(1),
       provider: z.string().min(1).max(64),
+      turnId: z.string().min(1).max(128).optional(),
     }),
     z.object({
       kind: z.literal('mid_turn_user_prompt'),
       sessionId: z.string().min(1),
       queueId: z.string().min(1).max(128).optional(),
       content: z.string().min(1).max(MAX_PROMPT_BYTES),
+      turnId: z.string().min(1).max(128).optional(),
     }),
     z.object({
       kind: z.literal('queued_user_prompt_started'),
@@ -947,6 +955,7 @@ export const sessionEventChannel = {
       queueId: z.string().min(1).max(128).optional(),
       queueMode: sessionSendQueueModeSchema,
       content: z.string().min(1).max(MAX_PROMPT_BYTES),
+      turnId: z.string().min(1).max(128).optional(),
     }),
     z.object({
       kind: z.literal('queued_user_prompt_failed'),
@@ -980,10 +989,12 @@ export const sessionEventChannel = {
     z.object({
       kind: z.literal('session_complete'),
       sessionId: z.string().min(1),
+      turnId: z.string().min(1).max(128).optional(),
     }),
     z.object({
       kind: z.literal('session_error'),
       sessionId: z.string().min(1),
+      turnId: z.string().min(1).max(128).optional(),
       /** 用户可读文案 (已经过 wrapSdkError 友好化)。renderer 显示这条。*/
       error: z.string(),
       /** OC-11 wrapSdkError 分类 —— renderer 据此决定 retry / open-settings 按钮。
@@ -1066,6 +1077,7 @@ export const sessionEventChannel = {
       requestMessagesHash: sha256HexSchema,
       requestEnvelopeHash: sha256HexSchema,
       ephemeralSuffixHash: sha256HexSchema.optional(),
+      promptCacheAffinityHash: sha256HexSchema.optional(),
       messageCount: z.number().int().nonnegative().max(10_000_000),
       toolCount: z.number().int().nonnegative().max(100_000),
       inputTokens: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),

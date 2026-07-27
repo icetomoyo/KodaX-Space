@@ -23,6 +23,10 @@ import {
   handoffAcceptChannel,
   handoffDismissChannel,
   handoffChangedChannel,
+  MAX_NORMALIZED_IMAGE_BASE64_LENGTH,
+  MAX_NORMALIZED_IMAGE_BYTES,
+  MAX_SOURCE_IMAGE_BASE64_LENGTH,
+  MAX_SOURCE_IMAGE_BYTES,
   clipboardSaveImageChannel,
   clipboardReadImageChannel,
   shellRevealPathChannel,
@@ -93,6 +97,55 @@ test('clipboard.saveImage output requires the normalized media type', () => {
       .success,
     false,
   );
+});
+
+test('clipboard.saveImage separates bounded source and normalized image limits', () => {
+  assert.equal(MAX_SOURCE_IMAGE_BYTES, 12 * 1024 * 1024);
+  assert.equal(MAX_NORMALIZED_IMAGE_BYTES, 6 * 1024 * 1024);
+  assert.equal(
+    clipboardSaveImageChannel.input.safeParse({
+      sessionId: 's_source_limit',
+      base64: 'A'.repeat(MAX_SOURCE_IMAGE_BASE64_LENGTH),
+      mediaType: 'image/png',
+    }).success,
+    true,
+  );
+  assert.equal(
+    clipboardSaveImageChannel.input.safeParse({
+      sessionId: 's_source_limit',
+      base64: 'A'.repeat(MAX_SOURCE_IMAGE_BASE64_LENGTH + 1),
+      mediaType: 'image/png',
+    }).success,
+    false,
+  );
+  assert.equal(
+    clipboardReadImageChannel.output.safeParse({
+      image: {
+        path: '/tmp/kodax-space/clipboard/s_1/normalized.png',
+        mediaType: 'image/png',
+        base64: 'A'.repeat(MAX_NORMALIZED_IMAGE_BASE64_LENGTH),
+        bytes: MAX_NORMALIZED_IMAGE_BYTES,
+        width: 2000,
+        height: 2000,
+      },
+    }).success,
+    true,
+  );
+});
+
+test('clipboard channels reject unsafe Session IDs at the schema boundary', () => {
+  const unsafeIds = ['../session', 'session/child', 'session\\child', 'session\u0000suffix'];
+  for (const sessionId of unsafeIds) {
+    assert.equal(
+      clipboardSaveImageChannel.input.safeParse({
+        sessionId,
+        base64: 'AQ==',
+        mediaType: 'image/png',
+      }).success,
+      false,
+      sessionId,
+    );
+  }
 });
 
 test('shell.openDirectory is present in the typed invoke registry', () => {

@@ -75,6 +75,8 @@ import { slashDiscoverChannel, slashExecChannel } from './slash.js';
 import { skillDiscoverChannel, skillInstallChannel, skillInvokeChannel } from './skill.js';
 import {
   agentDiscoverChannel,
+  agentActorSnapshotChannel,
+  agentActorChangedChannel,
   externalAgentStatusChannel,
   externalAgentRegistrationListChannel,
   externalAgentReferenceUpsertChannel,
@@ -183,6 +185,8 @@ import {
   settingsKodaxConfigSetCompactionChannel,
   settingsSetDefaultWorkspaceChannel,
   settingsSetLanguageModeChannel,
+  settingsSetTerminalShellChannel,
+  settingsSetWindowCloseBehaviorChannel,
   settingsSetRuntimeDefaultsChannel,
 } from './settings.js';
 import {
@@ -319,6 +323,7 @@ export const invokeChannels = {
   [skillInvokeChannel.name]: skillInvokeChannel,
   [skillInstallChannel.name]: skillInstallChannel,
   [agentDiscoverChannel.name]: agentDiscoverChannel,
+  [agentActorSnapshotChannel.name]: agentActorSnapshotChannel,
   [externalAgentStatusChannel.name]: externalAgentStatusChannel,
   [externalAgentRegistrationListChannel.name]: externalAgentRegistrationListChannel,
   [externalAgentReferenceUpsertChannel.name]: externalAgentReferenceUpsertChannel,
@@ -401,6 +406,8 @@ export const invokeChannels = {
   [settingsGetChannel.name]: settingsGetChannel,
   [settingsSetDefaultWorkspaceChannel.name]: settingsSetDefaultWorkspaceChannel,
   [settingsSetLanguageModeChannel.name]: settingsSetLanguageModeChannel,
+  [settingsSetTerminalShellChannel.name]: settingsSetTerminalShellChannel,
+  [settingsSetWindowCloseBehaviorChannel.name]: settingsSetWindowCloseBehaviorChannel,
   [settingsSetRuntimeDefaultsChannel.name]: settingsSetRuntimeDefaultsChannel,
   [settingsKodaxConfigGetChannel.name]: settingsKodaxConfigGetChannel,
   [settingsKodaxConfigSetCompactionChannel.name]: settingsKodaxConfigSetCompactionChannel,
@@ -467,6 +474,7 @@ export const pushChannels = {
   [runtimeConnectionChangedChannel.name]: runtimeConnectionChangedChannel,
   [runtimeProfileChangedChannel.name]: runtimeProfileChangedChannel,
   [sessionLiveChangedChannel.name]: sessionLiveChangedChannel,
+  [agentActorChangedChannel.name]: agentActorChangedChannel,
   [spaceControlRequestedChannel.name]: spaceControlRequestedChannel,
   [sessionEventChannel.name]: sessionEventChannel,
   [artifactChangedChannel.name]: artifactChangedChannel,

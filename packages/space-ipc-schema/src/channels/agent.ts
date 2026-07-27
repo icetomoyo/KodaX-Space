@@ -62,6 +62,78 @@ export type AgentMeta = z.infer<typeof agentMetaSchema>;
 export type AgentSource = z.infer<typeof agentSourceSchema>;
 export type AgentFailure = z.infer<typeof agentFailureSchema>;
 
+// KodaX 0.7.72+ unified Actor/Turn telemetry. This is deliberately separate
+// from managed_task_status: the latter owns the foreground AMA Worker, while
+// this snapshot is the canonical native/recursive/Workflow/external Agent tree.
+const agentActorProgressItemSchema = z
+  .object({
+    sequence: z.number().int().nonnegative(),
+    kind: z.enum(['status', 'tool', 'assistant']),
+    summary: z.string().max(4096),
+    createdAt: z.string().min(1).max(128),
+  })
+  .strict();
+
+const agentActorLatestTurnSchema = z
+  .object({
+    turnId: z.string().min(1).max(256),
+    state: z.enum(['accepted', 'running', 'completed', 'failed', 'interrupted']),
+    summary: z.string().max(4096),
+    summaryTruncated: z.boolean(),
+    recentActivity: z.array(agentActorProgressItemSchema).max(32),
+  })
+  .strict();
+
+const agentActorSummarySchema = z
+  .object({
+    path: z.string().min(1).max(2048),
+    taskName: z.string().min(1).max(256),
+    parentPath: z.string().min(1).max(2048).optional(),
+    kind: z.enum(['native', 'constructed', 'workflow', 'external']),
+    state: z.enum(['running', 'idle', 'closed']),
+    currentTurnId: z.string().min(1).max(256).optional(),
+    createdAt: z.string().min(1).max(128),
+    updatedAt: z.string().min(1).max(128),
+    revision: z.number().int().nonnegative(),
+    latestTurn: agentActorLatestTurnSchema.optional(),
+  })
+  .strict();
+
+export const agentActorTreeSnapshotSchema = z
+  .object({
+    runtimeId: z.string().min(1).max(256),
+    sessionId: z.string().min(1).max(256),
+    rootPath: z.literal('/root'),
+    revision: z.number().int().nonnegative(),
+    eventCursor: z.number().int().nonnegative(),
+    activeNonRootTurns: z.number().int().nonnegative(),
+    maxConcurrentThreads: z.number().int().positive(),
+    actors: z.array(agentActorSummarySchema).max(256),
+  })
+  .strict();
+
+export const agentActorSnapshotChannel = {
+  name: 'agent.actor.snapshot',
+  direction: 'invoke',
+  input: z
+    .object({
+      sessionId: z.string().min(1).max(256),
+    })
+    .strict(),
+  output: agentActorTreeSnapshotSchema,
+} as const;
+
+export const agentActorChangedChannel = {
+  name: 'agent.actor.changed',
+  direction: 'push',
+  payload: agentActorTreeSnapshotSchema,
+} as const;
+
+export type AgentActorTreeSnapshotT = z.infer<typeof agentActorTreeSnapshotSchema>;
+export type AgentActorSummaryT = z.infer<typeof agentActorSummarySchema>;
+export type AgentActorLatestTurnT = z.infer<typeof agentActorLatestTurnSchema>;
+export type AgentActorProgressItemT = z.infer<typeof agentActorProgressItemSchema>;
+
 // KodaX 0.7.67 external-agent plane. The renderer receives only redacted
 // registration summaries and normalized task snapshots; executor config and
 // credential references remain in the main process / SDK-owned store.

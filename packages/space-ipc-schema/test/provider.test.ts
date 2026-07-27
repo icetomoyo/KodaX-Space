@@ -85,3 +85,22 @@ test('provider.updateCustom carries the reasoning declaration', () => {
   });
   assert.equal(result.success, true);
 });
+
+test('provider custom inputs accept an explicit prompt-cache affinity opt-in', () => {
+  const result = providerAddCustomChannel.input.safeParse({
+    ...BASE_INPUT,
+    baseUrl: 'https://gw.example.com/v1',
+    promptCacheAffinity: true,
+  });
+  assert.equal(result.success, true);
+  assert.equal(result.success ? result.data.promptCacheAffinity : undefined, true);
+});
+
+test('provider custom inputs reject non-boolean prompt-cache affinity values', () => {
+  const result = providerAddCustomChannel.input.safeParse({
+    ...BASE_INPUT,
+    baseUrl: 'https://gw.example.com/v1',
+    promptCacheAffinity: 'yes',
+  });
+  assert.equal(result.success, false);
+});
