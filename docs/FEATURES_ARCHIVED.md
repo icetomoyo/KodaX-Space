@@ -66,9 +66,9 @@ The pre-rebase list used `Completed`, `Done`, `Merged`, `Partial`, `Deferred`, `
 | F075           | Shelved                        | No repeated graph-navigation use case has been established.                                                   |
 | F077/F078/F080 | Absorbed by F076               | They are localization acceptance slices, not independent product outcomes.                                    |
 | F079           | Watchlist                      | Revisit after the current two-locale completion gate and demonstrated demand.                                 |
-| F085           | Superseded by F087             | KodaX removed cross-process Workflow crash replay from its active roadmap.                                    |
+| F085           | Cancelled                      | KodaX removed cross-process Workflow crash replay; the later F087 replay UI was also reviewed out.            |
 | F086           | Cancelled                      | KodaX removed the separate never-run draft lifecycle.                                                         |
-| F092           | Superseded by F119             | Existing evidence/review primitives replace a speculative Advisor abstraction.                                |
+| F092           | Cancelled                      | Neither an Advisor primitive nor the later F119 cross-object review store demonstrated enough product value.  |
 | F093           | Superseded by F118             | Runtime Learning Center replaces a Skill-only Space-owned review queue.                                       |
 | F099           | Decomposed                     | Monitoring partially shipped; local isolation and remote runners require separate outcomes and threat models. |
 | F100           | Watchlist                      | Gate on KX-F139 or a prioritized user journey.                                                                |

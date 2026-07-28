@@ -404,7 +404,7 @@ Repointel 的核心调用契约（`status / warm / preturn / context-pack / impa
 - 远端 KodaX runner / workspace isolation（必须先有明确执行所有权、权限和恢复模型；worktree 不作为安全沙箱）
 - 社区 Skill 市场（正式 skill catalog 与 Learning Center 生命周期稳定后再评估）
 - Hooks 编辑器（PreToolUse / PostToolUse）
-- 更强自动审阅（优先扩展 F119 Evidence Review，不创建第二套 Advisor/Review Agent primitive）
+- 更强自动审阅（仅在出现可测量的重复用户需求后扩展现有审阅路径，不创建第二套 Advisor/Review Agent primitive）
 - 外部事件触发器（GitHub / Slack / Linear webhook）；本地显式 scheduler 由 F097 先建立可见、可审计的基线
 - Enterprise 策略（团队 provider 网关、扩展白名单、审计日志中央化）
 
