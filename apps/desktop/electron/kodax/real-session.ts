@@ -159,7 +159,11 @@ import {
   getSpaceSdkExtensionConfigGeneration,
   type SpaceSdkExtensionRuntimeHandle,
 } from './sdk-extensions.js';
-import { SPACE_MANUAL_TOPICS, SPACE_PRODUCT_NAME } from './space-manual-topics.js';
+import {
+  SPACE_MANUAL_BASE_TOPICS,
+  SPACE_MANUAL_TOPICS,
+  SPACE_PRODUCT_NAME,
+} from './space-manual-topics.js';
 import { workflowPolicyStore, buildWorkflowHostPolicy } from './workflow-policy.js';
 import { resolveKodaXShellExecutionContract } from './shell-execution.js';
 import { settingsStore } from '../settings/store.js';
@@ -2005,17 +2009,15 @@ export class RealKodaXSession implements ManagedSession {
         },
         context,
         guardrails,
-        // FEATURE_221 (SDK 0.7.58): 全白标自知识手册。让内建 kodax_manual tool 在用户问
-        // "怎么粘图/怎么配 provider/有什么工具"时只返回 Space 形态的答案。
-        // baseTopics: [] —— 完全替换,不 seed 任何 KodaX base 条目。此前只设 productName+topics
-        // 时,Space 没覆盖的 base 条目(doctor / agents / sdk / tools / mcp / repo-intelligence /
-        // custom-providers)仍会向模型吐 ~/.kodax/config.json 手改、`kodax doctor` CLI 这类
-        // 对 GUI 产品无意义、且泄漏 KodaX 名的内容。全白标后 Space 自己的 topics 是唯一来源
-        // (SPACE_MANUAL_TOPICS 已含 tools / mcp / repo-intelligence / custom-providers 增量条目)。
-        // CLI-only 的 doctor / agents / sdk 主题不再存在(GUI 产品不需要)。SDK 4KB body cap 内。
+        // FEATURE_221: Space overlays desktop interaction guidance on the SDK's
+        // curated underlying-capability topics. Overlapping topics compose the
+        // installed MANUAL_REGISTRY body instead of copying or deleting it, so
+        // provider/config/permission/tool/Skill/Extension/MCP/A2A/Session/
+        // compaction/SDK facts track the exact KodaX dependency. CLI-only UX
+        // topics remain replaced by Space-specific install/quickstart/help.
         selfManual: {
           productName: SPACE_PRODUCT_NAME,
-          baseTopics: [],
+          baseTopics: SPACE_MANUAL_BASE_TOPICS,
           topics: SPACE_MANUAL_TOPICS,
         },
         // KodaX owns strong-signal Workflow activation in AMA. Space passes only

@@ -3,20 +3,68 @@
 // The SDK ships a generic manual for KodaX SDK/CLI. In Space, users ask about the
 // desktop UI they can see: providers, sessions, composer, Task Dock, popouts,
 // artifacts, workflows, memory, MCP, permissions, and shortcuts. These topics
-// override or extend the base manual so the in-app assistant answers with the
-// current Space interaction model.
+// layer product guidance over the SDK manual so the in-app assistant keeps the
+// original KodaX mechanism facts and answers with the current Space interaction
+// model.
 //
 // Treat this file as the compact AI-facing self manual for KodaX Space. It is not
 // a QA checklist by itself; it is the source the agent reads when explaining what
 // the product can do and how a user should operate it.
 
-import type { KodaXManualTopicInput } from '@kodax-ai/kodax/coding';
+import {
+  KODAX_UNDERLYING_CAPABILITY_TOPICS,
+  MANUAL_REGISTRY,
+  type KodaXManualSource,
+  type KodaXManualTopicInput,
+} from '@kodax-ai/kodax/coding';
 
 export const SPACE_PRODUCT_NAME = 'KodaX Space';
+export const SPACE_MANUAL_BASE_TOPICS = [...KODAX_UNDERLYING_CAPABILITY_TOPICS];
 
 const text = (...lines: string[]) => lines.join('\n');
+const sdkBaseTopicIds = new Set<string>(SPACE_MANUAL_BASE_TOPICS);
 
-export const SPACE_MANUAL_TOPICS: readonly KodaXManualTopicInput[] = [
+function uniqueStrings(values: readonly string[]): string[] {
+  return [...new Set(values)];
+}
+
+function uniqueSources(values: readonly KodaXManualSource[]): KodaXManualSource[] {
+  const seen = new Set<string>();
+  return values.filter((source) => {
+    const key = `${source.label}\u0000${source.path}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+/**
+ * An injected topic overrides an SDK topic with the same id. Compose, rather
+ * than copy, the installed SDK body so useful KodaX facts survive Space
+ * branding and automatically track the exact dependency version.
+ */
+function inheritSdkManualTopic(topic: KodaXManualTopicInput): KodaXManualTopicInput {
+  if (!sdkBaseTopicIds.has(topic.id)) return topic;
+  const sdkTopic = MANUAL_REGISTRY[topic.id as keyof typeof MANUAL_REGISTRY];
+  if (!sdkTopic) return topic;
+
+  return {
+    ...topic,
+    body: text(
+      '## KodaX Space interaction',
+      '',
+      topic.body,
+      '',
+      '## Inherited KodaX SDK mechanism',
+      '',
+      sdkTopic.body,
+    ),
+    aliases: uniqueStrings([...(sdkTopic.aliases ?? []), ...(topic.aliases ?? [])]),
+    sources: uniqueSources([...(sdkTopic.sources ?? []), ...(topic.sources ?? [])]),
+  };
+}
+
+const SPACE_MANUAL_TOPIC_OVERLAYS: readonly KodaXManualTopicInput[] = [
   {
     id: 'overview',
     title: 'KodaX Space overview',
@@ -52,7 +100,7 @@ export const SPACE_MANUAL_TOPICS: readonly KodaXManualTopicInput[] = [
     body: text(
       '在 Space 会话里，当用户问“怎么配 provider”“右侧面板是什么”“这个按钮怎么用”这类产品使用问题时，AI 会调用 SDK 的 kodax_manual 工具。',
       '',
-      'Space 注入的 manual topics 会把默认 SDK/CLI 手册替换成桌面端语境：按钮在哪、面板做什么、快捷键是什么、哪些功能当前可用或受限。',
+      'Space 以 KodaX SDK 的底层能力主题为基线，再叠加桌面端语境：按钮在哪、面板做什么、快捷键是什么、哪些功能当前可用或受限。对 provider、配置、权限、工具、Skills、Extensions、MCP、A2A、Session、压缩和 SDK 等继承主题，Space 会保留当前安装 SDK 的原始正文与来源，不复制一份容易过期的摘要。',
       '',
       '因此它可以理解为“工具的自说明/自查手册”：AI 用它核对自己对产品能力和 UI 交互的回答。但它不是完整测试用例，也不能替代人工 QA、发布清单或安全评审。',
     ),
@@ -323,7 +371,7 @@ export const SPACE_MANUAL_TOPICS: readonly KodaXManualTopicInput[] = [
     body: text(
       'Preferences：显示语言、默认 workspace、Smart Popout Director、原生完成通知、workflow policy、Terminal Shell 和主窗口关闭行为。',
       'Providers：内置/custom provider、key 保存与测试、默认 provider、custom provider 管理。',
-      'Runtime：KodaX 配置概览、compaction 设置、MCP 全局/项目配置与 reload、Skills 用户/项目目录、安装 skill 文件夹/zip/archive。',
+      'Runtime：KodaX 核心配置概览、compaction 设置、MCP 全局/项目 integrations 配置与 reload、Skills 用户/项目目录、安装 skill 文件夹/zip/archive。',
       'License：查看社区/授权/过期/降级状态，导入 .kodax-license，导出授权请求，刷新状态。',
       '',
       'Settings 改 UI 偏好和运行时默认值；会话内临时 model/mode 仍可以通过底部控件或 slash command 调整。',
@@ -681,7 +729,9 @@ export const SPACE_MANUAL_TOPICS: readonly KodaXManualTopicInput[] = [
       '',
       '面板可 Refresh、Reload config、Install extension。已安装 .mcpb 扩展可查看和 uninstall；配置错误会显示并可 reveal 配置路径。',
       '',
-      'Settings -> Runtime 也能查看 global/project MCP 配置并 reload。/mcp 或 /extensions 可作为命令入口。',
+      'KodaX 0.7.77 的用户级 MCP 真理文件是 ~/.kodax/integrations/mcp.json，格式为 version 1 + servers。Space 的项目兼容层使用 <project>/.kodax/integrations/mcp.json，并让同名项目 server 覆盖用户 server。Settings -> Runtime 会显示规范路径、当前来源和数量；/mcp 或 /extensions 可作为命令入口。',
+      '',
+      '旧 ~/.kodax/config.json#mcpServers 仍可只读兼容，但不是新写入位置。使用 `kodax integrations migrate` 预览，再用 `kodax integrations migrate --apply` 生成分离文件；确认目标文件有效后才考虑 `--cleanup-legacy`。`.mcpb` 安装/卸载通过 SDK MCP CRUD 写入新的 integrations/mcp.json。',
       '',
       'Space MCP Manager 拥有 server 子进程、状态和日志；Coder 的 MCP 工具发现/reload 同步 Runtime，但 v0.1.33 不会启动第二套桌面 MCP manager。',
       '',
@@ -707,7 +757,9 @@ export const SPACE_MANUAL_TOPICS: readonly KodaXManualTopicInput[] = [
       'Space 的扩展面主要有两类：',
       '',
       '1. MCP/.mcpb：通过 MCP 面板安装、查看、启动/停止、卸载，能力会以 MCP tools 暴露给 agent。',
-      '2. SDK filesystem extensions：通过 /extensions sdk 查看默认目录、entrypoint、skipped entries 和运行时诊断。默认偏向 discovery-only，加载用户扩展代码需要显式启用。',
+      '2. SDK filesystem extensions：默认目录为 ~/.kodax/extensions，受管理路径声明在 ~/.kodax/integrations/extensions.json（version 1 + paths）。通过 /extensions sdk 查看默认目录、受管理 entrypoint、skipped entries 和运行时诊断。旧 config.json#extensions 仅作为迁移兼容；可用 `kodax integrations migrate` 预览和迁移。',
+      '',
+      'Space 默认只做发现。只有显式设置 KODAX_SPACE_ENABLE_SDK_EXTENSIONS 后，embedded Space extension runtime 才会把默认目录与 integrations/extensions.json 的路径去重后加载。Extensions 是进程内可信代码；不可信或重量级外部能力应优先使用 MCP。',
       '',
       '只从可信来源安装扩展。会改状态或访问外部资源的扩展工具仍应受权限模式、MCP 工具声明和用户确认约束。',
     ),
@@ -906,13 +958,19 @@ export const SPACE_MANUAL_TOPICS: readonly KodaXManualTopicInput[] = [
     id: 'config',
     title: 'Config and data locations',
     summary:
-      'Space 使用 ~/.kodax/space 保存 UI 状态，也复用 ~/.kodax 的 SDK 配置、sessions、skills、MCP。',
+      '核心配置与 MCP/A2A/Extensions integrations 已分离；Space UI 状态独立保存在 ~/.kodax/space。',
     body: text(
-      '~/.kodax/ 是 SDK/CLI/Space 共享层：config、sessions、skills、MCP、AGENTS.md 等。',
+      '~/.kodax/config.json 是 KodaX 核心配置：provider、model、effort、permission、customProviders、compaction、Runtime/Workflow 等。MCP、A2A 和 Extensions 不再把这里当作新配置真理面。',
+      '',
+      '~/.kodax/integrations/mcp.json 保存用户 MCP servers；~/.kodax/integrations/a2a.json 保存 A2A；~/.kodax/integrations/extensions.json 保存可信 Extension 路径。三者是独立、版本化的严格 JSON 文档，长期 owner 可按各自边界热重载并在无效编辑时保留 last-known-good。',
+      '',
+      '旧 config.json#mcpServers 和 config.json#extensions 仍可读取以便迁移。先运行 `kodax integrations migrate` 查看计划，再运行 `kodax integrations migrate --apply`；目标文件已存在时不会被覆盖。只有确认分离文件有效后才使用 `--cleanup-legacy`。',
+      '',
+      '~/.kodax/ 还保存 sessions、skills、agents、默认 extensions 目录和 AGENTS.md 等共享数据；项目级 Space MCP 兼容配置放在 <project>/.kodax/integrations/mcp.json。',
       '',
       '~/.kodax/space/ 是 Space 专属层：UI state、main logs、桌面端偏好等。',
       '',
-      '项目级配置通常位于项目内 .kodax 或 AGENTS.md。Settings -> Runtime 会展示 KodaX config、compaction、MCP、Skills 等运行时状态。',
+      'Settings -> Runtime 会把核心 config.json 与 MCP integration 路径、来源和数量分别展示，避免把它们误认为同一个文件。',
       '',
       '一般不要手动改 state 文件；若 UI 状态严重损坏，可在备份后重置 ~/.kodax/space/state.json。',
     ),
@@ -989,7 +1047,7 @@ export const SPACE_MANUAL_TOPICS: readonly KodaXManualTopicInput[] = [
       '- 文件存在却提示无法定位：若提示路径不在 KodaX 已授权目录，请打开正确项目或使用受支持的项目/Delivery 边界；这与文件不存在是两种状态。',
       '- PowerShell Auto 权限异常：-Path 中含 [] 会按通配符升级确认；确需精确方括号文件名时使用 -LiteralPath/PSPath。若行为不同，请记录完整参数形态但不要附带密钥或文件正文。',
       '- Quick Ask 不工作：需要先打开项目；它使用临时 plan-mode session。',
-      '- MCP 工具不可见：打开 MCP 面板 Refresh/Reload config，查看 server error/diagnostics。',
+      '- MCP 工具不可见：确认 server 位于 ~/.kodax/integrations/mcp.json 或 <project>/.kodax/integrations/mcp.json；打开 MCP 面板 Refresh/Reload config，查看 source、server error 和 diagnostics。旧 config.json#mcpServers 只用于迁移兼容。',
       '- 语言切换后仍有英文：模型输出、日志、专业面板和 provider 内容可能仍保留英文。',
       '- UI 状态异常：检查 ~/.kodax/space/logs 与 DevTools console；极端情况备份并重置 ~/.kodax/space/state.json。',
       '',
@@ -1016,3 +1074,6 @@ export const SPACE_MANUAL_TOPICS: readonly KodaXManualTopicInput[] = [
     ],
   },
 ];
+
+export const SPACE_MANUAL_TOPICS: readonly KodaXManualTopicInput[] =
+  SPACE_MANUAL_TOPIC_OVERLAYS.map(inheritSdkManualTopic);

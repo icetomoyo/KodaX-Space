@@ -1,7 +1,68 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { SPACE_MANUAL_TOPICS } from '../kodax/space-manual-topics.js';
+import {
+  KODAX_UNDERLYING_CAPABILITY_TOPICS,
+  MANUAL_REGISTRY,
+  resolveKodaXManual,
+} from '@kodax-ai/kodax/coding';
+import {
+  SPACE_MANUAL_BASE_TOPICS,
+  SPACE_MANUAL_TOPICS,
+  SPACE_PRODUCT_NAME,
+} from '../kodax/space-manual-topics.js';
+
+test('Space kodax_manual preserves the installed SDK mechanism manual', () => {
+  assert.deepEqual(SPACE_MANUAL_BASE_TOPICS, [...KODAX_UNDERLYING_CAPABILITY_TOPICS]);
+
+  const overlays = new Map(SPACE_MANUAL_TOPICS.map((topic) => [topic.id, topic]));
+  for (const id of KODAX_UNDERLYING_CAPABILITY_TOPICS) {
+    const overlay = overlays.get(id);
+    if (!overlay) continue;
+    const sdkTopic = MANUAL_REGISTRY[id];
+    assert.ok(
+      overlay.body.includes(sdkTopic.body),
+      `${id} must retain the exact installed SDK manual body`,
+    );
+    for (const source of sdkTopic.sources) {
+      assert.ok(
+        overlay.sources?.some(
+          (candidate) => candidate.label === source.label && candidate.path === source.path,
+        ),
+        `${id} must retain SDK source ${source.path}`,
+      );
+    }
+  }
+
+  const index = resolveKodaXManual(
+    {},
+    {
+      productName: SPACE_PRODUCT_NAME,
+      baseTopics: SPACE_MANUAL_BASE_TOPICS,
+      extraTopics: SPACE_MANUAL_TOPICS,
+    },
+  );
+  const effectiveIds = new Set(index.topics.map((topic) => topic.id));
+  for (const id of KODAX_UNDERLYING_CAPABILITY_TOPICS) {
+    assert.ok(effectiveIds.has(id), `effective manual must retain SDK topic ${id}`);
+  }
+  for (const topic of SPACE_MANUAL_TOPICS) {
+    assert.ok(effectiveIds.has(topic.id), `effective manual must include Space topic ${topic.id}`);
+  }
+
+  const config = resolveKodaXManual(
+    { topic: 'config' },
+    {
+      productName: SPACE_PRODUCT_NAME,
+      baseTopics: SPACE_MANUAL_BASE_TOPICS,
+      extraTopics: SPACE_MANUAL_TOPICS,
+    },
+  );
+  assert.match(config.content, /~\/\.kodax\/integrations\/mcp\.json/);
+  assert.match(config.content, /~\/\.kodax\/integrations\/a2a\.json/);
+  assert.match(config.content, /~\/\.kodax\/integrations\/extensions\.json/);
+  assert.match(config.content, /kodax integrations migrate --apply/);
+});
 
 test('Space kodax_manual documents the required KodaX 0.7.77 capability boundary', () => {
   const topics = new Map(SPACE_MANUAL_TOPICS.map((topic) => [topic.id, topic]));
