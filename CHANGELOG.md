@@ -18,6 +18,13 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ### Added
 
+- **Customer-selectable Coder Runtime mode (F141)** - Settings → Runtime exposes the recommended
+  shared Daemon and an Embedded compatibility mode. Space performs an owner-safe transition only
+  after active work drains, persists the versioned preference, and restarts automatically. Partner
+  remains embedded-inline, and the legacy environment selector is only a one-time pre-v3 migration
+  seed.
+- **Conversation file actions (F142)** - Conversation paths retain their existing left-click
+  behavior and expose the shared viewer/diff/@path/copy/reveal action menu on right-click.
 - **Context composition diagnostics** - The Coder context popover now shows a privacy-safe six-part root-input breakdown for system prompt, tool schemas, combined Skills / MCP, messages, request input, and recent tool results. Only category counts cross Space IPC; no prompt, message, tool-input, or tool-output body is projected.
 - **Cumulative Session token usage** - Added a separate bottom-bar indicator for Provider-reported usage across root and child Agents. On KodaX 0.7.77 it counts completed physical-request diagnostics once by request ID, including child, retry, fallback, repair, workflow-digest, and compaction-summary calls; older/mocked paths retain the iteration-summary fallback. Its popover leads with total input and distinguishes uncached input, cache-read input, output, optional cache-creation input, root/child call counts, and aggregate/latest cache-hit rates; `/cost` consumes the same cumulative source.
 - **Stable prompt-cache routing visibility** - The latest root Provider diagnostic now carries KodaX's hash-only cache-affinity identity through Space IPC and reports when stable routing is active without exposing the key. Custom compatible Providers gain an explicit, default-off opt-in because strict gateways can reject unknown protocol fields.
@@ -39,6 +46,24 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ### Fixed
 
+- **Safe Runtime-mode switching** - One shared admission gate now covers Runtime-touching Session,
+  Slash, Workflow, External Agent, MCP, and Settings operations. Active ManagedSessions,
+  running/paused Workflows, non-terminal External Agent tasks, pending permission/AskUser
+  interactions, queued Coder prompts, daemon work, and other clients block an unsafe owner change.
+  Startup reconciles the persisted mode with owner policy before Runtime connection and fails
+  closed on an active or unreadable inline owner.
+- **Registry-only packaged SDK** - Packaged builds detect KodaX development staging, replace it with
+  the exact lockfile Registry package before electron-builder, and reject unpublished SDK code or
+  an incomplete transitive dependency tree such as the observed missing `get-tsconfig`.
+- **Packaged dependency and startup verification** - Packaging requires exact agreement across
+  root/desktop manifests, both lock views, Registry source/integrity, and the installed SDK. Every
+  build verifies all public KodaX facades, ancestor-resolved transitive dependencies, unpacked
+  native SQLite loading, and a true Windows packaged application boot.
+- **Visible image attachments** - Sent and restored image attachments are visible again as bounded
+  thumbnails, including queued and forked Session recovery without exposing native paths.
+- **Unambiguous context state** - The context indicator distinguishes the model limit, effective
+  compaction threshold, active input pressure, and latest compaction outcome instead of presenting
+  one ambiguous percentage.
 - **Causally idempotent daemon live reconciliation** - Runtime live-snapshot reads are pure. Daemon transcript events carry their Runtime/run cursor, and each Session pauses delivery across a bounded snapshot request. Held lifecycle, tool, and delta events drain in original order before cumulative reconciliation; per-draft cursor watermarks reject only covered content. Active tools restore causally, stale running cards clear from the authoritative set, unchanged profile refreshes no longer masquerade as connection transitions, and transcript hot-path events no longer rebuild the whole Runtime profile per token. This removes repeated Coder output across local and hosted Providers while retaining reload, reconnect, focus, revision-gap, and terminal recovery.
 - **Custom Provider and Runtime catalog convergence** - Space and KodaX-config custom Provider mutations now reconcile transactionally with the shared daemon catalog, preserve Runtime/CLI-only metadata, support explicit context-window configuration, roll back on partial failure, and keep the selected Provider/model valid across startup, update, rename, and removal.
 - **MCP and Extension split-file adoption** - User/project MCP reads no longer interpret `config.json` locally, `.mcpb` errors point at the canonical integration file, Settings reports dedicated/legacy/default sources, provides a validated SDK-backed migration action, and managed Extension paths participate in opt-in SDK discovery with entrypoint deduplication.

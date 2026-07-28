@@ -90,15 +90,15 @@ npm run dev
 
 ## 当前源码基线
 
-**v0.1.33 发布基线精确依赖 npm 正式发布的 KodaX 0.7.77。** Coder 继续连接 profile-scoped shared daemon，并新增规范化的有界 Actor/Turn 投影、精确 history/live 对齐、Runtime-owned interrupt finalization、完整物理请求用量诊断、稳定提示词缓存亲和与 CLI 缓存用量归一化。Space 要求 `contextCompaction:3`、`transcriptPaging:1`、`transcriptSearch:1`、`interruptInput:1`、Auto LLM guardrail v3 和 `actorControlPlane:1`；缺少契约时 fail closed。Partner 继续由 Space embedded-inline 持有；MCP 进程/日志、Workflow library/start/admin、Space Reference Agent 执行和产品 Artifact 仍是明确的 host-provider 边界。
+**`main` 当前是修正后的 v0.1.33 正式候选，精确依赖 npm 正式发布的 KodaX 0.7.77。** Coder 默认连接 profile-scoped shared daemon，并提供规范化的有界 Actor/Turn 投影、精确 history/live 对齐、Runtime-owned interrupt finalization、完整物理请求用量诊断、稳定提示词缓存亲和与 CLI 缓存用量归一化。F141 在 Settings → Runtime 增加客户可见的 Daemon / Embedded 开关：Daemon 为推荐模式，Embedded 用于兼容回退。切换前会关闭 Runtime 操作准入并等待已接收入口退出；任何 ManagedSession、running/paused Workflow、非终态 External Agent task、permission/AskUser、待派发 Coder queue、daemon work 或其他客户端都会阻止不安全交接。owner policy 与 version 3 偏好转换完成后，Space 自动重启；新进程会在连接 Runtime 前协调持久化模式和 owner policy。环境变量只作为旧设置的一次迁移种子。Partner 继续由 Space embedded-inline 持有；MCP 进程/日志、Workflow library/start/admin、Space Reference Agent 执行和产品 Artifact 仍是明确的 host-provider 边界。
 
-KodaX 0.7.77 已把集成声明与核心配置分离。Space 从 `~/.kodax/integrations/mcp.json` 读取 MCP，从 `~/.kodax/integrations/extensions.json` 读取受管理 Extension 路径，并让 Runtime-owned A2A 使用 `~/.kodax/integrations/a2a.json`；项目 MCP 覆盖位于 `<project>/.kodax/integrations/mcp.json`。旧 `config.json#mcpServers` 与 `config.json#extensions` 只作为只读迁移回退。Settings → Runtime 会展示当前安装 SDK 的迁移计划，并可创建缺失的独立文件，同时不覆盖目标、不删除旧字段。应用内 `kodax_manual` 现在把 Space 操作说明与当前安装 SDK 的原始底层能力主题动态合成，不再丢失 Provider、配置、权限、工具、Skill、Extension、MCP、A2A、Session、压缩和 SDK 等有价值的原始说明。
+KodaX 0.7.77 已把集成声明与核心配置分离。Space 从 `~/.kodax/integrations/mcp.json` 读取 MCP，从 `~/.kodax/integrations/extensions.json` 读取受管理 Extension 路径，并让 Runtime-owned A2A 使用 `~/.kodax/integrations/a2a.json`；项目 MCP 覆盖位于 `<project>/.kodax/integrations/mcp.json`。旧 `config.json#mcpServers` 与 `config.json#extensions` 只作为只读迁移回退。Settings → Runtime 会展示当前安装 0.7.77 SDK 的迁移计划，并可创建缺失的独立文件，同时不覆盖目标、不删除旧字段。应用内 `kodax_manual` 把 Space 操作说明与当前安装 SDK 的原始底层能力主题动态合成，不会丢失 Provider、配置、权限、工具、Skill、Extension、MCP、A2A、Session、压缩和 SDK 等有价值的原始说明。
 
 底部状态区把主 Agent 上下文压力与整个 Session 累计 Token 分开显示。“上下文窗口”使用最终自动压缩阈值和不含正文的六类构成；完成态物理请求按 request ID 去重，覆盖 root、child、retry、fallback、repair、workflow digest 和 compaction summary。F140 新增“每次询问 / 保留托盘和 Runtime / 安全彻底退出”偏好；Terminal 与 Coder 命令工具共享同一个所选 Shell/profile PATH 契约，不接受任意可执行文件，也不把敏感变量投影给 PTY。
 
 F122-F124 继续提供 Partner 项目来源库、不可变证据/引用和自动 grounded context 闭环。F121 仅因最终人工多客户端验收台账保持 `InProgress`；0.1.33 已发布路径仍对缺失 daemon capability 明确失败。详见 [v0.1.33 稳定化设计](docs/features/v0.1.33.md)和[能力台账](docs/KODAX_CAPABILITY_LEDGER.md)。
 
-F135 继续把许可证允许再分发的 `frontend-slides` 与 `huashu-design` 作为经审查的 Space builtin 一起打包。F137 为 `v0.1.34` 规划四个由 Space 独立创作、中文优先的替代 Skill。详见 [v0.1.34 设计](docs/features/v0.1.34.md)、[builtin skill 文档](docs/BUILTIN_SKILLS.md)和 [v0.1.33 发布就绪清单](docs/releases/v0.1.33-release-readiness.md)。
+F135 继续把许可证允许再分发的 `frontend-slides` 与 `huashu-design` 作为经审查的 Space builtin 一起打包。F137 为 `v0.1.34` 规划四个由 Space 独立创作、中文优先的替代 Skill，不属于修正后的 v0.1.33。详见 [v0.1.34 设计](docs/features/v0.1.34.md)、[builtin skill 文档](docs/BUILTIN_SKILLS.md)和 [v0.1.33 发布记录](docs/releases/v0.1.33-release-readiness.md)。
 
 F136 让 Windows 后台 owner 可见、可控；F140 允许选择“每次询问”“保留托盘运行”或“安全彻底退出”。关闭最后一个窗口会销毁 renderer，通知区域 owner 可重开 Space 或保留 Runtime。0.1.33 的托盘仍由轻量 Electron main 持有；拆成独立 helper 仍属于后续优化。
 
@@ -202,16 +202,16 @@ KodaX-Space/
 
 关键技术选择：
 
-| 层              | 选择                                                                                                                        |
-| --------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| Shell           | Electron 42                                                                                                                 |
-| Renderer        | React 19、Vite、TypeScript、Zustand                                                                                         |
-| UI/runtime 分离 | Renderer 不直接执行 LLM/tool；特权工作留在 Electron main。                                                                  |
-| KodaX 集成      | Electron main 使用公开 Runtime facade；Coder 连接 profile daemon，Partner 与明确的 host-provider 服务保持 embedded inline。 |
-| IPC             | 来自 `@kodax-space/space-ipc-schema` 的 zod-validated contracts。                                                           |
-| Terminal        | xterm.js + node-pty。                                                                                                       |
-| Preview         | Monaco、pdfjs、mammoth/docx、SheetJS/xlsx。                                                                                 |
-| Tests           | Node test runner、Playwright、typecheck、packaging smoke checks。                                                           |
+| 层              | 选择                                                                                                                                                                |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Shell           | Electron 42                                                                                                                                                         |
+| Renderer        | React 19、Vite、TypeScript、Zustand                                                                                                                                 |
+| UI/runtime 分离 | Renderer 不直接执行 LLM/tool；特权工作留在 Electron main。                                                                                                          |
+| KodaX 集成      | Electron main 使用公开 owner 契约；Coder 默认连接 profile daemon，也可使用 Settings 选择的 Embedded 回退；Partner 与明确的 host-provider 服务保持 embedded inline。 |
+| IPC             | 来自 `@kodax-space/space-ipc-schema` 的 zod-validated contracts。                                                                                                   |
+| Terminal        | xterm.js + node-pty。                                                                                                                                               |
+| Preview         | Monaco、pdfjs、mammoth/docx、SheetJS/xlsx。                                                                                                                         |
+| Tests           | Node test runner、Playwright、typecheck、packaging smoke checks。                                                                                                   |
 
 ## 开发
 
@@ -278,8 +278,8 @@ npm run e2e:headed
 | 版本线            | 重点                                                                                                         |
 | ----------------- | ------------------------------------------------------------------------------------------------------------ |
 | `v0.1.32`         | 已发布 Shared-daemon Coder、Partner 项目知识/引用、受审 builtin、精确历史体验、Windows 图标/托盘与发布加固。 |
-| `v0.1.33`         | 已发布 KodaX 0.7.77 稳定化、规范 Actor/Task 状态、精确回放、Shell 控制、F140 关闭行为与诊断。                |
-| `v0.1.34`         | 独立创作、中文优先的 DOCX/PDF/XLSX/PPTX builtin 与语义 UI polish：有界执行和如实验证 receipt。               |
+| `v0.1.33`         | 修正后的 KodaX 0.7.77 正式版：Daemon/Embedded 安全选择、会话文件操作、附件/上下文修复与打包 Runtime 门禁。   |
+| `v0.1.34`         | Space 独立实现的中文优先 DOCX/PDF/XLSX/PPTX builtin 与语义 UI 精修，并提供有界执行和真实验证回执。           |
 | `v0.1.35-v0.1.40` | Workflow/Review 证据面、Task/Capability 治理，以及 SDK-gated Memory Agent/Learning Center host。             |
 | `v0.1.43`         | 本地化完成、beta diagnostics、release channel、updater/distribution trust。                                  |
 | `v0.2.x`          | Governed Browser 与 Partner packs、只读 Connector snapshots、本地 Automations、可刷新 Artifacts。            |

@@ -6,10 +6,13 @@
 
 > 当前发布基线：KodaX Space `v0.1.33`（package `0.1.33`）/ npm 正式发布的精确 KodaX `0.7.77`。
 >
+> 当前 `main` 是撤回后修正的 `v0.1.33` 正式候选；F141 Coder
+> Daemon/Embedded 客户开关、F142 会话文件操作和打包可靠性修复都属于本次重发。
+>
 > 更新日期：2026-07-28
 >
 > 如果你的界面与本文不同，请先在 Settings → License/版本信息中确认构建版本。
-> 本手册描述 `v0.1.33` 正式版；历史版本的界面与行为可能不同。
+> 本手册以修正后的 `v0.1.33` 正式候选为基线；历史安装包的界面与行为可能不同。
 
 这份手册面向第一次使用 KodaX Space 的开发者、技术团队成员和代码相关知识工作者。它以“完成一件真实工作”为主线；架构和开发细节分别放在 [HLD](HLD.md) 与 [USAGE](USAGE.md)。文中的实拍界面使用隔离的 mock 数据和示例项目生成，不包含真实 API Key、会话内容或本地路径。
 
@@ -204,15 +207,38 @@ _图 1：已打开示例项目但尚未创建会话时的 Coder 工作台。实�
 - **Artifact**：独立于项目文件的生成物，例如报告、HTML、SVG、PDF、DOCX、XLSX。
 - **Workflow**：可观察、可暂停/恢复/停止、可保存和复跑的多步骤任务。
 
-### v0.1.33 的 Runtime Host 对用户有什么影响
+### Coder 的 Daemon / Embedded 运行模式（v0.1.33 修正版）
 
-没有新增“Runtime 模式”开关。默认仍按原来的 Coder/Partner 方式使用，但底层所有权已经按 surface 拆分：Coder 连接当前 profile 的共享 daemon，Partner 继续在 Space 内 embedded-inline 运行。
+打开 **Settings → Runtime → Coder 运行模式**，可以选择：
+
+- **Daemon（推荐）**：Coder 连接当前 profile 的共享 daemon，支持持久任务、断线重连和多客户端协同；
+- **Embedded（兼容模式）**：Coder 在 KodaX Space 进程内运行。
+
+如果 Daemon 模式无法正常启动、连接不稳定或出现兼容问题，可以切换到
+**Embedded** 模式继续使用 Coder。选择新模式后点击 **切换并重启**；安全检查通过后，
+KodaX Space 会保存选择并自动重启。切换前需要先完成或停止正在运行的 Space 任务。
+如果还有 ManagedSession、running/paused Workflow、非终态 External Agent task、
+待处理 permission/AskUser、待派发 Coder queue、daemon active/queued work、其他客户端，
+或当前所有权状态无法确认，Space
+会拒绝切换，不会强制停止工作，也不会启动第二个竞争 owner。
+
+点击切换后，Space 会立即关闭新的 Coder admission，并等待已经进入的 Session、Slash、
+Workflow、Runtime External Agent、MCP 和 Runtime-affecting Settings 操作完成。成功
+交接后 admission 保持关闭直到新进程启动，避免安全检查与另一个入口同时触碰 owner。
+新进程会先按持久化模式协调 owner policy：Daemon 偏好遇到 unowned inline policy 会
+恢复 daemon policy；active/unreadable inline owner 会 fail closed。旧
+`KODAX_SPACE_RUNTIME_HOST=legacy|runtime` 只为 v1/v2 或缺失设置提供一次迁移种子；
+`~/.kodax/space/settings.json` 写入 version 3 后，`coderRuntimeMode` 是启动真理。
+
+Partner 继续在 Space 内 embedded-inline 运行，不受这个 Coder 开关影响。
 
 ```mermaid
 flowchart LR
     UI["Renderer UI"] --> IPC["受校验的 Space IPC"]
     IPC --> Host["RuntimeHostAdapter"]
-    Host --> RT["KodaX Runtime daemon<br/>Coder shared truth"]
+    Host --> Mode{"已保存 Coder 模式"}
+    Mode -->|Daemon| RT["KodaX Runtime daemon<br/>Coder shared truth"]
+    Mode -->|Embedded| Inline["Electron main inline owner<br/>Coder compatibility"]
     RT --> Run["session/run/settings/interactions<br/>Workflow observe/control<br/>Learning/catalog/Agent Actor-Turn"]
     Bridge["Space host providers"] --> Host
     Bridge --- P["Partner inline / MCP processes+logs<br/>Workflow library+start+admin / Reference Agent / Artifacts"]
@@ -220,7 +246,7 @@ flowchart LR
 
 多个受信任的 KodaX 客户端可以观察同一 Coder 会话；Space 会同步 provider/model/effort/mode 等共享设置，并通过 Runtime 处理权限 grant、AskUser、队列、Workflow 观察/暂停/恢复/停止、Learning Center 命令、MCP 工具发现/reload 和已配置 External Agent 的 Actor/Turn。Space 要求 `interruptInput:1`、`actorControlPlane:1`、`contextCompaction:3`、`transcriptPaging:1`、`transcriptSearch:1` 与 Auto LLM guardrail v3；Runtime 不可用或能力版本不足时 Coder fail closed，不会在背后重放到 inline owner。Partner 不受该 daemon 可用性影响。
 
-Space 还会核对 daemon 的实际版本和能力，而不只看已经安装的 npm 包：低于 `0.7.77` 或缺少上述契约的长驻 daemon 会被拒绝并提示重启。compaction v3 会先耐久化精确 pre-compaction lineage，再缩减活动上下文；Runtime 会复用精确 checkpoint/恢复指引字节，并在命令式手动压缩前把精确 flat Session history 对齐进 lineage，使 compaction entry、first-kept pointer 与压缩后附件留在同一 active path，同时继续读取旧的无后缀 checkpoint。Space 使用 revision-bound page/chunk/search 恢复可见历史，root 与持久 child 的历史保持隔离。Coder Session 使用 KodaX 的公开 `resolveAutoModeSettings()` 解析 `engine`、classifier model、timeout 与 `speculativeWindowMs`，并把缺失值写入可修订的 Runtime 设置；`0` 是有效的 speculative window 值。未配置时 classifier timeout 为 `20000ms`。底部会直接显示 `Auto[LLM]` 或 `Auto[RULES]`；快速连续切换按最后一次动作收敛，自动降级或手动选择后的 `Auto[RULES]` 保持粘性，需用 `/auto-engine llm` 显式切回。Auto[rules] 会对工作区内可完整建模的编辑直接放行，对工作区外、受保护、动态或无法完整建模的效果继续请求确认；Auto[LLM] 缺失 classifier model 时在本地拒绝，不请求 Provider、不弹权限窗、也不触发 rules 降级。输入 `/auto-denials` 可以查看当前 Runtime 版本、classifier model、timeout、speculative window 及不含提示正文的 classifier 时序/终止阶段。
+Daemon 模式还会核对 daemon 的实际版本和能力，而不只看已经安装的 npm 包：低于 `0.7.77` 或缺少上述契约的长驻 daemon 会被拒绝并提示重启。compaction v3 会先耐久化精确 pre-compaction lineage，再缩减活动上下文；Runtime 会复用精确 checkpoint/恢复指引字节，并在命令式手动压缩前把精确 flat Session history 对齐进 lineage，使 compaction entry、first-kept pointer 与压缩后附件留在同一 active path，同时继续读取旧的无后缀 checkpoint。Space 使用 revision-bound page/chunk/search 恢复可见历史，root 与持久 child 的历史保持隔离。Coder Session 使用 KodaX 的公开 `resolveAutoModeSettings()` 解析 `engine`、classifier model、timeout 与 `speculativeWindowMs`，并把缺失值写入可修订的 Runtime 设置；`0` 是有效的 speculative window 值。未配置时 classifier timeout 为 `20000ms`。底部会直接显示 `Auto[LLM]` 或 `Auto[RULES]`；快速连续切换按最后一次动作收敛，自动降级或手动选择后的 `Auto[RULES]` 保持粘性，需用 `/auto-engine llm` 显式切回。Auto[rules] 会对工作区内可完整建模的编辑直接放行，对工作区外、受保护、动态或无法完整建模的效果继续请求确认；Auto[LLM] 缺失 classifier model 时在本地拒绝，不请求 Provider、不弹权限窗、也不触发 rules 降级。输入 `/auto-denials` 可以查看当前 Runtime 版本、classifier model、timeout、speculative window 及不含提示正文的 classifier 时序/终止阶段。
 
 ### Windows 关闭窗口、后台托盘与彻底退出
 
@@ -435,7 +461,11 @@ KodaX 0.7.77 已把集成配置从核心 `config.json` 分离：
 
 Settings → Runtime 会分别显示 MCP 的规范路径、来源和 server 数。`Dedicated integration file` 表示已读取新文件；`Legacy config.json compatibility fallback` 表示仍在只读使用旧 `config.json#mcpServers`；`No file` 表示空默认值。旧 `config.json#extensions` 同样只作迁移回退。只要 SDK 计划发现可迁移条目，这里还会显示 MCP/Extension 的条目数、目标路径、潜在密钥警告和“迁移集成配置”按钮。
 
-应用内按钮直接调用 KodaX SDK 的 `planLegacyIntegrationMigration()` 与 `migrateLegacyIntegrationConfig()`：只创建缺失的独立文件，不覆盖已有目标，默认保留 `config.json` 旧字段，并在成功后重载 MCP。命令行也可先运行 `kodax integrations migrate` 预览计划，再运行 `kodax integrations migrate --apply` 创建独立文件。只有确认新文件有效后才考虑 `--cleanup-legacy`。`.mcpb` 安装/卸载通过 SDK MCP CRUD 写入新的 `integrations/mcp.json`。
+应用内按钮直接调用 KodaX SDK 的 `planLegacyIntegrationMigration()` 与 `migrateLegacyIntegrationConfig()`：只创建缺失的独立文件，不覆盖已有目标，默认保留 `config.json` 旧字段，并在成功后重载 MCP。命令行也可先运行 `kodax integrations migrate` 预览计划，再运行 `kodax integrations migrate --apply` 创建独立文件。只有确认新文件有效后才运行 `kodax integrations migrate --apply --cleanup-legacy` 显式清理旧字段。A2A 没有旧 `config.json` 迁移源，始终以 `integrations/a2a.json` 为权威配置。`.mcpb` 安装/卸载通过 SDK MCP CRUD 写入新的 `integrations/mcp.json`。
+
+如果某个独立 integration 文件无效，Space 会报告 SDK/Runtime 校验错误并指明应检查的
+规范路径；不会删除、重写或静默重置用户配置。修复点名的文件后按界面提示 reload 或
+安全重启 Runtime owner。inbound A2A authentication/authority 变化仍可能要求安全重启。
 
 应用内 AI 使用的 `kodax_manual` 不再用 Space 主题完全替换 SDK 手册。Space 以当前安装 SDK 的 `KODAX_UNDERLYING_CAPABILITY_TOPICS` 为基线；若 Space 覆盖同名主题，会把准确的 SDK 原始正文、aliases 和 sources 与桌面操作说明动态合成。这样 Provider、custom Provider、配置、权限、工具、Skills、Extensions、MCP、A2A、仓库智能、Sessions、压缩和 SDK 等原始有价值内容不会因白标说明而丢失。
 
@@ -550,6 +580,8 @@ flowchart TD
 | 普通 query 会闪出多个 cmd   | 0.7.77 保留非交互子进程隐藏；若仍出现，请记录 Space/KodaX 版本、进程名和触发操作，按回归问题报告            |
 | MCP 工具不可见              | MCP 面板 Refresh/Reload、server 状态、PATH、`integrations/mcp.json` 来源和 diagnostics                      |
 | 旧 MCP/Extension 配置未生效 | Settings → Runtime 查看 SDK 迁移计划并点击“迁移集成配置”；也可用 CLI dry-run/`--apply` 迁移                 |
+| 集成配置校验失败            | 只修复错误点名的 `integrations/*.json`；不要删除整个目录，修复后 reload 或安全重启 Runtime owner            |
+| Daemon 模式无法使用         | v0.1.33 修正版可在无活动工作时从 Settings → Runtime 切到 Embedded；若安全门拒绝，先处理任务/其他客户端      |
 | 关闭按钮行为不符合预期      | Settings → Preferences → Close button behavior；托盘禁用或初始化失败时会回退关闭即退出                      |
 | Terminal 找不到命令         | Settings → Preferences → Terminal Shell；确认所选 shell 的登录环境包含该命令                                |
 | Partner 没有浏览器/邮件发送 | 当前未交付，不是配置错误                                                                                    |

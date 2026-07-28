@@ -26,6 +26,8 @@
 >
 > **2026-07-28 KodaX integration 配置与 self-manual 收口（v0.1.33）**：KodaX 0.7.77 的核心 `config.json` 与 `integrations/mcp.json`、`integrations/extensions.json`、`integrations/a2a.json` 已按 owner 分离。Space 的 MCP Manager、项目 MCP 兼容层、Settings 概览/迁移入口和 SDK filesystem Extension discovery 全部消费公开 reader/CRUD/migration 契约，并保留旧 `config.json#mcpServers`/`#extensions` 的只读迁移回退。`kodax_manual` 不再以 `baseTopics: []` 清空 SDK 机制手册，而是在 ESM-only `/coding` 子路径动态加载后，用 SDK 发布的底层能力主题清单做基线；同名 Space 主题动态合成当前安装 `MANUAL_REGISTRY` 的原始正文、aliases 和 sources。
 >
+> **2026-07-28 v0.1.33 撤回后修正架构增量**：F141 在 Settings 提供推荐 Daemon 与 Embedded 兼容 owner 的客户选择，但不提供任意 endpoint、混合 owner 或 live failover。Electron main 以一个全局 admission 边界串行化所有触碰 Coder Runtime 的 Session、Slash、Workflow、External Agent、MCP 和 Runtime-affecting Settings 操作；切换还会阻止 ManagedSession、running/paused Workflow、非终态 External Agent task、permission/AskUser 和待派发 queue。持久化模式是启动真理，启动前 reconciliation 会修复 `daemon preference + unowned inline policy`，对 active/unreadable inline owner fail closed。正式包继续精确使用 npm Registry KodaX 0.7.77，并通过依赖闭包、native SQLite load 和真实 packaged boot。
+>
 > **2026-07-23 F135 builtin 分发**：Space 通过公开 Skill plugin 注册接口加载安装包外置的 `frontend-slides` 与 `huashu-design`，来源 revision、许可证、补丁和逐文件哈希全部可审计；`huashu-design` 默认去除推广水印/签名。本机 `pdf`/`pptx`/`xlsx`/`docx` skill 的当前许可不允许再分发，因此不进入安装包。
 >
 > **0.7.68 集成**：KodaX top-level managed coding path 自有 FEATURE_260 Memory Agent 生命周期，复用 F228 durable governance。Space 验证正式 `/experimental-memory` 契约、保留 metadata-only 回调诊断并继续拥有 UI 投影；不创建第二个 Memory Agent/存储/推广策略。完整 F117 仍受 activation/rollback 和桌面 query/action contract 门控。
@@ -208,7 +210,7 @@ const runtime: KodaXRuntime = await createKodaXRuntime({
 });
 ```
 
-`RuntimeHostAdapter` wraps the public facade and presents a bounded Space-owned compatibility surface. In `v0.1.33` it coordinates:
+`RuntimeHostAdapter` wraps the public facade and presents a bounded Space-owned compatibility surface. The corrected `v0.1.33` release candidate coordinates:
 
 - Coder daemon initialization/identity, capability validation, subscription readiness and detach-only close;
 - Coder session/run/live projection, transcript, compact, fork, rewind, queue and shared settings routes;
@@ -216,11 +218,20 @@ const runtime: KodaXRuntime = await createKodaXRuntime({
 - compaction v3 durability, revision-bound transcript paging/search, root/child history ownership,
   privacy-safe root context-budget snapshots, and Provider usage/cache diagnostics;
 - mailbox-driven model coordination while Space keeps Actor progress on the UI/SDK telemetry path;
-- Partner inline initialization plus the temporary process-start-only legacy rollback boundary.
+- Partner inline initialization plus the customer-selectable, restart-bound Coder Daemon/Embedded
+  owner boundary.
 
 The adapter does **not** claim every public Runtime service as a migrated Space route. For Coder, Runtime owns sessions/runs/settings/interactions, Workflow observation/control, Learning operations, catalog discovery, MCP tool discovery/reload, and configured External Agent Actor/Turns. Space remains authoritative for renderer projection, Partner tools/profile/policy, MCP process lifecycle/logs, Workflow library/start/admin, artifacts, and the Reference Agent executor-plane store. These residual paths are reported as host providers, not Runtime-native support.
 
-The `v0.1.33` adapter attaches Coder to the profile daemon and keeps Partner inline because Partner injects process-local tools, profiles, callbacks and policy. Missing required Coder capability fails closed; it never creates a hidden inline Coder owner. No user-facing arbitrary Runtime endpoint or mixed-owner preference is added.
+The published `v0.1.33` default attaches Coder to the profile daemon and keeps Partner inline
+because Partner injects process-local tools, profiles, callbacks and policy. F141 exposes only the
+closed `daemon | embedded` Coder choice. It closes a main-process admission boundary, drains
+already-entered Runtime operations, blocks ManagedSession, running/paused Workflow, non-terminal
+External Agent, permission/AskUser and queued work, converts owner policy, persists the preference,
+and restarts. Startup reconciles a persisted daemon preference with an unowned inline policy before
+Runtime connection; an active or unreadable inline owner fails closed. Missing required Coder
+capability never creates a hidden owner, and no arbitrary Runtime endpoint, mixed-owner preference,
+or live failover is added.
 
 On Windows, F136 keeps the adapter connection in the lightweight Electron main
 process after the last BrowserWindow is destroyed. Tray activation recreates a
@@ -285,17 +296,17 @@ Space stores UI preferences, compatibility projections/caches, Space-only sessio
 
 ### 4.3 Runtime failure and degradation
 
-| Failure                       | Handling                                                                                                                        |
-| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| Missing Runtime capability    | Fail closed; hide/disable the action and expose a redacted reason in capability health/diagnostics.                             |
-| LLM/provider network error    | KodaX owns retry/recovery semantics; Space renders structured state/action.                                                     |
-| MCP/Extension degradation     | Space bridge reports its owned health/reload result; Runtime capability diagnostics must not claim a second owner.              |
-| Coder daemon unavailable      | Fail Coder closed with a redacted diagnostic; never silently replay or downgrade accepted work to inline.                       |
-| Main process crash            | On restart, recover KodaX sessions and Space-owned durable stores; do not claim cross-process Workflow replay.                  |
-| Long-session/context pressure | Consume Runtime context-budget/compaction events; measure against the final effective threshold and do not add a second policy. |
-| Missing Provider usage fields | Show unavailable cache/usage categories as unknown; never estimate billing or merge diagnostic duplicates.                      |
-| Stale same-version daemon     | Inspect advertised capabilities; retire and reconnect only when no work, pending interaction, or other client remains.          |
-| Windows tray unavailable      | Fall back to quit-on-close; never retain an invisible Electron main owner.                                                      |
+| Failure                                 | Handling                                                                                                                                                                                                                                                                                     |
+| --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Missing Runtime capability              | Fail closed; hide/disable the action and expose a redacted reason in capability health/diagnostics.                                                                                                                                                                                          |
+| LLM/provider network error              | KodaX owns retry/recovery semantics; Space renders structured state/action.                                                                                                                                                                                                                  |
+| Invalid MCP/A2A/Extension configuration | Space reports the SDK/Runtime validation error and identifies the authoritative split file without deleting, rewriting, or silently resetting user configuration. The user repairs or migrates the named file; inbound A2A authority changes may still require the Runtime owner to restart. |
+| Coder daemon unavailable                | Fail Coder closed with a redacted diagnostic; never silently replay or downgrade accepted work to inline.                                                                                                                                                                                    |
+| Main process crash                      | On restart, recover KodaX sessions and Space-owned durable stores, then reconcile persisted Coder mode with owner policy before Runtime connection; do not claim cross-process Workflow replay.                                                                                              |
+| Long-session/context pressure           | Consume Runtime context-budget/compaction events; measure against the final effective threshold and do not add a second policy.                                                                                                                                                              |
+| Missing Provider usage fields           | Show unavailable cache/usage categories as unknown; never estimate billing or merge diagnostic duplicates.                                                                                                                                                                                   |
+| Stale same-version daemon               | Inspect advertised capabilities; retire and reconnect only when no work, pending interaction, or other client remains.                                                                                                                                                                       |
+| Windows tray unavailable                | Fall back to quit-on-close; never retain an invisible Electron main owner.                                                                                                                                                                                                                   |
 
 ### 4.4 ACP 与 Space 的关系
 
@@ -850,16 +861,17 @@ Space 严格遵守：
 
 ### 20.1 Active 0.1.x architecture lanes
 
-| Lane      | Architectural change                                                                                                |
-| --------- | ------------------------------------------------------------------------------------------------------------------- |
-| `v0.1.31` | `RuntimeHostAdapter` released for managed runs/transcript/compact/fork/rewind with explicit Space bridge ownership. |
-| `v0.1.32` | Move Coder to one shared profile daemon with multi-client live state/control; keep Partner embedded inline.         |
-| `v0.1.33` | Stabilize KodaX 0.7.77 Actor/history/usage contracts and add bounded Shell/F140 desktop lifecycle control.          |
-| `v0.1.35` | Extend Workflow snapshot schema for same-session replay provenance; attach evidence review receipts to objects.     |
-| `v0.1.36` | Derive Task Dock plan/capability/effective-run projections from Runtime facts.                                      |
-| `v0.1.39` | Host KX-F260 Memory Agent over existing F228/F088 governance when published.                                        |
-| `v0.1.40` | Host KX-F266 Learning Center; carrier actions remain capability-gated.                                              |
-| `v0.1.43` | Complete locale gates, release diagnostics, channels/updater/distribution trust.                                    |
+| Lane                | Architectural change                                                                                                                  |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `v0.1.31`           | `RuntimeHostAdapter` released for managed runs/transcript/compact/fork/rewind with explicit Space bridge ownership.                   |
+| `v0.1.32`           | Move Coder to one shared profile daemon with multi-client live state/control; keep Partner embedded inline.                           |
+| `v0.1.33`           | Stabilize KodaX 0.7.77 Actor/history/usage contracts and add bounded Shell/F140 desktop lifecycle control.                            |
+| corrected `v0.1.33` | Add safe customer-selectable Coder ownership and exact packaged Runtime dependency/boot gates before reissuing the withdrawn release. |
+| `v0.1.35`           | Extend Workflow snapshot schema for same-session replay provenance; attach evidence review receipts to objects.                       |
+| `v0.1.36`           | Derive Task Dock plan/capability/effective-run projections from Runtime facts.                                                        |
+| `v0.1.39`           | Host KX-F260 Memory Agent over existing F228/F088 governance when published.                                                          |
+| `v0.1.40`           | Host KX-F266 Learning Center; carrier actions remain capability-gated.                                                                |
+| `v0.1.43`           | Complete locale gates, release diagnostics, channels/updater/distribution trust.                                                      |
 
 ### 20.2 Active 0.2.x architecture lanes
 

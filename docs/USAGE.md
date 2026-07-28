@@ -2,8 +2,8 @@
 
 > 面向源码使用者、贡献者和发布维护者。普通用户请阅读[用户使用手册](USER_MANUAL.zh-CN.md)。
 >
-> 当前 Space 发布基线：`v0.1.33`；该发布使用 npm Registry 的精确 `@kodax-ai/kodax@0.7.77`。
-> 本版本包含 canonical Actor/Turn 投影、精确 history/live 对齐、context/session usage、稳定缓存亲和诊断、可配置 Shell、F140 关闭行为，以及 builtin catalog、file reveal 和 Node/build 工具链维护。
+> 当前 Space 正式候选：撤回后修正的 `v0.1.33`；正式构建使用 npm Registry 的精确 `@kodax-ai/kodax@0.7.77`，不消费本地未发布 SDK。
+> 本版本包含 canonical Actor/Turn 投影、精确 history/live 对齐、context/session usage、稳定缓存亲和诊断、可配置 Shell、F140 关闭行为、F141 Daemon/Embedded 安全选择、F142 会话文件操作，以及 builtin catalog、file reveal 和 Node/build/打包工具链维护。
 
 ## 1. 环境要求
 
@@ -66,6 +66,7 @@ flowchart TD
 | `~/.kodax/skills/`                       | 用户 Skills                                 | 项目也可有项目级 Skills                                                           |
 | `~/.kodax/handoffs/`                     | 桌面 handoff inbox                          | 用于上下文连续性                                                                  |
 | `~/.kodax/space/`                        | Space UI 和桌面专属状态                     | 包含 logs、state 等                                                               |
+| `~/.kodax/space/settings.json`           | Space versioned preferences                 | version 3 保存 `coderRuntimeMode`；不属于 KodaX 核心配置或 integrations           |
 | `<profile-root>/runtime/`                | Shared Runtime state/journal                | Coder daemon runs；默认实际为 `~/.kodax/runtime/`                                 |
 | `KODAX_HOME=<abs>`                       | 改变 SDK 共享数据根                         | 必须在应用启动前设置                                                              |
 | `KODAX_PROFILE_DIR=<abs>`                | 让 Space 和 SDK 使用一个独立 profile        | 该绝对路径本身就是 profile 根，不再追加 `.kodax`                                  |
@@ -73,18 +74,22 @@ flowchart TD
 
 若同时使用 `KODAX_PROFILE_DIR`，Space 会在首次加载 SDK 前将 `KODAX_HOME` 对齐到该 profile。相对路径会被忽略；测试模式优先级最高。
 
-从旧版升级时，`config.json#mcpServers` 与 `config.json#extensions` 仍可只读回退，但不应继续作为新配置位置。Settings → Runtime 会调用当前 KodaX SDK 展示迁移计划，并提供“迁移集成配置”按钮；它只创建缺失文件，不覆盖已有目标，也不删除旧字段，成功后会重载 MCP。命令行也可先运行 `kodax integrations migrate` 查看计划，再运行 `kodax integrations migrate --apply` 创建独立文件；只有确认独立文件有效后才考虑 `--cleanup-legacy`。
+从旧版升级时，`config.json#mcpServers` 与 `config.json#extensions` 仍可只读回退，但不应继续作为新配置位置。Settings → Runtime 会调用当前 KodaX SDK 的 `planLegacyIntegrationMigration()` 展示迁移计划，并通过 `migrateLegacyIntegrationConfig()` 提供“迁移集成配置”按钮；它只创建缺失文件，不覆盖已有目标，也不删除旧字段，成功后会重载 MCP。命令行也可先运行 `kodax integrations migrate` 查看计划，再运行 `kodax integrations migrate --apply` 创建独立文件；确认独立文件有效后，才使用 `kodax integrations migrate --apply --cleanup-legacy` 显式清理旧字段。A2A 没有旧 `config.json` 迁移源，始终以 `integrations/a2a.json` 为权威配置。
 
-## 4. v0.1.33 Runtime Host
+## 4. Runtime Host 与 v0.1.33 Coder 模式选择
 
-`RuntimeHostAdapter` 是 Electron main 内部边界，不是用户设置：
+`RuntimeHostAdapter` 仍是 Electron main 内部的 owner/能力边界；客户只选择
+**Daemon** 或 **Embedded**，不会看到 endpoint、token、owner revision、inline fence 或
+内部 `runtime | legacy` 名称：
 
 ```mermaid
 flowchart LR
     UI["Renderer UI"] --> IPC["zod IPC"]
     IPC --> Host["Electron main"]
     Host --> Adapter["RuntimeHostAdapter"]
-    Adapter --> Runtime["KodaX Runtime daemon<br/>Coder shared truth"]
+    Adapter --> Mode{"Saved Coder mode"}
+    Mode -->|Daemon| Runtime["KodaX Runtime daemon<br/>Coder shared truth"]
+    Mode -->|Embedded| Inline["Electron main inline owner<br/>Coder compatibility"]
     Host --> Partner["Partner embedded inline"]
     Host --> Bridges["Space host providers<br/>MCP processes/logs / Workflow library+start+admin<br/>Reference Agent / artifacts"]
 ```
@@ -109,21 +114,31 @@ v0.1.33 的 Coder daemon 路由包括：
 
 以下仍由 Space 管理：renderer 投影、Partner profile/tools/policy、Workflow library/start/rerun/save/admin/result/artifact、MCP server 进程与日志、Artifact 和 Space Reference Agent durable store。不要把这些路径写成 Runtime-native。
 
-Coder 缺少必要 Runtime capability 时 fail closed，不会把已接受操作重放到 inline owner。Partner 始终保持 embedded-inline。内部紧急回滚方式如下，必须在没有活动工作时、应用启动前设置并重启：
+Coder 缺少必要 Runtime capability 时 fail closed，不会把已接受操作偷偷重放到 inline owner。
+Partner 始终保持 embedded-inline。F141 在 **Settings → Runtime → Coder 运行模式** 提供
+客户可见的 Daemon / Embedded 选择：
 
-```powershell
-$env:KODAX_SPACE_RUNTIME_HOST='legacy'
-npm run dev
-```
+- **Daemon（推荐）**：连接共享 Runtime，保留持久任务、重连和多客户端协同能力；
+- **Embedded（兼容模式）**：在 Space 进程内持有 Coder，Daemon 无法正常启动或连接时可切换到此模式继续使用；
+- 切换会同步关闭 Coder admission，等待已经进入的 Session、Slash、Workflow、
+  Runtime External Agent、MCP 和 Runtime-affecting Settings 操作退出，再检查活动状态；
+- 只有 ManagedSession、running/paused Workflow、非终态 External Agent task、待处理
+  permission/AskUser 和待派发 Coder queue 都为空时才能切换；daemon 的 active/queued
+  work 或其他客户端也会阻止切换；通过所有权安全检查后，Space 保存偏好并自动重启；
+- Daemon → Embedded 会先安全停止空闲 daemon 并取得 inline owner；若还有任务、交互、其他客户端或所有权不可确认，切换会被拒绝；
+- Embedded → Daemon 会先释放 inline owner 并恢复 daemon owner policy。中途失败会尝试补偿；如果无法证明任一 owner 仍可用，Space 会保持 Coder 入口关闭并执行恢复重启。
+- 新进程会在 Runtime connect 之前协调持久化偏好和 owner policy：Daemon 偏好遇到
+  unowned inline policy 会先恢复 daemon policy；active/unreadable inline owner 会
+  fail closed，避免崩溃窗口产生双 owner。
 
-恢复 Runtime 路径：
+偏好保存在 `~/.kodax/space/settings.json`。旧的
+`KODAX_SPACE_RUNTIME_HOST=legacy|runtime` 只在旧版/空设置迁移时作为初始值；一旦
+首次模式选定，Space 会原子创建 version 3 设置；之后 Settings 中的选择就是启动真理，
+不再由环境变量覆盖。
 
-```powershell
-$env:KODAX_SPACE_RUNTIME_HOST='runtime'
-npm run dev
-```
-
-该变量是维护窗口中的内部回滚开关，不应做成用户偏好，也不支持在 live run 中切换。
+MCP、A2A 或 Extensions 的独立配置文件若校验失败，Space 报告 SDK/Runtime 错误和对应的
+规范路径，不删除、重写或静默重置配置。修复点名文件后执行相应 reload；涉及 inbound
+A2A authentication/authority 的变化仍可能要求 Runtime owner 安全重启。
 
 ### Windows 后台托盘
 
@@ -203,12 +218,14 @@ npm run build:linux
 
 跨平台产物最好在对应系统或 CI runner 上生成。发布前至少确认：
 
-1. `package.json`、应用 Version IPC、CHANGELOG 和 feature doc 版本一致；
+1. 根/desktop `package.json`、两份 lock 视图、已安装 KodaX、应用 Version IPC、CHANGELOG 和 feature doc 版本一致，且 SDK 解析为带 Registry URL/SRI 的同一个精确正式版本；
 2. `npm run build:smoke` 通过；
-3. installer/portable 或目标平台产物能够启动；
+3. pack 自动导入所有 KodaX public facade，按 Node ancestor 规则验证完整传递依赖，确认
+   `app.asar.unpacked` 中的 native SQLite，并实际加载 `better-sqlite3`；
 4. `npm run skills:check` 通过，打包后的 Space builtin 文件集/字节与 lock 完全一致，Huashu 三个有序补丁及大小写不敏感的推广签名禁词门禁有效，SDK builtin Markdown 也仍在 `app.asar`；
 5. Provider、创建会话、发送消息、后台 Session 权限/AskUser、session restore、fork/rewind/compact 完成人工冒烟；
-6. Windows 本地产物和 CI 的 Windows/macOS/Linux 产物均通过 package/boot smoke；
+6. Windows 本地产物由 pack 自动运行真实 `win-unpacked/KodaX Space.exe` boot smoke，
+   CI 的 Windows/macOS/Linux 产物均通过对应 package/boot smoke；
 7. Windows 人工验证主/Artifact 窗口图标、托盘关闭/重开/两种退出语义，以及重复查询时不出现瞬时 console 窗口；KodaX 0.7.77 保留非交互子进程隐藏，任何重现都按回归处理；
 8. 正式发布后再把文档中的“开发基线”改成“公开正式版”。
 
@@ -217,23 +234,30 @@ npm run build:linux
 `resedit@1.7.2` 直接修改 PE icon/version resources，不再扫描或启动缓存中的
 `rcedit.exe`。相关依赖和资源门禁失败必须让安装/打包失败，不能用 `|| true` 吞掉。
 
-`v0.1.33` 的可执行门禁、目标产物、人工验收、已知风险和 tag 后步骤集中在
-[发布就绪清单](releases/v0.1.33-release-readiness.md)。在该清单关闭之前，不应创建
-稳定版 `v0.1.33` tag。
+撤回前的门禁和产物哈希，以及修正版重新执行的门禁和发布证据，都记录在
+[v0.1.33 发布记录](releases/v0.1.33-release-readiness.md)。只有精确 npm KodaX 0.7.77、
+完整依赖闭包、native SQLite load、真实 packaged boot 和 GitHub CI 全部通过后，才能
+重建稳定 tag。
 
 ## 8. 排障
 
-| 现象                          | 首先检查                                                                   |
-| ----------------------------- | -------------------------------------------------------------------------- |
-| 没有 Provider / API key       | Settings → Providers；环境变量；OS Keychain 状态                           |
-| 会话或配置出现在错误 profile  | 启动前的 `KODAX_HOME`、`KODAX_PROFILE_DIR`；不要在 SDK import 后修改       |
-| Runtime run 失败              | 版本信息、runId、`~/.kodax/space/logs`、Runtime status/capability snapshot |
-| MCP 工具不可见                | MCP panel 的 Refresh/Reload、server diagnostics；MCP 子进程由 Space 管理   |
-| E2E 启动失败且提到 native ABI | 结束并行测试，运行 `node scripts/ensure-sqlite-native.mjs electron`        |
-| Node 单测提到 native ABI      | 运行 `node scripts/ensure-sqlite-native.mjs node`                          |
-| UI 状态损坏                   | 先备份 `~/.kodax/space/`，检查日志；最后手段才重置 `state.json`            |
+| 现象                          | 首先检查                                                                                                 |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------- |
+| 没有 Provider / API key       | Settings → Providers；环境变量；OS Keychain 状态                                                         |
+| 会话或配置出现在错误 profile  | 启动前的 `KODAX_HOME`、`KODAX_PROFILE_DIR`；不要在 SDK import 后修改                                     |
+| Runtime run 失败              | 版本信息、runId、`~/.kodax/space/logs`、Runtime status/capability snapshot                               |
+| Packaged daemon 启动即退出    | `~/.kodax/space/logs`；必要时把 `scripts/diagnose-packaged-daemon.cmd` 复制到 extracted app 目录前台复现 |
+| MCP 工具不可见                | MCP panel 的 Refresh/Reload、server diagnostics；MCP 子进程由 Space 管理                                 |
+| E2E 启动失败且提到 native ABI | 结束并行测试，运行 `node scripts/ensure-sqlite-native.mjs electron`                                      |
+| Node 单测提到 native ABI      | 运行 `node scripts/ensure-sqlite-native.mjs node`                                                        |
+| UI 状态损坏                   | 先备份 `~/.kodax/space/`，检查日志；最后手段才重置 `state.json`                                          |
 
 提交问题时请包含版本、操作系统、复现步骤、是否使用独立 profile、相关日志和脱敏截图。已知问题见 [KNOWN_ISSUES.md](KNOWN_ISSUES.md)。
+
+`scripts/diagnose-packaged-daemon.cmd` 不改变已保存的 Daemon/Embedded 偏好，会按当前
+`KODAX_PROFILE_DIR`/`KODAX_HOME` 前台启动与正式包相同的 Electron→Node→KodaX CLI
+链路，并在应用目录生成 `kodax-daemon-bootstrap-diagnostic.log`。该日志可能含本机路径、
+profile 位置和 Runtime 错误；分享前必须人工脱敏。
 
 ## 9. 文档入口
 
@@ -245,4 +269,6 @@ npm run build:linux
 - [Feature 路线图](FEATURE_LIST.md)
 - [Builtin skill 维护说明](BUILTIN_SKILLS.md)
 - [v0.1.33 发布就绪清单](releases/v0.1.33-release-readiness.md)
+- [v0.1.33 F141 人工测试指导](test-guides/FEATURE_141_v0.1.33_TEST_GUIDE.md)
+- [v0.1.33 F142 人工测试指导](test-guides/FEATURE_142_v0.1.33_TEST_GUIDE.md)
 - [贡献指南](../CONTRIBUTING.md)

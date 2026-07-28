@@ -1,4 +1,4 @@
-# FEATURE_142 v0.1.34 Human Test Guide
+# FEATURE_142 v0.1.33 Human Test Guide
 
 ## 前置条件
 

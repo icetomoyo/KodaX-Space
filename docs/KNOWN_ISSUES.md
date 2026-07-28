@@ -119,6 +119,13 @@ Last Updated: 2026-07-28
 | 121 | Medium   | Resolved    | Custom Provider settings could not declare the endpoint context window                                                   | v0.1.x                          | 2026-07-27 |
 | 122 | High     | Resolved    | Cumulative Runtime snapshots replayed streamed assistant output, thinking, and active tools in the renderer              | v0.1.33                         | 2026-07-27 |
 | 123 | High     | Resolved    | Space ignored KodaX split integration files and replaced valuable SDK self-manual content                                | KodaX 0.7.77 adoption           | 2026-07-28 |
+| 124 | High     | Resolved    | Coder runtime-mode switching admitted new work and could persist an inconsistent owner state                             | corrected v0.1.33               | 2026-07-28 |
+| 125 | High     | Open        | Invalid optional integration config could abort Coder daemon startup without actionable diagnostics                      | future published KodaX          | 2026-07-28 |
+| 126 | Medium   | Resolved    | Sent and restored image attachments disappear from visible user messages                                                 | v0.1.9                          | 2026-07-28 |
+| 127 | High     | Resolved    | Runtime-mode recovery could reopen admission or forget the clean-profile migration state                                 | corrected v0.1.33               | 2026-07-28 |
+| 128 | High     | Deferred    | Packaged Electron daemon shell probes fail before execution and Auto LLM reports Bash as disabled                        | future published KodaX          | 2026-07-28 |
+| 129 | High     | Resolved    | Packaged builds consumed nested KodaX development junctions and omitted transitive runtime dependencies                  | corrected v0.1.33               | 2026-07-28 |
+| 130 | High     | Resolved    | Runtime-mode switching left Workflow, Slash, and External Agent executable entry points outside admission                | corrected v0.1.33               | 2026-07-28 |
 
 ## Issue Details
 
@@ -7318,13 +7325,589 @@ Validation:
 - TypeScript checks and the focused schema/main-process suites pass; full release gates remain
   recorded in the v0.1.33 readiness document.
 
+### 124: Coder runtime-mode switching admitted new work and could persist an inconsistent owner state
+
+- Priority: High
+- Status: Resolved
+- Introduced: withdrawn v0.1.33 candidate
+- Fixed: corrected v0.1.33
+- Created: 2026-07-28
+- Resolution Date: 2026-07-28
+
+#### Original Problem
+
+The new Settings switch between daemon and embedded Coder hosts had several unsafe transition and
+recovery edges:
+
+- a Coder create, resume, send, or queued input could enter after the active-task check but before
+  the owner transition completed;
+- another mode request could reverse the persisted preference during the delayed restart window
+  without restoring the corresponding owner policy;
+- daemon-to-embedded persistence failure restored daemon policy but left the adapter closed while
+  the UI claimed the previous mode remained active;
+- failed embedded owner initialization could not recover to verified daemon policy;
+- v1/v2 settings were upgraded only in memory, so removing the legacy environment override could
+  change the selected host on the next launch;
+- the new Settings action was absent from the frozen Coder action manifest; and
+- the custom radio cards did not implement native radio keyboard behavior.
+
+Expected behavior:
+
+- mode switching and Space task admission are serialized in the main process;
+- no second switch or new task can enter once a restart has been scheduled;
+- every partial owner transition either remains usable or schedules a recovery restart;
+- persisted settings and owner policy agree across launches; and
+- the Settings control is keyboard- and screen-reader-operable.
+
+#### Root Cause
+
+The initial implementation treated the active-task check, settings write, owner transition, and
+restart scheduling as independent operations. It had no process-wide single-flight coordinator or
+admission drain. Migration reused the normalized in-memory value without writing a versioned
+document, while the Settings UI used ARIA roles on ordinary buttons instead of native grouped radio
+inputs.
+
+#### Resolution
+
+- Added a main-process runtime-mode coordinator that closes admission synchronously, drains
+  already-admitted Session work, rechecks active tasks, serializes switches, and keeps the gate
+  closed after any scheduled restart.
+- Runtime-touching Session, Slash, Workflow, External Agent, MCP, and Settings operations now
+  participate in the same process-wide gate.
+- The final active-work check includes ManagedSessions, running/paused Workflows, non-terminal
+  External Agent tasks, pending permission/AskUser interactions, queued Coder prompts, daemon
+  work, and other clients.
+- A failed embedded preference write restores daemon policy and schedules a recovery restart.
+- Failed/unowned embedded initialization can enable daemon policy only after verifying that the
+  owner state is unowned; occupied or unreadable states still fail closed.
+- Startup reconciles persisted Daemon preference with owner policy before Runtime connection.
+  `daemon + unowned inline policy` is repaired; active/unreadable inline ownership fails closed.
+- The initialized Space client version is retained for reconnects instead of falling back to a
+  hard-coded previous release number.
+- v1/v2 settings migrate atomically to v3 with the selected `coderRuntimeMode`, while unknown
+  forward-compatible fields remain preserved.
+- Added `settings.setCoderRuntimeMode` to the frozen action manifest as a Space host-provider
+  action.
+- Replaced the custom ARIA buttons with native same-name radio inputs and a fieldset/legend group.
+- Updated failure copy so it no longer promises that a closed previous host is still active.
+
+Files changed include:
+
+- `apps/desktop/electron/kodax/coder-runtime-mode-switch.ts`
+- `apps/desktop/electron/ipc/session.ts`
+- `apps/desktop/electron/kodax/runtime-host-adapter.ts`
+- `apps/desktop/electron/settings/store.ts`
+- `apps/desktop/electron/kodax/runtime/coder-action-manifest.ts`
+- `apps/desktop/electron/main.ts`
+- `apps/desktop/renderer/src/features/settings/SettingsModal.tsx`
+- `apps/desktop/renderer/src/i18n/messages.ts`
+- focused main-process regression tests
+
+Validation:
+
+- Focused mode-switch, owner-recovery, settings-migration, action-manifest, and IPC schema suites
+  pass, including concurrent admission, reverse-switch, recovery-restart, failed embedded owner,
+  cross-launch migration, and forward-compatible field preservation cases.
+- Focused Runtime mode/owner suites pass (83 tests), including startup reconciliation, global
+  activity blockers, reconnect version retention, inline-acquire compensation, and
+  recovery-restart admission closure.
+- Full workspace and packaged release gates use the exact npm Registry KodaX 0.7.77 package; no
+  unpublished SDK candidate is part of the correction.
+
+### 125: Invalid optional integration config could abort Coder daemon startup without actionable diagnostics
+
+- Priority: High
+- Status: Open
+- Introduced: v0.1.32 / KodaX 0.7.76
+- Target: future npm-published KodaX contract
+- Created: 2026-07-28
+- Resolution Date: 2026-07-28
+
+#### Original Problem
+
+On one reported Windows machine, both the portable and extracted v0.1.32 builds
+started Space and kept Partner usable, but every Coder request failed with:
+
+`Runtime daemon child exited before becoming healthy (code 1).`
+
+The customer had no `~/.kodax/runtime` directory, the same package worked on
+other machines, and the pre-daemon v0.1.28 build worked on the affected
+machine. Asking the customer to delete all of `~/.kodax/config.json` and
+`~/.kodax/integrations` could have hidden the trigger, but would destroy
+unrelated valid settings and was not an acceptable product fix.
+
+#### Root Cause
+
+Coder v0.1.32 moved execution into the KodaX daemon, while Partner remained on
+its independent inline path. KodaX treated strict MCP, A2A, and filesystem
+Extension documents as mandatory during daemon cold start. A machine-specific
+malformed or incompatible optional integration file could therefore terminate
+the child before health and before normal Runtime logging. Space surfaced only
+the parent's generic code-1 error and did not distinguish core Runtime health
+from optional integration degradation.
+
+The separate `Cannot find module 'better-sqlite3'` dialog seen from one
+administrator-mode portable launch is an extraction/native-module/endpoint
+protection signal in Electron's main process. It is not conflated with
+integration validation. If Electron fails before spawning the Runtime child,
+the visible dialog and Space main-process logs remain the evidence.
+
+#### Current Disposition
+
+- The corrected Space `v0.1.33` release does **not** claim an unpublished KodaX
+  domain-isolation or hot-recovery contract. It remains fixed to the exact
+  npm-published KodaX 0.7.77 package.
+- Space now identifies the authoritative `integrations/mcp.json`,
+  `integrations/extensions.json`, or `integrations/a2a.json` path and documents
+  the SDK migration plan/apply flow. It never recommends deleting all of
+  `config.json` or the integrations directory.
+- Settings exposes non-destructive legacy MCP/Extension migration through the
+  published SDK APIs. Existing destination files are not overwritten and
+  legacy fields are retained unless the user later requests explicit CLI
+  cleanup.
+- A malformed file can still fail Runtime startup under the current published
+  SDK. The user must repair the named file and safely restart/reload the owner.
+  Domain-isolated startup and recovery remain open until a supporting KodaX
+  contract is npm-published and explicitly adopted.
+
+### 126: Sent and restored image attachments disappear from visible user messages
+
+- Priority: Medium
+- Status: Resolved
+- Introduced: v0.1.9
+- Fixed: corrected v0.1.33
+- Created: 2026-07-28
+- Resolution Date: 2026-07-28
+
+#### Original Problem
+
+A user sent three images with the first query in Session
+`s_084731de-2f67-4c46-b28e-004ac166e64e`. KodaX persisted all three image
+content blocks and the durable files still exist, but the Space transcript
+shows only the query text. There is no attachment indicator, clickable link,
+or thumbnail in either the optimistic live message or restored history.
+
+Expected behavior:
+
+- the sent user bubble immediately shows every attached image;
+- switching Sessions or restarting Space restores the same attachment list;
+- clicking a thumbnail opens an in-app preview;
+- missing historical files degrade to an explicit unavailable tile instead of
+  disappearing; and
+- history transport does not embed large base64 payloads or expose unrestricted
+  local-file reads.
+
+#### Context
+
+Affected components include composer send projection, `session.history`, the
+shared IPC schema, renderer message state/composition, user bubbles, and the
+main-process `app://` protocol.
+
+#### Root Cause
+
+Image artifacts are passed separately to `session.send`, while the optimistic
+`UserMessage`, history `user` item, `ConversationMessage`, and `UserBubble`
+retain only string content. History calls `extractUserText()` and discards the
+persisted image blocks even though their Session-owned files remain available.
+
+#### Resolution
+
+- The Session schema now carries bounded, path-free image descriptors for live,
+  queued, and restored user messages, including explicit missing and unsupported
+  states instead of silently dropping an image.
+- The main process issues revocable `app://space/session-attachment/...`
+  capabilities and revalidates Session ownership, real paths, file size, and
+  detected image signatures on every no-store response.
+- Optimistic data URLs are replaced by durable capabilities after the send
+  acknowledgement, including the delivery-before-ack queued-message race.
+- User bubbles render lazy thumbnails outside the collapsed query text. Clicking
+  one opens Task Dock, whose transient snapshot is scoped to both project and
+  Session and is cleared on Session deletion or switch.
+- Forked Sessions receive their own attachment copies plus a bounded ownership
+  manifest, so their restored thumbnails survive source-Session deletion.
+
+#### Validation
+
+- The reported Session
+  `s_084731de-2f67-4c46-b28e-004ac166e64e` restores all three images as available
+  descriptors without exposing native paths.
+- The shared IPC schema suite passes all 287 tests.
+- The focused Desktop regression suite passes 112 tests with one existing skip,
+  covering history, fork ownership, MIME recovery, cache policy, queued
+  promotion, and Task Dock scoping.
+- The Playwright attachment flow passes both tests, including rendering a sent
+  image thumbnail and opening it in Task Dock.
+- TypeScript checks, renderer/main builds, targeted lint/format checks, and
+  `git diff --check` pass.
+
+### 127: Runtime-mode recovery could reopen admission or forget the clean-profile migration state
+
+- Priority: High
+- Status: Resolved
+- Introduced: withdrawn v0.1.33 candidate
+- Fixed: corrected v0.1.33
+- Created: 2026-07-28
+- Resolution Date: 2026-07-28
+
+#### Original Problem
+
+A second review of FEATURE_141 found additional clean-profile and partial-recovery edges:
+
+- when `settings.json` did not exist, the legacy environment selected the first in-memory mode but
+  no version 3 file was created, so the next launch could select a different host;
+- after clean-profile creation, ordinary settings updates replaced the now-existing file with a
+  fixed `.tmp` rename that intermittently failed with `EPERM` on Windows;
+- if daemon policy enable and inline-owner reacquisition both failed, the switch coordinator
+  reopened Coder admission even though no usable owner had been proven;
+- embedded `session.send()` could return accepted before its asynchronous stream discovered that
+  the inline owner was unavailable, leaving an unhandled rejected Promise;
+- generic failure copy claimed that no new mode was saved even when daemon preference persistence
+  had succeeded and its compensation write had failed; and
+- renderer files pulled into the Electron type project depended on renderer-only global JSX and
+  Vite declarations, making the current release type gate fail.
+
+#### Resolution
+
+- A missing settings file is now created exclusively and atomically with the selected migration
+  mode. If another Space process wins the create race, the store re-reads and normalizes that
+  committed document instead of overwriting it.
+- Ordinary updates use the shared Windows-safe atomic replacement helper with unique sibling files
+  instead of renaming a fixed `.tmp` path over an existing settings file. The fallback rejects
+  pre-existing directories and symbolic links without displacing them, and records any entry moved
+  during a race so Windows can restore it on failure.
+- Owner recovery failures carry a dedicated restart-required error. The switch coordinator schedules
+  a recovery restart and keeps its admission gate closed even when preference compensation also
+  fails.
+- The typed restart-required marker is preserved through ready-daemon inline rollback wrappers, and
+  the coordinator's outer catch provides a final restart-scheduling fallback before it can reopen
+  admission.
+- Embedded `send()` verifies the inline owner while the main-process admission is still held.
+  Fire-and-forget stream preflight failures also emit one bounded `session_error` instead of becoming
+  unhandled rejections.
+- Failure copy now describes the state neutrally and asks the customer to confirm the selected mode
+  after Space reopens. Mode cards separately mark the current saved mode and the pending radio
+  selection.
+- Cross-project renderer dependencies use explicit React and structural `ImportMeta` types, while
+  Runtime diagnostic degradation projections retain explicit result typing.
+
+Files changed include:
+
+- `apps/desktop/electron/settings/store.ts`
+- `apps/desktop/electron/kodax/coder-owner-recovery-error.ts`
+- `apps/desktop/electron/kodax/coder-runtime-mode-switch.ts`
+- `apps/desktop/electron/kodax/runtime-host-adapter.ts`
+- `apps/desktop/electron/kodax/real-session.ts`
+- `apps/desktop/renderer/src/i18n/messages.ts`
+- `apps/desktop/renderer/src/shell/FileActionMenu.tsx`
+- `apps/desktop/renderer/src/shell/inputBridge.ts`
+- focused settings, coordinator, adapter, and real-session tests
+
+Validation:
+
+- Clean-profile migration is tested across a second launch after the environment changes.
+- Settings replacement is tested through the Windows `EPERM` fallback, and the settings test file
+  passes repeated runs without the former intermittent rename failure.
+- Double owner-recovery failure is tested with successful and failed preference compensation; both
+  cases schedule restart and reject later Coder admissions. The ready-daemon path also covers a
+  committed daemon stop followed by inline acquisition and daemon restoration failure.
+- Embedded owner loss rejects `send()` before acceptance, and escaped stream preflight failures emit
+  exactly one terminal error.
+- TypeScript, lint, focused tests, build smoke, and diff checks pass.
+
+### 128: Packaged Electron daemon shell probes fail before execution and Auto LLM reports Bash as disabled
+
+- Priority: High
+- Status: Deferred upstream
+- Introduced: v0.1.33 / KodaX 0.7.77 shell-execution adoption
+- Target: future npm-published KodaX
+- Created: 2026-07-28
+
+#### Original Problem
+
+In Session `s_6d037f64-c0c9-4f0a-a2b5-78d9f560ef3d`, three ordinary command
+tool calls failed before the requested command started:
+
+`shell environment probe did not return a valid framed payload`
+
+After the user asked whether PowerShell was actually unavailable, the Agent
+submitted a fourth call through the Windows `bash` tool that wrapped the full
+PDF-generation side effect in PowerShell instead of running a minimal
+read-only capability probe. Auto LLM had a valid reason to reject that scope
+expansion, but its denial also claimed that Bash was explicitly unavailable in
+the Session and that invoking PowerShell was circumvention. The Agent then
+repeated that classifier-generated claim as though it were authoritative
+Runtime configuration and told the user that every shell channel was disabled.
+
+Expected behavior:
+
+- a packaged Electron daemon resolves the selected PowerShell environment and
+  executes the requested command;
+- Space's preflight canary validates the same helper path used by the Runtime
+  probe, so a passing canary cannot be followed by a fail-closed command tool;
+- infrastructure failures remain distinguishable from permission or policy
+  denials; and
+- Auto LLM does not reinterpret a user's diagnostic question as a Session
+  prohibition or invent an unavailable-tool policy.
+
+#### Evidence
+
+- The affected Session remained configured with `permissionMode: auto`,
+  `autoModeEngine: llm`, `shell.kind: powershell`, the absolute Windows
+  PowerShell executable, and `environment.windowsPath: registry`.
+- The effective tool scope included `bash`; no persisted setting disabled it.
+- The first three calls failed in the Runtime shell-environment probe before
+  command execution. Only the fourth call reached and was blocked by the
+  Auto LLM guardrail.
+- The user's PowerShell profile contains only the fnm initialization command.
+  Direct profile-aware PowerShell capture returns a framed PATH successfully,
+  which explains why Space's canary kept the `profile: default` contract.
+- The live packaged daemon is `KodaX Space.exe` running the KodaX CLI through
+  Electron's bounded Node bootstrap. Its long-lived environment correctly no
+  longer contains `ELECTRON_RUN_AS_NODE`.
+- The same framed-payload failure appears in nine Runtime runs across four
+  Sessions, covering both v0.1.32-development and v0.1.33 clients. This is not
+  isolated to the reported command or Provider.
+
+#### Root Cause
+
+There are two distinct failures:
+
+1. Space's preflight canary captures the PowerShell environment with an encoded
+   PowerShell script. KodaX Runtime's formal probe instead asks the selected
+   shell to launch `process.execPath -e ...` as a Node helper. In the packaged
+   daemon, `process.execPath` is the Electron application executable, not an
+   ordinary `node.exe`. Because the daemon bootstrap intentionally consumed
+   `ELECTRON_RUN_AS_NODE`, the nested helper launch re-enters normal Electron
+   application mode and emits no sentinel frame. KodaX already exposes
+   `prepareInternalNodeLaunch()` for trusted internal `process.execPath`
+   children, but the shell-environment resolver does not use that contract.
+2. The later Auto LLM permission review received a Windows `bash` tool call
+   whose payload invoked PowerShell and performed the previously discussed PDF
+   generation, while the immediate user intent asked only for confirmation.
+   Blocking that side effect was defensible, but the classifier converted the
+   question into a nonexistent policy fact, labeled PowerShell as
+   circumvention, and returned misleading denial prose. The root Agent then
+   overgeneralized that secondary denial into a false Session-level capability
+   diagnosis instead of retrying with a read-only probe.
+
+No requested Edge, PowerShell, CMD, Python, or other user command was able to
+start while the primary probe defect was active.
+
+#### Proposed Resolution
+
+- Make the Runtime environment helper use the existing bounded internal Node
+  launch contract whenever `process.execPath` is Electron.
+- Add a packaged Electron/asar regression that exercises the actual
+  `shellExecution` probe and a command tool, not only daemon bootstrap and
+  ordinary-Node compatibility.
+- Align Space's canary with the Runtime probe or add a Runtime-owned preflight
+  endpoint so the two checks cannot validate different execution paths.
+- Emit structured shell-resolution failure metadata so Agents and UI copy
+  cannot confuse an infrastructure probe failure with a permission setting.
+- Add Auto LLM regression coverage for diagnostic confirmation prompts and the
+  Windows `bash`-tool/PowerShell naming boundary. A scope-mismatch denial must
+  cite the actual side effect without inventing an unavailable-tool policy, and
+  a minimal read-only capability probe must remain distinguishable from the
+  previously proposed write operation.
+
+#### Upstream Work (not part of v0.1.33)
+
+- KodaX's formal shell-environment probe now routes its nested
+  `process.execPath` helper through the existing bounded Electron Node-launch
+  contract. `ELECTRON_RUN_AS_NODE=1` is scoped to that helper invocation, and a
+  preload scrub removes it before the helper serializes the environment used by
+  the requested command.
+- The packaged Electron daemon smoke now executes the real `toolBash`
+  `shellExecution` path with Windows PowerShell and verifies that the probe
+  succeeds while the Electron bootstrap switch remains absent from daemon,
+  ordinary child, and user-command environments.
+- Auto LLM's compact-review prompt now treats diagnostic questions as evidence,
+  not policy declarations. Scope-mismatch denials must name the actual
+  unrequested operation and may not invent tool availability or label normal
+  PowerShell dispatch as circumvention.
+- Space remains pinned to the published KodaX 0.7.77 package. Local unpublished
+  SDK work is not release evidence and is not consumed by the corrected
+  `v0.1.33` build.
+- This issue remains deferred until a supporting KodaX version is published and
+  explicitly adopted, the Space canary covers the same Runtime helper path,
+  and shell-resolution failures expose structured infrastructure diagnostics.
+
+Files changed:
+
+- `../KodaX/packages/coding/src/shell-execution/resolver.ts`
+- `../KodaX/packages/coding/src/shell-execution/resolver.test.ts`
+- `../KodaX/packages/coding/src/guardrails/auto-mode/classifier-prompt.ts`
+- `../KodaX/packages/coding/src/guardrails/auto-mode/classifier-prompt.test.ts`
+- `../KodaX/scripts/test-electron-daemon-smoke.mjs`
+- `../KodaX/tests/fixtures/electron-daemon-smoke/main.cjs`
+
+Verification:
+
+- Related KodaX Vitest suites passed: 47/47.
+- KodaX package build passed.
+- The packaged Electron daemon smoke passed against Electron 42.5.0.
+- JavaScript syntax checks and `git diff --check` passed.
+
+### 129: Packaged builds consumed nested KodaX development junctions and omitted transitive runtime dependencies
+
+- Priority: High
+- Status: Resolved
+- Introduced: withdrawn v0.1.33 candidate
+- Fixed: corrected v0.1.33
+- Created: 2026-07-28
+- Resolution Date: 2026-07-28
+
+#### Original Problem
+
+After `npm run clean; npm run build`, launching
+`out/win-unpacked/KodaX Space.exe` failed before the renderer opened:
+
+`Cannot find package 'get-tsconfig' imported from <path>`
+
+Expected behavior:
+
+- a local package build must either use the exact Registry KodaX package from
+  `package-lock.json` or fail before electron-builder creates artifacts;
+- no development junction, private SDK source, or incomplete external
+  dependency tree may enter `app.asar`; and
+- the development KodaX staging layout must be restored after the packaging
+  attempt, whether the published-package gate passes or fails.
+
+#### Root Cause
+
+`link-kodax.mjs` creates a Space-local staging directory at
+`node_modules/@kodax-ai/kodax` and places junctions to the sibling KodaX
+checkout under its `dist`, `node_modules`, and `scripts` children.
+`pack.mjs` checked only `realpath()` of the top-level SDK directory. Because
+that staging root itself is inside Space, the packer misclassified it as a
+published package and let electron-builder traverse the nested development
+junctions.
+
+The resulting asar contained an unpublished sibling KodaX development package
+and its `tsx`, but not `tsx`'s externally linked `get-tsconfig`
+dependency. Electron main therefore failed during startup module resolution.
+Adding `get-tsconfig` directly to Space would only hide the dependency leak and
+would still package an unpublished SDK, so it is not the fix.
+
+#### Resolution
+
+- `link-kodax.mjs` now writes a non-sensitive staging marker only after all
+  development junctions are ready.
+- The packer recognizes both the marker and pre-marker staging directories by
+  inspecting nested junction realpaths. Direct top-level SDK links remain
+  supported.
+- Staging restoration runs `link-kodax.mjs` again instead of incorrectly
+  replacing the staging directory with a link to one child target.
+- A detected development package is removed before `npm ci`; packaging then
+  requires the exact lockfile Registry package.
+- The corrected `v0.1.33` build accepts the published KodaX 0.7.77 baseline when
+  the root/desktop manifests, both lock views, installed package, Registry URL,
+  and integrity all agree. It does not require or package any unpublished SDK.
+
+Files changed:
+
+- `scripts/kodax-dev-link-state.mjs`
+- `scripts/kodax-runtime-release-gate.mjs`
+- `scripts/link-kodax.mjs`
+- `scripts/pack.mjs`
+- `scripts/smoke-pack.mjs`
+- `e2e/boot-smoke-packaged.mjs`
+- `scripts/test/kodax-dev-link-state.test.mjs`
+- `scripts/test/kodax-runtime-release-gate.test.mjs`
+
+Required reissue verification:
+
+- Development-link and release-dependency tests cover internal root/nested junctions,
+  manifest/lock/installed-version drift, Registry tarball source, and integrity validation.
+- The formal build starts from npm Registry KodaX 0.7.77 with no local staging.
+- Every build imports all public facades, walks ancestor-aware transitive dependencies, verifies
+  native bytes live outside asar, loads packaged `better-sqlite3`, and boots the real Windows
+  unpacked application.
+- The final executed commands and artifact evidence are recorded in the v0.1.33 readiness record.
+
+### 130: Runtime-mode switching left Workflow, Slash, and External Agent executable entry points outside admission
+
+- Priority: High
+- Status: Resolved
+- Introduced: withdrawn v0.1.33 candidate
+- Fixed: corrected v0.1.33
+- Created: 2026-07-28
+- Resolution Date: 2026-07-28
+
+#### Original Problem
+
+FEATURE_141 initially connected the runtime-mode switch coordinator only to
+`session.create` and `session.send`. While a mode switch had synchronously
+closed those two paths, a customer action could still start or resume
+executable Coder work through:
+
+- a Slash command that starts or reruns a Workflow;
+- Workflow panel `start`, `rerun`, or `resume`; or
+- Runtime External Agent task `start` or `sendInput`.
+
+Expected behavior:
+
+- every operation that touches the Coder Runtime owner must enter one coordinator gate;
+- a switch drains already-admitted work and rejects every later executable
+  entry until the owner is safely restored or the new process starts; and
+- Space-only diagnostics remain available so failures can be inspected without
+  racing the Runtime owner transition.
+
+#### Root Cause
+
+The coordinator was created correctly in Electron main, but its optional
+admission callback was injected only into Session IPC registration. Workflow,
+Slash, and Agent channel registrars had no shared admission dependency, so the
+active-work check and daemon owner stop could race a different executable IPC
+surface.
+
+Read-only `tryResume()` calls in Artifact, Memory, and Skill metadata paths do
+not acquire the Coder owner or start work; treating all lazy hydration as an
+execution admission would have blocked unrelated inspection without closing
+the actual launch side doors.
+
+#### Resolution
+
+- Added one exception-safe `runWithCoderAdmission()` helper over the mode-switch
+  coordinator's synchronous gate.
+- Electron main injects the same gate into Session, Slash, Workflow, External
+  Agent, MCP, and Runtime-affecting Settings channel registrars.
+- Slash execution is admitted as one operation because builtins can launch or
+  rerun Workflows.
+- Workflow `start`, `rerun`, and `resume`, plus External Agent task `start` and
+  `sendInput`, now hold admission until their launch/control acknowledgement
+  settles.
+- Runtime list/control/mutation routes participate in the gate. Space-only
+  diagnostics, Artifact, Memory, Skill parsing, and lazy hydration remain
+  outside because they do not acquire or mutate the Coder owner.
+- The F141 design, human regression guide, source documentation, user manual,
+  and `kodax_manual` explain the complete entry-point boundary.
+
+Files changed:
+
+- `apps/desktop/electron/kodax/coder-runtime-mode-switch.ts`
+- `apps/desktop/electron/ipc/session.ts`
+- `apps/desktop/electron/ipc/slash.ts`
+- `apps/desktop/electron/ipc/workflow.ts`
+- `apps/desktop/electron/ipc/agent.ts`
+- `apps/desktop/electron/main.ts`
+- `apps/desktop/electron/test/coder-runtime-mode-switch.test.ts`
+
+Verification:
+
+- The shared helper releases exactly once on both success and failure.
+- The focused coordinator, owner, settings, integration-health, and embedded
+  send suites pass with the existing Windows symlink skip only.
+- TypeScript checks pass after all four production channel registrars receive
+  the same injected gate.
+
 ## Summary
 
-- Total: 111
+- Total: 118
 - Open: 2
-- In Progress: 2
-- Resolved: 107
-- High: 48
-- Medium: 56
+- In Progress: 3
+- Resolved: 113
+- High: 54
+- Medium: 57
 - Low: 7
 - Next to resolve: 043

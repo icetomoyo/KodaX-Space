@@ -35,6 +35,9 @@ test('Space kodax_manual preserves the installed SDK mechanism manual', () => {
         `${id} must retain SDK source ${source.path}`,
       );
     }
+    for (const alias of sdkTopic.aliases ?? []) {
+      assert.ok(overlay.aliases?.includes(alias), `${id} must retain SDK alias ${alias}`);
+    }
   }
 
   const index = resolveKodaXManual(
@@ -65,9 +68,12 @@ test('Space kodax_manual preserves the installed SDK mechanism manual', () => {
   assert.match(config.content, /~\/\.kodax\/integrations\/a2a\.json/);
   assert.match(config.content, /~\/\.kodax\/integrations\/extensions\.json/);
   assert.match(config.content, /kodax integrations migrate --apply/);
+  assert.match(config.content, /只创建缺失的目标文件/);
+  assert.match(config.content, /目标文件已存在时不会被覆盖/);
+  assert.match(config.content, /--cleanup-legacy/);
 });
 
-test('Space kodax_manual documents the required KodaX 0.7.77 capability boundary', () => {
+test('Space kodax_manual documents the required current KodaX capability boundary', () => {
   const topics = new Map(SPACE_MANUAL_TOPICS.map((topic) => [topic.id, topic]));
   const ids = [...topics.keys()];
 
@@ -95,6 +101,22 @@ test('Space kodax_manual documents the required KodaX 0.7.77 capability boundary
   assert.match(topics.get('agent-coordination')?.body ?? '', /普通 progress.*不会唤醒父模型/);
   assert.match(topics.get('agent-coordination')?.body ?? '', /每条队列消息只出队一次/);
   assert.match(topics.get('tools')?.body ?? '', /Goal 生命周期工具.*完整常驻契约/);
+});
+
+test('Space kodax_manual explains the customer runtime-mode switch without replacing SDK facts', () => {
+  const topics = new Map(SPACE_MANUAL_TOPICS.map((topic) => [topic.id, topic]));
+  const runtimeHost = topics.get('runtime-host')?.body ?? '';
+  const settings = topics.get('settings')?.body ?? '';
+  const troubleshooting = topics.get('troubleshooting')?.body ?? '';
+
+  assert.match(runtimeHost, /Settings -> Runtime -> Coder runtime mode/);
+  assert.match(runtimeHost, /Daemon 是推荐模式/);
+  assert.match(runtimeHost, /Embedded 是.*兼容回退/);
+  assert.match(runtimeHost, /admission gate/);
+  assert.match(runtimeHost, /KODAX_SPACE_RUNTIME_HOST=.*一次迁移种子/);
+  assert.match(runtimeHost, /version 3.*coderRuntimeMode/);
+  assert.match(settings, /Coder runtime mode/);
+  assert.match(troubleshooting, /选择 Embedded.*切换并重启/);
 });
 
 test('Space kodax_manual distinguishes effective context pressure from cumulative session usage', () => {
