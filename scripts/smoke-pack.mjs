@@ -24,10 +24,7 @@ const rootDir = path.resolve(__dirname, '..');
 const outDir = path.resolve(rootDir, process.env.SPACE_PACK_OUT_DIR || 'out');
 const rootPackage = JSON.parse(readFileSync(path.join(rootDir, 'package.json'), 'utf8'));
 const SPACE_VERSION = String(rootPackage.version ?? '').trim();
-const installedKodaxPackage = JSON.parse(
-  readFileSync(path.join(rootDir, 'node_modules', '@kodax-ai', 'kodax', 'package.json'), 'utf8'),
-);
-const KODAX_VERSION = String(installedKodaxPackage.version ?? '').trim();
+const KODAX_VERSION = String(rootPackage.dependencies?.['@kodax-ai/kodax'] ?? '').trim();
 const SIZE_LIMIT_BYTES = 200 * 1024 * 1024;
 const require = createRequire(import.meta.url);
 const electronBin = require('electron');
@@ -346,6 +343,76 @@ async function checkAsarContents(asarPath) {
   }
   // 跨平台归一化：asar list 在 Windows 上返回 `\dist-electron\main.js`
   const normalized = files.map((f) => f.replace(/\\/g, '/'));
+  const devLinkMarker = '/node_modules/@kodax-ai/kodax/.kodax-space-dev-link';
+  if (normalized.some((file) => file === devLinkMarker || file.endsWith(devLinkMarker))) {
+    fail('KodaX development staging marker leaked into app.asar');
+  }
+
+  let packagedKodax;
+  try {
+    const asar = await import('@electron/asar');
+    packagedKodax = JSON.parse(
+      asar
+        .extractFile(
+          asarPath,
+          ['node_modules', '@kodax-ai', 'kodax', 'package.json'].join(path.sep),
+        )
+        .toString('utf8'),
+    );
+  } catch (error) {
+    fail(
+      `could not read packaged KodaX metadata: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+  if (packagedKodax.version !== KODAX_VERSION) {
+    fail(
+      `app.asar contains @kodax-ai/kodax@${packagedKodax.version ?? '(unknown)'}; ` +
+        `the root release manifest requires exact ${KODAX_VERSION}`,
+    );
+  }
+  ok(`app.asar contains exact @kodax-ai/kodax@${KODAX_VERSION}`);
+
+  // KodaX loads tsx at runtime for governed TypeScript extensions. Verify the
+  // packaged tsx dependency closure instead of assuming electron-builder
+  // followed a local staging junction. This catches the observed startup crash
+  // where tsx@4.21 was present but get-tsconfig was outside app.asar.
+  const packagedTsxMetadataPaths = normalized.filter((file) =>
+    file.endsWith('/node_modules/tsx/package.json'),
+  );
+  if (packagedKodax.dependencies?.tsx && packagedTsxMetadataPaths.length === 0) {
+    fail('KodaX declares runtime dependency tsx, but no packaged tsx metadata exists');
+  }
+  for (const metadataPath of packagedTsxMetadataPaths) {
+    let metadata;
+    try {
+      const asar = await import('@electron/asar');
+      metadata = JSON.parse(
+        asar
+          .extractFile(asarPath, metadataPath.replace(/^\//, '').split('/').join(path.sep))
+          .toString('utf8'),
+      );
+    } catch (error) {
+      fail(
+        `could not read packaged tsx metadata at ${metadataPath}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+    for (const dependency of Object.keys(metadata.dependencies ?? {})) {
+      const dependencyMetadata = `/node_modules/${dependency}/package.json`;
+      if (
+        !normalized.some((file) => file === dependencyMetadata || file.endsWith(dependencyMetadata))
+      ) {
+        fail(`packaged tsx@${metadata.version ?? '(unknown)'} is missing ${dependency}`);
+      }
+    }
+  }
+  if (packagedTsxMetadataPaths.length > 0) {
+    ok(`packaged tsx dependency closure is complete (${packagedTsxMetadataPaths.length} copy)`);
+  }
+
   const required = [
     '/dist-electron/main.js',
     '/dist-electron/preload.js',

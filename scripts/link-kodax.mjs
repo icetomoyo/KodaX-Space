@@ -25,6 +25,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { KODAX_DEV_LINK_MARKER } from './kodax-dev-link-state.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SPACE_ROOT = path.resolve(__dirname, '..');
@@ -74,6 +75,7 @@ const stagingPkg = {
   main: kodaxPkg.main,
   types: kodaxPkg.types,
   bin: kodaxPkg.bin,
+  kodaxRuntimeContracts: kodaxPkg.kodaxRuntimeContracts,
   // exports: 直接 borrow KodaX 自己的 exports map（它已指向 ./dist/sdk-*.js，与本 staging 的
   // dist 符号链接一致）。这样 KodaX 新增子路径（如 0.7.58 的 ./media）自动跟上，不再手 sync 漂移
   // —— 缺 ./media 曾导致 dev-link 下 import('@kodax-ai/kodax/media') 抛 ERR_PACKAGE_PATH_NOT_EXPORTED。
@@ -125,6 +127,11 @@ const scriptsLink = path.join(STAGING, 'scripts');
 if (fs.existsSync(scriptsSrc)) {
   fs.symlinkSync(scriptsSrc, scriptsLink, process.platform === 'win32' ? 'junction' : 'dir');
 }
+
+// Written last so an interrupted staging build is never mistaken for a
+// complete local SDK package. pack.mjs also recognizes pre-marker staging by
+// inspecting the nested junctions.
+fs.writeFileSync(path.join(STAGING, KODAX_DEV_LINK_MARKER), '', 'utf8');
 
 console.log(`[link-kodax] staging at:`);
 console.log(`  ${STAGING}`);
