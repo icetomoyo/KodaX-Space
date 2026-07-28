@@ -23,6 +23,8 @@ const EMPTY_EVENTS: readonly SessionEvent[] = [];
 export interface ActivitySnapshot {
   readonly streaming: boolean;
   readonly status: string;
+  /** Nested root compaction lifecycle, independent from the translated status label. */
+  readonly compacting?: boolean;
   readonly iter?: { current: number; max: number };
   readonly tokens?: number;
   /** session_start 的时间戳（spinner 计算 elapsed s 用）；pending 时退回 null。 */
@@ -203,7 +205,7 @@ export function snapshotFromEvents(
   // FEATURE_184/F193 — Sidecar Verifier 在 Worker 文字结束后再跑一次 LLM 评判
   // (~3-10s 尾延迟)。SDK 通过 onManagedTaskStatus 发 phase='verifying'，验证结束
   // 后转回 phase='worker'。覆盖 status，避免 spinner 卡在 "Writing…" 看着像没反应。
-  if (managedPhase === 'verifying') {
+  if (managedPhase === 'verifying' && !compacting) {
     status = 'Verifying…';
     toolPath = undefined;
     thinkingTokens = undefined;
@@ -213,6 +215,7 @@ export function snapshotFromEvents(
   return {
     streaming: true,
     status,
+    ...(compacting ? { compacting: true } : {}),
     iter,
     tokens,
     startedAt,
@@ -276,7 +279,7 @@ export function selectActivitySnapshot(
   // Compaction is a nested Runtime activity and is not represented by activeRun requirements.
   // Prefer its explicit lifecycle while active; otherwise the daemon live projection remains the
   // authority for ordinary queued/running/waiting states.
-  if (eventSnapshot.streaming && eventSnapshot.status === 'Compacting context…') {
+  if (eventSnapshot.streaming && eventSnapshot.compacting) {
     return eventSnapshot;
   }
   // Runtime admission is authoritative once it reports a queued or active run, even if the
@@ -424,8 +427,13 @@ export function ActivitySpinner(): ReactJSX.Element | null {
   );
 }
 
-/** Hook 版给 BottomBar 的 Send/Stop 按钮用 — 只关心 streaming bool（含 pendingSend）. */
-export function useIsStreaming(): boolean {
+export interface ActivityState {
+  readonly isStreaming: boolean;
+  readonly isCompacting: boolean;
+}
+
+/** Shared live activity state for controls that need both run and nested compaction status. */
+export function useActivityState(): ActivityState {
   const currentSessionId = useAppStore((s) => s.currentSessionId);
   const events = useAppStore((s) =>
     currentSessionId ? (s.eventsBySession[currentSessionId] ?? EMPTY_EVENTS) : EMPTY_EVENTS,
@@ -439,7 +447,16 @@ export function useIsStreaming(): boolean {
   const runtimeLive = useAppStore((s) =>
     currentSessionId ? s.liveProjectionBySession[currentSessionId] : undefined,
   );
-  return selectActivitySnapshot(runtimeLive, events, pending, managedPhase).streaming;
+  const snapshot = selectActivitySnapshot(runtimeLive, events, pending, managedPhase);
+  return {
+    isStreaming: snapshot.streaming,
+    isCompacting: snapshot.streaming && snapshot.compacting === true,
+  };
+}
+
+/** Hook 版给只关心 streaming bool（含 pendingSend）的调用方使用。 */
+export function useIsStreaming(): boolean {
+  return useActivityState().isStreaming;
 }
 
 type Translate = (key: MessageKey, vars?: Record<string, string | number>) => string;

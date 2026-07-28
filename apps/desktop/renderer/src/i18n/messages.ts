@@ -1542,13 +1542,24 @@ export const messages = {
     'contextWindow.title.next': 'Context window (next session)',
     'contextWindow.tooltip':
       '{label}: {percent}% remaining to auto-compact ({used} / {threshold} used)',
+    'contextWindow.tooltipAtThreshold':
+      '{label}: estimated request input {used} / {threshold} ({percent}%), at or above the auto-compact threshold',
     'contextWindow.clickForBreakdown': 'click for breakdown',
     'contextWindow.progressToAutoCompact': '{percent}% to auto-compact',
+    'contextWindow.estimatedRequestInput': 'Estimated request input',
+    'contextWindow.currentContextInput': 'Current context input',
     'contextWindow.remainingTokens': '{tokens} until auto-compact',
+    'contextWindow.thresholdReached': 'Estimated input has reached the auto-compact threshold',
+    'contextWindow.thresholdExceeded':
+      'Estimated input exceeds the auto-compact threshold by {tokens}',
+    'contextWindow.compacting': 'Compacting context',
+    'contextWindow.compactingExceeded':
+      'Exceeded the auto-compact threshold by {tokens} · Compacting context',
+    'contextWindow.providerReported': 'Provider last reported: {tokens}',
     'contextWindow.thresholdNote':
       'Model maximum context: {cap}. Current auto-compact threshold: {threshold}.',
     'contextWindow.activeInputNote':
-      'This is the latest root-model request snapshot, not the complete visible transcript. Request input is not an unprocessed queue; completed turns move into Messages on a later model request.',
+      'The primary meter follows the current Runtime request estimate used for compaction decisions. Provider-reported usage is shown separately when available. This is not the complete visible transcript.',
     'contextWindow.composition': 'Latest model input composition',
     'contextWindow.modelMaximum': 'Model maximum context',
     'contextWindow.autoCompactThreshold': 'Auto-compact threshold',
@@ -3647,11 +3658,20 @@ export const messages = {
     'contextWindow.title.next': '上下文窗口（下个会话）',
     'contextWindow.tooltip': '{label}：距离自动压缩还剩 {percent}%（已用 {used} / {threshold}）',
     'contextWindow.clickForBreakdown': '点击查看详情',
+    'contextWindow.tooltipAtThreshold':
+      '{label}：预计请求输入 {used} / {threshold}（{percent}%），已达到或超过自动压缩阈值',
     'contextWindow.progressToAutoCompact': '自动压缩进度 {percent}%',
     'contextWindow.remainingTokens': '距自动压缩还剩 {tokens}',
+    'contextWindow.estimatedRequestInput': '预计请求输入',
+    'contextWindow.currentContextInput': '当前上下文输入',
     'contextWindow.thresholdNote': '模型最大上下文：{cap}。当前自动压缩阈值：{threshold}。',
+    'contextWindow.thresholdReached': '预计输入已达到自动压缩阈值',
+    'contextWindow.thresholdExceeded': '预计输入已超过自动压缩阈值 {tokens}',
+    'contextWindow.compacting': '正在压缩上下文',
+    'contextWindow.compactingExceeded': '已超过自动压缩阈值 {tokens} · 正在压缩上下文',
+    'contextWindow.providerReported': 'Provider 上次上报：{tokens}',
     'contextWindow.activeInputNote':
-      '这里显示最近一次主 Agent 模型请求的输入快照，不是界面中可见的完整历史。“本次请求输入”不是未处理队列；完成内容会在后续模型请求中进入“对话消息”。',
+      '主进度采用 Runtime 用于压缩判断的当前请求估算；存在可靠数据时，Provider 上报值会单独列出。这里不是界面中可见的完整历史。',
     'contextWindow.composition': '最近一次模型输入构成',
     'contextWindow.modelMaximum': '模型最大上下文',
     'contextWindow.autoCompactThreshold': '自动压缩阈值',

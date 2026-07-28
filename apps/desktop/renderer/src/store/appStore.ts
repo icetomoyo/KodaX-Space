@@ -78,6 +78,9 @@ export interface SessionCompactionOutcome {
 
 export interface SessionTokenInfo {
   readonly tokens: number;
+  readonly tokenSource?: 'api' | 'estimate';
+  /** Renderer-local ordering for root context identity handoffs. */
+  readonly observedOrder?: number;
   readonly source: 'iteration_end' | 'compact_stats' | 'estimate';
   readonly compactedFrom?: number;
   readonly contextId?: string;
@@ -108,7 +111,10 @@ export interface SessionTokenUsageInfo {
 export type SessionContextBudgetSnapshot = Extract<
   SessionEvent,
   { kind: 'context_budget_snapshot' }
->;
+> & {
+  /** Renderer-local ordering for root context identity handoffs. */
+  readonly observedOrder?: number;
+};
 
 export type SessionProviderCacheDiagnostic = Extract<
   SessionEvent,
@@ -1516,6 +1522,13 @@ function hideOpenStrongIdentityDuplicateProjection(
         (candidate) =>
           candidate.restoredFromHistory &&
           candidate.closed &&
+let rootContextReadingOrder = 0;
+
+function nextRootContextReadingOrder(): number {
+  rootContextReadingOrder += 1;
+  return rootContextReadingOrder;
+}
+
           strongTurnIdentityMatches(candidate, live),
       );
     if (durable) {
@@ -3094,6 +3107,8 @@ export const useAppStore = create<AppState>((set) => ({
       const clearsPendingSend =
         event.kind === 'session_start' ||
         event.kind === 'queued_user_prompt_started' ||
+                ...(event.tokenSource !== undefined ? { tokenSource: event.tokenSource } : {}),
+                ...(event.contextId ? { observedOrder: nextRootContextReadingOrder() } : {}),
         event.kind === 'session_complete' ||
         event.kind === 'session_error';
       if (clearsPendingSend && state.pendingSendBySession[event.sessionId]) {
@@ -3190,6 +3205,11 @@ export const useAppStore = create<AppState>((set) => ({
           };
         }
       }
+          if (event.committed !== false && state.contextBudgetBySession[event.sessionId]) {
+            const { [event.sessionId]: _staleBudget, ...remainingBudgets } =
+              state.contextBudgetBySession;
+            next.contextBudgetBySession = remainingBudgets;
+          }
       if (
         event.kind === 'session_start' ||
         event.kind === 'mid_turn_user_prompt' ||
@@ -3269,7 +3289,10 @@ export const useAppStore = create<AppState>((set) => ({
       } else if (event.kind === 'context_budget_snapshot' && event.contextKind !== 'child') {
         next.contextBudgetBySession = {
           ...state.contextBudgetBySession,
-          [event.sessionId]: event,
+          [event.sessionId]: {
+            ...event,
+            ...(event.contextId ? { observedOrder: nextRootContextReadingOrder() } : {}),
+          },
         };
       } else if (event.kind === 'provider_cache_diagnostic') {
         const accumulated = accumulateSessionTokenUsage(
@@ -3301,10 +3324,32 @@ export const useAppStore = create<AppState>((set) => ({
         // Keep the authoritative post-compaction value separate from transcript history.
         const current = state.tokensBySession[event.sessionId];
         const contextRevision = event.afterRevision ?? event.contextRevision;
-        if (acceptsRootContextUpdate(current, event.contextId, contextRevision)) {
+        // A revision-less compact_stats event is only safe to apply over a
+        // revisioned reading when it explicitly confirms both commitment and
+        // ownership of the current root context. Legacy events that omit
+        // either signal may be stale and must not roll the gauge backwards.
+        const compatibleCommittedCompaction =
+          event.committed === true &&
+          contextRevision === undefined &&
+          current?.contextRevision !== undefined &&
+          event.contextId !== undefined &&
+          current.contextId !== undefined &&
+          current.contextId === event.contextId;
+        if (
+          compatibleCommittedCompaction ||
+          acceptsRootContextUpdate(current, event.contextId, contextRevision)
+        ) {
           next.tokensBySession = {
             ...state.tokensBySession,
-            [event.sessionId]: tokenInfoFromCompaction(event),
+            [event.sessionId]: {
+              ...tokenInfoFromCompaction(event),
+              ...(compatibleCommittedCompaction && current?.contextId
+                ? { contextId: current.contextId }
+                : {}),
+              ...(compatibleCommittedCompaction && current?.contextRevision !== undefined
+                ? { contextRevision: current.contextRevision }
+                : {}),
+            },
           };
         }
       } else if (event.kind === 'session_complete') {

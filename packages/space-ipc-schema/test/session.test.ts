@@ -614,6 +614,9 @@ test('session.event payload: mid_turn_user_prompt variant', () => {
     content: 'follow up',
     turnId: 'turn_1',
   };
+    contextId: 's_1',
+    contextKind: 'root' as const,
+    contextRevision: 3,
   assert.equal(sessionEventChannel.payload.safeParse(evt).success, true);
 });
 

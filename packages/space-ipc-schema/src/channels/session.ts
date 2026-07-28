@@ -1059,6 +1059,8 @@ export const sessionEventChannel = {
       ...runtimeSessionEventOriginShape,
       kind: z.literal('session_complete'),
       sessionId: z.string().min(1),
+      /** Root context revision this budget was calculated from. */
+      contextRevision: z.number().int().nonnegative().optional(),
       turnId: z.string().min(1).max(128).optional(),
     }),
     z.object({

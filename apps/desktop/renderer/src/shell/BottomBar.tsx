@@ -44,7 +44,7 @@ import {
   isSupportedInlineImage,
   type PendingAttachmentGate,
 } from './attachmentFiles.js';
-import { useIsStreaming } from './ActivitySpinner.js';
+import { useActivityState } from './ActivitySpinner.js';
 import { AgentModeSelector } from './AgentModeSelector.js';
 // Retired StashNotice; file changes now live in RightSidebar.ChangesSection.
 import { RetryBanner } from './RetryBanner.js';
@@ -2390,7 +2390,7 @@ export function BottomBar(): JSX.Element {
     }
   }
 
-  const isStreaming = useIsStreaming();
+  const { isStreaming, isCompacting } = useActivityState();
   const compactingSlash = busy && busySlashName === 'compact';
   const composerReadOnly = busy && !compactingSlash;
   const mascotInputActive =
@@ -2685,7 +2685,7 @@ export function BottomBar(): JSX.Element {
               {currentSurface !== 'partner' && <AgentModeSelector />}
             </div>
             <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">
-              <ContextWindowIndicator />
+              <ContextWindowIndicator compacting={isCompacting} />
               <ModelEffortSelector />
               {isStreaming && !compactingSlash ? (
                 <button

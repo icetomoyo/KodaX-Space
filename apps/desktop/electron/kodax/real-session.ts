@@ -1378,6 +1378,7 @@ export class RealKodaXSession implements ManagedSession {
           contextKind: snapshot.contextKind,
           parentContextId: snapshot.parentContextId,
           agentId: snapshot.agentId,
+          contextRevision: snapshot.contextRevision,
           provider: snapshot.provider,
           model: snapshot.model,
           profile: snapshot.profile,

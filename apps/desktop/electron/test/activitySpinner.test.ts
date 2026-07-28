@@ -53,6 +53,7 @@ test('manual compaction after a completed run keeps an animated compacting state
   const active = snapshotFromEvents(base, false, undefined);
   assert.equal(active.streaming, true);
   assert.equal(active.status, 'Compacting context…');
+  assert.equal(active.compacting, true);
 
   const finished = snapshotFromEvents(
     [
@@ -64,6 +65,21 @@ test('manual compaction after a completed run keeps an animated compacting state
     undefined,
   );
   assert.equal(finished.streaming, false);
+});
+
+test('managed verification cannot hide an active root compaction lifecycle', () => {
+  const snapshot = snapshotFromEvents(
+    [
+      { kind: 'session_start', sessionId: sid, provider: 'mock' },
+      { kind: 'compact_start', sessionId: sid },
+    ],
+    false,
+    'verifying',
+  );
+
+  assert.equal(snapshot.streaming, true);
+  assert.equal(snapshot.compacting, true);
+  assert.equal(snapshot.status, 'Compacting context…');
 });
 
 test('automatic compaction completion does not stop the still-running session spinner', () => {

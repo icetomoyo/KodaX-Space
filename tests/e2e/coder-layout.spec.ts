@@ -236,6 +236,11 @@ test('Coder preserves a usable workspace as persisted sidebars meet narrower scr
     await expect(page.getByTestId('session-token-total')).toContainText('1.3k');
     await page.getByTestId('context-window-indicator').click();
     await expect(page.getByTestId('context-window-breakdown')).toBeVisible();
+    await expect(page.getByTestId('context-window-breakdown')).toContainText(
+      /Estimated request input|预计请求输入/,
+    );
+    await expect(page.getByTestId('context-primary-input')).toContainText('≈1.1k');
+    await expect(page.getByTestId('context-provider-reported')).toContainText('1.3k');
     await expect(page.getByTestId('context-composition')).toBeVisible();
     const effectiveThreshold = Number(
       await page.getByTestId('context-effective-window-bar').getAttribute('aria-valuemax'),

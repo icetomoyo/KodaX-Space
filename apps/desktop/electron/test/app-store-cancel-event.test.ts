@@ -628,6 +628,142 @@ test('appendEvent totals deduped root and child physical Provider diagnostics', 
     requestEnvelopeHash: hash,
     messageCount: 44,
     toolCount: 12,
+test('committed compaction invalidates a revision-less pre-compaction budget', () => {
+  const snapshot = {
+    kind: 'context_budget_snapshot' as const,
+    sessionId: SID,
+    provider: 'mock',
+    model: 'mock-model',
+    profile: 'report_only' as const,
+    contextWindow: 1_000_000,
+    smallWindow: false,
+    pressure: 'high' as const,
+    tokenBreakdown: {
+      systemPrompt: 5_827,
+      toolSchemas: 15_458,
+      skillCatalog: 653,
+      mcpCatalog: 245,
+      transcript: 184_158,
+      pendingInput: 773,
+      recentToolResults: 122_178,
+      reservedResponse: 131_072,
+      total: 460_364,
+    },
+    usedTokens: 460_364,
+    availableTokens: 539_636,
+    usedRatio: 0.460364,
+    toolSchemaRatio: 0.015458,
+    createdAt: '2026-07-28T04:02:10.830Z',
+  };
+  const store = useAppStore.getState();
+  store.appendEvent(snapshot);
+  store.appendEvent({
+    kind: 'compact_stats',
+    sessionId: SID,
+    tokensBefore: 330_015,
+    tokensAfter: 91_005,
+    committed: true,
+    source: 'automatic_threshold',
+  });
+
+  assert.equal(useAppStore.getState().contextBudgetBySession[SID], undefined);
+  assert.equal(useAppStore.getState().tokensBySession[SID]?.tokens, 91_005);
+
+  const postCompactionSnapshot = {
+    ...snapshot,
+    pressure: 'low' as const,
+    tokenBreakdown: {
+      ...snapshot.tokenBreakdown,
+      transcript: 63_219,
+      pendingInput: 833,
+      recentToolResults: 6_485,
+      total: 223_792,
+    },
+    usedTokens: 223_792,
+    availableTokens: 776_208,
+    usedRatio: 0.223792,
+    createdAt: '2026-07-28T04:04:25.125Z',
+  };
+  store.appendEvent(postCompactionSnapshot);
+  assert.deepEqual(useAppStore.getState().contextBudgetBySession[SID], postCompactionSnapshot);
+
+  store.appendEvent({
+    kind: 'compact_stats',
+    sessionId: SID,
+    tokensBefore: 92_720,
+    tokensAfter: 92_720,
+    committed: false,
+    source: 'manual',
+  });
+  assert.deepEqual(useAppStore.getState().contextBudgetBySession[SID], postCompactionSnapshot);
+
+  store.appendEvent({
+    kind: 'iteration_end',
+    sessionId: SID,
+    iter: 2,
+    maxIter: 30,
+    tokenCount: 95_000,
+    tokenSource: 'api',
+    contextId: SID,
+    contextKind: 'root',
+    contextRevision: 3,
+  });
+  const revisionedSnapshot = {
+    ...postCompactionSnapshot,
+    contextId: SID,
+    contextKind: 'root' as const,
+    contextRevision: 3,
+  };
+  store.appendEvent(revisionedSnapshot);
+  const revisionedTokenInfo = useAppStore.getState().tokensBySession[SID];
+  const storedRevisionedBudget = useAppStore.getState().contextBudgetBySession[SID];
+  assert.ok(revisionedTokenInfo?.observedOrder !== undefined);
+  assert.ok(storedRevisionedBudget?.observedOrder !== undefined);
+  assert.ok(storedRevisionedBudget.observedOrder > revisionedTokenInfo.observedOrder);
+
+  store.appendEvent({
+    kind: 'compact_stats',
+    sessionId: SID,
+    tokensBefore: 95_000,
+    tokensAfter: 45_000,
+    contextId: SID,
+    contextKind: 'root',
+    committed: true,
+    source: 'automatic_threshold',
+  });
+  assert.deepEqual(useAppStore.getState().tokensBySession[SID], {
+    tokens: 45_000,
+    source: 'compact_stats',
+    compactedFrom: 95_000,
+    contextId: SID,
+    contextRevision: 3,
+    lastCompaction: {
+      committed: true,
+      tokensBefore: 95_000,
+      tokensAfter: 45_000,
+      source: 'automatic_threshold',
+    },
+  });
+  assert.equal(useAppStore.getState().contextBudgetBySession[SID], undefined);
+});
+
+test('iteration tokenSource survives in the derived root context reading', () => {
+  useAppStore.getState().appendEvent({
+    kind: 'iteration_end',
+    sessionId: SID,
+    iter: 1,
+    maxIter: 30,
+    tokenCount: 42_000,
+    tokenSource: 'estimate',
+  });
+
+  assert.deepEqual(useAppStore.getState().tokensBySession[SID], {
+    tokens: 42_000,
+    source: 'iteration_end',
+    tokenSource: 'estimate',
+  });
+});
+
     inputTokens: 145_226,
     outputTokens: 779,
     cacheReadInputTokens: 144_512,

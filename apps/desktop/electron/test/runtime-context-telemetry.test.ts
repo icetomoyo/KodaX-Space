@@ -103,6 +103,9 @@ test('daemon child Agent Provider usage keeps its context attribution', () => {
 test('daemon context budget diagnostics reach the renderer breakdown protocol', () => {
   const payload = {
     sessionId: 's_1',
+    contextId: 's_1',
+    contextKind: 'root',
+    contextRevision: 4,
     provider: 'zhipu',
     model: 'glm-5.2',
     profile: 'report_only',
@@ -132,6 +135,9 @@ test('daemon context budget diagnostics reach the renderer breakdown protocol', 
     {
       kind: 'context_budget_snapshot',
       sessionId: 's_1',
+      contextId: 's_1',
+      contextKind: 'root',
+      contextRevision: 4,
       provider: 'zhipu',
       model: 'glm-5.2',
       profile: 'report_only',

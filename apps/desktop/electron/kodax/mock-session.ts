@@ -343,6 +343,7 @@ export class MockKodaXSession implements ManagedSession {
         iter: 1,
         maxIter: 30,
         tokenCount: 1280,
+        tokenSource: 'api',
         usage: {
           inputTokens: 980,
           outputTokens: 300,

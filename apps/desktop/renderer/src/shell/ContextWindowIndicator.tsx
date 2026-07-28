@@ -17,8 +17,10 @@ import { useEffect, useState, type CSSProperties } from 'react';
 import { useI18n } from '../i18n/I18nProvider.js';
 import { useAppStore } from '../store/appStore.js';
 import {
-  resolveActiveInputTokens,
+  isEstimatedContextInput,
+  resolveActiveInputReading,
   resolveContextWindowReading,
+  resolveProviderReportedTokens,
   type ResolvedContextWindowReading,
 } from './contextWindowReading.js';
 import { getModelContextCap } from './modelContextCaps.js';
@@ -99,7 +101,11 @@ function useResolvedContextWindow(
   return resolved;
 }
 
-export function ContextWindowIndicator(): JSX.Element | null {
+export function ContextWindowIndicator({
+  compacting = false,
+}: {
+  readonly compacting?: boolean;
+}): JSX.Element | null {
   const { t } = useI18n();
   const currentSessionId = useAppStore((s) => s.currentSessionId);
   const tokenInfo = useAppStore((s) =>
@@ -165,14 +171,31 @@ export function ContextWindowIndicator(): JSX.Element | null {
       : percentageThreshold;
   const autoCompactThreshold = resolvedWindow.effectiveTriggerTokens ?? configuredThreshold;
 
-  const tokenCount = resolveActiveInputTokens(
-    tokenInfo?.tokens,
+  const inputReading = resolveActiveInputReading(
+    tokenInfo
+      ? {
+          tokens: tokenInfo.tokens,
+          contextId: tokenInfo.contextId,
+          contextRevision: tokenInfo.contextRevision,
+          observedOrder: tokenInfo.observedOrder,
+        }
+      : undefined,
     contextBudget
       ? {
           total: contextBudget.tokenBreakdown.total,
           reservedResponse: contextBudget.tokenBreakdown.reservedResponse,
+          contextId: contextBudget.contextId,
+          contextRevision: contextBudget.contextRevision,
+          observedOrder: contextBudget.observedOrder,
         }
       : undefined,
+  );
+  const tokenCount = inputReading.tokens;
+  const activeContextBudget = inputReading.budgetTokens !== undefined ? contextBudget : undefined;
+  const providerReportedTokens = resolveProviderReportedTokens(
+    inputReading,
+    tokenInfo?.source,
+    tokenInfo?.tokenSource,
   );
   const lastCompaction = tokenInfo?.lastCompaction;
   const compactionSourceLabel =
@@ -187,15 +210,34 @@ export function ContextWindowIndicator(): JSX.Element | null {
     lastCompaction?.elapsedMs !== undefined
       ? `${(lastCompaction.elapsedMs / 1_000).toFixed(1)}s`
       : null;
-  const isEstimate = tokenInfo?.source === 'estimate';
+  const isEstimate = isEstimatedContextInput(
+    inputReading.source,
+    tokenInfo?.source,
+    tokenInfo?.tokenSource,
+  );
   const autoCompactPercent = (tokenCount / autoCompactThreshold) * 100;
   const displayPercent = Math.min(100, autoCompactPercent);
-  // 历史恢复时是 estimate（无 iteration_end）— 加 "~" 前缀让用户知道是近似
-  const tokenStr = `${isEstimate ? '~' : ''}${formatTokens(tokenCount)}`;
+  // Runtime budget 和历史恢复都属于 estimate — 加 "≈" 前缀让用户知道是近似。
+  const tokenStr = `${isEstimate ? '≈' : ''}${formatTokens(tokenCount)}`;
   const capStr = formatTokens(cap);
   const thresholdStr = formatTokens(autoCompactThreshold);
   const remainingPercent = Math.max(0, 100 - displayPercent);
   const remainingTokenCount = Math.max(0, autoCompactThreshold - tokenCount);
+  const exceededTokenCount = Math.max(0, tokenCount - autoCompactThreshold);
+  const thresholdExceeded = tokenCount > autoCompactThreshold;
+  const thresholdReached = tokenCount >= autoCompactThreshold;
+  const inputSourceLabel = isEstimate
+    ? t('contextWindow.estimatedRequestInput')
+    : t('contextWindow.currentContextInput');
+  const progressStatus = compacting
+    ? thresholdExceeded
+      ? t('contextWindow.compactingExceeded', { tokens: formatTokens(exceededTokenCount) })
+      : t('contextWindow.compacting')
+    : thresholdExceeded
+      ? t('contextWindow.thresholdExceeded', { tokens: formatTokens(exceededTokenCount) })
+      : thresholdReached
+        ? t('contextWindow.thresholdReached')
+        : t('contextWindow.remainingTokens', { tokens: formatTokens(remainingTokenCount) });
   const sessionTotalTokens = sessionUsage
     ? Math.min(Number.MAX_SAFE_INTEGER, sessionUsage.inputTokens + sessionUsage.outputTokens)
     : undefined;
@@ -220,43 +262,44 @@ export function ContextWindowIndicator(): JSX.Element | null {
   const rootProviderCallCount = sessionUsage
     ? Math.max(0, sessionUsage.sampleCount - childProviderCallCount)
     : 0;
-  const inputCompositionRows = contextBudget
+  const inputCompositionRows = activeContextBudget
     ? [
         {
           key: 'system',
           label: t('contextWindow.breakdown.systemPrompt'),
-          tokens: contextBudget.tokenBreakdown.systemPrompt,
+          tokens: activeContextBudget.tokenBreakdown.systemPrompt,
           color: 'rgb(var(--context-system))',
         },
         {
           key: 'tools',
           label: t('contextWindow.breakdown.toolSchemas'),
-          tokens: contextBudget.tokenBreakdown.toolSchemas,
+          tokens: activeContextBudget.tokenBreakdown.toolSchemas,
           color: 'rgb(var(--context-tools))',
         },
         {
           key: 'skills',
           label: t('contextWindow.breakdown.skillCatalog'),
           tokens:
-            contextBudget.tokenBreakdown.skillCatalog + contextBudget.tokenBreakdown.mcpCatalog,
+            activeContextBudget.tokenBreakdown.skillCatalog +
+            activeContextBudget.tokenBreakdown.mcpCatalog,
           color: 'rgb(var(--context-skills))',
         },
         {
           key: 'transcript',
           label: t('contextWindow.breakdown.transcript'),
-          tokens: contextBudget.tokenBreakdown.transcript,
+          tokens: activeContextBudget.tokenBreakdown.transcript,
           color: 'rgb(var(--context-transcript))',
         },
         {
           key: 'pending',
           label: t('contextWindow.breakdown.pendingInput'),
-          tokens: contextBudget.tokenBreakdown.pendingInput,
+          tokens: activeContextBudget.tokenBreakdown.pendingInput,
           color: 'rgb(var(--context-request))',
         },
         {
           key: 'results',
           label: t('contextWindow.breakdown.recentToolResults'),
-          tokens: contextBudget.tokenBreakdown.recentToolResults,
+          tokens: activeContextBudget.tokenBreakdown.recentToolResults,
           color: 'rgb(var(--context-results))',
         },
       ]
@@ -288,12 +331,19 @@ export function ContextWindowIndicator(): JSX.Element | null {
     '--cw-level-height': `${remainingPercent}%`,
   };
   const contextLabel = currentSessionId ? t('contextWindow.title') : t('contextWindow.title.next');
-  const tooltip = t('contextWindow.tooltip', {
-    label: contextLabel,
-    percent: remainingPercent.toFixed(0),
-    used: tokenStr,
-    threshold: thresholdStr,
-  });
+  const tooltip = thresholdReached
+    ? t('contextWindow.tooltipAtThreshold', {
+        label: contextLabel,
+        percent: autoCompactPercent.toFixed(1),
+        used: tokenStr,
+        threshold: thresholdStr,
+      })
+    : t('contextWindow.tooltip', {
+        label: contextLabel,
+        percent: remainingPercent.toFixed(0),
+        used: tokenStr,
+        threshold: thresholdStr,
+      });
   const sessionUsageTooltip = currentSessionId
     ? t('sessionTokens.tooltip', {
         total: sessionTotalTokens === undefined ? '—' : formatTokens(sessionTotalTokens),
@@ -374,9 +424,17 @@ export function ContextWindowIndicator(): JSX.Element | null {
           </div>
 
           <div className="mb-2 flex items-end justify-between gap-3">
-            <div className="font-mono leading-none">
-              <span className="text-[18px] font-semibold text-fg-primary">{tokenStr}</span>
-              <span className="ml-2 text-[13px] text-fg-muted">/ {thresholdStr}</span>
+            <div>
+              <div className="mb-1 text-[9px] leading-none text-fg-muted">{inputSourceLabel}</div>
+              <div className="font-mono leading-none">
+                <span
+                  data-testid="context-primary-input"
+                  className="text-[18px] font-semibold text-fg-primary"
+                >
+                  {tokenStr}
+                </span>
+                <span className="ml-2 text-[13px] text-fg-muted">/ {thresholdStr}</span>
+              </div>
             </div>
             <span className={`font-mono text-[13px] font-medium leading-none ${toneClass}`}>
               {autoCompactPercent.toFixed(1)}%
@@ -394,7 +452,7 @@ export function ContextWindowIndicator(): JSX.Element | null {
               percent: autoCompactPercent.toFixed(1),
             })}
           >
-            {contextBudget ? (
+            {activeContextBudget ? (
               inputCompositionRows.map((row) => (
                 <div
                   key={row.key}
@@ -418,15 +476,25 @@ export function ContextWindowIndicator(): JSX.Element | null {
             )}
           </div>
 
-          <div className="mt-2 text-[11px] text-fg-muted">
-            {t('contextWindow.remainingTokens', { tokens: formatTokens(remainingTokenCount) })}
+          <div
+            data-testid="context-threshold-status"
+            className={`mt-2 text-[11px] ${thresholdReached || compacting ? 'text-danger' : 'text-fg-muted'}`}
+          >
+            {progressStatus}
           </div>
+          {providerReportedTokens !== undefined && (
+            <div data-testid="context-provider-reported" className="mt-1 text-[10px] text-fg-muted">
+              {t('contextWindow.providerReported', {
+                tokens: formatTokens(providerReportedTokens),
+              })}
+            </div>
+          )}
 
           <div className="mt-3 border-t border-border-default pt-3">
             <div className="mb-2 text-[11px] font-medium text-fg-secondary">
               {t('contextWindow.composition')}
             </div>
-            {contextBudget ? (
+            {activeContextBudget ? (
               <div data-testid="context-composition">
                 <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
                   {inputCompositionRows.map((row) => (
