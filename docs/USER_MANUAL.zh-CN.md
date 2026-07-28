@@ -433,9 +433,9 @@ KodaX 0.7.77 已把集成配置从核心 `config.json` 分离：
 | 受管理 Extensions | `~/.kodax/integrations/extensions.json`  | `{ "version": 1, "paths": [ ... ] }`；默认只发现，设置 `KODAX_SPACE_ENABLE_SDK_EXTENSIONS=1` 后才加载可信代码 |
 | Runtime A2A       | `~/.kodax/integrations/a2a.json`         | 独立版本化文档，由 KodaX Runtime 持有                                                                         |
 
-Settings → Runtime 会分别显示 MCP 的规范路径、来源和 server 数。`Dedicated integration file` 表示已读取新文件；`Legacy config.json compatibility fallback` 表示仍在只读使用旧 `config.json#mcpServers`；`No file` 表示空默认值。旧 `config.json#extensions` 同样只作迁移回退。
+Settings → Runtime 会分别显示 MCP 的规范路径、来源和 server 数。`Dedicated integration file` 表示已读取新文件；`Legacy config.json compatibility fallback` 表示仍在只读使用旧 `config.json#mcpServers`；`No file` 表示空默认值。旧 `config.json#extensions` 同样只作迁移回退。只要 SDK 计划发现可迁移条目，这里还会显示 MCP/Extension 的条目数、目标路径、潜在密钥警告和“迁移集成配置”按钮。
 
-升级时先运行 `kodax integrations migrate` 预览计划，再运行 `kodax integrations migrate --apply` 创建独立文件。目标文件已存在时不会被覆盖；只有确认新文件有效后才考虑 `--cleanup-legacy`。`.mcpb` 安装/卸载通过 SDK MCP CRUD 写入新的 `integrations/mcp.json`。
+应用内按钮直接调用 KodaX SDK 的 `planLegacyIntegrationMigration()` 与 `migrateLegacyIntegrationConfig()`：只创建缺失的独立文件，不覆盖已有目标，默认保留 `config.json` 旧字段，并在成功后重载 MCP。命令行也可先运行 `kodax integrations migrate` 预览计划，再运行 `kodax integrations migrate --apply` 创建独立文件。只有确认新文件有效后才考虑 `--cleanup-legacy`。`.mcpb` 安装/卸载通过 SDK MCP CRUD 写入新的 `integrations/mcp.json`。
 
 应用内 AI 使用的 `kodax_manual` 不再用 Space 主题完全替换 SDK 手册。Space 以当前安装 SDK 的 `KODAX_UNDERLYING_CAPABILITY_TOPICS` 为基线；若 Space 覆盖同名主题，会把准确的 SDK 原始正文、aliases 和 sources 与桌面操作说明动态合成。这样 Provider、custom Provider、配置、权限、工具、Skills、Extensions、MCP、A2A、仓库智能、Sessions、压缩和 SDK 等原始有价值内容不会因白标说明而丢失。
 
@@ -549,7 +549,7 @@ flowchart TD
 | CLI 自动恢复到了空会话      | 新版会跳过空 ACP 占位；核对实际包 SHA256、版本和是否仍有旧进程                                              |
 | 普通 query 会闪出多个 cmd   | 0.7.77 保留非交互子进程隐藏；若仍出现，请记录 Space/KodaX 版本、进程名和触发操作，按回归问题报告            |
 | MCP 工具不可见              | MCP 面板 Refresh/Reload、server 状态、PATH、`integrations/mcp.json` 来源和 diagnostics                      |
-| 旧 MCP/Extension 配置未生效 | Settings → Runtime 查看来源；运行 `kodax integrations migrate` 预览，再用 `--apply` 迁移                    |
+| 旧 MCP/Extension 配置未生效 | Settings → Runtime 查看 SDK 迁移计划并点击“迁移集成配置”；也可用 CLI dry-run/`--apply` 迁移                 |
 | 关闭按钮行为不符合预期      | Settings → Preferences → Close button behavior；托盘禁用或初始化失败时会回退关闭即退出                      |
 | Terminal 找不到命令         | Settings → Preferences → Terminal Shell；确认所选 shell 的登录环境包含该命令                                |
 | Partner 没有浏览器/邮件发送 | 当前未交付，不是配置错误                                                                                    |

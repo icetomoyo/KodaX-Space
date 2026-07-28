@@ -145,6 +145,32 @@ const kodaxConfigOverviewSchema = z
 
 export type KodaxConfigOverviewT = z.infer<typeof kodaxConfigOverviewSchema>;
 
+const kodaxIntegrationMigrationDomainPlanSchema = z
+  .object({
+    action: z.enum(['create', 'none']),
+    entries: z.number().int().min(0).max(100_000),
+    destination: z.string().min(1).max(4096),
+    reason: z.string().min(1).max(256).optional(),
+  })
+  .strict();
+
+export const kodaxIntegrationMigrationPlanSchema = z
+  .object({
+    mcp: kodaxIntegrationMigrationDomainPlanSchema,
+    extensions: kodaxIntegrationMigrationDomainPlanSchema,
+    warnings: z.array(z.string().min(1).max(1024)).max(64),
+  })
+  .strict();
+export type KodaxIntegrationMigrationPlanT = z.infer<typeof kodaxIntegrationMigrationPlanSchema>;
+
+export const kodaxIntegrationMigrationResultSchema = kodaxIntegrationMigrationPlanSchema.extend({
+  applied: z.array(z.enum(['mcp', 'extensions'])).max(2),
+  cleanedLegacy: z.boolean(),
+});
+export type KodaxIntegrationMigrationResultT = z.infer<
+  typeof kodaxIntegrationMigrationResultSchema
+>;
+
 export const settingsGetChannel = {
   name: 'settings.get',
   direction: 'invoke',
@@ -222,4 +248,18 @@ export const settingsKodaxConfigSetCompactionChannel = {
     })
     .strict(),
   output: kodaxConfigOverviewSchema,
+} as const;
+
+export const settingsKodaxConfigPlanIntegrationMigrationChannel = {
+  name: 'settings.kodaxConfig.planIntegrationMigration',
+  direction: 'invoke',
+  input: z.object({}).strict(),
+  output: kodaxIntegrationMigrationPlanSchema,
+} as const;
+
+export const settingsKodaxConfigApplyIntegrationMigrationChannel = {
+  name: 'settings.kodaxConfig.applyIntegrationMigration',
+  direction: 'invoke',
+  input: z.object({}).strict(),
+  output: kodaxIntegrationMigrationResultSchema,
 } as const;

@@ -10,6 +10,10 @@ import { settingsStore } from '../settings/store.js';
 import { validateProjectRoot } from './validate.js';
 import { resolveEffectiveLocale, type SpaceSettingsT } from '@kodax-space/space-ipc-schema';
 import { loadKodaxConfigOverview, updateKodaxCompactionConfig } from '../kodax/user-config.js';
+import {
+  applyKodaxIntegrationMigration,
+  planKodaxIntegrationMigration,
+} from '../kodax/integration-migration.js';
 import { runtimeHostAdapter } from '../kodax/runtime-host-adapter.js';
 
 function getPreferredSystemLanguages(): string[] {
@@ -94,5 +98,19 @@ export function registerSettingsChannels(): void {
       });
     }
     return result;
+  });
+
+  registerChannel('settings.kodaxConfig.planIntegrationMigration', async () => {
+    const plan = await planKodaxIntegrationMigration();
+    return { ...plan, warnings: [...plan.warnings] };
+  });
+
+  registerChannel('settings.kodaxConfig.applyIntegrationMigration', async () => {
+    const result = await applyKodaxIntegrationMigration();
+    return {
+      ...result,
+      warnings: [...result.warnings],
+      applied: [...result.applied],
+    };
   });
 }

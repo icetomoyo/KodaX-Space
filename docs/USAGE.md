@@ -73,7 +73,7 @@ flowchart TD
 
 若同时使用 `KODAX_PROFILE_DIR`，Space 会在首次加载 SDK 前将 `KODAX_HOME` 对齐到该 profile。相对路径会被忽略；测试模式优先级最高。
 
-从旧版升级时，`config.json#mcpServers` 与 `config.json#extensions` 仍可只读回退，但不应继续作为新配置位置。先运行 `kodax integrations migrate` 查看迁移计划，再运行 `kodax integrations migrate --apply` 创建独立文件；只有确认独立文件有效后才考虑 `--cleanup-legacy`。迁移不会覆盖已经存在的目标文件。
+从旧版升级时，`config.json#mcpServers` 与 `config.json#extensions` 仍可只读回退，但不应继续作为新配置位置。Settings → Runtime 会调用当前 KodaX SDK 展示迁移计划，并提供“迁移集成配置”按钮；它只创建缺失文件，不覆盖已有目标，也不删除旧字段，成功后会重载 MCP。命令行也可先运行 `kodax integrations migrate` 查看计划，再运行 `kodax integrations migrate --apply` 创建独立文件；只有确认独立文件有效后才考虑 `--cleanup-legacy`。
 
 ## 4. v0.1.33 Runtime Host
 

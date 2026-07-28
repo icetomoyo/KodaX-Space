@@ -181,7 +181,9 @@ import {
 import { titlebarSetOverlayChannel } from './titlebar.js';
 import {
   settingsGetChannel,
+  settingsKodaxConfigApplyIntegrationMigrationChannel,
   settingsKodaxConfigGetChannel,
+  settingsKodaxConfigPlanIntegrationMigrationChannel,
   settingsKodaxConfigSetCompactionChannel,
   settingsSetDefaultWorkspaceChannel,
   settingsSetLanguageModeChannel,
@@ -411,6 +413,10 @@ export const invokeChannels = {
   [settingsSetRuntimeDefaultsChannel.name]: settingsSetRuntimeDefaultsChannel,
   [settingsKodaxConfigGetChannel.name]: settingsKodaxConfigGetChannel,
   [settingsKodaxConfigSetCompactionChannel.name]: settingsKodaxConfigSetCompactionChannel,
+  [settingsKodaxConfigPlanIntegrationMigrationChannel.name]:
+    settingsKodaxConfigPlanIntegrationMigrationChannel,
+  [settingsKodaxConfigApplyIntegrationMigrationChannel.name]:
+    settingsKodaxConfigApplyIntegrationMigrationChannel,
   [licenseGetStatusChannel.name]: licenseGetStatusChannel,
   [licenseImportEntitlementChannel.name]: licenseImportEntitlementChannel,
   [licenseExportRequestChannel.name]: licenseExportRequestChannel,

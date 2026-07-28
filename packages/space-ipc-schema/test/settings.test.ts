@@ -6,7 +6,9 @@ import {
   invokeChannels,
   resolveEffectiveLocale,
   settingsGetChannel,
+  settingsKodaxConfigApplyIntegrationMigrationChannel,
   settingsKodaxConfigGetChannel,
+  settingsKodaxConfigPlanIntegrationMigrationChannel,
   settingsKodaxConfigSetCompactionChannel,
   settingsSetDefaultWorkspaceChannel,
   settingsSetLanguageModeChannel,
@@ -25,10 +27,49 @@ test('settings channels are registered', () => {
     'settings.setRuntimeDefaults',
     'settings.kodaxConfig.get',
     'settings.kodaxConfig.setCompaction',
+    'settings.kodaxConfig.planIntegrationMigration',
+    'settings.kodaxConfig.applyIntegrationMigration',
   ]) {
     assert.ok(invokeChannels[name as keyof typeof invokeChannels], `${name} should be registered`);
     assert.ok(INVOKE_CHANNEL_NAMES.has(name));
   }
+});
+
+test('KodaX integration migration channels expose a bounded SDK plan and result', () => {
+  const plan = {
+    mcp: {
+      action: 'create',
+      entries: 2,
+      destination: 'C:\\Users\\you\\.kodax\\integrations\\mcp.json',
+    },
+    extensions: {
+      action: 'none',
+      entries: 0,
+      destination: 'C:\\Users\\you\\.kodax\\integrations\\extensions.json',
+      reason: 'legacy-absent',
+    },
+    warnings: ['Review MCP environment references before migration.'],
+  };
+  assert.equal(
+    settingsKodaxConfigPlanIntegrationMigrationChannel.output.safeParse(plan).success,
+    true,
+  );
+  assert.equal(
+    settingsKodaxConfigApplyIntegrationMigrationChannel.output.safeParse({
+      ...plan,
+      applied: ['mcp'],
+      cleanedLegacy: false,
+    }).success,
+    true,
+  );
+  assert.equal(
+    settingsKodaxConfigApplyIntegrationMigrationChannel.output.safeParse({
+      ...plan,
+      applied: ['a2a'],
+      cleanedLegacy: true,
+    }).success,
+    false,
+  );
 });
 
 test('KodaX config overview channels accept compaction and storage summaries', () => {

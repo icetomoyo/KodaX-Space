@@ -92,7 +92,7 @@ npm run dev
 
 **v0.1.33 发布基线精确依赖 npm 正式发布的 KodaX 0.7.77。** Coder 继续连接 profile-scoped shared daemon，并新增规范化的有界 Actor/Turn 投影、精确 history/live 对齐、Runtime-owned interrupt finalization、完整物理请求用量诊断、稳定提示词缓存亲和与 CLI 缓存用量归一化。Space 要求 `contextCompaction:3`、`transcriptPaging:1`、`transcriptSearch:1`、`interruptInput:1`、Auto LLM guardrail v3 和 `actorControlPlane:1`；缺少契约时 fail closed。Partner 继续由 Space embedded-inline 持有；MCP 进程/日志、Workflow library/start/admin、Space Reference Agent 执行和产品 Artifact 仍是明确的 host-provider 边界。
 
-KodaX 0.7.77 已把集成声明与核心配置分离。Space 从 `~/.kodax/integrations/mcp.json` 读取 MCP，从 `~/.kodax/integrations/extensions.json` 读取受管理 Extension 路径，并让 Runtime-owned A2A 使用 `~/.kodax/integrations/a2a.json`；项目 MCP 覆盖位于 `<project>/.kodax/integrations/mcp.json`。旧 `config.json#mcpServers` 与 `config.json#extensions` 只作为只读迁移回退。应用内 `kodax_manual` 现在把 Space 操作说明与当前安装 SDK 的原始底层能力主题动态合成，不再丢失 Provider、配置、权限、工具、Skill、Extension、MCP、A2A、Session、压缩和 SDK 等有价值的原始说明。
+KodaX 0.7.77 已把集成声明与核心配置分离。Space 从 `~/.kodax/integrations/mcp.json` 读取 MCP，从 `~/.kodax/integrations/extensions.json` 读取受管理 Extension 路径，并让 Runtime-owned A2A 使用 `~/.kodax/integrations/a2a.json`；项目 MCP 覆盖位于 `<project>/.kodax/integrations/mcp.json`。旧 `config.json#mcpServers` 与 `config.json#extensions` 只作为只读迁移回退。Settings → Runtime 会展示当前安装 SDK 的迁移计划，并可创建缺失的独立文件，同时不覆盖目标、不删除旧字段。应用内 `kodax_manual` 现在把 Space 操作说明与当前安装 SDK 的原始底层能力主题动态合成，不再丢失 Provider、配置、权限、工具、Skill、Extension、MCP、A2A、Session、压缩和 SDK 等有价值的原始说明。
 
 底部状态区把主 Agent 上下文压力与整个 Session 累计 Token 分开显示。“上下文窗口”使用最终自动压缩阈值和不含正文的六类构成；完成态物理请求按 request ID 去重，覆盖 root、child、retry、fallback、repair、workflow digest 和 compaction summary。F140 新增“每次询问 / 保留托盘和 Runtime / 安全彻底退出”偏好；Terminal 与 Coder 命令工具共享同一个所选 Shell/profile PATH 契约，不接受任意可执行文件，也不把敏感变量投影给 PTY。
 
@@ -170,7 +170,7 @@ KodaX Space 会尽量复用 KodaX 生态状态；桌面 UI 特有状态则由 Sp
 | 状态                                     | 行为                                                                                                                      |
 | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
 | `~/.kodax/config.json`                   | CLI/SDK/Space 共享的 provider/model/effort/permission/custom provider/compaction 等核心配置；不再新写 MCP/A2A/Extension。 |
-| `~/.kodax/integrations/mcp.json`         | 版本化的用户 MCP server 声明；旧 `config.json#mcpServers` 只作为只读迁移回退。                                            |
+| `~/.kodax/integrations/mcp.json`         | 版本化的用户 MCP server 声明；Settings 可迁移只读回退的旧 `config.json#mcpServers`，且默认保留旧字段。                    |
 | `~/.kodax/integrations/extensions.json`  | 版本化的可信 filesystem Extension 路径；Space 默认只发现，设置 `KODAX_SPACE_ENABLE_SDK_EXTENSIONS=1` 后才加载。           |
 | `~/.kodax/integrations/a2a.json`         | 版本化、由 Runtime 持有的 A2A registration 配置。                                                                         |
 | `<project>/.kodax/integrations/mcp.json` | Space 项目 MCP 兼容层；同名项目 server 覆盖全局声明。                                                                     |

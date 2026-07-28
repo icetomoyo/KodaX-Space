@@ -6,11 +6,14 @@ import {
   MANUAL_REGISTRY,
   resolveKodaXManual,
 } from '@kodax-ai/kodax/coding';
-import {
-  SPACE_MANUAL_BASE_TOPICS,
-  SPACE_MANUAL_TOPICS,
-  SPACE_PRODUCT_NAME,
-} from '../kodax/space-manual-topics.js';
+import { buildSpaceManual, SPACE_PRODUCT_NAME } from '../kodax/space-manual-topics.js';
+
+const sdkManual = buildSpaceManual({
+  KODAX_UNDERLYING_CAPABILITY_TOPICS,
+  MANUAL_REGISTRY,
+});
+const SPACE_MANUAL_BASE_TOPICS = sdkManual.baseTopics;
+const SPACE_MANUAL_TOPICS = sdkManual.topics;
 
 test('Space kodax_manual preserves the installed SDK mechanism manual', () => {
   assert.deepEqual(SPACE_MANUAL_BASE_TOPICS, [...KODAX_UNDERLYING_CAPABILITY_TOPICS]);

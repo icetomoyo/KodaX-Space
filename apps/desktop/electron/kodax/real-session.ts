@@ -159,11 +159,7 @@ import {
   getSpaceSdkExtensionConfigGeneration,
   type SpaceSdkExtensionRuntimeHandle,
 } from './sdk-extensions.js';
-import {
-  SPACE_MANUAL_BASE_TOPICS,
-  SPACE_MANUAL_TOPICS,
-  SPACE_PRODUCT_NAME,
-} from './space-manual-topics.js';
+import { buildSpaceManual } from './space-manual-topics.js';
 import { workflowPolicyStore, buildWorkflowHostPolicy } from './workflow-policy.js';
 import { resolveKodaXShellExecutionContract } from './shell-execution.js';
 import { settingsStore } from '../settings/store.js';
@@ -777,10 +773,12 @@ export class RealKodaXSession implements ManagedSession {
       const shellExecution = await this.syncRuntimeSessionSettings();
       await runtimeHostAdapter.ensureObserved(sid);
 
-      const [skillsPrompt, compaction] = await Promise.all([
+      const [skillsPrompt, compaction, sdk] = await Promise.all([
         buildSkillsPromptForSurface('code', this.projectRoot),
         loadKodaxCompactionConfig(),
+        loadSdkCoding(),
       ]);
+      const selfManual = buildSpaceManual(sdk);
       const workflowPolicy = workflowPolicyStore.get();
       const options: RuntimeDaemonKodaXOptions = {
         provider: this.provider,
@@ -801,11 +799,7 @@ export class RealKodaXSession implements ManagedSession {
           ...(promptOverlay ? { promptOverlay } : {}),
           ...(skillsPrompt ? { skillsPrompt } : {}),
         },
-        selfManual: {
-          productName: SPACE_PRODUCT_NAME,
-          baseTopics: [],
-          topics: SPACE_MANUAL_TOPICS,
-        },
+        selfManual,
         workflowHostPolicy: buildWorkflowHostPolicy(workflowPolicy),
         workflowRunsBaseDir: workflowController.getRunBaseDir(),
         workflow: { maxConcurrency: workflowPolicy.maxConcurrency },
@@ -967,6 +961,7 @@ export class RealKodaXSession implements ManagedSession {
     // SDK subpath dynamic load — 首次调时拉 chunks，后续命中 cache。
     // planModeBlockCheck (同步) 和 runKodaX (异步) 都需要这个 module。
     const sdk = await loadSdkCoding();
+    const selfManual = buildSpaceManual(sdk);
 
     // F058: register the in-process create_artifact tool once (global registry).
     // Lazy here (first run) so the agent's tool schema includes it; idempotent.
@@ -2015,11 +2010,7 @@ export class RealKodaXSession implements ManagedSession {
         // provider/config/permission/tool/Skill/Extension/MCP/A2A/Session/
         // compaction/SDK facts track the exact KodaX dependency. CLI-only UX
         // topics remain replaced by Space-specific install/quickstart/help.
-        selfManual: {
-          productName: SPACE_PRODUCT_NAME,
-          baseTopics: SPACE_MANUAL_BASE_TOPICS,
-          topics: SPACE_MANUAL_TOPICS,
-        },
+        selfManual,
         // KodaX owns strong-signal Workflow activation in AMA. Space passes only
         // runtime caps plus the durable run dir for run_workflow. Host policy shape (incl.
         // "tokenBudget 0 = unlimited", KodaX 0.7.59) is single-sourced in buildWorkflowHostPolicy.

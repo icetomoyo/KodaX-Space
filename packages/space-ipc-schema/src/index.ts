@@ -506,7 +506,9 @@ export { titlebarSetOverlayChannel } from './channels/titlebar.js';
 
 export {
   settingsGetChannel,
+  settingsKodaxConfigApplyIntegrationMigrationChannel,
   settingsKodaxConfigGetChannel,
+  settingsKodaxConfigPlanIntegrationMigrationChannel,
   settingsKodaxConfigSetCompactionChannel,
   settingsSetDefaultWorkspaceChannel,
   settingsSetLanguageModeChannel,
@@ -514,6 +516,8 @@ export {
   settingsSetWindowCloseBehaviorChannel,
   settingsSetRuntimeDefaultsChannel,
   kodaxCompactionSettingsSchema,
+  kodaxIntegrationMigrationPlanSchema,
+  kodaxIntegrationMigrationResultSchema,
   kodaxIntegrationConfigSourceSchema,
   KODAX_COMPACTION_TRIGGER_PERCENT_MAX,
   KODAX_COMPACTION_TRIGGER_PERCENT_MIN,
@@ -525,6 +529,8 @@ export {
   type KodaxCompactionSettingsT,
   type KodaxConfigOverviewT,
   type KodaxIntegrationConfigSourceT,
+  type KodaxIntegrationMigrationPlanT,
+  type KodaxIntegrationMigrationResultT,
   type SpaceSettingsT,
   type SpaceRuntimeDefaultsT,
   type LanguageModeT,

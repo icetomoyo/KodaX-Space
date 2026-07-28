@@ -11,18 +11,17 @@
 // a QA checklist by itself; it is the source the agent reads when explaining what
 // the product can do and how a user should operate it.
 
-import {
-  KODAX_UNDERLYING_CAPABILITY_TOPICS,
-  MANUAL_REGISTRY,
-  type KodaXManualSource,
-  type KodaXManualTopicInput,
-} from '@kodax-ai/kodax/coding';
+import type { KodaXManualSource, KodaXManualTopicInput } from '@kodax-ai/kodax/coding';
 
 export const SPACE_PRODUCT_NAME = 'KodaX Space';
-export const SPACE_MANUAL_BASE_TOPICS = [...KODAX_UNDERLYING_CAPABILITY_TOPICS];
 
 const text = (...lines: string[]) => lines.join('\n');
-const sdkBaseTopicIds = new Set<string>(SPACE_MANUAL_BASE_TOPICS);
+
+type SdkCodingModule = typeof import('@kodax-ai/kodax/coding');
+type SdkManualModule = Pick<
+  SdkCodingModule,
+  'KODAX_UNDERLYING_CAPABILITY_TOPICS' | 'MANUAL_REGISTRY'
+>;
 
 function uniqueStrings(values: readonly string[]): string[] {
   return [...new Set(values)];
@@ -43,9 +42,13 @@ function uniqueSources(values: readonly KodaXManualSource[]): KodaXManualSource[
  * than copy, the installed SDK body so useful KodaX facts survive Space
  * branding and automatically track the exact dependency version.
  */
-function inheritSdkManualTopic(topic: KodaXManualTopicInput): KodaXManualTopicInput {
+function inheritSdkManualTopic(
+  topic: KodaXManualTopicInput,
+  sdkBaseTopicIds: ReadonlySet<string>,
+  manualRegistry: SdkManualModule['MANUAL_REGISTRY'],
+): KodaXManualTopicInput {
   if (!sdkBaseTopicIds.has(topic.id)) return topic;
-  const sdkTopic = MANUAL_REGISTRY[topic.id as keyof typeof MANUAL_REGISTRY];
+  const sdkTopic = manualRegistry[topic.id as keyof typeof manualRegistry];
   if (!sdkTopic) return topic;
 
   return {
@@ -731,7 +734,7 @@ const SPACE_MANUAL_TOPIC_OVERLAYS: readonly KodaXManualTopicInput[] = [
       '',
       'KodaX 0.7.77 的用户级 MCP 真理文件是 ~/.kodax/integrations/mcp.json，格式为 version 1 + servers。Space 的项目兼容层使用 <project>/.kodax/integrations/mcp.json，并让同名项目 server 覆盖用户 server。Settings -> Runtime 会显示规范路径、当前来源和数量；/mcp 或 /extensions 可作为命令入口。',
       '',
-      '旧 ~/.kodax/config.json#mcpServers 仍可只读兼容，但不是新写入位置。使用 `kodax integrations migrate` 预览，再用 `kodax integrations migrate --apply` 生成分离文件；确认目标文件有效后才考虑 `--cleanup-legacy`。`.mcpb` 安装/卸载通过 SDK MCP CRUD 写入新的 integrations/mcp.json。',
+      '旧 ~/.kodax/config.json#mcpServers 仍可只读兼容，但不是新写入位置。Settings -> Runtime 会直接展示 SDK 迁移计划，并提供“迁移集成配置”按钮；它只创建缺失的分离文件，不覆盖目标，也不删除旧字段。也可使用 `kodax integrations migrate` 预览，再用 `kodax integrations migrate --apply` 生成分离文件；确认目标文件有效后才考虑 `--cleanup-legacy`。`.mcpb` 安装/卸载通过 SDK MCP CRUD 写入新的 integrations/mcp.json。',
       '',
       'Space MCP Manager 拥有 server 子进程、状态和日志；Coder 的 MCP 工具发现/reload 同步 Runtime，但 v0.1.33 不会启动第二套桌面 MCP manager。',
       '',
@@ -757,7 +760,7 @@ const SPACE_MANUAL_TOPIC_OVERLAYS: readonly KodaXManualTopicInput[] = [
       'Space 的扩展面主要有两类：',
       '',
       '1. MCP/.mcpb：通过 MCP 面板安装、查看、启动/停止、卸载，能力会以 MCP tools 暴露给 agent。',
-      '2. SDK filesystem extensions：默认目录为 ~/.kodax/extensions，受管理路径声明在 ~/.kodax/integrations/extensions.json（version 1 + paths）。通过 /extensions sdk 查看默认目录、受管理 entrypoint、skipped entries 和运行时诊断。旧 config.json#extensions 仅作为迁移兼容；可用 `kodax integrations migrate` 预览和迁移。',
+      '2. SDK filesystem extensions：默认目录为 ~/.kodax/extensions，受管理路径声明在 ~/.kodax/integrations/extensions.json（version 1 + paths）。通过 /extensions sdk 查看默认目录、受管理 entrypoint、skipped entries 和运行时诊断。旧 config.json#extensions 仅作为迁移兼容；Settings -> Runtime 的 SDK 迁移计划与按钮会连同 MCP 一起处理，也可用 `kodax integrations migrate` 预览和迁移。',
       '',
       'Space 默认只做发现。只有显式设置 KODAX_SPACE_ENABLE_SDK_EXTENSIONS 后，embedded Space extension runtime 才会把默认目录与 integrations/extensions.json 的路径去重后加载。Extensions 是进程内可信代码；不可信或重量级外部能力应优先使用 MCP。',
       '',
@@ -964,7 +967,7 @@ const SPACE_MANUAL_TOPIC_OVERLAYS: readonly KodaXManualTopicInput[] = [
       '',
       '~/.kodax/integrations/mcp.json 保存用户 MCP servers；~/.kodax/integrations/a2a.json 保存 A2A；~/.kodax/integrations/extensions.json 保存可信 Extension 路径。三者是独立、版本化的严格 JSON 文档，长期 owner 可按各自边界热重载并在无效编辑时保留 last-known-good。',
       '',
-      '旧 config.json#mcpServers 和 config.json#extensions 仍可读取以便迁移。先运行 `kodax integrations migrate` 查看计划，再运行 `kodax integrations migrate --apply`；目标文件已存在时不会被覆盖。只有确认分离文件有效后才使用 `--cleanup-legacy`。',
+      '旧 config.json#mcpServers 和 config.json#extensions 仍可读取以便迁移。Settings -> Runtime 会调用 SDK 显示迁移计划，并提供迁移按钮；应用只创建缺失的目标文件，保留旧字段，随后重载 MCP。命令行也可先运行 `kodax integrations migrate` 查看计划，再运行 `kodax integrations migrate --apply`；目标文件已存在时不会被覆盖。只有确认分离文件有效后才使用 `--cleanup-legacy`。',
       '',
       '~/.kodax/ 还保存 sessions、skills、agents、默认 extensions 目录和 AGENTS.md 等共享数据；项目级 Space MCP 兼容配置放在 <project>/.kodax/integrations/mcp.json。',
       '',
@@ -1075,5 +1078,23 @@ const SPACE_MANUAL_TOPIC_OVERLAYS: readonly KodaXManualTopicInput[] = [
   },
 ];
 
-export const SPACE_MANUAL_TOPICS: readonly KodaXManualTopicInput[] =
-  SPACE_MANUAL_TOPIC_OVERLAYS.map(inheritSdkManualTopic);
+/**
+ * Build the effective Space manual only after the caller has dynamically loaded
+ * the ESM-only KodaX /coding export. The Electron main bundle is CommonJS, so a
+ * runtime static import here would become require() and fail before app startup.
+ */
+export function buildSpaceManual(sdk: SdkManualModule): {
+  readonly productName: typeof SPACE_PRODUCT_NAME;
+  readonly baseTopics: SdkManualModule['KODAX_UNDERLYING_CAPABILITY_TOPICS'];
+  readonly topics: readonly KodaXManualTopicInput[];
+} {
+  const baseTopics = [...sdk.KODAX_UNDERLYING_CAPABILITY_TOPICS];
+  const sdkBaseTopicIds = new Set<string>(baseTopics);
+  return {
+    productName: SPACE_PRODUCT_NAME,
+    baseTopics,
+    topics: SPACE_MANUAL_TOPIC_OVERLAYS.map((topic) =>
+      inheritSdkManualTopic(topic, sdkBaseTopicIds, sdk.MANUAL_REGISTRY),
+    ),
+  };
+}

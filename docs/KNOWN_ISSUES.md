@@ -7276,13 +7276,18 @@ the SDK's reusable mechanism topics.
 - `.mcpb` MCP mutations continue through SDK CRUD and every current error/UI path names the
   canonical file.
 - Runtime Settings projects dedicated/legacy/default source, canonical path, existence, and server
-  count independently from the core `config.json` overview.
+  count independently from the core `config.json` overview. It also previews the SDK migration plan
+  and applies it through a validated main-process action that creates only missing files, retains
+  legacy fields, and reloads live MCP state.
 - Opt-in SDK Extension discovery merges default discovery with
   `readExtensionsIntegration(...).document.paths` and deduplicates by entrypoint. In-process
   Extension execution remains disabled unless `KODAX_SPACE_ENABLE_SDK_EXTENSIONS=1`.
 - `kodax_manual` seeds `KODAX_UNDERLYING_CAPABILITY_TOPICS`. Same-id Space topics dynamically
   include the exact installed `MANUAL_REGISTRY` body, aliases, and sources; curated topics without
   a Space overlay remain entirely SDK-owned.
+- The manual is composed after the ESM-only `/coding` export is dynamically loaded. No static
+  subpath value import remains in the CommonJS Electron main bundle, and packaged startup is a
+  release regression gate for `ERR_PACKAGE_PATH_NOT_EXPORTED`.
 - Current English/Chinese README, documentation hub, usage/manual, PRD/HLD, capability/feature
   ledgers, changelog, known issues, release design, readiness record, Settings text, and manual
   topics now agree on the split configuration and migration workflow.
@@ -7303,11 +7308,13 @@ Files changed include:
 Validation:
 
 - Focused tests cover global/project split MCP files, project precedence, strict-document failures,
-  legacy fallback, Settings source projection, managed Extension paths, opt-in execution, and
-  entrypoint deduplication.
+  legacy fallback, Settings source/plan/apply projection, non-destructive SDK migration, managed
+  Extension paths, opt-in execution, and entrypoint deduplication.
 - The manual regression iterates the complete SDK curated topic list, requires every same-id Space
   topic to contain the exact installed SDK body and sources, and resolves the effective manual to
   prove no recommended underlying topic disappeared.
+- The built Electron main starts under the package's ESM-only subpath export contract without
+  `ERR_PACKAGE_PATH_NOT_EXPORTED`.
 - TypeScript checks and the focused schema/main-process suites pass; full release gates remain
   recorded in the v0.1.33 readiness document.
 

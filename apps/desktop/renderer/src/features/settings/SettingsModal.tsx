@@ -41,6 +41,7 @@ import {
   KODAX_COMPACTION_TRIGGER_PERCENT_MIN,
   type DispatchableAgentListingT,
   type KodaxConfigOverviewT,
+  type KodaxIntegrationMigrationPlanT,
   type ExternalAgentRegistrationSummaryT,
   type LanguageModeT,
   type LicenseStatusT,
@@ -739,6 +740,8 @@ function RuntimePanel(): JSX.Element {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [mcpReloading, setMcpReloading] = useState(false);
+  const [migrationPlan, setMigrationPlan] = useState<KodaxIntegrationMigrationPlanT | null>(null);
+  const [migrationApplying, setMigrationApplying] = useState(false);
   const [installing, setInstalling] = useState<SkillInstallBusy | null>(null);
   const [triggerPercent, setTriggerPercent] = useState('');
   const [triggerTokens, setTriggerTokens] = useState('');
@@ -757,15 +760,24 @@ function RuntimePanel(): JSX.Element {
     setLoading(true);
     setErr(null);
     try {
-      const result = await window.kodaxSpace.invoke('settings.kodaxConfig.get', {
-        ...(currentProjectPath ? { projectRoot: currentProjectPath } : {}),
-      });
-      if (!result.ok) {
-        setErr(`${result.error.code}: ${result.error.message}`);
+      const [overviewResult, migrationResult] = await Promise.all([
+        window.kodaxSpace.invoke('settings.kodaxConfig.get', {
+          ...(currentProjectPath ? { projectRoot: currentProjectPath } : {}),
+        }),
+        window.kodaxSpace.invoke('settings.kodaxConfig.planIntegrationMigration', {}),
+      ]);
+      if (!overviewResult.ok) {
+        setErr(`${overviewResult.error.code}: ${overviewResult.error.message}`);
         return;
       }
-      setOverview(result.data);
-      syncCompactionForm(result.data);
+      setOverview(overviewResult.data);
+      syncCompactionForm(overviewResult.data);
+      if (migrationResult.ok) {
+        setMigrationPlan(migrationResult.data);
+      } else {
+        setMigrationPlan(null);
+        setErr(`${migrationResult.error.code}: ${migrationResult.error.message}`);
+      }
     } finally {
       setLoading(false);
     }
@@ -858,6 +870,54 @@ function RuntimePanel(): JSX.Element {
     }
   }
 
+  async function applyIntegrationMigration(): Promise<void> {
+    if (!window.kodaxSpace || !migrationPlan) return;
+    const confirmed = await requestConfirm({
+      title: t('settings.integrationMigration.confirmTitle'),
+      message: t('settings.integrationMigration.confirmMessage', {
+        mcp: migrationPlan.mcp.entries,
+        extensions: migrationPlan.extensions.entries,
+      }),
+      confirmLabel: t('settings.integrationMigration.apply'),
+    });
+    if (!confirmed) return;
+
+    setMigrationApplying(true);
+    setErr(null);
+    try {
+      const result = await window.kodaxSpace.invoke(
+        'settings.kodaxConfig.applyIntegrationMigration',
+        {},
+      );
+      if (!result.ok) {
+        setErr(`${result.error.code}: ${result.error.message}`);
+        return;
+      }
+      const domains = result.data.applied
+        .map((domain) => t(`settings.integrationMigration.domain.${domain}` as MessageKey))
+        .join(', ');
+      pushToast(
+        t('settings.integrationMigration.applied', {
+          domains: domains || t('settings.integrationMigration.none'),
+        }),
+        'success',
+        2600,
+      );
+
+      const reloadResult = await window.kodaxSpace.invoke('mcp.reload', {
+        ...(currentProjectPath ? { projectRoot: currentProjectPath } : {}),
+      });
+      const reloadFailed = !reloadResult.ok || !reloadResult.data.ok;
+      window.dispatchEvent(new Event('kodax:integration-config-changed'));
+      await refresh();
+      if (reloadFailed) setErr(t('settings.integrationMigration.reloadFailed'));
+    } catch (error) {
+      setErr(error instanceof Error ? error.message : String(error));
+    } finally {
+      setMigrationApplying(false);
+    }
+  }
+
   async function installSkill(
     source: 'directory' | 'archive',
     target: 'user' | 'project',
@@ -905,6 +965,8 @@ function RuntimePanel(): JSX.Element {
   const projectMcpSource = overview?.mcp.projectSource
     ? mcpConfigSourceLabel(overview.mcp.projectSource, t)
     : t('settings.runtime.none');
+  const migrationNeeded =
+    migrationPlan?.mcp.action === 'create' || migrationPlan?.extensions.action === 'create';
 
   return (
     <div className="mx-auto max-w-4xl space-y-4 p-5">
@@ -957,6 +1019,59 @@ function RuntimePanel(): JSX.Element {
                 <span className="font-mono">{item.path}</span>: {item.error}
               </div>
             ))}
+          </div>
+        )}
+        {migrationNeeded && migrationPlan && (
+          <div className="mt-4 rounded-lg border border-warn/40 bg-warn/10 p-3">
+            <div className="flex items-start gap-2">
+              <AlertTriangle
+                className="mt-0.5 h-4 w-4 shrink-0 text-warn"
+                strokeWidth={1.8}
+                aria-hidden
+              />
+              <div className="min-w-0 flex-1">
+                <div className="text-xs font-medium text-fg-primary">
+                  {t('settings.integrationMigration.title')}
+                </div>
+                <p className="mt-1 text-[11px] leading-5 text-fg-muted">
+                  {t('settings.integrationMigration.description')}
+                </p>
+                <div className="mt-2 space-y-1 text-[11px] leading-5 text-fg-secondary">
+                  <div>
+                    {t('settings.integrationMigration.previewMcp', {
+                      count: migrationPlan.mcp.entries,
+                      path: migrationPlan.mcp.destination,
+                    })}
+                  </div>
+                  <div>
+                    {t('settings.integrationMigration.previewExtensions', {
+                      count: migrationPlan.extensions.entries,
+                      path: migrationPlan.extensions.destination,
+                    })}
+                  </div>
+                </div>
+                {migrationPlan.warnings.length > 0 && (
+                  <ul className="mt-2 list-disc space-y-1 pl-4 text-[11px] leading-5 text-warn">
+                    {migrationPlan.warnings.map((warning) => (
+                      <li key={warning}>{warning}</li>
+                    ))}
+                  </ul>
+                )}
+                <button
+                  type="button"
+                  onClick={() => void applyIntegrationMigration()}
+                  disabled={migrationApplying}
+                  className="mt-3 inline-flex min-h-8 items-center justify-center gap-2 rounded-lg border border-warn/50 bg-warn/15 px-3 text-xs font-medium text-warn hover:bg-warn/25 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {migrationApplying && (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={1.8} />
+                  )}
+                  {migrationApplying
+                    ? t('settings.integrationMigration.applying')
+                    : t('settings.integrationMigration.apply')}
+                </button>
+              </div>
+            </div>
           </div>
         )}
       </SettingsSection>

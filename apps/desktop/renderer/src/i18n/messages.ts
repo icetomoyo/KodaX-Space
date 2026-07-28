@@ -993,6 +993,22 @@ export const messages = {
     'settings.kodaxConfig.scope': 'Storage policy',
     'settings.kodaxConfig.sharedScope':
       'Core runtime settings stay in ~/.kodax/config.json; MCP, A2A, and extension declarations stay in ~/.kodax/integrations/*.json; Space-only UI preferences stay in ~/.kodax/space/settings.json.',
+    'settings.integrationMigration.title': 'Legacy integration configuration detected',
+    'settings.integrationMigration.description':
+      'This preview comes from the installed KodaX SDK. Applying creates only missing MCP and extension integration files; it does not overwrite destinations or remove legacy config.json fields.',
+    'settings.integrationMigration.previewMcp': 'MCP: {count} entries → {path}',
+    'settings.integrationMigration.previewExtensions': 'Extensions: {count} entries → {path}',
+    'settings.integrationMigration.confirmTitle': 'Migrate legacy integrations?',
+    'settings.integrationMigration.confirmMessage':
+      'Create the missing split files for {mcp} MCP entries and {extensions} extension paths? Legacy config.json fields will be retained.',
+    'settings.integrationMigration.apply': 'Migrate integrations',
+    'settings.integrationMigration.applying': 'Migrating…',
+    'settings.integrationMigration.applied': 'Integration migration complete: {domains}',
+    'settings.integrationMigration.none': 'no files needed',
+    'settings.integrationMigration.domain.mcp': 'MCP',
+    'settings.integrationMigration.domain.extensions': 'Extensions',
+    'settings.integrationMigration.reloadFailed':
+      'Migration completed, but the live MCP reload failed. Restart Space or use Reload MCP.',
     'settings.compaction.title': 'Context compaction',
     'settings.compaction.description':
       'Auto-compaction is always enabled. Configure when KodaX summarizes long context for new turns.',
@@ -1022,7 +1038,7 @@ export const messages = {
     'settings.mcp.projectServers': 'Project servers',
     'settings.mcp.recommendationLabel': 'Recommendation',
     'settings.mcp.recommendation':
-      'Keep global MCP in ~/.kodax/integrations/mcp.json and project overrides in <project>/.kodax/integrations/mcp.json. Run `kodax integrations migrate` and then `kodax integrations migrate --apply` to move legacy config.json entries.',
+      'Keep global MCP in ~/.kodax/integrations/mcp.json and project overrides in <project>/.kodax/integrations/mcp.json. Use the SDK migration action above, or run `kodax integrations migrate` followed by `--apply`, to move legacy config.json entries.',
     'settings.mcp.reload': 'Reload MCP',
     'settings.mcp.reloaded': 'MCP reloaded: {count} server(s)',
     'settings.skills.title': 'Skills',
@@ -4432,6 +4448,22 @@ export const messages = {
     'settings.kodaxConfig.scope': '存储策略',
     'settings.kodaxConfig.sharedScope':
       '运行时核心配置保存在 ~/.kodax/config.json；MCP、A2A 与 Extension 声明保存在 ~/.kodax/integrations/*.json；仅 Space UI 使用的偏好保存在 ~/.kodax/space/settings.json。',
+    'settings.integrationMigration.title': '检测到旧版集成配置',
+    'settings.integrationMigration.description':
+      '此预览由当前安装的 KodaX SDK 生成。应用后只创建缺失的 MCP 和 Extension 独立配置，不覆盖已有目标文件，也不删除 config.json 中的旧字段。',
+    'settings.integrationMigration.previewMcp': 'MCP：{count} 个条目 → {path}',
+    'settings.integrationMigration.previewExtensions': 'Extensions：{count} 个路径 → {path}',
+    'settings.integrationMigration.confirmTitle': '迁移旧版集成配置？',
+    'settings.integrationMigration.confirmMessage':
+      '要为 {mcp} 个 MCP 条目和 {extensions} 个 Extension 路径创建缺失的独立配置吗？config.json 中的旧字段会继续保留。',
+    'settings.integrationMigration.apply': '迁移集成配置',
+    'settings.integrationMigration.applying': '正在迁移…',
+    'settings.integrationMigration.applied': '集成配置迁移完成：{domains}',
+    'settings.integrationMigration.none': '无需创建文件',
+    'settings.integrationMigration.domain.mcp': 'MCP',
+    'settings.integrationMigration.domain.extensions': 'Extensions',
+    'settings.integrationMigration.reloadFailed':
+      '迁移已完成，但实时 MCP 重载失败。请重启 Space 或点击“重载 MCP”。',
     'settings.compaction.title': '上下文压缩',
     'settings.compaction.description':
       '自动压缩始终开启；可设置 KodaX 在新一轮对话前何时总结长上下文。',
@@ -4457,7 +4489,7 @@ export const messages = {
     'settings.mcp.projectServers': '项目服务',
     'settings.mcp.recommendationLabel': '建议',
     'settings.mcp.recommendation':
-      '全局 MCP 放在 ~/.kodax/integrations/mcp.json，项目覆盖放在 <project>/.kodax/integrations/mcp.json。可先运行 `kodax integrations migrate` 预览，再运行 `kodax integrations migrate --apply` 迁移旧 config.json 条目。',
+      '全局 MCP 放在 ~/.kodax/integrations/mcp.json，项目覆盖放在 <project>/.kodax/integrations/mcp.json。可使用上方 SDK 迁移按钮，或运行 `kodax integrations migrate` dry-run 后再用 `--apply`，迁移旧 config.json 条目。',
     'settings.mcp.reload': '重载 MCP',
     'settings.mcp.reloaded': 'MCP 已重载：{count} 个服务',
     'settings.skills.title': '技能',

@@ -231,9 +231,12 @@
 - Global/project MCP discovery, `.mcpb` CRUD, Settings source reporting, and embedded Extension
   discovery use SDK readers instead of interpreting the root config locally. Legacy MCP/Extension
   fields remain migration fallbacks and are never presented as the canonical write location.
+- Settings shows the SDK plan and applies migration through a validated host action that creates
+  only missing files, keeps the legacy fields, and reloads MCP/Extension runtime state.
 - `kodax_manual` now seeds `KODAX_UNDERLYING_CAPABILITY_TOPICS`. Space overlays that share an id
   retain the exact installed SDK body, aliases, and sources, while desktop-only topics remain
-  Space-authored. Regression tests cover the entire curated topic list.
+  Space-authored. Composition occurs after the ESM-only SDK export is dynamically loaded, and
+  regressions cover the entire curated topic list plus packaged main-process startup.
 - This is a compatibility correction to existing MCP/Extension/manual functionality, not a new
   Feature ID or a second configuration owner.
 

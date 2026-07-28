@@ -24,7 +24,7 @@
 >
 > **2026-07-27 F140 与 Shell 生命周期收口（v0.1.33）**：Windows 用户驱动的主窗口关闭由 Electron main 串行决策为每次询问、保留托盘/Runtime，或进入 F136 安全彻底退出；记住选择只写入 Space 设置，显式托盘命令、app quit、OS session end 与无托盘 fallback 不进入该策略。Terminal Shell 设置由 main 解析登录环境，并为 PTY 与 Coder 命令工具提供同一脱敏执行环境。
 >
-> **2026-07-28 KodaX integration 配置与 self-manual 收口（v0.1.33）**：KodaX 0.7.77 的核心 `config.json` 与 `integrations/mcp.json`、`integrations/extensions.json`、`integrations/a2a.json` 已按 owner 分离。Space 的 MCP Manager、项目 MCP 兼容层、Settings 概览和 SDK filesystem Extension discovery 全部消费公开 reader/CRUD 契约，并保留旧 `config.json#mcpServers`/`#extensions` 的只读迁移回退。`kodax_manual` 不再以 `baseTopics: []` 清空 SDK 机制手册，而是用 SDK 发布的底层能力主题清单做基线；同名 Space 主题动态合成当前安装 `MANUAL_REGISTRY` 的原始正文、aliases 和 sources。
+> **2026-07-28 KodaX integration 配置与 self-manual 收口（v0.1.33）**：KodaX 0.7.77 的核心 `config.json` 与 `integrations/mcp.json`、`integrations/extensions.json`、`integrations/a2a.json` 已按 owner 分离。Space 的 MCP Manager、项目 MCP 兼容层、Settings 概览/迁移入口和 SDK filesystem Extension discovery 全部消费公开 reader/CRUD/migration 契约，并保留旧 `config.json#mcpServers`/`#extensions` 的只读迁移回退。`kodax_manual` 不再以 `baseTopics: []` 清空 SDK 机制手册，而是在 ESM-only `/coding` 子路径动态加载后，用 SDK 发布的底层能力主题清单做基线；同名 Space 主题动态合成当前安装 `MANUAL_REGISTRY` 的原始正文、aliases 和 sources。
 >
 > **2026-07-23 F135 builtin 分发**：Space 通过公开 Skill plugin 注册接口加载安装包外置的 `frontend-slides` 与 `huashu-design`，来源 revision、许可证、补丁和逐文件哈希全部可审计；`huashu-design` 默认去除推广水印/签名。本机 `pdf`/`pptx`/`xlsx`/`docx` skill 的当前许可不允许再分发，因此不进入安装包。
 >
@@ -358,6 +358,7 @@ KodaX 生态已有 MCP 能力。`v0.1.33` 按公开服务拆分所有权：Coder
 - UI 层提供 MCP server 列表、启停开关、`.mcpb` 一键安装
 - 用户配置读写 `~/.kodax/integrations/mcp.json`（严格 `version: 1` + `servers`），与 CLI/REPL/SDK 共享；项目兼容层使用 `<project>/.kodax/integrations/mcp.json`，项目同名 server 覆盖用户声明
 - 旧 `config.json#mcpServers` 只由 SDK reader 作只读迁移回退；首次 SDK CRUD 会把旧条目 staged 到独立文件，新代码不再手写根配置
+- Settings 通过受校验 IPC 调用 SDK migration plan/apply；apply 固定 `cleanupLegacy: false`，只创建缺失文件，之后走既有 MCP reload/Extension runtime invalidation 边界
 - server start/stop/logs 继续由 Space main 管理；Coder `tools/reload` 优先走 daemon，并在不可用时保持明确的 host-provider/failure 语义
 
 ### 6.2 `.mcpb` Desktop Extension
@@ -368,7 +369,7 @@ KodaX 生态已有 MCP 能力。`v0.1.33` 按公开服务拆分所有权：Coder
 
 - `~/.kodax/integrations/extensions.json` 是严格 `version: 1` + `paths` 文档。Space 通过 SDK reader 合并默认 `~/.kodax/extensions` discovery 与受管理 paths，再按 entrypoint 去重；加载进程内代码仍受 `KODAX_SPACE_ENABLE_SDK_EXTENSIONS=1` 显式 opt-in 约束。
 - `~/.kodax/integrations/a2a.json` 是 Runtime-owned A2A 配置。Space 只消费 daemon 的版本化 registration/dispatchability 与 Actor/Turn 投影，不复制 A2A migration/auth/resource-server owner。
-- `kodax integrations migrate` 是 dry-run，`kodax integrations migrate --apply` 才创建独立文件；已存在目标不会被覆盖。`--cleanup-legacy` 只能在新文件验证后显式执行。
+- Settings 会展示同一 SDK dry-run plan 并提供迁移按钮；`kodax integrations migrate` / `--apply` 是等价 CLI 路径。两者都不会覆盖已有目标，Space 也不会自动清理旧字段；`--cleanup-legacy` 只能在新文件验证后显式执行。
 
 ### 6.4 Connector foundation（F096）
 
