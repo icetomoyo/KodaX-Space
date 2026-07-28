@@ -30,17 +30,26 @@ function readLinkTarget(entryPath, fallback) {
 export function inspectKodaxDevLink(spaceRoot, sdkDir) {
   let sdkLstat;
   let sdkRealpath;
+  let sdkPathFromCanonicalParent;
   try {
     sdkLstat = fs.lstatSync(sdkDir);
     sdkRealpath = fs.realpathSync(sdkDir);
+    sdkPathFromCanonicalParent = path.join(
+      fs.realpathSync(path.dirname(sdkDir)),
+      path.basename(sdkDir),
+    );
   } catch {
     return { linked: false };
   }
 
   // A package-root reparse point is development state even when it happens to
-  // target another directory under the Space checkout. Registry installs are
-  // always real directories.
-  if (sdkLstat.isSymbolicLink() || path.resolve(sdkRealpath) !== path.resolve(sdkDir)) {
+  // target another directory under the Space checkout. Compare the SDK realpath
+  // to the path beneath its canonical parent so an ancestor alias such as
+  // macOS /var -> /private/var is not mistaken for a package-root link.
+  if (
+    sdkLstat.isSymbolicLink() ||
+    path.resolve(sdkRealpath) !== path.resolve(sdkPathFromCanonicalParent)
+  ) {
     return {
       linked: true,
       layout: 'direct',

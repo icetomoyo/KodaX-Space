@@ -24,6 +24,22 @@ test('published SDK directory is not classified as a development link', async (t
   assert.deepEqual(inspectKodaxDevLink(spaceRoot, sdkDir), { linked: false });
 });
 
+test('canonicalized ancestor path is not classified as a package-root link', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'space-kodax-ancestor-alias-'));
+  const realSpaceRoot = path.join(root, 'real-space');
+  const aliasSpaceRoot = path.join(root, 'alias-space');
+  const realSdkDir = path.join(realSpaceRoot, 'node_modules', '@kodax-ai', 'kodax');
+  await mkdir(realSdkDir, { recursive: true });
+  await writeFile(path.join(realSdkDir, 'package.json'), '{}', 'utf8');
+  await symlink(realSpaceRoot, aliasSpaceRoot, process.platform === 'win32' ? 'junction' : 'dir');
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const sdkViaAncestorAlias = path.join(aliasSpaceRoot, 'node_modules', '@kodax-ai', 'kodax');
+  assert.deepEqual(inspectKodaxDevLink(aliasSpaceRoot, sdkViaAncestorAlias), {
+    linked: false,
+  });
+});
+
 test('link-kodax staging marker is always classified as a development link', async (t) => {
   const { spaceRoot, sdkDir } = await createFixture(t);
   await writeFile(path.join(sdkDir, KODAX_DEV_LINK_MARKER), '', 'utf8');
