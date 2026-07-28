@@ -867,11 +867,11 @@ Space 严格遵守：
 | `v0.1.32`           | Move Coder to one shared profile daemon with multi-client live state/control; keep Partner embedded inline.                           |
 | `v0.1.33`           | Stabilize KodaX 0.7.77 Actor/history/usage contracts and add bounded Shell/F140 desktop lifecycle control.                            |
 | corrected `v0.1.33` | Add safe customer-selectable Coder ownership and exact packaged Runtime dependency/boot gates before reissuing the withdrawn release. |
-| `v0.1.35`           | Extend Workflow snapshot schema for same-session replay provenance; attach evidence review receipts to objects.                       |
-| `v0.1.36`           | Derive Task Dock plan/capability/effective-run projections from Runtime facts.                                                        |
-| `v0.1.39`           | Host KX-F260 Memory Agent over existing F228/F088 governance when published.                                                          |
-| `v0.1.40`           | Host KX-F266 Learning Center; carrier actions remain capability-gated.                                                                |
-| `v0.1.43`           | Complete locale gates, release diagnostics, channels/updater/distribution trust.                                                      |
+| `v0.1.40`           | Extend Workflow snapshot schema for same-session replay provenance; attach evidence review receipts to objects.                       |
+| `v0.1.41`           | Derive Task Dock plan/capability/effective-run projections from Runtime facts.                                                        |
+| `v0.1.44`           | Host KX-F260 Memory Agent over existing F228/F088 governance when published.                                                          |
+| `v0.1.45`           | Host KX-F266 Learning Center; carrier actions remain capability-gated.                                                                |
+| `v0.1.48`           | Complete locale gates, release diagnostics, channels/updater/distribution trust.                                                      |
 
 ### 20.2 Active 0.2.x architecture lanes
 
