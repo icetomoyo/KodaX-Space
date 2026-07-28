@@ -236,6 +236,50 @@ const inputArtifactSchema = z.object({
 });
 export type InputArtifact = z.infer<typeof inputArtifactSchema>;
 
+const SESSION_ATTACHMENT_PREVIEW_URL_RE =
+  /^app:\/\/space\/session-attachment\/[A-Za-z0-9_-]{32,128}\?variant=(?:thumbnail|original)$/;
+
+export function isSessionAttachmentPreviewUrl(value: string): boolean {
+  return SESSION_ATTACHMENT_PREVIEW_URL_RE.test(value);
+}
+
+const sessionAttachmentPreviewUrlSchema = z
+  .string()
+  .min(1)
+  .max(512)
+  .refine(isSessionAttachmentPreviewUrl, 'invalid Session attachment preview URL');
+
+const sessionImageAttachmentBaseSchema = z.object({
+  id: z.string().min(1).max(128),
+  kind: z.literal('image'),
+  label: z.string().min(1).max(256).optional(),
+  bytes: z
+    .number()
+    .int()
+    .positive()
+    .max(6 * 1024 * 1024)
+    .optional(),
+});
+const sessionImageMediaTypeSchema = z.enum(['image/png', 'image/jpeg', 'image/webp']);
+
+export const sessionImageAttachmentSchema = z.discriminatedUnion('status', [
+  sessionImageAttachmentBaseSchema.extend({
+    status: z.literal('available'),
+    mediaType: sessionImageMediaTypeSchema,
+    thumbnailUrl: sessionAttachmentPreviewUrlSchema,
+    previewUrl: sessionAttachmentPreviewUrlSchema,
+  }),
+  sessionImageAttachmentBaseSchema.extend({
+    status: z.literal('missing'),
+    mediaType: sessionImageMediaTypeSchema.optional(),
+  }),
+  sessionImageAttachmentBaseSchema.extend({
+    status: z.literal('unsupported'),
+    mediaType: sessionImageMediaTypeSchema.optional(),
+  }),
+]);
+export type SessionImageAttachment = z.infer<typeof sessionImageAttachmentSchema>;
+
 const attachmentPathSchema = z.object({
   kind: z.enum(['file', 'directory']),
   /** Exact absolute path returned by Electron for the user-selected entry. */
@@ -290,6 +334,8 @@ export const sessionSendChannel = {
     queued: z.boolean().optional(),
     queueId: z.string().min(1).max(128).optional(),
     queueMode: sessionSendQueueModeSchema.optional(),
+    /** Main-issued, path-free preview capabilities for accepted image artifacts. */
+    attachments: z.array(sessionImageAttachmentSchema).max(8).optional(),
   }),
 } as const;
 
@@ -593,6 +639,7 @@ const sessionHistoryItemSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('user'),
     content: z.string().max(MAX_TEXT_CHUNK),
+    attachments: z.array(sessionImageAttachmentSchema).max(32).optional(),
     /** SDK 持久化的消息时间戳 (epoch ms)；缺失时 renderer fallback 到 sessionMeta.createdAt。
      *  让历史恢复的消息 footer "Xd ago" 显示真实时间而不是恢复瞬间 "just now"。 */
     sentAt: z.number().int().nonnegative().optional(),

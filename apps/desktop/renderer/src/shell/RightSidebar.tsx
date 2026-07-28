@@ -154,13 +154,23 @@ export function RightSidebar({
       ? shellFocusRequest
       : focusRequest;
 
-  // Artifact focus is Session-scoped. File Viewer remains open across Session changes
-  // because it belongs to the project, not the Session.
+  // Artifact focus is Session-scoped. Workspace File Viewer entries remain open across
+  // Session changes, while Session attachment previews are cleared with their owner.
   useEffect(() => {
     setTab((current) => (current === 'artifact' ? 'overview' : current));
     setFocusedArtifactId(null);
     setFocusedArtifactSnapshot(null);
   }, [currentSessionId]);
+  useEffect(() => {
+    if (
+      fileViewerSnapshot?.source !== 'session-attachment-preview' ||
+      fileViewerSnapshot.sessionId === currentSessionId
+    ) {
+      return;
+    }
+    setFileViewerSnapshot(null);
+    setTab((current) => (current === 'file' ? 'overview' : current));
+  }, [currentSessionId, fileViewerSnapshot]);
   useEffect(() => {
     setTab((current) => (current === 'file' ? 'overview' : current));
     setFileViewerSnapshot(null);
@@ -199,11 +209,11 @@ export function RightSidebar({
     return () => window.removeEventListener(OPEN_FILE_VIEWER_EVENT, onOpenFile);
   }, []);
   useEffect(() => {
-    const snapshot = getLastOpenedFileViewerSnapshot(currentProjectPath);
+    const snapshot = getLastOpenedFileViewerSnapshot(currentProjectPath, currentSessionId);
     if (!snapshot) return;
     setFileViewerSnapshot(snapshot);
     setTab('file');
-  }, [currentProjectPath]);
+  }, [currentProjectPath, currentSessionId]);
 
   // If artifacts disappear, overview is the safe fallback.
   const showArtifact = hasArtifactSurface && tab === 'artifact';

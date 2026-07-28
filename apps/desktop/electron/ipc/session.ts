@@ -81,6 +81,7 @@ import {
 import { clearSlashGoalForSession } from '../slash/builtin.js';
 import { ensureProviderKeyInjected } from './provider.js';
 import { buildAttachmentPathOverlay } from '../kodax/attachment-path-overlay.js';
+import { issueSessionImageAttachment } from '../window/session-attachment-protocol.js';
 import type {
   AgentsFileMeta,
   InputArtifact,
@@ -382,11 +383,25 @@ export function registerSessionChannels(): void {
         },
       );
     }
+    const attachments =
+      preparedArtifacts && preparedArtifacts.length > 0
+        ? await Promise.all(
+            preparedArtifacts.map((artifact, ordinal) =>
+              issueSessionImageAttachment({
+                sessionId: input.sessionId,
+                artifactPath: artifact.path,
+                declaredMediaType: artifact.mediaType,
+                ordinal,
+              }),
+            ),
+          )
+        : undefined;
     return {
       accepted: true as const,
       ...(result.queued
         ? { queued: true, queueId: result.queueId, queueMode: result.queueMode }
         : {}),
+      ...(attachments !== undefined ? { attachments } : {}),
     };
   });
 
@@ -971,7 +986,23 @@ export function registerSessionChannels(): void {
         // user message 通常 = pure text;若是工具结果回灌 (content 是 tool_result block 数组),
         // 则 text === '',不 emit user item (但 tool_results map 已经在第一步抽走了)
         const userText = extractUserText(msg.content);
-        if (userText.length > 0) {
+        const imageBlocks = extractUserImages(msg.content);
+        const attachments =
+          imageBlocks.length > 0
+            ? await Promise.all(
+                imageBlocks.map((image, ordinal) =>
+                  issueSessionImageAttachment({
+                    sessionId: input.sessionId,
+                    artifactPath: image.path,
+                    ...(image.declaredMediaType !== undefined
+                      ? { declaredMediaType: image.declaredMediaType }
+                      : {}),
+                    ordinal,
+                  }),
+                ),
+              )
+            : [];
+        if (userText.length > 0 || attachments.length > 0) {
           const messageTurnId = isRecord(msg) ? stringField(msg.turnId) : undefined;
           const turnId = stringField(entry.turnId) ?? messageTurnId;
           const turnUserOrdinal =
@@ -979,6 +1010,7 @@ export function registerSessionChannels(): void {
           items.push({
             kind: 'user',
             content: userText,
+            ...(attachments.length > 0 ? { attachments } : {}),
             // Real per-message time (see TranscriptEntryLike.timestamp). Only the user item
             // needs it: it becomes a UserMessage whose sentAt drives composeMessages' merge
             // with workflow notices; assistant/tool items become events that inherit the turn.
@@ -1250,6 +1282,32 @@ function extractUserText(content: unknown): string {
   }
   if (text.length > 256 * 1024) text = text.slice(0, 256 * 1024) + '\n…(truncated)';
   return text;
+}
+
+function extractUserImages(content: unknown): Array<{
+  readonly path: string;
+  readonly declaredMediaType?: 'image/png' | 'image/jpeg' | 'image/webp';
+}> {
+  if (!Array.isArray(content)) return [];
+  const images: Array<{
+    readonly path: string;
+    readonly declaredMediaType?: 'image/png' | 'image/jpeg' | 'image/webp';
+  }> = [];
+  for (const block of content) {
+    if (!isRecord(block) || block.type !== 'image') continue;
+    const artifactPath = stringField(block.path);
+    const mediaType = stringField(block.mediaType);
+    if (artifactPath === undefined) continue;
+    const declaredMediaType =
+      mediaType === 'image/png' || mediaType === 'image/jpeg' || mediaType === 'image/webp'
+        ? mediaType
+        : undefined;
+    images.push({
+      path: artifactPath,
+      ...(declaredMediaType !== undefined ? { declaredMediaType } : {}),
+    });
+  }
+  return images;
 }
 
 /** tool_result.content 拍平: 可能是 string,可能是 content blocks 数组 (含 text/image)。

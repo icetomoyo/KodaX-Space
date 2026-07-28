@@ -17,6 +17,7 @@ import {
   projectWebPreviewRegistry,
   projectWebPreviewResponseHeaders,
 } from './project-web-preview.js';
+import { handleSessionAttachmentProtocolRequest } from './session-attachment-protocol.js';
 
 let privilegesRegistered = false;
 let handlerInstalled = false;
@@ -44,6 +45,11 @@ export function registerAppSchemePrivileges(): void {
 export function installAppProtocolHandler(rendererRoot: string): void {
   if (handlerInstalled) return;
   protocol.handle(APP_PROTOCOL_SCHEME, async (request) => {
+    const attachmentResponse = await handleSessionAttachmentProtocolRequest(
+      request.url,
+      request.method,
+    );
+    if (attachmentResponse !== null) return attachmentResponse;
     if (isArtifactHtmlFrameUrl(request.url)) {
       return new Response(ARTIFACT_HTML_FRAME_BOOTSTRAP, {
         status: 200,

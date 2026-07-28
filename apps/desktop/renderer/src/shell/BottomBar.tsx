@@ -13,7 +13,7 @@ import {
   type IpcResult,
   type SessionMeta,
 } from '@kodax-space/space-ipc-schema';
-import { useAppStore } from '../store/appStore.js';
+import { useAppStore, type UserImageAttachment } from '../store/appStore.js';
 import { useSurfaceStore } from '../store/surface.js';
 import { ChipBar } from './ChipBar.js';
 import { ModelEffortSelector } from './ModelEffortSelector.js';
@@ -540,8 +540,12 @@ export function BottomBar(): JSX.Element {
   const pendingAgentMode = useAppStore((s) => s.pendingAgentMode);
   const setPendingProviderId = useAppStore((s) => s.setPendingProviderId);
   const appendUserMessage = useAppStore((s) => s.appendUserMessage);
+  const updateUserMessageAttachments = useAppStore((s) => s.updateUserMessageAttachments);
   const appendLocalNotice = useAppStore((s) => s.appendLocalNotice);
   const appendQueuedUserMessage = useAppStore((s) => s.appendQueuedUserMessage);
+  const updateQueuedUserMessageAttachments = useAppStore(
+    (s) => s.updateQueuedUserMessageAttachments,
+  );
   const markQueuedUserMessageAccepted = useAppStore((s) => s.markQueuedUserMessageAccepted);
   const removeQueuedUserMessage = useAppStore((s) => s.removeQueuedUserMessage);
   const promoteQueuedUserMessage = useAppStore((s) => s.promoteQueuedUserMessage);
@@ -2110,15 +2114,31 @@ export function BottomBar(): JSX.Element {
             })
           : undefined;
       const promptForAI = effectivePrompt;
+      const imagesAtSend = pendingImages;
+      const optimisticAttachmentNonce = Date.now();
+      const optimisticAttachments: readonly UserImageAttachment[] = imagesAtSend.map(
+        (image, index) => ({
+          id: `optimistic-${optimisticAttachmentNonce}-${index}`,
+          kind: 'image',
+          mediaType: image.mediaType,
+          label: image.label,
+          bytes: image.bytes,
+          status: 'available',
+          thumbnailUrl: image.dataUrl,
+          previewUrl: image.dataUrl,
+        }),
+      );
       const queuedLocalId = isStreaming
         ? appendQueuedUserMessage(sid, {
             content: effectivePrompt,
             matchContent: promptForAI,
             queueMode,
+            attachments: optimisticAttachments,
           })
         : null;
-      if (!queuedLocalId) appendUserMessage(sid, effectivePrompt);
-      const imagesAtSend = pendingImages;
+      const optimisticMessageId = queuedLocalId
+        ? null
+        : appendUserMessage(sid, effectivePrompt, undefined, optimisticAttachments);
       const fileRefsAtSend = pendingFileRefs;
       const artifactsForSend: InputArtifact[] | undefined =
         imagesAtSend.length > 0
@@ -2178,6 +2198,12 @@ export function BottomBar(): JSX.Element {
       };
 
       const acceptSendResult = (data: ChannelOutput<'session.send'>, late: boolean): void => {
+        if (optimisticMessageId && data.attachments) {
+          updateUserMessageAttachments(sid, optimisticMessageId, data.attachments);
+        }
+        if (queuedLocalId && data.attachments) {
+          updateQueuedUserMessageAttachments(sid, queuedLocalId, data.attachments);
+        }
         if (late) {
           setErr(null);
           pushToast(t('bottom.sendAcceptedInBackground'), 'info');

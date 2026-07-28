@@ -40,7 +40,12 @@ import { getSessionRuntimeStore } from './session-runtime-store.js';
 import { getSessionTitleStore } from './session-title-store.js';
 import { providerConfigStore } from '../providers/config.js';
 import { getBuiltin } from '../providers/catalog.js';
-import { cleanupClipboardForSession, cleanupPendingClipboardArtifacts } from '../ipc/clipboard.js';
+import {
+  cleanupClipboardForSession,
+  cleanupPendingClipboardArtifacts,
+  cloneClipboardAttachmentsForFork,
+} from '../ipc/clipboard.js';
+import { revokeSessionAttachmentPreviews } from '../window/session-attachment-protocol.js';
 import { runtimeHostAdapter } from './runtime-host-adapter.js';
 
 // alpha.2: Real KodaX 内核 vs Mock 切换。
@@ -970,6 +975,17 @@ class KodaXHost {
     // 用 SDK 返回的 sessionId 实例化（不走 createSession 因为后者自己 randomUUID）
     const sessionId = 'newSessionId' in sdkResult ? sdkResult.newSessionId : sdkResult.id;
     const createdAt = Date.now();
+    try {
+      await cloneClipboardAttachmentsForFork(sourceSessionId, sessionId);
+    } catch (error) {
+      if (src.surface === 'code' && runtimeHostAdapter.hasReadyRuntime()) {
+        await runtimeHostAdapter.deleteSession(sessionId).catch(() => undefined);
+      } else {
+        await deletePersistedSession({ sessionId }).catch(() => undefined);
+      }
+      await cleanupClipboardForSession(sessionId).catch(() => undefined);
+      throw error;
+    }
     // reviewer HIGH-1：factory 可能抛（MockKodaXSession / RealKodaXSession 构造路径）。
     // SDK 已经写盘，但 factory 失败时 in-memory 实例缺失 → 盘上 orphan session。
     // 用 try/catch 回滚：擦盘后重抛，调用方拿到的是确定的失败状态。
@@ -1014,6 +1030,7 @@ class KodaXHost {
       } else {
         await deletePersistedSession({ sessionId }).catch(() => undefined);
       }
+      await cleanupClipboardForSession(sessionId).catch(() => undefined);
       throw err;
     }
     this.sessions.set(sessionId, session);
@@ -1027,6 +1044,7 @@ class KodaXHost {
       } else {
         await deletePersistedSession({ sessionId }).catch(() => undefined);
       }
+      await cleanupClipboardForSession(sessionId).catch(() => undefined);
       throw new Error('fork runtime metadata could not be persisted');
     }
     return { newSessionId: sessionId, createdAt };
@@ -1162,7 +1180,11 @@ class KodaXHost {
     await getSessionTitleStore().delete(sessionId);
     // Attachments are durable Session-owned data. Delete them only after the
     // SDK confirms that the durable Session itself was deleted.
-    await cleanupClipboardForSession(sessionId);
+    try {
+      await cleanupClipboardForSession(sessionId);
+    } finally {
+      revokeSessionAttachmentPreviews(sessionId);
+    }
     return true;
   }
 

@@ -88,3 +88,46 @@ test('file picker accepts images, documents, and unknown file types', async () =
     ]);
   }
 });
+
+test('sent image renders in the user bubble and opens in Task Dock', async () => {
+  const testId = `sent-image-preview-${Date.now()}`;
+  const projectDir = path.join(os.tmpdir(), `kodax-test-${testId}-project`);
+  const selectedDir = path.join(os.tmpdir(), `kodax-test-${testId}-selected`);
+  const pngPath = path.join(selectedDir, 'task-dock-photo.png');
+  await fs.mkdir(projectDir, { recursive: true });
+  await fs.mkdir(selectedDir, { recursive: true });
+  await fs.writeFile(pngPath, TINY_PNG);
+
+  const space = await launchSpace(testId);
+  try {
+    const { page } = space;
+    await space.seedProject(projectDir);
+    const textarea = page.locator('textarea').first();
+    await expect(textarea).toBeEnabled({ timeout: 10_000 });
+    await page.getByTestId('file-attachment-input').setInputFiles(pngPath);
+    await textarea.fill('inspect the attached image');
+    await textarea.press('Enter');
+
+    const thumbnail = page.getByTestId('user-image-thumbnail');
+    await expect(thumbnail).toBeVisible({ timeout: 10_000 });
+    await expect(thumbnail.locator('img')).toHaveAttribute(
+      'src',
+      /^app:\/\/space\/session-attachment\/[A-Za-z0-9_-]+\?variant=thumbnail$/,
+    );
+    await thumbnail.click();
+
+    const fileViewer = page.getByTestId('file-viewer');
+    await expect(fileViewer).toBeVisible({ timeout: 10_000 });
+    await expect(fileViewer.getByText('task-dock-photo.png', { exact: true })).toBeVisible();
+    await expect(fileViewer.locator('img')).toHaveAttribute(
+      'src',
+      /^app:\/\/space\/session-attachment\/[A-Za-z0-9_-]+\?variant=original$/,
+    );
+  } finally {
+    await space.close();
+    await Promise.all([
+      fs.rm(projectDir, { recursive: true, force: true }),
+      fs.rm(selectedDir, { recursive: true, force: true }),
+    ]);
+  }
+});

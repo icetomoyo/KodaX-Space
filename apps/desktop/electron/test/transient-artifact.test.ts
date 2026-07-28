@@ -2,13 +2,46 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { SessionEvent } from '@kodax-space/space-ipc-schema';
 import {
+  clearLastOpenedFileViewerSnapshotForSession,
   collectTransientArtifactsFromEvents,
+  dispatchOpenFileViewer,
+  getLastOpenedFileViewerSnapshot,
   isFileViewerSnapshot,
   mergeTransientArtifactSnapshots,
   snapshotFromCreateArtifactTool,
   upsertTransientArtifact,
   type TransientArtifactSnapshot,
 } from '../../renderer/src/features/artifact/transientArtifact.js';
+
+test('Session attachment File Viewer snapshot is scoped to both project and Session', () => {
+  const globalWithWindow = globalThis as unknown as {
+    window?: { dispatchEvent(event: Event): boolean };
+  };
+  const previousWindow = globalWithWindow.window;
+  globalWithWindow.window = { dispatchEvent: () => true };
+  try {
+    dispatchOpenFileViewer({
+      id: 'session-image-scoped',
+      kind: 'image',
+      title: 'Image 1',
+      source: 'session-attachment-preview',
+      content: 'app://space/session-attachment/token?variant=original',
+      projectRoot: 'C:/project-a',
+      sessionId: 'session-a',
+    });
+    assert.equal(
+      getLastOpenedFileViewerSnapshot('C:/project-a', 'session-a')?.id,
+      'session-image-scoped',
+    );
+    assert.equal(getLastOpenedFileViewerSnapshot('C:/project-b', 'session-a'), null);
+    assert.equal(getLastOpenedFileViewerSnapshot('C:/project-a', 'session-b'), null);
+    clearLastOpenedFileViewerSnapshotForSession('session-a');
+    assert.equal(getLastOpenedFileViewerSnapshot('C:/project-a', 'session-a'), null);
+  } finally {
+    if (previousWindow === undefined) delete globalWithWindow.window;
+    else globalWithWindow.window = previousWindow;
+  }
+});
 
 test('file and Delivery previews belong to File Viewer, not Artifacts', () => {
   assert.equal(
@@ -28,6 +61,16 @@ test('file and Delivery previews belong to File Viewer, not Artifacts', () => {
       title: 'Report.pdf',
       source: 'delivery-preview',
       path: 'Report.pdf',
+    }),
+    true,
+  );
+  assert.equal(
+    isFileViewerSnapshot({
+      id: 'session-image',
+      kind: 'image',
+      title: 'Image 1',
+      source: 'session-attachment-preview',
+      content: 'app://space/session-attachment/token?variant=original',
     }),
     true,
   );

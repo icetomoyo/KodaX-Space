@@ -66,6 +66,28 @@ test('only user message, no events: returns single user bubble', () => {
   if (out[0].kind === 'user') assert.equal(out[0].content, 'hello');
 });
 
+test('user message image attachments survive composition for bubble rendering', () => {
+  const token = 'a'.repeat(32);
+  const message: UserMessage = {
+    id: 'u-image',
+    content: 'inspect this',
+    sentAt: 1000,
+    attachments: [
+      {
+        id: 'image-1',
+        kind: 'image',
+        mediaType: 'image/png',
+        status: 'available',
+        thumbnailUrl: `app://space/session-attachment/${token}?variant=thumbnail`,
+        previewUrl: `app://space/session-attachment/${token}?variant=original`,
+      },
+    ],
+  };
+  const out = composeMessages({ events: [], userMessages: [message] });
+  assert.equal(out[0]?.kind, 'user');
+  if (out[0]?.kind === 'user') assert.deepEqual(out[0].attachments, message.attachments);
+});
+
 test('compaction lineage hides its cumulative internal summary while branch lineage stays readable', () => {
   const compactionSummary = 'Conversation compacted: very large cumulative internal summary';
   const out = composeMessages({
@@ -200,10 +222,24 @@ test('local notice with no following real query renders alone, leaves later even
 });
 
 test('pending queued user messages render as queued_user, not normal user bubbles', () => {
+  const token = 'b'.repeat(32);
+  const queuedWithImage: QueuedUserMessage = {
+    ...queuedMsg('qu1', 'q2', 'after-turn'),
+    attachments: [
+      {
+        id: 'queued-image',
+        kind: 'image',
+        mediaType: 'image/png',
+        status: 'available',
+        thumbnailUrl: `app://space/session-attachment/${token}?variant=thumbnail`,
+        previewUrl: `app://space/session-attachment/${token}?variant=original`,
+      },
+    ],
+  };
   const out = composeMessages({
     events: [{ kind: 'text_delta', sessionId: sid, text: 'working' }],
     userMessages: [userMsg('u1', 'q1')],
-    queuedUserMessages: [queuedMsg('qu1', 'q2', 'after-turn')],
+    queuedUserMessages: [queuedWithImage],
   });
 
   assert.deepEqual(kindsOf(out), ['user', 'assistant_text', 'queued_user']);
@@ -212,6 +248,7 @@ test('pending queued user messages render as queued_user, not normal user bubble
   if (queued.kind === 'queued_user') {
     assert.equal(queued.content, 'q2');
     assert.equal(queued.queueMode, 'after-turn');
+    assert.deepEqual(queued.attachments, queuedWithImage.attachments);
   }
 });
 

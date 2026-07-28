@@ -41,6 +41,7 @@ import {
 } from '../lib/visualQuality.js';
 import { replaceSessionsInScope, type SessionScope } from '../lib/sessionScope.js';
 import {
+  clearLastOpenedFileViewerSnapshotForSession,
   collectTransientArtifactsFromEvents,
   snapshotFromCreateArtifactTool,
   upsertTransientArtifact,
@@ -163,17 +164,44 @@ const DEFAULT_RECENTS_FILTER: RecentsFilter = {
  * Main 端不会把用户 prompt 通过 push channel 回放——它是 invoke 的入参，单向。
  * Renderer 自己保留一份，与 session.event push 流共同构成完整对话。
  */
+export type UserImageAttachment =
+  | {
+      readonly id: string;
+      readonly kind: 'image';
+      readonly mediaType: 'image/png' | 'image/jpeg' | 'image/webp';
+      readonly label?: string;
+      readonly bytes?: number;
+      readonly status: 'available';
+      /**
+       * History uses short-lived app:// capabilities; the optimistic live row uses the
+       * already-normalized data URL until session.send replaces it with the capability.
+       */
+      readonly thumbnailUrl: string;
+      readonly previewUrl: string;
+    }
+  | {
+      readonly id: string;
+      readonly kind: 'image';
+      readonly mediaType?: 'image/png' | 'image/jpeg' | 'image/webp';
+      readonly label?: string;
+      readonly bytes?: number;
+      readonly status: 'missing' | 'unsupported';
+    };
+
 export interface UserMessage {
   /** 唯一 id：sessionId + 单调 counter 拼接，保 React key 稳定。*/
   readonly id: string;
   readonly content: string;
   readonly sentAt: number;
+  readonly attachments?: readonly UserImageAttachment[];
   /** Stable canonical boundary identity supplied by KodaX Runtime/history. */
   readonly turnId?: string;
   readonly turnUserOrdinal?: number;
   /** Internal idempotency identity for a Runtime-delivered queued prompt. */
   readonly deliveryQueueId?: string;
   readonly deliveryQueueMode?: QueuedUserMessage['queueMode'];
+  /** Stable renderer-local identity retained when a queued bubble is promoted before its ACK. */
+  readonly sourceQueuedLocalId?: string;
   readonly historyNoAssistantSegment?: boolean;
   /** Internal provenance used only to reconcile the session.history/live-stream boundary. */
   readonly restoredFromHistory?: true;
@@ -215,6 +243,7 @@ export interface QueuedUserMessage {
   readonly queueId?: string;
   readonly content: string;
   readonly matchContent: string;
+  readonly attachments?: readonly UserImageAttachment[];
   readonly queueMode: 'interrupt' | 'after-turn';
   readonly status: 'pending-ack' | 'queued' | 'failed';
   readonly failureReason?: Extract<SessionEvent, { kind: 'queued_user_prompt_failed' }>['reason'];
@@ -584,7 +613,17 @@ interface AppState {
     fallbackSentAt: number,
   ): void;
   /** sentAt 可选——缺省 Date.now()；history restore 时传 session.createdAt 让旧消息显示真实时间。 */
-  appendUserMessage(sessionId: string, content: string, sentAt?: number): void;
+  appendUserMessage(
+    sessionId: string,
+    content: string,
+    sentAt?: number,
+    attachments?: readonly UserImageAttachment[],
+  ): string | null;
+  updateUserMessageAttachments(
+    sessionId: string,
+    messageId: string,
+    attachments: readonly UserImageAttachment[],
+  ): void;
   /** 追加一条**本地提示条**(slash echo / 本地命令输出):参与时间排序,但不消费 SDK 事件段。
    *  用于所有不触发 SDK 回合的 slash 输出(见 localNoticesBySession + composeMessages)。 */
   appendLocalNotice(
@@ -599,8 +638,14 @@ interface AppState {
       readonly matchContent?: string;
       readonly queueMode: 'interrupt' | 'after-turn';
       readonly sentAt?: number;
+      readonly attachments?: readonly UserImageAttachment[];
     },
   ): string | null;
+  updateQueuedUserMessageAttachments(
+    sessionId: string,
+    localId: string,
+    attachments: readonly UserImageAttachment[],
+  ): void;
   markQueuedUserMessageAccepted(
     sessionId: string,
     localId: string,
@@ -1815,11 +1860,13 @@ function createUserMessage(
   content: string,
   sentAt?: number,
   identity?: StrongUserTurnIdentity,
+  attachments?: readonly UserImageAttachment[],
 ): UserMessage {
   return {
     id: `u_${sessionId}_${++userMessageCounter}`,
     content,
     sentAt: sentAt ?? nextLocalTranscriptSentAt(),
+    ...(attachments && attachments.length > 0 ? { attachments } : {}),
     ...(identity ?? {}),
   };
 }
@@ -2030,9 +2077,20 @@ function promoteQueuedUserMessageForPrompt(
             queuedMessageMatches(entry, matchContent),
         );
   const userBucket = state.userMessagesBySession[sessionId] ?? [];
-  const createPromotedUserMessage = (content: string): UserMessage => ({
-    ...createUserMessage(sessionId, content, nextUserMessageSentAtAfter(userBucket), identity),
+  const createPromotedUserMessage = (
+    content: string,
+    attachments?: readonly UserImageAttachment[],
+    sourceQueuedLocalId?: string,
+  ): UserMessage => ({
+    ...createUserMessage(
+      sessionId,
+      content,
+      nextUserMessageSentAtAfter(userBucket),
+      identity,
+      attachments,
+    ),
     ...(queueId !== undefined ? { deliveryQueueId: queueId, deliveryQueueMode: queueMode } : {}),
+    ...(sourceQueuedLocalId !== undefined ? { sourceQueuedLocalId } : {}),
   });
 
   if (idx === -1) {
@@ -2076,7 +2134,7 @@ function promoteQueuedUserMessageForPrompt(
       ...state.userMessagesBySession,
       [sessionId]: alreadyLiveByIdentity
         ? userBucket
-        : [...userBucket, createPromotedUserMessage(entry.content)],
+        : [...userBucket, createPromotedUserMessage(entry.content, entry.attachments, entry.id)],
     },
   };
 }
@@ -2300,15 +2358,46 @@ export const useAppStore = create<AppState>((set) => ({
       };
     }),
 
-  appendUserMessage: (sessionId, content, sentAt) =>
+  appendUserMessage: (sessionId, content, sentAt, attachments) => {
+    let messageId: string | null = null;
     set((state) => {
       if (!state.sessions.some((s) => s.sessionId === sessionId)) return state;
       const bucket = state.userMessagesBySession[sessionId] ?? [];
-      const msg = createUserMessage(sessionId, content, sentAt);
+      const msg = createUserMessage(sessionId, content, sentAt, undefined, attachments);
+      messageId = msg.id;
       return {
         userMessagesBySession: {
           ...state.userMessagesBySession,
           [sessionId]: [...bucket, msg],
+        },
+      };
+    });
+    return messageId;
+  },
+
+  updateUserMessageAttachments: (sessionId, messageId, attachments) =>
+    set((state) => {
+      const bucket = state.userMessagesBySession[sessionId];
+      if (!bucket) return state;
+      const messageIndex = bucket.findIndex((message) => message.id === messageId);
+      if (messageIndex === -1) return state;
+      const current = bucket[messageIndex]!;
+      const previousAttachments = current.attachments ?? [];
+      const nextAttachments = attachments.map((attachment, index) => {
+        const previousLabel = previousAttachments[index]?.label;
+        return attachment.label === undefined && previousLabel !== undefined
+          ? { ...attachment, label: previousLabel }
+          : attachment;
+      });
+      const nextBucket = bucket.slice();
+      nextBucket[messageIndex] = {
+        ...current,
+        attachments: nextAttachments,
+      };
+      return {
+        userMessagesBySession: {
+          ...state.userMessagesBySession,
+          [sessionId]: nextBucket,
         },
       };
     }),
@@ -2341,6 +2430,9 @@ export const useAppStore = create<AppState>((set) => ({
         id: localId,
         content: input.content,
         matchContent: input.matchContent ?? input.content,
+        ...(input.attachments && input.attachments.length > 0
+          ? { attachments: input.attachments }
+          : {}),
         queueMode: input.queueMode,
         status: 'pending-ack',
         sentAt: input.sentAt ?? Date.now(),
@@ -2354,6 +2446,49 @@ export const useAppStore = create<AppState>((set) => ({
     });
     return appended ? localId : null;
   },
+
+  updateQueuedUserMessageAttachments: (sessionId, localId, attachments) =>
+    set((state) => {
+      const bucket = state.queuedUserMessagesBySession[sessionId];
+      let changed = false;
+      const mergeAttachments = (
+        previousAttachments: readonly UserImageAttachment[] | undefined,
+      ): readonly UserImageAttachment[] =>
+        attachments.map((attachment, index) => {
+          const previousLabel = previousAttachments?.[index]?.label;
+          return attachment.label === undefined && previousLabel !== undefined
+            ? { ...attachment, label: previousLabel }
+            : attachment;
+        });
+      const nextBucket = (bucket ?? []).map((entry) => {
+        if (entry.id !== localId) return entry;
+        changed = true;
+        return {
+          ...entry,
+          attachments: mergeAttachments(entry.attachments),
+        };
+      });
+      const userBucket = state.userMessagesBySession[sessionId] ?? [];
+      const nextUserBucket = userBucket.map((message) => {
+        if (message.sourceQueuedLocalId !== localId) return message;
+        changed = true;
+        return {
+          ...message,
+          attachments: mergeAttachments(message.attachments),
+        };
+      });
+      if (!changed) return state;
+      return {
+        queuedUserMessagesBySession: {
+          ...state.queuedUserMessagesBySession,
+          [sessionId]: nextBucket,
+        },
+        userMessagesBySession: {
+          ...state.userMessagesBySession,
+          [sessionId]: nextUserBucket,
+        },
+      };
+    }),
 
   markQueuedUserMessageAccepted: (sessionId, localId, queueId, queueMode) =>
     set((state) => {
@@ -2408,7 +2543,13 @@ export const useAppStore = create<AppState>((set) => ({
         },
         userMessagesBySession: {
           ...state.userMessagesBySession,
-          [sessionId]: [...userBucket, createUserMessage(sessionId, entry.content, sentAt)],
+          [sessionId]: [
+            ...userBucket,
+            {
+              ...createUserMessage(sessionId, entry.content, sentAt, undefined, entry.attachments),
+              sourceQueuedLocalId: localId,
+            },
+          ],
         },
       };
     }),
@@ -2428,6 +2569,7 @@ export const useAppStore = create<AppState>((set) => ({
         id: localId,
         content: input.content,
         matchContent: input.matchContent ?? input.content,
+        ...(last.attachments !== undefined ? { attachments: last.attachments } : {}),
         queueMode: input.queueMode,
         status: 'queued',
         sentAt: input.sentAt ?? last.sentAt,
@@ -2591,6 +2733,7 @@ export const useAppStore = create<AppState>((set) => ({
             content: item.content,
             sentAt: nextHistoricalUserSentAt(item.sentAt),
             restoredFromHistory: true,
+            ...(item.attachments !== undefined ? { attachments: item.attachments } : {}),
             ...(item.turnId !== undefined ? { turnId: item.turnId } : {}),
             ...(item.turnUserOrdinal !== undefined
               ? { turnUserOrdinal: item.turnUserOrdinal }
@@ -3436,6 +3579,7 @@ export const useAppStore = create<AppState>((set) => ({
     }),
 
   removeSession: (sessionId) => {
+    clearLastOpenedFileViewerSnapshotForSession(sessionId);
     set((state) => {
       // 同时清掉对应事件 buffer 和 user message buffer——session 不在了，留着就是泄漏
       const { [sessionId]: _evt, ...restEvents } = state.eventsBySession;

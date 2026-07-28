@@ -16,6 +16,7 @@ import { ChartArtifact } from './renderers/ChartArtifact';
 import { SvgArtifact, ImageArtifact } from './renderers/MediaArtifact';
 import { useI18n } from '../../i18n/I18nProvider.js';
 import { isTextPreviewPath } from '../../lib/pathClassify.js';
+import { isSessionAttachmentPreviewUrl } from '@kodax-space/space-ipc-schema';
 
 export type { ArtifactContent } from './artifactContent';
 import type { ArtifactContent } from './artifactContent';
@@ -40,12 +41,12 @@ function Unsupported({ what }: { what: string }): JSX.Element {
 
 /**
  * Defense-in-depth on image src (content is AI-generated): allow only data:image/
- * URIs and scheme-less app-relative paths. Blocks javascript:/file:/blob:/http(s):
- * etc. (renderer CSP img-src 'self' data: already blocks most, but don't rely on
- * CSP alone in case it's relaxed later).
+ * URIs, scheme-less app-relative paths, and main-issued session attachment capability
+ * URLs. Blocks javascript:/file:/blob:/http(s): etc. (renderer CSP img-src 'self' data:
+ * already blocks most, but don't rely on CSP alone in case it's relaxed later).
  */
 function isSafeImageSrc(src: string): boolean {
-  return src.startsWith('data:image/') || /^[^:]*$/.test(src);
+  return src.startsWith('data:image/') || isSessionAttachmentPreviewUrl(src) || /^[^:]*$/.test(src);
 }
 
 export function ArtifactView(props: ArtifactContent): JSX.Element {

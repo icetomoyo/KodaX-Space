@@ -85,6 +85,70 @@ test('session.history output accepts restored sidecar verifier messages', () => 
   );
 });
 
+test('session image previews are bounded capability URLs in send acknowledgements and history', () => {
+  const token = 'a'.repeat(32);
+  const attachment = {
+    id: 'image-1',
+    kind: 'image' as const,
+    mediaType: 'image/png' as const,
+    bytes: 68,
+    status: 'available' as const,
+    thumbnailUrl: `app://space/session-attachment/${token}?variant=thumbnail`,
+    previewUrl: `app://space/session-attachment/${token}?variant=original`,
+  };
+  assert.equal(
+    sessionSendChannel.output.safeParse({
+      accepted: true,
+      attachments: [attachment],
+    }).success,
+    true,
+  );
+  assert.equal(
+    sessionHistoryChannel.output.safeParse({
+      items: [{ kind: 'user', content: 'inspect this', attachments: [attachment] }],
+    }).success,
+    true,
+  );
+  assert.equal(
+    sessionHistoryChannel.output.safeParse({
+      items: [
+        {
+          kind: 'user',
+          content: 'unsafe',
+          attachments: [
+            {
+              ...attachment,
+              thumbnailUrl: 'file:///C:/Users/example/private.png',
+            },
+          ],
+        },
+      ],
+    }).success,
+    false,
+  );
+});
+
+test('session history preserves explicit missing image tiles without exposing a path', () => {
+  assert.equal(
+    sessionHistoryChannel.output.safeParse({
+      items: [
+        {
+          kind: 'user',
+          content: '',
+          attachments: [
+            {
+              id: 'image-missing',
+              kind: 'image',
+              status: 'missing',
+            },
+          ],
+        },
+      ],
+    }).success,
+    true,
+  );
+});
+
 test('session.history carries bounded canonical user-boundary identity', () => {
   assert.equal(
     sessionHistoryChannel.output.safeParse({

@@ -25,6 +25,7 @@ import { DeliveriesPanel } from './DeliveriesPanel.js';
 export function ArtifactPanel(): JSX.Element {
   const { t } = useI18n();
   const currentProjectPath = useAppStore((state) => state.currentProjectPath);
+  const currentSessionId = useAppStore((state) => state.currentSessionId);
   const [activeTab, setActiveTab] = useState<
     'artifacts' | 'fileViewer' | 'deliveries' | 'fileProposals'
   >('artifacts');
@@ -59,11 +60,21 @@ export function ArtifactPanel(): JSX.Element {
     setActiveTab((current) => (current === 'fileViewer' ? 'artifacts' : current));
   }, [currentProjectPath]);
   useEffect(() => {
-    const snapshot = getLastOpenedFileViewerSnapshot(currentProjectPath);
+    if (
+      fileViewerSnapshot?.source !== 'session-attachment-preview' ||
+      fileViewerSnapshot.sessionId === currentSessionId
+    ) {
+      return;
+    }
+    setFileViewerSnapshot(null);
+    setActiveTab((current) => (current === 'fileViewer' ? 'artifacts' : current));
+  }, [currentSessionId, fileViewerSnapshot]);
+  useEffect(() => {
+    const snapshot = getLastOpenedFileViewerSnapshot(currentProjectPath, currentSessionId);
     if (!snapshot) return;
     setFileViewerSnapshot(snapshot);
     setActiveTab('fileViewer');
-  }, [currentProjectPath]);
+  }, [currentProjectPath, currentSessionId]);
   return (
     <aside
       className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-surface"

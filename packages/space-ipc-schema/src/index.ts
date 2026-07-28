@@ -151,6 +151,9 @@ export {
   type SessionEventKind,
   type InputArtifact,
   type InputArtifactSource,
+  sessionImageAttachmentSchema,
+  isSessionAttachmentPreviewUrl,
+  type SessionImageAttachment,
   type SessionSendQueueMode,
 } from './channels/session.js';
 

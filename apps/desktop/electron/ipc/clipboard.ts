@@ -18,14 +18,13 @@ import { constants as fsConstants, promises as fs } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
-import {
-  MAX_NORMALIZED_IMAGE_BYTES,
-  MAX_SOURCE_IMAGE_BYTES,
-} from '@kodax-space/space-ipc-schema';
+import { MAX_NORMALIZED_IMAGE_BYTES, MAX_SOURCE_IMAGE_BYTES } from '@kodax-space/space-ipc-schema';
 import { registerChannel } from './register.js';
 import { getKodaxRuntimeDir } from '../kodax/data-paths.js';
 
 const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+const FORK_ATTACHMENT_OWNERS_FILE = '.fork-attachment-owners.json';
+const MAX_FORK_ATTACHMENT_OWNERS = 128;
 
 type NativeClipboardImage = {
   readonly buffer: Buffer;
@@ -368,11 +367,33 @@ async function resolveArtifactLocation(
   if (!path.isAbsolute(artifactPath)) {
     throw new Error(`artifact path must be absolute: ${artifactPath}`);
   }
-  const normalized = path.normalize(artifactPath);
+  let normalized = path.normalize(artifactPath);
+  const durableRoot = durableClipboardRoot();
+  if (!isPathInside(durableSessionDir(sessionId), normalized)) {
+    const relativeToDurableRoot = path.relative(durableRoot, normalized);
+    const [ownerSessionId, ...relativeParts] = relativeToDurableRoot.split(path.sep);
+    const relativeArtifactPath = relativeParts.join(path.sep);
+    if (
+      ownerSessionId !== undefined &&
+      ownerSessionId !== sessionId &&
+      SESSION_ID_RE.test(ownerSessionId) &&
+      relativeArtifactPath.length > 0 &&
+      !path.isAbsolute(relativeArtifactPath) &&
+      !relativeArtifactPath.startsWith(`..${path.sep}`)
+    ) {
+      const forkOwners = await readForkAttachmentOwners(sessionId);
+      if (forkOwners.has(ownerSessionId)) {
+        // SDK forks retain the source transcript's immutable image paths. Each fork owns a
+        // physical copy under its own Session directory; map only explicitly inherited owners
+        // to that copy so deleting the source Session cannot break child history.
+        normalized = path.join(durableSessionDir(sessionId), relativeArtifactPath);
+      }
+    }
+  }
   const sandboxes = [
     {
       kind: 'durable' as const,
-      root: durableClipboardRoot(),
+      root: durableRoot,
       sandbox: durableSessionDir(sessionId),
     },
     {
@@ -410,6 +431,159 @@ async function resolveArtifactLocation(
     throw new Error(`artifact path must reference a file: ${artifactPath}`);
   }
   return { kind: selected.kind, realRoot, realSandbox, realArtifact };
+}
+
+async function readForkAttachmentOwners(sessionId: string): Promise<ReadonlySet<string>> {
+  const manifestPath = path.join(durableSessionDir(sessionId), FORK_ATTACHMENT_OWNERS_FILE);
+  try {
+    const parsed = JSON.parse(await fs.readFile(manifestPath, 'utf8')) as {
+      readonly version?: unknown;
+      readonly owners?: unknown;
+    };
+    if (parsed.version !== 1 || !Array.isArray(parsed.owners)) return new Set();
+    return new Set(
+      parsed.owners
+        .filter((owner): owner is string => typeof owner === 'string' && SESSION_ID_RE.test(owner))
+        .slice(0, MAX_FORK_ATTACHMENT_OWNERS),
+    );
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return new Set();
+    return new Set();
+  }
+}
+
+/**
+ * Give a fork independent ownership of every durable source image while retaining the immutable
+ * paths already written into the forked SDK transcript. A bounded owner manifest lets preview
+ * resolution map ancestor paths to the child's physical copies after the ancestor is deleted.
+ */
+export async function cloneClipboardAttachmentsForFork(
+  sourceSessionId: string,
+  childSessionId: string,
+): Promise<void> {
+  if (
+    !SESSION_ID_RE.test(sourceSessionId) ||
+    !SESSION_ID_RE.test(childSessionId) ||
+    sourceSessionId === childSessionId
+  ) {
+    throw new Error('clipboard fork attachment clone: invalid Session identity');
+  }
+  const sourceDir = durableSessionDir(sourceSessionId);
+  let entries: Array<{ readonly name: string; isFile(): boolean }>;
+  try {
+    entries = await fs.readdir(sourceDir, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw error;
+  }
+  const sourceFiles = entries.filter(
+    (entry) => entry.isFile() && entry.name !== FORK_ATTACHMENT_OWNERS_FILE,
+  );
+  const inheritedOwners = await readForkAttachmentOwners(sourceSessionId);
+  if (sourceFiles.length === 0 && inheritedOwners.size === 0) return;
+
+  const childDir = durableSessionDir(childSessionId);
+  await fs.mkdir(childDir, { recursive: true, mode: 0o700 });
+  for (const entry of sourceFiles) {
+    const sourcePath = path.join(sourceDir, entry.name);
+    const childPath = path.join(childDir, entry.name);
+    await resolveArtifactLocation(sourceSessionId, sourcePath);
+    try {
+      await fs.copyFile(sourcePath, childPath, fsConstants.COPYFILE_EXCL);
+      await fs.chmod(childPath, 0o600).catch(() => {});
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      const [sourceBytes, childBytes] = await Promise.all([
+        fs.readFile(sourcePath),
+        fs.readFile(childPath),
+      ]);
+      if (!sourceBytes.equals(childBytes)) {
+        throw new Error('clipboard fork attachment clone collision');
+      }
+    }
+  }
+
+  const owners = [...new Set([sourceSessionId, ...inheritedOwners])].slice(
+    0,
+    MAX_FORK_ATTACHMENT_OWNERS,
+  );
+  const manifestPath = path.join(childDir, FORK_ATTACHMENT_OWNERS_FILE);
+  const temporaryManifestPath = `${manifestPath}.${process.pid}-${randomUUID()}.tmp`;
+  await fs.writeFile(temporaryManifestPath, JSON.stringify({ version: 1, owners }), {
+    encoding: 'utf8',
+    mode: 0o600,
+  });
+  await fs.rename(temporaryManifestPath, manifestPath);
+  await fs.chmod(manifestPath, 0o600).catch(() => {});
+}
+
+export interface SessionAttachmentPreviewFile {
+  readonly filePath: string;
+  readonly mediaType: 'image/png' | 'image/jpeg' | 'image/webp';
+  readonly bytes: number;
+}
+
+function detectPreviewImageMediaType(
+  header: Uint8Array,
+): SessionAttachmentPreviewFile['mediaType'] | null {
+  if (
+    header.length >= 8 &&
+    header[0] === 0x89 &&
+    header[1] === 0x50 &&
+    header[2] === 0x4e &&
+    header[3] === 0x47 &&
+    header[4] === 0x0d &&
+    header[5] === 0x0a &&
+    header[6] === 0x1a &&
+    header[7] === 0x0a
+  ) {
+    return 'image/png';
+  }
+  if (header.length >= 3 && header[0] === 0xff && header[1] === 0xd8 && header[2] === 0xff) {
+    return 'image/jpeg';
+  }
+  if (
+    header.length >= 12 &&
+    header[0] === 0x52 &&
+    header[1] === 0x49 &&
+    header[2] === 0x46 &&
+    header[3] === 0x46 &&
+    header[8] === 0x57 &&
+    header[9] === 0x45 &&
+    header[10] === 0x42 &&
+    header[11] === 0x50
+  ) {
+    return 'image/webp';
+  }
+  return null;
+}
+
+/**
+ * Resolve one renderer-visible Session image without granting general local-file access.
+ * Every call repeats the realpath containment check so stale preview capabilities fail closed
+ * after deletion or filesystem replacement.
+ */
+export async function resolveSessionAttachmentPreviewFile(
+  sessionId: string,
+  artifactPath: string,
+): Promise<SessionAttachmentPreviewFile> {
+  const location = await resolveArtifactLocation(sessionId, artifactPath);
+  const handle = await fs.open(location.realArtifact, 'r');
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.size <= 0 || stat.size > MAX_NORMALIZED_IMAGE_BYTES) {
+      throw new Error('Session attachment preview file has an unsupported size');
+    }
+    const header = Buffer.alloc(12);
+    const { bytesRead } = await handle.read(header, 0, header.length, 0);
+    const mediaType = detectPreviewImageMediaType(header.subarray(0, bytesRead));
+    if (mediaType === null) {
+      throw new Error('Session attachment preview file is not a supported image');
+    }
+    return { filePath: location.realArtifact, mediaType, bytes: stat.size };
+  } finally {
+    await handle.close();
+  }
 }
 
 function isPathInside(parent: string, candidate: string): boolean {

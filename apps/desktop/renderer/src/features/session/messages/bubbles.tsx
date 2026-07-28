@@ -2,8 +2,20 @@
 // 单文件聚合：每个组件 < 80 行，共享 ConversationMessage 类型，拆分反而提高复杂度。
 
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Check, ChevronDown, ChevronUp, Copy, FileText, GitFork, Undo2 } from 'lucide-react';
+import {
+  Check,
+  ChevronDown,
+  ChevronUp,
+  Copy,
+  FileText,
+  GitFork,
+  ImageOff,
+  Maximize2,
+  Undo2,
+} from 'lucide-react';
+import { isSessionAttachmentPreviewUrl } from '@kodax-space/space-ipc-schema';
 import type { ConversationMessage } from '../composeMessages.js';
+import { useAppStore, type UserImageAttachment } from '../../../store/appStore.js';
 import { Markdown } from './Markdown.js';
 import { Caret } from '../../../components/Caret.js';
 import { Collapse } from '../../../components/Collapse.js';
@@ -14,6 +26,7 @@ import { openFileSmart, looksLikeFilePath } from '../../../lib/openPath.js';
 import { parseFileReferences, type ParsedFileReference } from '../../../lib/fileReferences.js';
 import { useI18n } from '../../../i18n/I18nProvider.js';
 import type { MessageKey } from '../../../i18n/messages.js';
+import { dispatchOpenFileViewer } from '../../artifact/transientArtifact.js';
 // OC-21: side-effect import 让内置 tool renderers (write/edit/multi_edit) 注册到 registry
 import './toolRenderers.js';
 import { getToolInputRenderer, getToolResultRenderer } from './toolRegistry.js';
@@ -371,10 +384,105 @@ function CollapsibleUserMessageContent({ content }: { content: string }): JSX.El
   );
 }
 
-export function UserBubble({ content, sentAt }: { content: string; sentAt?: number }): JSX.Element {
+function isSafeUserImageUrl(url: string): boolean {
+  return /^data:image\/(?:png|jpeg|webp);base64,/i.test(url) || isSessionAttachmentPreviewUrl(url);
+}
+
+function UserImageAttachments({
+  attachments,
+}: {
+  attachments: readonly UserImageAttachment[];
+}): JSX.Element {
+  const [failedIds, setFailedIds] = useState<ReadonlySet<string>>(new Set());
+  const currentSessionId = useAppStore((state) => state.currentSessionId);
+  const currentProjectPath = useAppStore((state) => state.currentProjectPath);
+
+  return (
+    <div
+      className="flex max-w-full flex-wrap gap-2"
+      data-testid="user-image-attachments"
+      aria-label="Image attachments"
+    >
+      {attachments.map((attachment, index) => {
+        const label = attachment.label ?? `Image ${index + 1}`;
+        const available =
+          attachment.status === 'available' &&
+          isSafeUserImageUrl(attachment.thumbnailUrl) &&
+          isSafeUserImageUrl(attachment.previewUrl) &&
+          !failedIds.has(attachment.id);
+
+        if (!available) {
+          return (
+            <div
+              key={attachment.id}
+              className="flex h-24 w-32 items-center justify-center gap-1.5 rounded-lg border border-info/25 bg-surface-2/60 px-2 text-center text-[10px] text-fg-muted"
+              data-testid="user-image-unavailable"
+              title={`${label} unavailable`}
+            >
+              <ImageOff className="h-4 w-4 shrink-0" aria-hidden />
+              <span className="truncate">{label}</span>
+            </div>
+          );
+        }
+
+        return (
+          <button
+            key={attachment.id}
+            type="button"
+            className="group/image relative h-24 w-32 overflow-hidden rounded-lg border border-info/30 bg-surface-2/60 text-left outline-none transition-colors hover:border-info/70 focus-visible:ring-2 focus-visible:ring-info/60"
+            data-testid="user-image-thumbnail"
+            title={`Open ${label}`}
+            aria-label={`Open ${label}`}
+            onClick={() =>
+              dispatchOpenFileViewer({
+                id: `session-attachment:${attachment.id}`,
+                kind: 'image',
+                title: label,
+                source: 'session-attachment-preview',
+                content: attachment.previewUrl,
+                ...(currentProjectPath ? { projectRoot: currentProjectPath } : {}),
+                ...(currentSessionId ? { sessionId: currentSessionId } : {}),
+              })
+            }
+          >
+            <img
+              src={attachment.thumbnailUrl}
+              alt={label}
+              loading="lazy"
+              decoding="async"
+              className="h-full w-full object-cover"
+              onError={() =>
+                setFailedIds((current) => {
+                  const next = new Set(current);
+                  next.add(attachment.id);
+                  return next;
+                })
+              }
+            />
+            <span className="absolute inset-x-0 bottom-0 flex items-center justify-between gap-1 bg-black/55 px-1.5 py-1 text-[10px] text-white opacity-0 transition-opacity group-hover/image:opacity-100 group-focus-visible/image:opacity-100">
+              <span className="truncate">{label}</span>
+              <Maximize2 className="h-3 w-3 shrink-0" aria-hidden />
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+export function UserBubble({
+  content,
+  attachments = [],
+  sentAt,
+}: {
+  content: string;
+  attachments?: readonly UserImageAttachment[];
+  sentAt?: number;
+}): JSX.Element {
   // Claude Desktop 风格 ——「对话即文档」单列布局：user pill **左对齐**与 assistant
   // 同列，浅蓝窄底色、收宽到 max-w-[80%]、width 跟内容走 (inline-block) 不撑满。
   // 这样比之前 80% 右对齐蓝 bubble 视觉更克制，整体读起来像一段文档流。
+  const visibleContent = attachments.length > 0 && content.trim() === '(image)' ? '' : content;
   return (
     <div className="group flex flex-col items-start" data-testid="user-message-bubble">
       <div
@@ -383,9 +491,14 @@ export function UserBubble({ content, sentAt }: { content: string; sentAt?: numb
           'bg-info/15 border-info/40 text-info',
         ].join(' ')}
       >
-        <CollapsibleUserMessageContent content={content} />
+        {visibleContent.length > 0 && <CollapsibleUserMessageContent content={visibleContent} />}
+        {attachments.length > 0 && (
+          <div className={visibleContent.length > 0 ? 'mt-2' : undefined}>
+            <UserImageAttachments attachments={attachments} />
+          </div>
+        )}
       </div>
-      <MessageFooter text={content} sentAt={sentAt} />
+      <MessageFooter text={visibleContent} sentAt={sentAt} />
     </div>
   );
 }
@@ -421,6 +534,7 @@ export function LocalNoticeBubble({
 
 export function QueuedUserBubble({
   content,
+  attachments = [],
   queueMode,
   status,
   sentAt,
@@ -439,6 +553,7 @@ export function QueuedUserBubble({
       : queueMode === 'after-turn'
         ? t('message.queue.waitingTurn')
         : t('message.queue.waitingSafePoint');
+  const visibleContent = attachments.length > 0 && content.trim() === '(image)' ? '' : content;
   return (
     <div
       className="group flex flex-col items-start"
@@ -462,11 +577,18 @@ export function QueuedUserBubble({
           <span className="uppercase tracking-[0.12em]">{label}</span>
           <span className="text-fg-muted normal-case">{detail}</span>
         </div>
-        <div className="min-w-0">
-          <UserMessageContent content={content} />
-        </div>
+        {visibleContent.length > 0 && (
+          <div className="min-w-0">
+            <UserMessageContent content={visibleContent} />
+          </div>
+        )}
+        {attachments.length > 0 && (
+          <div className={visibleContent.length > 0 ? 'mt-2' : undefined}>
+            <UserImageAttachments attachments={attachments} />
+          </div>
+        )}
       </div>
-      <MessageFooter text={content} sentAt={sentAt} />
+      <MessageFooter text={visibleContent} sentAt={sentAt} />
     </div>
   );
 }

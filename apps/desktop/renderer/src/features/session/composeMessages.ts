@@ -25,7 +25,13 @@ import type {
 } from '../../store/appStore.js';
 
 export type ConversationMessage =
-  | { kind: 'user'; id: string; content: string; sentAt: number }
+  | {
+      kind: 'user';
+      id: string;
+      content: string;
+      attachments?: UserMessage['attachments'];
+      sentAt: number;
+    }
   | {
       kind: 'local_notice';
       id: string;
@@ -37,6 +43,7 @@ export type ConversationMessage =
       kind: 'queued_user';
       id: string;
       content: string;
+      attachments?: QueuedUserMessage['attachments'];
       queueMode: 'interrupt' | 'after-turn';
       status: 'pending-ack' | 'queued' | 'failed';
       failureReason?: QueuedUserMessage['failureReason'];
@@ -213,6 +220,7 @@ export function composeMessages({
         kind: 'user',
         id: userMsg.id,
         content: userMsg.content,
+        ...(userMsg.attachments !== undefined ? { attachments: userMsg.attachments } : {}),
         sentAt: userMsg.sentAt,
       });
     }
@@ -247,6 +255,7 @@ function toQueuedConversationMessage(
     kind: 'queued_user',
     id: queued.id,
     content: queued.content,
+    ...(queued.attachments !== undefined ? { attachments: queued.attachments } : {}),
     queueMode: queued.queueMode,
     status: queued.status,
     ...(queued.failureReason !== undefined ? { failureReason: queued.failureReason } : {}),

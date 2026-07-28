@@ -42,6 +42,59 @@ beforeEach(() => {
   });
 });
 
+test('user image attachments update after send acknowledgement and restore from history', () => {
+  const optimisticId = useAppStore.getState().appendUserMessage(SID, 'inspect', 1000, [
+    {
+      id: 'optimistic-image',
+      kind: 'image',
+      mediaType: 'image/png',
+      label: 'pasted.png',
+      status: 'available',
+      thumbnailUrl: 'data:image/png;base64,AA==',
+      previewUrl: 'data:image/png;base64,AA==',
+    },
+  ]);
+  assert.ok(optimisticId);
+  const token = 'a'.repeat(32);
+  useAppStore.getState().updateUserMessageAttachments(SID, optimisticId, [
+    {
+      id: 'durable-image',
+      kind: 'image',
+      mediaType: 'image/png',
+      status: 'available',
+      thumbnailUrl: `app://space/session-attachment/${token}?variant=thumbnail`,
+      previewUrl: `app://space/session-attachment/${token}?variant=original`,
+    },
+  ]);
+  const liveAttachment = useAppStore.getState().userMessagesBySession[SID]?.[0]?.attachments?.[0];
+  assert.equal(liveAttachment?.id, 'durable-image');
+  assert.equal(liveAttachment?.label, 'pasted.png', 'optimistic label survives capability swap');
+
+  useAppStore.setState({ userMessagesBySession: {} });
+  useAppStore.getState().prependSessionHistory(
+    SID,
+    [
+      {
+        kind: 'user',
+        content: 'restored',
+        attachments: [
+          {
+            id: 'restored-image',
+            kind: 'image',
+            mediaType: 'image/jpeg',
+            status: 'missing',
+          },
+        ],
+      },
+    ],
+    2000,
+  );
+  assert.equal(
+    useAppStore.getState().userMessagesBySession[SID]?.[0]?.attachments?.[0]?.status,
+    'missing',
+  );
+});
+
 test('appendEvent clears pending send and dedupes repeated cancelled terminal events', () => {
   const store = useAppStore.getState();
   store.appendEvent({
@@ -324,11 +377,21 @@ test('queued interrupt terminal event wins an event-before-ack race by preview c
   );
 });
 
-test('queued_user_prompt_started promotes a pending after-turn queued message', () => {
+test('queued_user_prompt_started preserves an image when delivery beats the send ACK', () => {
   const store = useAppStore.getState();
   const localId = store.appendQueuedUserMessage(SID, {
     content: 'q2',
     queueMode: 'after-turn',
+    attachments: [
+      {
+        id: 'optimistic-queued-image',
+        kind: 'image',
+        mediaType: 'image/png',
+        status: 'available',
+        thumbnailUrl: 'data:image/png;base64,AA==',
+        previewUrl: 'data:image/png;base64,AA==',
+      },
+    ],
   });
   assert.ok(localId);
 
@@ -338,10 +401,25 @@ test('queued_user_prompt_started promotes a pending after-turn queued message', 
     queueMode: 'after-turn',
     content: 'q2',
   });
+  const token = 'b'.repeat(32);
+  store.updateQueuedUserMessageAttachments(SID, localId, [
+    {
+      id: 'durable-queued-image',
+      kind: 'image',
+      mediaType: 'image/png',
+      status: 'available',
+      thumbnailUrl: `app://space/session-attachment/${token}?variant=thumbnail`,
+      previewUrl: `app://space/session-attachment/${token}?variant=original`,
+    },
+  ]);
 
   const state = useAppStore.getState();
   assert.equal(state.queuedUserMessagesBySession[SID]?.length ?? 0, 0);
   assert.equal(state.userMessagesBySession[SID]?.at(-1)?.content, 'q2');
+  assert.equal(
+    state.userMessagesBySession[SID]?.at(-1)?.attachments?.[0]?.id,
+    'durable-queued-image',
+  );
 });
 
 test('convertLastUserMessageToQueued replaces a normal optimistic bubble after queued ack', () => {

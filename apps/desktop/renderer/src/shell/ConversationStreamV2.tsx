@@ -1309,7 +1309,9 @@ export function ConversationStreamV2(): JSX.Element {
               let inner: JSX.Element;
               switch (m.kind) {
                 case 'user':
-                  inner = <UserBubble content={m.content} sentAt={m.sentAt} />;
+                  inner = (
+                    <UserBubble content={m.content} attachments={m.attachments} sentAt={m.sentAt} />
+                  );
                   break;
                 case 'local_notice':
                   inner =

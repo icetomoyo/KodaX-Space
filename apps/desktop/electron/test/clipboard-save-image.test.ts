@@ -7,10 +7,7 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {
-  MAX_NORMALIZED_IMAGE_BYTES,
-  MAX_SOURCE_IMAGE_BYTES,
-} from '@kodax-space/space-ipc-schema';
+import { MAX_NORMALIZED_IMAGE_BYTES, MAX_SOURCE_IMAGE_BYTES } from '@kodax-space/space-ipc-schema';
 import {
   saveClipboardImage,
   readNativeClipboardImage,
@@ -22,7 +19,14 @@ import {
   finalizePendingClipboardArtifacts,
   prepareClipboardArtifactsForSend,
   assertClipboardImageOwnerSession,
+  resolveSessionAttachmentPreviewFile,
+  cloneClipboardAttachmentsForFork,
 } from '../ipc/clipboard.js';
+import {
+  handleSessionAttachmentProtocolRequest,
+  issueSessionImageAttachment,
+  revokeSessionAttachmentPreviews,
+} from '../window/session-attachment-protocol.js';
 import {
   _resetDataPathsCacheForTesting,
   getKodaxDir,
@@ -142,6 +146,128 @@ test('saveImage: writes file, extension follows the NORMALIZED mediaType (C6)', 
 
   const stat = await fs.stat(out.path);
   assert.equal(stat.size, out.bytes, 'on-disk size matches returned bytes');
+});
+
+test('Session attachment capability serves a validated durable image without exposing its path', async () => {
+  const sessionId = 'sess-preview';
+  const saved = await saveClipboardImage(
+    { sessionId, base64: TINY_PNG_BASE64, mediaType: 'image/png' },
+    NORMALIZE_TO_PNG,
+  );
+  const [promoted] = await prepareClipboardArtifactsForSend(sessionId, [
+    {
+      kind: 'image',
+      path: saved.path,
+      mediaType: saved.mediaType,
+      source: 'clipboard',
+    },
+  ]);
+  assert.ok(promoted);
+  const resolved = await resolveSessionAttachmentPreviewFile(sessionId, promoted.path);
+  assert.equal(resolved.mediaType, 'image/png');
+  assert.equal(resolved.bytes, Buffer.from(TINY_PNG_BASE64, 'base64').length);
+
+  const attachment = await issueSessionImageAttachment({
+    sessionId,
+    artifactPath: promoted.path,
+    declaredMediaType: 'image/png',
+    ordinal: 0,
+    label: 'clipboard.png',
+  });
+  assert.equal(attachment.status, 'available');
+  if (attachment.status !== 'available') return;
+  assert.equal(attachment.thumbnailUrl.includes(promoted.path), false);
+  assert.equal(attachment.previewUrl.includes(sessionId), false);
+
+  const head = await handleSessionAttachmentProtocolRequest(attachment.previewUrl, 'HEAD');
+  assert.equal(head?.status, 200);
+  assert.equal(head?.headers.get('content-type'), 'image/png');
+  assert.equal(head?.headers.get('content-length'), String(resolved.bytes));
+
+  const response = await handleSessionAttachmentProtocolRequest(attachment.previewUrl, 'GET');
+  assert.equal(response?.status, 200);
+  assert.equal(response?.headers.get('cache-control'), 'no-store');
+  assert.deepEqual(
+    Buffer.from(await response!.arrayBuffer()),
+    Buffer.from(TINY_PNG_BASE64, 'base64'),
+  );
+
+  revokeSessionAttachmentPreviews(sessionId);
+  const revoked = await handleSessionAttachmentProtocolRequest(attachment.previewUrl, 'GET');
+  assert.equal(revoked?.status, 404);
+});
+
+test('Session attachment capability trusts file magic over stale metadata and rejects replacement', async () => {
+  const sessionId = 'sess-preview-invalid';
+  const saved = await saveClipboardImage(
+    { sessionId, base64: TINY_PNG_BASE64, mediaType: 'image/png' },
+    NORMALIZE_TO_PNG,
+  );
+  const [promoted] = await prepareClipboardArtifactsForSend(sessionId, [
+    {
+      kind: 'image',
+      path: saved.path,
+      mediaType: saved.mediaType,
+      source: 'clipboard',
+    },
+  ]);
+  assert.ok(promoted);
+
+  const mismatched = await issueSessionImageAttachment({
+    sessionId,
+    artifactPath: promoted.path,
+    declaredMediaType: 'image/jpeg',
+    ordinal: 0,
+  });
+  assert.equal(mismatched.status, 'available');
+  assert.equal(mismatched.mediaType, 'image/png');
+
+  const issued = await issueSessionImageAttachment({
+    sessionId,
+    artifactPath: promoted.path,
+    ordinal: 0,
+  });
+  assert.equal(issued.status, 'available');
+  assert.equal(
+    issued.mediaType,
+    'image/png',
+    'missing historical mediaType is detected from magic',
+  );
+  if (issued.status !== 'available') return;
+  await fs.writeFile(promoted.path, Buffer.from('not an image', 'utf8'));
+  const replaced = await handleSessionAttachmentProtocolRequest(issued.previewUrl, 'GET');
+  assert.equal(replaced?.status, 415);
+});
+
+test('forked Session owns copied attachments after its source Session is deleted', async () => {
+  const sourceSessionId = 'sess-preview-source';
+  const childSessionId = 'sess-preview-child';
+  const saved = await saveClipboardImage(
+    { sessionId: sourceSessionId, base64: TINY_PNG_BASE64, mediaType: 'image/png' },
+    NORMALIZE_TO_PNG,
+  );
+  const [promoted] = await prepareClipboardArtifactsForSend(sourceSessionId, [
+    {
+      kind: 'image',
+      path: saved.path,
+      mediaType: saved.mediaType,
+      source: 'clipboard',
+    },
+  ]);
+  assert.ok(promoted);
+
+  await cloneClipboardAttachmentsForFork(sourceSessionId, childSessionId);
+  await cleanupClipboardForSession(sourceSessionId);
+  await assert.rejects(() => resolveSessionAttachmentPreviewFile(sourceSessionId, promoted.path));
+  const inherited = await resolveSessionAttachmentPreviewFile(childSessionId, promoted.path);
+  assert.equal(inherited.mediaType, 'image/png');
+
+  const attachment = await issueSessionImageAttachment({
+    sessionId: childSessionId,
+    artifactPath: promoted.path,
+    ordinal: 0,
+  });
+  assert.equal(attachment.status, 'available');
 });
 
 test('saveImage: normalization result drives extension + bytes (jpeg)', async () => {

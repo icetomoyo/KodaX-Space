@@ -16,12 +16,14 @@ export interface TransientArtifactSnapshot {
   id: string;
   kind: ArtifactKindT;
   title: string;
-  source?: 'artifact' | 'file-preview' | 'delivery-preview';
+  source?: 'artifact' | 'file-preview' | 'delivery-preview' | 'session-attachment-preview';
   version?: number;
   summary?: string;
   content?: string;
   path?: string;
   projectRoot?: string;
+  /** Present for Session-owned previews that must not survive a Session switch/delete. */
+  sessionId?: string;
   fileSource?: 'workspace' | 'artifact-store' | 'delivery-store';
   deliveryId?: string;
   permissions?: ArtifactHtmlPermissionsT;
@@ -62,19 +64,35 @@ export function dispatchOpenFileViewer(snapshot: TransientArtifactSnapshot): voi
 
 export function getLastOpenedFileViewerSnapshot(
   projectRoot: string | null,
+  sessionId?: string | null,
 ): TransientArtifactSnapshot | null {
   const snapshot = lastOpenedFileViewerSnapshot;
   if (!snapshot) return null;
-  if (!projectRoot || !snapshot.projectRoot) return snapshot;
-  return snapshot.projectRoot.localeCompare(projectRoot, undefined, { sensitivity: 'accent' }) === 0
-    ? snapshot
-    : null;
+  if (
+    projectRoot &&
+    snapshot.projectRoot &&
+    snapshot.projectRoot.localeCompare(projectRoot, undefined, { sensitivity: 'accent' }) !== 0
+  ) {
+    return null;
+  }
+  if (snapshot.sessionId && snapshot.sessionId !== sessionId) return null;
+  return snapshot;
+}
+
+export function clearLastOpenedFileViewerSnapshotForSession(sessionId: string): void {
+  if (lastOpenedFileViewerSnapshot?.sessionId === sessionId) {
+    lastOpenedFileViewerSnapshot = null;
+  }
 }
 
 export function isFileViewerSnapshot(
   snapshot: TransientArtifactSnapshot | null | undefined,
 ): boolean {
-  return snapshot?.source === 'file-preview' || snapshot?.source === 'delivery-preview';
+  return (
+    snapshot?.source === 'file-preview' ||
+    snapshot?.source === 'delivery-preview' ||
+    snapshot?.source === 'session-attachment-preview'
+  );
 }
 
 interface CreateArtifactToolLike {
