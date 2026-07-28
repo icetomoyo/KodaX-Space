@@ -86,6 +86,10 @@ function makeFakeSdk(
     async discoverDefaultExtensions() {
       return ['C:/Users/test/.kodax/extensions/one.js'];
     },
+    async dedupeExtensionPathsByEntrypoint(paths: string[]) {
+      calls.dedupePaths = paths;
+      return [...new Set(paths)];
+    },
     getActiveExtensionRuntime() {
       return activeRuntime;
     },
@@ -114,17 +118,21 @@ test('hasEnabledMcpServers ignores missing and disabled servers', () => {
   assert.equal(hasEnabledMcpServers({ disabled: { connect: 'disabled' } } as never), false);
   assert.equal(hasEnabledMcpServers({ malformed: null, list: [] } as never), false);
   assert.equal(hasEnabledMcpServers({ lazy: { command: 'node' } } as never), true);
-  assert.equal(hasEnabledMcpServers({ prewarm: { url: 'https://mcp.example', connect: 'prewarm' } } as never), true);
+  assert.equal(
+    hasEnabledMcpServers({ prewarm: { url: 'https://mcp.example', connect: 'prewarm' } } as never),
+    true,
+  );
 });
 
 test('loadKodaxProjectMcpServers reads raw project-level MCP config', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'kodax-project-mcp-'));
   try {
-    await mkdir(path.join(root, '.kodax'), { recursive: true });
+    await mkdir(path.join(root, '.kodax', 'integrations'), { recursive: true });
     await writeFile(
-      path.join(root, '.kodax', 'config.json'),
+      path.join(root, '.kodax', 'integrations', 'mcp.json'),
       JSON.stringify({
-        mcpServers: {
+        version: 1,
+        servers: {
           project: {
             command: 'node',
             args: ['server.js'],
@@ -147,21 +155,39 @@ test('loadKodaxProjectMcpServers reads raw project-level MCP config', async () =
   }
 });
 
-test('loadKodaxProjectMcpServers rejects invalid JSON with a sanitized error', async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'kodax-project-mcp-invalid-'));
+test('loadKodaxProjectMcpServers retains the SDK legacy config fallback', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'kodax-project-mcp-legacy-'));
   try {
     await mkdir(path.join(root, '.kodax'), { recursive: true });
     await writeFile(
       path.join(root, '.kodax', 'config.json'),
-      '{ "mcpServers": secret-fragment }',
+      JSON.stringify({ mcpServers: { legacy: { command: 'legacy-server' } } }),
+      'utf8',
+    );
+
+    const servers = await loadKodaxProjectMcpServers(root);
+
+    assert.deepEqual((servers as Record<string, unknown> | undefined)?.legacy, {
+      command: 'legacy-server',
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('loadKodaxProjectMcpServers rejects invalid split integration JSON', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'kodax-project-mcp-invalid-'));
+  try {
+    await mkdir(path.join(root, '.kodax', 'integrations'), { recursive: true });
+    await writeFile(
+      path.join(root, '.kodax', 'integrations', 'mcp.json'),
+      '{ "version": 1, "servers": secret-fragment }',
       'utf8',
     );
 
     await assert.rejects(
       () => loadKodaxProjectMcpServers(root),
-      (err: unknown) =>
-        err instanceof Error &&
-        err.message === 'project .kodax/config.json contains invalid JSON',
+      (err: unknown) => err instanceof Error && /Invalid JSON/.test(err.message),
     );
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -322,6 +348,10 @@ test('createSpaceSdkExtensionRuntime loads filesystem extensions only when env-e
     {
       loadSdkCoding: async () => sdk as never,
       loadMcpServers: async () => undefined,
+      loadConfiguredExtensionPaths: async () => [
+        'C:/Users/test/.kodax/managed/one.mjs',
+        'C:/Users/test/.kodax/extensions/one.js',
+      ],
       env: { KODAX_SPACE_ENABLE_SDK_EXTENSIONS: 'true' },
     },
   );
@@ -331,9 +361,14 @@ test('createSpaceSdkExtensionRuntime loads filesystem extensions only when env-e
   assert.equal(handle.discovery?.defaultDirectory, 'C:/Users/test/.kodax/extensions');
   assert.deepEqual(runtime.loadedExtensions, [
     {
-      paths: ['C:/Users/test/.kodax/extensions/one.js'],
+      paths: ['C:/Users/test/.kodax/extensions/one.js', 'C:/Users/test/.kodax/managed/one.mjs'],
       options: { continueOnError: true, loadSource: 'discovery' },
     },
   ]);
   assert.equal(calls.discoverDirectory, 'C:/Users/test/.kodax/extensions');
+  assert.deepEqual(calls.dedupePaths, [
+    'C:/Users/test/.kodax/extensions/one.js',
+    'C:/Users/test/.kodax/managed/one.mjs',
+    'C:/Users/test/.kodax/extensions/one.js',
+  ]);
 });

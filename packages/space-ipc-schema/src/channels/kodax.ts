@@ -1,7 +1,7 @@
 // KodaX user-level config channel — v0.1.6 cleanup
 //
-// 读 ~/.kodax/config.json 的"非 mcpServers"标量默认值，供 Space 在 session create 时预选。
-// renderer 拿到后只读 — Space 不写回 ~/.kodax/config.json（user 走 KodaX CLI / 编辑器改）。
+// 读 ~/.kodax/config.json 的核心标量默认值，供 Space 在 session create 时预选。
+// MCP/A2A/Extensions 已迁到 integrations/*.json，不属于这个 channel。
 //
 // **安全契约**：
 //   - 只返回标量（string / boolean / enum），不会有 secret 进入此 payload

@@ -1,6 +1,6 @@
 // MCP IPC handlers — FEATURE_036 + v0.1.x lifecycle (Batch 3 #5 follow-up).
 //
-//   mcp.discover    读 ~/.kodax/config.json + project (Space 投影, 不触发连接)
+//   mcp.discover    读 integrations/mcp.json + project (Space 投影, 不触发连接)
 //   mcp.servers     McpManager.listServers — runtime 状态快照 + catalog 大小
 //   mcp.start       强制连接 + catalog refresh
 //   mcp.stop        断开 + drop pending queue, 保留配置

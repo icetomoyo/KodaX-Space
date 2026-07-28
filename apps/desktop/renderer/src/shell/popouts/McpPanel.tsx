@@ -369,9 +369,12 @@ export function McpPanel(): JSX.Element {
         {merged.length === 0 && !loading && (
           <div className="text-fg-faint text-center py-8 text-xs">
             {t('mcp.noServersPrefix')}{' '}
-            <code className="text-fg-muted bg-surface-2 px-1 rounded">mcpServers</code>{' '}
+            <code className="text-fg-muted bg-surface-2 px-1 rounded">servers</code>{' '}
             {t('mcp.noServersSuffix')}{' '}
-            <code className="text-fg-muted bg-surface-2 px-1 rounded">~/.kodax/config.json</code>.
+            <code className="text-fg-muted bg-surface-2 px-1 rounded">
+              ~/.kodax/integrations/mcp.json
+            </code>
+            .
           </div>
         )}
 

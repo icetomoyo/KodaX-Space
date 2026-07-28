@@ -1,4 +1,3 @@
-import { promises as fsp } from 'node:fs';
 import path from 'node:path';
 import { getKodaxRuntimeDir } from '../kodax/data-paths.js';
 
@@ -8,66 +7,58 @@ import { getKodaxRuntimeDir } from '../kodax/data-paths.js';
 // for mcp.discover and strips env values. This path returns raw SDK McpServersConfig,
 // preserving command / args / env / url / headers so transports can actually start.
 //
-// loadKodaxUserConfig() follows the SDK global path: ~/.kodax/config.json.
-// loadKodaxMcpServersForProject() additionally merges project .kodax/config.json for agent runtime.
+// KodaX 0.7.77 stores MCP declarations in integrations/mcp.json. The SDK reader
+// keeps a read-only fallback to legacy config.json#mcpServers until migration.
+// Space uses the SDK reader for both the user config home and its project-scoped
+// compatibility layer so the split-file contract stays single-sourced.
 
-type SdkRootModule = typeof import('@kodax-ai/kodax');
-type McpServersConfig = NonNullable<ReturnType<SdkRootModule['loadConfig']>['mcpServers']>;
+type SdkReplModule = typeof import('@kodax-ai/kodax/repl');
+type McpServersConfig = ReturnType<SdkReplModule['listMcpServers']>;
+export type KodaxMcpIntegrationSnapshot = ReturnType<SdkReplModule['readMcpIntegration']>;
 
-let sdkRootCache: SdkRootModule | null = null;
-const MAX_PROJECT_CONFIG_BYTES = 1_048_576;
+let sdkReplCache: SdkReplModule | null = null;
 
-/** lazy 加载 KodaX root module — loadConfig() 在那里,fast-path cached after first call。*/
-async function loadSdkRoot(): Promise<SdkRootModule> {
-  if (sdkRootCache === null) {
-    sdkRootCache = await import('@kodax-ai/kodax');
+/** Lazy-load the public integration-config reader and MCP CRUD facade. */
+async function loadSdkRepl(): Promise<SdkReplModule> {
+  if (sdkReplCache === null) {
+    sdkReplCache = await import('@kodax-ai/kodax/repl');
   }
-  return sdkRootCache;
+  return sdkReplCache;
+}
+
+export function getKodaxMcpIntegrationPath(configHome: string): string {
+  return path.join(configHome, 'integrations', 'mcp.json');
+}
+
+export async function readKodaxMcpIntegration(
+  configHome: string,
+): Promise<KodaxMcpIntegrationSnapshot> {
+  const sdk = await loadSdkRepl();
+  return sdk.readMcpIntegration(configHome);
 }
 
 /**
- * 拿全套 mcpServers config (没读到 / 无配置则返回 undefined,McpManager 接受 undefined)。
- * 失败 (config.json 损坏 / SDK 加载错) 抛错,由 getMcpManager 的 catch 路径处理。
+ * Read the user-level MCP integration. The SDK returns source=user for the
+ * split file, source=legacy-user for config.json#mcpServers fallback, and an
+ * empty default document when neither exists.
  */
 export async function loadKodaxUserConfig(): Promise<McpServersConfig | undefined> {
-  const sdk = await loadSdkRoot();
-  const raw = sdk.loadConfig();
-  const ms = raw.mcpServers;
-  if (!ms || typeof ms !== 'object') return undefined;
-  return ms as McpServersConfig;
+  const snapshot = await readKodaxMcpIntegration(getKodaxRuntimeDir());
+  const servers = snapshot.document.servers;
+  return Object.keys(servers).length > 0 ? servers : undefined;
 }
-
 
 export async function loadKodaxProjectMcpServers(
   projectRoot: string,
 ): Promise<McpServersConfig | undefined> {
   if (!path.isAbsolute(projectRoot)) return undefined;
 
-  const projectPath = path.join(projectRoot, '.kodax', 'config.json');
-  const globalPath = path.join(getKodaxRuntimeDir(), 'config.json');
-  if (path.resolve(projectPath) === path.resolve(globalPath)) return undefined;
+  const projectConfigHome = path.join(path.resolve(projectRoot), '.kodax');
+  if (path.resolve(projectConfigHome) === path.resolve(getKodaxRuntimeDir())) return undefined;
 
-  let text: string;
-  try {
-    const stat = await fsp.stat(projectPath);
-    if (!stat.isFile() || stat.size > MAX_PROJECT_CONFIG_BYTES) return undefined;
-    text = await fsp.readFile(projectPath, 'utf8');
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code === 'ENOENT' || code === 'ENOTDIR') return undefined;
-    throw err;
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text) as unknown;
-  } catch {
-    throw new Error('project .kodax/config.json contains invalid JSON');
-  }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
-  const mcpServers = (parsed as Record<string, unknown>).mcpServers;
-  if (!mcpServers || typeof mcpServers !== 'object' || Array.isArray(mcpServers)) return undefined;
-  return mcpServers as McpServersConfig;
+  const snapshot = await readKodaxMcpIntegration(projectConfigHome);
+  const servers = snapshot.document.servers;
+  return Object.keys(servers).length > 0 ? servers : undefined;
 }
 
 export async function loadKodaxMcpServersForProject(

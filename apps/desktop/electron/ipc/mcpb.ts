@@ -64,14 +64,20 @@ async function installFromPath(filePath: string): Promise<InternalMcpbEntry> {
         await addOrReplace(displacedEntry);
         rolledBackRegistry = true;
       } catch (err) {
-        console.warn('[mcpb] failed to restore displaced registry entry:', err instanceof Error ? err.message : err);
+        console.warn(
+          '[mcpb] failed to restore displaced registry entry:',
+          err instanceof Error ? err.message : err,
+        );
       }
     } else {
       try {
         await removeByExtensionId(entry.extensionId);
         rolledBackRegistry = true;
       } catch (err) {
-        console.warn('[mcpb] failed to rollback failed install registry entry:', err instanceof Error ? err.message : err);
+        console.warn(
+          '[mcpb] failed to rollback failed install registry entry:',
+          err instanceof Error ? err.message : err,
+        );
       }
     }
     const failedInstallDirIsStillReferenced =
@@ -80,14 +86,21 @@ async function installFromPath(filePath: string): Promise<InternalMcpbEntry> {
     if (rolledBackRegistry && !failedInstallDirIsStillReferenced) {
       await safeRmInstallDir(entry.installDir, 'failed install');
     }
-    const reason = sync.kind === 'error' ? sync.message : 'an existing MCP server was not overwritten';
-    throw new Error(`Failed to register MCP server in ~/.kodax/config.json: ${reason}`);
+    const reason =
+      sync.kind === 'error' ? sync.message : 'an existing MCP server was not overwritten';
+    throw new Error(`Failed to register MCP server in ~/.kodax/integrations/mcp.json: ${reason}`);
   } else if (sync.kind === 'registered') {
     await reloadMcpManager().catch((err) => {
-      console.warn('[mcpb] MCP manager reload after install failed:', err instanceof Error ? err.message : err);
+      console.warn(
+        '[mcpb] MCP manager reload after install failed:',
+        err instanceof Error ? err.message : err,
+      );
     });
     await invalidateSpaceSdkExtensionRuntimes().catch((err) => {
-      console.warn('[mcpb] SDK extension runtime invalidation after install failed:', err instanceof Error ? err.message : err);
+      console.warn(
+        '[mcpb] SDK extension runtime invalidation after install failed:',
+        err instanceof Error ? err.message : err,
+      );
     });
   }
   if (displacedInstallDir) {
@@ -247,15 +260,25 @@ export function registerMcpbChannels(): void {
       const removedMcp = await removeEntryFromKodaxMcp(res.entry);
       if (removedMcp.kind === 'removed') {
         await reloadMcpManager().catch((err) => {
-          console.warn('[mcpb] MCP manager reload after uninstall failed:', err instanceof Error ? err.message : err);
+          console.warn(
+            '[mcpb] MCP manager reload after uninstall failed:',
+            err instanceof Error ? err.message : err,
+          );
         });
         await invalidateSpaceSdkExtensionRuntimes().catch((err) => {
-          console.warn('[mcpb] SDK extension runtime invalidation after uninstall failed:', err instanceof Error ? err.message : err);
+          console.warn(
+            '[mcpb] SDK extension runtime invalidation after uninstall failed:',
+            err instanceof Error ? err.message : err,
+          );
         });
       } else if (removedMcp.kind === 'skipped-changed') {
-        console.warn('[mcpb] leaving ~/.kodax/config.json MCP server because it no longer matches the installed bundle');
+        console.warn(
+          '[mcpb] leaving ~/.kodax/integrations/mcp.json server because it no longer matches the installed bundle',
+        );
       } else if (removedMcp.kind === 'error') {
-        console.warn(`[mcpb] failed to remove MCP server from ~/.kodax/config.json: ${removedMcp.message}`);
+        console.warn(
+          `[mcpb] failed to remove MCP server from ~/.kodax/integrations/mcp.json: ${removedMcp.message}`,
+        );
       }
     }
     if (res.installDir) {

@@ -34,7 +34,10 @@ test('mcp lifecycle inputs accept optional projectRoot scope', () => {
   assert.equal(mcpStartChannel.input.safeParse(scopedServer).success, true);
   assert.equal(mcpStopChannel.input.safeParse(scopedServer).success, true);
   assert.equal(mcpLogsChannel.input.safeParse(scopedServer).success, true);
-  assert.equal(mcpToolsChannel.input.safeParse({ ...scopedServer, forceRefresh: true }).success, true);
+  assert.equal(
+    mcpToolsChannel.input.safeParse({ ...scopedServer, forceRefresh: true }).success,
+    true,
+  );
   assert.equal(mcpReloadChannel.input.safeParse(undefined).success, true);
   assert.equal(mcpReloadChannel.input.safeParse({ projectRoot: 'C:/proj' }).success, true);
 });
@@ -82,7 +85,10 @@ test('mcp.discover output accepts errors array', () => {
   const out = {
     servers: [],
     errors: [
-      { path: '/home/u/.kodax/config.json', error: 'invalid JSON: Unexpected token' },
+      {
+        path: '/home/u/.kodax/integrations/mcp.json',
+        error: 'invalid JSON: Unexpected token',
+      },
     ],
   };
   assert.equal(mcpDiscoverChannel.output.safeParse(out).success, true);
@@ -119,7 +125,15 @@ test('mcp.discover output accepts source="mcpb" (v0.1.4 installed bundles)', () 
 test('mcp server name must be 1..128 chars', () => {
   const tooLong = 'x'.repeat(129);
   const out = {
-    servers: [{ name: tooLong, transport: 'stdio' as const, command: 'x', envCount: 0, source: 'global' as const }],
+    servers: [
+      {
+        name: tooLong,
+        transport: 'stdio' as const,
+        command: 'x',
+        envCount: 0,
+        source: 'global' as const,
+      },
+    ],
     errors: [],
   };
   assert.equal(mcpDiscoverChannel.output.safeParse(out).success, false);

@@ -1,3 +1,5 @@
+import { getKodaxRuntimeDir } from './data-paths.js';
+
 type SdkCodingModule = typeof import('@kodax-ai/kodax/coding');
 type SpaceSdkExtensionRuntime = ReturnType<SdkCodingModule['createExtensionRuntime']>;
 type SpaceSdkExtensionDiagnostics = ReturnType<SpaceSdkExtensionRuntime['getDiagnostics']>;
@@ -31,6 +33,7 @@ export interface CreateSpaceSdkExtensionRuntimeOptions {
 export interface SpaceSdkExtensionRuntimeDeps {
   readonly loadSdkCoding?: () => Promise<SdkCodingModule>;
   readonly loadMcpServers?: (projectRoot: string) => Promise<SpaceSdkMcpServersConfig | undefined>;
+  readonly loadConfiguredExtensionPaths?: () => Promise<readonly string[]>;
   readonly env?: NodeJS.ProcessEnv;
 }
 
@@ -139,7 +142,22 @@ export async function discoverSpaceSdkExtensions(
   const sdk = await getSdk(deps);
   const defaultDirectory = sdk.getDefaultExtensionDirectory();
   const detailed = await sdk.discoverExtensionsInDirectoryDetailed(defaultDirectory);
-  const paths = await sdk.discoverDefaultExtensions();
+  const defaultPaths = await sdk.discoverDefaultExtensions();
+  let configuredPaths: readonly string[] = [];
+  try {
+    if (deps?.loadConfiguredExtensionPaths) {
+      configuredPaths = await deps.loadConfiguredExtensionPaths();
+    } else {
+      const repl = await import('@kodax-ai/kodax/repl');
+      configuredPaths = repl.readExtensionsIntegration(getKodaxRuntimeDir()).document.paths;
+    }
+  } catch (err) {
+    console.warn(
+      '[sdk-extensions] integrations/extensions.json ignored:',
+      err instanceof Error ? err.message : err,
+    );
+  }
+  const paths = await sdk.dedupeExtensionPathsByEntrypoint([...defaultPaths, ...configuredPaths]);
   return { defaultDirectory, paths, skipped: detailed.skipped };
 }
 

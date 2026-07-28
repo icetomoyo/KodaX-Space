@@ -1,6 +1,6 @@
 // KodaX user-level config reader — v0.1.6 cleanup
 //
-// 读 ~/.kodax/config.json 的"非 mcpServers"字段，作为 Space 的 session 默认值来源：
+// 读 ~/.kodax/config.json 的核心字段，作为 Space 的 session 默认值来源：
 //   - provider / model / thinking / reasoningMode / permissionMode → 新 session preselect
 //   - customProviders → 通过 SDK registerConfiguredCustomProviders 注册到运行时 LLM registry，
 //                       让 `/provider <name>` 直接可切（即使 Space Provider 面板不展示）
@@ -29,6 +29,11 @@ import {
 } from '@kodax-space/space-ipc-schema';
 import { validateApiKeyEnv } from '../providers/env-guard.js';
 import { validateBaseUrl } from '../providers/url-guard.js';
+import {
+  getKodaxMcpIntegrationPath,
+  readKodaxMcpIntegration,
+  type KodaxMcpIntegrationSnapshot,
+} from '../mcp/kodax-user-config-loader.js';
 import { getKodaxRuntimeDir } from './data-paths.js';
 import { effortToReasoningMode, isSpaceReasoningMode } from './reasoning-effort.js';
 
@@ -635,7 +640,6 @@ function saveWritableKodaxConfig(config: SdkLoadConfigReturn): void {
   invalidateUserDefaultsCache();
 }
 
-const MAX_CONFIG_BYTES = 1_048_576;
 const MODELED_COMPACTION_KEYS = new Set([
   'enabled',
   'triggerPercent',
@@ -681,20 +685,27 @@ async function buildKodaxConfigOverview(
   const kodaxDir = getKodaxRuntimeDir();
   const configPath = getKodaxConfigPath();
   const configExists = await pathIsFile(configPath);
-  const projectSummary = await readProjectConfigSummary(projectRoot, configPath, errors);
+  const globalMcpSummary = await readGlobalMcpConfigSummary(raw, errors);
+  const projectSummary = await readProjectConfigSummary(
+    projectRoot,
+    globalMcpSummary.globalPath,
+    errors,
+  );
 
   return {
     configPath,
     configExists,
     compaction: normalizeCompactionSettings(raw.compaction),
     mcp: {
-      globalPath: configPath,
+      globalPath: globalMcpSummary.globalPath,
       ...(projectSummary.projectPath ? { projectPath: projectSummary.projectPath } : {}),
-      globalConfigExists: configExists,
+      globalSource: globalMcpSummary.globalSource,
+      ...(projectSummary.projectSource ? { projectSource: projectSummary.projectSource } : {}),
+      globalConfigExists: globalMcpSummary.globalConfigExists,
       ...(projectSummary.projectConfigExists !== undefined
         ? { projectConfigExists: projectSummary.projectConfigExists }
         : {}),
-      globalServers: countMcpServers(raw.mcpServers),
+      globalServers: globalMcpSummary.globalServers,
       projectServers: projectSummary.projectServers,
     },
     skills: {
@@ -762,91 +773,97 @@ function countMcpServers(raw: unknown): number {
   return Math.min(128, Object.keys(raw as Record<string, unknown>).length);
 }
 
+type KodaxMcpConfigSource = KodaxMcpIntegrationSnapshot['source'];
+
+async function readGlobalMcpConfigSummary(
+  raw: SdkWritableConfig,
+  errors: KodaxConfigOverviewT['errors'],
+): Promise<{
+  globalPath: string;
+  globalSource: KodaxMcpConfigSource;
+  globalConfigExists: boolean;
+  globalServers: number;
+}> {
+  const configHome = getKodaxRuntimeDir();
+  const globalPath = getKodaxMcpIntegrationPath(configHome);
+  const globalConfigExists = await pathIsFile(globalPath);
+
+  // Unit-test implementations only mock the root SDK module. Preserve their
+  // legacy fixture semantics without reading the developer's real config home.
+  if (activeImpl !== DEFAULT_IMPL) {
+    const globalServers = countMcpServers(raw.mcpServers);
+    return {
+      globalPath,
+      globalSource: globalServers > 0 ? 'legacy-user' : 'default',
+      globalConfigExists,
+      globalServers,
+    };
+  }
+
+  try {
+    const snapshot = await readKodaxMcpIntegration(configHome);
+    return {
+      globalPath,
+      globalSource: snapshot.source,
+      globalConfigExists,
+      globalServers: countMcpServers(snapshot.document.servers),
+    };
+  } catch (err) {
+    errors.push({
+      path: globalPath,
+      error: `MCP integration load failed: ${err instanceof Error ? err.message : String(err)}`,
+    });
+    return {
+      globalPath,
+      globalSource: 'default',
+      globalConfigExists,
+      globalServers: 0,
+    };
+  }
+}
+
 async function readProjectConfigSummary(
   projectRoot: string | undefined,
-  globalConfigPath: string,
+  globalMcpPath: string,
   errors: KodaxConfigOverviewT['errors'],
 ): Promise<{
   projectRoot?: string;
   projectPath?: string;
+  projectSource?: KodaxMcpConfigSource;
   projectConfigExists?: boolean;
   projectServers: number;
 }> {
   if (!projectRoot || !path.isAbsolute(projectRoot)) return { projectServers: 0 };
   const normalizedProjectRoot = path.normalize(projectRoot);
-  const projectPath = path.join(normalizedProjectRoot, '.kodax', 'config.json');
-  if (path.resolve(projectPath) === path.resolve(globalConfigPath)) {
+  const projectConfigHome = path.join(normalizedProjectRoot, '.kodax');
+  const projectPath = getKodaxMcpIntegrationPath(projectConfigHome);
+  if (path.resolve(projectPath) === path.resolve(globalMcpPath)) {
     return { projectRoot: normalizedProjectRoot, projectServers: 0 };
   }
 
-  let stat;
+  const projectConfigExists = await pathIsFile(projectPath);
   try {
-    stat = await fsp.stat(projectPath);
+    const snapshot = await readKodaxMcpIntegration(projectConfigHome);
+    return {
+      projectRoot: normalizedProjectRoot,
+      projectPath,
+      projectSource: snapshot.source,
+      projectConfigExists,
+      projectServers: countMcpServers(snapshot.document.servers),
+    };
   } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code === 'ENOENT' || code === 'ENOTDIR') {
-      return {
-        projectRoot: normalizedProjectRoot,
-        projectPath,
-        projectConfigExists: false,
-        projectServers: 0,
-      };
-    }
     errors.push({
       path: projectPath,
-      error: `stat failed: ${err instanceof Error ? err.message : String(err)}`,
+      error: `MCP integration load failed: ${err instanceof Error ? err.message : String(err)}`,
     });
     return {
       projectRoot: normalizedProjectRoot,
       projectPath,
-      projectConfigExists: false,
+      projectSource: 'default',
+      projectConfigExists,
       projectServers: 0,
     };
   }
-  if (!stat.isFile()) {
-    return {
-      projectRoot: normalizedProjectRoot,
-      projectPath,
-      projectConfigExists: false,
-      projectServers: 0,
-    };
-  }
-  if (stat.size > MAX_CONFIG_BYTES) {
-    errors.push({ path: projectPath, error: `config file too large (${stat.size} bytes)` });
-    return {
-      projectRoot: normalizedProjectRoot,
-      projectPath,
-      projectConfigExists: true,
-      projectServers: 0,
-    };
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(await fsp.readFile(projectPath, 'utf8'));
-  } catch (err) {
-    errors.push({
-      path: projectPath,
-      error: `invalid JSON: ${err instanceof Error ? err.message : String(err)}`,
-    });
-    return {
-      projectRoot: normalizedProjectRoot,
-      projectPath,
-      projectConfigExists: true,
-      projectServers: 0,
-    };
-  }
-
-  const projectServers =
-    parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? countMcpServers((parsed as Record<string, unknown>).mcpServers)
-      : 0;
-  return {
-    projectRoot: normalizedProjectRoot,
-    projectPath,
-    projectConfigExists: true,
-    projectServers,
-  };
 }
 
 /**

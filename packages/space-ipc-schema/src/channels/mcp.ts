@@ -2,7 +2,7 @@
 //
 // 完整设计要 list 配置 + start/stop/log/tool-catalog (F036 设计文档)，但 KodaX SDK 0.7.40
 // 公开 surface 没出 MCP 管理 API（`/mcp` 是 REPL-internal，SDK 不暴露 capability provider）。
-// alpha.1 先做"读 ~/.kodax/config.json mcpServers 字段并展示"——只读列表，不动 server 生命周期。
+// alpha.1 起展示 KodaX MCP 声明；0.1.33 跟随 SDK 改读 integrations/mcp.json。
 // 完整版（启停/日志/工具目录）在 v0.1.7 F039 接 SDK 后做（与 F038 同模式）。
 
 import { z } from 'zod';
@@ -14,7 +14,7 @@ const mcpTransportSchema = z.enum(['stdio', 'http']);
 // 单个 MCP server 配置投影 (Space 端关心的字段子集)。
 // 不暴露 env 内容——环境变量可能含 secrets，main 端 redact 后再传 renderer。
 const mcpServerMetaSchema = z.object({
-  /** Server name (mcpServers 对象的 key) */
+  /** Server name (integrations/mcp.json `servers` 对象的 key) */
   name: z.string().min(1).max(128),
   transport: mcpTransportSchema,
   /** stdio: 命令。例 'npx' / 'python' / 绝对路径 */
@@ -27,8 +27,8 @@ const mcpServerMetaSchema = z.object({
   envCount: z.number().int().nonnegative().max(1024),
   /**
    * 配置来源：
-   *   - 'global'  ~/.kodax/config.json（KodaX CLI / 用户手配）
-   *   - 'project' ${projectRoot}/.kodax/config.json（per-project 覆盖）
+   *   - 'global'  ~/.kodax/integrations/mcp.json（KodaX CLI / 用户手配）
+   *   - 'project' ${projectRoot}/.kodax/integrations/mcp.json（per-project 覆盖）
    *   - 'mcpb'    v0.1.4：通过 mcpb.install 装的 .mcpb / .dxt 扩展包
    *               （registry 在 ~/.kodax/mcpb/registry.json）
    *
@@ -41,7 +41,7 @@ const mcpServerMetaSchema = z.object({
 // ---- Invoke: mcp.discover ----
 //
 // 拉当前 projectRoot 对应的 MCP server 列表 (global + project 合并；同名 project 覆盖 global)。
-// 每次走 disk read——KodaX REPL 改完 config.json 后立刻在 desktop popout 生效。
+// 每次走 disk read——KodaX REPL 改完 integrations/mcp.json 后立刻在 desktop popout 生效。
 //
 // projectRoot —— 不再要求 live SDK session：用户从 Recents 恢复历史会话时
 // UI 有 sessionId 但 SDK 没 spin up；discover 是只读操作，绑 projectRoot 就够。
@@ -54,14 +54,16 @@ export const mcpDiscoverChannel = {
   output: z.object({
     servers: z.array(mcpServerMetaSchema).max(128),
     /** 解析过程中跳过的错误（损坏 JSON / shape 不对的 server 条目），UI 给用户提示 */
-    errors: z.array(
-      z.object({
-        // 通常是 ~/.kodax/config.json 或 ${root}/.kodax/config.json[#sanitized-name]
-        // 文件系统路径上限保守取 1024（兼容 Windows 长路径 + #name 后缀），不暴露其他来源
-        path: z.string().max(1024),
-        error: z.string().max(512),
-      }),
-    ).max(32),
+    errors: z
+      .array(
+        z.object({
+          // 通常是 ~/.kodax/integrations/mcp.json 或项目同名路径[#sanitized-name]
+          // 文件系统路径上限保守取 1024（兼容 Windows 长路径 + #name 后缀），不暴露其他来源
+          path: z.string().max(1024),
+          error: z.string().max(512),
+        }),
+      )
+      .max(32),
   }),
 } as const;
 
@@ -181,14 +183,14 @@ export const mcpToolsChannel = {
 } as const;
 
 // ---- Invoke: mcp.reload ----
-// 用户改了 ~/.kodax/config.json 后调,重建 Manager。dispose 老的 + 用新 config 创建。
+// 用户改了 ~/.kodax/integrations/mcp.json 后调,重建 Manager。
 export const mcpReloadChannel = {
   name: 'mcp.reload',
   direction: 'invoke',
   input: mcpManagerScopeInputSchema.optional(),
   output: z.object({
     ok: z.boolean(),
-    /** Reload 后服务器数 (用 listServers 数过)。0 = config 里没 mcpServers 或全 disabled */
+    /** Reload 后服务器数 (用 listServers 数过)。0 = integration 里没有 server 或全 disabled */
     serverCount: z.number().int().nonnegative().max(128),
   }),
 } as const;

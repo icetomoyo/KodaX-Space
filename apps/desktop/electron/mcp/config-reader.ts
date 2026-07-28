@@ -1,14 +1,18 @@
 // MCP config reader.
 //
 // Sources:
-// - global: ~/.kodax/config.json via SDK listMcpServers()
-// - project: <projectRoot>/.kodax/config.json parsed locally
+// - global: ~/.kodax/integrations/mcp.json via SDK listMcpServers()
+// - project: <projectRoot>/.kodax/integrations/mcp.json via the SDK integration reader
+// - legacy fallback: config.json#mcpServers while the user migrates
 // - mcpb: ~/.kodax/mcpb/registry.json metadata for installed bundles
-import { promises as fsp } from 'node:fs';
 import path from 'node:path';
 import type { McpServerMeta } from '@kodax-space/space-ipc-schema';
 import { readRegistry as readMcpbRegistry } from '../mcpb/registry.js';
 import { getKodaxRuntimeDir } from '../kodax/data-paths.js';
+import {
+  getKodaxMcpIntegrationPath,
+  loadKodaxProjectMcpServers,
+} from './kodax-user-config-loader.js';
 
 type SdkReplModule = typeof import('@kodax-ai/kodax/repl');
 type SdkMcpServersConfig = ReturnType<SdkReplModule['listMcpServers']>;
@@ -50,13 +54,14 @@ export async function prewarmSdkMcpStore(): Promise<void> {
   }
 }
 
-const MAX_CONFIG_BYTES = 1_048_576;
 const MAX_SERVERS_PER_FILE = 128;
 const MAX_ERROR_KEY_LEN = 64;
 
 function sanitizeKeyForErrorPath(name: string): string {
   const stripped = name.replace(/[\x00-\x1f\x7f]/g, '?');
-  return stripped.length > MAX_ERROR_KEY_LEN ? `${stripped.slice(0, MAX_ERROR_KEY_LEN)}...` : stripped;
+  return stripped.length > MAX_ERROR_KEY_LEN
+    ? `${stripped.slice(0, MAX_ERROR_KEY_LEN)}...`
+    : stripped;
 }
 
 interface DiscoverOptions {
@@ -79,8 +84,9 @@ export async function discoverMcpServers(opts: DiscoverOptions): Promise<Discove
 
   const errors: Array<{ path: string; error: string }> = [];
   const globalDir = opts.kodaxGlobalDir ?? getKodaxRuntimeDir();
-  const globalPath = path.join(globalDir, 'config.json');
-  const projectPath = path.join(opts.projectRoot, '.kodax', 'config.json');
+  const globalPath = getKodaxMcpIntegrationPath(globalDir);
+  const projectConfigHome = path.join(opts.projectRoot, '.kodax');
+  const projectPath = getKodaxMcpIntegrationPath(projectConfigHome);
 
   if (activeImpl === DEFAULT_IMPL && sdkModuleCache === null) {
     try {
@@ -95,9 +101,9 @@ export async function discoverMcpServers(opts: DiscoverOptions): Promise<Discove
 
   const globalServers = readGlobalServersFromSdk(globalPath, errors);
   const projectServers =
-    path.resolve(projectPath) === path.resolve(globalPath)
+    path.resolve(projectConfigHome) === path.resolve(globalDir)
       ? []
-      : await readServersFromFile(projectPath, 'project', errors);
+      : await readProjectServersFromSdk(opts.projectRoot, projectPath, errors);
   const mcpbServers = activeImpl === DEFAULT_IMPL ? await readMcpbServers(errors) : [];
 
   const byName = new Map<string, McpServerMeta>();
@@ -128,7 +134,9 @@ function arrayEqual(a: readonly string[], b: readonly string[]): boolean {
   return a.every((value, index) => value === b[index]);
 }
 
-async function readMcpbServers(errors: Array<{ path: string; error: string }>): Promise<McpServerMeta[]> {
+async function readMcpbServers(
+  errors: Array<{ path: string; error: string }>,
+): Promise<McpServerMeta[]> {
   try {
     const reg = await readMcpbRegistry();
     return reg.extensions.map((ext) => ({
@@ -156,7 +164,10 @@ function readGlobalServersFromSdk(
   const out: McpServerMeta[] = [];
   for (const [name, cfg] of Object.entries(sdkConfig)) {
     if (out.length >= MAX_SERVERS_PER_FILE) {
-      errors.push({ path: globalPath, error: `more than ${MAX_SERVERS_PER_FILE} servers; truncating` });
+      errors.push({
+        path: globalPath,
+        error: `more than ${MAX_SERVERS_PER_FILE} servers; truncating`,
+      });
       break;
     }
     const projection = projectSdkServerEntry(name, cfg as Record<string, unknown>, 'global');
@@ -193,86 +204,41 @@ function projectSdkServerEntry(
   return null;
 }
 
-async function readServersFromFile(
+async function readProjectServersFromSdk(
+  projectRoot: string,
   filePath: string,
-  source: 'global' | 'project',
   errors: Array<{ path: string; error: string }>,
 ): Promise<McpServerMeta[]> {
-  let text: string;
+  let servers: SdkMcpServersConfig | undefined;
   try {
-    const stat = await fsp.stat(filePath);
-    if (!stat.isFile()) return [];
-    if (stat.size > MAX_CONFIG_BYTES) {
-      errors.push({ path: filePath, error: `config file too large (${stat.size} bytes)` });
-      return [];
-    }
-    text = await fsp.readFile(filePath, 'utf8');
+    servers = await loadKodaxProjectMcpServers(projectRoot);
   } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code === 'ENOENT' || code === 'ENOTDIR') return [];
-    errors.push({ path: filePath, error: `read failed: ${(err as Error).message ?? String(err)}` });
+    errors.push({
+      path: filePath,
+      error: `integration config load failed: ${err instanceof Error ? err.message : String(err)}`,
+    });
     return [];
   }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch (err) {
-    errors.push({ path: filePath, error: `invalid JSON: ${(err as Error).message}` });
-    return [];
-  }
-
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    errors.push({ path: filePath, error: 'top-level must be a JSON object' });
-    return [];
-  }
-  const root = parsed as Record<string, unknown>;
-  const mcp = root.mcpServers;
-  if (mcp === undefined) return [];
-  if (!mcp || typeof mcp !== 'object' || Array.isArray(mcp)) {
-    errors.push({ path: filePath, error: 'mcpServers must be a JSON object' });
-    return [];
-  }
+  if (!servers) return [];
 
   const out: McpServerMeta[] = [];
-  for (const [name, raw] of Object.entries(mcp as Record<string, unknown>)) {
+  for (const [name, raw] of Object.entries(servers)) {
     if (out.length >= MAX_SERVERS_PER_FILE) {
-      errors.push({ path: filePath, error: `more than ${MAX_SERVERS_PER_FILE} servers; truncating` });
+      errors.push({
+        path: filePath,
+        error: `more than ${MAX_SERVERS_PER_FILE} servers; truncating`,
+      });
       break;
     }
-    const projection = projectServerEntry(name, raw, source);
-    if ('error' in projection) {
-      errors.push({ path: `${filePath}#${sanitizeKeyForErrorPath(name)}`, error: projection.error });
-      continue;
+    const projection = projectSdkServerEntry(name, raw as Record<string, unknown>, 'project');
+    if (projection) {
+      out.push(projection);
+    } else {
+      errors.push({
+        path: `${filePath}#${sanitizeKeyForErrorPath(name)}`,
+        error: 'server config has neither "command" nor "url" (SDK shape unexpected)',
+      });
     }
-    out.push(projection.meta);
   }
   return out;
-}
-
-function projectServerEntry(
-  name: string,
-  raw: unknown,
-  source: 'global' | 'project',
-): { meta: McpServerMeta } | { error: string } {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-    return { error: 'server config must be an object' };
-  }
-  const cfg = raw as Record<string, unknown>;
-  const envCount =
-    cfg.env && typeof cfg.env === 'object' && !Array.isArray(cfg.env)
-      ? Object.keys(cfg.env as Record<string, unknown>).length
-      : 0;
-
-  if (typeof cfg.url === 'string' && cfg.url.length > 0) {
-    return { meta: { name, transport: 'http', url: cfg.url, envCount, source } };
-  }
-  if (typeof cfg.command === 'string' && cfg.command.length > 0) {
-    const args = Array.isArray(cfg.args)
-      ? (cfg.args.filter((a) => typeof a === 'string') as string[])
-      : undefined;
-    return { meta: { name, transport: 'stdio', command: cfg.command, args, envCount, source } };
-  }
-
-  return { error: 'server config has neither "command" nor "url"' };
 }

@@ -2,7 +2,7 @@
 //
 // The SDK agent runtime owns its per-turn MCP capability provider separately. This
 // module backs the MCP popout lifecycle APIs: list/start/stop/logs/tools/reload.
-// It keeps managers scoped by projectRoot so project-level .kodax/config.json
+// It keeps managers scoped by projectRoot so project-level .kodax/integrations/mcp.json
 // servers are startable from the panel, while preserving the old global scope
 // when no projectRoot is supplied.
 
@@ -42,12 +42,18 @@ function normalizeScope(projectRoot?: string): ManagerScope {
 async function loadServersForScope(scope: ManagerScope): Promise<unknown> {
   if (scope.projectRoot !== undefined) {
     return loadKodaxMcpServersForProject(scope.projectRoot).catch((err) => {
-      console.warn('[mcp-manager] project-scoped MCP config load failed:', err instanceof Error ? err.message : err);
+      console.warn(
+        '[mcp-manager] project-scoped MCP config load failed:',
+        err instanceof Error ? err.message : err,
+      );
       return undefined;
     });
   }
   return loadKodaxUserConfig().catch((err) => {
-    console.warn('[mcp-manager] global MCP config load failed:', err instanceof Error ? err.message : err);
+    console.warn(
+      '[mcp-manager] global MCP config load failed:',
+      err instanceof Error ? err.message : err,
+    );
     return undefined;
   });
 }
@@ -60,7 +66,9 @@ function optionsForScope(scope: ManagerScope): { readonly projectRoot?: string }
  * Return the current Manager instance for a scope. The no-project call preserves
  * the original global behavior; projectRoot scopes merge global + project MCP.
  */
-export async function getMcpManager(options?: { readonly projectRoot?: string }): Promise<ManagerInstance> {
+export async function getMcpManager(options?: {
+  readonly projectRoot?: string;
+}): Promise<ManagerInstance> {
   if (shuttingDown) {
     throw new Error('McpManager unavailable: shutting down');
   }

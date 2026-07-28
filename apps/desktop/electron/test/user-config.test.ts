@@ -11,6 +11,9 @@
 
 import { test, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { promises as fsp } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import {
   loadKodaxCompactionConfig,
   loadKodaxConfigOverview,
@@ -357,10 +360,7 @@ test('registerKodaxCustomProviders merges Space custom providers into SDK regist
       baseUrl: 'https://space.example.com/v1',
       apiKeyEnv: 'SPACE_API_KEY',
       model: 'space-model',
-      models: [
-        { id: 'space-model', contextWindow: 262_144, maxOutputTokens: 16_384 },
-        'space-alt',
-      ],
+      models: [{ id: 'space-model', contextWindow: 262_144, maxOutputTokens: 16_384 }, 'space-alt'],
       promptCacheAffinity: true,
       contextWindow: 131_072,
       capabilityProfile: { supportsTools: true },
@@ -498,9 +498,7 @@ test('updateKodaxConfigCustomProvider clears modeled opt-ins but preserves unmod
     'promptCacheAffinity must be cleared, not preserved',
   );
   assert.equal('contextWindow' in p, false, 'contextWindow must be cleared, not preserved');
-  assert.deepEqual(p.models, [
-    { id: 'old-model', contextWindow: 131_072, maxOutputTokens: 8_192 },
-  ]);
+  assert.deepEqual(p.models, [{ id: 'old-model', contextWindow: 131_072, maxOutputTokens: 8_192 }]);
   // unmodeled CLI fields survive:
   assert.deepEqual(p.reasoningProfile, { effortStrategy: 'openai-chat-effort' });
   assert.equal(p.supportsThinking, true);
@@ -619,6 +617,41 @@ test('load/update KodaX compaction config preserves unrelated config fields', as
   assert.equal(overview.compaction.enabled, true);
   assert.equal(overview.compaction.triggerPercent, 60);
   assert.equal(overview.mcp.globalServers, 1);
+  assert.equal(overview.mcp.globalSource, 'legacy-user');
+  assert.match(overview.mcp.globalPath, /integrations[\\/]mcp\.json$/);
+});
+
+test('KodaX config overview reports the project split MCP integration source', async () => {
+  const projectRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'kodax-space-overview-'));
+  try {
+    const integrationDir = path.join(projectRoot, '.kodax', 'integrations');
+    await fsp.mkdir(integrationDir, { recursive: true });
+    await fsp.writeFile(
+      path.join(integrationDir, 'mcp.json'),
+      JSON.stringify({
+        version: 1,
+        servers: {
+          projectDocs: {
+            command: 'node',
+            args: ['project-docs.js'],
+          },
+        },
+      }),
+      'utf8',
+    );
+    mockUserConfig({});
+
+    const overview = await loadKodaxConfigOverview(projectRoot);
+    assert.equal(overview.mcp.projectConfigExists, true);
+    assert.equal(overview.mcp.projectSource, 'user');
+    assert.equal(overview.mcp.projectServers, 1);
+    assert.equal(
+      overview.mcp.projectPath,
+      path.join(projectRoot, '.kodax', 'integrations', 'mcp.json'),
+    );
+  } finally {
+    await fsp.rm(projectRoot, { recursive: true, force: true });
+  }
 });
 
 test('KodaX compaction stays enabled and clamps thresholds to 15-90', async () => {

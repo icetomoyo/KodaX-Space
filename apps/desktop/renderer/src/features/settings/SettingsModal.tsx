@@ -899,6 +899,12 @@ function RuntimePanel(): JSX.Element {
 
   const projectConfigLabel = overview?.mcp.projectPath ?? t('settings.runtime.none');
   const projectSkillDir = overview?.skills.projectSkillsDir ?? t('settings.runtime.none');
+  const globalMcpSource = overview
+    ? mcpConfigSourceLabel(overview.mcp.globalSource, t)
+    : t('common.loading');
+  const projectMcpSource = overview?.mcp.projectSource
+    ? mcpConfigSourceLabel(overview.mcp.projectSource, t)
+    : t('settings.runtime.none');
 
   return (
     <div className="mx-auto max-w-4xl space-y-4 p-5">
@@ -1053,6 +1059,8 @@ function RuntimePanel(): JSX.Element {
             mono
           />
           <RuntimeField label={t('settings.mcp.projectConfig')} value={projectConfigLabel} mono />
+          <RuntimeField label={t('settings.mcp.globalSource')} value={globalMcpSource} />
+          <RuntimeField label={t('settings.mcp.projectSource')} value={projectMcpSource} />
           <RuntimeField
             label={t('settings.mcp.globalServers')}
             value={overview ? String(overview.mcp.globalServers) : t('common.loading')}
@@ -1733,6 +1741,20 @@ function parseOptionalInt(
     throw new Error(t('settings.runtime.numberError', { field, min, max }));
   }
   return parsed;
+}
+
+function mcpConfigSourceLabel(
+  source: KodaxConfigOverviewT['mcp']['globalSource'],
+  t: Translate,
+): string {
+  switch (source) {
+    case 'user':
+      return t('settings.mcp.source.user');
+    case 'legacy-user':
+      return t('settings.mcp.source.legacyUser');
+    case 'default':
+      return t('settings.mcp.source.default');
+  }
 }
 
 function RuntimeField({

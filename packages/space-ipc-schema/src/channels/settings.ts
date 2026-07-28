@@ -109,10 +109,15 @@ const kodaxConfigErrorSchema = z
   })
   .strict();
 
+export const kodaxIntegrationConfigSourceSchema = z.enum(['user', 'legacy-user', 'default']);
+export type KodaxIntegrationConfigSourceT = z.infer<typeof kodaxIntegrationConfigSourceSchema>;
+
 const kodaxMcpConfigSummarySchema = z
   .object({
     globalPath: z.string().min(1).max(4096),
     projectPath: z.string().min(1).max(4096).optional(),
+    globalSource: kodaxIntegrationConfigSourceSchema,
+    projectSource: kodaxIntegrationConfigSourceSchema.optional(),
     globalConfigExists: z.boolean(),
     projectConfigExists: z.boolean().optional(),
     globalServers: z.number().int().min(0).max(128),

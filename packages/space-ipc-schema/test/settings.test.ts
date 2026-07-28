@@ -42,8 +42,10 @@ test('KodaX config overview channels accept compaction and storage summaries', (
       contextWindow: 200_000,
     },
     mcp: {
-      globalPath: 'C:\\Users\\you\\.kodax\\config.json',
-      projectPath: 'C:\\repo\\.kodax\\config.json',
+      globalPath: 'C:\\Users\\you\\.kodax\\integrations\\mcp.json',
+      projectPath: 'C:\\repo\\.kodax\\integrations\\mcp.json',
+      globalSource: 'user',
+      projectSource: 'default',
       globalConfigExists: true,
       projectConfigExists: false,
       globalServers: 2,
