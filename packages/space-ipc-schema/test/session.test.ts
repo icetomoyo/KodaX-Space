@@ -614,9 +614,6 @@ test('session.event payload: mid_turn_user_prompt variant', () => {
     content: 'follow up',
     turnId: 'turn_1',
   };
-    contextId: 's_1',
-    contextKind: 'root' as const,
-    contextRevision: 3,
   assert.equal(sessionEventChannel.payload.safeParse(evt).success, true);
 });
 
@@ -681,6 +678,9 @@ test('session.event payload: context budget snapshot is bounded and content-free
   const evt = {
     kind: 'context_budget_snapshot' as const,
     sessionId: 's_1',
+    contextId: 's_1',
+    contextKind: 'root' as const,
+    contextRevision: 3,
     provider: 'anthropic',
     model: 'claude-sonnet',
     profile: 'report_only' as const,

@@ -40,6 +40,7 @@ test('Space Artifact and notification entrypoints remain Space-owned', () => {
 
 test('Space settings mutations remain host projections and explicitly reload daemon config', () => {
   for (const entrypoint of [
+    'settings.setCoderRuntimeMode',
     'settings.setRuntimeDefaults',
     'settings.kodaxConfig.applyIntegrationMigration',
     'settings.kodaxConfig.setCompaction',

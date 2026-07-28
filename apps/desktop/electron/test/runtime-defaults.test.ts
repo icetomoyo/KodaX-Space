@@ -17,11 +17,12 @@ test('resolveRuntimeDefaults prioritizes explicit over session, Space, KodaX, an
         agentMode: 'sa',
       }),
       loadSettings: async () => ({
-        version: 2,
+        version: 3,
         defaultWorkspace: '/workspace',
         languageMode: 'system',
         terminalShell: 'auto',
         windowCloseBehavior: 'ask',
+        coderRuntimeMode: 'daemon',
         runtimeDefaults: {
           permissionMode: 'accept-edits',
           autoModeEngine: 'llm',
@@ -54,11 +55,12 @@ test('resolveRuntimeDefaults uses Space before KodaX and KodaX before builtins',
     {},
     {
       loadSettings: async () => ({
-        version: 2,
+        version: 3,
         defaultWorkspace: '/workspace',
         languageMode: 'system',
         terminalShell: 'auto',
         windowCloseBehavior: 'ask',
+        coderRuntimeMode: 'daemon',
         runtimeDefaults: {
           autoModeEngine: 'rules',
           agentMode: 'sa',
@@ -117,11 +119,12 @@ test('resolveRuntimeDefaults uses the KodaX autoMode engine before the builtin',
     {},
     {
       loadSettings: async () => ({
-        version: 2,
+        version: 3,
         defaultWorkspace: '/workspace',
         languageMode: 'system',
         terminalShell: 'auto',
         windowCloseBehavior: 'ask',
+        coderRuntimeMode: 'daemon',
         runtimeDefaults: {},
       }),
       loadKodaxDefaults: async () => ({

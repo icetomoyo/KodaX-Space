@@ -11,6 +11,7 @@ import type {
   RuntimeRunResult,
 } from '@kodax-ai/kodax/runtime';
 import type { AgentEvent, AgentTreeSnapshot } from '@kodax-ai/kodax/agent';
+import { isCoderOwnerRecoveryRestartRequired } from '../kodax/coder-owner-recovery-error.js';
 import { RuntimeHostAdapter, resolveRuntimeHostMode } from '../kodax/runtime-host-adapter.js';
 import { kodaxHost } from '../kodax/host.js';
 import {
@@ -528,7 +529,7 @@ function createFakeRuntime() {
             blockers: [],
             canStop: true,
           },
-        };
+        } as RuntimeDaemonManagementState;
       },
       stopForInline: async (input: unknown) => {
         calls.daemonStops.push(input);
@@ -619,6 +620,152 @@ test('resolveRuntimeHostMode defaults to runtime and accepts explicit legacy rol
   assert.equal(resolveRuntimeHostMode('runtime'), 'runtime');
   assert.equal(resolveRuntimeHostMode('legacy'), 'legacy');
   assert.equal(resolveRuntimeHostMode('unexpected'), 'runtime');
+});
+
+test('startup mode can be configured from persisted settings only before initialization', async () => {
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: 'C:\\isolated-profile',
+    ownerControl: {
+      acquireInline: async () => ({
+        profile: 'coder',
+        ownerId: 'inline_from_settings',
+        ownerPolicy: {
+          mode: 'inline',
+          revision: 1,
+          updatedAt: '2026-07-28T00:00:00.000Z',
+        },
+        close: () => undefined,
+      }),
+      getState: async () => ({
+        profile: 'coder',
+        policy: {
+          mode: 'inline',
+          revision: 1,
+          updatedAt: '2026-07-28T00:00:00.000Z',
+        },
+        ownerStatus: 'unowned',
+        owner: null,
+      }),
+      enableDaemon: async () => ({
+        mode: 'daemon',
+        revision: 2,
+        updatedAt: '2026-07-28T00:00:01.000Z',
+      }),
+    },
+  });
+
+  adapter.configureStartupMode('legacy');
+  assert.equal(adapter.selectedHost(), 'legacy');
+  await adapter.initialize();
+  await assert.rejects(
+    async () => adapter.configureStartupMode('runtime'),
+    /before initialization/,
+  );
+  await adapter.close();
+});
+
+test('daemon startup reconciles an unowned inline policy before Runtime initialization', async () => {
+  const calls: string[] = [];
+  const fake = createFakeRuntime();
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: 'C:\\isolated-profile',
+    runtimeFactory: async () => {
+      calls.push('runtime');
+      return fake.runtime;
+    },
+    identityStore: testIdentityStore,
+    ownerControl: {
+      acquireInline: async () => {
+        throw new Error('not used');
+      },
+      getState: async () => ({
+        profile: 'coder',
+        policy: {
+          mode: 'inline',
+          revision: 3,
+          updatedAt: '2026-07-28T00:00:00.000Z',
+        },
+        ownerStatus: 'unowned',
+        owner: null,
+      }),
+      enableDaemon: async () => {
+        calls.push('enable-daemon');
+        return {
+          mode: 'daemon',
+          revision: 4,
+          updatedAt: '2026-07-28T00:00:01.000Z',
+        };
+      },
+    },
+  });
+
+  await adapter.reconcileStartupOwnerPolicy();
+  await adapter.initialize('0.1.33');
+  assert.deepEqual(calls, ['enable-daemon', 'runtime']);
+  await adapter.close();
+});
+
+test('daemon startup refuses to reconcile inline policy while another owner is active', async () => {
+  let daemonEnables = 0;
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: 'C:\\isolated-profile',
+    ownerControl: {
+      acquireInline: async () => {
+        throw new Error('not used');
+      },
+      getState: async () => ({
+        profile: 'coder',
+        policy: {
+          mode: 'inline',
+          revision: 3,
+          updatedAt: '2026-07-28T00:00:00.000Z',
+        },
+        ownerStatus: 'owned',
+        owner: null,
+      }),
+      enableDaemon: async () => {
+        daemonEnables += 1;
+        return {
+          mode: 'daemon',
+          revision: 4,
+          updatedAt: '2026-07-28T00:00:01.000Z',
+        };
+      },
+    },
+  });
+
+  await assert.rejects(adapter.reconcileStartupOwnerPolicy(), /inline owner is still active/);
+  assert.equal(daemonEnables, 0);
+  await adapter.close();
+});
+
+test('Runtime reconnect keeps the first real Space client version', async () => {
+  const versions: string[] = [];
+  let factoryCalls = 0;
+  const fake = createFakeRuntime();
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: 'C:\\isolated-profile',
+    identityStore: {
+      openInstance: async ({ version }: { version: string }) => {
+        versions.push(version);
+        return testIdentityStore.openInstance({ version });
+      },
+    },
+    runtimeFactory: async () => {
+      factoryCalls += 1;
+      if (factoryCalls === 1) throw new Error('first connection failed');
+      return fake.runtime;
+    },
+  });
+
+  await assert.rejects(adapter.initialize('0.1.33'), /first connection failed/);
+  await adapter.initialize();
+  assert.deepEqual(versions, ['0.1.33', '0.1.33']);
+  await adapter.close();
 });
 
 test('legacy selection never constructs a KodaX Runtime', async () => {
@@ -716,6 +863,278 @@ test('legacy owner acquisition failure reports inline Coder as unavailable', asy
     'unavailable',
   );
   await adapter.close();
+});
+
+test('failed daemon initialization can prepare an embedded restart through the safe owner gate', async () => {
+  let acquiredInput: { enableRollback?: boolean } | undefined;
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: 'C:\\isolated-profile',
+    runtimeFactory: async () => {
+      throw new Error('daemon connection unavailable');
+    },
+    identityStore: testIdentityStore,
+    idleDaemonStop: async () => ({ stopped: false, reason: 'missing' }),
+    ownerControl: {
+      acquireInline: async (input) => {
+        acquiredInput = input;
+        return {
+          profile: 'coder',
+          ownerId: 'inline_after_failed_daemon',
+          ownerPolicy: {
+            mode: 'inline',
+            revision: 2,
+            updatedAt: '2026-07-28T00:00:00.000Z',
+          },
+          close: () => undefined,
+        };
+      },
+      getState: async () => ({
+        profile: 'coder',
+        policy: {
+          mode: 'daemon',
+          revision: 1,
+          updatedAt: '2026-07-28T00:00:00.000Z',
+        },
+        ownerStatus: 'unowned',
+        owner: null,
+      }),
+      enableDaemon: async () => ({
+        mode: 'daemon',
+        revision: 3,
+        updatedAt: '2026-07-28T00:00:01.000Z',
+      }),
+    },
+  });
+
+  await assert.rejects(adapter.initialize(), /daemon connection unavailable/);
+  await adapter.prepareEmbeddedRestart();
+
+  assert.equal(acquiredInput?.enableRollback, true);
+  assert.equal(adapter.snapshot().state, 'closed');
+  await adapter.restoreDaemonOwner();
+});
+
+test('failed daemon path restores daemon policy when inline acquisition fails', async () => {
+  let daemonRestores = 0;
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: 'C:\\isolated-profile',
+    runtimeFactory: async () => {
+      throw new Error('daemon connection unavailable');
+    },
+    identityStore: testIdentityStore,
+    idleDaemonStop: async () => ({ stopped: false, reason: 'missing' }),
+    ownerControl: {
+      acquireInline: async () => {
+        throw new Error('inline acquisition failed after policy write');
+      },
+      getState: async () => ({
+        profile: 'coder',
+        policy: {
+          mode: 'inline',
+          revision: 2,
+          updatedAt: '2026-07-28T00:00:00.000Z',
+        },
+        ownerStatus: 'unowned',
+        owner: null,
+      }),
+      enableDaemon: async () => {
+        daemonRestores += 1;
+        return {
+          mode: 'daemon',
+          revision: 3,
+          updatedAt: '2026-07-28T00:00:01.000Z',
+        };
+      },
+    },
+  });
+
+  await assert.rejects(adapter.initialize(), /daemon connection unavailable/);
+  await assert.rejects(
+    adapter.prepareEmbeddedRestart(),
+    /inline acquisition failed after policy write/,
+  );
+  assert.equal(daemonRestores, 1);
+  assert.equal(adapter.snapshot().state, 'failed');
+  await adapter.close();
+});
+
+test('legacy owner can release its fence and enable daemon policy before restart', async () => {
+  let inlineOwnerCloses = 0;
+  let daemonEnables = 0;
+  const adapter = new RuntimeHostAdapter({
+    mode: 'legacy',
+    profileRoot: 'C:\\isolated-profile',
+    ownerControl: {
+      acquireInline: async () => ({
+        profile: 'coder',
+        ownerId: 'inline_before_daemon',
+        ownerPolicy: {
+          mode: 'inline',
+          revision: 1,
+          updatedAt: '2026-07-28T00:00:00.000Z',
+        },
+        close: () => {
+          inlineOwnerCloses += 1;
+        },
+      }),
+      getState: async () => ({
+        profile: 'coder',
+        policy: {
+          mode: 'inline',
+          revision: 1,
+          updatedAt: '2026-07-28T00:00:00.000Z',
+        },
+        ownerStatus: 'unowned',
+        owner: null,
+      }),
+      enableDaemon: async () => {
+        daemonEnables += 1;
+        return {
+          mode: 'daemon',
+          revision: 2,
+          updatedAt: '2026-07-28T00:00:01.000Z',
+        };
+      },
+    },
+  });
+
+  await adapter.initialize();
+  const policy = await adapter.prepareDaemonRestart();
+
+  assert.equal(policy.mode, 'daemon');
+  assert.equal(inlineOwnerCloses, 1);
+  assert.equal(daemonEnables, 1);
+  assert.equal(adapter.snapshot().state, 'closed');
+});
+
+test('daemon enable and inline owner reacquire failure requires a recovery restart', async () => {
+  let inlineOwnerAcquisitions = 0;
+  const adapter = new RuntimeHostAdapter({
+    mode: 'legacy',
+    profileRoot: 'C:\\isolated-profile',
+    ownerControl: {
+      acquireInline: async () => {
+        inlineOwnerAcquisitions += 1;
+        if (inlineOwnerAcquisitions > 1) throw new Error('inline reacquire failed');
+        return {
+          profile: 'coder',
+          ownerId: 'inline_before_failed_daemon',
+          ownerPolicy: {
+            mode: 'inline',
+            revision: 1,
+            updatedAt: '2026-07-28T00:00:00.000Z',
+          },
+          close: () => undefined,
+        };
+      },
+      getState: async () => ({
+        profile: 'coder',
+        policy: {
+          mode: 'inline',
+          revision: 1,
+          updatedAt: '2026-07-28T00:00:00.000Z',
+        },
+        ownerStatus: 'unowned',
+        owner: null,
+      }),
+      enableDaemon: async () => {
+        throw new Error('daemon enable failed');
+      },
+    },
+  });
+
+  await adapter.initialize();
+  await assert.rejects(
+    adapter.prepareDaemonRestart(),
+    (error: unknown) =>
+      isCoderOwnerRecoveryRestartRequired(error) &&
+      error.message.includes('restore the embedded Coder owner'),
+  );
+  assert.equal(inlineOwnerAcquisitions, 2);
+  assert.equal(adapter.snapshot().state, 'failed');
+  assert.match(adapter.snapshot().error ?? '', /daemon enable failed.*inline reacquire failed/);
+});
+
+test('failed embedded initialization can recover to verified daemon policy before restart', async () => {
+  let daemonEnables = 0;
+  const adapter = new RuntimeHostAdapter({
+    mode: 'legacy',
+    profileRoot: 'C:\\isolated-profile',
+    ownerControl: {
+      acquireInline: async () => {
+        throw new Error('inline owner unavailable');
+      },
+      getState: async () => ({
+        profile: 'coder',
+        policy: {
+          mode: 'inline',
+          revision: 1,
+          updatedAt: '2026-07-28T00:00:00.000Z',
+        },
+        ownerStatus: 'unowned',
+        owner: null,
+      }),
+      enableDaemon: async () => {
+        daemonEnables += 1;
+        return {
+          mode: 'daemon',
+          revision: 2,
+          updatedAt: '2026-07-28T00:00:01.000Z',
+        };
+      },
+    },
+  });
+
+  await assert.rejects(adapter.initialize(), /inline owner unavailable/);
+  const policy = await adapter.prepareDaemonRestart();
+
+  assert.equal(policy.mode, 'daemon');
+  assert.equal(daemonEnables, 1);
+  assert.equal(adapter.snapshot().state, 'closed');
+  assert.equal(adapter.snapshot().error, undefined);
+});
+
+test('failed embedded initialization refuses daemon recovery while another owner is active', async () => {
+  let daemonEnables = 0;
+  const adapter = new RuntimeHostAdapter({
+    mode: 'legacy',
+    profileRoot: 'C:\\isolated-profile',
+    ownerControl: {
+      acquireInline: async () => {
+        throw new Error('inline owner unavailable');
+      },
+      getState: async () => ({
+        profile: 'coder',
+        policy: {
+          mode: 'inline',
+          revision: 1,
+          updatedAt: '2026-07-28T00:00:00.000Z',
+        },
+        ownerStatus: 'owned',
+        owner: {
+          runtimeId: 'other_owner',
+          pid: 99,
+          createdAt: '2026-07-28T00:00:00.000Z',
+          kind: 'daemon',
+        },
+      }),
+      enableDaemon: async () => {
+        daemonEnables += 1;
+        return {
+          mode: 'daemon',
+          revision: 2,
+          updatedAt: '2026-07-28T00:00:01.000Z',
+        };
+      },
+    },
+  });
+
+  await assert.rejects(adapter.initialize(), /inline owner unavailable/);
+  await assert.rejects(adapter.prepareDaemonRestart(), /Another Coder owner is still active/);
+  assert.equal(daemonEnables, 0);
+  assert.equal(adapter.snapshot().state, 'failed');
 });
 
 test('runtime selection attaches one Coder daemon with stable identity and required contracts', async () => {
@@ -897,8 +1316,9 @@ test('idle stale daemon capability mismatch is retired safely and reconnects', a
   const adapter = new RuntimeHostAdapter({
     mode: 'runtime',
     profileRoot: path.resolve('C:\\isolated-profile'),
-    runtimeFactory: async () => {
+    runtimeFactory: async (input) => {
       factoryCalls += 1;
+      assert.equal(input.requirements?.contextCompaction, 3);
       if (factoryCalls === 1) throw upgradeError;
       return fake.runtime;
     },
@@ -1048,6 +1468,46 @@ test('daemon rollback restores daemon policy when inline owner acquisition fails
   assert.equal(adapter.snapshot().error, undefined);
 });
 
+test('daemon rollback preserves restart-required recovery when inline acquisition and daemon restore fail', async () => {
+  const fake = createFakeRuntime();
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    ownerControl: {
+      acquireInline: async () => {
+        throw new Error('inline acquisition failed');
+      },
+      getState: async () => ({
+        profile: 'coder',
+        policy: {
+          mode: 'inline',
+          revision: 3,
+          updatedAt: '2026-07-12T00:00:01.000Z',
+        },
+        ownerStatus: 'unowned',
+        owner: null,
+      }),
+      enableDaemon: async () => {
+        throw new Error('daemon restore failed');
+      },
+    },
+  });
+
+  await adapter.initialize();
+  await assert.rejects(
+    adapter.prepareInlineRollback(),
+    (error: unknown) =>
+      isCoderOwnerRecoveryRestartRequired(error) &&
+      error.message.includes('could not complete or recover inline rollback'),
+  );
+  assert.equal(fake.calls.close, 1);
+  assert.equal(adapter.snapshot().state, 'failed');
+  assert.match(adapter.snapshot().error ?? '', /daemon restore failed.*inline acquisition failed/);
+});
+
 test('daemon owner restoration retains an inline fence and can be retried', async () => {
   const fake = createFakeRuntime();
   let inlineOwnerAcquisitions = 0;
@@ -1099,7 +1559,13 @@ test('daemon owner restoration retains an inline fence and can be retried', asyn
 
   await adapter.initialize();
   await adapter.prepareInlineRollback();
-  await assert.rejects(adapter.restoreDaemonOwner(), /daemon enable failed/);
+  await assert.rejects(
+    adapter.restoreDaemonOwner(),
+    (error: unknown) =>
+      isCoderOwnerRecoveryRestartRequired(error) &&
+      error.message.includes('daemon enable failed') &&
+      error.message.includes('restart required'),
+  );
 
   assert.equal(inlineOwnerAcquisitions, 2);
   assert.equal(inlineOwnerCloses, 1);

@@ -121,6 +121,7 @@ export const FROZEN_V0131_CODER_ENTRYPOINTS = [
   'settings.kodaxConfig.get',
   'settings.kodaxConfig.planIntegrationMigration',
   'settings.kodaxConfig.setCompaction',
+  'settings.setCoderRuntimeMode',
   'settings.setDefaultWorkspace',
   'settings.setLanguageMode',
   'settings.setRuntimeDefaults',
@@ -215,6 +216,9 @@ function targetOwnerFor(entrypoint: InvokeChannelName): CoderActionTargetOwner {
     entrypoint === 'settings.setWindowCloseBehavior'
   ) {
     return 'space-ui-only';
+  }
+  if (entrypoint === 'settings.setCoderRuntimeMode') {
+    return 'space-host-provider';
   }
   return 'space-host-provider';
 }

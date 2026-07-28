@@ -35,6 +35,22 @@ async function restoreDisplaced(
     if (code === 'EEXIST') {
       throw new Error(`${conflictMessage}; original retained at ${displacedPath}`);
     }
+    // Windows does not replace an existing destination with rename(), so this
+    // is a safe recovery path for a directory or symbolic link that cannot be
+    // restored with a hard link. A racing creator remains untouched and the
+    // displaced entry remains available at displacedPath.
+    if (process.platform === 'win32') {
+      try {
+        await fs.rename(displacedPath, filePath);
+      } catch (restoreError) {
+        const restoreCode = (restoreError as NodeJS.ErrnoException).code;
+        if (restoreCode === 'EEXIST' || restoreCode === 'EPERM') {
+          throw new Error(`${conflictMessage}; original retained at ${displacedPath}`);
+        }
+        throw new Error(`${conflictMessage}; recovery copy retained at ${displacedPath}`);
+      }
+      throw new Error(conflictMessage);
+    }
     throw new Error(`${conflictMessage}; recovery copy retained at ${displacedPath}`);
   }
   throw new Error(conflictMessage);
@@ -80,11 +96,30 @@ export async function replaceFileWithoutFollowingAliases(
     }
   }
 
+  // Windows rename fallback must not displace an entry that cannot be restored
+  // through the regular-file hard-link recovery path below. The post-rename
+  // verification remains necessary for races, but this preflight preserves an
+  // already-present directory or symbolic link at its caller-visible path.
+  try {
+    const existingStat = await fs.lstat(filePath);
+    if (existingStat.isSymbolicLink() || !existingStat.isFile()) {
+      throw new Error(`${conflictMessage}; unsafe existing entry retained at ${filePath}`);
+    }
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+      await fs.unlink(tempPath).catch(() => {});
+      throw err;
+    }
+  }
+
+  let displacedEntry = false;
   let displacedRegular = false;
   try {
     await testHooks?.beforeFallbackDisplace?.(filePath);
     try {
       await fs.rename(filePath, displacedPath);
+      displacedEntry = true;
       let displacedStat;
       try {
         displacedStat = await fs.lstat(displacedPath);
@@ -115,7 +150,7 @@ export async function replaceFileWithoutFollowingAliases(
     if (displacedRegular) await fs.unlink(displacedPath).catch(() => {});
   } catch (err) {
     await fs.unlink(tempPath).catch(() => {});
-    if (displacedRegular) {
+    if (displacedEntry) {
       const detail = err instanceof Error ? err.message : String(err);
       return await restoreDisplaced(displacedPath, filePath, `${conflictMessage}: ${detail}`);
     }

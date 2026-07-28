@@ -10,6 +10,10 @@ import { workflowController, type LaunchSession } from '../kodax/workflow-contro
 import { workflowPolicyStore } from '../kodax/workflow-policy.js';
 import { kodaxHost } from '../kodax/host.js';
 import { runtimeHostAdapter } from '../kodax/runtime-host-adapter.js';
+import {
+  runWithCoderAdmission,
+  type CoderAdmissionOptions,
+} from '../kodax/coder-runtime-mode-switch.js';
 
 /**
  * SECURITY（F063）：saved 工作流是可执行 JS——loadSavedWorkflow/loadSavedWorkflowCapsule
@@ -41,93 +45,103 @@ function sameProjectRoot(left: string | undefined, right: string | undefined): b
   return path.resolve(left) === path.resolve(right);
 }
 
-export function registerWorkflowChannels(): void {
-  registerChannel('workflow.list', async (input) => {
-    const localRuns = workflowController.list(input?.sessionId);
-    const session = input?.sessionId ? kodaxHost.get(input.sessionId) : undefined;
-    if (
-      !runtimeHostAdapter.isRuntimeSelected() ||
-      (input?.sessionId !== undefined && session?.surface === 'partner')
-    ) {
-      return { runs: localRuns };
-    }
-    try {
-      const runtimeRuns = await runtimeHostAdapter.listWorkflows(input);
-      const seen = new Set(runtimeRuns.map((run) => run.runId));
-      return {
-        runs: [...runtimeRuns, ...localRuns.filter((run) => !seen.has(run.runId))].slice(0, 500),
-      };
-    } catch (error) {
-      console.warn(
-        '[workflow.list] Coder daemon workflows unavailable:',
-        error instanceof Error ? error.message : error,
-      );
-      return { runs: localRuns };
-    }
-  });
-
-  registerChannel('workflow.get', async (input) => {
-    if (runtimeHostAdapter.isRuntimeSelected()) {
+export function registerWorkflowChannels(options: CoderAdmissionOptions = {}): void {
+  registerChannel('workflow.list', (input) =>
+    runWithCoderAdmission(options, async () => {
+      const localRuns = workflowController.list(input?.sessionId);
+      const session = input?.sessionId ? kodaxHost.get(input.sessionId) : undefined;
+      if (
+        !runtimeHostAdapter.isRuntimeSelected() ||
+        (input?.sessionId !== undefined && session?.surface === 'partner')
+      ) {
+        return { runs: localRuns };
+      }
       try {
-        const run = await runtimeHostAdapter.getWorkflow(input.runId);
-        if (run) return { run };
+        const runtimeRuns = await runtimeHostAdapter.listWorkflows(input);
+        const seen = new Set(runtimeRuns.map((run) => run.runId));
+        return {
+          runs: [...runtimeRuns, ...localRuns.filter((run) => !seen.has(run.runId))].slice(0, 500),
+        };
       } catch (error) {
         console.warn(
-          '[workflow.get] Coder daemon workflow unavailable:',
+          '[workflow.list] Coder daemon workflows unavailable:',
           error instanceof Error ? error.message : error,
         );
+        return { runs: localRuns };
       }
-    }
-    return { run: workflowController.get(input.runId) };
-  });
+    }),
+  );
+
+  registerChannel('workflow.get', (input) =>
+    runWithCoderAdmission(options, async () => {
+      if (runtimeHostAdapter.isRuntimeSelected()) {
+        try {
+          const run = await runtimeHostAdapter.getWorkflow(input.runId);
+          if (run) return { run };
+        } catch (error) {
+          console.warn(
+            '[workflow.get] Coder daemon workflow unavailable:',
+            error instanceof Error ? error.message : error,
+          );
+        }
+      }
+      return { run: workflowController.get(input.runId) };
+    }),
+  );
 
   // F062 run 生命周期控制。控制后状态变化由 workflow.event 自然回流，handler 只回 ok。
-  registerChannel('workflow.stop', async (input) => {
-    if (runtimeHostAdapter.isRuntimeSelected()) {
-      try {
-        if (await runtimeHostAdapter.getWorkflow(input.runId)) {
-          return { ok: await runtimeHostAdapter.controlWorkflow('stop', input.runId) };
+  registerChannel('workflow.stop', (input) =>
+    runWithCoderAdmission(options, async () => {
+      if (runtimeHostAdapter.isRuntimeSelected()) {
+        try {
+          if (await runtimeHostAdapter.getWorkflow(input.runId)) {
+            return { ok: await runtimeHostAdapter.controlWorkflow('stop', input.runId) };
+          }
+        } catch (error) {
+          console.warn(
+            '[workflow.stop] Coder daemon control unavailable:',
+            error instanceof Error ? error.message : error,
+          );
         }
-      } catch (error) {
-        console.warn(
-          '[workflow.stop] Coder daemon control unavailable:',
-          error instanceof Error ? error.message : error,
-        );
       }
-    }
-    return { ok: await workflowController.stop(input.runId, input.reason) };
-  });
+      return { ok: await workflowController.stop(input.runId, input.reason) };
+    }),
+  );
 
-  registerChannel('workflow.pause', async (input) => {
-    if (runtimeHostAdapter.isRuntimeSelected()) {
-      try {
-        if (await runtimeHostAdapter.getWorkflow(input.runId)) {
-          return { ok: await runtimeHostAdapter.controlWorkflow('pause', input.runId) };
+  registerChannel('workflow.pause', (input) =>
+    runWithCoderAdmission(options, async () => {
+      if (runtimeHostAdapter.isRuntimeSelected()) {
+        try {
+          if (await runtimeHostAdapter.getWorkflow(input.runId)) {
+            return { ok: await runtimeHostAdapter.controlWorkflow('pause', input.runId) };
+          }
+        } catch (error) {
+          console.warn(
+            '[workflow.pause] Coder daemon control unavailable:',
+            error instanceof Error ? error.message : error,
+          );
         }
-      } catch (error) {
-        console.warn(
-          '[workflow.pause] Coder daemon control unavailable:',
-          error instanceof Error ? error.message : error,
-        );
       }
-    }
-    return { ok: await workflowController.pause(input.runId) };
-  });
+      return { ok: await workflowController.pause(input.runId) };
+    }),
+  );
 
   registerChannel('workflow.resume', async (input) => {
-    if (runtimeHostAdapter.isRuntimeSelected()) {
-      try {
-        if (await runtimeHostAdapter.getWorkflow(input.runId)) {
-          return { ok: await runtimeHostAdapter.controlWorkflow('resume', input.runId) };
+    return runWithCoderAdmission(options, async () => {
+      if (runtimeHostAdapter.isRuntimeSelected()) {
+        try {
+          if (await runtimeHostAdapter.getWorkflow(input.runId)) {
+            return { ok: await runtimeHostAdapter.controlWorkflow('resume', input.runId) };
+          }
+        } catch (error) {
+          console.warn(
+            '[workflow.resume] Coder daemon control unavailable:',
+            error instanceof Error ? error.message : error,
+          );
         }
-      } catch (error) {
-        console.warn(
-          '[workflow.resume] Coder daemon control unavailable:',
-          error instanceof Error ? error.message : error,
-        );
       }
-    }
-    return { ok: await workflowController.resume(input.runId) };
+      return { ok: await workflowController.resume(input.runId) };
+    });
   });
 
   registerChannel('workflow.rename', async (input) => ({
@@ -139,24 +153,26 @@ export function registerWorkflowChannels(): void {
   }));
 
   registerChannel('workflow.rerun', async (input) => {
-    const run = workflowController.get(input.runId);
-    if (!run) return { error: 'workflow run not found' };
-    let session = kodaxHost.get(input.sessionId);
-    if (!session && (await kodaxHost.tryResume(input.sessionId))) {
-      session = kodaxHost.get(input.sessionId);
-    }
-    if (!session) return { error: 'session not found' };
-    if (!sameProjectRoot(run.projectRoot, session.projectRoot)) {
-      return { error: 'workflow run belongs to another project' };
-    }
-    if (run.surface && run.surface !== session.surface)
-      return { error: 'workflow run belongs to another surface' };
-    const res = await workflowController.rerunGeneratedWorkflow(
-      input.runId,
-      input.args ?? {},
-      toLaunchSession(session),
-    );
-    return 'error' in res ? { error: res.error } : { runId: res.runId };
+    return runWithCoderAdmission(options, async () => {
+      const run = workflowController.get(input.runId);
+      if (!run) return { error: 'workflow run not found' };
+      let session = kodaxHost.get(input.sessionId);
+      if (!session && (await kodaxHost.tryResume(input.sessionId))) {
+        session = kodaxHost.get(input.sessionId);
+      }
+      if (!session) return { error: 'session not found' };
+      if (!sameProjectRoot(run.projectRoot, session.projectRoot)) {
+        return { error: 'workflow run belongs to another project' };
+      }
+      if (run.surface && run.surface !== session.surface)
+        return { error: 'workflow run belongs to another surface' };
+      const res = await workflowController.rerunGeneratedWorkflow(
+        input.runId,
+        input.args ?? {},
+        toLaunchSession(session),
+      );
+      return 'error' in res ? { error: res.error } : { runId: res.runId };
+    });
   });
 
   registerChannel('workflow.prune', async (input) => {
@@ -189,29 +205,31 @@ export function registerWorkflowChannels(): void {
   });
 
   registerChannel('workflow.start', async (input) => {
-    // 从发起方 session 取运行时字段建 workflow 子 agent 的 KodaXOptions。
-    const session = kodaxHost.get(input.sessionId);
-    if (!session) return { error: 'session not found' };
-    // SECURITY：saved 路径必须在白名单目录内（可信 projectRoot 来自 session）。
-    if (input.source === 'saved' && !isSafeWorkflowPath(input.target, session.projectRoot)) {
-      return { error: '路径不在允许的工作流目录内' };
-    }
-    const res = await workflowController.start({
-      target: input.target,
-      source: input.source,
-      ...(input.args !== undefined ? { args: input.args } : {}),
-      ...(input.agentTarget !== undefined ? { agentTarget: input.agentTarget } : {}),
-      session: {
-        sessionId: session.sessionId,
-        surface: session.surface,
-        provider: session.provider,
-        ...(session.model !== undefined ? { model: session.model } : {}),
-        reasoningMode: session.reasoningMode,
-        agentMode: session.agentMode,
-        projectRoot: session.projectRoot,
-      },
+    return runWithCoderAdmission(options, async () => {
+      // 从发起方 session 取运行时字段建 workflow 子 agent 的 KodaXOptions。
+      const session = kodaxHost.get(input.sessionId);
+      if (!session) return { error: 'session not found' };
+      // SECURITY：saved 路径必须在白名单目录内（可信 projectRoot 来自 session）。
+      if (input.source === 'saved' && !isSafeWorkflowPath(input.target, session.projectRoot)) {
+        return { error: '路径不在允许的工作流目录内' };
+      }
+      const res = await workflowController.start({
+        target: input.target,
+        source: input.source,
+        ...(input.args !== undefined ? { args: input.args } : {}),
+        ...(input.agentTarget !== undefined ? { agentTarget: input.agentTarget } : {}),
+        session: {
+          sessionId: session.sessionId,
+          surface: session.surface,
+          provider: session.provider,
+          ...(session.model !== undefined ? { model: session.model } : {}),
+          reasoningMode: session.reasoningMode,
+          agentMode: session.agentMode,
+          projectRoot: session.projectRoot,
+        },
+      });
+      return 'error' in res ? { error: res.error } : { runId: res.runId };
     });
-    return 'error' in res ? { error: res.error } : { runId: res.runId };
   });
 
   // Save a generated workflow run into the trusted workflow library for this session's project.

@@ -11,6 +11,7 @@ import {
   settingsKodaxConfigPlanIntegrationMigrationChannel,
   settingsKodaxConfigSetCompactionChannel,
   settingsSetDefaultWorkspaceChannel,
+  settingsSetCoderRuntimeModeChannel,
   settingsSetLanguageModeChannel,
   settingsSetTerminalShellChannel,
   settingsSetWindowCloseBehaviorChannel,
@@ -21,6 +22,7 @@ test('settings channels are registered', () => {
   for (const name of [
     'settings.get',
     'settings.setDefaultWorkspace',
+    'settings.setCoderRuntimeMode',
     'settings.setLanguageMode',
     'settings.setTerminalShell',
     'settings.setWindowCloseBehavior',
@@ -149,6 +151,7 @@ test('settings output includes language preference and effective locale', () => 
     languageMode: 'system',
     terminalShell: 'auto',
     windowCloseBehavior: 'ask',
+    coderRuntimeMode: 'daemon',
     effectiveLocale: 'zh-CN',
     preferredSystemLanguages: ['zh-CN', 'en-US'],
     runtimeDefaults: {
@@ -160,10 +163,32 @@ test('settings output includes language preference and effective locale', () => 
   };
   assert.equal(settingsGetChannel.output.safeParse(output).success, true);
   assert.equal(settingsSetDefaultWorkspaceChannel.output.safeParse(output).success, true);
+  assert.equal(
+    settingsSetCoderRuntimeModeChannel.output.safeParse({
+      settings: output,
+      restarting: true,
+    }).success,
+    true,
+  );
   assert.equal(settingsSetLanguageModeChannel.output.safeParse(output).success, true);
   assert.equal(settingsSetTerminalShellChannel.output.safeParse(output).success, true);
   assert.equal(settingsSetWindowCloseBehaviorChannel.output.safeParse(output).success, true);
   assert.equal(settingsSetRuntimeDefaultsChannel.output.safeParse(output).success, true);
+});
+
+test('settings.setCoderRuntimeMode accepts only customer-facing daemon and embedded modes', () => {
+  for (const coderRuntimeMode of ['daemon', 'embedded']) {
+    assert.equal(
+      settingsSetCoderRuntimeModeChannel.input.safeParse({ coderRuntimeMode }).success,
+      true,
+    );
+  }
+  for (const coderRuntimeMode of ['runtime', 'legacy', 'worker']) {
+    assert.equal(
+      settingsSetCoderRuntimeModeChannel.input.safeParse({ coderRuntimeMode }).success,
+      false,
+    );
+  }
 });
 
 test('settings.setRuntimeDefaults accepts runtime defaults and rejects unknown keys', () => {

@@ -33,6 +33,9 @@ export type TerminalShellPreferenceT = z.infer<typeof terminalShellPreferenceSch
 export const windowCloseBehaviorSchema = z.enum(['ask', 'minimize-to-tray', 'quit-completely']);
 export type WindowCloseBehaviorT = z.infer<typeof windowCloseBehaviorSchema>;
 
+export const coderRuntimeModeSchema = z.enum(['daemon', 'embedded']);
+export type CoderRuntimeModeT = z.infer<typeof coderRuntimeModeSchema>;
+
 const spaceRuntimeDefaultsSchema = z
   .object({
     permissionMode: permissionModeSchema.optional(),
@@ -72,6 +75,7 @@ const spaceSettingsSchema = z.object({
   languageMode: languageModeSchema,
   terminalShell: terminalShellPreferenceSchema,
   windowCloseBehavior: windowCloseBehaviorSchema,
+  coderRuntimeMode: coderRuntimeModeSchema,
   effectiveLocale: supportedLocaleSchema,
   preferredSystemLanguages: z.array(z.string().min(1).max(128)),
   runtimeDefaults: spaceRuntimeDefaultsSchema.default({}),
@@ -185,6 +189,22 @@ export const settingsSetDefaultWorkspaceChannel = {
     path: z.string().min(1).max(4096),
   }),
   output: spaceSettingsSchema,
+} as const;
+
+export const settingsSetCoderRuntimeModeChannel = {
+  name: 'settings.setCoderRuntimeMode',
+  direction: 'invoke',
+  input: z
+    .object({
+      coderRuntimeMode: coderRuntimeModeSchema,
+    })
+    .strict(),
+  output: z
+    .object({
+      settings: spaceSettingsSchema,
+      restarting: z.boolean(),
+    })
+    .strict(),
 } as const;
 
 export const settingsSetLanguageModeChannel = {

@@ -1059,8 +1059,6 @@ export const sessionEventChannel = {
       ...runtimeSessionEventOriginShape,
       kind: z.literal('session_complete'),
       sessionId: z.string().min(1),
-      /** Root context revision this budget was calculated from. */
-      contextRevision: z.number().int().nonnegative().optional(),
       turnId: z.string().min(1).max(128).optional(),
     }),
     z.object({
@@ -1108,6 +1106,8 @@ export const sessionEventChannel = {
       contextKind: z.enum(['root', 'child']).optional(),
       parentContextId: z.string().min(1).max(512).optional(),
       agentId: z.string().min(1).max(256).optional(),
+      /** Root context revision this budget was calculated from. */
+      contextRevision: z.number().int().nonnegative().optional(),
       provider: z.string().min(1).max(64).optional(),
       model: z.string().min(1).max(256).optional(),
       profile: z.enum(['off', 'report_only', 'balanced', 'small_window', 'aggressive']),

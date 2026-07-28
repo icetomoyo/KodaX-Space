@@ -14,6 +14,10 @@ import { getMcpManager, reloadMcpManager } from '../mcp/manager.js';
 import { invalidateSpaceSdkExtensionRuntimes } from '../kodax/sdk-extensions.js';
 import { runtimeHostAdapter } from '../kodax/runtime-host-adapter.js';
 import type { McpServerStatusT, McpRuntimeStatusT } from '@kodax-space/space-ipc-schema';
+import {
+  runWithCoderAdmission,
+  type CoderAdmissionOptions,
+} from '../kodax/coder-runtime-mode-switch.js';
 
 /** SDK McpServerStatus → IPC McpServerStatusT 投影。两端 shape 几乎一致,只把 number 字段
  *  clamp 到 IPC schema 上限防御异常值。 */
@@ -37,7 +41,7 @@ function managerOptions(input?: {
   return input?.projectRoot ? { projectRoot: input.projectRoot } : undefined;
 }
 
-export function registerMcpChannels(): void {
+export function registerMcpChannels(options: CoderAdmissionOptions = {}): void {
   registerChannel('mcp.discover', async (input) => {
     return discoverMcpServers({ projectRoot: input.projectRoot });
   });
@@ -74,70 +78,74 @@ export function registerMcpChannels(): void {
     };
   });
 
-  registerChannel('mcp.tools', async (input) => {
-    if (runtimeHostAdapter.isRuntimeSelected()) {
-      try {
-        const list = await runtimeHostAdapter.listRuntimeMcpTools(
-          input.serverId,
-          input.forceRefresh,
-        );
-        return {
-          tools: list.tools.slice(0, 1024).map((tool) => ({
-            id: tool.id,
-            name: tool.name,
-            ...(tool.summary !== undefined ? { description: tool.summary } : {}),
-          })),
-          ...(list.cachedAt !== undefined ? { cachedAt: list.cachedAt } : {}),
-        };
-      } catch (error) {
-        console.warn(
-          '[mcp.tools] Coder daemon catalog unavailable; using Space host provider:',
-          error instanceof Error ? error.message : error,
-        );
+  registerChannel('mcp.tools', (input) =>
+    runWithCoderAdmission(options, async () => {
+      if (runtimeHostAdapter.isRuntimeSelected()) {
+        try {
+          const list = await runtimeHostAdapter.listRuntimeMcpTools(
+            input.serverId,
+            input.forceRefresh,
+          );
+          return {
+            tools: list.tools.slice(0, 1024).map((tool) => ({
+              id: tool.id,
+              name: tool.name,
+              ...(tool.summary !== undefined ? { description: tool.summary } : {}),
+            })),
+            ...(list.cachedAt !== undefined ? { cachedAt: list.cachedAt } : {}),
+          };
+        } catch (error) {
+          console.warn(
+            '[mcp.tools] Coder daemon catalog unavailable; using Space host provider:',
+            error instanceof Error ? error.message : error,
+          );
+        }
       }
-    }
-    const manager = await getMcpManager(managerOptions(input));
-    const list = await manager.listTools(input.serverId, {
-      forceRefresh: input.forceRefresh,
-    });
-    // SDK 给出全 capability descriptor; 投影到 IPC schema (id/name/description), cap 1024
-    const tools = list.tools.slice(0, 1024).map((t) => ({
-      id: t.id,
-      name: t.name,
-      ...(t.summary !== undefined ? { description: t.summary } : {}),
-    }));
-    return {
-      tools,
-      ...(list.cachedAt !== undefined ? { cachedAt: list.cachedAt } : {}),
-    };
-  });
-
-  registerChannel('mcp.reload', async (input) => {
-    await reloadMcpManager();
-    await invalidateSpaceSdkExtensionRuntimes().catch((err) => {
-      console.warn(
-        '[mcp] SDK extension runtime invalidation after reload failed:',
-        err instanceof Error ? err.message : err,
-      );
-    });
-    if (runtimeHostAdapter.isRuntimeSelected()) {
-      try {
-        const runtime = await runtimeHostAdapter.reloadRuntimeMcp();
-        return { ok: true, serverCount: Math.min(runtime.servers.length, 128) };
-      } catch (error) {
-        console.warn(
-          '[mcp.reload] Coder daemon reload unavailable; retaining Space reload result:',
-          error instanceof Error ? error.message : error,
-        );
-      }
-    }
-    // reload 后 lazy: 调一次 listServers 拿当前 count
-    try {
       const manager = await getMcpManager(managerOptions(input));
-      const count = manager.listServers().length;
-      return { ok: true, serverCount: Math.min(count, 128) };
-    } catch {
-      return { ok: false, serverCount: 0 };
-    }
-  });
+      const list = await manager.listTools(input.serverId, {
+        forceRefresh: input.forceRefresh,
+      });
+      // SDK 给出全 capability descriptor; 投影到 IPC schema (id/name/description), cap 1024
+      const tools = list.tools.slice(0, 1024).map((t) => ({
+        id: t.id,
+        name: t.name,
+        ...(t.summary !== undefined ? { description: t.summary } : {}),
+      }));
+      return {
+        tools,
+        ...(list.cachedAt !== undefined ? { cachedAt: list.cachedAt } : {}),
+      };
+    }),
+  );
+
+  registerChannel('mcp.reload', (input) =>
+    runWithCoderAdmission(options, async () => {
+      await reloadMcpManager();
+      await invalidateSpaceSdkExtensionRuntimes().catch((err) => {
+        console.warn(
+          '[mcp] SDK extension runtime invalidation after reload failed:',
+          err instanceof Error ? err.message : err,
+        );
+      });
+      if (runtimeHostAdapter.isRuntimeSelected()) {
+        try {
+          const runtime = await runtimeHostAdapter.reloadRuntimeMcp();
+          return { ok: true, serverCount: Math.min(runtime.servers.length, 128) };
+        } catch (error) {
+          console.warn(
+            '[mcp.reload] Coder daemon reload unavailable; retaining Space reload result:',
+            error instanceof Error ? error.message : error,
+          );
+        }
+      }
+      // reload 后 lazy: 调一次 listServers 拿当前 count
+      try {
+        const manager = await getMcpManager(managerOptions(input));
+        const count = manager.listServers().length;
+        return { ok: true, serverCount: Math.min(count, 128) };
+      } catch {
+        return { ok: false, serverCount: 0 };
+      }
+    }),
+  );
 }

@@ -409,6 +409,13 @@ export class RealKodaXSession implements ManagedSession {
       throw new Error(`[real-session ${this.sessionId}] already disposed`);
     }
 
+    if (this.surface === 'code' && !runtimeHostAdapter.isRuntimeSelected()) {
+      // Keep the admission gate held until the embedded owner has been proven.
+      // Otherwise send() can report acceptance and only fail later inside the
+      // fire-and-forget stream task after a failed owner recovery.
+      await runtimeHostAdapter.ensureLegacyOwner();
+    }
+
     if (this.surface === 'code' && runtimeHostAdapter.isRuntimeSelected()) {
       await runtimeHostAdapter.initialize();
       await runtimeHostAdapter.ensureSession({
@@ -532,12 +539,29 @@ export class RealKodaXSession implements ManagedSession {
     this.currentAbort = abort;
     this.lastActivityAt = Date.now();
 
-    void this.runRealStream(prompt, abort.signal, artifacts, promptOverlay).finally(() => {
-      if (this.currentAbort === abort) this.currentAbort = null;
-      if (!this.disposed && !abort.signal.aborted) {
-        this.startQueuedPromptIfIdle();
-      }
-    });
+    void this.runRealStream(prompt, abort.signal, artifacts, promptOverlay)
+      .catch((error: unknown) => {
+        if (this.disposed || abort.signal.aborted) return;
+        const wrapped = wrapSdkError(error);
+        console.warn(
+          `[real-session ${this.sessionId}] stream preflight error ` +
+            `(${wrapped.category}): ${wrapped.debugMessage}`,
+        );
+        this.emit({
+          kind: 'session_error',
+          sessionId: this.sessionId,
+          error: wrapped.userMessage,
+          category: wrapped.category,
+          retriable: wrapped.retriable,
+          ...(wrapped.action ? { action: wrapped.action } : {}),
+        });
+      })
+      .finally(() => {
+        if (this.currentAbort === abort) this.currentAbort = null;
+        if (!this.disposed && !abort.signal.aborted) {
+          this.startQueuedPromptIfIdle();
+        }
+      });
   }
 
   private startQueuedPromptIfIdle(): void {

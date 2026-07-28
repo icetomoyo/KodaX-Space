@@ -67,6 +67,7 @@ import {
   sdkTagToSurface,
 } from '../kodax/session-store.js';
 import { runtimeHostAdapter } from '../kodax/runtime-host-adapter.js';
+import { runWithCoderAdmission } from '../kodax/coder-runtime-mode-switch.js';
 import { partnerSourceStore } from '../kodax/partner-source-store.js';
 import { parseTaskCompletedBlocks, selectWorkflowBlocks } from './workflow-result-notice.js';
 import { dedupeTranscriptEntries } from './transcript-dedup.js';
@@ -211,6 +212,10 @@ export type _AssertAgentsFileShapeEqual = AgentsFile extends AgentsFileMeta
     : never
   : never;
 
+export interface SessionChannelsOptions {
+  readonly beginCoderAdmission?: () => () => void;
+}
+
 /**
  * 校验 providerId 实际存在于 catalog / custom-providers / 是 'mock'。
  * review F008 C1-sec：schema 只验格式，不验存在性——必须 main 端再过一层。
@@ -230,179 +235,192 @@ async function ensureCustomProviderRegistered(providerId: string): Promise<void>
   await registerKodaxCustomProviders(providerConfigStore.listCustom());
 }
 
-export function registerSessionChannels(): void {
+export function registerSessionChannels(options: SessionChannelsOptions = {}): void {
   // session.create
   registerChannel('session.create', async (input) => {
-    const projectRoot = validateProjectRoot(input.projectRoot);
-    await assertProviderExists(input.provider);
-    await ensureCustomProviderRegistered(input.provider);
-    await ensureProviderKeyInjected(input.provider);
-    const kodaxCustomProviders =
-      input.provider !== 'mock' && !isBuiltinId(input.provider)
-        ? await loadKodaxCustomProviders()
-        : [];
-    const effectiveModel =
-      input.model ?? providerDescriptor(input.provider, kodaxCustomProviders)?.defaultModel;
-    const runtimeDefaults = await resolveRuntimeDefaults({
-      explicit: {
-        reasoningMode: input.reasoningMode,
-        permissionMode: input.permissionMode,
-        autoModeEngine: input.autoModeEngine,
-        agentMode: input.agentMode,
-      },
-    });
-    const { sessionId, createdAt } = kodaxHost.createSession({
-      projectRoot,
-      provider: input.provider,
-      // Renderer usually supplies resolveActiveModel(), but main must still
-      // materialize the provider default when callers omit an explicit override.
-      ...(effectiveModel !== undefined ? { model: effectiveModel } : {}),
-      reasoningMode: runtimeDefaults.reasoningMode,
-      permissionMode: runtimeDefaults.permissionMode,
-      autoModeEngine: runtimeDefaults.autoModeEngine,
-      agentMode: runtimeDefaults.agentMode,
-      // F045: 工作面（Coder / Partner）。缺省 'code'。host 落盘成 SDK session tag。
-      surface: input.surface,
-      ephemeral: input.ephemeral,
-    });
-    // v0.1.6 cleanup: 用 ~/.kodax/config.json 的 thinking 默认值初始化新 session。
-    // 不传 schema 改动——renderer 没必要知道 thinking 默认值，main 直接 fill 即可。
-    // model 不在这里 fill：跨 provider 切换时 KodaX config 里的 model 名通常对不上
-    // 用户在 Space 选的 provider；要正确填要做 provider×model 映射，留 v0.1.7+。
+    const releaseModeSwitchAdmission = options.beginCoderAdmission?.() ?? (() => undefined);
     try {
-      const kodaxDefaults = await loadKodaxUserDefaults();
-      if (kodaxDefaults.thinking !== undefined) {
-        kodaxHost.setThinking(sessionId, kodaxDefaults.thinking);
+      const projectRoot = validateProjectRoot(input.projectRoot);
+      await assertProviderExists(input.provider);
+      await ensureCustomProviderRegistered(input.provider);
+      await ensureProviderKeyInjected(input.provider);
+      const kodaxCustomProviders =
+        input.provider !== 'mock' && !isBuiltinId(input.provider)
+          ? await loadKodaxCustomProviders()
+          : [];
+      const effectiveModel =
+        input.model ?? providerDescriptor(input.provider, kodaxCustomProviders)?.defaultModel;
+      const runtimeDefaults = await resolveRuntimeDefaults({
+        explicit: {
+          reasoningMode: input.reasoningMode,
+          permissionMode: input.permissionMode,
+          autoModeEngine: input.autoModeEngine,
+          agentMode: input.agentMode,
+        },
+      });
+      const { sessionId, createdAt } = kodaxHost.createSession({
+        projectRoot,
+        provider: input.provider,
+        // Renderer usually supplies resolveActiveModel(), but main must still
+        // materialize the provider default when callers omit an explicit override.
+        ...(effectiveModel !== undefined ? { model: effectiveModel } : {}),
+        reasoningMode: runtimeDefaults.reasoningMode,
+        permissionMode: runtimeDefaults.permissionMode,
+        autoModeEngine: runtimeDefaults.autoModeEngine,
+        agentMode: runtimeDefaults.agentMode,
+        // F045: 工作面（Coder / Partner）。缺省 'code'。host 落盘成 SDK session tag。
+        surface: input.surface,
+        ephemeral: input.ephemeral,
+      });
+      // v0.1.6 cleanup: 用 ~/.kodax/config.json 的 thinking 默认值初始化新 session。
+      // 不传 schema 改动——renderer 没必要知道 thinking 默认值，main 直接 fill 即可。
+      // model 不在这里 fill：跨 provider 切换时 KodaX config 里的 model 名通常对不上
+      // 用户在 Space 选的 provider；要正确填要做 provider×model 映射，留 v0.1.7+。
+      try {
+        const kodaxDefaults = await loadKodaxUserDefaults();
+        if (kodaxDefaults.thinking !== undefined) {
+          kodaxHost.setThinking(sessionId, kodaxDefaults.thinking);
+        }
+      } catch (err) {
+        console.warn(
+          '[session.create] kodax defaults fill failed:',
+          err instanceof Error ? err.message : err,
+        );
       }
-    } catch (err) {
-      console.warn(
-        '[session.create] kodax defaults fill failed:',
-        err instanceof Error ? err.message : err,
-      );
+      if (input.ephemeral !== true && !(await kodaxHost.persistRuntime(sessionId))) {
+        await kodaxHost.delete(sessionId);
+        throw new Error('session runtime metadata could not be persisted');
+      }
+      return {
+        sessionId,
+        createdAt,
+        reasoningMode: runtimeDefaults.reasoningMode,
+        permissionMode: runtimeDefaults.permissionMode,
+        autoModeEngine: runtimeDefaults.autoModeEngine,
+        agentMode: runtimeDefaults.agentMode,
+      };
+    } finally {
+      releaseModeSwitchAdmission();
     }
-    if (input.ephemeral !== true && !(await kodaxHost.persistRuntime(sessionId))) {
-      await kodaxHost.delete(sessionId);
-      throw new Error('session runtime metadata could not be persisted');
-    }
-    return {
-      sessionId,
-      createdAt,
-      reasoningMode: runtimeDefaults.reasoningMode,
-      permissionMode: runtimeDefaults.permissionMode,
-      autoModeEngine: runtimeDefaults.autoModeEngine,
-      agentMode: runtimeDefaults.agentMode,
-    };
   });
 
-  registerChannel('session.promoteEphemeral', async (input) => {
-    const promoted = await kodaxHost.promoteEphemeral(input.sessionId);
-    return { promoted };
-  });
+  registerChannel('session.promoteEphemeral', (input) =>
+    runWithCoderAdmission(options, async () => {
+      const promoted = await kodaxHost.promoteEphemeral(input.sessionId);
+      return { promoted };
+    }),
+  );
 
   // session.send
   registerChannel('session.send', async (input) => {
-    let session = kodaxHost.get(input.sessionId);
-    if (!session) {
-      // Lazy resume：sessionId 不在 in-flight，但磁盘上可能 persisted —— 重启 Space
-      // 后从 Recents 点击的 session 走这条路。tryResume 内部走 createSession 接管
-      // 原 sessionId，SDK 按 id 自动 resume lineage。
-      const resumed = await kodaxHost.tryResume(input.sessionId);
-      if (!resumed) {
-        throw new Error(`session not found: ${input.sessionId}`);
-      }
-      session = kodaxHost.get(input.sessionId);
+    const existingSession = kodaxHost.get(input.sessionId);
+    const releaseModeSwitchAdmission = options.beginCoderAdmission?.() ?? (() => undefined);
+    try {
+      let session = existingSession;
       if (!session) {
-        throw new Error(`session resume failed: ${input.sessionId}`);
-      }
-    }
-    // 第一次 send 时自动给 session 起个临时标题（基于 prompt 头部）。
-    // ensureTitle 已经在 host 里做"title === undefined 才填"的判断，重复调用安全。
-    assertSessionSendScope(session, {
-      expectedProjectRoot: input.expectedProjectRoot,
-      expectedSurface: input.expectedSurface,
-    });
-    if (input.partnerPromptOverlay !== undefined && session.surface !== 'partner') {
-      throw new Error('partnerPromptOverlay is only accepted for Partner sessions');
-    }
-    if (input.partnerRetrievalScope !== undefined) {
-      if (session.surface !== 'partner') {
-        throw new Error('partnerRetrievalScope is only accepted for Partner sessions');
-      }
-      await partnerSourceStore.setScope(
-        input.sessionId,
-        session.projectRoot,
-        input.partnerRetrievalScope,
-      );
-    }
-    kodaxHost.ensureTitle(input.sessionId, input.prompt);
-    // send 是 fire-and-forget——立刻 ACK，事件流通过 push 推
-    // send() returns { queued, queueId?, queueMode? }. If the turn is running,
-    // Real adapter accepts the prompt into the requested queue mode so the UI
-    // can show a queued acknowledgement instead of a HANDLER_ERROR.
-    // OC-31 v0.1.9: input.artifacts (image paste / drag-drop) 透传给 session.send，
-    // real-session 把它塞进 KodaXOptions.context.inputArtifacts → SDK 拼 multimodal content。
-    //
-    // review HIGH-2 fix: renderer 可能传任意 path 进 artifacts (eg /etc/passwd) 让 SDK
-    // 把任意文件读进 multimodal content 发给 LLM。这里在调 session.send 前对每个 artifact
-    // path 做沙箱校验——必须落在持久 Session attachment 目录或兼容的旧版临时
-    // clipboard 目录之内，且 sid 等于本次 send 的 sessionId (不许跨 session 引用图)。
-    if (input.artifacts && input.artifacts.length > 0) {
-      for (const a of input.artifacts) {
-        await assertArtifactPathInClipboardSandbox(input.sessionId, a.path);
-      }
-    }
-    if (input.attachmentPaths) {
-      for (const attachment of input.attachmentPaths) {
-        if (!path.isAbsolute(attachment.path)) {
-          throw new Error(`attachment path must be absolute: ${attachment.path}`);
+        // Lazy resume：sessionId 不在 in-flight，但磁盘上可能 persisted —— 重启 Space
+        // 后从 Recents 点击的 session 走这条路。tryResume 内部走 createSession 接管
+        // 原 sessionId，SDK 按 id 自动 resume lineage。
+        const resumed = await kodaxHost.tryResume(input.sessionId);
+        if (!resumed) {
+          throw new Error(`session not found: ${input.sessionId}`);
+        }
+        session = kodaxHost.get(input.sessionId);
+        if (!session) {
+          throw new Error(`session resume failed: ${input.sessionId}`);
         }
       }
+      // 第一次 send 时自动给 session 起个临时标题（基于 prompt 头部）。
+      // ensureTitle 已经在 host 里做"title === undefined 才填"的判断，重复调用安全。
+      assertSessionSendScope(session, {
+        expectedProjectRoot: input.expectedProjectRoot,
+        expectedSurface: input.expectedSurface,
+      });
+      if (input.partnerPromptOverlay !== undefined && session.surface !== 'partner') {
+        throw new Error('partnerPromptOverlay is only accepted for Partner sessions');
+      }
+      if (input.partnerRetrievalScope !== undefined) {
+        if (session.surface !== 'partner') {
+          throw new Error('partnerRetrievalScope is only accepted for Partner sessions');
+        }
+        await partnerSourceStore.setScope(
+          input.sessionId,
+          session.projectRoot,
+          input.partnerRetrievalScope,
+        );
+      }
+      kodaxHost.ensureTitle(input.sessionId, input.prompt);
+      // send 是 fire-and-forget——立刻 ACK，事件流通过 push 推
+      // send() returns { queued, queueId?, queueMode? }. If the turn is running,
+      // Real adapter accepts the prompt into the requested queue mode so the UI
+      // can show a queued acknowledgement instead of a HANDLER_ERROR.
+      // OC-31 v0.1.9: input.artifacts (image paste / drag-drop) 透传给 session.send，
+      // real-session 把它塞进 KodaXOptions.context.inputArtifacts → SDK 拼 multimodal content。
+      //
+      // review HIGH-2 fix: renderer 可能传任意 path 进 artifacts (eg /etc/passwd) 让 SDK
+      // 把任意文件读进 multimodal content 发给 LLM。这里在调 session.send 前对每个 artifact
+      // path 做沙箱校验——必须落在持久 Session attachment 目录或兼容的旧版临时
+      // clipboard 目录之内，且 sid 等于本次 send 的 sessionId (不许跨 session 引用图)。
+      if (input.artifacts && input.artifacts.length > 0) {
+        for (const a of input.artifacts) {
+          await assertArtifactPathInClipboardSandbox(input.sessionId, a.path);
+        }
+      }
+      if (input.attachmentPaths) {
+        for (const attachment of input.attachmentPaths) {
+          if (!path.isAbsolute(attachment.path)) {
+            throw new Error(`attachment path must be absolute: ${attachment.path}`);
+          }
+        }
+      }
+      await ensureProviderKeyInjected(session.provider);
+      await validateInputArtifactsForSession(input.artifacts, session);
+      const preparedArtifacts =
+        input.artifacts && input.artifacts.length > 0
+          ? await prepareClipboardArtifactsForSend(input.sessionId, input.artifacts)
+          : undefined;
+      const attachmentPathOverlay = buildAttachmentPathOverlay(input.attachmentPaths);
+      const promptOverlay = [input.partnerPromptOverlay, attachmentPathOverlay]
+        .filter((part): part is string => part !== undefined)
+        .join('\n\n');
+      const result = await session.send(input.prompt, preparedArtifacts, {
+        queueMode: input.queueMode,
+        ...(promptOverlay ? { promptOverlay } : {}),
+      });
+      if (input.artifacts && input.artifacts.length > 0) {
+        await finalizePendingClipboardArtifacts(input.sessionId, input.artifacts).catch(
+          (error: unknown) => {
+            console.warn(
+              `[session.send] accepted prompt but failed to remove draft attachments: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+          },
+        );
+      }
+      const attachments =
+        preparedArtifacts && preparedArtifacts.length > 0
+          ? await Promise.all(
+              preparedArtifacts.map((artifact, ordinal) =>
+                issueSessionImageAttachment({
+                  sessionId: input.sessionId,
+                  artifactPath: artifact.path,
+                  declaredMediaType: artifact.mediaType,
+                  ordinal,
+                }),
+              ),
+            )
+          : undefined;
+      return {
+        accepted: true as const,
+        ...(result.queued
+          ? { queued: true, queueId: result.queueId, queueMode: result.queueMode }
+          : {}),
+        ...(attachments !== undefined ? { attachments } : {}),
+      };
+    } finally {
+      releaseModeSwitchAdmission();
     }
-    await ensureProviderKeyInjected(session.provider);
-    await validateInputArtifactsForSession(input.artifacts, session);
-    const preparedArtifacts =
-      input.artifacts && input.artifacts.length > 0
-        ? await prepareClipboardArtifactsForSend(input.sessionId, input.artifacts)
-        : undefined;
-    const attachmentPathOverlay = buildAttachmentPathOverlay(input.attachmentPaths);
-    const promptOverlay = [input.partnerPromptOverlay, attachmentPathOverlay]
-      .filter((part): part is string => part !== undefined)
-      .join('\n\n');
-    const result = await session.send(input.prompt, preparedArtifacts, {
-      queueMode: input.queueMode,
-      ...(promptOverlay ? { promptOverlay } : {}),
-    });
-    if (input.artifacts && input.artifacts.length > 0) {
-      await finalizePendingClipboardArtifacts(input.sessionId, input.artifacts).catch(
-        (error: unknown) => {
-          console.warn(
-            `[session.send] accepted prompt but failed to remove draft attachments: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          );
-        },
-      );
-    }
-    const attachments =
-      preparedArtifacts && preparedArtifacts.length > 0
-        ? await Promise.all(
-            preparedArtifacts.map((artifact, ordinal) =>
-              issueSessionImageAttachment({
-                sessionId: input.sessionId,
-                artifactPath: artifact.path,
-                declaredMediaType: artifact.mediaType,
-                ordinal,
-              }),
-            ),
-          )
-        : undefined;
-    return {
-      accepted: true as const,
-      ...(result.queued
-        ? { queued: true, queueId: result.queueId, queueMode: result.queueMode }
-        : {}),
-      ...(attachments !== undefined ? { attachments } : {}),
-    };
   });
 
   // session.cancel
@@ -420,232 +438,250 @@ export function registerSessionChannels(): void {
   //     不验证 abs path / no NUL / no ..
   //   - 用 path.normalize 后比较——避免 trailing slash / 大小写差异导致 filter miss
   //     （比如 session 存了 /Users/foo/proj，renderer 传 /Users/foo/proj/ 应该匹配）
-  registerChannel('session.list', async (input) => {
-    // reviewer MEDIUM-3: projectFilter 必须在传给 listMerged 前 normalize，
-    // 让 SDK 层和 IPC 层比较同一形态（避免 Windows 路径 / 大小写 / trailing
-    // slash 不一致让 persisted session 静默丢失）。
-    // F005 v0.1.5：filter 必须是 allowlist 项目；保留 unfiltered（全部 session）路径。
-    let projectFilter: string | undefined;
-    if (input?.projectRoot !== undefined) {
-      projectFilter = canonProjectRoot(await projectStore.assertAllowed(input.projectRoot));
-    }
-    // FEATURE_038: 合并视图 — in-flight (in-memory) ∪ SDK persisted
-    // 传给 host.listMerged 的 projectRoot 是 canonical 形态（SDK listSessions 内部
-    // 自己 normalize；当前 SDK 版本 projectRoot filter 不严格——本层再过一道 canon
-    // 比较兜底）。
-    // F045: surface 过滤透传给 host.listMerged（在合并 in-flight ∪ persisted 后统一 filter）。
-    // 不传 = 全部（含历史无 tag 的，向后兼容）。Coder = surface!=='partner'，Partner = 'partner'。
-    const merged = await kodaxHost.listMerged({
-      projectRoot: projectFilter,
-      surface: input?.surface,
-      limit: input?.limit,
-    });
+  registerChannel('session.list', (input) =>
+    runWithCoderAdmission(options, async () => {
+      // reviewer MEDIUM-3: projectFilter 必须在传给 listMerged 前 normalize，
+      // 让 SDK 层和 IPC 层比较同一形态（避免 Windows 路径 / 大小写 / trailing
+      // slash 不一致让 persisted session 静默丢失）。
+      // F005 v0.1.5：filter 必须是 allowlist 项目；保留 unfiltered（全部 session）路径。
+      let projectFilter: string | undefined;
+      if (input?.projectRoot !== undefined) {
+        projectFilter = canonProjectRoot(await projectStore.assertAllowed(input.projectRoot));
+      }
+      // FEATURE_038: 合并视图 — in-flight (in-memory) ∪ SDK persisted
+      // 传给 host.listMerged 的 projectRoot 是 canonical 形态（SDK listSessions 内部
+      // 自己 normalize；当前 SDK 版本 projectRoot filter 不严格——本层再过一道 canon
+      // 比较兜底）。
+      // F045: surface 过滤透传给 host.listMerged（在合并 in-flight ∪ persisted 后统一 filter）。
+      // 不传 = 全部（含历史无 tag 的，向后兼容）。Coder = surface!=='partner'，Partner = 'partner'。
+      const merged = await kodaxHost.listMerged({
+        projectRoot: projectFilter,
+        surface: input?.surface,
+        limit: input?.limit,
+      });
 
-    // Persisted session 没有真运行时设置——磁盘上只 SDK lineage + gitRoot。先准备一份
-    // user-defaults 兜底，给 sidebar UI 占位用（避免显示 "mock" 让用户以为整个 SDK 是 mock）。
-    // loadKodaxUserDefaults 模块级缓存命中后零成本; providerConfigStore.load 自己缓存。
-    // 并行 await 两个 promise——它们彼此无依赖，并行版省一个 turn 调度 ms。
-    // tryResume 路径走相同 resolution，两边对齐，避免 UI 一闪即变。
-    let persistedProviderFallback = 'mock';
-    let persistedModelFallback: string | undefined;
-    const [[udResult, providerLoadResult], baseRuntimeDefaults, kodaxCustomProviders] =
-      await Promise.all([
-        Promise.allSettled([loadKodaxUserDefaults(), providerConfigStore.load()]),
-        resolveRuntimeDefaults(),
-        loadKodaxCustomProviders().catch(() => []),
-      ]);
-    if (udResult.status === 'fulfilled') {
-      const ud = udResult.value;
-      if (ud.provider) persistedProviderFallback = ud.provider;
-      if (ud.model) persistedModelFallback = ud.model;
-    }
-    // Space defaultProviderId 优先级高于 KodaX user defaults——用户在 Space 设过默认 provider
-    // 应该胜出；providerConfigStore.load 失败时保留 user-defaults / 'mock'。
-    if (providerLoadResult.status === 'fulfilled') {
-      const defaultId = providerConfigStore.getDefaultProviderId();
-      if (defaultId) persistedProviderFallback = defaultId;
-    }
-    // persisted session 没有 lastActivityAt——用 createdAt 占位（同一时间精度排序）
-    const withTs = merged
-      .filter((m) => {
-        if (projectFilter === undefined) return true;
-        if (m.kind === 'in-flight') {
+      // Persisted session 没有真运行时设置——磁盘上只 SDK lineage + gitRoot。先准备一份
+      // user-defaults 兜底，给 sidebar UI 占位用（避免显示 "mock" 让用户以为整个 SDK 是 mock）。
+      // loadKodaxUserDefaults 模块级缓存命中后零成本; providerConfigStore.load 自己缓存。
+      // 并行 await 两个 promise——它们彼此无依赖，并行版省一个 turn 调度 ms。
+      // tryResume 路径走相同 resolution，两边对齐，避免 UI 一闪即变。
+      let persistedProviderFallback = 'mock';
+      let persistedModelFallback: string | undefined;
+      const [[udResult, providerLoadResult], baseRuntimeDefaults, kodaxCustomProviders] =
+        await Promise.all([
+          Promise.allSettled([loadKodaxUserDefaults(), providerConfigStore.load()]),
+          resolveRuntimeDefaults(),
+          loadKodaxCustomProviders().catch(() => []),
+        ]);
+      if (udResult.status === 'fulfilled') {
+        const ud = udResult.value;
+        if (ud.provider) persistedProviderFallback = ud.provider;
+        if (ud.model) persistedModelFallback = ud.model;
+      }
+      // Space defaultProviderId 优先级高于 KodaX user defaults——用户在 Space 设过默认 provider
+      // 应该胜出；providerConfigStore.load 失败时保留 user-defaults / 'mock'。
+      if (providerLoadResult.status === 'fulfilled') {
+        const defaultId = providerConfigStore.getDefaultProviderId();
+        if (defaultId) persistedProviderFallback = defaultId;
+      }
+      // persisted session 没有 lastActivityAt——用 createdAt 占位（同一时间精度排序）
+      const withTs = merged
+        .filter((m) => {
+          if (projectFilter === undefined) return true;
+          if (m.kind === 'in-flight') {
+            return canonProjectRoot(m.projectRoot) === projectFilter;
+          }
+          // persisted 的 projectRoot 来自 SDK runtimeInfo.workspaceRoot ?? gitRoot。
+          // 当 SDK summary 缺这俩字段（fast path / 早期版本），projectRoot=undefined——
+          // 此时无法本地 filter；保守地保留它，让用户看得到（宁可串项目，也比"以前的
+          // session 全消失"体验好）。新版 SDK slow path 一旦填满 runtimeInfo 就走精确匹配。
+          if (m.projectRoot === undefined) return true;
           return canonProjectRoot(m.projectRoot) === projectFilter;
-        }
-        // persisted 的 projectRoot 来自 SDK runtimeInfo.workspaceRoot ?? gitRoot。
-        // 当 SDK summary 缺这俩字段（fast path / 早期版本），projectRoot=undefined——
-        // 此时无法本地 filter；保守地保留它，让用户看得到（宁可串项目，也比"以前的
-        // session 全消失"体验好）。新版 SDK slow path 一旦填满 runtimeInfo 就走精确匹配。
-        if (m.projectRoot === undefined) return true;
-        return canonProjectRoot(m.projectRoot) === projectFilter;
-      })
-      .map((m) => {
-        if (m.kind === 'in-flight') {
-          return { item: m, sortKey: m.lastActivityAt };
-        }
-        // persisted: SDK 给 ISO date string；缺省 → 0（最旧）
-        const ts = m.createdAt !== undefined ? Date.parse(m.createdAt) : 0;
-        return { item: m, sortKey: Number.isFinite(ts) ? ts : 0 };
-      })
-      .sort((a, b) => b.sortKey - a.sortKey);
-    const sessions: SessionMeta[] = await Promise.all(
-      withTs.map(async ({ item, sortKey }) => {
-        if (item.kind === 'in-flight') {
-          // in-flight 没有 msgCount 字段（ManagedSession 不跟用户消息计数），dashboard
-          // 用 sessions[].msgCount ?? userMessagesBuffer.length 双源 fallback。
-          // model 是用户 /model 设的值（undefined = provider 默认），透出去让 dashboard
-          // 能按真 model 维度做 Favorite model 统计。
+        })
+        .map((m) => {
+          if (m.kind === 'in-flight') {
+            return { item: m, sortKey: m.lastActivityAt };
+          }
+          // persisted: SDK 给 ISO date string；缺省 → 0（最旧）
+          const ts = m.createdAt !== undefined ? Date.parse(m.createdAt) : 0;
+          return { item: m, sortKey: Number.isFinite(ts) ? ts : 0 };
+        })
+        .sort((a, b) => b.sortKey - a.sortKey);
+      const sessions: SessionMeta[] = await Promise.all(
+        withTs.map(async ({ item, sortKey }) => {
+          if (item.kind === 'in-flight') {
+            // in-flight 没有 msgCount 字段（ManagedSession 不跟用户消息计数），dashboard
+            // 用 sessions[].msgCount ?? userMessagesBuffer.length 双源 fallback。
+            // model 是用户 /model 设的值（undefined = provider 默认），透出去让 dashboard
+            // 能按真 model 维度做 Favorite model 统计。
+            return {
+              sessionId: item.sessionId,
+              projectRoot: item.projectRoot,
+              provider: item.provider,
+              reasoningMode: item.reasoningMode,
+              permissionMode: item.permissionMode,
+              autoModeEngine: item.autoModeEngine,
+              agentMode: item.agentMode,
+              surface: item.surface,
+              title: item.title,
+              createdAt: item.createdAt,
+              lastActivityAt: item.lastActivityAt,
+              parentSessionId: item.parentSessionId,
+              forkPointTurnIdx: item.forkPointTurnIdx,
+              model: item.model,
+            };
+          }
+          // persisted: 运行时设置用 user-default 占位（Space defaultProviderId →
+          // ~/.kodax/config.json → 'mock' 兜底）。tryResume 用同样链路 resolve，
+          // 保证 sidebar 显示和真激活后的运行时设置一致——不会出现"点开 historical
+          // session 看着是 mock，点了发消息后 BottomBar 突然跳到 deepseek-v4-pro"
+          // 的视觉跳变。
+          //
+          // msgCount 直接透传 SDK summary 给的值——这是 dashboard 重启后 Messages 数
+          // 正确的关键（无需扫 jsonl 内容，SDK 已经 fast-path 缓存了 summary）。
+          // Read the per-session sidecar once. Previously resolveRuntimeDefaults()
+          // read it internally while this mapper read the same file again for the
+          // provider/model identity. The global defaults are identical for every
+          // row in this response, so resolve them once above and overlay the one
+          // session-specific layer here.
+          const persistedRuntime = await getSessionRuntimeStore().read(item.sessionId);
+          const identity = resolveHistoricalRuntimeIdentity({
+            ...(persistedRuntime !== null ? { persisted: persistedRuntime } : {}),
+            fallbackProvider: persistedProviderFallback,
+            ...(persistedModelFallback !== undefined
+              ? { fallbackModel: persistedModelFallback }
+              : {}),
+            kodaxCustomProviders,
+          });
           return {
             sessionId: item.sessionId,
-            projectRoot: item.projectRoot,
-            provider: item.provider,
-            reasoningMode: item.reasoningMode,
-            permissionMode: item.permissionMode,
-            autoModeEngine: item.autoModeEngine,
-            agentMode: item.agentMode,
+            // A project-scoped query is authoritative even when an SDK summary omits
+            // runtimeInfo.workspaceRoot/gitRoot (observed on the Linux slow path).
+            // Falling back directly to '/' makes the renderer group valid sessions
+            // outside their project and display that project as empty.
+            projectRoot: item.projectRoot ?? projectFilter ?? '/',
+            provider: identity.provider,
+            reasoningMode: persistedRuntime?.reasoningMode ?? baseRuntimeDefaults.reasoningMode,
+            permissionMode: persistedRuntime?.permissionMode ?? baseRuntimeDefaults.permissionMode,
+            autoModeEngine: persistedRuntime?.autoModeEngine ?? baseRuntimeDefaults.autoModeEngine,
+            agentMode: persistedRuntime?.agentMode ?? baseRuntimeDefaults.agentMode,
+            // F045: 真值——来自 SDK summary.tag 反推（host.listMerged 已派生），非占位。
             surface: item.surface,
             title: item.title,
-            createdAt: item.createdAt,
-            lastActivityAt: item.lastActivityAt,
-            parentSessionId: item.parentSessionId,
-            forkPointTurnIdx: item.forkPointTurnIdx,
-            model: item.model,
+            createdAt: sortKey,
+            lastActivityAt: sortKey,
+            msgCount: item.msgCount,
+            model: identity.model,
+            runtimeMetadataSource: identity.runtimeMetadataSource,
           };
-        }
-        // persisted: 运行时设置用 user-default 占位（Space defaultProviderId →
-        // ~/.kodax/config.json → 'mock' 兜底）。tryResume 用同样链路 resolve，
-        // 保证 sidebar 显示和真激活后的运行时设置一致——不会出现"点开 historical
-        // session 看着是 mock，点了发消息后 BottomBar 突然跳到 deepseek-v4-pro"
-        // 的视觉跳变。
-        //
-        // msgCount 直接透传 SDK summary 给的值——这是 dashboard 重启后 Messages 数
-        // 正确的关键（无需扫 jsonl 内容，SDK 已经 fast-path 缓存了 summary）。
-        // Read the per-session sidecar once. Previously resolveRuntimeDefaults()
-        // read it internally while this mapper read the same file again for the
-        // provider/model identity. The global defaults are identical for every
-        // row in this response, so resolve them once above and overlay the one
-        // session-specific layer here.
-        const persistedRuntime = await getSessionRuntimeStore().read(item.sessionId);
-        const identity = resolveHistoricalRuntimeIdentity({
-          ...(persistedRuntime !== null ? { persisted: persistedRuntime } : {}),
-          fallbackProvider: persistedProviderFallback,
-          ...(persistedModelFallback !== undefined
-            ? { fallbackModel: persistedModelFallback }
-            : {}),
-          kodaxCustomProviders,
-        });
-        return {
-          sessionId: item.sessionId,
-          // A project-scoped query is authoritative even when an SDK summary omits
-          // runtimeInfo.workspaceRoot/gitRoot (observed on the Linux slow path).
-          // Falling back directly to '/' makes the renderer group valid sessions
-          // outside their project and display that project as empty.
-          projectRoot: item.projectRoot ?? projectFilter ?? '/',
-          provider: identity.provider,
-          reasoningMode: persistedRuntime?.reasoningMode ?? baseRuntimeDefaults.reasoningMode,
-          permissionMode: persistedRuntime?.permissionMode ?? baseRuntimeDefaults.permissionMode,
-          autoModeEngine: persistedRuntime?.autoModeEngine ?? baseRuntimeDefaults.autoModeEngine,
-          agentMode: persistedRuntime?.agentMode ?? baseRuntimeDefaults.agentMode,
-          // F045: 真值——来自 SDK summary.tag 反推（host.listMerged 已派生），非占位。
-          surface: item.surface,
-          title: item.title,
-          createdAt: sortKey,
-          lastActivityAt: sortKey,
-          msgCount: item.msgCount,
-          model: identity.model,
-          runtimeMetadataSource: identity.runtimeMetadataSource,
-        };
-      }),
-    );
-    return { sessions };
-  });
+        }),
+      );
+      return { sessions };
+    }),
+  );
 
   // session.delete
-  registerChannel('session.delete', async (input) => {
-    return deleteSessionForIpc(input.sessionId);
-  });
+  registerChannel('session.delete', (input) =>
+    runWithCoderAdmission(options, () => deleteSessionForIpc(input.sessionId)),
+  );
 
   // session.setTitle
-  registerChannel('session.setTitle', async (input) => {
-    const ok = await kodaxHost.setTitle(input.sessionId, input.title);
-    return { ok };
-  });
+  registerChannel('session.setTitle', (input) =>
+    runWithCoderAdmission(options, async () => {
+      const ok = await kodaxHost.setTitle(input.sessionId, input.title);
+      return { ok };
+    }),
+  );
 
   // session.setReasoningMode — F008
-  registerChannel('session.setReasoningMode', async (input) => {
-    const ok = await commitRuntimeMutationForIpc(input.sessionId, () =>
-      kodaxHost.setReasoningMode(input.sessionId, input.mode),
-    );
-    return { ok };
-  });
+  registerChannel('session.setReasoningMode', (input) =>
+    runWithCoderAdmission(options, async () => {
+      const ok = await commitRuntimeMutationForIpc(input.sessionId, () =>
+        kodaxHost.setReasoningMode(input.sessionId, input.mode),
+      );
+      return { ok };
+    }),
+  );
 
   // session.setProvider — F008
   // 必须先验 providerId 真实存在——schema 只验格式，不验 catalog（review C1-sec）
-  registerChannel('session.setProvider', async (input) => {
-    await assertProviderExists(input.providerId);
-    await ensureCustomProviderRegistered(input.providerId);
-    await ensureProviderKeyInjected(input.providerId);
-    const kodaxCustomProviders =
-      input.providerId !== 'mock' && !isBuiltinId(input.providerId)
-        ? await loadKodaxCustomProviders()
-        : [];
-    const defaultModel = providerDescriptor(input.providerId, kodaxCustomProviders)?.defaultModel;
-    const ok = await commitRuntimeMutationForIpc(input.sessionId, () => {
-      const providerOk = kodaxHost.setProvider(input.sessionId, input.providerId);
-      return providerOk && kodaxHost.setModel(input.sessionId, defaultModel);
-    });
-    return { ok };
-  });
+  registerChannel('session.setProvider', (input) =>
+    runWithCoderAdmission(options, async () => {
+      await assertProviderExists(input.providerId);
+      await ensureCustomProviderRegistered(input.providerId);
+      await ensureProviderKeyInjected(input.providerId);
+      const kodaxCustomProviders =
+        input.providerId !== 'mock' && !isBuiltinId(input.providerId)
+          ? await loadKodaxCustomProviders()
+          : [];
+      const defaultModel = providerDescriptor(input.providerId, kodaxCustomProviders)?.defaultModel;
+      const ok = await commitRuntimeMutationForIpc(input.sessionId, () => {
+        const providerOk = kodaxHost.setProvider(input.sessionId, input.providerId);
+        return providerOk && kodaxHost.setModel(input.sessionId, defaultModel);
+      });
+      return { ok };
+    }),
+  );
 
   // session.setPermissionMode — FEATURE_029 canonical 3 mode
   // Daemon Coder 会把设置提交给 Runtime，下一次具体 tool call 即按新 mode 决策；
   // embedded / Partner / legacy 的 run-scoped guardrail 从下一轮 send 生效。
-  registerChannel('session.setPermissionMode', async (input) => {
-    const ok = await commitRuntimeMutationForIpc(input.sessionId, () =>
-      kodaxHost.setPermissionMode(input.sessionId, input.mode),
-    );
-    return { ok };
-  });
+  registerChannel('session.setPermissionMode', (input) =>
+    runWithCoderAdmission(options, async () => {
+      const ok = await commitRuntimeMutationForIpc(input.sessionId, () =>
+        kodaxHost.setPermissionMode(input.sessionId, input.mode),
+      );
+      return { ok };
+    }),
+  );
 
   // session.setAutoModeEngine — FEATURE_029
   // 切 auto mode 子档 engine ('llm' | 'rules')。即便当前 mode 不是 'auto' 也接受
   // (用户先选 engine 再切 auto 是合法路径)。Daemon Coder 的下一次具体 tool call 即读取
   // 新 engine；embedded / Partner / legacy 从下一轮 send 重新 bootstrap guardrail。
-  registerChannel('session.setAutoModeEngine', async (input) => {
-    const ok = await commitRuntimeMutationForIpc(input.sessionId, () =>
-      kodaxHost.setAutoModeEngine(input.sessionId, input.engine),
-    );
-    return { ok };
-  });
+  registerChannel('session.setAutoModeEngine', (input) =>
+    runWithCoderAdmission(options, async () => {
+      const ok = await commitRuntimeMutationForIpc(input.sessionId, () =>
+        kodaxHost.setAutoModeEngine(input.sessionId, input.engine),
+      );
+      return { ok };
+    }),
+  );
 
   // session.setAgentMode — 切 KodaX agent 形态 (AMA / SA)。
   // AMA = 多 agent 协作（KodaX 默认）；SA = 单 agent 降级路径，接口并发受限时使用。
   // 切换不重启 in-flight session，下一条 prompt 走新形态。
-  registerChannel('session.setAgentMode', async (input) => {
-    const ok = await commitRuntimeMutationForIpc(input.sessionId, () =>
-      kodaxHost.setAgentMode(input.sessionId, input.agentMode),
-    );
-    return { ok };
-  });
+  registerChannel('session.setAgentMode', (input) =>
+    runWithCoderAdmission(options, async () => {
+      const ok = await commitRuntimeMutationForIpc(input.sessionId, () =>
+        kodaxHost.setAgentMode(input.sessionId, input.agentMode),
+      );
+      return { ok };
+    }),
+  );
 
   // session.fork — FEATURE_038 (持久化)
   // v0.1.6: SDK forkSession 写盘出新 sessionId；host 用 source 运行时设置实例化
   // 新 ManagedSession 入 in-memory map。events 复制仍由 renderer 完成（重启后从
   // SDK loadSession 重放是 v0.1.7+ 优化）。
-  registerChannel('session.fork', async (input) => {
-    const result = await kodaxHost.fork(input.sessionId, input.forkPointTurnIdx);
-    if (!result) {
-      throw new Error(`session not found: ${input.sessionId}`);
-    }
-    return result;
-  });
+  registerChannel('session.fork', (input) =>
+    runWithCoderAdmission(options, async () => {
+      const result = await kodaxHost.fork(input.sessionId, input.forkPointTurnIdx);
+      if (!result) {
+        throw new Error(`session not found: ${input.sessionId}`);
+      }
+      return result;
+    }),
+  );
 
   // session.rewind — FEATURE_038 (持久化)
   // v0.1.6: main 端 cancel in-flight (await)，然后 SDK rewindSession 写盘截断；
   // renderer 截断 events 数组。
-  registerChannel('session.rewind', async (input) => {
-    return kodaxHost.rewind(input.sessionId, input.rewindPastTurnIdx);
-  });
+  registerChannel('session.rewind', (input) =>
+    runWithCoderAdmission(options, () =>
+      kodaxHost.rewind(input.sessionId, input.rewindPastTurnIdx),
+    ),
+  );
 
   // session.agentsMd — FEATURE_034
   // 拉取 session.projectRoot 下当前的 AGENTS.md 列表 (global + project)。
@@ -747,342 +783,347 @@ export function registerSessionChannels(): void {
   // 工具结果匹配: tool_result block 在后续 user message 里,通过 toolId 与之前的 tool_use 配对。
   // 失配 (tool_use 没等到 tool_result, 或 tool_result 没找到对应 tool_use) 仍 emit
   // tool_call item,result 字段缺失 → renderer 会渲染为 "running" 状态卡片。
-  registerChannel('session.localNotice.append', async (input) => {
-    const payload: Record<string, string> = { id: input.notice.id };
-    if (input.notice.variant !== undefined) payload.variant = input.notice.variant;
-    const liveSession = kodaxHost.get(input.sessionId);
-    const surface =
-      liveSession?.surface ??
-      sdkTagToSurface((await loadPersistedSession(input.sessionId))?.tag) ??
-      'code';
-    const entry =
-      surface === 'code' && runtimeHostAdapter.hasReadyRuntime()
-        ? await runtimeHostAdapter.appendNotice({
-            sessionId: input.sessionId,
-            source: 'space-local-notice',
-            content: input.notice.content,
-          })
-        : await appendPersistedClientNotice(input.sessionId, {
-            source: 'space-local-notice',
-            content: input.notice.content,
-            timestamp: isoTimestampFromSentAt(input.notice.sentAt),
-            payload,
-          });
-    if (entry === null) {
-      await getSessionLocalNoticeStore().append(input.sessionId, input.notice);
-    }
-    return { ok: true };
-  });
+  registerChannel('session.localNotice.append', (input) =>
+    runWithCoderAdmission(options, async () => {
+      const payload: Record<string, string> = { id: input.notice.id };
+      if (input.notice.variant !== undefined) payload.variant = input.notice.variant;
+      const liveSession = kodaxHost.get(input.sessionId);
+      const surface =
+        liveSession?.surface ??
+        sdkTagToSurface((await loadPersistedSession(input.sessionId))?.tag) ??
+        'code';
+      const entry =
+        surface === 'code' && runtimeHostAdapter.hasReadyRuntime()
+          ? await runtimeHostAdapter.appendNotice({
+              sessionId: input.sessionId,
+              source: 'space-local-notice',
+              content: input.notice.content,
+            })
+          : await appendPersistedClientNotice(input.sessionId, {
+              source: 'space-local-notice',
+              content: input.notice.content,
+              timestamp: isoTimestampFromSentAt(input.notice.sentAt),
+              payload,
+            });
+      if (entry === null) {
+        await getSessionLocalNoticeStore().append(input.sessionId, input.notice);
+      }
+      return { ok: true };
+    }),
+  );
 
   registerChannel('session.localNotice.replace', async (input) => {
     await getSessionLocalNoticeStore().replace(input.sessionId, input.notices);
     return { ok: true };
   });
 
-  registerChannel('session.history', async (input) => {
-    const withLocalNotices = async (
-      baseItems: readonly SessionHistoryItem[],
-    ): Promise<{ items: SessionHistoryItem[] }> => {
-      const localNotices = await getSessionLocalNoticeStore().list(input.sessionId);
-      return { items: appendLocalNoticeHistoryItems(baseItems, localNotices) };
-    };
-    // Full append-order transcript (not just the active branch) so pre-compaction
-    // turns stay visible in scrollback — fixes "history disappears after compaction".
-    const liveSession = kodaxHost.get(input.sessionId);
-    const surface =
-      liveSession?.surface ??
-      sdkTagToSurface((await loadPersistedSession(input.sessionId))?.tag) ??
-      'code';
-    const data =
-      surface === 'code' && runtimeHostAdapter.hasReadyRuntime()
-        ? await runtimeHostAdapter.transcript(input.sessionId)
-        : await loadPersistedTranscript(input.sessionId);
-    if (!data || !Array.isArray(data.messages)) {
-      return withLocalNotices([]);
-    }
-    const items: SessionHistoryItem[] = [];
-
-    // 第一步: 走一遍消息收集 toolId → result 映射 (tool_result 永远在 tool_use 之后,
-    // 但同一 message 里也可能有多个 tool_use,先扫一遍简化处理)
-    const toolResults = new Map<string, { content: string; isError: boolean }>();
-    for (const msg of data.messages) {
-      if (!Array.isArray(msg.content)) continue;
-      for (const block of msg.content) {
-        if (!block || typeof block !== 'object') continue;
-        if ((block as { type?: unknown }).type !== 'tool_result') continue;
-        const id = (block as { tool_use_id?: unknown }).tool_use_id;
-        if (typeof id !== 'string') continue;
-        const content = flattenToolResultContent((block as { content?: unknown }).content);
-        const isError = Boolean((block as { is_error?: unknown }).is_error);
-        toolResults.set(id, { content, isError });
-      }
-    }
-
-    // 第二步: 按顺序拍平 messages 成 items
-    //
-    // v0.1.x 修复 "fork/rewind branch_summary 回放成假用户气泡": fork 回到某个分支点时,
-    // SDK 会在 lineage 里合成一条 role==='user' 的 context message,把"你之前探索过的另一条
-    // 分支"的摘要塞给 LLM 当上下文——但这段文字从来不是用户真的打的字。旧逻辑直接按
-    // msg.role 拍平,于是这段摘要在滚动区里显示成一条用户消息(压缩产生的 compaction 摘要
-    // 同理,role==='system')。
-    //
-    // loadFullTranscript (SDK 0.7.51+) 额外提供 transcriptEntries——每条 message 对应一个
-    // entry,entry.type 精确标出 'message' / 'compaction' / 'branch_summary',不需要靠猜 role。
-    // 有了它就按 entry.type 路由:branch_summary/compaction → 非 user 的 lineage_notice 历史
-    // 提示条(entry.summary 是没被模板包裹的干净文本,优先用它);其余(type==='message')走
-    // 原有逻辑不变。旧 SDK / 测试 mock 没有 transcriptEntries 时,整段回退成"每条 message
-    // 都当作 type:'message'"——即完全不变的旧行为。
-    const rawTranscriptEntries = (data as { transcriptEntries?: unknown }).transcriptEntries;
-    type TranscriptEntryLike = {
-      readonly entryId?: unknown;
-      readonly logicalId?: unknown;
-      readonly sourceEntryId?: unknown;
-      readonly type?: unknown;
-      readonly source?: unknown;
-      readonly message: (typeof data.messages)[number];
-      readonly summary?: unknown;
-      readonly payload?: unknown;
-      readonly taskResults?: unknown;
-      readonly turnId?: unknown;
-      readonly content?: unknown;
-      // SDK 0.7.51+ SessionTranscriptEntry.timestamp (ISO string) — the real per-message
-      // wall-clock. We forward it as the history item's sentAt so restored turns keep their
-      // true time instead of all collapsing onto session.createdAt (the renderer fallback).
-      // Without it, workflow notices — which DO carry real run times — sort above the whole
-      // restored conversation after a compaction re-root (createdAt is reset later than the run).
-      readonly timestamp?: unknown;
-      // SDK marks each transcript entry active (on the live branch) or not. Used to scope
-      // dedup to inactive old-island re-clones only — the active branch is never collapsed.
-      readonly active?: unknown;
-    };
-    const entries: readonly TranscriptEntryLike[] = Array.isArray(rawTranscriptEntries)
-      ? (rawTranscriptEntries as TranscriptEntryLike[])
-      : data.messages.map((message) => ({ type: 'message', message }));
-
-    // Workflow 结果原位还原用:一条 `<task-completed>` 块只有当它的 task_id 命名了一个 Space 落盘的
-    // workflow run(<space>/workflow-runs/<runId>/)才算 workflow —— 借此把用同样 wrapper 的普通
-    // dispatch_child_task 排除掉(review HIGH)。
-    const workflowRunBaseDir = path.join(getSpaceDataDir(), 'workflow-runs');
-    // 同一个 workflow run 的结果只渲染一次:被压缩/re-root 过的 session,loadFullTranscript 的全谱系里
-    // 同一条 `<task-completed>` 会重复出现(旧的侧存储按 finished:runId:status 去重、只显一份;approach A
-    // 改按 transcript 位置渲染后丢了去重 → 同一份报告显示多次)。按 runId 去重、保留**首次**出现的位置。
-    const seenWorkflowRunIds = new Set<string>();
-    const visibleUserCountByTurnId = new Map<string, number>();
-    // 整段对话重复渲染修复:loadFullTranscript 返回全谱系。① 新 session:旧岛消息被 evict 成
-    // "[compacted]" 占位 → 跳过;② 旧 session(更早 SDK 写的):旧岛保留真内容、每次压缩逐字节克隆一份
-    // → 按内容折叠。去重**限定在 inactive 旧岛**,活动分支一条不碰(不折叠合法重复的活动消息)。
-    // 见 transcript-dedup.ts 的机制说明。
-    const dedupedEntries = dedupeTranscriptEntries(entries);
-
-    for (const entry of dedupedEntries) {
-      const entrySentAt = parseEntrySentAt(entry.timestamp);
-      if (entry.type === 'client_notice') {
-        const notice = clientNoticeHistoryItemFromEntry(entry, entrySentAt);
-        if (notice !== null) {
-          items.push(notice);
-        }
-        if (items.length >= 2000) break;
-        continue;
-      }
-      if (entry.type === 'branch_summary' || entry.type === 'compaction') {
-        const rawSummary =
-          typeof entry.summary === 'string' && entry.summary.trim().length > 0
-            ? entry.summary
-            : extractUserText((entry.message as { content?: unknown }).content);
-        const text = rawSummary.trim();
-        if (text.length > 0) {
-          const compactionPayload = isRecord(entry.payload) ? entry.payload : undefined;
-          const tokensBefore = compactionPayload?.tokensBefore;
-          const tokensAfter = compactionPayload?.tokensAfter;
-          const hasCompactStats =
-            entry.type === 'compaction' &&
-            typeof tokensBefore === 'number' &&
-            Number.isInteger(tokensBefore) &&
-            tokensBefore >= 0 &&
-            tokensBefore <= 10_000_000 &&
-            typeof tokensAfter === 'number' &&
-            Number.isInteger(tokensAfter) &&
-            tokensAfter >= 0 &&
-            tokensAfter <= 10_000_000;
-          items.push({
-            kind: 'lineage_notice',
-            noticeKind: entry.type,
-            text,
-            ...(hasCompactStats ? { tokensBefore, tokensAfter } : {}),
-          });
-        }
-        if (items.length >= 2000) break;
-        continue;
-      }
-      const taskResults = extractTaskResults(entry);
-      if (entry.type === 'task_result' || taskResults.length > 0) {
-        appendWorkflowTaskResultNotices(taskResults, seenWorkflowRunIds, items);
-        if (items.length >= 2000) break;
-        // Consume the entry only if a real workflow run was recognized. Legacy transcripts
-        // (recorded before structured task-result metadata) have the SDK reconstruct
-        // `_taskResults` stamped source:'child_task' even for real run_workflow results, so
-        // the block above renders nothing. Fall through to the `<task-completed>` text parse
-        // below — which cross-checks isWorkflowRunDir() against disk instead of trusting
-        // `source` — so those notices still restore (App.tsx's old run-dir side-store restore
-        // that used to cover this was removed this release). Guard on a parseable message so a
-        // messageless task_result entry still short-circuits instead of hitting `msg.role`.
-        if (taskResults.some((r) => r.source === 'workflow') || !isRecord(entry.message)) continue;
-      }
-      const msg = entry.message;
-      const meta = msg as {
-        _source?: unknown;
-        source?: unknown;
-        _synthetic?: unknown;
-        synthetic?: unknown;
+  registerChannel('session.history', (input) =>
+    runWithCoderAdmission(options, async () => {
+      const withLocalNotices = async (
+        baseItems: readonly SessionHistoryItem[],
+      ): Promise<{ items: SessionHistoryItem[] }> => {
+        const localNotices = await getSessionLocalNoticeStore().list(input.sessionId);
+        return { items: appendLocalNoticeHistoryItems(baseItems, localNotices) };
       };
-      const source = meta.source ?? meta._source;
-      const synthetic = meta.synthetic === true || meta._synthetic === true;
-      if (msg.role === 'user' && source === 'sidecar-verifier') {
-        const sidecarText = extractUserText(msg.content);
-        if (sidecarText.length > 0) {
-          items.push({
-            kind: 'sidecar_message',
-            message: {
-              source: 'sidecar-verifier',
-              verdict: 'revise',
-              recipient: 'main-agent',
-              delivery: 'synthetic-user-message',
-              content: sidecarText,
-              // #12 fix: SDK 不持久化真实 verdict/delivery/suggestedFix——上面几个字段都是
-              // 占位值,不是这条消息当时真实的判定结果。标 historical=true 让 renderer 用中性
-              // 的"历史记录"标签展示,不再断言 verdict==='revise'。
-              historical: true,
-            },
-          });
-        }
-        continue;
+      // Full append-order transcript (not just the active branch) so pre-compaction
+      // turns stay visible in scrollback — fixes "history disappears after compaction".
+      const liveSession = kodaxHost.get(input.sessionId);
+      const surface =
+        liveSession?.surface ??
+        sdkTagToSurface((await loadPersistedSession(input.sessionId))?.tag) ??
+        'code';
+      const data =
+        surface === 'code' && runtimeHostAdapter.hasReadyRuntime()
+          ? await runtimeHostAdapter.transcript(input.sessionId)
+          : await loadPersistedTranscript(input.sessionId);
+      if (!data || !Array.isArray(data.messages)) {
+        return withLocalNotices([]);
       }
-      // Workflow 结果/失败:SDK 把 run 的最终结果作为一条 _synthetic 的 `<task-completed …>`
-      // user 消息存进 transcript(位置正确)。识别它、原位渲染成 workflow 历史提示条——否则会被
-      // 下面的 `if (synthetic) continue` 丢掉,只能靠侧存储按 wall-clock 重排(SDK 压缩把时间戳
-      // 压平后 → resume 乱序/置顶)。见 historyWorkflowNoticeSchema。
-      if (synthetic && msg.role === 'user') {
-        // 一条合成消息可能批了多个 `<task-completed>` 块;逐块解析、只对**真 workflow run** 出 notice
-        // (dispatch_child_task 用同样的 wrapper、但没落盘目录 → isWorkflowRunDir 排除,避免误标)。
-        const blocks = parseTaskCompletedBlocks(extractUserText(msg.content));
-        if (blocks.length > 0) {
-          const { render, handled } = selectWorkflowBlocks(
-            blocks,
-            seenWorkflowRunIds,
-            workflowRunBaseDir,
-          );
-          for (const b of render) {
-            items.push({ kind: 'workflow_notice', text: b.text });
-            if (items.length >= 2000) break;
-          }
-          if (handled) continue; // 已处理(渲染或去重跳过)workflow 结果
-          // 否则(全是普通子任务 / 未落盘的 run)→ 落到下面的 synthetic-skip,和以前一样隐藏。
-        }
-      }
-      if (synthetic) continue; // 其余 SDK 合成消息隐藏
-      if (msg.role === 'system') continue; // system prompts 内部
+      const items: SessionHistoryItem[] = [];
 
-      if (msg.role === 'user') {
-        // user message 通常 = pure text;若是工具结果回灌 (content 是 tool_result block 数组),
-        // 则 text === '',不 emit user item (但 tool_results map 已经在第一步抽走了)
-        const userText = extractUserText(msg.content);
-        const imageBlocks = extractUserImages(msg.content);
-        const attachments =
-          imageBlocks.length > 0
-            ? await Promise.all(
-                imageBlocks.map((image, ordinal) =>
-                  issueSessionImageAttachment({
-                    sessionId: input.sessionId,
-                    artifactPath: image.path,
-                    ...(image.declaredMediaType !== undefined
-                      ? { declaredMediaType: image.declaredMediaType }
-                      : {}),
-                    ordinal,
-                  }),
-                ),
-              )
-            : [];
-        if (userText.length > 0 || attachments.length > 0) {
-          const messageTurnId = isRecord(msg) ? stringField(msg.turnId) : undefined;
-          const turnId = stringField(entry.turnId) ?? messageTurnId;
-          const turnUserOrdinal =
-            turnId !== undefined ? (visibleUserCountByTurnId.get(turnId) ?? 0) : undefined;
-          items.push({
-            kind: 'user',
-            content: userText,
-            ...(attachments.length > 0 ? { attachments } : {}),
-            // Real per-message time (see TranscriptEntryLike.timestamp). Only the user item
-            // needs it: it becomes a UserMessage whose sentAt drives composeMessages' merge
-            // with workflow notices; assistant/tool items become events that inherit the turn.
-            ...(entrySentAt !== undefined ? { sentAt: entrySentAt } : {}),
-            ...(turnId !== undefined ? { turnId, turnUserOrdinal: turnUserOrdinal! } : {}),
-          });
-          if (turnId !== undefined) {
-            visibleUserCountByTurnId.set(turnId, turnUserOrdinal! + 1);
-          }
-        }
-      } else if (msg.role === 'assistant') {
-        // assistant: 按 content blocks 顺序逐个发 — text/thinking 累积到下次 tool_use 边界
-        // flush 出 'assistant' item;tool_use 直接 emit 'tool_call' item
-        let textBuf = '';
-        let thinkingBuf = '';
-        const flushText = (): void => {
-          if (textBuf.length > 0 || thinkingBuf.length > 0) {
-            const contentItem: SessionHistoryItem =
-              thinkingBuf.length > 0
-                ? { kind: 'assistant', text: textBuf, thinking: thinkingBuf }
-                : { kind: 'assistant', text: textBuf };
-            items.push(
-              entrySentAt !== undefined ? { ...contentItem, sentAt: entrySentAt } : contentItem,
-            );
-            textBuf = '';
-            thinkingBuf = '';
-          }
-        };
-        const blocks = Array.isArray(msg.content)
-          ? msg.content
-          : typeof msg.content === 'string'
-            ? [{ type: 'text', text: msg.content }]
-            : [];
-        for (const block of blocks) {
+      // 第一步: 走一遍消息收集 toolId → result 映射 (tool_result 永远在 tool_use 之后,
+      // 但同一 message 里也可能有多个 tool_use,先扫一遍简化处理)
+      const toolResults = new Map<string, { content: string; isError: boolean }>();
+      for (const msg of data.messages) {
+        if (!Array.isArray(msg.content)) continue;
+        for (const block of msg.content) {
           if (!block || typeof block !== 'object') continue;
-          const t = (block as { type?: unknown }).type;
-          if (t === 'text') {
-            const s = (block as { text?: unknown }).text;
-            if (typeof s === 'string') textBuf += s;
-          } else if (t === 'thinking') {
-            const s = (block as { thinking?: unknown }).thinking;
-            if (typeof s === 'string') thinkingBuf += s;
-          } else if (t === 'tool_use') {
-            // 工具调用 → 先 flush 累积的 text/thinking,然后 emit tool_call item
-            flushText();
-            const id = (block as { id?: unknown }).id;
-            const name = (block as { name?: unknown }).name;
-            const rawInput = (block as { input?: unknown }).input;
-            if (typeof id === 'string' && typeof name === 'string') {
-              const matched = toolResults.get(id);
-              const tcItem: SessionHistoryItem = {
-                kind: 'tool_call',
-                toolId: id,
-                toolName: name,
-                ...(rawInput && typeof rawInput === 'object' && !Array.isArray(rawInput)
-                  ? { input: rawInput as Record<string, unknown> }
-                  : {}),
-                ...(matched !== undefined
-                  ? { result: matched.content, ...(matched.isError ? { isError: true } : {}) }
-                  : {}),
-              };
-              items.push(tcItem);
-            }
+          if ((block as { type?: unknown }).type !== 'tool_result') continue;
+          const id = (block as { tool_use_id?: unknown }).tool_use_id;
+          if (typeof id !== 'string') continue;
+          const content = flattenToolResultContent((block as { content?: unknown }).content);
+          const isError = Boolean((block as { is_error?: unknown }).is_error);
+          toolResults.set(id, { content, isError });
+        }
+      }
+
+      // 第二步: 按顺序拍平 messages 成 items
+      //
+      // v0.1.x 修复 "fork/rewind branch_summary 回放成假用户气泡": fork 回到某个分支点时,
+      // SDK 会在 lineage 里合成一条 role==='user' 的 context message,把"你之前探索过的另一条
+      // 分支"的摘要塞给 LLM 当上下文——但这段文字从来不是用户真的打的字。旧逻辑直接按
+      // msg.role 拍平,于是这段摘要在滚动区里显示成一条用户消息(压缩产生的 compaction 摘要
+      // 同理,role==='system')。
+      //
+      // loadFullTranscript (SDK 0.7.51+) 额外提供 transcriptEntries——每条 message 对应一个
+      // entry,entry.type 精确标出 'message' / 'compaction' / 'branch_summary',不需要靠猜 role。
+      // 有了它就按 entry.type 路由:branch_summary/compaction → 非 user 的 lineage_notice 历史
+      // 提示条(entry.summary 是没被模板包裹的干净文本,优先用它);其余(type==='message')走
+      // 原有逻辑不变。旧 SDK / 测试 mock 没有 transcriptEntries 时,整段回退成"每条 message
+      // 都当作 type:'message'"——即完全不变的旧行为。
+      const rawTranscriptEntries = (data as { transcriptEntries?: unknown }).transcriptEntries;
+      type TranscriptEntryLike = {
+        readonly entryId?: unknown;
+        readonly logicalId?: unknown;
+        readonly sourceEntryId?: unknown;
+        readonly type?: unknown;
+        readonly source?: unknown;
+        readonly message: (typeof data.messages)[number];
+        readonly summary?: unknown;
+        readonly payload?: unknown;
+        readonly taskResults?: unknown;
+        readonly turnId?: unknown;
+        readonly content?: unknown;
+        // SDK 0.7.51+ SessionTranscriptEntry.timestamp (ISO string) — the real per-message
+        // wall-clock. We forward it as the history item's sentAt so restored turns keep their
+        // true time instead of all collapsing onto session.createdAt (the renderer fallback).
+        // Without it, workflow notices — which DO carry real run times — sort above the whole
+        // restored conversation after a compaction re-root (createdAt is reset later than the run).
+        readonly timestamp?: unknown;
+        // SDK marks each transcript entry active (on the live branch) or not. Used to scope
+        // dedup to inactive old-island re-clones only — the active branch is never collapsed.
+        readonly active?: unknown;
+      };
+      const entries: readonly TranscriptEntryLike[] = Array.isArray(rawTranscriptEntries)
+        ? (rawTranscriptEntries as TranscriptEntryLike[])
+        : data.messages.map((message) => ({ type: 'message', message }));
+
+      // Workflow 结果原位还原用:一条 `<task-completed>` 块只有当它的 task_id 命名了一个 Space 落盘的
+      // workflow run(<space>/workflow-runs/<runId>/)才算 workflow —— 借此把用同样 wrapper 的普通
+      // dispatch_child_task 排除掉(review HIGH)。
+      const workflowRunBaseDir = path.join(getSpaceDataDir(), 'workflow-runs');
+      // 同一个 workflow run 的结果只渲染一次:被压缩/re-root 过的 session,loadFullTranscript 的全谱系里
+      // 同一条 `<task-completed>` 会重复出现(旧的侧存储按 finished:runId:status 去重、只显一份;approach A
+      // 改按 transcript 位置渲染后丢了去重 → 同一份报告显示多次)。按 runId 去重、保留**首次**出现的位置。
+      const seenWorkflowRunIds = new Set<string>();
+      const visibleUserCountByTurnId = new Map<string, number>();
+      // 整段对话重复渲染修复:loadFullTranscript 返回全谱系。① 新 session:旧岛消息被 evict 成
+      // "[compacted]" 占位 → 跳过;② 旧 session(更早 SDK 写的):旧岛保留真内容、每次压缩逐字节克隆一份
+      // → 按内容折叠。去重**限定在 inactive 旧岛**,活动分支一条不碰(不折叠合法重复的活动消息)。
+      // 见 transcript-dedup.ts 的机制说明。
+      const dedupedEntries = dedupeTranscriptEntries(entries);
+
+      for (const entry of dedupedEntries) {
+        const entrySentAt = parseEntrySentAt(entry.timestamp);
+        if (entry.type === 'client_notice') {
+          const notice = clientNoticeHistoryItemFromEntry(entry, entrySentAt);
+          if (notice !== null) {
+            items.push(notice);
           }
           if (items.length >= 2000) break;
+          continue;
         }
-        flushText();
+        if (entry.type === 'branch_summary' || entry.type === 'compaction') {
+          const rawSummary =
+            typeof entry.summary === 'string' && entry.summary.trim().length > 0
+              ? entry.summary
+              : extractUserText((entry.message as { content?: unknown }).content);
+          const text = rawSummary.trim();
+          if (text.length > 0) {
+            const compactionPayload = isRecord(entry.payload) ? entry.payload : undefined;
+            const tokensBefore = compactionPayload?.tokensBefore;
+            const tokensAfter = compactionPayload?.tokensAfter;
+            const hasCompactStats =
+              entry.type === 'compaction' &&
+              typeof tokensBefore === 'number' &&
+              Number.isInteger(tokensBefore) &&
+              tokensBefore >= 0 &&
+              tokensBefore <= 10_000_000 &&
+              typeof tokensAfter === 'number' &&
+              Number.isInteger(tokensAfter) &&
+              tokensAfter >= 0 &&
+              tokensAfter <= 10_000_000;
+            items.push({
+              kind: 'lineage_notice',
+              noticeKind: entry.type,
+              text,
+              ...(hasCompactStats ? { tokensBefore, tokensAfter } : {}),
+            });
+          }
+          if (items.length >= 2000) break;
+          continue;
+        }
+        const taskResults = extractTaskResults(entry);
+        if (entry.type === 'task_result' || taskResults.length > 0) {
+          appendWorkflowTaskResultNotices(taskResults, seenWorkflowRunIds, items);
+          if (items.length >= 2000) break;
+          // Consume the entry only if a real workflow run was recognized. Legacy transcripts
+          // (recorded before structured task-result metadata) have the SDK reconstruct
+          // `_taskResults` stamped source:'child_task' even for real run_workflow results, so
+          // the block above renders nothing. Fall through to the `<task-completed>` text parse
+          // below — which cross-checks isWorkflowRunDir() against disk instead of trusting
+          // `source` — so those notices still restore (App.tsx's old run-dir side-store restore
+          // that used to cover this was removed this release). Guard on a parseable message so a
+          // messageless task_result entry still short-circuits instead of hitting `msg.role`.
+          if (taskResults.some((r) => r.source === 'workflow') || !isRecord(entry.message))
+            continue;
+        }
+        const msg = entry.message;
+        const meta = msg as {
+          _source?: unknown;
+          source?: unknown;
+          _synthetic?: unknown;
+          synthetic?: unknown;
+        };
+        const source = meta.source ?? meta._source;
+        const synthetic = meta.synthetic === true || meta._synthetic === true;
+        if (msg.role === 'user' && source === 'sidecar-verifier') {
+          const sidecarText = extractUserText(msg.content);
+          if (sidecarText.length > 0) {
+            items.push({
+              kind: 'sidecar_message',
+              message: {
+                source: 'sidecar-verifier',
+                verdict: 'revise',
+                recipient: 'main-agent',
+                delivery: 'synthetic-user-message',
+                content: sidecarText,
+                // #12 fix: SDK 不持久化真实 verdict/delivery/suggestedFix——上面几个字段都是
+                // 占位值,不是这条消息当时真实的判定结果。标 historical=true 让 renderer 用中性
+                // 的"历史记录"标签展示,不再断言 verdict==='revise'。
+                historical: true,
+              },
+            });
+          }
+          continue;
+        }
+        // Workflow 结果/失败:SDK 把 run 的最终结果作为一条 _synthetic 的 `<task-completed …>`
+        // user 消息存进 transcript(位置正确)。识别它、原位渲染成 workflow 历史提示条——否则会被
+        // 下面的 `if (synthetic) continue` 丢掉,只能靠侧存储按 wall-clock 重排(SDK 压缩把时间戳
+        // 压平后 → resume 乱序/置顶)。见 historyWorkflowNoticeSchema。
+        if (synthetic && msg.role === 'user') {
+          // 一条合成消息可能批了多个 `<task-completed>` 块;逐块解析、只对**真 workflow run** 出 notice
+          // (dispatch_child_task 用同样的 wrapper、但没落盘目录 → isWorkflowRunDir 排除,避免误标)。
+          const blocks = parseTaskCompletedBlocks(extractUserText(msg.content));
+          if (blocks.length > 0) {
+            const { render, handled } = selectWorkflowBlocks(
+              blocks,
+              seenWorkflowRunIds,
+              workflowRunBaseDir,
+            );
+            for (const b of render) {
+              items.push({ kind: 'workflow_notice', text: b.text });
+              if (items.length >= 2000) break;
+            }
+            if (handled) continue; // 已处理(渲染或去重跳过)workflow 结果
+            // 否则(全是普通子任务 / 未落盘的 run)→ 落到下面的 synthetic-skip,和以前一样隐藏。
+          }
+        }
+        if (synthetic) continue; // 其余 SDK 合成消息隐藏
+        if (msg.role === 'system') continue; // system prompts 内部
+
+        if (msg.role === 'user') {
+          // user message 通常 = pure text;若是工具结果回灌 (content 是 tool_result block 数组),
+          // 则 text === '',不 emit user item (但 tool_results map 已经在第一步抽走了)
+          const userText = extractUserText(msg.content);
+          const imageBlocks = extractUserImages(msg.content);
+          const attachments =
+            imageBlocks.length > 0
+              ? await Promise.all(
+                  imageBlocks.map((image, ordinal) =>
+                    issueSessionImageAttachment({
+                      sessionId: input.sessionId,
+                      artifactPath: image.path,
+                      ...(image.declaredMediaType !== undefined
+                        ? { declaredMediaType: image.declaredMediaType }
+                        : {}),
+                      ordinal,
+                    }),
+                  ),
+                )
+              : [];
+          if (userText.length > 0 || attachments.length > 0) {
+            const messageTurnId = isRecord(msg) ? stringField(msg.turnId) : undefined;
+            const turnId = stringField(entry.turnId) ?? messageTurnId;
+            const turnUserOrdinal =
+              turnId !== undefined ? (visibleUserCountByTurnId.get(turnId) ?? 0) : undefined;
+            items.push({
+              kind: 'user',
+              content: userText,
+              ...(attachments.length > 0 ? { attachments } : {}),
+              // Real per-message time (see TranscriptEntryLike.timestamp). Only the user item
+              // needs it: it becomes a UserMessage whose sentAt drives composeMessages' merge
+              // with workflow notices; assistant/tool items become events that inherit the turn.
+              ...(entrySentAt !== undefined ? { sentAt: entrySentAt } : {}),
+              ...(turnId !== undefined ? { turnId, turnUserOrdinal: turnUserOrdinal! } : {}),
+            });
+            if (turnId !== undefined) {
+              visibleUserCountByTurnId.set(turnId, turnUserOrdinal! + 1);
+            }
+          }
+        } else if (msg.role === 'assistant') {
+          // assistant: 按 content blocks 顺序逐个发 — text/thinking 累积到下次 tool_use 边界
+          // flush 出 'assistant' item;tool_use 直接 emit 'tool_call' item
+          let textBuf = '';
+          let thinkingBuf = '';
+          const flushText = (): void => {
+            if (textBuf.length > 0 || thinkingBuf.length > 0) {
+              const contentItem: SessionHistoryItem =
+                thinkingBuf.length > 0
+                  ? { kind: 'assistant', text: textBuf, thinking: thinkingBuf }
+                  : { kind: 'assistant', text: textBuf };
+              items.push(
+                entrySentAt !== undefined ? { ...contentItem, sentAt: entrySentAt } : contentItem,
+              );
+              textBuf = '';
+              thinkingBuf = '';
+            }
+          };
+          const blocks = Array.isArray(msg.content)
+            ? msg.content
+            : typeof msg.content === 'string'
+              ? [{ type: 'text', text: msg.content }]
+              : [];
+          for (const block of blocks) {
+            if (!block || typeof block !== 'object') continue;
+            const t = (block as { type?: unknown }).type;
+            if (t === 'text') {
+              const s = (block as { text?: unknown }).text;
+              if (typeof s === 'string') textBuf += s;
+            } else if (t === 'thinking') {
+              const s = (block as { thinking?: unknown }).thinking;
+              if (typeof s === 'string') thinkingBuf += s;
+            } else if (t === 'tool_use') {
+              // 工具调用 → 先 flush 累积的 text/thinking,然后 emit tool_call item
+              flushText();
+              const id = (block as { id?: unknown }).id;
+              const name = (block as { name?: unknown }).name;
+              const rawInput = (block as { input?: unknown }).input;
+              if (typeof id === 'string' && typeof name === 'string') {
+                const matched = toolResults.get(id);
+                const tcItem: SessionHistoryItem = {
+                  kind: 'tool_call',
+                  toolId: id,
+                  toolName: name,
+                  ...(rawInput && typeof rawInput === 'object' && !Array.isArray(rawInput)
+                    ? { input: rawInput as Record<string, unknown> }
+                    : {}),
+                  ...(matched !== undefined
+                    ? { result: matched.content, ...(matched.isError ? { isError: true } : {}) }
+                    : {}),
+                };
+                items.push(tcItem);
+              }
+            }
+            if (items.length >= 2000) break;
+          }
+          flushText();
+        }
+        if (items.length >= 2000) break;
       }
-      if (items.length >= 2000) break;
-    }
-    return withLocalNotices(items);
-  });
+      return withLocalNotices(items);
+    }),
+  );
 }
 
 /** SessionTranscriptEntry.timestamp → epoch ms. SDK gives an ISO string; tolerate a raw

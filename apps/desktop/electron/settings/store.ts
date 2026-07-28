@@ -18,13 +18,19 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { z } from 'zod';
 import {
+  coderRuntimeModeSchema,
   terminalShellPreferenceSchema,
   windowCloseBehaviorSchema,
+  type CoderRuntimeModeT,
   type SpaceRuntimeDefaultsT,
   type TerminalShellPreferenceT,
   type WindowCloseBehaviorT,
 } from '@kodax-space/space-ipc-schema';
-import { replaceFileIfUnchanged } from '../kodax/atomic-file.js';
+import {
+  replaceFileIfUnchanged,
+  replaceFileWithoutFollowingAliases,
+  writeNewFileExclusive,
+} from '../kodax/atomic-file.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -61,26 +67,53 @@ const fileV2LooseSchema = z.object({
   runtimeDefaults: z.unknown().optional(),
 });
 
+const fileV3LooseSchema = fileV2LooseSchema.extend({
+  version: z.literal(3),
+  coderRuntimeMode: coderRuntimeModeSchema.catch('daemon').default('daemon'),
+});
+
 export interface SpaceSettings {
-  readonly version: 2;
+  readonly version: 3;
   readonly defaultWorkspace: string;
   readonly languageMode: 'system' | 'zh-CN' | 'en-US';
   readonly terminalShell: TerminalShellPreferenceT;
   readonly windowCloseBehavior: WindowCloseBehaviorT;
+  readonly coderRuntimeMode: CoderRuntimeModeT;
   readonly runtimeDefaults: SpaceRuntimeDefaultsT;
 }
 
 const DEFAULT_WORKSPACE = path.join(os.homedir(), 'kodax_workspace');
 
-function normalizeSettings(raw: unknown): SpaceSettings | null {
+function defaultCoderRuntimeMode(runtimeHostEnvironment: string | undefined): CoderRuntimeModeT {
+  return runtimeHostEnvironment?.trim().toLowerCase() === 'legacy' ? 'embedded' : 'daemon';
+}
+
+function normalizeSettings(
+  raw: unknown,
+  runtimeHostEnvironment: string | undefined,
+): SpaceSettings | null {
+  const v3 = fileV3LooseSchema.safeParse(raw);
+  if (v3.success) {
+    return {
+      version: 3,
+      defaultWorkspace: v3.data.defaultWorkspace,
+      languageMode: v3.data.languageMode,
+      terminalShell: v3.data.terminalShell,
+      windowCloseBehavior: v3.data.windowCloseBehavior,
+      coderRuntimeMode: v3.data.coderRuntimeMode,
+      runtimeDefaults: cleanRuntimeDefaults(v3.data.runtimeDefaults),
+    };
+  }
+
   const v2 = fileV2LooseSchema.safeParse(raw);
   if (v2.success) {
     return {
-      version: 2,
+      version: 3,
       defaultWorkspace: v2.data.defaultWorkspace,
       languageMode: v2.data.languageMode,
       terminalShell: v2.data.terminalShell,
       windowCloseBehavior: v2.data.windowCloseBehavior,
+      coderRuntimeMode: defaultCoderRuntimeMode(runtimeHostEnvironment),
       runtimeDefaults: cleanRuntimeDefaults(v2.data.runtimeDefaults),
     };
   }
@@ -88,11 +121,12 @@ function normalizeSettings(raw: unknown): SpaceSettings | null {
   const v1 = fileV1Schema.safeParse(raw);
   if (v1.success) {
     return {
-      version: 2,
+      version: 3,
       defaultWorkspace: v1.data.defaultWorkspace,
       languageMode: v1.data.languageMode,
       terminalShell: 'auto',
       windowCloseBehavior: 'ask',
+      coderRuntimeMode: defaultCoderRuntimeMode(runtimeHostEnvironment),
       runtimeDefaults: {},
     };
   }
@@ -110,6 +144,12 @@ function hasRetiredAgentMode(raw: unknown): boolean {
   return agentMode === 'amaw' || agentMode === 'ama-workflow';
 }
 
+function hasPreV3Schema(raw: unknown): boolean {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false;
+  const version = (raw as Record<string, unknown>).version;
+  return version === 1 || version === 2;
+}
+
 function migrateRetiredAgentMode(raw: unknown): unknown {
   if (!hasRetiredAgentMode(raw)) return raw;
   const settings = raw as Record<string, unknown>;
@@ -117,6 +157,27 @@ function migrateRetiredAgentMode(raw: unknown): unknown {
   return {
     ...settings,
     runtimeDefaults: { ...runtimeDefaults, agentMode: 'ama' },
+  };
+}
+
+function migratePreV3Settings(raw: unknown, normalized: SpaceSettings): unknown {
+  const rawSettings =
+    raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+  const rawRuntimeDefaults =
+    rawSettings.runtimeDefaults &&
+    typeof rawSettings.runtimeDefaults === 'object' &&
+    !Array.isArray(rawSettings.runtimeDefaults)
+      ? (rawSettings.runtimeDefaults as Record<string, unknown>)
+      : {};
+  const runtimeDefaults: Record<string, unknown> = { ...rawRuntimeDefaults };
+  for (const key of Object.keys(runtimeDefaultFieldSchemas)) {
+    delete runtimeDefaults[key];
+  }
+  Object.assign(runtimeDefaults, normalized.runtimeDefaults);
+  return {
+    ...rawSettings,
+    ...normalized,
+    runtimeDefaults,
   };
 }
 
@@ -151,30 +212,44 @@ function cleanRuntimeDefaults(defaults: unknown): SpaceRuntimeDefaultsT {
 
 export class SettingsStore {
   private cached: SpaceSettings | null = null;
+  private loadPromise: Promise<SpaceSettings> | null = null;
   private writeLock: Promise<SpaceSettings | void> = Promise.resolve();
 
   constructor(
     private readonly filePath: string = SETTINGS_FILE,
     private readonly dir: string = SPACE_DATA_DIR,
+    private readonly runtimeHostEnvironment: string | undefined = process.env
+      .KODAX_SPACE_RUNTIME_HOST,
   ) {}
 
   async load(): Promise<SpaceSettings> {
     if (this.cached) return { ...this.cached, runtimeDefaults: { ...this.cached.runtimeDefaults } };
+    const inFlight = this.loadPromise ?? this.loadUncached();
+    this.loadPromise = inFlight;
+    try {
+      return await inFlight;
+    } finally {
+      if (this.loadPromise === inFlight) this.loadPromise = null;
+    }
+  }
+
+  private async loadUncached(): Promise<SpaceSettings> {
+    let settingsFileMissing = false;
     try {
       const raw = await fs.readFile(this.filePath);
       const decoded = JSON.parse(raw.toString('utf-8')) as unknown;
-      const parsed = normalizeSettings(decoded);
+      const parsed = normalizeSettings(decoded, this.runtimeHostEnvironment);
       if (parsed) {
         this.cached = parsed;
-        if (hasRetiredAgentMode(decoded)) {
-          // Match KodaX v0.7.72: retire the legacy mode on disk exactly once.
-          // Replace only the exact bytes read above, so a concurrent Space instance
-          // cannot lose newer settings. Failure is non-fatal; a later launch retries.
+        if (hasPreV3Schema(decoded) || hasRetiredAgentMode(decoded)) {
+          // Persist schema upgrades and retired modes exactly once. Replace only
+          // the exact bytes read above, so a concurrent Space instance cannot
+          // lose newer settings. Failure is non-fatal; a later launch retries.
           try {
-            await this.migrateRetiredAgentMode(decoded, raw);
+            await this.migrateSettings(decoded, parsed, raw);
           } catch (err) {
             console.warn(
-              `[SettingsStore] retired agent-mode migration failed: ${err instanceof Error ? err.message : String(err)}`,
+              `[SettingsStore] settings migration failed: ${err instanceof Error ? err.message : String(err)}`,
             );
           }
         }
@@ -183,19 +258,26 @@ export class SettingsStore {
       console.warn(`[SettingsStore] ${this.filePath} schema invalid, falling back to defaults`);
     } catch (err) {
       const e = err as NodeJS.ErrnoException;
-      if (e.code !== 'ENOENT') {
+      if (e.code === 'ENOENT') {
+        settingsFileMissing = true;
+      } else {
         console.warn(`[SettingsStore] read failed (${e.code}), falling back to defaults`);
       }
     }
     // Fallback
-    this.cached = {
-      version: 2,
+    const defaults: SpaceSettings = {
+      version: 3,
       defaultWorkspace: DEFAULT_WORKSPACE,
       languageMode: 'system',
       terminalShell: 'auto',
       windowCloseBehavior: 'ask',
+      coderRuntimeMode: defaultCoderRuntimeMode(this.runtimeHostEnvironment),
       runtimeDefaults: {},
     };
+    // Do not expose the in-memory default until its exclusive create settles.
+    // A concurrent setter must first observe whichever complete document won
+    // the create race instead of updating against an unpublished default.
+    this.cached = settingsFileMissing ? await this.persistInitialSettings(defaults) : defaults;
     return { ...this.cached, runtimeDefaults: { ...this.cached.runtimeDefaults } };
   }
 
@@ -263,6 +345,10 @@ export class SettingsStore {
     return this.update((current) => ({ ...current, windowCloseBehavior }));
   }
 
+  async setCoderRuntimeMode(coderRuntimeMode: CoderRuntimeModeT): Promise<SpaceSettings> {
+    return this.update((current) => ({ ...current, coderRuntimeMode }));
+  }
+
   async setRuntimeDefaults(
     runtimeDefaults: Partial<SpaceRuntimeDefaultsT>,
   ): Promise<SpaceSettings> {
@@ -292,9 +378,11 @@ export class SettingsStore {
         });
 
         await fs.mkdir(this.dir, { recursive: true });
-        const tmp = this.filePath + '.tmp';
-        await fs.writeFile(tmp, JSON.stringify(next, null, 2), 'utf-8');
-        await fs.rename(tmp, this.filePath);
+        await replaceFileWithoutFollowingAliases(
+          this.filePath,
+          Buffer.from(JSON.stringify(next, null, 2), 'utf-8'),
+          'settings changed during update',
+        );
 
         // A failed write must not make the in-memory value look persisted.
         this.cached = next;
@@ -305,11 +393,15 @@ export class SettingsStore {
     return { ...committed, runtimeDefaults: { ...committed.runtimeDefaults } };
   }
 
-  private async migrateRetiredAgentMode(decoded: unknown, originalBytes: Buffer): Promise<void> {
-    const migratedBytes = Buffer.from(
-      JSON.stringify(migrateRetiredAgentMode(decoded), null, 2),
-      'utf-8',
-    );
+  private async migrateSettings(
+    decoded: unknown,
+    normalized: SpaceSettings,
+    originalBytes: Buffer,
+  ): Promise<void> {
+    const migrated = hasPreV3Schema(decoded)
+      ? migratePreV3Settings(decoded, normalized)
+      : migrateRetiredAgentMode(decoded);
+    const migratedBytes = Buffer.from(JSON.stringify(migrated, null, 2), 'utf-8');
     this.writeLock = this.writeLock
       .catch(() => undefined)
       .then(async () => {
@@ -317,11 +409,46 @@ export class SettingsStore {
           this.filePath,
           migratedBytes,
           sha256(originalBytes),
-          'settings changed during retired agent-mode migration',
+          'settings changed during schema migration',
           MAX_SETTINGS_MIGRATION_BYTES,
         );
       });
     await this.writeLock;
+  }
+
+  private async persistInitialSettings(defaults: SpaceSettings): Promise<SpaceSettings> {
+    try {
+      await fs.mkdir(this.dir, { recursive: true });
+      await writeNewFileExclusive(
+        this.filePath,
+        Buffer.from(JSON.stringify(defaults, null, 2), 'utf-8'),
+        'settings were created by another Space instance',
+      );
+      return defaults;
+    } catch (error) {
+      // A concurrent Space instance may have created a newer preference after
+      // this load observed ENOENT. Prefer that complete document over the local
+      // default and never overwrite it.
+      try {
+        const currentBytes = await fs.readFile(this.filePath);
+        const decoded = JSON.parse(currentBytes.toString('utf-8')) as unknown;
+        const current = normalizeSettings(decoded, this.runtimeHostEnvironment);
+        if (current) {
+          if (hasPreV3Schema(decoded) || hasRetiredAgentMode(decoded)) {
+            await this.migrateSettings(decoded, current, currentBytes).catch(() => undefined);
+          }
+          return current;
+        }
+      } catch {
+        // The original create error below is more useful than a secondary read.
+      }
+      console.warn(
+        `[SettingsStore] initial settings persistence failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return defaults;
+    }
   }
 }
 

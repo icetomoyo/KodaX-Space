@@ -9,6 +9,10 @@ import { BUILTIN_SLASH_COMMANDS } from '../slash/builtin.js';
 import { kodaxHost } from '../kodax/host.js';
 import { assertSessionSendScope } from './session.js';
 import { runtimeHostAdapter } from '../kodax/runtime-host-adapter.js';
+import {
+  runWithCoderAdmission,
+  type CoderAdmissionOptions,
+} from '../kodax/coder-runtime-mode-switch.js';
 import type { ChannelInput, ChannelOutput } from '@kodax-space/space-ipc-schema';
 
 /**
@@ -55,51 +59,55 @@ export async function executeSlashCommand(input: SlashExecInput): Promise<SlashE
     args: input.args,
   });
 }
-export function registerSlashChannels(): void {
+export function registerSlashChannels(options: CoderAdmissionOptions = {}): void {
   // slash.discover — renderer 取最新命令列表 (builtin + 未来 user/.kodax/commands)
-  registerChannel('slash.discover', async () => {
-    const local = [...listSlashCommands()];
-    if (!runtimeHostAdapter.isRuntimeSelected()) return { commands: local };
-    try {
-      const runtime = (await runtimeHostAdapter.listRuntimeCommands())
-        .map((command) => ({
-          name: command.name,
-          ...(command.aliases ? { aliases: [...command.aliases].slice(0, 8) } : {}),
-          description: command.description.slice(0, 512),
-          ...(command.argumentHint || command.usage
-            ? { argsHint: (command.argumentHint ?? command.usage)!.slice(0, 2_048) }
-            : {}),
-          source: command.source === 'builtin' ? ('builtin' as const) : ('user' as const),
-        }))
-        .filter(
-          (command) =>
-            /^[a-z][a-z0-9-]{0,63}$/.test(command.name) &&
-            (command.aliases ?? []).every(
-              (alias) => alias === '?' || /^[a-z][a-z0-9-]*$/.test(alias),
-            ),
+  registerChannel('slash.discover', () =>
+    runWithCoderAdmission(options, async () => {
+      const local = [...listSlashCommands()];
+      if (!runtimeHostAdapter.isRuntimeSelected()) return { commands: local };
+      try {
+        const runtime = (await runtimeHostAdapter.listRuntimeCommands())
+          .map((command) => ({
+            name: command.name,
+            ...(command.aliases ? { aliases: [...command.aliases].slice(0, 8) } : {}),
+            description: command.description.slice(0, 512),
+            ...(command.argumentHint || command.usage
+              ? { argsHint: (command.argumentHint ?? command.usage)!.slice(0, 2_048) }
+              : {}),
+            source: command.source === 'builtin' ? ('builtin' as const) : ('user' as const),
+          }))
+          .filter(
+            (command) =>
+              /^[a-z][a-z0-9-]{0,63}$/.test(command.name) &&
+              (command.aliases ?? []).every(
+                (alias) => alias === '?' || /^[a-z][a-z0-9-]*$/.test(alias),
+              ),
+          );
+        const localNames = new Set(
+          local.flatMap((command) => [command.name, ...(command.aliases ?? [])]),
         );
-      const localNames = new Set(
-        local.flatMap((command) => [command.name, ...(command.aliases ?? [])]),
-      );
-      return {
-        commands: [...local, ...runtime.filter((command) => !localNames.has(command.name))].slice(
-          0,
-          200,
-        ),
-      };
-    } catch (error) {
-      console.warn(
-        '[slash.discover] Coder daemon catalog unavailable; using Space commands:',
-        error instanceof Error ? error.message : error,
-      );
-      return { commands: local };
-    }
-  });
+        return {
+          commands: [...local, ...runtime.filter((command) => !localNames.has(command.name))].slice(
+            0,
+            200,
+          ),
+        };
+      } catch (error) {
+        console.warn(
+          '[slash.discover] Coder daemon catalog unavailable; using Space commands:',
+          error instanceof Error ? error.message : error,
+        );
+        return { commands: local };
+      }
+    }),
+  );
 
   // slash.exec — 执行命令。handler 内部自己做参数校验 + 返回 ok/message/echo。
   //
   // 不在这里加 try/catch：handler 异常会冒泡到 registerChannel 的统一捕获，
   // 走 IpcResult fail('HANDLER_ERROR', ...)（见 ipc/register.ts:44）。重复包一层
   // 既绕过统一 sanitisation，又会把内部错误对象的 message 字段直送 renderer。
-  registerChannel('slash.exec', executeSlashCommand);
+  registerChannel('slash.exec', (input) =>
+    runWithCoderAdmission(options, () => executeSlashCommand(input)),
+  );
 }

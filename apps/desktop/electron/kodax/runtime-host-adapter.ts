@@ -80,6 +80,10 @@ import {
 } from './runtime/runtime-agent-projection.js';
 import { RuntimeAgentTreeObserver } from './runtime/runtime-agent-tree-observer.js';
 import { buildChildActivity, isTransientChildEvent, type ChildMeta } from './workflow-activity.js';
+import {
+  createCoderOwnerRecoveryRestartError,
+  isCoderOwnerRecoveryRestartRequired,
+} from './coder-owner-recovery-error.js';
 
 export type RuntimeHostMode = 'legacy' | 'runtime';
 export type RuntimeHostState =
@@ -511,6 +515,7 @@ interface RuntimeOwnerControl {
   acquireInline(input: {
     readonly homeDir?: string;
     readonly profile: string;
+    readonly enableRollback?: boolean;
   }): Promise<RuntimeInlineOwnerHandle>;
   getState(input: {
     readonly homeDir?: string;
@@ -792,7 +797,7 @@ function isSessionSettingsRevisionConflict(error: unknown): boolean {
 }
 
 export class RuntimeHostAdapter {
-  private readonly mode: RuntimeHostMode;
+  private mode: RuntimeHostMode;
   private readonly profileRoot: string;
   private readonly runtimeHomeDir: string | undefined;
   private readonly autoModeDefaultsResolver: () => Promise<KodaxAutoModeDefaults>;
@@ -841,7 +846,14 @@ export class RuntimeHostAdapter {
   private reconnectAttempt = 0;
   private readonly runtimeEventParser?: RuntimeEventParser;
   private inlineOwner: RuntimeInlineOwnerHandle | undefined;
+  /**
+   * True after an owner transition starts and until it is either compensated
+   * back to a usable host or the process restarts. Runtime initialization,
+   * reconnect, and health polling must never create fresh daemon activity in
+   * this window.
+   */
   private rollbackInProgress = false;
+  private clientVersion = '0.0.0-dev';
 
   constructor(options: RuntimeHostAdapterOptions = {}) {
     this.mode = options.mode ?? resolveRuntimeHostMode(process.env.KODAX_SPACE_RUNTIME_HOST);
@@ -867,6 +879,42 @@ export class RuntimeHostAdapter {
 
   selectedHost(): RuntimeHostMode {
     return this.mode;
+  }
+
+  configureStartupMode(mode: RuntimeHostMode): void {
+    if (this.state !== 'uninitialized' || this.initializePromise !== null) {
+      throw new Error('Coder startup mode can only be configured before initialization.');
+    }
+    this.mode = mode;
+  }
+
+  /**
+   * Reconcile the persisted Space preference with the SDK owner policy before
+   * any Runtime connection is created. Mode switches intentionally order their
+   * two durable writes so the Space setting is authoritative after a crash:
+   * daemon preference + unowned inline policy is safely completed here.
+   */
+  async reconcileStartupOwnerPolicy(): Promise<void> {
+    if (this.state !== 'uninitialized' || this.initializePromise !== null) {
+      throw new Error('Coder owner policy can only be reconciled before initialization.');
+    }
+    if (this.mode !== 'runtime') return;
+    const ownerState = await this.ownerControl.getState({
+      ...this.runtimeOwnerTarget(),
+    });
+    if (ownerState.ownerStatus === 'unreadable') {
+      throw new Error('Coder owner state is unreadable; refusing startup policy recovery.');
+    }
+    if (ownerState.policy.mode !== 'inline') return;
+    if (ownerState.ownerStatus !== 'unowned') {
+      throw new Error(
+        'Coder is configured for daemon mode, but an inline owner is still active; ' +
+          'refusing to start a competing owner.',
+      );
+    }
+    await this.ownerControl.enableDaemon({
+      ...this.runtimeOwnerTarget(),
+    });
   }
 
   isRuntimeSelected(): boolean {
@@ -902,6 +950,13 @@ export class RuntimeHostAdapter {
   }
 
   initialize(clientVersion?: string): Promise<void> {
+    const requestedClientVersion = clientVersion?.trim();
+    if (requestedClientVersion) this.clientVersion = requestedClientVersion;
+    if (this.rollbackInProgress) {
+      return Promise.reject(
+        new Error('Coder owner transition is in progress; Runtime initialization is blocked.'),
+      );
+    }
     if (this.mode === 'legacy') {
       return this.initializeLegacyOwner();
     }
@@ -909,7 +964,7 @@ export class RuntimeHostAdapter {
     if (this.state === 'closed') return Promise.reject(new Error('Runtime host is closed'));
     if (this.initializePromise !== null) return this.initializePromise;
     this.state = 'initializing';
-    const version = clientVersion?.trim() || '0.1.33';
+    const version = this.clientVersion;
     let pendingRuntime: KodaXDaemonRuntime | null = null;
     let attachedHostToolLeaseId: string | undefined;
     this.initializePromise = this.identityStore
@@ -1121,7 +1176,10 @@ export class RuntimeHostAdapter {
     if (this.initializePromise !== null) return this.initializePromise;
     this.state = 'initializing';
     this.initializePromise = this.ownerControl
-      .acquireInline(this.runtimeOwnerTarget())
+      .acquireInline({
+        ...this.runtimeOwnerTarget(),
+        enableRollback: true,
+      })
       .then((owner) => {
         if (this.state === 'closed') {
           owner.close();
@@ -1178,7 +1236,7 @@ export class RuntimeHostAdapter {
   }
 
   private scheduleReconnect(retryOnlyTransientHealthFailure = false): void {
-    if (this.state === 'closed' || this.reconnectTimer) return;
+    if (this.state === 'closed' || this.rollbackInProgress || this.reconnectTimer) return;
     const delay = Math.min(30_000, 1_000 * 2 ** Math.min(this.reconnectAttempt, 5));
     this.reconnectTimer = setTimeout(() => {
       if (this.state === 'closed') {
@@ -1210,7 +1268,13 @@ export class RuntimeHostAdapter {
 
   private async requireRuntime(): Promise<KodaXDaemonRuntime> {
     if (this.mode !== 'runtime') throw new Error('Runtime host is disabled by the legacy selector');
+    if (this.rollbackInProgress) {
+      throw new Error('Coder owner transition is in progress; Runtime operations are blocked.');
+    }
     await this.initialize();
+    if (this.rollbackInProgress) {
+      throw new Error('Coder owner transition is in progress; Runtime operations are blocked.');
+    }
     if (this.runtime === null) throw new Error('Runtime host failed to initialize');
     return this.runtime;
   }
@@ -2974,6 +3038,7 @@ export class RuntimeHostAdapter {
       await this.close();
       this.inlineOwner = await this.ownerControl.acquireInline({
         ...this.runtimeOwnerTarget(),
+        enableRollback: true,
       });
     } catch (error) {
       // The daemon has already committed the stop at this point. Do not leave the
@@ -2983,14 +3048,140 @@ export class RuntimeHostAdapter {
       try {
         await this.restoreDaemonOwner();
       } catch (restoreError) {
-        throw new AggregateError(
-          [error, restoreError],
-          'Coder daemon stopped, but Space could not complete or recover inline rollback.',
-        );
+        const errors = [error, restoreError];
+        const message =
+          'Coder daemon stopped, but Space could not complete or recover inline rollback.';
+        if (isCoderOwnerRecoveryRestartRequired(restoreError)) {
+          throw createCoderOwnerRecoveryRestartError(errors, message);
+        }
+        throw new AggregateError(errors, message);
       }
       throw error;
     }
     return rollback;
+  }
+
+  async prepareEmbeddedRestart(operationId?: string): Promise<void> {
+    if (this.mode !== 'runtime') {
+      throw new Error('Embedded restart preparation requires the daemon Coder host.');
+    }
+    if (this.hasReadyRuntime()) {
+      await this.prepareInlineRollback(operationId);
+      return;
+    }
+    if (this.state === 'initializing' || this.initializePromise !== null) {
+      throw new Error('Wait for Coder initialization to settle before changing its runtime mode.');
+    }
+
+    const shouldResumeReconnect = this.reconnectTimer !== undefined;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = undefined;
+    const previousState = this.state;
+    this.rollbackInProgress = true;
+    try {
+      const stopped = await this.idleDaemonStop();
+      if (!stopped.stopped && stopped.reason !== 'missing') {
+        throw new Error(
+          stopped.message ??
+            `Coder daemon cannot stop safely (${stopped.reason ?? 'unknown reason'}).`,
+        );
+      }
+      const ownerState = await this.ownerControl.getState({
+        ...this.runtimeOwnerTarget(),
+      });
+      if (ownerState.ownerStatus !== 'unowned') {
+        throw new Error(
+          ownerState.ownerStatus === 'unreadable'
+            ? 'Coder owner state is unreadable; refusing to enable embedded mode.'
+            : 'Another Coder owner is still active; refusing to enable embedded mode.',
+        );
+      }
+      this.inlineOwner = await this.ownerControl.acquireInline({
+        ...this.runtimeOwnerTarget(),
+        enableRollback: true,
+      });
+      this.state = 'closed';
+      this.lastError = undefined;
+    } catch (error) {
+      let restoreError: unknown;
+      try {
+        // acquireInline() writes inline policy before acquiring the owner fence.
+        // A failed acquisition therefore still requires an explicit daemon
+        // policy compensation before Space can reopen admission.
+        await this.restoreDaemonOwner();
+      } catch (caught) {
+        restoreError = caught;
+      }
+      if (restoreError === undefined) {
+        this.state = previousState;
+        this.lastError = sanitizeDiagnosticError(error);
+        if (shouldResumeReconnect && previousState === 'uninitialized') this.scheduleReconnect();
+        throw error;
+      }
+      this.state = 'failed';
+      this.lastError =
+        `${sanitizeDiagnosticError(error)}; daemon policy recovery failed: ` +
+        sanitizeDiagnosticError(restoreError);
+      throw createCoderOwnerRecoveryRestartError(
+        [error, restoreError],
+        'Space could not enter embedded mode or restore daemon owner policy.',
+      );
+    }
+  }
+
+  async prepareDaemonRestart(): Promise<RuntimeOwnerPolicyState> {
+    if (this.mode !== 'legacy') {
+      throw new Error('Daemon restart preparation requires the embedded Coder owner.');
+    }
+    if (this.state === 'initializing') {
+      throw new Error('Wait for Coder initialization to settle before changing its runtime mode.');
+    }
+    const recoveringFailedUnownedOwner = this.state === 'failed' && this.inlineOwner === undefined;
+    if (!this.hasLegacyOwner() && !recoveringFailedUnownedOwner) {
+      throw new Error('Daemon restart preparation requires the embedded Coder owner.');
+    }
+    if (recoveringFailedUnownedOwner) {
+      const ownerState = await this.ownerControl.getState({
+        ...this.runtimeOwnerTarget(),
+      });
+      if (ownerState.ownerStatus !== 'unowned') {
+        throw new Error(
+          ownerState.ownerStatus === 'unreadable'
+            ? 'Coder owner state is unreadable; refusing to enable daemon mode.'
+            : 'Another Coder owner is still active; refusing to enable daemon mode.',
+        );
+      }
+    }
+    this.rollbackInProgress = true;
+    const inlineOwner = this.inlineOwner;
+    this.inlineOwner = undefined;
+    try {
+      inlineOwner?.close();
+      const policy = await this.ownerControl.enableDaemon({
+        ...this.runtimeOwnerTarget(),
+      });
+      this.state = 'closed';
+      this.lastError = undefined;
+      return policy;
+    } catch (error) {
+      this.lastError = sanitizeDiagnosticError(error);
+      try {
+        this.inlineOwner = await this.ownerControl.acquireInline({
+          ...this.runtimeOwnerTarget(),
+          enableRollback: true,
+        });
+        this.state = 'legacy';
+        this.rollbackInProgress = false;
+      } catch (fenceError) {
+        this.state = 'failed';
+        this.lastError = `${this.lastError}; failed to reacquire inline owner fence: ${sanitizeDiagnosticError(fenceError)}`;
+        throw createCoderOwnerRecoveryRestartError(
+          [error, fenceError],
+          'Space could not enable daemon mode or restore the embedded Coder owner.',
+        );
+      }
+      throw error;
+    }
   }
 
   async restoreDaemonOwner(): Promise<RuntimeOwnerPolicyState> {
@@ -3015,13 +3206,21 @@ export class RuntimeHostAdapter {
         // so the caller can retry without exposing an unowned inline profile.
         this.inlineOwner = await this.ownerControl.acquireInline({
           ...this.runtimeOwnerTarget(),
+          enableRollback: true,
         });
         this.state = 'closed';
       } catch (fenceError) {
         this.state = 'failed';
         this.lastError = `${this.lastError}; failed to reacquire inline owner fence: ${sanitizeDiagnosticError(fenceError)}`;
+        throw createCoderOwnerRecoveryRestartError(
+          [error, fenceError],
+          'Space could not restore daemon mode or retain the embedded Coder owner; restart required.',
+        );
       }
-      throw error;
+      throw createCoderOwnerRecoveryRestartError(
+        [error],
+        `Space could not restore daemon mode (${sanitizeDiagnosticError(error)}); restart required.`,
+      );
     }
   }
 

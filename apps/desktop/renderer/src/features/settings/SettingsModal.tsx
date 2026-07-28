@@ -26,7 +26,9 @@ import {
   Play,
   Plus,
   RefreshCw,
+  RotateCcw,
   Search,
+  Server,
   Settings2,
   ShieldCheck,
   SlidersHorizontal,
@@ -42,6 +44,7 @@ import {
   type DispatchableAgentListingT,
   type KodaxConfigOverviewT,
   type KodaxIntegrationMigrationPlanT,
+  type CoderRuntimeModeT,
   type ExternalAgentRegistrationSummaryT,
   type LanguageModeT,
   type LicenseStatusT,
@@ -733,6 +736,186 @@ function WindowCloseBehaviorSection(): JSX.Element {
 
 type SkillInstallBusy = 'user-directory' | 'user-archive' | 'project-directory' | 'project-archive';
 
+const CODER_RUNTIME_MODES: readonly {
+  readonly value: CoderRuntimeModeT;
+  readonly titleKey: MessageKey;
+  readonly badgeKey: MessageKey;
+  readonly descriptionKey: MessageKey;
+}[] = [
+  {
+    value: 'daemon',
+    titleKey: 'settings.coderRuntimeMode.daemon',
+    badgeKey: 'settings.coderRuntimeMode.recommended',
+    descriptionKey: 'settings.coderRuntimeMode.daemonDescription',
+  },
+  {
+    value: 'embedded',
+    titleKey: 'settings.coderRuntimeMode.embedded',
+    badgeKey: 'settings.coderRuntimeMode.compatibility',
+    descriptionKey: 'settings.coderRuntimeMode.embeddedDescription',
+  },
+];
+
+function CoderRuntimeModeSection(): JSX.Element {
+  const { t } = useI18n();
+  const [currentMode, setCurrentMode] = useState<CoderRuntimeModeT>('daemon');
+  const [selectedMode, setSelectedMode] = useState<CoderRuntimeModeT>('daemon');
+  const [loaded, setLoaded] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!window.kodaxSpace) return;
+    let cancelled = false;
+    void window.kodaxSpace
+      .invoke('settings.get', {})
+      .then((result) => {
+        if (cancelled) return;
+        if (!result.ok) {
+          setError(t('settings.coderRuntimeMode.loadFailed'));
+          return;
+        }
+        setCurrentMode(result.data.coderRuntimeMode);
+        setSelectedMode(result.data.coderRuntimeMode);
+        setLoaded(true);
+      })
+      .catch(() => {
+        if (!cancelled) setError(t('settings.coderRuntimeMode.loadFailed'));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [t]);
+
+  async function switchAndRestart(): Promise<void> {
+    if (!window.kodaxSpace || busy || selectedMode === currentMode) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await window.kodaxSpace.invoke('settings.setCoderRuntimeMode', {
+        coderRuntimeMode: selectedMode,
+      });
+      if (!result.ok) {
+        const message = result.error.message;
+        const localized = message.includes('no Space task is running')
+          ? t('settings.coderRuntimeMode.activeTaskBlocked')
+          : message.includes('cannot stop safely') ||
+              message.includes('owner is still active') ||
+              message.includes('owner state is unreadable')
+            ? t('settings.coderRuntimeMode.safetyBlocked')
+            : t('settings.coderRuntimeMode.switchFailed');
+        setError(localized);
+        pushToast(localized, 'error');
+        return;
+      }
+      setCurrentMode(result.data.settings.coderRuntimeMode);
+      setSelectedMode(result.data.settings.coderRuntimeMode);
+      if (result.data.restarting) {
+        pushToast(t('settings.coderRuntimeMode.restartScheduled'), 'success', 2200);
+      }
+    } catch {
+      const message = t('settings.coderRuntimeMode.switchFailed');
+      setError(message);
+      pushToast(message, 'error');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const changed = loaded && selectedMode !== currentMode;
+
+  return (
+    <SettingsSection
+      title={t('settings.coderRuntimeMode.title')}
+      description={t('settings.coderRuntimeMode.description')}
+      icon={Server}
+    >
+      <fieldset disabled={!loaded || busy} className="grid gap-2 sm:grid-cols-2">
+        <legend className="sr-only">{t('settings.coderRuntimeMode.label')}</legend>
+        {CODER_RUNTIME_MODES.map((mode) => {
+          const selected = selectedMode === mode.value;
+          const current = loaded && currentMode === mode.value;
+          return (
+            <label key={mode.value} className="cursor-pointer">
+              <input
+                type="radio"
+                name="coder-runtime-mode"
+                value={mode.value}
+                checked={selected}
+                disabled={!loaded || busy}
+                onChange={() => {
+                  setSelectedMode(mode.value);
+                  setError(null);
+                }}
+                className="peer sr-only"
+              />
+              <span
+                className={[
+                  'block rounded-lg border p-3 text-left transition-colors peer-focus-visible:outline-none peer-focus-visible:ring-2 peer-focus-visible:ring-info/70 peer-focus-visible:ring-offset-2 peer-focus-visible:ring-offset-surface disabled:cursor-not-allowed',
+                  !loaded || busy ? 'cursor-not-allowed opacity-60' : '',
+                  selected
+                    ? 'border-info/60 bg-info/10'
+                    : 'border-border-default bg-surface hover:bg-hover-bg',
+                ].join(' ')}
+              >
+                <span className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-semibold text-fg-primary">{t(mode.titleKey)}</span>
+                  <span className="flex flex-wrap justify-end gap-1">
+                    {current ? (
+                      <span className="rounded-full border border-info/35 bg-info/10 px-2 py-0.5 text-[10px] font-medium text-info">
+                        {t('settings.coderRuntimeMode.current')}
+                      </span>
+                    ) : null}
+                    <span
+                      className={[
+                        'rounded-full border px-2 py-0.5 text-[10px] font-medium',
+                        mode.value === 'daemon'
+                          ? 'border-ok/35 bg-ok/10 text-ok'
+                          : 'border-warn/35 bg-warn/10 text-warn',
+                      ].join(' ')}
+                    >
+                      {t(mode.badgeKey)}
+                    </span>
+                  </span>
+                </span>
+                <span className="mt-1.5 block text-[11px] leading-5 text-fg-muted">
+                  {t(mode.descriptionKey)}
+                </span>
+              </span>
+            </label>
+          );
+        })}
+      </fieldset>
+
+      <div className="mt-3 rounded-lg border border-warn/35 bg-warn/8 px-3 py-2 text-[11px] leading-5 text-fg-secondary">
+        {t('settings.coderRuntimeMode.fallbackNotice')}
+      </div>
+      <p className="mt-2 text-[11px] leading-5 text-fg-muted">
+        {t('settings.coderRuntimeMode.restartHint')}
+      </p>
+
+      <div className="mt-4 flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={() => void switchAndRestart()}
+          disabled={!changed || busy}
+          className="inline-flex min-h-8 items-center justify-center gap-2 rounded-lg border border-info/50 bg-info/12 px-3 text-xs font-medium text-info hover:bg-info/20 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {busy ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={1.8} />
+          ) : (
+            <RotateCcw className="h-3.5 w-3.5" strokeWidth={1.8} />
+          )}
+          {busy
+            ? t('settings.coderRuntimeMode.switching')
+            : t('settings.coderRuntimeMode.switchAndRestart')}
+        </button>
+        {error && <span className="text-xs text-danger">{error}</span>}
+      </div>
+    </SettingsSection>
+  );
+}
+
 function RuntimePanel(): JSX.Element {
   const { t } = useI18n();
   const currentProjectPath = useAppStore((s) => s.currentProjectPath);
@@ -975,6 +1158,8 @@ function RuntimePanel(): JSX.Element {
           {err}
         </div>
       )}
+
+      <CoderRuntimeModeSection />
 
       <ExternalAgentsSection projectRoot={currentProjectPath ?? undefined} />
 

@@ -818,7 +818,8 @@ export const messages = {
     'settings.providers': 'Providers',
     'settings.providers.description': 'Models, API keys, default provider, and custom endpoints.',
     'settings.runtime': 'Runtime',
-    'settings.runtime.description': 'KodaX config, MCP storage, skills, and context compaction.',
+    'settings.runtime.description':
+      'Coder mode, KodaX config, MCP storage, skills, and context compaction.',
     'settings.diagnostics': 'Diagnostics',
     'settings.diagnostics.title': 'Diagnostic export',
     'settings.diagnostics.description':
@@ -930,6 +931,33 @@ export const messages = {
     'settings.workflowHost.title': 'Workflow host',
     'settings.workflowHost.description':
       'Control runtime limits for explicit /workflow runs and AMA run_workflow.',
+    'settings.coderRuntimeMode.title': 'Coder runtime mode',
+    'settings.coderRuntimeMode.description':
+      'Choose how Coder connects to KodaX. Daemon mode is recommended; Embedded mode is the compatibility fallback.',
+    'settings.coderRuntimeMode.label': 'Coder runtime mode',
+    'settings.coderRuntimeMode.daemon': 'Daemon',
+    'settings.coderRuntimeMode.current': 'Current',
+    'settings.coderRuntimeMode.recommended': 'Recommended',
+    'settings.coderRuntimeMode.daemonDescription':
+      'Uses the shared background Runtime for durable tasks, reconnects, and multi-client coordination.',
+    'settings.coderRuntimeMode.embedded': 'Embedded',
+    'settings.coderRuntimeMode.compatibility': 'Compatibility',
+    'settings.coderRuntimeMode.embeddedDescription':
+      'Runs Coder inside KodaX Space. Use this fallback when the daemon cannot start or connect reliably.',
+    'settings.coderRuntimeMode.fallbackNotice':
+      'If Daemon mode has a problem, switch to Embedded mode to keep using Coder.',
+    'settings.coderRuntimeMode.restartHint':
+      'Space can switch modes only when no Space task is running. It will restart automatically after the safety check succeeds.',
+    'settings.coderRuntimeMode.switchAndRestart': 'Switch and restart',
+    'settings.coderRuntimeMode.switching': 'Switching…',
+    'settings.coderRuntimeMode.restartScheduled': 'Coder mode saved. KodaX Space is restarting…',
+    'settings.coderRuntimeMode.loadFailed': 'Could not load the Coder runtime mode.',
+    'settings.coderRuntimeMode.activeTaskBlocked':
+      'Finish or stop the active Space task before switching Coder mode.',
+    'settings.coderRuntimeMode.safetyBlocked':
+      'Coder is still in use or its owner cannot be verified. Try again after current work finishes.',
+    'settings.coderRuntimeMode.switchFailed':
+      'Could not complete the Coder mode switch. Space may restart to recover; check the selected mode after it reopens before retrying.',
     'settings.runtime.yes': 'Yes',
     'settings.runtime.no': 'No',
     'settings.runtime.none': 'None',
@@ -3657,19 +3685,19 @@ export const messages = {
     'contextWindow.title': '上下文窗口',
     'contextWindow.title.next': '上下文窗口（下个会话）',
     'contextWindow.tooltip': '{label}：距离自动压缩还剩 {percent}%（已用 {used} / {threshold}）',
-    'contextWindow.clickForBreakdown': '点击查看详情',
     'contextWindow.tooltipAtThreshold':
       '{label}：预计请求输入 {used} / {threshold}（{percent}%），已达到或超过自动压缩阈值',
+    'contextWindow.clickForBreakdown': '点击查看详情',
     'contextWindow.progressToAutoCompact': '自动压缩进度 {percent}%',
-    'contextWindow.remainingTokens': '距自动压缩还剩 {tokens}',
     'contextWindow.estimatedRequestInput': '预计请求输入',
     'contextWindow.currentContextInput': '当前上下文输入',
-    'contextWindow.thresholdNote': '模型最大上下文：{cap}。当前自动压缩阈值：{threshold}。',
+    'contextWindow.remainingTokens': '距自动压缩还剩 {tokens}',
     'contextWindow.thresholdReached': '预计输入已达到自动压缩阈值',
     'contextWindow.thresholdExceeded': '预计输入已超过自动压缩阈值 {tokens}',
     'contextWindow.compacting': '正在压缩上下文',
     'contextWindow.compactingExceeded': '已超过自动压缩阈值 {tokens} · 正在压缩上下文',
     'contextWindow.providerReported': 'Provider 上次上报：{tokens}',
+    'contextWindow.thresholdNote': '模型最大上下文：{cap}。当前自动压缩阈值：{threshold}。',
     'contextWindow.activeInputNote':
       '主进度采用 Runtime 用于压缩判断的当前请求估算；存在可靠数据时，Provider 上报值会单独列出。这里不是界面中可见的完整历史。',
     'contextWindow.composition': '最近一次模型输入构成',
@@ -4408,7 +4436,34 @@ export const messages = {
     'mode.engineDescription.rules': '走 ~/.kodax/auto-rules.jsonc + 内置 signals',
     'mode.footer': '全自动由 KodaX guardrail 接管。',
     'settings.runtime': '运行时',
-    'settings.runtime.description': 'KodaX 配置、MCP 存储、技能和上下文压缩。',
+    'settings.runtime.description': 'Coder 模式、KodaX 配置、MCP 存储、技能和上下文压缩。',
+    'settings.coderRuntimeMode.title': 'Coder 运行模式',
+    'settings.coderRuntimeMode.description':
+      '选择 Coder 连接 KodaX 的方式。推荐使用 Daemon 模式；Embedded 模式用于兼容与故障回退。',
+    'settings.coderRuntimeMode.label': 'Coder 运行模式',
+    'settings.coderRuntimeMode.daemon': 'Daemon',
+    'settings.coderRuntimeMode.current': '当前',
+    'settings.coderRuntimeMode.recommended': '推荐',
+    'settings.coderRuntimeMode.daemonDescription':
+      '使用共享后台 Runtime，支持持久任务、断线重连和多客户端协同。',
+    'settings.coderRuntimeMode.embedded': 'Embedded',
+    'settings.coderRuntimeMode.compatibility': '兼容模式',
+    'settings.coderRuntimeMode.embeddedDescription':
+      '在 KodaX Space 进程内运行 Coder。Daemon 无法正常启动或连接时可使用此模式。',
+    'settings.coderRuntimeMode.fallbackNotice':
+      '如果 Daemon 模式出现问题，可切换到 Embedded 模式继续使用 Coder。',
+    'settings.coderRuntimeMode.restartHint':
+      '仅在没有 Space 任务运行时可以切换。安全检查通过后，KodaX Space 会自动重启。',
+    'settings.coderRuntimeMode.switchAndRestart': '切换并重启',
+    'settings.coderRuntimeMode.switching': '正在切换…',
+    'settings.coderRuntimeMode.restartScheduled': 'Coder 模式已保存，KodaX Space 正在重启…',
+    'settings.coderRuntimeMode.loadFailed': '无法读取 Coder 运行模式。',
+    'settings.coderRuntimeMode.activeTaskBlocked':
+      '请先完成或停止当前 Space 任务，再切换 Coder 模式。',
+    'settings.coderRuntimeMode.safetyBlocked':
+      'Coder 仍在使用中，或无法确认其所有权状态。请等待当前工作完成后重试。',
+    'settings.coderRuntimeMode.switchFailed':
+      '未能完成 Coder 模式切换。Space 可能会重启以恢复；重新打开后请先确认当前模式，再决定是否重试。',
     'settings.runtime.yes': '是',
     'settings.runtime.no': '否',
     'settings.runtime.none': '无',

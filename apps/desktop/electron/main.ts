@@ -35,7 +35,7 @@ import { registerMcpChannels } from './ipc/mcp.js';
 import { prewarmSdkMcpStore } from './mcp/config-reader.js';
 import { disposeMcpManager } from './mcp/manager.js';
 import { registerKodaxChannels } from './ipc/kodax.js';
-import { registerQueueChannels, startQueueWatch } from './ipc/queue.js';
+import { hasQueuedCoderPrompts, registerQueueChannels, startQueueWatch } from './ipc/queue.js';
 import { registerAdminPolicyAuditChannels } from './ipc/admin.js';
 import { prewarmKodaxUserConfig, registerKodaxCustomProviders } from './kodax/user-config.js';
 import { probeKodaxSdk } from './kodax/kodax-sdk-probe.js';
@@ -94,6 +94,7 @@ import { kodaxHost } from './kodax/host.js';
 import { externalAgentGateway } from './kodax/external-agent-gateway.js';
 import { runtimeHostAdapter } from './kodax/runtime-host-adapter.js';
 import { stopCoderDaemonWhenSafe } from './kodax/runtime-daemon-control.js';
+import { CoderRuntimeModeSwitchCoordinator } from './kodax/coder-runtime-mode-switch.js';
 import { permissionRegistry } from './permission/registry.js';
 import { permissionBroker } from './permission/broker.js';
 import { askUserBroker } from './permission/ask-user-broker.js';
@@ -319,10 +320,21 @@ let backgroundTrayRefreshing = false;
 let backgroundTrayLocale: BackgroundTrayLocale = 'en-US';
 let backgroundCloseNoticeShown = false;
 let stopDaemonOnQuit = false;
+let coderRuntimeRestartScheduled = false;
 let completeExitRequested = false;
 let closeDecisionPending = false;
 const backgroundCloseBypass = new WeakSet<BrowserWindow>();
 setRendererTarget(() => (mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null));
+
+function scheduleCoderRuntimeModeRestart(): void {
+  if (coderRuntimeRestartScheduled) return;
+  coderRuntimeRestartScheduled = true;
+  setTimeout(() => {
+    stopDaemonOnQuit = false;
+    app.relaunch({ args: process.argv.slice(1) });
+    app.quit();
+  }, 250);
+}
 
 function applyCsp(): void {
   // CSP：renderer 只允许 self；dev 时放行 vite HMR（仅 script-src/connect-src）
@@ -1187,6 +1199,9 @@ app
     // starting Runtime in parallel would permanently give the daemon the stale
     // Explorer PATH even if hydration completed a few milliseconds later.
     const startupSettings = await settingsStore.load();
+    runtimeHostAdapter.configureStartupMode(
+      startupSettings.coderRuntimeMode === 'embedded' ? 'legacy' : 'runtime',
+    );
     await hydrateShellEnvOnce({
       preference: startupSettings.terminalShell,
       cwd: startupSettings.defaultWorkspace,
@@ -1208,7 +1223,8 @@ app
       // non-fatal for the application and Partner stays inline, but Coder fails closed;
       // Space never opens a second inline owner against the same profile.
       runtimeHostAdapter
-        .initialize(app.getVersion())
+        .reconcileStartupOwnerPolicy()
+        .then(() => runtimeHostAdapter.initialize(app.getVersion()))
         .then(() => {
           diagnosticsLogger?.info('runtime', 'host_initialized');
         })
@@ -1246,15 +1262,51 @@ app
     registerSpaceControlChannels();
     registerRepointelChannels();
     registerHandoffChannels();
-    registerSessionChannels();
+    const coderRuntimeModeSwitchCoordinator = new CoderRuntimeModeSwitchCoordinator({
+      currentHost: () => runtimeHostAdapter.selectedHost(),
+      hasActiveSpaceRun: async () => {
+        if (kodaxHost.listInFlight().some((session) => session.isRunning())) return true;
+        if (
+          workflowController
+            .list()
+            .some((run) => run.status === 'running' || run.status === 'paused')
+        ) {
+          return true;
+        }
+        if (permissionBroker.pendingCount() > 0 || askUserBroker.pendingCount() > 0) return true;
+        if (hasQueuedCoderPrompts()) return true;
+        const externalTasks = await externalAgentGateway.listTasks();
+        return externalTasks.some(
+          (task) =>
+            task.state !== 'completed' &&
+            task.state !== 'failed' &&
+            task.state !== 'canceled' &&
+            task.state !== 'rejected',
+        );
+      },
+      prepareEmbeddedRestart: () => runtimeHostAdapter.prepareEmbeddedRestart(),
+      prepareDaemonRestart: () => runtimeHostAdapter.prepareDaemonRestart(),
+      restoreDaemonOwner: () => runtimeHostAdapter.restoreDaemonOwner(),
+      persist: (mode) => settingsStore.setCoderRuntimeMode(mode),
+      scheduleRestart: scheduleCoderRuntimeModeRestart,
+    });
+    registerSessionChannels({
+      beginCoderAdmission: () => coderRuntimeModeSwitchCoordinator.beginCoderAdmission(),
+    });
     registerProjectChannels();
     registerPermissionChannels();
     registerAskUserChannels();
     registerBuiltinSlashCommands();
-    registerSlashChannels();
+    registerSlashChannels({
+      beginCoderAdmission: () => coderRuntimeModeSwitchCoordinator.beginCoderAdmission(),
+    });
     registerSkillChannels();
-    registerAgentChannels();
-    registerMcpChannels();
+    registerAgentChannels({
+      beginCoderAdmission: () => coderRuntimeModeSwitchCoordinator.beginCoderAdmission(),
+    });
+    registerMcpChannels({
+      beginCoderAdmission: () => coderRuntimeModeSwitchCoordinator.beginCoderAdmission(),
+    });
     registerKodaxChannels();
     registerAdminPolicyAuditChannels();
     registerQueueChannels();
@@ -1284,7 +1336,10 @@ app
     registerPartnerFileProposalChannels();
     registerTitlebarChannels();
     registerWindowChannels(() => (mainWindow && !mainWindow.isDestroyed() ? mainWindow : null));
-    registerSettingsChannels();
+    registerSettingsChannels({
+      switchCoderRuntimeMode: (target) => coderRuntimeModeSwitchCoordinator.switchMode(target),
+      beginCoderAdmission: () => coderRuntimeModeSwitchCoordinator.beginCoderAdmission(),
+    });
     registerLicenseChannels();
     // F020 native OS notification — renderer 调 notification.show 弹 OS 原生通知
     registerNotificationChannels();
@@ -1300,9 +1355,9 @@ app
     // F011 内置终端 (xterm.js + node-pty) — terminal.create/write/resize/kill + output/exit push
     registerTerminalChannels();
     // OC-31 v0.1.9 clipboard image paste — renderer 把粘贴板图片落到 app temp dir
-  registerClipboardChannels({
-    sessionExists: (sessionId) => kodaxHost.hasSession(sessionId),
-  });
+    registerClipboardChannels({
+      sessionExists: (sessionId) => kodaxHost.hasSession(sessionId),
+    });
     // Shell exits: reveal files, enter allowlisted directories, and open http(s) URLs.
     // 让 renderer 里到处的文件路径 / URL 死文本变成可点击（用户反馈）。
     registerShellChannels();
@@ -1312,7 +1367,9 @@ app
     registerMemoryChannels();
     // F060 Workflow Harness 支持：list/get IPC + 订阅 SDK 进程事件流转发到 renderer（workflow.event）。
     // init 是 best-effort（lazy-load SDK run manager + 加载持久化归属）；失败只降级为"无实时工作流面"。
-    registerWorkflowChannels();
+    registerWorkflowChannels({
+      beginCoderAdmission: () => coderRuntimeModeSwitchCoordinator.beginCoderAdmission(),
+    });
     void workflowController
       .init()
       .then(() => diagnosticsLogger?.info('workflow', 'controller_initialized'))

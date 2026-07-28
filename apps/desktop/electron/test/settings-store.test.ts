@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { replaceFileWithoutFollowingAliases } from '../kodax/atomic-file.js';
 import { SettingsStore } from '../settings/store.js';
 
 let tmpDir = '';
@@ -32,7 +33,125 @@ test('load backfills languageMode for older settings files', async () => {
   assert.equal(loaded.languageMode, 'system');
   assert.equal(loaded.terminalShell, 'auto');
   assert.equal(loaded.windowCloseBehavior, 'ask');
+  assert.equal(loaded.coderRuntimeMode, 'daemon');
   assert.deepEqual(loaded.runtimeDefaults, {});
+
+  const persisted = JSON.parse(await fs.readFile(settingsFile, 'utf-8')) as {
+    version: number;
+    coderRuntimeMode: string;
+  };
+  assert.equal(persisted.version, 3);
+  assert.equal(persisted.coderRuntimeMode, 'daemon');
+});
+
+test('load migrates an unset legacy environment selection to embedded mode', async () => {
+  await fs.writeFile(
+    settingsFile,
+    JSON.stringify({
+      version: 2,
+      defaultWorkspace: path.join(tmpDir, 'workspace'),
+      languageMode: 'system',
+    }),
+    'utf-8',
+  );
+
+  const loaded = await new SettingsStore(settingsFile, tmpDir, 'legacy').load();
+  assert.equal(loaded.version, 3);
+  assert.equal(loaded.coderRuntimeMode, 'embedded');
+
+  const persisted = JSON.parse(await fs.readFile(settingsFile, 'utf-8')) as {
+    version: number;
+    coderRuntimeMode: string;
+  };
+  assert.equal(persisted.version, 3);
+  assert.equal(persisted.coderRuntimeMode, 'embedded');
+
+  const reloadedWithoutLegacyEnvironment = await new SettingsStore(settingsFile, tmpDir, '').load();
+  assert.equal(reloadedWithoutLegacyEnvironment.coderRuntimeMode, 'embedded');
+});
+
+test('missing settings persist the legacy environment selection exactly once', async () => {
+  const first = await new SettingsStore(settingsFile, tmpDir, 'legacy').load();
+  assert.equal(first.coderRuntimeMode, 'embedded');
+
+  const persisted = JSON.parse(await fs.readFile(settingsFile, 'utf-8')) as {
+    version: number;
+    coderRuntimeMode: string;
+  };
+  assert.equal(persisted.version, 3);
+  assert.equal(persisted.coderRuntimeMode, 'embedded');
+
+  const reloadedWithoutLegacyEnvironment = await new SettingsStore(settingsFile, tmpDir, '').load();
+  assert.equal(reloadedWithoutLegacyEnvironment.coderRuntimeMode, 'embedded');
+});
+
+test('concurrent missing-settings creators converge on the persisted migration winner', async () => {
+  const legacyStore = new SettingsStore(settingsFile, tmpDir, 'legacy');
+  const runtimeStore = new SettingsStore(settingsFile, tmpDir, 'runtime');
+
+  const [legacyResult, runtimeResult] = await Promise.all([
+    legacyStore.load(),
+    runtimeStore.load(),
+  ]);
+  const persisted = JSON.parse(await fs.readFile(settingsFile, 'utf-8')) as {
+    version: number;
+    coderRuntimeMode: string;
+  };
+
+  assert.equal(persisted.version, 3);
+  assert.equal(legacyResult.coderRuntimeMode, persisted.coderRuntimeMode);
+  assert.equal(runtimeResult.coderRuntimeMode, persisted.coderRuntimeMode);
+});
+
+test('concurrent loads on one store share the same initial read and create', async (t) => {
+  const readFileDescriptor = Object.getOwnPropertyDescriptor(fs, 'readFile');
+  assert.ok(readFileDescriptor);
+  t.after(() => {
+    Object.defineProperty(fs, 'readFile', readFileDescriptor);
+  });
+
+  const originalReadFile = fs.readFile;
+  let readCalls = 0;
+  let releaseRead!: () => void;
+  const readGate = new Promise<void>((resolve) => {
+    releaseRead = resolve;
+  });
+  let markReadStarted!: () => void;
+  const readStarted = new Promise<void>((resolve) => {
+    markReadStarted = resolve;
+  });
+  Object.defineProperty(fs, 'readFile', {
+    configurable: true,
+    value: async (filePath: string) => {
+      readCalls += 1;
+      markReadStarted();
+      await readGate;
+      return originalReadFile(filePath);
+    },
+  });
+
+  const store = new SettingsStore(settingsFile, tmpDir, 'legacy');
+  const firstLoad = store.load();
+  await readStarted;
+  const secondLoad = store.load();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(readCalls, 1);
+
+  releaseRead();
+  const [first, second] = await Promise.all([firstLoad, secondLoad]);
+  assert.deepEqual(first, second);
+  assert.equal(first.coderRuntimeMode, 'embedded');
+});
+
+test('setCoderRuntimeMode persists the explicit customer preference', async () => {
+  const store = new SettingsStore(settingsFile, tmpDir);
+
+  const next = await store.setCoderRuntimeMode('embedded');
+  assert.equal(next.coderRuntimeMode, 'embedded');
+
+  const reloaded = await new SettingsStore(settingsFile, tmpDir, 'runtime').load();
+  assert.equal(reloaded.coderRuntimeMode, 'embedded');
+  assert.equal(reloaded.version, 3);
 });
 
 test('setLanguageMode persists without changing defaultWorkspace', async () => {
@@ -76,9 +195,11 @@ test('setWindowCloseBehavior persists without changing other preferences', async
   assert.equal(next.languageMode, 'zh-CN');
   assert.equal(next.terminalShell, 'pwsh');
   assert.equal(next.windowCloseBehavior, 'quit-completely');
+  assert.equal(next.coderRuntimeMode, 'daemon');
 
   const reloaded = await new SettingsStore(settingsFile, tmpDir).load();
   assert.equal(reloaded.windowCloseBehavior, 'quit-completely');
+  assert.equal(reloaded.coderRuntimeMode, 'daemon');
 });
 
 test('concurrent preference setters merge against the latest committed settings', async () => {
@@ -101,6 +222,7 @@ test('a failed settings write leaves the last committed value in memory', async 
   const initial = await store.load();
   assert.equal(initial.windowCloseBehavior, 'ask');
 
+  await fs.rm(settingsFile);
   await fs.mkdir(settingsFile);
   await assert.rejects(store.setWindowCloseBehavior('quit-completely'));
 
@@ -177,7 +299,7 @@ test('setRuntimeDefaults merges and persists runtime defaults', async () => {
   });
 
   const reloaded = await new SettingsStore(settingsFile, tmpDir).load();
-  assert.equal(reloaded.version, 2);
+  assert.equal(reloaded.version, 3);
   assert.equal(reloaded.defaultWorkspace, workspace);
   assert.deepEqual(reloaded.runtimeDefaults, merged.runtimeDefaults);
 });
@@ -273,4 +395,143 @@ test('setRuntimeDefaults ignores invalid patch fields without dropping existing 
     reasoningMode: 'quick',
     autoModeEngine: 'rules',
   });
+});
+
+test('settings updates recover from Windows EPERM while replacing the existing file', async (t) => {
+  const store = new SettingsStore(settingsFile, tmpDir);
+  await store.load();
+
+  const renameDescriptor = Object.getOwnPropertyDescriptor(fs, 'rename');
+  assert.ok(renameDescriptor);
+  t.after(() => {
+    Object.defineProperty(fs, 'rename', renameDescriptor);
+  });
+
+  const originalRename = fs.rename;
+  let forcedReplacementFailure = false;
+  Object.defineProperty(fs, 'rename', {
+    configurable: true,
+    value: async (source: string, destination: string) => {
+      if (!forcedReplacementFailure && destination === settingsFile) {
+        forcedReplacementFailure = true;
+        throw Object.assign(new Error('forced Windows replacement fallback'), { code: 'EPERM' });
+      }
+      return originalRename(source, destination);
+    },
+  });
+
+  const next = await store.setLanguageMode('zh-CN');
+
+  assert.equal(forcedReplacementFailure, true);
+  assert.equal(next.languageMode, 'zh-CN');
+  const persisted = JSON.parse(await fs.readFile(settingsFile, 'utf-8')) as {
+    languageMode: string;
+  };
+  assert.equal(persisted.languageMode, 'zh-CN');
+});
+
+test('Windows replacement fallback retains a directory at the settings path', async (t) => {
+  await fs.mkdir(settingsFile);
+  const store = new SettingsStore(settingsFile, tmpDir);
+  await store.load();
+
+  const renameDescriptor = Object.getOwnPropertyDescriptor(fs, 'rename');
+  assert.ok(renameDescriptor);
+  t.after(() => {
+    Object.defineProperty(fs, 'rename', renameDescriptor);
+  });
+
+  const originalRename = fs.rename;
+  Object.defineProperty(fs, 'rename', {
+    configurable: true,
+    value: async (source: string, destination: string) => {
+      if (destination === settingsFile) {
+        throw Object.assign(new Error('forced Windows replacement fallback'), { code: 'EPERM' });
+      }
+      return originalRename(source, destination);
+    },
+  });
+
+  await assert.rejects(store.setLanguageMode('zh-CN'), /unsafe existing entry retained/);
+  assert.equal((await fs.lstat(settingsFile)).isDirectory(), true);
+});
+
+test('Windows replacement fallback retains a symbolic link at the settings path', async (t) => {
+  const outsideFile = path.join(tmpDir, 'outside-settings.json');
+  await fs.writeFile(
+    outsideFile,
+    JSON.stringify({
+      version: 3,
+      defaultWorkspace: path.join(tmpDir, 'workspace'),
+      languageMode: 'system',
+      terminalShell: 'auto',
+      windowCloseBehavior: 'ask',
+      coderRuntimeMode: 'daemon',
+      runtimeDefaults: {},
+    }),
+    'utf-8',
+  );
+  try {
+    await fs.symlink(outsideFile, settingsFile, 'file');
+  } catch (error) {
+    t.skip(`symlink unavailable on this Windows environment: ${String(error)}`);
+    return;
+  }
+
+  const store = new SettingsStore(settingsFile, tmpDir);
+  await store.load();
+  const renameDescriptor = Object.getOwnPropertyDescriptor(fs, 'rename');
+  assert.ok(renameDescriptor);
+  t.after(() => {
+    Object.defineProperty(fs, 'rename', renameDescriptor);
+  });
+
+  const originalRename = fs.rename;
+  Object.defineProperty(fs, 'rename', {
+    configurable: true,
+    value: async (source: string, destination: string) => {
+      if (destination === settingsFile) {
+        throw Object.assign(new Error('forced Windows replacement fallback'), { code: 'EPERM' });
+      }
+      return originalRename(source, destination);
+    },
+  });
+
+  await assert.rejects(store.setLanguageMode('zh-CN'), /unsafe existing entry retained/);
+  assert.equal((await fs.lstat(settingsFile)).isSymbolicLink(), true);
+  const outside = JSON.parse(await fs.readFile(outsideFile, 'utf-8')) as {
+    languageMode: string;
+  };
+  assert.equal(outside.languageMode, 'system');
+});
+
+test('Windows replacement fallback restores a directory raced in after preflight', async (t) => {
+  if (process.platform !== 'win32') {
+    t.skip('Windows rename fallback only');
+    return;
+  }
+  await fs.writeFile(settingsFile, 'previous settings', 'utf-8');
+
+  await assert.rejects(
+    replaceFileWithoutFollowingAliases(
+      settingsFile,
+      Buffer.from('replacement settings', 'utf-8'),
+      'settings changed during update',
+      {
+        forceRenameFallback: true,
+        beforeFallbackDisplace: async () => {
+          await fs.unlink(settingsFile);
+          await fs.mkdir(settingsFile);
+        },
+      },
+    ),
+    /unsafe previous entry/,
+  );
+
+  assert.equal((await fs.lstat(settingsFile)).isDirectory(), true);
+  const siblings = await fs.readdir(tmpDir);
+  assert.equal(
+    siblings.some((name) => name.includes('.kodax-atomic-')),
+    false,
+  );
 });

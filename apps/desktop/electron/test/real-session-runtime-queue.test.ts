@@ -4,6 +4,72 @@ import test from 'node:test';
 import { RealKodaXSession } from '../kodax/real-session.js';
 import { runtimeHostAdapter } from '../kodax/runtime-host-adapter.js';
 
+test('embedded Coder send rejects before acceptance when the inline owner is unavailable', async (t) => {
+  const adapter = runtimeHostAdapter as unknown as Record<string, unknown>;
+  const originalIsRuntimeSelected = adapter.isRuntimeSelected;
+  const originalEnsureLegacyOwner = adapter.ensureLegacyOwner;
+  t.after(() => {
+    adapter.isRuntimeSelected = originalIsRuntimeSelected;
+    adapter.ensureLegacyOwner = originalEnsureLegacyOwner;
+  });
+
+  adapter.isRuntimeSelected = () => false;
+  adapter.ensureLegacyOwner = async () => {
+    throw new Error('inline owner unavailable');
+  };
+
+  const events: unknown[] = [];
+  const session = new RealKodaXSession({
+    sessionId: 'session_inline_owner_missing',
+    projectRoot: process.cwd(),
+    provider: 'test-provider',
+    reasoningMode: 'balanced',
+    permissionMode: 'accept-edits',
+    surface: 'code',
+    emit: (event) => events.push(event),
+    requestPermission: async () => 'allow_once',
+  });
+
+  await assert.rejects(session.send('must not be accepted'), /inline owner unavailable/);
+  assert.equal(session.isRunning(), false);
+  assert.deepEqual(events, []);
+});
+
+test('fire-and-forget stream preflight failures emit one terminal error instead of rejecting unhandled', async () => {
+  const events: Array<{ readonly kind?: string }> = [];
+  const session = new RealKodaXSession({
+    sessionId: 'session_stream_preflight_failure',
+    projectRoot: process.cwd(),
+    provider: 'test-provider',
+    reasoningMode: 'balanced',
+    permissionMode: 'accept-edits',
+    surface: 'partner',
+    emit: (event) => events.push(event),
+    requestPermission: async () => 'allow_once',
+  });
+  const internal = session as unknown as {
+    runRealStream(
+      prompt: string,
+      signal: AbortSignal,
+      artifacts?: readonly unknown[],
+      promptOverlay?: string,
+    ): Promise<void>;
+    startRun(prompt: string): void;
+  };
+  internal.runRealStream = async () => {
+    throw new Error('stream preflight failed');
+  };
+
+  internal.startRun('preflight');
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.equal(session.isRunning(), false);
+  assert.deepEqual(
+    events.map((event) => event.kind),
+    ['session_error'],
+  );
+});
+
 test('active daemon run preserves interrupt intent and requires explicit after-turn fallback', async (t) => {
   const adapter = runtimeHostAdapter as unknown as Record<string, unknown>;
   const patchedMethods = new Map<string, { readonly existed: boolean; readonly value: unknown }>();

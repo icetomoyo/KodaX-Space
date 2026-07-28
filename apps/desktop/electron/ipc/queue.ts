@@ -181,6 +181,10 @@ function combinedSnapshot(): { messages: QueuedMessageT[]; totalSize: number } {
   };
 }
 
+export function hasQueuedCoderPrompts(): boolean {
+  return combinedSnapshot().totalSize > 0;
+}
+
 function emitQueueChanged(kind: QueueEventKindT, affected: QueuedMessageT[]): void {
   const snapshot = combinedSnapshot();
   pushToRenderer('kodax.queueChanged', {
