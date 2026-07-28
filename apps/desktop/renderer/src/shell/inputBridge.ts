@@ -18,7 +18,13 @@ let receiver: InsertReceiver | null = null;
 
 /** BottomBar (or test harness) registers itself; returns an unregister fn. */
 export function registerInsertReceiver(fn: InsertReceiver): () => void {
-  if (receiver !== null && receiver !== fn && import.meta.env?.DEV) {
+  const isDev =
+    (
+      import.meta as ImportMeta & {
+        readonly env?: { readonly DEV?: boolean };
+      }
+    ).env?.DEV === true;
+  if (receiver !== null && receiver !== fn && isDev) {
     // Dev-only doubleregister warning (HMR / Strict Mode double-mount surfaces here)
     console.warn('[inputBridge] receiver overwrite — multiple BottomBar mounts?');
   }

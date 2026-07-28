@@ -78,10 +78,10 @@ export interface SessionCompactionOutcome {
 
 export interface SessionTokenInfo {
   readonly tokens: number;
+  readonly source: 'iteration_end' | 'compact_stats' | 'estimate';
   readonly tokenSource?: 'api' | 'estimate';
   /** Renderer-local ordering for root context identity handoffs. */
   readonly observedOrder?: number;
-  readonly source: 'iteration_end' | 'compact_stats' | 'estimate';
   readonly compactedFrom?: number;
   readonly contextId?: string;
   readonly contextRevision?: number;
@@ -1522,13 +1522,6 @@ function hideOpenStrongIdentityDuplicateProjection(
         (candidate) =>
           candidate.restoredFromHistory &&
           candidate.closed &&
-let rootContextReadingOrder = 0;
-
-function nextRootContextReadingOrder(): number {
-  rootContextReadingOrder += 1;
-  return rootContextReadingOrder;
-}
-
           strongTurnIdentityMatches(candidate, live),
       );
     if (durable) {
@@ -1571,6 +1564,13 @@ function stampLiveStreamEvent(event: SessionEvent): SessionEvent {
     return { ...event, sentAt: Date.now() };
   }
   return event;
+}
+
+let rootContextReadingOrder = 0;
+
+function nextRootContextReadingOrder(): number {
+  rootContextReadingOrder += 1;
+  return rootContextReadingOrder;
 }
 
 function acceptsRootContextUpdate(
@@ -3107,8 +3107,6 @@ export const useAppStore = create<AppState>((set) => ({
       const clearsPendingSend =
         event.kind === 'session_start' ||
         event.kind === 'queued_user_prompt_started' ||
-                ...(event.tokenSource !== undefined ? { tokenSource: event.tokenSource } : {}),
-                ...(event.contextId ? { observedOrder: nextRootContextReadingOrder() } : {}),
         event.kind === 'session_complete' ||
         event.kind === 'session_error';
       if (clearsPendingSend && state.pendingSendBySession[event.sessionId]) {
@@ -3205,11 +3203,6 @@ export const useAppStore = create<AppState>((set) => ({
           };
         }
       }
-          if (event.committed !== false && state.contextBudgetBySession[event.sessionId]) {
-            const { [event.sessionId]: _staleBudget, ...remainingBudgets } =
-              state.contextBudgetBySession;
-            next.contextBudgetBySession = remainingBudgets;
-          }
       if (
         event.kind === 'session_start' ||
         event.kind === 'mid_turn_user_prompt' ||
@@ -3256,6 +3249,8 @@ export const useAppStore = create<AppState>((set) => ({
               [event.sessionId]: {
                 tokens: event.tokenCount,
                 source: 'iteration_end',
+                ...(event.tokenSource !== undefined ? { tokenSource: event.tokenSource } : {}),
+                ...(event.contextId ? { observedOrder: nextRootContextReadingOrder() } : {}),
                 ...(event.contextId ? { contextId: event.contextId } : {}),
                 ...(event.contextRevision !== undefined
                   ? { contextRevision: event.contextRevision }
@@ -3351,6 +3346,11 @@ export const useAppStore = create<AppState>((set) => ({
                 : {}),
             },
           };
+          if (event.committed !== false && state.contextBudgetBySession[event.sessionId]) {
+            const { [event.sessionId]: _staleBudget, ...remainingBudgets } =
+              state.contextBudgetBySession;
+            next.contextBudgetBySession = remainingBudgets;
+          }
         }
       } else if (event.kind === 'session_complete') {
         if (!isSessionVisiblyOpen(state, event.sessionId)) {

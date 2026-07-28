@@ -46,9 +46,9 @@ export function snapshotFromEvents(
   // gauge/activity lifecycle. Letting a short reviewer iteration or compact
   // overwrite this snapshot recreates the exact stale/oscillating UI that the
   // context identity fields are intended to prevent.
-  const visibleEvents = events.filter((event) => !(
-    'contextKind' in event && event.contextKind === 'child'
-  ));
+  const visibleEvents = events.filter(
+    (event) => !('contextKind' in event && event.contextKind === 'child'),
+  );
   if (visibleEvents.length === 0) {
     // pending 但还没事件 → 显示 "Sending…" 占位，让 spinner 在 invoke 瞬间就亮
     return pending
