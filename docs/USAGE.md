@@ -48,24 +48,32 @@ npm run dev
 
 ```mermaid
 flowchart TD
-    Root["profile root<br/>默认 ~/.kodax"] --> Shared["KodaX 共享状态<br/>config / sessions / skills / handoffs"]
+    Root["profile root<br/>默认 ~/.kodax"] --> Core["config.json<br/>核心运行时配置"]
+    Root --> Integrations["integrations/<br/>mcp.json / extensions.json / a2a.json"]
+    Root --> Shared["KodaX 共享状态<br/>sessions / skills / handoffs"]
     Root --> Space["space/<br/>UI 状态、项目、日志"]
     Root --> Runtime["runtime/<br/>Runtime daemon run/event journal"]
 ```
 
-| 路径或变量                           | 作用                                 | 说明                                              |
-| ------------------------------------ | ------------------------------------ | ------------------------------------------------- |
-| `~/.kodax/config.json`               | Provider、MCP、permission 等共享配置 | CLI/SDK/Space 共用                                |
-| `~/.kodax/sessions/`                 | 会话历史                             | CLI/SDK/Space 共用                                |
-| `~/.kodax/skills/`                   | 用户 Skills                          | 项目也可有项目级 Skills                           |
-| `~/.kodax/handoffs/`                 | 桌面 handoff inbox                   | 用于上下文连续性                                  |
-| `~/.kodax/space/`                    | Space UI 和桌面专属状态              | 包含 logs、state 等                               |
-| `<profile-root>/runtime/`            | Shared Runtime state/journal         | Coder daemon runs；默认实际为 `~/.kodax/runtime/` |
-| `KODAX_HOME=<abs>`                   | 改变 SDK 共享数据根                  | 必须在应用启动前设置                              |
-| `KODAX_PROFILE_DIR=<abs>`            | 让 Space 和 SDK 使用一个独立 profile | 该绝对路径本身就是 profile 根，不再追加 `.kodax`  |
-| `KODAX_TEST_ONBOARDING=1\|<safe-id>` | 测试隔离 profile                     | 强制写入系统临时目录，禁止指向真实用户数据        |
+| 路径或变量                               | 作用                                        | 说明                                                                              |
+| ---------------------------------------- | ------------------------------------------- | --------------------------------------------------------------------------------- |
+| `~/.kodax/config.json`                   | Provider、permission、compaction 等核心配置 | CLI/SDK/Space 共用；不再把 MCP/A2A/Extension 当作新写入字段                       |
+| `~/.kodax/integrations/mcp.json`         | 用户 MCP server 声明                        | 严格 `version: 1` + `servers`；CLI/SDK/Space 共用                                 |
+| `~/.kodax/integrations/extensions.json`  | 受管理 Extension 路径                       | 严格 `version: 1` + `paths`；Space 加载仍需 `KODAX_SPACE_ENABLE_SDK_EXTENSIONS=1` |
+| `~/.kodax/integrations/a2a.json`         | Runtime A2A registration                    | 由 KodaX Runtime 持有                                                             |
+| `<project>/.kodax/integrations/mcp.json` | 项目 MCP 覆盖                               | Space 项目兼容层；同名项目 server 优先                                            |
+| `~/.kodax/sessions/`                     | 会话历史                                    | CLI/SDK/Space 共用                                                                |
+| `~/.kodax/skills/`                       | 用户 Skills                                 | 项目也可有项目级 Skills                                                           |
+| `~/.kodax/handoffs/`                     | 桌面 handoff inbox                          | 用于上下文连续性                                                                  |
+| `~/.kodax/space/`                        | Space UI 和桌面专属状态                     | 包含 logs、state 等                                                               |
+| `<profile-root>/runtime/`                | Shared Runtime state/journal                | Coder daemon runs；默认实际为 `~/.kodax/runtime/`                                 |
+| `KODAX_HOME=<abs>`                       | 改变 SDK 共享数据根                         | 必须在应用启动前设置                                                              |
+| `KODAX_PROFILE_DIR=<abs>`                | 让 Space 和 SDK 使用一个独立 profile        | 该绝对路径本身就是 profile 根，不再追加 `.kodax`                                  |
+| `KODAX_TEST_ONBOARDING=1\|<safe-id>`     | 测试隔离 profile                            | 强制写入系统临时目录，禁止指向真实用户数据                                        |
 
 若同时使用 `KODAX_PROFILE_DIR`，Space 会在首次加载 SDK 前将 `KODAX_HOME` 对齐到该 profile。相对路径会被忽略；测试模式优先级最高。
+
+从旧版升级时，`config.json#mcpServers` 与 `config.json#extensions` 仍可只读回退，但不应继续作为新配置位置。先运行 `kodax integrations migrate` 查看迁移计划，再运行 `kodax integrations migrate --apply` 创建独立文件；只有确认独立文件有效后才考虑 `--cleanup-legacy`。迁移不会覆盖已经存在的目标文件。
 
 ## 4. v0.1.33 Runtime Host
 

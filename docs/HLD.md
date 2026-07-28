@@ -1,6 +1,6 @@
 # KodaX Space 高层设计（HLD）
 
-> Last updated: 2026-07-27
+> Last updated: 2026-07-28
 > Status: 核心架构决策仍有效；当前发布基线为 KodaX Space 0.1.33（package 0.1.33）/ npm 正式发布的精确 KodaX 0.7.77。中间方案与否决理由见 [ADR/](ADR/)；当前能力边界见 [KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md)。
 > Companion doc: [PRD](PRD.md)
 
@@ -23,6 +23,8 @@
 > **2026-07-26 全局按钮交互维护（v0.1.33）**：Renderer 以 Session Token 控件的柔和扫光与边缘亮起为视觉基准，在 `body` 级交互层统一普通、语义、弹层和键盘焦点反馈。语义色继续来自既有 token；全宽列表降低强度；Windows 窗口控件、Monaco、xterm、disabled 与显式 opt-out 保持各自契约。该层仅绘制伪元素，不改变布局、业务 action、权限或 Runtime owner。
 >
 > **2026-07-27 F140 与 Shell 生命周期收口（v0.1.33）**：Windows 用户驱动的主窗口关闭由 Electron main 串行决策为每次询问、保留托盘/Runtime，或进入 F136 安全彻底退出；记住选择只写入 Space 设置，显式托盘命令、app quit、OS session end 与无托盘 fallback 不进入该策略。Terminal Shell 设置由 main 解析登录环境，并为 PTY 与 Coder 命令工具提供同一脱敏执行环境。
+>
+> **2026-07-28 KodaX integration 配置与 self-manual 收口（v0.1.33）**：KodaX 0.7.77 的核心 `config.json` 与 `integrations/mcp.json`、`integrations/extensions.json`、`integrations/a2a.json` 已按 owner 分离。Space 的 MCP Manager、项目 MCP 兼容层、Settings 概览和 SDK filesystem Extension discovery 全部消费公开 reader/CRUD 契约，并保留旧 `config.json#mcpServers`/`#extensions` 的只读迁移回退。`kodax_manual` 不再以 `baseTopics: []` 清空 SDK 机制手册，而是用 SDK 发布的底层能力主题清单做基线；同名 Space 主题动态合成当前安装 `MANUAL_REGISTRY` 的原始正文、aliases 和 sources。
 >
 > **2026-07-23 F135 builtin 分发**：Space 通过公开 Skill plugin 注册接口加载安装包外置的 `frontend-slides` 与 `huashu-design`，来源 revision、许可证、补丁和逐文件哈希全部可审计；`huashu-design` 默认去除推广水印/签名。本机 `pdf`/`pptx`/`xlsx`/`docx` skill 的当前许可不允许再分发，因此不进入安装包。
 >
@@ -354,14 +356,21 @@ CI 加 `depcheck` + `ts-prune` + 自定义 ESLint 规则（`no-restricted-import
 KodaX 生态已有 MCP 能力。`v0.1.33` 按公开服务拆分所有权：Coder 的 tool discovery 与 reload 同步 daemon；Space MCP Manager 继续管理 server 子进程、状态和日志，并服务 Partner/明确 residual。Space 的角色：
 
 - UI 层提供 MCP server 列表、启停开关、`.mcpb` 一键安装
-- 配置写入 KodaX 认识的位置（与 CLI / REPL 共享）
+- 用户配置读写 `~/.kodax/integrations/mcp.json`（严格 `version: 1` + `servers`），与 CLI/REPL/SDK 共享；项目兼容层使用 `<project>/.kodax/integrations/mcp.json`，项目同名 server 覆盖用户声明
+- 旧 `config.json#mcpServers` 只由 SDK reader 作只读迁移回退；首次 SDK CRUD 会把旧条目 staged 到独立文件，新代码不再手写根配置
 - server start/stop/logs 继续由 Space main 管理；Coder `tools/reload` 优先走 daemon，并在不可用时保持明确的 host-provider/failure 语义
 
 ### 6.2 `.mcpb` Desktop Extension
 
 `.mcpb` 安装/文件关联/拖放已发布。Space main 验证 manifest、解包边界和注册状态，renderer 仅显示脱敏结果。兼容性以 fixture/smoke 证明为准，不宣称所有第三方包 100% 可用。
 
-### 6.3 Connector foundation（F096）
+### 6.3 SDK filesystem Extensions 与 A2A
+
+- `~/.kodax/integrations/extensions.json` 是严格 `version: 1` + `paths` 文档。Space 通过 SDK reader 合并默认 `~/.kodax/extensions` discovery 与受管理 paths，再按 entrypoint 去重；加载进程内代码仍受 `KODAX_SPACE_ENABLE_SDK_EXTENSIONS=1` 显式 opt-in 约束。
+- `~/.kodax/integrations/a2a.json` 是 Runtime-owned A2A 配置。Space 只消费 daemon 的版本化 registration/dispatchability 与 Actor/Turn 投影，不复制 A2A migration/auth/resource-server owner。
+- `kodax integrations migrate` 是 dry-run，`kodax integrations migrate --apply` 才创建独立文件；已存在目标不会被覆盖。`--cleanup-legacy` 只能在新文件验证后显式执行。
+
+### 6.4 Connector foundation（F096）
 
 Connector 不是 “OAuth-flavored MCP” 的同义词。F096 定义 provider-specific adapter + shared catalog/auth/read snapshot/provenance/revocation boundary：
 
@@ -371,7 +380,7 @@ Connector 不是 “OAuth-flavored MCP” 的同义词。F096 定义 provider-sp
 - Connector `v1` 不开放 send/comment/merge/PR 等写动作；
 - MCP、browser、Connector 可以互补，但三者拥有不同 lifecycle/permission/audit contract。
 
-### 6.4 Skill
+### 6.5 Skill
 
 Skill 继续通过 KodaX public Skill API 与 Space compatibility bridge 管理；F116 不迁移 Runtime catalog：
 
@@ -645,7 +654,11 @@ Space → CLI:
 
 ```
 ~/.kodax/                       ← KodaX 内核共享区
-├── config.json                 ← user provider / mode 配置
+├── config.json                 ← provider / mode / permission / compaction 等核心配置
+├── integrations/
+│   ├── mcp.json                ← version 1 MCP servers
+│   ├── extensions.json         ← version 1 trusted extension paths
+│   └── a2a.json                ← Runtime-owned A2A registration
 ├── permissions.json            ← Allow patterns
 ├── sessions/
 │   ├── <session-id>.jsonl      ← 完整 transcript
@@ -656,7 +669,6 @@ Space → CLI:
 └── space/                      ← Space 独占
     ├── preferences.json        ← 主题 / 窗口位置 / 面板布局
     ├── projects.json           ← 最近项目
-    ├── mcp-ui-config.json      ← UI 层 MCP 顺序、禁用旗标
     ├── connectors/             ← Connector metadata（OAuth state 加密）
     ├── quick-ask.json          ← Quick Ask 最近 provider 选择
     └── telemetry.json          ← telemetry 设置
@@ -671,7 +683,7 @@ Space → CLI:
 
 ### 12.2 配置版本化
 
-每个 JSON 含 `schemaVersion`；启动时 main 跑 `migrators[][]` 链；失败回滚到上一版（保留 `.bak`）。
+Space-owned stores use their declared schemas/migrators. KodaX integration files use the SDK's strict domain version (`mcp`/`extensions` currently `version: 1`; A2A follows its published domain contract) and public migration APIs; Space does not reinterpret those documents as one root `config.json` schema.
 
 ---
 

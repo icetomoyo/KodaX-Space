@@ -14,19 +14,7 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ## [Unreleased]
 
-### Fixed
-
-- **Causally idempotent daemon live reconciliation** - Runtime live-snapshot reads are now pure.
-  Daemon transcript events carry their Runtime/run cursor, and each Session pauses delivery across
-  a bounded snapshot request. Its held lifecycle, tool, and delta events are drained in original
-  order before the cumulative projection is reconciled; per-draft cursor watermarks then reject
-  only content the snapshot actually carried. Active tools are restored in causal order and stale
-  running cards are removed from the authoritative set. Unchanged profile refreshes no longer
-  masquerade as connection transitions, and transcript hot-path events no longer rebuild the
-  complete Runtime profile for every token. This removes repeated Coder output across Ollama and
-  hosted Providers while retaining reload, reconnect, focus, revision-gap, and terminal recovery.
-
-## [0.1.33] - 2026-07-27
+## [0.1.33] - 2026-07-28
 
 ### Added
 
@@ -40,6 +28,8 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 ### Changed
 
 - **KodaX 0.7.77 Registry alignment** - Root and Desktop manifests now require the exact npm-published 0.7.77 SDK. Space consumes its complete request-envelope/ephemeral-suffix/cache-affinity hashes, delegates interrupt-finalization admission to Runtime, and accepts the CLI bridge's normalized cached-read/cache-creation usage. The lockfile records the official Registry tarball and integrity.
+- **Split KodaX integration configuration** - Space now treats `~/.kodax/config.json` as core configuration and consumes the SDK's independently versioned `integrations/mcp.json`, `integrations/extensions.json`, and Runtime-owned `integrations/a2a.json` contract. Global/project MCP discovery, `.mcpb` CRUD, Settings source reporting, and filesystem Extension discovery use public SDK readers; legacy root fields remain read-only migration fallbacks.
+- **SDK manual preservation** - The Space `kodax_manual` seeds the SDK-recommended underlying-capability topics instead of clearing all base topics. Same-id Space guidance dynamically composes the exact installed `MANUAL_REGISTRY` body, aliases, and sources, retaining valuable Provider/config/permission/tool/Skill/Extension/MCP/A2A/Session/compaction/SDK facts without copying them into a stale fork.
 - **Effective context-window presentation** - The Context window meter and composition percentages now use the final automatic-compaction threshold as their denominator. Model maximum context and auto-compact threshold are presented as independent facts, remaining space is explicitly “until auto-compact,” and reserved response capacity is excluded from active input instead of being shown as compaction headroom.
 - **Unified button interaction language** - All enabled application buttons now inherit the Token-usage control's soft semantic sweep, luminous edge, active feedback, and visible keyboard focus treatment. Primary, success, warning, reasoning, and dangerous actions retain distinct colors; portal-mounted dialogs are covered while Windows window controls, Monaco, xterm, disabled controls, and explicit opt-outs keep their own contracts.
 - **Current-source toolchain baseline** - Development and CI now read Node 22.23.1 from `.nvmrc` with a Node 22.12 engine floor, `electron-builder` 26.15.3, `node-gyp` 12.2, and `windows-latest`. Windows PE icon/version resource editing uses the pinned pure-JavaScript `resedit` path instead of probing a cached `rcedit` executable.
@@ -49,6 +39,9 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ### Fixed
 
+- **Causally idempotent daemon live reconciliation** - Runtime live-snapshot reads are pure. Daemon transcript events carry their Runtime/run cursor, and each Session pauses delivery across a bounded snapshot request. Held lifecycle, tool, and delta events drain in original order before cumulative reconciliation; per-draft cursor watermarks reject only covered content. Active tools restore causally, stale running cards clear from the authoritative set, unchanged profile refreshes no longer masquerade as connection transitions, and transcript hot-path events no longer rebuild the whole Runtime profile per token. This removes repeated Coder output across local and hosted Providers while retaining reload, reconnect, focus, revision-gap, and terminal recovery.
+- **Custom Provider and Runtime catalog convergence** - Space and KodaX-config custom Provider mutations now reconcile transactionally with the shared daemon catalog, preserve Runtime/CLI-only metadata, support explicit context-window configuration, roll back on partial failure, and keep the selected Provider/model valid across startup, update, rename, and removal.
+- **MCP and Extension split-file adoption** - User/project MCP reads no longer interpret `config.json` locally, `.mcpb` errors point at the canonical integration file, Settings reports dedicated/legacy/default sources, and managed Extension paths participate in opt-in SDK discovery with entrypoint deduplication.
 - **Daemon-backed Space builtin discovery** - Composer discovery merges installer-owned `frontend-slides` and `huashu-design` with the Runtime daemon catalog by name, preferring the Space entry on collisions without duplicate slash rows and retaining both failure fallbacks.
 - **File-reveal failure truthfulness** - `shell.revealPath` now distinguishes an allowed path that is missing, a path outside registered project/KodaX/Space roots, and an OS reveal failure. The renderer shows a dedicated authorization-scope message without widening the filesystem allowlist or adding an arbitrary-path existence oracle.
 - **Native SQLite ABI verification** - The Node/Electron `better-sqlite3` probe now catches load failures explicitly and exits nonzero, preventing Electron versions that report an uncaught `-e` exception with status 0 from being mistaken for a compatible native binding or producing a broken package.

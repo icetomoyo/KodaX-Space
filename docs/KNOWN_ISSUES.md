@@ -1,6 +1,6 @@
 # Known Issues
 
-Last Updated: 2026-07-27
+Last Updated: 2026-07-28
 
 > Historical issue details are preserved as investigation evidence. Resolved items older than 30 days move to [ISSUES_ARCHIVED.md](ISSUES_ARCHIVED.md) without losing their investigation record. The current published package baseline is v0.1.33; fixes marked `Fixed: v0.1.33` ship in that release. Start from the [documentation hub](README.md) for current behavior and status.
 
@@ -118,6 +118,7 @@ Last Updated: 2026-07-27
 | 120 | High     | Resolved    | Space custom Providers were invisible to the shared Coder daemon and failed as unknown Providers                         | v0.1.32                         | 2026-07-27 |
 | 121 | Medium   | Resolved    | Custom Provider settings could not declare the endpoint context window                                                   | v0.1.x                          | 2026-07-27 |
 | 122 | High     | Resolved    | Cumulative Runtime snapshots replayed streamed assistant output, thinking, and active tools in the renderer              | v0.1.33                         | 2026-07-27 |
+| 123 | High     | Resolved    | Space ignored KodaX split integration files and replaced valuable SDK self-manual content                                | KodaX 0.7.77 adoption           | 2026-07-28 |
 
 ## Issue Details
 
@@ -6949,7 +6950,7 @@ Validation:
 - Priority: High
 - Status: Resolved
 - Introduced: v0.1.32
-- Fixed: v0.1.34
+- Fixed: v0.1.33
 - Created: 2026-07-27
 - Resolution Date: 2026-07-27
 
@@ -7034,7 +7035,7 @@ Validation:
 - Priority: Medium
 - Status: Resolved
 - Introduced: v0.1.x
-- Fixed: v0.1.34
+- Fixed: v0.1.33
 - Created: 2026-07-27
 - Resolution Date: 2026-07-27
 
@@ -7102,7 +7103,7 @@ Validation:
 - Priority: High
 - Status: Resolved
 - Introduced: v0.1.33
-- Fixed: v0.1.34
+- Fixed: v0.1.33
 - Created: 2026-07-27
 - Resolution Date: 2026-07-27
 
@@ -7227,13 +7228,96 @@ Validation:
 - The repository-wide Prettier check still reports the existing formatting baseline outside this
   fix; no unrelated files were reformatted.
 
+### 123: Space ignored KodaX split integration files and replaced valuable SDK self-manual content
+
+- Priority: High
+- Status: Resolved
+- Introduced: KodaX 0.7.77 adoption
+- Fixed: v0.1.33
+- Created: 2026-07-28
+- Resolution Date: 2026-07-28
+
+#### Original Problem
+
+KodaX 0.7.77 separated MCP, filesystem Extension, and A2A declarations from the core
+`~/.kodax/config.json` file, but several Space paths and documents still treated root
+`mcpServers`/`extensions` fields as canonical:
+
+- project MCP discovery read `<project>/.kodax/config.json` directly;
+- the Runtime Settings overview and MCP panel pointed users to the old root file;
+- managed `integrations/extensions.json` paths did not participate in Space's opt-in SDK Extension
+  discovery;
+- current README/manual/architecture/release docs described the old storage model; and
+- Space configured `kodax_manual` with `baseTopics: []`, so the desktop white-label overlay removed
+  valuable original SDK mechanism guidance for providers, configuration, permissions, tools,
+  Skills, Extensions, MCP, A2A, repository intelligence, Sessions, compaction, and the SDK.
+
+Expected behavior:
+
+- Space follows the exact installed KodaX public integration reader/CRUD/migration contract.
+- New writes and user guidance use independently versioned `integrations/*.json` files while the
+  SDK's legacy fields remain a truthful read-only migration fallback.
+- Space product guidance augments the original SDK manual and cannot silently discard an
+  SDK-recommended underlying-capability topic.
+
+#### Root Cause
+
+The 0.7.77 dependency update verified Runtime/provider behavior but did not audit every Space-owned
+configuration reader, Settings projection, Extension discovery path, UI string, and current
+document against the SDK's new integration templates. Separately, the earlier white-label manual
+decision used full replacement to avoid CLI-only UX topics; it did not distinguish product UX from
+the SDK's reusable mechanism topics.
+
+#### Resolution
+
+- Global and project MCP discovery now use `readMcpIntegration()` and canonical
+  `integrations/mcp.json` paths. Same-name project servers retain precedence, invalid strict
+  documents fail visibly, and legacy root fields remain readable until migration.
+- `.mcpb` MCP mutations continue through SDK CRUD and every current error/UI path names the
+  canonical file.
+- Runtime Settings projects dedicated/legacy/default source, canonical path, existence, and server
+  count independently from the core `config.json` overview.
+- Opt-in SDK Extension discovery merges default discovery with
+  `readExtensionsIntegration(...).document.paths` and deduplicates by entrypoint. In-process
+  Extension execution remains disabled unless `KODAX_SPACE_ENABLE_SDK_EXTENSIONS=1`.
+- `kodax_manual` seeds `KODAX_UNDERLYING_CAPABILITY_TOPICS`. Same-id Space topics dynamically
+  include the exact installed `MANUAL_REGISTRY` body, aliases, and sources; curated topics without
+  a Space overlay remain entirely SDK-owned.
+- Current English/Chinese README, documentation hub, usage/manual, PRD/HLD, capability/feature
+  ledgers, changelog, known issues, release design, readiness record, Settings text, and manual
+  topics now agree on the split configuration and migration workflow.
+
+Files changed include:
+
+- `apps/desktop/electron/mcp/kodax-user-config-loader.ts`
+- `apps/desktop/electron/mcp/config-reader.ts`
+- `apps/desktop/electron/kodax/sdk-extensions.ts`
+- `apps/desktop/electron/kodax/space-manual-topics.ts`
+- `apps/desktop/electron/kodax/real-session.ts`
+- `apps/desktop/electron/kodax/user-config.ts`
+- `apps/desktop/renderer/src/features/settings/SettingsModal.tsx`
+- `apps/desktop/renderer/src/shell/popouts/McpPanel.tsx`
+- `packages/space-ipc-schema/src/channels/settings.ts`
+- current release and product documentation
+
+Validation:
+
+- Focused tests cover global/project split MCP files, project precedence, strict-document failures,
+  legacy fallback, Settings source projection, managed Extension paths, opt-in execution, and
+  entrypoint deduplication.
+- The manual regression iterates the complete SDK curated topic list, requires every same-id Space
+  topic to contain the exact installed SDK body and sources, and resolves the effective manual to
+  prove no recommended underlying topic disappeared.
+- TypeScript checks and the focused schema/main-process suites pass; full release gates remain
+  recorded in the v0.1.33 readiness document.
+
 ## Summary
 
-- Total: 110
+- Total: 111
 - Open: 2
 - In Progress: 2
-- Resolved: 106
-- High: 47
+- Resolved: 107
+- High: 48
 - Medium: 56
 - Low: 7
 - Next to resolve: 043

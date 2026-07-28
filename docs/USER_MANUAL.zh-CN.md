@@ -6,7 +6,7 @@
 
 > 当前发布基线：KodaX Space `v0.1.33`（package `0.1.33`）/ npm 正式发布的精确 KodaX `0.7.77`。
 >
-> 更新日期：2026-07-27
+> 更新日期：2026-07-28
 >
 > 如果你的界面与本文不同，请先在 Settings → License/版本信息中确认构建版本。
 > 本手册描述 `v0.1.33` 正式版；历史版本的界面与行为可能不同。
@@ -424,6 +424,21 @@ Space 0.1.33 保留并验证真实 `/experimental-memory` 导出和 policy，在
 
 MCP 面板展示 server 状态、命令/URL、start/stop、工具、日志/诊断和扩展卸载。`v0.1.33` 的 Coder 工具目录与 reload 会同步 Runtime；server 进程、状态和日志仍由 Space MCP Manager 负责，不会启动第二套桌面 manager。只安装可信来源的扩展。
 
+KodaX 0.7.77 已把集成配置从核心 `config.json` 分离：
+
+| 范围              | 规范路径                                 | 格式与 Space 行为                                                                                             |
+| ----------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| 用户 MCP          | `~/.kodax/integrations/mcp.json`         | `{ "version": 1, "servers": { ... } }`；CLI/SDK/Space 共用                                                    |
+| 项目 MCP          | `<project>/.kodax/integrations/mcp.json` | Space 项目兼容层；同名项目 server 覆盖用户 server                                                             |
+| 受管理 Extensions | `~/.kodax/integrations/extensions.json`  | `{ "version": 1, "paths": [ ... ] }`；默认只发现，设置 `KODAX_SPACE_ENABLE_SDK_EXTENSIONS=1` 后才加载可信代码 |
+| Runtime A2A       | `~/.kodax/integrations/a2a.json`         | 独立版本化文档，由 KodaX Runtime 持有                                                                         |
+
+Settings → Runtime 会分别显示 MCP 的规范路径、来源和 server 数。`Dedicated integration file` 表示已读取新文件；`Legacy config.json compatibility fallback` 表示仍在只读使用旧 `config.json#mcpServers`；`No file` 表示空默认值。旧 `config.json#extensions` 同样只作迁移回退。
+
+升级时先运行 `kodax integrations migrate` 预览计划，再运行 `kodax integrations migrate --apply` 创建独立文件。目标文件已存在时不会被覆盖；只有确认新文件有效后才考虑 `--cleanup-legacy`。`.mcpb` 安装/卸载通过 SDK MCP CRUD 写入新的 `integrations/mcp.json`。
+
+应用内 AI 使用的 `kodax_manual` 不再用 Space 主题完全替换 SDK 手册。Space 以当前安装 SDK 的 `KODAX_UNDERLYING_CAPABILITY_TOPICS` 为基线；若 Space 覆盖同名主题，会把准确的 SDK 原始正文、aliases 和 sources 与桌面操作说明动态合成。这样 Provider、custom Provider、配置、权限、工具、Skills、Extensions、MCP、A2A、仓库智能、Sessions、压缩和 SDK 等原始有价值内容不会因白标说明而丢失。
+
 ### Skills 与 Markdown Agents
 
 - 用户 Skill：`~/.kodax/skills/`
@@ -495,7 +510,8 @@ Settings → Runtime → External Agents 同时展示 Space Reference Agent 与 
 ```mermaid
 flowchart TD
     Session["~/.kodax/sessions"] --> K["KodaX session truth"]
-    Config["~/.kodax/config.json"] --> K
+    Config["~/.kodax/config.json<br/>核心配置"] --> K
+    Integrations["~/.kodax/integrations<br/>MCP / Extensions / A2A"] --> K
     Skills["~/.kodax/skills + project .kodax"] --> K
     Runtime["~/.kodax/runtime"] --> Events["Shared Runtime daemon state / run-event journal"]
     Space["~/.kodax/space"] --> UI["Space projects/preferences/metadata"]
@@ -532,7 +548,8 @@ flowchart TD
 | PowerShell 方括号路径被确认 | `-Path` 的 `[]` 是通配符；精确文件名改用 `-LiteralPath`/`-PSPath`                                           |
 | CLI 自动恢复到了空会话      | 新版会跳过空 ACP 占位；核对实际包 SHA256、版本和是否仍有旧进程                                              |
 | 普通 query 会闪出多个 cmd   | 0.7.77 保留非交互子进程隐藏；若仍出现，请记录 Space/KodaX 版本、进程名和触发操作，按回归问题报告            |
-| MCP 工具不可见              | MCP 面板 Refresh/Reload、server 状态、PATH、配置来源和 diagnostics                                          |
+| MCP 工具不可见              | MCP 面板 Refresh/Reload、server 状态、PATH、`integrations/mcp.json` 来源和 diagnostics                      |
+| 旧 MCP/Extension 配置未生效 | Settings → Runtime 查看来源；运行 `kodax integrations migrate` 预览，再用 `--apply` 迁移                    |
 | 关闭按钮行为不符合预期      | Settings → Preferences → Close button behavior；托盘禁用或初始化失败时会回退关闭即退出                      |
 | Terminal 找不到命令         | Settings → Preferences → Terminal Shell；确认所选 shell 的登录环境包含该命令                                |
 | Partner 没有浏览器/邮件发送 | 当前未交付，不是配置错误                                                                                    |

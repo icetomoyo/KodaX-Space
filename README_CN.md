@@ -92,6 +92,8 @@ npm run dev
 
 **v0.1.33 发布基线精确依赖 npm 正式发布的 KodaX 0.7.77。** Coder 继续连接 profile-scoped shared daemon，并新增规范化的有界 Actor/Turn 投影、精确 history/live 对齐、Runtime-owned interrupt finalization、完整物理请求用量诊断、稳定提示词缓存亲和与 CLI 缓存用量归一化。Space 要求 `contextCompaction:3`、`transcriptPaging:1`、`transcriptSearch:1`、`interruptInput:1`、Auto LLM guardrail v3 和 `actorControlPlane:1`；缺少契约时 fail closed。Partner 继续由 Space embedded-inline 持有；MCP 进程/日志、Workflow library/start/admin、Space Reference Agent 执行和产品 Artifact 仍是明确的 host-provider 边界。
 
+KodaX 0.7.77 已把集成声明与核心配置分离。Space 从 `~/.kodax/integrations/mcp.json` 读取 MCP，从 `~/.kodax/integrations/extensions.json` 读取受管理 Extension 路径，并让 Runtime-owned A2A 使用 `~/.kodax/integrations/a2a.json`；项目 MCP 覆盖位于 `<project>/.kodax/integrations/mcp.json`。旧 `config.json#mcpServers` 与 `config.json#extensions` 只作为只读迁移回退。应用内 `kodax_manual` 现在把 Space 操作说明与当前安装 SDK 的原始底层能力主题动态合成，不再丢失 Provider、配置、权限、工具、Skill、Extension、MCP、A2A、Session、压缩和 SDK 等有价值的原始说明。
+
 底部状态区把主 Agent 上下文压力与整个 Session 累计 Token 分开显示。“上下文窗口”使用最终自动压缩阈值和不含正文的六类构成；完成态物理请求按 request ID 去重，覆盖 root、child、retry、fallback、repair、workflow digest 和 compaction summary。F140 新增“每次询问 / 保留托盘和 Runtime / 安全彻底退出”偏好；Terminal 与 Coder 命令工具共享同一个所选 Shell/profile PATH 契约，不接受任意可执行文件，也不把敏感变量投影给 PTY。
 
 F122-F124 继续提供 Partner 项目来源库、不可变证据/引用和自动 grounded context 闭环。F121 仅因最终人工多客户端验收台账保持 `InProgress`；0.1.33 已发布路径仍对缺失 daemon capability 明确失败。详见 [v0.1.33 稳定化设计](docs/features/v0.1.33.md)和[能力台账](docs/KODAX_CAPABILITY_LEDGER.md)。
@@ -106,16 +108,16 @@ F136 让 Windows 后台 owner 可见、可控；F140 允许选择“每次询问
 
 **v0.1.33 - Runtime Stabilization and Desktop Control**
 
-正式发布：2026-07-27，tag 为 [`v0.1.33`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.33)，精确对齐 npm 正式发布的 KodaX 0.7.77。
+正式发布：2026-07-28，tag 为 [`v0.1.33`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.33)，精确对齐 npm 正式发布的 KodaX 0.7.77。
 
-| 领域         | 摘要                                                                                                                    |
-| ------------ | ----------------------------------------------------------------------------------------------------------------------- |
+| 领域         | 摘要                                                                                                                  |
+| ------------ | --------------------------------------------------------------------------------------------------------------------- |
 | Runtime 真理 | 规范 Agent Actor 树、单调 Runtime 投影、精确 history/live Turn 合并以及带 generation fence 的 resume/delete/dispose。 |
 | 上下文与用量 | 主 Agent 有效上下文、无正文构成、根/子 Agent 累计 Provider 用量和缓存亲和诊断各自如实展示。                           |
-| 桌面控制     | F140 关闭行为偏好和统一 Shell/profile PATH 契约覆盖托盘生命周期、Terminal 与 daemon-backed 命令工具。               |
+| 桌面控制     | F140 关闭行为偏好和统一 Shell/profile PATH 契约覆盖托盘生命周期、Terminal 与 daemon-backed 命令工具。                 |
 | 附件与 UI    | 剪贴板图片区分源/归一化体积上限，持久 Session 可安全认领；密集 Task/Agent 列表保持有界滚动。                          |
 | KodaX 0.7.77 | 精确 Registry bytes 提供 Runtime-owned finalization、public Kimi K3、CLI 缓存用量、物理请求诊断和稳定缓存亲和。       |
-| 验证         | 版本化 readiness 文档记录本地门禁和跨平台发布证据；未执行的人工 journey 继续明确保持未勾选。                        |
+| 验证         | 版本化 readiness 文档记录本地门禁和跨平台发布证据；未执行的人工 journey 继续明确保持未勾选。                          |
 
 完整说明见 [CHANGELOG.md](CHANGELOG.md)、[v0.1.33 设计](docs/features/v0.1.33.md)和[v0.1.33 发布记录](docs/releases/v0.1.33-release-readiness.md)。
 
@@ -165,15 +167,19 @@ F136 让 Windows 后台 owner 可见、可控；F140 允许选择“每次询问
 
 KodaX Space 会尽量复用 KodaX 生态状态；桌面 UI 特有状态则由 Space 自己管理。
 
-| 状态                             | 行为                                                                                                        |
-| -------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `~/.kodax/config.json`           | 用于 provider defaults、MCP servers、permission defaults、custom providers，以及 KodaX runtime 支持的配置。 |
-| `~/.kodax/sessions/`             | 与 KodaX CLI/REPL 共享 session 历史。                                                                       |
-| `~/.kodax/handoffs/`             | 桌面 handoff inbox，用于 session continuity。                                                               |
-| `~/.kodax/skills/` 和项目 skills | 由 KodaX skills runtime 发现。                                                                              |
-| API keys                         | 优先进入系统 Keychain；仍支持环境变量。                                                                     |
-| `~/.kodax/space/`                | Space 自有偏好、项目、UI 状态和桌面元数据。                                                                 |
-| `<profile-root>/runtime/`        | Shared Runtime daemon 状态与 run/event journal；默认 profile 下实际为 `~/.kodax/runtime/`。                 |
+| 状态                                     | 行为                                                                                                                      |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `~/.kodax/config.json`                   | CLI/SDK/Space 共享的 provider/model/effort/permission/custom provider/compaction 等核心配置；不再新写 MCP/A2A/Extension。 |
+| `~/.kodax/integrations/mcp.json`         | 版本化的用户 MCP server 声明；旧 `config.json#mcpServers` 只作为只读迁移回退。                                            |
+| `~/.kodax/integrations/extensions.json`  | 版本化的可信 filesystem Extension 路径；Space 默认只发现，设置 `KODAX_SPACE_ENABLE_SDK_EXTENSIONS=1` 后才加载。           |
+| `~/.kodax/integrations/a2a.json`         | 版本化、由 Runtime 持有的 A2A registration 配置。                                                                         |
+| `<project>/.kodax/integrations/mcp.json` | Space 项目 MCP 兼容层；同名项目 server 覆盖全局声明。                                                                     |
+| `~/.kodax/sessions/`                     | 与 KodaX CLI/REPL 共享 session 历史。                                                                                     |
+| `~/.kodax/handoffs/`                     | 桌面 handoff inbox，用于 session continuity。                                                                             |
+| `~/.kodax/skills/` 和项目 skills         | 由 KodaX skills runtime 发现。                                                                                            |
+| API keys                                 | 优先进入系统 Keychain；仍支持环境变量。                                                                                   |
+| `~/.kodax/space/`                        | Space 自有偏好、项目、UI 状态和桌面元数据。                                                                               |
+| `<profile-root>/runtime/`                | Shared Runtime daemon 状态与 run/event journal；默认 profile 下实际为 `~/.kodax/runtime/`。                               |
 
 ## 架构
 
@@ -272,8 +278,8 @@ npm run e2e:headed
 | 版本线            | 重点                                                                                                         |
 | ----------------- | ------------------------------------------------------------------------------------------------------------ |
 | `v0.1.32`         | 已发布 Shared-daemon Coder、Partner 项目知识/引用、受审 builtin、精确历史体验、Windows 图标/托盘与发布加固。 |
-| `v0.1.33`         | 已发布 KodaX 0.7.77 稳定化、规范 Actor/Task 状态、精确回放、Shell 控制、F140 关闭行为与诊断。              |
-| `v0.1.34`         | 独立创作、中文优先的 DOCX/PDF/XLSX/PPTX builtin 与语义 UI polish：有界执行和如实验证 receipt。          |
+| `v0.1.33`         | 已发布 KodaX 0.7.77 稳定化、规范 Actor/Task 状态、精确回放、Shell 控制、F140 关闭行为与诊断。                |
+| `v0.1.34`         | 独立创作、中文优先的 DOCX/PDF/XLSX/PPTX builtin 与语义 UI polish：有界执行和如实验证 receipt。               |
 | `v0.1.35-v0.1.40` | Workflow/Review 证据面、Task/Capability 治理，以及 SDK-gated Memory Agent/Learning Center host。             |
 | `v0.1.43`         | 本地化完成、beta diagnostics、release channel、updater/distribution trust。                                  |
 | `v0.2.x`          | Governed Browser 与 Partner packs、只读 Connector snapshots、本地 Automations、可刷新 Artifacts。            |
