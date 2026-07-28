@@ -94,6 +94,10 @@ extraResources:
   # targets keeps platform overrides from shadowing the shared resource list.
   - from: resources/icon.ico
     to: icon.ico
+  # The trusted data: boot screen embeds the real KodaX raster mark so the
+  # first visible frame never depends on app:// renderer readiness.
+  - from: resources/icon.png
+    to: icon.png
   # Space-owned builtin skills stay outside app.asar so their Python/Node/shell
   # scripts and binary assets have normal filesystem paths. They are still
   # installer-owned and registered automatically during main-process startup.

@@ -4,7 +4,7 @@
 
 ## Comparison target
 
-- Source visual truth: `C:\Users\ADMIN\.codex\generated_images\019f9d0f-f10f-7681-be2f-8d7caa6aa993\call_e2uJH2DQ676oJYerFlh1Xc2P.png`
+- Source visual truth: selected generated Context Window Popover direction.
 - Implementation screenshot: `C:\Works\GitProj\KodaX-AI\KodaX-Space\artifacts\responsive-layout-audit\03b-coder-context-breakdown-panel.png`
 - Full Electron screenshot: `C:\Works\GitProj\KodaX-AI\KodaX-Space\artifacts\responsive-layout-audit\03b-coder-context-breakdown.png`
 - Combined comparison evidence: `C:\Works\GitProj\KodaX-AI\KodaX-Space\artifacts\responsive-layout-audit\context-window-comparison.png`
@@ -66,7 +66,7 @@ Context window result: passed
 
 ### Comparison target
 
-- Source visual truth: `C:\Users\ADMIN\AppData\Local\Temp\codex-clipboard-32d128cc-bcc4-4f48-9a05-0fe4b8ea3fc2.png`
+- Source visual truth: user-supplied Token-usage button reference.
 - Browser-rendered implementation: `C:\Works\GitProj\KodaX-AI\KodaX-Space\artifacts\button-interaction-audit\03-unified-focus-feedback.png`
 - Light-theme implementation: `C:\Works\GitProj\KodaX-AI\KodaX-Space\artifacts\button-interaction-audit\05-unified-focus-light-theme.png`
 - Settings-modal implementation: `C:\Works\GitProj\KodaX-AI\KodaX-Space\artifacts\button-interaction-audit\08-settings-button-coverage.png`
@@ -126,3 +126,63 @@ The focused crop compares the Token-usage button's soft edge and illuminated dar
 - P3: after broader daily use, the default neutral sweep opacity can be tuned globally with `--button-sheen-opacity` without revisiting individual components.
 
 final result: passed
+
+## Randomized Early Boot Splash
+
+### Comparison target
+
+- Three selected directions were compared at the production launch size: Orbit
+  Trace, Signal Weave, and Aurora Gate.
+- Each implementation was reviewed beside its selected direction in a combined
+  reference/production viewport before the temporary review captures were
+  discarded.
+- Production implementation viewport: `1280 x 800` CSS pixels.
+- Combined comparison viewport: `1600 x 720` CSS pixels.
+- State: trusted dependency-free startup page before React renderer and application IPC readiness.
+
+### Intentional product decisions
+
+- A new BrowserWindow selects Orbit Trace, Signal Weave, or Aurora Gate once with equal random thirds. Renderer retries and crash recovery in the same window reuse that choice so the loading surface does not change unexpectedly.
+- The production splash embeds the shipped `resources/icon.png` mark. The generated directions use a larger isolated `K`; retaining the real app asset avoids a second, unofficial logo treatment in the first visible frame.
+- Motion is implemented with inline trusted CSS and contains no remote dependency, canvas, SVG, or renderer bundle requirement. All animation stops under `prefers-reduced-motion`.
+- Each direction keeps its own short status line. Main-process retries may replace the line through `textContent` only.
+
+### Findings
+
+No actionable P0, P1, or P2 visual differences remain.
+
+- Fonts and typography: all three variants retain the selected centered product-name hierarchy, compact muted status copy, and readable contrast on the existing dark KodaX Space surface.
+- Spacing and layout rhythm: the production window keeps a stable logo, title, and status anchor while the decorative motion changes around it. The composition remains centered at the real `1280 x 800` launch size.
+- Colors and visual tokens: the three variants consistently use the product green mark with violet and KodaX gold light treatments. Decorative glows remain subordinate to the brand and status text.
+- Image quality and asset fidelity: the real generated `1024 x 1024` PNG app mark is embedded as a data URL before renderer readiness; packaging now ships and smoke-checks the same PNG beside `app.asar`.
+- Copy and content: no progress percentage or false completion promise is shown. Retry, recovery, and failure copy remains concise and can be updated without executable markup.
+- Interaction and accessibility: the splash exposes a polite status region, prevents image dragging, supports the frameless window drag region, and supplies a reduced-motion state.
+- Responsiveness: the layout includes a compact breakpoint below `720px`; the primary comparison and implementation screenshots were captured at the production `1280 x 800` size.
+
+### Comparison history
+
+- Pass 0 confirmed Orbit Trace and Aurora Gate at production size.
+- Pass 0 found a P1 Signal Weave mirror error: left-side signal paths were transformed onto the right side.
+- Fix: left-side paths now rotate around their right-hand origin without horizontal inversion.
+- Pass 1 confirmed that Signal Weave renders paths on both sides of the brand mark. No P0, P1, or P2 visual difference remains.
+- Pass 2 removed the retired renderer-document loader. The transition from the
+  trusted splash to React now uses an empty, color-matched bootstrap root, so
+  the old K mark and spinner cannot flash between surfaces.
+
+### Verification
+
+- Boot-splash selection, trusted-markup, reduced-motion, and status-sanitization tests pass 3/3.
+- Renderer startup-gate tests pass 3/3.
+- Latest-generation renderer recovery scheduling tests pass 3/3.
+- Renderer bootstrap-document regression coverage confirms the retired loader
+  markup is absent and the dark transition background remains color matched.
+- Focused Electron renderer boot, Windows close-preference, and background-tray lifecycle coverage passes 3/3.
+- Electron main-process TypeScript checks, focused ESLint, production main bundle build, and Git whitespace checks pass.
+- Windows directory packaging passes; the packaged resource smoke confirms `icon.png` matches the source, and the packaged renderer/Runtime boot smoke passes.
+
+### Follow-up polish
+
+- P3: Signal Weave uses smoother continuous orbital arcs than the tighter inward bends of the generated direction.
+- P3: Aurora Gate uses broader blurred ribbons to keep the CSS-only first frame inexpensive.
+
+Randomized early boot splash result: passed

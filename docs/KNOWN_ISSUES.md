@@ -126,6 +126,8 @@ Last Updated: 2026-07-28
 | 128 | High     | Deferred    | Packaged Electron daemon shell probes fail before execution and Auto LLM reports Bash as disabled                        | future published KodaX          | 2026-07-28 |
 | 129 | High     | Resolved    | Packaged builds consumed nested KodaX development junctions and omitted transitive runtime dependencies                  | corrected v0.1.33               | 2026-07-28 |
 | 130 | High     | Resolved    | Runtime-mode switching left Workflow, Slash, and External Agent executable entry points outside admission                | corrected v0.1.33               | 2026-07-28 |
+| 131 | Medium   | Resolved    | Complete exit leaves the main window visible during shutdown and appears to require a second close                       | v0.1.33                         | 2026-07-28 |
+| 132 | Low      | Resolved    | Retired renderer loading UI flashes between the randomized startup splash and the application shell                      | v0.1.33                         | 2026-07-28 |
 
 ## Issue Details
 
@@ -7901,13 +7903,145 @@ Verification:
 - TypeScript checks pass after all four production channel registrars receive
   the same injected gate.
 
+### 131: Complete exit leaves the main window visible during shutdown and appears to require a second close
+
+- Priority: Medium
+- Status: Resolved
+- Introduced: v0.1.33
+- Fixed: v0.1.33
+- Created: 2026-07-28
+- Resolution Date: 2026-07-28
+
+#### Original Problem
+
+On Windows, a customer using the withdrawn v0.1.33 candidate clicked the main
+window close button, left **Remember my choice** clear, and selected the
+complete-close action. The native choice dialog disappeared, but the main
+window remained visible. Clicking the title-bar close button a second time made
+the window disappear.
+
+Expected behavior:
+
+- confirming complete exit should make the main window disappear immediately;
+- Runtime and child-process cleanup may continue for its existing bounded
+  shutdown period without making the action appear ignored; and
+- the remembered-choice checkbox must affect only persistence, not whether the
+  one-time action executes.
+
+#### Root Cause
+
+The close-choice parser correctly returns `quit-completely` whether or not the
+checkbox is selected. That action calls `app.quit()`. The global
+`before-quit` handler then sets `_quitting`, prevents Electron's default quit,
+and awaits asynchronous subsystem disposal plus the safe daemon-stop attempt.
+For complete exit, the watchdog allows this sequence up to eight seconds.
+
+Preventing the quit also prevents Electron from closing the BrowserWindow, but
+the handler does not hide or destroy the main window while cleanup runs. A
+second title-bar close enters the same window `close` listener after
+`_quitting` is already true, bypasses the close-choice policy, and therefore
+closes the still-visible window. This exactly produces the reported two-click
+behavior. The close implementation is unchanged in the current corrected
+v0.1.33 source, so withdrawing and rebuilding the package did not remove this
+UI lifecycle defect.
+
+#### Resolution
+
+- Added a small shutdown-window helper that synchronously hides every live
+  application window and isolates individual `hide()` failures.
+- The global `before-quit` handler now invokes that helper immediately after
+  committing `_quitting` and preventing Electron's default quit. Runtime,
+  child-process, tracing, tray, and watchdog cleanup retain their existing
+  bounded asynchronous lifecycle.
+- Shutdown intent now stops the remaining startup chain at safe checkpoints,
+  and asynchronous disposal waits for startup to settle before closing Runtime
+  resources. This prevents an early close from racing `initialize()` and
+  spawning resources after cleanup.
+- The close-choice behavior remains unchanged: selecting complete exit executes
+  the action once whether or not **Remember my choice** is selected; the
+  checkbox controls persistence only.
+
+Files changed:
+
+- `apps/desktop/electron/main.ts`
+- `apps/desktop/electron/window/shutdown-window.ts`
+- `apps/desktop/electron/test/shutdown-window.test.ts`
+
+Verification:
+
+- Focused shutdown and close-choice coverage passes 5/5, including one-time
+  complete exit with the remember checkbox clear, immediate hiding of every
+  live window, destroyed-window skipping, and failure isolation.
+- Focused Electron renderer boot, Windows close-preference, and background-tray
+  lifecycle coverage passes 3/3.
+- Electron main-process TypeScript checks, focused ESLint, and the production
+  main bundle build pass.
+- Windows directory packaging, packaged dependency/resource smoke checks, and
+  the packaged renderer/Runtime boot smoke pass.
+
+### 132: Retired renderer loading UI flashes between the randomized startup splash and the application shell
+
+- Priority: Low
+- Status: Resolved
+- Introduced: v0.1.33
+- Fixed: v0.1.33
+- Created: 2026-07-28
+- Resolution Date: 2026-07-28
+
+#### Original Problem
+
+After the new randomized startup animation completed, the previous small
+`KodaX Space / Starting up` panel and spinner appeared for a fraction of a
+second before the real application shell became visible.
+
+#### Root Cause
+
+The BrowserWindow correctly kept the dependency-free randomized splash visible
+until main-process initialization completed. Navigating to the React renderer
+then loaded `apps/desktop/index.html`, whose `#root` still contained the retired
+static loading panel. Chromium painted that static markup before the renderer
+bundle mounted React, exposing one obsolete intermediate frame.
+
+#### Resolution
+
+- Removed the retired panel, K mark, spinner, animation, and associated styles
+  from the renderer bootstrap document.
+- Kept an empty `#root` on a theme-aware background that matches the application
+  surface, avoiding a bright transition while React mounts.
+- Added a source-level regression test that rejects the retired loading markup
+  and verifies the color-matched dark bootstrap background.
+- Crash recovery remains behind the same main-process startup gate. Fatal
+  bootstrap errors keep the trusted splash visible with actionable status
+  instead of releasing an incomplete React renderer.
+- Renderer crash, navigation rejection, and `did-fail-load` recovery signals
+  now converge through one latest-generation scheduler, preventing duplicate
+  renderer loads for a single failure.
+- Package smoke extracts the renderer bootstrap document from `app.asar` and
+  rejects both retired loader markup and a non-empty bootstrap root.
+
+Files changed:
+
+- `apps/desktop/index.html`
+- `apps/desktop/electron/main.ts`
+- `apps/desktop/electron/test/renderer-bootstrap-document.test.ts`
+- `apps/desktop/electron/window/renderer-load-scheduler.ts`
+- `apps/desktop/electron/test/renderer-load-scheduler.test.ts`
+- `scripts/smoke-pack.mjs`
+
+Verification:
+
+- Renderer bootstrap-document, startup-gate, and startup/shutdown coordination
+  tests pass.
+- Electron TypeScript, focused lint/format, renderer and main-process builds,
+  and packaged boot smoke pass.
+
 ## Summary
 
-- Total: 118
+- Total: 120
 - Open: 2
 - In Progress: 3
-- Resolved: 113
+- Resolved: 115
 - High: 54
-- Medium: 57
-- Low: 7
+- Medium: 58
+- Low: 8
 - Next to resolve: 043
