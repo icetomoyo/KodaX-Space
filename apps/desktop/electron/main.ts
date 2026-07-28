@@ -18,7 +18,7 @@ import {
   type MenuItemConstructorOptions,
 } from 'electron';
 import path from 'node:path';
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import os from 'node:os';
 import { registerVersionChannel } from './ipc/version.js';
 import { registerRuntimeProjectionChannels } from './ipc/runtime.js';
@@ -84,6 +84,7 @@ import {
   bootStatusScript,
   createBootSplashUrl,
   describeUrlForLog,
+  selectBootSplashVariant,
 } from './window/boot-splash.js';
 import { cleanupOrphanKodaxSpaceDirWithLog } from './kodax/cleanup-orphan-kodax-space.js';
 import { migrateLegacyMcpbStorage } from './mcpb/registry.js';
@@ -126,6 +127,10 @@ import {
   resolveWindowCloseAction,
   type WindowClosePromptAction,
 } from './window/window-close-behavior.js';
+import { hideWindowsForShutdown } from './window/shutdown-window.js';
+import { RendererStartupGate } from './window/renderer-startup-gate.js';
+import { RendererLoadScheduler } from './window/renderer-load-scheduler.js';
+import { StartupShutdownCoordinator } from './window/startup-shutdown-coordinator.js';
 
 // CJS 输出（见 scripts/build-main.mjs），__dirname 是原生 Node 全局
 // 不用 import.meta.url（CJS 下不可用）
@@ -241,6 +246,9 @@ const WINDOW_ICON_PATH = resolveWindowIconPath({
   resourcesPath: process.resourcesPath,
   bundleDir: __dirname,
 });
+const BOOT_SPLASH_ICON_PATH = app.isPackaged
+  ? path.join(process.resourcesPath, 'icon.png')
+  : path.resolve(__dirname, '../resources/icon.png');
 const WINDOWS_TASKBAR_IDENTITY = resolveWindowsTaskbarIdentity({
   platform: process.platform,
   isPackaged: app.isPackaged,
@@ -324,7 +332,26 @@ let coderRuntimeRestartScheduled = false;
 let completeExitRequested = false;
 let closeDecisionPending = false;
 const backgroundCloseBypass = new WeakSet<BrowserWindow>();
+const rendererStartupGate = new RendererStartupGate();
+const startupShutdownCoordinator = new StartupShutdownCoordinator();
+let fatalStartupStatus: string | null = null;
+let bootSplashBrandDataUrl: string | undefined;
 setRendererTarget(() => (mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null));
+
+function loadBootSplashBrandDataUrl(): string | undefined {
+  if (bootSplashBrandDataUrl !== undefined) return bootSplashBrandDataUrl;
+  try {
+    bootSplashBrandDataUrl = `data:image/png;base64,${readFileSync(BOOT_SPLASH_ICON_PATH).toString(
+      'base64',
+    )}`;
+  } catch (error) {
+    console.warn(
+      '[main] boot splash brand image unavailable:',
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+  return bootSplashBrandDataUrl;
+}
 
 function scheduleCoderRuntimeModeRestart(): void {
   if (coderRuntimeRestartScheduled) return;
@@ -404,6 +431,11 @@ function createMainWindow(): BrowserWindow {
   // renderer 顶部 row 用 CSS `-webkit-app-region: drag` 当拖动条；按钮 'no-drag'。
   // Menu.setApplicationMenu(null) 在 app.whenReady 里彻底禁掉默认 File/Edit/View 菜单。
   const isMac = process.platform === 'darwin';
+  const bootSplashVariant = selectBootSplashVariant();
+  const bootSplashUrl = createBootSplashUrl({
+    variant: bootSplashVariant,
+    brandImageDataUrl: loadBootSplashBrandDataUrl(),
+  });
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -479,14 +511,17 @@ function createMainWindow(): BrowserWindow {
   installNavigationGuards(win.webContents, {
     devServerUrl: VITE_DEV_SERVER_URL,
     allowedAppOrigin: APP_PROTOCOL_ORIGIN,
-    allowedDataUrls: [createBootSplashUrl()],
+    allowedDataUrls: [bootSplashUrl],
     openExternal: (url) => void shell.openExternal(url),
   });
 
   const isWindowUnavailable = (): boolean => win.isDestroyed() || win.webContents.isDestroyed();
   let windowShown = false;
+  const appRendererLoadScheduler = new RendererLoadScheduler(() => rendererStartupGate.wait());
   const revealWindow = (source: string): void => {
-    if (windowShown || isWindowUnavailable()) return;
+    if (startupShutdownCoordinator.isShutdownRequested() || windowShown || isWindowUnavailable()) {
+      return;
+    }
     windowShown = true;
     win.show();
     win.webContents.setBackgroundThrottling(true);
@@ -526,6 +561,7 @@ function createMainWindow(): BrowserWindow {
     appLoadAttempt = 0;
     rendererGoneRecoveries = 0;
     clearAppLoadWatchdog();
+    appRendererLoadScheduler.cancel();
     revealWindow(source);
     console.info(`[main] renderer visual-ready via ${source}: ${describeUrlForLog(url)}`);
   };
@@ -537,34 +573,49 @@ function createMainWindow(): BrowserWindow {
   ipcMain.on('boot.rendererReady', rendererReadyListener);
 
   function retryAppLoad(reason: string): void {
-    if (isWindowUnavailable() || appLoadCommitted) return;
+    if (fatalStartupStatus !== null) {
+      appRendererLoadScheduler.cancel();
+      setBootStatus(fatalStartupStatus);
+      return;
+    }
+    if (
+      startupShutdownCoordinator.isShutdownRequested() ||
+      isWindowUnavailable() ||
+      appLoadCommitted
+    ) {
+      return;
+    }
     clearAppLoadWatchdog();
     if (appLoadAttempt >= appLoadMaxAttempts) {
       console.error(`[main] renderer did not commit after ${appLoadAttempt} attempt(s): ${reason}`);
-      setBootStatus('Renderer did not start. Check terminal logs, then reload.');
+      setBootStatus('KodaX Space needs attention. Check diagnostics, then reload.');
       revealWindow('renderer-load-failed');
       return;
     }
     console.warn(`[main] retrying renderer load: ${reason}`);
-    setBootStatus(`Retrying renderer load ${appLoadAttempt + 1}/${appLoadMaxAttempts}`);
+    setBootStatus('Trying that again');
     try {
       win.webContents.stop();
     } catch {
       // ignore stop races during renderer recovery
     }
-    const retryTimer = setTimeout(() => loadAppRenderer(reason), 250);
-    retryTimer.unref?.();
+    scheduleAppRendererLoad(reason, 250);
   }
 
   function loadAppRenderer(reason: string): void {
-    if (isWindowUnavailable()) return;
+    if (fatalStartupStatus !== null) {
+      appRendererLoadScheduler.cancel();
+      setBootStatus(fatalStartupStatus);
+      return;
+    }
+    if (startupShutdownCoordinator.isShutdownRequested() || isWindowUnavailable()) return;
     appLoadAttempt += 1;
     appLoadCommitted = false;
     clearAppLoadWatchdog();
     console.info(
       `[main] renderer load attempt ${appLoadAttempt}/${appLoadMaxAttempts} (${reason}) -> ${rendererTargetDescription}`,
     );
-    setBootStatus(`Loading renderer ${appLoadAttempt}/${appLoadMaxAttempts}`);
+    setBootStatus('Opening your workspace');
     const loadPromise =
       isDev && VITE_DEV_SERVER_URL
         ? win.loadURL(VITE_DEV_SERVER_URL)
@@ -584,13 +635,29 @@ function createMainWindow(): BrowserWindow {
     appLoadWatchdog.unref?.();
   }
 
+  const scheduleAppRendererLoad = (source: string, delayMs: number): void => {
+    appRendererLoadScheduler.schedule(() => {
+      if (startupShutdownCoordinator.isShutdownRequested() || isWindowUnavailable()) return;
+      loadAppRenderer(source);
+    }, delayMs);
+  };
+
   const startAppLoadAfterBoot = (source: string): void => {
-    if (bootStartedAppLoad || isWindowUnavailable()) return;
+    if (
+      startupShutdownCoordinator.isShutdownRequested() ||
+      bootStartedAppLoad ||
+      isWindowUnavailable()
+    ) {
+      return;
+    }
     bootStartedAppLoad = true;
     clearTimeout(bootFallbackTimer);
     revealWindow(source);
-    const startTimer = setTimeout(() => loadAppRenderer(source), 50);
-    startTimer.unref?.();
+    if (fatalStartupStatus !== null) {
+      setBootStatus(fatalStartupStatus);
+      return;
+    }
+    scheduleAppRendererLoad(source, 50);
   };
 
   const bootFallbackTimer = setTimeout(() => startAppLoadAfterBoot('boot-timeout'), 1500);
@@ -603,6 +670,7 @@ function createMainWindow(): BrowserWindow {
   win.webContents.once('dom-ready', () => startAppLoadAfterBoot('boot-dom-ready'));
   win.webContents.on('dom-ready', () => {
     console.info(`[main] renderer dom-ready: ${describeUrlForLog(win.webContents.getURL())}`);
+    if (fatalStartupStatus !== null) setBootStatus(fatalStartupStatus);
   });
   win.webContents.once('did-finish-load', () => revealWindow('did-finish-load'));
   win.webContents.on('did-finish-load', () => {
@@ -634,7 +702,19 @@ function createMainWindow(): BrowserWindow {
       `[main] renderer process gone: reason=${details.reason} exitCode=${details.exitCode}`,
     );
     clearAppLoadWatchdog();
-    if (details.reason === 'clean-exit') return;
+    if (startupShutdownCoordinator.isShutdownRequested() || details.reason === 'clean-exit') return;
+    if (fatalStartupStatus !== null) {
+      appRendererLoadScheduler.cancel();
+      appLoadCommitted = false;
+      void win.loadURL(bootSplashUrl).then(
+        () => setBootStatus(fatalStartupStatus ?? 'Startup could not finish.'),
+        (err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err);
+          console.error(`[main] fatal-state boot splash load rejected: ${message}`);
+        },
+      );
+      return;
+    }
     rendererGoneRecoveries += 1;
     if (rendererGoneRecoveries > rendererGoneMaxRecoveries) {
       console.error(
@@ -646,19 +726,14 @@ function createMainWindow(): BrowserWindow {
     }
     appLoadCommitted = false;
     const recoveryDelayMs = Math.min(500 * rendererGoneRecoveries, 2_000);
-    void win.loadURL(createBootSplashUrl()).then(
-      () =>
-        setBootStatus(`Recovering renderer ${rendererGoneRecoveries}/${rendererGoneMaxRecoveries}`),
+    void win.loadURL(bootSplashUrl).then(
+      () => setBootStatus('Restoring your workspace'),
       (err: unknown) => {
         const message = err instanceof Error ? err.message : String(err);
         console.error(`[main] recovery boot splash load rejected: ${message}`);
       },
     );
-    const reloadTimer = setTimeout(
-      () => loadAppRenderer(`render-process-gone:${details.reason}`),
-      recoveryDelayMs,
-    );
-    reloadTimer.unref?.();
+    scheduleAppRendererLoad(`render-process-gone:${details.reason}`, recoveryDelayMs);
   });
 
   win.on('closed', () => {
@@ -666,6 +741,7 @@ function createMainWindow(): BrowserWindow {
     uninstallTopmostGuard();
     clearTimeout(bootFallbackTimer);
     clearAppLoadWatchdog();
+    appRendererLoadScheduler.cancel();
     clearTimeout(revealTimer);
     if (mainWindow === win) mainWindow = null;
     if (
@@ -696,7 +772,7 @@ function createMainWindow(): BrowserWindow {
   });
 
   if (isDev && VITE_DEV_SERVER_URL) {
-    void win.loadURL(createBootSplashUrl()).catch((err: unknown) => {
+    void win.loadURL(bootSplashUrl).catch((err: unknown) => {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`[main] boot splash load rejected: ${message}`);
       startAppLoadAfterBoot('boot-load-rejected');
@@ -708,7 +784,7 @@ function createMainWindow(): BrowserWindow {
       win.webContents.openDevTools({ mode: 'detach' });
     }
   } else {
-    void win.loadURL(createBootSplashUrl()).catch((err: unknown) => {
+    void win.loadURL(bootSplashUrl).catch((err: unknown) => {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`[main] boot splash load rejected: ${message}`);
       startAppLoadAfterBoot('boot-load-rejected');
@@ -728,7 +804,26 @@ function showOrCreateMainWindow(): BrowserWindow {
   return createMainWindow();
 }
 
+function setVisibleBootStatus(message: string): void {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (window.isDestroyed() || window.webContents.isDestroyed()) continue;
+    const applyStatus = (): void => {
+      if (window.isDestroyed() || window.webContents.isDestroyed()) return;
+      if (!window.webContents.getURL().startsWith(BOOT_SPLASH_URL_PREFIX)) return;
+      void window.webContents
+        .executeJavaScript(bootStatusScript(message), true)
+        .catch(() => undefined);
+    };
+    if (window.webContents.getURL().startsWith(BOOT_SPLASH_URL_PREFIX)) {
+      applyStatus();
+    } else {
+      window.webContents.once('did-finish-load', applyStatus);
+    }
+  }
+}
+
 function activateMainWindow(): void {
+  if (startupShutdownCoordinator.isShutdownRequested()) return;
   if (app.isReady()) {
     showOrCreateMainWindow();
     return;
@@ -1095,7 +1190,7 @@ app.on('open-file', (event, filePath) => {
   void app.whenReady().then(() => installMcpbFromOsHandoff(filePath));
 });
 
-app
+const startupPromise = app
   .whenReady()
   .then(async () => {
     // Minimal application menu — App(mac) / Edit / View / Window。
@@ -1171,6 +1266,18 @@ app
     });
     applyCsp();
     logGpuFeatureStatus('app-ready');
+    // Show the trusted, dependency-free boot surface before Runtime/SDK/store
+    // initialization. The React renderer remains behind rendererStartupGate,
+    // so it cannot race IPC registration even though the window is visible.
+    showOrCreateMainWindow();
+    installWindowsBackgroundTray();
+    app.on('activate', () => {
+      if (startupShutdownCoordinator.isShutdownRequested()) return;
+      if (BrowserWindow.getAllWindows().length === 0) {
+        showOrCreateMainWindow();
+      }
+    });
+    repairStaleWindowsPortableShortcut();
     const spaceBuiltinSkillsRoot = resolveSpaceBuiltinSkillsPath({
       isPackaged: app.isPackaged,
       mainDirectory: __dirname,
@@ -1194,11 +1301,13 @@ app
         err instanceof Error ? err.message : err,
       );
     }
+    if (startupShutdownCoordinator.isShutdownRequested()) return;
     // Shell PATH must be ready before the shared Coder daemon starts. On Windows
     // version managers commonly initialize only from a PowerShell/bash profile;
     // starting Runtime in parallel would permanently give the daemon the stale
     // Explorer PATH even if hydration completed a few milliseconds later.
     const startupSettings = await settingsStore.load();
+    if (startupShutdownCoordinator.isShutdownRequested()) return;
     runtimeHostAdapter.configureStartupMode(
       startupSettings.coderRuntimeMode === 'embedded' ? 'legacy' : 'runtime',
     );
@@ -1206,6 +1315,7 @@ app
       preference: startupSettings.terminalShell,
       cwd: startupSettings.defaultWorkspace,
     });
+    if (startupShutdownCoordinator.isShutdownRequested()) return;
 
     // The remaining startup probes and stores are independent and can run in parallel.
     await Promise.all([
@@ -1236,12 +1346,14 @@ app
           );
         }),
     ]);
+    if (startupShutdownCoordinator.isShutdownRequested()) return;
     // POSIX SDK hydration may add provider secrets after diagnostics was initialized.
     refreshDiagnosticRedactionOptions();
     // v0.1.10 chore: best-effort 清理早期残留的 ~/.kodax_space 孤儿目录。
     // fire-and-forget,never throws,不阻塞 UI 启动;详见 cleanup-orphan-kodax-space.ts。
     void cleanupOrphanKodaxSpaceDirWithLog();
     const mcpbMigration = await migrateLegacyMcpbStorage();
+    if (startupShutdownCoordinator.isShutdownRequested()) return;
     if (mcpbMigration.kind === 'migrated') {
       console.log(
         `[startup] Migrated ${mcpbMigration.migrated} MCP bundle(s) to ~/.kodax/mcpb (${mcpbMigration.registered} registered).`,
@@ -1250,7 +1362,8 @@ app
       console.warn(`[startup] MCP bundle migration skipped: ${mcpbMigration.message}`);
     }
 
-    // IPC handlers 必须在窗口创建前注册——否则 renderer 启动后立刻调 invoke 会撞上 "No handler registered"
+    // IPC handlers must be registered before rendererStartupGate is released;
+    // the already-visible trusted boot page does not invoke application IPC.
     registerVersionChannel();
     // F121 Part 1: explicit SDK-pending snapshot handlers. They report
     // incompatible until the published daemon adapter replaces the projection.
@@ -1318,8 +1431,11 @@ app
     // 自定义 provider（如用户的 newapi-anthropic / openrouter-xxx）。失败不阻塞启动。
     try {
       await prewarmKodaxUserConfig();
+      if (startupShutdownCoordinator.isShutdownRequested()) return;
       await providerConfigStore.load();
+      if (startupShutdownCoordinator.isShutdownRequested()) return;
       await registerKodaxCustomProviders(providerConfigStore.listCustom());
+      if (startupShutdownCoordinator.isShutdownRequested()) return;
       await syncSpaceCustomProvidersToRuntime(providerConfigStore.listCustom());
     } catch (err) {
       console.warn(
@@ -1426,15 +1542,8 @@ app
           err instanceof Error ? err.message : err,
         );
       });
-    repairStaleWindowsPortableShortcut();
-    installWindowsBackgroundTray();
-    showOrCreateMainWindow();
-
-    app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) {
-        showOrCreateMainWindow();
-      }
-    });
+    if (startupShutdownCoordinator.isShutdownRequested()) return;
+    rendererStartupGate.release();
   })
   .catch((err) => {
     // 启动链兜底：whenReady 内任一步抛错（如 SDK chunk 缺运行时文件、动态 import 失败）原本会变成
@@ -1446,6 +1555,7 @@ app
     // sanitizeForDialog 抹掉绝对路径（Win 下含用户名）并截断，避免共享屏幕/录屏时泄漏路径或
     // 错误对象里夹带的敏感串。
     console.error('[main] fatal during whenReady startup:', sanitizeError(err));
+    if (startupShutdownCoordinator.isShutdownRequested()) return;
     try {
       dialog.showErrorBox(
         'KodaX Space 启动出错',
@@ -1456,13 +1566,19 @@ app
     }
     if (BrowserWindow.getAllWindows().length === 0) {
       try {
-        installWindowsBackgroundTray();
         showOrCreateMainWindow();
+        installWindowsBackgroundTray();
       } catch (e) {
         console.error('[main] createMainWindow() in startup catch also failed:', sanitizeError(e));
       }
     }
+    // The React renderer assumes that every preload IPC channel is registered.
+    // Keep the dependency-free trusted surface visible on fatal bootstrap
+    // errors rather than releasing an incomplete renderer that will fail again.
+    fatalStartupStatus = 'Startup could not finish. Restart KodaX Space to try again.';
+    setVisibleBootStatus(fatalStartupStatus);
   });
+startupShutdownCoordinator.setStartupPromise(startupPromise);
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin' && !hasUsableWindowsBackgroundTray()) {
@@ -1511,62 +1627,67 @@ async function startFileTracingIfEnabled(): Promise<void> {
 // 清理卡死导致无窗口僵尸主进程（dev 链路下还会连累 vite/esbuild 跟着挂）。
 let _quitting = false;
 app.on('before-quit', (event) => {
-  // 同步 + 幂等的清理先做（每次 before-quit 触发都安全重入）。
+  // 第二次 before-quit（理论上不会——app.exit 跳过 before-quit；防 electron quirk）直接放行。
+  if (_quitting) return;
+  _quitting = true;
+  startupShutdownCoordinator.requestShutdown();
+  // 异步清理需要 await 完才能让进程死，否则子进程 kill 与进程退出赛跑 → 孤儿残留。
+  event.preventDefault();
+  // Hide every surface synchronously once quit is committed so the user's
+  // first confirmation looks immediate instead of requiring a second close.
+  hideWindowsForShutdown(BrowserWindow.getAllWindows(), (error) => {
+    console.warn(
+      '[main] could not hide a window during shutdown:',
+      error instanceof Error ? error.message : String(error),
+    );
+  });
+  disposeWindowsBackgroundTray();
+
+  // Run synchronous, idempotent cleanup after the visual close so the surface
+  // disappears on the same input event even when a broker has pending work.
   permissionBroker.cancelAll('shutdown');
   askUserBroker.cancelAll('shutdown');
   spaceControlRendererBroker.cancelAll('shutdown');
-  // F011: kill all PTYs before exit so shells don't outlive Electron as zombies.
-  // disposeAll is synchronous + idempotent, never throws.
   try {
     getPtyHost().disposeAll();
   } catch (err) {
     console.warn('[main] ptyHost dispose:', err instanceof Error ? err.message : err);
   }
 
-  // 第二次 before-quit（理论上不会——app.exit 跳过 before-quit；防 electron quirk）直接放行。
-  if (_quitting) return;
-  _quitting = true;
-  disposeWindowsBackgroundTray();
-  // 异步清理需要 await 完才能让进程死，否则子进程 kill 与进程退出赛跑 → 孤儿残留。
-  event.preventDefault();
-
-  const tracingShutdown = _fileTracingShutdown;
-  _fileTracingShutdown = null;
-
-  // 所有会 spawn 子进程 / 持有句柄的异步清理，统一收口后 allSettled。每个自带 catch，
-  // 不让单个失败短路其它清理。
-  const disposals: Promise<unknown>[] = [
-    // McpManager: 释放 stdio transport 子进程,免得 quit 后 server 进程作为 zombie 留着。
-    disposeMcpManager().catch((err) =>
-      console.warn('[main] mcp shutdown:', err instanceof Error ? err.message : err),
-    ),
-    // KodaX in-flight sessions: detach shared-daemon Coder runs while draining
-    // Space-owned queues and local resources. Accepted run lifetime belongs to
-    // the daemon and must survive a normal Space restart.
-    kodaxHost
-      .disposeAll({ detachRuntimeRuns: true })
-      .catch((err) =>
-        console.error('[main] disposeAll on quit:', err instanceof Error ? err.message : err),
+  const disposalPromise = startupShutdownCoordinator.disposeAfterStartup(() => {
+    const tracingShutdown = _fileTracingShutdown;
+    _fileTracingShutdown = null;
+    // Startup must settle before any close() call: otherwise an early user quit
+    // can race Runtime initialize() and leave a newly spawned resource behind.
+    const disposals: Promise<unknown>[] = [
+      disposeMcpManager().catch((err) =>
+        console.warn('[main] mcp shutdown:', err instanceof Error ? err.message : err),
       ),
-    runtimeHostAdapter
-      .close()
-      .catch((err) =>
-        console.warn('[main] Runtime host shutdown:', err instanceof Error ? err.message : err),
-      ),
-    externalAgentGateway
-      .dispose()
-      .catch((err) =>
-        console.warn('[main] external-agent shutdown:', err instanceof Error ? err.message : err),
-      ),
-  ];
-  // FileTracingProcessor.shutdown(): 刷 pending write 到磁盘（opt-in，多数用户为 null）。
-  if (tracingShutdown !== null) {
-    disposals.push(
-      tracingShutdown().catch((err) =>
-        console.warn('[main] tracing shutdown:', err instanceof Error ? err.message : err),
-      ),
-    );
-  }
+      kodaxHost
+        .disposeAll({ detachRuntimeRuns: true })
+        .catch((err) =>
+          console.error('[main] disposeAll on quit:', err instanceof Error ? err.message : err),
+        ),
+      runtimeHostAdapter
+        .close()
+        .catch((err) =>
+          console.warn('[main] Runtime host shutdown:', err instanceof Error ? err.message : err),
+        ),
+      externalAgentGateway
+        .dispose()
+        .catch((err) =>
+          console.warn('[main] external-agent shutdown:', err instanceof Error ? err.message : err),
+        ),
+    ];
+    if (tracingShutdown !== null) {
+      disposals.push(
+        tracingShutdown().catch((err) =>
+          console.warn('[main] tracing shutdown:', err instanceof Error ? err.message : err),
+        ),
+      );
+    }
+    return disposals;
+  });
 
   // 兜底看门狗：任一清理卡死也不让 app 永远不退。unref 不让它本身把 event loop 拖住。
   const watchdogMs = stopDaemonOnQuit ? 8_000 : 2_500;
@@ -1576,7 +1697,7 @@ app.on('before-quit', (event) => {
   }, watchdogMs);
   watchdog.unref?.();
 
-  void Promise.allSettled(disposals)
+  void disposalPromise
     .then(async () => {
       if (!stopDaemonOnQuit) return;
       const result = await stopCoderDaemonWhenSafe({ timeoutMs: 4_000 }).catch((error) => ({

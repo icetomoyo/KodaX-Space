@@ -332,6 +332,14 @@ async function findAsarPaths() {
 async function checkAsarContents(asarPath) {
   ok(`app.asar located at ${asarPath}`);
 
+  const sourceBootIcon = await fs.readFile(path.join(rootDir, 'resources', 'icon.png'));
+  const packagedBootIconPath = path.join(path.dirname(asarPath), 'icon.png');
+  const packagedBootIcon = await fs.readFile(packagedBootIconPath).catch(() => null);
+  if (!packagedBootIcon || !packagedBootIcon.equals(sourceBootIcon)) {
+    fail(`Boot splash runtime icon is missing or differs: ${packagedBootIconPath}`);
+  }
+  ok('Boot splash runtime icon matches resources/icon.png');
+
   if (asarPath.replace(/\\/g, '/').includes('/win-unpacked/')) {
     const sourceIcon = await fs.readFile(path.join(rootDir, 'resources', 'icon.ico'));
     const packagedIconPath = path.join(path.dirname(asarPath), 'icon.ico');
@@ -403,6 +411,26 @@ async function checkAsarContents(asarPath) {
     );
   }
   ok(`app.asar contains exact @kodax-ai/kodax@${KODAX_VERSION}`);
+
+  let packagedRendererHtml;
+  try {
+    packagedRendererHtml = asar
+      .extractFile(asarPath, ['apps', 'desktop', 'dist', 'index.html'].join(path.sep))
+      .toString('utf8');
+  } catch (error) {
+    fail(
+      `could not read packaged renderer bootstrap document: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+  if (/boot-splash|boot-spinner|Starting up/.test(packagedRendererHtml)) {
+    fail('packaged renderer still contains the retired loading surface');
+  }
+  if (!/<div id="root"><\/div>/.test(packagedRendererHtml)) {
+    fail('packaged renderer bootstrap root is not empty');
+  }
+  ok('packaged renderer cannot flash the retired loading surface');
 
   // Traverse every required dependency reachable from the packaged KodaX
   // package using Node's ancestor lookup shape. A similarly named dependency
