@@ -1,4 +1,9 @@
-import { useEffect, useRef } from 'react';
+import {
+  useEffect,
+  useRef,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactElement,
+} from 'react';
 import { AtSign, Copy, Eye, FolderOpen, GitCompare } from 'lucide-react';
 import { Portal } from '../components/Portal.js';
 import { openFileInViewer, openInDiff, revealPath, toProjectRelative } from '../lib/openPath.js';
@@ -10,10 +15,12 @@ import { requestInsert } from './inputBridge.js';
 type PrimaryFileAction = 'artifact' | 'diff';
 
 interface FileActionMenuProps {
+  readonly id?: string;
   readonly path: string;
   readonly x: number;
   readonly y: number;
   readonly primary?: PrimaryFileAction;
+  readonly trigger?: HTMLElement | null;
   readonly onClose: () => void;
 }
 
@@ -23,31 +30,65 @@ export function insertPathReference(path: string, projectRoot?: string | null): 
 }
 
 export function FileActionMenu({
+  id,
   path,
   x,
   y,
   primary = 'artifact',
+  trigger,
   onClose,
-}: FileActionMenuProps): JSX.Element {
+}: FileActionMenuProps): ReactElement {
   const { t } = useI18n();
   const ref = useRef<HTMLDivElement | null>(null);
   const projectRoot = useAppStore((s) => s.currentProjectPath);
   const relativePath = toProjectRelative(path, projectRoot);
 
   useEffect(() => {
+    const returnFocusTarget =
+      trigger ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
+    const focusFrame = window.requestAnimationFrame(() => {
+      ref.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
+    });
     function onDocDown(e: MouseEvent): void {
       if (ref.current && !ref.current.contains(e.target as Node)) onClose();
     }
     function onKey(e: KeyboardEvent): void {
-      if (e.key === 'Escape') onClose();
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      onClose();
+      window.requestAnimationFrame(() => {
+        if (returnFocusTarget?.isConnected) returnFocusTarget.focus();
+      });
     }
     document.addEventListener('mousedown', onDocDown);
     window.addEventListener('keydown', onKey);
     return () => {
+      window.cancelAnimationFrame(focusFrame);
       document.removeEventListener('mousedown', onDocDown);
       window.removeEventListener('keydown', onKey);
     };
-  }, [onClose]);
+  }, [onClose, trigger]);
+
+  function onMenuKeyDown(event: ReactKeyboardEvent<HTMLDivElement>): void {
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+    const items = Array.from(ref.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? []);
+    if (items.length === 0) return;
+    event.preventDefault();
+    const activeIndex = items.indexOf(document.activeElement as HTMLElement);
+    const nextIndex =
+      event.key === 'Home'
+        ? 0
+        : event.key === 'End'
+          ? items.length - 1
+          : event.key === 'ArrowUp'
+            ? activeIndex <= 0
+              ? items.length - 1
+              : activeIndex - 1
+            : activeIndex < 0
+              ? 0
+              : (activeIndex + 1) % items.length;
+    items[nextIndex]?.focus();
+  }
 
   async function copyPath(): Promise<void> {
     try {
@@ -75,10 +116,12 @@ export function FileActionMenu({
   return (
     <Portal>
       <div
+        id={id}
         ref={ref}
         className="fixed z-[100] min-w-[220px] rounded-lg border border-border-default bg-surface-4 py-1 text-xs shadow-xl"
         style={{ left, top }}
         role="menu"
+        onKeyDown={onMenuKeyDown}
       >
         {artifactFirst ? (
           <>
@@ -157,16 +200,17 @@ function MenuRow({
   primary = false,
   onClick,
 }: {
-  readonly icon: JSX.Element;
+  readonly icon: ReactElement;
   readonly label: string;
   readonly primary?: boolean;
   readonly onClick: () => void;
-}): JSX.Element {
+}): ReactElement {
   return (
     <button
       type="button"
       onClick={onClick}
       role="menuitem"
+      tabIndex={-1}
       className={`grid w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded px-2.5 py-1.5 text-left ${
         primary
           ? 'bg-hover-bg text-fg-primary'

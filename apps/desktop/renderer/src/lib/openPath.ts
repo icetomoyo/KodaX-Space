@@ -19,6 +19,7 @@ import {
 } from '../features/artifact/transientArtifact.js';
 import {
   fileViewerContentKind,
+  isAbsolutePathOutsideProject,
   isPreviewablePath,
   isCodePath,
   toProjectRelative,
@@ -36,7 +37,13 @@ import {
 
 // 纯分类/归一化逻辑在 pathClassify.ts（可被 node:test 单测）；这里转出常用的几个，
 // 让 caller 仍从 openPath import（单一入口）。
-export { extOf, isPreviewablePath, looksLikeFilePath, toProjectRelative } from './pathClassify.js';
+export {
+  extOf,
+  isAbsolutePathOutsideProject,
+  isPreviewablePath,
+  looksLikeFilePath,
+  toProjectRelative,
+} from './pathClassify.js';
 
 interface OpenCtx {
   readonly sessionId?: string | null;
@@ -206,16 +213,6 @@ export async function openPartnerDeliveryInViewer(delivery: PartnerDeliveryRefT)
   return true;
 }
 
-export function isAbsolutePathOutsideProject(rawPath: string, projectRoot: string): boolean {
-  const p = rawPath.replace(/\\/g, '/');
-  const root = projectRoot.replace(/\\/g, '/').replace(/\/+$/, '');
-  const isAbsolute = p.startsWith('/') || /^[A-Za-z]:\//.test(p);
-  if (!isAbsolute) return false;
-  const a = p.toLowerCase();
-  const b = root.toLowerCase();
-  return a !== b && !a.startsWith(`${b}/`);
-}
-
 /** 系统浏览器打开 http(s) URL。 */
 export async function openExternalUrl(url: string): Promise<void> {
   const bridge = window.kodaxSpace;
@@ -282,6 +279,9 @@ export async function loadFileViewerSnapshot(
 ): Promise<TransientArtifactSnapshot> {
   const bridge = window.kodaxSpace;
   if (!bridge) throw new Error(translateMessage('artifact.runtimeUnavailable'));
+  if (isAbsolutePathOutsideProject(rawPath, projectRoot)) {
+    throw new Error(translateMessage('openPath.pathNotAllowed'));
+  }
   const rel = toProjectRelative(rawPath, projectRoot);
   const richKind = detectKind(rel);
   if (richKind !== null) {

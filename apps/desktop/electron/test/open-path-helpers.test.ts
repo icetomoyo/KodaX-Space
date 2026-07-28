@@ -4,6 +4,7 @@ import {
   deliveryPathMatches,
   extOf,
   fileViewerContentKind,
+  isAbsolutePathOutsideProject,
   isCodePath,
   isPreviewablePath,
   isTextPreviewPath,
@@ -118,10 +119,22 @@ test('looksLikeFilePath: rejects traversal and dotenv secrets for auto-linking',
   assert.equal(looksLikeFilePath('.env.example'), false);
 });
 
+test('isAbsolutePathOutsideProject: keeps absolute file actions inside the project', () => {
+  assert.equal(isAbsolutePathOutsideProject('C:\\proj\\docs\\a.md', 'C:\\proj'), false);
+  assert.equal(isAbsolutePathOutsideProject('c:/PROJ/docs/a.md', 'C:\\proj'), false);
+  assert.equal(isAbsolutePathOutsideProject('docs/a.md', 'C:\\proj'), false);
+  assert.equal(isAbsolutePathOutsideProject('C:\\project-other\\a.md', 'C:\\proj'), true);
+  assert.equal(isAbsolutePathOutsideProject('/home/u/proj/a.md', '/home/u/proj'), false);
+  assert.equal(isAbsolutePathOutsideProject('/Home/U/Proj/a.md', '/home/u/proj'), true);
+  assert.equal(isAbsolutePathOutsideProject('/tmp/a.md', '/home/u/proj'), true);
+  assert.equal(isAbsolutePathOutsideProject('\\\\SERVER\\Share\\a.md', '\\\\server\\share'), false);
+});
+
 test('toProjectRelative: strips projectRoot prefix and normalizes separators', () => {
   assert.equal(toProjectRelative('C:\\proj\\src\\index.html', 'C:\\proj'), 'src/index.html');
   assert.equal(toProjectRelative('C:/Proj/src/a.ts', 'c:/proj'), 'src/a.ts');
   assert.equal(toProjectRelative('/home/u/proj/src/a.ts', '/home/u/proj'), 'src/a.ts');
+  assert.equal(toProjectRelative('/Home/U/Proj/src/a.ts', '/home/u/proj'), 'Home/U/Proj/src/a.ts');
   assert.equal(toProjectRelative('src/a.ts', '/home/u/proj'), 'src/a.ts');
   assert.equal(toProjectRelative('/src/a.ts', null), 'src/a.ts');
   assert.equal(toProjectRelative('/etc/passwd', '/home/u/proj'), 'etc/passwd');

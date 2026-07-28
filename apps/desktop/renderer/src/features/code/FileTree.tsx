@@ -22,7 +22,7 @@ interface FileTreeProps {
   selectedPath: string | null;
   onSelect: (path: string) => void;
   onSelectDirectory?: (path: string) => void;
-  onFileContextMenu?: (path: string, x: number, y: number) => void;
+  onFileContextMenu?: (path: string, x: number, y: number, trigger: HTMLElement) => void;
   /** Changing this token refreshes the root and all currently expanded directories. */
   refreshToken?: number;
 }
@@ -205,7 +205,7 @@ interface FileTreeLevelProps {
   onToggle: (path: string) => void;
   onSelect: (path: string) => void;
   onSelectDirectory?: (path: string) => void;
-  onFileContextMenu?: (path: string, x: number, y: number) => void;
+  onFileContextMenu?: (path: string, x: number, y: number, trigger: HTMLElement) => void;
 }
 
 function FileTreeLevel({
@@ -248,7 +248,7 @@ interface FileTreeNodeProps {
   onToggle: (path: string) => void;
   onSelect: (path: string) => void;
   onSelectDirectory?: (path: string) => void;
-  onFileContextMenu?: (path: string, x: number, y: number) => void;
+  onFileContextMenu?: (path: string, x: number, y: number, trigger: HTMLElement) => void;
 }
 
 function FileTreeNode({
@@ -286,7 +286,7 @@ function FileTreeNode({
         onContextMenu={(e) => {
           if (isDir || !onFileContextMenu) return;
           e.preventDefault();
-          onFileContextMenu(node.path, e.clientX, e.clientY);
+          onFileContextMenu(node.path, e.clientX, e.clientY, e.currentTarget);
         }}
         className={`w-full text-left flex items-center gap-1.5 px-1 py-1 rounded hover:bg-hover-bg ${
           isSelected ? 'bg-surface-3 text-fg-primary' : 'text-fg-secondary hover:text-fg-primary'

@@ -16,6 +16,8 @@
 
 import {
   memo,
+  useId,
+  useRef,
   useState,
   type JSX,
   type MouseEvent as ReactMouseEvent,
@@ -28,14 +30,17 @@ import {
   openFileSmart,
   openExternalUrl,
   openGeneratedResourceHref,
+  isAbsolutePathOutsideProject,
   looksLikeFilePath,
 } from '../../../lib/openPath.js';
+import { useAppStore } from '../../../store/appStore.js';
 import { useI18n } from '../../../i18n/I18nProvider.js';
 import { parsePartnerDeliveryUri } from '@kodax-space/space-ipc-schema';
 import {
   openPartnerEvidence,
   parsePartnerCitationHref,
 } from '../../partner/partnerEvidenceEvents.js';
+import { FileActionMenu } from '../../../shell/FileActionMenu.js';
 
 interface MarkdownProps {
   readonly content: string;
@@ -154,10 +159,103 @@ function extractTextFromNode(node: ReactNode): string {
   return '';
 }
 
-function markdownUrlTransform(url: string): string {
+interface FileActionMenuPosition {
+  readonly x: number;
+  readonly y: number;
+}
+
+interface FileActionTriggerProps {
+  readonly onContextMenu?: (event: ReactMouseEvent<HTMLElement>) => void;
+  readonly 'aria-haspopup'?: 'menu';
+  readonly 'aria-expanded'?: boolean;
+  readonly 'aria-controls'?: string;
+  readonly 'data-file-action-path'?: string;
+}
+
+function MarkdownFileActionTarget({
+  path,
+  children,
+}: {
+  readonly path: string;
+  readonly children: (props: FileActionTriggerProps) => JSX.Element;
+}): JSX.Element {
+  const [menu, setMenu] = useState<FileActionMenuPosition | null>(null);
+  const menuId = useId();
+  const triggerRef = useRef<HTMLElement | null>(null);
+  const projectRoot = useAppStore((state) => state.currentProjectPath);
+  const menuAvailable =
+    typeof projectRoot === 'string' &&
+    projectRoot.length > 0 &&
+    !isAbsolutePathOutsideProject(path, projectRoot);
+
+  function onContextMenu(event: ReactMouseEvent<HTMLElement>): void {
+    event.preventDefault();
+    event.stopPropagation();
+    triggerRef.current = event.currentTarget;
+    const rect = event.currentTarget.getBoundingClientRect();
+    setMenu({
+      x: event.clientX || rect.left,
+      y: event.clientY || rect.bottom,
+    });
+  }
+
+  return (
+    <>
+      {children(
+        menuAvailable
+          ? {
+              onContextMenu,
+              'aria-haspopup': 'menu',
+              'aria-expanded': menu !== null,
+              'aria-controls': menu !== null ? menuId : undefined,
+              'data-file-action-path': path,
+            }
+          : {},
+      )}
+      {menuAvailable && menu && (
+        <FileActionMenu
+          id={menuId}
+          path={path}
+          x={menu.x}
+          y={menu.y}
+          primary="artifact"
+          trigger={triggerRef.current}
+          onClose={() => setMenu(null)}
+        />
+      )}
+    </>
+  );
+}
+
+function localFileTarget(value: string): string | null {
+  try {
+    const decoded = decodeURI(value);
+    if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(decoded) && !/^[A-Za-z]:[\\/]/.test(decoded)) {
+      return null;
+    }
+    return looksLikeFilePath(decoded) ? decoded : null;
+  } catch {
+    if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(value) && !/^[A-Za-z]:[\\/]/.test(value)) {
+      return null;
+    }
+    return looksLikeFilePath(value) ? value : null;
+  }
+}
+
+/** @internal Exported for deterministic Markdown target tests. */
+export function markdownFilePath(children: ReactNode, href: string | undefined): string | null {
+  if (typeof href === 'string') return localFileTarget(href);
+  const label = extractTextFromNode(children).trim();
+  return localFileTarget(label);
+}
+
+/** @internal Exported for deterministic Markdown target tests. */
+export function markdownUrlTransform(url: string): string {
   return parsePartnerDeliveryUri(url) || parsePartnerCitationHref(url)
     ? url
-    : defaultUrlTransform(url);
+    : localFileTarget(url)
+      ? url
+      : defaultUrlTransform(url);
 }
 
 function MarkdownInner({ content }: MarkdownProps): JSX.Element {
@@ -211,14 +309,19 @@ function MarkdownInner({ content }: MarkdownProps): JSX.Element {
             const inlineText = extractTextFromNode(children);
             if (looksLikeFilePath(inlineText)) {
               return (
-                <button
-                  type="button"
-                  onClick={() => void openFileSmart(inlineText)}
-                  title={t('markdown.openInlinePath', { path: inlineText })}
-                  className="bg-info/12 text-info hover:bg-info/20 px-1.5 py-0.5 rounded text-[12px] font-mono underline decoration-info/40 underline-offset-2 cursor-pointer"
-                >
-                  {children}
-                </button>
+                <MarkdownFileActionTarget path={inlineText}>
+                  {(fileActionProps) => (
+                    <button
+                      type="button"
+                      onClick={() => void openFileSmart(inlineText)}
+                      {...fileActionProps}
+                      title={t('markdown.openInlinePath', { path: inlineText })}
+                      className="bg-info/12 text-info hover:bg-info/20 px-1.5 py-0.5 rounded text-[12px] font-mono underline decoration-info/40 underline-offset-2 cursor-pointer"
+                    >
+                      {children}
+                    </button>
+                  )}
+                </MarkdownFileActionTarget>
               );
             }
             // Inline code —— Claude Desktop 风格 rose pill：浅色背景 + 中浓饱和文字。
@@ -238,6 +341,30 @@ function MarkdownInner({ content }: MarkdownProps): JSX.Element {
             const isGeneratedResource =
               typeof href === 'string' && parsePartnerDeliveryUri(href) !== null;
             const partnerCitationId = parsePartnerCitationHref(href);
+            const filePath =
+              !isHttp && !isGeneratedResource && !partnerCitationId
+                ? markdownFilePath(children, href)
+                : null;
+            if (filePath) {
+              return (
+                <MarkdownFileActionTarget path={filePath}>
+                  {(fileActionProps) => (
+                    <a
+                      {...props}
+                      href={href}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        void openFileSmart(filePath);
+                      }}
+                      {...fileActionProps}
+                      className="text-info/80 hover:text-info underline decoration-info/40 underline-offset-2"
+                    >
+                      {children}
+                    </a>
+                  )}
+                </MarkdownFileActionTarget>
+              );
+            }
             return (
               <a
                 {...props}

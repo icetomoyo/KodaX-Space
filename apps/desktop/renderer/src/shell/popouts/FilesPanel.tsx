@@ -13,6 +13,7 @@ interface FileMenuState {
   readonly path: string;
   readonly x: number;
   readonly y: number;
+  readonly trigger: HTMLElement;
 }
 
 interface FilesPanelProps {
@@ -197,7 +198,7 @@ export function FilesPanel({
             projectRoot={projectRoot}
             selectedPath={selectedPath}
             onSelect={selectFile}
-            onFileContextMenu={(path, x, y) => setFileMenu({ path, x, y })}
+            onFileContextMenu={(path, x, y, trigger) => setFileMenu({ path, x, y, trigger })}
             refreshToken={treeRefreshToken}
           />
         ) : searchResults.length > 0 ? (
@@ -211,7 +212,7 @@ export function FilesPanel({
                 path={path}
                 selected={path === selectedPath}
                 onSelect={selectFile}
-                onContextMenu={(x, y) => setFileMenu({ path, x, y })}
+                onContextMenu={(x, y, trigger) => setFileMenu({ path, x, y, trigger })}
               />
             ))}
           </div>
@@ -229,6 +230,7 @@ export function FilesPanel({
           path={fileMenu.path}
           x={fileMenu.x}
           y={fileMenu.y}
+          trigger={fileMenu.trigger}
           primary="artifact"
           onClose={() => setFileMenu(null)}
         />
@@ -309,7 +311,7 @@ function SearchResultRow({
   readonly path: string;
   readonly selected: boolean;
   readonly onSelect: (path: string) => void;
-  readonly onContextMenu: (x: number, y: number) => void;
+  readonly onContextMenu: (x: number, y: number, trigger: HTMLElement) => void;
 }): JSX.Element {
   const name = path.slice(path.lastIndexOf('/') + 1);
   const dir = path.slice(0, Math.max(0, path.length - name.length - 1));
@@ -320,7 +322,7 @@ function SearchResultRow({
       onClick={() => onSelect(path)}
       onContextMenu={(e) => {
         e.preventDefault();
-        onContextMenu(e.clientX, e.clientY);
+        onContextMenu(e.clientX, e.clientY, e.currentTarget);
       }}
       title={path}
       data-testid="files-search-result"

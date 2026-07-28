@@ -13,7 +13,11 @@ import {
   parsePartnerDeliveryToolResult,
   parsePartnerDeliveryToolResults,
 } from '../../renderer/src/lib/generatedResourceRef.js';
-import { Markdown } from '../../renderer/src/features/session/messages/Markdown.js';
+import {
+  Markdown,
+  markdownFilePath,
+  markdownUrlTransform,
+} from '../../renderer/src/features/session/messages/Markdown.js';
 import { I18nProvider } from '../../renderer/src/i18n/I18nProvider.js';
 
 function harness() {
@@ -202,4 +206,26 @@ test('Markdown preserves typed Partner Delivery links as generated-resource anch
       delete (globalThis as { navigator?: Navigator }).navigator;
     }
   }
+});
+
+test('Markdown file actions follow the link target instead of path-like display text', () => {
+  assert.equal(markdownFilePath('docs/old.md', 'docs/new.md'), 'docs/new.md');
+  assert.equal(markdownFilePath('README.md', '#installation'), null);
+  assert.equal(markdownFilePath('report.md', 'mailto:user@example.com'), null);
+  assert.equal(markdownFilePath('report.md', 'mailto:user@example.md'), null);
+  assert.equal(markdownFilePath('report.md', 'data:text/plain,payload.md'), null);
+  assert.equal(markdownFilePath('report.md', 'javascript:payload.md'), null);
+  assert.equal(markdownFilePath('report.md', 'https://example.test/report.md'), null);
+  assert.equal(markdownFilePath('report.md', formatPartnerDeliveryUri('pd_markdown')), null);
+  assert.equal(markdownFilePath('report.md', '#kodax-cite-cite_12345678'), null);
+  assert.equal(markdownFilePath('docs/fallback.md', undefined), 'docs/fallback.md');
+});
+
+test('Markdown URL transform preserves recognized Windows file targets', () => {
+  const windowsPath = 'C:\\Users\\ADMIN\\project\\docs\\report.md';
+  assert.equal(markdownUrlTransform(windowsPath), windowsPath);
+  assert.equal(markdownUrlTransform('docs/report.md'), 'docs/report.md');
+  assert.equal(markdownUrlTransform('mailto:user@example.md'), 'mailto:user@example.md');
+  assert.equal(markdownUrlTransform('data:text/plain,payload.md'), '');
+  assert.equal(markdownUrlTransform('javascript:payload.md'), '');
 });

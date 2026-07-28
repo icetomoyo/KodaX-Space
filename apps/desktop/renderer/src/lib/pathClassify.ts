@@ -212,6 +212,18 @@ export function looksLikeFilePath(text: string): boolean {
   return KNOWN_EXTS.has(extOf(s));
 }
 
+/** Whether an absolute path resolves outside the active project boundary. */
+export function isAbsolutePathOutsideProject(rawPath: string, projectRoot: string): boolean {
+  const p = rawPath.replace(/\\/g, '/');
+  const root = projectRoot.replace(/\\/g, '/').replace(/\/+$/, '');
+  const isAbsolute = p.startsWith('/') || /^[A-Za-z]:\//.test(p);
+  if (!isAbsolute) return false;
+  const windowsStyle = /^[A-Za-z]:\//.test(p) || p.startsWith('//');
+  const a = windowsStyle ? p.toLowerCase() : p;
+  const b = windowsStyle ? root.toLowerCase() : root;
+  return a !== b && !a.startsWith(`${b}/`);
+}
+
 /**
  * 绝对/混合路径 → 相对 projectRoot 的 posix 路径（files.read / files.diff 要相对形态）。
  * 不在 projectRoot 下的路径原样（去盘符外的前导斜杠），交由 main 端 resolveInsideProject 兜底拒绝。
@@ -220,7 +232,10 @@ export function toProjectRelative(p: string, projectRoot: string | null): string
   let s = p.replace(/\\/g, '/');
   if (projectRoot) {
     const root = projectRoot.replace(/\\/g, '/').replace(/\/+$/, '');
-    if (s.toLowerCase().startsWith(root.toLowerCase() + '/')) {
+    const windowsStyle = /^[A-Za-z]:\//.test(s) || s.startsWith('//');
+    const pathForCompare = windowsStyle ? s.toLowerCase() : s;
+    const rootForCompare = windowsStyle ? root.toLowerCase() : root;
+    if (pathForCompare.startsWith(`${rootForCompare}/`)) {
       s = s.slice(root.length + 1);
     }
   }

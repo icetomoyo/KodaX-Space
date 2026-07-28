@@ -90,6 +90,7 @@ interface FileMenuState {
   readonly path: string;
   readonly x: number;
   readonly y: number;
+  readonly trigger: HTMLElement;
 }
 
 interface RightSidebarProps {
@@ -1627,7 +1628,7 @@ function ChangesSection({
               collapsed={collapsed}
               onToggle={toggleDir}
               onPick={pickFile}
-              onContextMenu={(path, x, y) => setFileMenu({ path, x, y })}
+              onContextMenu={(path, x, y, trigger) => setFileMenu({ path, x, y, trigger })}
             />
             {snapshot.truncated && (
               <li className="text-fg-muted px-1">{t('right.moreTruncated', { count: 200 })}</li>
@@ -1640,6 +1641,7 @@ function ChangesSection({
           path={fileMenu.path}
           x={fileMenu.x}
           y={fileMenu.y}
+          trigger={fileMenu.trigger}
           primary="diff"
           onClose={() => setFileMenu(null)}
         />
@@ -1722,7 +1724,7 @@ interface ChangeTreeViewProps {
   collapsed: ReadonlySet<string>;
   onToggle: (dirPath: string) => void;
   onPick: (filePath: string) => void;
-  onContextMenu: (filePath: string, x: number, y: number) => void;
+  onContextMenu: (filePath: string, x: number, y: number, trigger: HTMLElement) => void;
 }
 
 /** Recursive directory tree renderer: folders fold, file rows open diff. */
@@ -1779,7 +1781,7 @@ function ChangeTreeView({
             onClick={() => onPick(f.path)}
             onContextMenu={(e) => {
               e.preventDefault();
-              onContextMenu(f.path, e.clientX, e.clientY);
+              onContextMenu(f.path, e.clientX, e.clientY, e.currentTarget);
             }}
             style={pad(depth)}
             className="w-full text-left flex items-center gap-1.5 pr-1 py-0.5 rounded hover:bg-hover-bg text-fg-secondary hover:text-fg-primary"
@@ -2058,7 +2060,12 @@ function ContextSection({
                     onClick={() => void openFileInViewer(f)}
                     onContextMenu={(e) => {
                       e.preventDefault();
-                      setFileMenu({ path: f, x: e.clientX, y: e.clientY });
+                      setFileMenu({
+                        path: f,
+                        x: e.clientX,
+                        y: e.clientY,
+                        trigger: e.currentTarget,
+                      });
                     }}
                     className="group/ctxfile w-full text-left flex items-center gap-1.5 px-1 py-0.5 rounded hover:bg-hover-bg text-fg-secondary hover:text-fg-primary"
                     title={t('fileActions.openInFileViewer')}
@@ -2081,6 +2088,7 @@ function ContextSection({
           path={fileMenu.path}
           x={fileMenu.x}
           y={fileMenu.y}
+          trigger={fileMenu.trigger}
           primary="artifact"
           onClose={() => setFileMenu(null)}
         />
