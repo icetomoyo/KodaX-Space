@@ -190,6 +190,11 @@ async function validateInputArtifactsForSession(
   session: { readonly provider: string; readonly model?: string },
 ): Promise<void> {
   if (!artifacts || artifacts.length === 0) return;
+  // KODAX_FORCE_MOCK never dispatches to the selected provider/model. Let the
+  // offline adapter consume attachments so E2E and local mock workflows can
+  // exercise promotion, durable preview capabilities, and history restoration.
+  // Real sessions still require the SDK capability preflight below.
+  if (process.env.KODAX_FORCE_MOCK === '1') return;
   const sdk = await loadSdkMediaCached();
   try {
     sdk.validateInputArtifactsForModel(artifacts, {
