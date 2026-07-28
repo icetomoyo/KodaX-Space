@@ -23,7 +23,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { assertKodaxRuntimeReleaseContract } from './kodax-runtime-release-gate.mjs';
+import { assertKodaxReleaseDependencyState } from './kodax-runtime-release-gate.mjs';
 import { inspectKodaxDevLink } from './kodax-dev-link-state.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -78,6 +78,19 @@ function restoreLink(link) {
   console.log(`[pack] restored dev link: @kodax-ai/kodax → ${link.target}`);
 }
 
+function verifyReleaseSdk() {
+  const dependency = assertKodaxReleaseDependencyState(SPACE_ROOT, SDK_DIR);
+  console.log(`[pack] verified exact Registry dependency @kodax-ai/kodax@${dependency.version}.`);
+  return dependency;
+}
+
+function runProductSmokes() {
+  run('node', ['scripts/smoke-pack.mjs'], 'packaged dependency smoke');
+  if (process.platform === 'win32') {
+    run('node', ['e2e/boot-smoke-packaged.mjs'], 'packaged Windows boot smoke');
+  }
+}
+
 // 透传给 electron-builder 的参数走白名单 —— 只允许已知的平台/架构标志。
 // 否则 electron-builder 接受 `--config.publish[0]...` / `--config.extraResources[0]=...` /
 // `--extraMetadata.*` 这类能在运行时覆盖 electron-builder.yml 任意字段的参数，
@@ -101,11 +114,7 @@ const manifestSnapshot = readManifestSnapshot();
 const link = inspectKodaxDevLink(SPACE_ROOT, SDK_DIR);
 
 if (!link.linked) {
-  const contract = assertKodaxRuntimeReleaseContract(SDK_DIR);
-  console.log(
-    `[pack] verified @kodax-ai/kodax@${contract.version} integrationConfigResilience ` +
-      `v${contract.integrationConfigResilience}.`,
-  );
+  verifyReleaseSdk();
   // 干净状态：直接打包（CI / 已 unlink 的 release checkout）
   run(
     'node',
@@ -113,6 +122,7 @@ if (!link.linked) {
     'ensure better-sqlite3 electron ABI',
   );
   run('npx', ['electron-builder', '-p', 'never', ...passthrough], 'electron-builder');
+  runProductSmokes();
   assertManifestUnchanged(manifestSnapshot, 'pack');
   process.exit(0);
 }
@@ -134,17 +144,16 @@ try {
     NODE_ENV: 'development',
   });
   assertManifestUnchanged(manifestSnapshot, 'npm ci (published SDK)');
-  const contract = assertKodaxRuntimeReleaseContract(SDK_DIR);
-  console.log(
-    `[pack] verified @kodax-ai/kodax@${contract.version} integrationConfigResilience ` +
-      `v${contract.integrationConfigResilience}.`,
-  );
+  verifyReleaseSdk();
   run(
     'node',
     ['scripts/ensure-sqlite-native.mjs', 'electron'],
     'ensure better-sqlite3 electron ABI',
   );
   run('npx', ['electron-builder', '-p', 'never', ...passthrough], 'electron-builder');
+  // Run against the exact Registry install before finally restores the local
+  // development staging package.
+  runProductSmokes();
   assertManifestUnchanged(manifestSnapshot, 'pack');
 } finally {
   try {

@@ -37,7 +37,10 @@ export function inspectKodaxDevLink(spaceRoot, sdkDir) {
     return { linked: false };
   }
 
-  if (!isInside(spaceRoot, sdkRealpath)) {
+  // A package-root reparse point is development state even when it happens to
+  // target another directory under the Space checkout. Registry installs are
+  // always real directories.
+  if (sdkLstat.isSymbolicLink() || path.resolve(sdkRealpath) !== path.resolve(sdkDir)) {
     return {
       linked: true,
       layout: 'direct',
@@ -53,7 +56,14 @@ export function inspectKodaxDevLink(spaceRoot, sdkDir) {
   // Compatibility with staging directories created before the marker existed.
   for (const child of ['dist', 'node_modules', 'scripts']) {
     try {
-      if (!isInside(spaceRoot, fs.realpathSync(path.join(sdkDir, child)))) {
+      const childPath = path.join(sdkDir, child);
+      const childLstat = fs.lstatSync(childPath);
+      const childRealpath = fs.realpathSync(childPath);
+      if (
+        childLstat.isSymbolicLink() ||
+        path.resolve(childRealpath) !== path.resolve(childPath) ||
+        !isInside(spaceRoot, childRealpath)
+      ) {
         return { linked: true, layout: 'staging' };
       }
     } catch {

@@ -64,6 +64,10 @@ const kodaxPkg = JSON.parse(fs.readFileSync(kodaxPkgPath, 'utf-8'));
 // 1. Fresh staging dir
 rimrafSafe(STAGING);
 fs.mkdirSync(STAGING, { recursive: true });
+// Mark the directory before writing package metadata or creating the first
+// junction. If this process is interrupted at any later instruction, pack.mjs
+// must still classify the partial directory as development state.
+fs.writeFileSync(path.join(STAGING, KODAX_DEV_LINK_MARKER), '', 'utf8');
 
 // 2. Write Space-owned package.json — mirror release.mjs subpath exports + name rewrite.
 //    publishConfig / bin / version 直接 borrow KodaX 的，保持版本号一致。
@@ -127,11 +131,6 @@ const scriptsLink = path.join(STAGING, 'scripts');
 if (fs.existsSync(scriptsSrc)) {
   fs.symlinkSync(scriptsSrc, scriptsLink, process.platform === 'win32' ? 'junction' : 'dir');
 }
-
-// Written last so an interrupted staging build is never mistaken for a
-// complete local SDK package. pack.mjs also recognizes pre-marker staging by
-// inspecting the nested junctions.
-fs.writeFileSync(path.join(STAGING, KODAX_DEV_LINK_MARKER), '', 'utf8');
 
 console.log(`[link-kodax] staging at:`);
 console.log(`  ${STAGING}`);

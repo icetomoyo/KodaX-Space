@@ -28,6 +28,20 @@ const KODAX_VERSION = String(rootPackage.dependencies?.['@kodax-ai/kodax'] ?? ''
 const SIZE_LIMIT_BYTES = 200 * 1024 * 1024;
 const require = createRequire(import.meta.url);
 const electronBin = require('electron');
+const KODAX_PUBLIC_FACADE_FILES = [
+  'index.js',
+  'sdk-a2a.js',
+  'sdk-agent.js',
+  'sdk-coding.js',
+  'sdk-experimental-memory.js',
+  'sdk-llm.js',
+  'sdk-mcp.js',
+  'sdk-media.js',
+  'sdk-repl.js',
+  'sdk-runtime.js',
+  'sdk-session.js',
+  'sdk-skills.js',
+];
 
 function fail(msg) {
   console.error(`[smoke-pack] FAIL: ${msg}`);
@@ -35,6 +49,20 @@ function fail(msg) {
 }
 function ok(msg) {
   console.log(`[smoke-pack] OK: ${msg}`);
+}
+
+function resolvePackagedDependencyMetadata(files, fromMetadataPath, dependency) {
+  const dependencyParts = dependency.split('/');
+  let current = path.posix.dirname(fromMetadataPath);
+  while (true) {
+    const candidate = path.posix.join(current, 'node_modules', ...dependencyParts, 'package.json');
+    const normalizedCandidate = candidate.startsWith('/') ? candidate : `/${candidate}`;
+    if (files.has(normalizedCandidate)) return normalizedCandidate;
+    const parent = path.posix.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return undefined;
 }
 
 async function pathExists(targetPath) {
@@ -343,14 +371,16 @@ async function checkAsarContents(asarPath) {
   }
   // 跨平台归一化：asar list 在 Windows 上返回 `\dist-electron\main.js`
   const normalized = files.map((f) => f.replace(/\\/g, '/'));
+  const normalizedSet = new Set(normalized);
   const devLinkMarker = '/node_modules/@kodax-ai/kodax/.kodax-space-dev-link';
   if (normalized.some((file) => file === devLinkMarker || file.endsWith(devLinkMarker))) {
     fail('KodaX development staging marker leaked into app.asar');
   }
 
   let packagedKodax;
+  let asar;
   try {
-    const asar = await import('@electron/asar');
+    asar = await import('@electron/asar');
     packagedKodax = JSON.parse(
       asar
         .extractFile(
@@ -374,44 +404,59 @@ async function checkAsarContents(asarPath) {
   }
   ok(`app.asar contains exact @kodax-ai/kodax@${KODAX_VERSION}`);
 
-  // KodaX loads tsx at runtime for governed TypeScript extensions. Verify the
-  // packaged tsx dependency closure instead of assuming electron-builder
-  // followed a local staging junction. This catches the observed startup crash
-  // where tsx@4.21 was present but get-tsconfig was outside app.asar.
-  const packagedTsxMetadataPaths = normalized.filter((file) =>
-    file.endsWith('/node_modules/tsx/package.json'),
-  );
-  if (packagedKodax.dependencies?.tsx && packagedTsxMetadataPaths.length === 0) {
-    fail('KodaX declares runtime dependency tsx, but no packaged tsx metadata exists');
-  }
-  for (const metadataPath of packagedTsxMetadataPaths) {
-    let metadata;
-    try {
-      const asar = await import('@electron/asar');
-      metadata = JSON.parse(
-        asar
-          .extractFile(asarPath, metadataPath.replace(/^\//, '').split('/').join(path.sep))
-          .toString('utf8'),
-      );
-    } catch (error) {
-      fail(
-        `could not read packaged tsx metadata at ${metadataPath}: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-    }
+  // Traverse every required dependency reachable from the packaged KodaX
+  // package using Node's ancestor lookup shape. A similarly named dependency
+  // nested under an unrelated package must not satisfy this check. This catches
+  // the observed tsx -> get-tsconfig omission and future transitive gaps.
+  const kodaxMetadataPath = '/node_modules/@kodax-ai/kodax/package.json';
+  const metadataQueue = [kodaxMetadataPath];
+  const metadataByPath = new Map([[kodaxMetadataPath, packagedKodax]]);
+  const visitedMetadata = new Set();
+  while (metadataQueue.length > 0) {
+    const metadataPath = metadataQueue.shift();
+    if (visitedMetadata.has(metadataPath)) continue;
+    visitedMetadata.add(metadataPath);
+    const metadata = metadataByPath.get(metadataPath);
     for (const dependency of Object.keys(metadata.dependencies ?? {})) {
-      const dependencyMetadata = `/node_modules/${dependency}/package.json`;
-      if (
-        !normalized.some((file) => file === dependencyMetadata || file.endsWith(dependencyMetadata))
-      ) {
-        fail(`packaged tsx@${metadata.version ?? '(unknown)'} is missing ${dependency}`);
+      const dependencyMetadataPath = resolvePackagedDependencyMetadata(
+        normalizedSet,
+        metadataPath,
+        dependency,
+      );
+      if (!dependencyMetadataPath) {
+        fail(
+          `${metadata.name ?? metadataPath}@${metadata.version ?? '(unknown)'} cannot resolve ` +
+            `required dependency ${dependency} from app.asar`,
+        );
       }
+      if (!metadataByPath.has(dependencyMetadataPath)) {
+        try {
+          metadataByPath.set(
+            dependencyMetadataPath,
+            JSON.parse(
+              asar
+                .extractFile(
+                  asarPath,
+                  dependencyMetadataPath.replace(/^\//, '').split('/').join(path.sep),
+                )
+                .toString('utf8'),
+            ),
+          );
+        } catch (error) {
+          fail(
+            `could not read dependency metadata at ${dependencyMetadataPath}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      }
+      metadataQueue.push(dependencyMetadataPath);
     }
   }
-  if (packagedTsxMetadataPaths.length > 0) {
-    ok(`packaged tsx dependency closure is complete (${packagedTsxMetadataPaths.length} copy)`);
-  }
+  ok(
+    `packaged KodaX required dependency closure is ancestor-resolvable ` +
+      `(${visitedMetadata.size} packages)`,
+  );
 
   const required = [
     '/dist-electron/main.js',
@@ -432,8 +477,7 @@ async function checkAsarContents(asarPath) {
   // installer that prunes any one of them can pass compilation and fail only
   // when Runtime or a constructed handler first starts.
   const kodaxRuntimeRequired = [
-    '/node_modules/@kodax-ai/kodax/dist/sdk-runtime.js',
-    '/node_modules/@kodax-ai/kodax/dist/sdk-experimental-memory.js',
+    ...KODAX_PUBLIC_FACADE_FILES.map((file) => `/node_modules/@kodax-ai/kodax/dist/${file}`),
     '/node_modules/@kodax-ai/kodax/dist/runtime-worker.js',
     '/node_modules/@kodax-ai/kodax/dist/constructed-handler-worker.js',
     '/node_modules/@kodax-ai/kodax/dist/semantic-worker.js',
@@ -589,6 +633,30 @@ async function checkAsarContents(asarPath) {
   }
   ok('@napi-rs/keyring native binding present in app.asar.unpacked');
 
+  const sqliteRequired = [
+    '/node_modules/better-sqlite3/package.json',
+    '/node_modules/better-sqlite3/lib/index.js',
+    '/node_modules/bindings/package.json',
+    '/node_modules/bindings/bindings.js',
+    '/node_modules/file-uri-to-path/package.json',
+    '/node_modules/file-uri-to-path/index.js',
+  ];
+  for (const req of sqliteRequired) {
+    if (!normalizedSet.has(req)) {
+      fail(`better-sqlite3 resolver chain missing from asar: ${req}`);
+    }
+  }
+  const hasSqliteNativeUnpacked = unpackedFiles.some((file) =>
+    /\/node_modules\/better-sqlite3\/build\/Release\/better_sqlite3\.node$/.test(file),
+  );
+  if (!hasSqliteNativeUnpacked) {
+    fail(
+      'better-sqlite3 native binding is missing from app.asar.unpacked; ' +
+        'the packaged main process cannot open its artifact catalog.',
+    );
+  }
+  ok('better-sqlite3 resolver chain and native binding are packaged');
+
   // yaml's dist/doc files are runtime code. A previous files glob stripped this
   // directory from node_modules and broke packaged startup.
   const yamlComposer = normalized.some((f) =>
@@ -647,6 +715,48 @@ async function checkAsarContents(asarPath) {
   }
 }
 
+function checkPackagedSqliteExecutesFromAsar(asarPath) {
+  const packageEntry = path.join(asarPath, 'package.json');
+  const marker = 'PACKAGED_SQLITE_PROBE=ok';
+  const probeSource = `
+const { createRequire } = require('node:module');
+try {
+  const requireFromPackage = createRequire(${JSON.stringify(packageEntry)});
+  const Database = requireFromPackage('better-sqlite3');
+  const database = new Database(':memory:');
+  const result = database.prepare('select 42 as value').get();
+  database.close();
+  if (result?.value !== 42) throw new Error('unexpected query result');
+  process.stdout.write(${JSON.stringify(marker)});
+} catch (error) {
+  console.error(error instanceof Error ? error.stack : String(error));
+  process.exit(1);
+}
+`;
+  const result = spawnSync(electronBin, ['-e', probeSource], {
+    cwd: rootDir,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: 30_000,
+    windowsHide: true,
+    env: {
+      ...process.env,
+      ELECTRON_RUN_AS_NODE: '1',
+    },
+  });
+  if (result.error) {
+    fail(`packaged better-sqlite3 probe could not start: ${result.error.message}`);
+  }
+  if (result.status !== 0 || !result.stdout.includes(marker)) {
+    fail(
+      `packaged better-sqlite3 probe failed (status=${result.status}, ` +
+        `signal=${result.signal ?? 'none'}): ` +
+        `${(result.stderr || result.stdout || 'no output').slice(-4_000)}`,
+    );
+  }
+  ok('better-sqlite3 opens and queries :memory: from packaged app.asar');
+}
+
 function checkKodaxWorkersExecuteFromAsar(asarPath) {
   const runtimeModuleUrl = pathToFileURL(
     path.join(asarPath, 'node_modules', '@kodax-ai', 'kodax', 'dist', 'sdk-runtime.js'),
@@ -654,6 +764,10 @@ function checkKodaxWorkersExecuteFromAsar(asarPath) {
   const codingModuleUrl = pathToFileURL(
     path.join(asarPath, 'node_modules', '@kodax-ai', 'kodax', 'dist', 'sdk-coding.js'),
   ).href;
+  const publicFacadeUrls = KODAX_PUBLIC_FACADE_FILES.map(
+    (file) =>
+      pathToFileURL(path.join(asarPath, 'node_modules', '@kodax-ai', 'kodax', 'dist', file)).href,
+  );
   const marker = 'KODAX_ASAR_WORKER_PROBE=';
   const probeSource = `
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -665,6 +779,7 @@ import { loadHandler } from ${JSON.stringify(codingModuleUrl)};
 const homeDir = await mkdtemp(path.join(tmpdir(), 'kodax-space-asar-probe-'));
 let runtime;
 try {
+  await Promise.all(${JSON.stringify(publicFacadeUrls)}.map((moduleUrl) => import(moduleUrl)));
   runtime = await createKodaXRuntime({
     mode: 'embedded',
     isolation: 'worker',
@@ -764,6 +879,7 @@ async function main() {
   await checkWindowsExecutableIcons(installers);
   for (const asarPath of await findAsarPaths()) {
     await checkAsarContents(asarPath);
+    checkPackagedSqliteExecutesFromAsar(asarPath);
     checkKodaxWorkersExecuteFromAsar(asarPath);
   }
   console.log('\n[smoke-pack] all checks passed');

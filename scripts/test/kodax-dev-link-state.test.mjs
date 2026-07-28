@@ -49,3 +49,34 @@ test('legacy staging with an external nested junction is detected without a mark
     layout: 'staging',
   });
 });
+
+test('package-root junction is detected even when its target stays inside Space', async (t) => {
+  const { spaceRoot, sdkDir } = await createFixture(t);
+  const localCopy = path.join(spaceRoot, 'local-kodax-copy');
+  await mkdir(localCopy, { recursive: true });
+  await rm(sdkDir, { recursive: true, force: true });
+  await symlink(localCopy, sdkDir, process.platform === 'win32' ? 'junction' : 'dir');
+
+  assert.deepEqual(inspectKodaxDevLink(spaceRoot, sdkDir), {
+    linked: true,
+    layout: 'direct',
+    target: await import('node:fs/promises').then((fs) => fs.readlink(sdkDir)),
+    type: process.platform === 'win32' ? 'junction' : 'dir',
+  });
+});
+
+test('nested staging junction is detected even when its target stays inside Space', async (t) => {
+  const { spaceRoot, sdkDir } = await createFixture(t);
+  const localDist = path.join(spaceRoot, 'local-kodax-dist');
+  await mkdir(localDist, { recursive: true });
+  await symlink(
+    localDist,
+    path.join(sdkDir, 'dist'),
+    process.platform === 'win32' ? 'junction' : 'dir',
+  );
+
+  assert.deepEqual(inspectKodaxDevLink(spaceRoot, sdkDir), {
+    linked: true,
+    layout: 'staging',
+  });
+});

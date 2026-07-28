@@ -20,10 +20,13 @@ const diagnosticsPath = path.join(
   'space-main.jsonl',
 );
 const daemonPath = path.join(profileDir, 'runtime', 'daemon', 'coder', 'daemon.json');
-const installedKodax = JSON.parse(
-  await readFile(path.join(rootDir, 'node_modules', '@kodax-ai', 'kodax', 'package.json'), 'utf8'),
-);
-const expectedKodaxVersion = String(installedKodax.version);
+const rootPackage = JSON.parse(await readFile(path.join(rootDir, 'package.json'), 'utf8'));
+const expectedKodaxVersion = String(rootPackage.dependencies?.['@kodax-ai/kodax'] ?? '').trim();
+if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(expectedKodaxVersion)) {
+  throw new Error(
+    `root manifest has no exact KodaX version: ${expectedKodaxVersion || '(missing)'}`,
+  );
+}
 const env = { ...process.env, KODAX_PROFILE_DIR: profileDir };
 delete env.ELECTRON_RUN_AS_NODE;
 
