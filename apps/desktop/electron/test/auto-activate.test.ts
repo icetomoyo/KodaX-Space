@@ -19,6 +19,7 @@ import {
 } from '../providers/auto-activate.js';
 import { providerConfigStore } from '../providers/config.js';
 import { BUILTIN_PROVIDERS } from '../providers/catalog.js';
+import { _resetMemoryStoreForTesting } from '../providers/keychain.js';
 
 let tmpDir = '';
 // 保存所有 builtin provider 的 apiKeyEnv 原值 —— 用户机器可能任何一个都已 set
@@ -33,6 +34,7 @@ beforeEach(async () => {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kodax-auto-activate-'));
   // 清掉所有 builtin apiKeyEnv，避免用户 shell 真实环境影响测试
   for (const k of ALL_API_KEY_ENVS) delete process.env[k];
+  _resetMemoryStoreForTesting();
   _resetAutoActivateForTesting();
   // 重置 providerConfigStore singleton 的内部缓存：用反射重置 spaceCache
   // (test 模式没法 new ProviderConfigStore 替换 singleton，只能 reset cache)
@@ -102,7 +104,7 @@ test('PRIORITY: when both DEEPSEEK and ZHIPU have keys, picks deepseek (higher p
 
 test('empty/whitespace env value is treated as absent', async () => {
   await providerConfigStore.load();
-  process.env.ANTHROPIC_API_KEY = '   ';  // 空白被 trim 后是空
+  process.env.ANTHROPIC_API_KEY = '   '; // 空白被 trim 后是空
   await autoActivateProvidersFromEnv();
   assert.equal(providerConfigStore.getDefaultProviderId(), null);
   assert.deepEqual(getAutoActivatedThisBoot(), []);
