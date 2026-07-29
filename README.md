@@ -96,7 +96,7 @@ KodaX 0.7.78 keeps integration declarations separate from core configuration and
 
 The bottom bar separates root-Agent context pressure from cumulative Session token usage. The Context window meter uses the final automatic-compaction threshold and a privacy-safe six-part composition; completed physical requests are deduplicated by request ID across root, child, retry, fallback, repair, workflow-digest, and compaction-summary calls. F140 adds an Ask/keep-in-tray/safe-complete-exit preference. A real quit on Windows, macOS, or Linux now stops the Coder daemon before Space disappears; blocked or failed shutdown restores a visible Space surface, while a Space-started orphan daemon self-reaps after its final client disconnects and work becomes idle. Terminal plus Coder command tools share one selected Shell/profile-PATH contract without projecting arbitrary executables or secrets.
 
-F122-F124 continue to provide the Partner project-source, immutable evidence/citation, and automatic grounded-context loop. F121 remains `InProgress` only for the final human multi-client acceptance ledger; the 0.1.34 candidate still fails closed on missing daemon capabilities. See the [v0.1.34 safety design](docs/features/v0.1.34.md) and [capability ledger](docs/KODAX_CAPABILITY_LEDGER.md).
+F122-F124 continue to provide the Partner project-source, immutable evidence/citation, and automatic grounded-context loop. F121 remains `InProgress` only for the final human multi-client acceptance ledger; v0.1.34 still fails closed on missing daemon capabilities. See the [v0.1.34 safety design](docs/features/v0.1.34.md) and [capability ledger](docs/KODAX_CAPABILITY_LEDGER.md).
 
 F135 also packages the redistributable `frontend-slides` and `huashu-design` skills as vetted Space builtins, so users do not install the skills separately. The distributed Huashu adaptation removes default promotional watermark/signature markup and instructions while retaining the upstream MIT license and authorship. Optional browser/video/TTS/AI-review pipelines still need their documented external runtimes or credentials. The locally installed `pdf`, `pptx`, `xlsx`, and `docx` skills are not bundled because their current license prohibits redistribution. F137 plans independently authored, Chinese-first replacements for `v0.1.36`; they are not part of the 0.1.34 safety release. See the [v0.1.36 design](docs/features/v0.1.36.md), [builtin skill maintenance](docs/BUILTIN_SKILLS.md), and the [v0.1.34 release-readiness record](docs/releases/v0.1.34-release-readiness.md).
 
@@ -108,11 +108,11 @@ queries no longer flash short-lived child-process consoles. Space consumes the
 official Registry package without vendoring an SDK patch. See
 [Issue 091](docs/KNOWN_ISSUES.md#091-ordinary-windows-queries-can-flash-several-short-lived-command-windows-from-kodax-runtime-child-processes).
 
-## Current Release Candidate
+## Current Release
 
 **v0.1.34 - Runtime Safety and Desktop Lifecycle Hardening**
 
-Prepared for release on 2026-07-30 with package version `0.1.34`, aligned to the exact npm-published KodaX 0.7.78 package. The latest published release remains [`v0.1.33`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.33) until the candidate gates pass and a tag is created.
+Released on 2026-07-30 as [`v0.1.34`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.34), with package version `0.1.34` aligned to the exact npm-published KodaX 0.7.78 package. The required `main`, four-platform preflight, and tagged release workflows all passed; the complete evidence and published artifact digests are recorded in the release-readiness document.
 
 | Area               | Summary                                                                                                                                                                                          |
 | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -281,10 +281,10 @@ npm run e2e:headed
 | [README_CN.md](README_CN.md)                                                                             | Chinese README.                                                                          |
 | [CONTRIBUTING.md](CONTRIBUTING.md)                                                                       | Contribution boundaries, validation, and documentation requirements.                     |
 | [docs/README.md](docs/README.md)                                                                         | Documentation hub and current-vs-historical document map.                                |
-| [docs/USER_MANUAL.zh-CN.md](docs/USER_MANUAL.zh-CN.md)                                                   | Illustrated Chinese manual for the v0.1.33 release baseline.                             |
+| [docs/USER_MANUAL.zh-CN.md](docs/USER_MANUAL.zh-CN.md)                                                   | Illustrated Chinese manual for the v0.1.34 release baseline.                             |
 | [docs/USAGE.md](docs/USAGE.md)                                                                           | Source launch, profiles, Runtime Host, testing, packaging, and troubleshooting.          |
 | [docs/BUILTIN_SKILLS.md](docs/BUILTIN_SKILLS.md)                                                         | Builtin skill provenance, licensing, update, patch, and package-integrity workflow.      |
-| [docs/releases/v0.1.33-release-readiness.md](docs/releases/v0.1.33-release-readiness.md)                 | v0.1.33 gates, production evidence, artifact hashes, and recorded manual acceptance.     |
+| [docs/releases/v0.1.34-release-readiness.md](docs/releases/v0.1.34-release-readiness.md)                 | v0.1.34 gates, production evidence, artifact digests, and known-risk record.             |
 | [docs/CODING_AGENT_BEGINNER_BEST_PRACTICES.zh-CN.md](docs/CODING_AGENT_BEGINNER_BEST_PRACTICES.zh-CN.md) | Chinese beginner guide for coding-agent practice in software and microservice workflows. |
 | [docs/PRD.md](docs/PRD.md)                                                                               | Product requirements and product positioning.                                            |
 | [docs/HLD.md](docs/HLD.md)                                                                               | High-level architecture and system design.                                               |

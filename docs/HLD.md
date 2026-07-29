@@ -1,7 +1,7 @@
 # KodaX Space 高层设计（HLD）
 
 > Last updated: 2026-07-30
-> Status: 核心架构决策仍有效；已发布基线为 KodaX Space 0.1.33 / KodaX 0.7.77，当前发布候选为 KodaX Space 0.1.34（package 0.1.34）/ npm 正式发布的精确 KodaX 0.7.78。中间方案与否决理由见 [ADR/](ADR/)；当前能力边界见 [KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md)。
+> Status: 核心架构决策仍有效；当前已发布基线为 KodaX Space 0.1.34（package 0.1.34）/ npm 正式发布的精确 KodaX 0.7.78。中间方案与否决理由见 [ADR/](ADR/)；当前能力边界见 [KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md)。
 > Companion doc: [PRD](PRD.md)
 
 > **0.1.30 增量**：Electron main 继续拥有特权边界，并新增一个持久、协议中立的 External Agent Executor Plane。Renderer 仅通过 zod IPC 获取脱敏 Registration/Descriptor/Task/Event 投影；管理入口仅接受主应用窗口，任务创建从 main-owned live Session 派生项目/父任务归属，读取与干预均复核任务所属 Session。实时 Session 与 Workflow 共用同一 KodaX 0.7.67 plane。Reference Executor 已接通；v0.1.32 起，Runtime 配置的 A2A 由 KodaX 0.7.76 Coder daemon 持有并按能力协商开放，MCP Tasks/受治理 HTTP 仍按 Runtime capability 门控。Partner 自 0.1.30 起已启用 workspace-first Outputs 与 checkpointed writes。
@@ -216,7 +216,7 @@ const runtime: KodaXRuntime = await createKodaXRuntime({
 });
 ```
 
-`RuntimeHostAdapter` wraps the public facade and presents a bounded Space-owned compatibility surface. The corrected `v0.1.33` release candidate coordinates:
+`RuntimeHostAdapter` wraps the public facade and presents a bounded Space-owned compatibility surface. The corrected `v0.1.33` release coordinates:
 
 - Coder daemon initialization/identity, capability validation, subscription readiness and detach-only close;
 - Coder session/run/live projection, transcript, compact, fork, rewind, queue and shared settings routes;

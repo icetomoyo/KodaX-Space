@@ -2,7 +2,7 @@
 
 Last Updated: 2026-07-30
 
-> Historical issue details are preserved as investigation evidence. Resolved items older than 30 days move to [ISSUES_ARCHIVED.md](ISSUES_ARCHIVED.md) without losing their investigation record. The current published package baseline is v0.1.33; the active release candidate is v0.1.34. Start from the [documentation hub](README.md) for current behavior and status.
+> Historical issue details are preserved as investigation evidence. Resolved items older than 30 days move to [ISSUES_ARCHIVED.md](ISSUES_ARCHIVED.md) without losing their investigation record. The current published package baseline is v0.1.34; the next planned feature release is v0.1.35. Start from the [documentation hub](README.md) for current behavior and status.
 
 ## Issue Index
 

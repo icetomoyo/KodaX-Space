@@ -1,7 +1,6 @@
 # KodaX Space 文档中心
 
-> 发布基线：KodaX Space [`v0.1.33`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.33)（package `0.1.33`）/ npm 正式发布的精确 KodaX `0.7.77`；本版本于 2026-07-28 发布。
-> 当前发布候选：KodaX Space `v0.1.34`（package `0.1.34`）/ npm 正式发布的精确 KodaX `0.7.78`；历史 release 文档继续保留当时事实。
+> 发布基线：KodaX Space [`v0.1.34`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.34)（package `0.1.34`）/ npm 正式发布的精确 KodaX `0.7.78`；本版本于 2026-07-30 发布，历史 release 文档继续保留当时事实。
 
 这里是文档的统一入口。当前 `main` 的完整退出修复要求 Runtime 明确提供
 `daemonOrphanExit:1`：

@@ -4,7 +4,7 @@
 >
 > 当前 `main` 对 Space 管理的 daemon 要求专用的 `daemonOrphanExit:1` 能力；
 > 不使用 KodaX 语义版本或 Auto-mode guardrail 版本代替生命周期能力判断。
-> 当前发布候选为 KodaX Space `0.1.34` / 精确 Registry KodaX `0.7.78`。
+> 当前已发布版本为 KodaX Space [`v0.1.34`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.34) / 精确 Registry KodaX `0.7.78`。
 > 本版本包含 canonical Actor/Turn 投影、精确 history/live 对齐、context/session usage、稳定缓存亲和诊断、可配置 Shell、F140 关闭行为、F141 Daemon/Embedded 安全选择、F142 会话文件操作，以及 builtin catalog、file reveal 和 Node/build/打包工具链维护。
 
 ## 1. 环境要求
@@ -260,11 +260,11 @@ npm run build:linux
 `resedit@1.7.2` 直接修改 PE icon/version resources，不再扫描或启动缓存中的
 `rcedit.exe`。相关依赖和资源门禁失败必须让安装/打包失败，不能用 `|| true` 吞掉。
 
-[v0.1.34 发布记录](releases/v0.1.34-release-readiness.md)是当前候选的真理源；历史
-[v0.1.33 发布记录](releases/v0.1.33-release-readiness.md)保留已发布版本证据。0.1.34 只有在
+[v0.1.34 发布记录](releases/v0.1.34-release-readiness.md)是当前正式版证据的真理源；历史
+[v0.1.33 发布记录](releases/v0.1.33-release-readiness.md)继续保留当时事实。v0.1.34 已通过
 精确 Registry 依赖一致性、`daemonOrphanExit:1` Runtime 能力、完整依赖闭包、
-native SQLite load、物理 sandbox helper/doctor、真实 packaged boot 和 GitHub CI 全部通过后，
-才能发布新产物。
+native SQLite load、物理 sandbox helper/doctor、真实 packaged boot 和 GitHub CI 门禁后
+发布。
 
 ## 8. 排障
 

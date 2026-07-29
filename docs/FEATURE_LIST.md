@@ -1,8 +1,7 @@
 # KodaX Space Feature List
 
 > Last reviewed: 2026-07-30
-> Current release baseline: published [`v0.1.33`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.33) (`0.1.33` package baseline)
-> Current release candidate: `v0.1.34` (`0.1.34` package baseline)
+> Latest published release: [`v0.1.34`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.34) (`0.1.34` package baseline)
 > Current KodaX SDK baseline: exact npm Registry `@kodax-ai/kodax@0.7.78` across both manifests, lock views, and installed bytes. Space-managed daemons require explicit `daemonOrphanExit:1`, `integrationConfigResilience:1`, `runtimeAutoModeGuardrail:4`, and `skillLearningLoop:1` contracts in addition to the established shared-session safety surface; lifecycle support is not inferred from SemVer. Formal builds consume no local unpublished SDK.
 > Scope: active roadmap, recent completion audit, and reviewed-out decisions. Older release history lives in [FEATURES_ARCHIVED.md](FEATURES_ARCHIVED.md), per-version designs, and [CHANGELOG.md](../CHANGELOG.md).
 
@@ -18,14 +17,14 @@
 
 ## Current summary
 
-| Item                      | Value                                                                                                                                                                                                             |
-| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Planned                   | 23                                                                                                                                                                                                                |
-| InProgress                | 4                                                                                                                                                                                                                 |
-| Recent Completed          | 25                                                                                                                                                                                                                |
-| Current release candidate | `v0.1.34` (KodaX 0.7.78 Runtime safety, resilient integrations, visible cross-platform exit, packaged sandbox helpers, startup UX, and history replay hardening)                                                  |
-| 0.1.x completion target   | `v0.1.48`, followed by `v0.1.49` patch/RC reserve                                                                                                                                                                 |
-| Far-future candidates     | F138 is explicitly deferred until after `v0.5.x`; other candidates remain in [KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md) and [FEATURES_ARCHIVED.md](FEATURES_ARCHIVED.md#watchlist-and-reopen-gates) |
+| Item                     | Value                                                                                                                                                                                                                             |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Planned                  | 23                                                                                                                                                                                                                                |
+| InProgress               | 4                                                                                                                                                                                                                                 |
+| Recent Completed         | 25                                                                                                                                                                                                                                |
+| Latest published release | [`v0.1.34`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.34) (KodaX 0.7.78 Runtime safety, resilient integrations, visible cross-platform exit, packaged sandbox helpers, startup UX, and history replay hardening) |
+| 0.1.x completion target  | `v0.1.48`, followed by `v0.1.49` patch/RC reserve                                                                                                                                                                                 |
+| Far-future candidates    | F138 is explicitly deferred until after `v0.5.x`; other candidates remain in [KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md) and [FEATURES_ARCHIVED.md](FEATURES_ARCHIVED.md#watchlist-and-reopen-gates)                 |
 
 ## Active features
 
@@ -148,8 +147,8 @@
   design, dependencies, and acceptance gates are unchanged and now live in
   `features/v0.1.36.md`.
 - F118 remains in `v0.1.35`; F130 and every later feature keep their current
-  targets. `v0.1.34` must pass the exact local and GitHub evidence in
-  `releases/v0.1.34-release-readiness.md` before a tag is created.
+  targets. `v0.1.34` passed the exact local and GitHub evidence in
+  `releases/v0.1.34-release-readiness.md` and was published on 2026-07-30.
 
 ### Current-release addition - 2026-07-20: separate Artifact and File Viewer ownership
 

@@ -4,9 +4,7 @@
   <img src="../resources/icon.png" alt="KodaX Space 应用图标" width="96">
 </p>
 
-> 已发布产品基线：KodaX Space `v0.1.33`（package `0.1.33`）/ KodaX `0.7.77`；
-> 当前发布候选：KodaX Space `v0.1.34`（package `0.1.34`）/ npm 正式发布的精确
-> KodaX `0.7.78`。
+> 已发布产品基线：KodaX Space [`v0.1.34`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.34)（package `0.1.34`）/ npm 正式发布的精确 KodaX `0.7.78`。
 >
 > 当前 `main` 对 Space 管理的 daemon 要求专用的 `daemonOrphanExit:1` 能力，
 > 不通过 KodaX 版本号推断生命周期支持。F141 Coder Daemon/Embedded 客户开关、F142
@@ -15,7 +13,7 @@
 > 更新日期：2026-07-30
 >
 > 如果你的界面与本文不同，请先在 Settings → License/版本信息中确认构建版本。
-> 本手册以 `v0.1.34` 发布候选为基线；历史安装包的界面与行为可能不同。
+> 本手册以 `v0.1.34` 正式发布版为基线；历史安装包的界面与行为可能不同。
 
 这份手册面向第一次使用 KodaX Space 的开发者、技术团队成员和代码相关知识工作者。它以“完成一件真实工作”为主线；架构和开发细节分别放在 [HLD](HLD.md) 与 [USAGE](USAGE.md)。文中的实拍界面使用隔离的 mock 数据和示例项目生成，不包含真实 API Key、会话内容或本地路径。
 
@@ -249,7 +247,7 @@ flowchart LR
     Bridge --- P["Partner inline / MCP processes+logs<br/>Workflow library+start+admin / Reference Agent / Artifacts"]
 ```
 
-多个受信任的 KodaX 客户端可以观察同一 Coder 会话；Space 会同步 provider/model/effort/mode 等共享设置，并通过 Runtime 处理权限 grant、AskUser、队列、Workflow 观察/暂停/恢复/停止、Learning Center 命令、MCP 工具发现/reload 和已配置 External Agent 的 Actor/Turn。0.1.34 候选要求 `daemonOrphanExit:1`、`integrationConfigResilience:1`、`runtimeAutoModeGuardrail:4`、`skillLearningLoop:1`、`interruptInput:1`、`actorControlPlane:1`、`contextCompaction:3`、`transcriptPaging:1` 与 `transcriptSearch:1`；Runtime 不可用或能力不足时 Coder fail closed，不会在背后重放到 inline owner。Partner 不受该 daemon 可用性影响。
+多个受信任的 KodaX 客户端可以观察同一 Coder 会话；Space 会同步 provider/model/effort/mode 等共享设置，并通过 Runtime 处理权限 grant、AskUser、队列、Workflow 观察/暂停/恢复/停止、Learning Center 命令、MCP 工具发现/reload 和已配置 External Agent 的 Actor/Turn。v0.1.34 要求 `daemonOrphanExit:1`、`integrationConfigResilience:1`、`runtimeAutoModeGuardrail:4`、`skillLearningLoop:1`、`interruptInput:1`、`actorControlPlane:1`、`contextCompaction:3`、`transcriptPaging:1` 与 `transcriptSearch:1`；Runtime 不可用或能力不足时 Coder fail closed，不会在背后重放到 inline owner。Partner 不受该 daemon 可用性影响。
 
 Daemon 模式还会核对 daemon 的实际能力，而不只看已经安装的 npm 包版本：缺少上述契约的长驻 daemon 会被拒绝并提示安全重启。`daemonOrphanExit:1` 只在当前 host 确实启用了孤儿回收策略时出现，不能由语义版本号替代。compaction v3 会先耐久化精确 pre-compaction lineage，再缩减活动上下文；Runtime 会复用精确 checkpoint/恢复指引字节，并在命令式手动压缩前把精确 flat Session history 对齐进 lineage，使 compaction entry、first-kept pointer 与压缩后附件留在同一 active path，同时继续读取旧的无后缀 checkpoint。Space 使用 revision-bound page/chunk/search 恢复可见历史，root 与持久 child 的历史保持隔离。Coder Session 使用 KodaX 的公开 `resolveAutoModeSettings()` 解析 `engine`、classifier model、timeout 与 `speculativeWindowMs`，并把缺失值写入可修订的 Runtime 设置；`0` 是有效的 speculative window 值。未配置时 classifier timeout 为 `20000ms`。底部会直接显示 `Auto[LLM]` 或 `Auto[RULES]`；快速连续切换按最后一次动作收敛。只有用户手动选择或持久化选择的 `Auto[RULES]` 才保持粘性，并需用 `/auto-engine llm` 显式切回。Auto v4 的 classifier 超时、Provider 错误或输出契约错误会立即重试一次；仍失败时仅对当前工具调用采用 Accept-edits 兼容回退，`engine` 继续是 `llm`，不会静默切到 Rules。Auto[rules] 会对工作区内可完整建模的编辑直接放行，对工作区外、受保护、动态或无法完整建模的效果继续请求确认；Auto[LLM] 缺失 classifier model 时不请求 Provider，并走同一有界的当前调用回退，不改变 engine。输入 `/auto-denials` 可以查看当前 Runtime 版本、classifier model、timeout、speculative window 及不含提示正文的 classifier 时序/终止阶段。
 

@@ -96,7 +96,7 @@ KodaX 0.7.78 继续把集成声明与核心配置分离，并新增 last-known-g
 
 底部状态区把主 Agent 上下文压力与整个 Session 累计 Token 分开显示。“上下文窗口”使用最终自动压缩阈值和不含正文的六类构成；完成态物理请求按 request ID 去重，覆盖 root、child、retry、fallback、repair、workflow digest 和 compaction summary。F140 新增“每次询问 / 保留托盘和 Runtime / 安全彻底退出”偏好。Windows、macOS 或 Linux 真正退出时，Space 必须先停止 Coder daemon；有 blocker 或停止失败时会恢复可见 Space，Space 自动拉起的孤儿 daemon 则在最后客户端断开且任务空闲后自回收。Terminal 与 Coder 命令工具共享同一个所选 Shell/profile PATH 契约，不接受任意可执行文件，也不把敏感变量投影给 PTY。
 
-F122-F124 继续提供 Partner 项目来源库、不可变证据/引用和自动 grounded context 闭环。F121 仅因最终人工多客户端验收台账保持 `InProgress`；0.1.34 候选仍对缺失 daemon capability 明确失败。详见 [v0.1.34 安全设计](docs/features/v0.1.34.md)和[能力台账](docs/KODAX_CAPABILITY_LEDGER.md)。
+F122-F124 继续提供 Partner 项目来源库、不可变证据/引用和自动 grounded context 闭环。F121 仅因最终人工多客户端验收台账保持 `InProgress`；v0.1.34 仍对缺失 daemon capability 明确失败。详见 [v0.1.34 安全设计](docs/features/v0.1.34.md)和[能力台账](docs/KODAX_CAPABILITY_LEDGER.md)。
 
 F135 继续把许可证允许再分发的 `frontend-slides` 与 `huashu-design` 作为经审查的 Space builtin 一起打包。F137 为 `v0.1.36` 规划四个由 Space 独立创作、中文优先的替代 Skill，不属于 0.1.34 安全发布。详见 [v0.1.36 设计](docs/features/v0.1.36.md)、[builtin skill 文档](docs/BUILTIN_SKILLS.md)和 [v0.1.34 发布记录](docs/releases/v0.1.34-release-readiness.md)。
 
@@ -104,11 +104,11 @@ F136 让 Windows 后台 owner 可见、可控；F140 允许选择“每次询问
 
 已解决的发布阻断项：KodaX 0.7.76 保留 0.7.75 引入的集中式 Windows `windowsHide` 加固，普通 daemon-backed Coder query 不再闪出短暂子进程控制台。Space 只消费官方 Registry 包，没有内置 SDK 源码补丁。详见 [Issue 091](docs/KNOWN_ISSUES.md#091-ordinary-windows-queries-can-flash-several-short-lived-command-windows-from-kodax-runtime-child-processes)。
 
-## 当前发布候选
+## 当前正式版本
 
 **v0.1.34 - Runtime Safety and Desktop Lifecycle Hardening**
 
-候选准备日期为 2026-07-30，package 版本 `0.1.34`，精确对齐 npm 正式发布的 KodaX 0.7.78。在候选门禁通过并创建 tag 前，最新已发布版本仍是 [`v0.1.33`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.33)。
+[`v0.1.34`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.34) 已于 2026-07-30 正式发布，package 版本为 `0.1.34`，精确对齐 npm 正式发布的 KodaX 0.7.78。必需的 `main`、四平台预检和 tag release workflow 已全部通过；完整证据与公开产物摘要记录在发布就绪文档中。
 
 | 领域         | 摘要                                                                                                                          |
 | ------------ | ----------------------------------------------------------------------------------------------------------------------------- |
@@ -258,10 +258,10 @@ npm run e2e:headed
 | [README.md](README.md)                                                                                   | 英文 README。                                               |
 | [CONTRIBUTING.md](CONTRIBUTING.md)                                                                       | 贡献边界、验证要求和文档同步规则。                          |
 | [docs/README.md](docs/README.md)                                                                         | 文档中心，以及当前文档/历史文档索引。                       |
-| [docs/USER_MANUAL.zh-CN.md](docs/USER_MANUAL.zh-CN.md)                                                   | 面向 v0.1.33 发布基线的图解中文手册。                       |
+| [docs/USER_MANUAL.zh-CN.md](docs/USER_MANUAL.zh-CN.md)                                                   | 面向 v0.1.34 发布基线的图解中文手册。                       |
 | [docs/USAGE.md](docs/USAGE.md)                                                                           | 源码启动、profile、Runtime Host、测试、打包与排障。         |
 | [docs/BUILTIN_SKILLS.md](docs/BUILTIN_SKILLS.md)                                                         | builtin skill 的来源、许可、更新、补丁和打包完整性流程。    |
-| [docs/releases/v0.1.33-release-readiness.md](docs/releases/v0.1.33-release-readiness.md)                 | v0.1.33 的发布门禁、产物要求、人工验收与发布步骤。          |
+| [docs/releases/v0.1.34-release-readiness.md](docs/releases/v0.1.34-release-readiness.md)                 | v0.1.34 的发布门禁、产物摘要、已知风险与发布证据。          |
 | [docs/CODING_AGENT_BEGINNER_BEST_PRACTICES.zh-CN.md](docs/CODING_AGENT_BEGINNER_BEST_PRACTICES.zh-CN.md) | Coding Agent 初学者最佳实践教程，覆盖软件研发和微服务场景。 |
 | [docs/PRD.md](docs/PRD.md)                                                                               | 产品需求和产品定位。                                        |
 | [docs/HLD.md](docs/HLD.md)                                                                               | 高层架构与系统设计。                                        |
