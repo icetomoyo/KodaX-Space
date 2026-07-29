@@ -16,6 +16,7 @@ import {
   RuntimeHostAdapter,
   assertSpaceRuntimeSdkLifecycleCapability,
   resolveRuntimeHostMode,
+  resolveSpaceRuntimeDaemonEndpoint,
 } from '../kodax/runtime-host-adapter.js';
 import { kodaxHost } from '../kodax/host.js';
 import {
@@ -675,6 +676,43 @@ test('resolveRuntimeHostMode defaults to runtime and accepts explicit legacy rol
   assert.equal(resolveRuntimeHostMode('runtime'), 'runtime');
   assert.equal(resolveRuntimeHostMode('legacy'), 'legacy');
   assert.equal(resolveRuntimeHostMode('unexpected'), 'runtime');
+});
+
+test('Darwin Runtime endpoints stay short, stable, and isolated by profile root', () => {
+  const first = resolveSpaceRuntimeDaemonEndpoint({
+    platform: 'darwin',
+    profileRoot:
+      '/var/folders/very/long/per-user/path/that-would-overflow-the-darwin-unix-socket-limit/.kodax',
+    profile: 'coder',
+    userId: 501,
+  });
+  const repeated = resolveSpaceRuntimeDaemonEndpoint({
+    platform: 'darwin',
+    profileRoot:
+      '/var/folders/very/long/per-user/path/that-would-overflow-the-darwin-unix-socket-limit/.kodax',
+    profile: 'coder',
+    userId: 501,
+  });
+  const isolated = resolveSpaceRuntimeDaemonEndpoint({
+    platform: 'darwin',
+    profileRoot: '/Users/example/another-profile/.kodax',
+    profile: 'coder',
+    userId: 501,
+  });
+
+  assert.deepEqual(first, repeated);
+  assert.notDeepEqual(first, isolated);
+  assert.equal(first?.kind, 'unix');
+  assert.match(first?.path ?? '', /^\/tmp\/kodax-501-[a-f0-9]{16}\.sock$/);
+  assert.ok(Buffer.byteLength(first?.path ?? '', 'utf8') < 104);
+  assert.equal(
+    resolveSpaceRuntimeDaemonEndpoint({
+      platform: 'linux',
+      profileRoot: '/home/example/.kodax',
+      profile: 'coder',
+    }),
+    undefined,
+  );
 });
 
 test('startup mode can be configured from persisted settings only before initialization', async () => {

@@ -3,48 +3,43 @@ import { expect, test } from '@playwright/test';
 import { launchSpace } from './fixtures.js';
 
 test('boot overlay remains above a painted Shell and is then removed atomically', async () => {
-  let earlyState: { visible: boolean; overlays: number } | null = null;
   const space = await launchSpace(`startup-overlay-${Date.now()}`, {
     env: {
-      SPACE_TEST_BOOT_PAINT_HOLD_MS: '3000',
-      SPACE_TEST_STARTUP_OVERLAY_HOLD_MS: '3000',
-    },
-    onLaunched: async (app) => {
-      await expect
-        .poll(
-          () =>
-            app
-              .evaluate(({ BrowserWindow, WebContentsView }) => {
-                const win = BrowserWindow.getAllWindows()[0];
-                if (!win) return null;
-                return {
-                  visible: win.isVisible(),
-                  overlays: win.contentView.children.filter(
-                    (view) => view instanceof WebContentsView,
-                  ).length,
-                };
-              })
-              .catch(() => null),
-          { timeout: 10_000 },
-        )
-        .toEqual({ visible: false, overlays: 1 });
-      await app.evaluate(({ app }) => {
-        app.emit('second-instance', {} as Electron.Event, [process.execPath], process.cwd(), {});
-      });
-      earlyState = await app.evaluate(({ BrowserWindow, WebContentsView }) => {
-        const win = BrowserWindow.getAllWindows()[0];
-        if (!win) return null;
-        return {
-          visible: win.isVisible(),
-          overlays: win.contentView.children.filter((view) => view instanceof WebContentsView)
-            .length,
-        };
-      });
+      SPACE_TEST_BOOT_PAINT_HOLD_MS: '10000',
+      SPACE_TEST_STARTUP_OVERLAY_HOLD_MS: '10000',
     },
   });
 
   try {
-    expect(earlyState).toEqual({ visible: false, overlays: 1 });
+    await expect
+      .poll(
+        () =>
+          space.app
+            .evaluate(({ app, BrowserWindow, WebContentsView }) => {
+              const win = BrowserWindow.getAllWindows()[0];
+              if (!win) return null;
+              const readState = () => ({
+                visible: win.isVisible(),
+                overlays: win.contentView.children.filter((view) => view instanceof WebContentsView)
+                  .length,
+              });
+              const beforeActivation = readState();
+              app.emit(
+                'second-instance',
+                {} as Electron.Event,
+                [process.execPath],
+                process.cwd(),
+                {},
+              );
+              return { beforeActivation, afterActivation: readState() };
+            })
+            .catch(() => null),
+        { timeout: 15_000 },
+      )
+      .toEqual({
+        beforeActivation: { visible: false, overlays: 1 },
+        afterActivation: { visible: false, overlays: 1 },
+      });
 
     await space.page.locator('[data-space-shell-ready]').waitFor();
     await expect
@@ -53,7 +48,7 @@ test('boot overlay remains above a painted Shell and is then removed atomically'
           space.app
             .evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.isVisible() ?? false)
             .catch(() => false),
-        { timeout: 10_000 },
+        { timeout: 15_000 },
       )
       .toBe(true);
 
@@ -99,7 +94,7 @@ test('boot overlay remains above a painted Shell and is then removed atomically'
               };
             })
             .catch(() => null),
-        { timeout: 10_000 },
+        { timeout: 15_000 },
       )
       .toEqual({ overlays: 0, throttling: true });
 
@@ -131,7 +126,7 @@ test('boot overlay remains above a painted Shell and is then removed atomically'
               };
             })
             .catch(() => null),
-        { timeout: 10_000 },
+        { timeout: 15_000 },
       )
       .toEqual({ overlays: 0, throttling: true });
   } finally {

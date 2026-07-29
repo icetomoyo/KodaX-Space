@@ -859,6 +859,13 @@ function checkKodaxWorkersExecuteFromAsar(asarPath) {
     (file) =>
       pathToFileURL(path.join(asarPath, 'node_modules', '@kodax-ai', 'kodax', 'dist', file)).href,
   );
+  const daemonEndpoint =
+    process.platform === 'darwin'
+      ? {
+          kind: 'unix',
+          path: path.posix.join('/tmp', `kodax-space-pack-${process.pid}.sock`),
+        }
+      : undefined;
   const marker = 'KODAX_ASAR_WORKER_PROBE=';
   const probeSource = `
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
@@ -961,6 +968,8 @@ try {
     profile: daemonProfile,
     homeDir,
     sessionsDir: path.join(homeDir, 'daemon-sessions'),
+    autoStartDaemon: true,
+    daemonEndpoint: ${JSON.stringify(daemonEndpoint)},
     daemonOrphanExitMs: 1_000,
     requirements: {
       daemonManagement: 1,

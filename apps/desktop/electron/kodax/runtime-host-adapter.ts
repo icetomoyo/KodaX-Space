@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 
 import type {
   ConnectKodaXRuntimeOptions,
@@ -8,6 +9,7 @@ import type {
   RuntimeCompactSessionInput,
   RuntimeCompactSessionResult,
   RuntimeCredentialBroker,
+  RuntimeDaemonEndpoint,
   RuntimeDaemonManagementState,
   RuntimeDaemonPreflight,
   RuntimeDaemonRollbackResult,
@@ -579,6 +581,27 @@ export function resolveRuntimeHostMode(value: string | undefined): RuntimeHostMo
   return value?.trim().toLowerCase() === 'legacy' ? 'legacy' : 'runtime';
 }
 
+export function resolveSpaceRuntimeDaemonEndpoint(input: {
+  readonly platform: NodeJS.Platform;
+  readonly profileRoot: string;
+  readonly profile: string;
+  readonly userId?: number;
+}): RuntimeDaemonEndpoint | undefined {
+  if (input.platform !== 'darwin') return undefined;
+  const identity = createHash('sha256')
+    .update(`${path.resolve(input.profileRoot)}\0${input.profile}`)
+    .digest('hex')
+    .slice(0, 16);
+  const owner =
+    Number.isSafeInteger(input.userId) && (input.userId ?? -1) >= 0 ? input.userId : 'u';
+  // Darwin's sockaddr_un.sun_path is only 104 bytes. os.tmpdir() commonly expands
+  // to a long /var/folders/... path, so keep the actual bind path under /tmp.
+  return {
+    kind: 'unix',
+    path: path.posix.join('/tmp', `kodax-${owner}-${identity}.sock`),
+  };
+}
+
 function assertSpaceDaemonLifecycleCapability(runtime: KodaXDaemonRuntime): void {
   const capability = runtime.capabilities?.daemonOrphanExit;
   if (
@@ -670,7 +693,21 @@ async function createPublishedRuntime(
       };
     },
   );
-  return sdk.connectKodaXRuntime(options);
+  const profileRoot =
+    options.homeDir ??
+    (options.sessionsDir !== undefined ? path.dirname(options.sessionsDir) : getKodaxRuntimeDir());
+  const endpoint =
+    options.endpoint ??
+    resolveSpaceRuntimeDaemonEndpoint({
+      platform: process.platform,
+      profileRoot,
+      profile: options.profile ?? 'coder',
+      userId: process.getuid?.(),
+    });
+  return sdk.connectKodaXRuntime({
+    ...options,
+    ...(endpoint !== undefined ? { endpoint } : {}),
+  });
 }
 
 export function assertSpaceRuntimeSdkLifecycleCapability(sdk: {
