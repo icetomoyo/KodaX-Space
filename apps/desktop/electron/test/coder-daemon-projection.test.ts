@@ -151,6 +151,29 @@ const permission = {
     apiKey: 'should-not-render',
   }),
   executionCwd: 'C:\\repo',
+  autoModeDiagnostics: {
+    source: 'classifier_failure',
+    classifierFailureKind: 'timeout',
+    classifierAttempts: [
+      {
+        attempt: 1,
+        outcome: 'timeout',
+        diagnostics: {
+          provider: 'anthropic',
+          model: 'fast-classifier',
+          timeoutMs: 12_000,
+          elapsedMs: 12_001,
+          systemBytes: 512,
+          messageBytes: 1_024,
+          promptBytes: 1_536,
+          retryCount: 0,
+          retryWaitMs: 0,
+          terminalPhase: 'pre_output',
+        },
+      },
+      { attempt: 2, outcome: 'confirm' },
+    ],
+  },
   grantSuggestions: [
     { id: 'session_scope', kind: 'session', label: 'Allow this exact command for this task' },
     {
@@ -298,6 +321,27 @@ test('atomic observation maps run, draft, tool, Todo, and interaction truth', ()
     assert.deepEqual(projectedPermission.request.allowAlwaysScope, {
       kind: 'runtime_persistent',
       label: 'Always allow this exact command: npm test',
+    });
+    assert.deepEqual(projectedPermission.request.autoModeDiagnostics, {
+      source: 'classifier_failure',
+      classifierFailureKind: 'timeout',
+      classifierAttempts: [
+        {
+          attempt: 1,
+          outcome: 'timeout',
+          diagnostics: {
+            provider: 'anthropic',
+            model: 'fast-classifier',
+            timeoutMs: 12_000,
+            elapsedMs: 12_001,
+            promptBytes: 1_536,
+            retryCount: 0,
+            retryWaitMs: 0,
+            terminalPhase: 'pre_output',
+          },
+        },
+        { attempt: 2, outcome: 'confirm' },
+      ],
     });
     assert.deepEqual(projectedPermission.request.toolCall, {
       toolId: 'tool_1',

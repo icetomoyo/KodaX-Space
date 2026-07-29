@@ -120,7 +120,8 @@ export function registerMcpChannels(options: CoderAdmissionOptions = {}): void {
 
   registerChannel('mcp.reload', (input) =>
     runWithCoderAdmission(options, async () => {
-      await reloadMcpManager();
+      const manager = await reloadMcpManager(managerOptions(input));
+      const localServerCount = Math.min(manager.listServers().length, 128);
       await invalidateSpaceSdkExtensionRuntimes().catch((err) => {
         console.warn(
           '[mcp] SDK extension runtime invalidation after reload failed:',
@@ -133,19 +134,13 @@ export function registerMcpChannels(options: CoderAdmissionOptions = {}): void {
           return { ok: true, serverCount: Math.min(runtime.servers.length, 128) };
         } catch (error) {
           console.warn(
-            '[mcp.reload] Coder daemon reload unavailable; retaining Space reload result:',
+            '[mcp.reload] Coder daemon reload unavailable; Space manager retained its valid reload:',
             error instanceof Error ? error.message : error,
           );
+          return { ok: false, serverCount: localServerCount };
         }
       }
-      // reload 后 lazy: 调一次 listServers 拿当前 count
-      try {
-        const manager = await getMcpManager(managerOptions(input));
-        const count = manager.listServers().length;
-        return { ok: true, serverCount: Math.min(count, 128) };
-      } catch {
-        return { ok: false, serverCount: 0 };
-      }
+      return { ok: true, serverCount: localServerCount };
     }),
   );
 }

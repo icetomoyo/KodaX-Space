@@ -212,11 +212,48 @@ function coderCenterWidthPx(
 }
 export function Shell({ version = null }: ShellProps): JSX.Element {
   const { t } = useI18n();
+  const shellRootRef = useRef<HTMLDivElement | null>(null);
   // F045: surface 一等状态（替代旧 local mode）。Partner 自本版起有真实空壳。
   const currentSurface = useSurfaceStore((s) => s.currentSurface);
 
   // F060: Liquid Glass 光标 specular 高光（balanced/full 档；纯 CSS 变量，pointer-events:none 不挡点击）。
   useSpotlight();
+
+  useEffect(() => {
+    let cancelled = false;
+    let firstFrame = 0;
+    let secondFrame = 0;
+
+    const notifyAfterPaint = (): void => {
+      firstFrame = window.requestAnimationFrame(() => {
+        secondFrame = window.requestAnimationFrame(() => {
+          if (cancelled) return;
+          const shellRoot = shellRootRef.current;
+          if (
+            shellRoot === null ||
+            !shellRoot.isConnected ||
+            shellRoot.getBoundingClientRect().width <= 0 ||
+            shellRoot.getBoundingClientRect().height <= 0
+          ) {
+            notifyAfterPaint();
+            return;
+          }
+          try {
+            window.kodaxSpace?.rendererReady();
+          } catch {
+            // Main retains the boot overlay and its recovery controls.
+          }
+        });
+      });
+    };
+
+    notifyAfterPaint();
+    return () => {
+      cancelled = true;
+      window.cancelAnimationFrame(firstFrame);
+      window.cancelAnimationFrame(secondFrame);
+    };
+  }, []);
 
   // 侧栏开/关：button 放在 breadcrumb 行最左 / 最右；侧栏关掉时 0 占位（不再 28px 竖条）
   const leftSidebarOpen = useAppStore((s) => s.leftSidebarOpen);
@@ -827,6 +864,8 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
 
   return (
     <div
+      ref={shellRootRef}
+      data-space-shell-ready
       className={`h-screen flex flex-col bg-surface text-fg-primary overflow-hidden relative isolate ${platformClass} ${
         rightSidebarWidthSettling ? 'right-sidebar-width-settling' : ''
       }`}

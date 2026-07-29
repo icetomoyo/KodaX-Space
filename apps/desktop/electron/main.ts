@@ -8,6 +8,7 @@
 import {
   app,
   BrowserWindow,
+  WebContentsView,
   Menu,
   Tray,
   shell,
@@ -80,12 +81,14 @@ import {
   resolveWindowsTaskbarIdentity,
 } from './window/windows-taskbar-identity.js';
 import {
-  BOOT_SPLASH_URL_PREFIX,
-  bootStatusScript,
+  BOOT_SPLASH_CLOSE_URL,
+  BOOT_SPLASH_RETRY_URL,
   createBootSplashUrl,
   describeUrlForLog,
   selectBootSplashVariant,
+  type BootSplashRecoveryAction,
 } from './window/boot-splash.js';
+import { BootSplashOverlay } from './window/boot-splash-overlay.js';
 import { cleanupOrphanKodaxSpaceDirWithLog } from './kodax/cleanup-orphan-kodax-space.js';
 import { migrateLegacyMcpbStorage } from './mcpb/registry.js';
 import { getPtyHost } from './terminal/ptyHost.js';
@@ -94,8 +97,8 @@ import { setRendererTarget } from './ipc/push.js';
 import { kodaxHost } from './kodax/host.js';
 import { externalAgentGateway } from './kodax/external-agent-gateway.js';
 import { runtimeHostAdapter } from './kodax/runtime-host-adapter.js';
-import { stopCoderDaemonWhenSafe } from './kodax/runtime-daemon-control.js';
 import { CoderRuntimeModeSwitchCoordinator } from './kodax/coder-runtime-mode-switch.js';
+import { isCoderOwnerRecoveryRestartRequired } from './kodax/coder-owner-recovery-error.js';
 import { permissionRegistry } from './permission/registry.js';
 import { permissionBroker } from './permission/broker.js';
 import { askUserBroker } from './permission/ask-user-broker.js';
@@ -123,11 +126,16 @@ import {
   type BackgroundTrayLocale,
 } from './window/background-tray-model.js';
 import {
+  collectSpaceExitWorkBlockers,
+  commitRelaunchBeforeDelayedQuit,
+  shouldRequestCompleteExitOnBeforeQuit,
+} from './window/complete-exit-policy.js';
+import {
   parseWindowClosePromptResult,
   resolveWindowCloseAction,
   type WindowClosePromptAction,
 } from './window/window-close-behavior.js';
-import { hideWindowsForShutdown } from './window/shutdown-window.js';
+import { hideWindowsForShutdown, showWindowAfterFailedShutdown } from './window/shutdown-window.js';
 import { RendererStartupGate } from './window/renderer-startup-gate.js';
 import { RendererLoadScheduler } from './window/renderer-load-scheduler.js';
 import { StartupShutdownCoordinator } from './window/startup-shutdown-coordinator.js';
@@ -328,14 +336,37 @@ let backgroundTrayRefreshing = false;
 let backgroundTrayLocale: BackgroundTrayLocale = 'en-US';
 let backgroundCloseNoticeShown = false;
 let stopDaemonOnQuit = false;
+let daemonStopConfirmedBeforeQuit = false;
 let coderRuntimeRestartScheduled = false;
+let startupRecoveryRestartScheduled = false;
+let secondaryInstanceExit = false;
 let completeExitRequested = false;
+let runtimeExitRecoveryScheduled = false;
+let runtimeExitRecoveryFallbackActive = false;
+let beginCoderShutdown: (() => Promise<() => void>) | null = null;
 let closeDecisionPending = false;
 const backgroundCloseBypass = new WeakSet<BrowserWindow>();
 const rendererStartupGate = new RendererStartupGate();
 const startupShutdownCoordinator = new StartupShutdownCoordinator();
 let fatalStartupStatus: string | null = null;
 let bootSplashBrandDataUrl: string | undefined;
+let mainWindowBootOverlay: BootSplashOverlay<WebContentsView> | null = null;
+type BootRecoveryActionMode =
+  | 'none'
+  | 'renderer-retry'
+  | 'app-restart'
+  | 'runtime-exit-recovery'
+  | 'close-only';
+let mainWindowBootStatusUpdater:
+  | ((message: string, action: BootRecoveryActionMode) => void)
+  | null = null;
+let mainWindowAwaitingInitialReveal = false;
+let pendingMainWindowActivation = false;
+let queueWatchShutdown: (() => void) | null = null;
+const RUNTIME_EXIT_RECOVERY_ARG = '--space-runtime-exit-recovery';
+const runtimeExitRecoveryRequested = process.argv.includes(RUNTIME_EXIT_RECOVERY_ARG);
+const testExitBypass =
+  Boolean(process.env.KODAX_TEST_ONBOARDING) && process.env.SPACE_TEST_BYPASS_COMPLETE_EXIT === '1';
 setRendererTarget(() => (mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null));
 
 function loadBootSplashBrandDataUrl(): string | undefined {
@@ -355,12 +386,55 @@ function loadBootSplashBrandDataUrl(): string | undefined {
 
 function scheduleCoderRuntimeModeRestart(): void {
   if (coderRuntimeRestartScheduled) return;
-  coderRuntimeRestartScheduled = true;
-  setTimeout(() => {
-    stopDaemonOnQuit = false;
-    app.relaunch({ args: process.argv.slice(1) });
-    app.quit();
-  }, 250);
+  commitRelaunchBeforeDelayedQuit({
+    commitRelaunch: () =>
+      app.relaunch({
+        args: process.argv.slice(1).filter((arg) => arg !== RUNTIME_EXIT_RECOVERY_ARG),
+      }),
+    markCommitted: () => {
+      coderRuntimeRestartScheduled = true;
+    },
+    scheduleQuit: (callback, delayMs) => {
+      setTimeout(callback, delayMs);
+    },
+    requestQuit: () => {
+      stopDaemonOnQuit = false;
+      daemonStopConfirmedBeforeQuit = false;
+      app.quit();
+    },
+    delayMs: 250,
+  });
+}
+
+function scheduleStartupRecoveryRestart(): boolean {
+  if (startupRecoveryRestartScheduled) return true;
+  try {
+    commitRelaunchBeforeDelayedQuit({
+      commitRelaunch: () =>
+        app.relaunch({
+          args: process.argv.slice(1).filter((arg) => arg !== RUNTIME_EXIT_RECOVERY_ARG),
+        }),
+      markCommitted: () => {
+        startupRecoveryRestartScheduled = true;
+      },
+      scheduleQuit: (callback, delayMs) => {
+        setTimeout(callback, delayMs);
+      },
+      requestQuit: () => {
+        stopDaemonOnQuit = false;
+        daemonStopConfirmedBeforeQuit = false;
+        app.quit();
+      },
+      delayMs: 100,
+    });
+    return true;
+  } catch (error) {
+    console.error(
+      '[main] startup relaunch failed:',
+      error instanceof Error ? error.message : String(error),
+    );
+    return false;
+  }
 }
 
 function applyCsp(): void {
@@ -456,9 +530,9 @@ function createMainWindow(): BrowserWindow {
       sandbox: true,
       webSecurity: true,
       allowRunningInsecureContent: false,
-      // Some Windows/GPU combinations throttle hidden windows enough that
-      // ready-to-show never fires. Keep boot navigation moving while show:false;
-      // revealWindow restores Chromium's default background throttling.
+      // React paints underneath the independent boot overlay. Keep it running
+      // even while Chromium considers the covered contents occluded; normal
+      // throttling is restored only after the Shell-ready signal removes it.
       backgroundThrottling: false,
     },
   });
@@ -466,6 +540,8 @@ function createMainWindow(): BrowserWindow {
     win.setAppDetails(WINDOWS_TASKBAR_IDENTITY.appDetails);
   }
   mainWindow = win;
+  mainWindowAwaitingInitialReveal = true;
+  pendingMainWindowActivation = false;
   installWindowActivityPublisher(win);
   const uninstallTopmostGuard = installTopmostGuard(win, { label: 'main window' });
   const invalidateMainWindow = (): void => {
@@ -511,20 +587,172 @@ function createMainWindow(): BrowserWindow {
   installNavigationGuards(win.webContents, {
     devServerUrl: VITE_DEV_SERVER_URL,
     allowedAppOrigin: APP_PROTOCOL_ORIGIN,
-    allowedDataUrls: [bootSplashUrl],
     openExternal: (url) => void shell.openExternal(url),
   });
 
   const isWindowUnavailable = (): boolean => win.isDestroyed() || win.webContents.isDestroyed();
+  let retryBootAction = (): void => undefined;
+  let startAppLoadAfterBoot = (_source: string): void => undefined;
+  let revealWindow = (_source: string): void => undefined;
+  let bootFallbackTimer: ReturnType<typeof setTimeout> | null = null;
+  let bootSurfacePainted = false;
+  let bootOverlayUnavailable = false;
+  const requestedPaintHold = Number(process.env.SPACE_TEST_BOOT_PAINT_HOLD_MS ?? 0);
+  const bootPaintHoldMs =
+    process.env.KODAX_TEST_ONBOARDING && Number.isFinite(requestedPaintHold)
+      ? Math.min(10_000, Math.max(0, requestedPaintHold))
+      : 0;
+  let bootStatusMessage = 'Opening your workspace';
+  let bootRecoveryAction: BootRecoveryActionMode = 'none';
+  const handleBootOverlayEnsureFailure = (context: string, error: unknown): void => {
+    bootOverlayUnavailable = true;
+    console.error(
+      `[main] ${context} boot overlay load rejected:`,
+      error instanceof Error ? error.message : String(error),
+    );
+  };
+  const recoveryPresentation = (action: BootRecoveryActionMode): BootSplashRecoveryAction => {
+    switch (action) {
+      case 'renderer-retry':
+        return 'try-again';
+      case 'app-restart':
+        return 'restart';
+      case 'runtime-exit-recovery':
+        return 'retry-restart';
+      case 'close-only':
+        return 'close-only';
+      default:
+        return 'none';
+    }
+  };
+  const bootOverlay = new BootSplashOverlay<WebContentsView>({
+    bootUrl: bootSplashUrl,
+    host: win.contentView,
+    getContentSize: () => win.getContentSize(),
+    createView: () =>
+      new WebContentsView({
+        webPreferences: {
+          contextIsolation: true,
+          nodeIntegration: false,
+          sandbox: true,
+          webSecurity: true,
+          allowRunningInsecureContent: false,
+          backgroundThrottling: false,
+        },
+      }),
+    onViewCreated: (view) => {
+      const bootContents = view.webContents;
+      bootContents.on('will-navigate', (event, url) => {
+        if (url === BOOT_SPLASH_CLOSE_URL) {
+          event.preventDefault();
+          if (!win.isDestroyed()) win.close();
+          return;
+        }
+        if (url === BOOT_SPLASH_RETRY_URL) {
+          event.preventDefault();
+          retryBootAction();
+        }
+      });
+      installNavigationGuards(bootContents, {
+        devServerUrl: undefined,
+        allowedDataUrls: [bootSplashUrl],
+        openExternal: (url) => void shell.openExternal(url),
+      });
+      bootContents.once('dom-ready', () => {
+        if (bootOverlay.currentView() !== view) return;
+        startAppLoadAfterBoot('boot-overlay-dom-ready');
+      });
+      bootContents.on('did-finish-load', () => {
+        if (bootOverlay.currentView() !== view) return;
+        console.info('[main] boot overlay ready');
+        void bootOverlay.setStatus(bootStatusMessage, recoveryPresentation(bootRecoveryAction));
+        void bootContents
+          .executeJavaScript(
+            `new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => {
+              setTimeout(() => {
+                document.body.dataset.bootPainted = 'true';
+                resolve(true);
+              }, ${bootPaintHoldMs});
+            })))`,
+            true,
+          )
+          .then(
+            () => {
+              if (bootOverlay.currentView() !== view) return;
+              bootSurfacePainted = true;
+              revealWindow('boot-overlay-painted');
+            },
+            (error: unknown) => {
+              console.warn(
+                '[main] boot overlay paint gate failed:',
+                error instanceof Error ? error.message : String(error),
+              );
+            },
+          );
+      });
+      bootContents.on('render-process-gone', (_event, details) => {
+        if (
+          details.reason === 'clean-exit' ||
+          startupShutdownCoordinator.isShutdownRequested() ||
+          !bootOverlay.invalidate(view)
+        ) {
+          return;
+        }
+        console.error(
+          `[main] boot overlay renderer gone: reason=${details.reason} exitCode=${details.exitCode}`,
+        );
+        void bootOverlay.ensure().then(
+          () => bootOverlay.setStatus(bootStatusMessage, recoveryPresentation(bootRecoveryAction)),
+          (error: unknown) => {
+            console.error(
+              '[main] boot overlay recovery failed:',
+              error instanceof Error ? error.message : String(error),
+            );
+          },
+        );
+      });
+    },
+    onError: (phase, error) => {
+      console.warn(
+        `[main] boot overlay ${phase} failed:`,
+        error instanceof Error ? error.message : String(error),
+      );
+    },
+  });
+  mainWindowBootOverlay = bootOverlay;
+  mainWindowBootStatusUpdater = (message, action) => {
+    bootStatusMessage = message;
+    bootRecoveryAction = action;
+    void bootOverlay.ensure().then(
+      () => bootOverlay.setStatus(message, recoveryPresentation(action)),
+      (error: unknown) => handleBootOverlayEnsureFailure('boot-status', error),
+    );
+  };
+  const resizeBootOverlay = (): void => bootOverlay.resize();
+  win.on('resize', resizeBootOverlay);
+  win.on('maximize', resizeBootOverlay);
+  win.on('unmaximize', resizeBootOverlay);
+  win.on('enter-full-screen', resizeBootOverlay);
+  win.on('leave-full-screen', resizeBootOverlay);
+
   let windowShown = false;
   const appRendererLoadScheduler = new RendererLoadScheduler(() => rendererStartupGate.wait());
-  const revealWindow = (source: string): void => {
+  revealWindow = (source: string): void => {
     if (startupShutdownCoordinator.isShutdownRequested() || windowShown || isWindowUnavailable()) {
       return;
     }
+    if (!bootSurfacePainted && !bootOverlayUnavailable && source !== 'boot-timeout') return;
     windowShown = true;
+    mainWindowAwaitingInitialReveal = false;
+    if (bootFallbackTimer !== null) {
+      clearTimeout(bootFallbackTimer);
+      bootFallbackTimer = null;
+    }
     win.show();
-    win.webContents.setBackgroundThrottling(true);
+    if (pendingMainWindowActivation) {
+      pendingMainWindowActivation = false;
+      win.focus();
+    }
     win.webContents.invalidate();
     console.info(`[main] main window shown via ${source}`);
   };
@@ -532,6 +760,7 @@ function createMainWindow(): BrowserWindow {
   let appLoadAttempt = 0;
   let appLoadCommitted = false;
   let appLoadWatchdog: ReturnType<typeof setTimeout> | null = null;
+  let rendererReadyCommitTimer: ReturnType<typeof setTimeout> | null = null;
   let bootStartedAppLoad = false;
   let rendererGoneRecoveries = 0;
   const appLoadMaxAttempts = 3;
@@ -546,36 +775,63 @@ function createMainWindow(): BrowserWindow {
     appLoadWatchdog = null;
   };
 
-  const setBootStatus = (message: string): void => {
+  const setBootStatus = (
+    message: string,
+    recoveryAction: BootRecoveryActionMode = 'none',
+  ): void => {
     if (isWindowUnavailable()) return;
-    if (!win.webContents.getURL().startsWith(BOOT_SPLASH_URL_PREFIX)) return;
-    void win.webContents.executeJavaScript(bootStatusScript(message), true).catch(() => undefined);
+    bootStatusMessage = message;
+    bootRecoveryAction = recoveryAction;
+    void bootOverlay.setStatus(message, recoveryPresentation(recoveryAction));
   };
 
   const markAppLoadCommitted = (source: string): void => {
     if (isWindowUnavailable()) return;
     const url = win.webContents.getURL();
-    if (url.startsWith(BOOT_SPLASH_URL_PREFIX)) return;
     if (appLoadCommitted) return;
     appLoadCommitted = true;
     appLoadAttempt = 0;
     rendererGoneRecoveries = 0;
     clearAppLoadWatchdog();
     appRendererLoadScheduler.cancel();
+    if (runtimeExitRecoveryFallbackActive) {
+      appLoadCommitted = false;
+      setBootStatus(
+        'Runtime shutdown could not be recovered automatically. Restart KodaX Space.',
+        'runtime-exit-recovery',
+      );
+      return;
+    }
+    bootOverlay.dispose();
+    win.webContents.setBackgroundThrottling(true);
     revealWindow(source);
+    win.webContents.invalidate();
     console.info(`[main] renderer visual-ready via ${source}: ${describeUrlForLog(url)}`);
   };
 
   const rendererReadyListener = (event: IpcMainEvent): void => {
     if (event.sender !== win.webContents) return;
-    markAppLoadCommitted('renderer-ready');
+    if (rendererReadyCommitTimer !== null) return;
+    const requestedDelay = Number(process.env.SPACE_TEST_STARTUP_OVERLAY_HOLD_MS ?? 0);
+    const holdMs =
+      process.env.KODAX_TEST_ONBOARDING && Number.isFinite(requestedDelay)
+        ? Math.min(10_000, Math.max(0, requestedDelay))
+        : 0;
+    if (holdMs === 0) {
+      markAppLoadCommitted('renderer-ready');
+      return;
+    }
+    rendererReadyCommitTimer = setTimeout(() => {
+      rendererReadyCommitTimer = null;
+      markAppLoadCommitted('renderer-ready-test-hold');
+    }, holdMs);
   };
   ipcMain.on('boot.rendererReady', rendererReadyListener);
 
   function retryAppLoad(reason: string): void {
     if (fatalStartupStatus !== null) {
       appRendererLoadScheduler.cancel();
-      setBootStatus(fatalStartupStatus);
+      setBootStatus(fatalStartupStatus, 'app-restart');
       return;
     }
     if (
@@ -588,7 +844,10 @@ function createMainWindow(): BrowserWindow {
     clearAppLoadWatchdog();
     if (appLoadAttempt >= appLoadMaxAttempts) {
       console.error(`[main] renderer did not commit after ${appLoadAttempt} attempt(s): ${reason}`);
-      setBootStatus('KodaX Space needs attention. Check diagnostics, then reload.');
+      setBootStatus(
+        'KodaX Space needs attention. Check diagnostics, then try again.',
+        'renderer-retry',
+      );
       revealWindow('renderer-load-failed');
       return;
     }
@@ -605,7 +864,7 @@ function createMainWindow(): BrowserWindow {
   function loadAppRenderer(reason: string): void {
     if (fatalStartupStatus !== null) {
       appRendererLoadScheduler.cancel();
-      setBootStatus(fatalStartupStatus);
+      setBootStatus(fatalStartupStatus, 'app-restart');
       return;
     }
     if (startupShutdownCoordinator.isShutdownRequested() || isWindowUnavailable()) return;
@@ -642,7 +901,7 @@ function createMainWindow(): BrowserWindow {
     }, delayMs);
   };
 
-  const startAppLoadAfterBoot = (source: string): void => {
+  startAppLoadAfterBoot = (source: string): void => {
     if (
       startupShutdownCoordinator.isShutdownRequested() ||
       bootStartedAppLoad ||
@@ -651,30 +910,41 @@ function createMainWindow(): BrowserWindow {
       return;
     }
     bootStartedAppLoad = true;
-    clearTimeout(bootFallbackTimer);
-    revealWindow(source);
     if (fatalStartupStatus !== null) {
-      setBootStatus(fatalStartupStatus);
+      setBootStatus(fatalStartupStatus, 'app-restart');
       return;
     }
     scheduleAppRendererLoad(source, 50);
   };
 
-  const bootFallbackTimer = setTimeout(() => startAppLoadAfterBoot('boot-timeout'), 1500);
+  bootFallbackTimer = setTimeout(() => {
+    startAppLoadAfterBoot('boot-timeout');
+    revealWindow('boot-timeout');
+  }, 1500 + bootPaintHoldMs);
   bootFallbackTimer.unref?.();
 
-  const revealTimer = setTimeout(() => revealWindow('timeout'), 2500);
-  revealTimer.unref?.();
-
-  win.once('ready-to-show', () => revealWindow('ready-to-show'));
-  win.webContents.once('dom-ready', () => startAppLoadAfterBoot('boot-dom-ready'));
+  win.webContents.on('did-start-navigation', (_event, url, isInPlace, isMainFrame) => {
+    if (isInPlace || !isMainFrame || !appLoadCommitted) return;
+    appLoadCommitted = false;
+    appLoadAttempt = 0;
+    win.webContents.setBackgroundThrottling(false);
+    if (rendererReadyCommitTimer !== null) {
+      clearTimeout(rendererReadyCommitTimer);
+      rendererReadyCommitTimer = null;
+    }
+    void bootOverlay.ensure().then(
+      () => setBootStatus('Refreshing your workspace'),
+      (error: unknown) => handleBootOverlayEnsureFailure('renderer-reload', error),
+    );
+    clearAppLoadWatchdog();
+    appLoadWatchdog = setTimeout(() => {
+      retryAppLoad(`no renderer-ready signal after reload of ${describeUrlForLog(url)}`);
+    }, appLoadTimeoutMs);
+    appLoadWatchdog.unref?.();
+  });
   win.webContents.on('dom-ready', () => {
     console.info(`[main] renderer dom-ready: ${describeUrlForLog(win.webContents.getURL())}`);
-    if (fatalStartupStatus !== null) setBootStatus(fatalStartupStatus);
-  });
-  win.webContents.once('did-finish-load', () => revealWindow('did-finish-load'));
-  win.webContents.on('did-finish-load', () => {
-    console.info(`[main] renderer did-finish-load: ${describeUrlForLog(win.webContents.getURL())}`);
+    if (fatalStartupStatus !== null) setBootStatus(fatalStartupStatus, 'app-restart');
   });
   win.webContents.on(
     'did-fail-provisional-load',
@@ -691,26 +961,26 @@ function createMainWindow(): BrowserWindow {
       `[main] renderer did-fail-load: code=${errorCode} ${errorDescription} url=${describeUrlForLog(validatedURL)}`,
     );
     revealWindow('did-fail-load');
-    if (validatedURL.startsWith(BOOT_SPLASH_URL_PREFIX)) {
-      startAppLoadAfterBoot('boot-did-fail-load');
-    } else {
-      retryAppLoad(`did-fail-load ${errorCode} ${errorDescription}`);
-    }
+    retryAppLoad(`did-fail-load ${errorCode} ${errorDescription}`);
   });
   win.webContents.on('render-process-gone', (_event, details) => {
     console.error(
       `[main] renderer process gone: reason=${details.reason} exitCode=${details.exitCode}`,
     );
     clearAppLoadWatchdog();
+    if (rendererReadyCommitTimer !== null) {
+      clearTimeout(rendererReadyCommitTimer);
+      rendererReadyCommitTimer = null;
+    }
     if (startupShutdownCoordinator.isShutdownRequested() || details.reason === 'clean-exit') return;
     if (fatalStartupStatus !== null) {
       appRendererLoadScheduler.cancel();
       appLoadCommitted = false;
-      void win.loadURL(bootSplashUrl).then(
-        () => setBootStatus(fatalStartupStatus ?? 'Startup could not finish.'),
+      void bootOverlay.ensure().then(
+        () => setBootStatus(fatalStartupStatus ?? 'Startup could not finish.', 'app-restart'),
         (err: unknown) => {
           const message = err instanceof Error ? err.message : String(err);
-          console.error(`[main] fatal-state boot splash load rejected: ${message}`);
+          console.error(`[main] fatal-state boot overlay load rejected: ${message}`);
         },
       );
       return;
@@ -720,30 +990,83 @@ function createMainWindow(): BrowserWindow {
       console.error(
         `[main] renderer crashed repeatedly; recovery stopped after ${rendererGoneMaxRecoveries} attempt(s)`,
       );
-      setBootStatus('Renderer crashed repeatedly. Check terminal logs, then reload.');
+      void bootOverlay.ensure().then(
+        () =>
+          setBootStatus(
+            'Renderer crashed repeatedly. Check diagnostics, then try again.',
+            'renderer-retry',
+          ),
+        (error: unknown) => handleBootOverlayEnsureFailure('renderer-crash-loop', error),
+      );
       revealWindow('renderer-crash-loop');
       return;
     }
     appLoadCommitted = false;
+    win.webContents.setBackgroundThrottling(false);
     const recoveryDelayMs = Math.min(500 * rendererGoneRecoveries, 2_000);
-    void win.loadURL(bootSplashUrl).then(
+    void bootOverlay.ensure().then(
       () => setBootStatus('Restoring your workspace'),
       (err: unknown) => {
         const message = err instanceof Error ? err.message : String(err);
-        console.error(`[main] recovery boot splash load rejected: ${message}`);
+        console.error(`[main] recovery boot overlay load rejected: ${message}`);
       },
     );
     scheduleAppRendererLoad(`render-process-gone:${details.reason}`, recoveryDelayMs);
   });
 
+  retryBootAction = (): void => {
+    if (isWindowUnavailable()) return;
+    if (bootRecoveryAction === 'runtime-exit-recovery') {
+      if (scheduleRuntimeExitRecovery('the user retried recovery from the boot overlay')) {
+        setBootStatus('Restarting KodaX Space');
+        app.exit(0);
+      }
+      return;
+    }
+    if (startupShutdownCoordinator.isShutdownRequested()) return;
+    if (bootRecoveryAction === 'app-restart') {
+      if (scheduleStartupRecoveryRestart()) {
+        setBootStatus('Restarting KodaX Space');
+      } else {
+        setBootStatus(
+          'Restart could not be scheduled. Close and reopen KodaX Space.',
+          'close-only',
+        );
+      }
+      return;
+    }
+    if (bootRecoveryAction !== 'renderer-retry') return;
+    appLoadAttempt = 0;
+    rendererGoneRecoveries = 0;
+    appLoadCommitted = false;
+    win.webContents.setBackgroundThrottling(false);
+    clearAppLoadWatchdog();
+    if (rendererReadyCommitTimer !== null) {
+      clearTimeout(rendererReadyCommitTimer);
+      rendererReadyCommitTimer = null;
+    }
+    void bootOverlay.ensure().then(
+      () => setBootStatus('Trying that again'),
+      (error: unknown) => handleBootOverlayEnsureFailure('boot-overlay-retry', error),
+    );
+    scheduleAppRendererLoad('boot-overlay-retry', 0);
+  };
+
   win.on('closed', () => {
     ipcMain.removeListener('boot.rendererReady', rendererReadyListener);
     uninstallTopmostGuard();
-    clearTimeout(bootFallbackTimer);
+    if (bootFallbackTimer !== null) clearTimeout(bootFallbackTimer);
     clearAppLoadWatchdog();
+    if (rendererReadyCommitTimer !== null) clearTimeout(rendererReadyCommitTimer);
     appRendererLoadScheduler.cancel();
-    clearTimeout(revealTimer);
-    if (mainWindow === win) mainWindow = null;
+    bootOverlay.dispose();
+    if (mainWindowBootOverlay === bootOverlay) mainWindowBootOverlay = null;
+    if (mainWindowBootStatusUpdater !== null) mainWindowBootStatusUpdater = null;
+    if (mainWindow === win) {
+      mainWindow = null;
+      mainWindowAwaitingInitialReveal = false;
+      pendingMainWindowActivation = false;
+    }
     if (
       WINDOWS_BACKGROUND_TRAY_ENABLED &&
       backgroundTray !== null &&
@@ -771,24 +1094,17 @@ function createMainWindow(): BrowserWindow {
     void refreshWindowsBackgroundTray();
   });
 
+  void bootOverlay.ensure().catch((err: unknown) => {
+    handleBootOverlayEnsureFailure('initial', err);
+    startAppLoadAfterBoot('boot-overlay-load-rejected');
+  });
   if (isDev && VITE_DEV_SERVER_URL) {
-    void win.loadURL(bootSplashUrl).catch((err: unknown) => {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error(`[main] boot splash load rejected: ${message}`);
-      startAppLoadAfterBoot('boot-load-rejected');
-    });
     // dev mode 也不再自动开 DevTools——用户用 View → Toggle Developer Tools 菜单或
     // Ctrl+Shift+I 快捷键按需打开。默认开会让首次启动多个浮窗显得突兀。
     // 若开发期想要自动打开，设环境变量 SPACE_AUTO_DEVTOOLS=1。
     if (process.env.SPACE_AUTO_DEVTOOLS === '1') {
       win.webContents.openDevTools({ mode: 'detach' });
     }
-  } else {
-    void win.loadURL(bootSplashUrl).catch((err: unknown) => {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error(`[main] boot splash load rejected: ${message}`);
-      startAppLoadAfterBoot('boot-load-rejected');
-    });
   }
   return win;
 }
@@ -796,6 +1112,10 @@ function createMainWindow(): BrowserWindow {
 function showOrCreateMainWindow(): BrowserWindow {
   const existing = mainWindow;
   if (existing && !existing.isDestroyed()) {
+    if (mainWindowAwaitingInitialReveal) {
+      pendingMainWindowActivation = true;
+      return existing;
+    }
     if (existing.isMinimized()) existing.restore();
     existing.show();
     existing.focus();
@@ -804,22 +1124,11 @@ function showOrCreateMainWindow(): BrowserWindow {
   return createMainWindow();
 }
 
-function setVisibleBootStatus(message: string): void {
-  for (const window of BrowserWindow.getAllWindows()) {
-    if (window.isDestroyed() || window.webContents.isDestroyed()) continue;
-    const applyStatus = (): void => {
-      if (window.isDestroyed() || window.webContents.isDestroyed()) return;
-      if (!window.webContents.getURL().startsWith(BOOT_SPLASH_URL_PREFIX)) return;
-      void window.webContents
-        .executeJavaScript(bootStatusScript(message), true)
-        .catch(() => undefined);
-    };
-    if (window.webContents.getURL().startsWith(BOOT_SPLASH_URL_PREFIX)) {
-      applyStatus();
-    } else {
-      window.webContents.once('did-finish-load', applyStatus);
-    }
-  }
+function setVisibleBootStatus(
+  message: string,
+  action: BootRecoveryActionMode = 'close-only',
+): void {
+  mainWindowBootStatusUpdater?.(message, action);
 }
 
 function activateMainWindow(): void {
@@ -829,6 +1138,112 @@ function activateMainWindow(): void {
     return;
   }
   void app.whenReady().then(() => showOrCreateMainWindow());
+}
+
+function restoreVisibleExitControlSurface(): void {
+  try {
+    installWindowsBackgroundTray();
+  } catch (error) {
+    console.warn(
+      '[main] could not restore the background tray after cancelled exit:',
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+  activateMainWindow();
+}
+
+function scheduleRuntimeExitRecovery(reason: string): boolean {
+  if (runtimeExitRecoveryScheduled) return true;
+  try {
+    app.relaunch({
+      args: [
+        ...process.argv.slice(1).filter((arg) => arg !== RUNTIME_EXIT_RECOVERY_ARG),
+        RUNTIME_EXIT_RECOVERY_ARG,
+      ],
+    });
+    runtimeExitRecoveryScheduled = true;
+    console.warn(
+      `[main] reopening Space because complete Runtime exit was not confirmed: ${reason}`,
+    );
+    return true;
+  } catch (error) {
+    console.error(
+      '[main] could not schedule the Runtime exit recovery relaunch:',
+      error instanceof Error ? error.message : String(error),
+    );
+    restoreVisibleExitControlSurface();
+    return false;
+  }
+}
+
+function keepSpaceVisibleAfterRecoveryRelaunchFailure(): void {
+  const firstFallbackActivation = !runtimeExitRecoveryFallbackActive;
+  runtimeExitRecoveryFallbackActive = true;
+  stopDaemonOnQuit = false;
+  daemonStopConfirmedBeforeQuit = false;
+  _quitting = false;
+  // Runtime/MCP cleanup may already be irreversible. Keep Coder admission
+  // fail-closed rather than presenting a control surface that looks healthy.
+  try {
+    installWindowsBackgroundTray();
+    showWindowAfterFailedShutdown(BrowserWindow.getAllWindows(), () => showOrCreateMainWindow());
+    setVisibleBootStatus(
+      'Runtime shutdown could not be recovered automatically. Restart KodaX Space.',
+      'runtime-exit-recovery',
+    );
+  } catch (error) {
+    console.error(
+      '[main] could not restore the existing control surface after relaunch failure:',
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+  // Repeated failures must always restore the window and fail-closed overlay.
+  // Only the modal dialog itself is one-shot.
+  if (!firstFallbackActivation) return;
+  void dialog
+    .showMessageBox({
+      type: 'error',
+      title: 'KodaX Space',
+      message: 'Coder Runtime could not be stopped safely',
+      detail:
+        'Space could not register its automatic recovery relaunch. A visible fail-closed window will remain; Coder actions stay disabled. Retry the restart, or restart KodaX Space manually.',
+      buttons: ['Retry restart', 'Keep fail-closed window open'],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true,
+    })
+    .then((result) => {
+      if (result.response !== 0) return;
+      if (scheduleRuntimeExitRecovery('the user retried recovery after relaunch failure')) {
+        app.exit(0);
+      }
+    })
+    .catch((error) => {
+      console.error(
+        '[main] could not show the failed-shutdown recovery dialog:',
+        error instanceof Error ? error.message : String(error),
+      );
+    });
+}
+
+async function showRuntimeExitRecoveryNoticeIfNeeded(): Promise<void> {
+  if (!runtimeExitRecoveryRequested) return;
+  restoreVisibleExitControlSurface();
+  const locale = await resolveCurrentTrayLocale();
+  const zh = locale === 'zh-CN';
+  await dialog.showMessageBox({
+    type: 'warning',
+    title: zh ? 'KodaX Space 已重新打开' : 'KodaX Space reopened',
+    message: zh
+      ? '未能确认 Coder Runtime 已安全停止'
+      : 'Coder Runtime shutdown could not be confirmed',
+    detail: zh
+      ? '为避免留下不可见的 daemon，Space 已自动恢复可见控制界面。请完成或取消仍在运行的任务，然后再次退出；诊断日志中保留了本次停止失败原因。'
+      : 'Space restored its visible control surface instead of leaving an invisible daemon. Finish or cancel remaining work, then quit again. The stop failure is retained in diagnostics.',
+    buttons: [zh ? '确定' : 'OK'],
+    defaultId: 0,
+    noLink: true,
+  });
 }
 
 async function resolveCurrentTrayLocale(): Promise<BackgroundTrayLocale> {
@@ -988,60 +1403,98 @@ async function collectBackgroundRuntimeStatus(): Promise<BackgroundRuntimeStatus
   }
 }
 
-function quitSpaceKeepingRuntime(): void {
-  stopDaemonOnQuit = false;
-  app.quit();
+async function collectActiveSpaceExitBlockers(): Promise<readonly string[]> {
+  const runningSessions = kodaxHost.listInFlight().filter((session) => session.isRunning()).length;
+  const runningWorkflows = workflowController
+    .list()
+    .filter((run) => run.status === 'running' || run.status === 'paused').length;
+  const externalTasks = await externalAgentGateway.listTasks();
+  const activeExternalTasks = externalTasks.filter(
+    (task) =>
+      task.state !== 'completed' &&
+      task.state !== 'failed' &&
+      task.state !== 'canceled' &&
+      task.state !== 'rejected',
+  ).length;
+  return collectSpaceExitWorkBlockers({
+    runningSessions,
+    runningWorkflows,
+    pendingPermissions: permissionBroker.pendingCount(),
+    pendingUserInputs: askUserBroker.pendingCount(),
+    queuedPrompts: hasQueuedCoderPrompts() ? 1 : 0,
+    activeExternalTasks,
+  });
 }
 
 async function requestCompleteExit(): Promise<void> {
   if (completeExitRequested) return;
   completeExitRequested = true;
+  let reopenCoderAdmission: (() => void) | undefined;
+  let exitCommitted = false;
   try {
+    reopenCoderAdmission = await beginCoderShutdown?.();
     const locale = await resolveCurrentTrayLocale();
-    const runtime = await collectBackgroundRuntimeStatus();
-    if (runtime.state === 'ready' && !runtime.canStop) {
-      const blockers = runtime.blockers.join(', ') || 'background work';
+    const [runtime, spaceBlockers] = await Promise.all([
+      collectBackgroundRuntimeStatus(),
+      collectActiveSpaceExitBlockers(),
+    ]);
+    const runtimeBlockers = runtime.state === 'ready' && !runtime.canStop ? runtime.blockers : [];
+    const blockers = [...spaceBlockers, ...runtimeBlockers];
+    if (blockers.length > 0) {
+      const blockerSummary = blockers.join(', ');
       const zh = locale === 'zh-CN';
-      const choice = await dialog.showMessageBox({
+      restoreVisibleExitControlSurface();
+      await dialog.showMessageBox({
         type: 'warning',
         title: zh ? 'Runtime 仍在使用中' : 'Runtime is still in use',
         message: zh
           ? '当前不能安全停止 KodaX Runtime'
           : 'KodaX Runtime cannot be stopped safely right now',
         detail: zh
-          ? `仍有任务、交互或其他客户端持有 Runtime（${blockers}）。可以只退出 Space 并保留后台任务，或取消后稍后重试。`
-          : `Runtime is still held by work, interactions, or other clients (${blockers}). You can quit Space while preserving that work, or cancel and retry later.`,
-        buttons: zh
-          ? ['仅退出 Space，保留 Runtime', '取消']
-          : ['Quit Space, keep Runtime', 'Cancel'],
-        defaultId: 1,
-        cancelId: 1,
+          ? `仍有任务、交互或其他客户端持有 Runtime（${blockerSummary}）。为避免中断工作或留下不可见 daemon，Space 会保持打开。请完成或取消相关工作后再退出。`
+          : `Runtime or Space still owns work, interactions, or other clients (${blockerSummary}). To avoid interrupting work or leaving an invisible daemon, Space will remain open. Finish or cancel that work and quit again.`,
+        buttons: [zh ? '保持 Space 打开' : 'Keep Space open'],
+        defaultId: 0,
         noLink: true,
       });
-      if (choice.response === 0) quitSpaceKeepingRuntime();
       return;
     }
-    if (runtime.state !== 'ready') {
-      const zh = locale === 'zh-CN';
-      const choice = await dialog.showMessageBox({
-        type: 'warning',
-        title: zh ? '安全尝试彻底退出' : 'Safely attempt complete exit',
-        message: zh
-          ? '暂时无法确认 Runtime 状态'
-          : 'The Runtime state cannot be confirmed right now',
-        detail: zh
-          ? '退出时会通过 Runtime 自身的安全检查尝试停止 daemon；若仍有任务或其他客户端，daemon 会拒绝停止并继续运行。'
-          : 'Space will ask Runtime to stop through its own safety gate. If work or other clients remain, the daemon will refuse and keep running.',
-        buttons: zh ? ['安全尝试彻底退出', '取消'] : ['Attempt complete exit safely', 'Cancel'],
-        defaultId: 1,
-        cancelId: 1,
-        noLink: true,
-      });
-      if (choice.response !== 0) return;
-    }
+    await runtimeHostAdapter.stopDaemonForCompleteExit();
+    daemonStopConfirmedBeforeQuit = true;
     stopDaemonOnQuit = true;
+    exitCommitted = true;
     app.quit();
+  } catch (error) {
+    if (
+      isCoderOwnerRecoveryRestartRequired(error) &&
+      scheduleRuntimeExitRecovery('daemon owner policy recovery requires a restart')
+    ) {
+      exitCommitted = true;
+      app.exit(0);
+      return;
+    }
+    restoreVisibleExitControlSurface();
+    const locale = await resolveCurrentTrayLocale();
+    const zh = locale === 'zh-CN';
+    console.warn(
+      '[main] complete exit preparation failed:',
+      error instanceof Error ? error.message : String(error),
+    );
+    await dialog.showMessageBox({
+      type: 'warning',
+      title: zh ? '暂时无法退出' : 'Space cannot quit yet',
+      message: zh ? '退出准备没有安全完成' : 'The complete-exit preparation did not finish safely',
+      detail: zh
+        ? 'Space 已保持打开，Coder Runtime 和当前任务未被强制终止。请稍后重试。'
+        : 'Space remains open, and Coder Runtime or current work was not force-terminated. Please retry shortly.',
+      buttons: [zh ? '确定' : 'OK'],
+      defaultId: 0,
+      noLink: true,
+    });
   } finally {
+    if (!exitCommitted) {
+      reopenCoderAdmission?.();
+    }
     completeExitRequested = false;
   }
 }
@@ -1065,7 +1518,6 @@ function updateWindowsBackgroundTrayMenu(runtime: BackgroundRuntimeStatus): void
       },
     },
     { type: 'separator' },
-    { label: copy.quitKeepRuntime, click: quitSpaceKeepingRuntime },
     { label: copy.quitCompletely, click: () => void requestCompleteExit() },
   ];
   tray.setContextMenu(Menu.buildFromTemplate(template));
@@ -1112,8 +1564,8 @@ function installWindowsBackgroundTray(): void {
     backgroundTrayRefreshTimer.unref?.();
   } catch (error) {
     // Tray support is a Windows convenience, not a startup dependency. If the
-    // shell rejects the icon or tray object, keep the normal window lifecycle:
-    // window-all-closed will then quit instead of leaving an invisible process.
+    // shell rejects it, last-window close still enters the cross-platform
+    // complete-exit gate and must stop Runtime before the process disappears.
     console.warn(
       '[main] Windows background tray unavailable; falling back to normal window exit:',
       error instanceof Error ? error.message : String(error),
@@ -1146,6 +1598,7 @@ function disposeWindowsBackgroundTray(): void {
 // 第一个进程收到 second-instance 事件 → show + focus 已有窗口（Slack/Discord 同款行为）。
 const gotInstanceLock = app.requestSingleInstanceLock();
 if (!gotInstanceLock) {
+  secondaryInstanceExit = true;
   app.quit();
 } else {
   app.on('second-instance', (_event, argv) => {
@@ -1377,32 +1830,15 @@ const startupPromise = app
     registerHandoffChannels();
     const coderRuntimeModeSwitchCoordinator = new CoderRuntimeModeSwitchCoordinator({
       currentHost: () => runtimeHostAdapter.selectedHost(),
-      hasActiveSpaceRun: async () => {
-        if (kodaxHost.listInFlight().some((session) => session.isRunning())) return true;
-        if (
-          workflowController
-            .list()
-            .some((run) => run.status === 'running' || run.status === 'paused')
-        ) {
-          return true;
-        }
-        if (permissionBroker.pendingCount() > 0 || askUserBroker.pendingCount() > 0) return true;
-        if (hasQueuedCoderPrompts()) return true;
-        const externalTasks = await externalAgentGateway.listTasks();
-        return externalTasks.some(
-          (task) =>
-            task.state !== 'completed' &&
-            task.state !== 'failed' &&
-            task.state !== 'canceled' &&
-            task.state !== 'rejected',
-        );
-      },
+      hasActiveSpaceRun: async () => (await collectActiveSpaceExitBlockers()).length > 0,
       prepareEmbeddedRestart: () => runtimeHostAdapter.prepareEmbeddedRestart(),
       prepareDaemonRestart: () => runtimeHostAdapter.prepareDaemonRestart(),
       restoreDaemonOwner: () => runtimeHostAdapter.restoreDaemonOwner(),
       persist: (mode) => settingsStore.setCoderRuntimeMode(mode),
       scheduleRestart: scheduleCoderRuntimeModeRestart,
     });
+    beginCoderShutdown = () =>
+      coderRuntimeModeSwitchCoordinator.beginShutdown({ drainTimeoutMs: 10_000 });
     registerSessionChannels({
       beginCoderAdmission: () => coderRuntimeModeSwitchCoordinator.beginCoderAdmission(),
     });
@@ -1425,7 +1861,9 @@ const startupPromise = app
     registerQueueChannels();
     // v0.1.6 cleanup: 预热 SDK MCP module 让首次 mcp.discover 不命中空 fallback
     // （DEFAULT_IMPL 首次同步调返回 {}，prewarm 异步触发后续调用走真 SDK）
-    void prewarmSdkMcpStore();
+    void prewarmSdkMcpStore().catch((err) =>
+      console.warn('[main] SDK MCP prewarm failed:', err instanceof Error ? err.message : err),
+    );
     // v0.1.6 cleanup: 同上，预热 root SDK module + 把 ~/.kodax/config.json 的 customProviders
     // 注册进 SDK runtime LLM registry。完成后 `/provider <name>` 可切到 KodaX-CLI 配的
     // 自定义 provider（如用户的 newapi-anthropic / openrouter-xxx）。失败不阻塞启动。
@@ -1465,7 +1903,12 @@ const startupPromise = app
     // F022 auto-updater — packaged 模式下走 GitHub Releases feed；dev 模式 idle
     // initAutoUpdater 内部判断 app.isPackaged + 异步触发首次 check，不阻塞窗口创建
     registerUpdaterChannels();
-    void initAutoUpdater();
+    void initAutoUpdater().catch((err) =>
+      console.warn(
+        '[main] updater initialization failed:',
+        err instanceof Error ? err.message : err,
+      ),
+    );
     // F021 .mcpb / .dxt bundle install — IPC handlers，UI 点 "Install extension..." 走
     registerMcpbChannels();
     // F011 内置终端 (xterm.js + node-pty) — terminal.create/write/resize/kill + output/exit push
@@ -1486,16 +1929,18 @@ const startupPromise = app
     registerWorkflowChannels({
       beginCoderAdmission: () => coderRuntimeModeSwitchCoordinator.beginCoderAdmission(),
     });
-    void workflowController
-      .init()
-      .then(() => diagnosticsLogger?.info('workflow', 'controller_initialized'))
-      .catch((err) => {
-        diagnosticsLogger?.warn('workflow', 'controller_initialization_failed', undefined, err);
-        console.warn(
-          '[main] workflow controller init failed:',
-          err instanceof Error ? err.message : err,
-        );
-      });
+    void startupShutdownCoordinator.trackStartupTask(
+      workflowController
+        .init()
+        .then(() => diagnosticsLogger?.info('workflow', 'controller_initialized'))
+        .catch((err) => {
+          diagnosticsLogger?.warn('workflow', 'controller_initialization_failed', undefined, err);
+          console.warn(
+            '[main] workflow controller init failed:',
+            err instanceof Error ? err.message : err,
+          );
+        }),
+    );
     // F064 Workflow Host Policy 已在上面启动期 Promise.all 里 await 加载（早于窗口/首跑）。
     // F059c L3：artifact.openWindow → 独立最大化窗口（复用同一 renderer + preload，走 #artifact hash）。
     registerArtifactWindowChannel({
@@ -1516,12 +1961,19 @@ const startupPromise = app
     void settingsStore.ensureWorkspaceExists();
     // KodaX SDK MessageQueue (process-global) 订阅 — 实时把 enqueued/dequeued/cleared 推 renderer.
     // 失败 (SDK chunk import 错) 不阻塞启动,renderer 仍能调 kodax.queueGet 轮询。
-    void startQueueWatch().catch((err) => {
-      console.warn('[main] startQueueWatch failed:', err instanceof Error ? err.message : err);
-    });
+    void startupShutdownCoordinator
+      .trackStartupTask(
+        startQueueWatch().then((unsubscribe) => {
+          queueWatchShutdown?.();
+          queueWatchShutdown = unsubscribe;
+        }),
+      )
+      .catch((err) => {
+        console.warn('[main] startQueueWatch failed:', err instanceof Error ? err.message : err);
+      });
     // FEATURE_083 FileTracingProcessor (opt-in): 设 SPACE_TRACE_DIR=/some/abs/path 后启动期注册,
     // SDK 把 span/trace lifecycle JSONL 写入该目录。默认不写 (避免文件落盘而用户不知情)。
-    void startFileTracingIfEnabled().catch((err) => {
+    void startupShutdownCoordinator.trackStartupTask(startFileTracingIfEnabled()).catch((err) => {
       console.warn('[main] file tracing init failed:', err instanceof Error ? err.message : err);
     });
     // 预加载 always-allow 规则 — broker.request 走 matches() 是同步路径，必须事先 load。
@@ -1544,6 +1996,12 @@ const startupPromise = app
       });
     if (startupShutdownCoordinator.isShutdownRequested()) return;
     rendererStartupGate.release();
+    void showRuntimeExitRecoveryNoticeIfNeeded().catch((error) => {
+      console.warn(
+        '[main] could not show the Runtime exit recovery notice:',
+        error instanceof Error ? error.message : String(error),
+      );
+    });
   })
   .catch((err) => {
     // 启动链兜底：whenReady 内任一步抛错（如 SDK chunk 缺运行时文件、动态 import 失败）原本会变成
@@ -1576,7 +2034,7 @@ const startupPromise = app
     // Keep the dependency-free trusted surface visible on fatal bootstrap
     // errors rather than releasing an incomplete renderer that will fail again.
     fatalStartupStatus = 'Startup could not finish. Restart KodaX Space to try again.';
-    setVisibleBootStatus(fatalStartupStatus);
+    setVisibleBootStatus(fatalStartupStatus, 'app-restart');
   });
 startupShutdownCoordinator.setStartupPromise(startupPromise);
 
@@ -1627,12 +2085,30 @@ async function startFileTracingIfEnabled(): Promise<void> {
 // 清理卡死导致无窗口僵尸主进程（dev 链路下还会连累 vite/esbuild 跟着挂）。
 let _quitting = false;
 app.on('before-quit', (event) => {
+  // Every user/OS quit path (macOS Cmd+Q, Linux last-window close, Windows
+  // complete exit) first passes the same Runtime safety gate. Internal mode
+  // restarts deliberately keep the daemon alive and bypass this user-exit path.
+  if (
+    shouldRequestCompleteExitOnBeforeQuit({
+      cleanupStarted: _quitting,
+      daemonStopCommitted: stopDaemonOnQuit,
+      runtimeModeRestartScheduled: coderRuntimeRestartScheduled || startupRecoveryRestartScheduled,
+      secondaryInstanceExit: secondaryInstanceExit || testExitBypass,
+    })
+  ) {
+    event.preventDefault();
+    void requestCompleteExit();
+    return;
+  }
+
+  // 同步 + 幂等的清理先做（每次 before-quit 触发都安全重入）。
   // 第二次 before-quit（理论上不会——app.exit 跳过 before-quit；防 electron quirk）直接放行。
   if (_quitting) return;
   _quitting = true;
   startupShutdownCoordinator.requestShutdown();
   // 异步清理需要 await 完才能让进程死，否则子进程 kill 与进程退出赛跑 → 孤儿残留。
   event.preventDefault();
+  // The process may remain alive for bounded Runtime/child-process cleanup.
   // Hide every surface synchronously once quit is committed so the user's
   // first confirmation looks immediate instead of requiring a second close.
   hideWindowsForShutdown(BrowserWindow.getAllWindows(), (error) => {
@@ -1657,9 +2133,21 @@ app.on('before-quit', (event) => {
   const disposalPromise = startupShutdownCoordinator.disposeAfterStartup(() => {
     const tracingShutdown = _fileTracingShutdown;
     _fileTracingShutdown = null;
+    const stopQueueWatch = queueWatchShutdown;
+    queueWatchShutdown = null;
     // Startup must settle before any close() call: otherwise an early user quit
     // can race Runtime initialize() and leave a newly spawned resource behind.
     const disposals: Promise<unknown>[] = [
+      Promise.resolve()
+        .then(() => stopQueueWatch?.())
+        .catch((err) =>
+          console.warn('[main] queue watch shutdown:', err instanceof Error ? err.message : err),
+        ),
+      Promise.resolve()
+        .then(() => workflowController.dispose())
+        .catch((err) =>
+          console.warn('[main] workflow shutdown:', err instanceof Error ? err.message : err),
+        ),
       disposeMcpManager().catch((err) =>
         console.warn('[main] mcp shutdown:', err instanceof Error ? err.message : err),
       ),
@@ -1689,34 +2177,45 @@ app.on('before-quit', (event) => {
     return disposals;
   });
 
-  // 兜底看门狗：任一清理卡死也不让 app 永远不退。unref 不让它本身把 event loop 拖住。
-  const watchdogMs = stopDaemonOnQuit ? 8_000 : 2_500;
+  // Complete exit gets enough time for local cleanup plus the daemon's own
+  // safety gate. Its watchdog recovers a visible Space instance instead of
+  // forcing an exit that could strand an invisible daemon.
+  let mayExitProcess = true;
+  const watchdogMs = stopDaemonOnQuit ? 25_000 : 2_500;
   const watchdog = setTimeout(() => {
-    console.warn(`[main] shutdown disposals exceeded ${watchdogMs}ms; forcing exit`);
-    app.exit(0);
+    console.warn(`[main] shutdown disposals exceeded ${watchdogMs}ms`);
+    if (!stopDaemonOnQuit) {
+      app.exit(0);
+      return;
+    }
+    if (scheduleRuntimeExitRecovery('shutdown timed out before daemon stop was confirmed')) {
+      app.exit(0);
+      return;
+    }
+    mayExitProcess = false;
+    keepSpaceVisibleAfterRecoveryRelaunchFailure();
   }, watchdogMs);
   watchdog.unref?.();
 
   void disposalPromise
-    .then(async () => {
-      if (!stopDaemonOnQuit) return;
-      const result = await stopCoderDaemonWhenSafe({ timeoutMs: 4_000 }).catch((error) => ({
-        stopped: false,
-        reason: 'command_failed',
-        message: error instanceof Error ? error.message : String(error),
-      }));
-      if (result.stopped || result.reason === 'missing') {
-        console.info('[main] complete exit safely stopped the idle Coder daemon.');
-        return;
+    .then(() => {
+      if (stopDaemonOnQuit && !daemonStopConfirmedBeforeQuit) {
+        console.warn(
+          '[main] complete exit reached cleanup without prior daemon-stop confirmation.',
+        );
+        mayExitProcess = scheduleRuntimeExitRecovery(
+          'daemon stop was not confirmed before local shutdown',
+        );
       }
-      console.warn(
-        `[main] complete exit preserved the Coder daemon because it could not stop safely (${result.reason ?? 'unknown'}).`,
-      );
     })
     .then(() => flushDiagnostics())
     .finally(() => {
       clearTimeout(watchdog);
-      app.exit(0);
+      if (mayExitProcess) {
+        app.exit(0);
+        return;
+      }
+      keepSpaceVisibleAfterRecoveryRelaunchFailure();
     });
 });
 

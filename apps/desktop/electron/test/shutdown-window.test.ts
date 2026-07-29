@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { hideWindowsForShutdown, type ShutdownWindowLike } from '../window/shutdown-window.js';
+import {
+  hideWindowsForShutdown,
+  showWindowAfterFailedShutdown,
+  type FailedShutdownWindowLike,
+  type ShutdownWindowLike,
+} from '../window/shutdown-window.js';
 
 function createWindow(options?: { destroyed?: boolean; hideError?: Error }): {
   window: ShutdownWindowLike;
@@ -43,4 +48,30 @@ test('one window hide failure does not block the rest of shutdown visibility cle
   assert.equal(broken.hideCalls(), 1);
   assert.equal(healthy.hideCalls(), 1);
   assert.deepEqual(errors, [failure]);
+});
+
+test('failed-shutdown recovery force-shows a newly created window after the old one was destroyed', () => {
+  const events: string[] = [];
+  const destroyed: FailedShutdownWindowLike = {
+    isDestroyed: () => true,
+    isMinimized: () => false,
+    restore: () => events.push('destroyed:restore'),
+    show: () => events.push('destroyed:show'),
+    focus: () => events.push('destroyed:focus'),
+  };
+  const replacement: FailedShutdownWindowLike = {
+    isDestroyed: () => false,
+    isMinimized: () => false,
+    restore: () => events.push('replacement:restore'),
+    show: () => events.push('replacement:show'),
+    focus: () => events.push('replacement:focus'),
+  };
+
+  const shown = showWindowAfterFailedShutdown([destroyed], () => {
+    events.push('replacement:create');
+    return replacement;
+  });
+
+  assert.equal(shown, replacement);
+  assert.deepEqual(events, ['replacement:create', 'replacement:show', 'replacement:focus']);
 });

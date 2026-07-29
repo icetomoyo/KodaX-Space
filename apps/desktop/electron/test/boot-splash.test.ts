@@ -4,6 +4,8 @@ import { test } from 'node:test';
 import {
   BOOT_SPLASH_URL_PREFIX,
   BOOT_SPLASH_VARIANTS,
+  BOOT_SPLASH_CLOSE_URL,
+  BOOT_SPLASH_RETRY_URL,
   bootStatusScript,
   createBootSplashUrl,
   selectBootSplashVariant,
@@ -33,14 +35,22 @@ test('each boot splash design keeps the trusted status and reduced-motion contra
     );
     assert.match(html, new RegExp(`data-variant="${variant}"`));
     assert.match(html, /data-boot-status/);
+    assert.match(html, /data-boot-close/);
+    assert.match(html, /data-boot-retry/);
+    assert.match(html, new RegExp(BOOT_SPLASH_CLOSE_URL.replaceAll('/', '\\/')));
+    assert.match(html, new RegExp(BOOT_SPLASH_RETRY_URL.replaceAll('/', '\\/')));
     assert.match(html, /prefers-reduced-motion:reduce/);
     assert.match(html, /data:image\/png;base64,aGVsbG8=/);
-    assert.doesNotMatch(html, /<canvas|<svg|https?:\/\//);
+    assert.doesNotMatch(html, /<canvas|<svg|<script|https?:\/\//);
   }
 });
 
 test('boot status updates serialize text without producing executable markup', () => {
-  const script = bootStatusScript('</span><script>bad()</script>');
+  const script = bootStatusScript('</span><script>bad()</script>', {
+    recoveryAction: 'retry-restart',
+  });
   assert.match(script, /textContent/);
+  assert.match(script, /recovery\.hidden = false/);
+  assert.match(script, /retry\.textContent = "Retry restart"/);
   assert.doesNotMatch(script, /target\.innerHTML/);
 });

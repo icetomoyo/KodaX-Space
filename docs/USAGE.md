@@ -4,6 +4,7 @@
 >
 > 当前 `main` 对 Space 管理的 daemon 要求专用的 `daemonOrphanExit:1` 能力；
 > 不使用 KodaX 语义版本或 Auto-mode guardrail 版本代替生命周期能力判断。
+> 当前发布候选为 KodaX Space `0.1.34` / 精确 Registry KodaX `0.7.78`。
 > 本版本包含 canonical Actor/Turn 投影、精确 history/live 对齐、context/session usage、稳定缓存亲和诊断、可配置 Shell、F140 关闭行为、F141 Daemon/Embedded 安全选择、F142 会话文件操作，以及 builtin catalog、file reveal 和 Node/build/打包工具链维护。
 
 ## 1. 环境要求
@@ -92,7 +93,7 @@ daemon management health，仅在健康指纹变化时刷新投影；损坏一�
 文件不会让 Coder 断线，修复文件后 Settings 通常会在数秒内自动恢复 healthy。轮询错误
 只保留上一份健康状态并记录一次有界警告，不会把核心 Runtime 标记为不可用。
 
-## 4. Runtime Host 与 v0.1.33 Coder 模式选择
+## 4. Runtime Host 与 Coder 模式选择
 
 `RuntimeHostAdapter` 仍是 Electron main 内部的 owner/能力边界；客户只选择
 **Daemon** 或 **Embedded**，不会看到 endpoint、token、owner revision、inline fence 或
@@ -123,7 +124,7 @@ v0.1.33 的 Coder daemon 路由包括：
 - PowerShell `-Path` 方括号通配符 fail-closed 升级确认，同时保留 `-LiteralPath`/`-PSPath` 的精确方括号文件名语义；
 - KodaX CLI auto-resume 有界扫描并跳过空 ACP 占位会话；Space 继续使用自己的显式 Session 选择器。
 - 交互式 resume 恢复 workspace runtime、messages、UI history、lineage、artifacts、extensions、title、tag 与 session identity；
-- 快速 Auto 设置写入按 Session 串行且 last-action-wins，`Auto[RULES]` 保持粘性，显式 `/auto-engine llm` 才切回 LLM；
+- 快速 Auto 设置写入按 Session 串行且 last-action-wins；手动/持久化选择的 `Auto[RULES]` 保持粘性。Auto v4 的 classifier 失败会重试一次，并只把当前调用交给 Accept-edits 兼容回退，engine 仍保持 `llm`；
 - imperative manual compaction 先把精确 flat Session history 对齐进 lineage；durable interrupt-delivery 持久化失败时输入保持 queued，并只发出不含用户正文的有界 warning。
 - `contextDiagnostics` 只投影根上下文分类 Token 数；Renderer 以最终自动压缩阈值为有效分母，并把模型最大上下文作为独立事实。Provider 根计数优先，budget fallback 会减去 reserved response capacity。
 - KodaX 0.7.77 的完成态 hash-only cache diagnostic 是 Session usage 的权威物理调用源，按 `requestId` 去重并覆盖 root/child、retry、fallback、repair、workflow digest 与 compaction summary；`iteration_end.usage` 仅是旧 Runtime/mock 在诊断激活前的回退。
@@ -156,18 +157,27 @@ MCP、A2A 或 Extensions 的独立配置文件若校验失败，Space 报告 SDK
 规范路径，不删除、重写或静默重置配置。修复点名文件后执行相应 reload；涉及 inbound
 A2A authentication/authority 的变化仍可能要求 Runtime owner 安全重启。
 
-### Windows 后台托盘
+### Windows 后台托盘与跨平台退出
 
 Windows 默认启用后台托盘。F140 让主窗口关闭行为可在 Settings → Preferences 中设为
 每次询问、最小化到托盘并保留 Runtime，或请求安全彻底退出；首次关闭默认询问，
 并可记住选择。最小化到托盘会销毁 BrowserWindow/renderer，但保留轻量 Electron
-main、托盘和 Runtime 客户端连接。托盘可重建窗口、只退出 Space 并保留 daemon，
-或请求安全的彻底退出。
+main、托盘和 Runtime 客户端连接。托盘可重建窗口、只关闭界面，或请求安全的彻底退出；
+不再提供会让 Space 自动拉起的 daemon 失去可见控制面的“仅退出 Space”动作。
 
-彻底退出必须先断开 Space，再通过发布版 KodaX CLI 的 daemon stop 安全门执行；
-active/queued/pending 工作或其他客户端会阻止 daemon 停止。自动化 fixture 可设置
+Windows 彻底退出、macOS `Cmd+Q` 和 Linux 最后窗口退出使用同一生命周期：先关闭
+Coder admission 并检查 blocker，再断开 Space，通过发布版 KodaX CLI 的 daemon stop
+安全门执行。active/queued/pending 工作或其他客户端会阻止 **Space 退出**，并恢复
+可见窗口；stop 失败或超时会自动重开 Space。自动化 fixture 可设置
 `SPACE_DISABLE_TRAY=1` 获得确定性的关闭即退出行为；这不是 renderer 可写的产品偏好。
-若托盘初始化失败，应用同样退回关闭即退出，避免不可见驻留。
+若托盘初始化失败，应用仍走相同的 complete-exit gate。
+
+`daemonOrphanExit:1` 仅对 Space 新拉起的 daemon 启用 30 秒 orphan idle-exit。
+最后一个客户端异常断开后，daemon 在没有其他客户端且任务空闲时自停；仍有任务则等到终态后重试。
+旧版残留优先执行 `kodax daemon stop --profile coder --timeout-ms 10000 --json`。CLI
+不可用时从 `${KODAX_HOME:-~/.kodax}/runtime/daemon/coder/daemon.json` 读取 PID，
+用 `ps` 核验 `daemon serve --profile coder` 后发送 `kill -TERM <PID>`；不要按共享
+进程名执行 `killall`。
 
 Settings → Preferences 的 Terminal Shell 选择会同时作用于 Space PTY 与 Coder
 命令工具。Electron main 从选中 shell 的登录环境解析 `PATH`，剥离常见密钥变量后再
@@ -250,10 +260,11 @@ npm run build:linux
 `resedit@1.7.2` 直接修改 PE icon/version resources，不再扫描或启动缓存中的
 `rcedit.exe`。相关依赖和资源门禁失败必须让安装/打包失败，不能用 `|| true` 吞掉。
 
-撤回前的门禁和产物哈希，以及修正版重新执行的门禁和发布证据，都记录在
-[v0.1.33 发布记录](releases/v0.1.33-release-readiness.md)。只有精确 npm KodaX 0.7.77、
-完整依赖闭包、native SQLite load、真实 packaged boot 和 GitHub CI 全部通过后，才能
-重建稳定 tag。
+[v0.1.34 发布记录](releases/v0.1.34-release-readiness.md)是当前候选的真理源；历史
+[v0.1.33 发布记录](releases/v0.1.33-release-readiness.md)保留已发布版本证据。0.1.34 只有在
+精确 Registry 依赖一致性、`daemonOrphanExit:1` Runtime 能力、完整依赖闭包、
+native SQLite load、物理 sandbox helper/doctor、真实 packaged boot 和 GitHub CI 全部通过后，
+才能发布新产物。
 
 ## 8. 排障
 
@@ -284,6 +295,7 @@ profile 位置和 Runtime 错误；分享前必须人工脱敏。
 - [KodaX 能力台账](KODAX_CAPABILITY_LEDGER.md)
 - [Feature 路线图](FEATURE_LIST.md)
 - [Builtin skill 维护说明](BUILTIN_SKILLS.md)
+- [v0.1.34 发布就绪清单](releases/v0.1.34-release-readiness.md)
 - [v0.1.33 发布就绪清单](releases/v0.1.33-release-readiness.md)
 - [v0.1.33 F141 人工测试指导](test-guides/FEATURE_141_v0.1.33_TEST_GUIDE.md)
 - [v0.1.33 F142 人工测试指导](test-guides/FEATURE_142_v0.1.33_TEST_GUIDE.md)

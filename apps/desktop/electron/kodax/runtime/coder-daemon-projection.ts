@@ -74,6 +74,10 @@ function timestamp(value: unknown, fallback = 0): number {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
+function nonNegativeInteger(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
 function runtimePhase(phase: RuntimeRunStatus['phase']): SpaceRuntimeRunProjectionT['phase'] {
   return phase;
 }
@@ -294,6 +298,55 @@ function permissionOperation(
   return 'unknown';
 }
 
+type SpacePermissionRequest = Extract<SpaceRuntimeInteractionT, { kind: 'permission' }>['request'];
+
+function projectAutoModeDiagnostics(
+  value: RuntimePermissionRequest['autoModeDiagnostics'],
+): SpacePermissionRequest['autoModeDiagnostics'] | undefined {
+  if (!value) return undefined;
+  const attempts = value.classifierAttempts?.slice(0, 4).map((attempt) => {
+    const diagnostics = attempt.diagnostics;
+    const provider = diagnostics ? sanitizeForDisplay(diagnostics.provider, 128) : '';
+    const model = diagnostics ? sanitizeForDisplay(diagnostics.model, 256) : '';
+    const timeoutMs = nonNegativeInteger(diagnostics?.timeoutMs);
+    const elapsedMs = nonNegativeInteger(diagnostics?.elapsedMs);
+    const promptBytes = nonNegativeInteger(diagnostics?.promptBytes);
+    const retryCount = nonNegativeInteger(diagnostics?.retryCount);
+    const retryWaitMs = nonNegativeInteger(diagnostics?.retryWaitMs);
+    const safeDiagnostics =
+      diagnostics &&
+      provider &&
+      model &&
+      timeoutMs !== undefined &&
+      elapsedMs !== undefined &&
+      promptBytes !== undefined &&
+      retryCount !== undefined &&
+      retryCount <= 16 &&
+      retryWaitMs !== undefined
+        ? {
+            provider,
+            model,
+            timeoutMs,
+            elapsedMs,
+            promptBytes,
+            retryCount,
+            retryWaitMs,
+            terminalPhase: diagnostics.terminalPhase,
+          }
+        : undefined;
+    return {
+      attempt: Math.min(4, Math.max(1, Math.trunc(attempt.attempt))),
+      outcome: attempt.outcome,
+      ...(safeDiagnostics ? { diagnostics: safeDiagnostics } : {}),
+    };
+  });
+  return {
+    source: value.source,
+    ...(value.classifierFailureKind ? { classifierFailureKind: value.classifierFailureKind } : {}),
+    ...(attempts && attempts.length > 0 ? { classifierAttempts: attempts } : {}),
+  };
+}
+
 function permissionInteraction(
   request: RuntimePermissionRequest,
   fallbackExecutionCwd?: string,
@@ -322,6 +375,7 @@ function permissionInteraction(
   const persistentGrantLabel = persistentGrantSuggestion
     ? sanitizeForDisplay(persistentGrantSuggestion.label, 512)
     : '';
+  const autoModeDiagnostics = projectAutoModeDiagnostics(request.autoModeDiagnostics);
   return {
     source: 'coder-runtime',
     kind: 'permission',
@@ -333,6 +387,7 @@ function permissionInteraction(
       sessionId: request.sessionId,
       risk: assessment.dangerous ? 'danger' : (request.risk ?? assessment.risk),
       reason,
+      ...(autoModeDiagnostics ? { autoModeDiagnostics } : {}),
       toolCall: {
         toolId: request.toolCallId ?? request.id,
         toolName: safeToolName,

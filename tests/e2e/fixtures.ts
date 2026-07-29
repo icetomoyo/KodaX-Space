@@ -47,6 +47,25 @@ async function closeElectronBounded(app: ElectronApplication): Promise<void> {
   }
 }
 
+export async function waitForMainRendererPage(app: ElectronApplication): Promise<Page> {
+  const deadline = Date.now() + 20_000;
+  while (Date.now() < deadline) {
+    const page = app
+      .windows()
+      .find((candidate) => !candidate.isClosed() && candidate.url().startsWith('app://space/'));
+    if (page) return page;
+    if (app.process().exitCode !== null) {
+      throw new Error('Electron exited before the app://space renderer opened');
+    }
+    await delay(25);
+  }
+  const urls = app
+    .windows()
+    .filter((candidate) => !candidate.isClosed())
+    .map((candidate) => candidate.url());
+  throw new Error(`Timed out waiting for app://space renderer (open pages: ${urls.join(', ')})`);
+}
+
 async function cleanupIsolatedSpace(
   app: ElectronApplication | undefined,
   testDataDir: string,
@@ -93,6 +112,8 @@ export interface LaunchSpaceOptions {
   readonly onPageError?: (err: Error) => void;
   /** Additional deterministic environment values for the isolated Electron process. */
   readonly env?: Readonly<Record<string, string>>;
+  /** Test-only hook that runs immediately after Electron connects, before renderer waits. */
+  readonly onLaunched?: (app: ElectronApplication) => Promise<void>;
 }
 
 /**
@@ -141,6 +162,10 @@ export async function launchSpace(
       env: {
         ...baseEnv,
         KODAX_TEST_ONBOARDING: testId,
+        // Test cleanup owns its isolated daemon explicitly. Do not let
+        // Playwright's app.close() schedule a production recovery relaunch,
+        // which would escape the harness and display dialogs on the desktop.
+        SPACE_TEST_BYPASS_COMPLETE_EXIT: '1',
         // Existing renderer E2E owns the whole Electron lifecycle. Keep the
         // Windows-only background tray out of these fixtures; dedicated main-
         // process coverage verifies the tray model and package wiring.
@@ -157,6 +182,7 @@ export async function launchSpace(
   }
 
   try {
+    await opts?.onLaunched?.(app);
     // 调试 hook：把 main process console + renderer console 都打到 test stdout，
     // 方便 30s 超时时定位卡在哪一步。CI 上可以静默掉。
     if (process.env.E2E_DEBUG === '1') {
@@ -164,19 +190,42 @@ export async function launchSpace(
       app.process().stderr?.on('data', (d: Buffer) => process.stderr.write(`[main:err] ${d}`));
     }
 
-    const page = await app.firstWindow();
+    // A WebContentsView is an independent Playwright Page. Instrument every
+    // early page before React can render, then select the BrowserWindow page by
+    // its privileged app URL. firstWindow() may be the short-lived boot overlay.
+    const instrumentedPages = new Set<Page>();
+    const instrumentPage = (candidate: Page): void => {
+      if (instrumentedPages.has(candidate)) return;
+      instrumentedPages.add(candidate);
+      if (opts?.onConsole) {
+        const { onConsole } = opts;
+        candidate.on('console', (msg) => onConsole({ type: msg.type(), text: msg.text() }));
+      }
+      if (opts?.onPageError) {
+        const { onPageError } = opts;
+        candidate.on('pageerror', (err) => onPageError(err));
+      }
+      if (process.env.E2E_DEBUG === '1') {
+        candidate.on('console', (msg) => console.log(`[renderer:${msg.type()}]`, msg.text()));
+        candidate.on('pageerror', (err) => console.error('[renderer:pageerror]', err.message));
+      }
+    };
+    app.on('window', instrumentPage);
+    for (const candidate of app.windows()) instrumentPage(candidate);
+    const page = await waitForMainRendererPage(app);
+    app.off('window', instrumentPage);
     // 关键顺序：先挂 spec 传入的 listeners，再等 domcontentloaded。
     // React #310 等同步 reconcile 错误在首屏 render pass 里就 fire，
     // domcontentloaded 之后才挂等于错过 v0.1.7 那一类回归的现场。
-    if (opts?.onConsole) {
+    if (!instrumentedPages.has(page) && opts?.onConsole) {
       const { onConsole } = opts;
       page.on('console', (msg) => onConsole({ type: msg.type(), text: msg.text() }));
     }
-    if (opts?.onPageError) {
+    if (!instrumentedPages.has(page) && opts?.onPageError) {
       const { onPageError } = opts;
       page.on('pageerror', (err) => onPageError(err));
     }
-    if (process.env.E2E_DEBUG === '1') {
+    if (!instrumentedPages.has(page) && process.env.E2E_DEBUG === '1') {
       page.on('console', (msg) => console.log(`[renderer:${msg.type()}]`, msg.text()));
       page.on('pageerror', (err) => console.error('[renderer:pageerror]', err.message));
     }

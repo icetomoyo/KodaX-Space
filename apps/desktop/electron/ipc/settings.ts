@@ -60,6 +60,48 @@ export interface SettingsChannelsOptions extends CoderAdmissionOptions {
   }>;
 }
 
+function rethrowActionableConfigConflict(error: unknown): never {
+  const name =
+    error instanceof Error
+      ? error.name || error.constructor.name
+      : typeof error === 'object' && error !== null && 'name' in error
+        ? String((error as { name?: unknown }).name)
+        : '';
+  if (
+    name === 'CoreConfigWriteConflictError' ||
+    name === 'IntegrationConfigConflictError' ||
+    /config(?:uration)? write conflict/i.test(
+      error instanceof Error ? error.message : String(error),
+    )
+  ) {
+    throw new Error(
+      'KodaX configuration changed in another process. Reload Runtime settings and retry; Space did not overwrite the newer file.',
+    );
+  }
+  throw error;
+}
+
+async function reloadRuntimeConfigAfterWrite(channel: string): Promise<{
+  readonly status: 'applied' | 'not-required' | 'failed';
+  readonly warning?: string;
+}> {
+  if (!runtimeHostAdapter.isRuntimeSelected()) return { status: 'not-required' };
+  try {
+    await runtimeHostAdapter.reloadRuntimeConfig();
+    return { status: 'applied' };
+  } catch (error) {
+    console.warn(
+      `[${channel}] Coder daemon config reload failed:`,
+      error instanceof Error ? error.message : error,
+    );
+    return {
+      status: 'failed',
+      warning:
+        'The configuration file was saved, but the running Coder Runtime did not apply it. Restart Runtime after reviewing integration diagnostics.',
+    };
+  }
+}
+
 export function registerSettingsChannels(options: SettingsChannelsOptions = {}): void {
   registerChannel('settings.get', async () => {
     const s = await settingsStore.load();
@@ -115,16 +157,13 @@ export function registerSettingsChannels(options: SettingsChannelsOptions = {}):
   registerChannel('settings.kodaxConfig.setCompaction', ({ projectRoot, compaction }) =>
     runWithCoderAdmission(options, async () => {
       const safeProjectRoot = projectRoot ? validateProjectRoot(projectRoot) : undefined;
-      const result = await updateKodaxCompactionConfig(compaction, safeProjectRoot);
-      if (runtimeHostAdapter.isRuntimeSelected()) {
-        await runtimeHostAdapter.reloadRuntimeConfig().catch((error) => {
-          console.warn(
-            '[settings.kodaxConfig.setCompaction] Coder daemon config reload failed:',
-            error instanceof Error ? error.message : error,
-          );
-        });
-      }
-      return result;
+      const result = await updateKodaxCompactionConfig(compaction, safeProjectRoot).catch(
+        rethrowActionableConfigConflict,
+      );
+      const runtimeReload = await reloadRuntimeConfigAfterWrite(
+        'settings.kodaxConfig.setCompaction',
+      );
+      return { ...result, runtimeReload };
     }),
   );
 
@@ -135,11 +174,15 @@ export function registerSettingsChannels(options: SettingsChannelsOptions = {}):
 
   registerChannel('settings.kodaxConfig.applyIntegrationMigration', () =>
     runWithCoderAdmission(options, async () => {
-      const result = await applyKodaxIntegrationMigration();
+      const result = await applyKodaxIntegrationMigration().catch(rethrowActionableConfigConflict);
+      const runtimeReload = await reloadRuntimeConfigAfterWrite(
+        'settings.kodaxConfig.applyIntegrationMigration',
+      );
       return {
         ...result,
         warnings: [...result.warnings],
         applied: [...result.applied],
+        runtimeReload,
       };
     }),
   );

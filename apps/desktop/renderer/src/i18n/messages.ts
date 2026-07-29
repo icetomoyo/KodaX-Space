@@ -932,6 +932,20 @@ export const messages = {
     'settings.workflowHost.description':
       'Control runtime limits for explicit /workflow runs and AMA run_workflow.',
     'settings.coderRuntimeMode.title': 'Coder runtime mode',
+    'settings.integrationHealth.title': 'Runtime integration health',
+    'settings.integrationHealth.description':
+      'MCP, A2A, and Extension configuration fail independently, retain last-known-good state, and recover after a valid edit.',
+    'settings.integrationHealth.healthy': 'Healthy',
+    'settings.integrationHealth.degraded': 'Degraded',
+    'settings.integrationHealth.unavailable': 'Waiting for Runtime',
+    'settings.integrationHealth.pending':
+      'Integration health becomes available after the KodaX daemon connects.',
+    'settings.integrationHealth.source': 'Source: {source}',
+    'settings.integrationHealth.watching': 'watching for changes',
+    'settings.integrationHealth.notWatching': 'watcher unavailable',
+    'settings.integrationHealth.revision': 'Revision: {revision}',
+    'settings.integrationHealth.lastReload': 'last valid reload: {time}',
+    'settings.integrationHealth.neverReloaded': 'no valid reload recorded',
     'settings.coderRuntimeMode.description':
       'Choose how Coder connects to KodaX. Daemon mode is recommended; Embedded mode is the compatibility fallback.',
     'settings.coderRuntimeMode.label': 'Coder runtime mode',
@@ -964,7 +978,7 @@ export const messages = {
     'settings.runtime.numberError': '{field} must be an integer from {min} to {max}.',
     'settings.externalAgents.title': 'External agents',
     'settings.externalAgents.description':
-      'KodaX 0.7.77 dispatchable catalog, executor plane, and durable task ledger.',
+      'KodaX 0.7.78 dispatchable catalog, executor plane, and durable task ledger.',
     'settings.externalAgents.sdk': 'KodaX SDK',
     'settings.externalAgents.plane': 'Executor plane',
     'settings.externalAgents.catalog': 'Registrations',
@@ -976,7 +990,7 @@ export const messages = {
     'settings.externalAgents.addReference': 'Add reference agent',
     'settings.externalAgents.referenceName': 'Space Reference Agent',
     'settings.externalAgents.referenceDescription':
-      'Local KodaX 0.7.77 executor-plane conformance target; no remote network request.',
+      'Local KodaX 0.7.78 executor-plane conformance target; no remote network request.',
     'settings.externalAgents.added': 'Reference agent added',
     'settings.externalAgents.remove': 'Remove registration',
     'settings.externalAgents.updated': 'Reference agent updated',
@@ -1052,6 +1066,8 @@ export const messages = {
       'Optional token window override. Leave blank to use the active model capability.',
     'settings.compaction.save': 'Save compaction',
     'settings.compaction.saved': 'Compaction settings saved',
+    'settings.runtimeConfig.reloadFailed':
+      'The file was saved, but the running Runtime did not apply it. Review integration health and restart Runtime.',
     'settings.mcp.title': 'MCP',
     'settings.mcp.description':
       'KodaX stores MCP servers in a dedicated integration file shared by CLI and Space; this section shows the canonical paths and active sources.',
@@ -4438,6 +4454,19 @@ export const messages = {
     'settings.runtime': '运行时',
     'settings.runtime.description': 'Coder 模式、KodaX 配置、MCP 存储、技能和上下文压缩。',
     'settings.coderRuntimeMode.title': 'Coder 运行模式',
+    'settings.integrationHealth.title': 'Runtime 集成健康状态',
+    'settings.integrationHealth.description':
+      'MCP、A2A 与 Extension 配置独立降级，保留最近有效状态，并在修复后自动恢复。',
+    'settings.integrationHealth.healthy': '健康',
+    'settings.integrationHealth.degraded': '已降级',
+    'settings.integrationHealth.unavailable': '等待 Runtime',
+    'settings.integrationHealth.pending': 'KodaX daemon 连接后会显示集成健康状态。',
+    'settings.integrationHealth.source': '来源：{source}',
+    'settings.integrationHealth.watching': '正在监听变更',
+    'settings.integrationHealth.notWatching': '监听器不可用',
+    'settings.integrationHealth.revision': '修订：{revision}',
+    'settings.integrationHealth.lastReload': '最近有效重载：{time}',
+    'settings.integrationHealth.neverReloaded': '尚无有效重载记录',
     'settings.coderRuntimeMode.description':
       '选择 Coder 连接 KodaX 的方式。推荐使用 Daemon 模式；Embedded 模式用于兼容与故障回退。',
     'settings.coderRuntimeMode.label': 'Coder 运行模式',
@@ -4469,7 +4498,7 @@ export const messages = {
     'settings.runtime.none': '无',
     'settings.runtime.numberError': '{field} 必须是 {min} 到 {max} 之间的整数。',
     'settings.externalAgents.title': '外部 Agent',
-    'settings.externalAgents.description': 'KodaX 0.7.77 可调度目录、执行平面和持久任务账本。',
+    'settings.externalAgents.description': 'KodaX 0.7.78 可调度目录、执行平面和持久任务账本。',
     'settings.externalAgents.sdk': 'KodaX SDK',
     'settings.externalAgents.plane': '执行平面',
     'settings.externalAgents.catalog': '注册项',
@@ -4481,7 +4510,7 @@ export const messages = {
     'settings.externalAgents.addReference': '添加 Reference Agent',
     'settings.externalAgents.referenceName': 'Space Reference Agent',
     'settings.externalAgents.referenceDescription':
-      '本地 KodaX 0.7.77 执行平面合规目标；不会发起远程网络请求。',
+      '本地 KodaX 0.7.78 执行平面合规目标；不会发起远程网络请求。',
     'settings.externalAgents.added': 'Reference Agent 已添加',
     'settings.externalAgents.remove': '移除注册项',
     'settings.externalAgents.updated': 'Reference Agent 已更新',
@@ -4550,6 +4579,8 @@ export const messages = {
     'settings.compaction.contextWindowHint': '可选的 token 窗口覆盖。留空则使用当前模型能力。',
     'settings.compaction.save': '保存压缩设置',
     'settings.compaction.saved': '压缩设置已保存',
+    'settings.runtimeConfig.reloadFailed':
+      '配置文件已保存，但当前 Runtime 未应用。请检查集成健康状态并重启 Runtime。',
     'settings.mcp.title': 'MCP',
     'settings.mcp.description':
       'KodaX 将 MCP 服务保存在 CLI 与 Space 共用的独立集成配置中；这里展示规范路径和当前来源。',

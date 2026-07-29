@@ -13,7 +13,10 @@ import {
 } from '../diagnostics/runtime.js';
 import { replaceFilePreservingExisting } from '../diagnostics/safe-write.js';
 import { runtimeHostAdapter } from '../kodax/runtime-host-adapter.js';
-import { getExperimentalMemorySdkCapability } from '../kodax/kodax-sdk-probe.js';
+import {
+  getExperimentalMemorySdkCapability,
+  getSandboxSdkCapability,
+} from '../kodax/kodax-sdk-probe.js';
 import { getUpdaterStateForDiagnostics } from './updater.js';
 
 export interface DiagnosticsChannelDeps {
@@ -66,6 +69,24 @@ export function registerDiagnosticsChannels(deps: DiagnosticsChannelDeps): void 
 
     await flushDiagnostics();
     const runtime = runtimeHostAdapter.snapshot();
+    let integrationHealth:
+      | Awaited<ReturnType<typeof runtimeHostAdapter.inspectDaemonStop>>['integrations']
+      | undefined;
+    let integrationHealthInspectionError: string | undefined;
+    if (runtime.state === 'ready') {
+      try {
+        integrationHealth = (await runtimeHostAdapter.inspectDaemonStop()).integrations;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        integrationHealthInspectionError = message.replace(/\s+/g, ' ').trim().slice(0, 512);
+        getDiagnosticsLogger()?.warn(
+          'diagnostics',
+          'runtime.integration-health-unavailable',
+          'Runtime integration health inspection failed during export',
+          { error: integrationHealthInspectionError },
+        );
+      }
+    }
     const redaction = getDiagnosticRedactionOptions();
     const bundle = await buildDiagnosticBundle({
       logDirectory:
@@ -76,7 +97,12 @@ export function registerDiagnosticsChannels(deps: DiagnosticsChannelDeps): void 
       categories: input.categories,
       capabilities: {
         runtime,
+        integrationHealth,
+        integrationHealthInspection: integrationHealthInspectionError
+          ? { status: 'failed', error: integrationHealthInspectionError }
+          : { status: runtime.state === 'ready' ? 'available' : 'not-required' },
         experimentalMemory: getExperimentalMemorySdkCapability(),
+        sandbox: getSandboxSdkCapability(),
         applicationOrigin: 'app://space',
         diagnostics: { fileSink: getDiagnosticLogDirectory() !== null, remoteUpload: false },
       },
@@ -86,10 +112,29 @@ export function registerDiagnosticsChannels(deps: DiagnosticsChannelDeps): void 
         arch: process.arch,
         updater: getUpdaterStateForDiagnostics(),
       },
-      degradations:
-        runtime.state === 'ready'
+      degradations: [
+        ...(runtime.state === 'ready'
           ? []
-          : [{ code: `runtime-${runtime.state}`, detail: runtime.error ?? 'Runtime not ready' }],
+          : [{ code: `runtime-${runtime.state}`, detail: runtime.error ?? 'Runtime not ready' }]),
+        ...(integrationHealthInspectionError
+          ? [
+              {
+                code: 'runtime-integration-health-unavailable',
+                detail: integrationHealthInspectionError,
+              },
+            ]
+          : []),
+        ...(integrationHealth?.domains.flatMap((domain) =>
+          domain.diagnostic
+            ? [
+                {
+                  code: `runtime-integration-${domain.domain}-${domain.diagnostic.code}`,
+                  detail: domain.diagnostic.message,
+                },
+              ]
+            : [],
+        ) ?? []),
+      ],
       secretValues: redaction.secretValues,
       privatePathPrefixes: redaction.privatePathPrefixes,
     });

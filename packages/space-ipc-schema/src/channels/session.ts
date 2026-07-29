@@ -1017,6 +1017,7 @@ export const sessionEventChannel = {
       queueId: z.string().min(1).max(128).optional(),
       content: z.string().min(1).max(MAX_PROMPT_BYTES),
       turnId: z.string().min(1).max(128).optional(),
+      turnUserOrdinal: z.number().int().nonnegative().max(1_000_000).optional(),
     }),
     z.object({
       kind: z.literal('queued_user_prompt_started'),
@@ -1025,6 +1026,7 @@ export const sessionEventChannel = {
       queueMode: sessionSendQueueModeSchema,
       content: z.string().min(1).max(MAX_PROMPT_BYTES),
       turnId: z.string().min(1).max(128).optional(),
+      turnUserOrdinal: z.number().int().nonnegative().max(1_000_000).optional(),
     }),
     z.object({
       kind: z.literal('queued_user_prompt_failed'),

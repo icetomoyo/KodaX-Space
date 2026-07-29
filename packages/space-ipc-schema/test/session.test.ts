@@ -613,8 +613,13 @@ test('session.event payload: mid_turn_user_prompt variant', () => {
     queueId: 'input_1',
     content: 'follow up',
     turnId: 'turn_1',
+    turnUserOrdinal: 1,
   };
   assert.equal(sessionEventChannel.payload.safeParse(evt).success, true);
+  assert.equal(
+    sessionEventChannel.payload.safeParse({ ...evt, turnUserOrdinal: -1 }).success,
+    false,
+  );
 });
 
 test('session.event payload: queued_user_prompt_started variant', () => {
@@ -625,8 +630,13 @@ test('session.event payload: queued_user_prompt_started variant', () => {
     queueMode: 'after-turn' as const,
     content: 'follow up',
     turnId: 'turn_2',
+    turnUserOrdinal: 0,
   };
   assert.equal(sessionEventChannel.payload.safeParse(evt).success, true);
+  assert.equal(
+    sessionEventChannel.payload.safeParse({ ...evt, turnUserOrdinal: 1_000_001 }).success,
+    false,
+  );
 });
 
 test('session.event payload: queued_user_prompt_failed variant is bounded and interrupt-only', () => {

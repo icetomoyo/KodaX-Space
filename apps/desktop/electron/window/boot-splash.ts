@@ -6,6 +6,20 @@ export interface BootSplashOptions {
   readonly brandImageDataUrl?: string;
 }
 
+export interface BootStatusOptions {
+  readonly recoveryAction?: BootSplashRecoveryAction;
+}
+
+export type BootSplashRecoveryAction =
+  | 'none'
+  | 'try-again'
+  | 'restart'
+  | 'retry-restart'
+  | 'close-only';
+
+export const BOOT_SPLASH_CLOSE_URL = 'kodax-boot-action://close';
+export const BOOT_SPLASH_RETRY_URL = 'kodax-boot-action://retry';
+
 const STATUS_BY_VARIANT: Readonly<Record<BootSplashVariant, string>> = {
   'orbit-trace': 'Preparing your workspace',
   'signal-weave': 'Connecting the pieces',
@@ -58,6 +72,14 @@ function createBootSplashHtml(
       .status{display:flex;min-height:22px;align-items:center;justify-content:center;gap:9px;margin-top:14px;color:var(--muted);font-size:14px;line-height:1.4;letter-spacing:.005em}
       .status-pulse{display:inline-block;width:22px;height:2px;overflow:hidden;border-radius:999px;background:rgba(157,103,247,.18)}
       .status-pulse::after{display:block;width:10px;height:100%;border-radius:inherit;background:linear-gradient(90deg,var(--violet),var(--gold));content:"";animation:status-sweep 1.8s ease-in-out infinite}
+      a{-webkit-app-region:no-drag;color:inherit;font:inherit;text-decoration:none}
+      .boot-close{position:fixed;z-index:10;top:14px;right:16px;display:grid;width:34px;height:34px;place-items:center;border:0;border-radius:9px;background:transparent;color:rgba(237,237,239,.62);font-size:24px;line-height:1;cursor:pointer;transition:background-color .16s ease,color .16s ease}
+      .boot-close:hover,.boot-close:focus-visible{outline:none;background:rgba(255,255,255,.08);color:var(--fg)}
+      .recovery{display:flex;justify-content:center;gap:10px;margin-top:22px}
+      .recovery[hidden]{display:none}
+      .recovery a{min-width:92px;border:1px solid rgba(255,255,255,.11);border-radius:9px;padding:8px 14px;background:rgba(255,255,255,.055);color:var(--fg);cursor:pointer;transition:border-color .16s ease,background-color .16s ease}
+      .recovery a:hover,.recovery a:focus-visible{outline:none;border-color:rgba(157,103,247,.5);background:rgba(157,103,247,.13)}
+      .recovery [data-boot-retry]{border-color:rgba(157,103,247,.32);background:rgba(157,103,247,.1)}
 
       .orbit,.signals,.auroras{position:absolute;inset:0;pointer-events:none}
       .orbit{display:none}
@@ -96,6 +118,7 @@ function createBootSplashHtml(
     </style>
   </head>
   <body data-variant="${options.variant}">
+    <a class="boot-close" href="${BOOT_SPLASH_CLOSE_URL}" data-boot-close aria-label="Close KodaX Space">&times;</a>
     <main class="boot" role="status" aria-live="polite">
       <div class="scene" aria-hidden="true">
         <div class="orbit"><span class="orbit-ring"></span><span class="orbit-dot"></span></div>
@@ -111,6 +134,10 @@ function createBootSplashHtml(
       <div class="copy">
         <div class="title">KodaX Space</div>
         <div class="status"><span data-boot-status>${STATUS_BY_VARIANT[options.variant]}</span><span class="status-pulse" aria-hidden="true"></span></div>
+        <div class="recovery" data-boot-recovery hidden>
+          <a href="${BOOT_SPLASH_RETRY_URL}" data-boot-retry>Try again</a>
+          <a href="${BOOT_SPLASH_CLOSE_URL}" data-boot-close>Close</a>
+        </div>
       </div>
     </main>
   </body>
@@ -132,11 +159,25 @@ export function describeUrlForLog(url: string): string {
   return `${url.slice(0, 237)}...`;
 }
 
-export function bootStatusScript(message: string): string {
+export function bootStatusScript(message: string, options: BootStatusOptions = {}): string {
+  const recoveryAction = options.recoveryAction ?? 'none';
+  const retryLabel =
+    recoveryAction === 'restart'
+      ? 'Restart'
+      : recoveryAction === 'retry-restart'
+        ? 'Retry restart'
+        : 'Try again';
   return `
     (() => {
       const target = document.querySelector('[data-boot-status]');
       if (target) target.textContent = ${JSON.stringify(message)};
+      const recovery = document.querySelector('[data-boot-recovery]');
+      if (recovery) recovery.hidden = ${recoveryAction === 'none' ? 'true' : 'false'};
+      const retry = document.querySelector('[data-boot-retry]');
+      if (retry) {
+        retry.hidden = ${recoveryAction === 'close-only' ? 'true' : 'false'};
+        retry.textContent = ${JSON.stringify(retryLabel)};
+      }
     })();
   `;
 }

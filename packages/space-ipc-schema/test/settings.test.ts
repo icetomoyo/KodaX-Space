@@ -61,6 +61,7 @@ test('KodaX integration migration channels expose a bounded SDK plan and result'
       ...plan,
       applied: ['mcp'],
       cleanedLegacy: false,
+      runtimeReload: { status: 'applied' },
     }).success,
     true,
   );
@@ -69,6 +70,7 @@ test('KodaX integration migration channels expose a bounded SDK plan and result'
       ...plan,
       applied: ['a2a'],
       cleanedLegacy: true,
+      runtimeReload: { status: 'failed', warning: 'Restart Runtime to apply the change.' },
     }).success,
     false,
   );
@@ -101,7 +103,14 @@ test('KodaX config overview channels accept compaction and storage summaries', (
     errors: [],
   };
   assert.equal(settingsKodaxConfigGetChannel.output.safeParse(output).success, true);
-  assert.equal(settingsKodaxConfigSetCompactionChannel.output.safeParse(output).success, true);
+  assert.equal(
+    settingsKodaxConfigSetCompactionChannel.output.safeParse({
+      ...output,
+      runtimeReload: { status: 'not-required' },
+    }).success,
+    true,
+  );
+  assert.equal(settingsKodaxConfigSetCompactionChannel.output.safeParse(output).success, false);
   assert.equal(
     settingsKodaxConfigSetCompactionChannel.input.safeParse({
       compaction: { enabled: false, triggerPercent: 60 },

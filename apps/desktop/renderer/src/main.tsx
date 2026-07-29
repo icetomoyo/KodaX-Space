@@ -44,30 +44,9 @@ if (!rootEl) {
 // 挂载精简的 <ArtifactWindow/>（自读取 artifact，无主窗 store）而非整个 <App/>。
 const artifactParams = parseArtifactHash(window.location.hash);
 
-function RendererReadySignal(): null {
-  React.useEffect(() => {
-    const notify = (): void => {
-      try {
-        window.kodaxSpace?.rendererReady();
-      } catch {
-        // best-effort boot telemetry only
-      }
-    };
-
-    if (typeof window.requestAnimationFrame === 'function') {
-      window.requestAnimationFrame(() => window.requestAnimationFrame(notify));
-    } else {
-      window.setTimeout(notify, 0);
-    }
-  }, []);
-
-  return null;
-}
-
 ReactDOM.createRoot(rootEl).render(
   <React.StrictMode>
     <RendererErrorBoundary>
-      <RendererReadySignal />
       <I18nProvider>
         {artifactParams ? <ArtifactWindow params={artifactParams} /> : <App />}
       </I18nProvider>

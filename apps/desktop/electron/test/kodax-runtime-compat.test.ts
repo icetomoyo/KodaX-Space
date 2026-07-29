@@ -8,7 +8,7 @@ import test from 'node:test';
 
 const PROBE_MARKER = 'KODAX_RUNTIME_PROBE=';
 const PROBE_TIMEOUT_MS = 30_000;
-const EXPECTED_KODAX_VERSION = '0.7.77';
+const EXPECTED_KODAX_VERSION = '0.7.78';
 const SHARED_DAEMON_TIMEOUT_MS = 45_000;
 const SHARED_DAEMON_MARKER = 'KODAX_SHARED_DAEMON_HOST=';
 const require = createRequire(import.meta.url);
@@ -23,6 +23,7 @@ const SHARED_DAEMON_REQUIREMENTS = {
   externalAgentAdmin: 1,
   actorControlPlane: 1,
   learningCenter: 1,
+  skillLearningLoop: 1,
   a2aConfigReconciler: 1,
   operationDeduplication: 1,
   sessionObservation: 1,
@@ -46,7 +47,9 @@ const SHARED_DAEMON_REQUIREMENTS = {
   sharedSessionSettings: 1,
   durableRecoveryQueries: 1,
   daemonManagement: 1,
-  runtimeAutoModeGuardrail: 3,
+  daemonOrphanExit: 1,
+  integrationConfigResilience: 1,
+  runtimeAutoModeGuardrail: 4,
 } as const;
 
 const PUBLISHED_SHARED_DAEMON_PEER_PROBE = String.raw`
@@ -66,7 +69,7 @@ try {
     clientInfo: {
       name: 'kodax-cli',
       title: 'KodaX terminal compatibility probe',
-      version: '0.7.77',
+      version: '0.7.78',
       instanceId: process.env.KODAX_PROBE_INSTANCE_ID,
       instanceSecret: process.env.KODAX_PROBE_INSTANCE_SECRET,
     },
@@ -250,6 +253,7 @@ try {
   runtime = await connectKodaXRuntime({
     profile,
     autoStart: true,
+    daemonOrphanExitMs: 30_000,
     homeDir,
     sessionsDir: path.join(homeDir, 'sessions'),
     clientInfo: {
@@ -299,7 +303,10 @@ try {
   const externalAgentAdminCapability = runtime.capabilities.externalAgentAdmin;
   const actorControlPlaneCapability = runtime.capabilities.actorControlPlane;
   const learningCenterCapability = runtime.capabilities.learningCenter;
+  const skillLearningLoopCapability = runtime.capabilities.skillLearningLoop;
   const a2aConfigCapability = runtime.capabilities.a2aConfigReconciler;
+  const integrationConfigCapability = runtime.capabilities.integrationConfigResilience;
+  const daemonOrphanExitCapability = runtime.capabilities.daemonOrphanExit;
   const runtimeAutoModeGuardrailCapability = runtime.capabilities.runtimeAutoModeGuardrail;
   result = {
     version: runtime.identity.version,
@@ -329,10 +336,17 @@ try {
       externalAgentAdmin: externalAgentAdminCapability?.version === 1,
       actorControlPlane: actorControlPlaneCapability?.version === 1,
       learningCenter: learningCenterCapability?.version === 1,
+      skillLearningLoop: skillLearningLoopCapability?.version === 1,
       a2aConfigReconciler: a2aConfigCapability?.version === 1,
+      daemonOrphanExit: daemonOrphanExitCapability?.version === 1,
+      integrationConfigResilience: integrationConfigCapability?.version === 1,
+      integrationHealth: managementAfterDetach.integrations?.state,
+      integrationDomains: managementAfterDetach.integrations?.domains.map(
+        (domain) => domain.domain,
+      ),
       permissionGrantAdmin: runtime.grantedScopes?.includes('permission:grant-admin') === true,
       runtimeAutoModeGuardrail:
-        runtimeAutoModeGuardrailCapability?.version === 3 &&
+        runtimeAutoModeGuardrailCapability?.version === 4 &&
         runtimeAutoModeGuardrailCapability.owner === 'session-runtime',
     },
   };
@@ -696,7 +710,12 @@ interface SharedDaemonHostResult {
     readonly externalAgentAdmin: boolean;
     readonly actorControlPlane: boolean;
     readonly learningCenter: boolean;
+    readonly skillLearningLoop: boolean;
     readonly a2aConfigReconciler: boolean;
+    readonly daemonOrphanExit: boolean;
+    readonly integrationConfigResilience: boolean;
+    readonly integrationHealth?: string;
+    readonly integrationDomains?: readonly string[];
     readonly permissionGrantAdmin: boolean;
     readonly runtimeAutoModeGuardrail: boolean;
   };
@@ -832,6 +851,32 @@ test(
   },
 );
 
+test(`KodaX ${EXPECTED_KODAX_VERSION} exposes fail-closed standalone command containment`, async () => {
+  const { KODAX_ASRT_VERSION, doctorKodaXSandbox, getKodaXSandboxCapability, runKodaXSandboxed } =
+    await import('@kodax-ai/kodax/sandbox');
+  const capability = getKodaXSandboxCapability();
+  assert.equal(capability.version, 1);
+  assert.equal(capability.asrtVersion, KODAX_ASRT_VERSION);
+  assert.equal(capability.genericCommandExecution, true);
+  assert.deepEqual(capability.controls, [
+    'filesystem',
+    'network',
+    'environment',
+    'timeout',
+    'output',
+  ]);
+  assert.equal(capability.ordinaryCallsTriggerSetup, false);
+  assert.equal(capability.unavailableBehavior, 'structured-no-execution');
+  assert.equal(capability.permissionFallback, 'normal-permission-policy');
+  assert.equal(typeof runKodaXSandboxed, 'function');
+
+  const doctor = await doctorKodaXSandbox();
+  assert.equal(doctor.version, KODAX_ASRT_VERSION);
+  assert.equal(doctor.platform, process.platform);
+  assert.equal(typeof doctor.ready, 'boolean');
+  assert.equal(Array.isArray(doctor.diagnostics), true);
+});
+
 test(`KodaX ${EXPECTED_KODAX_VERSION} Auto guardrail keeps the required permission semantics`, async () => {
   const projectRoot = await mkdtemp(path.join(tmpdir(), 'kodax-space-auto-guardrail-'));
   const previousKodaxHome = process.env.KODAX_HOME;
@@ -943,16 +988,20 @@ test(`KodaX ${EXPECTED_KODAX_VERSION} Auto guardrail keeps the required permissi
     const llmBeforeTool = llmGuardrail.beforeTool?.bind(llmGuardrail);
     assert.ok(llmBeforeTool);
 
-    const missingModel = await llmBeforeTool(
+    const missingModelFallback = await llmBeforeTool(
       { id: 'missing-model', name: 'bash', input: { command: 'python verify.py' } },
       context,
     );
-    assert.equal(missingModel.action, 'block');
-    assert.match(
-      'reason' in missingModel ? missingModel.reason : '',
-      /classifier model is not configured/i,
+    assert.equal(
+      missingModelFallback.action,
+      'allow',
+      'v4 degrades to the ordinary Accept-edits permission boundary instead of blocking or switching engines',
     );
-    assert.equal(llmPrompts, 0, 'missing classifier model must not request user confirmation');
+    assert.equal(
+      llmPrompts,
+      1,
+      'v4 configuration fallback must request one explicit confirmation instead of hard-blocking',
+    );
     assert.equal(llmGuardrail.getEngine(), 'llm');
     assert.deepEqual(llmGuardrail.getStats().denials, { consecutive: 0, cumulative: 0 });
     assert.deepEqual(llmGuardrail.getStats().breaker.timestamps, []);
@@ -965,7 +1014,7 @@ test(`KodaX ${EXPECTED_KODAX_VERSION} Auto guardrail keeps the required permissi
       sessionsDir: path.join(runtimeHome, 'sessions'),
       defaultProvider: 'missing-provider-must-not-be-resolved',
       sharedDaemonHost: true,
-      requirements: { runtimeAutoModeGuardrail: 3 },
+      requirements: { runtimeAutoModeGuardrail: 4 },
     });
     try {
       const session = await runtime.sessions.create({
@@ -1088,7 +1137,16 @@ test(
     assert.equal(result.management.externalAgentAdmin, true);
     assert.equal(result.management.actorControlPlane, true);
     assert.equal(result.management.learningCenter, true);
+    assert.equal(result.management.skillLearningLoop, true);
     assert.equal(result.management.a2aConfigReconciler, true);
+    assert.equal(result.management.daemonOrphanExit, true);
+    assert.equal(result.management.integrationConfigResilience, true);
+    assert.equal(result.management.integrationHealth, 'healthy');
+    assert.deepEqual([...result.management.integrationDomains!].sort(), [
+      'a2a',
+      'extensions',
+      'mcp',
+    ]);
     assert.equal(result.management.permissionGrantAdmin, true);
     assert.equal(result.management.runtimeAutoModeGuardrail, true);
     assert.equal(result.connectionState, 'connected');

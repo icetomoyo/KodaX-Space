@@ -246,12 +246,60 @@ const runtimePermissionAllowAlwaysScopeSchema = z
     label: z.string().min(1).max(512),
   })
   .strict();
+const runtimeAutoModeAttemptDiagnosticsSchema = z
+  .object({
+    provider: z.string().min(1).max(128),
+    model: z.string().min(1).max(256),
+    timeoutMs: z.number().int().nonnegative(),
+    elapsedMs: z.number().int().nonnegative(),
+    promptBytes: z.number().int().nonnegative(),
+    retryCount: z.number().int().nonnegative().max(16),
+    retryWaitMs: z.number().int().nonnegative(),
+    terminalPhase: z.enum([
+      'completed',
+      'pre_output',
+      'awaiting_text',
+      'thinking',
+      'streaming',
+      'contract_error',
+    ]),
+  })
+  .strict();
+const runtimeAutoModeClassifierAttemptSchema = z
+  .object({
+    attempt: z.number().int().positive().max(4),
+    outcome: z.enum([
+      'allow',
+      'confirm',
+      'timeout',
+      'provider_error',
+      'contract_error',
+      'input_budget',
+    ]),
+    diagnostics: runtimeAutoModeAttemptDiagnosticsSchema.optional(),
+  })
+  .strict();
+const runtimeAutoModeDiagnosticsSchema = z
+  .object({
+    source: z.enum([
+      'classifier_confirm',
+      'classifier_failure',
+      'classifier_circuit_breaker',
+      'configuration',
+    ]),
+    classifierFailureKind: z
+      .enum(['timeout', 'provider_error', 'contract_error', 'input_budget'])
+      .optional(),
+    classifierAttempts: z.array(runtimeAutoModeClassifierAttemptSchema).max(4).optional(),
+  })
+  .strict();
 const runtimePermissionRequestSchema = z.object({
   reqId: idSchema,
   sessionId: idSchema,
   risk: z.enum(['low', 'medium', 'high', 'danger']),
   reason: z.string().max(512),
   toolCall: runtimeInteractionToolCallSchema,
+  autoModeDiagnostics: runtimeAutoModeDiagnosticsSchema.optional(),
   suggestedPattern: z.string().min(1).max(512).optional(),
   allowAlwaysScope: runtimePermissionAllowAlwaysScopeSchema.optional(),
 });

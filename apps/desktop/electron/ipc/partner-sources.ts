@@ -234,7 +234,7 @@ export function registerPartnerSourceChannels(): void {
     const validatedRoot = await projectStore.assertAllowed(input.projectRoot);
     await assertPartnerSession(input.sessionId, validatedRoot);
     if (input.target.kind !== 'project-source') {
-      throw new Error('This evidence owner adapter is not registered in v0.1.33');
+      throw new Error('This evidence owner adapter is not registered in v0.1.34');
     }
     const relation = await partnerSourceStore.adoptMaterial(validatedRoot, input.target);
     return { relation };

@@ -85,3 +85,20 @@ export async function loadKodaxMcpServersForProject(
   if (!projectServers) return globalServers;
   return { ...globalServers, ...projectServers } as McpServersConfig;
 }
+
+/**
+ * Strict variant for an explicit reload transaction. Any invalid global or
+ * project document rejects the candidate so callers can retain their previous
+ * last-known-good manager instead of silently replacing it with a partial set.
+ */
+export async function loadKodaxMcpServersForProjectStrict(
+  projectRoot: string,
+): Promise<McpServersConfig | undefined> {
+  const [globalServers, projectServers] = await Promise.all([
+    loadKodaxUserConfig(),
+    loadKodaxProjectMcpServers(projectRoot),
+  ]);
+  if (!globalServers) return projectServers;
+  if (!projectServers) return globalServers;
+  return { ...globalServers, ...projectServers } as McpServersConfig;
+}

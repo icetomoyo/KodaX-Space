@@ -128,7 +128,11 @@ function learningHelp(): string {
     'Usage:',
     '  /learn pending',
     '  /learn diff <proposal-id>',
-    '  /learn approve <proposal-id> [--ack-impact]',
+    '  /learn review <name-or-slug>       (Coder Runtime)',
+    '  /learn trust <name-or-slug>        (Coder Runtime, after review)',
+    '  /learn disable <name-or-slug>      (Coder Runtime)',
+    '  /learn rollback <name-or-slug>     (Coder Runtime)',
+    '  /learn approve <proposal-id> [--ack-impact]  (Partner proposal)',
     '  /learn reject <proposal-id> [reason]',
     '  /skill pending',
     '  /workflow pending',
@@ -190,14 +194,32 @@ function runtimeLearningMatchesFilter(
 }
 
 function formatRuntimeLearningRecord(entry: LearnedCapabilityRecord): string {
-  return [
+  const lines = [
     `${entry.slug}  ${entry.lifecycle}  ${entry.carrier}`,
     `  Name: ${entry.displayName}`,
     `  Revision: ${entry.revision}; updated: ${entry.updatedAt}`,
+    entry.previousGoodRevision !== undefined
+      ? `  Previous good revision: ${entry.previousGoodRevision}`
+      : '',
     entry.diagnostics?.length ? `  Diagnostics: ${entry.diagnostics.join('; ')}` : '',
-  ]
-    .filter(Boolean)
-    .join('\n');
+  ];
+  if (entry.schemaVersion === 2) {
+    const evidenceRefs = entry.canary.invocations
+      .flatMap((invocation) => invocation.evidenceRefs)
+      .slice(0, 6);
+    lines.push(
+      `  Scope: project=${entry.scope.projectHash}; tenant=${entry.scope.tenantHash}; config=${entry.scope.configHomeHash}`,
+      `  Artifact: ${entry.artifact.relativePath}; content revision=${entry.artifact.contentRevision}`,
+      `  Fingerprint: ${entry.artifact.fingerprint}`,
+      entry.previousGoodArtifact
+        ? `  Previous good artifact: revision=${entry.previousGoodArtifact.contentRevision}; fingerprint=${entry.previousGoodArtifact.fingerprint}`
+        : '',
+      `  Provenance: decision=${entry.provenance.decisionId}; action=${entry.provenance.actionId}; input=${entry.provenance.inputHash}`,
+      `  Canary: ${entry.canary.invocationCount}/${entry.canary.maxInvocations}; verified=${entry.canary.verifiedSuccesses}; credible-negative=${entry.canary.credibleNegatives}`,
+      evidenceRefs.length ? `  Canary evidence: ${evidenceRefs.join(', ')}` : '',
+    );
+  }
+  return lines.filter(Boolean).join('\n');
 }
 
 async function handleRuntimeLearningPending(filter: LearningFilter): Promise<SlashHandlerResult> {
@@ -215,7 +237,7 @@ async function handleRuntimeLearningPending(filter: LearningFilter): Promise<Sla
       ? [
           `Pending ${LEARNING_FILTER_LABEL[filter]}: ${pending.length}`,
           ...pending.map(formatRuntimeLearningRecord),
-          'Next: /learn diff <name-or-slug>, /learn approve <name-or-slug>, or /learn reject <name-or-slug>.',
+          'Next: /learn diff <name-or-slug>, /learn review <name-or-slug>, /learn trust <name-or-slug>, or /learn reject <name-or-slug>.',
         ]
       : [`No pending ${LEARNING_FILTER_LABEL[filter]} in the Coder daemon.`];
     return { ok: true, message: compactSlashMessage(lines.join('\n\n')), echo: true };
@@ -530,16 +552,13 @@ async function handleLearningApprove(ctx: SlashHandlerContext): Promise<SlashHan
   const target = ctx.args.slice(1).find((arg) => arg !== '--ack-impact');
   if (!target) return { ok: false, message: learningHelp() };
   if (usesRuntimeLearning(ctx.sessionId)) {
-    try {
-      await runtimeHostAdapter.controlLearnedCapability('trust', target);
-      return { ok: true, message: `Trusted learned capability ${target}.`, echo: true };
-    } catch {
-      return {
-        ok: false,
-        message: `Cannot trust learned capability ${target}; inspect it with /learn diff ${target}.`,
-        echo: true,
-      };
-    }
+    return {
+      ok: false,
+      message:
+        `Coder learned capabilities keep review and trust separate. ` +
+        `Run /learn review ${target}, inspect the result, then run /learn trust ${target}.`,
+      echo: true,
+    };
   }
   const resolved = await resolveLearningStoreForSession(ctx.sessionId);
   if (!resolved.ok) return resolved;
@@ -555,6 +574,39 @@ async function handleLearningApprove(ctx: SlashHandlerContext): Promise<SlashHan
     message: formatLearningApproval(selected.entry, approval),
     echo: true,
   };
+}
+
+async function handleRuntimeLearningAction(
+  ctx: SlashHandlerContext,
+  action: 'review' | 'trust' | 'disable' | 'rollback',
+): Promise<SlashHandlerResult> {
+  const target = ctx.args[1];
+  if (!target) return { ok: false, message: learningHelp() };
+  if (!usesRuntimeLearning(ctx.sessionId)) {
+    return {
+      ok: false,
+      message: `/learn ${action} is available only for Coder Runtime learned capabilities.`,
+      echo: true,
+    };
+  }
+  try {
+    await runtimeHostAdapter.controlLearnedCapability(action, target);
+    const verb =
+      action === 'review'
+        ? 'Reviewed'
+        : action === 'trust'
+          ? 'Trusted'
+          : action === 'disable'
+            ? 'Disabled'
+            : 'Rolled back';
+    return { ok: true, message: `${verb} learned capability ${target}.`, echo: true };
+  } catch {
+    return {
+      ok: false,
+      message: `Cannot ${action} learned capability ${target}; inspect it with /learn diff ${target}.`,
+      echo: true,
+    };
+  }
 }
 
 async function handleLearningReject(ctx: SlashHandlerContext): Promise<SlashHandlerResult> {
@@ -605,6 +657,10 @@ async function handleLearningCommand(ctx: SlashHandlerContext): Promise<SlashHan
   if (sub === 'workflow' || sub === 'workflows') return handleLearningPending(ctx, 'workflow');
   if (sub === 'memory' || sub === 'memories') return handleLearningPending(ctx, 'memory');
   if (sub === 'diff' || sub === 'show') return handleLearningDiff(ctx);
+  if (sub === 'review') return handleRuntimeLearningAction(ctx, 'review');
+  if (sub === 'trust') return handleRuntimeLearningAction(ctx, 'trust');
+  if (sub === 'disable') return handleRuntimeLearningAction(ctx, 'disable');
+  if (sub === 'rollback') return handleRuntimeLearningAction(ctx, 'rollback');
   if (sub === 'approve') return handleLearningApprove(ctx);
   if (sub === 'reject') return handleLearningReject(ctx);
   if (sub === 'help' || sub === '--help' || sub === '-h')
@@ -2791,7 +2847,8 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
   {
     name: 'learn',
     description: 'Review SDK learning proposals for this project',
-    argsHint: 'pending|ledger|diff <id>|approve <id> [--ack-impact]|reject <id> [reason]',
+    argsHint:
+      'pending|ledger|diff <id>|review|trust|disable|rollback <id>|approve <id> [--ack-impact]|reject <id> [reason]',
     source: 'builtin',
     handler: handleLearningCommand,
   },

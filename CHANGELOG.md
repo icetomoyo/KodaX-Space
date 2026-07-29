@@ -14,12 +14,91 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ## [Unreleased]
 
-- **KodaX 0.7.78 Runtime safety baseline** - Root and Desktop now install the exact npm Registry release (`sha512-D33K2cSFM6Xyi1x8Q2Bwjv6KEGzZIdIlqSN+Odt9MVWgoEb0TCARlaC98ds+M1S+jlhCay+8masnStzbxk6Itg==`). Space requires exclusive Actor ownership, orphan exit, Skill learning-loop, resilient integration configuration, and Auto guardrail v4 contracts; exposes bounded integration health in Settings/diagnostics; projects Auto side-query metadata without prompt/response bodies; and consumes structured fail-closed sandbox observations while keeping full F138 OS isolation planned.
-- **Optional integration failures stay optional** - Space now follows daemon watcher health changes without reconnecting Coder. Invalid MCP/A2A/Extension updates retain KodaX's last-known-good state, surface the exact bounded diagnostic, and recover automatically after the named file is repaired; polling failures retain the last projection instead of degrading the core Runtime.
-- **Packaged sandbox helper paths** - ASRT and its runtime dependency chain now ship under physical `resources/node_modules` paths rather than inside `app.asar`, so Windows `srt-win.exe` and Linux seccomp helpers can be spawned. Package smoke verifies the files, runs the public sandbox doctor, and rejects `app.asar`/`ENOENT` helper diagnostics.
-- **Capability-based Runtime compatibility** - Live daemon attachment no longer rejects an otherwise compatible Runtime by semantic version. The explicit negotiated capability requirements, including `daemonOrphanExit:1`, remain the fail-closed contract.
-- **Visible sandbox fallback** - Active tools show `Sandboxed`, `Sandbox fallback`, or `No sandbox`; fallback explicitly means execution continues under the normal permission policy and never becomes model-visible transcript content.
-- **Learned Skill safety scope** - F118 moves forward to `v0.1.35` and is narrowed from a five-view, multi-carrier Learning Center to the minimum Runtime-owned learned-Skill attention/list/detail/control surface. `/learn` keeps review and trust distinct and exposes reject, disable, and rollback; Space still does not claim the planned event cursor, notifications, or desktop journey.
+## [0.1.34] - 2026-07-30
+
+### Theme
+
+**Runtime safety, resilient integrations, visible lifecycle control, and truthful packaged
+execution.**
+
+### Added
+
+- **Runtime integration health** - Settings and diagnostic export now expose bounded per-domain
+  MCP/A2A/Extension source, revision, watcher, last-valid-reload, and diagnostic facts. Space
+  follows daemon health changes without reconnecting Coder and automatically shows recovery after
+  the named integration file is repaired.
+- **Structured Auto and sandbox activity facts** - Auto guardrail v4 side queries project only
+  bounded provider/model/stage/timing/size/retry/failure metadata. Active tools show `Sandboxed`,
+  `Sandbox fallback`, or `No sandbox`; classifier prompt/response bodies and sandbox activity never
+  become transcript content.
+- **Space-scoped orphan recovery** - A daemon auto-started by Space negotiates
+  `daemonOrphanExit:1` and receives a 30-second idle-orphan grace. Other clients cancel the reaper,
+  active governed work drains to terminal state, and ordinary CLI-started persistent daemons keep
+  their existing lifecycle.
+- **Main-owned startup overlay** - Electron main owns the visible startup/shutdown boundary until
+  the current renderer generation is ready. The duplicate renderer loading screen is removed, and
+  recovery can restore the real application without a splash-to-shell flash.
+
+### Changed
+
+- **KodaX 0.7.78 Runtime safety baseline** - Root and Desktop install the exact npm Registry release
+  (`sha512-D33K2cSFM6Xyi1x8Q2Bwjv6KEGzZIdIlqSN+Odt9MVWgoEb0TCARlaC98ds+M1S+jlhCay+8masnStzbxk6Itg==`).
+  Formal builds require the same Registry bytes across both manifests, lock views, installed
+  package, dependency closure, and package smoke.
+- **Capability-based Runtime compatibility** - Live attachment is decided by negotiated contracts,
+  not by a second semantic-version floor. Space requires the existing shared-session safety
+  surface plus orphan exit, integration resilience, Skill learning-loop, and Auto guardrail v4;
+  any missing required capability fails closed.
+- **Auto v4 fallback semantics** - Manually or persistently selected Rules mode remains sticky.
+  Classifier timeout, Provider error, or output-contract failure receives one immediate retry;
+  exhaustion applies an Accept-edits-compatible fallback only to the current call while
+  `engine=llm` remains unchanged.
+- **Cross-platform complete-exit contract** - Windows complete exit, macOS `Cmd+Q`, Linux
+  last-window exit, and tray-disabled fallback close Coder admission, drain admitted operations,
+  inspect Space-local and daemon work, and perform a revision-fenced safe stop while a visible
+  control surface remains available. The tray no longer offers “Quit Space, keep Runtime”.
+- **Learned Skill roadmap** - F118 moves to `v0.1.35` as a minimum Runtime-owned learned-Skill
+  attention/list/detail/review/trust/reject/disable/rollback surface. The unimplemented F137/F139
+  native document and semantic UI lane moves intact to `v0.1.36`.
+- **Current `kodax_manual` guidance** - The injected self manual now explains 0.7.78 integration
+  health, Auto v4, sandbox/fallback meaning, cross-platform complete exit, orphan recovery, and
+  legacy daemon cleanup while retaining every installed SDK mechanism topic.
+
+### Fixed
+
+- **Optional integration failures stay optional** - Invalid MCP/A2A/Extension updates retain
+  KodaX's last-known-good state and return the exact bounded diagnostic. Poll failures retain the
+  previous projection instead of degrading the core Runtime.
+- **Transactional integration reloads** - Space validates and constructs MCP candidates before
+  replacing cached managers. Invalid global or project documents leave the prior manager set live;
+  Settings mutations report `applied`, `not-required`, or `failed`, and revision conflicts require
+  reload-and-retry instead of overwriting newer data.
+- **Packaged sandbox helper paths** - ASRT and its runtime dependency chain ship under physical
+  `resources/node_modules` paths rather than inside `app.asar`, allowing Windows `srt-win.exe` and
+  Linux seccomp helpers to spawn. Package smoke runs the public doctor and rejects
+  `app.asar`/`ENOENT` helper diagnostics.
+- **Complete-exit race and visibility gaps** - A full exit checks Partner, Workflow, permission,
+  AskUser, queue, and External Agent work before irreversible teardown. Missing daemon state counts
+  as stopped only after an independently verified unowned profile; blocker, timeout, malformed
+  output, command failure, or late ownership restores/relaunches Space.
+- **Restored interrupt history ordering** - Canonical positional replay keeps a completed interrupt
+  response above the next user query after Session switching or restart instead of moving the
+  previous answer below the new prompt.
+- **Stale 0.7.77 CI assertions** - Runtime compatibility and release-gate tests now require exact
+  KodaX 0.7.78, Auto guardrail v4, integration resilience, orphan exit, Skill learning-loop, and
+  sandbox contracts instead of failing every build platform on obsolete version/permission
+  expectations.
+
+### Verification
+
+- Workspace TypeScript and the complete `npm test` suite pass locally on Node 22.23.1, including
+  21 release tests, 1,977 Desktop tests, and 287 IPC-schema tests.
+- Release acceptance additionally requires lint, changed-file formatting, production
+  renderer/main smoke, Windows/Linux E2E shards, the three-platform smoke-build matrix, and the
+  exact evidence recorded in `docs/releases/v0.1.34-release-readiness.md`.
+- Packaged macOS/Linux process-level complete-exit acceptance and the upstream asynchronous
+  orphan-cleanup retry/verification gap remain explicit under Issue 133; this release does not
+  overstate `daemonOrphanExit:1` as a proof of eventual process exit after every cleanup failure.
 
 ## [0.1.33] - 2026-07-28
 

@@ -138,12 +138,23 @@ test('Space kodax_manual distinguishes effective context pressure from cumulativ
   assert.match(topic.body, /en-US.*zh-CN/);
 });
 
-test('Space kodax_manual describes the v0.1.33 close and shell controls', () => {
+test('Space kodax_manual describes the v0.1.34 runtime safety, close, and shell controls', () => {
   const topics = new Map(SPACE_MANUAL_TOPICS.map((topic) => [topic.id, topic]));
 
-  assert.match(topics.get('runtime-host')?.body ?? '', /v0\.1\.33/);
+  assert.match(topics.get('runtime-host')?.body ?? '', /v0\.1\.34/);
   assert.match(topics.get('background-runtime')?.body ?? '', /F140/);
   assert.match(topics.get('background-runtime')?.body ?? '', /Close button behavior/);
+  assert.match(topics.get('background-runtime')?.body ?? '', /macOS Cmd\+Q/);
+  assert.match(topics.get('background-runtime')?.body ?? '', /30 秒 orphan grace/);
+  assert.match(topics.get('background-runtime')?.body ?? '', /daemon\.json/);
+  assert.match(topics.get('background-runtime')?.body ?? '', /kill -TERM/);
+  assert.match(topics.get('background-runtime')?.body ?? '', /不要使用 `killall KodaX Space`/);
+  assert.match(topics.get('runtime-host')?.body ?? '', /daemonOrphanExit v1/);
+  assert.match(topics.get('runtime-host')?.body ?? '', /integration config resilience v1/);
+  assert.match(topics.get('runtime-host')?.body ?? '', /Auto LLM guardrail v4/);
+  assert.match(topics.get('runtime-host')?.body ?? '', /Sandbox fallback/);
+  assert.match(topics.get('mcp')?.body ?? '', /last-known-good/);
+  assert.match(topics.get('mcp')?.body ?? '', /revision.*watcher.*最近 reload/);
   assert.match(topics.get('settings')?.body ?? '', /Terminal Shell/);
   assert.match(topics.get('preview-terminal')?.body ?? '', /Coder 命令工具/);
 });

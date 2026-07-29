@@ -77,6 +77,7 @@ const sharedOptions = {
     '@kodax-ai/kodax/llm',
     '@kodax-ai/kodax/agent',
     '@kodax-ai/kodax/runtime',
+    '@kodax-ai/kodax/sandbox',
     '@kodax-ai/kodax/a2a',
     '@kodax-ai/kodax/experimental-memory',
     // ./media is dynamically imported by ipc/{session,clipboard}.ts — the base '@kodax-ai/kodax'

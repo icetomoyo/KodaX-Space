@@ -3,6 +3,14 @@ export interface ShutdownWindowLike {
   hide(): void;
 }
 
+export interface FailedShutdownWindowLike {
+  isDestroyed(): boolean;
+  isMinimized(): boolean;
+  restore(): void;
+  show(): void;
+  focus(): void;
+}
+
 /**
  * Remove every application window from the desktop as soon as shutdown is
  * committed. The Electron process may remain alive briefly while bounded
@@ -21,4 +29,20 @@ export function hideWindowsForShutdown(
       onHideError?.(error);
     }
   }
+}
+
+/**
+ * Last-resort visible fail-closed surface when Electron could not register a
+ * recovery relaunch after irreversible cleanup began. This intentionally
+ * bypasses normal startup-reveal gates, which are already in shutdown state.
+ */
+export function showWindowAfterFailedShutdown<T extends FailedShutdownWindowLike>(
+  windows: readonly T[],
+  createWindow: () => T,
+): T {
+  const window = windows.find((candidate) => !candidate.isDestroyed()) ?? createWindow();
+  if (window.isMinimized()) window.restore();
+  window.show();
+  window.focus();
+  return window;
 }

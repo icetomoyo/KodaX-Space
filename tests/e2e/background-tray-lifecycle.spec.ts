@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-import { launchSpace } from './fixtures.js';
+import { launchSpace, waitForMainRendererPage } from './fixtures.js';
 
 test('Windows tray keeps only the background host and can recreate a closed Space window', async () => {
   test.skip(process.platform !== 'win32', 'The background tray is intentionally Windows-only.');
@@ -25,13 +25,19 @@ test('Windows tray keeps only the background host and can recreate a closed Spac
     await expect.poll(() => space.app.windows().length).toBe(0);
     expect(space.app.process().exitCode).toBeNull();
 
-    const reopenedPromise = space.app.waitForEvent('window');
     await space.app.evaluate(({ app }) => {
       app.emit('activate');
     });
-    const reopened = await reopenedPromise;
+    // The boot WebContentsView is also exposed as a Playwright Page and is
+    // intentionally closed after the real app://space renderer becomes ready.
+    // Select the BrowserWindow renderer by URL instead of racing the first
+    // short-lived "window" event.
+    const reopened = await waitForMainRendererPage(space.app);
     await reopened.waitForFunction(() => document.getElementById('root') !== null);
-    expect(space.app.windows()).toHaveLength(1);
+    await expect
+      .poll(() => space.app.windows().filter((candidate) => !candidate.isClosed()).length)
+      .toBe(1);
+    expect(reopened.isClosed()).toBe(false);
     await space.close();
     closed = true;
     expect(mainStderr).not.toMatch(/unhandledRejection|Object has been destroyed/);

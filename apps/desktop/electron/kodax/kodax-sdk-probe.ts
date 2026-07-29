@@ -24,8 +24,32 @@ export type ExperimentalMemorySdkCapability =
 
 let experimentalMemoryCapability: ExperimentalMemorySdkCapability = { status: 'unprobed' };
 
+export type SandboxSdkCapability =
+  | { readonly status: 'unprobed' }
+  | {
+      readonly status: 'available';
+      readonly version: 1;
+      readonly asrtVersion: string;
+      readonly backend:
+        | 'windows-restricted-user'
+        | 'macos-seatbelt'
+        | 'linux-bubblewrap'
+        | 'unsupported';
+      readonly unavailableBehavior: 'structured-no-execution';
+      readonly setupMayElevate: boolean;
+      readonly readiness: 'checking' | 'ready' | 'setup-required' | 'unavailable';
+      readonly diagnosticCount: number;
+    };
+
+let sandboxCapability: SandboxSdkCapability = { status: 'unprobed' };
+let sandboxDoctorGeneration = 0;
+
 export function getExperimentalMemorySdkCapability(): ExperimentalMemorySdkCapability {
   return { ...experimentalMemoryCapability };
+}
+
+export function getSandboxSdkCapability(): SandboxSdkCapability {
+  return { ...sandboxCapability };
 }
 
 export function inspectExperimentalMemoryModule(moduleValue: unknown): {
@@ -69,6 +93,139 @@ export async function probeExperimentalMemorySdk(): Promise<ExperimentalMemorySd
     policyVersion: inspected.policyVersion,
   };
   return getExperimentalMemorySdkCapability();
+}
+
+export function inspectSandboxModule(
+  moduleValue: unknown,
+): Extract<SandboxSdkCapability, { status: 'available' }> {
+  if (typeof moduleValue !== 'object' || moduleValue === null) {
+    throw new Error('sandbox module namespace is not an object');
+  }
+  const moduleRecord = moduleValue as Record<string, unknown>;
+  const failures: string[] = [];
+  for (const name of [
+    'getKodaXSandboxCapability',
+    'doctorKodaXSandbox',
+    'getKodaXSandboxSetupGuidance',
+    'activateKodaXSandbox',
+    'setupKodaXSandbox',
+    'runKodaXSandboxed',
+  ] as const) {
+    if (typeof moduleRecord[name] !== 'function') {
+      failures.push(`${name} expected function, got ${typeof moduleRecord[name]}`);
+    }
+  }
+  const asrtVersion = moduleRecord.KODAX_ASRT_VERSION;
+  if (typeof asrtVersion !== 'string' || !/^\d+\.\d+\.\d+$/.test(asrtVersion)) {
+    failures.push('KODAX_ASRT_VERSION expected a semantic version string');
+  }
+
+  let capability: Record<string, unknown> = {};
+  if (typeof moduleRecord.getKodaXSandboxCapability === 'function') {
+    try {
+      const raw = moduleRecord.getKodaXSandboxCapability();
+      if (typeof raw === 'object' && raw !== null) capability = raw as Record<string, unknown>;
+      else failures.push('getKodaXSandboxCapability expected an object result');
+    } catch (error) {
+      failures.push(
+        `getKodaXSandboxCapability threw: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+  const controls = Array.isArray(capability.controls) ? capability.controls : [];
+  for (const control of ['filesystem', 'network', 'environment', 'timeout', 'output']) {
+    if (!controls.includes(control)) failures.push(`sandbox controls missing ${control}`);
+  }
+  if (capability.version !== 1) failures.push('sandbox capability version expected 1');
+  if (capability.asrtVersion !== asrtVersion) {
+    failures.push('sandbox capability ASRT version does not match KODAX_ASRT_VERSION');
+  }
+  if (capability.genericCommandExecution !== true) {
+    failures.push('sandbox genericCommandExecution expected true');
+  }
+  if (capability.ordinaryCallsTriggerSetup !== false) {
+    failures.push('sandbox ordinaryCallsTriggerSetup expected false');
+  }
+  if (capability.unavailableBehavior !== 'structured-no-execution') {
+    failures.push('sandbox unavailableBehavior expected structured-no-execution');
+  }
+  if (capability.permissionFallback !== 'normal-permission-policy') {
+    failures.push('sandbox permissionFallback expected normal-permission-policy');
+  }
+  const backend = capability.backend;
+  if (
+    backend !== 'windows-restricted-user' &&
+    backend !== 'macos-seatbelt' &&
+    backend !== 'linux-bubblewrap' &&
+    backend !== 'unsupported'
+  ) {
+    failures.push('sandbox backend is not recognized');
+  }
+  if (typeof capability.setupMayElevate !== 'boolean') {
+    failures.push('sandbox setupMayElevate expected boolean');
+  }
+  if (failures.length > 0) throw new Error(failures.join('; '));
+
+  return {
+    status: 'available',
+    version: 1,
+    asrtVersion: asrtVersion as string,
+    backend: backend as Extract<SandboxSdkCapability, { status: 'available' }>['backend'],
+    unavailableBehavior: 'structured-no-execution',
+    setupMayElevate: capability.setupMayElevate as boolean,
+    readiness: 'checking',
+    diagnosticCount: 0,
+  };
+}
+
+export function projectSandboxDoctorResult(
+  capability: Extract<SandboxSdkCapability, { status: 'available' }>,
+  doctorValue: unknown,
+): Extract<SandboxSdkCapability, { status: 'available' }> {
+  if (typeof doctorValue !== 'object' || doctorValue === null) {
+    return { ...capability, readiness: 'unavailable', diagnosticCount: 1 };
+  }
+  const doctor = doctorValue as Record<string, unknown>;
+  const diagnostics = Array.isArray(doctor.diagnostics) ? doctor.diagnostics : [];
+  const diagnosticCount = Math.min(diagnostics.length, 99);
+  if (doctor.ready === true) {
+    return { ...capability, readiness: 'ready', diagnosticCount };
+  }
+  if (doctor.setupRequired === true) {
+    return { ...capability, readiness: 'setup-required', diagnosticCount };
+  }
+  return {
+    ...capability,
+    readiness: 'unavailable',
+    diagnosticCount: Math.max(1, diagnosticCount),
+  };
+}
+
+export async function probeSandboxSdk(): Promise<SandboxSdkCapability> {
+  const moduleValue: unknown = await import('@kodax-ai/kodax/sandbox');
+  const inspected = inspectSandboxModule(moduleValue);
+  sandboxCapability = inspected;
+  const generation = ++sandboxDoctorGeneration;
+  const doctor = (
+    moduleValue as {
+      doctorKodaXSandbox: (input: { readonly refresh?: boolean }) => Promise<unknown>;
+    }
+  ).doctorKodaXSandbox;
+  try {
+    const result = await doctor({ refresh: false });
+    if (sandboxDoctorGeneration === generation) {
+      sandboxCapability = projectSandboxDoctorResult(inspected, result);
+    }
+  } catch {
+    if (sandboxDoctorGeneration === generation) {
+      sandboxCapability = {
+        ...inspected,
+        readiness: 'unavailable',
+        diagnosticCount: 1,
+      };
+    }
+  }
+  return getSandboxSdkCapability();
 }
 
 /**
@@ -155,6 +312,11 @@ export async function probeKodaxSdk(): Promise<void> {
   // failures; capability is negotiated from the exported shape rather than a hard-coded ID.
   try {
     await probeExperimentalMemorySdk();
+  } catch (error) {
+    failures.push(error instanceof Error ? error.message : String(error));
+  }
+  try {
+    await probeSandboxSdk();
   } catch (error) {
     failures.push(error instanceof Error ? error.message : String(error));
   }

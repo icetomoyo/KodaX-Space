@@ -15,8 +15,8 @@ The pre-rebase list used `Completed`, `Done`, `Merged`, `Partial`, `Deferred`, `
 
 ## Unreleased roadmap rebases
 
-| Date | Previous decision | Replacement |
-| --- | --- | --- |
+| Date       | Previous decision                                                       | Replacement                                                                                                                                                                 |
+| ---------- | ----------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 2026-07-13 | `v0.1.32` was a patch reserve after the consolidated `v0.1.31` release. | The unreleased reserve was replaced by F121 Coder Shared Daemon and Multi-Client Live State. Partner remains embedded inline; `v0.1.33-v0.1.34` remain regression reserves. |
 
 ## Released feature index
@@ -69,7 +69,7 @@ The pre-rebase list used `Completed`, `Done`, `Merged`, `Partial`, `Deferred`, `
 | F085           | Cancelled                      | KodaX removed cross-process Workflow crash replay.                                                            |
 | F086           | Cancelled                      | KodaX removed the separate never-run draft lifecycle.                                                         |
 | F092           | Cancelled                      | An Advisor primitive did not demonstrate enough product value.                                                |
-| F093           | Superseded by F118             | Runtime Learning Center replaces a Skill-only Space-owned review queue.                                       |
+| F093           | Superseded by F118             | A minimal Runtime-owned learned-Skill safety surface replaces a Skill-only Space-owned review queue.          |
 | F099           | Decomposed                     | Monitoring partially shipped; local isolation and remote runners require separate outcomes and threat models. |
 | F100           | Watchlist                      | Gate on KX-F139 or a prioritized user journey.                                                                |
 | F102           | Shelved                        | Reopen after three real internal consumers.                                                                   |
@@ -80,7 +80,7 @@ The pre-rebase list used `Completed`, `Done`, `Merged`, `Partial`, `Deferred`, `
 
 The following are not version commitments:
 
-- KodaX F266 Learning Center until a published contract passes Space compatibility probes. KodaX F260 is now published in 0.7.68 and tracked as the partial runtime integration plus planned F117 desktop host.
+- The published KodaX Learning Center/Skill-loop contracts are consumed without a Space-owned store; the remaining minimal F118 desktop safety surface is tracked in the active feature list. KodaX F260 is published and tracked as the partial runtime integration plus planned F117 desktop host.
 - KodaX F263/F264 learned Skill/Extension actions until `runtime.learning` advertises them.
 - KodaX F265 assurance/route telemetry until public DTOs exist.
 - A2A, MCP Tasks, and governed HTTP External Agent adapters until KodaX advertises conformant factories.

@@ -7,7 +7,7 @@ import test from 'node:test';
 import { assertKodaxReleaseDependencyState } from '../kodax-runtime-release-gate.mjs';
 
 async function writeReleaseDependencyFixture(root, versions = {}) {
-  const rootVersion = versions.root ?? '0.7.77';
+  const rootVersion = versions.root ?? '0.7.78';
   const desktopVersion = versions.desktop ?? rootVersion;
   const lockRootVersion = versions.lockRoot ?? rootVersion;
   const lockDesktopVersion = versions.lockDesktop ?? desktopVersion;
@@ -57,7 +57,7 @@ test('release dependency gate accepts one exact Registry version everywhere', as
     root,
     path.join(root, 'node_modules', '@kodax-ai', 'kodax'),
   );
-  assert.equal(result.version, '0.7.77');
+  assert.equal(result.version, '0.7.78');
   assert.match(result.resolved, /registry\.npmjs\.org/);
   assert.match(result.integrity, /^sha512-/);
 });

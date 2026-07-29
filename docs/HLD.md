@@ -1,7 +1,7 @@
 # KodaX Space 高层设计（HLD）
 
-> Last updated: 2026-07-28
-> Status: 核心架构决策仍有效；当前发布基线为 KodaX Space 0.1.33（package 0.1.33）/ npm 正式发布的精确 KodaX 0.7.77。中间方案与否决理由见 [ADR/](ADR/)；当前能力边界见 [KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md)。
+> Last updated: 2026-07-30
+> Status: 核心架构决策仍有效；已发布基线为 KodaX Space 0.1.33 / KodaX 0.7.77，当前发布候选为 KodaX Space 0.1.34（package 0.1.34）/ npm 正式发布的精确 KodaX 0.7.78。中间方案与否决理由见 [ADR/](ADR/)；当前能力边界见 [KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md)。
 > Companion doc: [PRD](PRD.md)
 
 > **0.1.30 增量**：Electron main 继续拥有特权边界，并新增一个持久、协议中立的 External Agent Executor Plane。Renderer 仅通过 zod IPC 获取脱敏 Registration/Descriptor/Task/Event 投影；管理入口仅接受主应用窗口，任务创建从 main-owned live Session 派生项目/父任务归属，读取与干预均复核任务所属 Session。实时 Session 与 Workflow 共用同一 KodaX 0.7.67 plane。Reference Executor 已接通；v0.1.32 起，Runtime 配置的 A2A 由 KodaX 0.7.76 Coder daemon 持有并按能力协商开放，MCP Tasks/受治理 HTTP 仍按 Runtime capability 门控。Partner 自 0.1.30 起已启用 workspace-first Outputs 与 checkpointed writes。
@@ -28,6 +28,12 @@
 >
 > **2026-07-28 v0.1.33 撤回后修正架构增量**：F141 在 Settings 提供推荐 Daemon 与 Embedded 兼容 owner 的客户选择，但不提供任意 endpoint、混合 owner 或 live failover。Electron main 以一个全局 admission 边界串行化所有触碰 Coder Runtime 的 Session、Slash、Workflow、External Agent、MCP 和 Runtime-affecting Settings 操作；切换还会阻止 ManagedSession、running/paused Workflow、非终态 External Agent task、permission/AskUser 和待派发 queue。持久化模式是启动真理，启动前 reconciliation 会修复 `daemon preference + unowned inline policy`，对 active/unreadable inline owner fail closed。正式包继续精确使用 npm Registry KodaX 0.7.77，并通过依赖闭包、native SQLite load 和真实 packaged boot。
 >
+> **2026-07-28 跨平台 daemon 退出修正**：用户/OS 真正退出统一关闭 Coder admission、排空已准入入口并读取 daemon preflight；blocker 会恢复窗口而不是退出。断开 Space 后只有 daemon stop 返回 stopped/missing 才允许 Electron 消失，失败或超时自动 relaunch 可见 Space。KodaX 的专用 `daemonOrphanExit:1` 能力只为 Space 新拉起的 detached daemon 启用 30 秒 orphan idle-exit：最后客户端异常断开且 work 空闲时自停，活动任务进入终态后重试，其他客户端始终阻止回收。该能力按 Runtime 事实协商，不通过 KodaX 版本号或 Auto-mode guardrail 版本推断。
+>
+> **2026-07-29 KodaX 0.7.78 正式包接入**：当前源码精确锁定官方 Registry bytes，并把 daemon 门禁提升为 exclusive Actor owner、`daemonOrphanExit:1`、`skillLearningLoop:1`、`integrationConfigResilience:1` 与 Auto guardrail v4。Runtime management 的 MCP/A2A/Extension health 经有界 schema 投影到 Settings 和诊断导出；invalid config 继续使用 last-known-good，revision 冲突 fail closed。Auto side-query 只投影 provider/model/耗时/大小/重试/阶段元数据，不传 prompt/response。公开 `/sandbox` facade 经过启动与打包 probe，`tool.sandbox` 只更新活动工具的结构化 containment 事实，不复制 transcript，也不把 command sandbox 误称为完整 F138。
+>
+> **2026-07-30 v0.1.34 安全发布边界**：所有普通退出在 Electron main 的统一 coordinator 内同步关闭 Coder admission、排空已准入操作、检查 Space-local 与 daemon work，并在仍有可见控制面时执行 revision-fenced stop；失败、blocker、超时、不可读或 late-owner race 恢复/重启 Space。主进程还统一持有 boot/shutdown overlay 和 renderer generation gate，消除第二套 renderer loading shell。Space MCP Manager 以完整 candidate 构建实现事务替换；正式包把 ASRT/helper 依赖移到物理 `resources/node_modules` 并由 package smoke 运行 sandbox doctor。历史 replay 按规范位置保持已完成 interrupt 回复早于下一条用户 query。Issue 133 的 macOS/Linux process acceptance 与异步 cleanup retry/verification 缺口、F138 完整 OS 隔离仍明确未完成。
+>
 > **2026-07-23 F135 builtin 分发**：Space 通过公开 Skill plugin 注册接口加载安装包外置的 `frontend-slides` 与 `huashu-design`，来源 revision、许可证、补丁和逐文件哈希全部可审计；`huashu-design` 默认去除推广水印/签名。本机 `pdf`/`pptx`/`xlsx`/`docx` skill 的当前许可不允许再分发，因此不进入安装包。
 >
 > **0.7.68 集成**：KodaX top-level managed coding path 自有 FEATURE_260 Memory Agent 生命周期，复用 F228 durable governance。Space 验证正式 `/experimental-memory` 契约、保留 metadata-only 回调诊断并继续拥有 UI 投影；不创建第二个 Memory Agent/存储/推广策略。完整 F117 仍受 activation/rollback 和桌面 query/action contract 门控。
@@ -38,7 +44,7 @@
 
 KodaX Space 不是新 agent，而是**复用 KodaX 内核的 Electron 桌面客户端**。架构 7 条核心判断：
 
-1. **进程模型** = Electron 标准（main / preload / renderer）加 profile-scoped KodaX Runtime daemon；`v0.1.33` 的 Coder owner 位于 daemon，Partner owner 保留在 Electron main embedded inline。
+1. **进程模型** = Electron 标准（main / preload / renderer）加 profile-scoped KodaX Runtime daemon；`v0.1.34` 的 Coder owner 默认位于 daemon，Partner owner 保留在 Electron main embedded inline。
 2. **与 KodaX 的边界** = **TypeScript Runtime/SDK public contracts**（不是 ACP）。Main 以 `@kodax-ai/kodax/runtime` 作为长期 host facade；Coder 使用 transport-safe observe/control/services，Partner 使用 embedded inline adapter；Space-owned zod IPC 仍是 renderer 唯一边界。决策基线见 [ADR-003](ADR/ADR-003-kodax-integration-in-process.md)、[v0.1.31](features/v0.1.31.md) 和 [v0.1.32](features/v0.1.32.md)。
 3. **Shell 选择** = Electron。理由见 [ADR-001](ADR/ADR-001-shell-electron.md)（含 OpenCode 反向迁移实证）。
 4. **Native 集成** = 仅在 profile 证明 JS/Worker 路径存在实质热瓶颈时引入 NAPI-RS；历史 native-helper 提案已移入 watchlist。见 [ADR-002](ADR/ADR-002-rust-integration-napi.md)。
@@ -306,7 +312,9 @@ Space stores UI preferences, compatibility projections/caches, Space-only sessio
 | Long-session/context pressure           | Consume Runtime context-budget/compaction events; measure against the final effective threshold and do not add a second policy.                                                                                                                                                              |
 | Missing Provider usage fields           | Show unavailable cache/usage categories as unknown; never estimate billing or merge diagnostic duplicates.                                                                                                                                                                                   |
 | Stale same-version daemon               | Inspect advertised capabilities; retire and reconnect only when no work, pending interaction, or other client remains.                                                                                                                                                                       |
-| Windows tray unavailable                | Fall back to quit-on-close; never retain an invisible Electron main owner.                                                                                                                                                                                                                   |
+| Windows tray unavailable                | Route last-window close through the same complete-exit gate; daemon stop must be confirmed or a visible Space surface is restored.                                                                                                                                                           |
+| macOS Cmd+Q / Linux last-window exit    | Close Coder admission, block on active work/other clients, then stop daemon; stop failure relaunches Space instead of leaving an invisible daemon.                                                                                                                                           |
+| Space crash / SIGKILL                   | A Space-started daemon advertising `daemonOrphanExit:1` waits 30 seconds after the last client disconnects, preserves active work/other clients, and self-stops once idle.                                                                                                                   |
 
 ### 4.4 ACP 与 Space 的关系
 
@@ -447,8 +455,9 @@ type Project = {
   禁宏/链接更新、取消和整树清理。
 - 该基线用于先完成功能和故障隔离，不宣称 OS 层文件系统/网络/进程/native-resource
   containment，也不因缺少 OS backend 禁用已经通过功能/保真测试的 adapter。
-- F138 在 `post-v0.5.x` 以可替换 backend 增加平台强制隔离；它不要求 KodaX SDK 改动，也
-  不回溯改变 Document Job、Presentation Project 或 Delivery 契约。
+- F138 在 `post-v0.5.x` 以可替换 backend 增加平台强制隔离；可复用 KodaX 0.7.78
+  的公开 command-sandbox facade，但文档 staging、凭据、native-resource、打包和平台验收
+  仍由 Space 持有，也不回溯改变 Document Job、Presentation Project 或 Delivery 契约。
 
 ---
 
@@ -861,16 +870,18 @@ Space 严格遵守：
 
 ### 20.1 Active 0.1.x architecture lanes
 
-| Lane                | Architectural change                                                                                                                  |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `v0.1.31`           | `RuntimeHostAdapter` released for managed runs/transcript/compact/fork/rewind with explicit Space bridge ownership.                   |
-| `v0.1.32`           | Move Coder to one shared profile daemon with multi-client live state/control; keep Partner embedded inline.                           |
-| `v0.1.33`           | Stabilize KodaX 0.7.77 Actor/history/usage contracts and add bounded Shell/F140 desktop lifecycle control.                            |
-| corrected `v0.1.33` | Add safe customer-selectable Coder ownership and exact packaged Runtime dependency/boot gates before reissuing the withdrawn release. |
-| `v0.1.40`           | Extend Workflow snapshot schema for same-session replay provenance; attach evidence review receipts to objects.                       |
-| `v0.1.44`           | Host KX-F260 Memory Agent over existing F228/F088 governance when published.                                                          |
-| `v0.1.35`           | Host the minimum learned-Skill safety surface over published `learningCenter:1` + `skillLearningLoop:1`.                              |
-| `v0.1.48`           | Complete locale gates, release diagnostics, channels/updater/distribution trust.                                                      |
+| Lane                | Architectural change                                                                                                                                                                          |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v0.1.31`           | `RuntimeHostAdapter` released for managed runs/transcript/compact/fork/rewind with explicit Space bridge ownership.                                                                           |
+| `v0.1.32`           | Move Coder to one shared profile daemon with multi-client live state/control; keep Partner embedded inline.                                                                                   |
+| `v0.1.33`           | Stabilize KodaX 0.7.77 Actor/history/usage contracts and add bounded Shell/F140 desktop lifecycle control.                                                                                    |
+| corrected `v0.1.33` | Add safe customer-selectable Coder ownership and exact packaged Runtime dependency/boot gates before reissuing the withdrawn release.                                                         |
+| `v0.1.34`           | Adopt KodaX 0.7.78 safety contracts, resilient integration health, visible complete exit/orphan recovery, physical sandbox helpers, one startup overlay, and exact positional history replay. |
+| `v0.1.36`           | Add the independently authored F137 native document Skill suite and F139 semantic UI polish without weakening F138 boundaries.                                                                |
+| `v0.1.40`           | Extend Workflow snapshot schema for same-session replay provenance; attach evidence review receipts to objects.                                                                               |
+| `v0.1.44`           | Host KX-F260 Memory Agent over existing F228/F088 governance when published.                                                                                                                  |
+| `v0.1.35`           | Host the minimum learned-Skill safety surface over published `learningCenter:1` + `skillLearningLoop:1`.                                                                                      |
+| `v0.1.48`           | Complete locale gates, release diagnostics, channels/updater/distribution trust.                                                                                                              |
 
 ### 20.2 Active 0.2.x architecture lanes
 

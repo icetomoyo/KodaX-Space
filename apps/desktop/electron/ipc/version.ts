@@ -10,7 +10,9 @@ import { isRepoIntelEntitled } from '../kodax/repo-intel-gate.js';
 import { runtimeHostAdapter, type RuntimeHostSnapshot } from '../kodax/runtime-host-adapter.js';
 import {
   getExperimentalMemorySdkCapability,
+  getSandboxSdkCapability,
   type ExperimentalMemorySdkCapability,
+  type SandboxSdkCapability,
 } from '../kodax/kodax-sdk-probe.js';
 
 function readSpaceVersion(electronApp: App): string {
@@ -57,7 +59,7 @@ function runtimeHostCapability(snapshot: RuntimeHostSnapshot): SpaceCapability {
   const failed = snapshot.state === 'failed';
   const identity = snapshot.identity;
   const detail = ready
-    ? `KodaX Runtime ${identity?.version ?? 'unknown'} ${identity?.mode ?? 'embedded'}/${identity?.isolation ?? 'inline'} owns Coder sessions, runs, settings, interactions, Workflow observation/control, Learning Center operations, catalog discovery, MCP tool discovery/reload, and configured External Agent Actor/Turns. Space retains Partner inline execution and the host-provider boundaries for MCP processes/logs, Workflow library/start/admin, Reference Agent execution, and product artifacts.`
+    ? `KodaX Runtime ${identity?.version ?? 'unknown'} ${identity?.mode ?? 'embedded'}/${identity?.isolation ?? 'inline'} owns Coder sessions, exclusive Actor trees, runs, Auto[LLM] v4 permission classification, resilient integration loading, structured sandbox observations, Workflow observation/control, Learning Center operations, catalog discovery, MCP tool discovery/reload, and configured External Agent Actor/Turns. Space retains Partner inline execution and the host-provider boundaries for MCP processes/logs, Workflow library/start/admin, Reference Agent execution, and product artifacts.`
     : legacy
       ? 'The internal legacy rollback host is selected before run start. No Runtime-managed run is active.'
       : failed
@@ -84,7 +86,7 @@ export function experimentalMemoryCapability(
       status: 'partial',
       detail:
         `The required KodaX experimental-memory contract is available with policy ${capability.policyVersion}. ` +
-        'KodaX managed runs own silent scoped recall and governed outcome/review persistence over F228; Space v0.1.33 preserves compatibility diagnostics while the full F117 Episodes, Activity, correction, and purge UX remains planned.',
+        'KodaX managed runs own silent scoped recall and governed outcome/review persistence over F228; Space v0.1.34 preserves compatibility diagnostics while the full F117 Episodes, Activity, correction, and purge UX remains planned.',
       since: '0.1.31',
     };
   }
@@ -97,6 +99,52 @@ export function experimentalMemoryCapability(
   };
 }
 
+export function sandboxCommandCapability(capability: SandboxSdkCapability): SpaceCapability {
+  if (capability.status === 'available') {
+    if (capability.readiness === 'ready') {
+      return {
+        id: 'sandbox.command',
+        label: 'KodaX command sandbox',
+        status: 'partial',
+        detail:
+          `KodaX sandbox doctor confirms command containment v${capability.version} is ready through ` +
+          `${capability.backend} with ASRT ${capability.asrtVersion}. This command-level primitive ` +
+          'does not complete Space F138 native-resource hardening.',
+        since: '0.1.34',
+      };
+    }
+    if (capability.readiness === 'setup-required') {
+      return {
+        id: 'sandbox.command',
+        label: 'KodaX command sandbox',
+        status: 'blocked',
+        detail:
+          `The fail-closed KodaX sandbox facade is present, but doctor reports setup is required ` +
+          `(${capability.diagnosticCount} bounded diagnostic(s)). Ordinary calls never trigger setup; ` +
+          'Space does not claim command containment until setup is explicitly completed and doctor passes.',
+        since: '0.1.34',
+      };
+    }
+    return {
+      id: 'sandbox.command',
+      label: 'KodaX command sandbox',
+      status: capability.readiness === 'checking' ? 'partial' : 'blocked',
+      detail:
+        capability.readiness === 'checking'
+          ? `The fail-closed KodaX sandbox facade v${capability.version} is present; readiness is still being checked. Space does not claim OS containment from API shape alone.`
+          : `The fail-closed KodaX sandbox facade is present, but doctor could not confirm a usable backend (${capability.diagnosticCount} bounded diagnostic(s)). Commands requiring containment return structured no-execution state.`,
+      since: '0.1.34',
+    };
+  }
+  return {
+    id: 'sandbox.command',
+    label: 'KodaX command sandbox',
+    status: 'planned',
+    detail:
+      'The KodaX sandbox facade has not been probed yet. Space does not claim OS containment until the fail-closed public contract is available.',
+  };
+}
+
 function buildCapabilityLedger(
   entitled: boolean,
   runtimeSnapshot: RuntimeHostSnapshot,
@@ -104,6 +152,7 @@ function buildCapabilityLedger(
   return [
     runtimeHostCapability(runtimeSnapshot),
     experimentalMemoryCapability(getExperimentalMemorySdkCapability()),
+    sandboxCommandCapability(getSandboxSdkCapability()),
     {
       id: 'repointel.trace',
       label: 'Repointel trace',
@@ -198,7 +247,7 @@ export function registerVersionChannel(): void {
       platform,
       kodaxSdkVersion: readKodaxSdkVersion(),
       kodaxDependencySpec: readKodaxDependencySpec(),
-      capabilityContract: 'space-v0.1.33',
+      capabilityContract: 'space-v0.1.34',
       capabilities: buildCapabilityLedger(entitled, runtimeHostAdapter.snapshot()),
     };
   });

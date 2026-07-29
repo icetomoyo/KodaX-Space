@@ -622,6 +622,15 @@ test('/learn diff and reject operate on SDK learning proposals', async () => {
   assert.equal(entry?.rejectedReason, 'not durable');
 });
 
+test('/learn keeps Runtime review/trust controls separate from Partner proposal approval', async () => {
+  const { sessionId } = await createLearningSession();
+  for (const action of ['review', 'trust', 'disable', 'rollback']) {
+    const result = await runCmd('learn', sessionId, [action, 'learned-skill']);
+    assert.equal(result.ok, false);
+    assert.match(result.message ?? '', /only for Coder Runtime learned capabilities/);
+  }
+});
+
 test('/skill pending and /workflow pending filter learning proposals', async () => {
   const { sessionId, projectRoot } = await createLearningSession();
   await seedLearningProposal(projectRoot, makeSkillLearningProposal('learn-skill-filter'));

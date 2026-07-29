@@ -40,3 +40,39 @@ test('startup failure still releases bounded shutdown disposal', async () => {
 
   assert.equal(disposalStarted, true);
 });
+
+test('shutdown also waits for non-blocking work launched during startup', async () => {
+  const coordinator = new StartupShutdownCoordinator();
+  let releaseBackgroundTask!: () => void;
+  const backgroundTask = new Promise<void>((resolve) => {
+    releaseBackgroundTask = resolve;
+  });
+  coordinator.trackStartupTask(backgroundTask);
+  coordinator.setStartupPromise(Promise.resolve());
+  coordinator.requestShutdown();
+
+  let disposalStarted = false;
+  const disposal = coordinator.disposeAfterStartup(() => {
+    disposalStarted = true;
+    return [];
+  });
+
+  await Promise.resolve();
+  assert.equal(disposalStarted, false);
+  releaseBackgroundTask();
+  await disposal;
+  assert.equal(disposalStarted, true);
+});
+
+test('tracked startup failures settle without blocking disposal', async () => {
+  const coordinator = new StartupShutdownCoordinator();
+  coordinator.trackStartupTask(Promise.reject(new Error('background startup failed')));
+
+  let disposalStarted = false;
+  await coordinator.disposeAfterStartup(() => {
+    disposalStarted = true;
+    return [];
+  });
+
+  assert.equal(disposalStarted, true);
+});

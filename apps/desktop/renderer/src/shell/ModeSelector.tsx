@@ -78,7 +78,7 @@ function mutationStateFor<T>(
     return created;
   }
   // Store updates received while no local mutation is pending are authoritative
-  // (for example an automatic Auto[RULES] fallback published by Runtime).
+  // (for example a Rules engine explicitly selected by another Runtime client).
   if (existing.pending === 0 && existing.intended !== authoritative) {
     existing.acknowledged = authoritative;
     existing.intended = authoritative;

@@ -1313,6 +1313,18 @@ function projectionNoticeKey(event: SessionEvent): string | undefined {
   return undefined;
 }
 
+function isPromptSegmentBoundary(
+  event: SessionEvent,
+): event is Extract<SessionEvent, { kind: 'mid_turn_user_prompt' | 'queued_user_prompt_started' }> {
+  return event.kind === 'mid_turn_user_prompt' || event.kind === 'queued_user_prompt_started';
+}
+
+function isTranscriptTerminal(
+  event: SessionEvent,
+): event is Extract<SessionEvent, { kind: 'session_complete' | 'session_error' }> {
+  return event.kind === 'session_complete' || event.kind === 'session_error';
+}
+
 /**
  * Durable history and Runtime live events are two projections of one canonical turn. History
  * contains canonical root tool calls (including todo tools); live contains runtime-only state
@@ -1323,13 +1335,18 @@ function mergeCanonicalTurnProjections(
   durableEvents: readonly SessionEvent[],
   liveEvents: readonly SessionEvent[],
 ): SessionEvent[] {
-  const isTerminal = (
-    event: SessionEvent,
-  ): event is Extract<SessionEvent, { kind: 'session_complete' | 'session_error' }> =>
-    event.kind === 'session_complete' || event.kind === 'session_error';
-  const liveTerminal = [...liveEvents].reverse().find(isTerminal);
-  const durableTerminal = [...durableEvents].reverse().find(isTerminal);
-  const durableBody = durableEvents.filter((event) => !isTerminal(event));
+  const liveTerminals = liveEvents.filter(isTranscriptTerminal);
+  const durableTerminals = durableEvents.filter(isTranscriptTerminal);
+  // A delivered-prompt event is both Runtime state and the positional start boundary for its
+  // user-owned segment. History has already reconstructed the canonical user row, so folding must
+  // retain at most one such marker and keep it at index 0. Appending it after durable text would
+  // turn it into an interior boundary; the next reconciliation scan would then shift every later
+  // assistant segment to the following user.
+  const leadingPromptBoundary =
+    durableEvents.find(isPromptSegmentBoundary) ?? liveEvents.find(isPromptSegmentBoundary);
+  const durableBody = durableEvents.filter(
+    (event) => !isTranscriptTerminal(event) && !isPromptSegmentBoundary(event),
+  );
   const mergedBody = [...durableBody];
   const durableToolStarts = new Set(
     durableBody
@@ -1350,7 +1367,12 @@ function mergeCanonicalTurnProjections(
 
   const liveExtras: SessionEvent[] = [];
   for (const event of liveEvents) {
-    if (isTerminal(event) || event.kind === 'text_delta' || event.kind === 'thinking_delta') {
+    if (
+      isTranscriptTerminal(event) ||
+      isPromptSegmentBoundary(event) ||
+      event.kind === 'text_delta' ||
+      event.kind === 'thinking_delta'
+    ) {
       continue;
     }
     if (event.kind === 'tool_start') {
@@ -1421,10 +1443,38 @@ function mergeCanonicalTurnProjections(
     });
   }
 
-  const terminal = liveTerminal ?? durableTerminal;
-  return terminal !== undefined
-    ? [...mergedBody, ...liveExtras, terminal]
-    : [...mergedBody, ...liveExtras];
+  const body =
+    leadingPromptBoundary !== undefined
+      ? [leadingPromptBoundary, ...mergedBody, ...liveExtras]
+      : [...mergedBody, ...liveExtras];
+  // Runtime terminals are authoritative when available. Preserve the whole consecutive sequence:
+  // older adapters/reconnect paths may emit error -> complete -> wrapped error, and the selector
+  // intentionally renders both errors while treating every terminal as one segment delimiter.
+  // Durable history contributes only a synthetic complete today, so mixing both projections would
+  // add a redundant delimiter.
+  const terminals = liveTerminals.length > 0 ? liveTerminals : durableTerminals;
+  return terminals.length > 0 ? [...body, ...terminals] : body;
+}
+
+function preserveRelocatedSegmentClosure(
+  events: readonly SessionEvent[],
+  turn: TranscriptTurnSnapshot,
+): SessionEvent[] {
+  if (events.length === 0 || events.some(isTranscriptTerminal)) return [...events];
+  const sessionId = events[0]?.sessionId;
+  if (!sessionId) return [...events];
+  // A closed live segment can be delimited only by the following prompt marker. Folding relocates
+  // the segment to its durable owner and leaves that marker with the next owner, so reproduce the
+  // lost structural boundary explicitly. This renderer-only terminal is the same delimiter used
+  // by session.history reconstruction; it does not claim that a separate Runtime run completed.
+  return [
+    ...events,
+    {
+      kind: 'session_complete',
+      sessionId,
+      ...(turn.turnId !== undefined ? { turnId: turn.turnId } : {}),
+    },
+  ];
 }
 
 function liveTurnCanFold(turn: TranscriptTurnSnapshot): boolean {
@@ -1476,7 +1526,10 @@ function foldStrongIdentityDuplicateTurns(
 
     const durableSegment = nextEvents.slice(pair.durable.eventStart, pair.durable.eventEnd);
     const duplicateSegment = nextEvents.slice(pair.duplicate.eventStart, pair.duplicate.eventEnd);
-    const mergedSegment = mergeCanonicalTurnProjections(durableSegment, duplicateSegment);
+    const mergedSegment = preserveRelocatedSegmentClosure(
+      mergeCanonicalTurnProjections(durableSegment, duplicateSegment),
+      pair.duplicate,
+    );
     const duplicateMessage = nextUsers[pair.duplicate.userIndex];
     didFold = true;
     nextEvents = [
@@ -1927,38 +1980,11 @@ function bindInitialLiveUserTurnIdentity(
   return userMessages;
 }
 
-function resolveLiveUserOrdinal(
-  userMessages: readonly UserMessage[],
-  turnId: string,
-  content: string,
-): number {
-  const liveOrdinals = new Set(
-    userMessages
-      .filter(
-        (message) =>
-          !message.restoredFromHistory &&
-          message.turnId === turnId &&
-          message.turnUserOrdinal !== undefined,
-      )
-      .map((message) => message.turnUserOrdinal!),
-  );
-  const unmatchedRestored = userMessages.find(
-    (message) =>
-      message.restoredFromHistory &&
-      message.turnId === turnId &&
-      message.content === content &&
-      message.turnUserOrdinal !== undefined &&
-      !liveOrdinals.has(message.turnUserOrdinal),
-  );
-  if (unmatchedRestored?.turnUserOrdinal !== undefined) {
-    return unmatchedRestored.turnUserOrdinal;
-  }
-
-  // Never assign an arbitrary restored ordinal when the canonical prompt text does not match.
-  // In one long Runtime turn, a genuinely new interrupt can follow already-folded history/live
-  // projections; reusing an older "unmatched" ordinal would give the new prompt a false strong
-  // identity and let duplicate reconciliation delete it. Fail open with a fresh ordinal instead:
-  // a lossy/clamped replay may remain visible twice, but a legal new user boundary is never lost.
+function resolveLiveUserOrdinal(userMessages: readonly UserMessage[], turnId: string): number {
+  // The Runtime adapter supplies turnUserOrdinal when it observed the canonical turn from its
+  // start. If that fact is absent (for example, observation attached mid-turn after reconnect),
+  // text/queue/alignment metadata cannot distinguish a replay from a legal same-text prompt.
+  // Always fail open with a fresh ordinal; a duplicate is recoverable, a deleted prompt is not.
   let maxOrdinal = -1;
   for (const message of userMessages) {
     if (
@@ -3128,7 +3154,8 @@ export const useAppStore = create<AppState>((set) => ({
           event.turnId !== undefined
             ? {
                 turnId: event.turnId,
-                turnUserOrdinal: resolveLiveUserOrdinal(userMessages, event.turnId, event.content),
+                turnUserOrdinal:
+                  event.turnUserOrdinal ?? resolveLiveUserOrdinal(userMessages, event.turnId),
               }
             : undefined;
         const promotionState =
@@ -3167,7 +3194,8 @@ export const useAppStore = create<AppState>((set) => ({
           event.turnId !== undefined
             ? {
                 turnId: event.turnId,
-                turnUserOrdinal: resolveLiveUserOrdinal(userMessages, event.turnId, event.content),
+                turnUserOrdinal:
+                  event.turnUserOrdinal ?? resolveLiveUserOrdinal(userMessages, event.turnId),
               }
             : undefined;
         const promotionState =

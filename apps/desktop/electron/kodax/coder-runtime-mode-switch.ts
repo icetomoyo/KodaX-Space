@@ -121,7 +121,7 @@ export async function switchCoderRuntimeModeAndRestart<TSettings>(
   return { settings, restarting: true };
 }
 
-type CoderRuntimeModeSwitchState = 'idle' | 'switching' | 'restarting';
+type CoderRuntimeModeSwitchState = 'idle' | 'switching' | 'restarting' | 'shutting_down';
 
 /**
  * Serializes runtime-mode changes with Coder request admission.
@@ -168,6 +168,30 @@ export class CoderRuntimeModeSwitchCoordinator<TSettings> {
     }
   }
 
+  /**
+   * Closes Coder admission before application-exit preflight. The returned
+   * callback reopens admission when exit is cancelled or blocked. A committed
+   * exit deliberately keeps the gate closed until the process terminates.
+   */
+  async beginShutdown(options: { readonly drainTimeoutMs?: number } = {}): Promise<() => void> {
+    if (this.state !== 'idle') {
+      throw new Error('Coder runtime mode is switching or Space is already shutting down.');
+    }
+    this.state = 'shutting_down';
+    try {
+      await this.waitForAdmissionsToDrain(options.drainTimeoutMs);
+    } catch (error) {
+      if (this.state === 'shutting_down') this.state = 'idle';
+      throw error;
+    }
+    let reopened = false;
+    return () => {
+      if (reopened) return;
+      reopened = true;
+      if (this.state === 'shutting_down') this.state = 'idle';
+    };
+  }
+
   async switchMode(target: CoderRuntimeModeT): Promise<CoderRuntimeModeSwitchResult<TSettings>> {
     if (this.state !== 'idle') {
       throw new Error('A Coder runtime mode switch is already in progress.');
@@ -202,10 +226,26 @@ export class CoderRuntimeModeSwitchCoordinator<TSettings> {
     return this.state === 'restarting';
   }
 
-  private waitForAdmissionsToDrain(): Promise<void> {
+  private waitForAdmissionsToDrain(timeoutMs?: number): Promise<void> {
     if (this.activeAdmissions === 0) return Promise.resolve();
-    return new Promise<void>((resolve) => {
-      this.admissionDrainWaiters.add(resolve);
+    return new Promise<void>((resolve, reject) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const complete = (): void => {
+        this.admissionDrainWaiters.delete(complete);
+        if (timer !== undefined) clearTimeout(timer);
+        resolve();
+      };
+      this.admissionDrainWaiters.add(complete);
+      if (timeoutMs !== undefined) {
+        timer = setTimeout(() => {
+          this.admissionDrainWaiters.delete(complete);
+          reject(
+            new Error(
+              `Coder shutdown admission drain did not finish within ${timeoutMs} ms. Space will remain open.`,
+            ),
+          );
+        }, timeoutMs);
+      }
     });
   }
 

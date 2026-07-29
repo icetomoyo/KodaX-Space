@@ -580,9 +580,7 @@ function createFakeRuntime() {
             blockers: [],
             canStop: true,
           },
-          ...(integrationHealth
-            ? { integrations: structuredClone(integrationHealth) }
-            : {}),
+          ...(integrationHealth ? { integrations: structuredClone(integrationHealth) } : {}),
         } as RuntimeDaemonManagementState;
       },
       stopForInline: async (input: unknown) => {
@@ -1590,6 +1588,132 @@ test('daemon rollback commits one inspected revision, waits for release, and res
   assert.equal(inlineOwnerCloses, 1);
 });
 
+test('complete exit atomically stops the inspected daemon and leaves an unowned daemon policy', async () => {
+  const fake = createFakeRuntime();
+  let inlineOwnerCloses = 0;
+  let daemonRestores = 0;
+  let ownerReleased = false;
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    idleDaemonStop: async () => {
+      throw new Error('ready Runtime complete-exit must not use the racy CLI stop path');
+    },
+    ownerControl: {
+      acquireInline: async () => ({
+        profile: 'coder',
+        ownerId: 'inline_complete_exit',
+        ownerPolicy: {
+          mode: 'inline',
+          revision: 3,
+          updatedAt: '2026-07-12T00:00:01.000Z',
+        },
+        close: () => {
+          inlineOwnerCloses += 1;
+        },
+      }),
+      getState: async () => ({
+        profile: 'coder',
+        policy: {
+          mode: ownerReleased ? 'daemon' : 'inline',
+          revision: ownerReleased ? 4 : 3,
+          updatedAt: '2026-07-12T00:00:02.000Z',
+        },
+        ownerStatus: ownerReleased ? 'unowned' : 'owned',
+        owner: ownerReleased
+          ? null
+          : {
+              runtimeId: 'rt_test',
+              pid: 123,
+              createdAt: '2026-07-12T00:00:00.000Z',
+              kind: 'daemon',
+            },
+      }),
+      enableDaemon: async () => {
+        daemonRestores += 1;
+        ownerReleased = true;
+        return {
+          mode: 'daemon',
+          revision: 4,
+          updatedAt: '2026-07-12T00:00:02.000Z',
+        };
+      },
+    },
+  });
+  const originalStop = fake.runtime.daemon.stopForInline.bind(fake.runtime.daemon);
+  fake.runtime.daemon.stopForInline = async (input) => {
+    const result = await originalStop(input);
+    ownerReleased = true;
+    return result;
+  };
+
+  await adapter.initialize();
+  await adapter.stopDaemonForCompleteExit('space-complete-exit-1');
+
+  assert.deepEqual(fake.calls.daemonStops, [
+    {
+      expectedRuntimeId: 'rt_test',
+      expectedRevision: 7,
+      expectedOwnerPolicyRevision: 2,
+      operation: { operationId: 'space-complete-exit-1' },
+    },
+  ]);
+  assert.equal(fake.calls.close, 1);
+  assert.equal(daemonRestores, 1);
+  assert.equal(inlineOwnerCloses, 1);
+  assert.equal(adapter.snapshot().state, 'closed');
+});
+
+test('complete exit treats CLI missing as confirmation only when owner state is unowned', async () => {
+  for (const ownerStatus of ['unowned', 'owned'] as const) {
+    const adapter = new RuntimeHostAdapter({
+      mode: 'runtime',
+      profileRoot: path.resolve('C:\\isolated-profile'),
+      idleDaemonStop: async () => ({ stopped: false, reason: 'missing' }),
+      ownerControl: {
+        acquireInline: async () => {
+          throw new Error('not used');
+        },
+        getState: async () => ({
+          profile: 'coder',
+          policy: {
+            mode: 'daemon',
+            revision: 4,
+            updatedAt: '2026-07-12T00:00:02.000Z',
+          },
+          ownerStatus,
+          owner:
+            ownerStatus === 'unowned'
+              ? null
+              : {
+                  runtimeId: 'rt_still_owned',
+                  pid: 123,
+                  createdAt: '2026-07-12T00:00:00.000Z',
+                  kind: 'daemon' as const,
+                },
+        }),
+        enableDaemon: async () => ({
+          mode: 'daemon',
+          revision: 4,
+          updatedAt: '2026-07-12T00:00:02.000Z',
+        }),
+      },
+    });
+
+    if (ownerStatus === 'unowned') {
+      await assert.doesNotReject(adapter.stopDaemonForCompleteExit());
+    } else {
+      await assert.rejects(
+        adapter.stopDaemonForCompleteExit(),
+        /owner is still active|could not be confirmed/i,
+      );
+    }
+  }
+});
+
 test('daemon rollback restores daemon policy when inline owner acquisition fails after stop', async () => {
   const fake = createFakeRuntime();
   let daemonRestores = 0;
@@ -2564,8 +2688,24 @@ test('daemon delivered interrupt batch becomes ordered queue-addressable session
   ).bridgeRuntimeEvent.bind(adapter);
 
   bridgeRuntimeEvent({
-    id: 'event_interrupt_batch',
+    id: 'event_interrupt_turn_started',
     seq: 1,
+    time: '2026-07-21T00:00:00.000Z',
+    type: 'turn.started',
+    sessionId: 's_1',
+    runId: 'run_active',
+    turnId: 'turn_active',
+    payload: {
+      sessionId: 's_1',
+      seq: 1,
+      turnId: 'turn_active',
+      deliveryKind: 'initial',
+      contextKind: 'root',
+    },
+  });
+  bridgeRuntimeEvent({
+    id: 'event_interrupt_batch',
+    seq: 2,
     time: '2026-07-21T00:00:00.000Z',
     type: 'run.input.delivered',
     sessionId: 's_1',
@@ -2592,7 +2732,7 @@ test('daemon delivered interrupt batch becomes ordered queue-addressable session
   });
   bridgeRuntimeEvent({
     id: 'event_interrupt_progress_mirror',
-    seq: 2,
+    seq: 3,
     time: '2026-07-21T00:00:01.000Z',
     type: 'run.progress',
     sessionId: 's_1',
@@ -2606,17 +2746,230 @@ test('daemon delivered interrupt batch becomes ordered queue-addressable session
 
   assert.deepEqual(pushed, [
     {
+      kind: 'session_start',
+      sessionId: 's_1',
+      provider: 'unknown',
+      turnId: 'turn_active',
+    },
+    {
       kind: 'mid_turn_user_prompt',
       sessionId: 's_1',
       queueId: 'input-1',
       content: 'first interrupt\n\nattachment overlay',
       turnId: 'turn_active',
+      turnUserOrdinal: 1,
     },
     {
       kind: 'mid_turn_user_prompt',
       sessionId: 's_1',
       queueId: 'input-2',
       content: 'second interrupt',
+      turnId: 'turn_active',
+      turnUserOrdinal: 2,
+    },
+  ]);
+  await adapter.close();
+});
+
+test('a queued Runtime turn assigns ordinal zero to its first delivered input', async () => {
+  const pushed: unknown[] = [];
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    push: (channel, payload) => {
+      if (channel === 'session.event') pushed.push(payload);
+    },
+  });
+  const bridgeRuntimeEvent = (
+    adapter as unknown as {
+      bridgeRuntimeEvent(event: import('@kodax-ai/kodax/runtime').RuntimeTypedEvent): void;
+    }
+  ).bridgeRuntimeEvent.bind(adapter);
+
+  bridgeRuntimeEvent({
+    id: 'event_queued_turn_started',
+    seq: 1,
+    time: '2026-07-29T06:46:27.447Z',
+    type: 'turn.started',
+    sessionId: 's_1',
+    runId: 'run_active',
+    turnId: 'turn_queued',
+    payload: {
+      sessionId: 's_1',
+      seq: 10,
+      turnId: 'turn_queued',
+      deliveryKind: 'queued',
+      contextKind: 'root',
+    },
+  });
+  bridgeRuntimeEvent({
+    id: 'event_queued_turn_input',
+    seq: 2,
+    time: '2026-07-29T06:46:27.453Z',
+    type: 'run.input.delivered',
+    sessionId: 's_1',
+    runId: 'run_active',
+    turnId: 'turn_queued',
+    payload: {
+      inputs: [
+        {
+          inputId: 'input-queued-first',
+          afterRunId: 'run_active',
+          input: [{ type: 'text', text: 'queued turn prompt' }],
+          queuedAt: '2026-07-29T06:45:00.917Z',
+          deliveredAt: '2026-07-29T06:46:27.453Z',
+        },
+      ],
+    },
+  });
+
+  assert.deepEqual(pushed, [
+    {
+      kind: 'session_start',
+      sessionId: 's_1',
+      provider: 'unknown',
+      turnId: 'turn_queued',
+    },
+    {
+      kind: 'mid_turn_user_prompt',
+      sessionId: 's_1',
+      queueId: 'input-queued-first',
+      content: 'queued turn prompt',
+      turnId: 'turn_queued',
+      turnUserOrdinal: 0,
+    },
+  ]);
+  await adapter.close();
+});
+
+test('unproven Runtime delivery kinds do not manufacture a user ordinal', async () => {
+  const pushed: unknown[] = [];
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    push: (channel, payload) => {
+      if (channel === 'session.event') pushed.push(payload);
+    },
+  });
+  const bridgeRuntimeEvent = (
+    adapter as unknown as {
+      bridgeRuntimeEvent(event: import('@kodax-ai/kodax/runtime').RuntimeTypedEvent): void;
+    }
+  ).bridgeRuntimeEvent.bind(adapter);
+  const observeRootTurnStart = (
+    adapter as unknown as {
+      observeRootTurnStart(turnId: string, deliveryKind: unknown): void;
+    }
+  ).observeRootTurnStart.bind(adapter);
+
+  for (const [index, deliveryKind] of ['interrupt', 'resume', 'future-kind'].entries()) {
+    const turnId = `turn_unproven_${index}`;
+    observeRootTurnStart(turnId, deliveryKind);
+    bridgeRuntimeEvent({
+      id: `event_unproven_input_${index}`,
+      seq: 31 + index * 2,
+      time: '2026-07-21T00:02:01.000Z',
+      type: 'run.input.delivered',
+      sessionId: 's_1',
+      runId: 'run_active',
+      turnId,
+      payload: {
+        inputs: [
+          {
+            inputId: `input-unproven-${index}`,
+            afterRunId: 'run_active',
+            input: [{ type: 'text', text: `unproven ${deliveryKind}` }],
+            queuedAt: '2026-07-21T00:02:00.000Z',
+            deliveredAt: '2026-07-21T00:02:01.000Z',
+          },
+        ],
+      },
+    });
+  }
+
+  const delivered = pushed.filter(
+    (event): event is { kind: string; turnUserOrdinal?: number } =>
+      typeof event === 'object' &&
+      event !== null &&
+      (event as { kind?: unknown }).kind === 'mid_turn_user_prompt',
+  );
+  assert.equal(delivered.length, 3);
+  assert.deepEqual(
+    delivered.map((event) => event.turnUserOrdinal),
+    [undefined, undefined, undefined],
+  );
+  await adapter.close();
+});
+
+test('same-adapter reconnect drops stale user ordinals when turn.started is not replayed', async () => {
+  const pushed: unknown[] = [];
+  const first = createFakeRuntime();
+  const second = createFakeRuntime();
+  let connectionAttempt = 0;
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => (connectionAttempt++ === 0 ? first.runtime : second.runtime),
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    push: (channel, payload) => {
+      if (channel === 'session.event') pushed.push(payload);
+    },
+  });
+  const bridgeRuntimeEvent = (
+    adapter as unknown as {
+      bridgeRuntimeEvent(event: import('@kodax-ai/kodax/runtime').RuntimeTypedEvent): void;
+    }
+  ).bridgeRuntimeEvent.bind(adapter);
+
+  await adapter.initialize();
+  bridgeRuntimeEvent({
+    id: 'event_before_disconnect_turn_started',
+    seq: 19,
+    time: '2026-07-21T00:00:58.000Z',
+    type: 'turn.started',
+    sessionId: 's_1',
+    runId: 'run_active',
+    turnId: 'turn_active',
+    payload: {
+      sessionId: 's_1',
+      seq: 19,
+      turnId: 'turn_active',
+      contextKind: 'root',
+      deliveryKind: 'initial',
+    },
+  });
+  first.disconnect(false);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(adapter.snapshot().state, 'failed');
+  await adapter.initialize();
+
+  pushed.length = 0;
+  bridgeRuntimeEvent({
+    id: 'event_reconnected_interrupt',
+    seq: 20,
+    time: '2026-07-21T00:01:00.000Z',
+    type: 'run.input.delivered',
+    sessionId: 's_1',
+    runId: 'run_active',
+    turnId: 'turn_active',
+    payload: {
+      inputs: [
+        {
+          inputId: 'input-after-reconnect',
+          afterRunId: 'run_active',
+          input: [{ type: 'text', text: 'same text may be new' }],
+          queuedAt: '2026-07-21T00:00:59.000Z',
+          deliveredAt: '2026-07-21T00:01:00.000Z',
+        },
+      ],
+    },
+  });
+
+  assert.deepEqual(pushed, [
+    {
+      kind: 'mid_turn_user_prompt',
+      sessionId: 's_1',
+      queueId: 'input-after-reconnect',
+      content: 'same text may be new',
       turnId: 'turn_active',
     },
   ]);

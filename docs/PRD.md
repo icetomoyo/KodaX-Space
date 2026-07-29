@@ -1,10 +1,12 @@
 # KodaX Space 产品需求文档（PRD）
 
-> Last updated: 2026-07-28
-> Status: 长期产品方向文档。当前正式候选为修正后的 KodaX Space 0.1.33（package 0.1.33）/ npm 正式发布的精确 KodaX 0.7.77。Coder shared daemon、compaction v3 与精确 checkpoint/history 恢复、mailbox-driven Agent 协调、运行中输入、root/child 投影隔离、Goal 工具常驻、Runtime-owned Auto LLM 权限、Sidecar 终态修正、Windows 后台子进程隐藏、Kimi K3 路由、跨 run 的稳定提示词缓存亲和、精确持久授权、有来源/许可/补丁/完整性门禁的 Space builtin skills，以及 Windows 可见、可重开的后台托盘与安全彻底退出已接入。v0.1.33 还交付 canonical Actor/Turn 投影、完整物理请求诊断、可配置 Shell、F140 主窗口关闭行为、F141 Daemon/Embedded 安全选择、F142 会话文件操作，以及附件、上下文和正式打包可靠性修复；并按 KodaX 0.7.77 公开契约分离核心 config 与 MCP/Extension/A2A integrations。Settings 可预览并应用 SDK 的旧配置迁移，且不覆盖目标或自动清理旧字段；应用内 `kodax_manual` 保留 SDK 推荐的原始底层能力主题。主 Agent 有效窗口按最终自动压缩阈值计算，累计 Provider 用量按完成态请求诊断覆盖根/子 Agent 及辅助物理调用；完整 F117/F118 桌面治理体验仍在计划中。已交付能力与边界以 [USER_MANUAL.zh-CN.md](USER_MANUAL.zh-CN.md)、[KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md) 和 [FEATURE_LIST.md](FEATURE_LIST.md) 为准。
+> Last updated: 2026-07-30
+> Status: 长期产品方向文档。当前发布候选为 KodaX Space 0.1.34（package 0.1.34）/ 精确 Registry KodaX 0.7.78。v0.1.33 已交付 Coder shared daemon、canonical Actor/Turn、精确 history/live 与 compaction、完整物理请求诊断、F140-F142、可配置 Shell、独立 integration 配置和正式打包门禁。v0.1.34 在此基础上接入 exclusive Actor、`daemonOrphanExit:1`、`integrationConfigResilience:1`、Auto guardrail v4、Skill learning-loop 和公开 command-sandbox observation；Settings/诊断显示 last-known-good integration health，真正退出会停止 Runtime 或恢复 Space，Space 自动拉起的孤儿 daemon 获得有界空闲回收，正式包验证物理 sandbox helper，启动 overlay 与历史 replay 也已加固。生命周期支持仍按能力协商，不通过 SemVer 推断；Issue 133 的 macOS/Linux process acceptance/cleanup retry gap 和 F138 完整 OS 隔离继续保持未完成。已交付能力与边界以 [USER_MANUAL.zh-CN.md](USER_MANUAL.zh-CN.md)、[KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md) 和 [FEATURE_LIST.md](FEATURE_LIST.md) 为准。
 > 对标：Anthropic Claude Desktop（Cowork / Code 双面板）+ OpenAI Codex Desktop App（多 agent 本机壳）
 
 > **当前落地摘要**：Coder 与 Partner 均可用；Partner 已具备 workspace-first Outputs、Sources/KB、checkpointed writes、Office/PDF 便利产物和本地 policy/audit。0.1.30 接入 KodaX 0.7.67 Reference External Agent 管理、Workflow/Worker 路由和 Task Dock 干预；v0.1.31 已发布 inline RuntimeHostAdapter 的 managed run、transcript、compact、fork、rewind；v0.1.32 由 KodaX 0.7.76 Coder daemon 在能力协商通过后提供 Runtime 配置的 A2A；v0.1.33 对齐 KodaX 0.7.77 并收口 Actor、精确回放、用量诊断、Shell、关闭行为和独立 integration 配置。底部把“距自动压缩的活动输入压力”和“Session 累计 Token 用量”拆为两个入口，避免把模型最大上下文、绝对阈值、输出容量预留和 Provider 账单混为一谈。MCP Tasks、受治理 HTTP、通用 Connector/浏览器控制/自动化/远程任务仍未作为当前能力开放。
+>
+> **2026-07-30 v0.1.34 候选增量**：精确接入 KodaX 0.7.78 的 exclusive Actor owner、Skill learning-loop、integration resilience、Auto guardrail v4 和公开 command-sandbox facade。Settings/诊断显示有界 integration health，Auto 只暴露 side-query 元数据，活动工具显示结构化 sandbox observation；main-owned startup/shutdown overlay、事务 MCP manager reload、跨平台 visible exit/orphan recovery、物理 sandbox helper 打包和 positional history replay 一起进入发布门禁。完整 Learning Center UI、Memory Agent UI、Issue 133 剩余项与 F138 文档/native-resource OS 隔离仍按原计划推进。
 >
 > **2026-07-12 路线重置**：从 `v0.1.31` 起，规范路线由 [FEATURE_LIST.md](FEATURE_LIST.md) 的 Runtime alignment、platform trust、workflow/review evidence、task/capability governance、Memory Agent、Learning Center 和 beta completion 版本链管理。旧 M0/M1/M2/M3 里程碑只作为产品演进历史，不再表示未交付状态或版本承诺。
 
@@ -24,7 +26,7 @@ KodaX Space 是 KodaX 生态的**桌面客户端**——不是另一个 IDE，�
   4. **可本地离线/可自托管**（不强制云）
   5. **Skills / Hooks / Permission Mode 与 KodaX 同源**
   6. **可审计的 builtin 分发**：只打包许可证允许再分发且锁定来源/补丁/哈希的 Skill；可选外部 runtime 不伪装成内嵌能力
-  7. **后台所有权可控**：Windows 关闭窗口释放 renderer，托盘明确展示后台 owner，并提供重开、保留 Runtime 退出和安全彻底退出
+  7. **后台所有权可控**：Windows 关闭窗口释放 renderer 并保留可见托盘；所有平台真正退出都停止 Runtime，失败则恢复 Space，崩溃后的 Space-owned daemon 空闲自回收
 - **不做**：
   - 不做独立 Chat 面板（用 Quick Ask popover 替代"临时问"场景）
   - 不做新的 IDE（不与 VS Code / JetBrains 正面竞争）
@@ -552,27 +554,27 @@ File panel 内点击 git diff
 
 ### 9.2 当前 0.1.x 版本链
 
-| Version lane | Outcome                                                                                                                                                      |
-| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `v0.1.31`    | 已交付 Runtime/platform trust、`app://space`、redacted diagnostics 与 typed semantic actions                                                                 |
-| `v0.1.32`    | Shared Coder daemon/live state，以及 Space-owned Partner 本地 Sources、稳定引用、自动 grounded recall                                                        |
-| `v0.1.33`    | KodaX 0.7.77 Runtime/Actor/history/usage 稳定化、Shell 控制与 F140 可配置关闭行为（已发布）                                                                  |
-| `v0.1.34`    | F137 中文优先 DOCX/PDF/XLSX/PPTX builtin 与 F139 语义 UI 精修                                                                                                |
-| `v0.1.35`    | Learned Skill Safety Surface；复用已发布 `learningCenter:1` + `skillLearningLoop:1`，不建设超出契约的多 carrier Learning Center                                |
-| `v0.1.36`    | —                                                                                                                                                            |
-| `v0.1.37`    | —                                                                                                                                                            |
-| `v0.1.38`    | —                                                                                                                                                            |
-| `v0.1.39`    | —                                                                                                                                                            |
-| `v0.1.40`    | Partner composer-first Skill workspace                                                                                                                        |
-| `v0.1.41`    | —                                                                                                                                                            |
-| `v0.1.42`    | Partner hybrid retrieval/evidence ranking 与 curated knowledge lifecycle                                                                                     |
-| `v0.1.43`    | F129 Partner Presentation Project：复用 F137 PPTX format service，增加模板优先 Studio、真实预览和目标 Office 引擎验证                                        |
-| `v0.1.44`    | Memory Agent Desktop Host；硬门槛为已发布、兼容的 KX-F260 contract                                                                                           |
-| `v0.1.45`    | —                                                                                                                                                            |
-| `v0.1.46`    | Partner knowledge freshness、conflict 与 access integrity                                                                                                    |
-| `v0.1.47`    | Partner knowledge integrity 稳定化预留                                                                                                                       |
-| `v0.1.48`    | Localization、beta/release diagnostics、distribution trust 与 Partner knowledge quality                                                                      |
-| `v0.1.49`    | 0.1.x patch/RC reserve                                                                                                                                       |
+| Version lane | Outcome                                                                                                                           |
+| ------------ | --------------------------------------------------------------------------------------------------------------------------------- |
+| `v0.1.31`    | 已交付 Runtime/platform trust、`app://space`、redacted diagnostics 与 typed semantic actions                                      |
+| `v0.1.32`    | Shared Coder daemon/live state，以及 Space-owned Partner 本地 Sources、稳定引用、自动 grounded recall                             |
+| `v0.1.33`    | KodaX 0.7.77 Runtime/Actor/history/usage 稳定化、Shell 控制与 F140 可配置关闭行为（已发布）                                       |
+| `v0.1.34`    | KodaX 0.7.78 Runtime 安全、integration resilience、Auto v4、可见彻底退出/orphan recovery、sandbox helper 打包、启动与历史回放加固 |
+| `v0.1.35`    | Learned Skill Safety Surface；复用已发布 `learningCenter:1` + `skillLearningLoop:1`，不建设超出契约的多 carrier Learning Center   |
+| `v0.1.36`    | F137 中文优先 DOCX/PDF/XLSX/PPTX builtin 与 F139 语义 UI 精修                                                                     |
+| `v0.1.37`    | —                                                                                                                                 |
+| `v0.1.38`    | —                                                                                                                                 |
+| `v0.1.39`    | —                                                                                                                                 |
+| `v0.1.40`    | Partner composer-first Skill workspace                                                                                            |
+| `v0.1.41`    | —                                                                                                                                 |
+| `v0.1.42`    | Partner hybrid retrieval/evidence ranking 与 curated knowledge lifecycle                                                          |
+| `v0.1.43`    | F129 Partner Presentation Project：复用 F137 PPTX format service，增加模板优先 Studio、真实预览和目标 Office 引擎验证             |
+| `v0.1.44`    | Memory Agent Desktop Host；硬门槛为已发布、兼容的 KX-F260 contract                                                                |
+| `v0.1.45`    | —                                                                                                                                 |
+| `v0.1.46`    | Partner knowledge freshness、conflict 与 access integrity                                                                         |
+| `v0.1.47`    | Partner knowledge integrity 稳定化预留                                                                                            |
+| `v0.1.48`    | Localization、beta/release diagnostics、distribution trust 与 Partner knowledge quality                                           |
+| `v0.1.49`    | 0.1.x patch/RC reserve                                                                                                            |
 
 KX-F260/F266 未按时发布时，Space 调换 feature lane，不绕过 capability gate。
 
@@ -593,7 +595,8 @@ Remote runner、Notebook、knowledge graph、desktop screen automation、`zh-Han
 F138 在 `v0.5.x` 产品线完成后，为已成熟的文档、Presentation 和 native adapter 执行面增加
 OS 强制的文件系统、网络、进程树、凭据和 native-resource 隔离。F137/F129 先使用有界
 Worker/独立子进程、私有 staging、超时取消、禁宏/链接更新和整树清理完成功能；F138 不回溯
-阻塞这些功能，也不需要 KodaX SDK 改动。
+阻塞这些功能。KodaX 0.7.78 的公开 command-sandbox facade 可作为命令 containment 原语复用，
+但不替代 Space-owned 文档 staging、凭据/native-resource、打包和平台验收。
 
 ---
 

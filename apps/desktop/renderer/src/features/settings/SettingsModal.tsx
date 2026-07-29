@@ -917,8 +917,9 @@ function CoderRuntimeModeSection(): JSX.Element {
 }
 
 function RuntimePanel(): JSX.Element {
-  const { t } = useI18n();
+  const { t, effectiveLocale } = useI18n();
   const currentProjectPath = useAppStore((s) => s.currentProjectPath);
+  const runtimeConnection = useAppStore((s) => s.runtimeConnection);
   const [overview, setOverview] = useState<KodaxConfigOverviewT | null>(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -1022,7 +1023,15 @@ function RuntimePanel(): JSX.Element {
       syncCompactionForm(result.data);
       window.dispatchEvent(new Event('kodax:compaction-config-changed'));
       setSaved(true);
-      pushToast(t('settings.compaction.saved'), 'success', 1800);
+      const runtimeReloadFailed = result.data.runtimeReload.status === 'failed';
+      pushToast(
+        runtimeReloadFailed
+          ? t('settings.runtimeConfig.reloadFailed')
+          : t('settings.compaction.saved'),
+        runtimeReloadFailed ? 'warning' : 'success',
+        runtimeReloadFailed ? 3200 : 1800,
+      );
+      if (runtimeReloadFailed) setErr(t('settings.runtimeConfig.reloadFailed'));
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
@@ -1083,14 +1092,15 @@ function RuntimePanel(): JSX.Element {
         t('settings.integrationMigration.applied', {
           domains: domains || t('settings.integrationMigration.none'),
         }),
-        'success',
+        result.data.runtimeReload.status === 'failed' ? 'warning' : 'success',
         2600,
       );
 
       const reloadResult = await window.kodaxSpace.invoke('mcp.reload', {
         ...(currentProjectPath ? { projectRoot: currentProjectPath } : {}),
       });
-      const reloadFailed = !reloadResult.ok || !reloadResult.data.ok;
+      const reloadFailed =
+        result.data.runtimeReload.status === 'failed' || !reloadResult.ok || !reloadResult.data.ok;
       window.dispatchEvent(new Event('kodax:integration-config-changed'));
       await refresh();
       if (reloadFailed) setErr(t('settings.integrationMigration.reloadFailed'));
@@ -1160,6 +1170,86 @@ function RuntimePanel(): JSX.Element {
       )}
 
       <CoderRuntimeModeSection />
+
+      <SettingsSection
+        title={t('settings.integrationHealth.title')}
+        description={t('settings.integrationHealth.description')}
+        icon={Network}
+      >
+        <div className="mb-3 flex items-center gap-2 text-xs">
+          {runtimeConnection.integrations?.state === 'healthy' ? (
+            <CheckCircle2 className="h-4 w-4 text-ok" strokeWidth={1.8} aria-hidden />
+          ) : runtimeConnection.integrations?.state === 'degraded' ? (
+            <AlertTriangle className="h-4 w-4 text-warn" strokeWidth={1.8} aria-hidden />
+          ) : (
+            <Loader2 className="h-4 w-4 text-fg-muted" strokeWidth={1.8} aria-hidden />
+          )}
+          <span className="font-medium text-fg-primary">
+            {runtimeConnection.integrations
+              ? t(
+                  `settings.integrationHealth.${runtimeConnection.integrations.state}` as MessageKey,
+                )
+              : t('settings.integrationHealth.unavailable')}
+          </span>
+        </div>
+        {runtimeConnection.integrations ? (
+          <div className="space-y-2">
+            {runtimeConnection.integrations.domains.map((domain) => (
+              <div
+                key={domain.domain}
+                className="rounded-lg border border-border-default bg-surface px-3 py-2.5"
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-xs font-semibold uppercase text-fg-primary">
+                    {domain.domain}
+                  </span>
+                  <span
+                    className={['text-[11px]', domain.diagnostic ? 'text-warn' : 'text-ok'].join(
+                      ' ',
+                    )}
+                  >
+                    {domain.diagnostic
+                      ? t('settings.integrationHealth.degraded')
+                      : t('settings.integrationHealth.healthy')}
+                  </span>
+                </div>
+                <div className="mt-1 break-all font-mono text-[11px] text-fg-muted">
+                  {domain.path}
+                </div>
+                <div className="mt-1 text-[11px] text-fg-muted">
+                  {t('settings.integrationHealth.source', {
+                    source: domain.source ?? 'default',
+                  })}
+                  {' · '}
+                  {domain.watching
+                    ? t('settings.integrationHealth.watching')
+                    : t('settings.integrationHealth.notWatching')}
+                </div>
+                <div className="mt-1 text-[11px] text-fg-muted">
+                  {t('settings.integrationHealth.revision', {
+                    revision: String(domain.revision ?? 0),
+                  })}
+                  {' · '}
+                  {domain.lastReloadAt
+                    ? t('settings.integrationHealth.lastReload', {
+                        time: new Date(domain.lastReloadAt).toLocaleString(effectiveLocale),
+                      })
+                    : t('settings.integrationHealth.neverReloaded')}
+                </div>
+                {domain.diagnostic && (
+                  <div className="mt-2 rounded-md border border-warn/30 bg-warn/8 px-2 py-1.5 text-[11px] leading-5 text-warn">
+                    {domain.diagnostic.message}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-xs leading-5 text-fg-muted">
+            {t('settings.integrationHealth.pending')}
+          </p>
+        )}
+      </SettingsSection>
 
       <ExternalAgentsSection projectRoot={currentProjectPath ?? undefined} />
 

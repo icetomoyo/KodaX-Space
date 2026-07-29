@@ -9,12 +9,25 @@
 export class StartupShutdownCoordinator {
   private shutdownRequested = false;
   private startupSettled: Promise<void> = Promise.resolve();
+  private readonly trackedStartupTasks = new Set<Promise<void>>();
 
   setStartupPromise(startup: Promise<unknown>): void {
     this.startupSettled = startup.then(
       () => undefined,
       () => undefined,
     );
+  }
+
+  trackStartupTask<T>(task: Promise<T>): Promise<T> {
+    const settled = task.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.trackedStartupTasks.add(settled);
+    void settled.finally(() => {
+      this.trackedStartupTasks.delete(settled);
+    });
+    return task;
   }
 
   requestShutdown(): void {
@@ -29,6 +42,12 @@ export class StartupShutdownCoordinator {
     createDisposals: () => readonly Promise<unknown>[],
   ): Promise<PromiseSettledResult<unknown>[]> {
     await this.startupSettled;
+    // Tasks can be registered by the synchronous tail of the main startup
+    // chain while an earlier tracked task is settling. Drain until stable so
+    // initialize()/subscribe work never races the corresponding close().
+    while (this.trackedStartupTasks.size > 0) {
+      await Promise.all(this.trackedStartupTasks);
+    }
     return Promise.allSettled(createDisposals());
   }
 }

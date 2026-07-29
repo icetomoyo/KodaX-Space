@@ -11,10 +11,68 @@ import {
   type SmartPopoutKind,
 } from '../../renderer/src/features/popout-director/rules.js';
 import { composeMessages } from '../../renderer/src/features/session/composeMessages.js';
-import type { SessionHistoryItem } from '@kodax-space/space-ipc-schema';
+import type { SessionEvent, SessionHistoryItem } from '@kodax-space/space-ipc-schema';
 
 const SID = 'hist-test';
 const FALLBACK_SENT_AT = 1700000000000;
+
+function testSegmentEnd(events: readonly SessionEvent[], cursor: number): number {
+  for (let index = cursor; index < events.length; index++) {
+    const event = events[index]!;
+    if (
+      index > cursor &&
+      (event.kind === 'mid_turn_user_prompt' || event.kind === 'queued_user_prompt_started')
+    ) {
+      return index;
+    }
+    if (event.kind === 'session_complete' || event.kind === 'session_error') {
+      let end = index + 1;
+      while (
+        end < events.length &&
+        (events[end]!.kind === 'session_complete' || events[end]!.kind === 'session_error')
+      ) {
+        end++;
+      }
+      return end;
+    }
+  }
+  return events.length;
+}
+
+function assertClosedTranscriptStructure(sessionId: string): void {
+  const state = useAppStore.getState();
+  const events = state.eventsBySession[sessionId] ?? [];
+  const owners = (state.userMessagesBySession[sessionId] ?? []).filter(
+    (message) => message.historyNoAssistantSegment !== true,
+  );
+  const segments: SessionEvent[][] = [];
+  for (let cursor = 0; cursor < events.length; ) {
+    const end = testSegmentEnd(events, cursor);
+    assert.ok(end > cursor, 'every event segment must advance the cursor');
+    segments.push(events.slice(cursor, end));
+    cursor = end;
+  }
+  for (const segment of segments) {
+    const boundaryIndexes = segment.flatMap((event, index) =>
+      event.kind === 'mid_turn_user_prompt' || event.kind === 'queued_user_prompt_started'
+        ? [index]
+        : [],
+    );
+    assert.ok(boundaryIndexes.length <= 1, 'an owned segment has at most one prompt boundary');
+    if (boundaryIndexes.length === 1) {
+      assert.equal(
+        boundaryIndexes[0],
+        0,
+        'a prompt boundary must be the first event in its segment',
+      );
+    }
+  }
+  assert.equal(
+    segments.length,
+    owners.length,
+    'a closed transcript must have exactly one event segment per effective owner',
+  );
+}
 
 beforeEach(() => {
   // 重置 store 关键 fields
@@ -560,6 +618,7 @@ test('history-first queued promotion keeps a live segment owner without renderin
     queueMode: 'after-turn',
     content: 'canonical queued query',
     turnId: 'turn-queued',
+    turnUserOrdinal: 0,
   });
 
   let state = useAppStore.getState();
@@ -617,6 +676,18 @@ test('history-first queued promotion keeps a live segment owner without renderin
     ),
     false,
   );
+  assert.equal(
+    (state.eventsBySession[SID] ?? []).filter(
+      (event) => event.kind === 'queued_user_prompt_started',
+    ).length,
+    1,
+    'terminal folding retains one effective delivery boundary',
+  );
+  assert.equal(
+    state.eventsBySession[SID]?.[0]?.kind,
+    'queued_user_prompt_started',
+    'the retained delivery marker remains the first event in its owned segment',
+  );
 });
 
 test('a later interrupt cannot steal an earlier history/live-overlap response segment', () => {
@@ -661,6 +732,7 @@ test('a later interrupt cannot steal an earlier history/live-overlap response se
     queueId: 'interrupt-lua',
     content: '使用Lua脚本是因为适配Redis是吗？',
     turnId: 'turn-active',
+    turnUserOrdinal: 1,
   });
   store.appendEvent({
     kind: 'text_delta',
@@ -1045,6 +1117,687 @@ test('one Runtime turn keeps distinct user boundaries by visible ordinal', () =>
       'assistant:corrected response',
     ],
   );
+});
+
+test('strong folding preserves consecutive empty interrupt turns before the first answer', () => {
+  const store = useAppStore.getState();
+  useAppStore.setState({ queuedUserMessagesBySession: {} });
+
+  store.appendUserMessage(SID, 'empty query 1', 10_000);
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-empty-prefix',
+  });
+  store.appendEvent({
+    kind: 'mid_turn_user_prompt',
+    sessionId: SID,
+    queueId: 'interrupt-empty-2',
+    content: 'empty query 2',
+    turnId: 'turn-empty-prefix',
+    turnUserOrdinal: 1,
+  });
+  store.appendEvent({
+    kind: 'mid_turn_user_prompt',
+    sessionId: SID,
+    queueId: 'interrupt-answer-3',
+    content: 'answered query 3',
+    turnId: 'turn-empty-prefix',
+    turnUserOrdinal: 2,
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'only answer 3',
+    sentAt: 10_300,
+  });
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: SID,
+    turnId: 'turn-empty-prefix',
+  });
+
+  store.prependSessionHistory(
+    SID,
+    [
+      {
+        kind: 'user',
+        content: 'empty query 1',
+        sentAt: 10_000,
+        turnId: 'turn-empty-prefix',
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'user',
+        content: 'empty query 2',
+        sentAt: 10_100,
+        turnId: 'turn-empty-prefix',
+        turnUserOrdinal: 1,
+      },
+      {
+        kind: 'user',
+        content: 'answered query 3',
+        sentAt: 10_200,
+        turnId: 'turn-empty-prefix',
+        turnUserOrdinal: 2,
+      },
+      { kind: 'assistant', text: 'only answer 3', sentAt: 10_300 },
+    ],
+    FALLBACK_SENT_AT,
+  );
+
+  const state = useAppStore.getState();
+  const out = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+    queuedUserMessages: state.queuedUserMessagesBySession[SID] ?? [],
+  });
+  assert.deepEqual(
+    out.flatMap((message) => {
+      if (message.kind === 'user') return [`user:${message.content}`];
+      if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+      return [];
+    }),
+    [
+      'user:empty query 1',
+      'user:empty query 2',
+      'user:answered query 3',
+      'assistant:only answer 3',
+    ],
+  );
+  assert.deepEqual(
+    (state.userMessagesBySession[SID] ?? []).map((message) => message.content),
+    ['empty query 1', 'empty query 2', 'answered query 3'],
+    'all three live duplicates fold without moving the third answer into an empty turn',
+  );
+
+  store.appendUserMessage(SID, 'next query 4', 20_000);
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-after-empty-prefix',
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'next answer 4',
+    sentAt: 20_100,
+  });
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: SID,
+    turnId: 'turn-after-empty-prefix',
+  });
+  const afterNextSend = useAppStore.getState();
+  assert.deepEqual(
+    composeMessages({
+      events: afterNextSend.eventsBySession[SID] ?? [],
+      userMessages: afterNextSend.userMessagesBySession[SID] ?? [],
+    }).flatMap((message) => {
+      if (message.kind === 'user') return [`user:${message.content}`];
+      if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+      return [];
+    }),
+    [
+      'user:empty query 1',
+      'user:empty query 2',
+      'user:answered query 3',
+      'assistant:only answer 3',
+      'user:next query 4',
+      'assistant:next answer 4',
+    ],
+    'a later completed send must not reveal a latent owner shift after empty-turn folding',
+  );
+  assertClosedTranscriptStructure(SID);
+});
+
+test('queued-after-turn folding preserves an empty canonical owner and the next completed send', () => {
+  const store = useAppStore.getState();
+  useAppStore.setState({ queuedUserMessagesBySession: {} });
+
+  store.appendUserMessage(SID, 'queued empty query', 10_000);
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-queued-empty',
+  });
+  store.appendEvent({
+    kind: 'queued_user_prompt_started',
+    sessionId: SID,
+    queueId: 'after-empty',
+    queueMode: 'after-turn',
+    content: 'queued answered query',
+    turnId: 'turn-queued-empty',
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'queued answer',
+    sentAt: 10_200,
+  });
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: SID,
+    turnId: 'turn-queued-empty',
+  });
+
+  store.prependSessionHistory(
+    SID,
+    [
+      {
+        kind: 'user',
+        content: 'queued empty query',
+        sentAt: 10_000,
+        turnId: 'turn-queued-empty',
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'user',
+        content: 'queued answered query',
+        sentAt: 10_100,
+        turnId: 'turn-queued-empty',
+        turnUserOrdinal: 1,
+      },
+      { kind: 'assistant', text: 'queued answer', sentAt: 10_200 },
+    ],
+    FALLBACK_SENT_AT,
+  );
+
+  store.appendUserMessage(SID, 'queued next query', 20_000);
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-queued-next',
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'queued next answer',
+    sentAt: 20_100,
+  });
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: SID,
+    turnId: 'turn-queued-next',
+  });
+
+  const state = useAppStore.getState();
+  const visible = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  }).flatMap((message) => {
+    if (message.kind === 'user') return [`user:${message.content}`];
+    if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+    return [];
+  });
+  assert.deepEqual(visible, [
+    'user:queued empty query',
+    'user:queued answered query',
+    'assistant:queued answer',
+    'user:queued next query',
+    'assistant:queued next answer',
+  ]);
+  assert.equal(
+    (state.eventsBySession[SID] ?? []).filter(
+      (event) => event.kind === 'queued_user_prompt_started' && event.queueId === 'after-empty',
+    ).length,
+    1,
+  );
+  assert.equal(
+    (state.userMessagesBySession[SID] ?? []).some(
+      (message) => message.hiddenProjectionDuplicate === true,
+    ),
+    false,
+  );
+  assertClosedTranscriptStructure(SID);
+});
+
+test('a legal same-text interrupt in one Runtime turn receives a fresh ordinal after folding', () => {
+  const store = useAppStore.getState();
+  useAppStore.setState({ queuedUserMessagesBySession: {} });
+
+  store.appendUserMessage(SID, 'repeat prompt', 10_000);
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-same-text',
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'answer one',
+    sentAt: 10_100,
+  });
+  store.prependSessionHistory(
+    SID,
+    [
+      {
+        kind: 'user',
+        content: 'repeat prompt',
+        sentAt: 10_000,
+        turnId: 'turn-same-text',
+        turnUserOrdinal: 0,
+      },
+      { kind: 'assistant', text: 'answer one', sentAt: 10_100 },
+    ],
+    FALLBACK_SENT_AT,
+  );
+
+  store.appendEvent({
+    kind: 'mid_turn_user_prompt',
+    sessionId: SID,
+    queueId: 'different-second',
+    content: 'different prompt',
+    turnId: 'turn-same-text',
+    turnUserOrdinal: 1,
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'answer two',
+    sentAt: 10_200,
+  });
+  store.appendEvent({
+    kind: 'mid_turn_user_prompt',
+    sessionId: SID,
+    queueId: 'repeat-third',
+    content: 'repeat prompt',
+    turnId: 'turn-same-text',
+    turnUserOrdinal: 2,
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'answer three',
+    sentAt: 10_300,
+  });
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: SID,
+    turnId: 'turn-same-text',
+  });
+
+  const state = useAppStore.getState();
+  assert.deepEqual(
+    (state.userMessagesBySession[SID] ?? []).map((message) => [
+      message.content,
+      message.turnUserOrdinal,
+    ]),
+    [
+      ['repeat prompt', 0],
+      ['different prompt', 1],
+      ['repeat prompt', 2],
+    ],
+    'a folded ordinal remains observed and cannot be reused by equal text later in the turn',
+  );
+  assert.deepEqual(
+    composeMessages({
+      events: state.eventsBySession[SID] ?? [],
+      userMessages: state.userMessagesBySession[SID] ?? [],
+    }).flatMap((message) => {
+      if (message.kind === 'user') return [`user:${message.content}`];
+      if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+      return [];
+    }),
+    [
+      'user:repeat prompt',
+      'assistant:answer one',
+      'user:different prompt',
+      'assistant:answer two',
+      'user:repeat prompt',
+      'assistant:answer three',
+    ],
+  );
+  assertClosedTranscriptStructure(SID);
+});
+
+test('an ambiguous same-text delivery after history fails open with a fresh ordinal', () => {
+  const store = useAppStore.getState();
+  useAppStore.setState({ queuedUserMessagesBySession: {} });
+  store.prependSessionHistory(
+    SID,
+    [
+      {
+        kind: 'user',
+        content: 'same text',
+        sentAt: 10_000,
+        turnId: 'turn-ambiguous',
+        turnUserOrdinal: 0,
+      },
+      { kind: 'assistant', text: 'old answer', sentAt: 10_100 },
+    ],
+    FALLBACK_SENT_AT,
+  );
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-ambiguous',
+  });
+  const queuedLocalId = store.appendQueuedUserMessage(SID, {
+    content: 'same text',
+    matchContent: 'same text',
+    queueMode: 'interrupt',
+    sentAt: 20_000,
+  });
+  assert.ok(queuedLocalId);
+  store.markQueuedUserMessageAccepted(SID, queuedLocalId, 'unproven-new-delivery', 'interrupt');
+  store.appendEvent({
+    kind: 'mid_turn_user_prompt',
+    sessionId: SID,
+    queueId: 'unproven-new-delivery',
+    content: 'same text',
+    turnId: 'turn-ambiguous',
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'new answer',
+    sentAt: 20_100,
+  });
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: SID,
+    turnId: 'turn-ambiguous',
+  });
+
+  const state = useAppStore.getState();
+  assert.deepEqual(
+    (state.userMessagesBySession[SID] ?? [])
+      .filter((message) => message.hiddenHistoryAnchor !== true)
+      .map((message) => message.turnUserOrdinal),
+    [0, 1],
+    'queue/alignment evidence cannot authorize text-only reuse of restored identity',
+  );
+  assert.deepEqual(
+    composeMessages({
+      events: state.eventsBySession[SID] ?? [],
+      userMessages: state.userMessagesBySession[SID] ?? [],
+    }).flatMap((message) => {
+      if (message.kind === 'user') return [`user:${message.content}`];
+      if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+      return [];
+    }),
+    ['user:same text', 'assistant:old answer', 'user:same text', 'assistant:new answer'],
+  );
+  assertClosedTranscriptStructure(SID);
+});
+
+test('strong folding preserves a consecutive multi-terminal error sequence', () => {
+  const store = useAppStore.getState();
+  store.appendUserMessage(SID, 'terminal compatibility', 10_000);
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-multi-terminal',
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'partial answer',
+    sentAt: 10_100,
+  });
+  store.appendEvent({
+    kind: 'session_error',
+    sessionId: SID,
+    turnId: 'turn-multi-terminal',
+    error: 'raw 500',
+  });
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: SID,
+    turnId: 'turn-multi-terminal',
+  });
+  store.appendEvent({
+    kind: 'session_error',
+    sessionId: SID,
+    turnId: 'turn-multi-terminal',
+    error: 'Server error (500). Retrying may help.',
+  });
+  store.prependSessionHistory(
+    SID,
+    [
+      {
+        kind: 'user',
+        content: 'terminal compatibility',
+        sentAt: 10_000,
+        turnId: 'turn-multi-terminal',
+        turnUserOrdinal: 0,
+      },
+      { kind: 'assistant', text: 'partial answer', sentAt: 10_100 },
+    ],
+    FALLBACK_SENT_AT,
+  );
+
+  const state = useAppStore.getState();
+  assert.deepEqual(
+    (state.eventsBySession[SID] ?? []).flatMap((event) => {
+      if (event.kind === 'session_error') return [`error:${event.error}`];
+      if (event.kind === 'session_complete') return ['complete'];
+      return [];
+    }),
+    ['error:raw 500', 'complete', 'error:Server error (500). Retrying may help.'],
+    'folding must preserve every consecutive terminal from the authoritative live projection',
+  );
+  const output = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  });
+  assert.deepEqual(
+    output.flatMap((message) =>
+      message.kind === 'system_notice' && message.variant === 'error' ? [message.text] : [],
+    ),
+    ['raw 500', 'Server error (500). Retrying may help.'],
+  );
+  assertClosedTranscriptStructure(SID);
+});
+
+test('completed interrupt run plus later runs stays paired after full history restore and next send', () => {
+  const store = useAppStore.getState();
+  useAppStore.setState({ queuedUserMessagesBySession: {} });
+
+  // Factual shape from s_ca10d118-fb1c-495c-b00b-5d26d3ac80e5: run.started has no
+  // identity, then an interrupt starts a second canonical turn inside the same Runtime run.
+  // Only that second turn owns run.completed.
+  store.appendUserMessage(SID, 'query 1', 10_000);
+  store.appendEvent({ kind: 'session_start', sessionId: SID, provider: 'mock' });
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-1',
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'answer 1',
+    sentAt: 10_100,
+  });
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-2',
+  });
+  store.appendEvent({
+    kind: 'mid_turn_user_prompt',
+    sessionId: SID,
+    queueId: 'interrupt-2',
+    content: 'query 2',
+    turnId: 'turn-2',
+    turnUserOrdinal: 0,
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'answer 2',
+    sentAt: 10_200,
+  });
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: SID,
+    turnId: 'turn-2',
+  });
+
+  for (const turn of [
+    { ordinal: 3, query: 'query 3', answer: 'answer 3', turnId: 'turn-3' },
+    { ordinal: 4, query: 'query 4', answer: 'answer 4', turnId: 'turn-4' },
+    { ordinal: 5, query: 'query 5', answer: 'answer 5', turnId: 'turn-5' },
+  ] as const) {
+    const sentAt = turn.ordinal * 10_000;
+    store.appendUserMessage(SID, turn.query, sentAt);
+    store.appendEvent({ kind: 'session_start', sessionId: SID, provider: 'mock' });
+    store.appendEvent({
+      kind: 'session_start',
+      sessionId: SID,
+      provider: 'mock',
+      turnId: turn.turnId,
+    });
+    store.appendEvent({
+      kind: 'text_delta',
+      sessionId: SID,
+      text: turn.answer,
+      sentAt: sentAt + 100,
+    });
+    store.appendEvent({
+      kind: 'session_complete',
+      sessionId: SID,
+      turnId: turn.turnId,
+    });
+  }
+
+  store.prependSessionHistory(
+    SID,
+    [
+      {
+        kind: 'user',
+        content: 'query 1',
+        sentAt: 10_000,
+        turnId: 'turn-1',
+        turnUserOrdinal: 0,
+      },
+      { kind: 'assistant', text: 'answer 1', sentAt: 10_100 },
+      {
+        kind: 'user',
+        content: 'query 2',
+        sentAt: 10_150,
+        turnId: 'turn-2',
+        turnUserOrdinal: 0,
+      },
+      { kind: 'assistant', text: 'answer 2', sentAt: 10_200 },
+      {
+        kind: 'user',
+        content: 'query 3',
+        sentAt: 30_000,
+        turnId: 'turn-3',
+        turnUserOrdinal: 0,
+      },
+      { kind: 'assistant', text: 'answer 3', sentAt: 30_100 },
+      {
+        kind: 'user',
+        content: 'query 4',
+        sentAt: 40_000,
+        turnId: 'turn-4',
+        turnUserOrdinal: 0,
+      },
+      { kind: 'assistant', text: 'answer 4', sentAt: 40_100 },
+      {
+        kind: 'user',
+        content: 'query 5',
+        sentAt: 50_000,
+        turnId: 'turn-5',
+        turnUserOrdinal: 0,
+      },
+      { kind: 'assistant', text: 'answer 5', sentAt: 50_100 },
+    ],
+    FALLBACK_SENT_AT,
+  );
+
+  const visibleTranscript = (): string[] => {
+    const state = useAppStore.getState();
+    return composeMessages({
+      events: state.eventsBySession[SID] ?? [],
+      userMessages: state.userMessagesBySession[SID] ?? [],
+      queuedUserMessages: state.queuedUserMessagesBySession[SID] ?? [],
+    }).flatMap((message) => {
+      if (message.kind === 'user') return [`user:${message.content}`];
+      if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+      return [];
+    });
+  };
+  const restoredTranscript = [
+    'user:query 1',
+    'assistant:answer 1',
+    'user:query 2',
+    'assistant:answer 2',
+    'user:query 3',
+    'assistant:answer 3',
+    'user:query 4',
+    'assistant:answer 4',
+    'user:query 5',
+    'assistant:answer 5',
+  ];
+
+  assert.deepEqual(
+    visibleTranscript(),
+    restoredTranscript,
+    'full history reconciliation must preserve every canonical prompt/response pair exactly once',
+  );
+  assert.deepEqual(
+    (useAppStore.getState().userMessagesBySession[SID] ?? []).map((message) => message.content),
+    ['query 1', 'query 2', 'query 3', 'query 4', 'query 5'],
+    'all five completed live duplicates must fold into their durable users',
+  );
+  const reconciledEvents = useAppStore.getState().eventsBySession[SID] ?? [];
+  const interruptBoundaryIndexes = reconciledEvents.flatMap((event, index) =>
+    event.kind === 'mid_turn_user_prompt' ? [index] : [],
+  );
+  const secondAnswerIndex = reconciledEvents.findIndex(
+    (event) => event.kind === 'text_delta' && event.text === 'answer 2',
+  );
+  assert.equal(interruptBoundaryIndexes.length, 1);
+  assert.ok(
+    interruptBoundaryIndexes[0]! < secondAnswerIndex,
+    'the retained interrupt marker must remain at the start of query 2, before its answer',
+  );
+
+  store.appendUserMessage(SID, 'query 6', 60_000);
+  assert.deepEqual(
+    visibleTranscript(),
+    [...restoredTranscript, 'user:query 6'],
+    'a new send must never consume the previous restored assistant segment',
+  );
+
+  store.appendEvent({ kind: 'session_start', sessionId: SID, provider: 'mock' });
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-6',
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'answer 6',
+    sentAt: 60_100,
+  });
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: SID,
+    turnId: 'turn-6',
+  });
+  assert.deepEqual(
+    visibleTranscript(),
+    [...restoredTranscript, 'user:query 6', 'assistant:answer 6'],
+    'the next Runtime lifecycle must bind its answer to the newly sent query',
+  );
+  assertClosedTranscriptStructure(SID);
 });
 
 test('history-first race keeps both turns when the eventual live semantics diverge', () => {

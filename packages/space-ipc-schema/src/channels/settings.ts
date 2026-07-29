@@ -149,6 +149,14 @@ const kodaxConfigOverviewSchema = z
 
 export type KodaxConfigOverviewT = z.infer<typeof kodaxConfigOverviewSchema>;
 
+const kodaxRuntimeConfigReloadSchema = z
+  .object({
+    status: z.enum(['applied', 'not-required', 'failed']),
+    warning: z.string().min(1).max(512).optional(),
+  })
+  .strict();
+export type KodaxRuntimeConfigReloadT = z.infer<typeof kodaxRuntimeConfigReloadSchema>;
+
 const kodaxIntegrationMigrationDomainPlanSchema = z
   .object({
     action: z.enum(['create', 'none']),
@@ -170,6 +178,7 @@ export type KodaxIntegrationMigrationPlanT = z.infer<typeof kodaxIntegrationMigr
 export const kodaxIntegrationMigrationResultSchema = kodaxIntegrationMigrationPlanSchema.extend({
   applied: z.array(z.enum(['mcp', 'extensions'])).max(2),
   cleanedLegacy: z.boolean(),
+  runtimeReload: kodaxRuntimeConfigReloadSchema,
 });
 export type KodaxIntegrationMigrationResultT = z.infer<
   typeof kodaxIntegrationMigrationResultSchema
@@ -267,7 +276,9 @@ export const settingsKodaxConfigSetCompactionChannel = {
       compaction: kodaxCompactionSettingsSchema,
     })
     .strict(),
-  output: kodaxConfigOverviewSchema,
+  output: kodaxConfigOverviewSchema.extend({
+    runtimeReload: kodaxRuntimeConfigReloadSchema,
+  }),
 } as const;
 
 export const settingsKodaxConfigPlanIntegrationMigrationChannel = {

@@ -455,3 +455,68 @@ test('recovery restart keeps the admission gate closed after embedded persistenc
   );
   assert.deepEqual(calls, ['prepare-embedded', 'persist-embedded', 'restore-daemon', 'restart']);
 });
+
+test('application shutdown closes admission, drains admitted work, and can reopen after cancellation', async () => {
+  let releaseAdmission!: () => void;
+  const admissionBlock = new Promise<void>((resolve) => {
+    releaseAdmission = resolve;
+  });
+  let admissionEntered!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    admissionEntered = resolve;
+  });
+  const coordinator = new CoderRuntimeModeSwitchCoordinator({
+    currentHost: () => 'runtime',
+    hasActiveSpaceRun: () => false,
+    prepareEmbeddedRestart: async () => undefined,
+    prepareDaemonRestart: async () => undefined,
+    restoreDaemonOwner: async () => undefined,
+    persist: async (mode) => ({ coderRuntimeMode: mode }),
+    scheduleRestart: () => undefined,
+  });
+
+  const admitted = coordinator.runCoderAdmission(async () => {
+    admissionEntered();
+    await admissionBlock;
+  });
+  await entered;
+
+  const shuttingDown = coordinator.beginShutdown();
+  await assert.rejects(
+    coordinator.runCoderAdmission(async () => undefined),
+    /shutting down|restarting/i,
+  );
+
+  releaseAdmission();
+  await admitted;
+  const reopen = await shuttingDown;
+  await assert.rejects(
+    coordinator.runCoderAdmission(async () => undefined),
+    /shutting down|restarting/i,
+  );
+
+  reopen();
+  reopen();
+  await coordinator.runCoderAdmission(async () => undefined);
+});
+
+test('application shutdown times out a stuck admission and atomically reopens the gate', async () => {
+  const coordinator = new CoderRuntimeModeSwitchCoordinator({
+    currentHost: () => 'runtime',
+    hasActiveSpaceRun: () => false,
+    prepareEmbeddedRestart: async () => undefined,
+    prepareDaemonRestart: async () => undefined,
+    restoreDaemonOwner: async () => undefined,
+    persist: async (mode) => ({ coderRuntimeMode: mode }),
+    scheduleRestart: () => undefined,
+  });
+  const releaseStuckAdmission = coordinator.beginCoderAdmission();
+
+  await assert.rejects(
+    coordinator.beginShutdown({ drainTimeoutMs: 10 }),
+    /did not finish within 10 ms.*remain open/i,
+  );
+  const releaseAfterTimeout = coordinator.beginCoderAdmission();
+  releaseAfterTimeout();
+  releaseStuckAdmission();
+});

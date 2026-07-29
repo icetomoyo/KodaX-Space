@@ -863,6 +863,8 @@ export class RuntimeHostAdapter {
   private readonly actorSnapshots = new Map<string, AgentActorTreeSnapshotT>();
   private readonly settingsUpdateLocks = new Map<string, Promise<void>>();
   private readonly runProviders = new Map<string, string>();
+  /** Next canonical user ordinal, but only for root turns observed from turn.started. */
+  private readonly nextUserOrdinalByTurnId = new Map<string, number>();
   private readonly terminalSidecarBlockRuns = new Map<string, string>();
   private readonly continuationCredentialLeases = new Map<string, string>();
   private readonly credentialLeases = new Map<string, SpaceCredentialLeaseBinding>();
@@ -1270,6 +1272,11 @@ export class RuntimeHostAdapter {
     this.hostToolLeaseIds.clear();
     this.runtime = null;
     this.activeRuns.clear();
+    // User ordinals are inferred only within one observed daemon connection.
+    // A reconnect may miss delivery events from the disconnected interval, so
+    // retaining these counters would turn an unprovable ordinal into a false
+    // strong identity and could fold two distinct user boundaries together.
+    this.nextUserOrdinalByTurnId.clear();
     this.initializePromise = null;
     this.state = 'uninitialized';
     await attached.close().catch(() => undefined);
@@ -1505,9 +1512,7 @@ export class RuntimeHostAdapter {
         'Coder daemon management runtimeId does not match the attached Runtime identity.',
       );
     }
-    this.integrationHealthFingerprint = this.fingerprintIntegrationHealth(
-      management.integrations,
-    );
+    this.integrationHealthFingerprint = this.fingerprintIntegrationHealth(management.integrations);
     this.profileCursor = Math.max(this.profileCursor, cursor);
     const projectedProfile = projectRuntimeProfile({
       status,
@@ -1987,6 +1992,7 @@ export class RuntimeHostAdapter {
             sessionId: continuation.sessionId,
             queueMode: 'after-turn',
             content: continuation.content,
+            ...(run.turnId ? { turnId: run.turnId, turnUserOrdinal: 0 } : {}),
           });
         }
       }
@@ -2206,7 +2212,7 @@ export class RuntimeHostAdapter {
           sessionId: continuation.sessionId,
           queueMode: 'after-turn',
           content: continuation.content,
-          ...(event.turnId ? { turnId: event.turnId } : {}),
+          ...(event.turnId ? { turnId: event.turnId, turnUserOrdinal: 0 } : {}),
         });
       }
       const leaseId = this.continuationCredentialLeases.get(event.runId);
@@ -2265,6 +2271,23 @@ export class RuntimeHostAdapter {
       session.autoModeEngine = settings.autoModeEngine;
     }
     await kodaxHost.persistRuntime(sessionId);
+  }
+
+  private observeRootTurnStart(turnId: string, deliveryKind: unknown): void {
+    if (this.nextUserOrdinalByTurnId.has(turnId)) return;
+    // An initial turn has already consumed its prompt at ordinal zero. A queued turn is created
+    // immediately before run.input.delivered, so that delivered input itself owns ordinal zero.
+    // Other or future delivery kinds do not prove either shape and must remain fail-open.
+    if (deliveryKind === 'initial') this.nextUserOrdinalByTurnId.set(turnId, 1);
+    else if (deliveryKind === 'queued') this.nextUserOrdinalByTurnId.set(turnId, 0);
+  }
+
+  private takeObservedUserOrdinal(turnId: string | undefined): number | undefined {
+    if (turnId === undefined) return undefined;
+    const ordinal = this.nextUserOrdinalByTurnId.get(turnId);
+    if (ordinal === undefined) return undefined;
+    this.nextUserOrdinalByTurnId.set(turnId, ordinal + 1);
+    return ordinal;
   }
 
   private bridgeRuntimeEvent(event: RuntimeTypedEvent, runtimeId?: string): void {
@@ -2473,12 +2496,14 @@ export class RuntimeHostAdapter {
           typeof delivered?.inputId === 'string' && delivered.inputId.length <= 128
             ? delivered.inputId
             : undefined;
+        const turnUserOrdinal = this.takeObservedUserOrdinal(event.turnId);
         const parsed = sessionEventChannel.payload.safeParse({
           kind: 'mid_turn_user_prompt',
           sessionId: event.sessionId,
           ...(queueId ? { queueId } : {}),
           content: clampRuntimePromptEventText(content),
           ...(event.turnId ? { turnId: event.turnId } : {}),
+          ...(turnUserOrdinal !== undefined ? { turnUserOrdinal } : {}),
         });
         if (parsed.success) this.push('session.event', parsed.data);
       }
@@ -2498,6 +2523,10 @@ export class RuntimeHostAdapter {
       if (parsed.success) this.push('session.event', parsed.data);
       return;
     }
+    if (event.type === 'turn.completed' || event.type === 'turn.failed') {
+      if (event.turnId) this.nextUserOrdinalByTurnId.delete(event.turnId);
+      return;
+    }
     // Runtime allocates canonical turn identity after run admission. Real daemon
     // run.started events therefore have no turnId; turn.started is the first
     // lifecycle event that can bind the optimistic renderer turn to durable history.
@@ -2506,6 +2535,7 @@ export class RuntimeHostAdapter {
       const turnId =
         event.turnId ?? (typeof payload?.turnId === 'string' ? payload.turnId : undefined);
       if (!turnId) return;
+      this.observeRootTurnStart(turnId, payload?.deliveryKind);
       this.push('session.event', {
         ...runtimeSessionEventOrigin(runtimeId, event),
         kind: 'session_start',
@@ -2525,7 +2555,7 @@ export class RuntimeHostAdapter {
           queueId: event.runId,
           queueMode: 'after-turn',
           content: continuation.content,
-          ...(event.turnId ? { turnId: event.turnId } : {}),
+          ...(event.turnId ? { turnId: event.turnId, turnUserOrdinal: 0 } : {}),
         });
       }
       const provider =
@@ -2551,6 +2581,7 @@ export class RuntimeHostAdapter {
         sessionId: event.sessionId,
         ...(event.turnId ? { turnId: event.turnId } : {}),
       });
+      if (event.turnId) this.nextUserOrdinalByTurnId.delete(event.turnId);
       return;
     }
     if (
@@ -2571,6 +2602,7 @@ export class RuntimeHostAdapter {
         event.type === 'run.failed' &&
         this.terminalSidecarBlockRuns.get(event.runId) === event.sessionId;
       this.terminalSidecarBlockRuns.delete(event.runId);
+      if (event.turnId) this.nextUserOrdinalByTurnId.delete(event.turnId);
       if (terminalSidecarBlock) {
         this.push('session.event', {
           ...runtimeSessionEventOrigin(runtimeId, event),
@@ -3238,6 +3270,61 @@ export class RuntimeHostAdapter {
     return rollback;
   }
 
+  /**
+   * Stop the Space-selected Coder daemon while this process still owns a live
+   * Runtime control plane. A ready daemon uses the revisioned stopForInline
+   * transaction, not the inspect-then-CLI path. The temporary inline fence
+   * closes the owner hand-off race and is released only after daemon policy is
+   * restored, leaving the profile both unowned and ready for the next launch.
+   */
+  async stopDaemonForCompleteExit(operationId?: string): Promise<void> {
+    if (this.mode !== 'runtime') {
+      // Embedded Coder has no detached daemon. Closing the inline owner is the
+      // complete shutdown operation and preserves the persisted inline policy.
+      await this.close();
+      return;
+    }
+    if (this.hasReadyRuntime()) {
+      await this.prepareInlineRollback(operationId);
+      await this.restoreDaemonOwner();
+      await this.assertUnownedDaemonPolicy();
+      return;
+    }
+    if (this.state === 'initializing' || this.initializePromise !== null) {
+      throw new Error('Wait for Coder initialization to settle before complete exit.');
+    }
+
+    const stopped = await this.idleDaemonStop();
+    if (!stopped.stopped && stopped.reason !== 'missing') {
+      throw new Error(
+        stopped.message ??
+          `Coder daemon shutdown could not be confirmed (${stopped.reason ?? 'unknown reason'}).`,
+      );
+    }
+
+    let ownerState = await this.ownerControl.getState({
+      ...this.runtimeOwnerTarget(),
+    });
+    if (ownerState.ownerStatus === 'owned') {
+      if (!stopped.stopped) {
+        throw new Error(
+          'Coder daemon CLI state is missing, but the Coder owner is still active; shutdown could not be confirmed.',
+        );
+      }
+      ownerState = await this.waitForAnyDaemonOwnerRelease();
+    }
+    if (ownerState.ownerStatus !== 'unowned') {
+      throw new Error('Coder owner state is unreadable; shutdown could not be confirmed.');
+    }
+    if (ownerState.policy.mode !== 'daemon') {
+      await this.ownerControl.enableDaemon({
+        ...this.runtimeOwnerTarget(),
+      });
+    }
+    await this.assertUnownedDaemonPolicy();
+    await this.close();
+  }
+
   async prepareEmbeddedRestart(operationId?: string): Promise<void> {
     if (this.mode !== 'runtime') {
       throw new Error('Embedded restart preparation requires the daemon Coder host.');
@@ -3421,6 +3508,36 @@ export class RuntimeHostAdapter {
     }
   }
 
+  private async waitForAnyDaemonOwnerRelease(): Promise<RuntimeOwnerState> {
+    const deadline = Date.now() + 10_000;
+    while (true) {
+      const state = await this.ownerControl.getState({
+        ...this.runtimeOwnerTarget(),
+      });
+      if (state.ownerStatus === 'unowned') return state;
+      if (state.ownerStatus === 'unreadable') {
+        throw new Error('Coder owner state became unreadable during complete exit.');
+      }
+      if (Date.now() >= deadline) {
+        throw new Error('Timed out waiting for the Coder daemon owner to release.');
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 25));
+    }
+  }
+
+  private async assertUnownedDaemonPolicy(): Promise<void> {
+    const state = await this.ownerControl.getState({
+      ...this.runtimeOwnerTarget(),
+    });
+    if (state.ownerStatus !== 'unowned' || state.policy.mode !== 'daemon') {
+      throw new Error(
+        state.ownerStatus === 'unreadable'
+          ? 'Coder owner state is unreadable after shutdown.'
+          : 'Coder daemon shutdown did not leave a verified unowned daemon policy.',
+      );
+    }
+  }
+
   async close(): Promise<void> {
     const inlineOwner = this.inlineOwner;
     this.inlineOwner = undefined;
@@ -3440,6 +3557,7 @@ export class RuntimeHostAdapter {
     this.hostToolLeaseIds.clear();
     this.activeRuns.clear();
     this.runProviders.clear();
+    this.nextUserOrdinalByTurnId.clear();
     this.terminalSidecarBlockRuns.clear();
     this.continuationCredentialLeases.clear();
     this.credentialLeases.clear();
