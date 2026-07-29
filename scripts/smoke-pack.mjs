@@ -481,15 +481,9 @@ async function checkAsarContents(asarPath) {
                 dependencyMetadataPath.replace(/^\//, '').split('/').join(path.sep),
               )
             : await fs.readFile(
-                path.join(
-                  resourceRootDir,
-                  ...dependencyMetadataPath.replace(/^\//, '').split('/'),
-                ),
+                path.join(resourceRootDir, ...dependencyMetadataPath.replace(/^\//, '').split('/')),
               );
-          metadataByPath.set(
-            dependencyMetadataPath,
-            JSON.parse(metadataBytes.toString('utf8')),
-          );
+          metadataByPath.set(dependencyMetadataPath, JSON.parse(metadataBytes.toString('utf8')));
         } catch (error) {
           fail(
             `could not read dependency metadata at ${dependencyMetadataPath}: ${
@@ -867,7 +861,7 @@ function checkKodaxWorkersExecuteFromAsar(asarPath) {
   );
   const marker = 'KODAX_ASAR_WORKER_PROBE=';
   const probeSource = `
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
@@ -1053,6 +1047,29 @@ try {
   // a disposable process, so terminate it after the result has been flushed.
   process.exit(0);
 } catch (error) {
+  let daemonBootstrapTail = '';
+  try {
+    const bootstrapLog = await readFile(
+      path.join(
+        homeDir,
+        '.kodax',
+        'runtime',
+        'daemon',
+        daemonProfile,
+        'bootstrap.log',
+      ),
+      'utf8',
+    );
+    daemonBootstrapTail = bootstrapLog
+      .slice(-8_000)
+      .replace(/(bearer\\s+)[^\\s"']+/gi, '$1[REDACTED]')
+      .replace(
+        /((?:api[_-]?key|authorization|token|secret|password)\\s*[:=]\\s*)[^\\s"']+/gi,
+        '$1[REDACTED]',
+      );
+  } catch {
+    daemonBootstrapTail = '';
+  }
   if (daemonRuntime) {
     let cleanupRuntimeId;
     await daemonRuntime.daemon
@@ -1076,6 +1093,9 @@ try {
   }
   await runtime?.close().catch(() => undefined);
   await rm(homeDir, { recursive: true, force: true }).catch(() => undefined);
+  if (daemonBootstrapTail) {
+    console.error('KODAX_DAEMON_BOOTSTRAP_TAIL\\n' + daemonBootstrapTail);
+  }
   console.error(error instanceof Error ? error.stack : String(error));
   process.exit(1);
 }
