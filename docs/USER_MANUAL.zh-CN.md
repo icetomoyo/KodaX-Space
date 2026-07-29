@@ -300,6 +300,11 @@ flowchart TD
 
 不要只看按钮颜色。允许前检查：工具名称、命令、目标路径、是否访问网络、是否会删除/覆盖数据。`Allow always` 仅在 Runtime 为当前安全操作给出具体授权建议时显示；它只记住所示的精确命令/工作目录/解释器/后台组合，或精确工具/路径范围，危险或动态 shell 操作仍只能单次确认。Auto 不是 OS 安全沙箱，也不是“允许一切”。
 
+Coder 工具活动条会显示结构化沙箱结果：`Sandboxed` 表示本次工具已应用
+Runtime containment；`Sandbox fallback` 表示沙箱未准备好或 backend 失败，本次工具仍按
+普通权限策略继续执行；`No sandbox` 表示本次没有选择沙箱。该状态只用于解释当前工具，
+不会写入对话正文，也不把命令级 containment 夸大为完整应用隔离。
+
 权限和 AskUser 请求按 Session 归属：当前弹窗只代表当前可见 Session。后台 Session 的请求会留在队列并在左侧栏显示等待标记；切换到对应 Session 后再处理。这样可以避免一个后台任务的确认窗盖住另一个正在阅读的会话。
 
 PowerShell 的 `-Path` 支持 `[...]` 通配符。最新版 KodaX 会把这类方括号路径视为不完整并升级确认，防止 `[.]kodax/config.json` 解析到受保护路径后绕过 Auto 审查；如果目标确实是名称中带方括号的普通文件，请使用 `-LiteralPath` 或 `-PSPath`，例如 `build/file[12].txt`，它仍会按精确目标建模。
@@ -450,7 +455,8 @@ Space 0.1.33 保留并验证真实 `/experimental-memory` 导出和 policy，在
 
 MCP 面板展示 server 状态、命令/URL、start/stop、工具、日志/诊断和扩展卸载。`v0.1.33` 的 Coder 工具目录与 reload 会同步 Runtime；server 进程、状态和日志仍由 Space MCP Manager 负责，不会启动第二套桌面 manager。只安装可信来源的扩展。
 
-KodaX 0.7.77 已把集成配置从核心 `config.json` 分离：
+KodaX 0.7.78 继续把集成配置从核心 `config.json` 分离，并为独立配置增加
+last-known-good 恢复、revisioned reload、watcher 状态和有界诊断：
 
 | 范围              | 规范路径                                 | 格式与 Space 行为                                                                                             |
 | ----------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
@@ -459,13 +465,21 @@ KodaX 0.7.77 已把集成配置从核心 `config.json` 分离：
 | 受管理 Extensions | `~/.kodax/integrations/extensions.json`  | `{ "version": 1, "paths": [ ... ] }`；默认只发现，设置 `KODAX_SPACE_ENABLE_SDK_EXTENSIONS=1` 后才加载可信代码 |
 | Runtime A2A       | `~/.kodax/integrations/a2a.json`         | 独立版本化文档，由 KodaX Runtime 持有                                                                         |
 
-Settings → Runtime 会分别显示 MCP 的规范路径、来源和 server 数。`Dedicated integration file` 表示已读取新文件；`Legacy config.json compatibility fallback` 表示仍在只读使用旧 `config.json#mcpServers`；`No file` 表示空默认值。旧 `config.json#extensions` 同样只作迁移回退。只要 SDK 计划发现可迁移条目，这里还会显示 MCP/Extension 的条目数、目标路径、潜在密钥警告和“迁移集成配置”按钮。
+Settings → Runtime 会显示 MCP、A2A、Extensions 各自的规范路径、来源、revision、
+watcher、最近 reload 和诊断状态。`Dedicated integration file` 表示已读取新文件；
+`Legacy config.json compatibility fallback` 表示仍在只读使用旧
+`config.json#mcpServers`；`No file` 表示空默认值。旧 `config.json#extensions`
+同样只作迁移回退。只要 SDK 计划发现可迁移条目，这里还会显示 MCP/Extension 的
+条目数、目标路径、潜在密钥警告和“迁移集成配置”按钮。
 
 应用内按钮直接调用 KodaX SDK 的 `planLegacyIntegrationMigration()` 与 `migrateLegacyIntegrationConfig()`：只创建缺失的独立文件，不覆盖已有目标，默认保留 `config.json` 旧字段，并在成功后重载 MCP。命令行也可先运行 `kodax integrations migrate` 预览计划，再运行 `kodax integrations migrate --apply` 创建独立文件。只有确认新文件有效后才运行 `kodax integrations migrate --apply --cleanup-legacy` 显式清理旧字段。A2A 没有旧 `config.json` 迁移源，始终以 `integrations/a2a.json` 为权威配置。`.mcpb` 安装/卸载通过 SDK MCP CRUD 写入新的 `integrations/mcp.json`。
 
-如果某个独立 integration 文件无效，Space 会报告 SDK/Runtime 校验错误并指明应检查的
-规范路径；不会删除、重写或静默重置用户配置。修复点名的文件后按界面提示 reload 或
-安全重启 Runtime owner。inbound A2A authentication/authority 变化仍可能要求安全重启。
+如果某个独立 integration 文件无效，Runtime 会继续使用 last-known-good 配置并返回
+有界诊断；Space 会指明应检查的规范路径，不会删除、重写或静默重置用户配置。Space
+会自动刷新 daemon watcher 的健康状态，修复被点名文件后通常会在数秒内恢复 healthy，
+无需重启 Coder。若迁移期间发现 revision 已被其他客户端更新，Space 会要求 reload 后
+重试，不会覆盖新数据；inbound A2A authentication/authority 变化仍可能要求安全重启
+Runtime owner。
 
 应用内 AI 使用的 `kodax_manual` 不再用 Space 主题完全替换 SDK 手册。Space 以当前安装 SDK 的 `KODAX_UNDERLYING_CAPABILITY_TOPICS` 为基线；若 Space 覆盖同名主题，会把准确的 SDK 原始正文、aliases 和 sources 与桌面操作说明动态合成。这样 Provider、custom Provider、配置、权限、工具、Skills、Extensions、MCP、A2A、仓库智能、Sessions、压缩和 SDK 等原始有价值内容不会因白标说明而丢失。
 

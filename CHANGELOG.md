@@ -14,6 +14,12 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ## [Unreleased]
 
+- **KodaX 0.7.78 Runtime safety baseline** - Root and Desktop now install the exact npm Registry release (`sha512-D33K2cSFM6Xyi1x8Q2Bwjv6KEGzZIdIlqSN+Odt9MVWgoEb0TCARlaC98ds+M1S+jlhCay+8masnStzbxk6Itg==`). Space requires exclusive Actor ownership, orphan exit, Skill learning-loop, resilient integration configuration, and Auto guardrail v4 contracts; exposes bounded integration health in Settings/diagnostics; projects Auto side-query metadata without prompt/response bodies; and consumes structured fail-closed sandbox observations while keeping full F138 OS isolation planned.
+- **Optional integration failures stay optional** - Space now follows daemon watcher health changes without reconnecting Coder. Invalid MCP/A2A/Extension updates retain KodaX's last-known-good state, surface the exact bounded diagnostic, and recover automatically after the named file is repaired; polling failures retain the last projection instead of degrading the core Runtime.
+- **Packaged sandbox helper paths** - ASRT and its runtime dependency chain now ship under physical `resources/node_modules` paths rather than inside `app.asar`, so Windows `srt-win.exe` and Linux seccomp helpers can be spawned. Package smoke verifies the files, runs the public sandbox doctor, and rejects `app.asar`/`ENOENT` helper diagnostics.
+- **Capability-based Runtime compatibility** - Live daemon attachment no longer rejects an otherwise compatible Runtime by semantic version. The explicit negotiated capability requirements, including `daemonOrphanExit:1`, remain the fail-closed contract.
+- **Visible sandbox fallback** - Active tools show `Sandboxed`, `Sandbox fallback`, or `No sandbox`; fallback explicitly means execution continues under the normal permission policy and never becomes model-visible transcript content.
+
 ## [0.1.33] - 2026-07-28
 
 ### Added

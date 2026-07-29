@@ -12,7 +12,11 @@
 // 不 streaming 且不 pending 时 return null，所以挂在 BottomBar 里零成本。
 
 import { useEffect, useState, type JSX as ReactJSX } from 'react';
-import type { SessionEvent, SpaceSessionLiveProjectionT } from '@kodax-space/space-ipc-schema';
+import type {
+  SessionEvent,
+  SpaceRuntimeToolSandboxT,
+  SpaceSessionLiveProjectionT,
+} from '@kodax-space/space-ipc-schema';
 import { useAppStore } from '../store/appStore.js';
 import { FileNameText } from '../components/FileNameText.js';
 import { useI18n } from '../i18n/I18nProvider.js';
@@ -35,6 +39,44 @@ export interface ActivitySnapshot {
   readonly thinkingTokens?: number;
   /** Running tool… 状态时当前 toolId 累积 tool_input_delta partialJson 的估算 token 数。 */
   readonly toolInputTokens?: number;
+  /** Runtime's structured, non-model-visible sandbox decision for the active tool. */
+  readonly sandbox?: RuntimeSandboxPresentation;
+}
+
+export interface RuntimeSandboxPresentation {
+  readonly label: string;
+  readonly title: string;
+  readonly tone: 'safe' | 'warning' | 'muted';
+}
+
+export function presentRuntimeSandbox(
+  sandbox: SpaceRuntimeToolSandboxT,
+): RuntimeSandboxPresentation {
+  if (sandbox.state === 'applied') {
+    return {
+      label: 'Sandboxed',
+      title: `Sandbox active (${sandbox.backend}).`,
+      tone: 'safe',
+    };
+  }
+  if (sandbox.state === 'fallback') {
+    const reason =
+      sandbox.reason === 'not_ready'
+        ? 'sandbox is not ready'
+        : sandbox.reason === 'prepare_failed'
+          ? 'sandbox preparation failed'
+          : 'sandbox backend failed';
+    return {
+      label: 'Sandbox fallback',
+      title: `${reason}; this tool continues under the normal permission policy.`,
+      tone: 'warning',
+    };
+  }
+  return {
+    label: 'No sandbox',
+    title: 'Sandboxing was not selected for this tool.',
+    tone: 'muted',
+  };
 }
 
 export function snapshotFromEvents(
@@ -265,6 +307,7 @@ export function snapshotFromRuntimeProjection(
     streaming: true,
     status,
     startedAt: run.startedAt ?? run.queuedAt ?? Date.now(),
+    ...(activeTool?.sandbox ? { sandbox: presentRuntimeSandbox(activeTool.sandbox) } : {}),
   };
 }
 
@@ -421,6 +464,20 @@ export function ActivitySpinner(): ReactJSX.Element | null {
           className="max-w-[280px] text-fg-muted"
           title={snap.toolPath}
         />
+      )}
+      {snap.sandbox && (
+        <span
+          className={
+            snap.sandbox.tone === 'warning'
+              ? 'rounded border border-warn/40 bg-warn/10 px-1.5 py-0.5 text-warn'
+              : snap.sandbox.tone === 'safe'
+                ? 'rounded border border-ok/35 bg-ok/10 px-1.5 py-0.5 text-ok'
+                : 'rounded border border-border-default px-1.5 py-0.5 text-fg-muted'
+          }
+          title={snap.sandbox.title}
+        >
+          {snap.sandbox.label}
+        </span>
       )}
       {tail && <span className="text-fg-muted">· {tail}</span>}
     </div>

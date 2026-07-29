@@ -12,7 +12,11 @@ import type {
 } from '@kodax-ai/kodax/runtime';
 import type { AgentEvent, AgentTreeSnapshot } from '@kodax-ai/kodax/agent';
 import { isCoderOwnerRecoveryRestartRequired } from '../kodax/coder-owner-recovery-error.js';
-import { RuntimeHostAdapter, resolveRuntimeHostMode } from '../kodax/runtime-host-adapter.js';
+import {
+  RuntimeHostAdapter,
+  assertSpaceRuntimeSdkLifecycleCapability,
+  resolveRuntimeHostMode,
+} from '../kodax/runtime-host-adapter.js';
 import { kodaxHost } from '../kodax/host.js';
 import {
   SessionRuntimeStore,
@@ -49,6 +53,18 @@ const testIdentityStore = {
 const testRuntimeEventParser = (event: unknown) => ({
   ok: true as const,
   event: event as import('@kodax-ai/kodax/runtime').RuntimeTypedEvent,
+});
+
+test('SDK lifecycle capability is checked before daemon auto-start', () => {
+  assert.doesNotThrow(() =>
+    assertSpaceRuntimeSdkLifecycleCapability({
+      KODAX_RUNTIME_SDK_CAPABILITIES: { daemonOrphanExit: 1 },
+    }),
+  );
+  assert.throws(
+    () => assertSpaceRuntimeSdkLifecycleCapability({}),
+    /installed KodaX SDK.*daemonOrphanExit v1/i,
+  );
 });
 
 async function waitForTest(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
@@ -117,6 +133,29 @@ function createFakeRuntime() {
   const actorEvents = new Map<string, AgentEvent[]>();
   const actorTrees = new Map<string, AgentTreeSnapshot>();
   const customProviders = new Map<string, Record<string, unknown>>();
+  let integrationHealth: RuntimeDaemonManagementState['integrations'] = {
+    state: 'healthy',
+    domains: [
+      {
+        domain: 'mcp',
+        path: 'C:\\Users\\test\\.kodax\\integrations\\mcp.json',
+        source: 'default',
+        watching: true,
+      },
+      {
+        domain: 'a2a',
+        path: 'C:\\Users\\test\\.kodax\\integrations\\a2a.json',
+        source: 'default',
+        watching: true,
+      },
+      {
+        domain: 'extensions',
+        path: 'C:\\Users\\test\\.kodax\\integrations\\extensions.json',
+        source: 'default',
+        watching: true,
+      },
+    ],
+  };
   const actorWaiters = new Set<{
     readonly sessionId: string;
     readonly afterSequence: number;
@@ -177,14 +216,16 @@ function createFakeRuntime() {
       mode: 'daemon',
       profile: 'coder',
       startedAt: '2026-07-12T00:00:00.000Z',
-      version: '0.7.77',
+      version: '0.7.78',
       isolation: 'process',
     },
     capabilities: {
       externalAgentAdmin: { version: 1 },
       actorControlPlane: { version: 1, methodNamespace: 'agents' },
       learningCenter: { version: 1 },
+      skillLearningLoop: { version: 1 },
       a2aConfigReconciler: { version: 1 },
+      integrationConfigResilience: { version: 1 },
       operationDeduplication: { version: 1, retentionMs: 900_000 },
       sessionObservation: { version: 1, maxBufferedEvents: 256 },
       afterTurnInput: { version: 1 },
@@ -210,7 +251,17 @@ function createFakeRuntime() {
         reverseBridgeDrainingFence: true,
         backgroundWorkPreflight: true,
       },
-      runtimeAutoModeGuardrail: { version: 3, owner: 'session-runtime' },
+      daemonOrphanExit: {
+        version: 1,
+        idleOnly: true,
+        bootstrapGrace: true,
+      },
+      sandboxRuntime: {
+        version: 1,
+        asrtVersion: '0.0.65',
+        backend: 'unsupported',
+      },
+      runtimeAutoModeGuardrail: { version: 4, owner: 'session-runtime' },
     },
     grantedScopes: [
       'session:observe',
@@ -529,6 +580,9 @@ function createFakeRuntime() {
             blockers: [],
             canStop: true,
           },
+          ...(integrationHealth
+            ? { integrations: structuredClone(integrationHealth) }
+            : {}),
         } as RuntimeDaemonManagementState;
       },
       stopForInline: async (input: unknown) => {
@@ -593,6 +647,9 @@ function createFakeRuntime() {
     pending,
     settings,
     permissionRequests,
+    setIntegrationHealth(value: RuntimeDaemonManagementState['integrations']) {
+      integrationHealth = value;
+    },
     emit(event: import('@kodax-ai/kodax/runtime').RuntimeTypedEvent) {
       observationListeners.get(event.sessionId)?.(event);
     },
@@ -1139,7 +1196,14 @@ test('failed embedded initialization refuses daemon recovery while another owner
 
 test('runtime selection attaches one Coder daemon with stable identity and required contracts', async () => {
   const fake = createFakeRuntime();
-  const options: ConnectKodaXRuntimeOptions[] = [];
+  const options: Array<
+    Omit<ConnectKodaXRuntimeOptions, 'requirements'> & {
+      readonly daemonOrphanExitMs?: number;
+      readonly requirements?: NonNullable<ConnectKodaXRuntimeOptions['requirements']> & {
+        readonly daemonOrphanExit?: 1;
+      };
+    }
+  > = [];
   const profileRoot = path.resolve('C:\\isolated-profile');
   const adapter = new RuntimeHostAdapter({
     mode: 'runtime',
@@ -1170,6 +1234,7 @@ test('runtime selection attaches one Coder daemon with stable identity and requi
     'default daemon selection must follow KODAX_HOME instead of treating the .kodax root as CLI homeDir',
   );
   assert.equal(options[0]?.sessionsDir, path.join(profileRoot, 'sessions'));
+  assert.equal(options[0]?.daemonOrphanExitMs, 30_000);
   assert.equal(options[0]?.clientInfo?.version, '0.1.30');
   assert.equal(options[0]?.clientInfo?.instanceId, 'space_instance_stable');
   assert.equal(options[0]?.clientInfo?.instanceSecret, 'space_secret_stable_0123456789abcdef');
@@ -1179,6 +1244,7 @@ test('runtime selection attaches one Coder daemon with stable identity and requi
   assert.equal(options[0]?.requirements?.externalAgentAdmin, 1);
   assert.equal(options[0]?.requirements?.actorControlPlane, 1);
   assert.equal(options[0]?.requirements?.learningCenter, 1);
+  assert.equal(options[0]?.requirements?.skillLearningLoop, 1);
   assert.equal(options[0]?.requirements?.a2aConfigReconciler, 1);
   assert.equal(options[0]?.requirements?.coderFeatureMatrix, 1);
   assert.equal(options[0]?.requirements?.sessionAdmission, 1);
@@ -1192,6 +1258,9 @@ test('runtime selection attaches one Coder daemon with stable identity and requi
   assert.equal(options[0]?.requirements?.sharedSessionSettings, 1);
   assert.equal(options[0]?.requirements?.durableRecoveryQueries, 1);
   assert.equal(options[0]?.requirements?.daemonManagement, 1);
+  assert.equal(options[0]?.requirements?.daemonOrphanExit, 1);
+  assert.equal(options[0]?.requirements?.integrationConfigResilience, 1);
+  assert.equal(options[0]?.requirements?.runtimeAutoModeGuardrail, 4);
   assert.equal(adapter.snapshot().state, 'ready');
   assert.equal(adapter.snapshot().identity?.runtimeId, 'rt_test');
   assert.equal(
@@ -1213,7 +1282,103 @@ test('runtime selection attaches one Coder daemon with stable identity and requi
     'runtime',
   );
   assert.equal((await adapter.preflightDaemonStop()).canStop, true);
-  assert.equal(fake.calls.daemonInspections, 1);
+  assert.equal(fake.calls.daemonInspections, 2);
+});
+
+test('integration health polling projects daemon watcher changes without reconnecting Coder', async () => {
+  const fake = createFakeRuntime();
+  const controller = new RuntimeProjectionController(
+    createPendingSdkRuntimeProjection(100).profileSnapshot(),
+  );
+  const connectionStates: string[] = [];
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    projectionController: controller,
+    integrationHealthPollMs: 5,
+    push: (channel, payload) => {
+      if (channel === 'runtime.connectionChanged') {
+        connectionStates.push(
+          (payload as { integrations?: { state?: string } }).integrations?.state ?? 'missing',
+        );
+      }
+    },
+  });
+
+  await adapter.initialize();
+  assert.equal(controller.profileSnapshot().connection.integrations?.state, 'healthy');
+  fake.setIntegrationHealth({
+    state: 'degraded',
+    domains: [
+      {
+        domain: 'mcp',
+        path: 'C:\\Users\\test\\.kodax\\integrations\\mcp.json',
+        source: 'user',
+        watching: true,
+        diagnostic: {
+          code: 'invalid-config',
+          message: 'Expected a JSON object.',
+          time: '2026-07-29T01:02:03.000Z',
+        },
+      },
+      {
+        domain: 'a2a',
+        path: 'C:\\Users\\test\\.kodax\\integrations\\a2a.json',
+        source: 'default',
+        watching: true,
+      },
+      {
+        domain: 'extensions',
+        path: 'C:\\Users\\test\\.kodax\\integrations\\extensions.json',
+        source: 'default',
+        watching: true,
+      },
+    ],
+  });
+
+  await waitForTest(
+    () => controller.profileSnapshot().connection.integrations?.state === 'degraded',
+  );
+  assert.equal(adapter.snapshot().state, 'ready');
+  assert.equal(
+    controller.profileSnapshot().connection.integrations?.domains[0]?.diagnostic?.message,
+    'Expected a JSON object.',
+  );
+
+  fake.setIntegrationHealth({
+    state: 'healthy',
+    domains: [
+      {
+        domain: 'mcp',
+        path: 'C:\\Users\\test\\.kodax\\integrations\\mcp.json',
+        source: 'user',
+        watching: true,
+        lastReloadAt: '2026-07-29T01:02:04.000Z',
+      },
+      {
+        domain: 'a2a',
+        path: 'C:\\Users\\test\\.kodax\\integrations\\a2a.json',
+        source: 'default',
+        watching: true,
+      },
+      {
+        domain: 'extensions',
+        path: 'C:\\Users\\test\\.kodax\\integrations\\extensions.json',
+        source: 'default',
+        watching: true,
+      },
+    ],
+  });
+  await waitForTest(
+    () => controller.profileSnapshot().connection.integrations?.state === 'healthy',
+  );
+
+  assert.deepEqual(connectionStates.slice(-2), ['degraded', 'healthy']);
+  assert.equal(adapter.snapshot().state, 'ready');
+  await adapter.close();
 });
 
 test('runtime custom provider catalog methods proxy through the connected daemon', async () => {
@@ -1902,9 +2067,9 @@ test('initialization closes a constructed Runtime when host-tool registration fa
   assert.equal(fake.calls.close, 1);
 });
 
-test('initialization rejects a daemon older than the KodaX 0.7.77 release baseline', async () => {
+test('initialization accepts any Runtime identity version that negotiates required capabilities', async () => {
   const fake = createFakeRuntime();
-  (fake.runtime.identity as { version: string }).version = '0.7.76';
+  (fake.runtime.identity as { version: string }).version = '0.7.77';
   const adapter = new RuntimeHostAdapter({
     mode: 'runtime',
     profileRoot: path.resolve('C:\\isolated-profile'),
@@ -1912,10 +2077,23 @@ test('initialization rejects a daemon older than the KodaX 0.7.77 release baseli
     identityStore: testIdentityStore,
   });
 
-  await assert.rejects(
-    adapter.initialize(),
-    /0\.7\.76.*required 0\.7\.77.*Restart the Coder daemon/i,
-  );
+  await adapter.initialize();
+  assert.equal(adapter.snapshot().state, 'ready');
+  assert.equal(adapter.snapshot().identity?.version, '0.7.77');
+  await adapter.close();
+});
+
+test('initialization requires the dedicated orphan-exit capability instead of a version proxy', async () => {
+  const fake = createFakeRuntime();
+  delete (fake.runtime.capabilities as Record<string, unknown>).daemonOrphanExit;
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+  });
+
+  await assert.rejects(adapter.initialize(), /daemonOrphanExit v1/i);
   assert.equal(adapter.snapshot().state, 'failed');
   assert.equal(fake.calls.close, 1);
 });

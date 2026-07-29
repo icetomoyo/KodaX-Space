@@ -22,6 +22,22 @@ const connection = {
   runtimeId: 'rt_1',
   profile: 'default',
   capabilities: [{ id: 'live.observe', version: 1, available: true }],
+  integrations: {
+    state: 'degraded',
+    domains: [
+      {
+        domain: 'mcp',
+        path: 'C:\\Users\\you\\.kodax\\integrations\\mcp.json',
+        source: 'user',
+        watching: true,
+        diagnostic: {
+          code: 'invalid-config',
+          message: 'MCP config is invalid; Runtime retained the last-known-good document.',
+          time: 101,
+        },
+      },
+    ],
+  },
 } as const;
 
 test('runtime projection channels are registered in schema-derived allowlists', () => {
@@ -106,7 +122,19 @@ test('selected-session live projection carries semantic spinner, Todo and queue 
     },
     queuedRuns: [],
     assistantDraft: { text: 'Working', startedAt: 3 },
-    activeTools: [{ toolCallId: 'tool_1', name: 'read', startedAt: 4 }],
+    activeTools: [
+      {
+        toolCallId: 'tool_1',
+        name: 'read',
+        startedAt: 4,
+        sandbox: {
+          version: 1,
+          state: 'applied',
+          backend: 'windows-restricted-user',
+          policyId: 'kodax-workspace-shell-v1',
+        },
+      },
+    ],
     todos: [{ id: 'todo_1', content: 'Inspect runtime', status: 'in_progress' }],
     queuedInputs: [
       {
@@ -168,6 +196,27 @@ test('connection projection rejects ready states that still claim stale data', (
       capabilities: [],
     }).success,
     true,
+  );
+  assert.equal(
+    runtimeConnectionChangedChannel.payload.safeParse({
+      ...connection,
+      integrations: {
+        state: 'healthy',
+        domains: [
+          {
+            domain: 'mcp',
+            path: 'C:\\Users\\you\\.kodax\\integrations\\mcp.json',
+            watching: false,
+            diagnostic: {
+              code: 'secret-leak',
+              message: 'unsupported diagnostic code',
+              time: 101,
+            },
+          },
+        ],
+      },
+    }).success,
+    false,
   );
 });
 

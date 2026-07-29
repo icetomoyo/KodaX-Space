@@ -78,6 +78,14 @@ test('Runtime connection equality ignores refresh timestamps but detects authori
     }),
     false,
   );
+  assert.equal(
+    runtimeConnectionSemanticallyEqual(connection, {
+      ...connection,
+      changedAt: 2,
+      integrations: { state: 'healthy', domains: [] },
+    }),
+    false,
+  );
 });
 
 test('Runtime transcript events carry the daemon cursor used by snapshot reconciliation', () => {
@@ -206,6 +214,17 @@ const observation = {
           meta: { toolCallId: 'tool_1' },
         },
         progress: { update: 'running tests' },
+        sandbox: {
+          update: {
+            id: 'tool_1',
+            observation: {
+              version: 1,
+              state: 'applied',
+              backend: 'windows-restricted-user',
+              policyId: 'kodax-workspace-shell-v1',
+            },
+          },
+        },
       },
     ],
     todo: {
@@ -255,6 +274,12 @@ test('atomic observation maps run, draft, tool, Todo, and interaction truth', ()
       name: 'bash',
       startedAt: Date.parse(running.startedAt),
       progress: 'running tests',
+      sandbox: {
+        version: 1,
+        state: 'applied',
+        backend: 'windows-restricted-user',
+        policyId: 'kodax-workspace-shell-v1',
+      },
     },
   ]);
   assert.deepEqual(projection.todos, [
@@ -557,6 +582,22 @@ test('profile projection excludes Partner and attributes active/queued runs', ()
     projectionRevision: 7,
     changedAt: 100,
     capabilities: [{ id: 'runtime.daemon', version: 1, available: true }],
+    integrations: {
+      state: 'degraded',
+      domains: [
+        {
+          domain: 'extensions',
+          path: 'C:\\Users\\you\\.kodax\\integrations\\extensions.json',
+          source: 'user',
+          watching: true,
+          diagnostic: {
+            code: 'activation-failed',
+            message: 'Extension activation failed; last-known-good paths remain active.',
+            time: '2026-07-29T08:00:00.000Z',
+          },
+        },
+      ],
+    },
   });
 
   assert.deepEqual(
@@ -569,6 +610,58 @@ test('profile projection excludes Partner and attributes active/queued runs', ()
     ['run_queued'],
   );
   assert.equal(projection.interactions.length, 2);
+  assert.deepEqual(projection.connection.integrations, {
+    state: 'degraded',
+    domains: [
+      {
+        domain: 'extensions',
+        path: 'C:\\Users\\you\\.kodax\\integrations\\extensions.json',
+        source: 'user',
+        watching: true,
+        diagnostic: {
+          code: 'activation-failed',
+          message: 'Extension activation failed; last-known-good paths remain active.',
+          time: Date.parse('2026-07-29T08:00:00.000Z'),
+        },
+      },
+    ],
+  });
+});
+
+test('tool sandbox events update active-tool diagnostics without creating transcript text', () => {
+  const reducer = new CoderSessionProjectionReducer(
+    projectRuntimeSessionSnapshot(observation, [askUser]),
+    observation.runs,
+  );
+
+  const change = reducer.apply({
+    id: 'event_sandbox_42',
+    seq: 42,
+    time: '2026-07-14T08:04:00.000Z',
+    sessionId: 's_code',
+    runId: 'run_active',
+    type: 'tool.sandbox',
+    payload: {
+      update: {
+        id: 'tool_1',
+        observation: {
+          version: 1,
+          state: 'fallback',
+          reason: 'not_ready',
+          execution: 'normal_permission_policy',
+        },
+      },
+      meta: { toolCallId: 'tool_1' },
+    },
+  } as unknown as RuntimeTypedEvent);
+
+  assert.equal(change?.change.domain, 'tools');
+  assert.deepEqual(reducer.snapshot().activeTools[0]?.sandbox, {
+    version: 1,
+    state: 'fallback',
+    reason: 'not_ready',
+    execution: 'normal_permission_policy',
+  });
 });
 
 test('event reducer advances one semantic domain per Runtime cursor', () => {

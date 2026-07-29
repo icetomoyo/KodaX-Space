@@ -1,6 +1,6 @@
 # Known Issues
 
-Last Updated: 2026-07-28
+Last Updated: 2026-07-29
 
 > Historical issue details are preserved as investigation evidence. Resolved items older than 30 days move to [ISSUES_ARCHIVED.md](ISSUES_ARCHIVED.md) without losing their investigation record. The current published package baseline is v0.1.33; fixes marked `Fixed: v0.1.33` ship in that release. Start from the [documentation hub](README.md) for current behavior and status.
 
@@ -120,7 +120,7 @@ Last Updated: 2026-07-28
 | 122 | High     | Resolved    | Cumulative Runtime snapshots replayed streamed assistant output, thinking, and active tools in the renderer              | v0.1.33                         | 2026-07-27 |
 | 123 | High     | Resolved    | Space ignored KodaX split integration files and replaced valuable SDK self-manual content                                | KodaX 0.7.77 adoption           | 2026-07-28 |
 | 124 | High     | Resolved    | Coder runtime-mode switching admitted new work and could persist an inconsistent owner state                             | corrected v0.1.33               | 2026-07-28 |
-| 125 | High     | Open        | Invalid optional integration config could abort Coder daemon startup without actionable diagnostics                      | future published KodaX          | 2026-07-28 |
+| 125 | High     | Resolved    | Invalid optional integration config could abort Coder daemon startup without actionable diagnostics                      | v0.1.32 / KodaX 0.7.76          | 2026-07-28 |
 | 126 | Medium   | Resolved    | Sent and restored image attachments disappear from visible user messages                                                 | v0.1.9                          | 2026-07-28 |
 | 127 | High     | Resolved    | Runtime-mode recovery could reopen admission or forget the clean-profile migration state                                 | corrected v0.1.33               | 2026-07-28 |
 | 128 | High     | Deferred    | Packaged Electron daemon shell probes fail before execution and Auto LLM reports Bash as disabled                        | future published KodaX          | 2026-07-28 |
@@ -7419,11 +7419,11 @@ Validation:
 ### 125: Invalid optional integration config could abort Coder daemon startup without actionable diagnostics
 
 - Priority: High
-- Status: Open
+- Status: Resolved
 - Introduced: v0.1.32 / KodaX 0.7.76
-- Target: future npm-published KodaX contract
+- Fixed: corrected v0.1.34 source + KodaX 0.7.78
 - Created: 2026-07-28
-- Resolution Date: 2026-07-28
+- Resolution Date: 2026-07-29
 
 #### Original Problem
 
@@ -7454,23 +7454,40 @@ protection signal in Electron's main process. It is not conflated with
 integration validation. If Electron fails before spawning the Runtime child,
 the visible dialog and Space main-process logs remain the evidence.
 
-#### Current Disposition
+#### Resolution
 
-- The corrected Space `v0.1.33` release does **not** claim an unpublished KodaX
-  domain-isolation or hot-recovery contract. It remains fixed to the exact
-  npm-published KodaX 0.7.77 package.
-- Space now identifies the authoritative `integrations/mcp.json`,
-  `integrations/extensions.json`, or `integrations/a2a.json` path and documents
-  the SDK migration plan/apply flow. It never recommends deleting all of
-  `config.json` or the integrations directory.
-- Settings exposes non-destructive legacy MCP/Extension migration through the
-  published SDK APIs. Existing destination files are not overwritten and
-  legacy fields are retained unless the user later requests explicit CLI
-  cleanup.
-- A malformed file can still fail Runtime startup under the current published
-  SDK. The user must repair the named file and safely restart/reload the owner.
-  Domain-isolated startup and recovery remain open until a supporting KodaX
-  contract is npm-published and explicitly adopted.
+- Space now requires the explicit `integrationConfigResilience:1` Runtime
+  capability. KodaX 0.7.78 isolates MCP, A2A, and Extension configuration
+  failures from core daemon health, retains last-known-good configuration, and
+  returns bounded per-domain diagnostics.
+- KodaX watchers do not currently publish a management-change event, so Space
+  performs a bounded two-second management-health poll while connected. It
+  rebuilds the profile only when the integration-health fingerprint changes,
+  automatically showing both degradation and recovery without reconnecting
+  Coder.
+- Poll failures retain the last known integration projection and emit one
+  bounded warning. They do not mark the core Runtime unavailable.
+- Space identifies the exact `integrations/mcp.json`,
+  `integrations/extensions.json`, or `integrations/a2a.json` path and preserves
+  non-destructive SDK migration. It never deletes `config.json` or the
+  integrations directory.
+- Runtime attachment is governed by negotiated capabilities rather than a
+  second semantic-version gate.
+
+Files changed:
+
+- `apps/desktop/electron/kodax/runtime-host-adapter.ts`
+- `apps/desktop/electron/test/runtime-host-adapter.test.ts`
+- `apps/desktop/electron/kodax/space-manual-topics.ts`
+- `docs/USAGE.md`
+- `docs/USER_MANUAL.zh-CN.md`
+
+Tests added:
+
+- Integration health changes from healthy to degraded and back to healthy
+  without changing Runtime readiness.
+- A lower identity version with every required capability is accepted, while
+  the dedicated orphan-exit capability remains mandatory.
 
 ### 126: Sent and restored image attachments disappear from visible user messages
 

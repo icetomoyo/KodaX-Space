@@ -1,4 +1,5 @@
 import type {
+  RuntimeIntegrationHealth,
   RuntimePermissionRequest,
   RuntimeRunStatus,
   RuntimeSessionSettings,
@@ -9,14 +10,17 @@ import type {
 } from '@kodax-ai/kodax/runtime';
 import {
   spaceRuntimeProfileProjectionSchema,
+  spaceRuntimeToolSandboxSchema,
   spaceSessionLiveChangedSchema,
   spaceSessionLiveProjectionSchema,
   type SpaceRuntimeCapabilityT,
+  type SpaceRuntimeIntegrationHealthT,
   type SpaceRuntimeInteractionT,
   type SpaceRuntimeProfileProjectionT,
   type SpaceRuntimeRunProjectionT,
   type SpaceSessionLiveChangedT,
   type SpaceSessionLiveProjectionT,
+  type SpaceRuntimeToolSandboxT,
 } from '@kodax-space/space-ipc-schema';
 import { assessRisk } from '../../permission/risk.js';
 import { sanitizeForDisplay, sanitizeInputForDisplay } from '../../permission/sanitize.js';
@@ -348,6 +352,11 @@ function permissionInteraction(
   };
 }
 
+function projectSandboxObservation(value: unknown): SpaceRuntimeToolSandboxT | undefined {
+  const parsed = spaceRuntimeToolSandboxSchema.safeParse(value);
+  return parsed.success ? parsed.data : undefined;
+}
+
 function normalizeQuestionOption(value: unknown): {
   label: string;
   value: string;
@@ -530,11 +539,47 @@ function toolProjection(
     text(progressRecord?.partialJson, 1_024) ??
     text(value.progress, 1_024);
   const run = runs.find((item) => item.runId === value.runId);
+  const sandboxUpdate = record(record(value.sandbox)?.update);
+  const sandbox = projectSandboxObservation(sandboxUpdate?.observation);
   return {
     toolCallId,
     name,
     startedAt: timestamp(run?.runningAt ?? run?.startedAt),
     ...(progress ? { progress } : {}),
+    ...(sandbox ? { sandbox } : {}),
+  };
+}
+
+function projectIntegrationHealth(
+  value: RuntimeIntegrationHealth | undefined,
+): SpaceRuntimeIntegrationHealthT | undefined {
+  if (!value) return undefined;
+  return {
+    state: value.state,
+    domains: value.domains.slice(0, 3).map((domain) => {
+      const diagnosticMessage = domain.diagnostic
+        ? sanitizeForDisplay(domain.diagnostic.message, MAX_REASON)
+        : '';
+      return {
+        domain: domain.domain,
+        path: domain.path.slice(0, 4_096),
+        ...(domain.revision ? { revision: domain.revision.slice(0, 256) } : {}),
+        ...(domain.source ? { source: domain.source } : {}),
+        ...(domain.lastReloadAt !== undefined
+          ? { lastReloadAt: timestamp(domain.lastReloadAt) }
+          : {}),
+        ...(domain.diagnostic && diagnosticMessage
+          ? {
+              diagnostic: {
+                code: domain.diagnostic.code,
+                message: diagnosticMessage,
+                time: timestamp(domain.diagnostic.time),
+              },
+            }
+          : {}),
+        watching: domain.watching,
+      };
+    }),
   };
 }
 
@@ -742,6 +787,7 @@ export function projectRuntimeProfile(input: {
   readonly projectionRevision: number;
   readonly changedAt: number;
   readonly capabilities: readonly SpaceRuntimeCapabilityT[];
+  readonly integrations?: RuntimeIntegrationHealth;
   readonly connectionState?: 'ready' | 'degraded';
   readonly reason?: string;
 }): SpaceRuntimeProfileProjectionT {
@@ -755,6 +801,7 @@ export function projectRuntimeProfile(input: {
       profile: input.status.profile,
       ...(input.reason ? { reason: input.reason.slice(0, MAX_REASON) } : {}),
       capabilities: input.capabilities,
+      ...(input.integrations ? { integrations: projectIntegrationHealth(input.integrations) } : {}),
     },
     projectionRevision: input.projectionRevision,
     cursor: { runtimeId: input.status.runtimeId, seq: input.cursor },
@@ -834,6 +881,7 @@ export class CoderSessionProjectionReducer {
         event.type === 'thinking.finished' ||
         event.type === 'tool.started' ||
         event.type === 'tool.progress' ||
+        event.type === 'tool.sandbox' ||
         event.type === 'tool.finished' ||
         event.type === 'todo.updated')
     ) {
@@ -891,6 +939,20 @@ export class CoderSessionProjectionReducer {
       if (index < 0) return null;
       const activeTools = [...this.#projection.activeTools];
       activeTools[index] = { ...activeTools[index]!, ...(progress ? { progress } : {}) };
+      return this.#commit(event.seq, { domain: 'tools', activeTools });
+    }
+    if (event.type === 'tool.sandbox') {
+      const meta = record(payload?.meta);
+      const update = record(payload?.update);
+      const toolCallId = text(meta?.toolCallId, 128) ?? text(update?.id, 128);
+      const sandbox = projectSandboxObservation(record(update?.observation));
+      if (!toolCallId || !sandbox) return null;
+      const index = this.#projection.activeTools.findIndex(
+        (item) => item.toolCallId === toolCallId,
+      );
+      if (index < 0) return null;
+      const activeTools = [...this.#projection.activeTools];
+      activeTools[index] = { ...activeTools[index]!, sandbox };
       return this.#commit(event.seq, { domain: 'tools', activeTools });
     }
     if (event.type === 'tool.finished') {

@@ -42,6 +42,33 @@ export const spaceRuntimeCapabilitySchema = z
   })
   .strict();
 
+const spaceRuntimeIntegrationDiagnosticSchema = z
+  .object({
+    code: z.enum(['invalid-config', 'activation-failed', 'watcher-degraded']),
+    message: z.string().min(1).max(MAX_REASON),
+    time: timestampSchema,
+  })
+  .strict();
+
+const spaceRuntimeIntegrationDomainSchema = z
+  .object({
+    domain: z.enum(['mcp', 'a2a', 'extensions']),
+    path: z.string().min(1).max(4096),
+    revision: z.string().min(1).max(256).optional(),
+    source: z.enum(['user', 'legacy-user', 'default']).optional(),
+    lastReloadAt: timestampSchema.optional(),
+    diagnostic: spaceRuntimeIntegrationDiagnosticSchema.optional(),
+    watching: z.boolean(),
+  })
+  .strict();
+
+export const spaceRuntimeIntegrationHealthSchema = z
+  .object({
+    state: z.enum(['healthy', 'degraded']),
+    domains: z.array(spaceRuntimeIntegrationDomainSchema).max(3),
+  })
+  .strict();
+
 export const spaceCoderConnectionStateSchema = z.enum([
   'connecting',
   'ready',
@@ -60,6 +87,7 @@ export const spaceCoderConnectionProjectionSchema = z
     profile: z.string().min(1).max(256).optional(),
     reason: z.string().min(1).max(MAX_REASON).optional(),
     capabilities: z.array(spaceRuntimeCapabilitySchema).max(128),
+    integrations: spaceRuntimeIntegrationHealthSchema.optional(),
   })
   .strict()
   .superRefine((value, ctx) => {
@@ -389,12 +417,43 @@ export const spaceRuntimeDraftSchema = z
   })
   .strict();
 
+export const spaceRuntimeToolSandboxSchema = z.discriminatedUnion('state', [
+  z
+    .object({
+      version: z.literal(1),
+      state: z.literal('applied'),
+      backend: z.enum([
+        'windows-restricted-user',
+        'macos-seatbelt',
+        'linux-bubblewrap',
+        'unsupported',
+      ]),
+      policyId: z.literal('kodax-workspace-shell-v1'),
+    })
+    .strict(),
+  z
+    .object({
+      version: z.literal(1),
+      state: z.literal('fallback'),
+      reason: z.enum(['not_ready', 'prepare_failed', 'backend_failed']),
+      execution: z.literal('normal_permission_policy'),
+    })
+    .strict(),
+  z
+    .object({
+      version: z.literal(1),
+      state: z.literal('not_selected'),
+    })
+    .strict(),
+]);
+
 export const spaceRuntimeActiveToolSchema = z
   .object({
     toolCallId: idSchema,
     name: z.string().min(1).max(128),
     startedAt: timestampSchema,
     progress: z.string().max(1024).optional(),
+    sandbox: spaceRuntimeToolSandboxSchema.optional(),
   })
   .strict();
 
@@ -673,7 +732,9 @@ export type SpaceCoderConnectionProjectionT = z.infer<typeof spaceCoderConnectio
 export type SpaceRuntimeRunPhaseT = z.infer<typeof spaceRuntimeRunPhaseSchema>;
 export type SpaceRuntimeRunProjectionT = z.infer<typeof spaceRuntimeRunProjectionSchema>;
 export type SpaceRuntimeInteractionT = z.infer<typeof spaceRuntimeInteractionSchema>;
+export type SpaceRuntimeIntegrationHealthT = z.infer<typeof spaceRuntimeIntegrationHealthSchema>;
 export type SpaceRuntimeProfileProjectionT = z.infer<typeof spaceRuntimeProfileProjectionSchema>;
+export type SpaceRuntimeToolSandboxT = z.infer<typeof spaceRuntimeToolSandboxSchema>;
 export type SpaceSessionLiveProjectionT = z.infer<typeof spaceSessionLiveProjectionSchema>;
 export type SpaceRuntimeSessionSettingsT = z.infer<typeof spaceRuntimeSessionSettingsSchema>;
 export type SpaceSessionLiveDomainChangeT = z.infer<typeof spaceSessionLiveDomainChangeSchema>;

@@ -158,6 +158,7 @@ export function runtimeConnectionSemanticallyEqual(
     left.runtimeId === right.runtimeId &&
     left.profile === right.profile &&
     left.reason === right.reason &&
+    JSON.stringify(left.integrations) === JSON.stringify(right.integrations) &&
     left.capabilities.length === right.capabilities.length &&
     left.capabilities.every((capability, index) => {
       const other = right.capabilities[index];
@@ -467,7 +468,16 @@ export function projectRuntimeContextSessionEvent(
   return parsed.success ? parsed.data : undefined;
 }
 
-type RuntimeFactory = (options: ConnectKodaXRuntimeOptions) => Promise<KodaXDaemonRuntime>;
+type SpaceRuntimeConnectOptions = Omit<ConnectKodaXRuntimeOptions, 'requirements'> & {
+  /** Opt-in lifecycle policy for Space-managed daemons. */
+  readonly daemonOrphanExitMs?: number;
+  readonly requirements?: NonNullable<ConnectKodaXRuntimeOptions['requirements']> & {
+    /** The current daemon host actually has Space's orphan idle-exit policy enabled. */
+    readonly daemonOrphanExit?: 1;
+  };
+};
+
+type RuntimeFactory = (options: SpaceRuntimeConnectOptions) => Promise<KodaXDaemonRuntime>;
 type RuntimeEventParser = (
   event: unknown,
 ) =>
@@ -555,29 +565,33 @@ export interface RuntimeHostAdapterOptions {
   readonly ownerControl?: RuntimeOwnerControl;
   readonly autoModeDefaultsResolver?: () => Promise<KodaxAutoModeDefaults>;
   readonly idleDaemonStop?: () => Promise<SafeDaemonStopResult>;
+  /**
+   * Fallback cadence for integration-health projection. KodaX watches the
+   * files inside the daemon but does not publish a management-change event.
+   * Test/custom runtimes default to disabled unless they opt in explicitly.
+   */
+  readonly integrationHealthPollMs?: number;
 }
 
 const MAX_DIAGNOSTIC_ERROR = 512;
-const MINIMUM_KODAX_RUNTIME_VERSION = [0, 7, 77] as const;
 
 export function resolveRuntimeHostMode(value: string | undefined): RuntimeHostMode {
   return value?.trim().toLowerCase() === 'legacy' ? 'legacy' : 'runtime';
 }
 
-function assertMinimumRuntimeVersion(version: string): void {
-  const match = /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(version.trim());
-  if (match) {
-    const actual = match.slice(1, 4).map(Number);
-    for (let index = 0; index < MINIMUM_KODAX_RUNTIME_VERSION.length; index += 1) {
-      if (actual[index]! > MINIMUM_KODAX_RUNTIME_VERSION[index]!) return;
-      if (actual[index]! < MINIMUM_KODAX_RUNTIME_VERSION[index]!) break;
-      if (index === MINIMUM_KODAX_RUNTIME_VERSION.length - 1) return;
-    }
+function assertSpaceDaemonLifecycleCapability(runtime: KodaXDaemonRuntime): void {
+  const capability = runtime.capabilities?.daemonOrphanExit;
+  if (
+    typeof capability !== 'object' ||
+    capability === null ||
+    !Number.isSafeInteger((capability as { version?: unknown }).version) ||
+    Number((capability as { version?: unknown }).version) < 1
+  ) {
+    throw new Error(
+      'KodaX Runtime does not support the required daemonOrphanExit v1 capability. ' +
+        'Install a compatible KodaX package and restart the Coder daemon.',
+    );
   }
-  throw new Error(
-    `KodaX Runtime ${version || '(unknown)'} is older than the required 0.7.77 baseline. ` +
-      'Restart the Coder daemon after updating KodaX; Space will not reuse an older daemon.',
-  );
 }
 
 function sanitizeDiagnosticError(error: unknown): string {
@@ -646,10 +660,30 @@ function projectRuntimeWorkflow(snapshot: unknown): WorkflowRunT | undefined {
 }
 
 async function createPublishedRuntime(
-  options: ConnectKodaXRuntimeOptions,
+  options: SpaceRuntimeConnectOptions,
 ): Promise<KodaXDaemonRuntime> {
   const sdk = await import('@kodax-ai/kodax/runtime');
+  assertSpaceRuntimeSdkLifecycleCapability(
+    sdk as typeof sdk & {
+      readonly KODAX_RUNTIME_SDK_CAPABILITIES?: {
+        readonly daemonOrphanExit?: number;
+      };
+    },
+  );
   return sdk.connectKodaXRuntime(options);
+}
+
+export function assertSpaceRuntimeSdkLifecycleCapability(sdk: {
+  readonly KODAX_RUNTIME_SDK_CAPABILITIES?: {
+    readonly daemonOrphanExit?: number;
+  };
+}): void {
+  if (sdk.KODAX_RUNTIME_SDK_CAPABILITIES?.daemonOrphanExit !== 1) {
+    throw new Error(
+      'The installed KodaX SDK does not support daemonOrphanExit v1. ' +
+        'Install a compatible Registry package before starting Coder.',
+    );
+  }
 }
 
 const publishedRuntimeOwnerControl: RuntimeOwnerControl = {
@@ -808,6 +842,7 @@ export class RuntimeHostAdapter {
   private readonly credentialResolver: (provider: string) => Promise<string | undefined>;
   private readonly ownerControl: RuntimeOwnerControl;
   private readonly idleDaemonStop: () => Promise<SafeDaemonStopResult>;
+  private readonly integrationHealthPollMs: number;
   private state: RuntimeHostState = 'uninitialized';
   private runtime: KodaXDaemonRuntime | null = null;
   private initializePromise: Promise<void> | null = null;
@@ -843,6 +878,11 @@ export class RuntimeHostAdapter {
   private connectionSubscription: RuntimeSubscription | undefined;
   private workflowSubscription: RuntimeSubscription | undefined;
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  private integrationHealthPollTimer: ReturnType<typeof setTimeout> | undefined;
+  private integrationHealthPollInFlight = false;
+  private integrationHealthRefreshPending = false;
+  private integrationHealthFingerprint = '';
+  private integrationHealthPollWarningShown = false;
   private reconnectAttempt = 0;
   private readonly runtimeEventParser?: RuntimeEventParser;
   private inlineOwner: RuntimeInlineOwnerHandle | undefined;
@@ -872,6 +912,8 @@ export class RuntimeHostAdapter {
     this.runtimeEventParser = options.runtimeEventParser;
     this.ownerControl = options.ownerControl ?? publishedRuntimeOwnerControl;
     this.idleDaemonStop = options.idleDaemonStop ?? (() => stopCoderDaemonWhenSafe());
+    this.integrationHealthPollMs =
+      options.integrationHealthPollMs ?? (options.runtimeFactory === undefined ? 2_000 : 0);
     this.credentialResolver =
       options.credentialResolver ??
       (async (provider) => (await import('../ipc/provider.js')).readProviderCredential(provider));
@@ -973,6 +1015,7 @@ export class RuntimeHostAdapter {
         const runtime = await this.runtimeFactory({
           profile: 'coder',
           autoStart: true,
+          daemonOrphanExitMs: 30_000,
           ...(this.runtimeHomeDir !== undefined ? { homeDir: this.runtimeHomeDir } : {}),
           sessionsDir: path.join(this.profileRoot, 'sessions'),
           clientInfo: {
@@ -993,6 +1036,7 @@ export class RuntimeHostAdapter {
             externalAgentAdmin: 1,
             actorControlPlane: 1,
             learningCenter: 1,
+            skillLearningLoop: 1,
             a2aConfigReconciler: 1,
             operationDeduplication: 1,
             sessionObservation: 1,
@@ -1016,7 +1060,9 @@ export class RuntimeHostAdapter {
             sharedSessionSettings: 1,
             durableRecoveryQueries: 1,
             daemonManagement: 1,
-            runtimeAutoModeGuardrail: 3,
+            daemonOrphanExit: 1,
+            integrationConfigResilience: 1,
+            runtimeAutoModeGuardrail: 4,
           },
         });
         pendingRuntime = runtime;
@@ -1030,7 +1076,7 @@ export class RuntimeHostAdapter {
           pendingRuntime = null;
           return;
         }
-        assertMinimumRuntimeVersion(runtime.identity.version);
+        assertSpaceDaemonLifecycleCapability(runtime);
         this.assertRequiredScopes(runtime);
         const { registerSpaceHostTools } = await import('./runtime/space-host-tools.js');
         let hostToolLease;
@@ -1094,6 +1140,7 @@ export class RuntimeHostAdapter {
         this.reconnectAttempt = 0;
         await this.resumeKnownCredentialLeases(runtime);
         await this.refreshProfile(0);
+        this.startIntegrationHealthPolling(runtime);
         for (const sessionId of this.desiredObservations) {
           if (this.observations.has(sessionId) || this.observationPromises.has(sessionId)) continue;
           try {
@@ -1114,6 +1161,7 @@ export class RuntimeHostAdapter {
         const runtime = pendingRuntime;
         pendingRuntime = null;
         if (runtime) {
+          this.stopIntegrationHealthPolling();
           this.connectionSubscription?.close();
           this.connectionSubscription = undefined;
           this.workflowSubscription?.close();
@@ -1205,6 +1253,7 @@ export class RuntimeHostAdapter {
     reconnectable = true,
   ): Promise<void> {
     if (this.state === 'closed' || this.runtime !== attached) return;
+    this.stopIntegrationHealthPolling();
     this.connectionSubscription?.close();
     this.connectionSubscription = undefined;
     this.workflowSubscription?.close();
@@ -1325,6 +1374,11 @@ export class RuntimeHostAdapter {
         available: true,
       },
       {
+        id: 'runtime.daemon.orphanExit',
+        version: version('daemonOrphanExit'),
+        available: available('daemonOrphanExit'),
+      },
+      {
         id: 'runtime.externalAgents',
         version: version('externalAgentAdmin'),
         available: runtime.agents.enabled && available('externalAgentAdmin'),
@@ -1343,6 +1397,29 @@ export class RuntimeHostAdapter {
         id: 'runtime.learning',
         version: version('learningCenter'),
         available: available('learningCenter'),
+      },
+      {
+        id: 'runtime.learning.skillLoop',
+        version: version('skillLearningLoop'),
+        available: available('skillLearningLoop'),
+      },
+      {
+        id: 'runtime.integrations.resilience',
+        version: version('integrationConfigResilience'),
+        available: available('integrationConfigResilience'),
+      },
+      {
+        id: 'runtime.autoMode.guardrail',
+        version: version('runtimeAutoModeGuardrail'),
+        available: version('runtimeAutoModeGuardrail') >= 4,
+      },
+      {
+        id: 'runtime.tools.sandboxObservation',
+        version: 1,
+        available:
+          version('sandboxRuntime') >= 1 &&
+          version('runtimeAutoModeGuardrail') >= 4 &&
+          available('typedRuntimeEvents'),
       },
       {
         id: 'runtime.externalAgents.a2aConfig',
@@ -1413,15 +1490,24 @@ export class RuntimeHostAdapter {
     const runtime = this.runtime;
     if (!runtime || this.state !== 'ready') return;
     const previousConnection = this.projectionController.profileSnapshot().connection;
-    const [status, userInputs] = await Promise.all([
+    const [status, userInputs, management] = await Promise.all([
       runtime.status.snapshot(),
       runtime.userInputs.listPending(),
+      runtime.daemon.inspect(),
     ]);
     if (status.runtimeId !== runtime.identity.runtimeId) {
       throw new Error(
         'Coder daemon status runtimeId does not match the attached Runtime identity.',
       );
     }
+    if (management.runtimeId !== runtime.identity.runtimeId) {
+      throw new Error(
+        'Coder daemon management runtimeId does not match the attached Runtime identity.',
+      );
+    }
+    this.integrationHealthFingerprint = this.fingerprintIntegrationHealth(
+      management.integrations,
+    );
     this.profileCursor = Math.max(this.profileCursor, cursor);
     const projectedProfile = projectRuntimeProfile({
       status,
@@ -1430,6 +1516,7 @@ export class RuntimeHostAdapter {
       projectionRevision: ++this.profileRevision,
       changedAt: Date.now(),
       capabilities: [...this.spaceCapabilities(runtime)],
+      ...(management.integrations ? { integrations: management.integrations } : {}),
     });
     const connectionChanged = !runtimeConnectionSemanticallyEqual(
       previousConnection,
@@ -1452,6 +1539,89 @@ export class RuntimeHostAdapter {
         this.lastError = sanitizeDiagnosticError(error);
         this.publishUnavailable('reconnecting', this.lastError);
       });
+  }
+
+  private fingerprintIntegrationHealth(
+    health: RuntimeDaemonManagementState['integrations'],
+  ): string {
+    return JSON.stringify(health ?? null);
+  }
+
+  private startIntegrationHealthPolling(runtime: KodaXDaemonRuntime): void {
+    this.stopIntegrationHealthPolling();
+    if (this.integrationHealthPollMs <= 0) return;
+    const scheduleNext = (): void => {
+      if (this.state !== 'ready' || this.runtime !== runtime || this.rollbackInProgress) return;
+      this.integrationHealthPollTimer = setTimeout(() => {
+        this.integrationHealthPollTimer = undefined;
+        void this.pollIntegrationHealth(runtime).finally(scheduleNext);
+      }, this.integrationHealthPollMs);
+      this.integrationHealthPollTimer.unref?.();
+    };
+    scheduleNext();
+  }
+
+  private stopIntegrationHealthPolling(): void {
+    if (this.integrationHealthPollTimer) clearTimeout(this.integrationHealthPollTimer);
+    this.integrationHealthPollTimer = undefined;
+    this.integrationHealthRefreshPending = false;
+  }
+
+  private async pollIntegrationHealth(runtime: KodaXDaemonRuntime): Promise<void> {
+    if (
+      this.integrationHealthPollInFlight ||
+      this.integrationHealthRefreshPending ||
+      this.state !== 'ready' ||
+      this.runtime !== runtime ||
+      this.rollbackInProgress
+    ) {
+      return;
+    }
+    this.integrationHealthPollInFlight = true;
+    try {
+      const management = await runtime.daemon.inspect();
+      if (this.state !== 'ready' || this.runtime !== runtime || this.rollbackInProgress) return;
+      if (management.runtimeId !== runtime.identity.runtimeId) {
+        throw new Error(
+          'Coder daemon management runtimeId does not match the attached Runtime identity.',
+        );
+      }
+      if (
+        this.fingerprintIntegrationHealth(management.integrations) ===
+        this.integrationHealthFingerprint
+      ) {
+        this.integrationHealthPollWarningShown = false;
+        return;
+      }
+      this.integrationHealthRefreshPending = true;
+      this.profileRefreshQueue = this.profileRefreshQueue
+        .then(async () => {
+          await this.refreshProfile(this.profileCursor);
+          this.integrationHealthPollWarningShown = false;
+        })
+        .catch((error: unknown) => {
+          if (!this.integrationHealthPollWarningShown) {
+            console.warn(
+              '[runtime] integration health refresh failed; retaining the last known state:',
+              sanitizeDiagnosticError(error),
+            );
+            this.integrationHealthPollWarningShown = true;
+          }
+        })
+        .finally(() => {
+          this.integrationHealthRefreshPending = false;
+        });
+    } catch (error: unknown) {
+      if (!this.integrationHealthPollWarningShown) {
+        console.warn(
+          '[runtime] integration health poll failed; retaining the last known state:',
+          sanitizeDiagnosticError(error),
+        );
+        this.integrationHealthPollWarningShown = true;
+      }
+    } finally {
+      this.integrationHealthPollInFlight = false;
+    }
   }
 
   private publishUnavailable(
@@ -1696,7 +1866,7 @@ export class RuntimeHostAdapter {
       defaults = await this.autoModeDefaultsResolver();
     } catch (error) {
       console.warn(
-        '[runtime] Auto LLM defaults load failed; using the KodaX 0.7.77 defaults:',
+        '[runtime] Auto LLM defaults load failed; using the KodaX 0.7.78 defaults:',
         sanitizeDiagnosticError(error),
       );
       defaults = {
@@ -2132,6 +2302,7 @@ export class RuntimeHostAdapter {
         event.type === 'thinking.delta' ||
         event.type === 'thinking.finished' ||
         event.type === 'tool.progress' ||
+        event.type === 'tool.sandbox' ||
         event.type === 'todo.updated'
       ) {
         return;
@@ -2225,6 +2396,11 @@ export class RuntimeHostAdapter {
           partialJson: payload.partialJson,
         });
       }
+      return;
+    }
+    if (event.type === 'tool.sandbox') {
+      // Structured sandbox state is projected through session.liveChanged only.
+      // It must never become model-visible or ordinary conversation history.
       return;
     }
     if (event.type === 'tool.finished') {
@@ -2739,6 +2915,7 @@ export class RuntimeHostAdapter {
   async reloadRuntimeConfig(): Promise<void> {
     const runtime = await this.requireRuntime();
     await runtime.config.reload();
+    await this.refreshProfile(this.profileCursor);
   }
 
   async listRuntimeCustomProviders(): Promise<readonly SdkCustomProviderConfig[]> {
@@ -3255,6 +3432,7 @@ export class RuntimeHostAdapter {
     this.connectionSubscription = undefined;
     this.workflowSubscription?.close();
     this.workflowSubscription = undefined;
+    this.stopIntegrationHealthPolling();
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = undefined;
     this.runtime = null;

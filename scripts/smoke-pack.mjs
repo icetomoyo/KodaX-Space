@@ -10,7 +10,7 @@
 //
 // 这层 smoke 抓的是 build 配置漂移：忘了 bundle main.js / files glob 把 dist 排除 / 误塞超大依赖。
 
-import { promises as fs, readFileSync, readdirSync } from 'node:fs';
+import { constants as fsConstants, promises as fs, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -39,6 +39,7 @@ const KODAX_PUBLIC_FACADE_FILES = [
   'sdk-media.js',
   'sdk-repl.js',
   'sdk-runtime.js',
+  'sdk-sandbox.js',
   'sdk-session.js',
   'sdk-skills.js',
 ];
@@ -380,6 +381,16 @@ async function checkAsarContents(asarPath) {
   // 跨平台归一化：asar list 在 Windows 上返回 `\dist-electron\main.js`
   const normalized = files.map((f) => f.replace(/\\/g, '/'));
   const normalizedSet = new Set(normalized);
+  const resourceRootDir = path.dirname(asarPath);
+  const resourceNodeModulesDir = path.join(resourceRootDir, 'node_modules');
+  const resourceNodeModuleFiles = (await pathExists(resourceNodeModulesDir))
+    ? (await listFilesRecursive(resourceNodeModulesDir)).map((file) => file.replace(/\\/g, '/'))
+    : [];
+  const physicalResourceSet = new Set(
+    resourceNodeModuleFiles.map(
+      (file) => `/${path.relative(resourceRootDir, file).replace(/\\/g, '/')}`,
+    ),
+  );
   const devLinkMarker = '/node_modules/@kodax-ai/kodax/.kodax-space-dev-link';
   if (normalized.some((file) => file === devLinkMarker || file.endsWith(devLinkMarker))) {
     fail('KodaX development staging marker leaked into app.asar');
@@ -411,6 +422,10 @@ async function checkAsarContents(asarPath) {
     );
   }
   ok(`app.asar contains exact @kodax-ai/kodax@${KODAX_VERSION}`);
+  if (packagedKodax.kodaxRuntimeContracts?.integrationConfigResilience !== 1) {
+    fail('packaged KodaX metadata does not advertise integrationConfigResilience v1');
+  }
+  ok('packaged KodaX metadata advertises integrationConfigResilience v1');
 
   let packagedRendererHtml;
   try {
@@ -437,6 +452,7 @@ async function checkAsarContents(asarPath) {
   // nested under an unrelated package must not satisfy this check. This catches
   // the observed tsx -> get-tsconfig omission and future transitive gaps.
   const kodaxMetadataPath = '/node_modules/@kodax-ai/kodax/package.json';
+  const packagedDependencyFiles = new Set([...normalizedSet, ...physicalResourceSet]);
   const metadataQueue = [kodaxMetadataPath];
   const metadataByPath = new Map([[kodaxMetadataPath, packagedKodax]]);
   const visitedMetadata = new Set();
@@ -447,7 +463,7 @@ async function checkAsarContents(asarPath) {
     const metadata = metadataByPath.get(metadataPath);
     for (const dependency of Object.keys(metadata.dependencies ?? {})) {
       const dependencyMetadataPath = resolvePackagedDependencyMetadata(
-        normalizedSet,
+        packagedDependencyFiles,
         metadataPath,
         dependency,
       );
@@ -459,16 +475,20 @@ async function checkAsarContents(asarPath) {
       }
       if (!metadataByPath.has(dependencyMetadataPath)) {
         try {
+          const metadataBytes = normalizedSet.has(dependencyMetadataPath)
+            ? asar.extractFile(
+                asarPath,
+                dependencyMetadataPath.replace(/^\//, '').split('/').join(path.sep),
+              )
+            : await fs.readFile(
+                path.join(
+                  resourceRootDir,
+                  ...dependencyMetadataPath.replace(/^\//, '').split('/'),
+                ),
+              );
           metadataByPath.set(
             dependencyMetadataPath,
-            JSON.parse(
-              asar
-                .extractFile(
-                  asarPath,
-                  dependencyMetadataPath.replace(/^\//, '').split('/').join(path.sep),
-                )
-                .toString('utf8'),
-            ),
+            JSON.parse(metadataBytes.toString('utf8')),
           );
         } catch (error) {
           fail(
@@ -640,10 +660,56 @@ async function checkAsarContents(asarPath) {
   const unpackedFiles = (await pathExists(unpackedDir))
     ? (await listFilesRecursive(unpackedDir)).map((f) => f.replace(/\\/g, '/'))
     : [];
-  const resourceNodeModulesDir = path.join(path.dirname(asarPath), 'node_modules');
-  const resourceNodeModuleFiles = (await pathExists(resourceNodeModulesDir))
-    ? (await listFilesRecursive(resourceNodeModulesDir)).map((f) => f.replace(/\\/g, '/'))
-    : [];
+  const asrtAsarPrefix = '/node_modules/@anthropic-ai/sandbox-runtime/';
+  if (normalized.some((file) => file.startsWith(asrtAsarPrefix))) {
+    fail(
+      '@anthropic-ai/sandbox-runtime leaked into app.asar. Its platform helpers must be ' +
+        'resolved from physical resources/node_modules paths.',
+    );
+  }
+  const requiredPhysicalSandboxFiles = [
+    '/node_modules/@anthropic-ai/sandbox-runtime/package.json',
+    '/node_modules/@anthropic-ai/sandbox-runtime/dist/index.js',
+    '/node_modules/@anthropic-ai/sandbox-runtime/vendor/seccomp/arm64/apply-seccomp',
+    '/node_modules/@anthropic-ai/sandbox-runtime/vendor/seccomp/x64/apply-seccomp',
+    '/node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/arm64/srt-win.exe',
+    '/node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/x64/srt-win.exe',
+    '/node_modules/@anthropic-ai/sandbox-runtime/node_modules/commander/package.json',
+    '/node_modules/@pondwader/socks5-server/package.json',
+    '/node_modules/node-forge/package.json',
+    '/node_modules/zod/package.json',
+  ];
+  for (const required of requiredPhysicalSandboxFiles) {
+    if (!resourceNodeModuleFiles.some((file) => file.endsWith(required))) {
+      fail(`sandbox runtime filesystem resource missing: ${required}`);
+    }
+  }
+  if (process.platform === 'linux') {
+    const helperArch =
+      process.arch === 'arm64' ? 'arm64' : process.arch === 'x64' ? 'x64' : undefined;
+    if (!helperArch) {
+      fail(`unsupported Linux architecture for sandbox helper verification: ${process.arch}`);
+    }
+    const applySeccompPath = path.join(
+      resourceNodeModulesDir,
+      '@anthropic-ai',
+      'sandbox-runtime',
+      'vendor',
+      'seccomp',
+      helperArch,
+      'apply-seccomp',
+    );
+    try {
+      await fs.access(applySeccompPath, fsConstants.X_OK);
+    } catch (error) {
+      fail(
+        `sandbox runtime helper is not executable: ${applySeccompPath} ` +
+          `(${error instanceof Error ? error.message : String(error)})`,
+      );
+    }
+    ok(`ASRT ${helperArch} seccomp helper is executable`);
+  }
+  ok('ASRT and its runtime dependency chain are physical filesystem resources');
   const hasKeyringNativeUnpacked = unpackedFiles.some(
     (f) => /\/node_modules\/@napi-rs\/keyring-[^/]+\/.+\.node$/.test(f) && nativePattern.test(f),
   );
@@ -792,6 +858,9 @@ function checkKodaxWorkersExecuteFromAsar(asarPath) {
   const codingModuleUrl = pathToFileURL(
     path.join(asarPath, 'node_modules', '@kodax-ai', 'kodax', 'dist', 'sdk-coding.js'),
   ).href;
+  const sandboxModuleUrl = pathToFileURL(
+    path.join(asarPath, 'node_modules', '@kodax-ai', 'kodax', 'dist', 'sdk-sandbox.js'),
+  ).href;
   const publicFacadeUrls = KODAX_PUBLIC_FACADE_FILES.map(
     (file) =>
       pathToFileURL(path.join(asarPath, 'node_modules', '@kodax-ai', 'kodax', 'dist', file)).href,
@@ -801,13 +870,63 @@ function checkKodaxWorkersExecuteFromAsar(asarPath) {
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { createKodaXRuntime } from ${JSON.stringify(runtimeModuleUrl)};
+import {
+  createKodaXRuntime,
+  getKodaXRuntimeOwnerState,
+  KODAX_RUNTIME_SDK_CAPABILITIES,
+} from ${JSON.stringify(runtimeModuleUrl)};
 import { loadHandler } from ${JSON.stringify(codingModuleUrl)};
+import {
+  KODAX_ASRT_VERSION,
+  doctorKodaXSandbox,
+  getKodaXSandboxCapability,
+} from ${JSON.stringify(sandboxModuleUrl)};
 
 const homeDir = await mkdtemp(path.join(tmpdir(), 'kodax-space-asar-probe-'));
 let runtime;
+let daemonRuntime;
+const daemonProfile = 'space-pack-lifecycle';
+async function waitForDaemonOwnerRelease(runtimeId) {
+  const deadline = Date.now() + 5_000;
+  while (true) {
+    const ownerState = getKodaXRuntimeOwnerState({ profile: daemonProfile, homeDir });
+    if (ownerState.ownerStatus === 'unowned') return;
+    if (ownerState.ownerStatus === 'unreadable') {
+      throw new Error('packaged lifecycle probe owner state became unreadable');
+    }
+    if (ownerState.owner?.runtimeId !== runtimeId) {
+      throw new Error('a different Runtime acquired the packaged lifecycle probe profile');
+    }
+    if (Date.now() >= deadline) {
+      throw new Error('packaged lifecycle probe daemon did not release its owner state');
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
 try {
   await Promise.all(${JSON.stringify(publicFacadeUrls)}.map((moduleUrl) => import(moduleUrl)));
+  const sandboxCapability = getKodaXSandboxCapability();
+  if (
+    sandboxCapability.version !== 1 ||
+    sandboxCapability.asrtVersion !== KODAX_ASRT_VERSION ||
+    sandboxCapability.unavailableBehavior !== 'structured-no-execution' ||
+    sandboxCapability.ordinaryCallsTriggerSetup !== false
+  ) {
+    throw new Error(
+      'packaged sandbox facade is not fail-closed: ' + JSON.stringify(sandboxCapability),
+    );
+  }
+  const sandboxDoctor = await doctorKodaXSandbox({ refresh: true });
+  const sandboxPathFailure = sandboxDoctor.diagnostics.find((diagnostic) =>
+    /(?:(?:ENOENT|EACCES|EPERM).*(?:srt-win|apply-seccomp)|(?:srt-win|apply-seccomp).*(?:ENOENT|EACCES|EPERM)|app\\.asar.*(?:srt-win|apply-seccomp|vendor)|(?:srt-win|apply-seccomp|vendor).*app\\.asar)/i.test(
+      diagnostic,
+    ),
+  );
+  if (sandboxPathFailure) {
+    throw new Error(
+      'packaged sandbox runtime resolved a non-physical helper path: ' + sandboxPathFailure,
+    );
+  }
   runtime = await createKodaXRuntime({
     mode: 'embedded',
     isolation: 'worker',
@@ -840,6 +959,62 @@ try {
     backups: new Map(),
     executionCwd: homeDir,
   });
+  if (KODAX_RUNTIME_SDK_CAPABILITIES?.daemonOrphanExit !== 1) {
+    throw new Error('packaged SDK does not advertise daemonOrphanExit v1 before auto-start');
+  }
+  daemonRuntime = await createKodaXRuntime({
+    mode: 'daemon',
+    profile: daemonProfile,
+    homeDir,
+    sessionsDir: path.join(homeDir, 'daemon-sessions'),
+    daemonOrphanExitMs: 1_000,
+    requirements: {
+      daemonManagement: 1,
+      daemonOrphanExit: 1,
+      integrationConfigResilience: 1,
+      skillLearningLoop: 1,
+      runtimeAutoModeGuardrail: 4,
+    },
+    clientInfo: {
+      name: 'kodax-space-pack-lifecycle-smoke',
+      version: ${JSON.stringify(SPACE_VERSION)},
+    },
+  });
+  const daemonOrphanExit = daemonRuntime.capabilities?.daemonOrphanExit;
+  if (
+    typeof daemonOrphanExit !== 'object' ||
+    daemonOrphanExit === null ||
+    daemonOrphanExit.version !== 1
+  ) {
+    throw new Error(
+      'packaged daemon did not negotiate daemonOrphanExit v1: ' +
+        JSON.stringify(daemonOrphanExit),
+    );
+  }
+  const management = await daemonRuntime.daemon.inspect();
+  if (
+    management.integrations?.state !== 'healthy' ||
+    management.integrations.domains.length !== 3
+  ) {
+    throw new Error(
+      'packaged daemon did not expose healthy integration state: ' +
+        JSON.stringify(management.integrations),
+    );
+  }
+  if (!management.preflight.canStop) {
+    throw new Error(
+      'packaged lifecycle probe daemon is not safely stoppable: ' +
+        management.preflight.blockers.join(','),
+    );
+  }
+  await daemonRuntime.daemon.stopForInline({
+    expectedRuntimeId: management.runtimeId,
+    expectedRevision: management.revision,
+    expectedOwnerPolicyRevision: management.ownerPolicy.revision,
+  });
+  await daemonRuntime.close();
+  daemonRuntime = undefined;
+  await waitForDaemonOwnerRelease(management.runtimeId);
   const result = {
     version: runtime.identity.version,
     mode: runtime.identity.mode,
@@ -847,6 +1022,12 @@ try {
     workerThreadId: runtime.identity.workerThreadId,
     sessionRoundTrip: loaded.id === created.id,
     constructedHandlerIsMainThread: handlerResult,
+    daemonOrphanExit: daemonOrphanExit.version,
+    integrationHealth: management.integrations.state,
+    sandboxVersion: sandboxCapability.version,
+    sandboxUnavailableBehavior: sandboxCapability.unavailableBehavior,
+    sandboxDoctorReady: sandboxDoctor.ready,
+    sandboxDoctorDiagnostics: sandboxDoctor.diagnostics.length,
   };
   if (
     result.version !== ${JSON.stringify(KODAX_VERSION)} ||
@@ -854,7 +1035,11 @@ try {
     result.isolation !== 'worker' ||
     !Number.isSafeInteger(result.workerThreadId) ||
     !result.sessionRoundTrip ||
-    result.constructedHandlerIsMainThread !== 'false'
+    result.constructedHandlerIsMainThread !== 'false' ||
+    result.daemonOrphanExit !== 1 ||
+    result.integrationHealth !== 'healthy' ||
+    result.sandboxVersion !== 1 ||
+    result.sandboxUnavailableBehavior !== 'structured-no-execution'
   ) {
     throw new Error('unexpected packaged Worker result: ' + JSON.stringify(result));
   }
@@ -868,6 +1053,27 @@ try {
   // a disposable process, so terminate it after the result has been flushed.
   process.exit(0);
 } catch (error) {
+  if (daemonRuntime) {
+    let cleanupRuntimeId;
+    await daemonRuntime.daemon
+      .inspect()
+      .then((management) => {
+        cleanupRuntimeId = management.runtimeId;
+        return management.preflight.canStop
+          ? daemonRuntime.daemon.stopForInline({
+              expectedRuntimeId: management.runtimeId,
+              expectedRevision: management.revision,
+              expectedOwnerPolicyRevision: management.ownerPolicy.revision,
+            })
+          : undefined;
+      })
+      .catch(() => undefined);
+    await daemonRuntime.close().catch(() => undefined);
+    daemonRuntime = undefined;
+    if (cleanupRuntimeId) {
+      await waitForDaemonOwnerRelease(cleanupRuntimeId).catch(() => undefined);
+    }
+  }
   await runtime?.close().catch(() => undefined);
   await rm(homeDir, { recursive: true, force: true }).catch(() => undefined);
   console.error(error instanceof Error ? error.stack : String(error));

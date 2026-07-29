@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { SessionEvent, SpaceSessionLiveProjectionT } from '@kodax-space/space-ipc-schema';
 import {
+  presentRuntimeSandbox,
   selectActivitySnapshot,
   snapshotFromEvents,
   snapshotFromRuntimeProjection,
@@ -252,4 +253,67 @@ test('Runtime host-tool wait is rendered from daemon requirements', () => {
   } satisfies SpaceSessionLiveProjectionT);
 
   assert.equal(snapshot?.status, 'Waiting for Space…');
+});
+
+test('Runtime sandbox observation is visible without changing tool execution state', () => {
+  const snapshot = snapshotFromRuntimeProjection({
+    sessionId: sid,
+    projectionRevision: 2,
+    cursor: { runtimeId: 'rt_1', seq: 4 },
+    transcriptRevision: 'transcript_4',
+    activeRun: {
+      runId: 'run_1',
+      sessionId: sid,
+      phase: 'running',
+      startedAt: 10,
+    },
+    queuedRuns: [],
+    activeTools: [
+      {
+        toolCallId: 'tool_1',
+        name: 'bash',
+        startedAt: 11,
+        sandbox: {
+          version: 1,
+          state: 'fallback',
+          reason: 'backend_failed',
+          execution: 'normal_permission_policy',
+        },
+      },
+    ],
+    todos: [],
+    queuedInputs: [],
+    interactions: [],
+  } satisfies SpaceSessionLiveProjectionT);
+
+  assert.equal(snapshot?.status, 'Running bash…');
+  assert.deepEqual(snapshot?.sandbox, {
+    label: 'Sandbox fallback',
+    title: 'sandbox backend failed; this tool continues under the normal permission policy.',
+    tone: 'warning',
+  });
+});
+
+test('Runtime sandbox presentation distinguishes applied and unselected decisions', () => {
+  assert.deepEqual(
+    presentRuntimeSandbox({
+      version: 1,
+      state: 'applied',
+      backend: 'windows-restricted-user',
+      policyId: 'kodax-workspace-shell-v1',
+    }),
+    {
+      label: 'Sandboxed',
+      title: 'Sandbox active (windows-restricted-user).',
+      tone: 'safe',
+    },
+  );
+  assert.deepEqual(
+    presentRuntimeSandbox({ version: 1, state: 'not_selected' }),
+    {
+      label: 'No sandbox',
+      title: 'Sandboxing was not selected for this tool.',
+      tone: 'muted',
+    },
+  );
 });

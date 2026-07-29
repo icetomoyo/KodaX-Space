@@ -2,7 +2,8 @@
 
 > 面向源码使用者、贡献者和发布维护者。普通用户请阅读[用户使用手册](USER_MANUAL.zh-CN.md)。
 >
-> 当前 Space 正式候选：撤回后修正的 `v0.1.33`；正式构建使用 npm Registry 的精确 `@kodax-ai/kodax@0.7.77`，不消费本地未发布 SDK。
+> 当前 `main` 对 Space 管理的 daemon 要求专用的 `daemonOrphanExit:1` 能力；
+> 不使用 KodaX 语义版本或 Auto-mode guardrail 版本代替生命周期能力判断。
 > 本版本包含 canonical Actor/Turn 投影、精确 history/live 对齐、context/session usage、稳定缓存亲和诊断、可配置 Shell、F140 关闭行为、F141 Daemon/Embedded 安全选择、F142 会话文件操作，以及 builtin catalog、file reveal 和 Node/build/打包工具链维护。
 
 ## 1. 环境要求
@@ -20,7 +21,17 @@ npm install --include=dev
 
 KodaX Space 是 npm workspace monorepo。不要只在 `apps/desktop` 中安装依赖，否则 workspace package、Electron native module 与根脚本可能不一致。
 
-根、desktop manifest 与 lockfile 当前都固定到 npm 正式发布的精确 KodaX 0.7.77。官方 Registry tarball 的 SRI 为 `sha512-doAvH966LlOk/fBvmMZCmVSBbvLNPHKWtMaEQ6C2Vqvzs6ninQEs290ECGNHvAP/dMuRh2gD6Dso76HUgzLfzw==`，SHA256 为 `E30B447059F1C237B81E5896E51698D3FFD7987A8C5E1CF15F9F2354C846F63C`。`npm ls @kodax-ai/kodax --all` 应只显示一个 deduped 0.7.77；Runtime compatibility 会拒绝更旧 daemon，并继续要求 guardrail v3、`permission:grant-admin`、`interruptInput:1`、`actorControlPlane:1`、`contextCompaction:3`、`transcriptPaging:1` 和 `transcriptSearch:1`。Provider catalog 还要求 public `kimi-k3` 1M 路由与 Kimi Code 既有 tiers。依赖必须保持 Registry URL 与上述 lockfile SRI，不能提交开发机 `file:` 依赖。
+根、desktop manifest 与 lockfile 记录一个精确的 Registry KodaX 依赖。开发联调可用
+`npm run link:kodax` 连接同级源码；正式打包沿用既有依赖一致性检查，要求两个
+manifest、lockfile 与安装包解析同一个 Registry 版本和完整性，不再增加
+“KodaX 必须 ≥0.7.78”或包元数据生命周期门禁。Runtime 连接按实际能力协商：
+Space 管理的 daemon 必须返回 `daemonOrphanExit:1`，并继续要求
+`permission:grant-admin`、`interruptInput:1`、`actorControlPlane:1`、
+`contextCompaction:3`、`transcriptPaging:1`、`transcriptSearch:1`、
+`skillLearningLoop:1`、`integrationConfigResilience:1` 和
+`runtimeAutoModeGuardrail:4`。`@kodax-ai/kodax/sandbox` 通过独立 facade probe
+验证，不能用版本号冒充 backend readiness。不得伪造 lockfile URL/SRI，也不能提交
+开发机 `file:` 依赖。
 
 ## 2. 启动方式
 
@@ -75,6 +86,11 @@ flowchart TD
 若同时使用 `KODAX_PROFILE_DIR`，Space 会在首次加载 SDK 前将 `KODAX_HOME` 对齐到该 profile。相对路径会被忽略；测试模式优先级最高。
 
 从旧版升级时，`config.json#mcpServers` 与 `config.json#extensions` 仍可只读回退，但不应继续作为新配置位置。Settings → Runtime 会调用当前 KodaX SDK 的 `planLegacyIntegrationMigration()` 展示迁移计划，并通过 `migrateLegacyIntegrationConfig()` 提供“迁移集成配置”按钮；它只创建缺失文件，不覆盖已有目标，也不删除旧字段，成功后会重载 MCP。命令行也可先运行 `kodax integrations migrate` 查看计划，再运行 `kodax integrations migrate --apply` 创建独立文件；确认独立文件有效后，才使用 `kodax integrations migrate --apply --cleanup-legacy` 显式清理旧字段。A2A 没有旧 `config.json` 迁移源，始终以 `integrations/a2a.json` 为权威配置。
+
+KodaX daemon watcher 对无效集成更新保留 last-known-good。Space 以有界周期读取
+daemon management health，仅在健康指纹变化时刷新投影；损坏一个可选 integration
+文件不会让 Coder 断线，修复文件后 Settings 通常会在数秒内自动恢复 healthy。轮询错误
+只保留上一份健康状态并记录一次有界警告，不会把核心 Runtime 标记为不可用。
 
 ## 4. Runtime Host 与 v0.1.33 Coder 模式选择
 

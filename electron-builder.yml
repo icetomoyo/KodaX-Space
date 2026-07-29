@@ -45,6 +45,11 @@ files:
   - 'node_modules/better-sqlite3/build/Release/better_sqlite3.node'
   - 'node_modules/bindings/**/*'
   - 'node_modules/file-uri-to-path/**/*'
+  # ASRT launches platform helpers by physical filesystem path. Keeping its JS
+  # facade inside app.asar (even with vendor binaries under app.asar.unpacked)
+  # leaves import.meta.url pointing at app.asar and makes spawn fail with ENOENT.
+  # Ship the complete runtime chain through extraResources instead.
+  - '!node_modules/@anthropic-ai/sandbox-runtime/**'
   - 'package.json'
   # KodaX builtin skills are runtime resources, not documentation. Restore
   # SKILL.md plus Markdown support files after the broad Markdown exclusion
@@ -124,6 +129,50 @@ extraResources:
       - '!**/*.map'
       - '!**/*.{md,markdown}'
       - '!**/*.{ts,tsx}'
+  # KodaX's ASRT adapter resolves this package from resources/node_modules when
+  # loaded by code in app.asar. The vendor executables must remain on a real
+  # filesystem path because ASRT passes them directly to child_process.spawn.
+  - from: node_modules/@anthropic-ai/sandbox-runtime
+    to: node_modules/@anthropic-ai/sandbox-runtime
+    filter:
+      - 'package.json'
+      - 'LICENSE'
+      - 'dist/**/*.js'
+      - 'vendor/seccomp/arm64/apply-seccomp'
+      - 'vendor/seccomp/x64/apply-seccomp'
+      - 'vendor/srt-win/arm64/srt-win.exe'
+      - 'vendor/srt-win/x64/srt-win.exe'
+  # Nested node_modules are excluded by electron-builder's FileSet traversal,
+  # so ASRT's pinned Commander 12 runtime needs its own physical resource set.
+  - from: node_modules/@anthropic-ai/sandbox-runtime/node_modules/commander
+    to: node_modules/@anthropic-ai/sandbox-runtime/node_modules/commander
+    filter:
+      - 'package.json'
+      - 'LICENSE'
+      - 'index.js'
+      - 'esm.mjs'
+      - 'lib/**/*.js'
+  - from: node_modules/@pondwader/socks5-server
+    to: node_modules/@pondwader/socks5-server
+    filter:
+      - 'package.json'
+      - 'LICENSE'
+      - 'dist/**/*.js'
+      - 'dist/**/*.mjs'
+  - from: node_modules/node-forge
+    to: node_modules/node-forge
+    filter:
+      - 'package.json'
+      - 'LICENSE'
+      - 'lib/**/*.js'
+  - from: node_modules/zod
+    to: node_modules/zod
+    filter:
+      - 'package.json'
+      - 'LICENSE'
+      - '**/*.js'
+      - '**/*.cjs'
+      - '**/*.mjs'
 
 # build:smoke 已经把 renderer + main 全 bundle 进 dist*。
 # native 模块（keytar 等）走 asarUnpack——asar 内 require .node 会失败
