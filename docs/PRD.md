@@ -33,7 +33,7 @@ KodaX Space 是 KodaX 生态的**桌面客户端**——不是另一个 IDE，�
 - **当前版本链**：
   - `v0.1.30`：Coder/Partner 双 surface、workspace-first Partner、Reference External Agents 已发布
   - `v0.1.31-v0.1.33`：Runtime contract alignment + `app://space`/structured logging + typed semantic Space control
-  - `v0.1.40-v0.1.45`：Partner outcome workspace、Workflow/Review、Task/Capability、Memory Agent、Learning Center
+  - `v0.1.40`、`v0.1.42-v0.1.45`：Partner Skill workspace、knowledge quality/curation、Presentation Project、Memory Agent、Learning Center
   - `v0.1.48`：本地化、诊断、release channel/distribution trust 完成 0.1.x beta gate
   - `v0.2.x`：Governed Browser、正式 Partner packs、Connector read snapshots、local automations、refreshable artifacts
 
@@ -563,7 +563,7 @@ File panel 内点击 git diff
 | `v0.1.38`    | —                                                                                                                                                            |
 | `v0.1.39`    | —                                                                                                                                                            |
 | `v0.1.40`    | Partner composer-first Skill workspace                                                                                                                        |
-| `v0.1.41`    | Task Plan/Completion Receipt、Runtime Capability Health、Effort/Assurance/Route facts                                                                        |
+| `v0.1.41`    | —                                                                                                                                                            |
 | `v0.1.42`    | Partner hybrid retrieval/evidence ranking 与 curated knowledge lifecycle                                                                                     |
 | `v0.1.43`    | F129 Partner Presentation Project：复用 F137 PPTX format service，增加模板优先 Studio、真实预览和目标 Office 引擎验证                                        |
 | `v0.1.44`    | Memory Agent Desktop Host；硬门槛为已发布、兼容的 KX-F260 contract                                                                                           |

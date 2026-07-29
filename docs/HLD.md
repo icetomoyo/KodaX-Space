@@ -408,7 +408,7 @@ Space 将 plugin-root 内容标成 `builtin` 只是产品来源分类，不降�
 工具副作用和可执行脚本仍按第三方 Skill 的保守策略处理。完整维护流程见
 [BUILTIN_SKILLS.md](BUILTIN_SKILLS.md)。
 
-统一到 Runtime catalog/extensions reload 留给 F090 或后续有明确 parity 的版本，不能因 public facade 存在就宣称已经迁移。
+Runtime catalog 与 Extension reload 继续按 Coder daemon、Partner embedded 和 Space residual owner 分离；不能因 public facade 存在就宣称已经统一迁移。
 
 ---
 
@@ -868,7 +868,6 @@ Space 严格遵守：
 | `v0.1.33`           | Stabilize KodaX 0.7.77 Actor/history/usage contracts and add bounded Shell/F140 desktop lifecycle control.                            |
 | corrected `v0.1.33` | Add safe customer-selectable Coder ownership and exact packaged Runtime dependency/boot gates before reissuing the withdrawn release. |
 | `v0.1.40`           | Extend Workflow snapshot schema for same-session replay provenance; attach evidence review receipts to objects.                       |
-| `v0.1.41`           | Derive Task Dock plan/capability/effective-run projections from Runtime facts.                                                        |
 | `v0.1.44`           | Host KX-F260 Memory Agent over existing F228/F088 governance when published.                                                          |
 | `v0.1.45`           | Host KX-F266 Learning Center; carrier actions remain capability-gated.                                                                |
 | `v0.1.48`           | Complete locale gates, release diagnostics, channels/updater/distribution trust.                                                      |
