@@ -303,7 +303,8 @@ Near-term planned work is tracked in [docs/FEATURE_LIST.md](docs/FEATURE_LIST.md
 | `v0.1.32`         | Published shared-daemon Coder, Partner project knowledge/citations, vetted builtins, exact-history UX, Windows icon/tray, and release hardening.     |
 | `v0.1.33`         | Corrected KodaX 0.7.77 release with safe Daemon/Embedded selection, conversation file actions, attachment/context fixes, and packaged Runtime gates. |
 | `v0.1.34`         | Independently authored Chinese-first DOCX/PDF/XLSX/PPTX builtins plus semantic UI polish, with bounded execution and truthful validation receipts.   |
-| `v0.1.40-v0.1.45` | Workflow/review evidence, task/capability governance, then SDK-gated Memory Agent and Learning Center hosts.                                         |
+| `v0.1.35`         | Minimum learned-Skill safety surface over the published Runtime learning loop, without a second store or multi-carrier Learning Center.               |
+| `v0.1.40-v0.1.44` | Workflow/review evidence, task/capability governance, and the SDK-gated Memory Agent host.                                                            |
 | `v0.1.48`         | Localization completion, beta diagnostics, release channels, updater/distribution trust.                                                             |
 | `v0.2.x`          | Governed browser and Partner packs, read-only connector snapshots, local automations, and refreshable artifacts.                                     |
 

@@ -828,13 +828,13 @@ Space 严格遵守：
 
 ## 19. 未来扩展点
 
-### 19.1 Memory Agent 与 Learning Center
+### 19.1 Memory Agent 与 Learned Skill Safety Surface
 
 - 0.1.31 已验证 KodaX 0.7.68 `/experimental-memory`、policy shape 和 managed-run lifecycle，并只向 `space.version`/脱敏诊断投影 bounded metadata；KodaX/F228 仍分别是 runtime 与 durable governance owner。
 - F117 通过已发布 KX-F260 contract 扩展现有 F088 Memory Governance；完整 Episodes/Activity/correction/forget/purge 和 activation/rollback 仍受精确 host contract 门控。
-- F118 通过 KX-F266 `runtime.learning` 承载学习生命周期；Space 不写第二套 learning store。
-- KX-F263/F264 的 Skill/Extension action 按 capability 独立启用。
-- 未发布 design 不被当作 SDK；缺失时保持当前功能并显示 unavailable reason。
+- F118 通过已发布的 `learningCenter:1` + `skillLearningLoop:1` 承载 learned Skill 生命周期；Space 不写第二套 learning store。
+- 首版只做 attention/list/detail 与 review/trust/reject/disable/rollback 的最小安全控制面，展示 Runtime 返回的 evidence、immutable revision、fingerprint、canary、validation 与 previous-good；不建设 Memory/Extension/Workflow carrier union。
+- archive/restore 不在公开 Runtime facade 中，Extension self-learning 已从 KodaX 路线移除；二者都不能作为 F118 隐藏验收项。
 
 ### 19.2 Governed Browser 与 Connectors
 
@@ -869,7 +869,7 @@ Space 严格遵守：
 | corrected `v0.1.33` | Add safe customer-selectable Coder ownership and exact packaged Runtime dependency/boot gates before reissuing the withdrawn release. |
 | `v0.1.40`           | Extend Workflow snapshot schema for same-session replay provenance; attach evidence review receipts to objects.                       |
 | `v0.1.44`           | Host KX-F260 Memory Agent over existing F228/F088 governance when published.                                                          |
-| `v0.1.45`           | Host KX-F266 Learning Center; carrier actions remain capability-gated.                                                                |
+| `v0.1.35`           | Host the minimum learned-Skill safety surface over published `learningCenter:1` + `skillLearningLoop:1`.                              |
 | `v0.1.48`           | Complete locale gates, release diagnostics, channels/updater/distribution trust.                                                      |
 
 ### 20.2 Active 0.2.x architecture lanes

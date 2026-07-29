@@ -19,6 +19,7 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 - **Packaged sandbox helper paths** - ASRT and its runtime dependency chain now ship under physical `resources/node_modules` paths rather than inside `app.asar`, so Windows `srt-win.exe` and Linux seccomp helpers can be spawned. Package smoke verifies the files, runs the public sandbox doctor, and rejects `app.asar`/`ENOENT` helper diagnostics.
 - **Capability-based Runtime compatibility** - Live daemon attachment no longer rejects an otherwise compatible Runtime by semantic version. The explicit negotiated capability requirements, including `daemonOrphanExit:1`, remain the fail-closed contract.
 - **Visible sandbox fallback** - Active tools show `Sandboxed`, `Sandbox fallback`, or `No sandbox`; fallback explicitly means execution continues under the normal permission policy and never becomes model-visible transcript content.
+- **Learned Skill safety scope** - F118 moves forward to `v0.1.35` and is narrowed from a five-view, multi-carrier Learning Center to the minimum Runtime-owned learned-Skill attention/list/detail/control surface. `/learn` keeps review and trust distinct and exposes reject, disable, and rollback; Space still does not claim the planned event cursor, notifications, or desktop journey.
 
 ## [0.1.33] - 2026-07-28
 

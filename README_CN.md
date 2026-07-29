@@ -280,7 +280,8 @@ npm run e2e:headed
 | `v0.1.32`         | 已发布 Shared-daemon Coder、Partner 项目知识/引用、受审 builtin、精确历史体验、Windows 图标/托盘与发布加固。 |
 | `v0.1.33`         | 修正后的 KodaX 0.7.77 正式版：Daemon/Embedded 安全选择、会话文件操作、附件/上下文修复与打包 Runtime 门禁。   |
 | `v0.1.34`         | Space 独立实现的中文优先 DOCX/PDF/XLSX/PPTX builtin 与语义 UI 精修，并提供有界执行和真实验证回执。           |
-| `v0.1.40-v0.1.45` | Workflow/Review 证据面、Task/Capability 治理，以及 SDK-gated Memory Agent/Learning Center host。             |
+| `v0.1.35`         | 基于已发布 Runtime 学习闭环的最小 learned Skill 安全控制面，不建设第二套存储或多 carrier Learning Center。   |
+| `v0.1.40-v0.1.44` | Workflow/Review 证据面、Task/Capability 治理，以及 SDK-gated Memory Agent host。                             |
 | `v0.1.48`         | 本地化完成、beta diagnostics、release channel、updater/distribution trust。                                  |
 | `v0.2.x`          | Governed Browser 与 Partner packs、只读 Connector snapshots、本地 Automations、可刷新 Artifacts。            |
 

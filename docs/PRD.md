@@ -33,7 +33,8 @@ KodaX Space 是 KodaX 生态的**桌面客户端**——不是另一个 IDE，�
 - **当前版本链**：
   - `v0.1.30`：Coder/Partner 双 surface、workspace-first Partner、Reference External Agents 已发布
   - `v0.1.31-v0.1.33`：Runtime contract alignment + `app://space`/structured logging + typed semantic Space control
-  - `v0.1.40`、`v0.1.42-v0.1.45`：Partner Skill workspace、knowledge quality/curation、Presentation Project、Memory Agent、Learning Center
+  - `v0.1.35`：learned Skill 最小安全控制面
+  - `v0.1.40`、`v0.1.42-v0.1.44`：Partner Skill workspace、knowledge quality/curation、Presentation Project、Memory Agent
   - `v0.1.48`：本地化、诊断、release channel/distribution trust 完成 0.1.x beta gate
   - `v0.2.x`：Governed Browser、正式 Partner packs、Connector read snapshots、local automations、refreshable artifacts
 
@@ -557,7 +558,7 @@ File panel 内点击 git diff
 | `v0.1.32`    | Shared Coder daemon/live state，以及 Space-owned Partner 本地 Sources、稳定引用、自动 grounded recall                                                        |
 | `v0.1.33`    | KodaX 0.7.77 Runtime/Actor/history/usage 稳定化、Shell 控制与 F140 可配置关闭行为（已发布）                                                                  |
 | `v0.1.34`    | F137 中文优先 DOCX/PDF/XLSX/PPTX builtin 与 F139 语义 UI 精修                                                                                                |
-| `v0.1.35`    | —                                                                                                                                                            |
+| `v0.1.35`    | Learned Skill Safety Surface；复用已发布 `learningCenter:1` + `skillLearningLoop:1`，不建设超出契约的多 carrier Learning Center                                |
 | `v0.1.36`    | —                                                                                                                                                            |
 | `v0.1.37`    | —                                                                                                                                                            |
 | `v0.1.38`    | —                                                                                                                                                            |
@@ -567,7 +568,7 @@ File panel 内点击 git diff
 | `v0.1.42`    | Partner hybrid retrieval/evidence ranking 与 curated knowledge lifecycle                                                                                     |
 | `v0.1.43`    | F129 Partner Presentation Project：复用 F137 PPTX format service，增加模板优先 Studio、真实预览和目标 Office 引擎验证                                        |
 | `v0.1.44`    | Memory Agent Desktop Host；硬门槛为已发布、兼容的 KX-F260 contract                                                                                           |
-| `v0.1.45`    | Learning Center Desktop Host；硬门槛为已发布的 KX-F266 `runtime.learning`                                                                                    |
+| `v0.1.45`    | —                                                                                                                                                            |
 | `v0.1.46`    | Partner knowledge freshness、conflict 与 access integrity                                                                                                    |
 | `v0.1.47`    | Partner knowledge integrity 稳定化预留                                                                                                                       |
 | `v0.1.48`    | Localization、beta/release diagnostics、distribution trust 与 Partner knowledge quality                                                                      |
