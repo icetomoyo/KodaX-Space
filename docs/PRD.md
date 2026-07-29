@@ -562,7 +562,7 @@ File panel 内点击 git diff
 | `v0.1.37`    | —                                                                                                                                                            |
 | `v0.1.38`    | —                                                                                                                                                            |
 | `v0.1.39`    | —                                                                                                                                                            |
-| `v0.1.40`    | Partner outcome-first workspace、Workflow provenance 与 object-attached review receipts                                                                      |
+| `v0.1.40`    | Partner composer-first Skill workspace                                                                                                                        |
 | `v0.1.41`    | Task Plan/Completion Receipt、Runtime Capability Health、Effort/Assurance/Route facts                                                                        |
 | `v0.1.42`    | Partner hybrid retrieval/evidence ranking 与 curated knowledge lifecycle                                                                                     |
 | `v0.1.43`    | F129 Partner Presentation Project：复用 F137 PPTX format service，增加模板优先 Studio、真实预览和目标 Office 引擎验证                                        |

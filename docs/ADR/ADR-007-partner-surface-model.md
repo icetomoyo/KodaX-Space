@@ -47,6 +47,30 @@ F109 Office/PDF writers and F113 reviewed file proposals remain valid Partner to
 
 The amendment does not claim Cowork/WorkBuddy parity. v0.1.30 has a local workspace/file foundation; scoped executable Skills, Partner MCP/connectors, browser/computer use, scheduled/remote work, user-visible expert teams, and template-grade Office design remain separate future capabilities. The Partner tool policy intentionally blocks the SDK `skill`, subagent-dispatch, workflow, and MCP mutation surfaces until each has a Partner-scoped authority model.
 
+## 2026-07-29 Amendment: Executable Partner Skills Are Required
+
+The v0.1.30 `skill` suppression was a fail-closed repair, not a permanent product boundary.
+
+The sequence was:
+
+1. v0.1.27 introduced the Partner read/research-oriented tool allowlist while the shared Skills prompt was still injected.
+2. The model could therefore see installed Skills, but Partner rejected the SDK `skill` tool used to load them.
+3. v0.1.30 resolved that inconsistent advertisement by returning an empty Skills addendum for Partner.
+4. Documentation then carried the temporary suppression forward as future capability work.
+
+That choice is superseded. Partner must consume installed KodaX Skills through both explicit user selection and natural-language Auto LLM activation.
+
+The authority model is:
+
+- `skill` is admitted as a capability loader that expands Skill instructions.
+- Loading a Skill grants no file, shell, network, connector, MCP, workflow, subagent, or mutation authority.
+- Every action requested by the loaded instructions remains independently governed by Partner tool visibility, permission, allowed-root, connector, checkpoint, proposal, rollback, and audit policy.
+- Skill dynamic-context execution must use a Partner-aware host policy and permission broker or be explicitly disabled; it must never fall back to unbrokered host execution.
+- Skills that cannot run under the current Partner boundary remain discoverable with a truthful compatibility reason rather than being silently hidden or misleadingly advertised.
+- Scene shortcuts and prompt templates are a learning and task-entry layer, not a replacement for executable Skills.
+
+F130 is the first required consumer of this amendment. It closes the explicit-versus-automatic Skill gap without turning Partner into Coder or weakening the Partner action boundary.
+
 ## Rationale
 
 - **同构于 Quick Ask**：Quick Ask 已经证明"同一 main 进程 runtime、不同临时 KodaXClient 实例"可行（ADR-004）。Partner 只是把这个模式从 transient popover 升级为持久 surface + 自定义画像。
