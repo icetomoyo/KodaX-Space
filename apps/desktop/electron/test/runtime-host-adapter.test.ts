@@ -16,7 +16,7 @@ import {
   RuntimeHostAdapter,
   assertSpaceRuntimeSdkLifecycleCapability,
   resolveRuntimeHostMode,
-  resolveSpaceRuntimeDaemonEndpoint,
+  withDarwinRuntimeDaemonTmpdir,
 } from '../kodax/runtime-host-adapter.js';
 import { kodaxHost } from '../kodax/host.js';
 import {
@@ -678,41 +678,41 @@ test('resolveRuntimeHostMode defaults to runtime and accepts explicit legacy rol
   assert.equal(resolveRuntimeHostMode('unexpected'), 'runtime');
 });
 
-test('Darwin Runtime endpoints stay short, stable, and isolated by profile root', () => {
-  const first = resolveSpaceRuntimeDaemonEndpoint({
-    platform: 'darwin',
-    profileRoot:
-      '/var/folders/very/long/per-user/path/that-would-overflow-the-darwin-unix-socket-limit/.kodax',
-    profile: 'coder',
-    userId: 501,
-  });
-  const repeated = resolveSpaceRuntimeDaemonEndpoint({
-    platform: 'darwin',
-    profileRoot:
-      '/var/folders/very/long/per-user/path/that-would-overflow-the-darwin-unix-socket-limit/.kodax',
-    profile: 'coder',
-    userId: 501,
-  });
-  const isolated = resolveSpaceRuntimeDaemonEndpoint({
-    platform: 'darwin',
-    profileRoot: '/Users/example/another-profile/.kodax',
-    profile: 'coder',
-    userId: 501,
-  });
-
-  assert.deepEqual(first, repeated);
-  assert.notDeepEqual(first, isolated);
-  assert.equal(first?.kind, 'unix');
-  assert.match(first?.path ?? '', /^\/tmp\/kodax-501-[a-f0-9]{16}\.sock$/);
-  assert.ok(Buffer.byteLength(first?.path ?? '', 'utf8') < 104);
-  assert.equal(
-    resolveSpaceRuntimeDaemonEndpoint({
-      platform: 'linux',
-      profileRoot: '/home/example/.kodax',
-      profile: 'coder',
-    }),
-    undefined,
+test('Darwin daemon startup uses a short TMPDIR and restores the host environment', async () => {
+  const darwinEnv: NodeJS.ProcessEnv = {
+    TMPDIR: '/var/folders/very/long/per-user/path/that-overflows-darwin-sockaddr-un',
+  };
+  const observed = await withDarwinRuntimeDaemonTmpdir(
+    'darwin',
+    async () => darwinEnv.TMPDIR,
+    darwinEnv,
   );
+  assert.equal(observed, '/tmp');
+  assert.equal(
+    darwinEnv.TMPDIR,
+    '/var/folders/very/long/per-user/path/that-overflows-darwin-sockaddr-un',
+  );
+
+  const emptyEnv: NodeJS.ProcessEnv = {};
+  await assert.rejects(
+    withDarwinRuntimeDaemonTmpdir(
+      'darwin',
+      async () => {
+        assert.equal(emptyEnv.TMPDIR, '/tmp');
+        throw new Error('startup failed');
+      },
+      emptyEnv,
+    ),
+    /startup failed/,
+  );
+  assert.equal(emptyEnv.TMPDIR, undefined);
+
+  const linuxEnv: NodeJS.ProcessEnv = { TMPDIR: '/var/tmp' };
+  assert.equal(
+    await withDarwinRuntimeDaemonTmpdir('linux', async () => linuxEnv.TMPDIR, linuxEnv),
+    '/var/tmp',
+  );
+  assert.equal(linuxEnv.TMPDIR, '/var/tmp');
 });
 
 test('startup mode can be configured from persisted settings only before initialization', async () => {

@@ -1,5 +1,4 @@
 import path from 'node:path';
-import { createHash } from 'node:crypto';
 
 import type {
   ConnectKodaXRuntimeOptions,
@@ -9,7 +8,6 @@ import type {
   RuntimeCompactSessionInput,
   RuntimeCompactSessionResult,
   RuntimeCredentialBroker,
-  RuntimeDaemonEndpoint,
   RuntimeDaemonManagementState,
   RuntimeDaemonPreflight,
   RuntimeDaemonRollbackResult,
@@ -581,25 +579,27 @@ export function resolveRuntimeHostMode(value: string | undefined): RuntimeHostMo
   return value?.trim().toLowerCase() === 'legacy' ? 'legacy' : 'runtime';
 }
 
-export function resolveSpaceRuntimeDaemonEndpoint(input: {
-  readonly platform: NodeJS.Platform;
-  readonly profileRoot: string;
-  readonly profile: string;
-  readonly userId?: number;
-}): RuntimeDaemonEndpoint | undefined {
-  if (input.platform !== 'darwin') return undefined;
-  const identity = createHash('sha256')
-    .update(`${path.resolve(input.profileRoot)}\0${input.profile}`)
-    .digest('hex')
-    .slice(0, 16);
-  const owner =
-    Number.isSafeInteger(input.userId) && (input.userId ?? -1) >= 0 ? input.userId : 'u';
-  // Darwin's sockaddr_un.sun_path is only 104 bytes. os.tmpdir() commonly expands
-  // to a long /var/folders/... path, so keep the actual bind path under /tmp.
-  return {
-    kind: 'unix',
-    path: path.posix.join('/tmp', `kodax-${owner}-${identity}.sock`),
-  };
+export async function withDarwinRuntimeDaemonTmpdir<T>(
+  platform: NodeJS.Platform,
+  operation: () => Promise<T>,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<T> {
+  if (platform !== 'darwin') return operation();
+  const previousTmpdir = env.TMPDIR;
+  // Darwin's sockaddr_un.sun_path is only 104 bytes. Its normal /var/folders/...
+  // TMPDIR can overflow once KodaX appends the scoped daemon endpoint filename.
+  // Keep the SDK default endpoint (required for auto-start), but compute and
+  // spawn it under the canonical short /tmp alias.
+  env.TMPDIR = '/tmp';
+  try {
+    return await operation();
+  } finally {
+    if (previousTmpdir === undefined) {
+      delete env.TMPDIR;
+    } else {
+      env.TMPDIR = previousTmpdir;
+    }
+  }
 }
 
 function assertSpaceDaemonLifecycleCapability(runtime: KodaXDaemonRuntime): void {
@@ -693,21 +693,7 @@ async function createPublishedRuntime(
       };
     },
   );
-  const profileRoot =
-    options.homeDir ??
-    (options.sessionsDir !== undefined ? path.dirname(options.sessionsDir) : getKodaxRuntimeDir());
-  const endpoint =
-    options.endpoint ??
-    resolveSpaceRuntimeDaemonEndpoint({
-      platform: process.platform,
-      profileRoot,
-      profile: options.profile ?? 'coder',
-      userId: process.getuid?.(),
-    });
-  return sdk.connectKodaXRuntime({
-    ...options,
-    ...(endpoint !== undefined ? { endpoint } : {}),
-  });
+  return withDarwinRuntimeDaemonTmpdir(process.platform, () => sdk.connectKodaXRuntime(options));
 }
 
 export function assertSpaceRuntimeSdkLifecycleCapability(sdk: {
