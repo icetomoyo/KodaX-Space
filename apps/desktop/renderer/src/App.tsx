@@ -26,6 +26,7 @@ import {
 } from './store/runtimeProjectionState.js';
 import { createSessionEventBatcher } from './store/sessionEventBatcher.js';
 import { invokeWithTimeout } from './lib/ipcInvokeWithTimeout.js';
+import { SPACE_VERSION_REFRESH_EVENT } from './lib/versionEvents.js';
 
 // Shell owns the visible layout; App keeps process-wide bootstrapping and global listeners.
 // Workflow notice dedup lives in appendEvent keyed workflow_notice events, not a module
@@ -202,10 +203,15 @@ export default function App(): JSX.Element {
       })
       .catch(() => {});
 
-    // 启动期一次性自检 + 订阅事件流
-    bridge.invoke('space.version', undefined).then((result) => {
-      if (result.ok) setVersion(result.data);
-    });
+    // Startup self-check plus explicit refreshes after mutable capability operations such as
+    // user-confirmed sandbox setup. Reading space.version itself remains side-effect free.
+    const refreshSpaceVersion = (): void => {
+      void bridge.invoke('space.version', undefined).then((result) => {
+        if (!disposed && result.ok) setVersion(result.data);
+      });
+    };
+    window.addEventListener(SPACE_VERSION_REFRESH_EVENT, refreshSpaceVersion);
+    refreshSpaceVersion();
 
     // FEATURE_004 启动时拉一次 provider 列表（main 已经把 keychain 中的 key 注入 env）
     bridge.invoke('provider.list', undefined).then((result) => {
@@ -423,6 +429,7 @@ export default function App(): JSX.Element {
       liveSnapshotReruns.clear();
       requestCoderLiveSnapshotRef.current = () => {};
       window.removeEventListener('focus', flushSessionEventsIfActive);
+      window.removeEventListener(SPACE_VERSION_REFRESH_EVENT, refreshSpaceVersion);
       document.removeEventListener('visibilitychange', flushSessionEventsIfActive);
       sessionEventBatcher.flush();
       sessionEventBatcher.dispose();

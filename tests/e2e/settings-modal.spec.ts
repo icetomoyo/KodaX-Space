@@ -141,6 +141,36 @@ test('SettingsModal tab switch keeps both panels mounted (preserves in-progress 
   }
 });
 
+test('Runtime settings exposes refreshable ASRT readiness without triggering setup', async () => {
+  const space = await launchSpace(`${TEST_ID}-sandbox-readiness`);
+  try {
+    const { page } = space;
+    await page.waitForTimeout(2000);
+    await page.getByTestId('settings-button').click();
+    await page.locator('#settings-tab-runtime').click();
+
+    const runtimePanel = page.locator('#settings-panel-runtime');
+    await expect(runtimePanel.getByText('Command sandbox (ASRT)')).toBeVisible();
+    await expect(runtimePanel.getByText('ASRT 0.0.65', { exact: true })).toBeVisible({
+      timeout: 10_000,
+    });
+    await expect(
+      runtimePanel.getByText(/Ready|Setup required|Unavailable/).first(),
+    ).toBeVisible();
+
+    const refresh = runtimePanel.getByTestId('sandbox-refresh');
+    await expect(refresh).toBeEnabled();
+    await refresh.click();
+    await expect(refresh).toBeEnabled({ timeout: 10_000 });
+    await expect(runtimePanel.getByText(/Checked:/)).toBeVisible();
+
+    // The test deliberately never confirms setup. Merely opening Settings or refreshing doctor
+    // must not launch an installer or UAC prompt.
+  } finally {
+    await space.close();
+  }
+});
+
 test('SettingsModal providers tab adds a custom provider and saves its API key', async () => {
   const space = await launchSpace(`${TEST_ID}-custom-provider`);
   try {

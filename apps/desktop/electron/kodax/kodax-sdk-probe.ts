@@ -201,6 +201,35 @@ export function projectSandboxDoctorResult(
   };
 }
 
+export function updateSandboxSdkDoctorResult(
+  reportedCapability: {
+    readonly version: 1;
+    readonly asrtVersion: string;
+    readonly backend:
+      | 'windows-restricted-user'
+      | 'macos-seatbelt'
+      | 'linux-bubblewrap'
+      | 'unsupported';
+    readonly setupMayElevate: boolean;
+  },
+  doctorValue: unknown,
+): SandboxSdkCapability {
+  if (sandboxCapability.status !== 'available') {
+    throw new Error('sandbox SDK must be probed before its doctor state can be updated');
+  }
+  if (
+    reportedCapability.version !== sandboxCapability.version ||
+    reportedCapability.asrtVersion !== sandboxCapability.asrtVersion ||
+    reportedCapability.backend !== sandboxCapability.backend ||
+    reportedCapability.setupMayElevate !== sandboxCapability.setupMayElevate
+  ) {
+    throw new Error('sandbox capability changed after startup shape negotiation');
+  }
+  sandboxDoctorGeneration += 1;
+  sandboxCapability = projectSandboxDoctorResult(sandboxCapability, doctorValue);
+  return getSandboxSdkCapability();
+}
+
 export async function probeSandboxSdk(): Promise<SandboxSdkCapability> {
   const moduleValue: unknown = await import('@kodax-ai/kodax/sandbox');
   const inspected = inspectSandboxModule(moduleValue);

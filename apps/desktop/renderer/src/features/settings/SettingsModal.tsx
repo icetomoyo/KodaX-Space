@@ -49,6 +49,7 @@ import {
   type LanguageModeT,
   type LicenseStatusT,
   type ProviderInfo,
+  type SandboxStatusT,
   type SupportedLocaleT,
   type TerminalShellPreferenceT,
   type WindowCloseBehaviorT,
@@ -62,6 +63,7 @@ import { ProviderCard } from '../provider/ProviderCard.js';
 import { CustomProviderForm } from '../provider/CustomProviderForm.js';
 import { WorkflowPolicySection } from '../workflow/WorkflowPolicySection.js';
 import { setSpaceLanguage } from '../../space-control/semanticActions.js';
+import { requestSpaceVersionRefresh } from '../../lib/versionEvents.js';
 
 export type SettingsTab = 'providers' | 'preferences' | 'runtime' | 'diagnostics' | 'license';
 
@@ -1171,6 +1173,8 @@ function RuntimePanel(): JSX.Element {
 
       <CoderRuntimeModeSection />
 
+      <SandboxReadinessSection />
+
       <SettingsSection
         title={t('settings.integrationHealth.title')}
         description={t('settings.integrationHealth.description')}
@@ -1524,6 +1528,228 @@ function RuntimePanel(): JSX.Element {
         </div>
       </SettingsSection>
     </div>
+  );
+}
+
+function SandboxReadinessSection(): JSX.Element {
+  const { t, effectiveLocale } = useI18n();
+  const [status, setStatus] = useState<SandboxStatusT | null>(null);
+  const [busy, setBusy] = useState<'load' | 'refresh' | 'setup' | null>('load');
+  const [error, setError] = useState<string | null>(null);
+
+  const readStatus = useCallback(async (): Promise<void> => {
+    if (!window.kodaxSpace) return;
+    setBusy((current) => current ?? 'load');
+    setError(null);
+    try {
+      const result = await window.kodaxSpace.invoke('sandbox.status', undefined);
+      if (!result.ok) {
+        setError(t('settings.sandbox.loadFailed'));
+        return;
+      }
+      setStatus(result.data);
+    } catch {
+      setError(t('settings.sandbox.loadFailed'));
+    } finally {
+      setBusy(null);
+    }
+  }, [t]);
+
+  useEffect(() => {
+    void readStatus();
+  }, [readStatus]);
+
+  async function refresh(): Promise<void> {
+    if (!window.kodaxSpace || busy !== null) return;
+    setBusy('refresh');
+    setError(null);
+    try {
+      const result = await window.kodaxSpace.invoke('sandbox.refresh', undefined);
+      if (!result.ok) {
+        setError(t('settings.sandbox.refreshFailed'));
+        return;
+      }
+      setStatus(result.data);
+      requestSpaceVersionRefresh();
+    } catch {
+      setError(t('settings.sandbox.refreshFailed'));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function setup(): Promise<void> {
+    if (!window.kodaxSpace || busy !== null || !status?.setup.canSetup) return;
+    const confirmed = await requestConfirm({
+      title: t('settings.sandbox.confirmTitle'),
+      message: t('settings.sandbox.confirmMessage'),
+      confirmLabel: t('settings.sandbox.confirm'),
+    });
+    if (!confirmed) return;
+
+    setBusy('setup');
+    setError(null);
+    try {
+      const result = await window.kodaxSpace.invoke('sandbox.setup', {
+        expectedRevision: status.revision,
+        confirmation: 'allow-sandbox-setup',
+      });
+      if (!result.ok) {
+        setError(t('settings.sandbox.setupFailed'));
+        const refreshed = await window.kodaxSpace.invoke('sandbox.refresh', undefined);
+        if (refreshed.ok) setStatus(refreshed.data);
+        requestSpaceVersionRefresh();
+        return;
+      }
+      setStatus(result.data);
+      requestSpaceVersionRefresh();
+      const outcome = result.data.lastOperation?.outcome;
+      if (outcome === 'ready') {
+        pushToast(t('settings.sandbox.setupSucceeded'), 'success', 2400);
+      } else if (outcome === 'cancelled') {
+        pushToast(t('settings.sandbox.cancelled'), 'warning', 2400);
+      } else {
+        pushToast(t('settings.sandbox.setupUnavailable'), 'warning', 3000);
+      }
+    } catch {
+      setError(t('settings.sandbox.setupFailed'));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const readiness = status?.readiness ?? 'checking';
+  const statusKey = `settings.sandbox.status.${readiness}` as MessageKey;
+  const statusTone =
+    readiness === 'ready'
+      ? 'border-ok/35 bg-ok/10 text-ok'
+      : readiness === 'setup-required'
+        ? 'border-warn/35 bg-warn/10 text-warn'
+        : readiness === 'unavailable'
+          ? 'border-danger/35 bg-danger/10 text-danger'
+          : 'border-border-default bg-surface-3 text-fg-muted';
+  const StatusIcon =
+    readiness === 'ready' ? CheckCircle2 : readiness === 'checking' ? Loader2 : AlertTriangle;
+
+  return (
+    <SettingsSection
+      title={t('settings.sandbox.title')}
+      description={t('settings.sandbox.description')}
+      icon={ShieldCheck}
+    >
+      <div className="flex flex-wrap items-start justify-between gap-3" aria-busy={busy !== null}>
+        <div className="min-w-0">
+          <span
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+            className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium ${statusTone}`}
+          >
+            <StatusIcon
+              className={`h-3.5 w-3.5 ${readiness === 'checking' ? 'animate-spin' : ''}`}
+              strokeWidth={1.8}
+              aria-hidden
+            />
+            {t(statusKey)}
+          </span>
+          {status && (
+            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-fg-muted">
+              <span>{t('settings.sandbox.asrtVersion', { version: status.asrtVersion })}</span>
+              <span>{t('settings.sandbox.backend', { backend: status.backend })}</span>
+              <span>{t('settings.sandbox.platform', { platform: status.platform })}</span>
+              <span>
+                {t('settings.sandbox.checkedAt', {
+                  time: new Date(status.checkedAt).toLocaleString(effectiveLocale),
+                })}
+              </span>
+            </div>
+          )}
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            data-testid="sandbox-refresh"
+            onClick={() => void refresh()}
+            disabled={busy !== null}
+            className="inline-flex min-h-8 items-center justify-center gap-2 rounded-lg border border-border-default bg-surface-3 px-3 text-xs text-fg-primary hover:bg-hover-bg disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {busy === 'refresh' || busy === 'load' ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={1.8} aria-hidden />
+            ) : (
+              <RefreshCw className="h-3.5 w-3.5" strokeWidth={1.8} aria-hidden />
+            )}
+            {busy === 'refresh' ? t('settings.sandbox.refreshing') : t('settings.sandbox.refresh')}
+          </button>
+          {status?.setup.canSetup && (
+            <button
+              type="button"
+              data-testid="sandbox-setup"
+              onClick={() => void setup()}
+              disabled={busy !== null}
+              className="inline-flex min-h-8 items-center justify-center gap-2 rounded-lg border border-warn/50 bg-warn/12 px-3 text-xs font-medium text-warn hover:bg-warn/20 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {busy === 'setup' ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={1.8} aria-hidden />
+              ) : (
+                <ShieldCheck className="h-3.5 w-3.5" strokeWidth={1.8} aria-hidden />
+              )}
+              {busy === 'setup' ? t('settings.sandbox.settingUp') : t('settings.sandbox.setup')}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {error && (
+        <div
+          role="alert"
+          className="mt-3 rounded-lg border border-danger/35 bg-danger/10 px-3 py-2 text-xs text-danger"
+        >
+          {error}
+        </div>
+      )}
+
+      {status?.setup.canSetup && (
+        <div className="mt-3 rounded-lg border border-warn/35 bg-warn/8 px-3 py-2 text-[11px] leading-5 text-fg-secondary">
+          {t('settings.sandbox.setupNotice')}
+        </div>
+      )}
+
+      {status && status.diagnostics.length > 0 && (
+        <div className="mt-3 rounded-lg border border-border-default bg-surface px-3 py-2.5">
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-fg-muted">
+            {t('settings.sandbox.diagnostics')}
+          </div>
+          <ul className="mt-1.5 list-disc space-y-1 pl-4 text-[11px] leading-5 text-fg-secondary">
+            {status.diagnostics.map((diagnostic, index) => (
+              <li key={`${diagnostic}-${index}`}>{diagnostic}</li>
+            ))}
+          </ul>
+          {status.diagnosticCount > status.diagnostics.length && (
+            <div className="mt-1 text-[11px] text-fg-muted">
+              {t('settings.sandbox.moreDiagnostics', {
+                count: status.diagnosticCount - status.diagnostics.length,
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {status && status.guidance.length > 0 && (
+        <div className="mt-3 rounded-lg border border-info/25 bg-info/7 px-3 py-2.5">
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-fg-muted">
+            {t('settings.sandbox.guidance')}
+          </div>
+          <ul className="mt-1.5 list-disc space-y-1 pl-4 text-[11px] leading-5 text-fg-secondary">
+            {status.guidance.map((line, index) => (
+              <li key={`${line}-${index}`}>{line}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <p className="mt-3 text-[11px] leading-5 text-fg-muted">{t('settings.sandbox.boundary')}</p>
+    </SettingsSection>
   );
 }
 

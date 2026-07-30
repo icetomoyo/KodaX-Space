@@ -328,6 +328,14 @@ Runtime containment；`Sandbox fallback` 表示沙箱未准备好或 backend 失
 普通权限策略继续执行；`No sandbox` 表示本次没有选择沙箱。该状态只用于解释当前工具，
 不会写入对话正文，也不把命令级 containment 夸大为完整应用隔离。
 
+当前开发版可在 **Settings → Runtime → 命令沙箱（ASRT）** 查看机器级 readiness：
+`已就绪`、`需要设置` 或 `不可用`，并显示 ASRT 版本、backend、最近检查时间、有界诊断和
+SDK 设置指引。刷新只运行 doctor，不会安装任何内容。Windows 仅在 doctor 明确返回
+`setup-required` 时显示“设置沙箱”；点击后还必须在 Space 内确认，随后系统才可能显示
+一次 UAC 提示。设置完成、取消或失败后都会重新运行 doctor 并更新状态。macOS/Linux
+只显示依赖安装指引，Space 不会自动调用包管理器。启动、普通工具调用和打开诊断包都不会
+自动触发 setup。
+
 权限和 AskUser 请求按 Session 归属：当前弹窗只代表当前可见 Session。后台 Session 的请求会留在队列并在左侧栏显示等待标记；切换到对应 Session 后再处理。这样可以避免一个后台任务的确认窗盖住另一个正在阅读的会话。
 
 PowerShell 的 `-Path` 支持 `[...]` 通配符。最新版 KodaX 会把这类方括号路径视为不完整并升级确认，防止 `[.]kodax/config.json` 解析到受保护路径后绕过 Auto 审查；如果目标确实是名称中带方括号的普通文件，请使用 `-LiteralPath` 或 `-PSPath`，例如 `build/file[12].txt`，它仍会按精确目标建模。
@@ -633,7 +641,7 @@ flowchart TD
 - 当前 `v0.1.34` 默认让 Coder 连接 profile-scoped shared daemon；Partner、其工具、权限、知识与交付仍由 Space embedded inline owner 管理，不会迁入 Coder daemon。
 - Runtime Learning Center 的兼容契约已接入，但完整 F118 管理界面尚未交付；Memory Agent 的 0.7.68 起始运行契约和 0.7.77 governed intervention 仍由 Runtime 持有，完整 F117 桌面管理体验尚未交付。
 - `daemonOrphanExit:1` 只证明当前 daemon host 启用了 orphan idle-exit，不证明异步 host cleanup 失败后一定重试成功；正式包 macOS/Linux process-level 验收和上游 cleanup retry/verification 缺口继续由 Issue 133 跟踪。
-- KodaX 0.7.78 的 command sandbox 与已打包 helper 提供命令 containment；它不等于 F138 规划的文档 staging、凭据、native-resource 和跨平台完整 OS 隔离。
+- KodaX 0.7.78 的 command sandbox、已打包 helper 与 F143 显式 setup/readiness UI 提供命令 containment；它不等于 F138 规划的文档 staging、凭据、native-resource 和跨平台完整 OS 隔离。
 - Partner 浏览器、通用 Connector、远程任务、桌面电脑控制和自动化尚未交付。
 - External Agent 的本地 Reference Executor 可用；Coder daemon 的 A2A 取决于显式配置与能力协商，MCP Tasks/governed HTTP 尚未作为通用能力开放。
 - Quick Ask 不是完全无 session side query。

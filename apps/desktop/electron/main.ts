@@ -22,6 +22,7 @@ import path from 'node:path';
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import os from 'node:os';
 import { registerVersionChannel } from './ipc/version.js';
+import { registerSandboxChannels } from './ipc/sandbox.js';
 import { registerRuntimeProjectionChannels } from './ipc/runtime.js';
 import { registerRepointelChannels } from './ipc/repointel.js';
 import { registerHandoffChannels } from './ipc/handoff.js';
@@ -1819,6 +1820,7 @@ const startupPromise = app
     // IPC handlers must be registered before rendererStartupGate is released;
     // the already-visible trusted boot page does not invoke application IPC.
     registerVersionChannel();
+    registerSandboxChannels();
     // F121 Part 1: explicit SDK-pending snapshot handlers. They report
     // incompatible until the published daemon adapter replaces the projection.
     registerRuntimeProjectionChannels();

@@ -819,7 +819,7 @@ export const messages = {
     'settings.providers.description': 'Models, API keys, default provider, and custom endpoints.',
     'settings.runtime': 'Runtime',
     'settings.runtime.description':
-      'Coder mode, KodaX config, MCP storage, skills, and context compaction.',
+      'Coder mode, command sandbox, KodaX config, MCP storage, skills, and context compaction.',
     'settings.diagnostics': 'Diagnostics',
     'settings.diagnostics.title': 'Diagnostic export',
     'settings.diagnostics.description':
@@ -932,6 +932,40 @@ export const messages = {
     'settings.workflowHost.description':
       'Control runtime limits for explicit /workflow runs and AMA run_workflow.',
     'settings.coderRuntimeMode.title': 'Coder runtime mode',
+    'settings.sandbox.title': 'Command sandbox (ASRT)',
+    'settings.sandbox.description':
+      'Inspect doctor-confirmed command containment and explicitly complete one-time setup when required.',
+    'settings.sandbox.status.checking': 'Checking',
+    'settings.sandbox.status.ready': 'Ready',
+    'settings.sandbox.status.setup-required': 'Setup required',
+    'settings.sandbox.status.unavailable': 'Unavailable',
+    'settings.sandbox.asrtVersion': 'ASRT {version}',
+    'settings.sandbox.backend': 'Backend: {backend}',
+    'settings.sandbox.platform': 'Platform: {platform}',
+    'settings.sandbox.checkedAt': 'Checked: {time}',
+    'settings.sandbox.refresh': 'Refresh',
+    'settings.sandbox.refreshing': 'Refreshing…',
+    'settings.sandbox.setup': 'Set up sandbox',
+    'settings.sandbox.settingUp': 'Setting up…',
+    'settings.sandbox.setupNotice':
+      'Windows setup may show one UAC prompt to provision a restricted account and network policy. Space will not elevate until you explicitly confirm.',
+    'settings.sandbox.confirmTitle': 'Set up the KodaX command sandbox?',
+    'settings.sandbox.confirmMessage':
+      'Windows may show a UAC prompt for one-time restricted account and network policy provisioning. Setup will be verified by a fresh sandbox doctor check.',
+    'settings.sandbox.confirm': 'Continue to UAC',
+    'settings.sandbox.diagnostics': 'Bounded diagnostics',
+    'settings.sandbox.moreDiagnostics': '{count} additional diagnostic(s) were withheld.',
+    'settings.sandbox.guidance': 'Setup guidance',
+    'settings.sandbox.boundary':
+      'This protects selected command execution. It does not claim the broader document and native-resource isolation planned under F138. Startup and ordinary tool calls never trigger setup.',
+    'settings.sandbox.loadFailed': 'Could not read the command sandbox status.',
+    'settings.sandbox.refreshFailed': 'Could not refresh the command sandbox status.',
+    'settings.sandbox.setupFailed':
+      'Sandbox setup could not start safely. The status was refreshed; review it before retrying.',
+    'settings.sandbox.setupSucceeded': 'Command sandbox setup completed and doctor is ready.',
+    'settings.sandbox.cancelled': 'Command sandbox setup was cancelled.',
+    'settings.sandbox.setupUnavailable':
+      'Setup finished without a ready doctor result. Review the guidance and retry.',
     'settings.integrationHealth.title': 'Runtime integration health',
     'settings.integrationHealth.description':
       'MCP, A2A, and Extension configuration fail independently, retain last-known-good state, and recover after a valid edit.',
@@ -4532,8 +4566,43 @@ export const messages = {
     'mode.engineDescription.rules': '走 ~/.kodax/auto-rules.jsonc + 内置 signals',
     'mode.footer': '全自动由 KodaX guardrail 接管。',
     'settings.runtime': '运行时',
-    'settings.runtime.description': 'Coder 模式、KodaX 配置、MCP 存储、技能和上下文压缩。',
+    'settings.runtime.description':
+      'Coder 模式、命令沙箱、KodaX 配置、MCP 存储、技能和上下文压缩。',
     'settings.coderRuntimeMode.title': 'Coder 运行模式',
+    'settings.sandbox.title': '命令沙箱（ASRT）',
+    'settings.sandbox.description':
+      '查看 doctor 确认的命令隔离状态，并在确有需要时显式完成一次性设置。',
+    'settings.sandbox.status.checking': '正在检查',
+    'settings.sandbox.status.ready': '已就绪',
+    'settings.sandbox.status.setup-required': '需要设置',
+    'settings.sandbox.status.unavailable': '不可用',
+    'settings.sandbox.asrtVersion': 'ASRT {version}',
+    'settings.sandbox.backend': '后端：{backend}',
+    'settings.sandbox.platform': '平台：{platform}',
+    'settings.sandbox.checkedAt': '检查时间：{time}',
+    'settings.sandbox.refresh': '刷新',
+    'settings.sandbox.refreshing': '正在刷新…',
+    'settings.sandbox.setup': '设置沙箱',
+    'settings.sandbox.settingUp': '正在设置…',
+    'settings.sandbox.setupNotice':
+      'Windows 设置可能显示一次 UAC 提示，用于配置受限账户和网络策略。只有你明确确认后，Space 才会请求提权。',
+    'settings.sandbox.confirmTitle': '设置 KodaX 命令沙箱？',
+    'settings.sandbox.confirmMessage':
+      'Windows 可能显示一次 UAC 提示，以完成受限账户和网络策略的一次性配置。完成后，Space 会重新运行 sandbox doctor 验证结果。',
+    'settings.sandbox.confirm': '继续并等待 UAC',
+    'settings.sandbox.diagnostics': '有界诊断',
+    'settings.sandbox.moreDiagnostics': '另有 {count} 条诊断未展开显示。',
+    'settings.sandbox.guidance': '设置指引',
+    'settings.sandbox.boundary':
+      '这里保护的是部分命令执行，不代表已经实现 F138 规划的完整文档与原生资源隔离。启动和普通工具调用永远不会自动触发设置。',
+    'settings.sandbox.loadFailed': '无法读取命令沙箱状态。',
+    'settings.sandbox.refreshFailed': '无法刷新命令沙箱状态。',
+    'settings.sandbox.setupFailed':
+      '无法安全启动沙箱设置。状态已重新检查，请确认后再重试。',
+    'settings.sandbox.setupSucceeded': '命令沙箱设置完成，doctor 已确认就绪。',
+    'settings.sandbox.cancelled': '已取消命令沙箱设置。',
+    'settings.sandbox.setupUnavailable':
+      '设置结束后 doctor 仍未确认就绪，请按指引排查后重试。',
     'settings.integrationHealth.title': 'Runtime 集成健康状态',
     'settings.integrationHealth.description':
       'MCP、A2A 与 Extension 配置独立降级，保留最近有效状态，并在修复后自动恢复。',

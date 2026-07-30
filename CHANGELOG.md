@@ -14,6 +14,15 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ## [Unreleased]
 
+### Added
+
+- **Explicit ASRT readiness and setup (F143)** - Settings → Runtime now shows
+  doctor-confirmed `Ready`, `Setup required`, or `Unavailable` state together with the ASRT
+  version, backend, bounded diagnostics, SDK guidance, and a refresh action. On Windows, setup is
+  available only after an explicit in-app confirmation and may then show the one-time UAC prompt;
+  setup is serialized, followed by a fresh doctor check, and never runs at startup or from an
+  ordinary tool call. macOS/Linux remain guidance-only and Space never invokes a package manager.
+
 ## [0.1.34] - 2026-07-30
 
 ### Theme

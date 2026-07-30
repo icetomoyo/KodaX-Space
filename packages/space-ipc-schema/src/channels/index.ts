@@ -12,6 +12,7 @@
 //   - 显式两个 map 让类型 + 运行时 allowlist 同源派生，preload 拿来直接用
 
 import { versionChannel } from './version.js';
+import { sandboxRefreshChannel, sandboxSetupChannel, sandboxStatusChannel } from './sandbox.js';
 import {
   runtimeConnectionChangedChannel,
   runtimeProfileChangedChannel,
@@ -281,6 +282,9 @@ import { spaceControlRequestedChannel, spaceControlResolveChannel } from './spac
 
 export const invokeChannels = {
   [versionChannel.name]: versionChannel,
+  [sandboxStatusChannel.name]: sandboxStatusChannel,
+  [sandboxRefreshChannel.name]: sandboxRefreshChannel,
+  [sandboxSetupChannel.name]: sandboxSetupChannel,
   [runtimeProfileSnapshotChannel.name]: runtimeProfileSnapshotChannel,
   [sessionLiveSnapshotChannel.name]: sessionLiveSnapshotChannel,
   [diagnosticsReportChannel.name]: diagnosticsReportChannel,

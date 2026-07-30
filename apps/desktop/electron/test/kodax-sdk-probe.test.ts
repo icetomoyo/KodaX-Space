@@ -9,6 +9,7 @@ import {
   inspectSandboxModule,
   projectSandboxDoctorResult,
   probeKodaxSdk,
+  updateSandboxSdkDoctorResult,
 } from '../kodax/kodax-sdk-probe.js';
 
 test('probeKodaxSdk: real SDK passes (all expected functions / classes exist)', async () => {
@@ -65,6 +66,33 @@ test('sandbox capability distinguishes facade shape from doctor-confirmed readin
     }).readiness,
     'ready',
   );
+});
+
+test('sandbox doctor refresh updates the capability ledger source without changing facade facts', async () => {
+  await probeKodaxSdk();
+  const current = getSandboxSdkCapability();
+  assert.equal(current.status, 'available');
+
+  const setupRequired = updateSandboxSdkDoctorResult(current, {
+    ready: false,
+    setupRequired: true,
+    diagnostics: ['bounded'],
+  });
+  assert.equal(setupRequired.status, 'available');
+  assert.equal(setupRequired.readiness, 'setup-required');
+  assert.equal(setupRequired.diagnosticCount, 1);
+
+  const ready = updateSandboxSdkDoctorResult(current, {
+    ready: true,
+    setupRequired: false,
+    diagnostics: [],
+  });
+  assert.equal(ready.status, 'available');
+  assert.equal(ready.readiness, 'ready');
+  assert.equal(ready.asrtVersion, current.asrtVersion);
+
+  // Restore the real machine projection for later tests in this process.
+  await probeKodaxSdk();
 });
 
 test('inspectSandboxModule rejects an executor that could hide unavailable containment', () => {

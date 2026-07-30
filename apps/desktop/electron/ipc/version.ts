@@ -12,8 +12,10 @@ import {
   getExperimentalMemorySdkCapability,
   getSandboxSdkCapability,
   type ExperimentalMemorySdkCapability,
-  type SandboxSdkCapability,
 } from '../kodax/kodax-sdk-probe.js';
+import { sandboxCommandCapability } from '../kodax/sandbox-capability-row.js';
+
+export { sandboxCommandCapability } from '../kodax/sandbox-capability-row.js';
 
 function readSpaceVersion(electronApp: App): string {
   // app.getVersion() 读 packaged 应用的 package.json；dev 模式下可能不是 0.1.0-alpha.0
@@ -96,52 +98,6 @@ export function experimentalMemoryCapability(
     status: 'planned',
     detail:
       'The required /experimental-memory contract has not been probed yet. Existing F228 Memory Governance remains available, and startup will fail closed if the exported contract cannot be verified.',
-  };
-}
-
-export function sandboxCommandCapability(capability: SandboxSdkCapability): SpaceCapability {
-  if (capability.status === 'available') {
-    if (capability.readiness === 'ready') {
-      return {
-        id: 'sandbox.command',
-        label: 'KodaX command sandbox',
-        status: 'partial',
-        detail:
-          `KodaX sandbox doctor confirms command containment v${capability.version} is ready through ` +
-          `${capability.backend} with ASRT ${capability.asrtVersion}. This command-level primitive ` +
-          'does not complete Space F138 native-resource hardening.',
-        since: '0.1.34',
-      };
-    }
-    if (capability.readiness === 'setup-required') {
-      return {
-        id: 'sandbox.command',
-        label: 'KodaX command sandbox',
-        status: 'blocked',
-        detail:
-          `The fail-closed KodaX sandbox facade is present, but doctor reports setup is required ` +
-          `(${capability.diagnosticCount} bounded diagnostic(s)). Ordinary calls never trigger setup; ` +
-          'Space does not claim command containment until setup is explicitly completed and doctor passes.',
-        since: '0.1.34',
-      };
-    }
-    return {
-      id: 'sandbox.command',
-      label: 'KodaX command sandbox',
-      status: capability.readiness === 'checking' ? 'partial' : 'blocked',
-      detail:
-        capability.readiness === 'checking'
-          ? `The fail-closed KodaX sandbox facade v${capability.version} is present; readiness is still being checked. Space does not claim OS containment from API shape alone.`
-          : `The fail-closed KodaX sandbox facade is present, but doctor could not confirm a usable backend (${capability.diagnosticCount} bounded diagnostic(s)). Commands requiring containment return structured no-execution state.`,
-      since: '0.1.34',
-    };
-  }
-  return {
-    id: 'sandbox.command',
-    label: 'KodaX command sandbox',
-    status: 'planned',
-    detail:
-      'The KodaX sandbox facade has not been probed yet. Space does not claim OS containment until the fail-closed public contract is available.',
   };
 }
 

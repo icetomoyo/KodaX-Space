@@ -34,6 +34,23 @@ export {
 } from './channels/version.js';
 
 export {
+  MAX_SANDBOX_DIAGNOSTICS,
+  MAX_SANDBOX_GUIDANCE,
+  MAX_SANDBOX_STATUS_TEXT,
+  sandboxBackendSchema,
+  sandboxLastOperationSchema,
+  sandboxReadinessSchema,
+  sandboxRefreshChannel,
+  sandboxSetupChannel,
+  sandboxStatusChannel,
+  sandboxStatusSchema,
+  type SandboxBackendT,
+  type SandboxLastOperationT,
+  type SandboxReadinessT,
+  type SandboxStatusT,
+} from './channels/sandbox.js';
+
+export {
   runtimeProfileSnapshotChannel,
   runtimeProfileChangedChannel,
   runtimeConnectionChangedChannel,

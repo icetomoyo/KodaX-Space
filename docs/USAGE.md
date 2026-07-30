@@ -275,6 +275,7 @@ native SQLite load、物理 sandbox helper/doctor、真实 packaged boot 和 Git
 | Runtime run 失败              | 版本信息、runId、`~/.kodax/space/logs`、Runtime status/capability snapshot                               |
 | Packaged daemon 启动即退出    | `~/.kodax/space/logs`；必要时把 `scripts/diagnose-packaged-daemon.cmd` 复制到 extracted app 目录前台复现 |
 | MCP 工具不可见                | MCP panel 的 Refresh/Reload、server diagnostics；MCP 子进程由 Space 管理                                 |
+| ASRT 显示需要设置或不可用     | Settings → Runtime → 命令沙箱（ASRT）先刷新 doctor；Windows 按显式确认完成一次性设置，macOS/Linux 按指引安装依赖后再刷新 |
 | E2E 启动失败且提到 native ABI | 结束并行测试，运行 `node scripts/ensure-sqlite-native.mjs electron`                                      |
 | Node 单测提到 native ABI      | 运行 `node scripts/ensure-sqlite-native.mjs node`                                                        |
 | UI 状态损坏                   | 先备份 `~/.kodax/space/`，检查日志；最后手段才重置 `state.json`                                          |
