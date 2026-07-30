@@ -34,6 +34,7 @@ import type {
 } from '@kodax-ai/kodax/agent';
 import type { SlashCommandDef, SlashHandlerContext, SlashHandlerResult } from './registry.js';
 import { kodaxHost, providerDescriptor } from '../kodax/host.js';
+import { learningSafetyService } from '../ipc/learning.js';
 import { isRepoIntelEntitled } from '../kodax/repo-intel-gate.js';
 import {
   workflowController,
@@ -590,7 +591,13 @@ async function handleRuntimeLearningAction(
     };
   }
   try {
-    await runtimeHostAdapter.controlLearnedCapability(action, target);
+    const record = await runtimeHostAdapter.getLearnedCapability(target);
+    await learningSafetyService.action({
+      action,
+      capabilityId: record.capabilityId,
+      expectedRevision: record.revision,
+      ...(record.schemaVersion === 2 ? { expectedFingerprint: record.artifact.fingerprint } : {}),
+    });
     const verb =
       action === 'review'
         ? 'Reviewed'
@@ -614,7 +621,13 @@ async function handleLearningReject(ctx: SlashHandlerContext): Promise<SlashHand
   if (!target) return { ok: false, message: learningHelp() };
   if (usesRuntimeLearning(ctx.sessionId)) {
     try {
-      await runtimeHostAdapter.controlLearnedCapability('reject', target);
+      const record = await runtimeHostAdapter.getLearnedCapability(target);
+      await learningSafetyService.action({
+        action: 'reject',
+        capabilityId: record.capabilityId,
+        expectedRevision: record.revision,
+        ...(record.schemaVersion === 2 ? { expectedFingerprint: record.artifact.fingerprint } : {}),
+      });
       return { ok: true, message: `Rejected learned capability ${target}.`, echo: true };
     } catch {
       return { ok: false, message: `Cannot reject learned capability ${target}.`, echo: true };

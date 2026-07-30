@@ -845,6 +845,30 @@ Space 严格遵守：
 - 首版只做 attention/list/detail 与 review/trust/reject/disable/rollback 的最小安全控制面，展示 Runtime 返回的 evidence、immutable revision、fingerprint、canary、validation 与 previous-good；不建设 Memory/Extension/Workflow carrier union。
 - archive/restore 不在公开 Runtime facade 中，Extension self-learning 已从 KodaX 路线移除；二者都不能作为 F118 隐藏验收项。
 
+#### F118 implemented boundary (`v0.1.35`)
+
+- Renderer access is gated by negotiated `learningCenter:1` and
+  `skillLearningLoop:1`. `LearningSafetySection` consumes only the strict
+  `learning.*` IPC projection; unknown records remain read-only.
+- `LearningSafetyService` in `apps/desktop/electron/ipc/learning.ts` re-reads an
+  exact capability ID and verifies revision/fingerprint before one Runtime
+  action. The public daemon facade has no caller-supplied mutation CAS token, so
+  Space treats Runtime as the serialized authority and verifies exactly the
+  next revision plus the action-specific lifecycle after the call instead of
+  claiming atomic client-side CAS. `lastAction` is not used as proof because
+  lifecycle transitions do not guarantee that it is rewritten.
+- Space has no learned-capability database. Its sole durable learning state is
+  `{ runtimeId, revision }` in `runtime-learning-cursor.json`; replay is
+  deduplicated and any identity change or sequence gap recovers from the Runtime
+  snapshot.
+- IPC never exposes Runtime absolute artifact paths or promotion/archive/restore
+  mutations. Review, trust, reject, disable, and rollback use exact capability
+  IDs and explicit confirmation; acknowledgement is a separate read-state
+  operation.
+- `SPACE_DISABLE_LEARNING_MUTATIONS=1` is the product rollback boundary:
+  Runtime records remain readable while desktop and `/learn` mutation paths fail
+  closed.
+
 ### 19.2 Governed Browser 与 Connectors
 
 - Browser 是 Space-owned Electron capability，以 bounded tool contract 暴露，页面内容与 application origin 隔离。
@@ -877,7 +901,7 @@ Space 严格遵守：
 | `v0.1.33`           | Stabilize KodaX 0.7.77 Actor/history/usage contracts and add bounded Shell/F140 desktop lifecycle control.                                                                                    |
 | corrected `v0.1.33` | Add safe customer-selectable Coder ownership and exact packaged Runtime dependency/boot gates before reissuing the withdrawn release.                                                         |
 | `v0.1.34`           | Adopt KodaX 0.7.78 safety contracts, resilient integration health, visible complete exit/orphan recovery, physical sandbox helpers, one startup overlay, and exact positional history replay. |
-| `v0.1.36`           | Add the independently authored F137 native document Skill suite and F139 semantic UI polish without weakening F138 boundaries.                                                                |
+| `v0.1.37`           | Add the independently authored F137 native document Skill suite and F139 semantic UI polish without weakening F138 boundaries.                                                                |
 | `v0.1.40`           | Extend Workflow snapshot schema for same-session replay provenance; attach evidence review receipts to objects.                                                                               |
 | `v0.1.44`           | Host KX-F260 Memory Agent over existing F228/F088 governance when published.                                                                                                                  |
 | `v0.1.35`           | Host the minimum learned-Skill safety surface over published `learningCenter:1` + `skillLearningLoop:1`.                                                                                      |

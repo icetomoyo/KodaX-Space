@@ -54,6 +54,7 @@ import {
   type RuntimeProjectionController,
 } from './runtime/runtime-projection-controller.js';
 import { pushToRenderer } from '../ipc/push.js';
+import { areLearningMutationsEnabled } from './learning-policy.js';
 import {
   sessionEventChannel,
   workflowProcessSnapshotSchema,
@@ -2959,10 +2960,48 @@ export class RuntimeHostAdapter {
     return runtime.learning.getSnapshot();
   }
 
+  async learningContext(): Promise<{ readonly runtimeId: string }> {
+    const runtime = await this.requireRuntime();
+    const capabilities = this.spaceCapabilities(runtime);
+    const learning = capabilities.find((item) => item.id === 'runtime.learning');
+    const skillLoop = capabilities.find((item) => item.id === 'runtime.learning.skillLoop');
+    if (
+      learning?.available !== true ||
+      learning.version < 1 ||
+      skillLoop?.available !== true ||
+      skillLoop.version < 1
+    ) {
+      throw new Error(
+        'Learned Skill safety requires Runtime learningCenter:1 and skillLearningLoop:1.',
+      );
+    }
+    return { runtimeId: runtime.identity.runtimeId };
+  }
+
+  async learningEvents(afterRevision?: number) {
+    const runtime = await this.requireRuntime();
+    return runtime.learning.events(afterRevision);
+  }
+
+  subscribeToLearning(options?: Parameters<KodaXDaemonRuntime['learning']['subscribe']>[0]) {
+    if (!this.hasReadyRuntime() || this.runtime === null) {
+      throw new Error('Runtime learning subscription requires a ready shared daemon.');
+    }
+    return this.runtime.learning.subscribe(options);
+  }
+
+  async acknowledgeLearnedCapability(capabilityId: string): Promise<void> {
+    const runtime = await this.requireRuntime();
+    await runtime.learning.acknowledge(capabilityId);
+  }
+
   async controlLearnedCapability(
     action: 'review' | 'trust' | 'reject' | 'disable' | 'rollback',
     nameOrSlug: string,
   ): Promise<void> {
+    if (!areLearningMutationsEnabled()) {
+      throw new Error('Space learned Skill mutation controls are disabled by rollout policy.');
+    }
     const runtime = await this.requireRuntime();
     await runtime.learning[action](nameOrSlug);
   }

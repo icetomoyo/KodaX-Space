@@ -269,6 +269,13 @@ import {
   memoryCurateChannel,
   memoryPackChannel,
 } from './memory.js';
+import {
+  learningAcknowledgeChannel,
+  learningActionChannel,
+  learningChangedChannel,
+  learningGetChannel,
+  learningListChannel,
+} from './learning.js';
 import { diagnosticsExportChannel, diagnosticsReportChannel } from './diagnostics.js';
 import { spaceControlRequestedChannel, spaceControlResolveChannel } from './space-control.js';
 
@@ -476,6 +483,10 @@ export const invokeChannels = {
   [memoryReadRefChannel.name]: memoryReadRefChannel,
   [memoryCurateChannel.name]: memoryCurateChannel,
   [memoryPackChannel.name]: memoryPackChannel,
+  [learningListChannel.name]: learningListChannel,
+  [learningGetChannel.name]: learningGetChannel,
+  [learningActionChannel.name]: learningActionChannel,
+  [learningAcknowledgeChannel.name]: learningAcknowledgeChannel,
 } as const;
 
 export const pushChannels = {
@@ -502,6 +513,7 @@ export const pushChannels = {
   [workflowEventChannel.name]: workflowEventChannel,
   [workflowActivityChannel.name]: workflowActivityChannel,
   [handoffChangedChannel.name]: handoffChangedChannel,
+  [learningChangedChannel.name]: learningChangedChannel,
 } as const;
 
 export type InvokeChannels = typeof invokeChannels;

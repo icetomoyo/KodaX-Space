@@ -69,6 +69,7 @@ import { registerShellChannels } from './ipc/shell.js';
 import { registerArtifactChannels } from './ipc/artifact.js';
 import { registerWorkflowChannels } from './ipc/workflow.js';
 import { registerMemoryChannels } from './ipc/memory.js';
+import { learningEventBridge, registerLearningChannels } from './ipc/learning.js';
 import { workflowController } from './kodax/workflow-controller.js';
 import { workflowPolicyStore } from './kodax/workflow-policy.js';
 import { registerArtifactWindowChannel } from './artifact/artifact-window.js';
@@ -1821,6 +1822,7 @@ const startupPromise = app
     // F121 Part 1: explicit SDK-pending snapshot handlers. They report
     // incompatible until the published daemon adapter replaces the projection.
     registerRuntimeProjectionChannels();
+    registerLearningChannels();
     registerDiagnosticsChannels({
       getMainWindow: () => mainWindow,
       spaceVersion: SPACE_VERSION,
@@ -2155,6 +2157,14 @@ app.on('before-quit', (event) => {
         .disposeAll({ detachRuntimeRuns: true })
         .catch((err) =>
           console.error('[main] disposeAll on quit:', err instanceof Error ? err.message : err),
+        ),
+      learningEventBridge
+        .stop()
+        .catch((err) =>
+          console.warn(
+            '[main] learning stream shutdown:',
+            err instanceof Error ? err.message : err,
+          ),
         ),
       runtimeHostAdapter
         .close()

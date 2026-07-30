@@ -81,6 +81,7 @@ import { buildAgentStatuses, type AgentStatusViewModel } from './agentStatusProj
 import type { TaskDockRunViewModel } from './taskDockProjection.js';
 import { useTaskDockRunView } from './useTaskDockRunView.js';
 import { RightSidebarFrame, type RightSidebarWidthMode } from './RightSidebarFrame.js';
+import { LearningSafetySection } from '../features/learning/LearningSafetySection.js';
 
 const EMPTY_EVENTS: readonly SessionEvent[] = [];
 const SECTION_OPEN_STORAGE_KEY = 'kodax-space.rightSidebar.sectionOpen';
@@ -273,6 +274,7 @@ export function RightSidebar({
         // Overview: stacked task sections with local scrolling.
         <div className="flex-1 min-h-0 overflow-y-auto">
           <RunSection focusRequest={effectiveFocusRequest} />
+          <LearningSafetySection />
           <PlanSection focusRequest={effectiveFocusRequest} />
           <AgentSection focusRequest={effectiveFocusRequest} />
           <ExternalAgentTasksSection />

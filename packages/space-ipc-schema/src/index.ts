@@ -698,6 +698,29 @@ export {
 } from './channels/memory.js';
 
 export {
+  learnedCapabilityActionSchema,
+  learnedCapabilityArtifactSchema,
+  learnedCapabilityCanaryInvocationSchema,
+  learnedCapabilityCarrierSchema,
+  learnedCapabilityLifecycleSchema,
+  learnedCapabilityProjectionSchema,
+  learnedCapabilitySourceSchema,
+  learningAcknowledgeChannel,
+  learningActionChannel,
+  learningChangedChannel,
+  learningEventSchema,
+  learningGetChannel,
+  learningListChannel,
+  learningSurfaceSnapshotSchema,
+  type LearnedCapabilityActionT,
+  type LearnedCapabilityCarrierT,
+  type LearnedCapabilityLifecycleT,
+  type LearnedCapabilityProjectionT,
+  type LearningEventT,
+  type LearningSurfaceSnapshotT,
+} from './channels/learning.js';
+
+export {
   INVOKE_CHANNEL_NAMES,
   PUSH_CHANNEL_NAMES,
   getInvokeChannel,

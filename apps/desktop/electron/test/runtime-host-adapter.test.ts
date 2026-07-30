@@ -116,6 +116,7 @@ function createFakeRuntime() {
     }>,
     workflowControls: [] as Array<{ action: string; runId: string }>,
     learningControls: [] as Array<{ action: string; nameOrSlug: string }>,
+    learningAcknowledgements: [] as string[],
     agentTrees: [] as string[],
     agentEvents: [] as Array<{ sessionId: string; afterSequence: number }>,
     agentWaits: [] as Array<{ sessionId: string; afterSequence: number }>,
@@ -494,6 +495,17 @@ function createFakeRuntime() {
       list: async () => ({ items: [], revision: 1 }),
       get: async (nameOrSlug: string) => ({ slug: nameOrSlug }),
       getSnapshot: async () => ({ ready: 0, newlyActive: 0, attention: 0, active: 0, revision: 1 }),
+      events: async () => [],
+      subscribe: () => ({
+        [Symbol.asyncIterator]() {
+          return {
+            next: async () => ({ done: true as const, value: undefined }),
+          };
+        },
+      }),
+      acknowledge: async (nameOrSlug: string) => {
+        calls.learningAcknowledgements.push(nameOrSlug);
+      },
       review: async (nameOrSlug: string) => {
         calls.learningControls.push({ action: 'review', nameOrSlug });
       },
@@ -3894,7 +3906,11 @@ test('Runtime learning controls are routed through the shared daemon', async () 
   });
 
   assert.deepEqual(await adapter.listLearnedCapabilities(), { items: [], revision: 1 });
+  assert.deepEqual(await adapter.learningContext(), { runtimeId: 'rt_test' });
+  assert.deepEqual(await adapter.learningEvents(1), []);
+  await adapter.acknowledgeLearnedCapability('learned-capability');
   await adapter.controlLearnedCapability('trust', 'learned-capability');
+  assert.deepEqual(fake.calls.learningAcknowledgements, ['learned-capability']);
   assert.deepEqual(fake.calls.learningControls, [
     { action: 'trust', nameOrSlug: 'learned-capability' },
   ]);

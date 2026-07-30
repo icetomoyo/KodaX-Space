@@ -561,8 +561,8 @@ File panel 内点击 git diff
 | `v0.1.33`    | KodaX 0.7.77 Runtime/Actor/history/usage 稳定化、Shell 控制与 F140 可配置关闭行为（已发布）                                       |
 | `v0.1.34`    | KodaX 0.7.78 Runtime 安全、integration resilience、Auto v4、可见彻底退出/orphan recovery、sandbox helper 打包、启动与历史回放加固 |
 | `v0.1.35`    | Learned Skill Safety Surface；复用已发布 `learningCenter:1` + `skillLearningLoop:1`，不建设超出契约的多 carrier Learning Center   |
-| `v0.1.36`    | F137 中文优先 DOCX/PDF/XLSX/PPTX builtin 与 F139 语义 UI 精修                                                                     |
-| `v0.1.37`    | —                                                                                                                                 |
+| `v0.1.36`    | —                                                                                                                                 |
+| `v0.1.37`    | F137 中文优先 DOCX/PDF/XLSX/PPTX builtin 与 F139 语义 UI 精修                                                                     |
 | `v0.1.38`    | —                                                                                                                                 |
 | `v0.1.39`    | —                                                                                                                                 |
 | `v0.1.40`    | Partner composer-first Skill workspace                                                                                            |
