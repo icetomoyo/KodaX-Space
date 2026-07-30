@@ -421,6 +421,153 @@ test('stream batching never merges covered and post-snapshot Runtime deltas', ()
   assert.equal(runtimeDeltasShareSnapshotSide(after, later, cursor), true);
 });
 
+test('app store keeps live Runtime drafts bounded across frames without crossing a snapshot', () => {
+  useAppStore.setState({ currentSessionId: 's_1', eventsBySession: { s_1: [] } });
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  useAppStore.getState().replaceSessionLiveProjection({
+    ...live,
+    projectionRevision: 2,
+    cursor: { runtimeId: 'rt_1', seq: 3 },
+    activeRun: {
+      runId: 'run_1',
+      sessionId: 's_1',
+      phase: 'running',
+      startedAt: 10,
+    },
+    assistantDraft: { text: 'abc', startedAt: 10 },
+  });
+
+  for (let seq = 4; seq <= 1_003; seq += 1) {
+    useAppStore.getState().appendEvent({
+      kind: 'text_delta',
+      sessionId: 's_1',
+      text: String(seq % 10),
+      runtimeEvent: { runtimeId: 'rt_1', runId: 'run_1', seq },
+    });
+  }
+
+  const textEvents = (useAppStore.getState().eventsBySession.s_1 ?? []).filter(
+    (event): event is Extract<SessionEvent, { kind: 'text_delta' }> => event.kind === 'text_delta',
+  );
+  assert.equal(textEvents.length, 2, 'snapshot-covered and post-snapshot text stay separate');
+  assert.equal(textEvents[0]?.text, 'abc');
+  assert.equal(
+    textEvents[1]?.text,
+    Array.from({ length: 1_000 }, (_, index) => String((index + 4) % 10)).join(''),
+  );
+  assert.equal(textEvents[1]?.runtimeEvent?.seq, 1_003);
+});
+
+test('app store coalesces adjacent tool input and replaces adjacent progress across frames', () => {
+  useAppStore.setState({ currentSessionId: 's_1', eventsBySession: { s_1: [] } });
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  const runtimeEvent = { runtimeId: 'rt_1', runId: 'run_1', seq: 1 };
+
+  useAppStore.getState().appendEvent({
+    kind: 'tool_input_delta',
+    sessionId: 's_1',
+    toolId: 'tool_1',
+    toolName: 'write',
+    partialJson: '{"path":',
+    runtimeEvent,
+  });
+  useAppStore.getState().appendEvent({
+    kind: 'tool_input_delta',
+    sessionId: 's_1',
+    toolId: 'tool_1',
+    toolName: 'write',
+    partialJson: '"README.md"}',
+    runtimeEvent: { ...runtimeEvent, seq: 2 },
+  });
+  useAppStore.getState().appendEvent({
+    kind: 'tool_progress',
+    sessionId: 's_1',
+    toolId: 'tool_1',
+    message: 'writing 10%',
+    runtimeEvent: { ...runtimeEvent, seq: 3 },
+  });
+  useAppStore.getState().appendEvent({
+    kind: 'tool_progress',
+    sessionId: 's_1',
+    toolId: 'tool_1',
+    message: 'writing 90%',
+    runtimeEvent: { ...runtimeEvent, seq: 4 },
+  });
+
+  const events = useAppStore.getState().eventsBySession.s_1 ?? [];
+  assert.equal(events.length, 2);
+  assert.equal(
+    events[0]?.kind === 'tool_input_delta' ? events[0].partialJson : undefined,
+    '{"path":"README.md"}',
+  );
+  assert.equal(events[1]?.kind === 'tool_progress' ? events[1].message : undefined, 'writing 90%');
+});
+
+test('app store keeps ambiguous tool input without a call id as separate events', () => {
+  useAppStore.setState({ currentSessionId: 's_1', eventsBySession: { s_1: [] } });
+
+  useAppStore.getState().appendEvent({
+    kind: 'tool_input_delta',
+    sessionId: 's_1',
+    toolName: 'write',
+    partialJson: '{"first":true}',
+  });
+  useAppStore.getState().appendEvent({
+    kind: 'tool_input_delta',
+    sessionId: 's_1',
+    toolName: 'write',
+    partialJson: '{"second":true}',
+  });
+
+  const events = useAppStore.getState().eventsBySession.s_1 ?? [];
+  assert.deepEqual(
+    events.map((event) => (event.kind === 'tool_input_delta' ? event.partialJson : undefined)),
+    ['{"first":true}', '{"second":true}'],
+  );
+});
+
+test('app store exposes a stable root-compaction render-busy projection', () => {
+  useAppStore.setState({
+    currentSessionId: 's_1',
+    eventsBySession: { s_1: [] },
+    compactingBySession: {},
+  });
+
+  useAppStore.getState().appendEvent({
+    kind: 'compact_start',
+    sessionId: 's_1',
+    contextKind: 'child',
+  });
+  assert.equal(useAppStore.getState().compactingBySession.s_1, undefined);
+
+  useAppStore.getState().appendEvent({
+    kind: 'compact_start',
+    sessionId: 's_1',
+    contextKind: 'root',
+  });
+  assert.equal(useAppStore.getState().compactingBySession.s_1, true);
+
+  useAppStore.getState().appendEvent({
+    kind: 'compact_end',
+    sessionId: 's_1',
+    contextKind: 'root',
+  });
+  assert.equal(useAppStore.getState().compactingBySession.s_1, undefined);
+});
+
+test('removing a session clears only its compaction render-busy projection', () => {
+  useAppStore.setState({
+    currentSessionId: 's_1',
+    eventsBySession: { s_1: [], s_2: [] },
+    compactingBySession: { s_1: true, s_2: true },
+  });
+
+  useAppStore.getState().removeSession('s_1');
+
+  assert.equal(useAppStore.getState().compactingBySession.s_1, undefined);
+  assert.equal(useAppStore.getState().compactingBySession.s_2, true);
+});
+
 test('snapshot inserts a missing tool start before orphan progress and remains idempotent', () => {
   useAppStore.setState({ currentSessionId: 's_1', eventsBySession: { s_1: [] } });
   useAppStore.getState().replaceRuntimeProfileProjection(profile);

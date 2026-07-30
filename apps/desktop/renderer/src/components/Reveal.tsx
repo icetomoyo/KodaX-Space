@@ -16,6 +16,8 @@ interface RevealProps {
   index?: number;
   /** 额外 class。 */
   className?: string;
+  /** Long restored transcripts animate only their recent tail; older rows mount without fan-out. */
+  animate?: boolean;
   children: ReactNode;
 }
 
@@ -23,11 +25,19 @@ interface RevealProps {
  * 通用 fade-up + stagger 入场包装。仅注入 class + animation-delay；
  * 实际 keyframe/easing/门控全在 styles.css .reveal 工具类。
  */
-export function Reveal({ index = 0, className, children }: RevealProps): JSX.Element {
+export function Reveal({
+  index = 0,
+  className,
+  animate = true,
+  children,
+}: RevealProps): JSX.Element {
   // index 超过 STAGGER_CAP 不再累加延迟，避免长列表拖尾
   const delay = Math.min(index, STAGGER_CAP) * STAGGER_MS;
   return (
-    <div className={`reveal ${className ?? ''}`} style={{ animationDelay: `${delay}ms` }}>
+    <div
+      className={`${animate ? 'reveal' : ''} ${className ?? ''}`}
+      style={animate ? { animationDelay: `${delay}ms` } : undefined}
+    >
       {children}
     </div>
   );

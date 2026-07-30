@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { access, mkdtemp, rm } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -11,12 +11,292 @@ const PROBE_TIMEOUT_MS = 30_000;
 const EXPECTED_KODAX_VERSION = '0.7.78';
 const SHARED_DAEMON_TIMEOUT_MS = 45_000;
 const SHARED_DAEMON_MARKER = 'KODAX_SHARED_DAEMON_HOST=';
+const SHARED_DAEMON_CONTEXT_MARKER = 'KODAX_SHARED_DAEMON_CONTEXT=';
+const SHARED_DAEMON_OWNER_MARKER = 'KODAX_SHARED_DAEMON_OWNER=';
+const CLEANUP_COMMAND_TIMEOUT_MS = 15_000;
 const require = createRequire(import.meta.url);
 const KODAX_CLI_PATH = path.join(
   path.dirname(require.resolve('@kodax-ai/kodax/package.json')),
   'dist',
   'kodax_cli.js',
 );
+
+interface SharedDaemonProbeContext {
+  readonly profile: string;
+  readonly homeDir: string;
+}
+
+interface SharedDaemonOwnerMarker extends SharedDaemonProbeContext {
+  readonly pid: number;
+}
+
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function waitForProcessExit(pid: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!processIsAlive(pid)) return true;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return !processIsAlive(pid);
+}
+
+function parseMarkerLine<T>(stdout: string, marker: string): T | undefined {
+  const markerIndex = stdout.lastIndexOf(marker);
+  if (markerIndex < 0) return undefined;
+  const lineStart = markerIndex + marker.length;
+  const lineEnd = stdout.indexOf('\n', lineStart);
+  if (lineEnd < 0) return undefined;
+  try {
+    return JSON.parse(stdout.slice(lineStart, lineEnd)) as T;
+  } catch {
+    return undefined;
+  }
+}
+
+function isSharedDaemonProbeContext(
+  parsed: Partial<SharedDaemonProbeContext> | undefined,
+): parsed is SharedDaemonProbeContext {
+  const resolvedHome =
+    typeof parsed?.homeDir === 'string' && parsed.homeDir.length > 0
+      ? path.resolve(parsed.homeDir)
+      : '';
+  const relativeToTemp = resolvedHome ? path.relative(path.resolve(tmpdir()), resolvedHome) : '';
+  return (
+    typeof parsed?.profile === 'string' &&
+    parsed.profile.startsWith('space-f121-') &&
+    resolvedHome.length > 0 &&
+    relativeToTemp.length > 0 &&
+    !relativeToTemp.startsWith('..') &&
+    !path.isAbsolute(relativeToTemp) &&
+    path.basename(resolvedHome).startsWith('kodax-space-shared-daemon-')
+  );
+}
+
+function parseSharedDaemonContext(stdout: string): SharedDaemonProbeContext | undefined {
+  const parsed = parseMarkerLine<Partial<SharedDaemonProbeContext>>(
+    stdout,
+    SHARED_DAEMON_CONTEXT_MARKER,
+  );
+  return isSharedDaemonProbeContext(parsed) ? parsed : undefined;
+}
+
+function parseSharedDaemonOwner(stdout: string): SharedDaemonOwnerMarker | undefined {
+  const parsed = parseMarkerLine<Partial<SharedDaemonOwnerMarker>>(
+    stdout,
+    SHARED_DAEMON_OWNER_MARKER,
+  );
+  const pid = parsed?.pid;
+  if (
+    !isSharedDaemonProbeContext(parsed) ||
+    typeof pid !== 'number' ||
+    !Number.isInteger(pid) ||
+    pid <= 0
+  ) {
+    return undefined;
+  }
+  return { ...parsed, pid };
+}
+
+function runCaptured(
+  command: string,
+  args: readonly string[],
+  timeoutMs = CLEANUP_COMMAND_TIMEOUT_MS,
+): Promise<{ readonly code: number | null; readonly stdout: string; readonly stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    const finish = (callback: () => void): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      callback();
+    };
+    const timeout = setTimeout(() => {
+      try {
+        child.kill();
+      } catch {
+        // The process may have exited between the timer and kill.
+      }
+      finish(() => reject(new Error(`${command} exceeded ${timeoutMs} ms`)));
+    }, timeoutMs);
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => {
+      stdout += chunk;
+    });
+    child.stderr.on('data', (chunk: string) => {
+      stderr += chunk;
+    });
+    child.once('error', (error) => finish(() => reject(error)));
+    child.once('close', (code) => finish(() => resolve({ code, stdout, stderr })));
+  });
+}
+
+async function readProcessCommandLine(pid: number): Promise<string | undefined> {
+  if (!processIsAlive(pid)) return undefined;
+  if (process.platform === 'win32') {
+    const script =
+      `(Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}" | ` +
+      'Select-Object -ExpandProperty CommandLine)';
+    const result = await runCaptured('powershell.exe', [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      script,
+    ]);
+    return result.code === 0 ? result.stdout.trim() || undefined : undefined;
+  }
+  const result = await runCaptured('ps', ['-p', String(pid), '-o', 'args=']);
+  return result.code === 0 ? result.stdout.trim() || undefined : undefined;
+}
+
+function parseCommandLineArguments(commandLine: string): string[] {
+  const args: string[] = [];
+  let current = '';
+  let quote: '"' | "'" | null = null;
+  for (const character of commandLine) {
+    if (quote !== null) {
+      if (character === quote) quote = null;
+      else current += character;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (/\s/.test(character)) {
+      if (current.length > 0) {
+        args.push(current);
+        current = '';
+      }
+      continue;
+    }
+    current += character;
+  }
+  if (current.length > 0) args.push(current);
+  return args;
+}
+
+function commandLineMatchesProbeOwner(
+  commandLine: string,
+  owner: SharedDaemonOwnerMarker,
+): boolean {
+  const args = parseCommandLineArguments(commandLine);
+  const normalizePath = (value: string): string =>
+    path.resolve(value).replaceAll('\\', '/').toLowerCase();
+  const normalizedArgs = args.map((arg) => arg.replaceAll('\\', '/').toLowerCase());
+  const daemonIndex = normalizedArgs.findIndex(
+    (arg, index) => arg === 'daemon' && normalizedArgs[index + 1] === 'serve',
+  );
+  const profileIndex = normalizedArgs.indexOf('--profile');
+  const homeIndex = normalizedArgs.indexOf('--home');
+  return (
+    args.some((arg) => normalizePath(arg) === normalizePath(KODAX_CLI_PATH)) &&
+    daemonIndex >= 0 &&
+    profileIndex >= 0 &&
+    normalizedArgs[profileIndex + 1] === owner.profile.toLowerCase() &&
+    homeIndex >= 0 &&
+    args[homeIndex + 1] !== undefined &&
+    normalizePath(args[homeIndex + 1]!) === normalizePath(owner.homeDir)
+  );
+}
+
+async function stopOwnedSharedDaemon(
+  owner: SharedDaemonOwnerMarker,
+  options: { readonly skipGracefulStop?: boolean } = {},
+): Promise<void> {
+  if (!processIsAlive(owner.pid)) {
+    await rm(owner.homeDir, { recursive: true, force: true });
+    return;
+  }
+
+  const stopResult =
+    options.skipGracefulStop === true
+      ? { code: null, stdout: '', stderr: 'graceful stop skipped by cleanup regression' }
+      : await runCaptured(process.execPath, [
+          KODAX_CLI_PATH,
+          'daemon',
+          'stop',
+          '--profile',
+          owner.profile,
+          '--home',
+          owner.homeDir,
+          '--timeout-ms',
+          '10000',
+          '--force',
+          '--json',
+        ]).catch((error: unknown) => ({
+          code: null,
+          stdout: '',
+          stderr: error instanceof Error ? error.message : String(error),
+        }));
+  if (options.skipGracefulStop !== true && (await waitForProcessExit(owner.pid, 10_000))) {
+    await rm(owner.homeDir, { recursive: true, force: true });
+    return;
+  }
+
+  if (!processIsAlive(owner.pid)) {
+    await rm(owner.homeDir, { recursive: true, force: true });
+    return;
+  }
+
+  const commandLine = await readProcessCommandLine(owner.pid);
+  if (commandLine === undefined && !processIsAlive(owner.pid)) {
+    await rm(owner.homeDir, { recursive: true, force: true });
+    return;
+  }
+  if (commandLine === undefined || !commandLineMatchesProbeOwner(commandLine, owner)) {
+    throw new Error(
+      `Refused to terminate PID ${owner.pid}: compatibility daemon identity no longer matches ` +
+        `${owner.profile} at ${owner.homeDir}. daemon stop: ${stopResult.stderr || stopResult.stdout}`,
+    );
+  }
+
+  if (process.platform === 'win32') {
+    await runCaptured('taskkill.exe', ['/PID', String(owner.pid), '/T', '/F']);
+  } else {
+    process.kill(owner.pid, 'SIGTERM');
+  }
+  if (!(await waitForProcessExit(owner.pid, 5_000))) {
+    throw new Error(`Owned compatibility daemon PID ${owner.pid} did not exit after termination.`);
+  }
+  await rm(owner.homeDir, { recursive: true, force: true });
+}
+
+async function stopSharedDaemonContext(context: SharedDaemonProbeContext): Promise<void> {
+  const result = await runCaptured(process.execPath, [
+    KODAX_CLI_PATH,
+    'daemon',
+    'stop',
+    '--profile',
+    context.profile,
+    '--home',
+    context.homeDir,
+    '--timeout-ms',
+    '10000',
+    '--force',
+    '--json',
+  ]);
+  if (result.code !== 0) {
+    throw new Error(
+      `Could not stop compatibility daemon ${context.profile}: ${result.stderr || result.stdout}`,
+    );
+  }
+  await rm(context.homeDir, { recursive: true, force: true });
+}
 
 const SHARED_DAEMON_REQUIREMENTS = {
   externalAgents: true,
@@ -171,6 +451,29 @@ import { connectKodaXRuntime } from '@kodax-ai/kodax/runtime';
 const requirements = JSON.parse(process.env.KODAX_PROBE_REQUIREMENTS);
 const homeDir = await mkdtemp(path.join(tmpdir(), 'kodax-space-shared-daemon-'));
 const profile = 'space-f121-' + process.pid;
+process.stdout.write(
+  'KODAX_SHARED_DAEMON_CONTEXT=' + JSON.stringify({ profile, homeDir }) + '\n',
+);
+process.env.KODAX_INTERNAL_DAEMON_TEST_PARENT_PID = String(process.pid);
+
+function processAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function waitForExit(pid, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!processAlive(pid)) return true;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return !processAlive(pid);
+}
 
 function runPeer(sessionId) {
   return new Promise((resolve, reject) => {
@@ -217,8 +520,8 @@ function runPeer(sessionId) {
   });
 }
 
-function stopDaemon() {
-  return new Promise((resolve, reject) => {
+async function stopDaemon(pid) {
+  const outcome = await new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [
       process.env.KODAX_CLI_PATH,
       'daemon',
@@ -240,15 +543,23 @@ function stopDaemon() {
     child.stderr.on('data', (chunk) => { stderr += chunk; });
     child.once('error', reject);
     child.once('close', (code) => {
-      if (code === 0) resolve();
-      else reject(new Error('Could not stop compatibility daemon: ' + (stderr || stdout)));
+      resolve({ code, stdout, stderr });
     });
   });
+  if (Number.isInteger(pid) && pid > 0 && await waitForExit(pid, 10000)) return;
+  if (outcome.code !== 0) {
+    throw new Error('Could not stop compatibility daemon: ' + (outcome.stderr || outcome.stdout));
+  }
+  if (Number.isInteger(pid) && pid > 0) {
+    throw new Error('Compatibility daemon PID ' + pid + ' remained alive after daemon stop.');
+  }
 }
 
 let runtime;
 let observation;
 let result;
+let managementBaseline;
+let daemonPid;
 try {
   runtime = await connectKodaXRuntime({
     profile,
@@ -266,6 +577,16 @@ try {
     capabilities: { richEvents: true, operationDeduplication: true },
     requirements,
   });
+  managementBaseline = await runtime.daemon.inspect();
+  daemonPid = managementBaseline.owner.pid;
+  process.stdout.write(
+    'KODAX_SHARED_DAEMON_OWNER=' +
+      JSON.stringify({ pid: daemonPid, profile, homeDir }) +
+      '\n',
+  );
+  if (process.env.KODAX_SHARED_DAEMON_FAILURE_MODE === 'hang-after-owner') {
+    await new Promise(() => {});
+  }
   const session = await runtime.sessions.create({
     title: 'F121 published multi-client probe',
     projectPath: process.cwd(),
@@ -280,7 +601,6 @@ try {
     if (event.type === 'session.settings.updated') resolveSettingsEvent(event.type);
   });
   const clientBaseline = await runtime.status.preflight();
-  const managementBaseline = await runtime.daemon.inspect();
   const peer = await runPeer(session.id);
   let eventTimeout;
   const eventType = await Promise.race([
@@ -309,6 +629,7 @@ try {
   const daemonOrphanExitCapability = runtime.capabilities.daemonOrphanExit;
   const runtimeAutoModeGuardrailCapability = runtime.capabilities.runtimeAutoModeGuardrail;
   result = {
+    daemonPid,
     version: runtime.identity.version,
     runtimeId: runtime.identity.runtimeId,
     connectionState: runtime.connection.current().state,
@@ -353,7 +674,7 @@ try {
 } finally {
   observation?.close();
   await runtime?.close();
-  await stopDaemon();
+  await stopDaemon(daemonPid);
   await rm(homeDir, { recursive: true, force: true });
 }
 process.stdout.write('KODAX_SHARED_DAEMON_HOST=' + JSON.stringify(result));
@@ -667,6 +988,7 @@ function runPublishedRuntimeWorkerProbe(): Promise<Record<string, unknown>> {
 }
 
 interface SharedDaemonHostResult {
+  readonly daemonPid: number;
   readonly version: string;
   readonly runtimeId: string;
   readonly connectionState: string;
@@ -721,7 +1043,16 @@ interface SharedDaemonHostResult {
   };
 }
 
-function runPublishedSharedDaemonProbe(): Promise<SharedDaemonHostResult> {
+interface SharedDaemonProbeRunOptions {
+  readonly expectedFailure?: boolean;
+  readonly failureMode?: 'hang-after-owner';
+  readonly forceCleanupFallback?: boolean;
+  readonly timeoutMs?: number;
+}
+
+function runPublishedSharedDaemonHost(
+  options: SharedDaemonProbeRunOptions = {},
+): Promise<SharedDaemonHostResult | SharedDaemonOwnerMarker> {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, ['--input-type=module', '-'], {
       cwd: process.cwd(),
@@ -730,58 +1061,125 @@ function runPublishedSharedDaemonProbe(): Promise<SharedDaemonHostResult> {
         KODAX_PROBE_REQUIREMENTS: JSON.stringify(SHARED_DAEMON_REQUIREMENTS),
         KODAX_PEER_PROBE: PUBLISHED_SHARED_DAEMON_PEER_PROBE,
         KODAX_CLI_PATH,
+        ...(options.failureMode ? { KODAX_SHARED_DAEMON_FAILURE_MODE: options.failureMode } : {}),
       },
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
     });
     let stdout = '';
     let stderr = '';
+    let context: SharedDaemonProbeContext | undefined;
+    let owner: SharedDaemonOwnerMarker | undefined;
     let settled = false;
-    const timeout = setTimeout(() => {
-      child.kill();
-      rejectOnce(new Error(`Shared daemon host exceeded ${SHARED_DAEMON_TIMEOUT_MS} ms`));
-    }, SHARED_DAEMON_TIMEOUT_MS);
-    const rejectOnce = (error: Error): void => {
+    let timeout: ReturnType<typeof setTimeout>;
+    const fail = (error: Error): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
-      reject(error);
+      const cleanup = owner
+        ? stopOwnedSharedDaemon(owner, {
+            skipGracefulStop: options.forceCleanupFallback,
+          })
+        : context
+          ? stopSharedDaemonContext(context)
+          : Promise.resolve();
+      void cleanup.then(
+        () => {
+          child.kill();
+          if (options.expectedFailure && owner) {
+            resolve(owner);
+            return;
+          }
+          reject(error);
+        },
+        (cleanupError: unknown) => {
+          child.kill();
+          reject(
+            new Error(`${error.message} Compatibility daemon cleanup also failed.`, {
+              cause: cleanupError,
+            }),
+          );
+        },
+      );
     };
+    timeout = setTimeout(() => {
+      fail(
+        new Error(
+          `Shared daemon host exceeded ${options.timeoutMs ?? SHARED_DAEMON_TIMEOUT_MS} ms`,
+        ),
+      );
+    }, options.timeoutMs ?? SHARED_DAEMON_TIMEOUT_MS);
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
     child.stdout.on('data', (chunk: string) => {
       stdout += chunk;
+      context ??= parseSharedDaemonContext(stdout);
+      owner ??= parseSharedDaemonOwner(stdout);
     });
     child.stderr.on('data', (chunk: string) => {
       stderr += chunk;
     });
-    child.once('error', rejectOnce);
-    child.stdin.once('error', rejectOnce);
+    child.once('error', fail);
+    child.stdin.once('error', fail);
     child.once('close', (code) => {
       if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
       if (code !== 0) {
-        reject(new Error(`Shared daemon host exited ${code}: ${stderr || stdout}`));
+        fail(new Error(`Shared daemon host exited ${code}: ${stderr || stdout}`));
         return;
       }
       const markerIndex = stdout.lastIndexOf(SHARED_DAEMON_MARKER);
       if (markerIndex < 0) {
-        reject(new Error(`Shared daemon host returned no result marker: ${stdout}`));
+        fail(new Error(`Shared daemon host returned no result marker: ${stdout}`));
         return;
       }
       try {
-        resolve(
-          JSON.parse(
-            stdout.slice(markerIndex + SHARED_DAEMON_MARKER.length),
-          ) as SharedDaemonHostResult,
-        );
+        const result = JSON.parse(
+          stdout.slice(markerIndex + SHARED_DAEMON_MARKER.length),
+        ) as SharedDaemonHostResult;
+        if (options.expectedFailure) {
+          settled = true;
+          clearTimeout(timeout);
+          reject(new Error('Shared daemon failure probe unexpectedly completed successfully.'));
+          return;
+        }
+        if (processIsAlive(result.daemonPid)) {
+          fail(
+            new Error(
+              `Shared daemon host returned while owned daemon PID ${result.daemonPid} was alive.`,
+            ),
+          );
+          return;
+        }
+        settled = true;
+        clearTimeout(timeout);
+        resolve(result);
       } catch (error) {
-        reject(new Error(`Shared daemon host returned invalid JSON: ${stdout}`, { cause: error }));
+        fail(new Error(`Shared daemon host returned invalid JSON: ${stdout}`, { cause: error }));
       }
     });
     child.stdin.end(PUBLISHED_SHARED_DAEMON_HOST_PROBE);
   });
+}
+
+async function runPublishedSharedDaemonProbe(): Promise<SharedDaemonHostResult> {
+  const result = await runPublishedSharedDaemonHost();
+  if (!('version' in result)) {
+    throw new Error('Shared daemon compatibility probe returned an owner marker without a result.');
+  }
+  return result;
+}
+
+async function runPublishedSharedDaemonFailureProbe(): Promise<SharedDaemonOwnerMarker> {
+  const result = await runPublishedSharedDaemonHost({
+    expectedFailure: true,
+    failureMode: 'hang-after-owner',
+    forceCleanupFallback: true,
+    timeoutMs: 2_500,
+  });
+  if ('version' in result) {
+    throw new Error('Shared daemon failure probe returned a successful host result.');
+  }
+  return result;
 }
 
 test(
@@ -1070,11 +1468,71 @@ test(`KodaX ${EXPECTED_KODAX_VERSION} exports a bounded non-empty auto-resume se
   assert.equal(requestedLimit, 1000);
 });
 
+test('shared daemon cleanup accepts only complete, scoped compatibility ownership markers', () => {
+  const owner: SharedDaemonOwnerMarker = {
+    pid: 12345,
+    profile: 'space-f121-987',
+    homeDir: path.join(tmpdir(), 'kodax-space-shared-daemon-test-owner'),
+  };
+  const prefix = `${SHARED_DAEMON_OWNER_MARKER}${JSON.stringify(owner)}`;
+
+  assert.equal(parseSharedDaemonOwner(prefix), undefined, 'partial stdout lines are not ownership');
+  assert.deepEqual(parseSharedDaemonOwner(`${prefix}\n`), owner);
+  assert.equal(
+    parseSharedDaemonOwner(
+      `${SHARED_DAEMON_OWNER_MARKER}${JSON.stringify({
+        ...owner,
+        profile: 'coder',
+      })}\n`,
+    ),
+    undefined,
+  );
+  assert.equal(
+    commandLineMatchesProbeOwner(
+      `"node" "${KODAX_CLI_PATH}" daemon serve --profile ${owner.profile} --home "${owner.homeDir}"`,
+      owner,
+    ),
+    true,
+  );
+  assert.equal(
+    commandLineMatchesProbeOwner(
+      `"node" "${KODAX_CLI_PATH}" daemon serve --profile coder --home "${owner.homeDir}"`,
+      owner,
+    ),
+    false,
+  );
+  assert.equal(
+    commandLineMatchesProbeOwner(
+      `"node" "other-cli.js" daemon serve --profile ${owner.profile} --home "${owner.homeDir}"`,
+      owner,
+    ),
+    false,
+  );
+  assert.equal(
+    commandLineMatchesProbeOwner(
+      `"node" "${KODAX_CLI_PATH}" daemon serve --profile=${owner.profile} --home "${owner.homeDir}"`,
+      owner,
+    ),
+    false,
+  );
+});
+
+test(
+  'shared daemon outer timeout reclaims only the exact marked compatibility daemon',
+  { timeout: 30_000 },
+  async () => {
+    const owner = await runPublishedSharedDaemonFailureProbe();
+    assert.equal(processIsAlive(owner.pid), false);
+    await assert.rejects(access(owner.homeDir));
+  },
+);
+
 test(
   `tarball KodaX ${EXPECTED_KODAX_VERSION} daemon shares one Coder session across processes`,
-  { timeout: SHARED_DAEMON_TIMEOUT_MS + 15_000 },
+  { timeout: SHARED_DAEMON_TIMEOUT_MS + 30_000 },
   async () => {
     const result = await runPublishedSharedDaemonProbe();
+    assert.equal(processIsAlive(result.daemonPid), false);
     assert.equal(result.version, EXPECTED_KODAX_VERSION);
     assert.equal(result.peer.runtimeId, result.runtimeId);
     assert.equal(result.peer.connectionState, 'connected');

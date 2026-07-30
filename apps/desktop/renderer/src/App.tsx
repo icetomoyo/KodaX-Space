@@ -102,10 +102,35 @@ export default function App(): JSX.Element {
       void invokeWithTimeout(bridge, 'session.liveSnapshot', { sessionId })
         .then((result) => {
           if (!disposed && result.ok) {
-            // Drain this paused Session first so lifecycle/tool events retain their causal position.
-            // The drain is intentionally unbatched: the new snapshot cursor is not installed yet,
-            // so coalescing could hide the boundary between covered and post-cursor deltas.
-            sessionEventBatcher.drain(sessionId);
+            // Install the *incoming* causal barrier while draining. This lets a large fragment
+            // backlog collapse to a handful of exact-text events without ever joining a covered
+            // delta to a post-snapshot delta.
+            const previousBarrier =
+              useAppStore.getState().runtimeSnapshotCursorBySession[sessionId];
+            const snapshotRun = result.data.activeRun ?? result.data.lastTerminalRun;
+            const sameBarrierRun =
+              snapshotRun !== undefined &&
+              previousBarrier?.runtimeId === result.data.cursor.runtimeId &&
+              previousBarrier.runId === snapshotRun.runId;
+            sessionEventBatcher.drain(
+              sessionId,
+              snapshotRun === undefined
+                ? result.data.cursor
+                : {
+                    ...result.data.cursor,
+                    runId: snapshotRun.runId,
+                    ...(result.data.assistantDraft !== undefined
+                      ? { assistantDraftSeq: result.data.cursor.seq }
+                      : sameBarrierRun && previousBarrier.assistantDraftSeq !== undefined
+                        ? { assistantDraftSeq: previousBarrier.assistantDraftSeq }
+                        : {}),
+                    ...(result.data.thinkingDraft !== undefined
+                      ? { thinkingDraftSeq: result.data.cursor.seq }
+                      : sameBarrierRun && previousBarrier.thinkingDraftSeq !== undefined
+                        ? { thinkingDraftSeq: previousBarrier.thinkingDraftSeq }
+                        : {}),
+                  },
+            );
             replaceSessionLiveProjection(result.data);
           }
         })

@@ -52,6 +52,8 @@ test('shouldPauseAurora pauses only full-quality inactive or interactive states'
   assert.equal(shouldPauseAurora('full', ACTIVE, true), false);
   assert.equal(shouldPauseAurora('full', ACTIVE, true, true), true);
   assert.equal(shouldPauseAurora('balanced', ACTIVE, true, true), false);
+  assert.equal(shouldPauseAurora('full', ACTIVE, true, false, true), true);
+  assert.equal(shouldPauseAurora('balanced', ACTIVE, true, false, true), false);
   assert.equal(shouldPauseAurora('full', PASSIVE, true), true);
   assert.equal(shouldPauseAurora('full', HIDDEN, true), true);
   assert.equal(shouldPauseAurora('full', null, false), true);

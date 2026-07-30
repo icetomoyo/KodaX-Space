@@ -17,9 +17,21 @@ import { isLocalDocumentActive, shouldPauseAurora } from './auroraActivity.js';
 
 const INTERACTION_PAUSE_MS = 180;
 const INTERACTION_CLASS = 'visual-interaction-active';
+const STREAMING_CLASS = 'visual-streaming-active';
 
 export function GlassAurora(): JSX.Element | null {
   const quality = useAppStore((s) => s.visualQuality);
+  const streaming = useAppStore((s) => {
+    const sessionId = s.currentSessionId;
+    if (!sessionId) return false;
+    const projection = s.liveProjectionBySession[sessionId];
+    return (
+      Boolean(s.pendingSendBySession[sessionId]) ||
+      projection?.activeRun !== undefined ||
+      (projection?.queuedRuns.length ?? 0) > 0 ||
+      s.compactingBySession[sessionId] === true
+    );
+  });
   const layerRef = useRef<HTMLDivElement | null>(null);
 
   // 窗口可见且聚焦时才让极光漂移；失焦 / 最小化 / 切后台一律暂停。
@@ -30,6 +42,7 @@ export function GlassAurora(): JSX.Element | null {
     if (quality !== 'full') {
       layer?.classList.remove('is-paused');
       document.documentElement.classList.remove(INTERACTION_CLASS);
+      document.documentElement.classList.remove(STREAMING_CLASS);
       return undefined;
     }
 
@@ -42,9 +55,11 @@ export function GlassAurora(): JSX.Element | null {
         activity,
         isLocalDocumentActive(document),
         interactionActive,
+        streaming,
       );
       layer?.classList.toggle('is-paused', paused);
       document.documentElement.classList.toggle(INTERACTION_CLASS, interactionActive);
+      document.documentElement.classList.toggle(STREAMING_CLASS, streaming);
     };
     const pauseForInteraction = (): void => {
       if (!interactionActive) {
@@ -86,8 +101,9 @@ export function GlassAurora(): JSX.Element | null {
       if (interactionTimer !== 0) window.clearTimeout(interactionTimer);
       layer?.classList.remove('is-paused');
       document.documentElement.classList.remove(INTERACTION_CLASS);
+      document.documentElement.classList.remove(STREAMING_CLASS);
     };
-  }, [quality]);
+  }, [quality, streaming]);
 
   if (quality === 'minimal') return null;
 

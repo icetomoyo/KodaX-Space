@@ -11,7 +11,10 @@
 // 点击聚合行展开 = 显示组里每个 tool 的细节卡。
 
 import {
+  memo,
+  useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -31,6 +34,7 @@ import {
   type WorkflowNoticeMessage,
 } from '../store/appStore.js';
 import { composeMessages, type ConversationMessage } from '../features/session/composeMessages.js';
+import { patchComposedStreamTail } from './conversationStreamIncremental.js';
 import {
   FOCUS_ARTIFACT_EVENT,
   snapshotFromCreateArtifactTool,
@@ -45,6 +49,7 @@ const EMPTY_USER_MESSAGES: readonly UserMessage[] = [];
 const EMPTY_LOCAL_NOTICES: readonly LocalNoticeMessage[] = [];
 const EMPTY_QUEUED_USER_MESSAGES: readonly QueuedUserMessage[] = [];
 const EMPTY_WORKFLOW_NOTICES: readonly WorkflowNoticeMessage[] = [];
+const EMPTY_MATCH_IDS: readonly string[] = [];
 const INSTANT_PROGRAMMATIC_SCROLL_GUARD_MS = 120;
 const SMOOTH_PROGRAMMATIC_SCROLL_GUARD_MS = 400;
 const BOTTOM_DISTANCE_PX = 32;
@@ -161,6 +166,16 @@ type ConversationRenderItem =
       receipts: ProcessReceiptMessage[];
     };
 
+interface ComposeMessagesCache {
+  readonly sessionId: string | null;
+  readonly events: readonly SessionEvent[];
+  readonly userMessages: readonly UserMessage[];
+  readonly localNotices: readonly LocalNoticeMessage[];
+  readonly queuedUserMessages: readonly QueuedUserMessage[];
+  readonly workflowNotices: readonly WorkflowNoticeMessage[];
+  readonly messages: readonly ConversationMessage[];
+}
+
 /**
  * v0.1.4: assistant_text 的 text/thinking 内容都拆成独立 view-message 渲染了
  * （AssistantBubble + ThinkingBlock），不再需要为 sub-cluster 取首句当 title。
@@ -195,6 +210,7 @@ const QUERY_JUMP_MIN_ANCHORS = 3;
 const QUERY_JUMP_TOP_PADDING_PX = 10;
 const QUERY_JUMP_TITLE_CHARS = 44;
 const QUERY_JUMP_BODY_CHARS = 116;
+const RESTORED_REVEAL_TAIL_ITEMS = 24;
 
 function compactInlineText(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
@@ -218,20 +234,39 @@ function messageTopWithinScroller(scroller: HTMLDivElement, target: HTMLElement)
   );
 }
 
+function findMessageNodeNearViewportPoint(
+  scroller: HTMLDivElement,
+  viewportFraction: number,
+): HTMLElement | null {
+  const rect = scroller.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return null;
+  const x = Math.min(rect.right - 8, rect.left + Math.max(72, Math.min(144, rect.width * 0.25)));
+  const centerY = rect.top + Math.max(1, Math.min(rect.height - 1, rect.height * viewportFraction));
+  for (const offset of [0, -6, 6, -14, 14, -28, 28]) {
+    const y = Math.max(rect.top + 1, Math.min(rect.bottom - 1, centerY + offset));
+    for (const element of document.elementsFromPoint(x, y)) {
+      if (!scroller.contains(element)) continue;
+      const message = element.closest<HTMLElement>('[data-msg-id]');
+      if (message && scroller.contains(message)) return message;
+    }
+  }
+  return null;
+}
+
 function findActiveQueryAnchorId(
   scroller: HTMLDivElement,
   anchors: readonly QueryJumpAnchor[],
 ): string | null {
   if (anchors.length === 0) return null;
-  const line = scroller.scrollTop + QUERY_JUMP_TOP_PADDING_PX + 1;
-  let activeId = anchors[0].id;
-  for (const anchor of anchors) {
-    const node = scroller.querySelector(`[data-msg-id="${CSS.escape(anchor.id)}"]`);
-    if (!(node instanceof HTMLElement)) continue;
-    if (messageTopWithinScroller(scroller, node) <= line) activeId = anchor.id;
-    else break;
-  }
-  return activeId;
+  const message = findMessageNodeNearViewportPoint(
+    scroller,
+    Math.min(0.25, (QUERY_JUMP_TOP_PADDING_PX + 24) / Math.max(1, scroller.clientHeight)),
+  );
+  return (
+    message?.closest<HTMLElement>('[data-query-anchor-id]')?.dataset.queryAnchorId ??
+    anchors[0]?.id ??
+    null
+  );
 }
 
 function isProcessReceiptMessage(message: ViewMessage): message is ProcessReceiptMessage {
@@ -272,6 +307,255 @@ function buildConversationRenderItems(messages: readonly ViewMessage[]): Convers
   flushReceipts();
 
   return items;
+}
+
+function subClustersShareProjection(
+  previous: readonly SubCluster[],
+  next: readonly SubCluster[],
+): boolean {
+  if (previous.length !== next.length) return false;
+  return previous.every((left, index) => {
+    const right = next[index];
+    return (
+      right !== undefined &&
+      left.id === right.id &&
+      left.title === right.title &&
+      left.turnIndex === right.turnIndex &&
+      left.syntheticTitle === right.syntheticTitle &&
+      left.thinking === right.thinking &&
+      left.tools.length === right.tools.length &&
+      left.tools.every((tool, toolIndex) => tool === right.tools[toolIndex])
+    );
+  });
+}
+
+function viewMessagesShareProjection(previous: ViewMessage, next: ViewMessage): boolean {
+  if (previous === next) return true;
+  if (previous.kind !== next.kind || previous.id !== next.id) return false;
+  switch (previous.kind) {
+    case 'user':
+      return (
+        next.kind === 'user' &&
+        previous.content === next.content &&
+        previous.attachments === next.attachments &&
+        previous.sentAt === next.sentAt
+      );
+    case 'local_notice':
+      return (
+        next.kind === 'local_notice' &&
+        previous.content === next.content &&
+        previous.variant === next.variant &&
+        previous.sentAt === next.sentAt
+      );
+    case 'queued_user':
+      return (
+        next.kind === 'queued_user' &&
+        previous.content === next.content &&
+        previous.attachments === next.attachments &&
+        previous.queueMode === next.queueMode &&
+        previous.status === next.status &&
+        previous.failureReason === next.failureReason &&
+        previous.sentAt === next.sentAt
+      );
+    case 'assistant_text':
+      return (
+        next.kind === 'assistant_text' &&
+        previous.text === next.text &&
+        previous.thinking === next.thinking &&
+        previous.turnIndex === next.turnIndex &&
+        previous.completed === next.completed &&
+        previous.sentAt === next.sentAt
+      );
+    case 'system_notice':
+      return (
+        next.kind === 'system_notice' &&
+        previous.variant === next.variant &&
+        previous.text === next.text &&
+        previous.lineageKind === next.lineageKind &&
+        previous.historical === next.historical &&
+        previous.action === next.action &&
+        previous.retriable === next.retriable &&
+        previous.retryAvailableAt === next.retryAvailableAt &&
+        previous.sentAt === next.sentAt
+      );
+    case 'tool_cluster':
+      return (
+        next.kind === 'tool_cluster' &&
+        previous.totalTools === next.totalTools &&
+        previous.turnIndex === next.turnIndex &&
+        previous.thinkingTokens === next.thinkingTokens &&
+        subClustersShareProjection(previous.subClusters, next.subClusters)
+      );
+    case 'thinking':
+      return (
+        next.kind === 'thinking' &&
+        previous.thinking === next.thinking &&
+        previous.turnIndex === next.turnIndex
+      );
+    case 'artifact':
+      return (
+        next.kind === 'artifact' &&
+        previous.artifactId === next.artifactId &&
+        previous.title === next.title &&
+        previous.artifactKind === next.artifactKind &&
+        previous.version === next.version &&
+        previous.status === next.status &&
+        previous.summary === next.summary &&
+        previous.snapshot === next.snapshot
+      );
+  }
+}
+
+function retainStableViewMessages(
+  previous: readonly ViewMessage[],
+  next: readonly ViewMessage[],
+): ViewMessage[] {
+  if (previous.length === 0 || next.length === 0) return [...next];
+  const previousById = new Map(previous.map((message) => [message.id, message]));
+  return next.map((message) => {
+    const prior = previousById.get(message.id);
+    return prior !== undefined && viewMessagesShareProjection(prior, message) ? prior : message;
+  });
+}
+
+function retainStableRenderItems(
+  previous: readonly ConversationRenderItem[],
+  next: readonly ConversationRenderItem[],
+): ConversationRenderItem[] {
+  if (previous.length === 0 || next.length === 0) return [...next];
+  const previousById = new Map(previous.map((item) => [item.id, item]));
+  return next.map((item) => {
+    const prior = previousById.get(item.id);
+    if (prior === undefined || prior.kind !== item.kind) return item;
+    if (prior.kind === 'message' && item.kind === 'message') {
+      return prior.message === item.message ? prior : item;
+    }
+    if (prior.kind === 'receipts' && item.kind === 'receipts') {
+      return prior.receipts.length === item.receipts.length &&
+        prior.receipts.every((receipt, index) => receipt === item.receipts[index])
+        ? prior
+        : item;
+    }
+    return item;
+  });
+}
+
+const HEIGHT_ESTIMATE_SAMPLE_CHARS = 4_096;
+const HEIGHT_ESTIMATE_HALF_SAMPLE_CHARS = HEIGHT_ESTIMATE_SAMPLE_CHARS / 2;
+
+function sampledNewlineEstimate(text: string): number {
+  const countNewlines = (start: number, end: number): number => {
+    let count = 0;
+    for (let index = start; index < end; index += 1) {
+      if (text.charCodeAt(index) === 10) count += 1;
+    }
+    return count;
+  };
+  if (text.length <= HEIGHT_ESTIMATE_SAMPLE_CHARS) {
+    return countNewlines(0, text.length);
+  }
+  const sampled =
+    countNewlines(0, HEIGHT_ESTIMATE_HALF_SAMPLE_CHARS) +
+    countNewlines(text.length - HEIGHT_ESTIMATE_HALF_SAMPLE_CHARS, text.length);
+  return Math.round((sampled * text.length) / HEIGHT_ESTIMATE_SAMPLE_CHARS);
+}
+
+function estimateTextLengthHeight(length: number, minimum: number): number {
+  const wrappedLines = Math.ceil(Math.max(0, length) / 92);
+  return Math.min(12_000, Math.max(minimum, wrappedLines * 21 + 38));
+}
+
+function estimateTextBlockHeight(text: string, minimum: number): number {
+  if (text.length === 0) return minimum;
+  const explicitLines = sampledNewlineEstimate(text) + 1;
+  const wrappedLines = Math.ceil(Math.max(0, text.length - explicitLines + 1) / 92);
+  return Math.min(12_000, Math.max(minimum, (explicitLines + wrappedLines) * 21 + 38));
+}
+
+function estimateToolCallHeight(tool: ToolCallMsg): number {
+  let approximateChars = tool.toolName.length;
+  if (typeof tool.result === 'string') approximateChars += tool.result.length;
+  if (tool.input !== undefined) {
+    let inspectedKeys = 0;
+    for (const key in tool.input) {
+      if (!Object.prototype.hasOwnProperty.call(tool.input, key)) continue;
+      const value = tool.input[key];
+      approximateChars +=
+        key.length +
+        (typeof value === 'string'
+          ? value.length
+          : Array.isArray(value)
+            ? Math.min(4_096, value.length * 24)
+            : value !== null && typeof value === 'object'
+              ? 512
+              : String(value).length);
+      inspectedKeys += 1;
+      if (inspectedKeys >= 64 || approximateChars >= 16_384) break;
+    }
+  }
+  return Math.min(280, estimateTextLengthHeight(approximateChars, 72));
+}
+
+function estimateReceiptHeight(
+  receipt: ProcessReceiptMessage,
+  expanded: ReadonlySet<string>,
+  clustersForceExpand: boolean,
+  thinkingForceExpand: boolean,
+): number {
+  if (receipt.kind === 'thinking') {
+    return expanded.has(receipt.id) || thinkingForceExpand
+      ? Math.min(720, estimateTextBlockHeight(receipt.thinking, 52))
+      : 34;
+  }
+  if (!expanded.has(receipt.id) && !clustersForceExpand) return 34;
+  let expandedHeight = 64;
+  for (const subCluster of receipt.subClusters) {
+    expandedHeight += estimateTextBlockHeight(subCluster.title, 28);
+    if (expandedHeight >= 720) return 720;
+    if (subCluster.thinking) {
+      expandedHeight += Math.min(420, estimateTextBlockHeight(subCluster.thinking, 32));
+      if (expandedHeight >= 720) return 720;
+    }
+    for (const tool of subCluster.tools) {
+      expandedHeight += estimateToolCallHeight(tool);
+      if (expandedHeight >= 720) return 720;
+    }
+  }
+  return Math.min(720, expandedHeight);
+}
+
+function estimateRenderItemHeight(
+  item: ConversationRenderItem,
+  expanded: ReadonlySet<string>,
+  clustersForceExpand: boolean,
+  thinkingForceExpand: boolean,
+): number {
+  if (item.kind === 'receipts') {
+    let receiptsHeight = 16;
+    for (const receipt of item.receipts) {
+      receiptsHeight += estimateReceiptHeight(
+        receipt,
+        expanded,
+        clustersForceExpand,
+        thinkingForceExpand,
+      );
+      if (receiptsHeight >= 720) return 720;
+    }
+    return receiptsHeight;
+  }
+  const message = item.message;
+  switch (message.kind) {
+    case 'user':
+    case 'local_notice':
+    case 'queued_user':
+      return estimateTextBlockHeight(message.content, 64);
+    case 'assistant_text':
+      return estimateTextBlockHeight(message.text, 72);
+    case 'system_notice':
+      return estimateTextBlockHeight(message.text, 48);
+    case 'artifact':
+      return 96;
+  }
 }
 
 function summarizeTools(tools: readonly ToolCallMsg[], t: Translate): string {
@@ -319,9 +603,11 @@ function artifactMessageFromTool(tool: ToolCallMsg): ArtifactMessage | null {
 }
 
 function groupTools(
-  messages: ConversationMessage[],
+  messages: readonly ConversationMessage[],
   view: 'normal' | 'thinking' | 'verbose' | 'summary',
   t: Translate,
+  countThinkingTokens: (id: string, thinking: string) => number = (_id, thinking) =>
+    approxTokens(thinking),
 ): ViewMessage[] {
   // normal/summary = 紧凑：thinking-only step 的推理折进工具组，连续 thinking→cmd 收敛成一个 cluster。
   // thinking/verbose = 摊开：thinking 仍是独立可读行，每个 step 各自成组（看清每一步在想什么）。
@@ -334,7 +620,7 @@ function groupTools(
     if (pendingCluster.length === 0) return;
     const totalTools = pendingCluster.reduce((acc, sc) => acc + sc.tools.length, 0);
     const thinkingTokens = pendingCluster.reduce(
-      (acc, sc) => acc + (sc.thinking ? approxTokens(sc.thinking) : 0),
+      (acc, sc) => acc + (sc.thinking ? countThinkingTokens(sc.id, sc.thinking) : 0),
       0,
     );
     const turnIndex = pendingCluster.find((sc) => sc.turnIndex !== undefined)?.turnIndex;
@@ -531,22 +817,106 @@ export function ConversationStreamV2(): JSX.Element {
   //   verbose  = 全摊开：thinking + 工具卡全默认展开
   //   summary  = 只看结论：thinking / 工具组全部隐藏，只留 user / assistant 正文
   const transcriptView = useAppStore((s) => s.transcriptView);
+  const composeCacheRef = useRef<ComposeMessagesCache | null>(null);
+  const viewMessagesCacheRef = useRef<{
+    readonly sessionId: string | null;
+    readonly messages: readonly ViewMessage[];
+  } | null>(null);
+  const renderItemsCacheRef = useRef<{
+    readonly sessionId: string | null;
+    readonly items: readonly ConversationRenderItem[];
+  } | null>(null);
+  const thinkingTokenCacheRef = useRef<{
+    sessionId: string | null;
+    entries: Map<string, { readonly source: string; readonly tokens: number }>;
+  }>({ sessionId: null, entries: new Map() });
 
-  const messages = useMemo(
-    () =>
-      composeMessages({
-        events,
-        userMessages,
-        localNotices,
-        queuedUserMessages,
-        workflowNotices,
-      }),
-    [events, userMessages, localNotices, queuedUserMessages, workflowNotices],
-  );
-  const viewMessages = useMemo(
-    () => groupTools(messages, transcriptView, t),
-    [messages, transcriptView, t],
-  );
+  const messages = useMemo(() => {
+    const cache = composeCacheRef.current;
+    const inputsUnchangedExceptEvents =
+      cache?.sessionId === currentSessionId &&
+      cache.userMessages === userMessages &&
+      cache.localNotices === localNotices &&
+      cache.queuedUserMessages === queuedUserMessages &&
+      cache.workflowNotices === workflowNotices;
+    const nextMessages =
+      inputsUnchangedExceptEvents && cache !== null
+        ? (patchComposedStreamTail(cache.events, cache.messages, events) ??
+          composeMessages({
+            events,
+            userMessages,
+            localNotices,
+            queuedUserMessages,
+            workflowNotices,
+          }))
+        : composeMessages({
+            events,
+            userMessages,
+            localNotices,
+            queuedUserMessages,
+            workflowNotices,
+          });
+    return nextMessages;
+  }, [currentSessionId, events, userMessages, localNotices, queuedUserMessages, workflowNotices]);
+  useLayoutEffect(() => {
+    composeCacheRef.current = {
+      sessionId: currentSessionId,
+      events,
+      userMessages,
+      localNotices,
+      queuedUserMessages,
+      workflowNotices,
+      messages,
+    };
+  }, [
+    currentSessionId,
+    events,
+    userMessages,
+    localNotices,
+    queuedUserMessages,
+    workflowNotices,
+    messages,
+  ]);
+  const groupedProjection = useMemo(() => {
+    const pendingTokenEntries = new Map<
+      string,
+      { readonly source: string; readonly tokens: number }
+    >();
+    const countThinkingTokens = (id: string, thinking: string): number => {
+      const committed = thinkingTokenCacheRef.current;
+      const cached =
+        committed.sessionId === currentSessionId ? committed.entries.get(id) : undefined;
+      if (cached?.source === thinking) return cached.tokens;
+      const pending = pendingTokenEntries.get(id);
+      if (pending?.source === thinking) return pending.tokens;
+      const tokens = approxTokens(thinking);
+      pendingTokenEntries.set(id, { source: thinking, tokens });
+      return tokens;
+    };
+    const fresh = groupTools(messages, transcriptView, t, countThinkingTokens);
+    const previous = viewMessagesCacheRef.current;
+    const viewMessages =
+      previous?.sessionId === currentSessionId
+        ? retainStableViewMessages(previous.messages, fresh)
+        : fresh;
+    return { viewMessages, pendingTokenEntries };
+  }, [messages, transcriptView, t, currentSessionId]);
+  const viewMessages = groupedProjection.viewMessages;
+  useLayoutEffect(() => {
+    let cache = thinkingTokenCacheRef.current;
+    if (cache.sessionId !== currentSessionId) {
+      cache = { sessionId: currentSessionId, entries: new Map() };
+      thinkingTokenCacheRef.current = cache;
+    }
+    for (const [id, entry] of groupedProjection.pendingTokenEntries) {
+      if (cache.entries.size >= 2_500 && !cache.entries.has(id)) {
+        const oldest = cache.entries.keys().next().value;
+        if (oldest !== undefined) cache.entries.delete(oldest);
+      }
+      cache.entries.set(id, entry);
+    }
+    viewMessagesCacheRef.current = { sessionId: currentSessionId, messages: viewMessages };
+  }, [currentSessionId, groupedProjection.pendingTokenEntries, viewMessages]);
   // summary 视图：滤掉 thinking 行和工具组，只保留对话正文。其余视图原样渲染。
   const displayMessages = useMemo(
     () =>
@@ -555,10 +925,18 @@ export function ConversationStreamV2(): JSX.Element {
         : viewMessages,
     [viewMessages, transcriptView],
   );
-  const renderItems = useMemo(
-    () => buildConversationRenderItems(displayMessages),
-    [displayMessages],
-  );
+  const renderItems = useMemo(() => {
+    const fresh = buildConversationRenderItems(displayMessages);
+    const previous = renderItemsCacheRef.current;
+    const stable =
+      previous?.sessionId === currentSessionId
+        ? retainStableRenderItems(previous.items, fresh)
+        : fresh;
+    return stable;
+  }, [displayMessages, currentSessionId]);
+  useLayoutEffect(() => {
+    renderItemsCacheRef.current = { sessionId: currentSessionId, items: renderItems };
+  }, [currentSessionId, renderItems]);
   const queryJumpAnchors = useMemo<readonly QueryJumpAnchor[]>(() => {
     const anchors: QueryJumpAnchor[] = [];
     for (const m of displayMessages) {
@@ -569,6 +947,18 @@ export function ConversationStreamV2(): JSX.Element {
     }
     return anchors;
   }, [displayMessages]);
+  const queryOwnerByRenderItemId = useMemo(() => {
+    const anchorIds = new Set(queryJumpAnchors.map((anchor) => anchor.id));
+    const owners = new Map<string, string>();
+    let currentOwner: string | undefined;
+    for (const item of renderItems) {
+      if (item.kind === 'message' && anchorIds.has(item.message.id)) {
+        currentOwner = item.message.id;
+      }
+      if (currentOwner !== undefined) owners.set(item.id, currentOwner);
+    }
+    return owners;
+  }, [queryJumpAnchors, renderItems]);
   const showQueryJumpRail = queryJumpAnchors.length >= QUERY_JUMP_MIN_ANCHORS;
   // verbose 全展开工具组；thinking/verbose 默认展开独立 thinking 行。
   const clustersForceExpand = transcriptView === 'verbose';
@@ -583,6 +973,7 @@ export function ConversationStreamV2(): JSX.Element {
   const touchStartYRef = useRef<number | null>(null);
   const autoFollowRafRef = useRef<number | null>(null);
   const jumpToBottomRafRef = useRef<number | null>(null);
+  const scrollSyncRafRef = useRef<number | null>(null);
   const restoreScrollSnapshotRef = useRef<
     ((scroller: HTMLDivElement, snapshot: ScrollSnapshot) => boolean) | null
   >(null);
@@ -629,7 +1020,7 @@ export function ConversationStreamV2(): JSX.Element {
   // 大小写不敏感；空 query → 空数组。
   const matchIds = useMemo<readonly string[]>(() => {
     const q = searchQuery.trim().toLowerCase();
-    if (!q) return [];
+    if (!q) return EMPTY_MATCH_IDS;
     const ids: string[] = [];
     for (const m of displayMessages) {
       let txt = '';
@@ -747,27 +1138,13 @@ export function ConversationStreamV2(): JSX.Element {
   }
 
   function captureViewportScrollAnchor(scroller: HTMLDivElement): ViewportScrollAnchor | null {
-    const nodes = Array.from(scroller.querySelectorAll('[data-msg-id]')).filter(
-      (node): node is HTMLElement => node instanceof HTMLElement && node.offsetParent !== null,
-    );
-    if (nodes.length === 0) return null;
-
-    const viewportTargetY = scroller.scrollTop + scroller.clientHeight * 0.42;
-    let best: { node: HTMLElement; distance: number; top: number } | null = null;
-
-    for (const node of nodes) {
-      const id = node.dataset.msgId;
-      if (!id) continue;
-      const top = messageTopWithinScroller(scroller, node);
-      const distance = Math.abs(top - viewportTargetY);
-      if (!best || distance < best.distance) best = { node, distance, top };
-    }
-
-    const id = best?.node.dataset.msgId;
-    if (!best || !id) return null;
+    const node = findMessageNodeNearViewportPoint(scroller, 0.42);
+    const id = node?.dataset.msgId;
+    if (!node || !id) return null;
+    const top = messageTopWithinScroller(scroller, node);
     return {
       id,
-      offsetTop: best.top - scroller.scrollTop,
+      offsetTop: top - scroller.scrollTop,
     };
   }
 
@@ -928,8 +1305,15 @@ export function ConversationStreamV2(): JSX.Element {
     // 守卫期内的 scroll 事件来自 ResizeObserver / smooth scroll 自己的 scrollTop 赋值，
     // 不视为用户上滚
     if (performance.now() < programmaticScrollIgnoreUntilRef.current) return;
-    syncFollowStateFromScrollPosition(e.currentTarget);
-    syncActiveQueryAnchorFromScrollPosition(e.currentTarget);
+    const scroller = e.currentTarget;
+    if (scrollSyncRafRef.current !== null) return;
+    scrollSyncRafRef.current = requestAnimationFrame(() => {
+      scrollSyncRafRef.current = null;
+      if (scrollRef.current !== scroller) return;
+      if (performance.now() < programmaticScrollIgnoreUntilRef.current) return;
+      syncFollowStateFromScrollPosition(scroller);
+      syncActiveQueryAnchorFromScrollPosition(scroller);
+    });
   }
 
   function handleWheel(e: ReactWheelEvent<HTMLDivElement>): void {
@@ -1067,6 +1451,10 @@ export function ConversationStreamV2(): JSX.Element {
         cancelAnimationFrame(autoFollowRafRef.current);
         autoFollowRafRef.current = null;
       }
+      if (scrollSyncRafRef.current !== null) {
+        cancelAnimationFrame(scrollSyncRafRef.current);
+        scrollSyncRafRef.current = null;
+      }
       cancelJumpToBottomAnimation();
     };
   }, [currentSessionId]);
@@ -1148,107 +1536,113 @@ export function ConversationStreamV2(): JSX.Element {
     scroller.scrollTo({ top, behavior: 'smooth' });
   }
 
-  function toggleGroup(id: string): void {
+  const toggleGroup = useCallback((id: string): void => {
     setExpanded((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
       return next;
     });
-  }
+  }, []);
 
-  async function forkFromTurn(turnIndex: number): Promise<void> {
-    if (!currentSessionId || !window.kodaxSpace) return;
-    const state = useAppStore.getState();
-    const session = state.sessions.find((s) => s.sessionId === currentSessionId);
-    if (!session) return;
-    const userMsgs = state.userMessagesBySession[currentSessionId] ?? [];
-    const forkPointTurnIdx = Math.max(0, Math.min(turnIndex, Math.max(0, userMsgs.length - 1)));
-    const r = await window.kodaxSpace.invoke('session.fork', {
-      sessionId: currentSessionId,
-      forkPointTurnIdx,
-    });
-    if (!r.ok) {
-      pushToast(
-        t('menu.session.forkFailed', {
-          message: r.error?.message ?? t('common.unknownError'),
-        }),
-        'error',
-      );
-      return;
-    }
+  const forkFromTurn = useCallback(
+    async (turnIndex: number): Promise<void> => {
+      if (!currentSessionId || !window.kodaxSpace) return;
+      const state = useAppStore.getState();
+      const session = state.sessions.find((s) => s.sessionId === currentSessionId);
+      if (!session) return;
+      const userMsgs = state.userMessagesBySession[currentSessionId] ?? [];
+      const forkPointTurnIdx = Math.max(0, Math.min(turnIndex, Math.max(0, userMsgs.length - 1)));
+      const r = await window.kodaxSpace.invoke('session.fork', {
+        sessionId: currentSessionId,
+        forkPointTurnIdx,
+      });
+      if (!r.ok) {
+        pushToast(
+          t('menu.session.forkFailed', {
+            message: r.error?.message ?? t('common.unknownError'),
+          }),
+          'error',
+        );
+        return;
+      }
 
-    const childTitle =
-      session.title !== undefined
-        ? `${session.title.replace(/( \(fork\))+$/, '')} (fork)`
-        : t('menu.session.forkedTitle');
-    const childSession: SessionMeta = {
-      sessionId: r.data.newSessionId,
-      projectRoot: session.projectRoot,
-      provider: session.provider,
-      reasoningMode: session.reasoningMode,
-      permissionMode: session.permissionMode,
-      autoModeEngine: session.autoModeEngine,
-      agentMode: session.agentMode,
-      surface: session.surface,
-      title: childTitle,
-      createdAt: r.data.createdAt,
-      lastActivityAt: r.data.createdAt,
-      parentSessionId: currentSessionId,
-      forkPointTurnIdx,
-    };
-    state.upsertSession(childSession);
-    state.forkSessionBuffers(currentSessionId, r.data.newSessionId, forkPointTurnIdx);
-    const latest = useAppStore.getState();
-    const latestSurface = useSurfaceStore.getState().currentSurface;
-    if (
-      shouldActivateSessionForCurrentScope(childSession, {
-        currentProjectPath: latest.currentProjectPath,
-        currentSurface: latestSurface,
-      })
-    ) {
-      latest.setCurrentSession(r.data.newSessionId);
-    }
-  }
+      const childTitle =
+        session.title !== undefined
+          ? `${session.title.replace(/( \(fork\))+$/, '')} (fork)`
+          : t('menu.session.forkedTitle');
+      const childSession: SessionMeta = {
+        sessionId: r.data.newSessionId,
+        projectRoot: session.projectRoot,
+        provider: session.provider,
+        reasoningMode: session.reasoningMode,
+        permissionMode: session.permissionMode,
+        autoModeEngine: session.autoModeEngine,
+        agentMode: session.agentMode,
+        surface: session.surface,
+        title: childTitle,
+        createdAt: r.data.createdAt,
+        lastActivityAt: r.data.createdAt,
+        parentSessionId: currentSessionId,
+        forkPointTurnIdx,
+      };
+      state.upsertSession(childSession);
+      state.forkSessionBuffers(currentSessionId, r.data.newSessionId, forkPointTurnIdx);
+      const latest = useAppStore.getState();
+      const latestSurface = useSurfaceStore.getState().currentSurface;
+      if (
+        shouldActivateSessionForCurrentScope(childSession, {
+          currentProjectPath: latest.currentProjectPath,
+          currentSurface: latestSurface,
+        })
+      ) {
+        latest.setCurrentSession(r.data.newSessionId);
+      }
+    },
+    [currentSessionId, t],
+  );
 
-  async function rewindToTurn(turnIndex: number): Promise<void> {
-    if (!currentSessionId || !window.kodaxSpace) return;
-    const state = useAppStore.getState();
-    const userMsgs = state.userMessagesBySession[currentSessionId] ?? [];
-    if (turnIndex < 0 || turnIndex >= userMsgs.length - 1) return;
+  const rewindToTurn = useCallback(
+    async (turnIndex: number): Promise<void> => {
+      if (!currentSessionId || !window.kodaxSpace) return;
+      const state = useAppStore.getState();
+      const userMsgs = state.userMessagesBySession[currentSessionId] ?? [];
+      if (turnIndex < 0 || turnIndex >= userMsgs.length - 1) return;
 
-    const confirmed = await requestConfirm({
-      title: t('menu.session.rewindToTurnTitle'),
-      message: t('menu.session.rewindToTurnMessage', { turn: String(turnIndex + 1) }),
-      confirmLabel: t('menu.session.rewindToTurnConfirm'),
-      danger: true,
-    });
-    if (!confirmed) return;
+      const confirmed = await requestConfirm({
+        title: t('menu.session.rewindToTurnTitle'),
+        message: t('menu.session.rewindToTurnMessage', { turn: String(turnIndex + 1) }),
+        confirmLabel: t('menu.session.rewindToTurnConfirm'),
+        danger: true,
+      });
+      if (!confirmed) return;
 
-    const r = await window.kodaxSpace.invoke('session.rewind', {
-      sessionId: currentSessionId,
-      rewindPastTurnIdx: turnIndex,
-    });
-    if (!r.ok) {
-      pushToast(
-        t('menu.session.rewindFailed', {
-          message: r.error?.message ?? t('common.unknownError'),
-        }),
-        'error',
-      );
-      return;
-    }
-    if (!r.data.ok || r.data.diskRewound === false) {
-      pushToast(
-        t('menu.session.rewindRejected', {
-          message: r.data.reason ?? 'disk history was not rewound',
-        }),
-        'error',
-      );
-      return;
-    }
-    state.rewindSessionBuffers(currentSessionId, turnIndex);
-  }
+      const r = await window.kodaxSpace.invoke('session.rewind', {
+        sessionId: currentSessionId,
+        rewindPastTurnIdx: turnIndex,
+      });
+      if (!r.ok) {
+        pushToast(
+          t('menu.session.rewindFailed', {
+            message: r.error?.message ?? t('common.unknownError'),
+          }),
+          'error',
+        );
+        return;
+      }
+      if (!r.data.ok || r.data.diskRewound === false) {
+        pushToast(
+          t('menu.session.rewindRejected', {
+            message: r.data.reason ?? 'disk history was not rewound',
+          }),
+          'error',
+        );
+        return;
+      }
+      state.rewindSessionBuffers(currentSessionId, turnIndex);
+    },
+    [currentSessionId, t],
+  );
 
   if (!currentSessionId) {
     return <WelcomeDashboard />;
@@ -1285,79 +1679,25 @@ export function ConversationStreamV2(): JSX.Element {
               ) : (
                 <div className="text-fg-faint italic text-sm">{t('conversation.emptyPrompt')}</div>
               ))}
-            {renderItems.map((item, i) => {
-              if (item.kind === 'receipts') {
-                return (
-                  <div key={item.id} className="relative">
-                    <TimelineMarker tone={receiptMarkerTone(item.receipts)} />
-                    <ProcessReceiptRow
-                      receipts={item.receipts}
-                      followTail={isStreaming && i === renderItems.length - 1}
-                      expanded={expanded}
-                      clustersForceExpand={clustersForceExpand}
-                      thinkingForceExpand={thinkingForceExpand}
-                      currentMatchId={currentMatchId}
-                      matchSet={matchSet}
-                      onToggle={toggleGroup}
-                    />
-                  </div>
-                );
-              }
-
-              const m = item.message;
-              const ringClass = searchRingClassFor(m.id, currentMatchId, matchSet);
-              let inner: JSX.Element;
-              switch (m.kind) {
-                case 'user':
-                  inner = (
-                    <UserBubble content={m.content} attachments={m.attachments} sentAt={m.sentAt} />
-                  );
-                  break;
-                case 'local_notice':
-                  inner =
-                    m.variant === 'echo' ? (
-                      <UserBubble content={m.content} sentAt={m.sentAt} />
-                    ) : (
-                      <LocalNoticeBubble {...m} />
-                    );
-                  break;
-                case 'queued_user':
-                  inner = <QueuedUserBubble {...m} />;
-                  break;
-                case 'assistant_text':
-                  inner = (
-                    <AssistantBubble
-                      text={m.text}
-                      thinking={m.thinking}
-                      sentAt={m.sentAt}
-                      turnIndex={m.turnIndex}
-                      completed={m.completed}
-                      canRewind={
-                        m.turnIndex !== undefined ? m.turnIndex < userMessages.length - 1 : false
-                      }
-                      onForkTurn={(idx) => void forkFromTurn(idx)}
-                      onRewindTurn={(idx) => void rewindToTurn(idx)}
-                    />
-                  );
-                  break;
-                case 'system_notice':
-                  inner = <SystemNotice {...m} />;
-                  break;
-                case 'artifact':
-                  inner = <ArtifactInlineCallout artifact={m} />;
-                  break;
-              }
-              return (
-                <div key={item.id} className="relative">
-                  <TimelineMarker tone={messageMarkerTone(m)} />
-                  <div data-msg-id={m.id} className={`search-ring-anim ${ringClass}`}>
-                    <Reveal index={i} className="conversation-message-body">
-                      {inner}
-                    </Reveal>
-                  </div>
-                </div>
-              );
-            })}
+            {renderItems.map((item, index) => (
+              <ConversationRenderRow
+                key={item.id}
+                item={item}
+                index={index}
+                animateEntry={index >= renderItems.length - RESTORED_REVEAL_TAIL_ITEMS}
+                liveTail={isStreaming && index === renderItems.length - 1}
+                queryOwnerId={queryOwnerByRenderItemId.get(item.id)}
+                expanded={expanded}
+                clustersForceExpand={clustersForceExpand}
+                thinkingForceExpand={thinkingForceExpand}
+                currentMatchId={currentMatchId}
+                matchSet={matchSet}
+                userMessages={userMessages}
+                onToggle={toggleGroup}
+                onForkTurn={forkFromTurn}
+                onRewindTurn={rewindToTurn}
+              />
+            ))}
             {/* 流式 spinner —— v0.1.4：从 BottomBar 搬到这里，把"正在做什么"
             放在对话流末尾。ActivitySpinner 自己 return null 时本块也不渲染。 */}
             <StreamingSpinnerRow />
@@ -1621,6 +1961,149 @@ function ProcessReceiptRow({
   );
 }
 
+type ConversationIntrinsicStyle = CSSProperties & {
+  readonly '--conversation-intrinsic-size': string;
+};
+
+const ConversationRenderRow = memo(function ConversationRenderRow({
+  item,
+  index,
+  animateEntry,
+  liveTail,
+  queryOwnerId,
+  expanded,
+  clustersForceExpand,
+  thinkingForceExpand,
+  currentMatchId,
+  matchSet,
+  userMessages,
+  onToggle,
+  onForkTurn,
+  onRewindTurn,
+}: {
+  readonly item: ConversationRenderItem;
+  readonly index: number;
+  readonly animateEntry: boolean;
+  readonly liveTail: boolean;
+  readonly queryOwnerId: string | undefined;
+  readonly expanded: ReadonlySet<string>;
+  readonly clustersForceExpand: boolean;
+  readonly thinkingForceExpand: boolean;
+  readonly currentMatchId: string | undefined;
+  readonly matchSet: ReadonlySet<string>;
+  readonly userMessages: readonly UserMessage[];
+  readonly onToggle: (id: string) => void;
+  readonly onForkTurn: (turnIndex: number) => Promise<void>;
+  readonly onRewindTurn: (turnIndex: number) => Promise<void>;
+}): JSX.Element {
+  const intrinsicStyle = useMemo<ConversationIntrinsicStyle>(
+    () => ({
+      '--conversation-intrinsic-size': `${estimateRenderItemHeight(
+        item,
+        expanded,
+        clustersForceExpand,
+        thinkingForceExpand,
+      )}px`,
+    }),
+    [item, expanded, clustersForceExpand, thinkingForceExpand],
+  );
+
+  if (item.kind === 'receipts') {
+    return (
+      <div
+        className="relative"
+        data-query-anchor-id={queryOwnerId}
+        data-testid="conversation-render-row"
+      >
+        <TimelineMarker tone={receiptMarkerTone(item.receipts)} animate={animateEntry} />
+        <div
+          className="conversation-occlusion-item"
+          data-live-tail={liveTail ? 'true' : undefined}
+          style={intrinsicStyle}
+        >
+          <ProcessReceiptRow
+            receipts={item.receipts}
+            followTail={liveTail}
+            expanded={expanded}
+            clustersForceExpand={clustersForceExpand}
+            thinkingForceExpand={thinkingForceExpand}
+            currentMatchId={currentMatchId}
+            matchSet={matchSet}
+            onToggle={onToggle}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  const message = item.message;
+  const ringClass = searchRingClassFor(message.id, currentMatchId, matchSet);
+  let inner: JSX.Element;
+  switch (message.kind) {
+    case 'user':
+      inner = (
+        <UserBubble
+          content={message.content}
+          attachments={message.attachments}
+          sentAt={message.sentAt}
+        />
+      );
+      break;
+    case 'local_notice':
+      inner =
+        message.variant === 'echo' ? (
+          <UserBubble content={message.content} sentAt={message.sentAt} />
+        ) : (
+          <LocalNoticeBubble {...message} />
+        );
+      break;
+    case 'queued_user':
+      inner = <QueuedUserBubble {...message} />;
+      break;
+    case 'assistant_text':
+      inner = (
+        <AssistantBubble
+          text={message.text}
+          thinking={message.thinking}
+          sentAt={message.sentAt}
+          turnIndex={message.turnIndex}
+          completed={message.completed}
+          canRewind={
+            message.turnIndex !== undefined ? message.turnIndex < userMessages.length - 1 : false
+          }
+          onForkTurn={(turnIndex) => void onForkTurn(turnIndex)}
+          onRewindTurn={(turnIndex) => void onRewindTurn(turnIndex)}
+        />
+      );
+      break;
+    case 'system_notice':
+      inner = <SystemNotice {...message} />;
+      break;
+    case 'artifact':
+      inner = <ArtifactInlineCallout artifact={message} />;
+      break;
+  }
+  return (
+    <div
+      className="relative"
+      data-query-anchor-id={queryOwnerId}
+      data-testid="conversation-render-row"
+    >
+      <TimelineMarker tone={messageMarkerTone(message)} animate={animateEntry} />
+      <div
+        data-msg-id={message.id}
+        data-live-tail={liveTail ? 'true' : undefined}
+        className={`conversation-occlusion-item search-ring-anim ${ringClass}`}
+        style={intrinsicStyle}
+      >
+        <Reveal index={index} animate={animateEntry} className="conversation-message-body">
+          {inner}
+        </Reveal>
+      </div>
+    </div>
+  );
+});
+
 type MarkerTone = 'user' | 'queued' | 'assistant' | 'system' | 'tool' | 'artifact' | 'thinking';
 
 const MARKER_TONE_CLASS: Record<MarkerTone, string> = {
@@ -1655,11 +2138,17 @@ function receiptMarkerTone(receipts: readonly ProcessReceiptMessage[]): MarkerTo
   return 'tool';
 }
 
-function TimelineMarker({ tone }: { tone: MarkerTone }): JSX.Element {
+function TimelineMarker({
+  tone,
+  animate = true,
+}: {
+  tone: MarkerTone;
+  animate?: boolean;
+}): JSX.Element {
   return (
     <span
       aria-hidden
-      className={`reveal-marker absolute left-[-25px] top-[0.65rem] z-10 h-2.5 w-2.5 rounded-full border border-surface ring-1 ring-border-default/60 ${MARKER_TONE_CLASS[tone]}`}
+      className={`${animate ? 'reveal-marker' : ''} absolute left-[-25px] top-[0.65rem] z-10 h-2.5 w-2.5 rounded-full border border-surface ring-1 ring-border-default/60 ${MARKER_TONE_CLASS[tone]}`}
     />
   );
 }

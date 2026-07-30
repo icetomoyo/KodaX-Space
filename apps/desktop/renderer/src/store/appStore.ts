@@ -60,6 +60,7 @@ import {
 import {
   hydrateSessionEventsFromLiveSnapshot,
   projectionTextSuffix,
+  runtimeDeltasShareSnapshotSide,
 } from './runtimeSnapshotHydration.js';
 import { mergeRuntimeSettingsIntoSessions } from './runtimeSessionSettings.js';
 
@@ -344,6 +345,8 @@ interface AppState {
   runtimeSnapshotRequiredBySession: Readonly<Record<string, true | undefined>>;
   /** Latest accepted cumulative live-snapshot cursor; covered Runtime deltas must not replay. */
   runtimeSnapshotCursorBySession: Readonly<Record<string, RuntimeSnapshotEventBarrier | undefined>>;
+  /** Stable render-busy projection for root context compaction; avoids rescanning event history. */
+  compactingBySession: Readonly<Record<string, true | undefined>>;
   /**
    * Keychain backend 状态。'memory' 表示 key 仅在本进程内有效；
    * UI 应显著告警，否则用户以为配了 key 但重启就丢（review M1-sec）。
@@ -956,9 +959,42 @@ function isSessionVisiblyOpen(state: AppState, sessionId: string): boolean {
   return !document.hidden && document.hasFocus();
 }
 
+const MAX_MERGED_LIVE_EVENT_TEXT = 256 * 1024;
+type StreamDeltaEvent = Extract<SessionEvent, { kind: 'text_delta' | 'thinking_delta' }>;
+
+function isStreamDeltaEvent(event: SessionEvent): event is StreamDeltaEvent {
+  return event.kind === 'text_delta' || event.kind === 'thinking_delta';
+}
+
+function liveEventRuntimeOriginsMatch(previous: SessionEvent, event: SessionEvent): boolean {
+  const previousOrigin = 'runtimeEvent' in previous ? previous.runtimeEvent : undefined;
+  const eventOrigin = 'runtimeEvent' in event ? event.runtimeEvent : undefined;
+  if (previousOrigin === undefined || eventOrigin === undefined) {
+    return previousOrigin === undefined && eventOrigin === undefined;
+  }
+  return (
+    previousOrigin.runtimeId === eventOrigin.runtimeId && previousOrigin.runId === eventOrigin.runId
+  );
+}
+
+function liveEventRuntimeSequenceIsContinuous(
+  previous: SessionEvent,
+  event: SessionEvent,
+): boolean {
+  const previousOrigin = 'runtimeEvent' in previous ? previous.runtimeEvent : undefined;
+  const eventOrigin = 'runtimeEvent' in event ? event.runtimeEvent : undefined;
+  if (previousOrigin === undefined || eventOrigin === undefined) {
+    return previousOrigin === undefined && eventOrigin === undefined;
+  }
+  return (
+    liveEventRuntimeOriginsMatch(previous, event) && eventOrigin.seq === previousOrigin.seq + 1
+  );
+}
+
 function appendSessionEvent(
   bucket: readonly SessionEvent[],
   event: SessionEvent,
+  snapshotCursor: RuntimeSnapshotEventBarrier | undefined,
 ): readonly SessionEvent[] {
   if (event.kind === 'workflow_notice' && event.key !== undefined) {
     const existingIndex = bucket.findIndex(
@@ -988,10 +1024,13 @@ function appendSessionEvent(
   }
   const last = bucket[bucket.length - 1];
   if (
-    event.kind === 'text_delta' &&
-    last?.kind === 'text_delta' &&
-    event.runtimeEvent === undefined &&
-    last.runtimeEvent === undefined
+    last !== undefined &&
+    isStreamDeltaEvent(last) &&
+    isStreamDeltaEvent(event) &&
+    last.kind === event.kind &&
+    liveEventRuntimeSequenceIsContinuous(last, event) &&
+    runtimeDeltasShareSnapshotSide(last, event, snapshotCursor) &&
+    last.text.length + event.text.length <= MAX_MERGED_LIVE_EVENT_TEXT
   ) {
     return [
       ...bucket.slice(0, -1),
@@ -999,15 +1038,26 @@ function appendSessionEvent(
     ];
   }
   if (
-    event.kind === 'thinking_delta' &&
-    last?.kind === 'thinking_delta' &&
-    event.runtimeEvent === undefined &&
-    last.runtimeEvent === undefined
+    last?.kind === 'tool_input_delta' &&
+    event.kind === 'tool_input_delta' &&
+    last.toolId !== undefined &&
+    last.toolId === event.toolId &&
+    last.toolName === event.toolName &&
+    liveEventRuntimeSequenceIsContinuous(last, event) &&
+    last.partialJson.length + event.partialJson.length <= MAX_MERGED_LIVE_EVENT_TEXT
   ) {
     return [
       ...bucket.slice(0, -1),
-      { ...event, text: last.text + event.text, sentAt: last.sentAt ?? event.sentAt },
+      { ...event, partialJson: last.partialJson + event.partialJson },
     ];
+  }
+  if (
+    last?.kind === 'tool_progress' &&
+    event.kind === 'tool_progress' &&
+    last.toolId === event.toolId &&
+    liveEventRuntimeOriginsMatch(last, event)
+  ) {
+    return [...bucket.slice(0, -1), event];
   }
   return [...bucket, event];
 }
@@ -2251,6 +2301,7 @@ export const useAppStore = create<AppState>((set) => ({
   liveProjectionBySession: initialRuntimeProjectionState.liveBySession,
   runtimeSnapshotRequiredBySession: initialRuntimeProjectionState.snapshotRequiredBySession,
   runtimeSnapshotCursorBySession: {},
+  compactingBySession: {},
   workBudgetBySession: {},
   harnessProfileBySession: {},
   tokensBySession: {},
@@ -3104,7 +3155,11 @@ export const useAppStore = create<AppState>((set) => ({
           if (previous.kind === 'session_error' && previous.error === 'cancelled') return state;
         }
       }
-      const appendedEvents = appendSessionEvent(bucket, storedEvent);
+      const appendedEvents = appendSessionEvent(
+        bucket,
+        storedEvent,
+        state.runtimeSnapshotCursorBySession[event.sessionId],
+      );
       const lifecycleBoundUsers =
         event.kind === 'session_start' && event.turnId !== undefined
           ? bindInitialLiveUserTurnIdentity(currentUsers, event.turnId)
@@ -3124,6 +3179,24 @@ export const useAppStore = create<AppState>((set) => ({
           : {}),
         lastEvent: storedEvent,
       };
+      const rootContextEvent =
+        !('contextKind' in event) ||
+        event.contextKind === undefined ||
+        event.contextKind === 'root';
+      const startsCompaction = event.kind === 'compact_start' && rootContextEvent;
+      const endsCompaction =
+        (event.kind === 'compact_end' && rootContextEvent) ||
+        event.kind === 'session_complete' ||
+        event.kind === 'session_error';
+      if (startsCompaction && state.compactingBySession[event.sessionId] !== true) {
+        next.compactingBySession = {
+          ...state.compactingBySession,
+          [event.sessionId]: true,
+        };
+      } else if (endsCompaction && state.compactingBySession[event.sessionId] === true) {
+        const { [event.sessionId]: _drop, ...restCompacting } = state.compactingBySession;
+        next.compactingBySession = restCompacting;
+      }
       // 只在"运行真正开始/结束"的生命周期事件到达时才清 pendingSend，把 spinner 交给 event-driven 状态。
       // ⚠️ 不能"任一事件到达就清"：repo-intelligence（repointel_trace）/ managed_task_status 等**非生命周期**
       // 事件可能先于 session_start 到达；若此时就清了 pendingSend，而 snapshotFromEvents 又只把
@@ -3674,6 +3747,7 @@ export const useAppStore = create<AppState>((set) => ({
       const { [sessionId]: _actors, ...restActorSnapshots } = state.agentActorSnapshotBySession;
       const { [sessionId]: _snapshotCursor, ...restSnapshotCursors } =
         state.runtimeSnapshotCursorBySession;
+      const { [sessionId]: _compacting, ...restCompacting } = state.compactingBySession;
       const { [sessionId]: _tok, ...restTokens } = state.tokensBySession;
       const { [sessionId]: _usage, ...restUsage } = state.sessionTokenUsageBySession;
       const { [sessionId]: _contextBudget, ...restContextBudgets } = state.contextBudgetBySession;
@@ -3707,6 +3781,7 @@ export const useAppStore = create<AppState>((set) => ({
         managedTaskStatusBySession: restMts,
         agentActorSnapshotBySession: restActorSnapshots,
         runtimeSnapshotCursorBySession: restSnapshotCursors,
+        compactingBySession: restCompacting,
         tokensBySession: restTokens,
         sessionTokenUsageBySession: restUsage,
         contextBudgetBySession: restContextBudgets,
@@ -4228,6 +4303,7 @@ export const useAppStore = create<AppState>((set) => ({
     set({
       currentSessionId: null,
       eventsBySession: {},
+      compactingBySession: {},
       transientArtifactsBySession: {},
       userMessagesBySession: {},
       queuedUserMessagesBySession: {},

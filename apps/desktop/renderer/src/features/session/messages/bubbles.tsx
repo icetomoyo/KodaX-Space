@@ -614,10 +614,13 @@ export function AssistantBubble({
 }): JSX.Element {
   const { t } = useI18n();
   const [showThinking, setShowThinking] = useState(false);
-  const thinkingTokenLabel =
-    thinking !== undefined
-      ? t('message.thinkingSummary', { tokens: formatCompactCount(approxTokens(thinking)) })
-      : null;
+  const thinkingTokenLabel = useMemo(
+    () =>
+      thinking !== undefined
+        ? t('message.thinkingSummary', { tokens: formatCompactCount(approxTokens(thinking)) })
+        : null,
+    [thinking, t],
+  );
   const turnActions =
     completed === true && turnIndex !== undefined
       ? {
@@ -649,7 +652,7 @@ export function AssistantBubble({
         </button>
       )}
       {thinking !== undefined && (
-        <Collapse open={showThinking}>
+        <Collapse open={showThinking} lazyMount>
           <ScrollCapBox
             onCollapse={() => setShowThinking(false)}
             followTail={completed === false}

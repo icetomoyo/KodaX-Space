@@ -100,6 +100,7 @@ interface ShellProps {
 // 后 component 重新 mount 时又跑一次 session.history IPC（缓存现在帮忙省 jsonl 读，但
 // store 复写 events 是真实成本）。挪到 module 级 process 级共享，跨 HMR 仍保留。
 const restoredSessionIds = new Set<string>();
+const HISTORY_RESTORE_VISUAL_CLASS = 'visual-history-restore-active';
 
 const RIGHT_SIDEBAR_DEFAULT_MIN_WIDTH = 320;
 const RIGHT_SIDEBAR_DEFAULT_MAX_WIDTH = 520;
@@ -672,24 +673,51 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
     // 注意:不再在 IPC 调用前 short-circuit "buffer 非空"——那是旧版兜底,现在 prepend
     // 是原子的,即使 buffer 已经有 in-flight 会话也能正确插入历史在前面。
     let cancelled = false;
-    void window.kodaxSpace.invoke('session.history', { sessionId: sid }).then((r) => {
-      if (cancelled || !r.ok) return;
-      const items = r.data.items;
-      if (items.length === 0) {
+    let settleFrame = 0;
+    let releaseFrame = 0;
+    const root = document.documentElement;
+    root.classList.add(HISTORY_RESTORE_VISUAL_CLASS);
+    const releaseVisualPressure = (): void => {
+      if (settleFrame !== 0) window.cancelAnimationFrame(settleFrame);
+      if (releaseFrame !== 0) window.cancelAnimationFrame(releaseFrame);
+      settleFrame = 0;
+      releaseFrame = 0;
+      root.classList.remove(HISTORY_RESTORE_VISUAL_CLASS);
+    };
+    const releaseAfterCommittedPaint = (): void => {
+      settleFrame = window.requestAnimationFrame(() => {
+        settleFrame = 0;
+        releaseFrame = window.requestAnimationFrame(() => {
+          releaseFrame = 0;
+          root.classList.remove(HISTORY_RESTORE_VISUAL_CLASS);
+        });
+      });
+    };
+    void window.kodaxSpace
+      .invoke('session.history', { sessionId: sid })
+      .then((r) => {
+        if (cancelled || !r.ok) return;
+        const items = r.data.items;
+        if (items.length === 0) {
+          restoredSessionIds.add(sid);
+          return;
+        }
+        const store = useAppStore.getState();
+        // history fallback timestamp：用 session.createdAt（SDK 落盘时刻），让 footer
+        // 显示 "Xd ago" 反映 session 创建时间而不是"恢复瞬间 just now"。SDK 未来给
+        // per-message timestamp 时再走 item.sentAt。
+        const sess = store.sessions.find((s) => s.sessionId === sid);
+        const fallbackTs = sess?.createdAt ?? Date.now();
+        store.prependSessionHistory(sid, items, fallbackTs);
         restoredSessionIds.add(sid);
-        return;
-      }
-      const store = useAppStore.getState();
-      // history fallback timestamp：用 session.createdAt（SDK 落盘时刻），让 footer
-      // 显示 "Xd ago" 反映 session 创建时间而不是"恢复瞬间 just now"。SDK 未来给
-      // per-message timestamp 时再走 item.sentAt。
-      const sess = store.sessions.find((s) => s.sessionId === sid);
-      const fallbackTs = sess?.createdAt ?? Date.now();
-      store.prependSessionHistory(sid, items, fallbackTs);
-      restoredSessionIds.add(sid);
-    });
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) releaseAfterCommittedPaint();
+      });
     return () => {
       cancelled = true;
+      releaseVisualPressure();
     };
   }, [currentSessionIdForPlan]);
 

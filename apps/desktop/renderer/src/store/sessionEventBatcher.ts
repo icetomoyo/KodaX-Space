@@ -2,9 +2,12 @@ import type { SessionEvent, SpaceRuntimeCursorT } from '@kodax-space/space-ipc-s
 import { runtimeDeltasShareSnapshotSide } from './runtimeSnapshotHydration.js';
 
 const HIDDEN_SESSION_EVENT_FLUSH_MS = 100;
+const MAX_MERGED_EVENT_TEXT = 256 * 1024;
 
 type SessionEventAppender = (event: SessionEvent) => void;
 type StreamDeltaEvent = Extract<SessionEvent, { kind: 'text_delta' | 'thinking_delta' }>;
+type ToolInputDeltaEvent = Extract<SessionEvent, { kind: 'tool_input_delta' }>;
+type ToolProgressEvent = Extract<SessionEvent, { kind: 'tool_progress' }>;
 
 export interface SessionEventBatchScheduler {
   readonly isBackground: () => boolean;
@@ -19,10 +22,10 @@ export interface SessionEventBatcher {
   flush(): void;
   pause(sessionId: string): void;
   /**
-   * Deliver one paused Session in original event order without coalescing. The caller uses this
-   * immediately before applying the snapshot whose cursor is not in the store yet.
+   * Deliver one paused Session in original structural order. Adjacent stream fragments may be
+   * coalesced only when they stay on the same side of the supplied incoming snapshot barrier.
    */
-  drain(sessionId: string): void;
+  drain(sessionId: string, incomingSnapshotCursor?: SnapshotEventBarrierCursor): void;
   resume(sessionId: string): void;
   dispose(): void;
 }
@@ -47,7 +50,35 @@ function isStreamDeltaEvent(event: SessionEvent): event is StreamDeltaEvent {
   return event.kind === 'text_delta' || event.kind === 'thinking_delta';
 }
 
-function mergeAdjacentStreamDeltas(
+function runtimeOriginsMatch(previous: SessionEvent, event: SessionEvent): boolean {
+  const previousOrigin = 'runtimeEvent' in previous ? previous.runtimeEvent : undefined;
+  const eventOrigin = 'runtimeEvent' in event ? event.runtimeEvent : undefined;
+  if (previousOrigin === undefined || eventOrigin === undefined) {
+    return previousOrigin === undefined && eventOrigin === undefined;
+  }
+  return (
+    previousOrigin.runtimeId === eventOrigin.runtimeId && previousOrigin.runId === eventOrigin.runId
+  );
+}
+
+function runtimeSequenceIsContinuous(previous: SessionEvent, event: SessionEvent): boolean {
+  const previousOrigin = 'runtimeEvent' in previous ? previous.runtimeEvent : undefined;
+  const eventOrigin = 'runtimeEvent' in event ? event.runtimeEvent : undefined;
+  if (previousOrigin === undefined || eventOrigin === undefined) {
+    return previousOrigin === undefined && eventOrigin === undefined;
+  }
+  return runtimeOriginsMatch(previous, event) && eventOrigin.seq === previousOrigin.seq + 1;
+}
+
+function isToolInputDeltaEvent(event: SessionEvent): event is ToolInputDeltaEvent {
+  return event.kind === 'tool_input_delta';
+}
+
+function isToolProgressEvent(event: SessionEvent): event is ToolProgressEvent {
+  return event.kind === 'tool_progress';
+}
+
+function mergeAdjacentSessionEvents(
   events: readonly SessionEvent[],
   snapshotCursor: (sessionId: string) => SnapshotEventBarrierCursor | undefined,
 ): SessionEvent[] {
@@ -60,10 +91,41 @@ function mergeAdjacentStreamDeltas(
       isStreamDeltaEvent(event) &&
       previous.sessionId === event.sessionId &&
       previous.kind === event.kind &&
+      runtimeSequenceIsContinuous(previous, event) &&
       runtimeDeltasShareSnapshotSide(previous, event, snapshotCursor(event.sessionId)) &&
-      previous.text.length + event.text.length <= 256 * 1024
+      previous.text.length + event.text.length <= MAX_MERGED_EVENT_TEXT
     ) {
-      merged[merged.length - 1] = { ...event, text: previous.text + event.text };
+      merged[merged.length - 1] = {
+        ...event,
+        text: previous.text + event.text,
+        sentAt: previous.sentAt ?? event.sentAt,
+      };
+    } else if (
+      previous !== undefined &&
+      isToolInputDeltaEvent(previous) &&
+      isToolInputDeltaEvent(event) &&
+      previous.sessionId === event.sessionId &&
+      previous.toolId !== undefined &&
+      previous.toolId === event.toolId &&
+      previous.toolName === event.toolName &&
+      runtimeSequenceIsContinuous(previous, event) &&
+      previous.partialJson.length + event.partialJson.length <= MAX_MERGED_EVENT_TEXT
+    ) {
+      merged[merged.length - 1] = {
+        ...event,
+        partialJson: previous.partialJson + event.partialJson,
+      };
+    } else if (
+      previous !== undefined &&
+      isToolProgressEvent(previous) &&
+      isToolProgressEvent(event) &&
+      previous.sessionId === event.sessionId &&
+      previous.toolId === event.toolId &&
+      runtimeOriginsMatch(previous, event)
+    ) {
+      // Progress is a latest-value UI projection. Intermediate adjacent values carry no durable
+      // transcript meaning, while retaining only the newest value bounds render work.
+      merged[merged.length - 1] = event;
     } else {
       merged.push(event);
     }
@@ -102,7 +164,7 @@ export function createSessionEventBatcher(
     const ready = queue.filter((event) => !pausedSessionIds.has(event.sessionId));
     queue = queue.filter((event) => pausedSessionIds.has(event.sessionId));
     if (ready.length === 0) return;
-    for (const event of mergeAdjacentStreamDeltas(ready, snapshotCursor)) {
+    for (const event of mergeAdjacentSessionEvents(ready, snapshotCursor)) {
       appendEvent(event);
     }
   };
@@ -126,10 +188,16 @@ export function createSessionEventBatcher(
     pause(sessionId) {
       pausedSessionIds.add(sessionId);
     },
-    drain(sessionId) {
+    drain(sessionId, incomingSnapshotCursor) {
       const drained = queue.filter((event) => event.sessionId === sessionId);
       queue = queue.filter((event) => event.sessionId !== sessionId);
-      for (const event of drained) appendEvent(event);
+      const cursorForDrain = (
+        candidateSessionId: string,
+      ): SnapshotEventBarrierCursor | undefined =>
+        candidateSessionId === sessionId && incomingSnapshotCursor !== undefined
+          ? incomingSnapshotCursor
+          : snapshotCursor(candidateSessionId);
+      for (const event of mergeAdjacentSessionEvents(drained, cursorForDrain)) appendEvent(event);
     },
     resume(sessionId) {
       pausedSessionIds.delete(sessionId);

@@ -76,7 +76,7 @@ test('snapshot barrier holds one Session while other Sessions continue flushing'
   batcher.dispose();
 });
 
-test('snapshot drain preserves raw lifecycle, tool, and delta ordering for one paused Session', () => {
+test('snapshot drain preserves structural order while coalescing only within the incoming barrier', () => {
   const appended: SessionEvent[] = [];
   const batcher = createSessionEventBatcher((event) => appended.push(event), {
     scheduler: inertScheduler,
@@ -106,7 +106,12 @@ test('snapshot drain preserves raw lifecycle, tool, and delta ordering for one p
     runtimeEvent: { runtimeId: 'rt_1', runId: 'run_1', seq: 5 },
   });
 
-  batcher.drain('s_1');
+  batcher.drain('s_1', {
+    runtimeId: 'rt_1',
+    runId: 'run_1',
+    seq: 2,
+    assistantDraftSeq: 2,
+  });
 
   assert.deepEqual(
     appended.map((event) =>
@@ -115,5 +120,113 @@ test('snapshot drain preserves raw lifecycle, tool, and delta ordering for one p
     ['session_start', 'text_delta:a', 'text_delta:b', 'tool_start', 'tool_progress'],
   );
   batcher.resume('s_1');
+  batcher.dispose();
+});
+
+test('snapshot drain collapses a large same-side fragment burst without losing exact text', () => {
+  const appended: SessionEvent[] = [];
+  const batcher = createSessionEventBatcher((event) => appended.push(event), {
+    scheduler: inertScheduler,
+  });
+
+  batcher.pause('s_1');
+  for (let seq = 1; seq <= 10_000; seq += 1) {
+    batcher.push(delta('s_1', String(seq % 10), seq));
+  }
+  batcher.drain('s_1', {
+    runtimeId: 'rt_1',
+    runId: 'run_1',
+    seq: 10_000,
+    assistantDraftSeq: 10_000,
+  });
+
+  assert.equal(appended.length, 1);
+  assert.equal(
+    appended[0]?.kind === 'text_delta' ? appended[0].text : undefined,
+    Array.from({ length: 10_000 }, (_, index) => String((index + 1) % 10)).join(''),
+  );
+  assert.equal(
+    appended[0]?.kind === 'text_delta' ? appended[0].runtimeEvent?.seq : undefined,
+    10_000,
+  );
+  batcher.dispose();
+});
+
+test('adjacent tool input is concatenated and tool progress keeps only the newest value', () => {
+  const appended: SessionEvent[] = [];
+  const batcher = createSessionEventBatcher((event) => appended.push(event), {
+    scheduler: inertScheduler,
+  });
+  const runtimeEvent = { runtimeId: 'rt_1', runId: 'run_1', seq: 1 };
+
+  batcher.push({
+    kind: 'tool_input_delta',
+    sessionId: 's_1',
+    toolId: 'tool_1',
+    toolName: 'write',
+    partialJson: '{"path":',
+    runtimeEvent,
+  });
+  batcher.push({
+    kind: 'tool_input_delta',
+    sessionId: 's_1',
+    toolId: 'tool_1',
+    toolName: 'write',
+    partialJson: '"README.md"}',
+    runtimeEvent: { ...runtimeEvent, seq: 2 },
+  });
+  batcher.push({
+    kind: 'tool_progress',
+    sessionId: 's_1',
+    toolId: 'tool_1',
+    message: 'writing 10%',
+    runtimeEvent: { ...runtimeEvent, seq: 3 },
+  });
+  batcher.push({
+    kind: 'tool_progress',
+    sessionId: 's_1',
+    toolId: 'tool_1',
+    message: 'writing 90%',
+    runtimeEvent: { ...runtimeEvent, seq: 4 },
+  });
+  batcher.flush();
+
+  assert.deepEqual(
+    appended.map((event) =>
+      event.kind === 'tool_input_delta'
+        ? `${event.kind}:${event.partialJson}`
+        : event.kind === 'tool_progress'
+          ? `${event.kind}:${event.message}`
+          : event.kind,
+    ),
+    ['tool_input_delta:{"path":"README.md"}', 'tool_progress:writing 90%'],
+  );
+  batcher.dispose();
+});
+
+test('tool input without a call id is never concatenated across ambiguous calls', () => {
+  const appended: SessionEvent[] = [];
+  const batcher = createSessionEventBatcher((event) => appended.push(event), {
+    scheduler: inertScheduler,
+  });
+
+  batcher.push({
+    kind: 'tool_input_delta',
+    sessionId: 's_1',
+    toolName: 'write',
+    partialJson: '{"first":true}',
+  });
+  batcher.push({
+    kind: 'tool_input_delta',
+    sessionId: 's_1',
+    toolName: 'write',
+    partialJson: '{"second":true}',
+  });
+  batcher.flush();
+
+  assert.deepEqual(
+    appended.map((event) => (event.kind === 'tool_input_delta' ? event.partialJson : undefined)),
+    ['{"first":true}', '{"second":true}'],
+  );
   batcher.dispose();
 });
