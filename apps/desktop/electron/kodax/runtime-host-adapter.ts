@@ -854,6 +854,11 @@ function isSessionSettingsRevisionConflict(error: unknown): boolean {
   );
 }
 
+function isDaemonStopTransportClosure(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /^Runtime daemon transport (?:closed|disconnected)\.?$/i.test(message.trim());
+}
+
 export class RuntimeHostAdapter {
   private mode: RuntimeHostMode;
   private readonly profileRoot: string;
@@ -3304,31 +3309,7 @@ export class RuntimeHostAdapter {
       this.rollbackInProgress = false;
       throw error;
     }
-    try {
-      await this.waitForDaemonOwnerRelease(rollback.runtimeId);
-      await this.close();
-      this.inlineOwner = await this.ownerControl.acquireInline({
-        ...this.runtimeOwnerTarget(),
-        enableRollback: true,
-      });
-    } catch (error) {
-      // The daemon has already committed the stop at this point. Do not leave the
-      // profile stranded in inline policy just because Space failed to finish
-      // closing its Runtime connection or acquire the replacement owner fence.
-      await this.close().catch(() => undefined);
-      try {
-        await this.restoreDaemonOwner();
-      } catch (restoreError) {
-        const errors = [error, restoreError];
-        const message =
-          'Coder daemon stopped, but Space could not complete or recover inline rollback.';
-        if (isCoderOwnerRecoveryRestartRequired(restoreError)) {
-          throw createCoderOwnerRecoveryRestartError(errors, message);
-        }
-        throw new AggregateError(errors, message);
-      }
-      throw error;
-    }
+    await this.completeInlineRollbackOwnerTransition(rollback.runtimeId);
     return rollback;
   }
 
@@ -3347,7 +3328,30 @@ export class RuntimeHostAdapter {
       return;
     }
     if (this.hasReadyRuntime()) {
-      await this.prepareInlineRollback(operationId);
+      const runtimeId = this.runtime?.identity.runtimeId;
+      try {
+        await this.prepareInlineRollback(operationId);
+      } catch (error) {
+        if (runtimeId === undefined || !isDaemonStopTransportClosure(error)) throw error;
+
+        // A successful rollback stops the daemon that carries its own RPC
+        // response. On some transports the close can win that final response,
+        // leaving the client with only an ambiguous transport error. Never infer
+        // success from the error: re-establish the transition guard and prove the
+        // exact daemon owner was released before continuing.
+        this.rollbackInProgress = true;
+        try {
+          await this.completeInlineRollbackOwnerTransition(runtimeId);
+        } catch (reconciliationError) {
+          const errors = [error, reconciliationError];
+          const message =
+            'Coder daemon transport closed before rollback confirmation, and owner release could not be verified.';
+          if (isCoderOwnerRecoveryRestartRequired(reconciliationError)) {
+            throw createCoderOwnerRecoveryRestartError(errors, message);
+          }
+          throw new AggregateError(errors, message);
+        }
+      }
       await this.restoreDaemonOwner();
       await this.assertUnownedDaemonPolicy();
       return;
@@ -3547,6 +3551,35 @@ export class RuntimeHostAdapter {
         [error],
         `Space could not restore daemon mode (${sanitizeDiagnosticError(error)}); restart required.`,
       );
+    }
+  }
+
+  private async completeInlineRollbackOwnerTransition(runtimeId: string): Promise<void> {
+    try {
+      await this.waitForDaemonOwnerRelease(runtimeId);
+      await this.close();
+      this.inlineOwner = await this.ownerControl.acquireInline({
+        ...this.runtimeOwnerTarget(),
+        enableRollback: true,
+      });
+    } catch (error) {
+      // The daemon may already have committed the stop at this point. Do not
+      // leave the profile stranded in inline policy just because Space failed
+      // to finish closing its Runtime connection or acquire the replacement
+      // owner fence.
+      await this.close().catch(() => undefined);
+      try {
+        await this.restoreDaemonOwner();
+      } catch (restoreError) {
+        const errors = [error, restoreError];
+        const message =
+          'Coder daemon stopped, but Space could not complete or recover inline rollback.';
+        if (isCoderOwnerRecoveryRestartRequired(restoreError)) {
+          throw createCoderOwnerRecoveryRestartError(errors, message);
+        }
+        throw new AggregateError(errors, message);
+      }
+      throw error;
     }
   }
 

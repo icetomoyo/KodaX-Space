@@ -1717,6 +1717,193 @@ test('complete exit atomically stops the inspected daemon and leaves an unowned 
   assert.equal(adapter.snapshot().state, 'closed');
 });
 
+test('complete exit verifies owner release when daemon transport closes before the rollback reply', async () => {
+  const fake = createFakeRuntime();
+  let inlineOwnerCloses = 0;
+  let daemonRestores = 0;
+  let ownerReleased = false;
+  let daemonPolicyRestored = false;
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    idleDaemonStop: async () => {
+      throw new Error('ready Runtime complete-exit must not use the racy CLI stop path');
+    },
+    ownerControl: {
+      acquireInline: async () => ({
+        profile: 'coder',
+        ownerId: 'inline_after_lost_reply',
+        ownerPolicy: {
+          mode: 'inline',
+          revision: 3,
+          updatedAt: '2026-07-31T00:00:01.000Z',
+        },
+        close: () => {
+          inlineOwnerCloses += 1;
+        },
+      }),
+      getState: async () => ({
+        profile: 'coder',
+        policy: {
+          mode: daemonPolicyRestored ? 'daemon' : ownerReleased ? 'inline' : 'daemon',
+          revision: daemonPolicyRestored ? 4 : ownerReleased ? 3 : 2,
+          updatedAt: '2026-07-31T00:00:02.000Z',
+        },
+        ownerStatus: ownerReleased ? 'unowned' : 'owned',
+        owner: ownerReleased
+          ? null
+          : {
+              runtimeId: 'rt_test',
+              pid: 123,
+              createdAt: '2026-07-31T00:00:00.000Z',
+              kind: 'daemon',
+            },
+      }),
+      enableDaemon: async () => {
+        daemonRestores += 1;
+        daemonPolicyRestored = true;
+        return {
+          mode: 'daemon',
+          revision: 4,
+          updatedAt: '2026-07-31T00:00:02.000Z',
+        };
+      },
+    },
+  });
+  fake.runtime.daemon.stopForInline = async (input) => {
+    fake.calls.daemonStops.push(input);
+    ownerReleased = true;
+    throw new Error('Runtime daemon transport closed.');
+  };
+
+  await adapter.initialize();
+  await adapter.stopDaemonForCompleteExit('space-complete-exit-lost-reply');
+
+  assert.deepEqual(fake.calls.daemonStops, [
+    {
+      expectedRuntimeId: 'rt_test',
+      expectedRevision: 7,
+      expectedOwnerPolicyRevision: 2,
+      operation: { operationId: 'space-complete-exit-lost-reply' },
+    },
+  ]);
+  assert.equal(fake.calls.close, 1);
+  assert.equal(daemonRestores, 1);
+  assert.equal(inlineOwnerCloses, 1);
+  assert.equal(adapter.snapshot().state, 'closed');
+});
+
+test('complete exit stays fail-closed when a lost rollback reply cannot prove owner release', async () => {
+  const fake = createFakeRuntime();
+  let inlineAcquisitions = 0;
+  let daemonRestores = 0;
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    ownerControl: {
+      acquireInline: async () => {
+        inlineAcquisitions += 1;
+        throw new Error('a different owner must not be replaced');
+      },
+      getState: async () => ({
+        profile: 'coder',
+        policy: {
+          mode: 'inline',
+          revision: 3,
+          updatedAt: '2026-07-31T00:00:01.000Z',
+        },
+        ownerStatus: 'owned',
+        owner: {
+          runtimeId: 'rt_different_owner',
+          pid: 456,
+          createdAt: '2026-07-31T00:00:01.000Z',
+          kind: 'daemon',
+        },
+      }),
+      enableDaemon: async () => {
+        daemonRestores += 1;
+        return {
+          mode: 'daemon',
+          revision: 4,
+          updatedAt: '2026-07-31T00:00:02.000Z',
+        };
+      },
+    },
+  });
+  fake.runtime.daemon.stopForInline = async (input) => {
+    fake.calls.daemonStops.push(input);
+    throw new Error('Runtime daemon transport closed.');
+  };
+
+  await adapter.initialize();
+  await assert.rejects(
+    adapter.stopDaemonForCompleteExit('space-complete-exit-unverified-owner'),
+    /owner release could not be verified/i,
+  );
+
+  assert.equal(fake.calls.close, 1);
+  assert.equal(inlineAcquisitions, 0);
+  assert.equal(daemonRestores, 1);
+});
+
+test('complete exit preserves restart-required recovery after a lost rollback reply', async () => {
+  const fake = createFakeRuntime();
+  let inlineAcquisitions = 0;
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    ownerControl: {
+      acquireInline: async () => {
+        inlineAcquisitions += 1;
+        throw new Error('inline owner fence unavailable');
+      },
+      getState: async () => ({
+        profile: 'coder',
+        policy: {
+          mode: 'inline',
+          revision: 3,
+          updatedAt: '2026-07-31T00:00:01.000Z',
+        },
+        ownerStatus: 'unowned',
+        owner: null,
+      }),
+      enableDaemon: async () => {
+        throw new Error('daemon policy restore failed');
+      },
+    },
+  });
+  fake.runtime.daemon.stopForInline = async (input) => {
+    fake.calls.daemonStops.push(input);
+    throw new Error('Runtime daemon transport closed.');
+  };
+
+  await adapter.initialize();
+  await assert.rejects(
+    adapter.stopDaemonForCompleteExit('space-complete-exit-restart-required'),
+    (error: unknown) => {
+      assert.equal(isCoderOwnerRecoveryRestartRequired(error), true);
+      assert.match(
+        error instanceof Error ? error.message : String(error),
+        /owner release could not be verified/i,
+      );
+      return true;
+    },
+  );
+
+  assert.equal(fake.calls.close, 1);
+  assert.equal(inlineAcquisitions, 2);
+  assert.equal(adapter.snapshot().state, 'failed');
+});
+
 test('complete exit treats CLI missing as confirmation only when owner state is unowned', async () => {
   for (const ownerStatus of ['unowned', 'owned'] as const) {
     const adapter = new RuntimeHostAdapter({
