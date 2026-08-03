@@ -73,6 +73,10 @@ export function registerDiagnosticsChannels(deps: DiagnosticsChannelDeps): void 
       | Awaited<ReturnType<typeof runtimeHostAdapter.inspectDaemonStop>>['integrations']
       | undefined;
     let integrationHealthInspectionError: string | undefined;
+    let sessionDiagnostics:
+      | Awaited<ReturnType<typeof runtimeHostAdapter.diagnoseSession>>
+      | undefined;
+    let sessionDiagnosticsError: string | undefined;
     if (runtime.state === 'ready') {
       try {
         integrationHealth = (await runtimeHostAdapter.inspectDaemonStop()).integrations;
@@ -85,6 +89,23 @@ export function registerDiagnosticsChannels(deps: DiagnosticsChannelDeps): void 
           'Runtime integration health inspection failed during export',
           { error: integrationHealthInspectionError },
         );
+      }
+      if (input.sessionId) {
+        try {
+          sessionDiagnostics = await runtimeHostAdapter.diagnoseSession({
+            sessionId: input.sessionId,
+            timeoutMs: 10_000,
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          sessionDiagnosticsError = message.replace(/\s+/g, ' ').trim().slice(0, 512);
+          getDiagnosticsLogger()?.warn(
+            'diagnostics',
+            'runtime.session-diagnostics-unavailable',
+            'Runtime session diagnostics capture failed during export',
+            { error: sessionDiagnosticsError },
+          );
+        }
       }
     }
     const redaction = getDiagnosticRedactionOptions();
@@ -101,6 +122,11 @@ export function registerDiagnosticsChannels(deps: DiagnosticsChannelDeps): void 
         integrationHealthInspection: integrationHealthInspectionError
           ? { status: 'failed', error: integrationHealthInspectionError }
           : { status: runtime.state === 'ready' ? 'available' : 'not-required' },
+        sessionDiagnostics: sessionDiagnostics
+          ? { status: 'available', value: sessionDiagnostics }
+          : sessionDiagnosticsError
+            ? { status: 'failed', error: sessionDiagnosticsError }
+            : { status: input.sessionId ? 'runtime-unavailable' : 'not-requested' },
         experimentalMemory: getExperimentalMemorySdkCapability(),
         sandbox: getSandboxSdkCapability(),
         applicationOrigin: 'app://space',
@@ -124,6 +150,18 @@ export function registerDiagnosticsChannels(deps: DiagnosticsChannelDeps): void 
               },
             ]
           : []),
+        ...(sessionDiagnosticsError
+          ? [
+              {
+                code: 'runtime-session-diagnostics-unavailable',
+                detail: sessionDiagnosticsError,
+              },
+            ]
+          : []),
+        ...(sessionDiagnostics?.run.errors.map((error) => ({
+          code: `runtime-session-${error.code}`,
+          detail: error.message,
+        })) ?? []),
         ...(integrationHealth?.domains.flatMap((domain) =>
           domain.diagnostic
             ? [

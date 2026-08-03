@@ -46,6 +46,66 @@ test('askUser.request payload accepts signals array', () => {
   assert.equal(result.success, true);
 });
 
+test('askUser.request carries bounded Auto[LLM] diagnostics for guardrail prompts', () => {
+  const result = askUserRequestChannel.payload.safeParse({
+    kind: 'guardrail',
+    reqId: 'req-diagnostics',
+    sessionId: 's_1',
+    reason: 'LLM requested confirmation',
+    toolCall: { toolId: 't_1', toolName: 'bash', input: { command: 'npm test' } },
+    autoModeDiagnostics: {
+      source: 'classifier_confirm',
+      classifierAttempts: [
+        {
+          attempt: 1,
+          outcome: 'confirm',
+          observedProtocol: 'structured_v2',
+          outputWarnings: ['missing_hazard', 'missing_reason'],
+        },
+      ],
+    },
+  });
+  assert.equal(result.success, true);
+});
+
+test('askUser.request rejects unknown or overflowing Auto[LLM] warning codes', () => {
+  const base = {
+    kind: 'guardrail',
+    reqId: 'req-diagnostics-invalid',
+    sessionId: 's_1',
+    reason: 'LLM requested confirmation',
+    toolCall: { toolId: 't_1', toolName: 'bash' },
+  } as const;
+  assert.equal(
+    askUserRequestChannel.payload.safeParse({
+      ...base,
+      autoModeDiagnostics: {
+        source: 'classifier_confirm',
+        classifierAttempts: [
+          { attempt: 1, outcome: 'confirm', outputWarnings: ['raw_model_output'] },
+        ],
+      },
+    }).success,
+    false,
+  );
+  assert.equal(
+    askUserRequestChannel.payload.safeParse({
+      ...base,
+      autoModeDiagnostics: {
+        source: 'classifier_confirm',
+        classifierAttempts: [
+          {
+            attempt: 1,
+            outcome: 'confirm',
+            outputWarnings: Array.from({ length: 17 }, () => 'missing_hazard'),
+          },
+        ],
+      },
+    }).success,
+    false,
+  );
+});
+
 test('askUser.request payload rejects signals over 20 (DoS guard)', () => {
   const signals = Array.from({ length: 21 }).map((_, i) => ({
     type: `t${i}`,

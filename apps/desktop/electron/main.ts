@@ -37,7 +37,12 @@ import { registerMcpChannels } from './ipc/mcp.js';
 import { prewarmSdkMcpStore } from './mcp/config-reader.js';
 import { disposeMcpManager } from './mcp/manager.js';
 import { registerKodaxChannels } from './ipc/kodax.js';
-import { hasQueuedCoderPrompts, registerQueueChannels, startQueueWatch } from './ipc/queue.js';
+import {
+  drainQueueForSession,
+  hasQueuedCoderPrompts,
+  registerQueueChannels,
+  startQueueWatch,
+} from './ipc/queue.js';
 import { registerAdminPolicyAuditChannels } from './ipc/admin.js';
 import { prewarmKodaxUserConfig, registerKodaxCustomProviders } from './kodax/user-config.js';
 import { probeKodaxSdk } from './kodax/kodax-sdk-probe.js';
@@ -50,6 +55,7 @@ import { hydrateShellEnvOnce } from './kodax/shell-env-hydrate.js';
 import { getKodaxDir, getScopedUserDataDir, applySdkHomeEnv } from './kodax/data-paths.js';
 import { registerProviderChannels, injectAllKeysToEnv } from './ipc/provider.js';
 import { syncSpaceCustomProvidersToRuntime } from './providers/runtime-catalog.js';
+import { customProviderMutationQueue } from './providers/custom-provider-mutations.js';
 import { autoActivateProvidersFromEnv } from './providers/auto-activate.js';
 import { registerFilesChannels } from './ipc/files.js';
 import { registerPartnerSourceChannels } from './ipc/partner-sources.js';
@@ -95,10 +101,11 @@ import { cleanupOrphanKodaxSpaceDirWithLog } from './kodax/cleanup-orphan-kodax-
 import { migrateLegacyMcpbStorage } from './mcpb/registry.js';
 import { getPtyHost } from './terminal/ptyHost.js';
 import { settingsStore } from './settings/store.js';
-import { setRendererTarget } from './ipc/push.js';
+import { pushToRenderer, setRendererTarget } from './ipc/push.js';
 import { kodaxHost } from './kodax/host.js';
 import { externalAgentGateway } from './kodax/external-agent-gateway.js';
 import { runtimeHostAdapter } from './kodax/runtime-host-adapter.js';
+import { startBackgroundRuntimeInitialization } from './kodax/background-runtime-startup.js';
 import { CoderRuntimeModeSwitchCoordinator } from './kodax/coder-runtime-mode-switch.js';
 import { isCoderOwnerRecoveryRestartRequired } from './kodax/coder-owner-recovery-error.js';
 import { permissionRegistry } from './permission/registry.js';
@@ -130,6 +137,11 @@ import {
 import {
   collectSpaceExitWorkBlockers,
   commitRelaunchBeforeDelayedQuit,
+  resolveBlockedCompleteExitAction,
+  runAdmittedCompleteExit,
+  runForcedCompleteExit,
+  shouldCancelSessionWideOnForcedExit,
+  shouldRecoverRuntimeAfterShutdownTimeout,
   shouldRequestCompleteExitOnBeforeQuit,
 } from './window/complete-exit-policy.js';
 import {
@@ -339,10 +351,12 @@ let backgroundTrayLocale: BackgroundTrayLocale = 'en-US';
 let backgroundCloseNoticeShown = false;
 let stopDaemonOnQuit = false;
 let daemonStopConfirmedBeforeQuit = false;
+let forcedExitCommitted = false;
 let coderRuntimeRestartScheduled = false;
 let startupRecoveryRestartScheduled = false;
 let secondaryInstanceExit = false;
 let completeExitRequested = false;
+let completeExitProgressActive = false;
 let runtimeExitRecoveryScheduled = false;
 let runtimeExitRecoveryFallbackActive = false;
 let beginCoderShutdown: (() => Promise<() => void>) | null = null;
@@ -1142,7 +1156,26 @@ function activateMainWindow(): void {
   void app.whenReady().then(() => showOrCreateMainWindow());
 }
 
+function setCompleteExitProgress(active: boolean): void {
+  if (completeExitProgressActive === active) return;
+  completeExitProgressActive = active;
+  const win = mainWindow;
+  if (win !== null && !win.isDestroyed()) {
+    try {
+      if (active) win.setProgressBar(2, { mode: 'indeterminate' });
+      else win.setProgressBar(-1);
+    } catch (error) {
+      console.warn(
+        '[main] could not update complete-exit taskbar progress:',
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  }
+  pushToRenderer('window.completeExitProgress', { active });
+}
+
 function restoreVisibleExitControlSurface(): void {
+  setCompleteExitProgress(false);
   try {
     installWindowsBackgroundTray();
   } catch (error) {
@@ -1152,6 +1185,16 @@ function restoreVisibleExitControlSurface(): void {
     );
   }
   activateMainWindow();
+}
+
+function hideExitControlSurfaceForBackgroundShutdown(): void {
+  hideWindowsForShutdown(BrowserWindow.getAllWindows(), (error) => {
+    console.warn(
+      '[main] could not hide a window during shutdown:',
+      error instanceof Error ? error.message : String(error),
+    );
+  });
+  disposeWindowsBackgroundTray();
 }
 
 function scheduleRuntimeExitRecovery(reason: string): boolean {
@@ -1428,9 +1471,113 @@ async function collectActiveSpaceExitBlockers(): Promise<readonly string[]> {
   });
 }
 
+const FORCED_EXIT_STEP_TIMEOUT_MS = 4_000;
+
+async function runForcedExitStep<T>(label: string, operation: Promise<T>): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(() => {
+      reject(new Error(`${label} exceeded ${FORCED_EXIT_STEP_TIMEOUT_MS}ms`));
+    }, FORCED_EXIT_STEP_TIMEOUT_MS);
+    timeout.unref?.();
+  });
+  try {
+    return await Promise.race([operation, deadline]);
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+  }
+}
+
+async function stopSpaceOwnedWorkForForcedExit(): Promise<void> {
+  const sessions = kodaxHost.listInFlight();
+  const sessionIds = sessions.map((session) => session.sessionId);
+  const runningSessions = sessions.filter((session) => session.isRunning());
+  // A daemon-backed Coder Session may also be attached by another client.
+  // Never use its Session-wide Stop path during Space force-close; the Runtime
+  // adapter below cancels only principal/run identities attributable to Space.
+  const locallyOwnedRunningSessions = runningSessions.filter((session) =>
+    shouldCancelSessionWideOnForcedExit({
+      surface: session.surface,
+      runtimeSelected: runtimeHostAdapter.isRuntimeSelected(),
+    }),
+  );
+  const runningWorkflows = workflowController
+    .list()
+    .filter((run) => run.status === 'running' || run.status === 'paused');
+  const externalTasks = await externalAgentGateway.listTasks();
+  const activeExternalTasks = externalTasks.filter(
+    (task) =>
+      task.state !== 'completed' &&
+      task.state !== 'failed' &&
+      task.state !== 'canceled' &&
+      task.state !== 'rejected',
+  );
+
+  permissionBroker.cancelAll('shutdown');
+  askUserBroker.cancelAll('shutdown');
+  const localStops = await Promise.allSettled([
+    ...locallyOwnedRunningSessions.map((session) => kodaxHost.cancel(session.sessionId)),
+    ...sessionIds.map((sessionId) => drainQueueForSession(sessionId)),
+    ...runningWorkflows.map((run) => workflowController.stop(run.runId, 'KodaX Space force close')),
+    ...activeExternalTasks.map((task) =>
+      externalAgentGateway.cancelTask(task.taskId, 'KodaX Space force close'),
+    ),
+  ]);
+  const runtimeStop = await runtimeHostAdapter.stopSpaceOwnedRuntimeWorkForForcedExit();
+  const failures = localStops.filter((result) => result.status === 'rejected');
+  if (failures.length > 0 || runtimeStop.failed > 0) {
+    throw new AggregateError(
+      [
+        ...failures.map((result) => result.reason),
+        ...(runtimeStop.failed > 0
+          ? [new Error(`${runtimeStop.failed} Runtime cancellation operation(s) failed`)]
+          : []),
+      ],
+      'Some Space-owned work did not confirm cancellation before forced exit.',
+    );
+  }
+}
+
+async function tryStopDaemonAfterForcedExitCancellation(): Promise<boolean> {
+  const runtime = await collectBackgroundRuntimeStatus();
+  if (runtime.state === 'ready' && !runtime.canStop) {
+    return false;
+  }
+  await runtimeHostAdapter.stopDaemonForCompleteExit();
+  return true;
+}
+
+async function forceCompleteExit(): Promise<void> {
+  const result = await runForcedCompleteExit({
+    hideControlSurface: hideExitControlSurfaceForBackgroundShutdown,
+    stopOwnedWork: () =>
+      runForcedExitStep('Space task cancellation', stopSpaceOwnedWorkForForcedExit()),
+    tryStopDaemon: () =>
+      runForcedExitStep(
+        'Runtime shutdown after forced cancellation',
+        tryStopDaemonAfterForcedExitCancellation(),
+      ),
+    commitExit: (outcome) => {
+      forcedExitCommitted = true;
+      daemonStopConfirmedBeforeQuit = outcome.daemonStopConfirmed;
+      stopDaemonOnQuit = outcome.daemonStopConfirmed;
+      app.quit();
+    },
+  });
+  for (const failure of result.failures) {
+    console.warn(
+      '[main] forced exit cleanup did not finish:',
+      failure instanceof Error ? failure.message : String(failure),
+    );
+  }
+}
+
 async function requestCompleteExit(): Promise<void> {
   if (completeExitRequested) return;
   completeExitRequested = true;
+  setCompleteExitProgress(true);
+  const requestStartedAt = Date.now();
+  console.info('[main] complete exit requested; preparing safe shutdown');
   let reopenCoderAdmission: (() => void) | undefined;
   let exitCommitted = false;
   try {
@@ -1442,30 +1589,43 @@ async function requestCompleteExit(): Promise<void> {
     ]);
     const runtimeBlockers = runtime.state === 'ready' && !runtime.canStop ? runtime.blockers : [];
     const blockers = [...spaceBlockers, ...runtimeBlockers];
+    console.info(`[main] complete exit preflight settled in ${Date.now() - requestStartedAt}ms`);
     if (blockers.length > 0) {
       const blockerSummary = blockers.join(', ');
       const zh = locale === 'zh-CN';
       restoreVisibleExitControlSurface();
-      await dialog.showMessageBox({
+      const result = await dialog.showMessageBox({
         type: 'warning',
         title: zh ? 'Runtime 仍在使用中' : 'Runtime is still in use',
         message: zh
-          ? '当前不能安全停止 KodaX Runtime'
-          : 'KodaX Runtime cannot be stopped safely right now',
+          ? '仍有任务正在运行，是否强行关闭 KodaX Space？'
+          : 'Work is still running. Force KodaX Space to close?',
         detail: zh
-          ? `仍有任务、交互或其他客户端持有 Runtime（${blockerSummary}）。为避免中断工作或留下不可见 daemon，Space 会保持打开。请完成或取消相关工作后再退出。`
-          : `Runtime or Space still owns work, interactions, or other clients (${blockerSummary}). To avoid interrupting work or leaving an invisible daemon, Space will remain open. Finish or cancel that work and quit again.`,
-        buttons: [zh ? '保持 Space 打开' : 'Keep Space open'],
+          ? `Runtime 或 Space 仍有工作、交互或其他客户端（${blockerSummary}）。选择“强行关闭”会立即停止当前 Space 所属的任务并完全退出；其他客户端的任务不会被停止，其 Runtime 会继续保留。`
+          : `Runtime or Space still has work, interactions, or other clients (${blockerSummary}). “Force close” stops work owned by this Space and exits completely. Work owned by other clients is preserved with their Runtime.`,
+        buttons: zh ? ['保持 Space 开启', '强行关闭'] : ['Keep Space open', 'Force close'],
         defaultId: 0,
+        cancelId: 0,
         noLink: true,
       });
+      if (resolveBlockedCompleteExitAction(result.response) === 'force-close') {
+        exitCommitted = true;
+        await forceCompleteExit();
+      }
       return;
     }
-    await runtimeHostAdapter.stopDaemonForCompleteExit();
-    daemonStopConfirmedBeforeQuit = true;
-    stopDaemonOnQuit = true;
-    exitCommitted = true;
-    app.quit();
+    await runAdmittedCompleteExit({
+      // Admission is complete: make the app disappear now while Runtime and
+      // child-process cleanup continues in the background.
+      hideControlSurface: hideExitControlSurfaceForBackgroundShutdown,
+      stopDaemon: () => runtimeHostAdapter.stopDaemonForCompleteExit(),
+      commitExit: () => {
+        daemonStopConfirmedBeforeQuit = true;
+        stopDaemonOnQuit = true;
+        exitCommitted = true;
+        app.quit();
+      },
+    });
   } catch (error) {
     if (
       isCoderOwnerRecoveryRestartRequired(error) &&
@@ -1476,26 +1636,40 @@ async function requestCompleteExit(): Promise<void> {
       return;
     }
     restoreVisibleExitControlSurface();
-    const locale = await resolveCurrentTrayLocale();
+    const locale = await resolveCurrentTrayLocale().catch((localeError) => {
+      console.warn(
+        '[main] complete exit failure locale resolution failed:',
+        localeError instanceof Error ? localeError.message : String(localeError),
+      );
+      return 'en-US' as const;
+    });
     const zh = locale === 'zh-CN';
     console.warn(
       '[main] complete exit preparation failed:',
       error instanceof Error ? error.message : String(error),
     );
-    await dialog.showMessageBox({
+    const result = await dialog.showMessageBox({
       type: 'warning',
-      title: zh ? '暂时无法退出' : 'Space cannot quit yet',
-      message: zh ? '退出准备没有安全完成' : 'The complete-exit preparation did not finish safely',
+      title: zh ? '暂时无法安全退出' : 'Space cannot quit safely yet',
+      message: zh
+        ? '退出准备没有安全完成，是否强行关闭？'
+        : 'The complete-exit preparation did not finish safely. Force close?',
       detail: zh
-        ? 'Space 已保持打开，Coder Runtime 和当前任务未被强制终止。请稍后重试。'
-        : 'Space remains open, and Coder Runtime or current work was not force-terminated. Please retry shortly.',
-      buttons: [zh ? '确定' : 'OK'],
+        ? '选择“强行关闭”会停止当前 Space 所属的任务并完全退出。无法确认归属的其他客户端任务不会被终止，共享 Runtime 可能继续保留。'
+        : '“Force close” stops work owned by this Space and exits completely. Work whose ownership cannot be proven is preserved, and the shared Runtime may remain available.',
+      buttons: zh ? ['保持 Space 开启', '强行关闭'] : ['Keep Space open', 'Force close'],
       defaultId: 0,
+      cancelId: 0,
       noLink: true,
     });
+    if (resolveBlockedCompleteExitAction(result.response) === 'force-close') {
+      exitCommitted = true;
+      await forceCompleteExit();
+    }
   } finally {
     if (!exitCommitted) {
       reopenCoderAdmission?.();
+      setCompleteExitProgress(false);
     }
     completeExitRequested = false;
   }
@@ -1772,8 +1946,11 @@ const startupPromise = app
     });
     if (startupShutdownCoordinator.isShutdownRequested()) return;
 
-    // The remaining startup probes and stores are independent and can run in parallel.
-    await Promise.all([
+    // Owner-policy reconciliation is a short, required ordering boundary: it
+    // must settle before initialize() can attach or start the selected owner.
+    // The expensive Runtime connection itself starts below as tracked
+    // background work and no longer holds IPC registration or renderer reveal.
+    const [, , , runtimeOwnerPolicyReady] = await Promise.all([
       probeKodaxSdk(),
       probeSkillRegistry(),
       // F064: 在窗口/首跑前 await 加载 Workflow Host Policy——real-session 同步 get() 读缓存，
@@ -1784,24 +1961,41 @@ const startupPromise = app
           err instanceof Error ? err.message : err,
         );
       }),
-      // F121: attach/auto-start the shared Coder daemon before IPC starts. Failure is
-      // non-fatal for the application and Partner stays inline, but Coder fails closed;
-      // Space never opens a second inline owner against the same profile.
       runtimeHostAdapter
         .reconcileStartupOwnerPolicy()
-        .then(() => runtimeHostAdapter.initialize(app.getVersion()))
-        .then(() => {
-          diagnosticsLogger?.info('runtime', 'host_initialized');
-        })
+        .then(() => true)
         .catch((err) => {
-          diagnosticsLogger?.warn('runtime', 'host_initialization_failed', undefined, err);
+          diagnosticsLogger?.warn('runtime', 'owner_policy_reconciliation_failed', undefined, err);
           console.warn(
-            '[main] Shared Coder Runtime initialization failed; Coder is unavailable:',
+            '[main] Shared Coder Runtime owner policy could not be reconciled; Coder is unavailable:',
             err instanceof Error ? err.message : err,
           );
+          return false;
         }),
     ]);
     if (startupShutdownCoordinator.isShutdownRequested()) return;
+
+    const runtimeInitializationReady = runtimeOwnerPolicyReady
+      ? startBackgroundRuntimeInitialization({
+          // initialize() changes the adapter to its explicit initializing state
+          // synchronously. Later Coder calls join the same initializePromise.
+          initialize: () => runtimeHostAdapter.initialize(app.getVersion()),
+          onReady: () => {
+            // POSIX SDK hydration can add provider secrets while Runtime attaches.
+            refreshDiagnosticRedactionOptions();
+            diagnosticsLogger?.info('runtime', 'host_initialized');
+          },
+          onFailure: (err) => {
+            diagnosticsLogger?.warn('runtime', 'host_initialization_failed', undefined, err);
+            console.warn(
+              '[main] Shared Coder Runtime initialization failed; Coder is unavailable:',
+              err instanceof Error ? err.message : err,
+            );
+          },
+        })
+      : Promise.resolve(false);
+    void startupShutdownCoordinator.trackStartupTask(runtimeInitializationReady);
+
     // POSIX SDK hydration may add provider secrets after diagnostics was initialized.
     refreshDiagnosticRedactionOptions();
     // v0.1.10 chore: best-effort 清理早期残留的 ~/.kodax_space 孤儿目录。
@@ -1821,8 +2015,8 @@ const startupPromise = app
     // the already-visible trusted boot page does not invoke application IPC.
     registerVersionChannel();
     registerSandboxChannels();
-    // F121 Part 1: explicit SDK-pending snapshot handlers. They report
-    // incompatible until the published daemon adapter replaces the projection.
+    // F121 Part 1: explicit SDK-pending snapshot handlers. They report a
+    // connecting projection until the published daemon adapter replaces it.
     registerRuntimeProjectionChannels();
     registerLearningChannels();
     registerDiagnosticsChannels({
@@ -1876,9 +2070,29 @@ const startupPromise = app
       if (startupShutdownCoordinator.isShutdownRequested()) return;
       await providerConfigStore.load();
       if (startupShutdownCoordinator.isShutdownRequested()) return;
-      await registerKodaxCustomProviders(providerConfigStore.listCustom());
+      const customProviders = providerConfigStore.listCustom();
+      await registerKodaxCustomProviders(customProviders);
       if (startupShutdownCoordinator.isShutdownRequested()) return;
-      await syncSpaceCustomProvidersToRuntime(providerConfigStore.listCustom());
+      // Reconcile the latest store state after every authoritative Runtime
+      // attachment, including internal reconnects. Sharing the UI mutation
+      // queue prevents an old startup snapshot from overwriting a newer
+      // add/update/remove while a cold daemon is still connecting.
+      runtimeHostAdapter.subscribeRuntimeReady(() => {
+        const synchronization = customProviderMutationQueue.run(async () => {
+          if (startupShutdownCoordinator.isShutdownRequested()) return;
+          await providerConfigStore.load();
+          if (startupShutdownCoordinator.isShutdownRequested()) return;
+          await syncSpaceCustomProvidersToRuntime(providerConfigStore.listCustom());
+        });
+        void startupShutdownCoordinator.trackStartupTask(
+          synchronization.catch((err) => {
+            console.warn(
+              '[main] Runtime custom provider synchronization failed:',
+              err instanceof Error ? err.message : err,
+            );
+          }),
+        );
+      });
     } catch (err) {
       console.warn(
         '[main] Custom provider bootstrap failed:',
@@ -2090,12 +2304,13 @@ async function startFileTracingIfEnabled(): Promise<void> {
 let _quitting = false;
 app.on('before-quit', (event) => {
   // Every user/OS quit path (macOS Cmd+Q, Linux last-window close, Windows
-  // complete exit) first passes the same Runtime safety gate. Internal mode
-  // restarts deliberately keep the daemon alive and bypass this user-exit path.
+  // complete exit) first passes the same Runtime safety gate. A user-confirmed
+  // forced exit and internal mode restarts deliberately bypass re-admission.
   if (
     shouldRequestCompleteExitOnBeforeQuit({
       cleanupStarted: _quitting,
       daemonStopCommitted: stopDaemonOnQuit,
+      forcedExitCommitted,
       runtimeModeRestartScheduled: coderRuntimeRestartScheduled || startupRecoveryRestartScheduled,
       secondaryInstanceExit: secondaryInstanceExit || testExitBypass,
     })
@@ -2115,13 +2330,7 @@ app.on('before-quit', (event) => {
   // The process may remain alive for bounded Runtime/child-process cleanup.
   // Hide every surface synchronously once quit is committed so the user's
   // first confirmation looks immediate instead of requiring a second close.
-  hideWindowsForShutdown(BrowserWindow.getAllWindows(), (error) => {
-    console.warn(
-      '[main] could not hide a window during shutdown:',
-      error instanceof Error ? error.message : String(error),
-    );
-  });
-  disposeWindowsBackgroundTray();
+  hideExitControlSurfaceForBackgroundShutdown();
 
   // Run synchronous, idempotent cleanup after the visual close so the surface
   // disappears on the same input event even when a broker has pending work.
@@ -2156,6 +2365,9 @@ app.on('before-quit', (event) => {
         console.warn('[main] mcp shutdown:', err instanceof Error ? err.message : err),
       ),
       kodaxHost
+        // Runtime cancellation was already filtered by principal/run identity
+        // in the force-close admission step. Session disposal must only detach;
+        // a Session-wide abort could stop another client's same-Session Run.
         .disposeAll({ detachRuntimeRuns: true })
         .catch((err) =>
           console.error('[main] disposeAll on quit:', err instanceof Error ? err.message : err),
@@ -2189,14 +2401,19 @@ app.on('before-quit', (event) => {
     return disposals;
   });
 
-  // Complete exit gets enough time for local cleanup plus the daemon's own
-  // safety gate. Its watchdog recovers a visible Space instance instead of
-  // forcing an exit that could strand an invisible daemon.
+  // Safe complete exit gets enough time for local cleanup plus the daemon's
+  // own safety gate and recovers a visible Space if that confirmation stalls.
+  // User-confirmed force close remains terminal and uses the short watchdog.
   let mayExitProcess = true;
-  const watchdogMs = stopDaemonOnQuit ? 25_000 : 2_500;
+  const watchdogMs = forcedExitCommitted ? 2_500 : stopDaemonOnQuit ? 25_000 : 2_500;
   const watchdog = setTimeout(() => {
     console.warn(`[main] shutdown disposals exceeded ${watchdogMs}ms`);
-    if (!stopDaemonOnQuit) {
+    if (
+      !shouldRecoverRuntimeAfterShutdownTimeout({
+        forcedExitCommitted,
+        daemonStopCommitted: stopDaemonOnQuit,
+      })
+    ) {
       app.exit(0);
       return;
     }

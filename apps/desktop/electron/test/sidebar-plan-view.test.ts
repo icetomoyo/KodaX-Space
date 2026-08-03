@@ -63,3 +63,24 @@ test('sidebar plan promotes a failed item into the compact window', () => {
   assert.ok(vm.rows.some((row) => row.kind === 'done-summary' && row.count === 1));
   assert.ok(vm.rows.some((row) => row.kind === 'more-summary' && row.count === 3));
 });
+
+test('sidebar plan shows every item after the compact summary is expanded', () => {
+  const todos = [
+    todo('a', 'completed'),
+    todo('b', 'completed'),
+    todo('c', 'in_progress'),
+    todo('d', 'pending'),
+    todo('e', 'pending'),
+    todo('f', 'pending'),
+    todo('g', 'pending'),
+    todo('h', 'pending'),
+  ];
+
+  const vm = buildSidebarPlanView(todos, { expanded: true });
+
+  assert.deepEqual(
+    visibleItemIds(vm),
+    todos.map((item) => item.id),
+  );
+  assert.ok(vm.rows.every((row) => row.kind === 'item'));
+});

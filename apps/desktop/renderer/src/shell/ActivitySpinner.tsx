@@ -14,10 +14,12 @@
 import { useEffect, useState, type JSX as ReactJSX } from 'react';
 import type {
   SessionEvent,
+  SpaceRuntimeProfileProjectionT,
   SpaceRuntimeToolSandboxT,
   SpaceSessionLiveProjectionT,
 } from '@kodax-space/space-ipc-schema';
 import { useAppStore } from '../store/appStore.js';
+import { runtimeConnectionHasFreshLiveAuthority } from '../store/runtimeProjectionState.js';
 import { FileNameText } from '../components/FileNameText.js';
 import { useI18n } from '../i18n/I18nProvider.js';
 import type { MessageKey } from '../i18n/messages.js';
@@ -271,38 +273,88 @@ export function snapshotFromRuntimeProjection(
   projection: SpaceSessionLiveProjectionT | undefined,
 ): ActivitySnapshot | undefined {
   if (!projection) return undefined;
-  const run = projection.activeRun;
+  return snapshotFromRuntimeRunState(projection.activeRun, projection.queuedRuns, projection);
+}
+
+type RuntimeProfileSession = SpaceRuntimeProfileProjectionT['sessions'][number];
+
+/**
+ * The profile projection is independently maintained by the daemon and survives a temporary
+ * session-observation invalidation. It intentionally carries less detail than session.live, but
+ * is still authoritative for whether a Run is active and therefore whether Stop must remain
+ * available.
+ */
+export function snapshotFromRuntimeProfileSession(
+  session: RuntimeProfileSession | undefined,
+): ActivitySnapshot | undefined {
+  if (!session) return undefined;
+  return snapshotFromRuntimeRunState(session.activeRun, session.queuedRuns);
+}
+
+function snapshotFromRuntimeProfileSessionExcludingRun(
+  session: RuntimeProfileSession | undefined,
+  excludedRunId: string | undefined,
+): ActivitySnapshot | undefined {
+  if (!session) return undefined;
+  if (!excludedRunId) return snapshotFromRuntimeProfileSession(session);
+  return snapshotFromRuntimeRunState(
+    session.activeRun?.runId === excludedRunId ? undefined : session.activeRun,
+    session.queuedRuns.filter((run) => run.runId !== excludedRunId),
+  );
+}
+
+function snapshotFromRuntimeRunState(
+  run: RuntimeProfileSession['activeRun'],
+  queuedRuns: RuntimeProfileSession['queuedRuns'],
+  detail?: SpaceSessionLiveProjectionT,
+): ActivitySnapshot {
   if (!run) {
-    if (projection.queuedRuns.length === 0) {
+    if (queuedRuns.length === 0) {
       return { streaming: false, status: '', startedAt: null };
     }
-    const queued = projection.queuedRuns[0]!;
+    const queued = queuedRuns[0]!;
     return {
       streaming: true,
       status: 'Queued…',
       startedAt: queued.queuedAt ?? queued.startedAt ?? Date.now(),
     };
   }
-  const activeTodo = projection.todos.find((todo) => todo.status === 'in_progress');
-  const activeTool = projection.activeTools.at(-1);
+  const activeTodo = detail?.todos.find((todo) => todo.status === 'in_progress');
+  const activeTool = detail?.activeTools.at(-1);
   const status =
     run.phase === 'waiting_permission'
       ? 'Waiting for permission…'
       : run.phase === 'waiting_user_input'
         ? 'Waiting for input…'
-        : run.requirements?.hostTools === 'waiting_host'
-          ? 'Waiting for Space…'
-          : activeTodo?.activeForm
-            ? `${activeTodo.activeForm}…`
-            : activeTool
-              ? `Running ${activeTool.name}…`
-              : projection.assistantDraft
-                ? 'Writing…'
-                : projection.thinkingDraft
-                  ? 'Thinking…'
-                  : projection.managedTask?.phase === 'verifying'
-                    ? 'Verifying…'
-                    : 'Working…';
+        : run.phase === 'waiting_agent'
+          ? run.activeSubtaskCount !== undefined
+            ? `Waiting for ${run.activeSubtaskCount} agent${run.activeSubtaskCount === 1 ? '' : 's'}…`
+            : 'Waiting for agents…'
+          : run.phase === 'recovering'
+            ? 'Recovering…'
+            : run.phase === 'unknown'
+              ? run.lifecycleError?.code === 'actor_settlement_not_persisted'
+                ? 'Run state not persisted…'
+                : run.stop?.state === 'unknown'
+                  ? 'Stop status unknown…'
+                  : 'Run status unknown…'
+              : run.stage === 'finalizing'
+                ? 'Finalizing…'
+                : run.stage === 'verifying'
+                  ? 'Verifying…'
+                  : run.requirements?.hostTools === 'waiting_host'
+                    ? 'Waiting for Space…'
+                    : activeTodo?.activeForm
+                      ? `${activeTodo.activeForm}…`
+                      : activeTool
+                        ? `Running ${activeTool.name}…`
+                        : detail?.assistantDraft
+                          ? 'Writing…'
+                          : detail?.thinkingDraft
+                            ? 'Thinking…'
+                            : detail?.managedTask?.phase === 'verifying'
+                              ? 'Verifying…'
+                              : 'Working…';
   return {
     streaming: true,
     status,
@@ -316,9 +368,49 @@ export function selectActivitySnapshot(
   events: readonly SessionEvent[],
   pending: boolean,
   managedPhase: string | undefined,
+  profileSession?: RuntimeProfileSession,
+  runtimeConnectionAuthoritative = true,
 ): ActivitySnapshot {
   const eventSnapshot = snapshotFromEvents(events, pending, managedPhase);
-  const runtimeSnapshot = snapshotFromRuntimeProjection(projection);
+  let terminalOrigin:
+    NonNullable<Extract<SessionEvent, { kind: 'session_complete' }>['runtimeEvent']> | undefined;
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]!;
+    if (
+      (event.kind === 'session_complete' || event.kind === 'session_error') &&
+      'runtimeEvent' in event &&
+      event.runtimeEvent !== undefined
+    ) {
+      terminalOrigin = event.runtimeEvent;
+      break;
+    }
+  }
+  const activeRun = projection?.activeRun;
+  const projectionCursor = projection?.cursor;
+  const terminalSupersedesProjection =
+    terminalOrigin !== undefined &&
+    activeRun !== undefined &&
+    projectionCursor !== undefined &&
+    terminalOrigin.runtimeId === projectionCursor.runtimeId &&
+    terminalOrigin.runId === activeRun.runId &&
+    terminalOrigin.seq >= projectionCursor.seq;
+  // A terminal bridge event and session.live change originate from the same Runtime event. If the
+  // delta is delayed or rejected, its causal origin still fences the older active snapshot for the
+  // same Run. A later Run has another runId/cursor and remains visible.
+  const runtimeSnapshot =
+    runtimeConnectionAuthoritative && !terminalSupersedesProjection
+      ? snapshotFromRuntimeProjection(projection)
+      : undefined;
+  // A session observation is deliberately discarded before an asynchronous resync. During that
+  // gap the profile still owns the Run boundary, so it must keep spinner/Stop state alive. Never
+  // override an available session.live snapshot: it is the more detailed authoritative plane.
+  const profileSnapshot =
+    !runtimeConnectionAuthoritative || (projection !== undefined && !terminalSupersedesProjection)
+      ? undefined
+      : snapshotFromRuntimeProfileSessionExcludingRun(
+          profileSession,
+          terminalSupersedesProjection ? terminalOrigin?.runId : undefined,
+        );
   // Compaction is a nested Runtime activity and is not represented by activeRun requirements.
   // Prefer its explicit lifecycle while active; otherwise the daemon live projection remains the
   // authority for ordinary queued/running/waiting states.
@@ -328,10 +420,11 @@ export function selectActivitySnapshot(
   // Runtime admission is authoritative once it reports a queued or active run, even if the
   // renderer missed the lifecycle event that normally clears its optimistic pending marker.
   if (runtimeSnapshot?.streaming) return runtimeSnapshot;
+  if (profileSnapshot?.streaming) return profileSnapshot;
   // A local send begins before Runtime admission can update the last projection.
   // Preserve that short pending state even when the previous authoritative snapshot was idle.
   if (pending) return eventSnapshot;
-  return runtimeSnapshot ?? eventSnapshot;
+  return runtimeSnapshot ?? profileSnapshot ?? eventSnapshot;
 }
 
 /** Tally a string's ASCII vs non-ASCII chars into an accumulator (for token estimation). */
@@ -407,8 +500,23 @@ export function ActivitySpinner(): ReactJSX.Element | null {
   const runtimeLive = useAppStore((s) =>
     currentSessionId ? s.liveProjectionBySession[currentSessionId] : undefined,
   );
+  const runtimeProfileSession = useAppStore((s) =>
+    currentSessionId
+      ? s.runtimeProfile?.sessions.find((session) => session.sessionId === currentSessionId)
+      : undefined,
+  );
+  const runtimeConnectionAuthoritative = useAppStore((s) =>
+    runtimeConnectionHasFreshLiveAuthority(s.runtimeConnection),
+  );
 
-  const snap = selectActivitySnapshot(runtimeLive, events, pending, managedPhase);
+  const snap = selectActivitySnapshot(
+    runtimeLive,
+    events,
+    pending,
+    managedPhase,
+    runtimeProfileSession,
+    runtimeConnectionAuthoritative,
+  );
   // Elapsed display still ticks once per second; spinner motion itself is CSS-driven.
   const [, forceTick] = useState(0);
 
@@ -504,7 +612,22 @@ export function useActivityState(): ActivityState {
   const runtimeLive = useAppStore((s) =>
     currentSessionId ? s.liveProjectionBySession[currentSessionId] : undefined,
   );
-  const snapshot = selectActivitySnapshot(runtimeLive, events, pending, managedPhase);
+  const runtimeProfileSession = useAppStore((s) =>
+    currentSessionId
+      ? s.runtimeProfile?.sessions.find((session) => session.sessionId === currentSessionId)
+      : undefined,
+  );
+  const runtimeConnectionAuthoritative = useAppStore((s) =>
+    runtimeConnectionHasFreshLiveAuthority(s.runtimeConnection),
+  );
+  const snapshot = selectActivitySnapshot(
+    runtimeLive,
+    events,
+    pending,
+    managedPhase,
+    runtimeProfileSession,
+    runtimeConnectionAuthoritative,
+  );
   return {
     isStreaming: snapshot.streaming,
     isCompacting: snapshot.streaming && snapshot.compacting === true,

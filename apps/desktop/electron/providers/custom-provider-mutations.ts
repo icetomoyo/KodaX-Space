@@ -51,6 +51,9 @@ export class CustomProviderMutationQueue {
   }
 }
 
+/** One process-wide ordering boundary for startup reconciliation and UI mutations. */
+export const customProviderMutationQueue = new CustomProviderMutationQueue();
+
 function editableCustomProvider(provider: CustomProvider): EditableCustomProvider {
   const { id: _id, createdAt: _createdAt, ...editable } = provider;
   return editable;

@@ -15,10 +15,13 @@
 // 配套的 highlight.js CSS 主题在 styles.css 全局引入。
 
 import {
+  createContext,
   memo,
+  useContext,
   useId,
   useRef,
   useState,
+  type ComponentPropsWithoutRef,
   type JSX,
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
@@ -96,9 +99,20 @@ export function _clearMarkdownLruCacheForTesting(): void {
 //   2. bg 提高一档 + 加 1px border 让轮廓清晰
 //   3. 字号 text-xs，图标 12×12，与文字 baseline 对齐
 //   4. 文字 "Copy" 大小写正常（之前 "copy" 全小写显得像 placeholder）
-function CopyCodeButton({ getText }: { getText: () => string }): JSX.Element {
+type MarkdownCopyKind = 'code' | 'text';
+
+function CopyCodeButton({
+  getText,
+  kind,
+}: {
+  readonly getText: () => string;
+  readonly kind: MarkdownCopyKind;
+}): JSX.Element {
   const { t } = useI18n();
   const [copied, setCopied] = useState(false);
+  const idleLabel = kind === 'code' ? t('markdown.copyCode') : t('markdown.copyText');
+  const idleAria = kind === 'code' ? t('markdown.copyCodeAria') : t('markdown.copyTextAria');
+  const copiedAria = kind === 'code' ? t('markdown.codeCopiedAria') : t('markdown.textCopiedAria');
   async function onCopy(): Promise<void> {
     try {
       await navigator.clipboard.writeText(getText());
@@ -117,8 +131,9 @@ function CopyCodeButton({ getText }: { getText: () => string }): JSX.Element {
         'opacity-60 hover:opacity-100 focus:opacity-100 group-hover/codeblock:opacity-100 transition-[opacity,background-color,color,border-color]',
         // Material chip stays readable on both light and dark content layers.
       ].join(' ')}
-      title={copied ? t('markdown.copied') : t('markdown.copyCode')}
-      aria-label={copied ? t('markdown.codeCopiedAria') : t('markdown.copyCodeAria')}
+      data-markdown-copy-kind={kind}
+      title={copied ? t('markdown.copied') : idleLabel}
+      aria-label={copied ? copiedAria : idleAria}
     >
       {copied ? (
         <span className="text-ok font-medium">✓ {t('markdown.copied')}</span>
@@ -138,7 +153,7 @@ function CopyCodeButton({ getText }: { getText: () => string }): JSX.Element {
             <rect width="14" height="14" x="8" y="8" rx="2" />
             <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
           </svg>
-          {t('markdown.copyCode')}
+          {idleLabel}
         </>
       )}
     </button>
@@ -157,6 +172,45 @@ function extractTextFromNode(node: ReactNode): string {
     return extractTextFromNode((node as { props: { children?: ReactNode } }).props.children);
   }
   return '';
+}
+
+const MarkdownCodeBlockContext = createContext(false);
+
+function explicitCodeLanguage(node: ReactNode): string | null {
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const language = explicitCodeLanguage(child);
+      if (language) return language;
+    }
+    return null;
+  }
+  if (node === null || typeof node !== 'object' || !('props' in node)) return null;
+
+  const props = (node as { props: { className?: unknown; children?: ReactNode } }).props;
+  if (typeof props.className === 'string') {
+    const match = /(?:^|\s)language-([^\s]+)/.exec(props.className);
+    if (match?.[1]) return match[1];
+  }
+  return explicitCodeLanguage(props.children);
+}
+
+function MarkdownPre({ children }: { readonly children?: ReactNode }): JSX.Element {
+  const language = explicitCodeLanguage(children);
+  const kind: MarkdownCopyKind = language ? 'code' : 'text';
+
+  return (
+    <pre
+      className="content-code markdown-code-block group/codeblock relative border rounded-md px-3 pb-3 pt-9 my-2.5 overflow-x-auto text-xs leading-relaxed"
+      data-markdown-code-kind={language ? 'source' : 'plain'}
+      data-markdown-code-language={language ?? undefined}
+    >
+      <MarkdownCodeBlockContext.Provider value>
+        {language ? <span className="markdown-code-language">{language}</span> : null}
+        <CopyCodeButton getText={() => extractTextFromNode(children)} kind={kind} />
+        {children}
+      </MarkdownCodeBlockContext.Provider>
+    </pre>
+  );
 }
 
 interface FileActionMenuPosition {
@@ -258,8 +312,54 @@ export function markdownUrlTransform(url: string): string {
       : defaultUrlTransform(url);
 }
 
+type MarkdownCodeProps = ComponentPropsWithoutRef<'code'> & { readonly node?: unknown };
+
+function MarkdownCode({ className, children, node, ...props }: MarkdownCodeProps): JSX.Element {
+  void node;
+  const { t } = useI18n();
+  const isBlock = useContext(MarkdownCodeBlockContext);
+
+  if (isBlock) {
+    return (
+      <code
+        className={['markdown-code-block-content', className].filter(Boolean).join(' ')}
+        {...props}
+      >
+        {children}
+      </code>
+    );
+  }
+
+  // 2026-06-18: inline code 若“长得像文件路径”（src/index.html、app.tsx…）→ 渲染成
+  // 可点击按钮，点 → openFileSmart（html/svg/md 进 File Viewer、代码进 diff、其它定位）。
+  const inlineText = extractTextFromNode(children);
+  if (looksLikeFilePath(inlineText)) {
+    return (
+      <MarkdownFileActionTarget path={inlineText}>
+        {(fileActionProps) => (
+          <button
+            type="button"
+            onClick={() => void openFileSmart(inlineText)}
+            {...fileActionProps}
+            title={t('markdown.openInlinePath', { path: inlineText })}
+            className="markdown-inline-path bg-info/12 text-info hover:bg-info/20 px-1.5 py-0.5 rounded text-[12px] font-mono underline decoration-info/40 underline-offset-2 cursor-pointer"
+          >
+            {children}
+          </button>
+        )}
+      </MarkdownFileActionTarget>
+    );
+  }
+
+  return (
+    <code className="markdown-inline-code px-1.5 py-0.5 rounded text-[12px] font-mono" {...props}>
+      {children}
+    </code>
+  );
+}
+
 function MarkdownInner({ content }: MarkdownProps): JSX.Element {
-  const { effectiveLocale, t } = useI18n();
+  const { effectiveLocale } = useI18n();
   // OC-19 module-level LRU 命中即返。命中率高=稳定内容反复 render；流式 delta 不会命中。
   const cacheKey = `${effectiveLocale}\0${content}`;
   const cached = lruCache.get(cacheKey);
@@ -287,51 +387,8 @@ function MarkdownInner({ content }: MarkdownProps): JSX.Element {
         components={{
           // ---- 代码 ----
           // group/codeblock 让 CopyCodeButton 的 hover 作用域限定到本 pre 而非整个消息
-          pre: ({ children }) => (
-            <pre className="content-code group/codeblock relative border rounded-md p-3 my-2.5 overflow-x-auto text-xs leading-relaxed">
-              <CopyCodeButton getText={() => extractTextFromNode(children)} />
-              {children}
-            </pre>
-          ),
-          code: ({ className, children, ...props }) => {
-            const isBlock = (className ?? '').startsWith('language-');
-            if (isBlock) {
-              return (
-                <code className={className} {...props}>
-                  {children}
-                </code>
-              );
-            }
-            // 2026-06-18: inline code 若"长得像文件路径"（src/index.html、app.tsx…）→ 渲染成
-            // 可点击按钮，点 → openFileSmart（html/svg/md 进 File Viewer、代码进 diff、其它定位）。
-            // 解决用户反馈"AI 回复里的文件路径只是纯文字点不动"。looksLikeFilePath 宁缺毋滥
-            // （需以已知扩展名结尾），避免把 `a.b` / `e.g` 误判成路径。
-            const inlineText = extractTextFromNode(children);
-            if (looksLikeFilePath(inlineText)) {
-              return (
-                <MarkdownFileActionTarget path={inlineText}>
-                  {(fileActionProps) => (
-                    <button
-                      type="button"
-                      onClick={() => void openFileSmart(inlineText)}
-                      {...fileActionProps}
-                      title={t('markdown.openInlinePath', { path: inlineText })}
-                      className="bg-info/12 text-info hover:bg-info/20 px-1.5 py-0.5 rounded text-[12px] font-mono underline decoration-info/40 underline-offset-2 cursor-pointer"
-                    >
-                      {children}
-                    </button>
-                  )}
-                </MarkdownFileActionTarget>
-              );
-            }
-            // Inline code —— Claude Desktop 风格 rose pill：浅色背景 + 中浓饱和文字。
-            // 双主题：dark = rose-300 字 + rose-950/40 衬底；light = rose-700 字 + rose-50 衬底。
-            return (
-              <code className="bg-danger/12 text-danger px-1.5 py-0.5 rounded text-[12px] font-mono">
-                {children}
-              </code>
-            );
-          },
+          pre: MarkdownPre,
+          code: MarkdownCode,
 
           // ---- 链接 ----
           // http(s) 链接经 shell.openExternal 走系统浏览器（http 也放行，不止 https）；
@@ -421,7 +478,7 @@ function MarkdownInner({ content }: MarkdownProps): JSX.Element {
 
           // ---- 引用 ----
           blockquote: ({ children }) => (
-            <blockquote className="my-3 border-l-2 border-border-strong pl-3 text-fg-muted italic [&>p]:my-1.5">
+            <blockquote className="markdown-blockquote my-3 rounded-r-md border-l-[3px] px-3 py-1 [&>p]:my-1.5">
               {children}
             </blockquote>
           ),

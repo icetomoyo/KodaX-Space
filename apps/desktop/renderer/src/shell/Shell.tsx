@@ -90,16 +90,19 @@ import {
 } from './taskDockControl.js';
 import type { RightSidebarWidthMode } from './RightSidebarFrame.js';
 import { resolveRightSidebarToggleAction } from './sidebarToggle.js';
+import {
+  activateSessionHistoryPaging,
+  deactivateSessionHistoryPaging,
+  hasReadySessionHistory,
+  revalidateNewestSessionHistory,
+  restoreNewestSessionHistory,
+  useSessionHistoryPaging,
+} from './sessionHistoryPaging.js';
 
 interface ShellProps {
   readonly version?: SpaceVersionOutput | null;
 }
 
-// 模块级 set：哪些 session 已从 SDK 拉过 history 回填 store。
-// 之前用 useRef 在 Shell component 里——HMR 重挂 / Shell 卸载重挂都会丢，导致 fork/rewind
-// 后 component 重新 mount 时又跑一次 session.history IPC（缓存现在帮忙省 jsonl 读，但
-// store 复写 events 是真实成本）。挪到 module 级 process 级共享，跨 HMR 仍保留。
-const restoredSessionIds = new Set<string>();
 const HISTORY_RESTORE_VISUAL_CLASS = 'visual-history-restore-active';
 
 const RIGHT_SIDEBAR_DEFAULT_MIN_WIDTH = 320;
@@ -589,6 +592,12 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
   // plan 清空 → 自动折叠。只在 hasPlan 状态切换的瞬间动一次，中间段用户的手动 toggle 不会被打扰。
   // 首次挂载只记录状态、不覆盖 localStorage 持久化值——避免用户上次手动设置被开屏一瞬间冲掉。
   const currentSessionIdForPlan = useAppStore((s) => s.currentSessionId);
+  const currentHistoryPaging = useSessionHistoryPaging(currentSessionIdForPlan);
+  const currentHistoryWarning =
+    currentHistoryPaging.conversationStatus === 'partial' ||
+    currentHistoryPaging.conversationStatus === 'ambiguous'
+      ? currentHistoryPaging.conversationStatus
+      : undefined;
   const planLength = useAppStore((s) => {
     const sid = s.currentSessionId;
     return sid
@@ -660,7 +669,7 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
   // 历史 session 切换时按需从 KodaX SDK 拉持久化对话内容回填 store。
   // events / userMessages buffer 是 in-memory；重启 / 切到 new session 后空 → 调
   // session.history → 拍平 messages 喂回 store，让 ConversationStreamV2 能渲染。
-  // 模块级 restoredSessionIds 跨 HMR / Shell remount 保留——见文件顶部。
+  // 分页缓存是唯一的“已恢复”权威；淘汰元数据时也同步淘汰 store 内历史正文。
   //
   // **race condition 修复 (2026-05)**：用 prependSessionHistory 原子前置 historical，
   // 避免 IPC 等待期用户已经发了新消息时旧逻辑(逐条 appendUserMessage)把 user array
@@ -669,7 +678,13 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
   useEffect(() => {
     const sid = currentSessionIdForPlan;
     if (!sid || !window.kodaxSpace) return;
-    if (restoredSessionIds.has(sid)) return; // 已拉过
+    activateSessionHistoryPaging(sid);
+    if (hasReadySessionHistory(sid)) {
+      // A cross-process mutation has no renderer event. Keep the ready projection painted, but
+      // revalidate newest canonical history on every selection under this activation generation.
+      void revalidateNewestSessionHistory(sid, currentSurface).catch(() => {});
+      return () => deactivateSessionHistoryPaging(sid);
+    }
     // 注意:不再在 IPC 调用前 short-circuit "buffer 非空"——那是旧版兜底,现在 prepend
     // 是原子的,即使 buffer 已经有 in-flight 会话也能正确插入历史在前面。
     let cancelled = false;
@@ -693,33 +708,17 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
         });
       });
     };
-    void window.kodaxSpace
-      .invoke('session.history', { sessionId: sid })
-      .then((r) => {
-        if (cancelled || !r.ok) return;
-        const items = r.data.items;
-        if (items.length === 0) {
-          restoredSessionIds.add(sid);
-          return;
-        }
-        const store = useAppStore.getState();
-        // history fallback timestamp：用 session.createdAt（SDK 落盘时刻），让 footer
-        // 显示 "Xd ago" 反映 session 创建时间而不是"恢复瞬间 just now"。SDK 未来给
-        // per-message timestamp 时再走 item.sentAt。
-        const sess = store.sessions.find((s) => s.sessionId === sid);
-        const fallbackTs = sess?.createdAt ?? Date.now();
-        store.prependSessionHistory(sid, items, fallbackTs);
-        restoredSessionIds.add(sid);
-      })
+    void restoreNewestSessionHistory(sid, currentSurface)
       .catch(() => {})
       .finally(() => {
         if (!cancelled) releaseAfterCommittedPaint();
       });
     return () => {
       cancelled = true;
+      deactivateSessionHistoryPaging(sid);
       releaseVisualPressure();
     };
-  }, [currentSessionIdForPlan]);
+  }, [currentSessionIdForPlan, currentSurface]);
 
   // 给 body 加 platform class，让 styles.css 里 .platform-darwin 的 traffic-lights
   // 让位规则生效。navigator.userAgent 在 Electron renderer 中 reliable。
@@ -1037,6 +1036,23 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
 
             <div ref={popoutBoundsRef} className="relative flex flex-1 min-h-0 flex-col">
               <PinnedTaskSummary />
+              {currentHistoryWarning !== undefined && (
+                <div
+                  role="status"
+                  aria-live="polite"
+                  data-testid="conversation-history-warning"
+                  className="flex flex-shrink-0 items-start gap-2 border-b border-warning/25 bg-warning/10 px-3 py-2 text-[11px] text-fg-secondary"
+                >
+                  <Info className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-warning" />
+                  <span>
+                    {t(
+                      currentHistoryWarning === 'ambiguous'
+                        ? 'session.historyAmbiguousWarning'
+                        : 'session.historyPartialWarning',
+                    )}
+                  </span>
+                </div>
+              )}
               <ConversationStreamV2 />
 
               {activePopout !== null && (

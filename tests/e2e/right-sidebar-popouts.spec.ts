@@ -237,6 +237,43 @@ test('Changes expands a fully untracked directory into reviewable file rows', as
   }
 });
 
+test('right sidebar reveals every plan step from the more-items row', async () => {
+  const testId = `right-sidebar-plan-more-${Date.now()}`;
+  const { space, projectDir } = await launchSeededSpace(testId);
+  try {
+    const page = space.page;
+    const sessionId = await createSession(space, 'seed expandable right sidebar plan');
+    await emitSessionEvent(space, {
+      kind: 'todo_update',
+      sessionId,
+      items: Array.from({ length: 7 }, (_, index) => ({
+        id: `todo-${index + 1}`,
+        content: `Plan step ${index + 1}`,
+        status: index === 0 ? ('in_progress' as const) : ('pending' as const),
+      })),
+    });
+
+    const showSidebar = page.getByLabel('Show right sidebar');
+    if (await showSidebar.isVisible()) await showSidebar.click();
+
+    const plan = section(page.getByTestId('right-sidebar'), /^Plan\b/);
+    await expect(plan).toBeVisible({ timeout: 5_000 });
+    const showMore = plan.getByTestId('right-sidebar-plan-show-more');
+    await expect(showMore).toHaveAccessibleName('Show 3 more plan items');
+    await expect(plan.getByText('Plan step 7')).toBeHidden();
+
+    await showMore.click();
+
+    for (let index = 1; index <= 7; index += 1) {
+      await expect(plan.getByText(`Plan step ${index}`, { exact: true })).toBeVisible();
+    }
+    await expect(showMore).toHaveCount(0);
+  } finally {
+    await space.close();
+    await fs.rm(projectDir, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
 test('right sidebar full-panel buttons open and close promptly while a session streams', async () => {
   // Quarantined on the Windows CI runner only. Seeding + rendering the sidebar
   // signals while a session streams intermittently stalls on the Windows runner

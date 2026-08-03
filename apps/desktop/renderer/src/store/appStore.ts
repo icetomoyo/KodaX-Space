@@ -29,9 +29,12 @@ import type {
   SpaceRuntimeProfileProjectionT,
   SpaceRuntimeCursorT,
   SpaceSessionLiveChangedT,
+  SpaceSessionLiveInvalidatedT,
   SpaceSessionLiveProjectionT,
   AgentActorTreeSnapshotT,
+  SessionHistoryItem,
 } from '@kodax-space/space-ipc-schema';
+import { bufferIndexForSelectorTurn } from '../features/session/turnIndex.js';
 import { canonProjectRoot as canonProjectRootShared } from '@kodax-space/space-ipc-schema';
 import {
   type VisualQuality,
@@ -55,6 +58,7 @@ import {
   replaceRuntimeConnection,
   replaceRuntimeProfile,
   replaceSessionLiveProjection as replaceSessionLiveProjectionState,
+  runtimeConnectionHasFreshLiveAuthority,
   type ApplySessionLiveChangeStatus,
 } from './runtimeProjectionState.js';
 import {
@@ -62,7 +66,12 @@ import {
   projectionTextSuffix,
   runtimeDeltasShareSnapshotSide,
 } from './runtimeSnapshotHydration.js';
-import { mergeRuntimeSettingsIntoSessions } from './runtimeSessionSettings.js';
+import {
+  mergeRuntimeActivityIntoSessions,
+  mergeRuntimeSettingsIntoSessions,
+} from './runtimeSessionSettings.js';
+import { pushToast, useToastStore } from './toastStore.js';
+import { translateMessage } from '../i18n/I18nProvider.js';
 
 export type MascotMode = 'legacy' | 'sprite' | 'off';
 
@@ -204,6 +213,20 @@ export interface UserMessage {
   /** Stable canonical boundary identity supplied by KodaX Runtime/history. */
   readonly turnId?: string;
   readonly turnUserOrdinal?: number;
+  readonly canonicalIndex?: number;
+  /** Absolute visible turn index before bounded history-window truncation. */
+  readonly historyTurnIndex?: number;
+  /** Exact persisted turn-end boundary used instead of a page-local turn index. */
+  readonly historyBoundary?: {
+    readonly boundaryId: string;
+    readonly sourceRevision: string;
+  };
+  /** Canonical persisted transcript provenance (history-only, never used as a React key). */
+  readonly entryId?: string;
+  readonly parentId?: string | null;
+  readonly logicalId?: string;
+  readonly sourceEntryId?: string;
+  readonly authoritativeEntryId?: string;
   /** Internal idempotency identity for a Runtime-delivered queued prompt. */
   readonly deliveryQueueId?: string;
   readonly deliveryQueueMode?: QueuedUserMessage['queueMode'];
@@ -223,6 +246,87 @@ export interface UserMessage {
    * It keeps positional event owners aligned without presenting a fabricated empty user bubble.
    */
   readonly hiddenHistoryAnchor?: boolean;
+}
+
+/** Renderer-only ownership marker for events reconstructed from a replaceable history window. */
+const restoredHistoryEvents = new WeakSet<object>();
+
+interface HistoryLiveBaseline {
+  userMessages: readonly UserMessage[];
+  events: readonly SessionEvent[];
+}
+
+/**
+ * A paged history window is repeatedly rebuilt as older pages arrive. Keep the independent live
+ * projection separate from the reconciled UI buffers; otherwise a suffix synthesized while the
+ * newest history page was stale becomes input to the next rebuild and is rendered twice once the
+ * durable page catches up.
+ */
+const historyLiveBaselines = new Map<string, HistoryLiveBaseline>();
+const MAX_HISTORY_LIVE_BASELINES = 32;
+const sessionViewLifecycleResetHandlers = new Set<() => void>();
+
+/**
+ * Renderer subsystems with module-local Session caches register here so resetSessionView can
+ * invalidate them synchronously, before a project switch can reselect the same Session id.
+ * Keeping the registry in the store avoids an appStore -> Shell import cycle.
+ */
+export function registerSessionViewLifecycleReset(handler: () => void): () => void {
+  sessionViewLifecycleResetHandlers.add(handler);
+  return () => sessionViewLifecycleResetHandlers.delete(handler);
+}
+
+function resetSessionViewLifecycles(): void {
+  historyLiveBaselines.clear();
+  for (const reset of sessionViewLifecycleResetHandlers) {
+    try {
+      reset();
+    } catch (error) {
+      // One auxiliary cache must never prevent the authoritative store reset/project switch.
+      console.warn('[appStore] Session view lifecycle reset failed:', error);
+    }
+  }
+}
+
+function rememberHistoryLiveBaseline(sessionId: string, baseline: HistoryLiveBaseline): void {
+  historyLiveBaselines.delete(sessionId);
+  historyLiveBaselines.set(sessionId, baseline);
+  while (historyLiveBaselines.size > MAX_HISTORY_LIVE_BASELINES) {
+    const oldest = historyLiveBaselines.keys().next().value;
+    if (oldest === undefined) break;
+    historyLiveBaselines.delete(oldest);
+  }
+}
+
+function rememberHistoryLiveEvent(
+  sessionId: string,
+  event: SessionEvent,
+  snapshotCursor?: RuntimeSnapshotEventBarrier,
+): void {
+  const baseline = historyLiveBaselines.get(sessionId);
+  if (!baseline) return;
+  baseline.events = appendSessionEvent(baseline.events, event, snapshotCursor);
+}
+
+function rememberHistoryLiveUsers(sessionId: string, users: readonly UserMessage[]): void {
+  const baseline = historyLiveBaselines.get(sessionId);
+  if (!baseline) return;
+  const byId = new Map(baseline.userMessages.map((message) => [message.id, message] as const));
+  for (const message of users) {
+    if (message.restoredFromHistory !== true) byId.set(message.id, message);
+  }
+  baseline.userMessages = [...byId.values()];
+}
+
+function forgetHistoryLiveUsers(sessionId: string, messageIds: readonly string[]): void {
+  const baseline = historyLiveBaselines.get(sessionId);
+  if (!baseline || messageIds.length === 0) return;
+  const forgotten = new Set(messageIds);
+  baseline.userMessages = baseline.userMessages.filter((message) => !forgotten.has(message.id));
+}
+
+function clearHistoryLiveBaseline(sessionId: string): void {
+  historyLiveBaselines.delete(sessionId);
 }
 
 export interface LocalNoticeMessage {
@@ -618,9 +722,16 @@ interface AppState {
    */
   prependSessionHistory(
     sessionId: string,
-    items: readonly import('@kodax-space/space-ipc-schema').SessionHistoryItem[],
+    items: readonly SessionHistoryItem[],
     fallbackSentAt: number,
+    options?: {
+      readonly replaceLoadedWindow?: boolean;
+      /** Older replacement windows do not mix a newer live transcript into the browsing page. */
+      readonly includeLiveProjection?: boolean;
+    },
   ): void;
+  /** Drop only the replaceable history projection while retaining independent live rows. */
+  evictRestoredSessionHistory(sessionId: string): void;
   /** sentAt 可选——缺省 Date.now()；history restore 时传 session.createdAt 让旧消息显示真实时间。 */
   appendUserMessage(
     sessionId: string,
@@ -704,6 +815,7 @@ interface AppState {
   replaceRuntimeProfileProjection(profile: SpaceRuntimeProfileProjectionT): void;
   replaceSessionLiveProjection(projection: SpaceSessionLiveProjectionT): void;
   applySessionLiveProjectionChange(change: SpaceSessionLiveChangedT): ApplySessionLiveChangeStatus;
+  invalidateSessionLiveProjection(invalidation: SpaceSessionLiveInvalidatedT): void;
   /** 用户在无 session 时点 picker → 暂存到 pending；下次 session.create 优先用。*/
   setPendingProviderId(id: string | null): void;
   setPendingReasoningMode(mode: SessionMeta['reasoningMode'] | null): void;
@@ -779,7 +891,7 @@ let localNoticeCounter = 0;
 let workflowNoticeCounter = 0;
 let queuedUserMessageCounter = 0;
 let lastLocalTranscriptSentAt = 0;
-const MAX_LOCAL_NOTICES_PER_SESSION = 1000;
+const MAX_LOCAL_NOTICES_PER_SESSION = 32;
 /**
  * 持久化 currentProjectPath 到 localStorage —— Vite HMR full reload / Electron renderer
  * 重载时，避免 zustand store 重置为 null 让 App.tsx 启动 effect 误把 currentProjectPath
@@ -1091,6 +1203,7 @@ interface TranscriptTurnSnapshot {
   readonly sentAt: number;
   readonly turnId?: string;
   readonly turnUserOrdinal?: number;
+  readonly canonicalIndex?: number;
   readonly restoredFromHistory: boolean;
   readonly terminal: boolean;
   readonly terminalTurnId?: string;
@@ -1120,14 +1233,6 @@ function transcriptTurnSnapshots(
   let eventCursor = 0;
   for (let userIndex = 0; userIndex < userMessages.length; userIndex++) {
     const message = userMessages[userIndex]!;
-    if (message.hiddenHistoryAnchor === true) {
-      const eventEnd =
-        message.historyNoAssistantSegment === true
-          ? eventCursor
-          : transcriptSegmentEnd(events, eventCursor);
-      eventCursor = eventEnd;
-      continue;
-    }
     const eventStart = eventCursor;
     const eventEnd =
       message.historyNoAssistantSegment === true
@@ -1144,6 +1249,7 @@ function transcriptTurnSnapshots(
       ...(message.turnUserOrdinal !== undefined
         ? { turnUserOrdinal: message.turnUserOrdinal }
         : {}),
+      ...(message.canonicalIndex !== undefined ? { canonicalIndex: message.canonicalIndex } : {}),
       restoredFromHistory: message.restoredFromHistory === true,
       ...semantic,
       closed: semantic.terminal || eventEnd < events.length || userIndex < userMessages.length - 1,
@@ -1151,6 +1257,20 @@ function transcriptTurnSnapshots(
     eventCursor = eventEnd;
   }
   return turns;
+}
+
+function transcriptCutForSelectorTurn(
+  userMessages: readonly UserMessage[],
+  events: readonly SessionEvent[],
+  selectorTurnIndex: number,
+): { readonly userEnd: number; readonly eventEnd: number } | null {
+  const userIndex = bufferIndexForSelectorTurn(userMessages, selectorTurnIndex);
+  if (userIndex < 0) return null;
+  const snapshot = transcriptTurnSnapshots(userMessages, events).find(
+    (turn) => turn.userIndex === userIndex,
+  );
+  if (!snapshot) return null;
+  return { userEnd: userIndex + 1, eventEnd: snapshot.eventEnd };
 }
 
 function transcriptSegmentEnd(events: readonly SessionEvent[], cursor: number): number {
@@ -1302,6 +1422,10 @@ function transcriptSegmentSemantic(
       const notice = `workflow:${event.text}`;
       notices.push(notice);
       visibleSequence.push(notice);
+    } else if (event.kind === 'history_truncation') {
+      const notice = `history-truncation:${event.scope}`;
+      notices.push(notice);
+      visibleSequence.push(notice);
     } else if (event.kind === 'compact_stats' && event.contextKind !== 'child') {
       visibleSequence.push(
         `compact:${stableJson({
@@ -1344,6 +1468,25 @@ function strongTurnIdentityMatches(
   );
 }
 
+function exactRestoredTurnIdentityMatches(
+  left: TranscriptTurnSnapshot,
+  right: TranscriptTurnSnapshot,
+): boolean {
+  if (!left.restoredFromHistory || !right.restoredFromHistory) return false;
+  if (left.canonicalIndex !== undefined || right.canonicalIndex !== undefined) {
+    return (
+      left.canonicalIndex !== undefined &&
+      right.canonicalIndex !== undefined &&
+      left.canonicalIndex === right.canonicalIndex
+    );
+  }
+  // Legacy full-history readers lacked canonical indexes. Their Runtime turn + visible ordinal is
+  // still the strongest persisted identity available and preserves idempotency for an identical
+  // replay. Paged Runtime rows always carry canonicalIndex, so ambiguous cross-page ordinals never
+  // enter this compatibility branch.
+  return strongTurnIdentityMatches(left, right);
+}
+
 function projectedEventText(
   events: readonly SessionEvent[],
   kind: 'text_delta' | 'thinking_delta',
@@ -1357,10 +1500,107 @@ function projectedEventText(
 function projectionNoticeKey(event: SessionEvent): string | undefined {
   if (event.kind === 'sidecar_message') return `sidecar:${stableJson(event.message)}`;
   if (event.kind === 'lineage_notice') {
+    if (event.entryId !== undefined) return `lineage-entry:${event.entryId}`;
+    if (event.provisionalId !== undefined) return `lineage-provisional:${event.provisionalId}`;
     return `lineage:${event.noticeKind}:${event.text}`;
   }
   if (event.kind === 'workflow_notice') return `workflow:${event.text}`;
+  if (event.kind === 'history_truncation') return `history-truncation:${event.scope}`;
   return undefined;
+}
+
+type TranscriptHistoryOrigin = {
+  readonly entryId?: string;
+  readonly parentId?: string | null;
+  readonly logicalId?: string;
+  readonly sourceEntryId?: string;
+  readonly authoritativeEntryId?: string;
+  readonly canonicalIndex?: number;
+  readonly turnId?: string;
+};
+
+function transcriptHistoryOrigin(item: SessionHistoryItem): TranscriptHistoryOrigin {
+  if (item.kind === 'local_notice' || item.kind === 'history_truncation') return {};
+  return {
+    ...(item.entryId !== undefined ? { entryId: item.entryId } : {}),
+    ...(item.parentId !== undefined ? { parentId: item.parentId } : {}),
+    ...(item.logicalId !== undefined ? { logicalId: item.logicalId } : {}),
+    ...(item.sourceEntryId !== undefined ? { sourceEntryId: item.sourceEntryId } : {}),
+    ...(item.authoritativeEntryId !== undefined
+      ? { authoritativeEntryId: item.authoritativeEntryId }
+      : {}),
+    ...(item.canonicalIndex !== undefined ? { canonicalIndex: item.canonicalIndex } : {}),
+    ...(item.turnId !== undefined ? { turnId: item.turnId } : {}),
+  };
+}
+
+type CompactionNoticeEvent = Extract<SessionEvent, { kind: 'lineage_notice' }>;
+
+function isCompactionNotice(event: SessionEvent): event is CompactionNoticeEvent {
+  return event.kind === 'lineage_notice' && event.noticeKind === 'compaction';
+}
+
+function dedupePersistedCompactionBoundaries(events: readonly SessionEvent[]): SessionEvent[] {
+  const entryIndex = new Map<string, number>();
+  const provisionalIndex = new Map<string, number>();
+  const out: Array<SessionEvent | undefined> = [];
+  for (const event of events) {
+    if (!isCompactionNotice(event)) {
+      out.push(event);
+      continue;
+    }
+    if (event.entryId !== undefined) {
+      const exactSlot = entryIndex.get(event.entryId);
+      const provisionalSlot =
+        event.provisionalId === undefined ? undefined : provisionalIndex.get(event.provisionalId);
+      if (exactSlot !== undefined) {
+        const exact = out[exactSlot];
+        if (isCompactionNotice(exact!)) {
+          // Keep the first durable/canonical position while enriching it with the live
+          // provisional identity. A later exact delivery must also retire its now-proven
+          // placeholder, even when history restored the same physical entry first.
+          out[exactSlot] = { ...exact, ...event };
+          if (provisionalSlot !== undefined && provisionalSlot !== exactSlot) {
+            const provisional = out[provisionalSlot];
+            if (isCompactionNotice(provisional!) && provisional.entryId === undefined) {
+              out[provisionalSlot] = undefined;
+            }
+          }
+          if (event.provisionalId !== undefined) {
+            provisionalIndex.set(event.provisionalId, exactSlot);
+          }
+        }
+        continue;
+      }
+      if (provisionalSlot !== undefined) {
+        const existing = out[provisionalSlot];
+        if (
+          isCompactionNotice(existing!) &&
+          existing.entryId !== undefined &&
+          existing.entryId !== event.entryId
+        ) {
+          // One Runtime event cannot legitimately resolve to two physical rows. Preserve both
+          // conflicting facts instead of silently replacing history.
+          entryIndex.set(event.entryId, out.length);
+          out.push(event);
+          continue;
+        }
+        out[provisionalSlot] = event;
+        entryIndex.set(event.entryId, provisionalSlot);
+        continue;
+      }
+      entryIndex.set(event.entryId, out.length);
+      if (event.provisionalId !== undefined) {
+        provisionalIndex.set(event.provisionalId, out.length);
+      }
+      out.push(event);
+      continue;
+    }
+    if (event.provisionalId !== undefined && provisionalIndex.has(event.provisionalId)) continue;
+    if (event.provisionalId !== undefined) provisionalIndex.set(event.provisionalId, out.length);
+    out.push(event);
+  }
+  return out.filter((event): event is SessionEvent => event !== undefined);
 }
 
 function isPromptSegmentBoundary(
@@ -1558,12 +1798,20 @@ function foldStrongIdentityDuplicateTurns(
 
     for (let duplicateIndex = 0; duplicateIndex < turns.length && !pair; duplicateIndex++) {
       const duplicate = turns[duplicateIndex]!;
-      if (!hasStrongTurnIdentity(duplicate) || !liveTurnCanFold(duplicate)) continue;
+      if (
+        duplicate.restoredFromHistory
+          ? duplicate.canonicalIndex === undefined && !hasStrongTurnIdentity(duplicate)
+          : !hasStrongTurnIdentity(duplicate) || !liveTurnCanFold(duplicate)
+      ) {
+        continue;
+      }
       for (let durableIndex = 0; durableIndex < duplicateIndex; durableIndex++) {
         const durable = turns[durableIndex]!;
         if (
           !durable.restoredFromHistory ||
-          !strongTurnIdentityMatches(durable, duplicate) ||
+          (duplicate.restoredFromHistory
+            ? !exactRestoredTurnIdentityMatches(durable, duplicate)
+            : !strongTurnIdentityMatches(durable, duplicate)) ||
           (!duplicate.restoredFromHistory && !liveTurnCanFold(duplicate))
         ) {
           continue;
@@ -1657,6 +1905,47 @@ function stableJson(value: unknown): string {
       .join(',')}}`;
   }
   return JSON.stringify(value) ?? 'undefined';
+}
+
+function stableHistoryHash(value: unknown): string {
+  const text = typeof value === 'string' ? value : stableJson(value);
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < text.length; index++) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
+function stableHistoryAnchorTurnId(items: readonly SessionHistoryItem[]): string {
+  const leadingProjection: SessionHistoryItem[] = [];
+  for (const item of items) {
+    if (item.kind === 'user') break;
+    if (item.kind !== 'local_notice') leadingProjection.push(item);
+  }
+  return `space-history-anchor:${stableHistoryHash(leadingProjection)}`;
+}
+
+function stableHistoryUserMessageId(
+  sessionId: string,
+  item: Extract<SessionHistoryItem, { readonly kind: 'user' }>,
+  fallbackOrdinal: number,
+): string {
+  const identityParts =
+    item.canonicalIndex !== undefined
+      ? ['canonical', String(item.canonicalIndex)]
+      : item.entryId !== undefined
+        ? ['entry', item.entryId]
+        : item.logicalId !== undefined
+          ? ['logical', item.logicalId]
+          : item.turnId !== undefined
+            ? ['turn', item.turnId, String(item.turnUserOrdinal ?? 0)]
+            : ['fallback', String(fallbackOrdinal)];
+  const encodePart = (part: string): string => `${part.length}:${part}`;
+  // Authoritative identities are encoded losslessly instead of folded into a 32-bit hash. The
+  // length-prefixed tuple is injective even when values contain separators; fallback ordinals are
+  // already unique within the canonical item array that is rebuilt atomically.
+  return `u_history_${[sessionId, ...identityParts].map(encodePart).join('|')}`;
 }
 
 function stampLiveStreamEvent(event: SessionEvent): SessionEvent {
@@ -2073,6 +2362,7 @@ function createLocalNotice(
 ): LocalNoticeMessage {
   const normalized = normalizeLocalNoticeOptions(options);
   const sentAt = normalized.sentAt ?? nextLocalTranscriptSentAt();
+  lastLocalTranscriptSentAt = Math.max(lastLocalTranscriptSentAt, sentAt);
   return {
     id: `ln_${sentAt}_${++localNoticeCounter}_${randomLocalNoticeSuffix()}`,
     content,
@@ -2082,26 +2372,35 @@ function createLocalNotice(
 }
 
 function mergeLocalNotices(
-  ...buckets: readonly (readonly LocalNoticeMessage[])[]
+  buckets: readonly (readonly LocalNoticeMessage[])[],
+  requiredNoticeId?: string,
 ): readonly LocalNoticeMessage[] {
   const byId = new Map<string, LocalNoticeMessage>();
   for (const bucket of buckets) {
     for (const notice of bucket) byId.set(notice.id, notice);
   }
-  return [...byId.values()]
-    .sort((a, b) => a.sentAt - b.sentAt || a.id.localeCompare(b.id))
-    .slice(-MAX_LOCAL_NOTICES_PER_SESSION);
+  const sorted = [...byId.values()].sort((a, b) => a.sentAt - b.sentAt || a.id.localeCompare(b.id));
+  if (sorted.length <= MAX_LOCAL_NOTICES_PER_SESSION) return sorted;
+  const newest = sorted.slice(-MAX_LOCAL_NOTICES_PER_SESSION);
+  if (requiredNoticeId === undefined || newest.some((notice) => notice.id === requiredNoticeId)) {
+    return newest;
+  }
+  const required = byId.get(requiredNoticeId);
+  if (required === undefined) return newest;
+  return [required, ...sorted.slice(sorted.length - (MAX_LOCAL_NOTICES_PER_SESSION - 1))].sort(
+    (a, b) => a.sentAt - b.sentAt || a.id.localeCompare(b.id),
+  );
 }
 
 interface LocalNoticeIpcBridge {
   invoke(
     channel: 'session.localNotice.append',
     payload: { readonly sessionId: string; readonly notice: LocalNoticeMessage },
-  ): Promise<unknown>;
+  ): Promise<{ readonly ok: boolean }>;
   invoke(
     channel: 'session.localNotice.replace',
     payload: { readonly sessionId: string; readonly notices: readonly LocalNoticeMessage[] },
-  ): Promise<unknown>;
+  ): Promise<{ readonly ok: boolean }>;
 }
 
 function getLocalNoticeBridge(): LocalNoticeIpcBridge | undefined {
@@ -2109,10 +2408,132 @@ function getLocalNoticeBridge(): LocalNoticeIpcBridge | undefined {
   return (window as Window & { readonly kodaxSpace?: LocalNoticeIpcBridge }).kodaxSpace;
 }
 
+const localNoticePersistenceFailures = new Set<string>();
+const failedLocalNoticeAppends = new Map<string, Map<string, LocalNoticeMessage>>();
+const failedLocalNoticeAppendNeedsReconcile = new Set<string>();
+const failedLocalNoticeReplaces = new Set<string>();
+const localNoticeRetryInFlight = new Set<string>();
+let localNoticePersistenceFailureToastId: string | null = null;
+const MAX_FAILED_LOCAL_NOTICE_BYTES = 8 * 1024 * 1024;
+
+function reportLocalNoticePersistenceFailure(sessionId: string): void {
+  console.error('[local-notice] durable persistence failed');
+  localNoticePersistenceFailures.add(sessionId);
+  const currentToastExists = useToastStore
+    .getState()
+    .toasts.some((toast) => toast.id === localNoticePersistenceFailureToastId);
+  if (currentToastExists) return;
+  pushToast(translateMessage('session.localNoticePersistenceFailed'), 'error', 0);
+  localNoticePersistenceFailureToastId = useToastStore.getState().toasts.at(-1)?.id ?? null;
+}
+
+function clearLocalNoticePersistenceFailure(sessionId: string): void {
+  localNoticePersistenceFailures.delete(sessionId);
+  if (localNoticePersistenceFailures.size > 0) return;
+  if (localNoticePersistenceFailureToastId !== null) {
+    useToastStore.getState().dismiss(localNoticePersistenceFailureToastId);
+  }
+  localNoticePersistenceFailureToastId = null;
+}
+
+function recordLocalNoticeAppendFailure(sessionId: string, notice: LocalNoticeMessage): void {
+  const current = failedLocalNoticeAppends.get(sessionId);
+  const countBounded = mergeLocalNotices(
+    [current ? [...current.values()] : [], [notice]],
+    notice.id,
+  );
+  const encoded = new Map(
+    countBounded.map((candidate) => [
+      candidate.id,
+      new TextEncoder().encode(JSON.stringify(candidate)).byteLength,
+    ]),
+  );
+  const requiredBytes = encoded.get(notice.id);
+  if (requiredBytes === undefined || requiredBytes > MAX_FAILED_LOCAL_NOTICE_BYTES) {
+    // No bounded exact payload can be retried. Keep the warning latched until an explicit full
+    // replace/reconcile succeeds; never retain an unbounded body merely to clear a toast.
+    failedLocalNoticeAppendNeedsReconcile.add(sessionId);
+  } else {
+    const retainedIds = new Set<string>([notice.id]);
+    let retainedBytes = requiredBytes;
+    for (let index = countBounded.length - 1; index >= 0; index -= 1) {
+      const candidate = countBounded[index]!;
+      if (retainedIds.has(candidate.id)) continue;
+      const candidateBytes = encoded.get(candidate.id)! + 1;
+      if (retainedBytes + candidateBytes > MAX_FAILED_LOCAL_NOTICE_BYTES) break;
+      retainedIds.add(candidate.id);
+      retainedBytes += candidateBytes;
+    }
+    failedLocalNoticeAppends.set(
+      sessionId,
+      new Map(
+        countBounded
+          .filter((candidate) => retainedIds.has(candidate.id))
+          .map((candidate) => [candidate.id, candidate]),
+      ),
+    );
+  }
+  reportLocalNoticePersistenceFailure(sessionId);
+}
+
+async function retryFailedLocalNoticeAppends(
+  sessionId: string,
+  bridge: LocalNoticeIpcBridge,
+): Promise<void> {
+  if (localNoticeRetryInFlight.has(sessionId)) return;
+  const pending = failedLocalNoticeAppends.get(sessionId);
+  if (!pending || pending.size === 0) {
+    if (
+      !failedLocalNoticeReplaces.has(sessionId) &&
+      !failedLocalNoticeAppendNeedsReconcile.has(sessionId)
+    ) {
+      clearLocalNoticePersistenceFailure(sessionId);
+    }
+    return;
+  }
+
+  localNoticeRetryInFlight.add(sessionId);
+  try {
+    // The main-side store dedupes by notice id, so replaying the exact failed payload is
+    // idempotent even if an IPC acknowledgement was lost after the durable write.
+    for (const [noticeId, notice] of [...pending.entries()]) {
+      try {
+        const result = await bridge.invoke('session.localNotice.append', { sessionId, notice });
+        if (!result.ok) {
+          reportLocalNoticePersistenceFailure(sessionId);
+          continue;
+        }
+        pending.delete(noticeId);
+      } catch {
+        reportLocalNoticePersistenceFailure(sessionId);
+      }
+    }
+    if (pending.size === 0 && failedLocalNoticeAppends.get(sessionId) === pending) {
+      failedLocalNoticeAppends.delete(sessionId);
+    }
+    const remaining = failedLocalNoticeAppends.get(sessionId);
+    if (
+      (!remaining || remaining.size === 0) &&
+      !failedLocalNoticeReplaces.has(sessionId) &&
+      !failedLocalNoticeAppendNeedsReconcile.has(sessionId)
+    ) {
+      clearLocalNoticePersistenceFailure(sessionId);
+    }
+  } finally {
+    localNoticeRetryInFlight.delete(sessionId);
+  }
+}
+
 function persistLocalNoticeAppend(sessionId: string, notice: LocalNoticeMessage): void {
   const bridge = getLocalNoticeBridge();
   if (!bridge) return;
-  void bridge.invoke('session.localNotice.append', { sessionId, notice }).catch(() => undefined);
+  void bridge
+    .invoke('session.localNotice.append', { sessionId, notice })
+    .then((result) => {
+      if (!result.ok) recordLocalNoticeAppendFailure(sessionId, notice);
+      else void retryFailedLocalNoticeAppends(sessionId, bridge);
+    })
+    .catch(() => recordLocalNoticeAppendFailure(sessionId, notice));
 }
 
 function persistLocalNoticeReplace(
@@ -2121,7 +2542,23 @@ function persistLocalNoticeReplace(
 ): void {
   const bridge = getLocalNoticeBridge();
   if (!bridge) return;
-  void bridge.invoke('session.localNotice.replace', { sessionId, notices }).catch(() => undefined);
+  void bridge
+    .invoke('session.localNotice.replace', { sessionId, notices })
+    .then((result) => {
+      if (!result.ok) {
+        failedLocalNoticeReplaces.add(sessionId);
+        reportLocalNoticePersistenceFailure(sessionId);
+        return;
+      }
+      failedLocalNoticeReplaces.delete(sessionId);
+      failedLocalNoticeAppends.delete(sessionId);
+      failedLocalNoticeAppendNeedsReconcile.delete(sessionId);
+      clearLocalNoticePersistenceFailure(sessionId);
+    })
+    .catch(() => {
+      failedLocalNoticeReplaces.add(sessionId);
+      reportLocalNoticePersistenceFailure(sessionId);
+    });
 }
 
 function normalizeQueuedMatchContent(content: string): string {
@@ -2410,11 +2847,17 @@ export const useAppStore = create<AppState>((set) => ({
       };
     });
   },
-  setSessions: (sessions) => set({ sessions }),
-  replaceSessionsForScope: (sessions, scope) =>
+  setSessions: (sessions) =>
     set((state) => ({
-      sessions: replaceSessionsInScope(state.sessions, sessions, scope, IS_WIN_RENDERER),
+      sessions: mergeRuntimeActivityIntoSessions(sessions, state.runtimeProfile),
     })),
+  replaceSessionsForScope: (sessions, scope) =>
+    set((state) => {
+      const replaced = replaceSessionsInScope(state.sessions, sessions, scope, IS_WIN_RENDERER);
+      return {
+        sessions: mergeRuntimeActivityIntoSessions(replaced, state.runtimeProfile),
+      };
+    }),
   setCurrentSession: (sessionId) =>
     set((state) => {
       // v0.1.9 fix: 切 session 时同步把 currentProjectPath 调到该 session 的 projectRoot。
@@ -2455,7 +2898,13 @@ export const useAppStore = create<AppState>((set) => ({
       const bucket = state.userMessagesBySession[sessionId] ?? [];
       const msg = createUserMessage(sessionId, content, sentAt, undefined, attachments);
       messageId = msg.id;
+      rememberHistoryLiveUsers(sessionId, [msg]);
       return {
+        sessions: state.sessions.map((session) =>
+          session.sessionId === sessionId && msg.sentAt > session.lastActivityAt
+            ? { ...session, lastActivityAt: msg.sentAt }
+            : session,
+        ),
         userMessagesBySession: {
           ...state.userMessagesBySession,
           [sessionId]: [...bucket, msg],
@@ -2484,6 +2933,7 @@ export const useAppStore = create<AppState>((set) => ({
         ...current,
         attachments: nextAttachments,
       };
+      rememberHistoryLiveUsers(sessionId, [nextBucket[messageIndex]!]);
       return {
         userMessagesBySession: {
           ...state.userMessagesBySession,
@@ -2502,7 +2952,7 @@ export const useAppStore = create<AppState>((set) => ({
       return {
         localNoticesBySession: {
           ...state.localNoticesBySession,
-          [sessionId]: mergeLocalNotices(bucket, [msg]),
+          [sessionId]: mergeLocalNotices([bucket, [msg]], msg.id),
         },
       };
     });
@@ -2626,6 +3076,11 @@ export const useAppStore = create<AppState>((set) => ({
       if (idx === -1) return state;
       const entry = bucket[idx]!;
       const userBucket = state.userMessagesBySession[sessionId] ?? [];
+      const promotedMessage = {
+        ...createUserMessage(sessionId, entry.content, sentAt, undefined, entry.attachments),
+        sourceQueuedLocalId: localId,
+      };
+      rememberHistoryLiveUsers(sessionId, [promotedMessage]);
       return {
         queuedUserMessagesBySession: {
           ...state.queuedUserMessagesBySession,
@@ -2633,13 +3088,7 @@ export const useAppStore = create<AppState>((set) => ({
         },
         userMessagesBySession: {
           ...state.userMessagesBySession,
-          [sessionId]: [
-            ...userBucket,
-            {
-              ...createUserMessage(sessionId, entry.content, sentAt, undefined, entry.attachments),
-              sourceQueuedLocalId: localId,
-            },
-          ],
+          [sessionId]: [...userBucket, promotedMessage],
         },
       };
     }),
@@ -2653,6 +3102,7 @@ export const useAppStore = create<AppState>((set) => ({
       const last = userBucket[userBucket.length - 1];
       if (!last || last.content !== userContent) return state;
 
+      forgetHistoryLiveUsers(sessionId, [last.id]);
       localId = `qu_${sessionId}_${++queuedUserMessageCounter}`;
       const queuedBucket = state.queuedUserMessagesBySession[sessionId] ?? [];
       const queued: QueuedUserMessage = {
@@ -2732,6 +3182,7 @@ export const useAppStore = create<AppState>((set) => ({
       // （理论上不可能 —— BottomBar busy 状态 + IPC await 期间不会有别的 user
       // message 进来；但磁盘 history restore 等罕见时序仍可能命中），就 noop。
       if (last.content !== content) return state;
+      forgetHistoryLiveUsers(sessionId, [last.id]);
       return {
         userMessagesBySession: {
           ...state.userMessagesBySession,
@@ -2740,7 +3191,7 @@ export const useAppStore = create<AppState>((set) => ({
       };
     }),
 
-  prependSessionHistory: (sessionId, items, fallbackSentAt) =>
+  prependSessionHistory: (sessionId, items, fallbackSentAt, options) =>
     set((state) => {
       if (!state.sessions.some((s) => s.sessionId === sessionId)) return state;
       // 在 set callback 内构造 historical buckets,确保读到最新 currentBucket,避免 await 期
@@ -2752,6 +3203,7 @@ export const useAppStore = create<AppState>((set) => ({
       const histMsgs: UserMessage[] = [];
       const histEvents: SessionEvent[] = [];
       const histLocalNotices: LocalNoticeMessage[] = [];
+      const historyAnchorTurnId = stableHistoryAnchorTurnId(items);
       let lastHistoricalUserSentAt = Number.NEGATIVE_INFINITY;
       const nextHistoricalUserSentAt = (candidateSentAt?: number): number => {
         const fallback =
@@ -2798,22 +3250,25 @@ export const useAppStore = create<AppState>((set) => ({
       // (sentAt 用 fallback),让索引对齐，但不把内部锚点渲染成空白 user 气泡。
       const ensureLeadingHistoryAnchor = (): void => {
         if (histMsgs.length === 0) {
-          const id = `u_${sessionId}_${++userMessageCounter}`;
+          const id = `u_${sessionId}_history_anchor_${stableHistoryHash(historyAnchorTurnId)}`;
           histMsgs.push({
             id,
             content: '',
             sentAt: nextHistoricalUserSentAt(fallbackSentAt),
             restoredFromHistory: true,
             hiddenHistoryAnchor: true,
+            turnId: historyAnchorTurnId,
+            turnUserOrdinal: 0,
           });
           openUserWithoutAssistant = true;
         }
       };
       for (const item of items) {
+        const historyOrigin = transcriptHistoryOrigin(item);
         if (item.kind === 'user') {
           if (assistantPendingComplete) flushTurnIfNeeded();
           else flushEmptyTurnIfNeeded();
-          const id = `u_${sessionId}_${++userMessageCounter}`;
+          const id = stableHistoryUserMessageId(sessionId, item, histMsgs.length);
           // History pairing is transcript-order based, while composeMessages still sorts by
           // sentAt. SDK compaction/re-root and tool-result restores can collapse or backdate
           // historical timestamps, so normalize only restored user turns to keep sort order
@@ -2823,10 +3278,17 @@ export const useAppStore = create<AppState>((set) => ({
             content: item.content,
             sentAt: nextHistoricalUserSentAt(item.sentAt),
             restoredFromHistory: true,
+            ...historyOrigin,
             ...(item.attachments !== undefined ? { attachments: item.attachments } : {}),
             ...(item.turnId !== undefined ? { turnId: item.turnId } : {}),
             ...(item.turnUserOrdinal !== undefined
               ? { turnUserOrdinal: item.turnUserOrdinal }
+              : {}),
+            ...(item.historyTurnIndex !== undefined
+              ? { historyTurnIndex: item.historyTurnIndex }
+              : {}),
+            ...(item.historyBoundary !== undefined
+              ? { historyBoundary: item.historyBoundary }
               : {}),
           });
           openUserWithoutAssistant = true;
@@ -2836,6 +3298,7 @@ export const useAppStore = create<AppState>((set) => ({
             item.sentAt ?? histMsgs[histMsgs.length - 1]?.sentAt ?? fallbackSentAt;
           if (item.thinking !== undefined && item.thinking.length > 0) {
             histEvents.push({
+              ...historyOrigin,
               kind: 'thinking_delta',
               sessionId,
               text: item.thinking,
@@ -2844,6 +3307,7 @@ export const useAppStore = create<AppState>((set) => ({
           }
           if (item.text.length > 0) {
             histEvents.push({
+              ...historyOrigin,
               kind: 'text_delta',
               sessionId,
               text: item.text,
@@ -2854,6 +3318,7 @@ export const useAppStore = create<AppState>((set) => ({
         } else if (item.kind === 'sidecar_message') {
           ensureLeadingHistoryAnchor();
           histEvents.push({
+            ...historyOrigin,
             kind: 'sidecar_message',
             sessionId,
             message: item.message,
@@ -2865,10 +3330,15 @@ export const useAppStore = create<AppState>((set) => ({
           // (variant='lineage')，不再显示成假的用户气泡。
           ensureLeadingHistoryAnchor();
           histEvents.push({
+            ...historyOrigin,
             kind: 'lineage_notice',
             sessionId,
             noticeKind: item.noticeKind,
             text: item.text,
+            ...(item.entryId !== undefined ? { displayId: item.entryId } : {}),
+            ...(item.sentAt !== undefined ? { sentAt: item.sentAt } : {}),
+            ...(item.tokensBefore !== undefined ? { tokensBefore: item.tokensBefore } : {}),
+            ...(item.tokensAfter !== undefined ? { tokensAfter: item.tokensAfter } : {}),
           });
           if (
             item.noticeKind === 'compaction' &&
@@ -2888,9 +3358,24 @@ export const useAppStore = create<AppState>((set) => ({
           // session.history 识别后发这个 kind。路由成 workflow_notice 事件 → composeMessages
           // 原位渲染成 system_notice(variant='workflow'),不再走侧存储按 wall-clock 重排。
           ensureLeadingHistoryAnchor();
-          histEvents.push({ kind: 'workflow_notice', sessionId, text: item.text });
+          histEvents.push({
+            ...historyOrigin,
+            kind: 'workflow_notice',
+            sessionId,
+            text: item.text,
+          });
+          markTurnHasEvents();
+        } else if (item.kind === 'history_truncation') {
+          ensureLeadingHistoryAnchor();
+          histEvents.push({
+            kind: 'history_truncation',
+            sessionId,
+            scope: item.scope,
+            omittedItems: item.omittedItems,
+          });
           markTurnHasEvents();
         } else if (item.kind === 'local_notice') {
+          lastLocalTranscriptSentAt = Math.max(lastLocalTranscriptSentAt, item.sentAt);
           histLocalNotices.push({
             id: item.id,
             content: item.content,
@@ -2902,6 +3387,7 @@ export const useAppStore = create<AppState>((set) => ({
           // 或 tool_use 没匹配上 tool_result) 仍 emit tool_start 让 UI 显示一张 "running" 卡片。
           ensureLeadingHistoryAnchor();
           histEvents.push({
+            ...historyOrigin,
             kind: 'tool_start',
             sessionId,
             toolId: item.toolId,
@@ -2910,6 +3396,7 @@ export const useAppStore = create<AppState>((set) => ({
           });
           if (item.result !== undefined) {
             histEvents.push({
+              ...historyOrigin,
               kind: 'tool_result',
               sessionId,
               toolId: item.toolId,
@@ -2923,14 +3410,33 @@ export const useAppStore = create<AppState>((set) => ({
       // tail: 最后一项是 assistant/tool_call 时补一个 session_complete 让段闭合
       if (assistantPendingComplete) flushTurnIfNeeded();
       else flushEmptyTurnIfNeeded();
-      const currentMsgs = state.userMessagesBySession[sessionId] ?? [];
-      const currentEvents = state.eventsBySession[sessionId] ?? [];
+      for (const event of histEvents) restoredHistoryEvents.add(event);
+      const replaceLoadedWindow = options?.replaceLoadedWindow === true;
+      let liveBaseline = replaceLoadedWindow ? historyLiveBaselines.get(sessionId) : undefined;
+      if (replaceLoadedWindow && liveBaseline === undefined) {
+        liveBaseline = {
+          userMessages: (state.userMessagesBySession[sessionId] ?? []).filter(
+            (message) => message.restoredFromHistory !== true,
+          ),
+          events: (state.eventsBySession[sessionId] ?? []).filter(
+            (event) => !restoredHistoryEvents.has(event),
+          ),
+        };
+        rememberHistoryLiveBaseline(sessionId, liveBaseline);
+      }
+      const includeLiveProjection = options?.includeLiveProjection !== false;
+      const currentMsgs = includeLiveProjection
+        ? (liveBaseline?.userMessages ?? state.userMessagesBySession[sessionId] ?? [])
+        : [];
+      const currentEvents = includeLiveProjection
+        ? (liveBaseline?.events ?? state.eventsBySession[sessionId] ?? [])
+        : [];
       const currentLocalNotices = state.localNoticesBySession[sessionId] ?? [];
       const folded = foldStrongIdentityDuplicateTurns(
         [...histMsgs, ...currentMsgs],
         [...histEvents, ...currentEvents],
       );
-      const combinedEvents = folded.events;
+      const combinedEvents = dedupePersistedCompactionBoundaries(folded.events);
       const combinedMsgs = hideOpenStrongIdentityDuplicateProjection(
         folded.userMessages,
         combinedEvents,
@@ -2990,7 +3496,7 @@ export const useAppStore = create<AppState>((set) => ({
         },
         localNoticesBySession: {
           ...state.localNoticesBySession,
-          [sessionId]: mergeLocalNotices(histLocalNotices, currentLocalNotices),
+          [sessionId]: mergeLocalNotices([histLocalNotices, currentLocalNotices]),
         },
         transientArtifactsBySession: {
           ...state.transientArtifactsBySession,
@@ -3010,6 +3516,33 @@ export const useAppStore = create<AppState>((set) => ({
         },
       };
     }),
+
+  evictRestoredSessionHistory: (sessionId) => {
+    clearHistoryLiveBaseline(sessionId);
+    set((state) => {
+      const currentUsers = state.userMessagesBySession[sessionId];
+      const currentEvents = state.eventsBySession[sessionId];
+      if (currentUsers === undefined && currentEvents === undefined) return state;
+      const liveUsers = (currentUsers ?? []).filter(
+        (message) => message.restoredFromHistory !== true,
+      );
+      const liveEvents = (currentEvents ?? []).filter((event) => !restoredHistoryEvents.has(event));
+      return {
+        userMessagesBySession: {
+          ...state.userMessagesBySession,
+          [sessionId]: liveUsers,
+        },
+        eventsBySession: {
+          ...state.eventsBySession,
+          [sessionId]: liveEvents,
+        },
+        transientArtifactsBySession: {
+          ...state.transientArtifactsBySession,
+          [sessionId]: collectTransientArtifactsFromEvents(liveEvents),
+        },
+      };
+    });
+  },
 
   setQueueState: (snapshot, totalSize) =>
     set({ queueSnapshot: snapshot, queueTotalSize: totalSize }),
@@ -3138,7 +3671,82 @@ export const useAppStore = create<AppState>((set) => ({
       }
       const bucket = state.eventsBySession[event.sessionId] ?? [];
       if (snapshotCoversRuntimeDraftEvent(state, event)) return state;
+      if (isCompactionNotice(event)) {
+        const provisionalIndex =
+          event.provisionalId === undefined
+            ? -1
+            : bucket.findIndex(
+                (existing) =>
+                  isCompactionNotice(existing) && existing.provisionalId === event.provisionalId,
+              );
+        const exactIndex =
+          event.entryId === undefined
+            ? -1
+            : bucket.findIndex(
+                (existing) => isCompactionNotice(existing) && existing.entryId === event.entryId,
+              );
+        if (provisionalIndex >= 0) {
+          const existing = bucket[provisionalIndex]!;
+          if (!isCompactionNotice(existing) || event.entryId === undefined) return state;
+          if (existing.entryId === undefined) {
+            const storedEvent = stampLiveStreamEvent(event);
+            if (exactIndex >= 0 && exactIndex !== provisionalIndex) {
+              // History restored the durable row before this provisional resolved. Now that the
+              // Runtime supplies the same physical entryId, retain the canonical history slot and
+              // its already-rendered identity, then remove only the proven placeholder.
+              const canonical = bucket[exactIndex]!;
+              const reconciledEvent = isCompactionNotice(canonical)
+                ? {
+                    ...canonical,
+                    ...storedEvent,
+                    displayId:
+                      canonical.displayId ??
+                      canonical.entryId ??
+                      event.displayId ??
+                      event.provisionalId ??
+                      event.entryId,
+                  }
+                : storedEvent;
+              const reconciled = bucket.flatMap((candidate, index) => {
+                if (index === provisionalIndex) return [];
+                return [index === exactIndex ? reconciledEvent : candidate];
+              });
+              return {
+                eventsBySession: {
+                  ...state.eventsBySession,
+                  [event.sessionId]: reconciled,
+                },
+                lastEvent: reconciledEvent,
+              };
+            }
+            // Durable provenance arrived after the immediate placeholder. Upgrade the exact same
+            // array slot so later text/tool/end events can never be overtaken or reparented.
+            const upgraded = bucket.slice();
+            upgraded[provisionalIndex] = storedEvent;
+            return {
+              eventsBySession: {
+                ...state.eventsBySession,
+                [event.sessionId]: upgraded,
+              },
+              lastEvent: storedEvent,
+            };
+          }
+          // Conflicting exact rows for one provisional identity are corrupt/ambiguous. Fall
+          // through and preserve the new fact instead of deleting or overwriting either row.
+        }
+        if (exactIndex >= 0) {
+          // Physical entry identity is authoritative. This check deliberately happens after
+          // provisional reconciliation so history-first delivery can retire its proven live
+          // placeholder instead of leaving a duplicate behind.
+          return state;
+        }
+      }
       const storedEvent = stampLiveStreamEvent(event);
+      rememberHistoryLiveEvent(
+        event.sessionId,
+        storedEvent,
+        state.runtimeSnapshotCursorBySession[event.sessionId],
+      );
       if (event.kind === 'session_error' && event.error === 'cancelled') {
         // 乐观取消(BottomBar handleCancel)与 main 端真实 cancelled 去重,防同一次取消显示两条。
         // 倒序回溯到本 turn 起点(session_start)为止;命中已存在的 cancelled 即判定重复 drop。
@@ -3315,6 +3923,7 @@ export const useAppStore = create<AppState>((set) => ({
           next.userMessagesBySession?.[event.sessionId] ??
           state.userMessagesBySession[event.sessionId] ??
           [];
+        rememberHistoryLiveUsers(event.sessionId, candidateUsers);
         const folded = foldStrongIdentityDuplicateTurns(candidateUsers, appendedEvents);
         const reconciledUsers = hideOpenStrongIdentityDuplicateProjection(
           folded.userMessages,
@@ -3725,7 +4334,12 @@ export const useAppStore = create<AppState>((set) => ({
     }),
 
   removeSession: (sessionId) => {
+    clearHistoryLiveBaseline(sessionId);
     clearLastOpenedFileViewerSnapshotForSession(sessionId);
+    failedLocalNoticeAppends.delete(sessionId);
+    failedLocalNoticeAppendNeedsReconcile.delete(sessionId);
+    failedLocalNoticeReplaces.delete(sessionId);
+    clearLocalNoticePersistenceFailure(sessionId);
     set((state) => {
       // 同时清掉对应事件 buffer 和 user message buffer——session 不在了，留着就是泄漏
       const { [sessionId]: _evt, ...restEvents } = state.eventsBySession;
@@ -3849,11 +4463,13 @@ export const useAppStore = create<AppState>((set) => ({
       );
       if (next.connection === state.runtimeConnection) return state;
       const keepActorSnapshots =
-        (next.connection.state === 'ready' || next.connection.state === 'degraded') &&
+        runtimeConnectionHasFreshLiveAuthority(next.connection) &&
         next.connection.runtimeId !== undefined &&
         next.connection.runtimeId === state.runtimeConnection.runtimeId;
       return {
         runtimeConnection: next.connection,
+        liveProjectionBySession: next.liveBySession,
+        runtimeSnapshotRequiredBySession: next.snapshotRequiredBySession,
         ...(keepActorSnapshots
           ? {}
           : {
@@ -3865,8 +4481,7 @@ export const useAppStore = create<AppState>((set) => ({
   replaceAgentActorSnapshot: (snapshot) =>
     set((state) => {
       if (
-        (state.runtimeConnection.state !== 'ready' &&
-          state.runtimeConnection.state !== 'degraded') ||
+        !runtimeConnectionHasFreshLiveAuthority(state.runtimeConnection) ||
         state.runtimeConnection.runtimeId !== snapshot.runtimeId
       ) {
         return state;
@@ -3914,6 +4529,7 @@ export const useAppStore = create<AppState>((set) => ({
         )
         .map((interaction) => interaction.request);
       return {
+        sessions: mergeRuntimeActivityIntoSessions(state.sessions, next.profile),
         runtimeConnection: next.connection,
         runtimeProfile: next.profile,
         liveProjectionBySession: next.liveBySession,
@@ -3921,13 +4537,13 @@ export const useAppStore = create<AppState>((set) => ({
         runtimeSnapshotCursorBySession:
           next.connection.runtimeId !== undefined &&
           next.connection.runtimeId === state.runtimeConnection.runtimeId &&
-          (next.connection.state === 'ready' || next.connection.state === 'degraded')
+          runtimeConnectionHasFreshLiveAuthority(next.connection)
             ? state.runtimeSnapshotCursorBySession
             : {},
         agentActorSnapshotBySession:
           next.connection.runtimeId !== undefined &&
           next.connection.runtimeId === state.runtimeConnection.runtimeId &&
-          (next.connection.state === 'ready' || next.connection.state === 'degraded')
+          runtimeConnectionHasFreshLiveAuthority(next.connection)
             ? state.agentActorSnapshotBySession
             : {},
         permissionQueue: [
@@ -3953,6 +4569,21 @@ export const useAppStore = create<AppState>((set) => ({
         projection,
       );
       const acceptedProjection = next.liveBySession[projection.sessionId] === projection;
+      if (!acceptedProjection) {
+        if (
+          next.liveBySession === state.liveProjectionBySession &&
+          next.snapshotRequiredBySession === state.runtimeSnapshotRequiredBySession
+        ) {
+          return state;
+        }
+        // Rejected full snapshots may be stale, belong to another Runtime, or arrive while live
+        // authority is unavailable. Preserve only the pure reducer's reconciliation marker; none
+        // of the rejected payload may update settings, interactions, hydration, or cursor planes.
+        return {
+          liveProjectionBySession: next.liveBySession,
+          runtimeSnapshotRequiredBySession: next.snapshotRequiredBySession,
+        };
+      }
       const snapshotRun = projection.activeRun ?? projection.lastTerminalRun;
       const previousBarrier = state.runtimeSnapshotCursorBySession[projection.sessionId];
       const sameBarrierRun =
@@ -3960,11 +4591,19 @@ export const useAppStore = create<AppState>((set) => ({
         previousBarrier?.runtimeId === projection.cursor.runtimeId &&
         previousBarrier.runId === snapshotRun.runId;
       const currentEvents = state.eventsBySession[projection.sessionId] ?? [];
-      const hydratedEvents = acceptedProjection
-        ? hydrateSessionEventsFromLiveSnapshot(currentEvents, projection)
-        : currentEvents;
+      const hydratedEvents = hydrateSessionEventsFromLiveSnapshot(currentEvents, projection);
+      const liveBaseline = historyLiveBaselines.get(projection.sessionId);
+      if (liveBaseline !== undefined) {
+        // Page replacement is rebuilt from this independent live projection. Hydrate the same
+        // authoritative Runtime snapshot into that baseline as well, otherwise loading an older
+        // page would rebuild from a pre-reconnect baseline and make assistant/thinking/tool state
+        // restored by the snapshot disappear.
+        rememberHistoryLiveBaseline(projection.sessionId, {
+          ...liveBaseline,
+          events: hydrateSessionEventsFromLiveSnapshot(liveBaseline.events, projection),
+        });
+      }
       const clearsPendingSend =
-        acceptedProjection &&
         Boolean(state.pendingSendBySession[projection.sessionId]) &&
         liveProjectionClearsPendingSend(currentProjection, projection);
       const pendingSendPatch = clearsPendingSend
@@ -3989,7 +4628,7 @@ export const useAppStore = create<AppState>((set) => ({
         sessions: mergeRuntimeSettingsIntoSessions(state.sessions, projection),
         liveProjectionBySession: next.liveBySession,
         runtimeSnapshotRequiredBySession: next.snapshotRequiredBySession,
-        ...(acceptedProjection && snapshotRun
+        ...(snapshotRun
           ? {
               runtimeSnapshotCursorBySession: {
                 ...state.runtimeSnapshotCursorBySession,
@@ -4108,6 +4747,33 @@ export const useAppStore = create<AppState>((set) => ({
     });
     return status;
   },
+  invalidateSessionLiveProjection: (invalidation) =>
+    set((state) => {
+      if (
+        state.runtimeConnection.runtimeId !== invalidation.runtimeId &&
+        state.liveProjectionBySession[invalidation.sessionId]?.cursor.runtimeId !==
+          invalidation.runtimeId
+      ) {
+        return state;
+      }
+      const { [invalidation.sessionId]: _live, ...remainingLive } = state.liveProjectionBySession;
+      const { [invalidation.sessionId]: _cursor, ...remainingCursors } =
+        state.runtimeSnapshotCursorBySession;
+      return {
+        liveProjectionBySession: remainingLive,
+        runtimeSnapshotCursorBySession: remainingCursors,
+        runtimeSnapshotRequiredBySession: {
+          ...state.runtimeSnapshotRequiredBySession,
+          [invalidation.sessionId]: true,
+        },
+        permissionQueue: state.permissionQueue.filter(
+          (request) => request.sessionId !== invalidation.sessionId,
+        ),
+        askUserQueue: state.askUserQueue.filter(
+          (request) => request.sessionId !== invalidation.sessionId,
+        ),
+      };
+    }),
 
   setPendingProviderId: (id) => set({ pendingProviderId: id }),
   setPendingReasoningMode: (mode) => {
@@ -4299,7 +4965,8 @@ export const useAppStore = create<AppState>((set) => ({
   clearLastDiffPath: () => set({ lastDiffPath: null }),
   setLastDiffPath: (path) => set({ lastDiffPath: path }),
 
-  resetSessionView: () =>
+  resetSessionView: () => {
+    resetSessionViewLifecycles();
     set({
       currentSessionId: null,
       eventsBySession: {},
@@ -4323,9 +4990,11 @@ export const useAppStore = create<AppState>((set) => ({
       sessions: [],
       lastDiffPath: null,
       pendingToolPaths: {},
-    }),
+    });
+  },
 
   resetSessionMessages: (sessionId) => {
+    clearHistoryLiveBaseline(sessionId);
     set((state) => {
       // 同步剥掉本 session 在 pendingToolPaths 中暂存的 tool_id → path 记录
       // 否则 /clear 后若一个迟来的 tool_result 带相同 toolId，会触发 FilePanel
@@ -4364,44 +5033,56 @@ export const useAppStore = create<AppState>((set) => ({
     persistLocalNoticeReplace(sessionId, []);
   },
 
-  // FEATURE_033: fork = clone full buffer 到 newSessionId。
-  // forkPointTurnIdx 当前仅作 metadata 记录（main 端已经写 session 上）；不在 renderer 层
-  // 按 turn 切，因为 in-memory 阶段 UX 是 "在当前对话末尾分叉一条平行线"。
-  // KodaX SDK 0.7.42 出 forkSession() 后 main 端会接磁盘，renderer 这层直接 setSessions 即可。
+  // FEATURE_033: fork = clone source buffer through the selected absolute turn.
+  // Disk is authoritative, but the optimistic renderer copy must use the same cut or the child
+  // briefly shows source-only turns that do not exist in its persisted transcript.
   //
   // **pendingToolPaths 不复制到 fork**（reviewer batch HIGH-2 的 follow-up）：
   // toolId 是 per-invocation UUID 全局唯一，永不复用——source 的 in-flight 工具 tool_result
   // 会路由回 source session（不是 fork），让 source 的 pending 自己清。fork 的"pending tool"
   // 概念只对 fork 自己产生的新 tool_start 才有意义。所以 fork 启动时 pendingToolPaths 自然为空。
-  forkSessionBuffers: (srcSessionId, newSessionId, _forkPointTurnIdx) => {
+  forkSessionBuffers: (srcSessionId, newSessionId, forkPointTurnIdx) => {
     let copiedLocalNotices: readonly LocalNoticeMessage[] | null = null;
     set((state) => {
       const srcEvents = state.eventsBySession[srcSessionId] ?? [];
       const srcMsgs = state.userMessagesBySession[srcSessionId] ?? [];
       const srcLocalNotices = state.localNoticesBySession[srcSessionId] ?? [];
       const srcNotices = state.workflowNoticesBySession[srcSessionId] ?? [];
-      copiedLocalNotices = srcLocalNotices.slice();
+      const cut = transcriptCutForSelectorTurn(srcMsgs, srcEvents, forkPointTurnIdx);
+      // Never populate a child with a demonstrably different branch when the requested selector
+      // is absent from the bounded renderer window. The authoritative child history can hydrate it.
+      if (!cut) return state;
+      const copiedMsgs = srcMsgs.slice(0, cut.userEnd);
+      const copiedEvents = srcEvents.slice(0, cut.eventEnd);
+      const firstRemovedSentAt = srcMsgs[cut.userEnd]?.sentAt ?? Number.POSITIVE_INFINITY;
+      const copiedNotices = srcLocalNotices.filter((notice) => notice.sentAt < firstRemovedSentAt);
+      const copiedWorkflowNotices = srcNotices.filter(
+        (notice) => notice.sentAt < firstRemovedSentAt,
+      );
+      copiedLocalNotices = copiedNotices;
       // events 里的 sessionId 字段是 source 的——为新 session 重建 events 时需要改 sessionId，
       // 否则 ConversationStreamV2 按 sessionId 过滤会读不到。这里直接做映射。
-      const remapped = srcEvents.map((e) => ({ ...e, sessionId: newSessionId }) as SessionEvent);
+      const remapped = copiedEvents.map(
+        (event) => ({ ...event, sessionId: newSessionId }) as SessionEvent,
+      );
       return {
         eventsBySession: { ...state.eventsBySession, [newSessionId]: remapped },
         transientArtifactsBySession: {
           ...state.transientArtifactsBySession,
           [newSessionId]: collectTransientArtifactsFromEvents(remapped),
         },
-        userMessagesBySession: { ...state.userMessagesBySession, [newSessionId]: srcMsgs.slice() },
+        userMessagesBySession: { ...state.userMessagesBySession, [newSessionId]: copiedMsgs },
         queuedUserMessagesBySession: {
           ...state.queuedUserMessagesBySession,
           [newSessionId]: [],
         },
         localNoticesBySession: {
           ...state.localNoticesBySession,
-          [newSessionId]: srcLocalNotices.slice(),
+          [newSessionId]: copiedNotices,
         },
         workflowNoticesBySession: {
           ...state.workflowNoticesBySession,
-          [newSessionId]: srcNotices.slice(),
+          [newSessionId]: copiedWorkflowNotices,
         },
       };
     });
@@ -4419,37 +5100,22 @@ export const useAppStore = create<AppState>((set) => ({
   // 在 UI 上显示 stale 数据（如已被截掉那轮的 todo list、过高的 work budget 计数）。
   // 重置后用户继续 send 时自然由新 events 重新填充。
   rewindSessionBuffers: (sessionId, rewindPastTurnIdx) => {
-    let persistedLocalNotices: readonly LocalNoticeMessage[] | null = null;
+    clearHistoryLiveBaseline(sessionId);
     set((state) => {
       const msgs = state.userMessagesBySession[sessionId] ?? [];
       const localNotices = state.localNoticesBySession[sessionId] ?? [];
       const notices = state.workflowNoticesBySession[sessionId] ?? [];
       const events = state.eventsBySession[sessionId] ?? [];
-      // idx 越界 → 啥都不做
-      if (rewindPastTurnIdx < 0 || rewindPastTurnIdx >= msgs.length) return state;
-      const newMsgs = msgs.slice(0, rewindPastTurnIdx + 1);
-      const firstRemovedSentAt = msgs[rewindPastTurnIdx + 1]?.sentAt ?? Number.POSITIVE_INFINITY;
+      const cut = transcriptCutForSelectorTurn(msgs, events, rewindPastTurnIdx);
+      // selector idx 不在当前可见窗口 → 啥都不做
+      if (!cut) return state;
+      const newMsgs = msgs.slice(0, cut.userEnd);
+      const firstRemovedSentAt = msgs[cut.userEnd]?.sentAt ?? Number.POSITIVE_INFINITY;
       const newLocalNotices = localNotices.filter((notice) => notice.sentAt < firstRemovedSentAt);
-      persistedLocalNotices = newLocalNotices;
       const newNotices = notices.filter((notice) => notice.sentAt < firstRemovedSentAt);
-      // events 按 session_complete/session_error 分段，保留前 (rewindPastTurnIdx + 1) 段。
-      //
-      // 命名说明：`completedTurnsBefore` 表示"在当前位置之前已经完成的 turn 数"——
-      // 第一次见到 session_complete 时为 0（处理 turn 0），第二次为 1（turn 1）...
-      // 当 completedTurnsBefore === rewindPastTurnIdx 时即在处理目标 turn 末尾，
-      // 切到 i+1 (含本条 session_complete) 即"保留 turns 0..idx 共 idx+1 个"。
-      let completedTurnsBefore = 0;
-      let sliceEnd = events.length; // 默认保留全部（last turn 还没 complete 时）
-      for (let i = 0; i < events.length; i++) {
-        const k = events[i].kind;
-        if (k === 'session_complete' || k === 'session_error') {
-          if (completedTurnsBefore === rewindPastTurnIdx) {
-            sliceEnd = i + 1;
-            break;
-          }
-          completedTurnsBefore++;
-        }
-      }
+      // A user with historyNoAssistantSegment does not consume an event segment. Use the same
+      // user→event projection as compose/history reconciliation instead of a raw user-array index.
+      const sliceEnd = cut.eventEnd;
       // 同步清掉 derived state（不区分 turn 边界——简单一致，让 events 重新驱动）
       const { [sessionId]: _todo, ...restTodos } = state.todoListBySession;
       const { [sessionId]: _bud, ...restBudgets } = state.workBudgetBySession;
@@ -4486,8 +5152,5 @@ export const useAppStore = create<AppState>((set) => ({
         providerCacheDiagnosticBySession: restProviderCacheDiagnostics,
       };
     });
-    if (persistedLocalNotices !== null) {
-      persistLocalNoticeReplace(sessionId, persistedLocalNotices);
-    }
   },
 }));

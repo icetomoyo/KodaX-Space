@@ -18,6 +18,7 @@ import { useI18n } from '../../i18n/I18nProvider.js';
 import type { MessageKey } from '../../i18n/messages.js';
 import { buildAskUserInteractionKey } from './ask-user-state.js';
 import { interactionsForSession } from '../session/sessionInteractionRouting.js';
+import { AutoModeDiagnosticsPanel } from '../permission/AutoModeDiagnosticsPanel.js';
 
 const SEVERITY_STYLE: Record<AskUserSignal['severity'], string> = {
   info: 'bg-info/12 text-info',
@@ -362,6 +363,8 @@ export function AskUserModal(): JSX.Element | null {
               <div className="text-sm text-fg-primary leading-relaxed whitespace-pre-wrap">
                 {truncate(guardrail.reason, 1500)}
               </div>
+
+              <AutoModeDiagnosticsPanel diagnostics={guardrail.autoModeDiagnostics} />
 
               <div className="space-y-1">
                 <div className="text-[11px] font-mono uppercase text-fg-muted">

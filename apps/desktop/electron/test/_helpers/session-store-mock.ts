@@ -27,6 +27,10 @@ export interface MockSessionState {
   seedTranscript(id: string, entries: readonly unknown[]): void;
   lastForkSelector(): string | undefined;
   lastRewindSelector(): string | undefined;
+  lastForkHistoryBoundary(): unknown;
+  lastRewindHistoryBoundary(): unknown;
+  forkCallCount(): number;
+  rewindCallCount(): number;
   /** Make SDK delete report that another KodaX process still owns the session. */
   setDeleteBusy(busy: boolean): void;
   /** Emulate the cursor-bearing listSessions contract introduced after SDK 0.7.66. */
@@ -55,6 +59,10 @@ export function installSessionStoreMock(): MockSessionState {
   >();
   let lastForkSelectorValue: string | undefined;
   let lastRewindSelectorValue: string | undefined;
+  let lastForkHistoryBoundaryValue: unknown;
+  let lastRewindHistoryBoundaryValue: unknown;
+  let forkCalls = 0;
+  let rewindCalls = 0;
   let deleteBusy = false;
   let cursorPaginationEnabled = false;
   let loadSessionHook: (() => Promise<void>) | null = null;
@@ -99,11 +107,20 @@ export function installSessionStoreMock(): MockSessionState {
       }));
     },
     forkSession: async (srcId, opts) => {
+      forkCalls += 1;
       lastForkSelectorValue = opts?.selector;
+      lastForkHistoryBoundaryValue = opts?.historyBoundary;
       const src = storage.get(srcId);
       if (!src) return null;
       const newId = `s_${randomUUID()}`;
-      const newData = { id: newId, title: opts?.title ?? src.title, gitRoot: src.gitRoot };
+      const newData = {
+        id: newId,
+        title: opts?.title ?? src.title,
+        gitRoot: src.gitRoot,
+        ...(src.transcriptEntries !== undefined
+          ? { transcriptEntries: src.transcriptEntries }
+          : {}),
+      };
       storage.set(newId, newData);
       emit('add', newId);
       return {
@@ -112,7 +129,9 @@ export function installSessionStoreMock(): MockSessionState {
       };
     },
     rewindSession: async (id, opts) => {
+      rewindCalls += 1;
       lastRewindSelectorValue = opts?.selector;
+      lastRewindHistoryBoundaryValue = opts?.historyBoundary;
       const s = storage.get(id);
       if (!s) return null;
       return { title: s.title, messages: [], gitRoot: s.gitRoot } as never;
@@ -216,6 +235,18 @@ export function installSessionStoreMock(): MockSessionState {
     lastRewindSelector(): string | undefined {
       return lastRewindSelectorValue;
     },
+    lastForkHistoryBoundary(): unknown {
+      return lastForkHistoryBoundaryValue;
+    },
+    lastRewindHistoryBoundary(): unknown {
+      return lastRewindHistoryBoundaryValue;
+    },
+    forkCallCount(): number {
+      return forkCalls;
+    },
+    rewindCallCount(): number {
+      return rewindCalls;
+    },
     setDeleteBusy(busy): void {
       deleteBusy = busy;
     },
@@ -239,6 +270,10 @@ export function installSessionStoreMock(): MockSessionState {
       titleOverrides.clear();
       lastForkSelectorValue = undefined;
       lastRewindSelectorValue = undefined;
+      lastForkHistoryBoundaryValue = undefined;
+      lastRewindHistoryBoundaryValue = undefined;
+      forkCalls = 0;
+      rewindCalls = 0;
       deleteBusy = false;
       cursorPaginationEnabled = false;
       loadSessionHook = null;

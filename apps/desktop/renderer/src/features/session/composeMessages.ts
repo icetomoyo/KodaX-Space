@@ -23,6 +23,7 @@ import type {
   UserMessage,
   WorkflowNoticeMessage,
 } from '../../store/appStore.js';
+import { selectorTurnIndexesByMessageId } from './turnIndex.js';
 
 export type ConversationMessage =
   | {
@@ -85,7 +86,9 @@ export type ConversationMessage =
        *  原来的横条 "✓ complete" 视觉太重、对每轮都打断阅读节奏。 */
       text: string;
       /** lineage variant 专用。compaction 的内部累计摘要不会进入可见 text。 */
-      lineageKind?: 'branch_summary' | 'compaction';
+      lineageKind?: 'branch_summary' | 'compaction' | 'history_truncation';
+      historyTruncationScope?: 'history' | 'turn';
+      omittedItems?: number;
       /** sidecar variant 专用：true 表示这条是 session.history 回放（main 无法持久化真实
        *  verdict/delivery），渲染方应该用中性"历史记录"标签而非断言具体 verdict（v0.1.x #12）。*/
       historical?: boolean;
@@ -107,6 +110,8 @@ interface ComposeInput {
   readonly localNotices?: readonly LocalNoticeMessage[];
   readonly queuedUserMessages?: readonly QueuedUserMessage[];
   readonly workflowNotices?: readonly WorkflowNoticeMessage[];
+  /** Raw lineage belongs to audit/details. Ordinary chat explicitly disables this projection. */
+  readonly includeAuditLineage?: boolean;
 }
 
 export function composeMessages({
@@ -115,6 +120,7 @@ export function composeMessages({
   localNotices = [],
   queuedUserMessages = [],
   workflowNotices = [],
+  includeAuditLineage = true,
 }: ComposeInput): ConversationMessage[] {
   const result: ConversationMessage[] = [];
 
@@ -155,6 +161,7 @@ export function composeMessages({
       : sentAt;
   const failedQueuedMessages = queuedUserMessages.filter((queued) => queued.status === 'failed');
   const liveQueuedMessages = queuedUserMessages.filter((queued) => queued.status !== 'failed');
+  const selectorTurnIndexes = selectorTurnIndexesByMessageId(userMessages);
 
   let cursor = 0;
   const localMessages = [
@@ -234,11 +241,23 @@ export function composeMessages({
     const segment = events.slice(cursor, segmentEnd);
     cursor = segmentEnd;
     if (userMsg.hiddenProjectionDuplicate !== true) {
-      composeAssistantSegment(segment, result, userMsg.sentAt, local.order);
+      composeAssistantSegment(
+        segment,
+        result,
+        userMsg.sentAt,
+        selectorTurnIndexes.get(userMsg.id),
+        includeAuditLineage,
+      );
     }
   }
   if (cursor < events.length) {
-    composeAssistantSegment(events.slice(cursor), result);
+    composeAssistantSegment(
+      events.slice(cursor),
+      result,
+      undefined,
+      undefined,
+      includeAuditLineage,
+    );
   }
 
   for (const queued of [...liveQueuedMessages].sort((a, b) => a.sentAt - b.sentAt)) {
@@ -314,6 +333,7 @@ function composeAssistantSegment(
   out: ConversationMessage[],
   parentSentAt?: number,
   turnIndex?: number,
+  includeAuditLineage = true,
 ): void {
   let currentText: {
     kind: 'assistant_text';
@@ -331,8 +351,27 @@ function composeAssistantSegment(
 
   // 每段开头计数器从 0 起，id 用 segment idx + offset，避免不同段的 id 冲撞
   const segmentTag = `seg${out.length}`;
-  let textBubbleCounter = 0;
-  let noticeCounter = 0;
+  const eventOccurrences = new Map<string, number>();
+
+  const eventTag = (event: SessionEvent, fallback: string): string => {
+    if ('canonicalIndex' in event && typeof event.canonicalIndex === 'number') {
+      return `history_c${event.canonicalIndex}`;
+    }
+    if ('entryId' in event && typeof event.entryId === 'string') {
+      return `history_e${encodeURIComponent(event.entryId)}`;
+    }
+    if ('logicalId' in event && typeof event.logicalId === 'string') {
+      return `history_l${encodeURIComponent(event.logicalId)}`;
+    }
+    return fallback;
+  };
+  const nextEventId = (event: SessionEvent, kind: string): string => {
+    const tag = eventTag(event, segmentTag);
+    const key = `${tag}_${kind}`;
+    const occurrence = eventOccurrences.get(key) ?? 0;
+    eventOccurrences.set(key, occurrence + 1);
+    return `${key}${occurrence}`;
+  };
 
   function flushTextBubble(): Extract<ConversationMessage, { kind: 'assistant_text' }> | null {
     if (currentText) {
@@ -351,7 +390,7 @@ function composeAssistantSegment(
         if (!currentText) {
           currentText = {
             kind: 'assistant_text',
-            id: `${segmentTag}_text${textBubbleCounter++}`,
+            id: nextEventId(evt, 'text'),
             text: '',
             ...(turnIndex !== undefined ? { turnIndex } : {}),
             sentAt: evt.sentAt ?? parentSentAt,
@@ -364,7 +403,7 @@ function composeAssistantSegment(
         if (!currentText) {
           currentText = {
             kind: 'assistant_text',
-            id: `${segmentTag}_text${textBubbleCounter++}`,
+            id: nextEventId(evt, 'text'),
             text: '',
             ...(turnIndex !== undefined ? { turnIndex } : {}),
             sentAt: evt.sentAt ?? parentSentAt,
@@ -378,7 +417,7 @@ function composeAssistantSegment(
         lastTextBubble = null;
         const card: Extract<ConversationMessage, { kind: 'tool_call' }> = {
           kind: 'tool_call',
-          id: `${segmentTag}_tool_${evt.toolId}`,
+          id: `${eventTag(evt, segmentTag)}_tool_${evt.toolId}`,
           toolId: evt.toolId,
           toolName: evt.toolName,
           input: evt.input,
@@ -436,7 +475,7 @@ function composeAssistantSegment(
         if (evt.message.historical === true) {
           out.push({
             kind: 'system_notice',
-            id: `${segmentTag}_sidecar${noticeCounter++}`,
+            id: nextEventId(evt, 'sidecar'),
             variant: 'sidecar',
             text: `${evt.message.content}${suggestedFix}`,
             historical: true,
@@ -451,13 +490,14 @@ function composeAssistantSegment(
               : 'Sidecar verifier blocked completion';
         out.push({
           kind: 'system_notice',
-          id: `${segmentTag}_sidecar${noticeCounter++}`,
+          id: nextEventId(evt, 'sidecar'),
           variant: 'sidecar',
           text: `${title}: ${evt.message.content}${suggestedFix}`,
         });
         break;
       }
       case 'lineage_notice': {
+        if (!includeAuditLineage) break;
         // #3 fix: branch_summary/compaction lineage entry 的历史提示条——不是用户消息,
         // 复用 sidecar 的视觉样式(SystemNotice 的 warn 配色)。compaction 的完整摘要是
         // Runtime 内部上下文，通常有上万字符且多次压缩之间高度重叠；只显示本地化边界标签。
@@ -475,10 +515,28 @@ function composeAssistantSegment(
         }
         out.push({
           kind: 'system_notice',
-          id: `${segmentTag}_lineage${noticeCounter++}`,
+          id:
+            evt.displayId !== undefined ||
+            evt.provisionalId !== undefined ||
+            evt.entryId !== undefined
+              ? `lineage_${evt.displayId ?? evt.provisionalId ?? evt.entryId}`
+              : nextEventId(evt, 'lineage'),
           variant: 'lineage',
           lineageKind: evt.noticeKind,
           text: evt.noticeKind === 'branch_summary' ? evt.text : '',
+        });
+        break;
+      }
+      case 'history_truncation': {
+        flushTextBubble();
+        out.push({
+          kind: 'system_notice',
+          id: nextEventId(evt, 'history_truncation'),
+          variant: 'lineage',
+          lineageKind: 'history_truncation',
+          historyTruncationScope: evt.scope,
+          omittedItems: evt.omittedItems,
+          text: '',
         });
         break;
       }
@@ -489,7 +547,7 @@ function composeAssistantSegment(
         flushTextBubble();
         out.push({
           kind: 'system_notice',
-          id: `${segmentTag}_wf${noticeCounter++}`,
+          id: nextEventId(evt, 'workflow'),
           variant: 'workflow',
           text: evt.text,
           ...(evt.sentAt !== undefined ? { sentAt: evt.sentAt } : {}),
@@ -501,7 +559,7 @@ function composeAssistantSegment(
         segmentHadError = true;
         out.push({
           kind: 'system_notice',
-          id: `${segmentTag}_err${noticeCounter++}`,
+          id: nextEventId(evt, 'error'),
           variant: 'error',
           text: evt.error,
           // OC-11 透传分类信息 —— SystemNotice 据此渲染 retry / open-settings 按钮

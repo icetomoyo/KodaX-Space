@@ -347,7 +347,7 @@ Space pins the root package and uses its documented public subpath exports. Inte
 
 ### 5.2 SDK 拉入方式
 
-- **Release/CI**：exact published `@kodax-ai/kodax` dependency and lockfile; packaging swaps/verifies the published tarball and required Worker/native sidecars.
+- **Release/CI**：exact `@kodax-ai/kodax` dependency and lockfile; normal releases require the Registry. Pre-release validation may use a repository-vendored, versioned tgz pinned by lockfile SRI, but only through the explicit local-test packaging entry point. Packaging verifies the locked physical package and required Worker/native sidecars.
 - **同仓开发**：`npm run link:kodax` links the adjacent checkout temporarily; release checks must prove no source link remains.
 - **Contract policy**：capability negotiation and compatibility probes determine support. Version comparisons may select compatibility code but may not invent a capability.
 
@@ -465,15 +465,17 @@ type Project = {
 
 ### 8.1 三层权限
 
-1. **KodaX 内核层**（`confirmTools` / `Allow patterns` / 危险命令黑名单——已存在）
+1. **KodaX 内核层**（Auto[LLM] classifier、Auto[Rules]、Accept-edits fallback 与权限 grant）
 2. **Space UI 层**（弹窗与录入；F121 的 Coder `Always allow` 仅回传 Runtime 给出的不透明精确 grant suggestion，绝不由 UI 扩大工具或 shell 范围；Partner 保留 inline policy path）
 3. **OS 层**（写入 keychain、利用 Win Credential Manager / macOS Keychain）
 
 唯一真理面在 KodaX。Space 是显示器 + 录入器。
 
-### 8.2 危险操作黑名单（Space 加固）
+### 8.2 静态危险操作边界（非 Auto[LLM] 决策路径）
 
-即便 KodaX 模式允许，下列命令在 Space 强制 typed-confirm（输入 `CONFIRM`）：
+Space 的静态检测仅用于 `accept-edits`、未安装 Auto guardrail 的 fallback 和其他由本地 broker
+拥有决策权的路径。成功安装 Auto guardrail 后，KodaX 先完成工具裁决；Space 不得再用下列
+模式覆盖合法的 LLM `allow`，只负责展示并录入 KodaX 明确发出的 `ask`：
 
 - `rm -rf` / `rmdir /S` 任何变体
 - `git push --force` / `git push -f`

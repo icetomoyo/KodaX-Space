@@ -4,6 +4,7 @@
 // state instead of mirroring unpublished KodaX daemon transport payloads.
 
 import { z } from 'zod';
+import { autoModeDecisionDiagnosticsSchema } from './permission.js';
 
 const MAX_ID = 128;
 const MAX_REASON = 512;
@@ -111,14 +112,58 @@ export const spaceRuntimeRunPhaseSchema = z.enum([
   'queued',
   'starting',
   'running',
+  'waiting_agent',
+  'recovering',
   'waiting_permission',
   'waiting_user_input',
   'waiting_credential',
   'cancelling',
+  'unknown',
   'completed',
   'cancelled',
   'failed',
   'interrupted',
+]);
+
+export const spaceRuntimeRunStopReceiptSchema = z
+  .object({
+    runId: idSchema,
+    sessionId: idSchema,
+    accepted: z.boolean(),
+    state: z.enum(['unknown', 'confirmed']),
+    outcome: z.enum(['unknown', 'cancelled', 'interrupted', 'completed', 'failed']),
+    phase: z.enum([
+      'queued',
+      'running',
+      'waiting_agent',
+      'recovering',
+      'waiting_permission',
+      'waiting_user_input',
+      'unknown',
+      'completed',
+      'failed',
+      'cancelled',
+      'interrupted',
+    ]),
+    revision: z.number().int().nonnegative(),
+  })
+  .strict();
+
+export const spaceRuntimeRunStageSchema = z.enum([
+  'queued',
+  'executing',
+  'waiting_agent',
+  'recovering',
+  'finalizing',
+  'terminal',
+  'unknown',
+  'starting',
+  'routing',
+  'preflight',
+  'round',
+  'worker',
+  'upgrade',
+  'verifying',
 ]);
 
 export const spaceRuntimeRunProjectionSchema = z
@@ -126,16 +171,37 @@ export const spaceRuntimeRunProjectionSchema = z
     runId: idSchema,
     sessionId: idSchema,
     phase: spaceRuntimeRunPhaseSchema,
+    stage: spaceRuntimeRunStageSchema.optional(),
+    stageChangedAt: timestampSchema.optional(),
+    activeSubtaskCount: z.number().int().nonnegative().optional(),
     queuedAt: timestampSchema.optional(),
     startedAt: timestampSchema.optional(),
     completedAt: timestampSchema.optional(),
     queuePosition: z.number().int().positive().max(MAX_QUEUE_ITEMS).optional(),
     terminalReason: z.string().min(1).max(MAX_REASON).optional(),
+    lifecycleError: z
+      .object({
+        code: z.enum(['actor_settlement_retrying', 'actor_settlement_not_persisted']),
+        message: z.string().min(1).max(MAX_REASON),
+        retryable: z.boolean(),
+      })
+      .strict()
+      .optional(),
     initiatedBy: spaceRuntimeInitiatorSchema.optional(),
     requirements: z
       .object({
         credential: z.enum(['ready', 'expired', 'terminal']).optional(),
         hostTools: z.enum(['ready', 'waiting_host', 'expired', 'terminal']).optional(),
+      })
+      .strict()
+      .optional(),
+    stop: z
+      .object({
+        requestedAt: timestampSchema,
+        state: z.enum(['unknown', 'confirmed']),
+        outcome: z.enum(['unknown', 'cancelled', 'interrupted', 'completed', 'failed']),
+        reason: z.string().min(1).max(MAX_REASON),
+        resolvedAt: timestampSchema.optional(),
       })
       .strict()
       .optional(),
@@ -145,10 +211,13 @@ export const spaceRuntimeRunProjectionSchema = z
 const ACTIVE_RUN_PHASES: ReadonlySet<z.infer<typeof spaceRuntimeRunPhaseSchema>> = new Set([
   'starting',
   'running',
+  'waiting_agent',
+  'recovering',
   'waiting_permission',
   'waiting_user_input',
   'waiting_credential',
   'cancelling',
+  'unknown',
 ]);
 const TERMINAL_RUN_PHASES: ReadonlySet<z.infer<typeof spaceRuntimeRunPhaseSchema>> = new Set([
   'completed',
@@ -246,60 +315,13 @@ const runtimePermissionAllowAlwaysScopeSchema = z
     label: z.string().min(1).max(512),
   })
   .strict();
-const runtimeAutoModeAttemptDiagnosticsSchema = z
-  .object({
-    provider: z.string().min(1).max(128),
-    model: z.string().min(1).max(256),
-    timeoutMs: z.number().int().nonnegative(),
-    elapsedMs: z.number().int().nonnegative(),
-    promptBytes: z.number().int().nonnegative(),
-    retryCount: z.number().int().nonnegative().max(16),
-    retryWaitMs: z.number().int().nonnegative(),
-    terminalPhase: z.enum([
-      'completed',
-      'pre_output',
-      'awaiting_text',
-      'thinking',
-      'streaming',
-      'contract_error',
-    ]),
-  })
-  .strict();
-const runtimeAutoModeClassifierAttemptSchema = z
-  .object({
-    attempt: z.number().int().positive().max(4),
-    outcome: z.enum([
-      'allow',
-      'confirm',
-      'timeout',
-      'provider_error',
-      'contract_error',
-      'input_budget',
-    ]),
-    diagnostics: runtimeAutoModeAttemptDiagnosticsSchema.optional(),
-  })
-  .strict();
-const runtimeAutoModeDiagnosticsSchema = z
-  .object({
-    source: z.enum([
-      'classifier_confirm',
-      'classifier_failure',
-      'classifier_circuit_breaker',
-      'configuration',
-    ]),
-    classifierFailureKind: z
-      .enum(['timeout', 'provider_error', 'contract_error', 'input_budget'])
-      .optional(),
-    classifierAttempts: z.array(runtimeAutoModeClassifierAttemptSchema).max(4).optional(),
-  })
-  .strict();
 const runtimePermissionRequestSchema = z.object({
   reqId: idSchema,
   sessionId: idSchema,
   risk: z.enum(['low', 'medium', 'high', 'danger']),
   reason: z.string().max(512),
   toolCall: runtimeInteractionToolCallSchema,
-  autoModeDiagnostics: runtimeAutoModeDiagnosticsSchema.optional(),
+  autoModeDiagnostics: autoModeDecisionDiagnosticsSchema.optional(),
   suggestedPattern: z.string().min(1).max(512).optional(),
   allowAlwaysScope: runtimePermissionAllowAlwaysScopeSchema.optional(),
 });
@@ -772,12 +794,35 @@ export const sessionLiveChangedChannel = {
   payload: spaceSessionLiveChangedSchema,
 } as const;
 
+export const spaceSessionLiveInvalidatedSchema = z
+  .object({
+    sessionId: idSchema,
+    runtimeId: idSchema,
+    reason: z.enum([
+      'event_overflow',
+      'event_order',
+      'delivery_failed',
+      'runtime_changed',
+      'transport_disconnected',
+    ]),
+    message: z.string().min(1).max(MAX_REASON),
+  })
+  .strict();
+
+export const sessionLiveInvalidatedChannel = {
+  name: 'session.liveInvalidated',
+  direction: 'push',
+  payload: spaceSessionLiveInvalidatedSchema,
+} as const;
+
 export type SpaceRuntimeCursorT = z.infer<typeof spaceRuntimeCursorSchema>;
 export type SpaceRuntimeInitiatorT = z.infer<typeof spaceRuntimeInitiatorSchema>;
 export type SpaceRuntimeCapabilityT = z.infer<typeof spaceRuntimeCapabilitySchema>;
 export type SpaceCoderConnectionStateT = z.infer<typeof spaceCoderConnectionStateSchema>;
 export type SpaceCoderConnectionProjectionT = z.infer<typeof spaceCoderConnectionProjectionSchema>;
 export type SpaceRuntimeRunPhaseT = z.infer<typeof spaceRuntimeRunPhaseSchema>;
+export type SpaceRuntimeRunStopReceiptT = z.infer<typeof spaceRuntimeRunStopReceiptSchema>;
+export type SpaceRuntimeRunStageT = z.infer<typeof spaceRuntimeRunStageSchema>;
 export type SpaceRuntimeRunProjectionT = z.infer<typeof spaceRuntimeRunProjectionSchema>;
 export type SpaceRuntimeInteractionT = z.infer<typeof spaceRuntimeInteractionSchema>;
 export type SpaceRuntimeIntegrationHealthT = z.infer<typeof spaceRuntimeIntegrationHealthSchema>;
@@ -787,3 +832,4 @@ export type SpaceSessionLiveProjectionT = z.infer<typeof spaceSessionLiveProject
 export type SpaceRuntimeSessionSettingsT = z.infer<typeof spaceRuntimeSessionSettingsSchema>;
 export type SpaceSessionLiveDomainChangeT = z.infer<typeof spaceSessionLiveDomainChangeSchema>;
 export type SpaceSessionLiveChangedT = z.infer<typeof spaceSessionLiveChangedSchema>;
+export type SpaceSessionLiveInvalidatedT = z.infer<typeof spaceSessionLiveInvalidatedSchema>;

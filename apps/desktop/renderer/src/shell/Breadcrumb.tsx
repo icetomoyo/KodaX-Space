@@ -7,6 +7,7 @@ import { useState } from 'react';
 import { useAppStore } from '../store/appStore.js';
 import { SessionMenu } from './SessionMenu.js';
 import { useI18n } from '../i18n/I18nProvider.js';
+import { ViewportTooltip } from '../components/ViewportTooltip.js';
 
 export function Breadcrumb(): JSX.Element {
   const { t } = useI18n();
@@ -17,6 +18,8 @@ export function Breadcrumb(): JSX.Element {
   const [menuOpen, setMenuOpen] = useState(false);
 
   const projectName = projectPath ? projectPath.split(/[\\/]/).filter(Boolean).pop() : null;
+  const sessionTitle =
+    session?.title ?? (session ? t('breadcrumb.untitledSession') : t('breadcrumb.newSession'));
 
   async function pickProject(): Promise<void> {
     if (!window.kodaxSpace) return;
@@ -28,16 +31,20 @@ export function Breadcrumb(): JSX.Element {
   }
 
   return (
-    <div className="flex items-center gap-1 text-sm text-fg-secondary flex-1 min-w-0">
+    <div className="flex min-w-0 flex-1 items-center gap-1 text-sm text-fg-secondary">
       {projectName ? (
-        <button
-          type="button"
-          onClick={() => void pickProject()}
-          className="px-1.5 py-0.5 rounded hover:bg-hover-bg truncate"
-          title={projectPath ?? ''}
+        <ViewportTooltip
+          content={projectPath ?? projectName}
+          className="flex min-w-0 max-w-[35%] flex-shrink"
         >
-          {projectName}
-        </button>
+          <button
+            type="button"
+            onClick={() => void pickProject()}
+            className="min-w-0 truncate rounded px-1.5 py-0.5 hover:bg-hover-bg"
+          >
+            {projectName}
+          </button>
+        </ViewportTooltip>
       ) : (
         <button
           type="button"
@@ -47,18 +54,17 @@ export function Breadcrumb(): JSX.Element {
           {t('breadcrumb.openFolder')}
         </button>
       )}
-      <span className="text-fg-muted">/</span>
-      <div className="relative flex items-center min-w-0">
-        <span className="px-1.5 py-0.5 truncate text-fg-muted" title={session?.sessionId}>
-          {session?.title ??
-            (session ? t('breadcrumb.untitledSession') : t('breadcrumb.newSession'))}
-        </span>
+      <span className="flex-shrink-0 text-fg-muted">/</span>
+      <div className="relative flex min-w-0 flex-1 items-center">
+        <ViewportTooltip content={sessionTitle} className="min-w-0 flex-1">
+          <span className="block truncate px-1.5 py-0.5 text-fg-muted">{sessionTitle}</span>
+        </ViewportTooltip>
         {session && (
           <>
             <button
               type="button"
               onClick={() => setMenuOpen((v) => !v)}
-              className="px-1 py-0.5 text-fg-muted hover:text-fg-secondary text-xs"
+              className="flex-shrink-0 px-1 py-0.5 text-xs text-fg-muted hover:text-fg-secondary"
               aria-label={t('breadcrumb.sessionOptions')}
             >
               ▾

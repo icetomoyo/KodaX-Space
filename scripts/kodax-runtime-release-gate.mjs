@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
@@ -23,7 +24,11 @@ function exactVersion(value, label) {
   return version;
 }
 
-export function assertKodaxReleaseDependencyState(spaceRoot, sdkDir) {
+export function assertKodaxReleaseDependencyState(
+  spaceRoot,
+  sdkDir,
+  { allowLocalTarball = false } = {},
+) {
   const rootManifest = readJson(path.join(spaceRoot, 'package.json'), 'the root manifest');
   const desktopManifest = readJson(
     path.join(spaceRoot, 'apps', 'desktop', 'package.json'),
@@ -56,23 +61,66 @@ export function assertKodaxReleaseDependencyState(spaceRoot, sdkDir) {
   if (mismatches.length > 0) {
     throw new Error(
       `[pack] KodaX release dependency mismatch: expected ${expected}; ${mismatches.join(', ')}. ` +
-        'Update both manifests and package-lock.json to one exact Registry version, run npm ci, ' +
-        'and package again.',
+        'Update both manifests and package-lock.json to one exact version, restore the locked ' +
+        'package, and package again.',
     );
   }
 
   const lockedPackage = lock.packages?.['node_modules/@kodax-ai/kodax'];
   const resolved = String(lockedPackage?.resolved ?? '').trim();
   const integrity = String(lockedPackage?.integrity ?? '').trim();
-  if (
-    !/^https:\/\/registry\.npmjs\.org\/@kodax-ai\/kodax\/-\/kodax-[^/]+\.tgz$/i.test(resolved) ||
-    !/^sha512-[A-Za-z0-9+/=]+$/.test(integrity)
-  ) {
+  if (!/^sha512-[A-Za-z0-9+/=]+$/.test(integrity)) {
     throw new Error(
-      `[pack] package-lock.json must resolve ${KODAX_PACKAGE}@${expected} from the npm Registry ` +
-        'with sha512 integrity before packaging.',
+      `[pack] package-lock.json must pin ${KODAX_PACKAGE}@${expected} with sha512 integrity ` +
+        'before packaging.',
     );
   }
 
-  return { version: expected, resolved, integrity };
+  const registryPattern = new RegExp(
+    `^https://registry\\.npmjs\\.org/@kodax-ai/kodax/-/kodax-${expected.replaceAll('.', '\\.')}\\.tgz$`,
+    'i',
+  );
+  if (registryPattern.test(resolved)) {
+    return { version: expected, resolved, integrity, source: 'registry' };
+  }
+
+  if (resolved.startsWith('file:')) {
+    if (!allowLocalTarball) {
+      throw new Error(
+        `[pack] Refusing local ${KODAX_PACKAGE}@${expected} tarball in release mode. ` +
+          'Use the explicit local-test packaging entry point for pre-release validation.',
+      );
+    }
+    const fileReference = decodeURIComponent(resolved.slice('file:'.length));
+    const tarballPath = path.resolve(spaceRoot, fileReference);
+    const expectedBasename = `kodax-ai-kodax-${expected}.tgz`;
+    if (path.basename(tarballPath) !== expectedBasename) {
+      throw new Error(
+        `[pack] Local ${KODAX_PACKAGE}@${expected} must use ${expectedBasename}; found ${resolved}.`,
+      );
+    }
+
+    let actualIntegrity;
+    try {
+      actualIntegrity = `sha512-${createHash('sha512')
+        .update(readFileSync(tarballPath))
+        .digest('base64')}`;
+    } catch (error) {
+      throw new Error(`[pack] Cannot read the locked local KodaX tarball at ${tarballPath}.`, {
+        cause: error,
+      });
+    }
+    if (actualIntegrity !== integrity) {
+      throw new Error(
+        `[pack] Locked local KodaX tarball integrity mismatch at ${tarballPath}. ` +
+          'Regenerate package-lock.json from the intended test package before packaging.',
+      );
+    }
+    return { version: expected, resolved, integrity, source: 'local-tarball' };
+  }
+
+  throw new Error(
+    `[pack] package-lock.json must resolve ${KODAX_PACKAGE}@${expected} from the npm Registry ` +
+      'or a versioned local test tarball before packaging.',
+  );
 }

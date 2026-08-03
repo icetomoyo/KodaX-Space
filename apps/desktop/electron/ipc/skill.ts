@@ -175,6 +175,7 @@ export function registerSkillChannels(): void {
     const executor = createSkillDynamicContextExecutor({
       sessionId: input.sessionId,
       permissionMode: session.permissionMode,
+      surface: session.surface,
     });
 
     const result = await registry.invoke(input.skillName, joinArgs(input.args), {

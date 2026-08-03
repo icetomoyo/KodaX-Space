@@ -62,18 +62,30 @@ import { isBuiltinId } from '../providers/catalog.js';
 import { providerConfigStore } from '../providers/config.js';
 import {
   appendPersistedClientNotice,
+  loadPersistedConversationHistory,
   loadPersistedSession,
   loadPersistedTranscript,
   sdkTagToSurface,
+  type PersistedConversationHistoryData,
 } from '../kodax/session-store.js';
-import { runtimeHostAdapter } from '../kodax/runtime-host-adapter.js';
+import {
+  runtimeHostAdapter,
+  type RuntimeConversationHistoryPage,
+} from '../kodax/runtime-host-adapter.js';
+import type { RuntimeConversationHistory } from '@kodax-ai/kodax/runtime';
+import { generateKodaxSessionId } from '../kodax/session-id.js';
+import { runtimeProjectionController } from '../kodax/runtime/runtime-projection-controller.js';
 import { runWithCoderAdmission } from '../kodax/coder-runtime-mode-switch.js';
 import { partnerSourceStore } from '../kodax/partner-source-store.js';
 import { parseTaskCompletedBlocks, selectWorkflowBlocks } from './workflow-result-notice.js';
 import { dedupeTranscriptEntries } from './transcript-dedup.js';
+import { limitSessionHistoryWithLocalNotices, pageSessionHistoryItems } from './history-window.js';
 import { resolveRuntimeDefaults } from '../kodax/runtime-defaults.js';
 import { getSessionRuntimeStore } from '../kodax/session-runtime-store.js';
-import { getSessionLocalNoticeStore } from '../kodax/session-local-notice-store.js';
+import {
+  appendSpaceOwnedLocalNotice,
+  getSessionLocalNoticeStore,
+} from '../kodax/session-local-notice-store.js';
 import {
   assertArtifactPathInClipboardSandbox,
   finalizePendingClipboardArtifacts,
@@ -87,9 +99,531 @@ import type {
   AgentsFileMeta,
   InputArtifact,
   SessionHistoryItem,
-  SessionLocalNotice,
   SessionMeta,
 } from '@kodax-space/space-ipc-schema';
+
+type ConversationHistoryData = RuntimeConversationHistory | PersistedConversationHistoryData;
+
+interface IndexedConversationEntry {
+  readonly index: number;
+  readonly entry: ConversationHistoryData['entries'][number];
+}
+
+type ConversationTurnBoundary = {
+  readonly boundaryId: string;
+  readonly sourceRevision: string;
+};
+
+interface RuntimeConversationWindow {
+  readonly revision: string;
+  readonly sourceRevision: string;
+  readonly status: RuntimeConversationHistory['status'];
+  readonly issues: RuntimeConversationHistory['issues'];
+  readonly entriesByIndex: Map<number, RuntimeConversationHistory['entries'][number]>;
+  /** Tool results from the immediately newer SDK page that close tool uses in this page. */
+  seamToolResults: Map<string, { readonly content: string; readonly isError: boolean }>;
+  /** Exact turn ends that cross from this SDK page into one or more already-loaded newer pages. */
+  seamTurnBoundaries: Map<number, ConversationTurnBoundary>;
+  /**
+   * Exact final boundary before the first visible user in this page and every already-loaded
+   * newer page. A single visible turn can have a tail spanning more than two SDK pages, while
+   * the resident browsing window intentionally retains only one page at a time.
+   */
+  newerPrefixTurnBoundary?: ConversationTurnBoundary;
+  entryBytes: number;
+  /** True only after advancing to an older SDK page, never for a slice of this same page. */
+  newerSdkPageOmitted: boolean;
+  prefixOmitted: boolean;
+  hasMore: boolean;
+  nextCursor?: string;
+  projectionContinuation?: {
+    readonly cursor: string;
+    readonly endExclusive: number;
+    readonly itemCount: number;
+  };
+}
+
+const RUNTIME_HISTORY_PAGE_LIMIT = 64;
+const MAX_RUNTIME_HISTORY_WINDOWS = 16;
+const MAX_RUNTIME_HISTORY_WINDOW_ENTRIES = 2_000;
+const MAX_RUNTIME_HISTORY_PAGE_BYTES = 32 * 1024 * 1024;
+const MAX_RUNTIME_HISTORY_WINDOW_BYTES = 64 * 1024 * 1024;
+const runtimeConversationWindows = new Map<string, RuntimeConversationWindow>();
+let runtimeProjectionCursorCounter = 0;
+
+function nextRuntimeProjectionCursor(sessionId: string): string {
+  runtimeProjectionCursorCounter += 1;
+  return `space-projection:${runtimeProjectionCursorCounter}:${sessionId}`;
+}
+
+function rememberRuntimeConversationWindow(
+  sessionId: string,
+  window: RuntimeConversationWindow,
+): void {
+  runtimeConversationWindows.delete(sessionId);
+  runtimeConversationWindows.set(sessionId, window);
+  while (runtimeConversationWindows.size > MAX_RUNTIME_HISTORY_WINDOWS) {
+    const oldest = runtimeConversationWindows.keys().next().value;
+    if (oldest === undefined) break;
+    runtimeConversationWindows.delete(oldest);
+  }
+}
+
+function assertSafePagedHistoryMutation(
+  sessionId: string,
+  historyBoundary: { readonly boundaryId: string; readonly sourceRevision: string } | undefined,
+): void {
+  const session = kodaxHost.get(sessionId);
+  if (session?.surface === 'code' && historyBoundary === undefined) {
+    throw new Error(
+      'An exact persisted history boundary is required for a Runtime-backed Session mutation.',
+    );
+  }
+}
+
+export async function truncateLocalNoticesAfterSuccessfulRewind(
+  input: { readonly sessionId: string; readonly localNoticeCutoffSentAt?: number },
+  result: { readonly ok: boolean; readonly diskRewound?: boolean },
+  store: Pick<
+    ReturnType<typeof getSessionLocalNoticeStore>,
+    'truncateBefore'
+  > = getSessionLocalNoticeStore(),
+): Promise<void> {
+  if (result.ok && result.diskRewound === true && input.localNoticeCutoffSentAt !== undefined) {
+    await store.truncateBefore(input.sessionId, input.localNoticeCutoffSentAt);
+  }
+}
+
+function isVisibleConversationUserMessage(message: unknown): boolean {
+  if (!isRecord(message) || message.role !== 'user') return false;
+  const source = message.source ?? message._source;
+  if (source === 'sidecar-verifier') return false;
+  if (message.synthetic === true || message._synthetic === true) return false;
+  return (
+    extractUserText(message.content).length > 0 || extractUserImages(message.content).length > 0
+  );
+}
+
+function conversationTurnBoundaries(
+  entries: readonly IndexedConversationEntry[],
+  sourceRevision: string,
+  includeFinalBoundary = true,
+): ReadonlyMap<number, { readonly boundaryId: string; readonly sourceRevision: string }> {
+  const boundaries = new Map<
+    number,
+    { readonly boundaryId: string; readonly sourceRevision: string }
+  >();
+  let currentUserIndex: number | undefined;
+  let currentBoundaryId: string | undefined;
+  const commit = (): void => {
+    if (currentUserIndex !== undefined && currentBoundaryId !== undefined) {
+      boundaries.set(currentUserIndex, { boundaryId: currentBoundaryId, sourceRevision });
+    }
+  };
+  for (const indexed of entries) {
+    if (isVisibleConversationUserMessage(indexed.entry.message)) {
+      commit();
+      currentUserIndex = indexed.index;
+      currentBoundaryId = indexed.entry.boundaryId;
+      continue;
+    }
+    if (currentUserIndex !== undefined) currentBoundaryId = indexed.entry.boundaryId;
+  }
+  if (includeFinalBoundary) commit();
+  return boundaries;
+}
+
+export function conversationHistoryAsTranscript(
+  history: ConversationHistoryData,
+  indexedEntries: readonly IndexedConversationEntry[] = history.entries.map((entry, index) => ({
+    index,
+    entry,
+  })),
+  boundaryEntries: readonly IndexedConversationEntry[] = indexedEntries,
+  includeFinalBoundary = true,
+  additionalTurnBoundaries: ReadonlyMap<
+    number,
+    { readonly boundaryId: string; readonly sourceRevision: string }
+  > = new Map(),
+) {
+  const turnBoundaries = new Map(
+    conversationTurnBoundaries(boundaryEntries, history.sourceRevision, includeFinalBoundary),
+  );
+  for (const [canonicalIndex, boundary] of additionalTurnBoundaries) {
+    turnBoundaries.set(canonicalIndex, boundary);
+  }
+  const transcriptEntries = indexedEntries.map(({ entry, index: canonicalIndex }) => {
+    const messageRecord = isRecord(entry.message) ? entry.message : undefined;
+    const entryId = entry.boundaryId ?? entry.auditEntryIds[0];
+    return {
+      ...(entryId !== undefined ? { entryId } : {}),
+      ...(entry.boundaryId !== undefined ? { logicalId: entry.boundaryId } : {}),
+      canonicalIndex,
+      type: 'message' as const,
+      message: entry.message,
+      ...(messageRecord?.timestamp !== undefined ? { timestamp: messageRecord.timestamp } : {}),
+      ...(messageRecord?.turnId !== undefined ? { turnId: messageRecord.turnId } : {}),
+      ...(turnBoundaries.has(canonicalIndex)
+        ? { historyBoundary: turnBoundaries.get(canonicalIndex)! }
+        : {}),
+      active: true,
+    };
+  });
+  return {
+    messages: transcriptEntries.map((entry) => entry.message),
+    activeMessages: transcriptEntries.map((entry) => entry.message),
+    transcriptEntries,
+  };
+}
+
+function runtimeWindowMatchesPage(
+  window: RuntimeConversationWindow,
+  page: RuntimeConversationHistoryPage,
+): boolean {
+  return (
+    window.revision === page.revision &&
+    window.sourceRevision === page.sourceRevision &&
+    window.status === page.status &&
+    window.issues.length === page.issues.length &&
+    window.issues.every((issue, index) => {
+      const candidate = page.issues[index];
+      return (
+        candidate !== undefined &&
+        issue.code === candidate.code &&
+        issue.message === candidate.message &&
+        issue.occurrenceCount === candidate.occurrenceCount &&
+        issue.entryCount === candidate.entryCount &&
+        issue.entryIds.length === candidate.entryIds.length &&
+        issue.entryIds.every((entryId, entryIndex) => entryId === candidate.entryIds[entryIndex])
+      );
+    })
+  );
+}
+
+function conversationHistoryDiagnostic(history: ConversationHistoryData) {
+  return {
+    status: history.status,
+    sourceRevision: history.sourceRevision,
+    issues: history.issues.map((issue) => ({
+      code: issue.code,
+      occurrenceCount: issue.occurrenceCount,
+      entryCount: issue.entryCount,
+    })),
+  };
+}
+
+type RuntimeConversationWindowResult =
+  | {
+      readonly outcome: 'ready';
+      readonly window: RuntimeConversationWindow | null;
+      readonly projectionEndExclusive?: number;
+      readonly projectionItemCount?: number;
+    }
+  | { readonly outcome: 'data_changed' };
+
+interface RuntimePresentationContinuationState {
+  projectionContinuation?: {
+    readonly cursor: string;
+    readonly endExclusive: number;
+    readonly itemCount: number;
+  };
+}
+
+/** Consume an older presentation slice without changing which SDK pages the window represents. */
+export function consumeRuntimePresentationContinuation(
+  state: RuntimePresentationContinuationState,
+  cursor: string,
+): { readonly endExclusive: number; readonly itemCount: number } | null {
+  if (state.projectionContinuation?.cursor !== cursor) return null;
+  const continuation = state.projectionContinuation;
+  state.projectionContinuation = undefined;
+  return {
+    endExclusive: continuation.endExclusive,
+    itemCount: continuation.itemCount,
+  };
+}
+
+export function collectCrossPageToolResults(
+  olderMessages: readonly unknown[],
+  newerMessages: readonly unknown[],
+): Map<string, { readonly content: string; readonly isError: boolean }> {
+  const toolUseIds = new Set<string>();
+  for (const message of olderMessages) {
+    if (!isRecord(message) || !Array.isArray(message.content)) continue;
+    for (const block of message.content) {
+      if (!isRecord(block) || block.type !== 'tool_use') continue;
+      const id = stringField(block.id);
+      if (id !== undefined) toolUseIds.add(id);
+    }
+  }
+  const results = new Map<string, { readonly content: string; readonly isError: boolean }>();
+  if (toolUseIds.size === 0) return results;
+  for (const message of newerMessages) {
+    if (!isRecord(message) || !Array.isArray(message.content)) continue;
+    for (const block of message.content) {
+      if (!isRecord(block) || block.type !== 'tool_result') continue;
+      const id = stringField(block.tool_use_id);
+      if (id === undefined || !toolUseIds.has(id)) continue;
+      results.set(id, {
+        content: flattenToolResultContent(block.content),
+        isError: block.is_error === true,
+      });
+    }
+  }
+  return results;
+}
+
+/**
+ * Preserve the exact end of the last visible turn in an older SDK page when that turn's
+ * assistant/tool tail continues into one or more newer pages. Every page has already passed the
+ * immutable revision/sourceRevision check before this helper is used. The first visible user in
+ * the newer history starts another turn and is therefore never consumed as part of this boundary.
+ */
+export function collectCrossPageTurnBoundaries(
+  olderEntries: readonly IndexedConversationEntry[],
+  newerEntries: readonly IndexedConversationEntry[],
+  sourceRevision: string,
+  continuedNewerPrefixBoundary?: ConversationTurnBoundary,
+): Map<number, ConversationTurnBoundary> {
+  let finalUserIndex: number | undefined;
+  let finalBoundaryId: string | undefined;
+  for (const indexed of olderEntries) {
+    if (isVisibleConversationUserMessage(indexed.entry.message)) {
+      finalUserIndex = indexed.index;
+      finalBoundaryId = indexed.entry.boundaryId;
+    } else if (finalUserIndex !== undefined) {
+      finalBoundaryId = indexed.entry.boundaryId;
+    }
+  }
+  if (finalUserIndex === undefined) return new Map();
+
+  let reachedNewerVisibleUser = false;
+  for (const indexed of newerEntries) {
+    if (isVisibleConversationUserMessage(indexed.entry.message)) {
+      reachedNewerVisibleUser = true;
+      break;
+    }
+    finalBoundaryId = indexed.entry.boundaryId;
+  }
+  if (!reachedNewerVisibleUser && continuedNewerPrefixBoundary !== undefined) {
+    if (continuedNewerPrefixBoundary.sourceRevision !== sourceRevision) {
+      throw new Error('Conversation history turn boundary crossed its immutable source revision.');
+    }
+    finalBoundaryId = continuedNewerPrefixBoundary.boundaryId;
+  }
+  return finalBoundaryId === undefined
+    ? new Map()
+    : new Map([[finalUserIndex, { boundaryId: finalBoundaryId, sourceRevision }]]);
+}
+
+/**
+ * Carry the exact tail of a turn through any number of one-page resident history windows.
+ * Entries are ordered oldest-to-newest. Once a visible user is reached, the preceding boundary
+ * is final; when no user is present, a farther-newer page owns the final boundary if supplied.
+ */
+export function collectLeadingTurnTailBoundary(
+  entries: readonly IndexedConversationEntry[],
+  sourceRevision: string,
+  continuedNewerPrefixBoundary?: ConversationTurnBoundary,
+): ConversationTurnBoundary | undefined {
+  let boundaryId: string | undefined;
+  for (const indexed of entries) {
+    if (isVisibleConversationUserMessage(indexed.entry.message)) {
+      return boundaryId === undefined ? undefined : { boundaryId, sourceRevision };
+    }
+    boundaryId = indexed.entry.boundaryId;
+  }
+  if (continuedNewerPrefixBoundary !== undefined) {
+    if (continuedNewerPrefixBoundary.sourceRevision !== sourceRevision) {
+      throw new Error('Conversation history turn boundary crossed its immutable source revision.');
+    }
+    return continuedNewerPrefixBoundary;
+  }
+  return boundaryId === undefined ? undefined : { boundaryId, sourceRevision };
+}
+
+function conversationTurnBoundaryBytes(boundary: ConversationTurnBoundary | undefined): number {
+  return boundary === undefined
+    ? 0
+    : Buffer.byteLength(boundary.boundaryId, 'utf8') +
+        Buffer.byteLength(boundary.sourceRevision, 'utf8');
+}
+
+function appendRuntimeConversationPage(
+  window: RuntimeConversationWindow,
+  page: RuntimeConversationHistoryPage,
+): void {
+  if (!runtimeWindowMatchesPage(window, page)) {
+    throw new Error('Conversation history continuation crossed its immutable boundary.');
+  }
+  const currentIndexes = [...window.entriesByIndex.keys()].sort((a, b) => a - b);
+  if (currentIndexes.length > 0 && page.entries.length > 0) {
+    const expectedNewestOlderIndex = currentIndexes[0]! - 1;
+    const actualNewestOlderIndex = page.entries[page.entries.length - 1]!.index;
+    if (actualNewestOlderIndex !== expectedNewestOlderIndex) {
+      throw new Error('Conversation history continuation is not contiguous with the loaded tail.');
+    }
+  }
+  const pageBytes = page.entries.reduce(
+    (total, indexed) => total + Buffer.byteLength(JSON.stringify(indexed.entry), 'utf8'),
+    0,
+  );
+  if (
+    page.entries.length > MAX_RUNTIME_HISTORY_WINDOW_ENTRIES ||
+    pageBytes > MAX_RUNTIME_HISTORY_PAGE_BYTES
+  ) {
+    throw new Error('Conversation history page exceeds the bounded resident window.');
+  }
+  const seamToolResults = collectCrossPageToolResults(
+    page.entries.map(({ entry }) => entry.message),
+    [...window.entriesByIndex.values()].map((entry) => entry.message),
+  );
+  const newerEntries = [...window.entriesByIndex.entries()]
+    .sort(([left], [right]) => left - right)
+    .map(([index, entry]) => ({ index, entry }));
+  const continuedNewerPrefixBoundary = window.newerPrefixTurnBoundary;
+  const seamTurnBoundaries = collectCrossPageTurnBoundaries(
+    page.entries,
+    newerEntries,
+    window.sourceRevision,
+    continuedNewerPrefixBoundary,
+  );
+  const newerPrefixTurnBoundary = collectLeadingTurnTailBoundary(
+    page.entries,
+    window.sourceRevision,
+    continuedNewerPrefixBoundary,
+  );
+  const seamToolResultBytes = [...seamToolResults.entries()].reduce(
+    (total, [id, result]) =>
+      total + Buffer.byteLength(id, 'utf8') + Buffer.byteLength(result.content, 'utf8') + 1,
+    0,
+  );
+  const seamTurnBoundaryBytes = [...seamTurnBoundaries.values()].reduce(
+    (total, boundary) => total + conversationTurnBoundaryBytes(boundary),
+    0,
+  );
+  const seamBytes =
+    seamToolResultBytes +
+    seamTurnBoundaryBytes +
+    conversationTurnBoundaryBytes(newerPrefixTurnBoundary);
+  if (pageBytes + seamBytes > MAX_RUNTIME_HISTORY_WINDOW_BYTES) {
+    throw new Error('Conversation history page seam exceeds the bounded resident window.');
+  }
+  if (window.entriesByIndex.size > 0) {
+    // Each SDK continuation becomes its own bounded browsing window. Keeping page generations
+    // separate avoids retaining an ever-growing prefix and gives renderer navigation an explicit
+    // no-overlap boundary instead of silently evicting arbitrary accumulated rows.
+    window.entriesByIndex.clear();
+    window.entryBytes = 0;
+    window.newerSdkPageOmitted = true;
+  }
+  window.projectionContinuation = undefined;
+  window.seamToolResults = seamToolResults;
+  window.seamTurnBoundaries = seamTurnBoundaries;
+  if (newerPrefixTurnBoundary === undefined) delete window.newerPrefixTurnBoundary;
+  else window.newerPrefixTurnBoundary = newerPrefixTurnBoundary;
+  for (const indexed of page.entries) {
+    if (window.entriesByIndex.has(indexed.index)) {
+      throw new Error(`Conversation history continuation repeated index ${indexed.index}.`);
+    }
+    window.entriesByIndex.set(indexed.index, indexed.entry);
+  }
+  window.entryBytes += pageBytes + seamBytes;
+  window.prefixOmitted = page.hasMore;
+  window.hasMore = page.hasMore;
+  window.nextCursor = window.hasMore ? page.nextCursor : undefined;
+}
+
+async function loadRuntimeConversationWindow(input: {
+  readonly sessionId: string;
+  readonly cursor?: string;
+  readonly revision?: string;
+  readonly sourceRevision?: string;
+}): Promise<RuntimeConversationWindowResult> {
+  const isContinuation = input.cursor !== undefined;
+  let window = runtimeConversationWindows.get(input.sessionId);
+  if (isContinuation) {
+    if (
+      window === undefined ||
+      input.revision !== window.revision ||
+      input.sourceRevision !== window.sourceRevision
+    ) {
+      runtimeConversationWindows.delete(input.sessionId);
+      return { outcome: 'data_changed' };
+    }
+    const presentationContinuation = consumeRuntimePresentationContinuation(window, input.cursor);
+    if (presentationContinuation !== null) {
+      rememberRuntimeConversationWindow(input.sessionId, window);
+      return {
+        outcome: 'ready',
+        window,
+        projectionEndExclusive: presentationContinuation.endExclusive,
+        projectionItemCount: presentationContinuation.itemCount,
+      };
+    }
+    if (window.nextCursor !== input.cursor) {
+      runtimeConversationWindows.delete(input.sessionId);
+      return { outcome: 'data_changed' };
+    }
+  } else {
+    runtimeConversationWindows.delete(input.sessionId);
+    window = undefined;
+  }
+
+  const result = await runtimeHostAdapter.conversationHistoryPage({
+    sessionId: input.sessionId,
+    ...(input.cursor !== undefined ? { cursor: input.cursor } : {}),
+    ...(window !== undefined
+      ? { revision: window.revision, sourceRevision: window.sourceRevision }
+      : {}),
+    limit: RUNTIME_HISTORY_PAGE_LIMIT,
+  });
+  if (result.outcome === 'data_changed') {
+    runtimeConversationWindows.delete(input.sessionId);
+    return result;
+  }
+  const page = result.page;
+  if (page === null) {
+    runtimeConversationWindows.delete(input.sessionId);
+    return { outcome: 'ready', window: null };
+  }
+  if (window === undefined) {
+    const pageBytes = page.entries.reduce(
+      (total, indexed) => total + Buffer.byteLength(JSON.stringify(indexed.entry), 'utf8'),
+      0,
+    );
+    if (
+      page.entries.length > MAX_RUNTIME_HISTORY_WINDOW_ENTRIES ||
+      pageBytes > MAX_RUNTIME_HISTORY_PAGE_BYTES
+    ) {
+      throw new Error('Conversation history page exceeds the bounded resident window.');
+    }
+    const newerPrefixTurnBoundary = collectLeadingTurnTailBoundary(
+      page.entries,
+      page.sourceRevision,
+    );
+    window = {
+      revision: page.revision,
+      sourceRevision: page.sourceRevision,
+      status: page.status,
+      issues: page.issues,
+      entriesByIndex: new Map(),
+      seamToolResults: new Map(),
+      seamTurnBoundaries: new Map(),
+      ...(newerPrefixTurnBoundary !== undefined ? { newerPrefixTurnBoundary } : {}),
+      entryBytes: pageBytes + conversationTurnBoundaryBytes(newerPrefixTurnBoundary),
+      newerSdkPageOmitted: false,
+      prefixOmitted: page.hasMore,
+      hasMore: page.hasMore,
+      ...(page.nextCursor !== undefined ? { nextCursor: page.nextCursor } : {}),
+    };
+    for (const indexed of page.entries) window.entriesByIndex.set(indexed.index, indexed.entry);
+  } else {
+    appendRuntimeConversationPage(window, page);
+  }
+  rememberRuntimeConversationWindow(input.sessionId, window);
+  return { outcome: 'ready', window };
+}
 
 export function resolveHistoricalRuntimeIdentity(input: {
   readonly persisted?: { readonly provider?: string; readonly model?: string };
@@ -263,7 +797,9 @@ export function registerSessionChannels(options: SessionChannelsOptions = {}): v
           agentMode: input.agentMode,
         },
       });
+      const allocatedSessionId = await generateKodaxSessionId();
       const { sessionId, createdAt } = kodaxHost.createSession({
+        sessionId: allocatedSessionId,
         projectRoot,
         provider: input.provider,
         // Renderer usually supplies resolveActiveModel(), but main must still
@@ -430,8 +966,7 @@ export function registerSessionChannels(options: SessionChannelsOptions = {}): v
 
   // session.cancel
   registerChannel('session.cancel', async (input) => {
-    const cancelled = await kodaxHost.cancel(input.sessionId);
-    return { cancelled };
+    return kodaxHost.cancel(input.sessionId);
   });
 
   // session.list
@@ -489,7 +1024,14 @@ export function registerSessionChannels(options: SessionChannelsOptions = {}): v
         const defaultId = providerConfigStore.getDefaultProviderId();
         if (defaultId) persistedProviderFallback = defaultId;
       }
-      // persisted session 没有 lastActivityAt——用 createdAt 占位（同一时间精度排序）
+      // Runtime profile owns the latest known run boundary. Older SDK SessionSummary only
+      // exposes createdAt, so use the profile to recover persisted Coder session activity.
+      // The renderer repeats this overlay because session.list can race Runtime startup.
+      const runtimeSessions = new Map(
+        runtimeProjectionController
+          .profileSnapshot()
+          .sessions.map((session) => [session.sessionId, session] as const),
+      );
       const withTs = merged
         .filter((m) => {
           if (projectFilter === undefined) return true;
@@ -505,15 +1047,24 @@ export function registerSessionChannels(options: SessionChannelsOptions = {}): v
         })
         .map((m) => {
           if (m.kind === 'in-flight') {
-            return { item: m, sortKey: m.lastActivityAt };
+            return {
+              item: m,
+              createdAt: m.createdAt,
+              lastActivityAt: m.lastActivityAt,
+              sortKey: m.lastActivityAt,
+            };
           }
-          // persisted: SDK 给 ISO date string；缺省 → 0（最旧）
-          const ts = m.createdAt !== undefined ? Date.parse(m.createdAt) : 0;
-          return { item: m, sortKey: Number.isFinite(ts) ? ts : 0 };
+          const runtimeSession =
+            m.surface === 'code' ? runtimeSessions.get(m.sessionId) : undefined;
+          const parsedCreatedAt = m.createdAt !== undefined ? Date.parse(m.createdAt) : 0;
+          const sdkCreatedAt = Number.isFinite(parsedCreatedAt) ? parsedCreatedAt : 0;
+          const createdAt = sdkCreatedAt > 0 ? sdkCreatedAt : (runtimeSession?.createdAt ?? 0);
+          const lastActivityAt = Math.max(createdAt, runtimeSession?.lastActivityAt ?? 0);
+          return { item: m, createdAt, lastActivityAt, sortKey: lastActivityAt };
         })
         .sort((a, b) => b.sortKey - a.sortKey);
       const sessions: SessionMeta[] = await Promise.all(
-        withTs.map(async ({ item, sortKey }) => {
+        withTs.map(async ({ item, createdAt, lastActivityAt }) => {
           if (item.kind === 'in-flight') {
             // in-flight 没有 msgCount 字段（ManagedSession 不跟用户消息计数），dashboard
             // 用 sessions[].msgCount ?? userMessagesBuffer.length 双源 fallback。
@@ -573,8 +1124,8 @@ export function registerSessionChannels(options: SessionChannelsOptions = {}): v
             // F045: 真值——来自 SDK summary.tag 反推（host.listMerged 已派生），非占位。
             surface: item.surface,
             title: item.title,
-            createdAt: sortKey,
-            lastActivityAt: sortKey,
+            createdAt,
+            lastActivityAt,
             msgCount: item.msgCount,
             model: identity.model,
             runtimeMetadataSource: identity.runtimeMetadataSource,
@@ -671,7 +1222,12 @@ export function registerSessionChannels(options: SessionChannelsOptions = {}): v
   // SDK loadSession 重放是 v0.1.7+ 优化）。
   registerChannel('session.fork', (input) =>
     runWithCoderAdmission(options, async () => {
-      const result = await kodaxHost.fork(input.sessionId, input.forkPointTurnIdx);
+      assertSafePagedHistoryMutation(input.sessionId, input.historyBoundary);
+      const result = await kodaxHost.fork(
+        input.sessionId,
+        input.forkPointTurnIdx,
+        input.historyBoundary,
+      );
       if (!result) {
         throw new Error(`session not found: ${input.sessionId}`);
       }
@@ -683,9 +1239,16 @@ export function registerSessionChannels(options: SessionChannelsOptions = {}): v
   // v0.1.6: main 端 cancel in-flight (await)，然后 SDK rewindSession 写盘截断；
   // renderer 截断 events 数组。
   registerChannel('session.rewind', (input) =>
-    runWithCoderAdmission(options, () =>
-      kodaxHost.rewind(input.sessionId, input.rewindPastTurnIdx),
-    ),
+    runWithCoderAdmission(options, async () => {
+      assertSafePagedHistoryMutation(input.sessionId, input.historyBoundary);
+      const result = await kodaxHost.rewind(
+        input.sessionId,
+        input.rewindPastTurnIdx,
+        input.historyBoundary,
+      );
+      await truncateLocalNoticesAfterSuccessfulRewind(input, result);
+      return result;
+    }),
   );
 
   // session.agentsMd — FEATURE_034
@@ -797,22 +1360,23 @@ export function registerSessionChannels(options: SessionChannelsOptions = {}): v
         liveSession?.surface ??
         sdkTagToSurface((await loadPersistedSession(input.sessionId))?.tag) ??
         'code';
-      const entry =
-        surface === 'code' && runtimeHostAdapter.hasReadyRuntime()
-          ? await runtimeHostAdapter.appendNotice({
-              sessionId: input.sessionId,
-              source: 'space-local-notice',
-              content: input.notice.content,
-            })
-          : await appendPersistedClientNotice(input.sessionId, {
-              source: 'space-local-notice',
-              content: input.notice.content,
-              timestamp: isoTimestampFromSentAt(input.notice.sentAt),
-              payload,
-            });
-      if (entry === null) {
-        await getSessionLocalNoticeStore().append(input.sessionId, input.notice);
-      }
+      const usesRuntimeConversation = surface === 'code' && runtimeHostAdapter.hasReadyRuntime();
+      await appendSpaceOwnedLocalNotice(input.sessionId, input.notice, async () => {
+        if (usesRuntimeConversation) {
+          await runtimeHostAdapter.appendNotice({
+            sessionId: input.sessionId,
+            source: 'space-local-notice',
+            content: input.notice.content,
+          });
+        } else {
+          await appendPersistedClientNotice(input.sessionId, {
+            source: 'space-local-notice',
+            content: input.notice.content,
+            timestamp: isoTimestampFromSentAt(input.notice.sentAt),
+            payload,
+          });
+        }
+      });
       return { ok: true };
     }),
   );
@@ -826,21 +1390,113 @@ export function registerSessionChannels(options: SessionChannelsOptions = {}): v
     runWithCoderAdmission(options, async () => {
       const withLocalNotices = async (
         baseItems: readonly SessionHistoryItem[],
-      ): Promise<{ items: SessionHistoryItem[] }> => {
+        conversation?: ReturnType<typeof conversationHistoryDiagnostic>,
+        page?:
+          | {
+              readonly outcome: 'ready';
+              readonly revision: string;
+              readonly sourceRevision: string;
+              readonly hasMore: boolean;
+              readonly nextCursor?: string;
+              readonly windowMode: 'replace' | 'prepend';
+              readonly hasNewer: boolean;
+            }
+          | { readonly outcome: 'data_changed' }
+          | { readonly outcome: 'runtime_unavailable' },
+      ) => {
         const localNotices = await getSessionLocalNoticeStore().list(input.sessionId);
-        return { items: appendLocalNoticeHistoryItems(baseItems, localNotices) };
+        return {
+          items: limitSessionHistoryWithLocalNotices(baseItems, localNotices),
+          ...(conversation !== undefined ? { conversation } : {}),
+          ...(page !== undefined ? { page } : {}),
+        };
       };
-      // Full append-order transcript (not just the active branch) so pre-compaction
-      // turns stay visible in scrollback — fixes "history disappears after compaction".
+      // Ordinary chat uses the SDK-owned conversation projection. Raw append-order transcript is
+      // retained only as a compatibility fallback for injected/legacy readers and for audit APIs.
       const liveSession = kodaxHost.get(input.sessionId);
+      const runtimeProfileOwnsSession = runtimeProjectionController
+        .profileSnapshot()
+        .sessions.some((session) => session.sessionId === input.sessionId);
       const surface =
         liveSession?.surface ??
+        input.expectedSurface ??
+        (runtimeHostAdapter.hasReadyRuntime() && runtimeProfileOwnsSession ? 'code' : undefined) ??
         sdkTagToSurface((await loadPersistedSession(input.sessionId))?.tag) ??
         'code';
-      const data =
-        surface === 'code' && runtimeHostAdapter.hasReadyRuntime()
-          ? await runtimeHostAdapter.transcript(input.sessionId)
-          : await loadPersistedTranscript(input.sessionId);
+      let data;
+      let usesConversationProjection = false;
+      let runtimeWindowForResponse: RuntimeConversationWindow | undefined;
+      let runtimeProjectionEndExclusive: number | undefined;
+      let runtimeProjectionItemCount: number | undefined;
+      let conversationDiagnosticValue: ReturnType<typeof conversationHistoryDiagnostic> | undefined;
+      let conversationPageValue:
+        | {
+            readonly outcome: 'ready';
+            readonly revision: string;
+            readonly sourceRevision: string;
+            readonly hasMore: boolean;
+            readonly nextCursor?: string;
+            readonly windowMode: 'replace' | 'prepend';
+            readonly hasNewer: boolean;
+          }
+        | { readonly outcome: 'data_changed' }
+        | { readonly outcome: 'runtime_unavailable' }
+        | undefined;
+      let omittedConversationEntries = 0;
+      if (surface === 'code') {
+        // A Coder Session must never fall back to the persisted full-body reader merely because
+        // the daemon is still starting. That fallback defeats bounded newest-page loading and can
+        // leave a direct-read `partial` projection permanently installed. Tell the renderer to
+        // retry this same bounded route once Runtime is ready.
+        if (!runtimeHostAdapter.hasReadyRuntime()) {
+          return withLocalNotices([], undefined, { outcome: 'runtime_unavailable' });
+        }
+        const result = await loadRuntimeConversationWindow(input);
+        if (result.outcome === 'data_changed') {
+          return withLocalNotices([], undefined, { outcome: 'data_changed' });
+        }
+        if (result.window === null) return withLocalNotices([]);
+        const window = result.window;
+        runtimeWindowForResponse = window;
+        runtimeProjectionEndExclusive = result.projectionEndExclusive;
+        runtimeProjectionItemCount = result.projectionItemCount;
+        const boundaryEntries: IndexedConversationEntry[] = [...window.entriesByIndex.entries()]
+          .sort(([left], [right]) => left - right)
+          .map(([index, entry]) => ({ index, entry }));
+        const conversation: RuntimeConversationHistory = {
+          revision: window.revision,
+          sourceRevision: window.sourceRevision,
+          status: window.status,
+          issues: window.issues,
+          entries: boundaryEntries.map(({ entry }) => entry),
+        };
+        data = conversationHistoryAsTranscript(
+          conversation,
+          boundaryEntries,
+          boundaryEntries,
+          !window.newerSdkPageOmitted,
+          window.seamTurnBoundaries,
+        );
+        // The response is one complete bounded browsing window, not an incremental fragment.
+        // SDK pages and Space's bounded projection slices both replace the renderer window so
+        // older navigation never accumulates the complete transcript in renderer memory.
+        conversationDiagnosticValue = conversationHistoryDiagnostic(conversation);
+        omittedConversationEntries = window.prefixOmitted ? (boundaryEntries[0]?.index ?? 0) : 0;
+        usesConversationProjection = true;
+      } else {
+        if (input.cursor !== undefined) {
+          return withLocalNotices([], undefined, { outcome: 'data_changed' });
+        }
+        const conversation = await loadPersistedConversationHistory(input.sessionId);
+        if (conversation.supported) {
+          if (conversation.data === null) return withLocalNotices([]);
+          data = conversationHistoryAsTranscript(conversation.data);
+          conversationDiagnosticValue = conversationHistoryDiagnostic(conversation.data);
+          usesConversationProjection = true;
+        } else {
+          data = await loadPersistedTranscript(input.sessionId);
+        }
+      }
       if (!data || !Array.isArray(data.messages)) {
         return withLocalNotices([]);
       }
@@ -849,6 +1505,9 @@ export function registerSessionChannels(options: SessionChannelsOptions = {}): v
       // 第一步: 走一遍消息收集 toolId → result 映射 (tool_result 永远在 tool_use 之后,
       // 但同一 message 里也可能有多个 tool_use,先扫一遍简化处理)
       const toolResults = new Map<string, { content: string; isError: boolean }>();
+      for (const [toolId, result] of runtimeWindowForResponse?.seamToolResults ?? []) {
+        toolResults.set(toolId, result);
+      }
       for (const msg of data.messages) {
         if (!Array.isArray(msg.content)) continue;
         for (const block of msg.content) {
@@ -879,8 +1538,12 @@ export function registerSessionChannels(options: SessionChannelsOptions = {}): v
       const rawTranscriptEntries = (data as { transcriptEntries?: unknown }).transcriptEntries;
       type TranscriptEntryLike = {
         readonly entryId?: unknown;
+        readonly parentId?: unknown;
         readonly logicalId?: unknown;
         readonly sourceEntryId?: unknown;
+        readonly authoritativeEntryId?: unknown;
+        readonly canonicalIndex?: unknown;
+        readonly historyBoundary?: unknown;
         readonly type?: unknown;
         readonly source?: unknown;
         readonly message: (typeof data.messages)[number];
@@ -895,13 +1558,35 @@ export function registerSessionChannels(options: SessionChannelsOptions = {}): v
         // Without it, workflow notices — which DO carry real run times — sort above the whole
         // restored conversation after a compaction re-root (createdAt is reset later than the run).
         readonly timestamp?: unknown;
-        // SDK marks each transcript entry active (on the live branch) or not. Used to scope
-        // dedup to inactive old-island re-clones only — the active branch is never collapsed.
+        // SDK marks each transcript entry active (on the live branch) or not. Activity can select
+        // the authoritative payload inside an identity-proven clone group, but never proves a
+        // clone and never changes the group's first canonical display position.
         readonly active?: unknown;
       };
-      const entries: readonly TranscriptEntryLike[] = Array.isArray(rawTranscriptEntries)
+      const allEntries: readonly TranscriptEntryLike[] = Array.isArray(rawTranscriptEntries)
         ? (rawTranscriptEntries as TranscriptEntryLike[])
         : data.messages.map((message) => ({ type: 'message', message }));
+      const turnUserOrdinalByCanonicalIndex = new Map<number, number>();
+      const globalVisibleUserCountByTurnId = new Map<string, number>();
+      let leadingOmittedTurnId: string | undefined;
+      let crossedLeadingOmittedTurn =
+        !usesConversationProjection || omittedConversationEntries === 0;
+      for (const entry of allEntries) {
+        if (!isRecord(entry.message)) continue;
+        const messageTurnId = stringField(entry.message.turnId);
+        const turnId = stringField(entry.turnId) ?? messageTurnId;
+        if (!crossedLeadingOmittedTurn && turnId !== undefined) {
+          if (leadingOmittedTurnId === undefined) leadingOmittedTurnId = turnId;
+          else if (turnId !== leadingOmittedTurnId) crossedLeadingOmittedTurn = true;
+        }
+        if (entry.message.role !== 'user') continue;
+        if (turnId === undefined || typeof entry.canonicalIndex !== 'number') continue;
+        if (!crossedLeadingOmittedTurn) continue;
+        const ordinal = globalVisibleUserCountByTurnId.get(turnId) ?? 0;
+        turnUserOrdinalByCanonicalIndex.set(entry.canonicalIndex, ordinal);
+        globalVisibleUserCountByTurnId.set(turnId, ordinal + 1);
+      }
+      const entries = allEntries;
 
       // Workflow 结果原位还原用:一条 `<task-completed>` 块只有当它的 task_id 命名了一个 Space 落盘的
       // workflow run(<space>/workflow-runs/<runId>/)才算 workflow —— 借此把用同样 wrapper 的普通
@@ -912,20 +1597,24 @@ export function registerSessionChannels(options: SessionChannelsOptions = {}): v
       // 改按 transcript 位置渲染后丢了去重 → 同一份报告显示多次)。按 runId 去重、保留**首次**出现的位置。
       const seenWorkflowRunIds = new Set<string>();
       const visibleUserCountByTurnId = new Map<string, number>();
-      // 整段对话重复渲染修复:loadFullTranscript 返回全谱系。① 新 session:旧岛消息被 evict 成
-      // "[compacted]" 占位 → 跳过;② 旧 session(更早 SDK 写的):旧岛保留真内容、每次压缩逐字节克隆一份
-      // → 按内容折叠。去重**限定在 inactive 旧岛**,活动分支一条不碰(不折叠合法重复的活动消息)。
+      let historyTurnIndex = 0;
+      // 完整历史投影:loadFullTranscript 返回全谱系。先修复旧 sidecar 的 child-before-parent
+      // 次序，再跳过精确 `[compacted]` 占位和已证明的 rewind-abandoned path；克隆只按 SDK
+      // 提供的 entryId/logicalId/sourceEntryId 关系折叠，并始终保留首次 canonical 位置。
+      // 旧 SDK 写下但没有 provenance 的相同内容必须 fail open，不能再次把真实 query 删除或搬家。
       // 见 transcript-dedup.ts 的机制说明。
-      const dedupedEntries = dedupeTranscriptEntries(entries);
+      const dedupedEntries = usesConversationProjection
+        ? entries
+        : dedupeTranscriptEntries(entries);
 
       for (const entry of dedupedEntries) {
         const entrySentAt = parseEntrySentAt(entry.timestamp);
+        const historyIdentity = historyIdentityFromEntry(entry);
         if (entry.type === 'client_notice') {
           const notice = clientNoticeHistoryItemFromEntry(entry, entrySentAt);
           if (notice !== null) {
             items.push(notice);
           }
-          if (items.length >= 2000) break;
           continue;
         }
         if (entry.type === 'branch_summary' || entry.type === 'compaction') {
@@ -949,19 +1638,19 @@ export function registerSessionChannels(options: SessionChannelsOptions = {}): v
               tokensAfter >= 0 &&
               tokensAfter <= 10_000_000;
             items.push({
+              ...historyIdentity,
               kind: 'lineage_notice',
               noticeKind: entry.type,
               text,
+              ...(entrySentAt !== undefined ? { sentAt: entrySentAt } : {}),
               ...(hasCompactStats ? { tokensBefore, tokensAfter } : {}),
             });
           }
-          if (items.length >= 2000) break;
           continue;
         }
         const taskResults = extractTaskResults(entry);
         if (entry.type === 'task_result' || taskResults.length > 0) {
-          appendWorkflowTaskResultNotices(taskResults, seenWorkflowRunIds, items);
-          if (items.length >= 2000) break;
+          appendWorkflowTaskResultNotices(taskResults, seenWorkflowRunIds, items, historyIdentity);
           // Consume the entry only if a real workflow run was recognized. Legacy transcripts
           // (recorded before structured task-result metadata) have the SDK reconstruct
           // `_taskResults` stamped source:'child_task' even for real run_workflow results, so
@@ -986,6 +1675,7 @@ export function registerSessionChannels(options: SessionChannelsOptions = {}): v
           const sidecarText = extractUserText(msg.content);
           if (sidecarText.length > 0) {
             items.push({
+              ...historyIdentity,
               kind: 'sidecar_message',
               message: {
                 source: 'sidecar-verifier',
@@ -998,6 +1688,7 @@ export function registerSessionChannels(options: SessionChannelsOptions = {}): v
                 // 的"历史记录"标签展示,不再断言 verdict==='revise'。
                 historical: true,
               },
+              ...(entrySentAt !== undefined ? { sentAt: entrySentAt } : {}),
             });
           }
           continue;
@@ -1017,8 +1708,7 @@ export function registerSessionChannels(options: SessionChannelsOptions = {}): v
               workflowRunBaseDir,
             );
             for (const b of render) {
-              items.push({ kind: 'workflow_notice', text: b.text });
-              if (items.length >= 2000) break;
+              items.push({ ...historyIdentity, kind: 'workflow_notice', text: b.text });
             }
             if (handled) continue; // 已处理(渲染或去重跳过)workflow 结果
             // 否则(全是普通子任务 / 未落盘的 run)→ 落到下面的 synthetic-skip,和以前一样隐藏。
@@ -1050,9 +1740,27 @@ export function registerSessionChannels(options: SessionChannelsOptions = {}): v
           if (userText.length > 0 || attachments.length > 0) {
             const messageTurnId = isRecord(msg) ? stringField(msg.turnId) : undefined;
             const turnId = stringField(entry.turnId) ?? messageTurnId;
+            const globalTurnUserOrdinal =
+              typeof entry.canonicalIndex === 'number'
+                ? turnUserOrdinalByCanonicalIndex.get(entry.canonicalIndex)
+                : undefined;
+            // Only the leading Runtime turn is ambiguous when its older prefix is omitted. Once
+            // the canonical turn id changes inside the loaded window, that later turn starts at
+            // ordinal zero and can safely reconcile with its live projection.
             const turnUserOrdinal =
-              turnId !== undefined ? (visibleUserCountByTurnId.get(turnId) ?? 0) : undefined;
+              turnId === undefined
+                ? undefined
+                : usesConversationProjection
+                  ? globalTurnUserOrdinal
+                  : (visibleUserCountByTurnId.get(turnId) ?? 0);
+            const selectorTurnIndex =
+              typeof entry.canonicalIndex === 'number' &&
+              Number.isSafeInteger(entry.canonicalIndex) &&
+              entry.canonicalIndex >= 0
+                ? entry.canonicalIndex
+                : historyTurnIndex;
             items.push({
+              ...historyIdentity,
               kind: 'user',
               content: userText,
               ...(attachments.length > 0 ? { attachments } : {}),
@@ -1060,10 +1768,23 @@ export function registerSessionChannels(options: SessionChannelsOptions = {}): v
               // needs it: it becomes a UserMessage whose sentAt drives composeMessages' merge
               // with workflow notices; assistant/tool items become events that inherit the turn.
               ...(entrySentAt !== undefined ? { sentAt: entrySentAt } : {}),
-              ...(turnId !== undefined ? { turnId, turnUserOrdinal: turnUserOrdinal! } : {}),
+              ...(turnId !== undefined ? { turnId } : {}),
+              ...(turnUserOrdinal !== undefined ? { turnUserOrdinal } : {}),
+              historyTurnIndex: selectorTurnIndex,
+              ...(isRecord(entry.historyBoundary) &&
+              typeof entry.historyBoundary.boundaryId === 'string' &&
+              typeof entry.historyBoundary.sourceRevision === 'string'
+                ? {
+                    historyBoundary: {
+                      boundaryId: entry.historyBoundary.boundaryId,
+                      sourceRevision: entry.historyBoundary.sourceRevision,
+                    },
+                  }
+                : {}),
             });
-            if (turnId !== undefined) {
-              visibleUserCountByTurnId.set(turnId, turnUserOrdinal! + 1);
+            historyTurnIndex += 1;
+            if (turnId !== undefined && turnUserOrdinal !== undefined) {
+              visibleUserCountByTurnId.set(turnId, turnUserOrdinal + 1);
             }
           }
         } else if (msg.role === 'assistant') {
@@ -1075,8 +1796,13 @@ export function registerSessionChannels(options: SessionChannelsOptions = {}): v
             if (textBuf.length > 0 || thinkingBuf.length > 0) {
               const contentItem: SessionHistoryItem =
                 thinkingBuf.length > 0
-                  ? { kind: 'assistant', text: textBuf, thinking: thinkingBuf }
-                  : { kind: 'assistant', text: textBuf };
+                  ? {
+                      ...historyIdentity,
+                      kind: 'assistant',
+                      text: textBuf,
+                      thinking: thinkingBuf,
+                    }
+                  : { ...historyIdentity, kind: 'assistant', text: textBuf };
               items.push(
                 entrySentAt !== undefined ? { ...contentItem, sentAt: entrySentAt } : contentItem,
               );
@@ -1107,6 +1833,7 @@ export function registerSessionChannels(options: SessionChannelsOptions = {}): v
               if (typeof id === 'string' && typeof name === 'string') {
                 const matched = toolResults.get(id);
                 const tcItem: SessionHistoryItem = {
+                  ...historyIdentity,
                   kind: 'tool_call',
                   toolId: id,
                   toolName: name,
@@ -1120,13 +1847,64 @@ export function registerSessionChannels(options: SessionChannelsOptions = {}): v
                 items.push(tcItem);
               }
             }
-            if (items.length >= 2000) break;
           }
           flushText();
         }
-        if (items.length >= 2000) break;
       }
-      return withLocalNotices(items);
+      if (omittedConversationEntries > 0) {
+        items.unshift({
+          kind: 'history_truncation',
+          scope: 'history',
+          omittedItems: Math.max(1, omittedConversationEntries),
+        });
+      }
+      if (runtimeWindowForResponse !== undefined) {
+        const window = runtimeWindowForResponse;
+        if (
+          runtimeProjectionItemCount !== undefined &&
+          runtimeProjectionItemCount !== items.length
+        ) {
+          runtimeConversationWindows.delete(input.sessionId);
+          return withLocalNotices([], undefined, { outcome: 'data_changed' });
+        }
+        const projectionPage = pageSessionHistoryItems(
+          items,
+          runtimeProjectionEndExclusive ?? items.length,
+        );
+        let nextCursor = window.nextCursor;
+        if (projectionPage.nextEndExclusive !== undefined) {
+          nextCursor = nextRuntimeProjectionCursor(input.sessionId);
+          window.projectionContinuation = {
+            cursor: nextCursor,
+            endExclusive: projectionPage.nextEndExclusive,
+            itemCount: items.length,
+          };
+        } else {
+          window.projectionContinuation = undefined;
+        }
+        rememberRuntimeConversationWindow(input.sessionId, window);
+        conversationPageValue = {
+          outcome: 'ready',
+          revision: window.revision,
+          sourceRevision: window.sourceRevision,
+          hasMore: nextCursor !== undefined,
+          // The newest request installs one bounded tail. Every cursor continuation is an older,
+          // non-overlapping slice and therefore extends the already loaded transcript upward.
+          // This is a presentation contract only; Runtime canonical order and cursors remain the
+          // authority for which records belong to each page.
+          windowMode: input.cursor === undefined ? 'replace' : 'prepend',
+          // A prepended response is older in isolation, but the renderer still owns the newest
+          // page it is extending. It therefore does not need replacement-window navigation.
+          hasNewer: input.cursor === undefined ? window.newerSdkPageOmitted : false,
+          ...(nextCursor !== undefined ? { nextCursor } : {}),
+        };
+        return withLocalNotices(
+          projectionPage.items,
+          conversationDiagnosticValue,
+          conversationPageValue,
+        );
+      }
+      return withLocalNotices(items, conversationDiagnosticValue, conversationPageValue);
     }),
   );
 }
@@ -1135,6 +1913,7 @@ export function registerSessionChannels(options: SessionChannelsOptions = {}): v
  *  number too. Returns undefined for missing/invalid so the renderer keeps its createdAt
  *  fallback rather than stamping NaN. */
 const MAX_HISTORY_TEXT = 262_144;
+const MAX_HISTORY_TOOL_RESULT = 524_288;
 
 function isoTimestampFromSentAt(sentAt: number): string {
   const date = new Date(sentAt);
@@ -1145,10 +1924,19 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+export function clampTextWithMarker(
+  text: string,
+  maxLength: number,
+  marker = '\n[truncated]',
+): string {
+  if (maxLength <= 0) return '';
+  if (text.length <= maxLength) return text;
+  const boundedMarker = marker.slice(0, maxLength);
+  return `${text.slice(0, maxLength - boundedMarker.length).trimEnd()}${boundedMarker}`;
+}
+
 function clampHistoryText(text: string): string {
-  if (text.length <= MAX_HISTORY_TEXT) return text;
-  const marker = '\n[truncated]';
-  return `${text.slice(0, Math.max(0, MAX_HISTORY_TEXT - marker.length)).trimEnd()}${marker}`;
+  return clampTextWithMarker(text, MAX_HISTORY_TEXT);
 }
 
 function clientNoticeHistoryItemFromEntry(
@@ -1198,6 +1986,48 @@ function clientNoticeHistoryItemFromEntry(
 
 function stringField(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+type HistoryTranscriptIdentity = {
+  readonly entryId?: string;
+  readonly parentId?: string | null;
+  readonly logicalId?: string;
+  readonly sourceEntryId?: string;
+  readonly authoritativeEntryId?: string;
+  readonly canonicalIndex?: number;
+  readonly turnId?: string;
+};
+
+function historyIdentityFromEntry(entry: {
+  readonly entryId?: unknown;
+  readonly parentId?: unknown;
+  readonly logicalId?: unknown;
+  readonly sourceEntryId?: unknown;
+  readonly authoritativeEntryId?: unknown;
+  readonly canonicalIndex?: unknown;
+  readonly turnId?: unknown;
+}): HistoryTranscriptIdentity {
+  const entryId = stringField(entry.entryId);
+  const parentId = entry.parentId === null ? null : stringField(entry.parentId);
+  const logicalId = stringField(entry.logicalId);
+  const sourceEntryId = stringField(entry.sourceEntryId);
+  const authoritativeEntryId = stringField(entry.authoritativeEntryId);
+  const canonicalIndex =
+    typeof entry.canonicalIndex === 'number' &&
+    Number.isInteger(entry.canonicalIndex) &&
+    entry.canonicalIndex >= 0
+      ? entry.canonicalIndex
+      : undefined;
+  const turnId = stringField(entry.turnId);
+  return {
+    ...(entryId !== undefined ? { entryId } : {}),
+    ...(parentId !== undefined || entry.parentId === null ? { parentId } : {}),
+    ...(logicalId !== undefined ? { logicalId } : {}),
+    ...(sourceEntryId !== undefined ? { sourceEntryId } : {}),
+    ...(authoritativeEntryId !== undefined ? { authoritativeEntryId } : {}),
+    ...(canonicalIndex !== undefined ? { canonicalIndex } : {}),
+    ...(turnId !== undefined ? { turnId } : {}),
+  };
 }
 
 interface TaskResultMetadataLike {
@@ -1256,14 +2086,18 @@ function appendWorkflowTaskResultNotices(
   taskResults: readonly TaskResultMetadataLike[],
   seenWorkflowRunIds: Set<string>,
   items: SessionHistoryItem[],
+  historyIdentity: HistoryTranscriptIdentity = {},
 ): void {
   for (const result of taskResults) {
     if (result.source !== 'workflow') continue;
     const key = result.runId ?? result.taskId;
     if (seenWorkflowRunIds.has(key)) continue;
     seenWorkflowRunIds.add(key);
-    items.push({ kind: 'workflow_notice', text: formatWorkflowTaskResultNotice(result) });
-    if (items.length >= 2000) break;
+    items.push({
+      ...historyIdentity,
+      kind: 'workflow_notice',
+      text: formatWorkflowTaskResultNotice(result),
+    });
   }
 }
 
@@ -1286,35 +2120,8 @@ function parseEntrySentAt(value: unknown): number | undefined {
 
 /** user message content 提取纯文本部分;若 content 是 string 直接返回;若是 blocks 数组取 type=='text'.
  *  tool_result blocks 不在这里出 — 它们在 history handler 第一步单独收集映射到 toolId。 */
-function toLocalNoticeHistoryItem(notice: SessionLocalNotice): SessionHistoryItem {
-  return {
-    kind: 'local_notice',
-    id: notice.id,
-    content: notice.content,
-    sentAt: notice.sentAt,
-    ...(notice.variant !== undefined ? { variant: notice.variant } : {}),
-  };
-}
-
-function appendLocalNoticeHistoryItems(
-  baseItems: readonly SessionHistoryItem[],
-  localNotices: readonly SessionLocalNotice[],
-): SessionHistoryItem[] {
-  const existingLocalIds = new Set(
-    baseItems.flatMap((item) => (item.kind === 'local_notice' ? [item.id] : [])),
-  );
-  const localItems = localNotices
-    .filter((notice) => !existingLocalIds.has(notice.id))
-    .map(toLocalNoticeHistoryItem)
-    .slice(-2000);
-  if (localItems.length === 0) return baseItems.slice(0, 2000);
-  const baseLimit = Math.max(0, 2000 - localItems.length);
-  return [...baseItems.slice(0, baseLimit), ...localItems];
-}
-
 function extractUserText(content: unknown): string {
-  if (typeof content === 'string')
-    return content.length > 256 * 1024 ? content.slice(0, 256 * 1024) + '\n…(truncated)' : content;
+  if (typeof content === 'string') return clampHistoryText(content);
   if (!Array.isArray(content)) return '';
   let text = '';
   for (const block of content) {
@@ -1326,8 +2133,7 @@ function extractUserText(content: unknown): string {
     }
     // tool_result / image / 其他 — 跳过
   }
-  if (text.length > 256 * 1024) text = text.slice(0, 256 * 1024) + '\n…(truncated)';
-  return text;
+  return clampHistoryText(text);
 }
 
 function extractUserImages(content: unknown): Array<{
@@ -1360,7 +2166,7 @@ function extractUserImages(content: unknown): Array<{
  *  只保留 text;过长截断兜底防 schema 上限报错。 */
 function flattenToolResultContent(content: unknown): string {
   if (typeof content === 'string') {
-    return content.length > 512 * 1024 ? content.slice(0, 512 * 1024) + '\n…(truncated)' : content;
+    return clampTextWithMarker(content, MAX_HISTORY_TOOL_RESULT);
   }
   if (!Array.isArray(content)) return '';
   let text = '';
@@ -1372,6 +2178,5 @@ function flattenToolResultContent(content: unknown): string {
     }
     // image blocks 等丢弃
   }
-  if (text.length > 512 * 1024) text = text.slice(0, 512 * 1024) + '\n…(truncated)';
-  return text;
+  return clampTextWithMarker(text, MAX_HISTORY_TOOL_RESULT);
 }

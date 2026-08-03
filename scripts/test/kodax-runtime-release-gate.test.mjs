@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -13,8 +14,23 @@ async function writeReleaseDependencyFixture(root, versions = {}) {
   const lockDesktopVersion = versions.lockDesktop ?? desktopVersion;
   const lockPackageVersion = versions.lockPackage ?? rootVersion;
   const installedVersion = versions.installed ?? rootVersion;
+  let resolved =
+    versions.resolved ??
+    `https://registry.npmjs.org/@kodax-ai/kodax/-/kodax-${lockPackageVersion}.tgz`;
+  let integrity = versions.integrity;
   await mkdir(path.join(root, 'apps', 'desktop'), { recursive: true });
   await mkdir(path.join(root, 'node_modules', '@kodax-ai', 'kodax'), { recursive: true });
+  if (versions.localTarball) {
+    const tarball = Buffer.from('local KodaX test tarball');
+    const tarballName = `kodax-ai-kodax-${lockPackageVersion}.tgz`;
+    const tarballPath = path.join(root, 'fixtures', tarballName);
+    await mkdir(path.dirname(tarballPath), { recursive: true });
+    await writeFile(tarballPath, tarball);
+    resolved = `file:fixtures/${tarballName}`;
+    integrity ??= `sha512-${createHash('sha512').update(tarball).digest('base64')}`;
+  } else {
+    integrity ??= 'sha512-YWJjZA==';
+  }
   await writeFile(
     path.join(root, 'package.json'),
     JSON.stringify({ dependencies: { '@kodax-ai/kodax': rootVersion } }),
@@ -34,8 +50,8 @@ async function writeReleaseDependencyFixture(root, versions = {}) {
         'apps/desktop': { dependencies: { '@kodax-ai/kodax': lockDesktopVersion } },
         'node_modules/@kodax-ai/kodax': {
           version: lockPackageVersion,
-          resolved: `https://registry.npmjs.org/@kodax-ai/kodax/-/kodax-${lockPackageVersion}.tgz`,
-          integrity: 'sha512-YWJjZA==',
+          resolved,
+          integrity,
         },
       },
     }),
@@ -60,6 +76,57 @@ test('release dependency gate accepts one exact Registry version everywhere', as
   assert.equal(result.version, '0.7.78');
   assert.match(result.resolved, /registry\.npmjs\.org/);
   assert.match(result.integrity, /^sha512-/);
+  assert.equal(result.source, 'registry');
+});
+
+test('release dependency gate rejects a local test tarball by default', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'space-kodax-dependency-gate-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await writeReleaseDependencyFixture(root, { root: '0.7.79', localTarball: true });
+
+  assert.throws(
+    () =>
+      assertKodaxReleaseDependencyState(
+        root,
+        path.join(root, 'node_modules', '@kodax-ai', 'kodax'),
+      ),
+    /refusing local .* release mode/i,
+  );
+});
+
+test('release dependency gate accepts an explicitly allowed integrity-pinned local test tarball', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'space-kodax-dependency-gate-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await writeReleaseDependencyFixture(root, { root: '0.7.79', localTarball: true });
+
+  const result = assertKodaxReleaseDependencyState(
+    root,
+    path.join(root, 'node_modules', '@kodax-ai', 'kodax'),
+    { allowLocalTarball: true },
+  );
+  assert.equal(result.version, '0.7.79');
+  assert.equal(result.source, 'local-tarball');
+  assert.match(result.resolved, /^file:/);
+});
+
+test('release dependency gate rejects a local test tarball integrity mismatch', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'space-kodax-dependency-gate-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await writeReleaseDependencyFixture(root, {
+    root: '0.7.79',
+    localTarball: true,
+    integrity: 'sha512-YWJjZA==',
+  });
+
+  assert.throws(
+    () =>
+      assertKodaxReleaseDependencyState(
+        root,
+        path.join(root, 'node_modules', '@kodax-ai', 'kodax'),
+        { allowLocalTarball: true },
+      ),
+    /integrity mismatch/i,
+  );
 });
 
 test('release dependency gate rejects an unmarked installed-version mismatch', async (t) => {

@@ -1,10 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import type {
-  InvokeChannelName,
-  SpaceSessionLiveProjectionT,
-} from '@kodax-space/space-ipc-schema';
+import type { InvokeChannelName, SpaceSessionLiveProjectionT } from '@kodax-space/space-ipc-schema';
 import {
   RuntimeProjectionController,
   RuntimeProjectionUnavailableError,
@@ -12,11 +9,11 @@ import {
 } from '../kodax/runtime/runtime-projection-controller.js';
 import { registerRuntimeProjectionChannels } from '../ipc/runtime.js';
 
-test('pending SDK controller reports an explicit incompatible profile without fake Runtime identity', () => {
+test('pending SDK controller reports an explicit connecting profile without fake Runtime identity', () => {
   const controller = createPendingSdkRuntimeProjection(100);
   const snapshot = controller.profileSnapshot();
 
-  assert.equal(snapshot.connection.state, 'incompatible');
+  assert.equal(snapshot.connection.state, 'connecting');
   assert.equal(snapshot.connection.stale, true);
   assert.equal(snapshot.connection.runtimeId, undefined);
   assert.match(snapshot.connection.reason ?? '', /published KodaX shared daemon/i);
@@ -297,6 +294,57 @@ test('connection-only replacement updates bootstrap truth and invalidates stale 
   );
   assert.equal(controller.profileSnapshot().connection.state, 'reconnecting');
   assert.throws(() => controller.sessionLiveSnapshot('s_1'), RuntimeProjectionUnavailableError);
+});
+
+test('stale degraded connections cannot retain or accept live snapshots', () => {
+  const controller = createPendingSdkRuntimeProjection(100);
+  controller.replaceProfile({
+    connection: {
+      state: 'ready',
+      changedAt: 101,
+      stale: false,
+      runtimeId: 'rt_1',
+      capabilities: [],
+    },
+    projectionRevision: 1,
+    cursor: { runtimeId: 'rt_1', seq: 1 },
+    sessions: [],
+    interactions: [],
+    notifications: [],
+  });
+  const live: SpaceSessionLiveProjectionT = {
+    sessionId: 's_1',
+    projectionRevision: 1,
+    cursor: { runtimeId: 'rt_1', seq: 1 },
+    transcriptRevision: 'tx_1',
+    queuedRuns: [],
+    activeTools: [],
+    todos: [],
+    queuedInputs: [],
+    interactions: [],
+  };
+  assert.equal(controller.replaceSessionLive(live), true);
+
+  assert.equal(
+    controller.replaceConnection({
+      state: 'degraded',
+      changedAt: 102,
+      stale: true,
+      runtimeId: 'rt_1',
+      reason: 'snapshot unavailable',
+      capabilities: [],
+    }),
+    true,
+  );
+  assert.throws(() => controller.sessionLiveSnapshot('s_1'), RuntimeProjectionUnavailableError);
+  assert.equal(
+    controller.replaceSessionLive({
+      ...live,
+      projectionRevision: 2,
+      cursor: { runtimeId: 'rt_1', seq: 2 },
+    }),
+    false,
+  );
 });
 
 test('profile refresh may advance revision at the same daemon cursor', () => {

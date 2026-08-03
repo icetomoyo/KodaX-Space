@@ -6,6 +6,7 @@ import type {
   WorkflowEventPayload,
 } from '@kodax-space/space-ipc-schema';
 import { useAppStore } from '../../renderer/src/store/appStore.js';
+import { useToastStore } from '../../renderer/src/store/toastStore.js';
 import { snapshotFromEvents } from '../../renderer/src/shell/ActivitySpinner.js';
 
 const SID = 's_cancel_dedupe';
@@ -24,6 +25,7 @@ const session: SessionMeta = {
 };
 
 beforeEach(() => {
+  useToastStore.getState().clear();
   useAppStore.setState({
     sessions: [session],
     currentSessionId: SID,
@@ -476,6 +478,233 @@ test('appendLocalNotice stores slash/info output outside real user turns', () =>
   assert.deepEqual(
     (state.localNoticesBySession[SID] ?? []).map((notice) => notice.variant),
     ['echo', 'output'],
+  );
+});
+
+test('appendLocalNotice surfaces durable IPC failure while keeping bounded optimistic state', async () => {
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  const originalError = console.error;
+  const errors: unknown[][] = [];
+  console.error = (...args: unknown[]) => errors.push(args);
+  let persistenceOk = false;
+  const persistedNoticeIds = new Set<string>();
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      kodaxSpace: {
+        invoke: async (_channel: string, payload: { readonly notice: { readonly id: string } }) => {
+          if (persistenceOk) persistedNoticeIds.add(payload.notice.id);
+          return { ok: persistenceOk };
+        },
+      },
+    },
+  });
+  try {
+    useAppStore.getState().appendLocalNotice(SID, '/will-remain-optimistic', 1003);
+    useAppStore.getState().appendLocalNotice(SID, '/second-failure', 1004);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    assert.equal(useAppStore.getState().localNoticesBySession[SID]?.length, 2);
+    assert.equal(useToastStore.getState().toasts.length, 1);
+    assert.equal(useToastStore.getState().toasts[0]?.tone, 'error');
+    assert.equal(useToastStore.getState().toasts[0]?.ttl, 0);
+    assert.equal(errors.length, 2);
+
+    persistenceOk = true;
+    useAppStore.getState().appendLocalNotice(SID, '/persistence-recovered', 1005);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(useToastStore.getState().toasts.length, 0);
+    const noticeIds = (useAppStore.getState().localNoticesBySession[SID] ?? []).map(
+      (notice) => notice.id,
+    );
+    assert.deepEqual([...persistedNoticeIds].sort(), [...noticeIds].sort());
+  } finally {
+    console.error = originalError;
+    useToastStore.getState().clear();
+    if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow);
+    else Reflect.deleteProperty(globalThis, 'window');
+  }
+});
+
+test('local notice persistence warning stays coalesced until every affected Session recovers', async () => {
+  const secondSessionId = 's_cancel_dedupe_second';
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  const originalError = console.error;
+  console.error = () => {};
+  const recovered = new Set<string>();
+  useAppStore.setState({
+    sessions: [session, { ...session, sessionId: secondSessionId }],
+  });
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      kodaxSpace: {
+        invoke: async (_channel: string, payload: { readonly sessionId: string }) => ({
+          ok: recovered.has(payload.sessionId),
+        }),
+      },
+    },
+  });
+  try {
+    useAppStore.getState().appendLocalNotice(SID, '/first-session-failure', 1_010);
+    useAppStore.getState().appendLocalNotice(secondSessionId, '/second-session-failure', 1_011);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(useToastStore.getState().toasts.length, 1);
+
+    recovered.add(SID);
+    useAppStore.getState().appendLocalNotice(SID, '/first-session-recovered', 1_012);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(useToastStore.getState().toasts.length, 1);
+
+    recovered.add(secondSessionId);
+    useAppStore.getState().appendLocalNotice(secondSessionId, '/second-session-recovered', 1_013);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(useToastStore.getState().toasts.length, 0);
+  } finally {
+    console.error = originalError;
+    useToastStore.getState().clear();
+    if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow);
+    else Reflect.deleteProperty(globalThis, 'window');
+  }
+});
+
+test('failed local notice replay remains bounded during a prolonged persistence outage', async () => {
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  const originalError = console.error;
+  console.error = () => {};
+  let persistenceOk = false;
+  let invokeCount = 0;
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      kodaxSpace: {
+        invoke: async () => {
+          invokeCount += 1;
+          return { ok: persistenceOk };
+        },
+      },
+    },
+  });
+  try {
+    for (let index = 0; index < 2_000; index += 1) {
+      useAppStore.getState().appendLocalNotice(SID, `/outage-${index}`, 20_000 + index);
+    }
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(useAppStore.getState().localNoticesBySession[SID]?.length, 32);
+    assert.equal(useToastStore.getState().toasts.length, 1);
+    assert.equal(invokeCount, 2_000);
+
+    persistenceOk = true;
+    useAppStore.getState().appendLocalNotice(SID, '/outage-recovered', 30_000);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.ok(invokeCount <= 2_033, `unexpected replay count: ${invokeCount}`);
+    assert.equal(useToastStore.getState().toasts.length, 0);
+  } finally {
+    console.error = originalError;
+    useToastStore.getState().clear();
+    if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow);
+    else Reflect.deleteProperty(globalThis, 'window');
+  }
+});
+
+test('an in-flight replay cannot erase a newer persistence failure for the same Session', async () => {
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  const originalError = console.error;
+  console.error = () => {};
+  let phase: 'initial' | 'blocked' | 'recovered' = 'initial';
+  let releaseRetry: (() => void) | undefined;
+  let markRetryStarted: (() => void) | undefined;
+  const retryStarted = new Promise<void>((resolve) => {
+    markRetryStarted = resolve;
+  });
+  const persistedContents = new Set<string>();
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      kodaxSpace: {
+        invoke: async (
+          _channel: string,
+          payload: { readonly notice: { readonly content: string } },
+        ) => {
+          const content = payload.notice.content;
+          if (content === '/retry-a' && phase === 'initial') return { ok: false };
+          if (content === '/retry-a' && phase === 'blocked') {
+            markRetryStarted?.();
+            await new Promise<void>((resolve) => {
+              releaseRetry = resolve;
+            });
+            persistedContents.add(content);
+            return { ok: true };
+          }
+          if (content === '/concurrent-c' && phase === 'blocked') return { ok: false };
+          persistedContents.add(content);
+          return { ok: true };
+        },
+      },
+    },
+  });
+  try {
+    useAppStore.getState().appendLocalNotice(SID, '/retry-a', 40_000);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(useToastStore.getState().toasts.length, 1);
+
+    phase = 'blocked';
+    useAppStore.getState().appendLocalNotice(SID, '/trigger-retry-b', 40_001);
+    await retryStarted;
+    useAppStore.getState().appendLocalNotice(SID, '/concurrent-c', 40_002);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    releaseRetry?.();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(useToastStore.getState().toasts.length, 1);
+
+    phase = 'recovered';
+    useAppStore.getState().appendLocalNotice(SID, '/trigger-final-retry-d', 40_003);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(persistedContents.has('/concurrent-c'), true);
+    assert.equal(useToastStore.getState().toasts.length, 0);
+  } finally {
+    console.error = originalError;
+    useToastStore.getState().clear();
+    if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow);
+    else Reflect.deleteProperty(globalThis, 'window');
+  }
+});
+
+test('appendLocalNotice keeps at most the 32 notices that can be restored into the UI window', () => {
+  const store = useAppStore.getState();
+  for (let index = 0; index < 40; index += 1) {
+    store.appendLocalNotice(SID, `/notice-${index}`, 2_000 + index);
+  }
+
+  const notices = useAppStore.getState().localNoticesBySession[SID] ?? [];
+  assert.equal(notices.length, 32);
+  assert.equal(notices[0]?.content, '/notice-8');
+  assert.equal(notices.at(-1)?.content, '/notice-39');
+});
+
+test('appendLocalNotice protects the current row at the 32-row limit after clock rollback', () => {
+  useAppStore.setState({
+    localNoticesBySession: {
+      [SID]: Array.from({ length: 32 }, (_, index) => ({
+        id: `future_${index}`,
+        content: `/future-${index}`,
+        sentAt: 100_000 + index,
+        variant: 'echo' as const,
+      })),
+    },
+  });
+
+  useAppStore.getState().appendLocalNotice(SID, '/current-after-rollback', 1);
+
+  const notices = useAppStore.getState().localNoticesBySession[SID] ?? [];
+  assert.equal(notices.length, 32);
+  assert.equal(
+    notices.some((notice) => notice.content === '/current-after-rollback'),
+    true,
+  );
+  assert.equal(
+    notices.some((notice) => notice.id === 'future_0'),
+    false,
   );
 });
 

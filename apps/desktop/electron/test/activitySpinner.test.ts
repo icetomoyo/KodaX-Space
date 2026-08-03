@@ -1,10 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { SessionEvent, SpaceSessionLiveProjectionT } from '@kodax-space/space-ipc-schema';
+import type {
+  SessionEvent,
+  SpaceRuntimeProfileProjectionT,
+  SpaceSessionLiveProjectionT,
+} from '@kodax-space/space-ipc-schema';
 import {
   presentRuntimeSandbox,
   selectActivitySnapshot,
   snapshotFromEvents,
+  snapshotFromRuntimeProfileSession,
   snapshotFromRuntimeProjection,
 } from '../../renderer/src/shell/ActivitySpinner.js';
 
@@ -195,6 +200,137 @@ test('an authoritative idle Runtime projection clears stale legacy activity tele
   assert.deepEqual(snapshot, { streaming: false, status: '', startedAt: null });
 });
 
+test('a causal terminal event fences an older active snapshot for the same Runtime Run', () => {
+  const active: SpaceSessionLiveProjectionT = {
+    ...idleProjection(),
+    projectionRevision: 3,
+    cursor: { runtimeId: 'rt_1', seq: 10 },
+    activeRun: {
+      runId: 'run_done',
+      sessionId: sid,
+      phase: 'running',
+      startedAt: 10,
+    },
+    thinkingDraft: { text: 'already finished', startedAt: 10 },
+  };
+
+  const snapshot = selectActivitySnapshot(
+    active,
+    [
+      { kind: 'session_start', sessionId: sid, provider: 'mock' },
+      {
+        kind: 'session_complete',
+        sessionId: sid,
+        runtimeEvent: { runtimeId: 'rt_1', runId: 'run_done', seq: 11 },
+      },
+    ],
+    false,
+    undefined,
+  );
+
+  assert.deepEqual(snapshot, { streaming: false, status: '', startedAt: null });
+});
+
+test('a terminal-fenced old live snapshot falls through to a newer profile Run', () => {
+  const staleActive: SpaceSessionLiveProjectionT = {
+    ...idleProjection(),
+    projectionRevision: 3,
+    cursor: { runtimeId: 'rt_1', seq: 10 },
+    activeRun: {
+      runId: 'run_done',
+      sessionId: sid,
+      phase: 'running',
+      startedAt: 10,
+    },
+  };
+  const newerProfileRun: SpaceRuntimeProfileProjectionT['sessions'][number] = {
+    sessionId: sid,
+    surface: 'code',
+    createdAt: 10,
+    lastActivityAt: 20,
+    activeRun: {
+      runId: 'run_new',
+      sessionId: sid,
+      phase: 'running',
+      startedAt: 20,
+    },
+    queuedRuns: [],
+  };
+
+  const snapshot = selectActivitySnapshot(
+    staleActive,
+    [
+      {
+        kind: 'session_complete',
+        sessionId: sid,
+        runtimeEvent: { runtimeId: 'rt_1', runId: 'run_done', seq: 11 },
+      },
+    ],
+    false,
+    undefined,
+    newerProfileRun,
+  );
+
+  assert.equal(snapshot.streaming, true);
+  assert.equal(snapshot.status, 'Working…');
+  assert.equal(snapshot.startedAt, 20);
+});
+
+test('a previous Run terminal cannot hide a newer active Runtime Run', () => {
+  const active: SpaceSessionLiveProjectionT = {
+    ...idleProjection(),
+    projectionRevision: 4,
+    cursor: { runtimeId: 'rt_1', seq: 20 },
+    activeRun: {
+      runId: 'run_new',
+      sessionId: sid,
+      phase: 'running',
+      startedAt: 20,
+    },
+    thinkingDraft: { text: 'new work', startedAt: 20 },
+  };
+
+  const snapshot = selectActivitySnapshot(
+    active,
+    [
+      {
+        kind: 'session_complete',
+        sessionId: sid,
+        runtimeEvent: { runtimeId: 'rt_1', runId: 'run_old', seq: 11 },
+      },
+    ],
+    false,
+    undefined,
+  );
+
+  assert.equal(snapshot.streaming, true);
+  assert.equal(snapshot.status, 'Thinking…');
+});
+
+test('a stale connection cannot keep a detailed live projection spinning', () => {
+  const active: SpaceSessionLiveProjectionT = {
+    ...idleProjection(),
+    activeRun: {
+      runId: 'run_stale',
+      sessionId: sid,
+      phase: 'running',
+      startedAt: 10,
+    },
+    thinkingDraft: { text: 'stale work', startedAt: 10 },
+  };
+
+  const snapshot = selectActivitySnapshot(
+    active,
+    [{ kind: 'session_complete', sessionId: sid }],
+    false,
+    undefined,
+    undefined,
+    false,
+  );
+
+  assert.deepEqual(snapshot, { streaming: false, status: '', startedAt: null });
+});
+
 test('pending admission still renders while the last Runtime projection is idle', () => {
   const snapshot = selectActivitySnapshot(idleProjection(), [], true, undefined);
 
@@ -232,6 +368,75 @@ test('legacy activity remains the fallback until a Runtime projection has been h
   assert.equal(snapshot.streaming, true);
 });
 
+test('Runtime profile keeps spinner and Stop active while the session observation is rebuilding', () => {
+  const profileSession: SpaceRuntimeProfileProjectionT['sessions'][number] = {
+    sessionId: sid,
+    surface: 'code',
+    createdAt: 10,
+    lastActivityAt: 20,
+    activeRun: {
+      runId: 'run_recovering',
+      sessionId: sid,
+      phase: 'recovering',
+      startedAt: 10,
+    },
+    queuedRuns: [],
+  };
+
+  const direct = snapshotFromRuntimeProfileSession(profileSession);
+  const selected = selectActivitySnapshot(undefined, [], false, undefined, profileSession);
+
+  assert.equal(direct?.streaming, true);
+  assert.equal(direct?.status, 'Recovering…');
+  assert.deepEqual(selected, direct);
+});
+
+test('a stale Runtime connection cannot keep an orphaned profile Stop active', () => {
+  const profileSession: SpaceRuntimeProfileProjectionT['sessions'][number] = {
+    sessionId: sid,
+    surface: 'code',
+    createdAt: 10,
+    lastActivityAt: 20,
+    activeRun: {
+      runId: 'run_stale',
+      sessionId: sid,
+      phase: 'recovering',
+      startedAt: 10,
+    },
+    queuedRuns: [],
+  };
+
+  const selected = selectActivitySnapshot(undefined, [], false, undefined, profileSession, false);
+
+  assert.deepEqual(selected, { streaming: false, status: '', startedAt: null });
+});
+
+test('an available idle session projection outranks a stale active profile boundary', () => {
+  const profileSession: SpaceRuntimeProfileProjectionT['sessions'][number] = {
+    sessionId: sid,
+    surface: 'code',
+    createdAt: 10,
+    lastActivityAt: 20,
+    activeRun: {
+      runId: 'run_stale',
+      sessionId: sid,
+      phase: 'running',
+      startedAt: 10,
+    },
+    queuedRuns: [],
+  };
+
+  const selected = selectActivitySnapshot(
+    idleProjection(),
+    [{ kind: 'session_start', sessionId: sid, provider: 'mock' }],
+    false,
+    undefined,
+    profileSession,
+  );
+
+  assert.deepEqual(selected, { streaming: false, status: '', startedAt: null });
+});
+
 test('Runtime host-tool wait is rendered from daemon requirements', () => {
   const snapshot = snapshotFromRuntimeProjection({
     sessionId: sid,
@@ -253,6 +458,58 @@ test('Runtime host-tool wait is rendered from daemon requirements', () => {
   } satisfies SpaceSessionLiveProjectionT);
 
   assert.equal(snapshot?.status, 'Waiting for Space…');
+});
+
+test('Runtime finalization and recovery phases never fall back to Thinking', () => {
+  const statusFor = (
+    phase: 'running' | 'waiting_agent' | 'recovering' | 'unknown',
+    stage?: 'finalizing',
+    settlementNotPersisted = false,
+  ) =>
+    snapshotFromRuntimeProjection({
+      sessionId: sid,
+      projectionRevision: 1,
+      cursor: { runtimeId: 'rt_1', seq: 3 },
+      transcriptRevision: 'transcript_3',
+      activeRun: {
+        runId: `run_${phase}`,
+        sessionId: sid,
+        phase,
+        ...(stage ? { stage } : {}),
+        ...(phase === 'waiting_agent' ? { activeSubtaskCount: 2 } : {}),
+        ...(phase === 'unknown'
+          ? {
+              ...(settlementNotPersisted
+                ? {
+                    lifecycleError: {
+                      code: 'actor_settlement_not_persisted' as const,
+                      message: 'Actor state could not be persisted.',
+                      retryable: false,
+                    },
+                  }
+                : {}),
+              stop: {
+                requestedAt: 12,
+                state: 'unknown',
+                outcome: 'unknown',
+                reason: 'Host outcome could not be confirmed.',
+              },
+            }
+          : {}),
+        startedAt: 10,
+      },
+      queuedRuns: [],
+      activeTools: [],
+      todos: [],
+      queuedInputs: [],
+      interactions: [],
+    } satisfies SpaceSessionLiveProjectionT)?.status;
+
+  assert.equal(statusFor('waiting_agent'), 'Waiting for 2 agents…');
+  assert.equal(statusFor('recovering'), 'Recovering…');
+  assert.equal(statusFor('unknown'), 'Stop status unknown…');
+  assert.equal(statusFor('unknown', undefined, true), 'Run state not persisted…');
+  assert.equal(statusFor('running', 'finalizing'), 'Finalizing…');
 });
 
 test('Runtime sandbox observation is visible without changing tool execution state', () => {
@@ -308,12 +565,9 @@ test('Runtime sandbox presentation distinguishes applied and unselected decision
       tone: 'safe',
     },
   );
-  assert.deepEqual(
-    presentRuntimeSandbox({ version: 1, state: 'not_selected' }),
-    {
-      label: 'No sandbox',
-      title: 'Sandboxing was not selected for this tool.',
-      tone: 'muted',
-    },
-  );
+  assert.deepEqual(presentRuntimeSandbox({ version: 1, state: 'not_selected' }), {
+    label: 'No sandbox',
+    title: 'Sandboxing was not selected for this tool.',
+    tone: 'muted',
+  });
 });

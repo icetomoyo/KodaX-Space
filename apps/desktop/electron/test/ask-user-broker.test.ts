@@ -175,6 +175,69 @@ test('push payload contains reason / toolCall / signals when provided', async ()
   await pending;
 });
 
+test('guardrail push projects Auto[LLM] diagnostics without raw classifier content', async () => {
+  const pending = askUserBroker.request({
+    sessionId: 's_diagnostics',
+    reason: 'classifier requested confirmation',
+    toolCall: { toolId: 't_diag', toolName: 'bash', input: { command: 'npm test' } },
+    autoModeDiagnostics: {
+      source: 'classifier_confirm',
+      classifierAttempts: [
+        {
+          attempt: 1,
+          outcome: 'confirm',
+          observedProtocol: 'structured_v2',
+          outputWarnings: ['missing_hazard', 'unknown_future_warning'],
+          rawResponse: '<decision>ask</decision>',
+          diagnostics: {
+            provider: 'api_key=TOP_SECRET',
+            model: 'fast\u202emodel',
+            timeoutMs: 12_000,
+            elapsedMs: 90,
+            promptBytes: 512,
+            retryCount: 0,
+            retryWaitMs: 0,
+            terminalPhase: 'completed',
+            rawResponse: 'never forward',
+          },
+        },
+      ],
+      rawResponse: 'never forward',
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  const evt = captured.find((candidate) => candidate.channel === 'askUser.request');
+  assert.ok(evt);
+  const payload = evt.payload as {
+    reqId: string;
+    autoModeDiagnostics?: unknown;
+  };
+  assert.deepEqual(payload.autoModeDiagnostics, {
+    source: 'classifier_confirm',
+    classifierAttempts: [
+      {
+        attempt: 1,
+        outcome: 'confirm',
+        observedProtocol: 'structured_v2',
+        outputWarnings: ['missing_hazard'],
+        diagnostics: {
+          provider: 'api_key=[REDACTED]',
+          model: 'fastmodel',
+          timeoutMs: 12_000,
+          elapsedMs: 90,
+          promptBytes: 512,
+          retryCount: 0,
+          retryWaitMs: 0,
+          terminalPhase: 'completed',
+        },
+      },
+    ],
+  });
+  assert.equal(JSON.stringify(payload).includes('<decision>'), false);
+  assert.equal(askUserBroker.resolve(payload.reqId, 'block'), true);
+  await pending;
+});
+
 test('C8: guardrail signals[] are clamped to the push schema max (20)', async () => {
   // >20 signals would fail the askUser.request zod validation on push → the prompt never reaches
   // the renderer and silently times out. The broker must clamp so the push always validates.

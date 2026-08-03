@@ -11,8 +11,9 @@
 // 关键架构：每条执行路径只有一个 Permission 决策者，禁止“双 broker”。
 //   - daemon Coder：KodaX Runtime 持有 Auto guardrail；只有升级请求才投影到 Space modal。
 //     Runtime 用 tool-call 授权令牌绑定并一次性消费 allow，Space 不再重复分类。
-//   - embedded / Partner / legacy：events.beforeToolExecute 转 Space PermissionBroker，
-//     broker 按 session.permissionMode 决策后把结果回流 KodaX。
+//   - embedded / Partner / legacy：Auto run 由注入的 KodaX guardrail 独占权限裁决；
+//     events.beforeToolExecute 仅保留 Partner 白名单。非 Auto 或 guardrail bootstrap 失败时，
+//     Space PermissionBroker 才按 session.permissionMode 作为 fallback 决策。
 //   - daemon transport 不支持 exitPlanMode 交互，所以从工具集中排除 exit_plan_mode；
 //     embedded 路径仍由 planModeBlockCheck + exitPlanMode fail-closed。
 
@@ -109,6 +110,7 @@ import type {
   AutoModeAskUser,
   AutoModeAskUserVerdict,
   AutoModeEngine,
+  AutoModeToolGuardrail,
   Guardrail,
   KodaXAgentMode,
   KodaXOptions,
@@ -119,12 +121,40 @@ import type {
   ToolCallSignal,
 } from '@kodax-ai/kodax/coding';
 import type { RuntimeDaemonKodaXOptions, RuntimeInput } from '@kodax-ai/kodax/runtime';
-import type { InputArtifact, SessionEvent, Surface } from '@kodax-space/space-ipc-schema';
+import type {
+  InputArtifact,
+  PermissionMode,
+  SessionEvent,
+  SpaceRuntimeRunStopReceiptT,
+  Surface,
+} from '@kodax-space/space-ipc-schema';
 import { ASK_USER_BACK_SIGNAL } from '@kodax-space/space-ipc-schema';
 
 /** Mirrors the askUser.request push schema's options[].max(20) — the synthetic "Back" must fit. */
 const ASK_USER_MAX_OPTIONS = 20;
+
+type RuntimeAdmissionOutcome = 'admitted' | 'not_admitted';
+
+interface RuntimeAdmissionState {
+  readonly abort: AbortController;
+  phase: 'preparing' | 'starting' | RuntimeAdmissionOutcome;
+  readonly promise: Promise<RuntimeAdmissionOutcome>;
+  readonly resolve: (outcome: RuntimeAdmissionOutcome) => void;
+}
+
+function createRuntimeAdmissionState(abort: AbortController): RuntimeAdmissionState {
+  let resolve!: (outcome: RuntimeAdmissionOutcome) => void;
+  const promise = new Promise<RuntimeAdmissionOutcome>((settle) => {
+    resolve = settle;
+  });
+  return { abort, phase: 'preparing', promise, resolve };
+}
 import { askUserBroker } from '../permission/ask-user-broker.js';
+import { resolveSpacePermissionBrokerMode } from '../permission/decision-owner.js';
+import {
+  createAutoSkillDynamicContextAuthorizer,
+  createSkillDynamicContextExecutor,
+} from '../skill/dynamic-context-executor.js';
 import { repoIntelContextFields } from './repo-intel-gate.js';
 import { bootstrapAutoMode } from './auto-mode-bootstrap.js';
 import {
@@ -173,6 +203,7 @@ import {
   buildWorkflowDigestActivity,
 } from './workflow-activity.js';
 import type {
+  LocalSessionCancelOutcome,
   ManagedSession,
   PermissionRequestFn,
   SendOptions,
@@ -335,6 +366,7 @@ export class RealKodaXSession implements ManagedSession {
   private readonly emit: (e: SessionEvent) => void;
   private readonly requestPermission: PermissionRequestFn;
   private currentAbort: AbortController | null = null;
+  private runtimeAdmission: RuntimeAdmissionState | null = null;
   private disposed = false;
   private abortRuntimeRunOnDispose = false;
   private extensionRuntimeHandle: SpaceSdkExtensionRuntimeHandle | undefined = undefined;
@@ -373,12 +405,13 @@ export class RealKodaXSession implements ManagedSession {
     });
     const shellExecutionFingerprint = JSON.stringify(shellExecution ?? null);
     const shellExecutionChanged = this.shellExecutionFingerprint !== shellExecutionFingerprint;
+    const dispatchedPermissionMode = this.permissionMode;
     await runtimeHostAdapter.updateSessionSettings(this.sessionId, {
       provider: this.provider,
       model: this.model ?? null,
       thinking: this.thinking ?? null,
       reasoningMode: this.reasoningMode,
-      permissionMode: this.permissionMode,
+      permissionMode: dispatchedPermissionMode,
       executionCwd: this.projectRoot,
       // Reconcile this at every execution boundary: the daemon session may have
       // been recreated while this Space-side object (and its fingerprint)
@@ -388,6 +421,17 @@ export class RealKodaXSession implements ManagedSession {
       agentMode: this.agentMode,
       autoModeEngine: this.autoModeEngine,
     });
+    // Runtime permissions are live settings: a mode selected while the daemon
+    // was initializing or while the versioned update was in flight must govern
+    // the next concrete tool call. The adapter serializes updates per session;
+    // append a corrective write after this older full snapshot when needed so
+    // the run-admission path cannot finish by restoring a stale mode.
+    const currentPermissionMode = this.permissionMode;
+    if (currentPermissionMode !== dispatchedPermissionMode) {
+      await runtimeHostAdapter.updateSessionSettings(this.sessionId, {
+        permissionMode: currentPermissionMode,
+      });
+    }
     if (shellExecutionChanged) {
       this.shellExecutionFingerprint = shellExecutionFingerprint;
       if (!shellExecution) {
@@ -408,6 +452,13 @@ export class RealKodaXSession implements ManagedSession {
     if (this.disposed) {
       throw new Error(`[real-session ${this.sessionId}] already disposed`);
     }
+
+    // Capture the embedded/Partner permission authority at the synchronous
+    // admission boundary. In particular, ensureLegacyOwner() may wait on
+    // another process; a settings change during that wait belongs to the next
+    // embedded run. Daemon Coder intentionally ignores this snapshot and keeps
+    // Runtime settings live for the next concrete tool call.
+    const runPermissionMode = this.permissionMode;
 
     if (this.surface === 'code' && !runtimeHostAdapter.isRuntimeSelected()) {
       // Keep the admission gate held until the embedded owner has been proven.
@@ -486,7 +537,7 @@ export class RealKodaXSession implements ManagedSession {
           queueMode,
         };
       }
-      this.startRun(prompt, artifacts, options?.promptOverlay);
+      this.startRun(prompt, artifacts, options?.promptOverlay, runPermissionMode);
       return { queued: false };
     }
 
@@ -509,7 +560,7 @@ export class RealKodaXSession implements ManagedSession {
       this.lastActivityAt = Date.now();
       return { queued: true, queueId, queueMode };
     }
-    this.startRun(prompt, artifacts, options?.promptOverlay);
+    this.startRun(prompt, artifacts, options?.promptOverlay, runPermissionMode);
     return { queued: false };
   }
 
@@ -534,12 +585,25 @@ export class RealKodaXSession implements ManagedSession {
     prompt: string,
     artifacts?: readonly InputArtifact[],
     promptOverlay?: string,
+    runPermissionMode: PermissionMode = this.permissionMode,
   ): void {
     const abort = new AbortController();
+    const runtimeAdmission =
+      this.surface === 'code' && runtimeHostAdapter.isRuntimeSelected()
+        ? createRuntimeAdmissionState(abort)
+        : null;
     this.currentAbort = abort;
+    this.runtimeAdmission = runtimeAdmission;
     this.lastActivityAt = Date.now();
 
-    void this.runRealStream(prompt, abort.signal, artifacts, promptOverlay)
+    void this.runRealStream(
+      prompt,
+      abort.signal,
+      artifacts,
+      promptOverlay,
+      runtimeAdmission,
+      runPermissionMode,
+    )
       .catch((error: unknown) => {
         if (this.disposed || abort.signal.aborted) return;
         const wrapped = wrapSdkError(error);
@@ -558,6 +622,7 @@ export class RealKodaXSession implements ManagedSession {
       })
       .finally(() => {
         if (this.currentAbort === abort) this.currentAbort = null;
+        if (this.runtimeAdmission === runtimeAdmission) this.runtimeAdmission = null;
         if (!this.disposed && !abort.signal.aborted) {
           this.startQueuedPromptIfIdle();
         }
@@ -652,18 +717,30 @@ export class RealKodaXSession implements ManagedSession {
     }
   }
 
-  async cancel(): Promise<void> {
-    if (this.currentAbort) {
-      this.currentAbort.abort();
-    }
+  async cancel(): Promise<SpaceRuntimeRunStopReceiptT | LocalSessionCancelOutcome | void> {
+    const currentAbort = this.currentAbort;
+    const admission =
+      currentAbort !== null && this.runtimeAdmission?.abort === currentAbort
+        ? this.runtimeAdmission
+        : null;
+    currentAbort?.abort();
     if (this.surface === 'code' && runtimeHostAdapter.isRuntimeSelected()) {
-      await runtimeHostAdapter.abortSessionRun(this.sessionId).catch((err) => {
-        console.warn(
-          `[real-session ${this.sessionId}] Runtime run abort failed:`,
-          err instanceof Error ? err.message : err,
-        );
-      });
-      return;
+      if (admission?.phase === 'preparing') {
+        this.settleRuntimeAdmission(admission, 'not_admitted', true);
+        if (this.currentAbort === currentAbort) this.currentAbort = null;
+        if (this.runtimeAdmission === admission) this.runtimeAdmission = null;
+        return { kind: 'local_cancelled_before_admission' };
+      }
+      if (admission !== null) {
+        const outcome =
+          admission.phase === 'admitted' || admission.phase === 'not_admitted'
+            ? admission.phase
+            : await admission.promise;
+        if (outcome === 'not_admitted') {
+          return { kind: 'local_cancelled_before_admission' };
+        }
+      }
+      return runtimeHostAdapter.abortSessionRun(this.sessionId);
     }
     // Stop should also drop queued follow-up prompts so cancel means
     // "do not continue". Drain failure must not block abort.
@@ -673,6 +750,25 @@ export class RealKodaXSession implements ManagedSession {
         err instanceof Error ? err.message : err,
       );
     });
+  }
+
+  private settleRuntimeAdmission(
+    admission: RuntimeAdmissionState | null | undefined,
+    outcome: RuntimeAdmissionOutcome,
+    emitLocalCancelled = false,
+  ): void {
+    if (!admission || admission.phase === 'admitted' || admission.phase === 'not_admitted') return;
+    admission.phase = outcome;
+    if (emitLocalCancelled && !this.disposed) {
+      this.emit({
+        kind: 'session_error',
+        sessionId: this.sessionId,
+        error: 'cancelled',
+        category: 'cancelled',
+        retriable: true,
+      });
+    }
+    admission.resolve(outcome);
   }
 
   async dispose(options?: SessionDisposeOptions): Promise<void> {
@@ -723,6 +819,7 @@ export class RealKodaXSession implements ManagedSession {
       call: Parameters<AutoModeAskUser>[0],
       reason: string,
       signals?: readonly ToolCallSignal[],
+      diagnostics?: Parameters<AutoModeAskUser>[3],
     ): Promise<AutoModeAskUserVerdict> => {
       const sigArr = signals?.map((s) => {
         // ToolCallSignal is a discriminated union on `kind`; map each variant to
@@ -773,6 +870,7 @@ export class RealKodaXSession implements ManagedSession {
           input: call.input,
         },
         signals: sigArr,
+        autoModeDiagnostics: diagnostics,
       });
     };
   }
@@ -782,6 +880,7 @@ export class RealKodaXSession implements ManagedSession {
     signal: AbortSignal,
     artifacts?: readonly InputArtifact[],
     promptOverlay?: string,
+    admission?: RuntimeAdmissionState | null,
   ): Promise<void> {
     const sid = this.sessionId;
     try {
@@ -828,23 +927,38 @@ export class RealKodaXSession implements ManagedSession {
         workflowRunsBaseDir: workflowController.getRunBaseDir(),
         workflow: { maxConcurrency: workflowPolicy.maxConcurrency },
       };
+      if (signal.aborted) {
+        this.settleRuntimeAdmission(admission, 'not_admitted', !this.disposed);
+        return;
+      }
+      if (admission) admission.phase = 'starting';
       const handle = await runtimeHostAdapter.startManagedRun({
         sessionId: sid,
         input: this.buildRuntimeInput(prompt, artifacts),
         mode: 'managed_task',
         options,
       });
+      this.settleRuntimeAdmission(admission, 'admitted');
       // Normal Space shutdown detaches from the shared daemon. dispose() marks
       // the local Session as disposed before aborting its local wait signal, so
       // do not turn that detach into a daemon run.abort while runs.start() is
       // still being acknowledged. Explicit user cancellation keeps disposed=false
       // and continues to abort the authoritative daemon run.
-      if (signal.aborted && (!this.disposed || this.abortRuntimeRunOnDispose)) {
+      if (
+        signal.aborted &&
+        (admission === undefined ||
+          admission === null ||
+          (this.disposed && this.abortRuntimeRunOnDispose))
+      ) {
         await runtimeHostAdapter.abortSessionRun(sid).catch(() => false);
       }
       await handle.result;
     } catch (error) {
-      if (signal.aborted || this.disposed) return;
+      if (signal.aborted || this.disposed) {
+        this.settleRuntimeAdmission(admission, 'not_admitted', signal.aborted && !this.disposed);
+        return;
+      }
+      this.settleRuntimeAdmission(admission, 'not_admitted');
       const retryAfterMs = await extractRetryAfterMs(error);
       if (signal.aborted || this.disposed) return;
       const wrapped = wrapSdkError(
@@ -865,6 +979,8 @@ export class RealKodaXSession implements ManagedSession {
         ...(wrapped.action ? { action: wrapped.action } : {}),
         ...(retryAvailableAt !== undefined ? { retryAvailableAt } : {}),
       });
+    } finally {
+      this.settleRuntimeAdmission(admission, 'not_admitted', signal.aborted && !this.disposed);
     }
   }
 
@@ -873,15 +989,25 @@ export class RealKodaXSession implements ManagedSession {
     signal: AbortSignal,
     artifacts?: readonly InputArtifact[],
     promptOverlay?: string,
+    runtimeAdmission?: RuntimeAdmissionState | null,
+    runPermissionMode: PermissionMode = this.permissionMode,
   ): Promise<void> {
     if (this.surface === 'code' && runtimeHostAdapter.isRuntimeSelected()) {
-      await this.runCoderDaemon(prompt, signal, artifacts, promptOverlay);
+      await this.runCoderDaemon(
+        prompt,
+        signal,
+        artifacts,
+        promptOverlay,
+        runtimeAdmission,
+      );
       return;
     }
     if (this.surface === 'code') {
       await runtimeHostAdapter.ensureLegacyOwner();
     }
     const sid = this.sessionId;
+    // Embedded mode changes are documented as next-run settings. The immutable
+    // mode was captured by send()/startRun() before any owner-recovery await.
     const isStopped = (): boolean => this.disposed || signal.aborted;
     const emitRawLive = (event: SessionEvent, force = false): void => {
       if (this.disposed) return;
@@ -1160,8 +1286,9 @@ export class RealKodaXSession implements ManagedSession {
     // Space PermissionBroker 据当前 mode (FEATURE_029 canonical 3 mode) 短路：
     //   - plan         → 全 deny
     //   - accept-edits → edit/write 类自动批，其他走 ask modal
-    //   - auto         → guardrail 内部决策 (FEATURE_030 注入后接管该路径)，
-    //                    F030 前先 fallback 到 accept-edits 行为
+    //   - auto         → 本轮 SDK guardrail 安装成功后，它是唯一决策者；本钩子只保留
+    //                    Partner 白名单防线，不再让 Space broker 静态复审。安装失败时
+    //                    fallback 到 broker 的 accept-edits 边界。
     //
     // 这是 embedded 路径替代双 broker 的唯一决策点；daemon 路径的唯一决策点在 Runtime。
     //
@@ -1169,6 +1296,7 @@ export class RealKodaXSession implements ManagedSession {
     // mode 是 'plan' → planModeBlockCheck 放行 (因为该 tool 不在 blocklist)，
     // 但 LLM 在实际 invoke 前 mode 被改成 'accept-edits'，broker 短路又允许。
     // 这里再 snapshot 一次 mode 用于审计 (broker 仍用现行 mode 决定)。
+    let autoGuardrailInstalled = false;
     const beforeToolExecute: NonNullable<KodaXEvents['beforeToolExecute']> = async (
       tool,
       input,
@@ -1186,11 +1314,23 @@ export class RealKodaXSession implements ManagedSession {
         );
         if (!partnerToolAllowed) return false;
       }
+      // KodaX runs tool guardrails before beforeToolExecute. Once this run's Auto
+      // guardrail is installed, its allow/ask verdict is final; asking the Space
+      // broker to reassess `dangerous` commands here would recreate the double
+      // approval that Auto[LLM] is intended to remove.
+      const brokerMode = resolveSpacePermissionBrokerMode(
+        runPermissionMode,
+        autoGuardrailInstalled,
+      );
+      if (brokerMode === null) {
+        return true;
+      }
       try {
         const decision = await this.requestPermission({
           toolId: meta?.toolId ?? `auto_${tool}_${Date.now()}`,
           toolName: tool,
           input,
+          mode: brokerMode,
           surface: this.surface,
           partnerToolAllowed,
         });
@@ -1208,8 +1348,9 @@ export class RealKodaXSession implements ManagedSession {
     // 返回非 null → KodaX 立即 deny 并把 reason 喂回 LLM（"plan-mode active"），
     // 返回 null → 工具调用继续走 beforeToolExecute permission gate。
     //
-    // 闭包读 this.permissionMode — kodaxHost.setPermissionMode 改字段后立即生效，
-    // 不需要重建 session。
+    // Permission mode is a run-owned snapshot. A UI mode change updates the
+    // Session setting immediately, but only the next run may consume it; every
+    // gate and tool callback in this run must stay on one authority boundary.
     // F047: Partner surface 工具白名单（non-bash-subset）+ plan-mode 拦截统一收敛到
     // computeToolBlockReason（纯函数，见 partner-tools.ts）。Partner 只放行 SDK 判定的只读
     // tier（resolveToolCapability==='read'）+ 显式 web 研究工具；Coder 行为不变（plan-mode 原样）。
@@ -1217,7 +1358,7 @@ export class RealKodaXSession implements ManagedSession {
     const planModeBlockCheck = (tool: string, _input: Record<string, unknown>): string | null =>
       computeToolBlockReason({
         surface: this.surface,
-        permissionMode: this.permissionMode,
+        permissionMode: runPermissionMode,
         tool,
         resolveCapability: () => sdk.resolveToolCapability(tool),
         resolveRegisteredTool: () => sdk.getRegisteredToolDefinition(tool),
@@ -1237,7 +1378,7 @@ export class RealKodaXSession implements ManagedSession {
     // 同时 emit 一条 system_notice 把 plan 文本推给 renderer 让用户看到（Phase G 会改成
     // 弹 modal "approve / reject" 真双向交互）。
     const exitPlanMode: NonNullable<KodaXEvents['exitPlanMode']> = async (plan) => {
-      if (this.permissionMode !== 'plan') return 'not-in-plan-mode';
+      if (runPermissionMode !== 'plan') return 'not-in-plan-mode';
       // 防御 truncate：thinking_end schema 上限 256KB，留 1KB 给 prefix/suffix
       const MAX_PLAN_BYTES = 250_000;
       const truncatedPlan =
@@ -1769,13 +1910,14 @@ export class RealKodaXSession implements ManagedSession {
     // FEATURE_030: AutoModeToolGuardrail bootstrap — 仅 mode='auto' 时构造并注入
     // KodaXOptions.guardrails。其他 mode 跳过，零成本（loadAutoRules 不读盘）。
     let guardrails: Guardrail[] | undefined;
-    if (this.permissionMode === 'auto') {
+    let autoToolGuardrail: AutoModeToolGuardrail | undefined;
+    if (runPermissionMode === 'auto') {
       // F030 review MEDIUM#1: 检查 abort 状态早退，避免 cancel 后还白白等 30s I/O
       if (signal.aborted) {
         // review HIGH-2: 取消提示必须在 aborted 下照常发，故用 this.emit 而非 emitLive——
         // 后者的 isStopped() 含 aborted，会把这条 cancelled 吞掉。但 disposed 时 channel 已关、
-        // appendEvent 也会 drop，跳过 emit。字段与 catch AbortError 分支 / BottomBar 乐观取消
-        // 对齐（category + retriable），避免同一"取消"在不同路径渲染形态不一致。
+        // appendEvent 也会 drop，跳过 emit。字段与 catch AbortError 分支 / main 端 legacy
+        // 终态对齐（category + retriable），避免同一"取消"在不同路径渲染形态不一致。
         if (!this.disposed) {
           this.emit({
             kind: 'session_error',
@@ -1823,7 +1965,9 @@ export class RealKodaXSession implements ManagedSession {
               ? console.warn(`[auto-mode ${sid}] ${msg}`)
               : console.info(`[auto-mode ${sid}] ${msg}`),
         });
-        guardrails = [bootstrap.getGuardrail()];
+        autoToolGuardrail = bootstrap.getGuardrail();
+        guardrails = [autoToolGuardrail];
+        autoGuardrailInstalled = true;
         console.info(
           `[real-session ${sid}] auto-mode bootstrapped; engine=${this.autoModeEngine}, ` +
             `rules sources=${bootstrap.rulesLoadResult.sources.length}, ` +
@@ -1954,11 +2098,18 @@ export class RealKodaXSession implements ManagedSession {
       const shellExecution = await resolveKodaXShellExecutionContract(terminalShell, {
         cwd: this.projectRoot,
       });
+      const runPermissionIntent: NonNullable<
+        NonNullable<KodaXOptions['context']>['permissionIntent']
+      > = {
+        rootUserIntent: prompt,
+        scopeHint: this.projectRoot,
+      };
       const context: NonNullable<KodaXOptions['context']> = {
         // gitRoot 用 projectRoot——Space 不再单独求 git root，KodaX 自己会处理边界
         gitRoot: this.projectRoot,
         executionCwd: this.projectRoot,
         ...(shellExecution ? { shellExecution } : {}),
+        permissionIntent: runPermissionIntent,
         contextDiagnostics: true,
         planModeBlockCheck,
         ...repoIntelCtx,
@@ -1996,6 +2147,35 @@ export class RealKodaXSession implements ManagedSession {
         [];
       const wireEffort = resolveWireEffort(this.reasoningMode, reasoningProfile, rejectedEfforts);
       const compaction = await loadKodaxCompactionConfig();
+      const persistedSkillSession =
+        sessionStorage !== undefined
+          ? await (sessionStorage as KodaXSessionStorage).load(sid).catch(() => null)
+          : null;
+      const skillGuardrailMessages = [
+        ...(persistedSkillSession?.messages ?? []),
+        { role: 'user' as const, content: prompt },
+      ];
+      const skillDynamicContextExecutor = createSkillDynamicContextExecutor({
+        sessionId: sid,
+        permissionMode: runPermissionMode,
+        surface: this.surface,
+        ...(autoToolGuardrail
+          ? {
+              authorize: createAutoSkillDynamicContextAuthorizer({
+                guardrail: autoToolGuardrail,
+                context: {
+                  agent: {
+                    name: 'space-skill-dynamic-context',
+                    instructions: '',
+                  } as never,
+                  messages: skillGuardrailMessages,
+                  permissionIntent: runPermissionIntent,
+                  abortSignal: signal,
+                },
+              }),
+            }
+          : {}),
+      });
 
       const options: KodaXOptions = {
         provider: this.provider,
@@ -2029,6 +2209,11 @@ export class RealKodaXSession implements ManagedSession {
         },
         context,
         guardrails,
+        // FEATURE_222: model-triggered Skill expansion must never fall back to
+        // the SDK's trusted-CLI execSync path. Coder commands use the same
+        // run-owned Auto guardrail (or broker fallback); Partner is shell-free.
+        skillDynamicContext:
+          this.surface === 'partner' ? { disable: true } : { execute: skillDynamicContextExecutor },
         // FEATURE_221: Space overlays desktop interaction guidance on the SDK's
         // curated underlying-capability topics. Overlapping topics compose the
         // installed MANUAL_REGISTRY body instead of copying or deleting it, so
@@ -2068,7 +2253,7 @@ export class RealKodaXSession implements ManagedSession {
               sessionId: sid,
               surface: this.surface,
               projectRoot: this.projectRoot,
-              permissionMode: this.permissionMode,
+              permissionMode: runPermissionMode,
             },
             () =>
               runWithSessionQueueScope(sid, () =>
@@ -2110,7 +2295,7 @@ export class RealKodaXSession implements ManagedSession {
               sessionId: sid,
               surface: this.surface,
               projectRoot: this.projectRoot,
-              permissionMode: this.permissionMode,
+              permissionMode: runPermissionMode,
             },
             () => runWithSessionQueueScope(sid, () => sdk.runManagedTask(options, prompt)),
           );

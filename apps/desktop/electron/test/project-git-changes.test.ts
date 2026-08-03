@@ -97,6 +97,37 @@ test('keeps the 200-file response guard after expanding untracked directories', 
   );
 });
 
+test('excludes .agent runtime artifacts before they consume the response guard', async () => {
+  const runtimePaths = Array.from(
+    { length: 205 },
+    (_, index) => `.agent/managed-tasks/run/file-${String(index).padStart(3, '0')}.json`,
+  );
+  await fs.mkdir(path.join(testRoot, '.agent', 'managed-tasks', 'run'), { recursive: true });
+  await Promise.all(
+    runtimePaths.map((relativePath) => fs.writeFile(path.join(testRoot, relativePath), '{}\n')),
+  );
+  await fs.mkdir(path.join(testRoot, 'src'));
+  await fs.writeFile(path.join(testRoot, 'src', 'result.ts'), 'export const result = true;\n');
+
+  const status = await runGit(testRoot, GIT_CHANGES_STATUS_ARGS);
+  assert.equal(status.ok, true);
+
+  const parsed = parseGitChangesStatus(status.stdout);
+  assert.deepEqual(parsed.files, [{ path: 'src/result.ts', status: 'U', staged: false }]);
+  assert.equal(parsed.truncated, false);
+});
+
+test('defensively ignores .agent records in porcelain input', () => {
+  const internalRecords = Array.from(
+    { length: 205 },
+    (_, index) => `?? .agent/run-${String(index).padStart(3, '0')}.json\0`,
+  ).join('');
+  const parsed = parseGitChangesStatus(`## main\0${internalRecords}?? docs/meaningful.md\0`);
+
+  assert.deepEqual(parsed.files, [{ path: 'docs/meaningful.md', status: 'U', staged: false }]);
+  assert.equal(parsed.truncated, false);
+});
+
 test('uses the destination path for a staged Unicode rename', async () => {
   const originalPath = '旧 文件.txt';
   const renamedPath = '新 文件.txt';

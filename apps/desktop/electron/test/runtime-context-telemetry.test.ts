@@ -2,7 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import type { RuntimeTypedEvent } from '@kodax-ai/kodax/runtime';
-import { projectRuntimeContextSessionEvent } from '../kodax/runtime-host-adapter.js';
+import {
+  projectRuntimeContextSessionEvent,
+  selectCommittedCompactionEntry,
+} from '../kodax/runtime-host-adapter.js';
 
 function runtimeEvent(type: string, payload: unknown): RuntimeTypedEvent {
   return {
@@ -404,6 +407,203 @@ test('daemon unchanged compaction outcomes remain visible instead of being disca
       afterRevision: 4,
       reason: 'covered_context_unchanged',
     },
+  );
+});
+
+test('all Runtime compaction sources survive the Space telemetry contract', () => {
+  for (const source of ['manual', 'automatic_threshold', 'physical_capacity'] as const) {
+    const projected = projectRuntimeContextSessionEvent(
+      runtimeEvent('context.compaction.finished', {
+        contextId: 's_1',
+        contextKind: 'root',
+        tokensBefore: 120_000,
+        tokensAfter: 40_000,
+        committed: true,
+        source,
+      }),
+    );
+    assert.equal(projected?.kind, 'compact_stats');
+    assert.equal(projected?.kind === 'compact_stats' ? projected.source : undefined, source);
+  }
+});
+
+test('committed root finish resolves only its exact persisted compaction identity', () => {
+  const event = {
+    ...runtimeEvent('context.compaction.finished', {
+      contextId: 's_1',
+      contextKind: 'root',
+      committed: true,
+      compactionEntryId: 'current_compaction',
+      tokensBefore: 120_000,
+      tokensAfter: 40_000,
+    }),
+    time: '2026-07-29T07:06:50.321Z',
+  } as RuntimeTypedEvent;
+  const transcript = {
+    title: 'test',
+    gitRoot: 'C:\\repo',
+    messages: [],
+    activeMessages: [],
+    transcriptEntries: [
+      {
+        entryId: 'old_compaction',
+        parentId: null,
+        logicalId: 'old_compaction',
+        timestamp: '2026-07-29T07:02:00.000Z',
+        type: 'compaction',
+        active: false,
+        summary: 'old',
+        payload: { tokensBefore: 90_000, tokensAfter: 30_000 },
+        message: { role: 'system', content: 'old' },
+      },
+      {
+        entryId: 'current_compaction',
+        parentId: null,
+        logicalId: 'current_compaction',
+        timestamp: '2026-07-29T07:06:50.278Z',
+        type: 'compaction',
+        active: true,
+        summary: 'current',
+        payload: { tokensBefore: 120_000, tokensAfter: 40_000 },
+        message: { role: 'system', content: 'current' },
+      },
+    ],
+  } as Parameters<typeof selectCommittedCompactionEntry>[0];
+
+  assert.deepEqual(selectCommittedCompactionEntry(transcript, event), {
+    entry: transcript!.transcriptEntries[1],
+    canonicalIndex: 1,
+  });
+  assert.equal(
+    selectCommittedCompactionEntry(transcript, event, new Set(['current_compaction'])),
+    undefined,
+    'replayed finish must not bind to an older unseen boundary',
+  );
+  assert.equal(
+    selectCommittedCompactionEntry(
+      { ...transcript!, transcriptEntries: [transcript!.transcriptEntries[0]!] },
+      event,
+    ),
+    undefined,
+    'a nearby historical compaction with different token facts must not be selected',
+  );
+  const staleSameFacts = {
+    ...transcript!.transcriptEntries[1]!,
+    entryId: 'stale_same_facts',
+    logicalId: 'stale_same_facts',
+    timestamp: '2026-07-29T07:06:50.301Z',
+  };
+  assert.equal(
+    selectCommittedCompactionEntry({ ...transcript!, transcriptEntries: [staleSameFacts] }, event),
+    undefined,
+    'same tokens and a 20 ms timestamp gap cannot impersonate the exact durable entry ID',
+  );
+  const eventWithoutEntryId = {
+    ...event,
+    payload: {
+      contextId: 's_1',
+      contextKind: 'root',
+      committed: true,
+      tokensBefore: 120_000,
+      tokensAfter: 40_000,
+    },
+  } as RuntimeTypedEvent;
+  assert.equal(
+    selectCommittedCompactionEntry(transcript, eventWithoutEntryId),
+    undefined,
+    'a finish without authoritative physical identity must keep its provisional unresolved',
+  );
+  const legacyCurrent = {
+    ...transcript!.transcriptEntries[1]!,
+    payload: undefined,
+  };
+  assert.equal(
+    selectCommittedCompactionEntry({ ...transcript!, transcriptEntries: [legacyCurrent] }, event),
+    undefined,
+    'a modern finish must not borrow identity from a nearby tokenless legacy entry',
+  );
+  assert.equal(
+    selectCommittedCompactionEntry(
+      {
+        ...transcript!,
+        transcriptEntries: [
+          {
+            ...legacyCurrent,
+            payload: { tokensBefore: 120_000 },
+          },
+        ],
+      },
+      event,
+    ),
+    undefined,
+    'a partially populated token payload is not an exact modern compaction identity',
+  );
+  const rewindEntry = {
+    ...transcript!.transcriptEntries[1]!,
+    entryId: 'legacy_rewind',
+    logicalId: 'legacy_rewind',
+    summary: '[Rewind] prior branch',
+    payload: { tokensBefore: 120_000, tokensAfter: 40_000, reason: 'rewind' },
+  };
+  assert.equal(
+    selectCommittedCompactionEntry({ ...transcript!, transcriptEntries: [rewindEntry] }, {
+      ...event,
+      payload: {
+        ...(event.payload as Record<string, unknown>),
+        compactionEntryId: 'legacy_rewind',
+      },
+    } as RuntimeTypedEvent),
+    undefined,
+    'legacy rewind compactions are storage markers, not visible compression boundaries',
+  );
+});
+
+test('no-op and child compactions never resolve a root transcript boundary', () => {
+  const transcript = {
+    title: 'test',
+    gitRoot: 'C:\\repo',
+    messages: [],
+    activeMessages: [],
+    transcriptEntries: [
+      {
+        entryId: 'compaction',
+        parentId: null,
+        logicalId: 'compaction',
+        timestamp: '2026-07-21T07:04:54.700Z',
+        type: 'compaction',
+        active: true,
+        summary: 'summary',
+        payload: { tokensBefore: 10, tokensAfter: 5 },
+        message: { role: 'system', content: 'summary' },
+      },
+    ],
+  } as Parameters<typeof selectCommittedCompactionEntry>[0];
+  assert.equal(
+    selectCommittedCompactionEntry(
+      transcript,
+      runtimeEvent('context.compaction.finished', {
+        contextKind: 'root',
+        committed: false,
+        compactionEntryId: 'compaction',
+        tokensBefore: 10,
+        tokensAfter: 5,
+      }),
+    ),
+    undefined,
+  );
+  assert.equal(
+    selectCommittedCompactionEntry(
+      transcript,
+      runtimeEvent('context.compaction.finished', {
+        contextKind: 'child',
+        parentContextId: 's_1',
+        committed: true,
+        compactionEntryId: 'compaction',
+        tokensBefore: 10,
+        tokensAfter: 5,
+      }),
+    ),
+    undefined,
   );
 });
 

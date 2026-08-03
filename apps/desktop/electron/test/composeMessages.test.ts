@@ -131,6 +131,33 @@ test('compaction lineage hides its cumulative internal summary while branch line
   assert.equal(JSON.stringify(out).includes(compactionSummary), false);
 });
 
+test('ordinary chat excludes raw compaction and branch lineage while retaining adjacent output', () => {
+  const out = composeMessages({
+    events: [
+      {
+        kind: 'lineage_notice',
+        sessionId: sid,
+        noticeKind: 'compaction',
+        text: 'internal compaction summary',
+      },
+      {
+        kind: 'lineage_notice',
+        sessionId: sid,
+        noticeKind: 'branch_summary',
+        text: 'internal branch summary',
+      },
+      { kind: 'text_delta', sessionId: sid, text: 'visible assistant output' },
+    ],
+    userMessages: [],
+    includeAuditLineage: false,
+  });
+
+  assert.deepEqual(
+    out.map((message) => ({ kind: message.kind, text: 'text' in message ? message.text : '' })),
+    [{ kind: 'assistant_text', text: 'visible assistant output' }],
+  );
+});
+
 test('visibly adjacent compactions coalesce without deleting lineage or compact stats upstream', () => {
   const out = composeMessages({
     events: [
@@ -1003,4 +1030,56 @@ test('re-rooted session: a workflow notice whose run predates all restored messa
     ['user', 'system_notice', 'user'],
     'in-range notice interleaves at its true position (no clamp)',
   );
+});
+
+test('canonical assistant and tool row ids survive prepending an older history page', () => {
+  const newestEvents: SessionEvent[] = [
+    { kind: 'text_delta', sessionId: sid, text: 'new answer', canonicalIndex: 21 },
+    {
+      kind: 'tool_start',
+      sessionId: sid,
+      toolId: 'tool-new',
+      toolName: 'read',
+      canonicalIndex: 22,
+    },
+    {
+      kind: 'tool_result',
+      sessionId: sid,
+      toolId: 'tool-new',
+      toolName: 'read',
+      content: 'result',
+      canonicalIndex: 23,
+    },
+    { kind: 'session_complete', sessionId: sid },
+  ];
+  const before = composeMessages({
+    events: newestEvents,
+    userMessages: [{ ...userMsg('history-new', 'new query'), historyTurnIndex: 20 }],
+  });
+  const after = composeMessages({
+    events: [
+      { kind: 'text_delta', sessionId: sid, text: 'old answer', canonicalIndex: 11 },
+      { kind: 'session_complete', sessionId: sid },
+      ...newestEvents,
+    ],
+    userMessages: [
+      { ...userMsg('history-old', 'old query', 900), historyTurnIndex: 10 },
+      { ...userMsg('history-new', 'new query'), historyTurnIndex: 20 },
+    ],
+  });
+
+  const beforeAnswer = before.find(
+    (message) => message.kind === 'assistant_text' && message.text === 'new answer',
+  );
+  const afterAnswer = after.find(
+    (message) => message.kind === 'assistant_text' && message.text === 'new answer',
+  );
+  const beforeTool = before.find(
+    (message) => message.kind === 'tool_call' && message.toolId === 'tool-new',
+  );
+  const afterTool = after.find(
+    (message) => message.kind === 'tool_call' && message.toolId === 'tool-new',
+  );
+  assert.equal(afterAnswer?.id, beforeAnswer?.id);
+  assert.equal(afterTool?.id, beforeTool?.id);
 });

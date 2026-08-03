@@ -94,13 +94,13 @@ npm run dev
 
 KodaX 0.7.78 继续把集成声明与核心配置分离，并新增 last-known-good 恢复、带 revision 的 reload、watcher 状态和有界诊断。Space 从 `~/.kodax/integrations/mcp.json` 读取 MCP，从 `~/.kodax/integrations/extensions.json` 读取受管理 Extension 路径，并让 Runtime-owned A2A 使用 `~/.kodax/integrations/a2a.json`；项目 MCP 覆盖位于 `<project>/.kodax/integrations/mcp.json`。Settings → Runtime 会显示每个集成域的来源、revision、watcher 和诊断状态；并发迁移/配置写入会明确要求 reload 后重试，不会覆盖更新的数据。应用内 `kodax_manual` 继续把 Space 操作说明与当前安装 SDK 的原始底层能力主题动态合成。
 
-底部状态区把主 Agent 上下文压力与整个 Session 累计 Token 分开显示。“上下文窗口”使用最终自动压缩阈值和不含正文的六类构成；完成态物理请求按 request ID 去重，覆盖 root、child、retry、fallback、repair、workflow digest 和 compaction summary。F140 新增“每次询问 / 保留托盘和 Runtime / 安全彻底退出”偏好。Windows、macOS 或 Linux 真正退出时，Space 必须先停止 Coder daemon；有 blocker 或停止失败时会恢复可见 Space，Space 自动拉起的孤儿 daemon 则在最后客户端断开且任务空闲后自回收。Terminal 与 Coder 命令工具共享同一个所选 Shell/profile PATH 契约，不接受任意可执行文件，也不把敏感变量投影给 PTY。
+底部状态区把主 Agent 上下文压力与整个 Session 累计 Token 分开显示。“上下文窗口”使用最终自动压缩阈值和不含正文的六类构成；完成态物理请求按 request ID 去重，覆盖 root、child、retry、fallback、repair、workflow digest 和 compaction summary。F140 新增“每次询问 / 保留托盘和 Runtime / 彻底退出”偏好。Windows、macOS 或 Linux 真正退出时，Space 会先尝试安全停止 Coder daemon；若有 blocker，则提供默认的“保持开启”和显式“强行关闭”。强行关闭只终止当前 Space 的任务、保留其他客户端的 Runtime 工作，并保证退出不再回到阻塞弹窗。Space 自动拉起的孤儿 daemon 仍会在最后客户端断开且任务空闲后自回收。Terminal 与 Coder 命令工具共享同一个所选 Shell/profile PATH 契约，不接受任意可执行文件，也不把敏感变量投影给 PTY。
 
 F122-F124 继续提供 Partner 项目来源库、不可变证据/引用和自动 grounded context 闭环。F121 仅因最终人工多客户端验收台账保持 `InProgress`；v0.1.34 仍对缺失 daemon capability 明确失败。详见 [v0.1.34 安全设计](docs/features/v0.1.34.md)和[能力台账](docs/KODAX_CAPABILITY_LEDGER.md)。
 
 F135 继续把许可证允许再分发的 `frontend-slides` 与 `huashu-design` 作为经审查的 Space builtin 一起打包。F137 为 `v0.1.36` 规划四个由 Space 独立创作、中文优先的替代 Skill，不属于 0.1.34 安全发布。详见 [v0.1.36 设计](docs/features/v0.1.36.md)、[builtin skill 文档](docs/BUILTIN_SKILLS.md)和 [v0.1.34 发布记录](docs/releases/v0.1.34-release-readiness.md)。
 
-F136 让 Windows 后台 owner 可见、可控；F140 允许选择“每次询问”“保留托盘运行”或“安全彻底退出”。关闭最后一个窗口会销毁 renderer，通知区域 owner 可重开 Space。真正退出采用统一跨平台契约：任务或其他客户端会让 Space 保持可见，安全停止成功后才退出，停止失败则自动重开。KodaX 的专用 `daemonOrphanExit:1` 能力只为 Space 自动拉起的 daemon 增加 30 秒空闲孤儿回收期。
+F136 让 Windows 后台 owner 可见、可控；F140 允许选择“每次询问”“保留托盘运行”或“彻底退出”。关闭最后一个窗口会销毁 renderer，通知区域 owner 可重开 Space。真正退出采用统一跨平台契约：先尝试安全停止；有任务时提供“保持开启 / 强行关闭”，强退仅取消本 Space 所属工作并完全退出，不误杀其他客户端。KodaX 的专用 `daemonOrphanExit:1` 能力只为 Space 自动拉起的 daemon 增加 30 秒空闲孤儿回收期。
 
 已解决的发布阻断项：KodaX 0.7.76 保留 0.7.75 引入的集中式 Windows `windowsHide` 加固，普通 daemon-backed Coder query 不再闪出短暂子进程控制台。Space 只消费官方 Registry 包，没有内置 SDK 源码补丁。详见 [Issue 091](docs/KNOWN_ISSUES.md#091-ordinary-windows-queries-can-flash-several-short-lived-command-windows-from-kodax-runtime-child-processes)。
 

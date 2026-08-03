@@ -85,6 +85,14 @@
     --content-material-border: rgba(17, 17, 20, 0.08);
     --content-material-highlight: rgba(245, 166, 35, 0.065);
     --content-code-bg: rgba(246, 246, 248, 0.72);
+    --content-code-highlight: rgba(37, 99, 235, 0.035);
+    --markdown-code-fg: 51 57 68;
+    --markdown-inline-code-bg: rgba(71, 85, 105, 0.08);
+    --markdown-inline-code-fg: 51 65 85;
+    --markdown-inline-code-border: rgba(71, 85, 105, 0.16);
+    --markdown-quote-bg: rgba(37, 99, 235, 0.035);
+    --markdown-quote-fg: 82 88 99;
+    --markdown-quote-border: rgba(37, 99, 235, 0.3);
     --diff-bg: 251 251 252;
     --add-bg: rgba(31, 157, 82, 0.1);
     --add-fg: 21 127 59;
@@ -156,6 +164,14 @@
     --content-material-border: rgba(255, 255, 255, 0.08);
     --content-material-highlight: rgba(245, 181, 68, 0.055);
     --content-code-bg: rgba(14, 14, 16, 0.7);
+    --content-code-highlight: rgba(96, 165, 250, 0.04);
+    --markdown-code-fg: 218 221 227;
+    --markdown-inline-code-bg: rgba(148, 163, 184, 0.1);
+    --markdown-inline-code-fg: 203 213 225;
+    --markdown-inline-code-border: rgba(148, 163, 184, 0.18);
+    --markdown-quote-bg: rgba(96, 165, 250, 0.055);
+    --markdown-quote-fg: 184 190 200;
+    --markdown-quote-border: rgba(96, 165, 250, 0.32);
     --diff-bg: 14 14 16;
     --add-bg: rgba(74, 222, 128, 0.07);
     --add-fg: 134 239 172;
@@ -346,8 +362,7 @@ html:not(.dark) .content-material {
 .content-code {
   background:
     linear-gradient(145deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0) 46%),
-    linear-gradient(90deg, var(--content-material-highlight), transparent 36%),
-    var(--content-code-bg);
+    linear-gradient(90deg, var(--content-code-highlight), transparent 36%), var(--content-code-bg);
   border-color: var(--content-material-border);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.1),
@@ -356,8 +371,7 @@ html:not(.dark) .content-material {
 html:not(.dark) .content-code {
   background:
     linear-gradient(145deg, rgba(255, 255, 255, 0.72), rgba(255, 255, 255, 0) 52%),
-    linear-gradient(90deg, var(--content-material-highlight), transparent 36%),
-    var(--content-code-bg);
+    linear-gradient(90deg, var(--content-code-highlight), transparent 36%), var(--content-code-bg);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.78),
     inset 0 -1px 0 rgba(17, 17, 20, 0.045);
@@ -408,8 +422,53 @@ html:not(.dark) .content-table-head {
   color: rgb(var(--fg-primary));
   background: rgb(var(--hover-bg) / 0.72);
 }
+.content-copy-button:focus-visible {
+  outline: 2px solid rgb(var(--info));
+  outline-offset: 2px;
+}
 html:not(.dark) .content-copy-button {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+.markdown-code-block {
+  color: rgb(var(--markdown-code-fg));
+}
+.markdown-code-language {
+  position: absolute;
+  top: 0.5rem;
+  left: 0.75rem;
+  max-width: calc(100% - 8rem);
+  overflow: hidden;
+  color: rgb(var(--fg-muted));
+  font-family: var(--ui);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.035em;
+  line-height: 1.25rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.markdown-code-block > .markdown-code-block-content {
+  display: block;
+  min-width: max-content;
+  padding: 0;
+  color: inherit;
+  background: transparent;
+}
+html .markdown-code-block > .markdown-code-block-content.hljs {
+  color: inherit;
+  background: transparent;
+}
+.markdown-inline-code {
+  color: rgb(var(--markdown-inline-code-fg));
+  background: var(--markdown-inline-code-bg);
+  border: 1px solid var(--markdown-inline-code-border);
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+.markdown-blockquote {
+  color: rgb(var(--markdown-quote-fg));
+  background: var(--markdown-quote-bg);
+  border-color: var(--markdown-quote-border);
 }
 html.q-minimal .content-material,
 html.q-minimal .content-code,

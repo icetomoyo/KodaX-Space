@@ -30,16 +30,23 @@ export interface SidebarPlanViewModel {
   readonly rows: readonly SidebarPlanRow[];
 }
 
+export interface SidebarPlanViewOptions {
+  readonly expanded?: boolean;
+}
+
 const MAX_VISIBLE_ROWS = 6;
 const MAX_VISIBLE_ITEMS_WITH_SUMMARIES = 4;
 
-export function buildSidebarPlanView(todos: readonly SidebarTodoItem[]): SidebarPlanViewModel {
+export function buildSidebarPlanView(
+  todos: readonly SidebarTodoItem[],
+  options: SidebarPlanViewOptions = {},
+): SidebarPlanViewModel {
   const progress = summarizeTodoProgress(todos);
   const total = progress.total;
   const completed = progress.completed;
   const running = todos.find((todo) => todo.status === 'in_progress');
 
-  if (total <= MAX_VISIBLE_ROWS) {
+  if (options.expanded || total <= MAX_VISIBLE_ROWS) {
     return {
       total,
       completed,

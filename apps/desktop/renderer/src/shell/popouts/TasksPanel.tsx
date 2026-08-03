@@ -1,7 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Caret } from '../../components/Caret.js';
 import { useAppStore } from '../../store/appStore.js';
-import { buildAgentStatuses, type AgentStatusViewModel } from '../agentStatusProjection.js';
+import {
+  buildAgentStatuses,
+  scopeAgentActorSnapshotToCurrentTurn,
+  type AgentStatusViewModel,
+} from '../agentStatusProjection.js';
 import { buildWorkerTree, type WorkerNode } from './worker-tree.js';
 import { useI18n } from '../../i18n/I18nProvider.js';
 import type { MessageKey } from '../../i18n/messages.js';
@@ -18,6 +22,9 @@ export function TasksPanel(): JSX.Element {
   const actorSnapshot = useAppStore((s) =>
     currentSessionId ? s.agentActorSnapshotBySession[currentSessionId] : undefined,
   );
+  const events = useAppStore((s) =>
+    currentSessionId ? s.eventsBySession[currentSessionId] : undefined,
+  );
   const budget = useAppStore((s) =>
     currentSessionId ? s.workBudgetBySession[currentSessionId] : undefined,
   );
@@ -25,9 +32,13 @@ export function TasksPanel(): JSX.Element {
     currentSessionId ? s.harnessProfileBySession[currentSessionId] : undefined,
   );
 
+  const currentTurnActorSnapshot = useMemo(
+    () => scopeAgentActorSnapshotToCurrentTurn(actorSnapshot, events),
+    [actorSnapshot, events],
+  );
   const agents = useMemo(
-    () => buildAgentStatuses(status, t, actorSnapshot),
-    [actorSnapshot, status, t],
+    () => buildAgentStatuses(status, t, currentTurnActorSnapshot),
+    [currentTurnActorSnapshot, status, t],
   );
   const workerById = useMemo(() => {
     const map = new Map<string, WorkerNode>();

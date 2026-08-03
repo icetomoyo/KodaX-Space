@@ -27,7 +27,21 @@ if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(expectedKodaxVersion)) {
     `root manifest has no exact KodaX version: ${expectedKodaxVersion || '(missing)'}`,
   );
 }
-const env = { ...process.env, KODAX_PROFILE_DIR: profileDir };
+// The renderer is intentionally independent from a cold daemon. Keep its
+// budget below the previously observed 20-50 second Runtime delay, while the
+// overall deadline still gives a cold packaged daemon enough time to settle on
+// slower Windows hosts.
+const RENDERER_READY_BUDGET_MS = 15_000;
+const RUNTIME_READY_BUDGET_MS = 90_000;
+const DAEMON_READY_TEST_DELAY_MS = 20_000;
+const env = {
+  ...process.env,
+  KODAX_PROFILE_DIR: profileDir,
+  // Published KodaX deliberately supports this internal smoke-test hold. It
+  // makes a renderer-before-Runtime assertion deterministic instead of relying
+  // on incidental cold-start speed.
+  KODAX_INTERNAL_DAEMON_TEST_READY_DELAY_MS: String(DAEMON_READY_TEST_DELAY_MS),
+};
 delete env.ELECTRON_RUN_AS_NODE;
 
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -51,6 +65,7 @@ async function readDiagnostics() {
   }
 }
 
+const launchedAt = Date.now();
 const child = spawn(exe, [], {
   cwd: path.dirname(exe),
   env,
@@ -59,9 +74,11 @@ const child = spawn(exe, [], {
 });
 
 try {
-  const deadline = Date.now() + 45_000;
+  const deadline = launchedAt + RUNTIME_READY_BUDGET_MS;
   let daemon;
   let diagnostics = [];
+  let rendererReadyAt;
+  let runtimeReadyAt;
   while (Date.now() < deadline) {
     if (child.exitCode !== null) {
       throw new Error(`packaged app exited before readiness (code ${child.exitCode})`);
@@ -77,11 +94,46 @@ try {
         event.message?.includes('renderer visual-ready') &&
         event.message?.includes('app://space/index.html'),
     );
+    const observedAt = Date.now();
+    if (rendererReady && rendererReadyAt === undefined) {
+      rendererReadyAt = observedAt;
+      if (rendererReadyAt - launchedAt > RENDERER_READY_BUDGET_MS) {
+        throw new Error(
+          `packaged renderer exceeded its independent ${RENDERER_READY_BUDGET_MS}ms readiness budget`,
+        );
+      }
+    }
+    if (runtimeReady && runtimeReadyAt === undefined) {
+      runtimeReadyAt = observedAt;
+      if (runtimeReadyAt - launchedAt > RUNTIME_READY_BUDGET_MS) {
+        throw new Error(
+          `packaged Runtime exceeded its ${RUNTIME_READY_BUDGET_MS}ms readiness budget`,
+        );
+      }
+    }
+    if (rendererReadyAt === undefined && observedAt - launchedAt > RENDERER_READY_BUDGET_MS) {
+      throw new Error(
+        `packaged renderer exceeded its independent ${RENDERER_READY_BUDGET_MS}ms readiness budget`,
+      );
+    }
     if (runtimeReady && rendererReady && daemon?.status === 'ready') break;
     await sleep(100);
   }
 
   if (daemon?.status !== 'ready') throw new Error('packaged Coder daemon did not become ready');
+  if (rendererReadyAt === undefined) throw new Error('packaged renderer did not become ready');
+  if (runtimeReadyAt === undefined) throw new Error('packaged Runtime host did not become ready');
+  const rendererReadyMs = rendererReadyAt - launchedAt;
+  const runtimeReadyMs = runtimeReadyAt - launchedAt;
+  if (rendererReadyMs > RENDERER_READY_BUDGET_MS) {
+    throw new Error(`packaged renderer became ready too late (${rendererReadyMs}ms)`);
+  }
+  if (runtimeReadyMs > RUNTIME_READY_BUDGET_MS) {
+    throw new Error(`packaged Runtime became ready too late (${runtimeReadyMs}ms)`);
+  }
+  if (runtimeReadyMs < DAEMON_READY_TEST_DELAY_MS) {
+    throw new Error('packaged Runtime became ready before the deterministic daemon hold elapsed');
+  }
   if (daemon.version !== expectedKodaxVersion) {
     throw new Error(`unexpected packaged KodaX version: ${daemon.version}`);
   }
@@ -107,7 +159,8 @@ try {
     throw new Error('packaged renderer did not reach app://space visual readiness');
   }
   console.log(
-    `[boot-smoke] PASS | KodaX ${expectedKodaxVersion} daemon ready | Runtime host ready | renderer app://space ready`,
+    `[boot-smoke] PASS | renderer ready in ${rendererReadyMs}ms | ` +
+      `KodaX ${expectedKodaxVersion} Runtime ready in ${runtimeReadyMs}ms after deterministic hold`,
   );
 } catch (error) {
   console.error('[boot-smoke] FAIL:', error instanceof Error ? error.message : String(error));

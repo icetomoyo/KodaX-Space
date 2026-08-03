@@ -37,7 +37,18 @@ export const windowActivityChannel = {
   }),
 } as const;
 
+export const windowCompleteExitProgressChannel = {
+  name: 'window.completeExitProgress',
+  direction: 'push',
+  payload: z.object({
+    active: z.boolean(),
+  }),
+} as const;
+
 export type WindowActivityStateT = z.infer<typeof windowActivityStateSchema>;
 export type WindowActivityPayload = z.infer<typeof windowActivityChannel.payload>;
+export type WindowCompleteExitProgressPayload = z.infer<
+  typeof windowCompleteExitProgressChannel.payload
+>;
 export type WindowControlActionT = z.infer<typeof windowControlActionSchema>;
 export type WindowStateT = z.infer<typeof windowStateSchema>;

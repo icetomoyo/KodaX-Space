@@ -1,9 +1,12 @@
+export const GIT_VISIBLE_PATHSPEC_ARGS = ['--', '.', ':(exclude).agent'] as const;
+
 export const GIT_CHANGES_STATUS_ARGS = [
   'status',
   '--porcelain=v1',
   '-b',
   '-z',
   '--untracked-files=all',
+  ...GIT_VISIBLE_PATHSPEC_ARGS,
 ] as const;
 
 export type GitChangeFile = {
@@ -36,6 +39,11 @@ function normalizeStatus(x: string, y: string): Pick<GitChangeFile, 'status' | '
   return { status: 'M', staged: x !== ' ' && x !== '?' };
 }
 
+function isInternalRuntimePath(filePath: string): boolean {
+  const normalized = filePath.replaceAll('\\', '/');
+  return normalized === '.agent' || normalized.startsWith('.agent/');
+}
+
 /** Parse the NUL-delimited porcelain format so Git never quotes or escapes paths. */
 export function parseGitChangesStatus(stdout: string): ParsedGitChanges {
   const records = stdout.split('\0');
@@ -50,10 +58,6 @@ export function parseGitChangesStatus(stdout: string): ParsedGitChanges {
       branch = parseBranch(record);
       continue;
     }
-    if (files.length >= 200) {
-      truncated = true;
-      break;
-    }
     if (record.length < 4) continue;
 
     const x = record.charAt(0);
@@ -63,6 +67,13 @@ export function parseGitChangesStatus(stdout: string): ParsedGitChanges {
     if (x === 'R' || y === 'R' || x === 'C' || y === 'C') index++;
     if (filePath.length === 0 || filePath.length > 2048) continue;
     if (filePath.startsWith('..') || filePath.includes('\0')) continue;
+    // `.agent` is runtime bookkeeping, not user-authored project output. Keep
+    // this defense even though the Git pathspec already excludes the directory.
+    if (isInternalRuntimePath(filePath)) continue;
+    if (files.length >= 200) {
+      truncated = true;
+      break;
+    }
 
     files.push({ path: filePath, ...normalizeStatus(x, y) });
   }

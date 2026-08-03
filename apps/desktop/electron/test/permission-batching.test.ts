@@ -142,3 +142,30 @@ test('high risk batches fine — only danger blocks batching', () => {
   const result = selectPermissionBatch(items);
   assert.equal(result.mode, 'batch');
 });
+
+test('Auto[LLM] diagnostics keep the head request individually reviewable', () => {
+  const head = {
+    ...makeReq('r1', 'sess-A', 'low'),
+    autoModeDiagnostics: {
+      source: 'classifier_confirm' as const,
+      classifierAttempts: [{ attempt: 1, outcome: 'confirm' as const }],
+    },
+  };
+  const result = selectPermissionBatch([head, makeReq('r2', 'sess-A', 'low')]);
+  assert.equal(result.mode, 'single');
+  if (result.mode === 'single') assert.equal(result.head?.reqId, 'r1');
+});
+
+test('Auto[LLM] diagnostics stop a later request from being hidden in a batch', () => {
+  const diagnosticRequest = {
+    ...makeReq('r2', 'sess-A', 'low'),
+    autoModeDiagnostics: { source: 'classifier_failure' as const },
+  };
+  const result = selectPermissionBatch([
+    makeReq('r1', 'sess-A', 'low'),
+    diagnosticRequest,
+    makeReq('r3', 'sess-A', 'low'),
+  ]);
+  assert.equal(result.mode, 'single');
+  if (result.mode === 'single') assert.equal(result.head?.reqId, 'r1');
+});

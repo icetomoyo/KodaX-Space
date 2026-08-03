@@ -18,15 +18,25 @@ import { SettingsModal } from './features/settings/SettingsModal.js';
 import { QuickAskPopover } from './features/quick-ask/QuickAskPopover.js';
 import { useSessionCompleteNotification } from './features/notifications/useSessionCompleteNotification.js';
 import { Shell } from './shell/Shell.js';
+import { CompleteExitOverlay } from './shell/CompleteExitOverlay.js';
 import { formatWorkflowEventNotices } from './features/workflow/workflowNotices.js';
 import { requestTaskDockFocus } from './shell/taskDockControl.js';
 import {
+  runtimeConnectionHasFreshLiveAuthority,
+  runtimeSessionNeedsObservation,
   shouldReconcileRuntimeConnection,
   shouldRequestSessionLiveSnapshot,
 } from './store/runtimeProjectionState.js';
 import { createSessionEventBatcher } from './store/sessionEventBatcher.js';
 import { invokeWithTimeout } from './lib/ipcInvokeWithTimeout.js';
 import { SPACE_VERSION_REFRESH_EVENT } from './lib/versionEvents.js';
+import {
+  historyPhaseAllowsRuntimeObservation,
+  invalidateSessionHistoryPaging,
+  sessionEventInvalidatesHistoryCache,
+  sessionHistoryAllowsRuntimeObservation,
+  useSessionHistoryPaging,
+} from './shell/sessionHistoryPaging.js';
 
 // Shell owns the visible layout; App keeps process-wide bootstrapping and global listeners.
 // Workflow notice dedup lives in appendEvent keyed workflow_notice events, not a module
@@ -52,6 +62,7 @@ export default function App(): JSX.Element {
   const replaceRuntimeProfileProjection = useAppStore((s) => s.replaceRuntimeProfileProjection);
   const replaceSessionLiveProjection = useAppStore((s) => s.replaceSessionLiveProjection);
   const applySessionLiveProjectionChange = useAppStore((s) => s.applySessionLiveProjectionChange);
+  const invalidateSessionLiveProjection = useAppStore((s) => s.invalidateSessionLiveProjection);
   const setPendingReasoningMode = useAppStore((s) => s.setPendingReasoningMode);
   const setPendingPermissionMode = useAppStore((s) => s.setPendingPermissionMode);
   const setPendingAutoModeEngine = useAppStore((s) => s.setPendingAutoModeEngine);
@@ -61,10 +72,23 @@ export default function App(): JSX.Element {
   const seedWorkflowRuns = useAppStore((s) => s.seedWorkflowRuns);
   const appendWorkflowActivity = useAppStore((s) => s.appendWorkflowActivity);
   const currentSessionId = useAppStore((s) => s.currentSessionId);
-  const coderRuntimeReady = useAppStore(
-    (s) =>
-      (s.runtimeConnection.state === 'ready' || s.runtimeConnection.state === 'degraded') &&
-      Boolean(s.runtimeConnection.runtimeId),
+  const currentSessionHistory = useSessionHistoryPaging(currentSessionId);
+  const currentSessionHistoryAllowsObservation = historyPhaseAllowsRuntimeObservation(
+    currentSessionHistory.phase,
+  );
+  const currentSessionNeedsRuntimeObservation = useAppStore((state) =>
+    currentSessionId
+      ? runtimeSessionNeedsObservation(
+          {
+            profile: state.runtimeProfile,
+            snapshotRequiredBySession: state.runtimeSnapshotRequiredBySession,
+          },
+          currentSessionId,
+        )
+      : false,
+  );
+  const coderRuntimeReady = useAppStore((s) =>
+    runtimeConnectionHasFreshLiveAuthority(s.runtimeConnection),
   );
   const hasCurrentLiveProjection = useAppStore((s) =>
     currentSessionId ? Boolean(s.liveProjectionBySession[currentSessionId]) : false,
@@ -153,6 +177,18 @@ export default function App(): JSX.Element {
       if (!sessionId) return;
       const selected = state.sessions.find((session) => session.sessionId === sessionId);
       if (selected?.surface === 'partner') return;
+      if (!sessionHistoryAllowsRuntimeObservation(sessionId)) return;
+      if (
+        !runtimeSessionNeedsObservation(
+          {
+            profile: state.runtimeProfile,
+            snapshotRequiredBySession: state.runtimeSnapshotRequiredBySession,
+          },
+          sessionId,
+        )
+      ) {
+        return;
+      }
       requestLiveSnapshot(sessionId);
     };
     const flushSessionEventsIfActive = (): void => {
@@ -182,15 +218,16 @@ export default function App(): JSX.Element {
           requestLiveSnapshot(change.sessionId);
         }
       }),
+      bridge.on('session.liveInvalidated', (invalidation) => {
+        invalidateSessionLiveProjection(invalidation);
+        requestLiveSnapshot(invalidation.sessionId);
+      }),
       bridge.on('agent.actor.changed', (snapshot) => {
         replaceAgentActorSnapshot(snapshot);
       }),
     );
     const mountedConnection = useAppStore.getState().runtimeConnection;
-    if (
-      (mountedConnection.state === 'ready' || mountedConnection.state === 'degraded') &&
-      mountedConnection.runtimeId !== undefined
-    ) {
+    if (runtimeConnectionHasFreshLiveAuthority(mountedConnection)) {
       // This process-wide effect also rebuilds when i18n dependencies change. An older in-flight
       // snapshot is intentionally ignored after cleanup, so the new coordinator must seed the
       // selected Session again even when coderRuntimeReady itself did not transition.
@@ -312,6 +349,9 @@ export default function App(): JSX.Element {
     // 全局 session.event 订阅——所有 session 共用这个监听，store 按 sessionId 路由
     unsubsRef.current.push(
       bridge.on('session.event', (event) => {
+        if (sessionEventInvalidatesHistoryCache(event.kind)) {
+          invalidateSessionHistoryPaging(event.sessionId);
+        }
         sessionEventBatcher.push(event);
         if (event.kind === 'session_complete' || event.kind === 'session_error') {
           requestLiveSnapshot(event.sessionId);
@@ -449,6 +489,7 @@ export default function App(): JSX.Element {
     replaceAgentActorSnapshot,
     replaceSessionLiveProjection,
     applySessionLiveProjectionChange,
+    invalidateSessionLiveProjection,
     setPendingReasoningMode,
     setPendingPermissionMode,
     setPendingAutoModeEngine,
@@ -459,12 +500,21 @@ export default function App(): JSX.Element {
     appendWorkflowActivity,
   ]);
 
-  // F121: selecting a Coder session installs the daemon observation before
-  // returning its atomic live snapshot. This also restores terminal-started
-  // runs after a renderer reload without restarting the run.
+  // F121: selecting a Coder session installs the daemon observation and returns its atomic live
+  // snapshot after the bounded canonical history first paint has settled. Observation and history
+  // share the Runtime transport; starting both together can head-of-line block even a tiny history
+  // page behind multi-second observation setup. This also restores terminal-started runs after a
+  // renderer reload without restarting the run.
   useEffect(() => {
     const bridge = window.kodaxSpace;
-    if (!bridge || !currentSessionId || !coderRuntimeReady || hasCurrentLiveProjection) {
+    if (
+      !bridge ||
+      !currentSessionId ||
+      !coderRuntimeReady ||
+      !currentSessionHistoryAllowsObservation ||
+      !currentSessionNeedsRuntimeObservation ||
+      hasCurrentLiveProjection
+    ) {
       return;
     }
     const selected = useAppStore
@@ -472,13 +522,29 @@ export default function App(): JSX.Element {
       .sessions.find((session) => session.sessionId === currentSessionId);
     if (selected?.surface === 'partner') return;
     requestCoderLiveSnapshotRef.current(currentSessionId);
-  }, [coderRuntimeReady, currentSessionId, hasCurrentLiveProjection, replaceSessionLiveProjection]);
+  }, [
+    coderRuntimeReady,
+    currentSessionHistoryAllowsObservation,
+    currentSessionId,
+    currentSessionNeedsRuntimeObservation,
+    hasCurrentLiveProjection,
+    replaceSessionLiveProjection,
+  ]);
 
   // Actor telemetry has an independent Runtime cursor. Seed it explicitly on
   // renderer reload; subsequent changes arrive through agent.actor.changed.
   useEffect(() => {
     const bridge = window.kodaxSpace;
-    if (!bridge || !currentSessionId || !coderRuntimeReady || hasCurrentActorSnapshot) return;
+    if (
+      !bridge ||
+      !currentSessionId ||
+      !coderRuntimeReady ||
+      !currentSessionHistoryAllowsObservation ||
+      !currentSessionNeedsRuntimeObservation ||
+      hasCurrentActorSnapshot
+    ) {
+      return;
+    }
     const state = useAppStore.getState();
     const selected = state.sessions.find((session) => session.sessionId === currentSessionId);
     if (selected?.surface === 'partner') return;
@@ -492,7 +558,14 @@ export default function App(): JSX.Element {
     return () => {
       disposed = true;
     };
-  }, [coderRuntimeReady, currentSessionId, hasCurrentActorSnapshot, replaceAgentActorSnapshot]);
+  }, [
+    coderRuntimeReady,
+    currentSessionHistoryAllowsObservation,
+    currentSessionId,
+    currentSessionNeedsRuntimeObservation,
+    hasCurrentActorSnapshot,
+    replaceAgentActorSnapshot,
+  ]);
 
   // (Esc 关 settings 面板已下放到 SettingsModal 自己 own —— 见 features/settings/SettingsModal.tsx)
 
@@ -592,6 +665,7 @@ export default function App(): JSX.Element {
         <SettingsModal initialTab="providers" onClose={() => setShowSettings(false)} />
       )}
       <QuickAskPopover open={showQuickAsk} onClose={() => setShowQuickAsk(false)} />
+      <CompleteExitOverlay />
     </>
   );
 }

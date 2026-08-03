@@ -51,6 +51,8 @@ export const diagnosticsExportChannel = {
   input: z
     .object({
       categories: z.array(diagnosticsExportCategorySchema).min(1).max(5).optional(),
+      /** Current Coder session, used only for metadata-only Runtime diagnostics. */
+      sessionId: z.string().min(1).max(128).optional(),
     })
     .strict(),
   output: z.discriminatedUnion('status', [

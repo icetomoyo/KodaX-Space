@@ -67,8 +67,8 @@ export interface KodaxAutoModeDefaults {
   readonly speculativeWindowMs?: number;
 }
 
-/** KodaX 0.7.77 Auto LLM defaults. Keep explicit at the Space/Session boundary. */
-export const KODAX_AUTO_MODE_DEFAULT_TIMEOUT_MS = 20_000;
+/** KodaX 0.7.79 Auto LLM default. Keep it explicit at the Space/Session boundary. */
+export const KODAX_AUTO_MODE_DEFAULT_TIMEOUT_MS = 30_000;
 
 export interface KodaxConfigCustomProvider {
   readonly id: string;
@@ -208,8 +208,9 @@ export async function loadKodaxUserDefaults(): Promise<KodaxUserDefaults> {
 
 /**
  * Runtime sessions do not load the REPL's `autoMode` config path themselves.
- * Resolve the same file/env precedence in Space and always materialize the 0.7.72
- * timeout so a stale implicit daemon default cannot silently change behaviour.
+ * Resolve the same file/env precedence in Space and always materialize the
+ * package-aligned timeout so a stale implicit daemon default cannot silently
+ * change behaviour.
  */
 export async function loadKodaxAutoModeDefaults(): Promise<KodaxAutoModeDefaults> {
   const defaults = await loadKodaxUserDefaults();

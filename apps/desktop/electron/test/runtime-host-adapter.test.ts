@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import test, { afterEach } from 'node:test';
+import test, { afterEach, beforeEach } from 'node:test';
 
 import type {
   ConnectKodaXRuntimeOptions,
@@ -9,12 +9,15 @@ import type {
   RuntimeDaemonManagementState,
   RuntimeRunHandle,
   RuntimeRunResult,
+  RuntimeSession,
+  RuntimeSessionStatus,
 } from '@kodax-ai/kodax/runtime';
 import type { AgentEvent, AgentTreeSnapshot } from '@kodax-ai/kodax/agent';
 import { isCoderOwnerRecoveryRestartRequired } from '../kodax/coder-owner-recovery-error.js';
 import {
   RuntimeHostAdapter,
-  assertSpaceRuntimeSdkLifecycleCapability,
+  assertSpaceRuntimeSdkRequiredCapabilities,
+  conversationTurnEndBoundaryId,
   resolveRuntimeHostMode,
   withDarwinRuntimeDaemonTmpdir,
 } from '../kodax/runtime-host-adapter.js';
@@ -56,16 +59,87 @@ const testRuntimeEventParser = (event: unknown) => ({
   event: event as import('@kodax-ai/kodax/runtime').RuntimeTypedEvent,
 });
 
-test('SDK lifecycle capability is checked before daemon auto-start', () => {
+function installPersistedSessionLookup(
+  records: ReadonlyMap<string, Readonly<Record<string, unknown>>> = new Map(),
+): void {
+  setSessionStoreImpl({
+    listSessions: async () => [],
+    forkSession: async () => null,
+    rewindSession: async () => null,
+    deleteSession: async () => ({ ok: true }),
+    loadSession: async (sessionId) => (records.get(sessionId) as never) ?? null,
+    watchSessions: () => ({ close() {} }),
+  } as SessionStoreImpl);
+}
+
+beforeEach(() => {
+  installPersistedSessionLookup();
+});
+
+test('required SDK capabilities are checked before daemon auto-start', () => {
   assert.doesNotThrow(() =>
-    assertSpaceRuntimeSdkLifecycleCapability({
-      KODAX_RUNTIME_SDK_CAPABILITIES: { daemonOrphanExit: 1 },
+    assertSpaceRuntimeSdkRequiredCapabilities({
+      KODAX_RUNTIME_SDK_CAPABILITIES: {
+        daemonOrphanExit: 1,
+        runtimeEventCoalescing: 1,
+      },
     }),
   );
   assert.throws(
-    () => assertSpaceRuntimeSdkLifecycleCapability({}),
-    /installed KodaX SDK.*daemonOrphanExit v1/i,
+    () =>
+      assertSpaceRuntimeSdkRequiredCapabilities({
+        KODAX_RUNTIME_SDK_CAPABILITIES: { daemonOrphanExit: 1 },
+      }),
+    /installed KodaX SDK.*runtimeEventCoalescing v1/i,
   );
+  assert.throws(
+    () => assertSpaceRuntimeSdkRequiredCapabilities({}),
+    /installed KodaX SDK.*daemonOrphanExit v1.*runtimeEventCoalescing v1/i,
+  );
+});
+
+test('conversation turn boundaries preserve repeated prompts and include the complete tool chain', () => {
+  type Entry = Parameters<typeof conversationTurnEndBoundaryId>[0][number];
+  const entries = [
+    { boundaryId: 'u0', auditEntryIds: ['u0'], message: { role: 'user', content: 'same' } },
+    {
+      boundaryId: 'a0',
+      auditEntryIds: ['a0'],
+      message: { role: 'assistant', content: [{ type: 'tool_use', id: 'tool0', name: 'read' }] },
+    },
+    {
+      boundaryId: 'r0',
+      auditEntryIds: ['r0'],
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'tool0', content: 'ok' }],
+      },
+    },
+    {
+      boundaryId: 'synthetic',
+      auditEntryIds: ['synthetic'],
+      message: { role: 'user', content: 'internal', _synthetic: true },
+    },
+    { boundaryId: 'u1', auditEntryIds: ['u1'], message: { role: 'user', content: 'same' } },
+    { boundaryId: 'a1', auditEntryIds: ['a1'], message: { role: 'assistant', content: 'done' } },
+  ] as unknown as readonly Entry[];
+
+  assert.equal(conversationTurnEndBoundaryId(entries, 0), 'synthetic');
+  assert.equal(conversationTurnEndBoundaryId(entries, 1), 'a1');
+  assert.equal(conversationTurnEndBoundaryId(entries, 2), null);
+});
+
+test('conversation turn boundaries fail closed when the visible turn tail has no boundary', () => {
+  type Entry = Parameters<typeof conversationTurnEndBoundaryId>[0][number];
+  const entries = [
+    { boundaryId: 'u0', auditEntryIds: ['u0'], message: { role: 'user', content: 'query' } },
+    {
+      auditEntryIds: ['a0'],
+      message: { role: 'assistant', content: 'answer without an exact mutation boundary' },
+    },
+  ] as unknown as readonly Entry[];
+
+  assert.equal(conversationTurnEndBoundaryId(entries, 0), null);
 });
 
 async function waitForTest(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
@@ -80,6 +154,8 @@ function createFakeRuntime() {
   const calls = {
     created: [] as unknown[],
     loaded: [] as string[],
+    sessionStatuses: [] as string[],
+    sessionDiagnostics: [] as Array<{ sessionId: string; runId?: string }>,
     started: [] as unknown[],
     aborted: [] as string[],
     transcripts: [] as string[],
@@ -124,11 +200,17 @@ function createFakeRuntime() {
     customProviderDeletes: [] as string[],
   };
   const sessions = new Set<string>();
+  const sessionRecords = new Map<string, RuntimeSession>();
+  const sessionStatuses = new Map<string, RuntimeSessionStatus>();
   const settings = new Map<string, { revision: number; value: Record<string, unknown> }>();
   const permissionRequests: import('@kodax-ai/kodax/runtime').RuntimePermissionRequest[] = [];
   const observationListeners = new Map<
     string,
     (event: import('@kodax-ai/kodax/runtime').RuntimeTypedEvent) => void
+  >();
+  const observationInvalidators = new Map<
+    string,
+    (invalidation: import('@kodax-ai/kodax/runtime').RuntimeObservationInvalidation) => void
   >();
   const pending = new Map<string, (result: RuntimeRunResult) => void>();
   const connectionListeners = new Set<(state: RuntimeConnectionState) => void>();
@@ -241,6 +323,12 @@ function createFakeRuntime() {
       sessionAdmission: { version: 1 },
       completeObservationSnapshot: { version: 1 },
       contextCompaction: { version: 3 },
+      conversationHistory: {
+        version: 1,
+        immutablePaging: true,
+        revisionedBoundaries: true,
+        ambiguityReporting: true,
+      },
       transcriptPaging: { version: 1 },
       transcriptSearch: { version: 1 },
       connectionLifecycle: { version: 1 },
@@ -258,6 +346,7 @@ function createFakeRuntime() {
         idleOnly: true,
         bootstrapGrace: true,
       },
+      runtimeEventCoalescing: { version: 1 },
       sandboxRuntime: {
         version: 1,
         asrtVersion: '0.0.65',
@@ -284,16 +373,111 @@ function createFakeRuntime() {
       async load(sessionId: string) {
         calls.loaded.push(sessionId);
         if (!sessions.has(sessionId)) throw new Error(`Session not found: ${sessionId}`);
-        return { id: sessionId, title: '' };
+        return (
+          sessionRecords.get(sessionId) ?? {
+            id: sessionId,
+            title: '',
+            workspaceRoot: 'C:\\repo',
+            gitRoot: 'C:\\repo',
+            surface: 'space-desktop',
+          }
+        );
       },
-      async create(input: { sessionId?: string }) {
+      async status(sessionId: string) {
+        calls.sessionStatuses.push(sessionId);
+        if (!sessions.has(sessionId)) throw new Error(`Session not found: ${sessionId}`);
+        return (
+          sessionStatuses.get(sessionId) ?? {
+            sessionId,
+            runtimeId: 'rt_test',
+            phase: 'idle',
+            observedAt: '2026-07-12T00:00:00.000Z',
+          }
+        );
+      },
+      async diagnostics(input: { sessionId: string; runId?: string }) {
+        calls.sessionDiagnostics.push(input);
+        if (!sessions.has(input.sessionId)) {
+          throw new Error(`Session not found: ${input.sessionId}`);
+        }
+        const status =
+          sessionStatuses.get(input.sessionId) ??
+          ({
+            sessionId: input.sessionId,
+            runtimeId: 'rt_test',
+            phase: 'idle',
+            observedAt: '2026-07-12T00:00:00.000Z',
+          } satisfies RuntimeSessionStatus);
+        const runId = input.runId ?? status.runId;
+        const hasRun = runId !== undefined;
+        const terminal =
+          status.phase === 'completed' ||
+          status.phase === 'failed' ||
+          status.phase === 'cancelled' ||
+          status.phase === 'interrupted';
+        return {
+          schemaVersion: 1 as const,
+          captureStartedAt: '2026-07-12T00:00:00.000Z',
+          capturedAt: '2026-07-12T00:00:00.001Z',
+          sdkVersion: '0.7.79',
+          runtimeVersion: '0.7.79',
+          daemonVersion: '0.7.79',
+          runtimeId: 'rt_test',
+          runtimeMode: 'daemon' as const,
+          sessionId: input.sessionId,
+          observation: { cursor: 0, transcriptRevision: `transcript_${input.sessionId}_0` },
+          run: hasRun
+            ? {
+                controlRecord: 'present' as const,
+                runId,
+                state: terminal ? ('terminal' as const) : ('active' as const),
+                ...(status.phase !== 'idle' ? { phase: status.phase } : {}),
+                stage: terminal ? ('terminal' as const) : ('executing' as const),
+                terminalTimeKnown: terminal,
+                activeSubtaskCount: 0,
+                activeSubtaskCountSource: 'run_status' as const,
+                errors: [],
+              }
+            : {
+                controlRecord: 'unknown' as const,
+                state: 'unknown' as const,
+                stage: 'unknown' as const,
+                terminalTimeKnown: false,
+                activeSubtaskCount: null,
+                activeSubtaskCountSource: 'unknown' as const,
+                errors: [
+                  {
+                    code: 'run_control_unknown' as const,
+                    message: 'No Run control record is available at this Session boundary.',
+                  },
+                ],
+              },
+        };
+      },
+      async create(input: {
+        sessionId?: string;
+        projectPath?: string;
+        gitRoot?: string;
+        surface?: string;
+      }) {
         calls.created.push(input);
         const id = input.sessionId ?? `s_${sessions.size + 1}`;
+        if (sessions.has(id)) {
+          throw Object.assign(new Error(`Session already exists: ${id}`), { code: 'conflict' });
+        }
         sessions.add(id);
+        const session = {
+          id,
+          title: '',
+          ...(input.projectPath !== undefined ? { workspaceRoot: input.projectPath } : {}),
+          ...(input.gitRoot !== undefined ? { gitRoot: input.gitRoot } : {}),
+          ...(input.surface !== undefined ? { surface: input.surface } : {}),
+        } satisfies RuntimeSession;
+        sessionRecords.set(id, session);
         settings.set(id, { revision: 0, value: {} });
         actorTrees.set(id, makeRootActorTree());
         actorEvents.set(id, []);
-        return { id, title: '' };
+        return session;
       },
       async transcript(sessionId: string) {
         calls.transcripts.push(sessionId);
@@ -305,6 +489,30 @@ function createFakeRuntime() {
       async transcriptEntryChunk() {
         return null;
       },
+      async conversation(sessionId: string) {
+        if (!sessions.has(sessionId)) return null;
+        return {
+          revision: `conversation_${sessionId}_0`,
+          sourceRevision: `source_${sessionId}_0`,
+          status: 'resolved' as const,
+          issues: [],
+          entries: [],
+        };
+      },
+      async conversationPage(input: { sessionId: string }) {
+        if (!sessions.has(input.sessionId)) return null;
+        return {
+          revision: `conversation_${input.sessionId}_0`,
+          sourceRevision: `source_${input.sessionId}_0`,
+          status: 'resolved' as const,
+          issues: [],
+          entries: [],
+          hasMore: false,
+        };
+      },
+      async conversationEntryChunk() {
+        return null;
+      },
       async observe(
         sessionId: string,
         listener?: (event: import('@kodax-ai/kodax/runtime').RuntimeTypedEvent) => void,
@@ -312,13 +520,26 @@ function createFakeRuntime() {
         calls.observed.push(sessionId);
         if (!sessions.has(sessionId)) throw new Error(`Session not found: ${sessionId}`);
         if (listener) observationListeners.set(sessionId, listener);
+        let resolveInvalidated!: (
+          invalidation: import('@kodax-ai/kodax/runtime').RuntimeObservationInvalidation,
+        ) => void;
+        const invalidated = new Promise<
+          import('@kodax-ai/kodax/runtime').RuntimeObservationInvalidation
+        >((resolve) => {
+          resolveInvalidated = resolve;
+        });
+        observationInvalidators.set(sessionId, resolveInvalidated);
         return {
           snapshot: {
             runtimeId: 'rt_test',
             cursor: 0,
             transcriptRevision: `transcript_${sessionId}_0`,
             session: { id: sessionId, title: '', surface: 'code' },
-            transcript: { title: '', messages: [] },
+            transcript: {
+              revision: `transcript_${sessionId}_0`,
+              entries: [],
+              hasMore: false,
+            },
             settings: settings.get(sessionId) ?? { revision: 0, value: {} },
             runs: [],
             pendingPermissions: [],
@@ -330,9 +551,13 @@ function createFakeRuntime() {
               managedTasks: [],
             },
           },
+          invalidated,
           close() {
             if (listener && observationListeners.get(sessionId) === listener) {
               observationListeners.delete(sessionId);
+            }
+            if (observationInvalidators.get(sessionId) === resolveInvalidated) {
+              observationInvalidators.delete(sessionId);
             }
             calls.observationCloses += 1;
           },
@@ -375,6 +600,7 @@ function createFakeRuntime() {
       },
       async delete(sessionId: string) {
         sessions.delete(sessionId);
+        sessionRecords.delete(sessionId);
         actorTrees.delete(sessionId);
         actorEvents.delete(sessionId);
         resolveActorWaiters(sessionId);
@@ -392,6 +618,15 @@ function createFakeRuntime() {
         const resolve = pending.get(runId);
         resolve?.({ runId, sessionId: 's_1', phase: 'cancelled' });
         pending.delete(runId);
+        return {
+          runId,
+          sessionId: 's_1',
+          accepted: true,
+          state: 'confirmed',
+          outcome: 'cancelled',
+          phase: 'cancelled',
+          revision: 1,
+        } as const;
       },
       async list() {
         return [];
@@ -655,6 +890,8 @@ function createFakeRuntime() {
     runtime,
     calls,
     sessions,
+    sessionRecords,
+    sessionStatuses,
     pending,
     settings,
     permissionRequests,
@@ -663,6 +900,17 @@ function createFakeRuntime() {
     },
     emit(event: import('@kodax-ai/kodax/runtime').RuntimeTypedEvent) {
       observationListeners.get(event.sessionId)?.(event);
+    },
+    invalidateObservation(
+      sessionId: string,
+      reason: import('@kodax-ai/kodax/runtime').RuntimeObservationInvalidation['reason'] = 'event_overflow',
+    ) {
+      observationInvalidators.get(sessionId)?.({
+        code: 'observation_invalidated',
+        reason,
+        runtimeId: 'rt_test',
+        message: `test ${reason}`,
+      });
     },
     emitActor(sessionId: string, event: AgentEvent, tree: AgentTreeSnapshot) {
       ensureActorState(sessionId);
@@ -772,6 +1020,12 @@ test('startup mode can be configured from persisted settings only before initial
 
 test('daemon startup reconciles an unowned inline policy before Runtime initialization', async () => {
   const calls: string[] = [];
+  const timingEvents: Array<{
+    scope: string;
+    stage: string;
+    phase: string;
+    data?: Readonly<Record<string, unknown>>;
+  }> = [];
   const fake = createFakeRuntime();
   const adapter = new RuntimeHostAdapter({
     mode: 'runtime',
@@ -804,19 +1058,57 @@ test('daemon startup reconciles an unowned inline policy before Runtime initiali
         };
       },
     },
+    startupTimingFactory: (scope) => ({
+      enabled: true,
+      mark: (stage, phase = 'complete', data) => {
+        timingEvents.push({ scope, stage, phase, ...(data === undefined ? {} : { data }) });
+      },
+    }),
   });
 
   await adapter.reconcileStartupOwnerPolicy();
   await adapter.initialize('0.1.33');
   assert.deepEqual(calls, ['enable-daemon', 'runtime']);
+  assert.deepEqual(
+    timingEvents.map(({ scope, stage, phase }) => `${scope}:${stage}:${phase}`),
+    [
+      'runtime-owner-policy:reconcile:start',
+      'runtime-owner-policy:owner_state_read:complete',
+      'runtime-owner-policy:daemon_policy_enable:complete',
+      'runtime-owner-policy:reconcile:complete',
+      'runtime-host-initialize:initialize:start',
+      'runtime-host-initialize:identity_open:complete',
+      'runtime-host-initialize:runtime_factory_connect:complete',
+      'runtime-host-initialize:capability_validation:complete',
+      'runtime-host-initialize:host_tools_module_import:complete',
+      'runtime-host-initialize:host_tools_register:complete',
+      'runtime-host-initialize:connection_validate:complete',
+      'runtime-host-initialize:connection_subscription_ready:complete',
+      'runtime-host-initialize:workflow_subscription_ready:complete',
+      'runtime-host-initialize:credential_leases_resume:complete',
+      'runtime-host-initialize:profile_refresh:complete',
+      'runtime-host-initialize:desired_observations_restore:complete',
+      'runtime-host-initialize:initialize:complete',
+    ],
+  );
+  assert.equal(timingEvents[1]?.data?.ownerStatus, 'unowned');
+  assert.equal(timingEvents[6]?.data?.runtimeId, 'rt_test');
+  assert.equal(typeof timingEvents[6]?.data?.runtimeAgeMs, 'number');
   await adapter.close();
 });
 
 test('daemon startup refuses to reconcile inline policy while another owner is active', async () => {
   let daemonEnables = 0;
+  let runtimeFactories = 0;
+  const controller = createPendingSdkRuntimeProjection(100);
   const adapter = new RuntimeHostAdapter({
     mode: 'runtime',
     profileRoot: 'C:\\isolated-profile',
+    projectionController: controller,
+    runtimeFactory: async () => {
+      runtimeFactories += 1;
+      return createFakeRuntime().runtime;
+    },
     ownerControl: {
       acquireInline: async () => {
         throw new Error('not used');
@@ -844,6 +1136,10 @@ test('daemon startup refuses to reconcile inline policy while another owner is a
 
   await assert.rejects(adapter.reconcileStartupOwnerPolicy(), /inline owner is still active/);
   assert.equal(daemonEnables, 0);
+  assert.equal(adapter.snapshot().state, 'failed');
+  assert.equal(controller.profileSnapshot().connection.state, 'incompatible');
+  await assert.rejects(adapter.initialize(), /owner policy reconciliation failed/i);
+  assert.equal(runtimeFactories, 0);
   await adapter.close();
 });
 
@@ -1249,6 +1545,7 @@ test('runtime selection attaches one Coder daemon with stable identity and requi
       readonly daemonOrphanExitMs?: number;
       readonly requirements?: NonNullable<ConnectKodaXRuntimeOptions['requirements']> & {
         readonly daemonOrphanExit?: 1;
+        readonly runtimeEventCoalescing?: 1;
       };
     }
   > = [];
@@ -1307,6 +1604,7 @@ test('runtime selection attaches one Coder daemon with stable identity and requi
   assert.equal(options[0]?.requirements?.durableRecoveryQueries, 1);
   assert.equal(options[0]?.requirements?.daemonManagement, 1);
   assert.equal(options[0]?.requirements?.daemonOrphanExit, 1);
+  assert.equal(options[0]?.requirements?.runtimeEventCoalescing, 1);
   assert.equal(options[0]?.requirements?.integrationConfigResilience, 1);
   assert.equal(options[0]?.requirements?.runtimeAutoModeGuardrail, 4);
   assert.equal(adapter.snapshot().state, 'ready');
@@ -1458,6 +1756,153 @@ test('runtime custom provider catalog methods proxy through the connected daemon
   await adapter.close();
 });
 
+test('a late Runtime-ready observer receives the current authoritative generation once', async () => {
+  const fake = createFakeRuntime();
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+  await adapter.initialize();
+
+  const revisions: number[] = [];
+  adapter.subscribeRuntimeReady((revision) => {
+    revisions.push(revision);
+  });
+  await Promise.resolve();
+
+  assert.deepEqual(revisions, [1]);
+  await adapter.close();
+});
+
+test('Runtime disconnect during startup warm-up cannot publish a false ready generation', async () => {
+  const fake = createFakeRuntime();
+  const daemon = fake.runtime.daemon as unknown as {
+    inspect: () => Promise<RuntimeDaemonManagementState>;
+  };
+  const inspect = daemon.inspect.bind(daemon);
+  let signalInspectStarted!: () => void;
+  const inspectStarted = new Promise<void>((resolve) => {
+    signalInspectStarted = resolve;
+  });
+  let releaseInspect!: () => void;
+  const inspectRelease = new Promise<void>((resolve) => {
+    releaseInspect = resolve;
+  });
+  daemon.inspect = async () => {
+    const result = await inspect();
+    signalInspectStarted();
+    await inspectRelease;
+    return result;
+  };
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+  const revisions: number[] = [];
+  adapter.subscribeRuntimeReady((revision) => {
+    revisions.push(revision);
+  });
+
+  const initialization = adapter.initialize();
+  await inspectStarted;
+  assert.equal(adapter.snapshot().state, 'ready');
+  fake.disconnect(false);
+  releaseInspect();
+
+  await assert.rejects(initialization, /authority changed/i);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(revisions, []);
+  assert.equal(adapter.hasReadyRuntime(), false);
+  assert.equal(adapter.snapshot().state, 'failed');
+  await adapter.close();
+});
+
+test('Runtime reconnect warm-up cannot self-await while restoring desired observations', async () => {
+  const first = createFakeRuntime();
+  const second = createFakeRuntime();
+  const third = createFakeRuntime();
+  const sessionId = 's_reconnect_observation';
+  for (const fake of [first, second, third]) {
+    fake.sessions.add(sessionId);
+    fake.settings.set(sessionId, { revision: 0, value: {} });
+  }
+
+  const secondDaemon = second.runtime.daemon as unknown as {
+    inspect: () => Promise<RuntimeDaemonManagementState>;
+  };
+  const inspect = secondDaemon.inspect.bind(secondDaemon);
+  let signalInspectStarted!: () => void;
+  const inspectStarted = new Promise<void>((resolve) => {
+    signalInspectStarted = resolve;
+  });
+  let releaseInspect!: () => void;
+  const inspectRelease = new Promise<void>((resolve) => {
+    releaseInspect = resolve;
+  });
+  secondDaemon.inspect = async () => {
+    const result = await inspect();
+    signalInspectStarted();
+    await inspectRelease;
+    return result;
+  };
+
+  let factoryCalls = 0;
+  const runtimes = [first.runtime, second.runtime, third.runtime];
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => {
+      const runtime = runtimes[factoryCalls];
+      factoryCalls += 1;
+      if (!runtime) throw new Error('unexpected Runtime reconnect attempt');
+      return runtime;
+    },
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  await adapter.initialize();
+  await adapter.ensureObserved(sessionId);
+  first.disconnect();
+  await waitForTest(() => adapter.snapshot().state === 'uninitialized');
+
+  const reconnect = adapter.initialize();
+  await inspectStarted;
+  assert.equal(adapter.snapshot().state, 'ready');
+  second.disconnect();
+  releaseInspect();
+
+  let reconnectTimeout: NodeJS.Timeout | undefined;
+  const reconnectOutcome = await Promise.race([
+    reconnect.then(
+      () => ({ kind: 'resolved' as const }),
+      (error: unknown) => ({ kind: 'rejected' as const, error }),
+    ),
+    new Promise<{ kind: 'timed-out' }>((resolve) => {
+      reconnectTimeout = setTimeout(() => resolve({ kind: 'timed-out' }), 1_000);
+    }),
+  ]).finally(() => {
+    if (reconnectTimeout) clearTimeout(reconnectTimeout);
+  });
+  assert.notEqual(reconnectOutcome.kind, 'timed-out');
+  assert.equal(reconnectOutcome.kind, 'rejected');
+  if (reconnectOutcome.kind === 'rejected') {
+    assert.match(String(reconnectOutcome.error), /authority changed/i);
+  }
+
+  await adapter.initialize();
+  assert.equal(adapter.hasReadyRuntime(), true);
+  assert.equal(factoryCalls, 3);
+  assert.deepEqual(third.calls.observed, [sessionId]);
+  await adapter.close();
+});
+
 test('transient unhealthy daemon startup retries until the existing safety window clears', async () => {
   const fake = createFakeRuntime();
   let factoryCalls = 0;
@@ -1474,6 +1919,10 @@ test('transient unhealthy daemon startup retries until the existing safety windo
     identityStore: testIdentityStore,
     runtimeEventParser: testRuntimeEventParser,
   });
+  const readyRevisions: number[] = [];
+  adapter.subscribeRuntimeReady((revision) => {
+    readyRevisions.push(revision);
+  });
   (adapter as unknown as { reconnectAttempt: number }).reconnectAttempt = -10;
 
   await assert.rejects(adapter.initialize(), /daemon is unhealthy/);
@@ -1486,6 +1935,8 @@ test('transient unhealthy daemon startup retries until the existing safety windo
 
   assert.equal(factoryCalls, 2);
   assert.equal(adapter.hasReadyRuntime(), true);
+  await waitForTest(() => readyRevisions.length === 1);
+  assert.deepEqual(readyRevisions, [1]);
   await adapter.close();
 });
 
@@ -1522,7 +1973,7 @@ test('idle stale daemon capability mismatch is retired safely and reconnects', a
   const fake = createFakeRuntime();
   let factoryCalls = 0;
   let safeStopCalls = 0;
-  const upgradeError = Object.assign(new Error('contextCompaction requires a newer daemon'), {
+  const upgradeError = Object.assign(new Error('runtimeEventCoalescing requires a newer daemon'), {
     code: 'daemon_capability_upgrade_required',
     preflight: { blockers: [] },
   });
@@ -1531,7 +1982,7 @@ test('idle stale daemon capability mismatch is retired safely and reconnects', a
     profileRoot: path.resolve('C:\\isolated-profile'),
     runtimeFactory: async (input) => {
       factoryCalls += 1;
-      assert.equal(input.requirements?.contextCompaction, 3);
+      assert.equal(input.requirements?.runtimeEventCoalescing, 1);
       if (factoryCalls === 1) throw upgradeError;
       return fake.runtime;
     },
@@ -1544,7 +1995,7 @@ test('idle stale daemon capability mismatch is retired safely and reconnects', a
   });
   (adapter as unknown as { reconnectAttempt: number }).reconnectAttempt = -10;
 
-  await assert.rejects(adapter.initialize(), /contextCompaction/);
+  await assert.rejects(adapter.initialize(), /runtimeEventCoalescing/);
   const deadline = Date.now() + 2_000;
   while (!adapter.hasReadyRuntime() && Date.now() < deadline) {
     await new Promise<void>((resolve) => setTimeout(resolve, 20));
@@ -1643,6 +2094,8 @@ test('complete exit atomically stops the inspected daemon and leaves an unowned 
   let inlineOwnerCloses = 0;
   let daemonRestores = 0;
   let ownerReleased = false;
+  const daemonExitWaits: Array<{ pid: number; timeoutMs: number }> = [];
+  const transitionOrder: string[] = [];
   const adapter = new RuntimeHostAdapter({
     mode: 'runtime',
     profileRoot: path.resolve('C:\\isolated-profile'),
@@ -1651,6 +2104,11 @@ test('complete exit atomically stops the inspected daemon and leaves an unowned 
     runtimeEventParser: testRuntimeEventParser,
     idleDaemonStop: async () => {
       throw new Error('ready Runtime complete-exit must not use the racy CLI stop path');
+    },
+    daemonProcessExitWaiter: async (pid, timeoutMs) => {
+      daemonExitWaits.push({ pid, timeoutMs });
+      transitionOrder.push('daemon-process-exited');
+      return true;
     },
     ownerControl: {
       acquireInline: async () => ({
@@ -1684,6 +2142,7 @@ test('complete exit atomically stops the inspected daemon and leaves an unowned 
       }),
       enableDaemon: async () => {
         daemonRestores += 1;
+        transitionOrder.push('daemon-policy-restored');
         ownerReleased = true;
         return {
           mode: 'daemon',
@@ -1714,7 +2173,528 @@ test('complete exit atomically stops the inspected daemon and leaves an unowned 
   assert.equal(fake.calls.close, 1);
   assert.equal(daemonRestores, 1);
   assert.equal(inlineOwnerCloses, 1);
+  assert.deepEqual(daemonExitWaits, [{ pid: 123, timeoutMs: 15_000 }]);
+  assert.deepEqual(transitionOrder, ['daemon-process-exited', 'daemon-policy-restored']);
   assert.equal(adapter.snapshot().state, 'closed');
+});
+
+test('complete exit fails closed and restores daemon policy when the inspected PID remains alive', async () => {
+  const fake = createFakeRuntime();
+  let inlineOwnerCloses = 0;
+  let daemonRestores = 0;
+  let ownerReleased = false;
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    daemonProcessExitWaiter: async (pid, timeoutMs) => {
+      assert.equal(pid, 123);
+      assert.equal(timeoutMs, 15_000);
+      return false;
+    },
+    ownerControl: {
+      acquireInline: async () => ({
+        profile: 'coder',
+        ownerId: 'inline_complete_exit_pid_timeout',
+        ownerPolicy: {
+          mode: 'inline',
+          revision: 3,
+          updatedAt: '2026-08-03T00:00:01.000Z',
+        },
+        close: () => {
+          inlineOwnerCloses += 1;
+        },
+      }),
+      getState: async () => ({
+        profile: 'coder',
+        policy: {
+          mode: ownerReleased ? 'daemon' : 'inline',
+          revision: ownerReleased ? 4 : 3,
+          updatedAt: '2026-08-03T00:00:02.000Z',
+        },
+        ownerStatus: ownerReleased ? 'unowned' : 'owned',
+        owner: ownerReleased
+          ? null
+          : {
+              runtimeId: 'rt_test',
+              pid: 123,
+              createdAt: '2026-08-03T00:00:00.000Z',
+              kind: 'daemon',
+            },
+      }),
+      enableDaemon: async () => {
+        daemonRestores += 1;
+        ownerReleased = true;
+        return {
+          mode: 'daemon',
+          revision: 4,
+          updatedAt: '2026-08-03T00:00:02.000Z',
+        };
+      },
+    },
+  });
+  const originalStop = fake.runtime.daemon.stopForInline.bind(fake.runtime.daemon);
+  fake.runtime.daemon.stopForInline = async (input) => {
+    const result = await originalStop(input);
+    ownerReleased = true;
+    return result;
+  };
+
+  await adapter.initialize();
+  await assert.rejects(
+    adapter.stopDaemonForCompleteExit('space-complete-exit-pid-timeout'),
+    /process 123 did not exit.*shutdown could not be confirmed/i,
+  );
+
+  assert.equal(fake.calls.close, 1);
+  assert.equal(daemonRestores, 1);
+  assert.equal(inlineOwnerCloses, 1);
+  assert.equal(adapter.snapshot().state, 'closed');
+});
+
+test('complete exit reacquires a fence after transient replacement-fence contention', async () => {
+  const fake = createFakeRuntime();
+  let ownerReleased = false;
+  let daemonPolicyRestored = false;
+  let inlineAcquisitions = 0;
+  let inlineOwnerCloses = 0;
+  let daemonRestores = 0;
+  let ownerStateReads = 0;
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    idleDaemonStop: async () => {
+      throw new Error('ready Runtime complete-exit must not use the racy CLI stop path');
+    },
+    daemonProcessExitWaiter: async () => true,
+    ownerControl: {
+      acquireInline: async () => {
+        inlineAcquisitions += 1;
+        if (inlineAcquisitions === 1) {
+          throw new Error('Runtime owner transition is already in progress.');
+        }
+        return {
+          profile: 'coder',
+          ownerId: 'inline_complete_exit_retry',
+          ownerPolicy: {
+            mode: 'inline',
+            revision: 5,
+            updatedAt: '2026-08-03T00:00:03.000Z',
+          },
+          close: () => {
+            inlineOwnerCloses += 1;
+          },
+        };
+      },
+      getState: async () => {
+        ownerStateReads += 1;
+        return {
+          profile: 'coder',
+          policy: {
+            mode: daemonPolicyRestored ? 'daemon' : 'inline',
+            revision: daemonPolicyRestored ? 4 : 3,
+            updatedAt: '2026-08-03T00:00:02.000Z',
+          },
+          ownerStatus: ownerReleased ? ('unowned' as const) : ('owned' as const),
+          owner: ownerReleased
+            ? null
+            : {
+                runtimeId: 'rt_test',
+                pid: 123,
+                createdAt: '2026-08-03T00:00:00.000Z',
+                kind: 'daemon' as const,
+              },
+        };
+      },
+      enableDaemon: async () => {
+        daemonRestores += 1;
+        daemonPolicyRestored = true;
+        return {
+          mode: 'daemon',
+          revision: 4,
+          updatedAt: '2026-08-03T00:00:02.000Z',
+        };
+      },
+    },
+  });
+  const originalStop = fake.runtime.daemon.stopForInline.bind(fake.runtime.daemon);
+  fake.runtime.daemon.stopForInline = async (input) => {
+    const result = await originalStop(input);
+    ownerReleased = true;
+    return result;
+  };
+
+  await adapter.initialize();
+  await assert.doesNotReject(
+    adapter.stopDaemonForCompleteExit('space-complete-exit-fence-contention'),
+  );
+
+  assert.equal(inlineAcquisitions, 2);
+  assert.equal(daemonRestores, 2);
+  assert.equal(inlineOwnerCloses, 1);
+  assert.equal(
+    ownerStateReads,
+    3,
+    'the compensated path must verify state before reacquiring its fence and after restore',
+  );
+  assert.equal(adapter.snapshot().state, 'closed');
+  assert.deepEqual(fake.calls.daemonStops, [
+    {
+      expectedRuntimeId: 'rt_test',
+      expectedRevision: 7,
+      expectedOwnerPolicyRevision: 2,
+      operation: { operationId: 'space-complete-exit-fence-contention' },
+    },
+  ]);
+});
+
+test('complete exit fails closed when replacement-fence contention persists', async () => {
+  const fake = createFakeRuntime();
+  let ownerReleased = false;
+  let daemonPolicyRestored = false;
+  let inlineAcquisitions = 0;
+  let daemonRestores = 0;
+  let daemonExitWaited = false;
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    daemonProcessExitWaiter: async () => {
+      daemonExitWaited = true;
+      return true;
+    },
+    ownerControl: {
+      acquireInline: async () => {
+        inlineAcquisitions += 1;
+        throw new Error('Runtime owner transition is already in progress.');
+      },
+      getState: async () => ({
+        profile: 'coder',
+        policy: {
+          mode: daemonPolicyRestored ? 'daemon' : 'inline',
+          revision: daemonPolicyRestored ? 4 : 3,
+          updatedAt: '2026-08-03T00:00:02.000Z',
+        },
+        ownerStatus: ownerReleased ? 'unowned' : 'owned',
+        owner: ownerReleased
+          ? null
+          : {
+              runtimeId: 'rt_test',
+              pid: 123,
+              createdAt: '2026-08-03T00:00:00.000Z',
+              kind: 'daemon',
+            },
+      }),
+      enableDaemon: async () => {
+        daemonRestores += 1;
+        daemonPolicyRestored = true;
+        return {
+          mode: 'daemon',
+          revision: 4,
+          updatedAt: '2026-08-03T00:00:02.000Z',
+        };
+      },
+    },
+  });
+  const originalStop = fake.runtime.daemon.stopForInline.bind(fake.runtime.daemon);
+  fake.runtime.daemon.stopForInline = async (input) => {
+    const result = await originalStop(input);
+    ownerReleased = true;
+    return result;
+  };
+
+  await adapter.initialize();
+  await assert.rejects(
+    adapter.stopDaemonForCompleteExit('space-complete-exit-persistent-fence-contention'),
+    /recovered owner state could not be verified/i,
+  );
+
+  assert.equal(inlineAcquisitions, 2);
+  assert.equal(daemonRestores, 2);
+  assert.equal(daemonExitWaited, false);
+  assert.equal(adapter.snapshot().state, 'closed');
+});
+
+test('complete exit preserves restart-required recovery when compensated fence retry cannot restore authority', async () => {
+  const fake = createFakeRuntime();
+  let ownerReleased = false;
+  let daemonPolicyRestored = false;
+  let inlineAcquisitions = 0;
+  let daemonEnableAttempts = 0;
+  let daemonExitWaited = false;
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    daemonProcessExitWaiter: async () => {
+      daemonExitWaited = true;
+      return true;
+    },
+    ownerControl: {
+      acquireInline: async () => {
+        inlineAcquisitions += 1;
+        throw new Error('inline owner fence unavailable');
+      },
+      getState: async () => ({
+        profile: 'coder',
+        policy: {
+          mode: daemonPolicyRestored ? 'daemon' : 'inline',
+          revision: daemonPolicyRestored ? 4 : 3,
+          updatedAt: '2026-08-03T00:00:02.000Z',
+        },
+        ownerStatus: ownerReleased ? 'unowned' : 'owned',
+        owner: ownerReleased
+          ? null
+          : {
+              runtimeId: 'rt_test',
+              pid: 123,
+              createdAt: '2026-08-03T00:00:00.000Z',
+              kind: 'daemon',
+            },
+      }),
+      enableDaemon: async () => {
+        daemonEnableAttempts += 1;
+        if (daemonEnableAttempts > 1) throw new Error('daemon policy restore failed');
+        daemonPolicyRestored = true;
+        return {
+          mode: 'daemon',
+          revision: 4,
+          updatedAt: '2026-08-03T00:00:02.000Z',
+        };
+      },
+    },
+  });
+  const originalStop = fake.runtime.daemon.stopForInline.bind(fake.runtime.daemon);
+  fake.runtime.daemon.stopForInline = async (input) => {
+    const result = await originalStop(input);
+    ownerReleased = true;
+    return result;
+  };
+
+  await adapter.initialize();
+  await assert.rejects(
+    adapter.stopDaemonForCompleteExit('space-complete-exit-retry-recovery'),
+    (error: unknown) => {
+      assert.equal(isCoderOwnerRecoveryRestartRequired(error), true);
+      assert.match(
+        error instanceof Error ? error.message : String(error),
+        /recovered owner state could not be verified/i,
+      );
+      return true;
+    },
+  );
+
+  assert.equal(inlineAcquisitions, 3);
+  assert.equal(daemonEnableAttempts, 2);
+  assert.equal(daemonExitWaited, false);
+  assert.equal(adapter.snapshot().state, 'failed');
+});
+
+test('forced exit preserves other-client Runtime work in the same Session', async () => {
+  const fake = createFakeRuntime();
+  const interrupted: Array<{ sessionId: string; actorPath: string; reason?: string }> = [];
+  fake.runtime.status.preflight = async () =>
+    ({
+      runtimeId: 'rt_test',
+      clientCount: 2,
+      activeRuns: [
+        {
+          runId: 'run_owned',
+          sessionId: 's_shared',
+          phase: 'running',
+          origin: { principalId: 'space_instance_stable' },
+        },
+        {
+          runId: 'run_other',
+          sessionId: 's_shared',
+          phase: 'running',
+          origin: { principalId: 'cli_instance' },
+        },
+      ],
+      queuedRuns: [
+        {
+          runId: 'run_owned_queued',
+          sessionId: 's_shared',
+          phase: 'queued',
+          origin: { principalId: 'space_instance_stable' },
+        },
+      ],
+      activeWorkflows: [
+        { runId: 'workflow_owned', workflow: 'review', status: 'running' },
+        { runId: 'workflow_other', workflow: 'review', status: 'running' },
+      ],
+      activeAgentTurns: [
+        {
+          sessionId: 's_shared',
+          actorPath: '/root/reviewer',
+          turnId: 'turn_owned',
+          kind: 'native',
+        },
+        {
+          sessionId: 's_shared',
+          actorPath: '/root/cli-reviewer',
+          turnId: 'turn_other',
+          kind: 'native',
+        },
+      ],
+      activeAgentTasks: [],
+      pendingPermissions: [],
+      pendingUserInputs: [],
+      blockers: ['connected_clients', 'active_runs', 'active_workflows', 'active_agent_turns'],
+      canStop: false,
+    }) as never;
+  fake.runtime.workflows.get = async (runId: string) =>
+    ({
+      runId,
+      workflowName: 'review',
+      status: 'running',
+      startedAt: '2026-07-12T00:00:00.000Z',
+      updatedAt: '2026-07-12T00:00:01.000Z',
+      sourceRunId: runId === 'workflow_owned' ? 'run_owned' : 'run_other',
+      hostMetadata: {
+        sessionId: 's_shared',
+        surface: 'code',
+      },
+      items: [],
+      counts: {
+        pending: 0,
+        running: 0,
+        completed: 0,
+        failed: 0,
+        cancelled: 0,
+        skipped: 0,
+      },
+      progress: {
+        spawnedAgents: 0,
+        finishedAgents: 0,
+        activeAgents: 0,
+        failedAgents: 0,
+        stoppedAgents: 0,
+      },
+    }) as never;
+  Object.assign(fake.runtime.agents as unknown as Record<string, unknown>, {
+    interrupt: async (sessionId: string, actorPath: string, reason?: string) => {
+      interrupted.push({ sessionId, actorPath, ...(reason ? { reason } : {}) });
+    },
+  });
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+  });
+
+  await adapter.initialize();
+  (
+    adapter as unknown as {
+      spaceOwnedAgentTurns: Set<string>;
+    }
+  ).spaceOwnedAgentTurns.add('s_shared\u0000/root/reviewer\u0000turn_owned');
+  const result = await adapter.stopSpaceOwnedRuntimeWorkForForcedExit();
+
+  assert.equal(result.attempted, 4);
+  assert.equal(result.failed, 0);
+  assert.deepEqual(fake.calls.aborted, ['run_owned', 'run_owned_queued']);
+  assert.deepEqual(fake.calls.workflowControls, [{ action: 'stop', runId: 'workflow_owned' }]);
+  assert.deepEqual(interrupted, [
+    {
+      sessionId: 's_shared',
+      actorPath: '/root/reviewer',
+      reason: 'KodaX Space force close',
+    },
+  ]);
+  await adapter.close();
+});
+
+test('Space-started Runtime Agent turns are registered for forced-exit cancellation', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_1');
+  const interrupted: string[] = [];
+  fake.runtime.status.preflight = async () =>
+    ({
+      runtimeId: 'rt_test',
+      clientCount: 2,
+      activeRuns: [],
+      queuedRuns: [],
+      activeWorkflows: [],
+      activeAgentTurns: [
+        {
+          sessionId: 's_1',
+          actorPath: '/external/reviewer',
+          turnId: 'turn_1',
+          kind: 'external',
+        },
+      ],
+      activeAgentTasks: [],
+      pendingPermissions: [],
+      pendingUserInputs: [],
+      blockers: ['connected_clients', 'active_agent_turns'],
+      canStop: false,
+    }) as never;
+  Object.assign(fake.runtime.agents as unknown as Record<string, unknown>, {
+    preflight: async () =>
+      ({
+        ok: true,
+        descriptor: {
+          agentId: 'reviewer',
+          configurationRevision: 'agent_rev_1',
+          protocol: 'a2a',
+        },
+        reasons: [],
+      }) as never,
+    spawn: async () => ({ actorPath: '/external/reviewer', turnId: 'turn_1' }),
+    detail: async () => ({
+      actor: {
+        path: '/external/reviewer',
+        taskName: 'external-reviewer',
+        objective: 'Review the patch',
+        kind: 'external',
+        state: 'running',
+        createdAt: '2026-07-12T00:00:00.000Z',
+        updatedAt: '2026-07-12T00:00:01.000Z',
+      },
+      turns: [
+        {
+          turnId: 'turn_1',
+          objective: 'Review the patch',
+          state: 'running',
+          createdAt: '2026-07-12T00:00:00.000Z',
+          metadata: { agentId: 'reviewer', protocol: 'a2a' },
+        },
+      ],
+    }),
+    interrupt: async (_sessionId: string, actorPath: string) => {
+      interrupted.push(actorPath);
+    },
+  });
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+  });
+
+  await adapter.initialize();
+  await adapter.startRuntimeActorTask({
+    sessionId: 's_1',
+    agentId: 'reviewer',
+    objective: 'Review the patch',
+    readOnly: true,
+  });
+  const result = await adapter.stopSpaceOwnedRuntimeWorkForForcedExit();
+
+  assert.deepEqual(result, { attempted: 1, failed: 0 });
+  assert.deepEqual(interrupted, ['/external/reviewer']);
+  await adapter.close();
 });
 
 test('complete exit verifies owner release when daemon transport closes before the rollback reply', async () => {
@@ -1732,6 +2712,7 @@ test('complete exit verifies owner release when daemon transport closes before t
     idleDaemonStop: async () => {
       throw new Error('ready Runtime complete-exit must not use the racy CLI stop path');
     },
+    daemonProcessExitWaiter: async () => true,
     ownerControl: {
       acquireInline: async () => ({
         profile: 'coder',
@@ -2171,6 +3152,37 @@ test('supported session operations use the Runtime facade', async () => {
   assert.deepEqual(fake.calls.rewound, [{ sessionId: 's_1', selector: 'entry_0' }]);
 });
 
+test('Coder session listing excludes every Partner ownership marker', async () => {
+  const fake = createFakeRuntime();
+  const filters: unknown[] = [];
+  Object.assign(fake.runtime.sessions, {
+    list: async (filter: unknown) => {
+      filters.push(filter);
+      return [
+        { id: 's_code', title: 'Coder', surface: 'code' },
+        { id: 's_surface_partner', title: 'Partner', surface: 'partner' },
+        { id: 's_tag_partner', title: 'Legacy Partner', tag: 'partner' },
+        { id: 's_profile_partner', title: 'Profile Partner', profileId: 'kodax-space.partner' },
+        { id: 's_runtime_info_partner', runtimeInfo: { surface: 'partner' } },
+      ];
+    },
+  });
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+  });
+
+  const sessions = await adapter.listSessions({ surface: 'code' });
+  assert.deepEqual(
+    sessions.map((session) => session.id),
+    ['s_code'],
+  );
+  assert.deepEqual(filters, [{}]);
+  await assert.rejects(adapter.listSessions({ surface: 'partner' }), /Partner sessions.*Coder/i);
+});
+
 test('oversized daemon transcripts are rebuilt from bounded pages and entry chunks', async () => {
   const fake = createFakeRuntime();
   fake.sessions.add('s_paged');
@@ -2246,6 +3258,1201 @@ test('oversized daemon transcripts are rebuilt from bounded pages and entry chun
   await adapter.close();
 });
 
+test('ordinary conversation history preserves SDK order, ambiguity, and oversized entries', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_conversation');
+  const older = {
+    boundaryId: 'entry_user',
+    auditEntryIds: ['entry_user'],
+    message: { role: 'user' as const, content: 'same' },
+  };
+  const newer = {
+    boundaryId: 'entry_assistant',
+    auditEntryIds: ['entry_assistant'],
+    message: { role: 'assistant' as const, content: 'answer' },
+  };
+  const olderByteLength = Buffer.byteLength(JSON.stringify(older), 'utf8');
+  const newerByteLength = Buffer.byteLength(JSON.stringify(newer), 'utf8');
+  let directCalled = false;
+  Object.assign(fake.runtime.sessions, {
+    conversation: async () => {
+      directCalled = true;
+      throw new Error('Space must use immutable conversation pages');
+    },
+    conversationPage: async (input: { cursor?: string }) =>
+      input.cursor
+        ? {
+            revision: 'conversation_rev_1',
+            sourceRevision: 'source_rev_1',
+            status: 'ambiguous' as const,
+            issues: [
+              {
+                code: 'legacy_overlap_ambiguous' as const,
+                message: 'legacy overlap',
+                occurrenceCount: 1,
+                entryCount: 2,
+                entryIds: ['entry_user', 'entry_assistant'],
+              },
+            ],
+            entries: [
+              {
+                index: 0,
+                boundaryId: older.boundaryId,
+                byteLength: olderByteLength,
+                oversized: false,
+                entry: older,
+              },
+            ],
+            hasMore: false,
+          }
+        : {
+            revision: 'conversation_rev_1',
+            sourceRevision: 'source_rev_1',
+            status: 'ambiguous' as const,
+            issues: [
+              {
+                code: 'legacy_overlap_ambiguous' as const,
+                message: 'legacy overlap',
+                occurrenceCount: 1,
+                entryCount: 2,
+                entryIds: ['entry_user', 'entry_assistant'],
+              },
+            ],
+            entries: [
+              {
+                index: 1,
+                boundaryId: newer.boundaryId,
+                byteLength: newerByteLength,
+                oversized: true,
+              },
+            ],
+            hasMore: true,
+            nextCursor: 'older-page',
+          },
+    conversationEntryChunk: async () => ({
+      revision: 'conversation_rev_1',
+      entryIndex: 1,
+      boundaryId: newer.boundaryId,
+      encoding: 'base64-json' as const,
+      data: Buffer.from(JSON.stringify(newer), 'utf8').toString('base64'),
+      hasMore: false,
+    }),
+  });
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  const conversation = await adapter.conversationHistory('s_conversation');
+
+  assert.equal(conversation?.status, 'ambiguous');
+  assert.equal(conversation?.sourceRevision, 'source_rev_1');
+  assert.deepEqual(
+    conversation?.entries.map((entry) => entry.boundaryId),
+    ['entry_user', 'entry_assistant'],
+  );
+  assert.deepEqual(await adapter.conversationTurnEndBoundary('s_conversation', 0), {
+    entryId: 'entry_assistant',
+    sourceRevision: 'source_rev_1',
+  });
+  assert.equal(directCalled, false);
+  await adapter.close();
+});
+
+test('bounded conversation page does not traverse older history and fences continuations', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_bounded_conversation');
+  const older = {
+    boundaryId: 'entry_older',
+    auditEntryIds: ['entry_older'],
+    message: { role: 'user' as const, content: 'older query' },
+  };
+  const newer = {
+    boundaryId: 'entry_newer',
+    auditEntryIds: ['entry_newer'],
+    message: { role: 'assistant' as const, content: 'newer answer' },
+  };
+  const calls: Array<{ cursor?: string; limit?: number }> = [];
+  Object.assign(fake.runtime.sessions, {
+    load: async () => {
+      throw new Error('bounded conversation pages must not materialize the full Session');
+    },
+    conversationPage: async (input: { cursor?: string; limit?: number }) => {
+      calls.push(input);
+      const entry = input.cursor ? older : newer;
+      return {
+        revision: 'conversation_rev_bounded',
+        sourceRevision: 'source_rev_bounded',
+        status: 'resolved' as const,
+        issues: [],
+        entries: [
+          {
+            index: input.cursor ? 0 : 1,
+            boundaryId: entry.boundaryId,
+            byteLength: Buffer.byteLength(JSON.stringify(entry), 'utf8'),
+            oversized: false,
+            entry,
+          },
+        ],
+        hasMore: input.cursor === undefined,
+        ...(input.cursor === undefined ? { nextCursor: 'older-page' } : {}),
+      };
+    },
+  });
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  const latest = await adapter.conversationHistoryPage({
+    sessionId: 's_bounded_conversation',
+    limit: 64,
+  });
+  assert.equal(latest.outcome, 'ready');
+  assert.deepEqual(
+    calls.map((call) => call.cursor),
+    [undefined],
+  );
+  if (latest.outcome !== 'ready' || latest.page === null) throw new Error('expected page');
+  assert.deepEqual(
+    latest.page.entries.map(({ index }) => index),
+    [1],
+  );
+  assert.equal(latest.page.nextCursor, 'older-page');
+
+  const olderPage = await adapter.conversationHistoryPage({
+    sessionId: 's_bounded_conversation',
+    cursor: 'older-page',
+    revision: latest.page.revision,
+    sourceRevision: latest.page.sourceRevision,
+    limit: 64,
+  });
+  assert.equal(olderPage.outcome, 'ready');
+  assert.deepEqual(
+    calls.map((call) => call.cursor),
+    [undefined, 'older-page'],
+  );
+
+  const stale = await adapter.conversationHistoryPage({
+    sessionId: 's_bounded_conversation',
+    cursor: 'older-page',
+    revision: 'stale-revision',
+    sourceRevision: latest.page.sourceRevision,
+  });
+  assert.deepEqual(stale, { outcome: 'data_changed' });
+  await adapter.close();
+});
+
+test('ordinary conversation paging fails closed on cross-page evidence and transport corruption', async (t) => {
+  const issue = {
+    code: 'legacy_overlap_ambiguous' as const,
+    message: 'legacy overlap',
+    occurrenceCount: 1,
+    entryCount: 1,
+    entryIds: ['entry_0'],
+  };
+  const entry0 = {
+    boundaryId: 'entry_0',
+    auditEntryIds: ['entry_0'],
+    message: { role: 'user' as const, content: 'query' },
+  };
+  const entry1 = {
+    boundaryId: 'entry_1',
+    auditEntryIds: ['entry_1'],
+    message: { role: 'assistant' as const, content: 'answer' },
+  };
+  const descriptor = (index: number, entry: typeof entry0 | typeof entry1) => ({
+    index,
+    boundaryId: entry.boundaryId,
+    byteLength: Buffer.byteLength(JSON.stringify(entry), 'utf8'),
+    oversized: false,
+    entry,
+  });
+
+  await t.test('rejects changed issue entryIds even when summary counts match', async () => {
+    const fake = createFakeRuntime();
+    fake.sessions.add('s_issue_evidence');
+    Object.assign(fake.runtime.sessions, {
+      conversationPage: async (input: { cursor?: string }) =>
+        input.cursor
+          ? {
+              revision: 'rev_issue',
+              sourceRevision: 'source_issue',
+              status: 'ambiguous' as const,
+              issues: [{ ...issue, entryIds: ['different-entry'] }],
+              entries: [descriptor(0, entry0)],
+              hasMore: false,
+            }
+          : {
+              revision: 'rev_issue',
+              sourceRevision: 'source_issue',
+              status: 'ambiguous' as const,
+              issues: [issue],
+              entries: [descriptor(1, entry1)],
+              hasMore: true,
+              nextCursor: 'older',
+            },
+    });
+    const adapter = new RuntimeHostAdapter({
+      mode: 'runtime',
+      profileRoot: path.resolve('C:\\isolated-profile'),
+      runtimeFactory: async () => fake.runtime,
+      identityStore: testIdentityStore,
+      runtimeEventParser: testRuntimeEventParser,
+    });
+    await assert.rejects(
+      adapter.conversationHistory('s_issue_evidence'),
+      /crossed its immutable boundary/i,
+    );
+    await adapter.close();
+  });
+
+  await t.test('rejects duplicate entry indexes', async () => {
+    const fake = createFakeRuntime();
+    fake.sessions.add('s_duplicate_page');
+    Object.assign(fake.runtime.sessions, {
+      conversationPage: async (input: { cursor?: string }) =>
+        input.cursor
+          ? {
+              revision: 'rev_duplicate',
+              sourceRevision: 'source_duplicate',
+              status: 'resolved' as const,
+              issues: [],
+              entries: [descriptor(1, entry1)],
+              hasMore: true,
+              nextCursor: 'older',
+            }
+          : {
+              revision: 'rev_duplicate',
+              sourceRevision: 'source_duplicate',
+              status: 'resolved' as const,
+              issues: [],
+              entries: [descriptor(1, entry1)],
+              hasMore: true,
+              nextCursor: 'older',
+            },
+    });
+    const adapter = new RuntimeHostAdapter({
+      mode: 'runtime',
+      profileRoot: path.resolve('C:\\isolated-profile'),
+      runtimeFactory: async () => fake.runtime,
+      identityStore: testIdentityStore,
+      runtimeEventParser: testRuntimeEventParser,
+    });
+    await assert.rejects(adapter.conversationHistory('s_duplicate_page'), /repeated entry index/i);
+    await adapter.close();
+  });
+
+  await t.test('rejects repeated page continuation cursors', async () => {
+    const fake = createFakeRuntime();
+    fake.sessions.add('s_repeated_cursor');
+    Object.assign(fake.runtime.sessions, {
+      conversationPage: async (input: { cursor?: string }) =>
+        input.cursor
+          ? {
+              revision: 'rev_cursor',
+              sourceRevision: 'source_cursor',
+              status: 'resolved' as const,
+              issues: [],
+              entries: [descriptor(0, entry0)],
+              hasMore: true,
+              nextCursor: 'older',
+            }
+          : {
+              revision: 'rev_cursor',
+              sourceRevision: 'source_cursor',
+              status: 'resolved' as const,
+              issues: [],
+              entries: [descriptor(1, entry1)],
+              hasMore: true,
+              nextCursor: 'older',
+            },
+    });
+    const adapter = new RuntimeHostAdapter({
+      mode: 'runtime',
+      profileRoot: path.resolve('C:\\isolated-profile'),
+      runtimeFactory: async () => fake.runtime,
+      identityStore: testIdentityStore,
+      runtimeEventParser: testRuntimeEventParser,
+    });
+    await assert.rejects(adapter.conversationHistory('s_repeated_cursor'), /repeated.*cursor/i);
+    await adapter.close();
+  });
+
+  await t.test('rejects malformed oversized chunk encoding and byte length', async () => {
+    const fake = createFakeRuntime();
+    fake.sessions.add('s_bad_chunk');
+    const encoded = Buffer.from(JSON.stringify(entry0), 'utf8').toString('base64');
+    Object.assign(fake.runtime.sessions, {
+      conversationPage: async () => ({
+        revision: 'rev_chunk',
+        sourceRevision: 'source_chunk',
+        status: 'resolved' as const,
+        issues: [],
+        entries: [
+          {
+            index: 0,
+            boundaryId: entry0.boundaryId,
+            byteLength: Buffer.byteLength(JSON.stringify(entry0), 'utf8'),
+            oversized: true,
+          },
+        ],
+        hasMore: false,
+      }),
+      conversationEntryChunk: async () => ({
+        revision: 'rev_chunk',
+        entryIndex: 0,
+        boundaryId: entry0.boundaryId,
+        encoding: 'utf8-json' as never,
+        data: encoded,
+        hasMore: false,
+      }),
+    });
+    const adapter = new RuntimeHostAdapter({
+      mode: 'runtime',
+      profileRoot: path.resolve('C:\\isolated-profile'),
+      runtimeFactory: async () => fake.runtime,
+      identityStore: testIdentityStore,
+      runtimeEventParser: testRuntimeEventParser,
+    });
+    await assert.rejects(adapter.conversationHistory('s_bad_chunk'), /unsupported chunk encoding/i);
+    await adapter.close();
+  });
+
+  await t.test('rejects an oversized entry whose reconstructed byte length differs', async () => {
+    const fake = createFakeRuntime();
+    fake.sessions.add('s_bad_chunk_length');
+    const raw = Buffer.from(JSON.stringify(entry0), 'utf8');
+    Object.assign(fake.runtime.sessions, {
+      conversationPage: async () => ({
+        revision: 'rev_chunk_length',
+        sourceRevision: 'source_chunk_length',
+        status: 'resolved' as const,
+        issues: [],
+        entries: [
+          {
+            index: 0,
+            boundaryId: entry0.boundaryId,
+            byteLength: raw.byteLength + 1,
+            oversized: true,
+          },
+        ],
+        hasMore: false,
+      }),
+      conversationEntryChunk: async () => ({
+        revision: 'rev_chunk_length',
+        entryIndex: 0,
+        boundaryId: entry0.boundaryId,
+        encoding: 'base64-json' as const,
+        data: raw.toString('base64'),
+        hasMore: false,
+      }),
+    });
+    const adapter = new RuntimeHostAdapter({
+      mode: 'runtime',
+      profileRoot: path.resolve('C:\\isolated-profile'),
+      runtimeFactory: async () => fake.runtime,
+      identityStore: testIdentityStore,
+      runtimeEventParser: testRuntimeEventParser,
+    });
+    await assert.rejects(adapter.conversationHistory('s_bad_chunk_length'), /encoded byte length/i);
+    await adapter.close();
+  });
+
+  await t.test('rejects repeated oversized-entry chunk cursors', async () => {
+    const fake = createFakeRuntime();
+    fake.sessions.add('s_repeated_chunk_cursor');
+    const raw = Buffer.from(JSON.stringify(entry0), 'utf8');
+    const splitAt = Math.max(1, Math.floor(raw.byteLength / 2));
+    Object.assign(fake.runtime.sessions, {
+      conversationPage: async () => ({
+        revision: 'rev_chunk_cursor',
+        sourceRevision: 'source_chunk_cursor',
+        status: 'resolved' as const,
+        issues: [],
+        entries: [
+          {
+            index: 0,
+            boundaryId: entry0.boundaryId,
+            byteLength: raw.byteLength,
+            oversized: true,
+          },
+        ],
+        hasMore: false,
+      }),
+      conversationEntryChunk: async (input: { cursor?: string }) => ({
+        revision: 'rev_chunk_cursor',
+        entryIndex: 0,
+        boundaryId: entry0.boundaryId,
+        encoding: 'base64-json' as const,
+        data: (input.cursor ? raw.subarray(splitAt) : raw.subarray(0, splitAt)).toString('base64'),
+        hasMore: true,
+        nextCursor: 'same-cursor',
+      }),
+    });
+    const adapter = new RuntimeHostAdapter({
+      mode: 'runtime',
+      profileRoot: path.resolve('C:\\isolated-profile'),
+      runtimeFactory: async () => fake.runtime,
+      identityStore: testIdentityStore,
+      runtimeEventParser: testRuntimeEventParser,
+    });
+    await assert.rejects(
+      adapter.conversationHistory('s_repeated_chunk_cursor'),
+      /repeated a continuation cursor/i,
+    );
+    await adapter.close();
+  });
+});
+
+test('successful rewind invalidates an in-flight ordinary conversation generation', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_rewind_generation');
+  let generation: 'stale' | 'fresh' = 'stale';
+  let releaseStale!: () => void;
+  const staleGate = new Promise<void>((resolve) => {
+    releaseStale = resolve;
+  });
+  let staleStarted!: () => void;
+  const staleStartedPromise = new Promise<void>((resolve) => {
+    staleStarted = resolve;
+  });
+  let pageReads = 0;
+  Object.assign(fake.runtime.sessions, {
+    conversationPage: async () => {
+      pageReads += 1;
+      const captured = generation;
+      if (captured === 'stale') {
+        staleStarted();
+        await staleGate;
+      }
+      const entry = {
+        boundaryId: `entry_${captured}`,
+        auditEntryIds: [`entry_${captured}`],
+        message: { role: 'assistant' as const, content: captured },
+      };
+      return {
+        revision: `revision_${captured}`,
+        sourceRevision: `source_${captured}`,
+        status: 'resolved' as const,
+        issues: [],
+        entries: [
+          {
+            index: 0,
+            boundaryId: entry.boundaryId,
+            byteLength: Buffer.byteLength(JSON.stringify(entry), 'utf8'),
+            oversized: false,
+            entry,
+          },
+        ],
+        hasMore: false,
+      };
+    },
+    rewind: async (input: { sessionId: string }) => {
+      generation = 'fresh';
+      return { id: input.sessionId, title: 'rewound' };
+    },
+  });
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  const staleRead = adapter.conversationHistory('s_rewind_generation');
+  await staleStartedPromise;
+  await adapter.rewindSession({ sessionId: 's_rewind_generation', selector: 'entry_0' });
+  const freshRead = adapter.conversationHistory('s_rewind_generation');
+  releaseStale();
+  const [staleResult, freshResult] = await Promise.all([staleRead, freshRead]);
+
+  assert.equal(pageReads, 2);
+  assert.equal(staleResult?.entries[0]?.message.content, 'fresh');
+  assert.equal(freshResult?.entries[0]?.message.content, 'fresh');
+  await adapter.close();
+});
+
+test('concurrent transcript callers share one load and one immutable page traversal', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_coalesced');
+  const entry = {
+    entryId: 'entry_coalesced',
+    parentId: null,
+    logicalId: 'logical_coalesced',
+    timestamp: '2026-08-01T00:00:00.000Z',
+    type: 'message' as const,
+    source: 'assistant' as const,
+    message: { role: 'assistant' as const, content: 'one materialization' },
+    active: true,
+  };
+  let releasePage!: () => void;
+  const pageGate = new Promise<void>((resolve) => {
+    releasePage = resolve;
+  });
+  let pageReads = 0;
+  fake.runtime.sessions.transcriptPage = async () => {
+    pageReads += 1;
+    await pageGate;
+    return {
+      revision: 'rev_coalesced',
+      entries: [{ index: 0, entryId: entry.entryId, byteLength: 100, oversized: false, entry }],
+      hasMore: false,
+    };
+  };
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  const first = adapter.transcript('s_coalesced');
+  const second = adapter.transcript('s_coalesced');
+  await new Promise((resolve) => setImmediate(resolve));
+  releasePage();
+  const [firstResult, secondResult] = await Promise.all([first, second]);
+
+  assert.deepEqual(firstResult, secondResult);
+  assert.equal(fake.calls.loaded.length, 1);
+  assert.equal(pageReads, 1);
+  await adapter.close();
+});
+
+test('a Runtime event replaces an older in-flight transcript boundary for later callers', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_crossed_boundary');
+  const staleEntry = {
+    entryId: 'entry_stale',
+    parentId: null,
+    logicalId: 'logical_stale',
+    timestamp: '2026-08-01T00:00:00.000Z',
+    type: 'message' as const,
+    source: 'assistant' as const,
+    message: { role: 'assistant' as const, content: 'stale boundary' },
+    active: true,
+  };
+  const freshEntry = {
+    ...staleEntry,
+    entryId: 'entry_fresh',
+    logicalId: 'logical_fresh',
+    timestamp: '2026-08-01T00:01:00.000Z',
+    message: { role: 'assistant' as const, content: 'fresh boundary' },
+  };
+  const originalObserve = fake.runtime.sessions.observe.bind(fake.runtime.sessions);
+  fake.runtime.sessions.observe = async (...args) => {
+    const observation = await originalObserve(...args);
+    return {
+      ...observation,
+      snapshot: {
+        ...observation.snapshot,
+        cursor: 10,
+        transcriptRevision: 'rev_stale',
+        session: { id: 's_crossed_boundary', title: 'Crossed boundary', surface: 'code' },
+        transcript: {
+          revision: 'rev_stale',
+          entries: [],
+          hasMore: true,
+          nextCursor: 'stale-page',
+        },
+      },
+    };
+  };
+  let releaseStale!: () => void;
+  const staleGate = new Promise<void>((resolve) => {
+    releaseStale = resolve;
+  });
+  let staleStarted!: () => void;
+  const staleStartedGate = new Promise<void>((resolve) => {
+    staleStarted = resolve;
+  });
+  let releaseFresh!: () => void;
+  const freshGate = new Promise<void>((resolve) => {
+    releaseFresh = resolve;
+  });
+  let freshStarted!: () => void;
+  const freshStartedGate = new Promise<void>((resolve) => {
+    freshStarted = resolve;
+  });
+  let freshPageReads = 0;
+  fake.runtime.sessions.transcriptPage = async (input: { cursor?: string }) => {
+    if (input.cursor === 'stale-page') {
+      staleStarted();
+      await staleGate;
+      return {
+        revision: 'rev_stale',
+        entries: [
+          {
+            index: 0,
+            entryId: staleEntry.entryId,
+            byteLength: 100,
+            oversized: false,
+            entry: staleEntry,
+          },
+        ],
+        hasMore: false,
+      };
+    }
+    freshPageReads += 1;
+    freshStarted();
+    await freshGate;
+    return {
+      revision: 'rev_fresh',
+      entries: [
+        {
+          index: 0,
+          entryId: freshEntry.entryId,
+          byteLength: 100,
+          oversized: false,
+          entry: freshEntry,
+        },
+      ],
+      hasMore: false,
+    };
+  };
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  await adapter.ensureObserved('s_crossed_boundary');
+  const crossedRead = adapter.transcript('s_crossed_boundary');
+  await staleStartedGate;
+  fake.emit({
+    id: 'event_crossing_history',
+    seq: 11,
+    time: '2026-08-01T00:01:00.000Z',
+    sessionId: 's_crossed_boundary',
+    runId: 'run_crossed_boundary',
+    type: 'runtime.warning',
+    payload: { message: 'invalidate the transcript seed' },
+  });
+  const laterRead = adapter.transcript('s_crossed_boundary');
+  await freshStartedGate;
+  releaseStale();
+  await new Promise((resolve) => setImmediate(resolve));
+  releaseFresh();
+  const [crossedResult, laterResult] = await Promise.all([crossedRead, laterRead]);
+
+  assert.deepEqual(
+    crossedResult?.transcriptEntries.map((entry) => entry.entryId),
+    [freshEntry.entryId],
+  );
+  assert.deepEqual(crossedResult, laterResult);
+  assert.equal(freshPageReads, 1);
+  await adapter.close();
+});
+
+test('fresh observation transcript seeds history paging without duplicate Session loads', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_snapshot');
+  const older = {
+    entryId: 'entry_snapshot_older',
+    parentId: null,
+    logicalId: 'logical_snapshot_older',
+    timestamp: '2026-07-31T00:00:00.000Z',
+    type: 'message' as const,
+    source: 'user' as const,
+    message: { role: 'user' as const, content: 'older snapshot row' },
+    active: true,
+  };
+  const latest = {
+    entryId: 'entry_snapshot_latest',
+    parentId: older.entryId,
+    logicalId: 'logical_snapshot_latest',
+    timestamp: '2026-07-31T00:01:00.000Z',
+    type: 'message' as const,
+    source: 'assistant' as const,
+    message: { role: 'assistant' as const, content: 'latest snapshot row' },
+    active: true,
+  };
+  const fresh = {
+    entryId: 'entry_after_event',
+    parentId: latest.entryId,
+    logicalId: 'logical_after_event',
+    timestamp: '2026-07-31T00:02:00.000Z',
+    type: 'message' as const,
+    source: 'assistant' as const,
+    message: { role: 'assistant' as const, content: 'fresh after event' },
+    active: true,
+  };
+  const originalObserve = fake.runtime.sessions.observe.bind(fake.runtime.sessions);
+  fake.runtime.sessions.observe = async (...args) => {
+    const observation = await originalObserve(...args);
+    return {
+      ...observation,
+      snapshot: {
+        ...observation.snapshot,
+        cursor: 10,
+        transcriptRevision: 'rev_snapshot',
+        session: { id: 's_snapshot', title: 'Snapshot title', surface: 'code' },
+        transcript: {
+          revision: 'rev_snapshot',
+          entries: [
+            {
+              index: 1,
+              entryId: latest.entryId,
+              byteLength: 100,
+              oversized: false,
+              entry: latest,
+            },
+          ],
+          hasMore: true,
+          nextCursor: 'snapshot-older',
+        },
+      },
+    };
+  };
+  const pageInputs: Array<{ cursor?: string }> = [];
+  fake.runtime.sessions.transcriptPage = async (input: { cursor?: string }) => {
+    pageInputs.push(input);
+    if (input.cursor === 'snapshot-older') {
+      return {
+        revision: 'rev_snapshot',
+        entries: [
+          {
+            index: 0,
+            entryId: older.entryId,
+            byteLength: 100,
+            oversized: false,
+            entry: older,
+          },
+        ],
+        hasMore: false,
+      };
+    }
+    return {
+      revision: 'rev_after_event',
+      entries: [
+        {
+          index: 2,
+          entryId: fresh.entryId,
+          byteLength: 100,
+          oversized: false,
+          entry: fresh,
+        },
+      ],
+      hasMore: false,
+    };
+  };
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  await adapter.ensureObserved('s_snapshot');
+  const snapshotTranscript = await adapter.transcript('s_snapshot');
+
+  assert.deepEqual(fake.calls.loaded, []);
+  assert.deepEqual(pageInputs, [{ sessionId: 's_snapshot', cursor: 'snapshot-older' }]);
+  assert.deepEqual(
+    snapshotTranscript?.transcriptEntries.map((entry) => entry.entryId),
+    [older.entryId, latest.entryId],
+  );
+
+  fake.emit({
+    id: 'event_after_snapshot',
+    seq: 11,
+    time: '2026-07-31T00:02:00.000Z',
+    sessionId: 's_snapshot',
+    runId: 'run_snapshot',
+    type: 'runtime.warning',
+    payload: { message: 'transcript may have changed' },
+  });
+  fake.calls.loaded.length = 0;
+  pageInputs.length = 0;
+
+  const refreshedTranscript = await adapter.transcript('s_snapshot');
+
+  assert.deepEqual(pageInputs, [{ sessionId: 's_snapshot' }]);
+  assert.deepEqual(
+    refreshedTranscript?.transcriptEntries.map((entry) => entry.entryId),
+    [fresh.entryId],
+  );
+  assert.equal(fake.calls.loaded.length, 1);
+  await adapter.close();
+});
+
+test('transcript paging restarts from a fresh boundary on resync_required and passes read budgets', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_resync');
+  const entry = {
+    entryId: 'entry_1',
+    parentId: null,
+    logicalId: 'logical_1',
+    timestamp: '2026-07-21T00:00:00.000Z',
+    type: 'message' as const,
+    source: 'assistant' as const,
+    message: { role: 'assistant' as const, content: 'restored' },
+    active: true,
+  };
+  let pageReads = 0;
+  const readOptions: Array<{ timeoutMs?: number; signal?: AbortSignal }> = [];
+  Object.assign(fake.runtime.sessions, {
+    transcriptPage: async (
+      _input: { cursor?: string },
+      options?: { timeoutMs?: number; signal?: AbortSignal },
+    ) => {
+      pageReads += 1;
+      readOptions.push(options ?? {});
+      if (pageReads === 1) {
+        throw Object.assign(new Error('snapshot expired'), { code: 'resync_required' });
+      }
+      return {
+        revision: 'rev_2',
+        entries: [{ index: 0, entryId: entry.entryId, byteLength: 100, oversized: false, entry }],
+        hasMore: false,
+      };
+    },
+  });
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  const transcript = await adapter.transcript('s_resync');
+
+  assert.equal(pageReads, 2);
+  assert.equal(transcript?.messages[0]?.content, 'restored');
+  assert.ok(readOptions.every((options) => options.timeoutMs === 15_000));
+  assert.ok(readOptions.every((options) => options.signal instanceof AbortSignal));
+  await adapter.close();
+});
+
+test('committed root compaction projects its persisted boundary once and filters no-op/child outcomes', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_1');
+  const compactionEntry = {
+    entryId: 'entry_compaction',
+    parentId: null,
+    logicalId: 'entry_compaction',
+    timestamp: '2026-07-29T07:06:50.278Z',
+    type: 'compaction' as const,
+    source: 'system' as const,
+    active: true,
+    summary: 'internal summary',
+    payload: { tokensBefore: 120_000, tokensAfter: 40_000 },
+    message: { role: 'system' as const, content: 'internal summary' },
+  };
+  Object.assign(fake.runtime.sessions, {
+    transcriptPage: async (input: { cursor?: string }) =>
+      input.cursor
+        ? {
+            revision: 'rev_compaction',
+            entries: [
+              {
+                index: 1,
+                entryId: compactionEntry.entryId,
+                byteLength: 256,
+                oversized: false,
+                entry: compactionEntry,
+              },
+            ],
+            hasMore: false,
+          }
+        : {
+            revision: 'rev_compaction',
+            entries: [
+              {
+                index: 0,
+                entryId: 'old_compaction',
+                byteLength: 256,
+                oversized: false,
+                entry: {
+                  ...compactionEntry,
+                  entryId: 'old_compaction',
+                  logicalId: 'old_compaction',
+                  timestamp: '2026-07-29T07:05:50.278Z',
+                  payload: { tokensBefore: 90_000, tokensAfter: 30_000 },
+                },
+              },
+            ],
+            hasMore: true,
+            nextCursor: 'current-page',
+          },
+    transcriptEntryChunk: async () => null,
+  });
+  const pushed: Array<{ channel: string; payload: unknown }> = [];
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    push: (channel, payload) => pushed.push({ channel, payload }),
+  });
+  await adapter.initialize();
+  await adapter.compactSession({ sessionId: 's_1', provider: 'mock' });
+
+  const committedPayload = {
+    contextId: 's_1',
+    contextKind: 'root',
+    committed: true,
+    compactionEntryId: 'entry_compaction',
+    tokensBefore: 120_000,
+    tokensAfter: 40_000,
+    source: 'automatic_threshold',
+  } as const;
+  const committed = {
+    id: 'evt_compaction',
+    seq: 1,
+    time: '2026-07-29T07:06:50.321Z',
+    sessionId: 's_1',
+    runId: 'run_1',
+    type: 'context.compaction.finished',
+    payload: committedPayload,
+  } as import('@kodax-ai/kodax/runtime').RuntimeTypedEvent;
+  fake.emit(committed);
+  await waitForTest(() =>
+    pushed.some(
+      ({ payload }) =>
+        (payload as { kind?: unknown; provisionalId?: unknown }).kind === 'lineage_notice' &&
+        (payload as { provisionalId?: unknown }).provisionalId ===
+          'runtime-compaction:evt_compaction',
+    ),
+  );
+  await waitForTest(() =>
+    pushed.some(
+      ({ payload }) =>
+        (payload as { kind?: unknown; entryId?: unknown }).kind === 'lineage_notice' &&
+        (payload as { entryId?: unknown }).entryId === 'entry_compaction',
+    ),
+  );
+  const boundaries = pushed
+    .filter(({ payload }) => (payload as { kind?: unknown }).kind === 'lineage_notice')
+    .map(({ payload }) => payload);
+  assert.deepEqual(boundaries[0], {
+    kind: 'lineage_notice',
+    sessionId: 's_1',
+    noticeKind: 'compaction',
+    text: 'Compaction',
+    provisionalId: 'runtime-compaction:evt_compaction',
+    displayId: 'runtime-compaction:evt_compaction',
+    contextId: 's_1',
+    source: 'automatic_threshold',
+    tokensBefore: 120_000,
+    tokensAfter: 40_000,
+    sentAt: Date.parse('2026-07-29T07:06:50.321Z'),
+  });
+  assert.deepEqual(boundaries[1], {
+    kind: 'lineage_notice',
+    sessionId: 's_1',
+    noticeKind: 'compaction',
+    text: 'internal summary',
+    provisionalId: 'runtime-compaction:evt_compaction',
+    displayId: 'runtime-compaction:evt_compaction',
+    entryId: 'entry_compaction',
+    parentId: null,
+    logicalId: 'entry_compaction',
+    canonicalIndex: 1,
+    contextId: 's_1',
+    source: 'automatic_threshold',
+    tokensBefore: 120_000,
+    tokensAfter: 40_000,
+    sentAt: Date.parse('2026-07-29T07:06:50.278Z'),
+  });
+
+  fake.emit({ ...committed, seq: 2 });
+  fake.emit({
+    ...committed,
+    id: 'evt_compaction_noop',
+    seq: 3,
+    payload: { ...committedPayload, committed: false },
+  } as import('@kodax-ai/kodax/runtime').RuntimeTypedEvent);
+  fake.emit({
+    ...committed,
+    id: 'evt_compaction_child',
+    seq: 4,
+    payload: {
+      ...committedPayload,
+      contextKind: 'child',
+      parentContextId: 's_1',
+    },
+  } as import('@kodax-ai/kodax/runtime').RuntimeTypedEvent);
+  await waitForTest(
+    () =>
+      pushed.filter(({ payload }) => (payload as { kind?: unknown }).kind === 'compact_stats')
+        .length >= 4,
+  );
+  assert.equal(
+    pushed.filter(({ payload }) => (payload as { kind?: unknown }).kind === 'lineage_notice')
+      .length,
+    2,
+  );
+  await adapter.close();
+});
+
+test('committed compaction without a physical entry ID stays provisional and performs no transcript scan', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_1');
+  let pageReads = 0;
+  Object.assign(fake.runtime.sessions, {
+    transcriptPage: async () => {
+      pageReads += 1;
+      throw new Error('transcript paging must not run without an exact entry ID');
+    },
+  });
+  const pushed: Array<{ channel: string; payload: unknown }> = [];
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    push: (channel, payload) => pushed.push({ channel, payload }),
+  });
+  await adapter.initialize();
+  await adapter.compactSession({ sessionId: 's_1', provider: 'mock' });
+  const eventBase = {
+    sessionId: 's_1',
+    runId: 'run_1',
+    time: '2026-07-29T07:06:50.321Z',
+  } as const;
+  fake.emit({
+    ...eventBase,
+    id: 'evt_compaction_without_entry_id',
+    seq: 1,
+    type: 'context.compaction.finished',
+    payload: {
+      contextId: 's_1',
+      contextKind: 'root',
+      committed: true,
+      tokensBefore: 120_000,
+      tokensAfter: 40_000,
+    },
+  } as import('@kodax-ai/kodax/runtime').RuntimeTypedEvent);
+  fake.emit({
+    ...eventBase,
+    id: 'evt_text_after_unbound_compaction',
+    seq: 2,
+    type: 'assistant.delta',
+    payload: { text: 'still streaming', meta: { contextKind: 'root' } },
+  } as import('@kodax-ai/kodax/runtime').RuntimeTypedEvent);
+
+  await waitForTest(() =>
+    pushed.some(
+      ({ payload }) =>
+        (payload as { kind?: unknown; text?: unknown }).kind === 'text_delta' &&
+        (payload as { text?: unknown }).text === 'still streaming',
+    ),
+  );
+  const transcriptEvents = pushed
+    .map(
+      ({ payload }) =>
+        payload as {
+          kind?: unknown;
+          entryId?: unknown;
+          provisionalId?: unknown;
+          displayId?: unknown;
+        },
+    )
+    .filter(({ kind }) => kind === 'lineage_notice' || kind === 'text_delta');
+  assert.deepEqual(
+    transcriptEvents.map(({ kind }) => kind),
+    ['lineage_notice', 'text_delta'],
+  );
+  assert.equal(transcriptEvents[0]?.entryId, undefined);
+  assert.deepEqual(transcriptEvents[0], {
+    kind: 'lineage_notice',
+    sessionId: 's_1',
+    noticeKind: 'compaction',
+    text: 'Compaction',
+    provisionalId: 'runtime-compaction:evt_compaction_without_entry_id',
+    displayId: 'runtime-compaction:evt_compaction_without_entry_id',
+    contextId: 's_1',
+    tokensBefore: 120_000,
+    tokensAfter: 40_000,
+    sentAt: Date.parse('2026-07-29T07:06:50.321Z'),
+  });
+  assert.equal(pageReads, 0);
+  await adapter.close();
+});
+
+test('committed compaction stays visible and does not block later output when paging fails', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_1');
+  let pageReads = 0;
+  Object.assign(fake.runtime.sessions, {
+    transcriptPage: async () => {
+      pageReads += 1;
+      throw new Error('transient paging failure');
+    },
+  });
+  const pushed: Array<{ channel: string; payload: unknown }> = [];
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    push: (channel, payload) => pushed.push({ channel, payload }),
+  });
+  await adapter.initialize();
+  await adapter.compactSession({ sessionId: 's_1', provider: 'mock' });
+  const eventBase = {
+    sessionId: 's_1',
+    runId: 'run_1',
+    time: '2026-07-29T07:06:50.321Z',
+  } as const;
+  fake.emit({
+    ...eventBase,
+    id: 'evt_compaction_failed_page',
+    seq: 1,
+    type: 'context.compaction.finished',
+    payload: {
+      contextId: 's_1',
+      contextKind: 'root',
+      committed: true,
+      compactionEntryId: 'entry_missing',
+      tokensBefore: 120_000,
+      tokensAfter: 40_000,
+    },
+  } as import('@kodax-ai/kodax/runtime').RuntimeTypedEvent);
+  fake.emit({
+    ...eventBase,
+    id: 'evt_text_after_compaction',
+    seq: 2,
+    type: 'assistant.delta',
+    payload: { text: 'still streaming', meta: { contextKind: 'root' } },
+  } as import('@kodax-ai/kodax/runtime').RuntimeTypedEvent);
+
+  await waitForTest(() =>
+    pushed.some(
+      ({ payload }) =>
+        (payload as { kind?: unknown; text?: unknown }).kind === 'text_delta' &&
+        (payload as { text?: unknown }).text === 'still streaming',
+    ),
+  );
+  await waitForTest(() => pageReads >= 3);
+  const transcriptEvents = pushed
+    .map(({ payload }) => payload as { kind?: unknown; entryId?: unknown })
+    .filter(({ kind }) => kind === 'lineage_notice' || kind === 'text_delta');
+  assert.deepEqual(
+    transcriptEvents.map(({ kind }) => kind),
+    ['lineage_notice', 'text_delta'],
+  );
+  assert.equal(transcriptEvents[0]?.entryId, undefined);
+  assert.equal(pageReads, 3);
+  await adapter.close();
+});
+
 test('Runtime session mutations invalidate the Space transcript compatibility cache', async () => {
   let transcriptReads = 0;
   setSessionStoreImpl({
@@ -2283,6 +4490,7 @@ test('Runtime session mutations invalidate the Space transcript compatibility ca
 });
 
 test('ensureSession accepts Coder only and rejects Partner before daemon access', async () => {
+  installPersistedSessionLookup();
   const fake = createFakeRuntime();
   fake.sessions.add('s_existing');
   const adapter = new RuntimeHostAdapter({
@@ -2325,7 +4533,521 @@ test('ensureSession accepts Coder only and rejects Partner before daemon access'
   });
 });
 
+test('ensureSession rejects an existing Session bound to another project', async () => {
+  installPersistedSessionLookup();
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_existing');
+  fake.sessionRecords.set('s_existing', {
+    id: 's_existing',
+    title: '',
+    workspaceRoot: 'C:\\other-repo',
+    gitRoot: 'C:\\other-repo',
+    surface: 'space-desktop',
+  });
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+  });
+
+  await assert.rejects(
+    adapter.ensureSession({
+      sessionId: 's_existing',
+      projectRoot: 'C:\\repo',
+      surface: 'code',
+      ephemeral: false,
+    }),
+    (error: unknown) =>
+      error instanceof Error &&
+      (error as Error & { code?: string }).code === 'session_identity_conflict' &&
+      /does not match projectRoot/i.test(error.message),
+  );
+});
+
+test('ensureSession rejects a persisted tag-only Partner before daemon reuse', async () => {
+  installPersistedSessionLookup(
+    new Map([
+      [
+        's_tag_only_partner',
+        {
+          title: '',
+          messages: [],
+          gitRoot: 'C:\\repo',
+          tag: 'partner',
+        },
+      ],
+    ]),
+  );
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_tag_only_partner');
+  fake.sessionRecords.set('s_tag_only_partner', {
+    id: 's_tag_only_partner',
+    title: '',
+    workspaceRoot: 'C:\\repo',
+    gitRoot: 'C:\\repo',
+  });
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+  });
+
+  await assert.rejects(
+    adapter.ensureSession({
+      sessionId: 's_tag_only_partner',
+      projectRoot: 'C:\\repo',
+      surface: 'code',
+      ephemeral: false,
+    }),
+    (error: unknown) =>
+      error instanceof Error &&
+      (error as Error & { code?: string }).code === 'session_identity_conflict' &&
+      /inline Partner surface/i.test(error.message),
+  );
+  assert.deepEqual(fake.calls.loaded, []);
+});
+
+test('Coder operations reject a persisted tag-only Partner without an expected project', async () => {
+  installPersistedSessionLookup(
+    new Map([
+      [
+        's_tag_only_partner_operation',
+        {
+          title: '',
+          messages: [],
+          gitRoot: 'C:\\repo',
+          tag: 'partner',
+        },
+      ],
+    ]),
+  );
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_tag_only_partner_operation');
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+  });
+
+  await assert.rejects(
+    adapter.compactSession({
+      sessionId: 's_tag_only_partner_operation',
+      provider: 'mock',
+    }),
+    (error: unknown) =>
+      error instanceof Error &&
+      (error as Error & { code?: string }).code === 'session_identity_conflict' &&
+      /inline Partner surface/i.test(error.message),
+  );
+  assert.deepEqual(fake.calls.loaded, []);
+  assert.deepEqual(fake.calls.compacted, []);
+});
+
+test('Coder ownership checks observe a cross-process Partner retag without an LRU delay', async () => {
+  const records = new Map<string, Readonly<Record<string, unknown>>>([
+    [
+      's_retagged_partner',
+      {
+        title: '',
+        messages: [],
+        gitRoot: 'C:\\repo',
+        tag: 'code',
+      },
+    ],
+  ]);
+  installPersistedSessionLookup(records);
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_retagged_partner');
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+  });
+
+  await adapter.compactSession({ sessionId: 's_retagged_partner', provider: 'mock' });
+  records.set('s_retagged_partner', {
+    title: '',
+    messages: [],
+    gitRoot: 'C:\\repo',
+    tag: 'partner',
+  });
+  await assert.rejects(
+    adapter.compactSession({ sessionId: 's_retagged_partner', provider: 'mock' }),
+    (error: unknown) =>
+      error instanceof Error &&
+      (error as Error & { code?: string }).code === 'session_identity_conflict',
+  );
+  assert.deepEqual(fake.calls.loaded, ['s_retagged_partner']);
+  assert.equal(fake.calls.compacted.length, 1);
+});
+
+test('observation and transcript reads reject a Session retagged to Partner', async () => {
+  const records = new Map<string, Readonly<Record<string, unknown>>>([
+    [
+      's_observed_retag',
+      {
+        title: '',
+        messages: [],
+        gitRoot: 'C:\\repo',
+        tag: 'code',
+      },
+    ],
+  ]);
+  installPersistedSessionLookup(records);
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_observed_retag');
+  const controller = new RuntimeProjectionController(
+    createPendingSdkRuntimeProjection(100).profileSnapshot(),
+  );
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    projectionController: controller,
+  });
+
+  await adapter.initialize();
+  await adapter.ensureObserved('s_observed_retag');
+  assert.equal(controller.sessionLiveSnapshot('s_observed_retag').sessionId, 's_observed_retag');
+
+  records.set('s_observed_retag', {
+    title: '',
+    messages: [],
+    gitRoot: 'C:\\repo',
+    tag: 'partner',
+  });
+  const rejectsIdentityConflict = (error: unknown) =>
+    error instanceof Error &&
+    (error as Error & { code?: string }).code === 'session_identity_conflict';
+
+  await assert.rejects(adapter.transcript('s_observed_retag'), rejectsIdentityConflict);
+  assert.throws(
+    () => controller.sessionLiveSnapshot('s_observed_retag'),
+    RuntimeProjectionUnavailableError,
+  );
+  assert.equal(fake.calls.observationCloses, 1);
+  await assert.rejects(adapter.ensureObserved('s_observed_retag'), rejectsIdentityConflict);
+  await assert.rejects(
+    adapter.diagnoseSession({ sessionId: 's_observed_retag' }),
+    rejectsIdentityConflict,
+  );
+  assert.deepEqual(fake.calls.sessionDiagnostics, []);
+  assert.deepEqual(fake.calls.transcripts, []);
+
+  await adapter.close();
+});
+
+test('run status and Stop bypass a history boundary that is busy with active Session writes', async () => {
+  setSessionStoreImpl({
+    listSessions: async () => [],
+    forkSession: async () => null,
+    rewindSession: async () => null,
+    deleteSession: async () => ({ ok: true }),
+    loadSession: async () => {
+      throw Object.assign(new Error('Session data changed during the read boundary: active.lock'), {
+        code: 'data_changed',
+      });
+    },
+    watchSessions: () => ({ close() {} }),
+  } as SessionStoreImpl);
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_1');
+  fake.sessionStatuses.set('s_1', {
+    sessionId: 's_1',
+    runtimeId: 'rt_test',
+    phase: 'running',
+    observedAt: '2026-08-01T04:00:00.000Z',
+    runId: 'run_active_writer',
+  });
+  fake.runtime.runs.list = async () => [
+    {
+      runId: 'run_active_writer',
+      sessionId: 's_1',
+      phase: 'running',
+      provider: 'mock',
+      mode: 'managed_task',
+      startedAt: '2026-08-01T04:00:00.000Z',
+    },
+  ];
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+  });
+
+  await adapter.initialize();
+  assert.equal(await adapter.findActiveRunId('s_1'), 'run_active_writer');
+  const receipt = await adapter.abortSessionRun('s_1');
+
+  assert.equal(receipt?.runId, 'run_active_writer');
+  assert.deepEqual(fake.calls.aborted, ['run_active_writer']);
+  assert.deepEqual(fake.calls.loaded, []);
+  await adapter.close();
+});
+
+test('Stop reports Runtime unavailability instead of claiming that no active Run exists', async () => {
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => {
+      throw new Error('daemon unavailable');
+    },
+    identityStore: testIdentityStore,
+  });
+
+  await assert.rejects(adapter.abortSessionRun('s_unavailable'), /daemon unavailable/i);
+  await adapter.close();
+});
+
+test('run status and Stop reject cross-Session daemon identities before any side effect', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_1');
+  fake.sessionStatuses.set('s_1', {
+    sessionId: 's_other',
+    runtimeId: 'rt_test',
+    phase: 'running',
+    observedAt: '2026-08-01T04:00:00.000Z',
+    runId: 'run_other',
+  });
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+  });
+
+  await adapter.initialize();
+  await assert.rejects(adapter.findActiveRunId('s_1'), /different Session identity/i);
+
+  fake.runtime.runs.list = async () => [
+    {
+      runId: 'run_other',
+      sessionId: 's_other',
+      phase: 'running',
+      provider: 'mock',
+      mode: 'managed_task',
+      startedAt: '2026-08-01T04:00:00.000Z',
+    },
+  ];
+  await assert.rejects(adapter.abortSessionRun('s_1'), /different Session identity/i);
+  assert.deepEqual(fake.calls.aborted, []);
+
+  await adapter.close();
+});
+
+test('ensureSession prefers workspaceRoot and falls back to gitRoot for project identity', async () => {
+  installPersistedSessionLookup();
+  const fake = createFakeRuntime();
+  const workspaceRoot = path.resolve('fixtures', 'repo', 'app');
+  const gitRoot = path.dirname(workspaceRoot);
+  fake.sessions.add('s_workspace');
+  fake.sessionRecords.set('s_workspace', {
+    id: 's_workspace',
+    title: '',
+    workspaceRoot: `${workspaceRoot}${path.sep}`,
+    gitRoot,
+    surface: 'space-desktop',
+  });
+  fake.sessions.add('s_git_only');
+  fake.sessionRecords.set('s_git_only', {
+    id: 's_git_only',
+    title: '',
+    gitRoot,
+    surface: 'space-desktop',
+  });
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+  });
+
+  assert.equal(
+    await adapter.ensureSession({
+      sessionId: 's_workspace',
+      projectRoot: workspaceRoot,
+      surface: 'code',
+      ephemeral: false,
+    }),
+    false,
+  );
+  assert.equal(
+    await adapter.ensureSession({
+      sessionId: 's_git_only',
+      projectRoot: gitRoot,
+      surface: 'code',
+      ephemeral: false,
+    }),
+    false,
+  );
+});
+
+test('ensureSession fails closed when an existing Session has no project identity', async () => {
+  installPersistedSessionLookup();
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_legacy_missing_root');
+  fake.sessionRecords.set('s_legacy_missing_root', {
+    id: 's_legacy_missing_root',
+    title: '',
+    surface: 'space-desktop',
+  });
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+  });
+
+  await assert.rejects(
+    adapter.ensureSession({
+      sessionId: 's_legacy_missing_root',
+      projectRoot: 'C:\\repo',
+      surface: 'code',
+      ephemeral: false,
+    }),
+    (error: unknown) =>
+      error instanceof Error &&
+      (error as Error & { code?: string }).code === 'session_identity_conflict' &&
+      /no workspaceRoot or gitRoot/i.test(error.message),
+  );
+});
+
+test('ensureSession reloads and validates a matching concurrent create conflict', async () => {
+  installPersistedSessionLookup();
+  const fake = createFakeRuntime();
+  const sessions = fake.runtime.sessions as unknown as {
+    create(input: { sessionId?: string }): Promise<RuntimeSession>;
+  };
+  sessions.create = async (input) => {
+    const sessionId = input.sessionId ?? 's_race';
+    fake.sessions.add(sessionId);
+    fake.sessionRecords.set(sessionId, {
+      id: sessionId,
+      title: '',
+      workspaceRoot: 'C:\\repo',
+      gitRoot: 'C:\\repo',
+      surface: 'space-desktop',
+    });
+    throw Object.assign(new Error(`Session already exists: ${sessionId}`), { code: 'conflict' });
+  };
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+  });
+
+  assert.equal(
+    await adapter.ensureSession({
+      sessionId: 's_race',
+      projectRoot: 'C:\\repo',
+      surface: 'code',
+      ephemeral: false,
+    }),
+    false,
+  );
+  assert.deepEqual(fake.calls.loaded, ['s_race', 's_race']);
+});
+
+test('ensureSession rejects a mismatching concurrent create conflict', async () => {
+  installPersistedSessionLookup();
+  const fake = createFakeRuntime();
+  const sessions = fake.runtime.sessions as unknown as {
+    create(input: { sessionId?: string }): Promise<RuntimeSession>;
+  };
+  sessions.create = async (input) => {
+    const sessionId = input.sessionId ?? 's_race_mismatch';
+    fake.sessions.add(sessionId);
+    fake.sessionRecords.set(sessionId, {
+      id: sessionId,
+      title: '',
+      workspaceRoot: 'C:\\other-repo',
+      gitRoot: 'C:\\other-repo',
+      surface: 'space-desktop',
+    });
+    throw Object.assign(new Error(`Session already exists: ${sessionId}`), { code: 'conflict' });
+  };
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+  });
+
+  await assert.rejects(
+    adapter.ensureSession({
+      sessionId: 's_race_mismatch',
+      projectRoot: 'C:\\repo',
+      surface: 'code',
+      ephemeral: false,
+    }),
+    (error: unknown) =>
+      error instanceof Error &&
+      (error as Error & { code?: string }).code === 'session_identity_conflict',
+  );
+});
+
+test('session recovery uses authoritative status and support diagnostics without a durable load', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_recovery');
+  fake.sessionStatuses.set('s_recovery', {
+    sessionId: 's_recovery',
+    runtimeId: 'rt_test',
+    phase: 'running',
+    observedAt: '2026-07-12T00:00:00.000Z',
+    runId: 'run_recovery',
+  });
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+  });
+
+  assert.equal(await adapter.findActiveRunId('s_recovery'), 'run_recovery');
+  const diagnostic = await adapter.diagnoseSession({
+    sessionId: 's_recovery',
+    runId: 'run_recovery',
+    timeoutMs: 1_000,
+  });
+  assert.equal(diagnostic.run.phase, 'running');
+  assert.equal(diagnostic.run.stage, 'executing');
+  assert.deepEqual(fake.calls.loaded, []);
+  assert.deepEqual(fake.calls.sessionStatuses, ['s_recovery']);
+  assert.deepEqual(fake.calls.sessionDiagnostics, [
+    { sessionId: 's_recovery', runId: 'run_recovery', timeoutMs: 1_000 },
+  ]);
+
+  fake.sessionStatuses.set('s_recovery', {
+    sessionId: 's_recovery',
+    runtimeId: 'rt_test',
+    phase: 'completed',
+    observedAt: '2026-07-12T00:00:01.000Z',
+    runId: 'run_recovery',
+  });
+  assert.equal(await adapter.findActiveRunId('s_recovery'), undefined);
+
+  fake.sessionStatuses.set('s_recovery', {
+    sessionId: 's_recovery',
+    runtimeId: 'rt_test',
+    phase: 'unknown',
+    observedAt: '2026-07-12T00:00:02.000Z',
+  });
+  await assert.rejects(
+    adapter.findActiveRunId('s_recovery'),
+    /reported unknown.*without a Run identity/i,
+  );
+});
+
 test('managed run tracking aborts the active Runtime run and close is idempotent', async () => {
+  installPersistedSessionLookup();
   const fake = createFakeRuntime();
   const adapter = new RuntimeHostAdapter({
     mode: 'runtime',
@@ -2349,8 +5071,17 @@ test('managed run tracking aborts the active Runtime run and close is idempotent
   });
   assert.equal(handle.runId, 'run_1');
   assert.equal(adapter.activeRunId('s_1'), 'run_1');
-  await adapter.abortSessionRun('s_1');
+  const receipt = await adapter.abortSessionRun('s_1');
   assert.deepEqual(fake.calls.aborted, ['run_1']);
+  assert.deepEqual(receipt, {
+    runId: 'run_1',
+    sessionId: 's_1',
+    accepted: true,
+    state: 'confirmed',
+    outcome: 'cancelled',
+    phase: 'cancelled',
+    revision: 1,
+  });
   await handle.result;
   assert.equal(adapter.activeRunId('s_1'), undefined);
 
@@ -2455,6 +5186,36 @@ test('initialization requires the dedicated orphan-exit capability instead of a 
   });
 
   await assert.rejects(adapter.initialize(), /daemonOrphanExit v1/i);
+  assert.equal(adapter.snapshot().state, 'failed');
+  assert.equal(fake.calls.close, 1);
+});
+
+test('initialization requires source-side Runtime event coalescing', async () => {
+  const fake = createFakeRuntime();
+  delete (fake.runtime.capabilities as Record<string, unknown>).runtimeEventCoalescing;
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+  });
+
+  await assert.rejects(adapter.initialize(), /runtimeEventCoalescing v1/i);
+  assert.equal(adapter.snapshot().state, 'failed');
+  assert.equal(fake.calls.close, 1);
+});
+
+test('initialization requires SDK-owned ordinary conversation history', async () => {
+  const fake = createFakeRuntime();
+  delete (fake.runtime.capabilities as Record<string, unknown>).conversationHistory;
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+  });
+
+  await assert.rejects(adapter.initialize(), /conversationHistory v1/i);
   assert.equal(adapter.snapshot().state, 'failed');
   assert.equal(fake.calls.close, 1);
 });
@@ -3707,7 +6468,35 @@ test('Runtime input capability projection follows interruptInput advertisement',
   );
 });
 
-test('Runtime exact-history capabilities expose compaction, paging, and search separately', () => {
+test('Runtime event coalescing capability is projected from the connected host', () => {
+  const fake = createFakeRuntime();
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+  });
+  const capabilities = (
+    adapter as unknown as {
+      spaceCapabilities(runtime: KodaXDaemonRuntime): readonly {
+        id: string;
+        version: number;
+        available: boolean;
+      }[];
+    }
+  ).spaceCapabilities(fake.runtime);
+
+  assert.deepEqual(
+    capabilities.find((item) => item.id === 'runtime.events.coalescing'),
+    {
+      id: 'runtime.events.coalescing',
+      version: 1,
+      available: true,
+    },
+  );
+});
+
+test('Runtime exact-history capabilities expose conversation, compaction, paging, and search separately', () => {
   const fake = createFakeRuntime();
   const adapter = new RuntimeHostAdapter({
     mode: 'runtime',
@@ -3731,6 +6520,7 @@ test('Runtime exact-history capabilities expose compaction, paging, and search s
       .filter((item) =>
         [
           'runtime.context.compaction',
+          'runtime.conversation.history',
           'runtime.transcript.paging',
           'runtime.transcript.search',
         ].includes(item.id),
@@ -3738,6 +6528,7 @@ test('Runtime exact-history capabilities expose compaction, paging, and search s
       .map(({ id, version, available }) => ({ id, version, available })),
     [
       { id: 'runtime.context.compaction', version: 3, available: true },
+      { id: 'runtime.conversation.history', version: 1, available: true },
       { id: 'runtime.transcript.paging', version: 1, available: true },
       { id: 'runtime.transcript.search', version: 1, available: true },
     ],
@@ -3768,6 +6559,771 @@ test('observation bootstrap failure closes the daemon subscription', async () =>
   assert.equal(fake.calls.observationCloses, 1);
   await adapter.close();
   assert.equal(fake.calls.observationCloses, 1);
+});
+
+test('profile management conflicts cannot split terminal events from the live Run projection', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_1');
+  const controller = new RuntimeProjectionController(
+    createPendingSdkRuntimeProjection(100).profileSnapshot(),
+  );
+  const pushed: Array<{ channel: string; payload: unknown }> = [];
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    projectionController: controller,
+    push: (channel, payload) => pushed.push({ channel, payload }),
+  });
+
+  await adapter.initialize();
+  await adapter.ensureObserved('s_1');
+  const initialIntegrations = controller.profileSnapshot().connection.integrations;
+  fake.runtime.daemon.inspect = async () => {
+    fake.calls.daemonInspections += 1;
+    throw Object.assign(new Error('Runtime state changed while daemon management was inspected.'), {
+      code: 'conflict',
+    });
+  };
+
+  fake.emit({
+    id: 'evt_run_started_profile_conflict',
+    seq: 1,
+    time: '2026-08-01T15:25:24.204Z',
+    sessionId: 's_1',
+    runId: 'run_profile_conflict',
+    turnId: 'turn_profile_conflict',
+    type: 'run.started',
+    payload: {
+      runId: 'run_profile_conflict',
+      sessionId: 's_1',
+      turnId: 'turn_profile_conflict',
+      phase: 'running',
+      startedAt: '2026-08-01T15:25:24.204Z',
+      provider: 'mock',
+      mode: 'managed_task',
+    },
+  });
+  await waitForTest(
+    () => controller.sessionLiveSnapshot('s_1').activeRun?.runId === 'run_profile_conflict',
+  );
+  await waitForTest(() => fake.calls.daemonInspections >= 2);
+
+  assert.equal(controller.profileSnapshot().connection.state, 'ready');
+  assert.equal(controller.profileSnapshot().connection.stale, false);
+  assert.deepEqual(controller.profileSnapshot().connection.integrations, initialIntegrations);
+
+  fake.emit({
+    id: 'evt_run_completed_profile_conflict',
+    seq: 2,
+    time: '2026-08-01T15:26:39.714Z',
+    sessionId: 's_1',
+    runId: 'run_profile_conflict',
+    turnId: 'turn_profile_conflict',
+    type: 'run.completed',
+    payload: {
+      runId: 'run_profile_conflict',
+      sessionId: 's_1',
+      turnId: 'turn_profile_conflict',
+      phase: 'completed',
+      startedAt: '2026-08-01T15:25:24.204Z',
+      endedAt: '2026-08-01T15:26:39.705Z',
+      provider: 'mock',
+      mode: 'managed_task',
+    },
+  });
+
+  await waitForTest(() => controller.sessionLiveSnapshot('s_1').activeRun === undefined);
+  assert.equal(controller.profileSnapshot().connection.state, 'ready');
+  assert.equal(
+    pushed.some(
+      ({ channel, payload }) =>
+        channel === 'runtime.connectionChanged' &&
+        (payload as { state?: string }).state === 'reconnecting',
+    ),
+    false,
+  );
+  assert.equal(
+    pushed.some(
+      ({ channel, payload }) =>
+        channel === 'session.event' && (payload as { kind?: string }).kind === 'session_complete',
+    ),
+    true,
+  );
+
+  await adapter.close();
+});
+
+test('observation invalidation notifies renderer immediately before a blocked resync completes', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_1');
+  const originalObserve = fake.runtime.sessions.observe.bind(fake.runtime.sessions);
+  let observeAttempts = 0;
+  let releaseSecondObserve!: () => void;
+  const secondObserveGate = new Promise<void>((resolve) => {
+    releaseSecondObserve = resolve;
+  });
+  let markSecondObserveStarted!: () => void;
+  const secondObserveStarted = new Promise<void>((resolve) => {
+    markSecondObserveStarted = resolve;
+  });
+  fake.runtime.sessions.observe = async (...args) => {
+    observeAttempts += 1;
+    if (observeAttempts === 2) {
+      markSecondObserveStarted();
+      await secondObserveGate;
+    }
+    return originalObserve(...args);
+  };
+  const controller = new RuntimeProjectionController(
+    createPendingSdkRuntimeProjection(100).profileSnapshot(),
+  );
+  const pushed: Array<{ channel: string; payload: unknown }> = [];
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    projectionController: controller,
+    push: (channel, payload) => pushed.push({ channel, payload }),
+  });
+
+  await adapter.initialize();
+  await adapter.ensureObserved('s_1');
+  fake.invalidateObservation('s_1', 'event_overflow');
+  await secondObserveStarted;
+
+  assert.throws(() => controller.sessionLiveSnapshot('s_1'), RuntimeProjectionUnavailableError);
+  assert.deepEqual(pushed.find(({ channel }) => channel === 'session.liveInvalidated')?.payload, {
+    sessionId: 's_1',
+    runtimeId: 'rt_test',
+    reason: 'event_overflow',
+    message: 'test event_overflow',
+  });
+  assert.equal(fake.calls.observationCloses, 1);
+
+  releaseSecondObserve();
+  await waitForTest(() => {
+    try {
+      return controller.sessionLiveSnapshot('s_1').sessionId === 's_1';
+    } catch (error) {
+      if (error instanceof RuntimeProjectionUnavailableError) return false;
+      throw error;
+    }
+  });
+  assert.equal(controller.sessionLiveSnapshot('s_1').sessionId, 's_1');
+
+  await adapter.close();
+  assert.equal(fake.calls.observationCloses, 2);
+});
+
+test('failed observation resync reconciles a terminal profile without staling a fresh Runtime snapshot', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_1');
+  let active = true;
+  const originalStatusSnapshot = fake.runtime.status.snapshot.bind(fake.runtime.status);
+  fake.runtime.status.snapshot = async () => {
+    const snapshot = await originalStatusSnapshot();
+    return {
+      ...snapshot,
+      runs: active
+        ? [
+            {
+              runId: 'run_1',
+              sessionId: 's_1',
+              phase: 'running' as const,
+              provider: 'mock',
+              mode: 'managed_task' as const,
+              startedAt: '2026-08-01T04:00:00.000Z',
+            },
+          ]
+        : [],
+    };
+  };
+  const originalObserve = fake.runtime.sessions.observe.bind(fake.runtime.sessions);
+  let observeAttempts = 0;
+  fake.runtime.sessions.observe = async (...args) => {
+    observeAttempts += 1;
+    if (observeAttempts === 2) throw new Error('test observation recovery failed');
+    return originalObserve(...args);
+  };
+  const controller = new RuntimeProjectionController(
+    createPendingSdkRuntimeProjection(100).profileSnapshot(),
+  );
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    projectionController: controller,
+  });
+
+  await adapter.initialize();
+  assert.equal(controller.profileSnapshot().sessions[0]?.activeRun?.runId, 'run_1');
+  await adapter.ensureObserved('s_1');
+  active = false;
+  fake.invalidateObservation('s_1', 'event_overflow');
+
+  await waitForTest(
+    () =>
+      observeAttempts === 2 &&
+      fake.calls.daemonInspections >= 2 &&
+      controller.profileSnapshot().sessions[0]?.activeRun === undefined,
+  );
+  const profile = controller.profileSnapshot();
+  assert.equal(profile.connection.state, 'ready');
+  assert.equal(profile.connection.stale, false);
+  assert.equal(profile.sessions[0]?.activeRun, undefined);
+  assert.throws(() => controller.sessionLiveSnapshot('s_1'), RuntimeProjectionUnavailableError);
+
+  await adapter.close();
+});
+
+test('failed observation resync retains Stop through a freshly reconciled active profile', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_1');
+  const originalStatusSnapshot = fake.runtime.status.snapshot.bind(fake.runtime.status);
+  fake.runtime.status.snapshot = async () => ({
+    ...(await originalStatusSnapshot()),
+    runs: [
+      {
+        runId: 'run_1',
+        sessionId: 's_1',
+        phase: 'running' as const,
+        provider: 'mock',
+        mode: 'managed_task' as const,
+        startedAt: '2026-08-01T04:00:00.000Z',
+      },
+    ],
+  });
+  const originalObserve = fake.runtime.sessions.observe.bind(fake.runtime.sessions);
+  let observeAttempts = 0;
+  fake.runtime.sessions.observe = async (...args) => {
+    observeAttempts += 1;
+    if (observeAttempts === 2) throw new Error('test observation recovery failed');
+    return originalObserve(...args);
+  };
+  const controller = new RuntimeProjectionController(
+    createPendingSdkRuntimeProjection(100).profileSnapshot(),
+  );
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    projectionController: controller,
+  });
+
+  await adapter.initialize();
+  await adapter.ensureObserved('s_1');
+  fake.invalidateObservation('s_1', 'event_overflow');
+
+  await waitForTest(() => observeAttempts === 2 && fake.calls.daemonInspections >= 2);
+  const profile = controller.profileSnapshot();
+  assert.equal(profile.connection.state, 'ready');
+  assert.equal(profile.connection.stale, false);
+  assert.equal(profile.sessions[0]?.activeRun?.runId, 'run_1');
+  assert.throws(() => controller.sessionLiveSnapshot('s_1'), RuntimeProjectionUnavailableError);
+
+  await adapter.close();
+});
+
+test('failed observation and profile reconciliation mark the old fallback stale', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_1');
+  const originalObserve = fake.runtime.sessions.observe.bind(fake.runtime.sessions);
+  let observeAttempts = 0;
+  fake.runtime.sessions.observe = async (...args) => {
+    observeAttempts += 1;
+    if (observeAttempts === 2) throw new Error('test observation recovery failed');
+    return originalObserve(...args);
+  };
+  const controller = new RuntimeProjectionController(
+    createPendingSdkRuntimeProjection(100).profileSnapshot(),
+  );
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    projectionController: controller,
+  });
+
+  await adapter.initialize();
+  await adapter.ensureObserved('s_1');
+  fake.runtime.status.snapshot = async () => {
+    throw new Error('test profile recovery failed');
+  };
+  fake.invalidateObservation('s_1', 'event_overflow');
+
+  await waitForTest(() => controller.profileSnapshot().connection.state === 'degraded');
+  const profile = controller.profileSnapshot();
+  assert.equal(observeAttempts, 2);
+  assert.equal(profile.connection.stale, true);
+  assert.match(profile.connection.reason ?? '', /observation recovery failed/i);
+  assert.throws(() => controller.sessionLiveSnapshot('s_1'), RuntimeProjectionUnavailableError);
+
+  await adapter.close();
+});
+
+test('a late profile read from a replaced Runtime cannot overwrite the new attachment', async () => {
+  const oldFake = createFakeRuntime();
+  oldFake.sessions.add('s_old');
+  const controller = new RuntimeProjectionController(
+    createPendingSdkRuntimeProjection(100).profileSnapshot(),
+  );
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => oldFake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    projectionController: controller,
+  });
+  await adapter.initialize();
+
+  const originalOldSnapshot = oldFake.runtime.status.snapshot.bind(oldFake.runtime.status);
+  let releaseOldSnapshot!: () => void;
+  const oldSnapshotGate = new Promise<void>((resolve) => {
+    releaseOldSnapshot = resolve;
+  });
+  let markOldSnapshotStarted!: () => void;
+  const oldSnapshotStarted = new Promise<void>((resolve) => {
+    markOldSnapshotStarted = resolve;
+  });
+  oldFake.runtime.status.snapshot = async () => {
+    markOldSnapshotStarted();
+    await oldSnapshotGate;
+    return originalOldSnapshot();
+  };
+
+  const privateAdapter = adapter as unknown as {
+    runtime: KodaXDaemonRuntime;
+    refreshProfile(cursor: number): Promise<void>;
+  };
+  const lateRefresh = privateAdapter.refreshProfile(1);
+  await oldSnapshotStarted;
+
+  const newFake = createFakeRuntime();
+  newFake.sessions.add('s_new');
+  privateAdapter.runtime = newFake.runtime;
+  await privateAdapter.refreshProfile(2);
+  assert.equal(controller.profileSnapshot().sessions[0]?.sessionId, 's_new');
+
+  releaseOldSnapshot();
+  await lateRefresh;
+  assert.equal(controller.profileSnapshot().sessions[0]?.sessionId, 's_new');
+
+  await adapter.close();
+  await oldFake.runtime.close();
+});
+
+test('trusted observation recovery does not cross the active Session writer boundary', async () => {
+  const records = new Map<string, Readonly<Record<string, unknown>>>([
+    [
+      's_active_writer_recovery',
+      {
+        title: '',
+        messages: [],
+        gitRoot: 'C:\\repo',
+        tag: 'code',
+      },
+    ],
+  ]);
+  installPersistedSessionLookup(records);
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_active_writer_recovery');
+  const originalObserve = fake.runtime.sessions.observe.bind(fake.runtime.sessions);
+  fake.runtime.sessions.observe = async (...args) => {
+    const observation = await originalObserve(...args);
+    return {
+      ...observation,
+      snapshot: {
+        ...observation.snapshot,
+        runs: [
+          {
+            runId: 'run_active_writer_recovery',
+            sessionId: 's_active_writer_recovery',
+            phase: 'running' as const,
+            provider: 'mock',
+            mode: 'managed_task' as const,
+            startedAt: '2026-08-02T12:00:00.000Z',
+          },
+        ],
+      },
+    };
+  };
+  const controller = new RuntimeProjectionController(
+    createPendingSdkRuntimeProjection(100).profileSnapshot(),
+  );
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    projectionController: controller,
+  });
+
+  await adapter.initialize();
+  await adapter.ensureObserved('s_active_writer_recovery');
+  setSessionStoreImpl({
+    listSessions: async () => [],
+    forkSession: async () => null,
+    rewindSession: async () => null,
+    deleteSession: async () => ({ ok: true }),
+    loadSession: async () => {
+      throw Object.assign(new Error('Session data changed during the read boundary: active.lock'), {
+        code: 'data_changed',
+      });
+    },
+    watchSessions: () => ({ close() {} }),
+  } as SessionStoreImpl);
+
+  fake.invalidateObservation('s_active_writer_recovery', 'event_overflow');
+  await waitForTest(() => fake.calls.observationCloses === 1);
+  await waitForTest(() => {
+    try {
+      return (
+        controller.sessionLiveSnapshot('s_active_writer_recovery').sessionId ===
+        's_active_writer_recovery'
+      );
+    } catch (error) {
+      if (error instanceof RuntimeProjectionUnavailableError) return false;
+      throw error;
+    }
+  });
+
+  assert.equal(fake.calls.observationCloses, 1);
+  await adapter.close();
+});
+
+test('terminal Session observations retire and are not restored after reconnect', async () => {
+  const first = createFakeRuntime();
+  const second = createFakeRuntime();
+  for (const fake of [first, second]) {
+    fake.sessions.add('s_retire');
+    fake.settings.set('s_retire', { revision: 0, value: {} });
+  }
+  let factoryCalls = 0;
+  const runtimes = [first.runtime, second.runtime];
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => {
+      const runtime = runtimes[factoryCalls++];
+      if (!runtime) throw new Error('unexpected Runtime reconnect attempt');
+      return runtime;
+    },
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  await adapter.ensureObserved('s_retire');
+  assert.deepEqual(first.calls.observed, ['s_retire']);
+  assert.equal(first.calls.observationCloses, 0);
+
+  first.emit({
+    id: 'evt_retire_started',
+    seq: 1,
+    time: '2026-08-02T12:00:00.000Z',
+    sessionId: 's_retire',
+    runId: 'run_retire',
+    turnId: 'turn_retire',
+    type: 'run.started',
+    payload: {
+      runId: 'run_retire',
+      sessionId: 's_retire',
+      turnId: 'turn_retire',
+      phase: 'running',
+      startedAt: '2026-08-02T12:00:00.000Z',
+      provider: 'mock',
+    },
+  });
+  await waitForTest(() => adapter.activeRunId('s_retire') === 'run_retire');
+  assert.equal(first.calls.observationCloses, 0);
+
+  first.emit({
+    id: 'evt_retire_completed',
+    seq: 2,
+    time: '2026-08-02T12:00:01.000Z',
+    sessionId: 's_retire',
+    runId: 'run_retire',
+    turnId: 'turn_retire',
+    type: 'run.completed',
+    payload: {
+      runId: 'run_retire',
+      sessionId: 's_retire',
+      turnId: 'turn_retire',
+      phase: 'completed',
+      startedAt: '2026-08-02T12:00:00.000Z',
+      endedAt: '2026-08-02T12:00:01.000Z',
+      provider: 'mock',
+    },
+  });
+  await waitForTest(() => first.calls.observationCloses === 1);
+  const actorTreeReadsAfterRetirement = first.calls.agentTrees.length;
+  first.emitActor(
+    's_retire',
+    {
+      sequence: 1,
+      kind: 'turn_completed',
+      actorPath: '/root',
+      turnId: 'turn_retire',
+      createdAt: '2026-08-02T12:00:01.000Z',
+    },
+    {
+      rootPath: '/root',
+      actors: [],
+      activeNonRootTurns: 0,
+      maxConcurrentThreads: 4,
+      revision: 1,
+    },
+  );
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(first.calls.agentTrees.length, actorTreeReadsAfterRetirement);
+
+  first.disconnect();
+  await waitForTest(() => adapter.snapshot().state === 'uninitialized');
+  await adapter.initialize();
+  assert.deepEqual(second.calls.observed, []);
+  await adapter.close();
+});
+
+test('a one-shot terminal Actor snapshot does not leave Session or Actor polling alive', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_actor_snapshot');
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  const snapshot = await adapter.actorTreeSnapshot('s_actor_snapshot');
+
+  assert.equal(snapshot.sessionId, 's_actor_snapshot');
+  assert.deepEqual(fake.calls.observed, ['s_actor_snapshot']);
+  assert.equal(fake.calls.observationCloses, 1);
+  const actorReadsAfterSnapshot = fake.calls.agentTrees.length;
+  fake.emitActor(
+    's_actor_snapshot',
+    {
+      sequence: 1,
+      kind: 'turn_completed',
+      actorPath: '/root',
+      turnId: 'turn_terminal',
+      createdAt: '2026-08-02T12:00:01.000Z',
+    },
+    {
+      rootPath: '/root',
+      actors: [],
+      activeNonRootTurns: 0,
+      maxConcurrentThreads: 4,
+      revision: 1,
+    },
+  );
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(fake.calls.agentTrees.length, actorReadsAfterSnapshot);
+  await adapter.close();
+});
+
+test('Actor snapshot retirement waits for buffered observation demand', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_actor_buffered_run');
+  const originalObserve = fake.runtime.sessions.observe.bind(fake.runtime.sessions);
+  fake.runtime.sessions.observe = async (...args) => {
+    const observation = await originalObserve(...args);
+    args[1]?.({
+      id: 'evt_buffered_run_started',
+      seq: 1,
+      time: '2026-08-02T12:00:00.000Z',
+      sessionId: 's_actor_buffered_run',
+      runId: 'run_buffered',
+      turnId: 'turn_buffered',
+      type: 'run.started',
+      payload: {
+        runId: 'run_buffered',
+        sessionId: 's_actor_buffered_run',
+        turnId: 'turn_buffered',
+        phase: 'running',
+        startedAt: '2026-08-02T12:00:00.000Z',
+        provider: 'mock',
+      },
+    });
+    return observation;
+  };
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  await adapter.actorTreeSnapshot('s_actor_buffered_run');
+
+  assert.equal(adapter.activeRunId('s_actor_buffered_run'), 'run_buffered');
+  assert.equal(fake.calls.observationCloses, 0);
+  await adapter.close();
+  assert.equal(fake.calls.observationCloses, 1);
+});
+
+test('a successfully resynced terminal invalidation retires its replacement observation', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_terminal_resync');
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  await adapter.ensureObserved('s_terminal_resync');
+  fake.emit({
+    id: 'evt_compaction_before_invalidation',
+    seq: 1,
+    time: '2026-08-02T12:00:00.000Z',
+    sessionId: 's_terminal_resync',
+    runId: 'run_compaction_before_invalidation',
+    type: 'context.compaction.started',
+    payload: { meta: { contextId: 'ctx_root', contextKind: 'root' } },
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  fake.invalidateObservation('s_terminal_resync', 'event_overflow');
+
+  await waitForTest(() => fake.calls.observed.length === 2);
+  await waitForTest(() => fake.calls.observationCloses === 2);
+  await adapter.close();
+  assert.equal(fake.calls.observationCloses, 2);
+});
+
+test('invalidation preserves only a factually in-flight local compaction call', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_local_compaction_resync');
+  let markCompactStarted!: () => void;
+  const compactStarted = new Promise<void>((resolve) => {
+    markCompactStarted = resolve;
+  });
+  let releaseCompact!: () => void;
+  const compactGate = new Promise<void>((resolve) => {
+    releaseCompact = resolve;
+  });
+  fake.runtime.sessions.compact = async () => {
+    markCompactStarted();
+    await compactGate;
+    return { compacted: true, tokensBefore: 200, tokensAfter: 80, messages: [] };
+  };
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  const compacting = adapter.compactSession({
+    sessionId: 's_local_compaction_resync',
+    provider: 'mock',
+  });
+  await compactStarted;
+  fake.invalidateObservation('s_local_compaction_resync', 'event_overflow');
+  await waitForTest(() => fake.calls.observed.length === 2);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(fake.calls.observationCloses, 1);
+
+  releaseCompact();
+  await compacting;
+  await waitForTest(() => fake.calls.observationCloses === 2);
+  await adapter.close();
+  assert.equal(fake.calls.observationCloses, 2);
+});
+
+test('a disconnected compaction marker cannot keep a fresh terminal observation alive', async () => {
+  const first = createFakeRuntime();
+  const second = createFakeRuntime();
+  for (const fake of [first, second]) {
+    fake.sessions.add('s_compaction_reconnect');
+    fake.settings.set('s_compaction_reconnect', { revision: 0, value: {} });
+  }
+  let factoryCalls = 0;
+  const runtimes = [first.runtime, second.runtime];
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => {
+      const runtime = runtimes[factoryCalls++];
+      if (!runtime) throw new Error('unexpected Runtime reconnect attempt');
+      return runtime;
+    },
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  await adapter.ensureObserved('s_compaction_reconnect');
+  first.emit({
+    id: 'evt_compaction_before_disconnect',
+    seq: 1,
+    time: '2026-08-02T12:00:00.000Z',
+    sessionId: 's_compaction_reconnect',
+    runId: 'run_compaction_reconnect',
+    type: 'context.compaction.started',
+    payload: { meta: { contextId: 'ctx_root', contextKind: 'root' } },
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(first.calls.observationCloses, 0);
+
+  first.disconnect();
+  await waitForTest(() => adapter.snapshot().state === 'uninitialized');
+  await adapter.initialize();
+
+  assert.deepEqual(second.calls.observed, ['s_compaction_reconnect']);
+  assert.equal(second.calls.observationCloses, 1);
+  await adapter.close();
+});
+
+test('an active context compaction retains observation until its canonical end', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_compacting');
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+  await adapter.ensureObserved('s_compacting');
+  fake.emit({
+    id: 'evt_compaction_started',
+    seq: 1,
+    time: '2026-08-02T12:00:00.000Z',
+    sessionId: 's_compacting',
+    runId: 'run_compacting',
+    type: 'context.compaction.started',
+    payload: { meta: { contextId: 'ctx_root', contextKind: 'root' } },
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(fake.calls.observationCloses, 0);
+
+  fake.emit({
+    id: 'evt_compaction_ended',
+    seq: 2,
+    time: '2026-08-02T12:00:01.000Z',
+    sessionId: 's_compacting',
+    runId: 'run_compacting',
+    type: 'context.compaction.ended',
+    payload: { meta: { contextId: 'ctx_root', contextKind: 'root' } },
+  });
+  await waitForTest(() => fake.calls.observationCloses === 1);
+  await adapter.close();
 });
 
 test('Coder observation pushes canonical Actor tree changes with an independent cursor', async () => {
@@ -4106,6 +7662,7 @@ test('Runtime learning controls are routed through the shared daemon', async () 
 
 test('Runtime external Agent mutations validate session Actor/Turn ownership before control', async () => {
   const fake = createFakeRuntime();
+  fake.sessions.add('s_1');
   const operations: string[] = [];
   const detail = {
     actor: {

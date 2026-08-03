@@ -13,8 +13,8 @@
 //   - reqId 用 randomUUID()——避免 renderer 端竞态时把答案对到错的 request
 //   - Always-allow 规则在 broker.request() 第一步检查；命中则**完全不**弹窗，直接 resolve
 //     'allow_once'（不重新写规则）。这是 F007 验收里"下次同 pattern 不再弹"的实现点
-//   - 危险命令（assessment.dangerous=true）即使有规则也**仍然弹窗**——always-allow 不应当
-//     覆盖危险命令；这是 defense-in-depth 第二层
+//   - 危险命令（assessment.dangerous=true）在本 broker 确实拥有决策权时仍然弹窗；
+//     已由 Auto SDK guardrail 裁决的调用不会再次进入本 broker
 //   - 超时：默认 5 分钟无响应自动 deny（防 renderer 崩了导致 KodaX 永远卡住）
 
 import { randomUUID } from 'node:crypto';
@@ -46,15 +46,16 @@ export interface PermissionRequestInput {
   readonly timeoutMs?: number;
 }
 
-// FEATURE_029 mode 行为表：accept-edits / auto 时这些工具名自动 allow_once（dangerous 仍走弹窗）。
+// FEATURE_029 mode 行为表：accept-edits 时这些工具名自动 allow_once
+//（dangerous 仍走弹窗）。
 // 命名贴近 KodaX 内核约定 + Claude Code 通用名。
-// auto mode 实际守门由 FEATURE_030 AutoModeToolGuardrail 接管；本 broker 在 F030 wire 前
-// fallback 到 accept-edits 同行为，保证 mode='auto' 至少不比 accept-edits 严。
+// Auto 正常路径由 FEATURE_030 AutoModeToolGuardrail 接管且不进入本 broker。兼容调用者
+// 仍可能把已由 SDK guardrail 裁决的 Auto 调用转到本 broker，因此 Auto 的非危险调用
+// 必须直接通过，避免重新弹窗形成第二个决策者；危险调用继续 fail closed。
 const EDIT_TOOLS = new Set(['edit', 'write', 'multi_edit', 'str_replace', 'insert_after_anchor']);
 
-// Readonly tools — 在 accept-edits / auto 模式下 hard-code 自动允许，**不依赖 LLM classifier**。
-// 这关闭了 auto[LLM] 模式下 classifier 网络 / 超时 / 无 model 时仍把 read 弹给用户的退化路径
-// (用户反馈：切到 auto[LLM] 还要为 read 授权)。语义上只读无副作用，安全允许。
+// Readonly tools — 在 accept-edits / Auto bootstrap-fallback 下 hard-code 自动允许。
+// Auto 正常路径中的只读语义由 SDK guardrail 负责，本集合不参与二次复审。
 // 名字覆盖 KodaX 内置 read 类工具 + Claude Code 通用名 — 三方一致。
 const READONLY_TOOLS = new Set([
   'read',
@@ -137,12 +138,9 @@ class PermissionBroker {
     //                  (planModeBlockCheck 也会拦下 mutating tools，本钩子双闸防 TOCTOU)。
     //                  Partner 只放行已经由 Partner tool policy admitted 的工具。
     //   accept-edits → edit/write 自动批，readonly 自动批，其他走 always-allow 规则 + 弹窗
-    //   auto         → 真正守门由 FEATURE_030 AutoModeToolGuardrail 接管 (走 KodaX
-    //                  KodaXOptions.guardrails)，guardrail 不确定时由 askUserBroker (F032)
-    //                  弹窗。broker 这一层在 auto 模式下只拦 dangerous (rm -rf 等)，
-    //                  非 dangerous 工具一律 allow_once 让 SDK guardrail 接手 ——
-    //                  否则 bash / web_fetch 等非 EDIT/READONLY 工具会被本 broker 强弹，
-    //                  guardrail 根本没机会发言 (用户反馈：auto[LLM] 还是弹窗)。
+    //   auto         → 正常路径已由 KodaXOptions.guardrails 完成裁决，不会进入这里。
+    //                  兼容路径只拦 dangerous，非 dangerous 直接通过，避免对同一
+    //                  Auto 调用再做一次静态审批。
     if (req.surface === 'partner' && req.partnerToolAllowed === true && !assessment.dangerous) {
       return { decision: 'allow_once', risk: assessment.risk };
     }
@@ -153,7 +151,6 @@ class PermissionBroker {
       return { decision: 'deny', risk: assessment.risk };
     }
     if (mode === 'auto' && !assessment.dangerous) {
-      // 非 dangerous 工具一律放过，由 SDK guardrail (F030) 决策；dangerous 仍弹窗
       return { decision: 'allow_once', risk: assessment.risk };
     }
     if (
@@ -164,7 +161,8 @@ class PermissionBroker {
       return { decision: 'allow_once', risk: assessment.risk };
     }
 
-    // accept-edits 中 dangerous / 非 edit 工具，或 auto 中的 dangerous：走 always-allow 规则 + 弹窗
+    // accept-edits 中 dangerous / 非 edit/read 工具，或 Auto 中 dangerous：
+    // 走 always-allow 规则 + 弹窗。
 
     // 确保规则已加载——idempotent，已加载时立即返回
     await permissionRegistry.load();

@@ -3,12 +3,16 @@ import { beforeEach, test } from 'node:test';
 
 import type {
   AgentActorTreeSnapshotT,
+  SessionMeta,
   SessionEvent,
   SpaceRuntimeProfileProjectionT,
   SpaceSessionLiveProjectionT,
 } from '@kodax-space/space-ipc-schema';
 import { useAppStore } from '../../renderer/src/store/appStore.js';
-import { createRuntimeProjectionState } from '../../renderer/src/store/runtimeProjectionState.js';
+import {
+  createRuntimeProjectionState,
+  runtimeSessionNeedsObservation,
+} from '../../renderer/src/store/runtimeProjectionState.js';
 import { runtimeDeltasShareSnapshotSide } from '../../renderer/src/store/runtimeSnapshotHydration.js';
 
 const profile: SpaceRuntimeProfileProjectionT = {
@@ -39,9 +43,45 @@ const live: SpaceSessionLiveProjectionT = {
   interactions: [],
 };
 
+function permissionInteraction(reqId: string): SpaceSessionLiveProjectionT['interactions'][number] {
+  return {
+    kind: 'permission',
+    source: 'coder-runtime',
+    runId: 'run_1',
+    createdAt: 1,
+    state: 'pending',
+    request: {
+      reqId,
+      sessionId: 's_1',
+      risk: 'medium',
+      reason: `permission ${reqId}`,
+      toolCall: {
+        toolId: `tool_${reqId}`,
+        toolName: 'write_file',
+        operation: 'write',
+      },
+    },
+  };
+}
+
+const sidebarSession: SessionMeta = {
+  sessionId: 's_1',
+  projectRoot: '/repo',
+  provider: 'mock',
+  reasoningMode: 'auto',
+  permissionMode: 'accept-edits',
+  autoModeEngine: 'llm',
+  agentMode: 'ama',
+  surface: 'code',
+  createdAt: 100,
+  lastActivityAt: 100,
+};
+
 beforeEach(() => {
+  useAppStore.getState().resetSessionMessages('s_1');
   const initial = createRuntimeProjectionState();
   useAppStore.setState({
+    sessions: [],
     runtimeConnection: initial.connection,
     runtimeProfile: initial.profile,
     liveProjectionBySession: initial.liveBySession,
@@ -55,6 +95,190 @@ beforeEach(() => {
     tokensBySession: {},
     pendingSendBySession: {},
   });
+});
+
+test('historical terminal Sessions do not start the expensive observation plane', () => {
+  const terminalProfile: SpaceRuntimeProfileProjectionT = {
+    ...profile,
+    sessions: [
+      {
+        sessionId: 's_1',
+        surface: 'code',
+        createdAt: 1,
+        lastActivityAt: 2,
+        queuedRuns: [],
+        lastTerminalRun: {
+          runId: 'run_done',
+          sessionId: 's_1',
+          phase: 'completed',
+          completedAt: 2,
+        },
+      },
+    ],
+  };
+  assert.equal(
+    runtimeSessionNeedsObservation(
+      { profile: terminalProfile, snapshotRequiredBySession: {} },
+      's_1',
+    ),
+    false,
+  );
+  assert.equal(
+    runtimeSessionNeedsObservation(
+      {
+        profile: {
+          ...terminalProfile,
+          sessions: [
+            {
+              ...terminalProfile.sessions[0]!,
+              activeRun: {
+                runId: 'run_active',
+                sessionId: 's_1',
+                phase: 'running',
+                startedAt: 3,
+              },
+            },
+          ],
+        },
+        snapshotRequiredBySession: {},
+      },
+      's_1',
+    ),
+    true,
+  );
+  assert.equal(
+    runtimeSessionNeedsObservation(
+      { profile: terminalProfile, snapshotRequiredBySession: { s_1: true } },
+      's_1',
+    ),
+    true,
+  );
+  assert.equal(
+    runtimeSessionNeedsObservation({ profile: null, snapshotRequiredBySession: {} }, 's_1'),
+    false,
+  );
+  assert.equal(
+    runtimeSessionNeedsObservation(
+      { profile: { ...terminalProfile, sessions: [] }, snapshotRequiredBySession: {} },
+      's_1',
+    ),
+    true,
+  );
+  assert.equal(
+    runtimeSessionNeedsObservation(
+      {
+        profile: {
+          ...terminalProfile,
+          sessions: [
+            {
+              ...terminalProfile.sessions[0]!,
+              queuedRuns: [
+                {
+                  runId: 'run_queued',
+                  sessionId: 's_1',
+                  phase: 'queued',
+                  queuedAt: 3,
+                },
+              ],
+            },
+          ],
+        },
+        snapshotRequiredBySession: {},
+      },
+      's_1',
+    ),
+    true,
+  );
+  assert.equal(
+    runtimeSessionNeedsObservation(
+      {
+        profile: {
+          ...terminalProfile,
+          interactions: [
+            {
+              kind: 'ask-user',
+              source: 'coder-runtime',
+              state: 'pending',
+              createdAt: 3,
+              request: {
+                kind: 'input',
+                reqId: 'req_1',
+                sessionId: 's_1',
+                question: 'Continue?',
+              },
+            },
+          ],
+        },
+        snapshotRequiredBySession: {},
+      },
+      's_1',
+    ),
+    true,
+  );
+});
+
+test('loading an older history page preserves live content hydrated from a Runtime snapshot', () => {
+  useAppStore.getState().setSessions([sidebarSession]);
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  useAppStore.getState().prependSessionHistory(
+    's_1',
+    [
+      {
+        kind: 'user',
+        content: 'new query',
+        canonicalIndex: 2,
+        entryId: 'user-2',
+      },
+      { kind: 'history_truncation', scope: 'history', omittedItems: 2 },
+    ],
+    100,
+    { replaceLoadedWindow: true },
+  );
+
+  useAppStore.getState().replaceSessionLiveProjection({
+    ...live,
+    projectionRevision: 2,
+    cursor: { runtimeId: 'rt_1', seq: 2 },
+    activeRun: {
+      runId: 'run_snapshot',
+      sessionId: 's_1',
+      phase: 'running',
+      startedAt: 200,
+    },
+    thinkingDraft: { text: 'snapshot thinking', startedAt: 201 },
+    assistantDraft: { text: 'snapshot answer', startedAt: 202 },
+    activeTools: [{ toolCallId: 'tool_snapshot', name: 'read_file', startedAt: 203 }],
+  });
+
+  useAppStore.getState().prependSessionHistory(
+    's_1',
+    [
+      {
+        kind: 'user',
+        content: 'old query',
+        canonicalIndex: 0,
+        entryId: 'user-1',
+      },
+      { kind: 'assistant', text: 'old answer', canonicalIndex: 1, entryId: 'answer-1' },
+      {
+        kind: 'user',
+        content: 'new query',
+        canonicalIndex: 2,
+        entryId: 'user-2',
+      },
+    ],
+    100,
+    { replaceLoadedWindow: true },
+  );
+
+  const events = useAppStore.getState().eventsBySession.s_1 ?? [];
+  assert.ok(events.some((event) => event.kind === 'thinking_delta' && event.text === 'snapshot thinking'));
+  assert.ok(events.some((event) => event.kind === 'text_delta' && event.text === 'snapshot answer'));
+  assert.ok(
+    events.some(
+      (event) => event.kind === 'tool_start' && event.toolId === 'tool_snapshot',
+    ),
+  );
 });
 
 test('app store keeps only monotonic Actor snapshots from the active Runtime', () => {
@@ -97,6 +321,33 @@ test('app store keeps only monotonic Actor snapshots from the active Runtime', (
   assert.deepEqual(useAppStore.getState().agentActorSnapshotBySession, {});
 });
 
+test('Runtime activity repairs sidebar recency across list races and new user messages', () => {
+  useAppStore.getState().setSessions([sidebarSession]);
+  const activityProfile: SpaceRuntimeProfileProjectionT = {
+    ...profile,
+    sessions: [
+      {
+        sessionId: 's_1',
+        surface: 'code',
+        projectRoot: '/repo',
+        createdAt: 100,
+        lastActivityAt: 300,
+        queuedRuns: [],
+      },
+    ],
+  };
+
+  useAppStore.getState().replaceRuntimeProfileProjection(activityProfile);
+  assert.equal(useAppStore.getState().sessions[0]?.lastActivityAt, 300);
+
+  // A slower session.list response must not overwrite the newer Runtime timestamp.
+  useAppStore.getState().setSessions([sidebarSession]);
+  assert.equal(useAppStore.getState().sessions[0]?.lastActivityAt, 300);
+
+  useAppStore.getState().appendUserMessage('s_1', 'latest interaction', 400);
+  assert.equal(useAppStore.getState().sessions[0]?.lastActivityAt, 400);
+});
+
 test('app store exposes snapshot replacement and revision-safe live patch actions', () => {
   useAppStore.getState().replaceRuntimeProfileProjection(profile);
   useAppStore.getState().replaceSessionLiveProjection(live);
@@ -118,6 +369,151 @@ test('app store exposes snapshot replacement and revision-safe live patch action
   assert.equal(state.runtimeProfile?.projectionRevision, 1);
   assert.equal(state.liveProjectionBySession.s_1?.projectionRevision, 2);
   assert.equal(state.liveProjectionBySession.s_1?.todos[0]?.status, 'completed');
+});
+
+test('app store drops a live activity snapshot as soon as Runtime authority becomes stale', () => {
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  useAppStore.getState().replaceSessionLiveProjection({
+    ...live,
+    activeRun: {
+      runId: 'run_stale',
+      sessionId: 's_1',
+      phase: 'running',
+      startedAt: 10,
+    },
+    thinkingDraft: { text: 'stale thinking', startedAt: 10 },
+  });
+
+  useAppStore.getState().setCoderRuntimeConnection({
+    ...profile.connection,
+    state: 'reconnecting',
+    changedAt: 2,
+    stale: true,
+    reason: 'transport lost',
+  });
+
+  assert.equal(useAppStore.getState().liveProjectionBySession.s_1, undefined);
+});
+
+test('a late Actor snapshot cannot repopulate state under stale degraded authority', () => {
+  const snapshot: AgentActorTreeSnapshotT = {
+    runtimeId: 'rt_1',
+    sessionId: 's_1',
+    rootPath: '/root',
+    revision: 1,
+    eventCursor: 1,
+    activeNonRootTurns: 1,
+    maxConcurrentThreads: 4,
+    actors: [],
+  };
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  useAppStore.getState().replaceAgentActorSnapshot(snapshot);
+
+  useAppStore.getState().setCoderRuntimeConnection({
+    ...profile.connection,
+    state: 'degraded',
+    stale: true,
+    changedAt: 2,
+    reason: 'observation invalidated',
+  });
+  useAppStore.getState().replaceAgentActorSnapshot({
+    ...snapshot,
+    revision: 2,
+    eventCursor: 2,
+  });
+
+  assert.deepEqual(useAppStore.getState().agentActorSnapshotBySession, {});
+});
+
+test('an older rejected live snapshot cannot roll back settings or interactions', () => {
+  useAppStore.getState().setSessions([sidebarSession]);
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  const current: SpaceSessionLiveProjectionT = {
+    ...live,
+    projectionRevision: 2,
+    cursor: { runtimeId: 'rt_1', seq: 2 },
+    settings: { revision: 2, value: { provider: 'current-provider' } },
+    interactions: [permissionInteraction('permission_current')],
+  };
+  useAppStore.getState().replaceSessionLiveProjection(current);
+
+  useAppStore.getState().replaceSessionLiveProjection({
+    ...live,
+    settings: { revision: 1, value: { provider: 'stale-provider' } },
+    interactions: [permissionInteraction('permission_stale')],
+  });
+
+  const state = useAppStore.getState();
+  assert.strictEqual(state.liveProjectionBySession.s_1, current);
+  assert.equal(state.sessions[0]?.provider, 'current-provider');
+  assert.deepEqual(
+    state.permissionQueue.map((request) => request.reqId),
+    ['permission_current'],
+  );
+});
+
+test('a late live snapshot cannot rebuild derived state under stale degraded authority', () => {
+  useAppStore.getState().setSessions([sidebarSession]);
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  useAppStore.getState().replaceSessionLiveProjection({
+    ...live,
+    projectionRevision: 2,
+    cursor: { runtimeId: 'rt_1', seq: 2 },
+    settings: { revision: 2, value: { provider: 'current-provider' } },
+    interactions: [permissionInteraction('permission_current')],
+  });
+  useAppStore.getState().setCoderRuntimeConnection({
+    ...profile.connection,
+    state: 'degraded',
+    stale: true,
+    changedAt: 2,
+    reason: 'observation invalidated',
+  });
+  useAppStore.setState({ permissionQueue: [], askUserQueue: [] });
+
+  useAppStore.getState().replaceSessionLiveProjection({
+    ...live,
+    projectionRevision: 3,
+    cursor: { runtimeId: 'rt_1', seq: 3 },
+    settings: { revision: 3, value: { provider: 'stale-provider' } },
+    interactions: [permissionInteraction('permission_stale')],
+  });
+
+  const state = useAppStore.getState();
+  assert.equal(state.liveProjectionBySession.s_1, undefined);
+  assert.equal(state.sessions[0]?.provider, 'current-provider');
+  assert.deepEqual(state.permissionQueue, []);
+  assert.deepEqual(state.askUserQueue, []);
+});
+
+test('observation invalidation removes stale live authority before snapshot reload', () => {
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  useAppStore.getState().replaceSessionLiveProjection(live);
+  useAppStore.setState({
+    runtimeSnapshotCursorBySession: {
+      s_1: { runtimeId: 'rt_1', runId: 'run_1', seq: 1 },
+    },
+  });
+
+  useAppStore.getState().invalidateSessionLiveProjection({
+    sessionId: 's_1',
+    runtimeId: 'rt_1',
+    reason: 'event_overflow',
+    message: 'Rebuild from a fresh observation snapshot.',
+  });
+
+  const invalidated = useAppStore.getState();
+  assert.equal(invalidated.liveProjectionBySession.s_1, undefined);
+  assert.equal(invalidated.runtimeSnapshotCursorBySession.s_1, undefined);
+  assert.equal(invalidated.runtimeSnapshotRequiredBySession.s_1, true);
+
+  useAppStore.getState().replaceSessionLiveProjection({
+    ...live,
+    projectionRevision: 2,
+    cursor: { runtimeId: 'rt_1', seq: 2 },
+  });
+  assert.equal(useAppStore.getState().liveProjectionBySession.s_1?.projectionRevision, 2);
+  assert.equal(useAppStore.getState().runtimeSnapshotRequiredBySession.s_1, undefined);
 });
 
 test('cumulative live snapshots hydrate missing state once without replaying text, thinking, or tools', () => {

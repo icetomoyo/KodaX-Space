@@ -944,6 +944,8 @@ export function SystemNotice({
   variant,
   text,
   lineageKind,
+  historyTruncationScope,
+  omittedItems,
   action,
   retryAvailableAt,
   sentAt,
@@ -967,9 +969,16 @@ export function SystemNotice({
       ? t('session.compactionHistoryLabel')
       : variant === 'lineage' && lineageKind === 'branch_summary'
         ? `${t('session.branchSummaryHistoryLabel')}: ${text}`
-        : variant === 'sidecar' && historical === true
-          ? `${t('session.sidecarHistoricalLabel')}: ${text}`
-          : text;
+        : variant === 'lineage' && lineageKind === 'history_truncation'
+          ? t(
+              historyTruncationScope === 'turn'
+                ? 'session.turnHistoryTruncatedLabel'
+                : 'session.historyTruncatedLabel',
+              { count: omittedItems ?? 0 },
+            )
+          : variant === 'sidecar' && historical === true
+            ? `${t('session.sidecarHistoricalLabel')}: ${text}`
+            : text;
 
   if (isWorkflow) {
     return (

@@ -6,6 +6,7 @@
 // coherent.
 
 import { z } from 'zod';
+import { autoModeDecisionDiagnosticsSchema } from './permission.js';
 
 /**
  * Sentinel value an ask_user option carries to request "go back" navigation.
@@ -54,20 +55,15 @@ const askUserQuestionAnswerSchema = z.union([
   askUserSelectionAnswerSchema,
   z.array(askUserSelectionAnswerSchema).max(20),
 ]);
-const askUserMultiAnswerSchema = z
-  .record(askUserQuestionAnswerSchema)
-  .superRefine((value, ctx) => {
-    if (Object.keys(value).length > 20) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'multi-question answers cannot contain more than 20 entries',
-      });
-    }
-  });
-const askUserReplyValueSchema = z.union([
-  askUserQuestionAnswerSchema,
-  askUserMultiAnswerSchema,
-]);
+const askUserMultiAnswerSchema = z.record(askUserQuestionAnswerSchema).superRefine((value, ctx) => {
+  if (Object.keys(value).length > 20) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'multi-question answers cannot contain more than 20 entries',
+    });
+  }
+});
+const askUserReplyValueSchema = z.union([askUserQuestionAnswerSchema, askUserMultiAnswerSchema]);
 
 const guardrailRequestSchema = z.object({
   kind: z.literal('guardrail').optional(),
@@ -76,6 +72,7 @@ const guardrailRequestSchema = z.object({
   reason: z.string().min(1).max(2048),
   toolCall: askUserToolCallSchema,
   signals: z.array(askUserSignalSchema).max(20).optional(),
+  autoModeDiagnostics: autoModeDecisionDiagnosticsSchema.optional(),
 });
 
 const questionRequestSchema = z

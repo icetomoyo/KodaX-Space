@@ -34,5 +34,5 @@ test('background tray presentation makes Runtime work and control state visible'
     blockers: [],
   });
   assert.match(english.status, /idle/);
-  assert.match(english.quitCompletely, /safely stop Runtime/);
+  assert.match(english.quitCompletely, /Quit completely/);
 });

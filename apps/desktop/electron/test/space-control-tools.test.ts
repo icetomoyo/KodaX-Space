@@ -4,9 +4,13 @@ import {
   _resetSpaceControlToolRegistrationForTesting,
   ensureSpaceControlToolsRegistered,
   isSpaceControlToolExposureEnabled,
+  makeSpaceControlInspectHandler,
   SPACE_CONTROL_APPLY_TOOL,
   SPACE_CONTROL_INSPECT_TOOL,
 } from '../space-control/tools.js';
+import { kodaxHost } from '../kodax/host.js';
+import type { ManagedSession } from '../kodax/session-adapter.js';
+import { withSessionRunContext } from '../kodax/session-run-context.js';
 import {
   _clearPartnerSpaceToolPoliciesForTesting,
   getPartnerSpaceToolPolicy,
@@ -125,6 +129,58 @@ test('space control tool registration rolls back a partial SDK registration', ()
   });
   assert.equal(retried.length, 2);
   _clearPartnerSpaceToolPoliciesForTesting();
+});
+
+test('space control keeps the run-owned permission mode after the Session setting changes', async () => {
+  kodaxHost.setFactory(
+    (opts): ManagedSession => ({
+      sessionId: opts.sessionId,
+      projectRoot: opts.projectRoot,
+      provider: opts.provider,
+      reasoningMode: opts.reasoningMode,
+      permissionMode: opts.permissionMode,
+      autoModeEngine: opts.autoModeEngine ?? 'llm',
+      agentMode: opts.agentMode ?? 'ama',
+      surface: opts.surface ?? 'code',
+      createdAt: Date.now(),
+      lastActivityAt: Date.now(),
+      title: undefined,
+      isRunning: () => false,
+      send: async () => ({ queued: false }),
+      cancel: async () => {},
+      dispose: async () => {},
+    }),
+  );
+  try {
+    const { sessionId } = kodaxHost.createSession({
+      projectRoot: '/space-control-run',
+      provider: 'mock',
+      permissionMode: 'plan',
+    });
+    assert.equal(kodaxHost.setPermissionMode(sessionId, 'accept-edits'), true);
+
+    const response = await withSessionRunContext(
+      {
+        sessionId,
+        surface: 'code',
+        projectRoot: '/space-control-run',
+        permissionMode: 'plan',
+      },
+      () =>
+        makeSpaceControlInspectHandler()({
+          actionId: 'settings.reasoningMode.setDefault',
+          args: { value: 'deep' },
+        }),
+    );
+    const parsed = JSON.parse(response) as {
+      actions: Array<{ id: string; reasonCode?: string }>;
+    };
+    assert.equal(parsed.actions[0]?.id, 'settings.reasoningMode.setDefault');
+    assert.equal(parsed.actions[0]?.reasonCode, 'plan-mode-denied');
+  } finally {
+    await kodaxHost.disposeAll();
+    kodaxHost.setFactory(null);
+  }
 });
 
 test('control inventory is unique, fully classified, and maps every visible action', () => {

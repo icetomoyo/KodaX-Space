@@ -29,6 +29,7 @@ import { useI18n } from '../../i18n/I18nProvider.js';
 import type { MessageKey } from '../../i18n/messages.js';
 import { permissionGrantPresentation } from './permissionGrantPresentation.js';
 import { interactionsForSession } from '../session/sessionInteractionRouting.js';
+import { AutoModeDiagnosticsPanel } from './AutoModeDiagnosticsPanel.js';
 
 // Risk badge 颜色. Dark 模式: 深色实底 + 淡色文字 (经典 badge 风);
 // Light 模式: 淡色实底 + 深色文字 — 视觉等价倒置, 在白底卡片上仍清晰.
@@ -251,6 +252,8 @@ export function PermissionModal(): JSX.Element | null {
 
         <div className="px-5 py-4 space-y-3 flex-1 overflow-y-auto">
           <div className="text-xs text-fg-muted leading-relaxed">{truncate(head.reason, 256)}</div>
+
+          <AutoModeDiagnosticsPanel diagnostics={head.autoModeDiagnostics} />
 
           <div className="space-y-1">
             <div className="text-[11px] font-mono uppercase text-fg-muted">

@@ -24,9 +24,7 @@ export type ApplySessionLiveChangeStatus =
   | 'snapshot-required'
   | 'snapshot-pending';
 
-export function shouldRequestSessionLiveSnapshot(
-  status: ApplySessionLiveChangeStatus,
-): boolean {
+export function shouldRequestSessionLiveSnapshot(status: ApplySessionLiveChangeStatus): boolean {
   return status === 'snapshot-required' || status === 'snapshot-pending';
 }
 
@@ -53,8 +51,36 @@ function runtimeIdOfProfile(profile: SpaceRuntimeProfileProjectionT | null): str
   return profile?.connection.runtimeId ?? profile?.cursor?.runtimeId;
 }
 
-function connectionAcceptsLive(connection: SpaceCoderConnectionProjectionT): boolean {
-  return connection.state === 'ready' || connection.state === 'degraded';
+export function runtimeConnectionHasFreshLiveAuthority(
+  connection: SpaceCoderConnectionProjectionT,
+): boolean {
+  return (connection.state === 'ready' || connection.state === 'degraded') && !connection.stale;
+}
+
+/**
+ * Decide whether a Session needs the expensive observation plane at all. Ordinary historical
+ * Sessions are fully served by canonical conversation history plus the lightweight Runtime
+ * profile; observing every terminal Session needlessly rebuilds its live reducer and can block a
+ * subsequent history click on the shared daemon transport. Active/queued work, pending Runtime
+ * interactions, and an explicit cursor-gap requirement still fail open to a full snapshot.
+ */
+export function runtimeSessionNeedsObservation(
+  state: Pick<RuntimeProjectionState, 'profile' | 'snapshotRequiredBySession'>,
+  sessionId: string,
+): boolean {
+  if (state.snapshotRequiredBySession[sessionId] === true) return true;
+  // Wait for the lightweight profile before deciding. Once a profile exists, absence is not proof
+  // of terminal state (the projection is deliberately bounded), so fail open to observation.
+  if (state.profile === null) return false;
+  const session = state.profile?.sessions.find((candidate) => candidate.sessionId === sessionId);
+  if (session === undefined) return true;
+  if (session?.activeRun !== undefined || (session?.queuedRuns.length ?? 0) > 0) return true;
+  return (
+    state.profile?.interactions.some(
+      (interaction) =>
+        interaction.state === 'pending' && interaction.request.sessionId === sessionId,
+    ) ?? false
+  );
 }
 
 /**
@@ -65,9 +91,9 @@ export function shouldReconcileRuntimeConnection(
   previous: SpaceCoderConnectionProjectionT,
   next: SpaceCoderConnectionProjectionT,
 ): boolean {
-  if (!connectionAcceptsLive(next) || next.runtimeId === undefined) return false;
+  if (!runtimeConnectionHasFreshLiveAuthority(next) || next.runtimeId === undefined) return false;
   return (
-    !connectionAcceptsLive(previous) ||
+    !runtimeConnectionHasFreshLiveAuthority(previous) ||
     previous.runtimeId !== next.runtimeId ||
     previous.state !== next.state ||
     previous.stale !== next.stale
@@ -79,7 +105,15 @@ export function replaceRuntimeConnection(
   connection: SpaceCoderConnectionProjectionT,
 ): RuntimeProjectionState {
   if (connection.changedAt < state.connection.changedAt) return state;
-  return { ...state, connection };
+  const authorityChanged = state.connection.runtimeId !== connection.runtimeId;
+  const authorityLost = !runtimeConnectionHasFreshLiveAuthority(connection);
+  return {
+    ...state,
+    connection,
+    ...(authorityChanged || authorityLost
+      ? { liveBySession: {}, snapshotRequiredBySession: {} }
+      : {}),
+  };
 }
 
 function withoutSnapshotRequirement(
@@ -134,12 +168,14 @@ export function replaceRuntimeProfile(
   }
 
   const runtimeChanged = currentRuntimeId !== nextRuntimeId;
+  const authorityLost = !runtimeConnectionHasFreshLiveAuthority(profile.connection);
   return {
     ...state,
     connection: profile.connection,
     profile,
-    liveBySession: runtimeChanged ? {} : state.liveBySession,
-    snapshotRequiredBySession: runtimeChanged ? {} : state.snapshotRequiredBySession,
+    liveBySession: runtimeChanged || authorityLost ? {} : state.liveBySession,
+    snapshotRequiredBySession:
+      runtimeChanged || authorityLost ? {} : state.snapshotRequiredBySession,
   };
 }
 
@@ -148,7 +184,7 @@ export function replaceSessionLiveProjection(
   projection: SpaceSessionLiveProjectionT,
 ): RuntimeProjectionState {
   const profileRuntimeId = runtimeIdOfProfile(state.profile);
-  if (!connectionAcceptsLive(state.connection)) return state;
+  if (!runtimeConnectionHasFreshLiveAuthority(state.connection)) return state;
   if (
     state.connection.runtimeId === undefined ||
     state.connection.runtimeId !== projection.cursor.runtimeId ||
@@ -235,7 +271,7 @@ export function applySessionLiveChange(
   update: SpaceSessionLiveChangedT,
 ): ApplySessionLiveChangeResult {
   if (
-    !connectionAcceptsLive(state.connection) ||
+    !runtimeConnectionHasFreshLiveAuthority(state.connection) ||
     state.connection.runtimeId === undefined ||
     state.connection.runtimeId !== update.cursor.runtimeId
   ) {

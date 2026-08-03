@@ -31,11 +31,13 @@ export function selectPermissionBatch(
 ): PermissionBatchSelection {
   if (queue.length === 0) return { mode: 'single', head: null };
   const head = queue[0]!;
-  if (head.risk === 'danger') return { mode: 'single', head };
+  // Auto[LLM] prompts carry decision provenance that must remain visible and
+  // individually reviewable. Do not hide it inside the compact batch card.
+  if (head.risk === 'danger' || head.autoModeDiagnostics) return { mode: 'single', head };
   const batch: PermissionRequestPayload[] = [head];
   for (let i = 1; i < queue.length; i++) {
     const next = queue[i]!;
-    if (next.sessionId !== head.sessionId || next.risk === 'danger') break;
+    if (next.sessionId !== head.sessionId || next.risk === 'danger' || next.autoModeDiagnostics) break;
     batch.push(next);
   }
   if (batch.length < 2) return { mode: 'single', head };

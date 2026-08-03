@@ -85,6 +85,9 @@ test('Space kodax_manual documents the required current KodaX capability boundar
   }
   assert.match(topics.get('runtime-host')?.body ?? '', /contextCompaction v3/);
   assert.match(topics.get('runtime-host')?.body ?? '', /transcriptSearch v1/);
+  assert.match(topics.get('runtime-host')?.body ?? '', /session\.status/);
+  assert.match(topics.get('runtime-host')?.body ?? '', /session\.diagnostics/);
+  assert.match(topics.get('runtime-host')?.body ?? '', /不会根据已出现回答文本伪造完成/);
   assert.match(topics.get('runtime-host')?.body ?? '', /精确 checkpoint 字节/);
   assert.match(topics.get('runtime-host')?.body ?? '', /精确 flat Session history/);
   assert.match(topics.get('composer')?.body ?? '', /interrupt input/);
@@ -150,6 +153,7 @@ test('Space kodax_manual describes the v0.1.34 runtime safety, close, and shell 
   assert.match(topics.get('background-runtime')?.body ?? '', /kill -TERM/);
   assert.match(topics.get('background-runtime')?.body ?? '', /不要使用 `killall KodaX Space`/);
   assert.match(topics.get('runtime-host')?.body ?? '', /daemonOrphanExit v1/);
+  assert.match(topics.get('runtime-host')?.body ?? '', /runtimeEventCoalescing v1/);
   assert.match(topics.get('runtime-host')?.body ?? '', /integration config resilience v1/);
   assert.match(topics.get('runtime-host')?.body ?? '', /Auto LLM guardrail v4/);
   assert.match(topics.get('runtime-host')?.body ?? '', /Sandbox fallback/);

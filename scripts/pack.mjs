@@ -78,9 +78,14 @@ function restoreLink(link) {
   console.log(`[pack] restored dev link: @kodax-ai/kodax → ${link.target}`);
 }
 
-function verifyReleaseSdk() {
-  const dependency = assertKodaxReleaseDependencyState(SPACE_ROOT, SDK_DIR);
-  console.log(`[pack] verified exact Registry dependency @kodax-ai/kodax@${dependency.version}.`);
+function verifyReleaseSdk(allowLocalTarball) {
+  const dependency = assertKodaxReleaseDependencyState(SPACE_ROOT, SDK_DIR, {
+    allowLocalTarball,
+  });
+  const sourceLabel = dependency.source === 'registry' ? 'Registry' : 'local test tarball';
+  console.log(
+    `[pack] verified exact ${sourceLabel} dependency @kodax-ai/kodax@${dependency.version}.`,
+  );
   return dependency;
 }
 
@@ -105,16 +110,23 @@ const ALLOWED_PASSTHROUGH = new Set([
   '--ia32',
   '--armv7l',
 ]);
-const passthrough = process.argv.slice(2).filter((arg) => {
+const LOCAL_TARBALL_FLAG = '--allow-local-kodax';
+const packArgs = process.argv.slice(2);
+const allowLocalTarball = packArgs.includes(LOCAL_TARBALL_FLAG);
+const passthrough = packArgs.filter((arg) => {
+  if (arg === LOCAL_TARBALL_FLAG) return false;
   if (ALLOWED_PASSTHROUGH.has(arg)) return true;
   console.warn(`[pack] 忽略不在白名单内的参数: ${arg}`);
   return false;
 });
 const manifestSnapshot = readManifestSnapshot();
 const link = inspectKodaxDevLink(SPACE_ROOT, SDK_DIR);
+if (allowLocalTarball) {
+  console.warn('[pack] explicit local KodaX test-tarball mode enabled; not for formal releases.');
+}
 
 if (!link.linked) {
-  verifyReleaseSdk();
+  verifyReleaseSdk(allowLocalTarball);
   // 干净状态：直接打包（CI / 已 unlink 的 release checkout）
   run(
     'node',
@@ -133,25 +145,25 @@ console.log(
     : `[pack] @kodax-ai/kodax is dev-linked (→ ${link.target}).`,
 );
 console.log(
-  '[pack] swapping to the published tarball for packaging (HLD §18: no KodaX-private code).',
+  '[pack] swapping to the locked physical package for packaging (HLD §18: no KodaX-private code).',
 );
 
 try {
   run('node', ['scripts/link-kodax.mjs', '--unlink'], 'unlink:kodax');
   // NODE_ENV=development + --include=dev：否则(用户 shell 常 export NODE_ENV=production)
   // npm 会丢掉 electron / electron-builder 等 devDeps，打包随即失败。
-  run('npm', ['ci', '--no-audit', '--no-fund', '--include=dev'], 'npm ci (published SDK)', {
+  run('npm', ['ci', '--no-audit', '--no-fund', '--include=dev'], 'npm ci (locked SDK)', {
     NODE_ENV: 'development',
   });
-  assertManifestUnchanged(manifestSnapshot, 'npm ci (published SDK)');
-  verifyReleaseSdk();
+  assertManifestUnchanged(manifestSnapshot, 'npm ci (locked SDK)');
+  verifyReleaseSdk(allowLocalTarball);
   run(
     'node',
     ['scripts/ensure-sqlite-native.mjs', 'electron'],
     'ensure better-sqlite3 electron ABI',
   );
   run('npx', ['electron-builder', '-p', 'never', ...passthrough], 'electron-builder');
-  // Run against the exact Registry install before finally restores the local
+  // Run against the exact locked install before finally restoring the local
   // development staging package.
   runProductSmokes();
   assertManifestUnchanged(manifestSnapshot, 'pack');

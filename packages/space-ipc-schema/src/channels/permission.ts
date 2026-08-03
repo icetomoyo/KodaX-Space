@@ -40,6 +40,91 @@ const permissionToolCallSchema = z.object({
 
 const riskLevelSchema = z.enum(['low', 'medium', 'high', 'danger']);
 const decisionSchema = z.enum(['deny', 'allow_once', 'allow_always']);
+
+// Structured Auto[LLM] diagnostics shared by the legacy inline askUser lane and
+// the Runtime permission projection. These fields describe how a decision was
+// produced; they never grant authority and never contain classifier prompt or
+// response text.
+const autoModeClassifierFailureKindSchema = z.enum([
+  'timeout',
+  'provider_error',
+  'contract_error',
+  'input_budget',
+]);
+const autoModeClassifierAttemptOutcomeSchema = z.enum([
+  'allow',
+  'confirm',
+  'timeout',
+  'provider_error',
+  'contract_error',
+  'input_budget',
+]);
+const autoModeObservedProtocolSchema = z.enum(['structured_v2', 'legacy_v1', 'unknown']);
+const autoModeParseFailureCodeSchema = z.enum([
+  'missing_decision',
+  'invalid_decision',
+  'ambiguous_decision',
+  // Retained for historical Runtime events created before auxiliary fields
+  // became warnings in KodaX 0.7.79.
+  'missing_hazard',
+  'invalid_hazard',
+  'decision_hazard_conflict',
+  'decision_reason_conflict',
+  'missing_reason',
+  'structured_format_violation',
+  'legacy_format_violation',
+  'tool_use',
+]);
+export const autoModeOutputWarningCodeSchema = z.enum([
+  'missing_hazard',
+  'invalid_hazard',
+  'decision_hazard_conflict',
+  'decision_reason_conflict',
+  'missing_reason',
+  'structured_format_violation',
+  'legacy_format_violation',
+]);
+const autoModeAttemptProviderDiagnosticsSchema = z
+  .object({
+    provider: z.string().min(1).max(128),
+    model: z.string().min(1).max(256),
+    timeoutMs: z.number().int().nonnegative(),
+    elapsedMs: z.number().int().nonnegative(),
+    promptBytes: z.number().int().nonnegative(),
+    retryCount: z.number().int().nonnegative().max(16),
+    retryWaitMs: z.number().int().nonnegative(),
+    terminalPhase: z.enum([
+      'completed',
+      'pre_output',
+      'awaiting_text',
+      'thinking',
+      'streaming',
+      'contract_error',
+    ]),
+  })
+  .strict();
+const autoModeClassifierAttemptSchema = z
+  .object({
+    attempt: z.number().int().positive().max(4),
+    outcome: autoModeClassifierAttemptOutcomeSchema,
+    diagnostics: autoModeAttemptProviderDiagnosticsSchema.optional(),
+    observedProtocol: autoModeObservedProtocolSchema.optional(),
+    parseFailureCode: autoModeParseFailureCodeSchema.optional(),
+    outputWarnings: z.array(autoModeOutputWarningCodeSchema).max(16).optional(),
+  })
+  .strict();
+export const autoModeDecisionDiagnosticsSchema = z
+  .object({
+    source: z.enum([
+      'classifier_confirm',
+      'classifier_failure',
+      'classifier_circuit_breaker',
+      'configuration',
+    ]),
+    classifierFailureKind: autoModeClassifierFailureKindSchema.optional(),
+    classifierAttempts: z.array(autoModeClassifierAttemptSchema).max(4).optional(),
+  })
+  .strict();
 const permissionAllowAlwaysScopeSchema = z
   .object({
     /** Display-only metadata for a Runtime-issued, concrete persistent grant suggestion. */
@@ -75,6 +160,7 @@ export const permissionRequestChannel = {
     sessionId: z.string().min(1),
     risk: riskLevelSchema,
     reason: z.string().max(512),
+    autoModeDiagnostics: autoModeDecisionDiagnosticsSchema.optional(),
     toolCall: permissionToolCallSchema,
     /** 已生成的 pattern 候选，给 "Always allow" 选项预填，renderer 决定要不要带 pattern。*/
     suggestedPattern: z.string().min(1).max(512).optional(),
@@ -159,6 +245,8 @@ export const permissionRevokeChannel = {
 
 export type PermissionRisk = z.infer<typeof riskLevelSchema>;
 export type PermissionDecision = z.infer<typeof decisionSchema>;
+export type AutoModeOutputWarningCode = z.infer<typeof autoModeOutputWarningCodeSchema>;
+export type AutoModeDecisionDiagnostics = z.infer<typeof autoModeDecisionDiagnosticsSchema>;
 export type PermissionToolCall = z.infer<typeof permissionToolCallSchema>;
 export type PermissionRule = z.infer<typeof permissionRuleSchema>;
 export type PermissionRequestPayload = z.infer<typeof permissionRequestChannel.payload>;

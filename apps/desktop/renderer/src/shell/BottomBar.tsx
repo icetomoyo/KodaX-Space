@@ -59,6 +59,15 @@ import { FileNameText } from '../components/FileNameText.js';
 import { useI18n } from '../i18n/I18nProvider.js';
 import type { MessageKey } from '../i18n/messages.js';
 import {
+  bufferIndexForSelectorTurn,
+  canRewindSelectorTurn,
+  latestSelectorTurnIndex,
+  localNoticeCutoffSentAtForSelectorTurn,
+  messageForSelectorTurn,
+  previousSelectorTurnIndex,
+  selectorTurnIndexesByMessageId,
+} from '../features/session/turnIndex.js';
+import {
   PARTNER_SOURCES_CHANGED_EVENT,
   PARTNER_WORKBENCH_CONTEXT_EVENT,
   buildPartnerWorkbenchPrompt,
@@ -551,7 +560,6 @@ export function BottomBar(): JSX.Element {
   const promoteQueuedUserMessage = useAppStore((s) => s.promoteQueuedUserMessage);
   const convertLastUserMessageToQueued = useAppStore((s) => s.convertLastUserMessageToQueued);
   const appendWorkflowNotice = useAppStore((s) => s.appendWorkflowNotice);
-  const appendEvent = useAppStore((s) => s.appendEvent);
   const rollbackLastUserMessage = useAppStore((s) => s.rollbackLastUserMessage);
   const resetSessionMessages = useAppStore((s) => s.resetSessionMessages);
   const upsertSession = useAppStore((s) => s.upsertSession);
@@ -1366,16 +1374,20 @@ export function BottomBar(): JSX.Element {
 
     if (action === 'show-history') {
       const userMsgs = state.userMessagesBySession[sessionId] ?? [];
-      if (userMsgs.length === 0) {
+      const turnIndexes = selectorTurnIndexesByMessageId(userMsgs);
+      const visibleUserMsgs = userMsgs.flatMap((message) => {
+        const turnIndex = turnIndexes.get(message.id);
+        return turnIndex === undefined ? [] : [{ message, turnIndex }];
+      });
+      if (visibleUserMsgs.length === 0) {
         appendUserMessage(sessionId, '[history] no user messages yet');
         return;
       }
       const lines = [
-        `[history] ${userMsgs.length} user message(s):`,
-        ...userMsgs.slice(-20).map((m, i) => {
-          const idx = Math.max(0, userMsgs.length - 20) + i + 1;
-          const head = m.content.replace(/\s+/g, ' ').slice(0, 80);
-          return `  ${idx}. ${head}${m.content.length > 80 ? '...' : ''}`;
+        `[history] ${visibleUserMsgs.length} loaded user message(s):`,
+        ...visibleUserMsgs.slice(-20).map(({ message, turnIndex }) => {
+          const head = message.content.replace(/\s+/g, ' ').slice(0, 80);
+          return `  ${turnIndex + 1}. ${head}${message.content.length > 80 ? '...' : ''}`;
         }),
       ];
       appendUserMessage(sessionId, lines.join('\n'));
@@ -1818,14 +1830,32 @@ export function BottomBar(): JSX.Element {
         );
       }
       const userMsgs = state.userMessagesBySession[sessionId] ?? [];
+      const latestTurnIndex = latestSelectorTurnIndex(userMsgs);
+      if (latestTurnIndex === undefined) {
+        appendUserMessage(sessionId, '[fork] no loaded user turn is available to fork');
+        return;
+      }
       const requestedIdx = args[0] && /^\d+$/.test(args[0]) ? Number(args[0]) : undefined;
-      const forkPointTurnIdx = Math.max(
-        0,
-        Math.min(requestedIdx ?? userMsgs.length - 1, Math.max(0, userMsgs.length - 1)),
-      );
+      if (requestedIdx !== undefined && bufferIndexForSelectorTurn(userMsgs, requestedIdx) < 0) {
+        appendUserMessage(
+          sessionId,
+          `[fork] turn ${requestedIdx} is not available in the loaded history window`,
+        );
+        return;
+      }
+      const forkPointTurnIdx = requestedIdx ?? latestTurnIndex;
+      const forkPointMessage = messageForSelectorTurn(userMsgs, forkPointTurnIdx);
+      const historyBoundary = forkPointMessage?.historyBoundary;
+      if (session.surface === 'code' && historyBoundary === undefined) {
+        appendUserMessage(
+          sessionId,
+          '[fork] exact persisted history boundary is not available yet',
+        );
+        return;
+      }
       const r = await invokeComposerIpc(
         'session.fork',
-        { sessionId, forkPointTurnIdx },
+        { sessionId, forkPointTurnIdx, ...(historyBoundary ? { historyBoundary } : {}) },
         { timeoutMs: null },
       );
       if (!r.ok) {
@@ -1869,8 +1899,14 @@ export function BottomBar(): JSX.Element {
         appendUserMessage(sessionId, '[rewind] IPC unavailable');
         return;
       }
+      const session = state.sessions.find((candidate) => candidate.sessionId === sessionId);
+      if (!session) {
+        appendUserMessage(sessionId, '[rewind] current session is not in the renderer list');
+        return;
+      }
       const userMsgs = state.userMessagesBySession[sessionId] ?? [];
-      if (userMsgs.length === 0) {
+      const latestTurnIndex = latestSelectorTurnIndex(userMsgs);
+      if (latestTurnIndex === undefined) {
         appendUserMessage(sessionId, '[rewind] nothing to rewind; no turns yet');
         return;
       }
@@ -1881,17 +1917,44 @@ export function BottomBar(): JSX.Element {
         );
       }
       const requestedIdx = args[0] && /^\d+$/.test(args[0]) ? Number(args[0]) : undefined;
-      if (requestedIdx === undefined && userMsgs.length < 2) {
+      const previousTurnIndex = previousSelectorTurnIndex(userMsgs);
+      if (requestedIdx === undefined && previousTurnIndex === undefined) {
         appendUserMessage(sessionId, '[rewind] no earlier turn to rewind to');
         return;
       }
-      const rewindPastTurnIdx = Math.max(
-        0,
-        Math.min(requestedIdx ?? userMsgs.length - 2, Math.max(0, userMsgs.length - 1)),
+      if (
+        requestedIdx !== undefined &&
+        (bufferIndexForSelectorTurn(userMsgs, requestedIdx) < 0 ||
+          !canRewindSelectorTurn(userMsgs, requestedIdx))
+      ) {
+        appendUserMessage(
+          sessionId,
+          `[rewind] turn ${requestedIdx} is not an earlier turn in the loaded history window`,
+        );
+        return;
+      }
+      const rewindPastTurnIdx = requestedIdx ?? previousTurnIndex!;
+      const rewindMessage = messageForSelectorTurn(userMsgs, rewindPastTurnIdx);
+      const historyBoundary = rewindMessage?.historyBoundary;
+      const localNoticeCutoffSentAt = localNoticeCutoffSentAtForSelectorTurn(
+        userMsgs,
+        rewindPastTurnIdx,
       );
+      if (session.surface === 'code' && historyBoundary === undefined) {
+        appendUserMessage(
+          sessionId,
+          '[rewind] exact persisted history boundary is not available yet',
+        );
+        return;
+      }
       const r = await invokeComposerIpc(
         'session.rewind',
-        { sessionId, rewindPastTurnIdx },
+        {
+          sessionId,
+          rewindPastTurnIdx,
+          ...(historyBoundary ? { historyBoundary } : {}),
+          ...(localNoticeCutoffSentAt !== undefined ? { localNoticeCutoffSentAt } : {}),
+        },
         { timeoutMs: null },
       );
       if (!r.ok) {
@@ -2305,15 +2368,6 @@ export function BottomBar(): JSX.Element {
     const sessionTitle =
       useAppStore.getState().sessions.find((s) => s.sessionId === sid)?.title ??
       t('bottom.thisSession');
-    appendEvent({
-      kind: 'session_error',
-      sessionId: sid,
-      error: 'cancelled',
-      category: 'cancelled',
-      retriable: true,
-    });
-    pushToast(t('bottom.stopSignalSent', { session: sessionTitle }), 'info', 2000);
-
     void window.kodaxSpace
       .invoke('session.cancel', { sessionId: sid })
       .then((r) => {
@@ -2325,6 +2379,18 @@ export function BottomBar(): JSX.Element {
             }),
             'error',
           );
+          return;
+        }
+
+        const stop = r.data.stop;
+        if (stop && (stop.state === 'unknown' || stop.outcome === 'unknown')) {
+          pushToast(t('bottom.stopOutcomeUnknown', { session: sessionTitle }), 'info', 4000);
+        } else if (r.data.cancelled) {
+          pushToast(t('bottom.stopConfirmed', { session: sessionTitle }), 'info', 2000);
+        } else if (stop) {
+          pushToast(t('bottom.runAlreadyTerminal', { session: sessionTitle }), 'info', 2500);
+        } else {
+          pushToast(t('bottom.noActiveRun', { session: sessionTitle }), 'info', 2500);
         }
       })
       .catch((err: unknown) => {

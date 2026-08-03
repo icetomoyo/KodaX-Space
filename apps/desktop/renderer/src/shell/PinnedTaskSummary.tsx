@@ -13,6 +13,7 @@ import { requestTaskDockFocus, type TaskDockSectionId } from './taskDockControl.
 import { useI18n } from '../i18n/I18nProvider.js';
 import type { MessageKey } from '../i18n/messages.js';
 import { useTaskDockRunView } from './useTaskDockRunView.js';
+import { ViewportTooltip } from '../components/ViewportTooltip.js';
 
 interface SummaryChip {
   readonly key: string;
@@ -35,32 +36,33 @@ export function PinnedTaskSummary(): JSX.Element | null {
 
   return (
     <div
-      className="ix-zone flex min-h-10 flex-shrink-0 items-center gap-2 border-b border-border-default bg-surface px-3 py-1.5 text-[12px]"
+      className="ix-zone grid h-10 flex-shrink-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 border-b border-border-default bg-surface px-3 text-[12px]"
       data-testid="pinned-task-summary"
     >
       <button
         type="button"
         onClick={() => requestTaskDockFocus(primaryTarget)}
-        className={`group grid min-w-0 flex-1 grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-hover-bg ${summaryToneClass(
+        className={`group grid h-8 min-w-0 grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left transition-colors hover:bg-hover-bg ${summaryToneClass(
           view.severity,
         )}`}
-        title={summaryTitle(view)}
         aria-label={t('pinned.openTarget', { target: primaryTargetLabel })}
         data-testid="pinned-summary-primary"
       >
         <span className="flex h-4 w-4 items-center justify-center">
           <CircleDot className={`h-3.5 w-3.5 ${summaryIconClass(view.severity)}`} strokeWidth={2} />
         </span>
-        <span className="flex min-w-0 items-baseline gap-2">
-          <span className="truncate font-medium text-fg-primary">{view.headline}</span>
+        <ViewportTooltip content={summaryTitle(view)} className="flex min-w-0 items-baseline gap-2">
+          <span className="min-w-0 truncate font-medium text-fg-primary">{view.headline}</span>
           {view.detail && (
-            <span className="hidden min-w-0 truncate text-fg-muted md:inline">{view.detail}</span>
+            <span className="hidden min-w-0 flex-1 truncate text-fg-muted xl:inline">
+              {view.detail}
+            </span>
           )}
-        </span>
+        </ViewportTooltip>
       </button>
 
       {chips.length > 0 && (
-        <div className="flex flex-shrink-0 items-center gap-1 overflow-hidden">
+        <div className="flex min-w-0 items-center gap-1 overflow-hidden">
           {chips.map((chip) => (
             <SummaryChipButton key={chip.key} chip={chip} />
           ))}
@@ -76,9 +78,7 @@ function SummaryChipButton({ chip }: { readonly chip: SummaryChip }): JSX.Elemen
     <button
       type="button"
       onClick={() => requestTaskDockFocus(chip.section)}
-      className={`inline-flex h-7 items-center gap-1.5 rounded-md border border-border-default bg-surface-2 px-2 text-fg-secondary transition-colors hover:bg-hover-bg hover:text-fg-primary ${
-        chip.key === 'agents' ? 'max-w-[190px]' : 'max-w-[120px]'
-      }`}
+      className="inline-flex h-7 flex-shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-border-default bg-surface-2 px-2 text-fg-secondary transition-colors hover:bg-hover-bg hover:text-fg-primary"
       title={t('pinned.openChip', { label: chip.label })}
       aria-label={t('pinned.openChip', { label: chip.label })}
       data-testid={`pinned-summary-${chip.key}`}
@@ -86,8 +86,12 @@ function SummaryChipButton({ chip }: { readonly chip: SummaryChip }): JSX.Elemen
       <span className="flex h-3.5 w-3.5 flex-shrink-0 items-center justify-center text-fg-muted">
         {chip.icon}
       </span>
-      <span className="truncate">{chip.label}</span>
-      {chip.value && <span className="font-mono tabular-nums text-fg-primary">{chip.value}</span>}
+      <span>{chip.label}</span>
+      {chip.value && (
+        <span className="whitespace-nowrap font-mono tabular-nums text-fg-primary">
+          {chip.value}
+        </span>
+      )}
     </button>
   );
 }

@@ -15,11 +15,41 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { permissionBroker, type PermissionRequestInput } from '../permission/broker.js';
-import type { PermissionMode } from '@kodax-space/space-ipc-schema';
+import type { PermissionMode, Surface } from '@kodax-space/space-ipc-schema';
+import type { AutoModeToolGuardrail } from '@kodax-ai/kodax/coding';
 import type { SkillDynamicContextExecutor } from '@kodax-ai/kodax/skills';
 
 const EXEC_TIMEOUT_MS = 30_000;
 const MAX_STDOUT_BYTES = 1_048_576; // 1 MB
+
+type AutoGuardrailBeforeTool = NonNullable<AutoModeToolGuardrail['beforeTool']>;
+type AutoGuardrailContext = Parameters<AutoGuardrailBeforeTool>[1];
+
+/**
+ * Adapt Skill's hidden dynamic-context execution to the same run-owned Auto
+ * guardrail used by ordinary tools. The caller supplies the live transcript
+ * and trusted permission intent so user constraints cannot disappear here.
+ */
+export function createAutoSkillDynamicContextAuthorizer(opts: {
+  readonly guardrail: AutoModeToolGuardrail;
+  readonly context: AutoGuardrailContext;
+}): (command: string, cwd: string, toolId: string) => Promise<boolean> {
+  return async (command, cwd, toolId) => {
+    const verdict = await opts.guardrail.beforeTool?.(
+      {
+        id: toolId,
+        name: 'bash',
+        input: {
+          command,
+          cwd,
+          description: 'Resolve Skill dynamic context',
+        },
+      },
+      opts.context,
+    );
+    return verdict?.action === 'allow';
+  };
+}
 
 /**
  * 工厂函数: 给特定 session + mode 创建一个 executor。
@@ -28,20 +58,39 @@ const MAX_STDOUT_BYTES = 1_048_576; // 1 MB
 export function createSkillDynamicContextExecutor(opts: {
   readonly sessionId: string;
   readonly permissionMode: PermissionMode;
+  readonly surface?: Surface;
+  /** Run-owned guardrail authorization. Omit only when the broker is the owner. */
+  readonly authorize?: (command: string, cwd: string, toolId: string) => Promise<boolean>;
 }): SkillDynamicContextExecutor {
   return async (command, cwd) => {
-    // 1) 走 permission broker - toolName='skill_dynamic_context' 让规则 + UI 都能识别
-    //    toolId 用 randomUUID — 每次 dynamic-context exec 是独立 request (允许"允许这一次"语义)
-    const req: PermissionRequestInput = {
-      sessionId: opts.sessionId,
-      toolId: randomUUID(),
-      toolName: 'skill_dynamic_context',
-      input: { command, cwd },
-      mode: opts.permissionMode,
-    };
-    const result = await permissionBroker.request(req);
-    if (result.decision === 'deny') {
-      throw new Error(`[skill dynamic-context denied by user] ${command}`);
+    // Partner is intentionally shell-free. Dynamic-context commands execute
+    // inside Skill expansion rather than as ordinary tools, so enforce the
+    // surface boundary here even if a future caller forgets `disable: true`.
+    if (opts.surface === 'partner') {
+      throw new Error('[skill dynamic-context disabled on Partner surface]');
+    }
+
+    const toolId = randomUUID();
+    if (opts.authorize) {
+      const allowed = await opts.authorize(command, cwd, toolId);
+      if (!allowed) {
+        throw new Error(`[skill dynamic-context denied by Auto guardrail] ${command}`);
+      }
+    } else {
+      // 1) 走 permission broker - toolName='skill_dynamic_context' 让规则 + UI 都能识别
+      //    toolId 用 randomUUID — 每次 dynamic-context exec 是独立 request (允许"允许这一次"语义)
+      const req: PermissionRequestInput = {
+        sessionId: opts.sessionId,
+        toolId,
+        toolName: 'skill_dynamic_context',
+        input: { command, cwd },
+        mode: opts.permissionMode,
+        surface: opts.surface,
+      };
+      const result = await permissionBroker.request(req);
+      if (result.decision === 'deny') {
+        throw new Error(`[skill dynamic-context denied by user] ${command}`);
+      }
     }
 
     // 2) 用户批准 → spawn 命令。shell:true 使用 OS 默认 shell,支持 piped/redirect 命令。
@@ -108,9 +157,11 @@ export function createSkillDynamicContextExecutor(opts: {
         clearTimeout(timer);
         if (code !== 0) {
           const errTail = stderr.toString('utf8').slice(-512);
-          reject(new Error(
-            `[skill dynamic-context exit ${code}] ${command}${errTail ? `\n${errTail}` : ''}`,
-          ));
+          reject(
+            new Error(
+              `[skill dynamic-context exit ${code}] ${command}${errTail ? `\n${errTail}` : ''}`,
+            ),
+          );
           return;
         }
         let output = stdout.toString('utf8');

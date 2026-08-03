@@ -1,8 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildAgentStatuses } from '../../renderer/src/shell/agentStatusProjection.js';
+import {
+  buildAgentStatuses,
+  scopeAgentActorSnapshotToCurrentTurn,
+} from '../../renderer/src/shell/agentStatusProjection.js';
 import { messages, type MessageKey } from '../../renderer/src/i18n/messages.js';
-import type { AgentActorTreeSnapshotT } from '@kodax-space/space-ipc-schema';
+import type { AgentActorTreeSnapshotT, SessionEvent } from '@kodax-space/space-ipc-schema';
 
 type Status = Parameters<typeof buildAgentStatuses>[0];
 
@@ -168,3 +171,103 @@ test('Actor tree projection is canonical and includes recursive Agent lifecycle'
   );
   assert.equal(buildAgentStatuses(undefined, undefined, snapshot)[0]?.state, 'idle');
 });
+
+test('current-turn Actor scope excludes completed Agents from earlier turns', () => {
+  const snapshot: AgentActorTreeSnapshotT = {
+    runtimeId: 'rt_1',
+    sessionId: 's_1',
+    rootPath: '/root',
+    revision: 12,
+    eventCursor: 30,
+    activeNonRootTurns: 2,
+    maxConcurrentThreads: 4,
+    actors: [
+      makeActor('/root', 'root'),
+      makeActor('/root/md-to-html', 'md-to-html', 'turn_md', 'completed'),
+      makeActor('/root/html-to-pdf', 'html-to-pdf', 'turn_pdf', 'completed'),
+      makeActor('/root/shanghai-json', 'shanghai-json', 'turn_shanghai', 'completed'),
+      makeActor('/root/beijing-json', 'beijing-json', 'turn_beijing', 'running'),
+    ],
+  };
+  const events = [
+    { kind: 'session_start', sessionId: 's_1', provider: 'mock', turnId: 'turn_old' },
+    {
+      kind: 'tool_result',
+      sessionId: 's_1',
+      toolId: 'spawn_old',
+      toolName: 'spawn_agent',
+      content: JSON.stringify({
+        actorPath: '/root/html-to-pdf',
+        turnId: 'turn_pdf',
+      }),
+    },
+    { kind: 'session_start', sessionId: 's_1', provider: 'mock', turnId: 'turn_current' },
+    {
+      kind: 'tool_result',
+      sessionId: 's_1',
+      toolId: 'spawn_shanghai',
+      toolName: 'spawn_agent',
+      content: JSON.stringify({
+        actorPath: '/root/shanghai-json',
+        turnId: 'turn_shanghai',
+      }),
+    },
+    {
+      kind: 'tool_result',
+      sessionId: 's_1',
+      toolId: 'spawn_beijing',
+      toolName: 'spawn_agent',
+      content: JSON.stringify({
+        actorPath: '/root/beijing-json',
+        turnId: 'turn_beijing',
+      }),
+    },
+  ] satisfies readonly SessionEvent[];
+
+  const scoped = scopeAgentActorSnapshotToCurrentTurn(snapshot, events);
+
+  assert.deepEqual(
+    scoped?.actors.map((actor) => actor.path),
+    ['/root', '/root/shanghai-json', '/root/beijing-json'],
+  );
+  assert.equal(scoped?.activeNonRootTurns, 1);
+  assert.deepEqual(
+    buildAgentStatuses(undefined, undefined, scoped).map((status) => [status.id, status.state]),
+    [
+      ['/root', 'idle'],
+      ['/root/shanghai-json', 'completed'],
+      ['/root/beijing-json', 'active'],
+    ],
+  );
+});
+
+function makeActor(
+  actorPath: string,
+  taskName: string,
+  turnId?: string,
+  turnState?: 'running' | 'completed',
+): AgentActorTreeSnapshotT['actors'][number] {
+  const isRoot = actorPath === '/root';
+  return {
+    path: actorPath,
+    taskName,
+    ...(isRoot ? {} : { parentPath: '/root' }),
+    kind: 'native',
+    state: turnState === 'running' ? 'running' : 'idle',
+    ...(turnState === 'running' && turnId ? { currentTurnId: turnId } : {}),
+    createdAt: '2026-07-30T00:00:00.000Z',
+    updatedAt: '2026-07-30T00:00:01.000Z',
+    revision: 1,
+    ...(turnId && turnState
+      ? {
+          latestTurn: {
+            turnId,
+            state: turnState,
+            summary: turnState,
+            summaryTruncated: false,
+            recentActivity: [],
+          },
+        }
+      : {}),
+  };
+}

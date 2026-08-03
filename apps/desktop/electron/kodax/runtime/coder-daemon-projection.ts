@@ -24,6 +24,7 @@ import {
 } from '@kodax-space/space-ipc-schema';
 import { assessRisk } from '../../permission/risk.js';
 import { sanitizeForDisplay, sanitizeInputForDisplay } from '../../permission/sanitize.js';
+import { projectAutoModeDiagnostics } from '../../permission/auto-mode-diagnostics.js';
 import { isTransientChildEvent, type ChildMeta } from '../workflow-activity.js';
 
 const MAX_DRAFT = 256 * 1024;
@@ -31,7 +32,14 @@ const MAX_REASON = 512;
 const MAX_PERMISSION_INPUT_PREVIEW = 8_192;
 const MAX_TODOS = 1_000;
 const MAX_TOOLS = 128;
-const ACTIVE_PHASES = new Set(['running', 'waiting_permission', 'waiting_user_input'] as const);
+const ACTIVE_PHASES = new Set([
+  'running',
+  'waiting_agent',
+  'recovering',
+  'waiting_permission',
+  'waiting_user_input',
+  'unknown',
+] as const);
 const TERMINAL_PHASES = new Set(['completed', 'failed', 'cancelled', 'interrupted'] as const);
 const TODO_STATUSES = new Set([
   'pending',
@@ -63,6 +71,22 @@ function record(value: unknown): Readonly<Record<string, unknown>> | undefined {
     : undefined;
 }
 
+/**
+ * Runtime summaries from older Sessions may expose only the persisted Space
+ * tag. Treat every available ownership marker as authoritative so a legacy
+ * Partner Session is never projected onto the Coder surface.
+ */
+export function isPartnerRuntimeSessionIdentity(value: unknown): boolean {
+  const session = record(value);
+  const runtimeInfo = record(session?.runtimeInfo);
+  return (
+    session?.tag === 'partner' ||
+    session?.surface === 'partner' ||
+    session?.profileId === 'kodax-space.partner' ||
+    runtimeInfo?.surface === 'partner'
+  );
+}
+
 function text(value: unknown, max = MAX_REASON): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value.slice(0, max) : undefined;
 }
@@ -87,10 +111,14 @@ export function projectRuntimeRun(
   queuePosition?: number,
 ): SpaceRuntimeRunProjectionT {
   const origin = run.origin;
+  const activeSubtaskCount = nonNegativeInteger(run.activeSubtaskCount);
   return {
     runId: run.runId,
     sessionId: run.sessionId,
     phase: runtimePhase(run.phase),
+    ...(run.stage !== undefined ? { stage: run.stage } : {}),
+    ...(run.stageChangedAt !== undefined ? { stageChangedAt: timestamp(run.stageChangedAt) } : {}),
+    ...(activeSubtaskCount !== undefined ? { activeSubtaskCount } : {}),
     ...(run.queuedAt !== undefined
       ? { queuedAt: timestamp(run.queuedAt) }
       : run.phase === 'queued'
@@ -106,6 +134,15 @@ export function projectRuntimeRun(
       : run.error
         ? { terminalReason: run.error.slice(0, MAX_REASON) }
         : {}),
+    ...(run.lifecycleError !== undefined
+      ? {
+          lifecycleError: {
+            code: run.lifecycleError.code,
+            message: run.lifecycleError.message.slice(0, MAX_REASON),
+            retryable: run.lifecycleError.retryable,
+          },
+        }
+      : {}),
     ...(origin !== undefined
       ? {
           initiatedBy: {
@@ -121,6 +158,19 @@ export function projectRuntimeRun(
               ? { credential: run.requirements.credential.state }
               : {}),
             ...(run.requirements.hostTools ? { hostTools: run.requirements.hostTools.state } : {}),
+          },
+        }
+      : {}),
+    ...(run.stop !== undefined
+      ? {
+          stop: {
+            requestedAt: timestamp(run.stop.requestedAt),
+            state: run.stop.state,
+            outcome: run.stop.outcome,
+            reason: run.stop.reason.slice(0, MAX_REASON) || 'Stop outcome is unknown.',
+            ...(run.stop.resolvedAt !== undefined
+              ? { resolvedAt: timestamp(run.stop.resolvedAt) }
+              : {}),
           },
         }
       : {}),
@@ -296,55 +346,6 @@ function permissionOperation(
   if (EXECUTE_OPERATIONS.has(normalized)) return 'execute';
   if (NETWORK_OPERATIONS.has(normalized)) return 'network';
   return 'unknown';
-}
-
-type SpacePermissionRequest = Extract<SpaceRuntimeInteractionT, { kind: 'permission' }>['request'];
-
-function projectAutoModeDiagnostics(
-  value: RuntimePermissionRequest['autoModeDiagnostics'],
-): SpacePermissionRequest['autoModeDiagnostics'] | undefined {
-  if (!value) return undefined;
-  const attempts = value.classifierAttempts?.slice(0, 4).map((attempt) => {
-    const diagnostics = attempt.diagnostics;
-    const provider = diagnostics ? sanitizeForDisplay(diagnostics.provider, 128) : '';
-    const model = diagnostics ? sanitizeForDisplay(diagnostics.model, 256) : '';
-    const timeoutMs = nonNegativeInteger(diagnostics?.timeoutMs);
-    const elapsedMs = nonNegativeInteger(diagnostics?.elapsedMs);
-    const promptBytes = nonNegativeInteger(diagnostics?.promptBytes);
-    const retryCount = nonNegativeInteger(diagnostics?.retryCount);
-    const retryWaitMs = nonNegativeInteger(diagnostics?.retryWaitMs);
-    const safeDiagnostics =
-      diagnostics &&
-      provider &&
-      model &&
-      timeoutMs !== undefined &&
-      elapsedMs !== undefined &&
-      promptBytes !== undefined &&
-      retryCount !== undefined &&
-      retryCount <= 16 &&
-      retryWaitMs !== undefined
-        ? {
-            provider,
-            model,
-            timeoutMs,
-            elapsedMs,
-            promptBytes,
-            retryCount,
-            retryWaitMs,
-            terminalPhase: diagnostics.terminalPhase,
-          }
-        : undefined;
-    return {
-      attempt: Math.min(4, Math.max(1, Math.trunc(attempt.attempt))),
-      outcome: attempt.outcome,
-      ...(safeDiagnostics ? { diagnostics: safeDiagnostics } : {}),
-    };
-  });
-  return {
-    source: value.source,
-    ...(value.classifierFailureKind ? { classifierFailureKind: value.classifierFailureKind } : {}),
-    ...(attempts && attempts.length > 0 ? { classifierAttempts: attempts } : {}),
-  };
 }
 
 function permissionInteraction(
@@ -846,7 +847,10 @@ export function projectRuntimeProfile(input: {
   readonly connectionState?: 'ready' | 'degraded';
   readonly reason?: string;
 }): SpaceRuntimeProfileProjectionT {
-  const codeSessions = input.status.sessions.filter((session) => session.surface !== 'partner');
+  const codeSessions = input.status.sessions.filter(
+    (session) => !isPartnerRuntimeSessionIdentity(session),
+  );
+  const codeSessionIds = new Set(codeSessions.map((session) => session.id));
   return spaceRuntimeProfileProjectionSchema.parse({
     connection: {
       state: input.connectionState ?? 'ready',
@@ -880,7 +884,10 @@ export function projectRuntimeProfile(input: {
         ...runs,
       };
     }),
-    interactions: projectRuntimeInteractions(input.status.pendingPermissions, input.userInputs),
+    interactions: projectRuntimeInteractions(
+      input.status.pendingPermissions.filter((request) => codeSessionIds.has(request.sessionId)),
+      input.userInputs.filter((request) => codeSessionIds.has(request.sessionId)),
+    ),
     notifications: [],
   });
 }

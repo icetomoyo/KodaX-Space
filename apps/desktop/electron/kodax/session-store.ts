@@ -26,7 +26,10 @@
 // 重置：setSessionStoreImpl(null) 恢复默认。
 import { canonProjectRoot, type Surface } from '@kodax-space/space-ipc-schema';
 import { dedupeTranscriptEntries } from '../ipc/transcript-dedup.js';
+import path from 'node:path';
+import { getKodaxRuntimeDir } from './data-paths.js';
 import { getSessionTitleStore } from './session-title-store.js';
+import { watchPersistedSessionContents } from './session-content-watcher.js';
 
 type SdkSessionModule = typeof import('@kodax-ai/kodax/session');
 type SessionManager = ReturnType<SdkSessionModule['createSessionManager']>;
@@ -86,8 +89,15 @@ export interface SessionStoreImpl {
    * back to `loadSession` (active branch only). See {@link loadPersistedTranscript}.
    */
   readonly loadFullTranscript?: SdkSessionModule['loadFullTranscript'];
+  /** SDK-owned ordinary-conversation projection; raw transcript remains the audit surface. */
+  readonly readConversationHistory?: SdkSessionModule['readConversationHistory'];
   readonly appendClientNotice?: SdkSessionModule['appendClientNotice'];
   readonly watchSessions: SdkSessionModule['watchSessions'];
+  /** Space-owned compatibility watcher for existing-file content changes. */
+  readonly watchSessionContents?: (callback: Parameters<SdkSessionModule['watchSessions']>[0]) => {
+    close: () => void;
+    ready?: Promise<void>;
+  };
   /** optional — mock impls can omit; default impl wires via createSessionManager when present. */
   readonly createSessionManager?: SdkSessionModule['createSessionManager'];
   readonly compactSession?: SessionManager['compactSession'];
@@ -170,6 +180,12 @@ const DEFAULT_IMPL: SessionStoreImpl = {
     // Guard against a spuriously-old SDK build without the method (never-throw contract).
     return typeof sdk.loadFullTranscript === 'function' ? sdk.loadFullTranscript(id) : null;
   },
+  readConversationHistory: async (id, opts) => {
+    const sdk = await loadSdkModule();
+    return typeof sdk.readConversationHistory === 'function'
+      ? sdk.readConversationHistory(id, opts)
+      : null;
+  },
   appendClientNotice: async (id, opts) => {
     const manager = await getManager();
     return typeof manager.appendClientNotice === 'function'
@@ -200,6 +216,12 @@ const DEFAULT_IMPL: SessionStoreImpl = {
       },
     };
   },
+  watchSessionContents: (cb) =>
+    process.platform === 'win32' || process.platform === 'linux'
+      ? watchPersistedSessionContents(path.join(getKodaxRuntimeDir(), 'sessions'), cb, {
+          onBaselineRecovered: clearPersistedSessionCache,
+        })
+      : { close: () => undefined },
 };
 
 let activeImpl: SessionStoreImpl = DEFAULT_IMPL;
@@ -211,6 +233,11 @@ interface CachedPersistedSessionList {
 
 let sessionListCacheGeneration = 0;
 let sessionListWatcher: { close: () => void } | null = null;
+let sessionContentWatcher: { close: () => void; ready?: Promise<void> } | null = null;
+let sessionContentWatcherReady: Promise<void> = Promise.resolve();
+const sessionContentSubscribers = new Set<
+  (event: { kind: 'add' | 'remove' | 'change'; sessionId: string }) => void
+>();
 let globalSummaryCache: {
   readonly expiresAt: number;
   readonly summaries: CursorSessionSummary[];
@@ -230,15 +257,33 @@ export function invalidatePersistedSessionListCache(): void {
 
 function ensureSessionListWatcher(): void {
   if (sessionListWatcher !== null) return;
-  sessionListWatcher = activeImpl.watchSessions(() => {
-    invalidatePersistedSessionListCache();
+  sessionListWatcher = activeImpl.watchSessions((event) => {
+    // SDK storage is shared with the CLI and other Space processes. A per-Session file event must
+    // invalidate every item projection, not only the sidebar list; otherwise the next history read
+    // can reuse an indefinitely stale transcript/conversation snapshot from before the external
+    // write. The global epoch also fences asynchronous reads already in flight.
+    invalidatePersistedSessionCache(event.sessionId);
   });
+  sessionContentWatcher =
+    activeImpl.watchSessionContents?.((event) => {
+      invalidatePersistedSessionCache(event.sessionId);
+      for (const subscriber of sessionContentSubscribers) subscriber(event);
+    }) ?? null;
+  sessionContentWatcherReady = sessionContentWatcher?.ready ?? Promise.resolve();
+}
+
+async function ensureSessionContentBaseline(): Promise<void> {
+  ensureSessionListWatcher();
+  await sessionContentWatcherReady;
 }
 
 /** 测试用：注入 mock SDK 实现。生产代码不调。 */
 export function setSessionStoreImpl(impl: SessionStoreImpl | null): void {
   sessionListWatcher?.close();
   sessionListWatcher = null;
+  sessionContentWatcher?.close();
+  sessionContentWatcher = null;
+  sessionContentWatcherReady = Promise.resolve();
   activeImpl = impl ?? DEFAULT_IMPL;
   clearPersistedSessionCache(); // 切 impl 必清缓存，避免 test 之间读到生产值
 }
@@ -367,7 +412,7 @@ async function listVisibleSummaryCandidates(opts: {
 }
 
 async function loadGlobalSummarySnapshot(): Promise<CursorSessionSummary[]> {
-  ensureSessionListWatcher();
+  await ensureSessionContentBaseline();
   const now = Date.now();
   if (globalSummaryCache !== null && globalSummaryCache.expiresAt > now) {
     return globalSummaryCache.summaries;
@@ -408,7 +453,7 @@ export async function listPersistedSessions(opts: {
   readonly limit?: number;
   readonly surface?: 'code' | 'partner';
 }): Promise<PersistedSessionMeta[]> {
-  ensureSessionListWatcher();
+  await ensureSessionContentBaseline();
   const key = JSON.stringify([
     opts.projectRoot === undefined ? null : canonProjectRoot(opts.projectRoot, IS_WIN_MAIN),
     opts.limit ?? DEFAULT_VISIBLE_SESSION_LIMIT,
@@ -527,10 +572,12 @@ async function listPersistedSessionsUncached(opts: {
 export async function forkPersistedSession(opts: {
   readonly sourceSessionId: string;
   readonly selector?: string;
+  readonly historyBoundary?: SessionConversationMutationBoundary;
   readonly title?: string;
 }): Promise<{ readonly newSessionId: string; readonly title: string } | null> {
   const result = await activeImpl.forkSession(opts.sourceSessionId, {
     ...(opts.selector !== undefined ? { selector: opts.selector } : {}),
+    ...(opts.historyBoundary !== undefined ? { historyBoundary: opts.historyBoundary } : {}),
     title: opts.title,
   });
   if (!result) return null;
@@ -554,10 +601,16 @@ export async function forkPersistedSession(opts: {
 export async function rewindPersistedSession(opts: {
   readonly sessionId: string;
   readonly selector?: string;
+  readonly historyBoundary?: SessionConversationMutationBoundary;
 }): Promise<boolean> {
   const data = await activeImpl.rewindSession(
     opts.sessionId,
-    opts.selector !== undefined ? { selector: opts.selector } : undefined,
+    opts.selector !== undefined || opts.historyBoundary !== undefined
+      ? {
+          ...(opts.selector !== undefined ? { selector: opts.selector } : {}),
+          ...(opts.historyBoundary !== undefined ? { historyBoundary: opts.historyBoundary } : {}),
+        }
+      : undefined,
   );
   if (data !== null) {
     invalidatePersistedSessionCache(opts.sessionId); // 截断后旧 data 过期
@@ -620,8 +673,8 @@ export async function compactPersistedSession(
  * 重读完整 jsonl (几 MB)。LRU 5 个 session 上限——刚好覆盖"最近用过的几个 session 切来
  * 切去"场景。缓存条目在 deletePersistedSession / fork / rewind 时清掉，避免读到过期数据。
  *
- * 失效语义：进程内只看自身 mutation；其他进程 (KodaX CLI) 改写同一 session 后 Space 进程
- * 不知道——这是已有的约束 (Space 不监听 jsonl 文件变化)，缓存不放大此问题。
+ * 失效语义：进程内 mutation 与 SDK watchSessions 上报的跨进程文件变化都会按 Session ID
+ * 清理 load/transcript/conversation 三类缓存，并通过 epoch 拒绝正在返回的旧异步读取。
  *
  * 返回 null 当 sessionId 不存在。
  */
@@ -634,6 +687,7 @@ const loadCache = new Map<string, LoadedSessionData>();
 let persistedSessionCacheEpoch = 0;
 
 export async function loadPersistedSession(sessionId: string): Promise<LoadedSessionData | null> {
+  await ensureSessionContentBaseline();
   for (;;) {
     const cached = loadCache.get(sessionId);
     if (cached !== undefined) {
@@ -657,6 +711,21 @@ export async function loadPersistedSession(sessionId: string): Promise<LoadedSes
       loadCache.delete(oldestKey);
     }
     return data;
+  }
+}
+
+/**
+ * Read the exact persisted Session without consulting the UI-oriented LRU.
+ * Ownership fences must observe cross-process retags immediately; a cached
+ * Coder record could otherwise hide that the same ID is now Partner-owned.
+ */
+export async function loadPersistedSessionFresh(
+  sessionId: string,
+): Promise<LoadedSessionData | null> {
+  for (;;) {
+    const loadEpoch = persistedSessionCacheEpoch;
+    const data = await activeImpl.loadSession(sessionId);
+    if (loadEpoch === persistedSessionCacheEpoch) return data;
   }
 }
 
@@ -708,7 +777,48 @@ type TranscriptData =
 
 const transcriptCache = new Map<string, TranscriptData>();
 
+export type PersistedConversationHistoryData = NonNullable<
+  Awaited<ReturnType<SdkSessionModule['readConversationHistory']>>
+>;
+
+export type PersistedConversationHistoryRead =
+  | { readonly supported: false; readonly data: null }
+  | { readonly supported: true; readonly data: PersistedConversationHistoryData | null };
+
+const conversationHistoryCache = new Map<string, PersistedConversationHistoryData>();
+
+/**
+ * Read the SDK-owned ordinary-conversation projection. `supported:false` is reserved for old
+ * injected test/legacy implementations; a supported `null` means the Session itself is missing.
+ */
+export async function loadPersistedConversationHistory(
+  sessionId: string,
+): Promise<PersistedConversationHistoryRead> {
+  if (!activeImpl.readConversationHistory) return { supported: false, data: null };
+  await ensureSessionContentBaseline();
+  for (;;) {
+    const cached = conversationHistoryCache.get(sessionId);
+    if (cached !== undefined) {
+      conversationHistoryCache.delete(sessionId);
+      conversationHistoryCache.set(sessionId, cached);
+      return { supported: true, data: cached };
+    }
+    const loadEpoch = persistedSessionCacheEpoch;
+    const data = await activeImpl.readConversationHistory(sessionId);
+    if (loadEpoch !== persistedSessionCacheEpoch) continue;
+    if (data === null) return { supported: true, data: null };
+    conversationHistoryCache.set(sessionId, data);
+    while (conversationHistoryCache.size > LOAD_CACHE_MAX) {
+      const oldestKey = conversationHistoryCache.keys().next().value;
+      if (oldestKey === undefined) break;
+      conversationHistoryCache.delete(oldestKey);
+    }
+    return { supported: true, data };
+  }
+}
+
 export async function loadPersistedTranscript(sessionId: string): Promise<TranscriptData | null> {
+  await ensureSessionContentBaseline();
   for (;;) {
     const cached = transcriptCache.get(sessionId);
     if (cached !== undefined) {
@@ -746,7 +856,9 @@ export async function loadPersistedTranscript(sessionId: string): Promise<Transc
 
 type TranscriptSelectorEntry = {
   readonly entryId?: unknown;
+  readonly parentId?: unknown;
   readonly logicalId?: unknown;
+  readonly sourceEntryId?: unknown;
   readonly active?: unknown;
   readonly type?: unknown;
   readonly summary?: unknown;
@@ -761,6 +873,78 @@ type TranscriptSelectorEntry = {
   } | null;
 };
 
+type SessionConversationMutationBoundary = NonNullable<
+  NonNullable<Parameters<SdkSessionModule['forkSession']>[1]>['historyBoundary']
+>;
+
+export type PersistedTurnEndBoundary =
+  | {
+      readonly kind: 'conversation';
+      readonly historyBoundary: SessionConversationMutationBoundary;
+    }
+  | { readonly kind: 'selector'; readonly selector: string };
+
+function isVisibleConversationUserMessage(message: unknown): boolean {
+  if (message === null || typeof message !== 'object' || Array.isArray(message)) return false;
+  const record = message as Record<string, unknown>;
+  if (record.role !== 'user') return false;
+  const source = record.source ?? record._source;
+  if (source === 'sidecar-verifier') return false;
+  if (record.synthetic === true || record._synthetic === true) return false;
+  if (extractPromptText(record.content).trim().length > 0) return true;
+  if (!Array.isArray(record.content)) return false;
+  return record.content.some((block) => {
+    if (block === null || typeof block !== 'object' || Array.isArray(block)) return false;
+    const type = (block as { readonly type?: unknown }).type;
+    return type === 'image' || type === 'image_url';
+  });
+}
+
+function persistedConversationTurnEndBoundaryId(
+  entries: PersistedConversationHistoryData['entries'],
+  turnIndex: number,
+): string | null {
+  let currentTurn = -1;
+  let candidate: string | null = null;
+  for (const entry of entries) {
+    if (isVisibleConversationUserMessage(entry.message)) {
+      if (currentTurn === turnIndex) return candidate;
+      currentTurn += 1;
+      candidate = entry.boundaryId ?? null;
+      continue;
+    }
+    if (currentTurn === turnIndex) {
+      // Fail closed when the selected turn's visible tail has no exact physical boundary.
+      candidate = entry.boundaryId ?? null;
+    }
+  }
+  return currentTurn === turnIndex ? candidate : null;
+}
+
+/** Resolve the same visible turn boundary used by ordinary history; never guess a raw selector. */
+export async function findPersistedTurnEndBoundary(
+  sessionId: string,
+  turnIndex: number,
+): Promise<PersistedTurnEndBoundary | null> {
+  if (!Number.isInteger(turnIndex) || turnIndex < 0) return null;
+  const conversation = await loadPersistedConversationHistory(sessionId);
+  if (conversation.supported) {
+    if (conversation.data === null) return null;
+    const boundaryId = persistedConversationTurnEndBoundaryId(conversation.data.entries, turnIndex);
+    return boundaryId === null
+      ? null
+      : {
+          kind: 'conversation',
+          historyBoundary: {
+            boundaryId,
+            sourceRevision: conversation.data.sourceRevision,
+          },
+        };
+  }
+  const selector = await findPersistedTurnEndSelector(sessionId, turnIndex);
+  return selector === null ? null : { kind: 'selector', selector };
+}
+
 export async function findPersistedTurnEndSelector(
   sessionId: string,
   turnIndex: number,
@@ -770,16 +954,9 @@ export async function findPersistedTurnEndSelector(
   if (data === null) return null;
   const rawEntries = (data as { readonly transcriptEntries?: unknown }).transcriptEntries;
   if (!Array.isArray(rawEntries)) return null;
-  const dedupedEntries = dedupeTranscriptEntries(rawEntries as readonly TranscriptSelectorEntry[]);
-  const hasActiveBranchMarkers = rawEntries.some(
-    (entry) =>
-      entry &&
-      typeof entry === 'object' &&
-      (entry as { readonly active?: unknown }).active === true,
-  );
-  const entries = hasActiveBranchMarkers
-    ? dedupedEntries.filter((entry) => entry.active === true)
-    : dedupedEntries;
+  // Renderer turn indexes come from this same visible full-history projection. Active-only
+  // filtering would make a visible pre-compaction turn select a later clone or another turn.
+  const entries = dedupeTranscriptEntries(rawEntries as readonly TranscriptSelectorEntry[]);
 
   let currentTurn = -1;
   let candidate: string | null = null;
@@ -838,6 +1015,7 @@ export function invalidatePersistedSessionCache(sessionId: string): void {
   persistedSessionCacheEpoch += 1;
   loadCache.delete(sessionId);
   transcriptCache.delete(sessionId);
+  conversationHistoryCache.delete(sessionId);
   invalidatePersistedSessionListCache();
 }
 
@@ -846,6 +1024,7 @@ export function clearPersistedSessionCache(): void {
   persistedSessionCacheEpoch += 1;
   loadCache.clear();
   transcriptCache.clear();
+  conversationHistoryCache.clear();
   invalidatePersistedSessionListCache();
 }
 
@@ -858,5 +1037,13 @@ export function clearPersistedSessionCache(): void {
 export function watchPersistedSessions(
   callback: (event: { kind: 'add' | 'remove' | 'change'; sessionId: string }) => void,
 ): { close: () => void } {
-  return activeImpl.watchSessions(callback);
+  ensureSessionListWatcher();
+  const sdkWatcher = activeImpl.watchSessions(callback);
+  sessionContentSubscribers.add(callback);
+  return {
+    close: () => {
+      sdkWatcher.close();
+      sessionContentSubscribers.delete(callback);
+    },
+  };
 }

@@ -7,8 +7,8 @@
 //   'accept-edits' → edit/write/multi_edit/insert_after_anchor 自动批；
 //                    其他 (bash/web_fetch/...) 走 ask modal；
 //                    dangerous (rm -rf 等) 即便是 edit 工具也 ask
-//   'auto'         → FEATURE_030 wire AutoModeToolGuardrail 后由 guardrail 守门。
-//                    F030 前的 fallback：跟 accept-edits 同行为，保证不比 accept-edits 松。
+//   'auto'         → FEATURE_030 AutoModeToolGuardrail 正常路径不进入 broker；
+//                    兼容路径只对 dangerous 调用保留本地确认，避免双 broker。
 //
 // 已删 mode：
 //   - 'ask-permissions'    (KodaX 没有)
@@ -229,24 +229,22 @@ test('auto mode (pre-F030 fallback) auto-allows edits like accept-edits', async 
   }
 });
 
-test('auto mode: non-dangerous bash falls through to SDK guardrail (no modal)', async () => {
-  // F030 wired 后 broker 这层不再为 bash 弹窗 — auto 模式真正的决策在 SDK
-  // guardrail (AutoModeToolGuardrail)，broker 在这里 allow_once 让 SDK 接手。
-  // dangerous bash 仍由 broker 兜底弹窗（见下面的 dangerous bash 测试）。
-  const pending = permissionBroker.request({
+test('auto compatibility path does not re-prompt for ordinary bash', async () => {
+  // SDK guardrail 正常路径不会调用 broker；兼容调用者若仍转发到这里，broker 不能
+  // 对已裁决调用再弹一次 modal。危险调用仍由下面的用例验证为 fail-closed。
+  const result = await permissionBroker.request({
     sessionId: 's_auto2',
     toolId: 't_bash',
     toolName: 'bash',
     input: { command: 'echo hi' },
     mode: 'auto',
   });
-  const result = await pending;
-  assert.equal(result.decision, 'allow_once', 'non-dangerous bash must short-circuit in auto');
   const reqs = captured.filter((c) => c.channel === 'permission.request');
-  assert.equal(reqs.length, 0, 'non-dangerous bash in auto mode must NOT pop broker modal');
+  assert.equal(result.decision, 'allow_once');
+  assert.equal(reqs.length, 0, 'ordinary bash in Auto must not use a second broker modal');
 });
 
-test('auto mode (pre-F030 fallback) still asks for dangerous bash', async () => {
+test('auto bootstrap fallback still asks for dangerous bash', async () => {
   const pending = permissionBroker.request({
     sessionId: 's_auto3',
     toolId: 't_rm',

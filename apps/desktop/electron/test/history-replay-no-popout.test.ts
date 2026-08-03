@@ -75,6 +75,7 @@ function assertClosedTranscriptStructure(sessionId: string): void {
 }
 
 beforeEach(() => {
+  useAppStore.getState().resetSessionMessages(SID);
   // 重置 store 关键 fields
   useAppStore.setState({
     sessions: [
@@ -325,6 +326,146 @@ test('history replay keeps a deliberately repeated identical turn with a distinc
     out.filter((message) => message.kind === 'assistant_text' && message.text === 'same answer')
       .length,
     2,
+  );
+});
+
+test('expanding a paged history window preserves a folded live turn exactly once', () => {
+  const store = useAppStore.getState();
+  store.appendUserMessage(SID, 'newest query', 20_000);
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-newest',
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'newest answer complete',
+    sentAt: 20_100,
+  });
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: SID,
+    turnId: 'turn-newest',
+  });
+
+  const newestWindow: SessionHistoryItem[] = [
+    { kind: 'history_truncation', scope: 'history', omittedItems: 2 },
+    {
+      kind: 'user',
+      content: 'newest query',
+      sentAt: 20_000,
+      turnId: 'turn-newest',
+      turnUserOrdinal: 0,
+    },
+    { kind: 'assistant', text: 'newest answer', sentAt: 20_100 },
+  ];
+  store.prependSessionHistory(SID, newestWindow, FALLBACK_SENT_AT, {
+    replaceLoadedWindow: true,
+  });
+  store.prependSessionHistory(
+    SID,
+    [
+      {
+        kind: 'user',
+        content: 'older query',
+        sentAt: 10_000,
+        turnId: 'turn-older',
+        turnUserOrdinal: 0,
+      },
+      { kind: 'assistant', text: 'older answer', sentAt: 10_100 },
+      newestWindow[1]!,
+      { kind: 'assistant', text: 'newest answer complete', sentAt: 20_100 },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true },
+  );
+
+  const state = useAppStore.getState();
+  const out = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  });
+  assert.deepEqual(
+    out.flatMap((message) => {
+      if (message.kind === 'user') return [`user:${message.content}`];
+      if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+      return [];
+    }),
+    [
+      'user:older query',
+      'assistant:older answer',
+      'user:newest query',
+      'assistant:newest answer complete',
+    ],
+  );
+});
+
+test('expanded history pages replace the prior truncation row and keep exact mutation boundaries', () => {
+  useAppStore.getState().prependSessionHistory(
+    SID,
+    [
+      { kind: 'history_truncation', scope: 'history', omittedItems: 2 },
+      {
+        kind: 'user',
+        content: 'newer query',
+        entryId: 'u2',
+        canonicalIndex: 2,
+        historyTurnIndex: 0,
+        historyBoundary: { boundaryId: 'a2', sourceRevision: 'source-1' },
+      },
+      { kind: 'assistant', text: 'newer answer', entryId: 'a2', canonicalIndex: 3 },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true },
+  );
+  const newestIdBeforeExpansion = useAppStore
+    .getState()
+    .userMessagesBySession[SID]?.find((message) => message.content === 'newer query')?.id;
+  useAppStore.getState().prependSessionHistory(
+    SID,
+    [
+      {
+        kind: 'user',
+        content: 'older query',
+        entryId: 'u1',
+        canonicalIndex: 0,
+        historyTurnIndex: 0,
+        historyBoundary: { boundaryId: 'a1', sourceRevision: 'source-1' },
+      },
+      { kind: 'assistant', text: 'older answer', entryId: 'a1', canonicalIndex: 1 },
+      {
+        kind: 'user',
+        content: 'newer query',
+        entryId: 'u2',
+        canonicalIndex: 2,
+        historyTurnIndex: 1,
+        historyBoundary: { boundaryId: 'a2', sourceRevision: 'source-1' },
+      },
+      { kind: 'assistant', text: 'newer answer', entryId: 'a2', canonicalIndex: 3 },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true },
+  );
+
+  const state = useAppStore.getState();
+  const visibleUsers = (state.userMessagesBySession[SID] ?? []).filter(
+    (message) => !message.hiddenHistoryAnchor && !message.hiddenProjectionDuplicate,
+  );
+  assert.deepEqual(
+    visibleUsers.map((message) => message.content),
+    ['older query', 'newer query'],
+  );
+  assert.deepEqual(visibleUsers[1]?.historyBoundary, {
+    boundaryId: 'a2',
+    sourceRevision: 'source-1',
+  });
+  assert.equal(visibleUsers[1]?.id, newestIdBeforeExpansion);
+  assert.equal(
+    (state.eventsBySession[SID] ?? []).filter((event) => event.kind === 'history_truncation')
+      .length,
+    0,
   );
 });
 
@@ -2508,4 +2649,766 @@ test('workflow_notice history item restores as a workflow system_notice at its t
   );
   const notice = out[nIdx];
   if (notice?.kind === 'system_notice') assert.match(notice.text, /\[workflow\] completed · run-x/);
+});
+
+test('history replay preserves canonical transcript provenance through user and event projections', () => {
+  const items: SessionHistoryItem[] = [
+    {
+      kind: 'user',
+      content: 'query',
+      entryId: 'entry_user',
+      parentId: 'entry_parent',
+      logicalId: 'logical_user',
+      sourceEntryId: 'entry_source',
+      authoritativeEntryId: 'entry_active_clone',
+      canonicalIndex: 34,
+      turnId: 'turn_1',
+      turnUserOrdinal: 0,
+    },
+    {
+      kind: 'assistant',
+      text: 'answer',
+      entryId: 'entry_assistant',
+      parentId: 'entry_user',
+      logicalId: 'logical_assistant',
+      canonicalIndex: 35,
+      turnId: 'turn_1',
+    },
+    {
+      kind: 'tool_call',
+      toolId: 'tool_1',
+      toolName: 'read',
+      result: 'ok',
+      entryId: 'entry_assistant',
+      parentId: 'entry_user',
+      logicalId: 'logical_assistant',
+      canonicalIndex: 35,
+      turnId: 'turn_1',
+    },
+  ];
+
+  useAppStore.getState().prependSessionHistory(SID, items, FALLBACK_SENT_AT);
+  const state = useAppStore.getState();
+  const user = state.userMessagesBySession[SID]?.[0];
+  assert.equal(user?.entryId, 'entry_user');
+  assert.equal(user?.parentId, 'entry_parent');
+  assert.equal(user?.logicalId, 'logical_user');
+  assert.equal(user?.sourceEntryId, 'entry_source');
+  assert.equal(user?.authoritativeEntryId, 'entry_active_clone');
+  assert.equal(user?.canonicalIndex, 34);
+  const events = state.eventsBySession[SID] ?? [];
+  const text = events.find((event) => event.kind === 'text_delta');
+  const tool = events.find((event) => event.kind === 'tool_start');
+  assert.equal(text?.entryId, 'entry_assistant');
+  assert.equal(text?.canonicalIndex, 35);
+  assert.equal(text?.turnId, 'turn_1');
+  assert.equal(tool?.entryId, 'entry_assistant');
+  assert.equal(tool?.parentId, 'entry_user');
+});
+
+test('persisted compaction entry identity reconciles live-first and history-first delivery exactly once', () => {
+  const liveBoundary: SessionEvent = {
+    kind: 'lineage_notice',
+    sessionId: SID,
+    noticeKind: 'compaction',
+    text: 'internal summary',
+    entryId: 'entry_compaction',
+    parentId: null,
+    logicalId: 'entry_compaction',
+    canonicalIndex: 2,
+    sentAt: FALLBACK_SENT_AT + 2,
+  };
+  useAppStore.setState({
+    eventsBySession: { [SID]: [liveBoundary] },
+    userMessagesBySession: {},
+  });
+  useAppStore.getState().prependSessionHistory(
+    SID,
+    [
+      {
+        kind: 'user',
+        content: 'query',
+        entryId: 'entry_user',
+        logicalId: 'entry_user',
+        canonicalIndex: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 'answer',
+        entryId: 'entry_answer',
+        logicalId: 'entry_answer',
+        canonicalIndex: 1,
+      },
+      {
+        kind: 'lineage_notice',
+        noticeKind: 'compaction',
+        text: 'internal summary',
+        entryId: 'entry_compaction',
+        parentId: null,
+        logicalId: 'entry_compaction',
+        canonicalIndex: 2,
+        sentAt: FALLBACK_SENT_AT + 2,
+      },
+    ],
+    FALLBACK_SENT_AT,
+  );
+  let boundaries = (useAppStore.getState().eventsBySession[SID] ?? []).filter(
+    (event) =>
+      event.kind === 'lineage_notice' &&
+      event.noticeKind === 'compaction' &&
+      event.entryId === 'entry_compaction',
+  );
+  assert.equal(boundaries.length, 1, 'live-first reconciliation keeps the history slot only once');
+
+  useAppStore.getState().appendEvent(liveBoundary);
+  boundaries = (useAppStore.getState().eventsBySession[SID] ?? []).filter(
+    (event) =>
+      event.kind === 'lineage_notice' &&
+      event.noticeKind === 'compaction' &&
+      event.entryId === 'entry_compaction',
+  );
+  assert.equal(boundaries.length, 1, 'history-first replay drops the duplicate live boundary');
+
+  const composed = composeMessages({
+    events: useAppStore.getState().eventsBySession[SID] ?? [],
+    userMessages: useAppStore.getState().userMessagesBySession[SID] ?? [],
+  });
+  assert.equal(
+    composed.filter(
+      (message) =>
+        message.kind === 'system_notice' &&
+        message.variant === 'lineage' &&
+        message.lineageKind === 'compaction',
+    ).length,
+    1,
+  );
+});
+
+test('live compaction placeholder upgrades in place without overtaking later output', () => {
+  const provisional: SessionEvent = {
+    kind: 'lineage_notice',
+    sessionId: SID,
+    noticeKind: 'compaction',
+    text: 'Compaction',
+    provisionalId: 'runtime-compaction:evt_1',
+    displayId: 'runtime-compaction:evt_1',
+    contextId: SID,
+    afterRevision: 8,
+    tokensBefore: 120_000,
+    tokensAfter: 40_000,
+    sentAt: FALLBACK_SENT_AT + 1,
+  };
+  const exact: SessionEvent = {
+    ...provisional,
+    text: 'durable summary',
+    entryId: 'entry_compaction',
+    logicalId: 'entry_compaction',
+    canonicalIndex: 42,
+    sentAt: FALLBACK_SENT_AT,
+  };
+  useAppStore.setState({ eventsBySession: { [SID]: [] }, userMessagesBySession: {} });
+
+  useAppStore.getState().appendEvent(provisional);
+  const provisionalMessageId = composeMessages({
+    events: useAppStore.getState().eventsBySession[SID] ?? [],
+    userMessages: [],
+  }).find(
+    (message) =>
+      message.kind === 'system_notice' &&
+      message.variant === 'lineage' &&
+      message.lineageKind === 'compaction',
+  )?.id;
+  useAppStore.getState().appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'output after compaction',
+  });
+  useAppStore.getState().appendEvent(exact);
+  useAppStore.getState().appendEvent(provisional);
+
+  const events = useAppStore.getState().eventsBySession[SID] ?? [];
+  assert.equal(events.length, 2);
+  assert.equal(events[0]?.kind, 'lineage_notice');
+  assert.equal(
+    events[0]?.kind === 'lineage_notice' ? events[0].entryId : undefined,
+    'entry_compaction',
+  );
+  assert.equal(events[1]?.kind, 'text_delta');
+  const exactMessageId = composeMessages({ events, userMessages: [] }).find(
+    (message) =>
+      message.kind === 'system_notice' &&
+      message.variant === 'lineage' &&
+      message.lineageKind === 'compaction',
+  )?.id;
+  assert.equal(exactMessageId, provisionalMessageId);
+});
+
+test('history compaction keeps same-facts live boundaries until exact identity resolves', () => {
+  useAppStore.getState().prependSessionHistory(
+    SID,
+    [
+      {
+        kind: 'lineage_notice',
+        noticeKind: 'compaction',
+        text: 'durable summary',
+        entryId: 'entry_compaction',
+        logicalId: 'entry_compaction',
+        canonicalIndex: 42,
+        tokensBefore: 120_000,
+        tokensAfter: 40_000,
+        sentAt: FALLBACK_SENT_AT,
+      },
+    ],
+    FALLBACK_SENT_AT,
+  );
+  const historyMessageId = composeMessages({
+    events: useAppStore.getState().eventsBySession[SID] ?? [],
+    userMessages: [],
+  }).find(
+    (message) =>
+      message.kind === 'system_notice' &&
+      message.variant === 'lineage' &&
+      message.lineageKind === 'compaction',
+  )?.id;
+  const matchingProvisional: SessionEvent = {
+    kind: 'lineage_notice',
+    sessionId: SID,
+    noticeKind: 'compaction',
+    text: 'Compaction',
+    provisionalId: 'runtime-compaction:evt_matching',
+    displayId: 'runtime-compaction:evt_matching',
+    tokensBefore: 120_000,
+    tokensAfter: 40_000,
+    sentAt: FALLBACK_SENT_AT + 10,
+  };
+  useAppStore.getState().appendEvent(matchingProvisional);
+  useAppStore.getState().appendEvent({
+    kind: 'lineage_notice',
+    sessionId: SID,
+    noticeKind: 'compaction',
+    text: 'Compaction',
+    provisionalId: 'runtime-compaction:evt_distinct',
+    displayId: 'runtime-compaction:evt_distinct',
+    tokensBefore: 120_000,
+    tokensAfter: 40_000,
+    sentAt: FALLBACK_SENT_AT + 20,
+  });
+
+  let boundaries = (useAppStore.getState().eventsBySession[SID] ?? []).filter(
+    (event): event is Extract<SessionEvent, { kind: 'lineage_notice' }> =>
+      event.kind === 'lineage_notice' && event.noticeKind === 'compaction',
+  );
+  assert.deepEqual(
+    boundaries.map((event) => event.entryId ?? event.provisionalId),
+    ['entry_compaction', 'runtime-compaction:evt_matching', 'runtime-compaction:evt_distinct'],
+    'tokens and nearby timestamps are facts, not identity; distinct boundaries fail open',
+  );
+
+  useAppStore.getState().appendEvent({
+    ...matchingProvisional,
+    text: 'durable summary',
+    entryId: 'entry_compaction',
+    logicalId: 'entry_compaction',
+    canonicalIndex: 42,
+    sentAt: FALLBACK_SENT_AT,
+  });
+  boundaries = (useAppStore.getState().eventsBySession[SID] ?? []).filter(
+    (event): event is Extract<SessionEvent, { kind: 'lineage_notice' }> =>
+      event.kind === 'lineage_notice' && event.noticeKind === 'compaction',
+  );
+  assert.deepEqual(
+    boundaries.map((event) => event.entryId ?? event.provisionalId),
+    ['entry_compaction', 'runtime-compaction:evt_distinct'],
+    'entryId proof retires only its matching provisional and keeps the canonical history slot',
+  );
+  const reconciledMessageId = composeMessages({
+    events: useAppStore.getState().eventsBySession[SID] ?? [],
+    userMessages: [],
+  }).find(
+    (message) =>
+      message.kind === 'system_notice' &&
+      message.variant === 'lineage' &&
+      message.lineageKind === 'compaction',
+  )?.id;
+  assert.equal(
+    reconciledMessageId,
+    historyMessageId,
+    'history-first exact reconciliation preserves the already-rendered message identity',
+  );
+});
+
+test('legacy history compaction never suppresses live boundaries by timestamp proximity', () => {
+  useAppStore.getState().prependSessionHistory(
+    SID,
+    [
+      {
+        kind: 'lineage_notice',
+        noticeKind: 'compaction',
+        text: 'legacy summary',
+        entryId: 'legacy_compaction',
+        logicalId: 'legacy_compaction',
+        canonicalIndex: 7,
+        sentAt: FALLBACK_SENT_AT,
+      },
+    ],
+    FALLBACK_SENT_AT,
+  );
+  const liveBase = {
+    kind: 'lineage_notice',
+    sessionId: SID,
+    noticeKind: 'compaction',
+    text: 'Compaction',
+    tokensBefore: 120_000,
+    tokensAfter: 40_000,
+  } as const;
+  useAppStore.getState().appendEvent({
+    ...liveBase,
+    provisionalId: 'runtime-compaction:legacy_matching',
+    sentAt: FALLBACK_SENT_AT + 50,
+  });
+  useAppStore.getState().appendEvent({
+    ...liveBase,
+    provisionalId: 'runtime-compaction:legacy_distant',
+    sentAt: FALLBACK_SENT_AT + 3_000,
+  });
+
+  const boundaries = (useAppStore.getState().eventsBySession[SID] ?? []).filter(
+    (event): event is Extract<SessionEvent, { kind: 'lineage_notice' }> =>
+      event.kind === 'lineage_notice' && event.noticeKind === 'compaction',
+  );
+  assert.deepEqual(
+    boundaries.map((event) => event.entryId ?? event.provisionalId),
+    [
+      'legacy_compaction',
+      'runtime-compaction:legacy_matching',
+      'runtime-compaction:legacy_distant',
+    ],
+  );
+});
+
+test('history truncation markers preserve their explicit positions around the retained query', () => {
+  useAppStore.getState().prependSessionHistory(
+    SID,
+    [
+      { kind: 'history_truncation', scope: 'history', omittedItems: 101 },
+      {
+        kind: 'user',
+        content: 'retained oversized query',
+        sentAt: FALLBACK_SENT_AT,
+        historyTurnIndex: 42,
+      },
+      { kind: 'history_truncation', scope: 'turn', omittedItems: 55 },
+      { kind: 'assistant', text: 'newest retained answer', sentAt: FALLBACK_SENT_AT + 1 },
+    ],
+    FALLBACK_SENT_AT,
+  );
+
+  const state = useAppStore.getState();
+  const composed = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  });
+  assert.deepEqual(
+    composed.map((message) =>
+      message.kind === 'system_notice'
+        ? [message.kind, message.lineageKind, message.historyTruncationScope, message.omittedItems]
+        : message.kind === 'user'
+          ? [message.kind, message.content]
+          : message.kind === 'assistant_text'
+            ? [message.kind, message.text, message.turnIndex]
+            : [message.kind],
+    ),
+    [
+      ['system_notice', 'history_truncation', 'history', 101],
+      ['user', 'retained oversized query'],
+      ['system_notice', 'history_truncation', 'turn', 55],
+      ['assistant_text', 'newest retained answer', 42],
+    ],
+  );
+});
+
+test('rewind uses absolute selector indexes while truncating the bounded renderer buffer', () => {
+  useAppStore.getState().prependSessionHistory(
+    SID,
+    [
+      { kind: 'history_truncation', scope: 'history', omittedItems: 200 },
+      {
+        kind: 'user',
+        content: 'visible turn 42',
+        sentAt: FALLBACK_SENT_AT,
+        historyTurnIndex: 42,
+      },
+      { kind: 'assistant', text: 'answer 42' },
+      {
+        kind: 'user',
+        content: 'visible turn 43',
+        sentAt: FALLBACK_SENT_AT + 2,
+        historyTurnIndex: 43,
+      },
+      { kind: 'assistant', text: 'answer 43' },
+    ],
+    FALLBACK_SENT_AT,
+  );
+
+  useAppStore.getState().rewindSessionBuffers(SID, 42);
+
+  const state = useAppStore.getState();
+  const visibleUsers = (state.userMessagesBySession[SID] ?? []).filter(
+    (message) => message.hiddenHistoryAnchor !== true,
+  );
+  assert.deepEqual(
+    visibleUsers.map((message) => [message.content, message.historyTurnIndex]),
+    [['visible turn 42', 42]],
+  );
+  const composed = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  });
+  assert.equal(
+    composed.some((message) => message.kind === 'user' && message.content === 'visible turn 43'),
+    false,
+  );
+});
+
+test('fork copies the bounded renderer buffer only through the selected absolute turn', () => {
+  useAppStore.setState({
+    userMessagesBySession: {
+      [SID]: [
+        {
+          id: 'prefix-anchor',
+          content: '',
+          sentAt: FALLBACK_SENT_AT - 1,
+          hiddenHistoryAnchor: true,
+          historyNoAssistantSegment: true,
+        },
+        {
+          id: 'visible-42',
+          content: 'visible turn 42',
+          sentAt: FALLBACK_SENT_AT,
+          historyTurnIndex: 42,
+        },
+        {
+          id: 'visible-43',
+          content: 'visible turn 43',
+          sentAt: FALLBACK_SENT_AT + 2,
+          historyTurnIndex: 43,
+        },
+        {
+          id: 'visible-44',
+          content: 'visible turn 44',
+          sentAt: FALLBACK_SENT_AT + 4,
+          historyTurnIndex: 44,
+        },
+      ],
+    },
+    eventsBySession: {
+      [SID]: [
+        { kind: 'text_delta', sessionId: SID, text: 'answer 42' },
+        { kind: 'session_complete', sessionId: SID },
+        { kind: 'text_delta', sessionId: SID, text: 'answer 43' },
+        { kind: 'session_complete', sessionId: SID },
+        { kind: 'text_delta', sessionId: SID, text: 'answer 44' },
+        { kind: 'session_complete', sessionId: SID },
+      ],
+    },
+  });
+
+  useAppStore.getState().forkSessionBuffers(SID, 'child-absolute-43', 43);
+
+  const state = useAppStore.getState();
+  assert.deepEqual(
+    (state.userMessagesBySession['child-absolute-43'] ?? []).map((message) => message.content),
+    ['', 'visible turn 42', 'visible turn 43'],
+  );
+  assert.deepEqual(
+    (state.eventsBySession['child-absolute-43'] ?? []).map((event) => [
+      event.kind,
+      event.sessionId,
+    ]),
+    [
+      ['text_delta', 'child-absolute-43'],
+      ['session_complete', 'child-absolute-43'],
+      ['text_delta', 'child-absolute-43'],
+      ['session_complete', 'child-absolute-43'],
+    ],
+  );
+});
+
+test('rewind cuts events by real segment ownership when a visible turn has no assistant segment', () => {
+  const messages = [
+    {
+      id: 'prefix-anchor',
+      content: '',
+      sentAt: FALLBACK_SENT_AT - 1,
+      hiddenHistoryAnchor: true,
+      historyNoAssistantSegment: true,
+    },
+    {
+      id: 'visible-42',
+      content: 'empty turn 42',
+      sentAt: FALLBACK_SENT_AT,
+      historyTurnIndex: 42,
+      historyNoAssistantSegment: true,
+    },
+    {
+      id: 'visible-43',
+      content: 'visible turn 43',
+      sentAt: FALLBACK_SENT_AT + 2,
+      historyTurnIndex: 43,
+    },
+    {
+      id: 'visible-44',
+      content: 'visible turn 44',
+      sentAt: FALLBACK_SENT_AT + 4,
+      historyTurnIndex: 44,
+    },
+  ];
+  const events = [
+    { kind: 'text_delta' as const, sessionId: SID, text: 'answer 43' },
+    { kind: 'session_complete' as const, sessionId: SID },
+    { kind: 'text_delta' as const, sessionId: SID, text: 'answer 44' },
+    { kind: 'session_complete' as const, sessionId: SID },
+  ];
+  useAppStore.setState({
+    userMessagesBySession: { [SID]: messages },
+    eventsBySession: { [SID]: events },
+  });
+
+  useAppStore.getState().rewindSessionBuffers(SID, 43);
+
+  let state = useAppStore.getState();
+  assert.deepEqual(
+    (state.userMessagesBySession[SID] ?? []).map((message) => message.content),
+    ['', 'empty turn 42', 'visible turn 43'],
+  );
+  assert.deepEqual(
+    (state.eventsBySession[SID] ?? []).map((event) => event.kind),
+    ['text_delta', 'session_complete'],
+  );
+
+  useAppStore.setState({
+    userMessagesBySession: { [SID]: messages },
+    eventsBySession: { [SID]: events },
+  });
+  useAppStore.getState().rewindSessionBuffers(SID, 42);
+  state = useAppStore.getState();
+  assert.deepEqual(state.eventsBySession[SID] ?? [], []);
+});
+
+test('repeating the same truncated history projection is idempotent and preserves ownership', () => {
+  const items: SessionHistoryItem[] = [
+    { kind: 'history_truncation', scope: 'history', omittedItems: 200 },
+    {
+      kind: 'user',
+      content: 'visible query',
+      sentAt: FALLBACK_SENT_AT,
+      historyTurnIndex: 42,
+      turnId: 'turn-visible-42',
+      turnUserOrdinal: 0,
+    },
+    { kind: 'history_truncation', scope: 'turn', omittedItems: 55 },
+    { kind: 'assistant', text: 'visible answer', sentAt: FALLBACK_SENT_AT + 1 },
+  ];
+
+  useAppStore.getState().prependSessionHistory(SID, items, FALLBACK_SENT_AT);
+  useAppStore.getState().prependSessionHistory(SID, items, FALLBACK_SENT_AT);
+
+  const state = useAppStore.getState();
+  assert.equal(
+    (state.userMessagesBySession[SID] ?? []).filter(
+      (message) => message.hiddenHistoryAnchor === true,
+    ).length,
+    1,
+  );
+  const composed = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  });
+  assert.deepEqual(
+    composed.map((message) => {
+      if (message.kind === 'system_notice') {
+        return [message.kind, message.historyTruncationScope, message.omittedItems];
+      }
+      if (message.kind === 'user') return [message.kind, message.content];
+      if (message.kind === 'assistant_text') return [message.kind, message.text];
+      return [message.kind];
+    }),
+    [
+      ['system_notice', 'history', 200],
+      ['user', 'visible query'],
+      ['system_notice', 'turn', 55],
+      ['assistant_text', 'visible answer'],
+    ],
+  );
+});
+
+test('repeating a truncated history whose final strong user has no response is idempotent', () => {
+  const items: SessionHistoryItem[] = [
+    { kind: 'history_truncation', scope: 'history', omittedItems: 200 },
+    {
+      kind: 'user',
+      content: 'cancelled query without a response',
+      sentAt: FALLBACK_SENT_AT,
+      historyTurnIndex: 42,
+      turnId: 'turn-empty-42',
+      turnUserOrdinal: 0,
+    },
+  ];
+
+  useAppStore.getState().prependSessionHistory(SID, items, FALLBACK_SENT_AT);
+  useAppStore.getState().prependSessionHistory(SID, items, FALLBACK_SENT_AT);
+
+  const state = useAppStore.getState();
+  const composed = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  });
+  assert.equal(
+    composed.filter(
+      (message) =>
+        message.kind === 'user' && message.content === 'cancelled query without a response',
+    ).length,
+    1,
+  );
+  assert.equal(
+    composed.filter(
+      (message) =>
+        message.kind === 'system_notice' &&
+        message.lineageKind === 'history_truncation' &&
+        message.historyTruncationScope === 'history',
+    ).length,
+    1,
+  );
+});
+
+test('s_607 projection keeps query, thinking, multi-tool receipts, workflow, and compaction in one order', () => {
+  const items: SessionHistoryItem[] = [
+    {
+      kind: 'user',
+      content: 'opening query',
+      entryId: 'opening_query',
+      logicalId: 'opening_query',
+      canonicalIndex: 0,
+      sentAt: FALLBACK_SENT_AT,
+    },
+    {
+      kind: 'assistant',
+      text: 'retained predecessor',
+      entryId: 'retained_parent',
+      parentId: 'opening_query',
+      logicalId: 'retained_parent',
+      canonicalIndex: 1,
+      sentAt: FALLBACK_SENT_AT + 1,
+    },
+    {
+      kind: 'user',
+      content: 'P0 query',
+      entryId: 'p0_query',
+      parentId: 'retained_parent',
+      logicalId: 'logical_p0',
+      canonicalIndex: 2,
+      turnId: 'turn_p0',
+      turnUserOrdinal: 0,
+      sentAt: FALLBACK_SENT_AT + 2,
+    },
+    {
+      kind: 'assistant',
+      text: 'I will verify both paths.',
+      thinking: 'inspect all relevant code',
+      entryId: 'p0_assistant',
+      parentId: 'p0_query',
+      logicalId: 'logical_assistant',
+      authoritativeEntryId: 'p0_assistant_clone',
+      canonicalIndex: 3,
+      turnId: 'turn_p0',
+      sentAt: FALLBACK_SENT_AT + 3,
+    },
+    {
+      kind: 'tool_call',
+      toolId: 'tool_read',
+      toolName: 'read',
+      input: { path: 'PRD.md' },
+      result: 'prd',
+      entryId: 'p0_assistant',
+      parentId: 'p0_query',
+      logicalId: 'logical_assistant',
+      authoritativeEntryId: 'p0_assistant_clone',
+      canonicalIndex: 3,
+      turnId: 'turn_p0',
+    },
+    {
+      kind: 'tool_call',
+      toolId: 'tool_grep',
+      toolName: 'grep',
+      input: { pattern: 'OLAP' },
+      result: 'matches',
+      entryId: 'p0_assistant',
+      parentId: 'p0_query',
+      logicalId: 'logical_assistant',
+      authoritativeEntryId: 'p0_assistant_clone',
+      canonicalIndex: 3,
+      turnId: 'turn_p0',
+    },
+    {
+      kind: 'workflow_notice',
+      text: '[workflow] completed · review',
+      entryId: 'workflow_result',
+      parentId: 'p0_results',
+      logicalId: 'workflow_result',
+      canonicalIndex: 5,
+      turnId: 'turn_p0',
+    },
+    {
+      kind: 'lineage_notice',
+      noticeKind: 'compaction',
+      text: 'internal summary',
+      entryId: 'compaction',
+      parentId: null,
+      logicalId: 'compaction',
+      canonicalIndex: 6,
+      tokensBefore: 120_000,
+      tokensAfter: 40_000,
+      sentAt: FALLBACK_SENT_AT + 6,
+    },
+  ];
+  useAppStore.getState().prependSessionHistory(SID, items, FALLBACK_SENT_AT);
+
+  const state = useAppStore.getState();
+  const composed = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  });
+  assert.deepEqual(
+    composed.map((message) =>
+      message.kind === 'system_notice' ? `${message.kind}:${message.variant}` : message.kind,
+    ),
+    [
+      'user',
+      'assistant_text',
+      'user',
+      'assistant_text',
+      'tool_call',
+      'tool_call',
+      'system_notice:workflow',
+      'system_notice:lineage',
+    ],
+  );
+  const p0Assistant = composed.find(
+    (message) => message.kind === 'assistant_text' && message.text === 'I will verify both paths.',
+  );
+  assert.equal(
+    p0Assistant?.kind === 'assistant_text' ? p0Assistant.thinking : undefined,
+    'inspect all relevant code',
+  );
+  assert.deepEqual(
+    composed.flatMap((message) =>
+      message.kind === 'tool_call' ? [[message.toolId, message.status, message.result]] : [],
+    ),
+    [
+      ['tool_read', 'done', 'prd'],
+      ['tool_grep', 'done', 'matches'],
+    ],
+  );
+  assert.equal(new Set(composed.map((message) => message.id)).size, composed.length);
+  assert.equal(state.userMessagesBySession[SID]?.[1]?.turnId, 'turn_p0');
 });

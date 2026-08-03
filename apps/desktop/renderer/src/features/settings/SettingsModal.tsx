@@ -295,6 +295,7 @@ export function SettingsModal({
 
 function DiagnosticsPanel(): JSX.Element {
   const { t } = useI18n();
+  const currentSessionId = useAppStore((state) => state.currentSessionId);
   const [busy, setBusy] = useState(false);
 
   async function exportDiagnostics(): Promise<void> {
@@ -303,6 +304,7 @@ function DiagnosticsPanel(): JSX.Element {
     try {
       const result = await window.kodaxSpace.invoke('diagnostics.export', {
         categories: ['manifest', 'logs', 'capabilities', 'release', 'degradations'],
+        ...(currentSessionId ? { sessionId: currentSessionId } : {}),
       });
       if (!result.ok) {
         pushToast(t('settings.diagnostics.exportFailed'), 'error');

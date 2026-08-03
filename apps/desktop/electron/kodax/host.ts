@@ -14,7 +14,12 @@ import type { SessionEvent } from '@kodax-space/space-ipc-schema';
 import { pushToRenderer } from '../ipc/push.js';
 import { permissionBroker } from '../permission/broker.js';
 import { askUserBroker } from '../permission/ask-user-broker.js';
-import type { ManagedSession, PermissionRequestFn, SessionFactory } from './session-adapter.js';
+import type {
+  ManagedSession,
+  PermissionRequestFn,
+  SessionCancelResult,
+  SessionFactory,
+} from './session-adapter.js';
 import { MockKodaXSession } from './mock-session.js';
 import { RealKodaXSession } from './real-session.js';
 import {
@@ -24,7 +29,7 @@ import {
   deletePersistedSession,
   loadPersistedSession,
   compactPersistedSession,
-  findPersistedTurnEndSelector,
+  findPersistedTurnEndBoundary,
   retagPersistedSession,
   sdkTagToSurface,
   invalidatePersistedSessionListCache,
@@ -245,6 +250,8 @@ class KodaXHost {
     /** FEATURE_033：fork 时由 host.fork 传入；外部调用 createSession 不应直接用。*/
     parentSessionId?: string;
     forkPointTurnIdx?: number;
+    /** New-session ID allocated by the canonical KodaX SDK generator. */
+    sessionId?: string;
     /** tryResume 专用：复用磁盘上的 sessionId 而非生成新的。*/
     existingSessionId?: string;
   }): { sessionId: string; createdAt: number } {
@@ -259,7 +266,16 @@ class KodaXHost {
     ) {
       throw new Error('Space cannot create an inline Coder session without the owner fence.');
     }
-    const sessionId = opts.existingSessionId ?? `s_${randomUUID()}`;
+    if (opts.sessionId !== undefined && opts.existingSessionId !== undefined) {
+      throw new Error('A Session cannot be both newly allocated and resumed.');
+    }
+    const sessionId = opts.existingSessionId ?? opts.sessionId ?? `s_${randomUUID()}`;
+    if (!SAFE_SESSION_ID_RE.test(sessionId)) {
+      throw new Error(`Unsafe Session ID: ${sessionId}`);
+    }
+    if (this.sessions.has(sessionId)) {
+      throw new Error(`Session already exists in Space: ${sessionId}`);
+    }
     const effectiveModel = resolveEffectiveProviderModel(opts.provider, opts.model);
     const session = this.factory({
       sessionId,
@@ -281,15 +297,15 @@ class KodaXHost {
       },
       requestPermission: async (req: Parameters<PermissionRequestFn>[0]) => {
         // F007 permission gate：session 实现调用前转 broker，broker 推 IPC 弹窗给 renderer
-        // alpha.1：把当前 session 的 permissionMode 一起传——broker 据此做 mode-aware 短路。
-        // 从 sessions Map 现取（session.setPermissionMode 改字段后立即生效，无需重建）。
+        // Run-owned callers pass an immutable mode snapshot. Legacy callers omit
+        // it and continue to use the Session's current mode from the Map.
         const current = this.sessions.get(sessionId);
         const resolved = await permissionBroker.request({
           sessionId,
           toolId: req.toolId,
           toolName: req.toolName,
           input: req.input,
-          mode: current?.permissionMode,
+          mode: req.mode ?? current?.permissionMode,
           surface: req.surface ?? current?.surface,
           partnerToolAllowed: req.partnerToolAllowed,
         });
@@ -711,23 +727,33 @@ class KodaXHost {
     return items;
   }
 
-  async cancel(sessionId: string): Promise<boolean> {
+  async cancel(sessionId: string): Promise<SessionCancelResult> {
     const s = this.sessions.get(sessionId);
-    if (!s) return false;
+    if (!s) return { cancelled: false };
     // 取消该 session 所有 pending permission 弹窗——否则用户看到的弹窗对的是已死的 session，
     // tool 实际不会再执行，按了"允许"也没用
     permissionBroker.cancelSession(sessionId, 'session_cancelled');
     // FEATURE_032：同样取消 askUser pending，否则 modal 残留
     askUserBroker.cancelSession(sessionId, 'session_cancelled');
-    // KodaX 0.7.43 升级后 sidecar verifier 在 Worker 文字结束后才跑（3-10s），verifier 阶段
-    // 不一定响应 abortSignal；某些 provider 的 fetch 也不响应 AbortController。两种情况都会让
-    // `runKodaX` 的 await 在 cancel 之后仍长时间不返回 → session_complete / session_error 不
-    // emit → renderer spinner 永远转。
-    //
-    // Stop is a UI control: report the terminal state before any SDK teardown
-    // path gets a chance to block.
-    const daemonCoder = s.surface === 'code' && runtimeHostAdapter.hasReadyRuntime();
-    if (!daemonCoder) {
+    const runtimeCoder =
+      s instanceof RealKodaXSession &&
+      s.surface === 'code' &&
+      runtimeHostAdapter.isRuntimeSelected();
+    if (runtimeCoder) {
+      const stop = await s.cancel();
+      if (!stop) return { cancelled: false };
+      if ('kind' in stop) return { cancelled: true };
+      return {
+        cancelled:
+          stop.state === 'confirmed' &&
+          (stop.outcome === 'cancelled' || stop.outcome === 'interrupted'),
+        stop,
+      };
+    }
+
+    // Legacy streams have no structured Stop receipt. Main owns their terminal
+    // event so the renderer can stop immediately even if SDK teardown blocks.
+    {
       pushToRenderer('session.event', {
         kind: 'session_error',
         sessionId,
@@ -743,7 +769,7 @@ class KodaXHost {
       );
     });
     void cancelPromise;
-    return true;
+    return { cancelled: true };
   }
 
   /**
@@ -952,24 +978,48 @@ class KodaXHost {
   async fork(
     sourceSessionId: string,
     forkPointTurnIdx: number,
+    historyBoundary?: { readonly boundaryId: string; readonly sourceRevision: string },
   ): Promise<{ newSessionId: string; createdAt: number } | null> {
     const src = this.sessions.get(sourceSessionId);
     if (!src) return null;
 
     const forkTitle = src.title !== undefined ? `${stripForkSuffix(src.title)} (fork)` : undefined;
-    const selector = await findPersistedTurnEndSelector(sourceSessionId, forkPointTurnIdx);
-    const sdkResult =
-      src.surface === 'code' && runtimeHostAdapter.hasReadyRuntime()
-        ? await runtimeHostAdapter.forkSession({
-            sessionId: sourceSessionId,
-            ...(selector !== null ? { selector } : {}),
-            ...(forkTitle !== undefined ? { title: forkTitle } : {}),
-          })
-        : await forkPersistedSession({
-            sourceSessionId,
-            ...(selector !== null ? { selector } : {}),
-            title: forkTitle,
-          });
+    const usesRuntime = src.surface === 'code';
+    if (usesRuntime && !runtimeHostAdapter.hasReadyRuntime()) {
+      throw new Error('Runtime is unavailable for an exact Coder Session fork.');
+    }
+    if (usesRuntime && historyBoundary === undefined) {
+      throw new Error('An exact persisted history boundary is required for a Coder Session fork.');
+    }
+    const runtimeBoundary = usesRuntime
+      ? {
+          entryId: historyBoundary!.boundaryId,
+          sourceRevision: historyBoundary!.sourceRevision,
+        }
+      : null;
+    const persistedBoundary = usesRuntime
+      ? null
+      : historyBoundary !== undefined
+        ? { kind: 'conversation' as const, historyBoundary }
+        : await findPersistedTurnEndBoundary(sourceSessionId, forkPointTurnIdx);
+    if ((usesRuntime && runtimeBoundary === null) || (!usesRuntime && persistedBoundary === null)) {
+      throw new Error(
+        `invalid_index: turn ${forkPointTurnIdx} has no authoritative boundary in session ${sourceSessionId}`,
+      );
+    }
+    const sdkResult = usesRuntime
+      ? await runtimeHostAdapter.forkSession({
+          sessionId: sourceSessionId,
+          historyBoundary: runtimeBoundary!,
+          ...(forkTitle !== undefined ? { title: forkTitle } : {}),
+        })
+      : await forkPersistedSession({
+          sourceSessionId,
+          ...(persistedBoundary?.kind === 'conversation'
+            ? { historyBoundary: persistedBoundary.historyBoundary }
+            : { selector: persistedBoundary!.selector }),
+          title: forkTitle,
+        });
     if (!sdkResult) return null; // SDK 找不到 source（盘上没记录），不视作错误（fork 一个未持久化的全新 session 是合法的）
 
     // 用 SDK 返回的 sessionId 实例化（不走 createSession 因为后者自己 randomUUID）
@@ -1016,7 +1066,7 @@ class KodaXHost {
             toolId: req.toolId,
             toolName: req.toolName,
             input: req.input,
-            mode: current?.permissionMode,
+            mode: req.mode ?? current?.permissionMode,
             surface: req.surface ?? current?.surface,
             partnerToolAllowed: req.partnerToolAllowed,
           });
@@ -1071,6 +1121,7 @@ class KodaXHost {
   async rewind(
     sessionId: string,
     rewindPastTurnIdx: number,
+    historyBoundary?: { readonly boundaryId: string; readonly sourceRevision: string },
   ): Promise<{
     ok: boolean;
     reason?: 'session_not_found' | 'invalid_index' | 'session_busy';
@@ -1084,24 +1135,47 @@ class KodaXHost {
   }> {
     const s = this.sessions.get(sessionId);
     if (!s) return { ok: false, reason: 'session_not_found' };
+    const usesRuntime = s.surface === 'code';
+    if (usesRuntime && !runtimeHostAdapter.hasReadyRuntime()) {
+      throw new Error('Runtime is unavailable for an exact Coder Session rewind.');
+    }
+    if (usesRuntime && historyBoundary === undefined) {
+      throw new Error(
+        'An exact persisted history boundary is required for a Coder Session rewind.',
+      );
+    }
+    const runtimeBoundary = usesRuntime
+      ? {
+          entryId: historyBoundary!.boundaryId,
+          sourceRevision: historyBoundary!.sourceRevision,
+        }
+      : null;
+    const persistedBoundary = usesRuntime
+      ? null
+      : historyBoundary !== undefined
+        ? { kind: 'conversation' as const, historyBoundary }
+        : await findPersistedTurnEndBoundary(sessionId, rewindPastTurnIdx);
+    if ((usesRuntime && runtimeBoundary === null) || (!usesRuntime && persistedBoundary === null)) {
+      return { ok: false, reason: 'invalid_index' };
+    }
     // cancel in-flight，避免 rewind 后还有迟来的 event 把截掉的位置塞回去
     permissionBroker.cancelSession(sessionId, 'session_cancelled');
     askUserBroker.cancelSession(sessionId, 'session_cancelled');
     // await cancel：确保 IPC ack 返回时 stream 已彻底终止，renderer 截 buffer 时不会有
     // late event 把截掉的内容再塞回去。cancel 通常是 ms 级。
     await s.cancel().catch(() => undefined);
-    const selector = await findPersistedTurnEndSelector(sessionId, rewindPastTurnIdx);
     // 持久化截断（NEVER throws；不存在 / 无可退则 no-op；返回 false 让 renderer 知道）
-    const diskRewound =
-      s.surface === 'code' && runtimeHostAdapter.hasReadyRuntime()
-        ? (await runtimeHostAdapter.rewindSession({
-            sessionId,
-            ...(selector !== null ? { selector } : {}),
-          })) !== null
-        : await rewindPersistedSession({
-            sessionId,
-            ...(selector !== null ? { selector } : {}),
-          });
+    const diskRewound = usesRuntime
+      ? (await runtimeHostAdapter.rewindSession({
+          sessionId,
+          historyBoundary: runtimeBoundary!,
+        })) !== null
+      : await rewindPersistedSession({
+          sessionId,
+          ...(persistedBoundary?.kind === 'conversation'
+            ? { historyBoundary: persistedBoundary.historyBoundary }
+            : { selector: persistedBoundary!.selector }),
+        });
     s.lastActivityAt = Date.now();
     // forkPointTurnIdx 不变（rewind 不影响 fork 元数据）
     return { ok: true, diskRewound };

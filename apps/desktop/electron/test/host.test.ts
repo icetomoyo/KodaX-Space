@@ -10,7 +10,9 @@ import os from 'node:os';
 import path from 'node:path';
 import type { SessionEvent } from '@kodax-space/space-ipc-schema';
 import { kodaxHost } from '../kodax/host.js';
-import type { ManagedSession } from '../kodax/session-adapter.js';
+import { generateKodaxSessionId } from '../kodax/session-id.js';
+import type { ManagedSession, PermissionRequestFn } from '../kodax/session-adapter.js';
+import { runtimeHostAdapter } from '../kodax/runtime-host-adapter.js';
 import { setRendererTarget } from '../ipc/push.js';
 import {
   finalizePendingClipboardArtifacts,
@@ -82,6 +84,51 @@ test('createSession: returns sessionId starting with "s_" + createdAt timestamp'
   assert.match(result.sessionId, /^s_/);
   assert.ok(result.createdAt > 0);
   assert.equal(kodaxHost.get(result.sessionId)?.sessionId, result.sessionId);
+});
+
+test('createSession accepts canonical KodaX IDs for both Coder and Partner', async () => {
+  const coderId = await generateKodaxSessionId();
+  const partnerId = await generateKodaxSessionId();
+  assert.match(coderId, /^[A-Za-z0-9_-]{1,128}$/);
+  assert.match(partnerId, /^[A-Za-z0-9_-]{1,128}$/);
+  assert.notEqual(coderId, partnerId);
+
+  const coder = kodaxHost.createSession({
+    sessionId: coderId,
+    projectRoot: '/r',
+    provider: 'mock',
+    surface: 'code',
+  });
+  const partner = kodaxHost.createSession({
+    sessionId: partnerId,
+    projectRoot: '/r',
+    provider: 'mock',
+    surface: 'partner',
+  });
+
+  assert.equal(coder.sessionId, coderId);
+  assert.equal(partner.sessionId, partnerId);
+  assert.equal(kodaxHost.get(coderId)?.surface, 'code');
+  assert.equal(kodaxHost.get(partnerId)?.surface, 'partner');
+});
+
+test('createSession rejects duplicate and ambiguous explicit IDs', async () => {
+  const sessionId = await generateKodaxSessionId();
+  kodaxHost.createSession({ sessionId, projectRoot: '/r', provider: 'mock' });
+  assert.throws(
+    () => kodaxHost.createSession({ sessionId, projectRoot: '/r', provider: 'mock' }),
+    /already exists in Space/i,
+  );
+  assert.throws(
+    () =>
+      kodaxHost.createSession({
+        sessionId: 's_new',
+        existingSessionId: 's_existing',
+        projectRoot: '/r',
+        provider: 'mock',
+      }),
+    /both newly allocated and resumed/i,
+  );
 });
 
 test('createSession applies default reasoningMode = auto', () => {
@@ -189,7 +236,7 @@ test('cancel returns and emits cancelled fallback when adapter cancel never reso
       kodaxHost.cancel(sessionId),
       new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 100)),
     ]);
-    assert.equal(result, true);
+    assert.deepEqual(result, { cancelled: true });
     const last = getEvents().at(-1);
     assert.equal(last?.kind, 'session_error');
     if (last?.kind === 'session_error') {
@@ -199,6 +246,137 @@ test('cancel returns and emits cancelled fallback when adapter cancel never reso
   } finally {
     kodaxHost.setFactory(null);
   }
+});
+
+test('permission requests honor the run-scoped mode after the live Session mode changes', async () => {
+  let requestPermission: PermissionRequestFn | undefined;
+  kodaxHost.setFactory((opts): ManagedSession => {
+    requestPermission = opts.requestPermission;
+    return {
+      sessionId: opts.sessionId,
+      projectRoot: opts.projectRoot,
+      provider: opts.provider,
+      reasoningMode: opts.reasoningMode,
+      permissionMode: opts.permissionMode,
+      autoModeEngine: opts.autoModeEngine ?? 'llm',
+      agentMode: opts.agentMode ?? 'ama',
+      surface: opts.surface ?? 'code',
+      createdAt: Date.now(),
+      lastActivityAt: Date.now(),
+      title: undefined,
+      isRunning: () => false,
+      send: async () => ({ queued: false }),
+      cancel: async () => {},
+      dispose: async () => {},
+    };
+  });
+
+  try {
+    const { sessionId } = kodaxHost.createSession({
+      projectRoot: '/r',
+      provider: 'mock',
+      permissionMode: 'auto',
+    });
+    assert.equal(kodaxHost.setPermissionMode(sessionId, 'plan'), true);
+    assert.ok(requestPermission);
+
+    const result = await requestPermission({
+      toolId: 'run-owned-edit',
+      toolName: 'edit',
+      input: { path: '/r/file.ts' },
+      mode: 'auto',
+    });
+
+    assert.equal(result, 'allow_once');
+    assert.equal(
+      captured.some((entry) => entry.channel === 'permission.request'),
+      false,
+    );
+  } finally {
+    kodaxHost.setFactory(null);
+  }
+});
+
+test('Runtime cancel preserves unknown and already-confirmed Stop receipts without synthetic terminal events', async (t) => {
+  const adapter = runtimeHostAdapter as unknown as Record<string, unknown>;
+  const originalIsRuntimeSelected = adapter.isRuntimeSelected;
+  const originalAbortSessionRun = adapter.abortSessionRun;
+  t.after(() => {
+    adapter.isRuntimeSelected = originalIsRuntimeSelected;
+    adapter.abortSessionRun = originalAbortSessionRun;
+  });
+
+  adapter.isRuntimeSelected = () => true;
+  adapter.abortSessionRun = async (sessionId: string) =>
+    sessionId.endsWith('unknown')
+      ? {
+          runId: 'run_unknown',
+          sessionId,
+          accepted: false,
+          state: 'unknown',
+          outcome: 'unknown',
+          phase: 'unknown',
+          revision: 2,
+        }
+      : {
+          runId: 'run_confirmed',
+          sessionId,
+          accepted: false,
+          state: 'confirmed',
+          outcome: 'cancelled',
+          phase: 'cancelled',
+          revision: 3,
+        };
+
+  const unknown = kodaxHost.createSession({
+    existingSessionId: 's_runtime_unknown',
+    projectRoot: '/r',
+    provider: 'zai-coding',
+  });
+  const unknownResult = await kodaxHost.cancel(unknown.sessionId);
+  assert.deepEqual(unknownResult, {
+    cancelled: false,
+    stop: {
+      runId: 'run_unknown',
+      sessionId: 's_runtime_unknown',
+      accepted: false,
+      state: 'unknown',
+      outcome: 'unknown',
+      phase: 'unknown',
+      revision: 2,
+    },
+  });
+  assert.equal(
+    getEvents().some(
+      (event) => event.sessionId === unknown.sessionId && event.kind === 'session_error',
+    ),
+    false,
+  );
+
+  const confirmed = kodaxHost.createSession({
+    existingSessionId: 's_runtime_confirmed',
+    projectRoot: '/r',
+    provider: 'zai-coding',
+  });
+  const confirmedResult = await kodaxHost.cancel(confirmed.sessionId);
+  assert.deepEqual(confirmedResult, {
+    cancelled: true,
+    stop: {
+      runId: 'run_confirmed',
+      sessionId: 's_runtime_confirmed',
+      accepted: false,
+      state: 'confirmed',
+      outcome: 'cancelled',
+      phase: 'cancelled',
+      revision: 3,
+    },
+  });
+  assert.equal(
+    getEvents().some(
+      (event) => event.sessionId === confirmed.sessionId && event.kind === 'session_error',
+    ),
+    false,
+  );
 });
 
 test('concurrent send on same session is rejected (no queueing in F003 Mock)', async () => {

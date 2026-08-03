@@ -1,4 +1,8 @@
-import type { SessionMeta, SpaceSessionLiveProjectionT } from '@kodax-space/space-ipc-schema';
+import type {
+  SessionMeta,
+  SpaceRuntimeProfileProjectionT,
+  SpaceSessionLiveProjectionT,
+} from '@kodax-space/space-ipc-schema';
 
 import { sdkEffortToReasoningMode } from '../shell/effortLadder.js';
 
@@ -40,4 +44,41 @@ export function mergeRuntimeSettingsIntoSessions(
     }
     return next;
   });
+}
+
+/**
+ * Overlay daemon-owned session timestamps onto the sidebar projection.
+ *
+ * `session.list` may race Runtime startup and older SDK summaries only expose
+ * `createdAt`. Keeping this merge in the renderer means a later profile
+ * snapshot still repairs both the displayed timestamp and recency ordering.
+ */
+export function mergeRuntimeActivityIntoSessions(
+  sessions: readonly SessionMeta[],
+  profile: SpaceRuntimeProfileProjectionT | null,
+): readonly SessionMeta[] {
+  if (!profile || profile.sessions.length === 0 || sessions.length === 0) return sessions;
+
+  const runtimeBySessionId = new Map(
+    profile.sessions.map((session) => [session.sessionId, session] as const),
+  );
+  let changed = false;
+  const merged = sessions.map((session) => {
+    if ((session.surface ?? 'code') !== 'code') return session;
+    const runtimeSession = runtimeBySessionId.get(session.sessionId);
+    if (!runtimeSession) return session;
+
+    const createdAt = session.createdAt > 0 ? session.createdAt : runtimeSession.createdAt;
+    const lastActivityAt = Math.max(
+      createdAt,
+      session.lastActivityAt,
+      runtimeSession.lastActivityAt,
+    );
+    if (createdAt === session.createdAt && lastActivityAt === session.lastActivityAt) {
+      return session;
+    }
+    changed = true;
+    return { ...session, createdAt, lastActivityAt };
+  });
+  return changed ? merged : sessions;
 }

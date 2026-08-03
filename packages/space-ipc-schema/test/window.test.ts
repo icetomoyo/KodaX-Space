@@ -7,6 +7,7 @@ import {
   pushChannels,
   PUSH_CHANNEL_NAMES,
   windowActivityChannel,
+  windowCompleteExitProgressChannel,
   windowControlChannel,
   windowStateChannel,
 } from '../src/index.js';
@@ -16,6 +17,21 @@ test('window.activity push channel is registered', () => {
   assert.ok(PUSH_CHANNEL_NAMES.has('window.activity'));
   assert.equal(windowActivityChannel.name, 'window.activity');
   assert.equal(windowActivityChannel.direction, 'push');
+});
+
+test('window complete-exit progress push channel is registered and boolean-only', () => {
+  assert.ok(pushChannels['window.completeExitProgress']);
+  assert.ok(PUSH_CHANNEL_NAMES.has('window.completeExitProgress'));
+  assert.equal(windowCompleteExitProgressChannel.direction, 'push');
+  assert.equal(windowCompleteExitProgressChannel.payload.safeParse({ active: true }).success, true);
+  assert.equal(
+    windowCompleteExitProgressChannel.payload.safeParse({ active: false }).success,
+    true,
+  );
+  assert.equal(
+    windowCompleteExitProgressChannel.payload.safeParse({ active: 'yes' }).success,
+    false,
+  );
 });
 
 test('window control invoke channels are registered', () => {

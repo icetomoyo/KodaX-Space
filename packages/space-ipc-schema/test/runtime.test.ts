@@ -8,6 +8,7 @@ import {
   runtimeProfileChangedChannel,
   runtimeProfileSnapshotChannel,
   sessionLiveChangedChannel,
+  sessionLiveInvalidatedChannel,
   sessionLiveSnapshotChannel,
   spaceRuntimeProfileProjectionSchema,
   spaceSessionLiveChangedSchema,
@@ -48,6 +49,7 @@ test('runtime projection channels are registered in schema-derived allowlists', 
     'runtime.connectionChanged',
     'runtime.profileChanged',
     'session.liveChanged',
+    'session.liveInvalidated',
   ] as const) {
     assert.ok(PUSH_CHANNEL_NAMES.has(name));
   }
@@ -57,6 +59,7 @@ test('runtime projection channels are registered in schema-derived allowlists', 
   assert.equal(runtimeConnectionChangedChannel.name, 'runtime.connectionChanged');
   assert.equal(runtimeProfileChangedChannel.name, 'runtime.profileChanged');
   assert.equal(sessionLiveChangedChannel.name, 'session.liveChanged');
+  assert.equal(sessionLiveInvalidatedChannel.name, 'session.liveInvalidated');
 });
 
 test('profile projection is bounded and accepts only trusted Coder session ownership', () => {
@@ -152,6 +155,57 @@ test('selected-session live projection carries semantic spinner, Todo and queue 
   assert.equal(spaceSessionLiveProjectionSchema.safeParse(live).success, true);
   assert.equal(sessionLiveSnapshotChannel.output.safeParse(live).success, true);
   assert.equal(sessionLiveSnapshotChannel.input.safeParse({ sessionId: 's_1' }).success, true);
+});
+
+test('new Runtime lifecycle phases remain active and preserve stage, subtasks, and Stop truth', () => {
+  for (const phase of ['waiting_agent', 'recovering', 'unknown'] as const) {
+    const parsed = spaceSessionLiveProjectionSchema.safeParse({
+      sessionId: 's_1',
+      projectionRevision: 4,
+      cursor,
+      transcriptRevision: 'tx_4',
+      activeRun: {
+        runId: `run_${phase}`,
+        sessionId: 's_1',
+        phase,
+        stage: phase === 'waiting_agent' ? 'waiting_agent' : phase,
+        stageChangedAt: 3,
+        activeSubtaskCount: phase === 'waiting_agent' ? 2 : 0,
+        startedAt: 2,
+        ...(phase === 'unknown'
+          ? {
+              lifecycleError: {
+                code: 'actor_settlement_not_persisted',
+                message: 'Actor state could not be persisted.',
+                retryable: false,
+              },
+              stop: {
+                requestedAt: 4,
+                state: 'unknown',
+                outcome: 'unknown',
+                reason: 'Host outcome could not be confirmed.',
+              },
+            }
+          : {}),
+      },
+      queuedRuns: [],
+      activeTools: [],
+      todos: [],
+      queuedInputs: [],
+      interactions: [],
+    });
+    assert.equal(parsed.success, true, phase);
+  }
+
+  assert.equal(
+    sessionLiveInvalidatedChannel.payload.safeParse({
+      sessionId: 's_1',
+      runtimeId: 'rt_1',
+      reason: 'event_overflow',
+      message: 'The observation must be rebuilt from a fresh snapshot.',
+    }).success,
+    true,
+  );
 });
 
 test('live changes require monotonic revisions and typed domain replacements', () => {
@@ -330,6 +384,17 @@ test('Runtime interaction projections preserve bounded display input and strip t
           sessionId: 's_1',
           risk: 'high',
           reason: 'Run command',
+          autoModeDiagnostics: {
+            source: 'classifier_confirm',
+            classifierAttempts: [
+              {
+                attempt: 1,
+                outcome: 'confirm',
+                observedProtocol: 'structured_v2',
+                outputWarnings: ['missing_hazard'],
+              },
+            ],
+          },
           allowAlwaysScope: {
             kind: 'runtime_persistent',
             label: 'Always allow this exact command: npm test',
@@ -355,6 +420,17 @@ test('Runtime interaction projections preserve bounded display input and strip t
   });
   assert.equal(interaction.request.toolCall.operation, 'execute');
   assert.equal(interaction.request.toolCall.executionCwd, 'C:\\repo');
+  assert.deepEqual(interaction.request.autoModeDiagnostics, {
+    source: 'classifier_confirm',
+    classifierAttempts: [
+      {
+        attempt: 1,
+        outcome: 'confirm',
+        observedProtocol: 'structured_v2',
+        outputWarnings: ['missing_hazard'],
+      },
+    ],
+  });
   assert.deepEqual(interaction.request.allowAlwaysScope, {
     kind: 'runtime_persistent',
     label: 'Always allow this exact command: npm test',

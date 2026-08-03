@@ -47,7 +47,7 @@ export function buildBackgroundTrayPresentation(
       details: `任务 ${runtime.activeWork} · 其他客户端 ${runtime.otherClients}`,
       open: '打开 KodaX Space',
       closeWindow: '关闭 Space 界面',
-      quitCompletely: '彻底退出（安全停止 Runtime）',
+      quitCompletely: '彻底退出…',
     };
   }
   const status =
@@ -65,6 +65,6 @@ export function buildBackgroundTrayPresentation(
     details: `Tasks ${runtime.activeWork} · other clients ${runtime.otherClients}`,
     open: 'Open KodaX Space',
     closeWindow: 'Close Space window',
-    quitCompletely: 'Quit completely (safely stop Runtime)',
+    quitCompletely: 'Quit completely…',
   };
 }

@@ -19,6 +19,10 @@ const ACTOR_STATUS_CACHE = new WeakMap<
   AgentActorTreeSnapshotT,
   Map<Translate, ActorStatusCacheEntry>
 >();
+const CURRENT_TURN_ACTOR_SNAPSHOT_CACHE = new WeakMap<
+  AgentActorTreeSnapshotT,
+  WeakMap<readonly SessionEvent[], AgentActorTreeSnapshotT>
+>();
 
 export interface AgentTraceViewModel {
   readonly id: string;
@@ -47,6 +51,116 @@ export function buildAgentStatuses(
 ): readonly AgentStatusViewModel[] {
   if (actorSnapshot) return buildActorStatuses(actorSnapshot, t, status);
   return buildLegacyAgentStatuses(status, t);
+}
+
+/**
+ * The Runtime Actor tree is cumulative for the lifetime of a Session. Task UI is
+ * turn-scoped, so keep only Actors referenced by the latest root turn plus any
+ * currently active Actors (and their ancestry/descendants).
+ */
+export function scopeAgentActorSnapshotToCurrentTurn(
+  snapshot: AgentActorTreeSnapshotT | undefined,
+  events: readonly SessionEvent[] | undefined,
+): AgentActorTreeSnapshotT | undefined {
+  if (!snapshot || !events || snapshot.actors.length <= 1) return snapshot;
+  const cached = CURRENT_TURN_ACTOR_SNAPSHOT_CACHE.get(snapshot)?.get(events);
+  if (cached) return cached;
+
+  let turnStartIndex = -1;
+  for (let index = events.length - 1; index >= 0; index--) {
+    if (events[index]?.kind === 'session_start') {
+      turnStartIndex = index;
+      break;
+    }
+  }
+
+  const actorByPath = new Map(snapshot.actors.map((actor) => [actor.path, actor]));
+  const selectedPaths = new Set<string>();
+  if (turnStartIndex >= 0) {
+    for (let index = turnStartIndex; index < events.length; index++) {
+      const event = events[index];
+      if (
+        event?.kind !== 'tool_result' ||
+        (event.toolName !== 'spawn_agent' && event.toolName !== 'followup_task')
+      ) {
+        continue;
+      }
+      const ref = parseActorTurnRef(event.content);
+      if (!ref) continue;
+      const actor = actorByPath.get(ref.actorPath);
+      if (
+        actor &&
+        (actor.currentTurnId === ref.turnId || actor.latestTurn?.turnId === ref.turnId)
+      ) {
+        selectedPaths.add(actor.path);
+      }
+    }
+  }
+
+  for (const actor of snapshot.actors) {
+    if (actor.path !== snapshot.rootPath && isActorTurnActive(actor)) {
+      selectedPaths.add(actor.path);
+    }
+  }
+
+  const selectedPathList = Array.from(selectedPaths);
+  const actors = snapshot.actors.filter(
+    (actor) =>
+      actor.path === snapshot.rootPath ||
+      selectedPathList.some(
+        (selectedPath) =>
+          actor.path === selectedPath ||
+          actor.path.startsWith(`${selectedPath}/`) ||
+          selectedPath.startsWith(`${actor.path}/`),
+      ),
+  );
+  const scoped =
+    actors.length === snapshot.actors.length
+      ? snapshot
+      : {
+          ...snapshot,
+          actors,
+          activeNonRootTurns: actors.filter(
+            (actor) => actor.path !== snapshot.rootPath && isActorTurnActive(actor),
+          ).length,
+        };
+  const byEvents = CURRENT_TURN_ACTOR_SNAPSHOT_CACHE.get(snapshot) ?? new WeakMap();
+  byEvents.set(events, scoped);
+  CURRENT_TURN_ACTOR_SNAPSHOT_CACHE.set(snapshot, byEvents);
+  return scoped;
+}
+
+function parseActorTurnRef(
+  content: string,
+): { readonly actorPath: string; readonly turnId: string } | null {
+  try {
+    const parsed: unknown = JSON.parse(content);
+    if (!isRecord(parsed)) return null;
+    const value = isRecord(parsed.data) ? parsed.data : parsed;
+    if (
+      typeof value.actorPath !== 'string' ||
+      !value.actorPath.startsWith('/root/') ||
+      typeof value.turnId !== 'string' ||
+      value.turnId.length === 0
+    ) {
+      return null;
+    }
+    return { actorPath: value.actorPath, turnId: value.turnId };
+  } catch {
+    return null;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isActorTurnActive(actor: AgentActorTreeSnapshotT['actors'][number]): boolean {
+  return (
+    actor.currentTurnId !== undefined ||
+    actor.latestTurn?.state === 'accepted' ||
+    actor.latestTurn?.state === 'running'
+  );
 }
 
 function buildLegacyAgentStatuses(

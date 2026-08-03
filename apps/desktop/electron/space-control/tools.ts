@@ -43,7 +43,11 @@ async function resolveAuthoritativeContext(
   ) {
     return undefined;
   }
-  return { ...context, permissionMode: session.permissionMode };
+  // The live Session is authoritative for identity and project ownership, but
+  // permissionMode belongs to the run that created this tool call. Replacing
+  // it with the mutable Session setting would let a mid-run UI toggle loosen
+  // or tighten one execution inconsistently. The new setting applies next run.
+  return context;
 }
 
 const inspectInputSchema = {

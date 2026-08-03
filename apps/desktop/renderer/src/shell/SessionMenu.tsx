@@ -40,6 +40,12 @@ import { invokeWithTimeout } from '../lib/ipcInvokeWithTimeout.js';
 import { requestConfirm } from '../store/confirmStore.js';
 import { pushToast } from '../store/toastStore.js';
 import { useI18n } from '../i18n/I18nProvider.js';
+import {
+  latestSelectorTurnIndex,
+  localNoticeCutoffSentAtForSelectorTurn,
+  messageForSelectorTurn,
+  previousSelectorTurnIndex,
+} from '../features/session/turnIndex.js';
 
 // 稳定空数组，防 selector `?? []` literal 每次新引用触发 zustand re-render loop (React #185)。
 const EMPTY_USER_MESSAGES: readonly UserMessage[] = [];
@@ -60,6 +66,8 @@ export function SessionMenu({ sessionId, onClose }: SessionMenuProps): JSX.Eleme
   const userMessages = useAppStore(
     (s) => s.userMessagesBySession[sessionId] ?? EMPTY_USER_MESSAGES,
   );
+  const latestTurnIndex = latestSelectorTurnIndex(userMessages);
+  const previousTurnIndex = previousSelectorTurnIndex(userMessages);
   const sessionFlags = useAppStore((s) => s.sessionFlags[sessionId]);
   const toggleFlag = useAppStore((s) => s.toggleSessionFlag);
   const session = sessions.find((x) => x.sessionId === sessionId);
@@ -101,7 +109,7 @@ export function SessionMenu({ sessionId, onClose }: SessionMenuProps): JSX.Eleme
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [renaming, sessionId, userMessages.length]);
+  }, [renaming, sessionId, latestTurnIndex, previousTurnIndex]);
 
   async function doRename(): Promise<void> {
     const trimmed = newTitle.trim();
@@ -150,10 +158,22 @@ export function SessionMenu({ sessionId, onClose }: SessionMenuProps): JSX.Eleme
    */
   async function doFork(): Promise<void> {
     if (!window.kodaxSpace || !session) return;
-    const forkPointTurnIdx = Math.max(0, userMessages.length - 1);
+    if (latestTurnIndex === undefined) {
+      pushToast(t('menu.session.noTurnsToFork'), 'info');
+      onClose();
+      return;
+    }
+    const forkPointTurnIdx = latestTurnIndex;
+    const historyBoundary = messageForSelectorTurn(userMessages, forkPointTurnIdx)?.historyBoundary;
+    if (session.surface === 'code' && historyBoundary === undefined) {
+      pushToast(t('session.historyBoundaryUnavailable'), 'warning');
+      onClose();
+      return;
+    }
     const r = await window.kodaxSpace.invoke('session.fork', {
       sessionId,
       forkPointTurnIdx,
+      ...(historyBoundary ? { historyBoundary } : {}),
     });
     if (!r.ok) {
       pushToast(
@@ -211,7 +231,7 @@ export function SessionMenu({ sessionId, onClose }: SessionMenuProps): JSX.Eleme
    */
   async function doRewind(): Promise<void> {
     if (!window.kodaxSpace || !session) return;
-    if (userMessages.length < 2) {
+    if (previousTurnIndex === undefined) {
       pushToast(t('menu.session.noEarlierTurn'), 'info');
       onClose();
       return;
@@ -227,8 +247,26 @@ export function SessionMenu({ sessionId, onClose }: SessionMenuProps): JSX.Eleme
       return;
     }
     // rewindPastTurnIdx = 保留前 N 条 user messages；要丢最后一条意味着保留 (length - 2) 索引位。
-    const rewindPastTurnIdx = userMessages.length - 2;
-    const r = await window.kodaxSpace.invoke('session.rewind', { sessionId, rewindPastTurnIdx });
+    const rewindPastTurnIdx = previousTurnIndex;
+    const historyBoundary = messageForSelectorTurn(
+      userMessages,
+      rewindPastTurnIdx,
+    )?.historyBoundary;
+    const localNoticeCutoffSentAt = localNoticeCutoffSentAtForSelectorTurn(
+      userMessages,
+      rewindPastTurnIdx,
+    );
+    if (session.surface === 'code' && historyBoundary === undefined) {
+      pushToast(t('session.historyBoundaryUnavailable'), 'warning');
+      onClose();
+      return;
+    }
+    const r = await window.kodaxSpace.invoke('session.rewind', {
+      sessionId,
+      rewindPastTurnIdx,
+      ...(historyBoundary ? { historyBoundary } : {}),
+      ...(localNoticeCutoffSentAt !== undefined ? { localNoticeCutoffSentAt } : {}),
+    });
     if (!r.ok) {
       pushToast(
         t('menu.session.rewindFailed', {
@@ -346,14 +384,16 @@ export function SessionMenu({ sessionId, onClose }: SessionMenuProps): JSX.Eleme
         label={t('menu.session.fork')}
         shortcut="F"
         onClick={() => void doFork()}
+        disabled={latestTurnIndex === undefined}
+        hint={latestTurnIndex === undefined ? t('menu.session.noTurnsToFork') : undefined}
       />
       <MenuRow
         Icon={Undo2}
         label={t('menu.session.rewindOneTurn')}
         shortcut="W"
         onClick={() => void doRewind()}
-        disabled={userMessages.length < 2}
-        hint={userMessages.length < 2 ? t('menu.session.noEarlierTurn') : undefined}
+        disabled={previousTurnIndex === undefined}
+        hint={previousTurnIndex === undefined ? t('menu.session.noEarlierTurn') : undefined}
       />
       <MenuRow
         Icon={Network}

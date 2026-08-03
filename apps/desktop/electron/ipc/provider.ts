@@ -47,7 +47,7 @@ import { refreshDiagnosticRedactionOptions } from '../diagnostics/runtime.js';
 import { runtimeHostAdapter } from '../kodax/runtime-host-adapter.js';
 import {
   addSpaceCustomProvider,
-  CustomProviderMutationQueue,
+  customProviderMutationQueue,
   removeSpaceCustomProvider,
   updateSpaceCustomProvider,
 } from '../providers/custom-provider-mutations.js';
@@ -57,8 +57,6 @@ type ConfiguredSource = ProviderInfo['configuredSource'];
 
 const injectedEnvOriginals = new Map<string, string | undefined>();
 let injectAllKeysToEnvQueue: Promise<void> = Promise.resolve();
-const customProviderMutationQueue = new CustomProviderMutationQueue();
-
 async function reloadCoderConfigBestEffort(context: string): Promise<void> {
   if (!runtimeHostAdapter.isRuntimeSelected()) return;
   await runtimeHostAdapter.reloadRuntimeConfig().catch((error) => {

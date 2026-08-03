@@ -18,6 +18,7 @@ import {
   runtimeProfileChangedChannel,
   runtimeProfileSnapshotChannel,
   sessionLiveChangedChannel,
+  sessionLiveInvalidatedChannel,
   sessionLiveSnapshotChannel,
 } from './runtime.js';
 import { repointelStatusChannel, repointelPrewarmChannel } from './repointel.js';
@@ -201,7 +202,12 @@ import {
   licenseRequireEntitlementChannel,
 } from './license.js';
 import { notificationShowChannel, notificationClickedChannel } from './notification.js';
-import { windowActivityChannel, windowControlChannel, windowStateChannel } from './window.js';
+import {
+  windowActivityChannel,
+  windowCompleteExitProgressChannel,
+  windowControlChannel,
+  windowStateChannel,
+} from './window.js';
 import { updaterCheckChannel, updaterInstallChannel, updaterStatusChannel } from './updater.js';
 import {
   mcpbInstallChannel,
@@ -497,6 +503,7 @@ export const pushChannels = {
   [runtimeConnectionChangedChannel.name]: runtimeConnectionChangedChannel,
   [runtimeProfileChangedChannel.name]: runtimeProfileChangedChannel,
   [sessionLiveChangedChannel.name]: sessionLiveChangedChannel,
+  [sessionLiveInvalidatedChannel.name]: sessionLiveInvalidatedChannel,
   [agentActorChangedChannel.name]: agentActorChangedChannel,
   [spaceControlRequestedChannel.name]: spaceControlRequestedChannel,
   [sessionEventChannel.name]: sessionEventChannel,
@@ -510,6 +517,7 @@ export const pushChannels = {
   [kodaxQueueChangedChannel.name]: kodaxQueueChangedChannel,
   [notificationClickedChannel.name]: notificationClickedChannel,
   [windowActivityChannel.name]: windowActivityChannel,
+  [windowCompleteExitProgressChannel.name]: windowCompleteExitProgressChannel,
   [updaterStatusChannel.name]: updaterStatusChannel,
   [mcpbChangedChannel.name]: mcpbChangedChannel,
   [terminalOutputChannel.name]: terminalOutputChannel,

@@ -50,23 +50,6 @@ function sessionLoadScopeKey(projectRoot: string, surface: string): string {
   return `${surface}:${canonProjectRootBrowser(projectRoot)}`;
 }
 
-// Hover-prefetch: 用户鼠标悬停在 Recents 项上时,后台触发 session.history IPC
-// 让 main 端 5-LRU cache (session-store.ts) 提前 warm 起来。等用户真正点击时,handler 命中
-// cache → 几乎瞬时返回。模块级 Set 避免对同一 session 重复 prefetch。
-// 只对 msgCount > 0 的 persisted session 做 (新空 session 没历史可拉)。
-const prefetchedSessionIds = new Set<string>();
-function prefetchSessionHistory(sessionId: string, msgCount: number | undefined): void {
-  if (!msgCount || msgCount === 0) return; // 没历史不浪费 IPC
-  if (prefetchedSessionIds.has(sessionId)) return;
-  if (!window.kodaxSpace) return;
-  prefetchedSessionIds.add(sessionId);
-  // 失败也不打扰用户,只是失去 prefetch 优势 (用户真正点击时还有第二次机会)
-  void window.kodaxSpace.invoke('session.history', { sessionId }).catch(() => {
-    // 取消标记,让真正 click 还能再试
-    prefetchedSessionIds.delete(sessionId);
-  });
-}
-
 interface LeftSidebarProps {
   /** 2026-06: 动态宽度（px）。Shell 拖 ResizeHandle 实时改这个值。 */
   width?: number;
@@ -1083,7 +1066,6 @@ function SessionRow({
       data-testid="sidebar-session-row"
       data-session-id={session.sessionId}
       onClick={() => onSelect(session.sessionId)}
-      onMouseEnter={() => prefetchSessionHistory(session.sessionId, session.msgCount)}
       onDoubleClick={onStartRename}
       onContextMenu={(e) => {
         e.preventDefault();

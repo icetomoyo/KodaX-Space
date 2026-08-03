@@ -5,6 +5,7 @@ import path from 'node:path';
 import { getKodaxRuntimeDir } from './data-paths.js';
 
 const MAX_CAPTURED_OUTPUT = 64 * 1024;
+const DAEMON_STOP_OUTER_GRACE_MS = 5_000;
 
 export interface SafeDaemonStopResult {
   readonly stopped: boolean;
@@ -13,6 +14,9 @@ export interface SafeDaemonStopResult {
     | 'stale'
     | 'unhealthy'
     | 'unverified_owner'
+    | 'cleanup_failed'
+    | 'cleanup_unverified'
+    | 'replacement_running'
     | 'command_failed'
     | 'invalid_output'
     | 'timeout'
@@ -25,6 +29,7 @@ interface DaemonStopJson {
   readonly stopped?: unknown;
   readonly reason?: unknown;
   readonly health?: unknown;
+  readonly error?: unknown;
 }
 
 export interface DaemonStopCommandResult {
@@ -148,23 +153,27 @@ export function parseDaemonStopOutput(result: DaemonStopCommandResult): SafeDaem
   }
   const reason = typeof parsed.reason === 'string' ? parsed.reason : undefined;
   const health = typeof parsed.health === 'string' ? parsed.health : undefined;
+  const error = typeof parsed.error === 'string' ? parsed.error.trim().slice(0, 512) : undefined;
   return {
     stopped: parsed.stopped,
     ...(reason !== undefined ? { reason } : {}),
     ...(!parsed.stopped && reason === undefined && health !== undefined ? { reason: health } : {}),
     exitCode: result.exitCode,
+    ...(!parsed.stopped && error ? { message: error } : {}),
   };
 }
 
 /**
  * Ask the published KodaX CLI to stop the Coder daemon through daemon.stop.
- * The daemon performs its own atomic client/work preflight and refuses when
- * another client, run, workflow, agent turn, or interaction still owns work.
+ * The daemon performs its own atomic client/work preflight, waits for the exact
+ * daemon process to exit, verifies the durable cleanup outcome, and refuses
+ * when another client, run, workflow, agent turn, or interaction still owns
+ * work.
  */
 export async function stopCoderDaemonWhenSafe(
   options: SafeDaemonStopOptions = {},
 ): Promise<SafeDaemonStopResult> {
-  const timeoutMs = Math.max(500, options.timeoutMs ?? 4_000);
+  const timeoutMs = Math.max(500, options.timeoutMs ?? 15_000);
   const cliPath = options.cliPath ?? resolveKodaxCliPath();
   const runtimeDir = path.resolve(options.runtimeDir ?? getKodaxRuntimeDir());
   // The Electron main bundle is CommonJS while KodaX publishes import-only
@@ -192,7 +201,12 @@ export async function stopCoderDaemonWhenSafe(
     process.execPath,
     launch.args,
     launch.env,
-    timeoutMs + 1_000,
+    // KodaX may use one timeout window to connect and a fresh one after
+    // daemon.stop is accepted. Its initialize/stop RPCs are not charged to the
+    // connect deadline, so reserve a third window for that handshake plus grace
+    // for Windows exact-tree recovery, the final PID wait, and JSON output.
+    // Keep an outer hard bound without killing a valid in-contract cleanup.
+    timeoutMs * 3 + DAEMON_STOP_OUTER_GRACE_MS,
   );
   return parseDaemonStopOutput(result);
 }

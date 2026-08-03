@@ -6,6 +6,10 @@ import { useSurfaceStore } from '../store/surface.js';
 import { requestConfirm } from '../store/confirmStore.js';
 import { useI18n } from '../i18n/I18nProvider.js';
 import { pushToast } from '../store/toastStore.js';
+import {
+  latestSelectorTurnIndex,
+  messageForSelectorTurn,
+} from '../features/session/turnIndex.js';
 import { SidebarContextMenu, type SidebarContextMenuItem } from './SidebarContextMenu.js';
 import {
   SESSION_CONTEXT_MENU_GROUPS,
@@ -49,10 +53,20 @@ export function SessionContextMenu({
   async function onFork(): Promise<void> {
     onClose();
     if (!window.kodaxSpace) return;
-    const turnIndex = Math.max(0, (userMessages?.length ?? 0) - 1);
+    const turnIndex = latestSelectorTurnIndex(userMessages ?? []);
+    if (turnIndex === undefined) {
+      pushToast(t('menu.session.noTurnsToFork'), 'info');
+      return;
+    }
+    const historyBoundary = messageForSelectorTurn(userMessages ?? [], turnIndex)?.historyBoundary;
+    if (session.surface === 'code' && historyBoundary === undefined) {
+      pushToast(t('session.historyBoundaryUnavailable'), 'warning');
+      return;
+    }
     const result = await window.kodaxSpace.invoke('session.fork', {
       sessionId: session.sessionId,
       forkPointTurnIdx: turnIndex,
+      ...(historyBoundary ? { historyBoundary } : {}),
     });
     if (!result.ok) {
       pushToast(

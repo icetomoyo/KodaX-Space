@@ -77,7 +77,11 @@ import {
   type TaskDockFocusRequest,
   type TaskDockSectionId,
 } from './taskDockControl.js';
-import { buildAgentStatuses, type AgentStatusViewModel } from './agentStatusProjection.js';
+import {
+  buildAgentStatuses,
+  scopeAgentActorSnapshotToCurrentTurn,
+  type AgentStatusViewModel,
+} from './agentStatusProjection.js';
 import type { TaskDockRunViewModel } from './taskDockProjection.js';
 import { useTaskDockRunView } from './useTaskDockRunView.js';
 import { RightSidebarFrame, type RightSidebarWidthMode } from './RightSidebarFrame.js';
@@ -585,16 +589,21 @@ function PlanSection({
 }): JSX.Element | null {
   const { t } = useI18n();
   const currentSessionId = useAppStore((s) => s.currentSessionId);
+  const [expandedPlanSessionId, setExpandedPlanSessionId] = useState<string | null>(null);
   const todos = useAppStore((s) =>
     currentSessionId
       ? (s.liveProjectionBySession[currentSessionId]?.todos ??
         s.todoListBySession[currentSessionId])
       : undefined,
   );
+  const showAll = currentSessionId !== null && expandedPlanSessionId === currentSessionId;
+  const showAllPlanItems = useCallback(() => {
+    if (currentSessionId) setExpandedPlanSessionId(currentSessionId);
+  }, [currentSessionId]);
 
   if (!todos || todos.length === 0) return null;
 
-  const plan = buildSidebarPlanView(todos);
+  const plan = buildSidebarPlanView(todos, { expanded: showAll });
 
   return (
     <Section
@@ -610,7 +619,7 @@ function PlanSection({
       )}
       <ul className="space-y-1 text-xs">
         {plan.rows.map((row) => (
-          <PlanRow key={planRowKey(row)} row={row} />
+          <PlanRow key={planRowKey(row)} row={row} onShowAll={showAllPlanItems} />
         ))}
       </ul>
     </Section>
@@ -622,7 +631,7 @@ function planRowKey(row: SidebarPlanRow): string {
   return `${row.kind}:${row.count}`;
 }
 
-function PlanRow({ row }: { row: SidebarPlanRow }): JSX.Element {
+function PlanRow({ row, onShowAll }: { row: SidebarPlanRow; onShowAll: () => void }): JSX.Element {
   const { t } = useI18n();
   if (row.kind === 'done-summary') {
     return (
@@ -636,12 +645,24 @@ function PlanRow({ row }: { row: SidebarPlanRow }): JSX.Element {
   }
 
   if (row.kind === 'more-summary') {
+    const label = t('right.showMorePlanItems', { count: row.count });
     return (
-      <li className="flex items-center gap-2 px-1.5 py-0.5 text-[11px] font-mono text-fg-faint">
-        <span className="w-3 text-center" aria-hidden>
-          +
-        </span>
-        <span>{t('right.moreCount', { count: row.count })}</span>
+      <li>
+        <button
+          type="button"
+          onClick={onShowAll}
+          className="group flex w-full items-center gap-2 rounded px-1.5 py-0.5 text-left font-mono text-[11px] text-fg-faint hover:bg-hover-bg hover:text-fg-secondary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent-ink"
+          aria-label={label}
+          title={label}
+          data-testid="right-sidebar-plan-show-more"
+        >
+          <span className="w-3 text-center" aria-hidden>
+            +
+          </span>
+          <span className="underline-offset-2 group-hover:underline">
+            {t('right.moreCount', { count: row.count })}
+          </span>
+        </button>
       </li>
     );
   }
@@ -748,13 +769,20 @@ function AgentSection({
   const actorSnapshot = useAppStore((s) =>
     currentSessionId ? s.agentActorSnapshotBySession[currentSessionId] : undefined,
   );
+  const events = useAppStore((s) =>
+    currentSessionId ? s.eventsBySession[currentSessionId] : undefined,
+  );
   const budget = useAppStore((s) =>
     currentSessionId ? s.workBudgetBySession[currentSessionId] : undefined,
   );
 
+  const currentTurnActorSnapshot = useMemo(
+    () => scopeAgentActorSnapshotToCurrentTurn(actorSnapshot, events),
+    [actorSnapshot, events],
+  );
   const agents = useMemo(
-    () => buildAgentStatuses(status, t, actorSnapshot),
-    [actorSnapshot, status, t],
+    () => buildAgentStatuses(status, t, currentTurnActorSnapshot),
+    [currentTurnActorSnapshot, status, t],
   );
 
   // Hide empty agent content, matching the no-content strategy used by PlanSection.
@@ -1319,7 +1347,7 @@ function AgentInlineList({
 }): JSX.Element {
   return (
     <ul className="space-y-1.5">
-      {agents.slice(0, 4).map((agent) => (
+      {agents.map((agent) => (
         <AgentStatusCard key={agent.id} agent={agent} compact />
       ))}
     </ul>

@@ -20,7 +20,7 @@
 //
 // 用法：
 //   npm run link:kodax    # 创建 staging
-//   npm run unlink:kodax  # 撤回，再 `npm ci` 还原 lockfile 中的 npm 包
+//   npm run unlink:kodax  # 撤回，再按 lockfile 还原实体包
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -50,7 +50,7 @@ function rimrafSafe(p) {
 if (unlinkMode) {
   rimrafSafe(STAGING);
   console.log(`[link-kodax] removed staging at ${STAGING}`);
-  console.log(`[link-kodax] run \`npm ci\` to restore the npm tarball from package-lock.json.`);
+  console.log(`[link-kodax] restore the locked package from package-lock.json before packaging.`);
   process.exit(0);
 }
 
@@ -144,5 +144,5 @@ console.log(`  1. Edit KodaX source under ${KODAX_REPO}/src/`);
 console.log(`  2. cd ${KODAX_REPO} && npm run build`);
 console.log(`  3. Restart Space dev — picks up new dist via junction.`);
 console.log(``);
-console.log(`Restore npm-published package:`);
+console.log(`Restore the locked physical package:`);
 console.log(`  npm run unlink:kodax && npm ci`);

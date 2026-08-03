@@ -22,17 +22,20 @@ npm install --include=dev
 
 KodaX Space 是 npm workspace monorepo。不要只在 `apps/desktop` 中安装依赖，否则 workspace package、Electron native module 与根脚本可能不一致。
 
-根、desktop manifest 与 lockfile 记录一个精确的 Registry KodaX 依赖。开发联调可用
-`npm run link:kodax` 连接同级源码；正式打包沿用既有依赖一致性检查，要求两个
-manifest、lockfile 与安装包解析同一个 Registry 版本和完整性，不再增加
+根、desktop manifest 与 lockfile 记录一个精确的 KodaX 版本。常规 Release/CI 使用
+Registry 包；预发布测试可在 lockfile 中解析到仓库内带版本号的 vendor tgz，并固定其
+sha512 完整性，通过 `npm run build:test-kodax` 显式构建。开发联调可用
+`npm run link:kodax` 连接同级源码；打包沿用既有依赖一致性检查，
+要求两个 manifest、lockfile 与安装包解析同一个版本和完整性，不再增加
 “KodaX 必须 ≥0.7.78”或包元数据生命周期门禁。Runtime 连接按实际能力协商：
 Space 管理的 daemon 必须返回 `daemonOrphanExit:1`，并继续要求
 `permission:grant-admin`、`interruptInput:1`、`actorControlPlane:1`、
 `contextCompaction:3`、`transcriptPaging:1`、`transcriptSearch:1`、
 `skillLearningLoop:1`、`integrationConfigResilience:1` 和
 `runtimeAutoModeGuardrail:4`。`@kodax-ai/kodax/sandbox` 通过独立 facade probe
-验证，不能用版本号冒充 backend readiness。不得伪造 lockfile URL/SRI，也不能提交
-开发机 `file:` 依赖。
+验证，不能用版本号冒充 backend readiness。不得伪造 lockfile URL/SRI；本地测试包必须
+使用 `kodax-ai-kodax-<version>.tgz` 命名、随 checkout 提供，并由 lockfile SRI 锁定内容。
+普通 `npm run build` 和正式发布入口始终拒绝本地 tgz。
 
 ## 2. 启动方式
 
@@ -160,15 +163,20 @@ A2A authentication/authority 的变化仍可能要求 Runtime owner 安全重启
 ### Windows 后台托盘与跨平台退出
 
 Windows 默认启用后台托盘。F140 让主窗口关闭行为可在 Settings → Preferences 中设为
-每次询问、最小化到托盘并保留 Runtime，或请求安全彻底退出；首次关闭默认询问，
+每次询问、最小化到托盘并保留 Runtime，或请求彻底退出；首次关闭默认询问，
 并可记住选择。最小化到托盘会销毁 BrowserWindow/renderer，但保留轻量 Electron
 main、托盘和 Runtime 客户端连接。托盘可重建窗口、只关闭界面，或请求安全的彻底退出；
 不再提供会让 Space 自动拉起的 daemon 失去可见控制面的“仅退出 Space”动作。
 
 Windows 彻底退出、macOS `Cmd+Q` 和 Linux 最后窗口退出使用同一生命周期：先关闭
-Coder admission 并检查 blocker，再断开 Space，通过发布版 KodaX CLI 的 daemon stop
-安全门执行。active/queued/pending 工作或其他客户端会阻止 **Space 退出**，并恢复
-可见窗口；stop 失败或超时会自动重开 Space。自动化 fixture 可设置
+Coder admission 并检查 blocker，再尝试 Runtime 的安全停止。active/queued/pending 工作
+或其他客户端阻止安全停止时，对话框提供“保持 Space 开启”和“强行关闭”；关闭对话框
+等同保持开启。强行关闭会取消当前 Space 所属的 Session Run、Agent Turn、Workflow、
+外部 Agent、交互与排队输入，然后完全退出 Electron；其他客户端的任务及其 Runtime
+不会被停止。共享 Runtime 的取消依据已认证的 Space principal、精确 Run/Agent ID 和
+Workflow source Run，不把 Session ID 当作客户端所有权。安全准备失败时也会提供相同
+的两个选项；取消、daemon 停止或最终清理即使未在有界等待内确认，也不会再次弹窗或
+重新拉起 Space。自动化 fixture 可设置
 `SPACE_DISABLE_TRAY=1` 获得确定性的关闭即退出行为；这不是 renderer 可写的产品偏好。
 若托盘初始化失败，应用仍走相同的 complete-exit gate。
 
@@ -268,17 +276,17 @@ native SQLite load、物理 sandbox helper/doctor、真实 packaged boot 和 Git
 
 ## 8. 排障
 
-| 现象                          | 首先检查                                                                                                 |
-| ----------------------------- | -------------------------------------------------------------------------------------------------------- |
-| 没有 Provider / API key       | Settings → Providers；环境变量；OS Keychain 状态                                                         |
-| 会话或配置出现在错误 profile  | 启动前的 `KODAX_HOME`、`KODAX_PROFILE_DIR`；不要在 SDK import 后修改                                     |
-| Runtime run 失败              | 版本信息、runId、`~/.kodax/space/logs`、Runtime status/capability snapshot                               |
-| Packaged daemon 启动即退出    | `~/.kodax/space/logs`；必要时把 `scripts/diagnose-packaged-daemon.cmd` 复制到 extracted app 目录前台复现 |
-| MCP 工具不可见                | MCP panel 的 Refresh/Reload、server diagnostics；MCP 子进程由 Space 管理                                 |
+| 现象                          | 首先检查                                                                                                                 |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| 没有 Provider / API key       | Settings → Providers；环境变量；OS Keychain 状态                                                                         |
+| 会话或配置出现在错误 profile  | 启动前的 `KODAX_HOME`、`KODAX_PROFILE_DIR`；不要在 SDK import 后修改                                                     |
+| Runtime run 失败              | 版本信息、runId、`~/.kodax/space/logs`、Runtime status/capability snapshot                                               |
+| Packaged daemon 启动即退出    | `~/.kodax/space/logs`；必要时把 `scripts/diagnose-packaged-daemon.cmd` 复制到 extracted app 目录前台复现                 |
+| MCP 工具不可见                | MCP panel 的 Refresh/Reload、server diagnostics；MCP 子进程由 Space 管理                                                 |
 | ASRT 显示需要设置或不可用     | Settings → Runtime → 命令沙箱（ASRT）先刷新 doctor；Windows 按显式确认完成一次性设置，macOS/Linux 按指引安装依赖后再刷新 |
-| E2E 启动失败且提到 native ABI | 结束并行测试，运行 `node scripts/ensure-sqlite-native.mjs electron`                                      |
-| Node 单测提到 native ABI      | 运行 `node scripts/ensure-sqlite-native.mjs node`                                                        |
-| UI 状态损坏                   | 先备份 `~/.kodax/space/`，检查日志；最后手段才重置 `state.json`                                          |
+| E2E 启动失败且提到 native ABI | 结束并行测试，运行 `node scripts/ensure-sqlite-native.mjs electron`                                                      |
+| Node 单测提到 native ABI      | 运行 `node scripts/ensure-sqlite-native.mjs node`                                                                        |
+| UI 状态损坏                   | 先备份 `~/.kodax/space/`，检查日志；最后手段才重置 `state.json`                                                          |
 
 提交问题时请包含版本、操作系统、复现步骤、是否使用独立 profile、相关日志和脱敏截图。已知问题见 [KNOWN_ISSUES.md](KNOWN_ISSUES.md)。
 

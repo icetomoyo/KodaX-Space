@@ -6,10 +6,29 @@ Owner: KodaX Runtime / SDK
 
 Consumer: KodaX Space
 
+## 0.7.79 release-candidate validation
+
+The local `@kodax-ai/kodax@0.7.79` release candidate implements the required
+source boundary and advertises it twice: the importable SDK fact
+`KODAX_RUNTIME_SDK_CAPABILITIES.runtimeEventCoalescing === 1` is available
+before daemon auto-start, and the connected host publishes
+`runtime.capabilities.runtimeEventCoalescing.version === 1`. Space now requires
+both facts and requests `runtimeEventCoalescing: 1`, so a stale daemon cannot be
+accepted merely because it still satisfies the older lifecycle contracts.
+
+The KodaX release-candidate regression suite covers 25,000 tiny thinking
+fragments, the 7 KiB + 7 KiB pre-merge size boundary, structural flushes,
+reconnect/replay, snapshot watermarks, cancellation and shutdown. Space's
+published-package compatibility probe independently checks the SDK, embedded
+Worker and process-distinct daemon capability surfaces. Formal Registry pinning
+and packaged long-Session measurements remain release steps; this document no
+longer represents an unimplemented upstream request.
+
 ## Problem
 
-KodaX currently emits and sequences one typed Runtime event for each provider
-or tool fragment. A factual active Run (`run_ms7m99gl_d9210f61`) produced
+Before the 0.7.79 source-side fix, KodaX emitted and sequenced one typed Runtime
+event for each provider or tool fragment. A factual active Run
+(`run_ms7m99gl_d9210f61`) produced
 25,689 `thinking.delta` records in 191 seconds. Those records carried only
 96,924 characters in total:
 
@@ -71,12 +90,12 @@ SDK/daemon:
 
 ## Space-side mitigation
 
-KodaX Space now coalesces continuous same-stream deltas before store updates,
+KodaX Space also coalesces continuous same-stream deltas before store updates,
 including paused queues released by snapshot hydration. It respects Runtime
 sequence continuity and snapshot draft watermarks, caps merged payloads, joins
 tool-input fragments, and retains only the latest adjacent progress state.
-This bounds renderer work and preserves cursor correctness, but it does not
-replace the upstream change because the raw daemon work has already occurred.
+This bounds renderer work and preserves cursor correctness independently of the
+source implementation; the two layers protect different failure domains.
 
 ## Orphan-daemon note
 

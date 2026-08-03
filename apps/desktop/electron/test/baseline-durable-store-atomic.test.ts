@@ -43,7 +43,11 @@ async function withForcedReplacementFallback(
 
   const originalRename = fs.rename;
   let forcedFallback = false;
+  let compareAndSwapDisplacedTarget = false;
   fs.rename = (async (oldPath, newPath) => {
+    if (resolve(String(oldPath)) === resolve(targetPath)) {
+      compareAndSwapDisplacedTarget = true;
+    }
     if (!forcedFallback && resolve(String(newPath)) === resolve(targetPath)) {
       forcedFallback = true;
       throw Object.assign(new Error('forced Windows replacement fallback'), { code: 'EPERM' });
@@ -53,7 +57,11 @@ async function withForcedReplacementFallback(
 
   try {
     await run();
-    assert.equal(forcedFallback, true, `${name} must exercise the Windows replacement fallback`);
+    assert.equal(
+      forcedFallback || compareAndSwapDisplacedTarget,
+      true,
+      `${name} must exercise an alias-safe fallback or compare-and-swap replacement`,
+    );
     assert.equal(readFileSync(outsidePath, 'utf8'), initialJson);
     const persisted = readFileSync(targetPath, 'utf8');
     assert.notEqual(persisted, initialJson);

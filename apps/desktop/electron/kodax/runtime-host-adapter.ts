@@ -7,6 +7,9 @@ import type {
   RuntimeAppendNoticeInput,
   RuntimeCompactSessionInput,
   RuntimeCompactSessionResult,
+  RuntimeConversationHistory,
+  RuntimeConversationHistoryBoundary,
+  RuntimeConversationHistorySliceEntry,
   RuntimeCredentialBroker,
   RuntimeDaemonManagementState,
   RuntimeDaemonPreflight,
@@ -17,10 +20,16 @@ import type {
   RuntimeOwnerState,
   RuntimeRewindSessionInput,
   RuntimeRunHandle,
+  RuntimeRunStopReceipt,
   RuntimeRunStatus,
+  RuntimeObservationInvalidation,
+  RuntimeReadOptions,
+  RuntimeSessionDiagnostics,
+  RuntimeSessionDiagnosticsInput,
   RuntimeSessionObservation,
   RuntimeSessionObservationSnapshot,
   RuntimeSessionFilter,
+  RuntimeSession,
   RuntimeSessionSettings,
   RuntimeSessionSettingsPatch,
   RuntimeSessionSummary,
@@ -41,10 +50,15 @@ import {
   type KodaxAutoModeDefaults,
   type SdkCustomProviderConfig,
 } from './user-config.js';
-import { invalidatePersistedSessionCache, SPACE_EPHEMERAL_SESSION_TAG } from './session-store.js';
+import {
+  invalidatePersistedSessionCache,
+  loadPersistedSessionFresh,
+  SPACE_EPHEMERAL_SESSION_TAG,
+} from './session-store.js';
 import { RuntimeClientIdentityStore } from './runtime/runtime-client-identity.js';
 import {
   CoderSessionProjectionReducer,
+  isPartnerRuntimeSessionIdentity,
   projectRuntimeProfile,
   projectRuntimeSessionSnapshot,
 } from './runtime/coder-daemon-projection.js';
@@ -56,6 +70,7 @@ import {
 import { pushToRenderer } from '../ipc/push.js';
 import { areLearningMutationsEnabled } from './learning-policy.js';
 import {
+  canonProjectRoot,
   sessionEventChannel,
   workflowProcessSnapshotSchema,
   workflowRunSchema,
@@ -85,6 +100,10 @@ import {
   createCoderOwnerRecoveryRestartError,
   isCoderOwnerRecoveryRestartRequired,
 } from './coder-owner-recovery-error.js';
+import {
+  createRuntimeStartupTiming,
+  type RuntimeStartupTimingFactory,
+} from './runtime-startup-timing.js';
 
 export type RuntimeHostMode = 'legacy' | 'runtime';
 export type RuntimeHostState =
@@ -271,23 +290,74 @@ function projectRuntimeProviderCacheDiagnostic(
 }
 
 type RuntimeTranscriptEntry = RuntimeTranscript['transcriptEntries'][number];
+type RuntimeConversationHistoryEntry = RuntimeConversationHistory['entries'][number];
+
+export interface RuntimeConversationHistoryPage {
+  readonly revision: string;
+  readonly sourceRevision: string;
+  readonly status: RuntimeConversationHistory['status'];
+  readonly issues: RuntimeConversationHistory['issues'];
+  readonly entries: readonly {
+    readonly index: number;
+    readonly entry: RuntimeConversationHistoryEntry;
+  }[];
+  readonly hasMore: boolean;
+  readonly nextCursor?: string;
+}
+
+export type RuntimeConversationHistoryPageResult =
+  | { readonly outcome: 'ready'; readonly page: RuntimeConversationHistoryPage | null }
+  | { readonly outcome: 'data_changed' };
+
+const RUNTIME_READ_TIMEOUT_MS = 15_000;
+const RUNTIME_TRANSCRIPT_TOTAL_TIMEOUT_MS = 60_000;
+const MAX_RUNTIME_TRANSCRIPT_RESYNCS = 2;
+const MAX_PROFILE_REFRESH_CONFLICT_RETRIES = 2;
+const PROFILE_REFRESH_CONFLICT_RETRY_MS = 25;
+const MAX_RUNTIME_CONVERSATION_ENTRY_BYTES = 32 * 1024 * 1024;
+const MAX_RUNTIME_CONVERSATION_TOTAL_BYTES = 32 * 1024 * 1024;
+const MAX_RUNTIME_CONVERSATION_ENTRIES = 100_000;
+
+function runtimeErrorCode(error: unknown): string | undefined {
+  return error && typeof error === 'object' && 'code' in error
+    ? String((error as { readonly code?: unknown }).code)
+    : undefined;
+}
+
+function isRuntimeResyncRequired(error: unknown): boolean {
+  return runtimeErrorCode(error) === 'resync_required';
+}
+
+function isRuntimeSnapshotConflict(error: unknown): boolean {
+  return runtimeErrorCode(error) === 'conflict';
+}
+
+async function waitForProfileRefreshRetry(attempt: number): Promise<void> {
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, PROFILE_REFRESH_CONFLICT_RETRY_MS * attempt);
+  });
+}
 
 async function readPagedTranscriptEntry(
   runtime: KodaXDaemonRuntime,
   sessionId: string,
   revision: string,
   descriptor: RuntimeTranscriptSliceEntry,
+  options: RuntimeReadOptions,
 ): Promise<RuntimeTranscriptEntry> {
   if (descriptor.entry) return descriptor.entry;
   const chunks: Buffer[] = [];
   let cursor: string | undefined;
   do {
-    const chunk = await runtime.sessions.transcriptEntryChunk({
-      sessionId,
-      revision,
-      entryIndex: descriptor.index,
-      ...(cursor ? { cursor } : {}),
-    });
+    const chunk = await runtime.sessions.transcriptEntryChunk(
+      {
+        sessionId,
+        revision,
+        entryIndex: descriptor.index,
+        ...(cursor ? { cursor } : {}),
+      },
+      options,
+    );
     if (!chunk) throw new Error(`Transcript entry ${descriptor.index} is unavailable.`);
     chunks.push(Buffer.from(chunk.data, 'base64'));
     cursor = chunk.hasMore ? chunk.nextCursor : undefined;
@@ -302,40 +372,594 @@ async function readPagedTranscriptEntry(
   return parsed as RuntimeTranscriptEntry;
 }
 
+async function readPagedConversationEntry(
+  runtime: KodaXDaemonRuntime,
+  sessionId: string,
+  revision: string,
+  descriptor: RuntimeConversationHistorySliceEntry,
+  options: RuntimeReadOptions,
+): Promise<RuntimeConversationHistoryEntry> {
+  if (!Number.isSafeInteger(descriptor.index) || descriptor.index < 0) {
+    throw new Error('Conversation history contains an invalid entry index.');
+  }
+  if (
+    !Number.isSafeInteger(descriptor.byteLength) ||
+    descriptor.byteLength <= 0 ||
+    descriptor.byteLength > MAX_RUNTIME_CONVERSATION_ENTRY_BYTES
+  ) {
+    throw new Error(`Conversation entry ${descriptor.index} has an invalid byte length.`);
+  }
+  if (descriptor.entry) {
+    if (descriptor.oversized) {
+      throw new Error(`Conversation entry ${descriptor.index} has conflicting inline metadata.`);
+    }
+    if (descriptor.entry.boundaryId !== descriptor.boundaryId) {
+      throw new Error(`Conversation entry ${descriptor.index} changed its boundary identity.`);
+    }
+    const encoded = JSON.stringify(descriptor.entry);
+    if (Buffer.byteLength(encoded, 'utf8') !== descriptor.byteLength) {
+      throw new Error(`Conversation entry ${descriptor.index} changed its encoded byte length.`);
+    }
+    return descriptor.entry;
+  }
+  if (!descriptor.oversized) {
+    throw new Error(`Conversation entry ${descriptor.index} omitted its inline body.`);
+  }
+  const chunks: Buffer[] = [];
+  const seenCursors = new Set<string>();
+  let decodedBytes = 0;
+  let cursor: string | undefined;
+  do {
+    const chunk = await runtime.sessions.conversationEntryChunk(
+      {
+        sessionId,
+        revision,
+        entryIndex: descriptor.index,
+        ...(cursor ? { cursor } : {}),
+      },
+      options,
+    );
+    if (!chunk) throw new Error(`Conversation entry ${descriptor.index} is unavailable.`);
+    if (chunk.revision !== revision || chunk.entryIndex !== descriptor.index) {
+      throw new Error(`Conversation entry ${descriptor.index} crossed its immutable boundary.`);
+    }
+    if (chunk.boundaryId !== descriptor.boundaryId) {
+      throw new Error(`Conversation entry ${descriptor.index} changed its boundary identity.`);
+    }
+    if (chunk.encoding !== 'base64-json') {
+      throw new Error(`Conversation entry ${descriptor.index} used an unsupported chunk encoding.`);
+    }
+    if (
+      chunk.data.length === 0 ||
+      chunk.data.length % 4 !== 0 ||
+      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(chunk.data)
+    ) {
+      throw new Error(`Conversation entry ${descriptor.index} contains malformed base64 data.`);
+    }
+    const decoded = Buffer.from(chunk.data, 'base64');
+    if (decoded.toString('base64') !== chunk.data) {
+      throw new Error(`Conversation entry ${descriptor.index} contains malformed base64 data.`);
+    }
+    decodedBytes += decoded.byteLength;
+    if (
+      decodedBytes > descriptor.byteLength ||
+      decodedBytes > MAX_RUNTIME_CONVERSATION_ENTRY_BYTES
+    ) {
+      throw new Error(`Conversation entry ${descriptor.index} exceeded its declared byte length.`);
+    }
+    chunks.push(decoded);
+    cursor = chunk.hasMore ? chunk.nextCursor : undefined;
+    if (chunk.hasMore && !cursor) {
+      throw new Error(`Conversation entry ${descriptor.index} omitted its continuation cursor.`);
+    }
+    if (cursor) {
+      if (seenCursors.has(cursor)) {
+        throw new Error(`Conversation entry ${descriptor.index} repeated a continuation cursor.`);
+      }
+      seenCursors.add(cursor);
+    }
+  } while (cursor);
+  if (decodedBytes !== descriptor.byteLength) {
+    throw new Error(`Conversation entry ${descriptor.index} changed its encoded byte length.`);
+  }
+  const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  if (typeof parsed !== 'object' || parsed === null) {
+    throw new Error(`Conversation entry ${descriptor.index} is malformed.`);
+  }
+  const entry = parsed as RuntimeConversationHistoryEntry;
+  if (entry.boundaryId !== descriptor.boundaryId) {
+    throw new Error(`Conversation entry ${descriptor.index} changed its boundary identity.`);
+  }
+  return entry;
+}
+
+function conversationIssuesMatch(
+  left: RuntimeConversationHistory['issues'],
+  right: RuntimeConversationHistory['issues'],
+): boolean {
+  if (left.length !== right.length) return false;
+  return left.every((issue, index) => {
+    const candidate = right[index];
+    return (
+      candidate !== undefined &&
+      issue.code === candidate.code &&
+      issue.message === candidate.message &&
+      issue.occurrenceCount === candidate.occurrenceCount &&
+      issue.entryCount === candidate.entryCount &&
+      issue.entryIds.length === candidate.entryIds.length &&
+      issue.entryIds.every((entryId, entryIndex) => entryId === candidate.entryIds[entryIndex])
+    );
+  });
+}
+
+/**
+ * Materialize exactly one immutable Runtime conversation page. Unlike the audit/full-history
+ * reader below, this function never follows nextCursor, so first paint remains bounded by the
+ * SDK page contract rather than total Session size.
+ */
+async function readRuntimeConversationHistoryPage(
+  runtime: KodaXDaemonRuntime,
+  input: { readonly sessionId: string; readonly cursor?: string; readonly limit?: number },
+): Promise<RuntimeConversationHistoryPage | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), RUNTIME_READ_TIMEOUT_MS);
+  timer.unref?.();
+  const readOptions: RuntimeReadOptions = {
+    timeoutMs: RUNTIME_READ_TIMEOUT_MS,
+    signal: controller.signal,
+  };
+  try {
+    let requestedLimit = input.limit;
+    let page = await runtime.sessions.conversationPage(input, readOptions);
+    if (!page) return null;
+    for (;;) {
+      let declaredBytes = 0;
+      for (const descriptor of page.entries) {
+        if (
+          !Number.isSafeInteger(descriptor.byteLength) ||
+          descriptor.byteLength <= 0 ||
+          descriptor.byteLength > MAX_RUNTIME_CONVERSATION_ENTRY_BYTES
+        ) {
+          throw new Error(`Conversation entry ${descriptor.index} has an invalid byte length.`);
+        }
+        declaredBytes += descriptor.byteLength;
+      }
+      if (declaredBytes <= MAX_RUNTIME_CONVERSATION_TOTAL_BYTES) break;
+      if (page.entries.length <= 1) {
+        throw new Error('Conversation history page exceeds the Space materialization limit.');
+      }
+      const nextLimit = Math.max(1, Math.floor(page.entries.length / 2));
+      if (requestedLimit !== undefined && nextLimit >= requestedLimit) {
+        throw new Error('Conversation history paging did not honor the bounded page limit.');
+      }
+      requestedLimit = nextLimit;
+      page = await runtime.sessions.conversationPage({ ...input, limit: nextLimit }, readOptions);
+      if (!page) return null;
+    }
+    if (page.hasMore && (!page.nextCursor || page.entries.length === 0)) {
+      throw new Error('Conversation history page omitted a valid continuation.');
+    }
+    if (!page.hasMore && page.nextCursor !== undefined) {
+      throw new Error('Conversation history page exposed a cursor without a continuation.');
+    }
+    if (page.entries.length > MAX_RUNTIME_CONVERSATION_ENTRIES) {
+      throw new Error('Conversation history page exceeds the Space entry limit.');
+    }
+    const seenIndexes = new Set<number>();
+    let totalBytes = 0;
+    const entries: Array<{ index: number; entry: RuntimeConversationHistoryEntry }> = [];
+    for (const descriptor of page.entries) {
+      if (!Number.isSafeInteger(descriptor.index) || descriptor.index < 0) {
+        throw new Error('Conversation history contains an invalid entry index.');
+      }
+      if (seenIndexes.has(descriptor.index)) {
+        throw new Error(`Conversation history repeated entry index ${descriptor.index}.`);
+      }
+      seenIndexes.add(descriptor.index);
+      totalBytes += descriptor.byteLength;
+      if (totalBytes > MAX_RUNTIME_CONVERSATION_TOTAL_BYTES) {
+        throw new Error('Conversation history page exceeds the Space materialization limit.');
+      }
+      entries.push({
+        index: descriptor.index,
+        entry: await readPagedConversationEntry(
+          runtime,
+          input.sessionId,
+          page.revision,
+          descriptor,
+          readOptions,
+        ),
+      });
+    }
+    for (let index = 1; index < entries.length; index += 1) {
+      if (entries[index - 1]!.index >= entries[index]!.index) {
+        throw new Error('Conversation history page is not in canonical ascending order.');
+      }
+    }
+    return {
+      revision: page.revision,
+      sourceRevision: page.sourceRevision,
+      status: page.status,
+      issues: page.issues,
+      entries,
+      hasMore: page.hasMore,
+      ...(page.nextCursor !== undefined ? { nextCursor: page.nextCursor } : {}),
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Rebuild the SDK-owned ordinary-conversation projection from immutable newest-first pages.
+ * Space deliberately does not infer ordering or collapse raw transcript entries here.
+ */
+async function readPagedRuntimeConversationHistory(
+  runtime: KodaXDaemonRuntime,
+  sessionId: string,
+): Promise<RuntimeConversationHistory | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), RUNTIME_TRANSCRIPT_TOTAL_TIMEOUT_MS);
+  timer.unref?.();
+  const readOptions: RuntimeReadOptions = {
+    timeoutMs: RUNTIME_READ_TIMEOUT_MS,
+    signal: controller.signal,
+  };
+  try {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        let page = await runtime.sessions.conversationPage({ sessionId }, readOptions);
+        if (!page) return null;
+        const revision = page.revision;
+        const sourceRevision = page.sourceRevision;
+        const status = page.status;
+        const issues = page.issues;
+        const entriesByIndex = new Map<number, RuntimeConversationHistoryEntry>();
+        const seenPageCursors = new Set<string>();
+        let totalBytes = 0;
+        do {
+          if (
+            page.revision !== revision ||
+            page.sourceRevision !== sourceRevision ||
+            page.status !== status ||
+            !conversationIssuesMatch(page.issues, issues)
+          ) {
+            throw new Error('Conversation history page crossed its immutable boundary.');
+          }
+          if (page.hasMore && page.entries.length === 0) {
+            throw new Error('Conversation history returned an empty continuation page.');
+          }
+          for (const descriptor of page.entries) {
+            if (!Number.isSafeInteger(descriptor.index) || descriptor.index < 0) {
+              throw new Error('Conversation history contains an invalid entry index.');
+            }
+            if (entriesByIndex.has(descriptor.index)) {
+              throw new Error(`Conversation history repeated entry index ${descriptor.index}.`);
+            }
+            if (
+              !Number.isSafeInteger(descriptor.byteLength) ||
+              descriptor.byteLength <= 0 ||
+              descriptor.byteLength > MAX_RUNTIME_CONVERSATION_ENTRY_BYTES
+            ) {
+              throw new Error(`Conversation entry ${descriptor.index} has an invalid byte length.`);
+            }
+            totalBytes += descriptor.byteLength;
+            if (
+              totalBytes > MAX_RUNTIME_CONVERSATION_TOTAL_BYTES ||
+              entriesByIndex.size >= MAX_RUNTIME_CONVERSATION_ENTRIES
+            ) {
+              throw new Error('Conversation history exceeds the Space materialization limit.');
+            }
+            entriesByIndex.set(
+              descriptor.index,
+              await readPagedConversationEntry(
+                runtime,
+                sessionId,
+                revision,
+                descriptor,
+                readOptions,
+              ),
+            );
+          }
+          const cursor: string | undefined = page.hasMore ? page.nextCursor : undefined;
+          if (page.hasMore && !cursor) {
+            throw new Error('Conversation history page omitted its continuation cursor.');
+          }
+          if (cursor) {
+            if (seenPageCursors.has(cursor)) {
+              throw new Error('Conversation history repeated a continuation cursor.');
+            }
+            seenPageCursors.add(cursor);
+          }
+          page = cursor
+            ? await runtime.sessions.conversationPage({ sessionId, cursor }, readOptions)
+            : null;
+          if (cursor && !page) {
+            throw new Error('Conversation history continuation page is unavailable.');
+          }
+        } while (page);
+        const entries: RuntimeConversationHistoryEntry[] = [];
+        for (let index = 0; index < entriesByIndex.size; index += 1) {
+          const entry = entriesByIndex.get(index);
+          if (!entry)
+            throw new Error('Conversation history contains a non-contiguous entry index.');
+          entries.push(entry);
+        }
+        return { revision, sourceRevision, status, issues, entries };
+      } catch (error) {
+        if (!isRuntimeResyncRequired(error) || attempt >= MAX_RUNTIME_TRANSCRIPT_RESYNCS) {
+          throw error;
+        }
+      }
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function isVisibleConversationUserBoundary(message: unknown): boolean {
+  const record = runtimeEventRecord(message);
+  if (!record || record.role !== 'user') return false;
+  const source = record.source ?? record._source;
+  if (source === 'sidecar-verifier') return false;
+  if (record.synthetic === true || record._synthetic === true) return false;
+  if (typeof record.content === 'string') return record.content.trim().length > 0;
+  if (!Array.isArray(record.content)) return false;
+  return record.content.some((block) => {
+    const value = runtimeEventRecord(block);
+    if (!value) return false;
+    if (value.type === 'text')
+      return typeof value.text === 'string' && value.text.trim().length > 0;
+    return value.type === 'image' || value.type === 'image_url';
+  });
+}
+
+export function conversationTurnEndBoundaryId(
+  entries: readonly RuntimeConversationHistoryEntry[],
+  turnIndex: number,
+): string | null {
+  if (!Number.isInteger(turnIndex) || turnIndex < 0) return null;
+  let currentTurn = -1;
+  let candidate: string | null = null;
+  for (const entry of entries) {
+    if (isVisibleConversationUserBoundary(entry.message)) {
+      if (currentTurn === turnIndex) return candidate;
+      currentTurn += 1;
+      candidate = entry.boundaryId ?? null;
+      continue;
+    }
+    if (currentTurn === turnIndex) {
+      // The selected turn ends at its last visible entry. If that tail has no exact physical
+      // boundary, reusing an earlier boundary would silently truncate part of the answer.
+      candidate = entry.boundaryId ?? null;
+    }
+  }
+  return currentTurn === turnIndex ? candidate : null;
+}
+
 async function readPagedRuntimeTranscript(
   runtime: KodaXDaemonRuntime,
   sessionId: string,
+  observationSnapshot?: RuntimeSessionObservationSnapshot,
+  loadedSession?: RuntimeSession,
 ): Promise<RuntimeTranscript | null> {
-  const session = await runtime.sessions.load(sessionId);
-  if (!session) return null;
-  const transcriptEntries: RuntimeTranscriptEntry[] = [];
-  let cursor: string | undefined;
-  do {
-    const page = await runtime.sessions.transcriptPage({
-      sessionId,
-      ...(cursor ? { cursor } : {}),
-    });
-    if (!page) return null;
-    const pageEntries = await Promise.all(
-      page.entries.map((descriptor) =>
-        readPagedTranscriptEntry(runtime, sessionId, page.revision, descriptor),
-      ),
-    );
-    transcriptEntries.unshift(...pageEntries);
-    cursor = page.hasMore ? page.nextCursor : undefined;
-    if (page.hasMore && !cursor) {
-      throw new Error('Transcript page omitted its continuation cursor.');
-    }
-  } while (cursor);
-
-  const visibleEntries = transcriptEntries.filter((entry) => entry.type !== 'rewind_marker');
-  return {
-    title: session.title,
-    gitRoot: session.gitRoot ?? session.workspaceRoot ?? '',
-    messages: visibleEntries.map((entry) => entry.message),
-    activeMessages: visibleEntries.filter((entry) => entry.active).map((entry) => entry.message),
-    transcriptEntries,
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), RUNTIME_TRANSCRIPT_TOTAL_TIMEOUT_MS);
+  timer.unref?.();
+  const readOptions: RuntimeReadOptions = {
+    timeoutMs: RUNTIME_READ_TIMEOUT_MS,
+    signal: controller.signal,
   };
+  try {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const snapshot =
+          attempt === 0 &&
+          observationSnapshot !== undefined &&
+          (observationSnapshot.transcript === null ||
+            observationSnapshot.transcript.revision === observationSnapshot.transcriptRevision)
+            ? observationSnapshot
+            : undefined;
+        const session =
+          snapshot?.session ??
+          (attempt === 0 && loadedSession !== undefined
+            ? loadedSession
+            : await runtime.sessions.load(sessionId, readOptions));
+        if (!session) return null;
+        const transcriptEntries: RuntimeTranscriptEntry[] = [];
+        let page = snapshot
+          ? snapshot.transcript
+          : await runtime.sessions.transcriptPage({ sessionId }, readOptions);
+        if (!page) {
+          return snapshot
+            ? {
+                title: session.title,
+                gitRoot: session.gitRoot ?? session.workspaceRoot ?? '',
+                messages: [],
+                activeMessages: [],
+                transcriptEntries: [],
+              }
+            : null;
+        }
+        do {
+          const pageEntries: RuntimeTranscriptEntry[] = [];
+          for (const descriptor of page.entries) {
+            pageEntries.push(
+              await readPagedTranscriptEntry(
+                runtime,
+                sessionId,
+                page.revision,
+                descriptor,
+                readOptions,
+              ),
+            );
+          }
+          transcriptEntries.unshift(...pageEntries);
+          const cursor: string | undefined = page.hasMore ? page.nextCursor : undefined;
+          if (page.hasMore && !cursor) {
+            throw new Error('Transcript page omitted its continuation cursor.');
+          }
+          page = cursor
+            ? await runtime.sessions.transcriptPage({ sessionId, cursor }, readOptions)
+            : null;
+          if (cursor && !page) {
+            throw new Error('Transcript continuation page is unavailable.');
+          }
+        } while (page);
+
+        const visibleEntries = transcriptEntries.filter((entry) => entry.type !== 'rewind_marker');
+        return {
+          title: session.title,
+          gitRoot: session.gitRoot ?? session.workspaceRoot ?? '',
+          messages: visibleEntries.map((entry) => entry.message),
+          activeMessages: visibleEntries
+            .filter((entry) => entry.active)
+            .map((entry) => entry.message),
+          transcriptEntries,
+        };
+      } catch (error) {
+        if (!isRuntimeResyncRequired(error) || attempt >= MAX_RUNTIME_TRANSCRIPT_RESYNCS) {
+          throw error;
+        }
+      }
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export function selectCommittedCompactionEntry(
+  transcript: RuntimeTranscript | null,
+  event: RuntimeTypedEvent,
+  alreadyProjected: ReadonlySet<string> = new Set(),
+): { readonly entry: RuntimeTranscriptEntry; readonly canonicalIndex: number } | undefined {
+  if (!transcript || event.type !== 'context.compaction.finished') return undefined;
+  return selectCommittedCompactionCandidate(
+    transcript.transcriptEntries.map((entry, canonicalIndex) => ({ entry, canonicalIndex })),
+    event,
+    alreadyProjected,
+  );
+}
+
+type RuntimeCompactionCandidate = {
+  readonly entry: RuntimeTranscriptEntry;
+  readonly canonicalIndex: number;
+};
+
+function selectCommittedCompactionCandidate(
+  transcriptCandidates: readonly RuntimeCompactionCandidate[],
+  event: RuntimeTypedEvent,
+  alreadyProjected: ReadonlySet<string> = new Set(),
+): RuntimeCompactionCandidate | undefined {
+  if (event.type !== 'context.compaction.finished') return undefined;
+  const eventPayload = runtimeEventRecord(event.payload);
+  if (eventPayload?.committed !== true) return undefined;
+  const isRootContext =
+    eventPayload.contextKind === 'root' ||
+    (eventPayload.contextKind === undefined && eventPayload.parentContextId === undefined);
+  if (!isRootContext) return undefined;
+  const compactionEntryId =
+    typeof eventPayload.compactionEntryId === 'string' &&
+    eventPayload.compactionEntryId.trim().length > 0
+      ? eventPayload.compactionEntryId
+      : undefined;
+  // Token counts, timestamps, active state and canonical proximity are not unique identities.
+  // Without the exact durable entry ID, stale paging can make an older same-facts compaction look
+  // like the just-committed row. Keep the provisional visible and fail open in that case.
+  if (compactionEntryId === undefined) return undefined;
+  const tokensBefore =
+    typeof eventPayload.tokensBefore === 'number' ? eventPayload.tokensBefore : undefined;
+  const tokensAfter =
+    typeof eventPayload.tokensAfter === 'number' ? eventPayload.tokensAfter : undefined;
+  // The modern Runtime contract persists the same complete token pair on the durable compaction
+  // and its committed finish. Without both values there is no safe bridge identity: timestamp
+  // proximity alone can bind a new finish to an older tokenless entry.
+  if (tokensBefore === undefined || tokensAfter === undefined) return undefined;
+  const candidates: RuntimeCompactionCandidate[] = [];
+
+  for (const { entry, canonicalIndex } of transcriptCandidates) {
+    if (entry.entryId !== compactionEntryId) continue;
+    if (entry.type !== 'compaction') continue;
+    const payload = runtimeEventRecord(entry.payload);
+    if (
+      payload?.reason === 'rewind' ||
+      (typeof entry.summary === 'string' && entry.summary.startsWith('[Rewind]'))
+    ) {
+      continue;
+    }
+    if (alreadyProjected.has(entry.entryId)) continue;
+    const exactTokens =
+      payload?.tokensBefore === tokensBefore && payload?.tokensAfter === tokensAfter;
+    // Tokenless and partially populated historical entries are not candidates for a modern
+    // finished event. They remain visible through history replay, but cannot lend their physical
+    // identity to a different live boundary.
+    if (!exactTokens) continue;
+    candidates.push({ entry, canonicalIndex });
+  }
+  // Duplicate physical IDs are corrupt/ambiguous. Do not choose one by position.
+  return candidates.length === 1 ? candidates[0] : undefined;
+}
+
+const RECENT_COMPACTION_PAGE_LIMIT = 64;
+const MAX_RECENT_COMPACTION_PAGES = 2;
+const MAX_RECENT_COMPACTION_DESCRIPTORS = 128;
+const MAX_RECENT_COMPACTION_OVERSIZED_READS = 2;
+
+/**
+ * Read only the newest bounded transcript window used to bind a live Runtime compaction event to
+ * its durable entry. This must never rebuild a long transcript on the serialized event queue.
+ */
+async function readRecentRuntimeCompactionCandidates(
+  runtime: KodaXDaemonRuntime,
+  sessionId: string,
+): Promise<RuntimeCompactionCandidate[]> {
+  const candidates: RuntimeCompactionCandidate[] = [];
+  let cursor: string | undefined;
+  let descriptorCount = 0;
+  let oversizedReads = 0;
+
+  for (let pageNumber = 0; pageNumber < MAX_RECENT_COMPACTION_PAGES; pageNumber++) {
+    const readOptions: RuntimeReadOptions = { timeoutMs: RUNTIME_READ_TIMEOUT_MS };
+    const page = await runtime.sessions.transcriptPage(
+      {
+        sessionId,
+        limit: RECENT_COMPACTION_PAGE_LIMIT,
+        ...(cursor ? { cursor } : {}),
+      },
+      readOptions,
+    );
+    if (!page) return candidates;
+    const descriptors = [...page.entries].sort((left, right) => right.index - left.index);
+    for (const descriptor of descriptors) {
+      if (descriptorCount++ >= MAX_RECENT_COMPACTION_DESCRIPTORS) return candidates;
+      let entry = descriptor.entry;
+      if (
+        !entry &&
+        descriptor.oversized &&
+        oversizedReads < MAX_RECENT_COMPACTION_OVERSIZED_READS
+      ) {
+        oversizedReads += 1;
+        try {
+          entry = await readPagedTranscriptEntry(
+            runtime,
+            sessionId,
+            page.revision,
+            descriptor,
+            readOptions,
+          );
+        } catch (error) {
+          if (isRuntimeResyncRequired(error)) throw error;
+          continue;
+        }
+      }
+      if (entry?.type === 'compaction') {
+        candidates.push({ entry, canonicalIndex: descriptor.index });
+      }
+    }
+    cursor = page.hasMore ? page.nextCursor : undefined;
+    if (!page.hasMore || !cursor) break;
+  }
+  return candidates;
 }
 
 /**
@@ -475,6 +1099,8 @@ type SpaceRuntimeConnectOptions = Omit<ConnectKodaXRuntimeOptions, 'requirements
   readonly requirements?: NonNullable<ConnectKodaXRuntimeOptions['requirements']> & {
     /** The current daemon host actually has Space's orphan idle-exit policy enabled. */
     readonly daemonOrphanExit?: 1;
+    /** Provider/tool fragments are bounded before Runtime sequence allocation and persistence. */
+    readonly runtimeEventCoalescing?: 1;
   };
 };
 
@@ -497,6 +1123,10 @@ interface RuntimeProjectionPush {
   (
     channel: 'session.liveChanged',
     payload: import('@kodax-space/space-ipc-schema').SpaceSessionLiveChangedT,
+  ): void;
+  (
+    channel: 'session.liveInvalidated',
+    payload: import('@kodax-space/space-ipc-schema').SpaceSessionLiveInvalidatedT,
   ): void;
   (channel: 'session.event', payload: import('@kodax-space/space-ipc-schema').SessionEvent): void;
   (
@@ -551,6 +1181,16 @@ interface RuntimeActorObservationState {
   readonly observer: RuntimeAgentTreeObserver;
 }
 
+interface RuntimeSessionObservationState {
+  readonly sessionId: string;
+  readonly runtime: KodaXDaemonRuntime;
+  readonly observation: RuntimeSessionObservation;
+  readonly reducer: CoderSessionProjectionReducer;
+  /** False after the first post-snapshot Runtime event is accepted for delivery. */
+  transcriptSnapshotFresh: boolean;
+  eventQueue: Promise<void>;
+}
+
 export interface RuntimeHostAdapterOptions {
   readonly mode?: RuntimeHostMode;
   /** Direct KodaX data/config root (normally KODAX_HOME), including sessions. */
@@ -566,15 +1206,43 @@ export interface RuntimeHostAdapterOptions {
   readonly ownerControl?: RuntimeOwnerControl;
   readonly autoModeDefaultsResolver?: () => Promise<KodaxAutoModeDefaults>;
   readonly idleDaemonStop?: () => Promise<SafeDaemonStopResult>;
+  /** Test seam for confirming that the exact inspected daemon PID has exited. */
+  readonly daemonProcessExitWaiter?: (pid: number, timeoutMs: number) => Promise<boolean>;
   /**
    * Fallback cadence for integration-health projection. KodaX watches the
    * files inside the daemon but does not publish a management-change event.
    * Test/custom runtimes default to disabled unless they opt in explicitly.
    */
   readonly integrationHealthPollMs?: number;
+  /** Test seam for the opt-in Runtime startup timing recorder. */
+  readonly startupTimingFactory?: RuntimeStartupTimingFactory;
 }
 
 const MAX_DIAGNOSTIC_ERROR = 512;
+const DAEMON_PROCESS_EXIT_TIMEOUT_MS = 15_000;
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return !(
+      error !== null &&
+      typeof error === 'object' &&
+      'code' in error &&
+      (error as { readonly code?: unknown }).code === 'ESRCH'
+    );
+  }
+}
+
+async function waitForDaemonProcessExit(pid: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (isProcessAlive(pid)) {
+    if (Date.now() >= deadline) return false;
+    await new Promise<void>((resolve) => setTimeout(resolve, 25));
+  }
+  return true;
+}
 
 export function resolveRuntimeHostMode(value: string | undefined): RuntimeHostMode {
   return value?.trim().toLowerCase() === 'legacy' ? 'legacy' : 'runtime';
@@ -603,16 +1271,30 @@ export async function withDarwinRuntimeDaemonTmpdir<T>(
   }
 }
 
-function assertSpaceDaemonLifecycleCapability(runtime: KodaXDaemonRuntime): void {
-  const capability = runtime.capabilities?.daemonOrphanExit;
-  if (
-    typeof capability !== 'object' ||
-    capability === null ||
-    !Number.isSafeInteger((capability as { version?: unknown }).version) ||
-    Number((capability as { version?: unknown }).version) < 1
-  ) {
+function runtimeCapabilityVersion(runtime: KodaXDaemonRuntime, name: string): number {
+  const capability = runtime.capabilities?.[name];
+  if (capability === true) return 1;
+  if (typeof capability !== 'object' || capability === null) return 0;
+  const version = (capability as { version?: unknown }).version;
+  return Number.isSafeInteger(version) && Number(version) > 0 ? Number(version) : 0;
+}
+
+function assertSpaceDaemonRequiredCapabilities(runtime: KodaXDaemonRuntime): void {
+  if (runtimeCapabilityVersion(runtime, 'daemonOrphanExit') < 1) {
     throw new Error(
       'KodaX Runtime does not support the required daemonOrphanExit v1 capability. ' +
+        'Install a compatible KodaX package and restart the Coder daemon.',
+    );
+  }
+  if (runtimeCapabilityVersion(runtime, 'runtimeEventCoalescing') < 1) {
+    throw new Error(
+      'KodaX Runtime does not support the required runtimeEventCoalescing v1 capability. ' +
+        'Install a compatible KodaX package and restart the Coder daemon.',
+    );
+  }
+  if (runtimeCapabilityVersion(runtime, 'conversationHistory') < 1) {
+    throw new Error(
+      'KodaX Runtime does not support the required conversationHistory v1 capability. ' +
         'Install a compatible KodaX package and restart the Coder daemon.',
     );
   }
@@ -667,6 +1349,32 @@ function isTransientDaemonHealthFailure(error: unknown): boolean {
   );
 }
 
+function runtimeStartupFailureData(error: unknown): Readonly<Record<string, unknown>> {
+  const code =
+    error !== null && typeof error === 'object' && 'code' in error
+      ? (error as { readonly code?: unknown }).code
+      : undefined;
+  return {
+    errorType: error instanceof Error ? error.name : typeof error,
+    ...(typeof code === 'string' || typeof code === 'number' ? { errorCode: code } : {}),
+  };
+}
+
+function runtimeIdentityTimingData(
+  identity: RuntimeIdentity,
+  now = Date.now(),
+): Readonly<Record<string, unknown>> {
+  const startedAt = Date.parse(identity.startedAt);
+  return {
+    runtimeId: identity.runtimeId,
+    mode: identity.mode,
+    profile: identity.profile,
+    version: identity.version,
+    ...(identity.isolation === undefined ? {} : { isolation: identity.isolation }),
+    ...(Number.isFinite(startedAt) ? { runtimeAgeMs: Math.max(0, now - startedAt) } : {}),
+  };
+}
+
 function projectRuntimeWorkflow(snapshot: unknown): WorkflowRunT | undefined {
   const base = workflowProcessSnapshotSchema.safeParse(snapshot);
   if (!base.success) return undefined;
@@ -687,24 +1395,31 @@ async function createPublishedRuntime(
   options: SpaceRuntimeConnectOptions,
 ): Promise<KodaXDaemonRuntime> {
   const sdk = await import('@kodax-ai/kodax/runtime');
-  assertSpaceRuntimeSdkLifecycleCapability(
+  assertSpaceRuntimeSdkRequiredCapabilities(
     sdk as typeof sdk & {
       readonly KODAX_RUNTIME_SDK_CAPABILITIES?: {
         readonly daemonOrphanExit?: number;
+        readonly runtimeEventCoalescing?: number;
       };
     },
   );
   return withDarwinRuntimeDaemonTmpdir(process.platform, () => sdk.connectKodaXRuntime(options));
 }
 
-export function assertSpaceRuntimeSdkLifecycleCapability(sdk: {
+export function assertSpaceRuntimeSdkRequiredCapabilities(sdk: {
   readonly KODAX_RUNTIME_SDK_CAPABILITIES?: {
     readonly daemonOrphanExit?: number;
+    readonly runtimeEventCoalescing?: number;
   };
 }): void {
-  if (sdk.KODAX_RUNTIME_SDK_CAPABILITIES?.daemonOrphanExit !== 1) {
+  const capabilities = sdk.KODAX_RUNTIME_SDK_CAPABILITIES;
+  const missing = [
+    ...(capabilities?.daemonOrphanExit === 1 ? [] : ['daemonOrphanExit v1']),
+    ...(capabilities?.runtimeEventCoalescing === 1 ? [] : ['runtimeEventCoalescing v1']),
+  ];
+  if (missing.length > 0) {
     throw new Error(
-      'The installed KodaX SDK does not support daemonOrphanExit v1. ' +
+      `The installed KodaX SDK does not support ${missing.join(' and ')}. ` +
         'Install a compatible Registry package before starting Coder.',
     );
   }
@@ -843,6 +1558,63 @@ function isSessionNotFound(error: unknown): boolean {
   return /Session not found:/i.test(error instanceof Error ? error.message : String(error));
 }
 
+export class RuntimeSessionIdentityConflictError extends Error {
+  readonly code = 'session_identity_conflict' as const;
+
+  constructor(sessionId: string, reason: string) {
+    super(`Runtime Session identity conflict for ${sessionId}: ${reason}`);
+    this.name = 'RuntimeSessionIdentityConflictError';
+  }
+}
+
+function canonicalRuntimeProjectRoot(projectRoot: string): string {
+  return canonProjectRoot(path.resolve(projectRoot), process.platform === 'win32');
+}
+
+function assertRuntimeSessionIdentity(
+  session: RuntimeSession,
+  expected: { readonly sessionId: string; readonly projectRoot?: string },
+): void {
+  if (session.id !== expected.sessionId) {
+    throw new RuntimeSessionIdentityConflictError(
+      expected.sessionId,
+      `Runtime returned Session ${session.id}.`,
+    );
+  }
+  if (session.surface === 'partner' || session.profileId === 'kodax-space.partner') {
+    throw new RuntimeSessionIdentityConflictError(
+      expected.sessionId,
+      'Partner Sessions must remain on the inline Partner owner.',
+    );
+  }
+  if (expected.projectRoot === undefined) return;
+
+  const workspaceRoot =
+    typeof session.workspaceRoot === 'string' && session.workspaceRoot.trim().length > 0
+      ? session.workspaceRoot
+      : undefined;
+  const gitRoot =
+    typeof session.gitRoot === 'string' && session.gitRoot.trim().length > 0
+      ? session.gitRoot
+      : undefined;
+  const observedRoot = workspaceRoot ?? gitRoot;
+  if (observedRoot === undefined) {
+    throw new RuntimeSessionIdentityConflictError(
+      expected.sessionId,
+      'the persisted Runtime Session has no workspaceRoot or gitRoot.',
+    );
+  }
+
+  const canonicalExpected = canonicalRuntimeProjectRoot(expected.projectRoot);
+  if (canonicalRuntimeProjectRoot(observedRoot) !== canonicalExpected) {
+    const field = workspaceRoot !== undefined ? 'workspaceRoot' : 'gitRoot';
+    throw new RuntimeSessionIdentityConflictError(
+      expected.sessionId,
+      `${field} ${observedRoot} does not match projectRoot ${expected.projectRoot}.`,
+    );
+  }
+}
+
 function isSessionSettingsRevisionConflict(error: unknown): boolean {
   const code =
     error && typeof error === 'object' && 'code' in error
@@ -859,6 +1631,13 @@ function isDaemonStopTransportClosure(error: unknown): boolean {
   return /^Runtime daemon transport (?:closed|disconnected)\.?$/i.test(message.trim());
 }
 
+class RuntimeInitializationAuthorityLostError extends Error {
+  constructor() {
+    super('Coder daemon authority changed before Runtime initialization completed.');
+    this.name = 'RuntimeInitializationAuthorityLostError';
+  }
+}
+
 export class RuntimeHostAdapter {
   private mode: RuntimeHostMode;
   private readonly profileRoot: string;
@@ -871,27 +1650,54 @@ export class RuntimeHostAdapter {
   private readonly credentialResolver: (provider: string) => Promise<string | undefined>;
   private readonly ownerControl: RuntimeOwnerControl;
   private readonly idleDaemonStop: () => Promise<SafeDaemonStopResult>;
+  private readonly daemonProcessExitWaiter: (pid: number, timeoutMs: number) => Promise<boolean>;
   private readonly integrationHealthPollMs: number;
+  private readonly startupTimingFactory: RuntimeStartupTimingFactory;
   private state: RuntimeHostState = 'uninitialized';
   private runtime: KodaXDaemonRuntime | null = null;
   private initializePromise: Promise<void> | null = null;
   private closePromise: Promise<void> | null = null;
   private lastError: string | undefined;
+  private startupOwnerPolicyFailure: string | undefined;
+  private runtimeReadyRevision = 0;
+  private readonly runtimeReadyObservers = new Set<(revision: number) => void>();
+  /** Stable daemon principal derived from Space's authenticated instanceId. */
+  private runtimePrincipalId: string | undefined;
+  /** Exact Run identities accepted through this Space process, retained for child-workflow provenance. */
+  private readonly spaceOwnedRunIds = new Set<string>();
+  /** Exact Runtime Agent turn identities started through this Space process. */
+  private readonly spaceOwnedAgentTurns = new Set<string>();
   private readonly activeRuns = new Map<string, string>();
-  private readonly observations = new Map<
-    string,
-    {
-      readonly observation: RuntimeSessionObservation;
-      readonly reducer: CoderSessionProjectionReducer;
-      eventQueue: Promise<void>;
-    }
-  >();
+  private readonly observations = new Map<string, RuntimeSessionObservationState>();
   private readonly observationPromises = new Map<string, Promise<void>>();
+  /** One immutable full-history materialization per Session at a time; never a stale result cache. */
+  private readonly transcriptPromises = new Map<
+    string,
+    { readonly token: symbol; readonly promise: Promise<RuntimeTranscript | null> }
+  >();
+  /** One SDK-owned ordinary-conversation materialization per Session at a time. */
+  private readonly conversationPromises = new Map<
+    string,
+    { readonly token: symbol; readonly promise: Promise<RuntimeConversationHistory | null> }
+  >();
+  private readonly transcriptGenerations = new Map<string, number>();
   private readonly desiredObservations = new Set<string>();
+  /** Context compactions can outlive an individual Run terminal event. */
+  private readonly activeCompactionsBySession = new Map<string, Set<string>>();
+  /** Space-issued compact() calls whose command promise has not settled on this connection. */
+  private readonly localCompactionCallsBySession = new Map<string, number>();
   private readonly actorObservations = new Map<string, RuntimeActorObservationState>();
   private readonly actorSnapshots = new Map<string, AgentActorTreeSnapshotT>();
   private readonly settingsUpdateLocks = new Map<string, Promise<void>>();
   private readonly runProviders = new Map<string, string>();
+  /** Persisted compaction entries already projected into the live transcript in this process. */
+  private readonly projectedCompactionEntries = new Map<string, Set<string>>();
+  /** Stable Runtime finish-event identities already represented by a live provisional boundary. */
+  private readonly projectedCompactionEvents = new Map<string, Set<string>>();
+  /** Finish events whose provisional row has already been bound to a durable transcript entry. */
+  private readonly resolvedCompactionEvents = new Map<string, Set<string>>();
+  /** Background durable-entry binding, deliberately outside each observation's event queue. */
+  private readonly compactionProjectionTasks = new Map<string, Promise<void>>();
   /** Next canonical user ordinal, but only for root turns observed from turn.started. */
   private readonly nextUserOrdinalByTurnId = new Map<string, number>();
   private readonly terminalSidecarBlockRuns = new Map<string, string>();
@@ -914,6 +1720,8 @@ export class RuntimeHostAdapter {
   private integrationHealthRefreshPending = false;
   private integrationHealthFingerprint = '';
   private integrationHealthPollWarningShown = false;
+  private profileManagementConflictWarningShown = false;
+  private profileRefreshFailureWarningShown = false;
   private reconnectAttempt = 0;
   private readonly runtimeEventParser?: RuntimeEventParser;
   private inlineOwner: RuntimeInlineOwnerHandle | undefined;
@@ -943,8 +1751,11 @@ export class RuntimeHostAdapter {
     this.runtimeEventParser = options.runtimeEventParser;
     this.ownerControl = options.ownerControl ?? publishedRuntimeOwnerControl;
     this.idleDaemonStop = options.idleDaemonStop ?? (() => stopCoderDaemonWhenSafe());
+    this.daemonProcessExitWaiter = options.daemonProcessExitWaiter ?? waitForDaemonProcessExit;
     this.integrationHealthPollMs =
       options.integrationHealthPollMs ?? (options.runtimeFactory === undefined ? 2_000 : 0);
+    this.startupTimingFactory =
+      options.startupTimingFactory ?? ((scope) => createRuntimeStartupTiming(scope));
     this.credentialResolver =
       options.credentialResolver ??
       (async (provider) => (await import('../ipc/provider.js')).readProviderCredential(provider));
@@ -971,23 +1782,63 @@ export class RuntimeHostAdapter {
     if (this.state !== 'uninitialized' || this.initializePromise !== null) {
       throw new Error('Coder owner policy can only be reconciled before initialization.');
     }
-    if (this.mode !== 'runtime') return;
-    const ownerState = await this.ownerControl.getState({
-      ...this.runtimeOwnerTarget(),
-    });
-    if (ownerState.ownerStatus === 'unreadable') {
-      throw new Error('Coder owner state is unreadable; refusing startup policy recovery.');
+    const timing = this.startupTimingFactory('runtime-owner-policy');
+    timing.mark('reconcile', 'start', { selectedHost: this.mode });
+    if (this.mode !== 'runtime') {
+      timing.mark('reconcile', 'skipped', { reason: 'legacy-host-selected' });
+      this.startupOwnerPolicyFailure = undefined;
+      return;
     }
-    if (ownerState.policy.mode !== 'inline') return;
-    if (ownerState.ownerStatus !== 'unowned') {
-      throw new Error(
-        'Coder is configured for daemon mode, but an inline owner is still active; ' +
-          'refusing to start a competing owner.',
-      );
+    let activeStage = 'owner_state_read';
+    try {
+      const ownerState = await this.ownerControl.getState({
+        ...this.runtimeOwnerTarget(),
+      });
+      const ownerCreatedAt = ownerState.owner ? Date.parse(ownerState.owner.createdAt) : Number.NaN;
+      timing.mark(activeStage, 'complete', {
+        ownerStatus: ownerState.ownerStatus,
+        policyMode: ownerState.policy.mode,
+        policyRevision: ownerState.policy.revision,
+        ...(ownerState.owner?.kind === undefined ? {} : { ownerKind: ownerState.owner.kind }),
+        ...(ownerState.owner === null ? {} : { ownerPid: ownerState.owner.pid }),
+        ...(Number.isFinite(ownerCreatedAt)
+          ? { ownerAgeMs: Math.max(0, Date.now() - ownerCreatedAt) }
+          : {}),
+      });
+      activeStage = 'owner_policy_validate';
+      if (ownerState.ownerStatus === 'unreadable') {
+        throw new Error('Coder owner state is unreadable; refusing startup policy recovery.');
+      }
+      if (ownerState.policy.mode !== 'inline') {
+        this.startupOwnerPolicyFailure = undefined;
+        timing.mark('reconcile', 'complete', { policyChanged: false });
+        return;
+      }
+      if (ownerState.ownerStatus !== 'unowned') {
+        throw new Error(
+          'Coder is configured for daemon mode, but an inline owner is still active; ' +
+            'refusing to start a competing owner.',
+        );
+      }
+      activeStage = 'daemon_policy_enable';
+      const policy = await this.ownerControl.enableDaemon({
+        ...this.runtimeOwnerTarget(),
+      });
+      timing.mark(activeStage, 'complete', {
+        policyMode: policy.mode,
+        policyRevision: policy.revision,
+      });
+      this.startupOwnerPolicyFailure = undefined;
+      timing.mark('reconcile', 'complete', { policyChanged: true });
+    } catch (error: unknown) {
+      timing.mark(activeStage, 'failed', runtimeStartupFailureData(error));
+      const diagnostic = sanitizeDiagnosticError(error);
+      this.startupOwnerPolicyFailure = diagnostic;
+      this.lastError = diagnostic;
+      this.state = 'failed';
+      this.publishUnavailable('incompatible', diagnostic);
+      throw error;
     }
-    await this.ownerControl.enableDaemon({
-      ...this.runtimeOwnerTarget(),
-    });
   }
 
   isRuntimeSelected(): boolean {
@@ -996,6 +1847,25 @@ export class RuntimeHostAdapter {
 
   hasReadyRuntime(): boolean {
     return this.mode === 'runtime' && this.state === 'ready' && this.runtime !== null;
+  }
+
+  subscribeRuntimeReady(observer: (revision: number) => void): () => void {
+    this.runtimeReadyObservers.add(observer);
+    const observedRevision = this.runtimeReadyRevision;
+    if (observedRevision > 0 && this.hasReadyRuntime()) {
+      queueMicrotask(() => {
+        if (!this.runtimeReadyObservers.has(observer) || !this.hasReadyRuntime()) return;
+        try {
+          observer(observedRevision);
+        } catch {
+          // Readiness observers are best-effort host integrations. Runtime
+          // authority must not be invalidated by a listener failure.
+        }
+      });
+    }
+    return () => {
+      this.runtimeReadyObservers.delete(observer);
+    };
   }
 
   hasLegacyOwner(): boolean {
@@ -1030,6 +1900,13 @@ export class RuntimeHostAdapter {
         new Error('Coder owner transition is in progress; Runtime initialization is blocked.'),
       );
     }
+    if (this.startupOwnerPolicyFailure !== undefined) {
+      return Promise.reject(
+        new Error(
+          `Coder owner policy reconciliation failed; Runtime initialization remains blocked: ${this.startupOwnerPolicyFailure}`,
+        ),
+      );
+    }
     if (this.mode === 'legacy') {
       return this.initializeLegacyOwner();
     }
@@ -1040,9 +1917,17 @@ export class RuntimeHostAdapter {
     const version = this.clientVersion;
     let pendingRuntime: KodaXDaemonRuntime | null = null;
     let attachedHostToolLeaseId: string | undefined;
+    const timing = this.startupTimingFactory('runtime-host-initialize');
+    let activeStage = 'identity_open';
+    timing.mark('initialize', 'start', { selectedHost: this.mode });
     this.initializePromise = this.identityStore
       .openInstance({ name: 'kodax-space', title: 'KodaX Space', version })
       .then(async (identity) => {
+        timing.mark(activeStage, 'complete');
+        // The daemon authenticates valid instanceId values as principalId and
+        // copies that principal onto every Run origin.
+        this.runtimePrincipalId = identity.instanceId;
+        activeStage = 'runtime_factory_connect';
         const runtime = await this.runtimeFactory({
           profile: 'coder',
           autoStart: true,
@@ -1083,6 +1968,7 @@ export class RuntimeHostAdapter {
             sessionAdmission: 1,
             completeObservationSnapshot: 1,
             contextCompaction: 3,
+            conversationHistory: 1,
             transcriptPaging: 1,
             transcriptSearch: 1,
             connectionLifecycle: 1,
@@ -1092,10 +1978,12 @@ export class RuntimeHostAdapter {
             durableRecoveryQueries: 1,
             daemonManagement: 1,
             daemonOrphanExit: 1,
+            runtimeEventCoalescing: 1,
             integrationConfigResilience: 1,
             runtimeAutoModeGuardrail: 4,
           },
         });
+        timing.mark(activeStage, 'complete', runtimeIdentityTimingData(runtime.identity));
         pendingRuntime = runtime;
         return runtime;
       })
@@ -1105,11 +1993,17 @@ export class RuntimeHostAdapter {
         if ((this.state as RuntimeHostState) === 'closed') {
           await runtime.close();
           pendingRuntime = null;
+          timing.mark('initialize', 'skipped', { reason: 'host-closed' });
           return;
         }
-        assertSpaceDaemonLifecycleCapability(runtime);
+        activeStage = 'capability_validation';
+        assertSpaceDaemonRequiredCapabilities(runtime);
         this.assertRequiredScopes(runtime);
+        timing.mark(activeStage, 'complete');
+        activeStage = 'host_tools_module_import';
         const { registerSpaceHostTools } = await import('./runtime/space-host-tools.js');
+        timing.mark(activeStage, 'complete');
+        activeStage = 'host_tools_register';
         let hostToolLease;
         if (this.hostToolLeaseId) {
           hostToolLease = await registerSpaceHostTools(runtime, this.hostToolLeaseId).catch(() =>
@@ -1118,16 +2012,21 @@ export class RuntimeHostAdapter {
         } else {
           hostToolLease = await registerSpaceHostTools(runtime);
         }
+        timing.mark(activeStage, 'complete', {
+          resumedLease: this.hostToolLeaseId !== undefined,
+        });
         attachedHostToolLeaseId = hostToolLease.id;
         if (this.state === 'closed') {
           await runtime.hostTools.revoke(hostToolLease.id).catch(() => false);
           await runtime.close();
           pendingRuntime = null;
+          timing.mark('initialize', 'skipped', { reason: 'host-closed' });
           return;
         }
         this.hostToolLeaseId = hostToolLease.id;
         this.hostToolLeaseIds.add(hostToolLease.id);
         this.runtime = runtime;
+        activeStage = 'connection_validate';
         if (!runtime.connection) {
           throw new Error('Coder daemon did not expose the required connection lifecycle.');
         }
@@ -1135,7 +2034,9 @@ export class RuntimeHostAdapter {
         if (connection.state !== 'connected') {
           throw new Error(connection.reason ?? 'Coder daemon disconnected during initialization.');
         }
+        timing.mark(activeStage, 'complete', { connectionState: connection.state });
         this.connectionSubscription?.close();
+        activeStage = 'connection_subscription_ready';
         this.connectionSubscription = runtime.connection.subscribe((next) => {
           if (next.state !== 'disconnected') return;
           void this.handleConnectionLoss(
@@ -1145,7 +2046,9 @@ export class RuntimeHostAdapter {
           );
         });
         await this.connectionSubscription.ready;
+        timing.mark(activeStage, 'complete');
         this.workflowSubscription?.close();
+        activeStage = 'workflow_subscription_ready';
         this.workflowSubscription = runtime.workflows.subscribe({}, (event) => {
           const snapshot = projectRuntimeWorkflow(event.snapshot);
           if (!snapshot) {
@@ -1164,31 +2067,86 @@ export class RuntimeHostAdapter {
           });
         });
         await this.workflowSubscription.ready;
+        timing.mark(activeStage, 'complete');
         this.state = 'ready';
         this.lastError = undefined;
         if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
         this.reconnectTimer = undefined;
         this.reconnectAttempt = 0;
+        activeStage = 'credential_leases_resume';
+        const credentialLeaseCount = this.credentialLeases.size;
         await this.resumeKnownCredentialLeases(runtime);
+        timing.mark(activeStage, 'complete', {
+          requestedCount: credentialLeaseCount,
+          activeCount: this.credentialLeases.size,
+        });
+        activeStage = 'profile_refresh';
         await this.refreshProfile(0);
+        timing.mark(activeStage, 'complete');
         this.startIntegrationHealthPolling(runtime);
+        activeStage = 'desired_observations_restore';
+        const desiredObservationCount = this.desiredObservations.size;
+        let restoredObservationCount = 0;
+        let missingObservationCount = 0;
+        let failedObservationCount = 0;
         for (const sessionId of this.desiredObservations) {
           if (this.observations.has(sessionId) || this.observationPromises.has(sessionId)) continue;
           try {
-            await this.openObservation(sessionId);
+            // Restore against the Runtime owned by this initialization attempt.
+            // Calling requireRuntime() from here can join initializePromise itself
+            // after a concurrent disconnect and form an unresolvable Promise cycle.
+            await this.openObservation(sessionId, { attachedRuntime: runtime });
+            // A terminal event can race the old transport loss. The restored snapshot is the
+            // authority for whether this observation is still needed; do not make a stale desired
+            // bit permanent merely because the terminal event was missed while disconnected.
+            await this.retireObservationWhenSettled(sessionId);
+            restoredObservationCount += 1;
           } catch (error: unknown) {
             if (isSessionNotFound(error)) {
               this.desiredObservations.delete(sessionId);
+              missingObservationCount += 1;
               continue;
             }
+            failedObservationCount += 1;
             console.warn(
               `[runtime] could not restore observation for ${sessionId}: ${sanitizeDiagnosticError(error)}`,
             );
           }
         }
+        timing.mark(activeStage, 'complete', {
+          requestedCount: desiredObservationCount,
+          restoredCount: restoredObservationCount,
+          missingCount: missingObservationCount,
+          failedCount: failedObservationCount,
+        });
+        // Connection lifecycle callbacks can run while the post-attach warm-up
+        // awaits credentials, profile reads, or desired observations. Never
+        // publish readiness for an attachment that lost authority in that gap.
+        if (this.runtime !== runtime || this.state !== 'ready') {
+          pendingRuntime = null;
+          throw new RuntimeInitializationAuthorityLostError();
+        }
         pendingRuntime = null;
+        timing.mark('initialize', 'complete', runtimeIdentityTimingData(runtime.identity));
+        this.initializePromise = null;
+        this.runtimeReadyRevision += 1;
+        const readyRevision = this.runtimeReadyRevision;
+        for (const observer of [...this.runtimeReadyObservers]) {
+          try {
+            observer(readyRevision);
+          } catch {
+            // A host integration cannot revoke an otherwise authoritative
+            // Runtime attachment by throwing from its observer.
+          }
+        }
       })
       .catch(async (error: unknown) => {
+        timing.mark(activeStage, 'failed', runtimeStartupFailureData(error));
+        if (error instanceof RuntimeInitializationAuthorityLostError) {
+          pendingRuntime = null;
+          this.initializePromise = null;
+          throw error;
+        }
         const runtime = pendingRuntime;
         pendingRuntime = null;
         if (runtime) {
@@ -1284,6 +2242,7 @@ export class RuntimeHostAdapter {
     reconnectable = true,
   ): Promise<void> {
     if (this.state === 'closed' || this.runtime !== attached) return;
+    const initializationInProgress = this.initializePromise !== null;
     this.stopIntegrationHealthPolling();
     this.connectionSubscription?.close();
     this.connectionSubscription = undefined;
@@ -1294,6 +2253,9 @@ export class RuntimeHostAdapter {
     for (const state of this.observations.values()) state.observation.close();
     this.observations.clear();
     this.observationPromises.clear();
+    this.transcriptPromises.clear();
+    this.conversationPromises.clear();
+    this.transcriptGenerations.clear();
     this.stopAllActorObservations();
     // Lease attachment is connection-scoped even though the stable lease IDs
     // survive in the daemon. Rebuild this set only from successful resume calls
@@ -1301,13 +2263,25 @@ export class RuntimeHostAdapter {
     this.hostToolLeaseIds.clear();
     this.runtime = null;
     this.activeRuns.clear();
+    // Compaction demand is derived from one connection's ordered event stream.
+    // A disconnect can lose the matching `ended` event; retaining that bit would
+    // prevent a fresh terminal snapshot from ever retiring the observation.
+    // In-flight local compaction calls fail/reconcile through their own promise,
+    // while a replacement observation rebuilds demand from its authoritative
+    // snapshot and newly delivered events.
+    this.activeCompactionsBySession.clear();
+    this.localCompactionCallsBySession.clear();
     // User ordinals are inferred only within one observed daemon connection.
     // A reconnect may miss delivery events from the disconnected interval, so
     // retaining these counters would turn an unprovable ordinal into a false
     // strong identity and could fold two distinct user boundaries together.
     this.nextUserOrdinalByTurnId.clear();
-    this.initializePromise = null;
-    this.state = 'uninitialized';
+    // Keep an in-flight initialization promise as the single-flight fence until
+    // its final authority check rejects. A fully initialized attachment clears
+    // this promise before publishing readiness, so ordinary reconnects remain
+    // free to start a new attempt immediately.
+    if (!initializationInProgress) this.initializePromise = null;
+    this.state = reconnectable ? 'uninitialized' : 'failed';
     await attached.close().catch(() => undefined);
     if (this.rollbackInProgress) {
       this.state = 'closed';
@@ -1315,7 +2289,6 @@ export class RuntimeHostAdapter {
     }
     if (reconnectable) this.scheduleReconnect();
     else {
-      this.state = 'failed';
       this.publishUnavailable('disconnected', this.lastError);
     }
   }
@@ -1415,6 +2388,11 @@ export class RuntimeHostAdapter {
         available: available('daemonOrphanExit'),
       },
       {
+        id: 'runtime.events.coalescing',
+        version: version('runtimeEventCoalescing'),
+        available: available('runtimeEventCoalescing'),
+      },
+      {
         id: 'runtime.externalAgents',
         version: version('externalAgentAdmin'),
         available: runtime.agents.enabled && available('externalAgentAdmin'),
@@ -1474,6 +2452,11 @@ export class RuntimeHostAdapter {
         available: available('contextCompaction'),
       },
       {
+        id: 'runtime.conversation.history',
+        version: version('conversationHistory'),
+        available: available('conversationHistory'),
+      },
+      {
         id: 'runtime.transcript.paging',
         version: version('transcriptPaging'),
         available: available('transcriptPaging'),
@@ -1526,32 +2509,64 @@ export class RuntimeHostAdapter {
     const runtime = this.runtime;
     if (!runtime || this.state !== 'ready') return;
     const previousConnection = this.projectionController.profileSnapshot().connection;
+    const managementRead = runtime.daemon.inspect().catch((error: unknown) => {
+      if (!isRuntimeSnapshotConflict(error)) throw error;
+      if (!this.profileManagementConflictWarningShown) {
+        console.warn(
+          '[runtime] daemon management changed during profile refresh; retaining the last known integration health:',
+          sanitizeDiagnosticError(error),
+        );
+        this.profileManagementConflictWarningShown = true;
+      }
+      return undefined;
+    });
     const [status, userInputs, management] = await Promise.all([
       runtime.status.snapshot(),
       runtime.userInputs.listPending(),
-      runtime.daemon.inspect(),
+      managementRead,
     ]);
+    // A reconnect can retain the same public runtimeId while replacing the attached Runtime
+    // object. Never let a slow snapshot from the retired attachment overwrite the new profile.
+    if (this.runtime !== runtime || this.state !== 'ready') return;
     if (status.runtimeId !== runtime.identity.runtimeId) {
       throw new Error(
         'Coder daemon status runtimeId does not match the attached Runtime identity.',
       );
     }
-    if (management.runtimeId !== runtime.identity.runtimeId) {
+    if (management !== undefined && management.runtimeId !== runtime.identity.runtimeId) {
       throw new Error(
         'Coder daemon management runtimeId does not match the attached Runtime identity.',
       );
     }
-    this.integrationHealthFingerprint = this.fingerprintIntegrationHealth(management.integrations);
+    if (management !== undefined) {
+      this.profileManagementConflictWarningShown = false;
+      this.integrationHealthFingerprint = this.fingerprintIntegrationHealth(
+        management.integrations,
+      );
+    }
     this.profileCursor = Math.max(this.profileCursor, cursor);
-    const projectedProfile = projectRuntimeProfile({
+    const projected = projectRuntimeProfile({
       status,
       userInputs,
       cursor: this.profileCursor,
       projectionRevision: ++this.profileRevision,
       changedAt: Date.now(),
       capabilities: [...this.spaceCapabilities(runtime)],
-      ...(management.integrations ? { integrations: management.integrations } : {}),
+      ...(management?.integrations ? { integrations: management.integrations } : {}),
     });
+    // Daemon management is auxiliary to the Session/Run profile. A consistency conflict in that
+    // read must not discard the independently successful status snapshot or erase previously
+    // known integration health.
+    const projectedProfile =
+      management === undefined && previousConnection.integrations !== undefined
+        ? {
+            ...projected,
+            connection: {
+              ...projected.connection,
+              integrations: previousConnection.integrations,
+            },
+          }
+        : projected;
     const connectionChanged = !runtimeConnectionSemanticallyEqual(
       previousConnection,
       projectedProfile.connection,
@@ -1566,12 +2581,43 @@ export class RuntimeHostAdapter {
     this.push('runtime.profileChanged', profile);
   }
 
+  private async refreshProfileAfterConflict(cursor: number): Promise<void> {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await this.refreshProfile(cursor);
+        return;
+      } catch (error: unknown) {
+        if (
+          !isRuntimeSnapshotConflict(error) ||
+          attempt >= MAX_PROFILE_REFRESH_CONFLICT_RETRIES ||
+          this.state !== 'ready' ||
+          this.runtime === null
+        ) {
+          throw error;
+        }
+        await waitForProfileRefreshRetry(attempt + 1);
+      }
+    }
+  }
+
   private scheduleProfileRefresh(cursor: number): void {
     this.profileRefreshQueue = this.profileRefreshQueue
-      .then(() => this.refreshProfile(cursor))
+      .then(async () => {
+        await this.refreshProfileAfterConflict(cursor);
+        this.profileRefreshFailureWarningShown = false;
+      })
       .catch((error: unknown) => {
         this.lastError = sanitizeDiagnosticError(error);
-        this.publishUnavailable('reconnecting', this.lastError);
+        // This is a background read, not a connection-lifecycle signal. The SDK connection
+        // subscription is the sole authority for reconnecting/disconnected transitions. Keep the
+        // last valid profile and live observation so a terminal event can still converge the UI.
+        if (!this.profileRefreshFailureWarningShown) {
+          console.warn(
+            '[runtime] profile refresh failed; retaining the last known Runtime projection:',
+            this.lastError,
+          );
+          this.profileRefreshFailureWarningShown = true;
+        }
       });
   }
 
@@ -1675,11 +2721,40 @@ export class RuntimeHostAdapter {
     }
   }
 
-  private async assertCoderSession(runtime: KodaXDaemonRuntime, sessionId: string): Promise<void> {
-    const session = await runtime.sessions.load(sessionId);
-    if (session.surface === 'partner' || session.profileId === 'kodax-space.partner') {
-      throw new Error(`Partner session ${sessionId} must remain on the inline Partner owner.`);
+  private async assertPersistedCoderOwnership(sessionId: string): Promise<void> {
+    const persisted = await loadPersistedSessionFresh(sessionId);
+    if (isPartnerRuntimeSessionIdentity(persisted)) {
+      this.desiredObservations.delete(sessionId);
+      this.activeCompactionsBySession.delete(sessionId);
+      this.localCompactionCallsBySession.delete(sessionId);
+      this.stopActorObservation(sessionId);
+      const observed = this.observations.get(sessionId);
+      if (observed) {
+        observed.observation.close();
+        this.observations.delete(sessionId);
+      }
+      this.invalidateTranscriptBoundary(sessionId);
+      this.projectionController.removeSessionLive(sessionId);
+      throw new RuntimeSessionIdentityConflictError(
+        sessionId,
+        'the persisted Session is owned by the inline Partner surface.',
+      );
     }
+  }
+
+  private async assertCoderSession(
+    runtime: KodaXDaemonRuntime,
+    sessionId: string,
+    options?: RuntimeReadOptions,
+    expectedProjectRoot?: string,
+  ): Promise<RuntimeSession> {
+    await this.assertPersistedCoderOwnership(sessionId);
+    const session = await runtime.sessions.load(sessionId, options);
+    assertRuntimeSessionIdentity(session, {
+      sessionId,
+      ...(expectedProjectRoot !== undefined ? { projectRoot: expectedProjectRoot } : {}),
+    });
+    return session;
   }
 
   async ensureSession(input: RuntimeSessionIdentity): Promise<boolean> {
@@ -1690,24 +2765,29 @@ export class RuntimeHostAdapter {
     }
     const runtime = await this.requireRuntime();
     try {
-      await this.assertCoderSession(runtime, input.sessionId);
+      await this.assertCoderSession(runtime, input.sessionId, undefined, input.projectRoot);
       return false;
     } catch (error: unknown) {
       if (!isSessionNotFound(error)) throw error;
     }
     try {
-      await runtime.sessions.create({
+      const created = await runtime.sessions.create({
         sessionId: input.sessionId,
         projectPath: input.projectRoot,
         gitRoot: input.projectRoot,
         surface: 'space-desktop',
         tag: input.ephemeral ? SPACE_EPHEMERAL_SESSION_TAG : 'code',
       });
+      assertRuntimeSessionIdentity(created, {
+        sessionId: input.sessionId,
+        projectRoot: input.projectRoot,
+      });
     } catch (createError: unknown) {
       try {
-        await this.assertCoderSession(runtime, input.sessionId);
+        await this.assertCoderSession(runtime, input.sessionId, undefined, input.projectRoot);
         return false;
-      } catch {
+      } catch (reloadError: unknown) {
+        if (!isSessionNotFound(reloadError)) throw reloadError;
         throw createError;
       }
     }
@@ -1720,13 +2800,169 @@ export class RuntimeHostAdapter {
       throw new Error('Partner sessions are not listed through the Coder daemon.');
     }
     const { surface: _spaceSurface, ...runtimeFilter } = filter ?? {};
-    return (await this.requireRuntime()).sessions.list(runtimeFilter);
+    const sessions = await (await this.requireRuntime()).sessions.list(runtimeFilter);
+    return sessions.filter((session) => !isPartnerRuntimeSessionIdentity(session));
   }
 
   async transcript(sessionId: string): Promise<RuntimeTranscript | null> {
+    const existing = this.transcriptPromises.get(sessionId);
+    if (existing) return existing.promise;
+    const token = Symbol(sessionId);
+    const pending = this.readTranscript(sessionId, token).finally(() => {
+      if (this.transcriptPromises.get(sessionId)?.token === token) {
+        this.transcriptPromises.delete(sessionId);
+      }
+    });
+    this.transcriptPromises.set(sessionId, { token, promise: pending });
+    return pending;
+  }
+
+  async conversationHistory(sessionId: string): Promise<RuntimeConversationHistory | null> {
+    const existing = this.conversationPromises.get(sessionId);
+    if (existing) return existing.promise;
+    const token = Symbol(sessionId);
+    const pending = this.readConversationHistory(sessionId, token).finally(() => {
+      if (this.conversationPromises.get(sessionId)?.token === token) {
+        this.conversationPromises.delete(sessionId);
+      }
+    });
+    this.conversationPromises.set(sessionId, { token, promise: pending });
+    return pending;
+  }
+
+  async conversationHistoryPage(input: {
+    readonly sessionId: string;
+    readonly cursor?: string;
+    readonly revision?: string;
+    readonly sourceRevision?: string;
+    readonly limit?: number;
+  }): Promise<RuntimeConversationHistoryPageResult> {
+    const generation = this.transcriptGenerations.get(input.sessionId) ?? 0;
     const runtime = await this.requireRuntime();
-    await this.assertCoderSession(runtime, sessionId);
-    return readPagedRuntimeTranscript(runtime, sessionId);
+    // Do not call sessions.load() or the persisted-body ownership probe here: both materialize the
+    // Session body and would erase the bounded first-page guarantee. The IPC owner routes only
+    // Runtime-profile Coder sessions to this method; Runtime then resolves the exact sessionId.
+    let page: RuntimeConversationHistoryPage | null;
+    try {
+      page = await readRuntimeConversationHistoryPage(runtime, {
+        sessionId: input.sessionId,
+        ...(input.cursor !== undefined ? { cursor: input.cursor } : {}),
+        ...(input.limit !== undefined ? { limit: input.limit } : {}),
+      });
+    } catch (error) {
+      if (isRuntimeResyncRequired(error)) return { outcome: 'data_changed' };
+      throw error;
+    }
+    if (
+      this.runtime !== runtime ||
+      this.state !== 'ready' ||
+      (this.transcriptGenerations.get(input.sessionId) ?? 0) !== generation
+    ) {
+      return { outcome: 'data_changed' };
+    }
+    if (
+      page !== null &&
+      ((input.revision !== undefined && page.revision !== input.revision) ||
+        (input.sourceRevision !== undefined && page.sourceRevision !== input.sourceRevision))
+    ) {
+      return { outcome: 'data_changed' };
+    }
+    return { outcome: 'ready', page };
+  }
+
+  private async readConversationHistory(
+    sessionId: string,
+    requestToken: symbol,
+  ): Promise<RuntimeConversationHistory | null> {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const generation = this.transcriptGenerations.get(sessionId) ?? 0;
+      const runtime = await this.requireRuntime();
+      await this.assertCoderSession(runtime, sessionId, { timeoutMs: RUNTIME_READ_TIMEOUT_MS });
+      const conversation = await readPagedRuntimeConversationHistory(runtime, sessionId);
+      if (this.runtime !== runtime || this.state !== 'ready') {
+        throw new Error('Coder daemon connection changed while reading conversation history.');
+      }
+      if ((this.transcriptGenerations.get(sessionId) ?? 0) === generation) return conversation;
+      const replacement = this.conversationPromises.get(sessionId);
+      if (replacement && replacement.token !== requestToken) return replacement.promise;
+    }
+    throw new Error('Conversation history could not establish a stable Runtime boundary.');
+  }
+
+  async conversationTurnEndBoundary(
+    sessionId: string,
+    turnIndex: number,
+  ): Promise<RuntimeConversationHistoryBoundary | null> {
+    if (!Number.isInteger(turnIndex) || turnIndex < 0) return null;
+    const history = await this.conversationHistory(sessionId);
+    if (!history) return null;
+    // `ambiguous` means the SDK retained more than one legacy interpretation; it does not make a
+    // returned physical boundary speculative. Bind the exact candidate the user selected and
+    // fence the mutation by sourceRevision. Never substitute another entry or infer by content.
+    const boundaryId = conversationTurnEndBoundaryId(history.entries, turnIndex);
+    return boundaryId ? { entryId: boundaryId, sourceRevision: history.sourceRevision } : null;
+  }
+
+  private invalidateTranscriptBoundary(sessionId: string): void {
+    this.transcriptGenerations.set(sessionId, (this.transcriptGenerations.get(sessionId) ?? 0) + 1);
+    this.transcriptPromises.delete(sessionId);
+    this.conversationPromises.delete(sessionId);
+  }
+
+  private async readTranscript(
+    sessionId: string,
+    requestToken: symbol,
+  ): Promise<RuntimeTranscript | null> {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const generation = this.transcriptGenerations.get(sessionId) ?? 0;
+      const runtime = await this.requireRuntime();
+      const observed = this.observations.get(sessionId);
+      const observationSnapshot =
+        observed?.runtime === runtime && observed.transcriptSnapshotFresh
+          ? observed.observation.snapshot
+          : undefined;
+      let transcript: RuntimeTranscript | null;
+      if (observationSnapshot) {
+        await this.assertPersistedCoderOwnership(sessionId);
+        transcript = await readPagedRuntimeTranscript(runtime, sessionId, observationSnapshot);
+      } else {
+        const loadedSession = await this.assertCoderSession(runtime, sessionId, {
+          timeoutMs: RUNTIME_READ_TIMEOUT_MS,
+        });
+        transcript = await readPagedRuntimeTranscript(runtime, sessionId, undefined, loadedSession);
+      }
+      if (this.runtime !== runtime || this.state !== 'ready') {
+        throw new Error('Coder daemon connection changed while reading Session history.');
+      }
+      if ((this.transcriptGenerations.get(sessionId) ?? 0) === generation) return transcript;
+
+      // A Runtime event crossed the immutable paging boundary. A caller that arrived after the
+      // event owns the newer in-flight read; share it instead of launching a third materialization.
+      const replacement = this.transcriptPromises.get(sessionId);
+      if (replacement && replacement.token !== requestToken) return replacement.promise;
+      // Retry once from the current Runtime revision. If another live event crosses that second
+      // boundary, its renderer event remains the authoritative tail after this consistent page.
+    }
+    throw new Error('Session history could not establish a stable Runtime boundary.');
+  }
+
+  /**
+   * Capture the SDK's read-only, boundary-labelled support record. Deliberately
+   * do not call sessions.load() first: diagnostics must not emit a durable
+   * session.loaded event or take part in recovery/ownership mutation.
+   */
+  async diagnoseSession(input: RuntimeSessionDiagnosticsInput): Promise<RuntimeSessionDiagnostics> {
+    const runtime = await this.requireRuntime();
+    await this.assertPersistedCoderOwnership(input.sessionId);
+    const diagnostic = await runtime.sessions.diagnostics(input);
+    if (
+      this.runtime !== runtime ||
+      diagnostic.runtimeId !== runtime.identity.runtimeId ||
+      diagnostic.sessionId !== input.sessionId
+    ) {
+      throw new Error('Coder daemon Session diagnostics crossed a Runtime or Session boundary.');
+    }
+    return diagnostic;
   }
 
   async appendNotice(input: RuntimeAppendNoticeInput) {
@@ -1744,9 +2980,29 @@ export class RuntimeHostAdapter {
     // renderer cannot miss the canonical start/finished/end sequence and the host does not need
     // to synthesize a second, revision-less compatibility sequence.
     await this.ensureObserved(input.sessionId);
-    const result = await runtime.sessions.compact(input);
-    if (result.compacted) invalidatePersistedSessionCache(input.sessionId);
-    return result;
+    const commandObservation = this.observations.get(input.sessionId);
+    this.localCompactionCallsBySession.set(
+      input.sessionId,
+      (this.localCompactionCallsBySession.get(input.sessionId) ?? 0) + 1,
+    );
+    let completedCompaction = false;
+    try {
+      const result = await runtime.sessions.compact(input);
+      completedCompaction = result.compacted;
+      if (result.compacted) invalidatePersistedSessionCache(input.sessionId);
+      return result;
+    } finally {
+      const remaining = (this.localCompactionCallsBySession.get(input.sessionId) ?? 1) - 1;
+      if (remaining > 0) this.localCompactionCallsBySession.set(input.sessionId, remaining);
+      else this.localCompactionCallsBySession.delete(input.sessionId);
+      // A successful compaction on the same observation remains subscribed for its canonical
+      // ended/skipped event, which may be delivered just after compact() resolves. A no-op, failed
+      // call, or an operation whose observation was invalidated can retire from the current fresh
+      // snapshot once its already-buffered events settle.
+      if (!completedCompaction || this.observations.get(input.sessionId) !== commandObservation) {
+        await this.retireObservationWhenSettled(input.sessionId);
+      }
+    }
   }
 
   async forkSession(input: RuntimeForkSessionInput) {
@@ -1763,6 +3019,9 @@ export class RuntimeHostAdapter {
     const result = await runtime.sessions.rewind(input);
     if (result !== null) {
       invalidatePersistedSessionCache(input.sessionId);
+      // Mutation success is the authoritative invalidation boundary. A caller arriving
+      // immediately after rewind must never join an in-flight pre-rewind history traversal.
+      this.invalidateTranscriptBoundary(input.sessionId);
       // Rewind can replace Actor state without producing a new Actor event.
       // Drop the cached cursor so renderer reload/rewind cannot resurrect the
       // pre-rewind child tree.
@@ -1798,13 +3057,19 @@ export class RuntimeHostAdapter {
       outcome = 'not_found';
     }
     this.desiredObservations.delete(sessionId);
+    this.activeCompactionsBySession.delete(sessionId);
+    this.localCompactionCallsBySession.delete(sessionId);
     this.stopActorObservation(sessionId);
     const observed = this.observations.get(sessionId);
     if (observed) {
       observed.observation.close();
       this.observations.delete(sessionId);
     }
+    this.invalidateTranscriptBoundary(sessionId);
     this.activeRuns.delete(sessionId);
+    this.projectedCompactionEntries.delete(sessionId);
+    this.projectedCompactionEvents.delete(sessionId);
+    this.resolvedCompactionEvents.delete(sessionId);
     for (const [runId, continuation] of this.continuationPrompts) {
       if (continuation.sessionId === sessionId) this.continuationPrompts.delete(runId);
     }
@@ -1926,9 +3191,10 @@ export class RuntimeHostAdapter {
     };
   }
 
-  ensureObserved(sessionId: string): Promise<void> {
+  async ensureObserved(sessionId: string): Promise<void> {
+    await this.assertPersistedCoderOwnership(sessionId);
     this.desiredObservations.add(sessionId);
-    if (this.observations.has(sessionId)) return Promise.resolve();
+    if (this.observations.has(sessionId)) return;
     const existing = this.observationPromises.get(sessionId);
     if (existing) return existing;
     const pending = this.openObservation(sessionId).finally(() => {
@@ -1940,6 +3206,101 @@ export class RuntimeHostAdapter {
     return pending;
   }
 
+  private compactionObservationKey(event: RuntimeTypedEvent): string {
+    const payload = runtimeEventRecord(event.payload);
+    const meta = runtimeEventRecord(payload?.meta);
+    const contextId =
+      (typeof payload?.contextId === 'string' ? payload.contextId : undefined) ??
+      (typeof meta?.contextId === 'string' ? meta.contextId : undefined) ??
+      (typeof payload?.agentId === 'string' ? payload.agentId : undefined) ??
+      (typeof meta?.agentId === 'string' ? meta.agentId : undefined) ??
+      'unknown';
+    return `${event.runId}\0${contextId}`;
+  }
+
+  private updateObservationDemandFromEvent(event: RuntimeTypedEvent): void {
+    if (
+      event.type === 'run.queued' ||
+      event.type === 'run.started' ||
+      event.type === 'permission.requested' ||
+      event.type === 'user_input.requested'
+    ) {
+      this.desiredObservations.add(event.sessionId);
+    }
+    if (
+      event.type === 'context.compaction.started' ||
+      event.type === 'context.compaction.finished'
+    ) {
+      // `finished` means the compaction result has been produced, not that the
+      // context lifecycle is over. In particular, committed boundaries may be
+      // reconciled asynchronously before the canonical `ended` event arrives.
+      // Replayed/restored streams may also begin at `finished`, so it must be
+      // sufficient on its own to retain the observation.
+      this.desiredObservations.add(event.sessionId);
+      const active = this.activeCompactionsBySession.get(event.sessionId) ?? new Set<string>();
+      active.add(this.compactionObservationKey(event));
+      this.activeCompactionsBySession.set(event.sessionId, active);
+    } else if (
+      event.type === 'context.compaction.ended' ||
+      event.type === 'context.compaction.skipped'
+    ) {
+      const active = this.activeCompactionsBySession.get(event.sessionId);
+      if (active) {
+        active.delete(this.compactionObservationKey(event));
+        if (active.size === 0) this.activeCompactionsBySession.delete(event.sessionId);
+      }
+    }
+  }
+
+  /**
+   * Retire long-lived Session and Actor observers once the authoritative projection is quiescent.
+   * Keeping terminal Sessions in desiredObservations makes every reconnect rebuild their reducers
+   * serially and leaves one Actor long-poll per historical Session running forever.
+   */
+  private retireObservationIfQuiescent(sessionId: string): boolean {
+    const state = this.observations.get(sessionId);
+    if (!state || this.activeRuns.has(sessionId)) return false;
+    const projection = state.reducer.snapshot();
+    const queuedInputActive = projection.queuedInputs.some(
+      (input) => input.state === 'queued' || input.state === 'delivering',
+    );
+    const interactionPending = projection.interactions.some(
+      (interaction) => interaction.state === 'pending',
+    );
+    if (
+      projection.activeRun !== undefined ||
+      projection.queuedRuns.length > 0 ||
+      queuedInputActive ||
+      interactionPending ||
+      (this.activeCompactionsBySession.get(sessionId)?.size ?? 0) > 0 ||
+      (this.localCompactionCallsBySession.get(sessionId) ?? 0) > 0
+    ) {
+      return false;
+    }
+    this.desiredObservations.delete(sessionId);
+    state.observation.close();
+    this.observations.delete(sessionId);
+    this.stopActorObservation(sessionId);
+    return true;
+  }
+
+  /**
+   * Observation bootstrap can buffer events until its immutable snapshot is installed. Wait for
+   * that ordered queue before deciding that the snapshot is terminal; otherwise a synchronously
+   * delivered run/interaction/compaction event could be discarded by premature retirement.
+   */
+  private async retireObservationWhenSettled(sessionId: string): Promise<boolean> {
+    while (true) {
+      const state = this.observations.get(sessionId);
+      if (!state) return false;
+      const pending = state.eventQueue;
+      await pending;
+      if (this.observations.get(sessionId) !== state) return false;
+      if (state.eventQueue !== pending) continue;
+      return this.retireObservationIfQuiescent(sessionId);
+    }
+  }
+
   async actorTreeSnapshot(sessionId: string): Promise<AgentActorTreeSnapshotT> {
     let runtime = await this.requireRuntime();
     await this.assertCoderSession(runtime, sessionId);
@@ -1948,56 +3309,92 @@ export class RuntimeHostAdapter {
     // the pre-reconnect client captured above.
     runtime = await this.requireRuntime();
     await this.assertCoderSession(runtime, sessionId);
-    const state = await this.ensureActorObserved(runtime, sessionId);
-    const snapshot = state.observer.current() ?? (await state.observer.refreshNow());
-    if (!snapshot) {
-      throw new Error(`Coder daemon did not return an Agent Actor snapshot for ${sessionId}.`);
+    try {
+      const state = await this.ensureActorObserved(runtime, sessionId);
+      const snapshot = state.observer.current() ?? (await state.observer.refreshNow());
+      if (!snapshot) {
+        throw new Error(`Coder daemon did not return an Agent Actor snapshot for ${sessionId}.`);
+      }
+      return snapshot;
+    } finally {
+      // A one-shot Actor snapshot for an already-terminal Session must not turn
+      // into a permanent Session observation plus 30-second Actor long-poll.
+      // Active/queued/pending work keeps the observers alive through the same
+      // authoritative quiescence predicate.
+      await this.retireObservationWhenSettled(sessionId);
     }
-    return snapshot;
   }
 
-  private async openObservation(sessionId: string): Promise<void> {
-    const runtime = await this.requireRuntime();
+  private async openObservation(
+    sessionId: string,
+    options: {
+      readonly attachedRuntime?: KodaXDaemonRuntime;
+      readonly trustPersistedOwnership?: boolean;
+    } = {},
+  ): Promise<void> {
+    if (!options.trustPersistedOwnership) {
+      await this.assertPersistedCoderOwnership(sessionId);
+    }
+    const runtime = options.attachedRuntime ?? (await this.requireRuntime());
+    if (
+      options.attachedRuntime !== undefined &&
+      (this.runtime !== options.attachedRuntime || this.state !== 'ready')
+    ) {
+      throw new Error('Coder daemon connection changed before observation recovery.');
+    }
     const parseRuntimeEvent =
       this.runtimeEventParser ?? (await import('@kodax-ai/kodax/runtime')).parseRuntimeEvent;
-    const session = await runtime.sessions.load(sessionId);
-    if (session.surface === 'partner' || session.profileId === 'kodax-space.partner') {
-      throw new Error(`Partner session ${sessionId} must remain on the inline Partner owner.`);
-    }
     const buffered: RuntimeTypedEvent[] = [];
-    let state:
-      | {
-          readonly observation: RuntimeSessionObservation;
-          readonly reducer: CoderSessionProjectionReducer;
-          eventQueue: Promise<void>;
+    let state: RuntimeSessionObservationState | undefined;
+    const observation = await runtime.sessions.observe(
+      sessionId,
+      (event) => {
+        const parsed = parseRuntimeEvent(event);
+        if (!parsed.ok) {
+          throw new Error(`Malformed Runtime observation event: ${parsed.error}`);
         }
-      | undefined;
-    const observation = await runtime.sessions.observe(sessionId, (event) => {
-      const parsed = parseRuntimeEvent(event);
-      if (!parsed.ok) {
-        console.warn(`[runtime] dropped malformed event: ${parsed.error}`);
-        return;
-      }
-      if (!state) {
-        buffered.push(parsed.event);
-        return;
-      }
-      this.enqueueRuntimeEvent(state, parsed.event);
-    });
+        if (!state) {
+          buffered.push(parsed.event);
+          return;
+        }
+        this.enqueueRuntimeEvent(state, parsed.event);
+      },
+      { timeoutMs: RUNTIME_READ_TIMEOUT_MS },
+    );
     let installed = false;
     try {
+      const session = observation.snapshot.session;
+      if (!options.trustPersistedOwnership) {
+        await this.assertPersistedCoderOwnership(sessionId);
+      }
+      assertRuntimeSessionIdentity(session, { sessionId });
       await this.resumeSnapshotBindings(runtime, observation.snapshot);
       const initial = projectRuntimeSessionSnapshot(observation.snapshot);
       await this.syncSpaceSessionSettings(sessionId, observation.snapshot.settings.value);
       const reducer = new CoderSessionProjectionReducer(initial, observation.snapshot.runs);
       for (const run of observation.snapshot.runs) this.runProviders.set(run.runId, run.provider);
-      state = { observation, reducer, eventQueue: Promise.resolve() };
+      state = {
+        sessionId,
+        runtime,
+        observation,
+        reducer,
+        transcriptSnapshotFresh: true,
+        eventQueue: Promise.resolve(),
+      };
       if (this.runtime !== runtime || this.state !== 'ready') {
         throw new Error('Coder daemon connection changed while opening a session observation.');
       }
       if (!this.desiredObservations.has(sessionId)) return;
       this.observations.set(sessionId, state);
       installed = true;
+      void observation.invalidated
+        .then((invalidation) => this.handleObservationInvalidation(state!, invalidation))
+        .catch((error: unknown) => {
+          console.warn(
+            `[runtime] observation invalidation signal failed for ${sessionId}:`,
+            sanitizeDiagnosticError(error),
+          );
+        });
       this.profileCursor = Math.max(this.profileCursor, observation.snapshot.cursor);
       this.projectionController.replaceSessionLive(initial);
       // Actor telemetry is best-effort: a daemon without the agents plane (or a
@@ -2036,6 +3433,94 @@ export class RuntimeHostAdapter {
       throw error;
     } finally {
       if (!installed) observation.close();
+    }
+  }
+
+  private async handleObservationInvalidation(
+    state: RuntimeSessionObservationState,
+    invalidation: RuntimeObservationInvalidation,
+  ): Promise<void> {
+    if (this.observations.get(state.sessionId) !== state) return;
+    const invalidationMessage =
+      sanitizeDiagnosticError(invalidation.message) ||
+      'The Runtime observation must be rebuilt from a fresh snapshot.';
+    console.warn(
+      `[runtime] observation invalidated for ${state.sessionId} (${invalidation.reason}): ${invalidationMessage}`,
+    );
+    this.observations.delete(state.sessionId);
+    state.observation.close();
+    this.stopActorObservation(state.sessionId);
+    // The replacement snapshot is authoritative for runs/queues/interactions but exposes no
+    // active-compaction state. Markers derived from the invalid event stream are therefore no
+    // longer provable. A Space-issued compact() still awaiting its command promise remains
+    // protected independently by localCompactionCallsBySession.
+    this.activeCompactionsBySession.delete(state.sessionId);
+    this.projectionController.removeSessionLive(state.sessionId);
+
+    // Tell the renderer to discard its stale projection immediately. Reopening
+    // the daemon observation may involve transport recovery and must not keep
+    // the invalid snapshot visible for that entire wait.
+    this.push('session.liveInvalidated', {
+      sessionId: state.sessionId,
+      runtimeId: invalidation.runtimeId,
+      reason: invalidation.reason,
+      message: invalidationMessage,
+    });
+
+    let resyncError: unknown;
+    if (
+      this.desiredObservations.has(state.sessionId) &&
+      this.runtime === state.runtime &&
+      this.state === 'ready'
+    ) {
+      try {
+        // This is recovery of an observation whose persisted Coder ownership and daemon Session
+        // identity were already validated. Re-reading the full persisted Session here races the
+        // active Run's normal writer lock and can keep live controls absent for minutes. The same
+        // Runtime identity plus the fresh daemon snapshot are the recovery fence; a new explicit
+        // ensureObserved() still performs the full persisted ownership check.
+        const existing = this.observationPromises.get(state.sessionId);
+        if (existing) {
+          await existing;
+        }
+        // An invalidation may arrive after the initial observation installed its state but before
+        // that opening promise's finally handler ran. Re-check after awaiting it; otherwise the
+        // invalidation would consume the only recovery attempt.
+        if (!this.observations.has(state.sessionId)) {
+          const pending = this.openObservation(state.sessionId, {
+            attachedRuntime: state.runtime,
+            trustPersistedOwnership: true,
+          }).finally(() => {
+            if (this.observationPromises.get(state.sessionId) === pending) {
+              this.observationPromises.delete(state.sessionId);
+            }
+          });
+          this.observationPromises.set(state.sessionId, pending);
+          await pending;
+        }
+        await this.retireObservationWhenSettled(state.sessionId);
+      } catch (error) {
+        resyncError = error;
+      }
+    }
+
+    if (resyncError !== undefined) {
+      this.lastError = sanitizeDiagnosticError(resyncError);
+      // The profile is the bounded fallback for controls while session.live is absent. Reconcile
+      // it from the same Runtime so a terminal Run that raced the failed observation cannot leave
+      // Stop visible forever. A successful snapshot is fresh even though this one Session's
+      // detailed observation failed, and must remain usable if the Run is still active. Only when
+      // the profile read itself fails do we mark the connection stale and reject the old fallback.
+      try {
+        await this.refreshProfile(this.profileCursor);
+      } catch (profileError) {
+        console.warn(
+          `[runtime] profile reconciliation after observation failure also failed for ${state.sessionId}:`,
+          sanitizeDiagnosticError(profileError),
+        );
+        this.publishUnavailable('degraded', this.lastError);
+      }
+      console.warn(`[runtime] observation resync failed for ${state.sessionId}:`, this.lastError);
     }
   }
 
@@ -2167,30 +3652,33 @@ export class RuntimeHostAdapter {
   }
 
   private enqueueRuntimeEvent(
-    state: {
-      readonly observation: RuntimeSessionObservation;
-      readonly reducer: CoderSessionProjectionReducer;
-      eventQueue: Promise<void>;
-    },
+    state: RuntimeSessionObservationState,
     event: RuntimeTypedEvent,
   ): void {
+    // The observation snapshot is immutable. Once any later event is accepted, a future history
+    // request must start a fresh transcript revision instead of silently replaying the old tail.
+    state.transcriptSnapshotFresh = false;
+    // Do not let a caller arriving after this event join an older immutable paging boundary.
+    // Existing callers either share a newer replacement or retry once in readTranscript().
+    this.invalidateTranscriptBoundary(event.sessionId);
     state.eventQueue = state.eventQueue
       .then(() => this.applyRuntimeEvent(state, event))
       .catch((error: unknown) => {
         this.lastError = sanitizeDiagnosticError(error);
-        this.publishUnavailable('degraded', this.lastError);
         console.warn(
-          `[runtime] ignored malformed event ${event.type} (${event.id}): ${this.lastError}`,
+          `[runtime] observation delivery failed for ${event.type} (${event.id}): ${this.lastError}`,
         );
+        void this.handleObservationInvalidation(state, {
+          code: 'observation_invalidated',
+          reason: 'delivery_failed',
+          runtimeId: state.runtime.identity.runtimeId,
+          message: this.lastError,
+        });
       });
   }
 
   private async applyRuntimeEvent(
-    state: {
-      readonly observation: RuntimeSessionObservation;
-      readonly reducer: CoderSessionProjectionReducer;
-      eventQueue: Promise<void>;
-    },
+    state: RuntimeSessionObservationState,
     event: RuntimeTypedEvent,
   ): Promise<void> {
     const runtime = this.runtime;
@@ -2203,6 +3691,7 @@ export class RuntimeHostAdapter {
     if (typeof eventPayload?.provider === 'string') {
       this.runProviders.set(event.runId, eventPayload.provider);
     }
+    this.updateObservationDemandFromEvent(event);
     let change;
     if (
       event.type === 'permission.requested' ||
@@ -2249,10 +3738,11 @@ export class RuntimeHostAdapter {
         await this.revokeCredentialLease(runtime, leaseId);
       }
     }
-    this.bridgeRuntimeEvent(event, runtime.identity.runtimeId);
+    await this.bridgeRuntimeEvent(event, runtime.identity.runtimeId);
     if (runtimeEventChangesProfile(event.type)) {
       this.scheduleProfileRefresh(event.seq);
     }
+    this.retireObservationIfQuiescent(event.sessionId);
   }
 
   private async syncSpaceSessionSettings(
@@ -2319,7 +3809,7 @@ export class RuntimeHostAdapter {
     return ordinal;
   }
 
-  private bridgeRuntimeEvent(event: RuntimeTypedEvent, runtimeId?: string): void {
+  private async bridgeRuntimeEvent(event: RuntimeTypedEvent, runtimeId?: string): Promise<void> {
     const payload =
       event.payload !== null && typeof event.payload === 'object'
         ? (event.payload as Readonly<Record<string, unknown>>)
@@ -2327,6 +3817,9 @@ export class RuntimeHostAdapter {
     const contextEvent = projectRuntimeContextSessionEvent(event);
     if (contextEvent) {
       this.push('session.event', contextEvent);
+      if (event.type === 'context.compaction.finished') {
+        this.projectCommittedCompactionBoundary(event);
+      }
       return;
     }
     const activityMeta = runtimeEventRecord(payload?.meta) as ChildMeta;
@@ -2668,6 +4161,165 @@ export class RuntimeHostAdapter {
     }
   }
 
+  private projectCommittedCompactionBoundary(event: RuntimeTypedEvent): void {
+    const payload = runtimeEventRecord(event.payload);
+    if (event.type !== 'context.compaction.finished' || payload?.committed !== true) return;
+    const isRootContext =
+      payload.contextKind === 'root' ||
+      (payload.contextKind === undefined && payload.parentContextId === undefined);
+    if (!isRootContext) return;
+
+    const provisionalId = `runtime-compaction:${event.id}`;
+    const projectedEvents =
+      this.projectedCompactionEvents.get(event.sessionId) ??
+      (() => {
+        const ids = new Set<string>();
+        this.projectedCompactionEvents.set(event.sessionId, ids);
+        return ids;
+      })();
+    if (!projectedEvents.has(provisionalId)) {
+      projectedEvents.add(provisionalId);
+      const sentAt = Date.parse(event.time);
+      this.push('session.event', {
+        kind: 'lineage_notice',
+        sessionId: event.sessionId,
+        noticeKind: 'compaction',
+        text: 'Compaction',
+        provisionalId,
+        displayId: provisionalId,
+        ...(typeof payload.contextId === 'string' ? { contextId: payload.contextId } : {}),
+        ...(typeof payload.contextRevision === 'number'
+          ? { contextRevision: payload.contextRevision }
+          : {}),
+        ...(typeof payload.afterRevision === 'number'
+          ? { afterRevision: payload.afterRevision }
+          : {}),
+        ...(payload.source === 'manual' ||
+        payload.source === 'automatic_threshold' ||
+        payload.source === 'physical_capacity'
+          ? { source: payload.source }
+          : {}),
+        ...(typeof payload.tokensBefore === 'number' ? { tokensBefore: payload.tokensBefore } : {}),
+        ...(typeof payload.tokensAfter === 'number' ? { tokensAfter: payload.tokensAfter } : {}),
+        ...(Number.isFinite(sentAt) ? { sentAt } : {}),
+      });
+    }
+
+    const runtime = this.runtime;
+    if (!runtime || this.state !== 'ready') return;
+    invalidatePersistedSessionCache(event.sessionId);
+    // Current Runtime releases do not expose the persisted compaction ID on the finish event.
+    // The provisional boundary is already complete for display; exact enrichment is attempted
+    // only when a future/compatible Runtime supplies authoritative physical identity.
+    if (
+      typeof payload.compactionEntryId !== 'string' ||
+      payload.compactionEntryId.trim().length === 0
+    ) {
+      return;
+    }
+    const taskKey = `${event.sessionId}\0${provisionalId}`;
+    if (this.resolvedCompactionEvents.get(event.sessionId)?.has(provisionalId)) return;
+    if (this.compactionProjectionTasks.has(taskKey)) return;
+    const task = this.reconcileCommittedCompactionBoundary(runtime, event, provisionalId)
+      .catch(() => undefined)
+      .finally(() => {
+        if (this.compactionProjectionTasks.get(taskKey) === task) {
+          this.compactionProjectionTasks.delete(taskKey);
+        }
+      });
+    this.compactionProjectionTasks.set(taskKey, task);
+  }
+
+  private async reconcileCommittedCompactionBoundary(
+    runtime: KodaXDaemonRuntime,
+    event: RuntimeTypedEvent,
+    provisionalId: string,
+  ): Promise<void> {
+    const payload = runtimeEventRecord(event.payload);
+    if (!payload) return;
+    const seen =
+      this.projectedCompactionEntries.get(event.sessionId) ??
+      (() => {
+        const ids = new Set<string>();
+        this.projectedCompactionEntries.set(event.sessionId, ids);
+        return ids;
+      })();
+
+    // Persistence precedes the finished event, but daemon paging can lag by a few milliseconds.
+    // The provisional row is already visible at the exact event slot, so these bounded retries
+    // only enrich its provenance and can fail without deleting or moving the boundary.
+    for (const delayMs of [0, 25, 100]) {
+      if (delayMs > 0) await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+      if (
+        this.runtime !== runtime ||
+        this.state !== 'ready' ||
+        !this.projectedCompactionEvents.get(event.sessionId)?.has(provisionalId)
+      ) {
+        return;
+      }
+      let candidates: RuntimeCompactionCandidate[];
+      try {
+        candidates = await readRecentRuntimeCompactionCandidates(runtime, event.sessionId);
+      } catch {
+        continue;
+      }
+      if (
+        this.runtime !== runtime ||
+        this.state !== 'ready' ||
+        !this.projectedCompactionEvents.get(event.sessionId)?.has(provisionalId)
+      ) {
+        return;
+      }
+      const resolved = selectCommittedCompactionCandidate(candidates, event, seen);
+      if (!resolved) continue;
+      const { entry, canonicalIndex } = resolved;
+      const resolvedEvents =
+        this.resolvedCompactionEvents.get(event.sessionId) ??
+        (() => {
+          const ids = new Set<string>();
+          this.resolvedCompactionEvents.set(event.sessionId, ids);
+          return ids;
+        })();
+      const sentAt = Date.parse(entry.timestamp);
+      const text =
+        typeof entry.summary === 'string' && entry.summary.trim().length > 0
+          ? entry.summary.slice(0, 262_144)
+          : 'Compaction';
+      this.push('session.event', {
+        kind: 'lineage_notice',
+        sessionId: event.sessionId,
+        noticeKind: 'compaction',
+        text,
+        provisionalId,
+        displayId: provisionalId,
+        entryId: entry.entryId,
+        parentId: entry.parentId,
+        logicalId: entry.logicalId,
+        ...(entry.sourceEntryId !== undefined ? { sourceEntryId: entry.sourceEntryId } : {}),
+        canonicalIndex,
+        ...(entry.turnId !== undefined ? { turnId: entry.turnId } : {}),
+        ...(typeof payload.contextId === 'string' ? { contextId: payload.contextId } : {}),
+        ...(typeof payload.contextRevision === 'number'
+          ? { contextRevision: payload.contextRevision }
+          : {}),
+        ...(typeof payload.afterRevision === 'number'
+          ? { afterRevision: payload.afterRevision }
+          : {}),
+        ...(payload.source === 'manual' ||
+        payload.source === 'automatic_threshold' ||
+        payload.source === 'physical_capacity'
+          ? { source: payload.source }
+          : {}),
+        ...(typeof payload.tokensBefore === 'number' ? { tokensBefore: payload.tokensBefore } : {}),
+        ...(typeof payload.tokensAfter === 'number' ? { tokensAfter: payload.tokensAfter } : {}),
+        ...(Number.isFinite(sentAt) ? { sentAt } : {}),
+      });
+      seen.add(entry.entryId);
+      resolvedEvents.add(provisionalId);
+      return;
+    }
+  }
+
   private pushRuntimeChildActivity(
     meta: ChildMeta,
     kind: 'tool_use' | 'tool_result' | 'end',
@@ -2721,12 +4373,14 @@ export class RuntimeHostAdapter {
       if (registeredCredential) {
         await this.revokeCredentialLease(runtime, registeredCredential.leaseId);
       }
+      this.retireObservationIfQuiescent(input.sessionId);
       throw error;
     }
     if (registeredCredential) {
       const lease = this.credentialLeases.get(registeredCredential.leaseId);
       if (lease) lease.runBinding.boundRunId = handle.runId;
     }
+    this.spaceOwnedRunIds.add(handle.runId);
     this.activeRuns.set(input.sessionId, handle.runId);
     const result = handle.result.finally(async () => {
       if (this.activeRuns.get(input.sessionId) === handle.runId) {
@@ -2735,6 +4389,7 @@ export class RuntimeHostAdapter {
       if (registeredCredential && this.runtime === runtime && this.state === 'ready') {
         await this.revokeCredentialLease(runtime, registeredCredential.leaseId);
       }
+      this.retireObservationIfQuiescent(input.sessionId);
     });
     return { ...handle, result };
   }
@@ -2803,29 +4458,153 @@ export class RuntimeHostAdapter {
 
   async findActiveRunId(sessionId: string): Promise<string | undefined> {
     const runtime = await this.requireRuntime();
-    await this.assertCoderSession(runtime, sessionId);
-    const statuses = await runtime.runs.list({
-      sessionId,
-      phase: ['running', 'waiting_permission', 'waiting_user_input'],
-    });
-    return statuses.slice().sort((a, b) => (b.sessionOrder ?? 0) - (a.sessionOrder ?? 0))[0]?.runId;
+    // Run control/status is already fenced by the daemon's Session admission and Runtime
+    // identity. Do not put a full persisted-Session read in front of it: an executing Run owns
+    // the Session write lock, so that history-grade boundary can legitimately report
+    // `data_changed` at the exact moment the user needs Stop to remain available.
+    const status = await runtime.sessions.status(sessionId);
+    if (status.sessionId !== sessionId) {
+      throw new Error('Coder daemon Session status belongs to a different Session identity.');
+    }
+    if (status.runtimeId !== runtime.identity.runtimeId) {
+      throw new Error('Coder daemon Session status belongs to a different Runtime identity.');
+    }
+    if (this.runtime !== runtime || this.state !== 'ready') {
+      throw new Error('Coder Runtime changed while resolving the active Run.');
+    }
+    switch (status.phase) {
+      case 'running':
+      case 'waiting_agent':
+      case 'recovering':
+      case 'waiting_permission':
+      case 'waiting_user_input':
+      case 'unknown':
+        if (!status.runId) {
+          throw new Error(
+            `Coder daemon reported ${status.phase} for ${sessionId} without a Run identity.`,
+          );
+        }
+        return status.runId;
+      default:
+        return undefined;
+    }
   }
 
-  async abortSessionRun(sessionId: string): Promise<boolean> {
-    const runtime = this.runtime;
-    if (!runtime) return false;
+  async abortSessionRun(sessionId: string): Promise<RuntimeRunStopReceipt | undefined> {
+    // Runtime-selected-but-disconnected is an availability failure, not evidence that the
+    // Session has no active Run. Requiring the authoritative Runtime here either reconnects or
+    // fails the IPC explicitly; returning undefined would make the UI claim "no active run".
+    const runtime = await this.requireRuntime();
+    // `runtime.runs.abort()` performs the authoritative run/session ownership check. A durable
+    // transcript ownership read is intentionally absent here because active Session writes are
+    // normal, not an identity conflict, and must never prevent delivery of a Stop request.
     const statuses = await runtime.runs.list({
       sessionId,
-      phase: ['running', 'waiting_permission', 'waiting_user_input', 'queued'],
+      phase: [
+        'running',
+        'waiting_agent',
+        'recovering',
+        'waiting_permission',
+        'waiting_user_input',
+        'unknown',
+        'queued',
+      ],
     });
+    if (statuses.some((candidate) => candidate.sessionId !== sessionId)) {
+      throw new Error('Coder daemon returned a Run status for a different Session identity.');
+    }
+    if (this.runtime !== runtime || this.state !== 'ready') {
+      throw new Error('Coder Runtime changed before the Stop request could be delivered.');
+    }
     const status = statuses.slice().sort((a, b) => {
       const rank = (run: RuntimeRunStatus): number => (run.phase === 'queued' ? 1 : 0);
       return rank(a) - rank(b) || (a.sessionOrder ?? 0) - (b.sessionOrder ?? 0);
     })[0];
     const runId = status?.runId ?? this.activeRunId(sessionId);
-    if (!runId) return false;
-    await runtime.runs.abort(runId);
-    return true;
+    if (!runId) return undefined;
+    const receipt = await runtime.runs.abort(runId);
+    if (receipt.runId !== runId || receipt.sessionId !== sessionId) {
+      throw new Error('Coder daemon returned a Stop receipt for a different Run or Session.');
+    }
+    // Terminal events normally refresh both projections. A Stop can instead race observation
+    // invalidation or transport recovery, so schedule an authoritative profile reconciliation as
+    // a second, bounded path rather than leaving the renderer on a stale active-Run summary.
+    this.scheduleProfileRefresh(this.profileCursor);
+    return receipt;
+  }
+
+  /**
+   * Best-effort cancellation used only after the user explicitly confirms a
+   * forced Space exit. Session identity is deliberately not used as client
+   * ownership: several Runtime clients may attach to one Session concurrently.
+   */
+  async stopSpaceOwnedRuntimeWorkForForcedExit(): Promise<{
+    readonly attempted: number;
+    readonly failed: number;
+  }> {
+    if (!this.hasReadyRuntime()) {
+      return { attempted: 0, failed: 0 };
+    }
+    const runtime = await this.requireRuntime();
+    const preflight = await runtime.status.preflight();
+    if (this.runtime !== runtime || this.state !== 'ready') {
+      throw new Error('Coder Runtime changed before forced-exit cancellation could start.');
+    }
+
+    const operations: Promise<unknown>[] = [];
+    const principalId = this.runtimePrincipalId;
+    const runIds = new Set(
+      [...preflight.activeRuns, ...preflight.queuedRuns]
+        .filter(
+          (run) =>
+            this.spaceOwnedRunIds.has(run.runId) ||
+            (principalId !== undefined && run.origin?.principalId === principalId),
+        )
+        .map((run) => run.runId),
+    );
+    for (const runId of runIds) operations.push(runtime.runs.abort(runId));
+
+    if (runtime.agents.enabled) {
+      const actors = new Set<string>();
+      for (const turn of preflight.activeAgentTurns) {
+        const actorKey = `${turn.sessionId}\u0000${turn.actorPath}`;
+        const turnKey = `${actorKey}\u0000${turn.turnId}`;
+        if (!this.spaceOwnedAgentTurns.has(turnKey) || actors.has(actorKey)) continue;
+        actors.add(actorKey);
+        operations.push(
+          runtime.agents.interrupt(turn.sessionId, turn.actorPath, 'KodaX Space force close'),
+        );
+      }
+    }
+
+    let workflowLookupFailures = 0;
+    const workflowSnapshots = await Promise.allSettled(
+      preflight.activeWorkflows.map((workflow) => runtime.workflows.get(workflow.runId)),
+    );
+    for (let index = 0; index < workflowSnapshots.length; index += 1) {
+      const result = workflowSnapshots[index];
+      const summary = preflight.activeWorkflows[index];
+      if (!result || !summary) continue;
+      if (result.status === 'rejected') {
+        workflowLookupFailures += 1;
+        continue;
+      }
+      const sourceRunId = (result.value as { readonly sourceRunId?: unknown } | undefined)
+        ?.sourceRunId;
+      if (
+        typeof sourceRunId === 'string' &&
+        (runIds.has(sourceRunId) || this.spaceOwnedRunIds.has(sourceRunId))
+      ) {
+        operations.push(runtime.workflows.stop(summary.runId));
+      }
+    }
+
+    const results = await Promise.allSettled(operations);
+    return {
+      attempted: operations.length,
+      failed:
+        workflowLookupFailures + results.filter((result) => result.status === 'rejected').length,
+    };
   }
 
   async submitInput(input: RuntimeSubmitInput) {
@@ -2860,6 +4639,7 @@ export class RuntimeHostAdapter {
       if (registeredCredential) {
         await this.revokeCredentialLease(runtime, registeredCredential.leaseId);
       }
+      this.retireObservationIfQuiescent(input.sessionId);
       throw error;
     }
     if ((!result.accepted || result.delivery !== 'after_turn') && registeredCredential) {
@@ -2884,6 +4664,8 @@ export class RuntimeHostAdapter {
         });
       }
     }
+    if (result.accepted) this.spaceOwnedRunIds.add(result.runId);
+    if (!result.accepted) this.retireObservationIfQuiescent(input.sessionId);
     return result;
   }
 
@@ -3125,6 +4907,7 @@ export class RuntimeHostAdapter {
 
   async listRuntimeActorTasks(sessionId: string, agentId?: string): Promise<ExternalAgentTaskT[]> {
     const runtime = await this.requireRuntime();
+    await this.assertCoderSession(runtime, sessionId);
     const tree = await runtime.agents.tree(sessionId);
     const details = await Promise.all(
       tree.actors
@@ -3151,6 +4934,7 @@ export class RuntimeHostAdapter {
     readonly expectedConfigurationRevision?: string;
   }): Promise<ExternalAgentTaskT> {
     const runtime = await this.requireRuntime();
+    await this.assertCoderSession(runtime, input.sessionId);
     const preflight = await runtime.agents.preflight({
       agentId: input.agentId,
       query: {
@@ -3178,6 +4962,9 @@ export class RuntimeHostAdapter {
         readOnly: input.readOnly,
       },
     });
+    this.spaceOwnedAgentTurns.add(
+      `${input.sessionId}\u0000${started.actorPath}\u0000${started.turnId}`,
+    );
     const detail = await runtime.agents.detail(input.sessionId, started.actorPath);
     const turn = detail.turns.find((item) => item.turnId === started.turnId);
     if (!turn) throw new Error('Coder daemon did not retain the accepted external Agent turn.');
@@ -3216,6 +5003,7 @@ export class RuntimeHostAdapter {
 
   private async runtimeActorTaskContext(sessionId: string, taskId: string) {
     const runtime = await this.requireRuntime();
+    await this.assertCoderSession(runtime, sessionId);
     const identity = decodeRuntimeActorTaskId(taskId);
     const detail = await runtime.agents.detail(sessionId, identity.actorPath);
     const turn = detail.turns.find((item) => item.turnId === identity.turnId);
@@ -3282,12 +5070,27 @@ export class RuntimeHostAdapter {
     if (state.runtimeId !== runtime.identity.runtimeId) {
       throw new Error('Coder daemon management Runtime identity changed during inspection.');
     }
+    if (
+      state.owner.runtimeId !== state.runtimeId ||
+      state.owner.kind !== 'daemon' ||
+      !Number.isSafeInteger(state.owner.pid) ||
+      state.owner.pid <= 0
+    ) {
+      throw new Error('Coder daemon management returned an invalid owner identity.');
+    }
     return state;
   }
 
   async prepareInlineRollback(operationId?: string): Promise<RuntimeDaemonRollbackResult> {
-    const runtime = await this.requireRuntime();
     const management = await this.inspectDaemonStop();
+    return this.prepareInlineRollbackFromManagement(management, operationId);
+  }
+
+  private async prepareInlineRollbackFromManagement(
+    management: RuntimeDaemonManagementState,
+    operationId?: string,
+  ): Promise<RuntimeDaemonRollbackResult> {
+    const runtime = await this.requireRuntime();
     if (!management.preflight.canStop) {
       const error = new Error(
         `Coder daemon cannot stop safely: ${management.preflight.blockers.join(', ') || 'unknown blocker'}.`,
@@ -3317,8 +5120,9 @@ export class RuntimeHostAdapter {
    * Stop the Space-selected Coder daemon while this process still owns a live
    * Runtime control plane. A ready daemon uses the revisioned stopForInline
    * transaction, not the inspect-then-CLI path. The temporary inline fence
-   * closes the owner hand-off race and is released only after daemon policy is
-   * restored, leaving the profile both unowned and ready for the next launch.
+   * closes the owner hand-off race and is held until the inspected daemon PID
+   * has exited. It is released only after daemon policy is restored, leaving
+   * the profile both unowned and ready for the next launch.
    */
   async stopDaemonForCompleteExit(operationId?: string): Promise<void> {
     if (this.mode !== 'runtime') {
@@ -3328,29 +5132,72 @@ export class RuntimeHostAdapter {
       return;
     }
     if (this.hasReadyRuntime()) {
-      const runtimeId = this.runtime?.identity.runtimeId;
+      const management = await this.inspectDaemonStop();
+      const runtimeId = management.runtimeId;
+      const daemonPid = management.owner.pid;
       try {
-        await this.prepareInlineRollback(operationId);
+        await this.prepareInlineRollbackFromManagement(management, operationId);
       } catch (error) {
-        if (runtimeId === undefined || !isDaemonStopTransportClosure(error)) throw error;
+        // The daemon can finish stopping while the short-lived owner-policy
+        // coordination lock prevents Space from acquiring the replacement
+        // inline fence. completeInlineRollbackOwnerTransition() compensates by
+        // restoring an unowned daemon policy, then rethrows the original fence
+        // error because embedded-mode switching still requires inline
+        // ownership. Complete exit has a different terminal condition: once
+        // that compensated state is authoritatively verified, no second quit
+        // request is necessary.
+        if (!this.rollbackInProgress && this.state === 'closed') {
+          try {
+            // Compensation restores daemon policy without retaining a fence.
+            // Reacquire inline ownership before waiting for the old PID; owner
+            // snapshots alone cannot exclude a replacement daemon.
+            await this.acquireCompensatedCompleteExitFence();
+          } catch (verificationError) {
+            const errors = [error, verificationError];
+            const message =
+              'Coder daemon stopped, but the recovered owner state could not be verified for complete exit.';
+            if (isCoderOwnerRecoveryRestartRequired(verificationError)) {
+              throw createCoderOwnerRecoveryRestartError(errors, message);
+            }
+            throw new AggregateError(errors, message);
+          }
+        } else {
+          if (!isDaemonStopTransportClosure(error)) throw error;
 
-        // A successful rollback stops the daemon that carries its own RPC
-        // response. On some transports the close can win that final response,
-        // leaving the client with only an ambiguous transport error. Never infer
-        // success from the error: re-establish the transition guard and prove the
-        // exact daemon owner was released before continuing.
-        this.rollbackInProgress = true;
+          // A successful rollback stops the daemon that carries its own RPC
+          // response. On some transports the close can win that final response,
+          // leaving the client with only an ambiguous transport error. Never infer
+          // success from the error: re-establish the transition guard and prove the
+          // exact daemon owner was released before continuing.
+          this.rollbackInProgress = true;
+          try {
+            await this.completeInlineRollbackOwnerTransition(runtimeId);
+          } catch (reconciliationError) {
+            const errors = [error, reconciliationError];
+            const message =
+              'Coder daemon transport closed before rollback confirmation, and owner release could not be verified.';
+            if (isCoderOwnerRecoveryRestartRequired(reconciliationError)) {
+              throw createCoderOwnerRecoveryRestartError(errors, message);
+            }
+            throw new AggregateError(errors, message);
+          }
+        }
+      }
+      try {
+        await this.assertDaemonProcessExited(daemonPid);
+      } catch (error) {
         try {
-          await this.completeInlineRollbackOwnerTransition(runtimeId);
-        } catch (reconciliationError) {
-          const errors = [error, reconciliationError];
+          await this.restoreDaemonOwner();
+        } catch (restoreError) {
+          const errors = [error, restoreError];
           const message =
-            'Coder daemon transport closed before rollback confirmation, and owner release could not be verified.';
-          if (isCoderOwnerRecoveryRestartRequired(reconciliationError)) {
+            'Coder daemon process exit was not confirmed, and daemon owner policy recovery failed.';
+          if (isCoderOwnerRecoveryRestartRequired(restoreError)) {
             throw createCoderOwnerRecoveryRestartError(errors, message);
           }
           throw new AggregateError(errors, message);
         }
+        throw error;
       }
       await this.restoreDaemonOwner();
       await this.assertUnownedDaemonPolicy();
@@ -3620,6 +5467,39 @@ export class RuntimeHostAdapter {
     }
   }
 
+  private async acquireCompensatedCompleteExitFence(): Promise<void> {
+    await this.assertUnownedDaemonPolicy();
+    this.rollbackInProgress = true;
+    try {
+      this.inlineOwner = await this.ownerControl.acquireInline({
+        ...this.runtimeOwnerTarget(),
+        enableRollback: true,
+      });
+    } catch (error) {
+      try {
+        // acquireInline() can commit inline policy before fence acquisition.
+        // Always compensate a failed retry before returning to the UI.
+        await this.restoreDaemonOwner();
+      } catch (restoreError) {
+        const errors = [error, restoreError];
+        const message =
+          'Space could not reacquire the complete-exit owner fence or restore daemon policy.';
+        if (isCoderOwnerRecoveryRestartRequired(restoreError)) {
+          throw createCoderOwnerRecoveryRestartError(errors, message);
+        }
+        throw new AggregateError(errors, message);
+      }
+      throw error;
+    }
+  }
+
+  private async assertDaemonProcessExited(pid: number): Promise<void> {
+    if (await this.daemonProcessExitWaiter(pid, DAEMON_PROCESS_EXIT_TIMEOUT_MS)) return;
+    throw new Error(
+      `Coder daemon process ${pid} did not exit after its owner was released; shutdown could not be confirmed.`,
+    );
+  }
+
   private async assertUnownedDaemonPolicy(): Promise<void> {
     const state = await this.ownerControl.getState({
       ...this.runtimeOwnerTarget(),
@@ -3648,10 +5528,19 @@ export class RuntimeHostAdapter {
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = undefined;
     this.runtime = null;
+    this.runtimePrincipalId = undefined;
     this.hostToolLeaseId = undefined;
     this.hostToolLeaseIds.clear();
+    this.spaceOwnedRunIds.clear();
+    this.spaceOwnedAgentTurns.clear();
     this.activeRuns.clear();
     this.runProviders.clear();
+    this.projectedCompactionEntries.clear();
+    this.projectedCompactionEvents.clear();
+    this.resolvedCompactionEvents.clear();
+    this.compactionProjectionTasks.clear();
+    this.activeCompactionsBySession.clear();
+    this.localCompactionCallsBySession.clear();
     this.nextUserOrdinalByTurnId.clear();
     this.terminalSidecarBlockRuns.clear();
     this.continuationCredentialLeases.clear();
@@ -3661,7 +5550,11 @@ export class RuntimeHostAdapter {
     for (const state of this.observations.values()) state.observation.close();
     this.observations.clear();
     this.observationPromises.clear();
+    this.transcriptPromises.clear();
+    this.conversationPromises.clear();
+    this.transcriptGenerations.clear();
     this.desiredObservations.clear();
+    this.runtimeReadyObservers.clear();
     this.state = 'closed';
     this.closePromise = runtime
       ? runtime.close()

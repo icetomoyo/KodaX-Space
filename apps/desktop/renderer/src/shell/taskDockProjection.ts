@@ -4,7 +4,11 @@ import type {
   WorkflowRunT,
 } from '@kodax-space/space-ipc-schema';
 import { summarizeTodoProgress } from '../lib/liveTaskProgress.js';
-import { buildAgentStatuses, type AgentStatusViewModel } from './agentStatusProjection.js';
+import {
+  buildAgentStatuses,
+  scopeAgentActorSnapshotToCurrentTurn,
+  type AgentStatusViewModel,
+} from './agentStatusProjection.js';
 import { messages, type MessageKey } from '../i18n/messages.js';
 
 type TodoItem = {
@@ -60,7 +64,11 @@ export function buildTaskDockRunView(input: BuildTaskDockRunInput): TaskDockRunV
   let agentStatuses: readonly AgentStatusViewModel[] | null = null;
   const getAgents = (): readonly AgentStatusViewModel[] => {
     if (agentStatuses === null) {
-      agentStatuses = buildAgentStatuses(input.managedStatus, t, input.actorSnapshot);
+      agentStatuses = buildAgentStatuses(
+        input.managedStatus,
+        t,
+        scopeAgentActorSnapshotToCurrentTurn(input.actorSnapshot, input.events),
+      );
     }
     return agentStatuses;
   };

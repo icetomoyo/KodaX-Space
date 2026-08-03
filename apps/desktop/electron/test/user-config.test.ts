@@ -59,7 +59,7 @@ function mockUserConfig(
   setUserConfigImpl(impl);
 }
 
-test('empty config → optional user fields undefined with explicit Auto LLM 0.7.77 defaults', async () => {
+test('empty config → optional user fields undefined with explicit Auto LLM 0.7.79 defaults', async () => {
   mockUserConfig({});
   const d = await loadKodaxUserDefaults();
   assert.equal(d.provider, undefined);
@@ -69,7 +69,7 @@ test('empty config → optional user fields undefined with explicit Auto LLM 0.7
   assert.equal(d.permissionMode, undefined);
   assert.equal(d.autoModeEngine, 'llm');
   assert.equal(d.autoModeClassifierModel, undefined);
-  assert.equal(d.autoModeTimeoutMs, 20_000);
+  assert.equal(d.autoModeTimeoutMs, 30_000);
   assert.equal(d.customProvidersCount, 0);
 });
 
@@ -667,12 +667,12 @@ test('KodaX compaction stays enabled and clamps thresholds to 15-90', async () =
   assert.deepEqual(overview.compaction, { enabled: true, triggerPercent: 90 });
 });
 
-test('Auto LLM defaults explicitly pin the KodaX 0.7.77 timeout', async () => {
+test('Auto LLM defaults explicitly pin the KodaX 0.7.79 timeout', async () => {
   mockUserConfig({});
 
   assert.deepEqual(await loadKodaxAutoModeDefaults(), {
     engine: 'llm',
-    timeoutMs: 20_000,
+    timeoutMs: 30_000,
   });
 });
 

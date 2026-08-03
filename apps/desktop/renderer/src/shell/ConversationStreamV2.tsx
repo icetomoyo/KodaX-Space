@@ -34,6 +34,11 @@ import {
   type WorkflowNoticeMessage,
 } from '../store/appStore.js';
 import { composeMessages, type ConversationMessage } from '../features/session/composeMessages.js';
+import {
+  canRewindSelectorTurn,
+  localNoticeCutoffSentAtForSelectorTurn,
+  selectorTurnIndexesByMessageId,
+} from '../features/session/turnIndex.js';
 import { patchComposedStreamTail } from './conversationStreamIncremental.js';
 import {
   FOCUS_ARTIFACT_EVENT,
@@ -55,6 +60,7 @@ const SMOOTH_PROGRAMMATIC_SCROLL_GUARD_MS = 400;
 const BOTTOM_DISTANCE_PX = 32;
 const JUMP_TO_BOTTOM_DISTANCE_PX = 100;
 const USER_SCROLL_INTENT_DELTA_PX = 4;
+const HISTORY_LOAD_THRESHOLD_PX = 240;
 
 function getDistanceFromBottom(el: HTMLDivElement): number {
   return Math.max(0, el.scrollHeight - el.scrollTop - el.clientHeight);
@@ -84,6 +90,14 @@ import { requestConfirm } from '../store/confirmStore.js';
 import { pushToast } from '../store/toastStore.js';
 import { useI18n } from '../i18n/I18nProvider.js';
 import type { MessageKey } from '../i18n/messages.js';
+import {
+  loadOlderSessionHistory,
+  olderHistoryWindowSeamScrollTop,
+  PREPEND_ANCHOR_CORRECTION_FRAME_OFFSETS,
+  preservesPrependAnchorForBoundaryInput,
+  restoreNewestSessionHistory,
+  useSessionHistoryPaging,
+} from './sessionHistoryPaging.js';
 // 聚合后的 view-only message kind —— 两层折叠对齐 Claude Desktop "Ran 6 commands ⌄":
 //
 //   ▸ Ran 6 commands · 12s              ← 外层 cluster (此处折叠 = 默认)
@@ -211,7 +225,6 @@ const QUERY_JUMP_TOP_PADDING_PX = 10;
 const QUERY_JUMP_TITLE_CHARS = 44;
 const QUERY_JUMP_BODY_CHARS = 116;
 const RESTORED_REVEAL_TAIL_ITEMS = 24;
-
 function compactInlineText(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
 }
@@ -249,6 +262,37 @@ function findMessageNodeNearViewportPoint(
       const message = element.closest<HTMLElement>('[data-msg-id]');
       if (message && scroller.contains(message)) return message;
     }
+  }
+  return null;
+}
+
+function findNearbyStableScrollAnchor(
+  scroller: HTMLDivElement,
+  visibleNode: HTMLElement,
+): HTMLElement | null {
+  const visibleRow = visibleNode.closest<HTMLElement>('[data-testid="conversation-render-row"]');
+  if (!visibleRow || !scroller.contains(visibleRow)) return null;
+  let previous = visibleRow.previousElementSibling;
+  let next = visibleRow.nextElementSibling;
+  // Page seams normally need only the adjacent assistant/user row. Keep the fallback bounded so
+  // ordinary wheel events can never turn into a full-DOM geometry scan on very long transcripts.
+  for (let distance = 0; distance < 32 && (previous !== null || next !== null); distance += 1) {
+    const previousAnchor = previous?.querySelector<HTMLElement>(
+      '[data-stable-scroll-anchor="true"]',
+    );
+    const nextAnchor = next?.querySelector<HTMLElement>('[data-stable-scroll-anchor="true"]');
+    if (previousAnchor && nextAnchor) {
+      const viewportCenter =
+        scroller.getBoundingClientRect().top + scroller.getBoundingClientRect().height * 0.42;
+      return Math.abs(previousAnchor.getBoundingClientRect().top - viewportCenter) <=
+        Math.abs(nextAnchor.getBoundingClientRect().top - viewportCenter)
+        ? previousAnchor
+        : nextAnchor;
+    }
+    if (previousAnchor) return previousAnchor;
+    if (nextAnchor) return nextAnchor;
+    previous = previous?.previousElementSibling ?? null;
+    next = next?.nextElementSibling ?? null;
   }
   return null;
 }
@@ -372,6 +416,8 @@ function viewMessagesShareProjection(previous: ViewMessage, next: ViewMessage): 
         previous.variant === next.variant &&
         previous.text === next.text &&
         previous.lineageKind === next.lineageKind &&
+        previous.historyTruncationScope === next.historyTruncationScope &&
+        previous.omittedItems === next.omittedItems &&
         previous.historical === next.historical &&
         previous.action === next.action &&
         previous.retriable === next.retriable &&
@@ -776,6 +822,7 @@ export function ConversationStreamV2(): JSX.Element {
   const { t } = useI18n();
   const isStreaming = useIsStreaming();
   const currentSessionId = useAppStore((s) => s.currentSessionId);
+  const historyPaging = useSessionHistoryPaging(currentSessionId);
   const events = useAppStore((s) =>
     currentSessionId ? (s.eventsBySession[currentSessionId] ?? EMPTY_EVENTS) : EMPTY_EVENTS,
   );
@@ -848,6 +895,7 @@ export function ConversationStreamV2(): JSX.Element {
             localNotices,
             queuedUserMessages,
             workflowNotices,
+            includeAuditLineage: false,
           }))
         : composeMessages({
             events,
@@ -855,6 +903,7 @@ export function ConversationStreamV2(): JSX.Element {
             localNotices,
             queuedUserMessages,
             workflowNotices,
+            includeAuditLineage: false,
           });
     return nextMessages;
   }, [currentSessionId, events, userMessages, localNotices, queuedUserMessages, workflowNotices]);
@@ -974,8 +1023,20 @@ export function ConversationStreamV2(): JSX.Element {
   const autoFollowRafRef = useRef<number | null>(null);
   const jumpToBottomRafRef = useRef<number | null>(null);
   const scrollSyncRafRef = useRef<number | null>(null);
+  const prependAnchorRestoreRef = useRef<{
+    readonly token: symbol;
+    phase: 'loading' | 'restoring';
+    rafId: number | null;
+    snapshot: ScrollSnapshot;
+    readonly scroller: HTMLDivElement;
+  } | null>(null);
   const restoreScrollSnapshotRef = useRef<
-    ((scroller: HTMLDivElement, snapshot: ScrollSnapshot) => boolean) | null
+    | ((
+        scroller: HTMLDivElement,
+        snapshot: ScrollSnapshot,
+        missingAnchorFallback?: 'ratio' | 'older-window-seam',
+      ) => boolean)
+    | null
   >(null);
   const scheduleAutoFollowRef = useRef<((scroller: HTMLDivElement) => void) | null>(null);
   const scrollToBottomNowRef = useRef<
@@ -1064,6 +1125,59 @@ export function ConversationStreamV2(): JSX.Element {
     return ids;
   }, [searchQuery, displayMessages]);
 
+  const captureViewportScrollAnchor = useCallback(
+    (scroller: HTMLDivElement): ViewportScrollAnchor | null => {
+      const visibleNode = findMessageNodeNearViewportPoint(scroller, 0.42);
+      if (!visibleNode) return null;
+      // A tool/thinking receipt can be regrouped when the preceding page completes its turn, which
+      // changes the receipt-cluster ID even though the conversation is unchanged. Prefer a normal
+      // canonical message row in that case; those IDs are stable across page prepends.
+      const visibleStableNode = visibleNode.closest<HTMLElement>(
+        '[data-stable-scroll-anchor="true"]',
+      );
+      const nearestStableNode =
+        visibleStableNode === null ? findNearbyStableScrollAnchor(scroller, visibleNode) : null;
+      // Only the exceptional all-receipt fragment needs a global owner lookup. Ordinary message
+      // scroll frames return above, and normal receipt seams find an adjacent stable row in <=32
+      // steps, keeping the hot path independent of accumulated transcript length.
+      const ownerId =
+        visibleStableNode === null && nearestStableNode === null
+          ? visibleNode.closest<HTMLElement>('[data-query-anchor-id]')?.dataset.queryAnchorId
+          : undefined;
+      const ownerNode = ownerId
+        ? scroller.querySelector<HTMLElement>(`[data-msg-id="${CSS.escape(ownerId)}"]`)
+        : null;
+      const node = visibleStableNode ?? nearestStableNode ?? ownerNode ?? visibleNode;
+      const id = node.dataset.msgId;
+      if (!id) return null;
+      const top = messageTopWithinScroller(scroller, node);
+      return {
+        id,
+        offsetTop: top - scroller.scrollTop,
+      };
+    },
+    [],
+  );
+
+  const rememberScrollSnapshot = useCallback(
+    (scroller: HTMLDivElement): ScrollSnapshot => {
+      const distance = getDistanceFromBottom(scroller);
+      const atBottom = distance < BOTTOM_DISTANCE_PX;
+      const anchor = atBottom ? null : captureViewportScrollAnchor(scroller);
+      const snapshot: ScrollSnapshot = {
+        scrollTop: scroller.scrollTop,
+        scrollHeight: scroller.scrollHeight,
+        clientHeight: scroller.clientHeight,
+        anchor,
+        atBottom,
+      };
+      viewportScrollAnchorRef.current = anchor;
+      scrollSnapshotRef.current = snapshot;
+      return snapshot;
+    },
+    [captureViewportScrollAnchor],
+  );
+
   // query 变化时重置当前位置
   useEffect(() => {
     setCurrentMatchIdx(0);
@@ -1075,16 +1189,23 @@ export function ConversationStreamV2(): JSX.Element {
     const id = matchIds[Math.min(currentMatchIdx, matchIds.length - 1)];
     const el = scrollRef.current?.querySelector(`[data-msg-id="${CSS.escape(id)}"]`);
     if (el && el instanceof HTMLElement) {
-      el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      const pendingPrepend = prependAnchorRestoreRef.current;
+      const loadingPrepend = pendingPrepend?.phase === 'loading';
+      el.scrollIntoView({ block: 'center', behavior: loadingPrepend ? 'auto' : 'smooth' });
+      if (loadingPrepend && pendingPrepend.scroller === scrollRef.current) {
+        pendingPrepend.snapshot = rememberScrollSnapshot(pendingPrepend.scroller);
+      }
     }
-  }, [currentMatchIdx, matchIds]);
+  }, [currentMatchIdx, matchIds, rememberScrollSnapshot]);
 
   function nextMatch(): void {
     if (matchIds.length === 0) return;
+    handlePrependUserScrollIntent();
     setCurrentMatchIdx((i) => (i + 1) % matchIds.length);
   }
   function prevMatch(): void {
     if (matchIds.length === 0) return;
+    handlePrependUserScrollIntent();
     setCurrentMatchIdx((i) => (i - 1 + matchIds.length) % matchIds.length);
   }
   function closeSearch(): void {
@@ -1126,42 +1247,42 @@ export function ConversationStreamV2(): JSX.Element {
     jumpToBottomRafRef.current = null;
   }
 
+  function cancelPrependAnchorRestore(): void {
+    const active = prependAnchorRestoreRef.current;
+    if (active?.rafId !== null && active?.rafId !== undefined) {
+      cancelAnimationFrame(active.rafId);
+    }
+    prependAnchorRestoreRef.current = null;
+  }
+
+  function handlePrependUserScrollIntent(): void {
+    const active = prependAnchorRestoreRef.current;
+    if (active === null) return;
+    // The continuation cannot be cancelled after dispatch without also preventing its DOM apply.
+    // While it is in flight, real scroll events refresh the pending snapshot for either direction.
+    // Once layout restoration starts, every new gesture wins and cancels the remaining RAFs.
+    if (active.phase === 'loading') return;
+    cancelPrependAnchorRestore();
+  }
+
+  function refreshPendingPrependSnapshot(scroller: HTMLDivElement): void {
+    const pending = prependAnchorRestoreRef.current;
+    if (pending?.phase === 'loading' && pending.scroller === scroller) {
+      pending.snapshot = rememberScrollSnapshot(scroller);
+    }
+  }
+
   function scrollToBottomNow(
     scroller: HTMLDivElement,
     guardMs = INSTANT_PROGRAMMATIC_SCROLL_GUARD_MS,
   ): void {
     cancelJumpToBottomAnimation();
+    handlePrependUserScrollIntent();
     markProgrammaticScroll(guardMs);
     scroller.scrollTop = scroller.scrollHeight;
+    refreshPendingPrependSnapshot(scroller);
     viewportScrollAnchorRef.current = null;
     scrollSnapshotRef.current = null;
-  }
-
-  function captureViewportScrollAnchor(scroller: HTMLDivElement): ViewportScrollAnchor | null {
-    const node = findMessageNodeNearViewportPoint(scroller, 0.42);
-    const id = node?.dataset.msgId;
-    if (!node || !id) return null;
-    const top = messageTopWithinScroller(scroller, node);
-    return {
-      id,
-      offsetTop: top - scroller.scrollTop,
-    };
-  }
-
-  function rememberScrollSnapshot(scroller: HTMLDivElement): ScrollSnapshot {
-    const distance = getDistanceFromBottom(scroller);
-    const atBottom = distance < BOTTOM_DISTANCE_PX;
-    const anchor = atBottom ? null : captureViewportScrollAnchor(scroller);
-    const snapshot: ScrollSnapshot = {
-      scrollTop: scroller.scrollTop,
-      scrollHeight: scroller.scrollHeight,
-      clientHeight: scroller.clientHeight,
-      anchor,
-      atBottom,
-    };
-    viewportScrollAnchorRef.current = anchor;
-    scrollSnapshotRef.current = snapshot;
-    return snapshot;
   }
 
   function restoreViewportScrollAnchor(
@@ -1184,9 +1305,30 @@ export function ConversationStreamV2(): JSX.Element {
     return true;
   }
 
-  function restoreScrollSnapshot(scroller: HTMLDivElement, snapshot: ScrollSnapshot): boolean {
+  function restoreScrollSnapshot(
+    scroller: HTMLDivElement,
+    snapshot: ScrollSnapshot,
+    missingAnchorFallback: 'ratio' | 'older-window-seam' = 'ratio',
+  ): boolean {
     if (snapshot.atBottom) return false;
     if (restoreViewportScrollAnchor(scroller, snapshot.anchor)) return true;
+
+    if (missingAnchorFallback === 'older-window-seam') {
+      // A bounded older window can intentionally have no canonical row in common with the page
+      // it replaces. The semantic seam is the bottom/newest edge of that older window, not the
+      // same scroll-height ratio (which would jump a user loading at top to another arbitrary top).
+      const nextMaxTop = olderHistoryWindowSeamScrollTop(
+        scroller.scrollHeight,
+        scroller.clientHeight,
+      );
+      markProgrammaticScroll();
+      scroller.scrollTop = nextMaxTop;
+      wasAtBottomRef.current = false;
+      viewportScrollAnchorRef.current = captureViewportScrollAnchor(scroller);
+      setShowJumpToBottom(false);
+      syncActiveQueryAnchorFromScrollPosition(scroller);
+      return true;
+    }
 
     const previousMaxTop = Math.max(1, snapshot.scrollHeight - snapshot.clientHeight);
     const nextMaxTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
@@ -1301,6 +1443,89 @@ export function ConversationStreamV2(): JSX.Element {
   scheduleAutoFollowRef.current = scheduleAutoFollow;
   scrollToBottomNowRef.current = scrollToBottomNow;
 
+  function requestOlderHistoryAtCurrentAnchor(scroller: HTMLDivElement): void {
+    if (
+      currentSessionId === null ||
+      !historyPaging.hasMore ||
+      historyPaging.phase === 'loading' ||
+      prependAnchorRestoreRef.current !== null
+    ) {
+      return;
+    }
+    const requestedSessionId = currentSessionId;
+    const token = Symbol(`prepend-anchor:${requestedSessionId}`);
+    const restoreState: {
+      readonly token: symbol;
+      phase: 'loading' | 'restoring';
+      rafId: number | null;
+      snapshot: ScrollSnapshot;
+      readonly scroller: HTMLDivElement;
+    } = {
+      token,
+      phase: 'loading',
+      rafId: null,
+      snapshot: rememberScrollSnapshot(scroller),
+      scroller,
+    };
+    prependAnchorRestoreRef.current = restoreState;
+    wasAtBottomRef.current = false;
+    void loadOlderSessionHistory(requestedSessionId)
+      .then(() => {
+        if (prependAnchorRestoreRef.current?.token !== token) return;
+        const snapshot = restoreState.snapshot;
+        restoreState.phase = 'restoring';
+        let layoutWaitFrames = 2;
+        const correctionFrames =
+          snapshot.anchor === null && !snapshot.atBottom
+            ? ([0] as const)
+            : PREPEND_ANCHOR_CORRECTION_FRAME_OFFSETS;
+        let settleFrame = 0;
+        const restoreAfterLayout = (): void => {
+          restoreState.rafId = null;
+          if (
+            prependAnchorRestoreRef.current?.token !== token ||
+            scrollRef.current !== scroller ||
+            useAppStore.getState().currentSessionId !== requestedSessionId
+          ) {
+            if (prependAnchorRestoreRef.current?.token === token) cancelPrependAnchorRestore();
+            return;
+          }
+          if (layoutWaitFrames > 0) {
+            layoutWaitFrames -= 1;
+            restoreState.rafId = requestAnimationFrame(restoreAfterLayout);
+            return;
+          }
+          if (correctionFrames.some((frame) => frame === settleFrame)) {
+            // `content-visibility` can replace intrinsic estimates only after the first restored
+            // scroll exposes the seam. Re-apply the original canonical anchor at sparse checkpoints
+            // across a bounded settling window so delayed corrections cannot move the user's view.
+            if (snapshot.atBottom) {
+              markProgrammaticScroll();
+              scroller.scrollTop = scroller.scrollHeight;
+              wasAtBottomRef.current = true;
+              viewportScrollAnchorRef.current = null;
+              scrollSnapshotRef.current = null;
+              setShowJumpToBottom(false);
+            } else {
+              restoreScrollSnapshotRef.current?.(scroller, snapshot, 'older-window-seam');
+            }
+          }
+          const finalSettleFrame = correctionFrames[correctionFrames.length - 1];
+          if (settleFrame < finalSettleFrame) {
+            settleFrame += 1;
+            restoreState.rafId = requestAnimationFrame(restoreAfterLayout);
+          } else {
+            prependAnchorRestoreRef.current = null;
+          }
+        };
+        restoreState.rafId = requestAnimationFrame(restoreAfterLayout);
+      })
+      .catch(() => {
+        if (prependAnchorRestoreRef.current?.token === token) cancelPrependAnchorRestore();
+        // The paging state records the failure. Keep the current stable window visible.
+      });
+  }
+
   function handleScroll(e: React.UIEvent<HTMLDivElement>): void {
     // 守卫期内的 scroll 事件来自 ResizeObserver / smooth scroll 自己的 scrollTop 赋值，
     // 不视为用户上滚
@@ -1311,8 +1536,14 @@ export function ConversationStreamV2(): JSX.Element {
       scrollSyncRafRef.current = null;
       if (scrollRef.current !== scroller) return;
       if (performance.now() < programmaticScrollIgnoreUntilRef.current) return;
+      // Freeze at the user's latest real position, not the threshold position where the async
+      // request happened to start. The snapshot becomes immutable when phase turns restoring.
+      refreshPendingPrependSnapshot(scroller);
       syncFollowStateFromScrollPosition(scroller);
       syncActiveQueryAnchorFromScrollPosition(scroller);
+      if (scroller.scrollTop <= HISTORY_LOAD_THRESHOLD_PX) {
+        requestOlderHistoryAtCurrentAnchor(scroller);
+      }
     });
   }
 
@@ -1334,9 +1565,17 @@ export function ConversationStreamV2(): JSX.Element {
     const scroller = e.currentTarget;
     const deltaY = e.deltaY;
     const scrollTopBefore = scroller.scrollTop;
+    const preserveBoundaryRestore = preservesPrependAnchorForBoundaryInput(
+      prependAnchorRestoreRef.current?.phase,
+      deltaY < 0,
+      scrollTopBefore,
+    );
+    if (deltaY !== 0 && !preserveBoundaryRestore) handlePrependUserScrollIntent();
 
     if (deltaY < 0 && scrollTopBefore > 0) {
       disengageFollowForUserScrollIntent(scroller);
+    } else if (deltaY < 0 && scrollTopBefore <= HISTORY_LOAD_THRESHOLD_PX) {
+      requestOlderHistoryAtCurrentAnchor(scroller);
     }
 
     requestAnimationFrame(() => {
@@ -1359,15 +1598,38 @@ export function ConversationStreamV2(): JSX.Element {
       case 'ArrowUp':
       case 'PageUp':
       case 'Home':
+        if (
+          !preservesPrependAnchorForBoundaryInput(
+            prependAnchorRestoreRef.current?.phase,
+            true,
+            scroller.scrollTop,
+          )
+        ) {
+          handlePrependUserScrollIntent();
+        }
         disengageFollowForUserScrollIntent(scroller);
         break;
       case ' ':
-        if (e.shiftKey) disengageFollowForUserScrollIntent(scroller);
-        else syncFollowStateOnNextFrame(scroller);
+        if (e.shiftKey) {
+          if (
+            !preservesPrependAnchorForBoundaryInput(
+              prependAnchorRestoreRef.current?.phase,
+              true,
+              scroller.scrollTop,
+            )
+          ) {
+            handlePrependUserScrollIntent();
+          }
+          disengageFollowForUserScrollIntent(scroller);
+        } else {
+          handlePrependUserScrollIntent();
+          syncFollowStateOnNextFrame(scroller);
+        }
         break;
       case 'ArrowDown':
       case 'PageDown':
       case 'End':
+        handlePrependUserScrollIntent();
         syncFollowStateOnNextFrame(scroller);
         break;
     }
@@ -1380,6 +1642,7 @@ export function ConversationStreamV2(): JSX.Element {
     if (scrollbarWidth <= 0) return;
     const rect = scroller.getBoundingClientRect();
     if (e.clientX >= rect.right - scrollbarWidth) {
+      handlePrependUserScrollIntent();
       disengageFollowForUserScrollIntent(scroller);
     }
   }
@@ -1396,8 +1659,18 @@ export function ConversationStreamV2(): JSX.Element {
     if (startY === null || currentY === undefined) return;
     const deltaY = currentY - startY;
     if (deltaY > USER_SCROLL_INTENT_DELTA_PX) {
+      if (
+        !preservesPrependAnchorForBoundaryInput(
+          prependAnchorRestoreRef.current?.phase,
+          true,
+          scroller.scrollTop,
+        )
+      ) {
+        handlePrependUserScrollIntent();
+      }
       disengageFollowForUserScrollIntent(scroller);
     } else if (deltaY < -USER_SCROLL_INTENT_DELTA_PX) {
+      handlePrependUserScrollIntent();
       syncFollowStateOnNextFrame(scroller);
     }
   }
@@ -1476,12 +1749,14 @@ export function ConversationStreamV2(): JSX.Element {
   }, [currentSessionId]);
 
   useEffect(() => {
+    cancelPrependAnchorRestore();
     if (scrollRef.current) {
       scrollToBottomNowRef.current?.(scrollRef.current);
       wasAtBottomRef.current = true;
       setShowJumpToBottom(false);
       setExpanded(new Set());
     }
+    return () => cancelPrependAnchorRestore();
   }, [currentSessionId]);
 
   useEffect(() => {
@@ -1503,6 +1778,14 @@ export function ConversationStreamV2(): JSX.Element {
   function jumpToBottom(): void {
     const scroller = scrollRef.current;
     if (!scroller) return;
+    handlePrependUserScrollIntent();
+    if (prependAnchorRestoreRef.current?.phase === 'loading') {
+      scrollToBottomNow(scroller);
+      wasAtBottomRef.current = true;
+      setShowJumpToBottom(false);
+      setActiveQueryAnchorId(queryJumpAnchors[queryJumpAnchors.length - 1]?.id ?? null);
+      return;
+    }
     markProgrammaticScroll(SMOOTH_PROGRAMMATIC_SCROLL_GUARD_MS);
     wasAtBottomRef.current = true;
     viewportScrollAnchorRef.current = null;
@@ -1511,9 +1794,27 @@ export function ConversationStreamV2(): JSX.Element {
     animateJumpToBottom(scroller);
   }
 
+  function returnToNewestHistory(): void {
+    if (!currentSessionId) return;
+    // This replaces the paging lifecycle token, so the stale continuation cannot apply data.
+    // Its viewport RAF must be fenced independently before the newest request starts.
+    cancelPrependAnchorRestore();
+    const session = useAppStore
+      .getState()
+      .sessions.find((candidate) => candidate.sessionId === currentSessionId);
+    const surface = session?.surface ?? useSurfaceStore.getState().currentSurface;
+    void restoreNewestSessionHistory(currentSessionId, surface)
+      .then(() => {
+        const scroller = scrollRef.current;
+        if (scroller) scrollToBottomNow(scroller);
+      })
+      .catch(() => pushToast(t('conversation.historyLoadFailed'), 'error'));
+  }
+
   function jumpToQueryAnchor(id: string): void {
     const scroller = scrollRef.current;
     if (!scroller) return;
+    handlePrependUserScrollIntent();
     const target = scroller.querySelector(`[data-msg-id="${CSS.escape(id)}"]`);
     if (!(target instanceof HTMLElement)) return;
 
@@ -1533,7 +1834,9 @@ export function ConversationStreamV2(): JSX.Element {
     };
     setShowJumpToBottom(maxTop - top > JUMP_TO_BOTTOM_DISTANCE_PX);
     setActiveQueryAnchorId(id);
-    scroller.scrollTo({ top, behavior: 'smooth' });
+    const loadingPrepend = prependAnchorRestoreRef.current?.phase === 'loading';
+    scroller.scrollTo({ top, behavior: loadingPrepend ? 'auto' : 'smooth' });
+    if (loadingPrepend) refreshPendingPrependSnapshot(scroller);
   }
 
   const toggleGroup = useCallback((id: string): void => {
@@ -1552,10 +1855,23 @@ export function ConversationStreamV2(): JSX.Element {
       const session = state.sessions.find((s) => s.sessionId === currentSessionId);
       if (!session) return;
       const userMsgs = state.userMessagesBySession[currentSessionId] ?? [];
-      const forkPointTurnIdx = Math.max(0, Math.min(turnIndex, Math.max(0, userMsgs.length - 1)));
+      const selectorIndexes = selectorTurnIndexesByMessageId(userMsgs);
+      const selectedMessage = userMsgs.find(
+        (message) => selectorIndexes.get(message.id) === turnIndex,
+      );
+      const localNoticeCutoffSentAt = localNoticeCutoffSentAtForSelectorTurn(userMsgs, turnIndex);
+      if (session.surface === 'code' && selectedMessage?.historyBoundary === undefined) {
+        pushToast(t('session.historyBoundaryUnavailable'), 'warning');
+        return;
+      }
+      const forkPointTurnIdx = Math.max(0, turnIndex);
       const r = await window.kodaxSpace.invoke('session.fork', {
         sessionId: currentSessionId,
         forkPointTurnIdx,
+        ...(selectedMessage?.historyBoundary !== undefined
+          ? { historyBoundary: selectedMessage.historyBoundary }
+          : {}),
+        ...(localNoticeCutoffSentAt !== undefined ? { localNoticeCutoffSentAt } : {}),
       });
       if (!r.ok) {
         pushToast(
@@ -1606,8 +1922,18 @@ export function ConversationStreamV2(): JSX.Element {
     async (turnIndex: number): Promise<void> => {
       if (!currentSessionId || !window.kodaxSpace) return;
       const state = useAppStore.getState();
+      const session = state.sessions.find((candidate) => candidate.sessionId === currentSessionId);
+      if (!session) return;
       const userMsgs = state.userMessagesBySession[currentSessionId] ?? [];
-      if (turnIndex < 0 || turnIndex >= userMsgs.length - 1) return;
+      if (turnIndex < 0 || !canRewindSelectorTurn(userMsgs, turnIndex)) return;
+      const selectorIndexes = selectorTurnIndexesByMessageId(userMsgs);
+      const selectedMessage = userMsgs.find(
+        (message) => selectorIndexes.get(message.id) === turnIndex,
+      );
+      if (session.surface === 'code' && selectedMessage?.historyBoundary === undefined) {
+        pushToast(t('session.historyBoundaryUnavailable'), 'warning');
+        return;
+      }
 
       const confirmed = await requestConfirm({
         title: t('menu.session.rewindToTurnTitle'),
@@ -1620,6 +1946,9 @@ export function ConversationStreamV2(): JSX.Element {
       const r = await window.kodaxSpace.invoke('session.rewind', {
         sessionId: currentSessionId,
         rewindPastTurnIdx: turnIndex,
+        ...(selectedMessage?.historyBoundary !== undefined
+          ? { historyBoundary: selectedMessage.historyBoundary }
+          : {}),
       });
       if (!r.ok) {
         pushToast(
@@ -1780,6 +2109,15 @@ export function ConversationStreamV2(): JSX.Element {
           chevron 用 2.5 描边补足「细 V 不够显眼」；hover 时 outline 微光环（用 outline 不用 ring，
           避免和 .lift 的 box-shadow 抢同一属性、hover 反而丢掉浮影）。
           外层 div 负责居中定位，内层 button 的 .ix-pop 悬停缩放不和居中 translate 打架。 */}
+      {historyPaging.hasNewer === true && (
+        <button
+          type="button"
+          onClick={returnToNewestHistory}
+          className="absolute bottom-14 left-1/2 z-10 -translate-x-1/2 rounded-full border border-border-default bg-surface-4 px-3 py-1.5 text-xs text-fg-secondary lift hover:text-fg-primary"
+        >
+          {t('conversation.returnToNewest')}
+        </button>
+      )}
       {showJumpToBottom && (
         <div className="reveal-marker absolute bottom-4 left-1/2 -ml-4 z-10">
           <button
@@ -2069,7 +2407,9 @@ const ConversationRenderRow = memo(function ConversationRenderRow({
           turnIndex={message.turnIndex}
           completed={message.completed}
           canRewind={
-            message.turnIndex !== undefined ? message.turnIndex < userMessages.length - 1 : false
+            message.turnIndex !== undefined
+              ? canRewindSelectorTurn(userMessages, message.turnIndex)
+              : false
           }
           onForkTurn={(turnIndex) => void onForkTurn(turnIndex)}
           onRewindTurn={(turnIndex) => void onRewindTurn(turnIndex)}
@@ -2092,6 +2432,7 @@ const ConversationRenderRow = memo(function ConversationRenderRow({
       <TimelineMarker tone={messageMarkerTone(message)} animate={animateEntry} />
       <div
         data-msg-id={message.id}
+        data-stable-scroll-anchor="true"
         data-live-tail={liveTail ? 'true' : undefined}
         className={`conversation-occlusion-item search-ring-anim ${ringClass}`}
         style={intrinsicStyle}

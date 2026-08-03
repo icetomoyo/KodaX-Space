@@ -85,6 +85,35 @@ test('session.history output accepts restored sidecar verifier messages', () => 
   );
 });
 
+test('session.history reports SDK conversation confidence without exposing raw evidence bodies', () => {
+  const parsed = sessionHistoryChannel.output.safeParse({
+    items: [{ kind: 'user', content: 'kept candidate' }],
+    conversation: {
+      status: 'ambiguous',
+      sourceRevision: 'sha256:abc',
+      issues: [
+        {
+          code: 'compaction_predecessor_missing',
+          occurrenceCount: 1,
+          entryCount: 2,
+        },
+      ],
+    },
+  });
+  assert.equal(parsed.success, true);
+  assert.equal(
+    sessionHistoryChannel.output.safeParse({
+      items: [],
+      conversation: {
+        status: 'deduplicated',
+        sourceRevision: 'sha256:abc',
+        issues: [],
+      },
+    }).success,
+    false,
+  );
+});
+
 test('session image previews are bounded capability URLs in send acknowledgements and history', () => {
   const token = 'a'.repeat(32);
   const attachment = {
@@ -158,6 +187,11 @@ test('session.history carries bounded canonical user-boundary identity', () => {
           content: 'q',
           turnId: 'turn_1',
           turnUserOrdinal: 1,
+          historyTurnIndex: 42,
+          historyBoundary: {
+            boundaryId: 'entry_42_tail',
+            sourceRevision: 'sha256:source',
+          },
         },
       ],
     }).success,
@@ -171,10 +205,72 @@ test('session.history carries bounded canonical user-boundary identity', () => {
           content: 'q',
           turnId: '',
           turnUserOrdinal: -1,
+          historyTurnIndex: -1,
         },
       ],
     }).success,
     false,
+  );
+});
+
+test('session.history carries immutable page cursors and explicit resync outcomes', () => {
+  assert.equal(
+    sessionHistoryChannel.input.safeParse({
+      sessionId: 's_1',
+      cursor: 'opaque-cursor',
+      revision: 'revision-1',
+      sourceRevision: 'source-1',
+    }).success,
+    true,
+  );
+  assert.equal(
+    sessionHistoryChannel.output.safeParse({
+      items: [],
+      page: {
+        outcome: 'ready',
+        revision: 'revision-1',
+        sourceRevision: 'source-1',
+        hasMore: true,
+        nextCursor: 'opaque-cursor',
+        windowMode: 'replace',
+        hasNewer: false,
+      },
+    }).success,
+    true,
+  );
+  assert.equal(
+    sessionHistoryChannel.output.safeParse({
+      items: [],
+      page: {
+        outcome: 'ready',
+        revision: 'revision-1',
+        sourceRevision: 'source-1',
+        hasMore: false,
+        windowMode: 'prepend',
+        hasNewer: false,
+      },
+    }).success,
+    true,
+  );
+  assert.equal(
+    sessionHistoryChannel.output.safeParse({
+      items: [],
+      page: { outcome: 'data_changed' },
+    }).success,
+    true,
+  );
+});
+
+test('session.history can ask the renderer to wait for the bounded Runtime reader', () => {
+  assert.deepEqual(
+    sessionHistoryChannel.output.parse({
+      items: [],
+      page: { outcome: 'runtime_unavailable' },
+    }),
+    {
+      items: [],
+      page: { outcome: 'runtime_unavailable' },
+    },
   );
 });
 
@@ -209,6 +305,14 @@ test('session.history carries persisted compaction token statistics', () => {
         kind: 'lineage_notice',
         noticeKind: 'compaction',
         text: 'summary',
+        entryId: 'entry_compaction',
+        parentId: null,
+        logicalId: 'logical_compaction',
+        sourceEntryId: 'entry_source',
+        authoritativeEntryId: 'entry_exact',
+        canonicalIndex: 146,
+        turnId: 'turn_1',
+        sentAt: 1710000000000,
         tokensBefore: 322_973,
         tokensAfter: 222_460,
       },
@@ -216,6 +320,63 @@ test('session.history carries persisted compaction token statistics', () => {
   });
 
   assert.equal(parsed.success, true);
+});
+
+test('session.history exposes bounded explicit history and turn truncation markers', () => {
+  assert.equal(
+    sessionHistoryChannel.output.safeParse({
+      items: [
+        { kind: 'history_truncation', scope: 'history', omittedItems: 123 },
+        { kind: 'history_truncation', scope: 'turn', omittedItems: 45 },
+      ],
+    }).success,
+    true,
+  );
+  assert.equal(
+    sessionHistoryChannel.output.safeParse({
+      items: [{ kind: 'history_truncation', scope: 'history', omittedItems: 0 }],
+    }).success,
+    false,
+  );
+});
+
+test('session.event accepts persisted compaction identity for live/history reconciliation', () => {
+  assert.equal(
+    sessionEventChannel.payload.safeParse({
+      kind: 'lineage_notice',
+      sessionId: 's_1',
+      noticeKind: 'compaction',
+      text: 'summary',
+      entryId: 'entry_compaction',
+      parentId: null,
+      logicalId: 'entry_compaction',
+      canonicalIndex: 146,
+      provisionalId: 'runtime-compaction:evt_1',
+      displayId: 'runtime-compaction:evt_1',
+      contextId: 's_1',
+      contextRevision: 7,
+      afterRevision: 8,
+      source: 'automatic_threshold',
+      tokensBefore: 489_491,
+      tokensAfter: 222_460,
+      sentAt: 1710000000000,
+    }).success,
+    true,
+  );
+  assert.equal(
+    sessionEventChannel.payload.safeParse({
+      kind: 'lineage_notice',
+      sessionId: 's_1',
+      noticeKind: 'compaction',
+      text: 'Compaction',
+      provisionalId: 'runtime-compaction:evt_1',
+      displayId: 'runtime-compaction:evt_1',
+      tokensBefore: 489_491,
+      tokensAfter: 222_460,
+      sentAt: 1710000000001,
+    }).success,
+    true,
+  );
 });
 
 test('session local notice persistence channels are registered and bounded', () => {
@@ -568,9 +729,57 @@ test('session.send accepts bounded native attachment paths for model-only contex
   );
 });
 
-test('session.cancel and session.delete have ok-style booleans', () => {
+test('session.cancel preserves authoritative Runtime Stop receipts without claiming unknown outcomes', () => {
   assert.equal(sessionCancelChannel.output.safeParse({ cancelled: true }).success, true);
   assert.equal(sessionCancelChannel.output.safeParse({ cancelled: false }).success, true);
+  assert.equal(
+    sessionCancelChannel.output.safeParse({
+      cancelled: false,
+      stop: {
+        runId: 'run_1',
+        sessionId: 's_1',
+        accepted: true,
+        state: 'unknown',
+        outcome: 'unknown',
+        phase: 'unknown',
+        revision: 3,
+      },
+    }).success,
+    true,
+  );
+  assert.equal(
+    sessionCancelChannel.output.safeParse({
+      cancelled: true,
+      stop: {
+        runId: 'run_1',
+        sessionId: 's_1',
+        accepted: false,
+        state: 'confirmed',
+        outcome: 'cancelled',
+        phase: 'cancelled',
+        revision: 4,
+      },
+    }).success,
+    true,
+  );
+  assert.equal(
+    sessionCancelChannel.output.safeParse({
+      cancelled: true,
+      stop: {
+        runId: 'run_1',
+        sessionId: 's_1',
+        accepted: true,
+        state: 'unknown',
+        outcome: 'cancelled',
+        phase: 'cancelling',
+        revision: -1,
+      },
+    }).success,
+    false,
+  );
+});
+
+test('session.delete has an ok-style boolean', () => {
   assert.equal(sessionDeleteChannel.output.safeParse({ deleted: true }).success, true);
   assert.equal(
     sessionDeleteChannel.output.safeParse({ deleted: false, reason: 'session_running' }).success,
@@ -988,9 +1197,21 @@ test('session.fork input requires sessionId + non-negative forkPointTurnIdx', ()
     false,
   );
   assert.equal(sessionForkChannel.input.safeParse({ sessionId: 's_1' }).success, false);
-  // 10_001 超 max → 拒绝（DoS guard）
+  assert.equal(
+    sessionForkChannel.input.safeParse({
+      sessionId: 's_1',
+      forkPointTurnIdx: 0,
+      historyBoundary: { boundaryId: 'entry_tail', sourceRevision: 'source-revision' },
+    }).success,
+    true,
+  );
+  // Absolute selectors share the same bound as historyTurnIndex.
   assert.equal(
     sessionForkChannel.input.safeParse({ sessionId: 's_1', forkPointTurnIdx: 10_001 }).success,
+    true,
+  );
+  assert.equal(
+    sessionForkChannel.input.safeParse({ sessionId: 's_1', forkPointTurnIdx: 10_000_001 }).success,
     false,
   );
 });
@@ -1014,6 +1235,42 @@ test('session.rewind input requires sessionId + non-negative rewindPastTurnIdx',
   );
   assert.equal(
     sessionRewindChannel.input.safeParse({ sessionId: 's_1', rewindPastTurnIdx: -1 }).success,
+    false,
+  );
+  assert.equal(
+    sessionRewindChannel.input.safeParse({
+      sessionId: 's_1',
+      rewindPastTurnIdx: 0,
+      historyBoundary: { boundaryId: 'entry_tail', sourceRevision: 'source-revision' },
+      localNoticeCutoffSentAt: 1_234,
+    }).success,
+    true,
+  );
+  assert.equal(
+    sessionRewindChannel.input.safeParse({
+      sessionId: 's_1',
+      rewindPastTurnIdx: 0,
+      localNoticeCutoffSentAt: -1,
+    }).success,
+    false,
+  );
+  assert.equal(
+    sessionRewindChannel.input.safeParse({
+      sessionId: 's_1',
+      rewindPastTurnIdx: 0,
+      localNoticeCutoffSentAt: 1.5,
+    }).success,
+    false,
+  );
+  assert.equal(
+    sessionRewindChannel.input.safeParse({ sessionId: 's_1', rewindPastTurnIdx: 10_001 }).success,
+    true,
+  );
+  assert.equal(
+    sessionRewindChannel.input.safeParse({
+      sessionId: 's_1',
+      rewindPastTurnIdx: 10_000_001,
+    }).success,
     false,
   );
 });

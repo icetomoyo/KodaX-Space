@@ -44,11 +44,18 @@ test('diagnostics.report accepts only bounded allowlisted renderer metadata', ()
 test('diagnostics.export accepts reviewed categories and rejects unknown keys', () => {
   assert.equal(diagnosticsExportChannel.input.safeParse({}).success, true);
   assert.equal(
-    diagnosticsExportChannel.input.safeParse({ categories: ['manifest', 'logs'] }).success,
+    diagnosticsExportChannel.input.safeParse({
+      categories: ['manifest', 'logs'],
+      sessionId: 's_current',
+    }).success,
     true,
   );
   assert.equal(
     diagnosticsExportChannel.input.safeParse({ categories: ['secrets'] }).success,
+    false,
+  );
+  assert.equal(
+    diagnosticsExportChannel.input.safeParse({ sessionId: 'x'.repeat(129) }).success,
     false,
   );
   assert.equal(diagnosticsExportChannel.input.safeParse({ path: 'C:\\secret.zip' }).success, false);

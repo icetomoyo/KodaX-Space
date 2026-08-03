@@ -20,6 +20,8 @@ import {
   SessionRuntimeStore,
   setSessionRuntimeStoreForTesting,
 } from '../kodax/session-runtime-store.js';
+import { runtimeHostAdapter } from '../kodax/runtime-host-adapter.js';
+import { collectCrossPageTurnBoundaries, collectLeadingTurnTailBoundary } from '../ipc/session.js';
 
 let mockState: MockSessionState;
 let runtimeDir = '';
@@ -56,11 +58,220 @@ afterEach(async () => {
 
 function seedPersistedSession(id: string, gitRoot: string, title = 'Untitled'): void {
   mockState.seed(id, gitRoot, title);
+  mockState.seedTranscript(
+    id,
+    Array.from({ length: 6 }, (_, turnIndex) => [
+      {
+        entryId: `u${turnIndex}`,
+        type: 'message',
+        message: { role: 'user', content: `prompt ${turnIndex}` },
+      },
+      {
+        entryId: `a${turnIndex}`,
+        type: 'message',
+        message: { role: 'assistant', content: `answer ${turnIndex}` },
+      },
+    ]).flat(),
+  );
 }
 
 test('fork: unknown in-memory source returns null', async () => {
   const result = await kodaxHost.fork('s_nope', 0);
   assert.equal(result, null);
+});
+
+test('Runtime fork uses the exact paged-history boundary without re-reading a local turn index', async () => {
+  const adapter = runtimeHostAdapter as unknown as Record<string, unknown>;
+  const originalReady = adapter.hasReadyRuntime;
+  const originalBoundary = adapter.conversationTurnEndBoundary;
+  const originalFork = adapter.forkSession;
+  let receivedBoundary: unknown;
+  try {
+    adapter.hasReadyRuntime = () => true;
+    adapter.conversationTurnEndBoundary = async () => {
+      throw new Error('page-local selector must not trigger a full-history boundary read');
+    };
+    adapter.forkSession = async (input: { readonly historyBoundary?: unknown }) => {
+      receivedBoundary = input.historyBoundary;
+      return { id: 's_exact_boundary_child' };
+    };
+    const { sessionId } = kodaxHost.createSession({
+      projectRoot: 'C:\\tmp\\proj',
+      provider: 'mock',
+    });
+    const result = await kodaxHost.fork(sessionId, 0, {
+      boundaryId: 'entry_exact_tail',
+      sourceRevision: 'source_exact',
+    });
+    assert.ok(result);
+    assert.deepEqual(receivedBoundary, {
+      entryId: 'entry_exact_tail',
+      sourceRevision: 'source_exact',
+    });
+  } finally {
+    adapter.hasReadyRuntime = originalReady;
+    adapter.conversationTurnEndBoundary = originalBoundary;
+    adapter.forkSession = originalFork;
+  }
+});
+
+test('Runtime fork and rewind preserve an exact turn boundary carried across three SDK pages', async () => {
+  type IndexedEntry = Parameters<typeof collectLeadingTurnTailBoundary>[0][number];
+  const entry = (
+    index: number,
+    boundaryId: string,
+    message: IndexedEntry['entry']['message'],
+  ): IndexedEntry => ({
+    index,
+    entry: { boundaryId, auditEntryIds: [boundaryId], message },
+  });
+  const sourceRevision = 'source_three_page_mutation';
+  const oldestPage = [
+    entry(62, 'user-long-turn', { role: 'user', content: 'long turn' }),
+    entry(63, 'assistant-first-page', { role: 'assistant', content: 'first tail' }),
+  ];
+  const middlePage = Array.from({ length: 64 }, (_, offset) =>
+    entry(64 + offset, `assistant-middle-${offset}`, {
+      role: 'assistant',
+      content: `middle tail ${offset}`,
+    }),
+  );
+  const newestPage = [
+    entry(128, 'assistant-authoritative-tail', { role: 'assistant', content: 'done' }),
+    entry(129, 'user-next-turn', { role: 'user', content: 'next' }),
+  ];
+  const newestPrefix = collectLeadingTurnTailBoundary(newestPage, sourceRevision);
+  const carriedPrefix = collectLeadingTurnTailBoundary(middlePage, sourceRevision, newestPrefix);
+  const exactBoundary = collectCrossPageTurnBoundaries(
+    oldestPage,
+    middlePage,
+    sourceRevision,
+    carriedPrefix,
+  ).get(62);
+  assert.deepEqual(exactBoundary, {
+    boundaryId: 'assistant-authoritative-tail',
+    sourceRevision,
+  });
+  assert.ok(exactBoundary);
+
+  const adapter = runtimeHostAdapter as unknown as Record<string, unknown>;
+  const originalReady = adapter.hasReadyRuntime;
+  const originalFork = adapter.forkSession;
+  const originalRewind = adapter.rewindSession;
+  const received: Array<{ readonly operation: 'fork' | 'rewind'; readonly boundary: unknown }> = [];
+  try {
+    adapter.hasReadyRuntime = () => true;
+    adapter.forkSession = async (input: { readonly historyBoundary?: unknown }) => {
+      received.push({ operation: 'fork', boundary: input.historyBoundary });
+      return { id: 's_three_page_boundary_child' };
+    };
+    adapter.rewindSession = async (input: { readonly historyBoundary?: unknown }) => {
+      received.push({ operation: 'rewind', boundary: input.historyBoundary });
+      return { id: input.historyBoundary };
+    };
+    const { sessionId } = kodaxHost.createSession({
+      projectRoot: 'C:\\tmp\\proj',
+      provider: 'mock',
+      surface: 'code',
+    });
+
+    assert.ok(await kodaxHost.fork(sessionId, 0, exactBoundary));
+    assert.deepEqual(await kodaxHost.rewind(sessionId, 0, exactBoundary), {
+      ok: true,
+      diskRewound: true,
+    });
+    assert.deepEqual(received, [
+      {
+        operation: 'fork',
+        boundary: {
+          entryId: 'assistant-authoritative-tail',
+          sourceRevision,
+        },
+      },
+      {
+        operation: 'rewind',
+        boundary: {
+          entryId: 'assistant-authoritative-tail',
+          sourceRevision,
+        },
+      },
+    ]);
+  } finally {
+    adapter.hasReadyRuntime = originalReady;
+    adapter.forkSession = originalFork;
+    adapter.rewindSession = originalRewind;
+  }
+});
+
+test('Runtime fork and rewind fail closed when an exact boundary or Runtime authority is absent', async () => {
+  const adapter = runtimeHostAdapter as unknown as Record<string, unknown>;
+  const originalReady = adapter.hasReadyRuntime;
+  const originalFork = adapter.forkSession;
+  const originalRewind = adapter.rewindSession;
+  let mutationCalls = 0;
+  try {
+    adapter.hasReadyRuntime = () => true;
+    adapter.forkSession = async () => {
+      mutationCalls += 1;
+      return { id: 'must-not-be-created' };
+    };
+    adapter.rewindSession = async () => {
+      mutationCalls += 1;
+      return { id: 'must-not-be-rewound' };
+    };
+    const { sessionId } = kodaxHost.createSession({
+      projectRoot: 'C:\\tmp\\proj',
+      provider: 'mock',
+      surface: 'code',
+    });
+    await assert.rejects(() => kodaxHost.fork(sessionId, 0), /exact persisted history boundary/);
+    await assert.rejects(() => kodaxHost.rewind(sessionId, 0), /exact persisted history boundary/);
+    assert.equal(mutationCalls, 0);
+
+    adapter.hasReadyRuntime = () => false;
+    const exactBoundary = { boundaryId: 'entry-tail', sourceRevision: 'source-revision' };
+    await assert.rejects(
+      () => kodaxHost.fork(sessionId, 0, exactBoundary),
+      /Runtime is unavailable/,
+    );
+    await assert.rejects(
+      () => kodaxHost.rewind(sessionId, 0, exactBoundary),
+      /Runtime is unavailable/,
+    );
+    assert.equal(mutationCalls, 0);
+  } finally {
+    adapter.hasReadyRuntime = originalReady;
+    adapter.forkSession = originalFork;
+    adapter.rewindSession = originalRewind;
+  }
+});
+
+test('Partner fork and rewind prefer the exact source-revision boundary over the legacy ordinal', async () => {
+  const { sessionId } = kodaxHost.createSession({
+    projectRoot: 'C:\\tmp\\proj',
+    provider: 'mock',
+    surface: 'partner',
+  });
+  seedPersistedSession(sessionId, 'C:\\tmp\\proj');
+  const exactBoundary = {
+    boundaryId: 'entry_exact_partner_tail',
+    sourceRevision: 'source_exact_partner',
+  };
+
+  const forked = await kodaxHost.fork(
+    sessionId,
+    // Deliberately outside the legacy visible-turn range. The exact boundary is authoritative.
+    999_999,
+    exactBoundary,
+  );
+  assert.ok(forked);
+  assert.equal(mockState.lastForkSelector(), undefined);
+  assert.deepEqual(mockState.lastForkHistoryBoundary(), exactBoundary);
+
+  const rewound = await kodaxHost.rewind(sessionId, 999_999, exactBoundary);
+  assert.deepEqual(rewound, { ok: true, diskRewound: true });
+  assert.equal(mockState.lastRewindSelector(), undefined);
+  assert.deepEqual(mockState.lastRewindHistoryBoundary(), exactBoundary);
 });
 
 test('fork: child inherits and persists the complete runtime identity', async () => {
@@ -71,6 +282,7 @@ test('fork: child inherits and persists the complete runtime identity', async ()
     permissionMode: 'plan',
     autoModeEngine: 'rules',
     model: 'mock-model-v2',
+    surface: 'partner',
   });
   kodaxHost.setThinking(src, true);
   seedPersistedSession(src, 'C:\\tmp\\proj');
@@ -100,6 +312,7 @@ test('fork: child has parentSessionId + forkPointTurnIdx metadata', async () => 
   const { sessionId: src } = kodaxHost.createSession({
     projectRoot: 'C:\\tmp\\proj',
     provider: 'mock',
+    surface: 'partner',
   });
   seedPersistedSession(src, 'C:\\tmp\\proj');
   const result = await kodaxHost.fork(src, 5);
@@ -113,6 +326,7 @@ test('fork: child title is "<src title> (fork)" when source has title', async ()
   const { sessionId: src } = kodaxHost.createSession({
     projectRoot: 'C:\\tmp\\proj',
     provider: 'mock',
+    surface: 'partner',
   });
   await kodaxHost.setTitle(src, 'Investigate bug');
   seedPersistedSession(src, 'C:\\tmp\\proj', 'Investigate bug');
@@ -125,6 +339,7 @@ test('fork: title does not accumulate "(fork) (fork)" on repeat fork', async () 
   const { sessionId: src } = kodaxHost.createSession({
     projectRoot: 'C:\\tmp\\proj',
     provider: 'mock',
+    surface: 'partner',
   });
   await kodaxHost.setTitle(src, 'X');
   seedPersistedSession(src, 'C:\\tmp\\proj', 'X');
@@ -141,6 +356,7 @@ test('fork: child title stays undefined when source has none', async () => {
   const { sessionId: src } = kodaxHost.createSession({
     projectRoot: 'C:\\tmp\\proj',
     provider: 'mock',
+    surface: 'partner',
   });
   // 不调 setTitle / send，title 保持 undefined
   seedPersistedSession(src, 'C:\\tmp\\proj', ''); // SDK title fallback 到空串
@@ -154,6 +370,7 @@ test('fork: source and child have different sessionIds, both listed in-flight', 
   const { sessionId: src } = kodaxHost.createSession({
     projectRoot: 'C:\\tmp\\proj',
     provider: 'mock',
+    surface: 'partner',
   });
   seedPersistedSession(src, 'C:\\tmp\\proj');
   const result = await kodaxHost.fork(src, 0);
@@ -197,7 +414,9 @@ test('rewind: known session returns ok:true and bumps lastActivityAt', async () 
   const { sessionId } = kodaxHost.createSession({
     projectRoot: 'C:\\tmp\\proj',
     provider: 'mock',
+    surface: 'partner',
   });
+  seedPersistedSession(sessionId, 'C:\\tmp\\proj');
   const initial = kodaxHost.get(sessionId)!.lastActivityAt;
   // 等 ≥ 2ms 确保 Date.now() 推进（Windows Date.now() 分辨率 ~15ms，给余量）
   await new Promise((r) => setTimeout(r, 20));
@@ -207,17 +426,16 @@ test('rewind: known session returns ok:true and bumps lastActivityAt', async () 
   assert.ok(kodaxHost.get(sessionId)!.lastActivityAt >= initial);
 });
 
-test('rewind: diskRewound=true when SDK has the session, false when not (reviewer HIGH-3)', async () => {
+test('rewind: invalid persisted selector fails closed before disk mutation', async () => {
   const { sessionId } = kodaxHost.createSession({
     projectRoot: 'C:\\tmp\\proj',
     provider: 'mock',
+    surface: 'partner',
   });
-  // 未 seed 到 storage → SDK rewindSession 返回 null → diskRewound=false
   const r1 = await kodaxHost.rewind(sessionId, 0);
-  assert.equal(r1.ok, true);
-  assert.equal(r1.diskRewound, false, 'disk rewind should report failure when SDK has no record');
+  assert.deepEqual(r1, { ok: false, reason: 'invalid_index' });
+  assert.equal(mockState.rewindCallCount(), 0);
 
-  // 再 seed 后重试
   seedPersistedSession(sessionId, 'C:\\tmp\\proj');
   const r2 = await kodaxHost.rewind(sessionId, 0);
   assert.equal(r2.ok, true);
@@ -228,6 +446,7 @@ test('rewind: resolves turn index to the completed turn end selector', async () 
   const { sessionId } = kodaxHost.createSession({
     projectRoot: 'C:\\tmp\\proj',
     provider: 'mock',
+    surface: 'partner',
   });
   seedPersistedSession(sessionId, 'C:\\tmp\\proj');
   mockState.seedTranscript(sessionId, [
@@ -262,6 +481,7 @@ test('rewind: selector ignores compacted placeholders and rewind markers', async
   const { sessionId } = kodaxHost.createSession({
     projectRoot: 'C:\\tmp\\proj',
     provider: 'mock',
+    surface: 'partner',
   });
   seedPersistedSession(sessionId, 'C:\\tmp\\proj');
   mockState.seedTranscript(sessionId, [
@@ -310,10 +530,11 @@ test('rewind: selector ignores compacted placeholders and rewind markers', async
   assert.equal(mockState.lastRewindSelector(), 'a0_final');
 });
 
-test('rewind: selector uses active branch when inactive old branch has unique prompts', async () => {
+test('rewind: selector uses the same full-history turn index shown by the renderer', async () => {
   const { sessionId } = kodaxHost.createSession({
     projectRoot: 'C:\\tmp\\proj',
     provider: 'mock',
+    surface: 'partner',
   });
   seedPersistedSession(sessionId, 'C:\\tmp\\proj');
   mockState.seedTranscript(sessionId, [
@@ -345,13 +566,14 @@ test('rewind: selector uses active branch when inactive old branch has unique pr
 
   const result = await kodaxHost.rewind(sessionId, 0);
   assert.equal(result.ok, true);
-  assert.equal(mockState.lastRewindSelector(), 'a0_final');
+  assert.equal(mockState.lastRewindSelector(), 'old_a0');
 });
 
 test('fork: resolves turn index to the completed turn end selector', async () => {
   const { sessionId } = kodaxHost.createSession({
     projectRoot: 'C:\\tmp\\proj',
     provider: 'mock',
+    surface: 'partner',
   });
   seedPersistedSession(sessionId, 'C:\\tmp\\proj');
   mockState.seedTranscript(sessionId, [
@@ -373,10 +595,59 @@ test('fork: resolves turn index to the completed turn end selector', async () =>
   assert.equal(mockState.lastForkSelector(), 'a0_final');
 });
 
+test('fork: no-user and out-of-range selectors fail before the SDK mutator is called', async () => {
+  const { sessionId } = kodaxHost.createSession({
+    projectRoot: 'C:\\tmp\\proj',
+    provider: 'mock',
+    surface: 'partner',
+  });
+  seedPersistedSession(sessionId, 'C:\\tmp\\proj');
+  mockState.seedTranscript(sessionId, [
+    {
+      entryId: 'assistant_only',
+      type: 'message',
+      message: { role: 'assistant', content: 'initiative' },
+    },
+  ]);
+
+  await assert.rejects(() => kodaxHost.fork(sessionId, 0), /invalid_index/);
+  assert.equal(mockState.forkCallCount(), 0);
+
+  mockState.seedTranscript(sessionId, [
+    { entryId: 'u0', type: 'message', message: { role: 'user', content: 'only prompt' } },
+    { entryId: 'a0', type: 'message', message: { role: 'assistant', content: 'only answer' } },
+  ]);
+  await assert.rejects(() => kodaxHost.fork(sessionId, 42), /invalid_index/);
+  assert.equal(mockState.forkCallCount(), 0);
+});
+
+test('rewind: invalid selector does not cancel the session or call the SDK mutator', async () => {
+  const { sessionId } = kodaxHost.createSession({
+    projectRoot: 'C:\\tmp\\proj',
+    provider: 'mock',
+    surface: 'partner',
+  });
+  seedPersistedSession(sessionId, 'C:\\tmp\\proj');
+  const session = kodaxHost.get(sessionId)!;
+  let cancelCalls = 0;
+  const originalCancel = session.cancel.bind(session);
+  session.cancel = async () => {
+    cancelCalls += 1;
+    await originalCancel();
+  };
+
+  const result = await kodaxHost.rewind(sessionId, 42);
+
+  assert.deepEqual(result, { ok: false, reason: 'invalid_index' });
+  assert.equal(cancelCalls, 0);
+  assert.equal(mockState.rewindCallCount(), 0);
+});
+
 test('fork: factory failure rolls back persisted entry (reviewer HIGH-1)', async () => {
   const { sessionId: src } = kodaxHost.createSession({
     projectRoot: 'C:\\tmp\\proj',
     provider: 'mock',
+    surface: 'partner',
   });
   seedPersistedSession(src, 'C:\\tmp\\proj');
 
@@ -403,7 +674,9 @@ test('rewind: cancels in-flight send and awaits cancel before returning', async 
   const { sessionId } = kodaxHost.createSession({
     projectRoot: 'C:\\tmp\\proj',
     provider: 'mock',
+    surface: 'partner',
   });
+  seedPersistedSession(sessionId, 'C:\\tmp\\proj');
   // 启动一条 send；不 await（让它在 micro-task 跑）
   await kodaxHost.get(sessionId)!.send('long running prompt');
   // 立刻 rewind——应当触发 session.cancel 链且 await 直到 cancel 完成

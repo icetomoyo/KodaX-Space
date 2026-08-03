@@ -22,6 +22,7 @@ import type {
   PermissionMode,
   SessionEvent,
   SessionSendQueueMode,
+  SpaceRuntimeRunStopReceiptT,
   Surface,
 } from '@kodax-space/space-ipc-schema';
 
@@ -29,6 +30,8 @@ export type PermissionRequestFn = (req: {
   readonly toolId: string;
   readonly toolName: string;
   readonly input?: Record<string, unknown>;
+  /** Run-scoped mode override; omitted callers use the Session's current mode. */
+  readonly mode?: PermissionMode;
   readonly surface?: Surface;
   readonly partnerToolAllowed?: boolean;
 }) => Promise<PermissionDecision>;
@@ -76,6 +79,26 @@ export type SessionDisposeOptions = {
    */
   readonly abortRuntimeRun?: boolean;
 };
+
+export interface SessionCancelResult {
+  /** True only when a terminal cancellation/interruption is authoritative. */
+  readonly cancelled: boolean;
+  /** Runtime Stop receipt; unknown outcomes must remain non-terminal in Space. */
+  readonly stop?: SpaceRuntimeRunStopReceiptT;
+}
+
+export interface LocalSessionCancelOutcome {
+  /**
+   * The local request was cancelled before a Runtime Run could be admitted.
+   * This is authoritative only for that not-yet-created Run.
+   */
+  readonly kind: 'local_cancelled_before_admission';
+}
+
+export type ManagedSessionCancelOutcome =
+  | SpaceRuntimeRunStopReceiptT
+  | LocalSessionCancelOutcome
+  | void;
 
 export interface ManagedSession {
   readonly sessionId: string;
@@ -172,13 +195,12 @@ export interface ManagedSession {
   ): Promise<SendResult>;
 
   /**
-   * 中断当前正在跑的 send。
-   *   - 实现**必须**在中断时 emit 一条 `{ kind: 'session_error', error: 'cancelled' }`
-   *     收尾（不是 session_complete）；renderer 用 kind 区分正常完成 vs 用户主动取消。
-   *   - Real adapter 还**必须**确保所有派生 child process（bash 工具、grep、网络流）
-   *     被 kill / 关闭——不允许"前台 abort 了但 LLM HTTP 流还在后台烧 token"。
+   * Interrupt the current send. Legacy implementations terminate through
+   * `session.event`; Runtime-backed implementations return the SDK's
+   * authoritative Stop receipt and must not synthesize a terminal event for an
+   * unknown outcome.
    */
-  cancel(): Promise<void>;
+  cancel(): Promise<ManagedSessionCancelOutcome>;
 
   /**
    * 释放 session 持有的所有资源。

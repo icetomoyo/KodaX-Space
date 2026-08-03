@@ -508,10 +508,16 @@ File panel 内点击 git diff
 
 继承 KodaX 内核三模式（`plan` / `accept-edits` / `auto`），桌面侧追加：
 
-- **写文件**：在项目根之外要二次确认（与 KodaX `isPathInsideProject` 对齐）
-- **bash**：默认按 `Allow patterns` 评估；通配越权要二次确认
+- **Auto[LLM]**：KodaX classifier 是单次工具调用的唯一权限决策者；合法 `allow` 不再由
+  Space 的静态风险规则二次审批。只有读取明确的密钥/令牌/凭据存储，或正常工作区域外有
+  具体证据会破坏系统稳定性、导致其他软件不可用的异常写操作，才应返回 `ask`。
+- **正常自动化**：项目内编辑/删除/移动、Git stash，以及正常的全局依赖安装、卸载、升级、
+  重装，不得仅因“属于写操作”请求确认。命令复杂、一般不确定性、网络或提权语法也不能单独
+  构成 `ask`。
+- **静态模式与降级**：`accept-edits`、Auto[Rules] 及 Auto guardrail 初始化失败时仍使用各自
+  的确定性边界；这些规则不覆盖一个已完成的 Auto[LLM] 决策。
 - **网络**：MCP server 的网络外呼按 server 粒度展示，可按 session 关闭
-- **危险命令**：`rm -rf` / `git push --force` / `chmod 777` / 等内建黑名单永远要求显式 typed confirmation（输入 `CONFIRM`）
+- **显示与录入**：Space 展示 KodaX 的 `ask` 依据并收集确认，不扩张或缩窄 Runtime 给出的权限范围。
 
 ### 7.3 Agent 工作区隔离（参考 Windows Agent Workspace）
 

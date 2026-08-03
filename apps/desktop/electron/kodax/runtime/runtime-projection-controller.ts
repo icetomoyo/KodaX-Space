@@ -1,8 +1,8 @@
 // F121 main-owned sanitized Runtime projection cache.
 //
-// The current SDK-neutral bootstrap stays explicitly incompatible. Part 2 will
-// feed authoritative daemon snapshots into this controller after capability
-// negotiation; the controller itself never imports the KodaX SDK.
+// The SDK-neutral bootstrap starts explicitly connecting. Authoritative daemon
+// snapshots replace it after capability negotiation; the controller itself
+// never imports the KodaX SDK.
 
 import {
   spaceCoderConnectionProjectionSchema,
@@ -29,6 +29,10 @@ export class RuntimeProjectionUnavailableError extends Error {
 
 function runtimeId(profile: SpaceRuntimeProfileProjectionT): string | undefined {
   return profile.connection.runtimeId ?? profile.cursor?.runtimeId;
+}
+
+function connectionHasFreshLiveAuthority(connection: SpaceCoderConnectionProjectionT): boolean {
+  return (connection.state === 'ready' || connection.state === 'degraded') && !connection.stale;
 }
 
 export class RuntimeProjectionController {
@@ -84,7 +88,7 @@ export class RuntimeProjectionController {
     ) {
       return false;
     }
-    if (currentRuntimeId !== nextRuntimeId) {
+    if (currentRuntimeId !== nextRuntimeId || !connectionHasFreshLiveAuthority(parsed.connection)) {
       this.#liveBySession.clear();
     }
     this.#profile = parsed;
@@ -102,10 +106,7 @@ export class RuntimeProjectionController {
     }
     const previousRuntimeId = runtimeId(this.#profile);
     const nextRuntimeId = parsed.runtimeId ?? this.#profile.cursor?.runtimeId;
-    if (
-      previousRuntimeId !== nextRuntimeId ||
-      (parsed.state !== 'ready' && parsed.state !== 'degraded')
-    ) {
+    if (previousRuntimeId !== nextRuntimeId || !connectionHasFreshLiveAuthority(parsed)) {
       this.#liveBySession.clear();
     }
     this.#profile = spaceRuntimeProfileProjectionSchema.parse({
@@ -120,8 +121,7 @@ export class RuntimeProjectionController {
     const parsed = spaceSessionLiveProjectionSchema.parse(projection);
     const profileRuntimeId = runtimeId(this.#profile);
     if (
-      (this.#profile.connection.state !== 'ready' &&
-        this.#profile.connection.state !== 'degraded') ||
+      !connectionHasFreshLiveAuthority(this.#profile.connection) ||
       profileRuntimeId === undefined ||
       profileRuntimeId !== parsed.cursor.runtimeId
     ) {
@@ -146,7 +146,7 @@ export function createPendingSdkRuntimeProjection(
 ): RuntimeProjectionController {
   return new RuntimeProjectionController({
     connection: {
-      state: 'incompatible',
+      state: 'connecting',
       changedAt,
       stale: true,
       reason: 'Connecting to the published KodaX shared daemon contract.',

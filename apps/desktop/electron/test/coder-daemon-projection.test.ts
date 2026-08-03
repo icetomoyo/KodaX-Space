@@ -171,7 +171,13 @@ const permission = {
           terminalPhase: 'pre_output',
         },
       },
-      { attempt: 2, outcome: 'confirm' },
+      {
+        attempt: 2,
+        outcome: 'confirm',
+        observedProtocol: 'structured_v2',
+        outputWarnings: ['missing_hazard', 'missing_reason'],
+        rawResponse: '<decision>ask</decision>',
+      },
     ],
   },
   grantSuggestions: [
@@ -340,7 +346,12 @@ test('atomic observation maps run, draft, tool, Todo, and interaction truth', ()
             terminalPhase: 'pre_output',
           },
         },
-        { attempt: 2, outcome: 'confirm' },
+        {
+          attempt: 2,
+          outcome: 'confirm',
+          observedProtocol: 'structured_v2',
+          outputWarnings: ['missing_hazard', 'missing_reason'],
+        },
       ],
     });
     assert.deepEqual(projectedPermission.request.toolCall, {
@@ -381,6 +392,53 @@ test('atomic observation maps run, draft, tool, Todo, and interaction truth', ()
       contentPreview: 'Also update the tests.',
     },
   ]);
+});
+
+test('waiting-agent, recovering, and unknown lifecycle phases remain authoritative active Runs', () => {
+  for (const phase of ['waiting_agent', 'recovering', 'unknown'] as const) {
+    const projected = projectRuntimeSessionSnapshot(
+      {
+        ...observation,
+        runs: [
+          {
+            ...running,
+            phase,
+            stage: phase,
+            stageChangedAt: '2026-07-14T08:04:00.000Z',
+            activeSubtaskCount: phase === 'waiting_agent' ? 2 : 0,
+            ...(phase === 'unknown'
+              ? {
+                  lifecycleError: {
+                    code: 'actor_settlement_not_persisted',
+                    message: 'Actor state could not be persisted.',
+                    retryable: false,
+                  },
+                  stop: {
+                    requestedAt: '2026-07-14T08:05:00.000Z',
+                    state: 'unknown',
+                    outcome: 'unknown',
+                    reason: 'Host outcome could not be confirmed.',
+                  },
+                }
+              : {}),
+          },
+        ],
+      } as unknown as RuntimeSessionObservationSnapshot,
+      [],
+    );
+
+    assert.equal(projected.activeRun?.phase, phase);
+    assert.equal(projected.activeRun?.stage, phase);
+    assert.equal(projected.activeRun?.activeSubtaskCount, phase === 'waiting_agent' ? 2 : 0);
+    if (phase === 'unknown') {
+      assert.equal(projected.activeRun?.stop?.state, 'unknown');
+      assert.deepEqual(projected.activeRun?.lifecycleError, {
+        code: 'actor_settlement_not_persisted',
+        message: 'Actor state could not be persisted.',
+        retryable: false,
+      });
+    }
+  }
 });
 
 test('permission projection uses sanitized description, assessed risk, and settings cwd as fallbacks', () => {
@@ -613,15 +671,32 @@ test('profile projection excludes Partner and attributes active/queued runs', ()
         createdAt: '2026-07-14T07:58:00.000Z',
         msgCount: 2,
       },
+      {
+        id: 's_tag_only_partner',
+        title: 'Legacy Partner',
+        tag: 'partner',
+        createdAt: '2026-07-14T07:57:00.000Z',
+        msgCount: 2,
+      },
+      {
+        id: 's_profile_partner',
+        title: 'Profile Partner',
+        profileId: 'kodax-space.partner',
+        createdAt: '2026-07-14T07:56:00.000Z',
+        msgCount: 2,
+      },
     ],
     runs: [running, queued],
-    pendingPermissions: [permission],
+    pendingPermissions: [
+      permission,
+      { ...permission, id: 'permission_partner', sessionId: 's_tag_only_partner' },
+    ],
     workflows: [],
   } as unknown as RuntimeStatusSnapshot;
 
   const projection = projectRuntimeProfile({
     status,
-    userInputs: [askUser],
+    userInputs: [askUser, { ...askUser, id: 'input_partner', sessionId: 's_profile_partner' }],
     cursor: 41,
     projectionRevision: 7,
     changedAt: 100,
@@ -654,6 +729,10 @@ test('profile projection excludes Partner and attributes active/queued runs', ()
     ['run_queued'],
   );
   assert.equal(projection.interactions.length, 2);
+  assert.deepEqual(
+    projection.interactions.map((interaction) => interaction.request.sessionId),
+    ['s_code', 's_code'],
+  );
   assert.deepEqual(projection.connection.integrations, {
     state: 'degraded',
     domains: [

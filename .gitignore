@@ -91,4 +91,5 @@ tmp/
 
 # UI-audit working dirs (screenshots / html previews from responsive + partner audits)
 artifacts/
-vendor/
+vendor/*
+!vendor/kodax-ai-kodax-0.7.79.tgz

@@ -53,6 +53,51 @@ test('daemon stop output fails closed on command errors, timeouts, and malformed
     }).reason,
     'invalid_output',
   );
+  assert.deepEqual(
+    parseDaemonStopOutput({
+      exitCode: 0,
+      stdout: JSON.stringify({
+        stopped: false,
+        reason: 'cleanup_failed',
+        error: 'Runtime daemon process cleanup failed.',
+      }),
+      stderr: '',
+      timedOut: false,
+    }),
+    {
+      stopped: false,
+      reason: 'cleanup_failed',
+      exitCode: 0,
+      message: 'Runtime daemon process cleanup failed.',
+    },
+  );
+  assert.deepEqual(
+    parseDaemonStopOutput({
+      exitCode: 0,
+      stdout: JSON.stringify({
+        stopped: false,
+        reason: 'cleanup_unverified',
+        error: 'Runtime daemon exited without a verifiable successful cleanup outcome.',
+      }),
+      stderr: '',
+      timedOut: false,
+    }),
+    {
+      stopped: false,
+      reason: 'cleanup_unverified',
+      exitCode: 0,
+      message: 'Runtime daemon exited without a verifiable successful cleanup outcome.',
+    },
+  );
+  assert.deepEqual(
+    parseDaemonStopOutput({
+      exitCode: 0,
+      stdout: JSON.stringify({ stopped: false, reason: 'replacement_running' }),
+      stderr: '',
+      timedOut: false,
+    }),
+    { stopped: false, reason: 'replacement_running', exitCode: 0 },
+  );
 });
 
 test('safe daemon stop launches the published CLI against the active KODAX_HOME', async () => {
@@ -64,7 +109,6 @@ test('safe daemon stop launches the published CLI against the active KODAX_HOME'
   }> = [];
   const runtimeDir = path.resolve('C:\\isolated-profile');
   const result = await stopCoderDaemonWhenSafe({
-    timeoutMs: 1_500,
     runtimeDir,
     cliPath: path.resolve('fake-kodax-cli.js'),
     runCommand: async (executable, args, env, timeoutMs) => {
@@ -88,9 +132,9 @@ test('safe daemon stop launches the published CLI against the active KODAX_HOME'
     '--profile',
     'coder',
     '--timeout-ms',
-    '1500',
+    '15000',
     '--json',
   ]);
   assert.equal(calls[0]?.env.KODAX_HOME, runtimeDir);
-  assert.equal(calls[0]?.timeoutMs, 2_500);
+  assert.equal(calls[0]?.timeoutMs, 50_000);
 });

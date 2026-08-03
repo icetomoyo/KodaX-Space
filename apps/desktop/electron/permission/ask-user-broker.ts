@@ -15,6 +15,7 @@ import type {
 } from '@kodax-space/space-ipc-schema';
 import { pushToRenderer } from '../ipc/push.js';
 import { sanitizeForDisplay, sanitizeInputForDisplay } from './sanitize.js';
+import { projectAutoModeDiagnostics } from './auto-mode-diagnostics.js';
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 
@@ -23,6 +24,8 @@ export interface AskUserRequestInput {
   readonly reason: string;
   readonly toolCall: AskUserToolCall;
   readonly signals?: readonly AskUserSignal[];
+  /** Structured SDK metadata only; raw classifier text is never accepted. */
+  readonly autoModeDiagnostics?: unknown;
   /** Test-only override. */
   readonly timeoutMs?: number;
 }
@@ -121,6 +124,7 @@ class AskUserBroker {
         severity: s.severity,
         message: sanitizeForDisplay(s.message, 512),
       }));
+      const autoModeDiagnostics = projectAutoModeDiagnostics(req.autoModeDiagnostics);
 
       pushToRenderer('askUser.request', {
         kind: 'guardrail',
@@ -133,6 +137,7 @@ class AskUserBroker {
           input: safeInput,
         },
         signals: safeSignals,
+        ...(autoModeDiagnostics ? { autoModeDiagnostics } : {}),
       });
     });
   }

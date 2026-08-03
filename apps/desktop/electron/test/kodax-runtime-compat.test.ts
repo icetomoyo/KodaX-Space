@@ -8,7 +8,10 @@ import test from 'node:test';
 
 const PROBE_MARKER = 'KODAX_RUNTIME_PROBE=';
 const PROBE_TIMEOUT_MS = 30_000;
-const EXPECTED_KODAX_VERSION = '0.7.78';
+const EXPECTED_KODAX_VERSION = '0.7.79';
+const INSTALLED_KODAX_VERSION = (
+  createRequire(import.meta.url)('@kodax-ai/kodax/package.json') as { readonly version: string }
+).version;
 const SHARED_DAEMON_TIMEOUT_MS = 45_000;
 const SHARED_DAEMON_MARKER = 'KODAX_SHARED_DAEMON_HOST=';
 const SHARED_DAEMON_CONTEXT_MARKER = 'KODAX_SHARED_DAEMON_CONTEXT=';
@@ -319,6 +322,7 @@ const SHARED_DAEMON_REQUIREMENTS = {
   sessionAdmission: 1,
   completeObservationSnapshot: 1,
   contextCompaction: 3,
+  conversationHistory: 1,
   transcriptPaging: 1,
   transcriptSearch: 1,
   connectionLifecycle: 1,
@@ -328,6 +332,7 @@ const SHARED_DAEMON_REQUIREMENTS = {
   durableRecoveryQueries: 1,
   daemonManagement: 1,
   daemonOrphanExit: 1,
+  runtimeEventCoalescing: 1,
   integrationConfigResilience: 1,
   runtimeAutoModeGuardrail: 4,
 } as const;
@@ -349,7 +354,7 @@ try {
     clientInfo: {
       name: 'kodax-cli',
       title: 'KodaX terminal compatibility probe',
-      version: '0.7.78',
+      version: '0.7.79',
       instanceId: process.env.KODAX_PROBE_INSTANCE_ID,
       instanceSecret: process.env.KODAX_PROBE_INSTANCE_SECRET,
     },
@@ -619,6 +624,11 @@ try {
     afterDetach = await runtime.status.preflight();
   }
   const managementAfterDetach = await runtime.daemon.inspect();
+  const sessionStatus = await runtime.sessions.status(session.id);
+  const sessionDiagnostics = await runtime.sessions.diagnostics({
+    sessionId: session.id,
+    timeoutMs: 5_000,
+  });
   const managementCapability = runtime.capabilities.daemonManagement;
   const externalAgentAdminCapability = runtime.capabilities.externalAgentAdmin;
   const actorControlPlaneCapability = runtime.capabilities.actorControlPlane;
@@ -627,6 +637,7 @@ try {
   const a2aConfigCapability = runtime.capabilities.a2aConfigReconciler;
   const integrationConfigCapability = runtime.capabilities.integrationConfigResilience;
   const daemonOrphanExitCapability = runtime.capabilities.daemonOrphanExit;
+  const runtimeEventCoalescingCapability = runtime.capabilities.runtimeEventCoalescing;
   const runtimeAutoModeGuardrailCapability = runtime.capabilities.runtimeAutoModeGuardrail;
   result = {
     daemonPid,
@@ -640,6 +651,14 @@ try {
     settings,
     clientBaseline: clientBaseline.clientCount,
     afterDetach: afterDetach.clientCount,
+    sessionLifecycle: {
+      statusPhase: sessionStatus.phase,
+      statusRuntimeIdMatches: sessionStatus.runtimeId === runtime.identity.runtimeId,
+      diagnosticsSchemaVersion: sessionDiagnostics.schemaVersion,
+      diagnosticsRuntimeIdMatches: sessionDiagnostics.runtimeId === runtime.identity.runtimeId,
+      diagnosticsSessionIdMatches: sessionDiagnostics.sessionId === session.id,
+      diagnosticErrorCodes: sessionDiagnostics.run.errors.map((error) => error.code),
+    },
     management: {
       baselineRevision: managementBaseline.revision,
       afterDetachRevision: managementAfterDetach.revision,
@@ -660,6 +679,7 @@ try {
       skillLearningLoop: skillLearningLoopCapability?.version === 1,
       a2aConfigReconciler: a2aConfigCapability?.version === 1,
       daemonOrphanExit: daemonOrphanExitCapability?.version === 1,
+      runtimeEventCoalescing: runtimeEventCoalescingCapability?.version === 1,
       integrationConfigResilience: integrationConfigCapability?.version === 1,
       integrationHealth: managementAfterDetach.integrations?.state,
       integrationDomains: managementAfterDetach.integrations?.domains.map(
@@ -688,6 +708,7 @@ import {
   connectKodaXRuntime,
   createKodaXRuntime,
   KODAX_DAEMON_PROTOCOL_VERSION,
+  KODAX_RUNTIME_SDK_CAPABILITIES,
 } from '@kodax-ai/kodax/runtime';
 import { createReferenceAgentExecutorFactory } from '@kodax-ai/kodax/agent';
 import {
@@ -703,7 +724,12 @@ try {
   runtime = await createKodaXRuntime({
     mode: 'embedded',
     isolation: 'worker',
-    requirements: { hardDispose: true, learningCenter: 1, actorControlPlane: 1 },
+    requirements: {
+      hardDispose: true,
+      learningCenter: 1,
+      actorControlPlane: 1,
+      conversationHistory: 1,
+    },
     homeDir,
     sessionsDir: path.join(homeDir, 'sessions'),
     worker: {
@@ -718,6 +744,16 @@ try {
     surface: 'release-probe',
   });
   const loaded = await runtime.sessions.load(created.id);
+  const sessionStatus = await runtime.sessions.status(created.id);
+  const sessionDiagnostics = await runtime.sessions.diagnostics({
+    sessionId: created.id,
+    timeoutMs: 5_000,
+  });
+  const conversation = await runtime.sessions.conversation(created.id);
+  const conversationPage = await runtime.sessions.conversationPage({
+    sessionId: created.id,
+    limit: 1,
+  });
   const learningSnapshot = await runtime.learning.getSnapshot();
   let downgradeRejected = false;
   try {
@@ -906,10 +942,39 @@ try {
     isolation: runtime.identity.isolation,
     workerThreadId: runtime.identity.workerThreadId,
     sessionRoundTrip: loaded.id === created.id,
+    sessionLifecycle: {
+      statusPhase: sessionStatus.phase,
+      statusRuntimeIdMatches: sessionStatus.runtimeId === runtime.identity.runtimeId,
+      diagnosticsSchemaVersion: sessionDiagnostics.schemaVersion,
+      diagnosticsRuntimeIdMatches: sessionDiagnostics.runtimeId === runtime.identity.runtimeId,
+      diagnosticsSessionIdMatches: sessionDiagnostics.sessionId === created.id,
+      diagnosticErrorCodes: sessionDiagnostics.run.errors.map((error) => error.code),
+    },
+    conversationHistory: {
+      capability: runtime.capabilities.conversationHistory?.version === 1,
+      directAvailable: conversation !== null,
+      pageAvailable: conversationPage !== null,
+      directStatus: conversation?.status,
+      directEntryCount: conversation?.entries.length,
+      directIssueCount: conversation?.issues.length,
+      pageStatus: conversationPage?.status,
+      pageEntryCount: conversationPage?.entries.length,
+      pageIssueCount: conversationPage?.issues.length,
+      boundaryMatches:
+        conversation !== null &&
+        conversationPage !== null &&
+        conversation.revision === conversationPage.revision &&
+        conversation.sourceRevision === conversationPage.sourceRevision &&
+        conversation.status === conversationPage.status,
+    },
     learningCenter: {
       capability: runtime.capabilities.learningCenter?.version === 1,
       revision: Number.isSafeInteger(learningSnapshot.revision),
       ready: Number.isSafeInteger(learningSnapshot.ready),
+    },
+    eventCoalescing: {
+      sdk: KODAX_RUNTIME_SDK_CAPABILITIES.runtimeEventCoalescing === 1,
+      runtime: runtime.capabilities.runtimeEventCoalescing?.version === 1,
     },
     downgradeRejected,
     a2aExports: {
@@ -1015,6 +1080,14 @@ interface SharedDaemonHostResult {
   readonly settings: { readonly revision: number; readonly value: Record<string, unknown> };
   readonly clientBaseline: number;
   readonly afterDetach: number;
+  readonly sessionLifecycle: {
+    readonly statusPhase: string;
+    readonly statusRuntimeIdMatches: boolean;
+    readonly diagnosticsSchemaVersion: number;
+    readonly diagnosticsRuntimeIdMatches: boolean;
+    readonly diagnosticsSessionIdMatches: boolean;
+    readonly diagnosticErrorCodes: readonly string[];
+  };
   readonly management: {
     readonly baselineRevision: number;
     readonly afterDetachRevision: number;
@@ -1035,6 +1108,7 @@ interface SharedDaemonHostResult {
     readonly skillLearningLoop: boolean;
     readonly a2aConfigReconciler: boolean;
     readonly daemonOrphanExit: boolean;
+    readonly runtimeEventCoalescing: boolean;
     readonly integrationConfigResilience: boolean;
     readonly integrationHealth?: string;
     readonly integrationDomains?: readonly string[];
@@ -1182,14 +1256,18 @@ async function runPublishedSharedDaemonFailureProbe(): Promise<SharedDaemonOwner
   return result;
 }
 
+test('installed KodaX bytes match the exact Space dependency pin', () => {
+  assert.equal(INSTALLED_KODAX_VERSION, EXPECTED_KODAX_VERSION);
+});
+
 test(
-  `KodaX ${EXPECTED_KODAX_VERSION} Runtime satisfies Worker and external-agent compatibility`,
+  `KodaX ${INSTALLED_KODAX_VERSION} Runtime satisfies Worker and external-agent compatibility`,
   {
     timeout: PROBE_TIMEOUT_MS + 5_000,
   },
   async () => {
     const result = await runPublishedRuntimeWorkerProbe();
-    assert.equal(result.version, EXPECTED_KODAX_VERSION);
+    assert.equal(result.version, INSTALLED_KODAX_VERSION);
     assert.equal(result.createAvailable, true);
     assert.equal(result.connectAvailable, true);
     assert.ok(Number.isSafeInteger(result.protocolVersion));
@@ -1197,11 +1275,32 @@ test(
     assert.equal(result.isolation, 'worker');
     assert.ok(Number.isSafeInteger(result.workerThreadId));
     assert.equal(result.sessionRoundTrip, true);
+    assert.deepEqual(result.sessionLifecycle, {
+      statusPhase: 'idle',
+      statusRuntimeIdMatches: true,
+      diagnosticsSchemaVersion: 1,
+      diagnosticsRuntimeIdMatches: true,
+      diagnosticsSessionIdMatches: true,
+      diagnosticErrorCodes: ['run_control_unknown'],
+    });
+    assert.deepEqual(result.conversationHistory, {
+      capability: true,
+      directAvailable: true,
+      pageAvailable: true,
+      directStatus: 'resolved',
+      directEntryCount: 0,
+      directIssueCount: 0,
+      pageStatus: 'resolved',
+      pageEntryCount: 0,
+      pageIssueCount: 0,
+      boundaryMatches: true,
+    });
     assert.deepEqual(result.learningCenter, {
       capability: true,
       revision: true,
       ready: true,
     });
+    assert.deepEqual(result.eventCoalescing, { sdk: true, runtime: true });
     assert.equal(result.downgradeRejected, true);
     assert.deepEqual(result.a2aExports, {
       bearerAuth: true,
@@ -1285,7 +1384,7 @@ test(`KodaX ${EXPECTED_KODAX_VERSION} Auto guardrail keeps the required permissi
       import('@kodax-ai/kodax/repl'),
       import('@kodax-ai/kodax/runtime'),
     ]);
-    const context = { agent: {} as never };
+    const context = { agent: {} as never, messages: [] };
     let rulesPrompts = 0;
     const rulesBootstrap = await bootstrapAutoMode({
       askUser: async () => {
@@ -1366,6 +1465,109 @@ test(`KodaX ${EXPECTED_KODAX_VERSION} Auto guardrail keeps the required permissi
       rulesPrompts,
       2,
       'an exact LiteralPath filename containing brackets must stay fully modeled',
+    );
+
+    const { createAutoModeToolGuardrail, KodaXBaseProvider } =
+      await import('@kodax-ai/kodax/coding');
+    class ClassifierProbeProvider extends KodaXBaseProvider {
+      readonly name = 'space-installed-package-probe';
+      readonly supportsThinking = false;
+      protected readonly config = {
+        apiKeyEnv: 'SPACE_INSTALLED_PACKAGE_PROBE_KEY',
+        model: 'space-installed-package-probe',
+        supportsThinking: false,
+        reasoningCapability: 'none' as const,
+      };
+
+      constructor(
+        private readonly output: string,
+        private readonly onCall: () => void,
+      ) {
+        super();
+      }
+
+      async stream() {
+        this.onCall();
+        return {
+          textBlocks: [{ type: 'text' as const, text: this.output }],
+          toolBlocks: [],
+          thinkingBlocks: [],
+          usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+          stopReason: 'end_turn' as const,
+        };
+      }
+    }
+    const createLlmDecisionProbe = (
+      output: string,
+      onClassifierCall: () => void,
+      onAskUser: () => void,
+    ) =>
+      createAutoModeToolGuardrail({
+        rules: { allow: [], soft_deny: [], environment: [] },
+        getToolProjection: (name) =>
+          name === 'bash'
+            ? (input: unknown) =>
+                `Bash: ${String((input as { command?: unknown } | undefined)?.command ?? '')}`
+            : () => '',
+        resolveProvider: () => new ClassifierProbeProvider(output, onClassifierCall),
+        defaultProvider: 'space-installed-package-probe',
+        defaultModel: 'space-installed-package-probe',
+        projectRoot,
+        executionCwd: projectRoot,
+        askUser: async () => {
+          onAskUser();
+          return 'allow';
+        },
+      });
+
+    let allowClassifierCalls = 0;
+    let allowPrompts = 0;
+    const allowGuardrail = createLlmDecisionProbe(
+      '<decision>allow</decision>',
+      () => {
+        allowClassifierCalls += 1;
+      },
+      () => {
+        allowPrompts += 1;
+      },
+    );
+    const legacyTierZeroAllow = await allowGuardrail.beforeTool?.(
+      { id: 'llm-final-allow', name: 'bash', input: { command: 'rm -rf /' } },
+      context,
+    );
+    assert.deepEqual(legacyTierZeroAllow, { action: 'allow' });
+    assert.equal(allowClassifierCalls, 1, 'the installed classifier must review the call');
+    assert.equal(
+      allowPrompts,
+      0,
+      'a legal LLM allow must remain final even when legacy static rules mark the command dangerous',
+    );
+
+    let askClassifierCalls = 0;
+    let askPrompts = 0;
+    const askGuardrail = createLlmDecisionProbe(
+      '<decision>ask</decision>',
+      () => {
+        askClassifierCalls += 1;
+      },
+      () => {
+        askPrompts += 1;
+      },
+    );
+    const credentialAsk = await askGuardrail.beforeTool?.(
+      {
+        id: 'llm-explicit-ask',
+        name: 'bash',
+        input: { command: 'Get-Content "$env:USERPROFILE/.ssh/id_rsa"' },
+      },
+      context,
+    );
+    assert.deepEqual(credentialAsk, { action: 'allow' });
+    assert.equal(askClassifierCalls, 1);
+    assert.equal(
+      askPrompts,
+      1,
+      'an explicit LLM ask must still reach the user confirmation bridge',
     );
 
     let llmPrompts = 0;
@@ -1528,12 +1730,12 @@ test(
 );
 
 test(
-  `tarball KodaX ${EXPECTED_KODAX_VERSION} daemon shares one Coder session across processes`,
+  `tarball KodaX ${INSTALLED_KODAX_VERSION} daemon shares one Coder session across processes`,
   { timeout: SHARED_DAEMON_TIMEOUT_MS + 30_000 },
   async () => {
     const result = await runPublishedSharedDaemonProbe();
     assert.equal(processIsAlive(result.daemonPid), false);
-    assert.equal(result.version, EXPECTED_KODAX_VERSION);
+    assert.equal(result.version, INSTALLED_KODAX_VERSION);
     assert.equal(result.peer.runtimeId, result.runtimeId);
     assert.equal(result.peer.connectionState, 'connected');
     assert.equal(result.peer.cursor, result.cursor);
@@ -1578,6 +1780,14 @@ test(
     assert.equal(result.clientBaseline, 1);
     assert.equal(result.peer.clientCount, 2);
     assert.equal(result.afterDetach, 1);
+    assert.deepEqual(result.sessionLifecycle, {
+      statusPhase: 'idle',
+      statusRuntimeIdMatches: true,
+      diagnosticsSchemaVersion: 1,
+      diagnosticsRuntimeIdMatches: true,
+      diagnosticsSessionIdMatches: true,
+      diagnosticErrorCodes: ['run_control_unknown'],
+    });
     assert.equal(result.peer.activeWorkflows, true);
     assert.equal(result.peer.activeAgentTurns, true);
     assert.ok(result.management.afterDetachRevision > result.management.baselineRevision);
@@ -1598,6 +1808,7 @@ test(
     assert.equal(result.management.skillLearningLoop, true);
     assert.equal(result.management.a2aConfigReconciler, true);
     assert.equal(result.management.daemonOrphanExit, true);
+    assert.equal(result.management.runtimeEventCoalescing, true);
     assert.equal(result.management.integrationConfigResilience, true);
     assert.equal(result.management.integrationHealth, 'healthy');
     assert.deepEqual([...result.management.integrationDomains!].sort(), [

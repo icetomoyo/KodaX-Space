@@ -82,7 +82,7 @@ test('connection reconciliation is edge-triggered instead of timestamp-triggered
       reason: 'transport recovering',
       changedAt: ready.changedAt + 1,
     }),
-    true,
+    false,
   );
   assert.equal(
     shouldReconcileRuntimeConnection(ready, {
@@ -280,6 +280,7 @@ test('connection loss blocks late live snapshots and changes until a ready profi
     capabilities: [],
   });
 
+  assert.deepEqual(disconnected.liveBySession, {});
   assert.equal(replaceSessionLiveProjection(disconnected, live('rt_1', 2)), disconnected);
   const patchResult = applySessionLiveChange(disconnected, {
     sessionId: 's_1',
@@ -289,5 +290,26 @@ test('connection loss blocks late live snapshots and changes until a ready profi
     change: { domain: 'tools', activeTools: [] },
   });
   assert.equal(patchResult.status, 'snapshot-required');
-  assert.equal(patchResult.state.liveBySession.s_1?.projectionRevision, 1);
+  assert.equal(patchResult.state.liveBySession.s_1, undefined);
+});
+
+test('a stale degraded connection also discards live authority until a fresh profile arrives', () => {
+  const ready = replaceRuntimeProfile(createRuntimeProjectionState(), profile('rt_1', 1));
+  const withLive = replaceSessionLiveProjection(ready, live('rt_1', 1));
+  const degraded = replaceRuntimeConnection(withLive, {
+    ...profile('rt_1', 2).connection,
+    state: 'degraded',
+    stale: true,
+    reason: 'profile reconciliation failed',
+  });
+
+  assert.deepEqual(degraded.liveBySession, {});
+  assert.equal(replaceSessionLiveProjection(degraded, live('rt_1', 2)), degraded);
+
+  const restored = replaceRuntimeProfile(degraded, profile('rt_1', 3));
+  assert.equal(restored.connection.state, 'ready');
+  assert.equal(
+    replaceSessionLiveProjection(restored, live('rt_1', 3)).liveBySession.s_1?.projectionRevision,
+    3,
+  );
 });

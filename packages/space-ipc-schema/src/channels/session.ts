@@ -8,6 +8,7 @@
 
 import { z } from 'zod';
 import { partnerKnowledgeScopeSchema } from './partner-knowledge.js';
+import { spaceRuntimeRunStopReceiptSchema } from './runtime.js';
 
 // ---- Reasoning mode (镜像 @kodax-ai/llm 的 KodaXReasoningMode 闭集) ----
 export const reasoningModeSchema = z.enum(['off', 'auto', 'quick', 'balanced', 'deep']);
@@ -346,9 +347,14 @@ export const sessionCancelChannel = {
   input: z.object({
     sessionId: z.string().min(1),
   }),
-  output: z.object({
-    cancelled: z.boolean(),
-  }),
+  output: z
+    .object({
+      /** True only when cancellation/interruption is already authoritative. */
+      cancelled: z.boolean(),
+      /** Present for Runtime-backed Runs, including unknown Stop outcomes. */
+      stop: spaceRuntimeRunStopReceiptSchema.optional(),
+    })
+    .strict(),
 } as const;
 
 // ---- Invoke: session.list ----
@@ -560,8 +566,27 @@ export const sessionAgentsMdSaveChannel = {
 // renderer 收到后 prependSessionHistory 会按这个顺序发 text_delta + tool_start + tool_result
 // + session_complete 进 events buffer,composeMessages 自动重建出气泡 + tool card。
 //
-// 上限：items 最多 2000 — 长会话也罕见超过这个；每条 user/assistant 含 content 文本上限同 text_delta。
+// 上限：items 最多 2000。生产者保留最新的完整 turn，并用 history_truncation 显式标出
+// 被省略的前缀或超大首个可见 turn 的中段；每条 user/assistant 文本上限同 text_delta。
+const transcriptHistoryIdentityShape = {
+  /** First physical occurrence selected for this canonical display slot. */
+  entryId: z.string().min(1).max(256).optional(),
+  /** Canonical lineage parent. Null is a real root; undefined means legacy data omitted it. */
+  parentId: z.string().min(1).max(256).nullable().optional(),
+  /** Stable identity shared by proven compaction/fork clones. */
+  logicalId: z.string().min(1).max(256).optional(),
+  /** Root physical source when this row was cloned. */
+  sourceEntryId: z.string().min(1).max(256).optional(),
+  /** Body provider when payload authority differed from the first canonical occurrence. */
+  authoritativeEntryId: z.string().min(1).max(256).optional(),
+  /** Position in the canonical full transcript after parent-before-child validation. */
+  canonicalIndex: z.number().int().nonnegative().max(10_000_000).optional(),
+  /** Runtime turn envelope shared by user, assistant, thinking, and tool projections. */
+  turnId: z.string().min(1).max(128).optional(),
+} as const;
+
 const historyToolCallSchema = z.object({
+  ...transcriptHistoryIdentityShape,
   kind: z.literal('tool_call'),
   toolId: z.string().min(1).max(128),
   toolName: z.string().min(1).max(64),
@@ -574,6 +599,7 @@ const historyToolCallSchema = z.object({
 });
 
 const historySidecarMessageSchema = z.object({
+  ...transcriptHistoryIdentityShape,
   kind: z.literal('sidecar_message'),
   message: z.object({
     source: z.literal('sidecar-verifier'),
@@ -595,17 +621,17 @@ const historySidecarMessageSchema = z.object({
 });
 
 /**
- * v0.1.x 新增：fork/rewind 产生的 branch_summary、以及压缩产生的 compaction lineage entry。
- * SDK 会在 lineage 里合成一条 role==='user'(branch_summary) 或 role==='system'(compaction)
- * 的 context message 塞进 messages[]（保证 LLM 上下文正确）——但这不是用户真的打过的字，
- * 按 role 直接拍平会在滚动区里显示成一条假的用户气泡。session.history handler 用
- * loadFullTranscript 的 transcriptEntries[].type 识别出这类 entry 后改发这个 kind，
- * renderer 路由到非 user 的历史提示条（复用 sidecar 的视觉样式，见 composeMessages.ts）。
+ * Raw/audit compatibility shape for branch_summary and compaction lineage entries.
+ * KodaX ordinary conversation intentionally excludes these records, and the main chat opts out of
+ * audit-lineage rows. The shape remains available to audit/details consumers and legacy fallbacks;
+ * it must never be projected as a user-authored message merely because lineage carries a role.
  */
 const historyLineageNoticeSchema = z.object({
+  ...transcriptHistoryIdentityShape,
   kind: z.literal('lineage_notice'),
   noticeKind: z.enum(['branch_summary', 'compaction']),
   text: z.string().max(MAX_TEXT_CHUNK),
+  sentAt: z.number().int().nonnegative().optional(),
   tokensBefore: z.number().int().nonnegative().max(10_000_000).optional(),
   tokensAfter: z.number().int().nonnegative().max(10_000_000).optional(),
 });
@@ -618,6 +644,7 @@ const historyLineageNoticeSchema = z.object({
  * 把 transcript 时间戳压平，导致 workflow 通知在 resume 后乱序/置顶）。
  */
 const historyWorkflowNoticeSchema = z.object({
+  ...transcriptHistoryIdentityShape,
   kind: z.literal('workflow_notice'),
   text: z.string().max(MAX_TEXT_CHUNK),
 });
@@ -635,8 +662,24 @@ const historyLocalNoticeSchema = sessionLocalNoticeSchema.extend({
   kind: z.literal('local_notice'),
 });
 
+const historyTruncationSchema = z.object({
+  kind: z.literal('history_truncation'),
+  scope: z.enum(['history', 'turn']),
+  omittedItems: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+});
+
+const absoluteTurnIndexSchema = z.number().int().nonnegative().max(10_000_000);
+
+const conversationHistoryBoundarySchema = z
+  .object({
+    boundaryId: z.string().min(1).max(256),
+    sourceRevision: z.string().min(1).max(256),
+  })
+  .strict();
+
 const sessionHistoryItemSchema = z.discriminatedUnion('kind', [
   z.object({
+    ...transcriptHistoryIdentityShape,
     kind: z.literal('user'),
     content: z.string().max(MAX_TEXT_CHUNK),
     attachments: z.array(sessionImageAttachmentSchema).max(32).optional(),
@@ -647,10 +690,14 @@ const sessionHistoryItemSchema = z.discriminatedUnion('kind', [
      * Stable Runtime identity for this visible user boundary. A Runtime turn may consume more
      * than one real user message, so turnId alone is not unique.
      */
-    turnId: z.string().min(1).max(128).optional(),
     turnUserOrdinal: z.number().int().nonnegative().max(1_000_000).optional(),
+    /** Absolute visible turn index before any bounded history-window truncation. */
+    historyTurnIndex: absoluteTurnIndexSchema.optional(),
+    /** Exact persisted turn-end boundary; authoritative for fork/rewind after paged restore. */
+    historyBoundary: conversationHistoryBoundarySchema.optional(),
   }),
   z.object({
+    ...transcriptHistoryIdentityShape,
     kind: z.literal('assistant'),
     text: z.string().max(MAX_TEXT_CHUNK),
     thinking: z.string().max(MAX_TEXT_CHUNK).optional(),
@@ -661,16 +708,74 @@ const sessionHistoryItemSchema = z.discriminatedUnion('kind', [
   historyLineageNoticeSchema,
   historyWorkflowNoticeSchema,
   historyLocalNoticeSchema,
+  historyTruncationSchema,
 ]);
+
+const conversationHistoryIssueCodeSchema = z.enum([
+  'active_entry_missing',
+  'compaction_boundary_invalid',
+  'compaction_predecessor_ambiguous',
+  'compaction_predecessor_missing',
+  'legacy_overlap_ambiguous',
+  'lineage_path_incomplete',
+  'lineage_unavailable',
+  'logical_identity_conflict',
+]);
+
+const conversationHistoryDiagnosticSchema = z.object({
+  status: z.enum(['resolved', 'partial', 'ambiguous']),
+  sourceRevision: z.string().min(1).max(256),
+  issues: z
+    .array(
+      z.object({
+        code: conversationHistoryIssueCodeSchema,
+        occurrenceCount: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+        entryCount: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+      }),
+    )
+    .max(64),
+});
 
 export const sessionHistoryChannel = {
   name: 'session.history',
   direction: 'invoke',
   input: z.object({
     sessionId: z.string().min(1),
+    /**
+     * The surface selected by the renderer. Supplying it lets main choose the bounded Coder
+     * Runtime reader without probing the persisted Session body first. Optional for older clients.
+     */
+    expectedSurface: z.enum(['code', 'partner']).optional(),
+    /** Opaque continuation cursor returned by the preceding ready page. */
+    cursor: z.string().min(1).max(4096).optional(),
+    /** Immutable page boundary expected by the renderer when requesting an older page. */
+    revision: z.string().min(1).max(256).optional(),
+    sourceRevision: z.string().min(1).max(256).optional(),
   }),
   output: z.object({
     items: z.array(sessionHistoryItemSchema).max(2000),
+    /** SDK-owned ordinary-conversation confidence. Missing only on legacy fallback readers. */
+    conversation: conversationHistoryDiagnosticSchema.optional(),
+    /** Present for Runtime-backed bounded history; legacy readers still return one complete result. */
+    page: z
+      .discriminatedUnion('outcome', [
+        z
+          .object({
+            outcome: z.literal('ready'),
+            revision: z.string().min(1).max(256),
+            sourceRevision: z.string().min(1).max(256),
+            hasMore: z.boolean(),
+            nextCursor: z.string().min(1).max(4096).optional(),
+            /** The newest page replaces the view; every older cursor page prepends to it. */
+            windowMode: z.enum(['replace', 'prepend']),
+            /** True only when a replacement window omits the newest tail. */
+            hasNewer: z.boolean(),
+          })
+          .strict(),
+        z.object({ outcome: z.literal('data_changed') }).strict(),
+        z.object({ outcome: z.literal('runtime_unavailable') }).strict(),
+      ])
+      .optional(),
   }),
 } as const;
 
@@ -726,7 +831,8 @@ export const sessionForkChannel = {
   direction: 'invoke',
   input: z.object({
     sessionId: z.string().min(1),
-    forkPointTurnIdx: z.number().int().nonnegative().max(10_000),
+    forkPointTurnIdx: absoluteTurnIndexSchema,
+    historyBoundary: conversationHistoryBoundarySchema.optional(),
   }),
   output: z.object({
     newSessionId: z.string().min(1),
@@ -748,7 +854,10 @@ export const sessionRewindChannel = {
   direction: 'invoke',
   input: z.object({
     sessionId: z.string().min(1),
-    rewindPastTurnIdx: z.number().int().nonnegative().max(10_000),
+    rewindPastTurnIdx: absoluteTurnIndexSchema,
+    historyBoundary: conversationHistoryBoundarySchema.optional(),
+    /** First renderer notice removed by rewind; main retains only notices with sentAt < cutoff. */
+    localNoticeCutoffSentAt: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
   }),
   output: z.object({
     ok: z.boolean(),
@@ -945,6 +1054,7 @@ export const sessionEventChannel = {
     // ---- 流式输出（v0.1.0-alpha.0 已有）----
     z.object({
       ...runtimeSessionEventOriginShape,
+      ...transcriptHistoryIdentityShape,
       kind: z.literal('text_delta'),
       sessionId: z.string().min(1),
       text: z.string().max(MAX_TEXT_CHUNK),
@@ -953,6 +1063,7 @@ export const sessionEventChannel = {
     }),
     z.object({
       ...runtimeSessionEventOriginShape,
+      ...transcriptHistoryIdentityShape,
       kind: z.literal('thinking_delta'),
       sessionId: z.string().min(1),
       text: z.string().max(MAX_TEXT_CHUNK),
@@ -970,6 +1081,7 @@ export const sessionEventChannel = {
     }),
     z.object({
       ...runtimeSessionEventOriginShape,
+      ...transcriptHistoryIdentityShape,
       kind: z.literal('tool_start'),
       sessionId: z.string().min(1),
       toolId: z.string().min(1),
@@ -993,6 +1105,7 @@ export const sessionEventChannel = {
     }),
     z.object({
       ...runtimeSessionEventOriginShape,
+      ...transcriptHistoryIdentityShape,
       kind: z.literal('tool_result'),
       sessionId: z.string().min(1),
       toolId: z.string().min(1),
@@ -1236,24 +1349,43 @@ export const sessionEventChannel = {
     }),
     // ---- SDK sidecar / todo hygiene observability ----
     z.object({
+      ...transcriptHistoryIdentityShape,
       kind: z.literal('sidecar_message'),
       sessionId: z.string().min(1),
       message: sidecarMessageSchema,
     }),
-    // ---- v0.1.x: fork/rewind branch_summary / compaction lineage notice (history replay only) ----
-    // 见 historyLineageNoticeSchema 注释——main 端从不实时 push 这个 kind；appStore.
-    // prependSessionHistory 在回放历史时把 session.history 的 lineage_notice item 转成这个
-    // SessionEvent 形态,喂给 composeMessages 走非 user 的 system_notice 展示路径。
+    // ---- Raw/audit compatibility: fork/rewind branch_summary / compaction lineage ----
+    // Ordinary main chat uses KodaX conversation projection and does not render these rows. This
+    // event remains for audit/details consumers and legacy history fallbacks only.
     z.object({
+      ...transcriptHistoryIdentityShape,
       kind: z.literal('lineage_notice'),
       sessionId: z.string().min(1),
       noticeKind: z.enum(['branch_summary', 'compaction']),
       text: z.string().max(MAX_TEXT_CHUNK),
+      /** Stable live placeholder identity. A later persisted projection upgrades this row in place. */
+      provisionalId: z.string().min(1).max(512).optional(),
+      /** Renderer identity chosen by the projection that first made this row visible. */
+      displayId: z.string().min(1).max(512).optional(),
+      sentAt: z.number().int().nonnegative().optional(),
+      contextId: z.string().min(1).max(512).optional(),
+      contextRevision: z.number().int().nonnegative().optional(),
+      afterRevision: z.number().int().nonnegative().optional(),
+      source: z.enum(['manual', 'automatic_threshold', 'physical_capacity']).optional(),
+      tokensBefore: z.number().int().nonnegative().max(10_000_000).optional(),
+      tokensAfter: z.number().int().nonnegative().max(10_000_000).optional(),
+    }),
+    z.object({
+      kind: z.literal('history_truncation'),
+      sessionId: z.string().min(1),
+      scope: z.enum(['history', 'turn']),
+      omittedItems: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
     }),
     // v0.1.x: workflow 结果/摘要提示条。历史回放由 session.history 的 workflow_notice item
     // 转成这个 SessionEvent；live workflow.event 也会注入同一事件流，避免 renderer 侧 wall-clock
     // notice 被排到整段 assistant 回复之后。key/sentAt 仅 live 去重/展示使用。
     z.object({
+      ...transcriptHistoryIdentityShape,
       kind: z.literal('workflow_notice'),
       sessionId: z.string().min(1),
       text: z.string().max(MAX_TEXT_CHUNK),

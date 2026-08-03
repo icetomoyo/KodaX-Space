@@ -11,6 +11,7 @@ import { registerChannel } from './register.js';
 import { validateProjectRoot } from './validate.js';
 import {
   GIT_CHANGES_STATUS_ARGS,
+  GIT_VISIBLE_PATHSPEC_ARGS,
   parseGitChangesStatus,
   type GitChangeFile,
 } from './project-git-changes.js';
@@ -215,7 +216,12 @@ export function registerProjectChannels(): void {
       return fallback;
     }
 
-    const status = await runGit(projectRoot, ['status', '--porcelain=v1', '-b']);
+    const status = await runGit(projectRoot, [
+      'status',
+      '--porcelain=v1',
+      '-b',
+      ...GIT_VISIBLE_PATHSPEC_ARGS,
+    ]);
     if (!status.ok) {
       const fallback = {
         isGitRepo: true,
