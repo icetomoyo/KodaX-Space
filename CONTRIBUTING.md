@@ -60,5 +60,13 @@ npm run smoke:boot
 ## 提交说明
 
 - 保持提交主题聚焦，不混入无关格式化或用户已有改动。
+- **提交信息结构**：subject 一行 + 空行 + body（正文）。
+  - subject 格式：`<type>(<scope>): <summary>`，例如 `feat(sandbox): project KodaX envPass into SDK Runs`；type 用 `feat`/`fix`/`docs`/`chore`/`test`/`refactor`/`perf`/`revert` 等，scope 为影响面（可省略）；summary 用祈使语气、首字母小写、不超过 72 字符、不以句号结尾。
+  - body：说明用户效果、关键边界、验证命令和仍未完成的人工/发布步骤（与下方条目一致）。全历史约 57% 的提交带正文，但最近约 100 个提交均为单行 subject——本规范要求恢复带正文的提交，正文能让后续审阅从提交本身理解意图；除纯 `docs`/`chore` 微调外，正文不得为空。
+  - 仓库根目录已提供提交模板 `.gitmessage`（随仓库跟踪）；启用方式：
+    ```bash
+    git config commit.template .gitmessage
+    ```
+    该配置为**本地配置**，每个新 clone 需重新执行一次。启用后 `git commit` 会打开带正文提示的模板；也可直接 `git commit -m "subject" -m "body"`。
 - 说明用户效果、关键边界、验证命令和仍未完成的人工/发布步骤。
 - 安全、数据丢失、权限绕过或凭据泄露问题请不要在公开 issue 中附真实敏感数据；先提供脱敏复现和最小证据。
