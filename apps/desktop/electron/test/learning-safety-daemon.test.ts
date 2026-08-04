@@ -22,6 +22,7 @@ import { LearningSafetyService } from '../ipc/learning.js';
 
 const READY_MARKER = 'F118_DAEMON_READY=';
 const TEST_TIMEOUT_MS = 45_000;
+const MAX_DAEMON_DIAGNOSTIC_BYTES = 16 * 1024;
 const require = createRequire(import.meta.url);
 const KODAX_CLI_PATH = path.join(
   path.dirname(require.resolve('@kodax-ai/kodax/package.json')),
@@ -67,7 +68,15 @@ const requirements = {
   operationDeduplication: 1,
   daemonManagement: 1,
   daemonOrphanExit: 1,
+  managedRunDurability: 1,
 } as const;
+
+function appendDiagnosticTail(previous: string, chunk: string): string {
+  const next = previous + chunk;
+  return next.length > MAX_DAEMON_DIAGNOSTIC_BYTES
+    ? next.slice(-MAX_DAEMON_DIAGNOSTIC_BYTES)
+    : next;
+}
 
 function startDaemonHost(homeDir: string, profile: string) {
   const child = spawn(process.execPath, ['--input-type=module', '-'], {
@@ -99,7 +108,7 @@ function startDaemonHost(homeDir: string, profile: string) {
       }
     });
     child.stderr.on('data', (chunk) => {
-      stderr += chunk;
+      stderr = appendDiagnosticTail(stderr, chunk);
     });
     child.once('error', reject);
     child.once('close', (code) => {

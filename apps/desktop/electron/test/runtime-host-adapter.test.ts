@@ -4553,6 +4553,8 @@ test('ensureSession accepts Coder only and rejects Partner before daemon access'
 
 test('ensureSession singleflights one identity and retries transient topology changes', async () => {
   const fake = createFakeRuntime();
+  const projectRoot = process.platform === 'win32' ? 'C:\\repo' : '/repo';
+  const equivalentProjectRoot = process.platform === 'win32' ? 'c:/REPO/' : '/repo/';
   const sessions = fake.runtime.sessions as unknown as {
     load(sessionId: string): Promise<RuntimeSession>;
   };
@@ -4575,9 +4577,16 @@ test('ensureSession singleflights one identity and retries transient topology ch
   // makes the identity inconclusive and exercises the strict fallback/retry path.
   await adapter.initialize();
   fake.sessions.add('s_topology_retry');
+  fake.sessionRecords.set('s_topology_retry', {
+    id: 's_topology_retry',
+    title: '',
+    workspaceRoot: projectRoot,
+    gitRoot: projectRoot,
+    surface: 'space-desktop',
+  });
   const identity = {
     sessionId: 's_topology_retry',
-    projectRoot: 'C:\\repo',
+    projectRoot,
     surface: 'code' as const,
     ephemeral: false,
   };
@@ -4585,7 +4594,7 @@ test('ensureSession singleflights one identity and retries transient topology ch
   assert.deepEqual(
     await Promise.all([
       adapter.ensureSession(identity),
-      adapter.ensureSession({ ...identity, projectRoot: 'c:/REPO/' }),
+      adapter.ensureSession({ ...identity, projectRoot: equivalentProjectRoot }),
     ]),
     [false, false],
   );
