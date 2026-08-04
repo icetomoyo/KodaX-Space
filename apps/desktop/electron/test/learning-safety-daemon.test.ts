@@ -103,6 +103,9 @@ function startDaemonHost(homeDir: string, profile: string) {
     cwd: process.cwd(),
     env: {
       ...process.env,
+      // Match the Runtime adapter: Darwin's long per-user TMPDIR can exceed
+      // the Unix socket path limit used by the published daemon auto-start.
+      ...(process.platform === 'darwin' ? { TMPDIR: '/tmp' } : {}),
       F118_HOME: homeDir,
       F118_PROFILE: profile,
       F118_REQUIREMENTS: JSON.stringify(requirements),
