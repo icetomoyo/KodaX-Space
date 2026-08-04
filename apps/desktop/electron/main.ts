@@ -819,7 +819,14 @@ function createMainWindow(): BrowserWindow {
       return;
     }
     bootOverlay.dispose();
-    win.webContents.setBackgroundThrottling(true);
+    // Electron may publish the detached WebContentsView on the next main-loop
+    // turn. Keep the renderer unthrottled until that removal is observable so
+    // a shown Shell is never briefly paired with a stale boot overlay.
+    setImmediate(() => {
+      if (!isWindowUnavailable() && appLoadCommitted) {
+        win.webContents.setBackgroundThrottling(true);
+      }
+    });
     revealWindow(source);
     win.webContents.invalidate();
     console.info(`[main] renderer visual-ready via ${source}: ${describeUrlForLog(url)}`);

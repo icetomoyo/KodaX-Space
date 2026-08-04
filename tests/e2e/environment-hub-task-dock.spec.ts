@@ -309,6 +309,20 @@ test('Task Dock presents semantic agent status and opens the full Agents panel',
     const runtimeId = await readRuntimeId(page);
 
     await emitSessionEvent(space, {
+      kind: 'session_start',
+      sessionId,
+      provider: 'mock',
+      turnId: 'turn-root',
+    });
+    await emitSessionEvent(space, {
+      kind: 'tool_result',
+      sessionId,
+      toolId: 'spawn-research',
+      toolName: 'spawn_agent',
+      content: JSON.stringify({ actorPath: '/root/research', turnId: 'turn-research' }),
+    });
+
+    await emitSessionEvent(space, {
       kind: 'managed_task_status',
       sessionId,
       status: {

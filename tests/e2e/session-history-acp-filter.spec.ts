@@ -10,6 +10,19 @@ test('ACP fixtures cannot hide real history and show-all searches beyond the rec
   test.setTimeout(120_000);
   const space = await launchSpace(TEST_ID);
   try {
+    await expect
+      .poll(
+        () =>
+          space.page
+            .evaluate(async () => {
+              const result = await window.kodaxSpace.invoke('session.list', { surface: 'code' });
+              return result.ok;
+            })
+            .catch(() => false),
+        { timeout: 30_000 },
+      )
+      .toBe(true);
+
     const projectDir = path.join(space.testDataDir, 'workspace');
     const secondaryProjectDir = path.join(space.testDataDir, 'secondary-workspace');
     await fs.mkdir(projectDir, { recursive: true });
