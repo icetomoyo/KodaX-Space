@@ -30,6 +30,12 @@ const invalidationEpochs = new Map<string, number>();
 const loadedEpochs = new Map<string, number>();
 const MAX_RUNTIME_RETRY_ATTEMPTS = 30;
 const MAX_CACHED_SESSION_HISTORIES = 32;
+let historyRequestOrdinal = 0;
+
+function nextHistoryRequestId(): string {
+  historyRequestOrdinal += 1;
+  return `history-${historyRequestOrdinal}`;
+}
 
 function clearRetry(sessionId: string): void {
   const timer = retryTimers.get(sessionId);
@@ -271,8 +277,10 @@ async function requestHistory(
     if (!(retainReadyProjection && boundary.phase === 'ready')) {
       publish(sessionId, { ...boundary, phase: 'loading', ...(surface ? { surface } : {}) });
     }
+    const requestId = nextHistoryRequestId();
     const response = await bridge.invoke('session.history', {
       sessionId,
+      requestId,
       ...(surface !== undefined ? { expectedSurface: surface } : {}),
       ...(continueFromCurrentBoundary && boundary.nextCursor !== undefined
         ? {
@@ -284,6 +292,15 @@ async function requestHistory(
     });
     if (activeTokens.get(sessionId) !== activeToken) return;
     if (!response.ok) throw new Error(response.error?.message ?? 'Session history load failed.');
+    if (response.data.sessionId !== sessionId || response.data.requestId !== requestId) {
+      console.error('[session.history] rejected a response with foreign ownership', {
+        requestedSessionId: sessionId,
+        responseSessionId: response.data.sessionId,
+        requestId,
+        responseRequestId: response.data.requestId,
+      });
+      throw new Error('Session history response ownership mismatch.');
+    }
     if ((invalidationEpochs.get(sessionId) ?? 0) !== requestedEpoch) {
       // A terminal/lineage persistence boundary overtook this read. Do not install a page or a
       // diagnostic from the older source generation; restart from the newest canonical boundary.

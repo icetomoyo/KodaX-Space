@@ -121,6 +121,7 @@ export const FROZEN_V0131_CODER_ENTRYPOINTS = [
   'settings.kodaxConfig.get',
   'settings.kodaxConfig.planIntegrationMigration',
   'settings.kodaxConfig.setCompaction',
+  'settings.kodaxConfig.setSandbox',
   'settings.setCoderRuntimeMode',
   'settings.setDefaultWorkspace',
   'settings.setLanguageMode',
@@ -235,7 +236,8 @@ function capabilityFor(entrypoint: InvokeChannelName): string | undefined {
   if (entrypoint === 'provider.setDefault') return 'runtime.config.cas';
   if (
     entrypoint === 'settings.setRuntimeDefaults' ||
-    entrypoint === 'settings.kodaxConfig.setCompaction'
+    entrypoint === 'settings.kodaxConfig.setCompaction' ||
+    entrypoint === 'settings.kodaxConfig.setSandbox'
   ) {
     return 'runtime.config.cas';
   }

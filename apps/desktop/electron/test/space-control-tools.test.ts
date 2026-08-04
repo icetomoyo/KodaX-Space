@@ -146,7 +146,7 @@ test('space control keeps the run-owned permission mode after the Session settin
       lastActivityAt: Date.now(),
       title: undefined,
       isRunning: () => false,
-      send: async () => ({ queued: false }),
+      send: async () => ({ accepted: true, queued: false }),
       cancel: async () => {},
       dispose: async () => {},
     }),

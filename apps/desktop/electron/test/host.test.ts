@@ -225,7 +225,7 @@ test('cancel returns and emits cancelled fallback when adapter cancel never reso
       lastActivityAt: Date.now(),
       title: undefined,
       isRunning: () => true,
-      send: async () => ({ queued: false }),
+      send: async () => ({ accepted: true, queued: false }),
       cancel: () => never,
       dispose: async () => {},
     }),
@@ -265,7 +265,7 @@ test('permission requests honor the run-scoped mode after the live Session mode 
       lastActivityAt: Date.now(),
       title: undefined,
       isRunning: () => false,
-      send: async () => ({ queued: false }),
+      send: async () => ({ accepted: true, queued: false }),
       cancel: async () => {},
       dispose: async () => {},
     };

@@ -108,6 +108,21 @@ function queuedToastText(queueMode: QueueMode | undefined, t: Translate): string
   return queueMode === 'after-turn' ? t('bottom.queuedAfterTurn') : t('bottom.queuedNextSafePoint');
 }
 
+type RejectedSessionSend = Extract<ChannelOutput<'session.send'>, { readonly accepted: false }>;
+
+export function rejectedSessionSendText(result: RejectedSessionSend, t: Translate): string {
+  switch (result.reason) {
+    case 'stale_run':
+      return t('bottom.sendRejected.staleRun');
+    case 'unsupported_capability':
+      return t('bottom.sendRejected.unsupportedInterrupt');
+    case 'interrupt_window_closed':
+      return t('bottom.sendRejected.interruptWindowClosed');
+    case 'session_data_changed':
+      return t('bottom.sendRejected.sessionDataChanged');
+  }
+}
+
 function composerInvokeFailure<T>(
   channel: InvokeChannelName,
   message: string,
@@ -2056,6 +2071,11 @@ export function BottomBar(): JSX.Element {
       setErr(
         `${sendResult.error?.code ?? 'ERR_UNKNOWN'}: ${sendResult.error?.message ?? t('common.unknownError')}`,
       );
+    } else if (!sendResult.data.accepted) {
+      setPendingSend(sessionId, false);
+      if (queuedLocalId) removeQueuedUserMessage(sessionId, queuedLocalId);
+      else rollbackLastUserMessage(sessionId, skillEcho);
+      setErr(rejectedSessionSendText(sendResult.data, t));
     } else if (sendResult.data.queued) {
       const acceptedQueueMode = sendResult.data.queueMode ?? queueMode;
       if (queuedLocalId) {
@@ -2235,10 +2255,7 @@ export function BottomBar(): JSX.Element {
       draftRef.current = '';
 
       if (!queuedLocalId) setPendingSend(sid, true);
-      const restoreFailedSend = (
-        result: Extract<IpcResult<ChannelOutput<'session.send'>>, { ok: false }>,
-        late: boolean,
-      ): void => {
+      const restoreUnacceptedSend = (message: string, late: boolean): void => {
         if (!queuedLocalId) setPendingSend(sid, false);
         if (queuedLocalId) removeQueuedUserMessage(sid, queuedLocalId);
         else rollbackLastUserMessage(sid, promptForAI);
@@ -2255,12 +2272,24 @@ export function BottomBar(): JSX.Element {
         if (fileRefsAtSend.length > 0) {
           setPendingFileRefs((prev) => (prev.length === 0 ? fileRefsAtSend : prev));
         }
-        setErr(
+        setErr(message);
+      };
+
+      const restoreFailedSend = (
+        result: Extract<IpcResult<ChannelOutput<'session.send'>>, { ok: false }>,
+        late: boolean,
+      ): void => {
+        restoreUnacceptedSend(
           `${result.error?.code ?? 'ERR_UNKNOWN'}: ${result.error?.message ?? t('common.unknownError')}`,
+          late,
         );
       };
 
-      const acceptSendResult = (data: ChannelOutput<'session.send'>, late: boolean): void => {
+      const applySendResult = (data: ChannelOutput<'session.send'>, late: boolean): void => {
+        if (!data.accepted) {
+          restoreUnacceptedSend(rejectedSessionSendText(data, t), late);
+          return;
+        }
         if (optimisticMessageId && data.attachments) {
           updateUserMessageAttachments(sid, optimisticMessageId, data.attachments);
         }
@@ -2307,7 +2336,7 @@ export function BottomBar(): JSX.Element {
       };
       const result = await invokeComposerIpc('session.send', sendPayload, {
         onLateResult: (lateResult) => {
-          if (lateResult.ok) acceptSendResult(lateResult.data, true);
+          if (lateResult.ok) applySendResult(lateResult.data, true);
           else restoreFailedSend(lateResult, true);
         },
       });
@@ -2318,7 +2347,7 @@ export function BottomBar(): JSX.Element {
         }
         restoreFailedSend(result, false);
       } else {
-        acceptSendResult(result.data, false);
+        applySendResult(result.data, false);
       }
     } finally {
       setBusy(false);

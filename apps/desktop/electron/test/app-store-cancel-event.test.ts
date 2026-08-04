@@ -154,6 +154,29 @@ test('appendEvent keeps pendingSend across a pre-session_start non-lifecycle eve
   assert.equal(snap2.streaming, true, 'still streaming after session_start (no gap)');
 });
 
+test('a delivered mid-turn prompt clears pendingSend and hands activity to Runtime state', () => {
+  const store = useAppStore.getState();
+
+  store.appendEvent({
+    kind: 'mid_turn_user_prompt',
+    sessionId: SID,
+    queueId: 'input_delivered',
+    content: 'correct the queued instruction',
+  });
+
+  const state = useAppStore.getState();
+  assert.equal(
+    state.pendingSendBySession[SID],
+    undefined,
+    'canonical interrupt delivery must clear the optimistic pending marker',
+  );
+  assert.equal(
+    snapshotFromEvents(state.eventsBySession[SID] ?? [], false, undefined).streaming,
+    true,
+    'the delivered prompt lifecycle keeps activity visible while Runtime remains active',
+  );
+});
+
 test('appendEvent still clears pendingSend on a terminal event even if only non-lifecycle events preceded it (no stuck spinner)', () => {
   // Guards the flip-side of the fix above: if a run fails/ends right after a non-lifecycle event
   // (no session_start ever arrived), the terminal event must still clear pendingSend so the spinner

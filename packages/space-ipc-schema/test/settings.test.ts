@@ -10,6 +10,7 @@ import {
   settingsKodaxConfigGetChannel,
   settingsKodaxConfigPlanIntegrationMigrationChannel,
   settingsKodaxConfigSetCompactionChannel,
+  settingsKodaxConfigSetSandboxChannel,
   settingsSetDefaultWorkspaceChannel,
   settingsSetCoderRuntimeModeChannel,
   settingsSetLanguageModeChannel,
@@ -29,6 +30,7 @@ test('settings channels are registered', () => {
     'settings.setRuntimeDefaults',
     'settings.kodaxConfig.get',
     'settings.kodaxConfig.setCompaction',
+    'settings.kodaxConfig.setSandbox',
     'settings.kodaxConfig.planIntegrationMigration',
     'settings.kodaxConfig.applyIntegrationMigration',
   ]) {
@@ -86,6 +88,11 @@ test('KodaX config overview channels accept compaction and storage summaries', (
       triggerTokens: 120_000,
       contextWindow: 200_000,
     },
+    sandbox: {
+      envPass: ['GH_TOKEN', 'GITHUB_TOKEN'],
+      totalEnvPass: 2,
+      editable: true,
+    },
     mcp: {
       globalPath: 'C:\\Users\\you\\.kodax\\integrations\\mcp.json',
       projectPath: 'C:\\repo\\.kodax\\integrations\\mcp.json',
@@ -111,6 +118,41 @@ test('KodaX config overview channels accept compaction and storage summaries', (
     true,
   );
   assert.equal(settingsKodaxConfigSetCompactionChannel.output.safeParse(output).success, false);
+  assert.equal(
+    settingsKodaxConfigSetSandboxChannel.output.safeParse({
+      ...output,
+      runtimeReload: { status: 'applied' },
+    }).success,
+    true,
+  );
+  assert.equal(
+    settingsKodaxConfigSetSandboxChannel.input.safeParse({
+      sandbox: { envPass: [' GH_TOKEN ', 'GITHUB_TOKEN'] },
+    }).success,
+    true,
+  );
+  for (const envPass of [
+    ['INVALID-NAME'],
+    ['1TOKEN'],
+    [42],
+    Array.from({ length: 129 }, (_, index) => `SPACE_ENV_${index}`),
+  ]) {
+    assert.equal(
+      settingsKodaxConfigSetSandboxChannel.input.safeParse({ sandbox: { envPass } }).success,
+      false,
+    );
+  }
+  assert.equal(
+    settingsKodaxConfigGetChannel.output.safeParse({
+      ...output,
+      sandbox: {
+        envPass: Array.from({ length: 128 }, (_, index) => `SPACE_ENV_${index}`),
+        totalEnvPass: 129,
+        editable: false,
+      },
+    }).success,
+    true,
+  );
   assert.equal(
     settingsKodaxConfigSetCompactionChannel.input.safeParse({
       compaction: { enabled: false, triggerPercent: 60 },

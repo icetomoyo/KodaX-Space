@@ -291,6 +291,14 @@ export type InputArtifactSource = z.infer<typeof inputArtifactSourceSchema>;
 const sessionSendQueueModeSchema = z.enum(['interrupt', 'after-turn']);
 export type SessionSendQueueMode = z.infer<typeof sessionSendQueueModeSchema>;
 
+const sessionSendRejectionReasonSchema = z.enum([
+  'stale_run',
+  'unsupported_capability',
+  'interrupt_window_closed',
+  'session_data_changed',
+]);
+export type SessionSendRejectionReason = z.infer<typeof sessionSendRejectionReasonSchema>;
+
 // ---- Invoke: session.send ----
 export const sessionSendChannel = {
   name: 'session.send',
@@ -323,21 +331,29 @@ export const sessionSendChannel = {
      */
     queueMode: sessionSendQueueModeSchema.default('interrupt'),
   }),
-  output: z.object({
-    // 只是 ACK"已排进 session 队列"——真正结果走 session.event push
-    accepted: z.literal(true),
-    /**
-     * When a turn is already running, RealKodaXSession accepts the prompt into
-     * the requested queue mode instead of starting a concurrent run.
-     * queued=true means the prompt is queued; queueId identifies that queue item.
-     * queued=false means a run was started immediately.
-     */
-    queued: z.boolean().optional(),
-    queueId: z.string().min(1).max(128).optional(),
-    queueMode: sessionSendQueueModeSchema.optional(),
-    /** Main-issued, path-free preview capabilities for accepted image artifacts. */
-    attachments: z.array(sessionImageAttachmentSchema).max(8).optional(),
-  }),
+  output: z.discriminatedUnion('accepted', [
+    z.object({
+      // 只是 ACK"已排进 session 队列"——真正结果走 session.event push
+      accepted: z.literal(true),
+      /**
+       * When a turn is already running, RealKodaXSession accepts the prompt into
+       * the requested queue mode instead of starting a concurrent run.
+       * queued=true means the prompt is queued; queueId identifies that queue item.
+       * queued=false means a run was started immediately.
+       */
+      queued: z.boolean().optional(),
+      queueId: z.string().min(1).max(128).optional(),
+      queueMode: sessionSendQueueModeSchema.optional(),
+      /** Main-issued, path-free preview capabilities for accepted image artifacts. */
+      attachments: z.array(sessionImageAttachmentSchema).max(8).optional(),
+    }),
+    z.object({
+      /** Factual Runtime business rejection. The prompt was not accepted or persisted. */
+      accepted: z.literal(false),
+      reason: sessionSendRejectionReasonSchema,
+      queueMode: sessionSendQueueModeSchema,
+    }),
+  ]),
 } as const;
 
 // ---- Invoke: session.cancel ----
@@ -741,6 +757,8 @@ export const sessionHistoryChannel = {
   direction: 'invoke',
   input: z.object({
     sessionId: z.string().min(1),
+    /** Renderer-owned request identity echoed by main as an end-to-end ownership fence. */
+    requestId: z.string().min(1).max(128),
     /**
      * The surface selected by the renderer. Supplying it lets main choose the bounded Coder
      * Runtime reader without probing the persisted Session body first. Optional for older clients.
@@ -753,6 +771,10 @@ export const sessionHistoryChannel = {
     sourceRevision: z.string().min(1).max(256).optional(),
   }),
   output: z.object({
+    /** End-to-end ownership fence for the returned history page. */
+    sessionId: z.string().min(1),
+    /** Exact request identity supplied by the renderer. */
+    requestId: z.string().min(1).max(128),
     items: z.array(sessionHistoryItemSchema).max(2000),
     /** SDK-owned ordinary-conversation confidence. Missing only on legacy fallback readers. */
     conversation: conversationHistoryDiagnosticSchema.optional(),

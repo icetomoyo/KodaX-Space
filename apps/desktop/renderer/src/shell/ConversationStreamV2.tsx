@@ -57,8 +57,9 @@ const EMPTY_WORKFLOW_NOTICES: readonly WorkflowNoticeMessage[] = [];
 const EMPTY_MATCH_IDS: readonly string[] = [];
 const INSTANT_PROGRAMMATIC_SCROLL_GUARD_MS = 120;
 const SMOOTH_PROGRAMMATIC_SCROLL_GUARD_MS = 400;
+// 追底判定与 jump-to-bottom 按钮显隐共用此阈值，两者严格互补（< 阈值追底，>= 阈值显示按钮），避免双阈值死区。
+// 例外：older-window-seam 历史分页恢复（restoreScrollSnapshot）刻意不追底且隐藏按钮——浏览更早历史时不打扰，另有 return-to-newest 按钮兜底。
 const BOTTOM_DISTANCE_PX = 32;
-const JUMP_TO_BOTTOM_DISTANCE_PX = 100;
 const USER_SCROLL_INTENT_DELTA_PX = 4;
 const HISTORY_LOAD_THRESHOLD_PX = 240;
 
@@ -1298,8 +1299,10 @@ export function ConversationStreamV2(): JSX.Element {
     const nextTop = Math.max(0, Math.min(maxTop, targetTop - anchor.offsetTop));
     markProgrammaticScroll();
     scroller.scrollTop = nextTop;
-    wasAtBottomRef.current = false;
-    setShowJumpToBottom(maxTop - nextTop > JUMP_TO_BOTTOM_DISTANCE_PX);
+    // 恢复落点按距离实时判定追底：内容收缩或窗口拉高使落点 <阈值 时恢复追底。
+    // 程序滚动的 scroll 事件被守卫吞掉，若这里无条件置 false 会形成"按钮隐藏+追底关闭"的稳态死区。
+    wasAtBottomRef.current = maxTop - nextTop < BOTTOM_DISTANCE_PX;
+    setShowJumpToBottom(maxTop - nextTop >= BOTTOM_DISTANCE_PX);
     syncActiveQueryAnchorFromScrollPosition(scroller);
     rememberScrollSnapshot(scroller);
     return true;
@@ -1336,8 +1339,8 @@ export function ConversationStreamV2(): JSX.Element {
     const nextTop = Math.max(0, Math.min(nextMaxTop, nextMaxTop * ratio));
     markProgrammaticScroll();
     scroller.scrollTop = nextTop;
-    wasAtBottomRef.current = false;
-    setShowJumpToBottom(nextMaxTop - nextTop > JUMP_TO_BOTTOM_DISTANCE_PX);
+    wasAtBottomRef.current = nextMaxTop - nextTop < BOTTOM_DISTANCE_PX;
+    setShowJumpToBottom(nextMaxTop - nextTop >= BOTTOM_DISTANCE_PX);
     syncActiveQueryAnchorFromScrollPosition(scroller);
     rememberScrollSnapshot(scroller);
     return true;
@@ -1397,11 +1400,11 @@ export function ConversationStreamV2(): JSX.Element {
     const atBottom = distance < BOTTOM_DISTANCE_PX;
     wasAtBottomRef.current = atBottom;
     rememberScrollSnapshot(el);
-    setShowJumpToBottom(!atBottom && distance > JUMP_TO_BOTTOM_DISTANCE_PX);
+    setShowJumpToBottom(!atBottom);
   }
 
   function syncJumpButtonFromScrollPosition(el: HTMLDivElement): void {
-    setShowJumpToBottom(getDistanceFromBottom(el) > JUMP_TO_BOTTOM_DISTANCE_PX);
+    setShowJumpToBottom(getDistanceFromBottom(el) >= BOTTOM_DISTANCE_PX);
   }
 
   function syncActiveQueryAnchorFromScrollPosition(el: HTMLDivElement): void {
@@ -1832,7 +1835,7 @@ export function ConversationStreamV2(): JSX.Element {
       anchor,
       atBottom: wasAtBottomRef.current,
     };
-    setShowJumpToBottom(maxTop - top > JUMP_TO_BOTTOM_DISTANCE_PX);
+    setShowJumpToBottom(maxTop - top >= BOTTOM_DISTANCE_PX);
     setActiveQueryAnchorId(id);
     const loadingPrepend = prependAnchorRestoreRef.current?.phase === 'loading';
     scroller.scrollTo({ top, behavior: loadingPrepend ? 'auto' : 'smooth' });

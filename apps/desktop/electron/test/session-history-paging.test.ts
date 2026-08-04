@@ -22,6 +22,34 @@ import {
 
 const originalWindow = globalThis.window;
 
+function mockHistoryInvoke<T extends (...args: never[]) => unknown>(handler: T) {
+  return async (channel: string, input: unknown) => {
+    const invoke = handler as unknown as (...args: readonly unknown[]) => unknown;
+    const result = (await invoke(channel, input)) as {
+      readonly ok: boolean;
+      readonly data?: Readonly<Record<string, unknown>>;
+      readonly [key: string]: unknown;
+    };
+    if (!result.ok || result.data === undefined) return result;
+    const owner = input as { readonly sessionId: string; readonly requestId: string };
+    return {
+      ...result,
+      data: {
+        ...result.data,
+        sessionId: owner.sessionId,
+        requestId: owner.requestId,
+      },
+    };
+  };
+}
+
+function withoutHistoryRequestId(input: unknown): Readonly<Record<string, unknown>> {
+  const owned = input as Readonly<Record<string, unknown>>;
+  assert.equal(typeof owned.requestId, 'string');
+  const { requestId: _requestId, ...rest } = owned;
+  return rest;
+}
+
 afterEach(() => {
   for (const sessionId of [
     'history-paging-resync',
@@ -37,6 +65,7 @@ afterEach(() => {
     'history-paging-invalidated-continuation',
     'history-paging-warning-race',
     'history-paging-active-warning-refresh',
+    'history-paging-foreign-owner',
   ]) {
     deactivateSessionHistoryPaging(sessionId);
   }
@@ -46,6 +75,60 @@ afterEach(() => {
     writable: true,
     value: originalWindow,
   });
+});
+
+test('history response with foreign Session/request ownership is rejected before store install', async () => {
+  const sessionId = 'history-paging-foreign-owner';
+  useAppStore.setState({
+    sessions: [
+      {
+        sessionId,
+        projectRoot: '/project',
+        provider: 'mock',
+        reasoningMode: 'auto',
+        permissionMode: 'accept-edits',
+        autoModeEngine: 'llm',
+        agentMode: 'ama',
+        surface: 'code',
+        createdAt: 1_000,
+        lastActivityAt: 1_000,
+      },
+    ],
+    currentSessionId: sessionId,
+    eventsBySession: {},
+    userMessagesBySession: {},
+  });
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    writable: true,
+    value: {
+      kodaxSpace: {
+        invoke: async () => ({
+          ok: true as const,
+          data: {
+            sessionId: 'foreign-session',
+            requestId: 'foreign-request',
+            items: [{ kind: 'user' as const, content: 'must never be installed' }],
+            page: {
+              outcome: 'ready' as const,
+              revision: 'foreign-revision',
+              sourceRevision: 'foreign-source',
+              hasMore: false,
+              windowMode: 'replace' as const,
+              hasNewer: false,
+            },
+          },
+        }),
+      },
+    },
+  });
+
+  await assert.rejects(
+    restoreNewestSessionHistory(sessionId, 'code'),
+    /history response ownership mismatch/i,
+  );
+  assert.equal(sessionHistoryPagingSnapshot(sessionId).phase, 'error');
+  assert.deepEqual(useAppStore.getState().userMessagesBySession[sessionId] ?? [], []);
 });
 
 test('resetSessionView synchronously clears paging authority and the independent live baseline', async () => {
@@ -74,7 +157,7 @@ test('resetSessionView synchronously clears paging authority and the independent
     writable: true,
     value: {
       kodaxSpace: {
-        invoke: async () => {
+        invoke: mockHistoryInvoke(async () => {
           calls += 1;
           return {
             ok: true as const,
@@ -96,7 +179,7 @@ test('resetSessionView synchronously clears paging authority and the independent
               },
             },
           };
-        },
+        }),
       },
     },
   });
@@ -214,7 +297,7 @@ test('ready history revalidates on reactivation without blanking or accepting a 
     writable: true,
     value: {
       kodaxSpace: {
-        invoke: async () => {
+        invoke: mockHistoryInvoke(async () => {
           calls += 1;
           if (calls === 1) {
             return {
@@ -233,7 +316,7 @@ test('ready history revalidates on reactivation without blanking or accepting a 
             };
           }
           return calls === 2 ? stale : fresh;
-        },
+        }),
       },
     },
   });
@@ -323,7 +406,7 @@ test('partial or ambiguous conversation diagnostics are never treated as reusabl
     writable: true,
     value: {
       kodaxSpace: {
-        invoke: async () => {
+        invoke: mockHistoryInvoke(async () => {
           call += 1;
           return {
             ok: true as const,
@@ -340,7 +423,7 @@ test('partial or ambiguous conversation diagnostics are never treated as reusabl
               },
             },
           };
-        },
+        }),
       },
     },
   });
@@ -367,7 +450,7 @@ test('a persistence boundary makes an otherwise ready page ineligible for reuse'
     writable: true,
     value: {
       kodaxSpace: {
-        invoke: async () => {
+        invoke: mockHistoryInvoke(async () => {
           calls += 1;
           return {
             ok: true as const,
@@ -384,7 +467,7 @@ test('a persistence boundary makes an otherwise ready page ineligible for reuse'
               },
             },
           };
-        },
+        }),
       },
     },
   });
@@ -444,7 +527,7 @@ test('a persistence boundary racing an IPC read rejects the stale page and retri
     writable: true,
     value: {
       kodaxSpace: {
-        invoke: async () => {
+        invoke: mockHistoryInvoke(async () => {
           calls += 1;
           if (calls === 1) return staleResponse;
           return {
@@ -462,7 +545,7 @@ test('a persistence boundary racing an IPC read rejects the stale page and retri
               },
             },
           };
-        },
+        }),
       },
     },
   });
@@ -552,10 +635,10 @@ test('an invalidated older-page request restarts at newest instead of certifying
     writable: true,
     value: {
       kodaxSpace: {
-        invoke: async (_channel: string, input: unknown) => {
+        invoke: mockHistoryInvoke(async (_channel: string, input: unknown) => {
           inputs.push(input);
           return { ok: true as const, data: pages[inputs.length - 1]! };
-        },
+        }),
       },
     },
   });
@@ -564,7 +647,7 @@ test('an invalidated older-page request restarts at newest instead of certifying
   invalidateSessionHistoryPaging(sessionId);
   await loadOlderSessionHistory(sessionId);
 
-  assert.deepEqual(inputs, [
+  assert.deepEqual(inputs.map(withoutHistoryRequestId), [
     { sessionId, expectedSurface: 'code' },
     { sessionId, expectedSurface: 'code' },
   ]);
@@ -629,7 +712,7 @@ test('an uncertain warning remains visible while a raced refresh waits for Runti
     writable: true,
     value: {
       kodaxSpace: {
-        invoke: async () => {
+        invoke: mockHistoryInvoke(async () => {
           calls += 1;
           if (calls === 1) {
             return {
@@ -653,7 +736,7 @@ test('an uncertain warning remains visible while a raced refresh waits for Runti
             ok: true as const,
             data: { items: [], page: { outcome: 'runtime_unavailable' as const } },
           };
-        },
+        }),
       },
     },
   });
@@ -722,7 +805,7 @@ test('an active uncertain warning revalidates immediately at a persistence bound
     writable: true,
     value: {
       kodaxSpace: {
-        invoke: async () => {
+        invoke: mockHistoryInvoke(async () => {
           calls += 1;
           return {
             ok: true as const,
@@ -746,7 +829,7 @@ test('an active uncertain warning revalidates immediately at a persistence bound
               },
             },
           };
-        },
+        }),
       },
     },
   });
@@ -839,7 +922,7 @@ test('history paging preserves surface routing and restarts from newest after da
   Object.defineProperty(globalThis, 'window', {
     configurable: true,
     writable: true,
-    value: { kodaxSpace: { invoke } },
+    value: { kodaxSpace: { invoke: mockHistoryInvoke(invoke) } },
   });
 
   await restoreNewestSessionHistory(sessionId, 'code');
@@ -849,7 +932,7 @@ test('history paging preserves surface routing and restarts from newest after da
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 
-  assert.deepEqual(inputs, [
+  assert.deepEqual(inputs.map(withoutHistoryRequestId), [
     { sessionId, expectedSurface: 'code' },
     {
       sessionId,
@@ -948,10 +1031,10 @@ test('history paging paints one bounded newest window and reads older windows on
     writable: true,
     value: {
       kodaxSpace: {
-        invoke: async (_channel: string, input: unknown) => {
+        invoke: mockHistoryInvoke(async (_channel: string, input: unknown) => {
           inputs.push(input);
           return { ok: true as const, data: pages[inputs.length - 1]! };
-        },
+        }),
       },
     },
   });
@@ -972,7 +1055,7 @@ test('history paging paints one bounded newest window and reads older windows on
     useAppStore.getState().userMessagesBySession[sessionId]?.map((message) => message.content),
     ['old query', 'new query'],
   );
-  assert.deepEqual(inputs[2], {
+  assert.deepEqual(withoutHistoryRequestId(inputs[2]), {
     sessionId,
     expectedSurface: 'code',
     cursor: 'cursor-2',
@@ -1010,7 +1093,7 @@ test('history paging waits for Runtime instead of falling back to a full persist
     writable: true,
     value: {
       kodaxSpace: {
-        invoke: async () => {
+        invoke: mockHistoryInvoke(async () => {
           calls += 1;
           return calls === 1
             ? {
@@ -1031,7 +1114,7 @@ test('history paging waits for Runtime instead of falling back to a full persist
                   },
                 },
               };
-        },
+        }),
       },
     },
   });
@@ -1128,7 +1211,7 @@ test('same Runtime turn users across pages retain both canonical queries and bou
     writable: true,
     value: {
       kodaxSpace: {
-        invoke: async () => ({ ok: true as const, data: pages[call++]! }),
+        invoke: mockHistoryInvoke(async () => ({ ok: true as const, data: pages[call++]! })),
       },
     },
   });
@@ -1212,7 +1295,7 @@ test('an accumulated older page retains canonical newest rows and the distinct l
     writable: true,
     value: {
       kodaxSpace: {
-        invoke: async () => ({ ok: true as const, data: pages[call++]! }),
+        invoke: mockHistoryInvoke(async () => ({ ok: true as const, data: pages[call++]! })),
       },
     },
   });
@@ -1250,13 +1333,13 @@ test('deactivating a Session cancels Runtime startup retries and ignores late li
     writable: true,
     value: {
       kodaxSpace: {
-        invoke: async () => {
+        invoke: mockHistoryInvoke(async () => {
           calls += 1;
           return {
             ok: true as const,
             data: { items: [], page: { outcome: 'runtime_unavailable' as const } },
           };
-        },
+        }),
       },
     },
   });
@@ -1304,7 +1387,7 @@ test('reactivating a Session does not reuse an in-flight request from its stale 
     writable: true,
     value: {
       kodaxSpace: {
-        invoke: async () => {
+        invoke: mockHistoryInvoke(async () => {
           calls += 1;
           if (calls === 1) return staleResponse;
           return {
@@ -1321,7 +1404,7 @@ test('reactivating a Session does not reuse an in-flight request from its stale 
               },
             },
           };
-        },
+        }),
       },
     },
   });
@@ -1524,23 +1607,25 @@ test('paging cache eviction releases restored store rows and reselect reloads ca
     writable: true,
     value: {
       kodaxSpace: {
-        invoke: async (_channel: string, input: { readonly sessionId: string }) => {
-          calls.set(input.sessionId, (calls.get(input.sessionId) ?? 0) + 1);
-          return {
-            ok: true as const,
-            data: {
-              items: [{ kind: 'user' as const, content: `query:${input.sessionId}` }],
-              page: {
-                outcome: 'ready' as const,
-                revision: `revision:${input.sessionId}`,
-                sourceRevision: `source:${input.sessionId}`,
-                hasMore: false,
-                windowMode: 'replace' as const,
-                hasNewer: false,
+        invoke: mockHistoryInvoke(
+          async (_channel: string, input: { readonly sessionId: string }) => {
+            calls.set(input.sessionId, (calls.get(input.sessionId) ?? 0) + 1);
+            return {
+              ok: true as const,
+              data: {
+                items: [{ kind: 'user' as const, content: `query:${input.sessionId}` }],
+                page: {
+                  outcome: 'ready' as const,
+                  revision: `revision:${input.sessionId}`,
+                  sourceRevision: `source:${input.sessionId}`,
+                  hasMore: false,
+                  windowMode: 'replace' as const,
+                  hasNewer: false,
+                },
               },
-            },
-          };
-        },
+            };
+          },
+        ),
       },
     },
   });

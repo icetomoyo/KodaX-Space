@@ -1286,7 +1286,7 @@ function transcriptSegmentEnd(events: readonly SessionEvent[], cursor: number): 
       let end = index + 1;
       while (
         end < events.length &&
-        (events[end]!.kind === 'session_complete' || events[end]!.kind === 'session_error')
+        terminalBelongsToSameCompatibilitySegment(event, events[end]!)
       ) {
         end++;
       }
@@ -1294,6 +1294,26 @@ function transcriptSegmentEnd(events: readonly SessionEvent[], cursor: number): 
     }
   }
   return events.length;
+}
+
+function terminalBelongsToSameCompatibilitySegment(
+  first: SessionEvent,
+  candidate: SessionEvent,
+): boolean {
+  if (
+    (first.kind !== 'session_complete' && first.kind !== 'session_error') ||
+    (candidate.kind !== 'session_complete' && candidate.kind !== 'session_error')
+  ) {
+    return false;
+  }
+  if (first.turnId !== undefined || candidate.turnId !== undefined) {
+    return first.turnId !== undefined && first.turnId === candidate.turnId;
+  }
+  // Legacy embedded adapters could emit error -> complete -> wrapped error for one failed turn.
+  // Preserve that exact compatibility family, but never let a successful completion swallow an
+  // unowned failure from the next prompt. Modern live failures are assigned a renderer-local turn
+  // identity before they enter the event buffer.
+  return first.kind === 'session_error';
 }
 
 /**
@@ -2255,6 +2275,35 @@ function nextUserMessageSentAtAfter(userMessages: readonly UserMessage[]): numbe
   return next;
 }
 
+/**
+ * User/reply ownership is transcript-order based, not wall-clock based. A resumed in-flight
+ * Session can expose a process-local `createdAt` later than a query that was submitted while its
+ * history request was still settling. History reconstruction may therefore carry a later sort
+ * timestamp than the newly appended query even though the query is logically last.
+ *
+ * Keep an explicitly supplied display time when it already preserves append order; otherwise
+ * advance it just beyond the existing user stream. This is deliberately limited to user rows:
+ * workflow/local notices still use their real timestamps for interleaving.
+ */
+function appendedUserMessageSentAt(
+  userMessages: readonly UserMessage[],
+  candidateSentAt?: number,
+): number {
+  let latestMessageSentAt = Number.NEGATIVE_INFINITY;
+  for (const message of userMessages) {
+    if (Number.isFinite(message.sentAt) && message.sentAt > latestMessageSentAt) {
+      latestMessageSentAt = message.sentAt;
+    }
+  }
+  const candidate =
+    typeof candidateSentAt === 'number' && Number.isFinite(candidateSentAt)
+      ? candidateSentAt
+      : nextLocalTranscriptSentAt();
+  const sentAt = Math.max(candidate, latestMessageSentAt + 1);
+  lastLocalTranscriptSentAt = Math.max(lastLocalTranscriptSentAt, sentAt);
+  return sentAt;
+}
+
 interface StrongUserTurnIdentity {
   readonly turnId: string;
   readonly turnUserOrdinal: number;
@@ -2317,6 +2366,24 @@ function bindInitialLiveUserTurnIdentity(
     return next;
   }
   return userMessages;
+}
+
+const LOCAL_TERMINAL_TURN_PREFIX = 'space-local-terminal:';
+
+function localTerminalTurnIdForLatestLiveUser(
+  userMessages: readonly UserMessage[],
+): string | undefined {
+  for (let index = userMessages.length - 1; index >= 0; index--) {
+    const message = userMessages[index]!;
+    if (message.restoredFromHistory || message.hiddenHistoryAnchor) continue;
+    const expectedLocalTurnId = `${LOCAL_TERMINAL_TURN_PREFIX}${message.id}`;
+    if (message.turnId === undefined) return expectedLocalTurnId;
+    if (message.turnId === expectedLocalTurnId) return message.turnId;
+    // The newest live user already belongs to an authoritative Runtime turn. Never walk farther
+    // back and steal an older unbound user merely because a later terminal omitted its turn id.
+    return undefined;
+  }
+  return undefined;
 }
 
 function resolveLiveUserOrdinal(userMessages: readonly UserMessage[], turnId: string): number {
@@ -2896,7 +2963,13 @@ export const useAppStore = create<AppState>((set) => ({
     set((state) => {
       if (!state.sessions.some((s) => s.sessionId === sessionId)) return state;
       const bucket = state.userMessagesBySession[sessionId] ?? [];
-      const msg = createUserMessage(sessionId, content, sentAt, undefined, attachments);
+      const msg = createUserMessage(
+        sessionId,
+        content,
+        appendedUserMessageSentAt(bucket, sentAt),
+        undefined,
+        attachments,
+      );
       messageId = msg.id;
       rememberHistoryLiveUsers(sessionId, [msg]);
       return {
@@ -3204,6 +3277,12 @@ export const useAppStore = create<AppState>((set) => ({
       const histEvents: SessionEvent[] = [];
       const histLocalNotices: LocalNoticeMessage[] = [];
       const historyAnchorTurnId = stableHistoryAnchorTurnId(items);
+      let firstHistoricalSentAt: number | undefined;
+      for (const item of items) {
+        if (!('sentAt' in item) || !Number.isFinite(item.sentAt)) continue;
+        firstHistoricalSentAt = item.sentAt;
+        break;
+      }
       let lastHistoricalUserSentAt = Number.NEGATIVE_INFINITY;
       const nextHistoricalUserSentAt = (candidateSentAt?: number): number => {
         const fallback =
@@ -3254,7 +3333,10 @@ export const useAppStore = create<AppState>((set) => ({
           histMsgs.push({
             id,
             content: '',
-            sentAt: nextHistoricalUserSentAt(fallbackSentAt),
+            // The Session list's fallback can describe this Runtime attachment rather than the
+            // bounded page's first record. Prefer canonical item time so a leading hidden anchor
+            // cannot push every restored user beyond a concurrently submitted live query.
+            sentAt: nextHistoricalUserSentAt(firstHistoricalSentAt ?? fallbackSentAt),
             restoredFromHistory: true,
             hiddenHistoryAnchor: true,
             turnId: historyAnchorTurnId,
@@ -3741,36 +3823,69 @@ export const useAppStore = create<AppState>((set) => ({
           return state;
         }
       }
-      const storedEvent = stampLiveStreamEvent(event);
+      // A failure may happen before Runtime admission, so there is no authoritative session_start
+      // and no Runtime turnId to bind the optimistic root query. Give only that live failure a
+      // renderer-local owner identity. Without it, a restored session_complete immediately before
+      // the failure looks like a legacy duplicate-terminal chain and every later response shifts
+      // one user bubble to the left.
+      const latestLocalTerminalTurnId =
+        (event.kind === 'session_error' || event.kind === 'session_complete') &&
+        event.turnId === undefined
+          ? localTerminalTurnIdForLatestLiveUser(currentUsers)
+          : undefined;
+      const previousEvent = bucket.at(-1);
+      const localTerminalTurnId =
+        event.kind === 'session_error'
+          ? latestLocalTerminalTurnId
+          : event.kind === 'session_complete' &&
+              previousEvent?.kind === 'session_error' &&
+              previousEvent.turnId !== undefined &&
+              previousEvent.turnId === latestLocalTerminalTurnId
+            ? latestLocalTerminalTurnId
+            : undefined;
+      const eventWithLocalOwner =
+        localTerminalTurnId === undefined ? event : { ...event, turnId: localTerminalTurnId };
+      const storedEvent = stampLiveStreamEvent(eventWithLocalOwner);
+      if (event.kind === 'session_error' && event.error === 'cancelled') {
+        // Deduplicate the optimistic BottomBar cancellation and the later main-process receipt.
+        // Renderer-local owners make consecutive pre-admission cancellations distinguishable even
+        // when neither has a session_start. Fall back to positional dedupe only when both legacy
+        // events genuinely lack identity, and never cross a session_start boundary.
+        const storedTerminalTurnId = 'turnId' in storedEvent ? storedEvent.turnId : undefined;
+        for (let i = bucket.length - 1; i >= 0; i--) {
+          const previous = bucket[i];
+          if (!previous) continue;
+          if (previous.kind === 'session_start') break;
+          if (previous.kind === 'session_error' && previous.error === 'cancelled') {
+            if (storedTerminalTurnId !== undefined || previous.turnId !== undefined) {
+              if (storedTerminalTurnId !== undefined && storedTerminalTurnId === previous.turnId) {
+                return state;
+              }
+              continue;
+            }
+            return state;
+          }
+        }
+      }
       rememberHistoryLiveEvent(
         event.sessionId,
         storedEvent,
         state.runtimeSnapshotCursorBySession[event.sessionId],
       );
-      if (event.kind === 'session_error' && event.error === 'cancelled') {
-        // 乐观取消(BottomBar handleCancel)与 main 端真实 cancelled 去重,防同一次取消显示两条。
-        // 倒序回溯到本 turn 起点(session_start)为止;命中已存在的 cancelled 即判定重复 drop。
-        //
-        // 已知边界 (review MEDIUM-2(b)):序列 `cancelled,session_start,cancelled` 有二义——
-        // 既可能是"取消→重发→再取消"两次独立取消(都要保留,见 app-store-cancel-event 测试),
-        // 也可能是"乐观 cancelled→重发→main 迟到 cancelled"同一次取消(该去重)。两者事件结构
-        // 完全相同,纯位置扫描无法区分,故此处**保留** session_start 边界(优先不误删合法的两次
-        // 独立取消)。彻底根治需给事件唯一序号 / 乐观标记,属独立 feature,不在本修复范围。
-        for (let i = bucket.length - 1; i >= 0; i--) {
-          const previous = bucket[i];
-          if (!previous) continue;
-          if (previous.kind === 'session_start') break;
-          if (previous.kind === 'session_error' && previous.error === 'cancelled') return state;
-        }
-      }
       const appendedEvents = appendSessionEvent(
         bucket,
         storedEvent,
         state.runtimeSnapshotCursorBySession[event.sessionId],
       );
+      const lifecycleTurnId =
+        event.kind === 'session_start'
+          ? event.turnId
+          : event.kind === 'session_error'
+            ? (event.turnId ?? localTerminalTurnId)
+            : undefined;
       const lifecycleBoundUsers =
-        event.kind === 'session_start' && event.turnId !== undefined
-          ? bindInitialLiveUserTurnIdentity(currentUsers, event.turnId)
+        lifecycleTurnId !== undefined
+          ? bindInitialLiveUserTurnIdentity(currentUsers, lifecycleTurnId)
           : currentUsers;
       const next: Partial<AppState> = {
         eventsBySession: {
@@ -3808,12 +3923,14 @@ export const useAppStore = create<AppState>((set) => ({
       // 只在"运行真正开始/结束"的生命周期事件到达时才清 pendingSend，把 spinner 交给 event-driven 状态。
       // ⚠️ 不能"任一事件到达就清"：repo-intelligence（repointel_trace）/ managed_task_status 等**非生命周期**
       // 事件可能先于 session_start 到达；若此时就清了 pendingSend，而 snapshotFromEvents 又只把
-      // session_start / queued_user_prompt_started 当 streaming，spinner 会在 session_start 到达前整段消失
+      // session_start / queued_user_prompt_started / mid_turn_user_prompt 当 streaming，spinner 会在
+      // session_start 到达前整段消失
       // ——用户看到 query 气泡却没有任何"正在做什么"指示（新会话首个 query 期间 repo 分析最久，尤其明显）。
       // 这里的生命周期 kind 必须与 ActivitySpinner.snapshotFromEvents 认的那组保持一致。
       const clearsPendingSend =
         event.kind === 'session_start' ||
         event.kind === 'queued_user_prompt_started' ||
+        event.kind === 'mid_turn_user_prompt' ||
         event.kind === 'session_complete' ||
         event.kind === 'session_error';
       if (clearsPendingSend && state.pendingSendBySession[event.sessionId]) {
@@ -5052,7 +5169,13 @@ export const useAppStore = create<AppState>((set) => ({
       // Never populate a child with a demonstrably different branch when the requested selector
       // is absent from the bounded renderer window. The authoritative child history can hydrate it.
       if (!cut) return state;
-      const copiedMsgs = srcMsgs.slice(0, cut.userEnd);
+      // Every row before the fork boundary is inherited history in the child, even when that row
+      // was still a live renderer projection in the source. The successful main-process fork has
+      // already made this prefix durable for the child; retaining the source's live classification
+      // would append the optimistic clone again when canonical child history hydrates.
+      const copiedMsgs = srcMsgs
+        .slice(0, cut.userEnd)
+        .map((message) => ({ ...message, restoredFromHistory: true as const }));
       const copiedEvents = srcEvents.slice(0, cut.eventEnd);
       const firstRemovedSentAt = srcMsgs[cut.userEnd]?.sentAt ?? Number.POSITIVE_INFINITY;
       const copiedNotices = srcLocalNotices.filter((notice) => notice.sentAt < firstRemovedSentAt);
@@ -5062,9 +5185,14 @@ export const useAppStore = create<AppState>((set) => ({
       copiedLocalNotices = copiedNotices;
       // events 里的 sessionId 字段是 source 的——为新 session 重建 events 时需要改 sessionId，
       // 否则 ConversationStreamV2 按 sessionId 过滤会读不到。这里直接做映射。
-      const remapped = copiedEvents.map(
-        (event) => ({ ...event, sessionId: newSessionId }) as SessionEvent,
-      );
+      const remapped = copiedEvents.map((event) => {
+        const copy = { ...event, sessionId: newSessionId } as SessionEvent;
+        // History/live ownership is tracked by object identity. All optimistic fork-prefix events
+        // are inherited history in the child, regardless of whether they were restored or live in
+        // the source; otherwise canonical hydration can replay the copied prefix as child-live.
+        restoredHistoryEvents.add(copy);
+        return copy;
+      });
       return {
         eventsBySession: { ...state.eventsBySession, [newSessionId]: remapped },
         transientArtifactsBySession: {

@@ -9,7 +9,11 @@ import { registerChannel } from './register.js';
 import { settingsStore, type SpaceSettings } from '../settings/store.js';
 import { validateProjectRoot } from './validate.js';
 import { resolveEffectiveLocale, type SpaceSettingsT } from '@kodax-space/space-ipc-schema';
-import { loadKodaxConfigOverview, updateKodaxCompactionConfig } from '../kodax/user-config.js';
+import {
+  loadKodaxConfigOverview,
+  updateKodaxCompactionConfig,
+  updateKodaxSandboxConfig,
+} from '../kodax/user-config.js';
 import {
   applyKodaxIntegrationMigration,
   planKodaxIntegrationMigration,
@@ -163,6 +167,17 @@ export function registerSettingsChannels(options: SettingsChannelsOptions = {}):
       const runtimeReload = await reloadRuntimeConfigAfterWrite(
         'settings.kodaxConfig.setCompaction',
       );
+      return { ...result, runtimeReload };
+    }),
+  );
+
+  registerChannel('settings.kodaxConfig.setSandbox', ({ projectRoot, sandbox }) =>
+    runWithCoderAdmission(options, async () => {
+      const safeProjectRoot = projectRoot ? validateProjectRoot(projectRoot) : undefined;
+      const result = await updateKodaxSandboxConfig(sandbox, safeProjectRoot).catch(
+        rethrowActionableConfigConflict,
+      );
+      const runtimeReload = await reloadRuntimeConfigAfterWrite('settings.kodaxConfig.setSandbox');
       return { ...result, runtimeReload };
     }),
   );

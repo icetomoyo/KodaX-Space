@@ -197,7 +197,7 @@ export class MockKodaXSession implements ManagedSession {
     void this.runMockStream(prompt, abort.signal).finally(() => {
       if (this.currentAbort === abort) this.currentAbort = null;
     });
-    return { queued: false };
+    return { accepted: true, queued: false };
   }
 
   async cancel(): Promise<void> {

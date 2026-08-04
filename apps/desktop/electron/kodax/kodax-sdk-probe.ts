@@ -8,7 +8,7 @@
 //   @kodax-ai/kodax/coding       runKodaX / runManagedTask / createAutoModeToolGuardrail / loadAutoRules /
 //                                formatAgentsForPrompt / getKodaxGlobalDir /
 //                                getRegisteredToolDefinition / getBuiltinRegisteredToolDefinition /
-//                                resolveProvider
+//                                resolveProvider / parseSandboxEnvironmentPass
 //   @kodax-ai/kodax/skills       SkillRegistry (skill/registry.ts 自己也 probe，这里重复防御)
 //   @kodax-ai/kodax/llm          verifyProviderCredential (FEATURE_216 — 测连接)
 //   @kodax-ai/kodax/a2a          authenticated A2A config/server/task-migration public surface
@@ -279,6 +279,7 @@ export async function probeKodaxSdk(): Promise<void> {
     ['getRegisteredToolDefinition', 'function', codingModule.getRegisteredToolDefinition],
     ['isToolNetworkRead', 'function', codingModule.isToolNetworkRead],
     ['loadAutoRules', 'function', codingModule.loadAutoRules],
+    ['parseSandboxEnvironmentPass', 'function', codingModule.parseSandboxEnvironmentPass],
     ['resolveProvider', 'function', codingModule.resolveProvider],
   ];
   for (const [name, kind, value] of codingChecks) {

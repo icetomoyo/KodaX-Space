@@ -85,6 +85,8 @@ export type SpaceSettingsT = z.infer<typeof spaceSettingsSchema>;
 
 export const KODAX_COMPACTION_TRIGGER_PERCENT_MIN = 15;
 export const KODAX_COMPACTION_TRIGGER_PERCENT_MAX = 90;
+export const KODAX_SANDBOX_ENV_PASS_MAX = 128;
+export const KODAX_SANDBOX_ENV_NAME_MAX = 256;
 
 export const kodaxCompactionSettingsSchema = z
   .object({
@@ -105,6 +107,30 @@ export const kodaxCompactionSettingsSchema = z
   })
   .strict();
 export type KodaxCompactionSettingsT = z.infer<typeof kodaxCompactionSettingsSchema>;
+
+export const kodaxSandboxEnvironmentNameSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(KODAX_SANDBOX_ENV_NAME_MAX)
+  .regex(/^[A-Za-z_][A-Za-z0-9_]*$/);
+
+export const kodaxSandboxSettingsSchema = z
+  .object({
+    envPass: z.array(kodaxSandboxEnvironmentNameSchema).max(KODAX_SANDBOX_ENV_PASS_MAX),
+  })
+  .strict();
+export type KodaxSandboxSettingsT = z.infer<typeof kodaxSandboxSettingsSchema>;
+
+/**
+ * Bounded renderer projection of KodaX's intentionally unbounded run config.
+ * `editable=false` prevents the settings UI from saving a partial projection
+ * when an existing CLI-authored allow-list exceeds the IPC editing limits.
+ */
+const kodaxSandboxConfigOverviewSchema = kodaxSandboxSettingsSchema.extend({
+  totalEnvPass: z.number().int().safe().min(0),
+  editable: z.boolean(),
+});
 
 const kodaxConfigErrorSchema = z
   .object({
@@ -141,6 +167,7 @@ const kodaxConfigOverviewSchema = z
     configPath: z.string().min(1).max(4096),
     configExists: z.boolean(),
     compaction: kodaxCompactionSettingsSchema,
+    sandbox: kodaxSandboxConfigOverviewSchema,
     mcp: kodaxMcpConfigSummarySchema,
     skills: kodaxSkillStorageSchema,
     errors: z.array(kodaxConfigErrorSchema).max(8),
@@ -274,6 +301,20 @@ export const settingsKodaxConfigSetCompactionChannel = {
     .object({
       projectRoot: z.string().min(1).max(4096).optional(),
       compaction: kodaxCompactionSettingsSchema,
+    })
+    .strict(),
+  output: kodaxConfigOverviewSchema.extend({
+    runtimeReload: kodaxRuntimeConfigReloadSchema,
+  }),
+} as const;
+
+export const settingsKodaxConfigSetSandboxChannel = {
+  name: 'settings.kodaxConfig.setSandbox',
+  direction: 'invoke',
+  input: z
+    .object({
+      projectRoot: z.string().min(1).max(4096).optional(),
+      sandbox: kodaxSandboxSettingsSchema,
     })
     .strict(),
   output: kodaxConfigOverviewSchema.extend({

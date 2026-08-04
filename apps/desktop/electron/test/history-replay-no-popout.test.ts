@@ -29,7 +29,7 @@ function testSegmentEnd(events: readonly SessionEvent[], cursor: number): number
       let end = index + 1;
       while (
         end < events.length &&
-        (events[end]!.kind === 'session_complete' || events[end]!.kind === 'session_error')
+        testTerminalBelongsToSameCompatibilitySegment(event, events[end]!)
       ) {
         end++;
       }
@@ -37,6 +37,22 @@ function testSegmentEnd(events: readonly SessionEvent[], cursor: number): number
     }
   }
   return events.length;
+}
+
+function testTerminalBelongsToSameCompatibilitySegment(
+  first: SessionEvent,
+  candidate: SessionEvent,
+): boolean {
+  if (
+    (first.kind !== 'session_complete' && first.kind !== 'session_error') ||
+    (candidate.kind !== 'session_complete' && candidate.kind !== 'session_error')
+  ) {
+    return false;
+  }
+  if (first.turnId !== undefined || candidate.turnId !== undefined) {
+    return first.turnId !== undefined && first.turnId === candidate.turnId;
+  }
+  return first.kind === 'session_error';
 }
 
 function assertClosedTranscriptStructure(sessionId: string): void {
@@ -1392,6 +1408,351 @@ test('strong folding preserves consecutive empty interrupt turns before the firs
     'a later completed send must not reveal a latent owner shift after empty-turn folding',
   );
   assertClosedTranscriptStructure(SID);
+});
+
+test('a batched interrupt handoff cannot move the next root query into the prior run', () => {
+  const store = useAppStore.getState();
+  const at = (offset: number): number => FALLBACK_SENT_AT + offset;
+  useAppStore.setState({ queuedUserMessagesBySession: {} });
+
+  store.prependSessionHistory(
+    SID,
+    [{ kind: 'assistant', text: 'older page tail', sentAt: at(9_000) }],
+    // A resumed in-flight Session may expose the attachment time as its fallback. It is newer
+    // than both this bounded page and the optimistic query submitted while history settles.
+    at(30_000),
+    { replaceLoadedWindow: true },
+  );
+
+  store.appendUserMessage(SID, 'root query', at(10_000));
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-root',
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'root progress',
+    sentAt: at(10_100),
+  });
+  store.appendEvent({
+    kind: 'mid_turn_user_prompt',
+    sessionId: SID,
+    queueId: 'interrupt-stop',
+    content: 'stop',
+    turnId: 'turn-batched-interrupts',
+    turnUserOrdinal: 0,
+  });
+  store.appendEvent({
+    kind: 'mid_turn_user_prompt',
+    sessionId: SID,
+    queueId: 'interrupt-continue',
+    content: 'continue',
+    turnId: 'turn-batched-interrupts',
+    turnUserOrdinal: 1,
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'continued result',
+    sentAt: at(10_300),
+  });
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: SID,
+    turnId: 'turn-batched-interrupts',
+  });
+
+  store.prependSessionHistory(
+    SID,
+    [
+      { kind: 'assistant', text: 'older page tail', sentAt: at(9_000) },
+      {
+        kind: 'user',
+        content: 'root query',
+        sentAt: at(10_000),
+        turnId: 'turn-root',
+        turnUserOrdinal: 0,
+      },
+      { kind: 'assistant', text: 'root progress', sentAt: at(10_100) },
+      {
+        kind: 'user',
+        content: 'stop',
+        sentAt: at(10_150),
+        turnId: 'turn-batched-interrupts',
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'user',
+        content: 'continue',
+        sentAt: at(10_200),
+        turnId: 'turn-batched-interrupts',
+        turnUserOrdinal: 1,
+      },
+      { kind: 'assistant', text: 'continued result', sentAt: at(10_300) },
+    ],
+    at(30_000),
+    { replaceLoadedWindow: true },
+  );
+
+  store.appendUserMessage(SID, 'next root query', at(20_000));
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-next-root',
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'next root answer',
+    sentAt: at(20_100),
+  });
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: SID,
+    turnId: 'turn-next-root',
+  });
+
+  const state = useAppStore.getState();
+  const visible = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  }).flatMap((message) => {
+    if (message.kind === 'user') return [`user:${message.content}`];
+    if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+    return [];
+  });
+  assert.deepEqual(visible, [
+    'assistant:older page tail',
+    'user:root query',
+    'assistant:root progress',
+    'user:stop',
+    'user:continue',
+    'assistant:continued result',
+    'user:next root query',
+    'assistant:next root answer',
+  ]);
+  assertClosedTranscriptStructure(SID);
+});
+
+test('pre-admission and stopped-run failures cannot leave later root output one user behind', () => {
+  const store = useAppStore.getState();
+
+  store.prependSessionHistory(
+    SID,
+    [
+      { kind: 'user', content: 'older query', sentAt: 1_000 },
+      { kind: 'assistant', text: 'older answer', sentAt: 1_100 },
+    ],
+    900,
+    { replaceLoadedWindow: true },
+  );
+
+  store.appendUserMessage(SID, 'first report', 2_000);
+  store.appendEvent({
+    kind: 'session_error',
+    sessionId: SID,
+    error: 'Session data changed during the read boundary: session.lock',
+  });
+
+  store.appendUserMessage(SID, 'continue', 3_000);
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-stopped',
+  });
+  store.appendEvent({
+    kind: 'session_error',
+    sessionId: SID,
+    error: 'Provider run failed while using a run-scoped credential.',
+    turnId: 'turn-stopped',
+  });
+
+  store.appendUserMessage(SID, 'second report', 4_000);
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-running',
+  });
+  store.appendEvent({
+    kind: 'thinking_delta',
+    sessionId: SID,
+    text: 'current thinking',
+    turnId: 'turn-running',
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'current answer',
+    turnId: 'turn-running',
+  });
+
+  const state = useAppStore.getState();
+  const visible = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  }).flatMap((message) => {
+    if (message.kind === 'user') return [`user:${message.content}`];
+    if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+    if (message.kind === 'system_notice' && message.variant === 'error') {
+      return [`error:${message.text}`];
+    }
+    return [];
+  });
+
+  assert.deepEqual(visible, [
+    'user:older query',
+    'assistant:older answer',
+    'user:first report',
+    'error:Session data changed during the read boundary: session.lock',
+    'user:continue',
+    'error:Provider run failed while using a run-scoped credential.',
+    'user:second report',
+    'assistant:current answer',
+  ]);
+});
+
+test('consecutive pre-admission cancellations keep distinct query owners without session_start', () => {
+  const store = useAppStore.getState();
+
+  store.appendUserMessage(SID, 'cancelled query one', 1_000);
+  store.appendEvent({ kind: 'session_error', sessionId: SID, error: 'cancelled' });
+  store.appendUserMessage(SID, 'cancelled query two', 2_000);
+  store.appendEvent({ kind: 'session_error', sessionId: SID, error: 'cancelled' });
+  store.appendUserMessage(SID, 'successful query three', 3_000);
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-success-three',
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'answer three',
+    turnId: 'turn-success-three',
+  });
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: SID,
+    turnId: 'turn-success-three',
+  });
+
+  const state = useAppStore.getState();
+  const visible = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  }).flatMap((message) => {
+    if (message.kind === 'user') return [`user:${message.content}`];
+    if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+    if (message.kind === 'system_notice' && message.variant === 'error') {
+      return [`error:${message.text}`];
+    }
+    return [];
+  });
+
+  assert.deepEqual(visible, [
+    'user:cancelled query one',
+    'error:cancelled',
+    'user:cancelled query two',
+    'error:cancelled',
+    'user:successful query three',
+    'assistant:answer three',
+  ]);
+});
+
+test('a deduped cancellation receipt cannot re-enter through the history-live baseline', () => {
+  const store = useAppStore.getState();
+  const restored = [
+    { kind: 'user' as const, content: 'restored query', sentAt: 100 },
+    { kind: 'assistant' as const, text: 'restored answer', sentAt: 200 },
+  ];
+  store.prependSessionHistory(SID, restored, 50, { replaceLoadedWindow: true });
+  store.appendUserMessage(SID, 'cancel once', 1_000);
+  store.appendEvent({ kind: 'session_error', sessionId: SID, error: 'cancelled' });
+  store.appendEvent({ kind: 'session_error', sessionId: SID, error: 'cancelled' });
+
+  // Re-applying the canonical window rebuilds from the remembered live baseline. A receipt that
+  // state-level dedupe rejected must not have been retained in that baseline.
+  store.prependSessionHistory(SID, restored, 50, { replaceLoadedWindow: true });
+  const state = useAppStore.getState();
+  const visible = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  });
+
+  assert.equal(
+    visible.filter(
+      (message) =>
+        message.kind === 'system_notice' &&
+        message.variant === 'error' &&
+        message.text === 'cancelled',
+    ).length,
+    1,
+  );
+});
+
+test('renderer-local ownership preserves a legacy error-complete-wrapped-error chain', () => {
+  const store = useAppStore.getState();
+
+  store.appendUserMessage(SID, 'legacy failing query', 1_000);
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'partial legacy answer',
+  });
+  store.appendEvent({ kind: 'session_error', sessionId: SID, error: 'raw 500' });
+  store.appendEvent({ kind: 'session_complete', sessionId: SID });
+  store.appendEvent({
+    kind: 'session_error',
+    sessionId: SID,
+    error: 'Server error (500). Retrying may help.',
+  });
+  store.appendUserMessage(SID, 'next successful query', 2_000);
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-after-legacy-error',
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'next successful answer',
+    turnId: 'turn-after-legacy-error',
+  });
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: SID,
+    turnId: 'turn-after-legacy-error',
+  });
+
+  const state = useAppStore.getState();
+  const visible = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  }).flatMap((message) => {
+    if (message.kind === 'user') return [`user:${message.content}`];
+    if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+    if (message.kind === 'system_notice' && message.variant === 'error') {
+      return [`error:${message.text}`];
+    }
+    return [];
+  });
+
+  assert.deepEqual(visible, [
+    'user:legacy failing query',
+    'assistant:partial legacy answer',
+    'error:raw 500',
+    'error:Server error (500). Retrying may help.',
+    'user:next successful query',
+    'assistant:next successful answer',
+  ]);
 });
 
 test('queued-after-turn folding preserves an empty canonical owner and the next completed send', () => {
@@ -3132,6 +3493,333 @@ test('fork copies the bounded renderer buffer only through the selected absolute
       ['session_complete', 'child-absolute-43'],
     ],
   );
+});
+
+test('forked restored history cannot re-enter as live events after canonical hydration', () => {
+  const childSessionId = 'child-restored-history';
+  const inherited: SessionHistoryItem[] = [
+    {
+      kind: 'user',
+      content: 'original opening query',
+      sentAt: FALLBACK_SENT_AT,
+      entryId: 'source-user-0',
+      canonicalIndex: 0,
+      historyTurnIndex: 0,
+      turnId: 'source-turn-0',
+      turnUserOrdinal: 0,
+    },
+    {
+      kind: 'assistant',
+      text: 'original early answer',
+      sentAt: FALLBACK_SENT_AT + 100,
+      entryId: 'source-assistant-1',
+      canonicalIndex: 1,
+    },
+    {
+      kind: 'user',
+      content: 'original decision query',
+      sentAt: FALLBACK_SENT_AT + 200,
+      entryId: 'source-user-2',
+      canonicalIndex: 2,
+      historyTurnIndex: 2,
+      turnId: 'source-turn-2',
+      turnUserOrdinal: 0,
+    },
+    {
+      kind: 'assistant',
+      text: 'original final recommendation',
+      sentAt: FALLBACK_SENT_AT + 300,
+      entryId: 'source-assistant-3',
+      canonicalIndex: 3,
+    },
+  ];
+  const store = useAppStore.getState();
+  store.prependSessionHistory(SID, inherited, FALLBACK_SENT_AT, {
+    replaceLoadedWindow: true,
+  });
+  store.upsertSession({
+    sessionId: childSessionId,
+    projectRoot: '/proj/x',
+    provider: 'mock',
+    reasoningMode: 'auto',
+    permissionMode: 'accept-edits',
+    autoModeEngine: 'llm',
+    agentMode: 'ama',
+    surface: 'code',
+    createdAt: FALLBACK_SENT_AT + 400,
+    lastActivityAt: FALLBACK_SENT_AT + 400,
+    parentSessionId: SID,
+    forkPointTurnIdx: 2,
+  });
+  store.forkSessionBuffers(SID, childSessionId, 2);
+
+  // The child first paints an optimistic clone of the source renderer buffer. Its canonical
+  // transcript then hydrates the same inherited prefix before the first child-only query.
+  store.prependSessionHistory(childSessionId, inherited, FALLBACK_SENT_AT + 400, {
+    replaceLoadedWindow: true,
+  });
+  store.appendUserMessage(childSessionId, 'child-only query', FALLBACK_SENT_AT + 500);
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: childSessionId,
+    text: 'child-only answer',
+    sentAt: FALLBACK_SENT_AT + 600,
+  });
+  store.appendEvent({ kind: 'session_complete', sessionId: childSessionId });
+
+  const state = useAppStore.getState();
+  const visible = composeMessages({
+    events: state.eventsBySession[childSessionId] ?? [],
+    userMessages: state.userMessagesBySession[childSessionId] ?? [],
+  }).flatMap((message) => {
+    if (message.kind === 'user') return [`user:${message.content}`];
+    if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+    return [];
+  });
+  assert.deepEqual(visible, [
+    'user:original opening query',
+    'assistant:original early answer',
+    'user:original decision query',
+    'assistant:original final recommendation',
+    'user:child-only query',
+    'assistant:child-only answer',
+  ]);
+  assertClosedTranscriptStructure(childSessionId);
+  assert.equal(
+    (useAppStore.getState().userMessagesBySession[SID] ?? []).some(
+      (message) => message.content === 'child-only query',
+    ),
+    false,
+    'the child-only query must never enter the source renderer buffer',
+  );
+});
+
+test('an immediate fork query stays after inherited history when hydration resolves later', () => {
+  const childSessionId = 'child-query-before-history';
+  const inherited: SessionHistoryItem[] = [
+    {
+      kind: 'user',
+      content: 'inherited query',
+      sentAt: FALLBACK_SENT_AT,
+      entryId: 'inherited-user',
+      canonicalIndex: 0,
+      historyTurnIndex: 0,
+      turnId: 'inherited-turn',
+      turnUserOrdinal: 0,
+    },
+    {
+      kind: 'assistant',
+      text: 'inherited answer',
+      sentAt: FALLBACK_SENT_AT + 100,
+      entryId: 'inherited-assistant',
+      canonicalIndex: 1,
+    },
+  ];
+  const store = useAppStore.getState();
+  store.prependSessionHistory(SID, inherited, FALLBACK_SENT_AT, {
+    replaceLoadedWindow: true,
+  });
+  store.upsertSession({
+    sessionId: childSessionId,
+    projectRoot: '/proj/x',
+    provider: 'mock',
+    reasoningMode: 'auto',
+    permissionMode: 'accept-edits',
+    autoModeEngine: 'llm',
+    agentMode: 'ama',
+    surface: 'code',
+    createdAt: FALLBACK_SENT_AT + 200,
+    lastActivityAt: FALLBACK_SENT_AT + 200,
+    parentSessionId: SID,
+    forkPointTurnIdx: 0,
+  });
+  store.forkSessionBuffers(SID, childSessionId, 0);
+  store.appendUserMessage(childSessionId, 'immediate child query', FALLBACK_SENT_AT + 300);
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: childSessionId,
+    text: 'immediate child answer',
+    sentAt: FALLBACK_SENT_AT + 400,
+  });
+  store.appendEvent({ kind: 'session_complete', sessionId: childSessionId });
+
+  store.prependSessionHistory(childSessionId, inherited, FALLBACK_SENT_AT + 200, {
+    replaceLoadedWindow: true,
+  });
+
+  const state = useAppStore.getState();
+  const visible = composeMessages({
+    events: state.eventsBySession[childSessionId] ?? [],
+    userMessages: state.userMessagesBySession[childSessionId] ?? [],
+  }).flatMap((message) => {
+    if (message.kind === 'user') return [`user:${message.content}`];
+    if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+    return [];
+  });
+  assert.deepEqual(visible, [
+    'user:inherited query',
+    'assistant:inherited answer',
+    'user:immediate child query',
+    'assistant:immediate child answer',
+  ]);
+  assertClosedTranscriptStructure(childSessionId);
+});
+
+test('fork classifies a source-live optimistic prefix as inherited child history', () => {
+  const childSessionId = 'child-source-live-prefix';
+  const store = useAppStore.getState();
+  store.appendUserMessage(SID, 'source live query', FALLBACK_SENT_AT);
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'source live answer',
+    sentAt: FALLBACK_SENT_AT + 100,
+  });
+  store.appendEvent({ kind: 'session_complete', sessionId: SID });
+  store.upsertSession({
+    sessionId: childSessionId,
+    projectRoot: '/proj/x',
+    provider: 'mock',
+    reasoningMode: 'auto',
+    permissionMode: 'accept-edits',
+    autoModeEngine: 'llm',
+    agentMode: 'ama',
+    surface: 'code',
+    createdAt: FALLBACK_SENT_AT + 200,
+    lastActivityAt: FALLBACK_SENT_AT + 200,
+    parentSessionId: SID,
+    forkPointTurnIdx: 0,
+  });
+  store.forkSessionBuffers(SID, childSessionId, 0);
+
+  // The persisted child prefix may have no strong turn identity on compatibility paths. It must
+  // replace the optimistic source-live clone instead of depending on identity folding to dedupe it.
+  store.prependSessionHistory(
+    childSessionId,
+    [
+      {
+        kind: 'user',
+        content: 'source live query',
+        sentAt: FALLBACK_SENT_AT,
+        entryId: 'child-source-live-user',
+        canonicalIndex: 0,
+        historyTurnIndex: 0,
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 'source live answer',
+        sentAt: FALLBACK_SENT_AT + 100,
+        entryId: 'child-source-live-assistant',
+        canonicalIndex: 1,
+      },
+    ],
+    FALLBACK_SENT_AT + 200,
+    { replaceLoadedWindow: true },
+  );
+
+  const state = useAppStore.getState();
+  const visible = composeMessages({
+    events: state.eventsBySession[childSessionId] ?? [],
+    userMessages: state.userMessagesBySession[childSessionId] ?? [],
+  }).flatMap((message) => {
+    if (message.kind === 'user') return [`user:${message.content}`];
+    if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+    return [];
+  });
+  assert.deepEqual(visible, ['user:source live query', 'assistant:source live answer']);
+  assertClosedTranscriptStructure(childSessionId);
+});
+
+test('fork keeps a mixed restored and source-live prefix single after child hydration', () => {
+  const childSessionId = 'child-mixed-prefix';
+  const restoredPrefix: SessionHistoryItem[] = [
+    {
+      kind: 'user',
+      content: 'restored source query',
+      sentAt: FALLBACK_SENT_AT,
+      entryId: 'restored-source-user',
+      canonicalIndex: 0,
+      historyTurnIndex: 0,
+      turnId: 'restored-source-turn',
+      turnUserOrdinal: 0,
+    },
+    {
+      kind: 'assistant',
+      text: 'restored source answer',
+      sentAt: FALLBACK_SENT_AT + 100,
+      entryId: 'restored-source-assistant',
+      canonicalIndex: 1,
+    },
+  ];
+  const store = useAppStore.getState();
+  store.prependSessionHistory(SID, restoredPrefix, FALLBACK_SENT_AT, {
+    replaceLoadedWindow: true,
+  });
+  store.appendUserMessage(SID, 'new source query', FALLBACK_SENT_AT + 200);
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'new source answer',
+    sentAt: FALLBACK_SENT_AT + 300,
+  });
+  store.appendEvent({ kind: 'session_complete', sessionId: SID });
+  store.upsertSession({
+    sessionId: childSessionId,
+    projectRoot: '/proj/x',
+    provider: 'mock',
+    reasoningMode: 'auto',
+    permissionMode: 'accept-edits',
+    autoModeEngine: 'llm',
+    agentMode: 'ama',
+    surface: 'code',
+    createdAt: FALLBACK_SENT_AT + 400,
+    lastActivityAt: FALLBACK_SENT_AT + 400,
+    parentSessionId: SID,
+    forkPointTurnIdx: 1,
+  });
+  store.forkSessionBuffers(SID, childSessionId, 1);
+  store.prependSessionHistory(
+    childSessionId,
+    [
+      ...restoredPrefix,
+      {
+        kind: 'user',
+        content: 'new source query',
+        sentAt: FALLBACK_SENT_AT + 200,
+        entryId: 'child-new-source-user',
+        canonicalIndex: 2,
+        historyTurnIndex: 1,
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 'new source answer',
+        sentAt: FALLBACK_SENT_AT + 300,
+        entryId: 'child-new-source-assistant',
+        canonicalIndex: 3,
+      },
+    ],
+    FALLBACK_SENT_AT + 400,
+    { replaceLoadedWindow: true },
+  );
+
+  const state = useAppStore.getState();
+  const visible = composeMessages({
+    events: state.eventsBySession[childSessionId] ?? [],
+    userMessages: state.userMessagesBySession[childSessionId] ?? [],
+  }).flatMap((message) => {
+    if (message.kind === 'user') return [`user:${message.content}`];
+    if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+    return [];
+  });
+  assert.deepEqual(visible, [
+    'user:restored source query',
+    'assistant:restored source answer',
+    'user:new source query',
+    'assistant:new source answer',
+  ]);
+  assertClosedTranscriptStructure(childSessionId);
 });
 
 test('rewind cuts events by real segment ownership when a visible turn has no assistant segment', () => {

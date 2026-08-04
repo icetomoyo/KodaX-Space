@@ -107,12 +107,7 @@ import {
 
 export type RuntimeHostMode = 'legacy' | 'runtime';
 export type RuntimeHostState =
-  | 'uninitialized'
-  | 'initializing'
-  | 'legacy'
-  | 'ready'
-  | 'failed'
-  | 'closed';
+  'uninitialized' | 'initializing' | 'legacy' | 'ready' | 'failed' | 'closed';
 export type RuntimeCapabilityOwner = 'runtime' | 'space-bridge' | 'legacy' | 'unavailable';
 export type RuntimeCapabilitySupport = 'supported' | 'partial' | 'unavailable';
 
@@ -317,6 +312,8 @@ const PROFILE_REFRESH_CONFLICT_RETRY_MS = 25;
 const MAX_RUNTIME_CONVERSATION_ENTRY_BYTES = 32 * 1024 * 1024;
 const MAX_RUNTIME_CONVERSATION_TOTAL_BYTES = 32 * 1024 * 1024;
 const MAX_RUNTIME_CONVERSATION_ENTRIES = 100_000;
+const MAX_SESSION_IDENTITY_READ_ATTEMPTS = 3;
+const SESSION_IDENTITY_RETRY_BASE_MS = 25;
 
 function runtimeErrorCode(error: unknown): string | undefined {
   return error && typeof error === 'object' && 'code' in error
@@ -325,7 +322,13 @@ function runtimeErrorCode(error: unknown): string | undefined {
 }
 
 function isRuntimeResyncRequired(error: unknown): boolean {
-  return runtimeErrorCode(error) === 'resync_required';
+  const code = runtimeErrorCode(error);
+  return code === 'resync_required' || code === 'data_changed';
+}
+
+function isSessionIdentityReadConflict(error: unknown): boolean {
+  const code = runtimeErrorCode(error);
+  return code === 'data_changed' || code === 'resync_required';
 }
 
 function isRuntimeSnapshotConflict(error: unknown): boolean {
@@ -1670,6 +1673,10 @@ export class RuntimeHostAdapter {
   private readonly activeRuns = new Map<string, string>();
   private readonly observations = new Map<string, RuntimeSessionObservationState>();
   private readonly observationPromises = new Map<string, Promise<void>>();
+  private readonly ensureSessionPromises = new Map<
+    string,
+    { readonly identityKey: string; readonly promise: Promise<boolean> }
+  >();
   /** One immutable full-history materialization per Session at a time; never a stale result cache. */
   private readonly transcriptPromises = new Map<
     string,
@@ -1708,8 +1715,8 @@ export class RuntimeHostAdapter {
     { readonly sessionId: string; readonly content: string }
   >();
   private profileRevision = 0;
-  private profileCursor = 0;
-  private profileRefreshQueue: Promise<void> = Promise.resolve();
+  private readonly profileCursors = new Map<string, number>();
+  private readonly profileRefreshQueues = new WeakMap<KodaXDaemonRuntime, Promise<void>>();
   private hostToolLeaseId: string | undefined;
   private readonly hostToolLeaseIds = new Set<string>();
   private connectionSubscription: RuntimeSubscription | undefined;
@@ -2505,9 +2512,38 @@ export class RuntimeHostAdapter {
     ] as const;
   }
 
-  private async refreshProfile(cursor: number): Promise<void> {
+  private refreshProfile(cursor: number): Promise<void> {
     const runtime = this.runtime;
-    if (!runtime || this.state !== 'ready') return;
+    if (!runtime || this.state !== 'ready') return Promise.resolve();
+    const causalCursor = this.advanceProfileCursor(runtime, cursor);
+    const previous = this.profileRefreshQueues.get(runtime) ?? Promise.resolve();
+    const refresh = previous.then(() => this.refreshProfileSnapshot(runtime, causalCursor));
+    // Keep each Runtime attachment serial without poisoning its queue after one failed read. A
+    // replaced Runtime has a different queue and must not wait behind a retired transport.
+    this.profileRefreshQueues.set(
+      runtime,
+      refresh.catch(() => undefined),
+    );
+    return refresh;
+  }
+
+  private currentProfileCursor(): number {
+    const runtime = this.runtime;
+    return runtime ? (this.profileCursors.get(runtime.identity.runtimeId) ?? 0) : 0;
+  }
+
+  private advanceProfileCursor(runtime: KodaXDaemonRuntime, cursor: number): number {
+    const runtimeId = runtime.identity.runtimeId;
+    const next = Math.max(this.profileCursors.get(runtimeId) ?? 0, cursor);
+    this.profileCursors.set(runtimeId, next);
+    return next;
+  }
+
+  private async refreshProfileSnapshot(runtime: KodaXDaemonRuntime, cursor: number): Promise<void> {
+    if (this.runtime !== runtime || this.state !== 'ready') return;
+    // `status.snapshot()` does not return an atomic Runtime cursor. The requested cursor is the
+    // causal lower bound captured before this read; never borrow a later Runtime cursor that may be
+    // advanced by an observation while the asynchronous snapshot is in flight.
     const previousConnection = this.projectionController.profileSnapshot().connection;
     const managementRead = runtime.daemon.inspect().catch((error: unknown) => {
       if (!isRuntimeSnapshotConflict(error)) throw error;
@@ -2544,11 +2580,10 @@ export class RuntimeHostAdapter {
         management.integrations,
       );
     }
-    this.profileCursor = Math.max(this.profileCursor, cursor);
     const projected = projectRuntimeProfile({
       status,
       userInputs,
-      cursor: this.profileCursor,
+      cursor,
       projectionRevision: ++this.profileRevision,
       changedAt: Date.now(),
       capabilities: [...this.spaceCapabilities(runtime)],
@@ -2601,9 +2636,8 @@ export class RuntimeHostAdapter {
   }
 
   private scheduleProfileRefresh(cursor: number): void {
-    this.profileRefreshQueue = this.profileRefreshQueue
-      .then(async () => {
-        await this.refreshProfileAfterConflict(cursor);
+    void this.refreshProfileAfterConflict(cursor)
+      .then(() => {
         this.profileRefreshFailureWarningShown = false;
       })
       .catch((error: unknown) => {
@@ -2674,9 +2708,8 @@ export class RuntimeHostAdapter {
         return;
       }
       this.integrationHealthRefreshPending = true;
-      this.profileRefreshQueue = this.profileRefreshQueue
-        .then(async () => {
-          await this.refreshProfile(this.profileCursor);
+      void this.refreshProfile(this.currentProfileCursor())
+        .then(() => {
           this.integrationHealthPollWarningShown = false;
         })
         .catch((error: unknown) => {
@@ -2747,14 +2780,73 @@ export class RuntimeHostAdapter {
     sessionId: string,
     options?: RuntimeReadOptions,
     expectedProjectRoot?: string,
+    persistedOwnershipVerified = false,
   ): Promise<RuntimeSession> {
-    await this.assertPersistedCoderOwnership(sessionId);
-    const session = await runtime.sessions.load(sessionId, options);
-    assertRuntimeSessionIdentity(session, {
-      sessionId,
-      ...(expectedProjectRoot !== undefined ? { projectRoot: expectedProjectRoot } : {}),
-    });
-    return session;
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        if (!persistedOwnershipVerified) await this.assertPersistedCoderOwnership(sessionId);
+        const session = await runtime.sessions.load(sessionId, options);
+        assertRuntimeSessionIdentity(session, {
+          sessionId,
+          ...(expectedProjectRoot !== undefined ? { projectRoot: expectedProjectRoot } : {}),
+        });
+        return session;
+      } catch (error: unknown) {
+        if (
+          attempt >= MAX_SESSION_IDENTITY_READ_ATTEMPTS ||
+          !isSessionIdentityReadConflict(error)
+        ) {
+          throw error;
+        }
+        if (options?.signal?.aborted) throw error;
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, SESSION_IDENTITY_RETRY_BASE_MS * attempt);
+        });
+      }
+    }
+  }
+
+  /**
+   * Runtime initialization installs one current, identity-fenced profile before the host becomes
+   * ready. Reuse that exact Session identity for control admission instead of rereading the full
+   * persisted Session while its actor/history writer is active. An absent profile row is
+   * inconclusive because the bounded profile may omit older Sessions, so callers still fall back
+   * to the strict load/create path.
+   */
+  private hasVerifiedProfileSession(
+    runtime: KodaXDaemonRuntime,
+    input: RuntimeSessionIdentity,
+  ): boolean {
+    const profile = this.projectionController.profileSnapshot();
+    if (
+      profile.connection.state !== 'ready' ||
+      profile.connection.stale ||
+      profile.connection.runtimeId !== runtime.identity.runtimeId ||
+      profile.cursor?.runtimeId !== runtime.identity.runtimeId
+    ) {
+      return false;
+    }
+    const session = profile.sessions.find((candidate) => candidate.sessionId === input.sessionId);
+    if (session === undefined) return false;
+    if (session.surface !== 'code') {
+      throw new RuntimeSessionIdentityConflictError(
+        input.sessionId,
+        'the Runtime profile is not owned by the Coder surface.',
+      );
+    }
+    // Older/bounded profile rows may omit project identity. That is not proof of a mismatch; keep
+    // the strict fallback so a legacy Session without durable project identity still fails closed.
+    if (session.projectRoot === undefined) return false;
+    if (
+      canonicalRuntimeProjectRoot(session.projectRoot) !==
+      canonicalRuntimeProjectRoot(input.projectRoot)
+    ) {
+      throw new RuntimeSessionIdentityConflictError(
+        input.sessionId,
+        `profile projectRoot ${session.projectRoot} does not match projectRoot ${input.projectRoot}.`,
+      );
+    }
+    return true;
   }
 
   async ensureSession(input: RuntimeSessionIdentity): Promise<boolean> {
@@ -2763,9 +2855,32 @@ export class RuntimeHostAdapter {
         `Partner session ${input.sessionId} must remain on the inline Partner owner.`,
       );
     }
+    const identityKey = `${canonicalRuntimeProjectRoot(input.projectRoot)}\0${input.surface}\0${input.ephemeral ? '1' : '0'}`;
+    const existing = this.ensureSessionPromises.get(input.sessionId);
+    if (existing !== undefined) {
+      if (existing.identityKey !== identityKey) {
+        throw new RuntimeSessionIdentityConflictError(
+          input.sessionId,
+          'concurrent admission requested a different Session identity.',
+        );
+      }
+      return existing.promise;
+    }
+    const pending = this.ensureSessionUnlocked(input).finally(() => {
+      if (this.ensureSessionPromises.get(input.sessionId)?.promise === pending) {
+        this.ensureSessionPromises.delete(input.sessionId);
+      }
+    });
+    this.ensureSessionPromises.set(input.sessionId, { identityKey, promise: pending });
+    return pending;
+  }
+
+  private async ensureSessionUnlocked(input: RuntimeSessionIdentity): Promise<boolean> {
     const runtime = await this.requireRuntime();
+    await this.assertPersistedCoderOwnership(input.sessionId);
+    if (this.hasVerifiedProfileSession(runtime, input)) return false;
     try {
-      await this.assertCoderSession(runtime, input.sessionId, undefined, input.projectRoot);
+      await this.assertCoderSession(runtime, input.sessionId, undefined, input.projectRoot, true);
       return false;
     } catch (error: unknown) {
       if (!isSessionNotFound(error)) throw error;
@@ -2784,14 +2899,14 @@ export class RuntimeHostAdapter {
       });
     } catch (createError: unknown) {
       try {
-        await this.assertCoderSession(runtime, input.sessionId, undefined, input.projectRoot);
+        await this.assertCoderSession(runtime, input.sessionId, undefined, input.projectRoot, true);
         return false;
       } catch (reloadError: unknown) {
         if (!isSessionNotFound(reloadError)) throw reloadError;
         throw createError;
       }
     }
-    this.scheduleProfileRefresh(this.profileCursor);
+    this.scheduleProfileRefresh(this.currentProfileCursor());
     return true;
   }
 
@@ -3082,7 +3197,7 @@ export class RuntimeHostAdapter {
     await Promise.all(sessionCredentialLeases);
     this.projectionController.removeSessionLive(sessionId);
     invalidatePersistedSessionCache(sessionId);
-    this.scheduleProfileRefresh(this.profileCursor);
+    this.scheduleProfileRefresh(this.currentProfileCursor());
     return outcome;
   }
 
@@ -3123,7 +3238,10 @@ export class RuntimeHostAdapter {
       }
       await this.ensureSession(identity);
     } else {
-      await this.assertCoderSession(runtime, sessionId);
+      // IPC/RealSession already owns the project/surface scope. Settings APIs and Runtime apply
+      // their own Session identity/revision checks, so a mutable full-history read here is both
+      // redundant and capable of rejecting a healthy active Session with data_changed.
+      await this.assertPersistedCoderOwnership(sessionId);
     }
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const current = await runtime.sessions.getSettingsVersioned(sessionId);
@@ -3197,11 +3315,13 @@ export class RuntimeHostAdapter {
     if (this.observations.has(sessionId)) return;
     const existing = this.observationPromises.get(sessionId);
     if (existing) return existing;
-    const pending = this.openObservation(sessionId).finally(() => {
-      if (this.observationPromises.get(sessionId) === pending) {
-        this.observationPromises.delete(sessionId);
-      }
-    });
+    const pending = this.openObservation(sessionId, { trustPersistedOwnership: true }).finally(
+      () => {
+        if (this.observationPromises.get(sessionId) === pending) {
+          this.observationPromises.delete(sessionId);
+        }
+      },
+    );
     this.observationPromises.set(sessionId, pending);
     return pending;
   }
@@ -3395,7 +3515,7 @@ export class RuntimeHostAdapter {
             sanitizeDiagnosticError(error),
           );
         });
-      this.profileCursor = Math.max(this.profileCursor, observation.snapshot.cursor);
+      this.advanceProfileCursor(runtime, observation.snapshot.cursor);
       this.projectionController.replaceSessionLive(initial);
       // Actor telemetry is best-effort: a daemon without the agents plane (or a
       // telemetry attach failure) must not fail session observation — the same
@@ -3512,7 +3632,7 @@ export class RuntimeHostAdapter {
       // detailed observation failed, and must remain usable if the Run is still active. Only when
       // the profile read itself fails do we mark the connection stale and reject the old fallback.
       try {
-        await this.refreshProfile(this.profileCursor);
+        await this.refreshProfile(this.currentProfileCursor());
       } catch (profileError) {
         console.warn(
           `[runtime] profile reconciliation after observation failure also failed for ${state.sessionId}:`,
@@ -4352,7 +4472,10 @@ export class RuntimeHostAdapter {
 
   async startManagedRun(input: RuntimeDaemonStartRunInput): Promise<RuntimeRunHandle> {
     const runtime = await this.requireRuntime();
-    await this.assertCoderSession(runtime, input.sessionId);
+    // Every Space start path calls ensureSession() before reaching this method. Do not put a
+    // second history-grade persisted read between factual admission and runs.start(): normal
+    // Session writers may make that read report data_changed even though Runtime can safely
+    // validate and admit the exact Session operation itself.
     await this.ensureObserved(input.sessionId);
     const provider = input.options?.provider;
     const registeredCredential =
@@ -4529,7 +4652,7 @@ export class RuntimeHostAdapter {
     // Terminal events normally refresh both projections. A Stop can instead race observation
     // invalidation or transport recovery, so schedule an authoritative profile reconciliation as
     // a second, bounded path rather than leaving the renderer on a stale active-Run summary.
-    this.scheduleProfileRefresh(this.profileCursor);
+    this.scheduleProfileRefresh(this.currentProfileCursor());
     return receipt;
   }
 
@@ -4609,7 +4732,10 @@ export class RuntimeHostAdapter {
 
   async submitInput(input: RuntimeSubmitInput) {
     const runtime = await this.requireRuntime();
-    await this.assertCoderSession(runtime, input.sessionId);
+    // submitInput is a control-plane operation against an already identified active Run. The
+    // daemon validates the session/run boundary authoritatively. A full persisted-history read
+    // here races the active Run's own writer lock and can make a healthy Session impossible to
+    // address, exactly like the former Stop preflight bug.
     await this.ensureObserved(input.sessionId);
     const isInterrupt = input.delivery === 'interrupt';
     if (isInterrupt && (input.credential !== undefined || input.hostTools !== undefined)) {
@@ -4665,7 +4791,16 @@ export class RuntimeHostAdapter {
       }
     }
     if (result.accepted) this.spaceOwnedRunIds.add(result.runId);
-    if (!result.accepted) this.retireObservationIfQuiescent(input.sessionId);
+    if (!result.accepted) {
+      // `stale_run` is an expected admission result, but it also means the local Run boundary
+      // used for this send is no longer safe for another mutation. Refresh the independent
+      // Runtime profile so the renderer can converge without retrying or changing delivery mode.
+      // This does not pretend to repair a daemon whose status and event stream disagree.
+      if (result.reason === 'stale_run') {
+        this.scheduleProfileRefresh(this.currentProfileCursor());
+      }
+      this.retireObservationIfQuiescent(input.sessionId);
+    }
     return result;
   }
 
@@ -4796,7 +4931,7 @@ export class RuntimeHostAdapter {
   async reloadRuntimeConfig(): Promise<void> {
     const runtime = await this.requireRuntime();
     await runtime.config.reload();
-    await this.refreshProfile(this.profileCursor);
+    await this.refreshProfile(this.currentProfileCursor());
   }
 
   async listRuntimeCustomProviders(): Promise<readonly SdkCustomProviderConfig[]> {
@@ -5546,6 +5681,7 @@ export class RuntimeHostAdapter {
     this.continuationCredentialLeases.clear();
     this.credentialLeases.clear();
     this.continuationPrompts.clear();
+    this.profileCursors.clear();
     this.stopAllActorObservations();
     for (const state of this.observations.values()) state.observation.close();
     this.observations.clear();

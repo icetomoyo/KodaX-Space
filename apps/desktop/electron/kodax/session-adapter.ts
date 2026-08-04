@@ -21,6 +21,7 @@ import type {
   PermissionDecision,
   PermissionMode,
   SessionEvent,
+  SessionSendRejectionReason,
   SessionSendQueueMode,
   SpaceRuntimeRunStopReceiptT,
   Surface,
@@ -54,17 +55,27 @@ export type SessionCreateOptions = {
 };
 
 /**
- * send() ACK returned to IPC callers.
- *   - { queued: false }                A run was started immediately.
- *   - { queued: true, queueId: '...', queueMode }
+ * send() admission result returned to IPC callers.
+ *   - { accepted: true, queued: false } A run was started immediately.
+ *   - { accepted: true, queued: true, queueId: '...', queueMode }
  *                                      The prompt was accepted into the requested
  *                                      follow-up queue mode.
+ *   - { accepted: false, reason, queueMode }
+ *                                      Runtime factually rejected the prompt. It
+ *                                      was not persisted and must remain editable.
  */
-export interface SendResult {
-  readonly queued: boolean;
-  readonly queueId?: string;
-  readonly queueMode?: SessionSendQueueMode;
-}
+export type SendResult =
+  | {
+      readonly accepted: true;
+      readonly queued: boolean;
+      readonly queueId?: string;
+      readonly queueMode?: SessionSendQueueMode;
+    }
+  | {
+      readonly accepted: false;
+      readonly reason: SessionSendRejectionReason;
+      readonly queueMode: SessionSendQueueMode;
+    };
 
 export type SendOptions = {
   readonly queueMode?: SessionSendQueueMode;
@@ -96,9 +107,7 @@ export interface LocalSessionCancelOutcome {
 }
 
 export type ManagedSessionCancelOutcome =
-  | SpaceRuntimeRunStopReceiptT
-  | LocalSessionCancelOutcome
-  | void;
+  SpaceRuntimeRunStopReceiptT | LocalSessionCancelOutcome | void;
 
 export interface ManagedSession {
   readonly sessionId: string;
@@ -175,10 +184,11 @@ export interface ManagedSession {
    * 并发约束：同一 session 在 send 进行中（即上一次 send 启动的事件流还没 emit
    * session_complete / session_error）不允许再 send——策略由实现选：
    *   - queue: Real adapter stores follow-up prompts in the SDK queue with
-   *            Space session ownership and returns `{ queued: true, queueId }`.
+   *            Space session ownership and returns an accepted queue result.
    *            KodaX may drain it mid-turn; Space falls back to the next run
    *            after settle if no safe drain point appears.
-   *   - reject: throw; IPC handler returns a HANDLER_ERROR envelope (Mock uses this).
+   *   - expected Runtime rejection: return a factual rejected admission result.
+   *   - local concurrency rejection: throw (Mock uses this).
    *
    * @throws 同步抛 / Promise reject：session 已 disposed、或拒绝并发
    */

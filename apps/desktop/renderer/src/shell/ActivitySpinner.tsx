@@ -126,7 +126,11 @@ export function snapshotFromEvents(
       streaming = false;
       break;
     }
-    if (ev.kind === 'session_start' || ev.kind === 'queued_user_prompt_started') {
+    if (
+      ev.kind === 'session_start' ||
+      ev.kind === 'queued_user_prompt_started' ||
+      ev.kind === 'mid_turn_user_prompt'
+    ) {
       streaming = true;
       break;
     }
@@ -277,6 +281,54 @@ export function snapshotFromRuntimeProjection(
 }
 
 type RuntimeProfileSession = SpaceRuntimeProfileProjectionT['sessions'][number];
+type RuntimeActivityOrigin = NonNullable<
+  Extract<SessionEvent, { readonly kind: 'session_start' }>['runtimeEvent']
+>;
+
+/**
+ * Find the newest Runtime event inside the currently open root activity span. A bridge event can
+ * arrive before the independently observed session.live/profile snapshots. Its Runtime sequence
+ * is therefore the only safe way to distinguish a genuinely newer active Run from stale restored
+ * lifecycle rows. Content alone is never treated as activity authority.
+ */
+function latestRuntimeActivityOrigin(
+  events: readonly SessionEvent[],
+): RuntimeActivityOrigin | undefined {
+  let boundary = -1;
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]!;
+    if ('contextKind' in event && event.contextKind === 'child') continue;
+    if (event.kind === 'session_complete' || event.kind === 'session_error') return undefined;
+    if (
+      event.kind === 'session_start' ||
+      event.kind === 'queued_user_prompt_started' ||
+      event.kind === 'mid_turn_user_prompt'
+    ) {
+      boundary = index;
+      break;
+    }
+  }
+  if (boundary < 0) return undefined;
+  for (let index = events.length - 1; index >= boundary; index -= 1) {
+    const event = events[index]!;
+    if ('contextKind' in event && event.contextKind === 'child') continue;
+    if ('runtimeEvent' in event && event.runtimeEvent !== undefined) {
+      return event.runtimeEvent;
+    }
+  }
+  return undefined;
+}
+
+function runtimeActivityOriginBelongsToCurrentRuntime(
+  origin: RuntimeActivityOrigin | undefined,
+  projectionCursor: SpaceSessionLiveProjectionT['cursor'] | undefined,
+  profileCursor: SpaceRuntimeProfileProjectionT['cursor'] | undefined,
+): boolean {
+  if (origin === undefined) return false;
+  const currentRuntimeId =
+    profileCursor?.runtimeId ?? projectionCursor?.runtimeId ?? origin.runtimeId;
+  return origin.runtimeId === currentRuntimeId;
+}
 
 /**
  * The profile projection is independently maintained by the daemon and survives a temporary
@@ -289,18 +341,6 @@ export function snapshotFromRuntimeProfileSession(
 ): ActivitySnapshot | undefined {
   if (!session) return undefined;
   return snapshotFromRuntimeRunState(session.activeRun, session.queuedRuns);
-}
-
-function snapshotFromRuntimeProfileSessionExcludingRun(
-  session: RuntimeProfileSession | undefined,
-  excludedRunId: string | undefined,
-): ActivitySnapshot | undefined {
-  if (!session) return undefined;
-  if (!excludedRunId) return snapshotFromRuntimeProfileSession(session);
-  return snapshotFromRuntimeRunState(
-    session.activeRun?.runId === excludedRunId ? undefined : session.activeRun,
-    session.queuedRuns.filter((run) => run.runId !== excludedRunId),
-  );
 }
 
 function snapshotFromRuntimeRunState(
@@ -370,10 +410,20 @@ export function selectActivitySnapshot(
   managedPhase: string | undefined,
   profileSession?: RuntimeProfileSession,
   runtimeConnectionAuthoritative = true,
+  profileCursor?: SpaceRuntimeProfileProjectionT['cursor'],
 ): ActivitySnapshot {
+  // Runtime bridge events are appended in the daemon's monotonic per-Runtime sequence, and root
+  // admission cannot start a successor Run before its predecessor has terminalized. The event-only
+  // lifecycle below relies on that contract: a terminal for an older root Run cannot legally arrive
+  // after a newer root Run's start. Cross-IPC live/profile snapshots do not share that ordering and
+  // are therefore arbitrated by explicit Run identity below instead of cursor recency.
   const eventSnapshot = snapshotFromEvents(events, pending, managedPhase);
+  const activeEventOrigin = eventSnapshot.streaming
+    ? latestRuntimeActivityOrigin(events)
+    : undefined;
   let terminalOrigin:
-    NonNullable<Extract<SessionEvent, { kind: 'session_complete' }>['runtimeEvent']> | undefined;
+    | NonNullable<Extract<SessionEvent, { kind: 'session_complete' }>['runtimeEvent']>
+    | undefined;
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index]!;
     if (
@@ -387,44 +437,63 @@ export function selectActivitySnapshot(
   }
   const activeRun = projection?.activeRun;
   const projectionCursor = projection?.cursor;
-  const terminalSupersedesProjection =
+  const terminalRunIds = new Set<string>();
+  if (projection?.lastTerminalRun) terminalRunIds.add(projection.lastTerminalRun.runId);
+  if (profileSession?.lastTerminalRun) terminalRunIds.add(profileSession.lastTerminalRun.runId);
+  if (
     terminalOrigin !== undefined &&
-    activeRun !== undefined &&
-    projectionCursor !== undefined &&
-    terminalOrigin.runtimeId === projectionCursor.runtimeId &&
-    terminalOrigin.runId === activeRun.runId &&
-    terminalOrigin.seq >= projectionCursor.seq;
-  // A terminal bridge event and session.live change originate from the same Runtime event. If the
-  // delta is delayed or rejected, its causal origin still fences the older active snapshot for the
-  // same Run. A later Run has another runId/cursor and remains visible.
+    runtimeActivityOriginBelongsToCurrentRuntime(terminalOrigin, projectionCursor, profileCursor)
+  ) {
+    terminalRunIds.add(terminalOrigin.runId);
+  }
   const runtimeSnapshot =
-    runtimeConnectionAuthoritative && !terminalSupersedesProjection
-      ? snapshotFromRuntimeProjection(projection)
+    runtimeConnectionAuthoritative && projection !== undefined
+      ? snapshotFromRuntimeRunState(
+          activeRun && !terminalRunIds.has(activeRun.runId) ? activeRun : undefined,
+          projection.queuedRuns.filter((run) => !terminalRunIds.has(run.runId)),
+          projection,
+        )
       : undefined;
-  // A session observation is deliberately discarded before an asynchronous resync. During that
-  // gap the profile still owns the Run boundary, so it must keep spinner/Stop state alive. Never
-  // override an available session.live snapshot: it is the more detailed authoritative plane.
   const profileSnapshot =
-    !runtimeConnectionAuthoritative || (projection !== undefined && !terminalSupersedesProjection)
-      ? undefined
-      : snapshotFromRuntimeProfileSessionExcludingRun(
-          profileSession,
-          terminalSupersedesProjection ? terminalOrigin?.runId : undefined,
-        );
+    runtimeConnectionAuthoritative && profileSession !== undefined
+      ? snapshotFromRuntimeRunState(
+          profileSession.activeRun && !terminalRunIds.has(profileSession.activeRun.runId)
+            ? profileSession.activeRun
+            : undefined,
+          profileSession.queuedRuns.filter((run) => !terminalRunIds.has(run.runId)),
+        )
+      : undefined;
+  const activeCurrentRuntimeEvent =
+    runtimeConnectionAuthoritative &&
+    activeEventOrigin !== undefined &&
+    runtimeActivityOriginBelongsToCurrentRuntime(
+      activeEventOrigin,
+      projectionCursor,
+      profileCursor,
+    ) &&
+    !terminalRunIds.has(activeEventOrigin.runId);
   // Compaction is a nested Runtime activity and is not represented by activeRun requirements.
   // Prefer its explicit lifecycle while active; otherwise the daemon live projection remains the
   // authority for ordinary queued/running/waiting states.
   if (eventSnapshot.streaming && eventSnapshot.compacting) {
     return eventSnapshot;
   }
-  // Runtime admission is authoritative once it reports a queued or active run, even if the
-  // renderer missed the lifecycle event that normally clears its optimistic pending marker.
+  // session.live, runtime.status and bridge events are independently delivered. Positive activity
+  // from any current-Runtime plane remains authoritative until that exact Run has an explicit
+  // terminal fact. An idle snapshot is only absence; letting its unrelated/global cursor clear a
+  // positive source caused spinner/Stop to flicker whenever the three streams alternated.
   if (runtimeSnapshot?.streaming) return runtimeSnapshot;
   if (profileSnapshot?.streaming) return profileSnapshot;
+  if (activeCurrentRuntimeEvent) return eventSnapshot;
   // A local send begins before Runtime admission can update the last projection.
   // Preserve that short pending state even when the previous authoritative snapshot was idle.
   if (pending) return eventSnapshot;
-  return runtimeSnapshot ?? profileSnapshot ?? eventSnapshot;
+  if (runtimeSnapshot) return runtimeSnapshot;
+  if (profileSnapshot) return profileSnapshot;
+  // Legacy/embedded sessions have no Runtime origin. Preserve their event-driven lifecycle only
+  // when no authoritative Runtime observation exists.
+  if (projection === undefined && profileSession === undefined) return eventSnapshot;
+  return { streaming: false, status: '', startedAt: null };
 }
 
 /** Tally a string's ASCII vs non-ASCII chars into an accumulator (for token estimation). */
@@ -465,7 +534,11 @@ function resolveStartedAtMemo(events: readonly SessionEvent[]): number {
   for (let i = events.length - 1; i >= 0; i--) {
     const k = events[i].kind;
     if (k === 'session_complete' || k === 'session_error') break;
-    if (k === 'session_start' || k === 'queued_user_prompt_started') {
+    if (
+      k === 'session_start' ||
+      k === 'queued_user_prompt_started' ||
+      k === 'mid_turn_user_prompt'
+    ) {
       lastStartIdx = i;
       break;
     }
@@ -505,6 +578,7 @@ export function ActivitySpinner(): ReactJSX.Element | null {
       ? s.runtimeProfile?.sessions.find((session) => session.sessionId === currentSessionId)
       : undefined,
   );
+  const runtimeProfileCursor = useAppStore((s) => s.runtimeProfile?.cursor);
   const runtimeConnectionAuthoritative = useAppStore((s) =>
     runtimeConnectionHasFreshLiveAuthority(s.runtimeConnection),
   );
@@ -516,6 +590,7 @@ export function ActivitySpinner(): ReactJSX.Element | null {
     managedPhase,
     runtimeProfileSession,
     runtimeConnectionAuthoritative,
+    runtimeProfileCursor,
   );
   // Elapsed display still ticks once per second; spinner motion itself is CSS-driven.
   const [, forceTick] = useState(0);
@@ -617,6 +692,7 @@ export function useActivityState(): ActivityState {
       ? s.runtimeProfile?.sessions.find((session) => session.sessionId === currentSessionId)
       : undefined,
   );
+  const runtimeProfileCursor = useAppStore((s) => s.runtimeProfile?.cursor);
   const runtimeConnectionAuthoritative = useAppStore((s) =>
     runtimeConnectionHasFreshLiveAuthority(s.runtimeConnection),
   );
@@ -627,6 +703,7 @@ export function useActivityState(): ActivityState {
     managedPhase,
     runtimeProfileSession,
     runtimeConnectionAuthoritative,
+    runtimeProfileCursor,
   );
   return {
     isStreaming: snapshot.streaming,

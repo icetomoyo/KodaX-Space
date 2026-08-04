@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import { RealKodaXSession } from '../kodax/real-session.js';
 import { runtimeHostAdapter } from '../kodax/runtime-host-adapter.js';
+import { setUserConfigImpl } from '../kodax/user-config.js';
 
 async function waitForTest(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -42,6 +43,293 @@ test('embedded Coder send rejects before acceptance when the inline owner is una
   assert.equal(session.isRunning(), false);
   assert.deepEqual(events, []);
 });
+
+test('daemon Coder restores the draft when the persisted boundary changes before admission', async (t) => {
+  const adapter = runtimeHostAdapter as unknown as Record<string, unknown>;
+  const patchedMethods = new Map<string, { readonly existed: boolean; readonly value: unknown }>();
+  const patchMethod = (name: string, value: unknown): void => {
+    patchedMethods.set(name, {
+      existed: Object.prototype.hasOwnProperty.call(adapter, name),
+      value: adapter[name],
+    });
+    adapter[name] = value;
+  };
+  t.after(() => {
+    for (const [name, original] of patchedMethods) {
+      if (original.existed) adapter[name] = original.value;
+      else delete adapter[name];
+    }
+  });
+
+  let observationAttempted = false;
+  let runtimeInputAttempted = false;
+  patchMethod('isRuntimeSelected', () => true);
+  patchMethod('initialize', async () => undefined);
+  patchMethod('ensureSession', async () => {
+    throw Object.assign(new Error('Session location topology changed'), { code: 'data_changed' });
+  });
+  patchMethod('ensureObserved', async () => {
+    observationAttempted = true;
+  });
+  patchMethod('submitInput', async () => {
+    runtimeInputAttempted = true;
+    throw new Error('submitInput must not run after a pre-admission boundary conflict');
+  });
+
+  const events: unknown[] = [];
+  const session = new RealKodaXSession({
+    sessionId: 'session_data_changed_before_admission',
+    projectRoot: process.cwd(),
+    provider: 'test-provider',
+    reasoningMode: 'balanced',
+    permissionMode: 'accept-edits',
+    surface: 'code',
+    emit: (event) => events.push(event),
+    requestPermission: async () => 'allow_once',
+  });
+
+  assert.deepEqual(
+    await session.send('must remain editable', undefined, { queueMode: 'after-turn' }),
+    { accepted: false, reason: 'session_data_changed', queueMode: 'after-turn' },
+  );
+  assert.equal(observationAttempted, false);
+  assert.equal(runtimeInputAttempted, false);
+  assert.equal(session.isRunning(), false);
+  assert.deepEqual(events, []);
+});
+
+test('daemon Coder retries a transient read-boundary change only before Run admission', async (t) => {
+  const adapter = runtimeHostAdapter as unknown as Record<string, unknown>;
+  const patchedMethods = new Map<string, { readonly existed: boolean; readonly value: unknown }>();
+  const patchMethod = (name: string, value: unknown): void => {
+    patchedMethods.set(name, {
+      existed: Object.prototype.hasOwnProperty.call(adapter, name),
+      value: adapter[name],
+    });
+    adapter[name] = value;
+  };
+  t.after(() => {
+    for (const [name, original] of patchedMethods) {
+      if (original.existed) adapter[name] = original.value;
+      else delete adapter[name];
+    }
+  });
+
+  let startAttempts = 0;
+  patchMethod('initialize', async () => undefined);
+  patchMethod('updateSessionSettings', async () => undefined);
+  patchMethod('ensureObserved', async () => undefined);
+  patchMethod('startManagedRun', async () => {
+    startAttempts += 1;
+    if (startAttempts < 3) {
+      throw Object.assign(new Error('Session data changed during the read boundary'), {
+        code: 'data_changed',
+      });
+    }
+    return {
+      runId: 'run_after_boundary_retry',
+      result: Promise.resolve({
+        runId: 'run_after_boundary_retry',
+        sessionId: 'session_boundary_retry',
+        phase: 'completed',
+      }),
+    };
+  });
+
+  const events: Array<{ readonly kind?: string }> = [];
+  const session = new RealKodaXSession({
+    sessionId: 'session_boundary_retry',
+    projectRoot: process.cwd(),
+    provider: 'test-provider',
+    reasoningMode: 'balanced',
+    permissionMode: 'accept-edits',
+    surface: 'code',
+    emit: (event) => events.push(event),
+    requestPermission: async () => 'allow_once',
+  });
+
+  await (
+    session as unknown as {
+      runCoderDaemon(prompt: string, signal: AbortSignal): Promise<void>;
+    }
+  ).runCoderDaemon('retry one unadmitted prompt', new AbortController().signal);
+
+  assert.equal(startAttempts, 3);
+  assert.equal(
+    events.some((event) => event.kind === 'session_error'),
+    false,
+  );
+});
+
+test('daemon Coder never retries an unclassified start failure', async (t) => {
+  const adapter = runtimeHostAdapter as unknown as Record<string, unknown>;
+  const patchedMethods = new Map<string, { readonly existed: boolean; readonly value: unknown }>();
+  const patchMethod = (name: string, value: unknown): void => {
+    patchedMethods.set(name, {
+      existed: Object.prototype.hasOwnProperty.call(adapter, name),
+      value: adapter[name],
+    });
+    adapter[name] = value;
+  };
+  t.after(() => {
+    for (const [name, original] of patchedMethods) {
+      if (original.existed) adapter[name] = original.value;
+      else delete adapter[name];
+    }
+  });
+
+  let startAttempts = 0;
+  patchMethod('initialize', async () => undefined);
+  patchMethod('updateSessionSettings', async () => undefined);
+  patchMethod('ensureObserved', async () => undefined);
+  patchMethod('startManagedRun', async () => {
+    startAttempts += 1;
+    throw new Error('transport outcome unknown');
+  });
+
+  const events: Array<{ readonly kind?: string }> = [];
+  const session = new RealKodaXSession({
+    sessionId: 'session_no_unsafe_retry',
+    projectRoot: process.cwd(),
+    provider: 'test-provider',
+    reasoningMode: 'balanced',
+    permissionMode: 'accept-edits',
+    surface: 'code',
+    emit: (event) => events.push(event),
+    requestPermission: async () => 'allow_once',
+  });
+
+  await (
+    session as unknown as {
+      runCoderDaemon(prompt: string, signal: AbortSignal): Promise<void>;
+    }
+  ).runCoderDaemon('do not duplicate uncertain admission', new AbortController().signal);
+
+  assert.equal(startAttempts, 1);
+  assert.equal(events.filter((event) => event.kind === 'session_error').length, 1);
+});
+
+test('daemon Coder cancellation during a boundary retry delay prevents another admission attempt', async (t) => {
+  const adapter = runtimeHostAdapter as unknown as Record<string, unknown>;
+  const patchedMethods = new Map<string, { readonly existed: boolean; readonly value: unknown }>();
+  const patchMethod = (name: string, value: unknown): void => {
+    patchedMethods.set(name, {
+      existed: Object.prototype.hasOwnProperty.call(adapter, name),
+      value: adapter[name],
+    });
+    adapter[name] = value;
+  };
+  t.after(() => {
+    for (const [name, original] of patchedMethods) {
+      if (original.existed) adapter[name] = original.value;
+      else delete adapter[name];
+    }
+  });
+
+  let startAttempts = 0;
+  patchMethod('initialize', async () => undefined);
+  patchMethod('updateSessionSettings', async () => undefined);
+  patchMethod('ensureObserved', async () => undefined);
+  patchMethod('startManagedRun', async () => {
+    startAttempts += 1;
+    throw Object.assign(new Error('Session data changed during the read boundary'), {
+      code: 'data_changed',
+    });
+  });
+
+  const events: Array<{ readonly kind?: string }> = [];
+  const session = new RealKodaXSession({
+    sessionId: 'session_cancel_boundary_retry',
+    projectRoot: process.cwd(),
+    provider: 'test-provider',
+    reasoningMode: 'balanced',
+    permissionMode: 'accept-edits',
+    surface: 'code',
+    emit: (event) => events.push(event),
+    requestPermission: async () => 'allow_once',
+  });
+  const abort = new AbortController();
+  const run = (
+    session as unknown as {
+      runCoderDaemon(prompt: string, signal: AbortSignal): Promise<void>;
+    }
+  ).runCoderDaemon('cancel before retry admission', abort.signal);
+
+  await waitForTest(() => startAttempts === 1);
+  abort.abort();
+  await run;
+
+  assert.equal(startAttempts, 1);
+  assert.equal(
+    events.some((event) => event.kind === 'session_error'),
+    false,
+  );
+});
+
+for (const abortRuntimeRun of [false, true] as const) {
+  test(`daemon Coder dispose(${abortRuntimeRun ? 'abort' : 'detach'}) during a boundary retry delay prevents another admission attempt`, async (t) => {
+    const adapter = runtimeHostAdapter as unknown as Record<string, unknown>;
+    const patchedMethods = new Map<
+      string,
+      { readonly existed: boolean; readonly value: unknown }
+    >();
+    const patchMethod = (name: string, value: unknown): void => {
+      patchedMethods.set(name, {
+        existed: Object.prototype.hasOwnProperty.call(adapter, name),
+        value: adapter[name],
+      });
+      adapter[name] = value;
+    };
+    t.after(() => {
+      for (const [name, original] of patchedMethods) {
+        if (original.existed) adapter[name] = original.value;
+        else delete adapter[name];
+      }
+    });
+
+    let startAttempts = 0;
+    let abortCalls = 0;
+    patchMethod('isRuntimeSelected', () => true);
+    patchMethod('initialize', async () => undefined);
+    patchMethod('ensureSession', async () => false);
+    patchMethod('ensureObserved', async () => undefined);
+    patchMethod('activeRunId', () => undefined);
+    patchMethod('findActiveRunId', async () => undefined);
+    patchMethod('updateSessionSettings', async () => undefined);
+    patchMethod('startManagedRun', async () => {
+      startAttempts += 1;
+      throw Object.assign(new Error('Session data changed during the read boundary'), {
+        code: 'data_changed',
+      });
+    });
+    patchMethod('abortSessionRun', async () => {
+      abortCalls += 1;
+      return true;
+    });
+
+    const session = new RealKodaXSession({
+      sessionId: `session_dispose_boundary_retry_${abortRuntimeRun ? 'abort' : 'detach'}`,
+      projectRoot: process.cwd(),
+      provider: 'test-provider',
+      reasoningMode: 'balanced',
+      permissionMode: 'accept-edits',
+      surface: 'code',
+      emit: () => undefined,
+      requestPermission: async () => 'allow_once',
+    });
+
+    assert.deepEqual(await session.send('dispose before retry admission'), {
+      accepted: true,
+      queued: false,
+    });
+    await waitForTest(() => startAttempts === 1);
+    await session.dispose({ abortRuntimeRun });
+    await waitForTest(() => !session.isRunning());
+
+    assert.equal(startAttempts, 1);
+    assert.equal(abortCalls, abortRuntimeRun ? 1 : 0);
+  });
+}
 
 test('embedded Coder snapshots permission mode before waiting for the inline owner', async (t) => {
   const adapter = runtimeHostAdapter as unknown as Record<string, unknown>;
@@ -100,7 +388,7 @@ test('embedded Coder snapshots permission mode before waiting for the inline own
   session.permissionMode = 'plan';
   releaseOwner();
 
-  assert.deepEqual(await accepted, { queued: false });
+  assert.deepEqual(await accepted, { accepted: true, queued: false });
   await waitForTest(() => observedRunMode !== undefined);
   assert.equal(observedRunMode, 'auto');
 });
@@ -202,12 +490,12 @@ test('active daemon run preserves interrupt intent and requires explicit after-t
     requestPermission: async () => 'allow_once',
   });
 
-  await assert.rejects(
-    session.send('follow-up while active', undefined, {
+  assert.deepEqual(
+    await session.send('follow-up while active', undefined, {
       queueMode: 'interrupt',
       promptOverlay: 'attachment path overlay',
     }),
-    /does not support mid-turn interrupt input.*Ctrl\/Cmd\+Enter/,
+    { accepted: false, reason: 'unsupported_capability', queueMode: 'interrupt' },
   );
   assert.deepEqual(submittedInput, {
     sessionId: 'session_restored',
@@ -223,9 +511,23 @@ test('active daemon run preserves interrupt intent and requires explicit after-t
     afterRunId: 'run_active',
     reason: 'interrupt_window_closed',
   });
-  await assert.rejects(
-    session.send('too late for this run', undefined, { queueMode: 'interrupt' }),
-    /passed its final safe insertion point.*was not sent.*retry/i,
+  assert.deepEqual(
+    await session.send('too late for this run', undefined, { queueMode: 'interrupt' }),
+    { accepted: false, reason: 'interrupt_window_closed', queueMode: 'interrupt' },
+  );
+
+  adapter.submitInput = async () => ({
+    accepted: false,
+    delivery: 'interrupt',
+    sessionId: 'session_restored',
+    afterRunId: 'run_active',
+    reason: 'stale_run',
+  });
+  assert.deepEqual(
+    await session.send('preserve this stale-boundary draft', undefined, {
+      queueMode: 'interrupt',
+    }),
+    { accepted: false, reason: 'stale_run', queueMode: 'interrupt' },
   );
 
   let acceptedInterruptCount = 0;
@@ -246,6 +548,7 @@ test('active daemon run preserves interrupt intent and requires explicit after-t
     queueMode: 'interrupt',
   });
   assert.deepEqual(interruptResult, {
+    accepted: true,
     queued: true,
     queueId: 'input_interrupt_1',
     queueMode: 'interrupt',
@@ -260,6 +563,7 @@ test('active daemon run preserves interrupt intent and requires explicit after-t
     queueMode: 'interrupt',
   });
   assert.deepEqual(secondInterruptResult, {
+    accepted: true,
     queued: true,
     queueId: 'input_interrupt_2',
     queueMode: 'interrupt',
@@ -279,6 +583,7 @@ test('active daemon run preserves interrupt intent and requires explicit after-t
     queueMode: 'after-turn',
   });
   assert.deepEqual(result, {
+    accepted: true,
     queued: true,
     queueId: 'run_follow_up',
     queueMode: 'after-turn',
@@ -322,6 +627,11 @@ test('active daemon run preserves interrupt intent and requires explicit after-t
 });
 
 test('daemon run refreshes settings and hides exit_plan_mode without an approval bridge', async (t) => {
+  setUserConfigImpl({
+    loadConfig: (() => ({ sandbox: { envPass: ['GH_TOKEN', 'GITHUB_TOKEN'] } })) as never,
+    registerCustomProviders: () => undefined,
+  });
+  t.after(() => setUserConfigImpl(null));
   const adapter = runtimeHostAdapter as unknown as Record<string, unknown>;
   const patchedMethods = new Map<string, { readonly existed: boolean; readonly value: unknown }>();
   const patchMethod = (name: string, value: unknown): void => {
@@ -413,10 +723,12 @@ test('daemon run refreshes settings and hides exit_plan_mode without an approval
           readonly excludeTools?: readonly string[];
           readonly shellExecution?: unknown;
         };
+        readonly sandbox?: { readonly envPass?: readonly string[] };
       }
     | undefined;
   assert.ok(options?.context?.excludeTools?.includes('exit_plan_mode'));
   assert.deepEqual(options?.context?.shellExecution, shellExecution);
+  assert.deepEqual(options?.sandbox?.envPass, ['GH_TOKEN', 'GITHUB_TOKEN']);
 });
 
 test('daemon permission sync keeps mode changes made during initialize and an in-flight settings write', async (t) => {
@@ -460,13 +772,16 @@ test('daemon permission sync keeps mode changes made during initialize and an in
   });
   patchMethod('ensureSession', async () => false);
   patchMethod('ensureObserved', async () => undefined);
-  patchMethod('updateSessionSettings', async (_sessionId: string, patch: Record<string, unknown>) => {
-    permissionModeWrites.push(patch.permissionMode);
-    if (permissionModeWrites.length === 1) {
-      markFirstSettingsWriteEntered();
-      await firstSettingsWriteGate;
-    }
-  });
+  patchMethod(
+    'updateSessionSettings',
+    async (_sessionId: string, patch: Record<string, unknown>) => {
+      permissionModeWrites.push(patch.permissionMode);
+      if (permissionModeWrites.length === 1) {
+        markFirstSettingsWriteEntered();
+        await firstSettingsWriteGate;
+      }
+    },
+  );
   patchMethod('startManagedRun', async () => ({
     runId: 'run_permission_live_settings',
     result: Promise.resolve({

@@ -14,6 +14,11 @@ KodaX 版本号或 guardrail 版本推断。Partner 继续由 Space inline owner
 
 KodaX 0.7.78 的配置说明也已收口：核心配置仍在 `~/.kodax/config.json`，MCP、可信 Extension 路径和 A2A 分别位于 `~/.kodax/integrations/mcp.json`、`extensions.json`、`a2a.json`。Settings → Runtime 会显示三个域的来源、revision、watcher、最近 reload 和有界诊断；Runtime 对无效更新保留 last-known-good 配置，并发写冲突要求 reload 后重试。应用内 `kodax_manual` 会继承当前安装 SDK 推荐的原始底层能力主题，再叠加 Space 操作说明。
 
+当前 vendored KodaX 0.7.79 测试候选还增加了 Run-scoped `sandbox.envPass`。Settings → Runtime
+可编辑变量名 allow-list；Space 将显式列表投影到所有 Coder、Partner、legacy 与 Workflow
+Run，变量值只在命令执行 host 读取。超出有界编辑器限制的 CLI 配置会完整保留并以只读方式
+显示，避免静默截断。
+
 ## 我想要……
 
 | 目标                                | 从这里开始                                                                                                                                                                |

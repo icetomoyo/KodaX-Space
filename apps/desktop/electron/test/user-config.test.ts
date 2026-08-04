@@ -19,12 +19,15 @@ import {
   loadKodaxConfigOverview,
   loadKodaxCustomProviders,
   loadKodaxAutoModeDefaults,
+  loadKodaxRunConfig,
+  loadKodaxSandboxConfig,
   loadKodaxUserDefaults,
   registerKodaxCustomProviders,
   removeKodaxConfigCustomProvider,
   setUserConfigImpl,
   updateKodaxCompactionConfig,
   updateKodaxConfigCustomProvider,
+  updateKodaxSandboxConfig,
   type KodaxUserConfigImpl,
 } from '../kodax/user-config.js';
 
@@ -39,6 +42,7 @@ function mockUserConfig(
     throwOnLoad: Error;
     throwOnRegister: Error;
     saveCalls: unknown[];
+    beforeSave: (current: Record<string, unknown>, patch: Record<string, unknown>) => void;
   }> = {},
 ): void {
   const impl: KodaxUserConfigImpl = {
@@ -48,8 +52,13 @@ function mockUserConfig(
     }) as never,
     saveConfig: ((next: Record<string, unknown>) => {
       hooks.saveCalls?.push(next);
-      for (const key of Object.keys(config)) delete config[key];
-      Object.assign(config, next);
+      hooks.beforeSave?.(config, next);
+      // Match KodaX saveConfig: lock-protected shallow merge, with explicit
+      // undefined deleting a top-level key.
+      for (const [key, value] of Object.entries(next)) {
+        if (value === undefined) delete config[key];
+        else config[key] = value;
+      }
     }) as never,
     registerCustomProviders: ((cfg: { customProviders?: unknown[] }) => {
       if (hooks.throwOnRegister) throw hooks.throwOnRegister;
@@ -606,6 +615,7 @@ test('load/update KodaX compaction config preserves unrelated config fields', as
   } as unknown as Parameters<typeof updateKodaxCompactionConfig>[0]);
 
   assert.equal(saveCalls.length, 1);
+  assert.deepEqual(Object.keys(saveCalls[0] as object), ['compaction']);
   assert.equal(config.provider, 'zhipu-coding');
   assert.equal(config.model, 'glm-5.2');
   assert.deepEqual(config.compaction, {
@@ -619,6 +629,105 @@ test('load/update KodaX compaction config preserves unrelated config fields', as
   assert.equal(overview.mcp.globalServers, 1);
   assert.equal(overview.mcp.globalSource, 'legacy-user');
   assert.match(overview.mcp.globalPath, /integrations[\\/]mcp\.json$/);
+});
+
+test('load/update KodaX sandbox envPass normalizes names and preserves unrelated fields', async () => {
+  const config: Record<string, unknown> = {
+    provider: 'zhipu-coding',
+    sandbox: {
+      envPass: [' GH_TOKEN ', 'INVALID-NAME', 'GH_TOKEN', 'NODE_OPTIONS', 42],
+      futurePolicy: 'keep-me',
+    },
+  };
+  const saveCalls: unknown[] = [];
+  mockUserConfig(config, { saveCalls });
+
+  assert.deepEqual(await loadKodaxSandboxConfig(), {
+    envPass: ['GH_TOKEN', 'NODE_OPTIONS'],
+  });
+  assert.deepEqual(await loadKodaxRunConfig(), {
+    compaction: { enabled: true },
+    sandbox: { envPass: ['GH_TOKEN', 'NODE_OPTIONS'] },
+  });
+
+  const overview = await updateKodaxSandboxConfig({
+    envPass: ['GITHUB_TOKEN', ' GH_TOKEN ', 'GITHUB_TOKEN'],
+  });
+
+  assert.equal(saveCalls.length, 1);
+  assert.deepEqual(Object.keys(saveCalls[0] as object), ['sandbox']);
+  assert.equal(config.provider, 'zhipu-coding');
+  assert.deepEqual(config.sandbox, {
+    futurePolicy: 'keep-me',
+    envPass: ['GITHUB_TOKEN', 'GH_TOKEN'],
+  });
+  assert.deepEqual(overview.sandbox, {
+    envPass: ['GITHUB_TOKEN', 'GH_TOKEN'],
+    totalEnvPass: 2,
+    editable: true,
+  });
+});
+
+test('sandbox and compaction domain patches preserve concurrent top-level writes', async () => {
+  const sandboxConfig: Record<string, unknown> = {
+    provider: 'before-sandbox-write',
+    sandbox: { envPass: ['OLD_TOKEN'], futurePolicy: 'keep-me' },
+  };
+  const sandboxSaveCalls: unknown[] = [];
+  mockUserConfig(sandboxConfig, {
+    saveCalls: sandboxSaveCalls,
+    beforeSave: (current) => {
+      current.provider = 'written-concurrently';
+      current.compaction = { enabled: true, triggerPercent: 55 };
+    },
+  });
+
+  await updateKodaxSandboxConfig({ envPass: ['NEW_TOKEN'] });
+  assert.equal(sandboxConfig.provider, 'written-concurrently');
+  assert.deepEqual(sandboxConfig.compaction, { enabled: true, triggerPercent: 55 });
+  assert.deepEqual(Object.keys(sandboxSaveCalls[0] as object), ['sandbox']);
+
+  const compactionConfig: Record<string, unknown> = {
+    model: 'before-compaction-write',
+    compaction: { enabled: true, triggerPercent: 75, futurePolicy: 'keep-me' },
+  };
+  const compactionSaveCalls: unknown[] = [];
+  mockUserConfig(compactionConfig, {
+    saveCalls: compactionSaveCalls,
+    beforeSave: (current) => {
+      current.model = 'written-concurrently';
+      current.sandbox = { envPass: ['GH_TOKEN'] };
+    },
+  });
+
+  await updateKodaxCompactionConfig({ enabled: true, triggerPercent: 60 });
+  assert.equal(compactionConfig.model, 'written-concurrently');
+  assert.deepEqual(compactionConfig.sandbox, { envPass: ['GH_TOKEN'] });
+  assert.deepEqual(Object.keys(compactionSaveCalls[0] as object), ['compaction']);
+});
+
+test('Run policy stays lossless when a CLI allow-list exceeds bounded IPC editing limits', async () => {
+  const names = Array.from({ length: 129 }, (_, index) => `SPACE_ENV_${index}`);
+  const longName = `SPACE_${'X'.repeat(260)}`;
+  mockUserConfig({ sandbox: { envPass: [...names, longName] } });
+
+  const runConfig = await loadKodaxRunConfig();
+  assert.deepEqual(runConfig.sandbox.envPass, [...names, longName]);
+
+  const overview = await loadKodaxConfigOverview();
+  assert.equal(overview.sandbox.editable, false);
+  assert.equal(overview.sandbox.totalEnvPass, 130);
+  assert.equal(overview.sandbox.envPass.length, 128);
+  assert.deepEqual(overview.sandbox.envPass, names.slice(0, 128));
+});
+
+test('KodaX run config always materializes an empty sandbox allow-list', async () => {
+  mockUserConfig({ sandbox: { envPass: ['bad-name', '', 1] } });
+
+  assert.deepEqual(await loadKodaxRunConfig(), {
+    compaction: { enabled: true },
+    sandbox: { envPass: [] },
+  });
 });
 
 test('KodaX config overview reports the project split MCP integration source', async () => {

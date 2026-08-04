@@ -192,7 +192,7 @@ KodaX Space intentionally reuses KodaX ecosystem state where it should, and owns
 
 | State                                    | Behavior                                                                                                                                                           |
 | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `~/.kodax/config.json`                   | Core provider/model/effort/permission/custom-provider/compaction and Runtime configuration shared with KodaX. MCP, A2A, and Extensions are not newly written here. |
+| `~/.kodax/config.json`                   | Core provider/model/effort/permission/custom-provider/compaction plus `sandbox.envPass` variable-name allow-list shared with KodaX. Values are never stored; MCP, A2A, and Extensions are not newly written here. |
 | `~/.kodax/integrations/mcp.json`         | Versioned user MCP server declarations shared by CLI/SDK/Space; Settings can migrate the read-only legacy `config.json#mcpServers` fallback without deleting it.   |
 | `~/.kodax/integrations/extensions.json`  | Versioned trusted filesystem-extension paths. Space loads them only when `KODAX_SPACE_ENABLE_SDK_EXTENSIONS=1`; the default is discovery-only.                     |
 | `~/.kodax/integrations/a2a.json`         | Versioned Runtime-owned A2A registration configuration.                                                                                                            |

@@ -104,6 +104,18 @@ function sanitizeAutoModeErrorMessage(msg: string): string {
   );
 }
 
+/**
+ * KodaX exposes a changed persistence boundary as a factual pre-admission conflict. Space may
+ * restore the draft only while it still knows that runs.start/submitInput has not been called.
+ */
+function isSessionPreAdmissionDataChanged(error: unknown): boolean {
+  const code =
+    error && typeof error === 'object' && 'code' in error
+      ? String((error as { readonly code?: unknown }).code)
+      : undefined;
+  return code === 'data_changed' || code === 'resync_required';
+}
+
 import type {
   AskUserAnswer as SdkAskUserAnswer,
   AskUserSelectionAnswer as SdkAskUserSelectionAnswer,
@@ -195,7 +207,7 @@ import { resolveKodaXShellExecutionContract } from './shell-execution.js';
 import { settingsStore } from '../settings/store.js';
 import { workflowController } from './workflow-controller.js';
 import { externalAgentGateway } from './external-agent-gateway.js';
-import { loadKodaxCompactionConfig } from './user-config.js';
+import { loadKodaxRunConfig } from './user-config.js';
 import { pushToRenderer } from '../ipc/push.js';
 import {
   isTransientChildEvent,
@@ -327,6 +339,7 @@ function clampSessionEventText(value: string | undefined): string | undefined {
 }
 
 const STREAM_DELTA_FLUSH_MS = 33;
+const PRE_ADMISSION_DATA_CHANGED_RETRY_DELAYS_MS = [25, 75] as const;
 
 // Plan-mode 工具拦截：v0.7.42 切到 SDK `isToolPlanModeAllowed`，基于工具注册时的
 // `sideEffect` / `planModeAllowed` 元数据自动判定——SDK 新增 'mutates-fs' 工具
@@ -468,25 +481,42 @@ export class RealKodaXSession implements ManagedSession {
     }
 
     if (this.surface === 'code' && runtimeHostAdapter.isRuntimeSelected()) {
-      await runtimeHostAdapter.initialize();
-      await runtimeHostAdapter.ensureSession({
-        sessionId: this.sessionId,
-        projectRoot: this.projectRoot,
-        surface: 'code',
-        ephemeral: this.ephemeral,
-      });
-      await runtimeHostAdapter.ensureObserved(this.sessionId);
-      const activeRunId =
-        runtimeHostAdapter.activeRunId(this.sessionId) ??
-        (await runtimeHostAdapter.findActiveRunId(this.sessionId));
+      const queueMode = options?.queueMode ?? 'interrupt';
+      let activeRunId: string | undefined;
+      try {
+        await runtimeHostAdapter.initialize();
+        await runtimeHostAdapter.ensureSession({
+          sessionId: this.sessionId,
+          projectRoot: this.projectRoot,
+          surface: 'code',
+          ephemeral: this.ephemeral,
+        });
+        await runtimeHostAdapter.ensureObserved(this.sessionId);
+        activeRunId =
+          runtimeHostAdapter.activeRunId(this.sessionId) ??
+          (await runtimeHostAdapter.findActiveRunId(this.sessionId));
+        if (this.currentAbort || activeRunId) {
+          if (!activeRunId) {
+            throw new Error('The Coder daemon is still accepting the current run; retry shortly.');
+          }
+          // A daemon session may outlive Space while its local settings sidecar is
+          // missing or stale. Reconcile before attaching a continuation; a fresh run
+          // performs the same one-time reconciliation at its execution boundary.
+          await this.syncRuntimeSessionSettings();
+        }
+      } catch (error: unknown) {
+        // This catch deliberately ends before submitInput()/startRun(). Retrying or translating an
+        // error after either Runtime admission call could duplicate a prompt whose acceptance is
+        // uncertain. Here no Runtime input has been submitted, so restoring the draft is factual.
+        if (isSessionPreAdmissionDataChanged(error)) {
+          return { accepted: false, reason: 'session_data_changed', queueMode };
+        }
+        throw error;
+      }
       if (this.currentAbort || activeRunId) {
         if (!activeRunId) {
           throw new Error('The Coder daemon is still accepting the current run; retry shortly.');
         }
-        // A daemon session may outlive Space while its local settings sidecar is
-        // missing or stale. Reconcile before attaching a continuation; a fresh run
-        // performs the same one-time reconciliation at its execution boundary.
-        await this.syncRuntimeSessionSettings();
         // Preserve the delivery mode selected by the user. In particular, normal
         // Enter means interrupt while Ctrl/Cmd+Enter means after-turn. A Runtime
         // that does not advertise interruptInput must reject that request
@@ -499,7 +529,6 @@ export class RealKodaXSession implements ManagedSession {
         const continuationPrompt = options?.promptOverlay
           ? `${prompt}\n\n${options.promptOverlay}`
           : prompt;
-        const queueMode = options?.queueMode ?? 'interrupt';
         const delivery = queueMode === 'after-turn' ? 'after_turn' : 'interrupt';
         const result = await runtimeHostAdapter.submitInput({
           sessionId: this.sessionId,
@@ -508,21 +537,7 @@ export class RealKodaXSession implements ManagedSession {
           input: this.buildRuntimeInput(continuationPrompt, artifacts),
         });
         if (!result.accepted) {
-          if (delivery === 'interrupt' && result.reason === 'unsupported_capability') {
-            throw new Error(
-              'The connected KodaX Runtime does not support mid-turn interrupt input. ' +
-                'Use Ctrl/Cmd+Enter to queue after the current turn.',
-            );
-          }
-          // Keep Space source-compatible with the immediately preceding Runtime package while
-          // recognizing the more specific rejection reason once the patched Runtime is installed.
-          if (delivery === 'interrupt' && String(result.reason) === 'interrupt_window_closed') {
-            throw new Error(
-              'The active run has already passed its final safe insertion point. ' +
-                'This message was not sent; retry after the run finishes.',
-            );
-          }
-          throw new Error(`The daemon rejected the ${queueMode} input: ${result.reason}.`);
+          return { accepted: false, reason: result.reason, queueMode };
         }
         if (result.delivery !== delivery) {
           throw new Error(
@@ -532,13 +547,14 @@ export class RealKodaXSession implements ManagedSession {
         }
         this.lastActivityAt = Date.now();
         return {
+          accepted: true,
           queued: true,
           queueId: result.delivery === 'interrupt' ? result.inputId : result.runId,
           queueMode,
         };
       }
       this.startRun(prompt, artifacts, options?.promptOverlay, runPermissionMode);
-      return { queued: false };
+      return { accepted: true, queued: false };
     }
 
     // Follow-up prompts are queued explicitly: interrupt goes into the SDK
@@ -558,10 +574,10 @@ export class RealKodaXSession implements ManagedSession {
         options?.promptOverlay,
       );
       this.lastActivityAt = Date.now();
-      return { queued: true, queueId, queueMode };
+      return { accepted: true, queued: true, queueId, queueMode };
     }
     this.startRun(prompt, artifacts, options?.promptOverlay, runPermissionMode);
-    return { queued: false };
+    return { accepted: true, queued: false };
   }
 
   private buildRuntimeInput(
@@ -885,20 +901,15 @@ export class RealKodaXSession implements ManagedSession {
     const sid = this.sessionId;
     try {
       await runtimeHostAdapter.initialize();
-      await runtimeHostAdapter.ensureSession({
-        sessionId: sid,
-        projectRoot: this.projectRoot,
-        surface: 'code',
-        ephemeral: this.ephemeral,
-      });
-      // Keep the execution boundary self-contained as queued/restored runs can enter
-      // here without a fresh renderer-driven session creation.
+      // send() has already established the exact Runtime Session identity before it reports
+      // acceptance. Repeating that history-grade load here races normal Session writers and can
+      // turn an accepted prompt into a later topology error.
       const shellExecution = await this.syncRuntimeSessionSettings();
       await runtimeHostAdapter.ensureObserved(sid);
 
-      const [skillsPrompt, compaction, sdk] = await Promise.all([
+      const [skillsPrompt, runConfig, sdk] = await Promise.all([
         buildSkillsPromptForSurface('code', this.projectRoot),
-        loadKodaxCompactionConfig(),
+        loadKodaxRunConfig(),
         loadSdkCoding(),
       ]);
       const selfManual = buildSpaceManual(sdk);
@@ -909,7 +920,8 @@ export class RealKodaXSession implements ManagedSession {
         agentMode: this.agentMode,
         ...(this.model !== undefined ? { model: this.model } : {}),
         ...(this.thinking !== undefined ? { thinking: this.thinking } : {}),
-        ...(compaction ? { compaction } : {}),
+        compaction: runConfig.compaction,
+        sandbox: runConfig.sandbox,
         context: {
           gitRoot: this.projectRoot,
           executionCwd: this.projectRoot,
@@ -932,12 +944,40 @@ export class RealKodaXSession implements ManagedSession {
         return;
       }
       if (admission) admission.phase = 'starting';
-      const handle = await runtimeHostAdapter.startManagedRun({
+      const startInput = {
         sessionId: sid,
         input: this.buildRuntimeInput(prompt, artifacts),
-        mode: 'managed_task',
+        mode: 'managed_task' as const,
         options,
-      });
+      };
+      let handle: Awaited<ReturnType<typeof runtimeHostAdapter.startManagedRun>>;
+      let boundaryRetry = 0;
+      for (;;) {
+        if (signal.aborted || this.disposed) {
+          throw Object.assign(new Error('Run admission was cancelled before retry.'), {
+            name: 'AbortError',
+          });
+        }
+        try {
+          handle = await runtimeHostAdapter.startManagedRun(startInput);
+          break;
+        } catch (error) {
+          const retryDelay = PRE_ADMISSION_DATA_CHANGED_RETRY_DELAYS_MS[boundaryRetry];
+          if (
+            retryDelay === undefined ||
+            signal.aborted ||
+            this.disposed ||
+            !isSessionPreAdmissionDataChanged(error)
+          ) {
+            throw error;
+          }
+          // startManagedRun rejected before returning a handle, and this factual error code means
+          // runs.start did not cross admission. A bounded retry is therefore safe; retrying any
+          // other error (or anything after a handle exists) could duplicate an accepted prompt.
+          boundaryRetry += 1;
+          await new Promise<void>((resolve) => setTimeout(resolve, retryDelay));
+        }
+      }
       this.settleRuntimeAdmission(admission, 'admitted');
       // Normal Space shutdown detaches from the shared daemon. dispose() marks
       // the local Session as disposed before aborting its local wait signal, so
@@ -993,13 +1033,7 @@ export class RealKodaXSession implements ManagedSession {
     runPermissionMode: PermissionMode = this.permissionMode,
   ): Promise<void> {
     if (this.surface === 'code' && runtimeHostAdapter.isRuntimeSelected()) {
-      await this.runCoderDaemon(
-        prompt,
-        signal,
-        artifacts,
-        promptOverlay,
-        runtimeAdmission,
-      );
+      await this.runCoderDaemon(prompt, signal, artifacts, promptOverlay, runtimeAdmission);
       return;
     }
     if (this.surface === 'code') {
@@ -2146,7 +2180,7 @@ export class RealKodaXSession implements ManagedSession {
         (await loadSdkAgent())?.getCachedRejectedEfforts(this.provider, this.model ?? undefined) ??
         [];
       const wireEffort = resolveWireEffort(this.reasoningMode, reasoningProfile, rejectedEfforts);
-      const compaction = await loadKodaxCompactionConfig();
+      const runConfig = await loadKodaxRunConfig();
       const persistedSkillSession =
         sessionStorage !== undefined
           ? await (sessionStorage as KodaXSessionStorage).load(sid).catch(() => null)
@@ -2185,7 +2219,8 @@ export class RealKodaXSession implements ManagedSession {
         // SDK 0.7.42 wired (P0): /model + /thinking 设置在下一 turn 生效
         ...(this.model !== undefined ? { model: this.model } : {}),
         ...(this.thinking !== undefined ? { thinking: this.thinking } : {}),
-        ...(compaction ? { compaction } : {}),
+        compaction: runConfig.compaction,
+        sandbox: runConfig.sandbox,
         events,
         ...(extensionRuntimeHandle !== undefined
           ? { extensionRuntime: extensionRuntimeHandle.runtime }

@@ -1,7 +1,7 @@
 // F060 — WorkflowController: 进程事件转发 + host 归属 + list/get + 归属持久化 + schema round-trip.
 // 用 fake run manager（不碰真 SDK / LLM），real tmp-dir 持久化（DI），无 mock 文件系统。
 
-import { test } from 'node:test';
+import { afterEach, beforeEach, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -12,11 +12,23 @@ import {
   withDefaultWorkflowAgentTarget,
 } from '../kodax/workflow-controller.js';
 import { _setRepoIntelEntitlementForTesting } from '../kodax/repo-intel-gate.js';
+import { setUserConfigImpl, type KodaxUserConfigImpl } from '../kodax/user-config.js';
 import type {
   WorkflowRunManagerLike,
   WorkflowLifecycleLike,
 } from '../kodax/workflow-controller.js';
 import { workflowEventChannel, workflowProcessSnapshotSchema } from '@kodax-space/space-ipc-schema';
+
+function setWorkflowConfig(sandbox: { readonly envPass: readonly string[] }): void {
+  setUserConfigImpl({
+    loadConfig: (() => ({ sandbox })) as KodaxUserConfigImpl['loadConfig'],
+    saveConfig: (() => undefined) as KodaxUserConfigImpl['saveConfig'],
+    registerCustomProviders: () => undefined,
+  });
+}
+
+beforeEach(() => setWorkflowConfig({ envPass: [] }));
+afterEach(() => setUserConfigImpl(null));
 
 // ---- fake run manager（可手动 emit 进程事件 + 持有 snapshot）----
 interface FakeSnap {
@@ -1274,6 +1286,35 @@ test('workflow launch enables repo-intelligence trace when licensed', async () =
     );
   } finally {
     _setRepoIntelEntitlementForTesting(null);
+    _setCodingSdkForTesting(null);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('workflow launch forwards configured and explicit-empty sandbox envPass', async () => {
+  const { dir, file } = freshFile();
+  _setCodingSdkForTesting(launchSdk('sandbox-flow'));
+  try {
+    const ctrl = new WorkflowController(() => {}, file);
+    const mgr = fakeManager();
+    await ctrl.init(mgr);
+
+    setWorkflowConfig({ envPass: ['GH_TOKEN', 'GITHUB_TOKEN'] });
+    await ctrl.createGeneratedWorkflow('configured sandbox', LAUNCH_SESSION);
+    assert.deepEqual(
+      (mgr.started[0]!.options as { sandbox?: unknown }).sandbox,
+      { envPass: ['GH_TOKEN', 'GITHUB_TOKEN'] },
+      'independently launched workflows inherit the configured allow-list',
+    );
+
+    setWorkflowConfig({ envPass: [] });
+    await ctrl.createGeneratedWorkflow('empty sandbox', LAUNCH_SESSION);
+    assert.deepEqual(
+      (mgr.started[1]!.options as { sandbox?: unknown }).sandbox,
+      { envPass: [] },
+      'an explicit empty list prevents process-global fallback',
+    );
+  } finally {
     _setCodingSdkForTesting(null);
     rmSync(dir, { recursive: true, force: true });
   }

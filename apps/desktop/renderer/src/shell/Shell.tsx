@@ -1053,7 +1053,7 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
                   </span>
                 </div>
               )}
-              <ConversationStreamV2 />
+              <ConversationStreamV2 key={currentSessionIdForPlan ?? 'no-session'} />
 
               {activePopout !== null && (
                 <PopoutOverlay

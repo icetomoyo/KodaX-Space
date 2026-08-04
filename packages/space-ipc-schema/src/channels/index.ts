@@ -187,6 +187,7 @@ import {
   settingsKodaxConfigGetChannel,
   settingsKodaxConfigPlanIntegrationMigrationChannel,
   settingsKodaxConfigSetCompactionChannel,
+  settingsKodaxConfigSetSandboxChannel,
   settingsSetCoderRuntimeModeChannel,
   settingsSetDefaultWorkspaceChannel,
   settingsSetLanguageModeChannel,
@@ -432,6 +433,7 @@ export const invokeChannels = {
   [settingsSetRuntimeDefaultsChannel.name]: settingsSetRuntimeDefaultsChannel,
   [settingsKodaxConfigGetChannel.name]: settingsKodaxConfigGetChannel,
   [settingsKodaxConfigSetCompactionChannel.name]: settingsKodaxConfigSetCompactionChannel,
+  [settingsKodaxConfigSetSandboxChannel.name]: settingsKodaxConfigSetSandboxChannel,
   [settingsKodaxConfigPlanIntegrationMigrationChannel.name]:
     settingsKodaxConfigPlanIntegrationMigrationChannel,
   [settingsKodaxConfigApplyIntegrationMigrationChannel.name]:

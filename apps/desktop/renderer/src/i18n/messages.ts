@@ -972,6 +972,21 @@ export const messages = {
     'settings.sandbox.cancelled': 'Command sandbox setup was cancelled.',
     'settings.sandbox.setupUnavailable':
       'Setup finished without a ready doctor result. Review the guidance and retry.',
+    'settings.sandbox.envPass.title': 'Sandbox environment passthrough',
+    'settings.sandbox.envPass.description':
+      'Allow selected host environment variables in model-issued command targets.',
+    'settings.sandbox.envPass.label': 'Allowed variable names',
+    'settings.sandbox.envPass.placeholder': 'GH_TOKEN\nGITHUB_TOKEN\nOPENAI_API_KEY',
+    'settings.sandbox.envPass.hint':
+      'Enter one name per line (commas and spaces also work), up to {max}. Leave empty to pass none.',
+    'settings.sandbox.envPass.security':
+      'Only names are saved. Values are read on the command-execution host and are never written to config. NODE_OPTIONS, BASH_ENV, RIPGREP_CONFIG_PATH, and imported Bash functions remain blocked. Restart an attached persistent daemon after changing host values.',
+    'settings.sandbox.envPass.save': 'Save allow-list',
+    'settings.sandbox.envPass.saved': 'Sandbox environment allow-list saved.',
+    'settings.sandbox.envPass.invalidName': 'Invalid environment variable name: {name}',
+    'settings.sandbox.envPass.tooMany': 'At most {max} environment variable names are allowed.',
+    'settings.sandbox.envPass.readOnlyOverflow':
+      'This CLI-authored allow-list contains {count} entries or a name longer than {nameMax} characters. Space preserves the full Runtime policy and disables this bounded editor to avoid truncation (editor limit: {max} entries). Reduce it in the KodaX config file before editing here.',
     'settings.integrationHealth.title': 'Runtime integration health',
     'settings.integrationHealth.description':
       'MCP, A2A, and Extension configuration fail independently, retain last-known-good state, and recover after a valid edit.',
@@ -2238,6 +2253,14 @@ export const messages = {
     'bottom.ipcUnavailable': 'IPC unavailable',
     'bottom.queuedAfterTurn': 'Queued - will run after the current turn',
     'bottom.queuedNextSafePoint': 'Queued - will join at the next safe point',
+    'bottom.sendRejected.staleRun':
+      'Message not sent: Runtime no longer accepts input for the reported active run. Your draft was restored while Space refreshes the run state.',
+    'bottom.sendRejected.unsupportedInterrupt':
+      'Message not sent: this Runtime does not support mid-turn interrupt input. Use Ctrl/Cmd+Enter to queue it after the current turn.',
+    'bottom.sendRejected.interruptWindowClosed':
+      'Message not sent: the active run has passed its final safe insertion point. Your draft was restored; retry after the run finishes.',
+    'bottom.sendRejected.sessionDataChanged':
+      'Message not sent: the Session persistence boundary changed while Space was preparing the request. Your draft was restored; retry now.',
     'bottom.noAssistantMessageToCopy': 'No assistant message to copy',
     'bottom.copiedChars': 'Copied {count} chars to clipboard',
     'bottom.clipboardWriteFailed': 'Clipboard write failed: {message}',
@@ -4431,6 +4454,14 @@ export const messages = {
     'bottom.ipcUnavailable': 'IPC 不可用',
     'bottom.queuedAfterTurn': '已排队 - 将在当前回合结束后运行',
     'bottom.queuedNextSafePoint': '已排队 - 将在下一个安全点加入',
+    'bottom.sendRejected.staleRun':
+      '消息未发送：Runtime 已不再接受当前所报活动任务的输入。草稿已恢复，Space 正在刷新任务状态。',
+    'bottom.sendRejected.unsupportedInterrupt':
+      '消息未发送：当前 Runtime 不支持回合中途插入。可用 Ctrl/Cmd+Enter 改为在本回合结束后排队。',
+    'bottom.sendRejected.interruptWindowClosed':
+      '消息未发送：当前任务已越过最后一个安全插入点。草稿已恢复，请在任务结束后重试。',
+    'bottom.sendRejected.sessionDataChanged':
+      '消息未发送：Space 准备请求时 Session 的持久化边界发生了变化。草稿已恢复，请立即重试。',
     'bottom.noAssistantMessageToCopy': '没有可复制的助手消息',
     'bottom.copiedChars': '已复制 {count} 个字符到剪贴板',
     'bottom.clipboardWriteFailed': '写入剪贴板失败：{message}',
@@ -4699,6 +4730,20 @@ export const messages = {
     'settings.sandbox.setupSucceeded': '命令沙箱设置完成，doctor 已确认就绪。',
     'settings.sandbox.cancelled': '已取消命令沙箱设置。',
     'settings.sandbox.setupUnavailable': '设置结束后 doctor 仍未确认就绪，请按指引排查后重试。',
+    'settings.sandbox.envPass.title': '沙箱环境变量透传',
+    'settings.sandbox.envPass.description': '允许模型发起的命令读取指定的宿主环境变量。',
+    'settings.sandbox.envPass.label': '允许的变量名',
+    'settings.sandbox.envPass.placeholder': 'GH_TOKEN\nGITHUB_TOKEN\nOPENAI_API_KEY',
+    'settings.sandbox.envPass.hint':
+      '每行填写一个变量名（也支持逗号或空格分隔），最多 {max} 个；留空表示不透传。',
+    'settings.sandbox.envPass.security':
+      '配置中只保存变量名，不保存变量值。变量值仅在命令执行宿主上读取；NODE_OPTIONS、BASH_ENV、RIPGREP_CONFIG_PATH 和导入的 Bash 函数始终禁止透传。修改宿主变量值后，已连接的持久 daemon 需要重启。',
+    'settings.sandbox.envPass.save': '保存允许列表',
+    'settings.sandbox.envPass.saved': '沙箱环境变量允许列表已保存。',
+    'settings.sandbox.envPass.invalidName': '环境变量名不合法：{name}',
+    'settings.sandbox.envPass.tooMany': '最多允许 {max} 个环境变量名。',
+    'settings.sandbox.envPass.readOnlyOverflow':
+      '这份由 CLI 写入的允许列表包含 {count} 项，或存在超过 {nameMax} 个字符的变量名。Space 会保留完整的 Runtime 策略，并禁用这个有界编辑器以避免截断（编辑器上限：{max} 项）。请先在 KodaX 配置文件中缩减后再在此编辑。',
     'settings.integrationHealth.title': 'Runtime 集成健康状态',
     'settings.integrationHealth.description':
       'MCP、A2A 与 Extension 配置独立降级，保留最近有效状态，并在修复后自动恢复。',

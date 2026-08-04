@@ -142,7 +142,7 @@ test('concurrent tryResume calls share one Session construction', async () => {
       lastActivityAt: Date.now(),
       title: undefined,
       isRunning: () => false,
-      send: async () => ({ queued: false }),
+      send: async () => ({ accepted: true, queued: false }),
       cancel: async () => {},
       dispose: async () => {
         disposes += 1;

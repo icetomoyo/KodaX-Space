@@ -23,9 +23,12 @@ import {
   CUSTOM_PROVIDER_CONTEXT_WINDOW_MIN,
   KODAX_COMPACTION_TRIGGER_PERCENT_MAX,
   KODAX_COMPACTION_TRIGGER_PERCENT_MIN,
+  KODAX_SANDBOX_ENV_NAME_MAX,
+  KODAX_SANDBOX_ENV_PASS_MAX,
   type CustomProviderReasoning,
   type KodaxCompactionSettingsT,
   type KodaxConfigOverviewT,
+  type KodaxSandboxSettingsT,
 } from '@kodax-space/space-ipc-schema';
 import { validateApiKeyEnv } from '../providers/env-guard.js';
 import { validateBaseUrl } from '../providers/url-guard.js';
@@ -65,6 +68,16 @@ export interface KodaxAutoModeDefaults {
   readonly classifierModel?: string;
   readonly timeoutMs: number;
   readonly speculativeWindowMs?: number;
+}
+
+export interface KodaxRunConfig {
+  readonly compaction: KodaxCompactionSettingsT;
+  readonly sandbox: KodaxSandboxRunSettings;
+}
+
+/** KodaX accepts an unbounded allow-list; IPC editing limits must not alter Run policy. */
+export interface KodaxSandboxRunSettings {
+  readonly envPass: readonly string[];
 }
 
 /** KodaX 0.7.79 Auto LLM default. Keep it explicit at the Space/Session boundary. */
@@ -328,24 +341,51 @@ export async function updateKodaxCompactionConfig(
 ): Promise<KodaxConfigOverviewT> {
   const raw = (await loadWritableKodaxConfig()) as SdkWritableConfig;
   const normalized = normalizeCompactionSettings(compaction);
-  const next: SdkWritableConfig = { ...raw };
-  next.compaction = mergeCompactionSettings(raw.compaction, normalized);
-  saveWritableKodaxConfig(next as SdkLoadConfigReturn);
+  saveWritableKodaxConfigPatch({
+    compaction: mergeCompactionSettings(raw.compaction, normalized),
+  });
   return loadKodaxConfigOverview(projectRoot);
 }
 
 export async function loadKodaxCompactionConfig(): Promise<KodaxCompactionSettingsT | undefined> {
+  return (await loadKodaxRunConfig()).compaction;
+}
+
+/**
+ * Read the run-scoped KodaX config in one snapshot. `sandbox` is always
+ * materialized, including an explicit empty allow-list, so SDK Runs do not
+ * accidentally fall back to process-global KODAX_SANDBOX_ENV_PASS state.
+ */
+export async function loadKodaxRunConfig(): Promise<KodaxRunConfig> {
   try {
     const raw = (await loadWritableKodaxConfig()) as SdkWritableConfig;
-    const normalized = normalizeCompactionSettings(raw.compaction);
-    return normalized;
+    return {
+      compaction: normalizeCompactionSettings(raw.compaction),
+      sandbox: normalizeSandboxSettings(raw.sandbox),
+    };
   } catch (err) {
     console.warn(
-      '[kodax-user-config] compaction config ignored:',
+      '[kodax-user-config] run config ignored:',
       err instanceof Error ? err.message : err,
     );
-    return { enabled: true };
+    return { compaction: { enabled: true }, sandbox: { envPass: [] } };
   }
+}
+
+export async function loadKodaxSandboxConfig(): Promise<KodaxSandboxRunSettings> {
+  return (await loadKodaxRunConfig()).sandbox;
+}
+
+export async function updateKodaxSandboxConfig(
+  sandbox: KodaxSandboxSettingsT,
+  projectRoot?: string,
+): Promise<KodaxConfigOverviewT> {
+  const raw = (await loadWritableKodaxConfig()) as SdkWritableConfig;
+  const normalized = normalizeSandboxSettings(sandbox);
+  saveWritableKodaxConfigPatch({
+    sandbox: mergeSandboxSettings(raw.sandbox, normalized),
+  });
+  return loadKodaxConfigOverview(projectRoot);
 }
 
 export async function updateKodaxConfigCustomProvider(
@@ -641,12 +681,22 @@ function saveWritableKodaxConfig(config: SdkLoadConfigReturn): void {
   invalidateUserDefaultsCache();
 }
 
+/**
+ * KodaX saveConfig performs a lock-protected shallow merge. Sending only the
+ * domain being edited prevents a stale Space snapshot from overwriting newer
+ * top-level fields written concurrently by the CLI or another Space action.
+ */
+function saveWritableKodaxConfigPatch(patch: Partial<SdkWritableConfig>): void {
+  saveWritableKodaxConfig(patch as SdkLoadConfigReturn);
+}
+
 const MODELED_COMPACTION_KEYS = new Set([
   'enabled',
   'triggerPercent',
   'triggerTokens',
   'contextWindow',
 ]);
+const MODELED_SANDBOX_KEYS = new Set(['envPass']);
 
 function getKodaxConfigPath(): string {
   return path.join(getKodaxRuntimeDir(), 'config.json');
@@ -697,6 +747,7 @@ async function buildKodaxConfigOverview(
     configPath,
     configExists,
     compaction: normalizeCompactionSettings(raw.compaction),
+    sandbox: projectSandboxOverview(raw.sandbox),
     mcp: {
       globalPath: globalMcpSummary.globalPath,
       ...(projectSummary.projectPath ? { projectPath: projectSummary.projectPath } : {}),
@@ -760,6 +811,47 @@ function mergeCompactionSettings(
   }
   Object.assign(out, modeled);
   return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function normalizeSandboxSettings(raw: unknown): KodaxSandboxRunSettings {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { envPass: [] };
+  const envPass = (raw as { readonly envPass?: unknown }).envPass;
+  if (!Array.isArray(envPass)) return { envPass: [] };
+  const seen = new Set<string>();
+  for (const candidate of envPass) {
+    if (typeof candidate !== 'string') continue;
+    const name = candidate.trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) continue;
+    seen.add(name);
+  }
+  return { envPass: [...seen] };
+}
+
+function projectSandboxOverview(raw: unknown): KodaxConfigOverviewT['sandbox'] {
+  const normalized = normalizeSandboxSettings(raw);
+  const envPass = normalized.envPass
+    .filter((name) => name.length <= KODAX_SANDBOX_ENV_NAME_MAX)
+    .slice(0, KODAX_SANDBOX_ENV_PASS_MAX);
+  return {
+    envPass: [...envPass],
+    totalEnvPass: normalized.envPass.length,
+    editable:
+      normalized.envPass.length <= KODAX_SANDBOX_ENV_PASS_MAX &&
+      normalized.envPass.every((name) => name.length <= KODAX_SANDBOX_ENV_NAME_MAX),
+  };
+}
+
+function mergeSandboxSettings(
+  currentRaw: unknown,
+  modeled: KodaxSandboxRunSettings,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (currentRaw && typeof currentRaw === 'object' && !Array.isArray(currentRaw)) {
+    for (const [key, value] of Object.entries(currentRaw as Record<string, unknown>)) {
+      if (!MODELED_SANDBOX_KEYS.has(key)) out[key] = value;
+    }
+  }
+  return { ...out, envPass: [...modeled.envPass] };
 }
 
 async function pathIsFile(filePath: string): Promise<boolean> {

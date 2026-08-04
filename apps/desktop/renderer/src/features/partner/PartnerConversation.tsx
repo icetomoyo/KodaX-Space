@@ -20,7 +20,7 @@ export function PartnerConversation(): JSX.Element {
       data-testid="partner-conversation"
     >
       <PartnerWorkbenchPanel />
-      {currentSessionId ? <ConversationStreamV2 /> : <PartnerWelcome />}
+      {currentSessionId ? <ConversationStreamV2 key={currentSessionId} /> : <PartnerWelcome />}
       <BottomBar />
     </div>
   );

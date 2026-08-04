@@ -44,6 +44,7 @@ test('Space settings mutations remain host projections and explicitly reload dae
     'settings.setRuntimeDefaults',
     'settings.kodaxConfig.applyIntegrationMigration',
     'settings.kodaxConfig.setCompaction',
+    'settings.kodaxConfig.setSandbox',
   ] as const) {
     const entry = CODER_ACTION_MANIFEST.find((item) => item.entrypoint === entrypoint);
     assert.ok(entry);

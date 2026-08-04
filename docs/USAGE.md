@@ -72,7 +72,7 @@ flowchart TD
 
 | 路径或变量                               | 作用                                        | 说明                                                                              |
 | ---------------------------------------- | ------------------------------------------- | --------------------------------------------------------------------------------- |
-| `~/.kodax/config.json`                   | Provider、permission、compaction 等核心配置 | CLI/SDK/Space 共用；不再把 MCP/A2A/Extension 当作新写入字段                       |
+| `~/.kodax/config.json`                   | Provider、permission、compaction、`sandbox.envPass` 等核心配置 | CLI/SDK/Space 共用；环境透传只保存变量名，不保存值；不再把 MCP/A2A/Extension 当作新写入字段 |
 | `~/.kodax/integrations/mcp.json`         | 用户 MCP server 声明                        | 严格 `version: 1` + `servers`；CLI/SDK/Space 共用                                 |
 | `~/.kodax/integrations/extensions.json`  | 受管理 Extension 路径                       | 严格 `version: 1` + `paths`；Space 加载仍需 `KODAX_SPACE_ENABLE_SDK_EXTENSIONS=1` |
 | `~/.kodax/integrations/a2a.json`         | Runtime A2A registration                    | 由 KodaX Runtime 持有                                                             |
@@ -88,6 +88,13 @@ flowchart TD
 | `KODAX_TEST_ONBOARDING=1\|<safe-id>`     | 测试隔离 profile                            | 强制写入系统临时目录，禁止指向真实用户数据                                        |
 
 若同时使用 `KODAX_PROFILE_DIR`，Space 会在首次加载 SDK 前将 `KODAX_HOME` 对齐到该 profile。相对路径会被忽略；测试模式优先级最高。
+
+Settings → Runtime 的“沙箱环境变量透传”编辑同一份 `config.json#sandbox.envPass`。
+它只接受变量名，变量值在命令实际执行的 host 上按需读取；Space 会把显式列表（包括空列表）
+传给 Coder、Partner、legacy 与独立 Workflow Run，避免回退到进程级环境配置。KodaX 仍会
+阻止 `NODE_OPTIONS`、`BASH_ENV`、`RIPGREP_CONFIG_PATH` 和导入的 Bash 函数。修改 host
+变量的值后，已连接的长驻 daemon 需要安全重启。若 CLI 写入的列表超出 Space 有界编辑器
+的 128 项/单名 256 字符限制，Runtime 仍使用完整列表，Space 禁用编辑以防部分投影被误存。
 
 从旧版升级时，`config.json#mcpServers` 与 `config.json#extensions` 仍可只读回退，但不应继续作为新配置位置。Settings → Runtime 会调用当前 KodaX SDK 的 `planLegacyIntegrationMigration()` 展示迁移计划，并通过 `migrateLegacyIntegrationConfig()` 提供“迁移集成配置”按钮；它只创建缺失文件，不覆盖已有目标，也不删除旧字段，成功后会重载 MCP。命令行也可先运行 `kodax integrations migrate` 查看计划，再运行 `kodax integrations migrate --apply` 创建独立文件；确认独立文件有效后，才使用 `kodax integrations migrate --apply --cleanup-legacy` 显式清理旧字段。A2A 没有旧 `config.json` 迁移源，始终以 `integrations/a2a.json` 为权威配置。
 

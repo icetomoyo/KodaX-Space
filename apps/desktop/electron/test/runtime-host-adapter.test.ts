@@ -150,7 +150,7 @@ async function waitForTest(predicate: () => boolean, timeoutMs = 1_000): Promise
   }
 }
 
-function createFakeRuntime() {
+function createFakeRuntime(runtimeId = 'rt_test') {
   const calls = {
     created: [] as unknown[],
     loaded: [] as string[],
@@ -296,7 +296,7 @@ function createFakeRuntime() {
   let runSeq = 0;
   const runtime = {
     identity: {
-      runtimeId: 'rt_test',
+      runtimeId,
       mode: 'daemon',
       profile: 'coder',
       startedAt: '2026-07-12T00:00:00.000Z',
@@ -389,7 +389,7 @@ function createFakeRuntime() {
         return (
           sessionStatuses.get(sessionId) ?? {
             sessionId,
-            runtimeId: 'rt_test',
+            runtimeId,
             phase: 'idle',
             observedAt: '2026-07-12T00:00:00.000Z',
           }
@@ -404,7 +404,7 @@ function createFakeRuntime() {
           sessionStatuses.get(input.sessionId) ??
           ({
             sessionId: input.sessionId,
-            runtimeId: 'rt_test',
+            runtimeId,
             phase: 'idle',
             observedAt: '2026-07-12T00:00:00.000Z',
           } satisfies RuntimeSessionStatus);
@@ -422,7 +422,7 @@ function createFakeRuntime() {
           sdkVersion: '0.7.79',
           runtimeVersion: '0.7.79',
           daemonVersion: '0.7.79',
-          runtimeId: 'rt_test',
+          runtimeId,
           runtimeMode: 'daemon' as const,
           sessionId: input.sessionId,
           observation: { cursor: 0, transcriptRevision: `transcript_${input.sessionId}_0` },
@@ -531,7 +531,7 @@ function createFakeRuntime() {
         observationInvalidators.set(sessionId, resolveInvalidated);
         return {
           snapshot: {
-            runtimeId: 'rt_test',
+            runtimeId,
             cursor: 0,
             transcriptRevision: `transcript_${sessionId}_0`,
             session: { id: sessionId, title: '', surface: 'code' },
@@ -776,17 +776,33 @@ function createFakeRuntime() {
     artifacts: {},
     status: {
       snapshot: async () => ({
-        runtimeId: 'rt_test',
+        runtimeId,
         mode: 'daemon',
         profile: 'coder',
         startedAt: '2026-07-12T00:00:00.000Z',
-        sessions: [...sessions].map((id) => ({ id, title: '', surface: 'code', msgCount: 0 })),
+        sessions: [...sessions].map((id) => {
+          const session = sessionRecords.get(id);
+          return {
+            id,
+            title: session?.title ?? '',
+            surface: session?.surface ?? 'code',
+            msgCount: 0,
+            ...(session !== undefined
+              ? {
+                  ...(session.workspaceRoot !== undefined
+                    ? { workspaceRoot: session.workspaceRoot }
+                    : {}),
+                  ...(session.gitRoot !== undefined ? { gitRoot: session.gitRoot } : {}),
+                }
+              : { workspaceRoot: 'C:\\repo', gitRoot: 'C:\\repo' }),
+          };
+        }),
         runs: [],
         pendingPermissions: [],
         workflows: [],
       }),
       preflight: async () => ({
-        runtimeId: 'rt_test',
+        runtimeId,
         clientCount: 1,
         activeRuns: [],
         queuedRuns: [],
@@ -802,7 +818,7 @@ function createFakeRuntime() {
       inspect: async (): Promise<RuntimeDaemonManagementState> => {
         calls.daemonInspections += 1;
         return {
-          runtimeId: 'rt_test',
+          runtimeId,
           revision: 7,
           ownerPolicy: {
             mode: 'daemon',
@@ -810,13 +826,13 @@ function createFakeRuntime() {
             updatedAt: '2026-07-12T00:00:00.000Z',
           },
           owner: {
-            runtimeId: 'rt_test',
+            runtimeId,
             pid: 123,
             createdAt: '2026-07-12T00:00:00.000Z',
             kind: 'daemon',
           },
           preflight: {
-            runtimeId: 'rt_test',
+            runtimeId,
             clientCount: 1,
             activeRuns: [],
             queuedRuns: [],
@@ -835,7 +851,7 @@ function createFakeRuntime() {
         calls.daemonStops.push(input);
         return {
           accepted: true as const,
-          runtimeId: 'rt_test',
+          runtimeId,
           revision: 8,
           ownerPolicy: {
             mode: 'inline' as const,
@@ -4522,7 +4538,7 @@ test('ensureSession accepts Coder only and rejects Partner before daemon access'
     ephemeral: false,
   });
 
-  assert.deepEqual(fake.calls.loaded, ['s_existing', 's_new']);
+  assert.deepEqual(fake.calls.loaded, ['s_new']);
   assert.equal(fake.calls.created.length, 1);
   assert.deepEqual(fake.calls.created[0], {
     sessionId: 's_new',
@@ -4531,6 +4547,48 @@ test('ensureSession accepts Coder only and rejects Partner before daemon access'
     surface: 'space-desktop',
     tag: 'code',
   });
+});
+
+test('ensureSession singleflights one identity and retries transient topology changes', async () => {
+  const fake = createFakeRuntime();
+  const sessions = fake.runtime.sessions as unknown as {
+    load(sessionId: string): Promise<RuntimeSession>;
+  };
+  const originalLoad = sessions.load.bind(sessions);
+  let attempts = 0;
+  sessions.load = async (sessionId) => {
+    attempts += 1;
+    if (attempts < 3) {
+      throw Object.assign(new Error('Session location topology changed'), { code: 'data_changed' });
+    }
+    return originalLoad(sessionId);
+  };
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+  });
+  // Establish a current profile that does not yet contain this externally-created Session. That
+  // makes the identity inconclusive and exercises the strict fallback/retry path.
+  await adapter.initialize();
+  fake.sessions.add('s_topology_retry');
+  const identity = {
+    sessionId: 's_topology_retry',
+    projectRoot: 'C:\\repo',
+    surface: 'code' as const,
+    ephemeral: false,
+  };
+
+  assert.deepEqual(
+    await Promise.all([
+      adapter.ensureSession(identity),
+      adapter.ensureSession({ ...identity, projectRoot: 'c:/REPO/' }),
+    ]),
+    [false, false],
+  );
+  assert.equal(attempts, 3);
+  assert.deepEqual(fake.calls.loaded, ['s_topology_retry']);
 });
 
 test('ensureSession rejects an existing Session bound to another project', async () => {
@@ -5458,6 +5516,7 @@ test('Space-started runs receive scoped credential and host-tool leases', async 
     prompt: 'hello',
     options: { provider: 'anthropic' },
   });
+  assert.deepEqual(fake.calls.loaded, []);
   const started = fake.calls.started[0] as {
     credential?: { leaseId: string; provider: string };
     hostTools?: { leaseId: string };
@@ -5553,6 +5612,7 @@ test('interrupt submission reuses the active run bindings and returns the factua
     delivery: 'interrupt',
     input: [{ type: 'text', text: 'steer now' }],
   });
+  assert.deepEqual(fake.calls.loaded, []);
 
   assert.deepEqual(result, {
     accepted: true,
@@ -6922,6 +6982,121 @@ test('a late profile read from a replaced Runtime cannot overwrite the new attac
 
   await adapter.close();
   await oldFake.runtime.close();
+});
+
+test('a replacement Runtime does not inherit the retired attachment profile cursor', async () => {
+  const oldFake = createFakeRuntime();
+  oldFake.sessions.add('s_old');
+  const controller = new RuntimeProjectionController(
+    createPendingSdkRuntimeProjection(100).profileSnapshot(),
+  );
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => oldFake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    projectionController: controller,
+  });
+  await adapter.initialize();
+
+  const privateAdapter = adapter as unknown as {
+    runtime: KodaXDaemonRuntime;
+    currentProfileCursor(): number;
+    advanceProfileCursor(runtime: KodaXDaemonRuntime, cursor: number): number;
+    refreshProfile(cursor: number): Promise<void>;
+  };
+  await privateAdapter.refreshProfile(1_000);
+  assert.equal(controller.profileSnapshot().cursor?.seq, 1_000);
+
+  const replacement = createFakeRuntime('rt_replacement');
+  replacement.sessions.add('s_new');
+  privateAdapter.runtime = replacement.runtime;
+  privateAdapter.advanceProfileCursor(replacement.runtime, 1);
+  await privateAdapter.refreshProfile(privateAdapter.currentProfileCursor());
+
+  assert.equal(controller.profileSnapshot().sessions[0]?.sessionId, 's_new');
+  assert.equal(
+    controller.profileSnapshot().cursor?.seq,
+    1,
+    'a new Runtime authority owns an independent cursor sequence',
+  );
+
+  await adapter.close();
+  await oldFake.runtime.close();
+});
+
+test('same-Runtime profile reads are serialized and retain their requested causal cursor', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_1');
+  const controller = new RuntimeProjectionController(
+    createPendingSdkRuntimeProjection(100).profileSnapshot(),
+  );
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    projectionController: controller,
+  });
+  await adapter.initialize();
+
+  const originalSnapshot = fake.runtime.status.snapshot.bind(fake.runtime.status);
+  let firstSnapshotStarted!: () => void;
+  const firstStarted = new Promise<void>((resolve) => {
+    firstSnapshotStarted = resolve;
+  });
+  let secondSnapshotStarted!: () => void;
+  const secondStarted = new Promise<void>((resolve) => {
+    secondSnapshotStarted = resolve;
+  });
+  let releaseFirst!: () => void;
+  const firstGate = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  let releaseSecond!: () => void;
+  const secondGate = new Promise<void>((resolve) => {
+    releaseSecond = resolve;
+  });
+  let snapshotCalls = 0;
+  fake.runtime.status.snapshot = async () => {
+    snapshotCalls += 1;
+    if (snapshotCalls === 1) {
+      firstSnapshotStarted();
+      await firstGate;
+    } else if (snapshotCalls === 2) {
+      secondSnapshotStarted();
+      await secondGate;
+    }
+    return originalSnapshot();
+  };
+
+  const privateAdapter = adapter as unknown as {
+    advanceProfileCursor(runtime: KodaXDaemonRuntime, cursor: number): number;
+    refreshProfile(cursor: number): Promise<void>;
+  };
+  const firstRefresh = privateAdapter.refreshProfile(10);
+  await firstStarted;
+  privateAdapter.advanceProfileCursor(fake.runtime, 30);
+  const secondRefresh = privateAdapter.refreshProfile(20);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.equal(snapshotCalls, 1, 'a second read on the same Runtime must wait for the first');
+  releaseFirst();
+  await firstRefresh;
+  assert.equal(
+    controller.profileSnapshot().cursor?.seq,
+    10,
+    'an in-flight snapshot must not borrow a later Runtime cursor',
+  );
+
+  await secondStarted;
+  releaseSecond();
+  await secondRefresh;
+  assert.equal(controller.profileSnapshot().cursor?.seq, 30);
+
+  await adapter.close();
 });
 
 test('trusted observation recovery does not cross the active Session writer boundary', async () => {

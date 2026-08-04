@@ -23,6 +23,8 @@ import {
   sessionSetAgentModeChannel,
 } from '../src/index.js';
 
+const historyEnvelope = { sessionId: 's_1', requestId: 'history-1' } as const;
+
 test('all 5 session invoke channels are registered', () => {
   for (const name of [
     'session.create',
@@ -66,6 +68,7 @@ test('session.list output distinguishes persisted runtime identity from legacy f
 test('session.history output accepts restored sidecar verifier messages', () => {
   assert.equal(
     sessionHistoryChannel.output.safeParse({
+      ...historyEnvelope,
       items: [
         { kind: 'user', content: 'q' },
         {
@@ -87,6 +90,7 @@ test('session.history output accepts restored sidecar verifier messages', () => 
 
 test('session.history reports SDK conversation confidence without exposing raw evidence bodies', () => {
   const parsed = sessionHistoryChannel.output.safeParse({
+    ...historyEnvelope,
     items: [{ kind: 'user', content: 'kept candidate' }],
     conversation: {
       status: 'ambiguous',
@@ -103,6 +107,7 @@ test('session.history reports SDK conversation confidence without exposing raw e
   assert.equal(parsed.success, true);
   assert.equal(
     sessionHistoryChannel.output.safeParse({
+      ...historyEnvelope,
       items: [],
       conversation: {
         status: 'deduplicated',
@@ -134,12 +139,14 @@ test('session image previews are bounded capability URLs in send acknowledgement
   );
   assert.equal(
     sessionHistoryChannel.output.safeParse({
+      ...historyEnvelope,
       items: [{ kind: 'user', content: 'inspect this', attachments: [attachment] }],
     }).success,
     true,
   );
   assert.equal(
     sessionHistoryChannel.output.safeParse({
+      ...historyEnvelope,
       items: [
         {
           kind: 'user',
@@ -160,6 +167,7 @@ test('session image previews are bounded capability URLs in send acknowledgement
 test('session history preserves explicit missing image tiles without exposing a path', () => {
   assert.equal(
     sessionHistoryChannel.output.safeParse({
+      ...historyEnvelope,
       items: [
         {
           kind: 'user',
@@ -181,6 +189,7 @@ test('session history preserves explicit missing image tiles without exposing a 
 test('session.history carries bounded canonical user-boundary identity', () => {
   assert.equal(
     sessionHistoryChannel.output.safeParse({
+      ...historyEnvelope,
       items: [
         {
           kind: 'user',
@@ -199,6 +208,7 @@ test('session.history carries bounded canonical user-boundary identity', () => {
   );
   assert.equal(
     sessionHistoryChannel.output.safeParse({
+      ...historyEnvelope,
       items: [
         {
           kind: 'user',
@@ -217,6 +227,7 @@ test('session.history carries immutable page cursors and explicit resync outcome
   assert.equal(
     sessionHistoryChannel.input.safeParse({
       sessionId: 's_1',
+      requestId: 'history-1',
       cursor: 'opaque-cursor',
       revision: 'revision-1',
       sourceRevision: 'source-1',
@@ -225,6 +236,7 @@ test('session.history carries immutable page cursors and explicit resync outcome
   );
   assert.equal(
     sessionHistoryChannel.output.safeParse({
+      ...historyEnvelope,
       items: [],
       page: {
         outcome: 'ready',
@@ -240,6 +252,7 @@ test('session.history carries immutable page cursors and explicit resync outcome
   );
   assert.equal(
     sessionHistoryChannel.output.safeParse({
+      ...historyEnvelope,
       items: [],
       page: {
         outcome: 'ready',
@@ -254,6 +267,7 @@ test('session.history carries immutable page cursors and explicit resync outcome
   );
   assert.equal(
     sessionHistoryChannel.output.safeParse({
+      ...historyEnvelope,
       items: [],
       page: { outcome: 'data_changed' },
     }).success,
@@ -264,10 +278,12 @@ test('session.history carries immutable page cursors and explicit resync outcome
 test('session.history can ask the renderer to wait for the bounded Runtime reader', () => {
   assert.deepEqual(
     sessionHistoryChannel.output.parse({
+      ...historyEnvelope,
       items: [],
       page: { outcome: 'runtime_unavailable' },
     }),
     {
+      ...historyEnvelope,
       items: [],
       page: { outcome: 'runtime_unavailable' },
     },
@@ -277,6 +293,7 @@ test('session.history can ask the renderer to wait for the bounded Runtime reade
 test('session.history output accepts restored local slash notices', () => {
   assert.equal(
     sessionHistoryChannel.output.safeParse({
+      ...historyEnvelope,
       items: [
         {
           kind: 'local_notice',
@@ -300,6 +317,7 @@ test('session.history output accepts restored local slash notices', () => {
 
 test('session.history carries persisted compaction token statistics', () => {
   const parsed = sessionHistoryChannel.output.safeParse({
+    ...historyEnvelope,
     items: [
       {
         kind: 'lineage_notice',
@@ -325,6 +343,7 @@ test('session.history carries persisted compaction token statistics', () => {
 test('session.history exposes bounded explicit history and turn truncation markers', () => {
   assert.equal(
     sessionHistoryChannel.output.safeParse({
+      ...historyEnvelope,
       items: [
         { kind: 'history_truncation', scope: 'history', omittedItems: 123 },
         { kind: 'history_truncation', scope: 'turn', omittedItems: 45 },
@@ -334,6 +353,7 @@ test('session.history exposes bounded explicit history and turn truncation marke
   );
   assert.equal(
     sessionHistoryChannel.output.safeParse({
+      ...historyEnvelope,
       items: [{ kind: 'history_truncation', scope: 'history', omittedItems: 0 }],
     }).success,
     false,
@@ -555,9 +575,32 @@ test('repo-intelligence trace accepts KodaX 0.7.57 built-in modes', () => {
   }
 });
 
-test('session.send output is { accepted: true } literal', () => {
+test('session.send distinguishes accepted acknowledgements from factual Runtime rejections', () => {
   assert.equal(sessionSendChannel.output.safeParse({ accepted: true }).success, true);
-  // accepted: false 不被允许——失败走 envelope error，不走业务 ack
+  assert.equal(
+    sessionSendChannel.output.safeParse({
+      accepted: false,
+      reason: 'stale_run',
+      queueMode: 'interrupt',
+    }).success,
+    true,
+  );
+  assert.equal(
+    sessionSendChannel.output.safeParse({
+      accepted: false,
+      reason: 'session_data_changed',
+      queueMode: 'after-turn',
+    }).success,
+    true,
+  );
+  assert.equal(
+    sessionSendChannel.output.safeParse({
+      accepted: false,
+      reason: 'unknown_rejection',
+      queueMode: 'interrupt',
+    }).success,
+    false,
+  );
   assert.equal(sessionSendChannel.output.safeParse({ accepted: false }).success, false);
 });
 test('session.send queueMode defaults to interrupt and accepts after-turn', () => {

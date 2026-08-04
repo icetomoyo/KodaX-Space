@@ -315,16 +315,29 @@ function findSegmentEnd(events: readonly SessionEvent[], cursor: number): number
       // 导致后续 user ↔ event 配对整体错位（错误挂错气泡、回复被甩到列表底部）。
       // 主修复在 main 端收口；这里再兜一道，保证即便多终止事件也留在同一段、位置正确。
       let end = i + 1;
-      while (
-        end < events.length &&
-        (events[end].kind === 'session_complete' || events[end].kind === 'session_error')
-      ) {
+      while (end < events.length && terminalBelongsToSameCompatibilitySegment(e, events[end])) {
         end++;
       }
       return end;
     }
   }
   return events.length;
+}
+
+function terminalBelongsToSameCompatibilitySegment(
+  first: SessionEvent,
+  candidate: SessionEvent,
+): boolean {
+  if (
+    (first.kind !== 'session_complete' && first.kind !== 'session_error') ||
+    (candidate.kind !== 'session_complete' && candidate.kind !== 'session_error')
+  ) {
+    return false;
+  }
+  if (first.turnId !== undefined || candidate.turnId !== undefined) {
+    return first.turnId !== undefined && first.turnId === candidate.turnId;
+  }
+  return first.kind === 'session_error';
 }
 
 /** 把一段 events 编织成 assistant 气泡 + tool cards + system notice 序列 */
