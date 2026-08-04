@@ -22,7 +22,7 @@ import { LearningSafetyService } from '../ipc/learning.js';
 
 const READY_MARKER = 'F118_DAEMON_READY=';
 const TEST_TIMEOUT_MS = 45_000;
-const MAX_DAEMON_DIAGNOSTIC_BYTES = 16 * 1024;
+const MAX_DAEMON_DIAGNOSTIC_BYTES = 2 * 1024;
 const require = createRequire(import.meta.url);
 const KODAX_CLI_PATH = path.join(
   path.dirname(require.resolve('@kodax-ai/kodax/package.json')),

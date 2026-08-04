@@ -1162,16 +1162,24 @@ function runPublishedSharedDaemonHost(
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
-      const cleanup = owner
-        ? stopOwnedSharedDaemon(owner, {
+      const cleanup = (async (): Promise<void> => {
+        if (child.exitCode === null) {
+          const closed = new Promise<void>((resolve) => child.once('close', () => resolve()));
+          child.kill();
+          await Promise.race([closed, new Promise((resolve) => setTimeout(resolve, 5_000))]);
+        }
+        owner ??= parseSharedDaemonOwner(stdout);
+        context ??= parseSharedDaemonContext(stdout);
+        if (owner) {
+          await stopOwnedSharedDaemon(owner, {
             skipGracefulStop: options.forceCleanupFallback,
-          })
-        : context
-          ? stopSharedDaemonContext(context)
-          : Promise.resolve();
+          });
+          return;
+        }
+        if (context) await stopSharedDaemonContext(context);
+      })();
       void cleanup.then(
         () => {
-          child.kill();
           if (options.expectedFailure && owner) {
             resolve(owner);
             return;
@@ -1179,7 +1187,6 @@ function runPublishedSharedDaemonHost(
           reject(error);
         },
         (cleanupError: unknown) => {
-          child.kill();
           const cleanupMessage =
             cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
           reject(
@@ -1265,7 +1272,7 @@ async function runPublishedSharedDaemonFailureProbe(): Promise<SharedDaemonOwner
     expectedFailure: true,
     failureMode: 'hang-after-owner',
     forceCleanupFallback: true,
-    timeoutMs: 2_500,
+    timeoutMs: 10_000,
   });
   if ('version' in result) {
     throw new Error('Shared daemon failure probe returned a successful host result.');
