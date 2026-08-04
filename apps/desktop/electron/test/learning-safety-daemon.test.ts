@@ -33,10 +33,10 @@ const KODAX_CLI_PATH = path.join(
 const DAEMON_HOST = String.raw`
 import { randomBytes, randomUUID } from 'node:crypto';
 import path from 'node:path';
-import { connectKodaXRuntime } from '@kodax-ai/kodax/runtime';
 
 let runtime;
 try {
+  const { connectKodaXRuntime } = await import('@kodax-ai/kodax/runtime');
   runtime = await connectKodaXRuntime({
     profile: process.env.F118_PROFILE,
     autoStart: true,
@@ -57,6 +57,10 @@ try {
     process.once('SIGTERM', resolve);
     process.once('SIGINT', resolve);
   });
+} catch (error) {
+  const detail = error instanceof Error ? error.message : String(error);
+  process.stderr.write('F118 daemon host failed: ' + detail + '\\n');
+  process.exitCode = 1;
 } finally {
   await runtime?.close();
 }
