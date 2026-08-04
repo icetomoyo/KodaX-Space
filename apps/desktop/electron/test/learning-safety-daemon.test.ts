@@ -32,6 +32,7 @@ const KODAX_CLI_PATH = path.join(
 
 const DAEMON_HOST = String.raw`
 import { randomBytes, randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
 let runtime;
@@ -59,7 +60,22 @@ try {
   });
 } catch (error) {
   const detail = error instanceof Error ? error.message : String(error);
-  process.stderr.write('F118 daemon host failed: ' + detail + '\\n');
+  const bootstrapLogPath = path.join(
+    process.env.F118_HOME ?? '',
+    '.kodax',
+    'runtime',
+    'daemon',
+    process.env.F118_PROFILE ?? '',
+    'bootstrap.log',
+  );
+  const bootstrapTail = await readFile(bootstrapLogPath, 'utf8')
+    .then((value) => value.slice(-1024).replace(/\\s+/g, ' '))
+    .catch(() => '');
+  process.stderr.write(
+    'F118 daemon host failed: ' + detail +
+      (bootstrapTail ? ' Bootstrap tail: ' + bootstrapTail : '') +
+      '\\n',
+  );
   process.exitCode = 1;
 } finally {
   await runtime?.close();
