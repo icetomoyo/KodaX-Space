@@ -246,6 +246,12 @@ export interface UserMessage {
    * It keeps positional event owners aligned without presenting a fabricated empty user bubble.
    */
   readonly hiddenHistoryAnchor?: boolean;
+  /**
+   * The newest bounded history page began inside this Runtime turn, before its canonical user
+   * entry. The anchor may reconcile with a unique live owner for the same authoritative turnId;
+   * it must remain ambiguous when one Runtime turn contains multiple live user prompts.
+   */
+  readonly leadingPartialHistory?: true;
 }
 
 /** Renderer-only ownership marker for events reconstructed from a replaceable history window. */
@@ -395,6 +401,12 @@ interface AppState {
    * （索引 >= 已查看长度）仍会重新亮起。
    */
   errorSeenAtBySession: Readonly<Record<string, number>>;
+  /**
+   * 每个 sessionId「已查看过的 terminal runId」——用户切进该 session 时记下当时
+   * lastTerminalRun.runId。useSessionStatus 据此熄灭 runtime 投影路径的 error 红点：
+   * runId 相同视为已看过；新一轮 failed/interrupted 的 runId 不同，红点重新亮起。
+   */
+  errorSeenRunIdBySession: Readonly<Record<string, string>>;
   /**
    * #9 fix: 用户手动关掉 todo-drift 提示（NotificationsSurface × 按钮）时记下的"轮次基线"
    * ——userMessagesBySession[sid].length。SDK 在同一轮对话里常常因为同一个"todo 没标
@@ -1205,6 +1217,7 @@ interface TranscriptTurnSnapshot {
   readonly turnUserOrdinal?: number;
   readonly canonicalIndex?: number;
   readonly restoredFromHistory: boolean;
+  readonly leadingPartialHistory: boolean;
   readonly terminal: boolean;
   readonly terminalTurnId?: string;
   readonly closed: boolean;
@@ -1251,6 +1264,7 @@ function transcriptTurnSnapshots(
         : {}),
       ...(message.canonicalIndex !== undefined ? { canonicalIndex: message.canonicalIndex } : {}),
       restoredFromHistory: message.restoredFromHistory === true,
+      leadingPartialHistory: message.leadingPartialHistory === true,
       ...semantic,
       closed: semantic.terminal || eventEnd < events.length || userIndex < userMessages.length - 1,
     });
@@ -1485,6 +1499,36 @@ function strongTurnIdentityMatches(
     hasStrongTurnIdentity(right) &&
     left.turnId === right.turnId &&
     left.turnUserOrdinal === right.turnUserOrdinal
+  );
+}
+
+function uniqueLeadingPartialHistoryMatch(
+  durable: TranscriptTurnSnapshot,
+  duplicate: TranscriptTurnSnapshot,
+  turns: readonly TranscriptTurnSnapshot[],
+): boolean {
+  if (
+    !durable.restoredFromHistory ||
+    !durable.leadingPartialHistory ||
+    durable.turnId === undefined ||
+    durable.turnUserOrdinal !== undefined ||
+    duplicate.restoredFromHistory ||
+    !hasStrongTurnIdentity(duplicate) ||
+    duplicate.turnId !== durable.turnId ||
+    !liveTurnCanFold(duplicate)
+  ) {
+    return false;
+  }
+  // A Runtime turn may contain several real user inputs. Without the omitted canonical prefix we
+  // cannot know which ordinal owns a leading partial page. Fold only when the live projection has
+  // exactly one possible owner for this turnId; otherwise preserve every candidate fail-open.
+  return (
+    turns.filter(
+      (candidate) =>
+        !candidate.restoredFromHistory &&
+        hasStrongTurnIdentity(candidate) &&
+        candidate.turnId === durable.turnId,
+    ).length === 1
   );
 }
 
@@ -1813,6 +1857,7 @@ function foldStrongIdentityDuplicateTurns(
       | {
           readonly durable: TranscriptTurnSnapshot;
           readonly duplicate: TranscriptTurnSnapshot;
+          readonly promoteLiveOwner: boolean;
         }
       | undefined;
 
@@ -1827,16 +1872,21 @@ function foldStrongIdentityDuplicateTurns(
       }
       for (let durableIndex = 0; durableIndex < duplicateIndex; durableIndex++) {
         const durable = turns[durableIndex]!;
+        const leadingPartialMatch = uniqueLeadingPartialHistoryMatch(
+          durable,
+          duplicate,
+          turns,
+        );
         if (
           !durable.restoredFromHistory ||
           (duplicate.restoredFromHistory
             ? !exactRestoredTurnIdentityMatches(durable, duplicate)
-            : !strongTurnIdentityMatches(durable, duplicate)) ||
+            : !strongTurnIdentityMatches(durable, duplicate) && !leadingPartialMatch) ||
           (!duplicate.restoredFromHistory && !liveTurnCanFold(duplicate))
         ) {
           continue;
         }
-        pair = { durable, duplicate };
+        pair = { durable, duplicate, promoteLiveOwner: leadingPartialMatch };
         break;
       }
     }
@@ -1857,15 +1907,33 @@ function foldStrongIdentityDuplicateTurns(
       ...nextEvents.slice(pair.duplicate.eventEnd),
     ];
 
+    const durableMessage = nextUsers[pair.durable.userIndex];
     nextUsers = nextUsers
       .filter((_, index) => index !== pair.duplicate.userIndex)
       .map((message, index) => {
         if (index !== pair.durable.userIndex) return message;
-        const { historyNoAssistantSegment: _emptySegment, ...rest } = message;
+        const promoteLiveOwner =
+          pair.promoteLiveOwner && durableMessage?.leadingPartialHistory === true;
+        const baseMessage = promoteLiveOwner && duplicateMessage ? duplicateMessage : message;
+        let rest: Omit<UserMessage, 'historyNoAssistantSegment'>;
+        if (promoteLiveOwner) {
+          const {
+            historyNoAssistantSegment: _emptySegment,
+            hiddenHistoryAnchor: _hiddenAnchor,
+            leadingPartialHistory: _leadingPartial,
+            hiddenProjectionDuplicate: _hiddenDuplicate,
+            ...visibleLiveOwner
+          } = baseMessage;
+          rest = visibleLiveOwner;
+        } else {
+          const { historyNoAssistantSegment: _emptySegment, ...durableOwner } = baseMessage;
+          rest = durableOwner;
+        }
         const deliveryQueueId = rest.deliveryQueueId ?? duplicateMessage?.deliveryQueueId;
         const deliveryQueueMode = rest.deliveryQueueMode ?? duplicateMessage?.deliveryQueueMode;
         const reconciled = {
           ...rest,
+          ...(promoteLiveOwner ? { restoredFromHistory: true as const } : {}),
           ...(deliveryQueueId !== undefined ? { deliveryQueueId } : {}),
           ...(deliveryQueueMode !== undefined ? { deliveryQueueMode } : {}),
         };
@@ -1944,6 +2012,20 @@ function stableHistoryAnchorTurnId(items: readonly SessionHistoryItem[]): string
     if (item.kind !== 'local_notice') leadingProjection.push(item);
   }
   return `space-history-anchor:${stableHistoryHash(leadingProjection)}`;
+}
+
+function authoritativeLeadingHistoryTurnId(
+  items: readonly SessionHistoryItem[],
+): string | undefined {
+  let turnId: string | undefined;
+  for (const item of items) {
+    if (item.kind === 'user') break;
+    if (item.kind === 'local_notice' || item.kind === 'history_truncation') continue;
+    if (item.turnId === undefined) continue;
+    if (turnId !== undefined && turnId !== item.turnId) return undefined;
+    turnId = item.turnId;
+  }
+  return turnId;
 }
 
 function stableHistoryUserMessageId(
@@ -2786,6 +2868,7 @@ export const useAppStore = create<AppState>((set) => ({
   currentSessionId: null,
   eventsBySession: {},
   errorSeenAtBySession: {},
+  errorSeenRunIdBySession: {},
   todoDriftDismissedAtBySession: {},
   todoDriftDismissedPendingCountBySession: {},
   transientArtifactsBySession: {},
@@ -2936,12 +3019,22 @@ export const useAppStore = create<AppState>((set) => ({
       const readFlags = setSessionFlagValue(state.sessionFlags, sessionId, 'unread', false);
       const found = state.sessions.find((s) => s.sessionId === sessionId);
       // 查看即确认：记下当前事件长度，让已看过的 error 状态点熄灭（新 error 会再亮）。
+      // runtime 投影路径同理：记下当前 lastTerminalRun.runId，让已看过的红点熄灭。
+      const seenRunId = state.liveProjectionBySession[sessionId]?.lastTerminalRun?.runId;
       const patch = {
         ...(readFlags === state.sessionFlags ? {} : { sessionFlags: readFlags }),
         errorSeenAtBySession: {
           ...state.errorSeenAtBySession,
           [sessionId]: state.eventsBySession[sessionId]?.length ?? 0,
         },
+        ...(seenRunId
+          ? {
+              errorSeenRunIdBySession: {
+                ...state.errorSeenRunIdBySession,
+                [sessionId]: seenRunId,
+              },
+            }
+          : {}),
       };
       if (!found || !found.projectRoot) return { currentSessionId: sessionId, ...patch };
       const targetCanon = canonProjectRootShared(found.projectRoot, IS_WIN_RENDERER);
@@ -3276,7 +3369,8 @@ export const useAppStore = create<AppState>((set) => ({
       const histMsgs: UserMessage[] = [];
       const histEvents: SessionEvent[] = [];
       const histLocalNotices: LocalNoticeMessage[] = [];
-      const historyAnchorTurnId = stableHistoryAnchorTurnId(items);
+      const leadingPartialTurnId = authoritativeLeadingHistoryTurnId(items);
+      const historyAnchorTurnId = leadingPartialTurnId ?? stableHistoryAnchorTurnId(items);
       let firstHistoricalSentAt: number | undefined;
       for (const item of items) {
         if (!('sentAt' in item) || !Number.isFinite(item.sentAt)) continue;
@@ -3340,7 +3434,9 @@ export const useAppStore = create<AppState>((set) => ({
             restoredFromHistory: true,
             hiddenHistoryAnchor: true,
             turnId: historyAnchorTurnId,
-            turnUserOrdinal: 0,
+            ...(leadingPartialTurnId !== undefined
+              ? { leadingPartialHistory: true as const }
+              : { turnUserOrdinal: 0 }),
           });
           openUserWithoutAssistant = true;
         }
@@ -4461,6 +4557,7 @@ export const useAppStore = create<AppState>((set) => ({
       // 同时清掉对应事件 buffer 和 user message buffer——session 不在了，留着就是泄漏
       const { [sessionId]: _evt, ...restEvents } = state.eventsBySession;
       const { [sessionId]: _esa, ...restErrorSeen } = state.errorSeenAtBySession;
+      const { [sessionId]: _esr, ...restErrorSeenRun } = state.errorSeenRunIdBySession;
       // #9 fix: todo-drift dismiss 基线也是 per-session 派生态，session 删了要一起清。
       const { [sessionId]: _tdda, ...restTodoDriftDismissedAt } =
         state.todoDriftDismissedAtBySession;
@@ -4499,6 +4596,7 @@ export const useAppStore = create<AppState>((set) => ({
         sessions: state.sessions.filter((s) => s.sessionId !== sessionId),
         eventsBySession: restEvents,
         errorSeenAtBySession: restErrorSeen,
+        errorSeenRunIdBySession: restErrorSeenRun,
         todoDriftDismissedAtBySession: restTodoDriftDismissedAt,
         todoDriftDismissedPendingCountBySession: restTodoDriftDismissedPending,
         transientArtifactsBySession: restTransientArtifacts,

@@ -18,6 +18,20 @@ import { useAppStore } from '../../store/appStore.js';
 export type SessionStatus = 'idle' | 'running' | 'awaiting' | 'error';
 
 /**
+ * runtime 投影路径的 error 判定：lastTerminalRun 为 failed/interrupted 且未被用户看过。
+ * 「看过」以 runId 为准（errorSeenRunIdBySession）——新一轮失败的 runId 不同，红点会重新亮起。
+ */
+export function isUnseenTerminalError(
+  runtimeLive: { lastTerminalRun?: { runId: string; phase: string } | undefined } | undefined,
+  seenRunId: string | undefined,
+): boolean {
+  const terminal = runtimeLive?.lastTerminalRun;
+  if (!terminal) return false;
+  if (terminal.phase !== 'failed' && terminal.phase !== 'interrupted') return false;
+  return terminal.runId !== seenRunId;
+}
+
+/**
  * 单 session 状态。
  * 优先级 awaiting > error > running > idle —— 等用户操作的事比 spinner 更紧急。
  */
@@ -34,6 +48,9 @@ export function useSessionStatus(sessionId: string | null): SessionStatus {
   );
   const errorSeenAt = useAppStore((s) =>
     sessionId ? (s.errorSeenAtBySession[sessionId] ?? 0) : 0,
+  );
+  const errorSeenRunId = useAppStore((s) =>
+    sessionId ? s.errorSeenRunIdBySession[sessionId] : undefined,
   );
   const runtimeLive = useAppStore((s) =>
     sessionId ? s.liveProjectionBySession[sessionId] : undefined,
@@ -52,10 +69,7 @@ export function useSessionStatus(sessionId: string | null): SessionStatus {
     // must still outrank running/error so the sidebar never loses the actionable signal.
     if (awaitingPermission || awaitingAskUser) return 'awaiting';
     if (runtimeLive?.activeRun || (runtimeLive?.queuedRuns.length ?? 0) > 0) return 'running';
-    if (
-      runtimeLive?.lastTerminalRun?.phase === 'failed' ||
-      runtimeLive?.lastTerminalRun?.phase === 'interrupted'
-    ) {
+    if (isUnseenTerminalError(runtimeLive, errorSeenRunId)) {
       return 'error';
     }
     // 倒扫 events 找最近一条 session lifecycle —— complete/error 表示已结束
@@ -73,7 +87,7 @@ export function useSessionStatus(sessionId: string | null): SessionStatus {
     }
     if (pending) return 'running';
     return 'idle';
-  }, [sessionId, pending, events, awaitingPermission, awaitingAskUser, errorSeenAt, runtimeLive]);
+  }, [sessionId, pending, events, awaitingPermission, awaitingAskUser, errorSeenAt, errorSeenRunId, runtimeLive]);
 }
 
 /**
@@ -89,6 +103,7 @@ export function useSessionStatusMap(
   const permissionQueue = useAppStore((s) => s.permissionQueue);
   const askUserQueue = useAppStore((s) => s.askUserQueue);
   const errorSeenMap = useAppStore((s) => s.errorSeenAtBySession);
+  const errorSeenRunIdMap = useAppStore((s) => s.errorSeenRunIdBySession);
   const liveProjectionBySession = useAppStore((s) => s.liveProjectionBySession);
 
   return useMemo(() => {
@@ -113,10 +128,7 @@ export function useSessionStatusMap(
         out[sid] = 'running';
         continue;
       }
-      if (
-        runtimeLive?.lastTerminalRun?.phase === 'failed' ||
-        runtimeLive?.lastTerminalRun?.phase === 'interrupted'
-      ) {
+      if (isUnseenTerminalError(runtimeLive, errorSeenRunIdMap[sid])) {
         out[sid] = 'error';
         continue;
       }
@@ -152,6 +164,7 @@ export function useSessionStatusMap(
     permissionQueue,
     askUserQueue,
     errorSeenMap,
+    errorSeenRunIdMap,
     liveProjectionBySession,
   ]);
 }
