@@ -19,6 +19,7 @@ import {
 import { connectKodaXRuntime } from '@kodax-ai/kodax/runtime';
 
 import { LearningSafetyService } from '../ipc/learning.js';
+import { withDarwinRuntimeDaemonTmpdir } from '../kodax/runtime-host-adapter.js';
 
 const READY_MARKER = 'F118_DAEMON_READY=';
 const TEST_TIMEOUT_MS = 45_000;
@@ -248,20 +249,22 @@ test(
       host = startDaemonHost(homeDir, profile);
       const runtimeId = await host.ready;
       assert.ok(runtimeId);
-      runtime = await connectKodaXRuntime({
-        profile,
-        autoStart: false,
-        homeDir,
-        sessionsDir: path.join(homeDir, 'sessions'),
-        clientInfo: {
-          name: 'kodax-space-f118-service',
-          version: '0.1.35',
-          instanceId: randomUUID(),
-          instanceSecret: randomBytes(32).toString('base64url'),
-        },
-        capabilities: { richEvents: true, operationDeduplication: true },
-        requirements,
-      });
+      runtime = await withDarwinRuntimeDaemonTmpdir(process.platform, () =>
+        connectKodaXRuntime({
+          profile,
+          autoStart: false,
+          homeDir,
+          sessionsDir: path.join(homeDir, 'sessions'),
+          clientInfo: {
+            name: 'kodax-space-f118-service',
+            version: '0.1.35',
+            instanceId: randomUUID(),
+            instanceSecret: randomBytes(32).toString('base64url'),
+          },
+          capabilities: { richEvents: true, operationDeduplication: true },
+          requirements,
+        }),
+      );
 
       const service = new LearningSafetyService({
         context: async () => ({ runtimeId: runtime!.identity.runtimeId }),
