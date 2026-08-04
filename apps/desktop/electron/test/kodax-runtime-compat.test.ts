@@ -42,6 +42,10 @@ function processIsAlive(pid: number): boolean {
   }
 }
 
+async function removeSharedDaemonHome(homeDir: string): Promise<void> {
+  await rm(homeDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+}
+
 async function waitForProcessExit(pid: number, timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -222,7 +226,7 @@ async function stopOwnedSharedDaemon(
   options: { readonly skipGracefulStop?: boolean } = {},
 ): Promise<void> {
   if (!processIsAlive(owner.pid)) {
-    await rm(owner.homeDir, { recursive: true, force: true });
+    await removeSharedDaemonHome(owner.homeDir);
     return;
   }
 
@@ -247,18 +251,18 @@ async function stopOwnedSharedDaemon(
           stderr: error instanceof Error ? error.message : String(error),
         }));
   if (options.skipGracefulStop !== true && (await waitForProcessExit(owner.pid, 10_000))) {
-    await rm(owner.homeDir, { recursive: true, force: true });
+    await removeSharedDaemonHome(owner.homeDir);
     return;
   }
 
   if (!processIsAlive(owner.pid)) {
-    await rm(owner.homeDir, { recursive: true, force: true });
+    await removeSharedDaemonHome(owner.homeDir);
     return;
   }
 
   const commandLine = await readProcessCommandLine(owner.pid);
   if (commandLine === undefined && !processIsAlive(owner.pid)) {
-    await rm(owner.homeDir, { recursive: true, force: true });
+    await removeSharedDaemonHome(owner.homeDir);
     return;
   }
   if (commandLine === undefined || !commandLineMatchesProbeOwner(commandLine, owner)) {
@@ -276,7 +280,7 @@ async function stopOwnedSharedDaemon(
   if (!(await waitForProcessExit(owner.pid, 5_000))) {
     throw new Error(`Owned compatibility daemon PID ${owner.pid} did not exit after termination.`);
   }
-  await rm(owner.homeDir, { recursive: true, force: true });
+  await removeSharedDaemonHome(owner.homeDir);
 }
 
 async function stopSharedDaemonContext(context: SharedDaemonProbeContext): Promise<void> {
@@ -298,7 +302,7 @@ async function stopSharedDaemonContext(context: SharedDaemonProbeContext): Promi
       `Could not stop compatibility daemon ${context.profile}: ${result.stderr || result.stdout}`,
     );
   }
-  await rm(context.homeDir, { recursive: true, force: true });
+  await removeSharedDaemonHome(context.homeDir);
 }
 
 const SHARED_DAEMON_REQUIREMENTS = {
@@ -1176,10 +1180,15 @@ function runPublishedSharedDaemonHost(
         },
         (cleanupError: unknown) => {
           child.kill();
+          const cleanupMessage =
+            cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
           reject(
-            new Error(`${error.message} Compatibility daemon cleanup also failed.`, {
-              cause: cleanupError,
-            }),
+            new Error(
+              `${error.message} Compatibility daemon cleanup also failed: ${cleanupMessage}`,
+              {
+                cause: cleanupError,
+              },
+            ),
           );
         },
       );
