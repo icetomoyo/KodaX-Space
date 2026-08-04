@@ -1,5 +1,10 @@
 # KodaX Space 运行与开发指南
 
+> **当前发布基线（2026-08-05）**：KodaX Space `v0.1.35` / npm Registry KodaX `0.7.80`。
+> Space 管理的 daemon 需要 `managedRunDurability:1`：接受的首条/队列输入及完成回合
+> 在生命周期事件前持久化为 canonical Run。Space 绑定确认的 `runId` 和流式 `turnId`，不以版本号代替能力协商。
+> 未显式设置 Auto LLM timeout 时，SDK 使用首次 `45000ms`、重试 `90000ms`。
+
 > 面向源码使用者、贡献者和发布维护者。普通用户请阅读[用户使用手册](USER_MANUAL.zh-CN.md)。
 >
 > 当前 `main` 对 Space 管理的 daemon 要求专用的 `daemonOrphanExit:1` 能力；
@@ -70,22 +75,22 @@ flowchart TD
     Root --> Runtime["runtime/<br/>Runtime daemon run/event journal"]
 ```
 
-| 路径或变量                               | 作用                                        | 说明                                                                              |
-| ---------------------------------------- | ------------------------------------------- | --------------------------------------------------------------------------------- |
+| 路径或变量                               | 作用                                                           | 说明                                                                                        |
+| ---------------------------------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
 | `~/.kodax/config.json`                   | Provider、permission、compaction、`sandbox.envPass` 等核心配置 | CLI/SDK/Space 共用；环境透传只保存变量名，不保存值；不再把 MCP/A2A/Extension 当作新写入字段 |
-| `~/.kodax/integrations/mcp.json`         | 用户 MCP server 声明                        | 严格 `version: 1` + `servers`；CLI/SDK/Space 共用                                 |
-| `~/.kodax/integrations/extensions.json`  | 受管理 Extension 路径                       | 严格 `version: 1` + `paths`；Space 加载仍需 `KODAX_SPACE_ENABLE_SDK_EXTENSIONS=1` |
-| `~/.kodax/integrations/a2a.json`         | Runtime A2A registration                    | 由 KodaX Runtime 持有                                                             |
-| `<project>/.kodax/integrations/mcp.json` | 项目 MCP 覆盖                               | Space 项目兼容层；同名项目 server 优先                                            |
-| `~/.kodax/sessions/`                     | 会话历史                                    | CLI/SDK/Space 共用                                                                |
-| `~/.kodax/skills/`                       | 用户 Skills                                 | 项目也可有项目级 Skills                                                           |
-| `~/.kodax/handoffs/`                     | 桌面 handoff inbox                          | 用于上下文连续性                                                                  |
-| `~/.kodax/space/`                        | Space UI 和桌面专属状态                     | 包含 logs、state 等                                                               |
-| `~/.kodax/space/settings.json`           | Space versioned preferences                 | version 3 保存 `coderRuntimeMode`；不属于 KodaX 核心配置或 integrations           |
-| `<profile-root>/runtime/`                | Shared Runtime state/journal                | Coder daemon runs；默认实际为 `~/.kodax/runtime/`                                 |
-| `KODAX_HOME=<abs>`                       | 改变 SDK 共享数据根                         | 必须在应用启动前设置                                                              |
-| `KODAX_PROFILE_DIR=<abs>`                | 让 Space 和 SDK 使用一个独立 profile        | 该绝对路径本身就是 profile 根，不再追加 `.kodax`                                  |
-| `KODAX_TEST_ONBOARDING=1\|<safe-id>`     | 测试隔离 profile                            | 强制写入系统临时目录，禁止指向真实用户数据                                        |
+| `~/.kodax/integrations/mcp.json`         | 用户 MCP server 声明                                           | 严格 `version: 1` + `servers`；CLI/SDK/Space 共用                                           |
+| `~/.kodax/integrations/extensions.json`  | 受管理 Extension 路径                                          | 严格 `version: 1` + `paths`；Space 加载仍需 `KODAX_SPACE_ENABLE_SDK_EXTENSIONS=1`           |
+| `~/.kodax/integrations/a2a.json`         | Runtime A2A registration                                       | 由 KodaX Runtime 持有                                                                       |
+| `<project>/.kodax/integrations/mcp.json` | 项目 MCP 覆盖                                                  | Space 项目兼容层；同名项目 server 优先                                                      |
+| `~/.kodax/sessions/`                     | 会话历史                                                       | CLI/SDK/Space 共用                                                                          |
+| `~/.kodax/skills/`                       | 用户 Skills                                                    | 项目也可有项目级 Skills                                                                     |
+| `~/.kodax/handoffs/`                     | 桌面 handoff inbox                                             | 用于上下文连续性                                                                            |
+| `~/.kodax/space/`                        | Space UI 和桌面专属状态                                        | 包含 logs、state 等                                                                         |
+| `~/.kodax/space/settings.json`           | Space versioned preferences                                    | version 3 保存 `coderRuntimeMode`；不属于 KodaX 核心配置或 integrations                     |
+| `<profile-root>/runtime/`                | Shared Runtime state/journal                                   | Coder daemon runs；默认实际为 `~/.kodax/runtime/`                                           |
+| `KODAX_HOME=<abs>`                       | 改变 SDK 共享数据根                                            | 必须在应用启动前设置                                                                        |
+| `KODAX_PROFILE_DIR=<abs>`                | 让 Space 和 SDK 使用一个独立 profile                           | 该绝对路径本身就是 profile 根，不再追加 `.kodax`                                            |
+| `KODAX_TEST_ONBOARDING=1\|<safe-id>`     | 测试隔离 profile                                               | 强制写入系统临时目录，禁止指向真实用户数据                                                  |
 
 若同时使用 `KODAX_PROFILE_DIR`，Space 会在首次加载 SDK 前将 `KODAX_HOME` 对齐到该 profile。相对路径会被忽略；测试模式优先级最高。
 

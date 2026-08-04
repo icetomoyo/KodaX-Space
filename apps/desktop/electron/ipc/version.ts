@@ -61,7 +61,7 @@ function runtimeHostCapability(snapshot: RuntimeHostSnapshot): SpaceCapability {
   const failed = snapshot.state === 'failed';
   const identity = snapshot.identity;
   const detail = ready
-    ? `KodaX Runtime ${identity?.version ?? 'unknown'} ${identity?.mode ?? 'embedded'}/${identity?.isolation ?? 'inline'} owns Coder sessions, exclusive Actor trees, runs, Auto[LLM] v4 permission classification, resilient integration loading, structured sandbox observations, Workflow observation/control, Learning Center operations, catalog discovery, MCP tool discovery/reload, and configured External Agent Actor/Turns. Space retains Partner inline execution and the host-provider boundaries for MCP processes/logs, Workflow library/start/admin, Reference Agent execution, and product artifacts.`
+    ? `KodaX Runtime ${identity?.version ?? 'unknown'} ${identity?.mode ?? 'embedded'}/${identity?.isolation ?? 'inline'} owns Coder sessions, exclusive Actor trees, durably bounded managed Runs, Auto[LLM] v4 permission classification, resilient integration loading, structured sandbox observations, Workflow observation/control, Learning Center operations, catalog discovery, MCP tool discovery/reload, and configured External Agent Actor/Turns. Space retains Partner inline execution and the host-provider boundaries for MCP processes/logs, Workflow library/start/admin, Reference Agent execution, and product artifacts.`
     : legacy
       ? 'The internal legacy rollback host is selected before run start. No Runtime-managed run is active.'
       : failed
@@ -88,7 +88,7 @@ export function experimentalMemoryCapability(
       status: 'partial',
       detail:
         `The required KodaX experimental-memory contract is available with policy ${capability.policyVersion}. ` +
-        'KodaX managed runs own silent scoped recall and governed outcome/review persistence over F228; Space v0.1.34 preserves compatibility diagnostics while the full F117 Episodes, Activity, correction, and purge UX remains planned.',
+        'KodaX managed runs own silent scoped recall and governed outcome/review persistence over F228; Space v0.1.35 preserves compatibility diagnostics while the full F117 Episodes, Activity, correction, and purge UX remains planned.',
       since: '0.1.31',
     };
   }
@@ -203,7 +203,7 @@ export function registerVersionChannel(): void {
       platform,
       kodaxSdkVersion: readKodaxSdkVersion(),
       kodaxDependencySpec: readKodaxDependencySpec(),
-      capabilityContract: 'space-v0.1.34',
+      capabilityContract: 'space-v0.1.35',
       capabilities: buildCapabilityLedger(entitled, runtimeHostAdapter.snapshot()),
     };
   });

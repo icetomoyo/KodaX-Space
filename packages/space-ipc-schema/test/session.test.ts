@@ -579,6 +579,14 @@ test('session.send distinguishes accepted acknowledgements from factual Runtime 
   assert.equal(sessionSendChannel.output.safeParse({ accepted: true }).success, true);
   assert.equal(
     sessionSendChannel.output.safeParse({
+      accepted: true,
+      queued: false,
+      runId: 'run-admitted',
+    }).success,
+    true,
+  );
+  assert.equal(
+    sessionSendChannel.output.safeParse({
       accepted: false,
       reason: 'stale_run',
       queueMode: 'interrupt',

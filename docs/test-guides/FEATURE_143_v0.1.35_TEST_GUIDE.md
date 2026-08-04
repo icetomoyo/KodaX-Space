@@ -2,7 +2,7 @@
 
 ## Preconditions
 
-- Install the exact published `@kodax-ai/kodax@0.7.78` dependency and verify
+- Install the exact published `@kodax-ai/kodax@0.7.80` dependency and verify
   `KODAX_ASRT_VERSION` is `0.0.65`.
 - Use an unpackaged or packaged Space build whose startup SDK probe succeeds.
 - For the Windows setup-required cases, use a disposable test machine or VM
@@ -101,7 +101,7 @@
   `apps/desktop/electron/test/sandbox-controller.test.ts`
 - Published KodaX facade and side-effect-free shape probe:
   `apps/desktop/electron/test/kodax-sdk-probe.test.ts`
-- Real 0.7.78 doctor result and shared `space.version` projection:
+- Real 0.7.80 doctor result and shared `space.version` projection:
   `apps/desktop/electron/test/sandbox-ipc-integration.test.ts`
 - Settings readiness and refresh desktop smoke:
   `tests/e2e/settings-modal.spec.ts`

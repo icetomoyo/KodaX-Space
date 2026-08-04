@@ -8,7 +8,7 @@ import test from 'node:test';
 
 const PROBE_MARKER = 'KODAX_RUNTIME_PROBE=';
 const PROBE_TIMEOUT_MS = 30_000;
-const EXPECTED_KODAX_VERSION = '0.7.79';
+const EXPECTED_KODAX_VERSION = '0.7.80';
 const INSTALLED_KODAX_VERSION = (
   createRequire(import.meta.url)('@kodax-ai/kodax/package.json') as { readonly version: string }
 ).version;
@@ -332,6 +332,7 @@ const SHARED_DAEMON_REQUIREMENTS = {
   durableRecoveryQueries: 1,
   daemonManagement: 1,
   daemonOrphanExit: 1,
+  managedRunDurability: 1,
   runtimeEventCoalescing: 1,
   integrationConfigResilience: 1,
   runtimeAutoModeGuardrail: 4,
@@ -354,7 +355,7 @@ try {
     clientInfo: {
       name: 'kodax-cli',
       title: 'KodaX terminal compatibility probe',
-      version: '0.7.79',
+      version: '0.7.80',
       instanceId: process.env.KODAX_PROBE_INSTANCE_ID,
       instanceSecret: process.env.KODAX_PROBE_INSTANCE_SECRET,
     },
@@ -637,6 +638,7 @@ try {
   const a2aConfigCapability = runtime.capabilities.a2aConfigReconciler;
   const integrationConfigCapability = runtime.capabilities.integrationConfigResilience;
   const daemonOrphanExitCapability = runtime.capabilities.daemonOrphanExit;
+  const managedRunDurabilityCapability = runtime.capabilities.managedRunDurability;
   const runtimeEventCoalescingCapability = runtime.capabilities.runtimeEventCoalescing;
   const runtimeAutoModeGuardrailCapability = runtime.capabilities.runtimeAutoModeGuardrail;
   result = {
@@ -679,6 +681,7 @@ try {
       skillLearningLoop: skillLearningLoopCapability?.version === 1,
       a2aConfigReconciler: a2aConfigCapability?.version === 1,
       daemonOrphanExit: daemonOrphanExitCapability?.version === 1,
+      managedRunDurability: managedRunDurabilityCapability?.version === 1,
       runtimeEventCoalescing: runtimeEventCoalescingCapability?.version === 1,
       integrationConfigResilience: integrationConfigCapability?.version === 1,
       integrationHealth: managementAfterDetach.integrations?.state,
@@ -976,6 +979,10 @@ try {
       sdk: KODAX_RUNTIME_SDK_CAPABILITIES.runtimeEventCoalescing === 1,
       runtime: runtime.capabilities.runtimeEventCoalescing?.version === 1,
     },
+    managedRunDurability: {
+      sdk: KODAX_RUNTIME_SDK_CAPABILITIES.managedRunDurability === 1,
+      runtime: runtime.capabilities.managedRunDurability?.version === 1,
+    },
     downgradeRejected,
     a2aExports: {
       bearerAuth: typeof createBearerEnvA2AAuthentication === 'function',
@@ -1108,6 +1115,7 @@ interface SharedDaemonHostResult {
     readonly skillLearningLoop: boolean;
     readonly a2aConfigReconciler: boolean;
     readonly daemonOrphanExit: boolean;
+    readonly managedRunDurability: boolean;
     readonly runtimeEventCoalescing: boolean;
     readonly integrationConfigResilience: boolean;
     readonly integrationHealth?: string;
@@ -1301,6 +1309,7 @@ test(
       ready: true,
     });
     assert.deepEqual(result.eventCoalescing, { sdk: true, runtime: true });
+    assert.deepEqual(result.managedRunDurability, { sdk: true, runtime: true });
     assert.equal(result.downgradeRejected, true);
     assert.deepEqual(result.a2aExports, {
       bearerAuth: true,
@@ -1808,6 +1817,7 @@ test(
     assert.equal(result.management.skillLearningLoop, true);
     assert.equal(result.management.a2aConfigReconciler, true);
     assert.equal(result.management.daemonOrphanExit, true);
+    assert.equal(result.management.managedRunDurability, true);
     assert.equal(result.management.runtimeEventCoalescing, true);
     assert.equal(result.management.integrationConfigResilience, true);
     assert.equal(result.management.integrationHealth, 'healthy');

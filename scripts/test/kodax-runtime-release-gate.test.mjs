@@ -8,7 +8,7 @@ import test from 'node:test';
 import { assertKodaxReleaseDependencyState } from '../kodax-runtime-release-gate.mjs';
 
 async function writeReleaseDependencyFixture(root, versions = {}) {
-  const rootVersion = versions.root ?? '0.7.78';
+  const rootVersion = versions.root ?? '0.7.80';
   const desktopVersion = versions.desktop ?? rootVersion;
   const lockRootVersion = versions.lockRoot ?? rootVersion;
   const lockDesktopVersion = versions.lockDesktop ?? desktopVersion;
@@ -73,7 +73,7 @@ test('release dependency gate accepts one exact Registry version everywhere', as
     root,
     path.join(root, 'node_modules', '@kodax-ai', 'kodax'),
   );
-  assert.equal(result.version, '0.7.78');
+  assert.equal(result.version, '0.7.80');
   assert.match(result.resolved, /registry\.npmjs\.org/);
   assert.match(result.integrity, /^sha512-/);
   assert.equal(result.source, 'registry');
@@ -82,7 +82,7 @@ test('release dependency gate accepts one exact Registry version everywhere', as
 test('release dependency gate rejects a local test tarball by default', async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'space-kodax-dependency-gate-'));
   t.after(() => rm(root, { recursive: true, force: true }));
-  await writeReleaseDependencyFixture(root, { root: '0.7.79', localTarball: true });
+  await writeReleaseDependencyFixture(root, { root: '0.7.80', localTarball: true });
 
   assert.throws(
     () =>
@@ -97,14 +97,14 @@ test('release dependency gate rejects a local test tarball by default', async (t
 test('release dependency gate accepts an explicitly allowed integrity-pinned local test tarball', async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'space-kodax-dependency-gate-'));
   t.after(() => rm(root, { recursive: true, force: true }));
-  await writeReleaseDependencyFixture(root, { root: '0.7.79', localTarball: true });
+  await writeReleaseDependencyFixture(root, { root: '0.7.80', localTarball: true });
 
   const result = assertKodaxReleaseDependencyState(
     root,
     path.join(root, 'node_modules', '@kodax-ai', 'kodax'),
     { allowLocalTarball: true },
   );
-  assert.equal(result.version, '0.7.79');
+  assert.equal(result.version, '0.7.80');
   assert.equal(result.source, 'local-tarball');
   assert.match(result.resolved, /^file:/);
 });
@@ -113,7 +113,7 @@ test('release dependency gate rejects a local test tarball integrity mismatch', 
   const root = await mkdtemp(path.join(os.tmpdir(), 'space-kodax-dependency-gate-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   await writeReleaseDependencyFixture(root, {
-    root: '0.7.79',
+    root: '0.7.80',
     localTarball: true,
     integrity: 'sha512-YWJjZA==',
   });

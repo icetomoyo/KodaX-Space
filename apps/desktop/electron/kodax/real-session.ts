@@ -150,6 +150,7 @@ type RuntimeAdmissionOutcome = 'admitted' | 'not_admitted';
 interface RuntimeAdmissionState {
   readonly abort: AbortController;
   phase: 'preparing' | 'starting' | RuntimeAdmissionOutcome;
+  runId?: string;
   readonly promise: Promise<RuntimeAdmissionOutcome>;
   readonly resolve: (outcome: RuntimeAdmissionOutcome) => void;
 }
@@ -553,8 +554,13 @@ export class RealKodaXSession implements ManagedSession {
           queueMode,
         };
       }
-      this.startRun(prompt, artifacts, options?.promptOverlay, runPermissionMode);
-      return { accepted: true, queued: false };
+      const admission = this.startRun(prompt, artifacts, options?.promptOverlay, runPermissionMode);
+      if (admission) await admission.promise;
+      return {
+        accepted: true,
+        queued: false,
+        ...(admission?.runId !== undefined ? { runId: admission.runId } : {}),
+      };
     }
 
     // Follow-up prompts are queued explicitly: interrupt goes into the SDK
@@ -602,7 +608,7 @@ export class RealKodaXSession implements ManagedSession {
     artifacts?: readonly InputArtifact[],
     promptOverlay?: string,
     runPermissionMode: PermissionMode = this.permissionMode,
-  ): void {
+  ): RuntimeAdmissionState | null {
     const abort = new AbortController();
     const runtimeAdmission =
       this.surface === 'code' && runtimeHostAdapter.isRuntimeSelected()
@@ -643,6 +649,7 @@ export class RealKodaXSession implements ManagedSession {
           this.startQueuedPromptIfIdle();
         }
       });
+    return runtimeAdmission;
   }
 
   private startQueuedPromptIfIdle(): void {
@@ -978,6 +985,7 @@ export class RealKodaXSession implements ManagedSession {
           await new Promise<void>((resolve) => setTimeout(resolve, retryDelay));
         }
       }
+      if (admission) admission.runId = handle.runId;
       this.settleRuntimeAdmission(admission, 'admitted');
       // Normal Space shutdown detaches from the shared daemon. dispose() marks
       // the local Session as disposed before aborting its local wait signal, so
@@ -1971,7 +1979,7 @@ export class RealKodaXSession implements ManagedSession {
           // v0.7.42 SDK wired (P0): 用户 /model 设的值或 provider 默认（''）
           getCurrentModel: () => this.model ?? '',
           initialEngine: this.autoModeEngine as AutoModeEngine,
-          timeoutMs: 30_000,
+          // 不显式 pin timeoutMs——让 SDK 0.7.80 使用两次尝试默认 (45s / 90s)。
           onEngineChange: (engine) => {
             // F030 review MEDIUM#4: session dispose 后 guardrail in-flight classifier
             // 仍可能调回这里——disposed 守护防止往已关 push channel 写

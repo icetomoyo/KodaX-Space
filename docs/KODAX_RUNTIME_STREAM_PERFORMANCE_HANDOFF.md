@@ -1,5 +1,12 @@
 # KodaX Runtime stream performance handoff
 
+> **Published-package follow-up (2026-08-05):** the release-candidate work
+> below is historical evidence. Space now pins the published npm Registry
+> `@kodax-ai/kodax@0.7.80` package. Its `runtimeEventCoalescing:1` behavior is
+> still consumed by the adapter; v0.1.35 additionally requires
+> `managedRunDurability:1` for canonical managed-Run persistence. This handoff
+> does not describe a remaining local-tarball dependency.
+
 Date: 2026-07-30
 
 Owner: KodaX Runtime / SDK

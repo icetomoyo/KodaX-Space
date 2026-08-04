@@ -70,6 +70,8 @@ export type SendResult =
       readonly queued: boolean;
       readonly queueId?: string;
       readonly queueMode?: SessionSendQueueMode;
+      /** Exact fresh Runtime Run admitted for an immediate send. */
+      readonly runId?: string;
     }
   | {
       readonly accepted: false;
@@ -107,7 +109,9 @@ export interface LocalSessionCancelOutcome {
 }
 
 export type ManagedSessionCancelOutcome =
-  SpaceRuntimeRunStopReceiptT | LocalSessionCancelOutcome | void;
+  | SpaceRuntimeRunStopReceiptT
+  | LocalSessionCancelOutcome
+  | void;
 
 export interface ManagedSession {
   readonly sessionId: string;

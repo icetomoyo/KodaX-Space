@@ -1,7 +1,7 @@
 // BottomBar - F011-revised
 // Composer footer: chips, textarea, attachments, mode controls, and send/stop.
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowUp, FileText, Folder, Plus, X } from 'lucide-react';
 import {
   MAX_SOURCE_IMAGE_BYTES,
@@ -9,7 +9,6 @@ import {
   type ChannelOutput,
   type InputArtifact,
   type InputArtifactSource,
-  type InvokeChannelName,
   type IpcResult,
   type SessionMeta,
 } from '@kodax-space/space-ipc-schema';
@@ -59,6 +58,14 @@ import { FileNameText } from '../components/FileNameText.js';
 import { useI18n } from '../i18n/I18nProvider.js';
 import type { MessageKey } from '../i18n/messages.js';
 import {
+  applyTrackedStateAction,
+  composerResultOwnsCurrentSession,
+  invokeComposerIpc,
+  isComposerTimeoutResult,
+  routeComposerFailure,
+  type TrackedStateAction,
+} from './composerInvoke.js';
+import {
   bufferIndexForSelectorTurn,
   canRewindSelectorTurn,
   latestSelectorTurnIndex,
@@ -86,24 +93,6 @@ const EMPTY_INPUT_HISTORY: readonly string[] = [];
 type QueueMode = 'interrupt' | 'after-turn';
 type Translate = (key: MessageKey, vars?: Record<string, string | number>) => string;
 
-interface ComposerInvokeOptions<T> {
-  readonly timeoutMs?: number | null;
-  readonly onLateResult?: (result: IpcResult<T>) => void;
-}
-
-const DEFAULT_COMPOSER_INVOKE_TIMEOUT_MS = 45_000;
-const COMPOSER_INVOKE_TIMEOUT_MS: Partial<Record<InvokeChannelName, number>> = {
-  'session.create': 45_000,
-  'session.send': 30_000,
-  'session.setTitle': 10_000,
-  'slash.exec': 90_000,
-  'skill.invoke': 60_000,
-  'skill.discover': 45_000,
-  'provider.test': 30_000,
-  'mcp.reload': 45_000,
-  'mcp.discover': 45_000,
-};
-
 function queuedToastText(queueMode: QueueMode | undefined, t: Translate): string {
   return queueMode === 'after-turn' ? t('bottom.queuedAfterTurn') : t('bottom.queuedNextSafePoint');
 }
@@ -120,97 +109,6 @@ export function rejectedSessionSendText(result: RejectedSessionSend, t: Translat
       return t('bottom.sendRejected.interruptWindowClosed');
     case 'session_data_changed':
       return t('bottom.sendRejected.sessionDataChanged');
-  }
-}
-
-function composerInvokeFailure<T>(
-  channel: InvokeChannelName,
-  message: string,
-  details?: unknown,
-): IpcResult<T> {
-  return {
-    ok: false,
-    error: {
-      code: 'INTERNAL',
-      message,
-      details: details === undefined ? { channel } : { channel, cause: details },
-    },
-  };
-}
-
-function composerInvokeTimeoutFailure<T>(
-  channel: InvokeChannelName,
-  timeoutMs: number,
-): IpcResult<T> {
-  return composerInvokeFailure(channel, composerTimeoutMessage(channel, timeoutMs), {
-    timedOut: true,
-  });
-}
-
-function composerTimeoutMessage(channel: InvokeChannelName, timeoutMs: number): string {
-  return `${channel} timed out after ${Math.round(timeoutMs / 1000)}s. The request may still finish in the background.`;
-}
-
-function composerInvokeTimeoutMs(channel: InvokeChannelName): number {
-  return COMPOSER_INVOKE_TIMEOUT_MS[channel] ?? DEFAULT_COMPOSER_INVOKE_TIMEOUT_MS;
-}
-
-function isComposerTimeoutResult<T>(result: IpcResult<T>): boolean {
-  if (result.ok) return false;
-  const details = result.error.details;
-  if (!details || typeof details !== 'object') return false;
-  if (!('cause' in details)) return false;
-  const cause = (details as { cause?: unknown }).cause;
-  return (
-    !!cause && typeof cause === 'object' && (cause as { timedOut?: unknown }).timedOut === true
-  );
-}
-
-async function invokeComposerIpc<C extends InvokeChannelName>(
-  channel: C,
-  payload: ChannelInput<C>,
-  optionsOrTimeoutMs: number | ComposerInvokeOptions<ChannelOutput<C>> = {},
-): Promise<IpcResult<ChannelOutput<C>>> {
-  const bridge = window.kodaxSpace;
-  if (!bridge) {
-    return composerInvokeFailure(channel, 'IPC unavailable');
-  }
-
-  const options =
-    typeof optionsOrTimeoutMs === 'number' ? { timeoutMs: optionsOrTimeoutMs } : optionsOrTimeoutMs;
-  const timeoutMs =
-    options.timeoutMs === null ? null : (options.timeoutMs ?? composerInvokeTimeoutMs(channel));
-  let timer: number | undefined;
-  let timedOut = false;
-  const timeoutResult =
-    timeoutMs === null
-      ? null
-      : new Promise<IpcResult<ChannelOutput<C>>>((resolve) => {
-          timer = window.setTimeout(() => {
-            timedOut = true;
-            resolve(composerInvokeTimeoutFailure(channel, timeoutMs));
-          }, timeoutMs);
-        });
-  const invokeResult = bridge
-    .invoke(channel, payload)
-    .catch((error: unknown) =>
-      composerInvokeFailure<ChannelOutput<C>>(
-        channel,
-        error instanceof Error ? error.message : String(error),
-        error,
-      ),
-    )
-    .then((result) => {
-      if (timedOut) options.onLateResult?.(result);
-      return result;
-    });
-
-  try {
-    return timeoutResult === null
-      ? await invokeResult
-      : await Promise.race([invokeResult, timeoutResult]);
-  } finally {
-    if (timer !== undefined) window.clearTimeout(timer);
   }
 }
 
@@ -237,6 +135,17 @@ interface PendingFileRef {
 
 const MAX_PENDING_IMAGES = 8;
 const MAX_PENDING_FILE_REFS = 32;
+
+function useTrackedState<T>(initialValue: T) {
+  const [value, setValue] = useState(initialValue);
+  const valueRef = useRef(initialValue);
+  const setTrackedValue = useCallback((next: TrackedStateAction<T>): void => {
+    const updated = applyTrackedStateAction(valueRef.current, next);
+    valueRef.current = updated;
+    setValue(updated);
+  }, []);
+  return [value, setTrackedValue, valueRef] as const;
+}
 
 function hasDraggedFiles(dataTransfer: DataTransfer): boolean {
   return Array.from(dataTransfer.types).includes('Files');
@@ -564,6 +473,7 @@ export function BottomBar(): JSX.Element {
   const pendingAgentMode = useAppStore((s) => s.pendingAgentMode);
   const setPendingProviderId = useAppStore((s) => s.setPendingProviderId);
   const appendUserMessage = useAppStore((s) => s.appendUserMessage);
+  const bindUserMessageRuntimeRun = useAppStore((s) => s.bindUserMessageRuntimeRun);
   const updateUserMessageAttachments = useAppStore((s) => s.updateUserMessageAttachments);
   const appendLocalNotice = useAppStore((s) => s.appendLocalNotice);
   const appendQueuedUserMessage = useAppStore((s) => s.appendQueuedUserMessage);
@@ -586,15 +496,17 @@ export function BottomBar(): JSX.Element {
       ? (s.inputHistoryBySession[currentSessionId] ?? EMPTY_INPUT_HISTORY)
       : EMPTY_INPUT_HISTORY,
   );
-  const [prompt, setPrompt] = useState('');
+  const [prompt, setPrompt, promptRef] = useTrackedState('');
   const [busy, setBusy] = useState(false);
   const [busySlashName, setBusySlashName] = useState<string | null>(null);
   const [isAttaching, setIsAttaching] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [attachOpen, setAttachOpen] = useState(false);
   // Images already persisted to main-process temp storage and awaiting send.
-  const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
-  const [pendingFileRefs, setPendingFileRefs] = useState<PendingFileRef[]>([]);
+  const [pendingImages, setPendingImages, pendingImagesRef] = useTrackedState<PendingImage[]>([]);
+  const [pendingFileRefs, setPendingFileRefs, pendingFileRefsRef] = useTrackedState<
+    PendingFileRef[]
+  >([]);
   const [draggingFiles, setDraggingFiles] = useState(false);
   const dragDepthRef = useRef(0);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -619,6 +531,11 @@ export function BottomBar(): JSX.Element {
   const handleSendRef = useRef<
     ((queueMode?: QueueMode, promptOverride?: string) => Promise<void>) | null
   >(null);
+
+  const composerDraftIsOccupied = (): boolean =>
+    promptRef.current.length > 0 ||
+    pendingImagesRef.current.length > 0 ||
+    pendingFileRefsRef.current.length > 0;
 
   function focusComposerSoon(): void {
     const focusNow = (): void => textareaRef.current?.focus({ preventScroll: true });
@@ -654,31 +571,34 @@ export function BottomBar(): JSX.Element {
   }
 
   /** Insert text into the textarea at the current caret or selection. */
-  function insertAtCaret(text: string): void {
-    const ta = textareaRef.current;
-    if (!ta) {
-      setPrompt((p) => p + text);
-      return;
-    }
-    const start = ta.selectionStart ?? -1;
-    const end = ta.selectionEnd ?? -1;
-    setPrompt((current) => {
-      const s = start >= 0 ? start : current.length;
-      const e = end >= 0 ? end : current.length;
-      return current.slice(0, s) + text + current.slice(e);
-    });
-    const newPos = (start >= 0 ? start : ta.value.length) + text.length;
-    requestAnimationFrame(() => {
-      const live = textareaRef.current;
-      if (!live) return;
-      live.focus();
-      try {
-        live.setSelectionRange(newPos, newPos);
-      } catch {
-        /* ignore invalid selection range */
+  const insertAtCaret = useCallback(
+    (text: string): void => {
+      const ta = textareaRef.current;
+      if (!ta) {
+        setPrompt((p) => p + text);
+        return;
       }
-    });
-  }
+      const start = ta.selectionStart ?? -1;
+      const end = ta.selectionEnd ?? -1;
+      setPrompt((current) => {
+        const s = start >= 0 ? start : current.length;
+        const e = end >= 0 ? end : current.length;
+        return current.slice(0, s) + text + current.slice(e);
+      });
+      const newPos = (start >= 0 ? start : ta.value.length) + text.length;
+      requestAnimationFrame(() => {
+        const live = textareaRef.current;
+        if (!live) return;
+        live.focus();
+        try {
+          live.setSelectionRange(newPos, newPos);
+        } catch {
+          /* ignore invalid selection range */
+        }
+      });
+    },
+    [setPrompt],
+  );
 
   const maxHeightRef = useRef<number | null>(null);
 
@@ -747,14 +667,14 @@ export function BottomBar(): JSX.Element {
     };
     window.addEventListener('kodax-space.compose-prefill', onPrefill);
     return () => window.removeEventListener('kodax-space.compose-prefill', onPrefill);
-  }, []);
+  }, [setPrompt]);
 
   useEffect(() => {
     return registerInsertReceiver((text) => {
       const safe = text.length > 4096 ? text.slice(0, 4096) : text;
       insertAtCaret(safe);
     });
-  }, []);
+  }, [insertAtCaret]);
 
   async function ensureSession(): Promise<string | null> {
     if (currentSessionId) {
@@ -2032,23 +1952,42 @@ export function BottomBar(): JSX.Element {
     queueMode: QueueMode = 'interrupt',
   ): Promise<void> {
     if (!window.kodaxSpace) return;
+    const skillEcho = skillSlashEchoText(name, args);
+    const resultOwnsComposer = (): boolean =>
+      composerResultOwnsCurrentSession(sessionId, useAppStore.getState().currentSessionId);
+    const reportSkillFailure = (message: string): void => {
+      appendInputHistory(sessionId, skillEcho);
+      routeComposerFailure(
+        sessionId,
+        useAppStore.getState().currentSessionId,
+        { late: false, currentComposerOccupied: false },
+        () => {
+          setPrompt(skillEcho);
+          draftRef.current = skillEcho;
+          setErr(message);
+        },
+        () => {
+          appendLocalNotice(sessionId, `[send failed] ${message}\n\nUnsent input:\n${skillEcho}`);
+        },
+      );
+    };
     const result = await invokeComposerIpc('skill.invoke', {
       sessionId,
       skillName: name,
       args,
     });
     if (!result.ok) {
-      setErr(
+      reportSkillFailure(
         `${result.error?.code ?? 'ERR_UNKNOWN'}: ${result.error?.message ?? t('common.unknownError')}`,
       );
       return;
     }
     const { ok, resolvedPrompt, error } = result.data;
     if (!ok || resolvedPrompt === undefined) {
-      setErr(error ?? t('bottom.skillFailed', { name }));
+      reportSkillFailure(error ?? t('bottom.skillFailed', { name }));
       return;
     }
-    const skillEcho = skillSlashEchoText(name, args);
+    appendInputHistory(sessionId, skillEcho);
     const queuedLocalId = isStreaming
       ? appendQueuedUserMessage(sessionId, {
           content: skillEcho,
@@ -2056,53 +1995,102 @@ export function BottomBar(): JSX.Element {
           queueMode,
         })
       : null;
-    if (!queuedLocalId) appendUserMessage(sessionId, skillEcho);
-    const sendResult = await invokeComposerIpc('session.send', {
-      sessionId,
-      prompt: resolvedPrompt,
-      queueMode,
-      ...(currentProjectPath ? { expectedProjectRoot: currentProjectPath } : {}),
-      expectedSurface: currentSurface,
-    });
-    if (!sendResult.ok) {
-      setPendingSend(sessionId, false);
+    const optimisticMessageId = queuedLocalId ? null : appendUserMessage(sessionId, skillEcho);
+    if (!queuedLocalId) setPendingSend(sessionId, true);
+    const restoreUnacceptedSkillSend = (message: string, late: boolean): void => {
+      if (!queuedLocalId) setPendingSend(sessionId, false);
       if (queuedLocalId) removeQueuedUserMessage(sessionId, queuedLocalId);
       else rollbackLastUserMessage(sessionId, skillEcho);
-      setErr(
-        `${sendResult.error?.code ?? 'ERR_UNKNOWN'}: ${sendResult.error?.message ?? t('common.unknownError')}`,
+      routeComposerFailure(
+        sessionId,
+        useAppStore.getState().currentSessionId,
+        { late, currentComposerOccupied: composerDraftIsOccupied() },
+        () => {
+          if (!late) {
+            setPrompt(skillEcho);
+            draftRef.current = skillEcho;
+          } else {
+            setPrompt((current) => (current.length === 0 ? skillEcho : current));
+            if (draftRef.current.length === 0) draftRef.current = skillEcho;
+          }
+          setErr(message);
+        },
+        () => {
+          appendLocalNotice(sessionId, `[send failed] ${message}\n\nUnsent input:\n${skillEcho}`);
+        },
       );
-    } else if (!sendResult.data.accepted) {
-      setPendingSend(sessionId, false);
-      if (queuedLocalId) removeQueuedUserMessage(sessionId, queuedLocalId);
-      else rollbackLastUserMessage(sessionId, skillEcho);
-      setErr(rejectedSessionSendText(sendResult.data, t));
-    } else if (sendResult.data.queued) {
-      const acceptedQueueMode = sendResult.data.queueMode ?? queueMode;
-      if (queuedLocalId) {
-        markQueuedUserMessageAccepted(
-          sessionId,
-          queuedLocalId,
-          sendResult.data.queueId,
-          acceptedQueueMode,
-        );
-      } else {
-        const convertedLocalId = convertLastUserMessageToQueued(sessionId, skillEcho, {
-          content: skillEcho,
-          matchContent: resolvedPrompt,
-          queueMode: acceptedQueueMode,
-        });
-        if (convertedLocalId) {
-          markQueuedUserMessageAccepted(
-            sessionId,
-            convertedLocalId,
-            sendResult.data.queueId,
-            acceptedQueueMode,
-          );
-        }
+    };
+    const restoreFailedSkillSend = (
+      failed: Extract<IpcResult<ChannelOutput<'session.send'>>, { ok: false }>,
+      late: boolean,
+    ): void => {
+      restoreUnacceptedSkillSend(
+        `${failed.error?.code ?? 'ERR_UNKNOWN'}: ${failed.error?.message ?? t('common.unknownError')}`,
+        late,
+      );
+    };
+    const applySkillSendResult = (data: ChannelOutput<'session.send'>, late: boolean): void => {
+      if (!data.accepted) {
+        restoreUnacceptedSkillSend(rejectedSessionSendText(data, t), late);
+        return;
       }
-      pushToast(queuedToastText(acceptedQueueMode, t), 'info');
-    } else if (queuedLocalId) {
-      promoteQueuedUserMessage(sessionId, queuedLocalId);
+      if (late) {
+        if (resultOwnsComposer()) setErr(null);
+        pushToast(t('bottom.sendAcceptedInBackground'), 'info');
+      }
+      if (data.queued) {
+        const acceptedQueueMode = data.queueMode ?? queueMode;
+        if (queuedLocalId) {
+          markQueuedUserMessageAccepted(sessionId, queuedLocalId, data.queueId, acceptedQueueMode);
+        } else {
+          const convertedLocalId = convertLastUserMessageToQueued(sessionId, skillEcho, {
+            content: skillEcho,
+            matchContent: resolvedPrompt,
+            queueMode: acceptedQueueMode,
+          });
+          if (convertedLocalId) {
+            markQueuedUserMessageAccepted(
+              sessionId,
+              convertedLocalId,
+              data.queueId,
+              acceptedQueueMode,
+            );
+          }
+        }
+        pushToast(queuedToastText(acceptedQueueMode, t), 'info');
+        return;
+      }
+      const admittedMessageId = queuedLocalId
+        ? promoteQueuedUserMessage(sessionId, queuedLocalId)
+        : optimisticMessageId;
+      if (data.runId && admittedMessageId) {
+        bindUserMessageRuntimeRun(sessionId, admittedMessageId, data.runId);
+      }
+    };
+    const sendResult = await invokeComposerIpc(
+      'session.send',
+      {
+        sessionId,
+        prompt: resolvedPrompt,
+        queueMode,
+        ...(currentProjectPath ? { expectedProjectRoot: currentProjectPath } : {}),
+        expectedSurface: currentSurface,
+      },
+      {
+        onLateResult: (lateResult) => {
+          if (lateResult.ok) applySkillSendResult(lateResult.data, true);
+          else restoreFailedSkillSend(lateResult, true);
+        },
+      },
+    );
+    if (!sendResult.ok) {
+      if (isComposerTimeoutResult(sendResult)) {
+        if (resultOwnsComposer()) setErr(sendResult.error.message);
+        return;
+      }
+      restoreFailedSkillSend(sendResult, false);
+    } else {
+      applySkillSendResult(sendResult.data, false);
     }
   }
 
@@ -2176,6 +2164,8 @@ export function BottomBar(): JSX.Element {
     try {
       const sid = await ensureSession();
       if (!sid) return;
+      const resultOwnsComposer = (): boolean =>
+        composerResultOwnsCurrentSession(sid, useAppStore.getState().currentSessionId);
       const attachmentPathsForSend = collectAbsoluteAttachmentPaths(
         effectivePrompt,
         pendingFileRefs,
@@ -2259,20 +2249,37 @@ export function BottomBar(): JSX.Element {
         if (!queuedLocalId) setPendingSend(sid, false);
         if (queuedLocalId) removeQueuedUserMessage(sid, queuedLocalId);
         else rollbackLastUserMessage(sid, promptForAI);
-        if (!late) {
-          setPrompt(promptAtSend);
-          draftRef.current = promptAtSend;
-        } else {
-          setPrompt((current) => (current.length === 0 ? promptAtSend : current));
-          if (draftRef.current.length === 0) draftRef.current = promptAtSend;
-        }
-        if (imagesAtSend.length > 0) {
-          setPendingImages((prev) => (prev.length === 0 ? imagesAtSend : prev));
-        }
-        if (fileRefsAtSend.length > 0) {
-          setPendingFileRefs((prev) => (prev.length === 0 ? fileRefsAtSend : prev));
-        }
-        setErr(message);
+        routeComposerFailure(
+          sid,
+          useAppStore.getState().currentSessionId,
+          { late, currentComposerOccupied: composerDraftIsOccupied() },
+          () => {
+            if (!late) {
+              setPrompt(promptAtSend);
+              draftRef.current = promptAtSend;
+            } else {
+              setPrompt((current) => (current.length === 0 ? promptAtSend : current));
+              if (draftRef.current.length === 0) draftRef.current = promptAtSend;
+            }
+            if (imagesAtSend.length > 0) {
+              setPendingImages((prev) => (prev.length === 0 ? imagesAtSend : prev));
+            }
+            if (fileRefsAtSend.length > 0) {
+              setPendingFileRefs((prev) => (prev.length === 0 ? fileRefsAtSend : prev));
+            }
+            setErr(message);
+          },
+          () => {
+            const imageNote =
+              imagesAtSend.length > 0
+                ? `\n\nUnsent image attachments: ${imagesAtSend.map((image) => image.label).join(', ')}`
+                : '';
+            appendLocalNotice(
+              sid,
+              `[send failed] ${message}\n\nUnsent input:\n${effectivePrompt}${imageNote}`,
+            );
+          },
+        );
       };
 
       const restoreFailedSend = (
@@ -2297,7 +2304,7 @@ export function BottomBar(): JSX.Element {
           updateQueuedUserMessageAttachments(sid, queuedLocalId, data.attachments);
         }
         if (late) {
-          setErr(null);
+          if (resultOwnsComposer()) setErr(null);
           pushToast(t('bottom.sendAcceptedInBackground'), 'info');
         }
         if (data.queued) {
@@ -2317,8 +2324,13 @@ export function BottomBar(): JSX.Element {
             }
           }
           pushToast(queuedToastText(acceptedQueueMode, t), 'info');
-        } else if (queuedLocalId) {
-          promoteQueuedUserMessage(sid, queuedLocalId);
+        } else {
+          const admittedMessageId = queuedLocalId
+            ? promoteQueuedUserMessage(sid, queuedLocalId)
+            : optimisticMessageId;
+          if (data.runId && admittedMessageId) {
+            bindUserMessageRuntimeRun(sid, admittedMessageId, data.runId);
+          }
         }
       };
 
@@ -2342,7 +2354,7 @@ export function BottomBar(): JSX.Element {
       });
       if (!result.ok) {
         if (isComposerTimeoutResult(result)) {
-          setErr(result.error.message);
+          if (resultOwnsComposer()) setErr(result.error.message);
           return;
         }
         restoreFailedSend(result, false);

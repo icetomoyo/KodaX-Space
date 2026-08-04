@@ -45,7 +45,7 @@ export interface SpaceAutoModeBootstrapDeps {
   readonly getCurrentModel: () => string;
   /** 当前 auto engine sub-mode (用户首选 / 自动 fallback 后)。*/
   readonly initialEngine: AutoModeEngine;
-  /** sideQuery classifier 超时 (ms)。缺省 30s. */
+  /** sideQuery classifier 超时 (ms)。未配置时由 SDK 决定（0.7.80 起：首次 45s / 重试 90s）。*/
   readonly timeoutMs?: number;
   /** engine 变更回调；FEATURE_030 wire 到 emit auto_engine_change SessionEvent. */
   readonly onEngineChange?: (engine: AutoModeEngine) => void;
@@ -103,8 +103,8 @@ export async function bootstrapAutoMode(
       askUser: deps.askUser,
       getToolProjection: (toolName) => {
         const def =
-          sdk.getRegisteredToolDefinition(toolName)
-          ?? sdk.getBuiltinRegisteredToolDefinition(toolName);
+          sdk.getRegisteredToolDefinition(toolName) ??
+          sdk.getBuiltinRegisteredToolDefinition(toolName);
         return def?.toClassifierInput;
       },
       resolveProvider: (name): KodaXBaseProvider | undefined => {
@@ -133,7 +133,8 @@ export async function bootstrapAutoMode(
       onEngineChange: deps.onEngineChange,
       projectRoot,
       initialEngine: deps.initialEngine,
-      timeoutMs: deps.timeoutMs ?? 30_000,
+      // 仅在显式配置时转发——否则让 SDK 0.7.80 使用两次尝试默认 (45s / 90s)。
+      ...(deps.timeoutMs !== undefined ? { timeoutMs: deps.timeoutMs } : {}),
     });
 
     return guardrail;

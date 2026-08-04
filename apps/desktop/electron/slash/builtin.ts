@@ -48,11 +48,7 @@ import {
   getSpaceSdkExtensionDiagnostics,
   loadSpaceSdkCoding,
 } from '../kodax/sdk-extensions.js';
-import {
-  KODAX_AUTO_MODE_DEFAULT_TIMEOUT_MS,
-  loadKodaxCustomProviders,
-  registerKodaxCustomProviders,
-} from '../kodax/user-config.js';
+import { loadKodaxCustomProviders, registerKodaxCustomProviders } from '../kodax/user-config.js';
 import { isBuiltinId } from '../providers/catalog.js';
 import { providerConfigStore } from '../providers/config.js';
 import { listSlashCommands } from './registry.js';
@@ -2694,7 +2690,7 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
             .then((snapshot) => snapshot.value)
             .catch(() => undefined)
         : undefined;
-      const timeoutMs = runtimeSettings?.autoModeTimeoutMs ?? KODAX_AUTO_MODE_DEFAULT_TIMEOUT_MS;
+      const timeoutMs = runtimeSettings?.autoModeTimeoutMs;
       const classifierModel =
         runtimeSettings?.autoModeClassifierModel ??
         runtimeSettings?.model ??
@@ -2707,7 +2703,7 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
           `  engine: ${session.autoModeEngine}`,
           `  runtime: ${runtimeSnapshot.identity?.version ?? runtimeSnapshot.state}`,
           `  classifier model: ${classifierModel}`,
-          `  timeout: ${timeoutMs}ms${runtimeSettings?.autoModeTimeoutMs === undefined ? ' (Space-pinned KodaX default)' : ''}`,
+          `  timeout: ${timeoutMs !== undefined ? `${timeoutMs}ms (configured)` : 'SDK default (45s first / 90s retry)'}`,
           '  thresholds:',
           '    consecutive blocks: 3',
           '    cumulative blocks: 20',

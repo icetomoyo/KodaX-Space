@@ -1,6 +1,11 @@
 # KodaX Space 产品需求文档（PRD）
 
-> Last updated: 2026-07-30
+> **2026-08-05 发布基线**：KodaX Space `v0.1.35` 对齐 npm 正式发布的 KodaX `0.7.80`。
+> Coder daemon 必须显式提供 `managedRunDurability:1`；Space 只消费其 canonical
+> managed-Run `runId`/`turnId`，不维护第二份 Run 状态。未配置的 Auto LLM classifier timeout
+> 使用 KodaX 的首次 45 秒、重试 90 秒默认值。
+
+> Last updated: 2026-08-05
 > Status: 长期产品方向文档。当前已发布基线为 KodaX Space 0.1.34（package 0.1.34）/ 精确 Registry KodaX 0.7.78。v0.1.33 已交付 Coder shared daemon、canonical Actor/Turn、精确 history/live 与 compaction、完整物理请求诊断、F140-F142、可配置 Shell、独立 integration 配置和正式打包门禁。v0.1.34 在此基础上接入 exclusive Actor、`daemonOrphanExit:1`、`integrationConfigResilience:1`、Auto guardrail v4、Skill learning-loop 和公开 command-sandbox observation；Settings/诊断显示 last-known-good integration health，真正退出会停止 Runtime 或恢复 Space，Space 自动拉起的孤儿 daemon 获得有界空闲回收，正式包验证物理 sandbox helper，启动 overlay 与历史 replay 也已加固。生命周期支持仍按能力协商，不通过 SemVer 推断；Issue 133 的 macOS/Linux process acceptance/cleanup retry gap 和 F138 完整 OS 隔离继续保持未完成。已交付能力与边界以 [USER_MANUAL.zh-CN.md](USER_MANUAL.zh-CN.md)、[KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md) 和 [FEATURE_LIST.md](FEATURE_LIST.md) 为准。
 > 对标：Anthropic Claude Desktop（Cowork / Code 双面板）+ OpenAI Codex Desktop App（多 agent 本机壳）
 

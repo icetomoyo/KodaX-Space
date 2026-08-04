@@ -318,12 +318,10 @@ for (const abortRuntimeRun of [false, true] as const) {
       requestPermission: async () => 'allow_once',
     });
 
-    assert.deepEqual(await session.send('dispose before retry admission'), {
-      accepted: true,
-      queued: false,
-    });
+    const accepted = session.send('dispose before retry admission');
     await waitForTest(() => startAttempts === 1);
     await session.dispose({ abortRuntimeRun });
+    assert.deepEqual(await accepted, { accepted: true, queued: false });
     await waitForTest(() => !session.isRunning());
 
     assert.equal(startAttempts, 1);
@@ -883,10 +881,21 @@ test('disposing Space during daemon run admission detaches without aborting the 
     requestPermission: async () => 'allow_once',
   });
 
-  await session.send('keep running after Space restarts');
+  const accepted = session.send('keep running after Space restarts');
   await startEntered;
-  await session.dispose({ abortRuntimeRun: false });
+  let acknowledgementSettled = false;
+  void accepted.then(() => {
+    acknowledgementSettled = true;
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(acknowledgementSettled, false, 'ACK must wait for authoritative Runtime admission');
   releaseStart();
+  assert.deepEqual(await accepted, {
+    accepted: true,
+    queued: false,
+    runId: 'run_detached',
+  });
+  await session.dispose({ abortRuntimeRun: false });
   await new Promise<void>((resolve) => setImmediate(resolve));
   await new Promise<void>((resolve) => setImmediate(resolve));
 
@@ -956,7 +965,7 @@ test('Runtime cancel before admission emits a local terminal and never starts a 
     requestPermission: async () => 'allow_once',
   });
 
-  await session.send('cancel before Runtime admission');
+  const accepted = session.send('cancel before Runtime admission');
   await runtimePreparationEntered;
   assert.deepEqual(await session.cancel(), {
     kind: 'local_cancelled_before_admission',
@@ -974,6 +983,7 @@ test('Runtime cancel before admission emits a local terminal and never starts a 
       },
     ],
   );
+  assert.deepEqual(await accepted, { accepted: true, queued: false });
 
   releaseRuntimePreparation();
   await new Promise<void>((resolve) => setTimeout(resolve, 25));
@@ -1062,7 +1072,7 @@ test('Runtime cancel waits for in-flight admission and returns its authoritative
     requestPermission: async () => 'allow_once',
   });
 
-  await session.send('cancel while Runtime acknowledges admission');
+  const accepted = session.send('cancel while Runtime acknowledges admission');
   await admissionEntered;
   let cancelSettled = false;
   const cancelResult = session.cancel().then((result) => {
@@ -1073,6 +1083,11 @@ test('Runtime cancel waits for in-flight admission and returns its authoritative
   assert.equal(cancelSettled, false);
 
   releaseAdmission();
+  assert.deepEqual(await accepted, {
+    accepted: true,
+    queued: false,
+    runId: 'run_admitted',
+  });
   assert.deepEqual(await cancelResult, {
     runId: 'run_admitted',
     sessionId: 'session_cancelled_during_admission',

@@ -66,7 +66,8 @@ export interface KodaxUserDefaults {
 export interface KodaxAutoModeDefaults {
   readonly engine: 'llm' | 'rules';
   readonly classifierModel?: string;
-  readonly timeoutMs: number;
+  /** 未配置时由 SDK 决定（0.7.80 起：首次 45s / 重试 90s）。*/
+  readonly timeoutMs?: number;
   readonly speculativeWindowMs?: number;
 }
 
@@ -79,9 +80,6 @@ export interface KodaxRunConfig {
 export interface KodaxSandboxRunSettings {
   readonly envPass: readonly string[];
 }
-
-/** KodaX 0.7.79 Auto LLM default. Keep it explicit at the Space/Session boundary. */
-export const KODAX_AUTO_MODE_DEFAULT_TIMEOUT_MS = 30_000;
 
 export interface KodaxConfigCustomProvider {
   readonly id: string;
@@ -221,9 +219,9 @@ export async function loadKodaxUserDefaults(): Promise<KodaxUserDefaults> {
 
 /**
  * Runtime sessions do not load the REPL's `autoMode` config path themselves.
- * Resolve the same file/env precedence in Space and always materialize the
- * package-aligned timeout so a stale implicit daemon default cannot silently
- * change behaviour.
+ * Resolve the same file/env precedence in Space. timeoutMs 仅在用户显式配置时
+ * 透传——未配置时 omit，让 SDK 0.7.80 使用两次尝试默认 (45s / 90s)，避免单一值
+ * 覆盖重试的更长截止时间。
  */
 export async function loadKodaxAutoModeDefaults(): Promise<KodaxAutoModeDefaults> {
   const defaults = await loadKodaxUserDefaults();
@@ -232,7 +230,7 @@ export async function loadKodaxAutoModeDefaults(): Promise<KodaxAutoModeDefaults
     ...(defaults.autoModeClassifierModel !== undefined
       ? { classifierModel: defaults.autoModeClassifierModel }
       : {}),
-    timeoutMs: defaults.autoModeTimeoutMs ?? KODAX_AUTO_MODE_DEFAULT_TIMEOUT_MS,
+    ...(defaults.autoModeTimeoutMs !== undefined ? { timeoutMs: defaults.autoModeTimeoutMs } : {}),
     ...(defaults.autoModeSpeculativeWindowMs !== undefined
       ? { speculativeWindowMs: defaults.autoModeSpeculativeWindowMs }
       : {}),
@@ -286,7 +284,7 @@ async function computeUserDefaults(): Promise<KodaxUserDefaults> {
     ...(autoMode.classifierModelEnv !== undefined || autoMode.classifierModel !== undefined
       ? { autoModeClassifierModel: autoMode.classifierModelEnv ?? autoMode.classifierModel }
       : {}),
-    autoModeTimeoutMs: autoMode.timeoutMs ?? KODAX_AUTO_MODE_DEFAULT_TIMEOUT_MS,
+    ...(autoMode.timeoutMs !== undefined ? { autoModeTimeoutMs: autoMode.timeoutMs } : {}),
     ...(autoMode.speculativeWindowMs !== undefined
       ? { autoModeSpeculativeWindowMs: autoMode.speculativeWindowMs }
       : {}),

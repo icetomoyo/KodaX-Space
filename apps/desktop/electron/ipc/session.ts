@@ -990,6 +990,7 @@ export function registerSessionChannels(options: SessionChannelsOptions = {}): v
         ...(result.queued
           ? { queued: true, queueId: result.queueId, queueMode: result.queueMode }
           : {}),
+        ...(result.runId !== undefined ? { runId: result.runId } : {}),
         ...(attachments !== undefined ? { attachments } : {}),
       };
     } finally {
@@ -1467,7 +1468,8 @@ export function registerSessionChannels(options: SessionChannelsOptions = {}): v
         let runtimeProjectionEndExclusive: number | undefined;
         let runtimeProjectionItemCount: number | undefined;
         let conversationDiagnosticValue:
-          ReturnType<typeof conversationHistoryDiagnostic> | undefined;
+          | ReturnType<typeof conversationHistoryDiagnostic>
+          | undefined;
         let conversationPageValue:
           | {
               readonly outcome: 'ready';

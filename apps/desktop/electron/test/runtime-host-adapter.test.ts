@@ -81,6 +81,7 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
     assertSpaceRuntimeSdkRequiredCapabilities({
       KODAX_RUNTIME_SDK_CAPABILITIES: {
         daemonOrphanExit: 1,
+        managedRunDurability: 1,
         runtimeEventCoalescing: 1,
       },
     }),
@@ -88,13 +89,13 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
   assert.throws(
     () =>
       assertSpaceRuntimeSdkRequiredCapabilities({
-        KODAX_RUNTIME_SDK_CAPABILITIES: { daemonOrphanExit: 1 },
+        KODAX_RUNTIME_SDK_CAPABILITIES: { daemonOrphanExit: 1, managedRunDurability: 1 },
       }),
     /installed KodaX SDK.*runtimeEventCoalescing v1/i,
   );
   assert.throws(
     () => assertSpaceRuntimeSdkRequiredCapabilities({}),
-    /installed KodaX SDK.*daemonOrphanExit v1.*runtimeEventCoalescing v1/i,
+    /installed KodaX SDK.*daemonOrphanExit v1.*managedRunDurability v1.*runtimeEventCoalescing v1/i,
   );
 });
 
@@ -300,7 +301,7 @@ function createFakeRuntime(runtimeId = 'rt_test') {
       mode: 'daemon',
       profile: 'coder',
       startedAt: '2026-07-12T00:00:00.000Z',
-      version: '0.7.78',
+      version: '0.7.80',
       isolation: 'process',
     },
     capabilities: {
@@ -346,6 +347,7 @@ function createFakeRuntime(runtimeId = 'rt_test') {
         idleOnly: true,
         bootstrapGrace: true,
       },
+      managedRunDurability: { version: 1 },
       runtimeEventCoalescing: { version: 1 },
       sandboxRuntime: {
         version: 1,
@@ -419,9 +421,9 @@ function createFakeRuntime(runtimeId = 'rt_test') {
           schemaVersion: 1 as const,
           captureStartedAt: '2026-07-12T00:00:00.000Z',
           capturedAt: '2026-07-12T00:00:00.001Z',
-          sdkVersion: '0.7.79',
-          runtimeVersion: '0.7.79',
-          daemonVersion: '0.7.79',
+          sdkVersion: '0.7.80',
+          runtimeVersion: '0.7.80',
+          daemonVersion: '0.7.80',
           runtimeId,
           runtimeMode: 'daemon' as const,
           sessionId: input.sessionId,
@@ -6117,6 +6119,125 @@ test('daemon run lifecycle preserves canonical turn identity in renderer events'
   await adapter.close();
 });
 
+test('an observation snapshot restores an after-turn marker with its exact admitted Run id', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_snapshot_continuation');
+  const originalObserve = fake.runtime.sessions.observe.bind(fake.runtime.sessions);
+  fake.runtime.sessions.observe = async (...args) => {
+    const observation = await originalObserve(...args);
+    return {
+      ...observation,
+      snapshot: {
+        ...observation.snapshot,
+        runs: [
+          {
+            runId: 'run_snapshot_continuation',
+            sessionId: 's_snapshot_continuation',
+            phase: 'running' as const,
+            startedAt: '2026-08-04T00:00:00.000Z',
+            provider: 'mock',
+            turnId: 'turn_snapshot_continuation',
+          },
+        ],
+      },
+    };
+  };
+  const pushed: unknown[] = [];
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    push: (channel, payload) => {
+      if (channel === 'session.event') pushed.push(payload);
+    },
+  });
+  (
+    adapter as unknown as {
+      continuationPrompts: Map<string, { sessionId: string; content: string }>;
+    }
+  ).continuationPrompts.set('run_snapshot_continuation', {
+    sessionId: 's_snapshot_continuation',
+    content: 'snapshot continuation',
+  });
+
+  await adapter.ensureObserved('s_snapshot_continuation');
+
+  assert.deepEqual(pushed, [
+    {
+      kind: 'queued_user_prompt_started',
+      sessionId: 's_snapshot_continuation',
+      queueId: 'run_snapshot_continuation',
+      queueMode: 'after-turn',
+      content: 'snapshot continuation',
+      turnId: 'turn_snapshot_continuation',
+      turnUserOrdinal: 0,
+    },
+  ]);
+  await adapter.close();
+});
+
+test('a terminal fallback restores an after-turn marker with its exact admitted Run id', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_terminal_continuation');
+  const pushed: unknown[] = [];
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    push: (channel, payload) => {
+      if (channel === 'session.event') pushed.push(payload);
+    },
+  });
+  await adapter.ensureObserved('s_terminal_continuation');
+  (
+    adapter as unknown as {
+      continuationPrompts: Map<string, { sessionId: string; content: string }>;
+    }
+  ).continuationPrompts.set('run_terminal_continuation', {
+    sessionId: 's_terminal_continuation',
+    content: 'terminal continuation',
+  });
+
+  fake.emit({
+    id: 'event_terminal_continuation',
+    seq: 1,
+    time: '2026-08-04T00:00:01.000Z',
+    type: 'run.completed',
+    sessionId: 's_terminal_continuation',
+    runId: 'run_terminal_continuation',
+    turnId: 'turn_terminal_continuation',
+    payload: {
+      runId: 'run_terminal_continuation',
+      sessionId: 's_terminal_continuation',
+      phase: 'completed',
+      startedAt: '2026-08-04T00:00:00.000Z',
+      provider: 'mock',
+    },
+  });
+  await waitForTest(() =>
+    pushed.some(
+      (payload) =>
+        (payload as { kind?: string; queueId?: string }).kind === 'queued_user_prompt_started' &&
+        (payload as { queueId?: string }).queueId === 'run_terminal_continuation',
+    ),
+  );
+
+  assert.deepEqual(pushed[0], {
+    kind: 'queued_user_prompt_started',
+    sessionId: 's_terminal_continuation',
+    queueId: 'run_terminal_continuation',
+    queueMode: 'after-turn',
+    content: 'terminal continuation',
+    turnId: 'turn_terminal_continuation',
+    turnUserOrdinal: 0,
+  });
+  await adapter.close();
+});
+
 test('daemon child turn lifecycle cannot bind the root renderer turn identity', async () => {
   const pushed: unknown[] = [];
   const adapter = new RuntimeHostAdapter({
@@ -6200,6 +6321,78 @@ test('daemon run failure falls back to the structured terminal message', async (
       retriable: false,
     },
   ]);
+  await adapter.close();
+});
+
+test('daemon bridge preserves Runtime turn identity on live transcript events', async () => {
+  const sessionEvents: unknown[] = [];
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    push: (channel, payload) => {
+      if (channel === 'session.event') sessionEvents.push(payload);
+    },
+  });
+  const bridgeRuntimeEvent = (
+    adapter as unknown as {
+      bridgeRuntimeEvent(event: import('@kodax-ai/kodax/runtime').RuntimeTypedEvent): void;
+    }
+  ).bridgeRuntimeEvent.bind(adapter);
+  const emit = (
+    seq: number,
+    type: import('@kodax-ai/kodax/runtime').RuntimeTypedEvent['type'],
+    payload: unknown,
+  ): void => {
+    bridgeRuntimeEvent({
+      id: `event_${seq}`,
+      seq,
+      time: '2026-08-04T00:00:00.000Z',
+      type,
+      sessionId: 's_turn_identity',
+      runId: 'run_turn_identity',
+      turnId: 'turn_authoritative',
+      payload,
+    } as import('@kodax-ai/kodax/runtime').RuntimeTypedEvent);
+  };
+
+  emit(1, 'thinking.delta', { text: 'reasoning', meta: { contextKind: 'root' } });
+  emit(2, 'assistant.delta', { text: 'answer', meta: { contextKind: 'root' } });
+  emit(3, 'thinking.finished', {
+    thinking: 'reasoning done',
+    meta: { contextKind: 'root' },
+  });
+  emit(4, 'tool.started', {
+    tool: { id: 'tool_1', name: 'read', input: { path: 'notes.md' } },
+    meta: { contextKind: 'root', toolCallId: 'tool_1' },
+  });
+  emit(5, 'tool.progress', {
+    update: { id: 'tool_1', message: 'reading' },
+    meta: { contextKind: 'root', toolCallId: 'tool_1' },
+  });
+  emit(6, 'tool.progress', {
+    partialJson: '{"path":"notes.md"}',
+    toolName: 'read',
+    meta: { contextKind: 'root', toolCallId: 'tool_1' },
+  });
+  emit(7, 'tool.finished', {
+    result: { id: 'tool_1', name: 'read', content: 'done' },
+    meta: { contextKind: 'root', toolCallId: 'tool_1' },
+  });
+
+  assert.deepEqual(
+    sessionEvents.map((event) => {
+      const row = event as { readonly kind: string; readonly turnId?: string };
+      return [row.kind, row.turnId];
+    }),
+    [
+      ['thinking_delta', 'turn_authoritative'],
+      ['text_delta', 'turn_authoritative'],
+      ['thinking_end', 'turn_authoritative'],
+      ['tool_start', 'turn_authoritative'],
+      ['tool_progress', 'turn_authoritative'],
+      ['tool_input_delta', 'turn_authoritative'],
+      ['tool_result', 'turn_authoritative'],
+    ],
+  );
   await adapter.close();
 });
 
@@ -6550,6 +6743,14 @@ test('Runtime event coalescing capability is projected from the connected host',
     capabilities.find((item) => item.id === 'runtime.events.coalescing'),
     {
       id: 'runtime.events.coalescing',
+      version: 1,
+      available: true,
+    },
+  );
+  assert.deepEqual(
+    capabilities.find((item) => item.id === 'runtime.managedRuns.durability'),
+    {
+      id: 'runtime.managedRuns.durability',
       version: 1,
       available: true,
     },

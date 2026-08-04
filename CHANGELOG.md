@@ -14,14 +14,62 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ## [Unreleased]
 
+No unreleased changes yet.
+
+---
+
+## [0.1.35] - 2026-08-05
+
 ### Added
 
+- **Learned Skill safety surface (F118)** - Task Dock and `/learn` now expose
+  bounded Runtime-owned learned-Skill attention, detail, review, trust, reject,
+  disable, and rollback actions. Each mutation is bound to the exact capability
+  ID, revision, and fingerprint; event-cursor gaps recover from an authoritative
+  snapshot, and `SPACE_DISABLE_LEARNING_MUTATIONS=1` retains a read-only view.
 - **Explicit ASRT readiness and setup (F143)** - Settings → Runtime now shows
   doctor-confirmed `Ready`, `Setup required`, or `Unavailable` state together with the ASRT
   version, backend, bounded diagnostics, SDK guidance, and a refresh action. On Windows, setup is
   available only after an explicit in-app confirmation and may then show the one-time UAC prompt;
   setup is serialized, followed by a fresh doctor check, and never runs at startup or from an
   ordinary tool call. macOS/Linux remain guidance-only and Space never invokes a package manager.
+
+### Changed
+
+- **Official KodaX 0.7.80 Registry alignment** - Root and Desktop manifests,
+  npm lockfile, installed package, and release gate use the published tarball
+  (`sha512-4OuLcI6GcAO20yhsM9bCGMH7xBirLoAtqicDZqafpkSxmrwpYSrJhDItdMyKv00NKdti//1xhwNQgTjQUke20A==`),
+  replacing the previous local candidate source.
+- **Durable managed-Run contract** - Coder now requires
+  `managedRunDurability:1` together with the existing daemon contracts. Space
+  publishes the capability in its ledger, binds the precise admitted `runId` to
+  each optimistic user row, and preserves Runtime `turnId` on streaming text,
+  thinking, and tool events.
+- **Auto LLM defaults follow the SDK** - Space no longer pins a retired timeout.
+  With no explicit user setting, KodaX 0.7.80 owns the 45-second first attempt
+  and 90-second retry; explicit timeout settings still win. The shared SDK/REPL
+  deterministic permission analyzer improves ordinary read, search, directory,
+  Git, and GET-only `web_fetch` classification.
+- **Current self-documentation** - The `kodax_manual`, user manual, capability
+  ledger, product docs, and release guides now describe learned-Skill control,
+  explicit sandbox readiness, durable Run boundaries, and the 0.7.80 upstream
+  limits without treating Worker-hosted `configuredA2A` as a Space Settings
+  feature.
+
+### Fixed
+
+- **History/live ownership race** - Late Runtime admission, queued-input
+  promotion, and streaming events now retain exact Run/Turn identity, so a
+  history revalidation cannot attach a fresh answer to an older query or replace
+  an active live projection beneath the user.
+- **Release reproducibility** - Formal packages reject the old local tarball
+  resolution and require the npm Registry integrity pin before packaging.
+
+### Verification
+
+- Release acceptance includes the exact dependency gate, strict SDK capability
+  probe, focused Runtime/renderer regressions, workspace test suite, lint,
+  typecheck, production build, package smoke, and GitHub CI for the release tag.
 
 ## [0.1.34] - 2026-07-30
 

@@ -33,6 +33,7 @@ import { SPACE_VERSION_REFRESH_EVENT } from './lib/versionEvents.js';
 import {
   historyPhaseAllowsRuntimeObservation,
   invalidateSessionHistoryPaging,
+  refreshDeferredSessionHistory,
   sessionEventInvalidatesHistoryCache,
   sessionHistoryAllowsRuntimeObservation,
   useSessionHistoryPaging,
@@ -106,10 +107,20 @@ export default function App(): JSX.Element {
     let disposed = false;
     const liveSnapshotRequests = new Set<string>();
     const liveSnapshotReruns = new Set<string>();
-    const sessionEventBatcher = createSessionEventBatcher(appendEvent, {
-      snapshotCursor: (sessionId) =>
-        useAppStore.getState().runtimeSnapshotCursorBySession[sessionId],
-    });
+    const sessionEventBatcher = createSessionEventBatcher(
+      (event) => {
+        appendEvent(event);
+        if (event.kind === 'session_complete' || event.kind === 'session_error') {
+          void refreshDeferredSessionHistory(event.sessionId).catch((error: unknown) => {
+            console.error('[session.history] deferred terminal refresh failed', error);
+          });
+        }
+      },
+      {
+        snapshotCursor: (sessionId) =>
+          useAppStore.getState().runtimeSnapshotCursorBySession[sessionId],
+      },
+    );
 
     // F121: listener-first Runtime bootstrap. A cursor gap requests one atomic
     // observation snapshot instead of attempting to replay partial daemon events.

@@ -13,6 +13,7 @@ import {
   olderHistoryWindowSeamScrollTop,
   PREPEND_ANCHOR_CORRECTION_FRAME_OFFSETS,
   preservesPrependAnchorForBoundaryInput,
+  refreshDeferredSessionHistory,
   revalidateNewestSessionHistory,
   resetSessionHistoryPagingLifecycle,
   restoreNewestSessionHistory,
@@ -66,6 +67,8 @@ afterEach(() => {
     'history-paging-invalidated-continuation',
     'history-paging-warning-race',
     'history-paging-active-warning-refresh',
+    'history-paging-active-warning-overtaken',
+    'history-paging-older-warning-window',
     'history-paging-foreign-owner',
   ]) {
     deactivateSessionHistoryPaging(sessionId);
@@ -356,6 +359,766 @@ test('ready history revalidates on reactivation without blanking or accepting a 
   assert.equal(
     useAppStore.getState().userMessagesBySession[sessionId]?.[0]?.content,
     'fresh external mutation',
+  );
+});
+
+test('ready history revalidation does not replace the painted live turn while a run is active', async () => {
+  const sessionId = 'history-paging-active-revalidation';
+  useAppStore.setState({
+    sessions: [
+      {
+        sessionId,
+        projectRoot: '/project',
+        provider: 'mock',
+        reasoningMode: 'auto',
+        permissionMode: 'accept-edits',
+        autoModeEngine: 'llm',
+        agentMode: 'ama',
+        surface: 'code',
+        createdAt: 1_000,
+        lastActivityAt: 1_000,
+      },
+    ],
+    currentSessionId: sessionId,
+    eventsBySession: {},
+    userMessagesBySession: {},
+    liveProjectionBySession: {},
+  });
+  type ReadyResponse = {
+    ok: true;
+    data: {
+      items: Array<
+        | { kind: 'user'; content: string; canonicalIndex: number; turnId?: string }
+        | { kind: 'assistant'; text: string; canonicalIndex: number; turnId?: string }
+      >;
+      page: {
+        outcome: 'ready';
+        revision: string;
+        sourceRevision: string;
+        hasMore: false;
+        windowMode: 'replace';
+        hasNewer: false;
+      };
+    };
+  };
+  let resolveActive!: (response: ReadyResponse) => void;
+  const activeResponse = new Promise<ReadyResponse>((resolve) => {
+    resolveActive = resolve;
+  });
+  let calls = 0;
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    writable: true,
+    value: {
+      kodaxSpace: {
+        invoke: mockHistoryInvoke(async () => {
+          calls += 1;
+          if (calls === 1) {
+            return {
+              ok: true as const,
+              data: {
+                items: [
+                  { kind: 'user' as const, content: 'earlier query', canonicalIndex: 0 },
+                  { kind: 'assistant' as const, text: 'earlier answer', canonicalIndex: 1 },
+                ],
+                page: {
+                  outcome: 'ready' as const,
+                  revision: 'revision-cached',
+                  sourceRevision: 'source-cached',
+                  hasMore: false as const,
+                  windowMode: 'replace' as const,
+                  hasNewer: false as const,
+                },
+              },
+            };
+          }
+          if (calls === 2) return activeResponse;
+          return {
+            ok: true as const,
+            data: {
+              items: [
+                { kind: 'user' as const, content: 'earlier query', canonicalIndex: 0 },
+                { kind: 'assistant' as const, text: 'earlier answer', canonicalIndex: 1 },
+                {
+                  kind: 'user' as const,
+                  content: 'active query',
+                  canonicalIndex: 2,
+                  turnId: 'turn-active',
+                },
+                {
+                  kind: 'assistant' as const,
+                  text: 'newer live answer',
+                  canonicalIndex: 3,
+                  turnId: 'turn-active',
+                },
+              ],
+              page: {
+                outcome: 'ready' as const,
+                revision: 'revision-terminal',
+                sourceRevision: 'source-terminal',
+                hasMore: false as const,
+                windowMode: 'replace' as const,
+                hasNewer: false as const,
+              },
+            },
+          };
+        }),
+      },
+    },
+  });
+
+  await restoreNewestSessionHistory(sessionId, 'code');
+  useAppStore.getState().appendUserMessage(sessionId, 'active query', 2_000);
+  useAppStore.getState().appendEvent({
+    kind: 'session_start',
+    sessionId,
+    provider: 'mock',
+    turnId: 'turn-active',
+  });
+  useAppStore.getState().appendEvent({
+    kind: 'text_delta',
+    sessionId,
+    text: 'newer live answer',
+    turnId: 'turn-active',
+  });
+  const activeProjection = {
+    sessionId,
+    projectionRevision: 1,
+    cursor: { runtimeId: 'runtime-active', seq: 1 },
+    transcriptRevision: 'transcript-active',
+    queuedRuns: [],
+    activeRun: {
+      runId: 'run-active',
+      sessionId,
+      phase: 'running' as const,
+      startedAt: 2_000,
+    },
+    activeTools: [],
+    todos: [],
+    queuedInputs: [],
+    interactions: [],
+  };
+  useAppStore.setState({ liveProjectionBySession: { [sessionId]: activeProjection } });
+
+  const revalidation = revalidateNewestSessionHistory(sessionId, 'code');
+  // Observation invalidation can temporarily remove the live projection even though the
+  // session_start + streamed transcript still prove that this turn is open.
+  const runtimeConnection = {
+    state: 'ready' as const,
+    changedAt: 2_000,
+    stale: false as const,
+    runtimeId: 'runtime-active',
+    profile: 'default',
+    capabilities: [],
+  };
+  useAppStore.setState({
+    liveProjectionBySession: {},
+    runtimeConnection,
+    runtimeProfile: {
+      connection: runtimeConnection,
+      projectionRevision: 2,
+      cursor: { runtimeId: 'runtime-active', seq: 2 },
+      sessions: [
+        {
+          sessionId,
+          projectRoot: '/project',
+          surface: 'code',
+          createdAt: 1_000,
+          lastActivityAt: 2_000,
+          queuedRuns: [],
+          activeRun: activeProjection.activeRun,
+        },
+      ],
+      interactions: [],
+      notifications: [],
+    },
+  });
+  resolveActive({
+    ok: true,
+    data: {
+      items: [
+        { kind: 'user', content: 'earlier query', canonicalIndex: 0 },
+        { kind: 'assistant', text: 'earlier answer', canonicalIndex: 1 },
+        {
+          kind: 'user',
+          content: 'active query',
+          canonicalIndex: 2,
+          turnId: 'turn-active',
+        },
+        {
+          kind: 'assistant',
+          text: 'stale in-flight answer',
+          canonicalIndex: 3,
+          turnId: 'turn-active',
+        },
+      ],
+      page: {
+        outcome: 'ready',
+        revision: 'revision-active',
+        sourceRevision: 'source-active',
+        hasMore: false,
+        windowMode: 'replace',
+        hasNewer: false,
+      },
+    },
+  });
+  await revalidation;
+
+  assert.equal(sessionHistoryPagingSnapshot(sessionId).revision, 'revision-cached');
+  assert.deepEqual(
+    composeMessages({
+      userMessages: useAppStore.getState().userMessagesBySession[sessionId] ?? [],
+      events: useAppStore.getState().eventsBySession[sessionId] ?? [],
+    }).flatMap((message) => {
+      if (message.kind === 'user') return [`user:${message.content}`];
+      if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+      return [];
+    }),
+    [
+      'user:earlier query',
+      'assistant:earlier answer',
+      'user:active query',
+      'assistant:newer live answer',
+    ],
+  );
+
+  invalidateSessionHistoryPaging(sessionId);
+  useAppStore.getState().appendEvent({
+    kind: 'session_complete',
+    sessionId,
+    turnId: 'turn-active',
+  });
+  await refreshDeferredSessionHistory(sessionId);
+
+  assert.equal(sessionHistoryPagingSnapshot(sessionId).revision, 'revision-terminal');
+  assert.deepEqual(
+    composeMessages({
+      userMessages: useAppStore.getState().userMessagesBySession[sessionId] ?? [],
+      events: useAppStore.getState().eventsBySession[sessionId] ?? [],
+    }).flatMap((message) => {
+      if (message.kind === 'user') return [`user:${message.content}`];
+      if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+      return [];
+    }),
+    [
+      'user:earlier query',
+      'assistant:earlier answer',
+      'user:active query',
+      'assistant:newer live answer',
+    ],
+  );
+});
+
+test('a failed deferred terminal refresh remains retryable', async () => {
+  const sessionId = 'history-paging-deferred-retry';
+  const session = {
+    sessionId,
+    projectRoot: '/project',
+    provider: 'mock',
+    reasoningMode: 'auto' as const,
+    permissionMode: 'accept-edits' as const,
+    autoModeEngine: 'llm' as const,
+    agentMode: 'ama' as const,
+    surface: 'code' as const,
+    createdAt: 1_000,
+    lastActivityAt: 1_000,
+  };
+  useAppStore.setState({
+    sessions: [session],
+    currentSessionId: sessionId,
+    eventsBySession: {},
+    userMessagesBySession: {},
+    pendingSendBySession: {},
+    liveProjectionBySession: {},
+  });
+  let calls = 0;
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    writable: true,
+    value: {
+      kodaxSpace: {
+        invoke: mockHistoryInvoke(async () => {
+          calls += 1;
+          if (calls === 3) throw new Error('transient terminal refresh failure');
+          return {
+            ok: true as const,
+            data: {
+              items: [
+                { kind: 'user' as const, content: 'query', canonicalIndex: 0 },
+                {
+                  kind: 'assistant' as const,
+                  text: calls === 4 ? 'terminal answer' : 'cached answer',
+                  canonicalIndex: 1,
+                },
+              ],
+              page: {
+                outcome: 'ready' as const,
+                revision: calls === 4 ? 'revision-terminal' : `revision-${calls}`,
+                sourceRevision: calls === 4 ? 'source-terminal' : `source-${calls}`,
+                hasMore: false,
+                windowMode: 'replace' as const,
+                hasNewer: false,
+              },
+            },
+          };
+        }),
+      },
+    },
+  });
+
+  await restoreNewestSessionHistory(sessionId, 'code');
+  useAppStore.setState({ pendingSendBySession: { [sessionId]: true } });
+  await revalidateNewestSessionHistory(sessionId, 'code');
+  useAppStore.setState({ pendingSendBySession: {} });
+
+  await assert.rejects(refreshDeferredSessionHistory(sessionId), /transient terminal refresh/);
+  await refreshDeferredSessionHistory(sessionId);
+
+  assert.equal(calls, 4);
+  assert.equal(sessionHistoryPagingSnapshot(sessionId).revision, 'revision-terminal');
+});
+
+test('a terminal refresh remains deferred when the next run starts before the read returns', async () => {
+  const sessionId = 'history-paging-deferred-next-run';
+  useAppStore.setState({
+    sessions: [
+      {
+        sessionId,
+        projectRoot: '/project',
+        provider: 'mock',
+        reasoningMode: 'auto',
+        permissionMode: 'accept-edits',
+        autoModeEngine: 'llm',
+        agentMode: 'ama',
+        surface: 'code',
+        createdAt: 1_000,
+        lastActivityAt: 1_000,
+      },
+    ],
+    currentSessionId: sessionId,
+    eventsBySession: {},
+    userMessagesBySession: {},
+    pendingSendBySession: {},
+    liveProjectionBySession: {},
+    runtimeSnapshotRequiredBySession: {},
+  });
+  let calls = 0;
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    writable: true,
+    value: {
+      kodaxSpace: {
+        invoke: mockHistoryInvoke(async () => {
+          calls += 1;
+          if (calls === 3) {
+            useAppStore.setState({ pendingSendBySession: { [sessionId]: true } });
+          }
+          return {
+            ok: true as const,
+            data: {
+              items: [
+                { kind: 'user' as const, content: 'query', canonicalIndex: 0 },
+                {
+                  kind: 'assistant' as const,
+                  text: `answer-${calls}`,
+                  canonicalIndex: 1,
+                },
+              ],
+              page: {
+                outcome: 'ready' as const,
+                revision: `revision-${calls}`,
+                sourceRevision: `source-${calls}`,
+                hasMore: false,
+                windowMode: 'replace' as const,
+                hasNewer: false,
+              },
+            },
+          };
+        }),
+      },
+    },
+  });
+
+  await restoreNewestSessionHistory(sessionId, 'code');
+  useAppStore.setState({ pendingSendBySession: { [sessionId]: true } });
+  await revalidateNewestSessionHistory(sessionId, 'code');
+  useAppStore.setState({ pendingSendBySession: {} });
+
+  await refreshDeferredSessionHistory(sessionId);
+  assert.equal(calls, 3);
+  assert.equal(sessionHistoryPagingSnapshot(sessionId).revision, 'revision-1');
+
+  useAppStore.setState({ pendingSendBySession: {} });
+  await refreshDeferredSessionHistory(sessionId);
+  assert.equal(calls, 4, 'the next Run terminal must still find the deferred refresh marker');
+  assert.equal(sessionHistoryPagingSnapshot(sessionId).revision, 'revision-4');
+});
+
+test('a snapshot-required live projection cannot block canonical history revalidation', async () => {
+  const sessionId = 'history-paging-snapshot-required';
+  const runtimeConnection = {
+    state: 'ready' as const,
+    changedAt: 2_000,
+    stale: false as const,
+    runtimeId: 'runtime-stale',
+    profile: 'default',
+    capabilities: [],
+  };
+  useAppStore.setState({
+    sessions: [
+      {
+        sessionId,
+        projectRoot: '/project',
+        provider: 'mock',
+        reasoningMode: 'auto',
+        permissionMode: 'accept-edits',
+        autoModeEngine: 'llm',
+        agentMode: 'ama',
+        surface: 'code',
+        createdAt: 1_000,
+        lastActivityAt: 1_000,
+      },
+    ],
+    currentSessionId: sessionId,
+    eventsBySession: {},
+    userMessagesBySession: {},
+    pendingSendBySession: {},
+    runtimeConnection,
+    liveProjectionBySession: {},
+    runtimeSnapshotRequiredBySession: {},
+    runtimeProfile: null,
+  });
+  let calls = 0;
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    writable: true,
+    value: {
+      kodaxSpace: {
+        invoke: mockHistoryInvoke(async () => {
+          calls += 1;
+          return {
+            ok: true as const,
+            data: {
+              items: [
+                { kind: 'user' as const, content: 'query', canonicalIndex: 0 },
+                {
+                  kind: 'assistant' as const,
+                  text: `answer-${calls}`,
+                  canonicalIndex: 1,
+                },
+              ],
+              page: {
+                outcome: 'ready' as const,
+                revision: `revision-${calls}`,
+                sourceRevision: `source-${calls}`,
+                hasMore: false,
+                windowMode: 'replace' as const,
+                hasNewer: false,
+              },
+            },
+          };
+        }),
+      },
+    },
+  });
+
+  await restoreNewestSessionHistory(sessionId, 'code');
+  useAppStore.getState().appendEvent({
+    kind: 'session_start',
+    sessionId,
+    provider: 'mock',
+    runtimeEvent: { runtimeId: 'runtime-stale', runId: 'run-stale', seq: 10 },
+  });
+  useAppStore.setState({
+    runtimeSnapshotRequiredBySession: { [sessionId]: true },
+    runtimeProfile: {
+      connection: runtimeConnection,
+      projectionRevision: 2,
+      cursor: { runtimeId: 'runtime-stale', seq: 10 },
+      sessions: [
+        {
+          sessionId,
+          projectRoot: '/project',
+          surface: 'code',
+          createdAt: 1_000,
+          lastActivityAt: 2_000,
+          queuedRuns: [],
+          activeRun: { sessionId, runId: 'run-stale', phase: 'running' },
+        },
+      ],
+      interactions: [],
+      notifications: [],
+    },
+  });
+  useAppStore.getState().appendEvent({
+    kind: 'session_start',
+    sessionId,
+    provider: 'mock',
+  });
+
+  await revalidateNewestSessionHistory(sessionId, 'code');
+
+  assert.equal(calls, 2);
+  assert.equal(sessionHistoryPagingSnapshot(sessionId).revision, 'revision-2');
+});
+
+test('a deferred refresh preserves an explicitly older browsing window', async () => {
+  const sessionId = 'history-paging-deferred-older-window';
+  useAppStore.setState({
+    sessions: [
+      {
+        sessionId,
+        projectRoot: '/project',
+        provider: 'mock',
+        reasoningMode: 'auto',
+        permissionMode: 'accept-edits',
+        autoModeEngine: 'llm',
+        agentMode: 'ama',
+        surface: 'code',
+        createdAt: 1_000,
+        lastActivityAt: 1_000,
+      },
+    ],
+    currentSessionId: sessionId,
+    eventsBySession: {},
+    userMessagesBySession: {},
+    pendingSendBySession: {},
+    liveProjectionBySession: {},
+  });
+  let calls = 0;
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    writable: true,
+    value: {
+      kodaxSpace: {
+        invoke: mockHistoryInvoke(async () => {
+          calls += 1;
+          return {
+            ok: true as const,
+            data: {
+              items: [{ kind: 'user' as const, content: 'older browsing row', canonicalIndex: 5 }],
+              page: {
+                outcome: 'ready' as const,
+                revision: `revision-${calls}`,
+                sourceRevision: `source-${calls}`,
+                hasMore: true,
+                nextCursor: 'older-cursor',
+                windowMode: 'replace' as const,
+                hasNewer: true,
+              },
+            },
+          };
+        }),
+      },
+    },
+  });
+
+  await restoreNewestSessionHistory(sessionId, 'code');
+  useAppStore.setState({ pendingSendBySession: { [sessionId]: true } });
+  await revalidateNewestSessionHistory(sessionId, 'code');
+  useAppStore.setState({ pendingSendBySession: {} });
+  await refreshDeferredSessionHistory(sessionId);
+
+  assert.equal(calls, 2, 'terminal refresh must not jump an older browsing window to newest');
+  assert.equal(sessionHistoryPagingSnapshot(sessionId).revision, 'revision-1');
+  assert.equal(sessionHistoryPagingSnapshot(sessionId).hasNewer, true);
+});
+
+test('a partial warning in an explicitly older window does not jump back to newest', async () => {
+  const sessionId = 'history-paging-older-warning-window';
+  useAppStore.setState({
+    sessions: [
+      {
+        sessionId,
+        projectRoot: '/project',
+        provider: 'mock',
+        reasoningMode: 'auto',
+        permissionMode: 'accept-edits',
+        autoModeEngine: 'llm',
+        agentMode: 'ama',
+        surface: 'code',
+        createdAt: 1_000,
+        lastActivityAt: 1_000,
+      },
+    ],
+    currentSessionId: sessionId,
+    eventsBySession: {},
+    userMessagesBySession: {},
+    pendingSendBySession: {},
+  });
+  let calls = 0;
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    writable: true,
+    value: {
+      kodaxSpace: {
+        invoke: mockHistoryInvoke(async () => {
+          calls += 1;
+          if (calls === 1) {
+            return {
+              ok: true as const,
+              data: {
+                items: [{ kind: 'user' as const, content: 'newest partial row' }],
+                conversation: { status: 'partial' as const },
+                page: {
+                  outcome: 'ready' as const,
+                  revision: 'newest-revision',
+                  sourceRevision: 'newest-source',
+                  hasMore: true as const,
+                  nextCursor: 'older-cursor',
+                  windowMode: 'replace' as const,
+                  hasNewer: false as const,
+                },
+              },
+            };
+          }
+          if (calls === 2) {
+            return {
+              ok: true as const,
+              data: {
+                items: [{ kind: 'user' as const, content: 'older partial row' }],
+                conversation: { status: 'partial' as const },
+                page: {
+                  outcome: 'ready' as const,
+                  revision: 'older-revision',
+                  sourceRevision: 'older-source',
+                  hasMore: false as const,
+                  windowMode: 'replace' as const,
+                  hasNewer: true as const,
+                },
+              },
+            };
+          }
+          return {
+            ok: true as const,
+            data: {
+              items: [{ kind: 'user' as const, content: 'unexpected newest repair' }],
+              conversation: { status: 'resolved' as const },
+              page: {
+                outcome: 'ready' as const,
+                revision: 'unexpected-revision',
+                sourceRevision: 'unexpected-source',
+                hasMore: false as const,
+                windowMode: 'replace' as const,
+                hasNewer: false as const,
+              },
+            },
+          };
+        }),
+      },
+    },
+  });
+
+  await restoreNewestSessionHistory(sessionId, 'code');
+  await loadOlderSessionHistory(sessionId);
+  assert.equal(sessionHistoryPagingSnapshot(sessionId).hasNewer, true);
+  invalidateSessionHistoryPaging(sessionId);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assert.equal(calls, 2);
+  assert.equal(sessionHistoryPagingSnapshot(sessionId).revision, 'older-revision');
+  assert.equal(sessionHistoryPagingSnapshot(sessionId).conversationStatus, 'partial');
+  assert.deepEqual(
+    useAppStore.getState().userMessagesBySession[sessionId]?.map((message) => message.content),
+    ['older partial row'],
+  );
+});
+
+test('a stale scoped session_start cannot block a canonical revalidation', async () => {
+  const sessionId = 'history-paging-stale-scoped-start';
+  const runtimeConnection = {
+    state: 'ready' as const,
+    changedAt: 2_000,
+    stale: false as const,
+    runtimeId: 'runtime-current',
+    profile: 'default',
+    capabilities: [],
+  };
+  useAppStore.setState({
+    sessions: [
+      {
+        sessionId,
+        projectRoot: '/project',
+        provider: 'mock',
+        reasoningMode: 'auto',
+        permissionMode: 'accept-edits',
+        autoModeEngine: 'llm',
+        agentMode: 'ama',
+        surface: 'code',
+        createdAt: 1_000,
+        lastActivityAt: 1_000,
+      },
+    ],
+    currentSessionId: sessionId,
+    eventsBySession: {},
+    userMessagesBySession: {},
+    pendingSendBySession: {},
+    liveProjectionBySession: {},
+    runtimeConnection,
+    runtimeProfile: {
+      connection: runtimeConnection,
+      projectionRevision: 2,
+      cursor: { runtimeId: 'runtime-current', seq: 2 },
+      sessions: [
+        {
+          sessionId,
+          projectRoot: '/project',
+          surface: 'code',
+          createdAt: 1_000,
+          lastActivityAt: 2_000,
+          queuedRuns: [],
+        },
+      ],
+      interactions: [],
+      notifications: [],
+    },
+  });
+  let calls = 0;
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    writable: true,
+    value: {
+      kodaxSpace: {
+        invoke: mockHistoryInvoke(async () => {
+          calls += 1;
+          return {
+            ok: true as const,
+            data: {
+              items: [
+                {
+                  kind: 'user' as const,
+                  content: calls === 1 ? 'old canonical' : 'new canonical',
+                  canonicalIndex: 0,
+                },
+              ],
+              page: {
+                outcome: 'ready' as const,
+                revision: `revision-${calls}`,
+                sourceRevision: `source-${calls}`,
+                hasMore: false,
+                windowMode: 'replace' as const,
+                hasNewer: false,
+              },
+            },
+          };
+        }),
+      },
+    },
+  });
+
+  await restoreNewestSessionHistory(sessionId, 'code');
+  useAppStore.getState().appendEvent({
+    kind: 'session_start',
+    sessionId,
+    provider: 'mock',
+    runtimeEvent: { runtimeId: 'runtime-old', runId: 'run-old', seq: 1 },
+  });
+  await revalidateNewestSessionHistory(sessionId, 'code');
+
+  assert.equal(sessionHistoryPagingSnapshot(sessionId).revision, 'revision-2');
+  assert.equal(
+    useAppStore.getState().userMessagesBySession[sessionId]?.[0]?.content,
+    'new canonical',
   );
 });
 
@@ -852,6 +1615,131 @@ test('an active uncertain warning revalidates immediately at a persistence bound
   assert.deepEqual(
     useAppStore.getState().userMessagesBySession[sessionId]?.map((message) => message.content),
     ['resolved query'],
+  );
+});
+
+test('an active warning refresh overtaken by the next Run defers canonical replacement', async () => {
+  const sessionId = 'history-paging-active-warning-overtaken';
+  useAppStore.setState({
+    sessions: [
+      {
+        sessionId,
+        projectRoot: '/project',
+        provider: 'mock',
+        reasoningMode: 'auto',
+        permissionMode: 'accept-edits',
+        autoModeEngine: 'llm',
+        agentMode: 'ama',
+        surface: 'code',
+        createdAt: 1_000,
+        lastActivityAt: 1_000,
+      },
+    ],
+    currentSessionId: sessionId,
+    eventsBySession: {},
+    userMessagesBySession: {},
+    pendingSendBySession: {},
+  });
+  let calls = 0;
+  let resolveOvertaken!: (value: {
+    ok: true;
+    data: {
+      items: Array<{ kind: 'user'; content: string }>;
+      conversation: { status: 'resolved' };
+      page: {
+        outcome: 'ready';
+        revision: string;
+        sourceRevision: string;
+        hasMore: false;
+        windowMode: 'replace';
+        hasNewer: false;
+      };
+    };
+  }) => void;
+  const overtakenResponse = new Promise<Parameters<typeof resolveOvertaken>[0]>((resolve) => {
+    resolveOvertaken = resolve;
+  });
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    writable: true,
+    value: {
+      kodaxSpace: {
+        invoke: mockHistoryInvoke(async () => {
+          calls += 1;
+          if (calls === 1) {
+            return {
+              ok: true as const,
+              data: {
+                items: [{ kind: 'user' as const, content: 'visible partial row' }],
+                conversation: { status: 'partial' as const },
+                page: {
+                  outcome: 'ready' as const,
+                  revision: 'revision-1',
+                  sourceRevision: 'source-1',
+                  hasMore: false as const,
+                  windowMode: 'replace' as const,
+                  hasNewer: false as const,
+                },
+              },
+            };
+          }
+          if (calls === 2) return overtakenResponse;
+          return {
+            ok: true as const,
+            data: {
+              items: [{ kind: 'user' as const, content: 'settled row' }],
+              conversation: { status: 'resolved' as const },
+              page: {
+                outcome: 'ready' as const,
+                revision: 'revision-3',
+                sourceRevision: 'source-3',
+                hasMore: false as const,
+                windowMode: 'replace' as const,
+                hasNewer: false as const,
+              },
+            },
+          };
+        }),
+      },
+    },
+  });
+
+  await restoreNewestSessionHistory(sessionId, 'code');
+  invalidateSessionHistoryPaging(sessionId);
+  const deadline = Date.now() + 2_000;
+  while (calls < 2 && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(calls, 2);
+  useAppStore.setState({ pendingSendBySession: { [sessionId]: true } });
+  resolveOvertaken({
+    ok: true,
+    data: {
+      items: [{ kind: 'user', content: 'overtaken row' }],
+      conversation: { status: 'resolved' },
+      page: {
+        outcome: 'ready',
+        revision: 'revision-2',
+        sourceRevision: 'source-2',
+        hasMore: false,
+        windowMode: 'replace',
+        hasNewer: false,
+      },
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(sessionHistoryPagingSnapshot(sessionId).revision, 'revision-1');
+  assert.equal(sessionHistoryPagingSnapshot(sessionId).conversationStatus, 'partial');
+  useAppStore.setState({ pendingSendBySession: {} });
+  await refreshDeferredSessionHistory(sessionId);
+
+  assert.equal(calls, 3);
+  assert.equal(sessionHistoryPagingSnapshot(sessionId).revision, 'revision-3');
+  assert.equal(sessionHistoryPagingSnapshot(sessionId).conversationStatus, 'resolved');
+  assert.deepEqual(
+    useAppStore.getState().userMessagesBySession[sessionId]?.map((message) => message.content),
+    ['settled row'],
   );
 });
 

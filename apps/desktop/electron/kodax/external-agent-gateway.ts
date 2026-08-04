@@ -25,7 +25,7 @@ import { getSpaceDataDir } from './data-paths.js';
 
 type SdkAgentModule = typeof import('@kodax-ai/kodax/agent');
 
-const KODAX_SDK_VERSION = '0.7.78';
+const KODAX_SDK_VERSION = '0.7.80';
 const REFERENCE_EXECUTOR_ID = 'kodax-space-reference-v1';
 const REFERENCE_MANAGEMENT_OWNER = 'kodax-space:reference';
 const MAX_STORE_FILE_BYTES = 16 * 1024 * 1024;

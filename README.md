@@ -13,7 +13,7 @@
   <a href="https://github.com/icetomoyo/KodaX-Space/releases/latest"><img alt="release" src="https://img.shields.io/github/v/release/icetomoyo/KodaX-Space?style=flat-square"></a>
   <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-KAI--FCL-orange?style=flat-square"></a>
   <a href="https://github.com/icetomoyo/KodaX-Space/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/icetomoyo/KodaX-Space/ci.yml?style=flat-square&label=ci"></a>
-  <img alt="KodaX SDK" src="https://img.shields.io/badge/KodaX_SDK-0.7.78-f0a020?style=flat-square">
+  <img alt="KodaX SDK" src="https://img.shields.io/badge/KodaX_SDK-0.7.80-f0a020?style=flat-square">
   <img alt="platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-34495e?style=flat-square">
 </p>
 
@@ -90,13 +90,13 @@ npm run dev
 
 ## Current Source Baseline
 
-**`main` requires the KodaX 0.7.78 Runtime safety contracts explicitly; it does not infer support from a semantic version.** Coder defaults to the profile-scoped shared daemon with exclusive Actor ownership, canonical bounded Actor/Turn projection, exact history/live reconciliation, Runtime-owned interrupt finalization, orphan idle exit, complete physical-request usage diagnostics, Auto guardrail v4, resilient integration configuration, and structured tool-sandbox observations. F141 adds a customer-visible Settings → Runtime switch between recommended Daemon mode and an Embedded compatibility fallback. A switch is admitted only after Runtime operations drain and Space proves that no ManagedSession, running/paused Workflow, non-terminal External Agent task, permission/AskUser interaction, queued Coder prompt, daemon work, or other client can be disrupted; owner policy and the versioned preference then transition before Space restarts. Startup reconciles persisted mode with owner policy before Runtime connection. The environment variable is only a one-time migration seed for pre-v3 settings. Partner remains an embedded-inline Space owner, while MCP processes/logs, Workflow library/start/admin, Space Reference Agent execution, and product artifacts remain explicit host-provider boundaries.
+**`main` requires the KodaX 0.7.80 Runtime safety contracts explicitly; it does not infer support from a semantic version.** Coder defaults to the profile-scoped shared daemon with exclusive Actor ownership, canonical bounded Actor/Turn projection, exact history/live reconciliation, durable managed-Run admission, Runtime-owned interrupt finalization, orphan idle exit, complete physical-request usage diagnostics, Auto guardrail v4, resilient integration configuration, and structured tool-sandbox observations. F141 adds a customer-visible Settings → Runtime switch between recommended Daemon mode and an Embedded compatibility fallback. A switch is admitted only after Runtime operations drain and Space proves that no ManagedSession, running/paused Workflow, non-terminal External Agent task, permission/AskUser interaction, queued Coder prompt, daemon work, or other client can be disrupted; owner policy and the versioned preference then transition before Space restarts. Startup reconciles persisted mode with owner policy before Runtime connection. The environment variable is only a one-time migration seed for pre-v3 settings. Partner remains an embedded-inline Space owner, while MCP processes/logs, Workflow library/start/admin, Space Reference Agent execution, and product artifacts remain explicit host-provider boundaries.
 
-KodaX 0.7.78 keeps integration declarations separate from core configuration and adds last-known-good recovery, revisioned reloads, watcher state, and bounded diagnostics. Space reads MCP from `~/.kodax/integrations/mcp.json`, managed extension paths from `~/.kodax/integrations/extensions.json`, and leaves Runtime-owned A2A in `~/.kodax/integrations/a2a.json`; project MCP overrides use `<project>/.kodax/integrations/mcp.json`. Legacy `config.json#mcpServers` and `config.json#extensions` remain read-only migration fallbacks. Settings → Runtime shows each integration domain's source, revision, watcher and diagnostic state; concurrent migration/config writes fail with an actionable reload-and-retry message instead of overwriting newer data. The in-app `kodax_manual` composes Space guidance with the exact installed SDK's original underlying-capability topics.
+KodaX 0.7.80 keeps integration declarations separate from core configuration and adds durable managed-Run boundaries: accepted initial and queued prompts and every completed turn are persisted before their lifecycle event is emitted. Space requires `managedRunDurability:1`, binds the admitted `runId` and streamed `turnId` to its optimistic query, and rejects daemons that cannot make that guarantee. The SDK now defaults an unspecified Auto LLM classifier timeout to 45 seconds and its one retry to 90 seconds; Space forwards only an explicit user timeout. `worker.configuredA2A` is a KodaX CLI Worker-hosted embedded-runtime option, not a Space Settings toggle. The in-app `kodax_manual` composes these Space boundaries with the exact installed SDK's original underlying-capability topics.
 
 The bottom bar separates root-Agent context pressure from cumulative Session token usage. The Context window meter uses the final automatic-compaction threshold and a privacy-safe six-part composition; completed physical requests are deduplicated by request ID across root, child, retry, fallback, repair, workflow-digest, and compaction-summary calls. F140 adds an Ask/keep-in-tray/complete-exit preference. A real quit on Windows, macOS, or Linux first attempts to stop the Coder daemon safely. If work blocks that attempt, Space offers Keep open or Force close; Force close cancels only this Space's work, preserves other clients, and exits without returning to the blocker loop. A Space-started orphan daemon still self-reaps after its final client disconnects and work becomes idle. Terminal plus Coder command tools share one selected Shell/profile-PATH contract without projecting arbitrary executables or secrets.
 
-F122-F124 continue to provide the Partner project-source, immutable evidence/citation, and automatic grounded-context loop. F121 remains `InProgress` only for the final human multi-client acceptance ledger; v0.1.34 still fails closed on missing daemon capabilities. See the [v0.1.34 safety design](docs/features/v0.1.34.md) and [capability ledger](docs/KODAX_CAPABILITY_LEDGER.md).
+F122-F124 continue to provide the Partner project-source, immutable evidence/citation, and automatic grounded-context loop. F121 remains `InProgress` only for the final human multi-client acceptance ledger; v0.1.35 still fails closed on missing daemon capabilities, including durable managed-Run boundaries. See the [v0.1.35 release design](docs/features/v0.1.35.md) and [capability ledger](docs/KODAX_CAPABILITY_LEDGER.md).
 
 F135 also packages the redistributable `frontend-slides` and `huashu-design` skills as vetted Space builtins, so users do not install the skills separately. The distributed Huashu adaptation removes default promotional watermark/signature markup and instructions while retaining the upstream MIT license and authorship. Optional browser/video/TTS/AI-review pipelines still need their documented external runtimes or credentials. The locally installed `pdf`, `pptx`, `xlsx`, and `docx` skills are not bundled because their current license prohibits redistribution. F137 plans independently authored, Chinese-first replacements for `v0.1.37`; they are not part of the 0.1.34 safety release. See the [v0.1.37 design](docs/features/v0.1.37.md), [builtin skill maintenance](docs/BUILTIN_SKILLS.md), and the [v0.1.34 release-readiness record](docs/releases/v0.1.34-release-readiness.md).
 
@@ -109,6 +109,21 @@ official Registry package without vendoring an SDK patch. See
 [Issue 091](docs/KNOWN_ISSUES.md#091-ordinary-windows-queries-can-flash-several-short-lived-command-windows-from-kodax-runtime-child-processes).
 
 ## Current Release
+
+**v0.1.35 - Durable Managed Runs and Session History Integrity**
+
+Released on 2026-08-05 as [`v0.1.35`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.35), with package version `0.1.35` aligned to the exact npm-published KodaX 0.7.80 package.
+
+| Area              | Summary                                                                                                                                                                       |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| KodaX 0.7.80      | Exact Registry package and SRI; `managedRunDurability:1` is negotiated instead of inferred from SemVer.                                                                       |
+| Coder correctness | The admitted `runId` and streamed `turnId` bind optimistic queries to canonical durable history, preventing late refreshes from attaching output to an older query.           |
+| Auto mode         | Space preserves an explicit classifier timeout and otherwise uses the SDK's 45-second initial and 90-second retry defaults.                                                   |
+| Documentation     | README, manuals, capability ledger, design/test guide, developer docs, and `kodax_manual` describe the same boundary and keep Worker-hosted A2A separate from Space settings. |
+
+See [CHANGELOG.md](CHANGELOG.md), the [v0.1.35 design](docs/features/v0.1.35.md), and the [v0.1.35 release record](docs/releases/v0.1.35-release-readiness.md).
+
+## Previous Releases
 
 **v0.1.34 - Runtime Safety and Desktop Lifecycle Hardening**
 
@@ -124,8 +139,6 @@ Released on 2026-07-30 as [`v0.1.34`](https://github.com/icetomoyo/KodaX-Space/r
 | Verification       | Local and GitHub gates are recorded in the versioned readiness document; Issue 133 and F138 limitations remain explicit instead of being described as completed.                                 |
 
 See [CHANGELOG.md](CHANGELOG.md), the [v0.1.34 design](docs/features/v0.1.34.md), and the [v0.1.34 release record](docs/releases/v0.1.34-release-readiness.md).
-
-## Previous Releases
 
 **v0.1.32 - Shared Coder and Usable Partner Knowledge**
 
@@ -190,19 +203,19 @@ See [CHANGELOG.md](CHANGELOG.md) and [docs/features/v0.1.29.md](docs/features/v0
 
 KodaX Space intentionally reuses KodaX ecosystem state where it should, and owns desktop-only state where the UI needs it.
 
-| State                                    | Behavior                                                                                                                                                           |
-| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| State                                    | Behavior                                                                                                                                                                                                          |
+| ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `~/.kodax/config.json`                   | Core provider/model/effort/permission/custom-provider/compaction plus `sandbox.envPass` variable-name allow-list shared with KodaX. Values are never stored; MCP, A2A, and Extensions are not newly written here. |
-| `~/.kodax/integrations/mcp.json`         | Versioned user MCP server declarations shared by CLI/SDK/Space; Settings can migrate the read-only legacy `config.json#mcpServers` fallback without deleting it.   |
-| `~/.kodax/integrations/extensions.json`  | Versioned trusted filesystem-extension paths. Space loads them only when `KODAX_SPACE_ENABLE_SDK_EXTENSIONS=1`; the default is discovery-only.                     |
-| `~/.kodax/integrations/a2a.json`         | Versioned Runtime-owned A2A registration configuration.                                                                                                            |
-| `<project>/.kodax/integrations/mcp.json` | Space project MCP compatibility layer; same-name project servers override the global declaration.                                                                  |
-| `~/.kodax/sessions/`                     | Shared session history with KodaX CLI/REPL.                                                                                                                        |
-| `~/.kodax/handoffs/`                     | Desktop handoff inbox for session continuity.                                                                                                                      |
-| `~/.kodax/skills/` and project skills    | Discovered by the KodaX skills runtime.                                                                                                                            |
-| API keys                                 | Stored through OS keychain when available; environment variables remain supported.                                                                                 |
-| `~/.kodax/space/`                        | Space-owned preferences, projects, UI state, and desktop-specific metadata.                                                                                        |
-| `<profile-root>/runtime/`                | Shared Runtime daemon state and run/event journal; with the default profile this resolves to `~/.kodax/runtime/`.                                                  |
+| `~/.kodax/integrations/mcp.json`         | Versioned user MCP server declarations shared by CLI/SDK/Space; Settings can migrate the read-only legacy `config.json#mcpServers` fallback without deleting it.                                                  |
+| `~/.kodax/integrations/extensions.json`  | Versioned trusted filesystem-extension paths. Space loads them only when `KODAX_SPACE_ENABLE_SDK_EXTENSIONS=1`; the default is discovery-only.                                                                    |
+| `~/.kodax/integrations/a2a.json`         | Versioned Runtime-owned A2A registration configuration.                                                                                                                                                           |
+| `<project>/.kodax/integrations/mcp.json` | Space project MCP compatibility layer; same-name project servers override the global declaration.                                                                                                                 |
+| `~/.kodax/sessions/`                     | Shared session history with KodaX CLI/REPL.                                                                                                                                                                       |
+| `~/.kodax/handoffs/`                     | Desktop handoff inbox for session continuity.                                                                                                                                                                     |
+| `~/.kodax/skills/` and project skills    | Discovered by the KodaX skills runtime.                                                                                                                                                                           |
+| API keys                                 | Stored through OS keychain when available; environment variables remain supported.                                                                                                                                |
+| `~/.kodax/space/`                        | Space-owned preferences, projects, UI state, and desktop-specific metadata.                                                                                                                                       |
+| `<profile-root>/runtime/`                | Shared Runtime daemon state and run/event journal; with the default profile this resolves to `~/.kodax/runtime/`.                                                                                                 |
 
 ## Architecture
 
@@ -281,10 +294,11 @@ npm run e2e:headed
 | [README_CN.md](README_CN.md)                                                                             | Chinese README.                                                                          |
 | [CONTRIBUTING.md](CONTRIBUTING.md)                                                                       | Contribution boundaries, validation, and documentation requirements.                     |
 | [docs/README.md](docs/README.md)                                                                         | Documentation hub and current-vs-historical document map.                                |
-| [docs/USER_MANUAL.zh-CN.md](docs/USER_MANUAL.zh-CN.md)                                                   | Illustrated Chinese manual for the v0.1.34 release baseline.                             |
+| [docs/USER_MANUAL.zh-CN.md](docs/USER_MANUAL.zh-CN.md)                                                   | Illustrated Chinese manual for the v0.1.35 release baseline.                             |
 | [docs/USAGE.md](docs/USAGE.md)                                                                           | Source launch, profiles, Runtime Host, testing, packaging, and troubleshooting.          |
 | [docs/BUILTIN_SKILLS.md](docs/BUILTIN_SKILLS.md)                                                         | Builtin skill provenance, licensing, update, patch, and package-integrity workflow.      |
 | [docs/releases/v0.1.34-release-readiness.md](docs/releases/v0.1.34-release-readiness.md)                 | v0.1.34 gates, production evidence, artifact digests, and known-risk record.             |
+| [docs/releases/v0.1.35-release-readiness.md](docs/releases/v0.1.35-release-readiness.md)                 | v0.1.35 gates, KodaX 0.7.80 contract, and release evidence.                              |
 | [docs/CODING_AGENT_BEGINNER_BEST_PRACTICES.zh-CN.md](docs/CODING_AGENT_BEGINNER_BEST_PRACTICES.zh-CN.md) | Chinese beginner guide for coding-agent practice in software and microservice workflows. |
 | [docs/PRD.md](docs/PRD.md)                                                                               | Product requirements and product positioning.                                            |
 | [docs/HLD.md](docs/HLD.md)                                                                               | High-level architecture and system design.                                               |
@@ -303,8 +317,8 @@ Near-term planned work is tracked in [docs/FEATURE_LIST.md](docs/FEATURE_LIST.md
 | `v0.1.32`         | Published shared-daemon Coder, Partner project knowledge/citations, vetted builtins, exact-history UX, Windows icon/tray, and release hardening.     |
 | `v0.1.33`         | Corrected KodaX 0.7.77 release with safe Daemon/Embedded selection, conversation file actions, attachment/context fixes, and packaged Runtime gates. |
 | `v0.1.34`         | KodaX 0.7.78 Runtime safety, resilient integrations, visible complete exit, packaged sandbox helpers, startup UX, and history replay hardening.      |
-| `v0.1.35`         | Minimum learned-Skill safety surface over the published Runtime learning loop, without a second store or multi-carrier Learning Center.              |
-| `v0.1.36`         | Unassigned feature slot.                                                                                                                              |
+| `v0.1.35`         | Published KodaX 0.7.80, durable managed-Run negotiation, session-history integrity, Auto timeout defaults, and the matching manual/test contract.    |
+| `v0.1.36`         | Unassigned feature slot.                                                                                                                             |
 | `v0.1.37`         | Independently authored Chinese-first DOCX/PDF/XLSX/PPTX builtins plus semantic UI polish, with bounded execution and truthful validation receipts.   |
 | `v0.1.40-v0.1.44` | Workflow/review evidence, task/capability governance, and the SDK-gated Memory Agent host.                                                           |
 | `v0.1.48`         | Localization completion, beta diagnostics, release channels, updater/distribution trust.                                                             |

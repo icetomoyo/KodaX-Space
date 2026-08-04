@@ -242,8 +242,8 @@ async function main() {
       'utf8',
     ),
   );
-  if (packageInfo.version !== '0.7.79') {
-    throw new Error(`This repair was validated with KodaX 0.7.79; found ${packageInfo.version}.`);
+  if (packageInfo.version !== '0.7.80') {
+    throw new Error(`This repair was validated with KodaX 0.7.80; found ${packageInfo.version}.`);
   }
 
   const manager = createSessionManager({ sessionsDir: options.sessionsDir });

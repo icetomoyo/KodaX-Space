@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import type { SessionEvent, SessionHistoryItem } from '@kodax-space/space-ipc-schema';
 import { registerSessionViewLifecycleReset, useAppStore } from '../store/appStore.js';
+import { runtimeConnectionHasFreshLiveAuthority } from '../store/runtimeProjectionState.js';
 
 export interface SessionHistoryPagingState {
   readonly phase: 'idle' | 'waiting' | 'loading' | 'ready' | 'error';
@@ -28,6 +29,7 @@ const activeTokens = new Map<string, symbol>();
 const cacheOrder = new Map<string, true>();
 const invalidationEpochs = new Map<string, number>();
 const loadedEpochs = new Map<string, number>();
+const deferredReadyRevalidations = new Set<string>();
 const MAX_RUNTIME_RETRY_ATTEMPTS = 30;
 const MAX_CACHED_SESSION_HISTORIES = 32;
 let historyRequestOrdinal = 0;
@@ -58,6 +60,7 @@ function touchCache(sessionId: string): void {
     loadedItems.delete(candidate);
     invalidationEpochs.delete(candidate);
     loadedEpochs.delete(candidate);
+    deferredReadyRevalidations.delete(candidate);
     listeners.delete(candidate);
     inFlight.delete(candidate);
     useAppStore.getState().evictRestoredSessionHistory(candidate);
@@ -131,12 +134,13 @@ export function invalidateSessionHistoryPaging(sessionId: string): void {
   if (
     activeTokens.has(sessionId) &&
     state?.phase === 'ready' &&
+    state.hasNewer !== true &&
     (state.conversationStatus === 'partial' || state.conversationStatus === 'ambiguous')
   ) {
     // A warning already visible in the active Session must not wait for a switch-away/back cycle
     // to discover that terminal persistence repaired it. Normal resolved pages remain lazy so a
     // terminal event cannot yank an actively scrolled transcript back to its newest window.
-    void requestHistory(sessionId, false, state.surface).catch(() => {});
+    void requestHistory(sessionId, false, state.surface, true).catch(() => {});
   }
 }
 
@@ -246,9 +250,49 @@ function scheduleRuntimeRetry(
   const timer = setTimeout(() => {
     retryTimers.delete(sessionId);
     if (!activeTokens.has(sessionId)) return;
-    void requestHistory(sessionId, false, surface, retainReadyProjection).catch(() => {});
+    void requestHistory(sessionId, false, surface, retainReadyProjection).catch(
+      (error: unknown) => {
+        console.error('[session.history] retry failed', { sessionId, error });
+        if (activeTokens.has(sessionId)) {
+          scheduleRuntimeRetry(sessionId, surface, retainReadyProjection);
+        }
+      },
+    );
   }, delayMs);
   retryTimers.set(sessionId, timer);
+}
+
+function sessionHasOpenLiveTurn(sessionId: string): boolean {
+  const state = useAppStore.getState();
+  if (state.pendingSendBySession[sessionId] === true) return true;
+  const snapshotRequired = state.runtimeSnapshotRequiredBySession[sessionId] === true;
+  let activeRunId: string | undefined;
+  if (!snapshotRequired && runtimeConnectionHasFreshLiveAuthority(state.runtimeConnection)) {
+    const runtimeId = state.runtimeConnection.runtimeId;
+    const live = state.liveProjectionBySession[sessionId];
+    const liveActiveRunId =
+      live !== undefined && live.cursor.runtimeId === runtimeId ? live.activeRun?.runId : undefined;
+    const runtimeProfile = state.runtimeProfile;
+    const profileSession =
+      runtimeProfile !== null && runtimeProfile.connection.runtimeId === runtimeId
+        ? runtimeProfile.sessions.find((session) => session.sessionId === sessionId)
+        : undefined;
+    activeRunId = liveActiveRunId ?? profileSession?.activeRun?.runId;
+  }
+  const events = state.eventsBySession[sessionId] ?? [];
+  for (let index = events.length - 1; index >= 0; index--) {
+    const event = events[index]!;
+    const runtimeRunId = 'runtimeEvent' in event ? event.runtimeEvent?.runId : undefined;
+    if (snapshotRequired && event.kind === 'session_start' && runtimeRunId === undefined) continue;
+    if (runtimeRunId !== undefined && runtimeRunId !== activeRunId) continue;
+    if (event.kind === 'session_complete' || event.kind === 'session_error') {
+      return false;
+    }
+    if (event.kind === 'session_start') return true;
+  }
+  // Runtime event buffers are replayable paint data, not current lifecycle authority. A stale
+  // scoped start with no matching active projection therefore cannot block canonical history.
+  return activeRunId !== undefined;
 }
 
 async function requestHistory(
@@ -345,11 +389,21 @@ async function requestHistory(
       scheduleRuntimeRetry(sessionId, surface, retainReadyProjection);
       return;
     }
+    if (retainReadyProjection && previous.phase === 'ready' && sessionHasOpenLiveTurn(sessionId)) {
+      // A background revalidation can overtake the next run and return a canonical copy of its
+      // still-open turn. Replacing an already-painted ready window here would overlap that copy
+      // with the live projection and temporarily reorder or suppress streaming content. Keep the
+      // prior canonical window until the run reaches its persistence boundary; that terminal
+      // event invalidates and revalidates the newest generation.
+      deferredReadyRevalidations.add(sessionId);
+      return;
+    }
     // A user can request an older page just after a terminal event invalidates the loaded
     // boundary. A KodaX cursor may still validly serve that immutable old snapshot, so epoch
     // mismatch must restart at newest instead of accidentally certifying an old continuation as
     // the current generation.
     applyHistoryResult(sessionId, response.data, continueFromCurrentBoundary);
+    deferredReadyRevalidations.delete(sessionId);
     loadedEpochs.set(sessionId, requestedEpoch);
     clearRetry(sessionId);
     publish(sessionId, {
@@ -411,6 +465,41 @@ export function revalidateNewestSessionHistory(
   return requestHistory(sessionId, false, expectedSurface, true);
 }
 
+/** Resume a ready-page refresh only after its deferred Run has reached a terminal boundary. */
+export async function refreshDeferredSessionHistory(sessionId: string): Promise<void> {
+  const activeToken = activeTokens.get(sessionId);
+  if (!deferredReadyRevalidations.has(sessionId) || activeToken === undefined) return;
+  const pending = inFlight.get(sessionId);
+  if (pending?.token === activeToken) {
+    try {
+      await pending.promise;
+    } catch (error) {
+      if (activeTokens.get(sessionId) === activeToken) {
+        deferredReadyRevalidations.add(sessionId);
+        const state = sessionHistoryPagingSnapshot(sessionId);
+        scheduleRuntimeRetry(sessionId, state.surface, state.phase === 'ready');
+      }
+      throw error;
+    }
+  }
+  if (activeTokens.get(sessionId) !== activeToken) return;
+  const state = sessionHistoryPagingSnapshot(sessionId);
+  if (state.phase !== 'ready') return;
+  if (state.hasNewer === true) {
+    deferredReadyRevalidations.delete(sessionId);
+    return;
+  }
+  try {
+    await requestHistory(sessionId, false, state.surface, true);
+  } catch (error) {
+    if (activeTokens.get(sessionId) === activeToken) {
+      deferredReadyRevalidations.add(sessionId);
+      scheduleRuntimeRetry(sessionId, state.surface, true);
+    }
+    throw error;
+  }
+}
+
 export function activateSessionHistoryPaging(sessionId: string): void {
   activeTokens.set(sessionId, Symbol(sessionId));
   touchCache(sessionId);
@@ -419,6 +508,7 @@ export function activateSessionHistoryPaging(sessionId: string): void {
 /** Stop retries and make every in-flight response stale when a Session leaves the active view. */
 export function deactivateSessionHistoryPaging(sessionId: string): void {
   activeTokens.delete(sessionId);
+  deferredReadyRevalidations.delete(sessionId);
   clearRetry(sessionId);
 }
 
@@ -437,6 +527,7 @@ export function resetSessionHistoryPagingLifecycle(): void {
   cacheOrder.clear();
   invalidationEpochs.clear();
   loadedEpochs.clear();
+  deferredReadyRevalidations.clear();
   for (const listener of new Set(subscribers)) listener();
 }
 

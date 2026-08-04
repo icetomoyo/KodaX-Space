@@ -859,6 +859,461 @@ test('a leading partial history turn cannot absorb an ordinal-zero owner with an
   );
 });
 
+test('an ambiguous leading partial projection never crosses the next canonical user boundary', () => {
+  const store = useAppStore.getState();
+  store.appendUserMessage(SID, 'older live query', 10_000);
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-older',
+  });
+  store.appendEvent({ kind: 'text_delta', sessionId: SID, text: 'shared older answer' });
+  store.appendEvent({
+    kind: 'session_error',
+    sessionId: SID,
+    error: 'provider failed after partial output',
+    turnId: 'turn-older',
+  });
+  store.appendUserMessage(SID, 'newer canonical query', 20_000);
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-newer',
+  });
+  store.appendEvent({ kind: 'text_delta', sessionId: SID, text: 'newer canonical answer' });
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: SID,
+    turnId: 'turn-newer',
+  });
+
+  store.prependSessionHistory(
+    SID,
+    [
+      { kind: 'history_truncation', scope: 'history', omittedItems: 50 },
+      {
+        kind: 'assistant',
+        text: 'shared older answer',
+        canonicalIndex: 50,
+        turnId: 'turn-older',
+      },
+      {
+        kind: 'user',
+        content: 'newer canonical query',
+        canonicalIndex: 51,
+        turnId: 'turn-newer',
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 'newer canonical answer',
+        canonicalIndex: 52,
+        turnId: 'turn-newer',
+      },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true },
+  );
+
+  const state = useAppStore.getState();
+  assert.deepEqual(
+    composeMessages({
+      events: state.eventsBySession[SID] ?? [],
+      userMessages: state.userMessagesBySession[SID] ?? [],
+    }).flatMap((message) => {
+      if (message.kind === 'user') return [`user:${message.content}`];
+      if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+      return [];
+    }),
+    [
+      'user:older live query',
+      'assistant:shared older answer',
+      'assistant:shared older answer',
+      'user:newer canonical query',
+      'assistant:newer canonical answer',
+    ],
+    'ambiguous old projections may both remain, but neither may move behind a newer user boundary',
+  );
+
+  store.appendUserMessage(SID, 'fresh query after restore', 30_000);
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-fresh',
+  });
+  store.appendEvent({ kind: 'text_delta', sessionId: SID, text: 'fresh answer' });
+  store.appendEvent({ kind: 'session_complete', sessionId: SID, turnId: 'turn-fresh' });
+  const refreshed = useAppStore.getState();
+  assert.deepEqual(
+    composeMessages({
+      events: refreshed.eventsBySession[SID] ?? [],
+      userMessages: refreshed.userMessagesBySession[SID] ?? [],
+    }).flatMap((message) => {
+      if (message.kind === 'user') return [`user:${message.content}`];
+      if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+      return [];
+    }),
+    [
+      'user:older live query',
+      'assistant:shared older answer',
+      'assistant:shared older answer',
+      'user:newer canonical query',
+      'assistant:newer canonical answer',
+      'user:fresh query after restore',
+      'assistant:fresh answer',
+    ],
+    'a later send must append after the conservatively retained old projections',
+  );
+});
+
+test('all live users in one ambiguous turn stay together before a later canonical turn', () => {
+  const store = useAppStore.getState();
+  store.appendUserMessage(SID, 'older root query', 10_000);
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-older-group',
+  });
+  store.appendEvent({ kind: 'text_delta', sessionId: SID, text: 'older root answer' });
+  store.appendEvent({
+    kind: 'mid_turn_user_prompt',
+    sessionId: SID,
+    queueId: 'older-followup',
+    content: 'older follow-up query',
+    turnId: 'turn-older-group',
+    turnUserOrdinal: 1,
+  });
+  store.appendEvent({ kind: 'text_delta', sessionId: SID, text: 'older follow-up answer' });
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: SID,
+    turnId: 'turn-older-group',
+  });
+  store.appendUserMessage(SID, 'newer query', 20_000);
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-newer',
+  });
+  store.appendEvent({ kind: 'text_delta', sessionId: SID, text: 'newer answer' });
+  store.appendEvent({ kind: 'session_complete', sessionId: SID, turnId: 'turn-newer' });
+
+  store.prependSessionHistory(
+    SID,
+    [
+      { kind: 'history_truncation', scope: 'history', omittedItems: 50 },
+      {
+        kind: 'assistant',
+        text: 'partial older canonical answer',
+        canonicalIndex: 50,
+        turnId: 'turn-older-group',
+      },
+      {
+        kind: 'user',
+        content: 'newer query',
+        canonicalIndex: 51,
+        turnId: 'turn-newer',
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 'newer answer',
+        canonicalIndex: 52,
+        turnId: 'turn-newer',
+      },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true },
+  );
+
+  const visible = composeMessages({
+    events: useAppStore.getState().eventsBySession[SID] ?? [],
+    userMessages: useAppStore.getState().userMessagesBySession[SID] ?? [],
+  }).flatMap((message) => {
+    if (message.kind === 'user') return [`user:${message.content}`];
+    if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+    return [];
+  });
+  assert.deepEqual(visible, [
+    'user:older root query',
+    'assistant:older root answer',
+    'user:older follow-up query',
+    'assistant:older follow-up answer',
+    'assistant:partial older canonical answer',
+    'user:newer query',
+    'assistant:newer answer',
+  ]);
+
+  store.appendUserMessage(SID, 'fresh query', 30_000);
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-fresh',
+  });
+  store.appendEvent({ kind: 'text_delta', sessionId: SID, text: 'fresh answer' });
+  store.appendEvent({ kind: 'session_complete', sessionId: SID, turnId: 'turn-fresh' });
+  const refreshed = composeMessages({
+    events: useAppStore.getState().eventsBySession[SID] ?? [],
+    userMessages: useAppStore.getState().userMessagesBySession[SID] ?? [],
+  }).flatMap((message) => {
+    if (message.kind === 'user') return [`user:${message.content}`];
+    if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+    return [];
+  });
+  assert.deepEqual(refreshed.slice(-2), ['user:fresh query', 'assistant:fresh answer']);
+});
+
+test('a retained canonical follow-up cannot split its relocated live turn from the next turn', () => {
+  const store = useAppStore.getState();
+  store.appendUserMessage(SID, 'live root query', 10_000);
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-multi-input',
+  });
+  store.appendEvent({ kind: 'text_delta', sessionId: SID, text: 'live root answer' });
+  store.appendEvent({
+    kind: 'mid_turn_user_prompt',
+    sessionId: SID,
+    queueId: 'follow-up-input',
+    content: 'live follow-up query',
+    turnId: 'turn-multi-input',
+    turnUserOrdinal: 1,
+  });
+  store.appendEvent({ kind: 'text_delta', sessionId: SID, text: 'live follow-up answer' });
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: SID,
+    turnId: 'turn-multi-input',
+  });
+  store.appendUserMessage(SID, 'live next query', 20_000);
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-next',
+  });
+  store.appendEvent({ kind: 'text_delta', sessionId: SID, text: 'live next answer' });
+  store.appendEvent({ kind: 'session_complete', sessionId: SID, turnId: 'turn-next' });
+
+  store.prependSessionHistory(
+    SID,
+    [
+      { kind: 'history_truncation', scope: 'history', omittedItems: 50 },
+      {
+        kind: 'assistant',
+        text: 'canonical partial root tail',
+        canonicalIndex: 50,
+        turnId: 'turn-multi-input',
+      },
+      {
+        kind: 'user',
+        content: 'live follow-up query',
+        canonicalIndex: 51,
+        turnId: 'turn-multi-input',
+        turnUserOrdinal: 1,
+      },
+      {
+        kind: 'assistant',
+        text: 'canonical follow-up answer',
+        canonicalIndex: 52,
+        turnId: 'turn-multi-input',
+      },
+      {
+        kind: 'user',
+        content: 'live next query',
+        canonicalIndex: 53,
+        turnId: 'turn-next',
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 'live next answer',
+        canonicalIndex: 54,
+        turnId: 'turn-next',
+      },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true },
+  );
+
+  const state = useAppStore.getState();
+  const visible = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  }).flatMap((message) => {
+    if (message.kind === 'user') return [`user:${message.content}`];
+    if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+    return [];
+  });
+  const rootQuery = visible.indexOf('user:live root query');
+  const rootAnswer = visible.indexOf('assistant:live root answer');
+  const followUpQuery = visible.indexOf('user:live follow-up query');
+  const followUpAnswer = visible.findIndex((row) => row.includes('live follow-up answer'));
+  const nextQuery = visible.indexOf('user:live next query');
+  const nextAnswer = visible.indexOf('assistant:live next answer', nextQuery + 1);
+  assert.ok(rootQuery >= 0 && rootQuery < rootAnswer, JSON.stringify(visible));
+  assert.ok(rootAnswer < followUpQuery);
+  assert.ok(followUpQuery < followUpAnswer, JSON.stringify(visible));
+  assert.ok(followUpAnswer < nextQuery);
+  assert.ok(nextQuery < nextAnswer);
+  assertClosedTranscriptStructure(SID);
+});
+
+test('a retained strong same-turn follow-up cannot split a relocated live turn at the page end', () => {
+  const store = useAppStore.getState();
+  store.appendUserMessage(SID, 'live root query', 10_000);
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-page-end',
+  });
+  store.appendEvent({ kind: 'text_delta', sessionId: SID, text: 'live root answer' });
+  store.appendEvent({
+    kind: 'mid_turn_user_prompt',
+    sessionId: SID,
+    queueId: 'page-end-follow-up',
+    content: 'live follow-up query',
+    turnId: 'turn-page-end',
+    turnUserOrdinal: 1,
+  });
+  store.appendEvent({ kind: 'text_delta', sessionId: SID, text: 'live follow-up answer' });
+  store.appendEvent({ kind: 'session_complete', sessionId: SID, turnId: 'turn-page-end' });
+
+  store.prependSessionHistory(
+    SID,
+    [
+      { kind: 'history_truncation', scope: 'history', omittedItems: 50 },
+      {
+        kind: 'assistant',
+        text: 'live root answer',
+        canonicalIndex: 50,
+        turnId: 'turn-page-end',
+      },
+      {
+        kind: 'user',
+        content: 'live follow-up query',
+        canonicalIndex: 51,
+        turnId: 'turn-page-end',
+        turnUserOrdinal: 1,
+      },
+      {
+        kind: 'assistant',
+        text: 'canonical follow-up answer',
+        canonicalIndex: 52,
+        turnId: 'turn-page-end',
+      },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true },
+  );
+
+  const state = useAppStore.getState();
+  const visible = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  }).flatMap((message) => {
+    if (message.kind === 'user') return [`user:${message.content}`];
+    if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+    return [];
+  });
+  const rootQuery = visible.indexOf('user:live root query');
+  const rootAnswer = visible.indexOf('assistant:live root answer');
+  const followUpQuery = visible.indexOf('user:live follow-up query');
+  const followUpAnswer = visible.findIndex((row) => row.includes('live follow-up answer'));
+  assert.ok(rootQuery >= 0 && rootQuery < rootAnswer);
+  assert.ok(rootAnswer < followUpQuery);
+  assert.ok(followUpQuery < followUpAnswer);
+  assert.equal(
+    visible.filter((row) => row === 'assistant:live root answer').length,
+    1,
+    JSON.stringify(visible),
+  );
+  assertClosedTranscriptStructure(SID);
+});
+
+test('a retained same-turn ordinal relocates only the proven live prefix before a fresh tail', () => {
+  const store = useAppStore.getState();
+  store.appendUserMessage(SID, 'live root query', 10_000);
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-fresh-tail',
+  });
+  store.appendEvent({ kind: 'text_delta', sessionId: SID, text: 'live root answer' });
+  for (const [ordinal, label] of [
+    [1, 'follow-up'],
+    [2, 'fresh tail'],
+  ] as const) {
+    store.appendEvent({
+      kind: 'mid_turn_user_prompt',
+      sessionId: SID,
+      queueId: `input-${ordinal}`,
+      content: `${label} query`,
+      turnId: 'turn-fresh-tail',
+      turnUserOrdinal: ordinal,
+    });
+    store.appendEvent({ kind: 'text_delta', sessionId: SID, text: `${label} answer` });
+  }
+  store.appendEvent({ kind: 'session_complete', sessionId: SID, turnId: 'turn-fresh-tail' });
+
+  store.prependSessionHistory(
+    SID,
+    [
+      { kind: 'history_truncation', scope: 'history', omittedItems: 50 },
+      {
+        kind: 'assistant',
+        text: 'canonical partial root tail',
+        canonicalIndex: 50,
+        turnId: 'turn-fresh-tail',
+      },
+      {
+        kind: 'user',
+        content: 'follow-up query',
+        canonicalIndex: 51,
+        turnId: 'turn-fresh-tail',
+        turnUserOrdinal: 1,
+      },
+      {
+        kind: 'assistant',
+        text: 'follow-up answer',
+        canonicalIndex: 52,
+        turnId: 'turn-fresh-tail',
+      },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true },
+  );
+
+  const state = useAppStore.getState();
+  const visible = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  }).flatMap((message) => {
+    if (message.kind === 'user') return [`user:${message.content}`];
+    if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+    return [];
+  });
+  const rootQuery = visible.indexOf('user:live root query');
+  const rootAnswer = visible.indexOf('assistant:live root answer');
+  const followUpQuery = visible.indexOf('user:follow-up query');
+  const followUpAnswer = visible.indexOf('assistant:follow-up answer', followUpQuery + 1);
+  assert.ok(rootQuery >= 0 && rootQuery < rootAnswer);
+  assert.ok(rootAnswer < followUpQuery);
+  assert.ok(followUpQuery < followUpAnswer);
+  assert.deepEqual(visible.slice(-2), ['user:fresh tail query', 'assistant:fresh tail answer']);
+  assertClosedTranscriptStructure(SID);
+});
+
 test('a mixed unidentified and identified leading prefix cannot claim the later live turn', () => {
   const store = useAppStore.getState();
   store.appendUserMessage(SID, 'identified live query', 10_000);
@@ -1005,6 +1460,91 @@ test('a retained same-turn weak user stays fail-open while the canonical prefix 
     1,
     'the assistant tail keeps its own hidden partial owner',
   );
+  assertClosedTranscriptStructure(SID);
+});
+
+test('a weak same-turn owner cannot let a live prefix cross the next canonical turn', () => {
+  const store = useAppStore.getState();
+  store.appendUserMessage(SID, 'live root query', 15_000);
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-weak-crossing',
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'live root answer',
+    sentAt: 15_100,
+  });
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: SID,
+    turnId: 'turn-weak-crossing',
+  });
+
+  store.prependSessionHistory(
+    SID,
+    [
+      { kind: 'history_truncation', scope: 'history', omittedItems: 50 },
+      {
+        kind: 'assistant',
+        text: 'live root answer',
+        sentAt: 9_000,
+        canonicalIndex: 50,
+        turnId: 'turn-weak-crossing',
+      },
+      {
+        kind: 'user',
+        content: 'weak same-turn query',
+        sentAt: 10_000,
+        canonicalIndex: 51,
+        turnId: 'turn-weak-crossing',
+      },
+      {
+        kind: 'assistant',
+        text: 'weak same-turn answer',
+        sentAt: 10_100,
+        canonicalIndex: 52,
+        turnId: 'turn-weak-crossing',
+      },
+      {
+        kind: 'user',
+        content: 'later query',
+        sentAt: 20_000,
+        canonicalIndex: 53,
+        turnId: 'turn-later',
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 'later answer',
+        sentAt: 20_100,
+        canonicalIndex: 54,
+        turnId: 'turn-later',
+      },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true },
+  );
+
+  const state = useAppStore.getState();
+  const visible = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  }).flatMap((message) => {
+    if (message.kind === 'user') return [`user:${message.content}`];
+    if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+    return [];
+  });
+  const liveRoot = visible.indexOf('user:live root query');
+  const weakOwner = visible.indexOf('user:weak same-turn query');
+  const laterQuery = visible.indexOf('user:later query');
+  const laterAnswer = visible.indexOf('assistant:later answer', laterQuery + 1);
+  assert.ok(liveRoot >= 0 && liveRoot < weakOwner, JSON.stringify(visible));
+  assert.ok(weakOwner < laterQuery, JSON.stringify(visible));
+  assert.ok(laterQuery < laterAnswer, JSON.stringify(visible));
   assertClosedTranscriptStructure(SID);
 });
 
@@ -1455,6 +1995,327 @@ test('history-first race waits for the matching live terminal, then folds the re
   );
 });
 
+test('authoritative terminal repairs a missed identity-bearing start before folding history', () => {
+  const store = useAppStore.getState();
+  store.appendUserMessage(SID, 'terminal repairs the owner', 10_000);
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'live answer',
+    sentAt: 10_100,
+  });
+
+  // The observation can be invalidated after run.started and miss turn.started. A canonical
+  // refresh then exposes the durable copy with its Runtime turn identity while the local live
+  // owner is still anonymous.
+  store.prependSessionHistory(
+    SID,
+    [
+      { kind: 'user', content: 'earlier query', sentAt: 5_000 },
+      { kind: 'assistant', text: 'earlier answer', sentAt: 5_100 },
+      {
+        kind: 'user',
+        content: 'terminal repairs the owner',
+        sentAt: 10_050,
+        turnId: 'turn-terminal-repair',
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 'live answer',
+        sentAt: 10_100,
+        turnId: 'turn-terminal-repair',
+      },
+    ],
+    FALLBACK_SENT_AT,
+  );
+
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: SID,
+    turnId: 'turn-terminal-repair',
+  });
+
+  const state = useAppStore.getState();
+  const out = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  });
+  assert.deepEqual(
+    out.flatMap((message) => {
+      if (message.kind === 'user') return [`user:${message.content}`];
+      if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+      return [];
+    }),
+    [
+      'user:earlier query',
+      'assistant:earlier answer',
+      'user:terminal repairs the owner',
+      'assistant:live answer',
+    ],
+  );
+  assertClosedTranscriptStructure(SID);
+});
+
+test('authoritative live transcript identity repairs a missed start while the run is active', () => {
+  const store = useAppStore.getState();
+  const messageId = store.appendUserMessage(SID, 'live identity repairs the owner', 10_000);
+  assert.notEqual(messageId, null);
+  store.bindUserMessageRuntimeRun(SID, messageId!, 'run-live-repair');
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    runtimeEvent: { runtimeId: 'runtime-live-repair', runId: 'run-live-repair', seq: 1 },
+  });
+  store.prependSessionHistory(
+    SID,
+    [
+      { kind: 'user', content: 'earlier query', sentAt: 5_000 },
+      { kind: 'assistant', text: 'earlier answer', sentAt: 5_100 },
+      {
+        kind: 'user',
+        content: 'live identity repairs the owner',
+        sentAt: 10_050,
+        turnId: 'turn-live-repair',
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 'durable prefix',
+        sentAt: 10_100,
+        turnId: 'turn-live-repair',
+      },
+    ],
+    FALLBACK_SENT_AT,
+  );
+
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'new live tail',
+    sentAt: 10_200,
+    turnId: 'turn-live-repair',
+    runtimeEvent: { runtimeId: 'runtime-live-repair', runId: 'run-live-repair', seq: 2 },
+  });
+
+  const state = useAppStore.getState();
+  const out = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  });
+  assert.equal(
+    out.filter(
+      (message) => message.kind === 'user' && message.content === 'live identity repairs the owner',
+    ).length,
+    1,
+    'the first surviving identity-bearing transcript event must close the handoff gap immediately',
+  );
+  assert.deepEqual(
+    out.flatMap((message) =>
+      message.kind === 'assistant_text' ? [`assistant:${message.text}`] : [],
+    ),
+    ['assistant:earlier answer', 'assistant:durable prefix'],
+    'the hidden live duplicate stays positional until the authoritative terminal merges it',
+  );
+});
+
+test('every surviving root transcript event can repair a missed identity-bearing start', () => {
+  const store = useAppStore.getState();
+  const transcriptEvents = [
+    (sessionId: string, runId: string, turnId: string): SessionEvent => ({
+      kind: 'thinking_end',
+      sessionId,
+      thinking: 'reasoning done',
+      turnId,
+      runtimeEvent: { runtimeId: 'runtime-repair', runId, seq: 2 },
+    }),
+    (sessionId: string, runId: string, turnId: string): SessionEvent => ({
+      kind: 'tool_progress',
+      sessionId,
+      toolId: `tool-${runId}`,
+      message: 'working',
+      turnId,
+      runtimeEvent: { runtimeId: 'runtime-repair', runId, seq: 2 },
+    }),
+    (sessionId: string, runId: string, turnId: string): SessionEvent => ({
+      kind: 'tool_input_delta',
+      sessionId,
+      toolId: `tool-${runId}`,
+      toolName: 'read',
+      partialJson: '{"path":"notes.md"}',
+      turnId,
+      runtimeEvent: { runtimeId: 'runtime-repair', runId, seq: 2 },
+    }),
+  ] as const;
+
+  transcriptEvents.forEach((createEvent, index) => {
+    const runId = `run-repair-${index}`;
+    const turnId = `turn-repair-${index}`;
+    const content = `query repaired by event ${index}`;
+    const messageId = store.appendUserMessage(SID, content, 30_000 + index);
+    assert.notEqual(messageId, null);
+    store.bindUserMessageRuntimeRun(SID, messageId!, runId);
+    store.appendEvent({
+      kind: 'session_start',
+      sessionId: SID,
+      provider: 'mock',
+      runtimeEvent: { runtimeId: 'runtime-repair', runId, seq: 1 },
+    });
+    store.appendEvent(createEvent(SID, runId, turnId));
+    store.appendEvent({
+      kind: 'session_complete',
+      sessionId: SID,
+      turnId,
+      runtimeEvent: { runtimeId: 'runtime-repair', runId, seq: 3 },
+    });
+  });
+
+  assert.deepEqual(
+    (useAppStore.getState().userMessagesBySession[SID] ?? []).map((message) => [
+      message.content,
+      message.turnId,
+    ]),
+    [
+      ['query repaired by event 0', 'turn-repair-0'],
+      ['query repaired by event 1', 'turn-repair-1'],
+      ['query repaired by event 2', 'turn-repair-2'],
+    ],
+  );
+});
+
+test('a delayed prior-run transcript event cannot claim the next optimistic query', () => {
+  const store = useAppStore.getState();
+  const oldMessageId = store.appendUserMessage(SID, 'old query', 10_000);
+  assert.notEqual(oldMessageId, null);
+  store.bindUserMessageRuntimeRun(SID, oldMessageId!, 'run-old');
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    runtimeEvent: { runtimeId: 'runtime-1', runId: 'run-old', seq: 1 },
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'old prefix',
+    runtimeEvent: { runtimeId: 'runtime-1', runId: 'run-old', seq: 2 },
+  });
+
+  // The Runtime profile can settle before a delayed observation batch drains, allowing the next
+  // optimistic query to exist before the old turn's first identity-bearing transcript event.
+  const newMessageId = store.appendUserMessage(SID, 'new query', 20_000);
+  assert.notEqual(newMessageId, null);
+  store.bindUserMessageRuntimeRun(SID, newMessageId!, 'run-new');
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'old suffix',
+    turnId: 'turn-old',
+    runtimeEvent: { runtimeId: 'runtime-1', runId: 'run-old', seq: 3 },
+  });
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: SID,
+    turnId: 'turn-old',
+    runtimeEvent: { runtimeId: 'runtime-1', runId: 'run-old', seq: 4 },
+  });
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    runtimeEvent: { runtimeId: 'runtime-1', runId: 'run-new', seq: 5 },
+  });
+  store.appendEvent({
+    kind: 'thinking_delta',
+    sessionId: SID,
+    text: 'new thinking',
+    turnId: 'turn-new',
+    runtimeEvent: { runtimeId: 'runtime-1', runId: 'run-new', seq: 6 },
+  });
+
+  const users = useAppStore.getState().userMessagesBySession[SID] ?? [];
+  assert.deepEqual(
+    users.map((message) => [message.content, message.turnId]),
+    [
+      ['old query', 'turn-old'],
+      ['new query', 'turn-new'],
+    ],
+  );
+});
+
+test('a Runtime admission acknowledgement binds the exact query after starts were missed', () => {
+  const store = useAppStore.getState();
+  const messageId = store.appendUserMessage(SID, 'query whose start was missed', 10_000);
+  assert.notEqual(messageId, null);
+
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'first surviving answer fragment',
+    turnId: 'turn-admitted',
+    runtimeEvent: { runtimeId: 'runtime-admitted', runId: 'run-admitted', seq: 2 },
+  });
+  store.bindUserMessageRuntimeRun(SID, messageId!, 'run-admitted');
+
+  assert.deepEqual(
+    (useAppStore.getState().userMessagesBySession[SID] ?? []).map((message) => [
+      message.content,
+      message.runtimeRunId,
+      message.turnId,
+    ]),
+    [['query whose start was missed', 'run-admitted', 'turn-admitted']],
+  );
+});
+
+test('a delayed old session start cannot steal a newly acknowledged Runtime query', () => {
+  const store = useAppStore.getState();
+  const oldMessageId = store.appendUserMessage(SID, 'old query', 10_000);
+  assert.notEqual(oldMessageId, null);
+  store.bindUserMessageRuntimeRun(SID, oldMessageId!, 'run-old');
+
+  const newMessageId = store.appendUserMessage(SID, 'new query', 20_000);
+  assert.notEqual(newMessageId, null);
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    runtimeEvent: { runtimeId: 'runtime-delayed', runId: 'run-old', seq: 1 },
+  });
+  store.bindUserMessageRuntimeRun(SID, newMessageId!, 'run-new');
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'old answer',
+    turnId: 'turn-old',
+    runtimeEvent: { runtimeId: 'runtime-delayed', runId: 'run-old', seq: 2 },
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'new answer',
+    turnId: 'turn-new',
+    runtimeEvent: { runtimeId: 'runtime-delayed', runId: 'run-new', seq: 3 },
+  });
+
+  assert.deepEqual(
+    (useAppStore.getState().userMessagesBySession[SID] ?? []).map((message) => [
+      message.content,
+      message.runtimeRunId,
+      message.turnId,
+    ]),
+    [
+      ['old query', 'run-old', 'turn-old'],
+      ['new query', 'run-new', 'turn-new'],
+    ],
+  );
+});
+
 test('history-first queued promotion keeps a live segment owner without rendering a second query', () => {
   const store = useAppStore.getState();
   const localId = store.appendQueuedUserMessage(SID, {
@@ -1556,6 +2417,59 @@ test('history-first queued promotion keeps a live segment owner without renderin
     state.eventsBySession[SID]?.[0]?.kind,
     'queued_user_prompt_started',
     'the retained delivery marker remains the first event in its owned segment',
+  );
+});
+
+test('an after-turn queue promotion carries its exact admitted Runtime run identity', () => {
+  const store = useAppStore.getState();
+  const localId = store.appendQueuedUserMessage(SID, {
+    content: 'queued query',
+    matchContent: 'queued query',
+    queueMode: 'after-turn',
+    sentAt: 8_000,
+  });
+  assert.ok(localId);
+  store.markQueuedUserMessageAccepted(SID, localId, 'run-after-turn', 'after-turn');
+
+  store.appendEvent({
+    kind: 'queued_user_prompt_started',
+    sessionId: SID,
+    queueId: 'run-after-turn',
+    queueMode: 'after-turn',
+    content: 'queued query',
+  });
+  store.appendEvent({
+    kind: 'thinking_delta',
+    sessionId: SID,
+    text: 'thinking',
+    turnId: 'turn-after-turn',
+    runtimeEvent: { runtimeId: 'runtime-queue', runId: 'run-after-turn', seq: 2 },
+  });
+
+  const promoted = (useAppStore.getState().userMessagesBySession[SID] ?? []).find(
+    (message) => message.sourceQueuedLocalId === localId,
+  );
+  assert.equal(promoted?.runtimeRunId, 'run-after-turn');
+  assert.equal(promoted?.turnId, 'turn-after-turn');
+});
+
+test('manual queued promotion returns the admitted message id for exact ACK binding', () => {
+  const store = useAppStore.getState();
+  const localId = store.appendQueuedUserMessage(SID, {
+    content: 'queued display query',
+    matchContent: 'queued provider query',
+    queueMode: 'interrupt',
+  });
+  assert.ok(localId);
+
+  const promotedId = store.promoteQueuedUserMessage(SID, localId);
+
+  assert.ok(promotedId);
+  assert.equal(
+    (useAppStore.getState().userMessagesBySession[SID] ?? []).find(
+      (message) => message.id === promotedId,
+    )?.sourceQueuedLocalId,
+    localId,
   );
 });
 

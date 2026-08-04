@@ -45,7 +45,6 @@ import { effortToReasoningMode } from './reasoning-effort.js';
 import { getKodaxRuntimeDir } from './data-paths.js';
 import { stopCoderDaemonWhenSafe, type SafeDaemonStopResult } from './runtime-daemon-control.js';
 import {
-  KODAX_AUTO_MODE_DEFAULT_TIMEOUT_MS,
   loadKodaxAutoModeDefaults,
   type KodaxAutoModeDefaults,
   type SdkCustomProviderConfig,
@@ -107,7 +106,12 @@ import {
 
 export type RuntimeHostMode = 'legacy' | 'runtime';
 export type RuntimeHostState =
-  'uninitialized' | 'initializing' | 'legacy' | 'ready' | 'failed' | 'closed';
+  | 'uninitialized'
+  | 'initializing'
+  | 'legacy'
+  | 'ready'
+  | 'failed'
+  | 'closed';
 export type RuntimeCapabilityOwner = 'runtime' | 'space-bridge' | 'legacy' | 'unavailable';
 export type RuntimeCapabilitySupport = 'supported' | 'partial' | 'unavailable';
 
@@ -204,6 +208,10 @@ export function runtimeSessionEventOrigin(runtimeId: string | undefined, event: 
         },
       }
     : {};
+}
+
+function runtimeTranscriptTurnIdentity(event: RuntimeTypedEvent) {
+  return event.turnId ? { turnId: event.turnId } : {};
 }
 
 function runtimeInputText(value: unknown): string | undefined {
@@ -1102,6 +1110,8 @@ type SpaceRuntimeConnectOptions = Omit<ConnectKodaXRuntimeOptions, 'requirements
   readonly requirements?: NonNullable<ConnectKodaXRuntimeOptions['requirements']> & {
     /** The current daemon host actually has Space's orphan idle-exit policy enabled. */
     readonly daemonOrphanExit?: 1;
+    /** Managed Run lifecycle events have canonical persistence boundaries. */
+    readonly managedRunDurability?: 1;
     /** Provider/tool fragments are bounded before Runtime sequence allocation and persistence. */
     readonly runtimeEventCoalescing?: 1;
   };
@@ -1295,6 +1305,12 @@ function assertSpaceDaemonRequiredCapabilities(runtime: KodaXDaemonRuntime): voi
         'Install a compatible KodaX package and restart the Coder daemon.',
     );
   }
+  if (runtimeCapabilityVersion(runtime, 'managedRunDurability') < 1) {
+    throw new Error(
+      'KodaX Runtime does not support the required managedRunDurability v1 capability. ' +
+        'Install a compatible KodaX package and restart the Coder daemon.',
+    );
+  }
   if (runtimeCapabilityVersion(runtime, 'conversationHistory') < 1) {
     throw new Error(
       'KodaX Runtime does not support the required conversationHistory v1 capability. ' +
@@ -1402,6 +1418,7 @@ async function createPublishedRuntime(
     sdk as typeof sdk & {
       readonly KODAX_RUNTIME_SDK_CAPABILITIES?: {
         readonly daemonOrphanExit?: number;
+        readonly managedRunDurability?: number;
         readonly runtimeEventCoalescing?: number;
       };
     },
@@ -1412,12 +1429,14 @@ async function createPublishedRuntime(
 export function assertSpaceRuntimeSdkRequiredCapabilities(sdk: {
   readonly KODAX_RUNTIME_SDK_CAPABILITIES?: {
     readonly daemonOrphanExit?: number;
+    readonly managedRunDurability?: number;
     readonly runtimeEventCoalescing?: number;
   };
 }): void {
   const capabilities = sdk.KODAX_RUNTIME_SDK_CAPABILITIES;
   const missing = [
     ...(capabilities?.daemonOrphanExit === 1 ? [] : ['daemonOrphanExit v1']),
+    ...(capabilities?.managedRunDurability === 1 ? [] : ['managedRunDurability v1']),
     ...(capabilities?.runtimeEventCoalescing === 1 ? [] : ['runtimeEventCoalescing v1']),
   ];
   if (missing.length > 0) {
@@ -1985,6 +2004,7 @@ export class RuntimeHostAdapter {
             durableRecoveryQueries: 1,
             daemonManagement: 1,
             daemonOrphanExit: 1,
+            managedRunDurability: 1,
             runtimeEventCoalescing: 1,
             integrationConfigResilience: 1,
             runtimeAutoModeGuardrail: 4,
@@ -2393,6 +2413,11 @@ export class RuntimeHostAdapter {
         id: 'runtime.daemon.orphanExit',
         version: version('daemonOrphanExit'),
         available: available('daemonOrphanExit'),
+      },
+      {
+        id: 'runtime.managedRuns.durability',
+        version: version('managedRunDurability'),
+        available: available('managedRunDurability'),
       },
       {
         id: 'runtime.events.coalescing',
@@ -3283,12 +3308,11 @@ export class RuntimeHostAdapter {
       defaults = await this.autoModeDefaultsResolver();
     } catch (error) {
       console.warn(
-        '[runtime] Auto LLM defaults load failed; using the KodaX 0.7.78 defaults:',
+        '[runtime] Auto LLM defaults load failed; falling back to engine=llm with SDK defaults:',
         sanitizeDiagnosticError(error),
       );
       defaults = {
         engine: 'llm',
-        timeoutMs: KODAX_AUTO_MODE_DEFAULT_TIMEOUT_MS,
       };
     }
     return {
@@ -3298,7 +3322,9 @@ export class RuntimeHostAdapter {
       defaults.classifierModel !== undefined
         ? { autoModeClassifierModel: defaults.classifierModel }
         : {}),
-      ...(current.autoModeTimeoutMs === undefined && patch.autoModeTimeoutMs === undefined
+      ...(current.autoModeTimeoutMs === undefined &&
+      patch.autoModeTimeoutMs === undefined &&
+      defaults.timeoutMs !== undefined
         ? { autoModeTimeoutMs: defaults.timeoutMs }
         : {}),
       ...(current.autoModeSpeculativeWindowMs === undefined &&
@@ -3536,6 +3562,7 @@ export class RuntimeHostAdapter {
           this.push('session.event', {
             kind: 'queued_user_prompt_started',
             sessionId: continuation.sessionId,
+            queueId: run.runId,
             queueMode: 'after-turn',
             content: continuation.content,
             ...(run.turnId ? { turnId: run.turnId, turnUserOrdinal: 0 } : {}),
@@ -3848,6 +3875,7 @@ export class RuntimeHostAdapter {
         this.push('session.event', {
           kind: 'queued_user_prompt_started',
           sessionId: continuation.sessionId,
+          queueId: event.runId,
           queueMode: 'after-turn',
           content: continuation.content,
           ...(event.turnId ? { turnId: event.turnId, turnUserOrdinal: 0 } : {}),
@@ -3976,6 +4004,7 @@ export class RuntimeHostAdapter {
     if (event.type === 'assistant.delta' && typeof payload?.text === 'string') {
       this.push('session.event', {
         ...runtimeSessionEventOrigin(runtimeId, event),
+        ...runtimeTranscriptTurnIdentity(event),
         kind: 'text_delta',
         sessionId: event.sessionId,
         text: payload.text,
@@ -3985,6 +4014,7 @@ export class RuntimeHostAdapter {
     if (event.type === 'thinking.delta' && typeof payload?.text === 'string') {
       this.push('session.event', {
         ...runtimeSessionEventOrigin(runtimeId, event),
+        ...runtimeTranscriptTurnIdentity(event),
         kind: 'thinking_delta',
         sessionId: event.sessionId,
         text: payload.text,
@@ -3994,6 +4024,7 @@ export class RuntimeHostAdapter {
     if (event.type === 'thinking.finished' && typeof payload?.thinking === 'string') {
       this.push('session.event', {
         ...runtimeSessionEventOrigin(runtimeId, event),
+        ...runtimeTranscriptTurnIdentity(event),
         kind: 'thinking_end',
         sessionId: event.sessionId,
         thinking: payload.thinking,
@@ -4022,6 +4053,7 @@ export class RuntimeHostAdapter {
           : {};
       this.push('session.event', {
         ...runtimeSessionEventOrigin(runtimeId, event),
+        ...runtimeTranscriptTurnIdentity(event),
         kind: 'tool_start',
         sessionId: event.sessionId,
         toolId,
@@ -4046,6 +4078,7 @@ export class RuntimeHostAdapter {
       if (typeof update?.message === 'string') {
         this.push('session.event', {
           ...runtimeSessionEventOrigin(runtimeId, event),
+          ...runtimeTranscriptTurnIdentity(event),
           kind: 'tool_progress',
           sessionId: event.sessionId,
           toolId,
@@ -4054,6 +4087,7 @@ export class RuntimeHostAdapter {
       } else if (typeof payload?.partialJson === 'string') {
         this.push('session.event', {
           ...runtimeSessionEventOrigin(runtimeId, event),
+          ...runtimeTranscriptTurnIdentity(event),
           kind: 'tool_input_delta',
           sessionId: event.sessionId,
           toolId,
@@ -4092,6 +4126,7 @@ export class RuntimeHostAdapter {
             : '';
       this.push('session.event', {
         ...runtimeSessionEventOrigin(runtimeId, event),
+        ...runtimeTranscriptTurnIdentity(event),
         kind: 'tool_result',
         sessionId: event.sessionId,
         toolId,

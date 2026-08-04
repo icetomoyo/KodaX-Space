@@ -213,6 +213,8 @@ export interface UserMessage {
   /** Stable canonical boundary identity supplied by KodaX Runtime/history. */
   readonly turnId?: string;
   readonly turnUserOrdinal?: number;
+  /** Renderer-only admission identity captured from run.started before turnId exists. */
+  readonly runtimeRunId?: string;
   readonly canonicalIndex?: number;
   /** Absolute visible turn index before bounded history-window truncation. */
   readonly historyTurnIndex?: number;
@@ -757,6 +759,8 @@ interface AppState {
     sentAt?: number,
     attachments?: readonly UserImageAttachment[],
   ): string | null;
+  /** Bind the exact optimistic row to the fresh Runtime Run acknowledged by session.send. */
+  bindUserMessageRuntimeRun(sessionId: string, messageId: string, runId: string): void;
   updateUserMessageAttachments(
     sessionId: string,
     messageId: string,
@@ -791,7 +795,7 @@ interface AppState {
     queueMode?: 'interrupt' | 'after-turn',
   ): void;
   removeQueuedUserMessage(sessionId: string, localId: string): void;
-  promoteQueuedUserMessage(sessionId: string, localId: string, sentAt?: number): void;
+  promoteQueuedUserMessage(sessionId: string, localId: string, sentAt?: number): string | null;
   convertLastUserMessageToQueued(
     sessionId: string,
     userContent: string,
@@ -1555,17 +1559,6 @@ function uniqueLeadingHistoryOwnerResolution(
   ) {
     return undefined;
   }
-  // A Runtime turn may contain several real user inputs. Without the omitted canonical prefix we
-  // cannot know which ordinal owns a leading partial page. Fold only when the live projection has
-  // exactly one possible owner for this turnId; otherwise preserve every candidate fail-open.
-  const unique =
-    turns.filter(
-      (candidate) =>
-        !candidate.restoredFromHistory &&
-        hasStrongTurnIdentity(candidate) &&
-        candidate.turnId === durable.turnId,
-    ).length === 1;
-  if (!unique) return undefined;
   if (durable.leadingPartialHistory) {
     // A later mid-turn prompt is positive evidence that it cannot own the assistant prefix which
     // precedes its user boundary. The canonical response must also be a verified sequence suffix
@@ -1576,18 +1569,43 @@ function uniqueLeadingHistoryOwnerResolution(
     ) {
       return undefined;
     }
-    // The same Runtime turn may contain a later retained canonical user after this omitted prefix.
-    // Even one such row is an alternate owner for the sole live prompt, regardless of whether its
-    // ordinal survived paging. Let that real canonical row reconcile by payload, or fail open.
+    // Ordinal zero is the only possible owner of an assistant prefix before later user boundaries.
+    // Reject an unidentified or second ordinal-zero live candidate, but do not treat proven later
+    // ordinals from the same Runtime turn as alternate owners.
+    const possibleLiveOwners = turns.filter(
+      (candidate) =>
+        !candidate.restoredFromHistory &&
+        candidate.turnId === durable.turnId &&
+        (candidate.turnUserOrdinal === undefined || candidate.turnUserOrdinal === 0),
+    );
+    if (
+      possibleLiveOwners.length !== 1 ||
+      possibleLiveOwners[0]?.messageId !== duplicate.messageId
+    ) {
+      return undefined;
+    }
+    // A retained canonical ordinal zero or unidentified same-turn user is still ambiguous. A
+    // retained strong ordinal greater than zero is a later boundary and cannot own this prefix.
     const hasRetainedCanonicalOwner = turns.some(
       (candidate) =>
         candidate.messageId !== durable.messageId &&
         candidate.restoredFromHistory &&
         !candidate.leadingPartialHistory &&
-        candidate.turnId === durable.turnId,
+        candidate.turnId === durable.turnId &&
+        (candidate.turnUserOrdinal === undefined || candidate.turnUserOrdinal === 0),
     );
     return hasRetainedCanonicalOwner ? undefined : 'promote_live_owner';
   }
+  // Outside a leading partial page, one same-turn live user is required because a Runtime turn can
+  // contain several real inputs and no omitted assistant prefix constrains their ownership.
+  const unique =
+    turns.filter(
+      (candidate) =>
+        !candidate.restoredFromHistory &&
+        hasStrongTurnIdentity(candidate) &&
+        candidate.turnId === durable.turnId,
+    ).length === 1;
+  if (!unique) return undefined;
   // A shared Runtime turn can contain several sequential user inputs, including history rows not
   // present in the current bounded window. Uniqueness among the live rows is therefore necessary
   // but not sufficient for a real canonical user: its visible payload must also be identical.
@@ -1916,6 +1934,109 @@ function liveTurnCanFold(turn: TranscriptTurnSnapshot): boolean {
   return turn.turnId !== undefined && turn.terminalTurnId === turn.turnId;
 }
 
+function stabilizeAmbiguousLeadingHistoryOrder(
+  userMessages: readonly UserMessage[],
+  events: readonly SessionEvent[],
+): ReconciledTranscriptBuffers {
+  const turns = transcriptTurnSnapshots(userMessages, events);
+  const durable = turns.find(
+    (turn) =>
+      turn.restoredFromHistory &&
+      turn.leadingPartialHistory &&
+      turn.turnId !== undefined &&
+      turn.turnUserOrdinal === undefined,
+  );
+  if (!durable) return { userMessages, events };
+  const liveTurns = turns.filter(
+    (turn) =>
+      !turn.restoredFromHistory && hasStrongTurnIdentity(turn) && turn.turnId === durable.turnId,
+  );
+  const liveOwners = liveTurns.filter((turn) => turn.turnUserOrdinal === 0);
+  if (liveOwners.length !== 1 || liveTurns.length === 0) return { userMessages, events };
+  if (
+    liveTurns.some(
+      (turn) => turn.userIndex <= durable.userIndex || turn.eventStart < durable.eventStart,
+    )
+  ) {
+    return { userMessages, events };
+  }
+  const crossingCanonicalTurns = turns.filter(
+    (turn) =>
+      turn.restoredFromHistory &&
+      !turn.leadingPartialHistory &&
+      turn.userIndex > durable.userIndex &&
+      liveTurns.some((live) => turn.userIndex < live.userIndex),
+  );
+  const retainedSameTurnOrdinal = crossingCanonicalTurns.reduce<number | undefined>(
+    (lowest, turn) => {
+      if (
+        !hasStrongTurnIdentity(turn) ||
+        turn.turnId !== durable.turnId ||
+        turn.turnUserOrdinal === 0
+      ) {
+        return lowest;
+      }
+      return lowest === undefined ? turn.turnUserOrdinal : Math.min(lowest, turn.turnUserOrdinal);
+    },
+    undefined,
+  );
+  const exactSuffixOwner = liveOwners[0];
+  const exactSuffixCanFoldInPlace =
+    exactSuffixOwner !== undefined &&
+    uniqueLeadingHistoryOwnerResolution(durable, exactSuffixOwner, turns) ===
+      'promote_live_owner' &&
+    (liveTurns.length === 1 ||
+      crossingCanonicalTurns.every((turn) => turn.turnId === durable.turnId));
+  if (exactSuffixCanFoldInPlace) {
+    return { userMessages, events };
+  }
+  const relocatedLiveTurns =
+    retainedSameTurnOrdinal !== undefined
+      ? liveTurns.filter(
+          (turn) =>
+            turn.turnUserOrdinal !== undefined && turn.turnUserOrdinal < retainedSameTurnOrdinal,
+        )
+      : crossingCanonicalTurns.some((turn) => turn.turnId !== durable.turnId)
+        ? liveTurns
+        : [];
+  if (relocatedLiveTurns.length === 0) return { userMessages, events };
+
+  const liveUserIndexes = new Set(relocatedLiveTurns.map((turn) => turn.userIndex));
+  const liveEventIndexes = new Set<number>();
+  for (const turn of relocatedLiveTurns) {
+    for (let index = turn.eventStart; index < turn.eventEnd; index++) liveEventIndexes.add(index);
+  }
+  const durableMessage = userMessages[durable.userIndex]!;
+  let previousSentAt = Number.NEGATIVE_INFINITY;
+  const liveMessages = relocatedLiveTurns.map((turn, index) => {
+    const message = userMessages[turn.userIndex]!;
+    const latestSentAt = durableMessage.sentAt - (relocatedLiveTurns.length - index);
+    const sentAt = Math.min(Math.max(message.sentAt, previousSentAt + 1), latestSentAt);
+    previousSentAt = sentAt;
+    return sentAt === message.sentAt ? message : { ...message, sentAt };
+  });
+  const liveEvents = relocatedLiveTurns.flatMap((turn, index) => {
+    const segment = events.slice(turn.eventStart, turn.eventEnd);
+    return index === relocatedLiveTurns.length - 1
+      ? preserveRelocatedSegmentClosure(segment, turn)
+      : segment;
+  });
+  const remainingUsers = userMessages.filter((_, index) => !liveUserIndexes.has(index));
+  const remainingEvents = events.filter((_, index) => !liveEventIndexes.has(index));
+  return {
+    userMessages: [
+      ...remainingUsers.slice(0, durable.userIndex),
+      ...liveMessages,
+      ...remainingUsers.slice(durable.userIndex),
+    ],
+    events: [
+      ...remainingEvents.slice(0, durable.eventStart),
+      ...liveEvents,
+      ...remainingEvents.slice(durable.eventStart),
+    ],
+  };
+}
+
 /**
  * Fold duplicate projections only with canonical identity. No content/timestamp heuristic is
  * allowed here: a fast, intentional repeat must remain a distinct turn even when its text and
@@ -1926,9 +2047,10 @@ function foldStrongIdentityDuplicateTurns(
   userMessages: readonly UserMessage[],
   events: readonly SessionEvent[],
 ): ReconciledTranscriptBuffers {
-  let nextUsers = [...userMessages];
-  let nextEvents = [...events];
-  let didFold = false;
+  const stabilized = stabilizeAmbiguousLeadingHistoryOrder(userMessages, events);
+  let nextUsers = [...stabilized.userMessages];
+  let nextEvents = [...stabilized.events];
+  let didFold = stabilized.userMessages !== userMessages;
   for (;;) {
     const turns = transcriptTurnSnapshots(nextUsers, nextEvents);
     let pair:
@@ -2524,9 +2646,13 @@ function liveProjectionClearsPendingSend(
   );
 }
 
+const LOCAL_TERMINAL_TURN_PREFIX = 'space-local-terminal:';
+
 function bindInitialLiveUserTurnIdentity(
   userMessages: readonly UserMessage[],
   turnId: string,
+  runId: string | undefined,
+  unscopedMode: 'none' | 'latest' | 'unique',
 ): readonly UserMessage[] {
   if (
     userMessages.some(
@@ -2536,23 +2662,46 @@ function bindInitialLiveUserTurnIdentity(
   ) {
     return userMessages;
   }
-  for (let index = userMessages.length - 1; index >= 0; index--) {
-    const message = userMessages[index]!;
+  const candidates = userMessages.flatMap((message, index) => {
     if (
       message.restoredFromHistory ||
       message.hiddenHistoryAnchor ||
       message.turnId !== undefined
     ) {
-      continue;
+      return [];
     }
+    if (runId !== undefined && message.runtimeRunId !== runId) return [];
+    return [index];
+  });
+  const localTerminalMessageId = turnId.startsWith(LOCAL_TERMINAL_TURN_PREFIX)
+    ? turnId.slice(LOCAL_TERMINAL_TURN_PREFIX.length)
+    : undefined;
+  const localTerminalTargetIndex =
+    localTerminalMessageId !== undefined
+      ? userMessages.findIndex((message) => message.id === localTerminalMessageId)
+      : -1;
+  const targetIndex =
+    localTerminalTargetIndex >= 0
+      ? localTerminalTargetIndex
+      : runId !== undefined
+        ? candidates.at(-1)
+        : unscopedMode === 'latest'
+          ? candidates.at(-1)
+          : unscopedMode === 'unique' && candidates.length === 1
+            ? candidates[0]
+            : undefined;
+  if (targetIndex !== undefined) {
     const next = userMessages.slice();
-    next[index] = { ...message, turnId, turnUserOrdinal: 0 };
+    next[targetIndex] = {
+      ...next[targetIndex]!,
+      turnId,
+      turnUserOrdinal: 0,
+      ...(runId !== undefined ? { runtimeRunId: runId } : {}),
+    };
     return next;
   }
   return userMessages;
 }
-
-const LOCAL_TERMINAL_TURN_PREFIX = 'space-local-terminal:';
 
 function localTerminalTurnIdForLatestLiveUser(
   userMessages: readonly UserMessage[],
@@ -2867,6 +3016,7 @@ function promoteQueuedUserMessageForPrompt(
       attachments,
     ),
     ...(queueId !== undefined ? { deliveryQueueId: queueId, deliveryQueueMode: queueMode } : {}),
+    ...(queueMode === 'after-turn' && queueId !== undefined ? { runtimeRunId: queueId } : {}),
     ...(sourceQueuedLocalId !== undefined ? { sourceQueuedLocalId } : {}),
   });
 
@@ -3182,6 +3332,68 @@ export const useAppStore = create<AppState>((set) => ({
     return messageId;
   },
 
+  bindUserMessageRuntimeRun: (sessionId, messageId, runId) =>
+    set((state) => {
+      const users = state.userMessagesBySession[sessionId];
+      if (!users) return state;
+      const targetIndex = users.findIndex((message) => message.id === messageId);
+      const target = users[targetIndex];
+      if (
+        !target ||
+        target.restoredFromHistory ||
+        target.hiddenHistoryAnchor ||
+        (target.runtimeRunId !== undefined && target.runtimeRunId !== runId)
+      ) {
+        return state;
+      }
+      const events = state.eventsBySession[sessionId] ?? [];
+      let turnId: string | undefined;
+      for (const event of events) {
+        if (
+          'turnId' in event &&
+          typeof event.turnId === 'string' &&
+          'runtimeEvent' in event &&
+          event.runtimeEvent?.runId === runId
+        ) {
+          turnId = event.turnId;
+          break;
+        }
+      }
+      if (turnId !== undefined && target.turnId !== undefined && target.turnId !== turnId) {
+        return state;
+      }
+      const boundUsers = users.slice();
+      boundUsers[targetIndex] = {
+        ...target,
+        runtimeRunId: runId,
+        ...(turnId !== undefined ? { turnId, turnUserOrdinal: 0 } : {}),
+      };
+      rememberHistoryLiveUsers(sessionId, boundUsers);
+      const folded = foldStrongIdentityDuplicateTurns(boundUsers, events);
+      const reconciledUsers = hideOpenStrongIdentityDuplicateProjection(
+        folded.userMessages,
+        folded.events,
+      );
+      return {
+        userMessagesBySession: {
+          ...state.userMessagesBySession,
+          [sessionId]: reconciledUsers,
+        },
+        ...(folded.events !== events
+          ? {
+              eventsBySession: {
+                ...state.eventsBySession,
+                [sessionId]: folded.events,
+              },
+              transientArtifactsBySession: {
+                ...state.transientArtifactsBySession,
+                [sessionId]: collectTransientArtifactsFromEvents(folded.events),
+              },
+            }
+          : {}),
+      };
+    }),
+
   updateUserMessageAttachments: (sessionId, messageId, attachments) =>
     set((state) => {
       const bucket = state.userMessagesBySession[sessionId];
@@ -3336,7 +3548,8 @@ export const useAppStore = create<AppState>((set) => ({
       };
     }),
 
-  promoteQueuedUserMessage: (sessionId, localId, sentAt) =>
+  promoteQueuedUserMessage: (sessionId, localId, sentAt) => {
+    let promotedMessageId: string | null = null;
     set((state) => {
       const bucket = state.queuedUserMessagesBySession[sessionId];
       if (!bucket) return state;
@@ -3348,6 +3561,7 @@ export const useAppStore = create<AppState>((set) => ({
         ...createUserMessage(sessionId, entry.content, sentAt, undefined, entry.attachments),
         sourceQueuedLocalId: localId,
       };
+      promotedMessageId = promotedMessage.id;
       rememberHistoryLiveUsers(sessionId, [promotedMessage]);
       return {
         queuedUserMessagesBySession: {
@@ -3359,7 +3573,9 @@ export const useAppStore = create<AppState>((set) => ({
           [sessionId]: [...userBucket, promotedMessage],
         },
       };
-    }),
+    });
+    return promotedMessageId;
+  },
 
   convertLastUserMessageToQueued: (sessionId, userContent, input) => {
     let localId: string | null = null;
@@ -4109,21 +4325,33 @@ export const useAppStore = create<AppState>((set) => ({
         state.runtimeSnapshotCursorBySession[event.sessionId],
       );
       const lifecycleTurnId =
+        'turnId' in storedEvent && typeof storedEvent.turnId === 'string'
+          ? storedEvent.turnId
+          : undefined;
+      const runtimeRunId =
+        'runtimeEvent' in storedEvent ? storedEvent.runtimeEvent?.runId : undefined;
+      const unscopedTurnBinding =
         event.kind === 'session_start'
-          ? event.turnId
-          : event.kind === 'session_error'
-            ? (event.turnId ?? localTerminalTurnId)
-            : undefined;
+          ? 'latest'
+          : event.kind === 'session_complete' || event.kind === 'session_error'
+            ? 'unique'
+            : 'none';
       const lifecycleBoundUsers =
         lifecycleTurnId !== undefined
-          ? bindInitialLiveUserTurnIdentity(currentUsers, lifecycleTurnId)
+          ? bindInitialLiveUserTurnIdentity(
+              currentUsers,
+              lifecycleTurnId,
+              runtimeRunId,
+              unscopedTurnBinding,
+            )
           : currentUsers;
+      const lifecycleIdentityChanged = lifecycleBoundUsers !== currentUsers;
       const next: Partial<AppState> = {
         eventsBySession: {
           ...state.eventsBySession,
           [event.sessionId]: appendedEvents,
         },
-        ...(lifecycleBoundUsers !== currentUsers
+        ...(lifecycleIdentityChanged
           ? {
               userMessagesBySession: {
                 ...state.userMessagesBySession,
@@ -4261,6 +4489,7 @@ export const useAppStore = create<AppState>((set) => ({
         }
       }
       if (
+        lifecycleIdentityChanged ||
         event.kind === 'session_start' ||
         event.kind === 'mid_turn_user_prompt' ||
         event.kind === 'queued_user_prompt_started' ||

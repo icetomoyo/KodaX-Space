@@ -344,6 +344,8 @@ export const sessionSendChannel = {
       queued: z.boolean().optional(),
       queueId: z.string().min(1).max(128).optional(),
       queueMode: sessionSendQueueModeSchema.optional(),
+      /** Exact fresh Runtime Run admitted for an immediate send. */
+      runId: z.string().min(1).max(128).optional(),
       /** Main-issued, path-free preview capabilities for accepted image artifacts. */
       attachments: z.array(sessionImageAttachmentSchema).max(8).optional(),
     }),
@@ -1094,6 +1096,7 @@ export const sessionEventChannel = {
     }),
     z.object({
       ...runtimeSessionEventOriginShape,
+      ...transcriptHistoryIdentityShape,
       kind: z.literal('thinking_end'),
       sessionId: z.string().min(1),
       // 全量 thinking trace 在大 reasoning session 可能不小，但比 tool_result 小一档。
@@ -1112,6 +1115,7 @@ export const sessionEventChannel = {
     }),
     z.object({
       ...runtimeSessionEventOriginShape,
+      ...transcriptHistoryIdentityShape,
       kind: z.literal('tool_input_delta'),
       sessionId: z.string().min(1),
       toolId: z.string().min(1).optional(),
@@ -1120,6 +1124,7 @@ export const sessionEventChannel = {
     }),
     z.object({
       ...runtimeSessionEventOriginShape,
+      ...transcriptHistoryIdentityShape,
       kind: z.literal('tool_progress'),
       sessionId: z.string().min(1),
       toolId: z.string().min(1),

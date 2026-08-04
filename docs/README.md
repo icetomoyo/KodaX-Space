@@ -1,5 +1,13 @@
 # KodaX Space 文档中心
 
+> **2026-08-05 当前发布更正**：KodaX Space `v0.1.35`（package `0.1.35`）使用 npm
+> Registry 的精确 KodaX `0.7.80` 包。受管理的 Coder daemon 除既有 Runtime 安全能力外，
+> 还必须协商 `managedRunDurability:1`；Space 将 durable `runId`/`turnId` 绑定到
+> optimistic composer history。未配置 Auto LLM timeout 时使用 SDK 首次 45 秒、重试 90 秒的默认值。
+> 见 [v0.1.35](features/v0.1.35.md)、[发布记录](releases/v0.1.35-release-readiness.md)、
+> [能力台账](KODAX_CAPABILITY_LEDGER.md)和
+> [应用内手册来源](../apps/desktop/electron/kodax/space-manual-topics.ts)。
+
 > 发布基线：KodaX Space [`v0.1.34`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.34)（package `0.1.34`）/ npm 正式发布的精确 KodaX `0.7.78`；本版本于 2026-07-30 发布，历史 release 文档继续保留当时事实。
 
 这里是文档的统一入口。当前 `main` 的完整退出修复要求 Runtime 明确提供
