@@ -418,6 +418,718 @@ test('expanding a paged history window preserves a folded live turn exactly once
   );
 });
 
+test('a newest history page starting mid-turn stays ordered when the omitted query page expands', () => {
+  const store = useAppStore.getState();
+  store.appendUserMessage(SID, 'older query', 10_000);
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-older',
+  });
+  store.appendEvent({
+    kind: 'thinking_delta',
+    sessionId: SID,
+    text: 'older reasoning omitted by the bounded canonical tail',
+    sentAt: 10_050,
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'older answer',
+    sentAt: 10_100,
+  });
+  store.appendEvent({ kind: 'session_complete', sessionId: SID, turnId: 'turn-older' });
+  store.appendUserMessage(SID, 'newer query', 20_000);
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-newer',
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'newer answer',
+    sentAt: 20_100,
+  });
+  store.appendEvent({ kind: 'session_complete', sessionId: SID, turnId: 'turn-newer' });
+
+  // This is the real failure shape from 20260804_114722_2w61e690e24c48: the bounded newest
+  // canonical page begins with the assistant tail of the older live turn, then contains the next
+  // complete query/answer. The omitted older query must remain the unique live owner of that tail.
+  store.prependSessionHistory(
+    SID,
+    [
+      { kind: 'history_truncation', scope: 'history', omittedItems: 50 },
+      {
+        kind: 'assistant',
+        text: 'older answer',
+        sentAt: 10_100,
+        canonicalIndex: 56,
+        turnId: 'turn-older',
+      },
+      {
+        kind: 'user',
+        content: 'newer query',
+        sentAt: 20_000,
+        canonicalIndex: 57,
+        turnId: 'turn-newer',
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 'newer answer',
+        sentAt: 20_100,
+        canonicalIndex: 58,
+        turnId: 'turn-newer',
+      },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true },
+  );
+
+  const state = useAppStore.getState();
+  const visible = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  }).flatMap((message) => {
+    if (message.kind === 'user') return [`user:${message.content}`];
+    if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+    if (message.kind === 'system_notice' && message.lineageKind === 'history_truncation') {
+      return ['notice:history_truncation'];
+    }
+    return [];
+  });
+  assert.deepEqual(visible, [
+    'notice:history_truncation',
+    'user:older query',
+    'assistant:older answer',
+    'user:newer query',
+    'assistant:newer answer',
+  ]);
+  assert.equal(visible.filter((item) => item === 'assistant:older answer').length, 1);
+  assert.equal(visible.filter((item) => item === 'user:newer query').length, 1);
+  assertClosedTranscriptStructure(SID);
+
+  // A non-overlapping older SDK page can end exactly after the omitted user row. Runtime can prove
+  // its turnId and canonical mutation boundary but intentionally omits turnUserOrdinal because an
+  // even older part of the same turn may contain another real user prompt.
+  store.prependSessionHistory(
+    SID,
+    [
+      {
+        kind: 'user',
+        content: 'older query',
+        sentAt: 10_000,
+        canonicalIndex: 55,
+        historyTurnIndex: 55,
+        historyBoundary: { boundaryId: 'older-answer-boundary', sourceRevision: 'source-1' },
+        turnId: 'turn-older',
+      },
+      {
+        kind: 'assistant',
+        text: 'older answer',
+        sentAt: 10_100,
+        canonicalIndex: 56,
+        turnId: 'turn-older',
+      },
+      {
+        kind: 'user',
+        content: 'newer query',
+        sentAt: 20_000,
+        canonicalIndex: 57,
+        historyTurnIndex: 57,
+        turnId: 'turn-newer',
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 'newer answer',
+        sentAt: 20_100,
+        canonicalIndex: 58,
+        turnId: 'turn-newer',
+      },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true },
+  );
+
+  const expanded = useAppStore.getState();
+  const expandedVisible = composeMessages({
+    events: expanded.eventsBySession[SID] ?? [],
+    userMessages: expanded.userMessagesBySession[SID] ?? [],
+  }).flatMap((message) => {
+    if (message.kind === 'user') return [`user:${message.content}`];
+    if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+    if (message.kind === 'system_notice' && message.lineageKind === 'history_truncation') {
+      return ['notice:history_truncation'];
+    }
+    return [];
+  });
+  assert.deepEqual(expandedVisible, [
+    'user:older query',
+    'assistant:older answer',
+    'user:newer query',
+    'assistant:newer answer',
+  ]);
+  const canonicalOlderOwner = (expanded.userMessagesBySession[SID] ?? []).find(
+    (message) => message.content === 'older query',
+  );
+  assert.deepEqual(
+    canonicalOlderOwner && {
+      canonicalIndex: canonicalOlderOwner.canonicalIndex,
+      historyTurnIndex: canonicalOlderOwner.historyTurnIndex,
+      historyBoundary: canonicalOlderOwner.historyBoundary,
+      turnId: canonicalOlderOwner.turnId,
+      turnUserOrdinal: canonicalOlderOwner.turnUserOrdinal,
+      restoredFromHistory: canonicalOlderOwner.restoredFromHistory,
+    },
+    {
+      canonicalIndex: 55,
+      historyTurnIndex: 55,
+      historyBoundary: { boundaryId: 'older-answer-boundary', sourceRevision: 'source-1' },
+      turnId: 'turn-older',
+      turnUserOrdinal: 0,
+      restoredFromHistory: true,
+    },
+    'the exact canonical fork/rewind boundary remains while the unique live owner supplies ordinal 0',
+  );
+  assertClosedTranscriptStructure(SID);
+});
+
+test('a leading canonical suffix preserves the complete live text and tool prefix in place', () => {
+  const store = useAppStore.getState();
+  store.appendUserMessage(SID, 'query before a tool-rich answer', 10_000);
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-tool-rich-prefix',
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'early answer',
+    sentAt: 10_050,
+  });
+  store.appendEvent({
+    kind: 'tool_start',
+    sessionId: SID,
+    toolId: 'tool-prefix',
+    toolName: 'read',
+    input: { path: '/tmp/example' },
+  });
+  store.appendEvent({
+    kind: 'tool_result',
+    sessionId: SID,
+    toolId: 'tool-prefix',
+    toolName: 'read',
+    content: 'tool output',
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'final answer',
+    sentAt: 10_100,
+  });
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: SID,
+    turnId: 'turn-tool-rich-prefix',
+  });
+
+  store.prependSessionHistory(
+    SID,
+    [
+      { kind: 'history_truncation', scope: 'history', omittedItems: 50 },
+      {
+        kind: 'assistant',
+        text: 'final answer',
+        sentAt: 10_100,
+        canonicalIndex: 56,
+        turnId: 'turn-tool-rich-prefix',
+      },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true },
+  );
+
+  const state = useAppStore.getState();
+  const visibleEvents = (state.eventsBySession[SID] ?? []).flatMap((event) => {
+    if (event.kind === 'text_delta') return [`text:${event.text}`];
+    if (event.kind === 'tool_start') return [`tool-start:${event.toolId}`];
+    if (event.kind === 'tool_result') return [`tool-result:${event.toolId}:${event.content}`];
+    return [];
+  });
+  assert.deepEqual(visibleEvents, [
+    'text:early answer',
+    'tool-start:tool-prefix',
+    'tool-result:tool-prefix:tool output',
+    'text:final answer',
+  ]);
+  assert.equal(visibleEvents.filter((event) => event === 'text:final answer').length, 1);
+
+  const visibleTranscript = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  }).flatMap((message) => {
+    if (message.kind === 'user') return [`user:${message.content}`];
+    if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+    return [];
+  });
+  assert.deepEqual(visibleTranscript, [
+    'user:query before a tool-rich answer',
+    'assistant:early answer',
+    'assistant:final answer',
+  ]);
+  assertClosedTranscriptStructure(SID);
+});
+
+test('a leading partial history turn stays ambiguous when several live users share its turnId', () => {
+  const store = useAppStore.getState();
+  store.appendUserMessage(SID, 'first prompt', 10_000);
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-multi-prompt',
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'first response',
+    sentAt: 10_100,
+  });
+  store.appendEvent({
+    kind: 'mid_turn_user_prompt',
+    sessionId: SID,
+    queueId: 'second-prompt',
+    content: 'second prompt',
+    turnId: 'turn-multi-prompt',
+    turnUserOrdinal: 1,
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'second response',
+    sentAt: 10_200,
+  });
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: SID,
+    turnId: 'turn-multi-prompt',
+  });
+
+  store.prependSessionHistory(
+    SID,
+    [
+      { kind: 'history_truncation', scope: 'history', omittedItems: 50 },
+      {
+        kind: 'assistant',
+        text: 'partial canonical response',
+        sentAt: 10_150,
+        canonicalIndex: 50,
+        turnId: 'turn-multi-prompt',
+      },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true },
+  );
+
+  const state = useAppStore.getState();
+  const users = state.userMessagesBySession[SID] ?? [];
+  assert.equal(
+    users.filter(
+      (message) => message.turnId === 'turn-multi-prompt' && !message.restoredFromHistory,
+    ).length,
+    2,
+    'an omitted ordinal must not be guessed from two possible live owners',
+  );
+  assert.equal(
+    users.filter((message) => message.leadingPartialHistory === true).length,
+    1,
+    'the unresolved canonical prefix remains an explicit hidden owner',
+  );
+});
+
+test('a leading partial history turn cannot absorb a sole later mid-turn live prompt', () => {
+  const store = useAppStore.getState();
+  store.appendUserMessage(SID, 'later mid-turn prompt', 10_000);
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-shared',
+  });
+  useAppStore.setState((state) => ({
+    userMessagesBySession: {
+      ...state.userMessagesBySession,
+      [SID]: (state.userMessagesBySession[SID] ?? []).map((message) => ({
+        ...message,
+        turnId: 'turn-shared',
+        turnUserOrdinal: 1,
+      })),
+    },
+  }));
+  store.appendEvent({ kind: 'text_delta', sessionId: SID, text: 'later answer', sentAt: 10_100 });
+  store.appendEvent({ kind: 'session_complete', sessionId: SID, turnId: 'turn-shared' });
+
+  store.prependSessionHistory(
+    SID,
+    [
+      { kind: 'history_truncation', scope: 'history', omittedItems: 50 },
+      {
+        kind: 'assistant',
+        text: 'earlier omitted prompt answer',
+        sentAt: 9_900,
+        canonicalIndex: 50,
+        turnId: 'turn-shared',
+      },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true },
+  );
+
+  const state = useAppStore.getState();
+  const users = state.userMessagesBySession[SID] ?? [];
+  assert.equal(
+    users.some(
+      (message) =>
+        message.content === 'later mid-turn prompt' &&
+        message.turnUserOrdinal === 1 &&
+        message.restoredFromHistory !== true,
+    ),
+    true,
+  );
+  assert.equal(users.filter((message) => message.leadingPartialHistory === true).length, 1);
+  const assistantText = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: users,
+  })
+    .filter((message) => message.kind === 'assistant_text')
+    .map((message) => message.text);
+  assert.deepEqual(assistantText, ['earlier omitted prompt answer', 'later answer']);
+});
+
+test('a leading partial history turn cannot absorb an ordinal-zero owner with another response', () => {
+  const store = useAppStore.getState();
+  store.appendUserMessage(SID, 'root live prompt', 10_000);
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-shared',
+  });
+  store.appendEvent({ kind: 'text_delta', sessionId: SID, text: 'live root answer' });
+  store.appendEvent({ kind: 'session_complete', sessionId: SID, turnId: 'turn-shared' });
+
+  store.prependSessionHistory(
+    SID,
+    [
+      { kind: 'history_truncation', scope: 'history', omittedItems: 50 },
+      {
+        kind: 'assistant',
+        text: 'different canonical tail',
+        canonicalIndex: 50,
+        turnId: 'turn-shared',
+      },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true },
+  );
+
+  const state = useAppStore.getState();
+  const users = state.userMessagesBySession[SID] ?? [];
+  assert.equal(
+    users.some(
+      (message) =>
+        message.content === 'root live prompt' &&
+        message.turnUserOrdinal === 0 &&
+        message.restoredFromHistory !== true,
+    ),
+    true,
+  );
+  assert.equal(users.filter((message) => message.leadingPartialHistory === true).length, 1);
+  assert.deepEqual(
+    composeMessages({ events: state.eventsBySession[SID] ?? [], userMessages: users })
+      .filter((message) => message.kind === 'assistant_text')
+      .map((message) => message.text),
+    ['different canonical tail', 'live root answer'],
+  );
+});
+
+test('a mixed unidentified and identified leading prefix cannot claim the later live turn', () => {
+  const store = useAppStore.getState();
+  store.appendUserMessage(SID, 'identified live query', 10_000);
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-identified',
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'identified live answer',
+    sentAt: 10_200,
+  });
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: SID,
+    turnId: 'turn-identified',
+  });
+
+  store.prependSessionHistory(
+    SID,
+    [
+      { kind: 'history_truncation', scope: 'history', omittedItems: 50 },
+      {
+        kind: 'assistant',
+        text: 'unidentified legacy prefix',
+        sentAt: 9_900,
+        canonicalIndex: 50,
+      },
+      {
+        kind: 'assistant',
+        text: 'identified canonical answer',
+        sentAt: 10_100,
+        canonicalIndex: 51,
+        turnId: 'turn-identified',
+      },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true },
+  );
+
+  const state = useAppStore.getState();
+  const users = state.userMessagesBySession[SID] ?? [];
+  assert.equal(
+    users.some((message) => message.leadingPartialHistory === true),
+    false,
+    'missing turn ownership anywhere in the leading body must force the legacy anchor path',
+  );
+  assert.equal(
+    users.some(
+      (message) =>
+        message.content === 'identified live query' && message.restoredFromHistory !== true,
+    ),
+    true,
+    'the live query remains independent because the mixed canonical prefix is ambiguous',
+  );
+});
+
+test('a retained same-turn weak user stays fail-open while the canonical prefix is omitted', () => {
+  const store = useAppStore.getState();
+  store.appendUserMessage(SID, 'later query', 10_000);
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-shared',
+  });
+  store.appendEvent({ kind: 'text_delta', sessionId: SID, text: 'later answer', sentAt: 10_200 });
+  store.appendEvent({ kind: 'session_complete', sessionId: SID, turnId: 'turn-shared' });
+
+  store.prependSessionHistory(
+    SID,
+    [
+      { kind: 'history_truncation', scope: 'history', omittedItems: 50 },
+      {
+        kind: 'assistant',
+        text: 'prior prompt tail',
+        sentAt: 9_900,
+        canonicalIndex: 50,
+        turnId: 'turn-shared',
+      },
+      {
+        kind: 'user',
+        content: 'later query',
+        sentAt: 10_000,
+        canonicalIndex: 51,
+        turnId: 'turn-shared',
+      },
+      {
+        kind: 'assistant',
+        text: 'later answer',
+        sentAt: 10_200,
+        canonicalIndex: 52,
+        turnId: 'turn-shared',
+      },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true },
+  );
+
+  const state = useAppStore.getState();
+  const visible = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  }).flatMap((message) => {
+    if (message.kind === 'user') return [`user:${message.content}`];
+    if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+    if (message.kind === 'system_notice' && message.lineageKind === 'history_truncation') {
+      return ['notice:history_truncation'];
+    }
+    return [];
+  });
+  assert.deepEqual(visible, [
+    'notice:history_truncation',
+    'assistant:prior prompt tail',
+    'user:later query',
+    'assistant:later answer',
+    'user:later query',
+    'assistant:later answer',
+  ]);
+  const laterOwners = (state.userMessagesBySession[SID] ?? []).filter(
+    (message) => message.content === 'later query',
+  );
+  assert.equal(laterOwners.length, 2);
+  assert.equal(
+    laterOwners.some(
+      (message) => message.canonicalIndex === 51 && message.restoredFromHistory === true,
+    ),
+    true,
+  );
+  assert.equal(
+    laterOwners.some(
+      (message) => message.turnUserOrdinal === 0 && message.restoredFromHistory !== true,
+    ),
+    true,
+    'the live owner remains independent until pagination proves the complete canonical prefix',
+  );
+  assert.equal(
+    (state.userMessagesBySession[SID] ?? []).filter(
+      (message) => message.leadingPartialHistory === true,
+    ).length,
+    1,
+    'the assistant tail keeps its own hidden partial owner',
+  );
+  assertClosedTranscriptStructure(SID);
+});
+
+test('a leading partial turn remains separate when its retained same-turn user has another payload', () => {
+  const store = useAppStore.getState();
+  store.appendUserMessage(SID, 'live later query', 10_000);
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-shared',
+  });
+  store.appendEvent({ kind: 'text_delta', sessionId: SID, text: 'live answer', sentAt: 10_300 });
+  store.appendEvent({ kind: 'session_complete', sessionId: SID, turnId: 'turn-shared' });
+
+  store.prependSessionHistory(
+    SID,
+    [
+      { kind: 'history_truncation', scope: 'history', omittedItems: 50 },
+      {
+        kind: 'assistant',
+        text: 'prior prompt tail',
+        sentAt: 9_900,
+        canonicalIndex: 50,
+        turnId: 'turn-shared',
+      },
+      {
+        kind: 'user',
+        content: 'canonical later query',
+        sentAt: 10_100,
+        canonicalIndex: 51,
+        turnId: 'turn-shared',
+      },
+      {
+        kind: 'assistant',
+        text: 'canonical answer',
+        sentAt: 10_200,
+        canonicalIndex: 52,
+        turnId: 'turn-shared',
+      },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true },
+  );
+
+  const users = useAppStore.getState().userMessagesBySession[SID] ?? [];
+  assert.equal(
+    users.some(
+      (message) =>
+        message.content === 'canonical later query' && message.restoredFromHistory === true,
+    ),
+    true,
+  );
+  assert.equal(
+    users.some(
+      (message) => message.content === 'live later query' && message.restoredFromHistory !== true,
+    ),
+    true,
+  );
+  assert.equal(
+    users.filter((message) => message.leadingPartialHistory === true).length,
+    1,
+    'the live query must not be promoted into the omitted earlier prompt boundary',
+  );
+});
+
+test('identical weak canonical users in one Runtime turn cannot guess one live ordinal', () => {
+  const store = useAppStore.getState();
+  store.appendUserMessage(SID, 'repeat', 10_000);
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-repeated',
+  });
+  store.appendEvent({ kind: 'text_delta', sessionId: SID, text: 'live second answer' });
+  store.appendEvent({ kind: 'session_complete', sessionId: SID, turnId: 'turn-repeated' });
+
+  store.prependSessionHistory(
+    SID,
+    [
+      { kind: 'history_truncation', scope: 'history', omittedItems: 10 },
+      {
+        kind: 'user',
+        content: 'repeat',
+        canonicalIndex: 10,
+        turnId: 'turn-repeated',
+      },
+      {
+        kind: 'assistant',
+        text: 'canonical first answer',
+        canonicalIndex: 11,
+        turnId: 'turn-repeated',
+      },
+      {
+        kind: 'user',
+        content: 'repeat',
+        canonicalIndex: 12,
+        turnId: 'turn-repeated',
+      },
+      {
+        kind: 'assistant',
+        text: 'canonical second answer',
+        canonicalIndex: 13,
+        turnId: 'turn-repeated',
+      },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true },
+  );
+
+  const users = useAppStore.getState().userMessagesBySession[SID] ?? [];
+  assert.equal(users.filter((message) => message.content === 'repeat').length, 3);
+  assert.equal(
+    users.filter((message) => message.content === 'repeat' && message.restoredFromHistory === true)
+      .length,
+    2,
+  );
+  assert.equal(
+    users.some((message) => message.content === 'repeat' && message.restoredFromHistory !== true),
+    true,
+    'the sole live ordinal stays independent because either canonical prompt could own it',
+  );
+});
+
 test('expanded history pages replace the prior truncation row and keep exact mutation boundaries', () => {
   useAppStore.getState().prependSessionHistory(
     SID,

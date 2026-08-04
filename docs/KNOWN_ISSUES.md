@@ -166,6 +166,7 @@ Last Updated: 2026-08-04
 | 168 | High     | Resolved    | Thinking output could stream while stale idle snapshots hid both the activity spinner and Stop button                         | v0.1.34 Runtime event/snapshot arbitration                   | 2026-08-04 |
 | 169 | High     | Resolved    | A pre-admission failure could shift every later Run output one query to the left                                              | v0.1.34 terminal compatibility segmentation                  | 2026-08-04 |
 | 170 | Medium   | Resolved    | A transient data_changed during runs.start surfaced after optimistic acceptance instead of retrying safely                    | v0.1.34 managed Runtime admission                            | 2026-08-04 |
+| 171 | High     | Resolved    | A bounded newest history page starting mid-turn could place the next answer above its query and the prior answer below it     | v0.1.34 history/live leading-page reconciliation             | 2026-08-04 |
 
 ## Issue Details
 
@@ -11982,14 +11983,125 @@ as a visible error.
 - Both detach-dispose and abort-dispose during the retry delay prevent another
   admission attempt; abort-dispose still issues its one factual Stop request.
 
+### 171: A bounded newest history page starting mid-turn could place the next answer above its query and the prior answer below it
+
+- Priority: High
+- Status: Resolved
+- Introduced: v0.1.34 bounded history projection
+- Fixed: corrected v0.1.34 source
+- Created: 2026-08-04
+- Resolution Date: 2026-08-04
+
+#### Problem
+
+Session `20260804_114722_2w61e690e24c48` showed a completed answer at the top,
+its query below it, and output from the preceding turn below that query. The
+visible timestamps made the inversion explicit. The same shape also explained
+the earlier live-only query bubbles that moved downward as new output arrived.
+
+The persisted KodaX conversation cache was already correct: canonical indexes
+56, 57, and 58 were prior answer, current query, and current answer. Restarting
+Space also restored the correct order. This excluded timestamp sorting,
+canonical storage corruption, and the KodaX sidecar merge from the incident.
+
+#### Root Cause
+
+The bounded newest conversation page can legally begin inside an older Runtime
+turn. In this incident its first retained row was that older turn's assistant
+tail; the older user row was just outside the page, while Space's live baseline
+still contained it.
+
+Space inserted an invisible owner for an assistant-leading page so positional
+composition stayed structurally closed. However, that owner used a synthetic
+hash identity even though the retained assistant row carried the authoritative
+Runtime `turnId`. History/live reconciliation therefore could not join the
+canonical assistant tail to its one live user owner. The user and event buffers
+then represented different logical turn orders, causing positional composition
+to render `new answer -> new query -> old answer`.
+
+#### Resolution
+
+- An assistant-leading bounded page now gives its invisible owner the
+  authoritative leading `turnId` only when every ownership-bearing leading row
+  identifies that same turn. A mixed legacy/current prefix remains ambiguous.
+- A leading history-scope truncation notice keeps a separate invisible prefix
+  owner, so recovering the omitted query cannot move that notice into the
+  query's turn or below it.
+- Reconciliation may promote the omitted live query into that canonical slot
+  only when exactly one closed live user turn has that `turnId`, it is ordinal
+  zero, and the retained canonical response is a verified suffix of its live
+  projection. This supports a page cut inside an older reasoning/tool/text turn
+  without accepting unrelated output. A sole later mid-turn prompt is explicit
+  counter-evidence and remains separate.
+- Once that suffix proof succeeds, Space preserves the complete live projection
+  in its original order rather than feeding the truncated durable suffix through
+  the ordinary durable-first merger. This keeps omitted early text and tool
+  events before the retained final answer and prevents the overlapping answer
+  from being appended twice.
+- When a later older page reveals the real canonical user with a `turnId` but
+  no provable ordinal, Space retains its canonical content/index/fork boundary
+  and may inherit only the ordinal of one uniquely matching live owner with the
+  same stable user payload. Attachment capability URLs are intentionally
+  excluded because live and history independently sign them; stable attachment
+  identity, status, media type, and byte count still participate. The optimistic
+  display label is also excluded because the canonical history path does not
+  persist it. This enrichment is allowed only after pagination has reached the
+  complete canonical prefix; while any truncation marker remains, Space does not
+  guess among possibly omitted same-turn prompts.
+- A hidden leading-partial owner cannot claim a live user when the retained page
+  already contains another real canonical user for that Runtime turn. The real
+  row gets the opportunity to reconcile; otherwise both candidates remain.
+- Repeated identical canonical prompts in one Runtime turn remain ambiguous
+  when their ordinals are absent. One live row is never guessed to represent the
+  first or second identical boundary.
+- If several real user prompts share the Runtime turn, the omitted ordinal is
+  ambiguous. Space preserves every candidate and the hidden partial owner
+  instead of guessing, deleting, or content-matching a query.
+- That fail-open rule can temporarily show both canonical and live copies while
+  an older prefix is still unloaded. This is the explicit non-destructive
+  boundary tracked by open Issue 153; Issue 171 fixes the proven two-turn
+  inversion without pretending the multi-input identity gap is solved.
+- Legacy history without a usable `turnId` retains the stable synthetic anchor
+  behavior. No global sort, timestamp heuristic, or text-based deduplication was
+  added. No KodaX SDK change is required for this defect.
+
+#### Verification
+
+- A regression reproduces the exact bounded-page shape: canonical older answer
+  followed by canonical current query/answer, overlapping complete live turns.
+  It requires `old query -> old answer -> new query -> new answer`, each once.
+- The regression then performs the real second cursor read that reveals the
+  omitted canonical user. It requires the same order while preserving the
+  user's canonical index and fork/rewind boundary.
+- A tool-rich variant uses live `early text -> tool start -> tool result -> final
+  text` with only the final text retained canonically. It requires the entire
+  live prefix to remain in place and the final text to appear exactly once.
+- An adversarial regression supplies two live user prompts with the same
+  Runtime `turnId` and requires fail-open ambiguity: neither prompt may be
+  guessed away and the partial canonical owner remains explicit.
+- Another adversarial regression mixes an unidentified leading assistant row
+  with a later identified row and requires Space not to claim both for the
+  later live turn.
+- Same-turn regressions cover a hidden partial prefix followed by a retained
+  canonical user, for both equal and different live payloads, plus two identical
+  weak canonical prompts competing for one live ordinal.
+- A sole ordinal-one live prompt with a different response cannot be absorbed by
+  a same-turn leading assistant tail; both response segments remain distinct.
+- Image paging coverage uses one stable attachment ID with two separately signed
+  capability URLs plus a live-only display label and requires one canonical
+  query; a different attachment ID must fail open as two distinct queries.
+- The complete history replay suite remains green, including repeated truncated
+  hydration, fork/rewind ownership, multi-user turns, empty turns, compaction,
+  and history-first/live-first races.
+
 ## Summary
 
-- Total: 158
+- Total: 159
 - Open: 2
 - In Progress: 9
 - Deferred: 1
-- Resolved: 146
-- High: 75
+- Resolved: 147
+- High: 76
 - Medium: 72
 - Low: 11
 - Next to resolve: 165

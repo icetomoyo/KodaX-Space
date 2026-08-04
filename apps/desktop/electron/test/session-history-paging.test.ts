@@ -54,6 +54,7 @@ afterEach(() => {
   for (const sessionId of [
     'history-paging-resync',
     'history-paging-large-turn',
+    'history-paging-leading-partial',
     'history-paging-runtime-startup',
     'history-paging-deactivate',
     'history-paging-reactivate',
@@ -1065,6 +1066,205 @@ test('history paging paints one bounded newest window and reads older windows on
   assert.equal(sessionHistoryPagingSnapshot(sessionId).hasMore, false);
 });
 
+test('history paging keeps a leading partial live turn ordered before and after its query page loads', async () => {
+  const sessionId = 'history-paging-leading-partial';
+  useAppStore.setState({
+    sessions: [
+      {
+        sessionId,
+        projectRoot: '/project',
+        provider: 'mock',
+        reasoningMode: 'auto',
+        permissionMode: 'accept-edits',
+        autoModeEngine: 'llm',
+        agentMode: 'ama',
+        surface: 'code',
+        createdAt: 1_000,
+        lastActivityAt: 20_100,
+      },
+    ],
+    currentSessionId: sessionId,
+    eventsBySession: {},
+    userMessagesBySession: {},
+  });
+
+  const store = useAppStore.getState();
+  const liveToken = 'a'.repeat(32);
+  const canonicalToken = 'b'.repeat(32);
+  store.appendUserMessage(sessionId, 'older query', 10_000, [
+    {
+      id: 'older-image',
+      kind: 'image',
+      mediaType: 'image/png',
+      label: 'evidence.png',
+      bytes: 123,
+      status: 'available',
+      thumbnailUrl: `app://space/session-attachment/${liveToken}?variant=thumbnail`,
+      previewUrl: `app://space/session-attachment/${liveToken}?variant=original`,
+    },
+  ]);
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId,
+    provider: 'mock',
+    turnId: 'turn-older',
+  });
+  store.appendEvent({ kind: 'text_delta', sessionId, text: 'older answer', sentAt: 10_100 });
+  store.appendEvent({ kind: 'session_complete', sessionId, turnId: 'turn-older' });
+  store.appendUserMessage(sessionId, 'newer query', 20_000);
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId,
+    provider: 'mock',
+    turnId: 'turn-newer',
+  });
+  store.appendEvent({ kind: 'text_delta', sessionId, text: 'newer answer', sentAt: 20_100 });
+  store.appendEvent({ kind: 'session_complete', sessionId, turnId: 'turn-newer' });
+
+  const pages = [
+    {
+      items: [
+        { kind: 'history_truncation' as const, scope: 'history' as const, omittedItems: 55 },
+        {
+          kind: 'assistant' as const,
+          text: 'older answer',
+          sentAt: 10_100,
+          canonicalIndex: 56,
+          turnId: 'turn-older',
+        },
+        {
+          kind: 'user' as const,
+          content: 'newer query',
+          sentAt: 20_000,
+          canonicalIndex: 57,
+          turnId: 'turn-newer',
+          turnUserOrdinal: 0,
+        },
+        {
+          kind: 'assistant' as const,
+          text: 'newer answer',
+          sentAt: 20_100,
+          canonicalIndex: 58,
+          turnId: 'turn-newer',
+        },
+      ],
+      page: {
+        outcome: 'ready' as const,
+        revision: 'revision-leading-partial',
+        sourceRevision: 'source-leading-partial',
+        hasMore: true,
+        nextCursor: 'older-query-page',
+        windowMode: 'replace' as const,
+        hasNewer: false,
+      },
+    },
+    {
+      items: [
+        {
+          kind: 'user' as const,
+          content: 'older query',
+          sentAt: 10_000,
+          canonicalIndex: 55,
+          historyTurnIndex: 55,
+          historyBoundary: {
+            boundaryId: 'older-answer-boundary',
+            sourceRevision: 'source-leading-partial',
+          },
+          turnId: 'turn-older',
+          attachments: [
+            {
+              id: 'older-image',
+              kind: 'image' as const,
+              mediaType: 'image/png' as const,
+              bytes: 123,
+              status: 'available' as const,
+              thumbnailUrl: `app://space/session-attachment/${canonicalToken}?variant=thumbnail`,
+              previewUrl: `app://space/session-attachment/${canonicalToken}?variant=original`,
+            },
+          ],
+        },
+      ],
+      page: {
+        outcome: 'ready' as const,
+        revision: 'revision-leading-partial',
+        sourceRevision: 'source-leading-partial',
+        hasMore: false,
+        windowMode: 'prepend' as const,
+        hasNewer: false,
+      },
+    },
+  ];
+  let call = 0;
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    writable: true,
+    value: {
+      kodaxSpace: {
+        invoke: mockHistoryInvoke(async () => ({ ok: true as const, data: pages[call++]! })),
+      },
+    },
+  });
+
+  const visibleSequence = (): readonly string[] => {
+    const state = useAppStore.getState();
+    return composeMessages({
+      events: state.eventsBySession[sessionId] ?? [],
+      userMessages: state.userMessagesBySession[sessionId] ?? [],
+    }).flatMap((message) => {
+      if (message.kind === 'user') return [`user:${message.content}`];
+      if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+      if (message.kind === 'system_notice' && message.lineageKind === 'history_truncation') {
+        return ['notice:history_truncation'];
+      }
+      return [];
+    });
+  };
+  const expected = [
+    'notice:history_truncation',
+    'user:older query',
+    'assistant:older answer',
+    'user:newer query',
+    'assistant:newer answer',
+  ];
+
+  await restoreNewestSessionHistory(sessionId, 'code');
+  assert.deepEqual(visibleSequence(), expected);
+
+  await loadOlderSessionHistory(sessionId);
+  assert.deepEqual(visibleSequence(), expected.slice(1));
+  const olderOwner = useAppStore
+    .getState()
+    .userMessagesBySession[sessionId]?.find((message) => message.content === 'older query');
+  assert.deepEqual(
+    olderOwner && {
+      canonicalIndex: olderOwner.canonicalIndex,
+      historyTurnIndex: olderOwner.historyTurnIndex,
+      historyBoundary: olderOwner.historyBoundary,
+      turnId: olderOwner.turnId,
+      turnUserOrdinal: olderOwner.turnUserOrdinal,
+      restoredFromHistory: olderOwner.restoredFromHistory,
+      attachmentId: olderOwner.attachments?.[0]?.id,
+      attachmentPreviewUrl:
+        olderOwner.attachments?.[0]?.status === 'available'
+          ? olderOwner.attachments[0].previewUrl
+          : undefined,
+    },
+    {
+      canonicalIndex: 55,
+      historyTurnIndex: 55,
+      historyBoundary: {
+        boundaryId: 'older-answer-boundary',
+        sourceRevision: 'source-leading-partial',
+      },
+      turnId: 'turn-older',
+      turnUserOrdinal: 0,
+      restoredFromHistory: true,
+      attachmentId: 'older-image',
+      attachmentPreviewUrl: `app://space/session-attachment/${canonicalToken}?variant=original`,
+    },
+  );
+});
+
 test('history paging waits for Runtime instead of falling back to a full persisted read', async () => {
   const sessionId = 'history-paging-runtime-startup';
   useAppStore.setState({
@@ -1528,7 +1728,7 @@ test('history-window replacement does not resurrect a query converted back to qu
   );
 });
 
-test('ambiguous same-turn history/live users fail open instead of deleting a distinct query', () => {
+test('same-turn users with different attachment identities fail open instead of merging', () => {
   const sessionId = 'history-paging-ambiguous-live-identity';
   useAppStore.setState({
     sessions: [
@@ -1550,7 +1750,18 @@ test('ambiguous same-turn history/live users fail open instead of deleting a dis
     userMessagesBySession: {},
   });
   const store = useAppStore.getState();
-  store.appendUserMessage(sessionId, 'original root query', 1_000);
+  const liveToken = 'c'.repeat(32);
+  const canonicalToken = 'd'.repeat(32);
+  store.appendUserMessage(sessionId, 'same visible query', 1_000, [
+    {
+      id: 'live-image',
+      kind: 'image',
+      mediaType: 'image/png',
+      status: 'available',
+      thumbnailUrl: `app://space/session-attachment/${liveToken}?variant=thumbnail`,
+      previewUrl: `app://space/session-attachment/${liveToken}?variant=original`,
+    },
+  ]);
   store.appendEvent({
     kind: 'session_start',
     sessionId,
@@ -1564,9 +1775,19 @@ test('ambiguous same-turn history/live users fail open instead of deleting a dis
     [
       {
         kind: 'user',
-        content: 'different later prompt',
+        content: 'same visible query',
         canonicalIndex: 10,
         turnId: 'turn-shared',
+        attachments: [
+          {
+            id: 'different-canonical-image',
+            kind: 'image',
+            mediaType: 'image/png',
+            status: 'available',
+            thumbnailUrl: `app://space/session-attachment/${canonicalToken}?variant=thumbnail`,
+            previewUrl: `app://space/session-attachment/${canonicalToken}?variant=original`,
+          },
+        ],
       },
       { kind: 'assistant', text: 'later answer', canonicalIndex: 11 },
     ],
@@ -1575,10 +1796,14 @@ test('ambiguous same-turn history/live users fail open instead of deleting a dis
   );
 
   assert.deepEqual(
-    (useAppStore.getState().userMessagesBySession[sessionId] ?? []).map(
-      (message) => message.content,
-    ),
-    ['different later prompt', 'original root query'],
+    (useAppStore.getState().userMessagesBySession[sessionId] ?? []).map((message) => ({
+      content: message.content,
+      attachmentId: message.attachments?.[0]?.id,
+    })),
+    [
+      { content: 'same visible query', attachmentId: 'different-canonical-image' },
+      { content: 'same visible query', attachmentId: 'live-image' },
+    ],
   );
 });
 

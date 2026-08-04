@@ -252,6 +252,12 @@ export interface UserMessage {
    * it must remain ambiguous when one Runtime turn contains multiple live user prompts.
    */
   readonly leadingPartialHistory?: true;
+  /**
+   * Runtime supplied a canonical turnId but could not prove this user's ordinal within that turn.
+   * A unique semantic live owner may supply only that missing ordinal; canonical content and
+   * mutation boundary remain authoritative.
+   */
+  readonly omittedHistoryUserOrdinal?: true;
 }
 
 /** Renderer-only ownership marker for events reconstructed from a replaceable history window. */
@@ -1209,6 +1215,7 @@ function snapshotCoversRuntimeDraftEvent(state: AppState, event: SessionEvent): 
 
 interface TranscriptTurnSnapshot {
   readonly messageId: string;
+  readonly userSemantic: string;
   readonly userIndex: number;
   readonly eventStart: number;
   readonly eventEnd: number;
@@ -1218,6 +1225,7 @@ interface TranscriptTurnSnapshot {
   readonly canonicalIndex?: number;
   readonly restoredFromHistory: boolean;
   readonly leadingPartialHistory: boolean;
+  readonly omittedHistoryUserOrdinal: boolean;
   readonly terminal: boolean;
   readonly terminalTurnId?: string;
   readonly closed: boolean;
@@ -1231,6 +1239,21 @@ interface TranscriptTurnSnapshot {
   }[];
   readonly notices: readonly string[];
   readonly visibleSequence: readonly string[];
+}
+
+function stableUserMessageSemantic(message: Pick<UserMessage, 'content' | 'attachments'>): string {
+  return stableJson({
+    content: message.content,
+    attachments: (message.attachments ?? []).map((attachment) => ({
+      id: attachment.id,
+      kind: attachment.kind,
+      mediaType: attachment.mediaType,
+      bytes: attachment.bytes,
+      status: attachment.status,
+      // label is optimistic renderer metadata that history does not persist. Capability URLs are
+      // independently re-issued for live and canonical rows. Neither is durable attachment identity.
+    })),
+  });
 }
 
 interface ReconciledTranscriptBuffers {
@@ -1254,6 +1277,7 @@ function transcriptTurnSnapshots(
     const semantic = transcriptSegmentSemantic(events.slice(eventStart, eventEnd));
     turns.push({
       messageId: message.id,
+      userSemantic: stableUserMessageSemantic(message),
       userIndex,
       eventStart,
       eventEnd,
@@ -1265,6 +1289,7 @@ function transcriptTurnSnapshots(
       ...(message.canonicalIndex !== undefined ? { canonicalIndex: message.canonicalIndex } : {}),
       restoredFromHistory: message.restoredFromHistory === true,
       leadingPartialHistory: message.leadingPartialHistory === true,
+      omittedHistoryUserOrdinal: message.omittedHistoryUserOrdinal === true,
       ...semantic,
       closed: semantic.terminal || eventEnd < events.length || userIndex < userMessages.length - 1,
     });
@@ -1502,14 +1527,25 @@ function strongTurnIdentityMatches(
   );
 }
 
-function uniqueLeadingPartialHistoryMatch(
+type LeadingHistoryOwnerResolution = 'promote_live_owner' | 'enrich_canonical_owner';
+
+function visibleProjectionIsSuffix(durable: readonly string[], live: readonly string[]): boolean {
+  if (durable.length === 0 || durable.length > live.length) return false;
+  const offset = live.length - durable.length;
+  // SDK paging retains whole canonical entries, so an in-entry text suffix is not sufficient
+  // identity and would make projection merging duplicate the overlapping text. Only an exact
+  // sequence suffix is admissible; earlier whole thinking/tool/text entries may be absent.
+  return durable.every((value, index) => live[offset + index] === value);
+}
+
+function uniqueLeadingHistoryOwnerResolution(
   durable: TranscriptTurnSnapshot,
   duplicate: TranscriptTurnSnapshot,
   turns: readonly TranscriptTurnSnapshot[],
-): boolean {
+): LeadingHistoryOwnerResolution | undefined {
   if (
     !durable.restoredFromHistory ||
-    !durable.leadingPartialHistory ||
+    (!durable.leadingPartialHistory && !durable.omittedHistoryUserOrdinal) ||
     durable.turnId === undefined ||
     durable.turnUserOrdinal !== undefined ||
     duplicate.restoredFromHistory ||
@@ -1517,19 +1553,61 @@ function uniqueLeadingPartialHistoryMatch(
     duplicate.turnId !== durable.turnId ||
     !liveTurnCanFold(duplicate)
   ) {
-    return false;
+    return undefined;
   }
   // A Runtime turn may contain several real user inputs. Without the omitted canonical prefix we
   // cannot know which ordinal owns a leading partial page. Fold only when the live projection has
   // exactly one possible owner for this turnId; otherwise preserve every candidate fail-open.
-  return (
+  const unique =
     turns.filter(
       (candidate) =>
         !candidate.restoredFromHistory &&
         hasStrongTurnIdentity(candidate) &&
         candidate.turnId === durable.turnId,
-    ).length === 1
+    ).length === 1;
+  if (!unique) return undefined;
+  if (durable.leadingPartialHistory) {
+    // A later mid-turn prompt is positive evidence that it cannot own the assistant prefix which
+    // precedes its user boundary. The canonical response must also be a verified sequence suffix
+    // of the live projection; turnId identifies the Runtime run, not an inner user segment.
+    if (
+      duplicate.turnUserOrdinal !== 0 ||
+      !visibleProjectionIsSuffix(durable.visibleSequence, duplicate.visibleSequence)
+    ) {
+      return undefined;
+    }
+    // The same Runtime turn may contain a later retained canonical user after this omitted prefix.
+    // Even one such row is an alternate owner for the sole live prompt, regardless of whether its
+    // ordinal survived paging. Let that real canonical row reconcile by payload, or fail open.
+    const hasRetainedCanonicalOwner = turns.some(
+      (candidate) =>
+        candidate.messageId !== durable.messageId &&
+        candidate.restoredFromHistory &&
+        !candidate.leadingPartialHistory &&
+        candidate.turnId === durable.turnId,
+    );
+    return hasRetainedCanonicalOwner ? undefined : 'promote_live_owner';
+  }
+  // A shared Runtime turn can contain several sequential user inputs, including history rows not
+  // present in the current bounded window. Uniqueness among the live rows is therefore necessary
+  // but not sufficient for a real canonical user: its visible payload must also be identical.
+  if (durable.userSemantic !== duplicate.userSemantic) return undefined;
+  const hasOmittedCanonicalPrefix = turns.some(
+    (candidate) =>
+      candidate.restoredFromHistory &&
+      candidate.notices.some((notice) => notice.startsWith('history-truncation:')),
   );
+  if (hasOmittedCanonicalPrefix) return undefined;
+  const matchingCanonicalOwners = turns.filter(
+    (candidate) =>
+      candidate.restoredFromHistory &&
+      !candidate.leadingPartialHistory &&
+      candidate.turnId === durable.turnId &&
+      candidate.userSemantic === duplicate.userSemantic,
+  ).length;
+  // Repeated identical prompts inside one Runtime turn are legal. Without canonical ordinals a
+  // single live row cannot prove which identical canonical boundary it represents.
+  return matchingCanonicalOwners === 1 ? 'enrich_canonical_owner' : undefined;
 }
 
 function exactRestoredTurnIdentityMatches(
@@ -1857,7 +1935,7 @@ function foldStrongIdentityDuplicateTurns(
       | {
           readonly durable: TranscriptTurnSnapshot;
           readonly duplicate: TranscriptTurnSnapshot;
-          readonly promoteLiveOwner: boolean;
+          readonly ownerResolution?: LeadingHistoryOwnerResolution;
         }
       | undefined;
 
@@ -1872,21 +1950,21 @@ function foldStrongIdentityDuplicateTurns(
       }
       for (let durableIndex = 0; durableIndex < duplicateIndex; durableIndex++) {
         const durable = turns[durableIndex]!;
-        const leadingPartialMatch = uniqueLeadingPartialHistoryMatch(
-          durable,
-          duplicate,
-          turns,
-        );
+        const ownerResolution = uniqueLeadingHistoryOwnerResolution(durable, duplicate, turns);
         if (
           !durable.restoredFromHistory ||
           (duplicate.restoredFromHistory
             ? !exactRestoredTurnIdentityMatches(durable, duplicate)
-            : !strongTurnIdentityMatches(durable, duplicate) && !leadingPartialMatch) ||
+            : !strongTurnIdentityMatches(durable, duplicate) && ownerResolution === undefined) ||
           (!duplicate.restoredFromHistory && !liveTurnCanFold(duplicate))
         ) {
           continue;
         }
-        pair = { durable, duplicate, promoteLiveOwner: leadingPartialMatch };
+        pair = {
+          durable,
+          duplicate,
+          ...(ownerResolution !== undefined ? { ownerResolution } : {}),
+        };
         break;
       }
     }
@@ -1894,10 +1972,17 @@ function foldStrongIdentityDuplicateTurns(
 
     const durableSegment = nextEvents.slice(pair.durable.eventStart, pair.durable.eventEnd);
     const duplicateSegment = nextEvents.slice(pair.duplicate.eventStart, pair.duplicate.eventEnd);
-    const mergedSegment = preserveRelocatedSegmentClosure(
-      mergeCanonicalTurnProjections(durableSegment, duplicateSegment),
-      pair.duplicate,
-    );
+    // A leading bounded page is a canonical suffix of the complete live projection. Its admission
+    // check already proved that visible suffix entry-by-entry. The generic projection merger is
+    // intentionally durable-first and therefore cannot preserve the omitted live prefix: it would
+    // append early text/tools after the durable suffix and duplicate overlapping text. Once the
+    // unique live owner is promoted, retain that complete projection in its original order. Other
+    // folds continue to use the canonical merger because their durable segment is not truncated.
+    const mergedProjection =
+      pair.ownerResolution === 'promote_live_owner'
+        ? [...duplicateSegment]
+        : mergeCanonicalTurnProjections(durableSegment, duplicateSegment);
+    const mergedSegment = preserveRelocatedSegmentClosure(mergedProjection, pair.duplicate);
     const duplicateMessage = nextUsers[pair.duplicate.userIndex];
     didFold = true;
     nextEvents = [
@@ -1913,7 +1998,11 @@ function foldStrongIdentityDuplicateTurns(
       .map((message, index) => {
         if (index !== pair.durable.userIndex) return message;
         const promoteLiveOwner =
-          pair.promoteLiveOwner && durableMessage?.leadingPartialHistory === true;
+          pair.ownerResolution === 'promote_live_owner' &&
+          durableMessage?.leadingPartialHistory === true;
+        const enrichCanonicalOwner =
+          pair.ownerResolution === 'enrich_canonical_owner' &&
+          durableMessage?.omittedHistoryUserOrdinal === true;
         const baseMessage = promoteLiveOwner && duplicateMessage ? duplicateMessage : message;
         let rest: Omit<UserMessage, 'historyNoAssistantSegment'>;
         if (promoteLiveOwner) {
@@ -1925,6 +2014,13 @@ function foldStrongIdentityDuplicateTurns(
             ...visibleLiveOwner
           } = baseMessage;
           rest = visibleLiveOwner;
+        } else if (enrichCanonicalOwner) {
+          const {
+            historyNoAssistantSegment: _emptySegment,
+            omittedHistoryUserOrdinal: _omittedOrdinal,
+            ...canonicalOwner
+          } = baseMessage;
+          rest = canonicalOwner;
         } else {
           const { historyNoAssistantSegment: _emptySegment, ...durableOwner } = baseMessage;
           rest = durableOwner;
@@ -1934,6 +2030,9 @@ function foldStrongIdentityDuplicateTurns(
         const reconciled = {
           ...rest,
           ...(promoteLiveOwner ? { restoredFromHistory: true as const } : {}),
+          ...(enrichCanonicalOwner && duplicateMessage?.turnUserOrdinal !== undefined
+            ? { turnUserOrdinal: duplicateMessage.turnUserOrdinal }
+            : {}),
           ...(deliveryQueueId !== undefined ? { deliveryQueueId } : {}),
           ...(deliveryQueueMode !== undefined ? { deliveryQueueMode } : {}),
         };
@@ -2021,7 +2120,10 @@ function authoritativeLeadingHistoryTurnId(
   for (const item of items) {
     if (item.kind === 'user') break;
     if (item.kind === 'local_notice' || item.kind === 'history_truncation') continue;
-    if (item.turnId === undefined) continue;
+    // A missing owner is not evidence that this row belongs to a later identified turn. Mixed
+    // legacy/current prefixes must retain the synthetic anchor instead of absorbing unknown rows
+    // into the first Runtime turn that happens to expose a turnId.
+    if (item.turnId === undefined) return undefined;
     if (turnId !== undefined && turnId !== item.turnId) return undefined;
     turnId = item.turnId;
   }
@@ -3371,6 +3473,7 @@ export const useAppStore = create<AppState>((set) => ({
       const histLocalNotices: LocalNoticeMessage[] = [];
       const leadingPartialTurnId = authoritativeLeadingHistoryTurnId(items);
       const historyAnchorTurnId = leadingPartialTurnId ?? stableHistoryAnchorTurnId(items);
+      const historyPrefixAnchorTurnId = `space-history-prefix:${stableHistoryHash(items)}`;
       let firstHistoricalSentAt: number | undefined;
       for (const item of items) {
         if (!('sentAt' in item) || !Number.isFinite(item.sentAt)) continue;
@@ -3395,6 +3498,7 @@ export const useAppStore = create<AppState>((set) => ({
       // events 还没 session_complete,先 flush 一个 complete
       let assistantPendingComplete = false;
       let openUserWithoutAssistant = false;
+      let leadingHistoryPrefixPending = false;
       const flushTurnIfNeeded = (): void => {
         if (assistantPendingComplete) {
           histEvents.push({ kind: 'session_complete', sessionId });
@@ -3422,7 +3526,13 @@ export const useAppStore = create<AppState>((set) => ({
       // 解决: 第一条非 user item 触发前如果 histMsgs 还空,先塞一条隐藏的历史锚点
       // (sentAt 用 fallback),让索引对齐，但不把内部锚点渲染成空白 user 气泡。
       const ensureLeadingHistoryAnchor = (): void => {
-        if (histMsgs.length === 0) {
+        let needsAnchor = histMsgs.length === 0;
+        if (leadingHistoryPrefixPending) {
+          flushTurnIfNeeded();
+          leadingHistoryPrefixPending = false;
+          needsAnchor = true;
+        }
+        if (needsAnchor) {
           const id = `u_${sessionId}_history_anchor_${stableHistoryHash(historyAnchorTurnId)}`;
           histMsgs.push({
             id,
@@ -3441,11 +3551,30 @@ export const useAppStore = create<AppState>((set) => ({
           openUserWithoutAssistant = true;
         }
       };
+      const ensureLeadingHistoryPrefixAnchor = (): void => {
+        if (histMsgs.length > 0) return;
+        const sentAt = Number.MIN_SAFE_INTEGER;
+        lastHistoricalUserSentAt = sentAt;
+        histMsgs.push({
+          id: `u_${sessionId}_history_anchor_${stableHistoryHash(historyPrefixAnchorTurnId)}`,
+          content: '',
+          // A history-scope truncation describes records before every retained row, including an
+          // omitted live query recovered below. Keep its invisible owner first regardless of the
+          // first retained assistant timestamp.
+          sentAt,
+          restoredFromHistory: true,
+          hiddenHistoryAnchor: true,
+          turnId: historyPrefixAnchorTurnId,
+          turnUserOrdinal: 0,
+        });
+        openUserWithoutAssistant = true;
+      };
       for (const item of items) {
         const historyOrigin = transcriptHistoryOrigin(item);
         if (item.kind === 'user') {
           if (assistantPendingComplete) flushTurnIfNeeded();
           else flushEmptyTurnIfNeeded();
+          leadingHistoryPrefixPending = false;
           const id = stableHistoryUserMessageId(sessionId, item, histMsgs.length);
           // History pairing is transcript-order based, while composeMessages still sorts by
           // sentAt. SDK compaction/re-root and tool-result restores can collapse or backdate
@@ -3461,6 +3590,9 @@ export const useAppStore = create<AppState>((set) => ({
             ...(item.turnId !== undefined ? { turnId: item.turnId } : {}),
             ...(item.turnUserOrdinal !== undefined
               ? { turnUserOrdinal: item.turnUserOrdinal }
+              : {}),
+            ...(item.turnId !== undefined && item.turnUserOrdinal === undefined
+              ? { omittedHistoryUserOrdinal: true as const }
               : {}),
             ...(item.historyTurnIndex !== undefined
               ? { historyTurnIndex: item.historyTurnIndex }
@@ -3544,7 +3676,9 @@ export const useAppStore = create<AppState>((set) => ({
           });
           markTurnHasEvents();
         } else if (item.kind === 'history_truncation') {
-          ensureLeadingHistoryAnchor();
+          const isLeadingHistoryPrefix = item.scope === 'history' && histMsgs.length === 0;
+          if (isLeadingHistoryPrefix) ensureLeadingHistoryPrefixAnchor();
+          else ensureLeadingHistoryAnchor();
           histEvents.push({
             kind: 'history_truncation',
             sessionId,
@@ -3552,6 +3686,7 @@ export const useAppStore = create<AppState>((set) => ({
             omittedItems: item.omittedItems,
           });
           markTurnHasEvents();
+          if (isLeadingHistoryPrefix) leadingHistoryPrefixPending = true;
         } else if (item.kind === 'local_notice') {
           lastLocalTranscriptSentAt = Math.max(lastLocalTranscriptSentAt, item.sentAt);
           histLocalNotices.push({
