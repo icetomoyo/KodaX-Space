@@ -1020,6 +1020,7 @@ export function ConversationStreamV2(): JSX.Element {
   const viewportScrollAnchorRef = useRef<ViewportScrollAnchor | null>(null);
   const scrollSnapshotRef = useRef<ScrollSnapshot | null>(null);
   const observedScrollerSizeRef = useRef<{ width: number; height: number } | null>(null);
+  const scrollerWasHiddenRef = useRef(false);
   const touchStartYRef = useRef<number | null>(null);
   const autoFollowRafRef = useRef<number | null>(null);
   const jumpToBottomRafRef = useRef<number | null>(null);
@@ -1701,11 +1702,22 @@ export function ConversationStreamV2(): JSX.Element {
         width: scroller.clientWidth,
         height: scroller.clientHeight,
       };
+      // Max Task Dock mode keeps the conversation mounted but hides its parent. Restoring a
+      // snapshot against the resulting 0x0 viewport clamps scrollTop to zero, then later
+      // treats that zero-sized snapshot as being at the bottom. Keep the last visible
+      // snapshot intact and restore it once the conversation has dimensions again.
+      if (nextSize.width === 0 || nextSize.height === 0) {
+        scrollerWasHiddenRef.current = true;
+        return;
+      }
+      const restoredFromHidden = scrollerWasHiddenRef.current;
+      scrollerWasHiddenRef.current = false;
       observedScrollerSizeRef.current = nextSize;
       const viewportResized =
-        previousSize !== null &&
-        (Math.abs(previousSize.width - nextSize.width) > 1 ||
-          Math.abs(previousSize.height - nextSize.height) > 1);
+        restoredFromHidden ||
+        (previousSize !== null &&
+          (Math.abs(previousSize.width - nextSize.width) > 1 ||
+            Math.abs(previousSize.height - nextSize.height) > 1));
 
       const snapshot = scrollSnapshotRef.current;
       if (viewportResized && snapshot && !snapshot.atBottom) {
