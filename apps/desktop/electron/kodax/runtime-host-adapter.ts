@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 
 import type {
   ConnectKodaXRuntimeOptions,
@@ -1204,6 +1205,8 @@ interface RuntimeSessionObservationState {
   readonly runtime: KodaXDaemonRuntime;
   readonly observation: RuntimeSessionObservation;
   readonly reducer: CoderSessionProjectionReducer;
+  activeRunId: string | undefined;
+  settings: RuntimeSessionObservationSnapshot['settings'];
   /** False after the first post-snapshot Runtime event is accepted for delivery. */
   transcriptSnapshotFresh: boolean;
   eventQueue: Promise<void>;
@@ -3312,37 +3315,63 @@ export class RuntimeHostAdapter {
     identity?: RuntimeSessionIdentity,
   ): Promise<void> {
     const runtime = await this.requireRuntime();
+    const observed = this.observations.get(sessionId);
+    const hasCurrentObservation =
+      observed !== undefined && observed.runtime === runtime && this.state === 'ready';
     if (identity) {
       if (identity.sessionId !== sessionId) {
         throw new Error('Runtime session identity does not match the settings target.');
       }
       await this.ensureSession(identity);
-    } else {
+    } else if (!hasCurrentObservation) {
       // IPC/RealSession already owns the project/surface scope. Settings APIs and Runtime apply
       // their own Session identity/revision checks, so a mutable full-history read here is both
       // redundant and capable of rejecting a healthy active Session with data_changed.
       await this.assertPersistedCoderOwnership(sessionId);
     }
+    let current =
+      hasCurrentObservation
+        ? structuredClone(observed.settings)
+        : await runtime.sessions.getSettingsVersioned(sessionId);
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      const current = await runtime.sessions.getSettingsVersioned(sessionId);
       const effectivePatch = await this.withMissingAutoModeDefaults(current.value, patch);
       const changed = Object.entries(effectivePatch).some(([key, value]) => {
         const currentValue = current.value[key as keyof typeof current.value];
         // Runtime patch `null` means delete, whereas a settings snapshot represents
         // an absent value as `undefined`. Treating null and undefined as different
         // caused every send/run boundary to issue a redundant revisioned write.
-        return value === null ? currentValue !== undefined : currentValue !== value;
+        return value === null
+          ? currentValue !== undefined
+          : !isDeepStrictEqual(currentValue, value);
       });
       if (!changed) return;
       try {
-        await runtime.sessions.updateSettingsVersioned(sessionId, effectivePatch, {
+        const updated = await runtime.sessions.updateSettingsVersioned(sessionId, effectivePatch, {
           expectedRevision: current.revision,
         });
+        this.recordObservedSettings(sessionId, runtime, updated);
         return;
       } catch (error) {
         if (attempt === 2 || !isSessionSettingsRevisionConflict(error)) throw error;
+        current = await runtime.sessions.getSettingsVersioned(sessionId);
       }
     }
+  }
+
+  private recordObservedSettings(
+    sessionId: string,
+    runtime: KodaXDaemonRuntime,
+    settings: RuntimeSessionObservationSnapshot['settings'],
+  ): void {
+    const state = this.observations.get(sessionId);
+    if (
+      state === undefined ||
+      state.runtime !== runtime ||
+      settings.revision < state.settings.revision
+    ) {
+      return;
+    }
+    state.settings = structuredClone(settings);
   }
 
   private async withMissingAutoModeDefaults(
@@ -3721,6 +3750,8 @@ export class RuntimeHostAdapter {
         runtime,
         observation,
         reducer,
+        activeRunId: initial.activeRun?.runId,
+        settings: structuredClone(observation.snapshot.settings),
         transcriptSnapshotFresh: true,
         eventQueue: Promise.resolve(),
       };
@@ -3748,6 +3779,9 @@ export class RuntimeHostAdapter {
         throw new Error(`Runtime rejected the authoritative live snapshot for ${sessionId}.`);
       }
       this.recordLiveProjectionRevision(initial);
+      for (const event of buffered) {
+        this.enqueueRuntimeEvent(state, event);
+      }
       // Actor telemetry is best-effort: a daemon without the agents plane (or a
       // telemetry attach failure) must not fail session observation — the same
       // policy as the post-rewind re-attach below. actorTreeSnapshot still
@@ -3773,9 +3807,6 @@ export class RuntimeHostAdapter {
             ...(run.turnId ? { turnId: run.turnId, turnUserOrdinal: 0 } : {}),
           });
         }
-      }
-      for (const event of buffered) {
-        this.enqueueRuntimeEvent(state, event);
       }
     } catch (error) {
       if (installed && this.observations.get(sessionId) === state) {
@@ -4007,6 +4038,28 @@ export class RuntimeHostAdapter {
     state: RuntimeSessionObservationState,
     event: RuntimeTypedEvent,
   ): void {
+    if (event.type === 'run.started') {
+      state.activeRunId = event.runId;
+    } else if (
+      (event.type === 'run.completed' ||
+        event.type === 'run.failed' ||
+        event.type === 'run.cancelled' ||
+        event.type === 'run.interrupted') &&
+      state.activeRunId === event.runId
+    ) {
+      state.activeRunId = undefined;
+    }
+    if (event.type === 'session.settings.updated') {
+      const payload = runtimeEventRecord(event.payload);
+      const revision = payload?.revision;
+      const settings = runtimeEventRecord(payload?.settings);
+      if (Number.isInteger(revision) && settings !== undefined) {
+        this.recordObservedSettings(event.sessionId, state.runtime, {
+          revision: Number(revision),
+          value: structuredClone(settings) as RuntimeSessionSettings,
+        });
+      }
+    }
     // The observation snapshot is immutable. Once any later event is accepted, a future history
     // request must start a fresh transcript revision instead of silently replaying the old tail.
     state.transcriptSnapshotFresh = false;
@@ -4826,12 +4879,19 @@ export class RuntimeHostAdapter {
   }
 
   activeRunId(sessionId: string): string | undefined {
-    const observed = this.observations.get(sessionId)?.reducer.snapshot().activeRun?.runId;
+    const observed = this.observations.get(sessionId)?.activeRunId;
     return observed ?? this.activeRuns.get(sessionId);
   }
 
   async findActiveRunId(sessionId: string): Promise<string | undefined> {
     const runtime = await this.requireRuntime();
+    // Observation callbacks update activeRunId before their ordered projection work. This makes
+    // both active and idle observation states authoritative without waiting for an unrelated RPC
+    // or reopening the mutable canonical Session through sessions.status().
+    const observed = this.observations.get(sessionId);
+    if (observed !== undefined && observed.runtime === runtime && this.state === 'ready') {
+      return observed.activeRunId;
+    }
     // Run control/status is already fenced by the daemon's Session admission and Runtime
     // identity. Do not put a full persisted-Session read in front of it: an executing Run owns
     // the Session write lock, so that history-grade boundary can legitimately report

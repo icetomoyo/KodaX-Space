@@ -149,18 +149,23 @@ type RuntimeAdmissionOutcome = 'admitted' | 'not_admitted';
 
 interface RuntimeAdmissionState {
   readonly abort: AbortController;
+  readonly restoreDraftOnBoundaryConflict: boolean;
   phase: 'preparing' | 'starting' | RuntimeAdmissionOutcome;
   runId?: string;
+  rejectionReason?: 'session_data_changed';
   readonly promise: Promise<RuntimeAdmissionOutcome>;
   readonly resolve: (outcome: RuntimeAdmissionOutcome) => void;
 }
 
-function createRuntimeAdmissionState(abort: AbortController): RuntimeAdmissionState {
+function createRuntimeAdmissionState(
+  abort: AbortController,
+  restoreDraftOnBoundaryConflict: boolean,
+): RuntimeAdmissionState {
   let resolve!: (outcome: RuntimeAdmissionOutcome) => void;
   const promise = new Promise<RuntimeAdmissionOutcome>((settle) => {
     resolve = settle;
   });
-  return { abort, phase: 'preparing', promise, resolve };
+  return { abort, restoreDraftOnBoundaryConflict, phase: 'preparing', promise, resolve };
 }
 import { askUserBroker } from '../permission/ask-user-broker.js';
 import { resolveSpacePermissionBrokerMode } from '../permission/decision-owner.js';
@@ -585,8 +590,21 @@ export class RealKodaXSession implements ManagedSession {
           queueMode,
         };
       }
-      const admission = this.startRun(prompt, artifacts, options?.promptOverlay, runPermissionMode);
-      if (admission) await admission.promise;
+      const admission = this.startRun(
+        prompt,
+        artifacts,
+        options?.promptOverlay,
+        runPermissionMode,
+        true,
+      );
+      const outcome = admission ? await admission.promise : 'admitted';
+      if (outcome === 'not_admitted' && admission?.rejectionReason !== undefined) {
+        return {
+          accepted: false,
+          reason: admission.rejectionReason,
+          queueMode,
+        };
+      }
       return {
         accepted: true,
         queued: false,
@@ -639,11 +657,12 @@ export class RealKodaXSession implements ManagedSession {
     artifacts?: readonly InputArtifact[],
     promptOverlay?: string,
     runPermissionMode: PermissionMode = this.permissionMode,
+    restoreDraftOnBoundaryConflict = false,
   ): RuntimeAdmissionState | null {
     const abort = new AbortController();
     const runtimeAdmission =
       this.surface === 'code' && runtimeHostAdapter.isRuntimeSelected()
-        ? createRuntimeAdmissionState(abort)
+        ? createRuntimeAdmissionState(abort, restoreDraftOnBoundaryConflict)
         : null;
     this.currentAbort = abort;
     this.runtimeAdmission = runtimeAdmission;
@@ -1035,6 +1054,18 @@ export class RealKodaXSession implements ManagedSession {
     } catch (error) {
       if (signal.aborted || this.disposed) {
         this.settleRuntimeAdmission(admission, 'not_admitted', signal.aborted && !this.disposed);
+        return;
+      }
+      if (
+        admission !== undefined &&
+        admission !== null &&
+        admission.restoreDraftOnBoundaryConflict &&
+        admission.phase !== 'admitted' &&
+        admission.phase !== 'not_admitted' &&
+        isSessionPreAdmissionDataChanged(error)
+      ) {
+        admission.rejectionReason = 'session_data_changed';
+        this.settleRuntimeAdmission(admission, 'not_admitted');
         return;
       }
       this.settleRuntimeAdmission(admission, 'not_admitted');

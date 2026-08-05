@@ -143,6 +143,65 @@ test('daemon Coder restores the draft when the persisted boundary changes before
   assert.deepEqual(events, []);
 });
 
+test('daemon Coder restores the draft when Runtime preparation crosses a changed boundary', async (t) => {
+  const adapter = runtimeHostAdapter as unknown as Record<string, unknown>;
+  const patchedMethods = new Map<string, { readonly existed: boolean; readonly value: unknown }>();
+  const patchMethod = (name: string, value: unknown): void => {
+    patchedMethods.set(name, {
+      existed: Object.prototype.hasOwnProperty.call(adapter, name),
+      value: adapter[name],
+    });
+    adapter[name] = value;
+  };
+  t.after(() => {
+    for (const [name, original] of patchedMethods) {
+      if (original.existed) adapter[name] = original.value;
+      else delete adapter[name];
+    }
+  });
+
+  let startAttempts = 0;
+  patchMethod('isRuntimeSelected', () => true);
+  patchMethod('initialize', async () => undefined);
+  patchMethod('ensureSession', async () => false);
+  patchMethod('ensureObserved', async () => undefined);
+  patchMethod('activeRunId', () => undefined);
+  patchMethod('findActiveRunId', async () => undefined);
+  patchMethod('updateSessionSettings', async () => {
+    throw Object.assign(new Error('Session settings boundary changed'), {
+      code: 'data_changed',
+    });
+  });
+  patchMethod('startManagedRun', async () => {
+    startAttempts += 1;
+    throw new Error('preparation failures must not reach Runtime admission');
+  });
+
+  const events: Array<{ readonly kind?: string }> = [];
+  const session = new RealKodaXSession({
+    sessionId: 'session_preparation_boundary_changed',
+    projectRoot: process.cwd(),
+    provider: 'test-provider',
+    reasoningMode: 'balanced',
+    permissionMode: 'accept-edits',
+    surface: 'code',
+    emit: (event) => events.push(event),
+    requestPermission: async () => 'allow_once',
+  });
+
+  assert.deepEqual(await session.send('restore after preparation conflict'), {
+    accepted: false,
+    reason: 'session_data_changed',
+    queueMode: 'interrupt',
+  });
+  assert.equal(startAttempts, 0);
+  assert.equal(
+    events.some((event) => event.kind === 'session_error'),
+    false,
+  );
+  await waitForTest(() => !session.isRunning());
+});
+
 test('daemon Coder retries a transient read-boundary change only before Run admission', async (t) => {
   const adapter = runtimeHostAdapter as unknown as Record<string, unknown>;
   const patchedMethods = new Map<string, { readonly existed: boolean; readonly value: unknown }>();
@@ -203,6 +262,116 @@ test('daemon Coder retries a transient read-boundary change only before Run admi
   assert.equal(
     events.some((event) => event.kind === 'session_error'),
     false,
+  );
+});
+
+test('daemon Coder returns a factual draft rejection when Run admission exhausts boundary retries', async (t) => {
+  const adapter = runtimeHostAdapter as unknown as Record<string, unknown>;
+  const patchedMethods = new Map<string, { readonly existed: boolean; readonly value: unknown }>();
+  const patchMethod = (name: string, value: unknown): void => {
+    patchedMethods.set(name, {
+      existed: Object.prototype.hasOwnProperty.call(adapter, name),
+      value: adapter[name],
+    });
+    adapter[name] = value;
+  };
+  t.after(() => {
+    for (const [name, original] of patchedMethods) {
+      if (original.existed) adapter[name] = original.value;
+      else delete adapter[name];
+    }
+  });
+
+  let startAttempts = 0;
+  patchMethod('isRuntimeSelected', () => true);
+  patchMethod('initialize', async () => undefined);
+  patchMethod('ensureSession', async () => false);
+  patchMethod('ensureObserved', async () => undefined);
+  patchMethod('activeRunId', () => undefined);
+  patchMethod('findActiveRunId', async () => undefined);
+  patchMethod('updateSessionSettings', async () => undefined);
+  patchMethod('startManagedRun', async () => {
+    startAttempts += 1;
+    throw Object.assign(new Error('Session data changed during the read boundary'), {
+      code: 'resync_required',
+    });
+  });
+
+  const events: Array<{ readonly kind?: string }> = [];
+  const session = new RealKodaXSession({
+    sessionId: 'session_boundary_retry_exhausted',
+    projectRoot: process.cwd(),
+    provider: 'test-provider',
+    reasoningMode: 'balanced',
+    permissionMode: 'accept-edits',
+    surface: 'code',
+    emit: (event) => events.push(event),
+    requestPermission: async () => 'allow_once',
+  });
+
+  assert.deepEqual(await session.send('restore this draft after retry exhaustion'), {
+    accepted: false,
+    reason: 'session_data_changed',
+    queueMode: 'interrupt',
+  });
+  assert.equal(startAttempts, 3);
+  assert.equal(
+    events.some((event) => event.kind === 'session_error'),
+    false,
+  );
+  await waitForTest(() => !session.isRunning());
+});
+
+test('an internally started prompt reports a boundary failure instead of failing silently', async (t) => {
+  const adapter = runtimeHostAdapter as unknown as Record<string, unknown>;
+  const patchedMethods = new Map<string, { readonly existed: boolean; readonly value: unknown }>();
+  const patchMethod = (name: string, value: unknown): void => {
+    patchedMethods.set(name, {
+      existed: Object.prototype.hasOwnProperty.call(adapter, name),
+      value: adapter[name],
+    });
+    adapter[name] = value;
+  };
+  const sessionId = 'session_internal_boundary_failure';
+  t.after(() => {
+    for (const [name, original] of patchedMethods) {
+      if (original.existed) adapter[name] = original.value;
+      else delete adapter[name];
+    }
+  });
+
+  patchMethod('isRuntimeSelected', () => true);
+  patchMethod('initialize', async () => undefined);
+  patchMethod('ensureSession', async () => false);
+  patchMethod('ensureObserved', async () => undefined);
+  patchMethod('updateSessionSettings', async () => undefined);
+  patchMethod('startManagedRun', async () => {
+    throw Object.assign(new Error('Session changed before queued Run admission'), {
+      code: 'data_changed',
+    });
+  });
+
+  const events: Array<{ readonly kind?: string }> = [];
+  const session = new RealKodaXSession({
+    sessionId,
+    projectRoot: process.cwd(),
+    provider: 'test-provider',
+    reasoningMode: 'balanced',
+    permissionMode: 'accept-edits',
+    surface: 'code',
+    emit: (event) => events.push(event),
+    requestPermission: async () => 'allow_once',
+  });
+  (
+    session as unknown as {
+      startRun(prompt: string): unknown;
+    }
+  ).startRun('do not lose this internally started prompt');
+
+  await waitForTest(() => !session.isRunning());
+  assert.equal(
+    events.some((event) => event.kind === 'session_error'),
+    true,
   );
 });
 

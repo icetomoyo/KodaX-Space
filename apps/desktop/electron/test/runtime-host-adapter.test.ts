@@ -5223,6 +5223,126 @@ test('run status and Stop bypass a history boundary that is busy with active Ses
   await adapter.close();
 });
 
+test('an active observation is positive Stop evidence without waiting for its event queue', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_active_observed');
+  const originalObserve = fake.runtime.sessions.observe.bind(fake.runtime.sessions);
+  fake.runtime.sessions.observe = async (...args) => {
+    const observation = await originalObserve(...args);
+    return {
+      ...observation,
+      snapshot: {
+        ...observation.snapshot,
+        runs: [
+          {
+            runId: 'run_active_observed',
+            sessionId: 's_active_observed',
+            phase: 'running' as const,
+            provider: 'mock',
+            mode: 'managed_task' as const,
+            startedAt: '2026-08-05T01:00:00.000Z',
+          },
+        ],
+      },
+    };
+  };
+  fake.runtime.sessions.status = async () => {
+    throw new Error('active observation should avoid a redundant status read');
+  };
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  await adapter.initialize();
+  await adapter.ensureObserved('s_active_observed');
+  const state = (
+    adapter as unknown as {
+      observations: Map<string, { eventQueue: Promise<void> }>;
+    }
+  ).observations.get('s_active_observed');
+  assert.ok(state);
+  state.eventQueue = new Promise<void>(() => undefined);
+
+  assert.equal(await adapter.findActiveRunId('s_active_observed'), 'run_active_observed');
+  assert.deepEqual(fake.calls.sessionStatuses, []);
+  await adapter.close();
+});
+
+test('an idle observation avoids a history-grade Session status read', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_observed_idle');
+  fake.runtime.sessions.status = async () => {
+    throw Object.assign(new Error('idle observation should avoid canonical Session status'), {
+      code: 'data_changed',
+    });
+  };
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  await adapter.initialize();
+  await adapter.ensureObserved('s_observed_idle');
+
+  assert.equal(await adapter.findActiveRunId('s_observed_idle'), undefined);
+  assert.deepEqual(fake.calls.sessionStatuses, []);
+  await adapter.close();
+});
+
+test('a queued run.started event is positive evidence before its event handler settles', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_queued_run_event');
+  fake.runtime.sessions.status = async () => {
+    throw Object.assign(new Error('queued run event should avoid canonical Session status'), {
+      code: 'data_changed',
+    });
+  };
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  await adapter.initialize();
+  await adapter.ensureObserved('s_queued_run_event');
+  const observed = (
+    adapter as unknown as {
+      observations: Map<string, { eventQueue: Promise<void> }>;
+    }
+  ).observations.get('s_queued_run_event');
+  assert.ok(observed);
+  observed.eventQueue = new Promise<void>(() => undefined);
+  fake.emit({
+    id: 'event_queued_run_started',
+    seq: 1,
+    time: '2026-08-05T10:00:00.000Z',
+    type: 'run.started',
+    sessionId: 's_queued_run_event',
+    runId: 'run_queued_event',
+    payload: {
+      runId: 'run_queued_event',
+      sessionId: 's_queued_run_event',
+      phase: 'running',
+      provider: 'anthropic',
+      mode: 'managed_task',
+      startedAt: '2026-08-05T10:00:00.000Z',
+    },
+  });
+
+  assert.equal(await adapter.findActiveRunId('s_queued_run_event'), 'run_queued_event');
+  assert.deepEqual(fake.calls.sessionStatuses, []);
+  await adapter.close();
+});
+
 test('Stop reports Runtime unavailability instead of claiming that no active Run exists', async () => {
   const adapter = new RuntimeHostAdapter({
     mode: 'runtime',
@@ -5621,6 +5741,66 @@ test('initialization requires the dedicated orphan-exit capability instead of a 
   assert.equal(fake.calls.close, 1);
 });
 
+test('buffered Runtime events become visible before Actor bootstrap can block observation', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_buffered_before_actor');
+  const originalObserve = fake.runtime.sessions.observe.bind(fake.runtime.sessions);
+  fake.runtime.sessions.observe = async (...args) => {
+    const observation = await originalObserve(...args);
+    args[1]?.({
+      id: 'evt_buffered_before_actor',
+      seq: 1,
+      time: '2026-08-05T12:00:00.000Z',
+      sessionId: 's_buffered_before_actor',
+      runId: 'run_buffered_before_actor',
+      type: 'run.started',
+      payload: {
+        runId: 'run_buffered_before_actor',
+        sessionId: 's_buffered_before_actor',
+        phase: 'running',
+        startedAt: '2026-08-05T12:00:00.000Z',
+        provider: 'mock',
+      },
+    });
+    return observation;
+  };
+  const agents = fake.runtime.agents as unknown as {
+    tree(sessionId: string): Promise<AgentTreeSnapshot>;
+  };
+  const originalTree = agents.tree.bind(agents);
+  let signalTreeStarted!: () => void;
+  const treeStarted = new Promise<void>((resolve) => {
+    signalTreeStarted = resolve;
+  });
+  let releaseTree!: () => void;
+  const treeRelease = new Promise<void>((resolve) => {
+    releaseTree = resolve;
+  });
+  agents.tree = async (sessionId) => {
+    signalTreeStarted();
+    await treeRelease;
+    return originalTree(sessionId);
+  };
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  const opening = adapter.ensureObserved('s_buffered_before_actor');
+  await treeStarted;
+  try {
+    const snapshot = await adapter.readSessionLiveSnapshot('s_buffered_before_actor');
+    assert.equal(snapshot.activeRun?.runId, 'run_buffered_before_actor');
+  } finally {
+    releaseTree();
+    await opening;
+    await adapter.close();
+  }
+});
+
 test('initialization requires source-side Runtime event coalescing', async () => {
   const fake = createFakeRuntime();
   delete (fake.runtime.capabilities as Record<string, unknown>).runtimeEventCoalescing;
@@ -5693,6 +5873,138 @@ test('session settings use revisioned CAS and skip unchanged values', async () =
     options: { expectedRevision: 3 },
   });
   assert.equal(fake.settings.get('s_1')?.value.model, undefined);
+});
+
+test('session settings reuse the observed version instead of rereading mutable Session history', async () => {
+  let rejectPersistedRead = false;
+  let persistedReads = 0;
+  setSessionStoreImpl({
+    listSessions: async () => [],
+    forkSession: async () => null,
+    rewindSession: async () => null,
+    deleteSession: async () => ({ ok: true }),
+    loadSession: async (sessionId) => {
+      persistedReads += 1;
+      if (rejectPersistedRead) {
+        throw Object.assign(new Error('active Session writer'), { code: 'data_changed' });
+      }
+      return { sessionId, title: '', messages: [], gitRoot: 'C:\\repo', tag: 'code' } as never;
+    },
+    watchSessions: () => ({ close() {} }),
+  } as SessionStoreImpl);
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_observed_settings');
+  const shellExecution = {
+    version: 1 as const,
+    shell: { kind: 'pwsh' as const, executable: 'C:\\Program Files\\PowerShell\\pwsh.exe' },
+    environment: { inherit: 'filtered' as const },
+  };
+  fake.settings.set('s_observed_settings', {
+    revision: 7,
+    value: {
+      provider: 'anthropic',
+      shellExecution,
+      autoModeClassifierModel: 'anthropic:classifier',
+      autoModeTimeoutMs: 20_000,
+      autoModeSpeculativeWindowMs: 640,
+    },
+  });
+  let settingsReads = 0;
+  fake.runtime.sessions.getSettingsVersioned = async () => {
+    settingsReads += 1;
+    throw Object.assign(new Error('active Session changed during settings read'), {
+      code: 'data_changed',
+    });
+  };
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  await adapter.initialize();
+  await adapter.ensureObserved('s_observed_settings');
+  const readsAfterObservation = persistedReads;
+  rejectPersistedRead = true;
+  const observed = (
+    adapter as unknown as {
+      observations: Map<string, { eventQueue: Promise<void> }>;
+    }
+  ).observations.get('s_observed_settings');
+  assert.ok(observed);
+  observed.eventQueue = new Promise<void>(() => undefined);
+  await adapter.updateSessionSettings('s_observed_settings', {
+    provider: 'anthropic',
+    shellExecution: structuredClone(shellExecution),
+  });
+
+  assert.equal(settingsReads, 0);
+  assert.equal(persistedReads, readsAfterObservation);
+  assert.deepEqual(fake.calls.settingsUpdates, []);
+  await adapter.close();
+});
+
+test('a queued settings event advances the no-op boundary before its handler settles', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_queued_settings');
+  const autoModeSettings = {
+    autoModeClassifierModel: 'anthropic:classifier',
+    autoModeTimeoutMs: 20_000,
+    autoModeSpeculativeWindowMs: 640,
+  };
+  fake.settings.set('s_queued_settings', {
+    revision: 7,
+    value: { provider: 'anthropic', ...autoModeSettings },
+  });
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  await adapter.initialize();
+  await adapter.ensureObserved('s_queued_settings');
+  const observed = (
+    adapter as unknown as {
+      observations: Map<string, { eventQueue: Promise<void> }>;
+    }
+  ).observations.get('s_queued_settings');
+  assert.ok(observed);
+  observed.eventQueue = new Promise<void>(() => undefined);
+  fake.settings.set('s_queued_settings', {
+    revision: 8,
+    value: { provider: 'openai', ...autoModeSettings },
+  });
+  fake.emit({
+    id: 'event_queued_settings_updated',
+    seq: 1,
+    time: '2026-08-05T10:00:00.000Z',
+    type: 'session.settings.updated',
+    sessionId: 's_queued_settings',
+    runId: 's_queued_settings',
+    payload: {
+      sessionId: 's_queued_settings',
+      revision: 8,
+      settings: { provider: 'openai', ...autoModeSettings },
+      patch: { provider: 'openai' },
+    },
+  });
+
+  await adapter.updateSessionSettings('s_queued_settings', { provider: 'anthropic' });
+
+  assert.deepEqual(fake.calls.settingsUpdates, [
+    {
+      sessionId: 's_queued_settings',
+      patch: { provider: 'anthropic' },
+      options: { expectedRevision: 8 },
+    },
+  ]);
+  assert.equal(fake.settings.get('s_queued_settings')?.value.provider, 'anthropic');
+  await adapter.close();
 });
 
 test('concurrent session settings updates serialize their revisioned CAS writes', async () => {
@@ -5952,6 +6264,61 @@ test('failed after-turn submission revokes its newly registered credential lease
     /transport failed/,
   );
   assert.deepEqual(fake.calls.credentialRevokes, ['credential_1']);
+  await adapter.close();
+});
+
+test('after-turn submission uses the provider from the SDK active Run record', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_observed_provider');
+  let runReads = 0;
+  fake.runtime.runs.get = async (runId) => {
+    runReads += 1;
+    return {
+      runId,
+      sessionId: 's_observed_provider',
+      phase: 'running',
+      startedAt: '2026-08-05T10:00:00.000Z',
+      provider: 'openai',
+    };
+  };
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    credentialResolver: async () => 'secret-from-keychain',
+  });
+
+  await adapter.initialize();
+  await adapter.ensureObserved('s_observed_provider');
+  fake.emit({
+    id: 'event_observed_provider',
+    seq: 1,
+    time: '2026-08-05T10:00:00.000Z',
+    type: 'run.started',
+    sessionId: 's_observed_provider',
+    runId: 'run_observed_provider',
+    payload: {
+      runId: 'run_observed_provider',
+      sessionId: 's_observed_provider',
+      phase: 'running',
+      provider: 'anthropic',
+      mode: 'managed_task',
+      startedAt: '2026-08-05T10:00:00.000Z',
+    },
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  await adapter.submitInput({
+    sessionId: 's_observed_provider',
+    afterRunId: 'run_observed_provider',
+    delivery: 'after_turn',
+    input: [{ type: 'text', text: 'continue after the turn' }],
+  });
+
+  assert.equal(runReads, 1);
+  assert.deepEqual(fake.calls.credentialRegistrations, [{ providers: ['openai'] }]);
   await adapter.close();
 });
 

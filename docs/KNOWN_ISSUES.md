@@ -2,7 +2,7 @@
 
 Last Updated: 2026-08-05
 
-> Historical issue details are preserved as investigation evidence. Resolved items older than 30 days move to [ISSUES_ARCHIVED.md](ISSUES_ARCHIVED.md) without losing their investigation record. The current source integration target is exact npm Registry KodaX 0.7.81; the latest published Space v0.1.35 used KodaX 0.7.80. Durable managed-Run admission requires `managedRunDurability:1`. Start from the [documentation hub](README.md) for current behavior and status.
+> Historical issue details are preserved as investigation evidence. Resolved items older than 30 days move to [ISSUES_ARCHIVED.md](ISSUES_ARCHIVED.md) without losing their investigation record. The current source integration target is exact npm Registry KodaX 0.7.82; the latest published Space v0.1.35 used KodaX 0.7.80. Durable managed-Run admission requires `managedRunDurability:1`. Start from the [documentation hub](README.md) for current behavior and status.
 
 ## Issue Index
 
@@ -169,6 +169,7 @@ Last Updated: 2026-08-05
 | 171 | High     | Resolved    | A bounded newest history page starting mid-turn could place the next answer above its query and the prior answer below it          | v0.1.34 history/live leading-page reconciliation             | 2026-08-04 |
 | 172 | High     | Resolved    | Live transcript events dropped Runtime turn identity, so an overtaking history revalidation could duplicate and reorder a new turn | v0.1.34 Runtime bridge and ready-history revalidation        | 2026-08-04 |
 | 173 | High     | Resolved    | Reopening or switching an active Session could lose its in-flight transcript and leave sidebar activity stale                      | v0.1.34 renderer Runtime observation bootstrap               | 2026-08-05 |
+| 174 | High     | Resolved    | Interrupt or after-turn send could race active Session persistence and restore the draft with session_data_changed                 | v0.1.35 / KodaX 0.7.82 active-run admission                  | 2026-08-05 |
 
 ## Issue Details
 
@@ -12402,14 +12403,88 @@ historical Session keeps the cheaper history-first load path.
 - Runtime ownership verification performs one status read even when persisted history changes
   during that read.
 
+## Issue 174: Interrupt or after-turn send could race active Session persistence and restore the draft with session_data_changed
+
+- Priority: High
+- Status: Resolved
+- Introduced: v0.1.34 Runtime send admission
+- Fixed: v0.1.35 development with KodaX 0.7.82
+- Created: 2026-08-05
+- Resolution Date: 2026-08-05
+
+### Original Problem
+
+Immediately after interrupting a turn, or while submitting an interrupt/after-turn follow-up, the
+composer intermittently reported that the persisted Session boundary had changed, restored the
+draft, and asked the user to retry. The prompt had not been lost, but normal active-Run writes were
+being mistaken for an ownership or topology conflict.
+
+### Root Cause
+
+- KodaX 0.7.80 `runs.submitInput()` crossed a canonical Session read before resolving the target
+  active Run, so the target Run's own writer could produce `data_changed` during valid input
+  admission.
+- Space reopened history-grade reads after an authoritative observation: settings reconciliation
+  discarded the observed revision, while an observed idle state still fell back to strict
+  `sessions.status()`.
+- When a fresh `runs.start()` exhausted its factual pre-handle boundary retries, Space settled the
+  local admission as not admitted but still returned `accepted:true`, preventing draft restoration.
+- The first fix cached settings and provider state behind the ordered projection queue. A blocked
+  event handler could therefore make a stale settings snapshot look unchanged or bind an after-turn
+  credential to an old provider. It also treated internally dequeued prompts like renderer sends,
+  even though no caller existed to consume a restored-draft rejection.
+
+### Resolution
+
+- Verified the KodaX 0.7.81 test package, then pinned the formal KodaX 0.7.82 release. Its
+  active-Run admission resolves `afterRunId` first, reuses the Runtime-owned admitted Session
+  context, admits interrupt without a
+  canonical Session read, and queues after-turn work without rereading executable history.
+- Observation callbacks advance their small active-Run and settings boundaries synchronously before
+  ordered projection work. Observed active and idle states therefore avoid strict Session status
+  without waiting on an unrelated RPC, while queued settings events cannot cause a stale no-op.
+  Equal structured settings, including `shellExecution`, issue no redundant CAS write; a real
+  revision conflict still reloads through the SDK.
+- Bootstrap events join the ordered queue before optional Actor telemetry attaches, so a slow Actor
+  read cannot expose and prematurely retire a false-idle observation.
+- After-turn credential setup reads the fresh provider from KodaX 0.7.82's active-Run record. That
+  endpoint now reuses cached Runtime admission and does not reopen canonical history for an active
+  Runtime-owned Run.
+- Exhausted, explicitly classified pre-handle boundary conflicts now return
+  `{ accepted:false, reason:'session_data_changed' }` only for a renderer send that can restore its
+  draft. Internally started/dequeued prompts retain the existing visible `session_error` path rather
+  than failing silently.
+
+### Files Changed
+
+- `apps/desktop/electron/kodax/runtime-host-adapter.ts`
+- `apps/desktop/electron/kodax/real-session.ts`
+- `apps/desktop/electron/test/runtime-host-adapter.test.ts`
+- `apps/desktop/electron/test/real-session-runtime-queue.test.ts`
+
+### Tests Added
+
+- Observed active and idle states avoid fallback Session status; a queued `run.started` event is
+  immediately positive evidence even while its projection handler is blocked.
+- Settings reuse the observed revision/value and structurally equal shell policy without a read or
+  write, while a queued newer settings event prevents a stale no-op.
+- After-turn submission obtains the provider from the SDK active-Run record instead of an
+  unversioned Space cache.
+- Runtime preparation conflicts and exhausted fresh-Run boundary retries (`data_changed` and
+  `resync_required`) both return a factual draft rejection and no Session error.
+- An internally started prompt reports its boundary failure instead of entering the renderer-only
+  restored-draft path, and buffered Runtime events become visible before Actor bootstrap can block.
+- KodaX's focused active-Run admission regression and the shipped 0.7.82 bundle prove interrupt and
+  after-turn admission use the Runtime-owned context instead of canonical Session history.
+
 ## Summary
 
-- Total: 161
+- Total: 162
 - Open: 1
 - In Progress: 9
 - Deferred: 1
-- Resolved: 150
-- High: 78
+- Resolved: 151
+- High: 79
 - Medium: 72
 - Low: 11
 - Next to resolve: 165
