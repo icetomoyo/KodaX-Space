@@ -6,6 +6,7 @@ import {
   composerResultOwnsCurrentSession,
   invokeComposerIpc,
   isComposerTimeoutResult,
+  pendingSendAcknowledgement,
   routeComposerFailure,
 } from '../../renderer/src/shell/composerInvoke.js';
 
@@ -117,4 +118,22 @@ test('tracked functional updates chain synchronously from the latest value', () 
   current = applyTrackedStateAction(current, (items) => [...items, 'file']);
 
   assert.deepEqual(current, ['image', 'file']);
+});
+
+test('accepted send results always settle their optimistic pending admission', () => {
+  assert.deepEqual(
+    pendingSendAcknowledgement({ accepted: true, queued: false, runId: 'run_1' }),
+    { kind: 'run', runId: 'run_1' },
+  );
+  assert.deepEqual(pendingSendAcknowledgement({ accepted: true, queued: false }), {
+    kind: 'clear',
+  });
+  assert.deepEqual(
+    pendingSendAcknowledgement({ accepted: true, queued: true, queueId: 'queue_1' }),
+    { kind: 'clear' },
+  );
+  assert.deepEqual(
+    pendingSendAcknowledgement({ accepted: true, queued: true, queueId: 'queue_1' }),
+    { kind: 'clear' },
+  );
 });

@@ -394,6 +394,37 @@ test('atomic observation maps run, draft, tool, Todo, and interaction truth', ()
   ]);
 });
 
+test('a terminal observation never projects residual or foreign Run drafts as answer text', () => {
+  const terminalObservation = {
+    ...observation,
+    cursor: 42,
+    runs: [
+      {
+        ...running,
+        phase: 'completed',
+        endedAt: '2026-07-14T08:04:00.000Z',
+      },
+    ],
+    live: {
+      ...observation.live,
+      assistantTextByRun: {
+        run_active: 'residual completed answer',
+        run_foreign: 'foreign answer',
+      },
+      thinkingTextByRun: {
+        run_active: 'residual completed thinking',
+        run_foreign: 'foreign thinking',
+      },
+    },
+  } as unknown as RuntimeSessionObservationSnapshot;
+
+  const projection = projectRuntimeSessionSnapshot(terminalObservation, []);
+  assert.equal(projection.activeRun, undefined);
+  assert.equal(projection.lastTerminalRun?.runId, 'run_active');
+  assert.equal(projection.assistantDraft, undefined);
+  assert.equal(projection.thinkingDraft, undefined);
+});
+
 test('waiting-agent, recovering, and unknown lifecycle phases remain authoritative active Runs', () => {
   for (const phase of ['waiting_agent', 'recovering', 'unknown'] as const) {
     const projected = projectRuntimeSessionSnapshot(

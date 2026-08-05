@@ -339,6 +339,37 @@ function clampSessionEventText(value: string | undefined): string | undefined {
   return `${value.slice(0, 262_120)}\n\n[truncated]`;
 }
 
+export function projectEmbeddedMidTurnUserMessages(
+  sessionId: string,
+  contents: readonly string[],
+  meta?: Parameters<NonNullable<KodaXEvents['onMidTurnUserMessages']>>[1],
+): SessionEvent[] {
+  return contents.flatMap((content, index) => {
+    const clamped = clampSessionEventText(content);
+    if (clamped === undefined || clamped.trim() === '') return [];
+    const queueCandidate = meta?.queuedMessageIds?.[index];
+    const queueId =
+      queueCandidate !== undefined && queueCandidate.length > 0 && queueCandidate.length <= 128
+        ? queueCandidate
+        : undefined;
+    const entryCandidate =
+      queueId === undefined ? undefined : meta?.queuedMessageEntryIds?.[queueId];
+    const entryId =
+      entryCandidate !== undefined && entryCandidate.length > 0 && entryCandidate.length <= 256
+        ? entryCandidate
+        : undefined;
+    return [
+      {
+        kind: 'mid_turn_user_prompt' as const,
+        sessionId,
+        ...(queueId !== undefined ? { queueId } : {}),
+        ...(entryId !== undefined ? { entryId } : {}),
+        content: clamped,
+      },
+    ];
+  });
+}
+
 const STREAM_DELTA_FLUSH_MS = 33;
 const PRE_ADMISSION_DATA_CHANGED_RETRY_DELAYS_MS = [25, 75] as const;
 
@@ -1562,16 +1593,9 @@ export class RealKodaXSession implements ManagedSession {
             : undefined,
         });
       },
-      onMidTurnUserMessages: (contents) => {
-        for (const content of contents) {
-          const clamped = clampSessionEventText(content);
-          if (clamped === undefined || clamped.trim() === '') continue;
-          emitLive({
-            kind: 'mid_turn_user_prompt',
-            sessionId: sid,
-            content: clamped,
-          });
-        }
+      onMidTurnUserMessages: (contents, meta) => {
+        for (const event of projectEmbeddedMidTurnUserMessages(sid, contents, meta))
+          emitLive(event);
       },
 
       // ---- Context budget diagnostics ----

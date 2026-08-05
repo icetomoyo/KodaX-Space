@@ -59,6 +59,7 @@ import {
   replaceRuntimeProfile,
   replaceSessionLiveProjection as replaceSessionLiveProjectionState,
   runtimeConnectionHasFreshLiveAuthority,
+  runtimeTerminalEvidenceCandidates,
   type ApplySessionLiveChangeStatus,
 } from './runtimeProjectionState.js';
 import {
@@ -225,6 +226,7 @@ export interface UserMessage {
   };
   /** Canonical persisted transcript provenance (history-only, never used as a React key). */
   readonly entryId?: string;
+  readonly auditEntryIds?: readonly string[];
   readonly parentId?: string | null;
   readonly logicalId?: string;
   readonly sourceEntryId?: string;
@@ -385,6 +387,13 @@ interface RuntimeSnapshotEventBarrier extends SpaceRuntimeCursorT {
   readonly thinkingDraftSeq?: number;
 }
 
+interface PendingSendRuntimeBaseline {
+  readonly requestGeneration: number;
+  readonly runtimeId?: string;
+  readonly cursorSeq: number;
+  readonly acceptedRunId?: string;
+}
+
 interface AppState {
   // ----- 数据 -----
   projects: readonly Project[];
@@ -415,6 +424,8 @@ interface AppState {
    * runId 相同视为已看过；新一轮 failed/interrupted 的 runId 不同，红点重新亮起。
    */
   errorSeenRunIdBySession: Readonly<Record<string, string>>;
+  /** All terminal Runtime Runs acknowledged while visiting a Session; bounded per Session. */
+  errorSeenRunIdsBySession: Readonly<Record<string, readonly string[]>>;
   /**
    * #9 fix: 用户手动关掉 todo-drift 提示（NotificationsSurface × 按钮）时记下的"轮次基线"
    * ——userMessagesBySession[sid].length。SDK 在同一轮对话里常常因为同一个"todo 没标
@@ -680,6 +691,9 @@ interface AppState {
    * appendEvent 收到任意该 session 的事件时清掉；handleSend 错误路径也手动清。
    */
   pendingSendBySession: Readonly<Record<string, true | undefined>>;
+  pendingSendRuntimeBaselineBySession: Readonly<
+    Record<string, PendingSendRuntimeBaseline | undefined>
+  >;
   /**
    * P0: 每个 session 用户已发送的 prompt 历史。↑/↓ 在 BottomBar 翻阅。
    * v0.1.x 不持久化（重启清空）；上限 200 条做 DoS guard。
@@ -759,6 +773,8 @@ interface AppState {
     sentAt?: number,
     attachments?: readonly UserImageAttachment[],
   ): string | null;
+  /** Record the exact Runtime Run admitted by session.send, independent of transcript rows. */
+  acknowledgePendingSendRun(sessionId: string, runId: string, expectedGeneration?: number): void;
   /** Bind the exact optimistic row to the fresh Runtime Run acknowledged by session.send. */
   bindUserMessageRuntimeRun(sessionId: string, messageId: string, runId: string): void;
   updateUserMessageAttachments(
@@ -796,9 +812,9 @@ interface AppState {
   ): void;
   removeQueuedUserMessage(sessionId: string, localId: string): void;
   promoteQueuedUserMessage(sessionId: string, localId: string, sentAt?: number): string | null;
-  convertLastUserMessageToQueued(
+  convertUserMessageToQueued(
     sessionId: string,
-    userContent: string,
+    messageId: string,
     input: {
       readonly content: string;
       readonly matchContent?: string;
@@ -808,12 +824,10 @@ interface AppState {
   ): string | null;
   appendWorkflowNotice(sessionId: string, content: string, sentAt?: number, key?: string): void;
   /**
-   * v0.1.4 B3: BottomBar optimistic appendUserMessage 后若 IPC session.send 失败
-   * （session disposed / 主进程错 / 等非 queue 路径），调本 action 把刚 push 的
-   * "幽灵 user message" 回滚掉。否则用户会看到一条自己说过但什么响应都没有的孤零零气泡。
-   * 仅删除"最新一条"，且 content 必须匹配（防御并发场景下误删别人）。
+   * Remove the exact optimistic row owned by a failed send. A timed-out send may settle after a
+   * newer request has appended another row, so content/last-row matching is not a safe fence.
    */
-  rollbackLastUserMessage(sessionId: string, content: string): void;
+  rollbackUserMessage(sessionId: string, messageId: string): void;
   upsertSession(meta: SessionMeta): void;
   removeSession(sessionId: string): void;
   enqueuePermission(req: PermissionRequestPayload): void;
@@ -835,7 +849,10 @@ interface AppState {
   setCoderRuntimeConnection(connection: SpaceCoderConnectionProjectionT): void;
   replaceAgentActorSnapshot(snapshot: AgentActorTreeSnapshotT): void;
   replaceRuntimeProfileProjection(profile: SpaceRuntimeProfileProjectionT): void;
-  replaceSessionLiveProjection(projection: SpaceSessionLiveProjectionT): void;
+  replaceSessionLiveProjection(
+    projection: SpaceSessionLiveProjectionT,
+    options?: { readonly allowEqualHydration?: boolean },
+  ): boolean;
   applySessionLiveProjectionChange(change: SpaceSessionLiveChangedT): ApplySessionLiveChangeStatus;
   invalidateSessionLiveProjection(invalidation: SpaceSessionLiveInvalidatedT): void;
   /** 用户在无 session 时点 picker → 暂存到 pending；下次 session.create 优先用。*/
@@ -876,7 +893,11 @@ interface AppState {
   /** F041: RightSidebar Changes 节点击文件行 → 设此 path 让 DiffPanel popout 接住。 */
   setLastDiffPath(path: string): void;
   /** P0: 标记某 session 已 invoke session.send 但还没有事件回流；spinner 据此显示 "Sending…"。*/
-  setPendingSend(sessionId: string, pending: boolean): void;
+  setPendingSend(
+    sessionId: string,
+    pending: boolean,
+    expectedGeneration?: number,
+  ): number | undefined;
   /** P0: 推一条 prompt 进 input history（用户提交时调），上限 200 条。 */
   appendInputHistory(sessionId: string, prompt: string): void;
   /** P2: Toggle the Task Dock. Open state is runtime-only; width remains persisted separately. */
@@ -912,6 +933,7 @@ let userMessageCounter = 0;
 let localNoticeCounter = 0;
 let workflowNoticeCounter = 0;
 let queuedUserMessageCounter = 0;
+let pendingSendGenerationCounter = 0;
 let lastLocalTranscriptSentAt = 0;
 const MAX_LOCAL_NOTICES_PER_SESSION = 32;
 /**
@@ -1204,7 +1226,7 @@ function snapshotCoversRuntimeDraftEvent(state: AppState, event: SessionEvent): 
   ) {
     return false;
   }
-  const origin = event.runtimeEvent;
+  const origin = 'runtimeEvent' in event ? event.runtimeEvent : undefined;
   if (!origin) return false;
   const barrier = state.runtimeSnapshotCursorBySession[event.sessionId];
   const coveredSeq =
@@ -1227,6 +1249,8 @@ interface TranscriptTurnSnapshot {
   readonly turnId?: string;
   readonly turnUserOrdinal?: number;
   readonly canonicalIndex?: number;
+  readonly entryId?: string;
+  readonly auditEntryIds?: readonly string[];
   readonly restoredFromHistory: boolean;
   readonly leadingPartialHistory: boolean;
   readonly omittedHistoryUserOrdinal: boolean;
@@ -1291,6 +1315,8 @@ function transcriptTurnSnapshots(
         ? { turnUserOrdinal: message.turnUserOrdinal }
         : {}),
       ...(message.canonicalIndex !== undefined ? { canonicalIndex: message.canonicalIndex } : {}),
+      ...(message.entryId !== undefined ? { entryId: message.entryId } : {}),
+      ...(message.auditEntryIds !== undefined ? { auditEntryIds: message.auditEntryIds } : {}),
       restoredFromHistory: message.restoredFromHistory === true,
       leadingPartialHistory: message.leadingPartialHistory === true,
       omittedHistoryUserOrdinal: message.omittedHistoryUserOrdinal === true,
@@ -1531,6 +1557,18 @@ function strongTurnIdentityMatches(
   );
 }
 
+type UserEntryIdentityRelation = 'match' | 'conflict' | 'unknown';
+
+function userEntryIdentityRelation(
+  left: TranscriptTurnSnapshot,
+  right: TranscriptTurnSnapshot,
+): UserEntryIdentityRelation {
+  if (left.entryId === undefined || right.entryId === undefined) return 'unknown';
+  const leftIds = new Set([left.entryId, ...(left.auditEntryIds ?? [])]);
+  const rightIds = [right.entryId, ...(right.auditEntryIds ?? [])];
+  return rightIds.some((entryId) => leftIds.has(entryId)) ? 'match' : 'conflict';
+}
+
 type LeadingHistoryOwnerResolution = 'promote_live_owner' | 'enrich_canonical_owner';
 
 function visibleProjectionIsSuffix(durable: readonly string[], live: readonly string[]): boolean {
@@ -1657,6 +1695,11 @@ function projectedEventText(
     .join('');
 }
 
+function cumulativeProjectionTextSuffix(durable: string, live: string): string {
+  if (live.length === 0 || durable.includes(live)) return '';
+  return live.startsWith(durable) ? live.slice(durable.length) : '';
+}
+
 function projectionNoticeKey(event: SessionEvent): string | undefined {
   if (event.kind === 'sidecar_message') return `sidecar:${stableJson(event.message)}`;
   if (event.kind === 'lineage_notice') {
@@ -1671,6 +1714,7 @@ function projectionNoticeKey(event: SessionEvent): string | undefined {
 
 type TranscriptHistoryOrigin = {
   readonly entryId?: string;
+  readonly auditEntryIds?: string[];
   readonly parentId?: string | null;
   readonly logicalId?: string;
   readonly sourceEntryId?: string;
@@ -1683,6 +1727,7 @@ function transcriptHistoryOrigin(item: SessionHistoryItem): TranscriptHistoryOri
   if (item.kind === 'local_notice' || item.kind === 'history_truncation') return {};
   return {
     ...(item.entryId !== undefined ? { entryId: item.entryId } : {}),
+    ...(item.auditEntryIds !== undefined ? { auditEntryIds: [...item.auditEntryIds] } : {}),
     ...(item.parentId !== undefined ? { parentId: item.parentId } : {}),
     ...(item.logicalId !== undefined ? { logicalId: item.logicalId } : {}),
     ...(item.sourceEntryId !== undefined ? { sourceEntryId: item.sourceEntryId } : {}),
@@ -1784,6 +1829,7 @@ function isTranscriptTerminal(
 function mergeCanonicalTurnProjections(
   durableEvents: readonly SessionEvent[],
   liveEvents: readonly SessionEvent[],
+  exactEntryIdentity = false,
 ): SessionEvent[] {
   const liveTerminals = liveEvents.filter(isTranscriptTerminal);
   const durableTerminals = durableEvents.filter(isTranscriptTerminal);
@@ -1862,11 +1908,14 @@ function mergeCanonicalTurnProjections(
     liveExtras.push(event);
   }
 
-  const textSuffix = projectionTextSuffix(
+  const textSuffixProjector = exactEntryIdentity
+    ? cumulativeProjectionTextSuffix
+    : projectionTextSuffix;
+  const textSuffix = textSuffixProjector(
     projectedEventText(durableEvents, 'text_delta'),
     projectedEventText(liveEvents, 'text_delta'),
   );
-  const thinkingSuffix = projectionTextSuffix(
+  const thinkingSuffix = textSuffixProjector(
     projectedEventText(durableEvents, 'thinking_delta'),
     projectedEventText(liveEvents, 'thinking_delta'),
   );
@@ -1927,10 +1976,11 @@ function preserveRelocatedSegmentClosure(
   ];
 }
 
-function liveTurnCanFold(turn: TranscriptTurnSnapshot): boolean {
+function liveTurnCanFold(turn: TranscriptTurnSnapshot, exactEntryIdentity = false): boolean {
   if (!turn.closed) return false;
   if (!turn.terminal) return true;
   if (turn.restoredFromHistory) return true;
+  if (exactEntryIdentity && turn.entryId !== undefined) return true;
   return turn.turnId !== undefined && turn.terminalTurnId === turn.turnId;
 }
 
@@ -2066,19 +2116,27 @@ function foldStrongIdentityDuplicateTurns(
       if (
         duplicate.restoredFromHistory
           ? duplicate.canonicalIndex === undefined && !hasStrongTurnIdentity(duplicate)
-          : !hasStrongTurnIdentity(duplicate) || !liveTurnCanFold(duplicate)
+          : (duplicate.entryId === undefined && !hasStrongTurnIdentity(duplicate)) ||
+            !liveTurnCanFold(duplicate, duplicate.entryId !== undefined)
       ) {
         continue;
       }
       for (let durableIndex = 0; durableIndex < duplicateIndex; durableIndex++) {
         const durable = turns[durableIndex]!;
-        const ownerResolution = uniqueLeadingHistoryOwnerResolution(durable, duplicate, turns);
+        const entryIdentity = userEntryIdentityRelation(durable, duplicate);
+        if (entryIdentity === 'conflict') continue;
+        const ownerResolution =
+          entryIdentity === 'match' && durable.omittedHistoryUserOrdinal
+            ? 'enrich_canonical_owner'
+            : uniqueLeadingHistoryOwnerResolution(durable, duplicate, turns);
         if (
           !durable.restoredFromHistory ||
           (duplicate.restoredFromHistory
             ? !exactRestoredTurnIdentityMatches(durable, duplicate)
-            : !strongTurnIdentityMatches(durable, duplicate) && ownerResolution === undefined) ||
-          (!duplicate.restoredFromHistory && !liveTurnCanFold(duplicate))
+            : entryIdentity !== 'match' &&
+              !strongTurnIdentityMatches(durable, duplicate) &&
+              ownerResolution === undefined) ||
+          (!duplicate.restoredFromHistory && !liveTurnCanFold(duplicate, entryIdentity === 'match'))
         ) {
           continue;
         }
@@ -2103,7 +2161,11 @@ function foldStrongIdentityDuplicateTurns(
     const mergedProjection =
       pair.ownerResolution === 'promote_live_owner'
         ? [...duplicateSegment]
-        : mergeCanonicalTurnProjections(durableSegment, duplicateSegment);
+        : mergeCanonicalTurnProjections(
+            durableSegment,
+            duplicateSegment,
+            userEntryIdentityRelation(pair.durable, pair.duplicate) === 'match',
+          );
     const mergedSegment = preserveRelocatedSegmentClosure(mergedProjection, pair.duplicate);
     const duplicateMessage = nextUsers[pair.duplicate.userIndex];
     didFold = true;
@@ -2631,18 +2693,103 @@ function createUserMessage(
   };
 }
 
+function pendingSendRuntimeBaseline(
+  state: Pick<AppState, 'runtimeConnection' | 'runtimeProfile' | 'liveProjectionBySession'>,
+  sessionId: string,
+  requestGeneration: number,
+): PendingSendRuntimeBaseline {
+  if (
+    !runtimeConnectionHasFreshLiveAuthority(state.runtimeConnection) ||
+    state.runtimeConnection.runtimeId === undefined
+  ) {
+    return { requestGeneration, cursorSeq: -1 };
+  }
+  const runtimeId = state.runtimeConnection.runtimeId;
+  const live = state.liveProjectionBySession[sessionId];
+  const liveSeq = live?.cursor.runtimeId === runtimeId ? live.cursor.seq : -1;
+  const profile =
+    state.runtimeProfile?.connection.runtimeId === runtimeId ? state.runtimeProfile : null;
+  const profileSeq = profile?.cursor?.runtimeId === runtimeId ? profile.cursor.seq : -1;
+  return {
+    requestGeneration,
+    runtimeId,
+    cursorSeq: Math.max(liveSeq, profileSeq),
+  };
+}
+
 function liveProjectionClearsPendingSend(
-  current: SpaceSessionLiveProjectionT | undefined,
   projection: SpaceSessionLiveProjectionT,
+  baseline: PendingSendRuntimeBaseline | undefined,
 ): boolean {
-  if (projection.activeRun || projection.queuedRuns.length > 0) return true;
+  if (
+    baseline?.acceptedRunId === undefined ||
+    (baseline.runtimeId !== undefined && projection.cursor.runtimeId !== baseline.runtimeId) ||
+    projection.cursor.seq <= baseline.cursorSeq
+  ) {
+    return false;
+  }
+  if (projection.activeRun?.runId === baseline.acceptedRunId) return true;
+  if (projection.queuedRuns.some((run) => run.runId === baseline.acceptedRunId)) return true;
   const terminal = projection.lastTerminalRun;
-  if (!terminal) return false;
-  const currentTerminal = current?.lastTerminalRun;
+  return terminal?.runId === baseline.acceptedRunId;
+}
+
+function eventClearsPendingSend(
+  event: SessionEvent,
+  baseline: PendingSendRuntimeBaseline | undefined,
+): boolean {
+  const origin = 'runtimeEvent' in event ? event.runtimeEvent : undefined;
+  if (baseline?.acceptedRunId === undefined) {
+    return (
+      origin === undefined &&
+      (event.kind === 'session_start' ||
+        event.kind === 'queued_user_prompt_started' ||
+        event.kind === 'mid_turn_user_prompt')
+    );
+  }
+  if (origin === undefined) return false;
+  if (
+    (baseline.runtimeId !== undefined && origin.runtimeId !== baseline.runtimeId) ||
+    origin.seq <= baseline.cursorSeq
+  ) {
+    return false;
+  }
+  return origin.runId === baseline.acceptedRunId;
+}
+
+function runtimeProfileClearsPendingSend(
+  profile: SpaceRuntimeProfileProjectionT | null,
+  sessionId: string,
+  baseline: PendingSendRuntimeBaseline | undefined,
+): boolean {
+  if (
+    baseline?.acceptedRunId === undefined ||
+    profile?.cursor === undefined ||
+    (baseline.runtimeId !== undefined && profile.cursor.runtimeId !== baseline.runtimeId) ||
+    profile.cursor.seq <= baseline.cursorSeq
+  ) {
+    return false;
+  }
+  const session = profile.sessions.find((candidate) => candidate.sessionId === sessionId);
   return (
-    currentTerminal?.runId !== terminal.runId ||
-    currentTerminal.phase !== terminal.phase ||
-    currentTerminal.completedAt !== terminal.completedAt
+    session?.activeRun?.runId === baseline.acceptedRunId ||
+    session?.queuedRuns.some((run) => run.runId === baseline.acceptedRunId) === true ||
+    session?.lastTerminalRun?.runId === baseline.acceptedRunId
+  );
+}
+
+function acknowledgedPendingSendAlreadyObserved(
+  state: Pick<AppState, 'runtimeProfile' | 'liveProjectionBySession' | 'eventsBySession'>,
+  sessionId: string,
+  baseline: PendingSendRuntimeBaseline,
+): boolean {
+  const live = state.liveProjectionBySession[sessionId];
+  return (
+    (live !== undefined && liveProjectionClearsPendingSend(live, baseline)) ||
+    runtimeProfileClearsPendingSend(state.runtimeProfile, sessionId, baseline) ||
+    (state.eventsBySession[sessionId] ?? []).some((event) =>
+      eventClearsPendingSend(event, baseline),
+    )
   );
 }
 
@@ -2987,6 +3134,7 @@ function promoteQueuedUserMessageForPrompt(
   matchContent: string,
   queueId?: string,
   identity?: StrongUserTurnIdentity,
+  entryId?: string,
 ): Partial<AppState> {
   const queued = state.queuedUserMessagesBySession[sessionId] ?? [];
   const queueIdIndex =
@@ -3018,12 +3166,14 @@ function promoteQueuedUserMessageForPrompt(
     ...(queueId !== undefined ? { deliveryQueueId: queueId, deliveryQueueMode: queueMode } : {}),
     ...(queueMode === 'after-turn' && queueId !== undefined ? { runtimeRunId: queueId } : {}),
     ...(sourceQueuedLocalId !== undefined ? { sourceQueuedLocalId } : {}),
+    ...(entryId !== undefined ? { entryId } : {}),
   });
 
   if (idx === -1) {
     const normalized = normalizeQueuedMatchContent(matchContent);
-    const alreadyRendered =
-      identity !== undefined
+    const alreadyRendered = entryId
+      ? userBucket.some((message) => !message.restoredFromHistory && message.entryId === entryId)
+      : identity !== undefined
         ? userBucket.some(
             (message) =>
               !message.restoredFromHistory &&
@@ -3044,14 +3194,15 @@ function promoteQueuedUserMessageForPrompt(
 
   const entry = queued[idx]!;
   const nextQueued = [...queued.slice(0, idx), ...queued.slice(idx + 1)];
-  const alreadyLiveByIdentity =
-    identity !== undefined &&
-    userBucket.some(
-      (message) =>
-        !message.restoredFromHistory &&
-        message.turnId === identity.turnId &&
-        message.turnUserOrdinal === identity.turnUserOrdinal,
-    );
+  const alreadyLiveByIdentity = entryId
+    ? userBucket.some((message) => !message.restoredFromHistory && message.entryId === entryId)
+    : identity !== undefined &&
+      userBucket.some(
+        (message) =>
+          !message.restoredFromHistory &&
+          message.turnId === identity.turnId &&
+          message.turnUserOrdinal === identity.turnUserOrdinal,
+      );
   return {
     queuedUserMessagesBySession: {
       ...state.queuedUserMessagesBySession,
@@ -3121,6 +3272,7 @@ export const useAppStore = create<AppState>((set) => ({
   eventsBySession: {},
   errorSeenAtBySession: {},
   errorSeenRunIdBySession: {},
+  errorSeenRunIdsBySession: {},
   todoDriftDismissedAtBySession: {},
   todoDriftDismissedPendingCountBySession: {},
   transientArtifactsBySession: {},
@@ -3155,6 +3307,7 @@ export const useAppStore = create<AppState>((set) => ({
   lastDiffPath: null,
   pendingToolPaths: {},
   pendingSendBySession: {},
+  pendingSendRuntimeBaselineBySession: {},
   inputHistoryBySession: {},
   queueSnapshot: [],
   queueTotalSize: 0,
@@ -3273,6 +3426,18 @@ export const useAppStore = create<AppState>((set) => ({
       // 查看即确认：记下当前事件长度，让已看过的 error 状态点熄灭（新 error 会再亮）。
       // runtime 投影路径同理：记下当前 lastTerminalRun.runId，让已看过的红点熄灭。
       const seenRunId = state.liveProjectionBySession[sessionId]?.lastTerminalRun?.runId;
+      const terminalRunIds = runtimeTerminalEvidenceCandidates(
+        {
+          connection: state.runtimeConnection,
+          profile: state.runtimeProfile,
+          liveBySession: state.liveProjectionBySession,
+        },
+        sessionId,
+      ).map((terminal) => terminal.runId);
+      if (seenRunId !== undefined) terminalRunIds.push(seenRunId);
+      const seenRunIds = [...(state.errorSeenRunIdsBySession[sessionId] ?? []), ...terminalRunIds]
+        .filter((runId, index, all) => all.indexOf(runId) === index)
+        .slice(-16);
       const patch = {
         ...(readFlags === state.sessionFlags ? {} : { sessionFlags: readFlags }),
         errorSeenAtBySession: {
@@ -3284,6 +3449,14 @@ export const useAppStore = create<AppState>((set) => ({
               errorSeenRunIdBySession: {
                 ...state.errorSeenRunIdBySession,
                 [sessionId]: seenRunId,
+              },
+            }
+          : {}),
+        ...(seenRunIds.length > 0
+          ? {
+              errorSeenRunIdsBySession: {
+                ...state.errorSeenRunIdsBySession,
+                [sessionId]: seenRunIds,
               },
             }
           : {}),
@@ -3331,6 +3504,49 @@ export const useAppStore = create<AppState>((set) => ({
     });
     return messageId;
   },
+
+  acknowledgePendingSendRun: (sessionId, runId, expectedGeneration) =>
+    set((state) => {
+      if (!state.pendingSendBySession[sessionId]) return state;
+      const currentBaseline = state.pendingSendRuntimeBaselineBySession[sessionId] ?? {
+        requestGeneration: 0,
+        cursorSeq: -1,
+      };
+      if (
+        (expectedGeneration !== undefined &&
+          currentBaseline.requestGeneration !== expectedGeneration) ||
+        (currentBaseline.acceptedRunId !== undefined && currentBaseline.acceptedRunId !== runId)
+      ) {
+        return state;
+      }
+      const currentAuthority = pendingSendRuntimeBaseline(
+        state,
+        sessionId,
+        currentBaseline.requestGeneration,
+      );
+      const acknowledgedBaseline = {
+        ...currentBaseline,
+        ...(currentBaseline.runtimeId === undefined && currentAuthority.runtimeId !== undefined
+          ? { runtimeId: currentAuthority.runtimeId }
+          : {}),
+        acceptedRunId: runId,
+      };
+      if (acknowledgedPendingSendAlreadyObserved(state, sessionId, acknowledgedBaseline)) {
+        const { [sessionId]: _dropPending, ...restPending } = state.pendingSendBySession;
+        const { [sessionId]: _dropBaseline, ...restBaselines } =
+          state.pendingSendRuntimeBaselineBySession;
+        return {
+          pendingSendBySession: restPending,
+          pendingSendRuntimeBaselineBySession: restBaselines,
+        };
+      }
+      return {
+        pendingSendRuntimeBaselineBySession: {
+          ...state.pendingSendRuntimeBaselineBySession,
+          [sessionId]: acknowledgedBaseline,
+        },
+      };
+    }),
 
   bindUserMessageRuntimeRun: (sessionId, messageId, runId) =>
     set((state) => {
@@ -3577,31 +3793,36 @@ export const useAppStore = create<AppState>((set) => ({
     return promotedMessageId;
   },
 
-  convertLastUserMessageToQueued: (sessionId, userContent, input) => {
+  convertUserMessageToQueued: (sessionId, messageId, input) => {
     let localId: string | null = null;
     set((state) => {
       if (!state.sessions.some((s) => s.sessionId === sessionId)) return state;
       const userBucket = state.userMessagesBySession[sessionId];
       if (!userBucket || userBucket.length === 0) return state;
-      const last = userBucket[userBucket.length - 1];
-      if (!last || last.content !== userContent) return state;
+      const messageIndex = userBucket.findIndex((message) => message.id === messageId);
+      if (messageIndex === -1) return state;
+      const message = userBucket[messageIndex];
+      if (!message) return state;
 
-      forgetHistoryLiveUsers(sessionId, [last.id]);
+      forgetHistoryLiveUsers(sessionId, [message.id]);
       localId = `qu_${sessionId}_${++queuedUserMessageCounter}`;
       const queuedBucket = state.queuedUserMessagesBySession[sessionId] ?? [];
       const queued: QueuedUserMessage = {
         id: localId,
         content: input.content,
         matchContent: input.matchContent ?? input.content,
-        ...(last.attachments !== undefined ? { attachments: last.attachments } : {}),
+        ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
         queueMode: input.queueMode,
         status: 'queued',
-        sentAt: input.sentAt ?? last.sentAt,
+        sentAt: input.sentAt ?? message.sentAt,
       };
       return {
         userMessagesBySession: {
           ...state.userMessagesBySession,
-          [sessionId]: userBucket.slice(0, -1),
+          [sessionId]: [
+            ...userBucket.slice(0, messageIndex),
+            ...userBucket.slice(messageIndex + 1),
+          ],
         },
         queuedUserMessagesBySession: {
           ...state.queuedUserMessagesBySession,
@@ -3657,20 +3878,17 @@ export const useAppStore = create<AppState>((set) => ({
       };
     }),
 
-  rollbackLastUserMessage: (sessionId, content) =>
+  rollbackUserMessage: (sessionId, messageId) =>
     set((state) => {
       const bucket = state.userMessagesBySession[sessionId];
       if (!bucket || bucket.length === 0) return state;
-      const last = bucket[bucket.length - 1];
-      // content 匹配兜底防御：如果 last 的 content 不是我们刚 append 的那条
-      // （理论上不可能 —— BottomBar busy 状态 + IPC await 期间不会有别的 user
-      // message 进来；但磁盘 history restore 等罕见时序仍可能命中），就 noop。
-      if (last.content !== content) return state;
-      forgetHistoryLiveUsers(sessionId, [last.id]);
+      const messageIndex = bucket.findIndex((message) => message.id === messageId);
+      if (messageIndex === -1) return state;
+      forgetHistoryLiveUsers(sessionId, [messageId]);
       return {
         userMessagesBySession: {
           ...state.userMessagesBySession,
-          [sessionId]: bucket.slice(0, -1),
+          [sessionId]: [...bucket.slice(0, messageIndex), ...bucket.slice(messageIndex + 1)],
         },
       };
     }),
@@ -4392,9 +4610,16 @@ export const useAppStore = create<AppState>((set) => ({
         event.kind === 'mid_turn_user_prompt' ||
         event.kind === 'session_complete' ||
         event.kind === 'session_error';
-      if (clearsPendingSend && state.pendingSendBySession[event.sessionId]) {
+      if (
+        clearsPendingSend &&
+        state.pendingSendBySession[event.sessionId] &&
+        eventClearsPendingSend(event, state.pendingSendRuntimeBaselineBySession[event.sessionId])
+      ) {
         const { [event.sessionId]: _drop, ...restPending } = state.pendingSendBySession;
+        const { [event.sessionId]: _dropBaseline, ...restBaselines } =
+          state.pendingSendRuntimeBaselineBySession;
         next.pendingSendBySession = restPending;
+        next.pendingSendRuntimeBaselineBySession = restBaselines;
       }
       if (event.kind === 'mid_turn_user_prompt') {
         const currentPromptUsers =
@@ -4434,6 +4659,7 @@ export const useAppStore = create<AppState>((set) => ({
             event.content,
             event.queueId,
             identity,
+            event.entryId,
           ),
         );
       } else if (event.kind === 'queued_user_prompt_started') {
@@ -4922,6 +5148,7 @@ export const useAppStore = create<AppState>((set) => ({
       const { [sessionId]: _evt, ...restEvents } = state.eventsBySession;
       const { [sessionId]: _esa, ...restErrorSeen } = state.errorSeenAtBySession;
       const { [sessionId]: _esr, ...restErrorSeenRun } = state.errorSeenRunIdBySession;
+      const { [sessionId]: _esrs, ...restErrorSeenRuns } = state.errorSeenRunIdsBySession;
       // #9 fix: todo-drift dismiss 基线也是 per-session 派生态，session 删了要一起清。
       const { [sessionId]: _tdda, ...restTodoDriftDismissedAt } =
         state.todoDriftDismissedAtBySession;
@@ -4955,12 +5182,15 @@ export const useAppStore = create<AppState>((set) => ({
       //   - sessionFlags (pinned/archived/unread 残留)
       const { [sessionId]: _ih, ...restHistory } = state.inputHistoryBySession;
       const { [sessionId]: _ps, ...restPending } = state.pendingSendBySession;
+      const { [sessionId]: _pendingBaseline, ...restPendingBaselines } =
+        state.pendingSendRuntimeBaselineBySession;
       const { [sessionId]: _sf, ...restFlags } = state.sessionFlags;
       return {
         sessions: state.sessions.filter((s) => s.sessionId !== sessionId),
         eventsBySession: restEvents,
         errorSeenAtBySession: restErrorSeen,
         errorSeenRunIdBySession: restErrorSeenRun,
+        errorSeenRunIdsBySession: restErrorSeenRuns,
         todoDriftDismissedAtBySession: restTodoDriftDismissedAt,
         todoDriftDismissedPendingCountBySession: restTodoDriftDismissedPending,
         transientArtifactsBySession: restTransientArtifacts,
@@ -4982,6 +5212,7 @@ export const useAppStore = create<AppState>((set) => ({
         promotedPopoutsBySession: restPromoted,
         inputHistoryBySession: restHistory,
         pendingSendBySession: restPending,
+        pendingSendRuntimeBaselineBySession: restPendingBaselines,
         sessionFlags: restFlags,
         permissionQueue: state.permissionQueue.filter((p) => p.sessionId !== sessionId),
         askUserQueue: state.askUserQueue.filter((p) => p.sessionId !== sessionId),
@@ -5045,6 +5276,23 @@ export const useAppStore = create<AppState>((set) => ({
         runtimeConnectionHasFreshLiveAuthority(next.connection) &&
         next.connection.runtimeId !== undefined &&
         next.connection.runtimeId === state.runtimeConnection.runtimeId;
+      const replacesKnownRuntime =
+        state.runtimeConnection.runtimeId !== undefined &&
+        state.runtimeConnection.runtimeId !== next.connection.runtimeId;
+      const pendingSendRuntimeBaselineBySession = Object.fromEntries(
+        Object.keys(state.pendingSendBySession).map((sessionId) => {
+          const baseline = state.pendingSendRuntimeBaselineBySession[sessionId] ?? {
+            requestGeneration: 0,
+            cursorSeq: -1,
+          };
+          return [
+            sessionId,
+            baseline.runtimeId === undefined && next.connection.runtimeId !== undefined
+              ? { ...baseline, runtimeId: next.connection.runtimeId }
+              : baseline,
+          ];
+        }),
+      );
       return {
         runtimeConnection: next.connection,
         liveProjectionBySession: next.liveBySession,
@@ -5054,6 +5302,12 @@ export const useAppStore = create<AppState>((set) => ({
           : {
               agentActorSnapshotBySession: {},
               runtimeSnapshotCursorBySession: {},
+              ...(replacesKnownRuntime
+                ? {
+                    pendingSendBySession: {},
+                    pendingSendRuntimeBaselineBySession: {},
+                  }
+                : { pendingSendRuntimeBaselineBySession }),
             }),
       };
     }),
@@ -5107,6 +5361,21 @@ export const useAppStore = create<AppState>((set) => ({
             interaction.kind === 'ask-user' && interaction.state === 'pending',
         )
         .map((interaction) => interaction.request);
+      let pendingSendBySession = state.pendingSendBySession;
+      let pendingSendRuntimeBaselineBySession = state.pendingSendRuntimeBaselineBySession;
+      for (const session of next.profile?.sessions ?? []) {
+        const baseline = pendingSendRuntimeBaselineBySession[session.sessionId];
+        if (
+          runtimeProfileClearsPendingSend(next.profile, session.sessionId, baseline) &&
+          pendingSendBySession[session.sessionId]
+        ) {
+          const { [session.sessionId]: _drop, ...rest } = pendingSendBySession;
+          const { [session.sessionId]: _dropBaseline, ...restBaselines } =
+            pendingSendRuntimeBaselineBySession;
+          pendingSendBySession = rest;
+          pendingSendRuntimeBaselineBySession = restBaselines;
+        }
+      }
       return {
         sessions: mergeRuntimeActivityIntoSessions(state.sessions, next.profile),
         runtimeConnection: next.connection,
@@ -5133,9 +5402,12 @@ export const useAppStore = create<AppState>((set) => ({
           ...state.askUserQueue.filter((request) => !codeSessionIds.has(request.sessionId)),
           ...runtimeAskUser,
         ],
+        pendingSendBySession,
+        pendingSendRuntimeBaselineBySession,
       };
     }),
-  replaceSessionLiveProjection: (projection) =>
+  replaceSessionLiveProjection: (projection, options) => {
+    let accepted = false;
     set((state) => {
       const currentProjection = state.liveProjectionBySession[projection.sessionId];
       const next = replaceSessionLiveProjectionState(
@@ -5149,6 +5421,8 @@ export const useAppStore = create<AppState>((set) => ({
       );
       const acceptedNewProjection = next.liveBySession[projection.sessionId] === projection;
       const acceptedEqualProjection =
+        (options?.allowEqualHydration === true ||
+          state.runtimeSnapshotRequiredBySession[projection.sessionId] === true) &&
         currentProjection !== undefined &&
         next.liveBySession[projection.sessionId] === currentProjection &&
         runtimeConnectionHasFreshLiveAuthority(state.runtimeConnection) &&
@@ -5157,10 +5431,11 @@ export const useAppStore = create<AppState>((set) => ({
         currentProjection.projectionRevision === projection.projectionRevision &&
         projection.cursor.seq >= currentProjection.cursor.seq &&
         next.snapshotRequiredBySession[projection.sessionId] !== true;
-      // An activation snapshot may legitimately repeat the live revision after history/LRU/window
-      // reconstruction removed renderer-only transcript rows. Keep the existing projection object
-      // but still use the equal authoritative payload to restore cumulative drafts and tools.
+      // Only an explicit activation/recovery snapshot may repeat the live revision after
+      // history/LRU/window reconstruction removed renderer-only transcript rows. Periodic reads
+      // remain no-ops at equal revision and cannot replay cumulative drafts into a healthy view.
       const acceptedProjection = acceptedNewProjection || acceptedEqualProjection;
+      accepted = acceptedProjection;
       if (!acceptedProjection) {
         if (
           next.liveBySession === state.liveProjectionBySession &&
@@ -5197,11 +5472,19 @@ export const useAppStore = create<AppState>((set) => ({
       }
       const clearsPendingSend =
         Boolean(state.pendingSendBySession[projection.sessionId]) &&
-        liveProjectionClearsPendingSend(currentProjection, projection);
+        liveProjectionClearsPendingSend(
+          projection,
+          state.pendingSendRuntimeBaselineBySession[projection.sessionId],
+        );
       const pendingSendPatch = clearsPendingSend
         ? (() => {
             const { [projection.sessionId]: _drop, ...rest } = state.pendingSendBySession;
-            return { pendingSendBySession: rest };
+            const { [projection.sessionId]: _dropBaseline, ...restBaselines } =
+              state.pendingSendRuntimeBaselineBySession;
+            return {
+              pendingSendBySession: rest,
+              pendingSendRuntimeBaselineBySession: restBaselines,
+            };
           })()
         : {};
       const runtimePermissions = projection.interactions
@@ -5259,7 +5542,9 @@ export const useAppStore = create<AppState>((set) => ({
         ],
         ...pendingSendPatch,
       };
-    }),
+    });
+    return accepted;
+  },
   applySessionLiveProjectionChange: (change) => {
     let status: ApplySessionLiveChangeStatus = 'ignored';
     set((state) => {
@@ -5285,13 +5570,18 @@ export const useAppStore = create<AppState>((set) => ({
         projection !== undefined &&
         Boolean(state.pendingSendBySession[change.sessionId]) &&
         liveProjectionClearsPendingSend(
-          state.liveProjectionBySession[change.sessionId],
           projection,
+          state.pendingSendRuntimeBaselineBySession[change.sessionId],
         );
       const pendingSendPatch = clearsPendingSend
         ? (() => {
             const { [change.sessionId]: _drop, ...rest } = state.pendingSendBySession;
-            return { pendingSendBySession: rest };
+            const { [change.sessionId]: _dropBaseline, ...restBaselines } =
+              state.pendingSendRuntimeBaselineBySession;
+            return {
+              pendingSendBySession: rest,
+              pendingSendRuntimeBaselineBySession: restBaselines,
+            };
           })()
         : {};
       const interactionPatch =
@@ -5390,18 +5680,38 @@ export const useAppStore = create<AppState>((set) => ({
     set({ pendingModel: model });
   },
 
-  setPendingSend: (sessionId, pending) =>
+  setPendingSend: (sessionId, pending, expectedGeneration) => {
+    let requestGeneration: number | undefined;
     set((state) => {
       if (pending) {
-        if (state.pendingSendBySession[sessionId]) return state;
+        requestGeneration = ++pendingSendGenerationCounter;
+        const baseline = pendingSendRuntimeBaseline(state, sessionId, requestGeneration);
         return {
           pendingSendBySession: { ...state.pendingSendBySession, [sessionId]: true as const },
+          pendingSendRuntimeBaselineBySession: {
+            ...state.pendingSendRuntimeBaselineBySession,
+            [sessionId]: baseline,
+          },
         };
       }
       if (!state.pendingSendBySession[sessionId]) return state;
+      if (
+        expectedGeneration !== undefined &&
+        state.pendingSendRuntimeBaselineBySession[sessionId]?.requestGeneration !==
+          expectedGeneration
+      ) {
+        return state;
+      }
       const { [sessionId]: _drop, ...rest } = state.pendingSendBySession;
-      return { pendingSendBySession: rest };
-    }),
+      const { [sessionId]: _dropBaseline, ...restBaselines } =
+        state.pendingSendRuntimeBaselineBySession;
+      return {
+        pendingSendBySession: rest,
+        pendingSendRuntimeBaselineBySession: restBaselines,
+      };
+    });
+    return requestGeneration;
+  },
 
   setRightSidebarOpen: (open) => {
     set({ rightSidebarOpen: open });

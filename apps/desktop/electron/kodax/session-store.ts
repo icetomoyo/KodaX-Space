@@ -685,6 +685,12 @@ type PersistedClientNoticeEntry = Awaited<ReturnType<SdkSessionModule['appendCli
 const LOAD_CACHE_MAX = 5;
 const loadCache = new Map<string, LoadedSessionData>();
 let persistedSessionCacheEpoch = 0;
+let persistedSessionCacheGeneration = 0;
+const persistedSessionGenerationById = new Map<string, number>();
+
+export function persistedSessionFreshnessToken(sessionId: string): string {
+  return `${persistedSessionCacheGeneration}:${persistedSessionGenerationById.get(sessionId) ?? 0}`;
+}
 
 export async function loadPersistedSession(sessionId: string): Promise<LoadedSessionData | null> {
   await ensureSessionContentBaseline();
@@ -727,6 +733,11 @@ export async function loadPersistedSessionFresh(
     const data = await activeImpl.loadSession(sessionId);
     if (loadEpoch === persistedSessionCacheEpoch) return data;
   }
+}
+
+/** Start the cross-process content watcher before a caller relies on a freshness token. */
+export async function preparePersistedSessionFreshnessTracking(): Promise<void> {
+  await ensureSessionContentBaseline();
 }
 
 export async function retagPersistedSession(opts: {
@@ -1013,6 +1024,10 @@ function extractPromptText(content: unknown): string {
 /** Mutator 调用——deletePersistedSession / fork / rewind 后清对应缓存项。*/
 export function invalidatePersistedSessionCache(sessionId: string): void {
   persistedSessionCacheEpoch += 1;
+  persistedSessionGenerationById.set(
+    sessionId,
+    (persistedSessionGenerationById.get(sessionId) ?? 0) + 1,
+  );
   loadCache.delete(sessionId);
   transcriptCache.delete(sessionId);
   conversationHistoryCache.delete(sessionId);
@@ -1022,6 +1037,8 @@ export function invalidatePersistedSessionCache(sessionId: string): void {
 /** 测试 / setStorageImpl 注入 mock 后清整张缓存。*/
 export function clearPersistedSessionCache(): void {
   persistedSessionCacheEpoch += 1;
+  persistedSessionCacheGeneration += 1;
+  persistedSessionGenerationById.clear();
   loadCache.clear();
   transcriptCache.clear();
   conversationHistoryCache.clear();

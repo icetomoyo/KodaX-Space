@@ -5,7 +5,9 @@ import { invokeWithTimeout } from '../lib/ipcInvokeWithTimeout.js';
 import {
   runtimeConnectionHasFreshLiveAuthority,
   runtimeProfileSessionHasActivity,
+  runtimeTerminalEvidenceCandidates,
   sessionLiveProjectionHasActivity,
+  type RuntimeTerminalEvidence,
 } from '../store/runtimeProjectionState.js';
 
 export interface SessionHistoryPagingState {
@@ -35,9 +37,93 @@ const cacheOrder = new Map<string, true>();
 const invalidationEpochs = new Map<string, number>();
 const loadedEpochs = new Map<string, number>();
 const deferredReadyRevalidations = new Set<string>();
+type TerminalHistoryWorkflowStatus = 'pending' | 'in-flight' | 'completed';
+interface TerminalHistoryWorkflowGroup {
+  readonly runtimeId: string;
+  readonly nextGeneration: number;
+  readonly runs: readonly {
+    readonly runId: string;
+    readonly generation: number;
+    readonly status: TerminalHistoryWorkflowStatus;
+  }[];
+}
+interface TerminalHistoryRequestScope {
+  readonly runtimeId: string;
+  readonly runs: readonly { readonly runId: string; readonly generation: number }[];
+}
+const terminalHistoryEvidenceBySession = new Map<string, TerminalHistoryWorkflowGroup>();
+const MAX_TERMINAL_HISTORY_RUN_IDS = 16;
 const MAX_RUNTIME_RETRY_ATTEMPTS = 30;
 const MAX_CACHED_SESSION_HISTORIES = 32;
 let historyRequestOrdinal = 0;
+
+function updateTerminalHistoryWorkflow(
+  sessionId: string,
+  runId: string,
+  status: TerminalHistoryWorkflowStatus,
+): void {
+  const group = terminalHistoryEvidenceBySession.get(sessionId);
+  if (group === undefined) return;
+  terminalHistoryEvidenceBySession.set(sessionId, {
+    ...group,
+    runs: group.runs.map((run) => (run.runId === runId ? { ...run, status } : run)),
+  });
+}
+
+function updateAllTerminalHistoryWorkflows(
+  sessionId: string,
+  from: TerminalHistoryWorkflowStatus,
+  to: TerminalHistoryWorkflowStatus,
+): void {
+  const group = terminalHistoryEvidenceBySession.get(sessionId);
+  if (group === undefined) return;
+  terminalHistoryEvidenceBySession.set(sessionId, {
+    ...group,
+    runs: group.runs.map((run) => (run.status === from ? { ...run, status: to } : run)),
+  });
+}
+
+function terminalHistoryWorkflowPending(sessionId: string): boolean {
+  return (
+    terminalHistoryEvidenceBySession
+      .get(sessionId)
+      ?.runs.some((run) => run.status !== 'completed') === true
+  );
+}
+
+function captureTerminalHistoryRequestScope(
+  sessionId: string,
+): TerminalHistoryRequestScope | undefined {
+  const group = terminalHistoryEvidenceBySession.get(sessionId);
+  if (group === undefined) return undefined;
+  const runs = group.runs
+    .filter((run) => run.status !== 'completed')
+    .map(({ runId, generation }) => ({ runId, generation }));
+  if (runs.length === 0) return undefined;
+  terminalHistoryEvidenceBySession.set(sessionId, {
+    ...group,
+    runs: group.runs.map((run) =>
+      run.status === 'completed' ? run : { ...run, status: 'in-flight' as const },
+    ),
+  });
+  return { runtimeId: group.runtimeId, runs };
+}
+
+/** Complete only evidence that existed when this authoritative newest-page read started. */
+function completeTerminalHistoryRequestScope(
+  sessionId: string,
+  scope: TerminalHistoryRequestScope | undefined,
+): boolean {
+  if (scope === undefined) return false;
+  const group = terminalHistoryEvidenceBySession.get(sessionId);
+  if (group === undefined || group.runtimeId !== scope.runtimeId) return true;
+  const generations = new Map(scope.runs.map((run) => [run.runId, run.generation]));
+  const runs = group.runs.map((run) =>
+    generations.get(run.runId) === run.generation ? { ...run, status: 'completed' as const } : run,
+  );
+  terminalHistoryEvidenceBySession.set(sessionId, { ...group, runs });
+  return runs.some((run) => run.status !== 'completed');
+}
 
 function nextHistoryRequestId(): string {
   historyRequestOrdinal += 1;
@@ -78,6 +164,7 @@ function touchCache(sessionId: string): void {
     invalidationEpochs.delete(candidate);
     loadedEpochs.delete(candidate);
     deferredReadyRevalidations.delete(candidate);
+    terminalHistoryEvidenceBySession.delete(candidate);
     listeners.delete(candidate);
     inFlight.delete(candidate);
     useAppStore.getState().evictRestoredSessionHistory(candidate);
@@ -170,8 +257,60 @@ export function invalidateSessionHistoryPaging(sessionId: string): void {
     // A warning already visible in the active Session must not wait for a switch-away/back cycle
     // to discover that terminal persistence repaired it. Normal resolved pages remain lazy so a
     // terminal event cannot yank an actively scrolled transcript back to its newest window.
-    void requestHistory(sessionId, false, state.surface, true).catch(() => {});
+    void requestHistory(sessionId, false, state.surface, true).catch((error: unknown) => {
+      console.error('[session.history] active reconciliation failed', { sessionId, error });
+    });
   }
+}
+
+/**
+ * A terminal Runtime boundary means the newest canonical page may now contain rows that were not
+ * durable during the preceding live read. Reconcile the newest page for the exact Runtime Run;
+ * the read that satisfies evidence must start after that evidence exists. Duplicate profile/live
+ * facts are idempotent, a request cannot settle evidence that arrived while it was in flight, and
+ * an explicitly older browsing window is never replaced underneath the user.
+ */
+export function reconcileTerminalSessionHistory(evidence: RuntimeTerminalEvidence): Promise<void> {
+  const previousGroup = terminalHistoryEvidenceBySession.get(evidence.sessionId);
+  const currentGroup =
+    previousGroup?.runtimeId === evidence.runtimeId
+      ? previousGroup
+      : { runtimeId: evidence.runtimeId, nextGeneration: 1, runs: [] };
+  const previousRun = currentGroup.runs.find((run) => run.runId === evidence.runId);
+  if (previousRun !== undefined) {
+    return inFlight.get(evidence.sessionId)?.promise ?? Promise.resolve();
+  }
+  terminalHistoryEvidenceBySession.set(evidence.sessionId, {
+    ...currentGroup,
+    nextGeneration: currentGroup.nextGeneration + 1,
+    runs: [
+      ...currentGroup.runs,
+      {
+        runId: evidence.runId,
+        generation: currentGroup.nextGeneration,
+        status: 'pending' as const,
+      },
+    ].slice(-MAX_TERMINAL_HISTORY_RUN_IDS),
+  });
+
+  const state = sessionHistoryPagingSnapshot(evidence.sessionId);
+  if (state.hasNewer === true) {
+    updateTerminalHistoryWorkflow(evidence.sessionId, evidence.runId, 'completed');
+    return Promise.resolve();
+  }
+  if (
+    !states.has(evidence.sessionId) &&
+    !loadedItems.has(evidence.sessionId) &&
+    !inFlight.has(evidence.sessionId)
+  ) {
+    return Promise.resolve();
+  }
+
+  deferredReadyRevalidations.delete(evidence.sessionId);
+  invalidateSessionHistoryPaging(evidence.sessionId);
+  if (!activeTokens.has(evidence.sessionId)) return Promise.resolve();
+  updateTerminalHistoryWorkflow(evidence.sessionId, evidence.runId, 'in-flight');
+  return requestHistory(evidence.sessionId, false, state.surface, state.phase === 'ready');
 }
 
 /**
@@ -273,6 +412,7 @@ function scheduleRuntimeRetry(
     const current = sessionHistoryPagingSnapshot(sessionId);
     publish(sessionId, { ...current, phase: 'error' });
     retryAttempts.delete(sessionId);
+    updateAllTerminalHistoryWorkflows(sessionId, 'in-flight', 'pending');
     return;
   }
   retryAttempts.set(sessionId, attempt);
@@ -299,15 +439,34 @@ function sessionHasOpenLiveTurn(sessionId: string): boolean {
   let activeRunId: string | undefined;
   if (!snapshotRequired && runtimeConnectionHasFreshLiveAuthority(state.runtimeConnection)) {
     const runtimeId = state.runtimeConnection.runtimeId;
+    const terminalRunIds = new Set(
+      runtimeTerminalEvidenceCandidates(
+        {
+          connection: state.runtimeConnection,
+          profile: state.runtimeProfile,
+          liveBySession: state.liveProjectionBySession,
+        },
+        sessionId,
+      ).map((terminal) => terminal.runId),
+    );
     const live = state.liveProjectionBySession[sessionId];
     const liveActiveRunId =
-      live !== undefined && live.cursor.runtimeId === runtimeId ? live.activeRun?.runId : undefined;
+      live !== undefined &&
+      live.cursor.runtimeId === runtimeId &&
+      live.activeRun !== undefined &&
+      !terminalRunIds.has(live.activeRun.runId)
+        ? live.activeRun?.runId
+        : undefined;
     const runtimeProfile = state.runtimeProfile;
     const profileSession =
       runtimeProfile !== null && runtimeProfile.connection.runtimeId === runtimeId
         ? runtimeProfile.sessions.find((session) => session.sessionId === sessionId)
         : undefined;
-    activeRunId = liveActiveRunId ?? profileSession?.activeRun?.runId;
+    const profileActiveRunId =
+      profileSession?.activeRun !== undefined && !terminalRunIds.has(profileSession.activeRun.runId)
+        ? profileSession.activeRun.runId
+        : undefined;
+    activeRunId = liveActiveRunId ?? profileActiveRunId;
   }
   const events = state.eventsBySession[sessionId] ?? [];
   for (let index = events.length - 1; index >= 0; index--) {
@@ -316,6 +475,7 @@ function sessionHasOpenLiveTurn(sessionId: string): boolean {
     if (snapshotRequired && event.kind === 'session_start' && runtimeRunId === undefined) continue;
     if (runtimeRunId !== undefined && runtimeRunId !== activeRunId) continue;
     if (event.kind === 'session_complete' || event.kind === 'session_error') {
+      if (runtimeRunId === undefined && activeRunId !== undefined) continue;
       return false;
     }
     if (event.kind === 'session_start') return true;
@@ -342,6 +502,9 @@ async function requestHistory(
   if (continueFromCurrentBoundary && (!previous.hasMore || previous.nextCursor === undefined)) {
     return;
   }
+  const terminalHistoryRequestScope = continuation
+    ? undefined
+    : captureTerminalHistoryRequestScope(sessionId);
 
   const pending = (async () => {
     const bridge = window.kodaxSpace;
@@ -428,6 +591,20 @@ async function requestHistory(
       deferredReadyRevalidations.add(sessionId);
       return;
     }
+    const terminalHistoryNeedsRetry = completeTerminalHistoryRequestScope(
+      sessionId,
+      terminalHistoryRequestScope,
+    );
+    if (terminalHistoryNeedsRetry) {
+      publish(sessionId, {
+        ...(retainReadyProjection && previous.phase === 'ready'
+          ? previous
+          : { ...IDLE_HISTORY_STATE, phase: 'waiting' as const }),
+        ...(surface ? { surface } : {}),
+      });
+      scheduleRuntimeRetry(sessionId, surface, retainReadyProjection);
+      return;
+    }
     // A user can request an older page just after a terminal event invalidates the loaded
     // boundary. A KodaX cursor may still validly serve that immutable old snapshot, so epoch
     // mismatch must restart at newest instead of accidentally certifying an old continuation as
@@ -459,6 +636,10 @@ async function requestHistory(
           ...previous,
           phase: retainReadyProjection && previous.phase === 'ready' ? 'ready' : 'error',
         });
+      }
+      updateAllTerminalHistoryWorkflows(sessionId, 'in-flight', 'pending');
+      if (activeTokens.has(sessionId) && terminalHistoryWorkflowPending(sessionId)) {
+        scheduleRuntimeRetry(sessionId, expectedSurface ?? previous.surface, retainReadyProjection);
       }
       throw error;
     })
@@ -558,6 +739,7 @@ export function resetSessionHistoryPagingLifecycle(): void {
   invalidationEpochs.clear();
   loadedEpochs.clear();
   deferredReadyRevalidations.clear();
+  terminalHistoryEvidenceBySession.clear();
   for (const listener of new Set(subscribers)) listener();
 }
 

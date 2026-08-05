@@ -1670,6 +1670,188 @@ test('identical weak canonical users in one Runtime turn cannot guess one live o
   );
 });
 
+test('an embedded delivered entry alias folds its terminal live projection without a turnId', () => {
+  const store = useAppStore.getState();
+  store.appendEvent({
+    kind: 'mid_turn_user_prompt',
+    sessionId: SID,
+    queueId: 'input-exact',
+    content: 'repeat',
+    entryId: 'entry-interrupt-original',
+  });
+  store.appendEvent({ kind: 'text_delta', sessionId: SID, text: 'live exact answer' });
+  store.appendEvent({ kind: 'session_complete', sessionId: SID });
+
+  store.prependSessionHistory(
+    SID,
+    [
+      { kind: 'history_truncation', scope: 'history', omittedItems: 20 },
+      {
+        kind: 'user',
+        content: 'repeat',
+        entryId: 'entry-compacted-clone',
+        auditEntryIds: ['entry-interrupt-original', 'entry-compacted-clone'],
+        canonicalIndex: 20,
+      },
+      {
+        kind: 'assistant',
+        text: 'canonical exact answer',
+        canonicalIndex: 21,
+      },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true },
+  );
+
+  const state = useAppStore.getState();
+  const users = (state.userMessagesBySession[SID] ?? []).filter(
+    (message) => message.content === 'repeat',
+  );
+  assert.equal(users.length, 1);
+  assert.equal(users[0]?.restoredFromHistory, true);
+  assert.equal(users[0]?.entryId, 'entry-compacted-clone');
+  const visible = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  }).flatMap((message) => {
+    if (message.kind === 'user') return [`user:${message.content}`];
+    if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+    return [];
+  });
+  assert.deepEqual(visible, ['user:repeat', 'assistant:canonical exact answer']);
+});
+
+test('an exact delivered entry retains a proven cumulative live text extension', () => {
+  const store = useAppStore.getState();
+  store.appendEvent({
+    kind: 'mid_turn_user_prompt',
+    sessionId: SID,
+    queueId: 'input-cumulative',
+    content: 'continue',
+    entryId: 'entry-cumulative',
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'durable prefix plus live suffix',
+  });
+  store.appendEvent({ kind: 'session_complete', sessionId: SID });
+  store.prependSessionHistory(
+    SID,
+    [
+      {
+        kind: 'user',
+        content: 'continue',
+        entryId: 'entry-cumulative',
+        canonicalIndex: 30,
+      },
+      {
+        kind: 'assistant',
+        text: 'durable prefix',
+        canonicalIndex: 31,
+      },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true },
+  );
+
+  const state = useAppStore.getState();
+  const visible = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  }).flatMap((message) =>
+    message.kind === 'assistant_text' ? [`assistant:${message.text}`] : [],
+  );
+  assert.deepEqual(visible, ['assistant:durable prefix plus live suffix']);
+});
+
+test('conflicting delivered interrupt entry references fail open even when legacy ordinals match', () => {
+  const store = useAppStore.getState();
+  store.appendEvent({
+    kind: 'mid_turn_user_prompt',
+    sessionId: SID,
+    queueId: 'input-live',
+    content: 'same text',
+    entryId: 'entry-live',
+    turnId: 'turn-entry-conflict',
+    turnUserOrdinal: 1,
+  });
+  store.appendEvent({ kind: 'text_delta', sessionId: SID, text: 'live response' });
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: SID,
+    turnId: 'turn-entry-conflict',
+  });
+  store.prependSessionHistory(
+    SID,
+    [
+      {
+        kind: 'user',
+        content: 'same text',
+        entryId: 'entry-history',
+        canonicalIndex: 30,
+        turnId: 'turn-entry-conflict',
+        turnUserOrdinal: 1,
+      },
+      {
+        kind: 'assistant',
+        text: 'history response',
+        canonicalIndex: 31,
+        turnId: 'turn-entry-conflict',
+      },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true },
+  );
+
+  const users = (useAppStore.getState().userMessagesBySession[SID] ?? []).filter(
+    (message) => message.content === 'same text',
+  );
+  assert.equal(users.length, 2);
+  assert.deepEqual(users.map((message) => message.entryId).sort(), ['entry-history', 'entry-live']);
+});
+
+test('history-first delivered interrupt folds only after its exact live projection closes', () => {
+  const store = useAppStore.getState();
+  store.prependSessionHistory(
+    SID,
+    [
+      {
+        kind: 'user',
+        content: 'history first',
+        entryId: 'entry-history-first',
+        canonicalIndex: 40,
+      },
+      {
+        kind: 'assistant',
+        text: 'durable answer',
+        canonicalIndex: 41,
+      },
+    ],
+    FALLBACK_SENT_AT,
+  );
+  store.appendEvent({
+    kind: 'mid_turn_user_prompt',
+    sessionId: SID,
+    queueId: 'input-history-first',
+    content: 'history first',
+    entryId: 'entry-history-first',
+  });
+  assert.equal(
+    (useAppStore.getState().userMessagesBySession[SID] ?? []).filter(
+      (message) => message.content === 'history first',
+    ).length,
+    2,
+  );
+  store.appendEvent({ kind: 'text_delta', sessionId: SID, text: 'live answer' });
+  store.appendEvent({ kind: 'session_complete', sessionId: SID });
+  const users = (useAppStore.getState().userMessagesBySession[SID] ?? []).filter(
+    (message) => message.content === 'history first',
+  );
+  assert.equal(users.length, 1);
+  assert.equal(users[0]?.restoredFromHistory, true);
+});
+
 test('expanded history pages replace the prior truncation row and keep exact mutation boundaries', () => {
   useAppStore.getState().prependSessionHistory(
     SID,

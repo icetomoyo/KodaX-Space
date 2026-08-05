@@ -561,21 +561,19 @@ export function projectRuntimeInteractions(
     .slice(0, 500);
 }
 
-function latestTextForRun(
+function textForRun(
   drafts: Readonly<Record<string, string>>,
   runs: readonly RuntimeRunStatus[],
+  runId: string | undefined,
 ): { text: string; startedAt: number } | undefined {
-  const candidates = Object.entries(drafts)
-    .filter(([, value]) => value.length > 0)
-    .map(([runId, value]) => {
-      const run = runs.find((item) => item.runId === runId);
-      return {
-        text: value.slice(-MAX_DRAFT),
-        startedAt: timestamp(run?.runningAt ?? run?.startedAt),
-      };
-    })
-    .sort((a, b) => b.startedAt - a.startedAt);
-  return candidates[0];
+  if (runId === undefined) return undefined;
+  const value = drafts[runId];
+  if (value === undefined || value.length === 0) return undefined;
+  const run = runs.find((item) => item.runId === runId);
+  return {
+    text: value.slice(-MAX_DRAFT),
+    startedAt: timestamp(run?.runningAt ?? run?.startedAt),
+  };
 }
 
 function toolProjection(
@@ -808,8 +806,19 @@ export function projectRuntimeSessionSnapshot(
   userInputs: readonly RuntimeUserInputRequest[] = pendingUserInputsFromSnapshot(snapshot),
 ): SpaceSessionLiveProjectionT {
   const runs = runsForSession(snapshot.runs, snapshot.session.id);
-  const assistantDraft = latestTextForRun(snapshot.live.assistantTextByRun, snapshot.runs);
-  const thinkingDraft = latestTextForRun(snapshot.live.thinkingTextByRun, snapshot.runs);
+  // Drafts repair only an active Run. Terminal answer tails converge through canonical history;
+  // projecting a leftover draft after terminal would both bypass persistence and risk assigning a
+  // different Run's keyed text to lastTerminalRun.
+  const assistantDraft = textForRun(
+    snapshot.live.assistantTextByRun,
+    snapshot.runs,
+    runs.activeRun?.runId,
+  );
+  const thinkingDraft = textForRun(
+    snapshot.live.thinkingTextByRun,
+    snapshot.runs,
+    runs.activeRun?.runId,
+  );
   const managedTask = managedTaskProjection(snapshot);
   return spaceSessionLiveProjectionSchema.parse({
     sessionId: snapshot.session.id,

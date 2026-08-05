@@ -166,11 +166,21 @@ test('runtime IPC bootstrap registers both snapshot handlers against the control
   const register = ((name: InvokeChannelName, handler: (input: unknown) => unknown) => {
     handlers.set(name, handler);
   }) as never;
-  const observed: string[] = [];
+  const snapshotReads: string[] = [];
+  let profileReads = 0;
 
-  registerRuntimeProjectionChannels(controller, register, async (sessionId) => {
-    observed.push(sessionId);
-  });
+  registerRuntimeProjectionChannels(
+    controller,
+    register,
+    async (sessionId) => {
+      snapshotReads.push(sessionId);
+      return controller.sessionLiveSnapshot(sessionId);
+    },
+    async () => {
+      profileReads += 1;
+      return controller.profileSnapshot();
+    },
+  );
 
   assert.deepEqual([...handlers.keys()].sort(), [
     'runtime.profileSnapshot',
@@ -180,11 +190,12 @@ test('runtime IPC bootstrap registers both snapshot handlers against the control
   assert.ok(profileHandler);
   const profile = await profileHandler(undefined);
   assert.equal((profile as { connection: { state: string } }).connection.state, 'ready');
+  assert.equal(profileReads, 1);
 
   const liveHandler = handlers.get('session.liveSnapshot');
   assert.ok(liveHandler);
   assert.deepEqual(await liveHandler({ sessionId: 's_1' }), live);
-  assert.deepEqual(observed, ['s_1']);
+  assert.deepEqual(snapshotReads, ['s_1']);
 });
 
 test('controller rejects rich snapshots before a ready matching Runtime profile exists', () => {

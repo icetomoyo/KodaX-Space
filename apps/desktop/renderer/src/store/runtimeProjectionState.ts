@@ -18,6 +18,17 @@ export interface RuntimeProjectionState {
   readonly snapshotRequiredBySession: Readonly<Record<string, true | undefined>>;
 }
 
+export interface RuntimeTerminalEvidence {
+  readonly sessionId: string;
+  readonly runtimeId: string;
+  readonly runId: string;
+  readonly phase: string;
+  readonly cursorSeq: number;
+  readonly startedAt?: number;
+  readonly completedAt?: number;
+  readonly transcriptRevision?: string;
+}
+
 export type ApplySessionLiveChangeStatus =
   | 'applied'
   | 'ignored'
@@ -30,6 +41,82 @@ export function shouldRequestSessionLiveSnapshot(status: ApplySessionLiveChangeS
 
 export function runtimeBootstrapRetryDelayMs(attempt: number): number | undefined {
   return [250, 1_000, 3_000][attempt - 1];
+}
+
+export function shouldRerunRejectedHydrationSnapshot(input: {
+  readonly allowEqualHydration: boolean;
+  readonly connection: SpaceCoderConnectionProjectionT;
+  readonly current: SpaceSessionLiveProjectionT | undefined;
+  readonly incoming: SpaceSessionLiveProjectionT;
+}): boolean {
+  return (
+    input.allowEqualHydration &&
+    runtimeConnectionHasFreshLiveAuthority(input.connection) &&
+    input.connection.runtimeId === input.incoming.cursor.runtimeId &&
+    input.current?.cursor.runtimeId === input.incoming.cursor.runtimeId &&
+    input.current.projectionRevision > input.incoming.projectionRevision
+  );
+}
+
+export function runtimeProfileTerminalEvidence(
+  profile: SpaceRuntimeProfileProjectionT,
+  sessionId: string,
+): RuntimeTerminalEvidence | undefined {
+  const terminal = profile.sessions.find(
+    (session) => session.sessionId === sessionId,
+  )?.lastTerminalRun;
+  const runtimeId = profile.connection.runtimeId ?? profile.cursor?.runtimeId;
+  if (terminal === undefined || runtimeId === undefined) return undefined;
+  return {
+    sessionId,
+    runtimeId,
+    runId: terminal.runId,
+    phase: terminal.phase,
+    cursorSeq: profile.cursor?.seq ?? 0,
+    ...(terminal.startedAt !== undefined ? { startedAt: terminal.startedAt } : {}),
+    ...(terminal.completedAt !== undefined ? { completedAt: terminal.completedAt } : {}),
+  };
+}
+
+/** Profile and per-Session observation cursors share only a causal lower bound, not an atomic read. */
+export function runtimeTerminalEvidenceCandidates(
+  state: Pick<RuntimeProjectionState, 'connection' | 'profile' | 'liveBySession'>,
+  sessionId: string,
+): readonly RuntimeTerminalEvidence[] {
+  if (
+    !runtimeConnectionHasFreshLiveAuthority(state.connection) ||
+    state.connection.runtimeId === undefined
+  ) {
+    return [];
+  }
+  const runtimeId = state.connection.runtimeId;
+  const live = state.liveBySession[sessionId];
+  const currentLive = live?.cursor.runtimeId === runtimeId ? live : undefined;
+  const liveTerminal = currentLive?.lastTerminalRun;
+  const liveEvidence =
+    currentLive === undefined || liveTerminal === undefined
+      ? undefined
+      : {
+          sessionId,
+          runtimeId,
+          runId: liveTerminal.runId,
+          phase: liveTerminal.phase,
+          cursorSeq: currentLive.cursor.seq,
+          ...(liveTerminal.startedAt !== undefined ? { startedAt: liveTerminal.startedAt } : {}),
+          ...(liveTerminal.completedAt !== undefined
+            ? { completedAt: liveTerminal.completedAt }
+            : {}),
+          transcriptRevision: currentLive.transcriptRevision,
+        };
+  const profile = state.profile?.connection.runtimeId === runtimeId ? state.profile : undefined;
+  const profileEvidence =
+    profile === undefined ? undefined : runtimeProfileTerminalEvidence(profile, sessionId);
+  if (profileEvidence === undefined) return liveEvidence === undefined ? [] : [liveEvidence];
+  if (liveEvidence === undefined) return [profileEvidence];
+  if (profileEvidence.runId === liveEvidence.runId) {
+    return [liveEvidence.cursorSeq >= profileEvidence.cursorSeq ? liveEvidence : profileEvidence];
+  }
+  return [profileEvidence, liveEvidence];
 }
 
 export interface ApplySessionLiveChangeResult {
@@ -81,10 +168,18 @@ export function runtimeProfileActivityOutranksLive(
   const profileSession = profile.sessions.find((session) => session.sessionId === sessionId);
   if (!runtimeProfileSessionHasActivity(profileSession)) return false;
   if (live === undefined) return true;
-  return (
+  const profileRunIds = [
+    ...(profileSession?.activeRun ? [profileSession.activeRun.runId] : []),
+    ...(profileSession?.queuedRuns.map((run) => run.runId) ?? []),
+  ];
+  const terminalRunId = live.lastTerminalRun?.runId;
+  const exactLiveTerminalClosesEveryProfileRun =
+    terminalRunId !== undefined && profileRunIds.every((runId) => runId === terminalRunId);
+  if (!exactLiveTerminalClosesEveryProfileRun) return true;
+  return !(
     profile.cursor !== undefined &&
     profile.cursor.runtimeId === live.cursor.runtimeId &&
-    profile.cursor.seq > live.cursor.seq
+    live.cursor.seq >= profile.cursor.seq
   );
 }
 

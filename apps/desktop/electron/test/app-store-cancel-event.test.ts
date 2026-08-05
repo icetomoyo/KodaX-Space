@@ -31,6 +31,7 @@ beforeEach(() => {
     currentSessionId: SID,
     eventsBySession: {},
     pendingSendBySession: { [SID]: true },
+    pendingSendRuntimeBaselineBySession: {},
     userMessagesBySession: {},
     queuedUserMessagesBySession: {},
     localNoticesBySession: {},
@@ -97,7 +98,7 @@ test('user image attachments update after send acknowledgement and restore from 
   );
 });
 
-test('appendEvent clears pending send and dedupes repeated cancelled terminal events', () => {
+test('appendEvent dedupes cancelled terminals without clearing an unscoped pending admission', () => {
   const store = useAppStore.getState();
   store.appendEvent({
     kind: 'session_error',
@@ -118,7 +119,7 @@ test('appendEvent clears pending send and dedupes repeated cancelled terminal ev
   const events = state.eventsBySession[SID] ?? [];
   assert.equal(events.length, 1);
   assert.equal(events[0]?.kind, 'session_error');
-  assert.equal(state.pendingSendBySession[SID], undefined);
+  assert.equal(state.pendingSendBySession[SID], true);
 });
 
 test('appendEvent keeps pendingSend across a pre-session_start non-lifecycle event (spinner stays up)', () => {
@@ -177,18 +178,17 @@ test('a delivered mid-turn prompt clears pendingSend and hands activity to Runti
   );
 });
 
-test('appendEvent still clears pendingSend on a terminal event even if only non-lifecycle events preceded it (no stuck spinner)', () => {
-  // Guards the flip-side of the fix above: if a run fails/ends right after a non-lifecycle event
-  // (no session_start ever arrived), the terminal event must still clear pendingSend so the spinner
-  // doesn't get stuck on "Sending…".
+test('an unscoped terminal after telemetry cannot clear a pending admission before its ACK', () => {
+  // An accepted no-Run IPC result clears this compatibility pending state in BottomBar. Until that
+  // ACK arrives, an identity-less terminal can belong to the previous Run and must fail closed.
   const store = useAppStore.getState();
   store.appendEvent({ kind: 'repointel_trace', sessionId: SID, event: { kind: 'started' } });
   assert.equal(useAppStore.getState().pendingSendBySession[SID], true);
   store.appendEvent({ kind: 'session_error', sessionId: SID, error: 'boom' });
   assert.equal(
     useAppStore.getState().pendingSendBySession[SID],
-    undefined,
-    'terminal clears pendingSend',
+    true,
+    'an unscoped terminal cannot clear pendingSend before admission is acknowledged',
   );
 });
 
@@ -260,11 +260,17 @@ test('mid_turn_user_prompt promotes a pending interrupt queued message', () => {
   });
   assert.ok(localId);
 
-  store.appendEvent({ kind: 'mid_turn_user_prompt', sessionId: SID, content: 'q2' });
+  store.appendEvent({
+    kind: 'mid_turn_user_prompt',
+    sessionId: SID,
+    content: 'q2',
+    entryId: 'entry-q2',
+  });
 
   const state = useAppStore.getState();
   assert.equal(state.queuedUserMessagesBySession[SID]?.length ?? 0, 0);
   assert.equal(state.userMessagesBySession[SID]?.at(-1)?.content, 'q2');
+  assert.equal(state.userMessagesBySession[SID]?.at(-1)?.entryId, 'entry-q2');
 });
 
 test('mid_turn_user_prompt consumes the matching queue id without rendering its host overlay', () => {
@@ -295,6 +301,39 @@ test('mid_turn_user_prompt consumes the matching queue id without rendering its 
     ['input-1'],
   );
   assert.equal(state.userMessagesBySession[SID]?.at(-1)?.content, 'review the document');
+});
+
+test('distinct delivered inputs sharing one Runtime sequence remain distinct boundaries', () => {
+  const store = useAppStore.getState();
+  store.appendEvent({
+    kind: 'mid_turn_user_prompt',
+    sessionId: SID,
+    queueId: 'input-1',
+    content: 'first correction',
+    turnId: 'turn-1',
+    turnUserOrdinal: 1,
+    runtimeEvent: { runtimeId: 'rt-1', runId: 'run-1', seq: 9 },
+  });
+  store.appendEvent({
+    kind: 'mid_turn_user_prompt',
+    sessionId: SID,
+    queueId: 'input-2',
+    content: 'second correction',
+    turnId: 'turn-1',
+    turnUserOrdinal: 2,
+    runtimeEvent: { runtimeId: 'rt-1', runId: 'run-1', seq: 9 },
+  });
+
+  const delivered = (useAppStore.getState().eventsBySession[SID] ?? []).filter(
+    (event) => event.kind === 'mid_turn_user_prompt',
+  );
+  assert.deepEqual(
+    delivered.map((event) => ({ queueId: event.queueId, ordinal: event.turnUserOrdinal })),
+    [
+      { queueId: 'input-1', ordinal: 1 },
+      { queueId: 'input-2', ordinal: 2 },
+    ],
+  );
 });
 
 test('mid_turn_user_prompt matches a host-overlay suffix when delivery wins the ack race', () => {
@@ -447,11 +486,12 @@ test('queued_user_prompt_started preserves an image when delivery beats the send
   );
 });
 
-test('convertLastUserMessageToQueued replaces a normal optimistic bubble after queued ack', () => {
+test('convertUserMessageToQueued replaces the addressed optimistic bubble after queued ack', () => {
   const store = useAppStore.getState();
-  store.appendUserMessage(SID, 'q2', 1234);
+  const messageId = store.appendUserMessage(SID, 'q2', 1234);
+  assert.ok(messageId);
 
-  const localId = store.convertLastUserMessageToQueued(SID, 'q2', {
+  const localId = store.convertUserMessageToQueued(SID, messageId, {
     content: 'q2',
     matchContent: 'resolved q2',
     queueMode: 'interrupt',
@@ -467,6 +507,41 @@ test('convertLastUserMessageToQueued replaces a normal optimistic bubble after q
   assert.equal(queued?.queueMode, 'interrupt');
   assert.equal(queued?.status, 'queued');
   assert.equal(queued?.sentAt, 1234);
+});
+
+test('rollbackUserMessage removes only the addressed optimistic bubble after a newer send', () => {
+  const store = useAppStore.getState();
+  const staleMessageId = store.appendUserMessage(SID, 'same prompt', 1234);
+  const currentMessageId = store.appendUserMessage(SID, 'same prompt', 1235);
+  assert.ok(staleMessageId);
+  assert.ok(currentMessageId);
+
+  store.rollbackUserMessage(SID, staleMessageId);
+
+  assert.deepEqual(
+    (useAppStore.getState().userMessagesBySession[SID] ?? []).map((message) => message.id),
+    [currentMessageId],
+  );
+});
+
+test('late queued acknowledgement converts only its addressed optimistic bubble', () => {
+  const store = useAppStore.getState();
+  const staleMessageId = store.appendUserMessage(SID, 'same prompt', 1234);
+  const currentMessageId = store.appendUserMessage(SID, 'same prompt', 1235);
+  assert.ok(staleMessageId);
+  assert.ok(currentMessageId);
+
+  const localId = store.convertUserMessageToQueued(SID, staleMessageId, {
+    content: 'same prompt',
+    queueMode: 'after-turn',
+  });
+
+  assert.ok(localId);
+  assert.deepEqual(
+    (useAppStore.getState().userMessagesBySession[SID] ?? []).map((message) => message.id),
+    [currentMessageId],
+  );
+  assert.equal(useAppStore.getState().queuedUserMessagesBySession[SID]?.[0]?.sentAt, 1234);
 });
 
 test('queued acknowledgement replaces an optimistic interrupt mode with after-turn', () => {

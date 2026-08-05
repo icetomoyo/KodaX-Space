@@ -30,6 +30,34 @@ test('history truncation also bounds a marker larger than the whole budget', () 
   assert.equal(clampTextWithMarker('too long', 0, '[truncated]'), '');
 });
 
+test('conversation projection retains every proven physical entry alias', () => {
+  const entries: Parameters<typeof conversationHistoryAsTranscript>[1] = [
+    {
+      index: 0,
+      entry: {
+        boundaryId: 'entry-compacted-clone',
+        auditEntryIds: ['entry-interrupt-original', 'entry-compacted-clone'],
+        message: { role: 'user', content: 'follow up' },
+      },
+    },
+  ];
+  const history: Parameters<typeof conversationHistoryAsTranscript>[0] = {
+    revision: 'revision-entry-aliases',
+    sourceRevision: 'source-entry-aliases',
+    status: 'resolved',
+    issues: [],
+    entries: entries.map(({ entry }) => entry),
+  };
+
+  const projected = conversationHistoryAsTranscript(history, entries);
+
+  assert.equal(projected.transcriptEntries[0]?.entryId, 'entry-compacted-clone');
+  assert.deepEqual(projected.transcriptEntries[0]?.auditEntryIds, [
+    'entry-interrupt-original',
+    'entry-compacted-clone',
+  ]);
+});
+
 test('conversation page seam preserves an exact tool result split after the 64th entry', () => {
   const olderMessages = [
     ...Array.from({ length: 63 }, (_, index) => ({

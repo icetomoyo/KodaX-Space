@@ -1,4 +1,8 @@
-import type { InvokeChannelName } from '@kodax-space/space-ipc-schema';
+import type {
+  InvokeChannelName,
+  SpaceRuntimeProfileProjectionT,
+  SpaceSessionLiveProjectionT,
+} from '@kodax-space/space-ipc-schema';
 
 import {
   runtimeProjectionController,
@@ -18,14 +22,14 @@ type RuntimeChannelRegistrar = <C extends RuntimeChannelName>(
 ) => void;
 
 export function registerRuntimeProjectionChannels(
-  controller: RuntimeProjectionController = runtimeProjectionController,
+  _controller: RuntimeProjectionController = runtimeProjectionController,
   register: RuntimeChannelRegistrar = registerChannel,
-  ensureObserved: (sessionId: string) => Promise<void> = (sessionId) =>
-    runtimeHostAdapter.ensureObserved(sessionId),
+  readSessionLiveSnapshot: (sessionId: string) => Promise<SpaceSessionLiveProjectionT> = (
+    sessionId,
+  ) => runtimeHostAdapter.readSessionLiveSnapshot(sessionId),
+  readRuntimeProfileSnapshot: () => Promise<SpaceRuntimeProfileProjectionT> = () =>
+    runtimeHostAdapter.readRuntimeProfileSnapshot(),
 ): void {
-  register('runtime.profileSnapshot', () => controller.profileSnapshot());
-  register('session.liveSnapshot', async ({ sessionId }) => {
-    await ensureObserved(sessionId);
-    return controller.sessionLiveSnapshot(sessionId);
-  });
+  register('runtime.profileSnapshot', () => readRuntimeProfileSnapshot());
+  register('session.liveSnapshot', ({ sessionId }) => readSessionLiveSnapshot(sessionId));
 }

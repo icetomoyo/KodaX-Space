@@ -283,8 +283,10 @@ export function conversationHistoryAsTranscript(
   const transcriptEntries = indexedEntries.map(({ entry, index: canonicalIndex }) => {
     const messageRecord = isRecord(entry.message) ? entry.message : undefined;
     const entryId = entry.boundaryId ?? entry.auditEntryIds[0];
+    const auditEntryIds = boundedAuditEntryIds(entry.auditEntryIds);
     return {
       ...(entryId !== undefined ? { entryId } : {}),
+      ...(auditEntryIds !== undefined ? { auditEntryIds } : {}),
       ...(entry.boundaryId !== undefined ? { logicalId: entry.boundaryId } : {}),
       canonicalIndex,
       type: 'message' as const,
@@ -1579,6 +1581,7 @@ export function registerSessionChannels(options: SessionChannelsOptions = {}): v
         const rawTranscriptEntries = (data as { transcriptEntries?: unknown }).transcriptEntries;
         type TranscriptEntryLike = {
           readonly entryId?: unknown;
+          readonly auditEntryIds?: unknown;
           readonly parentId?: unknown;
           readonly logicalId?: unknown;
           readonly sourceEntryId?: unknown;
@@ -2035,8 +2038,23 @@ function stringField(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
+function boundedAuditEntryIds(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  for (const candidate of value) {
+    const id = stringField(candidate);
+    if (id === undefined || id.length > 256 || seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+    if (ids.length === 256) break;
+  }
+  return ids.length > 0 ? ids : undefined;
+}
+
 type HistoryTranscriptIdentity = {
   readonly entryId?: string;
+  readonly auditEntryIds?: string[];
   readonly parentId?: string | null;
   readonly logicalId?: string;
   readonly sourceEntryId?: string;
@@ -2047,6 +2065,7 @@ type HistoryTranscriptIdentity = {
 
 function historyIdentityFromEntry(entry: {
   readonly entryId?: unknown;
+  readonly auditEntryIds?: unknown;
   readonly parentId?: unknown;
   readonly logicalId?: unknown;
   readonly sourceEntryId?: unknown;
@@ -2055,6 +2074,7 @@ function historyIdentityFromEntry(entry: {
   readonly turnId?: unknown;
 }): HistoryTranscriptIdentity {
   const entryId = stringField(entry.entryId);
+  const auditEntryIds = boundedAuditEntryIds(entry.auditEntryIds);
   const parentId = entry.parentId === null ? null : stringField(entry.parentId);
   const logicalId = stringField(entry.logicalId);
   const sourceEntryId = stringField(entry.sourceEntryId);
@@ -2068,6 +2088,7 @@ function historyIdentityFromEntry(entry: {
   const turnId = stringField(entry.turnId);
   return {
     ...(entryId !== undefined ? { entryId } : {}),
+    ...(auditEntryIds !== undefined ? { auditEntryIds } : {}),
     ...(parentId !== undefined || entry.parentId === null ? { parentId } : {}),
     ...(logicalId !== undefined ? { logicalId } : {}),
     ...(sourceEntryId !== undefined ? { sourceEntryId } : {}),

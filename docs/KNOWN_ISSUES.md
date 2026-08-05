@@ -2,7 +2,7 @@
 
 Last Updated: 2026-08-05
 
-> Historical issue details are preserved as investigation evidence. Resolved items older than 30 days move to [ISSUES_ARCHIVED.md](ISSUES_ARCHIVED.md) without losing their investigation record. The current published package baseline is v0.1.35 / exact npm Registry KodaX 0.7.80; durable managed-Run admission requires `managedRunDurability:1`. Start from the [documentation hub](README.md) for current behavior and status.
+> Historical issue details are preserved as investigation evidence. Resolved items older than 30 days move to [ISSUES_ARCHIVED.md](ISSUES_ARCHIVED.md) without losing their investigation record. The current source integration target is exact npm Registry KodaX 0.7.81; the latest published Space v0.1.35 used KodaX 0.7.80. Durable managed-Run admission requires `managedRunDurability:1`. Start from the [documentation hub](README.md) for current behavior and status.
 
 ## Issue Index
 
@@ -148,7 +148,7 @@ Last Updated: 2026-08-05
 | 150 | High     | Resolved    | Packaged cold Coder daemon initialization can block the real renderer for 20-50 seconds                                            | v0.1.34 packaged build / KodaX 0.7.79                        | 2026-08-02 |
 | 151 | Low      | Resolved    | Unlabeled fenced Markdown blocks were misclassified as inline code and rendered in the danger palette                              | v0.1.x conversation Markdown renderer                        | 2026-08-02 |
 | 152 | Medium   | Resolved    | Pristine empty KodaX Sessions return different direct and paged canonical conversation boundaries                                  | KodaX 0.7.79 local test package                              | 2026-08-02 |
-| 153 | Medium   | Open        | A newest canonical page beginning inside one multi-input Runtime turn lacks an exact live reconciliation identity                  | KodaX 0.7.79 bounded conversation integration                | 2026-08-02 |
+| 153 | Medium   | Resolved    | A newest canonical page beginning inside one multi-input Runtime turn lacks an exact live reconciliation identity                  | KodaX 0.7.81 canonical interrupt entry identity               | 2026-08-02 |
 | 154 | Low      | Resolved    | Expanded right-sidebar plans kept additional steps permanently hidden behind a non-interactive count                               | v0.1.34 right-sidebar plan summary                           | 2026-08-03 |
 | 155 | Medium   | Resolved    | First idle complete-exit request reopened Space after a recovered Runtime owner-transition race                                    | v0.1.34 / KodaX 0.7.79 complete-exit integration             | 2026-08-03 |
 | 156 | Medium   | Resolved    | Renderer history cache could preserve a stale partial-lineage warning after canonical storage changed                              | v0.1.34 bounded canonical history paging                     | 2026-08-03 |
@@ -10586,9 +10586,11 @@ the same newly created Session.
 ### 153: A newest canonical page beginning inside one multi-input Runtime turn lacks an exact live reconciliation identity
 
 - Priority: Medium
-- Status: Open
+- Status: Resolved
 - Affected: KodaX 0.7.79 bounded conversation integration
+- Fixed: KodaX 0.7.81 / current Space source
 - Created: 2026-08-02
+- Resolution Date: 2026-08-05
 
 #### Problem
 
@@ -10609,11 +10611,25 @@ window.
 
 #### Requirement
 
-Each real user input needs one stable opaque identity shared by its canonical
-conversation entry and the corresponding Runtime live/delivery projection,
-including across paging, compaction, and resume. This is only an identity
-contract requirement; no timestamp, sequence, UI visibility, content-dedup, or
-SDK implementation strategy is requested.
+For each delivered interrupt input, expose the canonical physical entry
+reference created by the durable input-persistence boundary. The reference
+must equal the corresponding conversation entry's `boundaryId` or one of its
+`auditEntryIds`; compaction may select another proven physical copy as the
+display boundary. Legacy absence remains fail-open. No new identity system,
+ordinal contract, lifecycle field, event replay, or SDK-owned paging mechanism
+is required.
+
+#### Resolution
+
+KodaX 0.7.81 adds optional `entryId` to each newly delivered Runtime interrupt
+event/status and guarantees that canonical persistence completes first. The
+reference survives event replay, compaction, and Runtime restart; legacy
+records may omit it. Space now projects the field through both daemon and
+embedded delivery paths, preserves it on the promoted live user row, retains
+the conversation entry's bounded `auditEntryIds`, and treats exact physical-ID
+membership as authoritative even when an embedded terminal lacks `turnId`. If
+both projections carry disjoint identity sets, Space fails open and does not
+fall back to content, time, position, or ordinal matching.
 
 ### 154: Expanded right-sidebar plans kept additional steps permanently hidden behind a non-interactive count
 
@@ -12086,8 +12102,8 @@ to render `new answer -> new query -> old answer`.
   once canonically and once live.
 - That fail-open rule can temporarily show both canonical and live copies while
   an older prefix is still unloaded. This is the explicit non-destructive
-  boundary tracked by open Issue 153; Issue 171 fixes the proven two-turn
-  inversion without pretending the multi-input identity gap is solved.
+  boundary that was tracked by Issue 153; Issue 171 fixed the proven two-turn
+  inversion, while KodaX 0.7.81 later closed the multi-input identity gap.
 - Legacy history without a usable `turnId` retains the stable synthetic anchor
   behavior. No global sort, timestamp heuristic, or text-based deduplication was
   added. No KodaX SDK change is required for this defect.
@@ -12294,8 +12310,6 @@ historical Session keeps the cheaper history-first load path.
   renderer was reloaded.
 - Sidebar status ignored the fresh Runtime profile's positive active/queued evidence, while history
   cache eviction did not protect background Runtime work.
-- Runtime-delivered user boundary events omitted their existing `runtimeId/runId/seq` envelope at
-  the Space IPC schema boundary.
 
 #### Resolution
 
@@ -12306,9 +12320,9 @@ historical Session keeps the cheaper history-first load path.
   Live failures retain the snapshot-required marker and release the paused event batch.
 - Canonical `session.history` reads have a 10-second renderer deadline; a hung main-process read
   transitions paging to `error` instead of leaving the observation gate in `loading` forever.
-- Equal-revision authoritative snapshots clear a retained requirement and can rehydrate cumulative
-  drafts/tools after the renderer transcript buffer was rebuilt without replacing or downgrading
-  the existing live projection.
+- Equal-revision authoritative snapshots clear a retained requirement. Active-Run snapshots can
+  rehydrate cumulative drafts/tools after the renderer transcript buffer was rebuilt without
+  replacing or downgrading the existing live projection; terminal snapshots never hydrate drafts.
 - Focus, visibility, Runtime reconnection, profile conflicts, and a 30-second low-frequency pass
   reconcile only already-observed active Sessions. This bounds stale terminal state without
   observing every historical Session.
@@ -12318,9 +12332,33 @@ historical Session keeps the cheaper history-first load path.
   missed same-Run `session_start`, allowing stale spinners to stop without `Ctrl+R`.
 - History LRU eviction prefers idle Sessions, then active Sessions, while retaining its hard
   32-Session bound. Eviction removes canonical restored rows but preserves independent live state.
-- Daemon mid-turn and after-turn user boundaries preserve the existing Runtime causal envelope.
-  No KodaX SDK change, main-process event ring, synthetic turn identity, or terminal `turnId` was
-  added.
+- No KodaX SDK change, main-process event ring, synthetic turn identity, terminal `turnId`, or new
+  ordinal contract was added.
+- Runtime terminal evidence is merged by exact `runtimeId + runId`; profile and observation cursors
+  are treated as causal lower bounds rather than a total order. Each exact terminal Run generation
+  is satisfied by one newest-history request that starts after the evidence exists. The request
+  captures its `runtimeId + runId + generation` scope, so evidence that overtakes an in-flight read
+  invalidates that read and is handled by the next request instead of being certified retroactively.
+  `managedRunDurability` v1 makes one post-evidence canonical read sufficient; Space does not poll
+  on unchanged revisions or infer persistence strength from `transcriptRevision`. Duplicate
+  terminal evidence is idempotent, failed reads remain retryable, an older terminal cannot close a
+  newer Run, and an explicitly older paging window is never forced back to newest.
+- A pending send records a renderer-local request generation and its Runtime cursor baseline, then
+  binds the exact admitted `runId` through an action independent of the optimistic transcript row.
+  With no fresh Runtime authority it starts from a real `-1` cursor rather than an undefined
+  wildcard. A cold undefined-to-fresh connection preserves and rebases that request, while a known
+  Runtime replacement retires it. Activity or terminal evidence that raced ahead of the
+  acknowledgement is reconciled when the acknowledgement arrives; unscoped terminals cannot clear
+  it. Delayed acknowledgements and events from a previous request/Run cannot clear a newer pending
+  generation. Queued or compatibility acknowledgements without a fresh `runId` explicitly retire
+  only their own temporary pending state.
+- Active Runtime ownership reconciliation and bounded conversation paging use a fresh, unbounded
+  status membership read instead of waiting for a streaming JSONL freshness token to stop changing.
+  The persisted fallback is capped at two attempts, so a continuously written Session cannot starve
+  reconciliation and a Partner retag is rejected before the Runtime history page read.
+- Equal-revision terminal hydration remains a narrow paint repair: it may retire a causally matched
+  residual tool/spinner, but it is not used to recover or synthesize a missing assistant tail. The
+  latter converges only through the canonical terminal-history refresh above.
 
 #### Files Changed
 
@@ -12328,10 +12366,13 @@ historical Session keeps the cheaper history-first load path.
 - `apps/desktop/renderer/src/lib/ipcInvokeWithTimeout.ts`
 - `apps/desktop/renderer/src/store/appStore.ts`
 - `apps/desktop/renderer/src/store/runtimeProjectionState.ts`
+- `apps/desktop/renderer/src/store/runtimeSnapshotHydration.ts`
 - `apps/desktop/renderer/src/features/session/useSessionStatus.ts`
+- `apps/desktop/renderer/src/shell/BottomBar.tsx`
+- `apps/desktop/renderer/src/shell/composerInvoke.ts`
 - `apps/desktop/renderer/src/shell/sessionHistoryPaging.ts`
 - `apps/desktop/electron/kodax/runtime-host-adapter.ts`
-- `packages/space-ipc-schema/src/channels/session.ts`
+- `apps/desktop/electron/kodax/runtime/coder-daemon-projection.ts`
 - Targeted renderer, bridge, schema, and paging regression tests
 
 #### Tests Added
@@ -12346,14 +12387,28 @@ historical Session keeps the cheaper history-first load path.
 - A hung canonical history IPC times out and releases the observation gate.
 - User boundary events retain Runtime causal identity.
 - Background active Session history is preferred under pressure while the cache remains bounded.
+- History-first, terminal-first, profile-first, snapshot-first, and terminal-overtakes-in-flight
+  orderings converge through the request-scoped post-evidence newest read. Evidence arriving during
+  an older request requires exactly one follow-up read; duplicate terminal evidence causes no extra
+  read, stale evidence cannot terminate a newer Run, and `hasNewer` browsing windows remain
+  unchanged.
+- A delayed duplicate terminal cannot clear a newly pending send, and profile-only newer activity
+  preserves waiting state despite an older queued terminal. Regressions cover the cold authority
+  edge, an exact Run already observed before its acknowledgement, acknowledgement without an
+  optimistic row, and a timed-out old acknowledgement racing a retry generation. Queued/no-Run
+  acknowledgements cannot leave pending state behind.
+- Equal terminal hydration removes only a causally covered residual tool while preserving existing
+  assistant text byte-for-byte, even if a malformed terminal projection carries draft fields.
+- Runtime ownership verification performs one status read even when persisted history changes
+  during that read.
 
 ## Summary
 
 - Total: 161
-- Open: 2
+- Open: 1
 - In Progress: 9
 - Deferred: 1
-- Resolved: 149
+- Resolved: 150
 - High: 78
 - Medium: 72
 - Low: 11

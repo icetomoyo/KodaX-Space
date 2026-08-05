@@ -187,24 +187,30 @@ test('session history preserves explicit missing image tiles without exposing a 
 });
 
 test('session.history carries bounded canonical user-boundary identity', () => {
-  assert.equal(
-    sessionHistoryChannel.output.safeParse({
-      ...historyEnvelope,
-      items: [
-        {
-          kind: 'user',
-          content: 'q',
-          turnId: 'turn_1',
-          turnUserOrdinal: 1,
-          historyTurnIndex: 42,
-          historyBoundary: {
-            boundaryId: 'entry_42_tail',
-            sourceRevision: 'sha256:source',
-          },
+  const parsed = sessionHistoryChannel.output.safeParse({
+    ...historyEnvelope,
+    items: [
+      {
+        kind: 'user',
+        content: 'q',
+        entryId: 'entry_compacted_clone',
+        auditEntryIds: ['entry_original', 'entry_compacted_clone'],
+        turnId: 'turn_1',
+        turnUserOrdinal: 1,
+        historyTurnIndex: 42,
+        historyBoundary: {
+          boundaryId: 'entry_42_tail',
+          sourceRevision: 'sha256:source',
         },
-      ],
-    }).success,
-    true,
+      },
+    ],
+  });
+  assert.equal(parsed.success, true);
+  assert.deepEqual(
+    parsed.success && parsed.data.items[0]?.kind === 'user'
+      ? parsed.data.items[0].auditEntryIds
+      : undefined,
+    ['entry_original', 'entry_compacted_clone'],
   );
   assert.equal(
     sessionHistoryChannel.output.safeParse({
@@ -218,6 +224,13 @@ test('session.history carries bounded canonical user-boundary identity', () => {
           historyTurnIndex: -1,
         },
       ],
+    }).success,
+    false,
+  );
+  assert.equal(
+    sessionHistoryChannel.output.safeParse({
+      ...historyEnvelope,
+      items: [{ kind: 'user', content: 'q', auditEntryIds: [''] }],
     }).success,
     false,
   );
@@ -872,6 +885,7 @@ test('session.event payload: mid_turn_user_prompt variant', () => {
     sessionId: 's_1',
     queueId: 'input_1',
     content: 'follow up',
+    entryId: 'entry_interrupt_1',
     turnId: 'turn_1',
     turnUserOrdinal: 1,
   };
@@ -880,6 +894,7 @@ test('session.event payload: mid_turn_user_prompt variant', () => {
     sessionEventChannel.payload.safeParse({ ...evt, turnUserOrdinal: -1 }).success,
     false,
   );
+  assert.equal(sessionEventChannel.payload.safeParse({ ...evt, entryId: '' }).success, false);
 });
 
 test('session.event payload: queued_user_prompt_started variant', () => {

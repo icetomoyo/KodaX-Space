@@ -52,6 +52,8 @@ import {
 import {
   invalidatePersistedSessionCache,
   loadPersistedSessionFresh,
+  persistedSessionFreshnessToken,
+  preparePersistedSessionFreshnessTracking,
   SPACE_EPHEMERAL_SESSION_TAG,
 } from './session-store.js';
 import { RuntimeClientIdentityStore } from './runtime/runtime-client-identity.js';
@@ -63,6 +65,7 @@ import {
 } from './runtime/coder-daemon-projection.js';
 import {
   createPendingSdkRuntimeProjection,
+  RuntimeProjectionUnavailableError,
   runtimeProjectionController,
   type RuntimeProjectionController,
 } from './runtime/runtime-projection-controller.js';
@@ -83,6 +86,8 @@ import {
   type ExternalAgentTaskT,
   type SessionEvent,
   type SpaceCoderConnectionProjectionT,
+  type SpaceRuntimeProfileProjectionT,
+  type SpaceSessionLiveProjectionT,
 } from '@kodax-space/space-ipc-schema';
 import {
   decodeRuntimeActorTaskId,
@@ -1692,6 +1697,14 @@ export class RuntimeHostAdapter {
   private readonly activeRuns = new Map<string, string>();
   private readonly observations = new Map<string, RuntimeSessionObservationState>();
   private readonly observationPromises = new Map<string, Promise<void>>();
+  private readonly persistedOwnershipTokens = new Map<string, string>();
+  /** Full unbounded coder Session membership from the latest authoritative Runtime status read. */
+  private runtimeCoderSessionIds = new Set<string>();
+  private readonly liveProjectionRevisions = new Map<
+    string,
+    { readonly runtimeId: string; readonly revision: number }
+  >();
+  private runtimeProfileSnapshotPromise: Promise<SpaceRuntimeProfileProjectionT> | null = null;
   private readonly ensureSessionPromises = new Map<
     string,
     { readonly identityKey: string; readonly promise: Promise<boolean> }
@@ -2283,6 +2296,8 @@ export class RuntimeHostAdapter {
     this.transcriptPromises.clear();
     this.conversationPromises.clear();
     this.transcriptGenerations.clear();
+    this.runtimeProfileSnapshotPromise = null;
+    this.runtimeCoderSessionIds.clear();
     this.stopAllActorObservations();
     // Lease attachment is connection-scoped even though the stable lease IDs
     // survive in the daemon. Rebuild this set only from successful resume calls
@@ -2599,6 +2614,11 @@ export class RuntimeHostAdapter {
         'Coder daemon management runtimeId does not match the attached Runtime identity.',
       );
     }
+    this.runtimeCoderSessionIds = new Set(
+      status.sessions
+        .filter((session) => !isPartnerRuntimeSessionIdentity(session))
+        .map((session) => session.id),
+    );
     if (management !== undefined) {
       this.profileManagementConflictWarningShown = false;
       this.integrationHealthFingerprint = this.fingerprintIntegrationHealth(
@@ -2780,24 +2800,55 @@ export class RuntimeHostAdapter {
   }
 
   private async assertPersistedCoderOwnership(sessionId: string): Promise<void> {
-    const persisted = await loadPersistedSessionFresh(sessionId);
-    if (isPartnerRuntimeSessionIdentity(persisted)) {
-      this.desiredObservations.delete(sessionId);
-      this.activeCompactionsBySession.delete(sessionId);
-      this.localCompactionCallsBySession.delete(sessionId);
-      this.stopActorObservation(sessionId);
-      const observed = this.observations.get(sessionId);
-      if (observed) {
-        observed.observation.close();
-        this.observations.delete(sessionId);
+    await preparePersistedSessionFreshnessTracking();
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const before = persistedSessionFreshnessToken(sessionId);
+      const persisted = await loadPersistedSessionFresh(sessionId);
+      const after = persistedSessionFreshnessToken(sessionId);
+      if (before !== after && attempt === 0) continue;
+      if (isPartnerRuntimeSessionIdentity(persisted)) {
+        this.persistedOwnershipTokens.delete(sessionId);
+        this.desiredObservations.delete(sessionId);
+        this.activeCompactionsBySession.delete(sessionId);
+        this.localCompactionCallsBySession.delete(sessionId);
+        this.stopActorObservation(sessionId);
+        const observed = this.observations.get(sessionId);
+        if (observed) {
+          observed.observation.close();
+          this.observations.delete(sessionId);
+        }
+        this.invalidateTranscriptBoundary(sessionId);
+        this.projectionController.removeSessionLive(sessionId);
+        throw new RuntimeSessionIdentityConflictError(
+          sessionId,
+          'the persisted Session is owned by the inline Partner surface.',
+        );
       }
-      this.invalidateTranscriptBoundary(sessionId);
-      this.projectionController.removeSessionLive(sessionId);
-      throw new RuntimeSessionIdentityConflictError(
-        sessionId,
-        'the persisted Session is owned by the inline Partner surface.',
-      );
+      // A second concurrent mutation must not make one read spin forever. Retain the older token
+      // so the next independent request verifies ownership again instead of certifying an
+      // identity read that raced the writer.
+      this.persistedOwnershipTokens.set(sessionId, before === after ? after : before);
+      return;
     }
+  }
+
+  private async assertPersistedCoderOwnershipIfChanged(sessionId: string): Promise<void> {
+    await preparePersistedSessionFreshnessTracking();
+    const before = persistedSessionFreshnessToken(sessionId);
+    if (this.persistedOwnershipTokens.get(sessionId) === before) return;
+    // Active Runs normally mutate the same JSONL file. One fresh Runtime status read proves
+    // ownership without waiting for that file to become quiescent. The projected profile is
+    // intentionally bounded, so membership is checked against the full status set captured by
+    // refreshProfileSnapshot instead of profile.sessions.
+    await this.readRuntimeProfileSnapshot();
+    const after = persistedSessionFreshnessToken(sessionId);
+    if (this.runtimeCoderSessionIds.has(sessionId)) {
+      // If the file changed during the status read, retain the older token so the next independent
+      // reconciliation rechecks identity. Never spin inside one request while a Run is streaming.
+      this.persistedOwnershipTokens.set(sessionId, before === after ? after : before);
+      return;
+    }
+    await this.assertPersistedCoderOwnership(sessionId);
   }
 
   private async assertCoderSession(
@@ -2977,11 +3028,12 @@ export class RuntimeHostAdapter {
     readonly sourceRevision?: string;
     readonly limit?: number;
   }): Promise<RuntimeConversationHistoryPageResult> {
-    const generation = this.transcriptGenerations.get(input.sessionId) ?? 0;
     const runtime = await this.requireRuntime();
-    // Do not call sessions.load() or the persisted-body ownership probe here: both materialize the
-    // Session body and would erase the bounded first-page guarantee. The IPC owner routes only
-    // Runtime-profile Coder sessions to this method; Runtime then resolves the exact sessionId.
+    await this.assertPersistedCoderOwnershipIfChanged(input.sessionId);
+    const generation = this.transcriptGenerations.get(input.sessionId) ?? 0;
+    // Ownership reconciliation uses Runtime status in the normal case and does not materialize the
+    // Session body, preserving the bounded first-page guarantee. Runtime then resolves the exact
+    // sessionId while the generation fence rejects an ownership or transcript change in flight.
     let page: RuntimeConversationHistoryPage | null;
     try {
       page = await readRuntimeConversationHistoryPage(runtime, {
@@ -3221,6 +3273,9 @@ export class RuntimeHostAdapter {
       .map((binding) => this.revokeCredentialLease(runtime, binding.leaseId));
     await Promise.all(sessionCredentialLeases);
     this.projectionController.removeSessionLive(sessionId);
+    this.persistedOwnershipTokens.delete(sessionId);
+    this.runtimeCoderSessionIds.delete(sessionId);
+    this.liveProjectionRevisions.delete(sessionId);
     invalidatePersistedSessionCache(sessionId);
     this.scheduleProfileRefresh(this.currentProfileCursor());
     return outcome;
@@ -3350,6 +3405,141 @@ export class RuntimeHostAdapter {
     );
     this.observationPromises.set(sessionId, pending);
     return pending;
+  }
+
+  async readSessionLiveSnapshot(sessionId: string): Promise<SpaceSessionLiveProjectionT> {
+    await this.assertPersistedCoderOwnershipIfChanged(sessionId);
+    const currentObservation = this.observations.get(sessionId);
+    if (
+      currentObservation !== undefined &&
+      currentObservation.runtime === this.runtime &&
+      this.state === 'ready'
+    ) {
+      const pending = currentObservation.eventQueue;
+      await pending;
+      if (
+        this.observations.get(sessionId) === currentObservation &&
+        currentObservation.runtime === this.runtime &&
+        this.state === 'ready'
+      ) {
+        const snapshot = this.projectionController.sessionLiveSnapshot(sessionId);
+        if (currentObservation.eventQueue === pending) {
+          this.retireObservationIfQuiescent(sessionId);
+        }
+        return snapshot;
+      }
+    }
+
+    const opening = this.observationPromises.get(sessionId);
+    if (opening !== undefined) {
+      await opening;
+    } else {
+      const cached = this.cachedSessionLiveSnapshot(sessionId);
+      if (cached !== undefined) return cached;
+      this.desiredObservations.add(sessionId);
+      const pending = this.openObservation(sessionId, { trustPersistedOwnership: true }).finally(
+        () => {
+          if (this.observationPromises.get(sessionId) === pending) {
+            this.observationPromises.delete(sessionId);
+          }
+        },
+      );
+      this.observationPromises.set(sessionId, pending);
+      await pending;
+    }
+    const installed = this.observations.get(sessionId);
+    const installedQueue = installed?.eventQueue;
+    if (installedQueue !== undefined) await installedQueue;
+    const snapshot = this.projectionController.sessionLiveSnapshot(sessionId);
+    if (installed !== undefined && installed.eventQueue === installedQueue) {
+      this.retireObservationIfQuiescent(sessionId);
+    }
+    return snapshot;
+  }
+
+  async readRuntimeProfileSnapshot(): Promise<SpaceRuntimeProfileProjectionT> {
+    if (this.runtimeProfileSnapshotPromise !== null) return this.runtimeProfileSnapshotPromise;
+    const pending = (async () => {
+      await this.refreshProfileAfterConflict(this.currentProfileCursor());
+      return this.projectionController.profileSnapshot();
+    })().finally(() => {
+      if (this.runtimeProfileSnapshotPromise === pending) {
+        this.runtimeProfileSnapshotPromise = null;
+      }
+    });
+    this.runtimeProfileSnapshotPromise = pending;
+    return pending;
+  }
+
+  private cachedSessionLiveSnapshot(sessionId: string): SpaceSessionLiveProjectionT | undefined {
+    let cached: SpaceSessionLiveProjectionT;
+    try {
+      cached = this.projectionController.sessionLiveSnapshot(sessionId);
+    } catch (error: unknown) {
+      if (error instanceof RuntimeProjectionUnavailableError) return undefined;
+      throw error;
+    }
+    if (this.state !== 'ready' || this.runtime?.identity.runtimeId !== cached.cursor.runtimeId) {
+      return undefined;
+    }
+    const profile = this.projectionController.profileSnapshot();
+    const session = profile.sessions.find((candidate) => candidate.sessionId === sessionId);
+    if (session === undefined) return undefined;
+    if (session.activeRun?.runId !== cached.activeRun?.runId) return undefined;
+    if (session.activeRun?.phase !== cached.activeRun?.phase) return undefined;
+    if (session.queuedRuns.length !== cached.queuedRuns.length) return undefined;
+    if (
+      session.queuedRuns.some(
+        (run, index) =>
+          run.runId !== cached.queuedRuns[index]?.runId ||
+          run.phase !== cached.queuedRuns[index]?.phase,
+      )
+    ) {
+      return undefined;
+    }
+    if (session.lastTerminalRun?.runId !== cached.lastTerminalRun?.runId) return undefined;
+    if (session.lastTerminalRun?.phase !== cached.lastTerminalRun?.phase) return undefined;
+    const profilePendingInteractions = profile.interactions
+      .filter(
+        (interaction) =>
+          interaction.state === 'pending' && interaction.request.sessionId === sessionId,
+      )
+      .map((interaction) => `${interaction.kind}:${interaction.request.reqId}`)
+      .sort();
+    const cachedPendingInteractions = cached.interactions
+      .filter((interaction) => interaction.state === 'pending')
+      .map((interaction) => `${interaction.kind}:${interaction.request.reqId}`)
+      .sort();
+    if (
+      profilePendingInteractions.length !== cachedPendingInteractions.length ||
+      profilePendingInteractions.some(
+        (identity, index) => identity !== cachedPendingInteractions[index],
+      )
+    ) {
+      return undefined;
+    }
+    return cached;
+  }
+
+  private previousLiveProjectionRevision(sessionId: string, runtimeId: string): number {
+    const watermark = this.liveProjectionRevisions.get(sessionId);
+    let revision = watermark?.runtimeId === runtimeId ? watermark.revision : 0;
+    try {
+      const previous = this.projectionController.sessionLiveSnapshot(sessionId);
+      if (previous.cursor.runtimeId === runtimeId) {
+        revision = Math.max(revision, previous.projectionRevision);
+      }
+    } catch (error: unknown) {
+      if (!(error instanceof RuntimeProjectionUnavailableError)) throw error;
+    }
+    return revision;
+  }
+
+  private recordLiveProjectionRevision(projection: SpaceSessionLiveProjectionT): void {
+    this.liveProjectionRevisions.set(projection.sessionId, {
+      runtimeId: projection.cursor.runtimeId,
+      revision: projection.projectionRevision,
+    });
   }
 
   private compactionObservationKey(event: RuntimeTypedEvent): string {
@@ -3515,7 +3705,14 @@ export class RuntimeHostAdapter {
       }
       assertRuntimeSessionIdentity(session, { sessionId });
       await this.resumeSnapshotBindings(runtime, observation.snapshot);
-      const initial = projectRuntimeSessionSnapshot(observation.snapshot);
+      const projected = projectRuntimeSessionSnapshot(observation.snapshot);
+      const initial = {
+        ...projected,
+        projectionRevision: Math.max(
+          projected.projectionRevision,
+          this.previousLiveProjectionRevision(sessionId, projected.cursor.runtimeId) + 1,
+        ),
+      };
       await this.syncSpaceSessionSettings(sessionId, observation.snapshot.settings.value);
       const reducer = new CoderSessionProjectionReducer(initial, observation.snapshot.runs);
       for (const run of observation.snapshot.runs) this.runProviders.set(run.runId, run.provider);
@@ -3542,7 +3739,15 @@ export class RuntimeHostAdapter {
           );
         });
       this.advanceProfileCursor(runtime, observation.snapshot.cursor);
-      this.projectionController.replaceSessionLive(initial);
+      // A retired observation deliberately leaves its final projection cached for cheap reads.
+      // Once a new daemon observation has been installed, that snapshot supersedes the cache even
+      // when its daemon cursor is unchanged. Remove the old cache atomically before applying the
+      // fresh snapshot; the independent revision watermark still prevents renderer rollback.
+      this.projectionController.removeSessionLive(sessionId);
+      if (!this.projectionController.replaceSessionLive(initial)) {
+        throw new Error(`Runtime rejected the authoritative live snapshot for ${sessionId}.`);
+      }
+      this.recordLiveProjectionRevision(initial);
       // Actor telemetry is best-effort: a daemon without the agents plane (or a
       // telemetry attach failure) must not fail session observation — the same
       // policy as the post-rewind re-attach below. actorTreeSnapshot still
@@ -3860,6 +4065,7 @@ export class RuntimeHostAdapter {
         await this.syncSpaceSessionSettings(event.sessionId, projection.settings.value);
       }
       if (this.projectionController.replaceSessionLive(projection)) {
+        this.recordLiveProjectionRevision(projection);
         this.push('session.liveChanged', change);
       }
     }
@@ -4174,12 +4380,19 @@ export class RuntimeHostAdapter {
           typeof delivered?.inputId === 'string' && delivered.inputId.length <= 128
             ? delivered.inputId
             : undefined;
+        const entryId =
+          typeof delivered?.entryId === 'string' &&
+          delivered.entryId.length > 0 &&
+          delivered.entryId.length <= 256
+            ? delivered.entryId
+            : undefined;
         const turnUserOrdinal = this.takeObservedUserOrdinal(event.turnId);
         const parsed = sessionEventChannel.payload.safeParse({
           ...runtimeSessionEventOrigin(runtimeId, event),
           kind: 'mid_turn_user_prompt',
           sessionId: event.sessionId,
           ...(queueId ? { queueId } : {}),
+          ...(entryId ? { entryId } : {}),
           content: clampRuntimePromptEventText(content),
           ...(event.turnId ? { turnId: event.turnId } : {}),
           ...(turnUserOrdinal !== undefined ? { turnUserOrdinal } : {}),
@@ -5720,6 +5933,10 @@ export class RuntimeHostAdapter {
     this.credentialLeases.clear();
     this.continuationPrompts.clear();
     this.profileCursors.clear();
+    this.persistedOwnershipTokens.clear();
+    this.runtimeCoderSessionIds.clear();
+    this.liveProjectionRevisions.clear();
+    this.runtimeProfileSnapshotPromise = null;
     this.stopAllActorObservations();
     for (const state of this.observations.values()) state.observation.close();
     this.observations.clear();

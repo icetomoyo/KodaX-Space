@@ -589,6 +589,8 @@ export const sessionAgentsMdSaveChannel = {
 const transcriptHistoryIdentityShape = {
   /** First physical occurrence selected for this canonical display slot. */
   entryId: z.string().min(1).max(256).optional(),
+  /** Every physical entry proven by KodaX to represent this same canonical interaction. */
+  auditEntryIds: z.array(z.string().min(1).max(256)).min(1).max(256).optional(),
   /** Canonical lineage parent. Null is a real root; undefined means legacy data omitted it. */
   parentId: z.string().min(1).max(256).nullable().optional(),
   /** Stable identity shared by proven compaction/fork clones. */
@@ -1157,6 +1159,8 @@ export const sessionEventChannel = {
       sessionId: z.string().min(1),
       queueId: z.string().min(1).max(128).optional(),
       content: z.string().min(1).max(MAX_PROMPT_BYTES),
+      /** Exact durable user entry reported by KodaX 0.7.81+; absent for legacy deliveries. */
+      entryId: z.string().min(1).max(256).optional(),
       turnId: z.string().min(1).max(128).optional(),
       turnUserOrdinal: z.number().int().nonnegative().max(1_000_000).optional(),
     }),

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { useAppStore } from '../../renderer/src/store/appStore.js';
 import { composeMessages } from '../../renderer/src/features/session/composeMessages.js';
 import { messageForSelectorTurn } from '../../renderer/src/features/session/turnIndex.js';
+import { runtimeTerminalEvidenceCandidates } from '../../renderer/src/store/runtimeProjectionState.js';
 import {
   activateSessionHistoryPaging,
   deactivateSessionHistoryPaging,
@@ -13,6 +14,7 @@ import {
   olderHistoryWindowSeamScrollTop,
   PREPEND_ANCHOR_CORRECTION_FRAME_OFFSETS,
   preservesPrependAnchorForBoundaryInput,
+  reconcileTerminalSessionHistory,
   refreshDeferredSessionHistory,
   revalidateNewestSessionHistory,
   resetSessionHistoryPagingLifecycle,
@@ -20,6 +22,773 @@ import {
   sessionEventInvalidatesHistoryCache,
   sessionHistoryPagingSnapshot,
 } from '../../renderer/src/shell/sessionHistoryPaging.js';
+
+test('terminal history dedupes same-Run profile/snapshot repeats but admits another Run at the same cursor', async () => {
+  const sessionId = 'history-paging-terminal-evidence';
+  useAppStore.setState({
+    sessions: [
+      {
+        sessionId,
+        projectRoot: '/project',
+        provider: 'mock',
+        reasoningMode: 'auto',
+        permissionMode: 'accept-edits',
+        autoModeEngine: 'llm',
+        agentMode: 'ama',
+        surface: 'code',
+        createdAt: 1_000,
+        lastActivityAt: 1_000,
+      },
+    ],
+    currentSessionId: sessionId,
+    eventsBySession: {},
+    userMessagesBySession: {},
+  });
+  let calls = 0;
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    writable: true,
+    value: {
+      kodaxSpace: {
+        invoke: mockHistoryInvoke(async () => {
+          calls += 1;
+          return {
+            ok: true as const,
+            data: {
+              items: [
+                { kind: 'user' as const, content: 'query', canonicalIndex: 0 },
+                {
+                  kind: 'assistant' as const,
+                  text: calls === 1 ? 'answer missing its tail' : 'complete answer tail',
+                  canonicalIndex: 1,
+                },
+              ],
+              page: {
+                outcome: 'ready' as const,
+                revision: `revision-${calls}`,
+                sourceRevision: `source-${calls}`,
+                hasMore: false,
+                windowMode: 'replace' as const,
+                hasNewer: false,
+              },
+            },
+          };
+        }),
+      },
+    },
+  });
+
+  await restoreNewestSessionHistory(sessionId, 'code');
+  const connection = {
+    state: 'ready' as const,
+    changedAt: 1,
+    stale: false,
+    runtimeId: 'rt_1',
+    capabilities: [],
+  };
+  const terminalRun = {
+    runId: 'run_terminal',
+    sessionId,
+    phase: 'completed' as const,
+    completedAt: 2,
+  };
+  const profileEvidence = runtimeTerminalEvidenceCandidates(
+    {
+      connection,
+      profile: {
+        connection,
+        projectionRevision: 1,
+        cursor: { runtimeId: 'rt_1', seq: 5 },
+        sessions: [
+          {
+            sessionId,
+            surface: 'code',
+            createdAt: 1,
+            lastActivityAt: 2,
+            queuedRuns: [],
+            lastTerminalRun: terminalRun,
+          },
+        ],
+        interactions: [],
+        notifications: [],
+      },
+      liveBySession: {},
+    },
+    sessionId,
+  )[0];
+  assert.notEqual(profileEvidence, undefined);
+  await reconcileTerminalSessionHistory(profileEvidence!);
+
+  const snapshotEvidence = runtimeTerminalEvidenceCandidates(
+    {
+      connection,
+      profile: null,
+      liveBySession: {
+        [sessionId]: {
+          sessionId,
+          projectionRevision: 2,
+          cursor: { runtimeId: 'rt_1', seq: 6 },
+          transcriptRevision: 'terminal-transcript',
+          queuedRuns: [],
+          activeTools: [],
+          todos: [],
+          queuedInputs: [],
+          interactions: [],
+          lastTerminalRun: terminalRun,
+        },
+      },
+    },
+    sessionId,
+  )[0];
+  assert.notEqual(snapshotEvidence, undefined);
+  await reconcileTerminalSessionHistory(snapshotEvidence!);
+  await reconcileTerminalSessionHistory({
+    ...snapshotEvidence!,
+    runId: 'run_next_terminal',
+  });
+  await reconcileTerminalSessionHistory({
+    ...snapshotEvidence!,
+    runId: 'run_next_terminal',
+  });
+
+  assert.equal(calls, 3);
+  assert.deepEqual(
+    composeMessages({
+      userMessages: useAppStore.getState().userMessagesBySession[sessionId] ?? [],
+      events: useAppStore.getState().eventsBySession[sessionId] ?? [],
+    })
+      .filter((message) => message.kind === 'assistant_text')
+      .map((message) => message.text),
+    ['complete answer tail'],
+  );
+});
+
+test('terminal evidence before first history is satisfied by that first post-terminal read', async () => {
+  const sessionId = 'history-paging-terminal-before-history';
+  useAppStore.setState({
+    sessions: [
+      {
+        sessionId,
+        projectRoot: '/project',
+        provider: 'mock',
+        reasoningMode: 'auto',
+        permissionMode: 'accept-edits',
+        autoModeEngine: 'llm',
+        agentMode: 'ama',
+        surface: 'code',
+        createdAt: 1_000,
+        lastActivityAt: 1_000,
+      },
+    ],
+    currentSessionId: sessionId,
+    eventsBySession: {},
+    userMessagesBySession: {},
+  });
+  let calls = 0;
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    writable: true,
+    value: {
+      kodaxSpace: {
+        invoke: mockHistoryInvoke(async () => {
+          calls += 1;
+          return {
+            ok: true as const,
+            data: {
+              items: [
+                {
+                  kind: 'assistant' as const,
+                  text: 'complete post-terminal answer',
+                  canonicalIndex: 1,
+                },
+              ],
+              page: {
+                outcome: 'ready' as const,
+                revision: 'revision-terminal',
+                sourceRevision: 'source-terminal',
+                hasMore: false,
+                windowMode: 'replace' as const,
+                hasNewer: false,
+              },
+            },
+          };
+        }),
+      },
+    },
+  });
+
+  const terminalEvidence = {
+    sessionId,
+    runtimeId: 'rt_1',
+    runId: 'run_terminal',
+    phase: 'completed' as const,
+    cursorSeq: 9,
+    transcriptRevision: 'transcript-terminal',
+  };
+  await reconcileTerminalSessionHistory(terminalEvidence);
+  assert.equal(calls, 0);
+  await restoreNewestSessionHistory(sessionId, 'code');
+  await reconcileTerminalSessionHistory(terminalEvidence);
+
+  assert.equal(calls, 1, 'the initial post-terminal history read also satisfies reconciliation');
+  assert.equal(sessionHistoryPagingSnapshot(sessionId).revision, 'revision-terminal');
+  assert.equal(
+    composeMessages({
+      userMessages: useAppStore.getState().userMessagesBySession[sessionId] ?? [],
+      events: useAppStore.getState().eventsBySession[sessionId] ?? [],
+    }).find((message) => message.kind === 'assistant_text')?.text,
+    'complete post-terminal answer',
+  );
+});
+
+test('terminal evidence overtaking an in-flight newest read restarts from newest once', async () => {
+  const sessionId = 'history-paging-terminal-overtakes-read';
+  useAppStore.setState({
+    sessions: [
+      {
+        sessionId,
+        projectRoot: '/project',
+        provider: 'mock',
+        reasoningMode: 'auto',
+        permissionMode: 'accept-edits',
+        autoModeEngine: 'llm',
+        agentMode: 'ama',
+        surface: 'code',
+        createdAt: 1_000,
+        lastActivityAt: 1_000,
+      },
+    ],
+    currentSessionId: sessionId,
+    eventsBySession: {},
+    userMessagesBySession: {},
+  });
+  let calls = 0;
+  let resolveStale!: (value: {
+    readonly ok: true;
+    readonly data: Readonly<Record<string, unknown>>;
+  }) => void;
+  const stale = new Promise<Parameters<typeof resolveStale>[0]>((resolve) => {
+    resolveStale = resolve;
+  });
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    writable: true,
+    value: {
+      kodaxSpace: {
+        invoke: mockHistoryInvoke(async () => {
+          calls += 1;
+          if (calls === 1) return stale;
+          return {
+            ok: true as const,
+            data: {
+              items: [{ kind: 'assistant' as const, text: 'terminal tail', canonicalIndex: 1 }],
+              page: {
+                outcome: 'ready' as const,
+                revision: 'revision-terminal',
+                sourceRevision: 'source-terminal',
+                hasMore: false,
+                windowMode: 'replace' as const,
+                hasNewer: false,
+              },
+            },
+          };
+        }),
+      },
+    },
+  });
+
+  const initial = restoreNewestSessionHistory(sessionId, 'code');
+  const reconciliation = reconcileTerminalSessionHistory({
+    sessionId,
+    runtimeId: 'rt_1',
+    runId: 'run_terminal',
+    phase: 'completed',
+    cursorSeq: 9,
+  });
+  resolveStale({
+    ok: true,
+    data: {
+      items: [{ kind: 'assistant', text: 'stale tail', canonicalIndex: 1 }],
+      page: {
+        outcome: 'ready',
+        revision: 'revision-stale',
+        sourceRevision: 'source-stale',
+        hasMore: false,
+        windowMode: 'replace',
+        hasNewer: false,
+      },
+    },
+  });
+  await Promise.all([initial, reconciliation]);
+  const deadline = Date.now() + 2_000;
+  while (calls < 2 && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+
+  assert.equal(calls, 2);
+  assert.equal(sessionHistoryPagingSnapshot(sessionId).revision, 'revision-terminal');
+});
+
+test('a history request settles only terminal evidence present when that request started', async () => {
+  const sessionId = 'history-paging-terminal-request-scope';
+  useAppStore.setState({
+    sessions: [
+      {
+        sessionId,
+        projectRoot: '/project',
+        provider: 'mock',
+        reasoningMode: 'auto',
+        permissionMode: 'accept-edits',
+        autoModeEngine: 'llm',
+        agentMode: 'ama',
+        surface: 'code',
+        createdAt: 1_000,
+        lastActivityAt: 1_000,
+      },
+    ],
+    currentSessionId: sessionId,
+    eventsBySession: {},
+    userMessagesBySession: {},
+  });
+  let calls = 0;
+  let resolveRunARead!: (value: {
+    readonly ok: true;
+    readonly data: Readonly<Record<string, unknown>>;
+  }) => void;
+  const runARead = new Promise<Parameters<typeof resolveRunARead>[0]>((resolve) => {
+    resolveRunARead = resolve;
+  });
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    writable: true,
+    value: {
+      kodaxSpace: {
+        invoke: mockHistoryInvoke(async () => {
+          calls += 1;
+          if (calls === 1) {
+            return {
+              ok: true as const,
+              data: {
+                items: [{ kind: 'assistant' as const, text: 'baseline', canonicalIndex: 1 }],
+                page: {
+                  outcome: 'ready' as const,
+                  revision: 'revision-0',
+                  sourceRevision: 'source-0',
+                  hasMore: false,
+                  windowMode: 'replace' as const,
+                  hasNewer: false,
+                },
+              },
+            };
+          }
+          if (calls === 2) return runARead;
+          return {
+            ok: true as const,
+            data: {
+              items: [
+                {
+                  kind: 'assistant' as const,
+                  text: 'both terminal runs persisted',
+                  canonicalIndex: 1,
+                },
+              ],
+              page: {
+                outcome: 'ready' as const,
+                revision: 'revision-2',
+                sourceRevision: 'source-2',
+                hasMore: false,
+                windowMode: 'replace' as const,
+                hasNewer: false,
+              },
+            },
+          };
+        }),
+      },
+    },
+  });
+
+  await restoreNewestSessionHistory(sessionId, 'code');
+  const runAReconciliation = reconcileTerminalSessionHistory({
+    sessionId,
+    runtimeId: 'rt_1',
+    runId: 'run_a',
+    phase: 'completed',
+    cursorSeq: 10,
+  });
+  const deadline = Date.now() + 2_000;
+  while (calls < 2 && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(calls, 2);
+  const runBReconciliation = reconcileTerminalSessionHistory({
+    sessionId,
+    runtimeId: 'rt_1',
+    runId: 'run_b',
+    phase: 'completed',
+    cursorSeq: 11,
+    transcriptRevision: 'transcript-2',
+  });
+  resolveRunARead({
+    ok: true,
+    data: {
+      items: [{ kind: 'assistant', text: 'only run A persisted', canonicalIndex: 1 }],
+      page: {
+        outcome: 'ready',
+        revision: 'revision-1',
+        sourceRevision: 'source-1',
+        hasMore: false,
+        windowMode: 'replace',
+        hasNewer: false,
+      },
+    },
+  });
+  await Promise.all([runAReconciliation, runBReconciliation]);
+  const retryDeadline = Date.now() + 2_000;
+  while (calls < 3 && Date.now() < retryDeadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+
+  assert.equal(calls, 3);
+  assert.equal(sessionHistoryPagingSnapshot(sessionId).revision, 'revision-2');
+  assert.equal(
+    composeMessages({
+      userMessages: useAppStore.getState().userMessagesBySession[sessionId] ?? [],
+      events: useAppStore.getState().eventsBySession[sessionId] ?? [],
+    }).find((message) => message.kind === 'assistant_text')?.text,
+    'both terminal runs persisted',
+  );
+  await reconcileTerminalSessionHistory({
+    sessionId,
+    runtimeId: 'rt_1',
+    runId: 'run_b',
+    phase: 'completed',
+    cursorSeq: 12,
+    transcriptRevision: 'transcript-2',
+  });
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.equal(calls, 3, 'repeat evidence cannot trigger another read');
+});
+
+test('a failed terminal newest-history read retries automatically and completes exactly once', async () => {
+  const sessionId = 'history-paging-terminal-auto-retry';
+  useAppStore.setState({
+    sessions: [
+      {
+        sessionId,
+        projectRoot: '/project',
+        provider: 'mock',
+        reasoningMode: 'auto',
+        permissionMode: 'accept-edits',
+        autoModeEngine: 'llm',
+        agentMode: 'ama',
+        surface: 'code',
+        createdAt: 1_000,
+        lastActivityAt: 1_000,
+      },
+    ],
+    currentSessionId: sessionId,
+    eventsBySession: {},
+    userMessagesBySession: {},
+  });
+  let calls = 0;
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    writable: true,
+    value: {
+      kodaxSpace: {
+        invoke: mockHistoryInvoke(async () => {
+          calls += 1;
+          if (calls === 2) throw new Error('transient terminal history failure');
+          return {
+            ok: true as const,
+            data: {
+              items: [
+                {
+                  kind: 'assistant' as const,
+                  text: calls === 1 ? 'answer missing tail' : 'complete terminal answer',
+                  canonicalIndex: 1,
+                },
+              ],
+              page: {
+                outcome: 'ready' as const,
+                revision: `revision-${calls}`,
+                sourceRevision: `source-${calls}`,
+                hasMore: false,
+                windowMode: 'replace' as const,
+                hasNewer: false,
+              },
+            },
+          };
+        }),
+      },
+    },
+  });
+
+  await restoreNewestSessionHistory(sessionId, 'code');
+  await assert.rejects(
+    reconcileTerminalSessionHistory({
+      sessionId,
+      runtimeId: 'rt_1',
+      runId: 'run_terminal',
+      phase: 'completed',
+      cursorSeq: 9,
+    }),
+    /transient terminal history failure/,
+  );
+  const deadline = Date.now() + 2_000;
+  while (calls < 3 && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+
+  assert.equal(calls, 3);
+  assert.equal(sessionHistoryPagingSnapshot(sessionId).revision, 'revision-3');
+  assert.equal(
+    composeMessages({
+      userMessages: useAppStore.getState().userMessagesBySession[sessionId] ?? [],
+      events: useAppStore.getState().eventsBySession[sessionId] ?? [],
+    }).find((message) => message.kind === 'assistant_text')?.text,
+    'complete terminal answer',
+  );
+
+  await reconcileTerminalSessionHistory({
+    sessionId,
+    runtimeId: 'rt_1',
+    runId: 'run_terminal',
+    phase: 'completed',
+    cursorSeq: 9,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.equal(calls, 3, 'duplicate terminal evidence must not schedule another canonical read');
+});
+
+test('snapshot-first terminal evidence is not repeated when the profile arrives later', async () => {
+  const sessionId = 'history-paging-terminal-snapshot-first';
+  useAppStore.setState({
+    sessions: [
+      {
+        sessionId,
+        projectRoot: '/project',
+        provider: 'mock',
+        reasoningMode: 'auto',
+        permissionMode: 'accept-edits',
+        autoModeEngine: 'llm',
+        agentMode: 'ama',
+        surface: 'code',
+        createdAt: 1_000,
+        lastActivityAt: 1_000,
+      },
+    ],
+    currentSessionId: sessionId,
+    eventsBySession: {},
+    userMessagesBySession: {},
+  });
+  let calls = 0;
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    writable: true,
+    value: {
+      kodaxSpace: {
+        invoke: mockHistoryInvoke(async () => {
+          calls += 1;
+          return {
+            ok: true as const,
+            data: {
+              items: [
+                {
+                  kind: 'assistant' as const,
+                  text: calls === 1 ? 'answer missing tail' : 'complete answer tail',
+                  canonicalIndex: 1,
+                },
+              ],
+              page: {
+                outcome: 'ready' as const,
+                revision: calls === 1 ? 'revision-old' : 'revision-terminal',
+                sourceRevision: calls === 1 ? 'source-old' : 'source-terminal',
+                hasMore: false,
+                windowMode: 'replace' as const,
+                hasNewer: false,
+              },
+            },
+          };
+        }),
+      },
+    },
+  });
+
+  await restoreNewestSessionHistory(sessionId, 'code');
+  await reconcileTerminalSessionHistory({
+    sessionId,
+    runtimeId: 'rt_1',
+    runId: 'run_terminal',
+    phase: 'completed',
+    cursorSeq: 9,
+    transcriptRevision: 'transcript-terminal',
+  });
+  assert.equal(calls, 2);
+  assert.equal(sessionHistoryPagingSnapshot(sessionId).revision, 'revision-terminal');
+  await reconcileTerminalSessionHistory({
+    sessionId,
+    runtimeId: 'rt_1',
+    runId: 'run_terminal',
+    phase: 'completed',
+    cursorSeq: 10,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.equal(calls, 2);
+  assert.equal(sessionHistoryPagingSnapshot(sessionId).revision, 'revision-terminal');
+  assert.equal(
+    composeMessages({
+      userMessages: useAppStore.getState().userMessagesBySession[sessionId] ?? [],
+      events: useAppStore.getState().eventsBySession[sessionId] ?? [],
+    }).find((message) => message.kind === 'assistant_text')?.text,
+    'complete answer tail',
+  );
+});
+
+test('a terminal Run with no new conversation rows performs one authoritative history read', async () => {
+  const sessionId = 'history-paging-terminal-unchanged';
+  useAppStore.setState({
+    sessions: [
+      {
+        sessionId,
+        projectRoot: '/project',
+        provider: 'mock',
+        reasoningMode: 'auto',
+        permissionMode: 'accept-edits',
+        autoModeEngine: 'llm',
+        agentMode: 'ama',
+        surface: 'code',
+        createdAt: 1_000,
+        lastActivityAt: 1_000,
+      },
+    ],
+    currentSessionId: sessionId,
+    eventsBySession: {},
+    userMessagesBySession: {},
+  });
+  let calls = 0;
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    writable: true,
+    value: {
+      kodaxSpace: {
+        invoke: mockHistoryInvoke(async () => {
+          calls += 1;
+          return {
+            ok: true as const,
+            data: {
+              items: [
+                {
+                  kind: 'assistant' as const,
+                  text: 'unchanged canonical answer',
+                  canonicalIndex: 1,
+                },
+              ],
+              page: {
+                outcome: 'ready' as const,
+                revision: 'revision-shared',
+                sourceRevision: 'source-shared',
+                hasMore: false,
+                windowMode: 'replace' as const,
+                hasNewer: false,
+              },
+            },
+          };
+        }),
+      },
+    },
+  });
+
+  await restoreNewestSessionHistory(sessionId, 'code');
+  await reconcileTerminalSessionHistory({
+    sessionId,
+    runtimeId: 'rt_1',
+    runId: 'run_terminal',
+    phase: 'completed',
+    cursorSeq: 9,
+  });
+  assert.equal(calls, 2);
+  await new Promise((resolve) => setTimeout(resolve, 450));
+  assert.equal(calls, 2, 'unchanged terminal history must not start a polling loop');
+  assert.equal(sessionHistoryPagingSnapshot(sessionId).revision, 'revision-shared');
+  assert.equal(
+    composeMessages({
+      userMessages: useAppStore.getState().userMessagesBySession[sessionId] ?? [],
+      events: useAppStore.getState().eventsBySession[sessionId] ?? [],
+    }).find((message) => message.kind === 'assistant_text')?.text,
+    'unchanged canonical answer',
+  );
+});
+
+test('terminal convergence ignores older evidence and preserves an explicit older window', async () => {
+  const sessionId = 'history-paging-terminal-older-window';
+  useAppStore.setState({
+    sessions: [
+      {
+        sessionId,
+        projectRoot: '/project',
+        provider: 'mock',
+        reasoningMode: 'auto',
+        permissionMode: 'accept-edits',
+        autoModeEngine: 'llm',
+        agentMode: 'ama',
+        surface: 'code',
+        createdAt: 1_000,
+        lastActivityAt: 1_000,
+      },
+    ],
+    currentSessionId: sessionId,
+    eventsBySession: {},
+    userMessagesBySession: {},
+  });
+  let calls = 0;
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    writable: true,
+    value: {
+      kodaxSpace: {
+        invoke: mockHistoryInvoke(async () => {
+          calls += 1;
+          return {
+            ok: true as const,
+            data: {
+              items: [{ kind: 'user' as const, content: 'older row', canonicalIndex: 1 }],
+              page: {
+                outcome: 'ready' as const,
+                revision: 'older-revision',
+                sourceRevision: 'older-source',
+                hasMore: true,
+                nextCursor: 'older-cursor',
+                windowMode: 'replace' as const,
+                hasNewer: true,
+              },
+            },
+          };
+        }),
+      },
+    },
+  });
+
+  await restoreNewestSessionHistory(sessionId, 'code');
+  await reconcileTerminalSessionHistory({
+    sessionId,
+    runtimeId: 'rt_1',
+    runId: 'run_newer_terminal',
+    phase: 'completed',
+    cursorSeq: 20,
+  });
+  await reconcileTerminalSessionHistory({
+    sessionId,
+    runtimeId: 'rt_1',
+    runId: 'run_old_terminal',
+    phase: 'completed',
+    cursorSeq: 10,
+  });
+
+  assert.equal(calls, 1);
+  assert.equal(sessionHistoryPagingSnapshot(sessionId).hasNewer, true);
+  assert.equal(sessionHistoryPagingSnapshot(sessionId).revision, 'older-revision');
+});
 
 const originalWindow = globalThis.window;
 
@@ -631,6 +1400,7 @@ test('ready history revalidation does not replace the painted live turn while a 
     kind: 'session_complete',
     sessionId,
     turnId: 'turn-active',
+    runtimeEvent: { runtimeId: 'runtime-active', runId: 'run-active', seq: 3 },
   });
   await refreshDeferredSessionHistory(sessionId);
 
@@ -2587,8 +3357,9 @@ test('history-window replacement does not resurrect an optimistic query after ro
     1_000,
     { replaceLoadedWindow: true },
   );
-  store.appendUserMessage(sessionId, 'optimistic ghost', 2_000);
-  store.rollbackLastUserMessage(sessionId, 'optimistic ghost');
+  const optimisticMessageId = store.appendUserMessage(sessionId, 'optimistic ghost', 2_000);
+  assert.ok(optimisticMessageId);
+  store.rollbackUserMessage(sessionId, optimisticMessageId);
   store.prependSessionHistory(
     sessionId,
     [{ kind: 'user', content: 'durable older', canonicalIndex: 5 }],
@@ -2633,9 +3404,10 @@ test('history-window replacement does not resurrect a query converted back to qu
     1_000,
     { replaceLoadedWindow: true },
   );
-  store.appendUserMessage(sessionId, 'queued query', 2_000);
+  const optimisticMessageId = store.appendUserMessage(sessionId, 'queued query', 2_000);
+  assert.ok(optimisticMessageId);
   assert.notEqual(
-    store.convertLastUserMessageToQueued(sessionId, 'queued query', {
+    store.convertUserMessageToQueued(sessionId, optimisticMessageId, {
       content: 'queued query',
       queueMode: 'after-turn',
       sentAt: 2_000,

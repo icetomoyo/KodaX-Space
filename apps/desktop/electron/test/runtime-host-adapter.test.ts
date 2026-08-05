@@ -27,6 +27,7 @@ import {
   setSessionRuntimeStoreForTesting,
 } from '../kodax/session-runtime-store.js';
 import {
+  invalidatePersistedSessionCache,
   loadPersistedTranscript,
   setSessionStoreImpl,
   type SessionStoreImpl,
@@ -3467,6 +3468,53 @@ test('bounded conversation page does not traverse older history and fences conti
   await adapter.close();
 });
 
+test('bounded conversation paging revalidates Coder ownership after a Partner retag', async () => {
+  const sessionId = 's_history_retag';
+  const records = new Map<string, Readonly<Record<string, unknown>>>([
+    [sessionId, { title: '', messages: [], gitRoot: 'C:\\repo', tag: 'code' }],
+  ]);
+  installPersistedSessionLookup(records);
+  const fake = createFakeRuntime();
+  fake.sessions.add(sessionId);
+  const originalStatusSnapshot = fake.runtime.status.snapshot.bind(fake.runtime.status);
+  let runtimeReportsPartner = false;
+  fake.runtime.status.snapshot = async () => {
+    const snapshot = await originalStatusSnapshot();
+    return runtimeReportsPartner ? { ...snapshot, sessions: [] } : snapshot;
+  };
+  let pageReads = 0;
+  Object.assign(fake.runtime.sessions, {
+    conversationPage: async () => {
+      pageReads += 1;
+      return null;
+    },
+  });
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  assert.deepEqual(await adapter.conversationHistoryPage({ sessionId }), {
+    outcome: 'ready',
+    page: null,
+  });
+  records.set(sessionId, { title: '', messages: [], gitRoot: 'C:\\repo', tag: 'partner' });
+  runtimeReportsPartner = true;
+  invalidatePersistedSessionCache(sessionId);
+
+  await assert.rejects(
+    adapter.conversationHistoryPage({ sessionId }),
+    (error: unknown) =>
+      error instanceof Error &&
+      (error as Error & { code?: string }).code === 'session_identity_conflict',
+  );
+  assert.equal(pageReads, 1, 'Partner history must be rejected before the SDK page read');
+  await adapter.close();
+});
+
 test('ordinary conversation paging fails closed on cross-page evidence and transport corruption', async (t) => {
   const issue = {
     code: 'legacy_overlap_ambiguous' as const,
@@ -4812,6 +4860,320 @@ test('observation and transcript reads reject a Session retagged to Partner', as
   await adapter.close();
 });
 
+test('live snapshot reconciliation uses fresh Runtime ownership without crossing active history', async () => {
+  let persistedReads = 0;
+  setSessionStoreImpl({
+    listSessions: async () => [],
+    forkSession: async () => null,
+    rewindSession: async () => null,
+    deleteSession: async () => ({ ok: true }),
+    loadSession: async (sessionId) => {
+      persistedReads += 1;
+      return {
+        sessionId,
+        title: '',
+        messages: [],
+        gitRoot: 'C:\\repo',
+        tag: 'code',
+      } as never;
+    },
+    watchSessions: () => ({ close() {} }),
+  } as SessionStoreImpl);
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_cached_snapshot');
+  const originalObserve = fake.runtime.sessions.observe.bind(fake.runtime.sessions);
+  fake.runtime.sessions.observe = async (...args) => {
+    const observation = await originalObserve(...args);
+    return {
+      ...observation,
+      snapshot: {
+        ...observation.snapshot,
+        runs: [
+          {
+            runId: 'run_cached_snapshot',
+            sessionId: 's_cached_snapshot',
+            phase: 'running' as const,
+            provider: 'mock',
+            mode: 'managed_task' as const,
+            startedAt: '2026-08-05T01:00:00.000Z',
+          },
+        ],
+      },
+    };
+  };
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  await adapter.initialize();
+  assert.equal(
+    (await adapter.readSessionLiveSnapshot('s_cached_snapshot')).sessionId,
+    's_cached_snapshot',
+  );
+  invalidatePersistedSessionCache('s_cached_snapshot');
+  for (let index = 0; index < 100; index += 1) {
+    assert.equal(
+      (await adapter.readSessionLiveSnapshot('s_cached_snapshot')).sessionId,
+      's_cached_snapshot',
+    );
+  }
+
+  assert.equal(persistedReads, 0, 'Runtime profile ownership avoids mutable persisted history');
+  assert.deepEqual(fake.calls.observed, ['s_cached_snapshot']);
+  await adapter.close();
+});
+
+test('live ownership reconciliation performs one Runtime read while persisted history keeps changing', async () => {
+  setSessionStoreImpl({
+    listSessions: async () => [],
+    forkSession: async () => null,
+    rewindSession: async () => null,
+    deleteSession: async () => ({ ok: true }),
+    loadSession: async (sessionId) =>
+      ({
+        sessionId,
+        title: '',
+        messages: [],
+        gitRoot: 'C:\\repo',
+        tag: 'code',
+      }) as never,
+    watchSessions: () => ({ close() {} }),
+  } as SessionStoreImpl);
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_streaming_ownership');
+  const originalStatusSnapshot = fake.runtime.status.snapshot.bind(fake.runtime.status);
+  let mutateDuringStatus = false;
+  let statusReads = 0;
+  fake.runtime.status.snapshot = async () => {
+    statusReads += 1;
+    const snapshot = await originalStatusSnapshot();
+    if (mutateDuringStatus) invalidatePersistedSessionCache('s_streaming_ownership');
+    return snapshot;
+  };
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  await adapter.initialize();
+  statusReads = 0;
+  mutateDuringStatus = true;
+  invalidatePersistedSessionCache('s_streaming_ownership');
+  assert.equal(
+    (await adapter.readSessionLiveSnapshot('s_streaming_ownership')).sessionId,
+    's_streaming_ownership',
+  );
+  assert.equal(statusReads, 1, 'one request must not wait for a streaming JSONL file to quiesce');
+  await adapter.close();
+});
+
+test('a quiescent live snapshot read retires observation and reuses its terminal cache', async () => {
+  let persistedReads = 0;
+  setSessionStoreImpl({
+    listSessions: async () => [],
+    forkSession: async () => null,
+    rewindSession: async () => null,
+    deleteSession: async () => ({ ok: true }),
+    loadSession: async (sessionId) => {
+      persistedReads += 1;
+      return { sessionId, title: '', messages: [], gitRoot: 'C:\\repo', tag: 'code' } as never;
+    },
+    watchSessions: () => ({ close() {} }),
+  } as SessionStoreImpl);
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_terminal_cache');
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  await adapter.initialize();
+  assert.equal((await adapter.readSessionLiveSnapshot('s_terminal_cache')).activeRun, undefined);
+  assert.equal(fake.calls.observationCloses, 1);
+  assert.equal((await adapter.readSessionLiveSnapshot('s_terminal_cache')).activeRun, undefined);
+  assert.equal(persistedReads, 0, 'fresh Runtime profile ownership avoids persisted history');
+  assert.deepEqual(fake.calls.observed, ['s_terminal_cache']);
+  await adapter.close();
+});
+
+test('cached snapshot ownership is revalidated after an external Session retag', async () => {
+  const records = new Map<string, Readonly<Record<string, unknown>>>([
+    ['s_cached_retag', { title: '', messages: [], gitRoot: 'C:\\repo', tag: 'code' }],
+  ]);
+  let notifySessionChange:
+    | ((event: { kind: 'change' | 'add' | 'remove'; sessionId: string }) => void)
+    | undefined;
+  setSessionStoreImpl({
+    listSessions: async () => [],
+    forkSession: async () => null,
+    rewindSession: async () => null,
+    deleteSession: async () => ({ ok: true }),
+    loadSession: async (sessionId) => (records.get(sessionId) ?? null) as never,
+    watchSessions: (callback) => {
+      notifySessionChange = callback;
+      return { close() {} };
+    },
+  } as SessionStoreImpl);
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_cached_retag');
+  const originalStatusSnapshot = fake.runtime.status.snapshot.bind(fake.runtime.status);
+  let runtimeReportsPartner = false;
+  fake.runtime.status.snapshot = async () => {
+    const snapshot = await originalStatusSnapshot();
+    return runtimeReportsPartner ? { ...snapshot, sessions: [] } : snapshot;
+  };
+  const originalObserve = fake.runtime.sessions.observe.bind(fake.runtime.sessions);
+  fake.runtime.sessions.observe = async (...args) => {
+    const observation = await originalObserve(...args);
+    return {
+      ...observation,
+      snapshot: {
+        ...observation.snapshot,
+        runs: [
+          {
+            runId: 'run_cached_retag',
+            sessionId: 's_cached_retag',
+            phase: 'running' as const,
+            provider: 'mock',
+            mode: 'managed_task' as const,
+            startedAt: '2026-08-05T01:00:00.000Z',
+          },
+        ],
+      },
+    };
+  };
+  const controller = new RuntimeProjectionController(
+    createPendingSdkRuntimeProjection(100).profileSnapshot(),
+  );
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    projectionController: controller,
+  });
+
+  await adapter.initialize();
+  await adapter.readSessionLiveSnapshot('s_cached_retag');
+  records.set('s_cached_retag', {
+    title: '',
+    messages: [],
+    gitRoot: 'C:\\repo',
+    tag: 'partner',
+  });
+  runtimeReportsPartner = true;
+  notifySessionChange?.({ kind: 'change', sessionId: 's_cached_retag' });
+
+  await assert.rejects(
+    adapter.readSessionLiveSnapshot('s_cached_retag'),
+    (error: unknown) =>
+      error instanceof Error &&
+      (error as Error & { code?: string }).code === 'session_identity_conflict',
+  );
+  assert.equal(fake.calls.observationCloses, 1);
+  assert.throws(
+    () => controller.sessionLiveSnapshot('s_cached_retag'),
+    RuntimeProjectionUnavailableError,
+  );
+  await adapter.close();
+});
+
+test('a Runtime profile read refreshes status instead of returning a stale main cache', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_profile_refresh');
+  const originalSnapshot = fake.runtime.status.snapshot.bind(fake.runtime.status);
+  let active = true;
+  let snapshotReads = 0;
+  fake.runtime.status.snapshot = async () => {
+    snapshotReads += 1;
+    return {
+      ...(await originalSnapshot()),
+      runs: active
+        ? [
+            {
+              runId: 'run_profile_refresh',
+              sessionId: 's_profile_refresh',
+              phase: 'running' as const,
+              provider: 'mock',
+              mode: 'managed_task' as const,
+              startedAt: '2026-08-05T01:00:00.000Z',
+            },
+          ]
+        : [],
+    };
+  };
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  await adapter.initialize();
+  assert.equal(
+    (await adapter.readRuntimeProfileSnapshot()).sessions[0]?.activeRun?.runId,
+    'run_profile_refresh',
+  );
+  active = false;
+  assert.equal((await adapter.readRuntimeProfileSnapshot()).sessions[0]?.activeRun, undefined);
+  assert.ok(snapshotReads >= 3);
+  await adapter.close();
+});
+
+test('a newer profile terminal invalidates an older retired live cache', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_terminal_advanced');
+  const originalSnapshot = fake.runtime.status.snapshot.bind(fake.runtime.status);
+  let terminalAdvanced = false;
+  fake.runtime.status.snapshot = async () => ({
+    ...(await originalSnapshot()),
+    runs: terminalAdvanced
+      ? [
+          {
+            runId: 'run_new_terminal',
+            sessionId: 's_terminal_advanced',
+            phase: 'completed' as const,
+            provider: 'mock',
+            mode: 'managed_task' as const,
+            startedAt: '2026-08-05T01:00:00.000Z',
+            endedAt: '2026-08-05T01:00:01.000Z',
+          },
+        ]
+      : [],
+  });
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  await adapter.initialize();
+  await adapter.readSessionLiveSnapshot('s_terminal_advanced');
+  assert.equal(fake.calls.observationCloses, 1);
+  terminalAdvanced = true;
+  assert.equal(
+    (await adapter.readRuntimeProfileSnapshot()).sessions[0]?.lastTerminalRun?.runId,
+    'run_new_terminal',
+  );
+  await adapter.readSessionLiveSnapshot('s_terminal_advanced');
+  assert.deepEqual(fake.calls.observed, ['s_terminal_advanced', 's_terminal_advanced']);
+  await adapter.close();
+});
+
 test('run status and Stop bypass a history boundary that is busy with active Session writes', async () => {
   setSessionStoreImpl({
     listSessions: async () => [],
@@ -5791,6 +6153,7 @@ test('daemon delivered interrupt batch becomes ordered queue-addressable session
         inputs: [
           {
             inputId: 'input-1',
+            entryId: 'entry-interrupt-1',
             afterRunId: 'run_active',
             input: [{ type: 'text', text: 'first interrupt\n\nattachment overlay' }],
             queuedAt: '2026-07-21T00:00:00.000Z',
@@ -5798,6 +6161,7 @@ test('daemon delivered interrupt batch becomes ordered queue-addressable session
           },
           {
             inputId: 'input-2',
+            entryId: 'entry-interrupt-2',
             afterRunId: 'run_active',
             input: [{ type: 'text', text: 'second interrupt' }],
             queuedAt: '2026-07-21T00:00:00.000Z',
@@ -5838,6 +6202,7 @@ test('daemon delivered interrupt batch becomes ordered queue-addressable session
       kind: 'mid_turn_user_prompt',
       sessionId: 's_1',
       queueId: 'input-1',
+      entryId: 'entry-interrupt-1',
       content: 'first interrupt\n\nattachment overlay',
       turnId: 'turn_active',
       turnUserOrdinal: 1,
@@ -5847,6 +6212,7 @@ test('daemon delivered interrupt batch becomes ordered queue-addressable session
       kind: 'mid_turn_user_prompt',
       sessionId: 's_1',
       queueId: 'input-2',
+      entryId: 'entry-interrupt-2',
       content: 'second interrupt',
       turnId: 'turn_active',
       turnUserOrdinal: 2,
@@ -7498,6 +7864,195 @@ test('terminal Session observations retire and are not restored after reconnect'
   await waitForTest(() => adapter.snapshot().state === 'uninitialized');
   await adapter.initialize();
   assert.deepEqual(second.calls.observed, []);
+  await adapter.close();
+});
+
+test('a same-Runtime observation generation immediately replaces its retired predecessor', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_reobserve');
+  const originalObserve = fake.runtime.sessions.observe.bind(fake.runtime.sessions);
+  let observationGeneration = 0;
+  fake.runtime.sessions.observe = async (...args) => {
+    const observation = await originalObserve(...args);
+    observationGeneration += 1;
+    if (observationGeneration === 1) return observation;
+    return {
+      ...observation,
+      snapshot: {
+        ...observation.snapshot,
+        cursor: 3,
+        runs: [
+          {
+            runId: 'run_second',
+            sessionId: 's_reobserve',
+            phase: 'running' as const,
+            provider: 'mock',
+            mode: 'managed_task' as const,
+            startedAt: '2026-08-05T01:01:00.000Z',
+          },
+        ],
+      },
+    };
+  };
+  const controller = new RuntimeProjectionController(
+    createPendingSdkRuntimeProjection(100).profileSnapshot(),
+  );
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    projectionController: controller,
+  });
+
+  await adapter.initialize();
+  await adapter.ensureObserved('s_reobserve');
+  fake.emit({
+    id: 'evt_first_started',
+    seq: 1,
+    time: '2026-08-05T01:00:00.000Z',
+    sessionId: 's_reobserve',
+    runId: 'run_first',
+    turnId: 'turn_first',
+    type: 'run.started',
+    payload: {
+      runId: 'run_first',
+      sessionId: 's_reobserve',
+      turnId: 'turn_first',
+      phase: 'running',
+      provider: 'mock',
+      startedAt: '2026-08-05T01:00:00.000Z',
+    },
+  });
+  fake.emit({
+    id: 'evt_first_completed',
+    seq: 2,
+    time: '2026-08-05T01:00:01.000Z',
+    sessionId: 's_reobserve',
+    runId: 'run_first',
+    turnId: 'turn_first',
+    type: 'run.completed',
+    payload: {
+      runId: 'run_first',
+      sessionId: 's_reobserve',
+      turnId: 'turn_first',
+      phase: 'completed',
+      provider: 'mock',
+      startedAt: '2026-08-05T01:00:00.000Z',
+      endedAt: '2026-08-05T01:00:01.000Z',
+    },
+  });
+  await waitForTest(() => fake.calls.observationCloses === 1);
+  const firstTerminalRevision = controller.sessionLiveSnapshot('s_reobserve').projectionRevision;
+
+  await adapter.ensureObserved('s_reobserve');
+  const second = controller.sessionLiveSnapshot('s_reobserve');
+  assert.equal(second.activeRun?.runId, 'run_second');
+  assert.ok(second.projectionRevision > firstTerminalRevision);
+  await adapter.close();
+});
+
+test('observation invalidation preserves a monotonic live revision for a missed renderer signal', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_invalidated_revision');
+  const originalObserve = fake.runtime.sessions.observe.bind(fake.runtime.sessions);
+  let generation = 0;
+  fake.runtime.sessions.observe = async (...args) => {
+    const observation = await originalObserve(...args);
+    generation += 1;
+    return {
+      ...observation,
+      snapshot: {
+        ...observation.snapshot,
+        cursor: generation === 1 ? 0 : 4,
+        runs: [
+          {
+            runId: generation === 1 ? 'run_before_invalidation' : 'run_after_invalidation',
+            sessionId: 's_invalidated_revision',
+            phase: 'running' as const,
+            provider: 'mock',
+            mode: 'managed_task' as const,
+            startedAt: '2026-08-05T01:00:00.000Z',
+          },
+        ],
+      },
+    };
+  };
+  const controller = new RuntimeProjectionController(
+    createPendingSdkRuntimeProjection(100).profileSnapshot(),
+  );
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    projectionController: controller,
+  });
+
+  await adapter.initialize();
+  await adapter.ensureObserved('s_invalidated_revision');
+  fake.emit({
+    id: 'evt_revision_progress_1',
+    seq: 1,
+    time: '2026-08-05T01:00:01.000Z',
+    sessionId: 's_invalidated_revision',
+    runId: 'run_before_invalidation',
+    type: 'run.progress',
+    payload: {
+      kind: 'managed_task_status',
+      status: {
+        agentMode: 'ama',
+        harnessProfile: 'H2_PLAN_EXECUTE_EVAL',
+        currentRound: 1,
+        maxRounds: 2,
+        upgradeCeiling: 'H2_PLAN_EXECUTE_EVAL',
+        phase: 'verifying',
+      },
+    },
+  });
+  fake.emit({
+    id: 'evt_revision_progress_2',
+    seq: 2,
+    time: '2026-08-05T01:00:02.000Z',
+    sessionId: 's_invalidated_revision',
+    runId: 'run_before_invalidation',
+    type: 'run.progress',
+    payload: {
+      kind: 'managed_task_status',
+      status: {
+        agentMode: 'ama',
+        harnessProfile: 'H2_PLAN_EXECUTE_EVAL',
+        currentRound: 2,
+        maxRounds: 2,
+        upgradeCeiling: 'H2_PLAN_EXECUTE_EVAL',
+        phase: 'verifying',
+      },
+    },
+  });
+  await waitForTest(
+    () => controller.sessionLiveSnapshot('s_invalidated_revision').projectionRevision >= 3,
+  );
+  const revisionBeforeInvalidation =
+    controller.sessionLiveSnapshot('s_invalidated_revision').projectionRevision;
+
+  fake.invalidateObservation('s_invalidated_revision', 'event_overflow');
+  await waitForTest(() => {
+    try {
+      return (
+        controller.sessionLiveSnapshot('s_invalidated_revision').activeRun?.runId ===
+        'run_after_invalidation'
+      );
+    } catch (error: unknown) {
+      if (error instanceof RuntimeProjectionUnavailableError) return false;
+      throw error;
+    }
+  });
+  assert.ok(
+    controller.sessionLiveSnapshot('s_invalidated_revision').projectionRevision >
+      revisionBeforeInvalidation,
+  );
   await adapter.close();
 });
 

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { RealKodaXSession } from '../kodax/real-session.js';
+import { projectEmbeddedMidTurnUserMessages, RealKodaXSession } from '../kodax/real-session.js';
 import { runtimeHostAdapter } from '../kodax/runtime-host-adapter.js';
 import { setUserConfigImpl } from '../kodax/user-config.js';
 
@@ -12,6 +12,51 @@ async function waitForTest(predicate: () => boolean, timeoutMs = 1_000): Promise
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
 }
+
+test('embedded mid-turn delivery preserves the SDK queue and canonical entry identities', () => {
+  assert.deepEqual(
+    projectEmbeddedMidTurnUserMessages('session_embedded_identity', ['first', 'second'], {
+      queuedMessageIds: ['queue-first', 'queue-second'],
+      queuedMessageEntryIds: {
+        'queue-first': 'entry-first',
+        'queue-second': 'entry-second',
+      },
+    }),
+    [
+      {
+        kind: 'mid_turn_user_prompt',
+        sessionId: 'session_embedded_identity',
+        queueId: 'queue-first',
+        entryId: 'entry-first',
+        content: 'first',
+      },
+      {
+        kind: 'mid_turn_user_prompt',
+        sessionId: 'session_embedded_identity',
+        queueId: 'queue-second',
+        entryId: 'entry-second',
+        content: 'second',
+      },
+    ],
+  );
+});
+
+test('embedded mid-turn delivery treats an invalid canonical entry identity as legacy absence', () => {
+  assert.deepEqual(
+    projectEmbeddedMidTurnUserMessages('session_embedded_legacy_identity', ['prompt'], {
+      queuedMessageIds: ['queue-prompt'],
+      queuedMessageEntryIds: { 'queue-prompt': '' },
+    }),
+    [
+      {
+        kind: 'mid_turn_user_prompt',
+        sessionId: 'session_embedded_legacy_identity',
+        queueId: 'queue-prompt',
+        content: 'prompt',
+      },
+    ],
+  );
+});
 
 test('embedded Coder send rejects before acceptance when the inline owner is unavailable', async (t) => {
   const adapter = runtimeHostAdapter as unknown as Record<string, unknown>;

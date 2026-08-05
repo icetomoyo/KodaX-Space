@@ -12,8 +12,23 @@ interface ComposerInvokeOptions<T> {
 
 export type TrackedStateAction<T> = T | ((current: T) => T);
 
+type AcceptedSessionSend = Extract<ChannelOutput<'session.send'>, { readonly accepted: true }>;
+
+export type PendingSendAcknowledgement =
+  | { readonly kind: 'none' }
+  | { readonly kind: 'clear' }
+  | { readonly kind: 'run'; readonly runId: string };
+
 export function applyTrackedStateAction<T>(current: T, next: TrackedStateAction<T>): T {
   return typeof next === 'function' ? (next as (value: T) => T)(current) : next;
+}
+
+export function pendingSendAcknowledgement(
+  result: AcceptedSessionSend,
+): PendingSendAcknowledgement {
+  if (result.queued) return { kind: 'clear' };
+  if (result.runId) return { kind: 'run', runId: result.runId };
+  return { kind: 'clear' };
 }
 
 const DEFAULT_TIMEOUT_MS = 45_000;

@@ -68,20 +68,13 @@ function terminalRunSegmentStart(events: readonly SessionEvent[]): number {
   return 0;
 }
 
-function terminalBoundary(events: readonly SessionEvent[]): number {
-  const index = events.findIndex(
-    (event) => event.kind === 'session_complete' || event.kind === 'session_error',
-  );
-  return index === -1 ? events.length : index;
-}
-
 function runtimeEventOrigin(event: SessionEvent): RuntimeEventOrigin | undefined {
   return 'runtimeEvent' in event ? event.runtimeEvent : undefined;
 }
 
 /**
  * Return only the part of a later projection that is not already present at the end of an earlier
- * projection. This compatibility helper is also used by durable-history/live-event folding.
+ * projection. This compatibility helper is also used by legacy durable-history/live-event folding.
  */
 export function projectionTextSuffix(durable: string, live: string): string {
   if (live.length === 0 || durable.includes(live)) return '';
@@ -412,24 +405,26 @@ export function hydrateSessionEventsFromLiveSnapshot(
     : terminalRunSegmentStart(events);
   const prefix = events.slice(0, segmentStart);
   let active: readonly SessionEvent[] = events.slice(segmentStart);
-  active = hydrateDraft(
-    active,
-    projection,
-    run.runId,
-    'thinking_delta',
-    projection.thinkingDraft?.text ?? '',
-    projection.thinkingDraft?.startedAt,
-    projection.activeRun ? active.length : terminalBoundary(active),
-  );
-  active = hydrateDraft(
-    active,
-    projection,
-    run.runId,
-    'text_delta',
-    projection.assistantDraft?.text ?? '',
-    projection.assistantDraft?.startedAt,
-    projection.activeRun ? active.length : terminalBoundary(active),
-  );
+  if (projection.activeRun !== undefined) {
+    active = hydrateDraft(
+      active,
+      projection,
+      run.runId,
+      'thinking_delta',
+      projection.thinkingDraft?.text ?? '',
+      projection.thinkingDraft?.startedAt,
+      active.length,
+    );
+    active = hydrateDraft(
+      active,
+      projection,
+      run.runId,
+      'text_delta',
+      projection.assistantDraft?.text ?? '',
+      projection.assistantDraft?.startedAt,
+      active.length,
+    );
+  }
   active = reconcileActiveTools(active, projection, run.runId);
 
   if (

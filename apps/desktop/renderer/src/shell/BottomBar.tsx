@@ -62,6 +62,7 @@ import {
   composerResultOwnsCurrentSession,
   invokeComposerIpc,
   isComposerTimeoutResult,
+  pendingSendAcknowledgement,
   routeComposerFailure,
   type TrackedStateAction,
 } from './composerInvoke.js';
@@ -473,6 +474,7 @@ export function BottomBar(): JSX.Element {
   const pendingAgentMode = useAppStore((s) => s.pendingAgentMode);
   const setPendingProviderId = useAppStore((s) => s.setPendingProviderId);
   const appendUserMessage = useAppStore((s) => s.appendUserMessage);
+  const acknowledgePendingSendRun = useAppStore((s) => s.acknowledgePendingSendRun);
   const bindUserMessageRuntimeRun = useAppStore((s) => s.bindUserMessageRuntimeRun);
   const updateUserMessageAttachments = useAppStore((s) => s.updateUserMessageAttachments);
   const appendLocalNotice = useAppStore((s) => s.appendLocalNotice);
@@ -483,9 +485,9 @@ export function BottomBar(): JSX.Element {
   const markQueuedUserMessageAccepted = useAppStore((s) => s.markQueuedUserMessageAccepted);
   const removeQueuedUserMessage = useAppStore((s) => s.removeQueuedUserMessage);
   const promoteQueuedUserMessage = useAppStore((s) => s.promoteQueuedUserMessage);
-  const convertLastUserMessageToQueued = useAppStore((s) => s.convertLastUserMessageToQueued);
+  const convertUserMessageToQueued = useAppStore((s) => s.convertUserMessageToQueued);
   const appendWorkflowNotice = useAppStore((s) => s.appendWorkflowNotice);
-  const rollbackLastUserMessage = useAppStore((s) => s.rollbackLastUserMessage);
+  const rollbackUserMessage = useAppStore((s) => s.rollbackUserMessage);
   const resetSessionMessages = useAppStore((s) => s.resetSessionMessages);
   const upsertSession = useAppStore((s) => s.upsertSession);
   const setCurrentSession = useAppStore((s) => s.setCurrentSession);
@@ -1996,11 +1998,11 @@ export function BottomBar(): JSX.Element {
         })
       : null;
     const optimisticMessageId = queuedLocalId ? null : appendUserMessage(sessionId, skillEcho);
-    if (!queuedLocalId) setPendingSend(sessionId, true);
+    const pendingSendGeneration = setPendingSend(sessionId, true);
     const restoreUnacceptedSkillSend = (message: string, late: boolean): void => {
-      if (!queuedLocalId) setPendingSend(sessionId, false);
+      setPendingSend(sessionId, false, pendingSendGeneration);
       if (queuedLocalId) removeQueuedUserMessage(sessionId, queuedLocalId);
-      else rollbackLastUserMessage(sessionId, skillEcho);
+      else if (optimisticMessageId) rollbackUserMessage(sessionId, optimisticMessageId);
       routeComposerFailure(
         sessionId,
         useAppStore.getState().currentSessionId,
@@ -2038,16 +2040,24 @@ export function BottomBar(): JSX.Element {
         if (resultOwnsComposer()) setErr(null);
         pushToast(t('bottom.sendAcceptedInBackground'), 'info');
       }
+      const pendingAcknowledgement = pendingSendAcknowledgement(data);
+      if (pendingAcknowledgement.kind === 'clear') {
+        setPendingSend(sessionId, false, pendingSendGeneration);
+      } else if (pendingAcknowledgement.kind === 'run') {
+        acknowledgePendingSendRun(sessionId, pendingAcknowledgement.runId, pendingSendGeneration);
+      }
       if (data.queued) {
         const acceptedQueueMode = data.queueMode ?? queueMode;
         if (queuedLocalId) {
           markQueuedUserMessageAccepted(sessionId, queuedLocalId, data.queueId, acceptedQueueMode);
         } else {
-          const convertedLocalId = convertLastUserMessageToQueued(sessionId, skillEcho, {
-            content: skillEcho,
-            matchContent: resolvedPrompt,
-            queueMode: acceptedQueueMode,
-          });
+          const convertedLocalId = optimisticMessageId
+            ? convertUserMessageToQueued(sessionId, optimisticMessageId, {
+                content: skillEcho,
+                matchContent: resolvedPrompt,
+                queueMode: acceptedQueueMode,
+              })
+            : null;
           if (convertedLocalId) {
             markQueuedUserMessageAccepted(
               sessionId,
@@ -2244,11 +2254,11 @@ export function BottomBar(): JSX.Element {
       setHistoryIdx(-1);
       draftRef.current = '';
 
-      if (!queuedLocalId) setPendingSend(sid, true);
+      const pendingSendGeneration = setPendingSend(sid, true);
       const restoreUnacceptedSend = (message: string, late: boolean): void => {
-        if (!queuedLocalId) setPendingSend(sid, false);
+        setPendingSend(sid, false, pendingSendGeneration);
         if (queuedLocalId) removeQueuedUserMessage(sid, queuedLocalId);
-        else rollbackLastUserMessage(sid, promptForAI);
+        else if (optimisticMessageId) rollbackUserMessage(sid, optimisticMessageId);
         routeComposerFailure(
           sid,
           useAppStore.getState().currentSessionId,
@@ -2307,6 +2317,12 @@ export function BottomBar(): JSX.Element {
           if (resultOwnsComposer()) setErr(null);
           pushToast(t('bottom.sendAcceptedInBackground'), 'info');
         }
+        const pendingAcknowledgement = pendingSendAcknowledgement(data);
+        if (pendingAcknowledgement.kind === 'clear') {
+          setPendingSend(sid, false, pendingSendGeneration);
+        } else if (pendingAcknowledgement.kind === 'run') {
+          acknowledgePendingSendRun(sid, pendingAcknowledgement.runId, pendingSendGeneration);
+        }
         if (data.queued) {
           // The turn is already running; main accepted the prompt into the requested
           // queue mode. Keep the current spinner and show a toast.
@@ -2314,11 +2330,13 @@ export function BottomBar(): JSX.Element {
           if (queuedLocalId) {
             markQueuedUserMessageAccepted(sid, queuedLocalId, data.queueId, acceptedQueueMode);
           } else {
-            const convertedLocalId = convertLastUserMessageToQueued(sid, effectivePrompt, {
-              content: effectivePrompt,
-              matchContent: promptForAI,
-              queueMode: acceptedQueueMode,
-            });
+            const convertedLocalId = optimisticMessageId
+              ? convertUserMessageToQueued(sid, optimisticMessageId, {
+                  content: effectivePrompt,
+                  matchContent: promptForAI,
+                  queueMode: acceptedQueueMode,
+                })
+              : null;
             if (convertedLocalId) {
               markQueuedUserMessageAccepted(sid, convertedLocalId, data.queueId, acceptedQueueMode);
             }

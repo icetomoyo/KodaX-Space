@@ -14,6 +14,7 @@ import {
   replaceSessionLiveProjection,
   runtimeBootstrapRetryDelayMs,
   runtimeProfileActivityOutranksLive,
+  runtimeTerminalEvidenceCandidates,
   runtimeProfileConflictsWithLive,
   runtimeProfileSessionHasActivity,
   runtimeSessionRequiresImmediateObservation,
@@ -22,6 +23,7 @@ import {
   shouldBootstrapSelectedSessionLive,
   shouldReconcileRuntimeConnection,
   shouldRequestSessionLiveSnapshot,
+  shouldRerunRejectedHydrationSnapshot,
 } from '../../renderer/src/store/runtimeProjectionState.js';
 
 function profile(runtimeId: string, projectionRevision: number): SpaceRuntimeProfileProjectionT {
@@ -61,6 +63,103 @@ test('snapshot-required and snapshot-pending both request authoritative reconcil
   assert.equal(shouldRequestSessionLiveSnapshot('snapshot-pending'), true);
   assert.equal(shouldRequestSessionLiveSnapshot('applied'), false);
   assert.equal(shouldRequestSessionLiveSnapshot('ignored'), false);
+});
+
+test('a rejected hydration snapshot reruns only when a newer same-Runtime projection overtook it', () => {
+  const connection = profile('rt_1', 3).connection;
+  assert.equal(
+    shouldRerunRejectedHydrationSnapshot({
+      allowEqualHydration: true,
+      connection,
+      current: live('rt_1', 3),
+      incoming: live('rt_1', 2),
+    }),
+    true,
+  );
+  assert.equal(
+    shouldRerunRejectedHydrationSnapshot({
+      allowEqualHydration: true,
+      connection,
+      current: undefined,
+      incoming: live('rt_1', 2),
+    }),
+    false,
+  );
+  assert.equal(
+    shouldRerunRejectedHydrationSnapshot({
+      allowEqualHydration: true,
+      connection: { ...connection, stale: true },
+      current: live('rt_1', 3),
+      incoming: live('rt_1', 2),
+    }),
+    false,
+  );
+});
+
+test('terminal evidence is exact, Runtime-scoped, and keeps distinct profile/live Runs independent', () => {
+  const terminalProfile: SpaceRuntimeProfileProjectionT = {
+    ...profile('rt_1', 4),
+    sessions: [
+      {
+        sessionId: 's_1',
+        surface: 'code',
+        createdAt: 1,
+        lastActivityAt: 4,
+        queuedRuns: [],
+        lastTerminalRun: {
+          runId: 'run_old',
+          sessionId: 's_1',
+          phase: 'completed',
+          completedAt: 4,
+        },
+      },
+    ],
+  };
+  const staleAgainstNewRun = {
+    ...live('rt_1', 5),
+    activeRun: {
+      runId: 'run_new',
+      sessionId: 's_1',
+      phase: 'running' as const,
+      startedAt: 5,
+    },
+  };
+  assert.deepEqual(
+    runtimeTerminalEvidenceCandidates(
+      {
+        connection: terminalProfile.connection,
+        profile: terminalProfile,
+        liveBySession: { s_1: staleAgainstNewRun },
+      },
+      's_1',
+    ).map((terminal) => terminal.runId),
+    ['run_old'],
+  );
+
+  const liveTerminal = {
+    ...live('rt_1', 6),
+    lastTerminalRun: {
+      runId: 'run_new',
+      sessionId: 's_1',
+      phase: 'completed' as const,
+      completedAt: 6,
+    },
+  };
+  assert.deepEqual(
+    runtimeTerminalEvidenceCandidates(
+      {
+        connection: terminalProfile.connection,
+        profile: {
+          ...terminalProfile,
+          projectionRevision: 6,
+          cursor: { runtimeId: 'rt_1', seq: 6 },
+        },
+        liveBySession: { s_1: liveTerminal },
+      },
+      's_1',
+    ).map((terminal) => terminal.runId),
+    ['run_old', 'run_new'],
+  );
 });
 
 test('Runtime activity evidence is positive-only for active and queued work', () => {
@@ -105,7 +204,19 @@ test('Runtime activity evidence is positive-only for active and queued work', ()
   const activeProfile = { ...profile('rt_1', 5), sessions: [activeSession] };
   assert.equal(runtimeProfileActivityOutranksLive(activeProfile, 's_1', undefined), true);
   assert.equal(runtimeProfileActivityOutranksLive(activeProfile, 's_1', live('rt_1', 4)), true);
-  assert.equal(runtimeProfileActivityOutranksLive(activeProfile, 's_1', live('rt_1', 5)), false);
+  assert.equal(runtimeProfileActivityOutranksLive(activeProfile, 's_1', live('rt_1', 5)), true);
+  assert.equal(
+    runtimeProfileActivityOutranksLive(activeProfile, 's_1', {
+      ...live('rt_1', 5),
+      lastTerminalRun: {
+        runId: 'run_1',
+        sessionId: 's_1',
+        phase: 'completed',
+        completedAt: 5,
+      },
+    }),
+    false,
+  );
 });
 
 test('active selected Sessions bootstrap live state before history and despite a stale projection', () => {

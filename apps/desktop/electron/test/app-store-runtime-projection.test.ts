@@ -94,6 +94,7 @@ beforeEach(() => {
     eventsBySession: {},
     tokensBySession: {},
     pendingSendBySession: {},
+    pendingSendRuntimeBaselineBySession: {},
   });
 });
 
@@ -614,12 +615,17 @@ test('an equal authoritative snapshot rehydrates a transcript buffer rebuilt wit
     },
     assistantDraft: { text: 'restored in-flight answer', startedAt: 10 },
   };
-  useAppStore.getState().replaceSessionLiveProjection(snapshot);
+  assert.equal(useAppStore.getState().replaceSessionLiveProjection(snapshot), true);
 
   // Simulate history/LRU/window reconstruction retaining the live projection revision while the
   // renderer-only transcript buffer has been rebuilt without the cumulative Runtime draft.
   useAppStore.setState({ eventsBySession: { s_1: [] } });
-  useAppStore.getState().replaceSessionLiveProjection({ ...snapshot });
+  assert.equal(
+    useAppStore
+      .getState()
+      .replaceSessionLiveProjection({ ...snapshot }, { allowEqualHydration: true }),
+    true,
+  );
 
   const restoredText = (useAppStore.getState().eventsBySession.s_1 ?? [])
     .filter(
@@ -629,6 +635,443 @@ test('an equal authoritative snapshot rehydrates a transcript buffer rebuilt wit
     .map((event) => event.text)
     .join('');
   assert.equal(restoredText, 'restored in-flight answer');
+});
+
+test('an ordinary equal-revision snapshot does not replay cumulative live content', () => {
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  const snapshot: SpaceSessionLiveProjectionT = {
+    ...live,
+    projectionRevision: 2,
+    cursor: { runtimeId: 'rt_1', seq: 2 },
+    activeRun: {
+      runId: 'run_1',
+      sessionId: 's_1',
+      phase: 'running',
+      startedAt: 10,
+    },
+    assistantDraft: { text: 'do not replay me', startedAt: 10 },
+  };
+  useAppStore.getState().replaceSessionLiveProjection(snapshot);
+  useAppStore.setState({ eventsBySession: { s_1: [] } });
+
+  assert.equal(useAppStore.getState().replaceSessionLiveProjection({ ...snapshot }), false);
+
+  assert.deepEqual(useAppStore.getState().eventsBySession.s_1, []);
+});
+
+test('a terminal profile clears old pending admission once without suppressing a later send', () => {
+  useAppStore.setState({ sessions: [sidebarSession] });
+  const queuedProfile: SpaceRuntimeProfileProjectionT = {
+    ...profile,
+    projectionRevision: 2,
+    cursor: { runtimeId: 'rt_1', seq: 2 },
+    sessions: [
+      {
+        sessionId: 's_1',
+        surface: 'code',
+        createdAt: 1,
+        lastActivityAt: 2,
+        queuedRuns: [
+          {
+            runId: 'run_queued',
+            sessionId: 's_1',
+            phase: 'queued',
+            queuedAt: 2,
+          },
+        ],
+      },
+    ],
+  };
+  useAppStore.getState().replaceRuntimeProfileProjection(queuedProfile);
+  const messageId = useAppStore.getState().appendUserMessage('s_1', 'queued request');
+  assert.notEqual(messageId, null);
+  useAppStore.getState().setPendingSend('s_1', true);
+  useAppStore.getState().acknowledgePendingSendRun('s_1', 'run_queued');
+  useAppStore.getState().bindUserMessageRuntimeRun('s_1', messageId!, 'run_queued');
+
+  const terminalProfile: SpaceRuntimeProfileProjectionT = {
+    ...queuedProfile,
+    projectionRevision: 3,
+    cursor: { runtimeId: 'rt_1', seq: 3 },
+    sessions: [
+      {
+        ...queuedProfile.sessions[0]!,
+        queuedRuns: [],
+        lastTerminalRun: {
+          runId: 'run_queued',
+          sessionId: 's_1',
+          phase: 'completed',
+          completedAt: 3,
+        },
+      },
+    ],
+  };
+  useAppStore.getState().replaceRuntimeProfileProjection(terminalProfile);
+  assert.equal(useAppStore.getState().pendingSendBySession.s_1, undefined);
+
+  useAppStore.getState().setPendingSend('s_1', true);
+  useAppStore.getState().replaceRuntimeProfileProjection({
+    ...terminalProfile,
+    projectionRevision: 4,
+    cursor: { runtimeId: 'rt_1', seq: 4 },
+  });
+  assert.equal(useAppStore.getState().pendingSendBySession.s_1, true);
+});
+
+test('a delayed profile terminal cannot clear a new pending admission after the same live terminal', () => {
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  useAppStore.getState().replaceSessionLiveProjection({
+    ...live,
+    projectionRevision: 4,
+    cursor: { runtimeId: 'rt_1', seq: 4 },
+    lastTerminalRun: {
+      runId: 'run_previous',
+      sessionId: 's_1',
+      phase: 'completed',
+      completedAt: 4,
+    },
+  });
+  useAppStore.getState().setPendingSend('s_1', true);
+
+  useAppStore.getState().replaceRuntimeProfileProjection({
+    ...profile,
+    projectionRevision: 5,
+    cursor: { runtimeId: 'rt_1', seq: 5 },
+    sessions: [
+      {
+        sessionId: 's_1',
+        surface: 'code',
+        createdAt: 1,
+        lastActivityAt: 5,
+        queuedRuns: [],
+        lastTerminalRun: {
+          runId: 'run_previous',
+          sessionId: 's_1',
+          phase: 'completed',
+          completedAt: 4,
+        },
+      },
+    ],
+  });
+
+  assert.equal(useAppStore.getState().pendingSendBySession.s_1, true);
+});
+
+test('an unscoped pending admission ignores stale lifecycle events before its Runtime ACK', () => {
+  useAppStore.getState().setPendingSend('s_1', true);
+
+  useAppStore.getState().appendEvent({
+    kind: 'session_complete',
+    sessionId: 's_1',
+  });
+
+  assert.equal(useAppStore.getState().pendingSendBySession.s_1, true);
+});
+
+test('a cold Runtime authority edge preserves pending and an already-observed exact Run clears on ACK', () => {
+  useAppStore.getState().setPendingSend('s_1', true);
+  useAppStore.getState().setCoderRuntimeConnection(profile.connection);
+  useAppStore.getState().replaceRuntimeProfileProjection({
+    ...profile,
+    projectionRevision: 2,
+    cursor: { runtimeId: 'rt_1', seq: 2 },
+    sessions: [
+      {
+        sessionId: 's_1',
+        surface: 'code',
+        createdAt: 1,
+        lastActivityAt: 2,
+        activeRun: {
+          runId: 'run_cold_start',
+          sessionId: 's_1',
+          phase: 'running',
+          startedAt: 2,
+        },
+        queuedRuns: [],
+      },
+    ],
+  });
+  assert.equal(
+    useAppStore.getState().pendingSendBySession.s_1,
+    true,
+    'Runtime bootstrap must not erase an in-flight local admission',
+  );
+
+  useAppStore.getState().acknowledgePendingSendRun('s_1', 'run_cold_start');
+
+  assert.equal(useAppStore.getState().pendingSendBySession.s_1, undefined);
+});
+
+test('a pending admission clears only for its acknowledged Run once the ACK is known', () => {
+  useAppStore.setState({ sessions: [sidebarSession] });
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  const messageId = useAppStore.getState().appendUserMessage('s_1', 'new request');
+  assert.notEqual(messageId, null);
+  useAppStore.getState().setPendingSend('s_1', true);
+
+  const delayedPreviousTerminal: SpaceRuntimeProfileProjectionT = {
+    ...profile,
+    projectionRevision: 2,
+    cursor: { runtimeId: 'rt_1', seq: 2 },
+    sessions: [
+      {
+        sessionId: 's_1',
+        surface: 'code',
+        createdAt: 1,
+        lastActivityAt: 2,
+        queuedRuns: [],
+        lastTerminalRun: {
+          runId: 'run_previous',
+          sessionId: 's_1',
+          phase: 'completed',
+          completedAt: 2,
+        },
+      },
+    ],
+  };
+  useAppStore.getState().replaceRuntimeProfileProjection(delayedPreviousTerminal);
+  assert.equal(
+    useAppStore.getState().pendingSendBySession.s_1,
+    true,
+    'a terminal that arrives before the send ACK is not admission evidence',
+  );
+
+  useAppStore.getState().acknowledgePendingSendRun('s_1', 'run_new');
+  useAppStore.getState().bindUserMessageRuntimeRun('s_1', messageId!, 'run_new');
+  useAppStore.getState().replaceRuntimeProfileProjection({
+    ...delayedPreviousTerminal,
+    projectionRevision: 3,
+    cursor: { runtimeId: 'rt_1', seq: 3 },
+  });
+  assert.equal(
+    useAppStore.getState().pendingSendBySession.s_1,
+    true,
+    'a newer delivery of the previous terminal cannot satisfy the acknowledged Run',
+  );
+
+  useAppStore.getState().replaceRuntimeProfileProjection({
+    ...delayedPreviousTerminal,
+    projectionRevision: 4,
+    cursor: { runtimeId: 'rt_1', seq: 4 },
+    sessions: [
+      {
+        ...delayedPreviousTerminal.sessions[0]!,
+        activeRun: {
+          runId: 'run_new',
+          sessionId: 's_1',
+          phase: 'running',
+          startedAt: 4,
+        },
+        lastTerminalRun: undefined,
+      },
+    ],
+  });
+  assert.equal(useAppStore.getState().pendingSendBySession.s_1, undefined);
+});
+
+test('a same-Run terminal observed before the send ACK clears immediately when the ACK binds', () => {
+  useAppStore.setState({ sessions: [sidebarSession] });
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  useAppStore.getState().setPendingSend('s_1', true);
+  useAppStore.getState().replaceRuntimeProfileProjection({
+    ...profile,
+    projectionRevision: 2,
+    cursor: { runtimeId: 'rt_1', seq: 2 },
+    sessions: [
+      {
+        sessionId: 's_1',
+        surface: 'code',
+        createdAt: 1,
+        lastActivityAt: 2,
+        queuedRuns: [],
+        lastTerminalRun: {
+          runId: 'run_fast',
+          sessionId: 's_1',
+          phase: 'completed',
+          completedAt: 2,
+        },
+      },
+    ],
+  });
+  assert.equal(useAppStore.getState().pendingSendBySession.s_1, true);
+
+  useAppStore.getState().acknowledgePendingSendRun('s_1', 'run_fast');
+
+  assert.equal(useAppStore.getState().pendingSendBySession.s_1, undefined);
+});
+
+test('a Runtime ACK clears pending independently of an optimistic user row', () => {
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  useAppStore.getState().setPendingSend('s_1', true);
+
+  useAppStore.getState().acknowledgePendingSendRun('s_1', 'run_without_local_row');
+  useAppStore.getState().replaceSessionLiveProjection({
+    ...live,
+    projectionRevision: 2,
+    cursor: { runtimeId: 'rt_1', seq: 2 },
+    activeRun: {
+      runId: 'run_without_local_row',
+      sessionId: 's_1',
+      phase: 'running',
+      startedAt: 2,
+    },
+  });
+
+  assert.equal(useAppStore.getState().pendingSendBySession.s_1, undefined);
+});
+
+test('an old Run start before the send ACK cannot clear the new pending admission', () => {
+  useAppStore.setState({ sessions: [sidebarSession] });
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  const messageId = useAppStore.getState().appendUserMessage('s_1', 'next request');
+  assert.notEqual(messageId, null);
+  useAppStore.getState().setPendingSend('s_1', true);
+  useAppStore.getState().replaceSessionLiveProjection({
+    ...live,
+    projectionRevision: 2,
+    cursor: { runtimeId: 'rt_1', seq: 2 },
+    activeRun: {
+      runId: 'run_previous',
+      sessionId: 's_1',
+      phase: 'running',
+      startedAt: 2,
+    },
+  });
+  assert.equal(useAppStore.getState().pendingSendBySession.s_1, true);
+
+  useAppStore.getState().acknowledgePendingSendRun('s_1', 'run_new');
+  useAppStore.getState().bindUserMessageRuntimeRun('s_1', messageId!, 'run_new');
+  assert.equal(useAppStore.getState().pendingSendBySession.s_1, true);
+  useAppStore.getState().replaceSessionLiveProjection({
+    ...live,
+    projectionRevision: 3,
+    cursor: { runtimeId: 'rt_1', seq: 3 },
+    activeRun: {
+      runId: 'run_new',
+      sessionId: 's_1',
+      phase: 'running',
+      startedAt: 3,
+    },
+  });
+  assert.equal(useAppStore.getState().pendingSendBySession.s_1, undefined);
+});
+
+test('a late ACK from a timed-out send cannot bind or clear the next local admission generation', () => {
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  const firstGeneration = useAppStore.getState().setPendingSend('s_1', true);
+  useAppStore.getState().setPendingSend('s_1', false, firstGeneration);
+  const secondGeneration = useAppStore.getState().setPendingSend('s_1', true);
+  assert.notEqual(firstGeneration, secondGeneration);
+
+  useAppStore.getState().acknowledgePendingSendRun('s_1', 'run_timed_out', firstGeneration);
+  useAppStore.getState().replaceSessionLiveProjection({
+    ...live,
+    projectionRevision: 2,
+    cursor: { runtimeId: 'rt_1', seq: 2 },
+    activeRun: {
+      runId: 'run_timed_out',
+      sessionId: 's_1',
+      phase: 'running',
+      startedAt: 2,
+    },
+  });
+  assert.equal(useAppStore.getState().pendingSendBySession.s_1, true);
+
+  useAppStore.getState().acknowledgePendingSendRun('s_1', 'run_retry', secondGeneration);
+  useAppStore.getState().replaceSessionLiveProjection({
+    ...live,
+    projectionRevision: 3,
+    cursor: { runtimeId: 'rt_1', seq: 3 },
+    activeRun: {
+      runId: 'run_retry',
+      sessionId: 's_1',
+      phase: 'running',
+      startedAt: 3,
+    },
+  });
+  assert.equal(useAppStore.getState().pendingSendBySession.s_1, undefined);
+});
+
+test('each overlapping send attempt owns a fresh pending admission generation', () => {
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  const firstGeneration = useAppStore.getState().setPendingSend('s_1', true);
+  const secondGeneration = useAppStore.getState().setPendingSend('s_1', true);
+
+  assert.notEqual(firstGeneration, secondGeneration);
+  useAppStore.getState().setPendingSend('s_1', false, firstGeneration);
+  assert.equal(useAppStore.getState().pendingSendBySession.s_1, true);
+
+  useAppStore.getState().acknowledgePendingSendRun('s_1', 'run_second', secondGeneration);
+  useAppStore.getState().replaceSessionLiveProjection({
+    ...live,
+    projectionRevision: 2,
+    cursor: { runtimeId: 'rt_1', seq: 2 },
+    activeRun: {
+      runId: 'run_second',
+      sessionId: 's_1',
+      phase: 'running',
+      startedAt: 2,
+    },
+  });
+  assert.equal(useAppStore.getState().pendingSendBySession.s_1, undefined);
+});
+
+test('equal terminal hydration only closes residual live tools and does not invent answer text', () => {
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  const terminal: SpaceSessionLiveProjectionT = {
+    ...live,
+    projectionRevision: 2,
+    cursor: { runtimeId: 'rt_1', seq: 2 },
+    lastTerminalRun: {
+      runId: 'run_terminal',
+      sessionId: 's_1',
+      phase: 'completed',
+      completedAt: 2,
+    },
+    thinkingDraft: { text: 'must not hydrate terminal thinking', startedAt: 1 },
+    assistantDraft: { text: 'must not hydrate terminal answer', startedAt: 1 },
+    activeTools: [],
+  };
+  useAppStore.getState().replaceSessionLiveProjection(terminal);
+  useAppStore.setState({
+    eventsBySession: {
+      s_1: [
+        { kind: 'session_start', sessionId: 's_1', provider: 'mock' },
+        {
+          kind: 'text_delta',
+          sessionId: 's_1',
+          text: 'already rendered prefix',
+        },
+        {
+          kind: 'tool_start',
+          sessionId: 's_1',
+          toolId: 'tool_residual',
+          toolName: 'read',
+          input: {},
+          runtimeEvent: { runtimeId: 'rt_1', runId: 'run_terminal', seq: 1 },
+        },
+      ],
+    },
+  });
+
+  assert.equal(
+    useAppStore
+      .getState()
+      .replaceSessionLiveProjection({ ...terminal }, { allowEqualHydration: true }),
+    true,
+  );
+  const events = useAppStore.getState().eventsBySession.s_1 ?? [];
+  assert.equal(
+    events
+      .filter((event) => event.kind === 'text_delta')
+      .map((event) => event.text)
+      .join(''),
+    'already rendered prefix',
+  );
+  assert.equal(
+    events.some((event) => event.kind === 'tool_start' && event.toolId === 'tool_residual'),
+    false,
+  );
 });
 
 test('snapshot cursor reconciles a delivered suffix and rejects a covered late delta', () => {
@@ -1290,10 +1733,15 @@ test('terminal snapshot preserves only the earlier draft coverage watermark for 
   );
 });
 
-test('authoritative run and terminal projections clear stale pending-send state', () => {
+test('acknowledged activity clears pending but the previous Run terminal cannot clear the next send', () => {
+  useAppStore.setState({ sessions: [sidebarSession] });
   useAppStore.getState().replaceRuntimeProfileProjection(profile);
   useAppStore.getState().replaceSessionLiveProjection(live);
+  const firstMessageId = useAppStore.getState().appendUserMessage('s_1', 'first request');
+  assert.notEqual(firstMessageId, null);
   useAppStore.getState().setPendingSend('s_1', true);
+  useAppStore.getState().acknowledgePendingSendRun('s_1', 'run_1');
+  useAppStore.getState().bindUserMessageRuntimeRun('s_1', firstMessageId!, 'run_1');
 
   const admitted = useAppStore.getState().applySessionLiveProjectionChange({
     sessionId: 's_1',
@@ -1315,6 +1763,8 @@ test('authoritative run and terminal projections clear stale pending-send state'
   assert.equal(admitted, 'applied');
   assert.equal(useAppStore.getState().pendingSendBySession.s_1, undefined);
 
+  const secondMessageId = useAppStore.getState().appendUserMessage('s_1', 'second request');
+  assert.notEqual(secondMessageId, null);
   useAppStore.getState().setPendingSend('s_1', true);
   useAppStore.getState().replaceSessionLiveProjection({
     ...live,
@@ -1329,6 +1779,23 @@ test('authoritative run and terminal projections clear stale pending-send state'
     },
   });
 
+  assert.equal(useAppStore.getState().pendingSendBySession.s_1, true);
+
+  useAppStore.getState().replaceSessionLiveProjection({
+    ...live,
+    projectionRevision: 4,
+    cursor: { runtimeId: 'rt_1', seq: 4 },
+    activeRun: {
+      runId: 'run_2',
+      sessionId: 's_1',
+      phase: 'running',
+      startedAt: 30,
+    },
+  });
+
+  assert.equal(useAppStore.getState().pendingSendBySession.s_1, true);
+  useAppStore.getState().acknowledgePendingSendRun('s_1', 'run_2');
+  useAppStore.getState().bindUserMessageRuntimeRun('s_1', secondMessageId!, 'run_2');
   assert.equal(useAppStore.getState().pendingSendBySession.s_1, undefined);
 });
 
