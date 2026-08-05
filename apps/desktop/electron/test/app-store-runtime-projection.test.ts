@@ -126,6 +126,27 @@ test('historical terminal Sessions do not start the expensive observation plane'
   assert.equal(
     runtimeSessionNeedsObservation(
       {
+        profile: terminalProfile,
+        liveBySession: {
+          s_1: {
+            ...live,
+            activeRun: {
+              runId: 'run_stale_local',
+              sessionId: 's_1',
+              phase: 'running',
+              startedAt: 1,
+            },
+          },
+        },
+        snapshotRequiredBySession: {},
+      },
+      's_1',
+    ),
+    true,
+  );
+  assert.equal(
+    runtimeSessionNeedsObservation(
+      {
         profile: {
           ...terminalProfile,
           sessions: [
@@ -272,12 +293,14 @@ test('loading an older history page preserves live content hydrated from a Runti
   );
 
   const events = useAppStore.getState().eventsBySession.s_1 ?? [];
-  assert.ok(events.some((event) => event.kind === 'thinking_delta' && event.text === 'snapshot thinking'));
-  assert.ok(events.some((event) => event.kind === 'text_delta' && event.text === 'snapshot answer'));
   assert.ok(
-    events.some(
-      (event) => event.kind === 'tool_start' && event.toolId === 'tool_snapshot',
-    ),
+    events.some((event) => event.kind === 'thinking_delta' && event.text === 'snapshot thinking'),
+  );
+  assert.ok(
+    events.some((event) => event.kind === 'text_delta' && event.text === 'snapshot answer'),
+  );
+  assert.ok(
+    events.some((event) => event.kind === 'tool_start' && event.toolId === 'tool_snapshot'),
   );
 });
 
@@ -575,6 +598,37 @@ test('cumulative live snapshots hydrate missing state once without replaying tex
   );
   assert.equal(events.filter((event) => event.kind === 'tool_start').length, 1);
   assert.equal(events.filter((event) => event.kind === 'tool_progress').length, 1);
+});
+
+test('an equal authoritative snapshot rehydrates a transcript buffer rebuilt without its draft', () => {
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  const snapshot: SpaceSessionLiveProjectionT = {
+    ...live,
+    projectionRevision: 2,
+    cursor: { runtimeId: 'rt_1', seq: 2 },
+    activeRun: {
+      runId: 'run_1',
+      sessionId: 's_1',
+      phase: 'running',
+      startedAt: 10,
+    },
+    assistantDraft: { text: 'restored in-flight answer', startedAt: 10 },
+  };
+  useAppStore.getState().replaceSessionLiveProjection(snapshot);
+
+  // Simulate history/LRU/window reconstruction retaining the live projection revision while the
+  // renderer-only transcript buffer has been rebuilt without the cumulative Runtime draft.
+  useAppStore.setState({ eventsBySession: { s_1: [] } });
+  useAppStore.getState().replaceSessionLiveProjection({ ...snapshot });
+
+  const restoredText = (useAppStore.getState().eventsBySession.s_1 ?? [])
+    .filter(
+      (event): event is Extract<SessionEvent, { kind: 'text_delta' }> =>
+        event.kind === 'text_delta',
+    )
+    .map((event) => event.text)
+    .join('');
+  assert.equal(restoredText, 'restored in-flight answer');
 });
 
 test('snapshot cursor reconciles a delivered suffix and rejects a covered late delta', () => {

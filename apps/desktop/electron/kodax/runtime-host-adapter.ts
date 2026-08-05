@@ -3873,6 +3873,7 @@ export class RuntimeHostAdapter {
       if (continuation) {
         this.continuationPrompts.delete(event.runId);
         this.push('session.event', {
+          ...runtimeSessionEventOrigin(runtime.identity.runtimeId, event),
           kind: 'queued_user_prompt_started',
           sessionId: continuation.sessionId,
           queueId: event.runId,
@@ -4175,6 +4176,7 @@ export class RuntimeHostAdapter {
             : undefined;
         const turnUserOrdinal = this.takeObservedUserOrdinal(event.turnId);
         const parsed = sessionEventChannel.payload.safeParse({
+          ...runtimeSessionEventOrigin(runtimeId, event),
           kind: 'mid_turn_user_prompt',
           sessionId: event.sessionId,
           ...(queueId ? { queueId } : {}),
@@ -4227,6 +4229,7 @@ export class RuntimeHostAdapter {
       if (continuation) {
         this.continuationPrompts.delete(event.runId);
         this.push('session.event', {
+          ...runtimeSessionEventOrigin(runtimeId, event),
           kind: 'queued_user_prompt_started',
           sessionId: continuation.sessionId,
           queueId: event.runId,

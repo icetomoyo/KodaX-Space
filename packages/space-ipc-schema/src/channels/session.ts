@@ -1152,6 +1152,7 @@ export const sessionEventChannel = {
       turnId: z.string().min(1).max(128).optional(),
     }),
     z.object({
+      ...runtimeSessionEventOriginShape,
       kind: z.literal('mid_turn_user_prompt'),
       sessionId: z.string().min(1),
       queueId: z.string().min(1).max(128).optional(),
@@ -1160,6 +1161,7 @@ export const sessionEventChannel = {
       turnUserOrdinal: z.number().int().nonnegative().max(1_000_000).optional(),
     }),
     z.object({
+      ...runtimeSessionEventOriginShape,
       kind: z.literal('queued_user_prompt_started'),
       sessionId: z.string().min(1),
       queueId: z.string().min(1).max(128).optional(),

@@ -1,7 +1,12 @@
 import { useSyncExternalStore } from 'react';
 import type { SessionEvent, SessionHistoryItem } from '@kodax-space/space-ipc-schema';
 import { registerSessionViewLifecycleReset, useAppStore } from '../store/appStore.js';
-import { runtimeConnectionHasFreshLiveAuthority } from '../store/runtimeProjectionState.js';
+import { invokeWithTimeout } from '../lib/ipcInvokeWithTimeout.js';
+import {
+  runtimeConnectionHasFreshLiveAuthority,
+  runtimeProfileSessionHasActivity,
+  sessionLiveProjectionHasActivity,
+} from '../store/runtimeProjectionState.js';
 
 export interface SessionHistoryPagingState {
   readonly phase: 'idle' | 'waiting' | 'loading' | 'ready' | 'error';
@@ -50,10 +55,22 @@ function touchCache(sessionId: string): void {
   cacheOrder.delete(sessionId);
   cacheOrder.set(sessionId, true);
   while (cacheOrder.size > MAX_CACHED_SESSION_HISTORIES) {
-    const candidate = Array.from(cacheOrder.keys()).find(
+    const cachedSessionIds = Array.from(cacheOrder.keys());
+    const inactiveCandidates = cachedSessionIds.filter(
       (cachedSessionId) => !activeTokens.has(cachedSessionId),
     );
+    const candidate =
+      inactiveCandidates.find(
+        (cachedSessionId) => !sessionHasKnownRuntimeActivity(cachedSessionId),
+      ) ??
+      inactiveCandidates[0] ??
+      cachedSessionIds.find((cachedSessionId) => cachedSessionId !== sessionId);
     if (candidate === undefined) break;
+    // Runtime activity makes a canonical history window the last eviction choice, not an
+    // unbounded exemption. The independent live projection remains available and selection will
+    // reload the evicted history. The final fallback also invalidates a pathological surplus of
+    // simultaneous paging activations so their late replies cannot repopulate the cache.
+    activeTokens.delete(candidate);
     cacheOrder.delete(candidate);
     clearRetry(candidate);
     states.delete(candidate);
@@ -65,6 +82,19 @@ function touchCache(sessionId: string): void {
     inFlight.delete(candidate);
     useAppStore.getState().evictRestoredSessionHistory(candidate);
   }
+}
+
+function sessionHasKnownRuntimeActivity(sessionId: string): boolean {
+  const state = useAppStore.getState();
+  if (sessionLiveProjectionHasActivity(state.liveProjectionBySession[sessionId])) return true;
+  if (!runtimeConnectionHasFreshLiveAuthority(state.runtimeConnection)) return false;
+  const profile = state.runtimeProfile;
+  if (profile === null || profile.connection.runtimeId !== state.runtimeConnection.runtimeId) {
+    return false;
+  }
+  return runtimeProfileSessionHasActivity(
+    profile.sessions.find((session) => session.sessionId === sessionId),
+  );
 }
 
 function publish(sessionId: string, state: SessionHistoryPagingState): void {
@@ -322,7 +352,7 @@ async function requestHistory(
       publish(sessionId, { ...boundary, phase: 'loading', ...(surface ? { surface } : {}) });
     }
     const requestId = nextHistoryRequestId();
-    const response = await bridge.invoke('session.history', {
+    const response = await invokeWithTimeout(bridge, 'session.history', {
       sessionId,
       requestId,
       ...(surface !== undefined ? { expectedSurface: surface } : {}),

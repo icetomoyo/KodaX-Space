@@ -5147,7 +5147,20 @@ export const useAppStore = create<AppState>((set) => ({
         },
         projection,
       );
-      const acceptedProjection = next.liveBySession[projection.sessionId] === projection;
+      const acceptedNewProjection = next.liveBySession[projection.sessionId] === projection;
+      const acceptedEqualProjection =
+        currentProjection !== undefined &&
+        next.liveBySession[projection.sessionId] === currentProjection &&
+        runtimeConnectionHasFreshLiveAuthority(state.runtimeConnection) &&
+        state.runtimeConnection.runtimeId === projection.cursor.runtimeId &&
+        currentProjection.cursor.runtimeId === projection.cursor.runtimeId &&
+        currentProjection.projectionRevision === projection.projectionRevision &&
+        projection.cursor.seq >= currentProjection.cursor.seq &&
+        next.snapshotRequiredBySession[projection.sessionId] !== true;
+      // An activation snapshot may legitimately repeat the live revision after history/LRU/window
+      // reconstruction removed renderer-only transcript rows. Keep the existing projection object
+      // but still use the equal authoritative payload to restore cumulative drafts and tools.
+      const acceptedProjection = acceptedNewProjection || acceptedEqualProjection;
       if (!acceptedProjection) {
         if (
           next.liveBySession === state.liveProjectionBySession &&

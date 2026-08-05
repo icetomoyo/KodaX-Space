@@ -12,6 +12,14 @@ import {
   replaceRuntimeConnection,
   replaceRuntimeProfile,
   replaceSessionLiveProjection,
+  runtimeBootstrapRetryDelayMs,
+  runtimeProfileActivityOutranksLive,
+  runtimeProfileConflictsWithLive,
+  runtimeProfileSessionHasActivity,
+  runtimeSessionRequiresImmediateObservation,
+  runtimeSessionNeedsObservation,
+  sessionLiveProjectionHasActivity,
+  shouldBootstrapSelectedSessionLive,
   shouldReconcileRuntimeConnection,
   shouldRequestSessionLiveSnapshot,
 } from '../../renderer/src/store/runtimeProjectionState.js';
@@ -53,6 +61,193 @@ test('snapshot-required and snapshot-pending both request authoritative reconcil
   assert.equal(shouldRequestSessionLiveSnapshot('snapshot-pending'), true);
   assert.equal(shouldRequestSessionLiveSnapshot('applied'), false);
   assert.equal(shouldRequestSessionLiveSnapshot('ignored'), false);
+});
+
+test('Runtime activity evidence is positive-only for active and queued work', () => {
+  const activeSession: SpaceRuntimeProfileProjectionT['sessions'][number] = {
+    sessionId: 's_1',
+    surface: 'code',
+    createdAt: 1,
+    lastActivityAt: 2,
+    activeRun: {
+      runId: 'run_1',
+      sessionId: 's_1',
+      phase: 'running',
+      startedAt: 1,
+    },
+    queuedRuns: [],
+  };
+  const queuedSession: SpaceRuntimeProfileProjectionT['sessions'][number] = {
+    ...activeSession,
+    activeRun: undefined,
+    queuedRuns: [
+      {
+        runId: 'run_queued',
+        sessionId: 's_1',
+        phase: 'queued',
+        startedAt: 2,
+      },
+    ],
+  };
+
+  assert.equal(runtimeProfileSessionHasActivity(activeSession), true);
+  assert.equal(runtimeProfileSessionHasActivity(queuedSession), true);
+  assert.equal(
+    runtimeProfileSessionHasActivity({ ...activeSession, activeRun: undefined, queuedRuns: [] }),
+    false,
+  );
+  assert.equal(
+    sessionLiveProjectionHasActivity({ ...live('rt_1', 1), activeRun: activeSession.activeRun }),
+    true,
+  );
+  assert.equal(sessionLiveProjectionHasActivity(live('rt_1', 1)), false);
+
+  const activeProfile = { ...profile('rt_1', 5), sessions: [activeSession] };
+  assert.equal(runtimeProfileActivityOutranksLive(activeProfile, 's_1', undefined), true);
+  assert.equal(runtimeProfileActivityOutranksLive(activeProfile, 's_1', live('rt_1', 4)), true);
+  assert.equal(runtimeProfileActivityOutranksLive(activeProfile, 's_1', live('rt_1', 5)), false);
+});
+
+test('active selected Sessions bootstrap live state before history and despite a stale projection', () => {
+  assert.equal(
+    shouldBootstrapSelectedSessionLive({
+      runtimeReady: true,
+      needsObservation: true,
+      hasImmediateActivity: true,
+      historyAllowsObservation: false,
+      hasLiveProjection: true,
+    }),
+    true,
+  );
+  assert.equal(
+    shouldBootstrapSelectedSessionLive({
+      runtimeReady: true,
+      needsObservation: true,
+      hasImmediateActivity: false,
+      historyAllowsObservation: false,
+      hasLiveProjection: false,
+    }),
+    false,
+  );
+  assert.equal(
+    shouldBootstrapSelectedSessionLive({
+      runtimeReady: true,
+      needsObservation: true,
+      hasImmediateActivity: false,
+      historyAllowsObservation: true,
+      hasLiveProjection: false,
+    }),
+    true,
+  );
+});
+
+test('immediate observation accepts local activity, fresh profile activity, or an explicit requirement', () => {
+  const initial = createRuntimeProjectionState();
+  assert.equal(runtimeSessionRequiresImmediateObservation(initial, 's_1'), false);
+  assert.equal(
+    runtimeSessionRequiresImmediateObservation(
+      {
+        ...initial,
+        liveBySession: {
+          s_1: {
+            ...live('rt_1', 1),
+            activeRun: {
+              runId: 'run_local',
+              sessionId: 's_1',
+              phase: 'running',
+              startedAt: 1,
+            },
+          },
+        },
+      },
+      's_1',
+    ),
+    true,
+  );
+  const ready = replaceRuntimeProfile(initial, {
+    ...profile('rt_1', 2),
+    sessions: [
+      {
+        sessionId: 's_1',
+        surface: 'code',
+        createdAt: 1,
+        lastActivityAt: 2,
+        activeRun: {
+          runId: 'run_profile',
+          sessionId: 's_1',
+          phase: 'running',
+          startedAt: 1,
+        },
+        queuedRuns: [],
+      },
+    ],
+  });
+  assert.equal(runtimeSessionRequiresImmediateObservation(ready, 's_1'), true);
+  const boundedReady = replaceRuntimeProfile(initial, profile('rt_1', 3));
+  const missingSessionNeedsObservation = runtimeSessionNeedsObservation(boundedReady, 's_1');
+  const missingSessionIsImmediate = runtimeSessionRequiresImmediateObservation(boundedReady, 's_1');
+  assert.equal(missingSessionNeedsObservation, true);
+  assert.equal(missingSessionIsImmediate, true);
+  assert.equal(
+    shouldBootstrapSelectedSessionLive({
+      runtimeReady: true,
+      needsObservation: missingSessionNeedsObservation,
+      hasImmediateActivity: missingSessionIsImmediate,
+      historyAllowsObservation: false,
+      hasLiveProjection: false,
+    }),
+    true,
+  );
+  assert.equal(
+    runtimeSessionRequiresImmediateObservation(
+      { ...initial, snapshotRequiredBySession: { s_1: true } },
+      's_1',
+    ),
+    true,
+  );
+});
+
+test('a bounded profile omission is not terminal evidence against an observed active Session', () => {
+  const activeLive: SpaceSessionLiveProjectionT = {
+    ...live('rt_1', 5),
+    activeRun: {
+      runId: 'run_active',
+      sessionId: 's_1',
+      phase: 'running',
+      startedAt: 1,
+    },
+  };
+
+  assert.equal(runtimeProfileConflictsWithLive(profile('rt_1', 5), 's_1', activeLive), false);
+  assert.equal(
+    runtimeProfileConflictsWithLive(
+      {
+        ...profile('rt_1', 6),
+        sessions: [
+          {
+            sessionId: 's_1',
+            surface: 'code',
+            createdAt: 1,
+            lastActivityAt: 2,
+            queuedRuns: [],
+            lastTerminalRun: {
+              runId: 'run_active',
+              sessionId: 's_1',
+              phase: 'completed',
+              completedAt: 2,
+            },
+          },
+        ],
+      },
+      's_1',
+      activeLive,
+    ),
+    true,
+  );
+});
+
+test('Runtime bootstrap reconciliation uses three bounded retries', () => {
+  assert.deepEqual([1, 2, 3, 4].map(runtimeBootstrapRetryDelayMs), [250, 1_000, 3_000, undefined]);
 });
 
 test('connection reconciliation is edge-triggered instead of timestamp-triggered', () => {
@@ -249,6 +444,30 @@ test('duplicate or older live changes are ignored without scheduling a snapshot'
   const result = applySessionLiveChange(base, duplicate);
   assert.equal(result.status, 'ignored');
   assert.equal(result.state, base);
+});
+
+test('an equal authoritative snapshot clears a retained reconciliation requirement', () => {
+  const base = replaceSessionLiveProjection(
+    replaceRuntimeProfile(createRuntimeProjectionState(), profile('rt_1', 4)),
+    live('rt_1', 4),
+  );
+  const gapResult = applySessionLiveChange(base, {
+    sessionId: 's_1',
+    baseProjectionRevision: 6,
+    projectionRevision: 7,
+    cursor: { runtimeId: 'rt_1', seq: 7 },
+    change: { domain: 'tools', activeTools: [] },
+  });
+
+  const staleEqual = replaceSessionLiveProjection(gapResult.state, {
+    ...live('rt_1', 4),
+    cursor: { runtimeId: 'rt_1', seq: 3 },
+  });
+  assert.equal(staleEqual.snapshotRequiredBySession.s_1, true);
+
+  const reconciled = replaceSessionLiveProjection(gapResult.state, live('rt_1', 4));
+  assert.equal(reconciled.liveBySession.s_1?.projectionRevision, 4);
+  assert.equal(reconciled.snapshotRequiredBySession.s_1, undefined);
 });
 
 test('stale bootstrap snapshots cannot overwrite a newer pushed connection/profile', () => {

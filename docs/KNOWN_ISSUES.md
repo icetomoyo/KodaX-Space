@@ -168,6 +168,7 @@ Last Updated: 2026-08-05
 | 170 | Medium   | Resolved    | A transient data_changed during runs.start surfaced after optimistic acceptance instead of retrying safely                         | v0.1.34 managed Runtime admission                            | 2026-08-04 |
 | 171 | High     | Resolved    | A bounded newest history page starting mid-turn could place the next answer above its query and the prior answer below it          | v0.1.34 history/live leading-page reconciliation             | 2026-08-04 |
 | 172 | High     | Resolved    | Live transcript events dropped Runtime turn identity, so an overtaking history revalidation could duplicate and reorder a new turn | v0.1.34 Runtime bridge and ready-history revalidation        | 2026-08-04 |
+| 173 | High     | Resolved    | Reopening or switching an active Session could lose its in-flight transcript and leave sidebar activity stale                      | v0.1.34 renderer Runtime observation bootstrap               | 2026-08-05 |
 
 ## Issue Details
 
@@ -12260,14 +12261,100 @@ from canonical history, explaining why `Ctrl+R` repaired the display.
 - Existing leading-partial, multi-input, fork/rewind, history-first/live-first,
   and repeated-prompt ambiguity tests remain unchanged and green.
 
+## Issue 173: Reopening or switching an active Session could lose its in-flight transcript and leave sidebar activity stale
+
+- Priority: High
+- Status: Resolved
+- Introduced: v0.1.34 renderer Runtime observation bootstrap
+- Fixed: v0.1.35
+- Created: 2026-08-05
+- Resolution Date: 2026-08-05
+
+#### Original Problem
+
+With several Runtime Sessions running concurrently, repeatedly switching between them could make
+already-rendered assistant content disappear, leave completed Sessions spinning, or remove the
+sidebar spinner from a Session that was still running. Closing the Space window while leaving the
+daemon alive and reopening it could show only `Working` with no in-flight transcript; `Ctrl+R`
+repeated the same blank state.
+
+Expected behavior: selecting or reopening an active Session restores its cumulative Runtime
+snapshot immediately, background active Session status converges after missed pushes, and an idle
+historical Session keeps the cheaper history-first load path.
+
+#### Root Cause
+
+- The selected Session's `session.liveSnapshot` request was gated by canonical history reaching
+  `ready` or `error`. Runtime startup outcomes such as `waiting`, `runtime_unavailable`, or repeated
+  `data_changed` could therefore block the only cumulative in-flight transcript source forever.
+- An existing live projection was treated as sufficient even after switching away and back, so a
+  partial or stale projection did not get activation reconciliation.
+- Snapshot failures were silently swallowed and the paused event batch had no bounded recovery
+  attempt. A missed terminal `session.liveChanged` could leave a stale active projection until the
+  renderer was reloaded.
+- Sidebar status ignored the fresh Runtime profile's positive active/queued evidence, while history
+  cache eviction did not protect background Runtime work.
+- Runtime-delivered user boundary events omitted their existing `runtimeId/runId/seq` envelope at
+  the Space IPC schema boundary.
+
+#### Resolution
+
+- Active, queued, interaction-pending, and snapshot-required selected Sessions now request an
+  atomic live snapshot immediately, independent of history phase and independent of an older live
+  projection. Idle Sessions retain history-first observation.
+- Runtime profile and live-snapshot bootstrap errors are logged and retried with bounded backoff.
+  Live failures retain the snapshot-required marker and release the paused event batch.
+- Canonical `session.history` reads have a 10-second renderer deadline; a hung main-process read
+  transitions paging to `error` instead of leaving the observation gate in `loading` forever.
+- Equal-revision authoritative snapshots clear a retained requirement and can rehydrate cumulative
+  drafts/tools after the renderer transcript buffer was rebuilt without replacing or downgrading
+  the existing live projection.
+- Focus, visibility, Runtime reconnection, profile conflicts, and a 30-second low-frequency pass
+  reconcile only already-observed active Sessions. This bounds stale terminal state without
+  observing every historical Session.
+- Fresh profile active/queued state can positively mark sidebar activity but bounded-profile
+  absence never clears stronger live evidence or creates eager background conflict reads. The one
+  selected omitted Session fails open to immediate observation. A terminal snapshot fences a
+  missed same-Run `session_start`, allowing stale spinners to stop without `Ctrl+R`.
+- History LRU eviction prefers idle Sessions, then active Sessions, while retaining its hard
+  32-Session bound. Eviction removes canonical restored rows but preserves independent live state.
+- Daemon mid-turn and after-turn user boundaries preserve the existing Runtime causal envelope.
+  No KodaX SDK change, main-process event ring, synthetic turn identity, or terminal `turnId` was
+  added.
+
+#### Files Changed
+
+- `apps/desktop/renderer/src/App.tsx`
+- `apps/desktop/renderer/src/lib/ipcInvokeWithTimeout.ts`
+- `apps/desktop/renderer/src/store/appStore.ts`
+- `apps/desktop/renderer/src/store/runtimeProjectionState.ts`
+- `apps/desktop/renderer/src/features/session/useSessionStatus.ts`
+- `apps/desktop/renderer/src/shell/sessionHistoryPaging.ts`
+- `apps/desktop/electron/kodax/runtime-host-adapter.ts`
+- `packages/space-ipc-schema/src/channels/session.ts`
+- Targeted renderer, bridge, schema, and paging regression tests
+
+#### Tests Added
+
+- Active selected Sessions bypass history and stale-projection gates; idle Sessions remain
+  history-first.
+- Fresh profile activity is positive-only status evidence.
+- Equal authoritative snapshots clear retained reconciliation requirements.
+- Equal authoritative snapshots rehydrate missing renderer-only draft rows.
+- Terminal snapshots fence same-Run lifecycle starts when the terminal push was missed.
+- Runtime profile bootstrap and live reconciliation use three bounded retries.
+- A hung canonical history IPC times out and releases the observation gate.
+- User boundary events retain Runtime causal identity.
+- Background active Session history is preferred under pressure while the cache remains bounded.
+
 ## Summary
 
-- Total: 160
+- Total: 161
 - Open: 2
 - In Progress: 9
 - Deferred: 1
-- Resolved: 148
-- High: 77
+- Resolved: 149
+- High: 78
 - Medium: 72
 - Low: 11
 - Next to resolve: 165

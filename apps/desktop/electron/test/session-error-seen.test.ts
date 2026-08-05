@@ -2,7 +2,10 @@ import { beforeEach, test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { SessionMeta, SpaceSessionLiveProjectionT } from '@kodax-space/space-ipc-schema';
 import { useAppStore } from '../../renderer/src/store/appStore.js';
-import { isUnseenTerminalError } from '../../renderer/src/features/session/useSessionStatus.js';
+import {
+  deriveSessionStatus,
+  isUnseenTerminalError,
+} from '../../renderer/src/features/session/useSessionStatus.js';
 
 const SID = 's_error_seen';
 
@@ -37,6 +40,13 @@ function liveWithTerminalRun(
   };
 }
 
+function liveWithActiveRun(runId: string): SpaceSessionLiveProjectionT {
+  return {
+    ...liveWithTerminalRun('run_done', 'completed'),
+    activeRun: { runId, sessionId: SID, phase: 'running', startedAt: 3 },
+  };
+}
+
 beforeEach(() => {
   useAppStore.setState({
     sessions: [session],
@@ -64,10 +74,69 @@ test('isUnseenTerminalError gates the runtime error dot by runId', () => {
   assert.equal(isUnseenTerminalError(failed, undefined), true);
   assert.equal(isUnseenTerminalError(failed, 'run_fail_1'), false);
   // 新一轮失败 runId 不同 → 红点重新亮起
-  assert.equal(isUnseenTerminalError(liveWithTerminalRun('run_fail_2', 'failed'), 'run_fail_1'), true);
+  assert.equal(
+    isUnseenTerminalError(liveWithTerminalRun('run_fail_2', 'failed'), 'run_fail_1'),
+    true,
+  );
   assert.equal(isUnseenTerminalError(liveWithTerminalRun('run_1', 'interrupted'), undefined), true);
   assert.equal(isUnseenTerminalError(liveWithTerminalRun('run_1', 'completed'), undefined), false);
   assert.equal(isUnseenTerminalError(undefined, undefined), false);
+});
+
+test('fresh profile activity can only add running evidence and never clears live running evidence', () => {
+  assert.equal(
+    deriveSessionStatus({
+      pending: false,
+      events: [],
+      awaitingPermission: false,
+      awaitingAskUser: false,
+      errorSeenAt: 0,
+      errorSeenRunId: undefined,
+      runtimeLive: undefined,
+      runtimeProfileActive: true,
+    }),
+    'running',
+  );
+
+  assert.equal(
+    deriveSessionStatus({
+      pending: false,
+      events: [],
+      awaitingPermission: false,
+      awaitingAskUser: false,
+      errorSeenAt: 0,
+      errorSeenRunId: undefined,
+      runtimeLive: liveWithActiveRun('run_still_live'),
+      runtimeProfileActive: false,
+    }),
+    'running',
+  );
+});
+
+test('a terminal snapshot clears a stale same-Run start when the terminal push was missed', () => {
+  assert.equal(
+    deriveSessionStatus({
+      pending: false,
+      events: [
+        {
+          kind: 'session_start',
+          sessionId: SID,
+          provider: 'mock',
+          runtimeEvent: { runtimeId: 'rt_1', runId: 'run_done', seq: 1 },
+        },
+      ],
+      awaitingPermission: false,
+      awaitingAskUser: false,
+      errorSeenAt: 0,
+      errorSeenRunId: undefined,
+      runtimeLive: {
+        ...liveWithTerminalRun('run_done', 'completed'),
+        cursor: { runtimeId: 'rt_1', seq: 2 },
+      },
+      runtimeProfileActive: false,
+    }),
+    'idle',
+  );
 });
 
 test('removeSession cleans errorSeenRunIdBySession', () => {

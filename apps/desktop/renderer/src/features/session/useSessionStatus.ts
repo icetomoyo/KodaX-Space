@@ -1,26 +1,13 @@
-// F040: per-session status hook —— 把 store 里散布在多处的事件流派生成一个紧凑枚举：
-//
-//   - 'running'  : session 正在跑（pendingSend 或 in-flight 事件流）
-//   - 'awaiting' : 等用户确认（permissionQueue / askUserQueue 头部）
-//   - 'error'    : 最近一条 session lifecycle 事件是 session_error 且未被新事件 supersede
-//   - 'idle'     : 其它
-//
-// LeftSidebar.ProjectTree 用这个驱动每行末尾的状态点 + 折叠项目节点的运行计数。
-//
-// 选择 hook 形态而非 store-derived state 的原因：
-//   - 每次 events 流入都重算需要 selector，store 里写就会污染 reducer
-//   - hook 把派生留给消费者，且 useMemo 自动跟随 events buffer 引用变化
-//   - 同 session 多处订阅时 React 会去重 re-render，相比 store 衍生不慢
-
 import { useMemo } from 'react';
+import type { SessionEvent, SpaceSessionLiveProjectionT } from '@kodax-space/space-ipc-schema';
 import { useAppStore } from '../../store/appStore.js';
+import {
+  runtimeConnectionHasFreshLiveAuthority,
+  runtimeProfileActivityOutranksLive,
+} from '../../store/runtimeProjectionState.js';
 
 export type SessionStatus = 'idle' | 'running' | 'awaiting' | 'error';
 
-/**
- * runtime 投影路径的 error 判定：lastTerminalRun 为 failed/interrupted 且未被用户看过。
- * 「看过」以 runId 为准（errorSeenRunIdBySession）——新一轮失败的 runId 不同，红点会重新亮起。
- */
 export function isUnseenTerminalError(
   runtimeLive: { lastTerminalRun?: { runId: string; phase: string } | undefined } | undefined,
   seenRunId: string | undefined,
@@ -31,132 +18,173 @@ export function isUnseenTerminalError(
   return terminal.runId !== seenRunId;
 }
 
-/**
- * 单 session 状态。
- * 优先级 awaiting > error > running > idle —— 等用户操作的事比 spinner 更紧急。
- */
-export function useSessionStatus(sessionId: string | null): SessionStatus {
-  const pending = useAppStore((s) =>
-    sessionId ? Boolean(s.pendingSendBySession[sessionId]) : false,
-  );
-  const events = useAppStore((s) => (sessionId ? s.eventsBySession[sessionId] : undefined));
-  const awaitingPermission = useAppStore((s) =>
-    sessionId ? s.permissionQueue.some((p) => p.sessionId === sessionId) : false,
-  );
-  const awaitingAskUser = useAppStore((s) =>
-    sessionId ? s.askUserQueue.some((p) => p.sessionId === sessionId) : false,
-  );
-  const errorSeenAt = useAppStore((s) =>
-    sessionId ? (s.errorSeenAtBySession[sessionId] ?? 0) : 0,
-  );
-  const errorSeenRunId = useAppStore((s) =>
-    sessionId ? s.errorSeenRunIdBySession[sessionId] : undefined,
-  );
-  const runtimeLive = useAppStore((s) =>
-    sessionId ? s.liveProjectionBySession[sessionId] : undefined,
-  );
-
-  return useMemo<SessionStatus>(() => {
-    if (!sessionId) return 'idle';
-    if (
-      runtimeLive?.activeRun?.phase === 'waiting_permission' ||
-      runtimeLive?.activeRun?.phase === 'waiting_user_input' ||
-      runtimeLive?.interactions.some((interaction) => interaction.state === 'pending')
-    ) {
-      return 'awaiting';
-    }
-    // Renderer queues can arrive one frame before the Runtime projection catches up. Human input
-    // must still outrank running/error so the sidebar never loses the actionable signal.
-    if (awaitingPermission || awaitingAskUser) return 'awaiting';
-    if (runtimeLive?.activeRun || (runtimeLive?.queuedRuns.length ?? 0) > 0) return 'running';
-    if (isUnseenTerminalError(runtimeLive, errorSeenRunId)) {
-      return 'error';
-    }
-    // 倒扫 events 找最近一条 session lifecycle —— complete/error 表示已结束
-    if (events) {
-      for (let i = events.length - 1; i >= 0; i--) {
-        const ev = events[i];
-        if (ev.kind === 'session_error') {
-          // 已被用户看过（含取消）的 error 不再亮红点；未看过的才算 'error'。
-          if (i >= errorSeenAt) return 'error';
+export function deriveSessionStatus(input: {
+  readonly pending: boolean;
+  readonly events: readonly SessionEvent[] | undefined;
+  readonly awaitingPermission: boolean;
+  readonly awaitingAskUser: boolean;
+  readonly errorSeenAt: number;
+  readonly errorSeenRunId: string | undefined;
+  readonly runtimeLive: SpaceSessionLiveProjectionT | undefined;
+  readonly runtimeProfileActive: boolean;
+}): SessionStatus {
+  const { runtimeLive } = input;
+  if (
+    runtimeLive?.activeRun?.phase === 'waiting_permission' ||
+    runtimeLive?.activeRun?.phase === 'waiting_user_input' ||
+    runtimeLive?.interactions.some((interaction) => interaction.state === 'pending') ||
+    input.awaitingPermission ||
+    input.awaitingAskUser
+  ) {
+    return 'awaiting';
+  }
+  if (
+    runtimeLive?.activeRun !== undefined ||
+    (runtimeLive?.queuedRuns.length ?? 0) > 0 ||
+    input.runtimeProfileActive
+  ) {
+    return 'running';
+  }
+  if (isUnseenTerminalError(runtimeLive, input.errorSeenRunId)) return 'error';
+  if (input.events) {
+    for (let index = input.events.length - 1; index >= 0; index--) {
+      const event = input.events[index]!;
+      if (event.kind === 'session_error') {
+        if (index >= input.errorSeenAt) return 'error';
+        break;
+      }
+      if (event.kind === 'session_complete') break;
+      if (event.kind === 'session_start') {
+        const origin = event.runtimeEvent;
+        const terminal = runtimeLive?.lastTerminalRun;
+        if (
+          origin !== undefined &&
+          runtimeLive !== undefined &&
+          terminal?.runId === origin.runId &&
+          runtimeLive.cursor.runtimeId === origin.runtimeId &&
+          origin.seq <= runtimeLive.cursor.seq
+        ) {
           break;
         }
-        if (ev.kind === 'session_complete') break; // session 结束但没错 → 看 pending/start
-        if (ev.kind === 'session_start') return 'running';
+        return 'running';
       }
     }
-    if (pending) return 'running';
-    return 'idle';
-  }, [sessionId, pending, events, awaitingPermission, awaitingAskUser, errorSeenAt, errorSeenRunId, runtimeLive]);
+  }
+  return input.pending ? 'running' : 'idle';
 }
 
-/**
- * 批量 —— 项目展开聚合 N session 计数时复用。返回每种状态的 sessionId 数组。
- * 性能：events 引用变化时会重算，但 ProjectTree 调用层会按 projectPath 切片，
- * 单项目几十条 session 内运算量小，不影响渲染。
- */
+function profileActivityForSession(
+  sessionId: string | null,
+  state: ReturnType<typeof useAppStore.getState>,
+): boolean {
+  if (!sessionId || !runtimeConnectionHasFreshLiveAuthority(state.runtimeConnection)) return false;
+  const profile = state.runtimeProfile;
+  if (profile === null || profile.connection.runtimeId !== state.runtimeConnection.runtimeId) {
+    return false;
+  }
+  return runtimeProfileActivityOutranksLive(
+    profile,
+    sessionId,
+    state.liveProjectionBySession[sessionId],
+  );
+}
+
+export function useSessionStatus(sessionId: string | null): SessionStatus {
+  const pending = useAppStore((state) =>
+    sessionId ? Boolean(state.pendingSendBySession[sessionId]) : false,
+  );
+  const events = useAppStore((state) => (sessionId ? state.eventsBySession[sessionId] : undefined));
+  const awaitingPermission = useAppStore((state) =>
+    sessionId ? state.permissionQueue.some((request) => request.sessionId === sessionId) : false,
+  );
+  const awaitingAskUser = useAppStore((state) =>
+    sessionId ? state.askUserQueue.some((request) => request.sessionId === sessionId) : false,
+  );
+  const errorSeenAt = useAppStore((state) =>
+    sessionId ? (state.errorSeenAtBySession[sessionId] ?? 0) : 0,
+  );
+  const errorSeenRunId = useAppStore((state) =>
+    sessionId ? state.errorSeenRunIdBySession[sessionId] : undefined,
+  );
+  const runtimeLive = useAppStore((state) =>
+    sessionId ? state.liveProjectionBySession[sessionId] : undefined,
+  );
+  const runtimeProfileActive = useAppStore((state) => profileActivityForSession(sessionId, state));
+
+  return useMemo(() => {
+    if (!sessionId) return 'idle';
+    return deriveSessionStatus({
+      pending,
+      events,
+      awaitingPermission,
+      awaitingAskUser,
+      errorSeenAt,
+      errorSeenRunId,
+      runtimeLive,
+      runtimeProfileActive,
+    });
+  }, [
+    sessionId,
+    pending,
+    events,
+    awaitingPermission,
+    awaitingAskUser,
+    errorSeenAt,
+    errorSeenRunId,
+    runtimeLive,
+    runtimeProfileActive,
+  ]);
+}
+
 export function useSessionStatusMap(
   sessionIds: readonly string[],
 ): Readonly<Record<string, SessionStatus>> {
-  const pendingMap = useAppStore((s) => s.pendingSendBySession);
-  const eventsMap = useAppStore((s) => s.eventsBySession);
-  const permissionQueue = useAppStore((s) => s.permissionQueue);
-  const askUserQueue = useAppStore((s) => s.askUserQueue);
-  const errorSeenMap = useAppStore((s) => s.errorSeenAtBySession);
-  const errorSeenRunIdMap = useAppStore((s) => s.errorSeenRunIdBySession);
-  const liveProjectionBySession = useAppStore((s) => s.liveProjectionBySession);
+  const pendingMap = useAppStore((state) => state.pendingSendBySession);
+  const eventsMap = useAppStore((state) => state.eventsBySession);
+  const permissionQueue = useAppStore((state) => state.permissionQueue);
+  const askUserQueue = useAppStore((state) => state.askUserQueue);
+  const errorSeenMap = useAppStore((state) => state.errorSeenAtBySession);
+  const errorSeenRunIdMap = useAppStore((state) => state.errorSeenRunIdBySession);
+  const liveProjectionBySession = useAppStore((state) => state.liveProjectionBySession);
+  const runtimeConnection = useAppStore((state) => state.runtimeConnection);
+  const runtimeProfile = useAppStore((state) => state.runtimeProfile);
 
   return useMemo(() => {
-    const permissionSids = new Set(permissionQueue.map((p) => p.sessionId));
-    const askUserSids = new Set(askUserQueue.map((p) => p.sessionId));
-    const out: Record<string, SessionStatus> = {};
-    for (const sid of sessionIds) {
-      const runtimeLive = liveProjectionBySession[sid];
-      if (
-        runtimeLive?.activeRun?.phase === 'waiting_permission' ||
-        runtimeLive?.activeRun?.phase === 'waiting_user_input' ||
-        runtimeLive?.interactions.some((interaction) => interaction.state === 'pending')
-      ) {
-        out[sid] = 'awaiting';
-        continue;
-      }
-      if (permissionSids.has(sid) || askUserSids.has(sid)) {
-        out[sid] = 'awaiting';
-        continue;
-      }
-      if (runtimeLive?.activeRun || (runtimeLive?.queuedRuns.length ?? 0) > 0) {
-        out[sid] = 'running';
-        continue;
-      }
-      if (isUnseenTerminalError(runtimeLive, errorSeenRunIdMap[sid])) {
-        out[sid] = 'error';
-        continue;
-      }
-      const events = eventsMap[sid];
-      let status: SessionStatus = pendingMap[sid] ? 'running' : 'idle';
-      if (events) {
-        const seenAt = errorSeenMap[sid] ?? 0;
-        for (let i = events.length - 1; i >= 0; i--) {
-          const ev = events[i];
-          if (ev.kind === 'session_error') {
-            // 已看过（含取消）的 error 不再亮红点；保持 running/idle。未看过才标 'error'。
-            if (i >= seenAt) status = 'error';
-            break;
-          }
-          if (ev.kind === 'session_complete') {
-            // complete 不重写 status —— 让 pendingSend 决定（罕见 race：用户在 complete 后立刻
-            // 新 send，pendingSend=true 让 status='running' 立刻反映）
-            break;
-          }
-          if (ev.kind === 'session_start') {
-            status = 'running';
-            break;
-          }
+    const permissionSessionIds = new Set(permissionQueue.map((request) => request.sessionId));
+    const askUserSessionIds = new Set(askUserQueue.map((request) => request.sessionId));
+    const profileActiveSessionIds = new Set<string>();
+    const freshProfile = runtimeProfile;
+    if (
+      freshProfile !== null &&
+      runtimeConnectionHasFreshLiveAuthority(runtimeConnection) &&
+      freshProfile.connection.runtimeId === runtimeConnection.runtimeId
+    ) {
+      for (const session of freshProfile.sessions) {
+        if (
+          runtimeProfileActivityOutranksLive(
+            freshProfile,
+            session.sessionId,
+            liveProjectionBySession[session.sessionId],
+          )
+        ) {
+          profileActiveSessionIds.add(session.sessionId);
         }
       }
-      out[sid] = status;
     }
-    return out;
+    const statuses: Record<string, SessionStatus> = {};
+    for (const sessionId of sessionIds) {
+      statuses[sessionId] = deriveSessionStatus({
+        pending: Boolean(pendingMap[sessionId]),
+        events: eventsMap[sessionId],
+        awaitingPermission: permissionSessionIds.has(sessionId),
+        awaitingAskUser: askUserSessionIds.has(sessionId),
+        errorSeenAt: errorSeenMap[sessionId] ?? 0,
+        errorSeenRunId: errorSeenRunIdMap[sessionId],
+        runtimeLive: liveProjectionBySession[sessionId],
+        runtimeProfileActive: profileActiveSessionIds.has(sessionId),
+      });
+    }
+    return statuses;
   }, [
     sessionIds,
     pendingMap,
@@ -166,5 +194,7 @@ export function useSessionStatusMap(
     errorSeenMap,
     errorSeenRunIdMap,
     liveProjectionBySession,
+    runtimeConnection,
+    runtimeProfile,
   ]);
 }

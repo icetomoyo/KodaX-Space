@@ -135,6 +135,50 @@ test('history response with foreign Session/request ownership is rejected before
   assert.deepEqual(useAppStore.getState().userMessagesBySession[sessionId] ?? [], []);
 });
 
+test('a hung history IPC times out and releases the observation gate', async (t) => {
+  const sessionId = 'history-paging-timeout';
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  useAppStore.setState({
+    sessions: [
+      {
+        sessionId,
+        projectRoot: '/project',
+        provider: 'mock',
+        reasoningMode: 'auto',
+        permissionMode: 'accept-edits',
+        autoModeEngine: 'llm',
+        agentMode: 'ama',
+        surface: 'code',
+        createdAt: 1_000,
+        lastActivityAt: 1_000,
+      },
+    ],
+    currentSessionId: sessionId,
+    eventsBySession: {},
+    userMessagesBySession: {},
+  });
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    writable: true,
+    value: {
+      kodaxSpace: {
+        invoke: async () => await new Promise<never>(() => {}),
+      },
+    },
+  });
+
+  let rejection: unknown;
+  void restoreNewestSessionHistory(sessionId, 'code').catch((error: unknown) => {
+    rejection = error;
+  });
+  await Promise.resolve();
+  t.mock.timers.tick(10_001);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.match(rejection instanceof Error ? rejection.message : '', /timed out after 10s/);
+  assert.equal(sessionHistoryPagingSnapshot(sessionId).phase, 'error');
+});
+
 test('resetSessionView synchronously clears paging authority and the independent live baseline', async () => {
   const sessionId = 'history-paging-project-reset';
   const session = {
@@ -2758,4 +2802,158 @@ test('paging cache eviction releases restored store rows and reselect reloads ca
     useAppStore.getState().userMessagesBySession[evicted]?.map((message) => message.content),
     [`query:${evicted}`],
   );
+});
+
+test('paging cache does not evict a background Session with known Runtime activity', async () => {
+  const sessionIds = Array.from({ length: 34 }, (_, index) => `history-paging-active-${index}`);
+  const protectedSessionId = sessionIds[0]!;
+  useAppStore.setState({
+    sessions: sessionIds.map((sessionId) => ({
+      sessionId,
+      projectRoot: '/project',
+      provider: 'mock',
+      reasoningMode: 'auto' as const,
+      permissionMode: 'accept-edits' as const,
+      autoModeEngine: 'llm' as const,
+      agentMode: 'ama' as const,
+      surface: 'code' as const,
+      createdAt: 1_000,
+      lastActivityAt: 1_000,
+    })),
+    currentSessionId: sessionIds.at(-1)!,
+    eventsBySession: {},
+    userMessagesBySession: {},
+    liveProjectionBySession: {
+      [protectedSessionId]: {
+        sessionId: protectedSessionId,
+        projectionRevision: 1,
+        cursor: { runtimeId: 'rt_1', seq: 1 },
+        transcriptRevision: 'tx_1',
+        activeRun: {
+          runId: 'run_active',
+          sessionId: protectedSessionId,
+          phase: 'running',
+          startedAt: 1,
+        },
+        queuedRuns: [],
+        activeTools: [],
+        todos: [],
+        queuedInputs: [],
+        interactions: [],
+      },
+    },
+  });
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    writable: true,
+    value: {
+      kodaxSpace: {
+        invoke: mockHistoryInvoke(
+          async (_channel: string, input: { readonly sessionId: string }) => ({
+            ok: true as const,
+            data: {
+              items: [{ kind: 'user' as const, content: `query:${input.sessionId}` }],
+              page: {
+                outcome: 'ready' as const,
+                revision: `revision:${input.sessionId}`,
+                sourceRevision: `source:${input.sessionId}`,
+                hasMore: false,
+                windowMode: 'replace' as const,
+                hasNewer: false,
+              },
+            },
+          }),
+        ),
+      },
+    },
+  });
+
+  for (const sessionId of sessionIds) {
+    await restoreNewestSessionHistory(sessionId, 'code');
+    deactivateSessionHistoryPaging(sessionId);
+  }
+
+  assert.equal(hasReadySessionHistory(protectedSessionId), true);
+  assert.deepEqual(
+    useAppStore
+      .getState()
+      .userMessagesBySession[protectedSessionId]?.map((message) => message.content),
+    [`query:${protectedSessionId}`],
+  );
+});
+
+test('paging cache remains hard-bounded when every cached Session has Runtime activity', async () => {
+  const sessionIds = Array.from({ length: 33 }, (_, index) => `history-paging-all-active-${index}`);
+  useAppStore.setState({
+    sessions: sessionIds.map((sessionId) => ({
+      sessionId,
+      projectRoot: '/project',
+      provider: 'mock',
+      reasoningMode: 'auto' as const,
+      permissionMode: 'accept-edits' as const,
+      autoModeEngine: 'llm' as const,
+      agentMode: 'ama' as const,
+      surface: 'code' as const,
+      createdAt: 1_000,
+      lastActivityAt: 1_000,
+    })),
+    currentSessionId: sessionIds.at(-1)!,
+    eventsBySession: {},
+    userMessagesBySession: {},
+    liveProjectionBySession: Object.fromEntries(
+      sessionIds.map((sessionId, index) => [
+        sessionId,
+        {
+          sessionId,
+          projectionRevision: 1,
+          cursor: { runtimeId: 'rt_1', seq: index + 1 },
+          transcriptRevision: `tx_${index}`,
+          activeRun: {
+            runId: `run_${index}`,
+            sessionId,
+            phase: 'running' as const,
+            startedAt: 1,
+          },
+          queuedRuns: [],
+          activeTools: [],
+          todos: [],
+          queuedInputs: [],
+          interactions: [],
+        },
+      ]),
+    ),
+  });
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    writable: true,
+    value: {
+      kodaxSpace: {
+        invoke: mockHistoryInvoke(
+          async (_channel: string, input: { readonly sessionId: string }) => ({
+            ok: true as const,
+            data: {
+              items: [{ kind: 'user' as const, content: `query:${input.sessionId}` }],
+              page: {
+                outcome: 'ready' as const,
+                revision: `revision:${input.sessionId}`,
+                sourceRevision: `source:${input.sessionId}`,
+                hasMore: false,
+                windowMode: 'replace' as const,
+                hasNewer: false,
+              },
+            },
+          }),
+        ),
+      },
+    },
+  });
+
+  for (const sessionId of sessionIds) {
+    await restoreNewestSessionHistory(sessionId, 'code');
+    deactivateSessionHistoryPaging(sessionId);
+  }
+
+  assert.equal(sessionIds.filter(hasReadySessionHistory).length, 32);
+  assert.equal(hasReadySessionHistory(sessionIds[0]!), false);
+  assert.equal(hasReadySessionHistory(sessionIds.at(-1)!), true);
 });

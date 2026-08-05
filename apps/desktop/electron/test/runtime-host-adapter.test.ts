@@ -5752,75 +5752,89 @@ test('daemon delivered interrupt batch becomes ordered queue-addressable session
   });
   const bridgeRuntimeEvent = (
     adapter as unknown as {
-      bridgeRuntimeEvent(event: import('@kodax-ai/kodax/runtime').RuntimeTypedEvent): void;
+      bridgeRuntimeEvent(
+        event: import('@kodax-ai/kodax/runtime').RuntimeTypedEvent,
+        runtimeId?: string,
+      ): void;
     }
   ).bridgeRuntimeEvent.bind(adapter);
 
-  bridgeRuntimeEvent({
-    id: 'event_interrupt_turn_started',
-    seq: 1,
-    time: '2026-07-21T00:00:00.000Z',
-    type: 'turn.started',
-    sessionId: 's_1',
-    runId: 'run_active',
-    turnId: 'turn_active',
-    payload: {
-      sessionId: 's_1',
+  bridgeRuntimeEvent(
+    {
+      id: 'event_interrupt_turn_started',
       seq: 1,
+      time: '2026-07-21T00:00:00.000Z',
+      type: 'turn.started',
+      sessionId: 's_1',
+      runId: 'run_active',
       turnId: 'turn_active',
-      deliveryKind: 'initial',
-      contextKind: 'root',
+      payload: {
+        sessionId: 's_1',
+        seq: 1,
+        turnId: 'turn_active',
+        deliveryKind: 'initial',
+        contextKind: 'root',
+      },
     },
-  });
-  bridgeRuntimeEvent({
-    id: 'event_interrupt_batch',
-    seq: 2,
-    time: '2026-07-21T00:00:00.000Z',
-    type: 'run.input.delivered',
-    sessionId: 's_1',
-    runId: 'run_active',
-    turnId: 'turn_active',
-    payload: {
-      inputs: [
-        {
-          inputId: 'input-1',
-          afterRunId: 'run_active',
-          input: [{ type: 'text', text: 'first interrupt\n\nattachment overlay' }],
-          queuedAt: '2026-07-21T00:00:00.000Z',
-          deliveredAt: '2026-07-21T00:00:01.000Z',
-        },
-        {
-          inputId: 'input-2',
-          afterRunId: 'run_active',
-          input: [{ type: 'text', text: 'second interrupt' }],
-          queuedAt: '2026-07-21T00:00:00.000Z',
-          deliveredAt: '2026-07-21T00:00:01.000Z',
-        },
-      ],
+    'rt_test',
+  );
+  bridgeRuntimeEvent(
+    {
+      id: 'event_interrupt_batch',
+      seq: 2,
+      time: '2026-07-21T00:00:00.000Z',
+      type: 'run.input.delivered',
+      sessionId: 's_1',
+      runId: 'run_active',
+      turnId: 'turn_active',
+      payload: {
+        inputs: [
+          {
+            inputId: 'input-1',
+            afterRunId: 'run_active',
+            input: [{ type: 'text', text: 'first interrupt\n\nattachment overlay' }],
+            queuedAt: '2026-07-21T00:00:00.000Z',
+            deliveredAt: '2026-07-21T00:00:01.000Z',
+          },
+          {
+            inputId: 'input-2',
+            afterRunId: 'run_active',
+            input: [{ type: 'text', text: 'second interrupt' }],
+            queuedAt: '2026-07-21T00:00:00.000Z',
+            deliveredAt: '2026-07-21T00:00:01.000Z',
+          },
+        ],
+      },
     },
-  });
-  bridgeRuntimeEvent({
-    id: 'event_interrupt_progress_mirror',
-    seq: 3,
-    time: '2026-07-21T00:00:01.000Z',
-    type: 'run.progress',
-    sessionId: 's_1',
-    runId: 'run_active',
-    payload: {
-      kind: 'mid_turn_user_messages',
-      contents: ['first interrupt\n\nattachment overlay', 'second interrupt'],
-      meta: { queuedMessageIds: ['msg-1', 'msg-2'] },
+    'rt_test',
+  );
+  bridgeRuntimeEvent(
+    {
+      id: 'event_interrupt_progress_mirror',
+      seq: 3,
+      time: '2026-07-21T00:00:01.000Z',
+      type: 'run.progress',
+      sessionId: 's_1',
+      runId: 'run_active',
+      payload: {
+        kind: 'mid_turn_user_messages',
+        contents: ['first interrupt\n\nattachment overlay', 'second interrupt'],
+        meta: { queuedMessageIds: ['msg-1', 'msg-2'] },
+      },
     },
-  });
+    'rt_test',
+  );
 
   assert.deepEqual(pushed, [
     {
+      runtimeEvent: { runtimeId: 'rt_test', runId: 'run_active', seq: 1 },
       kind: 'session_start',
       sessionId: 's_1',
       provider: 'unknown',
       turnId: 'turn_active',
     },
     {
+      runtimeEvent: { runtimeId: 'rt_test', runId: 'run_active', seq: 2 },
       kind: 'mid_turn_user_prompt',
       sessionId: 's_1',
       queueId: 'input-1',
@@ -5829,6 +5843,7 @@ test('daemon delivered interrupt batch becomes ordered queue-addressable session
       turnUserOrdinal: 1,
     },
     {
+      runtimeEvent: { runtimeId: 'rt_test', runId: 'run_active', seq: 2 },
       kind: 'mid_turn_user_prompt',
       sessionId: 's_1',
       queueId: 'input-2',
@@ -6236,6 +6251,11 @@ test('a terminal fallback restores an after-turn marker with its exact admitted 
   );
 
   assert.deepEqual(pushed[0], {
+    runtimeEvent: {
+      runtimeId: 'rt_test',
+      runId: 'run_terminal_continuation',
+      seq: 1,
+    },
     kind: 'queued_user_prompt_started',
     sessionId: 's_terminal_continuation',
     queueId: 'run_terminal_continuation',

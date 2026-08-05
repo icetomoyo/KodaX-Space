@@ -13,9 +13,9 @@ export async function invokeWithTimeout<C extends InvokeChannelName>(
   payload: ChannelInput<C>,
   timeoutMs = 10_000,
 ): Promise<IpcResult<ChannelOutput<C>>> {
-  let timer: number | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   const timeoutResult = new Promise<IpcResult<ChannelOutput<C>>>((resolve) => {
-    timer = window.setTimeout(() => {
+    timer = globalThis.setTimeout(() => {
       resolve({
         ok: false,
         error: {
@@ -41,6 +41,6 @@ export async function invokeWithTimeout<C extends InvokeChannelName>(
   try {
     return await Promise.race([invokeResult, timeoutResult]);
   } finally {
-    if (timer !== undefined) window.clearTimeout(timer);
+    if (timer !== undefined) globalThis.clearTimeout(timer);
   }
 }

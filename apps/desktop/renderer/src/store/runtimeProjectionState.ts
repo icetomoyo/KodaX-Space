@@ -28,6 +28,10 @@ export function shouldRequestSessionLiveSnapshot(status: ApplySessionLiveChangeS
   return status === 'snapshot-required' || status === 'snapshot-pending';
 }
 
+export function runtimeBootstrapRetryDelayMs(attempt: number): number | undefined {
+  return [250, 1_000, 3_000][attempt - 1];
+}
+
 export interface ApplySessionLiveChangeResult {
   readonly state: RuntimeProjectionState;
   readonly status: ApplySessionLiveChangeStatus;
@@ -57,6 +61,87 @@ export function runtimeConnectionHasFreshLiveAuthority(
   return (connection.state === 'ready' || connection.state === 'degraded') && !connection.stale;
 }
 
+export function runtimeProfileSessionHasActivity(
+  session: SpaceRuntimeProfileProjectionT['sessions'][number] | undefined,
+): boolean {
+  return session?.activeRun !== undefined || (session?.queuedRuns.length ?? 0) > 0;
+}
+
+export function sessionLiveProjectionHasActivity(
+  projection: SpaceSessionLiveProjectionT | undefined,
+): boolean {
+  return projection?.activeRun !== undefined || (projection?.queuedRuns.length ?? 0) > 0;
+}
+
+export function runtimeProfileActivityOutranksLive(
+  profile: SpaceRuntimeProfileProjectionT,
+  sessionId: string,
+  live: SpaceSessionLiveProjectionT | undefined,
+): boolean {
+  const profileSession = profile.sessions.find((session) => session.sessionId === sessionId);
+  if (!runtimeProfileSessionHasActivity(profileSession)) return false;
+  if (live === undefined) return true;
+  return (
+    profile.cursor !== undefined &&
+    profile.cursor.runtimeId === live.cursor.runtimeId &&
+    profile.cursor.seq > live.cursor.seq
+  );
+}
+
+export function runtimeProfileConflictsWithLive(
+  profile: SpaceRuntimeProfileProjectionT,
+  sessionId: string,
+  live: SpaceSessionLiveProjectionT | undefined,
+): boolean {
+  if (live === undefined || !sessionLiveProjectionHasActivity(live)) return false;
+  const profileSession = profile.sessions.find((session) => session.sessionId === sessionId);
+  // The profile is deliberately bounded, so omission cannot serve as terminal evidence.
+  if (profileSession === undefined) return false;
+  if (profileSession.activeRun?.runId !== live?.activeRun?.runId) return true;
+  if (profileSession.queuedRuns.length !== live.queuedRuns.length) return true;
+  return profileSession.queuedRuns.some(
+    (run, index) => run.runId !== live.queuedRuns[index]?.runId,
+  );
+}
+
+export function runtimeSessionRequiresImmediateObservation(
+  state: Pick<
+    RuntimeProjectionState,
+    'connection' | 'profile' | 'liveBySession' | 'snapshotRequiredBySession'
+  >,
+  sessionId: string,
+): boolean {
+  if (state.snapshotRequiredBySession[sessionId] === true) return true;
+  if (sessionLiveProjectionHasActivity(state.liveBySession[sessionId])) return true;
+  if (!runtimeConnectionHasFreshLiveAuthority(state.connection)) return false;
+  const profile = state.profile;
+  if (profile === null || profile.connection.runtimeId !== state.connection.runtimeId) return false;
+  if (
+    profile.interactions.some(
+      (interaction) =>
+        interaction.state === 'pending' && interaction.request.sessionId === sessionId,
+    )
+  ) {
+    return true;
+  }
+  const session = profile.sessions.find((candidate) => candidate.sessionId === sessionId);
+  // This helper gates only the selected Session. A bounded profile omission is deliberately
+  // fail-open so an active Session outside the profile slice cannot be trapped behind history.
+  return session === undefined || runtimeProfileSessionHasActivity(session);
+}
+
+export function shouldBootstrapSelectedSessionLive(input: {
+  readonly runtimeReady: boolean;
+  readonly needsObservation: boolean;
+  readonly hasImmediateActivity: boolean;
+  readonly historyAllowsObservation: boolean;
+  readonly hasLiveProjection: boolean;
+}): boolean {
+  if (!input.runtimeReady || !input.needsObservation) return false;
+  if (input.hasImmediateActivity) return true;
+  return input.historyAllowsObservation && !input.hasLiveProjection;
+}
+
 /**
  * Decide whether a Session needs the expensive observation plane at all. Ordinary historical
  * Sessions are fully served by canonical conversation history plus the lightweight Runtime
@@ -65,16 +150,18 @@ export function runtimeConnectionHasFreshLiveAuthority(
  * interactions, and an explicit cursor-gap requirement still fail open to a full snapshot.
  */
 export function runtimeSessionNeedsObservation(
-  state: Pick<RuntimeProjectionState, 'profile' | 'snapshotRequiredBySession'>,
+  state: Pick<RuntimeProjectionState, 'profile' | 'snapshotRequiredBySession'> &
+    Partial<Pick<RuntimeProjectionState, 'liveBySession'>>,
   sessionId: string,
 ): boolean {
   if (state.snapshotRequiredBySession[sessionId] === true) return true;
+  if (sessionLiveProjectionHasActivity(state.liveBySession?.[sessionId])) return true;
   // Wait for the lightweight profile before deciding. Once a profile exists, absence is not proof
   // of terminal state (the projection is deliberately bounded), so fail open to observation.
   if (state.profile === null) return false;
   const session = state.profile?.sessions.find((candidate) => candidate.sessionId === sessionId);
   if (session === undefined) return true;
-  if (session?.activeRun !== undefined || (session?.queuedRuns.length ?? 0) > 0) return true;
+  if (runtimeProfileSessionHasActivity(session)) return true;
   return (
     state.profile?.interactions.some(
       (interaction) =>
@@ -199,6 +286,19 @@ export function replaceSessionLiveProjection(
     current.cursor.runtimeId === projection.cursor.runtimeId &&
     projection.projectionRevision <= current.projectionRevision
   ) {
+    if (
+      projection.projectionRevision === current.projectionRevision &&
+      projection.cursor.seq >= current.cursor.seq &&
+      state.snapshotRequiredBySession[projection.sessionId] === true
+    ) {
+      return {
+        ...state,
+        snapshotRequiredBySession: withoutSnapshotRequirement(
+          state.snapshotRequiredBySession,
+          projection.sessionId,
+        ),
+      };
+    }
     return state;
   }
 

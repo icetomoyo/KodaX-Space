@@ -10,7 +10,11 @@
 //   - layout 结构——由 shell/* 接管
 
 import { useEffect, useRef, useState } from 'react';
-import type { SpaceRuntimeDefaultsT, SpaceVersionOutput } from '@kodax-space/space-ipc-schema';
+import type {
+  SpaceRuntimeDefaultsT,
+  SpaceRuntimeProfileProjectionT,
+  SpaceVersionOutput,
+} from '@kodax-space/space-ipc-schema';
 import { useAppStore } from './store/appStore.js';
 import { pushToast } from './store/toastStore.js';
 import { useI18n } from './i18n/I18nProvider.js';
@@ -23,7 +27,12 @@ import { formatWorkflowEventNotices } from './features/workflow/workflowNotices.
 import { requestTaskDockFocus } from './shell/taskDockControl.js';
 import {
   runtimeConnectionHasFreshLiveAuthority,
+  runtimeBootstrapRetryDelayMs,
+  runtimeProfileConflictsWithLive,
+  runtimeSessionRequiresImmediateObservation,
   runtimeSessionNeedsObservation,
+  sessionLiveProjectionHasActivity,
+  shouldBootstrapSelectedSessionLive,
   shouldReconcileRuntimeConnection,
   shouldRequestSessionLiveSnapshot,
 } from './store/runtimeProjectionState.js';
@@ -35,7 +44,6 @@ import {
   invalidateSessionHistoryPaging,
   refreshDeferredSessionHistory,
   sessionEventInvalidatesHistoryCache,
-  sessionHistoryAllowsRuntimeObservation,
   useSessionHistoryPaging,
 } from './shell/sessionHistoryPaging.js';
 
@@ -82,6 +90,7 @@ export default function App(): JSX.Element {
       ? runtimeSessionNeedsObservation(
           {
             profile: state.runtimeProfile,
+            liveBySession: state.liveProjectionBySession,
             snapshotRequiredBySession: state.runtimeSnapshotRequiredBySession,
           },
           currentSessionId,
@@ -94,6 +103,18 @@ export default function App(): JSX.Element {
   const hasCurrentLiveProjection = useAppStore((s) =>
     currentSessionId ? Boolean(s.liveProjectionBySession[currentSessionId]) : false,
   );
+  const currentSessionHasImmediateRuntimeActivity = useAppStore((state) => {
+    if (!currentSessionId) return false;
+    return runtimeSessionRequiresImmediateObservation(
+      {
+        connection: state.runtimeConnection,
+        profile: state.runtimeProfile,
+        liveBySession: state.liveProjectionBySession,
+        snapshotRequiredBySession: state.runtimeSnapshotRequiredBySession,
+      },
+      currentSessionId,
+    );
+  });
   const hasCurrentActorSnapshot = useAppStore((s) =>
     currentSessionId ? Boolean(s.agentActorSnapshotBySession[currentSessionId]) : false,
   );
@@ -107,6 +128,12 @@ export default function App(): JSX.Element {
     let disposed = false;
     const liveSnapshotRequests = new Set<string>();
     const liveSnapshotReruns = new Set<string>();
+    const liveSnapshotRetryAttempts = new Map<string, number>();
+    const liveSnapshotRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+    let runtimeProfileRetryAttempt = 0;
+    let runtimeProfileRetryTimer: ReturnType<typeof setTimeout> | undefined;
+    let runtimeProfileBootstrapped = false;
+    let requestLiveSnapshot: (sessionId: string) => void = () => {};
     const sessionEventBatcher = createSessionEventBatcher(
       (event) => {
         appendEvent(event);
@@ -122,9 +149,51 @@ export default function App(): JSX.Element {
       },
     );
 
-    // F121: listener-first Runtime bootstrap. A cursor gap requests one atomic
-    // observation snapshot instead of attempting to replay partial daemon events.
-    const requestLiveSnapshot = (sessionId: string): void => {
+    const requireLiveSnapshot = (sessionId: string): void => {
+      useAppStore.setState((state) =>
+        state.runtimeSnapshotRequiredBySession[sessionId] === true
+          ? state
+          : {
+              runtimeSnapshotRequiredBySession: {
+                ...state.runtimeSnapshotRequiredBySession,
+                [sessionId]: true as const,
+              },
+            },
+      );
+    };
+    const clearLiveSnapshotRetry = (sessionId: string): void => {
+      const timer = liveSnapshotRetryTimers.get(sessionId);
+      if (timer !== undefined) clearTimeout(timer);
+      liveSnapshotRetryTimers.delete(sessionId);
+      liveSnapshotRetryAttempts.delete(sessionId);
+    };
+    const scheduleLiveSnapshotRetry = (sessionId: string, error: unknown): void => {
+      requireLiveSnapshot(sessionId);
+      const attempt = (liveSnapshotRetryAttempts.get(sessionId) ?? 0) + 1;
+      liveSnapshotRetryAttempts.set(sessionId, attempt);
+      console.error('[session.liveSnapshot] reconciliation failed', {
+        sessionId,
+        attempt,
+        error,
+      });
+      if (attempt > 3 || disposed || liveSnapshotRetryTimers.has(sessionId)) return;
+      const delayMs = runtimeBootstrapRetryDelayMs(attempt);
+      if (delayMs === undefined) return;
+      const timer = setTimeout(() => {
+        liveSnapshotRetryTimers.delete(sessionId);
+        if (!disposed) requestLiveSnapshot(sessionId);
+      }, delayMs);
+      liveSnapshotRetryTimers.set(sessionId, timer);
+    };
+
+    // Listener-first Runtime bootstrap. A cursor gap requests one atomic observation snapshot
+    // instead of attempting to replay partial daemon events.
+    requestLiveSnapshot = (sessionId: string): void => {
+      const retryTimer = liveSnapshotRetryTimers.get(sessionId);
+      if (retryTimer !== undefined) {
+        clearTimeout(retryTimer);
+        liveSnapshotRetryTimers.delete(sessionId);
+      }
       if (liveSnapshotRequests.has(sessionId)) {
         // Do not lose a terminal/focus reconciliation that races an older bootstrap read.
         liveSnapshotReruns.add(sessionId);
@@ -137,40 +206,41 @@ export default function App(): JSX.Element {
       sessionEventBatcher.pause(sessionId);
       void invokeWithTimeout(bridge, 'session.liveSnapshot', { sessionId })
         .then((result) => {
-          if (!disposed && result.ok) {
-            // Install the *incoming* causal barrier while draining. This lets a large fragment
-            // backlog collapse to a handful of exact-text events without ever joining a covered
-            // delta to a post-snapshot delta.
-            const previousBarrier =
-              useAppStore.getState().runtimeSnapshotCursorBySession[sessionId];
-            const snapshotRun = result.data.activeRun ?? result.data.lastTerminalRun;
-            const sameBarrierRun =
-              snapshotRun !== undefined &&
-              previousBarrier?.runtimeId === result.data.cursor.runtimeId &&
-              previousBarrier.runId === snapshotRun.runId;
-            sessionEventBatcher.drain(
-              sessionId,
-              snapshotRun === undefined
-                ? result.data.cursor
-                : {
-                    ...result.data.cursor,
-                    runId: snapshotRun.runId,
-                    ...(result.data.assistantDraft !== undefined
-                      ? { assistantDraftSeq: result.data.cursor.seq }
-                      : sameBarrierRun && previousBarrier.assistantDraftSeq !== undefined
-                        ? { assistantDraftSeq: previousBarrier.assistantDraftSeq }
-                        : {}),
-                    ...(result.data.thinkingDraft !== undefined
-                      ? { thinkingDraftSeq: result.data.cursor.seq }
-                      : sameBarrierRun && previousBarrier.thinkingDraftSeq !== undefined
-                        ? { thinkingDraftSeq: previousBarrier.thinkingDraftSeq }
-                        : {}),
-                  },
-            );
-            replaceSessionLiveProjection(result.data);
-          }
+          if (!result.ok) throw new Error(result.error?.message ?? 'Session live snapshot failed.');
+          if (disposed) return;
+          // Install the incoming causal barrier while draining. This lets a large fragment backlog
+          // collapse without joining a covered delta to a post-snapshot delta.
+          const previousBarrier = useAppStore.getState().runtimeSnapshotCursorBySession[sessionId];
+          const snapshotRun = result.data.activeRun ?? result.data.lastTerminalRun;
+          const sameBarrierRun =
+            snapshotRun !== undefined &&
+            previousBarrier?.runtimeId === result.data.cursor.runtimeId &&
+            previousBarrier.runId === snapshotRun.runId;
+          sessionEventBatcher.drain(
+            sessionId,
+            snapshotRun === undefined
+              ? result.data.cursor
+              : {
+                  ...result.data.cursor,
+                  runId: snapshotRun.runId,
+                  ...(result.data.assistantDraft !== undefined
+                    ? { assistantDraftSeq: result.data.cursor.seq }
+                    : sameBarrierRun && previousBarrier.assistantDraftSeq !== undefined
+                      ? { assistantDraftSeq: previousBarrier.assistantDraftSeq }
+                      : {}),
+                  ...(result.data.thinkingDraft !== undefined
+                    ? { thinkingDraftSeq: result.data.cursor.seq }
+                    : sameBarrierRun && previousBarrier.thinkingDraftSeq !== undefined
+                      ? { thinkingDraftSeq: previousBarrier.thinkingDraftSeq }
+                      : {}),
+                },
+          );
+          replaceSessionLiveProjection(result.data);
+          clearLiveSnapshotRetry(sessionId);
         })
-        .catch(() => {})
+        .catch((error: unknown) => {
+          if (!disposed) scheduleLiveSnapshotRetry(sessionId, error);
+        })
         .finally(() => {
           if (disposed) return;
           liveSnapshotRequests.delete(sessionId);
@@ -188,11 +258,11 @@ export default function App(): JSX.Element {
       if (!sessionId) return;
       const selected = state.sessions.find((session) => session.sessionId === sessionId);
       if (selected?.surface === 'partner') return;
-      if (!sessionHistoryAllowsRuntimeObservation(sessionId)) return;
       if (
         !runtimeSessionNeedsObservation(
           {
             profile: state.runtimeProfile,
+            liveBySession: state.liveProjectionBySession,
             snapshotRequiredBySession: state.runtimeSnapshotRequiredBySession,
           },
           sessionId,
@@ -202,13 +272,84 @@ export default function App(): JSX.Element {
       }
       requestLiveSnapshot(sessionId);
     };
+    const requestObservedActiveLiveSnapshots = (): ReadonlySet<string> => {
+      const state = useAppStore.getState();
+      const requested = new Set<string>();
+      for (const [sessionId, projection] of Object.entries(state.liveProjectionBySession)) {
+        if (!sessionLiveProjectionHasActivity(projection)) continue;
+        const session = state.sessions.find((candidate) => candidate.sessionId === sessionId);
+        if (session?.surface !== 'partner') {
+          requested.add(sessionId);
+          requestLiveSnapshot(sessionId);
+        }
+      }
+      return requested;
+    };
+    const requestObservedProfileConflicts = (): void => {
+      const state = useAppStore.getState();
+      if (!runtimeConnectionHasFreshLiveAuthority(state.runtimeConnection)) return;
+      const profile = state.runtimeProfile;
+      if (profile === null || profile.connection.runtimeId !== state.runtimeConnection.runtimeId)
+        return;
+      for (const [sessionId, projection] of Object.entries(state.liveProjectionBySession)) {
+        if (!sessionLiveProjectionHasActivity(projection)) continue;
+        if (runtimeProfileConflictsWithLive(profile, sessionId, projection)) {
+          requestLiveSnapshot(sessionId);
+        }
+      }
+    };
+    const clearRuntimeProfileRetry = (): void => {
+      if (runtimeProfileRetryTimer !== undefined) clearTimeout(runtimeProfileRetryTimer);
+      runtimeProfileRetryTimer = undefined;
+      runtimeProfileRetryAttempt = 0;
+    };
+    const acceptRuntimeProfile = (profile: SpaceRuntimeProfileProjectionT): boolean => {
+      replaceRuntimeProfileProjection(profile);
+      const state = useAppStore.getState();
+      runtimeProfileBootstrapped =
+        state.runtimeProfile !== null &&
+        runtimeConnectionHasFreshLiveAuthority(state.runtimeConnection) &&
+        state.runtimeProfile.connection.runtimeId === state.runtimeConnection.runtimeId;
+      if (runtimeProfileBootstrapped) clearRuntimeProfileRetry();
+      requestObservedProfileConflicts();
+      return runtimeProfileBootstrapped;
+    };
+    const requestRuntimeProfileSnapshot = (): void => {
+      runtimeProfileRetryAttempt += 1;
+      const attempt = runtimeProfileRetryAttempt;
+      void bridge
+        .invoke('runtime.profileSnapshot', undefined)
+        .then((result) => {
+          if (disposed) return;
+          if (!result.ok)
+            throw new Error(result.error?.message ?? 'Runtime profile snapshot failed.');
+          if (!acceptRuntimeProfile(result.data)) {
+            throw new Error('Runtime profile snapshot was not accepted.');
+          }
+        })
+        .catch((error: unknown) => {
+          if (disposed || runtimeProfileBootstrapped) return;
+          console.error('[runtime.profileSnapshot] bootstrap failed', { attempt, error });
+          const delayMs = runtimeBootstrapRetryDelayMs(attempt);
+          if (delayMs === undefined) return;
+          runtimeProfileRetryTimer = setTimeout(() => {
+            runtimeProfileRetryTimer = undefined;
+            if (!disposed) requestRuntimeProfileSnapshot();
+          }, delayMs);
+        });
+    };
     const flushSessionEventsIfActive = (): void => {
       if (document.hidden || !document.hasFocus()) return;
       sessionEventBatcher.flush();
-      // Focus/visibility is a cheap reconciliation boundary for a renderer that
-      // may have missed the daemon's terminal liveChanged notification.
-      requestCurrentCoderLiveSnapshot();
+      // Reconcile every observed active Session, not only the selected one. A missed terminal
+      // notification otherwise leaves a background spinner stale indefinitely.
+      const requested = requestObservedActiveLiveSnapshots();
+      const currentSessionId = useAppStore.getState().currentSessionId;
+      if (currentSessionId === null || !requested.has(currentSessionId)) {
+        requestCurrentCoderLiveSnapshot();
+      }
     };
+    const liveReconciliationTimer = setInterval(requestObservedActiveLiveSnapshots, 30_000);
     window.addEventListener('focus', flushSessionEventsIfActive);
     document.addEventListener('visibilitychange', flushSessionEventsIfActive);
     unsubsRef.current.push(
@@ -217,11 +358,15 @@ export default function App(): JSX.Element {
         setCoderRuntimeConnection(connection);
         const accepted = useAppStore.getState().runtimeConnection;
         if (accepted !== previous && shouldReconcileRuntimeConnection(previous, accepted)) {
-          requestCurrentCoderLiveSnapshot();
+          const requested = requestObservedActiveLiveSnapshots();
+          const currentSessionId = useAppStore.getState().currentSessionId;
+          if (currentSessionId === null || !requested.has(currentSessionId)) {
+            requestCurrentCoderLiveSnapshot();
+          }
         }
       }),
       bridge.on('runtime.profileChanged', (profile) => {
-        replaceRuntimeProfileProjection(profile);
+        void acceptRuntimeProfile(profile);
       }),
       bridge.on('session.liveChanged', (change) => {
         const status = applySessionLiveProjectionChange(change);
@@ -244,12 +389,7 @@ export default function App(): JSX.Element {
       // selected Session again even when coderRuntimeReady itself did not transition.
       requestCurrentCoderLiveSnapshot();
     }
-    void bridge
-      .invoke('runtime.profileSnapshot', undefined)
-      .then((result) => {
-        if (!disposed && result.ok) replaceRuntimeProfileProjection(result.data);
-      })
-      .catch(() => {});
+    requestRuntimeProfileSnapshot();
 
     // Startup self-check plus explicit refreshes after mutable capability operations such as
     // user-confirmed sandbox setup. Reading space.version itself remains side-effect free.
@@ -478,6 +618,11 @@ export default function App(): JSX.Element {
       }
       liveSnapshotRequests.clear();
       liveSnapshotReruns.clear();
+      for (const timer of liveSnapshotRetryTimers.values()) clearTimeout(timer);
+      liveSnapshotRetryTimers.clear();
+      liveSnapshotRetryAttempts.clear();
+      clearRuntimeProfileRetry();
+      clearInterval(liveReconciliationTimer);
       requestCoderLiveSnapshotRef.current = () => {};
       window.removeEventListener('focus', flushSessionEventsIfActive);
       window.removeEventListener(SPACE_VERSION_REFRESH_EVENT, refreshSpaceVersion);
@@ -511,20 +656,20 @@ export default function App(): JSX.Element {
     appendWorkflowActivity,
   ]);
 
-  // F121: selecting a Coder session installs the daemon observation and returns its atomic live
-  // snapshot after the bounded canonical history first paint has settled. Observation and history
-  // share the Runtime transport; starting both together can head-of-line block even a tiny history
-  // page behind multi-second observation setup. This also restores terminal-started runs after a
-  // renderer reload without restarting the run.
+  // Active work is snapshot-first. Its cumulative Runtime observation is the only source that can
+  // restore an in-flight draft after reopening the Space window, so canonical history must not
+  // block it and an older renderer projection must not suppress activation reconciliation.
   useEffect(() => {
-    const bridge = window.kodaxSpace;
     if (
-      !bridge ||
+      !window.kodaxSpace ||
       !currentSessionId ||
-      !coderRuntimeReady ||
-      !currentSessionHistoryAllowsObservation ||
-      !currentSessionNeedsRuntimeObservation ||
-      hasCurrentLiveProjection
+      !shouldBootstrapSelectedSessionLive({
+        runtimeReady: coderRuntimeReady,
+        needsObservation: currentSessionNeedsRuntimeObservation,
+        hasImmediateActivity: currentSessionHasImmediateRuntimeActivity,
+        historyAllowsObservation: false,
+        hasLiveProjection: true,
+      })
     ) {
       return;
     }
@@ -535,11 +680,39 @@ export default function App(): JSX.Element {
     requestCoderLiveSnapshotRef.current(currentSessionId);
   }, [
     coderRuntimeReady,
+    currentSessionHasImmediateRuntimeActivity,
+    currentSessionId,
+    currentSessionNeedsRuntimeObservation,
+  ]);
+
+  // Idle history remains history-first to avoid head-of-line blocking its first canonical paint.
+  useEffect(() => {
+    if (
+      !window.kodaxSpace ||
+      !currentSessionId ||
+      currentSessionHasImmediateRuntimeActivity ||
+      !shouldBootstrapSelectedSessionLive({
+        runtimeReady: coderRuntimeReady,
+        needsObservation: currentSessionNeedsRuntimeObservation,
+        hasImmediateActivity: false,
+        historyAllowsObservation: currentSessionHistoryAllowsObservation,
+        hasLiveProjection: hasCurrentLiveProjection,
+      })
+    ) {
+      return;
+    }
+    const selected = useAppStore
+      .getState()
+      .sessions.find((session) => session.sessionId === currentSessionId);
+    if (selected?.surface === 'partner') return;
+    requestCoderLiveSnapshotRef.current(currentSessionId);
+  }, [
+    coderRuntimeReady,
+    currentSessionHasImmediateRuntimeActivity,
     currentSessionHistoryAllowsObservation,
     currentSessionId,
     currentSessionNeedsRuntimeObservation,
     hasCurrentLiveProjection,
-    replaceSessionLiveProjection,
   ]);
 
   // Actor telemetry has an independent Runtime cursor. Seed it explicitly on
