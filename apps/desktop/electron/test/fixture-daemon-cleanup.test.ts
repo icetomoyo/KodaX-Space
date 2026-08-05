@@ -45,9 +45,10 @@ test('test daemon cleanup signals the validated isolated PID and ignores missing
   roots.push(root);
   const descriptorDir = path.join(root, 'runtime', 'daemon', 'coder');
   await mkdir(descriptorDir, { recursive: true });
+  const daemonPid = process.pid + 1;
   await writeFile(
     path.join(descriptorDir, 'daemon.json'),
-    JSON.stringify({ pid: 9876, profile: 'coder', configHome: root }),
+    JSON.stringify({ pid: daemonPid, profile: 'coder', configHome: root }),
     'utf8',
   );
 
@@ -59,6 +60,6 @@ test('test daemon cleanup signals the validated isolated PID and ignores missing
     }),
     true,
   );
-  assert.deepEqual(signals, [{ pid: 9876, signal: 'SIGTERM' }]);
+  assert.deepEqual(signals, [{ pid: daemonPid, signal: 'SIGTERM' }]);
   assert.equal(await stopOwnedTestDaemon(`${root}-missing`, () => true), false);
 });
