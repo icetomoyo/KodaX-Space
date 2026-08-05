@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { runSerializedSessionHistoryOperation } from '../ipc/session.js';
+import {
+  resolveSessionHistoryBackend,
+  runSerializedSessionHistoryOperation,
+} from '../ipc/session.js';
 
 function deferred(): { readonly promise: Promise<void>; readonly resolve: () => void } {
   let resolve!: () => void;
@@ -62,4 +65,11 @@ test('a failed history operation releases the same-Session writer queue', async 
 
   await assert.rejects(failure, /expected history read failure/);
   assert.equal(await successor, 'success');
+});
+
+test('Embedded Coder history restores from persisted conversation instead of waiting for daemon', () => {
+  assert.equal(resolveSessionHistoryBackend('code', 'legacy', false), 'persisted');
+  assert.equal(resolveSessionHistoryBackend('code', 'runtime', false), 'runtime-unavailable');
+  assert.equal(resolveSessionHistoryBackend('code', 'runtime', true), 'runtime');
+  assert.equal(resolveSessionHistoryBackend('partner', 'runtime', true), 'persisted');
 });

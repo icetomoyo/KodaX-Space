@@ -962,6 +962,8 @@ const LS_KEY_MASCOT_ENABLED = 'kodax-space.mascotEnabled';
 const LS_KEY_SMART_POPOUT = 'kodax-space.smartPopoutEnabled';
 const LS_KEY_NATIVE_COMPLETION_NOTIFICATIONS = 'kodax-space.nativeCompletionNotificationsEnabled';
 const LS_KEY_SESSION_TOKEN_USAGE = 'kodax-space.sessionTokenUsage.v1';
+const LS_KEY_ERROR_SEEN_RUN_IDS = 'kodax-space.errorSeenRunIds.v1';
+const MAX_PERSISTED_ERROR_SEEN_SESSIONS = 512;
 const PENDING_MODEL_MAX_LEN = 256;
 const MASCOT_MODE_VALUES = ['legacy', 'sprite', 'off'] as const;
 
@@ -1107,6 +1109,36 @@ function setSessionFlagValue(
     return rest;
   }
   return { ...flags, [sessionId]: next };
+}
+
+function readPersistedErrorSeenRunIds(): Readonly<Record<string, readonly string[]>> {
+  const raw = lsGet(LS_KEY_ERROR_SEEN_RUN_IDS);
+  if (raw === null) return {};
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const entries: Array<[string, readonly string[]]> = [];
+    for (const [sessionId, value] of Object.entries(parsed)) {
+      if (sessionId.length === 0 || sessionId.length > 256 || !Array.isArray(value)) continue;
+      const runIds = value
+        .filter((runId): runId is string => typeof runId === 'string' && runId.length <= 256)
+        .slice(-16);
+      if (runIds.length > 0) entries.push([sessionId, [...new Set(runIds)]]);
+    }
+    return Object.fromEntries(entries.slice(-MAX_PERSISTED_ERROR_SEEN_SESSIONS));
+  } catch {
+    return {};
+  }
+}
+
+function persistErrorSeenRunIds(seenBySession: Readonly<Record<string, readonly string[]>>): void {
+  const entries = Object.entries(seenBySession)
+    .filter((entry) => entry[1].length > 0)
+    .slice(-MAX_PERSISTED_ERROR_SEEN_SESSIONS);
+  lsSet(
+    LS_KEY_ERROR_SEEN_RUN_IDS,
+    entries.length > 0 ? JSON.stringify(Object.fromEntries(entries)) : null,
+  );
 }
 
 function isSessionVisiblyOpen(state: AppState, sessionId: string): boolean {
@@ -3272,7 +3304,7 @@ export const useAppStore = create<AppState>((set) => ({
   eventsBySession: {},
   errorSeenAtBySession: {},
   errorSeenRunIdBySession: {},
-  errorSeenRunIdsBySession: {},
+  errorSeenRunIdsBySession: readPersistedErrorSeenRunIds(),
   todoDriftDismissedAtBySession: {},
   todoDriftDismissedPendingCountBySession: {},
   transientArtifactsBySession: {},
@@ -3413,7 +3445,8 @@ export const useAppStore = create<AppState>((set) => ({
         sessions: mergeRuntimeActivityIntoSessions(replaced, state.runtimeProfile),
       };
     }),
-  setCurrentSession: (sessionId) =>
+  setCurrentSession: (sessionId) => {
+    let seenBySessionToPersist: Readonly<Record<string, readonly string[]>> | null = null;
     set((state) => {
       // v0.1.9 fix: 切 session 时同步把 currentProjectPath 调到该 session 的 projectRoot。
       // 否则 ChangesSection / WorkingFolderSection / ChipBar / BottomBar 在多项目 sidebar
@@ -3435,9 +3468,19 @@ export const useAppStore = create<AppState>((set) => ({
         sessionId,
       ).map((terminal) => terminal.runId);
       if (seenRunId !== undefined) terminalRunIds.push(seenRunId);
+      for (const event of state.eventsBySession[sessionId] ?? []) {
+        if (event.kind === 'session_error' && event.runtimeEvent?.runId !== undefined) {
+          terminalRunIds.push(event.runtimeEvent.runId);
+        }
+      }
       const seenRunIds = [...(state.errorSeenRunIdsBySession[sessionId] ?? []), ...terminalRunIds]
         .filter((runId, index, all) => all.indexOf(runId) === index)
         .slice(-16);
+      const errorSeenRunIdsBySession =
+        seenRunIds.length > 0
+          ? { ...state.errorSeenRunIdsBySession, [sessionId]: seenRunIds }
+          : state.errorSeenRunIdsBySession;
+      seenBySessionToPersist = errorSeenRunIdsBySession;
       const patch = {
         ...(readFlags === state.sessionFlags ? {} : { sessionFlags: readFlags }),
         errorSeenAtBySession: {
@@ -3454,10 +3497,7 @@ export const useAppStore = create<AppState>((set) => ({
           : {}),
         ...(seenRunIds.length > 0
           ? {
-              errorSeenRunIdsBySession: {
-                ...state.errorSeenRunIdsBySession,
-                [sessionId]: seenRunIds,
-              },
+              errorSeenRunIdsBySession,
             }
           : {}),
       };
@@ -3474,7 +3514,9 @@ export const useAppStore = create<AppState>((set) => ({
         currentProjectPath: found.projectRoot,
         ...patch,
       };
-    }),
+    });
+    if (seenBySessionToPersist !== null) persistErrorSeenRunIds(seenBySessionToPersist);
+  },
 
   appendUserMessage: (sessionId, content, sentAt, attachments) => {
     let messageId: string | null = null;
@@ -5149,6 +5191,7 @@ export const useAppStore = create<AppState>((set) => ({
       const { [sessionId]: _esa, ...restErrorSeen } = state.errorSeenAtBySession;
       const { [sessionId]: _esr, ...restErrorSeenRun } = state.errorSeenRunIdBySession;
       const { [sessionId]: _esrs, ...restErrorSeenRuns } = state.errorSeenRunIdsBySession;
+      persistErrorSeenRunIds(restErrorSeenRuns);
       // #9 fix: todo-drift dismiss 基线也是 per-session 派生态，session 删了要一起清。
       const { [sessionId]: _tdda, ...restTodoDriftDismissedAt } =
         state.todoDriftDismissedAtBySession;

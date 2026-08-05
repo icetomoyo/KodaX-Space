@@ -184,7 +184,7 @@ test('historical terminal Sessions do not start the expensive observation plane'
       { profile: { ...terminalProfile, sessions: [] }, snapshotRequiredBySession: {} },
       's_1',
     ),
-    true,
+    false,
   );
   assert.equal(
     runtimeSessionNeedsObservation(

@@ -29,6 +29,7 @@ import {
   runtimeConnectionHasFreshLiveAuthority,
   runtimeBootstrapRetryDelayMs,
   runtimeProfileConflictsWithLive,
+  runtimeSessionNeedsPeriodicReconciliation,
   runtimeSessionRequiresImmediateObservation,
   runtimeSessionNeedsObservation,
   runtimeTerminalEvidenceCandidates,
@@ -48,7 +49,9 @@ import {
   reconcileTerminalSessionHistory,
   refreshDeferredSessionHistory,
   sessionEventInvalidatesHistoryCache,
+  sessionHistoryPagingSnapshot,
   useSessionHistoryPaging,
+  wakeWaitingSessionHistory,
 } from './shell/sessionHistoryPaging.js';
 
 // Shell owns the visible layout; App keeps process-wide bootstrapping and global listeners.
@@ -58,6 +61,8 @@ import {
 
 interface LiveSnapshotRequestOptions {
   readonly allowEqualHydration?: boolean;
+  /** Causal invalidations rerun; focus/timer hints only join the request already in flight. */
+  readonly rerunIfInFlight?: boolean;
 }
 
 const MAX_BACKGROUND_LIVE_RECONCILIATIONS = 4;
@@ -264,7 +269,8 @@ export default function App(): JSX.Element {
         liveSnapshotRetryTimers.delete(sessionId);
       }
       if (liveSnapshotRequests.has(sessionId)) {
-        // Do not lose a terminal/focus reconciliation that races an older bootstrap read.
+        if (options.rerunIfInFlight === false) return;
+        // Do not lose a causal terminal/invalidation reconciliation that races an older read.
         const pending = liveSnapshotReruns.get(sessionId);
         liveSnapshotReruns.set(sessionId, {
           allowEqualHydration:
@@ -351,7 +357,9 @@ export default function App(): JSX.Element {
         });
     };
     requestCoderLiveSnapshotRef.current = requestLiveSnapshot;
-    const requestCurrentCoderLiveSnapshot = (): void => {
+    const requestCurrentCoderLiveSnapshot = (
+      options: Pick<LiveSnapshotRequestOptions, 'rerunIfInFlight'> = {},
+    ): void => {
       const state = useAppStore.getState();
       const sessionId = state.currentSessionId;
       if (!sessionId) return;
@@ -369,10 +377,52 @@ export default function App(): JSX.Element {
       ) {
         return;
       }
-      requestLiveSnapshot(sessionId, { allowEqualHydration: true });
+      const immediate = runtimeSessionRequiresImmediateObservation(
+        {
+          connection: state.runtimeConnection,
+          profile: state.runtimeProfile,
+          liveBySession: state.liveProjectionBySession,
+          snapshotRequiredBySession: state.runtimeSnapshotRequiredBySession,
+        },
+        sessionId,
+      );
+      if (
+        !immediate &&
+        !historyPhaseAllowsRuntimeObservation(sessionHistoryPagingSnapshot(sessionId).phase)
+      ) {
+        return;
+      }
+      requestLiveSnapshot(sessionId, { allowEqualHydration: true, ...options });
+    };
+    const recoverCurrentSessionAtRuntimeEdge = (
+      options: Pick<LiveSnapshotRequestOptions, 'rerunIfInFlight'> = {},
+    ): void => {
+      const state = useAppStore.getState();
+      const sessionId = state.currentSessionId;
+      if (!sessionId) return;
+      const selected = state.sessions.find((session) => session.sessionId === sessionId);
+      if (selected?.surface === 'partner') return;
+      const immediate = runtimeSessionRequiresImmediateObservation(
+        {
+          connection: state.runtimeConnection,
+          profile: state.runtimeProfile,
+          liveBySession: state.liveProjectionBySession,
+          snapshotRequiredBySession: state.runtimeSnapshotRequiredBySession,
+        },
+        sessionId,
+      );
+      if (!immediate) {
+        void wakeWaitingSessionHistory(sessionId).catch((error: unknown) => {
+          console.error('[session.history] Runtime-ready wake failed', { sessionId, error });
+        });
+      }
+      requestCurrentCoderLiveSnapshot(options);
     };
     const requestObservedActiveLiveSnapshots = (
-      options: { readonly visibleOnly?: boolean } = {},
+      options: {
+        readonly visibleOnly?: boolean;
+        readonly excludeSessionId?: string;
+      } = {},
     ): ReadonlySet<string> => {
       const state = useAppStore.getState();
       const requested = new Set<string>();
@@ -383,6 +433,7 @@ export default function App(): JSX.Element {
           projection !== undefined &&
           sessionLiveProjectionHasActivity(projection) &&
           projection.cursor.runtimeId === state.runtimeConnection.runtimeId &&
+          sessionId !== options.excludeSessionId &&
           !liveSnapshotRequests.has(sessionId) &&
           state.sessions.find((session) => session.sessionId === sessionId)?.surface !== 'partner',
       );
@@ -400,6 +451,31 @@ export default function App(): JSX.Element {
         backgroundReconciliationCursor = (start + visited) % candidates.length;
       }
       return requested;
+    };
+    const requestPeriodicCurrentCoderLiveSnapshot = (): string | undefined => {
+      const state = useAppStore.getState();
+      const sessionId = state.currentSessionId;
+      if (!sessionId || liveSnapshotRequests.has(sessionId)) return undefined;
+      const selected = state.sessions.find((session) => session.sessionId === sessionId);
+      if (selected?.surface === 'partner') return undefined;
+      if (
+        !runtimeSessionNeedsPeriodicReconciliation(
+          {
+            connection: state.runtimeConnection,
+            profile: state.runtimeProfile,
+            liveBySession: state.liveProjectionBySession,
+            snapshotRequiredBySession: state.runtimeSnapshotRequiredBySession,
+          },
+          sessionId,
+        )
+      ) {
+        return undefined;
+      }
+      requestLiveSnapshot(sessionId, {
+        allowEqualHydration: true,
+        rerunIfInFlight: false,
+      });
+      return sessionId;
     };
     const requestObservedProfileConflicts = (): void => {
       const state = useAppStore.getState();
@@ -428,6 +504,9 @@ export default function App(): JSX.Element {
         runtimeConnectionHasFreshLiveAuthority(state.runtimeConnection) &&
         state.runtimeProfile.connection.runtimeId === state.runtimeConnection.runtimeId;
       if (runtimeProfileBootstrapped) clearRuntimeProfileRetry();
+      if (!wasBootstrapped && runtimeProfileBootstrapped) {
+        recoverCurrentSessionAtRuntimeEdge();
+      }
       requestObservedProfileConflicts();
       if (runtimeProfileBootstrapped) {
         for (const session of profile.sessions) {
@@ -435,9 +514,6 @@ export default function App(): JSX.Element {
             reconcileAuthoritativeTerminalHistory(session.sessionId);
           }
         }
-      }
-      if (!wasBootstrapped && runtimeProfileBootstrapped) {
-        requestCurrentCoderLiveSnapshot();
       }
       return runtimeProfileBootstrapped;
     };
@@ -487,21 +563,37 @@ export default function App(): JSX.Element {
       if (document.hidden || !document.hasFocus()) return;
       sessionEventBatcher.flush();
       requestRuntimeProfileSnapshot();
+      recoverCurrentSessionAtRuntimeEdge({ rerunIfInFlight: false });
       // Reconcile every observed active Session, not only the selected one. A missed terminal
       // notification otherwise leaves a background spinner stale indefinitely.
-      const requested = requestObservedActiveLiveSnapshots();
       const currentSessionId = useAppStore.getState().currentSessionId;
-      if (currentSessionId === null || !requested.has(currentSessionId)) {
-        requestCurrentCoderLiveSnapshot();
+      requestObservedActiveLiveSnapshots({
+        ...(currentSessionId !== null ? { excludeSessionId: currentSessionId } : {}),
+      });
+    };
+    let windowReconciliationActive = !document.hidden && document.hasFocus();
+    const reconcileWindowActivation = (): void => {
+      const active = !document.hidden && document.hasFocus();
+      if (!active) {
+        windowReconciliationActive = false;
+        return;
       }
+      if (windowReconciliationActive) return;
+      windowReconciliationActive = true;
+      flushSessionEventsIfActive();
     };
     const liveReconciliationTimer = setInterval(() => {
       if (document.hidden) return;
       requestRuntimeProfileSnapshot();
-      requestObservedActiveLiveSnapshots({ visibleOnly: true });
+      const current = requestPeriodicCurrentCoderLiveSnapshot();
+      requestObservedActiveLiveSnapshots({
+        visibleOnly: true,
+        ...(current !== undefined ? { excludeSessionId: current } : {}),
+      });
     }, 30_000);
-    window.addEventListener('focus', flushSessionEventsIfActive);
-    document.addEventListener('visibilitychange', flushSessionEventsIfActive);
+    window.addEventListener('focus', reconcileWindowActivation);
+    window.addEventListener('blur', reconcileWindowActivation);
+    document.addEventListener('visibilitychange', reconcileWindowActivation);
     unsubsRef.current.push(
       bridge.on('runtime.connectionChanged', (connection) => {
         const previous = useAppStore.getState().runtimeConnection;
@@ -509,11 +601,11 @@ export default function App(): JSX.Element {
         const accepted = useAppStore.getState().runtimeConnection;
         if (accepted !== previous && shouldReconcileRuntimeConnection(previous, accepted)) {
           runtimeProfileBootstrapped = false;
-          const requested = requestObservedActiveLiveSnapshots();
           const currentSessionId = useAppStore.getState().currentSessionId;
-          if (currentSessionId === null || !requested.has(currentSessionId)) {
-            requestCurrentCoderLiveSnapshot();
-          }
+          recoverCurrentSessionAtRuntimeEdge();
+          requestObservedActiveLiveSnapshots({
+            ...(currentSessionId !== null ? { excludeSessionId: currentSessionId } : {}),
+          });
         }
       }),
       bridge.on('runtime.profileChanged', (profile) => {
@@ -541,7 +633,7 @@ export default function App(): JSX.Element {
       // This process-wide effect also rebuilds when i18n dependencies change. An older in-flight
       // snapshot is intentionally ignored after cleanup, so the new coordinator must seed the
       // selected Session again even when coderRuntimeReady itself did not transition.
-      requestCurrentCoderLiveSnapshot();
+      recoverCurrentSessionAtRuntimeEdge();
     }
     requestRuntimeProfileSnapshot();
 
@@ -782,9 +874,10 @@ export default function App(): JSX.Element {
       clearRuntimeProfileRetry();
       clearInterval(liveReconciliationTimer);
       requestCoderLiveSnapshotRef.current = () => {};
-      window.removeEventListener('focus', flushSessionEventsIfActive);
+      window.removeEventListener('focus', reconcileWindowActivation);
+      window.removeEventListener('blur', reconcileWindowActivation);
       window.removeEventListener(SPACE_VERSION_REFRESH_EVENT, refreshSpaceVersion);
-      document.removeEventListener('visibilitychange', flushSessionEventsIfActive);
+      document.removeEventListener('visibilitychange', reconcileWindowActivation);
       sessionEventBatcher.flush();
       sessionEventBatcher.dispose();
     };
@@ -883,6 +976,7 @@ export default function App(): JSX.Element {
       !coderRuntimeReady ||
       !currentSessionHistoryAllowsObservation ||
       !currentSessionNeedsRuntimeObservation ||
+      !hasCurrentLiveProjection ||
       hasCurrentActorSnapshot
     ) {
       return;
@@ -891,12 +985,31 @@ export default function App(): JSX.Element {
     const selected = state.sessions.find((session) => session.sessionId === currentSessionId);
     if (selected?.surface === 'partner') return;
     let disposed = false;
-    void bridge
-      .invoke('agent.actor.snapshot', { sessionId: currentSessionId })
+    void invokeWithTimeout(
+      bridge,
+      'agent.actor.snapshot',
+      { sessionId: currentSessionId },
+      30_000,
+    )
       .then((result) => {
-        if (!disposed && result.ok) replaceAgentActorSnapshot(result.data);
+        if (disposed) return;
+        if (!result.ok) {
+          console.warn('[agent.actor.snapshot] bootstrap failed', {
+            sessionId: currentSessionId,
+            error: result.error,
+          });
+          return;
+        }
+        replaceAgentActorSnapshot(result.data);
       })
-      .catch(() => {});
+      .catch((error: unknown) => {
+        if (!disposed) {
+          console.error('[agent.actor.snapshot] unexpected bootstrap failure', {
+            sessionId: currentSessionId,
+            error,
+          });
+        }
+      });
     return () => {
       disposed = true;
     };
@@ -905,6 +1018,7 @@ export default function App(): JSX.Element {
     currentSessionHistoryAllowsObservation,
     currentSessionId,
     currentSessionNeedsRuntimeObservation,
+    hasCurrentLiveProjection,
     hasCurrentActorSnapshot,
     replaceAgentActorSnapshot,
   ]);

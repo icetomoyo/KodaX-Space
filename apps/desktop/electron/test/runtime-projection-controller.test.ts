@@ -167,7 +167,7 @@ test('runtime IPC bootstrap registers both snapshot handlers against the control
     handlers.set(name, handler);
   }) as never;
   const snapshotReads: string[] = [];
-  let profileReads = 0;
+  let profileRefreshRequests = 0;
 
   registerRuntimeProjectionChannels(
     controller,
@@ -176,9 +176,8 @@ test('runtime IPC bootstrap registers both snapshot handlers against the control
       snapshotReads.push(sessionId);
       return controller.sessionLiveSnapshot(sessionId);
     },
-    async () => {
-      profileReads += 1;
-      return controller.profileSnapshot();
+    () => {
+      profileRefreshRequests += 1;
     },
   );
 
@@ -190,7 +189,7 @@ test('runtime IPC bootstrap registers both snapshot handlers against the control
   assert.ok(profileHandler);
   const profile = await profileHandler(undefined);
   assert.equal((profile as { connection: { state: string } }).connection.state, 'ready');
-  assert.equal(profileReads, 1);
+  assert.equal(profileRefreshRequests, 1, 'profile IPC must reconcile without delaying cache read');
 
   const liveHandler = handlers.get('session.liveSnapshot');
   assert.ok(liveHandler);

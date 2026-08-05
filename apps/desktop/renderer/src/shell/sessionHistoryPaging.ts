@@ -29,6 +29,10 @@ const IDLE_HISTORY_STATE: SessionHistoryPagingState = {
 const states = new Map<string, SessionHistoryPagingState>();
 const listeners = new Map<string, Set<() => void>>();
 const inFlight = new Map<string, { readonly token: symbol; readonly promise: Promise<void> }>();
+const runtimeReadyWakeups = new Map<
+  string,
+  { readonly token: symbol; readonly promise: Promise<void> }
+>();
 const loadedItems = new Map<string, readonly SessionHistoryItem[]>();
 const retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const retryAttempts = new Map<string, number>();
@@ -650,6 +654,43 @@ async function requestHistory(
   return pending;
 }
 
+/**
+ * A ready Runtime edge should not wait for the exponential retry timer left by startup. Join an
+ * older in-flight read first, then issue exactly one current-generation retry if it still reports
+ * waiting. The normal request token, epoch, and ownership fences remain the only install path.
+ */
+export function wakeWaitingSessionHistory(sessionId: string): Promise<void> {
+  const activeToken = activeTokens.get(sessionId);
+  if (activeToken === undefined) return Promise.resolve();
+  const existingWake = runtimeReadyWakeups.get(sessionId);
+  if (existingWake?.token === activeToken) return existingWake.promise;
+  const existingRead = inFlight.get(sessionId);
+  if (
+    sessionHistoryPagingSnapshot(sessionId).phase !== 'waiting' &&
+    existingRead?.token !== activeToken
+  ) {
+    return Promise.resolve();
+  }
+
+  const pending = (async () => {
+    clearRetry(sessionId);
+    if (existingRead?.token === activeToken) {
+      await existingRead.promise.catch(() => undefined);
+    }
+    if (activeTokens.get(sessionId) !== activeToken) return;
+    const state = sessionHistoryPagingSnapshot(sessionId);
+    if (state.phase !== 'waiting') return;
+    clearRetry(sessionId);
+    await requestHistory(sessionId, false, state.surface);
+  })().finally(() => {
+    if (runtimeReadyWakeups.get(sessionId)?.promise === pending) {
+      runtimeReadyWakeups.delete(sessionId);
+    }
+  });
+  runtimeReadyWakeups.set(sessionId, { token: activeToken, promise: pending });
+  return pending;
+}
+
 export function restoreNewestSessionHistory(
   sessionId: string,
   expectedSurface: 'code' | 'partner',
@@ -733,6 +774,7 @@ export function resetSessionHistoryPagingLifecycle(): void {
   for (const sessionId of retryTimers.keys()) clearRetry(sessionId);
   activeTokens.clear();
   inFlight.clear();
+  runtimeReadyWakeups.clear();
   states.clear();
   loadedItems.clear();
   cacheOrder.clear();

@@ -62,13 +62,21 @@ export function runtimeProfileTerminalEvidence(
   profile: SpaceRuntimeProfileProjectionT,
   sessionId: string,
 ): RuntimeTerminalEvidence | undefined {
-  const terminal = profile.sessions.find(
-    (session) => session.sessionId === sessionId,
-  )?.lastTerminalRun;
+  return runtimeProfileSessionTerminalEvidence(
+    profile,
+    profile.sessions.find((session) => session.sessionId === sessionId),
+  );
+}
+
+export function runtimeProfileSessionTerminalEvidence(
+  profile: SpaceRuntimeProfileProjectionT,
+  session: SpaceRuntimeProfileProjectionT['sessions'][number] | undefined,
+): RuntimeTerminalEvidence | undefined {
+  const terminal = session?.lastTerminalRun;
   const runtimeId = profile.connection.runtimeId ?? profile.cursor?.runtimeId;
-  if (terminal === undefined || runtimeId === undefined) return undefined;
+  if (session === undefined || terminal === undefined || runtimeId === undefined) return undefined;
   return {
-    sessionId,
+    sessionId: session.sessionId,
     runtimeId,
     runId: terminal.runId,
     phase: terminal.phase,
@@ -165,7 +173,18 @@ export function runtimeProfileActivityOutranksLive(
   sessionId: string,
   live: SpaceSessionLiveProjectionT | undefined,
 ): boolean {
-  const profileSession = profile.sessions.find((session) => session.sessionId === sessionId);
+  return runtimeProfileSessionActivityOutranksLive(
+    profile,
+    profile.sessions.find((session) => session.sessionId === sessionId),
+    live,
+  );
+}
+
+export function runtimeProfileSessionActivityOutranksLive(
+  profile: SpaceRuntimeProfileProjectionT,
+  profileSession: SpaceRuntimeProfileProjectionT['sessions'][number] | undefined,
+  live: SpaceSessionLiveProjectionT | undefined,
+): boolean {
   if (!runtimeProfileSessionHasActivity(profileSession)) return false;
   if (live === undefined) return true;
   const profileRunIds = [
@@ -220,9 +239,44 @@ export function runtimeSessionRequiresImmediateObservation(
     return true;
   }
   const session = profile.sessions.find((candidate) => candidate.sessionId === sessionId);
-  // This helper gates only the selected Session. A bounded profile omission is deliberately
-  // fail-open so an active Session outside the profile slice cannot be trapped behind history.
-  return session === undefined || runtimeProfileSessionHasActivity(session);
+  // Main supplements the bounded recent summaries with every active/queued Run from the complete
+  // Run index. Omission is therefore not positive activity evidence and must not let a cold
+  // observation block canonical history first paint for an old/cross-project Session.
+  return runtimeProfileSessionHasActivity(session);
+}
+
+/**
+ * Periodic recovery uses only exact current-Runtime evidence. Main supplements bounded recent
+ * summaries with active/queued Run identities, so an omitted idle Session must not reopen an
+ * observation every 30 seconds.
+ */
+export function runtimeSessionNeedsPeriodicReconciliation(
+  state: RuntimeProjectionState,
+  sessionId: string,
+): boolean {
+  if (
+    !runtimeConnectionHasFreshLiveAuthority(state.connection) ||
+    state.connection.runtimeId === undefined
+  ) {
+    return false;
+  }
+  if (state.snapshotRequiredBySession[sessionId] === true) return true;
+  const runtimeId = state.connection.runtimeId;
+  const live = state.liveBySession[sessionId];
+  if (live?.cursor.runtimeId === runtimeId && sessionLiveProjectionHasActivity(live)) return true;
+  const profile = state.profile;
+  if (profile === null || profile.connection.runtimeId !== runtimeId) return false;
+  if (
+    profile.interactions.some(
+      (interaction) =>
+        interaction.state === 'pending' && interaction.request.sessionId === sessionId,
+    )
+  ) {
+    return true;
+  }
+  return runtimeProfileSessionHasActivity(
+    profile.sessions.find((candidate) => candidate.sessionId === sessionId),
+  );
 }
 
 export function shouldBootstrapSelectedSessionLive(input: {
@@ -251,11 +305,13 @@ export function runtimeSessionNeedsObservation(
 ): boolean {
   if (state.snapshotRequiredBySession[sessionId] === true) return true;
   if (sessionLiveProjectionHasActivity(state.liveBySession?.[sessionId])) return true;
-  // Wait for the lightweight profile before deciding. Once a profile exists, absence is not proof
-  // of terminal state (the projection is deliberately bounded), so fail open to observation.
+  // Wait for the lightweight profile before deciding. Its recent Session summaries are bounded,
+  // but main supplements them from the complete active/queued Run index. An omitted row therefore
+  // has no positive reason to open an expensive live observation; existing live activity above
+  // remains fail-open until exact terminal evidence arrives.
   if (state.profile === null) return false;
   const session = state.profile?.sessions.find((candidate) => candidate.sessionId === sessionId);
-  if (session === undefined) return true;
+  if (session === undefined) return false;
   if (runtimeProfileSessionHasActivity(session)) return true;
   return (
     state.profile?.interactions.some(

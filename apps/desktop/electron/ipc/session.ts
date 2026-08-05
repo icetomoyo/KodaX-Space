@@ -179,6 +179,17 @@ export async function runSerializedSessionHistoryOperation<T>(
   }
 }
 
+export type SessionHistoryBackend = 'runtime' | 'persisted' | 'runtime-unavailable';
+
+export function resolveSessionHistoryBackend(
+  surface: SessionMeta['surface'],
+  selectedHost: 'runtime' | 'legacy',
+  runtimeReady: boolean,
+): SessionHistoryBackend {
+  if (surface !== 'code' || selectedHost === 'legacy') return 'persisted';
+  return runtimeReady ? 'runtime' : 'runtime-unavailable';
+}
+
 function nextRuntimeProjectionCursor(sessionId: string): string {
   runtimeProjectionCursorCounter += 1;
   return `space-projection:${runtimeProjectionCursorCounter}:${sessionId}`;
@@ -1486,14 +1497,18 @@ export function registerSessionChannels(options: SessionChannelsOptions = {}): v
           | { readonly outcome: 'runtime_unavailable' }
           | undefined;
         let omittedConversationEntries = 0;
-        if (surface === 'code') {
+        const historyBackend = resolveSessionHistoryBackend(
+          surface,
+          runtimeHostAdapter.selectedHost(),
+          runtimeHostAdapter.hasReadyRuntime(),
+        );
+        if (historyBackend === 'runtime-unavailable') {
           // A Coder Session must never fall back to the persisted full-body reader merely because
-          // the daemon is still starting. That fallback defeats bounded newest-page loading and can
-          // leave a direct-read `partial` projection permanently installed. Tell the renderer to
-          // retry this same bounded route once Runtime is ready.
-          if (!runtimeHostAdapter.hasReadyRuntime()) {
-            return withLocalNotices([], undefined, { outcome: 'runtime_unavailable' });
-          }
+          // the selected daemon is still starting. Embedded mode is different: it has no daemon
+          // by design and must restore through the persisted conversation projection below.
+          return withLocalNotices([], undefined, { outcome: 'runtime_unavailable' });
+        }
+        if (historyBackend === 'runtime') {
           const result = await loadRuntimeConversationWindow(input);
           if (result.outcome === 'data_changed') {
             return withLocalNotices([], undefined, { outcome: 'data_changed' });

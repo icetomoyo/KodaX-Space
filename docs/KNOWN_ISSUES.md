@@ -2,7 +2,7 @@
 
 Last Updated: 2026-08-05
 
-> Historical issue details are preserved as investigation evidence. Resolved items older than 30 days move to [ISSUES_ARCHIVED.md](ISSUES_ARCHIVED.md) without losing their investigation record. The current source integration target is exact npm Registry KodaX 0.7.82; the latest published Space v0.1.35 used KodaX 0.7.80. Durable managed-Run admission requires `managedRunDurability:1`. Start from the [documentation hub](README.md) for current behavior and status.
+> Historical issue details are preserved as investigation evidence. Resolved items older than 30 days move to [ISSUES_ARCHIVED.md](ISSUES_ARCHIVED.md) without losing their investigation record. The current published Space baseline is v0.1.36 with exact npm Registry KodaX 0.7.82. Durable managed-Run admission requires `managedRunDurability:1`; active-Session input admission and history/live reconciliation are also release gates. Start from the [documentation hub](README.md) for current behavior and status.
 
 ## Issue Index
 
@@ -169,7 +169,7 @@ Last Updated: 2026-08-05
 | 171 | High     | Resolved    | A bounded newest history page starting mid-turn could place the next answer above its query and the prior answer below it          | v0.1.34 history/live leading-page reconciliation             | 2026-08-04 |
 | 172 | High     | Resolved    | Live transcript events dropped Runtime turn identity, so an overtaking history revalidation could duplicate and reorder a new turn | v0.1.34 Runtime bridge and ready-history revalidation        | 2026-08-04 |
 | 173 | High     | Resolved    | Reopening or switching an active Session could lose its in-flight transcript and leave sidebar activity stale                      | v0.1.34 renderer Runtime observation bootstrap               | 2026-08-05 |
-| 174 | High     | Resolved    | Interrupt or after-turn send could race active Session persistence and restore the draft with session_data_changed                 | v0.1.35 / KodaX 0.7.82 active-run admission                  | 2026-08-05 |
+| 174 | High     | Resolved    | Interrupt or after-turn send could race active Session persistence and restore the draft with session_data_changed                 | v0.1.36 / KodaX 0.7.82 active-run admission                  | 2026-08-05 |
 
 ## Issue Details
 
@@ -12311,6 +12311,28 @@ historical Session keeps the cheaper history-first load path.
   renderer was reloaded.
 - Sidebar status ignored the fresh Runtime profile's positive active/queued evidence, while history
   cache eviction did not protect background Runtime work.
+- The first v0.1.35 recovery correction accidentally put `daemon.inspect()` on the Runtime profile
+  refresh path, then made both bounded history and live-snapshot reads refresh that full profile
+  whenever the persisted Session file changed. With several active writers, one unstable management
+  inspection serialized every Session behind the same queue; `Ctrl+R` then cleared the renderer
+  cache faster than main could repopulate it.
+- The same correction routed every `surface === 'code'` history read through Runtime, even when the
+  selected host was Embedded. Embedded intentionally has no ready daemon, so those Sessions returned
+  `runtime_unavailable` forever instead of restoring the persisted conversation.
+- Rapid activation of several cold active Sessions could enter `sessions.observe()` concurrently.
+  In the packaged app this saturated the shared Runtime transport and delayed an otherwise
+  independent history read behind the observation burst.
+- Selecting a Session from another project synchronously changed `currentProjectPath`. The sidebar
+  treated that ordering change as a cache invalidation and reissued `session.list` for every known
+  project, creating an unrelated sidecar-read and React-render burst beside the target history/live
+  requests.
+- The SDK status snapshot bounded recent Session summaries to 50 while retaining the complete Run
+  index. Space ignored active Runs whose Session summary fell outside that page, then interpreted
+  every profile omission as a reason to open a cold observation after history. An idle historical
+  click could therefore start several seconds of background transport work and delay the next
+  cross-project history click.
+- A failed/interrupted Run acknowledgement was kept only in renderer memory. Reload reconstructed
+  the same authoritative terminal evidence as unseen, so a dismissed red error dot reappeared.
 
 #### Resolution
 
@@ -12324,13 +12346,24 @@ historical Session keeps the cheaper history-first load path.
 - Equal-revision authoritative snapshots clear a retained requirement. Active-Run snapshots can
   rehydrate cumulative drafts/tools after the renderer transcript buffer was rebuilt without
   replacing or downgrading the existing live projection; terminal snapshots never hydrate drafts.
-- Focus, visibility, Runtime reconnection, profile conflicts, and a 30-second low-frequency pass
-  reconcile only already-observed active Sessions. This bounds stale terminal state without
-  observing every historical Session.
+- Focus, visibility, Runtime reconnection, and profile conflicts reconcile the cached Runtime
+  profile and already-observed active Sessions. The 30-second low-frequency pass immediately reads
+  the main cache while scheduling a single-flight core status refresh; it never waits for or calls
+  the management inspection lane. It also retries the selected Coder Session when exact current
+  evidence shows `snapshotRequired`, active/queued work, or a pending interaction even if no live
+  projection was installed. Bounded-profile omission alone never creates a periodic observation.
+  Focus and visibility hints are collapsed to one inactive-to-active edge so one window activation
+  cannot create a redundant profile/live rerun.
 - Fresh profile active/queued state can positively mark sidebar activity but bounded-profile
-  absence never clears stronger live evidence or creates eager background conflict reads. The one
-  selected omitted Session fails open to immediate observation. A terminal snapshot fences a
-  missed same-Run `session_start`, allowing stale spinners to stop without `Ctrl+R`.
+  absence never clears stronger live evidence or creates eager observation. Main supplements the
+  bounded recent summaries with active/queued Sessions found in the complete Runtime Run index
+  only after independently verifying an out-of-page Session's persisted Coder identity. Unknown
+  and Partner identities fail closed, while an omitted idle Session no longer opens an expensive
+  observation after history. Exact activity, interaction, or snapshot-required evidence still
+  makes the live snapshot urgent. When
+  the Runtime becomes ready, a waiting history read is woken immediately instead of waiting for its
+  startup retry timer. A terminal snapshot fences a missed same-Run `session_start`, allowing stale
+  spinners to stop without `Ctrl+R`.
 - History LRU eviction prefers idle Sessions, then active Sessions, while retaining its hard
   32-Session bound. Eviction removes canonical restored rows but preserves independent live state.
 - No KodaX SDK change, main-process event ring, synthetic turn identity, terminal `turnId`, or new
@@ -12353,13 +12386,55 @@ historical Session keeps the cheaper history-first load path.
   it. Delayed acknowledgements and events from a previous request/Run cannot clear a newer pending
   generation. Queued or compatibility acknowledgements without a fresh `runId` explicitly retire
   only their own temporary pending state.
-- Active Runtime ownership reconciliation and bounded conversation paging use a fresh, unbounded
-  status membership read instead of waiting for a streaming JSONL freshness token to stop changing.
-  The persisted fallback is capped at two attempts, so a continuously written Session cannot starve
-  reconciliation and a Partner retag is rejected before the Runtime history page read.
+- Runtime profile IPC immediately returns the main-process projection and independently schedules a
+  coalesced core refresh using only Runtime status and pending-input state. Auxiliary
+  `daemon.inspect()` integration health runs in a Runtime-scoped background lane and cannot block
+  history, live snapshots, or profile bootstrap—even if an inspection from a retired connection
+  never settles.
+- Active/queued Runtime ownership reconciliation uses positive observation/profile evidence and the
+  full Coder membership cached by the latest core status projection. Persisted-file changes therefore
+  do not trigger a global status read while a Session is actively writing. An idle Session instead
+  performs the persisted fallback, capped at two attempts, so an external Partner retag is rejected
+  before the Runtime page or cached live projection is exposed even when profile status is stale.
+  A temporary active-Run bypass never certifies the changed persisted ownership token, so the
+  post-terminal read still performs that strict verification.
+- Session history routing now considers both surface and selected host: Daemon Coder waits for the
+  bounded Runtime conversation API, while Embedded Coder and Partner restore through the persisted
+  conversation projection.
+- Persisted Session, transcript, and conversation reads now fence only their own Session generation.
+  File activity from other concurrently running Sessions cannot restart or starve an idle Session's
+  recovery boundary.
+- Only the cold `sessions.observe()` attach RPC is serialized per attached Runtime instance.
+  History, snapshot installation, settings/lease work, Actor telemetry, already-open observations,
+  and event delivery remain outside that queue. Failed opens release the next Session, while a
+  retired Runtime's queue and late result cannot block or overwrite its replacement.
+- Reconnect publishes core Runtime readiness before restoring desired observations in the
+  background. The recovery pump submits only one not-yet-started cold observation at a time, so a
+  newly selected foreground Session can enter after the one attach already running instead of
+  waiting behind the complete reconnect backlog. Runtime observation remains single-concurrency,
+  and the pump skips a Session already restored or retired in the foreground. The immutable live
+  projection is installed before credential/host-tool/settings recovery. Known credential leases
+  and optional Actor bootstrap are best-effort, Runtime-fenced background work and cannot hold core
+  profile, history, or either the same or another Session's live recovery. Explicit Actor snapshots
+  share one whole-Session bootstrap, wait for the initial Actor observer to become ready, and start
+  only after the live projection exists; renderer waiting is bounded without spawning retries that
+  the current SDK Agent read API cannot cancel.
+- Profile revisions advance above the main controller's current watermark, so reconnecting to the
+  same stable Runtime ID cannot leave the profile stale and reject the replacement live snapshot.
+- Persisted Embedded reads retry a same-Session invalidation at most once. A second changing but
+  internally consistent history/transcript snapshot is returned without caching, while strict
+  ownership reads fail closed with `data_changed` instead of spinning forever.
 - Equal-revision terminal hydration remains a narrow paint repair: it may retire a causally matched
   residual tool/spinner, but it is not used to recover or synthesize a missing assistant tail. The
   latter converges only through the canonical terminal-history refresh above.
+- Sidebar project Session scopes are loaded once per project and surface. Merely selecting a
+  Session in another already-loaded project no longer rereads every project; explicit refresh and a
+  newly discovered scope retain their existing load paths. Status selection uses shallow result
+  equality, so streamed text that does not change any Session status no longer repaints the whole
+  project tree.
+- Acknowledged failed/interrupted Runtime `runId`s are persisted in a bounded renderer preference.
+  Reloaded history suppresses only the exact acknowledged terminal error; a different Run still
+  produces a new red error dot, and deleting the Session removes its acknowledgement record.
 
 #### Files Changed
 
@@ -12370,8 +12445,12 @@ historical Session keeps the cheaper history-first load path.
 - `apps/desktop/renderer/src/store/runtimeSnapshotHydration.ts`
 - `apps/desktop/renderer/src/features/session/useSessionStatus.ts`
 - `apps/desktop/renderer/src/shell/BottomBar.tsx`
+- `apps/desktop/renderer/src/shell/LeftSidebar.tsx`
+- `apps/desktop/renderer/src/shell/sidebarSessionLoading.ts`
 - `apps/desktop/renderer/src/shell/composerInvoke.ts`
 - `apps/desktop/renderer/src/shell/sessionHistoryPaging.ts`
+- `apps/desktop/electron/ipc/runtime.ts`
+- `apps/desktop/electron/ipc/session.ts`
 - `apps/desktop/electron/kodax/runtime-host-adapter.ts`
 - `apps/desktop/electron/kodax/runtime/coder-daemon-projection.ts`
 - Targeted renderer, bridge, schema, and paging regression tests
@@ -12400,8 +12479,55 @@ historical Session keeps the cheaper history-first load path.
   acknowledgements cannot leave pending state behind.
 - Equal terminal hydration removes only a causally covered residual tool while preserving existing
   assistant text byte-for-byte, even if a malformed terminal projection carries draft fields.
-- Runtime ownership verification performs one status read even when persisted history changes
-  during that read.
+- Runtime ownership verification performs no status or management read while active persisted
+  history changes; 20 concurrent history and 20 concurrent live recoveries complete while
+  management inspection is deliberately held forever. Idle retags are rejected without requiring a
+  profile refresh.
+- Embedded Coder selects persisted history, while Daemon Coder retains the bounded Runtime and
+  `runtime_unavailable` startup paths.
+- An unrelated noisy Session cannot restart another Session's ownership, transcript, or
+  conversation read.
+- A gated two-Session cold-observation burst proves only one open enters Runtime at a time while an
+  intervening canonical history read completes before the first observation is released.
+- Reconnect recovery with several desired Sessions proves a selected foreground live snapshot
+  overtakes background attaches that have not started, remains single-concurrency, and is not
+  reopened when the background pump later reaches the same desired ID. Periodic policy tests prove
+  exact `snapshotRequired` and profile activity are retried while idle rows, profile omission, and
+  stale authority are not.
+- Regressions also cover failed-open queue release, same-Session single-flight, a blocked Actor tree,
+  whole-bootstrap Actor single-flight, history during gated reconnect restoration, a late
+  observation result from a retired Runtime, an Actor result from an attachment replaced under the
+  same stable Runtime ID,
+  permanently gated known/snapshot credential recovery, same-Runtime-ID active restoration, cold
+  active interrupt admission, and bounded Embedded reads under continuous same-Session writes.
+- Cross-project selection does not reload settled project Session scopes; new/surface-specific
+  scopes still load once. Terminal error acknowledgements survive renderer reload by exact Run
+  identity and do not suppress a later failure.
+- Runtime-ready recovery cancels a waiting history retry and performs exactly one current-generation
+  newest read. If an unavailable read is already in flight, the wake joins it before retrying; the
+  existing token, epoch, request ID, and revision fences remain authoritative.
+- Profile projection regressions require an active Run omitted from the recent Session page to stay
+  visible after exact Coder identity verification, while an unverified or Partner out-of-page Run
+  fails closed and an omitted Session with no local or Runtime activity does not open a cold live
+  observation after canonical history.
+
+#### Verification
+
+- The complete Desktop suite passes: 2,480 passed, 4 Windows-environment skips, 0 failed.
+- TypeScript typecheck, relevant ESLint checks, and `git diff --check` pass.
+- `npm run build:win` passes packaging and smoke checks with exact KodaX 0.7.82; the packaged
+  renderer reached ready in 6,967 ms and Runtime reached ready in 27,407 ms after the smoke test's
+  deterministic 20-second hold.
+- Direct history reads from the final packaged executable for the three reported legacy Sessions
+  completed in 44 ms, 48 ms, and 31 ms and returned 39, 44, and 73 entries. Cold cross-project UI
+  switches completed in 34 ms, 90 ms, and 113 ms; the cached return completed in 10 ms. The path
+  that previously took about 4.4 seconds completed in 90 ms.
+- After `Ctrl+R`, the shell restored in 143 ms and manually reselecting the same historical Session
+  restored 23 rendered rows in 164 ms. Current Session selection is not persisted by the existing UI,
+  so an idle Session is intentionally not auto-selected after renderer reload.
+- A final independent read-only review confirmed the out-of-page Partner isolation finding is
+  closed and found no remaining merge blocker. The existing 500-row profile cap remains an explicit
+  extreme boundary only when more than 500 Sessions are simultaneously active or queued.
 
 ## Issue 174: Interrupt or after-turn send could race active Session persistence and restore the draft with session_data_changed
 

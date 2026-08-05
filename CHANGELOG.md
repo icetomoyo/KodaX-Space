@@ -18,6 +18,49 @@ No unreleased changes yet.
 
 ---
 
+## [0.1.36] - 2026-08-05
+
+### Changed
+
+- **KodaX 0.7.82 Registry alignment** - Root/Desktop manifests, workspace
+  packages, lockfile views, installed bytes, runtime capability reporting, and
+  the release gate now use one exact npm Registry package and integrity pin.
+- **Active Session admission** - Send, interrupt, after-turn, Session switch,
+  draft restoration, and history revalidation now share a bounded admission
+  boundary so transient topology changes cannot surface as generic handler
+  failures or attach a new answer to an older query.
+- **Live/history identity** - Accepted input keeps its exact `runId` and
+  streamed `turnId`; snapshot watermarks, paging cursors, and canonical
+  boundaries remain Session-scoped through reconnect and late reads.
+- **Renderer recovery isolation** - Session hydration, sidebar activity, live
+  transcript projection, and history paging reject stale events from another
+  Session while preserving in-flight work.
+
+### Fixed
+
+- Prevented concurrent Session persistence and input admission from restoring
+  a draft after a successful send or interrupt.
+- Prevented stale Runtime snapshots and history pages from hiding activity,
+  duplicating output, reordering turns, or moving content across Sessions.
+- Updated the history-repair guard to the published KodaX 0.7.82 package.
+
+### Documentation
+
+- Added the v0.1.36 design and release-readiness record.
+- Synchronized README files, the documentation hub, PRD/HLD, Feature List,
+  capability ledger, known-issue baseline, user manual, and in-app
+  `kodax_manual` with the v0.1.36 / KodaX 0.7.82 baseline.
+- Kept F137/F139 scheduled for v0.1.42 and retained unresolved lifecycle and
+  performance boundaries as explicit known issues.
+
+### Verification
+
+- Release checks, builtin-skill integrity, typecheck, lint, and the full local
+  workspace test suite are required before tagging; GitHub `main` and tagged
+  release workflow evidence belongs in the versioned readiness record.
+
+---
+
 ## [0.1.35] - 2026-08-05
 
 ### Added

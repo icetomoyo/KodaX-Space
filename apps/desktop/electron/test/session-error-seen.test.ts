@@ -72,6 +72,87 @@ test('setCurrentSession records the seen terminal runId', () => {
   assert.deepEqual(useAppStore.getState().errorSeenRunIdsBySession[SID], ['run_fail_1']);
 });
 
+test('setCurrentSession persists acknowledged terminal runIds for renderer reload', () => {
+  const storage = new Map<string, string>();
+  const previousWindow = globalThis.window;
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      localStorage: {
+        getItem: (key: string) => storage.get(key) ?? null,
+        setItem: (key: string, value: string) => storage.set(key, value),
+        removeItem: (key: string) => storage.delete(key),
+      },
+    },
+  });
+  try {
+    useAppStore.setState({
+      eventsBySession: {
+        [SID]: [
+          {
+            kind: 'session_error',
+            sessionId: SID,
+            error: 'failed',
+            runtimeEvent: { runtimeId: 'rt_1', runId: 'run_fail_persisted', seq: 9 },
+          },
+        ],
+      },
+    });
+
+    useAppStore.getState().setCurrentSession(SID);
+
+    const persisted = storage.get('kodax-space.errorSeenRunIds.v1');
+    assert.ok(persisted);
+    assert.deepEqual(JSON.parse(persisted), { [SID]: ['run_fail_persisted'] });
+  } finally {
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: previousWindow,
+    });
+  }
+});
+
+test('a persisted terminal runId suppresses its restored session_error but not a newer failure', () => {
+  const restoredError = {
+    kind: 'session_error' as const,
+    sessionId: SID,
+    error: 'failed',
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_fail_seen', seq: 9 },
+  };
+  const base = {
+    pending: false,
+    awaitingPermission: false,
+    awaitingAskUser: false,
+    errorSeenAt: 0,
+    errorSeenRunId: undefined,
+    runtimeLive: undefined,
+    runtimeProfileActive: false,
+  };
+
+  assert.equal(
+    deriveSessionStatus({
+      ...base,
+      events: [restoredError],
+      errorSeenRunIds: ['run_fail_seen'],
+    }),
+    'idle',
+  );
+  assert.equal(
+    deriveSessionStatus({
+      ...base,
+      events: [
+        restoredError,
+        {
+          ...restoredError,
+          runtimeEvent: { runtimeId: 'rt_1', runId: 'run_fail_new', seq: 19 },
+        },
+      ],
+      errorSeenRunIds: ['run_fail_seen'],
+    }),
+    'error',
+  );
+});
+
 test('visiting a Session acknowledges distinct profile and live terminal Runs without ordering IDs', () => {
   const connection = {
     state: 'ready' as const,

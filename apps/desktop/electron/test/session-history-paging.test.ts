@@ -21,6 +21,7 @@ import {
   restoreNewestSessionHistory,
   sessionEventInvalidatesHistoryCache,
   sessionHistoryPagingSnapshot,
+  wakeWaitingSessionHistory,
 } from '../../renderer/src/shell/sessionHistoryPaging.js';
 
 test('terminal history dedupes same-Run profile/snapshot repeats but admits another Run at the same cursor', async () => {
@@ -1960,6 +1961,118 @@ test('Runtime observation waits for the canonical history activation to settle',
   assert.equal(historyPhaseAllowsRuntimeObservation('loading'), false);
   assert.equal(historyPhaseAllowsRuntimeObservation('ready'), true);
   assert.equal(historyPhaseAllowsRuntimeObservation('error'), true);
+});
+
+test('Runtime ready wakes waiting history immediately and cancels the old retry timer', async () => {
+  const sessionId = 'history-paging-runtime-ready-wake';
+  useAppStore.setState({
+    sessions: [],
+    currentSessionId: sessionId,
+    eventsBySession: {},
+    userMessagesBySession: {},
+  });
+  let calls = 0;
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    writable: true,
+    value: {
+      kodaxSpace: {
+        invoke: mockHistoryInvoke(async () => {
+          calls += 1;
+          if (calls === 1) {
+            return {
+              ok: true as const,
+              data: { items: [], page: { outcome: 'runtime_unavailable' as const } },
+            };
+          }
+          return {
+            ok: true as const,
+            data: {
+              items: [{ kind: 'user' as const, content: 'ready without timer delay' }],
+              page: {
+                outcome: 'ready' as const,
+                revision: 'ready-revision',
+                sourceRevision: 'ready-source',
+                hasMore: false,
+                windowMode: 'replace' as const,
+                hasNewer: false,
+              },
+            },
+          };
+        }),
+      },
+    },
+  });
+
+  await restoreNewestSessionHistory(sessionId, 'code');
+  assert.equal(sessionHistoryPagingSnapshot(sessionId).phase, 'waiting');
+  await wakeWaitingSessionHistory(sessionId);
+  assert.equal(calls, 2);
+  assert.equal(sessionHistoryPagingSnapshot(sessionId).phase, 'ready');
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  assert.equal(calls, 2, 'the superseded retry timer must remain cancelled');
+});
+
+test('Runtime ready coalesces behind an in-flight unavailable history read', async () => {
+  const sessionId = 'history-paging-runtime-ready-inflight';
+  useAppStore.setState({
+    sessions: [],
+    currentSessionId: sessionId,
+    eventsBySession: {},
+    userMessagesBySession: {},
+  });
+  let calls = 0;
+  let resolveUnavailable!: (value: {
+    ok: true;
+    data: { items: never[]; page: { outcome: 'runtime_unavailable' } };
+  }) => void;
+  const unavailable = new Promise<{
+    ok: true;
+    data: { items: never[]; page: { outcome: 'runtime_unavailable' } };
+  }>((resolve) => {
+    resolveUnavailable = resolve;
+  });
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    writable: true,
+    value: {
+      kodaxSpace: {
+        invoke: mockHistoryInvoke(async () => {
+          calls += 1;
+          if (calls === 1) return unavailable;
+          return {
+            ok: true as const,
+            data: {
+              items: [{ kind: 'user' as const, content: 'single ready wake' }],
+              page: {
+                outcome: 'ready' as const,
+                revision: 'ready-revision',
+                sourceRevision: 'ready-source',
+                hasMore: false,
+                windowMode: 'replace' as const,
+                hasNewer: false,
+              },
+            },
+          };
+        }),
+      },
+    },
+  });
+
+  const initial = restoreNewestSessionHistory(sessionId, 'code');
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const firstWake = wakeWaitingSessionHistory(sessionId);
+  const secondWake = wakeWaitingSessionHistory(sessionId);
+  resolveUnavailable({
+    ok: true,
+    data: { items: [], page: { outcome: 'runtime_unavailable' } },
+  });
+  await Promise.all([initial, firstWake, secondWake]);
+
+  assert.equal(calls, 2);
+  assert.equal(sessionHistoryPagingSnapshot(sessionId).phase, 'ready');
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  assert.equal(calls, 2);
 });
 
 test('only canonical persistence-boundary events invalidate cached history', () => {

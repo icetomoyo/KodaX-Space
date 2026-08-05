@@ -17,6 +17,7 @@ import {
   runtimeTerminalEvidenceCandidates,
   runtimeProfileConflictsWithLive,
   runtimeProfileSessionHasActivity,
+  runtimeSessionNeedsPeriodicReconciliation,
   runtimeSessionRequiresImmediateObservation,
   runtimeSessionNeedsObservation,
   sessionLiveProjectionHasActivity,
@@ -297,8 +298,8 @@ test('immediate observation accepts local activity, fresh profile activity, or a
   const boundedReady = replaceRuntimeProfile(initial, profile('rt_1', 3));
   const missingSessionNeedsObservation = runtimeSessionNeedsObservation(boundedReady, 's_1');
   const missingSessionIsImmediate = runtimeSessionRequiresImmediateObservation(boundedReady, 's_1');
-  assert.equal(missingSessionNeedsObservation, true);
-  assert.equal(missingSessionIsImmediate, true);
+  assert.equal(missingSessionNeedsObservation, false);
+  assert.equal(missingSessionIsImmediate, false);
   assert.equal(
     shouldBootstrapSelectedSessionLive({
       runtimeReady: true,
@@ -307,7 +308,17 @@ test('immediate observation accepts local activity, fresh profile activity, or a
       historyAllowsObservation: false,
       hasLiveProjection: false,
     }),
-    true,
+    false,
+  );
+  assert.equal(
+    shouldBootstrapSelectedSessionLive({
+      runtimeReady: true,
+      needsObservation: missingSessionNeedsObservation,
+      hasImmediateActivity: missingSessionIsImmediate,
+      historyAllowsObservation: true,
+      hasLiveProjection: false,
+    }),
+    false,
   );
   assert.equal(
     runtimeSessionRequiresImmediateObservation(
@@ -359,6 +370,67 @@ test('a bounded profile omission is not terminal evidence against an observed ac
 
 test('Runtime bootstrap reconciliation uses three bounded retries', () => {
   assert.deepEqual([1, 2, 3, 4].map(runtimeBootstrapRetryDelayMs), [250, 1_000, 3_000, undefined]);
+});
+
+test('periodic reconciliation retries only current Sessions with exact recovery evidence', () => {
+  const initial = createRuntimeProjectionState();
+  const ready = replaceRuntimeProfile(initial, profile('rt_1', 1));
+  assert.equal(
+    runtimeSessionNeedsPeriodicReconciliation(
+      { ...ready, snapshotRequiredBySession: { s_1: true } },
+      's_1',
+    ),
+    true,
+  );
+
+  const activeProfile = replaceRuntimeProfile(initial, {
+    ...profile('rt_1', 2),
+    sessions: [
+      {
+        sessionId: 's_1',
+        surface: 'code',
+        createdAt: 1,
+        lastActivityAt: 2,
+        activeRun: {
+          runId: 'run_profile',
+          sessionId: 's_1',
+          phase: 'running',
+          startedAt: 1,
+        },
+        queuedRuns: [],
+      },
+    ],
+  });
+  assert.equal(runtimeSessionNeedsPeriodicReconciliation(activeProfile, 's_1'), true);
+  assert.equal(
+    runtimeSessionNeedsPeriodicReconciliation(
+      replaceRuntimeProfile(initial, {
+        ...profile('rt_1', 3),
+        sessions: [
+          {
+            sessionId: 's_1',
+            surface: 'code',
+            createdAt: 1,
+            lastActivityAt: 3,
+            queuedRuns: [],
+          },
+        ],
+      }),
+      's_1',
+    ),
+    false,
+  );
+  assert.equal(
+    runtimeSessionNeedsPeriodicReconciliation(ready, 's_missing_from_bounded_profile'),
+    false,
+  );
+  assert.equal(
+    runtimeSessionNeedsPeriodicReconciliation(
+      { ...ready, connection: { ...ready.connection, stale: true } },
+      's_1',
+    ),
+    false,
+  );
 });
 
 test('connection reconciliation is edge-triggered instead of timestamp-triggered', () => {

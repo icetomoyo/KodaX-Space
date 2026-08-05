@@ -782,6 +782,95 @@ test('profile projection excludes Partner and attributes active/queued runs', ()
   });
 });
 
+test('profile projection retains verified Coder activity omitted from the bounded recent list', () => {
+  const omittedRunning = {
+    ...running,
+    runId: 'run_omitted_active',
+    sessionId: 's_omitted_active',
+    startedAt: '2026-07-14T08:10:00.000Z',
+    runningAt: '2026-07-14T08:10:01.000Z',
+  };
+  const status = {
+    runtimeId: 'rt_shared',
+    mode: 'daemon',
+    profile: 'coder',
+    startedAt: '2026-07-14T07:00:00.000Z',
+    sessions: [
+      {
+        id: 's_recent_idle',
+        title: 'Recent idle',
+        surface: 'code',
+        createdAt: '2026-07-14T08:09:00.000Z',
+        msgCount: 2,
+      },
+    ],
+    runs: [omittedRunning],
+    pendingPermissions: [],
+    workflows: [],
+  } as unknown as RuntimeStatusSnapshot;
+
+  const projection = projectRuntimeProfile({
+    status,
+    verifiedOutOfPageCoderSessionIds: new Set(['s_omitted_active']),
+    userInputs: [],
+    cursor: 42,
+    projectionRevision: 8,
+    changedAt: 101,
+    capabilities: [{ id: 'runtime.daemon', version: 1, available: true }],
+  });
+
+  assert.deepEqual(
+    projection.sessions.map((session) => session.sessionId),
+    ['s_recent_idle', 's_omitted_active'],
+  );
+  assert.equal(projection.sessions[1]?.activeRun?.runId, 'run_omitted_active');
+  assert.equal(
+    projection.sessions[1]?.createdAt,
+    Date.parse('2026-07-14T08:10:00.000Z'),
+  );
+});
+
+test('profile projection fails closed for unverified active Sessions outside the recent list', () => {
+  const status = {
+    runtimeId: 'rt_shared',
+    mode: 'daemon',
+    profile: 'coder',
+    startedAt: '2026-07-14T07:00:00.000Z',
+    sessions: [
+      {
+        id: 's_recent_idle',
+        title: 'Recent idle',
+        surface: 'code',
+        createdAt: '2026-07-14T08:09:00.000Z',
+        msgCount: 2,
+      },
+    ],
+    runs: [
+      {
+        ...running,
+        runId: 'run_unknown_active',
+        sessionId: 's_unknown_active',
+      },
+    ],
+    pendingPermissions: [],
+    workflows: [],
+  } as unknown as RuntimeStatusSnapshot;
+
+  const projection = projectRuntimeProfile({
+    status,
+    userInputs: [],
+    cursor: 43,
+    projectionRevision: 9,
+    changedAt: 102,
+    capabilities: [{ id: 'runtime.daemon', version: 1, available: true }],
+  });
+
+  assert.deepEqual(
+    projection.sessions.map((session) => session.sessionId),
+    ['s_recent_idle'],
+  );
+});
+
 test('tool sandbox events update active-tool diagnostics without creating transcript text', () => {
   const reducer = new CoderSessionProjectionReducer(
     projectRuntimeSessionSnapshot(observation, [askUser]),

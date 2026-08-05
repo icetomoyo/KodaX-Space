@@ -1,9 +1,12 @@
 import { useMemo } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import type { SessionEvent, SpaceSessionLiveProjectionT } from '@kodax-space/space-ipc-schema';
 import { useAppStore } from '../../store/appStore.js';
 import {
   runtimeConnectionHasFreshLiveAuthority,
   runtimeProfileActivityOutranksLive,
+  runtimeProfileSessionActivityOutranksLive,
+  runtimeProfileSessionTerminalEvidence,
   runtimeProfileTerminalEvidence,
 } from '../../store/runtimeProjectionState.js';
 
@@ -103,6 +106,12 @@ export function deriveSessionStatus(input: {
     for (let index = input.events.length - 1; index >= 0; index--) {
       const event = input.events[index]!;
       if (event.kind === 'session_error') {
+        if (
+          event.runtimeEvent?.runId !== undefined &&
+          seenTerminalRunIds.has(event.runtimeEvent.runId)
+        ) {
+          break;
+        }
         if (index >= input.errorSeenAt) return 'error';
         break;
       }
@@ -223,71 +232,60 @@ export function useSessionStatus(sessionId: string | null): SessionStatus {
 export function useSessionStatusMap(
   sessionIds: readonly string[],
 ): Readonly<Record<string, SessionStatus>> {
-  const pendingMap = useAppStore((state) => state.pendingSendBySession);
-  const eventsMap = useAppStore((state) => state.eventsBySession);
-  const permissionQueue = useAppStore((state) => state.permissionQueue);
-  const askUserQueue = useAppStore((state) => state.askUserQueue);
-  const errorSeenMap = useAppStore((state) => state.errorSeenAtBySession);
-  const errorSeenRunIdMap = useAppStore((state) => state.errorSeenRunIdBySession);
-  const errorSeenRunIdsMap = useAppStore((state) => state.errorSeenRunIdsBySession);
-  const liveProjectionBySession = useAppStore((state) => state.liveProjectionBySession);
-  const runtimeConnection = useAppStore((state) => state.runtimeConnection);
-  const runtimeProfile = useAppStore((state) => state.runtimeProfile);
-
-  return useMemo(() => {
-    const permissionSessionIds = new Set(permissionQueue.map((request) => request.sessionId));
-    const askUserSessionIds = new Set(askUserQueue.map((request) => request.sessionId));
-    const profileActiveSessionIds = new Set<string>();
-    const profileTerminalRunBySession = new Map<string, RuntimeTerminalEvidence>();
-    const freshProfile = runtimeProfile;
-    if (
-      freshProfile !== null &&
-      runtimeConnectionHasFreshLiveAuthority(runtimeConnection) &&
-      freshProfile.connection.runtimeId === runtimeConnection.runtimeId
-    ) {
-      for (const session of freshProfile.sessions) {
-        const terminal = runtimeProfileTerminalEvidence(freshProfile, session.sessionId);
-        if (terminal !== undefined) {
-          profileTerminalRunBySession.set(session.sessionId, terminal);
-        }
-        if (
-          runtimeProfileActivityOutranksLive(
-            freshProfile,
-            session.sessionId,
-            liveProjectionBySession[session.sessionId],
-          )
-        ) {
-          profileActiveSessionIds.add(session.sessionId);
+  return useAppStore(
+    useShallow((state) => {
+      const pendingMap = state.pendingSendBySession;
+      const eventsMap = state.eventsBySession;
+      const permissionQueue = state.permissionQueue;
+      const askUserQueue = state.askUserQueue;
+      const errorSeenMap = state.errorSeenAtBySession;
+      const errorSeenRunIdMap = state.errorSeenRunIdBySession;
+      const errorSeenRunIdsMap = state.errorSeenRunIdsBySession;
+      const liveProjectionBySession = state.liveProjectionBySession;
+      const runtimeConnection = state.runtimeConnection;
+      const runtimeProfile = state.runtimeProfile;
+      const permissionSessionIds = new Set(permissionQueue.map((request) => request.sessionId));
+      const askUserSessionIds = new Set(askUserQueue.map((request) => request.sessionId));
+      const profileActiveSessionIds = new Set<string>();
+      const profileTerminalRunBySession = new Map<string, RuntimeTerminalEvidence>();
+      const freshProfile = runtimeProfile;
+      if (
+        freshProfile !== null &&
+        runtimeConnectionHasFreshLiveAuthority(runtimeConnection) &&
+        freshProfile.connection.runtimeId === runtimeConnection.runtimeId
+      ) {
+        for (const session of freshProfile.sessions) {
+          const terminal = runtimeProfileSessionTerminalEvidence(freshProfile, session);
+          if (terminal !== undefined) {
+            profileTerminalRunBySession.set(session.sessionId, terminal);
+          }
+          if (
+            runtimeProfileSessionActivityOutranksLive(
+              freshProfile,
+              session,
+              liveProjectionBySession[session.sessionId],
+            )
+          ) {
+            profileActiveSessionIds.add(session.sessionId);
+          }
         }
       }
-    }
-    const statuses: Record<string, SessionStatus> = {};
-    for (const sessionId of sessionIds) {
-      statuses[sessionId] = deriveSessionStatus({
-        pending: Boolean(pendingMap[sessionId]),
-        events: eventsMap[sessionId],
-        awaitingPermission: permissionSessionIds.has(sessionId),
-        awaitingAskUser: askUserSessionIds.has(sessionId),
-        errorSeenAt: errorSeenMap[sessionId] ?? 0,
-        errorSeenRunId: errorSeenRunIdMap[sessionId],
-        errorSeenRunIds: errorSeenRunIdsMap[sessionId],
-        runtimeLive: liveProjectionBySession[sessionId],
-        runtimeProfileActive: profileActiveSessionIds.has(sessionId),
-        runtimeProfileTerminalRun: profileTerminalRunBySession.get(sessionId),
-      });
-    }
-    return statuses;
-  }, [
-    sessionIds,
-    pendingMap,
-    eventsMap,
-    permissionQueue,
-    askUserQueue,
-    errorSeenMap,
-    errorSeenRunIdMap,
-    errorSeenRunIdsMap,
-    liveProjectionBySession,
-    runtimeConnection,
-    runtimeProfile,
-  ]);
+      const statuses: Record<string, SessionStatus> = {};
+      for (const sessionId of sessionIds) {
+        statuses[sessionId] = deriveSessionStatus({
+          pending: Boolean(pendingMap[sessionId]),
+          events: eventsMap[sessionId],
+          awaitingPermission: permissionSessionIds.has(sessionId),
+          awaitingAskUser: askUserSessionIds.has(sessionId),
+          errorSeenAt: errorSeenMap[sessionId] ?? 0,
+          errorSeenRunId: errorSeenRunIdMap[sessionId],
+          errorSeenRunIds: errorSeenRunIdsMap[sessionId],
+          runtimeLive: liveProjectionBySession[sessionId],
+          runtimeProfileActive: profileActiveSessionIds.has(sessionId),
+          runtimeProfileTerminalRun: profileTerminalRunBySession.get(sessionId),
+        });
+      }
+      return statuses;
+    }),
+  );
 }

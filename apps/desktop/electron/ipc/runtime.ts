@@ -1,8 +1,4 @@
-import type {
-  InvokeChannelName,
-  SpaceRuntimeProfileProjectionT,
-  SpaceSessionLiveProjectionT,
-} from '@kodax-space/space-ipc-schema';
+import type { InvokeChannelName, SpaceSessionLiveProjectionT } from '@kodax-space/space-ipc-schema';
 
 import {
   runtimeProjectionController,
@@ -22,14 +18,19 @@ type RuntimeChannelRegistrar = <C extends RuntimeChannelName>(
 ) => void;
 
 export function registerRuntimeProjectionChannels(
-  _controller: RuntimeProjectionController = runtimeProjectionController,
+  controller: RuntimeProjectionController = runtimeProjectionController,
   register: RuntimeChannelRegistrar = registerChannel,
   readSessionLiveSnapshot: (sessionId: string) => Promise<SpaceSessionLiveProjectionT> = (
     sessionId,
   ) => runtimeHostAdapter.readSessionLiveSnapshot(sessionId),
-  readRuntimeProfileSnapshot: () => Promise<SpaceRuntimeProfileProjectionT> = () =>
-    runtimeHostAdapter.readRuntimeProfileSnapshot(),
+  requestRuntimeProfileRefresh: () => void = () =>
+    runtimeHostAdapter.requestRuntimeProfileRefresh(),
 ): void {
-  register('runtime.profileSnapshot', () => readRuntimeProfileSnapshot());
+  // Return the main-process cache immediately, then reconcile core Runtime status in a separate
+  // lane. A renderer reload must never wait for status or daemon management before it can paint.
+  register('runtime.profileSnapshot', () => {
+    requestRuntimeProfileRefresh();
+    return controller.profileSnapshot();
+  });
   register('session.liveSnapshot', ({ sessionId }) => readSessionLiveSnapshot(sessionId));
 }

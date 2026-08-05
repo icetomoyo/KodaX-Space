@@ -1,6 +1,6 @@
 # KodaX Space 高层设计（HLD）
 
-> **2026-08-05 v0.1.35**：当前 Runtime 基线为精确 npm Registry KodaX `0.7.80`。
+> **2026-08-05 v0.1.36**：当前 Runtime 基线为精确 npm Registry KodaX `0.7.82`；活动 Session 输入准入、history/live 对齐和恢复隔离是当前 Space 维护边界。
 > `RuntimeHostAdapter` 要求 `managedRunDurability:1`，使 accepted prompt 与 completed turn
 > 在事件发布前已成为 canonical managed Run；Space 仅用 returned `runId`/`turnId` 关联 UI
 > optimistic state 和 history，不复制持久化职责。未设置 Auto timeout 时，SDK 默认 45 秒首次、90 秒重试。
@@ -908,11 +908,12 @@ Space 严格遵守：
 | `v0.1.33`           | Stabilize KodaX 0.7.77 Actor/history/usage contracts and add bounded Shell/F140 desktop lifecycle control.                                                                                    |
 | corrected `v0.1.33` | Add safe customer-selectable Coder ownership and exact packaged Runtime dependency/boot gates before reissuing the withdrawn release.                                                         |
 | `v0.1.34`           | Adopt KodaX 0.7.78 safety contracts, resilient integration health, visible complete exit/orphan recovery, physical sandbox helpers, one startup overlay, and exact positional history replay. |
-| `v0.1.37`           | Add the independently authored F137 native document Skill suite and F139 semantic UI polish without weakening F138 boundaries.                                                                |
-| `v0.1.40`           | Extend Workflow snapshot schema for same-session replay provenance; attach evidence review receipts to objects.                                                                               |
-| `v0.1.44`           | Host KX-F260 Memory Agent over existing F228/F088 governance when published.                                                                                                                  |
+| `v0.1.42`           | Add the independently authored F137 native document Skill suite and F139 semantic UI polish without weakening F138 boundaries.                                                                |
+| `v0.1.45`           | Extend Workflow snapshot schema for same-session replay provenance; attach evidence review receipts to objects.                                                                               |
+| `v0.1.49`           | Host KX-F260 Memory Agent over existing F228/F088 governance when published.                                                                                                                  |
 | `v0.1.35`           | Host the minimum learned-Skill safety surface over published `learningCenter:1` + `skillLearningLoop:1`.                                                                                      |
-| `v0.1.48`           | Complete locale gates, release diagnostics, channels/updater/distribution trust.                                                                                                              |
+| `v0.1.36`           | Harden active-Session input admission, exact run/turn ownership, paged history reconciliation, and renderer recovery without adding a second Runtime store.                                |
+| `v0.1.53`           | Complete locale gates, release diagnostics, channels/updater/distribution trust.                                                                                                              |
 
 ### 20.2 Active 0.2.x architecture lanes
 

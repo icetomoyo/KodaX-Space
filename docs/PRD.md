@@ -1,6 +1,6 @@
 # KodaX Space 产品需求文档（PRD）
 
-> **2026-08-05 发布基线**：KodaX Space `v0.1.35` 对齐 npm 正式发布的 KodaX `0.7.80`。
+> **2026-08-05 发布基线**：KodaX Space `v0.1.36` 对齐 npm 正式发布的 KodaX `0.7.82`，并收口活动 Session 输入准入与 history/live 对齐。
 > Coder daemon 必须显式提供 `managedRunDurability:1`；Space 只消费其 canonical
 > managed-Run `runId`/`turnId`，不维护第二份 Run 状态。未配置的 Auto LLM classifier timeout
 > 使用 KodaX 的首次 45 秒、重试 90 秒默认值。
@@ -41,8 +41,9 @@ KodaX Space 是 KodaX 生态的**桌面客户端**——不是另一个 IDE，�
   - `v0.1.30`：Coder/Partner 双 surface、workspace-first Partner、Reference External Agents 已发布
   - `v0.1.31-v0.1.33`：Runtime contract alignment + `app://space`/structured logging + typed semantic Space control
   - `v0.1.35`：learned Skill 最小安全控制面
-  - `v0.1.40`、`v0.1.42-v0.1.44`：Partner Skill workspace、knowledge quality/curation、Presentation Project、Memory Agent
-  - `v0.1.48`：本地化、诊断、release channel/distribution trust 完成 0.1.x beta gate
+  - `v0.1.36`：活动 Session 输入准入、历史/live 对齐与恢复隔离维护发布
+  - `v0.1.45`、`v0.1.47-v0.1.49`：Partner Skill workspace、knowledge quality/curation、Presentation Project、Memory Agent
+  - `v0.1.53`：本地化、诊断、release channel/distribution trust 完成 0.1.x beta gate
   - `v0.2.x`：Governed Browser、正式 Partner packs、Connector read snapshots、local automations、refreshable artifacts
 
 ---
@@ -117,7 +118,7 @@ KodaX Space **不取代** CLI/REPL。三者关系：
 | In-app browser plugin（agent 操控本地 dev server） | —                                                                | ✅                           | `v0.2.0` governed Electron browser；不用 MCP 代替 host policy                         |
 | Routines / Automations（定时 / 事件触发）          | ✅ 云                                                            | ✅ 复用 thread               | 不做云；`v0.2.6` 建立本地、可见、可审计 scheduler                                     |
 | 远端 SSH session / devbox                          | ✅                                                               | ✅ alpha                     | 观察清单；没有版本承诺，先明确权限、所有权与恢复模型                                  |
-| Automatic Review Agent（高风险动作经审阅子 agent） | —                                                                | ✅                           | `v0.1.40` 做 Evidence Review，不创建第二套 Advisor primitive                          |
+| Automatic Review Agent（高风险动作经审阅子 agent） | —                                                                | ✅                           | `v0.1.45` 做 Evidence Review，不创建第二套 Advisor primitive                          |
 | 多 agent 并行可视化                                | 较新                                                             | ✅ 卖点                      | ✅ Subagent/Workflow/External Agent 投影已发布                                        |
 | Cloud Sandbox / VM 执行                            | —                                                                | ✅ Cloud Tasks               | ❌ 与 ChatGPT Agent 划清                                                              |
 | 模型选择                                           | Anthropic only                                                   | OpenAI only                  | **12+ provider + 自定义** ← 关键差异                                                  |
@@ -188,7 +189,7 @@ Partner 与 Coder 共用同一引擎，差异只在四件事：
 
 **5️⃣ 交互 / UI 层（outcome-first doc workspace）**
 
-- 当前已发布的 `Sources（左）| 对话 + 任务进度（中）| Artifact 预览（右）` 是 F130 之前的兼容基线；`v0.1.40` 默认布局不再保留嵌套 Partner 左栏
+- 当前已发布的 `Sources（左）| 对话 + 任务进度（中）| Artifact 预览（右）` 是 F130 之前的兼容基线；`v0.1.45` 默认布局不再保留嵌套 Partner 左栏
 - 新任务可选 `分析报告 / 表格与数据 / PPT 演示 / 文档写作 / 文件整理` 结果入口，也可直接自然语言输入；入口不新增工作模式、Skill 选择器或权限状态
 - 资料通过 `Add material` 按需进入统一上下文抽屉；中间保持对话、澄清与简短回执；右栏固定为 `成果 / 过程 / 文件`
 - 隐式入口（极简且智能）：拖一个 PDF/docx 进来、或在非 git 目录开 session → 自动判定为知识工作并切到 doc-workspace，tab 只作锚点不作唯一入口
@@ -402,7 +403,7 @@ Repointel 的核心调用契约（`status / warm / preturn / context-pack / impa
 - Connector foundation：先交付 catalog、授权状态、可撤销的只读 snapshot、provenance 与 Partner KB ingestion；写动作另行建项和威胁建模
 - **Partner surface（当前已发布，继续扩展）** —— 见 [ADR-007](ADR/ADR-007-partner-surface-model.md)：
   - _Surface spec + 当前兼容布局_（已交付）：Surface 抽象、F130 前三栏基线、受限工具策略、非 git 作用域与隐式入口
-  - _Outcome-first workspace_（`v0.1.40`）：五个可选结果入口、按需项目资料、对话居中、`成果 / 过程 / 文件` 右栏；不改变 Coder、Auto LLM 或权限/自治契约
+  - _Outcome-first workspace_（`v0.1.45`）：五个可选结果入口、按需项目资料、对话居中、`成果 / 过程 / 文件` 右栏；不改变 Coder、Auto LLM 或权限/自治契约
   - _Skill packs + Artifact 层_（`v0.2.0` 扩展）：在已发布 artifact/Office writers 上增加 governed browser、document pack 与 research/citation pack
   - _Partner verification contract_（已交付）：Agent Profile、工具可见性、source-faithfulness/citation-completeness 规则；后续只按真实 eval 缺口增强，不再保留 SDK R1/R2 Blocked 占位
   - 全场景全功能见 [§2.3](#23-partner-全场景--全功能)
@@ -572,20 +573,25 @@ File panel 内点击 git diff
 | `v0.1.33`    | KodaX 0.7.77 Runtime/Actor/history/usage 稳定化、Shell 控制与 F140 可配置关闭行为（已发布）                                       |
 | `v0.1.34`    | KodaX 0.7.78 Runtime 安全、integration resilience、Auto v4、可见彻底退出/orphan recovery、sandbox helper 打包、启动与历史回放加固 |
 | `v0.1.35`    | Learned Skill Safety Surface；复用已发布 `learningCenter:1` + `skillLearningLoop:1`，不建设超出契约的多 carrier Learning Center   |
-| `v0.1.36`    | —                                                                                                                                 |
-| `v0.1.37`    | F137 中文优先 DOCX/PDF/XLSX/PPTX builtin 与 F139 语义 UI 精修                                                                     |
+| `v0.1.36`    | KodaX 0.7.82、活动 Session 输入准入、history/live 对齐、跨 Session 恢复隔离与发布文档收口                               |
+| `v0.1.37`    | —                                                                                                                                 |
 | `v0.1.38`    | —                                                                                                                                 |
 | `v0.1.39`    | —                                                                                                                                 |
-| `v0.1.40`    | Partner composer-first Skill workspace                                                                                            |
+| `v0.1.40`    | —                                                                                            |
 | `v0.1.41`    | —                                                                                                                                 |
-| `v0.1.42`    | Partner hybrid retrieval/evidence ranking 与 curated knowledge lifecycle                                                          |
-| `v0.1.43`    | F129 Partner Presentation Project：复用 F137 PPTX format service，增加模板优先 Studio、真实预览和目标 Office 引擎验证             |
-| `v0.1.44`    | Memory Agent Desktop Host；硬门槛为已发布、兼容的 KX-F260 contract                                                                |
-| `v0.1.45`    | —                                                                                                                                 |
-| `v0.1.46`    | Partner knowledge freshness、conflict 与 access integrity                                                                         |
-| `v0.1.47`    | Partner knowledge integrity 稳定化预留                                                                                            |
-| `v0.1.48`    | Localization、beta/release diagnostics、distribution trust 与 Partner knowledge quality                                           |
-| `v0.1.49`    | 0.1.x patch/RC reserve                                                                                                            |
+| `v0.1.42`    | F137 中文优先 DOCX/PDF/XLSX/PPTX builtin 与 F139 语义 UI 精修                                                          |
+| `v0.1.43`    | —             |
+| `v0.1.44`    | —                                                                |
+| `v0.1.45`    | Partner composer-first Skill workspace                                                                                                                                 |
+| `v0.1.46`    | —                                                                         |
+| `v0.1.47`    | Partner hybrid retrieval/evidence ranking 与 curated knowledge lifecycle                                                                                            |
+| `v0.1.48`    | F129 Partner Presentation Project：复用 F137 PPTX format service，增加模板优先 Studio、真实预览和目标 Office 引擎验证                                           |
+| `v0.1.49`    | Memory Agent Desktop Host；硬门槛为已发布、兼容的 KX-F260 contract |
+| `v0.1.50`    | — |
+| `v0.1.51`    | Partner knowledge freshness、conflict 与 access integrity |
+| `v0.1.52`    | Partner knowledge integrity 稳定化预留 |
+| `v0.1.53`    | Localization、beta/release diagnostics、distribution trust 与 Partner knowledge quality |
+| `v0.1.54`    | 0.1.x patch/RC reserve                                                                                                            |
 
 KX-F260/F266 未按时发布时，Space 调换 feature lane，不绕过 capability gate。
 

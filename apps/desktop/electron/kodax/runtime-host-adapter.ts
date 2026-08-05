@@ -34,6 +34,7 @@ import type {
   RuntimeSessionSettings,
   RuntimeSessionSettingsPatch,
   RuntimeSessionSummary,
+  RuntimeStatusSnapshot,
   RuntimeDaemonStartRunInput,
   RuntimeSubmitInput,
   RuntimeSubmitInputResult,
@@ -60,6 +61,7 @@ import {
 import { RuntimeClientIdentityStore } from './runtime/runtime-client-identity.js';
 import {
   CoderSessionProjectionReducer,
+  coderRuntimeSessionIds,
   isPartnerRuntimeSessionIdentity,
   projectRuntimeProfile,
   projectRuntimeSessionSnapshot,
@@ -171,6 +173,28 @@ const PROFILE_CHANGING_RUNTIME_EVENTS: ReadonlySet<RuntimeTypedEvent['type']> = 
  */
 export function runtimeEventChangesProfile(type: RuntimeTypedEvent['type']): boolean {
   return PROFILE_CHANGING_RUNTIME_EVENTS.has(type);
+}
+
+function outOfPageLiveRunIdsBySession(
+  status: RuntimeStatusSnapshot,
+): ReadonlyMap<string, ReadonlySet<string>> {
+  const recentSessionIds = new Set(status.sessions.map((session) => session.id));
+  const runIdsBySession = new Map<string, Set<string>>();
+  for (const run of status.runs) {
+    if (
+      recentSessionIds.has(run.sessionId) ||
+      run.phase === 'completed' ||
+      run.phase === 'failed' ||
+      run.phase === 'cancelled' ||
+      run.phase === 'interrupted'
+    ) {
+      continue;
+    }
+    const runIds = runIdsBySession.get(run.sessionId) ?? new Set<string>();
+    runIds.add(run.runId);
+    runIdsBySession.set(run.sessionId, runIds);
+  }
+  return runIdsBySession;
 }
 
 export function runtimeConnectionSemanticallyEqual(
@@ -1198,6 +1222,7 @@ interface SpaceCredentialLeaseBinding {
 interface RuntimeActorObservationState {
   readonly runtime: KodaXDaemonRuntime;
   readonly observer: RuntimeAgentTreeObserver;
+  readonly ready: Promise<void>;
 }
 
 interface RuntimeSessionObservationState {
@@ -1206,6 +1231,7 @@ interface RuntimeSessionObservationState {
   readonly observation: RuntimeSessionObservation;
   readonly reducer: CoderSessionProjectionReducer;
   activeRunId: string | undefined;
+  readonly bindingRunIds: Set<string>;
   settings: RuntimeSessionObservationSnapshot['settings'];
   /** False after the first post-snapshot Runtime event is accepted for delivery. */
   transcriptSnapshotFresh: boolean;
@@ -1700,8 +1726,14 @@ export class RuntimeHostAdapter {
   private readonly activeRuns = new Map<string, string>();
   private readonly observations = new Map<string, RuntimeSessionObservationState>();
   private readonly observationPromises = new Map<string, Promise<void>>();
+  private readonly observationOpenQueues = new WeakMap<KodaXDaemonRuntime, Promise<void>>();
   private readonly persistedOwnershipTokens = new Map<string, string>();
-  /** Full unbounded coder Session membership from the latest authoritative Runtime status read. */
+  /** Exact out-of-page Run generations whose persisted Session was verified as Coder. */
+  private readonly verifiedOutOfPageCoderRuns = new Map<string, ReadonlySet<string>>();
+  /** Exact out-of-page Run generations rejected by an authoritative Partner identity. */
+  private readonly rejectedOutOfPagePartnerRuns = new Map<string, ReadonlySet<string>>();
+  private readonly outOfPageCoderVerificationWarnings = new Set<string>();
+  /** Recent Coder membership plus independently verified out-of-page active Run Sessions. */
   private runtimeCoderSessionIds = new Set<string>();
   private readonly liveProjectionRevisions = new Map<
     string,
@@ -1730,6 +1762,14 @@ export class RuntimeHostAdapter {
   private readonly localCompactionCallsBySession = new Map<string, number>();
   private readonly actorObservations = new Map<string, RuntimeActorObservationState>();
   private readonly actorSnapshots = new Map<string, AgentActorTreeSnapshotT>();
+  private readonly actorSnapshotPromises = new Map<
+    string,
+    {
+      readonly runtime: KodaXDaemonRuntime;
+      readonly token: symbol;
+      readonly promise: Promise<AgentActorTreeSnapshotT>;
+    }
+  >();
   private readonly settingsUpdateLocks = new Map<string, Promise<void>>();
   private readonly runProviders = new Map<string, string>();
   /** Persisted compaction entries already projected into the live transcript in this process. */
@@ -1752,17 +1792,20 @@ export class RuntimeHostAdapter {
   private profileRevision = 0;
   private readonly profileCursors = new Map<string, number>();
   private readonly profileRefreshQueues = new WeakMap<KodaXDaemonRuntime, Promise<void>>();
+  private readonly scheduledProfileRefreshes = new WeakMap<
+    KodaXDaemonRuntime,
+    { cursor: number; version: number }
+  >();
   private hostToolLeaseId: string | undefined;
   private readonly hostToolLeaseIds = new Set<string>();
   private connectionSubscription: RuntimeSubscription | undefined;
   private workflowSubscription: RuntimeSubscription | undefined;
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   private integrationHealthPollTimer: ReturnType<typeof setTimeout> | undefined;
-  private integrationHealthPollInFlight = false;
-  private integrationHealthRefreshPending = false;
+  private integrationHealthPollRuntime: KodaXDaemonRuntime | undefined;
+  private integrationHealth: RuntimeDaemonManagementState['integrations'];
   private integrationHealthFingerprint = '';
   private integrationHealthPollWarningShown = false;
-  private profileManagementConflictWarningShown = false;
   private profileRefreshFailureWarningShown = false;
   private reconnectAttempt = 0;
   private readonly runtimeEventParser?: RuntimeEventParser;
@@ -2069,6 +2112,8 @@ export class RuntimeHostAdapter {
         this.hostToolLeaseId = hostToolLease.id;
         this.hostToolLeaseIds.add(hostToolLease.id);
         this.runtime = runtime;
+        this.integrationHealth = undefined;
+        this.integrationHealthFingerprint = '';
         activeStage = 'connection_validate';
         if (!runtime.connection) {
           throw new Error('Coder daemon did not expose the required connection lifecycle.');
@@ -2118,49 +2163,18 @@ export class RuntimeHostAdapter {
         this.reconnectAttempt = 0;
         activeStage = 'credential_leases_resume';
         const credentialLeaseCount = this.credentialLeases.size;
-        await this.resumeKnownCredentialLeases(runtime);
         timing.mark(activeStage, 'complete', {
           requestedCount: credentialLeaseCount,
-          activeCount: this.credentialLeases.size,
+          background: true,
         });
         activeStage = 'profile_refresh';
         await this.refreshProfile(0);
         timing.mark(activeStage, 'complete');
         this.startIntegrationHealthPolling(runtime);
         activeStage = 'desired_observations_restore';
-        const desiredObservationCount = this.desiredObservations.size;
-        let restoredObservationCount = 0;
-        let missingObservationCount = 0;
-        let failedObservationCount = 0;
-        for (const sessionId of this.desiredObservations) {
-          if (this.observations.has(sessionId) || this.observationPromises.has(sessionId)) continue;
-          try {
-            // Restore against the Runtime owned by this initialization attempt.
-            // Calling requireRuntime() from here can join initializePromise itself
-            // after a concurrent disconnect and form an unresolvable Promise cycle.
-            await this.openObservation(sessionId, { attachedRuntime: runtime });
-            // A terminal event can race the old transport loss. The restored snapshot is the
-            // authority for whether this observation is still needed; do not make a stale desired
-            // bit permanent merely because the terminal event was missed while disconnected.
-            await this.retireObservationWhenSettled(sessionId);
-            restoredObservationCount += 1;
-          } catch (error: unknown) {
-            if (isSessionNotFound(error)) {
-              this.desiredObservations.delete(sessionId);
-              missingObservationCount += 1;
-              continue;
-            }
-            failedObservationCount += 1;
-            console.warn(
-              `[runtime] could not restore observation for ${sessionId}: ${sanitizeDiagnosticError(error)}`,
-            );
-          }
-        }
         timing.mark(activeStage, 'complete', {
-          requestedCount: desiredObservationCount,
-          restoredCount: restoredObservationCount,
-          missingCount: missingObservationCount,
-          failedCount: failedObservationCount,
+          requestedCount: this.desiredObservations.size,
+          background: true,
         });
         // Connection lifecycle callbacks can run while the post-attach warm-up
         // awaits credentials, profile reads, or desired observations. Never
@@ -2170,6 +2184,8 @@ export class RuntimeHostAdapter {
           throw new RuntimeInitializationAuthorityLostError();
         }
         pendingRuntime = null;
+        this.resumeKnownCredentialLeases(runtime);
+        void this.restoreDesiredObservations(runtime);
         timing.mark('initialize', 'complete', runtimeIdentityTimingData(runtime.identity));
         this.initializePromise = null;
         this.runtimeReadyRevision += 1;
@@ -2250,6 +2266,68 @@ export class RuntimeHostAdapter {
     return this.initializePromise;
   }
 
+  private restoreDesiredObservations(runtime: KodaXDaemonRuntime): void {
+    // Submit at most one background attachment at a time. sessions.observe() must stay serialized,
+    // but eagerly filling that queue with every remembered Session makes a newly selected Session
+    // wait behind the whole reconnect backlog. A foreground read can now enter after the one
+    // attachment already in progress without making Runtime observation concurrent.
+    void (async () => {
+      for (const sessionId of [...this.desiredObservations]) {
+        if (this.runtime !== runtime || this.state !== 'ready') return;
+        await this.restoreDesiredObservation(runtime, sessionId);
+      }
+    })().catch((error: unknown) => {
+      if (this.runtime === runtime && this.state === 'ready') {
+        console.warn(
+          `[runtime] desired observation recovery stopped: ${sanitizeDiagnosticError(error)}`,
+        );
+      }
+    });
+  }
+
+  private async restoreDesiredObservation(
+    runtime: KodaXDaemonRuntime,
+    sessionId: string,
+  ): Promise<void> {
+    if (
+      this.runtime !== runtime ||
+      this.state !== 'ready' ||
+      !this.desiredObservations.has(sessionId) ||
+      this.observations.has(sessionId)
+    )
+      return;
+    if (this.observationPromises.has(sessionId)) return;
+    const pending = this.openObservation(sessionId, { attachedRuntime: runtime }).finally(() => {
+      if (this.observationPromises.get(sessionId) === pending) {
+        this.observationPromises.delete(sessionId);
+      }
+    });
+    this.observationPromises.set(sessionId, pending);
+    try {
+      await pending;
+      // Retirement may wait for a busy event queue to become stable. It must not hold the recovery
+      // pump and thereby recreate cross-Session head-of-line blocking after the attach completed.
+      void this.retireObservationWhenSettled(sessionId).catch((error: unknown) => {
+        if (this.runtime === runtime && this.state === 'ready') {
+          console.warn(
+            `[runtime] restored observation retirement failed for ${sessionId}: ${sanitizeDiagnosticError(error)}`,
+          );
+        }
+      });
+    } catch (error: unknown) {
+      const stillCurrent = this.runtime === runtime && this.state === 'ready';
+      // A retired attachment is expected to reject its pending restoration. Its result has no
+      // authority over either the replacement Runtime's desired bit or user-facing diagnostics.
+      if (!stillCurrent) return;
+      if (isSessionNotFound(error)) this.desiredObservations.delete(sessionId);
+      else {
+        console.warn(
+          `[runtime] could not restore observation for ${sessionId}: ${sanitizeDiagnosticError(error)}`,
+        );
+      }
+    }
+  }
+
   private initializeLegacyOwner(): Promise<void> {
     if (this.state === 'legacy') return Promise.resolve();
     if (this.state === 'closed') return Promise.reject(new Error('Runtime host is closed'));
@@ -2301,7 +2379,13 @@ export class RuntimeHostAdapter {
     this.transcriptGenerations.clear();
     this.runtimeProfileSnapshotPromise = null;
     this.runtimeCoderSessionIds.clear();
+    this.verifiedOutOfPageCoderRuns.clear();
+    this.rejectedOutOfPagePartnerRuns.clear();
+    this.outOfPageCoderVerificationWarnings.clear();
+    this.integrationHealth = undefined;
+    this.integrationHealthFingerprint = '';
     this.stopAllActorObservations();
+    this.actorSnapshotPromises.clear();
     // Lease attachment is connection-scoped even though the stable lease IDs
     // survive in the daemon. Rebuild this set only from successful resume calls
     // on the replacement connection.
@@ -2587,22 +2671,11 @@ export class RuntimeHostAdapter {
     // `status.snapshot()` does not return an atomic Runtime cursor. The requested cursor is the
     // causal lower bound captured before this read; never borrow a later Runtime cursor that may be
     // advanced by an observation while the asynchronous snapshot is in flight.
-    const previousConnection = this.projectionController.profileSnapshot().connection;
-    const managementRead = runtime.daemon.inspect().catch((error: unknown) => {
-      if (!isRuntimeSnapshotConflict(error)) throw error;
-      if (!this.profileManagementConflictWarningShown) {
-        console.warn(
-          '[runtime] daemon management changed during profile refresh; retaining the last known integration health:',
-          sanitizeDiagnosticError(error),
-        );
-        this.profileManagementConflictWarningShown = true;
-      }
-      return undefined;
-    });
-    const [status, userInputs, management] = await Promise.all([
+    const previousProfile = this.projectionController.profileSnapshot();
+    const previousConnection = previousProfile.connection;
+    const [status, userInputs] = await Promise.all([
       runtime.status.snapshot(),
       runtime.userInputs.listPending(),
-      managementRead,
     ]);
     // A reconnect can retain the same public runtimeId while replacing the attached Runtime
     // object. Never let a slow snapshot from the retired attachment overwrite the new profile.
@@ -2612,56 +2685,105 @@ export class RuntimeHostAdapter {
         'Coder daemon status runtimeId does not match the attached Runtime identity.',
       );
     }
-    if (management !== undefined && management.runtimeId !== runtime.identity.runtimeId) {
-      throw new Error(
-        'Coder daemon management runtimeId does not match the attached Runtime identity.',
-      );
-    }
+    const verifiedOutOfPageCoderSessionIds =
+      await this.verifyOutOfPageCoderSessions(runtime, status);
+    if (this.runtime !== runtime || this.state !== 'ready') return;
     this.runtimeCoderSessionIds = new Set(
-      status.sessions
-        .filter((session) => !isPartnerRuntimeSessionIdentity(session))
-        .map((session) => session.id),
+      coderRuntimeSessionIds(status, verifiedOutOfPageCoderSessionIds),
     );
-    if (management !== undefined) {
-      this.profileManagementConflictWarningShown = false;
-      this.integrationHealthFingerprint = this.fingerprintIntegrationHealth(
-        management.integrations,
-      );
-    }
+    this.profileRevision = Math.max(
+      this.profileRevision + 1,
+      previousProfile.projectionRevision + 1,
+    );
     const projected = projectRuntimeProfile({
       status,
+      verifiedOutOfPageCoderSessionIds,
       userInputs,
       cursor,
-      projectionRevision: ++this.profileRevision,
+      projectionRevision: this.profileRevision,
       changedAt: Date.now(),
       capabilities: [...this.spaceCapabilities(runtime)],
-      ...(management?.integrations ? { integrations: management.integrations } : {}),
+      ...(this.integrationHealth ? { integrations: this.integrationHealth } : {}),
     });
-    // Daemon management is auxiliary to the Session/Run profile. A consistency conflict in that
-    // read must not discard the independently successful status snapshot or erase previously
-    // known integration health.
-    const projectedProfile =
-      management === undefined && previousConnection.integrations !== undefined
-        ? {
-            ...projected,
-            connection: {
-              ...projected.connection,
-              integrations: previousConnection.integrations,
-            },
-          }
-        : projected;
     const connectionChanged = !runtimeConnectionSemanticallyEqual(
       previousConnection,
-      projectedProfile.connection,
+      projected.connection,
     );
     const profile = connectionChanged
-      ? projectedProfile
-      : { ...projectedProfile, connection: previousConnection };
+      ? projected
+      : { ...projected, connection: previousConnection };
     if (!this.projectionController.replaceProfile(profile)) return;
     if (connectionChanged) {
       this.push('runtime.connectionChanged', profile.connection);
     }
     this.push('runtime.profileChanged', profile);
+  }
+
+  private async verifyOutOfPageCoderSessions(
+    runtime: KodaXDaemonRuntime,
+    status: RuntimeStatusSnapshot,
+  ): Promise<ReadonlySet<string>> {
+    const liveRunIdsBySession = outOfPageLiveRunIdsBySession(status);
+    for (const sessionId of this.verifiedOutOfPageCoderRuns.keys()) {
+      if (!liveRunIdsBySession.has(sessionId)) this.verifiedOutOfPageCoderRuns.delete(sessionId);
+    }
+    for (const sessionId of this.rejectedOutOfPagePartnerRuns.keys()) {
+      if (!liveRunIdsBySession.has(sessionId)) this.rejectedOutOfPagePartnerRuns.delete(sessionId);
+    }
+    const unresolved = [...liveRunIdsBySession].filter(([sessionId, runIds]) => {
+      const verified = this.verifiedOutOfPageCoderRuns.get(sessionId);
+      const rejected = this.rejectedOutOfPagePartnerRuns.get(sessionId);
+      return [verified, rejected].every(
+        (known) => known === undefined || [...runIds].some((runId) => !known.has(runId)),
+      );
+    });
+    if (unresolved.length > 0) await preparePersistedSessionFreshnessTracking();
+    await Promise.all(
+      unresolved.map(([sessionId, runIds]) =>
+        this.verifyOutOfPageCoderSession(runtime, sessionId, runIds),
+      ),
+    );
+    if (this.runtime !== runtime || this.state !== 'ready') return new Set();
+    return new Set(
+      [...liveRunIdsBySession]
+        .filter(([sessionId, runIds]) => {
+          const verified = this.verifiedOutOfPageCoderRuns.get(sessionId);
+          return verified !== undefined && [...runIds].every((runId) => verified.has(runId));
+        })
+        .map(([sessionId]) => sessionId),
+    );
+  }
+
+  private async verifyOutOfPageCoderSession(
+    runtime: KodaXDaemonRuntime,
+    sessionId: string,
+    runIds: ReadonlySet<string>,
+  ): Promise<void> {
+    try {
+      const persisted = await loadPersistedSessionFresh(sessionId);
+      if (this.runtime !== runtime || this.state !== 'ready') return;
+      if (persisted === null) {
+        this.verifiedOutOfPageCoderRuns.delete(sessionId);
+        return;
+      }
+      if (isPartnerRuntimeSessionIdentity(persisted)) {
+        this.verifiedOutOfPageCoderRuns.delete(sessionId);
+        this.rejectedOutOfPagePartnerRuns.set(sessionId, new Set(runIds));
+        this.outOfPageCoderVerificationWarnings.delete(sessionId);
+        return;
+      }
+      this.verifiedOutOfPageCoderRuns.set(sessionId, new Set(runIds));
+      this.rejectedOutOfPagePartnerRuns.delete(sessionId);
+      this.outOfPageCoderVerificationWarnings.delete(sessionId);
+    } catch (error: unknown) {
+      this.verifiedOutOfPageCoderRuns.delete(sessionId);
+      this.rejectedOutOfPagePartnerRuns.delete(sessionId);
+      if (this.outOfPageCoderVerificationWarnings.has(sessionId)) return;
+      console.warn(
+        `[runtime] could not verify out-of-page Coder identity for ${sessionId}: ${sanitizeDiagnosticError(error)}`,
+      );
+      this.outOfPageCoderVerificationWarnings.add(sessionId);
+    }
   }
 
   private async refreshProfileAfterConflict(cursor: number): Promise<void> {
@@ -2684,23 +2806,47 @@ export class RuntimeHostAdapter {
   }
 
   private scheduleProfileRefresh(cursor: number): void {
-    void this.refreshProfileAfterConflict(cursor)
-      .then(() => {
-        this.profileRefreshFailureWarningShown = false;
-      })
-      .catch((error: unknown) => {
-        this.lastError = sanitizeDiagnosticError(error);
-        // This is a background read, not a connection-lifecycle signal. The SDK connection
-        // subscription is the sole authority for reconnecting/disconnected transitions. Keep the
-        // last valid profile and live observation so a terminal event can still converge the UI.
-        if (!this.profileRefreshFailureWarningShown) {
-          console.warn(
-            '[runtime] profile refresh failed; retaining the last known Runtime projection:',
-            this.lastError,
-          );
-          this.profileRefreshFailureWarningShown = true;
+    const runtime = this.runtime;
+    if (!runtime || this.state !== 'ready') return;
+    const existing = this.scheduledProfileRefreshes.get(runtime);
+    if (existing !== undefined) {
+      existing.cursor = Math.max(existing.cursor, cursor);
+      existing.version += 1;
+      return;
+    }
+    const scheduled = { cursor, version: 1 };
+    this.scheduledProfileRefreshes.set(runtime, scheduled);
+    void (async () => {
+      for (;;) {
+        const requestedVersion = scheduled.version;
+        const requestedCursor = scheduled.cursor;
+        try {
+          await this.refreshProfileAfterConflict(requestedCursor);
+          this.profileRefreshFailureWarningShown = false;
+        } catch (error: unknown) {
+          this.lastError = sanitizeDiagnosticError(error);
+          // This is a background read, not a connection-lifecycle signal. The SDK connection
+          // subscription is the sole authority for reconnecting/disconnected transitions.
+          if (!this.profileRefreshFailureWarningShown) {
+            console.warn(
+              '[runtime] profile refresh failed; retaining the last known Runtime projection:',
+              this.lastError,
+            );
+            this.profileRefreshFailureWarningShown = true;
+          }
         }
-      });
+        if (
+          scheduled.version === requestedVersion ||
+          this.runtime !== runtime ||
+          this.state !== 'ready'
+        ) {
+          break;
+        }
+      }
+      if (this.scheduledProfileRefreshes.get(runtime) === scheduled) {
+        this.scheduledProfileRefreshes.delete(runtime);
+      }
+    })();
   }
 
   private fingerprintIntegrationHealth(
@@ -2720,26 +2866,27 @@ export class RuntimeHostAdapter {
       }, this.integrationHealthPollMs);
       this.integrationHealthPollTimer.unref?.();
     };
-    scheduleNext();
+    // Management inspection is auxiliary and may need a stable daemon-wide revision. Run it in
+    // its own background lane so a conflict or long read cannot delay profile, history, or live
+    // recovery. The in-flight guard prevents overlapping inspections if one remains pending.
+    void this.pollIntegrationHealth(runtime).finally(scheduleNext);
   }
 
   private stopIntegrationHealthPolling(): void {
     if (this.integrationHealthPollTimer) clearTimeout(this.integrationHealthPollTimer);
     this.integrationHealthPollTimer = undefined;
-    this.integrationHealthRefreshPending = false;
   }
 
   private async pollIntegrationHealth(runtime: KodaXDaemonRuntime): Promise<void> {
     if (
-      this.integrationHealthPollInFlight ||
-      this.integrationHealthRefreshPending ||
+      this.integrationHealthPollRuntime === runtime ||
       this.state !== 'ready' ||
       this.runtime !== runtime ||
       this.rollbackInProgress
     ) {
       return;
     }
-    this.integrationHealthPollInFlight = true;
+    this.integrationHealthPollRuntime = runtime;
     try {
       const management = await runtime.daemon.inspect();
       if (this.state !== 'ready' || this.runtime !== runtime || this.rollbackInProgress) return;
@@ -2748,32 +2895,27 @@ export class RuntimeHostAdapter {
           'Coder daemon management runtimeId does not match the attached Runtime identity.',
         );
       }
-      if (
-        this.fingerprintIntegrationHealth(management.integrations) ===
-        this.integrationHealthFingerprint
-      ) {
+      const nextFingerprint = this.fingerprintIntegrationHealth(management.integrations);
+      if (nextFingerprint === this.integrationHealthFingerprint) {
         this.integrationHealthPollWarningShown = false;
         return;
       }
-      this.integrationHealthRefreshPending = true;
-      void this.refreshProfile(this.currentProfileCursor())
-        .then(() => {
-          this.integrationHealthPollWarningShown = false;
-        })
-        .catch((error: unknown) => {
-          if (!this.integrationHealthPollWarningShown) {
-            console.warn(
-              '[runtime] integration health refresh failed; retaining the last known state:',
-              sanitizeDiagnosticError(error),
-            );
-            this.integrationHealthPollWarningShown = true;
-          }
-        })
-        .finally(() => {
-          this.integrationHealthRefreshPending = false;
-        });
+      const previousHealth = this.integrationHealth;
+      const nextHealth = management.integrations;
+      this.integrationHealth = nextHealth;
+      try {
+        await this.refreshProfile(this.currentProfileCursor());
+        if (this.state !== 'ready' || this.runtime !== runtime || this.rollbackInProgress) return;
+        this.integrationHealthFingerprint = nextFingerprint;
+        this.integrationHealthPollWarningShown = false;
+      } catch (error: unknown) {
+        if (this.runtime === runtime && this.integrationHealth === nextHealth) {
+          this.integrationHealth = previousHealth;
+        }
+        throw error;
+      }
     } catch (error: unknown) {
-      if (!this.integrationHealthPollWarningShown) {
+      if (this.runtime === runtime && !this.integrationHealthPollWarningShown) {
         console.warn(
           '[runtime] integration health poll failed; retaining the last known state:',
           sanitizeDiagnosticError(error),
@@ -2781,7 +2923,9 @@ export class RuntimeHostAdapter {
         this.integrationHealthPollWarningShown = true;
       }
     } finally {
-      this.integrationHealthPollInFlight = false;
+      if (this.integrationHealthPollRuntime === runtime) {
+        this.integrationHealthPollRuntime = undefined;
+      }
     }
   }
 
@@ -2839,19 +2983,38 @@ export class RuntimeHostAdapter {
     await preparePersistedSessionFreshnessTracking();
     const before = persistedSessionFreshnessToken(sessionId);
     if (this.persistedOwnershipTokens.get(sessionId) === before) return;
-    // Active Runs normally mutate the same JSONL file. One fresh Runtime status read proves
-    // ownership without waiting for that file to become quiescent. The projected profile is
-    // intentionally bounded, so membership is checked against the full status set captured by
-    // refreshProfileSnapshot instead of profile.sessions.
-    await this.readRuntimeProfileSnapshot();
-    const after = persistedSessionFreshnessToken(sessionId);
-    if (this.runtimeCoderSessionIds.has(sessionId)) {
-      // If the file changed during the status read, retain the older token so the next independent
-      // reconciliation rechecks identity. Never spin inside one request while a Run is streaming.
-      this.persistedOwnershipTokens.set(sessionId, before === after ? after : before);
+    // Only positive active/queued Runtime evidence may bypass the mutable JSONL boundary. An idle
+    // membership cache can outlive an external Partner retag and is therefore not identity proof.
+    if (this.hasActiveRuntimeOwnershipEvidence(sessionId)) {
+      // Do not certify the changed durable identity while Runtime evidence is temporarily taking
+      // precedence. Once the Run becomes terminal, the unchanged token must force a real persisted
+      // ownership check instead of carrying this bypass into the idle Session.
       return;
     }
     await this.assertPersistedCoderOwnership(sessionId);
+  }
+
+  private hasActiveRuntimeOwnershipEvidence(sessionId: string): boolean {
+    if (!this.runtimeCoderSessionIds.has(sessionId)) return false;
+    const runtime = this.runtime;
+    if (runtime === null || this.state !== 'ready') return false;
+    const observed = this.observations.get(sessionId);
+    if (
+      (observed?.runtime === runtime && observed.reducer.snapshot().activeRun !== undefined) ||
+      this.activeRuns.has(sessionId)
+    ) {
+      return true;
+    }
+    const profile = this.projectionController.profileSnapshot();
+    if (
+      profile.connection.state !== 'ready' ||
+      profile.connection.stale ||
+      profile.connection.runtimeId !== runtime.identity.runtimeId
+    ) {
+      return false;
+    }
+    const session = profile.sessions.find((candidate) => candidate.sessionId === sessionId);
+    return session?.surface === 'code' && Boolean(session.activeRun || session.queuedRuns.length);
   }
 
   private async assertCoderSession(
@@ -2956,8 +3119,10 @@ export class RuntimeHostAdapter {
 
   private async ensureSessionUnlocked(input: RuntimeSessionIdentity): Promise<boolean> {
     const runtime = await this.requireRuntime();
+    const profileVerified = this.hasVerifiedProfileSession(runtime, input);
+    if (profileVerified && this.hasActiveRuntimeOwnershipEvidence(input.sessionId)) return false;
     await this.assertPersistedCoderOwnership(input.sessionId);
-    if (this.hasVerifiedProfileSession(runtime, input)) return false;
+    if (profileVerified) return false;
     try {
       await this.assertCoderSession(runtime, input.sessionId, undefined, input.projectRoot, true);
       return false;
@@ -3329,10 +3494,9 @@ export class RuntimeHostAdapter {
       // redundant and capable of rejecting a healthy active Session with data_changed.
       await this.assertPersistedCoderOwnership(sessionId);
     }
-    let current =
-      hasCurrentObservation
-        ? structuredClone(observed.settings)
-        : await runtime.sessions.getSettingsVersioned(sessionId);
+    let current = hasCurrentObservation
+      ? structuredClone(observed.settings)
+      : await runtime.sessions.getSettingsVersioned(sessionId);
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const effectivePatch = await this.withMissingAutoModeDefaults(current.value, patch);
       const changed = Object.entries(effectivePatch).some(([key, value]) => {
@@ -3420,18 +3584,25 @@ export class RuntimeHostAdapter {
   }
 
   async ensureObserved(sessionId: string): Promise<void> {
-    await this.assertPersistedCoderOwnership(sessionId);
+    const current = this.observations.get(sessionId);
+    if (current !== undefined && current.runtime === this.runtime && this.state === 'ready') {
+      this.desiredObservations.add(sessionId);
+      return;
+    }
+    if (!this.hasActiveRuntimeOwnershipEvidence(sessionId)) {
+      await this.assertPersistedCoderOwnership(sessionId);
+    }
     this.desiredObservations.add(sessionId);
     if (this.observations.has(sessionId)) return;
     const existing = this.observationPromises.get(sessionId);
     if (existing) return existing;
-    const pending = this.openObservation(sessionId, { trustPersistedOwnership: true }).finally(
-      () => {
-        if (this.observationPromises.get(sessionId) === pending) {
-          this.observationPromises.delete(sessionId);
-        }
-      },
-    );
+    const pending = this.openObservation(sessionId, {
+      trustPersistedOwnership: true,
+    }).finally(() => {
+      if (this.observationPromises.get(sessionId) === pending) {
+        this.observationPromises.delete(sessionId);
+      }
+    });
     this.observationPromises.set(sessionId, pending);
     return pending;
   }
@@ -3466,13 +3637,13 @@ export class RuntimeHostAdapter {
       const cached = this.cachedSessionLiveSnapshot(sessionId);
       if (cached !== undefined) return cached;
       this.desiredObservations.add(sessionId);
-      const pending = this.openObservation(sessionId, { trustPersistedOwnership: true }).finally(
-        () => {
-          if (this.observationPromises.get(sessionId) === pending) {
-            this.observationPromises.delete(sessionId);
-          }
-        },
-      );
+      const pending = this.openObservation(sessionId, {
+        trustPersistedOwnership: true,
+      }).finally(() => {
+        if (this.observationPromises.get(sessionId) === pending) {
+          this.observationPromises.delete(sessionId);
+        }
+      });
       this.observationPromises.set(sessionId, pending);
       await pending;
     }
@@ -3498,6 +3669,23 @@ export class RuntimeHostAdapter {
     });
     this.runtimeProfileSnapshotPromise = pending;
     return pending;
+  }
+
+  requestRuntimeProfileRefresh(): void {
+    void this.readRuntimeProfileSnapshot()
+      .then(() => {
+        this.profileRefreshFailureWarningShown = false;
+      })
+      .catch((error: unknown) => {
+        this.lastError = sanitizeDiagnosticError(error);
+        if (!this.profileRefreshFailureWarningShown) {
+          console.warn(
+            '[runtime] profile reconciliation failed; retaining the last known projection:',
+            this.lastError,
+          );
+          this.profileRefreshFailureWarningShown = true;
+        }
+      });
   }
 
   private cachedSessionLiveSnapshot(sessionId: string): SpaceSessionLiveProjectionT | undefined {
@@ -3667,18 +3855,42 @@ export class RuntimeHostAdapter {
   }
 
   async actorTreeSnapshot(sessionId: string): Promise<AgentActorTreeSnapshotT> {
-    let runtime = await this.requireRuntime();
-    await this.assertCoderSession(runtime, sessionId);
+    const runtime = await this.requireRuntime();
+    const existing = this.actorSnapshotPromises.get(sessionId);
+    if (existing?.runtime === runtime) return existing.promise;
+    const token = Symbol(sessionId);
+    const pending = this.readActorTreeSnapshot(runtime, sessionId).finally(() => {
+      if (this.actorSnapshotPromises.get(sessionId)?.token === token) {
+        this.actorSnapshotPromises.delete(sessionId);
+      }
+    });
+    this.actorSnapshotPromises.set(sessionId, { runtime, token, promise: pending });
+    return pending;
+  }
+
+  private async readActorTreeSnapshot(
+    initialRuntime: KodaXDaemonRuntime,
+    sessionId: string,
+  ): Promise<AgentActorTreeSnapshotT> {
+    let runtime = initialRuntime;
+    await this.assertCoderSession(runtime, sessionId, { timeoutMs: RUNTIME_READ_TIMEOUT_MS });
     await this.ensureObserved(sessionId);
     // ensureObserved may reconnect the daemon. Never attach the Actor cursor to
     // the pre-reconnect client captured above.
     runtime = await this.requireRuntime();
-    await this.assertCoderSession(runtime, sessionId);
+    await this.assertCoderSession(runtime, sessionId, { timeoutMs: RUNTIME_READ_TIMEOUT_MS });
     try {
       const state = await this.ensureActorObserved(runtime, sessionId);
       const snapshot = state.observer.current() ?? (await state.observer.refreshNow());
       if (!snapshot) {
         throw new Error(`Coder daemon did not return an Agent Actor snapshot for ${sessionId}.`);
+      }
+      if (
+        this.runtime !== runtime ||
+        this.state !== 'ready' ||
+        this.actorObservations.get(sessionId) !== state
+      ) {
+        throw new Error('Coder daemon connection changed while reading Agent Actor snapshot.');
       }
       return snapshot;
     } finally {
@@ -3688,6 +3900,36 @@ export class RuntimeHostAdapter {
       // authoritative quiescence predicate.
       await this.retireObservationWhenSettled(sessionId);
     }
+  }
+
+  private async observeSessionSerially(
+    runtime: KodaXDaemonRuntime,
+    sessionId: string,
+    onEvent: Parameters<KodaXDaemonRuntime['sessions']['observe']>[1],
+  ): Promise<RuntimeSessionObservation> {
+    const previous = this.observationOpenQueues.get(runtime) ?? Promise.resolve();
+    // Every caller receives its own failing promise. The queue barrier only converts the previous
+    // caller's already-reported outcome into readiness for the next independent Session.
+    const barrier = previous.then(
+      () => undefined,
+      () => undefined,
+    );
+    const pending = barrier.then(async () => {
+      if (this.runtime !== runtime || this.state !== 'ready') {
+        throw new Error('Coder daemon connection changed before session observation.');
+      }
+      return runtime.sessions.observe(sessionId, onEvent, { timeoutMs: RUNTIME_READ_TIMEOUT_MS });
+    });
+    // The caller still receives `pending` and its factual failure. Only the private queue tail is
+    // made non-rejecting so one failed Session cannot poison later observation recovery.
+    this.observationOpenQueues.set(
+      runtime,
+      pending.then(
+        () => undefined,
+        () => undefined,
+      ),
+    );
+    return pending;
   }
 
   private async openObservation(
@@ -3711,29 +3953,30 @@ export class RuntimeHostAdapter {
       this.runtimeEventParser ?? (await import('@kodax-ai/kodax/runtime')).parseRuntimeEvent;
     const buffered: RuntimeTypedEvent[] = [];
     let state: RuntimeSessionObservationState | undefined;
-    const observation = await runtime.sessions.observe(
-      sessionId,
-      (event) => {
-        const parsed = parseRuntimeEvent(event);
-        if (!parsed.ok) {
-          throw new Error(`Malformed Runtime observation event: ${parsed.error}`);
-        }
-        if (!state) {
-          buffered.push(parsed.event);
-          return;
-        }
-        this.enqueueRuntimeEvent(state, parsed.event);
-      },
-      { timeoutMs: RUNTIME_READ_TIMEOUT_MS },
-    );
+    const observation = await this.observeSessionSerially(runtime, sessionId, (event) => {
+      const parsed = parseRuntimeEvent(event);
+      if (!parsed.ok) {
+        throw new Error(`Malformed Runtime observation event: ${parsed.error}`);
+      }
+      if (!state) {
+        buffered.push(parsed.event);
+        return;
+      }
+      this.enqueueRuntimeEvent(state, parsed.event);
+    });
     let installed = false;
     try {
+      if (this.runtime !== runtime || this.state !== 'ready') {
+        throw new Error('Coder daemon connection changed while opening a session observation.');
+      }
       const session = observation.snapshot.session;
       if (!options.trustPersistedOwnership) {
         await this.assertPersistedCoderOwnership(sessionId);
       }
+      if (this.runtime !== runtime || this.state !== 'ready') {
+        throw new Error('Coder daemon connection changed while validating session observation.');
+      }
       assertRuntimeSessionIdentity(session, { sessionId });
-      await this.resumeSnapshotBindings(runtime, observation.snapshot);
       const projected = projectRuntimeSessionSnapshot(observation.snapshot);
       const initial = {
         ...projected,
@@ -3742,7 +3985,6 @@ export class RuntimeHostAdapter {
           this.previousLiveProjectionRevision(sessionId, projected.cursor.runtimeId) + 1,
         ),
       };
-      await this.syncSpaceSessionSettings(sessionId, observation.snapshot.settings.value);
       const reducer = new CoderSessionProjectionReducer(initial, observation.snapshot.runs);
       for (const run of observation.snapshot.runs) this.runProviders.set(run.runId, run.provider);
       state = {
@@ -3751,6 +3993,17 @@ export class RuntimeHostAdapter {
         observation,
         reducer,
         activeRunId: initial.activeRun?.runId,
+        bindingRunIds: new Set(
+          observation.snapshot.runs
+            .filter(
+              (run) =>
+                run.phase !== 'completed' &&
+                run.phase !== 'failed' &&
+                run.phase !== 'cancelled' &&
+                run.phase !== 'interrupted',
+            )
+            .map((run) => run.runId),
+        ),
         settings: structuredClone(observation.snapshot.settings),
         transcriptSnapshotFresh: true,
         eventQueue: Promise.resolve(),
@@ -3782,18 +4035,40 @@ export class RuntimeHostAdapter {
       for (const event of buffered) {
         this.enqueueRuntimeEvent(state, event);
       }
+      // Credential/host-tool lease attachment and Space settings persistence are recovery side
+      // effects, not prerequisites for painting the immutable Runtime snapshot. Keep them outside
+      // both the cold-observe queue and this Session's core live projection path.
+      void this.resumeSnapshotBindings(runtime, observation.snapshot, state).catch(
+        (error: unknown) => {
+          if (this.runtime !== runtime || this.state !== 'ready') return;
+          console.warn(
+            `[runtime] session binding recovery failed for ${sessionId}:`,
+            sanitizeDiagnosticError(error),
+          );
+        },
+      );
+      void this.syncSpaceSessionSettings(
+        runtime,
+        sessionId,
+        observation.snapshot.settings.revision,
+        observation.snapshot.settings.value,
+      ).catch((error: unknown) => {
+        if (this.runtime !== runtime || this.state !== 'ready') return;
+        console.warn(
+          `[runtime] session settings recovery failed for ${sessionId}:`,
+          sanitizeDiagnosticError(error),
+        );
+      });
       // Actor telemetry is best-effort: a daemon without the agents plane (or a
       // telemetry attach failure) must not fail session observation — the same
       // policy as the post-rewind re-attach below. actorTreeSnapshot still
       // surfaces the factual error to the renderer on demand.
-      try {
-        await this.ensureActorObserved(runtime, sessionId);
-      } catch (error) {
+      void this.ensureActorObserved(runtime, sessionId).catch((error: unknown) => {
         console.warn(
           '[runtime] Agent Actor observation attach failed:',
           sanitizeDiagnosticError(error),
         );
-      }
+      });
       for (const run of observation.snapshot.runs) {
         const continuation = this.continuationPrompts.get(run.runId);
         if (continuation && run.phase !== 'queued') {
@@ -3912,7 +4187,10 @@ export class RuntimeHostAdapter {
     sessionId: string,
   ): Promise<RuntimeActorObservationState> {
     const existing = this.actorObservations.get(sessionId);
-    if (existing?.runtime === runtime) return existing;
+    if (existing?.runtime === runtime) {
+      await existing.ready;
+      return existing;
+    }
     if (!runtime.agents.enabled) {
       // Without this guard a daemon with the agents plane disabled would attach
       // an observer whose every refresh fails and retries forever.
@@ -3956,10 +4234,15 @@ export class RuntimeHostAdapter {
         );
       },
     });
-    state = { runtime, observer };
+    // Publish the state before starting so concurrent session bootstrap and explicit Actor reads
+    // join the same initial events/tree traversal instead of queueing a second refresh behind it.
+    const ready = Promise.resolve()
+      .then(() => observer.start())
+      .then(() => undefined);
+    state = { runtime, observer, ready };
     this.actorObservations.set(sessionId, state);
     try {
-      await observer.start();
+      await ready;
     } catch (error) {
       if (this.actorObservations.get(sessionId) === state) {
         this.stopActorObservation(sessionId);
@@ -3984,6 +4267,7 @@ export class RuntimeHostAdapter {
   private async resumeSnapshotBindings(
     runtime: KodaXDaemonRuntime,
     snapshot: RuntimeSessionObservationSnapshot,
+    state: RuntimeSessionObservationState,
   ): Promise<void> {
     const { registerSpaceHostTools } = await import('./runtime/space-host-tools.js');
     for (const run of snapshot.runs) {
@@ -3991,6 +4275,8 @@ export class RuntimeHostAdapter {
       if (
         credential &&
         credential.state === 'ready' &&
+        this.observations.get(run.sessionId) === state &&
+        state.bindingRunIds.has(run.runId) &&
         !this.credentialLeases.has(credential.leaseId)
       ) {
         const binding: SpaceCredentialLeaseBinding = {
@@ -4011,7 +4297,15 @@ export class RuntimeHostAdapter {
         };
         try {
           await runtime.credentials.resume(credential.leaseId, binding.broker);
-          this.credentialLeases.set(credential.leaseId, binding);
+          if (
+            this.runtime === runtime &&
+            this.state === 'ready' &&
+            this.observations.get(run.sessionId) === state &&
+            state.bindingRunIds.has(run.runId) &&
+            !this.credentialLeases.has(credential.leaseId)
+          ) {
+            this.credentialLeases.set(credential.leaseId, binding);
+          }
         } catch {
           // A CLI/IDE-owned lease is expected to fail stable-client ownership.
         }
@@ -4022,11 +4316,20 @@ export class RuntimeHostAdapter {
         hostTools &&
         hostTools.state !== 'expired' &&
         hostTools.state !== 'terminal' &&
+        this.observations.get(run.sessionId) === state &&
+        state.bindingRunIds.has(run.runId) &&
         !this.hostToolLeaseIds.has(hostTools.leaseId)
       ) {
         try {
           const lease = await registerSpaceHostTools(runtime, hostTools.leaseId);
-          this.hostToolLeaseIds.add(lease.id);
+          if (
+            this.runtime === runtime &&
+            this.state === 'ready' &&
+            this.observations.get(run.sessionId) === state &&
+            state.bindingRunIds.has(run.runId)
+          ) {
+            this.hostToolLeaseIds.add(lease.id);
+          }
         } catch {
           // Stable-client ownership rejects leases registered by other clients.
         }
@@ -4040,14 +4343,17 @@ export class RuntimeHostAdapter {
   ): void {
     if (event.type === 'run.started') {
       state.activeRunId = event.runId;
+      state.bindingRunIds.add(event.runId);
+    } else if (event.type === 'run.queued') {
+      state.bindingRunIds.add(event.runId);
     } else if (
       (event.type === 'run.completed' ||
         event.type === 'run.failed' ||
         event.type === 'run.cancelled' ||
-        event.type === 'run.interrupted') &&
-      state.activeRunId === event.runId
+        event.type === 'run.interrupted')
     ) {
-      state.activeRunId = undefined;
+      state.bindingRunIds.delete(event.runId);
+      if (state.activeRunId === event.runId) state.activeRunId = undefined;
     }
     if (event.type === 'session.settings.updated') {
       const payload = runtimeEventRecord(event.payload);
@@ -4115,7 +4421,18 @@ export class RuntimeHostAdapter {
     if (change) {
       const projection = state.reducer.snapshot();
       if (event.type === 'session.settings.updated' && projection.settings) {
-        await this.syncSpaceSessionSettings(event.sessionId, projection.settings.value);
+        void this.syncSpaceSessionSettings(
+          runtime,
+          event.sessionId,
+          projection.settings.revision,
+          projection.settings.value,
+        ).catch((error: unknown) => {
+          if (this.runtime !== runtime || this.state !== 'ready') return;
+          console.warn(
+            `[runtime] session settings event sync failed for ${event.sessionId}:`,
+            sanitizeDiagnosticError(error),
+          );
+        });
       }
       if (this.projectionController.replaceSessionLive(projection)) {
         this.recordLiveProjectionRevision(projection);
@@ -4154,10 +4471,23 @@ export class RuntimeHostAdapter {
   }
 
   private async syncSpaceSessionSettings(
+    runtime: KodaXDaemonRuntime,
     sessionId: string,
+    revision: number,
     settings: RuntimeSessionSettings,
   ): Promise<void> {
+    const isCurrentRevision = (): boolean => {
+      const state = this.observations.get(sessionId);
+      return (
+        this.runtime === runtime &&
+        this.state === 'ready' &&
+        state?.runtime === runtime &&
+        state.settings.revision === revision
+      );
+    };
+    if (!isCurrentRevision()) return;
     const { kodaxHost, resolveEffectiveProviderModel } = await import('./host.js');
+    if (!isCurrentRevision()) return;
     const session = kodaxHost.get(sessionId);
     if (!session || session.surface !== 'code') return;
     const previousProvider = session.provider;
@@ -4197,6 +4527,7 @@ export class RuntimeHostAdapter {
     if (settings.autoModeEngine === 'llm' || settings.autoModeEngine === 'rules') {
       session.autoModeEngine = settings.autoModeEngine;
     }
+    if (!isCurrentRevision()) return;
     await kodaxHost.persistRuntime(sessionId);
   }
 
@@ -4857,16 +5188,32 @@ export class RuntimeHostAdapter {
     };
   }
 
-  private async resumeKnownCredentialLeases(runtime: KodaXDaemonRuntime): Promise<void> {
+  private resumeKnownCredentialLeases(runtime: KodaXDaemonRuntime): void {
     for (const [leaseId, binding] of [...this.credentialLeases]) {
-      try {
-        await runtime.credentials.resume(leaseId, binding.broker);
-      } catch {
-        this.credentialLeases.delete(leaseId);
-        for (const [runId, candidate] of this.continuationCredentialLeases) {
-          if (candidate === leaseId) this.continuationCredentialLeases.delete(runId);
-        }
-      }
+      void runtime.credentials.resume(leaseId, binding.broker).then(
+        () => {
+          if (
+            this.runtime === runtime &&
+            this.state === 'ready' &&
+            !this.credentialLeases.has(leaseId)
+          ) {
+            void runtime.credentials.revoke(leaseId).catch(() => false);
+          }
+        },
+        () => {
+          if (
+            this.runtime !== runtime ||
+            this.state !== 'ready' ||
+            this.credentialLeases.get(leaseId) !== binding
+          ) {
+            return;
+          }
+          this.credentialLeases.delete(leaseId);
+          for (const [runId, candidate] of this.continuationCredentialLeases) {
+            if (candidate === leaseId) this.continuationCredentialLeases.delete(runId);
+          }
+        },
+      );
     }
   }
 
@@ -4885,12 +5232,31 @@ export class RuntimeHostAdapter {
 
   async findActiveRunId(sessionId: string): Promise<string | undefined> {
     const runtime = await this.requireRuntime();
-    // Observation callbacks update activeRunId before their ordered projection work. This makes
-    // both active and idle observation states authoritative without waiting for an unrelated RPC
-    // or reopening the mutable canonical Session through sessions.status().
+    // Positive observation evidence is immediately authoritative. An idle cursor is not negative
+    // proof: another client may have admitted a Run whose run.started event has not reached this
+    // attachment yet, so confirm that case against the Runtime run index.
     const observed = this.observations.get(sessionId);
     if (observed !== undefined && observed.runtime === runtime && this.state === 'ready') {
-      return observed.activeRunId;
+      if (observed.activeRunId !== undefined) return observed.activeRunId;
+      const statuses = await runtime.runs.list({
+        sessionId,
+        phase: [
+          'running',
+          'waiting_agent',
+          'recovering',
+          'waiting_permission',
+          'waiting_user_input',
+          'unknown',
+        ],
+      });
+      if (statuses.some((candidate) => candidate.sessionId !== sessionId)) {
+        throw new Error('Coder daemon returned a Run status for a different Session identity.');
+      }
+      if (this.runtime !== runtime || this.state !== 'ready') {
+        throw new Error('Coder Runtime changed while resolving the active Run.');
+      }
+      return statuses.slice().sort((a, b) => (a.sessionOrder ?? 0) - (b.sessionOrder ?? 0))[0]
+        ?.runId;
     }
     // Run control/status is already fenced by the daemon's Session admission and Runtime
     // identity. Do not put a full persisted-Session read in front of it: an executing Run owns
@@ -5995,9 +6361,15 @@ export class RuntimeHostAdapter {
     this.profileCursors.clear();
     this.persistedOwnershipTokens.clear();
     this.runtimeCoderSessionIds.clear();
+    this.verifiedOutOfPageCoderRuns.clear();
+    this.rejectedOutOfPagePartnerRuns.clear();
+    this.outOfPageCoderVerificationWarnings.clear();
     this.liveProjectionRevisions.clear();
     this.runtimeProfileSnapshotPromise = null;
+    this.integrationHealth = undefined;
+    this.integrationHealthFingerprint = '';
     this.stopAllActorObservations();
+    this.actorSnapshotPromises.clear();
     for (const state of this.observations.values()) state.observation.close();
     this.observations.clear();
     this.observationPromises.clear();

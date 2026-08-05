@@ -674,7 +674,7 @@ export async function compactPersistedSession(
  * 切去"场景。缓存条目在 deletePersistedSession / fork / rewind 时清掉，避免读到过期数据。
  *
  * 失效语义：进程内 mutation 与 SDK watchSessions 上报的跨进程文件变化都会按 Session ID
- * 清理 load/transcript/conversation 三类缓存，并通过 epoch 拒绝正在返回的旧异步读取。
+ * 清理 load/transcript/conversation 三类缓存，并通过 per-Session generation 拒绝正在返回的旧异步读取。
  *
  * 返回 null 当 sessionId 不存在。
  */
@@ -683,8 +683,8 @@ type AppendClientNoticeOptions = Parameters<SdkSessionModule['appendClientNotice
 type PersistedClientNoticeEntry = Awaited<ReturnType<SdkSessionModule['appendClientNotice']>>;
 
 const LOAD_CACHE_MAX = 5;
+const MAX_FRESH_READ_ATTEMPTS = 2;
 const loadCache = new Map<string, LoadedSessionData>();
-let persistedSessionCacheEpoch = 0;
 let persistedSessionCacheGeneration = 0;
 const persistedSessionGenerationById = new Map<string, number>();
 
@@ -694,7 +694,7 @@ export function persistedSessionFreshnessToken(sessionId: string): string {
 
 export async function loadPersistedSession(sessionId: string): Promise<LoadedSessionData | null> {
   await ensureSessionContentBaseline();
-  for (;;) {
+  for (let attempt = 0; attempt < MAX_FRESH_READ_ATTEMPTS; attempt += 1) {
     const cached = loadCache.get(sessionId);
     if (cached !== undefined) {
       // LRU recency bump: 删后重 set 让 Map iteration 顺序刷新（Map insertion order = 最近使用）
@@ -702,13 +702,15 @@ export async function loadPersistedSession(sessionId: string): Promise<LoadedSes
       loadCache.set(sessionId, cached);
       return cached;
     }
-    const loadEpoch = persistedSessionCacheEpoch;
+    const loadToken = persistedSessionFreshnessToken(sessionId);
     const data = await activeImpl.loadSession(sessionId);
     // A mutation may have invalidated this Session while the asynchronous read
     // was in flight. Re-read instead of repopulating the cache with a stale
     // pre-mutation snapshot.
-    if (loadEpoch !== persistedSessionCacheEpoch) continue;
+    const stable = loadToken === persistedSessionFreshnessToken(sessionId);
+    if (!stable && attempt + 1 < MAX_FRESH_READ_ATTEMPTS) continue;
     if (data === null) return null;
+    if (!stable) return data;
     loadCache.set(sessionId, data);
     // Evict oldest 一直保持 <= MAX
     while (loadCache.size > LOAD_CACHE_MAX) {
@@ -718,6 +720,7 @@ export async function loadPersistedSession(sessionId: string): Promise<LoadedSes
     }
     return data;
   }
+  throw new Error(`Persisted Session read exhausted its bounded attempts for ${sessionId}.`);
 }
 
 /**
@@ -728,11 +731,15 @@ export async function loadPersistedSession(sessionId: string): Promise<LoadedSes
 export async function loadPersistedSessionFresh(
   sessionId: string,
 ): Promise<LoadedSessionData | null> {
-  for (;;) {
-    const loadEpoch = persistedSessionCacheEpoch;
+  for (let attempt = 0; attempt < MAX_FRESH_READ_ATTEMPTS; attempt += 1) {
+    const loadToken = persistedSessionFreshnessToken(sessionId);
     const data = await activeImpl.loadSession(sessionId);
-    if (loadEpoch === persistedSessionCacheEpoch) return data;
+    if (loadToken === persistedSessionFreshnessToken(sessionId)) return data;
   }
+  throw Object.assign(
+    new Error(`Persisted Session changed while verifying ${sessionId}; retry the operation.`),
+    { code: 'data_changed' },
+  );
 }
 
 /** Start the cross-process content watcher before a caller relies on a freshness token. */
@@ -807,17 +814,19 @@ export async function loadPersistedConversationHistory(
 ): Promise<PersistedConversationHistoryRead> {
   if (!activeImpl.readConversationHistory) return { supported: false, data: null };
   await ensureSessionContentBaseline();
-  for (;;) {
+  for (let attempt = 0; attempt < MAX_FRESH_READ_ATTEMPTS; attempt += 1) {
     const cached = conversationHistoryCache.get(sessionId);
     if (cached !== undefined) {
       conversationHistoryCache.delete(sessionId);
       conversationHistoryCache.set(sessionId, cached);
       return { supported: true, data: cached };
     }
-    const loadEpoch = persistedSessionCacheEpoch;
+    const loadToken = persistedSessionFreshnessToken(sessionId);
     const data = await activeImpl.readConversationHistory(sessionId);
-    if (loadEpoch !== persistedSessionCacheEpoch) continue;
+    const stable = loadToken === persistedSessionFreshnessToken(sessionId);
+    if (!stable && attempt + 1 < MAX_FRESH_READ_ATTEMPTS) continue;
     if (data === null) return { supported: true, data: null };
+    if (!stable) return { supported: true, data };
     conversationHistoryCache.set(sessionId, data);
     while (conversationHistoryCache.size > LOAD_CACHE_MAX) {
       const oldestKey = conversationHistoryCache.keys().next().value;
@@ -826,18 +835,19 @@ export async function loadPersistedConversationHistory(
     }
     return { supported: true, data };
   }
+  throw new Error(`Persisted conversation read exhausted its bounded attempts for ${sessionId}.`);
 }
 
 export async function loadPersistedTranscript(sessionId: string): Promise<TranscriptData | null> {
   await ensureSessionContentBaseline();
-  for (;;) {
+  for (let attempt = 0; attempt < MAX_FRESH_READ_ATTEMPTS; attempt += 1) {
     const cached = transcriptCache.get(sessionId);
     if (cached !== undefined) {
       transcriptCache.delete(sessionId);
       transcriptCache.set(sessionId, cached);
       return cached;
     }
-    const loadEpoch = persistedSessionCacheEpoch;
+    const loadToken = persistedSessionFreshnessToken(sessionId);
     let data: TranscriptData | null = null;
     if (activeImpl.loadFullTranscript) {
       try {
@@ -853,8 +863,10 @@ export async function loadPersistedTranscript(sessionId: string): Promise<Transc
     if (data === null) {
       data = await activeImpl.loadSession(sessionId);
     }
-    if (loadEpoch !== persistedSessionCacheEpoch) continue;
+    const stable = loadToken === persistedSessionFreshnessToken(sessionId);
+    if (!stable && attempt + 1 < MAX_FRESH_READ_ATTEMPTS) continue;
     if (data === null) return null;
+    if (!stable) return data;
     transcriptCache.set(sessionId, data);
     while (transcriptCache.size > LOAD_CACHE_MAX) {
       const oldestKey = transcriptCache.keys().next().value;
@@ -863,6 +875,7 @@ export async function loadPersistedTranscript(sessionId: string): Promise<Transc
     }
     return data;
   }
+  throw new Error(`Persisted transcript read exhausted its bounded attempts for ${sessionId}.`);
 }
 
 type TranscriptSelectorEntry = {
@@ -1023,7 +1036,6 @@ function extractPromptText(content: unknown): string {
 
 /** Mutator 调用——deletePersistedSession / fork / rewind 后清对应缓存项。*/
 export function invalidatePersistedSessionCache(sessionId: string): void {
-  persistedSessionCacheEpoch += 1;
   persistedSessionGenerationById.set(
     sessionId,
     (persistedSessionGenerationById.get(sessionId) ?? 0) + 1,
@@ -1036,7 +1048,6 @@ export function invalidatePersistedSessionCache(sessionId: string): void {
 
 /** 测试 / setStorageImpl 注入 mock 后清整张缓存。*/
 export function clearPersistedSessionCache(): void {
-  persistedSessionCacheEpoch += 1;
   persistedSessionCacheGeneration += 1;
   persistedSessionGenerationById.clear();
   loadCache.clear();

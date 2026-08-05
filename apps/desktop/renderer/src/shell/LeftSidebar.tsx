@@ -42,13 +42,12 @@ import type { Project } from '@kodax-space/space-ipc-schema';
 import { useI18n } from '../i18n/I18nProvider.js';
 import { invokeWithTimeout } from '../lib/ipcInvokeWithTimeout.js';
 import { runningPeerAction } from './runningPeerAction.js';
-
-type SessionLoadPhase = 'loading' | 'loaded' | 'error';
-type SessionLoadStateByScope = Readonly<Record<string, SessionLoadPhase | undefined>>;
-
-function sessionLoadScopeKey(projectRoot: string, surface: string): string {
-  return `${surface}:${canonProjectRootBrowser(projectRoot)}`;
-}
+import {
+  sessionLoadScopeKey,
+  unloadedProjectSessionRoots,
+  type SessionLoadPhase,
+  type SessionLoadStateByScope,
+} from './sidebarSessionLoading.js';
 
 interface LeftSidebarProps {
   /** 2026-06: 动态宽度（px）。Shell 拖 ResizeHandle 实时改这个值。 */
@@ -126,17 +125,13 @@ export function LeftSidebar({
     const candidates = [currentProjectPath, ...projects.map((project) => project.path)].filter(
       (projectPath): projectPath is string => projectPath !== null,
     );
-    const roots = [
-      ...new Map(
-        candidates.map((projectPath) => [canonProjectRootBrowser(projectPath), projectPath]),
-      ).values(),
-    ];
+    const roots = unloadedProjectSessionRoots(candidates, currentSurface, sessionLoadStateByScope);
     if (roots.length === 0) return;
 
     // Each project lands independently. A slow project must not keep every other
     // project looking empty while an aggregate Promise waits for the tail.
     for (const projectRoot of roots) void loadProjectSessions(projectRoot);
-  }, [currentProjectPath, loadProjectSessions, projects]);
+  }, [currentProjectPath, currentSurface, loadProjectSessions, projects, sessionLoadStateByScope]);
 
   /**
    * + New session：统一首页与新建。不再急建空 session（那会跳进零消息空白对话页，

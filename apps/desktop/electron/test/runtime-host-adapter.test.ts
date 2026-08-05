@@ -10,6 +10,7 @@ import type {
   RuntimeRunHandle,
   RuntimeRunResult,
   RuntimeSession,
+  RuntimeSessionSettings,
   RuntimeSessionStatus,
 } from '@kodax-ai/kodax/runtime';
 import type { AgentEvent, AgentTreeSnapshot } from '@kodax-ai/kodax/agent';
@@ -1647,7 +1648,11 @@ test('runtime selection attaches one Coder daemon with stable identity and requi
     'runtime',
   );
   assert.equal((await adapter.preflightDaemonStop()).canStop, true);
-  assert.equal(fake.calls.daemonInspections, 2);
+  assert.equal(
+    fake.calls.daemonInspections,
+    1,
+    'profile refresh must not inspect management state',
+  );
 });
 
 test('integration health polling projects daemon watcher changes without reconnecting Coder', async () => {
@@ -1674,7 +1679,9 @@ test('integration health polling projects daemon watcher changes without reconne
   });
 
   await adapter.initialize();
-  assert.equal(controller.profileSnapshot().connection.integrations?.state, 'healthy');
+  await waitForTest(
+    () => controller.profileSnapshot().connection.integrations?.state === 'healthy',
+  );
   fake.setIntegrationHealth({
     state: 'degraded',
     domains: [
@@ -1746,6 +1753,62 @@ test('integration health polling projects daemon watcher changes without reconne
   await adapter.close();
 });
 
+test('a stuck integration inspection from a retired Runtime does not block the replacement', async () => {
+  const retired = createFakeRuntime();
+  const replacement = createFakeRuntime();
+  retired.runtime.daemon.inspect = () => {
+    retired.calls.daemonInspections += 1;
+    return new Promise<RuntimeDaemonManagementState>(() => undefined);
+  };
+  replacement.setIntegrationHealth({
+    state: 'degraded',
+    domains: [
+      {
+        domain: 'mcp',
+        path: 'C:\\Users\\test\\.kodax\\integrations\\mcp.json',
+        source: 'user',
+        watching: true,
+        diagnostic: {
+          code: 'watcher-degraded',
+          message: 'replacement Runtime health',
+          time: '2026-08-05T01:02:03.000Z',
+        },
+      },
+    ],
+  });
+  const controller = new RuntimeProjectionController(
+    createPendingSdkRuntimeProjection(100).profileSnapshot(),
+  );
+  let runtimeFactoryCalls = 0;
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () =>
+      runtimeFactoryCalls++ === 0 ? retired.runtime : replacement.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    projectionController: controller,
+    integrationHealthPollMs: 5,
+  });
+
+  await adapter.initialize();
+  await waitForTest(() => retired.calls.daemonInspections === 1);
+  retired.disconnect(true);
+  await waitForTest(() => adapter.snapshot().state === 'uninitialized');
+  await adapter.initialize();
+
+  await waitForTest(
+    () =>
+      replacement.calls.daemonInspections > 0 &&
+      controller.profileSnapshot().connection.integrations?.state === 'degraded',
+  );
+  assert.equal(
+    controller.profileSnapshot().connection.integrations?.domains[0]?.diagnostic?.message,
+    'replacement Runtime health',
+  );
+  await adapter.close();
+});
+
 test('runtime custom provider catalog methods proxy through the connected daemon', async () => {
   const fake = createFakeRuntime();
   const adapter = new RuntimeHostAdapter({
@@ -1798,22 +1861,20 @@ test('a late Runtime-ready observer receives the current authoritative generatio
 
 test('Runtime disconnect during startup warm-up cannot publish a false ready generation', async () => {
   const fake = createFakeRuntime();
-  const daemon = fake.runtime.daemon as unknown as {
-    inspect: () => Promise<RuntimeDaemonManagementState>;
-  };
-  const inspect = daemon.inspect.bind(daemon);
-  let signalInspectStarted!: () => void;
-  const inspectStarted = new Promise<void>((resolve) => {
-    signalInspectStarted = resolve;
+  const status = fake.runtime.status;
+  const snapshot = status.snapshot.bind(status);
+  let signalSnapshotStarted!: () => void;
+  const snapshotStarted = new Promise<void>((resolve) => {
+    signalSnapshotStarted = resolve;
   });
-  let releaseInspect!: () => void;
-  const inspectRelease = new Promise<void>((resolve) => {
-    releaseInspect = resolve;
+  let releaseSnapshot!: () => void;
+  const snapshotRelease = new Promise<void>((resolve) => {
+    releaseSnapshot = resolve;
   });
-  daemon.inspect = async () => {
-    const result = await inspect();
-    signalInspectStarted();
-    await inspectRelease;
+  status.snapshot = async () => {
+    const result = await snapshot();
+    signalSnapshotStarted();
+    await snapshotRelease;
     return result;
   };
   const adapter = new RuntimeHostAdapter({
@@ -1829,10 +1890,10 @@ test('Runtime disconnect during startup warm-up cannot publish a false ready gen
   });
 
   const initialization = adapter.initialize();
-  await inspectStarted;
+  await snapshotStarted;
   assert.equal(adapter.snapshot().state, 'ready');
   fake.disconnect(false);
-  releaseInspect();
+  releaseSnapshot();
 
   await assert.rejects(initialization, /authority changed/i);
   await new Promise<void>((resolve) => setImmediate(resolve));
@@ -1852,22 +1913,20 @@ test('Runtime reconnect warm-up cannot self-await while restoring desired observ
     fake.settings.set(sessionId, { revision: 0, value: {} });
   }
 
-  const secondDaemon = second.runtime.daemon as unknown as {
-    inspect: () => Promise<RuntimeDaemonManagementState>;
-  };
-  const inspect = secondDaemon.inspect.bind(secondDaemon);
-  let signalInspectStarted!: () => void;
-  const inspectStarted = new Promise<void>((resolve) => {
-    signalInspectStarted = resolve;
+  const secondStatus = second.runtime.status;
+  const snapshot = secondStatus.snapshot.bind(secondStatus);
+  let signalSnapshotStarted!: () => void;
+  const snapshotStarted = new Promise<void>((resolve) => {
+    signalSnapshotStarted = resolve;
   });
-  let releaseInspect!: () => void;
-  const inspectRelease = new Promise<void>((resolve) => {
-    releaseInspect = resolve;
+  let releaseSnapshot!: () => void;
+  const snapshotRelease = new Promise<void>((resolve) => {
+    releaseSnapshot = resolve;
   });
-  secondDaemon.inspect = async () => {
-    const result = await inspect();
-    signalInspectStarted();
-    await inspectRelease;
+  secondStatus.snapshot = async () => {
+    const result = await snapshot();
+    signalSnapshotStarted();
+    await snapshotRelease;
     return result;
   };
 
@@ -1892,10 +1951,10 @@ test('Runtime reconnect warm-up cannot self-await while restoring desired observ
   await waitForTest(() => adapter.snapshot().state === 'uninitialized');
 
   const reconnect = adapter.initialize();
-  await inspectStarted;
+  await snapshotStarted;
   assert.equal(adapter.snapshot().state, 'ready');
   second.disconnect();
-  releaseInspect();
+  releaseSnapshot();
 
   let reconnectTimeout: NodeJS.Timeout | undefined;
   const reconnectOutcome = await Promise.race([
@@ -1918,7 +1977,865 @@ test('Runtime reconnect warm-up cannot self-await while restoring desired observ
   await adapter.initialize();
   assert.equal(adapter.hasReadyRuntime(), true);
   assert.equal(factoryCalls, 3);
-  assert.deepEqual(third.calls.observed, [sessionId]);
+  await waitForTest(() => third.calls.observationCloses >= 1);
+  await adapter.close();
+});
+
+test('reconnect publishes core readiness before restoring a gated desired observation', async () => {
+  const first = createFakeRuntime();
+  const second = createFakeRuntime();
+  const observedSessionId = 's_reconnect_background_observation';
+  const historySessionId = 's_reconnect_history';
+  for (const fake of [first, second]) {
+    fake.sessions.add(observedSessionId);
+    fake.sessions.add(historySessionId);
+  }
+  const originalObserve = second.runtime.sessions.observe.bind(second.runtime.sessions);
+  let signalObserveStarted!: () => void;
+  const observeStarted = new Promise<void>((resolve) => {
+    signalObserveStarted = resolve;
+  });
+  let releaseObserve!: () => void;
+  const observeRelease = new Promise<void>((resolve) => {
+    releaseObserve = resolve;
+  });
+  second.runtime.sessions.observe = async (...args) => {
+    if (args[0] === observedSessionId) {
+      signalObserveStarted();
+      await observeRelease;
+    }
+    return originalObserve(...args);
+  };
+  let factoryCalls = 0;
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => (factoryCalls++ === 0 ? first.runtime : second.runtime),
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  await adapter.initialize();
+  await adapter.ensureObserved(observedSessionId);
+  first.disconnect();
+  await waitForTest(() => adapter.snapshot().state === 'uninitialized');
+  await adapter.initialize();
+  await observeStarted;
+  try {
+    const history = await Promise.race([
+      adapter.conversationHistoryPage({ sessionId: historySessionId }),
+      new Promise<never>((_resolve, reject) => {
+        setTimeout(() => reject(new Error('history waited for desired observation restore')), 250);
+      }),
+    ]);
+    assert.equal(history.outcome, 'ready');
+  } finally {
+    releaseObserve();
+    await waitForTest(() => second.calls.observationCloses >= 1);
+    await adapter.close();
+  }
+});
+
+test('foreground live snapshot overtakes desired observations not yet restoring after reconnect', async () => {
+  const first = createFakeRuntime();
+  const second = createFakeRuntime();
+  const backgroundSessionIds = [
+    's_reconnect_background_one',
+    's_reconnect_background_two',
+    's_reconnect_background_three',
+  ];
+  const foregroundSessionId = 's_reconnect_foreground';
+  for (const fake of [first, second]) {
+    for (const sessionId of [...backgroundSessionIds, foregroundSessionId]) {
+      fake.sessions.add(sessionId);
+    }
+  }
+
+  const originalObserve = second.runtime.sessions.observe.bind(second.runtime.sessions);
+  const started: string[] = [];
+  let activeObservations = 0;
+  let maxActiveObservations = 0;
+  let signalHeadStarted!: () => void;
+  const headStarted = new Promise<void>((resolve) => {
+    signalHeadStarted = resolve;
+  });
+  let releaseHead!: () => void;
+  const headGate = new Promise<void>((resolve) => {
+    releaseHead = resolve;
+  });
+  let releaseTail!: () => void;
+  const tailGate = new Promise<void>((resolve) => {
+    releaseTail = resolve;
+  });
+  second.runtime.sessions.observe = async (...args: Parameters<typeof originalObserve>) => {
+    const sessionId = args[0];
+    started.push(sessionId);
+    activeObservations += 1;
+    maxActiveObservations = Math.max(maxActiveObservations, activeObservations);
+    try {
+      if (sessionId === backgroundSessionIds[0]) {
+        signalHeadStarted();
+        await headGate;
+      } else if (backgroundSessionIds.slice(1).includes(sessionId)) {
+        await tailGate;
+      }
+      return await originalObserve(...args);
+    } finally {
+      activeObservations -= 1;
+    }
+  };
+
+  let factoryCalls = 0;
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => (factoryCalls++ === 0 ? first.runtime : second.runtime),
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  await adapter.initialize();
+  for (const sessionId of [...backgroundSessionIds, foregroundSessionId]) {
+    await adapter.ensureObserved(sessionId);
+  }
+  first.disconnect();
+  await waitForTest(() => adapter.snapshot().state === 'uninitialized');
+  await adapter.initialize();
+  await headStarted;
+
+  const foreground = adapter.readSessionLiveSnapshot(foregroundSessionId);
+  await new Promise<void>((resolve) => setTimeout(resolve, 25));
+  releaseHead();
+  try {
+    const snapshot = await Promise.race([
+      foreground,
+      new Promise<never>((_resolve, reject) => {
+        setTimeout(() => reject(new Error('foreground live snapshot waited behind recovery')), 250);
+      }),
+    ]);
+    assert.equal(snapshot.sessionId, foregroundSessionId);
+    assert.deepEqual(started.slice(0, 2), [backgroundSessionIds[0], foregroundSessionId]);
+    assert.equal(maxActiveObservations, 1);
+  } finally {
+    releaseTail();
+    await waitForTest(() => started.length >= backgroundSessionIds.length + 1);
+    assert.equal(
+      started.filter((sessionId) => sessionId === foregroundSessionId).length,
+      1,
+      'the background pump must skip a desired Session already restored in the foreground',
+    );
+    await adapter.close();
+  }
+});
+
+test('background profile refresh bursts coalesce to one in-flight and one trailing read', async () => {
+  const fake = createFakeRuntime();
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+  await adapter.initialize();
+
+  const originalSnapshot = fake.runtime.status.snapshot.bind(fake.runtime.status);
+  let reads = 0;
+  let signalFirstStarted!: () => void;
+  const firstStarted = new Promise<void>((resolve) => {
+    signalFirstStarted = resolve;
+  });
+  let releaseFirst!: () => void;
+  const firstGate = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  fake.runtime.status.snapshot = async () => {
+    reads += 1;
+    if (reads === 1) {
+      signalFirstStarted();
+      await firstGate;
+    }
+    return originalSnapshot();
+  };
+  const schedule = (
+    adapter as unknown as { scheduleProfileRefresh(cursor: number): void }
+  ).scheduleProfileRefresh.bind(adapter);
+
+  schedule(1);
+  await firstStarted;
+  for (let cursor = 2; cursor <= 20; cursor += 1) schedule(cursor);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(reads, 1);
+
+  releaseFirst();
+  await waitForTest(() => reads >= 2);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(reads, 2);
+  await adapter.close();
+});
+
+test('background profile refresh retains a trailing request when the in-flight read fails', async () => {
+  const fake = createFakeRuntime();
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+  await adapter.initialize();
+
+  const originalSnapshot = fake.runtime.status.snapshot.bind(fake.runtime.status);
+  let reads = 0;
+  let signalFirstStarted!: () => void;
+  const firstStarted = new Promise<void>((resolve) => {
+    signalFirstStarted = resolve;
+  });
+  let releaseFirst!: () => void;
+  const firstGate = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  fake.runtime.status.snapshot = async () => {
+    reads += 1;
+    if (reads === 1) {
+      signalFirstStarted();
+      await firstGate;
+      throw new Error('first background profile read failed');
+    }
+    return originalSnapshot();
+  };
+  const schedule = (
+    adapter as unknown as { scheduleProfileRefresh(cursor: number): void }
+  ).scheduleProfileRefresh.bind(adapter);
+
+  schedule(1);
+  await firstStarted;
+  schedule(2);
+  releaseFirst();
+  await waitForTest(() => reads >= 2);
+  assert.equal(reads, 2);
+  await adapter.close();
+});
+
+test('known credential recovery cannot hold Runtime readiness or history', async () => {
+  const fake = createFakeRuntime('rt_known_credential_background');
+  fake.sessions.add('s_known_credential_history');
+  let signalResumeStarted!: () => void;
+  const resumeStarted = new Promise<void>((resolve) => {
+    signalResumeStarted = resolve;
+  });
+  let releaseResume!: () => void;
+  const resumeRelease = new Promise<void>((resolve) => {
+    releaseResume = resolve;
+  });
+  fake.runtime.credentials.resume = async (leaseId) => {
+    signalResumeStarted();
+    await resumeRelease;
+    return { id: leaseId, providers: [] };
+  };
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+  (
+    adapter as unknown as {
+      credentialLeases: Map<string, unknown>;
+    }
+  ).credentialLeases.set('credential_known_background', {
+    leaseId: 'credential_known_background',
+    provider: 'mock',
+    sessionId: 's_known_credential_history',
+    runBinding: {},
+    broker: async () => undefined,
+  });
+
+  const initializing = adapter.initialize();
+  try {
+    await resumeStarted;
+    await Promise.race([
+      initializing,
+      new Promise<never>((_resolve, reject) => {
+        setTimeout(
+          () => reject(new Error('Runtime readiness waited for credential recovery')),
+          250,
+        );
+      }),
+    ]);
+    const history = await Promise.race([
+      adapter.conversationHistoryPage({ sessionId: 's_known_credential_history' }),
+      new Promise<never>((_resolve, reject) => {
+        setTimeout(() => reject(new Error('history waited for credential recovery')), 250);
+      }),
+    ]);
+    assert.equal(history.outcome, 'ready');
+  } finally {
+    releaseResume();
+    await initializing.catch(() => undefined);
+    await adapter.close();
+  }
+});
+
+test('one post-attach binding stall cannot serialize other desired Session restores', async () => {
+  const first = createFakeRuntime('rt_restore_first');
+  const second = createFakeRuntime('rt_restore_second');
+  const blockerId = 's_restore_binding_blocker';
+  const followerId = 's_restore_binding_follower';
+  for (const fake of [first, second]) {
+    fake.sessions.add(blockerId);
+    fake.sessions.add(followerId);
+  }
+  const originalObserve = second.runtime.sessions.observe.bind(second.runtime.sessions);
+  second.runtime.sessions.observe = async (...args) => {
+    const observation = await originalObserve(...args);
+    if (args[0] !== blockerId) return observation;
+    return {
+      ...observation,
+      snapshot: {
+        ...observation.snapshot,
+        runs: [
+          {
+            runId: 'run_restore_binding_blocker',
+            sessionId: blockerId,
+            phase: 'running' as const,
+            provider: 'mock',
+            mode: 'managed_task' as const,
+            startedAt: '2026-08-05T12:00:00.000Z',
+            requirements: {
+              credential: {
+                leaseId: 'credential_restore_blocker',
+                provider: 'mock',
+                state: 'ready' as const,
+              },
+            },
+          },
+        ],
+      },
+    };
+  };
+  const originalResume = second.runtime.credentials.resume.bind(second.runtime.credentials);
+  let signalResumeStarted!: () => void;
+  const resumeStarted = new Promise<void>((resolve) => {
+    signalResumeStarted = resolve;
+  });
+  let releaseResume!: () => void;
+  const resumeRelease = new Promise<void>((resolve) => {
+    releaseResume = resolve;
+  });
+  second.runtime.credentials.resume = async (...args) => {
+    if (args[0] === 'credential_restore_blocker') {
+      signalResumeStarted();
+      await resumeRelease;
+    }
+    return originalResume(...args);
+  };
+  let factoryCalls = 0;
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => (factoryCalls++ === 0 ? first.runtime : second.runtime),
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  await adapter.initialize();
+  await adapter.ensureObserved(blockerId);
+  await adapter.ensureObserved(followerId);
+  first.disconnect();
+  await waitForTest(() => adapter.snapshot().state === 'uninitialized');
+  await adapter.initialize();
+  await resumeStarted;
+  try {
+    const follower = await Promise.race([
+      adapter.readSessionLiveSnapshot(followerId),
+      new Promise<never>((_resolve, reject) => {
+        setTimeout(
+          () => reject(new Error('follower live snapshot waited for blocker binding')),
+          250,
+        );
+      }),
+    ]);
+    assert.equal(follower.sessionId, followerId);
+  } finally {
+    releaseResume();
+    await adapter.close();
+  }
+});
+
+test('snapshot binding recovery cannot hold its own core live projection', async () => {
+  const fake = createFakeRuntime('rt_snapshot_binding_background');
+  const sessionId = 's_snapshot_binding_background';
+  fake.sessions.add(sessionId);
+  const originalObserve = fake.runtime.sessions.observe.bind(fake.runtime.sessions);
+  fake.runtime.sessions.observe = async (...args) => {
+    const observation = await originalObserve(...args);
+    return {
+      ...observation,
+      snapshot: {
+        ...observation.snapshot,
+        runs: [
+          {
+            runId: 'run_snapshot_binding_background',
+            sessionId,
+            phase: 'running' as const,
+            provider: 'mock',
+            mode: 'managed_task' as const,
+            startedAt: '2026-08-05T12:00:00.000Z',
+            requirements: {
+              credential: {
+                leaseId: 'credential_snapshot_binding_background',
+                provider: 'mock',
+                state: 'ready' as const,
+              },
+            },
+          },
+        ],
+      },
+    };
+  };
+  let signalResumeStarted!: () => void;
+  const resumeStarted = new Promise<void>((resolve) => {
+    signalResumeStarted = resolve;
+  });
+  let releaseResume!: () => void;
+  const resumeRelease = new Promise<void>((resolve) => {
+    releaseResume = resolve;
+  });
+  fake.runtime.credentials.resume = async (leaseId) => {
+    signalResumeStarted();
+    await resumeRelease;
+    return { id: leaseId, providers: [] };
+  };
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  await adapter.initialize();
+  const opening = adapter.readSessionLiveSnapshot(sessionId);
+  try {
+    await resumeStarted;
+    const snapshot = await Promise.race([
+      opening,
+      new Promise<never>((_resolve, reject) => {
+        setTimeout(() => reject(new Error('live projection waited for snapshot binding')), 250);
+      }),
+    ]);
+    assert.equal(snapshot.activeRun?.runId, 'run_snapshot_binding_background');
+  } finally {
+    releaseResume();
+    await opening.catch(() => undefined);
+    await adapter.close();
+  }
+});
+
+test('terminal evidence fences a late same-Runtime snapshot binding', async () => {
+  const fake = createFakeRuntime('rt_terminal_binding_fence');
+  const sessionId = 's_terminal_binding_fence';
+  const runId = 'run_terminal_binding_fence';
+  const leaseId = 'credential_terminal_binding_fence';
+  fake.sessions.add(sessionId);
+  const originalObserve = fake.runtime.sessions.observe.bind(fake.runtime.sessions);
+  fake.runtime.sessions.observe = async (...args) => {
+    const observation = await originalObserve(...args);
+    return {
+      ...observation,
+      snapshot: {
+        ...observation.snapshot,
+        runs: [
+          {
+            runId,
+            sessionId,
+            phase: 'running' as const,
+            provider: 'mock',
+            mode: 'managed_task' as const,
+            startedAt: '2026-08-05T12:00:00.000Z',
+            requirements: {
+              credential: {
+                leaseId,
+                provider: 'mock',
+                state: 'ready' as const,
+              },
+            },
+          },
+        ],
+      },
+    };
+  };
+  const originalResume = fake.runtime.credentials.resume.bind(fake.runtime.credentials);
+  let signalResumeStarted!: () => void;
+  const resumeStarted = new Promise<void>((resolve) => {
+    signalResumeStarted = resolve;
+  });
+  let releaseResume!: () => void;
+  const resumeRelease = new Promise<void>((resolve) => {
+    releaseResume = resolve;
+  });
+  fake.runtime.credentials.resume = async (...args) => {
+    signalResumeStarted();
+    await resumeRelease;
+    return originalResume(...args);
+  };
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  await adapter.initialize();
+  assert.equal((await adapter.readSessionLiveSnapshot(sessionId)).activeRun?.runId, runId);
+  await resumeStarted;
+  fake.emit({
+    id: 'event_terminal_binding_fence',
+    seq: 1,
+    time: '2026-08-05T12:00:01.000Z',
+    type: 'run.completed',
+    sessionId,
+    runId,
+    payload: {
+      runId,
+      sessionId,
+      phase: 'completed',
+      provider: 'mock',
+      mode: 'managed_task',
+      startedAt: '2026-08-05T12:00:00.000Z',
+      endedAt: '2026-08-05T12:00:01.000Z',
+    },
+  });
+  releaseResume();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  const credentialLeases = (
+    adapter as unknown as {
+      credentialLeases: Map<string, unknown>;
+    }
+  ).credentialLeases;
+  assert.equal(credentialLeases.has(leaseId), false);
+  await adapter.close();
+});
+
+test('queued terminal evidence fences a late same-Runtime snapshot binding', async () => {
+  const fake = createFakeRuntime('rt_queued_terminal_binding_fence');
+  const sessionId = 's_queued_terminal_binding_fence';
+  const runId = 'run_queued_terminal_binding_fence';
+  const leaseId = 'credential_queued_terminal_binding_fence';
+  fake.sessions.add(sessionId);
+  const originalObserve = fake.runtime.sessions.observe.bind(fake.runtime.sessions);
+  fake.runtime.sessions.observe = async (...args) => {
+    const observation = await originalObserve(...args);
+    return {
+      ...observation,
+      snapshot: {
+        ...observation.snapshot,
+        runs: [
+          {
+            runId,
+            sessionId,
+            phase: 'queued' as const,
+            provider: 'mock',
+            mode: 'managed_task' as const,
+            startedAt: '2026-08-05T12:00:00.000Z',
+            requirements: {
+              credential: {
+                leaseId,
+                provider: 'mock',
+                state: 'ready' as const,
+              },
+            },
+          },
+        ],
+      },
+    };
+  };
+  let signalResumeStarted!: () => void;
+  const resumeStarted = new Promise<void>((resolve) => {
+    signalResumeStarted = resolve;
+  });
+  let releaseResume!: () => void;
+  const resumeRelease = new Promise<void>((resolve) => {
+    releaseResume = resolve;
+  });
+  fake.runtime.credentials.resume = async (leaseIdToResume) => {
+    signalResumeStarted();
+    await resumeRelease;
+    return { id: leaseIdToResume, providers: [] };
+  };
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  await adapter.initialize();
+  assert.deepEqual(
+    (await adapter.readSessionLiveSnapshot(sessionId)).queuedRuns.map((run) => run.runId),
+    [runId],
+  );
+  await resumeStarted;
+  fake.emit({
+    id: 'event_queued_terminal_binding_fence',
+    seq: 1,
+    time: '2026-08-05T12:00:01.000Z',
+    type: 'run.cancelled',
+    sessionId,
+    runId,
+    payload: {
+      runId,
+      sessionId,
+      phase: 'cancelled',
+      provider: 'mock',
+      mode: 'managed_task',
+      startedAt: '2026-08-05T12:00:00.000Z',
+      endedAt: '2026-08-05T12:00:01.000Z',
+    },
+  });
+  releaseResume();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  const credentialLeases = (
+    adapter as unknown as {
+      credentialLeases: Map<string, unknown>;
+    }
+  ).credentialLeases;
+  assert.equal(credentialLeases.has(leaseId), false);
+  await adapter.close();
+});
+
+test('same-runtime-id reconnect restores an active live projection', async () => {
+  const first = createFakeRuntime('rt_stable_reconnect');
+  const second = createFakeRuntime('rt_stable_reconnect');
+  const sessionId = 's_stable_reconnect';
+  first.sessions.add(sessionId);
+  second.sessions.add(sessionId);
+  const secondObserve = second.runtime.sessions.observe.bind(second.runtime.sessions);
+  second.runtime.sessions.observe = async (...args) => {
+    const observation = await secondObserve(...args);
+    return {
+      ...observation,
+      snapshot: {
+        ...observation.snapshot,
+        runs: [
+          {
+            runId: 'run_stable_reconnect',
+            sessionId,
+            phase: 'running' as const,
+            provider: 'mock',
+            mode: 'managed_task' as const,
+            startedAt: '2026-08-05T12:00:00.000Z',
+          },
+        ],
+      },
+    };
+  };
+  const controller = new RuntimeProjectionController(
+    createPendingSdkRuntimeProjection(100).profileSnapshot(),
+  );
+  let factoryCalls = 0;
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => (factoryCalls++ === 0 ? first.runtime : second.runtime),
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    projectionController: controller,
+  });
+
+  await adapter.initialize();
+  await adapter.ensureObserved(sessionId);
+  first.disconnect();
+  await waitForTest(() => adapter.snapshot().state === 'uninitialized');
+  await adapter.initialize();
+  await waitForTest(() => {
+    try {
+      return controller.sessionLiveSnapshot(sessionId).activeRun?.runId === 'run_stable_reconnect';
+    } catch {
+      return false;
+    }
+  });
+  assert.equal(controller.sessionLiveSnapshot(sessionId).cursor.runtimeId, 'rt_stable_reconnect');
+  await adapter.close();
+});
+
+test('a stale missing Session result cannot cancel the replacement Runtime restore', async () => {
+  const first = createFakeRuntime('rt_stale_missing_first');
+  const retired = createFakeRuntime('rt_stale_missing_retired');
+  const replacement = createFakeRuntime('rt_stale_missing_replacement');
+  const sessionId = 's_stale_missing_restore';
+  first.sessions.add(sessionId);
+  replacement.sessions.add(sessionId);
+
+  const retiredObserve = retired.runtime.sessions.observe.bind(retired.runtime.sessions);
+  let signalRetiredStarted!: () => void;
+  const retiredStarted = new Promise<void>((resolve) => {
+    signalRetiredStarted = resolve;
+  });
+  let releaseRetired!: () => void;
+  const retiredRelease = new Promise<void>((resolve) => {
+    releaseRetired = resolve;
+  });
+  retired.runtime.sessions.observe = async (...args) => {
+    if (args[0] === sessionId) {
+      signalRetiredStarted();
+      await retiredRelease;
+    }
+    return retiredObserve(...args);
+  };
+
+  const replacementObserve = replacement.runtime.sessions.observe.bind(
+    replacement.runtime.sessions,
+  );
+  let signalReplacementStarted!: () => void;
+  const replacementStarted = new Promise<void>((resolve) => {
+    signalReplacementStarted = resolve;
+  });
+  let releaseReplacement!: () => void;
+  const replacementRelease = new Promise<void>((resolve) => {
+    releaseReplacement = resolve;
+  });
+  replacement.runtime.sessions.observe = async (...args) => {
+    const observation = await replacementObserve(...args);
+    if (args[0] !== sessionId) return observation;
+    signalReplacementStarted();
+    await replacementRelease;
+    return {
+      ...observation,
+      snapshot: {
+        ...observation.snapshot,
+        runs: [
+          {
+            runId: 'run_stale_missing_replacement',
+            sessionId,
+            phase: 'running' as const,
+            provider: 'mock',
+            mode: 'managed_task' as const,
+            startedAt: '2026-08-05T12:00:00.000Z',
+          },
+        ],
+      },
+    };
+  };
+
+  let factoryCalls = 0;
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => {
+      factoryCalls += 1;
+      if (factoryCalls === 1) return first.runtime;
+      if (factoryCalls === 2) return retired.runtime;
+      return replacement.runtime;
+    },
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  await adapter.initialize();
+  await adapter.ensureObserved(sessionId);
+  first.disconnect();
+  await waitForTest(() => adapter.snapshot().state === 'uninitialized');
+  await adapter.initialize();
+  await retiredStarted;
+
+  retired.disconnect();
+  await waitForTest(() => adapter.snapshot().state === 'uninitialized');
+  await adapter.initialize();
+  await replacementStarted;
+  releaseRetired();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  releaseReplacement();
+
+  const observations = (
+    adapter as unknown as {
+      observations: Map<string, unknown>;
+    }
+  ).observations;
+  await waitForTest(() => observations.has(sessionId));
+  await adapter.close();
+});
+
+test('a retired Runtime cannot install credential bindings after observation attach', async () => {
+  const first = createFakeRuntime('rt_retired_binding_first');
+  const second = createFakeRuntime('rt_retired_binding_second');
+  const sessionId = 's_retired_binding';
+  first.sessions.add(sessionId);
+  second.sessions.add(sessionId);
+
+  const originalObserve = first.runtime.sessions.observe.bind(first.runtime.sessions);
+  first.runtime.sessions.observe = async (...args) => {
+    const observation = await originalObserve(...args);
+    return {
+      ...observation,
+      snapshot: {
+        ...observation.snapshot,
+        runs: [
+          {
+            runId: 'run_retired_binding',
+            sessionId,
+            phase: 'running' as const,
+            provider: 'mock',
+            mode: 'managed_task' as const,
+            startedAt: '2026-08-05T12:00:00.000Z',
+            requirements: {
+              credential: {
+                leaseId: 'credential_retired_binding',
+                provider: 'mock',
+                state: 'ready' as const,
+              },
+            },
+          },
+        ],
+      },
+    };
+  };
+  const originalResume = first.runtime.credentials.resume.bind(first.runtime.credentials);
+  let signalResumeStarted!: () => void;
+  const resumeStarted = new Promise<void>((resolve) => {
+    signalResumeStarted = resolve;
+  });
+  let releaseResume!: () => void;
+  const resumeRelease = new Promise<void>((resolve) => {
+    releaseResume = resolve;
+  });
+  first.runtime.credentials.resume = async (...args) => {
+    signalResumeStarted();
+    await resumeRelease;
+    return originalResume(...args);
+  };
+
+  let factoryCalls = 0;
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => (factoryCalls++ === 0 ? first.runtime : second.runtime),
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  await adapter.initialize();
+  const opening = adapter.readSessionLiveSnapshot(sessionId);
+  assert.equal((await opening).activeRun?.runId, 'run_retired_binding');
+  await resumeStarted;
+  first.disconnect();
+  await waitForTest(() => adapter.snapshot().state === 'uninitialized');
+  await adapter.initialize();
+  releaseResume();
+
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const credentialLeases = (
+    adapter as unknown as {
+      credentialLeases: Map<string, unknown>;
+    }
+  ).credentialLeases;
+  assert.equal(credentialLeases.has('credential_retired_binding'), false);
   await adapter.close();
 });
 
@@ -3468,7 +4385,7 @@ test('bounded conversation page does not traverse older history and fences conti
   await adapter.close();
 });
 
-test('bounded conversation paging revalidates Coder ownership after a Partner retag', async () => {
+test('bounded conversation paging rejects an idle Partner retag without a profile refresh', async () => {
   const sessionId = 's_history_retag';
   const records = new Map<string, Readonly<Record<string, unknown>>>([
     [sessionId, { title: '', messages: [], gitRoot: 'C:\\repo', tag: 'code' }],
@@ -3476,12 +4393,6 @@ test('bounded conversation paging revalidates Coder ownership after a Partner re
   installPersistedSessionLookup(records);
   const fake = createFakeRuntime();
   fake.sessions.add(sessionId);
-  const originalStatusSnapshot = fake.runtime.status.snapshot.bind(fake.runtime.status);
-  let runtimeReportsPartner = false;
-  fake.runtime.status.snapshot = async () => {
-    const snapshot = await originalStatusSnapshot();
-    return runtimeReportsPartner ? { ...snapshot, sessions: [] } : snapshot;
-  };
   let pageReads = 0;
   Object.assign(fake.runtime.sessions, {
     conversationPage: async () => {
@@ -3502,7 +4413,6 @@ test('bounded conversation paging revalidates Coder ownership after a Partner re
     page: null,
   });
   records.set(sessionId, { title: '', messages: [], gitRoot: 'C:\\repo', tag: 'partner' });
-  runtimeReportsPartner = true;
   invalidatePersistedSessionCache(sessionId);
 
   await assert.rejects(
@@ -4914,6 +5824,7 @@ test('live snapshot reconciliation uses fresh Runtime ownership without crossing
     (await adapter.readSessionLiveSnapshot('s_cached_snapshot')).sessionId,
     's_cached_snapshot',
   );
+  persistedReads = 0;
   invalidatePersistedSessionCache('s_cached_snapshot');
   for (let index = 0; index < 100; index += 1) {
     assert.equal(
@@ -4927,7 +5838,7 @@ test('live snapshot reconciliation uses fresh Runtime ownership without crossing
   await adapter.close();
 });
 
-test('live ownership reconciliation performs one Runtime read while persisted history keeps changing', async () => {
+test('live ownership reconciliation stays on cached Runtime membership while history changes', async () => {
   setSessionStoreImpl({
     listSessions: async () => [],
     forkSession: async () => null,
@@ -4970,7 +5881,312 @@ test('live ownership reconciliation performs one Runtime read while persisted hi
     (await adapter.readSessionLiveSnapshot('s_streaming_ownership')).sessionId,
     's_streaming_ownership',
   );
-  assert.equal(statusReads, 1, 'one request must not wait for a streaming JSONL file to quiesce');
+  assert.equal(
+    statusReads,
+    0,
+    'live recovery must reuse cached Runtime membership instead of refreshing the global profile',
+  );
+  await adapter.close();
+});
+
+test('active Runtime ownership bypass does not certify an external Partner retag after terminal', async () => {
+  const sessionId = 's_active_retag_terminal';
+  const runId = 'run_active_retag_terminal';
+  const records = new Map<string, Readonly<Record<string, unknown>>>([
+    [
+      sessionId,
+      {
+        sessionId,
+        title: '',
+        messages: [],
+        gitRoot: 'C:\\repo',
+        tag: 'code',
+      },
+    ],
+  ]);
+  installPersistedSessionLookup(records);
+  const fake = createFakeRuntime();
+  fake.sessions.add(sessionId);
+  const originalObserve = fake.runtime.sessions.observe.bind(fake.runtime.sessions);
+  fake.runtime.sessions.observe = async (...args) => {
+    const observation = await originalObserve(...args);
+    return {
+      ...observation,
+      snapshot: {
+        ...observation.snapshot,
+        runs: [
+          {
+            runId,
+            sessionId,
+            phase: 'running' as const,
+            provider: 'mock',
+            mode: 'managed_task' as const,
+            startedAt: '2026-08-05T12:00:00.000Z',
+          },
+        ],
+      },
+    };
+  };
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  await adapter.initialize();
+  assert.equal((await adapter.readSessionLiveSnapshot(sessionId)).activeRun?.runId, runId);
+  records.set(sessionId, {
+    sessionId,
+    title: '',
+    messages: [],
+    gitRoot: 'C:\\repo',
+    tag: 'partner',
+  });
+  invalidatePersistedSessionCache(sessionId);
+  assert.equal(
+    (await adapter.readSessionLiveSnapshot(sessionId)).activeRun?.runId,
+    runId,
+    'positive active Runtime evidence remains authoritative while the Run is active',
+  );
+
+  fake.emit({
+    id: 'event_active_retag_terminal',
+    seq: 1,
+    time: '2026-08-05T12:00:01.000Z',
+    type: 'run.completed',
+    sessionId,
+    runId,
+    payload: {
+      runId,
+      sessionId,
+      phase: 'completed',
+      provider: 'mock',
+      mode: 'managed_task',
+      startedAt: '2026-08-05T12:00:00.000Z',
+      endedAt: '2026-08-05T12:00:01.000Z',
+    },
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  await assert.rejects(
+    adapter.readSessionLiveSnapshot(sessionId),
+    (error: unknown) =>
+      error instanceof Error &&
+      (error as Error & { code?: string }).code === 'session_identity_conflict',
+  );
+  await adapter.close();
+});
+
+test('history and live recovery do not wait for daemon management inspection', async () => {
+  const sessionIds = Array.from({ length: 20 }, (_, index) => `s_parallel_recovery_${index}`);
+  const fake = createFakeRuntime();
+  for (const sessionId of sessionIds) fake.sessions.add(sessionId);
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  await adapter.initialize();
+  fake.runtime.daemon.inspect = () => {
+    fake.calls.daemonInspections += 1;
+    return new Promise<RuntimeDaemonManagementState>(() => undefined);
+  };
+  const privateAdapter = adapter as unknown as {
+    pollIntegrationHealth(runtime: KodaXDaemonRuntime): Promise<void>;
+  };
+  void privateAdapter.pollIntegrationHealth(fake.runtime);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  for (const sessionId of sessionIds) invalidatePersistedSessionCache(sessionId);
+
+  const recovery = Promise.all([
+    ...sessionIds.map((sessionId) => adapter.conversationHistoryPage({ sessionId })),
+    ...sessionIds.map((sessionId) => adapter.readSessionLiveSnapshot(sessionId)),
+  ]);
+  const recovered = await Promise.race([
+    recovery,
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error('session recovery waited for daemon management')), 1_000);
+    }),
+  ]);
+
+  assert.equal(recovered.length, sessionIds.length * 2);
+  assert.equal(
+    fake.calls.daemonInspections,
+    1,
+    'the blocked management lane remains single-flight',
+  );
+  await adapter.close();
+});
+
+test('cold live observation bursts are serialized without blocking history reads', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_observation_one');
+  fake.sessions.add('s_observation_two');
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  await adapter.initialize();
+  const originalObserve = fake.runtime.sessions.observe.bind(fake.runtime.sessions);
+  let releaseFirstObservation!: () => void;
+  const firstObservationGate = new Promise<void>((resolve) => {
+    releaseFirstObservation = resolve;
+  });
+  let startedObservations = 0;
+  let activeObservations = 0;
+  let maxActiveObservations = 0;
+  fake.runtime.sessions.observe = async (...args: Parameters<typeof originalObserve>) => {
+    startedObservations += 1;
+    activeObservations += 1;
+    maxActiveObservations = Math.max(maxActiveObservations, activeObservations);
+    try {
+      if (args[0] === 's_observation_one') await firstObservationGate;
+      return await originalObserve(...args);
+    } finally {
+      activeObservations -= 1;
+    }
+  };
+
+  const firstSnapshot = adapter.readSessionLiveSnapshot('s_observation_one');
+  await waitForTest(() => startedObservations === 1);
+  const secondSnapshot = adapter.readSessionLiveSnapshot('s_observation_two');
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(startedObservations, 1, 'only one cold observation may enter the Runtime at a time');
+
+  const history = await Promise.race([
+    adapter.conversationHistoryPage({ sessionId: 's_observation_two' }),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error('history waited behind a cold observation burst')), 250);
+    }),
+  ]);
+  assert.equal(history.outcome, 'ready');
+
+  releaseFirstObservation();
+  await Promise.all([firstSnapshot, secondSnapshot]);
+  assert.equal(maxActiveObservations, 1);
+  assert.deepEqual(fake.calls.observed, ['s_observation_one', 's_observation_two']);
+  await adapter.close();
+});
+
+test('a failed cold observation releases the next Session in the Runtime queue', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_observation_fails');
+  fake.sessions.add('s_observation_recovers');
+  const originalObserve = fake.runtime.sessions.observe.bind(fake.runtime.sessions);
+  fake.runtime.sessions.observe = async (...args) => {
+    if (args[0] === 's_observation_fails') throw new Error('test observation failure');
+    return originalObserve(...args);
+  };
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  await adapter.initialize();
+  await assert.rejects(
+    adapter.readSessionLiveSnapshot('s_observation_fails'),
+    /test observation failure/,
+  );
+  const recovered = await adapter.readSessionLiveSnapshot('s_observation_recovers');
+  assert.equal(recovered.sessionId, 's_observation_recovers');
+  assert.deepEqual(fake.calls.observed, ['s_observation_recovers']);
+  await adapter.close();
+});
+
+test('concurrent cold reads for one Session share a single observation open', async () => {
+  const fake = createFakeRuntime();
+  const sessionId = 's_observation_singleflight';
+  fake.sessions.add(sessionId);
+  const originalObserve = fake.runtime.sessions.observe.bind(fake.runtime.sessions);
+  let signalObserveStarted!: () => void;
+  const observeStarted = new Promise<void>((resolve) => {
+    signalObserveStarted = resolve;
+  });
+  let releaseObserve!: () => void;
+  const observeRelease = new Promise<void>((resolve) => {
+    releaseObserve = resolve;
+  });
+  let starts = 0;
+  fake.runtime.sessions.observe = async (...args) => {
+    starts += 1;
+    signalObserveStarted();
+    await observeRelease;
+    return originalObserve(...args);
+  };
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  await adapter.initialize();
+  const first = adapter.readSessionLiveSnapshot(sessionId);
+  await observeStarted;
+  const second = adapter.readSessionLiveSnapshot(sessionId);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(starts, 1);
+  releaseObserve();
+  await Promise.all([first, second]);
+  assert.deepEqual(fake.calls.observed, [sessionId]);
+  await adapter.close();
+});
+
+test('a replacement Runtime does not wait for or install a retired observation result', async () => {
+  const first = createFakeRuntime('rt_observation_old');
+  const second = createFakeRuntime('rt_observation_new');
+  const sessionId = 's_observation_replacement';
+  first.sessions.add(sessionId);
+  second.sessions.add(sessionId);
+  const originalObserve = first.runtime.sessions.observe.bind(first.runtime.sessions);
+  let signalOldObserveReady!: () => void;
+  const oldObserveReady = new Promise<void>((resolve) => {
+    signalOldObserveReady = resolve;
+  });
+  let releaseOldObserve!: () => void;
+  const oldObserveRelease = new Promise<void>((resolve) => {
+    releaseOldObserve = resolve;
+  });
+  first.runtime.sessions.observe = async (...args) => {
+    const observation = await originalObserve(...args);
+    signalOldObserveReady();
+    await oldObserveRelease;
+    return observation;
+  };
+  let factoryCalls = 0;
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => (factoryCalls++ === 0 ? first.runtime : second.runtime),
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  await adapter.initialize();
+  const staleRead = adapter.readSessionLiveSnapshot(sessionId);
+  await oldObserveReady;
+  first.disconnect();
+  await waitForTest(() => adapter.snapshot().state === 'uninitialized');
+  await adapter.initialize();
+  const fresh = await adapter.readSessionLiveSnapshot(sessionId);
+  assert.equal(fresh.cursor.runtimeId, 'rt_observation_new');
+
+  releaseOldObserve();
+  await assert.rejects(staleRead, /connection changed/i);
+  assert.equal(adapter.snapshot().identity?.runtimeId, 'rt_observation_new');
   await adapter.close();
 });
 
@@ -5000,13 +6216,14 @@ test('a quiescent live snapshot read retires observation and reuses its terminal
   await adapter.initialize();
   assert.equal((await adapter.readSessionLiveSnapshot('s_terminal_cache')).activeRun, undefined);
   assert.equal(fake.calls.observationCloses, 1);
+  persistedReads = 0;
   assert.equal((await adapter.readSessionLiveSnapshot('s_terminal_cache')).activeRun, undefined);
   assert.equal(persistedReads, 0, 'fresh Runtime profile ownership avoids persisted history');
   assert.deepEqual(fake.calls.observed, ['s_terminal_cache']);
   await adapter.close();
 });
 
-test('cached snapshot ownership is revalidated after an external Session retag', async () => {
+test('cached idle snapshot ownership rejects an external retag without a profile refresh', async () => {
   const records = new Map<string, Readonly<Record<string, unknown>>>([
     ['s_cached_retag', { title: '', messages: [], gitRoot: 'C:\\repo', tag: 'code' }],
   ]);
@@ -5026,32 +6243,6 @@ test('cached snapshot ownership is revalidated after an external Session retag',
   } as SessionStoreImpl);
   const fake = createFakeRuntime();
   fake.sessions.add('s_cached_retag');
-  const originalStatusSnapshot = fake.runtime.status.snapshot.bind(fake.runtime.status);
-  let runtimeReportsPartner = false;
-  fake.runtime.status.snapshot = async () => {
-    const snapshot = await originalStatusSnapshot();
-    return runtimeReportsPartner ? { ...snapshot, sessions: [] } : snapshot;
-  };
-  const originalObserve = fake.runtime.sessions.observe.bind(fake.runtime.sessions);
-  fake.runtime.sessions.observe = async (...args) => {
-    const observation = await originalObserve(...args);
-    return {
-      ...observation,
-      snapshot: {
-        ...observation.snapshot,
-        runs: [
-          {
-            runId: 'run_cached_retag',
-            sessionId: 's_cached_retag',
-            phase: 'running' as const,
-            provider: 'mock',
-            mode: 'managed_task' as const,
-            startedAt: '2026-08-05T01:00:00.000Z',
-          },
-        ],
-      },
-    };
-  };
   const controller = new RuntimeProjectionController(
     createPendingSdkRuntimeProjection(100).profileSnapshot(),
   );
@@ -5072,7 +6263,6 @@ test('cached snapshot ownership is revalidated after an external Session retag',
     gitRoot: 'C:\\repo',
     tag: 'partner',
   });
-  runtimeReportsPartner = true;
   notifySessionChange?.({ kind: 'change', sessionId: 's_cached_retag' });
 
   await assert.rejects(
@@ -5129,6 +6319,76 @@ test('a Runtime profile read refreshes status instead of returning a stale main 
   active = false;
   assert.equal((await adapter.readRuntimeProfileSnapshot()).sessions[0]?.activeRun, undefined);
   assert.ok(snapshotReads >= 3);
+  await adapter.close();
+});
+
+test('out-of-page active profile rows require persisted Coder identity proof', async () => {
+  const records = new Map<string, Readonly<Record<string, unknown>>>([
+    [
+      's_out_of_page_coder',
+      { title: '', messages: [], gitRoot: 'C:\\repo', tag: 'code' },
+    ],
+    [
+      's_out_of_page_partner',
+      { title: '', messages: [], gitRoot: 'C:\\repo', tag: 'partner' },
+    ],
+  ]);
+  let persistedReads = 0;
+  setSessionStoreImpl({
+    listSessions: async () => [],
+    forkSession: async () => null,
+    rewindSession: async () => null,
+    deleteSession: async () => ({ ok: true }),
+    loadSession: async (sessionId) => {
+      persistedReads += 1;
+      return (records.get(sessionId) as never) ?? null;
+    },
+    watchSessions: () => ({ close() {} }),
+  } as SessionStoreImpl);
+  const fake = createFakeRuntime();
+  fake.runtime.status.snapshot = async () => ({
+    runtimeId: 'rt_test',
+    mode: 'daemon',
+    profile: 'coder',
+    startedAt: '2026-08-05T01:00:00.000Z',
+    sessions: [],
+    runs: [
+      {
+        runId: 'run_out_of_page_coder',
+        sessionId: 's_out_of_page_coder',
+        phase: 'running',
+        provider: 'mock',
+        startedAt: '2026-08-05T01:00:01.000Z',
+      },
+      {
+        runId: 'run_out_of_page_partner',
+        sessionId: 's_out_of_page_partner',
+        phase: 'running',
+        provider: 'mock',
+        startedAt: '2026-08-05T01:00:02.000Z',
+      },
+    ],
+    pendingPermissions: [],
+    workflows: [],
+  });
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  await adapter.initialize();
+  assert.deepEqual(
+    (await adapter.readRuntimeProfileSnapshot()).sessions.map((session) => session.sessionId),
+    ['s_out_of_page_coder'],
+  );
+  assert.equal(
+    persistedReads,
+    2,
+    'the exact active Run proof is reused instead of rereading an actively written Session',
+  );
   await adapter.close();
 });
 
@@ -5272,13 +6532,30 @@ test('an active observation is positive Stop evidence without waiting for its ev
   await adapter.close();
 });
 
-test('an idle observation avoids a history-grade Session status read', async () => {
+test('an idle observation confirms negative active-Run evidence through the run index', async () => {
   const fake = createFakeRuntime();
   fake.sessions.add('s_observed_idle');
   fake.runtime.sessions.status = async () => {
     throw Object.assign(new Error('idle observation should avoid canonical Session status'), {
       code: 'data_changed',
     });
+  };
+  let lateActiveRun = false;
+  let runIndexReads = 0;
+  fake.runtime.runs.list = async () => {
+    runIndexReads += 1;
+    return lateActiveRun
+      ? [
+          {
+            runId: 'run_admitted_after_idle_cursor',
+            sessionId: 's_observed_idle',
+            phase: 'running' as const,
+            provider: 'mock',
+            mode: 'managed_task' as const,
+            startedAt: '2026-08-05T12:00:00.000Z',
+          },
+        ]
+      : [];
   };
   const adapter = new RuntimeHostAdapter({
     mode: 'runtime',
@@ -5292,6 +6569,9 @@ test('an idle observation avoids a history-grade Session status read', async () 
   await adapter.ensureObserved('s_observed_idle');
 
   assert.equal(await adapter.findActiveRunId('s_observed_idle'), undefined);
+  lateActiveRun = true;
+  assert.equal(await adapter.findActiveRunId('s_observed_idle'), 'run_admitted_after_idle_cursor');
+  assert.equal(runIndexReads, 2);
   assert.deepEqual(fake.calls.sessionStatuses, []);
   await adapter.close();
 });
@@ -5438,6 +6718,63 @@ test('ensureSession prefers workspaceRoot and falls back to gitRoot for project 
     }),
     false,
   );
+});
+
+test('ensureSession admits an active verified profile without crossing its persisted writer', async () => {
+  let persistedReads = 0;
+  setSessionStoreImpl({
+    listSessions: async () => [],
+    forkSession: async () => null,
+    rewindSession: async () => null,
+    deleteSession: async () => ({ ok: true }),
+    loadSession: async () => {
+      persistedReads += 1;
+      throw Object.assign(new Error('active Session writer'), { code: 'data_changed' });
+    },
+    watchSessions: () => ({ close() {} }),
+  } as SessionStoreImpl);
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_active_profile');
+  fake.sessionRecords.set('s_active_profile', {
+    id: 's_active_profile',
+    title: '',
+    workspaceRoot: 'C:\\repo',
+    gitRoot: 'C:\\repo',
+    surface: 'code',
+  });
+  const originalSnapshot = fake.runtime.status.snapshot.bind(fake.runtime.status);
+  fake.runtime.status.snapshot = async () => ({
+    ...(await originalSnapshot()),
+    runs: [
+      {
+        runId: 'run_active_profile',
+        sessionId: 's_active_profile',
+        phase: 'running' as const,
+        provider: 'mock',
+        mode: 'managed_task' as const,
+        startedAt: '2026-08-05T01:00:00.000Z',
+      },
+    ],
+  });
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+  });
+
+  await adapter.initialize();
+  assert.equal(
+    await adapter.ensureSession({
+      sessionId: 's_active_profile',
+      projectRoot: 'C:\\repo',
+      surface: 'code',
+      ephemeral: false,
+    }),
+    false,
+  );
+  assert.equal(persistedReads, 0);
+  await adapter.close();
 });
 
 test('ensureSession fails closed when an existing Session has no project identity', async () => {
@@ -6007,6 +7344,76 @@ test('a queued settings event advances the no-op boundary before its handler set
   await adapter.close();
 });
 
+test('a stale snapshot settings task cannot overwrite a newer Runtime revision', async (t) => {
+  class NoopRuntimeStore extends SessionRuntimeStore {
+    override async set(): Promise<boolean> {
+      return true;
+    }
+  }
+
+  const sessionId = 's_stale_snapshot_settings';
+  await kodaxHost.disposeAll();
+  setSessionRuntimeStoreForTesting(new NoopRuntimeStore(path.resolve('C:\\unused')));
+  t.after(async () => {
+    setSessionRuntimeStoreForTesting(null);
+    await kodaxHost.disposeAll();
+  });
+  kodaxHost.createSession({
+    existingSessionId: sessionId,
+    projectRoot: path.resolve('C:\\project'),
+    provider: 'anthropic',
+    permissionMode: 'auto',
+    autoModeEngine: 'llm',
+  });
+
+  const fake = createFakeRuntime('rt_stale_snapshot_settings');
+  fake.sessions.add(sessionId);
+  fake.settings.set(sessionId, {
+    revision: 1,
+    value: { provider: 'anthropic', reasoningMode: 'balanced' },
+  });
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  await adapter.ensureObserved(sessionId);
+  const settingsSync = adapter as unknown as {
+    recordObservedSettings(
+      targetSessionId: string,
+      runtime: typeof fake.runtime,
+      settings: { revision: number; value: RuntimeSessionSettings },
+    ): void;
+    syncSpaceSessionSettings(
+      runtime: typeof fake.runtime,
+      targetSessionId: string,
+      revision: number,
+      settings: RuntimeSessionSettings,
+    ): Promise<void>;
+  };
+  settingsSync.recordObservedSettings(sessionId, fake.runtime, {
+    revision: 2,
+    value: { provider: 'openai', reasoningMode: 'deep' },
+  });
+  await settingsSync.syncSpaceSessionSettings(fake.runtime, sessionId, 2, {
+    provider: 'openai',
+    reasoningMode: 'deep',
+  });
+  assert.equal(kodaxHost.get(sessionId)?.provider, 'openai');
+
+  await settingsSync.syncSpaceSessionSettings(fake.runtime, sessionId, 1, {
+    provider: 'anthropic',
+    reasoningMode: 'balanced',
+  });
+
+  assert.equal(kodaxHost.get(sessionId)?.provider, 'openai');
+  assert.equal(kodaxHost.get(sessionId)?.reasoningMode, 'deep');
+  await adapter.close();
+});
+
 test('concurrent session settings updates serialize their revisioned CAS writes', async () => {
   const fake = createFakeRuntime();
   fake.sessions.add('s_1');
@@ -6323,6 +7730,22 @@ test('after-turn submission uses the provider from the SDK active Run record', a
 });
 
 test('interrupt submission reuses the active run bindings and returns the factual Runtime result', async () => {
+  let rejectPersistedRead = false;
+  let persistedReads = 0;
+  setSessionStoreImpl({
+    listSessions: async () => [],
+    forkSession: async () => null,
+    rewindSession: async () => null,
+    deleteSession: async () => ({ ok: true }),
+    loadSession: async (sessionId) => {
+      persistedReads += 1;
+      if (rejectPersistedRead) {
+        throw Object.assign(new Error('active Session writer'), { code: 'data_changed' });
+      }
+      return { sessionId, title: '', messages: [], gitRoot: 'C:\\repo', tag: 'code' } as never;
+    },
+    watchSessions: () => ({ close() {} }),
+  } as SessionStoreImpl);
   const fake = createFakeRuntime();
   fake.sessions.add('s_1');
   fake.runtime.runs.submitInput = async (input) => {
@@ -6346,6 +7769,11 @@ test('interrupt submission reuses the active run bindings and returns the factua
     credentialResolver: async () => 'secret-from-keychain',
   });
 
+  await adapter.initialize();
+  await adapter.ensureObserved('s_1');
+  const readsAfterObservation = persistedReads;
+  rejectPersistedRead = true;
+
   const result = await adapter.submitInput({
     sessionId: 's_1',
     afterRunId: 'run_previous',
@@ -6353,6 +7781,7 @@ test('interrupt submission reuses the active run bindings and returns the factua
     input: [{ type: 'text', text: 'steer now' }],
   });
   assert.deepEqual(fake.calls.loaded, []);
+  assert.equal(persistedReads, readsAfterObservation);
 
   assert.deepEqual(result, {
     accepted: true,
@@ -6373,6 +7802,91 @@ test('interrupt submission reuses the active run bindings and returns the factua
   ]);
   assert.deepEqual(fake.calls.credentialRegistrations, []);
   assert.deepEqual(fake.calls.credentialRevokes, []);
+  await adapter.close();
+});
+
+test('cold active interrupt uses Runtime ownership without crossing persisted history', async () => {
+  let persistedReads = 0;
+  setSessionStoreImpl({
+    listSessions: async () => [],
+    forkSession: async () => null,
+    rewindSession: async () => null,
+    deleteSession: async () => ({ ok: true }),
+    loadSession: async () => {
+      persistedReads += 1;
+      throw Object.assign(new Error('active Session writer'), { code: 'data_changed' });
+    },
+    watchSessions: () => ({ close() {} }),
+  } as SessionStoreImpl);
+  const fake = createFakeRuntime('rt_cold_active_interrupt');
+  const sessionId = 's_cold_active_interrupt';
+  const runId = 'run_cold_active_interrupt';
+  fake.sessions.add(sessionId);
+  const originalStatus = fake.runtime.status.snapshot.bind(fake.runtime.status);
+  fake.runtime.status.snapshot = async () => ({
+    ...(await originalStatus()),
+    runs: [
+      {
+        runId,
+        sessionId,
+        phase: 'running' as const,
+        provider: 'mock',
+        mode: 'managed_task' as const,
+        startedAt: '2026-08-05T12:00:00.000Z',
+      },
+    ],
+  });
+  const originalObserve = fake.runtime.sessions.observe.bind(fake.runtime.sessions);
+  fake.runtime.sessions.observe = async (...args) => {
+    const observation = await originalObserve(...args);
+    return {
+      ...observation,
+      snapshot: {
+        ...observation.snapshot,
+        runs: [
+          {
+            runId,
+            sessionId,
+            phase: 'running' as const,
+            provider: 'mock',
+            mode: 'managed_task' as const,
+            startedAt: '2026-08-05T12:00:00.000Z',
+          },
+        ],
+      },
+    };
+  };
+  fake.runtime.runs.submitInput = async (input) => {
+    fake.calls.submitted.push(input);
+    return {
+      accepted: true,
+      delivery: 'interrupt' as const,
+      inputId: 'input_cold_active_interrupt',
+      runId,
+      sessionId,
+      afterRunId: runId,
+      sessionOrder: 1,
+    };
+  };
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  await adapter.initialize();
+  const result = await adapter.submitInput({
+    sessionId,
+    afterRunId: runId,
+    delivery: 'interrupt',
+    input: [{ type: 'text', text: 'cold steer' }],
+  });
+
+  assert.equal(result.accepted, true);
+  assert.equal(persistedReads, 0);
+  assert.equal(fake.calls.submitted.length, 1);
   await adapter.close();
 });
 
@@ -7598,11 +9112,13 @@ test('profile management conflicts cannot split terminal events from the live Ru
     identityStore: testIdentityStore,
     runtimeEventParser: testRuntimeEventParser,
     projectionController: controller,
+    integrationHealthPollMs: 5,
     push: (channel, payload) => pushed.push({ channel, payload }),
   });
 
   await adapter.initialize();
   await adapter.ensureObserved('s_1');
+  await waitForTest(() => controller.profileSnapshot().connection.integrations !== undefined);
   const initialIntegrations = controller.profileSnapshot().connection.integrations;
   fake.runtime.daemon.inspect = async () => {
     fake.calls.daemonInspections += 1;
@@ -7793,9 +9309,7 @@ test('failed observation resync reconciles a terminal profile without staling a 
 
   await waitForTest(
     () =>
-      observeAttempts === 2 &&
-      fake.calls.daemonInspections >= 2 &&
-      controller.profileSnapshot().sessions[0]?.activeRun === undefined,
+      observeAttempts === 2 && controller.profileSnapshot().sessions[0]?.activeRun === undefined,
   );
   const profile = controller.profileSnapshot();
   assert.equal(profile.connection.state, 'ready');
@@ -7846,7 +9360,7 @@ test('failed observation resync retains Stop through a freshly reconciled active
   await adapter.ensureObserved('s_1');
   fake.invalidateObservation('s_1', 'event_overflow');
 
-  await waitForTest(() => observeAttempts === 2 && fake.calls.daemonInspections >= 2);
+  await waitForTest(() => observeAttempts === 2);
   const profile = controller.profileSnapshot();
   assert.equal(profile.connection.state, 'ready');
   assert.equal(profile.connection.stale, false);
@@ -8462,6 +9976,86 @@ test('a one-shot terminal Actor snapshot does not leave Session or Actor polling
   await adapter.close();
 });
 
+test('Actor snapshot rejects an old attachment after a same-runtime-id replacement', async () => {
+  const first = createFakeRuntime('rt_actor_same_id');
+  const second = createFakeRuntime('rt_actor_same_id');
+  const sessionId = 's_actor_same_id_replacement';
+  first.sessions.add(sessionId);
+  second.sessions.add(sessionId);
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => first.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+  await adapter.initialize();
+
+  const privateAdapter = adapter as unknown as {
+    runtime: KodaXDaemonRuntime | null;
+    state: string;
+    ensureActorObserved(runtime: KodaXDaemonRuntime, sessionId: string): Promise<unknown>;
+  };
+  const ensureActorObserved = privateAdapter.ensureActorObserved.bind(privateAdapter);
+  privateAdapter.ensureActorObserved = async (runtime, requestedSessionId) => {
+    const observed = await ensureActorObserved(runtime, requestedSessionId);
+    // Model the exact race: the old Actor observer is ready, then a replacement attachment with
+    // the same public runtimeId becomes authoritative before the IPC continuation returns it.
+    privateAdapter.runtime = second.runtime;
+    privateAdapter.state = 'ready';
+    return observed;
+  };
+
+  await assert.rejects(
+    adapter.actorTreeSnapshot(sessionId),
+    /connection changed while reading Agent Actor snapshot/i,
+  );
+  await adapter.close();
+  await first.runtime.close();
+});
+
+test('concurrent Actor snapshots for one Session share the whole bootstrap operation', async () => {
+  const fake = createFakeRuntime();
+  const sessionId = 's_actor_snapshot_singleflight';
+  fake.sessions.add(sessionId);
+  const originalEvents = fake.runtime.agents.events.bind(fake.runtime.agents);
+  let signalEventsStarted!: () => void;
+  const eventsStarted = new Promise<void>((resolve) => {
+    signalEventsStarted = resolve;
+  });
+  let releaseEvents!: () => void;
+  const eventsGate = new Promise<void>((resolve) => {
+    releaseEvents = resolve;
+  });
+  let eventCalls = 0;
+  fake.runtime.agents.events = async (...args) => {
+    eventCalls += 1;
+    signalEventsStarted();
+    await eventsGate;
+    return originalEvents(...args);
+  };
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  const first = adapter.actorTreeSnapshot(sessionId);
+  await eventsStarted;
+  const second = adapter.actorTreeSnapshot(sessionId);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(eventCalls, 1);
+
+  releaseEvents();
+  const [firstSnapshot, secondSnapshot] = await Promise.all([first, second]);
+  assert.deepEqual(secondSnapshot, firstSnapshot);
+  assert.equal(eventCalls, 1);
+  assert.equal(fake.calls.agentTrees.length, 1);
+  await adapter.close();
+});
+
 test('Actor snapshot retirement waits for buffered observation demand', async () => {
   const fake = createFakeRuntime();
   fake.sessions.add('s_actor_buffered_run');
@@ -8501,6 +10095,62 @@ test('Actor snapshot retirement waits for buffered observation demand', async ()
   assert.equal(fake.calls.observationCloses, 0);
   await adapter.close();
   assert.equal(fake.calls.observationCloses, 1);
+});
+
+test('blocked Actor telemetry cannot hold the next cold Session observation', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_actor_blocker');
+  fake.sessions.add('s_actor_follower');
+  const agents = fake.runtime.agents as unknown as {
+    tree(sessionId: string): Promise<AgentTreeSnapshot>;
+  };
+  const originalTree = agents.tree.bind(agents);
+  let signalTreeStarted!: () => void;
+  const treeStarted = new Promise<void>((resolve) => {
+    signalTreeStarted = resolve;
+  });
+  let releaseTree!: () => void;
+  const treeRelease = new Promise<void>((resolve) => {
+    releaseTree = resolve;
+  });
+  agents.tree = async (sessionId) => {
+    if (sessionId === 's_actor_blocker') {
+      signalTreeStarted();
+      await treeRelease;
+    }
+    return originalTree(sessionId);
+  };
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  const firstOpening = adapter.ensureObserved('s_actor_blocker');
+  await treeStarted;
+  try {
+    const history = await Promise.race([
+      adapter.conversationHistoryPage({ sessionId: 's_actor_follower' }),
+      new Promise<never>((_resolve, reject) => {
+        setTimeout(() => reject(new Error('history waited for Actor telemetry')), 250);
+      }),
+    ]);
+    assert.equal(history.outcome, 'ready');
+
+    const follower = await Promise.race([
+      adapter.readSessionLiveSnapshot('s_actor_follower'),
+      new Promise<never>((_resolve, reject) => {
+        setTimeout(() => reject(new Error('cold observation waited for Actor telemetry')), 250);
+      }),
+    ]);
+    assert.equal(follower.sessionId, 's_actor_follower');
+  } finally {
+    releaseTree();
+    await firstOpening;
+    await adapter.close();
+  }
 });
 
 test('a successfully resynced terminal invalidation retires its replacement observation', async () => {
@@ -8612,6 +10262,7 @@ test('a disconnected compaction marker cannot keep a fresh terminal observation 
   await waitForTest(() => adapter.snapshot().state === 'uninitialized');
   await adapter.initialize();
 
+  await waitForTest(() => second.calls.observationCloses === 1);
   assert.deepEqual(second.calls.observed, ['s_compaction_reconnect']);
   assert.equal(second.calls.observationCloses, 1);
   await adapter.close();
@@ -8836,6 +10487,7 @@ test('observation with an omitted model keeps a concrete provider default for Au
   });
 
   await adapter.ensureObserved('s_auto_default_model');
+  await waitForTest(() => kodaxHost.get('s_auto_default_model')?.reasoningMode === 'deep');
 
   assert.equal(kodaxHost.get('s_auto_default_model')?.model, 'glm-5.2');
   assert.equal(kodaxHost.get('s_auto_default_model')?.reasoningMode, 'deep');

@@ -32,6 +32,7 @@ const MAX_REASON = 512;
 const MAX_PERMISSION_INPUT_PREVIEW = 8_192;
 const MAX_TODOS = 1_000;
 const MAX_TOOLS = 128;
+const MAX_PROFILE_SESSIONS = 500;
 const ACTIVE_PHASES = new Set([
   'running',
   'waiting_agent',
@@ -85,6 +86,31 @@ export function isPartnerRuntimeSessionIdentity(value: unknown): boolean {
     session?.profileId === 'kodax-space.partner' ||
     runtimeInfo?.surface === 'partner'
   );
+}
+
+/**
+ * `status.snapshot()` bounds its recent Session summaries independently from its Run index. An
+ * out-of-page Run has no surface identity, so include it only after main has independently verified
+ * the persisted Session as Coder. Unknown identities fail closed at the Coder/Partner boundary.
+ */
+export function coderRuntimeSessionIds(
+  status: RuntimeStatusSnapshot,
+  verifiedOutOfPageCoderSessionIds: ReadonlySet<string> = new Set(),
+): ReadonlySet<string> {
+  const sessionById = new Map(status.sessions.map((session) => [session.id, session]));
+  const sessionIds = new Set(
+    status.sessions
+      .filter((session) => !isPartnerRuntimeSessionIdentity(session))
+      .map((session) => session.id),
+  );
+  for (const run of status.runs) {
+    if (run.phase !== 'queued' && !ACTIVE_PHASES.has(run.phase as never)) continue;
+    const knownSession = sessionById.get(run.sessionId);
+    if (knownSession !== undefined && isPartnerRuntimeSessionIdentity(knownSession)) continue;
+    if (knownSession === undefined && !verifiedOutOfPageCoderSessionIds.has(run.sessionId)) continue;
+    sessionIds.add(run.sessionId);
+  }
+  return sessionIds;
 }
 
 function text(value: unknown, max = MAX_REASON): string | undefined {
@@ -847,6 +873,7 @@ export function projectRuntimeSessionSnapshot(
 
 export function projectRuntimeProfile(input: {
   readonly status: RuntimeStatusSnapshot;
+  readonly verifiedOutOfPageCoderSessionIds?: ReadonlySet<string>;
   readonly userInputs: readonly RuntimeUserInputRequest[];
   readonly cursor: number;
   readonly projectionRevision: number;
@@ -859,7 +886,24 @@ export function projectRuntimeProfile(input: {
   const codeSessions = input.status.sessions.filter(
     (session) => !isPartnerRuntimeSessionIdentity(session),
   );
-  const codeSessionIds = new Set(codeSessions.map((session) => session.id));
+  const codeSessionIds = coderRuntimeSessionIds(
+    input.status,
+    input.verifiedOutOfPageCoderSessionIds,
+  );
+  const recentCodeSessionIds = new Set(codeSessions.map((session) => session.id));
+  const activeSessionIdsOutsideRecentPage = [...codeSessionIds].filter(
+    (sessionId) => !recentCodeSessionIds.has(sessionId),
+  );
+  const retainedRecentSessions = codeSessions.slice(
+    0,
+    Math.max(0, MAX_PROFILE_SESSIONS - activeSessionIdsOutsideRecentPage.length),
+  );
+  const projectedSessions = [
+    ...retainedRecentSessions.map((session) => ({ sessionId: session.id, session })),
+    ...activeSessionIdsOutsideRecentPage
+      .slice(0, MAX_PROFILE_SESSIONS)
+      .map((sessionId) => ({ sessionId, session: undefined })),
+  ];
   return spaceRuntimeProfileProjectionSchema.parse({
     connection: {
       state: input.connectionState ?? 'ready',
@@ -873,19 +917,22 @@ export function projectRuntimeProfile(input: {
     },
     projectionRevision: input.projectionRevision,
     cursor: { runtimeId: input.status.runtimeId, seq: input.cursor },
-    sessions: codeSessions.slice(0, 500).map((session) => {
-      const runs = runsForSession(input.status.runs, session.id);
-      const createdAt = timestamp(session.createdAt);
-      const ownRuns = input.status.runs.filter((run) => run.sessionId === session.id);
+    sessions: projectedSessions.map(({ sessionId, session }) => {
+      const runs = runsForSession(input.status.runs, sessionId);
+      const ownRuns = input.status.runs.filter((run) => run.sessionId === sessionId);
+      const createdAt =
+        session !== undefined
+          ? timestamp(session.createdAt)
+          : Math.min(...ownRuns.map((run) => timestamp(run.acceptedAt ?? run.startedAt)));
       const lastActivityAt = Math.max(
         createdAt,
         ...ownRuns.map((run) => timestamp(run.endedAt ?? run.runningAt ?? run.startedAt)),
       );
       return {
-        sessionId: session.id,
+        sessionId,
         surface: 'code' as const,
-        ...(session.title ? { title: session.title.slice(0, 256) } : {}),
-        ...(session.workspaceRoot || session.gitRoot
+        ...(session?.title ? { title: session.title.slice(0, 256) } : {}),
+        ...(session?.workspaceRoot || session?.gitRoot
           ? { projectRoot: (session.workspaceRoot ?? session.gitRoot)!.slice(0, 4_096) }
           : {}),
         createdAt,
