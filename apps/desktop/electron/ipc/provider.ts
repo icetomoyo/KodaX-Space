@@ -441,7 +441,10 @@ export function registerProviderChannels(): void {
     await providerConfigStore.setDefault(input.providerId);
     // 切默认 provider 时重新注入——共享 env 时让它胜出
     await injectAllKeysToEnv();
-    await reloadCoderConfigBestEffort('provider.setDefault');
+    // The durable default and process environment are already updated. A daemon config reload
+    // is best-effort and can wait for a cold Runtime; do not keep a completed picker selection
+    // pending on that background synchronization.
+    void reloadCoderConfigBestEffort('provider.setDefault');
     return { ok: true };
   });
 
