@@ -117,24 +117,32 @@ async function emitActorSnapshot(
 }
 
 async function readRuntimeId(page: Page): Promise<string> {
-  const runtimeId = await page.evaluate(async () => {
-    const bridge = (
-      window as unknown as {
-        kodaxSpace: {
-          invoke: (
-            name: string,
-            input: unknown,
-          ) => Promise<{
-            ok: boolean;
-            data?: { connection?: { runtimeId?: string; state?: string } };
-          }>;
-        };
-      }
-    ).kodaxSpace;
-    const result = await bridge.invoke('runtime.profileSnapshot', undefined);
-    if (!result.ok) return null;
-    return result.data?.connection?.runtimeId ?? null;
-  });
+  const readProfileRuntimeId = () =>
+    page.evaluate(async () => {
+      const bridge = (
+        window as unknown as {
+          kodaxSpace: {
+            invoke: (
+              name: string,
+              input: unknown,
+            ) => Promise<{
+              ok: boolean;
+              data?: { connection?: { runtimeId?: string; state?: string } };
+            }>;
+          };
+        }
+      ).kodaxSpace;
+      const result = await bridge.invoke('runtime.profileSnapshot', undefined);
+      if (!result.ok) return null;
+      return result.data?.connection?.runtimeId ?? null;
+    });
+
+  // The daemon initializes independently from the session-create UI path. In CI,
+  // the first profile projection can still be pending after the session is visible.
+  // Actor telemetry is scoped by runtime ID, so wait for its canonical source rather
+  // than emitting a snapshot that the renderer would correctly discard.
+  await expect.poll(readProfileRuntimeId, { timeout: 20_000 }).not.toBeNull();
+  const runtimeId = await readProfileRuntimeId();
   if (!runtimeId) throw new Error('Coder Runtime was not ready for Actor telemetry');
   return runtimeId;
 }
