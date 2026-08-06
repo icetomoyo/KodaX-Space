@@ -1,6 +1,6 @@
 # Known Issues
 
-Last Updated: 2026-08-05
+Last Updated: 2026-08-06
 
 > Historical issue details are preserved as investigation evidence. Resolved items older than 30 days move to [ISSUES_ARCHIVED.md](ISSUES_ARCHIVED.md) without losing their investigation record. The current published Space baseline is v0.1.36 with exact npm Registry KodaX 0.7.82. Durable managed-Run admission requires `managedRunDurability:1`; active-Session input admission and history/live reconciliation are also release gates. Start from the [documentation hub](README.md) for current behavior and status.
 
@@ -170,6 +170,7 @@ Last Updated: 2026-08-05
 | 172 | High     | Resolved    | Live transcript events dropped Runtime turn identity, so an overtaking history revalidation could duplicate and reorder a new turn | v0.1.34 Runtime bridge and ready-history revalidation        | 2026-08-04 |
 | 173 | High     | Resolved    | Reopening or switching an active Session could lose its in-flight transcript and leave sidebar activity stale                      | v0.1.34 renderer Runtime observation bootstrap               | 2026-08-05 |
 | 174 | High     | Resolved    | Interrupt or after-turn send could race active Session persistence and restore the draft with session_data_changed                 | v0.1.36 / KodaX 0.7.82 active-run admission                  | 2026-08-05 |
+| 175 | High     | Resolved    | Safe close could reject an idle app after hiding it, then succeed only on a second close                                            | v0.1.36 complete-exit / Windows daemon cleanup                | 2026-08-06 |
 
 ## Issue Details
 
@@ -10616,7 +10617,8 @@ For each delivered interrupt input, expose the canonical physical entry
 reference created by the durable input-persistence boundary. The reference
 must equal the corresponding conversation entry's `boundaryId` or one of its
 `auditEntryIds`; compaction may select another proven physical copy as the
-display boundary. Legacy absence remains fail-open. No new identity system,
+display boundary. One-sided legacy absence remains fail-open; pairs with no
+entry evidence on either side retain the existing guarded compatibility path. No new identity system,
 ordinal contract, lifecycle field, event replay, or SDK-owned paging mechanism
 is required.
 
@@ -10744,6 +10746,13 @@ condition. It therefore restored the hidden windows and showed a failure even
 though the authoritative final state was already safe for process exit. The
 second request succeeded because the compensated daemon policy was now stable.
 
+A later renderer-recovery variant had the same first-close/second-close symptom without an owner
+transition. Read-only `session.list` and `session.history` hydration had been wrapped in the Coder
+executable-admission counter. A slow project list or bounded history read therefore looked like
+work that had to drain before shutdown; the first close could time out and reopen the gate, while
+the completed read made the second close succeed. Those reads do not acquire a Coder owner and do
+not start or mutate a Run.
+
 #### Resolution
 
 - Complete exit now distinguishes a compensated terminal state from an
@@ -10757,11 +10766,20 @@ second request succeeded because the compensated daemon policy was now stable.
 - Embedded-mode switching semantics are unchanged: that path still requires
   acquisition of the inline owner fence and cannot use the complete-exit
   exception.
+- Read-only Session list/history requests no longer enter executable Coder admission. History keeps
+  its per-Session single-writer queue, revision/sourceRevision/cursor fences, and cross-Session
+  parallelism; create/send/queue/fork/rewind/settings and other executable or mutating paths remain
+  admitted. Complete exit also keeps its visible progress surface until daemon shutdown is
+  authoritatively verified, then hides and commits adjacently.
 
 #### Files Changed
 
 - `apps/desktop/electron/kodax/runtime-host-adapter.ts`
+- `apps/desktop/electron/ipc/session.ts`
+- `apps/desktop/electron/window/complete-exit-policy.ts`
 - `apps/desktop/electron/test/runtime-host-adapter.test.ts`
+- `apps/desktop/electron/test/session-read-admission.test.ts`
+- `apps/desktop/electron/test/complete-exit-policy.test.ts`
 - `docs/KNOWN_ISSUES.md`
 
 #### Tests Added
@@ -10770,6 +10788,9 @@ second request succeeded because the compensated daemon policy was now stable.
   verified daemon-policy compensation completes on the first exit request.
 - Existing lost-reply, unreadable-owner, restart-required, and normal atomic
   complete-exit regressions continue to enforce fail-closed behavior.
+- Static admission-boundary regressions require both Session list and history to stay outside the
+  executable counter, while existing history serialization tests require same-Session ordering and
+  different-Session parallelism.
 
 #### Verification
 
@@ -10779,6 +10800,9 @@ second request succeeded because the compensated daemon policy was now stable.
 - Electron TypeScript, targeted ESLint, and diff whitespace validation passed.
 - A clean `build:test-kodax` completed successfully. Packaged smoke verified
   exact KodaX 0.7.79 content and the packaged boot test reached Runtime ready.
+- The 2026-08-06 recurrence passed the combined history/paging/Runtime/mode-switch/exit suite
+  (366 passing assertions), TypeScript, full ESLint, and the production renderer/main smoke build
+  against exact KodaX 0.7.82.
 
 ### 156: Renderer history cache could preserve a stale partial-lineage warning after canonical storage changed
 
@@ -12283,9 +12307,9 @@ from canonical history, explaining why `Ctrl+R` repaired the display.
 - Priority: High
 - Status: Resolved
 - Introduced: v0.1.34 renderer Runtime observation bootstrap
-- Fixed: v0.1.35
+- Fixed: v0.1.36 development
 - Created: 2026-08-05
-- Resolution Date: 2026-08-05
+- Resolution Date: 2026-08-06
 
 #### Original Problem
 
@@ -12366,6 +12390,28 @@ historical Session keeps the cheaper history-first load path.
   spinners to stop without `Ctrl+R`.
 - History LRU eviction prefers idle Sessions, then active Sessions, while retaining its hard
   32-Session bound. Eviction removes canonical restored rows but preserves independent live state.
+- The independent live baseline records canonical indexes only within one exact
+  `sourceRevision`; a revision change clears those coordinate watermarks rather than comparing
+  indexes across an append, compaction, or re-root. Exact live owners whose complete content was
+  already proven equivalent to a durable turn retain a separate identity proof. A later resolved,
+  authoritative newest window may prune that proven shadow when its bounded prefix has advanced
+  past the owner, even when the append also changed `sourceRevision`. Conflicting or divergent
+  identities remain fail-open.
+- A resolved newest page that was requested for exact terminal `runtimeId + runId` evidence can
+  also prune a live owner from that settled Run when the bounded page has already advanced past it,
+  even if no intermediate page ever folded that owner. This proof requires matching runtime-event
+  identity and stable entry/turn identity. Partial or ambiguous history, entry conflicts, older
+  browsing pages, missing identities, and newer Runs remain fail-open.
+- An open live projection may replace a canonical user-only shell or extend a non-empty canonical
+  assistant/tool prefix only when its ordered event-level text, thinking, tool identities, inputs,
+  and existing results cumulatively cover that prefix. Space retains canonical-only workflow,
+  lineage, sidecar, compaction, and truncation metadata, then appends only the proven live suffix in
+  its original text/tool order. A canonical prefix therefore cannot move text around a tool call or
+  erase a durable notice. Divergent projections remain visible and separate; a synthetic history
+  terminal cannot hide the only live suffix.
+- Temporarily hidden live duplicates preserve their original ordering timestamp. Removing the
+  hidden marker restores that timestamp, so an old interrupted turn cannot inherit a recent
+  durable timestamp and move to the end of the conversation.
 - No KodaX SDK change, main-process event ring, synthetic turn identity, terminal `turnId`, or new
   ordinal contract was added.
 - Runtime terminal evidence is merged by exact `runtimeId + runId`; profile and observation cursors
@@ -12435,6 +12481,35 @@ historical Session keeps the cheaper history-first load path.
 - Acknowledged failed/interrupted Runtime `runId`s are persisted in a bounded renderer preference.
   Reloaded history suppresses only the exact acknowledged terminal error; a different Run still
   produces a new red error dot, and deleting the Session removes its acknowledgement record.
+- The 2026-08-06 multi-Session regression had two exact renderer ownership failures. Runtime
+  projected a queued `turn.started` as `session_start` immediately before the authoritative
+  `run.input.delivered` boundary, allowing positional fallback to claim an older anonymous owner.
+  Separately, a newest canonical page containing only the active user row marked that row as having
+  no assistant segment, then hid the exact open live duplicate and therefore hid the only streamed
+  answer until reload rebuilt canonical order.
+- Queued turns now defer their user boundary to `run.input.delivered`, which already carries the
+  KodaX 0.7.82 turn, input, and entry identities; Space assigns the observed turn-local ordinal.
+  Prompt-delivery boundaries create their own owner and no longer run the initial-owner repair that
+  could bind an older anonymous query first. An exact canonical user-only tail adopts the still-open
+  live segment without a synthetic terminal; the canonical row remains the sole visible owner and
+  later deltas continue under it. When either side of an interrupt reconciliation carries a
+  canonical entry reference, a missing or disjoint counterpart remains fail-open instead of falling
+  back to the locally synthesized ordinal. Fully legacy pairs with no entry evidence on either side
+  retain the guarded strong-turn compatibility path. Complete canonical turns retain the existing
+  closed-fold behavior.
+- History-cache eviction restores the independent live baseline before discarding canonical rows
+  and removes renderer-only hidden-duplicate markers from that baseline. A completed shadow already
+  proven equivalent to durable history is pruned before eviction, so dropping the canonical window
+  cannot resurrect it at the tail; open and divergent owners remain available for recovery. A
+  history-first active canonical owner also keeps a live baseline shadow for later page replacement
+  or eviction. Entry reference conflicts remain fail-open even while the live projection is open.
+  Passive selection and profile bootstrap hints upgrade and join an in-flight live snapshot instead
+  of scheduling a redundant trailing read. No new SDK contract, polling loop, IPC method, full
+  transcript read, or main-process event buffer was added.
+- Complete-exit preflight shares one authoritative Runtime status read between Runtime blockers and
+  local Session checks. When the selected daemon reports ready and idle, a stale local daemon-Coder
+  stream no longer causes a false first-close warning; Partner, Embedded, and unavailable Runtime
+  paths still fail closed, and mode switching continues to count every local active Session.
 
 #### Files Changed
 
@@ -12510,11 +12585,39 @@ historical Session keeps the cheaper history-first load path.
   visible after exact Coder identity verification, while an unverified or Partner out-of-page Run
   fails closed and an omitted Session with no local or Runtime activity does not open a cold live
   observation after canonical history.
+- The 2026-08-06 regression tests reproduce queued `turn.started` before input delivery, a canonical
+  user-only newest page overtaking an open thinking/text draft in both arrival orders, continued
+  post-history deltas, terminal canonical convergence without duplication, an entry-reference
+  conflict, prompt delivery after an anonymous same-Run owner, active/terminal LRU eviction, a
+  hidden live owner returning to its original timestamp, a previously canonicalized live turn
+  moving outside the bounded newest window across an append revision, durable-proof survival across
+  LRU eviction, a never-folded settled Run already omitted by its first post-terminal page, a
+  source-revision change, and a non-empty canonical prefix with an interleaved live text/tool suffix.
+  The suite also covers one-sided delivered-entry absence, divergent open content remaining visible,
+  durable workflow metadata between a canonical prefix and its live suffix, live-only notices before
+  and between covered content runs (including one notice splitting a canonical same-kind text run),
+  exact content-offset insertion for simultaneous durable/live notices, occurrence-safe notice
+  reconciliation, and exact root compaction-stat deduplication. Partial terminal
+  history is verified not to prune the live fallback. Exit tests also cover the authoritative-daemon-
+  idle/stale-local-state race while retaining fail-closed fallbacks.
+- The final focused history/paging/Runtime/mode-switch/exit suite passed 381 assertions with no
+  failures. TypeScript, ESLint, `git diff --check`, and the production renderer/main smoke build
+  passed. The repository-wide run exposed a separate KodaX 0.7.82 compatibility-probe shutdown
+  failure; the transcript/history/exit regressions in this issue remained green.
 
 #### Verification
 
-- The complete Desktop suite passes: 2,480 passed, 4 Windows-environment skips, 0 failed.
-- TypeScript typecheck, relevant ESLint checks, and `git diff --check` pass.
+- The current issue-focused suite passes 381 assertions. A repository-wide run reached 2,491
+  passes and 4 environment skips; four transient SDK-build artifact failures passed on targeted
+  rerun. The remaining KodaX Runtime compatibility probe cannot verify daemon shutdown against the
+  locally installed development/test SDK package, so repository-wide release qualification remains
+  open until the shutdown-verification contract is published and the exact Registry dependency is
+  installed.
+- TypeScript typecheck, full ESLint, `git diff --check`, and `npm run build:smoke` pass.
+- The targeted KodaX Runtime compatibility probe remains 6/8: its two daemon-shutdown cases cannot
+  verify outer-timeout reclamation / final PID exit against the locally linked development candidate.
+  This is independent of the transcript, paging, performance, and close-policy regressions above and
+  remains a release gate until the shutdown-verification contract is available from the Registry SDK.
 - `npm run build:win` passes packaging and smoke checks with exact KodaX 0.7.82; the packaged
   renderer reached ready in 6,967 ms and Runtime reached ready in 27,407 ms after the smoke test's
   deterministic 20-second hold.
@@ -12603,14 +12706,74 @@ being mistaken for an ownership or topology conflict.
 - KodaX's focused active-Run admission regression and the shipped 0.7.82 bundle prove interrupt and
   after-turn admission use the Runtime-owned context instead of canonical Session history.
 
+## Issue 175: Safe close could reject an idle app after hiding it, then succeed only on a second close
+
+- Priority: High
+- Status: Resolved
+- Introduced: v0.1.36 complete-exit / Windows daemon cleanup
+- Fixed: v0.1.36 development with a KodaX test build exposing daemon-containment verification
+- Created: 2026-08-06
+- Resolution Date: 2026-08-06
+
+### Original Problem
+
+With no visible task running, the first close request hid the Space window. After a delay, Space
+restored the window and reported that it could not close safely. Choosing Keep Open and closing a
+second time often succeeded. The warning could list many unresolved managed children even though
+their recorded roots had already exited.
+
+### Root Cause
+
+- Space hid its control surface before daemon cleanup was verified, so a fail-closed result looked
+  like the application exited and reopened.
+- Space treated daemon PID exit as its final proof. That could not prove the exact durable cleanup
+  result or that Windows descendants were gone.
+- KodaX correctly retained incomplete child-registry evidence when snapshot ancestry could no
+  longer be proven. A daemon with many historical short-lived children could therefore fail strict
+  final cleanup even though killing those old PIDs would be unsafe.
+- After a successful rollback, the Runtime control plane was already closed. Reopening Coder
+  admission in the same process was not a valid Keep Open recovery.
+
+### Resolution
+
+- Space waits for KodaX's exact `waitForRuntimeDaemonShutdown()` result before hiding its window and
+  committing exit. The verifier combines the durable runtimeId/PID cleanup outcome with daemon and
+  containment-supervisor exit, and reports replacement, failure, and unverified states explicitly.
+- KodaX starts the Windows daemon suspended, assigns it to a kill-on-close Job Object, and resumes
+  it only after assignment. Its supervisor exits only after the Job is empty. Under that kernel
+  boundary, final cleanup may safely retire incomplete current-owner registry evidence without a
+  bare-PID kill.
+- Space requires the SDK-side verifier API, but does not make the connected capability a Session
+  attachment requirement. An already-running legacy daemon may still restore Sessions; complete
+  exit remains fail-closed until that daemon is explicitly stopped and relaunched under the Job
+  boundary. The SDK never attempts an unsafe lock-only in-place migration.
+- A failed cleanup keeps the window visible. If Runtime control was already committed closed,
+  choosing Keep Open schedules a controlled application relaunch; if relaunch cannot be scheduled,
+  Coder admission remains closed rather than pretending recovery succeeded.
+
+The KodaX change resolves the daemon-owned slice only. It does not claim that KodaX Issue 256's
+separate Worker owner-lease boundary is complete.
+
+### Verification
+
+- Complete-exit policy tests prove the window remains visible through verification and is hidden
+  only immediately before a successful commit.
+- Runtime adapter tests prove the exact owner/config/profile reaches the SDK verifier, failed
+  durable cleanup requires recovery, and replacement-fence ambiguity fails closed.
+- KodaX Windows Job tests prove pre-execution containment and descendant reclamation; verifier tests
+  prove an exact durable success is insufficient while the containment supervisor remains alive.
+- The real daemon start/restart/stop smoke proves both Windows supervisors exit at their respective
+  shutdown boundaries. All work is confined to daemon startup and complete-exit paths; Session
+  switching, transcript restoration, renderer streaming, and steady-state UI IPC are unchanged.
+
 ## Summary
 
-- Total: 162
+- Total: 163
 - Open: 1
 - In Progress: 9
 - Deferred: 1
-- Resolved: 151
-- High: 79
+- Resolved: 152
+- High: 80
 - Medium: 72
 - Low: 11
 - Next to resolve: 165

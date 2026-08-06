@@ -426,6 +426,10 @@ async function checkAsarContents(asarPath) {
     fail('packaged KodaX metadata does not advertise integrationConfigResilience v1');
   }
   ok('packaged KodaX metadata advertises integrationConfigResilience v1');
+  if (packagedKodax.kodaxRuntimeContracts?.daemonShutdownVerification !== 1) {
+    fail('packaged KodaX metadata does not advertise daemonShutdownVerification v1');
+  }
+  ok('packaged KodaX metadata advertises daemonShutdownVerification v1');
 
   let packagedRendererHtml;
   try {
@@ -957,6 +961,11 @@ try {
   if (KODAX_RUNTIME_SDK_CAPABILITIES?.daemonOrphanExit !== 1) {
     throw new Error('packaged SDK does not advertise daemonOrphanExit v1 before auto-start');
   }
+  if (KODAX_RUNTIME_SDK_CAPABILITIES?.daemonShutdownVerification !== 1) {
+    throw new Error(
+      'packaged SDK does not advertise daemonShutdownVerification v1 before auto-start',
+    );
+  }
   daemonRuntime = await createKodaXRuntime({
     mode: 'daemon',
     profile: daemonProfile,
@@ -966,6 +975,7 @@ try {
     requirements: {
       daemonManagement: 1,
       daemonOrphanExit: 1,
+      ...(process.platform === 'win32' ? { daemonShutdownVerification: 1 } : {}),
       integrationConfigResilience: 1,
       skillLearningLoop: 1,
       runtimeAutoModeGuardrail: 4,
@@ -985,6 +995,19 @@ try {
       'packaged daemon did not negotiate daemonOrphanExit v1: ' +
         JSON.stringify(daemonOrphanExit),
     );
+  }
+  if (process.platform === 'win32') {
+    const shutdownVerification = daemonRuntime.capabilities?.daemonShutdownVerification;
+    if (
+      typeof shutdownVerification !== 'object' ||
+      shutdownVerification === null ||
+      shutdownVerification.version !== 1
+    ) {
+      throw new Error(
+        'packaged daemon did not negotiate daemonShutdownVerification v1: ' +
+          JSON.stringify(shutdownVerification),
+      );
+    }
   }
   const management = await daemonRuntime.daemon.inspect();
   if (

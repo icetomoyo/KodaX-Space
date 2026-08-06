@@ -14,7 +14,19 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ## [Unreleased]
 
-No unreleased changes yet.
+### Changed
+
+- Complete exit keeps its progress surface visible until the exact Coder daemon
+  shutdown is authoritatively verified. Space now requires the SDK's
+  `daemonShutdownVerification:1` fact and consumes its durable-outcome plus
+  containment-boundary verifier instead of inferring success from a PID alone.
+
+### Fixed
+
+- A failed safe close no longer makes the window disappear and then reappear.
+  If Runtime control has already been closed and recovery cannot be proven,
+  choosing Keep Open performs a controlled relaunch instead of reopening a
+  nonfunctional Coder admission path.
 
 ---
 

@@ -153,6 +153,7 @@ test('Space kodax_manual describes the v0.1.36 runtime safety, close, and shell 
   assert.match(topics.get('background-runtime')?.body ?? '', /kill -TERM/);
   assert.match(topics.get('background-runtime')?.body ?? '', /不要使用 `killall KodaX Space`/);
   assert.match(topics.get('runtime-host')?.body ?? '', /daemonOrphanExit v1/);
+  assert.match(topics.get('runtime-host')?.body ?? '', /daemonShutdownVerification v1/);
   assert.match(topics.get('runtime-host')?.body ?? '', /managedRunDurability v1/);
   assert.match(topics.get('runtime-host')?.body ?? '', /runtimeEventCoalescing v1/);
   assert.match(topics.get('runtime-host')?.body ?? '', /integration config resilience v1/);
