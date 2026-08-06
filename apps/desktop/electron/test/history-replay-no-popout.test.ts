@@ -1759,9 +1759,7 @@ test('an exact delivered entry retains a proven cumulative live text extension',
   const visible = composeMessages({
     events: state.eventsBySession[SID] ?? [],
     userMessages: state.userMessagesBySession[SID] ?? [],
-  }).flatMap((message) =>
-    message.kind === 'assistant_text' ? [`assistant:${message.text}`] : [],
-  );
+  }).flatMap((message) => (message.kind === 'assistant_text' ? [`assistant:${message.text}`] : []));
   assert.deepEqual(visible, ['assistant:durable prefix plus live suffix']);
 });
 
@@ -1809,6 +1807,176 @@ test('conflicting delivered interrupt entry references fail open even when legac
   );
   assert.equal(users.length, 2);
   assert.deepEqual(users.map((message) => message.entryId).sort(), ['entry-history', 'entry-live']);
+});
+
+test('a delivered interrupt with a legacy-missing durable entry reference stays fail-open', () => {
+  const store = useAppStore.getState();
+  store.appendEvent({
+    kind: 'mid_turn_user_prompt',
+    sessionId: SID,
+    queueId: 'input-live-only-entry',
+    content: 'legacy exact-looking prompt',
+    entryId: 'entry-live-only',
+    turnId: 'turn-live-only-entry',
+    turnUserOrdinal: 1,
+  });
+  store.appendEvent({ kind: 'text_delta', sessionId: SID, text: 'live legacy response' });
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: SID,
+    turnId: 'turn-live-only-entry',
+  });
+  store.prependSessionHistory(
+    SID,
+    [
+      {
+        kind: 'user',
+        content: 'legacy exact-looking prompt',
+        canonicalIndex: 30,
+        turnId: 'turn-live-only-entry',
+        turnUserOrdinal: 1,
+      },
+      {
+        kind: 'assistant',
+        text: 'durable legacy response',
+        canonicalIndex: 31,
+        turnId: 'turn-live-only-entry',
+      },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true },
+  );
+
+  const users = (useAppStore.getState().userMessagesBySession[SID] ?? []).filter(
+    (message) => message.content === 'legacy exact-looking prompt',
+  );
+  assert.equal(users.length, 2);
+  assert.equal(users.filter((message) => message.entryId === undefined).length, 1);
+  assert.equal(users.filter((message) => message.entryId === 'entry-live-only').length, 1);
+});
+
+test('an open delivered interrupt with a legacy-missing durable entry reference stays visible', () => {
+  const store = useAppStore.getState();
+  store.appendEvent({
+    kind: 'mid_turn_user_prompt',
+    sessionId: SID,
+    queueId: 'input-open-live-only-entry',
+    content: 'legacy open prompt',
+    entryId: 'entry-open-live-only',
+    turnId: 'turn-open-live-only-entry',
+    turnUserOrdinal: 1,
+  });
+  store.appendEvent({ kind: 'text_delta', sessionId: SID, text: 'open legacy response' });
+  store.prependSessionHistory(
+    SID,
+    [
+      {
+        kind: 'user',
+        content: 'legacy open prompt',
+        canonicalIndex: 30,
+        turnId: 'turn-open-live-only-entry',
+        turnUserOrdinal: 1,
+      },
+      {
+        kind: 'assistant',
+        text: 'durable open legacy response',
+        canonicalIndex: 31,
+        turnId: 'turn-open-live-only-entry',
+      },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true },
+  );
+
+  const state = useAppStore.getState();
+  assert.equal(
+    (state.userMessagesBySession[SID] ?? []).filter(
+      (message) => message.content === 'legacy open prompt',
+    ).length,
+    2,
+  );
+  assert.equal(
+    state.userMessagesBySession[SID]?.some(
+      (message) => message.entryId === 'entry-open-live-only' && message.hiddenProjectionDuplicate,
+    ),
+    false,
+  );
+});
+
+test('a conflicting open live entry remains visible beside a canonical user-only tail', () => {
+  const store = useAppStore.getState();
+  store.appendEvent({
+    kind: 'mid_turn_user_prompt',
+    sessionId: SID,
+    queueId: 'input-open-live',
+    content: 'ambiguous open query',
+    entryId: 'entry-open-live',
+    turnId: 'turn-open-entry-conflict',
+    turnUserOrdinal: 1,
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'open live response',
+    turnId: 'turn-open-entry-conflict',
+  });
+  store.prependSessionHistory(
+    SID,
+    [
+      {
+        kind: 'user',
+        content: 'ambiguous open query',
+        entryId: 'entry-open-history',
+        canonicalIndex: 30,
+        turnId: 'turn-open-entry-conflict',
+        turnUserOrdinal: 1,
+      },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true },
+  );
+
+  let state = useAppStore.getState();
+  let visible = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  });
+  assert.equal(
+    visible.filter(
+      (message) => message.kind === 'user' && message.content === 'ambiguous open query',
+    ).length,
+    2,
+  );
+  assert.equal(
+    visible.some(
+      (message) => message.kind === 'assistant_text' && message.text === 'open live response',
+    ),
+    true,
+  );
+
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: SID,
+    turnId: 'turn-open-entry-conflict',
+  });
+  state = useAppStore.getState();
+  visible = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  });
+  assert.equal(
+    visible.filter(
+      (message) => message.kind === 'user' && message.content === 'ambiguous open query',
+    ).length,
+    2,
+  );
+  assert.deepEqual(
+    (state.userMessagesBySession[SID] ?? [])
+      .filter((message) => message.content === 'ambiguous open query')
+      .map((message) => message.entryId)
+      .sort(),
+    ['entry-open-history', 'entry-open-live'],
+  );
 });
 
 test('history-first delivered interrupt folds only after its exact live projection closes', () => {
@@ -2295,15 +2463,14 @@ test('authoritative live transcript identity repairs a missed start while the ru
     out.filter(
       (message) => message.kind === 'user' && message.content === 'live identity repairs the owner',
     ).length,
-    1,
-    'the first surviving identity-bearing transcript event must close the handoff gap immediately',
+    2,
+    'a live tail that does not cover the durable prefix must remain visible and fail-open',
   );
   assert.deepEqual(
     out.flatMap((message) =>
       message.kind === 'assistant_text' ? [`assistant:${message.text}`] : [],
     ),
-    ['assistant:earlier answer', 'assistant:durable prefix'],
-    'the hidden live duplicate stays positional until the authoritative terminal merges it',
+    ['assistant:earlier answer', 'assistant:durable prefix', 'assistant:new live tail'],
   );
 });
 
@@ -2602,6 +2769,1552 @@ test('history-first queued promotion keeps a live segment owner without renderin
   );
 });
 
+test('a canonical user-only tail adopts its exact open live answer without hiding the draft', () => {
+  const store = useAppStore.getState();
+  const messageId = store.appendUserMessage(SID, 'active query', 10_000);
+  assert.ok(messageId);
+  store.bindUserMessageRuntimeRun(SID, messageId, 'run-active');
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-active',
+    runtimeEvent: { runtimeId: 'runtime-active', runId: 'run-active', seq: 1 },
+  });
+  store.appendEvent({
+    kind: 'thinking_delta',
+    sessionId: SID,
+    text: 'live reasoning',
+    turnId: 'turn-active',
+    runtimeEvent: { runtimeId: 'runtime-active', runId: 'run-active', seq: 2 },
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'live answer',
+    turnId: 'turn-active',
+    runtimeEvent: { runtimeId: 'runtime-active', runId: 'run-active', seq: 3 },
+  });
+
+  store.prependSessionHistory(
+    SID,
+    [
+      {
+        kind: 'user',
+        content: 'active query',
+        sentAt: 10_000,
+        entryId: 'entry-active-user',
+        canonicalIndex: 0,
+        turnId: 'turn-active',
+        turnUserOrdinal: 0,
+      },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true },
+  );
+
+  let state = useAppStore.getState();
+  let visible = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  });
+  assert.equal(visible.filter((message) => message.kind === 'user').length, 1);
+  assert.equal(
+    visible.some(
+      (message) =>
+        message.kind === 'assistant_text' &&
+        message.text === 'live answer' &&
+        message.thinking === 'live reasoning',
+    ),
+    true,
+  );
+  assert.equal(
+    state.userMessagesBySession[SID]?.length,
+    1,
+    'the live-first projection keeps one canonical owner',
+  );
+  assert.equal(state.userMessagesBySession[SID]?.[0]?.restoredFromHistory, true);
+  assert.equal(state.userMessagesBySession[SID]?.[0]?.runtimeRunId, 'run-active');
+  assert.equal(state.userMessagesBySession[SID]?.[0]?.historyNoAssistantSegment, undefined);
+  assert.equal(state.userMessagesBySession[SID]?.[0]?.hiddenProjectionDuplicate, undefined);
+
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: ' tail',
+    turnId: 'turn-active',
+    runtimeEvent: { runtimeId: 'runtime-active', runId: 'run-active', seq: 4 },
+  });
+  state = useAppStore.getState();
+  visible = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  });
+  assert.equal(
+    visible.some(
+      (message) => message.kind === 'assistant_text' && message.text === 'live answer tail',
+    ),
+    true,
+    'post-history deltas remain attached to the canonical owner',
+  );
+
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: SID,
+    turnId: 'turn-active',
+    runtimeEvent: { runtimeId: 'runtime-active', runId: 'run-active', seq: 5 },
+  });
+  store.prependSessionHistory(
+    SID,
+    [
+      {
+        kind: 'user',
+        content: 'active query',
+        sentAt: 10_000,
+        entryId: 'entry-active-user',
+        canonicalIndex: 0,
+        turnId: 'turn-active',
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 'live answer tail',
+        sentAt: 10_100,
+        canonicalIndex: 1,
+        turnId: 'turn-active',
+      },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true },
+  );
+  state = useAppStore.getState();
+  visible = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  });
+  assert.equal(
+    visible.filter((message) => message.kind === 'user').length,
+    1,
+    'the refreshed live-first projection keeps one user',
+  );
+  assert.equal(
+    visible.filter(
+      (message) => message.kind === 'assistant_text' && message.text === 'live answer tail',
+    ).length,
+    1,
+  );
+});
+
+test('a history-first canonical user-only tail opens for its exact live answer', () => {
+  const store = useAppStore.getState();
+  store.prependSessionHistory(
+    SID,
+    [
+      {
+        kind: 'user',
+        content: 'history-first active query',
+        sentAt: 15_000,
+        entryId: 'entry-history-first-user',
+        canonicalIndex: 0,
+        turnId: 'turn-history-first',
+        turnUserOrdinal: 0,
+      },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true },
+  );
+
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-history-first',
+    runtimeEvent: { runtimeId: 'runtime-history-first', runId: 'run-history-first', seq: 1 },
+  });
+  store.appendEvent({
+    kind: 'thinking_delta',
+    sessionId: SID,
+    text: 'history-first reasoning',
+    turnId: 'turn-history-first',
+    runtimeEvent: { runtimeId: 'runtime-history-first', runId: 'run-history-first', seq: 2 },
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'history-first answer',
+    turnId: 'turn-history-first',
+    runtimeEvent: { runtimeId: 'runtime-history-first', runId: 'run-history-first', seq: 3 },
+  });
+
+  let state = useAppStore.getState();
+  let visible = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  });
+  assert.equal(state.userMessagesBySession[SID]?.length, 1);
+  assert.equal(state.userMessagesBySession[SID]?.[0]?.runtimeRunId, 'run-history-first');
+  assert.equal(state.userMessagesBySession[SID]?.[0]?.historyNoAssistantSegment, undefined);
+  assert.equal(
+    visible.filter((message) => message.kind === 'user').length,
+    1,
+    'the history-first live projection renders one user before terminal',
+  );
+  assert.equal(
+    visible.some(
+      (message) =>
+        message.kind === 'assistant_text' &&
+        message.text === 'history-first answer' &&
+        message.thinking === 'history-first reasoning',
+    ),
+    true,
+  );
+
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: ' tail',
+    turnId: 'turn-history-first',
+    runtimeEvent: { runtimeId: 'runtime-history-first', runId: 'run-history-first', seq: 4 },
+  });
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: SID,
+    turnId: 'turn-history-first',
+    runtimeEvent: { runtimeId: 'runtime-history-first', runId: 'run-history-first', seq: 5 },
+  });
+  store.prependSessionHistory(
+    SID,
+    [
+      {
+        kind: 'user',
+        content: 'history-first active query',
+        sentAt: 15_000,
+        entryId: 'entry-history-first-user',
+        canonicalIndex: 0,
+        turnId: 'turn-history-first',
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 'history-first answer tail',
+        sentAt: 15_100,
+        canonicalIndex: 1,
+        turnId: 'turn-history-first',
+      },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true },
+  );
+
+  state = useAppStore.getState();
+  visible = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  });
+  assert.equal(
+    visible.filter((message) => message.kind === 'user').length,
+    1,
+    'the refreshed history-first projection keeps one user after terminal',
+  );
+  assert.equal(
+    visible.filter(
+      (message) =>
+        message.kind === 'assistant_text' && message.text === 'history-first answer tail',
+    ).length,
+    1,
+  );
+});
+
+test('history eviction restores the independent live owner instead of a hidden UI projection', () => {
+  const store = useAppStore.getState();
+  const messageId = store.appendUserMessage(SID, 'evicted active query', 20_000);
+  assert.ok(messageId);
+  store.bindUserMessageRuntimeRun(SID, messageId, 'run-evicted-active');
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-evicted-active',
+    runtimeEvent: { runtimeId: 'runtime-evict', runId: 'run-evicted-active', seq: 1 },
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'answer survives eviction',
+    turnId: 'turn-evicted-active',
+    runtimeEvent: { runtimeId: 'runtime-evict', runId: 'run-evicted-active', seq: 2 },
+  });
+  store.prependSessionHistory(
+    SID,
+    [
+      {
+        kind: 'user',
+        content: 'evicted active query',
+        canonicalIndex: 0,
+        turnId: 'turn-evicted-active',
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 'different durable eviction snapshot',
+        canonicalIndex: 1,
+        turnId: 'turn-evicted-active',
+      },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true },
+  );
+  assert.equal(
+    (useAppStore.getState().userMessagesBySession[SID] ?? []).some(
+      (message) => message.hiddenProjectionDuplicate === true,
+    ),
+    false,
+    'divergent durable content cannot hide the still-open live owner',
+  );
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: SID,
+    turnId: 'turn-evicted-active',
+    runtimeEvent: { runtimeId: 'runtime-evict', runId: 'run-evicted-active', seq: 3 },
+  });
+
+  store.evictRestoredSessionHistory(SID);
+
+  const state = useAppStore.getState();
+  const visible = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  });
+  assert.equal(state.userMessagesBySession[SID]?.length, 1);
+  assert.equal(state.userMessagesBySession[SID]?.[0]?.restoredFromHistory, undefined);
+  assert.equal(state.userMessagesBySession[SID]?.[0]?.hiddenProjectionDuplicate, undefined);
+  assert.deepEqual(
+    visible.flatMap((message) => {
+      if (message.kind === 'user') return [`user:${message.content}`];
+      if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+      return [];
+    }),
+    ['user:evicted active query', 'assistant:answer survives eviction'],
+  );
+});
+
+test('history eviction preserves an open divergent live owner before terminal', () => {
+  const store = useAppStore.getState();
+  const messageId = store.appendUserMessage(SID, 'still-running evicted query', 25_000);
+  assert.ok(messageId);
+  store.bindUserMessageRuntimeRun(SID, messageId, 'run-still-running');
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-still-running',
+    runtimeEvent: { runtimeId: 'runtime-active-evict', runId: 'run-still-running', seq: 1 },
+  });
+  store.appendEvent({
+    kind: 'thinking_delta',
+    sessionId: SID,
+    text: 'reasoning survives active eviction',
+    turnId: 'turn-still-running',
+    runtimeEvent: { runtimeId: 'runtime-active-evict', runId: 'run-still-running', seq: 2 },
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'answer survives active eviction',
+    turnId: 'turn-still-running',
+    runtimeEvent: { runtimeId: 'runtime-active-evict', runId: 'run-still-running', seq: 3 },
+  });
+  store.prependSessionHistory(
+    SID,
+    [
+      {
+        kind: 'user',
+        content: 'still-running evicted query',
+        canonicalIndex: 0,
+        turnId: 'turn-still-running',
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 'different durable active snapshot',
+        canonicalIndex: 1,
+        turnId: 'turn-still-running',
+      },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true },
+  );
+  assert.equal(
+    (useAppStore.getState().userMessagesBySession[SID] ?? []).some(
+      (message) => message.hiddenProjectionDuplicate === true,
+    ),
+    false,
+  );
+
+  store.evictRestoredSessionHistory(SID);
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: ' and continues',
+    turnId: 'turn-still-running',
+    runtimeEvent: { runtimeId: 'runtime-active-evict', runId: 'run-still-running', seq: 4 },
+  });
+
+  const state = useAppStore.getState();
+  const visible = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  });
+  assert.equal(state.userMessagesBySession[SID]?.length, 1);
+  assert.equal(state.userMessagesBySession[SID]?.[0]?.restoredFromHistory, undefined);
+  assert.equal(state.userMessagesBySession[SID]?.[0]?.hiddenProjectionDuplicate, undefined);
+  assert.equal(
+    visible.some(
+      (message) =>
+        message.kind === 'assistant_text' &&
+        message.text === 'answer survives active eviction and continues' &&
+        message.thinking === 'reasoning survives active eviction',
+    ),
+    true,
+  );
+});
+
+test('an unhidden live owner restores its original time after the hidden baseline is refreshed', () => {
+  const store = useAppStore.getState();
+  const originalSentAt = 25_000;
+  const messageId = store.appendUserMessage(SID, 'temporarily hidden query', originalSentAt);
+  assert.ok(messageId);
+  store.bindUserMessageRuntimeRun(SID, messageId, 'run-temporarily-hidden');
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-temporarily-hidden',
+    runtimeEvent: { runtimeId: 'runtime-hidden-time', runId: 'run-temporarily-hidden', seq: 1 },
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'temporarily hidden',
+    turnId: 'turn-temporarily-hidden',
+    runtimeEvent: { runtimeId: 'runtime-hidden-time', runId: 'run-temporarily-hidden', seq: 2 },
+  });
+  store.prependSessionHistory(
+    SID,
+    [
+      {
+        kind: 'user',
+        content: 'temporarily hidden query',
+        sentAt: FALLBACK_SENT_AT,
+        canonicalIndex: 80,
+        turnId: 'turn-temporarily-hidden',
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 'temporarily hidden answer',
+        sentAt: FALLBACK_SENT_AT + 1,
+        canonicalIndex: 81,
+        turnId: 'turn-temporarily-hidden',
+      },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true },
+  );
+  assert.equal(
+    (useAppStore.getState().userMessagesBySession[SID] ?? []).find(
+      (message) => message.id === messageId,
+    )?.hiddenProjectionDuplicate,
+    true,
+  );
+
+  // A later identity acknowledgement refreshes the independent baseline while the UI-only
+  // duplicate marker is present. The baseline must retain the live owner's original sort key.
+  store.bindUserMessageRuntimeRun(SID, messageId, 'run-temporarily-hidden');
+  store.evictRestoredSessionHistory(SID);
+
+  const restored = useAppStore.getState().userMessagesBySession[SID]?.[0];
+  assert.equal(restored?.hiddenProjectionDuplicate, undefined);
+  assert.equal(restored?.sentAt, originalSentAt);
+});
+
+test('a canonicalized live turn cannot reappear after the newest bounded window moves past it', () => {
+  const store = useAppStore.getState();
+  const messageId = store.appendUserMessage(SID, 'old interrupted query', 30_000);
+  assert.ok(messageId);
+  store.bindUserMessageRuntimeRun(SID, messageId, 'run-old-interrupted');
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-old-interrupted',
+    runtimeEvent: { runtimeId: 'runtime-bounded', runId: 'run-old-interrupted', seq: 1 },
+  });
+  store.appendEvent({
+    kind: 'thinking_delta',
+    sessionId: SID,
+    text: 'old reasoning',
+    turnId: 'turn-old-interrupted',
+    runtimeEvent: { runtimeId: 'runtime-bounded', runId: 'run-old-interrupted', seq: 2 },
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'old partial answer',
+    turnId: 'turn-old-interrupted',
+    runtimeEvent: { runtimeId: 'runtime-bounded', runId: 'run-old-interrupted', seq: 3 },
+  });
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: SID,
+    turnId: 'turn-old-interrupted',
+    runtimeEvent: { runtimeId: 'runtime-bounded', runId: 'run-old-interrupted', seq: 4 },
+  });
+
+  // The first canonical window proves where the completed live turn belongs.
+  store.prependSessionHistory(
+    SID,
+    [
+      { kind: 'history_truncation', scope: 'history', omittedItems: 80 },
+      {
+        kind: 'user',
+        content: 'old interrupted query',
+        sentAt: 30_000,
+        canonicalIndex: 80,
+        turnId: 'turn-old-interrupted',
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        thinking: 'old reasoning',
+        text: 'old partial answer',
+        sentAt: 30_100,
+        canonicalIndex: 81,
+        turnId: 'turn-old-interrupted',
+      },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true, sourceRevision: 'source-bounded' },
+  );
+
+  // A later 64-entry newest window starts after that canonical index. The old live baseline is a
+  // cache shadow, not a new tail turn, and must not be appended after the current answer.
+  const newestWindow: SessionHistoryItem[] = [
+    { kind: 'history_truncation', scope: 'history', omittedItems: 105 },
+    {
+      kind: 'user',
+      content: 'current query',
+      sentAt: 40_000,
+      canonicalIndex: 105,
+      turnId: 'turn-current',
+      turnUserOrdinal: 0,
+    },
+    {
+      kind: 'assistant',
+      text: 'current answer',
+      sentAt: 40_100,
+      canonicalIndex: 106,
+      turnId: 'turn-current',
+    },
+  ];
+  store.prependSessionHistory(SID, newestWindow, FALLBACK_SENT_AT, {
+    replaceLoadedWindow: true,
+    sourceRevision: 'source-after-append',
+    authoritativeNewest: true,
+  });
+  store.prependSessionHistory(SID, newestWindow, FALLBACK_SENT_AT, {
+    replaceLoadedWindow: true,
+    sourceRevision: 'source-after-append',
+    authoritativeNewest: true,
+  });
+
+  const state = useAppStore.getState();
+  const visible = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  });
+  assert.deepEqual(
+    visible.flatMap((message) => {
+      if (message.kind === 'user') return [`user:${message.content}`];
+      if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+      return [];
+    }),
+    ['user:current query', 'assistant:current answer'],
+  );
+});
+
+test('history eviction never restores a completed live owner already proven durable', () => {
+  const store = useAppStore.getState();
+  const messageId = store.appendUserMessage(SID, 'durable owner before eviction', 30_500);
+  assert.ok(messageId);
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-durable-before-eviction',
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'durable answer before eviction',
+    turnId: 'turn-durable-before-eviction',
+  });
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: SID,
+    turnId: 'turn-durable-before-eviction',
+  });
+  store.prependSessionHistory(
+    SID,
+    [
+      {
+        kind: 'user',
+        content: 'durable owner before eviction',
+        canonicalIndex: 80,
+        turnId: 'turn-durable-before-eviction',
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 'durable answer before eviction',
+        canonicalIndex: 81,
+        turnId: 'turn-durable-before-eviction',
+      },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true, sourceRevision: 'source-before-eviction' },
+  );
+
+  store.evictRestoredSessionHistory(SID);
+  assert.equal(useAppStore.getState().userMessagesBySession[SID]?.length, 0);
+
+  store.prependSessionHistory(
+    SID,
+    [
+      { kind: 'history_truncation', scope: 'history', omittedItems: 105 },
+      {
+        kind: 'user',
+        content: 'current owner after eviction',
+        canonicalIndex: 105,
+        turnId: 'turn-current-after-eviction',
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 'current answer after eviction',
+        canonicalIndex: 106,
+        turnId: 'turn-current-after-eviction',
+      },
+    ],
+    FALLBACK_SENT_AT,
+    {
+      replaceLoadedWindow: true,
+      sourceRevision: 'source-after-eviction',
+      authoritativeNewest: true,
+    },
+  );
+  assert.deepEqual(
+    (useAppStore.getState().userMessagesBySession[SID] ?? [])
+      .filter((message) => message.hiddenHistoryAnchor !== true)
+      .map((message) => message.content),
+    ['current owner after eviction'],
+  );
+});
+
+test('the first post-terminal newest page prunes an omitted live turn that never folded before', () => {
+  const store = useAppStore.getState();
+  const oldMessageId = store.appendUserMessage(SID, 'never-canonicalized old query', 31_000);
+  assert.ok(oldMessageId);
+  store.bindUserMessageRuntimeRun(SID, oldMessageId, 'run-never-canonicalized');
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-never-canonicalized',
+    runtimeEvent: { runtimeId: 'runtime-terminal-page', runId: 'run-never-canonicalized', seq: 1 },
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'old partial answer',
+    turnId: 'turn-never-canonicalized',
+    runtimeEvent: { runtimeId: 'runtime-terminal-page', runId: 'run-never-canonicalized', seq: 2 },
+  });
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: SID,
+    turnId: 'turn-never-canonicalized',
+    runtimeEvent: { runtimeId: 'runtime-terminal-page', runId: 'run-never-canonicalized', seq: 3 },
+  });
+
+  // No intermediate history page ever contained the old turn. The first authoritative read after
+  // its terminal already starts beyond it, matching the reported long-running Session sequence.
+  store.prependSessionHistory(
+    SID,
+    [
+      { kind: 'history_truncation', scope: 'history', omittedItems: 105 },
+      {
+        kind: 'user',
+        content: 'current canonical query',
+        canonicalIndex: 105,
+        turnId: 'turn-current-terminal-page',
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 'current canonical answer',
+        canonicalIndex: 106,
+        turnId: 'turn-current-terminal-page',
+      },
+    ],
+    FALLBACK_SENT_AT,
+    {
+      replaceLoadedWindow: true,
+      sourceRevision: 'source-terminal-page',
+      settledRuntimeRuns: [
+        { runtimeId: 'runtime-terminal-page', runId: 'run-never-canonicalized' },
+      ],
+    },
+  );
+
+  const state = useAppStore.getState();
+  const visible = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  });
+  assert.deepEqual(
+    visible.flatMap((message) => {
+      if (message.kind === 'user') return [`user:${message.content}`];
+      if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+      return [];
+    }),
+    ['user:current canonical query', 'assistant:current canonical answer'],
+  );
+});
+
+test('canonical index watermarks fail open after the source revision changes', () => {
+  const store = useAppStore.getState();
+  const messageId = store.appendUserMessage(SID, 'revision-scoped live query', 32_000);
+  assert.ok(messageId);
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-revision-scoped',
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'revision-scoped answer',
+    turnId: 'turn-revision-scoped',
+  });
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: SID,
+    turnId: 'turn-revision-scoped',
+  });
+  store.prependSessionHistory(
+    SID,
+    [
+      { kind: 'history_truncation', scope: 'history', omittedItems: 80 },
+      {
+        kind: 'user',
+        content: 'revision-scoped live query',
+        canonicalIndex: 80,
+        turnId: 'turn-revision-scoped',
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 'revision-scoped answer',
+        canonicalIndex: 81,
+        turnId: 'turn-revision-scoped',
+      },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true, sourceRevision: 'source-before-compaction' },
+  );
+  store.prependSessionHistory(
+    SID,
+    [
+      { kind: 'history_truncation', scope: 'history', omittedItems: 105 },
+      {
+        kind: 'user',
+        content: 're-rooted current query',
+        canonicalIndex: 105,
+        turnId: 'turn-after-compaction',
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 're-rooted current answer',
+        canonicalIndex: 106,
+        turnId: 'turn-after-compaction',
+      },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true, sourceRevision: 'source-after-compaction' },
+  );
+
+  assert.equal(
+    (useAppStore.getState().userMessagesBySession[SID] ?? []).some(
+      (message) => message.content === 'revision-scoped live query',
+    ),
+    true,
+    'indexes from another canonical source cannot prove that the live owner moved out of window',
+  );
+});
+
+test('an exact open live extension survives a non-empty canonical assistant prefix', () => {
+  const store = useAppStore.getState();
+  const messageId = store.appendUserMessage(SID, 'active prefixed query', 33_000);
+  assert.ok(messageId);
+  store.bindUserMessageRuntimeRun(SID, messageId, 'run-active-prefix');
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-active-prefix',
+    runtimeEvent: { runtimeId: 'runtime-active-prefix', runId: 'run-active-prefix', seq: 1 },
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'committed prefix',
+    turnId: 'turn-active-prefix',
+    runtimeEvent: { runtimeId: 'runtime-active-prefix', runId: 'run-active-prefix', seq: 2 },
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: ' plus live suffix',
+    turnId: 'turn-active-prefix',
+    runtimeEvent: { runtimeId: 'runtime-active-prefix', runId: 'run-active-prefix', seq: 3 },
+  });
+
+  store.prependSessionHistory(
+    SID,
+    [
+      {
+        kind: 'user',
+        content: 'active prefixed query',
+        canonicalIndex: 0,
+        turnId: 'turn-active-prefix',
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 'committed prefix',
+        canonicalIndex: 1,
+        turnId: 'turn-active-prefix',
+      },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true, sourceRevision: 'source-active-prefix' },
+  );
+
+  const state = useAppStore.getState();
+  const visible = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  });
+  assert.equal(visible.filter((message) => message.kind === 'user').length, 1);
+  assert.equal(
+    visible.some(
+      (message) =>
+        message.kind === 'assistant_text' && message.text === 'committed prefix plus live suffix',
+    ),
+    true,
+  );
+  assert.equal(
+    state.userMessagesBySession[SID]?.some((message) => message.hiddenProjectionDuplicate === true),
+    false,
+  );
+});
+
+test('an open live extension preserves text and tool ordering after a canonical prefix', () => {
+  const store = useAppStore.getState();
+  const messageId = store.appendUserMessage(SID, 'active interleaved query', 33_500);
+  assert.ok(messageId);
+  store.bindUserMessageRuntimeRun(SID, messageId, 'run-active-interleaved');
+  const runtimeEvent = (seq: number) => ({
+    runtimeId: 'runtime-active-interleaved',
+    runId: 'run-active-interleaved',
+    seq,
+  });
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-active-interleaved',
+    runtimeEvent: runtimeEvent(1),
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'committed prefix',
+    turnId: 'turn-active-interleaved',
+    runtimeEvent: runtimeEvent(2),
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: ' before tool',
+    turnId: 'turn-active-interleaved',
+    runtimeEvent: runtimeEvent(3),
+  });
+  store.appendEvent({
+    kind: 'tool_start',
+    sessionId: SID,
+    toolId: 'tool-interleaved',
+    toolName: 'read',
+    input: { path: 'README.md' },
+    turnId: 'turn-active-interleaved',
+    runtimeEvent: runtimeEvent(4),
+  });
+  store.appendEvent({
+    kind: 'tool_result',
+    sessionId: SID,
+    toolId: 'tool-interleaved',
+    toolName: 'read',
+    content: 'file body',
+    turnId: 'turn-active-interleaved',
+    runtimeEvent: runtimeEvent(5),
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: ' after tool',
+    turnId: 'turn-active-interleaved',
+    runtimeEvent: runtimeEvent(6),
+  });
+  store.prependSessionHistory(
+    SID,
+    [
+      {
+        kind: 'user',
+        content: 'active interleaved query',
+        canonicalIndex: 0,
+        turnId: 'turn-active-interleaved',
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 'committed prefix',
+        canonicalIndex: 1,
+        turnId: 'turn-active-interleaved',
+      },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true, sourceRevision: 'source-active-interleaved' },
+  );
+
+  const state = useAppStore.getState();
+  const visible = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  }).flatMap((message) => {
+    if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+    if (message.kind === 'tool_call') return [`tool:${message.toolName}`];
+    return [];
+  });
+  assert.deepEqual(visible, [
+    'assistant:committed prefix before tool',
+    'tool:read',
+    'assistant: after tool',
+  ]);
+});
+
+test('an open live extension preserves durable notices before its ordered live suffix', () => {
+  const store = useAppStore.getState();
+  const messageId = store.appendUserMessage(SID, 'active notice query', 33_750);
+  assert.ok(messageId);
+  store.bindUserMessageRuntimeRun(SID, messageId, 'run-active-notice');
+  const runtimeEvent = (seq: number) => ({
+    runtimeId: 'runtime-active-notice',
+    runId: 'run-active-notice',
+    seq,
+  });
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-active-notice',
+    runtimeEvent: runtimeEvent(1),
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'committed prefix',
+    turnId: 'turn-active-notice',
+    runtimeEvent: runtimeEvent(2),
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: ' plus live suffix',
+    turnId: 'turn-active-notice',
+    runtimeEvent: runtimeEvent(3),
+  });
+  store.prependSessionHistory(
+    SID,
+    [
+      {
+        kind: 'user',
+        content: 'active notice query',
+        canonicalIndex: 0,
+        turnId: 'turn-active-notice',
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 'committed prefix',
+        canonicalIndex: 1,
+        turnId: 'turn-active-notice',
+      },
+      { kind: 'workflow_notice', text: 'durable workflow result' },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true, sourceRevision: 'source-active-notice' },
+  );
+
+  const state = useAppStore.getState();
+  const visible = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  }).flatMap((message) => {
+    if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+    if (message.kind === 'system_notice' && message.variant === 'workflow') {
+      return [`workflow:${message.text}`];
+    }
+    return [];
+  });
+  assert.deepEqual(visible, [
+    'assistant:committed prefix',
+    'workflow:durable workflow result',
+    'assistant: plus live suffix',
+  ]);
+});
+
+test('an open live extension keeps a live-only notice at its original position', () => {
+  const store = useAppStore.getState();
+  const messageId = store.appendUserMessage(SID, 'active live notice query', 33_875);
+  assert.ok(messageId);
+  store.bindUserMessageRuntimeRun(SID, messageId, 'run-active-live-notice');
+  const runtimeEvent = (seq: number) => ({
+    runtimeId: 'runtime-active-live-notice',
+    runId: 'run-active-live-notice',
+    seq,
+  });
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-active-live-notice',
+    runtimeEvent: runtimeEvent(1),
+  });
+  store.appendEvent({
+    kind: 'workflow_notice',
+    sessionId: SID,
+    text: 'live workflow progress',
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'committed prefix',
+    turnId: 'turn-active-live-notice',
+    runtimeEvent: runtimeEvent(2),
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: ' plus live suffix',
+    turnId: 'turn-active-live-notice',
+    runtimeEvent: runtimeEvent(3),
+  });
+
+  store.prependSessionHistory(
+    SID,
+    [
+      {
+        kind: 'user',
+        content: 'active live notice query',
+        canonicalIndex: 0,
+        turnId: 'turn-active-live-notice',
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 'committed prefix',
+        canonicalIndex: 1,
+        turnId: 'turn-active-live-notice',
+      },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true, sourceRevision: 'source-active-live-notice' },
+  );
+
+  const state = useAppStore.getState();
+  const visible = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  }).flatMap((message) => {
+    if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+    if (message.kind === 'system_notice' && message.variant === 'workflow') {
+      return [`workflow:${message.text}`];
+    }
+    return [];
+  });
+  assert.deepEqual(visible, [
+    'workflow:live workflow progress',
+    'assistant:committed prefix plus live suffix',
+  ]);
+});
+
+test('open reconciliation retains live notice order between covered content runs', () => {
+  const store = useAppStore.getState();
+  const messageId = store.appendUserMessage(SID, 'active inter-run notice query', 33_900);
+  assert.ok(messageId);
+  store.bindUserMessageRuntimeRun(SID, messageId, 'run-active-inter-run-notice');
+  const runtimeEvent = (seq: number) => ({
+    runtimeId: 'runtime-active-inter-run-notice',
+    runId: 'run-active-inter-run-notice',
+    seq,
+  });
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-active-inter-run-notice',
+    runtimeEvent: runtimeEvent(1),
+  });
+  store.appendEvent({
+    kind: 'thinking_delta',
+    sessionId: SID,
+    text: 'checked context',
+    turnId: 'turn-active-inter-run-notice',
+    runtimeEvent: runtimeEvent(2),
+  });
+  store.appendEvent({
+    kind: 'workflow_notice',
+    sessionId: SID,
+    text: 'live checkpoint',
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'committed answer',
+    turnId: 'turn-active-inter-run-notice',
+    runtimeEvent: runtimeEvent(3),
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: ' plus suffix',
+    turnId: 'turn-active-inter-run-notice',
+    runtimeEvent: runtimeEvent(4),
+  });
+
+  store.prependSessionHistory(
+    SID,
+    [
+      {
+        kind: 'user',
+        content: 'active inter-run notice query',
+        canonicalIndex: 0,
+        turnId: 'turn-active-inter-run-notice',
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        thinking: 'checked context',
+        text: 'committed answer',
+        canonicalIndex: 1,
+        turnId: 'turn-active-inter-run-notice',
+      },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true, sourceRevision: 'source-active-inter-run-notice' },
+  );
+
+  const state = useAppStore.getState();
+  const visible = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  }).flatMap((message) => {
+    if (message.kind === 'assistant_text') {
+      return [
+        ...(message.thinking === undefined ? [] : [`thinking:${message.thinking}`]),
+        ...(message.text.length === 0 ? [] : [`assistant:${message.text}`]),
+      ];
+    }
+    if (message.kind === 'system_notice' && message.variant === 'workflow') {
+      return [`workflow:${message.text}`];
+    }
+    return [];
+  });
+  assert.deepEqual(visible, [
+    'thinking:checked context',
+    'workflow:live checkpoint',
+    'assistant:committed answer plus suffix',
+  ]);
+});
+
+test('a live-only notice may split one canonical text prefix without duplicating the turn', () => {
+  const store = useAppStore.getState();
+  const messageId = store.appendUserMessage(SID, 'active split-text notice query', 33_925);
+  assert.ok(messageId);
+  store.bindUserMessageRuntimeRun(SID, messageId, 'run-active-split-text-notice');
+  const runtimeEvent = (seq: number) => ({
+    runtimeId: 'runtime-active-split-text-notice',
+    runId: 'run-active-split-text-notice',
+    seq,
+  });
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-active-split-text-notice',
+    runtimeEvent: runtimeEvent(1),
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'committed ',
+    turnId: 'turn-active-split-text-notice',
+    runtimeEvent: runtimeEvent(2),
+  });
+  store.appendEvent({ kind: 'workflow_notice', sessionId: SID, text: 'live checkpoint' });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'answer plus suffix',
+    turnId: 'turn-active-split-text-notice',
+    runtimeEvent: runtimeEvent(3),
+  });
+
+  store.prependSessionHistory(
+    SID,
+    [
+      {
+        kind: 'user',
+        content: 'active split-text notice query',
+        canonicalIndex: 0,
+        turnId: 'turn-active-split-text-notice',
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 'committed answer',
+        canonicalIndex: 1,
+        turnId: 'turn-active-split-text-notice',
+      },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true, sourceRevision: 'source-active-split-text-notice' },
+  );
+
+  const state = useAppStore.getState();
+  const visible = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  }).flatMap((message) => {
+    if (message.kind === 'user') return [`user:${message.content}`];
+    if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+    if (message.kind === 'system_notice' && message.variant === 'workflow') {
+      return [`workflow:${message.text}`];
+    }
+    return [];
+  });
+  assert.deepEqual(visible, [
+    'user:active split-text notice query',
+    'assistant:committed ',
+    'workflow:live checkpoint',
+    'assistant:answer plus suffix',
+  ]);
+});
+
+test('collapsed open reconciliation inserts a durable notice at its exact content offset', () => {
+  const store = useAppStore.getState();
+  const messageId = store.appendUserMessage(SID, 'active dual-notice query', 33_937);
+  assert.ok(messageId);
+  store.bindUserMessageRuntimeRun(SID, messageId, 'run-active-dual-notice');
+  const runtimeEvent = (seq: number) => ({
+    runtimeId: 'runtime-active-dual-notice',
+    runId: 'run-active-dual-notice',
+    seq,
+  });
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-active-dual-notice',
+    runtimeEvent: runtimeEvent(1),
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'committed ',
+    turnId: 'turn-active-dual-notice',
+    runtimeEvent: runtimeEvent(2),
+  });
+  store.appendEvent({ kind: 'workflow_notice', sessionId: SID, text: 'live checkpoint' });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'answer plus suffix',
+    turnId: 'turn-active-dual-notice',
+    runtimeEvent: runtimeEvent(3),
+  });
+
+  store.prependSessionHistory(
+    SID,
+    [
+      {
+        kind: 'user',
+        content: 'active dual-notice query',
+        canonicalIndex: 0,
+        turnId: 'turn-active-dual-notice',
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 'committed answer',
+        canonicalIndex: 1,
+        turnId: 'turn-active-dual-notice',
+      },
+      { kind: 'workflow_notice', text: 'durable result' },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true, sourceRevision: 'source-active-dual-notice' },
+  );
+
+  const state = useAppStore.getState();
+  const visible = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  }).flatMap((message) => {
+    if (message.kind === 'user') return [`user:${message.content}`];
+    if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+    if (message.kind === 'system_notice' && message.variant === 'workflow') {
+      return [`workflow:${message.text}`];
+    }
+    return [];
+  });
+  assert.deepEqual(visible, [
+    'user:active dual-notice query',
+    'assistant:committed ',
+    'workflow:live checkpoint',
+    'assistant:answer',
+    'workflow:durable result',
+    'assistant: plus suffix',
+  ]);
+});
+
+test('open reconciliation deduplicates matching root compaction stats', () => {
+  const store = useAppStore.getState();
+  const messageId = store.appendUserMessage(SID, 'active compact query', 33_950);
+  assert.ok(messageId);
+  store.bindUserMessageRuntimeRun(SID, messageId, 'run-active-compact');
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-active-compact',
+    runtimeEvent: { runtimeId: 'runtime-active-compact', runId: 'run-active-compact', seq: 1 },
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'committed compact answer plus suffix',
+    turnId: 'turn-active-compact',
+    runtimeEvent: { runtimeId: 'runtime-active-compact', runId: 'run-active-compact', seq: 2 },
+  });
+  store.appendEvent({
+    kind: 'compact_stats',
+    sessionId: SID,
+    tokensBefore: 120_000,
+    tokensAfter: 30_000,
+  });
+
+  store.prependSessionHistory(
+    SID,
+    [
+      {
+        kind: 'user',
+        content: 'active compact query',
+        canonicalIndex: 0,
+        turnId: 'turn-active-compact',
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 'committed compact answer',
+        canonicalIndex: 1,
+        turnId: 'turn-active-compact',
+      },
+      {
+        kind: 'lineage_notice',
+        noticeKind: 'compaction',
+        text: 'context compacted',
+        tokensBefore: 120_000,
+        tokensAfter: 30_000,
+      },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true, sourceRevision: 'source-active-compact' },
+  );
+
+  const events = useAppStore.getState().eventsBySession[SID] ?? [];
+  assert.equal(
+    events.filter(
+      (event) =>
+        event.kind === 'compact_stats' &&
+        event.contextKind !== 'child' &&
+        event.tokensBefore === 120_000 &&
+        event.tokensAfter === 30_000,
+    ).length,
+    1,
+  );
+});
+
+test('open reconciliation preserves repeated durable notices beyond live multiplicity', () => {
+  const store = useAppStore.getState();
+  const messageId = store.appendUserMessage(SID, 'active repeated notice query', 33_975);
+  assert.ok(messageId);
+  store.bindUserMessageRuntimeRun(SID, messageId, 'run-active-repeated-notice');
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-active-repeated-notice',
+    runtimeEvent: {
+      runtimeId: 'runtime-active-repeated-notice',
+      runId: 'run-active-repeated-notice',
+      seq: 1,
+    },
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'committed repeated answer plus suffix',
+    turnId: 'turn-active-repeated-notice',
+    runtimeEvent: {
+      runtimeId: 'runtime-active-repeated-notice',
+      runId: 'run-active-repeated-notice',
+      seq: 2,
+    },
+  });
+  store.appendEvent({ kind: 'workflow_notice', sessionId: SID, text: 'same notice' });
+
+  store.prependSessionHistory(
+    SID,
+    [
+      {
+        kind: 'user',
+        content: 'active repeated notice query',
+        canonicalIndex: 0,
+        turnId: 'turn-active-repeated-notice',
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 'committed repeated answer',
+        canonicalIndex: 1,
+        turnId: 'turn-active-repeated-notice',
+      },
+      { kind: 'workflow_notice', text: 'same notice' },
+      { kind: 'workflow_notice', text: 'same notice' },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true, sourceRevision: 'source-active-repeated-notice' },
+  );
+
+  const visible = composeMessages({
+    events: useAppStore.getState().eventsBySession[SID] ?? [],
+    userMessages: useAppStore.getState().userMessagesBySession[SID] ?? [],
+  });
+  assert.equal(
+    visible.filter(
+      (message) =>
+        message.kind === 'system_notice' &&
+        message.variant === 'workflow' &&
+        message.text === 'same notice',
+    ).length,
+    2,
+  );
+});
+
+test('open reconciliation never deduplicates equal notices across content gaps', () => {
+  const store = useAppStore.getState();
+  const messageId = store.appendUserMessage(SID, 'active cross-gap notice query', 33_990);
+  assert.ok(messageId);
+  store.bindUserMessageRuntimeRun(SID, messageId, 'run-active-cross-gap-notice');
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-active-cross-gap-notice',
+    runtimeEvent: {
+      runtimeId: 'runtime-active-cross-gap-notice',
+      runId: 'run-active-cross-gap-notice',
+      seq: 1,
+    },
+  });
+  store.appendEvent({ kind: 'workflow_notice', sessionId: SID, text: 'same-position-text' });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'committed cross-gap answer plus suffix',
+    turnId: 'turn-active-cross-gap-notice',
+    runtimeEvent: {
+      runtimeId: 'runtime-active-cross-gap-notice',
+      runId: 'run-active-cross-gap-notice',
+      seq: 2,
+    },
+  });
+
+  store.prependSessionHistory(
+    SID,
+    [
+      {
+        kind: 'user',
+        content: 'active cross-gap notice query',
+        canonicalIndex: 0,
+        turnId: 'turn-active-cross-gap-notice',
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 'committed cross-gap answer',
+        canonicalIndex: 1,
+        turnId: 'turn-active-cross-gap-notice',
+      },
+      { kind: 'workflow_notice', text: 'same-position-text' },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true, sourceRevision: 'source-active-cross-gap-notice' },
+  );
+
+  const state = useAppStore.getState();
+  const visible = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  }).flatMap((message) => {
+    if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+    if (message.kind === 'system_notice' && message.variant === 'workflow') {
+      return [`workflow:${message.text}`];
+    }
+    return [];
+  });
+  assert.deepEqual(visible, [
+    'workflow:same-position-text',
+    'assistant:committed cross-gap answer',
+    'workflow:same-position-text',
+    'assistant: plus suffix',
+  ]);
+});
+
 test('an after-turn queue promotion carries its exact admitted Runtime run identity', () => {
   const store = useAppStore.getState();
   const localId = store.appendQueuedUserMessage(SID, {
@@ -2653,6 +4366,134 @@ test('manual queued promotion returns the admitted message id for exact ACK bind
     )?.sourceQueuedLocalId,
     localId,
   );
+});
+
+test('an interrupt delivery boundary cannot bind the previous anonymous owner', () => {
+  const store = useAppStore.getState();
+  const firstMessageId = store.appendUserMessage(SID, 'first query', 30_000);
+  assert.ok(firstMessageId);
+  store.bindUserMessageRuntimeRun(SID, firstMessageId, 'run-shared');
+  useAppStore.setState((state) => ({
+    userMessagesBySession: {
+      ...state.userMessagesBySession,
+      [SID]: (state.userMessagesBySession[SID] ?? []).map((message) =>
+        message.id === firstMessageId ? { ...message, entryId: 'entry-first-query' } : message,
+      ),
+    },
+  }));
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'first answer',
+  });
+
+  const queuedId = store.appendQueuedUserMessage(SID, {
+    content: 'second query',
+    matchContent: 'second query',
+    queueMode: 'interrupt',
+    sentAt: 30_100,
+  });
+  assert.ok(queuedId);
+  store.markQueuedUserMessageAccepted(SID, queuedId, 'run-shared', 'interrupt');
+  store.appendEvent({
+    kind: 'mid_turn_user_prompt',
+    sessionId: SID,
+    queueId: 'delivery-second',
+    content: 'second query',
+    entryId: 'entry-second-query',
+    turnId: 'turn-second',
+    turnUserOrdinal: 0,
+    runtimeEvent: { runtimeId: 'runtime-shared', runId: 'run-shared', seq: 10 },
+  });
+
+  let state = useAppStore.getState();
+  const firstOwner = state.userMessagesBySession[SID]?.find(
+    (message) => message.id === firstMessageId,
+  );
+  const secondOwner = state.userMessagesBySession[SID]?.find(
+    (message) => message.content === 'second query',
+  );
+  assert.equal(firstOwner?.turnId, undefined);
+  assert.deepEqual(secondOwner && [secondOwner.turnId, secondOwner.turnUserOrdinal], [
+    'turn-second',
+    0,
+  ]);
+
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'second answer',
+    turnId: 'turn-second',
+    runtimeEvent: { runtimeId: 'runtime-shared', runId: 'run-shared', seq: 11 },
+  });
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: SID,
+    turnId: 'turn-second',
+    runtimeEvent: { runtimeId: 'runtime-shared', runId: 'run-shared', seq: 12 },
+  });
+  state = useAppStore.getState();
+  let visible = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  }).flatMap((message) => {
+    if (message.kind === 'user') return [`user:${message.content}`];
+    if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+    return [];
+  });
+  assert.deepEqual(visible, [
+    'user:first query',
+    'assistant:first answer',
+    'user:second query',
+    'assistant:second answer',
+  ]);
+
+  store.prependSessionHistory(
+    SID,
+    [
+      {
+        kind: 'user',
+        content: 'first query',
+        sentAt: 30_000,
+        entryId: 'entry-first-query',
+        canonicalIndex: 0,
+      },
+      { kind: 'assistant', text: 'first answer', sentAt: 30_050, canonicalIndex: 1 },
+      {
+        kind: 'user',
+        content: 'second query',
+        sentAt: 30_100,
+        entryId: 'entry-second-query',
+        canonicalIndex: 2,
+        turnId: 'turn-second',
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 'second answer',
+        sentAt: 30_150,
+        canonicalIndex: 3,
+        turnId: 'turn-second',
+      },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true },
+  );
+  state = useAppStore.getState();
+  visible = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  }).flatMap((message) => {
+    if (message.kind === 'user') return [`user:${message.content}`];
+    if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+    return [];
+  });
+  assert.deepEqual(visible, [
+    'user:first query',
+    'assistant:first answer',
+    'user:second query',
+    'assistant:second answer',
+  ]);
 });
 
 test('a later interrupt cannot steal an earlier history/live-overlap response segment', () => {
@@ -2848,7 +4689,7 @@ test('a later interrupt cannot steal an earlier history/live-overlap response se
   );
 });
 
-test('a mismatched live terminal unhides rather than deletes an ambiguous projection', () => {
+test('a mismatched live terminal preserves an already-visible ambiguous projection', () => {
   const store = useAppStore.getState();
   store.appendUserMessage(SID, 'identity mismatch safety', 10_000);
   store.appendEvent({
@@ -2881,7 +4722,7 @@ test('a mismatched live terminal unhides rather than deletes an ambiguous projec
     useAppStore
       .getState()
       .userMessagesBySession[SID]?.some((message) => message.hiddenProjectionDuplicate === true),
-    true,
+    false,
   );
 
   store.appendEvent({
@@ -2983,7 +4824,7 @@ test('an in-flight final turn does not prevent an earlier strong-identity fold',
     events: state.eventsBySession[SID] ?? [],
     userMessages: users,
   });
-  assert.equal(out.filter((message) => message.kind === 'user').length, 2);
+  assert.equal(out.filter((message) => message.kind === 'user').length, 3);
   assert.equal(
     out.some(
       (message) => message.kind === 'assistant_text' && message.text === 'durable running snapshot',
@@ -2994,8 +4835,8 @@ test('an in-flight final turn does not prevent an earlier strong-identity fold',
     out.some(
       (message) => message.kind === 'assistant_text' && message.text === 'partial live answer',
     ),
-    false,
-    'the open live projection remains paired but hidden until its terminal arrives',
+    true,
+    'divergent open live content remains visible while the earlier completed turn still folds',
   );
 });
 

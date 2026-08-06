@@ -138,9 +138,12 @@ import {
   collectSpaceExitWorkBlockers,
   commitRelaunchBeforeDelayedQuit,
   resolveBlockedCompleteExitAction,
+  resolveFailedCompleteExitAction,
+  shouldRetryDaemonStopAfterFailedCompleteExit,
   runAdmittedCompleteExit,
   runForcedCompleteExit,
   shouldCancelSessionWideOnForcedExit,
+  shouldCountLocalSessionExitBlocker,
   shouldRecoverRuntimeAfterShutdownTimeout,
   shouldRequestCompleteExitOnBeforeQuit,
 } from './window/complete-exit-policy.js';
@@ -1290,8 +1293,8 @@ async function showRuntimeExitRecoveryNoticeIfNeeded(): Promise<void> {
       ? '未能确认 Coder Runtime 已安全停止'
       : 'Coder Runtime shutdown could not be confirmed',
     detail: zh
-      ? '为避免留下不可见的 daemon，Space 已自动恢复可见控制界面。请完成或取消仍在运行的任务，然后再次退出；诊断日志中保留了本次停止失败原因。'
-      : 'Space restored its visible control surface instead of leaving an invisible daemon. Finish or cancel remaining work, then quit again. The stop failure is retained in diagnostics.',
+      ? 'Runtime 停止验证失败后，Space 已重启并恢复有效的控制代次。请查看保留的诊断信息，然后再次尝试完整退出。'
+      : 'Space restarted to restore a valid Runtime control generation after shutdown verification failed. Review the retained diagnostics, then retry complete exit.',
     buttons: [zh ? '确定' : 'OK'],
     defaultId: 0,
     noLink: true,
@@ -1455,12 +1458,27 @@ async function collectBackgroundRuntimeStatus(): Promise<BackgroundRuntimeStatus
   }
 }
 
-async function collectActiveSpaceExitBlockers(): Promise<readonly string[]> {
-  const runningSessions = kodaxHost.listInFlight().filter((session) => session.isRunning()).length;
+async function collectActiveSpaceExitBlockers(
+  runtimeStatus?: Promise<BackgroundRuntimeStatus>,
+): Promise<readonly string[]> {
+  const externalTasksPromise = externalAgentGateway.listTasks();
+  const runtime = runtimeStatus === undefined ? undefined : await runtimeStatus;
+  const runtimeSelected = runtimeHostAdapter.selectedHost() === 'runtime';
+  const runningSessions = kodaxHost
+    .listInFlight()
+    .filter(
+      (session) =>
+        session.isRunning() &&
+        shouldCountLocalSessionExitBlocker({
+          surface: session.surface,
+          runtimeSelected,
+          runtimeAuthorityReady: runtime?.state === 'ready',
+        }),
+    ).length;
   const runningWorkflows = workflowController
     .list()
     .filter((run) => run.status === 'running' || run.status === 'paused').length;
-  const externalTasks = await externalAgentGateway.listTasks();
+  const externalTasks = await externalTasksPromise;
   const activeExternalTasks = externalTasks.filter(
     (task) =>
       task.state !== 'completed' &&
@@ -1554,16 +1572,18 @@ async function tryStopDaemonAfterForcedExitCancellation(): Promise<boolean> {
   return true;
 }
 
-async function forceCompleteExit(): Promise<void> {
+async function forceCompleteExit(options: { readonly skipDaemonStop?: boolean } = {}): Promise<void> {
   const result = await runForcedCompleteExit({
     hideControlSurface: hideExitControlSurfaceForBackgroundShutdown,
     stopOwnedWork: () =>
       runForcedExitStep('Space task cancellation', stopSpaceOwnedWorkForForcedExit()),
-    tryStopDaemon: () =>
-      runForcedExitStep(
-        'Runtime shutdown after forced cancellation',
-        tryStopDaemonAfterForcedExitCancellation(),
-      ),
+    tryStopDaemon: options.skipDaemonStop === true
+      ? async () => false
+      : () =>
+          runForcedExitStep(
+            'Runtime shutdown after forced cancellation',
+            tryStopDaemonAfterForcedExitCancellation(),
+          ),
     commitExit: (outcome) => {
       forcedExitCommitted = true;
       daemonStopConfirmedBeforeQuit = outcome.daemonStopConfirmed;
@@ -1587,12 +1607,14 @@ async function requestCompleteExit(): Promise<void> {
   console.info('[main] complete exit requested; preparing safe shutdown');
   let reopenCoderAdmission: (() => void) | undefined;
   let exitCommitted = false;
+  let keepCoderAdmissionClosed = false;
   try {
     reopenCoderAdmission = await beginCoderShutdown?.();
     const locale = await resolveCurrentTrayLocale();
+    const runtimeStatus = collectBackgroundRuntimeStatus();
     const [runtime, spaceBlockers] = await Promise.all([
-      collectBackgroundRuntimeStatus(),
-      collectActiveSpaceExitBlockers(),
+      runtimeStatus,
+      collectActiveSpaceExitBlockers(runtimeStatus),
     ]);
     const runtimeBlockers = runtime.state === 'ready' && !runtime.canStop ? runtime.blockers : [];
     const blockers = [...spaceBlockers, ...runtimeBlockers];
@@ -1622,8 +1644,8 @@ async function requestCompleteExit(): Promise<void> {
       return;
     }
     await runAdmittedCompleteExit({
-      // Admission is complete: make the app disappear now while Runtime and
-      // child-process cleanup continues in the background.
+      // Keep the progress surface visible until Runtime shutdown is verified; hiding and commit
+      // then happen adjacently so a fail-closed stop never looks like Space quit and reopened.
       hideControlSurface: hideExitControlSurfaceForBackgroundShutdown,
       stopDaemon: () => runtimeHostAdapter.stopDaemonForCompleteExit(),
       commitExit: () => {
@@ -1634,14 +1656,6 @@ async function requestCompleteExit(): Promise<void> {
       },
     });
   } catch (error) {
-    if (
-      isCoderOwnerRecoveryRestartRequired(error) &&
-      scheduleRuntimeExitRecovery('daemon owner policy recovery requires a restart')
-    ) {
-      exitCommitted = true;
-      app.exit(0);
-      return;
-    }
     restoreVisibleExitControlSurface();
     const locale = await resolveCurrentTrayLocale().catch((localeError) => {
       console.warn(
@@ -1669,13 +1683,29 @@ async function requestCompleteExit(): Promise<void> {
       cancelId: 0,
       noLink: true,
     });
-    if (resolveBlockedCompleteExitAction(result.response) === 'force-close') {
+    const failureAction = resolveFailedCompleteExitAction(
+      result.response,
+      isCoderOwnerRecoveryRestartRequired(error),
+    );
+    if (failureAction === 'force-close') {
       exitCommitted = true;
-      await forceCompleteExit();
+      await forceCompleteExit({
+        skipDaemonStop: !shouldRetryDaemonStopAfterFailedCompleteExit(
+          isCoderOwnerRecoveryRestartRequired(error),
+        ),
+      });
+    } else if (failureAction === 'restart-recovery') {
+      if (scheduleRuntimeExitRecovery('daemon shutdown recovery requires a restart')) {
+        exitCommitted = true;
+        app.exit(0);
+      } else {
+        keepCoderAdmissionClosed = true;
+        keepSpaceVisibleAfterRecoveryRelaunchFailure();
+      }
     }
   } finally {
     if (!exitCommitted) {
-      reopenCoderAdmission?.();
+      if (!keepCoderAdmissionClosed) reopenCoderAdmission?.();
       setCompleteExitProgress(false);
     }
     completeExitRequested = false;

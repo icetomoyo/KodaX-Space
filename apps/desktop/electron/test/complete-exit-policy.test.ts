@@ -8,7 +8,10 @@ import {
   runAdmittedCompleteExit,
   runForcedCompleteExit,
   resolveBlockedCompleteExitAction,
+  resolveFailedCompleteExitAction,
+  shouldRetryDaemonStopAfterFailedCompleteExit,
   shouldCancelSessionWideOnForcedExit,
+  shouldCountLocalSessionExitBlocker,
   shouldRecoverRuntimeAfterShutdownTimeout,
   shouldRequestCompleteExitOnBeforeQuit,
 } from '../window/complete-exit-policy.js';
@@ -82,6 +85,14 @@ test('blocked complete exit requires the explicit destructive response', () => {
   }
 });
 
+test('failed complete exit restarts only after a committed Runtime stop', () => {
+  assert.equal(resolveFailedCompleteExitAction(0, false), 'keep-open');
+  assert.equal(resolveFailedCompleteExitAction(0, true), 'restart-recovery');
+  assert.equal(resolveFailedCompleteExitAction(1, true), 'force-close');
+  assert.equal(shouldRetryDaemonStopAfterFailedCompleteExit(false), true);
+  assert.equal(shouldRetryDaemonStopAfterFailedCompleteExit(true), false);
+});
+
 test('forced shutdown timeouts never schedule Runtime recovery', () => {
   assert.equal(
     shouldRecoverRuntimeAfterShutdownTimeout({
@@ -121,6 +132,24 @@ test('forced exit never applies a Session-wide Stop to daemon-backed Coder work'
   );
 });
 
+test('authoritative daemon idle ignores only stale local daemon Coder activity', () => {
+  assert.equal(
+    shouldCountLocalSessionExitBlocker({
+      surface: 'code',
+      runtimeSelected: true,
+      runtimeAuthorityReady: true,
+    }),
+    false,
+  );
+  for (const input of [
+    { surface: 'partner' as const, runtimeSelected: true, runtimeAuthorityReady: true },
+    { surface: 'code' as const, runtimeSelected: false, runtimeAuthorityReady: true },
+    { surface: 'code' as const, runtimeSelected: true, runtimeAuthorityReady: false },
+  ]) {
+    assert.equal(shouldCountLocalSessionExitBlocker(input), true);
+  }
+});
+
 test('complete exit reports every Space-owned executable-work blocker', () => {
   assert.deepEqual(
     collectSpaceExitWorkBlockers({
@@ -153,7 +182,7 @@ test('complete exit reports every Space-owned executable-work blocker', () => {
   );
 });
 
-test('admitted complete exit hides its surface before daemon shutdown finishes', async () => {
+test('admitted complete exit keeps its surface visible until daemon shutdown is verified', async () => {
   const events: string[] = [];
   let finishDaemonStop: (() => void) | undefined;
   const daemonStopped = new Promise<void>((resolve) => {
@@ -170,18 +199,18 @@ test('admitted complete exit hides its surface before daemon shutdown finishes',
     commitExit: () => events.push('exit:committed'),
   });
 
-  assert.deepEqual(events, ['surface:hidden', 'daemon:stopping']);
+  assert.deepEqual(events, ['daemon:stopping']);
   finishDaemonStop?.();
   await exit;
   assert.deepEqual(events, [
-    'surface:hidden',
     'daemon:stopping',
     'daemon:stopped',
+    'surface:hidden',
     'exit:committed',
   ]);
 });
 
-test('failed admitted shutdown stays uncommitted after its surface was hidden', async () => {
+test('failed admitted shutdown stays visible and uncommitted', async () => {
   const events: string[] = [];
   const failure = new Error('daemon stop failed');
 
@@ -196,7 +225,7 @@ test('failed admitted shutdown stays uncommitted after its surface was hidden', 
     }),
     failure,
   );
-  assert.deepEqual(events, ['surface:hidden', 'daemon:stopping']);
+  assert.deepEqual(events, ['daemon:stopping']);
 });
 
 test('forced complete exit stops Space-owned work before attempting daemon shutdown', async () => {

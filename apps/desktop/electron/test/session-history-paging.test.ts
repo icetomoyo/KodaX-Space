@@ -242,6 +242,202 @@ test('terminal evidence before first history is satisfied by that first post-ter
   );
 });
 
+test('the exact terminal history scope prunes an omitted never-folded live owner', async () => {
+  const sessionId = 'history-paging-terminal-prunes-never-folded';
+  useAppStore.setState({
+    sessions: [
+      {
+        sessionId,
+        projectRoot: '/project',
+        provider: 'mock',
+        reasoningMode: 'auto',
+        permissionMode: 'accept-edits',
+        autoModeEngine: 'llm',
+        agentMode: 'ama',
+        surface: 'code',
+        createdAt: 1_000,
+        lastActivityAt: 1_000,
+      },
+    ],
+    currentSessionId: sessionId,
+    eventsBySession: {},
+    userMessagesBySession: {},
+  });
+  const store = useAppStore.getState();
+  const messageId = store.appendUserMessage(sessionId, 'old live query', 1_100);
+  assert.ok(messageId);
+  store.bindUserMessageRuntimeRun(sessionId, messageId, 'run_terminal_prune');
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId,
+    provider: 'mock',
+    turnId: 'turn-terminal-prune',
+    runtimeEvent: { runtimeId: 'rt_terminal_prune', runId: 'run_terminal_prune', seq: 1 },
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId,
+    text: 'old live answer',
+    turnId: 'turn-terminal-prune',
+    runtimeEvent: { runtimeId: 'rt_terminal_prune', runId: 'run_terminal_prune', seq: 2 },
+  });
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId,
+    turnId: 'turn-terminal-prune',
+    runtimeEvent: { runtimeId: 'rt_terminal_prune', runId: 'run_terminal_prune', seq: 3 },
+  });
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    writable: true,
+    value: {
+      kodaxSpace: {
+        invoke: mockHistoryInvoke(async () => ({
+          ok: true as const,
+          data: {
+            items: [
+              { kind: 'history_truncation' as const, scope: 'history' as const, omittedItems: 105 },
+              {
+                kind: 'user' as const,
+                content: 'current canonical query',
+                canonicalIndex: 105,
+              },
+              {
+                kind: 'assistant' as const,
+                text: 'current canonical answer',
+                canonicalIndex: 106,
+              },
+            ],
+            conversation: { status: 'resolved' as const },
+            page: {
+              outcome: 'ready' as const,
+              revision: 'revision-terminal-prune',
+              sourceRevision: 'source-terminal-prune',
+              hasMore: false,
+              windowMode: 'replace' as const,
+              hasNewer: false,
+            },
+          },
+        })),
+      },
+    },
+  });
+
+  const terminal = {
+    sessionId,
+    runtimeId: 'rt_terminal_prune',
+    runId: 'run_terminal_prune',
+    phase: 'completed' as const,
+    cursorSeq: 3,
+  };
+  await reconcileTerminalSessionHistory(terminal);
+  await restoreNewestSessionHistory(sessionId, 'code');
+
+  assert.deepEqual(
+    composeMessages({
+      userMessages: useAppStore.getState().userMessagesBySession[sessionId] ?? [],
+      events: useAppStore.getState().eventsBySession[sessionId] ?? [],
+    }).flatMap((message) => {
+      if (message.kind === 'user') return [`user:${message.content}`];
+      if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+      return [];
+    }),
+    ['user:current canonical query', 'assistant:current canonical answer'],
+  );
+});
+
+test('an unresolved terminal history page cannot prune an omitted live owner', async () => {
+  const sessionId = 'history-paging-partial-terminal-keeps-live';
+  useAppStore.setState({
+    sessions: [
+      {
+        sessionId,
+        projectRoot: '/project',
+        provider: 'mock',
+        reasoningMode: 'auto',
+        permissionMode: 'accept-edits',
+        autoModeEngine: 'llm',
+        agentMode: 'ama',
+        surface: 'code',
+        createdAt: 1_000,
+        lastActivityAt: 1_000,
+      },
+    ],
+    currentSessionId: sessionId,
+    eventsBySession: {},
+    userMessagesBySession: {},
+  });
+  const store = useAppStore.getState();
+  const messageId = store.appendUserMessage(sessionId, 'ambiguous live query', 1_100);
+  assert.ok(messageId);
+  store.bindUserMessageRuntimeRun(sessionId, messageId, 'run_partial_terminal');
+  for (const event of [
+    {
+      kind: 'session_start' as const,
+      provider: 'mock',
+      turnId: 'turn-partial-terminal',
+      runtimeEvent: { runtimeId: 'rt_partial_terminal', runId: 'run_partial_terminal', seq: 1 },
+    },
+    {
+      kind: 'text_delta' as const,
+      text: 'ambiguous live answer',
+      turnId: 'turn-partial-terminal',
+      runtimeEvent: { runtimeId: 'rt_partial_terminal', runId: 'run_partial_terminal', seq: 2 },
+    },
+    {
+      kind: 'session_complete' as const,
+      turnId: 'turn-partial-terminal',
+      runtimeEvent: { runtimeId: 'rt_partial_terminal', runId: 'run_partial_terminal', seq: 3 },
+    },
+  ]) {
+    store.appendEvent({ ...event, sessionId });
+  }
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    writable: true,
+    value: {
+      kodaxSpace: {
+        invoke: mockHistoryInvoke(async () => ({
+          ok: true as const,
+          data: {
+            items: [
+              { kind: 'history_truncation' as const, scope: 'history' as const, omittedItems: 105 },
+              { kind: 'user' as const, content: 'uncertain canonical tail', canonicalIndex: 105 },
+            ],
+            conversation: { status: 'partial' as const },
+            page: {
+              outcome: 'ready' as const,
+              revision: 'revision-partial-terminal',
+              sourceRevision: 'source-partial-terminal',
+              hasMore: false,
+              windowMode: 'replace' as const,
+              hasNewer: false,
+            },
+          },
+        })),
+      },
+    },
+  });
+
+  await reconcileTerminalSessionHistory({
+    sessionId,
+    runtimeId: 'rt_partial_terminal',
+    runId: 'run_partial_terminal',
+    phase: 'completed',
+    cursorSeq: 3,
+  });
+  await restoreNewestSessionHistory(sessionId, 'code');
+
+  assert.equal(
+    useAppStore
+      .getState()
+      .userMessagesBySession[
+        sessionId
+      ]?.some((message) => message.content === 'ambiguous live query'),
+    true,
+  );
+});
+
 test('terminal evidence overtaking an in-flight newest read restarts from newest once', async () => {
   const sessionId = 'history-paging-terminal-overtakes-read';
   useAppStore.setState({
@@ -840,6 +1036,8 @@ afterEach(() => {
     'history-paging-active-warning-overtaken',
     'history-paging-older-warning-window',
     'history-paging-foreign-owner',
+    'history-paging-terminal-prunes-never-folded',
+    'history-paging-partial-terminal-keeps-live',
   ]) {
     deactivateSessionHistoryPaging(sessionId);
   }

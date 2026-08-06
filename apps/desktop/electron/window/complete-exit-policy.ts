@@ -29,9 +29,25 @@ export function daemonStopWasConfirmed(result: {
 }
 
 export type BlockedCompleteExitAction = 'keep-open' | 'force-close';
+export type FailedCompleteExitAction = BlockedCompleteExitAction | 'restart-recovery';
 
 export function resolveBlockedCompleteExitAction(response: number): BlockedCompleteExitAction {
   return response === 1 ? 'force-close' : 'keep-open';
+}
+
+export function resolveFailedCompleteExitAction(
+  response: number,
+  restartRequired: boolean,
+): FailedCompleteExitAction {
+  const action = resolveBlockedCompleteExitAction(response);
+  if (action === 'force-close') return action;
+  return restartRequired ? 'restart-recovery' : 'keep-open';
+}
+
+export function shouldRetryDaemonStopAfterFailedCompleteExit(
+  restartRequired: boolean,
+): boolean {
+  return !restartRequired;
 }
 
 /**
@@ -55,6 +71,19 @@ export function shouldCancelSessionWideOnForcedExit(input: {
   readonly runtimeSelected: boolean;
 }): boolean {
   return input.surface !== 'code' || !input.runtimeSelected;
+}
+
+/**
+ * A ready daemon preflight is authoritative for daemon-backed Coder Runs. Local stream cleanup may
+ * lag its terminal fact and must not create a false first-close blocker. Partner, Embedded, and an
+ * unavailable Runtime remain locally fail-closed.
+ */
+export function shouldCountLocalSessionExitBlocker(input: {
+  readonly surface: 'code' | 'partner';
+  readonly runtimeSelected: boolean;
+  readonly runtimeAuthorityReady: boolean;
+}): boolean {
+  return input.surface !== 'code' || !input.runtimeSelected || !input.runtimeAuthorityReady;
 }
 
 export interface SpaceExitWorkSnapshot {
@@ -86,18 +115,17 @@ export function collectSpaceExitWorkBlockers(snapshot: SpaceExitWorkSnapshot): r
 }
 
 /**
- * Once complete-exit admission has proven there is no active work to protect,
- * remove the control surface before waiting for daemon shutdown. The process
- * can continue its bounded cleanup in the background; callers remain
- * responsible for restoring the surface if shutdown fails closed.
+ * Keep the visible progress surface until daemon shutdown is authoritatively
+ * verified. Hiding first makes a fail-closed cleanup look like Space quit and
+ * then reopened. Once cleanup succeeds, hiding and committing are adjacent.
  */
 export async function runAdmittedCompleteExit(input: {
   readonly hideControlSurface: () => void;
   readonly stopDaemon: () => Promise<void>;
   readonly commitExit: () => void;
 }): Promise<void> {
-  input.hideControlSurface();
   await input.stopDaemon();
+  input.hideControlSurface();
   input.commitExit();
 }
 

@@ -1025,163 +1025,162 @@ export function registerSessionChannels(options: SessionChannelsOptions = {}): v
   //     不验证 abs path / no NUL / no ..
   //   - 用 path.normalize 后比较——避免 trailing slash / 大小写差异导致 filter miss
   //     （比如 session 存了 /Users/foo/proj，renderer 传 /Users/foo/proj/ 应该匹配）
-  registerChannel('session.list', (input) =>
-    runWithCoderAdmission(options, async () => {
-      // reviewer MEDIUM-3: projectFilter 必须在传给 listMerged 前 normalize，
-      // 让 SDK 层和 IPC 层比较同一形态（避免 Windows 路径 / 大小写 / trailing
-      // slash 不一致让 persisted session 静默丢失）。
-      // F005 v0.1.5：filter 必须是 allowlist 项目；保留 unfiltered（全部 session）路径。
-      let projectFilter: string | undefined;
-      if (input?.projectRoot !== undefined) {
-        projectFilter = canonProjectRoot(await projectStore.assertAllowed(input.projectRoot));
-      }
-      // FEATURE_038: 合并视图 — in-flight (in-memory) ∪ SDK persisted
-      // 传给 host.listMerged 的 projectRoot 是 canonical 形态（SDK listSessions 内部
-      // 自己 normalize；当前 SDK 版本 projectRoot filter 不严格——本层再过一道 canon
-      // 比较兜底）。
-      // F045: surface 过滤透传给 host.listMerged（在合并 in-flight ∪ persisted 后统一 filter）。
-      // 不传 = 全部（含历史无 tag 的，向后兼容）。Coder = surface!=='partner'，Partner = 'partner'。
-      const merged = await kodaxHost.listMerged({
-        projectRoot: projectFilter,
-        surface: input?.surface,
-        limit: input?.limit,
-      });
+  // Read-only hydration deliberately stays outside executable Coder admission. Navigation must
+  // not delay a mode switch or complete exit after all real work has stopped.
+  registerChannel('session.list', async (input) => {
+    // reviewer MEDIUM-3: projectFilter 必须在传给 listMerged 前 normalize，
+    // 让 SDK 层和 IPC 层比较同一形态（避免 Windows 路径 / 大小写 / trailing
+    // slash 不一致让 persisted session 静默丢失）。
+    // F005 v0.1.5：filter 必须是 allowlist 项目；保留 unfiltered（全部 session）路径。
+    let projectFilter: string | undefined;
+    if (input?.projectRoot !== undefined) {
+      projectFilter = canonProjectRoot(await projectStore.assertAllowed(input.projectRoot));
+    }
+    // FEATURE_038: 合并视图 — in-flight (in-memory) ∪ SDK persisted
+    // 传给 host.listMerged 的 projectRoot 是 canonical 形态（SDK listSessions 内部
+    // 自己 normalize；当前 SDK 版本 projectRoot filter 不严格——本层再过一道 canon
+    // 比较兜底）。
+    // F045: surface 过滤透传给 host.listMerged（在合并 in-flight ∪ persisted 后统一 filter）。
+    // 不传 = 全部（含历史无 tag 的，向后兼容）。Coder = surface!=='partner'，Partner = 'partner'。
+    const merged = await kodaxHost.listMerged({
+      projectRoot: projectFilter,
+      surface: input?.surface,
+      limit: input?.limit,
+    });
 
-      // Persisted session 没有真运行时设置——磁盘上只 SDK lineage + gitRoot。先准备一份
-      // user-defaults 兜底，给 sidebar UI 占位用（避免显示 "mock" 让用户以为整个 SDK 是 mock）。
-      // loadKodaxUserDefaults 模块级缓存命中后零成本; providerConfigStore.load 自己缓存。
-      // 并行 await 两个 promise——它们彼此无依赖，并行版省一个 turn 调度 ms。
-      // tryResume 路径走相同 resolution，两边对齐，避免 UI 一闪即变。
-      let persistedProviderFallback = 'mock';
-      let persistedModelFallback: string | undefined;
-      const [[udResult, providerLoadResult], baseRuntimeDefaults, kodaxCustomProviders] =
-        await Promise.all([
-          Promise.allSettled([loadKodaxUserDefaults(), providerConfigStore.load()]),
-          resolveRuntimeDefaults(),
-          loadKodaxCustomProviders().catch(() => []),
-        ]);
-      if (udResult.status === 'fulfilled') {
-        const ud = udResult.value;
-        if (ud.provider) persistedProviderFallback = ud.provider;
-        if (ud.model) persistedModelFallback = ud.model;
-      }
-      // Space defaultProviderId 优先级高于 KodaX user defaults——用户在 Space 设过默认 provider
-      // 应该胜出；providerConfigStore.load 失败时保留 user-defaults / 'mock'。
-      if (providerLoadResult.status === 'fulfilled') {
-        const defaultId = providerConfigStore.getDefaultProviderId();
-        if (defaultId) persistedProviderFallback = defaultId;
-      }
-      // Runtime profile owns the latest known run boundary. Older SDK SessionSummary only
-      // exposes createdAt, so use the profile to recover persisted Coder session activity.
-      // The renderer repeats this overlay because session.list can race Runtime startup.
-      const runtimeSessions = new Map(
-        runtimeProjectionController
-          .profileSnapshot()
-          .sessions.map((session) => [session.sessionId, session] as const),
-      );
-      const withTs = merged
-        .filter((m) => {
-          if (projectFilter === undefined) return true;
-          if (m.kind === 'in-flight') {
-            return canonProjectRoot(m.projectRoot) === projectFilter;
-          }
-          // persisted 的 projectRoot 来自 SDK runtimeInfo.workspaceRoot ?? gitRoot。
-          // 当 SDK summary 缺这俩字段（fast path / 早期版本），projectRoot=undefined——
-          // 此时无法本地 filter；保守地保留它，让用户看得到（宁可串项目，也比"以前的
-          // session 全消失"体验好）。新版 SDK slow path 一旦填满 runtimeInfo 就走精确匹配。
-          if (m.projectRoot === undefined) return true;
+    // Persisted session 没有真运行时设置——磁盘上只 SDK lineage + gitRoot。先准备一份
+    // user-defaults 兜底，给 sidebar UI 占位用（避免显示 "mock" 让用户以为整个 SDK 是 mock）。
+    // loadKodaxUserDefaults 模块级缓存命中后零成本; providerConfigStore.load 自己缓存。
+    // 并行 await 两个 promise——它们彼此无依赖，并行版省一个 turn 调度 ms。
+    // tryResume 路径走相同 resolution，两边对齐，避免 UI 一闪即变。
+    let persistedProviderFallback = 'mock';
+    let persistedModelFallback: string | undefined;
+    const [[udResult, providerLoadResult], baseRuntimeDefaults, kodaxCustomProviders] =
+      await Promise.all([
+        Promise.allSettled([loadKodaxUserDefaults(), providerConfigStore.load()]),
+        resolveRuntimeDefaults(),
+        loadKodaxCustomProviders().catch(() => []),
+      ]);
+    if (udResult.status === 'fulfilled') {
+      const ud = udResult.value;
+      if (ud.provider) persistedProviderFallback = ud.provider;
+      if (ud.model) persistedModelFallback = ud.model;
+    }
+    // Space defaultProviderId 优先级高于 KodaX user defaults——用户在 Space 设过默认 provider
+    // 应该胜出；providerConfigStore.load 失败时保留 user-defaults / 'mock'。
+    if (providerLoadResult.status === 'fulfilled') {
+      const defaultId = providerConfigStore.getDefaultProviderId();
+      if (defaultId) persistedProviderFallback = defaultId;
+    }
+    // Runtime profile owns the latest known run boundary. Older SDK SessionSummary only
+    // exposes createdAt, so use the profile to recover persisted Coder session activity.
+    // The renderer repeats this overlay because session.list can race Runtime startup.
+    const runtimeSessions = new Map(
+      runtimeProjectionController
+        .profileSnapshot()
+        .sessions.map((session) => [session.sessionId, session] as const),
+    );
+    const withTs = merged
+      .filter((m) => {
+        if (projectFilter === undefined) return true;
+        if (m.kind === 'in-flight') {
           return canonProjectRoot(m.projectRoot) === projectFilter;
-        })
-        .map((m) => {
-          if (m.kind === 'in-flight') {
-            return {
-              item: m,
-              createdAt: m.createdAt,
-              lastActivityAt: m.lastActivityAt,
-              sortKey: m.lastActivityAt,
-            };
-          }
-          const runtimeSession =
-            m.surface === 'code' ? runtimeSessions.get(m.sessionId) : undefined;
-          const parsedCreatedAt = m.createdAt !== undefined ? Date.parse(m.createdAt) : 0;
-          const sdkCreatedAt = Number.isFinite(parsedCreatedAt) ? parsedCreatedAt : 0;
-          const createdAt = sdkCreatedAt > 0 ? sdkCreatedAt : (runtimeSession?.createdAt ?? 0);
-          const lastActivityAt = Math.max(createdAt, runtimeSession?.lastActivityAt ?? 0);
-          return { item: m, createdAt, lastActivityAt, sortKey: lastActivityAt };
-        })
-        .sort((a, b) => b.sortKey - a.sortKey);
-      const sessions: SessionMeta[] = await Promise.all(
-        withTs.map(async ({ item, createdAt, lastActivityAt }) => {
-          if (item.kind === 'in-flight') {
-            // in-flight 没有 msgCount 字段（ManagedSession 不跟用户消息计数），dashboard
-            // 用 sessions[].msgCount ?? userMessagesBuffer.length 双源 fallback。
-            // model 是用户 /model 设的值（undefined = provider 默认），透出去让 dashboard
-            // 能按真 model 维度做 Favorite model 统计。
-            return {
-              sessionId: item.sessionId,
-              projectRoot: item.projectRoot,
-              provider: item.provider,
-              reasoningMode: item.reasoningMode,
-              permissionMode: item.permissionMode,
-              autoModeEngine: item.autoModeEngine,
-              agentMode: item.agentMode,
-              surface: item.surface,
-              title: item.title,
-              createdAt: item.createdAt,
-              lastActivityAt: item.lastActivityAt,
-              parentSessionId: item.parentSessionId,
-              forkPointTurnIdx: item.forkPointTurnIdx,
-              model: item.model,
-            };
-          }
-          // persisted: 运行时设置用 user-default 占位（Space defaultProviderId →
-          // ~/.kodax/config.json → 'mock' 兜底）。tryResume 用同样链路 resolve，
-          // 保证 sidebar 显示和真激活后的运行时设置一致——不会出现"点开 historical
-          // session 看着是 mock，点了发消息后 BottomBar 突然跳到 deepseek-v4-pro"
-          // 的视觉跳变。
-          //
-          // msgCount 直接透传 SDK summary 给的值——这是 dashboard 重启后 Messages 数
-          // 正确的关键（无需扫 jsonl 内容，SDK 已经 fast-path 缓存了 summary）。
-          // Read the per-session sidecar once. Previously resolveRuntimeDefaults()
-          // read it internally while this mapper read the same file again for the
-          // provider/model identity. The global defaults are identical for every
-          // row in this response, so resolve them once above and overlay the one
-          // session-specific layer here.
-          const persistedRuntime = await getSessionRuntimeStore().read(item.sessionId);
-          const identity = resolveHistoricalRuntimeIdentity({
-            ...(persistedRuntime !== null ? { persisted: persistedRuntime } : {}),
-            fallbackProvider: persistedProviderFallback,
-            ...(persistedModelFallback !== undefined
-              ? { fallbackModel: persistedModelFallback }
-              : {}),
-            kodaxCustomProviders,
-          });
+        }
+        // persisted 的 projectRoot 来自 SDK runtimeInfo.workspaceRoot ?? gitRoot。
+        // 当 SDK summary 缺这俩字段（fast path / 早期版本），projectRoot=undefined——
+        // 此时无法本地 filter；保守地保留它，让用户看得到（宁可串项目，也比"以前的
+        // session 全消失"体验好）。新版 SDK slow path 一旦填满 runtimeInfo 就走精确匹配。
+        if (m.projectRoot === undefined) return true;
+        return canonProjectRoot(m.projectRoot) === projectFilter;
+      })
+      .map((m) => {
+        if (m.kind === 'in-flight') {
+          return {
+            item: m,
+            createdAt: m.createdAt,
+            lastActivityAt: m.lastActivityAt,
+            sortKey: m.lastActivityAt,
+          };
+        }
+        const runtimeSession = m.surface === 'code' ? runtimeSessions.get(m.sessionId) : undefined;
+        const parsedCreatedAt = m.createdAt !== undefined ? Date.parse(m.createdAt) : 0;
+        const sdkCreatedAt = Number.isFinite(parsedCreatedAt) ? parsedCreatedAt : 0;
+        const createdAt = sdkCreatedAt > 0 ? sdkCreatedAt : (runtimeSession?.createdAt ?? 0);
+        const lastActivityAt = Math.max(createdAt, runtimeSession?.lastActivityAt ?? 0);
+        return { item: m, createdAt, lastActivityAt, sortKey: lastActivityAt };
+      })
+      .sort((a, b) => b.sortKey - a.sortKey);
+    const sessions: SessionMeta[] = await Promise.all(
+      withTs.map(async ({ item, createdAt, lastActivityAt }) => {
+        if (item.kind === 'in-flight') {
+          // in-flight 没有 msgCount 字段（ManagedSession 不跟用户消息计数），dashboard
+          // 用 sessions[].msgCount ?? userMessagesBuffer.length 双源 fallback。
+          // model 是用户 /model 设的值（undefined = provider 默认），透出去让 dashboard
+          // 能按真 model 维度做 Favorite model 统计。
           return {
             sessionId: item.sessionId,
-            // A project-scoped query is authoritative even when an SDK summary omits
-            // runtimeInfo.workspaceRoot/gitRoot (observed on the Linux slow path).
-            // Falling back directly to '/' makes the renderer group valid sessions
-            // outside their project and display that project as empty.
-            projectRoot: item.projectRoot ?? projectFilter ?? '/',
-            provider: identity.provider,
-            reasoningMode: persistedRuntime?.reasoningMode ?? baseRuntimeDefaults.reasoningMode,
-            permissionMode: persistedRuntime?.permissionMode ?? baseRuntimeDefaults.permissionMode,
-            autoModeEngine: persistedRuntime?.autoModeEngine ?? baseRuntimeDefaults.autoModeEngine,
-            agentMode: persistedRuntime?.agentMode ?? baseRuntimeDefaults.agentMode,
-            // F045: 真值——来自 SDK summary.tag 反推（host.listMerged 已派生），非占位。
+            projectRoot: item.projectRoot,
+            provider: item.provider,
+            reasoningMode: item.reasoningMode,
+            permissionMode: item.permissionMode,
+            autoModeEngine: item.autoModeEngine,
+            agentMode: item.agentMode,
             surface: item.surface,
             title: item.title,
-            createdAt,
-            lastActivityAt,
-            msgCount: item.msgCount,
-            model: identity.model,
-            runtimeMetadataSource: identity.runtimeMetadataSource,
+            createdAt: item.createdAt,
+            lastActivityAt: item.lastActivityAt,
+            parentSessionId: item.parentSessionId,
+            forkPointTurnIdx: item.forkPointTurnIdx,
+            model: item.model,
           };
-        }),
-      );
-      return { sessions };
-    }),
-  );
+        }
+        // persisted: 运行时设置用 user-default 占位（Space defaultProviderId →
+        // ~/.kodax/config.json → 'mock' 兜底）。tryResume 用同样链路 resolve，
+        // 保证 sidebar 显示和真激活后的运行时设置一致——不会出现"点开 historical
+        // session 看着是 mock，点了发消息后 BottomBar 突然跳到 deepseek-v4-pro"
+        // 的视觉跳变。
+        //
+        // msgCount 直接透传 SDK summary 给的值——这是 dashboard 重启后 Messages 数
+        // 正确的关键（无需扫 jsonl 内容，SDK 已经 fast-path 缓存了 summary）。
+        // Read the per-session sidecar once. Previously resolveRuntimeDefaults()
+        // read it internally while this mapper read the same file again for the
+        // provider/model identity. The global defaults are identical for every
+        // row in this response, so resolve them once above and overlay the one
+        // session-specific layer here.
+        const persistedRuntime = await getSessionRuntimeStore().read(item.sessionId);
+        const identity = resolveHistoricalRuntimeIdentity({
+          ...(persistedRuntime !== null ? { persisted: persistedRuntime } : {}),
+          fallbackProvider: persistedProviderFallback,
+          ...(persistedModelFallback !== undefined
+            ? { fallbackModel: persistedModelFallback }
+            : {}),
+          kodaxCustomProviders,
+        });
+        return {
+          sessionId: item.sessionId,
+          // A project-scoped query is authoritative even when an SDK summary omits
+          // runtimeInfo.workspaceRoot/gitRoot (observed on the Linux slow path).
+          // Falling back directly to '/' makes the renderer group valid sessions
+          // outside their project and display that project as empty.
+          projectRoot: item.projectRoot ?? projectFilter ?? '/',
+          provider: identity.provider,
+          reasoningMode: persistedRuntime?.reasoningMode ?? baseRuntimeDefaults.reasoningMode,
+          permissionMode: persistedRuntime?.permissionMode ?? baseRuntimeDefaults.permissionMode,
+          autoModeEngine: persistedRuntime?.autoModeEngine ?? baseRuntimeDefaults.autoModeEngine,
+          agentMode: persistedRuntime?.agentMode ?? baseRuntimeDefaults.agentMode,
+          // F045: 真值——来自 SDK summary.tag 反推（host.listMerged 已派生），非占位。
+          surface: item.surface,
+          title: item.title,
+          createdAt,
+          lastActivityAt,
+          msgCount: item.msgCount,
+          model: identity.model,
+          runtimeMetadataSource: identity.runtimeMetadataSource,
+        };
+      }),
+    );
+    return { sessions };
+  });
 
   // session.delete
   registerChannel('session.delete', (input) =>
@@ -1433,57 +1432,14 @@ export function registerSessionChannels(options: SessionChannelsOptions = {}): v
     return { ok: true };
   });
 
+  // History keeps its own per-Session writer queue and Runtime revision/cursor fences. It is a
+  // read-only projection and therefore must not participate in executable Coder admission.
   registerChannel('session.history', (input) =>
-    runSerializedSessionHistoryOperation(input.sessionId, () =>
-      runWithCoderAdmission(options, async () => {
-        const withLocalNotices = async (
-          baseItems: readonly SessionHistoryItem[],
-          conversation?: ReturnType<typeof conversationHistoryDiagnostic>,
-          page?:
-            | {
-                readonly outcome: 'ready';
-                readonly revision: string;
-                readonly sourceRevision: string;
-                readonly hasMore: boolean;
-                readonly nextCursor?: string;
-                readonly windowMode: 'replace' | 'prepend';
-                readonly hasNewer: boolean;
-              }
-            | { readonly outcome: 'data_changed' }
-            | { readonly outcome: 'runtime_unavailable' },
-        ) => {
-          const localNotices = await getSessionLocalNoticeStore().list(input.sessionId);
-          return {
-            sessionId: input.sessionId,
-            requestId: input.requestId,
-            items: limitSessionHistoryWithLocalNotices(baseItems, localNotices),
-            ...(conversation !== undefined ? { conversation } : {}),
-            ...(page !== undefined ? { page } : {}),
-          };
-        };
-        // Ordinary chat uses the SDK-owned conversation projection. Raw append-order transcript is
-        // retained only as a compatibility fallback for injected/legacy readers and for audit APIs.
-        const liveSession = kodaxHost.get(input.sessionId);
-        const runtimeProfileOwnsSession = runtimeProjectionController
-          .profileSnapshot()
-          .sessions.some((session) => session.sessionId === input.sessionId);
-        const surface =
-          liveSession?.surface ??
-          input.expectedSurface ??
-          (runtimeHostAdapter.hasReadyRuntime() && runtimeProfileOwnsSession
-            ? 'code'
-            : undefined) ??
-          sdkTagToSurface((await loadPersistedSession(input.sessionId))?.tag) ??
-          'code';
-        let data;
-        let usesConversationProjection = false;
-        let runtimeWindowForResponse: RuntimeConversationWindow | undefined;
-        let runtimeProjectionEndExclusive: number | undefined;
-        let runtimeProjectionItemCount: number | undefined;
-        let conversationDiagnosticValue:
-          | ReturnType<typeof conversationHistoryDiagnostic>
-          | undefined;
-        let conversationPageValue:
+    runSerializedSessionHistoryOperation(input.sessionId, async () => {
+      const withLocalNotices = async (
+        baseItems: readonly SessionHistoryItem[],
+        conversation?: ReturnType<typeof conversationHistoryDiagnostic>,
+        page?:
           | {
               readonly outcome: 'ready';
               readonly revision: string;
@@ -1494,483 +1450,517 @@ export function registerSessionChannels(options: SessionChannelsOptions = {}): v
               readonly hasNewer: boolean;
             }
           | { readonly outcome: 'data_changed' }
-          | { readonly outcome: 'runtime_unavailable' }
-          | undefined;
-        let omittedConversationEntries = 0;
-        const historyBackend = resolveSessionHistoryBackend(
-          surface,
-          runtimeHostAdapter.selectedHost(),
-          runtimeHostAdapter.hasReadyRuntime(),
-        );
-        if (historyBackend === 'runtime-unavailable') {
-          // A Coder Session must never fall back to the persisted full-body reader merely because
-          // the selected daemon is still starting. Embedded mode is different: it has no daemon
-          // by design and must restore through the persisted conversation projection below.
-          return withLocalNotices([], undefined, { outcome: 'runtime_unavailable' });
-        }
-        if (historyBackend === 'runtime') {
-          const result = await loadRuntimeConversationWindow(input);
-          if (result.outcome === 'data_changed') {
-            return withLocalNotices([], undefined, { outcome: 'data_changed' });
+          | { readonly outcome: 'runtime_unavailable' },
+      ) => {
+        const localNotices = await getSessionLocalNoticeStore().list(input.sessionId);
+        return {
+          sessionId: input.sessionId,
+          requestId: input.requestId,
+          items: limitSessionHistoryWithLocalNotices(baseItems, localNotices),
+          ...(conversation !== undefined ? { conversation } : {}),
+          ...(page !== undefined ? { page } : {}),
+        };
+      };
+      // Ordinary chat uses the SDK-owned conversation projection. Raw append-order transcript is
+      // retained only as a compatibility fallback for injected/legacy readers and for audit APIs.
+      const liveSession = kodaxHost.get(input.sessionId);
+      const runtimeProfileOwnsSession = runtimeProjectionController
+        .profileSnapshot()
+        .sessions.some((session) => session.sessionId === input.sessionId);
+      const surface =
+        liveSession?.surface ??
+        input.expectedSurface ??
+        (runtimeHostAdapter.hasReadyRuntime() && runtimeProfileOwnsSession ? 'code' : undefined) ??
+        sdkTagToSurface((await loadPersistedSession(input.sessionId))?.tag) ??
+        'code';
+      let data;
+      let usesConversationProjection = false;
+      let runtimeWindowForResponse: RuntimeConversationWindow | undefined;
+      let runtimeProjectionEndExclusive: number | undefined;
+      let runtimeProjectionItemCount: number | undefined;
+      let conversationDiagnosticValue: ReturnType<typeof conversationHistoryDiagnostic> | undefined;
+      let conversationPageValue:
+        | {
+            readonly outcome: 'ready';
+            readonly revision: string;
+            readonly sourceRevision: string;
+            readonly hasMore: boolean;
+            readonly nextCursor?: string;
+            readonly windowMode: 'replace' | 'prepend';
+            readonly hasNewer: boolean;
           }
-          if (result.window === null) return withLocalNotices([]);
-          const window = result.window;
-          runtimeWindowForResponse = window;
-          runtimeProjectionEndExclusive = result.projectionEndExclusive;
-          runtimeProjectionItemCount = result.projectionItemCount;
-          const boundaryEntries: IndexedConversationEntry[] = [...window.entriesByIndex.entries()]
-            .sort(([left], [right]) => left - right)
-            .map(([index, entry]) => ({ index, entry }));
-          const conversation: RuntimeConversationHistory = {
-            revision: window.revision,
-            sourceRevision: window.sourceRevision,
-            status: window.status,
-            issues: window.issues,
-            entries: boundaryEntries.map(({ entry }) => entry),
-          };
-          data = conversationHistoryAsTranscript(
-            conversation,
-            boundaryEntries,
-            boundaryEntries,
-            !window.newerSdkPageOmitted,
-            window.seamTurnBoundaries,
-          );
-          // The response is one complete bounded browsing window, not an incremental fragment.
-          // SDK pages and Space's bounded projection slices both replace the renderer window so
-          // older navigation never accumulates the complete transcript in renderer memory.
-          conversationDiagnosticValue = conversationHistoryDiagnostic(conversation);
-          omittedConversationEntries = window.prefixOmitted ? (boundaryEntries[0]?.index ?? 0) : 0;
+        | { readonly outcome: 'data_changed' }
+        | { readonly outcome: 'runtime_unavailable' }
+        | undefined;
+      let omittedConversationEntries = 0;
+      const historyBackend = resolveSessionHistoryBackend(
+        surface,
+        runtimeHostAdapter.selectedHost(),
+        runtimeHostAdapter.hasReadyRuntime(),
+      );
+      if (historyBackend === 'runtime-unavailable') {
+        // A Coder Session must never fall back to the persisted full-body reader merely because
+        // the selected daemon is still starting. Embedded mode is different: it has no daemon
+        // by design and must restore through the persisted conversation projection below.
+        return withLocalNotices([], undefined, { outcome: 'runtime_unavailable' });
+      }
+      if (historyBackend === 'runtime') {
+        const result = await loadRuntimeConversationWindow(input);
+        if (result.outcome === 'data_changed') {
+          return withLocalNotices([], undefined, { outcome: 'data_changed' });
+        }
+        if (result.window === null) return withLocalNotices([]);
+        const window = result.window;
+        runtimeWindowForResponse = window;
+        runtimeProjectionEndExclusive = result.projectionEndExclusive;
+        runtimeProjectionItemCount = result.projectionItemCount;
+        const boundaryEntries: IndexedConversationEntry[] = [...window.entriesByIndex.entries()]
+          .sort(([left], [right]) => left - right)
+          .map(([index, entry]) => ({ index, entry }));
+        const conversation: RuntimeConversationHistory = {
+          revision: window.revision,
+          sourceRevision: window.sourceRevision,
+          status: window.status,
+          issues: window.issues,
+          entries: boundaryEntries.map(({ entry }) => entry),
+        };
+        data = conversationHistoryAsTranscript(
+          conversation,
+          boundaryEntries,
+          boundaryEntries,
+          !window.newerSdkPageOmitted,
+          window.seamTurnBoundaries,
+        );
+        // The response is one complete bounded browsing window, not an incremental fragment.
+        // SDK pages and Space's bounded projection slices both replace the renderer window so
+        // older navigation never accumulates the complete transcript in renderer memory.
+        conversationDiagnosticValue = conversationHistoryDiagnostic(conversation);
+        omittedConversationEntries = window.prefixOmitted ? (boundaryEntries[0]?.index ?? 0) : 0;
+        usesConversationProjection = true;
+      } else {
+        if (input.cursor !== undefined) {
+          return withLocalNotices([], undefined, { outcome: 'data_changed' });
+        }
+        const conversation = await loadPersistedConversationHistory(input.sessionId);
+        if (conversation.supported) {
+          if (conversation.data === null) return withLocalNotices([]);
+          data = conversationHistoryAsTranscript(conversation.data);
+          conversationDiagnosticValue = conversationHistoryDiagnostic(conversation.data);
           usesConversationProjection = true;
         } else {
-          if (input.cursor !== undefined) {
-            return withLocalNotices([], undefined, { outcome: 'data_changed' });
-          }
-          const conversation = await loadPersistedConversationHistory(input.sessionId);
-          if (conversation.supported) {
-            if (conversation.data === null) return withLocalNotices([]);
-            data = conversationHistoryAsTranscript(conversation.data);
-            conversationDiagnosticValue = conversationHistoryDiagnostic(conversation.data);
-            usesConversationProjection = true;
-          } else {
-            data = await loadPersistedTranscript(input.sessionId);
-          }
+          data = await loadPersistedTranscript(input.sessionId);
         }
-        if (!data || !Array.isArray(data.messages)) {
-          return withLocalNotices([]);
-        }
-        const items: SessionHistoryItem[] = [];
+      }
+      if (!data || !Array.isArray(data.messages)) {
+        return withLocalNotices([]);
+      }
+      const items: SessionHistoryItem[] = [];
 
-        // 第一步: 走一遍消息收集 toolId → result 映射 (tool_result 永远在 tool_use 之后,
-        // 但同一 message 里也可能有多个 tool_use,先扫一遍简化处理)
-        const toolResults = new Map<string, { content: string; isError: boolean }>();
-        for (const [toolId, result] of runtimeWindowForResponse?.seamToolResults ?? []) {
-          toolResults.set(toolId, result);
+      // 第一步: 走一遍消息收集 toolId → result 映射 (tool_result 永远在 tool_use 之后,
+      // 但同一 message 里也可能有多个 tool_use,先扫一遍简化处理)
+      const toolResults = new Map<string, { content: string; isError: boolean }>();
+      for (const [toolId, result] of runtimeWindowForResponse?.seamToolResults ?? []) {
+        toolResults.set(toolId, result);
+      }
+      for (const msg of data.messages) {
+        if (!Array.isArray(msg.content)) continue;
+        for (const block of msg.content) {
+          if (!block || typeof block !== 'object') continue;
+          if ((block as { type?: unknown }).type !== 'tool_result') continue;
+          const id = (block as { tool_use_id?: unknown }).tool_use_id;
+          if (typeof id !== 'string') continue;
+          const content = flattenToolResultContent((block as { content?: unknown }).content);
+          const isError = Boolean((block as { is_error?: unknown }).is_error);
+          toolResults.set(id, { content, isError });
         }
-        for (const msg of data.messages) {
-          if (!Array.isArray(msg.content)) continue;
-          for (const block of msg.content) {
-            if (!block || typeof block !== 'object') continue;
-            if ((block as { type?: unknown }).type !== 'tool_result') continue;
-            const id = (block as { tool_use_id?: unknown }).tool_use_id;
-            if (typeof id !== 'string') continue;
-            const content = flattenToolResultContent((block as { content?: unknown }).content);
-            const isError = Boolean((block as { is_error?: unknown }).is_error);
-            toolResults.set(id, { content, isError });
-          }
-        }
+      }
 
-        // 第二步: 按顺序拍平 messages 成 items
-        //
-        // v0.1.x 修复 "fork/rewind branch_summary 回放成假用户气泡": fork 回到某个分支点时,
-        // SDK 会在 lineage 里合成一条 role==='user' 的 context message,把"你之前探索过的另一条
-        // 分支"的摘要塞给 LLM 当上下文——但这段文字从来不是用户真的打的字。旧逻辑直接按
-        // msg.role 拍平,于是这段摘要在滚动区里显示成一条用户消息(压缩产生的 compaction 摘要
-        // 同理,role==='system')。
-        //
-        // loadFullTranscript (SDK 0.7.51+) 额外提供 transcriptEntries——每条 message 对应一个
-        // entry,entry.type 精确标出 'message' / 'compaction' / 'branch_summary',不需要靠猜 role。
-        // 有了它就按 entry.type 路由:branch_summary/compaction → 非 user 的 lineage_notice 历史
-        // 提示条(entry.summary 是没被模板包裹的干净文本,优先用它);其余(type==='message')走
-        // 原有逻辑不变。旧 SDK / 测试 mock 没有 transcriptEntries 时,整段回退成"每条 message
-        // 都当作 type:'message'"——即完全不变的旧行为。
-        const rawTranscriptEntries = (data as { transcriptEntries?: unknown }).transcriptEntries;
-        type TranscriptEntryLike = {
-          readonly entryId?: unknown;
-          readonly auditEntryIds?: unknown;
-          readonly parentId?: unknown;
-          readonly logicalId?: unknown;
-          readonly sourceEntryId?: unknown;
-          readonly authoritativeEntryId?: unknown;
-          readonly canonicalIndex?: unknown;
-          readonly historyBoundary?: unknown;
-          readonly type?: unknown;
-          readonly source?: unknown;
-          readonly message: (typeof data.messages)[number];
-          readonly summary?: unknown;
-          readonly payload?: unknown;
-          readonly taskResults?: unknown;
-          readonly turnId?: unknown;
-          readonly content?: unknown;
-          // SDK 0.7.51+ SessionTranscriptEntry.timestamp (ISO string) — the real per-message
-          // wall-clock. We forward it as the history item's sentAt so restored turns keep their
-          // true time instead of all collapsing onto session.createdAt (the renderer fallback).
-          // Without it, workflow notices — which DO carry real run times — sort above the whole
-          // restored conversation after a compaction re-root (createdAt is reset later than the run).
-          readonly timestamp?: unknown;
-          // SDK marks each transcript entry active (on the live branch) or not. Activity can select
-          // the authoritative payload inside an identity-proven clone group, but never proves a
-          // clone and never changes the group's first canonical display position.
-          readonly active?: unknown;
+      // 第二步: 按顺序拍平 messages 成 items
+      //
+      // v0.1.x 修复 "fork/rewind branch_summary 回放成假用户气泡": fork 回到某个分支点时,
+      // SDK 会在 lineage 里合成一条 role==='user' 的 context message,把"你之前探索过的另一条
+      // 分支"的摘要塞给 LLM 当上下文——但这段文字从来不是用户真的打的字。旧逻辑直接按
+      // msg.role 拍平,于是这段摘要在滚动区里显示成一条用户消息(压缩产生的 compaction 摘要
+      // 同理,role==='system')。
+      //
+      // loadFullTranscript (SDK 0.7.51+) 额外提供 transcriptEntries——每条 message 对应一个
+      // entry,entry.type 精确标出 'message' / 'compaction' / 'branch_summary',不需要靠猜 role。
+      // 有了它就按 entry.type 路由:branch_summary/compaction → 非 user 的 lineage_notice 历史
+      // 提示条(entry.summary 是没被模板包裹的干净文本,优先用它);其余(type==='message')走
+      // 原有逻辑不变。旧 SDK / 测试 mock 没有 transcriptEntries 时,整段回退成"每条 message
+      // 都当作 type:'message'"——即完全不变的旧行为。
+      const rawTranscriptEntries = (data as { transcriptEntries?: unknown }).transcriptEntries;
+      type TranscriptEntryLike = {
+        readonly entryId?: unknown;
+        readonly auditEntryIds?: unknown;
+        readonly parentId?: unknown;
+        readonly logicalId?: unknown;
+        readonly sourceEntryId?: unknown;
+        readonly authoritativeEntryId?: unknown;
+        readonly canonicalIndex?: unknown;
+        readonly historyBoundary?: unknown;
+        readonly type?: unknown;
+        readonly source?: unknown;
+        readonly message: (typeof data.messages)[number];
+        readonly summary?: unknown;
+        readonly payload?: unknown;
+        readonly taskResults?: unknown;
+        readonly turnId?: unknown;
+        readonly content?: unknown;
+        // SDK 0.7.51+ SessionTranscriptEntry.timestamp (ISO string) — the real per-message
+        // wall-clock. We forward it as the history item's sentAt so restored turns keep their
+        // true time instead of all collapsing onto session.createdAt (the renderer fallback).
+        // Without it, workflow notices — which DO carry real run times — sort above the whole
+        // restored conversation after a compaction re-root (createdAt is reset later than the run).
+        readonly timestamp?: unknown;
+        // SDK marks each transcript entry active (on the live branch) or not. Activity can select
+        // the authoritative payload inside an identity-proven clone group, but never proves a
+        // clone and never changes the group's first canonical display position.
+        readonly active?: unknown;
+      };
+      const allEntries: readonly TranscriptEntryLike[] = Array.isArray(rawTranscriptEntries)
+        ? (rawTranscriptEntries as TranscriptEntryLike[])
+        : data.messages.map((message) => ({ type: 'message', message }));
+      const turnUserOrdinalByCanonicalIndex = new Map<number, number>();
+      const globalVisibleUserCountByTurnId = new Map<string, number>();
+      let leadingOmittedTurnId: string | undefined;
+      let crossedLeadingOmittedTurn =
+        !usesConversationProjection || omittedConversationEntries === 0;
+      for (const entry of allEntries) {
+        if (!isRecord(entry.message)) continue;
+        const messageTurnId = stringField(entry.message.turnId);
+        const turnId = stringField(entry.turnId) ?? messageTurnId;
+        if (!crossedLeadingOmittedTurn && turnId !== undefined) {
+          if (leadingOmittedTurnId === undefined) leadingOmittedTurnId = turnId;
+          else if (turnId !== leadingOmittedTurnId) crossedLeadingOmittedTurn = true;
+        }
+        if (entry.message.role !== 'user') continue;
+        if (turnId === undefined || typeof entry.canonicalIndex !== 'number') continue;
+        if (!crossedLeadingOmittedTurn) continue;
+        const ordinal = globalVisibleUserCountByTurnId.get(turnId) ?? 0;
+        turnUserOrdinalByCanonicalIndex.set(entry.canonicalIndex, ordinal);
+        globalVisibleUserCountByTurnId.set(turnId, ordinal + 1);
+      }
+      const entries = allEntries;
+
+      // Workflow 结果原位还原用:一条 `<task-completed>` 块只有当它的 task_id 命名了一个 Space 落盘的
+      // workflow run(<space>/workflow-runs/<runId>/)才算 workflow —— 借此把用同样 wrapper 的普通
+      // dispatch_child_task 排除掉(review HIGH)。
+      const workflowRunBaseDir = path.join(getSpaceDataDir(), 'workflow-runs');
+      // 同一个 workflow run 的结果只渲染一次:被压缩/re-root 过的 session,loadFullTranscript 的全谱系里
+      // 同一条 `<task-completed>` 会重复出现(旧的侧存储按 finished:runId:status 去重、只显一份;approach A
+      // 改按 transcript 位置渲染后丢了去重 → 同一份报告显示多次)。按 runId 去重、保留**首次**出现的位置。
+      const seenWorkflowRunIds = new Set<string>();
+      const visibleUserCountByTurnId = new Map<string, number>();
+      let historyTurnIndex = 0;
+      // 完整历史投影:loadFullTranscript 返回全谱系。先修复旧 sidecar 的 child-before-parent
+      // 次序，再跳过精确 `[compacted]` 占位和已证明的 rewind-abandoned path；克隆只按 SDK
+      // 提供的 entryId/logicalId/sourceEntryId 关系折叠，并始终保留首次 canonical 位置。
+      // 旧 SDK 写下但没有 provenance 的相同内容必须 fail open，不能再次把真实 query 删除或搬家。
+      // 见 transcript-dedup.ts 的机制说明。
+      const dedupedEntries = usesConversationProjection
+        ? entries
+        : dedupeTranscriptEntries(entries);
+
+      for (const entry of dedupedEntries) {
+        const entrySentAt = parseEntrySentAt(entry.timestamp);
+        const historyIdentity = historyIdentityFromEntry(entry);
+        if (entry.type === 'client_notice') {
+          const notice = clientNoticeHistoryItemFromEntry(entry, entrySentAt);
+          if (notice !== null) {
+            items.push(notice);
+          }
+          continue;
+        }
+        if (entry.type === 'branch_summary' || entry.type === 'compaction') {
+          const rawSummary =
+            typeof entry.summary === 'string' && entry.summary.trim().length > 0
+              ? entry.summary
+              : extractUserText((entry.message as { content?: unknown }).content);
+          const text = rawSummary.trim();
+          if (text.length > 0) {
+            const compactionPayload = isRecord(entry.payload) ? entry.payload : undefined;
+            const tokensBefore = compactionPayload?.tokensBefore;
+            const tokensAfter = compactionPayload?.tokensAfter;
+            const hasCompactStats =
+              entry.type === 'compaction' &&
+              typeof tokensBefore === 'number' &&
+              Number.isInteger(tokensBefore) &&
+              tokensBefore >= 0 &&
+              tokensBefore <= 10_000_000 &&
+              typeof tokensAfter === 'number' &&
+              Number.isInteger(tokensAfter) &&
+              tokensAfter >= 0 &&
+              tokensAfter <= 10_000_000;
+            items.push({
+              ...historyIdentity,
+              kind: 'lineage_notice',
+              noticeKind: entry.type,
+              text,
+              ...(entrySentAt !== undefined ? { sentAt: entrySentAt } : {}),
+              ...(hasCompactStats ? { tokensBefore, tokensAfter } : {}),
+            });
+          }
+          continue;
+        }
+        const taskResults = extractTaskResults(entry);
+        if (entry.type === 'task_result' || taskResults.length > 0) {
+          appendWorkflowTaskResultNotices(taskResults, seenWorkflowRunIds, items, historyIdentity);
+          // Consume the entry only if a real workflow run was recognized. Legacy transcripts
+          // (recorded before structured task-result metadata) have the SDK reconstruct
+          // `_taskResults` stamped source:'child_task' even for real run_workflow results, so
+          // the block above renders nothing. Fall through to the `<task-completed>` text parse
+          // below — which cross-checks isWorkflowRunDir() against disk instead of trusting
+          // `source` — so those notices still restore (App.tsx's old run-dir side-store restore
+          // that used to cover this was removed this release). Guard on a parseable message so a
+          // messageless task_result entry still short-circuits instead of hitting `msg.role`.
+          if (taskResults.some((r) => r.source === 'workflow') || !isRecord(entry.message))
+            continue;
+        }
+        const msg = entry.message;
+        const meta = msg as {
+          _source?: unknown;
+          source?: unknown;
+          _synthetic?: unknown;
+          synthetic?: unknown;
         };
-        const allEntries: readonly TranscriptEntryLike[] = Array.isArray(rawTranscriptEntries)
-          ? (rawTranscriptEntries as TranscriptEntryLike[])
-          : data.messages.map((message) => ({ type: 'message', message }));
-        const turnUserOrdinalByCanonicalIndex = new Map<number, number>();
-        const globalVisibleUserCountByTurnId = new Map<string, number>();
-        let leadingOmittedTurnId: string | undefined;
-        let crossedLeadingOmittedTurn =
-          !usesConversationProjection || omittedConversationEntries === 0;
-        for (const entry of allEntries) {
-          if (!isRecord(entry.message)) continue;
-          const messageTurnId = stringField(entry.message.turnId);
-          const turnId = stringField(entry.turnId) ?? messageTurnId;
-          if (!crossedLeadingOmittedTurn && turnId !== undefined) {
-            if (leadingOmittedTurnId === undefined) leadingOmittedTurnId = turnId;
-            else if (turnId !== leadingOmittedTurnId) crossedLeadingOmittedTurn = true;
+        const source = meta.source ?? meta._source;
+        const synthetic = meta.synthetic === true || meta._synthetic === true;
+        if (msg.role === 'user' && source === 'sidecar-verifier') {
+          const sidecarText = extractUserText(msg.content);
+          if (sidecarText.length > 0) {
+            items.push({
+              ...historyIdentity,
+              kind: 'sidecar_message',
+              message: {
+                source: 'sidecar-verifier',
+                verdict: 'revise',
+                recipient: 'main-agent',
+                delivery: 'synthetic-user-message',
+                content: sidecarText,
+                // #12 fix: SDK 不持久化真实 verdict/delivery/suggestedFix——上面几个字段都是
+                // 占位值,不是这条消息当时真实的判定结果。标 historical=true 让 renderer 用中性
+                // 的"历史记录"标签展示,不再断言 verdict==='revise'。
+                historical: true,
+              },
+              ...(entrySentAt !== undefined ? { sentAt: entrySentAt } : {}),
+            });
           }
-          if (entry.message.role !== 'user') continue;
-          if (turnId === undefined || typeof entry.canonicalIndex !== 'number') continue;
-          if (!crossedLeadingOmittedTurn) continue;
-          const ordinal = globalVisibleUserCountByTurnId.get(turnId) ?? 0;
-          turnUserOrdinalByCanonicalIndex.set(entry.canonicalIndex, ordinal);
-          globalVisibleUserCountByTurnId.set(turnId, ordinal + 1);
+          continue;
         }
-        const entries = allEntries;
-
-        // Workflow 结果原位还原用:一条 `<task-completed>` 块只有当它的 task_id 命名了一个 Space 落盘的
-        // workflow run(<space>/workflow-runs/<runId>/)才算 workflow —— 借此把用同样 wrapper 的普通
-        // dispatch_child_task 排除掉(review HIGH)。
-        const workflowRunBaseDir = path.join(getSpaceDataDir(), 'workflow-runs');
-        // 同一个 workflow run 的结果只渲染一次:被压缩/re-root 过的 session,loadFullTranscript 的全谱系里
-        // 同一条 `<task-completed>` 会重复出现(旧的侧存储按 finished:runId:status 去重、只显一份;approach A
-        // 改按 transcript 位置渲染后丢了去重 → 同一份报告显示多次)。按 runId 去重、保留**首次**出现的位置。
-        const seenWorkflowRunIds = new Set<string>();
-        const visibleUserCountByTurnId = new Map<string, number>();
-        let historyTurnIndex = 0;
-        // 完整历史投影:loadFullTranscript 返回全谱系。先修复旧 sidecar 的 child-before-parent
-        // 次序，再跳过精确 `[compacted]` 占位和已证明的 rewind-abandoned path；克隆只按 SDK
-        // 提供的 entryId/logicalId/sourceEntryId 关系折叠，并始终保留首次 canonical 位置。
-        // 旧 SDK 写下但没有 provenance 的相同内容必须 fail open，不能再次把真实 query 删除或搬家。
-        // 见 transcript-dedup.ts 的机制说明。
-        const dedupedEntries = usesConversationProjection
-          ? entries
-          : dedupeTranscriptEntries(entries);
-
-        for (const entry of dedupedEntries) {
-          const entrySentAt = parseEntrySentAt(entry.timestamp);
-          const historyIdentity = historyIdentityFromEntry(entry);
-          if (entry.type === 'client_notice') {
-            const notice = clientNoticeHistoryItemFromEntry(entry, entrySentAt);
-            if (notice !== null) {
-              items.push(notice);
-            }
-            continue;
-          }
-          if (entry.type === 'branch_summary' || entry.type === 'compaction') {
-            const rawSummary =
-              typeof entry.summary === 'string' && entry.summary.trim().length > 0
-                ? entry.summary
-                : extractUserText((entry.message as { content?: unknown }).content);
-            const text = rawSummary.trim();
-            if (text.length > 0) {
-              const compactionPayload = isRecord(entry.payload) ? entry.payload : undefined;
-              const tokensBefore = compactionPayload?.tokensBefore;
-              const tokensAfter = compactionPayload?.tokensAfter;
-              const hasCompactStats =
-                entry.type === 'compaction' &&
-                typeof tokensBefore === 'number' &&
-                Number.isInteger(tokensBefore) &&
-                tokensBefore >= 0 &&
-                tokensBefore <= 10_000_000 &&
-                typeof tokensAfter === 'number' &&
-                Number.isInteger(tokensAfter) &&
-                tokensAfter >= 0 &&
-                tokensAfter <= 10_000_000;
-              items.push({
-                ...historyIdentity,
-                kind: 'lineage_notice',
-                noticeKind: entry.type,
-                text,
-                ...(entrySentAt !== undefined ? { sentAt: entrySentAt } : {}),
-                ...(hasCompactStats ? { tokensBefore, tokensAfter } : {}),
-              });
-            }
-            continue;
-          }
-          const taskResults = extractTaskResults(entry);
-          if (entry.type === 'task_result' || taskResults.length > 0) {
-            appendWorkflowTaskResultNotices(
-              taskResults,
+        // Workflow 结果/失败:SDK 把 run 的最终结果作为一条 _synthetic 的 `<task-completed …>`
+        // user 消息存进 transcript(位置正确)。识别它、原位渲染成 workflow 历史提示条——否则会被
+        // 下面的 `if (synthetic) continue` 丢掉,只能靠侧存储按 wall-clock 重排(SDK 压缩把时间戳
+        // 压平后 → resume 乱序/置顶)。见 historyWorkflowNoticeSchema。
+        if (synthetic && msg.role === 'user') {
+          // 一条合成消息可能批了多个 `<task-completed>` 块;逐块解析、只对**真 workflow run** 出 notice
+          // (dispatch_child_task 用同样的 wrapper、但没落盘目录 → isWorkflowRunDir 排除,避免误标)。
+          const blocks = parseTaskCompletedBlocks(extractUserText(msg.content));
+          if (blocks.length > 0) {
+            const { render, handled } = selectWorkflowBlocks(
+              blocks,
               seenWorkflowRunIds,
-              items,
-              historyIdentity,
+              workflowRunBaseDir,
             );
-            // Consume the entry only if a real workflow run was recognized. Legacy transcripts
-            // (recorded before structured task-result metadata) have the SDK reconstruct
-            // `_taskResults` stamped source:'child_task' even for real run_workflow results, so
-            // the block above renders nothing. Fall through to the `<task-completed>` text parse
-            // below — which cross-checks isWorkflowRunDir() against disk instead of trusting
-            // `source` — so those notices still restore (App.tsx's old run-dir side-store restore
-            // that used to cover this was removed this release). Guard on a parseable message so a
-            // messageless task_result entry still short-circuits instead of hitting `msg.role`.
-            if (taskResults.some((r) => r.source === 'workflow') || !isRecord(entry.message))
-              continue;
-          }
-          const msg = entry.message;
-          const meta = msg as {
-            _source?: unknown;
-            source?: unknown;
-            _synthetic?: unknown;
-            synthetic?: unknown;
-          };
-          const source = meta.source ?? meta._source;
-          const synthetic = meta.synthetic === true || meta._synthetic === true;
-          if (msg.role === 'user' && source === 'sidecar-verifier') {
-            const sidecarText = extractUserText(msg.content);
-            if (sidecarText.length > 0) {
-              items.push({
-                ...historyIdentity,
-                kind: 'sidecar_message',
-                message: {
-                  source: 'sidecar-verifier',
-                  verdict: 'revise',
-                  recipient: 'main-agent',
-                  delivery: 'synthetic-user-message',
-                  content: sidecarText,
-                  // #12 fix: SDK 不持久化真实 verdict/delivery/suggestedFix——上面几个字段都是
-                  // 占位值,不是这条消息当时真实的判定结果。标 historical=true 让 renderer 用中性
-                  // 的"历史记录"标签展示,不再断言 verdict==='revise'。
-                  historical: true,
-                },
-                ...(entrySentAt !== undefined ? { sentAt: entrySentAt } : {}),
-              });
+            for (const b of render) {
+              items.push({ ...historyIdentity, kind: 'workflow_notice', text: b.text });
             }
-            continue;
+            if (handled) continue; // 已处理(渲染或去重跳过)workflow 结果
+            // 否则(全是普通子任务 / 未落盘的 run)→ 落到下面的 synthetic-skip,和以前一样隐藏。
           }
-          // Workflow 结果/失败:SDK 把 run 的最终结果作为一条 _synthetic 的 `<task-completed …>`
-          // user 消息存进 transcript(位置正确)。识别它、原位渲染成 workflow 历史提示条——否则会被
-          // 下面的 `if (synthetic) continue` 丢掉,只能靠侧存储按 wall-clock 重排(SDK 压缩把时间戳
-          // 压平后 → resume 乱序/置顶)。见 historyWorkflowNoticeSchema。
-          if (synthetic && msg.role === 'user') {
-            // 一条合成消息可能批了多个 `<task-completed>` 块;逐块解析、只对**真 workflow run** 出 notice
-            // (dispatch_child_task 用同样的 wrapper、但没落盘目录 → isWorkflowRunDir 排除,避免误标)。
-            const blocks = parseTaskCompletedBlocks(extractUserText(msg.content));
-            if (blocks.length > 0) {
-              const { render, handled } = selectWorkflowBlocks(
-                blocks,
-                seenWorkflowRunIds,
-                workflowRunBaseDir,
-              );
-              for (const b of render) {
-                items.push({ ...historyIdentity, kind: 'workflow_notice', text: b.text });
-              }
-              if (handled) continue; // 已处理(渲染或去重跳过)workflow 结果
-              // 否则(全是普通子任务 / 未落盘的 run)→ 落到下面的 synthetic-skip,和以前一样隐藏。
-            }
-          }
-          if (synthetic) continue; // 其余 SDK 合成消息隐藏
-          if (msg.role === 'system') continue; // system prompts 内部
+        }
+        if (synthetic) continue; // 其余 SDK 合成消息隐藏
+        if (msg.role === 'system') continue; // system prompts 内部
 
-          if (msg.role === 'user') {
-            // user message 通常 = pure text;若是工具结果回灌 (content 是 tool_result block 数组),
-            // 则 text === '',不 emit user item (但 tool_results map 已经在第一步抽走了)
-            const userText = extractUserText(msg.content);
-            const imageBlocks = extractUserImages(msg.content);
-            const attachments =
-              imageBlocks.length > 0
-                ? await Promise.all(
-                    imageBlocks.map((image, ordinal) =>
-                      issueSessionImageAttachment({
-                        sessionId: input.sessionId,
-                        artifactPath: image.path,
-                        ...(image.declaredMediaType !== undefined
-                          ? { declaredMediaType: image.declaredMediaType }
-                          : {}),
-                        ordinal,
-                      }),
-                    ),
-                  )
-                : [];
-            if (userText.length > 0 || attachments.length > 0) {
-              const messageTurnId = isRecord(msg) ? stringField(msg.turnId) : undefined;
-              const turnId = stringField(entry.turnId) ?? messageTurnId;
-              const globalTurnUserOrdinal =
-                typeof entry.canonicalIndex === 'number'
-                  ? turnUserOrdinalByCanonicalIndex.get(entry.canonicalIndex)
-                  : undefined;
-              // Only the leading Runtime turn is ambiguous when its older prefix is omitted. Once
-              // the canonical turn id changes inside the loaded window, that later turn starts at
-              // ordinal zero and can safely reconcile with its live projection.
-              const turnUserOrdinal =
-                turnId === undefined
-                  ? undefined
-                  : usesConversationProjection
-                    ? globalTurnUserOrdinal
-                    : (visibleUserCountByTurnId.get(turnId) ?? 0);
-              const selectorTurnIndex =
-                typeof entry.canonicalIndex === 'number' &&
-                Number.isSafeInteger(entry.canonicalIndex) &&
-                entry.canonicalIndex >= 0
-                  ? entry.canonicalIndex
-                  : historyTurnIndex;
-              items.push({
-                ...historyIdentity,
-                kind: 'user',
-                content: userText,
-                ...(attachments.length > 0 ? { attachments } : {}),
-                // Real per-message time (see TranscriptEntryLike.timestamp). Only the user item
-                // needs it: it becomes a UserMessage whose sentAt drives composeMessages' merge
-                // with workflow notices; assistant/tool items become events that inherit the turn.
-                ...(entrySentAt !== undefined ? { sentAt: entrySentAt } : {}),
-                ...(turnId !== undefined ? { turnId } : {}),
-                ...(turnUserOrdinal !== undefined ? { turnUserOrdinal } : {}),
-                historyTurnIndex: selectorTurnIndex,
-                ...(isRecord(entry.historyBoundary) &&
-                typeof entry.historyBoundary.boundaryId === 'string' &&
-                typeof entry.historyBoundary.sourceRevision === 'string'
+        if (msg.role === 'user') {
+          // user message 通常 = pure text;若是工具结果回灌 (content 是 tool_result block 数组),
+          // 则 text === '',不 emit user item (但 tool_results map 已经在第一步抽走了)
+          const userText = extractUserText(msg.content);
+          const imageBlocks = extractUserImages(msg.content);
+          const attachments =
+            imageBlocks.length > 0
+              ? await Promise.all(
+                  imageBlocks.map((image, ordinal) =>
+                    issueSessionImageAttachment({
+                      sessionId: input.sessionId,
+                      artifactPath: image.path,
+                      ...(image.declaredMediaType !== undefined
+                        ? { declaredMediaType: image.declaredMediaType }
+                        : {}),
+                      ordinal,
+                    }),
+                  ),
+                )
+              : [];
+          if (userText.length > 0 || attachments.length > 0) {
+            const messageTurnId = isRecord(msg) ? stringField(msg.turnId) : undefined;
+            const turnId = stringField(entry.turnId) ?? messageTurnId;
+            const globalTurnUserOrdinal =
+              typeof entry.canonicalIndex === 'number'
+                ? turnUserOrdinalByCanonicalIndex.get(entry.canonicalIndex)
+                : undefined;
+            // Only the leading Runtime turn is ambiguous when its older prefix is omitted. Once
+            // the canonical turn id changes inside the loaded window, that later turn starts at
+            // ordinal zero and can safely reconcile with its live projection.
+            const turnUserOrdinal =
+              turnId === undefined
+                ? undefined
+                : usesConversationProjection
+                  ? globalTurnUserOrdinal
+                  : (visibleUserCountByTurnId.get(turnId) ?? 0);
+            const selectorTurnIndex =
+              typeof entry.canonicalIndex === 'number' &&
+              Number.isSafeInteger(entry.canonicalIndex) &&
+              entry.canonicalIndex >= 0
+                ? entry.canonicalIndex
+                : historyTurnIndex;
+            items.push({
+              ...historyIdentity,
+              kind: 'user',
+              content: userText,
+              ...(attachments.length > 0 ? { attachments } : {}),
+              // Real per-message time (see TranscriptEntryLike.timestamp). Only the user item
+              // needs it: it becomes a UserMessage whose sentAt drives composeMessages' merge
+              // with workflow notices; assistant/tool items become events that inherit the turn.
+              ...(entrySentAt !== undefined ? { sentAt: entrySentAt } : {}),
+              ...(turnId !== undefined ? { turnId } : {}),
+              ...(turnUserOrdinal !== undefined ? { turnUserOrdinal } : {}),
+              historyTurnIndex: selectorTurnIndex,
+              ...(isRecord(entry.historyBoundary) &&
+              typeof entry.historyBoundary.boundaryId === 'string' &&
+              typeof entry.historyBoundary.sourceRevision === 'string'
+                ? {
+                    historyBoundary: {
+                      boundaryId: entry.historyBoundary.boundaryId,
+                      sourceRevision: entry.historyBoundary.sourceRevision,
+                    },
+                  }
+                : {}),
+            });
+            historyTurnIndex += 1;
+            if (turnId !== undefined && turnUserOrdinal !== undefined) {
+              visibleUserCountByTurnId.set(turnId, turnUserOrdinal + 1);
+            }
+          }
+        } else if (msg.role === 'assistant') {
+          // assistant: 按 content blocks 顺序逐个发 — text/thinking 累积到下次 tool_use 边界
+          // flush 出 'assistant' item;tool_use 直接 emit 'tool_call' item
+          let textBuf = '';
+          let thinkingBuf = '';
+          const flushText = (): void => {
+            if (textBuf.length > 0 || thinkingBuf.length > 0) {
+              const contentItem: SessionHistoryItem =
+                thinkingBuf.length > 0
                   ? {
-                      historyBoundary: {
-                        boundaryId: entry.historyBoundary.boundaryId,
-                        sourceRevision: entry.historyBoundary.sourceRevision,
-                      },
+                      ...historyIdentity,
+                      kind: 'assistant',
+                      text: textBuf,
+                      thinking: thinkingBuf,
                     }
-                  : {}),
-              });
-              historyTurnIndex += 1;
-              if (turnId !== undefined && turnUserOrdinal !== undefined) {
-                visibleUserCountByTurnId.set(turnId, turnUserOrdinal + 1);
-              }
+                  : { ...historyIdentity, kind: 'assistant', text: textBuf };
+              items.push(
+                entrySentAt !== undefined ? { ...contentItem, sentAt: entrySentAt } : contentItem,
+              );
+              textBuf = '';
+              thinkingBuf = '';
             }
-          } else if (msg.role === 'assistant') {
-            // assistant: 按 content blocks 顺序逐个发 — text/thinking 累积到下次 tool_use 边界
-            // flush 出 'assistant' item;tool_use 直接 emit 'tool_call' item
-            let textBuf = '';
-            let thinkingBuf = '';
-            const flushText = (): void => {
-              if (textBuf.length > 0 || thinkingBuf.length > 0) {
-                const contentItem: SessionHistoryItem =
-                  thinkingBuf.length > 0
-                    ? {
-                        ...historyIdentity,
-                        kind: 'assistant',
-                        text: textBuf,
-                        thinking: thinkingBuf,
-                      }
-                    : { ...historyIdentity, kind: 'assistant', text: textBuf };
-                items.push(
-                  entrySentAt !== undefined ? { ...contentItem, sentAt: entrySentAt } : contentItem,
-                );
-                textBuf = '';
-                thinkingBuf = '';
-              }
-            };
-            const blocks = Array.isArray(msg.content)
-              ? msg.content
-              : typeof msg.content === 'string'
-                ? [{ type: 'text', text: msg.content }]
-                : [];
-            for (const block of blocks) {
-              if (!block || typeof block !== 'object') continue;
-              const t = (block as { type?: unknown }).type;
-              if (t === 'text') {
-                const s = (block as { text?: unknown }).text;
-                if (typeof s === 'string') textBuf += s;
-              } else if (t === 'thinking') {
-                const s = (block as { thinking?: unknown }).thinking;
-                if (typeof s === 'string') thinkingBuf += s;
-              } else if (t === 'tool_use') {
-                // 工具调用 → 先 flush 累积的 text/thinking,然后 emit tool_call item
-                flushText();
-                const id = (block as { id?: unknown }).id;
-                const name = (block as { name?: unknown }).name;
-                const rawInput = (block as { input?: unknown }).input;
-                if (typeof id === 'string' && typeof name === 'string') {
-                  const matched = toolResults.get(id);
-                  const tcItem: SessionHistoryItem = {
-                    ...historyIdentity,
-                    kind: 'tool_call',
-                    toolId: id,
-                    toolName: name,
-                    ...(rawInput && typeof rawInput === 'object' && !Array.isArray(rawInput)
-                      ? { input: rawInput as Record<string, unknown> }
-                      : {}),
-                    ...(matched !== undefined
-                      ? { result: matched.content, ...(matched.isError ? { isError: true } : {}) }
-                      : {}),
-                  };
-                  items.push(tcItem);
-                }
-              }
-            }
-            flushText();
-          }
-        }
-        if (omittedConversationEntries > 0) {
-          items.unshift({
-            kind: 'history_truncation',
-            scope: 'history',
-            omittedItems: Math.max(1, omittedConversationEntries),
-          });
-        }
-        if (runtimeWindowForResponse !== undefined) {
-          const window = runtimeWindowForResponse;
-          if (
-            runtimeProjectionItemCount !== undefined &&
-            runtimeProjectionItemCount !== items.length
-          ) {
-            runtimeConversationWindows.delete(input.sessionId);
-            return withLocalNotices([], undefined, { outcome: 'data_changed' });
-          }
-          const projectionPage = pageSessionHistoryItems(
-            items,
-            runtimeProjectionEndExclusive ?? items.length,
-          );
-          let nextCursor = window.nextCursor;
-          if (projectionPage.nextEndExclusive !== undefined) {
-            nextCursor = nextRuntimeProjectionCursor(input.sessionId);
-            window.projectionContinuation = {
-              cursor: nextCursor,
-              endExclusive: projectionPage.nextEndExclusive,
-              itemCount: items.length,
-            };
-          } else {
-            window.projectionContinuation = undefined;
-          }
-          rememberRuntimeConversationWindow(input.sessionId, window);
-          conversationPageValue = {
-            outcome: 'ready',
-            revision: window.revision,
-            sourceRevision: window.sourceRevision,
-            hasMore: nextCursor !== undefined,
-            // The newest request installs one bounded tail. Every cursor continuation is an older,
-            // non-overlapping slice and therefore extends the already loaded transcript upward.
-            // This is a presentation contract only; Runtime canonical order and cursors remain the
-            // authority for which records belong to each page.
-            windowMode: input.cursor === undefined ? 'replace' : 'prepend',
-            // A prepended response is older in isolation, but the renderer still owns the newest
-            // page it is extending. It therefore does not need replacement-window navigation.
-            hasNewer: input.cursor === undefined ? window.newerSdkPageOmitted : false,
-            ...(nextCursor !== undefined ? { nextCursor } : {}),
           };
-          return withLocalNotices(
-            projectionPage.items,
-            conversationDiagnosticValue,
-            conversationPageValue,
-          );
+          const blocks = Array.isArray(msg.content)
+            ? msg.content
+            : typeof msg.content === 'string'
+              ? [{ type: 'text', text: msg.content }]
+              : [];
+          for (const block of blocks) {
+            if (!block || typeof block !== 'object') continue;
+            const t = (block as { type?: unknown }).type;
+            if (t === 'text') {
+              const s = (block as { text?: unknown }).text;
+              if (typeof s === 'string') textBuf += s;
+            } else if (t === 'thinking') {
+              const s = (block as { thinking?: unknown }).thinking;
+              if (typeof s === 'string') thinkingBuf += s;
+            } else if (t === 'tool_use') {
+              // 工具调用 → 先 flush 累积的 text/thinking,然后 emit tool_call item
+              flushText();
+              const id = (block as { id?: unknown }).id;
+              const name = (block as { name?: unknown }).name;
+              const rawInput = (block as { input?: unknown }).input;
+              if (typeof id === 'string' && typeof name === 'string') {
+                const matched = toolResults.get(id);
+                const tcItem: SessionHistoryItem = {
+                  ...historyIdentity,
+                  kind: 'tool_call',
+                  toolId: id,
+                  toolName: name,
+                  ...(rawInput && typeof rawInput === 'object' && !Array.isArray(rawInput)
+                    ? { input: rawInput as Record<string, unknown> }
+                    : {}),
+                  ...(matched !== undefined
+                    ? { result: matched.content, ...(matched.isError ? { isError: true } : {}) }
+                    : {}),
+                };
+                items.push(tcItem);
+              }
+            }
+          }
+          flushText();
         }
-        return withLocalNotices(items, conversationDiagnosticValue, conversationPageValue);
-      }),
-    ),
+      }
+      if (omittedConversationEntries > 0) {
+        items.unshift({
+          kind: 'history_truncation',
+          scope: 'history',
+          omittedItems: Math.max(1, omittedConversationEntries),
+        });
+      }
+      if (runtimeWindowForResponse !== undefined) {
+        const window = runtimeWindowForResponse;
+        if (
+          runtimeProjectionItemCount !== undefined &&
+          runtimeProjectionItemCount !== items.length
+        ) {
+          runtimeConversationWindows.delete(input.sessionId);
+          return withLocalNotices([], undefined, { outcome: 'data_changed' });
+        }
+        const projectionPage = pageSessionHistoryItems(
+          items,
+          runtimeProjectionEndExclusive ?? items.length,
+        );
+        let nextCursor = window.nextCursor;
+        if (projectionPage.nextEndExclusive !== undefined) {
+          nextCursor = nextRuntimeProjectionCursor(input.sessionId);
+          window.projectionContinuation = {
+            cursor: nextCursor,
+            endExclusive: projectionPage.nextEndExclusive,
+            itemCount: items.length,
+          };
+        } else {
+          window.projectionContinuation = undefined;
+        }
+        rememberRuntimeConversationWindow(input.sessionId, window);
+        conversationPageValue = {
+          outcome: 'ready',
+          revision: window.revision,
+          sourceRevision: window.sourceRevision,
+          hasMore: nextCursor !== undefined,
+          // The newest request installs one bounded tail. Every cursor continuation is an older,
+          // non-overlapping slice and therefore extends the already loaded transcript upward.
+          // This is a presentation contract only; Runtime canonical order and cursors remain the
+          // authority for which records belong to each page.
+          windowMode: input.cursor === undefined ? 'replace' : 'prepend',
+          // A prepended response is older in isolation, but the renderer still owns the newest
+          // page it is extending. It therefore does not need replacement-window navigation.
+          hasNewer: input.cursor === undefined ? window.newerSdkPageOmitted : false,
+          ...(nextCursor !== undefined ? { nextCursor } : {}),
+        };
+        return withLocalNotices(
+          projectionPage.items,
+          conversationDiagnosticValue,
+          conversationPageValue,
+        );
+      }
+      return withLocalNotices(items, conversationDiagnosticValue, conversationPageValue);
+    }),
   );
 }
 

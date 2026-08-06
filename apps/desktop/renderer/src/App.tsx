@@ -144,6 +144,7 @@ export default function App(): JSX.Element {
     if (!bridge) return;
     let disposed = false;
     const liveSnapshotRequests = new Set<string>();
+    const liveSnapshotActiveIntents = new Map<string, { allowEqualHydration: boolean }>();
     const liveSnapshotReruns = new Map<string, LiveSnapshotRequestOptions>();
     const liveSnapshotRetryAttempts = new Map<string, number>();
     const liveSnapshotRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -269,7 +270,15 @@ export default function App(): JSX.Element {
         liveSnapshotRetryTimers.delete(sessionId);
       }
       if (liveSnapshotRequests.has(sessionId)) {
-        if (options.rerunIfInFlight === false) return;
+        if (options.rerunIfInFlight === false) {
+          const activeIntent = liveSnapshotActiveIntents.get(sessionId);
+          if (activeIntent && options.allowEqualHydration === true) {
+            // Equal hydration only changes renderer acceptance; upgrade the read already in flight
+            // instead of losing activation recovery or paying for a second snapshot IPC.
+            activeIntent.allowEqualHydration = true;
+          }
+          return;
+        }
         // Do not lose a causal terminal/invalidation reconciliation that races an older read.
         const pending = liveSnapshotReruns.get(sessionId);
         liveSnapshotReruns.set(sessionId, {
@@ -279,6 +288,10 @@ export default function App(): JSX.Element {
         return;
       }
       liveSnapshotRequests.add(sessionId);
+      const activeIntent = {
+        allowEqualHydration: options.allowEqualHydration === true,
+      };
+      liveSnapshotActiveIntents.set(sessionId, activeIntent);
       // Hold this Session's cursor-bearing Runtime events until the authoritative snapshot cursor
       // arrives. Draining the held events in raw order before reconciliation preserves lifecycle
       // and tool positions; the accepted per-draft watermark rejects only later covered replays.
@@ -317,7 +330,7 @@ export default function App(): JSX.Element {
           );
           const accepted = replaceSessionLiveProjection(
             result.data,
-            options.allowEqualHydration === true ? { allowEqualHydration: true } : undefined,
+            activeIntent.allowEqualHydration ? { allowEqualHydration: true } : undefined,
           );
           if (accepted) reconcileAuthoritativeTerminalHistory(sessionId);
           const currentState = useAppStore.getState();
@@ -325,7 +338,7 @@ export default function App(): JSX.Element {
           if (
             !accepted &&
             shouldRerunRejectedHydrationSnapshot({
-              allowEqualHydration: options.allowEqualHydration === true,
+              allowEqualHydration: activeIntent.allowEqualHydration,
               connection: currentState.runtimeConnection,
               current: currentProjection,
               incoming: result.data,
@@ -341,11 +354,17 @@ export default function App(): JSX.Element {
           if (!scheduledRetry) clearLiveSnapshotRetry(sessionId);
         })
         .catch((error: unknown) => {
-          if (!disposed) scheduleLiveSnapshotRetry(sessionId, error, options);
+          if (!disposed) {
+            scheduleLiveSnapshotRetry(sessionId, error, {
+              ...options,
+              ...(activeIntent.allowEqualHydration ? { allowEqualHydration: true } : {}),
+            });
+          }
         })
         .finally(() => {
           if (disposed) return;
           liveSnapshotRequests.delete(sessionId);
+          liveSnapshotActiveIntents.delete(sessionId);
           const rerun = liveSnapshotReruns.get(sessionId);
           if (rerun !== undefined) {
             liveSnapshotReruns.delete(sessionId);
@@ -505,7 +524,7 @@ export default function App(): JSX.Element {
         state.runtimeProfile.connection.runtimeId === state.runtimeConnection.runtimeId;
       if (runtimeProfileBootstrapped) clearRuntimeProfileRetry();
       if (!wasBootstrapped && runtimeProfileBootstrapped) {
-        recoverCurrentSessionAtRuntimeEdge();
+        recoverCurrentSessionAtRuntimeEdge({ rerunIfInFlight: false });
       }
       requestObservedProfileConflicts();
       if (runtimeProfileBootstrapped) {
@@ -867,6 +886,7 @@ export default function App(): JSX.Element {
         sessionEventBatcher.drain(sessionId);
       }
       liveSnapshotRequests.clear();
+      liveSnapshotActiveIntents.clear();
       liveSnapshotReruns.clear();
       for (const timer of liveSnapshotRetryTimers.values()) clearTimeout(timer);
       liveSnapshotRetryTimers.clear();
@@ -928,7 +948,10 @@ export default function App(): JSX.Element {
       .getState()
       .sessions.find((session) => session.sessionId === currentSessionId);
     if (selected?.surface === 'partner') return;
-    requestCoderLiveSnapshotRef.current(currentSessionId, { allowEqualHydration: true });
+    requestCoderLiveSnapshotRef.current(currentSessionId, {
+      allowEqualHydration: true,
+      rerunIfInFlight: false,
+    });
   }, [
     coderRuntimeReady,
     currentSessionHasImmediateRuntimeActivity,
@@ -956,7 +979,10 @@ export default function App(): JSX.Element {
       .getState()
       .sessions.find((session) => session.sessionId === currentSessionId);
     if (selected?.surface === 'partner') return;
-    requestCoderLiveSnapshotRef.current(currentSessionId, { allowEqualHydration: true });
+    requestCoderLiveSnapshotRef.current(currentSessionId, {
+      allowEqualHydration: true,
+      rerunIfInFlight: false,
+    });
   }, [
     coderRuntimeReady,
     currentSessionHasImmediateRuntimeActivity,

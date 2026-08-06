@@ -234,6 +234,8 @@ export interface UserMessage {
   /** Internal idempotency identity for a Runtime-delivered queued prompt. */
   readonly deliveryQueueId?: string;
   readonly deliveryQueueMode?: QueuedUserMessage['queueMode'];
+  /** Interrupt deliveries require an exact canonical entry reference before live/history folding. */
+  readonly deliveredInterrupt?: true;
   /** Stable renderer-local identity retained when a queued bubble is promoted before its ACK. */
   readonly sourceQueuedLocalId?: string;
   readonly historyNoAssistantSegment?: boolean;
@@ -245,6 +247,8 @@ export interface UserMessage {
    * rendering a second user/assistant copy; terminal reconciliation removes this placeholder.
    */
   readonly hiddenProjectionDuplicate?: true;
+  /** Original live ordering key while hiddenProjectionDuplicate temporarily follows its owner. */
+  readonly hiddenProjectionOriginalSentAt?: number;
   /**
    * Internal alignment anchor for assistant/tool-leading history and history/live segment gaps.
    * It keeps positional event owners aligned without presenting a fabricated empty user bubble.
@@ -270,6 +274,17 @@ const restoredHistoryEvents = new WeakSet<object>();
 interface HistoryLiveBaseline {
   userMessages: readonly UserMessage[];
   events: readonly SessionEvent[];
+  /** Live owners already proven to have one exact durable canonical counterpart. */
+  readonly durableCanonicalizedUserIds: Set<string>;
+  /** Canonical index namespace for canonicalIndexByUserId. */
+  canonicalSourceRevision?: string;
+  /** Live owners that were once proven to occupy an exact canonical transcript index. */
+  canonicalIndexByUserId: Map<string, number>;
+}
+
+interface CanonicalizedLiveOwner {
+  readonly messageId: string;
+  readonly canonicalIndex: number;
 }
 
 /**
@@ -324,14 +339,70 @@ function rememberHistoryLiveEvent(
   baseline.events = appendSessionEvent(baseline.events, event, snapshotCursor);
 }
 
+function liveBaselineUser(message: UserMessage): UserMessage {
+  if (
+    message.hiddenProjectionDuplicate !== true &&
+    message.hiddenProjectionOriginalSentAt === undefined
+  ) {
+    return message;
+  }
+  const {
+    hiddenProjectionDuplicate: _hidden,
+    hiddenProjectionOriginalSentAt,
+    ...liveMessage
+  } = message;
+  return hiddenProjectionOriginalSentAt === undefined
+    ? liveMessage
+    : { ...liveMessage, sentAt: hiddenProjectionOriginalSentAt };
+}
+
 function rememberHistoryLiveUsers(sessionId: string, users: readonly UserMessage[]): void {
   const baseline = historyLiveBaselines.get(sessionId);
   if (!baseline) return;
-  const byId = new Map(baseline.userMessages.map((message) => [message.id, message] as const));
+  const byId = new Map(
+    baseline.userMessages.map((message) => {
+      const liveMessage = liveBaselineUser(message);
+      return [liveMessage.id, liveMessage] as const;
+    }),
+  );
   for (const message of users) {
-    if (message.restoredFromHistory !== true) byId.set(message.id, message);
+    if (message.restoredFromHistory !== true) byId.set(message.id, liveBaselineUser(message));
   }
   baseline.userMessages = [...byId.values()];
+}
+
+function rememberOpenedHistoryLiveOwner(sessionId: string, message: UserMessage): void {
+  const baseline = historyLiveBaselines.get(sessionId);
+  if (!baseline) return;
+  const {
+    restoredFromHistory: _restored,
+    canonicalIndex: _canonicalIndex,
+    historyTurnIndex: _historyTurnIndex,
+    historyBoundary: _historyBoundary,
+    historyNoAssistantSegment: _emptySegment,
+    hiddenProjectionDuplicate: _hiddenDuplicate,
+    hiddenProjectionOriginalSentAt,
+    ...liveOwner
+  } = message;
+  const owner = {
+    ...liveOwner,
+    ...(hiddenProjectionOriginalSentAt !== undefined
+      ? { sentAt: hiddenProjectionOriginalSentAt }
+      : {}),
+    id: `${message.id}:runtime`,
+  };
+  baseline.userMessages = [
+    ...baseline.userMessages.filter(
+      (candidate) =>
+        candidate.id !== owner.id &&
+        !(
+          candidate.entryId !== undefined &&
+          owner.entryId !== undefined &&
+          candidate.entryId === owner.entryId
+        ),
+    ),
+    owner,
+  ];
 }
 
 function forgetHistoryLiveUsers(sessionId: string, messageIds: readonly string[]): void {
@@ -339,6 +410,145 @@ function forgetHistoryLiveUsers(sessionId: string, messageIds: readonly string[]
   if (!baseline || messageIds.length === 0) return;
   const forgotten = new Set(messageIds);
   baseline.userMessages = baseline.userMessages.filter((message) => !forgotten.has(message.id));
+  for (const messageId of forgotten) {
+    baseline.canonicalIndexByUserId.delete(messageId);
+    baseline.durableCanonicalizedUserIds.delete(messageId);
+  }
+}
+
+function rememberCanonicalizedHistoryLiveOwners(
+  sessionId: string,
+  owners: readonly CanonicalizedLiveOwner[],
+): void {
+  const baseline = historyLiveBaselines.get(sessionId);
+  if (!baseline || owners.length === 0) return;
+  const baselineIds = new Set(baseline.userMessages.map((message) => message.id));
+  for (const owner of owners) {
+    if (baselineIds.has(owner.messageId)) {
+      baseline.canonicalIndexByUserId.set(owner.messageId, owner.canonicalIndex);
+      baseline.durableCanonicalizedUserIds.add(owner.messageId);
+    }
+  }
+}
+
+function pruneCanonicalizedHistoryLivePrefix(
+  baseline: HistoryLiveBaseline,
+  firstRetainedCanonicalIndex: number | undefined,
+  prefixOmitted: boolean,
+): void {
+  if (!prefixOmitted || firstRetainedCanonicalIndex === undefined) return;
+  const prunedIds = new Set(
+    [...baseline.canonicalIndexByUserId.entries()].flatMap(([messageId, canonicalIndex]) =>
+      canonicalIndex < firstRetainedCanonicalIndex ? [messageId] : [],
+    ),
+  );
+  pruneHistoryLiveOwners(baseline, prunedIds);
+}
+
+function pruneHistoryLiveOwners(
+  baseline: HistoryLiveBaseline,
+  prunedIds: ReadonlySet<string>,
+): void {
+  if (prunedIds.size === 0) return;
+
+  const turns = transcriptTurnSnapshots(baseline.userMessages, baseline.events);
+  const prunedUserIndexes = new Set<number>();
+  const prunedEventIndexes = new Set<number>();
+  for (const turn of turns) {
+    if (!prunedIds.has(turn.messageId)) continue;
+    prunedUserIndexes.add(turn.userIndex);
+    for (let index = turn.eventStart; index < turn.eventEnd; index++) {
+      prunedEventIndexes.add(index);
+    }
+  }
+  baseline.userMessages = baseline.userMessages.filter((_, index) => !prunedUserIndexes.has(index));
+  baseline.events = baseline.events.filter((_, index) => !prunedEventIndexes.has(index));
+  for (const messageId of prunedIds) {
+    baseline.canonicalIndexByUserId.delete(messageId);
+    baseline.durableCanonicalizedUserIds.delete(messageId);
+  }
+}
+
+function canonicalLiveTurnRelation(
+  canonicalTurns: readonly TranscriptTurnSnapshot[],
+  live: TranscriptTurnSnapshot,
+): 'present' | 'conflict' | 'absent' {
+  return canonicalTurns.reduce<'present' | 'conflict' | 'absent'>((relation, canonical) => {
+    if (relation !== 'absent') return relation;
+    const entryRelation = userEntryIdentityRelation(canonical, live);
+    if (entryRelation === 'match') return 'present';
+    if (strongTurnIdentityMatches(canonical, live)) {
+      return entryRelation === 'conflict' ? 'conflict' : 'present';
+    }
+    return 'absent';
+  }, 'absent');
+}
+
+function pruneDurablyCanonicalizedHistoryLivePrefix(
+  baseline: HistoryLiveBaseline,
+  canonicalUsers: readonly UserMessage[],
+  canonicalEvents: readonly SessionEvent[],
+  prefixOmitted: boolean,
+  authoritativeNewest: boolean,
+): void {
+  if (
+    !prefixOmitted ||
+    !authoritativeNewest ||
+    baseline.durableCanonicalizedUserIds.size === 0
+  ) {
+    return;
+  }
+  const canonicalTurns = transcriptTurnSnapshots(canonicalUsers, canonicalEvents);
+  const prunedIds = new Set(
+    transcriptTurnSnapshots(baseline.userMessages, baseline.events).flatMap((live) =>
+      baseline.durableCanonicalizedUserIds.has(live.messageId) &&
+      canonicalLiveTurnRelation(canonicalTurns, live) === 'absent'
+        ? [live.messageId]
+        : [],
+    ),
+  );
+  pruneHistoryLiveOwners(baseline, prunedIds);
+}
+
+function pruneSettledRuntimeHistoryLivePrefix(
+  baseline: HistoryLiveBaseline,
+  canonicalUsers: readonly UserMessage[],
+  canonicalEvents: readonly SessionEvent[],
+  settledRuns: readonly { readonly runtimeId: string; readonly runId: string }[],
+  prefixOmitted: boolean,
+): void {
+  if (!prefixOmitted || settledRuns.length === 0) return;
+  const settledRuntimeByRun = new Map(
+    settledRuns.map(({ runId, runtimeId }) => [runId, runtimeId]),
+  );
+  const canonicalTurns = transcriptTurnSnapshots(canonicalUsers, canonicalEvents);
+  const liveTurns = transcriptTurnSnapshots(baseline.userMessages, baseline.events);
+  const prunedIds = new Set<string>();
+  for (const live of liveTurns) {
+    const runtimeId =
+      live.runtimeRunId === undefined ? undefined : settledRuntimeByRun.get(live.runtimeRunId);
+    if (runtimeId === undefined || (live.entryId === undefined && !hasStrongTurnIdentity(live))) {
+      continue;
+    }
+    const segment = baseline.events.slice(live.eventStart, live.eventEnd);
+    let sawExactRuntimeEvent = false;
+    let conflictingRuntimeEvent = false;
+    for (const event of segment) {
+      if (!('runtimeEvent' in event) || event.runtimeEvent === undefined) continue;
+      if (
+        event.runtimeEvent.runtimeId === runtimeId &&
+        event.runtimeEvent.runId === live.runtimeRunId
+      ) {
+        sawExactRuntimeEvent = true;
+      } else {
+        conflictingRuntimeEvent = true;
+      }
+    }
+    if (!sawExactRuntimeEvent || conflictingRuntimeEvent) continue;
+    const canonicalRelation = canonicalLiveTurnRelation(canonicalTurns, live);
+    if (canonicalRelation === 'absent') prunedIds.add(live.messageId);
+  }
+  pruneHistoryLiveOwners(baseline, prunedIds);
 }
 
 function clearHistoryLiveBaseline(sessionId: string): void {
@@ -762,6 +972,15 @@ interface AppState {
       readonly replaceLoadedWindow?: boolean;
       /** Older replacement windows do not mix a newer live transcript into the browsing page. */
       readonly includeLiveProjection?: boolean;
+      /** Canonical index namespace for conservative live-baseline pruning. */
+      readonly sourceRevision?: string;
+      /** This resolved replacement is the authoritative newest canonical window. */
+      readonly authoritativeNewest?: boolean;
+      /** Exact Runtime Runs settled by the authoritative newest-page read being installed. */
+      readonly settledRuntimeRuns?: readonly {
+        readonly runtimeId: string;
+        readonly runId: string;
+      }[];
     },
   ): void;
   /** Drop only the replaceable history projection while retaining independent live rows. */
@@ -1280,9 +1499,11 @@ interface TranscriptTurnSnapshot {
   readonly sentAt: number;
   readonly turnId?: string;
   readonly turnUserOrdinal?: number;
+  readonly runtimeRunId?: string;
   readonly canonicalIndex?: number;
   readonly entryId?: string;
   readonly auditEntryIds?: readonly string[];
+  readonly deliveredInterrupt: boolean;
   readonly restoredFromHistory: boolean;
   readonly leadingPartialHistory: boolean;
   readonly omittedHistoryUserOrdinal: boolean;
@@ -1319,6 +1540,7 @@ function stableUserMessageSemantic(message: Pick<UserMessage, 'content' | 'attac
 interface ReconciledTranscriptBuffers {
   readonly userMessages: readonly UserMessage[];
   readonly events: readonly SessionEvent[];
+  readonly canonicalizedLiveOwners?: readonly CanonicalizedLiveOwner[];
 }
 
 function transcriptTurnSnapshots(
@@ -1346,9 +1568,11 @@ function transcriptTurnSnapshots(
       ...(message.turnUserOrdinal !== undefined
         ? { turnUserOrdinal: message.turnUserOrdinal }
         : {}),
+      ...(message.runtimeRunId !== undefined ? { runtimeRunId: message.runtimeRunId } : {}),
       ...(message.canonicalIndex !== undefined ? { canonicalIndex: message.canonicalIndex } : {}),
       ...(message.entryId !== undefined ? { entryId: message.entryId } : {}),
       ...(message.auditEntryIds !== undefined ? { auditEntryIds: message.auditEntryIds } : {}),
+      deliveredInterrupt: message.deliveredInterrupt === true,
       restoredFromHistory: message.restoredFromHistory === true,
       leadingPartialHistory: message.leadingPartialHistory === true,
       omittedHistoryUserOrdinal: message.omittedHistoryUserOrdinal === true,
@@ -1744,6 +1968,20 @@ function projectionNoticeKey(event: SessionEvent): string | undefined {
   return undefined;
 }
 
+function projectionMergeKey(event: SessionEvent): string | undefined {
+  const noticeKey = projectionNoticeKey(event);
+  if (noticeKey !== undefined) return noticeKey;
+  if (event.kind !== 'compact_stats' || event.contextKind === 'child') return undefined;
+  return `compact:${stableJson({
+    tokensBefore: event.tokensBefore,
+    tokensAfter: event.tokensAfter,
+    contextId: event.contextId,
+    contextRevision: event.contextRevision,
+    afterRevision: event.afterRevision,
+    committed: event.committed,
+  })}`;
+}
+
 type TranscriptHistoryOrigin = {
   readonly entryId?: string;
   readonly auditEntryIds?: string[];
@@ -2016,6 +2254,493 @@ function liveTurnCanFold(turn: TranscriptTurnSnapshot, exactEntryIdentity = fals
   return turn.turnId !== undefined && turn.terminalTurnId === turn.turnId;
 }
 
+function transcriptContentSequence(turn: TranscriptTurnSnapshot): readonly string[] {
+  return turn.visibleSequence.filter(
+    (item) =>
+      item.startsWith('thinking:') ||
+      item.startsWith('text:') ||
+      item.startsWith('tool-start:') ||
+      item.startsWith('tool-result:'),
+  );
+}
+
+function durableProjectionCoversLiveContent(
+  durable: TranscriptTurnSnapshot,
+  live: TranscriptTurnSnapshot,
+): boolean {
+  const durableSequence = transcriptContentSequence(durable);
+  const liveSequence = transcriptContentSequence(live);
+  return (
+    durableSequence.length === liveSequence.length &&
+    durableSequence.every((item, index) => item === liveSequence[index])
+  );
+}
+
+function openLiveProjectionCoversDurablePrefix(
+  durable: TranscriptTurnSnapshot,
+  live: TranscriptTurnSnapshot,
+): boolean {
+  if (live.closed) return false;
+  const durableSequence = transcriptContentSequence(durable);
+  const liveSequence = transcriptContentSequence(live);
+  if (contentProjectionIsPrefix(durableSequence, liveSequence)) return true;
+  // A notice can split one text stream into two visible runs even though the other projection stores
+  // the same prefix as one assistant entry. Matching the same-kind content stream remains exact;
+  // notice positions are reconciled separately by content offset.
+  return contentProjectionIsPrefix(
+    collapseAdjacentTextContent(durableSequence),
+    collapseAdjacentTextContent(liveSequence),
+  );
+}
+
+function contentProjectionIsPrefix(
+  durableSequence: readonly string[],
+  liveSequence: readonly string[],
+): boolean {
+  if (durableSequence.length === 0 || durableSequence.length > liveSequence.length) return false;
+  return durableSequence.every((item, index) => {
+    const candidate = liveSequence[index];
+    if (candidate === undefined) return false;
+    const finalCumulativeText =
+      index === durableSequence.length - 1 &&
+      (item.startsWith('thinking:') || item.startsWith('text:'));
+    return finalCumulativeText ? candidate.startsWith(item) : candidate === item;
+  });
+}
+
+function collapseAdjacentTextContent(sequence: readonly string[]): string[] {
+  const collapsed: Array<{ readonly prefix?: 'thinking:' | 'text:'; readonly parts: string[] }> = [];
+  for (const item of sequence) {
+    const prefix = item.startsWith('thinking:')
+      ? ('thinking:' as const)
+      : item.startsWith('text:')
+        ? ('text:' as const)
+        : undefined;
+    const previous = collapsed[collapsed.length - 1];
+    if (prefix !== undefined && previous?.prefix === prefix) {
+      previous.parts.push(item.slice(prefix.length));
+    } else {
+      collapsed.push({ ...(prefix !== undefined ? { prefix } : {}), parts: [item] });
+    }
+  }
+  return collapsed.map((item) => item.parts.join(''));
+}
+
+function durableProjectionCoversOpenLiveContent(
+  durable: TranscriptTurnSnapshot,
+  live: TranscriptTurnSnapshot,
+): boolean {
+  let durableIndex = 0;
+  return live.visibleSequence.every((item, liveIndex) => {
+    const finalCumulativeText =
+      liveIndex === live.visibleSequence.length - 1 &&
+      (item.startsWith('thinking:') || item.startsWith('text:'));
+    while (durableIndex < durable.visibleSequence.length) {
+      const candidate = durable.visibleSequence[durableIndex++]!;
+      if (finalCumulativeText ? candidate.startsWith(item) : candidate === item) return true;
+    }
+    return false;
+  });
+}
+
+interface TranscriptContentRun {
+  readonly key: string;
+  readonly eventIndexes: readonly number[];
+  readonly textKind?: 'thinking_delta' | 'text_delta';
+}
+
+function transcriptContentRuns(events: readonly SessionEvent[]): TranscriptContentRun[] {
+  const runs: Array<{
+    key: string;
+    eventIndexes: number[];
+    textKind?: 'thinking_delta' | 'text_delta';
+  }> = [];
+  let mergeableTextRun: number | undefined;
+  for (let index = 0; index < events.length; index++) {
+    const event = events[index]!;
+    if (event.kind === 'thinking_delta' || event.kind === 'text_delta') {
+      const prefix = event.kind === 'thinking_delta' ? 'thinking:' : 'text:';
+      const current = mergeableTextRun === undefined ? undefined : runs[mergeableTextRun];
+      if (current?.textKind === event.kind) {
+        current.key += event.text;
+        current.eventIndexes.push(index);
+      } else {
+        runs.push({ key: `${prefix}${event.text}`, eventIndexes: [index], textKind: event.kind });
+        mergeableTextRun = runs.length - 1;
+      }
+    } else if (event.kind === 'tool_start') {
+      runs.push({
+        key: `tool-start:${stableJson({
+          toolId: event.toolId,
+          toolName: event.toolName,
+          input: stableJson(event.input ?? {}),
+        })}`,
+        eventIndexes: [index],
+      });
+      mergeableTextRun = undefined;
+    } else if (event.kind === 'tool_result') {
+      runs.push({
+        key: `tool-result:${stableJson({
+          toolId: event.toolId,
+          toolName: event.toolName,
+          content: event.content,
+        })}`,
+        eventIndexes: [index],
+      });
+      mergeableTextRun = undefined;
+    } else if (
+      projectionNoticeKey(event) !== undefined ||
+      (event.kind === 'compact_stats' && event.contextKind !== 'child') ||
+      event.kind === 'session_error'
+    ) {
+      mergeableTextRun = undefined;
+    }
+  }
+  return runs;
+}
+
+function collapseAdjacentTextRuns(
+  runs: readonly TranscriptContentRun[],
+): TranscriptContentRun[] {
+  const collapsed: Array<{
+    keyParts: string[];
+    eventIndexes: number[];
+    textKind?: 'thinking_delta' | 'text_delta';
+  }> = [];
+  for (const run of runs) {
+    const previous = collapsed[collapsed.length - 1];
+    if (run.textKind !== undefined && previous?.textKind === run.textKind) {
+      const prefix = run.textKind === 'thinking_delta' ? 'thinking:' : 'text:';
+      previous.keyParts.push(run.key.slice(prefix.length));
+      previous.eventIndexes.push(...run.eventIndexes);
+    } else {
+      collapsed.push({
+        keyParts: [run.key],
+        eventIndexes: [...run.eventIndexes],
+        ...(run.textKind !== undefined ? { textKind: run.textKind } : {}),
+      });
+    }
+  }
+  return collapsed.map((run) => ({
+    key: run.keyParts.join(''),
+    eventIndexes: run.eventIndexes,
+    ...(run.textKind !== undefined ? { textKind: run.textKind } : {}),
+  }));
+}
+
+interface ProjectionContentPosition {
+  readonly runIndex: number;
+  readonly startOffset: number;
+  readonly endOffset: number;
+}
+
+function projectionContentPositions(
+  events: readonly SessionEvent[],
+  runs: readonly TranscriptContentRun[],
+): ReadonlyMap<number, ProjectionContentPosition> {
+  const positions = new Map<number, ProjectionContentPosition>();
+  for (let runIndex = 0; runIndex < runs.length; runIndex++) {
+    let offset = 0;
+    for (const eventIndex of runs[runIndex]!.eventIndexes) {
+      const event = events[eventIndex]!;
+      const size =
+        event.kind === 'thinking_delta' || event.kind === 'text_delta' ? event.text.length : 1;
+      positions.set(eventIndex, {
+        runIndex,
+        startOffset: offset,
+        endOffset: offset + size,
+      });
+      offset += size;
+    }
+  }
+  return positions;
+}
+
+interface AnchoredProjectionEvent {
+  readonly runIndex: number;
+  readonly offset: number;
+  readonly event: SessionEvent;
+}
+
+function anchoredProjectionExtras(
+  events: readonly SessionEvent[],
+  positions: ReadonlyMap<number, ProjectionContentPosition>,
+): AnchoredProjectionEvent[] {
+  const extras: AnchoredProjectionEvent[] = [];
+  let runIndex = 0;
+  let offset = 0;
+  for (let eventIndex = 0; eventIndex < events.length; eventIndex++) {
+    const event = events[eventIndex]!;
+    const position = positions.get(eventIndex);
+    if (position !== undefined) {
+      runIndex = position.runIndex;
+      offset = position.endOffset;
+    } else if (!isTranscriptTerminal(event) && !isPromptSegmentBoundary(event)) {
+      extras.push({ runIndex, offset, event });
+    }
+  }
+  return extras;
+}
+
+function projectionAnchorKey(event: AnchoredProjectionEvent): string {
+  return `${event.runIndex}:${event.offset}`;
+}
+
+function unmatchedDurableProjectionExtras(
+  durable: readonly AnchoredProjectionEvent[],
+  live: readonly AnchoredProjectionEvent[],
+): AnchoredProjectionEvent[] {
+  const liveCounts = new Map<string, number>();
+  for (const anchored of live) {
+    const mergeKey = projectionMergeKey(anchored.event);
+    if (mergeKey === undefined) continue;
+    const key = `${projectionAnchorKey(anchored)}:${mergeKey}`;
+    liveCounts.set(key, (liveCounts.get(key) ?? 0) + 1);
+  }
+  return durable.filter((anchored) => {
+    const mergeKey = projectionMergeKey(anchored.event);
+    if (mergeKey === undefined) return true;
+    const key = `${projectionAnchorKey(anchored)}:${mergeKey}`;
+    const remaining = liveCounts.get(key) ?? 0;
+    if (remaining === 0) return true;
+    if (remaining === 1) liveCounts.delete(key);
+    else liveCounts.set(key, remaining - 1);
+    return false;
+  });
+}
+
+interface ProjectionEventGroup {
+  readonly runIndex: number;
+  readonly offset: number;
+  readonly events: SessionEvent[];
+}
+
+function anchoredProjectionGroups(
+  extras: readonly AnchoredProjectionEvent[],
+): ProjectionEventGroup[] {
+  const groups: Array<{ runIndex: number; offset: number; events: SessionEvent[] }> = [];
+  for (const extra of extras) {
+    const previous = groups[groups.length - 1];
+    if (previous?.runIndex === extra.runIndex && previous.offset === extra.offset) {
+      previous.events.push(extra.event);
+    } else {
+      groups.push({ runIndex: extra.runIndex, offset: extra.offset, events: [extra.event] });
+    }
+  }
+  return groups;
+}
+
+function projectionPositionCompare(
+  leftRun: number,
+  leftOffset: number,
+  rightRun: number,
+  rightOffset: number,
+): number {
+  return leftRun - rightRun || leftOffset - rightOffset;
+}
+
+function flushProjectionGroupsThrough(
+  groups: readonly ProjectionEventGroup[],
+  cursor: number,
+  runIndex: number,
+  offset: number,
+  output: SessionEvent[],
+): number {
+  while (cursor < groups.length) {
+    const group = groups[cursor]!;
+    if (projectionPositionCompare(group.runIndex, group.offset, runIndex, offset) > 0) break;
+    output.push(...group.events);
+    cursor++;
+  }
+  return cursor;
+}
+
+function mergeCollapsedOpenLiveProjection(
+  durableEvents: readonly SessionEvent[],
+  liveEvents: readonly SessionEvent[],
+  promptBoundary: SessionEvent | undefined,
+): SessionEvent[] {
+  const durableRuns = collapseAdjacentTextRuns(transcriptContentRuns(durableEvents));
+  const liveRuns = collapseAdjacentTextRuns(transcriptContentRuns(liveEvents));
+  const durablePositions = projectionContentPositions(durableEvents, durableRuns);
+  const livePositions = projectionContentPositions(liveEvents, liveRuns);
+  const durableExtras = anchoredProjectionExtras(durableEvents, durablePositions);
+  const liveExtras = anchoredProjectionExtras(liveEvents, livePositions);
+  const groups = anchoredProjectionGroups(
+    unmatchedDurableProjectionExtras(durableExtras, liveExtras),
+  );
+  const merged: SessionEvent[] = promptBoundary === undefined ? [] : [promptBoundary];
+  let groupCursor = 0;
+  for (let eventIndex = 0; eventIndex < liveEvents.length; eventIndex++) {
+    const event = liveEvents[eventIndex]!;
+    if (isTranscriptTerminal(event) || isPromptSegmentBoundary(event)) continue;
+    const position = livePositions.get(eventIndex);
+    if (position === undefined) {
+      merged.push(event);
+      continue;
+    }
+    groupCursor = flushProjectionGroupsThrough(
+      groups,
+      groupCursor,
+      position.runIndex,
+      position.startOffset,
+      merged,
+    );
+    if (event.kind !== 'thinking_delta' && event.kind !== 'text_delta') {
+      merged.push(event);
+      continue;
+    }
+    let textOffset = position.startOffset;
+    while (
+      groupCursor < groups.length &&
+      groups[groupCursor]!.runIndex === position.runIndex &&
+      groups[groupCursor]!.offset < position.endOffset
+    ) {
+      const group = groups[groupCursor]!;
+      const splitAt = group.offset - position.startOffset;
+      if (group.offset > textOffset) {
+        merged.push({ ...event, text: event.text.slice(textOffset - position.startOffset, splitAt) });
+      }
+      merged.push(...group.events);
+      textOffset = group.offset;
+      groupCursor++;
+    }
+    if (textOffset < position.endOffset) {
+      merged.push({ ...event, text: event.text.slice(textOffset - position.startOffset) });
+    }
+  }
+  while (groupCursor < groups.length) merged.push(...groups[groupCursor++]!.events);
+  return merged;
+}
+
+function projectionContentGaps(
+  events: readonly SessionEvent[],
+  runs: readonly TranscriptContentRun[],
+): SessionEvent[][] {
+  const contentIndexes = new Set(runs.flatMap((run) => run.eventIndexes));
+  const gaps = Array.from({ length: runs.length + 1 }, () => [] as SessionEvent[]);
+  let nextRunIndex = 0;
+  for (let eventIndex = 0; eventIndex < events.length; eventIndex++) {
+    while (
+      nextRunIndex < runs.length &&
+      runs[nextRunIndex]!.eventIndexes[runs[nextRunIndex]!.eventIndexes.length - 1]! < eventIndex
+    ) {
+      nextRunIndex++;
+    }
+    const event = events[eventIndex]!;
+    if (
+      contentIndexes.has(eventIndex) ||
+      isTranscriptTerminal(event) ||
+      isPromptSegmentBoundary(event)
+    ) {
+      continue;
+    }
+    gaps[nextRunIndex]!.push(event);
+  }
+  return gaps;
+}
+
+function mergeOpenLiveTurnProjections(
+  durable: TranscriptTurnSnapshot,
+  durableEvents: readonly SessionEvent[],
+  liveEvents: readonly SessionEvent[],
+): SessionEvent[] {
+  const promptBoundary =
+    durableEvents.find(isPromptSegmentBoundary) ?? liveEvents.find(isPromptSegmentBoundary);
+  const durableRuns = transcriptContentRuns(durableEvents);
+  const liveRuns = transcriptContentRuns(liveEvents);
+  const durableSequence = transcriptContentSequence(durable);
+  const liveSequence = liveRuns.map((run) => run.key);
+  if (!contentProjectionIsPrefix(durableSequence, liveSequence)) {
+    return mergeCollapsedOpenLiveProjection(durableEvents, liveEvents, promptBoundary);
+  }
+  const liveGaps = projectionContentGaps(liveEvents, liveRuns);
+  const durableGaps = projectionContentGaps(durableEvents, durableRuns).map(
+    (events, gapIndex) => {
+      const liveMergeKeyCounts = new Map<string, number>();
+      for (const event of liveGaps[gapIndex] ?? []) {
+        const key = projectionMergeKey(event);
+        if (key !== undefined) {
+          liveMergeKeyCounts.set(key, (liveMergeKeyCounts.get(key) ?? 0) + 1);
+        }
+      }
+      return events.filter((event) => {
+        const key = projectionMergeKey(event);
+        if (key === undefined) return true;
+        const remaining = liveMergeKeyCounts.get(key) ?? 0;
+        if (remaining === 0) return true;
+        if (remaining === 1) liveMergeKeyCounts.delete(key);
+        else liveMergeKeyCounts.set(key, remaining - 1);
+        return false;
+      });
+    },
+  );
+  const durableRunEvents = durableRuns.map((run) =>
+    run.eventIndexes.map((eventIndex) => durableEvents[eventIndex]!),
+  );
+  const liveRunByEventIndex = new Map<number, number>();
+  for (let runIndex = 0; runIndex < liveRuns.length; runIndex++) {
+    for (const eventIndex of liveRuns[runIndex]!.eventIndexes) {
+      liveRunByEventIndex.set(eventIndex, runIndex);
+    }
+  }
+
+  const merged: SessionEvent[] = promptBoundary === undefined ? [] : [promptBoundary];
+  let emittedDurableTail = false;
+  const emitDurableTail = (): void => {
+    if (emittedDurableTail) return;
+    merged.push(...(durableGaps[durableRuns.length] ?? []));
+    emittedDurableTail = true;
+  };
+  let remainingCumulativePrefix =
+    durableSequence.length === 0
+      ? 0
+      : durableSequence[durableSequence.length - 1]!.slice(
+          durableSequence[durableSequence.length - 1]!.indexOf(':') + 1,
+        ).length;
+
+  for (let eventIndex = 0; eventIndex < liveEvents.length; eventIndex++) {
+    const event = liveEvents[eventIndex]!;
+    if (isTranscriptTerminal(event) || isPromptSegmentBoundary(event)) continue;
+    const runIndex = liveRunByEventIndex.get(eventIndex);
+    if (runIndex === undefined) {
+      merged.push(event);
+      continue;
+    }
+    if (runIndex >= durableRuns.length) {
+      emitDurableTail();
+      merged.push(event);
+      continue;
+    }
+
+    const liveRun = liveRuns[runIndex]!;
+    const firstEventIndex = liveRun.eventIndexes[0]!;
+    const lastEventIndex = liveRun.eventIndexes[liveRun.eventIndexes.length - 1]!;
+    if (eventIndex === firstEventIndex) {
+      merged.push(...(durableGaps[runIndex] ?? []), ...(durableRunEvents[runIndex] ?? []));
+    }
+    const cumulativeText =
+      runIndex === durableRuns.length - 1 &&
+      liveRun.textKind !== undefined &&
+      liveRun.key.startsWith(durableSequence[runIndex]!);
+    if (cumulativeText && event.kind === liveRun.textKind && remainingCumulativePrefix > 0) {
+      if (remainingCumulativePrefix < event.text.length) {
+        emitDurableTail();
+        merged.push({ ...event, text: event.text.slice(remainingCumulativePrefix) });
+        remainingCumulativePrefix = 0;
+      } else {
+        remainingCumulativePrefix -= event.text.length;
+      }
+    } else if (cumulativeText && event.kind === liveRun.textKind) {
+      emitDurableTail();
+      merged.push(event);
+    }
+    if (runIndex === durableRuns.length - 1 && eventIndex === lastEventIndex) emitDurableTail();
+  }
+  emitDurableTail();
+  return merged;
+}
+
 function stabilizeAmbiguousLeadingHistoryOrder(
   userMessages: readonly UserMessage[],
   events: readonly SessionEvent[],
@@ -2133,6 +2858,7 @@ function foldStrongIdentityDuplicateTurns(
   let nextUsers = [...stabilized.userMessages];
   let nextEvents = [...stabilized.events];
   let didFold = stabilized.userMessages !== userMessages;
+  const canonicalizedLiveOwners: CanonicalizedLiveOwner[] = [];
   for (;;) {
     const turns = transcriptTurnSnapshots(nextUsers, nextEvents);
     let pair:
@@ -2140,6 +2866,7 @@ function foldStrongIdentityDuplicateTurns(
           readonly durable: TranscriptTurnSnapshot;
           readonly duplicate: TranscriptTurnSnapshot;
           readonly ownerResolution?: LeadingHistoryOwnerResolution;
+          readonly openLiveAdoption?: 'replace' | 'merge';
         }
       | undefined;
 
@@ -2148,15 +2875,44 @@ function foldStrongIdentityDuplicateTurns(
       if (
         duplicate.restoredFromHistory
           ? duplicate.canonicalIndex === undefined && !hasStrongTurnIdentity(duplicate)
-          : (duplicate.entryId === undefined && !hasStrongTurnIdentity(duplicate)) ||
-            !liveTurnCanFold(duplicate, duplicate.entryId !== undefined)
+          : duplicate.entryId === undefined && !hasStrongTurnIdentity(duplicate)
       ) {
         continue;
       }
       for (let durableIndex = 0; durableIndex < duplicateIndex; durableIndex++) {
         const durable = turns[durableIndex]!;
         const entryIdentity = userEntryIdentityRelation(durable, duplicate);
-        if (entryIdentity === 'conflict') continue;
+        const exactDeliveryEntryRequired =
+          (durable.deliveredInterrupt || duplicate.deliveredInterrupt) &&
+          (durable.entryId !== undefined || duplicate.entryId !== undefined);
+        if (
+          entryIdentity === 'conflict' ||
+          (exactDeliveryEntryRequired && entryIdentity !== 'match')
+        ) {
+          continue;
+        }
+        const durableMessage = nextUsers[durable.userIndex];
+        const sameRuntimeRun =
+          durable.runtimeRunId === undefined ||
+          duplicate.runtimeRunId === undefined ||
+          durable.runtimeRunId === duplicate.runtimeRunId;
+        // The newest canonical page can persist the user boundary before any assistant row.
+        // Its empty durable segment and the exact open live owner are two projections of one turn,
+        // not a complete history copy plus a duplicate. Move the live segment under the canonical
+        // owner now so compose never hides the only draft while the Runtime is still streaming.
+        const openLiveAdoption =
+          durable.restoredFromHistory &&
+          !duplicate.restoredFromHistory &&
+          !duplicate.closed &&
+          sameRuntimeRun &&
+          (entryIdentity === 'match' || strongTurnIdentityMatches(durable, duplicate))
+            ? durableMessage?.historyNoAssistantSegment === true &&
+              durable.eventStart === durable.eventEnd
+              ? 'replace'
+              : openLiveProjectionCoversDurablePrefix(durable, duplicate)
+                ? 'merge'
+                : undefined
+            : undefined;
         const ownerResolution =
           entryIdentity === 'match' && durable.omittedHistoryUserOrdinal
             ? 'enrich_canonical_owner'
@@ -2168,7 +2924,9 @@ function foldStrongIdentityDuplicateTurns(
             : entryIdentity !== 'match' &&
               !strongTurnIdentityMatches(durable, duplicate) &&
               ownerResolution === undefined) ||
-          (!duplicate.restoredFromHistory && !liveTurnCanFold(duplicate, entryIdentity === 'match'))
+          (!duplicate.restoredFromHistory &&
+            openLiveAdoption === undefined &&
+            !liveTurnCanFold(duplicate, entryIdentity === 'match'))
         ) {
           continue;
         }
@@ -2176,6 +2934,7 @@ function foldStrongIdentityDuplicateTurns(
           durable,
           duplicate,
           ...(ownerResolution !== undefined ? { ownerResolution } : {}),
+          ...(openLiveAdoption !== undefined ? { openLiveAdoption } : {}),
         };
         break;
       }
@@ -2188,18 +2947,38 @@ function foldStrongIdentityDuplicateTurns(
     // check already proved that visible suffix entry-by-entry. The generic projection merger is
     // intentionally durable-first and therefore cannot preserve the omitted live prefix: it would
     // append early text/tools after the durable suffix and duplicate overlapping text. Once the
-    // unique live owner is promoted, retain that complete projection in its original order. Other
-    // folds continue to use the canonical merger because their durable segment is not truncated.
+    // unique live owner is promoted, retain that complete live projection in its original order.
+    // For an open live extension, retain the canonical prefix/notices and append only the proven
+    // live suffix in its original text/tool order. Other folds continue to use the canonical merger
+    // because their durable segment is not truncated.
     const mergedProjection =
-      pair.ownerResolution === 'promote_live_owner'
-        ? [...duplicateSegment]
-        : mergeCanonicalTurnProjections(
-            durableSegment,
-            duplicateSegment,
-            userEntryIdentityRelation(pair.durable, pair.duplicate) === 'match',
-          );
-    const mergedSegment = preserveRelocatedSegmentClosure(mergedProjection, pair.duplicate);
+      pair.openLiveAdoption !== undefined
+        ? mergeOpenLiveTurnProjections(pair.durable, durableSegment, duplicateSegment)
+        : pair.ownerResolution === 'promote_live_owner'
+          ? [...duplicateSegment]
+          : mergeCanonicalTurnProjections(
+              durableSegment,
+              duplicateSegment,
+              userEntryIdentityRelation(pair.durable, pair.duplicate) === 'match',
+            );
+    const mergedSegment =
+      pair.openLiveAdoption === undefined
+        ? preserveRelocatedSegmentClosure(mergedProjection, pair.duplicate)
+        : mergedProjection.filter((event) => !isTranscriptTerminal(event));
     const duplicateMessage = nextUsers[pair.duplicate.userIndex];
+    if (
+      pair.openLiveAdoption === undefined &&
+      pair.ownerResolution !== 'promote_live_owner' &&
+      !pair.duplicate.restoredFromHistory &&
+      duplicateMessage !== undefined &&
+      pair.durable.canonicalIndex !== undefined &&
+      durableProjectionCoversLiveContent(pair.durable, pair.duplicate)
+    ) {
+      canonicalizedLiveOwners.push({
+        messageId: duplicateMessage.id,
+        canonicalIndex: pair.durable.canonicalIndex,
+      });
+    }
     didFold = true;
     nextEvents = [
       ...nextEvents.slice(0, pair.durable.eventStart),
@@ -2227,9 +3006,13 @@ function foldStrongIdentityDuplicateTurns(
             hiddenHistoryAnchor: _hiddenAnchor,
             leadingPartialHistory: _leadingPartial,
             hiddenProjectionDuplicate: _hiddenDuplicate,
+            hiddenProjectionOriginalSentAt,
             ...visibleLiveOwner
           } = baseMessage;
-          rest = visibleLiveOwner;
+          rest =
+            hiddenProjectionOriginalSentAt === undefined
+              ? visibleLiveOwner
+              : { ...visibleLiveOwner, sentAt: hiddenProjectionOriginalSentAt };
         } else if (enrichCanonicalOwner) {
           const {
             historyNoAssistantSegment: _emptySegment,
@@ -2243,6 +3026,8 @@ function foldStrongIdentityDuplicateTurns(
         }
         const deliveryQueueId = rest.deliveryQueueId ?? duplicateMessage?.deliveryQueueId;
         const deliveryQueueMode = rest.deliveryQueueMode ?? duplicateMessage?.deliveryQueueMode;
+        const deliveredInterrupt = rest.deliveredInterrupt ?? duplicateMessage?.deliveredInterrupt;
+        const runtimeRunId = rest.runtimeRunId ?? duplicateMessage?.runtimeRunId;
         const reconciled = {
           ...rest,
           ...(promoteLiveOwner ? { restoredFromHistory: true as const } : {}),
@@ -2251,13 +3036,21 @@ function foldStrongIdentityDuplicateTurns(
             : {}),
           ...(deliveryQueueId !== undefined ? { deliveryQueueId } : {}),
           ...(deliveryQueueMode !== undefined ? { deliveryQueueMode } : {}),
+          ...(deliveredInterrupt === true ? { deliveredInterrupt: true as const } : {}),
+          ...(runtimeRunId !== undefined ? { runtimeRunId } : {}),
         };
         return mergedSegment.length > 0
           ? reconciled
           : { ...reconciled, historyNoAssistantSegment: true };
       });
   }
-  return didFold ? { userMessages: nextUsers, events: nextEvents } : { userMessages, events };
+  return didFold
+    ? {
+        userMessages: nextUsers,
+        events: nextEvents,
+        ...(canonicalizedLiveOwners.length > 0 ? { canonicalizedLiveOwners } : {}),
+      }
+    : { userMessages, events };
 }
 
 function hideOpenStrongIdentityDuplicateProjection(
@@ -2273,10 +3066,25 @@ function hideOpenStrongIdentityDuplicateProjection(
       .slice(0, liveIndex)
       .reverse()
       .find(
-        (candidate) =>
-          candidate.restoredFromHistory &&
-          candidate.closed &&
-          strongTurnIdentityMatches(candidate, live),
+        (candidate) => {
+          const entryIdentity = userEntryIdentityRelation(candidate, live);
+          const exactDeliveryEntryRequired =
+            (candidate.deliveredInterrupt || live.deliveredInterrupt) &&
+            (candidate.entryId !== undefined || live.entryId !== undefined);
+          const sameRuntimeRun =
+            candidate.runtimeRunId === undefined ||
+            live.runtimeRunId === undefined ||
+            candidate.runtimeRunId === live.runtimeRunId;
+          return (
+            candidate.restoredFromHistory &&
+            candidate.closed &&
+            entryIdentity !== 'conflict' &&
+            (!exactDeliveryEntryRequired || entryIdentity === 'match') &&
+            sameRuntimeRun &&
+            strongTurnIdentityMatches(candidate, live) &&
+            durableProjectionCoversOpenLiveContent(candidate, live)
+          );
+        },
       );
     if (durable) {
       sentAtByMessageId.set(live.messageId, Math.max(live.sentAt, durable.sentAt + 1));
@@ -2286,14 +3094,36 @@ function hideOpenStrongIdentityDuplicateProjection(
   const reconciled = userMessages.map((message) => {
     const sentAt = sentAtByMessageId.get(message.id);
     if (sentAt !== undefined) {
-      if (message.sentAt === sentAt && message.hiddenProjectionDuplicate === true) return message;
+      if (
+        message.sentAt === sentAt &&
+        message.hiddenProjectionDuplicate === true &&
+        message.hiddenProjectionOriginalSentAt !== undefined
+      ) {
+        return message;
+      }
       changed = true;
-      return { ...message, sentAt, hiddenProjectionDuplicate: true as const };
+      return {
+        ...message,
+        sentAt,
+        hiddenProjectionDuplicate: true as const,
+        hiddenProjectionOriginalSentAt: message.hiddenProjectionOriginalSentAt ?? message.sentAt,
+      };
     }
-    if (message.hiddenProjectionDuplicate !== true) return message;
+    if (
+      message.hiddenProjectionDuplicate !== true &&
+      message.hiddenProjectionOriginalSentAt === undefined
+    ) {
+      return message;
+    }
     changed = true;
-    const { hiddenProjectionDuplicate: _hidden, ...visibleMessage } = message;
-    return visibleMessage;
+    const {
+      hiddenProjectionDuplicate: _hidden,
+      hiddenProjectionOriginalSentAt,
+      ...visibleMessage
+    } = message;
+    return hiddenProjectionOriginalSentAt === undefined
+      ? visibleMessage
+      : { ...visibleMessage, sentAt: hiddenProjectionOriginalSentAt };
   });
   return changed ? reconciled : userMessages;
 }
@@ -2882,6 +3712,36 @@ function bindInitialLiveUserTurnIdentity(
   return userMessages;
 }
 
+function openExactRestoredInitialTurn(
+  userMessages: readonly UserMessage[],
+  turnId: string,
+  runId: string | undefined,
+): readonly UserMessage[] {
+  const candidates = userMessages.flatMap((message, index) => {
+    if (
+      message.restoredFromHistory !== true ||
+      message.hiddenHistoryAnchor === true ||
+      message.historyNoAssistantSegment !== true ||
+      message.turnId !== turnId ||
+      message.turnUserOrdinal !== 0 ||
+      (runId !== undefined && message.runtimeRunId !== undefined && message.runtimeRunId !== runId)
+    ) {
+      return [];
+    }
+    return [index];
+  });
+  if (candidates.length !== 1) return userMessages;
+
+  const targetIndex = candidates[0]!;
+  const { historyNoAssistantSegment: _emptySegment, ...restoredOwner } = userMessages[targetIndex]!;
+  const next = userMessages.slice();
+  next[targetIndex] = {
+    ...restoredOwner,
+    ...(runId !== undefined ? { runtimeRunId: runId } : {}),
+  };
+  return next;
+}
+
 function localTerminalTurnIdForLatestLiveUser(
   userMessages: readonly UserMessage[],
 ): string | undefined {
@@ -3196,6 +4056,7 @@ function promoteQueuedUserMessageForPrompt(
       attachments,
     ),
     ...(queueId !== undefined ? { deliveryQueueId: queueId, deliveryQueueMode: queueMode } : {}),
+    ...(queueMode === 'interrupt' ? { deliveredInterrupt: true as const } : {}),
     ...(queueMode === 'after-turn' && queueId !== undefined ? { runtimeRunId: queueId } : {}),
     ...(sourceQueuedLocalId !== undefined ? { sourceQueuedLocalId } : {}),
     ...(entryId !== undefined ? { entryId } : {}),
@@ -3628,6 +4489,7 @@ export const useAppStore = create<AppState>((set) => ({
       };
       rememberHistoryLiveUsers(sessionId, boundUsers);
       const folded = foldStrongIdentityDuplicateTurns(boundUsers, events);
+      rememberCanonicalizedHistoryLiveOwners(sessionId, folded.canonicalizedLiveOwners ?? []);
       const reconciledUsers = hideOpenStrongIdentityDuplicateProjection(
         folded.userMessages,
         folded.events,
@@ -4210,10 +5072,48 @@ export const useAppStore = create<AppState>((set) => ({
           events: (state.eventsBySession[sessionId] ?? []).filter(
             (event) => !restoredHistoryEvents.has(event),
           ),
+          durableCanonicalizedUserIds: new Set(),
+          canonicalIndexByUserId: new Map(),
         };
         rememberHistoryLiveBaseline(sessionId, liveBaseline);
       }
       const includeLiveProjection = options?.includeLiveProjection !== false;
+      if (includeLiveProjection && liveBaseline !== undefined) {
+        const sourceRevision = options?.sourceRevision;
+        if (liveBaseline.canonicalSourceRevision !== sourceRevision) {
+          liveBaseline.canonicalIndexByUserId.clear();
+          liveBaseline.canonicalSourceRevision = sourceRevision;
+        }
+        const prefixOmitted = items.some(
+          (item) => item.kind === 'history_truncation' && item.scope === 'history',
+        );
+        const firstRetainedCanonicalIndex = histMsgs.reduce<number | undefined>(
+          (first, message) =>
+            message.canonicalIndex === undefined
+              ? first
+              : Math.min(first ?? message.canonicalIndex, message.canonicalIndex),
+          undefined,
+        );
+        pruneCanonicalizedHistoryLivePrefix(
+          liveBaseline,
+          firstRetainedCanonicalIndex,
+          prefixOmitted && sourceRevision !== undefined,
+        );
+        pruneDurablyCanonicalizedHistoryLivePrefix(
+          liveBaseline,
+          histMsgs,
+          histEvents,
+          prefixOmitted,
+          options?.authoritativeNewest === true,
+        );
+        pruneSettledRuntimeHistoryLivePrefix(
+          liveBaseline,
+          histMsgs,
+          histEvents,
+          options?.settledRuntimeRuns ?? [],
+          prefixOmitted,
+        );
+      }
       const currentMsgs = includeLiveProjection
         ? (liveBaseline?.userMessages ?? state.userMessagesBySession[sessionId] ?? [])
         : [];
@@ -4225,6 +5125,7 @@ export const useAppStore = create<AppState>((set) => ({
         [...histMsgs, ...currentMsgs],
         [...histEvents, ...currentEvents],
       );
+      rememberCanonicalizedHistoryLiveOwners(sessionId, folded.canonicalizedLiveOwners ?? []);
       const combinedEvents = dedupePersistedCompactionBoundaries(folded.events);
       const combinedMsgs = hideOpenStrongIdentityDuplicateProjection(
         folded.userMessages,
@@ -4307,15 +5208,28 @@ export const useAppStore = create<AppState>((set) => ({
     }),
 
   evictRestoredSessionHistory: (sessionId) => {
-    clearHistoryLiveBaseline(sessionId);
+    const liveBaseline = historyLiveBaselines.get(sessionId);
+    if (liveBaseline !== undefined) {
+      // A closed live owner that already folded into canonical history is only a cache shadow.
+      // Restoring it while dropping its durable proof would let it reappear at the tail later.
+      pruneHistoryLiveOwners(
+        liveBaseline,
+        new Set(liveBaseline.durableCanonicalizedUserIds),
+      );
+    }
     set((state) => {
       const currentUsers = state.userMessagesBySession[sessionId];
       const currentEvents = state.eventsBySession[sessionId];
-      if (currentUsers === undefined && currentEvents === undefined) return state;
-      const liveUsers = (currentUsers ?? []).filter(
-        (message) => message.restoredFromHistory !== true,
-      );
-      const liveEvents = (currentEvents ?? []).filter((event) => !restoredHistoryEvents.has(event));
+      if (currentUsers === undefined && currentEvents === undefined && liveBaseline === undefined) {
+        return state;
+      }
+      const liveUsers = (
+        liveBaseline?.userMessages ??
+        (currentUsers ?? []).filter((message) => message.restoredFromHistory !== true)
+      ).map(liveBaselineUser);
+      const liveEvents =
+        liveBaseline?.events ??
+        (currentEvents ?? []).filter((event) => !restoredHistoryEvents.has(event));
       return {
         userMessagesBySession: {
           ...state.userMessagesBySession,
@@ -4331,6 +5245,7 @@ export const useAppStore = create<AppState>((set) => ({
         },
       };
     });
+    clearHistoryLiveBaseline(sessionId);
   },
 
   setQueueState: (snapshot, totalSize) =>
@@ -4596,15 +5511,29 @@ export const useAppStore = create<AppState>((set) => ({
           : event.kind === 'session_complete' || event.kind === 'session_error'
             ? 'unique'
             : 'none';
+      const initialTurnUsers =
+        event.kind === 'session_start' && lifecycleTurnId !== undefined
+          ? openExactRestoredInitialTurn(currentUsers, lifecycleTurnId, runtimeRunId)
+          : currentUsers;
+      if (initialTurnUsers !== currentUsers && lifecycleTurnId !== undefined) {
+        const openedOwner = initialTurnUsers.find(
+          (message) =>
+            message.restoredFromHistory === true &&
+            message.turnId === lifecycleTurnId &&
+            message.turnUserOrdinal === 0 &&
+            message.historyNoAssistantSegment !== true,
+        );
+        if (openedOwner) rememberOpenedHistoryLiveOwner(event.sessionId, openedOwner);
+      }
       const lifecycleBoundUsers =
-        lifecycleTurnId !== undefined
+        lifecycleTurnId !== undefined && !isPromptSegmentBoundary(storedEvent)
           ? bindInitialLiveUserTurnIdentity(
-              currentUsers,
+              initialTurnUsers,
               lifecycleTurnId,
               runtimeRunId,
               unscopedTurnBinding,
             )
-          : currentUsers;
+          : initialTurnUsers;
       const lifecycleIdentityChanged = lifecycleBoundUsers !== currentUsers;
       const next: Partial<AppState> = {
         eventsBySession: {
@@ -4770,6 +5699,10 @@ export const useAppStore = create<AppState>((set) => ({
           [];
         rememberHistoryLiveUsers(event.sessionId, candidateUsers);
         const folded = foldStrongIdentityDuplicateTurns(candidateUsers, appendedEvents);
+        rememberCanonicalizedHistoryLiveOwners(
+          event.sessionId,
+          folded.canonicalizedLiveOwners ?? [],
+        );
         const reconciledUsers = hideOpenStrongIdentityDuplicateProjection(
           folded.userMessages,
           folded.events,

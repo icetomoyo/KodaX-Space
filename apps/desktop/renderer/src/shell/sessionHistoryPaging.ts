@@ -379,7 +379,12 @@ function mergeLoadedHistoryItems(
   ];
 }
 
-function applyHistoryResult(sessionId: string, data: unknown, continuation: boolean): void {
+function applyHistoryResult(
+  sessionId: string,
+  data: unknown,
+  continuation: boolean,
+  settledRuntimeRuns: readonly { readonly runtimeId: string; readonly runId: string }[] = [],
+): void {
   // Kept as a narrow runtime helper below; this signature prevents exporting generated IPC types
   // through a renderer-only module.
   const result = data as {
@@ -388,6 +393,8 @@ function applyHistoryResult(sessionId: string, data: unknown, continuation: bool
     readonly page?: {
       readonly windowMode?: 'replace' | 'prepend';
       readonly hasNewer?: boolean;
+      readonly outcome?: 'ready' | 'data_changed' | 'runtime_unavailable';
+      readonly sourceRevision?: string;
     };
   };
   const nextItems =
@@ -402,6 +409,16 @@ function applyHistoryResult(sessionId: string, data: unknown, continuation: bool
     // A prepend retains the newest canonical page already resident in nextItems, so the live
     // projection still belongs at its bottom. Only a true replacement browsing window excludes it.
     includeLiveProjection: result.page?.windowMode === 'prepend' || result.page?.hasNewer !== true,
+    ...(result.page?.sourceRevision !== undefined
+      ? { sourceRevision: result.page.sourceRevision }
+      : {}),
+    ...(!continuation &&
+    result.page?.outcome === 'ready' &&
+    result.page.hasNewer !== true &&
+    result.conversation?.status === 'resolved'
+      ? { authoritativeNewest: true }
+      : {}),
+    ...(settledRuntimeRuns.length > 0 ? { settledRuntimeRuns } : {}),
   });
 }
 
@@ -613,7 +630,18 @@ async function requestHistory(
     // boundary. A KodaX cursor may still validly serve that immutable old snapshot, so epoch
     // mismatch must restart at newest instead of accidentally certifying an old continuation as
     // the current generation.
-    applyHistoryResult(sessionId, response.data, continueFromCurrentBoundary);
+    const settledRuntimeRuns =
+      terminalHistoryRequestScope !== undefined &&
+      !continueFromCurrentBoundary &&
+      page?.outcome === 'ready' &&
+      page.hasNewer !== true &&
+      response.data.conversation?.status === 'resolved'
+        ? terminalHistoryRequestScope.runs.map(({ runId }) => ({
+            runtimeId: terminalHistoryRequestScope.runtimeId,
+            runId,
+          }))
+        : [];
+    applyHistoryResult(sessionId, response.data, continueFromCurrentBoundary, settledRuntimeRuns);
     deferredReadyRevalidations.delete(sessionId);
     loadedEpochs.set(sessionId, requestedEpoch);
     clearRetry(sessionId);

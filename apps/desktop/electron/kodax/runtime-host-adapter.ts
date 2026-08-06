@@ -1225,6 +1225,30 @@ interface RuntimeActorObservationState {
   readonly ready: Promise<void>;
 }
 
+type DaemonShutdownVerification =
+  | { readonly status: 'succeeded' }
+  | { readonly status: 'failed'; readonly outcome?: { readonly error?: string } }
+  | { readonly status: 'replacement_running'; readonly runtimeId: string; readonly pid: number }
+  | {
+      readonly status: 'unverified';
+      readonly reason:
+        | 'daemon_active'
+        | 'containment_active'
+        | 'containment_unavailable'
+        | 'outcome_missing';
+    };
+
+interface DaemonShutdownVerificationInput {
+  readonly configHome: string;
+  readonly profile: string;
+  readonly owner: RuntimeDaemonManagementState['owner'];
+  readonly timeoutMs: number;
+}
+
+type DaemonShutdownVerifier = (
+  input: DaemonShutdownVerificationInput,
+) => Promise<DaemonShutdownVerification>;
+
 interface RuntimeSessionObservationState {
   readonly sessionId: string;
   readonly runtime: KodaXDaemonRuntime;
@@ -1253,6 +1277,8 @@ export interface RuntimeHostAdapterOptions {
   readonly ownerControl?: RuntimeOwnerControl;
   readonly autoModeDefaultsResolver?: () => Promise<KodaxAutoModeDefaults>;
   readonly idleDaemonStop?: () => Promise<SafeDaemonStopResult>;
+  /** Test seam for the SDK-owned durable shutdown verifier. */
+  readonly daemonShutdownVerifier?: DaemonShutdownVerifier;
   /** Test seam for confirming that the exact inspected daemon PID has exited. */
   readonly daemonProcessExitWaiter?: (pid: number, timeoutMs: number) => Promise<boolean>;
   /**
@@ -1268,27 +1294,21 @@ export interface RuntimeHostAdapterOptions {
 const MAX_DIAGNOSTIC_ERROR = 512;
 const DAEMON_PROCESS_EXIT_TIMEOUT_MS = 15_000;
 
-function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return !(
-      error !== null &&
-      typeof error === 'object' &&
-      'code' in error &&
-      (error as { readonly code?: unknown }).code === 'ESRCH'
+async function verifyPublishedDaemonShutdown(
+  input: DaemonShutdownVerificationInput,
+): Promise<DaemonShutdownVerification> {
+  const sdk = await import('@kodax-ai/kodax/runtime');
+  const verifier = (
+    sdk as typeof sdk & {
+      readonly waitForRuntimeDaemonShutdown?: DaemonShutdownVerifier;
+    }
+  ).waitForRuntimeDaemonShutdown;
+  if (verifier === undefined) {
+    throw new Error(
+      'The installed KodaX SDK cannot authoritatively verify daemon shutdown. Install the matching SDK build.',
     );
   }
-}
-
-async function waitForDaemonProcessExit(pid: number, timeoutMs: number): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (isProcessAlive(pid)) {
-    if (Date.now() >= deadline) return false;
-    await new Promise<void>((resolve) => setTimeout(resolve, 25));
-  }
-  return true;
+  return verifier(input);
 }
 
 export function resolveRuntimeHostMode(value: string | undefined): RuntimeHostMode {
@@ -1452,6 +1472,7 @@ async function createPublishedRuntime(
     sdk as typeof sdk & {
       readonly KODAX_RUNTIME_SDK_CAPABILITIES?: {
         readonly daemonOrphanExit?: number;
+        readonly daemonShutdownVerification?: number;
         readonly managedRunDurability?: number;
         readonly runtimeEventCoalescing?: number;
       };
@@ -1463,6 +1484,7 @@ async function createPublishedRuntime(
 export function assertSpaceRuntimeSdkRequiredCapabilities(sdk: {
   readonly KODAX_RUNTIME_SDK_CAPABILITIES?: {
     readonly daemonOrphanExit?: number;
+    readonly daemonShutdownVerification?: number;
     readonly managedRunDurability?: number;
     readonly runtimeEventCoalescing?: number;
   };
@@ -1470,6 +1492,9 @@ export function assertSpaceRuntimeSdkRequiredCapabilities(sdk: {
   const capabilities = sdk.KODAX_RUNTIME_SDK_CAPABILITIES;
   const missing = [
     ...(capabilities?.daemonOrphanExit === 1 ? [] : ['daemonOrphanExit v1']),
+    ...(capabilities?.daemonShutdownVerification === 1
+      ? []
+      : ['daemonShutdownVerification v1']),
     ...(capabilities?.managedRunDurability === 1 ? [] : ['managedRunDurability v1']),
     ...(capabilities?.runtimeEventCoalescing === 1 ? [] : ['runtimeEventCoalescing v1']),
   ];
@@ -1706,7 +1731,7 @@ export class RuntimeHostAdapter {
   private readonly credentialResolver: (provider: string) => Promise<string | undefined>;
   private readonly ownerControl: RuntimeOwnerControl;
   private readonly idleDaemonStop: () => Promise<SafeDaemonStopResult>;
-  private readonly daemonProcessExitWaiter: (pid: number, timeoutMs: number) => Promise<boolean>;
+  private readonly daemonShutdownVerifier: DaemonShutdownVerifier;
   private readonly integrationHealthPollMs: number;
   private readonly startupTimingFactory: RuntimeStartupTimingFactory;
   private state: RuntimeHostState = 'uninitialized';
@@ -1836,7 +1861,15 @@ export class RuntimeHostAdapter {
     this.runtimeEventParser = options.runtimeEventParser;
     this.ownerControl = options.ownerControl ?? publishedRuntimeOwnerControl;
     this.idleDaemonStop = options.idleDaemonStop ?? (() => stopCoderDaemonWhenSafe());
-    this.daemonProcessExitWaiter = options.daemonProcessExitWaiter ?? waitForDaemonProcessExit;
+    const legacyProcessExitWaiter = options.daemonProcessExitWaiter;
+    this.daemonShutdownVerifier = options.daemonShutdownVerifier
+      ?? (legacyProcessExitWaiter === undefined
+        ? verifyPublishedDaemonShutdown
+        : async (input) => (
+            await legacyProcessExitWaiter(input.owner.pid, input.timeoutMs)
+              ? { status: 'succeeded' as const }
+              : { status: 'unverified' as const, reason: 'daemon_active' as const }
+          ));
     this.integrationHealthPollMs =
       options.integrationHealthPollMs ?? (options.runtimeFactory === undefined ? 2_000 : 0);
     this.startupTimingFactory =
@@ -4812,6 +4845,10 @@ export class RuntimeHostAdapter {
         event.turnId ?? (typeof payload?.turnId === 'string' ? payload.turnId : undefined);
       if (!turnId) return;
       this.observeRootTurnStart(turnId, payload?.deliveryKind);
+      // A queued turn's first real user boundary is run.input.delivered. Projecting a
+      // session_start first lets the renderer's positional fallback claim a stale anonymous
+      // owner before the canonical input identity arrives, which can relocate an older segment.
+      if (payload?.deliveryKind === 'queued') return;
       this.push('session.event', {
         ...runtimeSessionEventOrigin(runtimeId, event),
         kind: 'session_start',
@@ -5932,15 +5969,23 @@ export class RuntimeHostAdapter {
    * Stop the Space-selected Coder daemon while this process still owns a live
    * Runtime control plane. A ready daemon uses the revisioned stopForInline
    * transaction, not the inspect-then-CLI path. The temporary inline fence
-   * closes the owner hand-off race and is held until the inspected daemon PID
-   * has exited. It is released only after daemon policy is restored, leaving
-   * the profile both unowned and ready for the next launch.
+   * closes the owner hand-off race and is held until the SDK verifies the exact
+   * daemon's durable cleanup outcome and containment boundary. It is released
+   * only after daemon policy is restored, leaving the profile both unowned and
+   * ready for the next launch.
    */
   async stopDaemonForCompleteExit(operationId?: string): Promise<void> {
     if (this.mode !== 'runtime') {
       // Embedded Coder has no detached daemon. Closing the inline owner is the
       // complete shutdown operation and preserves the persisted inline policy.
-      await this.close();
+      try {
+        await this.close();
+      } catch (error) {
+        throw createCoderOwnerRecoveryRestartError(
+          [error],
+          'Embedded Coder shutdown did not finish cleanly; restart required.',
+        );
+      }
       return;
     }
     if (this.hasReadyRuntime()) {
@@ -5961,17 +6006,14 @@ export class RuntimeHostAdapter {
         if (!this.rollbackInProgress && this.state === 'closed') {
           try {
             // Compensation restores daemon policy without retaining a fence.
-            // Reacquire inline ownership before waiting for the old PID; owner
-            // snapshots alone cannot exclude a replacement daemon.
+            // Reacquire inline ownership before verifying the old shutdown;
+            // owner snapshots alone cannot exclude a replacement daemon.
             await this.acquireCompensatedCompleteExitFence();
           } catch (verificationError) {
             const errors = [error, verificationError];
             const message =
               'Coder daemon stopped, but the recovered owner state could not be verified for complete exit.';
-            if (isCoderOwnerRecoveryRestartRequired(verificationError)) {
-              throw createCoderOwnerRecoveryRestartError(errors, message);
-            }
-            throw new AggregateError(errors, message);
+            throw createCoderOwnerRecoveryRestartError(errors, message);
           }
         } else {
           if (!isDaemonStopTransportClosure(error)) throw error;
@@ -5988,28 +6030,36 @@ export class RuntimeHostAdapter {
             const errors = [error, reconciliationError];
             const message =
               'Coder daemon transport closed before rollback confirmation, and owner release could not be verified.';
-            if (isCoderOwnerRecoveryRestartRequired(reconciliationError)) {
-              throw createCoderOwnerRecoveryRestartError(errors, message);
-            }
-            throw new AggregateError(errors, message);
+            throw createCoderOwnerRecoveryRestartError(errors, message);
           }
         }
       }
       try {
-        await this.assertDaemonProcessExited(daemonPid);
+        const verification = await this.daemonShutdownVerifier({
+          configHome: this.runtimeHomeDir === undefined
+            ? this.profileRoot
+            : path.join(this.runtimeHomeDir, '.kodax'),
+          profile: 'coder',
+          owner: management.owner,
+          timeoutMs: DAEMON_PROCESS_EXIT_TIMEOUT_MS,
+        });
+        this.assertDaemonShutdownVerified(verification, daemonPid);
       } catch (error) {
         try {
           await this.restoreDaemonOwner();
         } catch (restoreError) {
           const errors = [error, restoreError];
           const message =
-            'Coder daemon process exit was not confirmed, and daemon owner policy recovery failed.';
+            'Coder daemon shutdown was not verified, and daemon owner policy recovery failed.';
           if (isCoderOwnerRecoveryRestartRequired(restoreError)) {
             throw createCoderOwnerRecoveryRestartError(errors, message);
           }
           throw new AggregateError(errors, message);
         }
-        throw error;
+        throw createCoderOwnerRecoveryRestartError(
+          [error],
+          'Coder daemon shutdown was not authoritatively verified; restart required.',
+        );
       }
       await this.restoreDaemonOwner();
       await this.assertUnownedDaemonPolicy();
@@ -6019,35 +6069,74 @@ export class RuntimeHostAdapter {
       throw new Error('Wait for Coder initialization to settle before complete exit.');
     }
 
-    const stopped = await this.idleDaemonStop();
-    if (!stopped.stopped && stopped.reason !== 'missing') {
-      throw new Error(
-        stopped.message ??
-          `Coder daemon shutdown could not be confirmed (${stopped.reason ?? 'unknown reason'}).`,
-      );
-    }
-
-    let ownerState = await this.ownerControl.getState({
-      ...this.runtimeOwnerTarget(),
-    });
-    if (ownerState.ownerStatus === 'owned') {
-      if (!stopped.stopped) {
-        throw new Error(
-          'Coder daemon CLI state is missing, but the Coder owner is still active; shutdown could not be confirmed.',
-        );
-      }
-      ownerState = await this.waitForAnyDaemonOwnerRelease();
-    }
-    if (ownerState.ownerStatus !== 'unowned') {
-      throw new Error('Coder owner state is unreadable; shutdown could not be confirmed.');
-    }
-    if (ownerState.policy.mode !== 'daemon') {
-      await this.ownerControl.enableDaemon({
+    try {
+      const ownerBeforeStop = await this.ownerControl.getState({
         ...this.runtimeOwnerTarget(),
       });
+      if (ownerBeforeStop.ownerStatus === 'unreadable') {
+        throw new Error('Coder owner state is unreadable before shutdown.');
+      }
+      if (
+        ownerBeforeStop.ownerStatus === 'owned'
+        && (ownerBeforeStop.owner === null || ownerBeforeStop.owner.kind === 'inline')
+      ) {
+        throw new Error('Coder owner is not a daemon; shutdown could not be confirmed.');
+      }
+
+      const stopped = await this.idleDaemonStop();
+      if (!stopped.stopped && stopped.reason !== 'missing') {
+        throw new Error(
+          stopped.message ??
+            `Coder daemon shutdown could not be confirmed (${stopped.reason ?? 'unknown reason'}).`,
+        );
+      }
+      if (ownerBeforeStop.ownerStatus === 'unowned') {
+        if (stopped.stopped || stopped.reason !== 'missing') {
+          throw new Error(
+            'Coder daemon CLI reported a shutdown without a captured owner; shutdown could not be confirmed.',
+          );
+        }
+      } else {
+        if (!stopped.stopped || ownerBeforeStop.owner === null) {
+          throw new Error(
+            'The captured Coder daemon owner was not authoritatively stopped.',
+          );
+        }
+        const verification = await this.daemonShutdownVerifier({
+          configHome: this.runtimeHomeDir === undefined
+            ? this.profileRoot
+            : path.join(this.runtimeHomeDir, '.kodax'),
+          profile: 'coder',
+          owner: ownerBeforeStop.owner,
+          timeoutMs: DAEMON_PROCESS_EXIT_TIMEOUT_MS,
+        });
+        this.assertDaemonShutdownVerified(verification, ownerBeforeStop.owner.pid);
+      }
+
+      const ownerState = await this.ownerControl.getState({
+        ...this.runtimeOwnerTarget(),
+      });
+      if (ownerState.ownerStatus !== 'unowned') {
+        throw new Error(
+          ownerState.ownerStatus === 'unreadable'
+            ? 'Coder owner state is unreadable after shutdown.'
+            : 'A Coder owner is active after shutdown; shutdown could not be confirmed.',
+        );
+      }
+      if (ownerState.policy.mode !== 'daemon') {
+        await this.ownerControl.enableDaemon({
+          ...this.runtimeOwnerTarget(),
+        });
+      }
+      await this.assertUnownedDaemonPolicy();
+      await this.close();
+    } catch (error) {
+      if (isCoderOwnerRecoveryRestartRequired(error)) throw error;
+      throw createCoderOwnerRecoveryRestartError(
+        [error],
+        'Idle Coder daemon shutdown could not be confirmed; restart required.',
+      );
     }
-    await this.assertUnownedDaemonPolicy();
-    await this.close();
   }
 
   async prepareEmbeddedRestart(operationId?: string): Promise<void> {
@@ -6262,23 +6351,6 @@ export class RuntimeHostAdapter {
     }
   }
 
-  private async waitForAnyDaemonOwnerRelease(): Promise<RuntimeOwnerState> {
-    const deadline = Date.now() + 10_000;
-    while (true) {
-      const state = await this.ownerControl.getState({
-        ...this.runtimeOwnerTarget(),
-      });
-      if (state.ownerStatus === 'unowned') return state;
-      if (state.ownerStatus === 'unreadable') {
-        throw new Error('Coder owner state became unreadable during complete exit.');
-      }
-      if (Date.now() >= deadline) {
-        throw new Error('Timed out waiting for the Coder daemon owner to release.');
-      }
-      await new Promise<void>((resolve) => setTimeout(resolve, 25));
-    }
-  }
-
   private async acquireCompensatedCompleteExitFence(): Promise<void> {
     await this.assertUnownedDaemonPolicy();
     this.rollbackInProgress = true;
@@ -6305,10 +6377,24 @@ export class RuntimeHostAdapter {
     }
   }
 
-  private async assertDaemonProcessExited(pid: number): Promise<void> {
-    if (await this.daemonProcessExitWaiter(pid, DAEMON_PROCESS_EXIT_TIMEOUT_MS)) return;
+  private assertDaemonShutdownVerified(
+    verification: DaemonShutdownVerification,
+    pid: number,
+  ): void {
+    if (verification.status === 'succeeded') return;
+    if (verification.status === 'failed') {
+      throw new Error(
+        verification.outcome?.error
+          ?? `Coder daemon ${pid} reported failed final cleanup.`,
+      );
+    }
+    if (verification.status === 'replacement_running') {
+      throw new Error(
+        `Coder daemon ${pid} stopped, but replacement ${verification.runtimeId}/${verification.pid} is running.`,
+      );
+    }
     throw new Error(
-      `Coder daemon process ${pid} did not exit after its owner was released; shutdown could not be confirmed.`,
+      `Coder daemon ${pid} shutdown could not be confirmed (${verification.reason}).`,
     );
   }
 

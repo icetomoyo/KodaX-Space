@@ -83,6 +83,7 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
     assertSpaceRuntimeSdkRequiredCapabilities({
       KODAX_RUNTIME_SDK_CAPABILITIES: {
         daemonOrphanExit: 1,
+        daemonShutdownVerification: 1,
         managedRunDurability: 1,
         runtimeEventCoalescing: 1,
       },
@@ -91,13 +92,17 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
   assert.throws(
     () =>
       assertSpaceRuntimeSdkRequiredCapabilities({
-        KODAX_RUNTIME_SDK_CAPABILITIES: { daemonOrphanExit: 1, managedRunDurability: 1 },
+        KODAX_RUNTIME_SDK_CAPABILITIES: {
+          daemonOrphanExit: 1,
+          daemonShutdownVerification: 1,
+          managedRunDurability: 1,
+        },
       }),
     /installed KodaX SDK.*runtimeEventCoalescing v1/i,
   );
   assert.throws(
     () => assertSpaceRuntimeSdkRequiredCapabilities({}),
-    /installed KodaX SDK.*daemonOrphanExit v1.*managedRunDurability v1.*runtimeEventCoalescing v1/i,
+    /installed KodaX SDK.*daemonOrphanExit v1.*daemonShutdownVerification v1.*managedRunDurability v1.*runtimeEventCoalescing v1/i,
   );
 });
 
@@ -1246,6 +1251,48 @@ test('legacy selection never constructs a KodaX Runtime', async () => {
   await assert.rejects(adapter.ensureLegacyOwner(), /closed/);
 });
 
+test('embedded complete-exit close failure requires process recovery', async () => {
+  const adapter = new RuntimeHostAdapter({
+    mode: 'legacy',
+    profileRoot: 'C:\\isolated-profile',
+    ownerControl: {
+      acquireInline: async () => ({
+        profile: 'coder',
+        ownerId: 'inline_close_failure',
+        ownerPolicy: {
+          mode: 'inline',
+          revision: 1,
+          updatedAt: '2026-08-06T00:00:00.000Z',
+        },
+        close: () => {
+          throw new Error('inline close failed');
+        },
+      }),
+      getState: async () => ({
+        profile: 'coder',
+        policy: {
+          mode: 'inline',
+          revision: 1,
+          updatedAt: '2026-08-06T00:00:00.000Z',
+        },
+        ownerStatus: 'unowned',
+        owner: null,
+      }),
+      enableDaemon: async () => ({
+        mode: 'daemon',
+        revision: 2,
+        updatedAt: '2026-08-06T00:00:01.000Z',
+      }),
+    },
+  });
+
+  await adapter.initialize();
+  await assert.rejects(
+    adapter.stopDaemonForCompleteExit(),
+    (error: unknown) => isCoderOwnerRecoveryRestartRequired(error),
+  );
+});
+
 test('legacy owner acquisition failure reports inline Coder as unavailable', async () => {
   const adapter = new RuntimeHostAdapter({
     mode: 'legacy',
@@ -1624,6 +1671,7 @@ test('runtime selection attaches one Coder daemon with stable identity and requi
   assert.equal(options[0]?.requirements?.durableRecoveryQueries, 1);
   assert.equal(options[0]?.requirements?.daemonManagement, 1);
   assert.equal(options[0]?.requirements?.daemonOrphanExit, 1);
+  assert.equal(options[0]?.requirements?.daemonShutdownVerification, undefined);
   assert.equal(options[0]?.requirements?.runtimeEventCoalescing, 1);
   assert.equal(options[0]?.requirements?.integrationConfigResilience, 1);
   assert.equal(options[0]?.requirements?.runtimeAutoModeGuardrail, 4);
@@ -3027,24 +3075,42 @@ test('daemon rollback commits one inspected revision, waits for release, and res
 
 test('complete exit atomically stops the inspected daemon and leaves an unowned daemon policy', async () => {
   const fake = createFakeRuntime();
+  const inspectDaemon = fake.runtime.daemon.inspect.bind(fake.runtime.daemon);
+  fake.runtime.daemon.inspect = async () => {
+    const management = await inspectDaemon();
+    return {
+      ...management,
+      owner: {
+        ...management.owner,
+        processContainment: 'windows-job',
+        supervisorPid: 456,
+      },
+    };
+  };
   let inlineOwnerCloses = 0;
   let daemonRestores = 0;
   let ownerReleased = false;
-  const daemonExitWaits: Array<{ pid: number; timeoutMs: number }> = [];
+  const shutdownVerifications: Array<{
+    readonly configHome: string;
+    readonly profile: string;
+    readonly owner: RuntimeDaemonManagementState['owner'];
+    readonly timeoutMs: number;
+  }> = [];
   const transitionOrder: string[] = [];
   const adapter = new RuntimeHostAdapter({
     mode: 'runtime',
     profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeHomeDir: path.resolve('C:\\runtime-base'),
     runtimeFactory: async () => fake.runtime,
     identityStore: testIdentityStore,
     runtimeEventParser: testRuntimeEventParser,
     idleDaemonStop: async () => {
       throw new Error('ready Runtime complete-exit must not use the racy CLI stop path');
     },
-    daemonProcessExitWaiter: async (pid, timeoutMs) => {
-      daemonExitWaits.push({ pid, timeoutMs });
-      transitionOrder.push('daemon-process-exited');
-      return true;
+    daemonShutdownVerifier: async (input) => {
+      shutdownVerifications.push(input);
+      transitionOrder.push('daemon-shutdown-verified');
+      return { status: 'succeeded' };
     },
     ownerControl: {
       acquireInline: async () => ({
@@ -3109,12 +3175,26 @@ test('complete exit atomically stops the inspected daemon and leaves an unowned 
   assert.equal(fake.calls.close, 1);
   assert.equal(daemonRestores, 1);
   assert.equal(inlineOwnerCloses, 1);
-  assert.deepEqual(daemonExitWaits, [{ pid: 123, timeoutMs: 15_000 }]);
-  assert.deepEqual(transitionOrder, ['daemon-process-exited', 'daemon-policy-restored']);
+  assert.deepEqual(shutdownVerifications, [
+    {
+      configHome: path.join(path.resolve('C:\\runtime-base'), '.kodax'),
+      profile: 'coder',
+      owner: {
+        runtimeId: 'rt_test',
+        pid: 123,
+        createdAt: '2026-07-12T00:00:00.000Z',
+        kind: 'daemon',
+        processContainment: 'windows-job',
+        supervisorPid: 456,
+      },
+      timeoutMs: 15_000,
+    },
+  ]);
+  assert.deepEqual(transitionOrder, ['daemon-shutdown-verified', 'daemon-policy-restored']);
   assert.equal(adapter.snapshot().state, 'closed');
 });
 
-test('complete exit fails closed and restores daemon policy when the inspected PID remains alive', async () => {
+test('complete exit fails closed and requires recovery when durable daemon cleanup fails', async () => {
   const fake = createFakeRuntime();
   let inlineOwnerCloses = 0;
   let daemonRestores = 0;
@@ -3125,10 +3205,15 @@ test('complete exit fails closed and restores daemon policy when the inspected P
     runtimeFactory: async () => fake.runtime,
     identityStore: testIdentityStore,
     runtimeEventParser: testRuntimeEventParser,
-    daemonProcessExitWaiter: async (pid, timeoutMs) => {
-      assert.equal(pid, 123);
-      assert.equal(timeoutMs, 15_000);
-      return false;
+    daemonShutdownVerifier: async (input) => {
+      assert.equal(input.configHome, path.resolve('C:\\isolated-profile'));
+      assert.equal(input.profile, 'coder');
+      assert.equal(input.owner.pid, 123);
+      assert.equal(input.timeoutMs, 15_000);
+      return {
+        status: 'failed',
+        outcome: { error: 'managed child cleanup failed' },
+      };
     },
     ownerControl: {
       acquireInline: async () => ({
@@ -3180,8 +3265,15 @@ test('complete exit fails closed and restores daemon policy when the inspected P
 
   await adapter.initialize();
   await assert.rejects(
-    adapter.stopDaemonForCompleteExit('space-complete-exit-pid-timeout'),
-    /process 123 did not exit.*shutdown could not be confirmed/i,
+    adapter.stopDaemonForCompleteExit('space-complete-exit-cleanup-failed'),
+    (error: unknown) => {
+      assert.equal(isCoderOwnerRecoveryRestartRequired(error), true);
+      assert.match(
+        error instanceof Error ? error.message : String(error),
+        /shutdown was not authoritatively verified.*restart required/i,
+      );
+      return true;
+    },
   );
 
   assert.equal(fake.calls.close, 1);
@@ -3349,7 +3441,14 @@ test('complete exit fails closed when replacement-fence contention persists', as
   await adapter.initialize();
   await assert.rejects(
     adapter.stopDaemonForCompleteExit('space-complete-exit-persistent-fence-contention'),
-    /recovered owner state could not be verified/i,
+    (error: unknown) => {
+      assert.equal(isCoderOwnerRecoveryRestartRequired(error), true);
+      assert.match(
+        error instanceof Error ? error.message : String(error),
+        /recovered owner state could not be verified/i,
+      );
+      return true;
+    },
   );
 
   assert.equal(inlineAcquisitions, 2);
@@ -3862,10 +3961,179 @@ test('complete exit treats CLI missing as confirmation only when owner state is 
     } else {
       await assert.rejects(
         adapter.stopDaemonForCompleteExit(),
-        /owner is still active|could not be confirmed/i,
+        (error: unknown) => isCoderOwnerRecoveryRestartRequired(error),
       );
     }
   }
+});
+
+test('complete exit verifies the exact idle daemon owner before accepting CLI shutdown', async () => {
+  const observedOwner = {
+    runtimeId: 'rt_idle_contained',
+    pid: 321,
+    createdAt: '2026-08-06T00:00:00.000Z',
+    kind: 'daemon' as const,
+    processContainment: 'windows-job' as const,
+    supervisorPid: 654,
+  };
+  let ownerReads = 0;
+  let verificationOwner: typeof observedOwner | undefined;
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    idleDaemonStop: async () => ({ stopped: true }),
+    daemonShutdownVerifier: async (input) => {
+      verificationOwner = input.owner as typeof observedOwner;
+      return { status: 'succeeded' };
+    },
+    ownerControl: {
+      acquireInline: async () => {
+        throw new Error('not used');
+      },
+      getState: async () => {
+        ownerReads += 1;
+        return ownerReads === 1
+          ? {
+              profile: 'coder',
+              policy: {
+                mode: 'daemon' as const,
+                revision: 4,
+                updatedAt: '2026-08-06T00:00:00.000Z',
+              },
+              ownerStatus: 'owned' as const,
+              owner: observedOwner,
+            }
+          : {
+              profile: 'coder',
+              policy: {
+                mode: 'daemon' as const,
+                revision: 5,
+                updatedAt: '2026-08-06T00:00:01.000Z',
+              },
+              ownerStatus: 'unowned' as const,
+              owner: null,
+            };
+      },
+      enableDaemon: async () => ({
+        mode: 'daemon',
+        revision: 5,
+        updatedAt: '2026-08-06T00:00:01.000Z',
+      }),
+    },
+  });
+
+  await adapter.stopDaemonForCompleteExit();
+
+  assert.deepEqual(verificationOwner, observedOwner);
+  assert.ok(ownerReads >= 3);
+});
+
+test('complete exit rejects an idle CLI success without a captured daemon owner', async () => {
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    idleDaemonStop: async () => ({ stopped: true }),
+    ownerControl: {
+      acquireInline: async () => {
+        throw new Error('not used');
+      },
+      getState: async () => ({
+        profile: 'coder',
+        policy: {
+          mode: 'daemon',
+          revision: 4,
+          updatedAt: '2026-08-06T00:00:00.000Z',
+        },
+        ownerStatus: 'unowned',
+        owner: null,
+      }),
+      enableDaemon: async () => ({
+        mode: 'daemon',
+        revision: 4,
+        updatedAt: '2026-08-06T00:00:00.000Z',
+      }),
+    },
+  });
+
+  await assert.rejects(
+    adapter.stopDaemonForCompleteExit(),
+    (error: unknown) => isCoderOwnerRecoveryRestartRequired(error),
+  );
+});
+
+test('complete exit rejects an idle legacy daemon without verified containment', async () => {
+  const legacyOwner = {
+    runtimeId: 'rt_idle_legacy',
+    pid: 987,
+    createdAt: '2026-08-06T00:00:00.000Z',
+    kind: 'daemon' as const,
+  };
+  let ownerReads = 0;
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    idleDaemonStop: async () => ({ stopped: true }),
+    daemonShutdownVerifier: async () => ({
+      status: 'unverified',
+      reason: 'containment_unavailable',
+    }),
+    ownerControl: {
+      acquireInline: async () => {
+        throw new Error('not used');
+      },
+      getState: async () => {
+        ownerReads += 1;
+        return ownerReads === 1
+          ? {
+              profile: 'coder',
+              policy: {
+                mode: 'daemon' as const,
+                revision: 4,
+                updatedAt: '2026-08-06T00:00:00.000Z',
+              },
+              ownerStatus: 'owned' as const,
+              owner: legacyOwner,
+            }
+          : {
+              profile: 'coder',
+              policy: {
+                mode: 'daemon' as const,
+                revision: 5,
+                updatedAt: '2026-08-06T00:00:01.000Z',
+              },
+              ownerStatus: 'unowned' as const,
+              owner: null,
+            };
+      },
+      enableDaemon: async () => ({
+        mode: 'daemon',
+        revision: 5,
+        updatedAt: '2026-08-06T00:00:01.000Z',
+      }),
+    },
+  });
+
+  await assert.rejects(
+    adapter.stopDaemonForCompleteExit(),
+    (error: unknown) => isCoderOwnerRecoveryRestartRequired(error),
+  );
+});
+
+test('ambiguous idle daemon stop requires process recovery', async () => {
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    idleDaemonStop: async () => ({
+      stopped: false,
+      reason: 'command_failed',
+      message: 'daemon stop outcome is ambiguous',
+    }),
+  });
+
+  await assert.rejects(
+    adapter.stopDaemonForCompleteExit(),
+    (error: unknown) => isCoderOwnerRecoveryRestartRequired(error),
+  );
 });
 
 test('daemon rollback restores daemon policy when inline owner acquisition fails after stop', async () => {
@@ -8102,7 +8370,7 @@ test('daemon delivered interrupt batch becomes ordered queue-addressable session
   await adapter.close();
 });
 
-test('a queued Runtime turn assigns ordinal zero to its first delivered input', async () => {
+test('a queued Runtime turn defers its user boundary until the delivered input arrives', async () => {
   const pushed: unknown[] = [];
   const adapter = new RuntimeHostAdapter({
     mode: 'runtime',
@@ -8154,12 +8422,6 @@ test('a queued Runtime turn assigns ordinal zero to its first delivered input', 
   });
 
   assert.deepEqual(pushed, [
-    {
-      kind: 'session_start',
-      sessionId: 's_1',
-      provider: 'unknown',
-      turnId: 'turn_queued',
-    },
     {
       kind: 'mid_turn_user_prompt',
       sessionId: 's_1',
