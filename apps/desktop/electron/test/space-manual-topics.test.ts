@@ -141,10 +141,10 @@ test('Space kodax_manual distinguishes effective context pressure from cumulativ
   assert.match(topic.body, /en-US.*zh-CN/);
 });
 
-test('Space kodax_manual describes the v0.1.36 runtime safety, close, and shell controls', () => {
+test('Space kodax_manual describes the v0.1.37 runtime safety, close, and shell controls', () => {
   const topics = new Map(SPACE_MANUAL_TOPICS.map((topic) => [topic.id, topic]));
 
-  assert.match(topics.get('runtime-host')?.body ?? '', /v0\.1\.36/);
+  assert.match(topics.get('runtime-host')?.body ?? '', /v0\.1\.37/);
   assert.match(topics.get('background-runtime')?.body ?? '', /F140/);
   assert.match(topics.get('background-runtime')?.body ?? '', /Close button behavior/);
   assert.match(topics.get('background-runtime')?.body ?? '', /macOS Cmd\+Q/);

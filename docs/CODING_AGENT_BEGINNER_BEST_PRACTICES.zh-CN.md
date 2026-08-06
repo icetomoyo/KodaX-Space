@@ -1,6 +1,6 @@
 # KodaX Space Coding Agent 新手教程：软件与微服务开发最佳实践
 
-适用版本：KodaX Space v0.1.36 / npm 正式发布的 KodaX 0.7.82。界面入口以[当前用户手册](USER_MANUAL.zh-CN.md)为准；Coder daemon 会显式协商 `managedRunDurability:1`，未配置 Auto LLM timeout 时使用首次 45 秒、重试 90 秒的 SDK 默认值；活动 Session 的输入、切换、恢复和历史分页都必须保留精确的 `runId`/`turnId`/Session 身份。
+适用版本：KodaX Space v0.1.37 / npm 正式发布的 KodaX 0.7.83。界面入口以[当前用户手册](USER_MANUAL.zh-CN.md)为准；Coder daemon 会显式协商 `managedRunDurability:1`，未配置 Auto LLM timeout 时使用首次 45 秒、重试 90 秒的 SDK 默认值；活动 Session 的输入、切换、恢复和历史分页都必须保留精确的 `runId`/`turnId`/Session 身份。
 
 适用对象：第一次使用 Coding Agent 的开发者、测试工程师、技术负责人、代码相关知识工作者，以及需要把 KodaX Space 推广给团队成员的客户。
 

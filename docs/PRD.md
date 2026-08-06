@@ -1,12 +1,12 @@
 # KodaX Space 产品需求文档（PRD）
 
-> **2026-08-05 发布基线**：KodaX Space `v0.1.36` 对齐 npm 正式发布的 KodaX `0.7.82`，并收口活动 Session 输入准入与 history/live 对齐。
+> **2026-08-06 发布基线**：KodaX Space `v0.1.37` 对齐 npm 正式发布的 KodaX `0.7.83`，并收口多 Session 恢复与安全退出恢复。
 > Coder daemon 必须显式提供 `managedRunDurability:1`；Space 只消费其 canonical
 > managed-Run `runId`/`turnId`，不维护第二份 Run 状态。未配置的 Auto LLM classifier timeout
 > 使用 KodaX 的首次 45 秒、重试 90 秒默认值。
 
-> Last updated: 2026-08-05
-> Status: 长期产品方向文档。当前已发布基线为 KodaX Space 0.1.34（package 0.1.34）/ 精确 Registry KodaX 0.7.78。v0.1.33 已交付 Coder shared daemon、canonical Actor/Turn、精确 history/live 与 compaction、完整物理请求诊断、F140-F142、可配置 Shell、独立 integration 配置和正式打包门禁。v0.1.34 在此基础上接入 exclusive Actor、`daemonOrphanExit:1`、`integrationConfigResilience:1`、Auto guardrail v4、Skill learning-loop 和公开 command-sandbox observation；Settings/诊断显示 last-known-good integration health，真正退出会停止 Runtime 或恢复 Space，Space 自动拉起的孤儿 daemon 获得有界空闲回收，正式包验证物理 sandbox helper，启动 overlay 与历史 replay 也已加固。生命周期支持仍按能力协商，不通过 SemVer 推断；Issue 133 的 macOS/Linux process acceptance/cleanup retry gap 和 F138 完整 OS 隔离继续保持未完成。已交付能力与边界以 [USER_MANUAL.zh-CN.md](USER_MANUAL.zh-CN.md)、[KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md) 和 [FEATURE_LIST.md](FEATURE_LIST.md) 为准。
+> Last updated: 2026-08-06
+> Status: 长期产品方向文档。当前已发布基线为 KodaX Space 0.1.37（package 0.1.37）/ 精确 Registry KodaX 0.7.83。v0.1.37 在既有 Runtime owner、canonical Actor/Turn、精确 history/live 与 compaction、完整物理请求诊断、F140-F142、可配置 Shell、独立 integration 配置和正式打包门禁基础上，继续收口多 Session 恢复、跨 Session 事件隔离、完整退出恢复和应用内手册同步。生命周期支持仍按能力协商，不通过 SemVer 推断；Issue 133 的 macOS/Linux process acceptance/cleanup retry gap 和 F138 完整 OS 隔离继续保持未完成。已交付能力与边界以 [USER_MANUAL.zh-CN.md](USER_MANUAL.zh-CN.md)、[KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md) 和 [FEATURE_LIST.md](FEATURE_LIST.md) 为准。
 > 对标：Anthropic Claude Desktop（Cowork / Code 双面板）+ OpenAI Codex Desktop App（多 agent 本机壳）
 
 > **当前落地摘要**：Coder 与 Partner 均可用；Partner 已具备 workspace-first Outputs、Sources/KB、checkpointed writes、Office/PDF 便利产物和本地 policy/audit。0.1.30 接入 KodaX 0.7.67 Reference External Agent 管理、Workflow/Worker 路由和 Task Dock 干预；v0.1.31 已发布 inline RuntimeHostAdapter 的 managed run、transcript、compact、fork、rewind；v0.1.32 由 KodaX 0.7.76 Coder daemon 在能力协商通过后提供 Runtime 配置的 A2A；v0.1.33 对齐 KodaX 0.7.77 并收口 Actor、精确回放、用量诊断、Shell、关闭行为和独立 integration 配置。底部把“距自动压缩的活动输入压力”和“Session 累计 Token 用量”拆为两个入口，避免把模型最大上下文、绝对阈值、输出容量预留和 Provider 账单混为一谈。MCP Tasks、受治理 HTTP、通用 Connector/浏览器控制/自动化/远程任务仍未作为当前能力开放。
@@ -42,6 +42,7 @@ KodaX Space 是 KodaX 生态的**桌面客户端**——不是另一个 IDE，�
   - `v0.1.31-v0.1.33`：Runtime contract alignment + `app://space`/structured logging + typed semantic Space control
   - `v0.1.35`：learned Skill 最小安全控制面
   - `v0.1.36`：活动 Session 输入准入、历史/live 对齐与恢复隔离维护发布
+  - `v0.1.37`：KodaX 0.7.83、多 Session 恢复、安全退出恢复与发布文档同步
   - `v0.1.45`、`v0.1.47-v0.1.49`：Partner Skill workspace、knowledge quality/curation、Presentation Project、Memory Agent
   - `v0.1.53`：本地化、诊断、release channel/distribution trust 完成 0.1.x beta gate
   - `v0.2.x`：Governed Browser、正式 Partner packs、Connector read snapshots、local automations、refreshable artifacts
@@ -574,7 +575,7 @@ File panel 内点击 git diff
 | `v0.1.34`    | KodaX 0.7.78 Runtime 安全、integration resilience、Auto v4、可见彻底退出/orphan recovery、sandbox helper 打包、启动与历史回放加固 |
 | `v0.1.35`    | Learned Skill Safety Surface；复用已发布 `learningCenter:1` + `skillLearningLoop:1`，不建设超出契约的多 carrier Learning Center   |
 | `v0.1.36`    | KodaX 0.7.82、活动 Session 输入准入、history/live 对齐、跨 Session 恢复隔离与发布文档收口                               |
-| `v0.1.37`    | —                                                                                                                                 |
+| `v0.1.37`    | KodaX 0.7.83、多 Session 恢复、安全退出恢复与发布文档同步                                                                        |
 | `v0.1.38`    | —                                                                                                                                 |
 | `v0.1.39`    | —                                                                                                                                 |
 | `v0.1.40`    | —                                                                                            |

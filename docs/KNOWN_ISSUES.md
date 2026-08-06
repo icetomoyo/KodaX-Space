@@ -2,7 +2,7 @@
 
 Last Updated: 2026-08-06
 
-> Historical issue details are preserved as investigation evidence. Resolved items older than 30 days move to [ISSUES_ARCHIVED.md](ISSUES_ARCHIVED.md) without losing their investigation record. The current published Space baseline is v0.1.36 with exact npm Registry KodaX 0.7.82. Durable managed-Run admission requires `managedRunDurability:1`; active-Session input admission and history/live reconciliation are also release gates. Start from the [documentation hub](README.md) for current behavior and status.
+> Historical issue details are preserved as investigation evidence. Resolved items older than 30 days move to [ISSUES_ARCHIVED.md](ISSUES_ARCHIVED.md) without losing their investigation record. The current published Space baseline is v0.1.37 with exact npm Registry KodaX 0.7.83. Durable managed-Run admission requires `managedRunDurability:1`; multi-Session recovery, active-Session input admission, safe-close recovery, and history/live reconciliation are release gates. Start from the [documentation hub](README.md) for current behavior and status.
 
 ## Issue Index
 
@@ -170,7 +170,7 @@ Last Updated: 2026-08-06
 | 172 | High     | Resolved    | Live transcript events dropped Runtime turn identity, so an overtaking history revalidation could duplicate and reorder a new turn | v0.1.34 Runtime bridge and ready-history revalidation        | 2026-08-04 |
 | 173 | High     | Resolved    | Reopening or switching an active Session could lose its in-flight transcript and leave sidebar activity stale                      | v0.1.34 renderer Runtime observation bootstrap               | 2026-08-05 |
 | 174 | High     | Resolved    | Interrupt or after-turn send could race active Session persistence and restore the draft with session_data_changed                 | v0.1.36 / KodaX 0.7.82 active-run admission                  | 2026-08-05 |
-| 175 | High     | Resolved    | Safe close could reject an idle app after hiding it, then succeed only on a second close                                            | v0.1.36 complete-exit / Windows daemon cleanup                | 2026-08-06 |
+| 175 | High     | Resolved    | Safe close could reject an idle app after hiding it, then succeed only on a second close                                            | v0.1.37 complete-exit / Windows daemon cleanup                | 2026-08-06 |
 
 ## Issue Details
 

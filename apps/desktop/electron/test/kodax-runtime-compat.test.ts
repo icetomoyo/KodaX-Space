@@ -8,7 +8,7 @@ import test from 'node:test';
 
 const PROBE_MARKER = 'KODAX_RUNTIME_PROBE=';
 const PROBE_TIMEOUT_MS = 30_000;
-const EXPECTED_KODAX_VERSION = '0.7.82';
+const EXPECTED_KODAX_VERSION = '0.7.83';
 const INSTALLED_KODAX_VERSION = (
   createRequire(import.meta.url)('@kodax-ai/kodax/package.json') as { readonly version: string }
 ).version;
@@ -359,7 +359,7 @@ try {
     clientInfo: {
       name: 'kodax-cli',
       title: 'KodaX terminal compatibility probe',
-      version: '0.7.82',
+      version: '0.7.83',
       instanceId: process.env.KODAX_PROBE_INSTANCE_ID,
       instanceSecret: process.env.KODAX_PROBE_INSTANCE_SECRET,
     },

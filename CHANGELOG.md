@@ -14,6 +14,47 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ## [Unreleased]
 
+---
+
+## [0.1.37] - 2026-08-06
+
+### Changed
+
+- **KodaX 0.7.83 Registry alignment** - Root/Desktop manifests, workspace
+  packages, lockfile views, installed bytes, and the runtime compatibility
+  gate now use one exact npm Registry package and integrity pin.
+- **Multi-Session recovery** - Session hydration, history paging, live
+  projection, and recovery now keep project, surface, Session, request, and
+  Runtime identity aligned while Sessions are restored or switched.
+- **Safe close and renderer surface** - Complete-exit recovery remains visible
+  when Runtime shutdown cannot be proven, and the bootstrap document uses the
+  semantic surface tokens used by the current UI.
+
+### Fixed
+
+- Prevented stale recovery snapshots or late Runtime events from hiding active
+  work, moving output across Sessions, or resurrecting an invalid owner.
+- Stabilized daemon shutdown and safe-close recovery after multi-Session work,
+  including the Keep Open relaunch path.
+- Updated compatibility tests for the published KodaX 0.7.83 package.
+
+### Documentation
+
+- Added the v0.1.37 feature design, release-readiness record, and Issue 175
+  regression guide.
+- Synchronized README files, the documentation hub, PRD/HLD, Feature List,
+  capability ledger, known issues, usage guide, Chinese user manual, builtin
+  skill guide, beginner guide, and in-app kodax_manual.
+
+### Verification
+
+- Full workspace tests, release checks, typecheck, lint, production smoke
+  build, package smoke, and GitHub main/tagged workflows are release gates.
+
+---
+
+## [0.1.36] - 2026-08-05
+
 ### Changed
 
 - Complete exit keeps its progress surface visible until the exact Coder daemon
@@ -27,12 +68,6 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
   If Runtime control has already been closed and recovery cannot be proven,
   choosing Keep Open performs a controlled relaunch instead of reopening a
   nonfunctional Coder admission path.
-
----
-
-## [0.1.36] - 2026-08-05
-
-### Changed
 
 - **KodaX 0.7.82 Registry alignment** - Root/Desktop manifests, workspace
   packages, lockfile views, installed bytes, runtime capability reporting, and

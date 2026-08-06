@@ -1,6 +1,6 @@
 {
   "name": "@kodax-space/desktop",
-  "version": "0.1.36",
+  "version": "0.1.37",
   "description": "KodaX Space desktop app — Electron main + Vite renderer",
   "private": true,
   "type": "module",
