@@ -108,7 +108,7 @@ F136 让 Windows 后台 owner 可见、可控；F140 允许选择“每次询问
 
 **v0.1.37 - Recovery and Release Alignment**
 
-[`v0.1.37`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.37) 为 2026-08-06 发布候选版本，package 版本为 `0.1.37`，精确对齐 npm 正式发布的 KodaX 0.7.83。Space 继续收紧多 Session 恢复、历史分页、跨 Session 事件隔离和安全退出恢复边界。详见 [CHANGELOG.md](CHANGELOG.md)、[v0.1.37 设计](docs/features/v0.1.37.md)和[v0.1.37 发布记录](docs/releases/v0.1.37-release-readiness.md)。
+[`v0.1.37`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.37) 已于 2026-08-06 正式发布，package 版本为 `0.1.37`，精确对齐 npm 正式发布的 KodaX 0.7.83。Space 继续收紧多 Session 恢复、历史分页、跨 Session 事件隔离和安全退出恢复边界。详见 [CHANGELOG.md](CHANGELOG.md)、[v0.1.37 设计](docs/features/v0.1.37.md)和[v0.1.37 发布记录](docs/releases/v0.1.37-release-readiness.md)。
 
 **v0.1.36 - Session and Runtime Reconciliation Hardening**
 
