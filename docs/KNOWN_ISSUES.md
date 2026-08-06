@@ -148,7 +148,7 @@ Last Updated: 2026-08-06
 | 150 | High     | Resolved    | Packaged cold Coder daemon initialization can block the real renderer for 20-50 seconds                                            | v0.1.34 packaged build / KodaX 0.7.79                        | 2026-08-02 |
 | 151 | Low      | Resolved    | Unlabeled fenced Markdown blocks were misclassified as inline code and rendered in the danger palette                              | v0.1.x conversation Markdown renderer                        | 2026-08-02 |
 | 152 | Medium   | Resolved    | Pristine empty KodaX Sessions return different direct and paged canonical conversation boundaries                                  | KodaX 0.7.79 local test package                              | 2026-08-02 |
-| 153 | Medium   | Resolved    | A newest canonical page beginning inside one multi-input Runtime turn lacks an exact live reconciliation identity                  | KodaX 0.7.81 canonical interrupt entry identity               | 2026-08-02 |
+| 153 | Medium   | Resolved    | A newest canonical page beginning inside one multi-input Runtime turn lacks an exact live reconciliation identity                  | KodaX 0.7.81 canonical interrupt entry identity              | 2026-08-02 |
 | 154 | Low      | Resolved    | Expanded right-sidebar plans kept additional steps permanently hidden behind a non-interactive count                               | v0.1.34 right-sidebar plan summary                           | 2026-08-03 |
 | 155 | Medium   | Resolved    | First idle complete-exit request reopened Space after a recovered Runtime owner-transition race                                    | v0.1.34 / KodaX 0.7.79 complete-exit integration             | 2026-08-03 |
 | 156 | Medium   | Resolved    | Renderer history cache could preserve a stale partial-lineage warning after canonical storage changed                              | v0.1.34 bounded canonical history paging                     | 2026-08-03 |
@@ -170,7 +170,8 @@ Last Updated: 2026-08-06
 | 172 | High     | Resolved    | Live transcript events dropped Runtime turn identity, so an overtaking history revalidation could duplicate and reorder a new turn | v0.1.34 Runtime bridge and ready-history revalidation        | 2026-08-04 |
 | 173 | High     | Resolved    | Reopening or switching an active Session could lose its in-flight transcript and leave sidebar activity stale                      | v0.1.34 renderer Runtime observation bootstrap               | 2026-08-05 |
 | 174 | High     | Resolved    | Interrupt or after-turn send could race active Session persistence and restore the draft with session_data_changed                 | v0.1.36 / KodaX 0.7.82 active-run admission                  | 2026-08-05 |
-| 175 | High     | Resolved    | Safe close could reject an idle app after hiding it, then succeed only on a second close                                            | v0.1.37 complete-exit / Windows daemon cleanup                | 2026-08-06 |
+| 175 | High     | Resolved    | Safe close could reject an idle app after hiding it, then succeed only on a second close                                           | v0.1.37 complete-exit / Windows daemon cleanup               | 2026-08-06 |
+| 176 | High     | Resolved    | Reactivating an invalidated active Session could duplicate or misplace its newest query and answer until Ctrl+R                    | v0.1.37 multi-Session recovery                               | 2026-08-06 |
 
 ## Issue Details
 
@@ -12766,14 +12767,60 @@ separate Worker owner-lease boundary is complete.
   shutdown boundaries. All work is confined to daemon startup and complete-exit paths; Session
   switching, transcript restoration, renderer streaming, and steady-state UI IPC are unchanged.
 
+## Issue 176: Reactivating an invalidated active Session could duplicate or misplace its newest query and answer until Ctrl+R
+
+- Priority: High
+- Status: Resolved
+- Introduced: v0.1.37 multi-Session recovery
+- Fixed: post-v0.1.37 maintenance
+- Created: 2026-08-06
+- Resolution Date: 2026-08-06
+
+### Original Problem
+
+When several Sessions were running, switching away from an active Session and returning after its
+history cache had been invalidated could show its newest query in an older turn, repeat the final
+answer, or render the newest query-and-answer pair twice. Ctrl+R restored the correct order. The
+canonical Session log and Runtime conversation page remained complete, distinct, and correctly
+ordered.
+
+### Root Cause
+
+`revalidateNewestSessionHistory` already retained a resolved rendered page when a new open Run
+overtook its history read, deferring canonical replacement until terminal convergence.
+`restoreNewestSessionHistory` did not use that guard. Cache invalidation made the Shell choose the
+restore entry point even though a resolved page was still painted, so an in-flight canonical copy
+could be installed beside the same turn's live projection. The two renderer-owned copies could
+then be paired or sorted independently. Ctrl+R cleared the live copy and rebuilt only from the
+canonical source, masking the race.
+
+### Resolution
+
+- Reactivation retains an already-painted `ready` projection and reuses the existing open-Run
+  deferral boundary. Cold activation still installs history immediately.
+- `partial` and `ambiguous` conversation pages remain in the direct restore path so uncertainty is
+  neither hidden nor retained as durable authority.
+- Terminal convergence performs the existing single deferred newest-history refresh. The fix adds
+  no polling, SDK request, content-based deduplication, or steady-state renderer work.
+
+### Verification
+
+- A regression test invalidates a resolved inactive page, starts an exact identified live turn,
+  reactivates the Session while a stale canonical copy arrives, and proves the rendered query and
+  answer remain single and ordered.
+- The same test terminates the Run, refreshes canonical history, and proves the final query and
+  answer each occur exactly once.
+- The complete history-paging suite and TypeScript checks pass; existing partial and ambiguous
+  recovery behavior remains covered.
+
 ## Summary
 
-- Total: 163
+- Total: 164
 - Open: 1
 - In Progress: 9
 - Deferred: 1
-- Resolved: 152
-- High: 80
+- Resolved: 153
+- High: 81
 - Medium: 72
 - Low: 11
 - Next to resolve: 165

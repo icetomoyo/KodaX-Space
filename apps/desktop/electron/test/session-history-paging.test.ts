@@ -1034,6 +1034,7 @@ afterEach(() => {
     'history-paging-warning-race',
     'history-paging-active-warning-refresh',
     'history-paging-active-warning-overtaken',
+    'history-paging-invalidated-reactivation-overtaken',
     'history-paging-older-warning-window',
     'history-paging-foreign-owner',
     'history-paging-terminal-prunes-never-folded',
@@ -2866,6 +2867,198 @@ test('an active warning refresh overtaken by the next Run defers canonical repla
     useAppStore.getState().userMessagesBySession[sessionId]?.map((message) => message.content),
     ['settled row'],
   );
+});
+
+test('reactivating an invalidated ready page defers an in-flight canonical duplicate', async () => {
+  const sessionId = 'history-paging-invalidated-reactivation-overtaken';
+  useAppStore.setState({
+    sessions: [
+      {
+        sessionId,
+        projectRoot: '/project',
+        provider: 'mock',
+        reasoningMode: 'auto',
+        permissionMode: 'accept-edits',
+        autoModeEngine: 'llm',
+        agentMode: 'ama',
+        surface: 'code',
+        createdAt: 1_000,
+        lastActivityAt: 1_000,
+      },
+    ],
+    currentSessionId: sessionId,
+    eventsBySession: {},
+    userMessagesBySession: {},
+    pendingSendBySession: {},
+  });
+  let calls = 0;
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    writable: true,
+    value: {
+      kodaxSpace: {
+        invoke: mockHistoryInvoke(async () => {
+          calls += 1;
+          const secondAnswer = calls === 2 ? 'stale partial second answer' : 'second answer';
+          return {
+            ok: true as const,
+            data: {
+              items: [
+                {
+                  kind: 'user' as const,
+                  content: 'first query',
+                  canonicalIndex: 0,
+                  turnId: 'turn-first',
+                  turnUserOrdinal: 0,
+                },
+                {
+                  kind: 'assistant' as const,
+                  text: 'first answer',
+                  canonicalIndex: 1,
+                  turnId: 'turn-first',
+                },
+                ...(calls === 1
+                  ? []
+                  : [
+                      {
+                        kind: 'user' as const,
+                        content: 'second query',
+                        canonicalIndex: 2,
+                        turnId: 'turn-second',
+                        turnUserOrdinal: 0,
+                      },
+                      {
+                        kind: 'assistant' as const,
+                        text: secondAnswer,
+                        canonicalIndex: 3,
+                        turnId: 'turn-second',
+                      },
+                    ]),
+              ],
+              conversation: { status: 'resolved' as const },
+              page: {
+                outcome: 'ready' as const,
+                revision: `revision-${calls}`,
+                sourceRevision: `source-${calls}`,
+                hasMore: false as const,
+                windowMode: 'replace' as const,
+                hasNewer: false as const,
+              },
+            },
+          };
+        }),
+      },
+    },
+  });
+
+  await restoreNewestSessionHistory(sessionId, 'code');
+  deactivateSessionHistoryPaging(sessionId);
+  invalidateSessionHistoryPaging(sessionId);
+
+  const messageId = useAppStore.getState().appendUserMessage(sessionId, 'second query', 2_000);
+  assert.ok(messageId);
+  useAppStore.getState().appendEvent({
+    kind: 'session_start',
+    sessionId,
+    provider: 'mock',
+    turnId: 'turn-second',
+    runtimeEvent: { runtimeId: 'runtime-active', runId: 'run-second', seq: 1 },
+  });
+  useAppStore.getState().bindUserMessageRuntimeRun(sessionId, messageId, 'run-second');
+  useAppStore.getState().appendEvent({
+    kind: 'text_delta',
+    sessionId,
+    text: 'second answer',
+    turnId: 'turn-second',
+    runtimeEvent: { runtimeId: 'runtime-active', runId: 'run-second', seq: 2 },
+  });
+  const runtimeConnection = {
+    state: 'ready' as const,
+    changedAt: 2_000,
+    stale: false as const,
+    runtimeId: 'runtime-active',
+    capabilities: [],
+  };
+  const activeRun = {
+    runId: 'run-second',
+    sessionId,
+    phase: 'running' as const,
+    startedAt: 2_000,
+  };
+  useAppStore.setState({
+    runtimeConnection,
+    runtimeProfile: {
+      connection: runtimeConnection,
+      projectionRevision: 1,
+      cursor: { runtimeId: 'runtime-active', seq: 2 },
+      sessions: [
+        {
+          sessionId,
+          projectRoot: '/project',
+          surface: 'code',
+          createdAt: 1_000,
+          lastActivityAt: 2_000,
+          queuedRuns: [],
+          activeRun,
+        },
+      ],
+      interactions: [],
+      notifications: [],
+    },
+    liveProjectionBySession: {
+      [sessionId]: {
+        sessionId,
+        projectionRevision: 1,
+        cursor: { runtimeId: 'runtime-active', seq: 2 },
+        transcriptRevision: 'transcript-active',
+        queuedRuns: [],
+        activeRun,
+        activeTools: [],
+        todos: [],
+        queuedInputs: [],
+        interactions: [],
+      },
+    },
+  });
+
+  await restoreNewestSessionHistory(sessionId, 'code');
+
+  assert.equal(calls, 2);
+  assert.equal(sessionHistoryPagingSnapshot(sessionId).revision, 'revision-1');
+  assert.deepEqual(
+    composeMessages({
+      userMessages: useAppStore.getState().userMessagesBySession[sessionId] ?? [],
+      events: useAppStore.getState().eventsBySession[sessionId] ?? [],
+    }).flatMap((message) => {
+      if (message.kind === 'user') return [`user:${message.content}`];
+      if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+      return [];
+    }),
+    ['user:first query', 'assistant:first answer', 'user:second query', 'assistant:second answer'],
+  );
+
+  useAppStore.getState().appendEvent({
+    kind: 'session_complete',
+    sessionId,
+    turnId: 'turn-second',
+    runtimeEvent: { runtimeId: 'runtime-active', runId: 'run-second', seq: 3 },
+  });
+  useAppStore.setState({ liveProjectionBySession: {}, runtimeProfile: null });
+  invalidateSessionHistoryPaging(sessionId);
+  await refreshDeferredSessionHistory(sessionId);
+
+  assert.equal(calls, 3);
+  assert.equal(sessionHistoryPagingSnapshot(sessionId).revision, 'revision-3');
+  const terminalTranscript = composeMessages({
+    userMessages: useAppStore.getState().userMessagesBySession[sessionId] ?? [],
+    events: useAppStore.getState().eventsBySession[sessionId] ?? [],
+  }).flatMap((message) => {
+    if (message.kind === 'user') return [`user:${message.content}`];
+    if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+    return [];
+  });
+  assert.equal(terminalTranscript.filter((item) => item === 'user:second query').length, 1);
+  assert.equal(terminalTranscript.filter((item) => item === 'assistant:second answer').length, 1);
 });
 
 test('history paging preserves surface routing and restarts from newest after data_changed', async () => {

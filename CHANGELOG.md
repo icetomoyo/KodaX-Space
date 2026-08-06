@@ -14,6 +14,13 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ## [Unreleased]
 
+### Fixed
+
+- Reactivating an invalidated but already-rendered Session now retains its
+  resolved projection while an open Run overtakes canonical history recovery.
+  This prevents the newest query or answer from appearing twice, attaching to
+  the previous turn, or moving within the transcript until Ctrl+R.
+
 ---
 
 ## [0.1.37] - 2026-08-06

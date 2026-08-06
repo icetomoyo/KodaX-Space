@@ -725,7 +725,16 @@ export function restoreNewestSessionHistory(
 ): Promise<void> {
   clearRetry(sessionId);
   activateSessionHistoryPaging(sessionId);
-  return requestHistory(sessionId, false, expectedSurface);
+  // An invalidation makes the cached page ineligible as durable authority, but it does not make
+  // the already-painted projection unsafe to retain. Reactivation can overlap the next open Run;
+  // use the same open-turn deferral as ordinary revalidation so an in-flight canonical copy never
+  // enters the renderer beside its live owner. A truly cold activation still installs directly.
+  const cached = sessionHistoryPagingSnapshot(sessionId);
+  const retainReadyProjection =
+    cached.phase === 'ready' &&
+    cached.conversationStatus !== 'partial' &&
+    cached.conversationStatus !== 'ambiguous';
+  return requestHistory(sessionId, false, expectedSurface, retainReadyProjection);
 }
 
 export function loadOlderSessionHistory(sessionId: string): Promise<void> {
