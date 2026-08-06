@@ -53,8 +53,9 @@ Desktop.ini
 *.deb
 *.snap
 
-# F010: generated icon placeholder (regenerated each build via scripts/gen-icon.mjs)
-resources/icon.png
+# F010: generated app icon (scripts/gen-icon.mjs, deterministic output).
+# resources/icon.png is committed so GitHub can render it in README/README_CN;
+# ICO/ICNS stay generated per build and are never checked in.
 resources/icon.ico
 resources/icon.icns
 resources/.icon-*/

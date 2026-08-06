@@ -9,7 +9,9 @@
 // 生成 icns；Windows 直接使用多尺寸 ICO，避免 portable 外层启动器仅含单个
 // 256px PNG entry 时在部分 Explorer / 缩放组合下显示不稳定。
 //
-// 一次性脚本：跑 `node scripts/gen-icon.mjs` 重新生成。CI 里也跑一次（仓库不 check-in 二进制）。
+// 一次性脚本：跑 `node scripts/gen-icon.mjs` 重新生成。CI 里也跑一次。
+// resources/icon.png 是确定性输出（无时间戳/随机数），已提交到仓库（README 在
+// GitHub 上直接引用它）；.ico/.icns 仍由构建生成，不 check-in 二进制。
 
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
