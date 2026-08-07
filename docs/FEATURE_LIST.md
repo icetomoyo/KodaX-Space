@@ -1,8 +1,8 @@
 # KodaX Space Feature List
 
-> Last reviewed: 2026-08-06
+> Last reviewed: 2026-08-07
 > Latest published release: [`v0.1.37`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.37) (`0.1.37` package baseline)
-> Current KodaX SDK baseline: exact npm Registry `@kodax-ai/kodax@0.7.83` across both manifests, lock views, and installed bytes (`sha512-4ctuATY3isOYiRCyB/0aWkz2LdqEIlqtKdjM8P7YvL+D1ipS+X1SWHVXpp0yjKGWqN+/l4t27ASV4xhQNbpFtg==`). Space-managed daemons require explicit capability contracts in addition to the established shared-session safety surface, including `managedRunDurability:1`; lifecycle support is not inferred from SemVer. Delivered interrupt `entryId` remains feature-detected per event because it was introduced by KodaX 0.7.81 without a new daemon capability version.
+> Current KodaX SDK baseline: exact npm Registry `@kodax-ai/kodax@0.7.84` across both manifests, lock views, and installed bytes (`sha512-3FhgipPMQ4Aeugy8ripI/YMJsn+POtnoh4BSqOe2QD8PdiZx/a3qsKsphbjMMhInjQnHSZxySIbEt7s+TTZ7VA==`). Space-managed daemons require explicit capability contracts in addition to the established shared-session safety surface, including `managedRunDurability:1`; lifecycle support is not inferred from SemVer. Delivered interrupt `entryId` remains feature-detected per event because it was introduced by KodaX 0.7.81 without a new daemon capability version. KodaX 0.7.84's same-owner Actor settlement recovery is consumed through the existing Run/Stop contract rather than a fabricated capability version.
 > Scope: active roadmap, recent completion audit, and reviewed-out decisions. Older release history lives in [FEATURES_ARCHIVED.md](FEATURES_ARCHIVED.md), per-version designs, and [CHANGELOG.md](../CHANGELOG.md).
 
 ## Planning rules
@@ -74,7 +74,7 @@
 | `v0.1.35`       | Learned Skill and command-sandbox safety surfaces                                                                     | F118, F143                        | Released 2026-08-05: ships the minimum learned-Skill control path plus explicit ASRT readiness, refresh, guidance, user-confirmed Windows setup, KodaX 0.7.80 Registry alignment, and durable Run/history ownership gates.                                                      |
 | `v0.1.36`       | Session and Runtime reconciliation hardening                                                                          | Maintenance fixes                 | Released 2026-08-05: aligns KodaX 0.7.82, serializes active Session input admission, preserves run/turn identity through history/live reconciliation, isolates renderer recovery, and updates the user/in-app manuals.                                      |
 | `v0.1.37`       | Recovery and release alignment                                                                                         | Maintenance fixes                 | Released 2026-08-06: aligns KodaX 0.7.83, preserves multi-Session/run/turn ownership through recovery, keeps failed safe close visible and recoverable, and synchronizes the public and in-app manuals.                                                     |
-| `v0.1.38`       | —                                                                                                                     | none                              | —                                                                                                                                                                                                                                                                               |
+| `v0.1.38`       | KodaX 0.7.84 and Session recovery maintenance                                                                            | Maintenance fixes                 | Exact 0.7.84 Registry bytes, bounded Agent progress, same-owner Stop reconciliation, Session reactivation identity recovery, tracked icon packaging, local release gates, and GitHub CI pass without changing business logic in release preparation. |
 | `v0.1.39`       | —                                                                                                                     | none                              | —                                                                                                                                                                                                                                                                               |
 | `v0.1.40`       | —                                                                                                                     | none                              | —                                                                                                                                                                                                                                                                               |
 | `v0.1.41`       | —                                                                                                                     | none                              | —                                                                                                                                                                                                                                                                               |
@@ -208,6 +208,14 @@
 - No new Feature ID is marked completed by this release; F137 and F139 remain
   scheduled for `v0.1.42`, and unresolved lifecycle/performance limits remain in
   `KNOWN_ISSUES.md`.
+
+### Release preparation - 2026-08-07: v0.1.38 KodaX 0.7.84 maintenance
+
+- The next maintenance release aligns Space package metadata and the in-app
+  manual to `v0.1.38` while consuming the exact KodaX 0.7.84 Registry package.
+- The release record covers bounded Agent progress, exact same-owner Stop
+  recovery, Issue 176 Session reactivation, tracked icon packaging, and the
+  complete documentation set. No new Feature ID is marked completed.
 
 ### Current-release addition - 2026-07-20: separate Artifact and File Viewer ownership
 

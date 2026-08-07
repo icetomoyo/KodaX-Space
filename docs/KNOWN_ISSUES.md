@@ -1,8 +1,8 @@
 # Known Issues
 
-Last Updated: 2026-08-06
+Last Updated: 2026-08-07
 
-> Historical issue details are preserved as investigation evidence. Resolved items older than 30 days move to [ISSUES_ARCHIVED.md](ISSUES_ARCHIVED.md) without losing their investigation record. The current published Space baseline is v0.1.37 with exact npm Registry KodaX 0.7.83. Durable managed-Run admission requires `managedRunDurability:1`; multi-Session recovery, active-Session input admission, safe-close recovery, and history/live reconciliation are release gates. Start from the [documentation hub](README.md) for current behavior and status.
+> Historical issue details are preserved as investigation evidence. Resolved items older than 30 days move to [ISSUES_ARCHIVED.md](ISSUES_ARCHIVED.md) without losing their investigation record. The current Space v0.1.38 baseline uses exact npm Registry KodaX 0.7.84. Durable managed-Run admission requires `managedRunDurability:1`; bounded Agent progress, same-owner Stop recovery, Session reactivation, active-Session input admission, safe-close recovery, and history/live reconciliation are release gates. Start from the [documentation hub](README.md) for current behavior and status.
 
 ## Issue Index
 
@@ -171,7 +171,7 @@ Last Updated: 2026-08-06
 | 173 | High     | Resolved    | Reopening or switching an active Session could lose its in-flight transcript and leave sidebar activity stale                      | v0.1.34 renderer Runtime observation bootstrap               | 2026-08-05 |
 | 174 | High     | Resolved    | Interrupt or after-turn send could race active Session persistence and restore the draft with session_data_changed                 | v0.1.36 / KodaX 0.7.82 active-run admission                  | 2026-08-05 |
 | 175 | High     | Resolved    | Safe close could reject an idle app after hiding it, then succeed only on a second close                                           | v0.1.37 complete-exit / Windows daemon cleanup               | 2026-08-06 |
-| 176 | High     | Resolved    | Reactivating an invalidated active Session could duplicate or misplace its newest query and answer until Ctrl+R                    | v0.1.37 multi-Session recovery                               | 2026-08-06 |
+| 176 | High     | Resolved    | Reactivating an invalidated active Session could duplicate or misplace its newest query and answer until Ctrl+R                    | v0.1.38 Session reactivation recovery                         | 2026-08-06 |
 
 ## Issue Details
 
@@ -11693,6 +11693,43 @@ Space must continue to display the authoritative outcome and cannot rewrite it
 as cancellation; KodaX still needs one consistent terminal reason for a
 user-initiated Stop.
 
+#### 2026-08-06 recurrence and upstream fix status
+
+Session `20260806_200641_l181e74214d29d` exposed a second entry into the same
+stuck boundary on KodaX `0.7.83`: fire-and-forget child progress snapshot writes
+backlogged the Actor mutation queue, a completed child missed the five-second
+terminal-persistence deadline, and the controller self-fenced with
+`actor_settlement_not_persisted`. That Actor health projection changed the Run
+to `unknown` before the user pressed Stop. `requestRunStop()` then rejected both
+Stop attempts as `accepted: false`, so no abort signal or cooperative child
+quiescence was delivered. Space kept the nonterminal Run visible and restored
+follow-up drafts rejected as `stale_run`; those behaviors preserved facts and
+input, but the SDK offered no transition that could restore the Session.
+
+KodaX Issue 282 is fixed in the v0.7.84 development source across the complete
+chain: bounded/coalesced progress projection that no longer waits indefinitely
+at the terminal boundary, exact same-owner reconciliation of a late Actor
+snapshot, first-Stop delivery for a live same-owner unknown Run, and idempotent
+repair-effect redelivery when a repeated Stop finds the first repair still
+unknown. Durable quiescence of remaining children and confirmed terminal
+cleanup then release the Session for a later Run. If the executor Promise had
+already returned while durability was unknown, its saved success or
+credential-safe failure fact is applied only after repair and remains
+authoritative over fallback callbacks. A stale durable unknown status also
+cannot rewind an in-process terminal Run; no-op quiescence avoids an
+unnecessary Session lock window. Foreign/ownerless ownership, missing terminal
+evidence, and genuine persistence failure remain unknown rather than being
+force-idled.
+
+Space source now consumes the exact npm Registry KodaX `0.7.84` package across
+both manifests, both lock views, and the installed deduplicated bytes
+(`sha512-3FhgipPM…TTZ7VA==`). The exact-package Runtime Worker, shared-daemon,
+host Stop-receipt, input-admission, external-Agent, typecheck, and release
+dependency gates pass. This issue remains Open only for a packaged application
+fault-injection rerun of the original progress-backlog/late-settlement incident
+and the broader pre-existing Issue 146 cancellation-convergence boundary; the
+published v0.1.37 artifact remains historical KodaX `0.7.83` evidence.
+
 #### Evidence
 
 - Daemon Run status `runs/run_msdws10q_43b6e914/status.json`: phase `failed`,
@@ -12771,8 +12808,8 @@ separate Worker owner-lease boundary is complete.
 
 - Priority: High
 - Status: Resolved
-- Introduced: v0.1.37 multi-Session recovery
-- Fixed: post-v0.1.37 maintenance
+- Introduced: v0.1.38 Session reactivation recovery
+- Fixed: v0.1.38 release maintenance
 - Created: 2026-08-06
 - Resolution Date: 2026-08-06
 

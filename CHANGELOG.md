@@ -14,12 +14,43 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ## [Unreleased]
 
+---
+
+## [0.1.38] - 2026-08-07
+
+### Changed
+
+- **KodaX 0.7.84 Registry alignment** - Root/Desktop manifests, workspace
+  packages, lockfile views, installed bytes, and runtime compatibility tests
+  now use the exact published npm Registry package and integrity pin.
+- **Agent progress recovery** - The release documents the bounded progress
+  merge and exact same-owner Stop reconciliation contract. Foreign ownership
+  and persistent storage failures remain fail-closed.
+- **Release packaging** - Space package metadata, the Windows icon resource,
+  and the release documentation all describe the same `0.1.38` artifact.
+
 ### Fixed
 
 - Reactivating an invalidated but already-rendered Session now retains its
   resolved projection while an open Run overtakes canonical history recovery.
   This prevents the newest query or answer from appearing twice, attaching to
   the previous turn, or moving within the transcript until Ctrl+R.
+- Late Actor settlement after an exact same-owner Stop can now be reconciled
+  before the captured executor result is applied, so a completed-looking
+  answer does not leave its Session permanently stuck in `unknown`.
+
+### Documentation
+
+- Synchronized README files, the documentation hub, PRD/HLD, Feature List,
+  capability ledger, known issues, usage guide, Chinese user manual, beginner
+  guide, builtin-skill guide, release records, regression guide, and the
+  in-app `kodax_manual` for Space `0.1.38` and KodaX `0.7.84`.
+
+### Verification
+
+- Local release checks, workspace tests, typecheck, lint, production smoke
+  build, package smoke, and the GitHub main/tagged workflows are release
+  gates for this version.
 
 ---
 
