@@ -108,7 +108,7 @@ F136 让 Windows 后台 owner 可见、可控；F140 允许选择“每次询问
 
 **v0.1.38 - KodaX 0.7.84 Maintenance Release**
 
-2026-08-07 release candidate：package `0.1.38` 精确对齐 npm 正式发布的
+2026-08-07 正式发布 [`v0.1.38`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.38)：package `0.1.38` 精确对齐 npm 正式发布的
 KodaX `0.7.84`。本版本同步已落地的 Session 重新激活修复、Agent progress
 有界持久化与同 owner Stop 收敛、图标打包资源、README/手册和应用内
 `kodax_manual`。详细内容见 [v0.1.38 设计](docs/features/v0.1.38.md) 与

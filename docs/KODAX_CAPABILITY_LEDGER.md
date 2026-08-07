@@ -1,7 +1,7 @@
 # KodaX Capability Ledger
 
 > Last reviewed: 2026-08-07
-> Space baseline: release candidate [`v0.1.38`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.38) (`0.1.38` package baseline; v0.1.37 remains historical)
+> Space baseline: released [`v0.1.38`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.38) (`0.1.38` package baseline; v0.1.37 remains historical)
 > Source SDK baseline: npm-published exact `@kodax-ai/kodax@0.7.84` (`SHA512 3FhgipPM…TTZ7VA==`).
 > Workspace dependency: root and Desktop manifests, lockfile, and installed bytes resolve the same Registry tarball. The formal release gate rejects local sources and requires that URL and integrity pin.
 > Package/source evidence: a formal release requires both workspaces to resolve one deduplicated exact Registry package whose root/desktop manifests, lock views, installed package, tarball URL, and integrity agree. Release acceptance also imports every public KodaX facade, verifies ancestor-aware transitive dependencies, loads packaged `better-sqlite3` from unpacked native bytes, and boots the packaged application.
@@ -34,8 +34,8 @@ This is the Space-side source of truth for SDK-dependent capability planning. A 
 The current source uses the exact npm Registry KodaX `0.7.84` package and
 integrity `sha512-3FhgipPMQ4Aeugy8ripI/YMJsn+POtnoh4BSqOe2QD8PdiZx/a3qsKsphbjMMhInjQnHSZxySIbEt7s+TTZ7VA==`.
 The published Space v0.1.37 artifact remains historical evidence for KodaX
-0.7.83; it is not rewritten to claim the newer dependency. The v0.1.38
-release candidate is the current source baseline for KodaX 0.7.84.
+0.7.83; it is not rewritten to claim the newer dependency. The released
+v0.1.38 artifact is the current source baseline for KodaX 0.7.84.
 Space keeps a bounded active-Session input-admission boundary around send,
 interrupt, after-turn, Session switching, draft recovery, and history
 revalidation, and extends the same identity fence to multi-Session recovery

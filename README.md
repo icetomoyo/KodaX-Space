@@ -114,7 +114,7 @@ official Registry package without vendoring an SDK patch. See
 
 **v0.1.38 - KodaX 0.7.84 Maintenance Release**
 
-Release candidate dated 2026-08-07 for package version `0.1.38`, aligned to
+Released on 2026-08-07 as [`v0.1.38`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.38), with package version `0.1.38` aligned to
 the exact npm-published KodaX 0.7.84 package. The release carries the
 already-landed Session reactivation correction, bounded Agent progress and
 same-owner Stop reconciliation contract, tracked icon packaging, and the

@@ -1,7 +1,7 @@
 # KodaX Space Feature List
 
 > Last reviewed: 2026-08-07
-> Latest published release: [`v0.1.37`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.37) (`0.1.37` package baseline)
+> Latest published release: [`v0.1.38`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.38) (`0.1.38` package baseline; KodaX 0.7.84 Registry alignment)
 > Current KodaX SDK baseline: exact npm Registry `@kodax-ai/kodax@0.7.84` across both manifests, lock views, and installed bytes (`sha512-3FhgipPMQ4Aeugy8ripI/YMJsn+POtnoh4BSqOe2QD8PdiZx/a3qsKsphbjMMhInjQnHSZxySIbEt7s+TTZ7VA==`). Space-managed daemons require explicit capability contracts in addition to the established shared-session safety surface, including `managedRunDurability:1`; lifecycle support is not inferred from SemVer. Delivered interrupt `entryId` remains feature-detected per event because it was introduced by KodaX 0.7.81 without a new daemon capability version. KodaX 0.7.84's same-owner Actor settlement recovery is consumed through the existing Run/Stop contract rather than a fabricated capability version.
 > Scope: active roadmap, recent completion audit, and reviewed-out decisions. Older release history lives in [FEATURES_ARCHIVED.md](FEATURES_ARCHIVED.md), per-version designs, and [CHANGELOG.md](../CHANGELOG.md).
 
@@ -22,7 +22,7 @@
 | Planned                  | 20                                                                                                                                                                                                                                                  |
 | InProgress               | 4                                                                                                                                                                                                                                                   |
 | Recent Completed         | 27                                                                                                                                                                                                                                                  |
-| Latest published release | [`v0.1.37`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.37) (KodaX 0.7.83 Registry alignment, multi-Session recovery, safe-close recovery, and release documentation synchronization)                    |
+| Latest published release | [`v0.1.38`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.38) (KodaX 0.7.84 Registry alignment, Agent progress/Stop recovery, Session reactivation protection, and release documentation synchronization) |
 | 0.1.x completion target  | `v0.1.53`, followed by `v0.1.54` patch/RC reserve                                                                                                                                                                                                   |
 | Far-future candidates    | F144 is scheduled after `v0.2.x`; F138 is explicitly deferred until after `v0.5.x`; other candidates remain in [KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md) and [FEATURES_ARCHIVED.md](FEATURES_ARCHIVED.md#watchlist-and-reopen-gates) |
 
