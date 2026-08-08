@@ -1,6 +1,6 @@
 # Known Issues
 
-Last Updated: 2026-08-07
+Last Updated: 2026-08-08
 
 > Historical issue details are preserved as investigation evidence. Resolved items older than 30 days move to [ISSUES_ARCHIVED.md](ISSUES_ARCHIVED.md) without losing their investigation record. The current Space v0.1.38 baseline uses exact npm Registry KodaX 0.7.84. Durable managed-Run admission requires `managedRunDurability:1`; bounded Agent progress, same-owner Stop recovery, Session reactivation, active-Session input admission, safe-close recovery, and history/live reconciliation are release gates. Start from the [documentation hub](README.md) for current behavior and status.
 
@@ -171,7 +171,8 @@ Last Updated: 2026-08-07
 | 173 | High     | Resolved    | Reopening or switching an active Session could lose its in-flight transcript and leave sidebar activity stale                      | v0.1.34 renderer Runtime observation bootstrap               | 2026-08-05 |
 | 174 | High     | Resolved    | Interrupt or after-turn send could race active Session persistence and restore the draft with session_data_changed                 | v0.1.36 / KodaX 0.7.82 active-run admission                  | 2026-08-05 |
 | 175 | High     | Resolved    | Safe close could reject an idle app after hiding it, then succeed only on a second close                                           | v0.1.37 complete-exit / Windows daemon cleanup               | 2026-08-06 |
-| 176 | High     | Resolved    | Reactivating an invalidated active Session could duplicate or misplace its newest query and answer until Ctrl+R                    | v0.1.38 Session reactivation recovery                         | 2026-08-06 |
+| 176 | High     | Resolved    | Reactivating an invalidated active Session could duplicate or misplace its newest query and answer until Ctrl+R                    | v0.1.38 Session reactivation recovery                        | 2026-08-06 |
+| 177 | High     | Resolved    | History reconciliation could duplicate a recovered answer or place compact notices after a later answer                            | v0.1.38 history/live and local-notice reconciliation         | 2026-08-08 |
 
 ## Issue Details
 
@@ -12850,14 +12851,68 @@ canonical source, masking the race.
 - The complete history-paging suite and TypeScript checks pass; existing partial and ambiguous
   recovery behavior remains covered.
 
+## Issue 177: History reconciliation could duplicate a recovered answer or place compact notices after a later answer
+
+- Priority: High
+- Status: Resolved
+- Introduced: v0.1.38 history/live and local-notice reconciliation
+- Fixed: v0.1.38 release maintenance
+- Created: 2026-08-08
+- Resolution Date: 2026-08-08
+
+### Original Problem
+
+Two deterministic restore defects affected the rendered transcript while the persisted canonical
+history remained correct:
+
+- After a mid-stream Provider recovery, terminal reconciliation could append the abandoned live
+  attempt and the successful retry to the canonical final answer. Ctrl+R cleared the live
+  projection and temporarily restored the single canonical answer.
+- When the newest bounded history page started with an assistant entry, restored `/compact` command
+  and result notices could appear below that later answer. Reloading reconstructed the same order
+  because both data sources were persisted.
+
+### Root Cause
+
+- A `stable_boundary_retry` starts a new Provider text attempt, but canonical/live folding compared
+  canonical text against every live `text_delta`, including the abandoned pre-retry draft. With no
+  valid prefix relation, the whole live projection was retained beside the canonical answer.
+- A leading partial history page needs a hidden user owner for assistant/tool events. Its timestamp
+  was taken from the first merged history item, which could be a local notice from the side store.
+  The hidden owner then tied that notice and sorted before it, carrying the later assistant segment
+  above both compact notices.
+
+### Resolution
+
+- Text and thinking reconciliation now projects only events after the last exact
+  `mid_stream_text` / `stable_boundary_retry` boundary. Recovery diagnostics remain in the event
+  stream, and an exact-entry live extension produced after the retry is still retained.
+- Hidden history anchors now derive time only from canonical conversation items. Local notices keep
+  their own side-store times and therefore remain before a genuinely later leading assistant.
+- No global content deduplication or sort rule changed; both fixes are scoped to the provenance
+  boundaries that made the previous ordering invalid.
+
+### Verification
+
+- Recovery regressions prove the abandoned attempt is removed, the canonical retry answer renders
+  once after repeated authoritative reconciliation, the diagnostic event survives, and a proven
+  post-retry live extension is preserved.
+- A lifecycle regression advances the authoritative newest window past that recovered turn and
+  proves its already-canonical live baseline cannot reappear at the transcript tail.
+- A bounded-page regression starts with two compact notices followed by a canonical assistant and
+  proves the hidden owner inherits canonical time and composes after both notices.
+- The complete history replay suite passes. See
+  [ISSUE_177_v0.1.38_REGRESSION_GUIDE.md](test-guides/ISSUE_177_v0.1.38_REGRESSION_GUIDE.md)
+  for packaged-app acceptance coverage.
+
 ## Summary
 
-- Total: 164
+- Total: 165
 - Open: 1
 - In Progress: 9
 - Deferred: 1
-- Resolved: 153
-- High: 81
+- Resolved: 154
+- High: 82
 - Medium: 72
 - Low: 11
 - Next to resolve: 165

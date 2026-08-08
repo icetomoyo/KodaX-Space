@@ -2345,6 +2345,139 @@ test('history-first race waits for the matching live terminal, then folds the re
   );
 });
 
+test('terminal recovery keeps only the canonical retry answer when folding live text', () => {
+  const store = useAppStore.getState();
+  const optimisticId = store.appendUserMessage(SID, 'review with a child agent', 10_000);
+  assert.ok(optimisticId);
+  store.bindUserMessageRuntimeRun(SID, optimisticId, 'run-recovery');
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-recovery',
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'interim attempt',
+    sentAt: 10_100,
+  });
+  store.appendEvent({
+    kind: 'provider_recovery',
+    sessionId: SID,
+    stage: 'mid_stream_text',
+    errorClass: 'connection_failure',
+    attempt: 1,
+    maxAttempts: 2,
+    delayMs: 0,
+    recoveryAction: 'stable_boundary_retry',
+    ladderStep: 1,
+    fallbackUsed: false,
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'retry final',
+    sentAt: 10_200,
+  });
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: SID,
+    turnId: 'turn-recovery',
+  });
+
+  const canonicalHistory: SessionHistoryItem[] = [
+    {
+      kind: 'user',
+      content: 'review with a child agent',
+      sentAt: 10_050,
+      turnId: 'turn-recovery',
+      turnUserOrdinal: 0,
+    },
+    {
+      kind: 'assistant',
+      text: 'retry final',
+      sentAt: 10_200,
+      turnId: 'turn-recovery',
+    },
+  ];
+  for (let attempt = 0; attempt < 2; attempt++) {
+    store.prependSessionHistory(SID, canonicalHistory, FALLBACK_SENT_AT, {
+      replaceLoadedWindow: true,
+      authoritativeNewest: true,
+    });
+  }
+
+  const state = useAppStore.getState();
+  const out = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  });
+  assert.deepEqual(
+    out.flatMap((message) =>
+      message.kind === 'assistant_text' ? [`assistant:${message.text}`] : [],
+    ),
+    ['assistant:retry final'],
+  );
+  assert.equal(
+    (state.eventsBySession[SID] ?? []).some((event) => event.kind === 'provider_recovery'),
+    true,
+    'the diagnostic recovery event remains available to Runtime UI state',
+  );
+});
+
+test('exact entry recovery retains a proven post-retry live extension', () => {
+  const store = useAppStore.getState();
+  store.appendEvent({
+    kind: 'mid_turn_user_prompt',
+    sessionId: SID,
+    queueId: 'input-recovery-extension',
+    content: 'continue after retry',
+    entryId: 'entry-recovery-extension',
+  });
+  store.appendEvent({ kind: 'text_delta', sessionId: SID, text: 'abandoned attempt' });
+  store.appendEvent({
+    kind: 'provider_recovery',
+    sessionId: SID,
+    stage: 'mid_stream_text',
+    errorClass: 'connection_failure',
+    attempt: 1,
+    maxAttempts: 2,
+    delayMs: 0,
+    recoveryAction: 'stable_boundary_retry',
+    ladderStep: 1,
+    fallbackUsed: false,
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'retry final extended',
+  });
+  store.appendEvent({ kind: 'session_complete', sessionId: SID });
+
+  store.prependSessionHistory(
+    SID,
+    [
+      {
+        kind: 'user',
+        content: 'continue after retry',
+        entryId: 'entry-recovery-extension',
+        canonicalIndex: 30,
+      },
+      { kind: 'assistant', text: 'retry final', canonicalIndex: 31 },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true },
+  );
+
+  const state = useAppStore.getState();
+  const visible = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  }).flatMap((message) => (message.kind === 'assistant_text' ? [`assistant:${message.text}`] : []));
+  assert.deepEqual(visible, ['assistant:retry final extended']);
+});
+
 test('authoritative terminal repairs a missed identity-bearing start before folding history', () => {
   const store = useAppStore.getState();
   store.appendUserMessage(SID, 'terminal repairs the owner', 10_000);
@@ -3327,6 +3460,112 @@ test('a canonicalized live turn cannot reappear after the newest bounded window 
     sourceRevision: 'source-after-append',
     authoritativeNewest: true,
   });
+
+  const state = useAppStore.getState();
+  const visible = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  });
+  assert.deepEqual(
+    visible.flatMap((message) => {
+      if (message.kind === 'user') return [`user:${message.content}`];
+      if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+      return [];
+    }),
+    ['user:current query', 'assistant:current answer'],
+  );
+});
+
+test('a canonicalized recovery turn cannot reappear after the newest window moves past it', () => {
+  const store = useAppStore.getState();
+  const messageId = store.appendUserMessage(SID, 'recovered old query', 30_000);
+  assert.ok(messageId);
+  store.bindUserMessageRuntimeRun(SID, messageId, 'run-old-recovery');
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-old-recovery',
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'abandoned attempt',
+    turnId: 'turn-old-recovery',
+  });
+  store.appendEvent({
+    kind: 'provider_recovery',
+    sessionId: SID,
+    stage: 'mid_stream_text',
+    errorClass: 'connection_failure',
+    attempt: 1,
+    maxAttempts: 2,
+    delayMs: 0,
+    recoveryAction: 'stable_boundary_retry',
+    ladderStep: 1,
+    fallbackUsed: false,
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'retry final',
+    turnId: 'turn-old-recovery',
+  });
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: SID,
+    turnId: 'turn-old-recovery',
+  });
+
+  store.prependSessionHistory(
+    SID,
+    [
+      { kind: 'history_truncation', scope: 'history', omittedItems: 80 },
+      {
+        kind: 'user',
+        content: 'recovered old query',
+        sentAt: 30_000,
+        canonicalIndex: 80,
+        turnId: 'turn-old-recovery',
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 'retry final',
+        sentAt: 30_100,
+        canonicalIndex: 81,
+        turnId: 'turn-old-recovery',
+      },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true, sourceRevision: 'source-recovery-fold' },
+  );
+
+  const newestWindow: SessionHistoryItem[] = [
+    { kind: 'history_truncation', scope: 'history', omittedItems: 105 },
+    {
+      kind: 'user',
+      content: 'current query',
+      sentAt: 40_000,
+      canonicalIndex: 105,
+      turnId: 'turn-current',
+      turnUserOrdinal: 0,
+    },
+    {
+      kind: 'assistant',
+      text: 'current answer',
+      sentAt: 40_100,
+      canonicalIndex: 106,
+      turnId: 'turn-current',
+    },
+  ];
+  for (let attempt = 0; attempt < 2; attempt++) {
+    store.prependSessionHistory(SID, newestWindow, FALLBACK_SENT_AT, {
+      replaceLoadedWindow: true,
+      sourceRevision: 'source-after-recovery',
+      authoritativeNewest: true,
+    });
+  }
 
   const state = useAppStore.getState();
   const visible = composeMessages({
@@ -6384,6 +6623,61 @@ test('history replay hides its alignment anchor when the transcript starts with 
         message.kind === 'assistant_text' && message.text === 'restored assistant output',
     ),
     true,
+  );
+});
+
+test('a leading canonical assistant stays after earlier restored local notices', () => {
+  useAppStore.setState({
+    eventsBySession: {},
+    userMessagesBySession: {},
+    localNoticesBySession: {},
+    workflowNoticesBySession: {},
+  });
+
+  useAppStore.getState().prependSessionHistory(
+    SID,
+    [
+      {
+        kind: 'local_notice',
+        id: 'compact-command',
+        content: '/compact',
+        sentAt: 1_000,
+        variant: 'echo',
+      },
+      {
+        kind: 'local_notice',
+        id: 'compact-result',
+        content: 'Compacted context',
+        sentAt: 2_000,
+        variant: 'output',
+      },
+      { kind: 'assistant', text: 'later canonical answer', sentAt: 10_000 },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true },
+  );
+
+  const state = useAppStore.getState();
+  const anchor = (state.userMessagesBySession[SID] ?? [])[0];
+  assert.equal(anchor?.hiddenHistoryAnchor, true);
+  assert.equal(
+    anchor?.sentAt,
+    10_000,
+    'the hidden owner must inherit canonical transcript time, not side-store notice time',
+  );
+
+  const out = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+    localNotices: state.localNoticesBySession[SID] ?? [],
+  });
+  assert.deepEqual(
+    out.flatMap((message) => {
+      if (message.kind === 'local_notice') return [`notice:${message.content}`];
+      if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+      return [];
+    }),
+    ['notice:/compact', 'notice:Compacted context', 'assistant:later canonical answer'],
   );
 });
 

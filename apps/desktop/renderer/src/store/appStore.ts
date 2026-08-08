@@ -1951,6 +1951,23 @@ function projectedEventText(
     .join('');
 }
 
+function liveTextProjectionAfterStableBoundaryRetry(
+  events: readonly SessionEvent[],
+): readonly SessionEvent[] {
+  let resetIndex = -1;
+  for (let index = 0; index < events.length; index++) {
+    const event = events[index]!;
+    if (
+      event.kind === 'provider_recovery' &&
+      event.stage === 'mid_stream_text' &&
+      event.recoveryAction === 'stable_boundary_retry'
+    ) {
+      resetIndex = index;
+    }
+  }
+  return resetIndex === -1 ? events : events.slice(resetIndex + 1);
+}
+
 function cumulativeProjectionTextSuffix(durable: string, live: string): string {
   if (live.length === 0 || durable.includes(live)) return '';
   return live.startsWith(durable) ? live.slice(durable.length) : '';
@@ -2181,16 +2198,19 @@ function mergeCanonicalTurnProjections(
   const textSuffixProjector = exactEntryIdentity
     ? cumulativeProjectionTextSuffix
     : projectionTextSuffix;
+  // A stable-boundary retry starts a new Provider text attempt. The recovery marker remains for
+  // diagnostics, but the abandoned draft has no canonical authority after the retry succeeds.
+  const liveTextProjection = liveTextProjectionAfterStableBoundaryRetry(liveEvents);
   const textSuffix = textSuffixProjector(
     projectedEventText(durableEvents, 'text_delta'),
-    projectedEventText(liveEvents, 'text_delta'),
+    projectedEventText(liveTextProjection, 'text_delta'),
   );
   const thinkingSuffix = textSuffixProjector(
     projectedEventText(durableEvents, 'thinking_delta'),
-    projectedEventText(liveEvents, 'thinking_delta'),
+    projectedEventText(liveTextProjection, 'thinking_delta'),
   );
-  const liveTextEvent = liveEvents.find((event) => event.kind === 'text_delta');
-  const liveThinkingEvent = liveEvents.find((event) => event.kind === 'thinking_delta');
+  const liveTextEvent = liveTextProjection.find((event) => event.kind === 'text_delta');
+  const liveThinkingEvent = liveTextProjection.find((event) => event.kind === 'thinking_delta');
   if (thinkingSuffix.length > 0) {
     liveExtras.push({
       kind: 'thinking_delta',
@@ -2264,15 +2284,21 @@ function transcriptContentSequence(turn: TranscriptTurnSnapshot): readonly strin
   );
 }
 
-function durableProjectionCoversLiveContent(
+function durableProjectionCoversMergedContent(
   durable: TranscriptTurnSnapshot,
-  live: TranscriptTurnSnapshot,
+  mergedEvents: readonly SessionEvent[],
 ): boolean {
   const durableSequence = transcriptContentSequence(durable);
-  const liveSequence = transcriptContentSequence(live);
+  const mergedSequence = transcriptSegmentSemantic(mergedEvents).visibleSequence.filter(
+    (item) =>
+      item.startsWith('thinking:') ||
+      item.startsWith('text:') ||
+      item.startsWith('tool-start:') ||
+      item.startsWith('tool-result:'),
+  );
   return (
-    durableSequence.length === liveSequence.length &&
-    durableSequence.every((item, index) => item === liveSequence[index])
+    durableSequence.length === mergedSequence.length &&
+    durableSequence.every((item, index) => item === mergedSequence[index])
   );
 }
 
@@ -2972,7 +2998,7 @@ function foldStrongIdentityDuplicateTurns(
       !pair.duplicate.restoredFromHistory &&
       duplicateMessage !== undefined &&
       pair.durable.canonicalIndex !== undefined &&
-      durableProjectionCoversLiveContent(pair.durable, pair.duplicate)
+      durableProjectionCoversMergedContent(pair.durable, mergedProjection)
     ) {
       canonicalizedLiveOwners.push({
         messageId: duplicateMessage.id,
@@ -4812,10 +4838,11 @@ export const useAppStore = create<AppState>((set) => ({
       const leadingPartialTurnId = authoritativeLeadingHistoryTurnId(items);
       const historyAnchorTurnId = leadingPartialTurnId ?? stableHistoryAnchorTurnId(items);
       const historyPrefixAnchorTurnId = `space-history-prefix:${stableHistoryHash(items)}`;
-      let firstHistoricalSentAt: number | undefined;
+      let firstCanonicalHistoricalSentAt: number | undefined;
       for (const item of items) {
+        if (item.kind === 'local_notice') continue;
         if (!('sentAt' in item) || !Number.isFinite(item.sentAt)) continue;
-        firstHistoricalSentAt = item.sentAt;
+        firstCanonicalHistoricalSentAt = item.sentAt;
         break;
       }
       let lastHistoricalUserSentAt = Number.NEGATIVE_INFINITY;
@@ -4878,7 +4905,7 @@ export const useAppStore = create<AppState>((set) => ({
             // The Session list's fallback can describe this Runtime attachment rather than the
             // bounded page's first record. Prefer canonical item time so a leading hidden anchor
             // cannot push every restored user beyond a concurrently submitted live query.
-            sentAt: nextHistoricalUserSentAt(firstHistoricalSentAt ?? fallbackSentAt),
+            sentAt: nextHistoricalUserSentAt(firstCanonicalHistoricalSentAt ?? fallbackSentAt),
             restoredFromHistory: true,
             hiddenHistoryAnchor: true,
             turnId: historyAnchorTurnId,
