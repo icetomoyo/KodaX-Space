@@ -77,6 +77,7 @@ test('profile projection is bounded and accepts only trusted Coder session owner
         activeRun: {
           runId: 'run_1',
           sessionId: 's_1',
+          turnId: 'turn_1',
           phase: 'running',
           startedAt: 2,
           initiatedBy: { clientId: 'space_1', name: 'KodaX Space' },
@@ -91,6 +92,19 @@ test('profile projection is bounded and accepts only trusted Coder session owner
   assert.equal(spaceRuntimeProfileProjectionSchema.safeParse(valid).success, true);
   assert.equal(runtimeProfileSnapshotChannel.output.safeParse(valid).success, true);
   assert.equal(runtimeProfileChangedChannel.payload.safeParse(valid).success, true);
+  assert.equal(
+    spaceRuntimeProfileProjectionSchema.safeParse({
+      ...valid,
+      sessions: [
+        {
+          ...valid.sessions[0],
+          activeRun: { ...valid.sessions[0].activeRun, turnId: undefined },
+        },
+      ],
+    }).success,
+    true,
+    'legacy projections without turnId remain valid',
+  );
 
   assert.equal(
     spaceRuntimeProfileProjectionSchema.safeParse({

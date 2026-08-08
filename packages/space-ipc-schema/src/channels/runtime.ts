@@ -170,6 +170,7 @@ export const spaceRuntimeRunProjectionSchema = z
   .object({
     runId: idSchema,
     sessionId: idSchema,
+    turnId: idSchema.optional(),
     phase: spaceRuntimeRunPhaseSchema,
     stage: spaceRuntimeRunStageSchema.optional(),
     stageChangedAt: timestampSchema.optional(),

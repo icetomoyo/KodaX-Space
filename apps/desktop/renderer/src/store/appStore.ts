@@ -3768,6 +3768,89 @@ function openExactRestoredInitialTurn(
   return next;
 }
 
+function knownProjectionRunTurnId(
+  projection: SpaceSessionLiveProjectionT,
+  runId: string,
+): string | undefined {
+  if (projection.activeRun?.runId === runId && projection.activeRun.turnId !== undefined) {
+    return projection.activeRun.turnId;
+  }
+  const queued = projection.queuedRuns.find(
+    (run) => run.runId === runId && run.turnId !== undefined,
+  );
+  if (queued?.turnId !== undefined) return queued.turnId;
+  if (
+    projection.lastTerminalRun?.runId === runId &&
+    projection.lastTerminalRun.turnId !== undefined
+  ) {
+    return projection.lastTerminalRun.turnId;
+  }
+  return undefined;
+}
+
+function preserveKnownProjectionRunTurnIdentity(
+  current: SpaceSessionLiveProjectionT | undefined,
+  incoming: SpaceSessionLiveProjectionT,
+): SpaceSessionLiveProjectionT {
+  if (current === undefined || current.cursor.runtimeId !== incoming.cursor.runtimeId) return incoming;
+  const activeTurnId =
+    incoming.activeRun === undefined
+      ? undefined
+      : knownProjectionRunTurnId(current, incoming.activeRun.runId);
+  const terminalTurnId =
+    incoming.lastTerminalRun === undefined
+      ? undefined
+      : knownProjectionRunTurnId(current, incoming.lastTerminalRun.runId);
+  let queuedRunsChanged = false;
+  const queuedRuns = incoming.queuedRuns.map((run) => {
+    const knownTurnId = knownProjectionRunTurnId(current, run.runId);
+    if (knownTurnId === undefined || knownTurnId === run.turnId) return run;
+    queuedRunsChanged = true;
+    return { ...run, turnId: knownTurnId };
+  });
+  const activeRun =
+    incoming.activeRun !== undefined &&
+    activeTurnId !== undefined &&
+    activeTurnId !== incoming.activeRun.turnId
+      ? { ...incoming.activeRun, turnId: activeTurnId }
+      : incoming.activeRun;
+  const lastTerminalRun =
+    incoming.lastTerminalRun !== undefined &&
+    terminalTurnId !== undefined &&
+    terminalTurnId !== incoming.lastTerminalRun.turnId
+      ? { ...incoming.lastTerminalRun, turnId: terminalTurnId }
+      : incoming.lastTerminalRun;
+  if (
+    activeRun === incoming.activeRun &&
+    lastTerminalRun === incoming.lastTerminalRun &&
+    !queuedRunsChanged
+  ) {
+    return incoming;
+  }
+  return { ...incoming, activeRun, queuedRuns, lastTerminalRun };
+}
+
+function openActiveSnapshotInitialTurn(
+  sessionId: string,
+  userMessages: readonly UserMessage[],
+  projection: SpaceSessionLiveProjectionT | undefined,
+): readonly UserMessage[] {
+  const activeRun = projection?.activeRun;
+  if (activeRun?.turnId === undefined) return userMessages;
+  const opened = openExactRestoredInitialTurn(userMessages, activeRun.turnId, activeRun.runId);
+  if (opened === userMessages) return userMessages;
+  const openedOwner = opened.find(
+    (message) =>
+      message.restoredFromHistory === true &&
+      message.turnId === activeRun.turnId &&
+      message.turnUserOrdinal === 0 &&
+      message.runtimeRunId === activeRun.runId &&
+      message.historyNoAssistantSegment !== true,
+  );
+  if (openedOwner !== undefined) rememberOpenedHistoryLiveOwner(sessionId, openedOwner);
+  return opened;
+}
+
 function localTerminalTurnIdForLatestLiveUser(
   userMessages: readonly UserMessage[],
 ): string | undefined {
@@ -5148,10 +5231,15 @@ export const useAppStore = create<AppState>((set) => ({
         ? (liveBaseline?.events ?? state.eventsBySession[sessionId] ?? [])
         : [];
       const currentLocalNotices = state.localNoticesBySession[sessionId] ?? [];
-      const folded = foldStrongIdentityDuplicateTurns(
+      const ownerOpenedMsgs = openActiveSnapshotInitialTurn(
+        sessionId,
         [...histMsgs, ...currentMsgs],
-        [...histEvents, ...currentEvents],
+        includeLiveProjection ? state.liveProjectionBySession[sessionId] : undefined,
       );
+      const folded = foldStrongIdentityDuplicateTurns(ownerOpenedMsgs, [
+        ...histEvents,
+        ...currentEvents,
+      ]);
       rememberCanonicalizedHistoryLiveOwners(sessionId, folded.canonicalizedLiveOwners ?? []);
       const combinedEvents = dedupePersistedCompactionBoundaries(folded.events);
       const combinedMsgs = hideOpenStrongIdentityDuplicateProjection(
@@ -6454,14 +6542,38 @@ export const useAppStore = create<AppState>((set) => ({
           runtimeSnapshotRequiredBySession: next.snapshotRequiredBySession,
         };
       }
-      const snapshotRun = projection.activeRun ?? projection.lastTerminalRun;
+      const identityProjection = preserveKnownProjectionRunTurnIdentity(
+        currentProjection,
+        projection,
+      );
+      const storedProjection =
+        acceptedEqualProjection && currentProjection !== undefined
+          ? preserveKnownProjectionRunTurnIdentity(identityProjection, currentProjection)
+          : identityProjection;
+      const liveProjectionBySession =
+        storedProjection !== next.liveBySession[projection.sessionId]
+          ? {
+              ...next.liveBySession,
+              [projection.sessionId]: storedProjection,
+            }
+          : next.liveBySession;
+      const snapshotRun = identityProjection.activeRun ?? identityProjection.lastTerminalRun;
       const previousBarrier = state.runtimeSnapshotCursorBySession[projection.sessionId];
       const sameBarrierRun =
         snapshotRun !== undefined &&
         previousBarrier?.runtimeId === projection.cursor.runtimeId &&
         previousBarrier.runId === snapshotRun.runId;
       const currentEvents = state.eventsBySession[projection.sessionId] ?? [];
-      const hydratedEvents = hydrateSessionEventsFromLiveSnapshot(currentEvents, projection);
+      const currentUsers = state.userMessagesBySession[projection.sessionId] ?? [];
+      const snapshotOwnedUsers = openActiveSnapshotInitialTurn(
+        projection.sessionId,
+        currentUsers,
+        identityProjection,
+      );
+      const hydratedEvents = hydrateSessionEventsFromLiveSnapshot(
+        currentEvents,
+        identityProjection,
+      );
       const liveBaseline = historyLiveBaselines.get(projection.sessionId);
       if (liveBaseline !== undefined) {
         // Page replacement is rebuilt from this independent live projection. Hydrate the same
@@ -6470,7 +6582,7 @@ export const useAppStore = create<AppState>((set) => ({
         // restored by the snapshot disappear.
         rememberHistoryLiveBaseline(projection.sessionId, {
           ...liveBaseline,
-          events: hydrateSessionEventsFromLiveSnapshot(liveBaseline.events, projection),
+          events: hydrateSessionEventsFromLiveSnapshot(liveBaseline.events, identityProjection),
         });
       }
       const clearsPendingSend =
@@ -6504,7 +6616,7 @@ export const useAppStore = create<AppState>((set) => ({
         .map((interaction) => interaction.request);
       return {
         sessions: mergeRuntimeSettingsIntoSessions(state.sessions, projection),
-        liveProjectionBySession: next.liveBySession,
+        liveProjectionBySession,
         runtimeSnapshotRequiredBySession: next.snapshotRequiredBySession,
         ...(snapshotRun
           ? {
@@ -6535,6 +6647,14 @@ export const useAppStore = create<AppState>((set) => ({
               },
             }
           : {}),
+        ...(snapshotOwnedUsers !== currentUsers
+          ? {
+              userMessagesBySession: {
+                ...state.userMessagesBySession,
+                [projection.sessionId]: snapshotOwnedUsers,
+              },
+            }
+          : {}),
         permissionQueue: [
           ...state.permissionQueue.filter((request) => request.sessionId !== projection.sessionId),
           ...runtimePermissions,
@@ -6551,6 +6671,7 @@ export const useAppStore = create<AppState>((set) => ({
   applySessionLiveProjectionChange: (change) => {
     let status: ApplySessionLiveChangeStatus = 'ignored';
     set((state) => {
+      const currentProjection = state.liveProjectionBySession[change.sessionId];
       const result = applySessionLiveChange(
         {
           connection: state.runtimeConnection,
@@ -6567,7 +6688,38 @@ export const useAppStore = create<AppState>((set) => ({
       ) {
         return state;
       }
-      const projection = result.state.liveBySession[change.sessionId];
+      const rawProjection = result.state.liveBySession[change.sessionId];
+      const projection =
+        result.status === 'applied' && rawProjection !== undefined
+          ? preserveKnownProjectionRunTurnIdentity(currentProjection, rawProjection)
+          : rawProjection;
+      const liveProjectionBySession =
+        projection !== undefined && projection !== rawProjection
+          ? {
+              ...result.state.liveBySession,
+              [change.sessionId]: projection,
+            }
+          : result.state.liveBySession;
+      const appliesRunIdentity =
+        result.status === 'applied' &&
+        projection !== undefined &&
+        (change.change.domain === 'run' || change.change.domain === 'terminal');
+      const currentEvents = state.eventsBySession[change.sessionId] ?? [];
+      const currentUsers = state.userMessagesBySession[change.sessionId] ?? [];
+      const snapshotOwnedUsers =
+        appliesRunIdentity && change.change.domain === 'run'
+          ? openActiveSnapshotInitialTurn(change.sessionId, currentUsers, projection)
+          : currentUsers;
+      const hydratedEvents = appliesRunIdentity
+        ? hydrateSessionEventsFromLiveSnapshot(currentEvents, projection)
+        : currentEvents;
+      const liveBaseline = historyLiveBaselines.get(change.sessionId);
+      if (appliesRunIdentity && liveBaseline !== undefined) {
+        rememberHistoryLiveBaseline(change.sessionId, {
+          ...liveBaseline,
+          events: hydrateSessionEventsFromLiveSnapshot(liveBaseline.events, projection),
+        });
+      }
       const clearsPendingSend =
         result.status === 'applied' &&
         projection !== undefined &&
@@ -6623,8 +6775,24 @@ export const useAppStore = create<AppState>((set) => ({
           ? { sessions: mergeRuntimeSettingsIntoSessions(state.sessions, projection) }
           : {};
       return {
-        liveProjectionBySession: result.state.liveBySession,
+        liveProjectionBySession,
         runtimeSnapshotRequiredBySession: result.state.snapshotRequiredBySession,
+        ...(hydratedEvents !== currentEvents
+          ? {
+              eventsBySession: {
+                ...state.eventsBySession,
+                [change.sessionId]: hydratedEvents,
+              },
+            }
+          : {}),
+        ...(snapshotOwnedUsers !== currentUsers
+          ? {
+              userMessagesBySession: {
+                ...state.userMessagesBySession,
+                [change.sessionId]: snapshotOwnedUsers,
+              },
+            }
+          : {}),
         ...interactionPatch,
         ...settingsPatch,
         ...pendingSendPatch,

@@ -141,6 +141,7 @@ export function projectRuntimeRun(
   return {
     runId: run.runId,
     sessionId: run.sessionId,
+    ...(run.turnId !== undefined ? { turnId: run.turnId } : {}),
     phase: runtimePhase(run.phase),
     ...(run.stage !== undefined ? { stage: run.stage } : {}),
     ...(run.stageChangedAt !== undefined ? { stageChangedAt: timestamp(run.stageChangedAt) } : {}),

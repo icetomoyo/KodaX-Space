@@ -9,6 +9,18 @@ type RuntimeEventOrigin = NonNullable<
 >;
 type DraftEventKind = 'text_delta' | 'thinking_delta';
 type StreamDeltaEvent = Extract<SessionEvent, { kind: DraftEventKind }>;
+type SnapshotRunEvent = Extract<
+  SessionEvent,
+  {
+    kind:
+      | DraftEventKind
+      | 'thinking_end'
+      | 'tool_start'
+      | 'tool_input_delta'
+      | 'tool_progress'
+      | 'tool_result';
+  }
+>;
 type SnapshotEventBarrierCursor = SpaceRuntimeCursorT & {
   readonly runId?: string;
   readonly assistantDraftSeq?: number;
@@ -158,6 +170,7 @@ function draftEvent(
   kind: DraftEventKind,
   projection: SpaceSessionLiveProjectionT,
   runId: string,
+  turnId: string | undefined,
   text: string,
   sentAt: number | undefined,
 ): SessionEvent {
@@ -170,9 +183,46 @@ function draftEvent(
       runId,
       seq: projection.cursor.seq,
     },
+    ...(turnId !== undefined ? { turnId } : {}),
     ...(sentAt !== undefined ? { sentAt } : {}),
   };
   return base as SessionEvent;
+}
+
+function isSnapshotRunEvent(event: SessionEvent): event is SnapshotRunEvent {
+  return (
+    event.kind === 'text_delta' ||
+    event.kind === 'thinking_delta' ||
+    event.kind === 'thinking_end' ||
+    event.kind === 'tool_start' ||
+    event.kind === 'tool_input_delta' ||
+    event.kind === 'tool_progress' ||
+    event.kind === 'tool_result'
+  );
+}
+
+function enrichCoveredRunTurnIdentity(
+  events: readonly SessionEvent[],
+  projection: SpaceSessionLiveProjectionT,
+  runId: string,
+  turnId: string | undefined,
+): readonly SessionEvent[] {
+  if (turnId === undefined) return events;
+  let changed = false;
+  const next = events.map((event) => {
+    const origin = runtimeEventOrigin(event);
+    if (
+      !isSnapshotRunEvent(event) ||
+      event.turnId !== undefined ||
+      !belongsToRun(origin, projection, runId) ||
+      origin!.seq > projection.cursor.seq
+    ) {
+      return event;
+    }
+    changed = true;
+    return { ...event, turnId };
+  });
+  return changed ? next : events;
 }
 
 function alignCoveredDraftChunks(
@@ -232,6 +282,7 @@ function hydrateDraft(
   events: readonly SessionEvent[],
   projection: SpaceSessionLiveProjectionT,
   runId: string,
+  turnId: string | undefined,
   kind: DraftEventKind,
   cumulative: string,
   sentAt: number | undefined,
@@ -247,7 +298,7 @@ function hydrateDraft(
     for (let index = 0; index <= events.length; index++) {
       const insertion = alignedInsertions.get(index);
       if (insertion !== undefined && insertion.length > 0) {
-        next.push(draftEvent(kind, projection, runId, insertion, sentAt));
+        next.push(draftEvent(kind, projection, runId, turnId, insertion, sentAt));
       }
       if (index < events.length) next.push(events[index]!);
     }
@@ -264,7 +315,7 @@ function hydrateDraft(
   if (recovery.prefix.length > 0) {
     const first = covered.findIndex((event) => event.kind === kind);
     const insertion = first === -1 ? adjustedBarrier : first;
-    next.splice(insertion, 0, draftEvent(kind, projection, runId, recovery.prefix, sentAt));
+    next.splice(insertion, 0, draftEvent(kind, projection, runId, turnId, recovery.prefix, sentAt));
     adjustedBarrier++;
   }
   if (recovery.suffix.length > 0) {
@@ -276,7 +327,7 @@ function hydrateDraft(
       }
     }
     const insertion = last === -1 ? adjustedBarrier : last + 1;
-    next.splice(insertion, 0, draftEvent(kind, projection, runId, recovery.suffix, sentAt));
+    next.splice(insertion, 0, draftEvent(kind, projection, runId, turnId, recovery.suffix, sentAt));
   }
   return next;
 }
@@ -297,6 +348,7 @@ function reconcileActiveTools(
   events: readonly SessionEvent[],
   projection: SpaceSessionLiveProjectionT,
   runId: string,
+  turnId: string | undefined,
 ): readonly SessionEvent[] {
   const activeToolIds = new Set(projection.activeTools.map((tool) => tool.toolCallId));
   const completedToolIds = new Set(
@@ -352,6 +404,7 @@ function reconcileActiveTools(
           runId,
           seq: projection.cursor.seq,
         },
+        ...(turnId !== undefined ? { turnId } : {}),
       });
     } else if (startEntry.index > firstToolIndex) {
       const [start] = next.splice(startEntry.index, 1);
@@ -379,6 +432,7 @@ function reconcileActiveTools(
         runId,
         seq: projection.cursor.seq,
       },
+      ...(turnId !== undefined ? { turnId } : {}),
     });
   }
 
@@ -404,12 +458,18 @@ export function hydrateSessionEventsFromLiveSnapshot(
     ? activeRunSegmentStart(events)
     : terminalRunSegmentStart(events);
   const prefix = events.slice(0, segmentStart);
-  let active: readonly SessionEvent[] = events.slice(segmentStart);
+  let active: readonly SessionEvent[] = enrichCoveredRunTurnIdentity(
+    events.slice(segmentStart),
+    projection,
+    run.runId,
+    run.turnId,
+  );
   if (projection.activeRun !== undefined) {
     active = hydrateDraft(
       active,
       projection,
       run.runId,
+      run.turnId,
       'thinking_delta',
       projection.thinkingDraft?.text ?? '',
       projection.thinkingDraft?.startedAt,
@@ -419,13 +479,14 @@ export function hydrateSessionEventsFromLiveSnapshot(
       active,
       projection,
       run.runId,
+      run.turnId,
       'text_delta',
       projection.assistantDraft?.text ?? '',
       projection.assistantDraft?.startedAt,
       active.length,
     );
   }
-  active = reconcileActiveTools(active, projection, run.runId);
+  active = reconcileActiveTools(active, projection, run.runId, run.turnId);
 
   if (
     active.length === events.length - segmentStart &&

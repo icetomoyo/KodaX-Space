@@ -108,6 +108,7 @@ test('Runtime transcript events carry the daemon cursor used by snapshot reconci
 const running = {
   runId: 'run_active',
   sessionId: 's_code',
+  turnId: 'turn_active',
   phase: 'running',
   startedAt: '2026-07-14T08:00:00.000Z',
   provider: 'anthropic',
@@ -289,6 +290,7 @@ test('atomic observation maps run, draft, tool, Todo, and interaction truth', ()
   assert.equal(projection.cursor.runtimeId, 'rt_shared');
   assert.equal(projection.cursor.seq, 41);
   assert.equal(projection.activeRun?.runId, 'run_active');
+  assert.equal(projection.activeRun?.turnId, 'turn_active');
   assert.equal(projection.activeRun?.initiatedBy?.name, 'kodax-space');
   assert.equal(projection.activeRun?.requirements?.hostTools, 'waiting_host');
   assert.deepEqual(

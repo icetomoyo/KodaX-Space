@@ -8,6 +8,7 @@ import type {
   SpaceRuntimeProfileProjectionT,
   SpaceSessionLiveProjectionT,
 } from '@kodax-space/space-ipc-schema';
+import { composeMessages } from '../../renderer/src/features/session/composeMessages.js';
 import { useAppStore } from '../../renderer/src/store/appStore.js';
 import {
   createRuntimeProjectionState,
@@ -599,6 +600,576 @@ test('cumulative live snapshots hydrate missing state once without replaying tex
   );
   assert.equal(events.filter((event) => event.kind === 'tool_start').length, 1);
   assert.equal(events.filter((event) => event.kind === 'tool_progress').length, 1);
+});
+
+test('a late renderer snapshot keeps its restored turn owner across terminal history and reactivation', () => {
+  useAppStore.setState({ sessions: [sidebarSession], currentSessionId: 's_1' });
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  const store = useAppStore.getState();
+  const q1 = {
+    kind: 'user' as const,
+    content: 'P1 query',
+    sentAt: 10,
+    entryId: 'entry_q1',
+    canonicalIndex: 0,
+    turnId: 'turn_q1',
+    turnUserOrdinal: 0,
+  };
+  const a1 = {
+    kind: 'assistant' as const,
+    text: 'P1 answer',
+    sentAt: 20,
+    canonicalIndex: 1,
+    turnId: 'turn_q1',
+  };
+  const q2 = {
+    kind: 'user' as const,
+    content: 'latest query',
+    sentAt: 30,
+    entryId: 'entry_q2',
+    canonicalIndex: 2,
+    turnId: 'turn_q2',
+    turnUserOrdinal: 0,
+  };
+
+  store.prependSessionHistory('s_1', [q1], 10, {
+    replaceLoadedWindow: true,
+    sourceRevision: 'history-q1-open',
+  });
+  store.replaceSessionLiveProjection({
+    ...live,
+    projectionRevision: 2,
+    cursor: { runtimeId: 'rt_1', seq: 10 },
+    activeRun: {
+      runId: 'run_q1',
+      sessionId: 's_1',
+      phase: 'running',
+      turnId: 'turn_q1',
+      startedAt: 10,
+    },
+    assistantDraft: { text: 'P1 answer', startedAt: 11 },
+  });
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: 's_1',
+    turnId: 'turn_q1',
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_q1', seq: 11 },
+  });
+  store.prependSessionHistory('s_1', [q1, a1], 10, {
+    replaceLoadedWindow: true,
+    sourceRevision: 'history-q1-terminal',
+  });
+
+  const q2MessageId = store.appendUserMessage('s_1', q2.content, q2.sentAt);
+  assert.ok(q2MessageId);
+  store.bindUserMessageRuntimeRun('s_1', q2MessageId, 'run_q2');
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: 's_1',
+    provider: 'mock',
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_q2', seq: 12 },
+  });
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: 's_1',
+    provider: 'mock',
+    turnId: 'turn_q2',
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_q2', seq: 13 },
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: 's_1',
+    text: 'latest answer',
+    turnId: 'turn_q2',
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_q2', seq: 14 },
+  });
+  store.prependSessionHistory('s_1', [q1, a1, q2], 10, {
+    replaceLoadedWindow: true,
+    sourceRevision: 'history-reactivated',
+  });
+
+  const state = useAppStore.getState();
+  const transcript = composeMessages({
+    events: state.eventsBySession.s_1 ?? [],
+    userMessages: state.userMessagesBySession.s_1 ?? [],
+  }).flatMap((message) => {
+    if (message.kind === 'user') return [`user:${message.content}`];
+    if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+    return [];
+  });
+  assert.deepEqual(transcript, [
+    'user:P1 query',
+    'assistant:P1 answer',
+    'user:latest query',
+    'assistant:latest answer',
+  ]);
+});
+
+test('history arriving after a live snapshot opens only the exact restored initial turn', () => {
+  useAppStore.setState({ sessions: [sidebarSession], currentSessionId: 's_1' });
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  const store = useAppStore.getState();
+  const snapshotBeforeIdentity: SpaceSessionLiveProjectionT = {
+    ...live,
+    projectionRevision: 2,
+    cursor: { runtimeId: 'rt_1', seq: 5 },
+    activeRun: {
+      runId: 'run_snapshot_first',
+      sessionId: 's_1',
+      phase: 'running',
+    },
+    assistantDraft: { text: 'snapshot-first answer', startedAt: 2 },
+  };
+  store.replaceSessionLiveProjection(snapshotBeforeIdentity);
+  assert.equal(
+    store.replaceSessionLiveProjection(
+      {
+        ...snapshotBeforeIdentity,
+        activeRun: { ...snapshotBeforeIdentity.activeRun!, turnId: 'turn_snapshot_first' },
+      },
+      { allowEqualHydration: true },
+    ),
+    true,
+  );
+  store.prependSessionHistory(
+    's_1',
+    [
+      {
+        kind: 'user',
+        content: 'snapshot-first query',
+        entryId: 'entry_snapshot_first',
+        canonicalIndex: 0,
+        turnId: 'turn_snapshot_first',
+        turnUserOrdinal: 0,
+      },
+    ],
+    10,
+    { replaceLoadedWindow: true, sourceRevision: 'snapshot-first-history' },
+  );
+
+  const state = useAppStore.getState();
+  assert.equal(state.userMessagesBySession.s_1?.length, 1);
+  assert.equal(state.userMessagesBySession.s_1?.[0]?.runtimeRunId, 'run_snapshot_first');
+  assert.equal(state.userMessagesBySession.s_1?.[0]?.historyNoAssistantSegment, undefined);
+  assert.equal(
+    composeMessages({
+      events: state.eventsBySession.s_1 ?? [],
+      userMessages: state.userMessagesBySession.s_1 ?? [],
+    }).filter(
+      (message) => message.kind === 'assistant_text' && message.text === 'snapshot-first answer',
+    ).length,
+    1,
+  );
+});
+
+test('an active snapshot turn cannot guess a later user ordinal inside the same turn', () => {
+  useAppStore.setState({ sessions: [sidebarSession], currentSessionId: 's_1' });
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  const store = useAppStore.getState();
+  store.prependSessionHistory(
+    's_1',
+    [
+      {
+        kind: 'user',
+        content: 'initial prompt',
+        canonicalIndex: 0,
+        turnId: 'turn_shared',
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 'initial answer',
+        canonicalIndex: 1,
+        turnId: 'turn_shared',
+      },
+      {
+        kind: 'user',
+        content: 'mid-turn prompt',
+        canonicalIndex: 2,
+        turnId: 'turn_shared',
+        turnUserOrdinal: 1,
+      },
+    ],
+    10,
+    { replaceLoadedWindow: true, sourceRevision: 'mid-turn-open' },
+  );
+  store.replaceSessionLiveProjection({
+    ...live,
+    projectionRevision: 2,
+    cursor: { runtimeId: 'rt_1', seq: 5 },
+    activeRun: {
+      runId: 'run_shared',
+      sessionId: 's_1',
+      turnId: 'turn_shared',
+      phase: 'running',
+    },
+    assistantDraft: { text: 'mid-turn draft', startedAt: 2 },
+  });
+
+  const users = useAppStore.getState().userMessagesBySession.s_1 ?? [];
+  assert.deepEqual(
+    users.map((message) => ({
+      content: message.content,
+      ordinal: message.turnUserOrdinal,
+      runId: message.runtimeRunId,
+      empty: message.historyNoAssistantSegment,
+    })),
+    [
+      { content: 'initial prompt', ordinal: 0, runId: undefined, empty: undefined },
+      { content: 'mid-turn prompt', ordinal: 1, runId: undefined, empty: true },
+    ],
+  );
+});
+
+test('history replacement that excludes live projection does not open a snapshot owner', () => {
+  useAppStore.setState({ sessions: [sidebarSession], currentSessionId: 's_1' });
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  const store = useAppStore.getState();
+  store.replaceSessionLiveProjection({
+    ...live,
+    projectionRevision: 2,
+    cursor: { runtimeId: 'rt_1', seq: 5 },
+    activeRun: {
+      runId: 'run_excluded',
+      sessionId: 's_1',
+      turnId: 'turn_excluded',
+      phase: 'running',
+    },
+    assistantDraft: { text: 'excluded draft', startedAt: 2 },
+  });
+  store.prependSessionHistory(
+    's_1',
+    [
+      {
+        kind: 'user',
+        content: 'excluded query',
+        canonicalIndex: 0,
+        turnId: 'turn_excluded',
+        turnUserOrdinal: 0,
+      },
+    ],
+    10,
+    { replaceLoadedWindow: true, includeLiveProjection: false },
+  );
+
+  const state = useAppStore.getState();
+  assert.equal(state.userMessagesBySession.s_1?.[0]?.runtimeRunId, undefined);
+  assert.equal(state.userMessagesBySession.s_1?.[0]?.historyNoAssistantSegment, true);
+  assert.deepEqual(state.eventsBySession.s_1, []);
+});
+
+test('an equal snapshot enriches covered draft and tool events without replay or conflict overwrite', () => {
+  useAppStore.setState({ sessions: [sidebarSession], currentSessionId: 's_1' });
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  const withoutTurn: SpaceSessionLiveProjectionT = {
+    ...live,
+    projectionRevision: 2,
+    cursor: { runtimeId: 'rt_1', seq: 5 },
+    activeRun: {
+      runId: 'run_identity',
+      sessionId: 's_1',
+      phase: 'running',
+    },
+    assistantDraft: { text: 'draft locked', startedAt: 2 },
+    activeTools: [
+      { toolCallId: 'tool_identity', name: 'read_file', startedAt: 2, progress: 'reading' },
+    ],
+  };
+  useAppStore.getState().replaceSessionLiveProjection(withoutTurn);
+  const stateBeforeIdentity = useAppStore.getState();
+  const splitEvents: SessionEvent[] = [];
+  for (const event of stateBeforeIdentity.eventsBySession.s_1 ?? []) {
+    if (event.kind !== 'text_delta') {
+      splitEvents.push(event);
+      continue;
+    }
+    const { turnId: _turnId, ...eventWithoutTurnId } = event;
+    splitEvents.push(
+      { ...eventWithoutTurnId, text: 'draft ' },
+      { ...event, text: 'locked', turnId: 'turn_conflict' },
+    );
+  }
+  useAppStore.setState({
+    eventsBySession: {
+      ...stateBeforeIdentity.eventsBySession,
+      s_1: splitEvents,
+    },
+  });
+
+  assert.equal(
+    useAppStore.getState().replaceSessionLiveProjection(
+      {
+        ...withoutTurn,
+        activeRun: { ...withoutTurn.activeRun!, turnId: 'turn_identity' },
+      },
+      { allowEqualHydration: true },
+    ),
+    true,
+  );
+  assert.equal(
+    useAppStore.getState().replaceSessionLiveProjection(
+      {
+        ...withoutTurn,
+        activeRun: { ...withoutTurn.activeRun!, turnId: 'turn_other' },
+      },
+      { allowEqualHydration: true },
+    ),
+    true,
+  );
+
+  const events = useAppStore.getState().eventsBySession.s_1 ?? [];
+  assert.equal(
+    useAppStore.getState().liveProjectionBySession.s_1?.activeRun?.turnId,
+    'turn_identity',
+  );
+  assert.deepEqual(
+    events
+      .filter(
+        (event): event is Extract<SessionEvent, { kind: 'text_delta' }> =>
+          event.kind === 'text_delta',
+      )
+      .map((event) => ({ text: event.text, turnId: event.turnId })),
+    [
+      { text: 'draft ', turnId: 'turn_identity' },
+      { text: 'locked', turnId: 'turn_conflict' },
+    ],
+  );
+  assert.equal(events.filter((event) => event.kind === 'tool_start').length, 1);
+  assert.equal(events.filter((event) => event.kind === 'tool_progress').length, 1);
+  assert.equal(
+    events
+      .filter((event) => event.kind === 'tool_start' || event.kind === 'tool_progress')
+      .every((event) => event.turnId === 'turn_identity'),
+    true,
+  );
+});
+
+test('an equal snapshot persists missing queued and terminal turn identities without replacing state', () => {
+  useAppStore.setState({ sessions: [sidebarSession], currentSessionId: 's_1' });
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  const store = useAppStore.getState();
+  const withoutIdentity: SpaceSessionLiveProjectionT = {
+    ...live,
+    projectionRevision: 2,
+    cursor: { runtimeId: 'rt_1', seq: 5 },
+    queuedRuns: [
+      {
+        runId: 'run_equal_queued',
+        sessionId: 's_1',
+        phase: 'queued',
+        queuedAt: 2,
+      },
+    ],
+    lastTerminalRun: {
+      runId: 'run_equal_terminal',
+      sessionId: 's_1',
+      phase: 'completed',
+      completedAt: 2,
+    },
+  };
+  store.replaceSessionLiveProjection(withoutIdentity);
+  assert.equal(
+    store.replaceSessionLiveProjection(
+      {
+        ...withoutIdentity,
+        queuedRuns: [{ ...withoutIdentity.queuedRuns[0]!, turnId: 'turn_equal_queued' }],
+        lastTerminalRun: {
+          ...withoutIdentity.lastTerminalRun!,
+          turnId: 'turn_equal_terminal',
+        },
+      },
+      { allowEqualHydration: true },
+    ),
+    true,
+  );
+
+  const projection = useAppStore.getState().liveProjectionBySession.s_1;
+  assert.equal(projection?.queuedRuns[0]?.turnId, 'turn_equal_queued');
+  assert.equal(projection?.lastTerminalRun?.turnId, 'turn_equal_terminal');
+  assert.equal(projection?.projectionRevision, 2);
+  assert.equal(projection?.cursor.seq, 5);
+});
+
+test('a run change that supplies turn identity opens the restored owner and enriches snapshot events', () => {
+  useAppStore.setState({ sessions: [sidebarSession], currentSessionId: 's_1' });
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  const store = useAppStore.getState();
+  store.prependSessionHistory(
+    's_1',
+    [
+      {
+        kind: 'user',
+        content: 'incremental identity query',
+        canonicalIndex: 0,
+        turnId: 'turn_incremental',
+        turnUserOrdinal: 0,
+      },
+    ],
+    10,
+    { replaceLoadedWindow: true, sourceRevision: 'incremental-identity-open' },
+  );
+  store.replaceSessionLiveProjection({
+    ...live,
+    projectionRevision: 2,
+    cursor: { runtimeId: 'rt_1', seq: 5 },
+    activeRun: {
+      runId: 'run_incremental',
+      sessionId: 's_1',
+      phase: 'running',
+    },
+    assistantDraft: { text: 'incremental answer', startedAt: 2 },
+  });
+
+  assert.equal(
+    store.applySessionLiveProjectionChange({
+      sessionId: 's_1',
+      baseProjectionRevision: 2,
+      projectionRevision: 3,
+      cursor: { runtimeId: 'rt_1', seq: 6 },
+      change: {
+        domain: 'run',
+        activeRun: {
+          runId: 'run_incremental',
+          sessionId: 's_1',
+          phase: 'running',
+          turnId: 'turn_incremental',
+        },
+        queuedRuns: [],
+      },
+    }),
+    'applied',
+  );
+
+  let state = useAppStore.getState();
+  assert.equal(state.userMessagesBySession.s_1?.[0]?.runtimeRunId, 'run_incremental');
+  assert.equal(state.userMessagesBySession.s_1?.[0]?.historyNoAssistantSegment, undefined);
+  assert.equal(
+    state.eventsBySession.s_1
+      ?.filter((event) => event.kind === 'text_delta')
+      .every((event) => event.turnId === 'turn_incremental'),
+    true,
+  );
+  assert.equal(
+    store.applySessionLiveProjectionChange({
+      sessionId: 's_1',
+      baseProjectionRevision: 3,
+      projectionRevision: 4,
+      cursor: { runtimeId: 'rt_1', seq: 7 },
+      change: {
+        domain: 'run',
+        activeRun: {
+          runId: 'run_incremental',
+          sessionId: 's_1',
+          phase: 'running',
+          turnId: 'turn_incremental_conflict',
+        },
+        queuedRuns: [],
+      },
+    }),
+    'applied',
+  );
+  assert.equal(
+    useAppStore.getState().liveProjectionBySession.s_1?.activeRun?.turnId,
+    'turn_incremental',
+  );
+
+  store.prependSessionHistory(
+    's_1',
+    [
+      {
+        kind: 'user',
+        content: 'incremental identity query',
+        canonicalIndex: 0,
+        turnId: 'turn_incremental',
+        turnUserOrdinal: 0,
+      },
+    ],
+    10,
+    { replaceLoadedWindow: true, sourceRevision: 'incremental-identity-rebuild' },
+  );
+  state = useAppStore.getState();
+  assert.equal(state.userMessagesBySession.s_1?.[0]?.runtimeRunId, 'run_incremental');
+  assert.equal(state.userMessagesBySession.s_1?.[0]?.historyNoAssistantSegment, undefined);
+  assert.equal(
+    composeMessages({
+      events: state.eventsBySession.s_1 ?? [],
+      userMessages: state.userMessagesBySession.s_1 ?? [],
+    }).filter(
+      (message) => message.kind === 'assistant_text' && message.text === 'incremental answer',
+    ).length,
+    1,
+  );
+});
+
+test('a newer snapshot cannot split one run across conflicting active and terminal turn identities', () => {
+  useAppStore.setState({ sessions: [sidebarSession], currentSessionId: 's_1' });
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  const store = useAppStore.getState();
+  const activeRun = {
+    runId: 'run_immutable_identity',
+    sessionId: 's_1',
+    phase: 'running' as const,
+    turnId: 'turn_original',
+  };
+  const queuedRun = {
+    runId: 'run_queued_identity',
+    sessionId: 's_1',
+    phase: 'queued' as const,
+    turnId: 'turn_queued_original',
+    queuedAt: 2,
+  };
+  store.replaceSessionLiveProjection({
+    ...live,
+    projectionRevision: 2,
+    cursor: { runtimeId: 'rt_1', seq: 5 },
+    activeRun,
+    queuedRuns: [queuedRun],
+    assistantDraft: { text: 'a', startedAt: 2 },
+  });
+  store.replaceSessionLiveProjection({
+    ...live,
+    projectionRevision: 3,
+    cursor: { runtimeId: 'rt_1', seq: 6 },
+    activeRun: { ...activeRun, turnId: 'turn_conflict' },
+    queuedRuns: [{ ...queuedRun, turnId: 'turn_queued_conflict' }],
+    assistantDraft: { text: 'ab', startedAt: 2 },
+  });
+
+  let state = useAppStore.getState();
+  assert.equal(state.liveProjectionBySession.s_1?.activeRun?.turnId, 'turn_original');
+  assert.equal(
+    state.liveProjectionBySession.s_1?.queuedRuns[0]?.turnId,
+    'turn_queued_original',
+  );
+  assert.deepEqual(
+    state.eventsBySession.s_1
+      ?.filter((event) => event.kind === 'text_delta')
+      .map((event) => ({ text: event.text, turnId: event.turnId })),
+    [
+      { text: 'a', turnId: 'turn_original' },
+      { text: 'b', turnId: 'turn_original' },
+    ],
+  );
+
+  store.replaceSessionLiveProjection({
+    ...live,
+    projectionRevision: 4,
+    cursor: { runtimeId: 'rt_1', seq: 7 },
+    lastTerminalRun: {
+      ...activeRun,
+      phase: 'completed',
+      turnId: 'turn_terminal_conflict',
+      completedAt: 3,
+    },
+  });
+  state = useAppStore.getState();
+  assert.equal(state.liveProjectionBySession.s_1?.lastTerminalRun?.turnId, 'turn_original');
+  assert.equal(
+    state.eventsBySession.s_1
+      ?.filter((event) => event.kind === 'text_delta')
+      .every((event) => event.turnId === 'turn_original'),
+    true,
+  );
 });
 
 test('an equal authoritative snapshot rehydrates a transcript buffer rebuilt without its draft', () => {
