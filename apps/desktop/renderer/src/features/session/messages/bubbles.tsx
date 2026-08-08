@@ -671,7 +671,7 @@ export function AssistantBubble({
           </ScrollCapBox>
         </Collapse>
       )}
-      <div className="text-sm leading-relaxed text-fg-primary">
+      <div className="leading-relaxed text-fg-primary">
         {text.length > 0 ? (
           <Markdown content={text} />
         ) : (

@@ -200,7 +200,7 @@ function MarkdownPre({ children }: { readonly children?: ReactNode }): JSX.Eleme
 
   return (
     <pre
-      className="content-code markdown-code-block group/codeblock relative border rounded-md px-3 pb-3 pt-9 my-2.5 overflow-x-auto text-xs leading-relaxed"
+      className="content-code markdown-code-block group/codeblock relative border rounded-md px-3 pb-3 pt-9 my-2.5 overflow-x-auto text-[0.857em] leading-relaxed"
       data-markdown-code-kind={language ? 'source' : 'plain'}
       data-markdown-code-language={language ?? undefined}
     >
@@ -374,7 +374,7 @@ function MarkdownInner({ content }: MarkdownProps): JSX.Element {
   // 每个 element 用 components 里的覆盖样式手动控制。
   // 全 zinc-100 文字 + styles.css light-override 自动翻成深色,亮暗双主题都吃得下。
   const rendered = (
-    <div className="markdown-body text-fg-primary leading-relaxed text-sm">
+    <div className="markdown-body text-fg-primary leading-relaxed">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         urlTransform={markdownUrlTransform}
@@ -486,24 +486,24 @@ function MarkdownInner({ content }: MarkdownProps): JSX.Element {
           // ---- 标题阶梯 ----
           // H1 ~ H4 用明显的字号阶梯,LLM 输出"## Steps" "### Phase 1" 时一眼能看出层级
           h1: ({ children }) => (
-            <h1 className="mt-4 mb-2 text-xl font-semibold text-fg-primary border-b border-border-default pb-1">
+            <h1 className="mt-4 mb-2 text-[1.429em] font-semibold text-fg-primary border-b border-border-default pb-1">
               {children}
             </h1>
           ),
           h2: ({ children }) => (
-            <h2 className="mt-4 mb-2 text-lg font-semibold text-fg-primary">{children}</h2>
+            <h2 className="mt-4 mb-2 text-[1.286em] font-semibold text-fg-primary">{children}</h2>
           ),
           h3: ({ children }) => (
-            <h3 className="mt-3 mb-1.5 text-base font-semibold text-fg-primary">{children}</h3>
+            <h3 className="mt-3 mb-1.5 text-[1.143em] font-semibold text-fg-primary">{children}</h3>
           ),
           h4: ({ children }) => (
-            <h4 className="mt-3 mb-1 text-sm font-semibold text-fg-primary">{children}</h4>
+            <h4 className="mt-3 mb-1 text-[1em] font-semibold text-fg-primary">{children}</h4>
           ),
           h5: ({ children }) => (
-            <h5 className="mt-2 mb-1 text-sm font-medium text-fg-primary">{children}</h5>
+            <h5 className="mt-2 mb-1 text-[1em] font-medium text-fg-primary">{children}</h5>
           ),
           h6: ({ children }) => (
-            <h6 className="mt-2 mb-1 text-xs font-medium text-fg-secondary uppercase tracking-wider">
+            <h6 className="mt-2 mb-1 text-[0.857em] font-medium text-fg-secondary uppercase tracking-wider">
               {children}
             </h6>
           ),
@@ -512,11 +512,11 @@ function MarkdownInner({ content }: MarkdownProps): JSX.Element {
           // remark-gfm 把 | a | b | 解析成 table;这里给 cell border + zebra stripe 让数据可读
           table: ({ children }) => (
             <div className="content-table my-3 overflow-x-auto rounded-md border">
-              <table className="w-full text-xs">{children}</table>
+              <table className="w-full text-[0.857em]">{children}</table>
             </div>
           ),
           thead: ({ children }) => (
-            <thead className="content-table-head text-fg-secondary text-xs uppercase tracking-wider">
+            <thead className="content-table-head text-fg-secondary uppercase tracking-wider">
               {children}
             </thead>
           ),

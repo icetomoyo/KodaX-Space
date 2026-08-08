@@ -406,7 +406,9 @@ export function QuickAskPopover({ open, onClose }: QuickAskPopoverProps): JSX.El
                 </div>
               )}
               {exchange.reply.length > 0 ? (
-                <Markdown content={exchange.reply} />
+                <div className="text-sm">
+                  <Markdown content={exchange.reply} />
+                </div>
               ) : (
                 <div className="text-sm text-fg-muted">{t('quickAsk.waitingForAnswer')}</div>
               )}
