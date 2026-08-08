@@ -416,10 +416,7 @@ export function QuickAskPopover({ open, onClose }: QuickAskPopoverProps): JSX.El
           )}
 
           {state.kind === 'error' && (
-            <div
-              className="mt-3 border-t border-danger/60 pt-3 text-xs text-danger"
-              role="alert"
-            >
+            <div className="mt-3 border-t border-danger/60 pt-3 text-xs text-danger" role="alert">
               <div className="mb-1 flex items-center gap-2 font-mono text-[11px]">
                 <span className="h-2 w-2 flex-shrink-0 rounded-full bg-danger" />
                 <span>{t('quickAsk.status.failed')}</span>
@@ -490,10 +487,7 @@ function quickAskStatus(state: AskState, t: Translate): QuickAskStatus | null {
     const eventStatus = latestStreamingStatus(state.events, t);
     if (eventStatus) return eventStatus;
     return {
-      label:
-        state.reply.length > 0
-          ? t('quickAsk.status.streaming')
-          : t('quickAsk.status.waiting'),
+      label: state.reply.length > 0 ? t('quickAsk.status.streaming') : t('quickAsk.status.waiting'),
       spinning: true,
       dotClass: 'bg-warn',
     };
