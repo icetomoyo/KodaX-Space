@@ -3660,7 +3660,7 @@ test('history eviction never restores a completed live owner already proven dura
   );
 });
 
-test('the first post-terminal newest page prunes an omitted live turn that never folded before', () => {
+test('a post-terminal newest page keeps an omitted live turn without canonical proof', () => {
   const store = useAppStore.getState();
   const oldMessageId = store.appendUserMessage(SID, 'never-canonicalized old query', 31_000);
   assert.ok(oldMessageId);
@@ -3695,6 +3695,7 @@ test('the first post-terminal newest page prunes an omitted live turn that never
       {
         kind: 'user',
         content: 'current canonical query',
+        sentAt: 40_000,
         canonicalIndex: 105,
         turnId: 'turn-current-terminal-page',
         turnUserOrdinal: 0,
@@ -3702,6 +3703,7 @@ test('the first post-terminal newest page prunes an omitted live turn that never
       {
         kind: 'assistant',
         text: 'current canonical answer',
+        sentAt: 40_100,
         canonicalIndex: 106,
         turnId: 'turn-current-terminal-page',
       },
@@ -3710,9 +3712,94 @@ test('the first post-terminal newest page prunes an omitted live turn that never
     {
       replaceLoadedWindow: true,
       sourceRevision: 'source-terminal-page',
-      settledRuntimeRuns: [
-        { runtimeId: 'runtime-terminal-page', runId: 'run-never-canonicalized' },
-      ],
+    },
+  );
+
+  const state = useAppStore.getState();
+  const visible = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  });
+  assert.deepEqual(
+    new Set(
+      visible.flatMap((message) => {
+        if (message.kind === 'user') return [`user:${message.content}`];
+        if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+        return [];
+      }),
+    ),
+    new Set([
+      'user:current canonical query',
+      'assistant:current canonical answer',
+      'user:never-canonicalized old query',
+      'assistant:old partial answer',
+    ]),
+  );
+});
+
+test('a terminal Run newer than the canonical page keeps its submitted query and partial output', () => {
+  const store = useAppStore.getState();
+  const messageId = store.appendUserMessage(SID, 'durability-fenced query', 50_000);
+  assert.ok(messageId);
+  store.bindUserMessageRuntimeRun(SID, messageId, 'run-durability-fenced');
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-durability-fenced',
+    runtimeEvent: {
+      runtimeId: 'runtime-durability-fenced',
+      runId: 'run-durability-fenced',
+      seq: 1,
+    },
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'partial output remains visible after Stop',
+    turnId: 'turn-durability-fenced',
+    runtimeEvent: {
+      runtimeId: 'runtime-durability-fenced',
+      runId: 'run-durability-fenced',
+      seq: 2,
+    },
+  });
+  store.appendEvent({
+    kind: 'session_error',
+    sessionId: SID,
+    error: 'actor_settlement_not_persisted',
+    turnId: 'turn-durability-fenced',
+    runtimeEvent: {
+      runtimeId: 'runtime-durability-fenced',
+      runId: 'run-durability-fenced',
+      seq: 3,
+    },
+  });
+
+  store.prependSessionHistory(
+    SID,
+    [
+      { kind: 'history_truncation', scope: 'history', omittedItems: 104 },
+      {
+        kind: 'user',
+        content: 'last durable query',
+        sentAt: 40_000,
+        canonicalIndex: 104,
+        turnId: 'turn-last-durable',
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 'last durable answer',
+        sentAt: 40_100,
+        canonicalIndex: 105,
+        turnId: 'turn-last-durable',
+      },
+    ],
+    FALLBACK_SENT_AT,
+    {
+      replaceLoadedWindow: true,
+      sourceRevision: 'source-before-durability-fence',
     },
   );
 
@@ -3727,7 +3814,12 @@ test('the first post-terminal newest page prunes an omitted live turn that never
       if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
       return [];
     }),
-    ['user:current canonical query', 'assistant:current canonical answer'],
+    [
+      'user:last durable query',
+      'assistant:last durable answer',
+      'user:durability-fenced query',
+      'assistant:partial output remains visible after Stop',
+    ],
   );
 });
 

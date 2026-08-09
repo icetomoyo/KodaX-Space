@@ -635,8 +635,12 @@ test('session.send queueMode defaults to interrupt and accepts after-turn', () =
     sessionId: 's_1',
     prompt: 'hello',
     queueMode: 'after-turn',
+    operationId: 'space-send-operation-1',
   });
   assert.equal(afterTurnResult.success, true);
+  if (afterTurnResult.success) {
+    assert.equal(afterTurnResult.data.operationId, 'space-send-operation-1');
+  }
 
   assert.equal(
     sessionSendChannel.input.safeParse({ sessionId: 's_1', prompt: 'hello', queueMode: 'later' })
@@ -794,6 +798,14 @@ test('session.send accepts bounded native attachment paths for model-only contex
 });
 
 test('session.cancel preserves authoritative Runtime Stop receipts without claiming unknown outcomes', () => {
+  assert.equal(
+    sessionCancelChannel.input.safeParse({ sessionId: 's_1', runId: 'run_visible' }).success,
+    true,
+  );
+  assert.equal(
+    sessionCancelChannel.input.safeParse({ sessionId: 's_1', runId: '' }).success,
+    false,
+  );
   assert.equal(sessionCancelChannel.output.safeParse({ cancelled: true }).success, true);
   assert.equal(sessionCancelChannel.output.safeParse({ cancelled: false }).success, true);
   assert.equal(

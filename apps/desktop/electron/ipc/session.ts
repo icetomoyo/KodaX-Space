@@ -104,6 +104,55 @@ import type {
 
 type ConversationHistoryData = RuntimeConversationHistory | PersistedConversationHistoryData;
 
+interface SessionSendOperationRecord {
+  readonly fingerprint: string;
+  readonly result: Promise<unknown>;
+  state: 'pending' | 'settled';
+}
+
+const MAX_SESSION_SEND_OPERATIONS = 256;
+const sessionSendOperations = new Map<string, SessionSendOperationRecord>();
+
+/** Keep admission idempotency ahead of attachment validation and draft cleanup. */
+export function runIdempotentSessionSend<T>(
+  operationId: string | undefined,
+  fingerprint: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  if (operationId === undefined) return operation();
+  const existing = sessionSendOperations.get(operationId);
+  if (existing) {
+    if (existing.fingerprint !== fingerprint) {
+      return Promise.reject(
+        new Error(`session.send operation ${operationId} reused for a different request`),
+      );
+    }
+    sessionSendOperations.delete(operationId);
+    sessionSendOperations.set(operationId, existing);
+    return existing.result as Promise<T>;
+  }
+
+  while (sessionSendOperations.size >= MAX_SESSION_SEND_OPERATIONS) {
+    const settled = [...sessionSendOperations].find(([, record]) => record.state === 'settled');
+    if (!settled) {
+      return Promise.reject(new Error('session.send in-flight capacity reached'));
+    }
+    sessionSendOperations.delete(settled[0]);
+  }
+  const result = Promise.resolve().then(operation);
+  const record: SessionSendOperationRecord = { fingerprint, result, state: 'pending' };
+  sessionSendOperations.set(operationId, record);
+  void result.then(
+    () => {
+      record.state = 'settled';
+    },
+    () => {
+      record.state = 'settled';
+    },
+  );
+  return result;
+}
+
 interface IndexedConversationEntry {
   readonly index: number;
   readonly entry: ConversationHistoryData['entries'][number];
@@ -892,128 +941,131 @@ export function registerSessionChannels(options: SessionChannelsOptions = {}): v
   );
 
   // session.send
-  registerChannel('session.send', async (input) => {
-    const existingSession = kodaxHost.get(input.sessionId);
-    const releaseModeSwitchAdmission = options.beginCoderAdmission?.() ?? (() => undefined);
-    try {
-      let session = existingSession;
-      if (!session) {
-        // Lazy resume：sessionId 不在 in-flight，但磁盘上可能 persisted —— 重启 Space
-        // 后从 Recents 点击的 session 走这条路。tryResume 内部走 createSession 接管
-        // 原 sessionId，SDK 按 id 自动 resume lineage。
-        const resumed = await kodaxHost.tryResume(input.sessionId);
-        if (!resumed) {
-          throw new Error(`session not found: ${input.sessionId}`);
-        }
-        session = kodaxHost.get(input.sessionId);
+  registerChannel('session.send', (input) =>
+    runIdempotentSessionSend(input.operationId, JSON.stringify(input), async () => {
+      const existingSession = kodaxHost.get(input.sessionId);
+      const releaseModeSwitchAdmission = options.beginCoderAdmission?.() ?? (() => undefined);
+      try {
+        let session = existingSession;
         if (!session) {
-          throw new Error(`session resume failed: ${input.sessionId}`);
-        }
-      }
-      // 第一次 send 时自动给 session 起个临时标题（基于 prompt 头部）。
-      // ensureTitle 已经在 host 里做"title === undefined 才填"的判断，重复调用安全。
-      assertSessionSendScope(session, {
-        expectedProjectRoot: input.expectedProjectRoot,
-        expectedSurface: input.expectedSurface,
-      });
-      if (input.partnerPromptOverlay !== undefined && session.surface !== 'partner') {
-        throw new Error('partnerPromptOverlay is only accepted for Partner sessions');
-      }
-      if (input.partnerRetrievalScope !== undefined) {
-        if (session.surface !== 'partner') {
-          throw new Error('partnerRetrievalScope is only accepted for Partner sessions');
-        }
-        await partnerSourceStore.setScope(
-          input.sessionId,
-          session.projectRoot,
-          input.partnerRetrievalScope,
-        );
-      }
-      kodaxHost.ensureTitle(input.sessionId, input.prompt);
-      // send 是 fire-and-forget——立刻 ACK，事件流通过 push 推
-      // send() returns a factual admission result. If the turn is running,
-      // Real adapter accepts the prompt into the requested queue mode so the UI
-      // can show a queued acknowledgement instead of a HANDLER_ERROR.
-      // OC-31 v0.1.9: input.artifacts (image paste / drag-drop) 透传给 session.send，
-      // real-session 把它塞进 KodaXOptions.context.inputArtifacts → SDK 拼 multimodal content。
-      //
-      // review HIGH-2 fix: renderer 可能传任意 path 进 artifacts (eg /etc/passwd) 让 SDK
-      // 把任意文件读进 multimodal content 发给 LLM。这里在调 session.send 前对每个 artifact
-      // path 做沙箱校验——必须落在持久 Session attachment 目录或兼容的旧版临时
-      // clipboard 目录之内，且 sid 等于本次 send 的 sessionId (不许跨 session 引用图)。
-      if (input.artifacts && input.artifacts.length > 0) {
-        for (const a of input.artifacts) {
-          await assertArtifactPathInClipboardSandbox(input.sessionId, a.path);
-        }
-      }
-      if (input.attachmentPaths) {
-        for (const attachment of input.attachmentPaths) {
-          if (!path.isAbsolute(attachment.path)) {
-            throw new Error(`attachment path must be absolute: ${attachment.path}`);
+          // Lazy resume：sessionId 不在 in-flight，但磁盘上可能 persisted —— 重启 Space
+          // 后从 Recents 点击的 session 走这条路。tryResume 内部走 createSession 接管
+          // 原 sessionId，SDK 按 id 自动 resume lineage。
+          const resumed = await kodaxHost.tryResume(input.sessionId);
+          if (!resumed) {
+            throw new Error(`session not found: ${input.sessionId}`);
+          }
+          session = kodaxHost.get(input.sessionId);
+          if (!session) {
+            throw new Error(`session resume failed: ${input.sessionId}`);
           }
         }
-      }
-      await ensureProviderKeyInjected(session.provider);
-      await validateInputArtifactsForSession(input.artifacts, session);
-      const preparedArtifacts =
-        input.artifacts && input.artifacts.length > 0
-          ? await prepareClipboardArtifactsForSend(input.sessionId, input.artifacts)
-          : undefined;
-      const attachmentPathOverlay = buildAttachmentPathOverlay(input.attachmentPaths);
-      const promptOverlay = [input.partnerPromptOverlay, attachmentPathOverlay]
-        .filter((part): part is string => part !== undefined)
-        .join('\n\n');
-      const result = await session.send(input.prompt, preparedArtifacts, {
-        queueMode: input.queueMode,
-        ...(promptOverlay ? { promptOverlay } : {}),
-      });
-      if (!result.accepted) {
+        // 第一次 send 时自动给 session 起个临时标题（基于 prompt 头部）。
+        // ensureTitle 已经在 host 里做"title === undefined 才填"的判断，重复调用安全。
+        assertSessionSendScope(session, {
+          expectedProjectRoot: input.expectedProjectRoot,
+          expectedSurface: input.expectedSurface,
+        });
+        if (input.partnerPromptOverlay !== undefined && session.surface !== 'partner') {
+          throw new Error('partnerPromptOverlay is only accepted for Partner sessions');
+        }
+        if (input.partnerRetrievalScope !== undefined) {
+          if (session.surface !== 'partner') {
+            throw new Error('partnerRetrievalScope is only accepted for Partner sessions');
+          }
+          await partnerSourceStore.setScope(
+            input.sessionId,
+            session.projectRoot,
+            input.partnerRetrievalScope,
+          );
+        }
+        kodaxHost.ensureTitle(input.sessionId, input.prompt);
+        // send 是 fire-and-forget——立刻 ACK，事件流通过 push 推
+        // send() returns a factual admission result. If the turn is running,
+        // Real adapter accepts the prompt into the requested queue mode so the UI
+        // can show a queued acknowledgement instead of a HANDLER_ERROR.
+        // OC-31 v0.1.9: input.artifacts (image paste / drag-drop) 透传给 session.send，
+        // real-session 把它塞进 KodaXOptions.context.inputArtifacts → SDK 拼 multimodal content。
+        //
+        // review HIGH-2 fix: renderer 可能传任意 path 进 artifacts (eg /etc/passwd) 让 SDK
+        // 把任意文件读进 multimodal content 发给 LLM。这里在调 session.send 前对每个 artifact
+        // path 做沙箱校验——必须落在持久 Session attachment 目录或兼容的旧版临时
+        // clipboard 目录之内，且 sid 等于本次 send 的 sessionId (不许跨 session 引用图)。
+        if (input.artifacts && input.artifacts.length > 0) {
+          for (const a of input.artifacts) {
+            await assertArtifactPathInClipboardSandbox(input.sessionId, a.path);
+          }
+        }
+        if (input.attachmentPaths) {
+          for (const attachment of input.attachmentPaths) {
+            if (!path.isAbsolute(attachment.path)) {
+              throw new Error(`attachment path must be absolute: ${attachment.path}`);
+            }
+          }
+        }
+        await ensureProviderKeyInjected(session.provider);
+        await validateInputArtifactsForSession(input.artifacts, session);
+        const preparedArtifacts =
+          input.artifacts && input.artifacts.length > 0
+            ? await prepareClipboardArtifactsForSend(input.sessionId, input.artifacts)
+            : undefined;
+        const attachmentPathOverlay = buildAttachmentPathOverlay(input.attachmentPaths);
+        const promptOverlay = [input.partnerPromptOverlay, attachmentPathOverlay]
+          .filter((part): part is string => part !== undefined)
+          .join('\n\n');
+        const result = await session.send(input.prompt, preparedArtifacts, {
+          queueMode: input.queueMode,
+          ...(promptOverlay ? { promptOverlay } : {}),
+          ...(input.operationId !== undefined ? { operationId: input.operationId } : {}),
+        });
+        if (!result.accepted) {
+          return {
+            accepted: false as const,
+            reason: result.reason,
+            queueMode: result.queueMode,
+          };
+        }
+        if (input.artifacts && input.artifacts.length > 0) {
+          await finalizePendingClipboardArtifacts(input.sessionId, input.artifacts).catch(
+            (error: unknown) => {
+              console.warn(
+                `[session.send] accepted prompt but failed to remove draft attachments: ${
+                  error instanceof Error ? error.message : String(error)
+                }`,
+              );
+            },
+          );
+        }
+        const attachments =
+          preparedArtifacts && preparedArtifacts.length > 0
+            ? await Promise.all(
+                preparedArtifacts.map((artifact, ordinal) =>
+                  issueSessionImageAttachment({
+                    sessionId: input.sessionId,
+                    artifactPath: artifact.path,
+                    declaredMediaType: artifact.mediaType,
+                    ordinal,
+                  }),
+                ),
+              )
+            : undefined;
         return {
-          accepted: false as const,
-          reason: result.reason,
-          queueMode: result.queueMode,
+          accepted: true as const,
+          ...(result.queued
+            ? { queued: true, queueId: result.queueId, queueMode: result.queueMode }
+            : {}),
+          ...(result.runId !== undefined ? { runId: result.runId } : {}),
+          ...(attachments !== undefined ? { attachments } : {}),
         };
+      } finally {
+        releaseModeSwitchAdmission();
       }
-      if (input.artifacts && input.artifacts.length > 0) {
-        await finalizePendingClipboardArtifacts(input.sessionId, input.artifacts).catch(
-          (error: unknown) => {
-            console.warn(
-              `[session.send] accepted prompt but failed to remove draft attachments: ${
-                error instanceof Error ? error.message : String(error)
-              }`,
-            );
-          },
-        );
-      }
-      const attachments =
-        preparedArtifacts && preparedArtifacts.length > 0
-          ? await Promise.all(
-              preparedArtifacts.map((artifact, ordinal) =>
-                issueSessionImageAttachment({
-                  sessionId: input.sessionId,
-                  artifactPath: artifact.path,
-                  declaredMediaType: artifact.mediaType,
-                  ordinal,
-                }),
-              ),
-            )
-          : undefined;
-      return {
-        accepted: true as const,
-        ...(result.queued
-          ? { queued: true, queueId: result.queueId, queueMode: result.queueMode }
-          : {}),
-        ...(result.runId !== undefined ? { runId: result.runId } : {}),
-        ...(attachments !== undefined ? { attachments } : {}),
-      };
-    } finally {
-      releaseModeSwitchAdmission();
-    }
-  });
+    }),
+  );
 
   // session.cancel
   registerChannel('session.cancel', async (input) => {
-    return kodaxHost.cancel(input.sessionId);
+    return kodaxHost.cancel(input.sessionId, input.runId);
   });
 
   // session.list

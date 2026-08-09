@@ -306,6 +306,8 @@ export const sessionSendChannel = {
   input: z.object({
     sessionId: z.string().min(1),
     prompt: z.string().min(1).max(MAX_PROMPT_BYTES),
+    /** Stable across an ambiguous IPC retry so Runtime admission remains exactly-once. */
+    operationId: z.string().min(1).max(128).optional(),
     partnerPromptOverlay: z.string().min(1).max(MAX_PARTNER_PROMPT_OVERLAY_BYTES).optional(),
     /**
      * Non-image attachments keep a file:// link in the visible user message,
@@ -364,6 +366,8 @@ export const sessionCancelChannel = {
   direction: 'invoke',
   input: z.object({
     sessionId: z.string().min(1),
+    /** Exact visible Runtime Run. When present, Stop must never retarget a successor. */
+    runId: z.string().min(1).max(128).optional(),
   }),
   output: z
     .object({

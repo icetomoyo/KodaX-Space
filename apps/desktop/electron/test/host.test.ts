@@ -21,6 +21,7 @@ import {
 } from '../ipc/clipboard.js';
 import { _resetDataPathsCacheForTesting, getKodaxDir } from '../kodax/data-paths.js';
 import { permissionBroker } from '../permission/broker.js';
+import { askUserBroker } from '../permission/ask-user-broker.js';
 import { installSessionStoreMock, type MockSessionState } from './_helpers/session-store-mock.js';
 
 // Stub webContents：捕获所有 session.event payload 到数组里
@@ -377,6 +378,61 @@ test('Runtime cancel preserves unknown and already-confirmed Stop receipts witho
     ),
     false,
   );
+});
+
+test('a stale exact Runtime Stop does not clean up interactions owned by the current Run', async (t) => {
+  const adapter = runtimeHostAdapter as unknown as Record<string, unknown>;
+  const originalIsRuntimeSelected = adapter.isRuntimeSelected;
+  const originalAbortSessionRun = adapter.abortSessionRun;
+  const originalPermissionCancel = permissionBroker.cancelSession;
+  const originalAskUserCancel = askUserBroker.cancelSession;
+  t.after(() => {
+    adapter.isRuntimeSelected = originalIsRuntimeSelected;
+    adapter.abortSessionRun = originalAbortSessionRun;
+    permissionBroker.cancelSession = originalPermissionCancel;
+    askUserBroker.cancelSession = originalAskUserCancel;
+  });
+
+  let permissionCancelCalls = 0;
+  let askUserCancelCalls = 0;
+  adapter.isRuntimeSelected = () => true;
+  adapter.abortSessionRun = async (sessionId: string, runId?: string) => ({
+    runId: runId ?? 'run_missing',
+    sessionId,
+    accepted: false,
+    state: 'confirmed',
+    outcome: 'completed',
+    phase: 'completed',
+    revision: 4,
+  });
+  permissionBroker.cancelSession = () => {
+    permissionCancelCalls += 1;
+  };
+  askUserBroker.cancelSession = () => {
+    askUserCancelCalls += 1;
+  };
+
+  const current = kodaxHost.createSession({
+    existingSessionId: 's_runtime_successor',
+    projectRoot: '/r',
+    provider: 'zai-coding',
+  });
+  const result = await kodaxHost.cancel(current.sessionId, 'run_previous');
+
+  assert.deepEqual(result, {
+    cancelled: false,
+    stop: {
+      runId: 'run_previous',
+      sessionId: current.sessionId,
+      accepted: false,
+      state: 'confirmed',
+      outcome: 'completed',
+      phase: 'completed',
+      revision: 4,
+    },
+  });
+  assert.equal(permissionCancelCalls, 0);
+  assert.equal(askUserCancelCalls, 0);
 });
 
 test('concurrent send on same session is rejected (no queueing in F003 Mock)', async () => {

@@ -242,7 +242,7 @@ test('terminal evidence before first history is satisfied by that first post-ter
   );
 });
 
-test('the exact terminal history scope prunes an omitted never-folded live owner', async () => {
+test('the exact terminal history scope keeps an omitted owner without canonical proof', async () => {
   const sessionId = 'history-paging-terminal-prunes-never-folded';
   useAppStore.setState({
     sessions: [
@@ -300,11 +300,13 @@ test('the exact terminal history scope prunes an omitted never-folded live owner
               {
                 kind: 'user' as const,
                 content: 'current canonical query',
+                sentAt: 2_000,
                 canonicalIndex: 105,
               },
               {
                 kind: 'assistant' as const,
                 text: 'current canonical answer',
+                sentAt: 2_100,
                 canonicalIndex: 106,
               },
             ],
@@ -334,15 +336,22 @@ test('the exact terminal history scope prunes an omitted never-folded live owner
   await restoreNewestSessionHistory(sessionId, 'code');
 
   assert.deepEqual(
-    composeMessages({
-      userMessages: useAppStore.getState().userMessagesBySession[sessionId] ?? [],
-      events: useAppStore.getState().eventsBySession[sessionId] ?? [],
-    }).flatMap((message) => {
-      if (message.kind === 'user') return [`user:${message.content}`];
-      if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
-      return [];
-    }),
-    ['user:current canonical query', 'assistant:current canonical answer'],
+    new Set(
+      composeMessages({
+        userMessages: useAppStore.getState().userMessagesBySession[sessionId] ?? [],
+        events: useAppStore.getState().eventsBySession[sessionId] ?? [],
+      }).flatMap((message) => {
+        if (message.kind === 'user') return [`user:${message.content}`];
+        if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+        return [];
+      }),
+    ),
+    new Set([
+      'user:current canonical query',
+      'assistant:current canonical answer',
+      'user:old live query',
+      'assistant:old live answer',
+    ]),
   );
 });
 

@@ -727,22 +727,28 @@ class KodaXHost {
     return items;
   }
 
-  async cancel(sessionId: string): Promise<SessionCancelResult> {
+  async cancel(sessionId: string, runId?: string): Promise<SessionCancelResult> {
     const s = this.sessions.get(sessionId);
     if (!s) return { cancelled: false };
-    // 取消该 session 所有 pending permission 弹窗——否则用户看到的弹窗对的是已死的 session，
-    // tool 实际不会再执行，按了"允许"也没用
-    permissionBroker.cancelSession(sessionId, 'session_cancelled');
-    // FEATURE_032：同样取消 askUser pending，否则 modal 残留
-    askUserBroker.cancelSession(sessionId, 'session_cancelled');
+    const cancelSessionInteractions = (): void => {
+      // 取消该 session 所有 pending permission 弹窗——否则用户看到的弹窗对的是已死的 session，
+      // tool 实际不会再执行，按了"允许"也没用
+      permissionBroker.cancelSession(sessionId, 'session_cancelled');
+      // FEATURE_032：同样取消 askUser pending，否则 modal 残留
+      askUserBroker.cancelSession(sessionId, 'session_cancelled');
+    };
     const runtimeCoder =
       s instanceof RealKodaXSession &&
       s.surface === 'code' &&
       runtimeHostAdapter.isRuntimeSelected();
     if (runtimeCoder) {
-      const stop = await s.cancel();
+      const stop = await s.cancel(runId);
       if (!stop) return { cancelled: false };
-      if ('kind' in stop) return { cancelled: true };
+      if ('kind' in stop) {
+        cancelSessionInteractions();
+        return { cancelled: true };
+      }
+      if (stop.accepted || runId === undefined) cancelSessionInteractions();
       return {
         cancelled:
           stop.state === 'confirmed' &&
@@ -753,6 +759,7 @@ class KodaXHost {
 
     // Legacy streams have no structured Stop receipt. Main owns their terminal
     // event so the renderer can stop immediately even if SDK teardown blocks.
+    cancelSessionInteractions();
     {
       pushToRenderer('session.event', {
         kind: 'session_error',

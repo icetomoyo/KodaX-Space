@@ -59,11 +59,16 @@ import { useI18n } from '../i18n/I18nProvider.js';
 import type { MessageKey } from '../i18n/messages.js';
 import {
   applyTrackedStateAction,
+  composerRunControls,
   composerResultOwnsCurrentSession,
   invokeComposerIpc,
   isComposerTimeoutResult,
   pendingSendAcknowledgement,
+  queueModeForRuntimePhase,
+  retainComposerSendOperation,
+  resolveComposerStopTarget,
   routeComposerFailure,
+  settleComposerSendOperation,
   type TrackedStateAction,
 } from './composerInvoke.js';
 import {
@@ -459,6 +464,13 @@ export function BottomBar(): JSX.Element {
   const { t } = useI18n();
   const currentSessionId = useAppStore((s) => s.currentSessionId);
   const currentProjectPath = useAppStore((s) => s.currentProjectPath);
+  const { isStreaming, isCompacting, runtimeActiveRun, runtimeStopIdentity, activityGeneration } =
+    useActivityState();
+  const currentRuntimePhase = runtimeActiveRun?.phase;
+  const currentRuntimeStopRunId = runtimeStopIdentity.runId;
+  const stopPointerRunIdRef = useRef<string | null | undefined>(undefined);
+  const stopPointerGenerationRef = useRef<string | undefined>(undefined);
+  const stopPointerSessionIdRef = useRef<string | null | undefined>(undefined);
   // New sessions are tagged with the active surface.
   const currentSurface = useSurfaceStore((s) => s.currentSurface);
   const mascotMode = useAppStore((s) => s.mascotMode);
@@ -533,6 +545,7 @@ export function BottomBar(): JSX.Element {
   const handleSendRef = useRef<
     ((queueMode?: QueueMode, promptOverride?: string) => Promise<void>) | null
   >(null);
+  const retainedSendOperationRef = useRef<ReadonlyMap<string, string>>(new Map());
 
   const composerDraftIsOccupied = (): boolean =>
     promptRef.current.length > 0 ||
@@ -1999,6 +2012,25 @@ export function BottomBar(): JSX.Element {
       : null;
     const optimisticMessageId = queuedLocalId ? null : appendUserMessage(sessionId, skillEcho);
     const pendingSendGeneration = setPendingSend(sessionId, true);
+    const skillSendPayloadWithoutOperation: ChannelInput<'session.send'> = {
+      sessionId,
+      prompt: resolvedPrompt,
+      queueMode,
+      ...(currentProjectPath ? { expectedProjectRoot: currentProjectPath } : {}),
+      expectedSurface: currentSurface,
+    };
+    const skillSendOperation = retainComposerSendOperation(
+      retainedSendOperationRef.current,
+      JSON.stringify(skillSendPayloadWithoutOperation),
+      () => `space-send-${crypto.randomUUID()}`,
+    );
+    retainedSendOperationRef.current = skillSendOperation.retainedOperations;
+    const settleSkillSendOperation = (): void => {
+      retainedSendOperationRef.current = settleComposerSendOperation(
+        retainedSendOperationRef.current,
+        skillSendOperation,
+      );
+    };
     const restoreUnacceptedSkillSend = (message: string, late: boolean): void => {
       setPendingSend(sessionId, false, pendingSendGeneration);
       if (queuedLocalId) removeQueuedUserMessage(sessionId, queuedLocalId);
@@ -2032,6 +2064,7 @@ export function BottomBar(): JSX.Element {
       );
     };
     const applySkillSendResult = (data: ChannelOutput<'session.send'>, late: boolean): void => {
+      settleSkillSendOperation();
       if (!data.accepted) {
         restoreUnacceptedSkillSend(rejectedSessionSendText(data, t), late);
         return;
@@ -2080,11 +2113,8 @@ export function BottomBar(): JSX.Element {
     const sendResult = await invokeComposerIpc(
       'session.send',
       {
-        sessionId,
-        prompt: resolvedPrompt,
-        queueMode,
-        ...(currentProjectPath ? { expectedProjectRoot: currentProjectPath } : {}),
-        expectedSurface: currentSurface,
+        ...skillSendPayloadWithoutOperation,
+        operationId: skillSendOperation.operationId,
       },
       {
         onLateResult: (lateResult) => {
@@ -2110,6 +2140,7 @@ export function BottomBar(): JSX.Element {
   ): Promise<void> {
     if (!window.kodaxSpace) return;
     if (busy || attachmentGateRef.current!.isPending()) return;
+    const effectiveQueueMode = queueModeForRuntimePhase(queueMode, currentRuntimePhase);
     const promptAtSend = promptOverride ?? prompt;
     const trimmed = promptAtSend.trim();
     const fileRefPrompt = pendingFileReferencePrompt(trimmed, pendingFileRefs);
@@ -2160,12 +2191,12 @@ export function BottomBar(): JSX.Element {
         setBusy(true);
         setErr(null);
         try {
-          await invokeSkill(sid, legacySkillName, args, queueMode);
+          await invokeSkill(sid, legacySkillName, args, effectiveQueueMode);
         } finally {
           setBusy(false);
         }
       } else {
-        await execSlashOrSkill(sid, token, args, queueMode);
+        await execSlashOrSkill(sid, token, args, effectiveQueueMode);
       }
       return;
     }
@@ -2215,7 +2246,7 @@ export function BottomBar(): JSX.Element {
         ? appendQueuedUserMessage(sid, {
             content: effectivePrompt,
             matchContent: promptForAI,
-            queueMode,
+            queueMode: effectiveQueueMode,
             attachments: optimisticAttachments,
           })
         : null;
@@ -2255,6 +2286,34 @@ export function BottomBar(): JSX.Element {
       draftRef.current = '';
 
       const pendingSendGeneration = setPendingSend(sid, true);
+      const sendPayloadWithoutOperation: ChannelInput<'session.send'> = {
+        sessionId: sid,
+        prompt: promptForAI,
+        queueMode: effectiveQueueMode,
+        ...(currentProjectPath ? { expectedProjectRoot: currentProjectPath } : {}),
+        expectedSurface: currentSurface,
+        ...(partnerPromptOverlay ? { partnerPromptOverlay } : {}),
+        ...(attachmentPathsForSend.length > 0
+          ? { attachmentPaths: [...attachmentPathsForSend] }
+          : {}),
+        ...(artifactsForSend ? { artifacts: artifactsForSend } : {}),
+      };
+      const sendOperation = retainComposerSendOperation(
+        retainedSendOperationRef.current,
+        JSON.stringify(sendPayloadWithoutOperation),
+        () => `space-send-${crypto.randomUUID()}`,
+      );
+      retainedSendOperationRef.current = sendOperation.retainedOperations;
+      const clearRetainedSendOperation = (): void => {
+        retainedSendOperationRef.current = settleComposerSendOperation(
+          retainedSendOperationRef.current,
+          sendOperation,
+        );
+      };
+      const sendPayload: ChannelInput<'session.send'> = {
+        ...sendPayloadWithoutOperation,
+        operationId: sendOperation.operationId,
+      };
       const restoreUnacceptedSend = (message: string, late: boolean): void => {
         setPendingSend(sid, false, pendingSendGeneration);
         if (queuedLocalId) removeQueuedUserMessage(sid, queuedLocalId);
@@ -2303,6 +2362,9 @@ export function BottomBar(): JSX.Element {
       };
 
       const applySendResult = (data: ChannelOutput<'session.send'>, late: boolean): void => {
+        // Both accepted and factual business rejection settle this exact operation. Transport
+        // failures deliberately retain it so an exact manual retry cannot duplicate admission.
+        clearRetainedSendOperation();
         if (!data.accepted) {
           restoreUnacceptedSend(rejectedSessionSendText(data, t), late);
           return;
@@ -2326,7 +2388,7 @@ export function BottomBar(): JSX.Element {
         if (data.queued) {
           // The turn is already running; main accepted the prompt into the requested
           // queue mode. Keep the current spinner and show a toast.
-          const acceptedQueueMode = data.queueMode ?? queueMode;
+          const acceptedQueueMode = data.queueMode ?? effectiveQueueMode;
           if (queuedLocalId) {
             markQueuedUserMessageAccepted(sid, queuedLocalId, data.queueId, acceptedQueueMode);
           } else {
@@ -2352,18 +2414,6 @@ export function BottomBar(): JSX.Element {
         }
       };
 
-      const sendPayload: ChannelInput<'session.send'> = {
-        sessionId: sid,
-        prompt: promptForAI,
-        queueMode,
-        ...(currentProjectPath ? { expectedProjectRoot: currentProjectPath } : {}),
-        expectedSurface: currentSurface,
-        ...(partnerPromptOverlay ? { partnerPromptOverlay } : {}),
-        ...(attachmentPathsForSend.length > 0
-          ? { attachmentPaths: [...attachmentPathsForSend] }
-          : {}),
-        ...(artifactsForSend ? { artifacts: artifactsForSend } : {}),
-      };
       const result = await invokeComposerIpc('session.send', sendPayload, {
         onLateResult: (lateResult) => {
           if (lateResult.ok) applySendResult(lateResult.data, true);
@@ -2418,9 +2468,23 @@ export function BottomBar(): JSX.Element {
     });
   }
 
-  function handleCancel(): void {
+  function handleCancel(
+    pointerDownRunId?: string | null,
+    pointerDownGeneration?: string,
+    pointerDownSessionId?: string | null,
+  ): void {
     const sid = currentSessionId;
     if (!sid || !window.kodaxSpace) return;
+    const target = resolveComposerStopTarget(
+      pointerDownRunId,
+      currentRuntimeStopRunId,
+      runtimeStopIdentity.requiresExactRunId,
+      pointerDownGeneration,
+      activityGeneration,
+      pointerDownSessionId,
+      sid,
+    );
+    if (!target.allowed) return;
     // #13 fix: session.cancel 是异步 IPC——结果回来时用户可能已经切到别的 session。之前的
     // toast 只有 "Stop signal sent"/"Cancel failed"，看不出说的是哪个 session，容易被
     // 误当成"当前 session 出错了"。带上 session 标题消歧义。
@@ -2428,7 +2492,10 @@ export function BottomBar(): JSX.Element {
       useAppStore.getState().sessions.find((s) => s.sessionId === sid)?.title ??
       t('bottom.thisSession');
     void window.kodaxSpace
-      .invoke('session.cancel', { sessionId: sid })
+      .invoke('session.cancel', {
+        sessionId: sid,
+        ...(target.runId !== undefined ? { runId: target.runId } : {}),
+      })
       .then((r) => {
         if (!r.ok) {
           pushToast(
@@ -2475,7 +2542,8 @@ export function BottomBar(): JSX.Element {
         e.preventDefault();
         return;
       }
-      const queueMode: QueueMode = e.ctrlKey || e.metaKey ? 'after-turn' : 'interrupt';
+      const requestedQueueMode: QueueMode = e.ctrlKey || e.metaKey ? 'after-turn' : 'interrupt';
+      const queueMode = queueModeForRuntimePhase(requestedQueueMode, currentRuntimePhase);
       e.preventDefault();
       void handleSend(queueMode);
       return;
@@ -2515,8 +2583,8 @@ export function BottomBar(): JSX.Element {
     }
   }
 
-  const { isStreaming, isCompacting } = useActivityState();
   const compactingSlash = busy && busySlashName === 'compact';
+  const runControls = composerRunControls(isStreaming, compactingSlash, currentRuntimePhase);
   const composerReadOnly = busy && !compactingSlash;
   const mascotInputActive =
     prompt.trim().length > 0 || pendingImages.length > 0 || pendingFileRefs.length > 0;
@@ -2525,11 +2593,13 @@ export function BottomBar(): JSX.Element {
   const canSend =
     !busy &&
     !isAttaching &&
-    !isStreaming &&
+    runControls.canSendDuringActivity &&
     !!currentProjectPath &&
     (prompt.trim().length > 0 || pendingImages.length > 0 || pendingFileRefs.length > 0);
   const sendButtonTitle = canSend
-    ? t('bottom.sendTitle.ready')
+    ? currentRuntimePhase === 'unknown'
+      ? t('bottom.sendTitle.afterTurn')
+      : t('bottom.sendTitle.ready')
     : !currentProjectPath
       ? t('bottom.openFolderFirst')
       : busy || isAttaching
@@ -2812,17 +2882,65 @@ export function BottomBar(): JSX.Element {
             <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">
               <ContextWindowIndicator compacting={isCompacting} />
               <ModelEffortSelector />
-              {isStreaming && !compactingSlash ? (
+              {runControls.showStop && (
                 <button
+                  key={`${currentSessionId ?? 'no-session'}:${
+                    currentRuntimeStopRunId ??
+                    activityGeneration ??
+                    (runtimeStopIdentity.requiresExactRunId
+                      ? 'runtime-unresolved'
+                      : 'session-unanchored')
+                  }`}
                   type="button"
-                  onClick={() => void handleCancel()}
+                  onPointerDown={() => {
+                    stopPointerRunIdRef.current = currentRuntimeStopRunId ?? null;
+                    stopPointerGenerationRef.current = activityGeneration;
+                    stopPointerSessionIdRef.current = currentSessionId;
+                  }}
+                  onPointerCancel={() => {
+                    stopPointerRunIdRef.current = undefined;
+                    stopPointerGenerationRef.current = undefined;
+                    stopPointerSessionIdRef.current = undefined;
+                  }}
+                  onPointerLeave={() => {
+                    stopPointerRunIdRef.current = undefined;
+                    stopPointerGenerationRef.current = undefined;
+                    stopPointerSessionIdRef.current = undefined;
+                  }}
+                  onBlur={() => {
+                    stopPointerRunIdRef.current = undefined;
+                    stopPointerGenerationRef.current = undefined;
+                    stopPointerSessionIdRef.current = undefined;
+                  }}
+                  onClick={(event) => {
+                    const keyboardActivation = event.detail === 0;
+                    const pointerDownRunId = keyboardActivation
+                      ? undefined
+                      : stopPointerRunIdRef.current;
+                    const pointerDownGeneration = keyboardActivation
+                      ? undefined
+                      : stopPointerGenerationRef.current;
+                    const pointerDownSessionId = keyboardActivation
+                      ? undefined
+                      : stopPointerSessionIdRef.current;
+                    stopPointerRunIdRef.current = undefined;
+                    stopPointerGenerationRef.current = undefined;
+                    stopPointerSessionIdRef.current = undefined;
+                    handleCancel(pointerDownRunId, pointerDownGeneration, pointerDownSessionId);
+                  }}
+                  disabled={
+                    (runtimeStopIdentity.requiresExactRunId &&
+                      currentRuntimeStopRunId === undefined) ||
+                    (!runtimeStopIdentity.requiresExactRunId && activityGeneration === undefined)
+                  }
                   className="ml-1 w-8 h-8 rounded-lg bg-danger hover:brightness-110 text-white flex items-center justify-center shadow-sm transition-[filter]"
                   title={t('bottom.stopTitle')}
                   aria-label={t('bottom.stopGeneration')}
                 >
                   <span aria-hidden className="block w-2.5 h-2.5 bg-white rounded-[2px]" />
                 </button>
-              ) : (
+              )}
+              {runControls.showSend && (
                 <button
                   type="button"
                   onClick={() => void handleSend('interrupt')}

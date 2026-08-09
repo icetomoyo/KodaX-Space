@@ -82,6 +82,8 @@ export type SendResult =
 export type SendOptions = {
   readonly queueMode?: SessionSendQueueMode;
   readonly promptOverlay?: string;
+  /** Stable admission identity supplied by the renderer across ambiguous retries. */
+  readonly operationId?: string;
 };
 
 export type SessionDisposeOptions = {
@@ -214,7 +216,7 @@ export interface ManagedSession {
    * authoritative Stop receipt and must not synthesize a terminal event for an
    * unknown outcome.
    */
-  cancel(): Promise<ManagedSessionCancelOutcome>;
+  cancel(runId?: string): Promise<ManagedSessionCancelOutcome>;
 
   /**
    * 释放 session 持有的所有资源。

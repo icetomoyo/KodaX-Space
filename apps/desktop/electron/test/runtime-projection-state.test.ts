@@ -218,6 +218,28 @@ test('Runtime activity evidence is positive-only for active and queued work', ()
     }),
     false,
   );
+  assert.equal(
+    runtimeProfileActivityOutranksLive(
+      { ...activeProfile, cursor: { runtimeId: 'rt_1', seq: 100 } },
+      's_1',
+      {
+        ...live('rt_1', 5),
+        cursor: {
+          runtimeId: 'rt_1',
+          sessionId: 's_1',
+          journalEpoch: 'journal_s_1',
+          seq: 5,
+        },
+        lastTerminalRun: {
+          runId: 'run_1',
+          sessionId: 's_1',
+          phase: 'completed',
+          completedAt: 5,
+        },
+      },
+    ),
+    false,
+  );
 });
 
 test('active selected Sessions bootstrap live state before history and despite a stale projection', () => {
@@ -492,6 +514,45 @@ test('profile replacement ignores stale revisions and clears live state on Runti
   assert.equal(restarted.profile?.connection.runtimeId, 'rt_2');
   assert.deepEqual(restarted.liveBySession, {});
   assert.deepEqual(restarted.snapshotRequiredBySession, {});
+});
+
+test('a new Session journal epoch resets live revision and sequence watermarks', () => {
+  const ready = replaceRuntimeProfile(createRuntimeProjectionState(), profile('rt_1', 100));
+  const oldEpoch = replaceSessionLiveProjection(ready, {
+    ...live('rt_1', 100),
+    cursor: {
+      runtimeId: 'rt_1',
+      sessionId: 's_1',
+      journalEpoch: 'epoch_old',
+      seq: 100,
+    },
+  });
+  const newEpoch = replaceSessionLiveProjection(oldEpoch, {
+    ...live('rt_1', 1),
+    cursor: {
+      runtimeId: 'rt_1',
+      sessionId: 's_1',
+      journalEpoch: 'epoch_new',
+      seq: 1,
+    },
+  });
+
+  assert.equal(newEpoch.liveBySession.s_1?.projectionRevision, 1);
+  assert.equal(newEpoch.liveBySession.s_1?.cursor.journalEpoch, 'epoch_new');
+
+  const staleChange = applySessionLiveChange(newEpoch, {
+    sessionId: 's_1',
+    baseProjectionRevision: 1,
+    projectionRevision: 101,
+    cursor: {
+      runtimeId: 'rt_1',
+      sessionId: 's_1',
+      journalEpoch: 'epoch_old',
+      seq: 101,
+    },
+    change: { domain: 'todos', todos: [] },
+  });
+  assert.equal(staleChange.status, 'snapshot-required');
 });
 
 test('matching live change advances one domain without rebuilding from events', () => {

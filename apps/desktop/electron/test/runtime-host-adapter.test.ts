@@ -10,8 +10,11 @@ import type {
   RuntimeRunHandle,
   RuntimeRunResult,
   RuntimeSession,
+  RuntimeSessionCursor,
   RuntimeSessionSettings,
   RuntimeSessionStatus,
+  RuntimeEventType,
+  RuntimeTypedEvent,
 } from '@kodax-ai/kodax/runtime';
 import type { AgentEvent, AgentTreeSnapshot } from '@kodax-ai/kodax/agent';
 import { isCoderOwnerRecoveryRestartRequired } from '../kodax/coder-owner-recovery-error.js';
@@ -61,6 +64,34 @@ const testRuntimeEventParser = (event: unknown) => ({
   event: event as import('@kodax-ai/kodax/runtime').RuntimeTypedEvent,
 });
 
+type TestRuntimeEvent = {
+  [Type in RuntimeEventType]: Omit<RuntimeTypedEvent<Type>, 'cursor'> & {
+    readonly cursor?: RuntimeSessionCursor;
+  };
+}[RuntimeEventType];
+
+function testRuntimeCursor(sessionId: string, seq: number): RuntimeSessionCursor {
+  return { sessionId, journalEpoch: 'journal_epoch_1', seq };
+}
+
+function withTestRuntimeCursor(event: TestRuntimeEvent): RuntimeTypedEvent {
+  return {
+    ...event,
+    cursor: event.cursor ?? testRuntimeCursor(event.sessionId, event.seq),
+  } as RuntimeTypedEvent;
+}
+
+function bindTestRuntimeEventBridge(
+  adapter: RuntimeHostAdapter,
+): (event: TestRuntimeEvent, runtimeId?: string) => void {
+  const bridge = (
+    adapter as unknown as {
+      bridgeRuntimeEvent(event: RuntimeTypedEvent, runtimeId?: string): void;
+    }
+  ).bridgeRuntimeEvent.bind(adapter);
+  return (event, runtimeId) => bridge(withTestRuntimeCursor(event), runtimeId);
+}
+
 function installPersistedSessionLookup(
   records: ReadonlyMap<string, Readonly<Record<string, unknown>>> = new Map(),
 ): void {
@@ -82,6 +113,7 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
   assert.doesNotThrow(() =>
     assertSpaceRuntimeSdkRequiredCapabilities({
       KODAX_RUNTIME_SDK_CAPABILITIES: {
+        actorSettlementConvergence: 1,
         daemonOrphanExit: 1,
         daemonShutdownVerification: 1,
         managedRunDurability: 1,
@@ -93,6 +125,7 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
     () =>
       assertSpaceRuntimeSdkRequiredCapabilities({
         KODAX_RUNTIME_SDK_CAPABILITIES: {
+          actorSettlementConvergence: 1,
           daemonOrphanExit: 1,
           daemonShutdownVerification: 1,
           managedRunDurability: 1,
@@ -102,7 +135,7 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
   );
   assert.throws(
     () => assertSpaceRuntimeSdkRequiredCapabilities({}),
-    /installed KodaX SDK.*daemonOrphanExit v1.*daemonShutdownVerification v1.*managedRunDurability v1.*runtimeEventCoalescing v1/i,
+    /installed KodaX SDK.*actorSettlementConvergence v1.*daemonOrphanExit v1.*daemonShutdownVerification v1.*managedRunDurability v1.*runtimeEventCoalescing v1/i,
   );
 });
 
@@ -355,6 +388,7 @@ function createFakeRuntime(runtimeId = 'rt_test') {
         bootstrapGrace: true,
       },
       managedRunDurability: { version: 1 },
+      actorSettlementConvergence: { version: 1 },
       runtimeEventCoalescing: { version: 1 },
       sandboxRuntime: {
         version: 1,
@@ -541,7 +575,7 @@ function createFakeRuntime(runtimeId = 'rt_test') {
         return {
           snapshot: {
             runtimeId,
-            cursor: 0,
+            cursor: testRuntimeCursor(sessionId, 0),
             transcriptRevision: `transcript_${sessionId}_0`,
             session: { id: sessionId, title: '', surface: 'code' },
             transcript: {
@@ -923,8 +957,9 @@ function createFakeRuntime(runtimeId = 'rt_test') {
     setIntegrationHealth(value: RuntimeDaemonManagementState['integrations']) {
       integrationHealth = value;
     },
-    emit(event: import('@kodax-ai/kodax/runtime').RuntimeTypedEvent) {
-      observationListeners.get(event.sessionId)?.(event);
+    emit(event: TestRuntimeEvent) {
+      const typed = withTestRuntimeCursor(event);
+      observationListeners.get(typed.sessionId)?.(typed);
     },
     invalidateObservation(
       sessionId: string,
@@ -1287,9 +1322,8 @@ test('embedded complete-exit close failure requires process recovery', async () 
   });
 
   await adapter.initialize();
-  await assert.rejects(
-    adapter.stopDaemonForCompleteExit(),
-    (error: unknown) => isCoderOwnerRecoveryRestartRequired(error),
+  await assert.rejects(adapter.stopDaemonForCompleteExit(), (error: unknown) =>
+    isCoderOwnerRecoveryRestartRequired(error),
   );
 });
 
@@ -3959,9 +3993,8 @@ test('complete exit treats CLI missing as confirmation only when owner state is 
     if (ownerStatus === 'unowned') {
       await assert.doesNotReject(adapter.stopDaemonForCompleteExit());
     } else {
-      await assert.rejects(
-        adapter.stopDaemonForCompleteExit(),
-        (error: unknown) => isCoderOwnerRecoveryRestartRequired(error),
+      await assert.rejects(adapter.stopDaemonForCompleteExit(), (error: unknown) =>
+        isCoderOwnerRecoveryRestartRequired(error),
       );
     }
   }
@@ -4055,9 +4088,8 @@ test('complete exit rejects an idle CLI success without a captured daemon owner'
     },
   });
 
-  await assert.rejects(
-    adapter.stopDaemonForCompleteExit(),
-    (error: unknown) => isCoderOwnerRecoveryRestartRequired(error),
+  await assert.rejects(adapter.stopDaemonForCompleteExit(), (error: unknown) =>
+    isCoderOwnerRecoveryRestartRequired(error),
   );
 });
 
@@ -4113,9 +4145,8 @@ test('complete exit rejects an idle legacy daemon without verified containment',
     },
   });
 
-  await assert.rejects(
-    adapter.stopDaemonForCompleteExit(),
-    (error: unknown) => isCoderOwnerRecoveryRestartRequired(error),
+  await assert.rejects(adapter.stopDaemonForCompleteExit(), (error: unknown) =>
+    isCoderOwnerRecoveryRestartRequired(error),
   );
 });
 
@@ -4130,9 +4161,8 @@ test('ambiguous idle daemon stop requires process recovery', async () => {
     }),
   });
 
-  await assert.rejects(
-    adapter.stopDaemonForCompleteExit(),
-    (error: unknown) => isCoderOwnerRecoveryRestartRequired(error),
+  await assert.rejects(adapter.stopDaemonForCompleteExit(), (error: unknown) =>
+    isCoderOwnerRecoveryRestartRequired(error),
   );
 });
 
@@ -5098,7 +5128,7 @@ test('a Runtime event replaces an older in-flight transcript boundary for later 
       ...observation,
       snapshot: {
         ...observation.snapshot,
-        cursor: 10,
+        cursor: testRuntimeCursor('s_crossed_boundary', 10),
         transcriptRevision: 'rev_stale',
         session: { id: 's_crossed_boundary', title: 'Crossed boundary', surface: 'code' },
         transcript: {
@@ -5238,7 +5268,7 @@ test('fresh observation transcript seeds history paging without duplicate Sessio
       ...observation,
       snapshot: {
         ...observation.snapshot,
-        cursor: 10,
+        cursor: testRuntimeCursor('s_snapshot', 10),
         transcriptRevision: 'rev_snapshot',
         session: { id: 's_snapshot', title: 'Snapshot title', surface: 'code' },
         transcript: {
@@ -6592,14 +6622,8 @@ test('a Runtime profile read refreshes status instead of returning a stale main 
 
 test('out-of-page active profile rows require persisted Coder identity proof', async () => {
   const records = new Map<string, Readonly<Record<string, unknown>>>([
-    [
-      's_out_of_page_coder',
-      { title: '', messages: [], gitRoot: 'C:\\repo', tag: 'code' },
-    ],
-    [
-      's_out_of_page_partner',
-      { title: '', messages: [], gitRoot: 'C:\\repo', tag: 'partner' },
-    ],
+    ['s_out_of_page_coder', { title: '', messages: [], gitRoot: 'C:\\repo', tag: 'code' }],
+    ['s_out_of_page_partner', { title: '', messages: [], gitRoot: 'C:\\repo', tag: 'partner' }],
   ]);
   let persistedReads = 0;
   setSessionStoreImpl({
@@ -6748,6 +6772,103 @@ test('run status and Stop bypass a history boundary that is busy with active Ses
   assert.equal(receipt?.runId, 'run_active_writer');
   assert.deepEqual(fake.calls.aborted, ['run_active_writer']);
   assert.deepEqual(fake.calls.loaded, []);
+  await adapter.close();
+});
+
+test('an exact Run Stop never retargets through the Session run list', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_1');
+  fake.runtime.runs.list = async () => {
+    throw new Error('exact Stop must not resolve a replacement Run');
+  };
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+  });
+
+  const receipt = await adapter.abortSessionRun('s_1', 'run_visible');
+
+  assert.equal(receipt?.runId, 'run_visible');
+  assert.deepEqual(fake.calls.aborted, ['run_visible']);
+  await adapter.close();
+});
+
+test('an exact queued Run Stop does not abort or retarget the active Run', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_1');
+  fake.runtime.runs.get = async (runId: string) => ({
+    runId,
+    sessionId: 's_1',
+    phase: 'queued' as const,
+    provider: 'mock',
+    startedAt: '2026-08-09T00:00:00.000Z',
+  });
+  fake.runtime.runs.list = async () => {
+    throw new Error('exact queued Stop must not retarget the active Run');
+  };
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+  });
+
+  const receipt = await adapter.abortSessionRun('s_1', 'run_queued');
+
+  assert.equal(receipt, undefined);
+  assert.deepEqual(fake.calls.aborted, []);
+  await adapter.close();
+});
+
+test('an exact unknown active Run Stop remains deliverable', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_1');
+  fake.runtime.runs.get = async (runId: string) => ({
+    runId,
+    sessionId: 's_1',
+    phase: 'unknown' as const,
+    provider: 'mock',
+    startedAt: '2026-08-09T00:00:00.000Z',
+  });
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+  });
+
+  const receipt = await adapter.abortSessionRun('s_1', 'run_unknown');
+
+  assert.equal(receipt?.accepted, true);
+  assert.deepEqual(fake.calls.aborted, ['run_unknown']);
+  await adapter.close();
+});
+
+test('an exact Run Stop rejects a foreign Session before aborting it', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_1');
+  fake.runtime.runs.get = async (runId: string) => ({
+    runId,
+    sessionId: 's_other',
+    phase: 'running' as const,
+    provider: 'mock',
+    startedAt: '2026-08-09T00:00:00.000Z',
+  });
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+  });
+
+  await assert.rejects(
+    adapter.abortSessionRun('s_1', 'run_foreign'),
+    /different Session identity/i,
+  );
+
+  assert.deepEqual(fake.calls.aborted, []);
   await adapter.close();
 });
 
@@ -7352,7 +7473,7 @@ test('buffered Runtime events become visible before Actor bootstrap can block ob
   const originalObserve = fake.runtime.sessions.observe.bind(fake.runtime.sessions);
   fake.runtime.sessions.observe = async (...args) => {
     const observation = await originalObserve(...args);
-    args[1]?.({
+    args[1]?.(withTestRuntimeCursor({
       id: 'evt_buffered_before_actor',
       seq: 1,
       time: '2026-08-05T12:00:00.000Z',
@@ -7366,7 +7487,7 @@ test('buffered Runtime events become visible before Actor bootstrap can block ob
         startedAt: '2026-08-05T12:00:00.000Z',
         provider: 'mock',
       },
-    });
+    }));
     return observation;
   };
   const agents = fake.runtime.agents as unknown as {
@@ -8261,14 +8382,7 @@ test('daemon delivered interrupt batch becomes ordered queue-addressable session
       if (channel === 'session.event') pushed.push(payload);
     },
   });
-  const bridgeRuntimeEvent = (
-    adapter as unknown as {
-      bridgeRuntimeEvent(
-        event: import('@kodax-ai/kodax/runtime').RuntimeTypedEvent,
-        runtimeId?: string,
-      ): void;
-    }
-  ).bridgeRuntimeEvent.bind(adapter);
+  const bridgeRuntimeEvent = bindTestRuntimeEventBridge(adapter);
 
   bridgeRuntimeEvent(
     {
@@ -8378,11 +8492,7 @@ test('a queued Runtime turn defers its user boundary until the delivered input a
       if (channel === 'session.event') pushed.push(payload);
     },
   });
-  const bridgeRuntimeEvent = (
-    adapter as unknown as {
-      bridgeRuntimeEvent(event: import('@kodax-ai/kodax/runtime').RuntimeTypedEvent): void;
-    }
-  ).bridgeRuntimeEvent.bind(adapter);
+  const bridgeRuntimeEvent = bindTestRuntimeEventBridge(adapter);
 
   bridgeRuntimeEvent({
     id: 'event_queued_turn_started',
@@ -8442,11 +8552,7 @@ test('unproven Runtime delivery kinds do not manufacture a user ordinal', async 
       if (channel === 'session.event') pushed.push(payload);
     },
   });
-  const bridgeRuntimeEvent = (
-    adapter as unknown as {
-      bridgeRuntimeEvent(event: import('@kodax-ai/kodax/runtime').RuntimeTypedEvent): void;
-    }
-  ).bridgeRuntimeEvent.bind(adapter);
+  const bridgeRuntimeEvent = bindTestRuntimeEventBridge(adapter);
   const observeRootTurnStart = (
     adapter as unknown as {
       observeRootTurnStart(turnId: string, deliveryKind: unknown): void;
@@ -8507,11 +8613,7 @@ test('same-adapter reconnect drops stale user ordinals when turn.started is not 
       if (channel === 'session.event') pushed.push(payload);
     },
   });
-  const bridgeRuntimeEvent = (
-    adapter as unknown as {
-      bridgeRuntimeEvent(event: import('@kodax-ai/kodax/runtime').RuntimeTypedEvent): void;
-    }
-  ).bridgeRuntimeEvent.bind(adapter);
+  const bridgeRuntimeEvent = bindTestRuntimeEventBridge(adapter);
 
   await adapter.initialize();
   bridgeRuntimeEvent({
@@ -8577,11 +8679,7 @@ test('daemon run lifecycle preserves canonical turn identity in renderer events'
       if (channel === 'session.event') pushed.push(payload);
     },
   });
-  const bridgeRuntimeEvent = (
-    adapter as unknown as {
-      bridgeRuntimeEvent(event: import('@kodax-ai/kodax/runtime').RuntimeTypedEvent): void;
-    }
-  ).bridgeRuntimeEvent.bind(adapter);
+  const bridgeRuntimeEvent = bindTestRuntimeEventBridge(adapter);
 
   bridgeRuntimeEvent({
     id: 'event_run_started_identity',
@@ -8784,11 +8882,7 @@ test('daemon child turn lifecycle cannot bind the root renderer turn identity', 
       if (channel === 'session.event') pushed.push(payload);
     },
   });
-  const bridgeRuntimeEvent = (
-    adapter as unknown as {
-      bridgeRuntimeEvent(event: import('@kodax-ai/kodax/runtime').RuntimeTypedEvent): void;
-    }
-  ).bridgeRuntimeEvent.bind(adapter);
+  const bridgeRuntimeEvent = bindTestRuntimeEventBridge(adapter);
 
   bridgeRuntimeEvent({
     id: 'event_child_turn_started',
@@ -8821,11 +8915,7 @@ test('daemon run failure falls back to the structured terminal message', async (
       if (channel === 'session.event') pushed.push(payload);
     },
   });
-  const bridgeRuntimeEvent = (
-    adapter as unknown as {
-      bridgeRuntimeEvent(event: import('@kodax-ai/kodax/runtime').RuntimeTypedEvent): void;
-    }
-  ).bridgeRuntimeEvent.bind(adapter);
+  const bridgeRuntimeEvent = bindTestRuntimeEventBridge(adapter);
 
   bridgeRuntimeEvent({
     id: 'event_run_failed_with_terminal_reason',
@@ -8870,11 +8960,7 @@ test('daemon bridge preserves Runtime turn identity on live transcript events', 
       if (channel === 'session.event') sessionEvents.push(payload);
     },
   });
-  const bridgeRuntimeEvent = (
-    adapter as unknown as {
-      bridgeRuntimeEvent(event: import('@kodax-ai/kodax/runtime').RuntimeTypedEvent): void;
-    }
-  ).bridgeRuntimeEvent.bind(adapter);
+  const bridgeRuntimeEvent = bindTestRuntimeEventBridge(adapter);
   const emit = (
     seq: number,
     type: import('@kodax-ai/kodax/runtime').RuntimeTypedEvent['type'],
@@ -8944,11 +9030,7 @@ test('daemon bridge routes child activity without inserting it into the primary 
       if (channel === 'workflow.activity') workflowActivities.push(payload);
     },
   });
-  const bridgeRuntimeEvent = (
-    adapter as unknown as {
-      bridgeRuntimeEvent(event: import('@kodax-ai/kodax/runtime').RuntimeTypedEvent): void;
-    }
-  ).bridgeRuntimeEvent.bind(adapter);
+  const bridgeRuntimeEvent = bindTestRuntimeEventBridge(adapter);
   const childMeta = {
     contextKind: 'child',
     contextId: 'child_context_1',
@@ -9081,11 +9163,7 @@ test('terminal Runtime events fail only undelivered interrupt inputs before clos
         if (channel === 'session.event') pushed.push(payload);
       },
     });
-    const bridgeRuntimeEvent = (
-      adapter as unknown as {
-        bridgeRuntimeEvent(event: import('@kodax-ai/kodax/runtime').RuntimeTypedEvent): void;
-      }
-    ).bridgeRuntimeEvent.bind(adapter);
+    const bridgeRuntimeEvent = bindTestRuntimeEventBridge(adapter);
 
     bridgeRuntimeEvent({
       id: `event_${type}`,
@@ -9148,11 +9226,7 @@ test('daemon terminal sidecar block is surfaced as a notice and closes without a
       if (channel === 'session.event') pushed.push(payload);
     },
   });
-  const bridgeRuntimeEvent = (
-    adapter as unknown as {
-      bridgeRuntimeEvent(event: import('@kodax-ai/kodax/runtime').RuntimeTypedEvent): void;
-    }
-  ).bridgeRuntimeEvent.bind(adapter);
+  const bridgeRuntimeEvent = bindTestRuntimeEventBridge(adapter);
 
   bridgeRuntimeEvent({
     id: 'event_sidecar_blocked',
@@ -10023,7 +10097,7 @@ test('a same-Runtime observation generation immediately replaces its retired pre
       ...observation,
       snapshot: {
         ...observation.snapshot,
-        cursor: 3,
+        cursor: testRuntimeCursor('s_reobserve', 3),
         runs: [
           {
             runId: 'run_second',
@@ -10108,7 +10182,7 @@ test('observation invalidation preserves a monotonic live revision for a missed 
       ...observation,
       snapshot: {
         ...observation.snapshot,
-        cursor: generation === 1 ? 0 : 4,
+        cursor: testRuntimeCursor('s_invalidated_revision', generation === 1 ? 0 : 4),
         runs: [
           {
             runId: generation === 1 ? 'run_before_invalidation' : 'run_after_invalidation',
@@ -10324,7 +10398,7 @@ test('Actor snapshot retirement waits for buffered observation demand', async ()
   const originalObserve = fake.runtime.sessions.observe.bind(fake.runtime.sessions);
   fake.runtime.sessions.observe = async (...args) => {
     const observation = await originalObserve(...args);
-    args[1]?.({
+    args[1]?.(withTestRuntimeCursor({
       id: 'evt_buffered_run_started',
       seq: 1,
       time: '2026-08-02T12:00:00.000Z',
@@ -10340,7 +10414,7 @@ test('Actor snapshot retirement waits for buffered observation demand', async ()
         startedAt: '2026-08-02T12:00:00.000Z',
         provider: 'mock',
       },
-    });
+    }));
     return observation;
   };
   const adapter = new RuntimeHostAdapter({

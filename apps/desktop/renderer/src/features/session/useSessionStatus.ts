@@ -261,7 +261,6 @@ export function useSessionStatusMap(
           }
           if (
             runtimeProfileSessionActivityOutranksLive(
-              freshProfile,
               session,
               liveProjectionBySession[session.sessionId],
             )

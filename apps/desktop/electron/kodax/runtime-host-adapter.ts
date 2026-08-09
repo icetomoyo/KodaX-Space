@@ -123,6 +123,15 @@ export type RuntimeHostState =
 export type RuntimeCapabilityOwner = 'runtime' | 'space-bridge' | 'legacy' | 'unavailable';
 export type RuntimeCapabilitySupport = 'supported' | 'partial' | 'unavailable';
 
+const EXACT_STOP_ACTIVE_PHASES: ReadonlySet<RuntimeRunStatus['phase']> = new Set([
+  'running',
+  'waiting_agent',
+  'recovering',
+  'waiting_permission',
+  'waiting_user_input',
+  'unknown',
+]);
+
 export interface RuntimeHostCapability {
   readonly id: string;
   readonly support: RuntimeCapabilitySupport;
@@ -1347,6 +1356,12 @@ function runtimeCapabilityVersion(runtime: KodaXDaemonRuntime, name: string): nu
 }
 
 function assertSpaceDaemonRequiredCapabilities(runtime: KodaXDaemonRuntime): void {
+  if (runtimeCapabilityVersion(runtime, 'actorSettlementConvergence') < 1) {
+    throw new Error(
+      'KodaX Runtime does not support the required actorSettlementConvergence v1 capability. ' +
+        'Install a compatible KodaX package and restart the Coder daemon.',
+    );
+  }
   if (runtimeCapabilityVersion(runtime, 'daemonOrphanExit') < 1) {
     throw new Error(
       'KodaX Runtime does not support the required daemonOrphanExit v1 capability. ' +
@@ -1471,6 +1486,7 @@ async function createPublishedRuntime(
   assertSpaceRuntimeSdkRequiredCapabilities(
     sdk as typeof sdk & {
       readonly KODAX_RUNTIME_SDK_CAPABILITIES?: {
+        readonly actorSettlementConvergence?: number;
         readonly daemonOrphanExit?: number;
         readonly daemonShutdownVerification?: number;
         readonly managedRunDurability?: number;
@@ -1483,6 +1499,7 @@ async function createPublishedRuntime(
 
 export function assertSpaceRuntimeSdkRequiredCapabilities(sdk: {
   readonly KODAX_RUNTIME_SDK_CAPABILITIES?: {
+    readonly actorSettlementConvergence?: number;
     readonly daemonOrphanExit?: number;
     readonly daemonShutdownVerification?: number;
     readonly managedRunDurability?: number;
@@ -1491,10 +1508,9 @@ export function assertSpaceRuntimeSdkRequiredCapabilities(sdk: {
 }): void {
   const capabilities = sdk.KODAX_RUNTIME_SDK_CAPABILITIES;
   const missing = [
+    ...(capabilities?.actorSettlementConvergence === 1 ? [] : ['actorSettlementConvergence v1']),
     ...(capabilities?.daemonOrphanExit === 1 ? [] : ['daemonOrphanExit v1']),
-    ...(capabilities?.daemonShutdownVerification === 1
-      ? []
-      : ['daemonShutdownVerification v1']),
+    ...(capabilities?.daemonShutdownVerification === 1 ? [] : ['daemonShutdownVerification v1']),
     ...(capabilities?.managedRunDurability === 1 ? [] : ['managedRunDurability v1']),
     ...(capabilities?.runtimeEventCoalescing === 1 ? [] : ['runtimeEventCoalescing v1']),
   ];
@@ -1862,14 +1878,14 @@ export class RuntimeHostAdapter {
     this.ownerControl = options.ownerControl ?? publishedRuntimeOwnerControl;
     this.idleDaemonStop = options.idleDaemonStop ?? (() => stopCoderDaemonWhenSafe());
     const legacyProcessExitWaiter = options.daemonProcessExitWaiter;
-    this.daemonShutdownVerifier = options.daemonShutdownVerifier
-      ?? (legacyProcessExitWaiter === undefined
+    this.daemonShutdownVerifier =
+      options.daemonShutdownVerifier ??
+      (legacyProcessExitWaiter === undefined
         ? verifyPublishedDaemonShutdown
-        : async (input) => (
-            await legacyProcessExitWaiter(input.owner.pid, input.timeoutMs)
+        : async (input) =>
+            (await legacyProcessExitWaiter(input.owner.pid, input.timeoutMs))
               ? { status: 'succeeded' as const }
-              : { status: 'unverified' as const, reason: 'daemon_active' as const }
-          ));
+              : { status: 'unverified' as const, reason: 'daemon_active' as const });
     this.integrationHealthPollMs =
       options.integrationHealthPollMs ?? (options.runtimeFactory === undefined ? 2_000 : 0);
     this.startupTimingFactory =
@@ -2555,6 +2571,11 @@ export class RuntimeHostAdapter {
         available: available('managedRunDurability'),
       },
       {
+        id: 'runtime.actors.settlementConvergence',
+        version: version('actorSettlementConvergence'),
+        available: available('actorSettlementConvergence'),
+      },
+      {
         id: 'runtime.events.coalescing',
         version: version('runtimeEventCoalescing'),
         available: available('runtimeEventCoalescing'),
@@ -2718,8 +2739,10 @@ export class RuntimeHostAdapter {
         'Coder daemon status runtimeId does not match the attached Runtime identity.',
       );
     }
-    const verifiedOutOfPageCoderSessionIds =
-      await this.verifyOutOfPageCoderSessions(runtime, status);
+    const verifiedOutOfPageCoderSessionIds = await this.verifyOutOfPageCoderSessions(
+      runtime,
+      status,
+    );
     if (this.runtime !== runtime || this.state !== 'ready') return;
     this.runtimeCoderSessionIds = new Set(
       coderRuntimeSessionIds(status, verifiedOutOfPageCoderSessionIds),
@@ -4055,7 +4078,7 @@ export class RuntimeHostAdapter {
             sanitizeDiagnosticError(error),
           );
         });
-      this.advanceProfileCursor(runtime, observation.snapshot.cursor);
+      this.advanceProfileCursor(runtime, observation.snapshot.cursor.seq);
       // A retired observation deliberately leaves its final projection cached for cheap reads.
       // Once a new daemon observation has been installed, that snapshot supersedes the cache even
       // when its daemon cursor is unchanged. Remove the old cache atomically before applying the
@@ -4380,10 +4403,10 @@ export class RuntimeHostAdapter {
     } else if (event.type === 'run.queued') {
       state.bindingRunIds.add(event.runId);
     } else if (
-      (event.type === 'run.completed' ||
-        event.type === 'run.failed' ||
-        event.type === 'run.cancelled' ||
-        event.type === 'run.interrupted')
+      event.type === 'run.completed' ||
+      event.type === 'run.failed' ||
+      event.type === 'run.cancelled' ||
+      event.type === 'run.interrupted'
     ) {
       state.bindingRunIds.delete(event.runId);
       if (state.activeRunId === event.runId) state.activeRunId = undefined;
@@ -5327,26 +5350,45 @@ export class RuntimeHostAdapter {
     }
   }
 
-  async abortSessionRun(sessionId: string): Promise<RuntimeRunStopReceipt | undefined> {
+  async abortSessionRun(
+    sessionId: string,
+    expectedRunId?: string,
+  ): Promise<RuntimeRunStopReceipt | undefined> {
     // Runtime-selected-but-disconnected is an availability failure, not evidence that the
     // Session has no active Run. Requiring the authoritative Runtime here either reconnects or
     // fails the IPC explicitly; returning undefined would make the UI claim "no active run".
     const runtime = await this.requireRuntime();
-    // `runtime.runs.abort()` performs the authoritative run/session ownership check. A durable
-    // transcript ownership read is intentionally absent here because active Session writes are
-    // normal, not an identity conflict, and must never prevent delivery of a Stop request.
-    const statuses = await runtime.runs.list({
-      sessionId,
-      phase: [
-        'running',
-        'waiting_agent',
-        'recovering',
-        'waiting_permission',
-        'waiting_user_input',
-        'unknown',
-        'queued',
-      ],
-    });
+    // An exact Stop must prove Run/Session ownership and visible active phase before invoking the
+    // destructive abort. Queued Runs have separate controls; accepting one here could make Host
+    // clean interactions owned by a different active Run in the same Session.
+    // The session-scoped fallback remains list-based so active transcript writes cannot block Stop.
+    const exactStatus =
+      expectedRunId === undefined ? undefined : await runtime.runs.get(expectedRunId);
+    if (expectedRunId !== undefined && exactStatus === undefined) return undefined;
+    if (
+      exactStatus !== undefined &&
+      (exactStatus.runId !== expectedRunId || exactStatus.sessionId !== sessionId)
+    ) {
+      throw new Error('Coder daemon returned a Run status for a different Session identity.');
+    }
+    if (exactStatus !== undefined && !EXACT_STOP_ACTIVE_PHASES.has(exactStatus.phase)) {
+      return undefined;
+    }
+    const statuses =
+      expectedRunId === undefined
+        ? await runtime.runs.list({
+            sessionId,
+            phase: [
+              'running',
+              'waiting_agent',
+              'recovering',
+              'waiting_permission',
+              'waiting_user_input',
+              'unknown',
+              'queued',
+            ],
+          })
+        : [];
     if (statuses.some((candidate) => candidate.sessionId !== sessionId)) {
       throw new Error('Coder daemon returned a Run status for a different Session identity.');
     }
@@ -5357,7 +5399,7 @@ export class RuntimeHostAdapter {
       const rank = (run: RuntimeRunStatus): number => (run.phase === 'queued' ? 1 : 0);
       return rank(a) - rank(b) || (a.sessionOrder ?? 0) - (b.sessionOrder ?? 0);
     })[0];
-    const runId = status?.runId ?? this.activeRunId(sessionId);
+    const runId = expectedRunId ?? status?.runId ?? this.activeRunId(sessionId);
     if (!runId) return undefined;
     const receipt = await runtime.runs.abort(runId);
     if (receipt.runId !== runId || receipt.sessionId !== sessionId) {
@@ -6036,9 +6078,10 @@ export class RuntimeHostAdapter {
       }
       try {
         const verification = await this.daemonShutdownVerifier({
-          configHome: this.runtimeHomeDir === undefined
-            ? this.profileRoot
-            : path.join(this.runtimeHomeDir, '.kodax'),
+          configHome:
+            this.runtimeHomeDir === undefined
+              ? this.profileRoot
+              : path.join(this.runtimeHomeDir, '.kodax'),
           profile: 'coder',
           owner: management.owner,
           timeoutMs: DAEMON_PROCESS_EXIT_TIMEOUT_MS,
@@ -6077,8 +6120,8 @@ export class RuntimeHostAdapter {
         throw new Error('Coder owner state is unreadable before shutdown.');
       }
       if (
-        ownerBeforeStop.ownerStatus === 'owned'
-        && (ownerBeforeStop.owner === null || ownerBeforeStop.owner.kind === 'inline')
+        ownerBeforeStop.ownerStatus === 'owned' &&
+        (ownerBeforeStop.owner === null || ownerBeforeStop.owner.kind === 'inline')
       ) {
         throw new Error('Coder owner is not a daemon; shutdown could not be confirmed.');
       }
@@ -6098,14 +6141,13 @@ export class RuntimeHostAdapter {
         }
       } else {
         if (!stopped.stopped || ownerBeforeStop.owner === null) {
-          throw new Error(
-            'The captured Coder daemon owner was not authoritatively stopped.',
-          );
+          throw new Error('The captured Coder daemon owner was not authoritatively stopped.');
         }
         const verification = await this.daemonShutdownVerifier({
-          configHome: this.runtimeHomeDir === undefined
-            ? this.profileRoot
-            : path.join(this.runtimeHomeDir, '.kodax'),
+          configHome:
+            this.runtimeHomeDir === undefined
+              ? this.profileRoot
+              : path.join(this.runtimeHomeDir, '.kodax'),
           profile: 'coder',
           owner: ownerBeforeStop.owner,
           timeoutMs: DAEMON_PROCESS_EXIT_TIMEOUT_MS,
@@ -6384,8 +6426,7 @@ export class RuntimeHostAdapter {
     if (verification.status === 'succeeded') return;
     if (verification.status === 'failed') {
       throw new Error(
-        verification.outcome?.error
-          ?? `Coder daemon ${pid} reported failed final cleanup.`,
+        verification.outcome?.error ?? `Coder daemon ${pid} reported failed final cleanup.`,
       );
     }
     if (verification.status === 'replacement_running') {

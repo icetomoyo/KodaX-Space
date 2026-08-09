@@ -1,6 +1,6 @@
 # Known Issues
 
-Last Updated: 2026-08-08
+Last Updated: 2026-08-09
 
 > Historical issue details are preserved as investigation evidence. Resolved items older than 30 days move to [ISSUES_ARCHIVED.md](ISSUES_ARCHIVED.md) without losing their investigation record. The current Space v0.1.38 baseline uses exact npm Registry KodaX 0.7.84. Durable managed-Run admission requires `managedRunDurability:1`; bounded Agent progress, same-owner Stop recovery, Session reactivation, active-Session input admission, safe-close recovery, and history/live reconciliation are release gates. Start from the [documentation hub](README.md) for current behavior and status.
 
@@ -173,8 +173,49 @@ Last Updated: 2026-08-08
 | 175 | High     | Resolved    | Safe close could reject an idle app after hiding it, then succeed only on a second close                                           | v0.1.37 complete-exit / Windows daemon cleanup               | 2026-08-06 |
 | 176 | High     | Resolved    | Reactivating an invalidated active Session could duplicate or misplace its newest query and answer until Ctrl+R                    | v0.1.38 Session reactivation recovery                        | 2026-08-06 |
 | 177 | High     | Resolved    | History reconciliation could duplicate a recovered answer or place compact notices after a later answer                            | v0.1.38 history/live and local-notice reconciliation         | 2026-08-08 |
+| 178 | High     | Release blocked | Actor durability unknown blocked input, dropped the live turn after Stop, and misreported self-fence as foreign ownership       | KodaX 0.7.84 / Space v0.1.38                                 | 2026-08-09 |
 
 ## Issue Details
+
+### 178: Actor durability unknown blocked input, dropped the live turn after Stop, and misreported self-fence as foreign ownership
+
+- Priority: High
+- Status: Release blocked
+- Introduced: KodaX 0.7.84 / Space v0.1.38
+- Fixed target: KodaX v0.7.85 / Space v0.1.39
+- Created: 2026-08-09
+
+#### Problem
+
+During a live multi-Agent Run, delayed Actor snapshot persistence moved the Run
+to `unknown` while the root provider continued working. Space then rejected all
+normal sends as `stale_run`. Manual Stop could make the optimistic query and
+streamed output disappear when canonical history lacked that incomplete turn.
+Further `spawn_agent` calls reported `actor_owner_conflict` even though the
+controller had self-fenced inside the same Runtime rather than lost ownership
+to a foreign process.
+
+#### Resolution
+
+- Space requires `actorSettlementConvergence:1`, so it cannot ship this UX over
+  the partial KodaX 0.7.84 semantics.
+- All composer paths convert input during `unknown` to one acknowledged
+  after-turn continuation. Runtime retains it behind the exact fenced Run and
+  starts it only after same-owner repair and a durable prior terminal.
+- Stop transports the visible exact Run ID end-to-end and validates the receipt
+  before presenting success.
+- Live transcript pruning now needs exact canonical folding proof; a terminal
+  event alone cannot erase a query/output turn whose Session commit is absent.
+- KodaX fail-closes root and child work, automatically repairs only exact
+  same-owner state, and reports causal `actor_settlement_not_persisted` for
+  self-fence. A real foreign owner still reports `actor_owner_conflict`.
+
+#### Release boundary
+
+This fix must ship as a paired release: publish the new KodaX package bytes,
+pin those exact Registry bytes in both Space manifests/lock views, then run the
+packaged Windows fault-injection guide. Updating Space without the new package
+fails the capability gate by design.
 
 ### 013: Restored KodaX sessions could pair assistant segments with the following user prompt after consecutive user messages
 

@@ -14,6 +14,33 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ## [Unreleased]
 
+### Changed
+
+- Coder startup now requires KodaX Runtime capability
+  `actorSettlementConvergence:1`; Space will not claim compatibility from the
+  package version alone.
+- When the active Run is durability-unknown, every composer entry point queues
+  the next query as after-turn input. The draft is cleared only after Runtime
+  acknowledges that exact queued continuation.
+- Ambiguous composer sends retain their operation identity across intervening
+  drafts. Main-process deduplication runs before attachment validation, so an
+  accepted query with a lost IPC reply cannot be duplicated or fail merely
+  because its draft image was already cleaned up.
+
+### Fixed
+
+- Stop now carries the visible exact `runId` through renderer, IPC, host, and
+  Runtime receipt validation, preventing a stale click from targeting a
+  successor Run.
+- A terminal Runtime event no longer prunes a live query/output turn without
+  exact canonical folding proof. Manual recovery therefore keeps the submitted
+  query and streamed output visible when its canonical Session commit is
+  absent.
+- Durability-unknown UI remains active and stoppable, but now describes the
+  factual automatic repair instead of promising an unspecified Space refresh.
+- Same-runtime Actor self-fence is surfaced as settlement persistence failure;
+  genuine `actor_owner_conflict` remains reserved for a different live owner.
+
 ---
 
 ## [0.1.38] - 2026-08-07

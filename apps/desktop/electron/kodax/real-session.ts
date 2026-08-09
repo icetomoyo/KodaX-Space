@@ -572,6 +572,9 @@ export class RealKodaXSession implements ManagedSession {
           afterRunId: activeRunId,
           delivery,
           input: this.buildRuntimeInput(continuationPrompt, artifacts),
+          ...(options?.operationId !== undefined
+            ? { operation: { operationId: options.operationId } }
+            : {}),
         });
         if (!result.accepted) {
           return { accepted: false, reason: result.reason, queueMode };
@@ -595,6 +598,7 @@ export class RealKodaXSession implements ManagedSession {
         artifacts,
         options?.promptOverlay,
         runPermissionMode,
+        options?.operationId,
         true,
       );
       const outcome = admission ? await admission.promise : 'admitted';
@@ -631,7 +635,13 @@ export class RealKodaXSession implements ManagedSession {
       this.lastActivityAt = Date.now();
       return { accepted: true, queued: true, queueId, queueMode };
     }
-    this.startRun(prompt, artifacts, options?.promptOverlay, runPermissionMode);
+    this.startRun(
+      prompt,
+      artifacts,
+      options?.promptOverlay,
+      runPermissionMode,
+      options?.operationId,
+    );
     return { accepted: true, queued: false };
   }
 
@@ -657,6 +667,7 @@ export class RealKodaXSession implements ManagedSession {
     artifacts?: readonly InputArtifact[],
     promptOverlay?: string,
     runPermissionMode: PermissionMode = this.permissionMode,
+    operationId?: string,
     restoreDraftOnBoundaryConflict = false,
   ): RuntimeAdmissionState | null {
     const abort = new AbortController();
@@ -675,6 +686,7 @@ export class RealKodaXSession implements ManagedSession {
       promptOverlay,
       runtimeAdmission,
       runPermissionMode,
+      operationId,
     )
       .catch((error: unknown) => {
         if (this.disposed || abort.signal.aborted) return;
@@ -790,14 +802,20 @@ export class RealKodaXSession implements ManagedSession {
     }
   }
 
-  async cancel(): Promise<SpaceRuntimeRunStopReceiptT | LocalSessionCancelOutcome | void> {
+  async cancel(
+    runId?: string,
+  ): Promise<SpaceRuntimeRunStopReceiptT | LocalSessionCancelOutcome | void> {
     const currentAbort = this.currentAbort;
     const admission =
       currentAbort !== null && this.runtimeAdmission?.abort === currentAbort
         ? this.runtimeAdmission
         : null;
+    const runtimeCoder = this.surface === 'code' && runtimeHostAdapter.isRuntimeSelected();
+    if (runtimeCoder && runId !== undefined && admission?.runId !== runId) {
+      return runtimeHostAdapter.abortSessionRun(this.sessionId, runId);
+    }
     currentAbort?.abort();
-    if (this.surface === 'code' && runtimeHostAdapter.isRuntimeSelected()) {
+    if (runtimeCoder) {
       if (admission?.phase === 'preparing') {
         this.settleRuntimeAdmission(admission, 'not_admitted', true);
         if (this.currentAbort === currentAbort) this.currentAbort = null;
@@ -813,7 +831,7 @@ export class RealKodaXSession implements ManagedSession {
           return { kind: 'local_cancelled_before_admission' };
         }
       }
-      return runtimeHostAdapter.abortSessionRun(this.sessionId);
+      return runtimeHostAdapter.abortSessionRun(this.sessionId, runId);
     }
     // Stop should also drop queued follow-up prompts so cancel means
     // "do not continue". Drain failure must not block abort.
@@ -954,6 +972,7 @@ export class RealKodaXSession implements ManagedSession {
     artifacts?: readonly InputArtifact[],
     promptOverlay?: string,
     admission?: RuntimeAdmissionState | null,
+    operationId?: string,
   ): Promise<void> {
     const sid = this.sessionId;
     try {
@@ -1006,6 +1025,7 @@ export class RealKodaXSession implements ManagedSession {
         input: this.buildRuntimeInput(prompt, artifacts),
         mode: 'managed_task' as const,
         options,
+        ...(operationId !== undefined ? { operation: { operationId } } : {}),
       };
       let handle: Awaited<ReturnType<typeof runtimeHostAdapter.startManagedRun>>;
       let boundaryRetry = 0;
@@ -1101,9 +1121,17 @@ export class RealKodaXSession implements ManagedSession {
     promptOverlay?: string,
     runtimeAdmission?: RuntimeAdmissionState | null,
     runPermissionMode: PermissionMode = this.permissionMode,
+    operationId?: string,
   ): Promise<void> {
     if (this.surface === 'code' && runtimeHostAdapter.isRuntimeSelected()) {
-      await this.runCoderDaemon(prompt, signal, artifacts, promptOverlay, runtimeAdmission);
+      await this.runCoderDaemon(
+        prompt,
+        signal,
+        artifacts,
+        promptOverlay,
+        runtimeAdmission,
+        operationId,
+      );
       return;
     }
     if (this.surface === 'code') {

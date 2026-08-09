@@ -850,7 +850,12 @@ export function projectRuntimeSessionSnapshot(
   return spaceSessionLiveProjectionSchema.parse({
     sessionId: snapshot.session.id,
     projectionRevision: 1,
-    cursor: { runtimeId: snapshot.runtimeId, seq: snapshot.cursor },
+    cursor: {
+      runtimeId: snapshot.runtimeId,
+      sessionId: snapshot.cursor.sessionId,
+      journalEpoch: snapshot.cursor.journalEpoch,
+      seq: snapshot.cursor.seq,
+    },
     transcriptRevision: snapshot.transcriptRevision,
     ...runs,
     ...(assistantDraft ? { assistantDraft } : {}),
@@ -1157,7 +1162,7 @@ export class CoderSessionProjectionReducer {
   ): SpaceSessionLiveChangedT {
     const baseProjectionRevision = this.#projection.projectionRevision;
     const projectionRevision = baseProjectionRevision + 1;
-    const cursor = { runtimeId: this.#projection.cursor.runtimeId, seq };
+    const cursor = { ...this.#projection.cursor, seq };
     switch (change.domain) {
       case 'run':
         this.#projection = {

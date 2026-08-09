@@ -92,6 +92,7 @@ test('Runtime transcript events carry the daemon cursor used by snapshot reconci
   const event = {
     id: 'event_7',
     seq: 7,
+    cursor: { sessionId: 's_1', journalEpoch: 'journal_epoch_1', seq: 7 },
     time: '2026-07-28T00:00:00.000Z',
     type: 'assistant.delta',
     sessionId: 's_1',
@@ -208,7 +209,11 @@ const askUser = {
 
 const observation = {
   runtimeId: 'rt_shared',
-  cursor: 41,
+  cursor: {
+    sessionId: 's_code',
+    journalEpoch: 'journal_epoch_shared',
+    seq: 41,
+  },
   transcriptRevision: 'transcript_rev_41',
   session: {
     id: 's_code',
@@ -288,6 +293,8 @@ test('atomic observation maps run, draft, tool, Todo, and interaction truth', ()
   const projection = projectRuntimeSessionSnapshot(observation, [askUser]);
 
   assert.equal(projection.cursor.runtimeId, 'rt_shared');
+  assert.equal(projection.cursor.sessionId, 's_code');
+  assert.equal(projection.cursor.journalEpoch, 'journal_epoch_shared');
   assert.equal(projection.cursor.seq, 41);
   assert.equal(projection.activeRun?.runId, 'run_active');
   assert.equal(projection.activeRun?.turnId, 'turn_active');
@@ -399,7 +406,7 @@ test('atomic observation maps run, draft, tool, Todo, and interaction truth', ()
 test('a terminal observation never projects residual or foreign Run drafts as answer text', () => {
   const terminalObservation = {
     ...observation,
-    cursor: 42,
+    cursor: { ...observation.cursor, seq: 42 },
     runs: [
       {
         ...running,

@@ -225,6 +225,7 @@ export function QuickAskPopover({ open, onClose }: QuickAskPopoverProps): JSX.El
       sessionId,
       prompt: trimmed,
       queueMode: 'interrupt',
+      operationId: `space-quick-ask-${crypto.randomUUID()}`,
       expectedProjectRoot: currentProjectPath,
       expectedSurface: 'code',
     });

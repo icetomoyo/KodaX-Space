@@ -491,11 +491,7 @@ function pruneDurablyCanonicalizedHistoryLivePrefix(
   prefixOmitted: boolean,
   authoritativeNewest: boolean,
 ): void {
-  if (
-    !prefixOmitted ||
-    !authoritativeNewest ||
-    baseline.durableCanonicalizedUserIds.size === 0
-  ) {
+  if (!prefixOmitted || !authoritativeNewest || baseline.durableCanonicalizedUserIds.size === 0) {
     return;
   }
   const canonicalTurns = transcriptTurnSnapshots(canonicalUsers, canonicalEvents);
@@ -507,47 +503,6 @@ function pruneDurablyCanonicalizedHistoryLivePrefix(
         : [],
     ),
   );
-  pruneHistoryLiveOwners(baseline, prunedIds);
-}
-
-function pruneSettledRuntimeHistoryLivePrefix(
-  baseline: HistoryLiveBaseline,
-  canonicalUsers: readonly UserMessage[],
-  canonicalEvents: readonly SessionEvent[],
-  settledRuns: readonly { readonly runtimeId: string; readonly runId: string }[],
-  prefixOmitted: boolean,
-): void {
-  if (!prefixOmitted || settledRuns.length === 0) return;
-  const settledRuntimeByRun = new Map(
-    settledRuns.map(({ runId, runtimeId }) => [runId, runtimeId]),
-  );
-  const canonicalTurns = transcriptTurnSnapshots(canonicalUsers, canonicalEvents);
-  const liveTurns = transcriptTurnSnapshots(baseline.userMessages, baseline.events);
-  const prunedIds = new Set<string>();
-  for (const live of liveTurns) {
-    const runtimeId =
-      live.runtimeRunId === undefined ? undefined : settledRuntimeByRun.get(live.runtimeRunId);
-    if (runtimeId === undefined || (live.entryId === undefined && !hasStrongTurnIdentity(live))) {
-      continue;
-    }
-    const segment = baseline.events.slice(live.eventStart, live.eventEnd);
-    let sawExactRuntimeEvent = false;
-    let conflictingRuntimeEvent = false;
-    for (const event of segment) {
-      if (!('runtimeEvent' in event) || event.runtimeEvent === undefined) continue;
-      if (
-        event.runtimeEvent.runtimeId === runtimeId &&
-        event.runtimeEvent.runId === live.runtimeRunId
-      ) {
-        sawExactRuntimeEvent = true;
-      } else {
-        conflictingRuntimeEvent = true;
-      }
-    }
-    if (!sawExactRuntimeEvent || conflictingRuntimeEvent) continue;
-    const canonicalRelation = canonicalLiveTurnRelation(canonicalTurns, live);
-    if (canonicalRelation === 'absent') prunedIds.add(live.messageId);
-  }
   pruneHistoryLiveOwners(baseline, prunedIds);
 }
 
@@ -600,7 +555,12 @@ interface RuntimeSnapshotEventBarrier extends SpaceRuntimeCursorT {
 interface PendingSendRuntimeBaseline {
   readonly requestGeneration: number;
   readonly runtimeId?: string;
-  readonly cursorSeq: number;
+  /** Per-Session observation sequence; never compare it with the aggregate profile cursor. */
+  readonly liveCursorSeq: number;
+  readonly liveCursorSessionId?: string;
+  readonly liveCursorJournalEpoch?: string;
+  /** Aggregate profile sequence; causal only within the profile projection stream. */
+  readonly profileCursorSeq: number;
   readonly acceptedRunId?: string;
 }
 
@@ -976,11 +936,6 @@ interface AppState {
       readonly sourceRevision?: string;
       /** This resolved replacement is the authoritative newest canonical window. */
       readonly authoritativeNewest?: boolean;
-      /** Exact Runtime Runs settled by the authoritative newest-page read being installed. */
-      readonly settledRuntimeRuns?: readonly {
-        readonly runtimeId: string;
-        readonly runId: string;
-      }[];
     },
   ): void;
   /** Drop only the replaceable history projection while retaining independent live rows. */
@@ -2335,7 +2290,8 @@ function contentProjectionIsPrefix(
 }
 
 function collapseAdjacentTextContent(sequence: readonly string[]): string[] {
-  const collapsed: Array<{ readonly prefix?: 'thinking:' | 'text:'; readonly parts: string[] }> = [];
+  const collapsed: Array<{ readonly prefix?: 'thinking:' | 'text:'; readonly parts: string[] }> =
+    [];
   for (const item of sequence) {
     const prefix = item.startsWith('thinking:')
       ? ('thinking:' as const)
@@ -2425,9 +2381,7 @@ function transcriptContentRuns(events: readonly SessionEvent[]): TranscriptConte
   return runs;
 }
 
-function collapseAdjacentTextRuns(
-  runs: readonly TranscriptContentRun[],
-): TranscriptContentRun[] {
+function collapseAdjacentTextRuns(runs: readonly TranscriptContentRun[]): TranscriptContentRun[] {
   const collapsed: Array<{
     keyParts: string[];
     eventIndexes: number[];
@@ -2625,7 +2579,10 @@ function mergeCollapsedOpenLiveProjection(
       const group = groups[groupCursor]!;
       const splitAt = group.offset - position.startOffset;
       if (group.offset > textOffset) {
-        merged.push({ ...event, text: event.text.slice(textOffset - position.startOffset, splitAt) });
+        merged.push({
+          ...event,
+          text: event.text.slice(textOffset - position.startOffset, splitAt),
+        });
       }
       merged.push(...group.events);
       textOffset = group.offset;
@@ -2681,26 +2638,24 @@ function mergeOpenLiveTurnProjections(
     return mergeCollapsedOpenLiveProjection(durableEvents, liveEvents, promptBoundary);
   }
   const liveGaps = projectionContentGaps(liveEvents, liveRuns);
-  const durableGaps = projectionContentGaps(durableEvents, durableRuns).map(
-    (events, gapIndex) => {
-      const liveMergeKeyCounts = new Map<string, number>();
-      for (const event of liveGaps[gapIndex] ?? []) {
-        const key = projectionMergeKey(event);
-        if (key !== undefined) {
-          liveMergeKeyCounts.set(key, (liveMergeKeyCounts.get(key) ?? 0) + 1);
-        }
+  const durableGaps = projectionContentGaps(durableEvents, durableRuns).map((events, gapIndex) => {
+    const liveMergeKeyCounts = new Map<string, number>();
+    for (const event of liveGaps[gapIndex] ?? []) {
+      const key = projectionMergeKey(event);
+      if (key !== undefined) {
+        liveMergeKeyCounts.set(key, (liveMergeKeyCounts.get(key) ?? 0) + 1);
       }
-      return events.filter((event) => {
-        const key = projectionMergeKey(event);
-        if (key === undefined) return true;
-        const remaining = liveMergeKeyCounts.get(key) ?? 0;
-        if (remaining === 0) return true;
-        if (remaining === 1) liveMergeKeyCounts.delete(key);
-        else liveMergeKeyCounts.set(key, remaining - 1);
-        return false;
-      });
-    },
-  );
+    }
+    return events.filter((event) => {
+      const key = projectionMergeKey(event);
+      if (key === undefined) return true;
+      const remaining = liveMergeKeyCounts.get(key) ?? 0;
+      if (remaining === 0) return true;
+      if (remaining === 1) liveMergeKeyCounts.delete(key);
+      else liveMergeKeyCounts.set(key, remaining - 1);
+      return false;
+    });
+  });
   const durableRunEvents = durableRuns.map((run) =>
     run.eventIndexes.map((eventIndex) => durableEvents[eventIndex]!),
   );
@@ -3091,27 +3046,25 @@ function hideOpenStrongIdentityDuplicateProjection(
     const durable = turns
       .slice(0, liveIndex)
       .reverse()
-      .find(
-        (candidate) => {
-          const entryIdentity = userEntryIdentityRelation(candidate, live);
-          const exactDeliveryEntryRequired =
-            (candidate.deliveredInterrupt || live.deliveredInterrupt) &&
-            (candidate.entryId !== undefined || live.entryId !== undefined);
-          const sameRuntimeRun =
-            candidate.runtimeRunId === undefined ||
-            live.runtimeRunId === undefined ||
-            candidate.runtimeRunId === live.runtimeRunId;
-          return (
-            candidate.restoredFromHistory &&
-            candidate.closed &&
-            entryIdentity !== 'conflict' &&
-            (!exactDeliveryEntryRequired || entryIdentity === 'match') &&
-            sameRuntimeRun &&
-            strongTurnIdentityMatches(candidate, live) &&
-            durableProjectionCoversOpenLiveContent(candidate, live)
-          );
-        },
-      );
+      .find((candidate) => {
+        const entryIdentity = userEntryIdentityRelation(candidate, live);
+        const exactDeliveryEntryRequired =
+          (candidate.deliveredInterrupt || live.deliveredInterrupt) &&
+          (candidate.entryId !== undefined || live.entryId !== undefined);
+        const sameRuntimeRun =
+          candidate.runtimeRunId === undefined ||
+          live.runtimeRunId === undefined ||
+          candidate.runtimeRunId === live.runtimeRunId;
+        return (
+          candidate.restoredFromHistory &&
+          candidate.closed &&
+          entryIdentity !== 'conflict' &&
+          (!exactDeliveryEntryRequired || entryIdentity === 'match') &&
+          sameRuntimeRun &&
+          strongTurnIdentityMatches(candidate, live) &&
+          durableProjectionCoversOpenLiveContent(candidate, live)
+        );
+      });
     if (durable) {
       sentAtByMessageId.set(live.messageId, Math.max(live.sentAt, durable.sentAt + 1));
     }
@@ -3590,18 +3543,30 @@ function pendingSendRuntimeBaseline(
     !runtimeConnectionHasFreshLiveAuthority(state.runtimeConnection) ||
     state.runtimeConnection.runtimeId === undefined
   ) {
-    return { requestGeneration, cursorSeq: -1 };
+    return { requestGeneration, liveCursorSeq: -1, profileCursorSeq: -1 };
   }
   const runtimeId = state.runtimeConnection.runtimeId;
   const live = state.liveProjectionBySession[sessionId];
-  const liveSeq = live?.cursor.runtimeId === runtimeId ? live.cursor.seq : -1;
+  const currentLive =
+    live?.cursor.runtimeId === runtimeId &&
+    (live.cursor.sessionId === undefined || live.cursor.sessionId === sessionId)
+      ? live
+      : undefined;
+  const liveSeq = currentLive?.cursor.seq ?? -1;
   const profile =
     state.runtimeProfile?.connection.runtimeId === runtimeId ? state.runtimeProfile : null;
   const profileSeq = profile?.cursor?.runtimeId === runtimeId ? profile.cursor.seq : -1;
   return {
     requestGeneration,
     runtimeId,
-    cursorSeq: Math.max(liveSeq, profileSeq),
+    liveCursorSeq: liveSeq,
+    profileCursorSeq: profileSeq,
+    ...(currentLive?.cursor.sessionId !== undefined
+      ? { liveCursorSessionId: currentLive.cursor.sessionId }
+      : {}),
+    ...(currentLive?.cursor.journalEpoch !== undefined
+      ? { liveCursorJournalEpoch: currentLive.cursor.journalEpoch }
+      : {}),
   };
 }
 
@@ -3609,10 +3574,19 @@ function liveProjectionClearsPendingSend(
   projection: SpaceSessionLiveProjectionT,
   baseline: PendingSendRuntimeBaseline | undefined,
 ): boolean {
+  const sameKnownLiveLineage =
+    baseline?.liveCursorSessionId === undefined ||
+    baseline.liveCursorJournalEpoch === undefined ||
+    projection.cursor.sessionId === undefined ||
+    projection.cursor.journalEpoch === undefined ||
+    (projection.cursor.sessionId === baseline.liveCursorSessionId &&
+      projection.cursor.journalEpoch === baseline.liveCursorJournalEpoch);
   if (
     baseline?.acceptedRunId === undefined ||
     (baseline.runtimeId !== undefined && projection.cursor.runtimeId !== baseline.runtimeId) ||
-    projection.cursor.seq <= baseline.cursorSeq
+    (projection.cursor.sessionId !== undefined &&
+      projection.cursor.sessionId !== projection.sessionId) ||
+    (sameKnownLiveLineage && projection.cursor.seq <= baseline.liveCursorSeq)
   ) {
     return false;
   }
@@ -3638,7 +3612,7 @@ function eventClearsPendingSend(
   if (origin === undefined) return false;
   if (
     (baseline.runtimeId !== undefined && origin.runtimeId !== baseline.runtimeId) ||
-    origin.seq <= baseline.cursorSeq
+    origin.seq <= baseline.liveCursorSeq
   ) {
     return false;
   }
@@ -3654,7 +3628,7 @@ function runtimeProfileClearsPendingSend(
     baseline?.acceptedRunId === undefined ||
     profile?.cursor === undefined ||
     (baseline.runtimeId !== undefined && profile.cursor.runtimeId !== baseline.runtimeId) ||
-    profile.cursor.seq <= baseline.cursorSeq
+    profile.cursor.seq <= baseline.profileCursorSeq
   ) {
     return false;
   }
@@ -3792,7 +3766,8 @@ function preserveKnownProjectionRunTurnIdentity(
   current: SpaceSessionLiveProjectionT | undefined,
   incoming: SpaceSessionLiveProjectionT,
 ): SpaceSessionLiveProjectionT {
-  if (current === undefined || current.cursor.runtimeId !== incoming.cursor.runtimeId) return incoming;
+  if (current === undefined || current.cursor.runtimeId !== incoming.cursor.runtimeId)
+    return incoming;
   const activeTurnId =
     incoming.activeRun === undefined
       ? undefined
@@ -4522,7 +4497,8 @@ export const useAppStore = create<AppState>((set) => ({
       if (!state.pendingSendBySession[sessionId]) return state;
       const currentBaseline = state.pendingSendRuntimeBaselineBySession[sessionId] ?? {
         requestGeneration: 0,
-        cursorSeq: -1,
+        liveCursorSeq: -1,
+        profileCursorSeq: -1,
       };
       if (
         (expectedGeneration !== undefined &&
@@ -5216,13 +5192,6 @@ export const useAppStore = create<AppState>((set) => ({
           prefixOmitted,
           options?.authoritativeNewest === true,
         );
-        pruneSettledRuntimeHistoryLivePrefix(
-          liveBaseline,
-          histMsgs,
-          histEvents,
-          options?.settledRuntimeRuns ?? [],
-          prefixOmitted,
-        );
       }
       const currentMsgs = includeLiveProjection
         ? (liveBaseline?.userMessages ?? state.userMessagesBySession[sessionId] ?? [])
@@ -5327,10 +5296,7 @@ export const useAppStore = create<AppState>((set) => ({
     if (liveBaseline !== undefined) {
       // A closed live owner that already folded into canonical history is only a cache shadow.
       // Restoring it while dropping its durable proof would let it reappear at the tail later.
-      pruneHistoryLiveOwners(
-        liveBaseline,
-        new Set(liveBaseline.durableCanonicalizedUserIds),
-      );
+      pruneHistoryLiveOwners(liveBaseline, new Set(liveBaseline.durableCanonicalizedUserIds));
     }
     set((state) => {
       const currentUsers = state.userMessagesBySession[sessionId];
@@ -6374,7 +6340,8 @@ export const useAppStore = create<AppState>((set) => ({
         Object.keys(state.pendingSendBySession).map((sessionId) => {
           const baseline = state.pendingSendRuntimeBaselineBySession[sessionId] ?? {
             requestGeneration: 0,
-            cursorSeq: -1,
+            liveCursorSeq: -1,
+            profileCursorSeq: -1,
           };
           return [
             sessionId,

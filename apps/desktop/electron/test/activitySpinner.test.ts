@@ -7,7 +7,10 @@ import type {
 } from '@kodax-space/space-ipc-schema';
 import {
   presentRuntimeSandbox,
+  selectEffectiveRuntimeActiveRun,
   selectActivitySnapshot,
+  selectActivityGeneration,
+  selectRuntimeStopIdentity,
   snapshotFromEvents,
   snapshotFromRuntimeProfileSession,
   snapshotFromRuntimeProjection,
@@ -407,6 +410,63 @@ test('Runtime profile keeps spinner and Stop active while the session observatio
   assert.equal(direct?.streaming, true);
   assert.equal(direct?.status, 'Recovering…');
   assert.deepEqual(selected, direct);
+});
+
+test('profile-only unknown state exposes the exact effective active Run to composer controls', () => {
+  const profileSession: SpaceRuntimeProfileProjectionT['sessions'][number] = {
+    sessionId: sid,
+    surface: 'code',
+    createdAt: 10,
+    lastActivityAt: 20,
+    activeRun: {
+      runId: 'run_unknown_profile',
+      sessionId: sid,
+      phase: 'unknown',
+      startedAt: 10,
+    },
+    queuedRuns: [],
+  };
+
+  const selected = selectEffectiveRuntimeActiveRun(undefined, [], profileSession, true, {
+    runtimeId: 'rt_1',
+    seq: 11,
+  });
+
+  assert.equal(selected?.runId, 'run_unknown_profile');
+  assert.equal(selected?.phase, 'unknown');
+});
+
+test('stale Runtime activity retains its exact Stop identity while connection authority rebuilds', () => {
+  const identity = selectRuntimeStopIdentity(
+    undefined,
+    [
+      {
+        kind: 'session_start',
+        sessionId: sid,
+        provider: 'mock',
+        runtimeEvent: { runtimeId: 'rt_1', runId: 'run_visible_old', seq: 12 },
+      },
+    ],
+    undefined,
+    false,
+    { runtimeId: 'rt_1', seq: 12 },
+  );
+
+  assert.deepEqual(identity, { requiresExactRunId: true, runId: 'run_visible_old' });
+});
+
+test('legacy activity generation changes at the next root turn boundary', () => {
+  const first: SessionEvent[] = [
+    { kind: 'session_start', sessionId: sid, provider: 'mock', turnId: 'turn_old' },
+  ];
+  const successor: SessionEvent[] = [
+    ...first,
+    { kind: 'session_complete', sessionId: sid },
+    { kind: 'session_start', sessionId: sid, provider: 'mock', turnId: 'turn_successor' },
+  ];
+
+  assert.equal(selectActivityGeneration(first, undefined), 'turn:turn_old');
+  assert.equal(selectActivityGeneration(successor, undefined), 'turn:turn_successor');
 });
 
 test('a stale Runtime connection cannot keep an orphaned profile Stop active', () => {
@@ -840,7 +900,7 @@ test('Runtime finalization and recovery phases never fall back to Thinking', () 
   assert.equal(statusFor('waiting_agent'), 'Waiting for 2 agents…');
   assert.equal(statusFor('recovering'), 'Recovering…');
   assert.equal(statusFor('unknown'), 'Stop status unknown…');
-  assert.equal(statusFor('unknown', undefined, true), 'Run state not persisted…');
+  assert.equal(statusFor('unknown', undefined, true), 'Stopping and repairing run state…');
   assert.equal(statusFor('running', 'finalizing'), 'Finalizing…');
 });
 

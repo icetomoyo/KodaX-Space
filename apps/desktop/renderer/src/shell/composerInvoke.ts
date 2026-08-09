@@ -12,6 +12,12 @@ interface ComposerInvokeOptions<T> {
 
 export type TrackedStateAction<T> = T | ((current: T) => T);
 
+export interface RetainedComposerSendOperation {
+  readonly requestSignature: string;
+  readonly operationId: string;
+  readonly retainedOperations: ReadonlyMap<string, string>;
+}
+
 type AcceptedSessionSend = Extract<ChannelOutput<'session.send'>, { readonly accepted: true }>;
 
 export type PendingSendAcknowledgement =
@@ -23,12 +29,78 @@ export function applyTrackedStateAction<T>(current: T, next: TrackedStateAction<
   return typeof next === 'function' ? (next as (value: T) => T)(current) : next;
 }
 
+/** Reuse one admission identity only when the user retries the exact ambiguous request. */
+export function retainComposerSendOperation(
+  current: ReadonlyMap<string, string>,
+  requestSignature: string,
+  createOperationId: () => string,
+): RetainedComposerSendOperation {
+  const retainedOperations = new Map(current);
+  const existingOperationId = retainedOperations.get(requestSignature);
+  const operationId = existingOperationId ?? createOperationId();
+  retainedOperations.delete(requestSignature);
+  retainedOperations.set(requestSignature, operationId);
+  return { requestSignature, operationId, retainedOperations };
+}
+
+export function settleComposerSendOperation(
+  current: ReadonlyMap<string, string>,
+  operation: Pick<RetainedComposerSendOperation, 'requestSignature' | 'operationId'>,
+): ReadonlyMap<string, string> {
+  if (current.get(operation.requestSignature) !== operation.operationId) return current;
+  const retainedOperations = new Map(current);
+  retainedOperations.delete(operation.requestSignature);
+  return retainedOperations;
+}
+
 export function pendingSendAcknowledgement(
   result: AcceptedSessionSend,
 ): PendingSendAcknowledgement {
   if (result.queued) return { kind: 'clear' };
   if (result.runId) return { kind: 'run', runId: result.runId };
   return { kind: 'clear' };
+}
+
+export function queueModeForRuntimePhase(
+  requested: 'interrupt' | 'after-turn',
+  phase: string | undefined,
+): 'interrupt' | 'after-turn' {
+  return phase === 'unknown' ? 'after-turn' : requested;
+}
+
+export function composerRunControls(
+  isStreaming: boolean,
+  compactingSlash: boolean,
+  runtimePhase: string | undefined,
+): {
+  readonly showStop: boolean;
+  readonly showSend: boolean;
+  readonly canSendDuringActivity: boolean;
+} {
+  const unknownRun = isStreaming && runtimePhase === 'unknown';
+  return {
+    showStop: isStreaming && !compactingSlash,
+    showSend: !isStreaming || unknownRun,
+    canSendDuringActivity: !isStreaming || unknownRun,
+  };
+}
+
+export function resolveComposerStopTarget(
+  pointerDownRunId: string | null | undefined,
+  currentRunId: string | undefined,
+  exactRunIdRequired: boolean,
+  pointerDownGeneration?: string,
+  currentGeneration?: string,
+  pointerDownSessionId?: string | null,
+  currentSessionId?: string | null,
+): { readonly allowed: boolean; readonly runId?: string } {
+  if (pointerDownSessionId !== undefined && pointerDownSessionId !== currentSessionId)
+    return { allowed: false };
+  if (pointerDownRunId === null && pointerDownGeneration !== currentGeneration)
+    return { allowed: false };
+  const runId = pointerDownRunId === undefined ? currentRunId : (pointerDownRunId ?? undefined);
+  if (exactRunIdRequired && runId === undefined) return { allowed: false };
+  return runId === undefined ? { allowed: true } : { allowed: true, runId };
 }
 
 const DEFAULT_TIMEOUT_MS = 45_000;

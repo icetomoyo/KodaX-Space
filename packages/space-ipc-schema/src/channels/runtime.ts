@@ -23,8 +23,18 @@ export const spaceRuntimeCursorSchema = z
   .object({
     runtimeId: idSchema,
     seq: z.number().int().nonnegative(),
+    sessionId: idSchema.optional(),
+    journalEpoch: idSchema.optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, ctx) => {
+    if ((value.sessionId === undefined) !== (value.journalEpoch === undefined)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'session-bound Runtime cursors require both sessionId and journalEpoch',
+      });
+    }
+  });
 
 export const spaceRuntimeInitiatorSchema = z
   .object({

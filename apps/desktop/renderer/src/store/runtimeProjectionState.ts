@@ -122,7 +122,9 @@ export function runtimeTerminalEvidenceCandidates(
   if (profileEvidence === undefined) return liveEvidence === undefined ? [] : [liveEvidence];
   if (liveEvidence === undefined) return [profileEvidence];
   if (profileEvidence.runId === liveEvidence.runId) {
-    return [liveEvidence.cursorSeq >= profileEvidence.cursorSeq ? liveEvidence : profileEvidence];
+    // The profile cursor is aggregate while the live cursor is Session-bound. Their numeric
+    // sequences are incomparable; the exact per-Session observation is the stronger duplicate.
+    return [liveEvidence];
   }
   return [profileEvidence, liveEvidence];
 }
@@ -150,6 +152,31 @@ function runtimeIdOfProfile(profile: SpaceRuntimeProfileProjectionT | null): str
   return profile?.connection.runtimeId ?? profile?.cursor?.runtimeId;
 }
 
+function cursorBelongsToSession(
+  cursor: SpaceSessionLiveProjectionT['cursor'],
+  sessionId: string,
+): boolean {
+  return cursor.sessionId === undefined || cursor.sessionId === sessionId;
+}
+
+function sameSessionCursorLineage(
+  left: SpaceSessionLiveProjectionT['cursor'],
+  right: SpaceSessionLiveProjectionT['cursor'],
+): boolean {
+  if (left.runtimeId !== right.runtimeId) return false;
+  if (
+    left.sessionId === undefined ||
+    left.journalEpoch === undefined ||
+    right.sessionId === undefined ||
+    right.journalEpoch === undefined
+  ) {
+    // Legacy Space cursors had only runtimeId+seq. Preserve compatibility until every producer is
+    // upgraded, but use the complete lineage identity whenever both sides provide it.
+    return true;
+  }
+  return left.sessionId === right.sessionId && left.journalEpoch === right.journalEpoch;
+}
+
 export function runtimeConnectionHasFreshLiveAuthority(
   connection: SpaceCoderConnectionProjectionT,
 ): boolean {
@@ -174,14 +201,12 @@ export function runtimeProfileActivityOutranksLive(
   live: SpaceSessionLiveProjectionT | undefined,
 ): boolean {
   return runtimeProfileSessionActivityOutranksLive(
-    profile,
     profile.sessions.find((session) => session.sessionId === sessionId),
     live,
   );
 }
 
 export function runtimeProfileSessionActivityOutranksLive(
-  profile: SpaceRuntimeProfileProjectionT,
   profileSession: SpaceRuntimeProfileProjectionT['sessions'][number] | undefined,
   live: SpaceSessionLiveProjectionT | undefined,
 ): boolean {
@@ -194,12 +219,10 @@ export function runtimeProfileSessionActivityOutranksLive(
   const terminalRunId = live.lastTerminalRun?.runId;
   const exactLiveTerminalClosesEveryProfileRun =
     terminalRunId !== undefined && profileRunIds.every((runId) => runId === terminalRunId);
-  if (!exactLiveTerminalClosesEveryProfileRun) return true;
-  return !(
-    profile.cursor !== undefined &&
-    profile.cursor.runtimeId === live.cursor.runtimeId &&
-    live.cursor.seq >= profile.cursor.seq
-  );
+  // A terminal fact for the exact Run is stronger than stale profile activity.
+  // Profile refreshes aggregate multiple Sessions, while Runtime event cursors
+  // are Session-bound and their seq values must never be compared cross-Session.
+  return !exactLiveTerminalClosesEveryProfileRun;
 }
 
 export function runtimeProfileConflictsWithLive(
@@ -427,14 +450,17 @@ export function replaceSessionLiveProjection(
     state.connection.runtimeId === undefined ||
     state.connection.runtimeId !== projection.cursor.runtimeId ||
     profileRuntimeId === undefined ||
-    profileRuntimeId !== projection.cursor.runtimeId
+    profileRuntimeId !== projection.cursor.runtimeId ||
+    !cursorBelongsToSession(projection.cursor, projection.sessionId)
   )
     return requireSnapshot(state, projection.sessionId).state;
 
   const current = state.liveBySession[projection.sessionId];
+  const sameLineage =
+    current !== undefined && sameSessionCursorLineage(current.cursor, projection.cursor);
   if (
     current !== undefined &&
-    current.cursor.runtimeId === projection.cursor.runtimeId &&
+    sameLineage &&
     projection.projectionRevision <= current.projectionRevision
   ) {
     if (
@@ -524,22 +550,23 @@ export function applySessionLiveChange(
   if (
     !runtimeConnectionHasFreshLiveAuthority(state.connection) ||
     state.connection.runtimeId === undefined ||
-    state.connection.runtimeId !== update.cursor.runtimeId
+    state.connection.runtimeId !== update.cursor.runtimeId ||
+    !cursorBelongsToSession(update.cursor, update.sessionId)
   ) {
     return requireSnapshot(state, update.sessionId);
   }
   const current = state.liveBySession[update.sessionId];
   if (current === undefined) return requireSnapshot(state, update.sessionId);
 
-  if (
-    update.cursor.runtimeId === current.cursor.runtimeId &&
-    update.projectionRevision <= current.projectionRevision
-  ) {
+  if (!sameSessionCursorLineage(current.cursor, update.cursor)) {
+    return requireSnapshot(state, update.sessionId);
+  }
+
+  if (update.projectionRevision <= current.projectionRevision) {
     return { state, status: 'ignored' };
   }
 
   if (
-    update.cursor.runtimeId !== current.cursor.runtimeId ||
     update.baseProjectionRevision !== current.projectionRevision ||
     update.cursor.seq <= current.cursor.seq
   ) {

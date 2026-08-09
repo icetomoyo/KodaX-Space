@@ -2254,7 +2254,7 @@ export const messages = {
     'bottom.queuedAfterTurn': 'Queued - will run after the current turn',
     'bottom.queuedNextSafePoint': 'Queued - will join at the next safe point',
     'bottom.sendRejected.staleRun':
-      'Message not sent: Runtime no longer accepts input for the reported active run. Your draft was restored while Space refreshes the run state.',
+      'Message not sent: the active Run boundary changed. Your draft was restored; retry after the status updates.',
     'bottom.sendRejected.unsupportedInterrupt':
       'Message not sent: this Runtime does not support mid-turn interrupt input. Use Ctrl/Cmd+Enter to queue it after the current turn.',
     'bottom.sendRejected.interruptWindowClosed':
@@ -2274,6 +2274,7 @@ export const messages = {
     'bottom.noActiveRun': 'No active run was found to stop - {session}',
     'bottom.cancelFailed': 'Cancel failed ({session}): {message}',
     'bottom.sendTitle.ready': 'Send / interrupt (Enter)',
+    'bottom.sendTitle.afterTurn': 'Queue after the current turn (Enter)',
     'bottom.sendTitle.busy': 'Command is running',
     'bottom.sendTitle.empty': 'Type a message first',
     'bottom.attachCommands': 'Attach / Commands',
@@ -4455,7 +4456,7 @@ export const messages = {
     'bottom.queuedAfterTurn': '已排队 - 将在当前回合结束后运行',
     'bottom.queuedNextSafePoint': '已排队 - 将在下一个安全点加入',
     'bottom.sendRejected.staleRun':
-      '消息未发送：Runtime 已不再接受当前所报活动任务的输入。草稿已恢复，Space 正在刷新任务状态。',
+      '消息未发送：当前任务边界已经变化。草稿已恢复；请在状态更新后重试。',
     'bottom.sendRejected.unsupportedInterrupt':
       '消息未发送：当前 Runtime 不支持回合中途插入。可用 Ctrl/Cmd+Enter 改为在本回合结束后排队。',
     'bottom.sendRejected.interruptWindowClosed':
@@ -4475,6 +4476,7 @@ export const messages = {
     'bottom.noActiveRun': '未找到可停止的活动任务 - {session}',
     'bottom.cancelFailed': '取消失败（{session}）：{message}',
     'bottom.sendTitle.ready': '发送 / 中断（Enter）',
+    'bottom.sendTitle.afterTurn': '排队到当前回合后（Enter）',
     'bottom.sendTitle.busy': '命令正在运行',
     'bottom.sendTitle.empty': '请先输入消息',
     'bottom.attachCommands': '附件 / 命令',

@@ -1137,10 +1137,7 @@ test('a newer snapshot cannot split one run across conflicting active and termin
 
   let state = useAppStore.getState();
   assert.equal(state.liveProjectionBySession.s_1?.activeRun?.turnId, 'turn_original');
-  assert.equal(
-    state.liveProjectionBySession.s_1?.queuedRuns[0]?.turnId,
-    'turn_queued_original',
-  );
+  assert.equal(state.liveProjectionBySession.s_1?.queuedRuns[0]?.turnId, 'turn_queued_original');
   assert.deepEqual(
     state.eventsBySession.s_1
       ?.filter((event) => event.kind === 'text_delta')
@@ -1485,6 +1482,80 @@ test('a Runtime ACK clears pending independently of an optimistic user row', () 
       sessionId: 's_1',
       phase: 'running',
       startedAt: 2,
+    },
+  });
+
+  assert.equal(useAppStore.getState().pendingSendBySession.s_1, undefined);
+});
+
+test('an aggregate profile cursor from another Session cannot pin a local pending send', () => {
+  useAppStore.getState().replaceRuntimeProfileProjection({
+    ...profile,
+    projectionRevision: 1_000,
+    cursor: { runtimeId: 'rt_1', seq: 1_000 },
+  });
+  useAppStore.getState().replaceSessionLiveProjection({
+    ...live,
+    projectionRevision: 2,
+    cursor: {
+      runtimeId: 'rt_1',
+      sessionId: 's_1',
+      journalEpoch: 'epoch_s1',
+      seq: 2,
+    },
+  });
+  useAppStore.getState().setPendingSend('s_1', true);
+  useAppStore.getState().acknowledgePendingSendRun('s_1', 'run_local');
+
+  useAppStore.getState().replaceSessionLiveProjection({
+    ...live,
+    projectionRevision: 3,
+    cursor: {
+      runtimeId: 'rt_1',
+      sessionId: 's_1',
+      journalEpoch: 'epoch_s1',
+      seq: 3,
+    },
+    activeRun: {
+      runId: 'run_local',
+      sessionId: 's_1',
+      phase: 'running',
+      startedAt: 3,
+    },
+  });
+
+  assert.equal(useAppStore.getState().pendingSendBySession.s_1, undefined);
+});
+
+test('a new Session journal epoch can confirm an exact send after its sequence resets', () => {
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  useAppStore.getState().replaceSessionLiveProjection({
+    ...live,
+    projectionRevision: 1_000,
+    cursor: {
+      runtimeId: 'rt_1',
+      sessionId: 's_1',
+      journalEpoch: 'epoch_old',
+      seq: 1_000,
+    },
+  });
+  useAppStore.getState().setPendingSend('s_1', true);
+  useAppStore.getState().acknowledgePendingSendRun('s_1', 'run_new_epoch');
+
+  useAppStore.getState().replaceSessionLiveProjection({
+    ...live,
+    projectionRevision: 1,
+    cursor: {
+      runtimeId: 'rt_1',
+      sessionId: 's_1',
+      journalEpoch: 'epoch_new',
+      seq: 1,
+    },
+    activeRun: {
+      runId: 'run_new_epoch',
+      sessionId: 's_1',
+      phase: 'running',
+      startedAt: 1,
     },
   });
 

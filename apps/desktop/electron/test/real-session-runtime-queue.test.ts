@@ -793,6 +793,7 @@ test('active daemon run preserves interrupt intent and requires explicit after-t
   };
   const result = await session.send('explicit after-turn follow-up', undefined, {
     queueMode: 'after-turn',
+    operationId: 'space-send-after-turn-1',
   });
   assert.deepEqual(result, {
     accepted: true,
@@ -805,6 +806,7 @@ test('active daemon run preserves interrupt intent and requires explicit after-t
     afterRunId: 'run_active',
     delivery: 'after_turn',
     input: [{ type: 'text', text: 'explicit after-turn follow-up' }],
+    operation: { operationId: 'space-send-after-turn-1' },
   });
   assert.ok(settingsUpdate);
   const { shellExecution: latestShellExecution, ...latestSettingsPatch } = settingsUpdate.patch;
@@ -903,9 +905,18 @@ test('daemon run refreshes settings and hides exit_plan_mode without an approval
         signal: AbortSignal,
         artifacts?: readonly unknown[],
         promptOverlay?: string,
+        admission?: unknown,
+        operationId?: string,
       ): Promise<void>;
     }
-  ).runCoderDaemon('inspect', new AbortController().signal);
+  ).runCoderDaemon(
+    'inspect',
+    new AbortController().signal,
+    undefined,
+    undefined,
+    undefined,
+    'space-send-start-1',
+  );
 
   assert.ok(settingsUpdate);
   const { shellExecution, ...settingsPatch } = settingsUpdate.patch;
@@ -941,6 +952,7 @@ test('daemon run refreshes settings and hides exit_plan_mode without an approval
   assert.ok(options?.context?.excludeTools?.includes('exit_plan_mode'));
   assert.deepEqual(options?.context?.shellExecution, shellExecution);
   assert.deepEqual(options?.sandbox?.envPass, ['GH_TOKEN', 'GITHUB_TOKEN']);
+  assert.deepEqual(managedRunInput?.operation, { operationId: 'space-send-start-1' });
 });
 
 test('daemon permission sync keeps mode changes made during initialize and an in-flight settings write', async (t) => {
@@ -1204,7 +1216,7 @@ test('Runtime cancel before admission emits a local terminal and never starts a 
   assert.equal(startCalls, 0);
 });
 
-test('Runtime cancel waits for in-flight admission and returns its authoritative Stop receipt', async (t) => {
+test('Runtime cancel without a visible Run ID waits for in-flight admission', async (t) => {
   const adapter = runtimeHostAdapter as unknown as Record<string, unknown>;
   const patchedMethods = new Map<string, { readonly existed: boolean; readonly value: unknown }>();
   const patchMethod = (name: string, value: unknown): void => {
@@ -1238,6 +1250,7 @@ test('Runtime cancel waits for in-flight admission and returns its authoritative
     resolveRun = resolve;
   });
   let abortCalls = 0;
+  let abortedRunId: string | undefined;
 
   patchMethod('isRuntimeSelected', () => true);
   patchMethod('initialize', async () => undefined);
@@ -1254,8 +1267,9 @@ test('Runtime cancel waits for in-flight admission and returns its authoritative
       result: runResult,
     };
   });
-  patchMethod('abortSessionRun', async () => {
+  patchMethod('abortSessionRun', async (_sessionId: string, runId?: string) => {
     abortCalls += 1;
+    abortedRunId = runId;
     resolveRun({
       runId: 'run_admitted',
       sessionId: 'session_cancelled_during_admission',
@@ -1313,8 +1327,111 @@ test('Runtime cancel waits for in-flight admission and returns its authoritative
   });
   await waitForTest(() => !session.isRunning());
   assert.equal(abortCalls, 1);
+  assert.equal(abortedRunId, undefined);
   assert.equal(
     events.some((event) => event.kind === 'session_error'),
     false,
   );
+});
+
+test('a stale exact Stop does not cancel a preparing successor admission', async (t) => {
+  const adapter = runtimeHostAdapter as unknown as Record<string, unknown>;
+  const patchedMethods = new Map<string, { readonly existed: boolean; readonly value: unknown }>();
+  const patchMethod = (name: string, value: unknown): void => {
+    patchedMethods.set(name, {
+      existed: Object.prototype.hasOwnProperty.call(adapter, name),
+      value: adapter[name],
+    });
+    adapter[name] = value;
+  };
+  t.after(() => {
+    for (const [name, original] of patchedMethods) {
+      if (original.existed) adapter[name] = original.value;
+      else delete adapter[name];
+    }
+  });
+
+  let releaseAdmission!: () => void;
+  const admissionGate = new Promise<void>((resolve) => {
+    releaseAdmission = resolve;
+  });
+  let markAdmissionEntered!: () => void;
+  const admissionEntered = new Promise<void>((resolve) => {
+    markAdmissionEntered = resolve;
+  });
+  let resolveSuccessor!: (value: { runId: string; sessionId: string; phase: 'completed' }) => void;
+  const successorResult = new Promise<{
+    runId: string;
+    sessionId: string;
+    phase: 'completed';
+  }>((resolve) => {
+    resolveSuccessor = resolve;
+  });
+  const stoppedRunIds: string[] = [];
+
+  patchMethod('isRuntimeSelected', () => true);
+  patchMethod('initialize', async () => undefined);
+  patchMethod('ensureSession', async () => false);
+  patchMethod('ensureObserved', async () => undefined);
+  patchMethod('activeRunId', () => undefined);
+  patchMethod('findActiveRunId', async () => undefined);
+  patchMethod('updateSessionSettings', async () => undefined);
+  patchMethod('startManagedRun', async () => {
+    markAdmissionEntered();
+    await admissionGate;
+    return { runId: 'run_successor', result: successorResult };
+  });
+  patchMethod('abortSessionRun', async (sessionId: string, runId?: string) => {
+    stoppedRunIds.push(runId ?? 'session-fallback');
+    return {
+      runId: runId ?? 'session-fallback',
+      sessionId,
+      accepted: false,
+      state: 'confirmed',
+      outcome: 'completed',
+      phase: 'completed',
+      revision: 2,
+    };
+  });
+
+  const sessionId = 'session_stale_exact_stop';
+  const session = new RealKodaXSession({
+    sessionId,
+    projectRoot: process.cwd(),
+    provider: 'zai-coding',
+    model: 'glm-5.2',
+    reasoningMode: 'deep',
+    permissionMode: 'auto',
+    autoModeEngine: 'llm',
+    surface: 'code',
+    emit: () => undefined,
+    requestPermission: async () => 'allow_once',
+  });
+
+  const accepted = session.send('successor admission');
+  await admissionEntered;
+  const staleStop = session.cancel('run_previous');
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(stoppedRunIds, ['run_previous']);
+  assert.equal(session.isRunning(), true);
+
+  releaseAdmission();
+  assert.deepEqual(await accepted, {
+    accepted: true,
+    queued: false,
+    runId: 'run_successor',
+  });
+  assert.deepEqual(await staleStop, {
+    runId: 'run_previous',
+    sessionId,
+    accepted: false,
+    state: 'confirmed',
+    outcome: 'completed',
+    phase: 'completed',
+    revision: 2,
+  });
+
+  resolveSuccessor({ runId: 'run_successor', sessionId, phase: 'completed' });
+  await waitForTest(() => !session.isRunning());
 });
