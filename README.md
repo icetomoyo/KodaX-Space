@@ -13,7 +13,7 @@
   <a href="https://github.com/icetomoyo/KodaX-Space/releases/latest"><img alt="release" src="https://img.shields.io/github/v/release/icetomoyo/KodaX-Space?style=flat-square"></a>
   <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-KAI--FCL-orange?style=flat-square"></a>
   <a href="https://github.com/icetomoyo/KodaX-Space/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/icetomoyo/KodaX-Space/ci.yml?style=flat-square&label=ci"></a>
-  <img alt="KodaX SDK" src="https://img.shields.io/badge/KodaX_SDK-0.7.84-f0a020?style=flat-square">
+  <img alt="KodaX SDK" src="https://img.shields.io/badge/KodaX_SDK-0.7.85-f0a020?style=flat-square">
   <img alt="platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-34495e?style=flat-square">
 </p>
 
@@ -90,11 +90,11 @@ npm run dev
 
 ## Current Source Baseline
 
-**`main` uses the exact KodaX 0.7.84 package and negotiates Runtime safety contracts explicitly; it does not infer support from a semantic version.** Coder defaults to the profile-scoped shared daemon with exclusive Actor ownership, canonical bounded Actor/Turn projection, exact history/live reconciliation, durable managed-Run admission, Runtime-owned interrupt finalization, orphan idle exit, complete physical-request usage diagnostics, Auto guardrail v4, resilient integration configuration, and structured tool-sandbox observations. F141 adds a customer-visible Settings → Runtime switch between recommended Daemon mode and an Embedded compatibility fallback. A switch is admitted only after Runtime operations drain and Space proves that no ManagedSession, running/paused Workflow, non-terminal External Agent task, permission/AskUser interaction, queued Coder prompt, daemon work, or other client can be disrupted; owner policy and the versioned preference then transition before Space restarts. Startup reconciles persisted mode with owner policy before Runtime connection. The environment variable is only a one-time migration seed for pre-v3 settings. Partner remains an embedded-inline Space owner, while MCP processes/logs, Workflow library/start/admin, Space Reference Agent execution, and product artifacts remain explicit host-provider boundaries.
+**`main` uses the exact KodaX 0.7.85 package and negotiates Runtime safety contracts explicitly; it does not infer support from a semantic version.** Coder defaults to the profile-scoped shared daemon with exclusive Actor ownership, canonical bounded Actor/Turn projection, exact history/live reconciliation, durable managed-Run admission, Runtime-owned interrupt finalization, Session-scoped event journals, orphan idle exit, complete physical-request usage diagnostics, Auto guardrail v4, resilient integration configuration, and structured tool-sandbox observations. F141 adds a customer-visible Settings → Runtime switch between recommended Daemon mode and an Embedded compatibility fallback. A switch is admitted only after Runtime operations drain and Space proves that no ManagedSession, running/paused Workflow, non-terminal External Agent task, permission/AskUser interaction, queued Coder prompt, daemon work, or other client can be disrupted; owner policy and the versioned preference then transition before Space restarts. Startup reconciles persisted mode with owner policy before Runtime connection. The environment variable is only a one-time migration seed for pre-v3 settings. Partner remains an embedded-inline Space owner, while MCP processes/logs, Workflow library/start/admin, Space Reference Agent execution, and product artifacts remain explicit host-provider boundaries.
 
-KodaX 0.7.84 retains the separate integration declarations and durable managed-Run boundaries introduced in 0.7.80: accepted initial and queued prompts and every completed turn are persisted before their lifecycle event is emitted. It also bounds Agent progress persistence and lets an exact same-owner Stop reconcile a late Actor settlement before applying the captured executor result, preventing a completed-looking answer from leaving its Session permanently stuck in `unknown`. Foreign ownership and persistent storage failures remain fail-closed. Space requires `managedRunDurability:1`, binds the admitted `runId` and streamed `turnId` to its optimistic query, and rejects daemons that cannot make that guarantee. The SDK defaults an unspecified Auto LLM classifier timeout to 45 seconds and its one retry to 90 seconds; Space forwards only an explicit user timeout. `worker.configuredA2A` is a KodaX CLI Worker-hosted embedded-runtime option, not a Space Settings toggle. The in-app `kodax_manual` composes these Space boundaries with the exact installed SDK's original underlying-capability topics.
+KodaX 0.7.85 adds `actorSettlementConvergence:1` and `sessionEventJournal:1` to the durable managed-Run boundary. A durability self-fence blocks new callbacks/effects, automatically repairs only exact-owner Actor facts, waits for exact pre-fence Runtime-mediated tool effects before releasing the Session route, and accepts the next query as after-turn work without trusting an abort-ignoring provider Promise forever. Every Runtime observation carries `(sessionId, journalEpoch, seq)`; Space resets watermarks on epoch rollover and never compares sequence numbers across Sessions. Foreign ownership and persistent storage failures remain fail-closed. Space requires these contracts together with `managedRunDurability:1`, binds the admitted `runId` and streamed `turnId` to its optimistic query, and rejects or upgrades daemons that cannot make those guarantees. KodaX 0.7.85 also makes Agent Home/root mutations non-authorizable and requires real containment for opaque shell execution. `worker.configuredA2A` remains a KodaX CLI Worker-hosted embedded-runtime option, not a Space Settings toggle.
 
-KodaX 0.7.84 retains the canonical `entryId` created for every newly delivered interrupt input. Space carries that exact reference through daemon and embedded live events and folds it only when the corresponding conversation entry exposes the same physical ID as its `boundaryId` or one of its proven `auditEntryIds`; disjoint references remain visible, while legacy records without the field keep the existing fail-open compatibility path. v0.1.38 additionally serializes active Session input admission and history revalidation so stale snapshots cannot move a fresh response across queries or Sessions, and retains an already-rendered projection while an open Run overtakes canonical recovery.
+KodaX 0.7.85 retains the canonical `entryId` created for every newly delivered interrupt input. Space carries that exact reference through daemon and embedded live events and folds it only when the corresponding conversation entry exposes the same physical ID as its `boundaryId` or one of its proven `auditEntryIds`; disjoint references remain visible, while legacy records without the field keep the existing fail-open compatibility path. v0.1.38 additionally serializes active Session input admission and history revalidation so stale snapshots cannot move a fresh response across queries or Sessions, and retains an already-rendered projection while an open Run overtakes canonical recovery.
 
 The bottom bar separates root-Agent context pressure from cumulative Session token usage. The Context window meter uses the final automatic-compaction threshold and a privacy-safe six-part composition; completed physical requests are deduplicated by request ID across root, child, retry, fallback, repair, workflow-digest, and compaction-summary calls. F140 adds an Ask/keep-in-tray/complete-exit preference. A real quit on Windows, macOS, or Linux first attempts to stop the Coder daemon safely. If work blocks that attempt, Space offers Keep open or Force close; Force close cancels only this Space's work, preserves other clients, and exits without returning to the blocker loop. A Space-started orphan daemon still self-reaps after its final client disconnects and work becomes idle. Terminal plus Coder command tools share one selected Shell/profile-PATH contract without projecting arbitrary executables or secrets.
 
@@ -120,12 +120,12 @@ already-landed Session reactivation correction, bounded Agent progress and
 same-owner Stop reconciliation contract, tracked icon packaging, and the
 matching documentation/manual update.
 
-| Area                 | Summary                                                                                                                        |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| Runtime contract     | KodaX 0.7.84 exact Registry bytes; Agent progress remains bounded and same-owner Stop can reconcile late Actor settlement. |
-| Session recovery     | An invalidated but rendered active Session keeps its projection while canonical history recovery is overtaken by an open Run. |
-| Documentation        | README files, manuals, capability ledger, release design/readiness, regression guide, and `kodax_manual` share the same boundary. |
-| Packaging            | All Space workspace versions are 0.1.38 and the tracked Windows icon resource is included in the release path.             |
+| Area             | Summary                                                                                                                           |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| Runtime contract | KodaX 0.7.84 exact Registry bytes; Agent progress remains bounded and same-owner Stop can reconcile late Actor settlement.        |
+| Session recovery | An invalidated but rendered active Session keeps its projection while canonical history recovery is overtaken by an open Run.     |
+| Documentation    | README files, manuals, capability ledger, release design/readiness, regression guide, and `kodax_manual` share the same boundary. |
+| Packaging        | All Space workspace versions are 0.1.38 and the tracked Windows icon resource is included in the release path.                    |
 
 See [CHANGELOG.md](CHANGELOG.md), the [v0.1.38 design](docs/features/v0.1.38.md), and the [v0.1.38 release record](docs/releases/v0.1.38-release-readiness.md).
 
@@ -133,12 +133,12 @@ See [CHANGELOG.md](CHANGELOG.md), the [v0.1.38 design](docs/features/v0.1.38.md)
 
 Released on 2026-08-06 as [`v0.1.37`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.37), with package version `0.1.37` aligned to the exact npm-published KodaX 0.7.83 package.
 
-| Area                 | Summary                                                                                                                                                                          |
-| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Recovery             | Session hydration, history paging, live projection, and Runtime recovery preserve project, surface, Session, request, and owner identity.                                    |
-| Safe close           | Shutdown remains visible until verified; Keep Open relaunches through a controlled path after Runtime authority closes.                                                      |
-| KodaX baseline       | The published v0.1.37 manifests and lock views use exact Registry KodaX 0.7.83 bytes; current `main` has moved to the exact 0.7.84 source baseline documented above.              |
-| Documentation        | The Chinese manual, capability ledger, release design, readiness record, regression guide, and in-app `kodax_manual` describe the same current boundary.                  |
+| Area           | Summary                                                                                                                                                              |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Recovery       | Session hydration, history paging, live projection, and Runtime recovery preserve project, surface, Session, request, and owner identity.                            |
+| Safe close     | Shutdown remains visible until verified; Keep Open relaunches through a controlled path after Runtime authority closes.                                              |
+| KodaX baseline | The published v0.1.38 manifests and lock views use exact Registry KodaX 0.7.84 bytes; current `main` has moved to the exact 0.7.85 source baseline documented above. |
+| Documentation  | The Chinese manual, capability ledger, release design, readiness record, regression guide, and in-app `kodax_manual` describe the same current boundary.             |
 
 See [CHANGELOG.md](CHANGELOG.md), the [v0.1.37 design](docs/features/v0.1.37.md), and the [v0.1.37 release record](docs/releases/v0.1.37-release-readiness.md).
 
@@ -335,8 +335,8 @@ npm run e2e:headed
 | [docs/BUILTIN_SKILLS.md](docs/BUILTIN_SKILLS.md)                                                         | Builtin skill provenance, licensing, update, patch, and package-integrity workflow.      |
 | [docs/releases/v0.1.34-release-readiness.md](docs/releases/v0.1.34-release-readiness.md)                 | v0.1.34 gates, production evidence, artifact digests, and known-risk record.             |
 | [docs/releases/v0.1.37-release-readiness.md](docs/releases/v0.1.37-release-readiness.md)                 | v0.1.37 gates, KodaX 0.7.83 contract, and release evidence.                              |
-| [docs/features/v0.1.38.md](docs/features/v0.1.38.md)                                                       | v0.1.38 maintenance scope and KodaX 0.7.84 boundary.                                   |
-| [docs/releases/v0.1.38-release-readiness.md](docs/releases/v0.1.38-release-readiness.md)                 | v0.1.38 gates, KodaX 0.7.84 contract, and release evidence.                             |
+| [docs/features/v0.1.38.md](docs/features/v0.1.38.md)                                                     | v0.1.38 maintenance scope and KodaX 0.7.84 boundary.                                     |
+| [docs/releases/v0.1.38-release-readiness.md](docs/releases/v0.1.38-release-readiness.md)                 | v0.1.38 gates, KodaX 0.7.84 contract, and release evidence.                              |
 | [docs/CODING_AGENT_BEGINNER_BEST_PRACTICES.zh-CN.md](docs/CODING_AGENT_BEGINNER_BEST_PRACTICES.zh-CN.md) | Chinese beginner guide for coding-agent practice in software and microservice workflows. |
 | [docs/PRD.md](docs/PRD.md)                                                                               | Product requirements and product positioning.                                            |
 | [docs/HLD.md](docs/HLD.md)                                                                               | High-level architecture and system design.                                               |
@@ -350,19 +350,19 @@ npm run e2e:headed
 
 Near-term planned work is tracked in [docs/FEATURE_LIST.md](docs/FEATURE_LIST.md). Current highlights:
 
-| Lane              | Focus                                                                                                                                                |
-| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `v0.1.32`         | Published shared-daemon Coder, Partner project knowledge/citations, vetted builtins, exact-history UX, Windows icon/tray, and release hardening.     |
-| `v0.1.33`         | Corrected KodaX 0.7.77 release with safe Daemon/Embedded selection, conversation file actions, attachment/context fixes, and packaged Runtime gates. |
-| `v0.1.34`         | KodaX 0.7.78 Runtime safety, resilient integrations, visible complete exit, packaged sandbox helpers, startup UX, and history replay hardening.      |
-| `v0.1.35`         | Published KodaX 0.7.80, durable managed-Run negotiation, session-history integrity, Auto timeout defaults, and the matching manual/test contract.    |
-| `v0.1.36`         | Session input-admission, history/live reconciliation, renderer recovery, and KodaX 0.7.82 maintenance hardening.                                      |
-| `v0.1.37`         | KodaX 0.7.83, multi-Session recovery, safe-close relaunch, semantic bootstrap surface, and release documentation alignment.                            |
-| `v0.1.38`         | KodaX 0.7.84, Agent progress/Stop convergence, Session reactivation recovery, tracked icon packaging, and complete release documentation alignment.      |
-| `v0.1.42`         | Independently authored Chinese-first DOCX/PDF/XLSX/PPTX builtins plus semantic UI polish, with bounded execution and truthful validation receipts.   |
-| `v0.1.45`、`v0.1.47-v0.1.49` | Partner Skill workspace, knowledge quality/curation, Presentation Project, and the SDK-gated Memory Agent host.                                                           |
-| `v0.1.53`         | Localization completion, beta diagnostics, release channels, updater/distribution trust.                                                             |
-| `v0.2.x`          | Governed browser and Partner packs, read-only connector snapshots, local automations, and refreshable artifacts.                                     |
+| Lane                         | Focus                                                                                                                                                |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v0.1.32`                    | Published shared-daemon Coder, Partner project knowledge/citations, vetted builtins, exact-history UX, Windows icon/tray, and release hardening.     |
+| `v0.1.33`                    | Corrected KodaX 0.7.77 release with safe Daemon/Embedded selection, conversation file actions, attachment/context fixes, and packaged Runtime gates. |
+| `v0.1.34`                    | KodaX 0.7.78 Runtime safety, resilient integrations, visible complete exit, packaged sandbox helpers, startup UX, and history replay hardening.      |
+| `v0.1.35`                    | Published KodaX 0.7.80, durable managed-Run negotiation, session-history integrity, Auto timeout defaults, and the matching manual/test contract.    |
+| `v0.1.36`                    | Session input-admission, history/live reconciliation, renderer recovery, and KodaX 0.7.82 maintenance hardening.                                     |
+| `v0.1.37`                    | KodaX 0.7.83, multi-Session recovery, safe-close relaunch, semantic bootstrap surface, and release documentation alignment.                          |
+| `v0.1.38`                    | KodaX 0.7.84, Agent progress/Stop convergence, Session reactivation recovery, tracked icon packaging, and complete release documentation alignment.  |
+| `v0.1.42`                    | Independently authored Chinese-first DOCX/PDF/XLSX/PPTX builtins plus semantic UI polish, with bounded execution and truthful validation receipts.   |
+| `v0.1.45`、`v0.1.47-v0.1.49` | Partner Skill workspace, knowledge quality/curation, Presentation Project, and the SDK-gated Memory Agent host.                                      |
+| `v0.1.53`                    | Localization completion, beta diagnostics, release channels, updater/distribution trust.                                                             |
+| `v0.2.x`                     | Governed browser and Partner packs, read-only connector snapshots, local automations, and refreshable artifacts.                                     |
 
 Remote runners, notebooks, knowledge graphs, desktop screen automation, and unshipped External Agent adapters are reopen-gated watchlist items, not committed release features.
 

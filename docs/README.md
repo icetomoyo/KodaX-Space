@@ -1,7 +1,7 @@
 # KodaX Space 文档中心
 
 > **2026-08-07 当前发布基线**：KodaX Space `v0.1.38`（package `0.1.38`）使用 npm
-> Registry 的精确 KodaX `0.7.84` 包。受管理的 Coder daemon 除既有 Runtime 安全能力外，
+> Registry 的精确 KodaX `0.7.85` 包。受管理的 Coder daemon 除既有 Runtime 安全能力外，
 > 还必须协商 `managedRunDurability:1`；Space 将 durable `runId`/`turnId` 绑定到
 > optimistic composer history，并串行化活动 Session 的输入准入与历史重验。v0.1.38 还覆盖
 > 有界 Agent progress、同 owner Stop 收敛，以及已绘制 Session 重新激活时的 canonical 去重。
@@ -22,9 +22,9 @@ KodaX 版本号或 guardrail 版本推断。Partner 继续由 Space inline owner
 
 当前源码维护把底部“上下文窗口”改为按最终自动压缩阈值计算的有效窗口，并把模型最大上下文、自动压缩阈值、最近一次模型输入构成和距压缩剩余量分层展示；“会话 Token 用量”则独立累计根/子 Agent 的 Provider 调用与缓存分类。两者不能互换：前者是最近一次主模型请求的输入压力快照，后者是整个 Session 已发生的累计用量。v0.1.38 继续收紧多 Session 恢复、活动 Session 的输入准入、历史分页和安全退出恢复隔离，并记录 Issue 176 的已绘制 Session 重新激活修复。
 
-KodaX 0.7.84 的配置说明也已收口：核心配置仍在 `~/.kodax/config.json`，MCP、可信 Extension 路径和 A2A 分别位于 `~/.kodax/integrations/mcp.json`、`extensions.json`、`a2a.json`。Settings → Runtime 会显示三个域的来源、revision、watcher、最近 reload 和有界诊断；Runtime 对无效更新保留 last-known-good 配置，并发写冲突要求 reload 后重试。应用内 `kodax_manual` 会继承当前安装 SDK 推荐的原始底层能力主题，再叠加 Space 操作说明。
+KodaX 0.7.85 的配置说明也已收口：核心配置仍在 `~/.kodax/config.json`，MCP、可信 Extension 路径和 A2A 分别位于 `~/.kodax/integrations/mcp.json`、`extensions.json`、`a2a.json`。Settings → Runtime 会显示三个域的来源、revision、watcher、最近 reload 和有界诊断；Runtime 对无效更新保留 last-known-good 配置，并发写冲突要求 reload 后重试。应用内 `kodax_manual` 会继承当前安装 SDK 推荐的原始底层能力主题，再叠加 Space 操作说明。Coder 同时要求 `actorSettlementConvergence:1` 与 `sessionEventJournal:1`，并按 `(sessionId, journalEpoch, seq)` 隔离事件水位。
 
-当前 KodaX 0.7.84 还提供 Run-scoped `sandbox.envPass`。Settings → Runtime
+当前 KodaX 0.7.85 还提供 Run-scoped `sandbox.envPass`。Settings → Runtime
 可编辑变量名 allow-list；Space 将显式列表投影到所有 Coder、Partner、legacy 与 Workflow
 Run，变量值只在命令执行 host 读取。超出有界编辑器限制的 CLI 配置会完整保留并以只读方式
 显示，避免静默截断。
@@ -57,26 +57,26 @@ Run，变量值只在命令执行 host 读取。超出有界编辑器限制的 C
 
 ## 当前有效文档
 
-| 文档                                                 | 性质             | 更新规则                                       |
-| ---------------------------------------------------- | ---------------- | ---------------------------------------------- |
-| `README.md` / `README_CN.md`                         | 项目入口         | 只概括公开版本和下一开发基线                   |
-| `USER_MANUAL.zh-CN.md`                               | 面向用户         | 必须与当前 UI、快捷键和实际能力一致            |
-| `USAGE.md`                                           | 面向开发/运维    | 必须与 package scripts、数据路径和验证流程一致 |
-| `PRD.md`                                             | 产品目标与路线   | 保留长期方向，明确已交付/开发中/观察项         |
-| `HLD.md`                                             | 当前高层架构     | 反映真实 owner、边界和降级策略                 |
-| `KODAX_CAPABILITY_LEDGER.md`                         | 能力接入事实     | 每次 SDK/Runtime 接入后更新状态与证据          |
-| `FEATURE_LIST.md`                                    | 版本路线图       | 只有可交付、可验证的版本项进入 active list     |
-| `KNOWN_ISSUES.md`                                    | 当前问题         | 已解决项保留结论，新增问题需有复现和状态       |
-| `BUILTIN_SKILLS.md`                                  | builtin 分发维护 | 固定来源、许可、补丁、更新和打包完整性         |
-| `features/v0.1.38.md`                                | 当前 release 设计 | KodaX 0.7.84、Session reactivation 与发布边界 |
-| `releases/v0.1.38-release-readiness.md`              | 当前发布记录     | 门禁、GitHub CI、产物证据和人工项             |
-| `releases/v0.1.37-release-readiness.md`              | 当前发布记录     | 记录门禁、GitHub CI、产物证据和未执行人工项    |
-| `releases/v0.1.35-release-readiness.md`              | 历史发布记录     | 保留已发布版本的门禁、产物哈希和人工项         |
-| `test-guides/ISSUE_176_v0.1.38_REGRESSION_GUIDE.md`  | 当前回归验收     | 覆盖 Session 重新激活、canonical 去重和跨 Session 隔离 |
-| `test-guides/ISSUE_175_v0.1.37_REGRESSION_GUIDE.md`  | 历史回归验收     | 覆盖安全退出、daemon 恢复和多 Session 隔离       |
-| `test-guides/FEATURE_141_v0.1.33_TEST_GUIDE.md`      | 当前人工验收     | 覆盖两种 owner、双向切换、打包闭包和真实启动   |
-| `test-guides/FEATURE_142_v0.1.33_TEST_GUIDE.md`      | 当前人工验收     | 覆盖会话文件路径的共享文件动作                 |
-| `apps/desktop/electron/kodax/space-manual-topics.ts` | 应用内 AI 自说明 | 与用户手册同步更新，防止 AI 给出旧操作说明     |
+| 文档                                                 | 性质              | 更新规则                                               |
+| ---------------------------------------------------- | ----------------- | ------------------------------------------------------ |
+| `README.md` / `README_CN.md`                         | 项目入口          | 只概括公开版本和下一开发基线                           |
+| `USER_MANUAL.zh-CN.md`                               | 面向用户          | 必须与当前 UI、快捷键和实际能力一致                    |
+| `USAGE.md`                                           | 面向开发/运维     | 必须与 package scripts、数据路径和验证流程一致         |
+| `PRD.md`                                             | 产品目标与路线    | 保留长期方向，明确已交付/开发中/观察项                 |
+| `HLD.md`                                             | 当前高层架构      | 反映真实 owner、边界和降级策略                         |
+| `KODAX_CAPABILITY_LEDGER.md`                         | 能力接入事实      | 每次 SDK/Runtime 接入后更新状态与证据                  |
+| `FEATURE_LIST.md`                                    | 版本路线图        | 只有可交付、可验证的版本项进入 active list             |
+| `KNOWN_ISSUES.md`                                    | 当前问题          | 已解决项保留结论，新增问题需有复现和状态               |
+| `BUILTIN_SKILLS.md`                                  | builtin 分发维护  | 固定来源、许可、补丁、更新和打包完整性                 |
+| `features/v0.1.38.md`                                | 当前 release 设计 | KodaX 0.7.84、Session reactivation 与发布边界          |
+| `releases/v0.1.38-release-readiness.md`              | 当前发布记录      | 门禁、GitHub CI、产物证据和人工项                      |
+| `releases/v0.1.37-release-readiness.md`              | 当前发布记录      | 记录门禁、GitHub CI、产物证据和未执行人工项            |
+| `releases/v0.1.35-release-readiness.md`              | 历史发布记录      | 保留已发布版本的门禁、产物哈希和人工项                 |
+| `test-guides/ISSUE_176_v0.1.38_REGRESSION_GUIDE.md`  | 当前回归验收      | 覆盖 Session 重新激活、canonical 去重和跨 Session 隔离 |
+| `test-guides/ISSUE_175_v0.1.37_REGRESSION_GUIDE.md`  | 历史回归验收      | 覆盖安全退出、daemon 恢复和多 Session 隔离             |
+| `test-guides/FEATURE_141_v0.1.33_TEST_GUIDE.md`      | 当前人工验收      | 覆盖两种 owner、双向切换、打包闭包和真实启动           |
+| `test-guides/FEATURE_142_v0.1.33_TEST_GUIDE.md`      | 当前人工验收      | 覆盖会话文件路径的共享文件动作                         |
+| `apps/desktop/electron/kodax/space-manual-topics.ts` | 应用内 AI 自说明  | 与用户手册同步更新，防止 AI 给出旧操作说明             |
 
 ## 历史文档
 

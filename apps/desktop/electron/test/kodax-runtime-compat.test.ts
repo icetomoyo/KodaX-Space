@@ -8,7 +8,7 @@ import test from 'node:test';
 
 const PROBE_MARKER = 'KODAX_RUNTIME_PROBE=';
 const PROBE_TIMEOUT_MS = 30_000;
-const EXPECTED_KODAX_VERSION = '0.7.84';
+const EXPECTED_KODAX_VERSION = '0.7.85';
 const INSTALLED_KODAX_VERSION = (
   createRequire(import.meta.url)('@kodax-ai/kodax/package.json') as { readonly version: string }
 ).version;
@@ -337,7 +337,9 @@ const SHARED_DAEMON_REQUIREMENTS = {
   daemonManagement: 1,
   daemonOrphanExit: 1,
   managedRunDurability: 1,
+  actorSettlementConvergence: 1,
   runtimeEventCoalescing: 1,
+  sessionEventJournal: 1,
   integrationConfigResilience: 1,
   runtimeAutoModeGuardrail: 4,
 } as const;
@@ -359,7 +361,7 @@ try {
     clientInfo: {
       name: 'kodax-cli',
       title: 'KodaX terminal compatibility probe',
-      version: '0.7.84',
+      version: '0.7.85',
       instanceId: process.env.KODAX_PROBE_INSTANCE_ID,
       instanceSecret: process.env.KODAX_PROBE_INSTANCE_SECRET,
     },
@@ -643,7 +645,9 @@ try {
   const integrationConfigCapability = runtime.capabilities.integrationConfigResilience;
   const daemonOrphanExitCapability = runtime.capabilities.daemonOrphanExit;
   const managedRunDurabilityCapability = runtime.capabilities.managedRunDurability;
+  const actorSettlementConvergenceCapability = runtime.capabilities.actorSettlementConvergence;
   const runtimeEventCoalescingCapability = runtime.capabilities.runtimeEventCoalescing;
+  const sessionEventJournalCapability = runtime.capabilities.sessionEventJournal;
   const runtimeAutoModeGuardrailCapability = runtime.capabilities.runtimeAutoModeGuardrail;
   result = {
     daemonPid,
@@ -686,7 +690,9 @@ try {
       a2aConfigReconciler: a2aConfigCapability?.version === 1,
       daemonOrphanExit: daemonOrphanExitCapability?.version === 1,
       managedRunDurability: managedRunDurabilityCapability?.version === 1,
+      actorSettlementConvergence: actorSettlementConvergenceCapability?.version === 1,
       runtimeEventCoalescing: runtimeEventCoalescingCapability?.version === 1,
+      sessionEventJournal: sessionEventJournalCapability?.version === 1,
       integrationConfigResilience: integrationConfigCapability?.version === 1,
       integrationHealth: managementAfterDetach.integrations?.state,
       integrationDomains: managementAfterDetach.integrations?.domains.map(
@@ -987,6 +993,14 @@ try {
       sdk: KODAX_RUNTIME_SDK_CAPABILITIES.managedRunDurability === 1,
       runtime: runtime.capabilities.managedRunDurability?.version === 1,
     },
+    actorSettlementConvergence: {
+      sdk: KODAX_RUNTIME_SDK_CAPABILITIES.actorSettlementConvergence === 1,
+      runtime: runtime.capabilities.actorSettlementConvergence?.version === 1,
+    },
+    sessionEventJournal: {
+      sdk: KODAX_RUNTIME_SDK_CAPABILITIES.sessionEventJournal === 1,
+      runtime: runtime.capabilities.sessionEventJournal?.version === 1,
+    },
     downgradeRejected,
     a2aExports: {
       bearerAuth: typeof createBearerEnvA2AAuthentication === 'function',
@@ -1120,7 +1134,9 @@ interface SharedDaemonHostResult {
     readonly a2aConfigReconciler: boolean;
     readonly daemonOrphanExit: boolean;
     readonly managedRunDurability: boolean;
+    readonly actorSettlementConvergence: boolean;
     readonly runtimeEventCoalescing: boolean;
+    readonly sessionEventJournal: boolean;
     readonly integrationConfigResilience: boolean;
     readonly integrationHealth?: string;
     readonly integrationDomains?: readonly string[];
@@ -1326,6 +1342,8 @@ test(
     });
     assert.deepEqual(result.eventCoalescing, { sdk: true, runtime: true });
     assert.deepEqual(result.managedRunDurability, { sdk: true, runtime: true });
+    assert.deepEqual(result.actorSettlementConvergence, { sdk: true, runtime: true });
+    assert.deepEqual(result.sessionEventJournal, { sdk: true, runtime: true });
     assert.equal(result.downgradeRejected, true);
     assert.deepEqual(result.a2aExports, {
       bearerAuth: true,
@@ -1401,14 +1419,18 @@ test(`KodaX ${EXPECTED_KODAX_VERSION} exposes fail-closed standalone command con
 
 test(`KodaX ${EXPECTED_KODAX_VERSION} Auto guardrail keeps the required permission semantics`, async () => {
   const projectRoot = await mkdtemp(path.join(tmpdir(), 'kodax-space-auto-guardrail-'));
+  const kodaxHome = await mkdtemp(path.join(tmpdir(), 'kodax-space-auto-home-'));
   const previousKodaxHome = process.env.KODAX_HOME;
-  process.env.KODAX_HOME = path.join(projectRoot, '.isolated-kodax-home');
+  process.env.KODAX_HOME = kodaxHome;
 
   try {
-    const [{ bootstrapAutoMode }, { createKodaXRuntime }] = await Promise.all([
-      import('@kodax-ai/kodax/repl'),
-      import('@kodax-ai/kodax/runtime'),
-    ]);
+    const [{ bootstrapAutoMode }, { createKodaXRuntime }, { setAgentConfigHome }] =
+      await Promise.all([
+        import('@kodax-ai/kodax/repl'),
+        import('@kodax-ai/kodax/runtime'),
+        import('@kodax-ai/kodax/coding'),
+      ]);
+    setAgentConfigHome(process.env.KODAX_HOME);
     const context = { agent: {} as never, messages: [] };
     let rulesPrompts = 0;
     const rulesBootstrap = await bootstrapAutoMode({
@@ -1492,6 +1514,18 @@ test(`KodaX ${EXPECTED_KODAX_VERSION} Auto guardrail keeps the required permissi
       'an exact LiteralPath filename containing brackets must stay fully modeled',
     );
 
+    const agentHomeRemoval = await rulesBeforeTool(
+      {
+        id: 'agent-home-root-removal',
+        name: 'bash',
+        input: { command: `Remove-Item -LiteralPath "${kodaxHome}" -Recurse` },
+      },
+      context,
+    );
+    assert.equal(agentHomeRemoval.action, 'block');
+    assert.match(agentHomeRemoval.reason ?? '', /Agent Home/i);
+    assert.equal(rulesPrompts, 2, 'Agent Home root mutation must be non-authorizable');
+
     const { createAutoModeToolGuardrail, KodaXBaseProvider } =
       await import('@kodax-ai/kodax/coding');
     class ClassifierProbeProvider extends KodaXBaseProvider {
@@ -1556,17 +1590,30 @@ test(`KodaX ${EXPECTED_KODAX_VERSION} Auto guardrail keeps the required permissi
         allowPrompts += 1;
       },
     );
-    const legacyTierZeroAllow = await allowGuardrail.beforeTool?.(
-      { id: 'llm-final-allow', name: 'bash', input: { command: 'rm -rf /' } },
+    const classifiedHighImpactAllow = await allowGuardrail.beforeTool?.(
+      { id: 'llm-final-allow', name: 'bash', input: { command: 'git reset --hard HEAD' } },
       context,
     );
-    assert.deepEqual(legacyTierZeroAllow, { action: 'allow' });
+    assert.deepEqual(classifiedHighImpactAllow, { action: 'allow' });
     assert.equal(allowClassifierCalls, 1, 'the installed classifier must review the call');
     assert.equal(
       allowPrompts,
       0,
       'a legal LLM allow must remain final even when legacy static rules mark the command dangerous',
     );
+
+    const agentHomeContainingRemoval = await allowGuardrail.beforeTool?.(
+      { id: 'llm-agent-home-hard-boundary', name: 'bash', input: { command: 'rm -rf /' } },
+      context,
+    );
+    assert.equal(agentHomeContainingRemoval?.action, 'block');
+    assert.match(agentHomeContainingRemoval?.reason ?? '', /Agent Home/i);
+    assert.equal(
+      allowClassifierCalls,
+      1,
+      'the non-authorizable Agent Home boundary must run before the classifier',
+    );
+    assert.equal(allowPrompts, 0);
 
     let askClassifierCalls = 0;
     let askPrompts = 0;
@@ -1613,19 +1660,35 @@ test(`KodaX ${EXPECTED_KODAX_VERSION} Auto guardrail keeps the required permissi
     const llmBeforeTool = llmGuardrail.beforeTool?.bind(llmGuardrail);
     assert.ok(llmBeforeTool);
 
-    const missingModelFallback = await llmBeforeTool(
+    const opaqueMissingModelCall = await llmBeforeTool(
       { id: 'missing-model', name: 'bash', input: { command: 'python verify.py' } },
       context,
     );
     assert.equal(
-      missingModelFallback.action,
-      'allow',
-      'v4 degrades to the ordinary Accept-edits permission boundary instead of blocking or switching engines',
+      opaqueMissingModelCall.action,
+      'block',
+      'opaque Bash must fail closed when standalone guardrail construction supplies no process-tree containment',
     );
+    assert.match(opaqueMissingModelCall.reason ?? '', /sandbox|containment/i);
     assert.equal(
       llmPrompts,
       1,
-      'v4 configuration fallback must request one explicit confirmation instead of hard-blocking',
+      'the permission fallback may ask, but approval cannot bypass missing OS containment',
+    );
+
+    const modeledMissingModelFallback = await llmBeforeTool(
+      {
+        id: 'missing-model-modeled-write',
+        name: 'bash',
+        input: { command: 'Set-Content -LiteralPath "build/modeled.txt" -Value data' },
+      },
+      context,
+    );
+    assert.equal(modeledMissingModelFallback.action, 'allow');
+    assert.equal(
+      llmPrompts,
+      2,
+      'a modeled call can still use the explicit Accept-edits fallback without switching engines',
     );
     assert.equal(llmGuardrail.getEngine(), 'llm');
     assert.deepEqual(llmGuardrail.getStats().denials, { consecutive: 0, cumulative: 0 });
@@ -1666,9 +1729,12 @@ test(`KodaX ${EXPECTED_KODAX_VERSION} Auto guardrail keeps the required permissi
       await runtime.close();
     }
   } finally {
+    const { setAgentConfigHome } = await import('@kodax-ai/kodax/coding');
+    setAgentConfigHome(undefined);
     if (previousKodaxHome === undefined) delete process.env.KODAX_HOME;
     else process.env.KODAX_HOME = previousKodaxHome;
     await rm(projectRoot, { recursive: true, force: true });
+    await rm(kodaxHome, { recursive: true, force: true });
   }
 });
 
@@ -1763,7 +1829,7 @@ test(
     assert.equal(result.version, INSTALLED_KODAX_VERSION);
     assert.equal(result.peer.runtimeId, result.runtimeId);
     assert.equal(result.peer.connectionState, 'connected');
-    assert.equal(result.peer.cursor, result.cursor);
+    assert.deepEqual(result.peer.cursor, result.cursor);
     assert.equal(result.peer.transcriptRevision, result.transcriptRevision);
     assert.deepEqual(result.peer.completeSnapshot, {
       managedTasks: true,
@@ -1834,7 +1900,9 @@ test(
     assert.equal(result.management.a2aConfigReconciler, true);
     assert.equal(result.management.daemonOrphanExit, true);
     assert.equal(result.management.managedRunDurability, true);
+    assert.equal(result.management.actorSettlementConvergence, true);
     assert.equal(result.management.runtimeEventCoalescing, true);
+    assert.equal(result.management.sessionEventJournal, true);
     assert.equal(result.management.integrationConfigResilience, true);
     assert.equal(result.management.integrationHealth, 'healthy');
     assert.deepEqual([...result.management.integrationDomains!].sort(), [

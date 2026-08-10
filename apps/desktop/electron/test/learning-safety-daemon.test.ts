@@ -90,6 +90,7 @@ const requirements = {
   daemonManagement: 1,
   daemonOrphanExit: 1,
   managedRunDurability: 1,
+  sessionEventJournal: 1,
 } as const;
 
 function appendDiagnosticTail(previous: string, chunk: string): string {

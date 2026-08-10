@@ -1,6 +1,6 @@
 # KodaX Space 产品需求文档（PRD）
 
-> **2026-08-07 发布基线**：KodaX Space `v0.1.38` 对齐 npm 正式发布的 KodaX `0.7.84`，并收口 Agent progress/同 owner Stop 收敛与已绘制 Session 重新激活恢复。
+> **2026-08-11 当前源码**：KodaX Space `v0.1.39` 对齐 npm 正式发布的精确 KodaX `0.7.85`，要求 Actor settlement convergence 与 Session-scoped event journal；当前已发布产品仍是 v0.1.38 / KodaX 0.7.84。
 > Coder daemon 必须显式提供 `managedRunDurability:1`；Space 只消费其 canonical
 > managed-Run `runId`/`turnId`，不维护第二份 Run 状态。未配置的 Auto LLM classifier timeout
 > 使用 KodaX 的首次 45 秒、重试 90 秒默认值。
@@ -575,24 +575,24 @@ File panel 内点击 git diff
 | `v0.1.33`    | KodaX 0.7.77 Runtime/Actor/history/usage 稳定化、Shell 控制与 F140 可配置关闭行为（已发布）                                       |
 | `v0.1.34`    | KodaX 0.7.78 Runtime 安全、integration resilience、Auto v4、可见彻底退出/orphan recovery、sandbox helper 打包、启动与历史回放加固 |
 | `v0.1.35`    | Learned Skill Safety Surface；复用已发布 `learningCenter:1` + `skillLearningLoop:1`，不建设超出契约的多 carrier Learning Center   |
-| `v0.1.36`    | KodaX 0.7.82、活动 Session 输入准入、history/live 对齐、跨 Session 恢复隔离与发布文档收口                               |
-| `v0.1.37`    | KodaX 0.7.83、多 Session 恢复、安全退出恢复与发布文档同步                                                                        |
-| `v0.1.38`    | KodaX 0.7.84、Agent progress/同 owner Stop 收敛、Session 重新激活恢复、图标打包与发布文档同步                                  |
-| `v0.1.39`    | —                                                                                                                                 |
-| `v0.1.40`    | —                                                                                            |
+| `v0.1.36`    | KodaX 0.7.82、活动 Session 输入准入、history/live 对齐、跨 Session 恢复隔离与发布文档收口                                         |
+| `v0.1.37`    | KodaX 0.7.83、多 Session 恢复、安全退出恢复与发布文档同步                                                                         |
+| `v0.1.38`    | KodaX 0.7.84、Agent progress/同 owner Stop 收敛、Session 重新激活恢复、图标打包与发布文档同步                                     |
+| `v0.1.39`    | KodaX 0.7.85、Actor settlement 自动收敛、unknown after-turn、精确 Stop、输入/历史保留与 Session journal epoch 隔离                |
+| `v0.1.40`    | —                                                                                                                                 |
 | `v0.1.41`    | —                                                                                                                                 |
-| `v0.1.42`    | F137 中文优先 DOCX/PDF/XLSX/PPTX builtin 与 F139 语义 UI 精修                                                          |
-| `v0.1.43`    | —             |
-| `v0.1.44`    | —                                                                |
-| `v0.1.45`    | Partner composer-first Skill workspace                                                                                                                                 |
-| `v0.1.46`    | —                                                                         |
-| `v0.1.47`    | Partner hybrid retrieval/evidence ranking 与 curated knowledge lifecycle                                                                                            |
-| `v0.1.48`    | F129 Partner Presentation Project：复用 F137 PPTX format service，增加模板优先 Studio、真实预览和目标 Office 引擎验证                                           |
-| `v0.1.49`    | Memory Agent Desktop Host；硬门槛为已发布、兼容的 KX-F260 contract |
-| `v0.1.50`    | — |
-| `v0.1.51`    | Partner knowledge freshness、conflict 与 access integrity |
-| `v0.1.52`    | Partner knowledge integrity 稳定化预留 |
-| `v0.1.53`    | Localization、beta/release diagnostics、distribution trust 与 Partner knowledge quality |
+| `v0.1.42`    | F137 中文优先 DOCX/PDF/XLSX/PPTX builtin 与 F139 语义 UI 精修                                                                     |
+| `v0.1.43`    | —                                                                                                                                 |
+| `v0.1.44`    | —                                                                                                                                 |
+| `v0.1.45`    | Partner composer-first Skill workspace                                                                                            |
+| `v0.1.46`    | —                                                                                                                                 |
+| `v0.1.47`    | Partner hybrid retrieval/evidence ranking 与 curated knowledge lifecycle                                                          |
+| `v0.1.48`    | F129 Partner Presentation Project：复用 F137 PPTX format service，增加模板优先 Studio、真实预览和目标 Office 引擎验证             |
+| `v0.1.49`    | Memory Agent Desktop Host；硬门槛为已发布、兼容的 KX-F260 contract                                                                |
+| `v0.1.50`    | —                                                                                                                                 |
+| `v0.1.51`    | Partner knowledge freshness、conflict 与 access integrity                                                                         |
+| `v0.1.52`    | Partner knowledge integrity 稳定化预留                                                                                            |
+| `v0.1.53`    | Localization、beta/release diagnostics、distribution trust 与 Partner knowledge quality                                           |
 | `v0.1.54`    | 0.1.x patch/RC reserve                                                                                                            |
 
 KX-F260/F266 未按时发布时，Space 调换 feature lane，不绕过 capability gate。

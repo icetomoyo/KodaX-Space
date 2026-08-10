@@ -118,6 +118,7 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
         daemonShutdownVerification: 1,
         managedRunDurability: 1,
         runtimeEventCoalescing: 1,
+        sessionEventJournal: 1,
       },
     }),
   );
@@ -129,13 +130,14 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
           daemonOrphanExit: 1,
           daemonShutdownVerification: 1,
           managedRunDurability: 1,
+          sessionEventJournal: 1,
         },
       }),
     /installed KodaX SDK.*runtimeEventCoalescing v1/i,
   );
   assert.throws(
     () => assertSpaceRuntimeSdkRequiredCapabilities({}),
-    /installed KodaX SDK.*actorSettlementConvergence v1.*daemonOrphanExit v1.*daemonShutdownVerification v1.*managedRunDurability v1.*runtimeEventCoalescing v1/i,
+    /installed KodaX SDK.*actorSettlementConvergence v1.*daemonOrphanExit v1.*daemonShutdownVerification v1.*managedRunDurability v1.*runtimeEventCoalescing v1.*sessionEventJournal v1/i,
   );
 });
 
@@ -390,6 +392,7 @@ function createFakeRuntime(runtimeId = 'rt_test') {
       managedRunDurability: { version: 1 },
       actorSettlementConvergence: { version: 1 },
       runtimeEventCoalescing: { version: 1 },
+      sessionEventJournal: { version: 1 },
       sandboxRuntime: {
         version: 1,
         asrtVersion: '0.0.65',
@@ -1647,6 +1650,7 @@ test('runtime selection attaches one Coder daemon with stable identity and requi
       readonly requirements?: NonNullable<ConnectKodaXRuntimeOptions['requirements']> & {
         readonly daemonOrphanExit?: 1;
         readonly runtimeEventCoalescing?: 1;
+        readonly sessionEventJournal?: 1;
       };
     }
   > = [];
@@ -1705,8 +1709,10 @@ test('runtime selection attaches one Coder daemon with stable identity and requi
   assert.equal(options[0]?.requirements?.durableRecoveryQueries, 1);
   assert.equal(options[0]?.requirements?.daemonManagement, 1);
   assert.equal(options[0]?.requirements?.daemonOrphanExit, 1);
+  assert.equal(options[0]?.requirements?.actorSettlementConvergence, 1);
   assert.equal(options[0]?.requirements?.daemonShutdownVerification, undefined);
   assert.equal(options[0]?.requirements?.runtimeEventCoalescing, 1);
+  assert.equal(options[0]?.requirements?.sessionEventJournal, 1);
   assert.equal(options[0]?.requirements?.integrationConfigResilience, 1);
   assert.equal(options[0]?.requirements?.runtimeAutoModeGuardrail, 4);
   assert.equal(adapter.snapshot().state, 'ready');
@@ -7473,21 +7479,23 @@ test('buffered Runtime events become visible before Actor bootstrap can block ob
   const originalObserve = fake.runtime.sessions.observe.bind(fake.runtime.sessions);
   fake.runtime.sessions.observe = async (...args) => {
     const observation = await originalObserve(...args);
-    args[1]?.(withTestRuntimeCursor({
-      id: 'evt_buffered_before_actor',
-      seq: 1,
-      time: '2026-08-05T12:00:00.000Z',
-      sessionId: 's_buffered_before_actor',
-      runId: 'run_buffered_before_actor',
-      type: 'run.started',
-      payload: {
-        runId: 'run_buffered_before_actor',
+    args[1]?.(
+      withTestRuntimeCursor({
+        id: 'evt_buffered_before_actor',
+        seq: 1,
+        time: '2026-08-05T12:00:00.000Z',
         sessionId: 's_buffered_before_actor',
-        phase: 'running',
-        startedAt: '2026-08-05T12:00:00.000Z',
-        provider: 'mock',
-      },
-    }));
+        runId: 'run_buffered_before_actor',
+        type: 'run.started',
+        payload: {
+          runId: 'run_buffered_before_actor',
+          sessionId: 's_buffered_before_actor',
+          phase: 'running',
+          startedAt: '2026-08-05T12:00:00.000Z',
+          provider: 'mock',
+        },
+      }),
+    );
     return observation;
   };
   const agents = fake.runtime.agents as unknown as {
@@ -7538,6 +7546,21 @@ test('initialization requires source-side Runtime event coalescing', async () =>
   });
 
   await assert.rejects(adapter.initialize(), /runtimeEventCoalescing v1/i);
+  assert.equal(adapter.snapshot().state, 'failed');
+  assert.equal(fake.calls.close, 1);
+});
+
+test('initialization requires Session-scoped Runtime event journals', async () => {
+  const fake = createFakeRuntime();
+  delete (fake.runtime.capabilities as Record<string, unknown>).sessionEventJournal;
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+  });
+
+  await assert.rejects(adapter.initialize(), /sessionEventJournal v1/i);
   assert.equal(adapter.snapshot().state, 'failed');
   assert.equal(fake.calls.close, 1);
 });
@@ -9367,6 +9390,14 @@ test('Runtime event coalescing capability is projected from the connected host',
       available: true,
     },
   );
+  assert.deepEqual(
+    capabilities.find((item) => item.id === 'runtime.events.sessionJournal'),
+    {
+      id: 'runtime.events.sessionJournal',
+      version: 1,
+      available: true,
+    },
+  );
 });
 
 test('Runtime exact-history capabilities expose conversation, compaction, paging, and search separately', () => {
@@ -10398,23 +10429,25 @@ test('Actor snapshot retirement waits for buffered observation demand', async ()
   const originalObserve = fake.runtime.sessions.observe.bind(fake.runtime.sessions);
   fake.runtime.sessions.observe = async (...args) => {
     const observation = await originalObserve(...args);
-    args[1]?.(withTestRuntimeCursor({
-      id: 'evt_buffered_run_started',
-      seq: 1,
-      time: '2026-08-02T12:00:00.000Z',
-      sessionId: 's_actor_buffered_run',
-      runId: 'run_buffered',
-      turnId: 'turn_buffered',
-      type: 'run.started',
-      payload: {
-        runId: 'run_buffered',
+    args[1]?.(
+      withTestRuntimeCursor({
+        id: 'evt_buffered_run_started',
+        seq: 1,
+        time: '2026-08-02T12:00:00.000Z',
         sessionId: 's_actor_buffered_run',
+        runId: 'run_buffered',
         turnId: 'turn_buffered',
-        phase: 'running',
-        startedAt: '2026-08-02T12:00:00.000Z',
-        provider: 'mock',
-      },
-    }));
+        type: 'run.started',
+        payload: {
+          runId: 'run_buffered',
+          sessionId: 's_actor_buffered_run',
+          turnId: 'turn_buffered',
+          phase: 'running',
+          startedAt: '2026-08-02T12:00:00.000Z',
+          provider: 'mock',
+        },
+      }),
+    );
     return observation;
   };
   const adapter = new RuntimeHostAdapter({

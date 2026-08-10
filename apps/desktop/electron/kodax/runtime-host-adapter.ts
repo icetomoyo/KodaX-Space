@@ -1153,6 +1153,8 @@ type SpaceRuntimeConnectOptions = Omit<ConnectKodaXRuntimeOptions, 'requirements
     readonly managedRunDurability?: 1;
     /** Provider/tool fragments are bounded before Runtime sequence allocation and persistence. */
     readonly runtimeEventCoalescing?: 1;
+    /** Runtime event ordering and replay are scoped to one Session journal epoch. */
+    readonly sessionEventJournal?: 1;
   };
 };
 
@@ -1380,6 +1382,12 @@ function assertSpaceDaemonRequiredCapabilities(runtime: KodaXDaemonRuntime): voi
         'Install a compatible KodaX package and restart the Coder daemon.',
     );
   }
+  if (runtimeCapabilityVersion(runtime, 'sessionEventJournal') < 1) {
+    throw new Error(
+      'KodaX Runtime does not support the required sessionEventJournal v1 capability. ' +
+        'Install a compatible KodaX package and restart the Coder daemon.',
+    );
+  }
   if (runtimeCapabilityVersion(runtime, 'conversationHistory') < 1) {
     throw new Error(
       'KodaX Runtime does not support the required conversationHistory v1 capability. ' +
@@ -1491,6 +1499,7 @@ async function createPublishedRuntime(
         readonly daemonShutdownVerification?: number;
         readonly managedRunDurability?: number;
         readonly runtimeEventCoalescing?: number;
+        readonly sessionEventJournal?: number;
       };
     },
   );
@@ -1504,6 +1513,7 @@ export function assertSpaceRuntimeSdkRequiredCapabilities(sdk: {
     readonly daemonShutdownVerification?: number;
     readonly managedRunDurability?: number;
     readonly runtimeEventCoalescing?: number;
+    readonly sessionEventJournal?: number;
   };
 }): void {
   const capabilities = sdk.KODAX_RUNTIME_SDK_CAPABILITIES;
@@ -1513,6 +1523,7 @@ export function assertSpaceRuntimeSdkRequiredCapabilities(sdk: {
     ...(capabilities?.daemonShutdownVerification === 1 ? [] : ['daemonShutdownVerification v1']),
     ...(capabilities?.managedRunDurability === 1 ? [] : ['managedRunDurability v1']),
     ...(capabilities?.runtimeEventCoalescing === 1 ? [] : ['runtimeEventCoalescing v1']),
+    ...(capabilities?.sessionEventJournal === 1 ? [] : ['sessionEventJournal v1']),
   ];
   if (missing.length > 0) {
     throw new Error(
@@ -2113,7 +2124,9 @@ export class RuntimeHostAdapter {
             daemonManagement: 1,
             daemonOrphanExit: 1,
             managedRunDurability: 1,
+            actorSettlementConvergence: 1,
             runtimeEventCoalescing: 1,
+            sessionEventJournal: 1,
             integrationConfigResilience: 1,
             runtimeAutoModeGuardrail: 4,
           },
@@ -2579,6 +2592,11 @@ export class RuntimeHostAdapter {
         id: 'runtime.events.coalescing',
         version: version('runtimeEventCoalescing'),
         available: available('runtimeEventCoalescing'),
+      },
+      {
+        id: 'runtime.events.sessionJournal',
+        version: version('sessionEventJournal'),
+        available: available('sessionEventJournal'),
       },
       {
         id: 'runtime.externalAgents',

@@ -13,7 +13,7 @@
   <a href="https://github.com/icetomoyo/KodaX-Space/releases/latest"><img alt="release" src="https://img.shields.io/github/v/release/icetomoyo/KodaX-Space?style=flat-square"></a>
   <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-KAI--FCL-orange?style=flat-square"></a>
   <a href="https://github.com/icetomoyo/KodaX-Space/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/icetomoyo/KodaX-Space/ci.yml?style=flat-square&label=ci"></a>
-  <img alt="KodaX SDK" src="https://img.shields.io/badge/KodaX_SDK-0.7.84-f0a020?style=flat-square">
+  <img alt="KodaX SDK" src="https://img.shields.io/badge/KodaX_SDK-0.7.85-f0a020?style=flat-square">
   <img alt="platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-34495e?style=flat-square">
 </p>
 
@@ -92,7 +92,7 @@ npm run dev
 
 **`main` 对 Space 管理的 daemon 要求专用的 KodaX `daemonOrphanExit:1` 能力，不再用语义版本号推断生命周期行为。** Coder 默认连接 profile-scoped shared daemon，并提供规范化的有界 Actor/Turn 投影、精确 history/live 对齐、Runtime-owned interrupt finalization、完整物理请求用量诊断、稳定提示词缓存亲和与 CLI 缓存用量归一化。F141 在 Settings → Runtime 增加客户可见的 Daemon / Embedded 开关：Daemon 为推荐模式，Embedded 用于兼容回退。切换前会关闭 Runtime 操作准入并等待已接收入口退出；任何 ManagedSession、running/paused Workflow、非终态 External Agent task、permission/AskUser、待派发 Coder queue、daemon work 或其他客户端都会阻止不安全交接。owner policy 与 version 3 偏好转换完成后，Space 自动重启；新进程会在连接 Runtime 前协调持久化模式和 owner policy。环境变量只作为旧设置的一次迁移种子。Partner 继续由 Space embedded-inline 持有；MCP 进程/日志、Workflow library/start/admin、Space Reference Agent 执行和产品 Artifact 仍是明确的 host-provider 边界。
 
-KodaX 0.7.84 把已接收的首条/队列输入和每个完成回合先持久化为 canonical managed Run，再发布生命周期事件，并保留新交付 interrupt 的精确 `entryId`。本版本还会有界合并 Agent progress 持久化，并允许精确同 owner 的 Stop 协调晚到 Actor settlement 后应用已经捕获的 executor 结果，避免回答看似完成却让 Session 永久停在 `unknown`；异主 owner 和持续存储故障仍保持 fail-closed。Space 明确协商 `managedRunDurability:1`，用已确认的 `runId` 和流式 `turnId` 绑定 optimistic query，并拒绝不能提供该保证的 daemon。未显式配置 Auto LLM timeout 时，SDK 的首次 classifier timeout 为 45 秒，唯一重试为 90 秒；Space 只转发用户显式配置的值。`worker.configuredA2A` 是 KodaX CLI Worker-hosted embedded Runtime 的配置，不是 Space Settings 开关。应用内 `kodax_manual` 把这些 Space 边界与当前安装 SDK 的原始底层能力主题动态合成。
+KodaX 0.7.85 在 durable managed Run 基础上正式提供 `actorSettlementConvergence:1` 与 `sessionEventJournal:1`。Actor 持久化自隔离后，Runtime 会阻断新的 callback/effect，只按精确同 owner 证据自动修复，并在释放 Session 路由前等待隔离前已进入的 Runtime 工具效果收敛；它不会因忽略 abort 的 Provider Promise 永远不返回而永久占用 Session。每个 Runtime observation 都携带 `(sessionId, journalEpoch, seq)`，Space 在 epoch 变化时重置水位，绝不跨 Session 比较 seq。异主 owner 和持续存储故障仍保持 fail-closed。Space 同时要求 `managedRunDurability:1`、`actorSettlementConvergence:1` 和 `sessionEventJournal:1`，并对缺失能力的 daemon 执行安全升级或拒绝连接。0.7.85 还把 Agent Home/root 写入设为不可授权，并要求不透明 Shell 执行具备真实 OS containment。`worker.configuredA2A` 仍是 KodaX CLI Worker-hosted embedded Runtime 的配置，不是 Space Settings 开关。
 
 底部状态区把主 Agent 上下文压力与整个 Session 累计 Token 分开显示。“上下文窗口”使用最终自动压缩阈值和不含正文的六类构成；完成态物理请求按 request ID 去重，覆盖 root、child、retry、fallback、repair、workflow digest 和 compaction summary。F140 新增“每次询问 / 保留托盘和 Runtime / 彻底退出”偏好。Windows、macOS 或 Linux 真正退出时，Space 会先尝试安全停止 Coder daemon；若有 blocker，则提供默认的“保持开启”和显式“强行关闭”。强行关闭只终止当前 Space 的任务、保留其他客户端的 Runtime 工作，并保证退出不再回到阻塞弹窗。Space 自动拉起的孤儿 daemon 仍会在最后客户端断开且任务空闲后自回收。Terminal 与 Coder 命令工具共享同一个所选 Shell/profile PATH 契约，不接受任意可执行文件，也不把敏感变量投影给 PTY。
 
@@ -183,7 +183,7 @@ KodaX `0.7.84`。本版本同步已落地的 Session 重新激活修复、Agent 
 | MCP 和 Skills      | KodaX MCP servers 与 skills 的桌面管理和展示入口，并随包提供经审查的 `frontend-slides` 与 `huashu-design` builtin。                                                                                             |
 | Memory Governance  | 评审、批准、拒绝、检查 memory proposals 和 approved references。                                                                                                                                                |
 | Partner surface    | 已启用 workspace-first 知识工作界面，提供 Sources、KB、Outputs、checkpoint 写入、Office/PDF 便利生成与本地 policy/audit。                                                                                       |
-| External Agents    | KodaX 0.7.84 Runtime 配置的 Coder Agent 使用独占 Actor owner、durable managed Run 和统一 Actor/Turn 任务；Space Reference Agent 保留主窗口管理和 durable Task Dock 干预路径。MCP Tasks 与受治理 HTTP 继续门控。 |
+| External Agents    | KodaX 0.7.85 Runtime 配置的 Coder Agent 使用独占 Actor owner、durable managed Run 和统一 Actor/Turn 任务；Space Reference Agent 保留主窗口管理和 durable Task Dock 干预路径。MCP Tasks 与受治理 HTTP 继续门控。 |
 
 ## 配置模型
 
@@ -285,7 +285,7 @@ npm run e2e:headed
 | [docs/BUILTIN_SKILLS.md](docs/BUILTIN_SKILLS.md)                                                         | builtin skill 的来源、许可、更新、补丁和打包完整性流程。    |
 | [docs/releases/v0.1.34-release-readiness.md](docs/releases/v0.1.34-release-readiness.md)                 | v0.1.34 的发布门禁、产物摘要、已知风险与发布证据。          |
 | [docs/releases/v0.1.37-release-readiness.md](docs/releases/v0.1.37-release-readiness.md)                 | v0.1.37 的 KodaX 0.7.83 合约、门禁与发布证据。              |
-| [docs/features/v0.1.38.md](docs/features/v0.1.38.md)                                                       | v0.1.38 维护范围与 KodaX 0.7.84 边界。                     |
+| [docs/features/v0.1.38.md](docs/features/v0.1.38.md)                                                     | v0.1.38 维护范围与 KodaX 0.7.84 边界。                      |
 | [docs/releases/v0.1.38-release-readiness.md](docs/releases/v0.1.38-release-readiness.md)                 | v0.1.38 门禁、KodaX 0.7.84 合约与发布证据。                 |
 | [docs/CODING_AGENT_BEGINNER_BEST_PRACTICES.zh-CN.md](docs/CODING_AGENT_BEGINNER_BEST_PRACTICES.zh-CN.md) | Coding Agent 初学者最佳实践教程，覆盖软件研发和微服务场景。 |
 | [docs/PRD.md](docs/PRD.md)                                                                               | 产品需求和产品定位。                                        |
@@ -308,8 +308,8 @@ npm run e2e:headed
 | `v0.1.35`         | npm 正式 KodaX 0.7.80、durable managed Run 协商、会话历史完整性、Auto timeout 默认值与对应手册/测试。        |
 | `v0.1.35`         | 基于已发布 Runtime 学习闭环的最小 learned Skill 安全控制面，不建设第二套存储或多 carrier Learning Center。   |
 | `v0.1.36`         | KodaX 0.7.82、活动 Session 输入准入、history/live 对齐、跨 Session 恢复隔离与发布文档收口。                  |
-| `v0.1.37`         | KodaX 0.7.83、多 Session 恢复、安全退出重启、语义启动背景和发布文档对齐。                                      |
-| `v0.1.38`         | KodaX 0.7.84、Agent progress/Stop 收敛、Session 重新激活恢复、图标打包与完整发布文档同步。                    |
+| `v0.1.37`         | KodaX 0.7.83、多 Session 恢复、安全退出重启、语义启动背景和发布文档对齐。                                    |
+| `v0.1.38`         | KodaX 0.7.84、Agent progress/Stop 收敛、Session 重新激活恢复、图标打包与完整发布文档同步。                   |
 | `v0.1.42`         | Space 独立实现的中文优先 DOCX/PDF/XLSX/PPTX builtin 与语义 UI 精修，并提供有界执行和真实验证回执。           |
 | `v0.1.40-v0.1.44` | Workflow/Review 证据面、Task/Capability 治理，以及 SDK-gated Memory Agent host。                             |
 | `v0.1.48`         | 本地化完成、beta diagnostics、release channel、updater/distribution trust。                                  |

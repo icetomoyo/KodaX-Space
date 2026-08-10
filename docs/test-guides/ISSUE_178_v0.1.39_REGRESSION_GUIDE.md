@@ -3,7 +3,9 @@
 ## Preconditions
 
 - Use a Space build containing this fix and exact KodaX package bytes that
-  advertise `actorSettlementConvergence:1`.
+  advertise both `actorSettlementConvergence:1` and `sessionEventJournal:1`.
+- Confirm the build resolves npm Registry `@kodax-ai/kodax@0.7.85`, not a
+  locally linked or repacked package with the same version string.
 - Use an isolated KodaX home and a large Session with at least three child
   Agents.
 - Inject a delay into the first child terminal Actor snapshot save.
@@ -36,6 +38,9 @@ the removed draft attachment.
 
 Expected: the fenced Run fails factually, the queued Run starts once, and the
 submitted query plus recoverable streamed output do not disappear or reorder.
+The successor must not start while an exact pre-fence Runtime-mediated tool
+effect is still pending; an abort-ignoring provider Promise alone must not keep
+the repaired Session permanently occupied.
 
 ### 3. Exact Stop
 
@@ -59,6 +64,17 @@ Never release the delayed write.
 
 Expected: spinner and Stop remain visible, queued input is retained but never
 executes, and Space never force-idles or fabricates completion.
+
+### 6. Session journal epoch rollover
+
+1. Observe an active Session and record its `(sessionId, journalEpoch, seq)`.
+2. Restart the isolated daemon so the journal epoch changes and sequence
+   numbering begins from the new lineage.
+3. Complete the Run and submit another query.
+
+Expected: the new epoch is accepted even if its `seq` is lower. The old spinner
+clears, an acknowledged send does not remain stuck in `Sending`, and events
+from another Session never outrank this Session's terminal event.
 
 ## Pass criteria
 

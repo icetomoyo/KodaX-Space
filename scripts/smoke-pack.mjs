@@ -426,6 +426,10 @@ async function checkAsarContents(asarPath) {
     fail('packaged KodaX metadata does not advertise actorSettlementConvergence v1');
   }
   ok('packaged KodaX metadata advertises actorSettlementConvergence v1');
+  if (packagedKodax.kodaxRuntimeContracts?.sessionEventJournal !== 1) {
+    fail('packaged KodaX metadata does not advertise sessionEventJournal v1');
+  }
+  ok('packaged KodaX metadata advertises sessionEventJournal v1');
   if (packagedKodax.kodaxRuntimeContracts?.integrationConfigResilience !== 1) {
     fail('packaged KodaX metadata does not advertise integrationConfigResilience v1');
   }
@@ -975,6 +979,9 @@ try {
       'packaged SDK does not advertise daemonShutdownVerification v1 before auto-start',
     );
   }
+  if (KODAX_RUNTIME_SDK_CAPABILITIES?.sessionEventJournal !== 1) {
+    throw new Error('packaged SDK does not advertise sessionEventJournal v1 before auto-start');
+  }
   daemonRuntime = await createKodaXRuntime({
     mode: 'daemon',
     profile: daemonProfile,
@@ -984,6 +991,10 @@ try {
     requirements: {
       daemonManagement: 1,
       daemonOrphanExit: 1,
+      actorSettlementConvergence: 1,
+      managedRunDurability: 1,
+      runtimeEventCoalescing: 1,
+      sessionEventJournal: 1,
       ...(process.platform === 'win32' ? { daemonShutdownVerification: 1 } : {}),
       integrationConfigResilience: 1,
       skillLearningLoop: 1,
@@ -1018,6 +1029,37 @@ try {
       );
     }
   }
+  const sessionEventJournal = daemonRuntime.capabilities?.sessionEventJournal;
+  if (
+    typeof sessionEventJournal !== 'object' ||
+    sessionEventJournal === null ||
+    sessionEventJournal.version !== 1
+  ) {
+    throw new Error(
+      'packaged daemon did not negotiate sessionEventJournal v1: ' +
+      JSON.stringify(sessionEventJournal),
+    );
+  }
+  const journalSession = await daemonRuntime.sessions.create({
+    title: 'Packaged Session journal probe',
+    projectPath: homeDir,
+    surface: 'space-desktop',
+    tag: 'code',
+  });
+  const journalObservation = await daemonRuntime.sessions.observe(journalSession.id, () => {});
+  const journalCursor = journalObservation.snapshot.cursor;
+  journalObservation.close();
+  if (
+    journalCursor.sessionId !== journalSession.id ||
+    typeof journalCursor.journalEpoch !== 'string' ||
+    journalCursor.journalEpoch.length === 0 ||
+    !Number.isSafeInteger(journalCursor.seq) ||
+    journalCursor.seq < 0
+  ) {
+    throw new Error(
+      'packaged daemon returned an invalid Session journal cursor: ' + JSON.stringify(journalCursor),
+    );
+  }
   const management = await daemonRuntime.daemon.inspect();
   if (
     management.integrations?.state !== 'healthy' ||
@@ -1050,6 +1092,8 @@ try {
     sessionRoundTrip: loaded.id === created.id,
     constructedHandlerIsMainThread: handlerResult,
     daemonOrphanExit: daemonOrphanExit.version,
+    sessionEventJournal: sessionEventJournal.version,
+    sessionCursorValid: true,
     integrationHealth: management.integrations.state,
     sandboxVersion: sandboxCapability.version,
     sandboxUnavailableBehavior: sandboxCapability.unavailableBehavior,
@@ -1064,6 +1108,8 @@ try {
     !result.sessionRoundTrip ||
     result.constructedHandlerIsMainThread !== 'false' ||
     result.daemonOrphanExit !== 1 ||
+    result.sessionEventJournal !== 1 ||
+    !result.sessionCursorValid ||
     result.integrationHealth !== 'healthy' ||
     result.sandboxVersion !== 1 ||
     result.sandboxUnavailableBehavior !== 'structured-no-execution'

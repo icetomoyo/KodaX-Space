@@ -16,6 +16,13 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ### Changed
 
+- **KodaX 0.7.85 Registry alignment** - Root/Desktop manifests and every
+  lockfile view now resolve the exact published package
+  (`sha512-6iDF3dgz1WehkaLGDgIBBa0r2cpTalR4SMiCEw6QVEsyBDS9zwvTQ5zBoI/VDaMFdyCyHUUs7ZLVatkeBRaj/Q==`).
+- Coder startup now requires both `actorSettlementConvergence:1` and
+  `sessionEventJournal:1`. Session observations retain the complete
+  `(sessionId, journalEpoch, seq)` cursor and reset local watermarks when the
+  journal epoch changes instead of comparing sequence numbers across Sessions.
 - Coder startup now requires KodaX Runtime capability
   `actorSettlementConvergence:1`; Space will not claim compatibility from the
   package version alone.
@@ -26,6 +33,9 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
   drafts. Main-process deduplication runs before attachment validation, so an
   accepted query with a lost IPC reply cannot be duplicated or fail merely
   because its draft image was already cleaned up.
+- KodaX 0.7.85 safety semantics are reflected in compatibility probes: Agent
+  Home/root mutations are non-authorizable, and opaque shell execution must
+  have real OS containment rather than an approval-only fallback.
 
 ### Fixed
 
@@ -40,6 +50,13 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
   factual automatic repair instead of promising an unspecified Space refresh.
 - Same-runtime Actor self-fence is surfaced as settlement persistence failure;
   genuine `actor_owner_conflict` remains reserved for a different live owner.
+
+### Verification
+
+- Full workspace tests, typecheck, lint, production Windows packaging, package
+  smoke, and packaged boot smoke pass against the exact Registry 0.7.85 bytes.
+  The package probe starts a real daemon, observes a real Session, and validates
+  its complete Session journal cursor.
 
 ---
 

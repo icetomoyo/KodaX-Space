@@ -1,6 +1,6 @@
 # KodaX Space 高层设计（HLD）
 
-> **2026-08-07 v0.1.38**：当前 Runtime 基线为精确 npm Registry KodaX `0.7.84`；Agent progress/同 owner Stop 收敛、已绘制 Session 重新激活、history/live 对齐和安全退出恢复是当前 Space 维护边界。
+> **2026-08-11 v0.1.39 source**：当前源码 Runtime 基线为精确 npm Registry KodaX `0.7.85`；Space 要求 `actorSettlementConvergence:1` 与 `sessionEventJournal:1`，保留完整 Session journal cursor，并在 durable effect convergence 后才释放未知 Run 的路由。当前已发布产品仍是 v0.1.38 / KodaX 0.7.84。
 > `RuntimeHostAdapter` 要求 `managedRunDurability:1`，使 accepted prompt 与 completed turn
 > 在事件发布前已成为 canonical managed Run；Space 仅用 returned `runId`/`turnId` 关联 UI
 > optimistic state 和 history，不复制持久化职责。未设置 Auto timeout 时，SDK 默认 45 秒首次、90 秒重试。
@@ -912,9 +912,9 @@ Space 严格遵守：
 | `v0.1.45`           | Extend Workflow snapshot schema for same-session replay provenance; attach evidence review receipts to objects.                                                                               |
 | `v0.1.49`           | Host KX-F260 Memory Agent over existing F228/F088 governance when published.                                                                                                                  |
 | `v0.1.35`           | Host the minimum learned-Skill safety surface over published `learningCenter:1` + `skillLearningLoop:1`.                                                                                      |
-| `v0.1.36`           | Harden active-Session input admission, exact run/turn ownership, paged history reconciliation, and renderer recovery without adding a second Runtime store.                                |
-| `v0.1.37`           | Align the exact KodaX 0.7.83 package and release docs while preserving multi-Session recovery, safe-close recovery, and renderer ownership boundaries.                              |
-| `v0.1.38`           | Align the exact KodaX 0.7.84 package and manual while preserving bounded Agent progress, same-owner Stop recovery, and Session reactivation identity boundaries.                 |
+| `v0.1.36`           | Harden active-Session input admission, exact run/turn ownership, paged history reconciliation, and renderer recovery without adding a second Runtime store.                                   |
+| `v0.1.37`           | Align the exact KodaX 0.7.83 package and release docs while preserving multi-Session recovery, safe-close recovery, and renderer ownership boundaries.                                        |
+| `v0.1.38`           | Align the exact KodaX 0.7.84 package and manual while preserving bounded Agent progress, same-owner Stop recovery, and Session reactivation identity boundaries.                              |
 | `v0.1.53`           | Complete locale gates, release diagnostics, channels/updater/distribution trust.                                                                                                              |
 
 ### 20.2 Active 0.2.x architecture lanes
