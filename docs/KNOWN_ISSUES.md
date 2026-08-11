@@ -173,8 +173,8 @@ Last Updated: 2026-08-11
 | 175 | High     | Resolved           | Safe close could reject an idle app after hiding it, then succeed only on a second close                                           | v0.1.37 complete-exit / Windows daemon cleanup               | 2026-08-06 |
 | 176 | High     | Resolved           | Reactivating an invalidated active Session could duplicate or misplace its newest query and answer until Ctrl+R                    | v0.1.38 Session reactivation recovery                        | 2026-08-06 |
 | 177 | High     | Resolved           | History reconciliation could duplicate a recovered answer or place compact notices after a later answer                            | v0.1.38 history/live and local-notice reconciliation         | 2026-08-08 |
-| 178 | High     | Resolved in source | Actor durability unknown blocked input, dropped the live turn after Stop, and misreported self-fence as foreign ownership          | KodaX 0.7.84 / Space v0.1.38                                 | 2026-08-09 |
-| 179 | Medium   | Resolved           | Idle Space exit reported running tasks when only other Runtime clients remained connected                                          | v0.1.38 complete-exit client protection                      | 2026-08-11 |
+| 178 | High     | Resolved in source | Actor durability unknown blocked input, dropped the live turn after Stop, and misreported self-fence as foreign ownership          | KodaX 0.7.85 / Space v0.1.39                                 | 2026-08-09 |
+| 179 | Medium   | Resolved           | Idle Space exit reported running tasks when only other Runtime clients remained connected                                          | v0.1.39 complete-exit client protection                      | 2026-08-11 |
 
 ## Issue Details
 
@@ -227,7 +227,7 @@ fault-injection run described in the Issue 178 regression guide.
 - Priority: Medium
 - Status: Resolved
 - Introduced: v0.1.38 complete-exit client protection
-- Fixed: v0.1.38 source maintenance
+- Fixed: v0.1.39 source maintenance
 - Created: 2026-08-11
 - Resolution Date: 2026-08-11
 

@@ -1,12 +1,12 @@
 # KodaX Space 产品需求文档（PRD）
 
-> **2026-08-11 当前源码**：KodaX Space `v0.1.39` 对齐 npm 正式发布的精确 KodaX `0.7.85`，要求 Actor settlement convergence 与 Session-scoped event journal；当前已发布产品仍是 v0.1.38 / KodaX 0.7.84。
+> **2026-08-11 当前源码/发布准备**：KodaX Space `v0.1.39` 对齐 npm 正式发布的精确 KodaX `0.7.85`，要求 Actor settlement convergence 与 Session-scoped event journal；v0.1.38 保留为历史正式产品基线。
 > Coder daemon 必须显式提供 `managedRunDurability:1`；Space 只消费其 canonical
 > managed-Run `runId`/`turnId`，不维护第二份 Run 状态。未配置的 Auto LLM classifier timeout
 > 使用 KodaX 的首次 45 秒、重试 90 秒默认值。
 
-> Last updated: 2026-08-07
-> Status: 长期产品方向文档。当前已发布基线为 KodaX Space 0.1.38（package 0.1.38）/ 精确 Registry KodaX 0.7.84。v0.1.38 在既有 Runtime owner、canonical Actor/Turn、精确 history/live 与 compaction、完整物理请求诊断、F140-F142、可配置 Shell、独立 integration 配置和正式打包门禁基础上，继续收口 Agent progress 持久化、同 owner Stop 的晚到 settlement 恢复、已绘制 Session 重新激活和应用内手册同步。生命周期支持仍按能力协商，不通过 SemVer 推断；Issue 133 的 macOS/Linux process acceptance/cleanup retry gap 和 F138 完整 OS 隔离继续保持未完成。已交付能力与边界以 [USER_MANUAL.zh-CN.md](USER_MANUAL.zh-CN.md)、[KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md) 和 [FEATURE_LIST.md](FEATURE_LIST.md) 为准。
+> Last updated: 2026-08-11
+> Status: 长期产品方向文档。当前发布准备基线为 KodaX Space 0.1.39（package 0.1.39）/ 精确 Registry KodaX 0.7.85。v0.1.39 在既有 Runtime owner、canonical Actor/Turn、精确 history/live 与 compaction、完整物理请求诊断、F140-F142、可配置 Shell、独立 integration 配置和正式打包门禁基础上，继续收口 Actor settlement convergence、Session journal epoch、unknown Run 输入、精确 Stop、输入去重与 idle-exit client protection。生命周期支持仍按能力协商，不通过 SemVer 推断；Issue 133 的 macOS/Linux process acceptance/cleanup retry gap 和 F138 完整 OS 隔离继续保持未完成。已交付能力与边界以 [USER_MANUAL.zh-CN.md](USER_MANUAL.zh-CN.md)、[KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md) 和 [FEATURE_LIST.md](FEATURE_LIST.md) 为准。
 > 对标：Anthropic Claude Desktop（Cowork / Code 双面板）+ OpenAI Codex Desktop App（多 agent 本机壳）
 
 > **当前落地摘要**：Coder 与 Partner 均可用；Partner 已具备 workspace-first Outputs、Sources/KB、checkpointed writes、Office/PDF 便利产物和本地 policy/audit。0.1.30 接入 KodaX 0.7.67 Reference External Agent 管理、Workflow/Worker 路由和 Task Dock 干预；v0.1.31 已发布 inline RuntimeHostAdapter 的 managed run、transcript、compact、fork、rewind；v0.1.32 由 KodaX 0.7.76 Coder daemon 在能力协商通过后提供 Runtime 配置的 A2A；v0.1.33 对齐 KodaX 0.7.77 并收口 Actor、精确回放、用量诊断、Shell、关闭行为和独立 integration 配置。底部把“距自动压缩的活动输入压力”和“Session 累计 Token 用量”拆为两个入口，避免把模型最大上下文、绝对阈值、输出容量预留和 Provider 账单混为一谈。MCP Tasks、受治理 HTTP、通用 Connector/浏览器控制/自动化/远程任务仍未作为当前能力开放。

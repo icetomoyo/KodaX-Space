@@ -243,6 +243,9 @@ export function runtimeSessionEventOrigin(runtimeId: string | undefined, event: 
         runtimeEvent: {
           runtimeId,
           runId: event.runId,
+          ...(event.cursor?.journalEpoch !== undefined
+            ? { journalEpoch: event.cursor.journalEpoch }
+            : {}),
           seq: event.seq,
         },
       }

@@ -101,7 +101,12 @@ test('Runtime transcript events carry the daemon cursor used by snapshot reconci
   } satisfies RuntimeTypedEvent<'assistant.delta'>;
 
   assert.deepEqual(runtimeSessionEventOrigin('rt_1', event), {
-    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_1', seq: 7 },
+    runtimeEvent: {
+      runtimeId: 'rt_1',
+      runId: 'run_1',
+      journalEpoch: 'journal_epoch_1',
+      seq: 7,
+    },
   });
   assert.deepEqual(runtimeSessionEventOrigin(undefined, event), {});
 });

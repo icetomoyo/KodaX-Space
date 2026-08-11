@@ -1066,6 +1066,7 @@ const todoDriftWarningSchema = z.object({
 const runtimeSessionEventOriginSchema = z.object({
   runtimeId: z.string().min(1).max(128),
   runId: z.string().min(1).max(128),
+  journalEpoch: z.string().min(1).max(128).optional(),
   seq: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
 });
 
@@ -1073,6 +1074,7 @@ const runtimeSessionEventOriginShape = {
   /**
    * Runtime provenance is optional for legacy/mock/history events. Daemon-backed live events use
    * it as the causal barrier against an authoritative cumulative session.liveSnapshot cursor.
+   * Sequence ordering and replay are valid only inside one Session journal epoch.
    */
   runtimeEvent: runtimeSessionEventOriginSchema.optional(),
 } as const;

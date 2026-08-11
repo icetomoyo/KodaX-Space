@@ -875,12 +875,33 @@ test('session.list input is void; output requires sessions array', () => {
 test('session.event payload: text_delta variant', () => {
   const evt = { kind: 'text_delta' as const, sessionId: 's_1', text: 'hello' };
   assert.equal(sessionEventChannel.payload.safeParse(evt).success, true);
+  const runtimeEvent = sessionEventChannel.payload.safeParse({
+    ...evt,
+    runtimeEvent: {
+      runtimeId: 'rt_1',
+      runId: 'run_1',
+      journalEpoch: 'journal_epoch_1',
+      seq: 42,
+    },
+  });
+  assert.equal(runtimeEvent.success, true);
+  assert.equal(
+    runtimeEvent.success ? runtimeEvent.data.runtimeEvent?.journalEpoch : undefined,
+    'journal_epoch_1',
+  );
   assert.equal(
     sessionEventChannel.payload.safeParse({
       ...evt,
       runtimeEvent: { runtimeId: 'rt_1', runId: 'run_1', seq: 42 },
     }).success,
     true,
+  );
+  assert.equal(
+    sessionEventChannel.payload.safeParse({
+      ...evt,
+      runtimeEvent: { runtimeId: 'rt_1', runId: 'run_1', journalEpoch: '', seq: 42 },
+    }).success,
+    false,
   );
   assert.equal(
     sessionEventChannel.payload.safeParse({

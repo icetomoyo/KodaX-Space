@@ -23,6 +23,7 @@
 | InProgress               | 4                                                                                                                                                                                                                                                   |
 | Recent Completed         | 27                                                                                                                                                                                                                                                  |
 | Latest published release | [`v0.1.38`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.38) (KodaX 0.7.84 Registry alignment, Agent progress/Stop recovery, Session reactivation protection, and release documentation synchronization)                              |
+| Current release candidate | [`v0.1.39`](features/v0.1.39.md) (KodaX 0.7.85 Actor settlement convergence, Session journal epochs, exact unknown-Run input/Stop handling, and release documentation synchronization)                         |
 | 0.1.x completion target  | `v0.1.53`, followed by `v0.1.54` patch/RC reserve                                                                                                                                                                                                   |
 | Far-future candidates    | F144 is scheduled after `v0.2.x`; F138 is explicitly deferred until after `v0.5.x`; other candidates remain in [KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md) and [FEATURES_ARCHIVED.md](FEATURES_ARCHIVED.md#watchlist-and-reopen-gates) |
 
@@ -216,6 +217,16 @@
 - The release record covers bounded Agent progress, exact same-owner Stop
   recovery, Issue 176 Session reactivation, tracked icon packaging, and the
   complete documentation set. No new Feature ID is marked completed.
+
+### Release preparation - 2026-08-11: v0.1.39 KodaX 0.7.85 maintenance
+
+- The candidate aligns every Space package manifest and the in-app `kodax_manual`
+  to package `0.1.39` while consuming the exact npm Registry KodaX `0.7.85`
+  bytes.
+- The release record covers Actor settlement convergence, Session journal epoch
+  isolation, exact unknown-Run after-turn input and Stop ownership, live-history
+  preservation, input deduplication, and the complete documentation set. No new
+  Feature ID is marked completed.
 
 ### Current-release addition - 2026-07-20: separate Artifact and File Viewer ownership
 

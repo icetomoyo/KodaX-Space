@@ -1335,7 +1335,9 @@ function liveEventRuntimeOriginsMatch(previous: SessionEvent, event: SessionEven
     return previousOrigin === undefined && eventOrigin === undefined;
   }
   return (
-    previousOrigin.runtimeId === eventOrigin.runtimeId && previousOrigin.runId === eventOrigin.runId
+    previousOrigin.runtimeId === eventOrigin.runtimeId &&
+    previousOrigin.runId === eventOrigin.runId &&
+    previousOrigin.journalEpoch === eventOrigin.journalEpoch
   );
 }
 
@@ -1351,6 +1353,44 @@ function liveEventRuntimeSequenceIsContinuous(
   return (
     liveEventRuntimeOriginsMatch(previous, event) && eventOrigin.seq === previousOrigin.seq + 1
   );
+}
+
+function runtimeJournalEventWasApplied(
+  events: readonly SessionEvent[],
+  event: SessionEvent,
+): boolean {
+  const incoming = 'runtimeEvent' in event ? event.runtimeEvent : undefined;
+  if (incoming?.journalEpoch === undefined) return false;
+
+  for (let index = events.length - 1; index >= 0; index--) {
+    const candidate = events[index]!;
+    const existing = 'runtimeEvent' in candidate ? candidate.runtimeEvent : undefined;
+    if (
+      existing === undefined ||
+      existing.runtimeId !== incoming.runtimeId ||
+      existing.runId !== incoming.runId ||
+      existing.journalEpoch !== incoming.journalEpoch
+    ) {
+      continue;
+    }
+    if (existing.seq > incoming.seq) return true;
+    if (existing.seq < incoming.seq) return false;
+    if (candidate.kind !== event.kind) continue;
+    if (event.kind === 'mid_turn_user_prompt') {
+      const candidateInputId =
+        candidate.kind === event.kind ? (candidate.queueId ?? candidate.entryId) : undefined;
+      const inputId = event.queueId ?? event.entryId;
+      if (inputId === undefined || candidateInputId === undefined) continue;
+      if (candidateInputId !== inputId) continue;
+    }
+    if (event.kind === 'queued_user_prompt_started') {
+      const candidateQueueId = candidate.kind === event.kind ? candidate.queueId : undefined;
+      if (event.queueId === undefined || candidateQueueId === undefined) continue;
+      if (candidateQueueId !== event.queueId) continue;
+    }
+    return true;
+  }
+  return false;
 }
 
 function appendSessionEvent(
@@ -1440,6 +1480,7 @@ function snapshotCoversRuntimeDraftEvent(state: AppState, event: SessionEvent): 
   return (
     barrier?.runtimeId === origin.runtimeId &&
     barrier.runId === origin.runId &&
+    barrier.journalEpoch === origin.journalEpoch &&
     coveredSeq !== undefined &&
     origin.seq <= coveredSeq
   );
@@ -5455,6 +5496,15 @@ export const useAppStore = create<AppState>((set) => ({
         }
       }
       const bucket = state.eventsBySession[event.sessionId] ?? [];
+      const liveBaselineEvents = historyLiveBaselines.get(event.sessionId)?.events;
+      if (
+        runtimeJournalEventWasApplied(bucket, event) ||
+        (liveBaselineEvents !== undefined &&
+          liveBaselineEvents !== bucket &&
+          runtimeJournalEventWasApplied(liveBaselineEvents, event))
+      ) {
+        return state;
+      }
       if (snapshotCoversRuntimeDraftEvent(state, event)) return state;
       if (isCompactionNotice(event)) {
         const provisionalIndex =

@@ -37,13 +37,15 @@ export function runtimeDeltasShareSnapshotSide(
   }
   if (
     previous.runtimeEvent.runtimeId !== event.runtimeEvent.runtimeId ||
-    previous.runtimeEvent.runId !== event.runtimeEvent.runId
+    previous.runtimeEvent.runId !== event.runtimeEvent.runId ||
+    previous.runtimeEvent.journalEpoch !== event.runtimeEvent.journalEpoch
   ) {
     return false;
   }
   if (
     cursor?.runtimeId !== event.runtimeEvent.runtimeId ||
-    (cursor.runId !== undefined && cursor.runId !== event.runtimeEvent.runId)
+    (cursor.runId !== undefined && cursor.runId !== event.runtimeEvent.runId) ||
+    cursor?.journalEpoch !== event.runtimeEvent.journalEpoch
   ) {
     return true;
   }
@@ -151,7 +153,11 @@ function belongsToRun(
   projection: SpaceSessionLiveProjectionT,
   runId: string,
 ): boolean {
-  return origin?.runtimeId === projection.cursor.runtimeId && origin.runId === runId;
+  return (
+    origin?.runtimeId === projection.cursor.runtimeId &&
+    origin.runId === runId &&
+    origin.journalEpoch === projection.cursor.journalEpoch
+  );
 }
 
 function firstPostSnapshotIndex(
@@ -181,6 +187,9 @@ function draftEvent(
     runtimeEvent: {
       runtimeId: projection.cursor.runtimeId,
       runId,
+      ...(projection.cursor.journalEpoch !== undefined
+        ? { journalEpoch: projection.cursor.journalEpoch }
+        : {}),
       seq: projection.cursor.seq,
     },
     ...(turnId !== undefined ? { turnId } : {}),
@@ -402,6 +411,9 @@ function reconcileActiveTools(
         runtimeEvent: {
           runtimeId: projection.cursor.runtimeId,
           runId,
+          ...(projection.cursor.journalEpoch !== undefined
+            ? { journalEpoch: projection.cursor.journalEpoch }
+            : {}),
           seq: projection.cursor.seq,
         },
         ...(turnId !== undefined ? { turnId } : {}),
@@ -430,6 +442,9 @@ function reconcileActiveTools(
       runtimeEvent: {
         runtimeId: projection.cursor.runtimeId,
         runId,
+        ...(projection.cursor.journalEpoch !== undefined
+          ? { journalEpoch: projection.cursor.journalEpoch }
+          : {}),
         seq: projection.cursor.seq,
       },
       ...(turnId !== undefined ? { turnId } : {}),

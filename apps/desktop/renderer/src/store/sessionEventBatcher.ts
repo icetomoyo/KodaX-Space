@@ -57,7 +57,9 @@ function runtimeOriginsMatch(previous: SessionEvent, event: SessionEvent): boole
     return previousOrigin === undefined && eventOrigin === undefined;
   }
   return (
-    previousOrigin.runtimeId === eventOrigin.runtimeId && previousOrigin.runId === eventOrigin.runId
+    previousOrigin.runtimeId === eventOrigin.runtimeId &&
+    previousOrigin.runId === eventOrigin.runId &&
+    previousOrigin.journalEpoch === eventOrigin.journalEpoch
   );
 }
 

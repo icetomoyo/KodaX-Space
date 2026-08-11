@@ -76,6 +76,34 @@ test('snapshot barrier holds one Session while other Sessions continue flushing'
   batcher.dispose();
 });
 
+test('event batching never coalesces continuous sequence numbers across journal epochs', () => {
+  const appended: SessionEvent[] = [];
+  const batcher = createSessionEventBatcher((event) => appended.push(event), {
+    scheduler: inertScheduler,
+  });
+  const runtimeEvent = { runtimeId: 'rt_1', runId: 'run_1', seq: 1 };
+
+  batcher.push({
+    kind: 'text_delta',
+    sessionId: 's_1',
+    text: 'old epoch',
+    runtimeEvent: { ...runtimeEvent, journalEpoch: 'epoch_old' },
+  });
+  batcher.push({
+    kind: 'text_delta',
+    sessionId: 's_1',
+    text: 'new epoch',
+    runtimeEvent: { ...runtimeEvent, journalEpoch: 'epoch_new', seq: 2 },
+  });
+  batcher.flush();
+
+  assert.deepEqual(
+    appended.map((event) => (event.kind === 'text_delta' ? event.text : event.kind)),
+    ['old epoch', 'new epoch'],
+  );
+  batcher.dispose();
+});
+
 test('snapshot drain preserves structural order while coalescing only within the incoming barrier', () => {
   const appended: SessionEvent[] = [];
   const batcher = createSessionEventBatcher((event) => appended.push(event), {

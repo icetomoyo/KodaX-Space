@@ -14,6 +14,10 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ## [Unreleased]
 
+---
+
+## [0.1.39] - 2026-08-11
+
 ### Changed
 
 - **KodaX 0.7.85 Registry alignment** - Root/Desktop manifests and every

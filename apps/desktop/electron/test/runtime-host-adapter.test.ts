@@ -8477,14 +8477,24 @@ test('daemon delivered interrupt batch becomes ordered queue-addressable session
 
   assert.deepEqual(pushed, [
     {
-      runtimeEvent: { runtimeId: 'rt_test', runId: 'run_active', seq: 1 },
+      runtimeEvent: {
+        runtimeId: 'rt_test',
+        runId: 'run_active',
+        journalEpoch: 'journal_epoch_1',
+        seq: 1,
+      },
       kind: 'session_start',
       sessionId: 's_1',
       provider: 'unknown',
       turnId: 'turn_active',
     },
     {
-      runtimeEvent: { runtimeId: 'rt_test', runId: 'run_active', seq: 2 },
+      runtimeEvent: {
+        runtimeId: 'rt_test',
+        runId: 'run_active',
+        journalEpoch: 'journal_epoch_1',
+        seq: 2,
+      },
       kind: 'mid_turn_user_prompt',
       sessionId: 's_1',
       queueId: 'input-1',
@@ -8494,7 +8504,12 @@ test('daemon delivered interrupt batch becomes ordered queue-addressable session
       turnUserOrdinal: 1,
     },
     {
-      runtimeEvent: { runtimeId: 'rt_test', runId: 'run_active', seq: 2 },
+      runtimeEvent: {
+        runtimeId: 'rt_test',
+        runId: 'run_active',
+        journalEpoch: 'journal_epoch_1',
+        seq: 2,
+      },
       kind: 'mid_turn_user_prompt',
       sessionId: 's_1',
       queueId: 'input-2',
@@ -8884,6 +8899,7 @@ test('a terminal fallback restores an after-turn marker with its exact admitted 
     runtimeEvent: {
       runtimeId: 'rt_test',
       runId: 'run_terminal_continuation',
+      journalEpoch: 'journal_epoch_1',
       seq: 1,
     },
     kind: 'queued_user_prompt_started',

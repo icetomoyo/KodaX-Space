@@ -1,12 +1,13 @@
 # KodaX Runtime stream performance handoff
 
-> **Published-package follow-up (2026-08-07):** the performance investigation
-> below is historical evidence. Space v0.1.38 now pins the published npm
-> Registry `@kodax-ai/kodax@0.7.84` package. Its `runtimeEventCoalescing:1`
+> **Published-package follow-up (2026-08-11):** the performance investigation
+> below is historical evidence. Space v0.1.39 now pins the published npm
+> Registry `@kodax-ai/kodax@0.7.85` package. Its `runtimeEventCoalescing:1`
 > behavior is still consumed by the adapter; the current release additionally
-> requires `managedRunDurability:1`, bounded Agent progress, same-owner Stop
-> reconciliation, and protects active-Session admission and multi-Session
-> recovery. This handoff does not describe a local-tarball dependency.
+> requires `managedRunDurability:1`, Actor settlement convergence, Session
+> journal epochs, bounded Agent progress, same-owner Stop reconciliation, and
+> protects active-Session admission and multi-Session recovery. This handoff
+> does not describe a local-tarball dependency.
 
 Date: 2026-07-30
 

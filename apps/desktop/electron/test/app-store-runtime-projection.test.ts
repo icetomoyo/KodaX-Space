@@ -602,6 +602,183 @@ test('cumulative live snapshots hydrate missing state once without replaying tex
   assert.equal(events.filter((event) => event.kind === 'tool_progress').length, 1);
 });
 
+test('replayed Runtime journal events do not duplicate one completed transcript turn', () => {
+  useAppStore.setState({ sessions: [sidebarSession], currentSessionId: 's_1' });
+  const store = useAppStore.getState();
+  const messageId = store.appendUserMessage('s_1', 'inspect the current implementation', 10);
+  assert.ok(messageId);
+  store.bindUserMessageRuntimeRun('s_1', messageId, 'run_replayed');
+  const runtimeEvent = (seq: number) => ({
+    runtimeId: 'rt_1',
+    runId: 'run_replayed',
+    journalEpoch: 'epoch_replayed',
+    seq,
+  });
+
+  const events: readonly SessionEvent[] = [
+    {
+      kind: 'session_start',
+      sessionId: 's_1',
+      provider: 'mock',
+      turnId: 'turn_replayed',
+      runtimeEvent: runtimeEvent(1),
+    },
+    {
+      kind: 'text_delta',
+      sessionId: 's_1',
+      text: 'first update',
+      turnId: 'turn_replayed',
+      runtimeEvent: runtimeEvent(2),
+    },
+    {
+      kind: 'tool_start',
+      sessionId: 's_1',
+      toolId: 'tool_replayed',
+      toolName: 'read_file',
+      input: {},
+      turnId: 'turn_replayed',
+      runtimeEvent: runtimeEvent(3),
+    },
+    {
+      kind: 'tool_result',
+      sessionId: 's_1',
+      toolId: 'tool_replayed',
+      toolName: 'read_file',
+      content: 'done',
+      turnId: 'turn_replayed',
+      runtimeEvent: runtimeEvent(4),
+    },
+    {
+      kind: 'text_delta',
+      sessionId: 's_1',
+      text: 'final answer',
+      turnId: 'turn_replayed',
+      runtimeEvent: runtimeEvent(5),
+    },
+    {
+      kind: 'session_complete',
+      sessionId: 's_1',
+      turnId: 'turn_replayed',
+      runtimeEvent: runtimeEvent(6),
+    },
+  ];
+
+  for (const event of events) store.appendEvent(event);
+  for (const event of events) store.appendEvent(event);
+
+  const state = useAppStore.getState();
+  assert.deepEqual(
+    composeMessages({
+      events: state.eventsBySession.s_1 ?? [],
+      userMessages: state.userMessagesBySession.s_1 ?? [],
+    }).flatMap((message) =>
+      message.kind === 'assistant_text' ? [`assistant:${message.text}`] : [],
+    ),
+    ['assistant:first update', 'assistant:final answer'],
+  );
+  assert.equal(
+    (state.eventsBySession.s_1 ?? []).filter(
+      (event) =>
+        'runtimeEvent' in event && event.runtimeEvent?.runId === 'run_replayed',
+    ).length,
+    events.length,
+  );
+});
+
+test('one Runtime journal record may still project distinct same-sequence events', () => {
+  useAppStore.setState({ sessions: [sidebarSession], currentSessionId: 's_1' });
+  const origin = {
+    runtimeId: 'rt_1',
+    runId: 'run_fanout',
+    journalEpoch: 'epoch_fanout',
+    seq: 10,
+  };
+  const events: readonly SessionEvent[] = [
+    {
+      kind: 'mid_turn_user_prompt',
+      sessionId: 's_1',
+      entryId: 'entry_1',
+      content: 'same interrupt text',
+      runtimeEvent: origin,
+    },
+    {
+      kind: 'mid_turn_user_prompt',
+      sessionId: 's_1',
+      entryId: 'entry_2',
+      content: 'same interrupt text',
+      runtimeEvent: origin,
+    },
+    {
+      kind: 'queued_user_prompt_started',
+      sessionId: 's_1',
+      queueId: 'input_1',
+      queueMode: 'interrupt',
+      content: 'first queued input',
+      runtimeEvent: origin,
+    },
+    {
+      kind: 'queued_user_prompt_started',
+      sessionId: 's_1',
+      queueId: 'input_2',
+      queueMode: 'interrupt',
+      content: 'second queued input',
+      runtimeEvent: origin,
+    },
+    {
+      kind: 'session_complete',
+      sessionId: 's_1',
+      runtimeEvent: origin,
+    },
+  ];
+
+  for (const event of events) useAppStore.getState().appendEvent(event);
+  for (const event of events) useAppStore.getState().appendEvent(event);
+
+  assert.deepEqual(
+    (useAppStore.getState().eventsBySession.s_1 ?? []).map((event) => {
+      if (event.kind === 'mid_turn_user_prompt') return `${event.kind}:${event.entryId}`;
+      if (event.kind === 'queued_user_prompt_started') return `${event.kind}:${event.queueId}`;
+      return event.kind;
+    }),
+    [
+      'mid_turn_user_prompt:entry_1',
+      'mid_turn_user_prompt:entry_2',
+      'queued_user_prompt_started:input_1',
+      'queued_user_prompt_started:input_2',
+      'session_complete',
+    ],
+  );
+});
+
+test('a new Runtime journal epoch may reuse a prior event sequence', () => {
+  useAppStore.setState({ sessions: [sidebarSession], currentSessionId: 's_1' });
+  const event = {
+    kind: 'text_delta' as const,
+    sessionId: 's_1',
+    text: 'old epoch',
+    runtimeEvent: {
+      runtimeId: 'rt_1',
+      runId: 'run_epoch_reset',
+      journalEpoch: 'epoch_old',
+      seq: 9,
+    },
+  };
+
+  useAppStore.getState().appendEvent(event);
+  useAppStore.getState().appendEvent({
+    ...event,
+    text: 'new epoch',
+    runtimeEvent: { ...event.runtimeEvent, journalEpoch: 'epoch_new', seq: 10 },
+  });
+
+  assert.deepEqual(
+    (useAppStore.getState().eventsBySession.s_1 ?? []).map((item) =>
+      'runtimeEvent' in item ? item.runtimeEvent?.journalEpoch : undefined,
+    ),
+    ['epoch_old', 'epoch_new'],
+  );
+});
+
 test('a late renderer snapshot keeps its restored turn owner across terminal history and reactivation', () => {
   useAppStore.setState({ sessions: [sidebarSession], currentSessionId: 's_1' });
   useAppStore.getState().replaceRuntimeProfileProjection(profile);
@@ -1938,7 +2115,12 @@ test('stream batching never merges covered and post-snapshot Runtime deltas', ()
     kind: 'text_delta' as const,
     sessionId: 's_1',
     text: 'c',
-    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_1', seq: 3 },
+    runtimeEvent: {
+      runtimeId: 'rt_1',
+      runId: 'run_1',
+      journalEpoch: 'epoch_events',
+      seq: 3,
+    },
   };
   const after = {
     ...covered,
@@ -1950,10 +2132,23 @@ test('stream batching never merges covered and post-snapshot Runtime deltas', ()
     text: 'e',
     runtimeEvent: { ...after.runtimeEvent, seq: 5 },
   };
-  const cursor = { runtimeId: 'rt_1', runId: 'run_1', seq: 3, assistantDraftSeq: 3 };
+  const cursor = {
+    runtimeId: 'rt_1',
+    runId: 'run_1',
+    journalEpoch: 'epoch_events',
+    seq: 3,
+    assistantDraftSeq: 3,
+  };
 
   assert.equal(runtimeDeltasShareSnapshotSide(covered, after, cursor), false);
   assert.equal(runtimeDeltasShareSnapshotSide(after, later, cursor), true);
+  assert.equal(
+    runtimeDeltasShareSnapshotSide(covered, after, {
+      ...cursor,
+      journalEpoch: 'epoch_snapshot',
+    }),
+    true,
+  );
 });
 
 test('app store keeps live Runtime drafts bounded across frames without crossing a snapshot', () => {
