@@ -120,7 +120,11 @@ function rebuildFromSource(runtime) {
 
   run(NODE, args, `node-gyp rebuild better-sqlite3 for ${runtime}`, {
     cwd: betterSqlite3Dir,
-    timeout: 300_000,
+    // Windows-hosted runners can spend more than five minutes in MSBuild
+    // before the native addon process returns, especially on a cold cache.
+    // Keep this bounded, but do not turn a slow CI compile into a false test
+    // failure.
+    timeout: 600_000,
   });
 }
 
