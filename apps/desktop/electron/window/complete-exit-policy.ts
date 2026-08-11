@@ -2,23 +2,46 @@ export interface BeforeQuitState {
   readonly cleanupStarted: boolean;
   readonly daemonStopCommitted: boolean;
   readonly forcedExitCommitted: boolean;
+  readonly sharedRuntimeExitCommitted: boolean;
   readonly runtimeModeRestartScheduled: boolean;
   readonly secondaryInstanceExit: boolean;
 }
 
 /**
  * User and OS quit requests must enter the complete-exit gate on every desktop
- * platform. Only an explicitly committed forced exit, internal restarts, and
- * the losing single-instance process may bypass daemon shutdown.
+ * platform. Only a committed forced or shared-Runtime-preserving exit,
+ * internal restarts, and the losing single-instance process may bypass daemon
+ * shutdown.
  */
 export function shouldRequestCompleteExitOnBeforeQuit(state: BeforeQuitState): boolean {
   return (
     !state.cleanupStarted &&
     !state.daemonStopCommitted &&
     !state.forcedExitCommitted &&
+    !state.sharedRuntimeExitCommitted &&
     !state.runtimeModeRestartScheduled &&
     !state.secondaryInstanceExit
   );
+}
+
+export type CompleteExitDisposition =
+  | 'stop-runtime-and-exit'
+  | 'exit-preserve-runtime'
+  | 'confirm-blocked-exit';
+
+/**
+ * Other clients prevent stopping their shared Runtime, not closing this idle Space. Keep every
+ * executable-work blocker on the existing confirmation path.
+ */
+export function resolveCompleteExitDisposition(input: {
+  readonly spaceBlockers: readonly string[];
+  readonly runtimeBlockers: readonly string[];
+}): CompleteExitDisposition {
+  if (input.spaceBlockers.length > 0) return 'confirm-blocked-exit';
+  if (input.runtimeBlockers.length === 0) return 'stop-runtime-and-exit';
+  return input.runtimeBlockers.every((blocker) => blocker === 'connected_clients')
+    ? 'exit-preserve-runtime'
+    : 'confirm-blocked-exit';
 }
 
 export function daemonStopWasConfirmed(result: {

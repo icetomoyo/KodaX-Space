@@ -138,6 +138,7 @@ import {
   collectSpaceExitWorkBlockers,
   commitRelaunchBeforeDelayedQuit,
   resolveBlockedCompleteExitAction,
+  resolveCompleteExitDisposition,
   resolveFailedCompleteExitAction,
   shouldRetryDaemonStopAfterFailedCompleteExit,
   runAdmittedCompleteExit,
@@ -355,6 +356,7 @@ let backgroundCloseNoticeShown = false;
 let stopDaemonOnQuit = false;
 let daemonStopConfirmedBeforeQuit = false;
 let forcedExitCommitted = false;
+let sharedRuntimeExitCommitted = false;
 let coderRuntimeRestartScheduled = false;
 let startupRecoveryRestartScheduled = false;
 let secondaryInstanceExit = false;
@@ -1618,8 +1620,15 @@ async function requestCompleteExit(): Promise<void> {
     ]);
     const runtimeBlockers = runtime.state === 'ready' && !runtime.canStop ? runtime.blockers : [];
     const blockers = [...spaceBlockers, ...runtimeBlockers];
+    const disposition = resolveCompleteExitDisposition({ spaceBlockers, runtimeBlockers });
     console.info(`[main] complete exit preflight settled in ${Date.now() - requestStartedAt}ms`);
-    if (blockers.length > 0) {
+    if (disposition === 'exit-preserve-runtime') {
+      exitCommitted = true;
+      sharedRuntimeExitCommitted = true;
+      app.quit();
+      return;
+    }
+    if (disposition === 'confirm-blocked-exit') {
       const blockerSummary = blockers.join(', ');
       const zh = locale === 'zh-CN';
       restoreVisibleExitControlSurface();
@@ -2348,6 +2357,7 @@ app.on('before-quit', (event) => {
       cleanupStarted: _quitting,
       daemonStopCommitted: stopDaemonOnQuit,
       forcedExitCommitted,
+      sharedRuntimeExitCommitted,
       runtimeModeRestartScheduled: coderRuntimeRestartScheduled || startupRecoveryRestartScheduled,
       secondaryInstanceExit: secondaryInstanceExit || testExitBypass,
     })

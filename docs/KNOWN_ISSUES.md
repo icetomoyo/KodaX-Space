@@ -174,6 +174,7 @@ Last Updated: 2026-08-11
 | 176 | High     | Resolved           | Reactivating an invalidated active Session could duplicate or misplace its newest query and answer until Ctrl+R                    | v0.1.38 Session reactivation recovery                        | 2026-08-06 |
 | 177 | High     | Resolved           | History reconciliation could duplicate a recovered answer or place compact notices after a later answer                            | v0.1.38 history/live and local-notice reconciliation         | 2026-08-08 |
 | 178 | High     | Resolved in source | Actor durability unknown blocked input, dropped the live turn after Stop, and misreported self-fence as foreign ownership          | KodaX 0.7.84 / Space v0.1.38                                 | 2026-08-09 |
+| 179 | Medium   | Resolved           | Idle Space exit reported running tasks when only other Runtime clients remained connected                                          | v0.1.38 complete-exit client protection                      | 2026-08-11 |
 
 ## Issue Details
 
@@ -220,6 +221,56 @@ The source fix and exact dependency pin are complete. Production Windows
 packaging, package smoke, and packaged boot smoke pass against the official
 0.7.85 bytes. The remaining release evidence is the packaged Windows
 fault-injection run described in the Issue 178 regression guide.
+
+### 179: Idle Space exit reported running tasks when only other Runtime clients remained connected
+
+- Priority: Medium
+- Status: Resolved
+- Introduced: v0.1.38 complete-exit client protection
+- Fixed: v0.1.38 source maintenance
+- Created: 2026-08-11
+- Resolution Date: 2026-08-11
+
+#### Original Problem
+
+When Space had no active or queued work, complete exit still showed “tasks are running” whenever
+the shared Runtime reported only `connected_clients`. The user had to choose a misleading force
+close action even though exiting Space could safely leave the shared Runtime available to those
+other clients.
+
+Expected behavior: `connected_clients` alone should keep the shared Runtime alive without blocking
+Space exit. Space-owned work and other Runtime work blockers must retain the existing confirmation
+and preservation behavior.
+
+#### Context
+
+- The Runtime stop preflight correctly treats multiple logical clients as a daemon-stop blocker.
+- Space merged daemon-stop blockers with Space-owned work blockers and presented all of them as
+  running tasks.
+
+#### Root Cause
+
+Complete exit did not distinguish “Space cannot exit safely” from “the shared Runtime cannot stop
+safely.” It therefore routed a daemon-retention condition through the task-cancellation prompt.
+
+#### Resolution
+
+- Complete-exit preflight now distinguishes a daemon-stop blocker from a Space-exit blocker.
+- When `connected_clients` is the only Runtime blocker and Space owns no active work, Space commits
+  an exit that disconnects its Runtime client but does not cancel work or stop the shared daemon.
+- The committed preserve-Runtime path bypasses the second `before-quit` admission check while still
+  running the existing bounded local cleanup.
+- Space-owned work and every Runtime work blocker retain the existing confirmation path; an idle
+  Runtime with no blockers still uses the verified daemon-stop path.
+
+#### Verification
+
+- Added policy regression coverage for connected-client-only exit, mixed Space/Runtime blockers,
+  Runtime work blockers, idle daemon stop, and second-pass `before-quit` admission.
+- `node --test --test-concurrency=1 --import tsx apps/desktop/electron/test/complete-exit-policy.test.ts`
+  passed: 15/15.
+- Desktop typecheck, lint, and smoke build passed. The full Desktop test run had one unrelated
+  transient F118 daemon-integration failure; its isolated rerun passed.
 
 ### 013: Restored KodaX sessions could pair assistant segments with the following user prompt after consecutive user messages
 
@@ -12954,12 +13005,12 @@ history remained correct:
 
 ## Summary
 
-- Total: 165
+- Total: 166
 - Open: 1
 - In Progress: 9
 - Deferred: 1
-- Resolved: 154
+- Resolved: 155
 - High: 82
-- Medium: 72
+- Medium: 73
 - Low: 11
 - Next to resolve: 165

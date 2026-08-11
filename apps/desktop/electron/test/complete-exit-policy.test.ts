@@ -5,6 +5,7 @@ import {
   collectSpaceExitWorkBlockers,
   commitRelaunchBeforeDelayedQuit,
   daemonStopWasConfirmed,
+  resolveCompleteExitDisposition,
   runAdmittedCompleteExit,
   runForcedCompleteExit,
   resolveBlockedCompleteExitAction,
@@ -16,12 +17,35 @@ import {
   shouldRequestCompleteExitOnBeforeQuit,
 } from '../window/complete-exit-policy.js';
 
+test('connected clients alone preserve the shared Runtime without blocking Space exit', () => {
+  assert.equal(
+    resolveCompleteExitDisposition({
+      spaceBlockers: [],
+      runtimeBlockers: ['connected_clients'],
+    }),
+    'exit-preserve-runtime',
+  );
+
+  for (const input of [
+    { spaceBlockers: ['space_sessions:1'], runtimeBlockers: ['connected_clients'] },
+    { spaceBlockers: [], runtimeBlockers: ['connected_clients', 'active_runs'] },
+  ]) {
+    assert.equal(resolveCompleteExitDisposition(input), 'confirm-blocked-exit');
+  }
+
+  assert.equal(
+    resolveCompleteExitDisposition({ spaceBlockers: [], runtimeBlockers: [] }),
+    'stop-runtime-and-exit',
+  );
+});
+
 test('all ordinary app quit requests enter complete-exit coordination', () => {
   assert.equal(
     shouldRequestCompleteExitOnBeforeQuit({
       cleanupStarted: false,
       daemonStopCommitted: false,
       forcedExitCommitted: false,
+      sharedRuntimeExitCommitted: false,
       runtimeModeRestartScheduled: false,
       secondaryInstanceExit: false,
     }),
@@ -35,6 +59,7 @@ test('internal restart, committed cleanup, and secondary processes bypass comple
       cleanupStarted: true,
       daemonStopCommitted: false,
       forcedExitCommitted: false,
+      sharedRuntimeExitCommitted: false,
       runtimeModeRestartScheduled: false,
       secondaryInstanceExit: false,
     },
@@ -42,6 +67,7 @@ test('internal restart, committed cleanup, and secondary processes bypass comple
       cleanupStarted: false,
       daemonStopCommitted: true,
       forcedExitCommitted: false,
+      sharedRuntimeExitCommitted: false,
       runtimeModeRestartScheduled: false,
       secondaryInstanceExit: false,
     },
@@ -49,6 +75,7 @@ test('internal restart, committed cleanup, and secondary processes bypass comple
       cleanupStarted: false,
       daemonStopCommitted: false,
       forcedExitCommitted: false,
+      sharedRuntimeExitCommitted: false,
       runtimeModeRestartScheduled: true,
       secondaryInstanceExit: false,
     },
@@ -56,6 +83,7 @@ test('internal restart, committed cleanup, and secondary processes bypass comple
       cleanupStarted: false,
       daemonStopCommitted: false,
       forcedExitCommitted: true,
+      sharedRuntimeExitCommitted: false,
       runtimeModeRestartScheduled: false,
       secondaryInstanceExit: false,
     },
@@ -63,8 +91,17 @@ test('internal restart, committed cleanup, and secondary processes bypass comple
       cleanupStarted: false,
       daemonStopCommitted: false,
       forcedExitCommitted: false,
+      sharedRuntimeExitCommitted: false,
       runtimeModeRestartScheduled: false,
       secondaryInstanceExit: true,
+    },
+    {
+      cleanupStarted: false,
+      daemonStopCommitted: false,
+      forcedExitCommitted: false,
+      sharedRuntimeExitCommitted: true,
+      runtimeModeRestartScheduled: false,
+      secondaryInstanceExit: false,
     },
   ]) {
     assert.equal(shouldRequestCompleteExitOnBeforeQuit(state), false);
