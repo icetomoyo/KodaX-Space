@@ -1602,8 +1602,16 @@ test(`KodaX ${EXPECTED_KODAX_VERSION} Auto guardrail keeps the required permissi
       'a legal LLM allow must remain final even when legacy static rules mark the command dangerous',
     );
 
+    const agentHomeContainingRemovalCommand =
+      process.platform === 'win32'
+        ? `Remove-Item -LiteralPath "${kodaxHome}" -Recurse`
+        : `rm -rf "${kodaxHome}"`;
     const agentHomeContainingRemoval = await allowGuardrail.beforeTool?.(
-      { id: 'llm-agent-home-hard-boundary', name: 'bash', input: { command: 'rm -rf /' } },
+      {
+        id: 'llm-agent-home-hard-boundary',
+        name: 'bash',
+        input: { command: agentHomeContainingRemovalCommand },
+      },
       context,
     );
     assert.equal(agentHomeContainingRemoval?.action, 'block');
