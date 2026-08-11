@@ -1,6 +1,6 @@
 # KodaX Space 文档中心
 
-> **2026-08-11 当前源码/发布准备**：KodaX Space `v0.1.39`（package `0.1.39`）使用 npm
+> **2026-08-11 当前正式发布基线**：KodaX Space [`v0.1.39`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.39)（package `0.1.39`）使用 npm
 > Registry 的精确 KodaX `0.7.85` 包。受管理的 Coder daemon 除既有 Runtime 安全能力外，
 > 还必须协商 `managedRunDurability:1`；Space 将 durable `runId`/`turnId` 绑定到
 > optimistic composer history，并串行化活动 Session 的输入准入与历史重验。v0.1.39 还覆盖

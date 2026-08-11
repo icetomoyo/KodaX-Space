@@ -114,7 +114,7 @@ official Registry package without vendoring an SDK patch. See
 
 **v0.1.39 - KodaX 0.7.85 Runtime Convergence Maintenance Release**
 
-Release candidate dated 2026-08-11 for package version `0.1.39`, aligned to
+Released on 2026-08-11 as [`v0.1.39`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.39), with package version `0.1.39` aligned to
 the exact npm-published KodaX 0.7.85 package. The release carries Actor
 settlement convergence, Session journal epoch isolation, durable-unknown
 after-turn admission, exact visible-Run Stop validation, input operation

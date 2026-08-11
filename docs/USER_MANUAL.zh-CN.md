@@ -4,7 +4,7 @@
   <img src="../resources/icon.png" alt="KodaX Space 应用图标" width="96">
 </p>
 
-> 已发布产品基线：KodaX Space [`v0.1.38`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.38)（package `0.1.38`）/ npm 正式发布的精确 KodaX `0.7.84`；当前 v0.1.39 release candidate 使用 KodaX `0.7.85`。
+> 已发布产品基线：KodaX Space [`v0.1.39`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.39)（package `0.1.39`）/ npm 正式发布的精确 KodaX `0.7.85`。
 >
 > 当前 `main` 使用精确 Registry KodaX `0.7.85`，并要求
 > `actorSettlementConvergence:1`、`sessionEventJournal:1` 以及专用的
@@ -14,7 +14,7 @@
 > 更新日期：2026-08-11
 >
 > 如果你的界面与本文不同，请先在 Settings → License/版本信息中确认构建版本。
-> 本手册正在为 `v0.1.39` 发布候选版更新；在 GitHub tag 与产物验证完成前，历史安装包的界面与行为可能不同。
+> 本手册对应 `v0.1.39` 正式发布产物；历史安装包的界面与行为可能不同。
 
 这份手册面向第一次使用 KodaX Space 的开发者、技术团队成员和代码相关知识工作者。它以“完成一件真实工作”为主线；架构和开发细节分别放在 [HLD](HLD.md) 与 [USAGE](USAGE.md)。文中的实拍界面使用隔离的 mock 数据和示例项目生成，不包含真实 API Key、会话内容或本地路径。
 

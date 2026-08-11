@@ -108,7 +108,7 @@ F136 让 Windows 后台 owner 可见、可控；F140 允许选择“每次询问
 
 **v0.1.39 - KodaX 0.7.85 Runtime Convergence Maintenance Release**
 
-2026-08-11 release candidate：package `0.1.39` 精确对齐 npm 正式发布的
+2026-08-11 正式发布 [`v0.1.39`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.39)：package `0.1.39` 精确对齐 npm 正式发布的
 KodaX `0.7.85`。本版本同步 Actor settlement convergence、Session journal
 epoch 隔离、unknown Run 的 after-turn 输入、精确 Stop、输入操作去重、history/live
 保护和 idle-exit client preservation，并更新 README/手册与应用内 `kodax_manual`。

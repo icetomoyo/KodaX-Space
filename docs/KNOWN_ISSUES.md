@@ -2,7 +2,7 @@
 
 Last Updated: 2026-08-11
 
-> Historical issue details are preserved as investigation evidence. Resolved items older than 30 days move to [ISSUES_ARCHIVED.md](ISSUES_ARCHIVED.md) without losing their investigation record. The latest published Space v0.1.38 baseline uses KodaX 0.7.84; current v0.1.39 source uses exact npm Registry KodaX 0.7.85 and requires `managedRunDurability:1`, `actorSettlementConvergence:1`, and `sessionEventJournal:1`. Start from the [documentation hub](README.md) for current behavior and status.
+> Historical issue details are preserved as investigation evidence. Resolved items older than 30 days move to [ISSUES_ARCHIVED.md](ISSUES_ARCHIVED.md) without losing their investigation record. The latest published Space [`v0.1.39`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.39) baseline uses exact npm Registry KodaX 0.7.85 and requires `managedRunDurability:1`, `actorSettlementConvergence:1`, and `sessionEventJournal:1`. Start from the [documentation hub](README.md) for current behavior and status.
 
 ## Issue Index
 
@@ -219,8 +219,9 @@ to a foreign process.
 
 The source fix and exact dependency pin are complete. Production Windows
 packaging, package smoke, and packaged boot smoke pass against the official
-0.7.85 bytes. The remaining release evidence is the packaged Windows
-fault-injection run described in the Issue 178 regression guide.
+0.7.85 bytes. The packaged Windows fault-injection run and the tagged v0.1.39
+release workflow are complete; the public release is recorded in the
+release-readiness document and the Issue 178 regression guide.
 
 ### 179: Idle Space exit reported running tasks when only other Runtime clients remained connected
 
