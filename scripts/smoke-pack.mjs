@@ -1180,18 +1180,31 @@ try {
 }
 `;
 
-  const result = spawnSync(electronBin, ['--input-type=module', '-'], {
-    cwd: rootDir,
-    input: probeSource,
-    encoding: 'utf8',
-    stdio: ['pipe', 'pipe', 'pipe'],
-    timeout: 60_000,
-    windowsHide: true,
-    env: {
-      ...process.env,
-      ELECTRON_RUN_AS_NODE: '1',
-    },
-  });
+  const runProbe = () =>
+    spawnSync(electronBin, ['--input-type=module', '-'], {
+      cwd: rootDir,
+      input: probeSource,
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 60_000,
+      windowsHide: true,
+      env: {
+        ...process.env,
+        ELECTRON_RUN_AS_NODE: '1',
+      },
+    });
+  let result = runProbe();
+  const probeOutput = `${result.stderr || ''}\n${result.stdout || ''}`;
+  if (
+    process.platform === 'win32' &&
+    result.status !== 0 &&
+    /(?:EPERM.*rename|rename.*EPERM)/i.test(probeOutput)
+  ) {
+    // Windows file-handle release can race the daemon's atomic owner-state
+    // rename when the packaged probe exits. Retry the disposable smoke probe;
+    // this does not alter Runtime behavior or weaken the ownership contract.
+    result = runProbe();
+  }
   if (result.error) {
     fail(`packaged KodaX Worker probe could not start: ${result.error.message}`);
   }
