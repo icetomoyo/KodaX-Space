@@ -14,6 +14,15 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ## [Unreleased]
 
+### Fixed
+
+- Daemon startup now delegates an `inline` owner fence to the SDK's atomic
+  daemon-enable reconciliation instead of rejecting every owned snapshot.
+  Provably abandoned inline owners recover without deleting `~/.kodax`, while
+  active, unreadable, and unverifiable owners still fail closed.
+- Space retains an inline owner handle when coordinated close fails, allowing
+  the SDK release to be retried instead of silently orphaning the fence.
+
 ---
 
 ## [0.1.39] - 2026-08-11

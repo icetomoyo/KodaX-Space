@@ -31,7 +31,7 @@
 >
 > **2026-07-28 KodaX integration 配置与 self-manual 收口（v0.1.33）**：KodaX 0.7.77 的核心 `config.json` 与 `integrations/mcp.json`、`integrations/extensions.json`、`integrations/a2a.json` 已按 owner 分离。Space 的 MCP Manager、项目 MCP 兼容层、Settings 概览/迁移入口和 SDK filesystem Extension discovery 全部消费公开 reader/CRUD/migration 契约，并保留旧 `config.json#mcpServers`/`#extensions` 的只读迁移回退。`kodax_manual` 不再以 `baseTopics: []` 清空 SDK 机制手册，而是在 ESM-only `/coding` 子路径动态加载后，用 SDK 发布的底层能力主题清单做基线；同名 Space 主题动态合成当前安装 `MANUAL_REGISTRY` 的原始正文、aliases 和 sources。
 >
-> **2026-07-28 v0.1.33 撤回后修正架构增量**：F141 在 Settings 提供推荐 Daemon 与 Embedded 兼容 owner 的客户选择，但不提供任意 endpoint、混合 owner 或 live failover。Electron main 以一个全局 admission 边界串行化所有触碰 Coder Runtime 的 Session、Slash、Workflow、External Agent、MCP 和 Runtime-affecting Settings 操作；切换还会阻止 ManagedSession、running/paused Workflow、非终态 External Agent task、permission/AskUser 和待派发 queue。持久化模式是启动真理，启动前 reconciliation 会修复 `daemon preference + unowned inline policy`，对 active/unreadable inline owner fail closed。正式包继续精确使用 npm Registry KodaX 0.7.77，并通过依赖闭包、native SQLite load 和真实 packaged boot。
+> **2026-07-28 v0.1.33 撤回后修正架构增量（2026-08-11 owner crash recovery 修订）**：F141 在 Settings 提供推荐 Daemon 与 Embedded 兼容 owner 的客户选择，但不提供任意 endpoint、混合 owner 或 live failover。Electron main 以一个全局 admission 边界串行化所有触碰 Coder Runtime 的 Session、Slash、Workflow、External Agent、MCP 和 Runtime-affecting Settings 操作；切换还会阻止 ManagedSession、running/paused Workflow、非终态 External Agent task、permission/AskUser 和待派发 queue。持久化模式是启动真理；启动前 reconciliation 由 Space 声明 daemon 期望，并由 SDK 在 owner-policy 临界区内恢复可证明已死亡的 inline owner。active、unreadable、legacy-kind、daemon-kind 或无法验证的 owner 继续 fail closed，Space 不直接删除 SDK owner 文件。
 >
 > **2026-07-28 跨平台 daemon 退出修正**：用户/OS 真正退出统一关闭 Coder admission、排空已准入入口并读取 daemon preflight；blocker 会恢复窗口而不是退出。断开 Space 后只有 daemon stop 返回 stopped/missing 才允许 Electron 消失，失败或超时自动 relaunch 可见 Space。KodaX 的专用 `daemonOrphanExit:1` 能力只为 Space 新拉起的 detached daemon 启用 30 秒 orphan idle-exit：最后客户端异常断开且 work 空闲时自停，活动任务进入终态后重试，其他客户端始终阻止回收。该能力按 Runtime 事实协商，不通过 KodaX 版本号或 Auto-mode guardrail 版本推断。
 >
@@ -239,8 +239,9 @@ because Partner injects process-local tools, profiles, callbacks and policy. F14
 closed `daemon | embedded` Coder choice. It closes a main-process admission boundary, drains
 already-entered Runtime operations, blocks ManagedSession, running/paused Workflow, non-terminal
 External Agent, permission/AskUser and queued work, converts owner policy, persists the preference,
-and restarts. Startup reconciles a persisted daemon preference with an unowned inline policy before
-Runtime connection; an active or unreadable inline owner fails closed. Missing required Coder
+and restarts. Startup delegates a persisted daemon preference plus inline policy to the SDK's
+atomic daemon-enable reconciliation before Runtime connection. Only a provably abandoned inline
+owner is recovered; active, unreadable, legacy-kind, daemon-kind, or unverifiable owners fail closed. Missing required Coder
 capability never creates a hidden owner, and no arbitrary Runtime endpoint, mixed-owner preference,
 or live failover is added.
 

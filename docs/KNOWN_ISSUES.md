@@ -1,6 +1,6 @@
 # Known Issues
 
-Last Updated: 2026-08-11
+Last Updated: 2026-08-12
 
 > Historical issue details are preserved as investigation evidence. Resolved items older than 30 days move to [ISSUES_ARCHIVED.md](ISSUES_ARCHIVED.md) without losing their investigation record. The latest published Space [`v0.1.39`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.39) baseline uses exact npm Registry KodaX 0.7.85 and requires `managedRunDurability:1`, `actorSettlementConvergence:1`, and `sessionEventJournal:1`. Start from the [documentation hub](README.md) for current behavior and status.
 
@@ -175,8 +175,38 @@ Last Updated: 2026-08-11
 | 177 | High     | Resolved           | History reconciliation could duplicate a recovered answer or place compact notices after a later answer                            | v0.1.38 history/live and local-notice reconciliation         | 2026-08-08 |
 | 178 | High     | Resolved in source | Actor durability unknown blocked input, dropped the live turn after Stop, and misreported self-fence as foreign ownership          | KodaX 0.7.85 / Space v0.1.39                                 | 2026-08-09 |
 | 179 | Medium   | Resolved           | Idle Space exit reported running tasks when only other Runtime clients remained connected                                          | v0.1.39 complete-exit client protection                      | 2026-08-11 |
+| 180 | High     | Resolved in source | A crashed inline owner permanently blocked daemon startup until the customer deleted `~/.kodax`                                   | v0.1.38 / KodaX 0.7.84 owner-policy reconciliation           | 2026-08-11 |
 
 ## Issue Details
+
+### 180: A crashed inline owner permanently blocked daemon startup until the customer deleted `~/.kodax`
+
+- Priority: High
+- Status: Resolved in source
+- Introduced: v0.1.38 / KodaX 0.7.84 owner-policy reconciliation
+- Fixed target: Unreleased Space + KodaX source
+- Created: 2026-08-11
+
+#### Problem and root cause
+
+Daemon-mode startup treated every parseable owner snapshot under inline policy
+as active and rejected it before calling the SDK. If the prior inline owner had
+crashed, the stale fence therefore had no protocol-safe recovery path. Deleting
+`~/.kodax` removed the fence but also risked deleting unrelated sessions and
+configuration.
+
+#### Resolution
+
+- Space now delegates every readable inline-policy transition to the existing
+  SDK daemon-enable command and continues only after that command succeeds.
+- KodaX performs stale-inline proof, exact deletion, and policy commit inside
+  its owner-policy critical section; Space does not parse or delete SDK files.
+- Active, malformed, daemon-kind, legacy-kind, and unverifiable owners still
+  block startup.
+- Failed inline close retains its handle so release remains retryable.
+
+See
+[ISSUE_180_UNRELEASED_REGRESSION_GUIDE.md](test-guides/ISSUE_180_UNRELEASED_REGRESSION_GUIDE.md).
 
 ### 178: Actor durability unknown blocked input, dropped the live turn after Stop, and misreported self-fence as foreign ownership
 
@@ -13006,12 +13036,12 @@ history remained correct:
 
 ## Summary
 
-- Total: 166
+- Total: 167
 - Open: 1
 - In Progress: 9
 - Deferred: 1
-- Resolved: 155
-- High: 82
+- Resolved: 156
+- High: 83
 - Medium: 73
 - Low: 11
 - Next to resolve: 165

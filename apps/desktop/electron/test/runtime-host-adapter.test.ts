@@ -7,6 +7,7 @@ import type {
   KodaXDaemonRuntime,
   RuntimeConnectionState,
   RuntimeDaemonManagementState,
+  RuntimeInlineOwnerHandle,
   RuntimeRunHandle,
   RuntimeRunResult,
   RuntimeSession,
@@ -1160,7 +1161,55 @@ test('daemon startup reconciles an unowned inline policy before Runtime initiali
   await adapter.close();
 });
 
-test('daemon startup refuses to reconcile inline policy while another owner is active', async () => {
+test('daemon startup delegates stale owned inline recovery to the SDK before initialization', async () => {
+  const calls: string[] = [];
+  const fake = createFakeRuntime();
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: 'C:\\isolated-profile',
+    runtimeFactory: async () => {
+      calls.push('runtime');
+      return fake.runtime;
+    },
+    identityStore: testIdentityStore,
+    ownerControl: {
+      acquireInline: async () => {
+        throw new Error('not used');
+      },
+      getState: async () => ({
+        profile: 'coder',
+        policy: {
+          mode: 'inline',
+          revision: 3,
+          updatedAt: '2026-08-11T00:00:00.000Z',
+        },
+        ownerStatus: 'owned',
+        owner: {
+          runtimeId: 'inline-stale',
+          pid: 999_999_999,
+          createdAt: '2026-08-11T00:00:00.000Z',
+          kind: 'inline',
+        },
+      }),
+      enableDaemon: async () => {
+        calls.push('enable-daemon');
+        return {
+          mode: 'daemon',
+          revision: 4,
+          updatedAt: '2026-08-11T00:00:01.000Z',
+        };
+      },
+    },
+  });
+
+  await adapter.reconcileStartupOwnerPolicy();
+  await adapter.initialize('0.1.39');
+
+  assert.deepEqual(calls, ['enable-daemon', 'runtime']);
+  await adapter.close();
+});
+
+test('daemon startup stays fail-closed when the SDK rejects an active inline owner', async () => {
   let daemonEnables = 0;
   let runtimeFactories = 0;
   const controller = createPendingSdkRuntimeProjection(100);
@@ -1188,17 +1237,13 @@ test('daemon startup refuses to reconcile inline policy while another owner is a
       }),
       enableDaemon: async () => {
         daemonEnables += 1;
-        return {
-          mode: 'daemon',
-          revision: 4,
-          updatedAt: '2026-07-28T00:00:01.000Z',
-        };
+        throw new Error('Cannot enable Runtime daemon ownership while inline owner is active.');
       },
     },
   });
 
-  await assert.rejects(adapter.reconcileStartupOwnerPolicy(), /inline owner is still active/);
-  assert.equal(daemonEnables, 0);
+  await assert.rejects(adapter.reconcileStartupOwnerPolicy(), /inline owner is active/);
+  assert.equal(daemonEnables, 1);
   assert.equal(adapter.snapshot().state, 'failed');
   assert.equal(controller.profileSnapshot().connection.state, 'incompatible');
   await assert.rejects(adapter.initialize(), /owner policy reconciliation failed/i);
@@ -1287,6 +1332,156 @@ test('legacy selection never constructs a KodaX Runtime', async () => {
   assert.equal(inlineOwnerCloses, 1);
   assert.equal(adapter.hasLegacyOwner(), false);
   await assert.rejects(adapter.ensureLegacyOwner(), /closed/);
+});
+
+test('adapter close retries a transient inline owner release failure', async () => {
+  let closeAttempts = 0;
+  const adapter = new RuntimeHostAdapter({
+    mode: 'legacy',
+    profileRoot: 'C:\\isolated-profile',
+    ownerControl: {
+      acquireInline: async () => ({
+        profile: 'coder',
+        ownerId: 'inline_retryable_close',
+        ownerPolicy: {
+          mode: 'inline',
+          revision: 1,
+          updatedAt: '2026-08-11T00:00:00.000Z',
+        },
+        close: () => {
+          closeAttempts += 1;
+          if (closeAttempts === 1) throw new Error('inline close failed');
+        },
+      }),
+      getState: async () => ({
+        profile: 'coder',
+        policy: {
+          mode: 'inline',
+          revision: 1,
+          updatedAt: '2026-08-11T00:00:00.000Z',
+        },
+        ownerStatus: 'owned',
+        owner: null,
+      }),
+      enableDaemon: async () => ({
+        mode: 'daemon',
+        revision: 2,
+        updatedAt: '2026-08-11T00:00:01.000Z',
+      }),
+    },
+  });
+
+  await adapter.initialize();
+  await adapter.close();
+  assert.equal(closeAttempts, 2);
+  assert.equal(adapter.hasLegacyOwner(), false);
+  assert.equal(adapter.snapshot().state, 'closed');
+});
+
+test('adapter close finishes local cleanup and retains the owner after release retries are exhausted', async () => {
+  let closeAttempts = 0;
+  const adapter = new RuntimeHostAdapter({
+    mode: 'legacy',
+    profileRoot: 'C:\\isolated-profile',
+    ownerControl: {
+      acquireInline: async () => ({
+        profile: 'coder',
+        ownerId: 'inline_failed_close',
+        ownerPolicy: {
+          mode: 'inline',
+          revision: 1,
+          updatedAt: '2026-08-11T00:00:00.000Z',
+        },
+        close: () => {
+          closeAttempts += 1;
+          if (closeAttempts <= 5) throw new Error('inline close failed');
+        },
+      }),
+      getState: async () => ({
+        profile: 'coder',
+        policy: {
+          mode: 'inline',
+          revision: 1,
+          updatedAt: '2026-08-11T00:00:00.000Z',
+        },
+        ownerStatus: 'owned',
+        owner: null,
+      }),
+      enableDaemon: async () => ({
+        mode: 'daemon',
+        revision: 2,
+        updatedAt: '2026-08-11T00:00:01.000Z',
+      }),
+    },
+  });
+
+  await adapter.initialize();
+  await assert.rejects(adapter.close(), /inline close failed/);
+  assert.equal(closeAttempts, 5);
+  assert.equal(adapter.hasLegacyOwner(), false);
+  assert.equal(adapter.snapshot().state, 'closed');
+  await adapter.close();
+  assert.equal(closeAttempts, 6);
+});
+
+test('adapter close retries a Runtime whose first close attempt fails', async () => {
+  const fake = createFakeRuntime();
+  let closeAttempts = 0;
+  fake.runtime.close = async () => {
+    closeAttempts += 1;
+    if (closeAttempts === 1) throw new Error('runtime close failed');
+  };
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: 'C:\\isolated-profile',
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+  });
+
+  await adapter.initialize();
+  await assert.rejects(adapter.close(), /runtime close failed/);
+  await adapter.close();
+  assert.equal(closeAttempts, 2);
+});
+
+test('adapter close retries both Runtime and inline owner after simultaneous failures', async () => {
+  const fake = createFakeRuntime();
+  let runtimeCloseAttempts = 0;
+  let ownerCloseAttempts = 0;
+  fake.runtime.close = async () => {
+    runtimeCloseAttempts += 1;
+    if (runtimeCloseAttempts === 1) throw new Error('runtime close failed');
+  };
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: 'C:\\isolated-profile',
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+  });
+
+  await adapter.initialize();
+  const inlineOwner: RuntimeInlineOwnerHandle = {
+    profile: 'coder',
+    ownerId: 'inline_combined_close',
+    ownerPolicy: {
+      mode: 'inline',
+      revision: 1,
+      updatedAt: '2026-08-11T00:00:00.000Z',
+    },
+    close: () => {
+      ownerCloseAttempts += 1;
+      if (ownerCloseAttempts <= 5) throw new Error('inline close failed');
+    },
+  };
+  (adapter as unknown as { inlineOwner: RuntimeInlineOwnerHandle }).inlineOwner = inlineOwner;
+
+  await assert.rejects(
+    adapter.close(),
+    (error: unknown) => error instanceof AggregateError && error.errors.length === 2,
+  );
+  await adapter.close();
+  assert.equal(runtimeCloseAttempts, 2);
+  assert.equal(ownerCloseAttempts, 6);
 });
 
 test('embedded complete-exit close failure requires process recovery', async () => {

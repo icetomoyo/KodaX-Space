@@ -1766,6 +1766,7 @@ export class RuntimeHostAdapter {
   private readonly startupTimingFactory: RuntimeStartupTimingFactory;
   private state: RuntimeHostState = 'uninitialized';
   private runtime: KodaXDaemonRuntime | null = null;
+  private closingRuntime: KodaXDaemonRuntime | null = null;
   private initializePromise: Promise<void> | null = null;
   private closePromise: Promise<void> | null = null;
   private lastError: string | undefined;
@@ -1961,12 +1962,6 @@ export class RuntimeHostAdapter {
         this.startupOwnerPolicyFailure = undefined;
         timing.mark('reconcile', 'complete', { policyChanged: false });
         return;
-      }
-      if (ownerState.ownerStatus !== 'unowned') {
-        throw new Error(
-          'Coder is configured for daemon mode, but an inline owner is still active; ' +
-            'refusing to start a competing owner.',
-        );
       }
       activeStage = 'daemon_policy_enable';
       const policy = await this.ownerControl.enableDaemon({
@@ -6294,10 +6289,8 @@ export class RuntimeHostAdapter {
       }
     }
     this.rollbackInProgress = true;
-    const inlineOwner = this.inlineOwner;
-    this.inlineOwner = undefined;
     try {
-      inlineOwner?.close();
+      this.releaseInlineOwner();
       const policy = await this.ownerControl.enableDaemon({
         ...this.runtimeOwnerTarget(),
       });
@@ -6306,6 +6299,11 @@ export class RuntimeHostAdapter {
       return policy;
     } catch (error) {
       this.lastError = sanitizeDiagnosticError(error);
+      if (this.inlineOwner !== undefined) {
+        this.state = 'legacy';
+        this.rollbackInProgress = false;
+        throw error;
+      }
       try {
         this.inlineOwner = await this.ownerControl.acquireInline({
           ...this.runtimeOwnerTarget(),
@@ -6329,9 +6327,7 @@ export class RuntimeHostAdapter {
     if (!this.rollbackInProgress) {
       throw new Error('Space does not have an inline rollback to restore.');
     }
-    const inlineOwner = this.inlineOwner;
-    this.inlineOwner = undefined;
-    inlineOwner?.close();
+    this.releaseInlineOwner();
     try {
       const policy = await this.ownerControl.enableDaemon({
         ...this.runtimeOwnerTarget(),
@@ -6474,11 +6470,9 @@ export class RuntimeHostAdapter {
   }
 
   async close(): Promise<void> {
-    const inlineOwner = this.inlineOwner;
-    this.inlineOwner = undefined;
-    inlineOwner?.close();
     if (this.closePromise !== null) return this.closePromise;
-    const runtime = this.runtime;
+    const runtime = this.closingRuntime ?? this.runtime;
+    if (runtime !== null) this.closingRuntime = runtime;
     const initializing = this.initializePromise;
     this.connectionSubscription?.close();
     this.connectionSubscription = undefined;
@@ -6527,10 +6521,49 @@ export class RuntimeHostAdapter {
     this.desiredObservations.clear();
     this.runtimeReadyObservers.clear();
     this.state = 'closed';
-    this.closePromise = runtime
-      ? runtime.close()
-      : (initializing?.catch(() => undefined) ?? Promise.resolve());
-    return this.closePromise;
+    const closing = (async () => {
+      const errors: unknown[] = [];
+      try {
+        if (runtime) {
+          await runtime.close();
+          if (this.closingRuntime === runtime) this.closingRuntime = null;
+        }
+        else await (initializing?.catch(() => undefined) ?? Promise.resolve());
+      } catch (error) {
+        errors.push(error);
+      }
+      try {
+        await this.releaseInlineOwnerForClose();
+      } catch (error) {
+        errors.push(error);
+      }
+      if (errors.length === 1) throw errors[0];
+      if (errors.length > 1) throw new AggregateError(errors, 'Runtime host close failed.');
+    })();
+    this.closePromise = closing;
+    void closing.catch(() => {
+      if (this.closePromise === closing) this.closePromise = null;
+    });
+    return closing;
+  }
+
+  private releaseInlineOwner(): void {
+    const inlineOwner = this.inlineOwner;
+    if (inlineOwner === undefined) return;
+    inlineOwner.close();
+    if (this.inlineOwner === inlineOwner) this.inlineOwner = undefined;
+  }
+
+  private async releaseInlineOwnerForClose(): Promise<void> {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        this.releaseInlineOwner();
+        return;
+      } catch (error) {
+        if (attempt === 4) throw error;
+        await new Promise<void>((resolve) => setTimeout(resolve, 10));
+      }
+    }
   }
 
   private runtimeOwnerTarget(): { readonly homeDir?: string; readonly profile: string } {
