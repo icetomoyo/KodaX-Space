@@ -4,44 +4,44 @@ import { launchSpace } from './fixtures.js';
 
 test('boot overlay remains above a painted Shell and is then removed atomically', async () => {
   const space = await launchSpace(`startup-overlay-${Date.now()}`, {
-    waitForRendererReady: false,
+    onLaunched: async (app) => {
+      await expect
+        .poll(
+          () =>
+            app
+              .evaluate(({ app, BrowserWindow, WebContentsView }) => {
+                const win = BrowserWindow.getAllWindows()[0];
+                if (!win) return null;
+                const readState = () => ({
+                  visible: win.isVisible(),
+                  overlays: win.contentView.children.filter((view) => view instanceof WebContentsView)
+                    .length,
+                });
+                const beforeActivation = readState();
+                app.emit(
+                  'second-instance',
+                  {} as Electron.Event,
+                  [process.execPath],
+                  process.cwd(),
+                  {},
+                );
+                return { beforeActivation, afterActivation: readState() };
+              })
+              .catch(() => null),
+          { timeout: 15_000 },
+        )
+        .toEqual({
+          beforeActivation: { visible: false, overlays: 1 },
+          afterActivation: { visible: false, overlays: 1 },
+        });
+    },
     env: {
-      SPACE_TEST_BOOT_PAINT_HOLD_MS: '10000',
+      SPACE_TEST_BOOT_PAINT_HOLD_MS: '5000',
       SPACE_TEST_STARTUP_OVERLAY_HOLD_MS: '10000',
     },
   });
 
   try {
-    await expect
-      .poll(
-        () =>
-          space.app
-            .evaluate(({ app, BrowserWindow, WebContentsView }) => {
-              const win = BrowserWindow.getAllWindows()[0];
-              if (!win) return null;
-              const readState = () => ({
-                visible: win.isVisible(),
-                overlays: win.contentView.children.filter((view) => view instanceof WebContentsView)
-                  .length,
-              });
-              const beforeActivation = readState();
-              app.emit(
-                'second-instance',
-                {} as Electron.Event,
-                [process.execPath],
-                process.cwd(),
-                {},
-              );
-              return { beforeActivation, afterActivation: readState() };
-            })
-            .catch(() => null),
-        { timeout: 15_000 },
-      )
-      .toEqual({
-        beforeActivation: { visible: false, overlays: 1 },
-        afterActivation: { visible: false, overlays: 1 },
-      });
-
     await space.page.locator('[data-space-shell-ready]').waitFor();
     const readCoveredState = () =>
       space.app
