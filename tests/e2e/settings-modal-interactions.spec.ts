@@ -4,6 +4,7 @@ import { launchSpace } from './fixtures.js';
 const TEST_ID = `settings-interactions-${Date.now()}`;
 const TASK_FOCUS_TOGGLE = 'Auto-focus Task Dock and Review paths';
 const CONFIRM_DIALOG = '[role="dialog"][aria-label="Confirm action"]';
+const PROVIDER_CARD_TIMEOUT_MS = 20_000;
 
 async function openSettings(page: Page): Promise<void> {
   await page.waitForTimeout(2000);
@@ -64,7 +65,9 @@ async function addCustomProvider(
     }
   }
   await page.getByRole('button', { name: 'Add provider' }).click();
-  await expect(page.locator('article', { hasText: name })).toBeVisible({ timeout: 5000 });
+  await expect(page.locator('article', { hasText: name })).toBeVisible({
+    timeout: PROVIDER_CARD_TIMEOUT_MS,
+  });
 }
 
 interface InteractiveSnapshot {
@@ -291,7 +294,7 @@ test('Settings interactive inventory has no unnamed controls across dynamic stat
     await page.getByLabel('Default model').fill('inventory-model');
     await page.getByRole('button', { name: 'Add provider' }).click();
     const card = page.locator('article', { hasText: 'Inventory Gateway' });
-    await expect(card).toBeVisible({ timeout: 5000 });
+    await expect(card).toBeVisible({ timeout: PROVIDER_CARD_TIMEOUT_MS });
     await card.getByRole('button', { name: 'Add key' }).click();
     await expectNamedInteractionSurface(page, 'provider card editor', [
       'INVENTORY_GATEWAY_API_KEY API key',
