@@ -114,7 +114,7 @@ official Registry package without vendoring an SDK patch. See
 
 **v0.1.41 - Provider Recovery and Latest KodaX Alignment**
 
-Prepared for release on 2026-08-14 as [`v0.1.41`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.41), with package version `0.1.41` and the latest npm `@kodax-ai/kodax` release pinned exactly to `0.7.87`. The release aligns the ordered `provider.recovery` event across live rendering, history reconciliation, reconnect hydration, and Ctrl+R without content-based deduplication, and documents the GLM-5.3 Zhipu Coding Plan defaults.
+Released on 2026-08-14 as [`v0.1.41`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.41), with package version `0.1.41` and the latest npm `@kodax-ai/kodax` release pinned exactly to `0.7.87`. The release aligns the ordered `provider.recovery` event across live rendering, history reconciliation, reconnect hydration, and Ctrl+R without content-based deduplication, and documents the GLM-5.3 Zhipu Coding Plan defaults.
 
 | Area                 | Summary                                                                                                                                              |
 | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |

@@ -108,7 +108,7 @@ F136 让 Windows 后台 owner 可见、可控；F140 允许选择“每次询问
 
 **v0.1.41 - Provider Recovery 与最新 KodaX 对齐发布**
 
-准备于 2026-08-14 发布 [`v0.1.41`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.41)：Space package `0.1.41` 精确锁定 npm `latest` KodaX `0.7.87`。本版本让有序 `provider.recovery` 在实时渲染、历史重验、重连恢复和 Ctrl+R 之后保持同一份 transcript，不使用正文去重，并同步 GLM-5.3 Zhipu Coding Plan 默认值与 effort 映射。
+已于 2026-08-14 正式发布 [`v0.1.41`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.41)：Space package `0.1.41` 精确锁定 npm `latest` KodaX `0.7.87`。本版本让有序 `provider.recovery` 在实时渲染、历史重验、重连恢复和 Ctrl+R 之后保持同一份 transcript，不使用正文去重，并同步 GLM-5.3 Zhipu Coding Plan 默认值与 effort 映射。
 
 | 范围 | 摘要 |
 | --- | --- |
