@@ -114,9 +114,11 @@ jobs:
         shell: bash
         run: |
           dbus-run-session -- bash -euo pipefail -c '
-            printf "%s\n" "kodax-space-ci" |
-              gnome-keyring-daemon --unlock --components=secrets >/dev/null
-            xvfb-run --auto-servernum --server-args="-screen 0 1280x800x24" npm run e2e:run -- --shard=${{ matrix.shard }}
+            xvfb-run --auto-servernum --server-args="-screen 0 1280x800x24" bash -euo pipefail -c "
+              printf \"%s\\n\" \"kodax-space-ci\" |
+                gnome-keyring-daemon --unlock --components=secrets >/dev/null
+              npm run e2e:run -- --shard=${{ matrix.shard }}
+            "
           '
 
       # Upload trace + screenshots on failure (already gitignored locally)
