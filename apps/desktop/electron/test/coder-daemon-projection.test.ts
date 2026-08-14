@@ -12,6 +12,7 @@ import {
   CoderSessionProjectionReducer,
   projectRuntimeProfile,
   projectRuntimeSessionSnapshot,
+  projectRuntimeSessionSnapshotWithDraftReplay,
 } from '../kodax/runtime/coder-daemon-projection.js';
 import {
   runtimeConnectionSemanticallyEqual,
@@ -406,6 +407,210 @@ test('atomic observation maps run, draft, tool, Todo, and interaction truth', ()
       contentPreview: 'Also update the tests.',
     },
   ]);
+});
+
+test('draft replay fails open when retained journal events cannot establish a recovery checkpoint', () => {
+  const snapshot = {
+    ...observation,
+    cursor: { ...observation.cursor, seq: 2 },
+    live: {
+      ...observation.live,
+      assistantTextByRun: { run_active: 'stable replacement' },
+      thinkingTextByRun: {},
+    },
+  } as unknown as RuntimeSessionObservationSnapshot;
+  const replay = [
+    {
+      id: 'event_trimmed_recovery_1',
+      seq: 1,
+      cursor: { sessionId: 's_code', journalEpoch: 'journal_epoch_shared', seq: 1 },
+      time: '2026-07-14T08:04:01.000Z',
+      sessionId: 's_code',
+      runId: 'run_active',
+      type: 'provider.recovery',
+      payload: {
+        event: { stage: 'mid_stream_text', recoveryAction: 'stable_boundary_retry' },
+        meta: { contextKind: 'root' },
+      },
+    },
+    {
+      id: 'event_trimmed_replacement_2',
+      seq: 2,
+      cursor: { sessionId: 's_code', journalEpoch: 'journal_epoch_shared', seq: 2 },
+      time: '2026-07-14T08:04:02.000Z',
+      sessionId: 's_code',
+      runId: 'run_active',
+      type: 'assistant.delta',
+      payload: { text: 'replacement', meta: { contextKind: 'root' } },
+    },
+  ] as unknown as RuntimeTypedEvent[];
+
+  const projected = projectRuntimeSessionSnapshotWithDraftReplay(snapshot, replay);
+
+  assert.equal(projected.assistantDraft?.text, 'stable replacement');
+});
+
+test('draft replay derives a retained checkpoint prefix from the cumulative Runtime draft', () => {
+  const snapshot = {
+    ...observation,
+    cursor: { ...observation.cursor, seq: 4 },
+    live: {
+      ...observation.live,
+      assistantTextByRun: { run_active: 'stableabandonedreplacement' },
+      thinkingTextByRun: {},
+    },
+  } as unknown as RuntimeSessionObservationSnapshot;
+  const replay = [
+    {
+      id: 'event_retained_iteration_1',
+      seq: 1,
+      cursor: { sessionId: 's_code', journalEpoch: 'journal_epoch_shared', seq: 1 },
+      time: '2026-07-14T08:04:01.000Z',
+      sessionId: 's_code',
+      runId: 'run_active',
+      type: 'run.progress',
+      payload: { kind: 'iteration_start', meta: { contextKind: 'root' } },
+    },
+    {
+      id: 'event_retained_abandoned_2',
+      seq: 2,
+      cursor: { sessionId: 's_code', journalEpoch: 'journal_epoch_shared', seq: 2 },
+      time: '2026-07-14T08:04:02.000Z',
+      sessionId: 's_code',
+      runId: 'run_active',
+      type: 'assistant.delta',
+      payload: { text: 'abandoned', meta: { contextKind: 'root' } },
+    },
+    {
+      id: 'event_retained_recovery_3',
+      seq: 3,
+      cursor: { sessionId: 's_code', journalEpoch: 'journal_epoch_shared', seq: 3 },
+      time: '2026-07-14T08:04:03.000Z',
+      sessionId: 's_code',
+      runId: 'run_active',
+      type: 'provider.recovery',
+      payload: {
+        event: { stage: 'mid_stream_text', recoveryAction: 'stable_boundary_retry' },
+        meta: { contextKind: 'root' },
+      },
+    },
+    {
+      id: 'event_retained_replacement_4',
+      seq: 4,
+      cursor: { sessionId: 's_code', journalEpoch: 'journal_epoch_shared', seq: 4 },
+      time: '2026-07-14T08:04:04.000Z',
+      sessionId: 's_code',
+      runId: 'run_active',
+      type: 'assistant.delta',
+      payload: { text: 'replacement', meta: { contextKind: 'root' } },
+    },
+  ] as unknown as RuntimeTypedEvent[];
+
+  const projected = projectRuntimeSessionSnapshotWithDraftReplay(snapshot, replay);
+  assert.equal(projected.assistantDraft?.text, 'stablereplacement');
+
+  const replayFromToolBoundary = [
+    {
+      ...replay[0]!,
+      id: 'event_retained_tool_boundary_1',
+      type: 'tool.finished',
+      payload: {
+        result: { id: 'tool_1', name: 'read', content: 'done' },
+        meta: { contextKind: 'root', toolCallId: 'tool_1' },
+      },
+    },
+    ...replay.slice(1),
+  ] as unknown as RuntimeTypedEvent[];
+  const projectedFromToolBoundary = projectRuntimeSessionSnapshotWithDraftReplay(
+    snapshot,
+    replayFromToolBoundary,
+  );
+  assert.equal(projectedFromToolBoundary.assistantDraft?.text, 'stablereplacement');
+});
+
+test('draft replay uses the same bounded window as the cumulative Runtime draft', () => {
+  const abandoned = 'A'.repeat(262_144);
+  const snapshot = {
+    ...observation,
+    cursor: { ...observation.cursor, seq: 4 },
+    live: {
+      ...observation.live,
+      assistantTextByRun: { run_active: `${abandoned}B` },
+      thinkingTextByRun: {},
+    },
+  } as unknown as RuntimeSessionObservationSnapshot;
+  const event = (seq: number, type: RuntimeTypedEvent['type'], payload: unknown) =>
+    ({
+      id: `event_bounded_${seq}`,
+      seq,
+      cursor: { sessionId: 's_code', journalEpoch: 'journal_epoch_shared', seq },
+      time: `2026-07-14T08:04:0${seq}.000Z`,
+      sessionId: 's_code',
+      runId: 'run_active',
+      type,
+      payload,
+    }) as unknown as RuntimeTypedEvent;
+  const projected = projectRuntimeSessionSnapshotWithDraftReplay(snapshot, [
+    event(1, 'run.progress', { kind: 'iteration_start', meta: { contextKind: 'root' } }),
+    event(2, 'assistant.delta', { text: abandoned, meta: { contextKind: 'root' } }),
+    event(3, 'provider.recovery', {
+      event: { stage: 'mid_stream_text', recoveryAction: 'stable_boundary_retry' },
+      meta: { contextKind: 'root' },
+    }),
+    event(4, 'assistant.delta', { text: 'B', meta: { contextKind: 'root' } }),
+  ]);
+
+  assert.equal(projected.assistantDraft?.text, 'B');
+  assert.equal(projected.draftRecoveries?.length, 1);
+});
+
+test('draft replay resumes from a complete checkpoint after an ambiguous retained recovery', () => {
+  const snapshot = {
+    ...observation,
+    cursor: { ...observation.cursor, seq: 4 },
+    live: {
+      ...observation.live,
+      assistantTextByRun: { run_active: 'stableoldcurrent' },
+      thinkingTextByRun: {},
+    },
+  } as unknown as RuntimeSessionObservationSnapshot;
+  const event = (seq: number, type: RuntimeTypedEvent['type'], payload: unknown) =>
+    ({
+      id: `event_tail_${seq}`,
+      seq,
+      cursor: { sessionId: 's_code', journalEpoch: 'journal_epoch_shared', seq },
+      time: `2026-07-14T08:04:0${seq}.000Z`,
+      sessionId: 's_code',
+      runId: 'run_active',
+      type,
+      payload,
+    }) as RuntimeTypedEvent;
+  const reducer = new CoderSessionProjectionReducer(
+    projectRuntimeSessionSnapshot(snapshot),
+    snapshot.runs,
+    [
+      event(1, 'provider.recovery', {
+        event: { stage: 'mid_stream_text', recoveryAction: 'stable_boundary_retry' },
+        meta: { contextKind: 'root' },
+      }),
+      event(2, 'assistant.delta', { text: 'old', meta: { contextKind: 'root' } }),
+      event(3, 'run.progress', {
+        kind: 'iteration_start',
+        meta: { contextKind: 'root' },
+      }),
+      event(4, 'assistant.delta', { text: 'current', meta: { contextKind: 'root' } }),
+    ],
+  );
+
+  reducer.apply(
+    event(5, 'provider.recovery', {
+      event: { stage: 'mid_stream_text', recoveryAction: 'stable_boundary_retry' },
+      meta: { contextKind: 'root' },
+    }),
+  );
+  reducer.apply(event(6, 'assistant.delta', { text: 'new', meta: { contextKind: 'root' } }));
+
+  assert.equal(reducer.snapshot().assistantDraft?.text, 'stableoldnew');
 });
 
 test('a terminal observation never projects residual or foreign Run drafts as answer text', () => {
@@ -838,10 +1043,7 @@ test('profile projection retains verified Coder activity omitted from the bounde
     ['s_recent_idle', 's_omitted_active'],
   );
   assert.equal(projection.sessions[1]?.activeRun?.runId, 'run_omitted_active');
-  assert.equal(
-    projection.sessions[1]?.createdAt,
-    Date.parse('2026-07-14T08:10:00.000Z'),
-  );
+  assert.equal(projection.sessions[1]?.createdAt, Date.parse('2026-07-14T08:10:00.000Z'));
 });
 
 test('profile projection fails closed for unverified active Sessions outside the recent list', () => {
@@ -1031,6 +1233,282 @@ test('event reducer keeps child activity out of the primary live projection', ()
   } as unknown as RuntimeTypedEvent);
   assert.equal(reducer.snapshot().assistantDraft?.text, 'partial answer root continuation');
   assert.equal(reducer.snapshot().cursor.seq, 46);
+});
+
+test('event reducer replaces only the failed Provider attempt after an iteration checkpoint', () => {
+  const reducer = new CoderSessionProjectionReducer(
+    projectRuntimeSessionSnapshot(
+      {
+        ...observation,
+        live: {
+          ...observation.live,
+          assistantTextByRun: { run_active: 'S' },
+          thinkingTextByRun: { run_active: 'T' },
+        },
+      } as unknown as RuntimeSessionObservationSnapshot,
+      [askUser],
+    ),
+    observation.runs,
+  );
+
+  reducer.apply({
+    id: 'event_iteration_start_42',
+    seq: 42,
+    time: '2026-07-14T08:04:00.000Z',
+    sessionId: 's_code',
+    runId: 'run_active',
+    type: 'run.progress',
+    payload: { kind: 'iteration_start', iter: 2, maxIter: 10 },
+  } as unknown as RuntimeTypedEvent);
+  reducer.apply({
+    id: 'event_attempt_a_text_43',
+    seq: 43,
+    time: '2026-07-14T08:04:01.000Z',
+    sessionId: 's_code',
+    runId: 'run_active',
+    type: 'assistant.delta',
+    payload: { text: 'A' },
+  } as unknown as RuntimeTypedEvent);
+  reducer.apply({
+    id: 'event_attempt_a_thinking_44',
+    seq: 44,
+    time: '2026-07-14T08:04:02.000Z',
+    sessionId: 's_code',
+    runId: 'run_active',
+    type: 'thinking.delta',
+    payload: { text: 'A' },
+  } as unknown as RuntimeTypedEvent);
+  reducer.apply({
+    id: 'event_provider_recovery_45',
+    seq: 45,
+    time: '2026-07-14T08:04:03.000Z',
+    sessionId: 's_code',
+    runId: 'run_active',
+    type: 'provider.recovery',
+    payload: {
+      event: {
+        stage: 'mid_stream_text',
+        recoveryAction: 'stable_boundary_retry',
+      },
+      meta: { contextKind: 'root' },
+    },
+  } as unknown as RuntimeTypedEvent);
+  reducer.apply({
+    id: 'event_attempt_b_text_46',
+    seq: 46,
+    time: '2026-07-14T08:04:04.000Z',
+    sessionId: 's_code',
+    runId: 'run_active',
+    type: 'assistant.delta',
+    payload: { text: 'B' },
+  } as unknown as RuntimeTypedEvent);
+  reducer.apply({
+    id: 'event_attempt_b_thinking_47',
+    seq: 47,
+    time: '2026-07-14T08:04:05.000Z',
+    sessionId: 's_code',
+    runId: 'run_active',
+    type: 'thinking.delta',
+    payload: { text: 'B' },
+  } as unknown as RuntimeTypedEvent);
+
+  assert.equal(reducer.snapshot().assistantDraft?.text, 'SB');
+  assert.equal(reducer.snapshot().thinkingDraft?.text, 'TB');
+  assert.deepEqual(reducer.snapshot().draftRecoveries, [
+    {
+      runId: 'run_active',
+      checkpointSeq: 42,
+      recoverySeq: 45,
+      assistantCheckpointLength: 1,
+      thinkingCheckpointLength: 1,
+    },
+  ]);
+  const checkpointChange = reducer.apply({
+    id: 'event_replacement_iteration_48',
+    seq: 48,
+    time: '2026-07-14T08:04:06.000Z',
+    sessionId: 's_code',
+    runId: 'run_active',
+    type: 'run.progress',
+    payload: { kind: 'iteration_start', iter: 3, maxIter: 10 },
+  } as unknown as RuntimeTypedEvent);
+  assert.equal(checkpointChange?.change.domain, 'draft');
+  assert.equal(reducer.snapshot().cursor.seq, 48);
+  assert.deepEqual(reducer.snapshot().draftCheckpoints, [
+    { runId: 'run_active', seq: 48, assistantLength: 2, thinkingLength: 2 },
+  ]);
+});
+
+test('event reducer advances the recovery checkpoint when a root tool result completes', () => {
+  const reducer = new CoderSessionProjectionReducer(
+    projectRuntimeSessionSnapshot(
+      {
+        ...observation,
+        live: {
+          ...observation.live,
+          assistantTextByRun: { run_active: 'S' },
+          thinkingTextByRun: {},
+          activeTools: [],
+        },
+      } as unknown as RuntimeSessionObservationSnapshot,
+      [askUser],
+    ),
+    observation.runs,
+  );
+
+  const events = [
+    {
+      id: 'event_iteration_start_42',
+      seq: 42,
+      type: 'run.progress',
+      payload: { kind: 'iteration_start', iter: 2, maxIter: 10 },
+    },
+    {
+      id: 'event_stable_pre_tool_text_43',
+      seq: 43,
+      type: 'assistant.delta',
+      payload: { text: 'A' },
+    },
+    {
+      id: 'event_tool_start_44',
+      seq: 44,
+      type: 'tool.started',
+      payload: { tool: { id: 'tool_retry', name: 'read' }, meta: { toolCallId: 'tool_retry' } },
+    },
+    {
+      id: 'event_tool_finish_45',
+      seq: 45,
+      type: 'tool.finished',
+      payload: {
+        result: { id: 'tool_retry', name: 'read', content: 'tool result' },
+        meta: { contextKind: 'root', toolCallId: 'tool_retry' },
+      },
+    },
+    {
+      id: 'event_unstable_post_tool_text_46',
+      seq: 46,
+      type: 'assistant.delta',
+      payload: { text: 'U' },
+    },
+    {
+      id: 'event_provider_recovery_47',
+      seq: 47,
+      type: 'provider.recovery',
+      payload: {
+        event: {
+          stage: 'post_tool_execution_pre_assistant_close',
+          recoveryAction: 'stable_boundary_retry',
+        },
+        meta: { contextKind: 'root' },
+      },
+    },
+    {
+      id: 'event_replacement_text_48',
+      seq: 48,
+      type: 'assistant.delta',
+      payload: { text: 'B' },
+    },
+  ] as const;
+  for (const event of events) {
+    reducer.apply({
+      ...event,
+      time: '2026-07-14T08:04:00.000Z',
+      sessionId: 's_code',
+      runId: 'run_active',
+    } as unknown as RuntimeTypedEvent);
+  }
+
+  assert.equal(reducer.snapshot().assistantDraft?.text, 'SAB');
+  assert.deepEqual(reducer.snapshot().activeTools, []);
+});
+
+test('event reducer does not reset drafts for non-replacement or pre-content recovery', () => {
+  const cases = [
+    { stage: 'before_first_delta', recoveryAction: 'fresh_connection_retry' },
+    { stage: 'mid_stream_text', recoveryAction: 'manual_continue' },
+    { stage: 'before_first_delta', recoveryAction: 'stable_boundary_retry' },
+  ] as const;
+
+  for (const recovery of cases) {
+    const reducer = new CoderSessionProjectionReducer(
+      projectRuntimeSessionSnapshot(observation, [askUser]),
+      observation.runs,
+    );
+    reducer.apply({
+      id: `event_iteration_start_${recovery.recoveryAction}`,
+      seq: 42,
+      time: '2026-07-14T08:04:00.000Z',
+      sessionId: 's_code',
+      runId: 'run_active',
+      type: 'run.progress',
+      payload: { kind: 'iteration_start', iter: 2, maxIter: 10 },
+    } as unknown as RuntimeTypedEvent);
+    reducer.apply({
+      id: `event_provider_recovery_${recovery.recoveryAction}`,
+      seq: 43,
+      time: '2026-07-14T08:04:01.000Z',
+      sessionId: 's_code',
+      runId: 'run_active',
+      type: 'provider.recovery',
+      payload: { event: recovery, meta: { contextKind: 'root' } },
+    } as unknown as RuntimeTypedEvent);
+
+    assert.equal(reducer.snapshot().assistantDraft?.text, 'partial answer');
+    assert.equal(reducer.snapshot().thinkingDraft?.text, 'checking');
+  }
+});
+
+test('event reducer keeps transient child recovery out of the root draft checkpoint', () => {
+  const reducer = new CoderSessionProjectionReducer(
+    projectRuntimeSessionSnapshot(observation, [askUser]),
+    observation.runs,
+  );
+  reducer.apply({
+    id: 'event_iteration_start_42',
+    seq: 42,
+    time: '2026-07-14T08:04:00.000Z',
+    sessionId: 's_code',
+    runId: 'run_active',
+    type: 'run.progress',
+    payload: { kind: 'iteration_start', iter: 2, maxIter: 10 },
+  } as unknown as RuntimeTypedEvent);
+  reducer.apply({
+    id: 'event_root_text_43',
+    seq: 43,
+    time: '2026-07-14T08:04:01.000Z',
+    sessionId: 's_code',
+    runId: 'run_active',
+    type: 'assistant.delta',
+    payload: { text: ' root attempt' },
+  } as unknown as RuntimeTypedEvent);
+
+  const childRecovery = reducer.apply({
+    id: 'event_child_recovery_44',
+    seq: 44,
+    time: '2026-07-14T08:04:02.000Z',
+    sessionId: 's_code',
+    runId: 'run_active',
+    type: 'provider.recovery',
+    payload: {
+      event: {
+        stage: 'mid_stream_text',
+        recoveryAction: 'stable_boundary_retry',
+      },
+      meta: {
+        contextKind: 'child',
+        contextId: 'child_context_1',
+        parentContextId: 's_code',
+        childAgentId: 'child_1',
+        liveOnly: true,
+        toolCallId: 'child_tool',
+      },
+    },
+  } as unknown as RuntimeTypedEvent);
+
+  assert.equal(childRecovery, null);
+  assert.equal(reducer.snapshot().assistantDraft?.text, 'partial answer root attempt');
+  assert.equal(reducer.snapshot().thinkingDraft?.text, 'checking');
+  assert.equal(reducer.snapshot().cursor.seq, 43);
 });
 
 test('terminal and next-run events reset run-scoped live state before new deltas', () => {

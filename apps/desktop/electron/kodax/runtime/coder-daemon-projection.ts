@@ -13,6 +13,7 @@ import {
   spaceRuntimeToolSandboxSchema,
   spaceSessionLiveChangedSchema,
   spaceSessionLiveProjectionSchema,
+  providerRecoveryReplacesDraft,
   type SpaceRuntimeCapabilityT,
   type SpaceRuntimeIntegrationHealthT,
   type SpaceRuntimeInteractionT,
@@ -72,6 +73,23 @@ function record(value: unknown): Readonly<Record<string, unknown>> | undefined {
     : undefined;
 }
 
+function recoveryReplacesProvisionalAttempt(
+  payload: Readonly<Record<string, unknown>> | undefined,
+): boolean {
+  const recovery = record(payload?.event);
+  const stage = recovery?.stage;
+  const action = recovery?.recoveryAction;
+  return (
+    typeof stage === 'string' &&
+    typeof action === 'string' &&
+    providerRecoveryReplacesDraft({ stage, recoveryAction: action })
+  );
+}
+
+function isTransientChildRuntimeEvent(event: RuntimeTypedEvent): boolean {
+  return isTransientChildEvent(record(record(event.payload)?.meta) as ChildMeta);
+}
+
 /**
  * Runtime summaries from older Sessions may expose only the persisted Space
  * tag. Treat every available ownership marker as authoritative so a legacy
@@ -107,7 +125,8 @@ export function coderRuntimeSessionIds(
     if (run.phase !== 'queued' && !ACTIVE_PHASES.has(run.phase as never)) continue;
     const knownSession = sessionById.get(run.sessionId);
     if (knownSession !== undefined && isPartnerRuntimeSessionIdentity(knownSession)) continue;
-    if (knownSession === undefined && !verifiedOutOfPageCoderSessionIds.has(run.sessionId)) continue;
+    if (knownSession === undefined && !verifiedOutOfPageCoderSessionIds.has(run.sessionId))
+      continue;
     sessionIds.add(run.sessionId);
   }
   return sessionIds;
@@ -877,6 +896,18 @@ export function projectRuntimeSessionSnapshot(
   });
 }
 
+/**
+ * Replace Runtime's cumulative text/thinking snapshot with an attempt-aware projection rebuilt
+ * from the same active Run's journal. Other live domains remain owned by the observation snapshot.
+ */
+export function projectRuntimeSessionSnapshotWithDraftReplay(
+  snapshot: RuntimeSessionObservationSnapshot,
+  replayEvents: readonly RuntimeTypedEvent[],
+): SpaceSessionLiveProjectionT {
+  const projected = projectRuntimeSessionSnapshot(snapshot);
+  return new CoderSessionProjectionReducer(projected, snapshot.runs, replayEvents).snapshot();
+}
+
 export function projectRuntimeProfile(input: {
   readonly status: RuntimeStatusSnapshot;
   readonly verifiedOutOfPageCoderSessionIds?: ReadonlySet<string>;
@@ -971,11 +1002,24 @@ function runStatusFromEvent(event: RuntimeTypedEvent): RuntimeRunStatus | undefi
 
 export class CoderSessionProjectionReducer {
   #projection: SpaceSessionLiveProjectionT;
+  #draftCheckpoint:
+    | {
+        runId: string;
+        seq: number;
+        assistantDraft: SpaceSessionLiveProjectionT['assistantDraft'];
+        thinkingDraft: SpaceSessionLiveProjectionT['thinkingDraft'];
+      }
+    | undefined;
   readonly #runs = new Map<string, RuntimeRunStatus>();
 
-  constructor(projection: SpaceSessionLiveProjectionT, runs: readonly RuntimeRunStatus[] = []) {
+  constructor(
+    projection: SpaceSessionLiveProjectionT,
+    runs: readonly RuntimeRunStatus[] = [],
+    replayEvents: readonly RuntimeTypedEvent[] = [],
+  ) {
     this.#projection = spaceSessionLiveProjectionSchema.parse(projection);
     for (const run of runs) this.#runs.set(run.runId, run);
+    this.#bootstrapDraftAttempt(replayEvents);
   }
 
   snapshot(): SpaceSessionLiveProjectionT {
@@ -997,12 +1041,13 @@ export class CoderSessionProjectionReducer {
     if (event.sessionId !== this.#projection.sessionId) return null;
     if (event.seq <= this.#projection.cursor.seq) return null;
     const payload = record(event.payload);
-    const activityMeta = record(payload?.meta) as ChildMeta;
     if (
-      isTransientChildEvent(activityMeta) &&
+      isTransientChildRuntimeEvent(event) &&
       (event.type === 'assistant.delta' ||
         event.type === 'thinking.delta' ||
         event.type === 'thinking.finished' ||
+        event.type === 'provider.recovery' ||
+        (event.type === 'run.progress' && payload?.kind === 'iteration_start') ||
         event.type === 'tool.started' ||
         event.type === 'tool.progress' ||
         event.type === 'tool.sandbox' ||
@@ -1011,24 +1056,64 @@ export class CoderSessionProjectionReducer {
     ) {
       return null;
     }
+    if (event.type === 'run.progress' && payload?.kind === 'iteration_start') {
+      if (this.#checkpointDrafts(event.runId, event.seq)) {
+        return this.#commit(event.seq, {
+          domain: 'draft',
+          assistantDraft: this.#projection.assistantDraft ?? null,
+          thinkingDraft: this.#projection.thinkingDraft ?? null,
+          draftRecoveries: this.#projection.draftRecoveries ?? [],
+          draftCheckpoints: this.#projection.draftCheckpoints ?? [],
+        });
+      }
+      return null;
+    }
+    if (event.type === 'provider.recovery' && recoveryReplacesProvisionalAttempt(payload)) {
+      const checkpoint = this.#draftCheckpoint;
+      if (!checkpoint || checkpoint.runId !== event.runId) return null;
+      const draftRecoveries = [
+        ...(this.#projection.draftRecoveries ?? []),
+        {
+          runId: event.runId,
+          checkpointSeq: checkpoint.seq,
+          recoverySeq: event.seq,
+          assistantCheckpointLength: checkpoint.assistantDraft?.text.length ?? 0,
+          thinkingCheckpointLength: checkpoint.thinkingDraft?.text.length ?? 0,
+        },
+      ];
+      const metadataAvailable = draftRecoveries.length <= 512;
+      return this.#commit(event.seq, {
+        domain: 'draft',
+        assistantDraft: checkpoint.assistantDraft ?? null,
+        thinkingDraft: checkpoint.thinkingDraft ?? null,
+        draftRecoveries: metadataAvailable ? draftRecoveries : [],
+        draftCheckpoints: metadataAvailable ? (this.#projection.draftCheckpoints ?? []) : [],
+      });
+    }
     if (event.type === 'assistant.delta' && typeof payload?.text === 'string') {
       const current = this.#projection.assistantDraft?.text ?? '';
+      const combined = `${current}${payload.text}`;
+      const next = combined.slice(-MAX_DRAFT);
       const startedAt = this.#runStartedAt(event.runId, event.time);
       return this.#commit(event.seq, {
         domain: 'draft',
-        assistantDraft: { text: `${current}${payload.text}`.slice(-MAX_DRAFT), startedAt },
+        assistantDraft: { text: next, startedAt },
         thinkingDraft: this.#projection.thinkingDraft ?? null,
+        ...(this.#trimDraftRecoveryCheckpoints('assistant', combined.length - next.length) ?? {}),
       });
     }
     if (event.type === 'thinking.delta' && typeof payload?.text === 'string') {
       const current = this.#projection.thinkingDraft?.text ?? '';
+      const combined = `${current}${payload.text}`;
+      const next = combined.slice(-MAX_DRAFT);
       return this.#commit(event.seq, {
         domain: 'draft',
         assistantDraft: this.#projection.assistantDraft ?? null,
         thinkingDraft: {
-          text: `${current}${payload.text}`.slice(-MAX_DRAFT),
+          text: next,
           startedAt: this.#runStartedAt(event.runId, event.time),
         },
+        ...(this.#trimDraftRecoveryCheckpoints('thinking', combined.length - next.length) ?? {}),
       });
     }
     if (event.type === 'thinking.finished' && typeof payload?.thinking === 'string') {
@@ -1087,6 +1172,7 @@ export class CoderSessionProjectionReducer {
       const activeTools = toolCallId
         ? this.#projection.activeTools.filter((item) => item.toolCallId !== toolCallId)
         : this.#projection.activeTools.slice(0, -1);
+      this.#checkpointDrafts(event.runId, event.seq);
       return this.#commit(event.seq, { domain: 'tools', activeTools });
     }
     if (event.type === 'todo.updated') {
@@ -1155,6 +1241,170 @@ export class CoderSessionProjectionReducer {
     return timestamp(run?.runningAt ?? run?.startedAt, timestamp(fallback));
   }
 
+  #checkpointDrafts(runId: string, seq: number): boolean {
+    if (this.#projection.activeRun?.runId !== runId) return false;
+    this.#draftCheckpoint = {
+      runId,
+      seq,
+      assistantDraft: this.#projection.assistantDraft,
+      thinkingDraft: this.#projection.thinkingDraft,
+    };
+    if (!this.#projection.draftRecoveries?.length) return false;
+    const checkpoint = {
+      runId,
+      seq,
+      assistantLength: this.#projection.assistantDraft?.text.length ?? 0,
+      thinkingLength: this.#projection.thinkingDraft?.text.length ?? 0,
+    };
+    const checkpoints = [...(this.#projection.draftCheckpoints ?? [])];
+    const previous = checkpoints.at(-1);
+    if (
+      previous?.assistantLength === checkpoint.assistantLength &&
+      previous.thinkingLength === checkpoint.thinkingLength
+    ) {
+      checkpoints[checkpoints.length - 1] = checkpoint;
+    } else {
+      checkpoints.push(checkpoint);
+    }
+    if (checkpoints.length > 512) {
+      this.#projection = {
+        ...this.#projection,
+        draftRecoveries: undefined,
+        draftCheckpoints: undefined,
+      };
+      return true;
+    }
+    this.#projection = { ...this.#projection, draftCheckpoints: checkpoints };
+    return true;
+  }
+
+  #trimDraftRecoveryCheckpoints(
+    kind: 'assistant' | 'thinking',
+    dropped: number,
+  ):
+    | {
+        draftRecoveries: NonNullable<SpaceSessionLiveProjectionT['draftRecoveries']>;
+        draftCheckpoints: NonNullable<SpaceSessionLiveProjectionT['draftCheckpoints']>;
+      }
+    | undefined {
+    const recoveries = this.#projection.draftRecoveries;
+    if (dropped <= 0 || !recoveries?.length) return undefined;
+    return {
+      draftRecoveries: recoveries.map((recovery) =>
+        kind === 'assistant'
+          ? {
+              ...recovery,
+              assistantCheckpointLength: Math.max(0, recovery.assistantCheckpointLength - dropped),
+            }
+          : {
+              ...recovery,
+              thinkingCheckpointLength: Math.max(0, recovery.thinkingCheckpointLength - dropped),
+            },
+      ),
+      draftCheckpoints: (this.#projection.draftCheckpoints ?? []).map((checkpoint) =>
+        kind === 'assistant'
+          ? { ...checkpoint, assistantLength: Math.max(0, checkpoint.assistantLength - dropped) }
+          : { ...checkpoint, thinkingLength: Math.max(0, checkpoint.thinkingLength - dropped) },
+      ),
+    };
+  }
+
+  #bootstrapDraftAttempt(replayEvents: readonly RuntimeTypedEvent[]): void {
+    const runId = this.#projection.activeRun?.runId;
+    if (!runId) return;
+    const retainedEvents = replayEvents
+      .filter(
+        (event) =>
+          event.sessionId === this.#projection.sessionId &&
+          event.runId === runId &&
+          event.cursor.sessionId === this.#projection.cursor.sessionId &&
+          event.cursor.journalEpoch === this.#projection.cursor.journalEpoch &&
+          event.seq <= this.#projection.cursor.seq,
+      )
+      .sort((left, right) => left.seq - right.seq);
+    let checkpointAvailable = false;
+    let hasReplayableRecovery = false;
+    let awaitingCompleteCheckpoint = false;
+    let replayStart = 0;
+    for (let index = 0; index < retainedEvents.length; index++) {
+      const event = retainedEvents[index]!;
+      if (isTransientChildRuntimeEvent(event)) continue;
+      const payload = record(event.payload);
+      if (
+        (event.type === 'run.progress' && payload?.kind === 'iteration_start') ||
+        event.type === 'tool.finished'
+      ) {
+        checkpointAvailable = true;
+        if (awaitingCompleteCheckpoint) {
+          replayStart = index;
+          awaitingCompleteCheckpoint = false;
+          hasReplayableRecovery = false;
+        }
+        continue;
+      }
+      if (event.type !== 'provider.recovery' || !recoveryReplacesProvisionalAttempt(payload)) {
+        continue;
+      }
+      if (!checkpointAvailable) {
+        awaitingCompleteCheckpoint = true;
+        continue;
+      }
+      hasReplayableRecovery = true;
+    }
+    if (!checkpointAvailable || awaitingCompleteCheckpoint) return;
+    const events = retainedEvents.slice(replayStart);
+
+    const replayedText = events
+      .filter((event) => !isTransientChildRuntimeEvent(event) && event.type === 'assistant.delta')
+      .map((event) => record(event.payload)?.text)
+      .filter((value): value is string => typeof value === 'string')
+      .join('')
+      .slice(-MAX_DRAFT);
+    const replayedThinking = events
+      .filter((event) => !isTransientChildRuntimeEvent(event) && event.type === 'thinking.delta')
+      .map((event) => record(event.payload)?.text)
+      .filter((value): value is string => typeof value === 'string')
+      .join('')
+      .slice(-MAX_DRAFT);
+    const cumulativeText = this.#projection.assistantDraft?.text ?? '';
+    const cumulativeThinking = this.#projection.thinkingDraft?.text ?? '';
+    if (!cumulativeText.endsWith(replayedText) || !cumulativeThinking.endsWith(replayedThinking)) {
+      return;
+    }
+    const stableText = cumulativeText.slice(0, cumulativeText.length - replayedText.length);
+    const stableThinking = cumulativeThinking.slice(
+      0,
+      cumulativeThinking.length - replayedThinking.length,
+    );
+    const firstSeq = events[0]?.seq ?? 1;
+    const seed = spaceSessionLiveProjectionSchema.parse({
+      ...this.#projection,
+      cursor: { ...this.#projection.cursor, seq: Math.max(0, firstSeq - 1) },
+      assistantDraft:
+        stableText.length > 0
+          ? { text: stableText, startedAt: this.#projection.assistantDraft?.startedAt ?? 0 }
+          : undefined,
+      thinkingDraft:
+        stableThinking.length > 0
+          ? { text: stableThinking, startedAt: this.#projection.thinkingDraft?.startedAt ?? 0 }
+          : undefined,
+      draftRecoveries: undefined,
+      draftCheckpoints: undefined,
+    });
+    const replay = new CoderSessionProjectionReducer(seed, [...this.#runs.values()]);
+    for (const event of events) replay.apply(event);
+    this.#draftCheckpoint = replay.#draftCheckpoint;
+    if (!hasReplayableRecovery) return;
+    const rebuilt = replay.snapshot();
+    this.#projection = spaceSessionLiveProjectionSchema.parse({
+      ...this.#projection,
+      assistantDraft: rebuilt.assistantDraft,
+      thinkingDraft: rebuilt.thinkingDraft,
+      draftRecoveries: rebuilt.draftRecoveries,
+      draftCheckpoints: rebuilt.draftCheckpoints,
+    });
+  }
+
   #commit(
     seq: number,
     change: SpaceSessionLiveChangedT['change'],
@@ -1176,6 +1426,8 @@ export class CoderSessionProjectionReducer {
             ? {
                 assistantDraft: undefined,
                 thinkingDraft: undefined,
+                draftRecoveries: undefined,
+                draftCheckpoints: undefined,
                 activeTools: [],
                 managedTask: undefined,
                 interactions: [],
@@ -1191,6 +1443,12 @@ export class CoderSessionProjectionReducer {
           cursor,
           assistantDraft: change.assistantDraft ?? undefined,
           thinkingDraft: change.thinkingDraft ?? undefined,
+          ...(change.draftRecoveries !== undefined
+            ? { draftRecoveries: change.draftRecoveries }
+            : {}),
+          ...(change.draftCheckpoints !== undefined
+            ? { draftCheckpoints: change.draftCheckpoints }
+            : {}),
         };
         break;
       case 'tools':

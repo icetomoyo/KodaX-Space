@@ -139,6 +139,16 @@ test('selected-session live projection carries semantic spinner, Todo and queue 
     },
     queuedRuns: [],
     assistantDraft: { text: 'Working', startedAt: 3 },
+    draftRecoveries: [
+      {
+        runId: 'run_1',
+        checkpointSeq: 2,
+        recoverySeq: 3,
+        assistantCheckpointLength: 7,
+        thinkingCheckpointLength: 0,
+      },
+    ],
+    draftCheckpoints: [{ runId: 'run_1', seq: 3, assistantLength: 7, thinkingLength: 0 }],
     activeTools: [
       {
         toolCallId: 'tool_1',
@@ -244,6 +254,26 @@ test('live changes require monotonic revisions and typed domain replacements', (
     spaceSessionLiveChangedSchema.safeParse({
       ...valid,
       change: { domain: 'tools', todos: [] },
+    }).success,
+    false,
+  );
+  assert.equal(
+    spaceSessionLiveChangedSchema.safeParse({
+      ...valid,
+      change: {
+        domain: 'draft',
+        assistantDraft: null,
+        thinkingDraft: null,
+        draftRecoveries: [
+          {
+            runId: 'run_1',
+            checkpointSeq: 7,
+            recoverySeq: 9,
+            assistantCheckpointLength: 0,
+            thinkingCheckpointLength: 0,
+          },
+        ],
+      },
     }).success,
     false,
   );

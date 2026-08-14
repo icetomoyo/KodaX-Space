@@ -56,6 +56,199 @@ test('empty in → empty out', () => {
   assert.deepEqual(composeMessages({ events: [], userMessages: [] }), []);
 });
 
+test('provider recovery replaces the abandoned live assistant draft before history arrives', () => {
+  const events: SessionEvent[] = [
+    { kind: 'text_delta', sessionId: sid, text: 'abandoned attempt' },
+    {
+      kind: 'provider_recovery',
+      sessionId: sid,
+      stage: 'mid_stream_text',
+      errorClass: 'connection_failure',
+      attempt: 1,
+      maxAttempts: 4,
+      delayMs: 0,
+      recoveryAction: 'stable_boundary_retry',
+      ladderStep: 2,
+      fallbackUsed: false,
+    },
+    { kind: 'text_delta', sessionId: sid, text: 'retry answer' },
+  ];
+
+  const out = composeMessages({ events, userMessages: [] });
+  assert.deepEqual(
+    out.flatMap((message) => (message.kind === 'assistant_text' ? [message.text] : [])),
+    ['retry answer'],
+  );
+});
+
+test('provider recovery invalidates the abandoned draft before replacement text starts', () => {
+  const out = composeMessages({
+    events: [
+      { kind: 'text_delta', sessionId: sid, text: 'abandoned attempt' },
+      {
+        kind: 'provider_recovery',
+        sessionId: sid,
+        stage: 'mid_stream_text',
+        errorClass: 'connection_failure',
+        attempt: 1,
+        maxAttempts: 4,
+        delayMs: 250,
+        recoveryAction: 'stable_boundary_retry',
+        ladderStep: 2,
+        fallbackUsed: false,
+      },
+    ],
+    userMessages: [],
+  });
+
+  assert.deepEqual(
+    out.flatMap((message) => (message.kind === 'assistant_text' ? [message.text] : [])),
+    [],
+  );
+});
+
+test('thinking sanitization recovery replaces the provisional thinking attempt', () => {
+  const out = composeMessages({
+    events: [
+      { kind: 'thinking_delta', sessionId: sid, text: 'invalid thinking' },
+      {
+        kind: 'provider_recovery',
+        sessionId: sid,
+        stage: 'mid_stream_thinking',
+        errorClass: 'reasoning_content_required',
+        attempt: 1,
+        maxAttempts: 1,
+        delayMs: 0,
+        recoveryAction: 'sanitize_thinking_and_retry',
+        ladderStep: 2,
+        fallbackUsed: false,
+      },
+      { kind: 'thinking_delta', sessionId: sid, text: 'replacement thinking' },
+      { kind: 'text_delta', sessionId: sid, text: 'replacement answer' },
+    ],
+    userMessages: [],
+  });
+
+  assert.deepEqual(
+    out.flatMap((message) =>
+      message.kind === 'assistant_text' ? [{ text: message.text, thinking: message.thinking }] : [],
+    ),
+    [{ text: 'replacement answer', thinking: 'replacement thinking' }],
+  );
+});
+
+test('provider recovery preserves output and tools completed before the current attempt', () => {
+  const out = composeMessages({
+    events: [
+      { kind: 'text_delta', sessionId: sid, text: 'stable output' },
+      { kind: 'tool_start', sessionId: sid, toolId: 'tool_1', toolName: 'read', input: {} },
+      {
+        kind: 'tool_result',
+        sessionId: sid,
+        toolId: 'tool_1',
+        toolName: 'read',
+        content: 'stable result',
+      },
+      { kind: 'text_delta', sessionId: sid, text: 'abandoned attempt' },
+      {
+        kind: 'provider_recovery',
+        sessionId: sid,
+        stage: 'mid_stream_text',
+        errorClass: 'connection_failure',
+        attempt: 1,
+        maxAttempts: 4,
+        delayMs: 0,
+        recoveryAction: 'stable_boundary_retry',
+        ladderStep: 2,
+        fallbackUsed: false,
+      },
+      { kind: 'text_delta', sessionId: sid, text: 'replacement' },
+    ],
+    userMessages: [],
+  });
+
+  assert.deepEqual(
+    out.flatMap((message) => (message.kind === 'assistant_text' ? [message.text] : [])),
+    ['stable output', 'replacement'],
+  );
+  assert.equal(out.filter((message) => message.kind === 'tool_call').length, 1);
+});
+
+test('consecutive provider recoveries retain only the latest live assistant attempt', () => {
+  const recovery = (
+    attempt: number,
+    recoveryAction: 'stable_boundary_retry' | 'non_streaming_fallback',
+  ): SessionEvent => ({
+    kind: 'provider_recovery',
+    sessionId: sid,
+    stage: 'mid_stream_text',
+    errorClass: 'connection_failure',
+    attempt,
+    maxAttempts: 4,
+    delayMs: 0,
+    recoveryAction,
+    ladderStep: recoveryAction === 'non_streaming_fallback' ? 3 : 2,
+    fallbackUsed: recoveryAction === 'non_streaming_fallback',
+  });
+  const events: SessionEvent[] = [
+    { kind: 'text_delta', sessionId: sid, text: 'first attempt' },
+    recovery(1, 'stable_boundary_retry'),
+    { kind: 'text_delta', sessionId: sid, text: 'second attempt' },
+    recovery(2, 'non_streaming_fallback'),
+    { kind: 'text_delta', sessionId: sid, text: 'fallback answer' },
+  ];
+
+  const out = composeMessages({ events, userMessages: [] });
+  assert.deepEqual(
+    out.flatMap((message) => (message.kind === 'assistant_text' ? [message.text] : [])),
+    ['fallback answer'],
+  );
+});
+
+test('legitimate repeated assistant text remains unchanged without provider recovery', () => {
+  const out = composeMessages({
+    events: [
+      { kind: 'text_delta', sessionId: sid, text: 'repeat' },
+      { kind: 'text_delta', sessionId: sid, text: 'repeat' },
+    ],
+    userMessages: [],
+  });
+
+  assert.deepEqual(
+    out.flatMap((message) => (message.kind === 'assistant_text' ? [message.text] : [])),
+    ['repeatrepeat'],
+  );
+});
+
+test('non-replacing provider recovery actions do not clear live assistant text', () => {
+  for (const recoveryAction of ['fresh_connection_retry', 'manual_continue']) {
+    const events: SessionEvent[] = [
+      { kind: 'text_delta', sessionId: sid, text: 'visible before recovery' },
+      {
+        kind: 'provider_recovery',
+        sessionId: sid,
+        stage:
+          recoveryAction === 'fresh_connection_retry' ? 'before_first_delta' : 'mid_stream_text',
+        errorClass: 'connection_failure',
+        attempt: 1,
+        maxAttempts: 1,
+        delayMs: 0,
+        recoveryAction,
+        ladderStep: recoveryAction === 'fresh_connection_retry' ? 1 : 4,
+        fallbackUsed: false,
+      },
+      { kind: 'text_delta', sessionId: sid, text: ' and after' },
+    ];
+
+    const out = composeMessages({ events, userMessages: [] });
+    assert.deepEqual(
+      out.flatMap((message) => (message.kind === 'assistant_text' ? [message.text] : [])),
+      ['visible before recovery and after'],
+      recoveryAction,
+    );
+  }
+});
+
 test('only user message, no events: returns single user bubble', () => {
   const out = composeMessages({
     events: [],

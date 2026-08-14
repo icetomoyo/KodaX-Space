@@ -8,6 +8,7 @@ import {
   pushChannels,
   INVOKE_CHANNEL_NAMES,
   PUSH_CHANNEL_NAMES,
+  providerRecoveryReplacesDraft,
   sessionCreateChannel,
   sessionSendChannel,
   sessionCancelChannel,
@@ -910,6 +911,28 @@ test('session.event payload: text_delta variant', () => {
     }).success,
     false,
   );
+});
+
+test('provider recovery replacement requires both provisional content and a replacement action', () => {
+  for (const recovery of [
+    { stage: 'mid_stream_text', recoveryAction: 'stable_boundary_retry' },
+    { stage: 'mid_stream_tool_input', recoveryAction: 'non_streaming_fallback' },
+    { stage: 'mid_stream_thinking', recoveryAction: 'sanitize_thinking_and_retry' },
+    {
+      stage: 'post_tool_execution_pre_assistant_close',
+      recoveryAction: 'stable_boundary_retry',
+    },
+  ]) {
+    assert.equal(providerRecoveryReplacesDraft(recovery), true, JSON.stringify(recovery));
+  }
+
+  for (const recovery of [
+    { stage: 'before_first_delta', recoveryAction: 'stable_boundary_retry' },
+    { stage: 'mid_stream_text', recoveryAction: 'fresh_connection_retry' },
+    { stage: 'mid_stream_text', recoveryAction: 'manual_continue' },
+  ]) {
+    assert.equal(providerRecoveryReplacesDraft(recovery), false, JSON.stringify(recovery));
+  }
 });
 
 test('session.event payload: mid_turn_user_prompt variant', () => {

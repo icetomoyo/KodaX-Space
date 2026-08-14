@@ -355,6 +355,7 @@ export type RuntimeConversationHistoryPageResult =
   | { readonly outcome: 'data_changed' };
 
 const RUNTIME_READ_TIMEOUT_MS = 15_000;
+const RUNTIME_DRAFT_REPLAY_TIMEOUT_MS = 2_000;
 const RUNTIME_TRANSCRIPT_TOTAL_TIMEOUT_MS = 60_000;
 const MAX_RUNTIME_TRANSCRIPT_RESYNCS = 2;
 const MAX_PROFILE_REFRESH_CONFLICT_RETRIES = 2;
@@ -4016,6 +4017,58 @@ export class RuntimeHostAdapter {
     return pending;
   }
 
+  private async projectObservationSnapshot(
+    runtime: KodaXDaemonRuntime,
+    snapshot: RuntimeSessionObservationSnapshot,
+    parseRuntimeEvent: RuntimeEventParser,
+  ): Promise<{
+    readonly projection: SpaceSessionLiveProjectionT;
+    readonly replayEvents: readonly RuntimeTypedEvent[];
+  }> {
+    const projected = projectRuntimeSessionSnapshot(snapshot);
+    const runId = projected.activeRun?.runId;
+    if (!runId) {
+      return { projection: projected, replayEvents: [] };
+    }
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const replay = await Promise.race([
+        runtime.events.replay({
+          runId,
+          type: [
+            'run.progress',
+            'assistant.delta',
+            'thinking.delta',
+            'tool.finished',
+            'provider.recovery',
+          ],
+        }),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(
+            () => reject(new Error('Runtime draft replay timed out.')),
+            RUNTIME_DRAFT_REPLAY_TIMEOUT_MS,
+          );
+          timer.unref?.();
+        }),
+      ]);
+      const replayEvents = replay.map((event) => {
+        const parsed = parseRuntimeEvent(event);
+        if (!parsed.ok) throw new Error(`Malformed Runtime replay event: ${parsed.error}`);
+        return parsed.event;
+      });
+      return { projection: projected, replayEvents };
+    } catch (error) {
+      console.warn(
+        `[runtime] supplemental draft replay failed for ${snapshot.session.id}:`,
+        sanitizeDiagnosticError(error),
+      );
+      return { projection: projected, replayEvents: [] };
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }
+
   private async openObservation(
     sessionId: string,
     options: {
@@ -4061,15 +4114,24 @@ export class RuntimeHostAdapter {
         throw new Error('Coder daemon connection changed while validating session observation.');
       }
       assertRuntimeSessionIdentity(session, { sessionId });
-      const projected = projectRuntimeSessionSnapshot(observation.snapshot);
-      const initial = {
-        ...projected,
+      const replayed = await this.projectObservationSnapshot(
+        runtime,
+        observation.snapshot,
+        parseRuntimeEvent,
+      );
+      const initialProjection = {
+        ...replayed.projection,
         projectionRevision: Math.max(
-          projected.projectionRevision,
-          this.previousLiveProjectionRevision(sessionId, projected.cursor.runtimeId) + 1,
+          replayed.projection.projectionRevision,
+          this.previousLiveProjectionRevision(sessionId, replayed.projection.cursor.runtimeId) + 1,
         ),
       };
-      const reducer = new CoderSessionProjectionReducer(initial, observation.snapshot.runs);
+      const reducer = new CoderSessionProjectionReducer(
+        initialProjection,
+        observation.snapshot.runs,
+        replayed.replayEvents,
+      );
+      const initial = reducer.snapshot();
       for (const run of observation.snapshot.runs) this.runProviders.set(run.runId, run.provider);
       state = {
         sessionId,
@@ -4669,6 +4731,7 @@ export class RuntimeHostAdapter {
         event.type === 'assistant.delta' ||
         event.type === 'thinking.delta' ||
         event.type === 'thinking.finished' ||
+        event.type === 'provider.recovery' ||
         event.type === 'tool.progress' ||
         event.type === 'tool.sandbox' ||
         event.type === 'todo.updated'
@@ -4704,6 +4767,28 @@ export class RuntimeHostAdapter {
         sessionId: event.sessionId,
         thinking: payload.thinking,
       });
+      return;
+    }
+    if (event.type === 'provider.recovery') {
+      const recovery = runtimeEventRecord(payload?.event);
+      if (!recovery) return;
+      const parsed = sessionEventChannel.payload.safeParse({
+        ...runtimeSessionEventOrigin(runtimeId, event),
+        ...runtimeTranscriptTurnIdentity(event),
+        kind: 'provider_recovery',
+        sessionId: event.sessionId,
+        stage: recovery.stage,
+        errorClass: recovery.errorClass,
+        attempt: recovery.attempt,
+        maxAttempts: recovery.maxAttempts,
+        delayMs: recovery.delayMs,
+        recoveryAction: recovery.recoveryAction,
+        ladderStep: recovery.ladderStep,
+        fallbackUsed: recovery.fallbackUsed,
+      });
+      if (parsed.success && parsed.data.kind === 'provider_recovery') {
+        this.push('session.event', parsed.data);
+      }
       return;
     }
     if (event.type === 'tool.started') {
@@ -6539,8 +6624,7 @@ export class RuntimeHostAdapter {
         if (runtime) {
           await runtime.close();
           if (this.closingRuntime === runtime) this.closingRuntime = null;
-        }
-        else await (initializing?.catch(() => undefined) ?? Promise.resolve());
+        } else await (initializing?.catch(() => undefined) ?? Promise.resolve());
       } catch (error) {
         errors.push(error);
       }

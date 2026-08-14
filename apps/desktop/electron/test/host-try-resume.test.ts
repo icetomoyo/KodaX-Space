@@ -392,7 +392,7 @@ test('tryResume falls back to the resolved provider default when configured mode
   const resumed = kodaxHost.get(id);
   assert.ok(resumed);
   assert.equal(resumed.provider, 'zhipu-coding');
-  assert.equal(resumed.model, 'glm-5.2');
+  assert.equal(resumed.model, 'glm-5.3');
 });
 
 test('tryResume registers Space custom default provider before rehydrating session', async () => {

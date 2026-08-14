@@ -175,7 +175,8 @@ Last Updated: 2026-08-14
 | 177 | High     | Resolved           | History reconciliation could duplicate a recovered answer or place compact notices after a later answer                            | v0.1.38 history/live and local-notice reconciliation         | 2026-08-08 |
 | 178 | High     | Resolved in source | Actor durability unknown blocked input, dropped the live turn after Stop, and misreported self-fence as foreign ownership          | KodaX 0.7.85 / Space v0.1.39                                 | 2026-08-09 |
 | 179 | Medium   | Resolved           | Idle Space exit reported running tasks when only other Runtime clients remained connected                                          | v0.1.39 complete-exit client protection                      | 2026-08-11 |
-| 180 | High     | Resolved           | A crashed inline owner permanently blocked daemon startup until the customer deleted `~/.kodax`                                   | v0.1.38 / KodaX 0.7.84 owner-policy reconciliation           | 2026-08-14 |
+| 180 | High     | Resolved           | A crashed inline owner permanently blocked daemon startup until the customer deleted `~/.kodax`                                    | v0.1.38 / KodaX 0.7.84 owner-policy reconciliation           | 2026-08-14 |
+| 181 | High     | Resolved           | Daemon Provider recovery could leave an abandoned answer attempt in the live transcript until Ctrl+R                               | v0.1.38 daemon Runtime recovery projection                   | 2026-08-14 |
 
 ## Issue Details
 
@@ -13049,15 +13050,76 @@ history remained correct:
   [ISSUE_177_v0.1.38_REGRESSION_GUIDE.md](test-guides/ISSUE_177_v0.1.38_REGRESSION_GUIDE.md)
   for packaged-app acceptance coverage.
 
+## Issue 181: Daemon Provider recovery could leave an abandoned answer attempt in the live transcript until Ctrl+R
+
+- Priority: High
+- Status: Resolved
+- Fixed: Unreleased
+- Introduced: v0.1.38 daemon Runtime recovery projection
+- Created: 2026-08-14
+
+### Original Problem
+
+After a Provider emitted assistant text and then recovered by retrying the same turn, the Space
+conversation could show both the abandoned attempt and the successful replacement as one repeated
+answer. Reloading with Ctrl+R restored the single canonical answer.
+
+Expected behavior is that a recovery which replaces the current Provider attempt immediately
+invalidates that attempt's provisional assistant and thinking text, while retaining the recovery
+diagnostic and the successful replacement output. Live display, Session switching, observation
+reconnect, terminal history reconciliation, and Ctrl+R must converge to the same transcript.
+
+### Context
+
+The npm Registry KodaX 0.7.87 Runtime already emits ordered `provider.recovery` events with
+Session/Run/Turn/cursor identity and exposes the durable Session event journal through
+`runtime.events.replay`. This issue is scoped to Space consuming those existing contracts; it does
+not require a new SDK event, payload field, capability, or KodaX live-projection change.
+
+### Root Cause
+
+- The daemon Runtime adapter bridges `assistant.delta` into `text_delta` but drops
+  `provider.recovery`, unlike the Embedded Coder path.
+- The daemon live projection reducer appends every assistant/thinking delta and has no recovery
+  invalidation boundary.
+- The renderer's Issue 177 boundary is applied only while reconciling canonical history with live
+  events, not while composing the pure live event stream.
+- A newly opened Runtime observation hydrates text from the cumulative live snapshot without
+  reconstructing the active attempt from the existing journal.
+
+### Resolution
+
+- The daemon bridge now projects the existing Runtime `provider.recovery` event with exact Runtime
+  provenance and rejects malformed or transient-child variants.
+- The daemon and renderer projections reset provisional assistant/thinking drafts only for recovery actions that replace the current
+  attempt; do not clear pre-delta fresh retries or terminal `manual_continue` decisions.
+- Active observation hydration reconstructs the current attempt from the existing Session event
+  journal at the captured cursor, while retaining completed tool boundaries, journal prefixes,
+  and all non-draft live state. The supplemental replay is bounded and fail-open: if it is missing,
+  malformed, or unavailable, Space still installs the authoritative Runtime snapshot.
+- After an observation invalidation, renderer hydration replaces covered draft events with the
+  recovered authoritative draft instead of appending it to the abandoned pre-disconnect attempt.
+  Space-internal recovery and stable-checkpoint coordinates retain text/tool/text order without
+  adding any KodaX contract.
+- Renderer history reconciliation retains the recovery diagnostic at its causal boundary before
+  canonical replacement output. Legitimate repeated text remains unchanged because no string
+  deduplication is used.
+- Root and Desktop now use KodaX 0.7.87. No KodaX SDK event, field, capability, or projector change
+  was required. Automated regressions cover live retry/fallback/thinking recovery, daemon bridge
+  isolation, active reconnect, history folding, cursor fencing, tools, and non-replacing actions.
+- See
+  [ISSUE_181_UNRELEASED_REGRESSION_GUIDE.md](test-guides/ISSUE_181_UNRELEASED_REGRESSION_GUIDE.md)
+  for packaged-app acceptance coverage.
+
 ## Summary
 
-- Total: 167
-- Open: 1
+- Total: 168
+- Open: 0
 - Ready: 0
 - In Progress: 9
 - Deferred: 0
-- Resolved: 157
-- High: 83
+- Resolved: 158
+- High: 84
 - Medium: 73
 - Low: 11
 - Next to resolve: 165

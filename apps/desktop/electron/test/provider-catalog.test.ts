@@ -13,7 +13,12 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { BUILTIN_PROVIDERS, getBuiltin, isBuiltinId } from '../providers/catalog.js';
+import {
+  BUILTIN_PROVIDERS,
+  buildFallbackProviders,
+  getBuiltin,
+  isBuiltinId,
+} from '../providers/catalog.js';
 
 test('catalog includes at least 13 built-in providers (SDK can add more)', () => {
   assert.ok(BUILTIN_PROVIDERS.length >= 13);
@@ -120,11 +125,18 @@ test('apiKeyEnv values match KodaX upstream catalog (env var naming convention)'
   }
 });
 
-test('zhipu-coding catalog tracks KodaX 0.7.56 GLM lineup', () => {
+test('zhipu-coding catalog tracks the KodaX 0.7.87 GLM-5.3 default', () => {
   const provider = getBuiltin('zhipu-coding');
   assert.ok(provider);
-  assert.equal(provider.defaultModel, 'glm-5.2');
-  assert.deepEqual(provider.models, ['glm-5.2', 'glm-5-turbo', 'glm-4.7']);
+  assert.equal(provider.defaultModel, 'glm-5.3');
+  assert.deepEqual(provider.models, ['glm-5.3', 'glm-5.2', 'glm-5-turbo', 'glm-4.7']);
+});
+
+test('zhipu-coding disaster fallback tracks the KodaX 0.7.87 GLM-5.3 default', () => {
+  const provider = buildFallbackProviders().find((item) => item.id === 'zhipu-coding');
+  assert.ok(provider);
+  assert.equal(provider.defaultModel, 'glm-5.3');
+  assert.deepEqual(provider.models, ['glm-5.3']);
 });
 
 test('zai-coding catalog (SDK 0.7.58) has anthropic protocol + friendly name, not the raw slug', () => {

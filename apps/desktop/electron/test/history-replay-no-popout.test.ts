@@ -2345,6 +2345,81 @@ test('history-first race waits for the matching live terminal, then folds the re
   );
 });
 
+test('terminal non-streaming recovery keeps only the canonical fallback answer when folding live text', () => {
+  const store = useAppStore.getState();
+  const optimisticId = store.appendUserMessage(SID, 'recover without streaming', 9_000);
+  assert.ok(optimisticId);
+  store.bindUserMessageRuntimeRun(SID, optimisticId, 'run-fallback');
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-fallback',
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'abandoned stream',
+    sentAt: 9_100,
+  });
+  store.appendEvent({
+    kind: 'provider_recovery',
+    sessionId: SID,
+    stage: 'mid_stream_text',
+    errorClass: 'connection_failure',
+    attempt: 2,
+    maxAttempts: 4,
+    delayMs: 0,
+    recoveryAction: 'non_streaming_fallback',
+    ladderStep: 3,
+    fallbackUsed: true,
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'fallback answer',
+    sentAt: 9_200,
+  });
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: SID,
+    turnId: 'turn-fallback',
+  });
+
+  store.prependSessionHistory(
+    SID,
+    [
+      {
+        kind: 'user',
+        content: 'recover without streaming',
+        sentAt: 9_050,
+        turnId: 'turn-fallback',
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 'fallback answer',
+        sentAt: 9_200,
+        turnId: 'turn-fallback',
+      },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true, authoritativeNewest: true },
+  );
+
+  const state = useAppStore.getState();
+  const out = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  });
+  assert.deepEqual(
+    out.flatMap((message) =>
+      message.kind === 'assistant_text' ? [`assistant:${message.text}`] : [],
+    ),
+    ['assistant:fallback answer'],
+  );
+});
+
 test('terminal recovery keeps only the canonical retry answer when folding live text', () => {
   const store = useAppStore.getState();
   const optimisticId = store.appendUserMessage(SID, 'review with a child agent', 10_000);

@@ -110,7 +110,7 @@ const SPACE_OVERRIDES: Record<string, SpaceOverride> = {
     displayName: 'Zhipu Coding Plan',
     protocol: 'anthropic',
     fallbackApiKeyEnv: 'ZHIPU_CODING_API_KEY',
-    fallbackDefaultModel: 'glm-5.2',
+    fallbackDefaultModel: 'glm-5.3',
   },
   // Z.ai Coding Plan（SDK 0.7.58 新增，与 zhipu-coding 并列的 GLM-5.2 coding-plan 入口）。
   // 继承 KodaXAnthropicCompatProvider → protocol=anthropic（baseUrl https://api.z.ai/api/anthropic）；
@@ -249,7 +249,7 @@ function loadProvidersFromJson(): readonly BuiltinProvider[] {
 //
 // fallback 数据来源：与 KodaX SDK 最近 sync 一致 (fa7213f sync 自上游)，
 // 比真相旧一些但能让 Space 跑起来 + log 警告提示用户 reinstall / re-link。
-function buildFallbackProviders(): readonly BuiltinProvider[] {
+export function buildFallbackProviders(): readonly BuiltinProvider[] {
   const list: BuiltinProvider[] = [];
   for (const [id, ov] of Object.entries(SPACE_OVERRIDES)) {
     list.push({

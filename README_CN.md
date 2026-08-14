@@ -13,7 +13,7 @@
   <a href="https://github.com/icetomoyo/KodaX-Space/releases/latest"><img alt="release" src="https://img.shields.io/github/v/release/icetomoyo/KodaX-Space?style=flat-square"></a>
   <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-KAI--FCL-orange?style=flat-square"></a>
   <a href="https://github.com/icetomoyo/KodaX-Space/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/icetomoyo/KodaX-Space/ci.yml?style=flat-square&label=ci"></a>
-  <img alt="KodaX SDK" src="https://img.shields.io/badge/KodaX_SDK-0.7.86-f0a020?style=flat-square">
+  <img alt="KodaX SDK" src="https://img.shields.io/badge/KodaX_SDK-0.7.87-f0a020?style=flat-square">
   <img alt="platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-34495e?style=flat-square">
 </p>
 
@@ -90,7 +90,7 @@ npm run dev
 
 ## 当前源码基线
 
-**`main` 使用精确的 KodaX 0.7.86 Registry 包，并显式协商 Runtime 安全能力，不通过语义版本号推断支持。** Coder 默认连接 profile-scoped shared daemon，并要求 SDK 和已连接 Runtime 同时提供 `sandboxRuntime:3`；旧 v1/v2 daemon 不能继续暴露旧的 Windows Shell 生命周期。Space 还要求 `daemonOrphanExit:1`，并提供规范化的有界 Actor/Turn 投影、精确 history/live 对齐、Runtime-owned interrupt finalization、完整物理请求用量诊断、稳定提示词缓存亲和与 CLI 缓存用量归一化。F141 在 Settings → Runtime 增加客户可见的 Daemon / Embedded 开关：Daemon 为推荐模式，Embedded 用于兼容回退。切换前会关闭 Runtime 操作准入并等待已接收入口退出；任何 ManagedSession、running/paused Workflow、非终态 External Agent task、permission/AskUser、待派发 Coder queue、daemon work 或其他客户端都会阻止不安全交接。owner policy 与 version 3 偏好转换完成后，Space 自动重启；新进程会在连接 Runtime 前协调持久化模式和 owner policy。环境变量只作为旧设置的一次迁移种子。Partner 继续由 Space embedded-inline 持有；MCP 进程/日志、Workflow library/start/admin、Space Reference Agent 执行和产品 Artifact 仍是明确的 host-provider 边界。
+**`main` 使用精确的 KodaX 0.7.87 Registry 包，并显式协商 Runtime 安全能力，不通过语义版本号推断支持。** Coder 默认连接 profile-scoped shared daemon，并要求 SDK 和已连接 Runtime 同时提供 `sandboxRuntime:3`；旧 v1/v2 daemon 不能继续暴露旧的 Windows Shell 生命周期。Space 还要求 `daemonOrphanExit:1`，并提供规范化的有界 Actor/Turn 投影、精确 history/live 对齐、Runtime-owned interrupt finalization、完整物理请求用量诊断、稳定提示词缓存亲和与 CLI 缓存用量归一化。F141 在 Settings → Runtime 增加客户可见的 Daemon / Embedded 开关：Daemon 为推荐模式，Embedded 用于兼容回退。切换前会关闭 Runtime 操作准入并等待已接收入口退出；任何 ManagedSession、running/paused Workflow、非终态 External Agent task、permission/AskUser、待派发 Coder queue、daemon work 或其他客户端都会阻止不安全交接。owner policy 与 version 3 偏好转换完成后，Space 自动重启；新进程会在连接 Runtime 前协调持久化模式和 owner policy。环境变量只作为旧设置的一次迁移种子。Partner 继续由 Space embedded-inline 持有；MCP 进程/日志、Workflow library/start/admin、Space Reference Agent 执行和产品 Artifact 仍是明确的 host-provider 边界。
 
 KodaX 0.7.86 保留 `actorSettlementConvergence:1` 与 `sessionEventJournal:1`，并新增 `sandboxRuntime:3`。Actor 持久化自隔离后，Runtime 会阻断新的 callback/effect，只按精确同 owner 证据自动修复，并在释放 Session 路由前等待隔离前已进入的 Runtime 工具效果收敛；每个 Runtime observation 仍按 `(sessionId, journalEpoch, seq)` 隔离水位。sandbox v3 修复 Electron/ASAR Windows 命令链，并在机器范围协调 sandbox policy owner。Runtime Shell 采用 sandbox-first：若 containment 无法准备，已授权命令使用普通权限策略，且不会重放命令或再次调用 classifier；灾难性破坏操作与 Agent Home 控制面破坏仍是确定性硬拒绝。`worker.configuredA2A` 仍是 KodaX CLI Worker-hosted embedded Runtime 的配置，不是 Space Settings 开关。
 
@@ -110,12 +110,12 @@ F136 让 Windows 后台 owner 可见、可控；F140 允许选择“每次询问
 
 2026-08-14 正式发布 [`v0.1.40`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.40)：package `0.1.40` 精确对齐 npm 正式发布的 KodaX `0.7.86`，SDK 与 Runtime 同时要求 `sandboxRuntime:3`。本版本覆盖 Issue 128 打包 Electron/ASAR Windows Shell 链路、sandbox-first 普通权限 fallback，以及 stale inline owner 的 SDK 原子恢复和可重试清理。
 
-| 区域 | 内容 |
-| --- | --- |
-| Runtime 合约 | KodaX 0.7.86 精确 Registry bytes，并显式协商 `sandboxRuntime:3`、`actorSettlementConvergence:1`、`sessionEventJournal:1`。 |
-| Windows Shell | 打包烟测执行真实 contained marker command，检查 helper 物理路径、daemon sandbox v3 和重启后的 Shell。 |
-| Owner 恢复 | abandoned inline owner 由 SDK 原子协议恢复；active、不可读和不可验证 owner 继续 fail closed，close 失败可重试。 |
-| 文档 | README、中文手册、能力台账、release 设计/记录、回归指南、CHANGELOG 和 `kodax_manual` 同步。 |
+| 区域          | 内容                                                                                                                       |
+| ------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| Runtime 合约  | KodaX 0.7.86 精确 Registry bytes，并显式协商 `sandboxRuntime:3`、`actorSettlementConvergence:1`、`sessionEventJournal:1`。 |
+| Windows Shell | 打包烟测执行真实 contained marker command，检查 helper 物理路径、daemon sandbox v3 和重启后的 Shell。                      |
+| Owner 恢复    | abandoned inline owner 由 SDK 原子协议恢复；active、不可读和不可验证 owner 继续 fail closed，close 失败可重试。            |
+| 文档          | README、中文手册、能力台账、release 设计/记录、回归指南、CHANGELOG 和 `kodax_manual` 同步。                                |
 
 详细内容见 [v0.1.40 设计](docs/features/v0.1.40.md) 与
 [v0.1.40 发布记录](docs/releases/v0.1.40-release-readiness.md)。
@@ -312,8 +312,8 @@ npm run e2e:headed
 | [docs/releases/v0.1.40-release-readiness.md](docs/releases/v0.1.40-release-readiness.md)                 | v0.1.40 门禁、KodaX 0.7.86 合约与发布证据。                 |
 | [docs/features/v0.1.39.md](docs/features/v0.1.39.md)                                                     | 历史 v0.1.39 维护范围与 KodaX 0.7.85 边界。                 |
 | [docs/releases/v0.1.39-release-readiness.md](docs/releases/v0.1.39-release-readiness.md)                 | 历史 v0.1.39 门禁、KodaX 0.7.85 合约与发布证据。            |
-| [docs/features/v0.1.38.md](docs/features/v0.1.38.md)                                                     | 历史 v0.1.38 维护范围与 KodaX 0.7.84 边界。                  |
-| [docs/releases/v0.1.38-release-readiness.md](docs/releases/v0.1.38-release-readiness.md)                 | 历史 v0.1.38 门禁、KodaX 0.7.84 合约与发布证据。             |
+| [docs/features/v0.1.38.md](docs/features/v0.1.38.md)                                                     | 历史 v0.1.38 维护范围与 KodaX 0.7.84 边界。                 |
+| [docs/releases/v0.1.38-release-readiness.md](docs/releases/v0.1.38-release-readiness.md)                 | 历史 v0.1.38 门禁、KodaX 0.7.84 合约与发布证据。            |
 | [docs/CODING_AGENT_BEGINNER_BEST_PRACTICES.zh-CN.md](docs/CODING_AGENT_BEGINNER_BEST_PRACTICES.zh-CN.md) | Coding Agent 初学者最佳实践教程，覆盖软件研发和微服务场景。 |
 | [docs/PRD.md](docs/PRD.md)                                                                               | 产品需求和产品定位。                                        |
 | [docs/HLD.md](docs/HLD.md)                                                                               | 高层架构与系统设计。                                        |
@@ -327,22 +327,22 @@ npm run e2e:headed
 
 近期计划以 [docs/FEATURE_LIST.md](docs/FEATURE_LIST.md) 为准。当前重点：
 
-| 版本线            | 重点                                                                                                         |
-| ----------------- | ------------------------------------------------------------------------------------------------------------ |
-| `v0.1.32`         | 已发布 Shared-daemon Coder、Partner 项目知识/引用、受审 builtin、精确历史体验、Windows 图标/托盘与发布加固。 |
-| `v0.1.33`         | 修正后的 KodaX 0.7.77 正式版：Daemon/Embedded 安全选择、会话文件操作、附件/上下文修复与打包 Runtime 门禁。   |
-| `v0.1.34`         | KodaX 0.7.78 Runtime 安全、集成韧性、可见彻底退出、sandbox helper 打包、启动 UX 和历史回放加固。             |
-| `v0.1.35`         | npm 正式 KodaX 0.7.80、durable managed Run 协商、会话历史完整性、Auto timeout 默认值与对应手册/测试。        |
-| `v0.1.35`         | 基于已发布 Runtime 学习闭环的最小 learned Skill 安全控制面，不建设第二套存储或多 carrier Learning Center。   |
-| `v0.1.36`         | KodaX 0.7.82、活动 Session 输入准入、history/live 对齐、跨 Session 恢复隔离与发布文档收口。                  |
-| `v0.1.37`         | KodaX 0.7.83、多 Session 恢复、安全退出重启、语义启动背景和发布文档对齐。                                    |
-| `v0.1.40`         | KodaX 0.7.86、sandboxRuntime v3、Issue 128 打包 Shell、stale owner 恢复、可重试 owner 清理与完整发布文档同步。 |
+| 版本线            | 重点                                                                                                                              |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `v0.1.32`         | 已发布 Shared-daemon Coder、Partner 项目知识/引用、受审 builtin、精确历史体验、Windows 图标/托盘与发布加固。                      |
+| `v0.1.33`         | 修正后的 KodaX 0.7.77 正式版：Daemon/Embedded 安全选择、会话文件操作、附件/上下文修复与打包 Runtime 门禁。                        |
+| `v0.1.34`         | KodaX 0.7.78 Runtime 安全、集成韧性、可见彻底退出、sandbox helper 打包、启动 UX 和历史回放加固。                                  |
+| `v0.1.35`         | npm 正式 KodaX 0.7.80、durable managed Run 协商、会话历史完整性、Auto timeout 默认值与对应手册/测试。                             |
+| `v0.1.35`         | 基于已发布 Runtime 学习闭环的最小 learned Skill 安全控制面，不建设第二套存储或多 carrier Learning Center。                        |
+| `v0.1.36`         | KodaX 0.7.82、活动 Session 输入准入、history/live 对齐、跨 Session 恢复隔离与发布文档收口。                                       |
+| `v0.1.37`         | KodaX 0.7.83、多 Session 恢复、安全退出重启、语义启动背景和发布文档对齐。                                                         |
+| `v0.1.40`         | KodaX 0.7.86、sandboxRuntime v3、Issue 128 打包 Shell、stale owner 恢复、可重试 owner 清理与完整发布文档同步。                    |
 | `v0.1.39`         | KodaX 0.7.85、Actor settlement convergence、Session journal epoch 隔离、unknown Run 输入、精确 Stop、输入去重与完整发布文档同步。 |
-| `v0.1.38`         | KodaX 0.7.84、Agent progress/Stop 收敛、Session 重新激活恢复、图标打包与完整发布文档同步。                   |
-| `v0.1.42`         | Space 独立实现的中文优先 DOCX/PDF/XLSX/PPTX builtin 与语义 UI 精修，并提供有界执行和真实验证回执。           |
-| `v0.1.40-v0.1.44` | Workflow/Review 证据面、Task/Capability 治理，以及 SDK-gated Memory Agent host。                             |
-| `v0.1.48`         | 本地化完成、beta diagnostics、release channel、updater/distribution trust。                                  |
-| `v0.2.x`          | Governed Browser 与 Partner packs、只读 Connector snapshots、本地 Automations、可刷新 Artifacts。            |
+| `v0.1.38`         | KodaX 0.7.84、Agent progress/Stop 收敛、Session 重新激活恢复、图标打包与完整发布文档同步。                                        |
+| `v0.1.42`         | Space 独立实现的中文优先 DOCX/PDF/XLSX/PPTX builtin 与语义 UI 精修，并提供有界执行和真实验证回执。                                |
+| `v0.1.40-v0.1.44` | Workflow/Review 证据面、Task/Capability 治理，以及 SDK-gated Memory Agent host。                                                  |
+| `v0.1.48`         | 本地化完成、beta diagnostics、release channel、updater/distribution trust。                                                       |
+| `v0.2.x`          | Governed Browser 与 Partner packs、只读 Connector snapshots、本地 Automations、可刷新 Artifacts。                                 |
 
 Remote runner、Notebook、Knowledge Graph、桌面 screen automation 和未发布 External Agent adapter 都是带 reopen gate 的 watchlist，不是已承诺版本 feature。
 

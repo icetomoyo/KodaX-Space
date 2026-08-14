@@ -16,7 +16,7 @@
 //
 // 设计原则：纯函数。给定相同输入产相同输出，便于 useMemo + 单元测试。
 
-import type { SessionEvent } from '@kodax-space/space-ipc-schema';
+import { providerRecoveryReplacesDraft, type SessionEvent } from '@kodax-space/space-ipc-schema';
 import type {
   LocalNoticeMessage,
   QueuedUserMessage,
@@ -357,6 +357,7 @@ function composeAssistantSegment(
     completed?: boolean;
     sentAt?: number;
   } | null = null;
+  let currentTextIsCanonical = false;
   let lastTextBubble: Extract<ConversationMessage, { kind: 'assistant_text' }> | null = null;
   let segmentHadError = false;
   // tool_call 卡片按 toolId 查找——同一个 toolId 的 start/progress/result 合并到一张卡
@@ -392,6 +393,7 @@ function composeAssistantSegment(
       out.push(currentText);
       lastTextBubble = flushed;
       currentText = null;
+      currentTextIsCanonical = false;
       return flushed;
     }
     return null;
@@ -408,6 +410,10 @@ function composeAssistantSegment(
             ...(turnIndex !== undefined ? { turnIndex } : {}),
             sentAt: evt.sentAt ?? parentSentAt,
           };
+          currentTextIsCanonical =
+            evt.canonicalIndex !== undefined ||
+            evt.entryId !== undefined ||
+            evt.logicalId !== undefined;
         }
         currentText.text += evt.text;
         break;
@@ -421,8 +427,20 @@ function composeAssistantSegment(
             ...(turnIndex !== undefined ? { turnIndex } : {}),
             sentAt: evt.sentAt ?? parentSentAt,
           };
+          currentTextIsCanonical =
+            evt.canonicalIndex !== undefined ||
+            evt.entryId !== undefined ||
+            evt.logicalId !== undefined;
         }
         currentText.thinking = (currentText.thinking ?? '') + evt.text;
+        break;
+      }
+      case 'provider_recovery': {
+        if (providerRecoveryReplacesDraft(evt) && !currentTextIsCanonical) {
+          currentText = null;
+          currentTextIsCanonical = false;
+          lastTextBubble = null;
+        }
         break;
       }
       case 'tool_start': {

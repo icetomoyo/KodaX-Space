@@ -514,6 +514,8 @@ function applyDomainChange(
           ? {
               assistantDraft: undefined,
               thinkingDraft: undefined,
+              draftRecoveries: undefined,
+              draftCheckpoints: undefined,
               activeTools: [],
               managedTask: undefined,
               interactions: [],
@@ -525,6 +527,12 @@ function applyDomainChange(
         ...base,
         assistantDraft: update.change.assistantDraft ?? undefined,
         thinkingDraft: update.change.thinkingDraft ?? undefined,
+        ...(update.change.draftRecoveries !== undefined
+          ? { draftRecoveries: update.change.draftRecoveries }
+          : {}),
+        ...(update.change.draftCheckpoints !== undefined
+          ? { draftCheckpoints: update.change.draftCheckpoints }
+          : {}),
       };
     case 'tools':
       return { ...base, activeTools: update.change.activeTools };
@@ -569,6 +577,17 @@ export function applySessionLiveChange(
   if (
     update.baseProjectionRevision !== current.projectionRevision ||
     update.cursor.seq <= current.cursor.seq
+  ) {
+    return requireSnapshot(state, update.sessionId);
+  }
+  if (
+    update.change.domain === 'draft' &&
+    (update.change.draftRecoveries?.some(
+      (recovery) => recovery.runId !== current.activeRun?.runId,
+    ) ||
+      update.change.draftCheckpoints?.some(
+        (checkpoint) => checkpoint.runId !== current.activeRun?.runId,
+      ))
   ) {
     return requireSnapshot(state, update.sessionId);
   }

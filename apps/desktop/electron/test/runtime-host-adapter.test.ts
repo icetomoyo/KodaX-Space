@@ -2951,6 +2951,311 @@ test('same-runtime-id reconnect restores an active live projection', async () =>
   await adapter.close();
 });
 
+test('active observation rebuilds the current Provider attempt from the Runtime journal', async () => {
+  const fake = createFakeRuntime('rt_recovered_observation');
+  const sessionId = 's_recovered_observation';
+  const runId = 'run_recovered_observation';
+  fake.sessions.add(sessionId);
+  const originalObserve = fake.runtime.sessions.observe.bind(fake.runtime.sessions);
+  fake.runtime.sessions.observe = async (...args) => {
+    const observation = await originalObserve(...args);
+    return {
+      ...observation,
+      snapshot: {
+        ...observation.snapshot,
+        cursor: testRuntimeCursor(sessionId, 6),
+        runs: [
+          {
+            runId,
+            sessionId,
+            phase: 'running' as const,
+            provider: 'mock',
+            mode: 'managed_task' as const,
+            startedAt: '2026-08-14T00:00:00.000Z',
+          },
+        ],
+        live: {
+          ...observation.snapshot.live,
+          assistantTextByRun: { [runId]: 'abandonedreplacement' },
+          thinkingTextByRun: { [runId]: 'abandoned thinkingreplacement thinking' },
+        },
+      },
+    };
+  };
+  let replayCalls = 0;
+  fake.runtime.events.replay = async (filter) => {
+    replayCalls += 1;
+    assert.equal(filter.runId, runId);
+    assert.deepEqual(filter.type, [
+      'run.progress',
+      'assistant.delta',
+      'thinking.delta',
+      'tool.finished',
+      'provider.recovery',
+    ]);
+    assert.equal(filter.limit, undefined);
+    return [
+      withTestRuntimeCursor({
+        id: 'event_recovered_iteration',
+        seq: 1,
+        time: '2026-08-14T00:00:00.100Z',
+        type: 'run.progress',
+        sessionId,
+        runId,
+        turnId: 'turn_recovered_observation',
+        payload: { kind: 'iteration_start', iter: 1, maxIter: 200 },
+      }),
+      withTestRuntimeCursor({
+        id: 'event_abandoned_text',
+        seq: 2,
+        time: '2026-08-14T00:00:00.200Z',
+        type: 'assistant.delta',
+        sessionId,
+        runId,
+        turnId: 'turn_recovered_observation',
+        payload: { text: 'abandoned' },
+      }),
+      withTestRuntimeCursor({
+        id: 'event_abandoned_thinking',
+        seq: 3,
+        time: '2026-08-14T00:00:00.300Z',
+        type: 'thinking.delta',
+        sessionId,
+        runId,
+        turnId: 'turn_recovered_observation',
+        payload: { text: 'abandoned thinking' },
+      }),
+      withTestRuntimeCursor({
+        id: 'event_recovered_boundary',
+        seq: 4,
+        time: '2026-08-14T00:00:00.400Z',
+        type: 'provider.recovery',
+        sessionId,
+        runId,
+        turnId: 'turn_recovered_observation',
+        payload: {
+          event: {
+            stage: 'mid_stream_text',
+            errorClass: 'connection_failure',
+            attempt: 1,
+            maxAttempts: 4,
+            delayMs: 0,
+            recoveryAction: 'stable_boundary_retry',
+            ladderStep: 2,
+            fallbackUsed: false,
+          },
+        },
+      }),
+      withTestRuntimeCursor({
+        id: 'event_replacement_text',
+        seq: 5,
+        time: '2026-08-14T00:00:00.500Z',
+        type: 'assistant.delta',
+        sessionId,
+        runId,
+        turnId: 'turn_recovered_observation',
+        payload: { text: 'replacement' },
+      }),
+      withTestRuntimeCursor({
+        id: 'event_replacement_thinking',
+        seq: 6,
+        time: '2026-08-14T00:00:00.600Z',
+        type: 'thinking.delta',
+        sessionId,
+        runId,
+        turnId: 'turn_recovered_observation',
+        payload: { text: 'replacement thinking' },
+      }),
+      withTestRuntimeCursor({
+        id: 'event_after_snapshot_cursor',
+        seq: 7,
+        time: '2026-08-14T00:00:00.700Z',
+        type: 'assistant.delta',
+        sessionId,
+        runId,
+        turnId: 'turn_recovered_observation',
+        payload: { text: 'future event' },
+      }),
+    ];
+  };
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  await adapter.initialize();
+  await adapter.ensureObserved(sessionId);
+
+  const live = await adapter.readSessionLiveSnapshot(sessionId);
+  assert.equal(replayCalls, 1);
+  assert.equal(live.assistantDraft?.text, 'replacement');
+  assert.equal(live.thinkingDraft?.text, 'replacement thinking');
+  assert.equal(live.cursor.seq, 6);
+  await adapter.close();
+});
+
+test('active observation keeps its replayed checkpoint for later Provider recoveries', async () => {
+  const fake = createFakeRuntime('rt_checkpoint_observation');
+  const sessionId = 's_checkpoint_observation';
+  const runId = 'run_checkpoint_observation';
+  fake.sessions.add(sessionId);
+  const originalObserve = fake.runtime.sessions.observe.bind(fake.runtime.sessions);
+  fake.runtime.sessions.observe = async (...args) => {
+    const observation = await originalObserve(...args);
+    return {
+      ...observation,
+      snapshot: {
+        ...observation.snapshot,
+        cursor: testRuntimeCursor(sessionId, 1),
+        runs: [
+          {
+            runId,
+            sessionId,
+            phase: 'running' as const,
+            provider: 'mock',
+            mode: 'managed_task' as const,
+            startedAt: '2026-08-14T00:00:00.000Z',
+          },
+        ],
+        live: observation.snapshot.live,
+      },
+    };
+  };
+  fake.runtime.events.replay = async () => [
+    withTestRuntimeCursor({
+      id: 'event_checkpoint_iteration',
+      seq: 1,
+      time: '2026-08-14T00:00:00.100Z',
+      type: 'run.progress',
+      sessionId,
+      runId,
+      payload: { kind: 'iteration_start', iter: 1, maxIter: 200 },
+    }),
+  ];
+  const controller = new RuntimeProjectionController(
+    createPendingSdkRuntimeProjection(100).profileSnapshot(),
+  );
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    projectionController: controller,
+  });
+
+  await adapter.initialize();
+  await adapter.ensureObserved(sessionId);
+  fake.emit({
+    id: 'event_checkpoint_abandoned',
+    seq: 2,
+    time: '2026-08-14T00:00:00.200Z',
+    type: 'assistant.delta',
+    sessionId,
+    runId,
+    payload: { text: 'abandoned' },
+  });
+  fake.emit({
+    id: 'event_checkpoint_recovery_1',
+    seq: 3,
+    time: '2026-08-14T00:00:00.300Z',
+    type: 'provider.recovery',
+    sessionId,
+    runId,
+    payload: {
+      event: { stage: 'mid_stream_text', recoveryAction: 'stable_boundary_retry' },
+    },
+  });
+  fake.emit({
+    id: 'event_checkpoint_replacement_1',
+    seq: 4,
+    time: '2026-08-14T00:00:00.400Z',
+    type: 'assistant.delta',
+    sessionId,
+    runId,
+    payload: { text: 'first replacement' },
+  });
+  fake.emit({
+    id: 'event_checkpoint_recovery_2',
+    seq: 5,
+    time: '2026-08-14T00:00:00.500Z',
+    type: 'provider.recovery',
+    sessionId,
+    runId,
+    payload: {
+      event: { stage: 'mid_stream_text', recoveryAction: 'non_streaming_fallback' },
+    },
+  });
+  fake.emit({
+    id: 'event_checkpoint_replacement_2',
+    seq: 6,
+    time: '2026-08-14T00:00:00.600Z',
+    type: 'assistant.delta',
+    sessionId,
+    runId,
+    payload: { text: 'final replacement' },
+  });
+
+  await waitForTest(
+    () => controller.sessionLiveSnapshot(sessionId).assistantDraft?.text === 'final replacement',
+  );
+  await adapter.close();
+});
+
+test('active observation remains available when supplemental journal replay fails', async () => {
+  const fake = createFakeRuntime('rt_replay_failure');
+  const sessionId = 's_replay_failure';
+  const runId = 'run_replay_failure';
+  fake.sessions.add(sessionId);
+  const originalObserve = fake.runtime.sessions.observe.bind(fake.runtime.sessions);
+  fake.runtime.sessions.observe = async (...args) => {
+    const observation = await originalObserve(...args);
+    return {
+      ...observation,
+      snapshot: {
+        ...observation.snapshot,
+        cursor: testRuntimeCursor(sessionId, 2),
+        runs: [
+          {
+            runId,
+            sessionId,
+            phase: 'running' as const,
+            provider: 'mock',
+            mode: 'managed_task' as const,
+            startedAt: '2026-08-14T00:00:00.000Z',
+          },
+        ],
+        live: {
+          ...observation.snapshot.live,
+          assistantTextByRun: { [runId]: 'authoritative cumulative draft' },
+        },
+      },
+    };
+  };
+  fake.runtime.events.replay = async () => {
+    throw new Error('journal unavailable');
+  };
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  await adapter.initialize();
+  await adapter.ensureObserved(sessionId);
+
+  assert.equal(
+    (await adapter.readSessionLiveSnapshot(sessionId)).assistantDraft?.text,
+    'authoritative cumulative draft',
+  );
+  await adapter.close();
+});
+
 test('a stale missing Session result cannot cancel the replacement Runtime restore', async () => {
   const first = createFakeRuntime('rt_stale_missing_first');
   const retired = createFakeRuntime('rt_stale_missing_retired');
@@ -9273,6 +9578,128 @@ test('daemon bridge preserves Runtime turn identity on live transcript events', 
       ['tool_result', 'turn_authoritative'],
     ],
   );
+  await adapter.close();
+});
+
+test('daemon bridge projects root Provider recovery with Runtime provenance', async () => {
+  const sessionEvents: unknown[] = [];
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    push: (channel, payload) => {
+      if (channel === 'session.event') sessionEvents.push(payload);
+    },
+  });
+  const bridgeRuntimeEvent = bindTestRuntimeEventBridge(adapter);
+
+  bridgeRuntimeEvent(
+    {
+      id: 'event_provider_recovery',
+      seq: 41,
+      time: '2026-08-14T00:00:00.000Z',
+      type: 'provider.recovery',
+      sessionId: 's_recovery',
+      runId: 'run_recovery',
+      turnId: 'turn_recovery',
+      payload: {
+        event: {
+          stage: 'mid_stream_text',
+          errorClass: 'connection_failure',
+          attempt: 1,
+          maxAttempts: 4,
+          delayMs: 250,
+          recoveryAction: 'stable_boundary_retry',
+          ladderStep: 2,
+          fallbackUsed: false,
+        },
+        meta: { contextKind: 'root' },
+      },
+    },
+    'runtime_recovery',
+  );
+
+  assert.deepEqual(sessionEvents, [
+    {
+      runtimeEvent: {
+        runtimeId: 'runtime_recovery',
+        runId: 'run_recovery',
+        journalEpoch: 'journal_epoch_1',
+        seq: 41,
+      },
+      turnId: 'turn_recovery',
+      kind: 'provider_recovery',
+      sessionId: 's_recovery',
+      stage: 'mid_stream_text',
+      errorClass: 'connection_failure',
+      attempt: 1,
+      maxAttempts: 4,
+      delayMs: 250,
+      recoveryAction: 'stable_boundary_retry',
+      ladderStep: 2,
+      fallbackUsed: false,
+    },
+  ]);
+  await adapter.close();
+});
+
+test('daemon bridge rejects malformed and transient child Provider recovery events', async () => {
+  const sessionEvents: unknown[] = [];
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    push: (channel, payload) => {
+      if (channel === 'session.event') sessionEvents.push(payload);
+    },
+  });
+  const bridgeRuntimeEvent = bindTestRuntimeEventBridge(adapter);
+  const recovery = {
+    stage: 'mid_stream_text',
+    errorClass: 'connection_failure',
+    attempt: 1,
+    maxAttempts: 4,
+    delayMs: 250,
+    recoveryAction: 'stable_boundary_retry',
+    ladderStep: 2,
+    fallbackUsed: false,
+  } as const;
+
+  bridgeRuntimeEvent({
+    id: 'event_malformed_provider_recovery',
+    seq: 42,
+    time: '2026-08-14T00:00:01.000Z',
+    type: 'provider.recovery',
+    sessionId: 's_recovery',
+    runId: 'run_recovery',
+    turnId: 'turn_recovery',
+    payload: {
+      event: { ...recovery, recoveryAction: undefined },
+      meta: { contextKind: 'root' },
+    },
+  } as import('@kodax-ai/kodax/runtime').RuntimeTypedEvent);
+  bridgeRuntimeEvent({
+    id: 'event_child_provider_recovery',
+    seq: 43,
+    time: '2026-08-14T00:00:02.000Z',
+    type: 'provider.recovery',
+    sessionId: 's_recovery',
+    runId: 'run_recovery',
+    turnId: 'turn_recovery',
+    payload: {
+      event: recovery,
+      meta: {
+        contextKind: 'child',
+        contextId: 'child_context_1',
+        parentContextId: 's_recovery',
+        childAgentId: 'child_1',
+        childAgentName: 'Researcher',
+        liveOnly: true,
+        workflowCorrelation: {
+          workflowRunId: 'workflow_1',
+          childAgentId: 'child_1',
+        },
+      },
+    },
+  } as import('@kodax-ai/kodax/runtime').RuntimeTypedEvent);
+
+  assert.deepEqual(sessionEvents, []);
   await adapter.close();
 });
 

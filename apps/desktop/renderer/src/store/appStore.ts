@@ -35,7 +35,10 @@ import type {
   SessionHistoryItem,
 } from '@kodax-space/space-ipc-schema';
 import { bufferIndexForSelectorTurn } from '../features/session/turnIndex.js';
-import { canonProjectRoot as canonProjectRootShared } from '@kodax-space/space-ipc-schema';
+import {
+  canonProjectRoot as canonProjectRootShared,
+  providerRecoveryReplacesDraft,
+} from '@kodax-space/space-ipc-schema';
 import {
   type VisualQuality,
   VISUAL_QUALITY_KEY,
@@ -1947,17 +1950,13 @@ function projectedEventText(
     .join('');
 }
 
-function liveTextProjectionAfterStableBoundaryRetry(
+function liveTextProjectionAfterReplacingRecovery(
   events: readonly SessionEvent[],
 ): readonly SessionEvent[] {
   let resetIndex = -1;
   for (let index = 0; index < events.length; index++) {
     const event = events[index]!;
-    if (
-      event.kind === 'provider_recovery' &&
-      event.stage === 'mid_stream_text' &&
-      event.recoveryAction === 'stable_boundary_retry'
-    ) {
+    if (event.kind === 'provider_recovery' && providerRecoveryReplacesDraft(event)) {
       resetIndex = index;
     }
   }
@@ -2144,6 +2143,7 @@ function mergeCanonicalTurnProjections(
     if (noticeKey !== undefined) durableNoticeKeys.add(noticeKey);
   }
 
+  const liveAttemptBoundaries: SessionEvent[] = [];
   const liveExtras: SessionEvent[] = [];
   for (const event of liveEvents) {
     if (
@@ -2178,6 +2178,12 @@ function mergeCanonicalTurnProjections(
       }
       continue;
     }
+    if (event.kind === 'provider_recovery' && providerRecoveryReplacesDraft(event)) {
+      // History already contains the successful replacement attempt. Keep the recovery marker at
+      // its causal boundary, before that canonical output, so rendering cannot invalidate history.
+      liveAttemptBoundaries.push(event);
+      continue;
+    }
     const noticeKey = projectionNoticeKey(event);
     if (noticeKey !== undefined) {
       if (!durableNoticeKeys.has(noticeKey)) {
@@ -2194,9 +2200,9 @@ function mergeCanonicalTurnProjections(
   const textSuffixProjector = exactEntryIdentity
     ? cumulativeProjectionTextSuffix
     : projectionTextSuffix;
-  // A stable-boundary retry starts a new Provider text attempt. The recovery marker remains for
-  // diagnostics, but the abandoned draft has no canonical authority after the retry succeeds.
-  const liveTextProjection = liveTextProjectionAfterStableBoundaryRetry(liveEvents);
+  // A replacing recovery starts a new Provider text attempt. The marker remains for diagnostics,
+  // but the abandoned draft has no canonical authority after the retry succeeds.
+  const liveTextProjection = liveTextProjectionAfterReplacingRecovery(liveEvents);
   const textSuffix = textSuffixProjector(
     projectedEventText(durableEvents, 'text_delta'),
     projectedEventText(liveTextProjection, 'text_delta'),
@@ -2230,8 +2236,8 @@ function mergeCanonicalTurnProjections(
 
   const body =
     leadingPromptBoundary !== undefined
-      ? [leadingPromptBoundary, ...mergedBody, ...liveExtras]
-      : [...mergedBody, ...liveExtras];
+      ? [leadingPromptBoundary, ...liveAttemptBoundaries, ...mergedBody, ...liveExtras]
+      : [...liveAttemptBoundaries, ...mergedBody, ...liveExtras];
   // Runtime terminals are authoritative when available. Preserve the whole consecutive sequence:
   // older adapters/reconnect paths may emit error -> complete -> wrapped error, and the selector
   // intentionally renders both errors while treating every terminal as one segment delimiter.

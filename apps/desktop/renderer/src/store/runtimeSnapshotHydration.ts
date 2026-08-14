@@ -179,6 +179,7 @@ function draftEvent(
   turnId: string | undefined,
   text: string,
   sentAt: number | undefined,
+  seq = projection.cursor.seq,
 ): SessionEvent {
   const base = {
     kind,
@@ -190,7 +191,7 @@ function draftEvent(
       ...(projection.cursor.journalEpoch !== undefined
         ? { journalEpoch: projection.cursor.journalEpoch }
         : {}),
-      seq: projection.cursor.seq,
+      seq,
     },
     ...(turnId !== undefined ? { turnId } : {}),
     ...(sentAt !== undefined ? { sentAt } : {}),
@@ -341,6 +342,58 @@ function hydrateDraft(
   return next;
 }
 
+function removeCoveredDraftAttempt(
+  events: readonly SessionEvent[],
+  projection: SpaceSessionLiveProjectionT,
+  runId: string,
+  kind: DraftEventKind,
+  checkpointSeq: number,
+  recoverySeq: number,
+): readonly SessionEvent[] {
+  return events.filter((event) => {
+    const origin = runtimeEventOrigin(event);
+    return !(
+      event.kind === kind &&
+      belongsToRun(origin, projection, runId) &&
+      origin!.seq > checkpointSeq &&
+      origin!.seq < recoverySeq
+    );
+  });
+}
+
+function replaceCoveredDraftInterval(
+  events: readonly SessionEvent[],
+  projection: SpaceSessionLiveProjectionT,
+  runId: string,
+  turnId: string | undefined,
+  kind: DraftEventKind,
+  text: string,
+  sentAt: number | undefined,
+  afterSeq: number,
+  throughSeq: number,
+): readonly SessionEvent[] {
+  const next = events.filter((event) => {
+    const origin = runtimeEventOrigin(event);
+    return !(
+      event.kind === kind &&
+      belongsToRun(origin, projection, runId) &&
+      origin!.seq > afterSeq &&
+      origin!.seq <= throughSeq
+    );
+  });
+  if (text.length === 0) return next;
+  const insertion = next.findIndex((event) => {
+    const origin = runtimeEventOrigin(event);
+    return belongsToRun(origin, projection, runId) && origin!.seq > afterSeq;
+  });
+  next.splice(
+    insertion >= 0 ? insertion : firstPostSnapshotIndex(next, projection, runId),
+    0,
+    draftEvent(kind, projection, runId, turnId, text, sentAt, throughSeq),
+  );
+  return next;
+}
+
 function toolIdOf(event: SessionEvent): string | undefined {
   if (
     event.kind === 'tool_start' ||
@@ -480,6 +533,92 @@ export function hydrateSessionEventsFromLiveSnapshot(
     run.turnId,
   );
   if (projection.activeRun !== undefined) {
+    const recoveries = (projection.draftRecoveries ?? [])
+      .filter((recovery) => recovery.runId === run.runId)
+      .sort((left, right) => left.recoverySeq - right.recoverySeq);
+    for (const recovery of recoveries) {
+      active = removeCoveredDraftAttempt(
+        active,
+        projection,
+        run.runId,
+        'thinking_delta',
+        recovery.checkpointSeq,
+        recovery.recoverySeq,
+      );
+      active = removeCoveredDraftAttempt(
+        active,
+        projection,
+        run.runId,
+        'text_delta',
+        recovery.checkpointSeq,
+        recovery.recoverySeq,
+      );
+    }
+    const checkpoints = (projection.draftCheckpoints ?? [])
+      .filter((checkpoint) => checkpoint.runId === run.runId)
+      .sort((left, right) => left.seq - right.seq);
+    for (const [kind, cumulative, sentAt, recoveryLength, checkpointLength] of [
+      [
+        'thinking_delta',
+        projection.thinkingDraft?.text ?? '',
+        projection.thinkingDraft?.startedAt,
+        'thinkingCheckpointLength',
+        'thinkingLength',
+      ],
+      [
+        'text_delta',
+        projection.assistantDraft?.text ?? '',
+        projection.assistantDraft?.startedAt,
+        'assistantCheckpointLength',
+        'assistantLength',
+      ],
+    ] as const) {
+      for (let index = 0; index < recoveries.length; index++) {
+        const recovery = recoveries[index]!;
+        const nextRecovery = recoveries[index + 1];
+        let afterSeq = recovery.recoverySeq;
+        let offset = Math.min(recovery[recoveryLength], cumulative.length);
+        const stableCheckpoints = checkpoints.filter(
+          (checkpoint) =>
+            checkpoint.seq > afterSeq &&
+            (nextRecovery === undefined || checkpoint.seq < nextRecovery.recoverySeq),
+        );
+        for (const checkpoint of stableCheckpoints) {
+          const end = Math.min(checkpoint[checkpointLength], cumulative.length);
+          active = replaceCoveredDraftInterval(
+            active,
+            projection,
+            run.runId,
+            run.turnId,
+            kind,
+            cumulative.slice(offset, end),
+            sentAt,
+            afterSeq,
+            checkpoint.seq,
+          );
+          offset = end;
+          afterSeq = checkpoint.seq;
+        }
+        const end = Math.min(
+          nextRecovery?.[recoveryLength] ?? cumulative.length,
+          cumulative.length,
+        );
+        const throughSeq = nextRecovery?.checkpointSeq ?? projection.cursor.seq;
+        if (throughSeq > afterSeq || end > offset) {
+          active = replaceCoveredDraftInterval(
+            active,
+            projection,
+            run.runId,
+            run.turnId,
+            kind,
+            cumulative.slice(offset, end),
+            sentAt,
+            afterSeq,
+            Math.max(afterSeq, throughSeq),
+          );
+        }
+      }
+    }
     active = hydrateDraft(
       active,
       projection,
