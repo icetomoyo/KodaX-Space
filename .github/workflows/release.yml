@@ -99,12 +99,24 @@ jobs:
           SKIP_PTY_TESTS: '1'
         run: npm test
 
+      - name: Prepare Windows sandbox for packaged Shell gate
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          KODAX_HOME: ${{ runner.temp }}/kodax-space-pack-smoke-home/.kodax
+        run: >-
+          node --input-type=module -e
+          "import { setupKodaXSandbox } from '@kodax-ai/kodax/sandbox';
+          const result = await setupKodaXSandbox();
+          if (!result.ready) throw new Error('Windows sandbox preparation failed: ' + JSON.stringify(result));"
+
       - name: Build installer
         run: npm run ${{ matrix.build_script }}
         # 不传 GH_TOKEN —— electron-builder 检测到 GH_TOKEN + tag push 会自动开启 GitHub
         # Publisher 创建 draft release 上传 artifact，跟 release job 的 action-gh-release
         # 撞同一 tag 导致 'already_exists' 失败。build script 已加 `-p never` 双保险。
         env:
+          KODAX_HOME: ${{ runner.os == 'Windows' && format('{0}/kodax-space-pack-smoke-home/.kodax', runner.temp) || '' }}
           # 关闭 native rebuild 在 CI（keytar 在 v0.1.0 是 optional + memory fallback）
           npm_config_build_from_source: 'false'
 
@@ -126,6 +138,8 @@ jobs:
           Get-ChildItem -LiteralPath out -Filter '*.zip' | Format-Table -AutoSize
 
       - name: Smoke check installer
+        env:
+          KODAX_HOME: ${{ runner.os == 'Windows' && format('{0}/kodax-space-pack-smoke-home/.kodax', runner.temp) || '' }}
         run: npm run smoke:pack
 
       # 拦"installer build 通过但 renderer 启动崩"这一类 v0.1.7-shape regression：

@@ -10,6 +10,10 @@
 > [能力台账](KODAX_CAPABILITY_LEDGER.md)和
 > [应用内手册来源](../apps/desktop/electron/kodax/space-manual-topics.ts)。
 
+> **2026-08-14 当前源码基线**：root/Desktop 已升级到精确 Registry KodaX
+> `0.7.86`，并在 SDK 预检、daemon 连接、Settings sandbox 状态和正式打包烟测中
+> 要求 `sandboxRuntime:3`。v0.1.39 / KodaX 0.7.85 的发布记录保持历史事实。
+
 > 历史发布基线：KodaX Space [`v0.1.35`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.35)（package `0.1.35`）/ npm 正式发布的精确 KodaX `0.7.80`；历史 release 文档继续保留当时事实。
 
 这里是文档的统一入口。当前 `main` 的完整退出修复要求 Runtime 明确提供
@@ -22,9 +26,9 @@ KodaX 版本号或 guardrail 版本推断。Partner 继续由 Space inline owner
 
 当前源码维护把底部“上下文窗口”改为按最终自动压缩阈值计算的有效窗口，并把模型最大上下文、自动压缩阈值、最近一次模型输入构成和距压缩剩余量分层展示；“会话 Token 用量”则独立累计根/子 Agent 的 Provider 调用与缓存分类。两者不能互换：前者是最近一次主模型请求的输入压力快照，后者是整个 Session 已发生的累计用量。v0.1.39 继续收紧多 Session 恢复、活动 Session 的输入准入、历史分页和安全退出恢复隔离，并按 `(sessionId, journalEpoch, seq)` 隔离 Session journal 水位，记录 Issue 178 的 unknown Run、精确 Stop 和输入去重修复。
 
-KodaX 0.7.85 的配置说明也已收口：核心配置仍在 `~/.kodax/config.json`，MCP、可信 Extension 路径和 A2A 分别位于 `~/.kodax/integrations/mcp.json`、`extensions.json`、`a2a.json`。Settings → Runtime 会显示三个域的来源、revision、watcher、最近 reload 和有界诊断；Runtime 对无效更新保留 last-known-good 配置，并发写冲突要求 reload 后重试。应用内 `kodax_manual` 会继承当前安装 SDK 推荐的原始底层能力主题，再叠加 Space 操作说明。Coder 同时要求 `actorSettlementConvergence:1` 与 `sessionEventJournal:1`，并按 `(sessionId, journalEpoch, seq)` 隔离事件水位。
+KodaX 0.7.86 的配置说明也已收口：核心配置仍在 `~/.kodax/config.json`，MCP、可信 Extension 路径和 A2A 分别位于 `~/.kodax/integrations/mcp.json`、`extensions.json`、`a2a.json`。Settings → Runtime 会显示三个域的来源、revision、watcher、最近 reload 和有界诊断；Runtime 对无效更新保留 last-known-good 配置，并发写冲突要求 reload 后重试。应用内 `kodax_manual` 会继承当前安装 SDK 推荐的原始底层能力主题，再叠加 Space 操作说明。Coder 同时要求 `sandboxRuntime:3`、`actorSettlementConvergence:1` 与 `sessionEventJournal:1`，并按 `(sessionId, journalEpoch, seq)` 隔离事件水位。
 
-当前 KodaX 0.7.85 还提供 Run-scoped `sandbox.envPass`。Settings → Runtime
+当前 KodaX 0.7.86 还提供 Run-scoped `sandbox.envPass`。Settings → Runtime
 可编辑变量名 allow-list；Space 将显式列表投影到所有 Coder、Partner、legacy 与 Workflow
 Run，变量值只在命令执行 host 读取。超出有界编辑器限制的 CLI 配置会完整保留并以只读方式
 显示，避免静默截断。

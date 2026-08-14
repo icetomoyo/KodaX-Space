@@ -8,7 +8,7 @@ import {
 } from '../kodax/sandbox-controller.js';
 
 const capability = {
-  version: 1 as const,
+  version: 3 as const,
   asrtVersion: '0.0.65',
   platform: 'win32' as const,
   backend: 'windows-restricted-user' as const,
@@ -146,6 +146,39 @@ test('refresh re-runs doctor and exposes setup-required without leaking raw path
   assert.equal(JSON.stringify(refreshed).includes('private.txt'), false);
   assert.equal(JSON.stringify(refreshed).includes('$HOME'), false);
   assert.equal(refreshed.lastOperation?.outcome, 'setup-required');
+});
+
+test('Windows ACL recovery blocks expose v3 recovery guidance instead of Setup', async () => {
+  const recoveryDiagnostic =
+    '[acl_cleanup_unconfirmed] An unconfirmed Windows sandbox process tree from the same Windows boot may still have live descendants; restart Windows before retrying. ' +
+    'After stopping every KodaX and KodaX Space process, run "C:\\Users\\alice\\AppData\\Local\\Temp\\kodax-srt\\srt-win.exe" acl recover --force --json, then delete "C:\\ProgramData\\KodaX\\sandbox-runtime\\acl-poison".';
+  const blocked = doctor({
+    ready: false,
+    setupRequired: false,
+    diagnostics: [recoveryDiagnostic],
+  });
+  const controller = new SandboxController({
+    loadSdk: async () =>
+      fakeSdk({
+        doctorKodaXSandbox: async () => blocked,
+        getKodaXSandboxSetupGuidance: () => [
+          recoveryDiagnostic.slice('[acl_cleanup_unconfirmed]'.length).trim(),
+        ],
+      }),
+    now: () => new Date('2026-08-14T08:00:00.000Z'),
+  });
+
+  const status = await controller.status();
+
+  assert.equal(status.readiness, 'unavailable');
+  assert.equal(status.setup.canSetup, false);
+  assert.deepEqual(status.diagnostics, ['Windows sandbox ACL cleanup is unconfirmed.']);
+  assert.ok(status.guidance.some((line) => /restart Windows/i.test(line)));
+  assert.ok(status.guidance.some((line) => /kodax sandbox doctor/i.test(line)));
+  assert.equal(status.guidance.some((line) => /explicit Setup/i.test(line)), false);
+  assert.equal(JSON.stringify(status).includes('alice'), false);
+  assert.equal(JSON.stringify(status).includes('AppData'), false);
+  assert.equal(JSON.stringify(status).includes('ProgramData'), false);
 });
 
 test('confirmed Windows setup activates once and verifies a fresh ready doctor result', async () => {

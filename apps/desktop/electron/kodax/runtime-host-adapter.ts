@@ -1150,6 +1150,8 @@ type SpaceRuntimeConnectOptions = Omit<ConnectKodaXRuntimeOptions, 'requirements
   /** Opt-in lifecycle policy for Space-managed daemons. */
   readonly daemonOrphanExitMs?: number;
   readonly requirements?: NonNullable<ConnectKodaXRuntimeOptions['requirements']> & {
+    /** Windows sandbox ownership, policy identity, and recovery use the v3 contract. */
+    readonly sandboxRuntime?: 3;
     /** The current daemon host actually has Space's orphan idle-exit policy enabled. */
     readonly daemonOrphanExit?: 1;
     /** Managed Run lifecycle events have canonical persistence boundaries. */
@@ -1361,6 +1363,12 @@ function runtimeCapabilityVersion(runtime: KodaXDaemonRuntime, name: string): nu
 }
 
 function assertSpaceDaemonRequiredCapabilities(runtime: KodaXDaemonRuntime): void {
+  if (runtimeCapabilityVersion(runtime, 'sandboxRuntime') < 3) {
+    throw new Error(
+      'KodaX Runtime does not support the required sandboxRuntime v3 capability. ' +
+        'Install a compatible KodaX package and restart the Coder daemon.',
+    );
+  }
   if (runtimeCapabilityVersion(runtime, 'actorSettlementConvergence') < 1) {
     throw new Error(
       'KodaX Runtime does not support the required actorSettlementConvergence v1 capability. ' +
@@ -1502,6 +1510,7 @@ async function createPublishedRuntime(
         readonly daemonShutdownVerification?: number;
         readonly managedRunDurability?: number;
         readonly runtimeEventCoalescing?: number;
+        readonly sandboxRuntime?: number;
         readonly sessionEventJournal?: number;
       };
     },
@@ -1516,6 +1525,7 @@ export function assertSpaceRuntimeSdkRequiredCapabilities(sdk: {
     readonly daemonShutdownVerification?: number;
     readonly managedRunDurability?: number;
     readonly runtimeEventCoalescing?: number;
+    readonly sandboxRuntime?: number;
     readonly sessionEventJournal?: number;
   };
 }): void {
@@ -1526,6 +1536,7 @@ export function assertSpaceRuntimeSdkRequiredCapabilities(sdk: {
     ...(capabilities?.daemonShutdownVerification === 1 ? [] : ['daemonShutdownVerification v1']),
     ...(capabilities?.managedRunDurability === 1 ? [] : ['managedRunDurability v1']),
     ...(capabilities?.runtimeEventCoalescing === 1 ? [] : ['runtimeEventCoalescing v1']),
+    ...(capabilities?.sandboxRuntime === 3 ? [] : ['sandboxRuntime v3']),
     ...(capabilities?.sessionEventJournal === 1 ? [] : ['sessionEventJournal v1']),
   ];
   if (missing.length > 0) {
@@ -2124,6 +2135,7 @@ export class RuntimeHostAdapter {
             managedRunDurability: 1,
             actorSettlementConvergence: 1,
             runtimeEventCoalescing: 1,
+            sandboxRuntime: 3,
             sessionEventJournal: 1,
             integrationConfigResilience: 1,
             runtimeAutoModeGuardrail: 4,
@@ -2635,7 +2647,7 @@ export class RuntimeHostAdapter {
         id: 'runtime.tools.sandboxObservation',
         version: 1,
         available:
-          version('sandboxRuntime') >= 1 &&
+          version('sandboxRuntime') >= 3 &&
           version('runtimeAutoModeGuardrail') >= 4 &&
           available('typedRuntimeEvents'),
       },

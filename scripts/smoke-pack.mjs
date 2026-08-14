@@ -874,10 +874,12 @@ function checkKodaxWorkersExecuteFromAsar(asarPath) {
   const marker = 'KODAX_ASAR_WORKER_PROBE=';
   const probeSource = `
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
   createKodaXRuntime,
+  enableKodaXDaemonOwner,
   getKodaXRuntimeOwnerState,
   KODAX_RUNTIME_SDK_CAPABILITIES,
 } from ${JSON.stringify(runtimeModuleUrl)};
@@ -886,13 +888,259 @@ import {
   KODAX_ASRT_VERSION,
   doctorKodaXSandbox,
   getKodaXSandboxCapability,
+  runKodaXSandboxed,
 } from ${JSON.stringify(sandboxModuleUrl)};
 
 if (process.platform === 'darwin') process.env.TMPDIR = '/tmp';
-const homeDir = await mkdtemp(path.join(tmpdir(), 'kodax-space-asar-probe-'));
+const configuredKodaXHome = process.env.KODAX_HOME?.trim();
+if (process.platform === 'win32' && !configuredKodaXHome) {
+  throw new Error(
+    'Windows packaged Shell smoke requires a dedicated KODAX_HOME prepared with '
+      + 'setupKodaXSandbox().',
+  );
+}
+const ownsHomeDir = process.platform !== 'win32';
+const homeDir = ownsHomeDir
+  ? await mkdtemp(path.join(tmpdir(), 'kodax-space-asar-probe-'))
+  : path.dirname(path.resolve(configuredKodaXHome));
+process.env.KODAX_HOME ||= path.join(homeDir, '.kodax');
 let runtime;
 let daemonRuntime;
+let providerServer;
 const daemonProfile = 'space-pack-lifecycle';
+const providerName = 'space-pack-shell-probe';
+const providerModel = 'space-pack-shell-model';
+const providerKeyEnv = 'KODAX_SPACE_PACK_SHELL_PROBE_KEY';
+let pendingDaemonShellMarker = '';
+function writeProviderChunk(response, chunk) {
+  response.write('data: ' + JSON.stringify(chunk) + '\\n\\n');
+}
+async function startProviderServer() {
+  providerServer = createServer((request, response) => {
+    const chunks = [];
+    request.on('data', (chunk) => chunks.push(chunk));
+    request.on('end', () => {
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      const hasToolResult = Array.isArray(body.messages) && body.messages.some(
+        (message) => message?.role === 'tool',
+      );
+      response.writeHead(200, {
+        'content-type': 'text/event-stream',
+        'cache-control': 'no-cache',
+        connection: 'close',
+      });
+      const base = {
+        id: 'chatcmpl-space-pack-shell',
+        object: 'chat.completion.chunk',
+        created: Math.floor(Date.now() / 1000),
+        model: providerModel,
+      };
+      if (hasToolResult) {
+        writeProviderChunk(response, {
+          ...base,
+          choices: [{ index: 0, delta: { content: 'done' }, finish_reason: null }],
+        });
+        writeProviderChunk(response, {
+          ...base,
+          choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+        });
+      } else {
+        const command = process.platform === 'win32'
+          ? "if ($env:ELECTRON_RUN_AS_NODE) { exit 41 }; [Console]::Out.Write('" + pendingDaemonShellMarker + "')"
+          : 'if [ -n "$ELECTRON_RUN_AS_NODE" ]; then exit 41; fi; printf "' + pendingDaemonShellMarker + '"';
+        writeProviderChunk(response, {
+          ...base,
+          choices: [{
+            index: 0,
+            delta: {
+              role: 'assistant',
+              tool_calls: [{
+                index: 0,
+                id: 'call-space-pack-shell',
+                type: 'function',
+                function: { name: 'bash', arguments: JSON.stringify({ command }) },
+              }],
+            },
+            finish_reason: null,
+          }],
+        });
+        writeProviderChunk(response, {
+          ...base,
+          choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }],
+        });
+      }
+      response.end('data: [DONE]\\n\\n');
+    });
+  });
+  await new Promise((resolve, reject) => {
+    providerServer.once('error', reject);
+    providerServer.listen({ host: '127.0.0.1', port: 0 }, resolve);
+  });
+  const address = providerServer.address();
+  if (address === null || typeof address === 'string') {
+    throw new Error('packaged shell probe provider did not bind a loopback port');
+  }
+  process.env[providerKeyEnv] = 'space-pack-shell-probe-key';
+  return 'http://127.0.0.1:' + address.port + '/v1';
+}
+async function closeProviderServer() {
+  if (!providerServer) return;
+  providerServer.closeAllConnections?.();
+  await new Promise((resolve) => providerServer.close(resolve));
+  providerServer = undefined;
+  delete process.env[providerKeyEnv];
+}
+function shellExecutionContract() {
+  return {
+    version: 1,
+    shell: process.platform === 'win32'
+      ? {
+          kind: 'powershell',
+          executable: path.join(
+            process.env.SystemRoot ?? path.join(path.parse(process.execPath).root, 'Windows'),
+            'System32',
+            'WindowsPowerShell',
+            'v1.0',
+            'powershell.exe',
+          ),
+          profile: 'none',
+        }
+      : { kind: 'bash', executable: '/bin/bash', profile: 'none' },
+    environment: {
+      inherit: 'filtered',
+      ...(process.platform === 'win32' ? { windowsPath: 'registry' } : {}),
+    },
+    cache: { ttlMs: 30_000, refreshToken: 'space-pack-shell-probe' },
+    probeTimeoutMs: 10_000,
+  };
+}
+async function configureProbeProvider(runtime, providerBaseUrl) {
+  await runtime.catalog.upsertCustomProvider({
+    name: providerName,
+    protocol: 'openai',
+    baseUrl: providerBaseUrl,
+    apiKeyEnv: providerKeyEnv,
+    model: providerModel,
+    reasoning: 'none',
+  });
+}
+async function runDaemonShellProbe(runtime, marker) {
+  pendingDaemonShellMarker = marker;
+  const session = await runtime.sessions.create({
+    title: 'Packaged daemon Shell probe',
+    projectPath: homeDir,
+    surface: 'space-desktop',
+    tag: 'code',
+  });
+  const contract = shellExecutionContract();
+  await runtime.sessions.updateSettings(session.id, {
+    provider: providerName,
+    model: providerModel,
+    permissionMode: 'accept-edits',
+    executionCwd: homeDir,
+    shellExecution: contract,
+    agentMode: 'sa',
+  });
+  const events = [];
+  const permissionFailures = [];
+  const subscription = runtime.events.subscribe({ sessionId: session.id }, (event) => {
+    events.push(event);
+    if (event.type === 'permission.requested' && typeof event.payload?.id === 'string') {
+      runtime.permissions.respond(
+        event.payload.id,
+        { type: 'allow_once' },
+        { runId: event.runId },
+      ).catch((error) => permissionFailures.push(error));
+    }
+  });
+  await subscription.ready;
+  try {
+    const handle = await runtime.runs.start({
+      sessionId: session.id,
+      prompt: 'Execute the exact marker command once, then finish.',
+      options: {
+        provider: providerName,
+        model: providerModel,
+        agentMode: 'sa',
+        maxIter: 2,
+        context: {
+          gitRoot: homeDir,
+          executionCwd: homeDir,
+          shellExecution: contract,
+        },
+      },
+    });
+    const completed = await handle.result;
+    if (permissionFailures.length > 0) throw permissionFailures[0];
+    const sandboxUpdates = events
+      .filter((event) => event.type === 'tool.sandbox')
+      .map((event) => event.payload?.update);
+    const observation = sandboxUpdates.find((update) => update?.observation?.state === 'applied')
+      ?.observation;
+    const finishedToolContent = events
+      .filter(
+        (event) => event.type === 'tool.finished' && event.payload?.result?.name === 'bash',
+      )
+      .map((event) => event.payload.result.content)
+      .join('\\n');
+    const markerSeen = finishedToolContent.includes(marker);
+    const exitedCleanly = finishedToolContent.includes('Exit: 0');
+    const inheritedElectronEnv = finishedToolContent.includes('Exit: 41');
+    const toolReportedError = finishedToolContent.includes('[Error]');
+    if (
+      completed.phase !== 'completed' ||
+      observation?.policyId !== 'kodax-workspace-shell-v1' ||
+      !markerSeen ||
+      !exitedCleanly ||
+      inheritedElectronEnv ||
+      toolReportedError
+    ) {
+      throw new Error(
+        'packaged daemon Shell probe failed: ' +
+          JSON.stringify({
+            transcript: JSON.stringify({ completed, events }).slice(-2_000),
+            phase: completed.phase,
+            observation,
+            sandboxUpdates,
+            finishedToolContent,
+            markerSeen,
+            exitedCleanly,
+            inheritedElectronEnv,
+            toolReportedError,
+          }),
+      );
+    }
+    return observation.backend;
+  } finally {
+    subscription.close();
+  }
+}
+function daemonRequirements() {
+  return {
+    daemonManagement: 1,
+    daemonOrphanExit: 1,
+    actorSettlementConvergence: 1,
+    managedRunDurability: 1,
+    runtimeEventCoalescing: 1,
+    sandboxRuntime: 3,
+    sessionEventJournal: 1,
+    ...(process.platform === 'win32' ? { daemonShutdownVerification: 1 } : {}),
+    integrationConfigResilience: 1,
+    skillLearningLoop: 1,
+    runtimeAutoModeGuardrail: 4,
+  };
+}
+function createDaemonProbeRuntime(clientName) {
+  return createKodaXRuntime({
+    mode: 'daemon',
+    profile: daemonProfile,
+    homeDir,
+    sessionsDir: path.join(homeDir, 'daemon-sessions'),
+    daemonOrphanExitMs: 1_000,
+    requirements: daemonRequirements(),
+    clientInfo: { name: clientName, version: ${JSON.stringify(SPACE_VERSION)} },
+  });
+}
 async function waitForDaemonOwnerRelease(runtimeId) {
   const deadline = Date.now() + 5_000;
   while (true) {
@@ -910,14 +1158,29 @@ async function waitForDaemonOwnerRelease(runtimeId) {
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
 }
+async function enableDaemonOwnerWhenReady() {
+  const deadline = Date.now() + 10_000;
+  while (true) {
+    try {
+      return enableKodaXDaemonOwner({ profile: daemonProfile, homeDir });
+    } catch (error) {
+      if (!String(error).includes('owner transition is already in progress')) throw error;
+      if (Date.now() >= deadline) {
+        throw new Error('packaged lifecycle probe owner transition did not drain');
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+}
 try {
   await Promise.all(${JSON.stringify(publicFacadeUrls)}.map((moduleUrl) => import(moduleUrl)));
   const sandboxCapability = getKodaXSandboxCapability();
   if (
-    sandboxCapability.version !== 1 ||
+    sandboxCapability.version !== 3 ||
     sandboxCapability.asrtVersion !== KODAX_ASRT_VERSION ||
     sandboxCapability.unavailableBehavior !== 'structured-no-execution' ||
-    sandboxCapability.ordinaryCallsTriggerSetup !== false
+    sandboxCapability.ordinaryCallsTriggerSetup !== false ||
+    sandboxCapability.permissionFallback !== 'normal-permission-policy'
   ) {
     throw new Error(
       'packaged sandbox facade is not fail-closed: ' + JSON.stringify(sandboxCapability),
@@ -933,6 +1196,49 @@ try {
     throw new Error(
       'packaged sandbox runtime resolved a non-physical helper path: ' + sandboxPathFailure,
     );
+  }
+  if (process.platform === 'win32' && !sandboxDoctor.ready) {
+    throw new Error(
+      'packaged Windows sandbox is not ready: ' + JSON.stringify(sandboxDoctor.diagnostics),
+    );
+  }
+  let directSandboxProbe;
+  if (sandboxDoctor.ready) {
+    const sandboxMarker = 'KODAX_ASAR_SANDBOX_PROBE=ok';
+    const command =
+      process.platform === 'win32'
+        ? path.join(
+            process.env.SystemRoot ?? path.join(path.parse(process.execPath).root, 'Windows'),
+            'System32',
+            'WindowsPowerShell',
+            'v1.0',
+            'powershell.exe',
+          )
+        : '/bin/sh';
+    const args =
+      process.platform === 'win32'
+        ? ['-NoProfile', '-NonInteractive', '-Command', "[Console]::Out.Write('" + sandboxMarker + "')"]
+        : ['-c', 'printf ' + sandboxMarker];
+    directSandboxProbe = await runKodaXSandboxed({
+      command,
+      args,
+      cwd: homeDir,
+      filesystem: { allowRead: [homeDir], allowWrite: [homeDir] },
+      network: { mode: 'deny' },
+      inheritEnvironment: true,
+      timeoutMs: 30_000,
+    });
+    if (
+      directSandboxProbe.status !== 'completed' ||
+      directSandboxProbe.exitCode !== 0 ||
+      directSandboxProbe.sandboxed !== true ||
+      directSandboxProbe.stdout !== sandboxMarker ||
+      directSandboxProbe.stderr !== ''
+    ) {
+      throw new Error(
+        'packaged sandbox command probe failed: ' + JSON.stringify(directSandboxProbe),
+      );
+    }
   }
   runtime = await createKodaXRuntime({
     mode: 'embedded',
@@ -982,29 +1288,15 @@ try {
   if (KODAX_RUNTIME_SDK_CAPABILITIES?.sessionEventJournal !== 1) {
     throw new Error('packaged SDK does not advertise sessionEventJournal v1 before auto-start');
   }
-  daemonRuntime = await createKodaXRuntime({
-    mode: 'daemon',
-    profile: daemonProfile,
-    homeDir,
-    sessionsDir: path.join(homeDir, 'daemon-sessions'),
-    daemonOrphanExitMs: 1_000,
-    requirements: {
-      daemonManagement: 1,
-      daemonOrphanExit: 1,
-      actorSettlementConvergence: 1,
-      managedRunDurability: 1,
-      runtimeEventCoalescing: 1,
-      sessionEventJournal: 1,
-      ...(process.platform === 'win32' ? { daemonShutdownVerification: 1 } : {}),
-      integrationConfigResilience: 1,
-      skillLearningLoop: 1,
-      runtimeAutoModeGuardrail: 4,
-    },
-    clientInfo: {
-      name: 'kodax-space-pack-lifecycle-smoke',
-      version: ${JSON.stringify(SPACE_VERSION)},
-    },
-  });
+  if (KODAX_RUNTIME_SDK_CAPABILITIES?.sandboxRuntime !== 3) {
+    throw new Error('packaged SDK does not advertise sandboxRuntime v3 before auto-start');
+  }
+  const providerBaseUrl = sandboxDoctor.ready ? await startProviderServer() : undefined;
+  const initialOwnerPolicy = await enableDaemonOwnerWhenReady();
+  if (initialOwnerPolicy.mode !== 'daemon') {
+    throw new Error('packaged lifecycle probe did not enable daemon ownership');
+  }
+  daemonRuntime = await createDaemonProbeRuntime('kodax-space-pack-lifecycle-smoke');
   const daemonOrphanExit = daemonRuntime.capabilities?.daemonOrphanExit;
   if (
     typeof daemonOrphanExit !== 'object' ||
@@ -1040,6 +1332,17 @@ try {
       JSON.stringify(sessionEventJournal),
     );
   }
+  const daemonSandboxRuntime = daemonRuntime.capabilities?.sandboxRuntime;
+  if (
+    typeof daemonSandboxRuntime !== 'object' ||
+    daemonSandboxRuntime === null ||
+    daemonSandboxRuntime.version !== 3
+  ) {
+    throw new Error(
+      'packaged daemon did not negotiate sandboxRuntime v3: ' +
+        JSON.stringify(daemonSandboxRuntime),
+    );
+  }
   const journalSession = await daemonRuntime.sessions.create({
     title: 'Packaged Session journal probe',
     projectPath: homeDir,
@@ -1058,6 +1361,14 @@ try {
   ) {
     throw new Error(
       'packaged daemon returned an invalid Session journal cursor: ' + JSON.stringify(journalCursor),
+    );
+  }
+  let firstDaemonShellBackend;
+  if (providerBaseUrl) {
+    await configureProbeProvider(daemonRuntime, providerBaseUrl);
+    firstDaemonShellBackend = await runDaemonShellProbe(
+      daemonRuntime,
+      'KODAX_DAEMON_SHELL_PROBE_1=ok',
     );
   }
   const management = await daemonRuntime.daemon.inspect();
@@ -1084,6 +1395,38 @@ try {
   await daemonRuntime.close();
   daemonRuntime = undefined;
   await waitForDaemonOwnerRelease(management.runtimeId);
+  let restartedDaemonShellBackend;
+  if (providerBaseUrl) {
+    const restartedOwnerPolicy = await enableDaemonOwnerWhenReady();
+    if (restartedOwnerPolicy.mode !== 'daemon') {
+      throw new Error('packaged lifecycle probe did not restore daemon ownership');
+    }
+    daemonRuntime = await createDaemonProbeRuntime('kodax-space-pack-restart-smoke');
+    await configureProbeProvider(daemonRuntime, providerBaseUrl);
+    restartedDaemonShellBackend = await runDaemonShellProbe(
+      daemonRuntime,
+      'KODAX_DAEMON_SHELL_PROBE_2=ok',
+    );
+    const restartedManagement = await daemonRuntime.daemon.inspect();
+    if (!restartedManagement.preflight.canStop) {
+      throw new Error(
+        'restarted packaged lifecycle probe daemon is not safely stoppable: ' +
+          restartedManagement.preflight.blockers.join(','),
+      );
+    }
+    await daemonRuntime.daemon.stopForInline({
+      expectedRuntimeId: restartedManagement.runtimeId,
+      expectedRevision: restartedManagement.revision,
+      expectedOwnerPolicyRevision: restartedManagement.ownerPolicy.revision,
+    });
+    await daemonRuntime.close();
+    daemonRuntime = undefined;
+    await waitForDaemonOwnerRelease(restartedManagement.runtimeId);
+    const finalOwnerPolicy = await enableDaemonOwnerWhenReady();
+    if (finalOwnerPolicy.mode !== 'daemon') {
+      throw new Error('packaged lifecycle probe did not restore daemon ownership after restart');
+    }
+  }
   const result = {
     version: runtime.identity.version,
     mode: runtime.identity.mode,
@@ -1092,13 +1435,18 @@ try {
     sessionRoundTrip: loaded.id === created.id,
     constructedHandlerIsMainThread: handlerResult,
     daemonOrphanExit: daemonOrphanExit.version,
+    daemonSandboxRuntime: daemonSandboxRuntime.version,
     sessionEventJournal: sessionEventJournal.version,
     sessionCursorValid: true,
     integrationHealth: management.integrations.state,
     sandboxVersion: sandboxCapability.version,
     sandboxUnavailableBehavior: sandboxCapability.unavailableBehavior,
+    sandboxPermissionFallback: sandboxCapability.permissionFallback,
     sandboxDoctorReady: sandboxDoctor.ready,
     sandboxDoctorDiagnostics: sandboxDoctor.diagnostics.length,
+    sandboxCommandExecuted: directSandboxProbe?.status === 'completed',
+    firstDaemonShellBackend,
+    restartedDaemonShellBackend,
   };
   if (
     result.version !== ${JSON.stringify(KODAX_VERSION)} ||
@@ -1108,17 +1456,25 @@ try {
     !result.sessionRoundTrip ||
     result.constructedHandlerIsMainThread !== 'false' ||
     result.daemonOrphanExit !== 1 ||
+    result.daemonSandboxRuntime !== 3 ||
     result.sessionEventJournal !== 1 ||
     !result.sessionCursorValid ||
     result.integrationHealth !== 'healthy' ||
-    result.sandboxVersion !== 1 ||
-    result.sandboxUnavailableBehavior !== 'structured-no-execution'
+    result.sandboxVersion !== 3 ||
+    result.sandboxUnavailableBehavior !== 'structured-no-execution' ||
+    result.sandboxPermissionFallback !== 'normal-permission-policy' ||
+    (result.sandboxDoctorReady && !result.sandboxCommandExecuted) ||
+    (result.sandboxDoctorReady && result.firstDaemonShellBackend !== sandboxCapability.backend) ||
+    (result.sandboxDoctorReady && result.restartedDaemonShellBackend !== sandboxCapability.backend)
   ) {
     throw new Error('unexpected packaged Worker result: ' + JSON.stringify(result));
   }
   await runtime.close();
   runtime = undefined;
-  await rm(homeDir, { recursive: true, force: true });
+  await closeProviderServer();
+  if (ownsHomeDir) {
+    await rm(homeDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
   await new Promise((resolve) => {
     process.stdout.write(${JSON.stringify(marker)} + JSON.stringify(result), resolve);
   });
@@ -1130,8 +1486,7 @@ try {
   try {
     const bootstrapLog = await readFile(
       path.join(
-        homeDir,
-        '.kodax',
+        process.env.KODAX_HOME,
         'runtime',
         'daemon',
         daemonProfile,
@@ -1171,7 +1526,15 @@ try {
     }
   }
   await runtime?.close().catch(() => undefined);
-  await rm(homeDir, { recursive: true, force: true }).catch(() => undefined);
+  await closeProviderServer().catch(() => undefined);
+  if (ownsHomeDir) {
+    await rm(homeDir, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 100,
+    }).catch(() => undefined);
+  }
   if (daemonBootstrapTail) {
     console.error('KODAX_DAEMON_BOOTSTRAP_TAIL\\n' + daemonBootstrapTail);
   }
@@ -1186,7 +1549,7 @@ try {
       input: probeSource,
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'pipe'],
-      timeout: 60_000,
+      timeout: 180_000,
       windowsHide: true,
       env: {
         ...process.env,

@@ -15,7 +15,7 @@ export interface SandboxDoctorResult {
 }
 
 export interface SandboxCapability {
-  readonly version: 1;
+  readonly version: 3;
   readonly asrtVersion: string;
   readonly platform: 'darwin' | 'linux' | 'win32';
   readonly backend:
@@ -70,8 +70,23 @@ function compactText(value: string): string {
     .slice(0, MAX_SANDBOX_STATUS_TEXT);
 }
 
+function isWindowsAclRecoveryText(value: string): boolean {
+  const normalized = value.toLowerCase();
+  return (
+    normalized.includes('acl_cleanup_unconfirmed') ||
+    (normalized.includes('windows sandbox') &&
+      (normalized.includes('acl cleanup') ||
+        normalized.includes('poison marker') ||
+        normalized.includes('boot identity') ||
+        normalized.includes('process tree')))
+  );
+}
+
 function safeDiagnostic(value: string): string {
   const normalized = compactText(value).toLowerCase();
+  if (isWindowsAclRecoveryText(normalized)) {
+    return 'Windows sandbox ACL cleanup is unconfirmed.';
+  }
   if (
     normalized.includes('account') ||
     normalized.includes('sandbox user') ||
@@ -138,7 +153,7 @@ function normalizeCapability(value: unknown): SandboxCapability {
     value.backend === 'linux-bubblewrap' ||
     value.backend === 'unsupported';
   if (
-    value.version !== 1 ||
+    value.version !== 3 ||
     typeof value.asrtVersion !== 'string' ||
     !/^\d+\.\d+\.\d+$/.test(value.asrtVersion) ||
     !validPlatform ||
@@ -198,6 +213,9 @@ function normalizeActivation(
 function projectGuidanceLine(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const normalized = compactText(value).toLowerCase();
+  if (isWindowsAclRecoveryText(normalized) || normalized.includes('acl recover --force --json')) {
+    return 'Restart Windows, then refresh sandbox readiness. If recovery is still blocked, stop every KodaX and KodaX Space process, run `kodax sandbox doctor`, and follow its ACL recovery command.';
+  }
   if (normalized.includes('terminal') && normalized.includes('administrator')) {
     return 'The terminal does not need to run as Administrator; approve UAC only after the explicit Setup action.';
   }
@@ -235,11 +253,17 @@ function projectGuidanceLine(value: unknown): string | null {
 function defaultGuidance(
   capability: SandboxCapability,
   readiness: SandboxStatusT['readiness'],
+  windowsAclRecoveryBlocked = false,
 ): readonly string[] {
   if (readiness === 'ready') {
     return [`KodaX command sandbox is ready with ASRT ${capability.asrtVersion}.`];
   }
   if (capability.platform === 'win32') {
+    if (windowsAclRecoveryBlocked) {
+      return [
+        'Restart Windows, then refresh sandbox readiness. If recovery is still blocked, stop every KodaX and KodaX Space process, run `kodax sandbox doctor`, and follow its ACL recovery command.',
+      ];
+    }
     return [
       'Use the explicit Setup action to provision the one-time Windows sandbox account and network policy.',
       'The terminal does not need to run as Administrator; approve UAC only after the explicit Setup action.',
@@ -477,6 +501,7 @@ export class SandboxController {
         : 'unavailable';
 
     const rawDiagnostics = projectedDoctor.diagnostics;
+    const windowsAclRecoveryBlocked = rawDiagnostics.some(isWindowsAclRecoveryText);
     const diagnostics = [...new Set(rawDiagnostics.map(safeDiagnostic))].slice(
       0,
       MAX_SANDBOX_DIAGNOSTICS,
@@ -499,7 +524,9 @@ export class SandboxController {
         rawGuidance.map(projectGuidanceLine).filter((line): line is string => line !== null),
       ),
     ].slice(0, MAX_SANDBOX_GUIDANCE);
-    if (guidance.length === 0) guidance.push(...defaultGuidance(capability, readiness));
+    if (guidance.length === 0) {
+      guidance.push(...defaultGuidance(capability, readiness, windowsAclRecoveryBlocked));
+    }
 
     const canSetup =
       readiness === 'setup-required' &&

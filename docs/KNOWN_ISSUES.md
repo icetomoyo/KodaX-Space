@@ -1,8 +1,8 @@
 # Known Issues
 
-Last Updated: 2026-08-12
+Last Updated: 2026-08-14
 
-> Historical issue details are preserved as investigation evidence. Resolved items older than 30 days move to [ISSUES_ARCHIVED.md](ISSUES_ARCHIVED.md) without losing their investigation record. The latest published Space [`v0.1.39`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.39) baseline uses exact npm Registry KodaX 0.7.85 and requires `managedRunDurability:1`, `actorSettlementConvergence:1`, and `sessionEventJournal:1`. Start from the [documentation hub](README.md) for current behavior and status.
+> Historical issue details are preserved as investigation evidence. Resolved items older than 30 days move to [ISSUES_ARCHIVED.md](ISSUES_ARCHIVED.md) without losing their investigation record. The latest published Space [`v0.1.39`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.39) baseline uses exact npm Registry KodaX 0.7.85. Current source uses exact KodaX 0.7.86 and additionally requires `sandboxRuntime:3`. Start from the [documentation hub](README.md) for current behavior and status.
 
 ## Issue Index
 
@@ -123,7 +123,7 @@ Last Updated: 2026-08-12
 | 125 | High     | Resolved           | Invalid optional integration config could abort Coder daemon startup without actionable diagnostics                                | v0.1.32 / KodaX 0.7.76                                       | 2026-07-28 |
 | 126 | Medium   | Resolved           | Sent and restored image attachments disappear from visible user messages                                                           | v0.1.9                                                       | 2026-07-28 |
 | 127 | High     | Resolved           | Runtime-mode recovery could reopen admission or forget the clean-profile migration state                                           | corrected v0.1.33                                            | 2026-07-28 |
-| 128 | High     | Deferred           | Packaged Electron daemon shell probes fail before execution and Auto LLM reports Bash as disabled                                  | future published KodaX                                       | 2026-07-28 |
+| 128 | High     | Resolved           | Packaged Electron daemon shell probes fail before execution and Auto LLM reports Bash as disabled                                  | KodaX 0.7.86 adoption                                        | 2026-07-28 |
 | 129 | High     | Resolved           | Packaged builds consumed nested KodaX development junctions and omitted transitive runtime dependencies                            | corrected v0.1.33                                            | 2026-07-28 |
 | 130 | High     | Resolved           | Runtime-mode switching left Workflow, Slash, and External Agent executable entry points outside admission                          | corrected v0.1.33                                            | 2026-07-28 |
 | 131 | Medium   | Resolved           | Complete exit leaves the main window visible during shutdown and appears to require a second close                                 | v0.1.33                                                      | 2026-07-28 |
@@ -175,17 +175,18 @@ Last Updated: 2026-08-12
 | 177 | High     | Resolved           | History reconciliation could duplicate a recovered answer or place compact notices after a later answer                            | v0.1.38 history/live and local-notice reconciliation         | 2026-08-08 |
 | 178 | High     | Resolved in source | Actor durability unknown blocked input, dropped the live turn after Stop, and misreported self-fence as foreign ownership          | KodaX 0.7.85 / Space v0.1.39                                 | 2026-08-09 |
 | 179 | Medium   | Resolved           | Idle Space exit reported running tasks when only other Runtime clients remained connected                                          | v0.1.39 complete-exit client protection                      | 2026-08-11 |
-| 180 | High     | Resolved in source | A crashed inline owner permanently blocked daemon startup until the customer deleted `~/.kodax`                                   | v0.1.38 / KodaX 0.7.84 owner-policy reconciliation           | 2026-08-11 |
+| 180 | High     | Resolved           | A crashed inline owner permanently blocked daemon startup until the customer deleted `~/.kodax`                                   | v0.1.38 / KodaX 0.7.84 owner-policy reconciliation           | 2026-08-11 |
 
 ## Issue Details
 
 ### 180: A crashed inline owner permanently blocked daemon startup until the customer deleted `~/.kodax`
 
 - Priority: High
-- Status: Resolved in source
+- Status: Resolved
 - Introduced: v0.1.38 / KodaX 0.7.84 owner-policy reconciliation
-- Fixed target: Unreleased Space + KodaX source
+- Fixed: Unreleased Space + KodaX 0.7.86
 - Created: 2026-08-11
+- Resolution Date: 2026-08-14
 
 #### Problem and root cause
 
@@ -7822,10 +7823,11 @@ Validation:
 ### 128: Packaged Electron daemon shell probes fail before execution and Auto LLM reports Bash as disabled
 
 - Priority: High
-- Status: Deferred upstream
+- Status: Resolved
 - Introduced: v0.1.33 / KodaX 0.7.77 shell-execution adoption
-- Target: future npm-published KodaX
+- Fixed: current Space source / npm-published KodaX 0.7.86
 - Created: 2026-07-28
+- Resolution Date: 2026-08-14
 
 #### Original Problem
 
@@ -7915,7 +7917,7 @@ start while the primary probe defect was active.
   a minimal read-only capability probe must remain distinguishable from the
   previously proposed write operation.
 
-#### Upstream Work (not part of v0.1.33)
+#### Resolution
 
 - KodaX's formal shell-environment probe now routes its nested
   `process.execPath` helper through the existing bounded Electron Node-launch
@@ -7930,12 +7932,18 @@ start while the primary probe defect was active.
   not policy declarations. Scope-mismatch denials must name the actual
   unrequested operation and may not invent tool availability or label normal
   PowerShell dispatch as circumvention.
-- Space remains pinned to the published KodaX 0.7.77 package. Local unpublished
-  SDK work is not release evidence and is not consumed by the corrected
-  `v0.1.33` build.
-- This issue remains deferred until a supporting KodaX version is published and
-  explicitly adopted, the Space canary covers the same Runtime helper path,
-  and shell-resolution failures expose structured infrastructure diagnostics.
+- KodaX 0.7.86 stages the Windows sandbox runner outside ASAR, isolates the
+  Electron Node bootstrap from user commands, coordinates policy ownership
+  machine-wide, and retains a fail-closed fence until process-tree termination
+  and ACL cleanup are proven. Lifecycle failures are surfaced and commands
+  that may have started are never replayed.
+- Space now pins the exact npm-published 0.7.86 bytes, requires
+  `sandboxRuntime:3` before daemon auto-start and after connection, updates the
+  Settings sandbox contract to facade v3, and rejects a stale v1/v2 daemon.
+- The packaged Space smoke verifies the v3 facade and daemon capability and,
+  whenever sandbox doctor reports ready, executes a real contained command
+  from the packaged Electron/ASAR process. KodaX's release smoke additionally
+  covers 20 cold Shell calls and an immediate same-executable restart call.
 
 Files changed:
 
@@ -7945,12 +7953,19 @@ Files changed:
 - `../KodaX/packages/coding/src/guardrails/auto-mode/classifier-prompt.test.ts`
 - `../KodaX/scripts/test-electron-daemon-smoke.mjs`
 - `../KodaX/tests/fixtures/electron-daemon-smoke/main.cjs`
+- `package.json`
+- `apps/desktop/package.json`
+- `apps/desktop/electron/kodax/runtime-host-adapter.ts`
+- `apps/desktop/electron/kodax/kodax-sdk-probe.ts`
+- `scripts/smoke-pack.mjs`
 
 Verification:
 
 - Related KodaX Vitest suites passed: 47/47.
 - KodaX package build passed.
 - The packaged Electron daemon smoke passed against Electron 42.5.0.
+- Space compatibility coverage passes against exact KodaX 0.7.86 and rejects
+  SDK/daemon sandbox capability versions below v3.
 - JavaScript syntax checks and `git diff --check` passed.
 
 ### 129: Packaged builds consumed nested KodaX development junctions and omitted transitive runtime dependencies
@@ -13038,9 +13053,10 @@ history remained correct:
 
 - Total: 167
 - Open: 1
+- Ready: 0
 - In Progress: 9
-- Deferred: 1
-- Resolved: 156
+- Deferred: 0
+- Resolved: 157
 - High: 83
 - Medium: 73
 - Low: 11

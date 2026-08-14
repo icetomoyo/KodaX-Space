@@ -43,6 +43,7 @@ const env = {
   KODAX_INTERNAL_DAEMON_TEST_READY_DELAY_MS: String(DAEMON_READY_TEST_DELAY_MS),
 };
 delete env.ELECTRON_RUN_AS_NODE;
+delete env.KODAX_HOME;
 
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 

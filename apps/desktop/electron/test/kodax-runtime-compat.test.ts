@@ -8,7 +8,7 @@ import test from 'node:test';
 
 const PROBE_MARKER = 'KODAX_RUNTIME_PROBE=';
 const PROBE_TIMEOUT_MS = 30_000;
-const EXPECTED_KODAX_VERSION = '0.7.85';
+const EXPECTED_KODAX_VERSION = '0.7.86';
 const INSTALLED_KODAX_VERSION = (
   createRequire(import.meta.url)('@kodax-ai/kodax/package.json') as { readonly version: string }
 ).version;
@@ -339,6 +339,7 @@ const SHARED_DAEMON_REQUIREMENTS = {
   managedRunDurability: 1,
   actorSettlementConvergence: 1,
   runtimeEventCoalescing: 1,
+  sandboxRuntime: 3,
   sessionEventJournal: 1,
   integrationConfigResilience: 1,
   runtimeAutoModeGuardrail: 4,
@@ -361,7 +362,7 @@ try {
     clientInfo: {
       name: 'kodax-cli',
       title: 'KodaX terminal compatibility probe',
-      version: '0.7.85',
+      version: '0.7.86',
       instanceId: process.env.KODAX_PROBE_INSTANCE_ID,
       instanceSecret: process.env.KODAX_PROBE_INSTANCE_SECRET,
     },
@@ -997,6 +998,10 @@ try {
       sdk: KODAX_RUNTIME_SDK_CAPABILITIES.actorSettlementConvergence === 1,
       runtime: runtime.capabilities.actorSettlementConvergence?.version === 1,
     },
+    sandboxRuntime: {
+      sdk: KODAX_RUNTIME_SDK_CAPABILITIES.sandboxRuntime === 3,
+      runtime: runtime.capabilities.sandboxRuntime?.version === 3,
+    },
     sessionEventJournal: {
       sdk: KODAX_RUNTIME_SDK_CAPABILITIES.sessionEventJournal === 1,
       runtime: runtime.capabilities.sessionEventJournal?.version === 1,
@@ -1343,6 +1348,7 @@ test(
     assert.deepEqual(result.eventCoalescing, { sdk: true, runtime: true });
     assert.deepEqual(result.managedRunDurability, { sdk: true, runtime: true });
     assert.deepEqual(result.actorSettlementConvergence, { sdk: true, runtime: true });
+    assert.deepEqual(result.sandboxRuntime, { sdk: true, runtime: true });
     assert.deepEqual(result.sessionEventJournal, { sdk: true, runtime: true });
     assert.equal(result.downgradeRejected, true);
     assert.deepEqual(result.a2aExports, {
@@ -1395,7 +1401,7 @@ test(`KodaX ${EXPECTED_KODAX_VERSION} exposes fail-closed standalone command con
   const { KODAX_ASRT_VERSION, doctorKodaXSandbox, getKodaXSandboxCapability, runKodaXSandboxed } =
     await import('@kodax-ai/kodax/sandbox');
   const capability = getKodaXSandboxCapability();
-  assert.equal(capability.version, 1);
+  assert.equal(capability.version, 3);
   assert.equal(capability.asrtVersion, KODAX_ASRT_VERSION);
   assert.equal(capability.genericCommandExecution, true);
   assert.deepEqual(capability.controls, [
@@ -1674,14 +1680,13 @@ test(`KodaX ${EXPECTED_KODAX_VERSION} Auto guardrail keeps the required permissi
     );
     assert.equal(
       opaqueMissingModelCall.action,
-      'block',
-      'opaque Bash must fail closed when standalone guardrail construction supplies no process-tree containment',
+      'allow',
+      'opaque Bash falls back to the normal permission policy when sandbox containment is unavailable',
     );
-    assert.match(opaqueMissingModelCall.reason ?? '', /sandbox|containment/i);
     assert.equal(
       llmPrompts,
       1,
-      'the permission fallback may ask, but approval cannot bypass missing OS containment',
+      'the normal permission fallback must preserve explicit user approval',
     );
 
     const modeledMissingModelFallback = await llmBeforeTool(

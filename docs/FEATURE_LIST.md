@@ -1,8 +1,8 @@
 # KodaX Space Feature List
 
-> Last reviewed: 2026-08-11
+> Last reviewed: 2026-08-14
 > Latest published release: [`v0.1.39`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.39) (`0.1.39` package baseline; KodaX 0.7.85 Registry alignment)
-> Current KodaX SDK baseline: exact npm Registry `@kodax-ai/kodax@0.7.85` across both manifests, lock views, and installed bytes (`sha512-6iDF3dgz1WehkaLGDgIBBa0r2cpTalR4SMiCEw6QVEsyBDS9zwvTQ5zBoI/VDaMFdyCyHUUs7ZLVatkeBRaj/Q==`). Space-managed daemons require explicit capability contracts in addition to the established shared-session safety surface, including `managedRunDurability:1`, `actorSettlementConvergence:1`, and `sessionEventJournal:1`; lifecycle support is not inferred from SemVer. Delivered interrupt `entryId` remains feature-detected per event. Session journal cursors are compared only within the same `(sessionId, journalEpoch)` lineage.
+> Current KodaX SDK baseline: exact npm Registry `@kodax-ai/kodax@0.7.86` across both manifests, lock views, and installed bytes (`sha512-6xYcn97r2Q5XKlxMbUZivt/4e3M+2WXfYfV8N4ffgLECxGZrX+tQut7Cmzt7eR3jF36/VLrElUadLBrUD8Lepw==`). Space-managed daemons require explicit capability contracts in addition to the established shared-session safety surface, including `sandboxRuntime:3`, `managedRunDurability:1`, `actorSettlementConvergence:1`, and `sessionEventJournal:1`; lifecycle support is not inferred from SemVer. Delivered interrupt `entryId` remains feature-detected per event. Session journal cursors are compared only within the same `(sessionId, journalEpoch)` lineage.
 > Scope: active roadmap, recent completion audit, and reviewed-out decisions. Older release history lives in [FEATURES_ARCHIVED.md](FEATURES_ARCHIVED.md), per-version designs, and [CHANGELOG.md](../CHANGELOG.md).
 
 ## Planning rules

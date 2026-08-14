@@ -119,6 +119,7 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
         daemonShutdownVerification: 1,
         managedRunDurability: 1,
         runtimeEventCoalescing: 1,
+        sandboxRuntime: 3,
         sessionEventJournal: 1,
       },
     }),
@@ -131,6 +132,7 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
           daemonOrphanExit: 1,
           daemonShutdownVerification: 1,
           managedRunDurability: 1,
+          sandboxRuntime: 3,
           sessionEventJournal: 1,
         },
       }),
@@ -138,7 +140,7 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
   );
   assert.throws(
     () => assertSpaceRuntimeSdkRequiredCapabilities({}),
-    /installed KodaX SDK.*actorSettlementConvergence v1.*daemonOrphanExit v1.*daemonShutdownVerification v1.*managedRunDurability v1.*runtimeEventCoalescing v1.*sessionEventJournal v1/i,
+    /installed KodaX SDK.*actorSettlementConvergence v1.*daemonOrphanExit v1.*daemonShutdownVerification v1.*managedRunDurability v1.*runtimeEventCoalescing v1.*sandboxRuntime v3.*sessionEventJournal v1/i,
   );
 });
 
@@ -395,7 +397,7 @@ function createFakeRuntime(runtimeId = 'rt_test') {
       runtimeEventCoalescing: { version: 1 },
       sessionEventJournal: { version: 1 },
       sandboxRuntime: {
-        version: 1,
+        version: 3,
         asrtVersion: '0.0.65',
         backend: 'unsupported',
       },
@@ -1907,6 +1909,7 @@ test('runtime selection attaches one Coder daemon with stable identity and requi
   assert.equal(options[0]?.requirements?.actorSettlementConvergence, 1);
   assert.equal(options[0]?.requirements?.daemonShutdownVerification, undefined);
   assert.equal(options[0]?.requirements?.runtimeEventCoalescing, 1);
+  assert.equal(options[0]?.requirements?.sandboxRuntime, 3);
   assert.equal(options[0]?.requirements?.sessionEventJournal, 1);
   assert.equal(options[0]?.requirements?.integrationConfigResilience, 1);
   assert.equal(options[0]?.requirements?.runtimeAutoModeGuardrail, 4);
@@ -7756,6 +7759,25 @@ test('initialization requires Session-scoped Runtime event journals', async () =
   });
 
   await assert.rejects(adapter.initialize(), /sessionEventJournal v1/i);
+  assert.equal(adapter.snapshot().state, 'failed');
+  assert.equal(fake.calls.close, 1);
+});
+
+test('initialization requires the sandbox v3 execution lifecycle', async () => {
+  const fake = createFakeRuntime();
+  (fake.runtime.capabilities as Record<string, unknown>).sandboxRuntime = {
+    version: 2,
+    asrtVersion: '0.0.65',
+    backend: 'windows-restricted-user',
+  };
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+  });
+
+  await assert.rejects(adapter.initialize(), /sandboxRuntime v3/i);
   assert.equal(adapter.snapshot().state, 'failed');
   assert.equal(fake.calls.close, 1);
 });

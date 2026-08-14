@@ -14,8 +14,26 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ## [Unreleased]
 
+### Changed
+
+- Root and Desktop now resolve the exact npm-published
+  `@kodax-ai/kodax@0.7.86` package. Coder startup requires both the SDK and the
+  connected Runtime to advertise `sandboxRuntime:3`; an idle older daemon is
+  retired only through KodaX's verified capability-upgrade path.
+- Space's sandbox startup probe, Settings status schema, capability ledger, and
+  packaged Electron smoke now consume standalone sandbox facade v3. The smoke
+  executes a real contained command when doctor reports ready and independently
+  verifies daemon-side sandbox v3 negotiation.
+- Auto LLM compatibility coverage follows KodaX 0.7.86 sandbox-first semantics:
+  unavailable containment uses the existing normal permission policy without
+  replaying a command or issuing a second classifier decision.
+
 ### Fixed
 
+- KodaX 0.7.86 repairs the packaged Electron/ASAR Windows Shell chain tracked by
+  Issue 128, including staged sandbox runners, Electron Node-bootstrap
+  isolation, machine-wide policy ownership, termination proof, and surfaced
+  lifecycle cleanup failures.
 - Daemon startup now delegates an `inline` owner fence to the SDK's atomic
   daemon-enable reconciliation instead of rejecting every owned snapshot.
   Provably abandoned inline owners recover without deleting `~/.kodax`, while

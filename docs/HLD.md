@@ -1,11 +1,11 @@
 # KodaX Space 高层设计（HLD）
 
-> **2026-08-11 v0.1.39 发布基线**：当前 Runtime 基线为精确 npm Registry KodaX `0.7.85`；Space 要求 `actorSettlementConvergence:1` 与 `sessionEventJournal:1`，保留完整 Session journal cursor，并在 durable effect convergence 后才释放未知 Run 的路由。v0.1.38 保留为历史正式产品基线。
+> **2026-08-14 当前源码基线**：源码使用精确 npm Registry KodaX `0.7.86`，要求 `sandboxRuntime:3`、`actorSettlementConvergence:1` 与 `sessionEventJournal:1`。sandbox v3 修复 Electron/ASAR Windows Shell 生命周期并采用 sandbox-first、普通权限 fallback；已发布 v0.1.39 / KodaX 0.7.85 仍作为历史正式产品基线。
 > `RuntimeHostAdapter` 要求 `managedRunDurability:1`，使 accepted prompt 与 completed turn
 > 在事件发布前已成为 canonical managed Run；Space 仅用 returned `runId`/`turnId` 关联 UI
 > optimistic state 和 history，不复制持久化职责。未设置 Auto timeout 时，SDK 默认 45 秒首次、90 秒重试。
 
-> Last updated: 2026-08-11
+> Last updated: 2026-08-14
 > Status: 核心架构决策仍有效；当前正式发布基线为 KodaX Space 0.1.39（package 0.1.39）/ npm 正式发布的精确 KodaX 0.7.85。中间方案与否决理由见 [ADR/](ADR/)；当前能力边界见 [KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md)。
 > Companion doc: [PRD](PRD.md)
 
