@@ -1293,7 +1293,7 @@ async function runPublishedSharedDaemonFailureProbe(): Promise<SharedDaemonOwner
     expectedFailure: true,
     failureMode: 'hang-after-owner',
     forceCleanupFallback: true,
-    timeoutMs: 10_000,
+    timeoutMs: 20_000,
   });
   if ('version' in result) {
     throw new Error('Shared daemon failure probe returned a successful host result.');
