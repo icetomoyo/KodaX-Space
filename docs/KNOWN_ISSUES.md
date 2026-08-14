@@ -2,7 +2,7 @@
 
 Last Updated: 2026-08-14
 
-> Historical issue details are preserved as investigation evidence. Resolved items older than 30 days move to [ISSUES_ARCHIVED.md](ISSUES_ARCHIVED.md) without losing their investigation record. The latest published Space [`v0.1.40`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.40) baseline uses exact npm Registry KodaX 0.7.86 and requires `sandboxRuntime:3`. Start from the [documentation hub](README.md) for current behavior and status.
+> Historical issue details are preserved as investigation evidence. Resolved items older than 30 days move to [ISSUES_ARCHIVED.md](ISSUES_ARCHIVED.md) without losing their investigation record. The latest published Space [`v0.1.41`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.41) baseline uses exact npm Registry KodaX 0.7.87 and requires `sandboxRuntime:3`. Start from the [documentation hub](README.md) for current behavior and status.
 
 ## Issue Index
 
@@ -13054,7 +13054,7 @@ history remained correct:
 
 - Priority: High
 - Status: Resolved
-- Fixed: Unreleased
+- Fixed: v0.1.41
 - Introduced: v0.1.38 daemon Runtime recovery projection
 - Created: 2026-08-14
 
@@ -13108,7 +13108,7 @@ not require a new SDK event, payload field, capability, or KodaX live-projection
   was required. Automated regressions cover live retry/fallback/thinking recovery, daemon bridge
   isolation, active reconnect, history folding, cursor fencing, tools, and non-replacing actions.
 - See
-  [ISSUE_181_UNRELEASED_REGRESSION_GUIDE.md](test-guides/ISSUE_181_UNRELEASED_REGRESSION_GUIDE.md)
+  [ISSUE_181_v0.1.41_REGRESSION_GUIDE.md](test-guides/ISSUE_181_v0.1.41_REGRESSION_GUIDE.md)
   for packaged-app acceptance coverage.
 
 ## Summary

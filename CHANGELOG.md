@@ -14,10 +14,17 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ## [Unreleased]
 
+_No changes yet._
+
+---
+
+## [0.1.41] - 2026-08-14
+
 ### Changed
 
-- Root and Desktop now resolve exact npm-published `@kodax-ai/kodax@0.7.87`,
-  including the GLM-5.3 Zhipu Coding Plan defaults and effort mapping.
+- Root and Desktop now resolve the latest npm `@kodax-ai/kodax` release,
+  currently exact `0.7.87`, including the GLM-5.3 Zhipu Coding Plan defaults
+  and effort mapping. The lockfile records the Registry tarball and SRI.
 
 ### Fixed
 
@@ -26,6 +33,12 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
   existing ordered recovery event in live rendering, history reconciliation,
   and active observation replay, so the transcript is identical before and
   after Ctrl+R without content-based deduplication or new SDK requirements.
+
+### Documentation
+
+- Synchronized the README files, PRD, HLD, Feature List, capability ledger,
+  known issues, usage/user manuals, release design, regression guide, and the
+  in-app `kodax_manual` for v0.1.41.
 
 ---
 

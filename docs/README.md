@@ -1,21 +1,18 @@
 # KodaX Space 文档中心
 
-> **2026-08-14 当前正式发布基线**：KodaX Space [`v0.1.40`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.40)（package `0.1.40`）使用 npm
-> Registry 的精确 KodaX `0.7.86` 包。受管理的 Coder daemon 除既有 Runtime 安全能力外，
+> **2026-08-14 当前正式发布基线**：KodaX Space [`v0.1.41`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.41)（package `0.1.41`）使用 npm
+> Registry 的精确 KodaX `0.7.87` 包。受管理的 Coder daemon 除既有 Runtime 安全能力外，
 > 还必须协商 `managedRunDurability:1`、`actorSettlementConvergence:1`、
 > `sessionEventJournal:1` 和 `sandboxRuntime:3`；Space 将 durable `runId`/`turnId` 绑定到
-> optimistic composer history，并串行化活动 Session 的输入准入与历史重验。v0.1.40 还覆盖
+> optimistic composer history，并串行化活动 Session 的输入准入与历史重验。v0.1.41 还覆盖
 > sandbox-first Shell、Issue 128 打包链路和 SDK 原子 owner reconciliation。
 > 未配置 Auto LLM timeout 时使用 SDK 首次 45 秒、重试 90 秒的默认值。
-> 见 [v0.1.40](features/v0.1.40.md)、[发布记录](releases/v0.1.40-release-readiness.md)、
-> [能力台账](KODAX_CAPABILITY_LEDGER.md)和
-> [应用内手册来源](../apps/desktop/electron/kodax/space-manual-topics.ts)。
 
 > **2026-08-14 当前源码基线**：root/Desktop 已升级到精确 Registry KodaX
-> `0.7.86`，并在 SDK 预检、daemon 连接、Settings sandbox 状态和正式打包烟测中
+> `0.7.87`，并在 SDK 预检、daemon 连接、Settings sandbox 状态和正式打包烟测中
 > 要求 `sandboxRuntime:3`。v0.1.39 / KodaX 0.7.85 的发布记录保持历史事实。
 
-> 历史发布基线：KodaX Space [`v0.1.35`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.35)（package `0.1.35`）/ npm 正式发布的精确 KodaX `0.7.80`；历史 release 文档继续保留当时事实。
+> 历史发布基线：KodaX Space [`v0.1.40`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.40)（package `0.1.40`）/ npm 正式发布的精确 KodaX `0.7.86`；历史 release 文档继续保留当时事实。
 
 这里是文档的统一入口。当前 `main` 的完整退出修复要求 Runtime 明确提供
 `daemonOrphanExit:1`：
@@ -25,11 +22,11 @@ interrupt input、Actor/Turn v1 和 Auto LLM guardrail；Settings 可在无活�
 KodaX 版本号或 guardrail 版本推断。Partner 继续由 Space inline owner 管理，完整 F117/F118
 桌面管理体验仍在后续路线中。历史设计和 release 记录保留当时语境。
 
-当前源码维护把底部“上下文窗口”改为按最终自动压缩阈值计算的有效窗口，并把模型最大上下文、自动压缩阈值、最近一次模型输入构成和距压缩剩余量分层展示；“会话 Token 用量”则独立累计根/子 Agent 的 Provider 调用与缓存分类。两者不能互换：前者是最近一次主模型请求的输入压力快照，后者是整个 Session 已发生的累计用量。v0.1.40 继续保留 v0.1.39 的多 Session 恢复、活动 Session 输入准入、历史分页、安全退出恢复隔离和 `(sessionId, journalEpoch, seq)` 水位隔离，并记录 sandbox v3、Issue 128 和 Issue 180 的当前边界。
+当前源码维护把底部“上下文窗口”改为按最终自动压缩阈值计算的有效窗口，并把模型最大上下文、自动压缩阈值、最近一次模型输入构成和距压缩剩余量分层展示；“会话 Token 用量”则独立累计根/子 Agent 的 Provider 调用与缓存分类。两者不能互换：前者是最近一次主模型请求的输入压力快照，后者是整个 Session 已发生的累计用量。v0.1.41 继续保留 v0.1.39 的多 Session 恢复、活动 Session 输入准入、历史分页、安全退出恢复隔离和 `(sessionId, journalEpoch, seq)` 水位隔离，并记录 sandbox v3、Issue 128 和 Issue 180 的当前边界。
 
-KodaX 0.7.86 的配置说明也已收口：核心配置仍在 `~/.kodax/config.json`，MCP、可信 Extension 路径和 A2A 分别位于 `~/.kodax/integrations/mcp.json`、`extensions.json`、`a2a.json`。Settings → Runtime 会显示三个域的来源、revision、watcher、最近 reload 和有界诊断；Runtime 对无效更新保留 last-known-good 配置，并发写冲突要求 reload 后重试。应用内 `kodax_manual` 会继承当前安装 SDK 推荐的原始底层能力主题，再叠加 Space 操作说明。Coder 同时要求 `sandboxRuntime:3`、`actorSettlementConvergence:1` 与 `sessionEventJournal:1`，并按 `(sessionId, journalEpoch, seq)` 隔离事件水位。
+KodaX 0.7.87 的配置说明也已收口：核心配置仍在 `~/.kodax/config.json`，MCP、可信 Extension 路径和 A2A 分别位于 `~/.kodax/integrations/mcp.json`、`extensions.json`、`a2a.json`。Settings → Runtime 会显示三个域的来源、revision、watcher、最近 reload 和有界诊断；Runtime 对无效更新保留 last-known-good 配置，并发写冲突要求 reload 后重试。应用内 `kodax_manual` 会继承当前安装 SDK 推荐的原始底层能力主题，再叠加 Space 操作说明。Coder 同时要求 `sandboxRuntime:3`、`actorSettlementConvergence:1` 与 `sessionEventJournal:1`，并按 `(sessionId, journalEpoch, seq)` 隔离事件水位。
 
-当前 KodaX 0.7.86 还提供 Run-scoped `sandbox.envPass`。Settings → Runtime
+当前 KodaX 0.7.87 还提供 Run-scoped `sandbox.envPass`。Settings → Runtime
 可编辑变量名 allow-list；Space 将显式列表投影到所有 Coder、Partner、legacy 与 Workflow
 Run，变量值只在命令执行 host 读取。超出有界编辑器限制的 CLI 配置会完整保留并以只读方式
 显示，避免静默截断。
@@ -73,15 +70,18 @@ Run，变量值只在命令执行 host 读取。超出有界编辑器限制的 C
 | `FEATURE_LIST.md`                                    | 版本路线图        | 只有可交付、可验证的版本项进入 active list             |
 | `KNOWN_ISSUES.md`                                    | 当前问题          | 已解决项保留结论，新增问题需有复现和状态               |
 | `BUILTIN_SKILLS.md`                                  | builtin 分发维护  | 固定来源、许可、补丁、更新和打包完整性                 |
-| `features/v0.1.40.md`                                | 当前 release 设计 | KodaX 0.7.86、sandbox v3、owner reconciliation 与发布边界 |
-| `releases/v0.1.40-release-readiness.md`              | 当前发布记录      | 门禁、GitHub CI、产物证据和人工项                         |
+| `features/v0.1.41.md`                                | current release design | Provider recovery, latest KodaX 0.7.87, and release boundary |
+| `releases/v0.1.41-release-readiness.md`              | current release record | Gates, GitHub CI, artifact evidence, and regression items |
+| `test-guides/ISSUE_181_v0.1.41_REGRESSION_GUIDE.md`  | current regression acceptance | Provider recovery, reconnect, history, and Ctrl+R |
+| `features/v0.1.40.md`                                | 历史 release 设计 | KodaX 0.7.86、sandbox v3、owner reconciliation 与发布边界 |
+| `releases/v0.1.40-release-readiness.md`              | 历史发布记录      | 门禁、GitHub CI、产物证据和人工项                         |
 | `features/v0.1.39.md`                                | 历史 release 设计 | KodaX 0.7.85、Actor convergence、journal epoch 与发布边界 |
 | `releases/v0.1.39-release-readiness.md`              | 历史发布记录      | 门禁、GitHub CI、产物证据和人工项                         |
 | `features/v0.1.38.md`                                | 历史 release 设计 | KodaX 0.7.84、Session reactivation 与发布边界          |
 | `releases/v0.1.38-release-readiness.md`              | 历史发布记录      | 门禁、GitHub CI、产物证据和发布资产                    |
-| `releases/v0.1.37-release-readiness.md`              | 当前发布记录      | 记录门禁、GitHub CI、产物证据和未执行人工项            |
+| `releases/v0.1.37-release-readiness.md`              | 历史发布记录      | 保留 v0.1.37 门禁、GitHub CI、产物证据和人工项         |
 | `releases/v0.1.35-release-readiness.md`              | 历史发布记录      | 保留已发布版本的门禁、产物哈希和人工项                 |
-| `test-guides/ISSUE_128_v0.1.40_REGRESSION_GUIDE.md`  | 当前回归验收      | 覆盖 sandbox v3、打包 Windows Shell 和重启链路         |
+| `test-guides/ISSUE_128_v0.1.40_REGRESSION_GUIDE.md`  | 历史回归验收      | 覆盖 sandbox v3、打包 Windows Shell 和重启链路         |
 | `test-guides/ISSUE_178_v0.1.39_REGRESSION_GUIDE.md`  | 历史回归验收      | 覆盖 unknown Run、精确 Stop、journal epoch 和输入去重 |
 | `test-guides/ISSUE_176_v0.1.38_REGRESSION_GUIDE.md`  | 历史回归验收      | 覆盖 Session 重新激活、canonical 去重和跨 Session 隔离 |
 | `test-guides/ISSUE_175_v0.1.37_REGRESSION_GUIDE.md`  | 历史回归验收      | 覆盖安全退出、daemon 恢复和多 Session 隔离             |

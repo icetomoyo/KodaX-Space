@@ -1,6 +1,6 @@
 # KodaX Space 运行与开发指南
 
-> **当前发布基线（2026-08-14）**：KodaX Space `v0.1.40` / npm Registry KodaX `0.7.86`。
+> **当前发布基线（2026-08-14）**：KodaX Space `v0.1.41` / npm Registry KodaX `0.7.87`。
 > Space 管理的 daemon 需要 `managedRunDurability:1`：接受的首条/队列输入及完成回合
 > 在生命周期事件前持久化为 canonical Run。Space 绑定确认的 `runId` 和流式 `turnId`，不以版本号代替能力协商。
 > 未显式设置 Auto LLM timeout 时，SDK 使用首次 `45000ms`、重试 `90000ms`。
@@ -9,7 +9,7 @@
 >
 > 当前 `main` 对 Space 管理的 daemon 要求专用的 `daemonOrphanExit:1` 能力；
 > 不使用 KodaX 语义版本或 Auto-mode guardrail 版本代替生命周期能力判断。
-> 当前版本为 KodaX Space [`v0.1.40`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.40) / 精确 Registry KodaX `0.7.86`。
+> 当前版本为 KodaX Space [`v0.1.41`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.41) / 精确 Registry KodaX `0.7.87`。
 > 本版本包含 v0.1.39 的多 Session 恢复、精确 run/turn history/live 对齐、Session journal epoch 隔离、完整退出恢复、Agent progress/同 owner Stop 收敛，以及 sandbox v3、Issue 128 打包 Shell、Issue 180 owner reconciliation 和对应的 builtin/manual/Node/build/打包工具链维护。
 
 ## 1. 环境要求

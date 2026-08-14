@@ -47,7 +47,7 @@ try {
     sessionsDir: path.join(process.env.F118_HOME, 'sessions'),
     clientInfo: {
       name: 'f118-daemon-host',
-      version: '0.1.40',
+      version: '0.1.41',
       instanceId: randomUUID(),
       instanceSecret: randomBytes(32).toString('base64url'),
     },
@@ -258,7 +258,7 @@ test(
           sessionsDir: path.join(homeDir, 'sessions'),
           clientInfo: {
             name: 'kodax-space-f118-service',
-            version: '0.1.40',
+            version: '0.1.41',
             instanceId: randomUUID(),
             instanceSecret: randomBytes(32).toString('base64url'),
           },
