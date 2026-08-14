@@ -1,7 +1,7 @@
 # KodaX Space Feature List
 
 > Last reviewed: 2026-08-14
-> Latest published release: [`v0.1.39`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.39) (`0.1.39` package baseline; KodaX 0.7.85 Registry alignment)
+> Latest published release: [`v0.1.40`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.40) (`0.1.40` package baseline; KodaX 0.7.86 Registry and sandbox v3 alignment)
 > Current KodaX SDK baseline: exact npm Registry `@kodax-ai/kodax@0.7.86` across both manifests, lock views, and installed bytes (`sha512-6xYcn97r2Q5XKlxMbUZivt/4e3M+2WXfYfV8N4ffgLECxGZrX+tQut7Cmzt7eR3jF36/VLrElUadLBrUD8Lepw==`). Space-managed daemons require explicit capability contracts in addition to the established shared-session safety surface, including `sandboxRuntime:3`, `managedRunDurability:1`, `actorSettlementConvergence:1`, and `sessionEventJournal:1`; lifecycle support is not inferred from SemVer. Delivered interrupt `entryId` remains feature-detected per event. Session journal cursors are compared only within the same `(sessionId, journalEpoch)` lineage.
 > Scope: active roadmap, recent completion audit, and reviewed-out decisions. Older release history lives in [FEATURES_ARCHIVED.md](FEATURES_ARCHIVED.md), per-version designs, and [CHANGELOG.md](../CHANGELOG.md).
 
@@ -22,7 +22,7 @@
 | Planned                  | 20                                                                                                                                                                                                                                                  |
 | InProgress               | 4                                                                                                                                                                                                                                                   |
 | Recent Completed         | 27                                                                                                                                                                                                                                                  |
-| Latest published release | [`v0.1.39`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.39) (KodaX 0.7.85 Registry alignment, Actor settlement convergence, Session journal epochs, exact unknown-Run input/Stop handling, and release documentation synchronization) |
+| Latest published release | [`v0.1.40`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.40) (KodaX 0.7.86 Registry/sandbox v3 alignment, Issue 128 packaged Shell coverage, owner reconciliation, and release documentation synchronization) |
 | 0.1.x completion target  | `v0.1.53`, followed by `v0.1.54` patch/RC reserve                                                                                                                                                                                                   |
 | Far-future candidates    | F144 is scheduled after `v0.2.x`; F138 is explicitly deferred until after `v0.5.x`; other candidates remain in [KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md) and [FEATURES_ARCHIVED.md](FEATURES_ARCHIVED.md#watchlist-and-reopen-gates) |
 
@@ -76,7 +76,7 @@
 | `v0.1.37`       | Recovery and release alignment                                                                                        | Maintenance fixes                 | Released 2026-08-06: aligns KodaX 0.7.83, preserves multi-Session/run/turn ownership through recovery, keeps failed safe close visible and recoverable, and synchronizes the public and in-app manuals.                                                                         |
 | `v0.1.38`       | KodaX 0.7.84 and Session recovery maintenance                                                                         | Maintenance fixes                 | Exact 0.7.84 Registry bytes, bounded Agent progress, same-owner Stop reconciliation, Session reactivation identity recovery, tracked icon packaging, local release gates, and GitHub CI pass without changing business logic in release preparation.                            |
 | `v0.1.39`       | KodaX 0.7.85 settlement convergence and Session journal alignment                                                     | Maintenance fixes                 | Exact 0.7.85 Registry bytes are pinned. Unknown Runs accept exactly-once after-turn input, preserve live history, and Stop only the visible exact Run; Session journal epochs remain isolated. Packaged Windows fault injection and release gates remain.                       |
-| `v0.1.40`       | —                                                                                                                     | none                              | —                                                                                                                                                                                                                                                                               |
+| `v0.1.40`       | KodaX 0.7.86 sandbox and owner-reconciliation maintenance                                                            | Maintenance fixes                 | Exact 0.7.86 Registry bytes are pinned. SDK and Runtime require sandboxRuntime v3; packaged Windows Shell and stale inline-owner recovery are covered by bounded smoke/regression gates. |
 | `v0.1.41`       | —                                                                                                                     | none                              | —                                                                                                                                                                                                                                                                               |
 | `v0.1.42`       | Native document Skills and semantic UI polish                                                                         | F137, F139                        | Independently authored document workflows and semantic UI gates pass without weakening file, delivery, accessibility, or validation boundaries.                                                                                                                                 |
 | `v0.1.43`       | —                                                                                                                     | none                              | —                                                                                                                                                                                                                                                                               |
@@ -216,6 +216,16 @@
 - The release record covers bounded Agent progress, exact same-owner Stop
   recovery, Issue 176 Session reactivation, tracked icon packaging, and the
   complete documentation set. No new Feature ID is marked completed.
+
+### Release preparation - 2026-08-14: v0.1.40 KodaX 0.7.86 sandbox and owner-reconciliation maintenance
+
+- The candidate aligns every Space package manifest and the in-app `kodax_manual`
+  to package `0.1.40` while consuming the exact npm Registry KodaX `0.7.86`
+  bytes and requiring `sandboxRuntime:3` from both SDK and Runtime.
+- The release record covers Issue 128 packaged Electron/ASAR Windows Shell
+  coverage, sandbox-first fallback semantics, Issue 180 owner reconciliation,
+  retryable owner cleanup, and the complete documentation set. No new Feature ID
+  is marked completed.
 
 ### Release preparation - 2026-08-11: v0.1.39 KodaX 0.7.85 maintenance
 

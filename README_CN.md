@@ -96,15 +96,29 @@ KodaX 0.7.86 保留 `actorSettlementConvergence:1` 与 `sessionEventJournal:1`�
 
 底部状态区把主 Agent 上下文压力与整个 Session 累计 Token 分开显示。“上下文窗口”使用最终自动压缩阈值和不含正文的六类构成；完成态物理请求按 request ID 去重，覆盖 root、child、retry、fallback、repair、workflow digest 和 compaction summary。F140 新增“每次询问 / 保留托盘和 Runtime / 彻底退出”偏好。Windows、macOS 或 Linux 真正退出时，Space 会先尝试安全停止 Coder daemon；若有 blocker，则提供默认的“保持开启”和显式“强行关闭”。强行关闭只终止当前 Space 的任务、保留其他客户端的 Runtime 工作，并保证退出不再回到阻塞弹窗。Space 自动拉起的孤儿 daemon 仍会在最后客户端断开且任务空闲后自回收。Terminal 与 Coder 命令工具共享同一个所选 Shell/profile PATH 契约，不接受任意可执行文件，也不把敏感变量投影给 PTY。
 
-F122-F124 继续提供 Partner 项目来源库、不可变证据/引用和自动 grounded context 闭环。F121 仅因最终人工多客户端验收台账保持 `InProgress`；v0.1.39 对缺失 daemon capability（包括 durable managed Run、Actor settlement convergence 和 Session journal）明确失败，并进一步保护活动 Session 的输入准入、history/live 对齐和 journal epoch 隔离。详见 [v0.1.39 发布设计](docs/features/v0.1.39.md)和[能力台账](docs/KODAX_CAPABILITY_LEDGER.md)。
+F122-F124 继续提供 Partner 项目来源库、不可变证据/引用和自动 grounded context 闭环。F121 仅因最终人工多客户端验收台账保持 `InProgress`；v0.1.40 对缺失 daemon capability（包括 durable managed Run、Actor settlement convergence、Session journal 和 sandboxRuntime）明确失败，并继续保护活动 Session 的输入准入、history/live 对齐和 journal epoch 隔离。详见 [v0.1.40 发布设计](docs/features/v0.1.40.md)和[能力台账](docs/KODAX_CAPABILITY_LEDGER.md)。
 
-F135 继续把许可证允许再分发的 `frontend-slides` 与 `huashu-design` 作为经审查的 Space builtin 一起打包。F137 改排到 `v0.1.42`，由 Space 独立创作四个中文优先的替代 Skill；本次 v0.1.39 不包含文档 Skill。详见 [v0.1.42 设计](docs/features/v0.1.42.md)、[builtin skill 文档](docs/BUILTIN_SKILLS.md)和 [v0.1.39 发布记录](docs/releases/v0.1.39-release-readiness.md)。
+F135 继续把许可证允许再分发的 `frontend-slides` 与 `huashu-design` 作为经审查的 Space builtin 一起打包。F137 改排到 `v0.1.42`，由 Space 独立创作四个中文优先的替代 Skill；本次 v0.1.40 不包含文档 Skill。详见 [v0.1.42 设计](docs/features/v0.1.42.md)、[builtin skill 文档](docs/BUILTIN_SKILLS.md)和 [v0.1.40 发布记录](docs/releases/v0.1.40-release-readiness.md)。
 
 F136 让 Windows 后台 owner 可见、可控；F140 允许选择“每次询问”“保留托盘运行”或“彻底退出”。关闭最后一个窗口会销毁 renderer，通知区域 owner 可重开 Space。真正退出采用统一跨平台契约：先尝试安全停止；有任务时提供“保持开启 / 强行关闭”，强退仅取消本 Space 所属工作并完全退出，不误杀其他客户端。KodaX 的专用 `daemonOrphanExit:1` 能力只为 Space 自动拉起的 daemon 增加 30 秒空闲孤儿回收期。
 
 已解决的发布阻断项：KodaX 0.7.76 保留 0.7.75 引入的集中式 Windows `windowsHide` 加固，普通 daemon-backed Coder query 不再闪出短暂子进程控制台。Space 只消费官方 Registry 包，没有内置 SDK 源码补丁。详见 [Issue 091](docs/KNOWN_ISSUES.md#091-ordinary-windows-queries-can-flash-several-short-lived-command-windows-from-kodax-runtime-child-processes)。
 
 ## 当前正式版本
+
+**v0.1.40 - KodaX 0.7.86 Sandbox 与 Owner 收敛发布**
+
+2026-08-14 正式发布 [`v0.1.40`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.40)：package `0.1.40` 精确对齐 npm 正式发布的 KodaX `0.7.86`，SDK 与 Runtime 同时要求 `sandboxRuntime:3`。本版本覆盖 Issue 128 打包 Electron/ASAR Windows Shell 链路、sandbox-first 普通权限 fallback，以及 stale inline owner 的 SDK 原子恢复和可重试清理。
+
+| 区域 | 内容 |
+| --- | --- |
+| Runtime 合约 | KodaX 0.7.86 精确 Registry bytes，并显式协商 `sandboxRuntime:3`、`actorSettlementConvergence:1`、`sessionEventJournal:1`。 |
+| Windows Shell | 打包烟测执行真实 contained marker command，检查 helper 物理路径、daemon sandbox v3 和重启后的 Shell。 |
+| Owner 恢复 | abandoned inline owner 由 SDK 原子协议恢复；active、不可读和不可验证 owner 继续 fail closed，close 失败可重试。 |
+| 文档 | README、中文手册、能力台账、release 设计/记录、回归指南、CHANGELOG 和 `kodax_manual` 同步。 |
+
+详细内容见 [v0.1.40 设计](docs/features/v0.1.40.md) 与
+[v0.1.40 发布记录](docs/releases/v0.1.40-release-readiness.md)。
 
 **v0.1.39 - KodaX 0.7.85 Runtime Convergence Maintenance Release**
 
@@ -289,13 +303,15 @@ npm run e2e:headed
 | [README.md](README.md)                                                                                   | 英文 README。                                               |
 | [CONTRIBUTING.md](CONTRIBUTING.md)                                                                       | 贡献边界、验证要求和文档同步规则。                          |
 | [docs/README.md](docs/README.md)                                                                         | 文档中心，以及当前文档/历史文档索引。                       |
-| [docs/USER_MANUAL.zh-CN.md](docs/USER_MANUAL.zh-CN.md)                                                   | 面向 v0.1.39 发布基线的图解中文手册。                       |
+| [docs/USER_MANUAL.zh-CN.md](docs/USER_MANUAL.zh-CN.md)                                                   | 面向 v0.1.40 发布基线的图解中文手册。                       |
 | [docs/USAGE.md](docs/USAGE.md)                                                                           | 源码启动、profile、Runtime Host、测试、打包与排障。         |
 | [docs/BUILTIN_SKILLS.md](docs/BUILTIN_SKILLS.md)                                                         | builtin skill 的来源、许可、更新、补丁和打包完整性流程。    |
 | [docs/releases/v0.1.34-release-readiness.md](docs/releases/v0.1.34-release-readiness.md)                 | v0.1.34 的发布门禁、产物摘要、已知风险与发布证据。          |
 | [docs/releases/v0.1.37-release-readiness.md](docs/releases/v0.1.37-release-readiness.md)                 | v0.1.37 的 KodaX 0.7.83 合约、门禁与发布证据。              |
-| [docs/features/v0.1.39.md](docs/features/v0.1.39.md)                                                     | v0.1.39 维护范围与 KodaX 0.7.85 边界。                      |
-| [docs/releases/v0.1.39-release-readiness.md](docs/releases/v0.1.39-release-readiness.md)                 | v0.1.39 门禁、KodaX 0.7.85 合约与发布证据。                 |
+| [docs/features/v0.1.40.md](docs/features/v0.1.40.md)                                                     | v0.1.40 维护范围与 KodaX 0.7.86 sandbox 边界。              |
+| [docs/releases/v0.1.40-release-readiness.md](docs/releases/v0.1.40-release-readiness.md)                 | v0.1.40 门禁、KodaX 0.7.86 合约与发布证据。                 |
+| [docs/features/v0.1.39.md](docs/features/v0.1.39.md)                                                     | 历史 v0.1.39 维护范围与 KodaX 0.7.85 边界。                 |
+| [docs/releases/v0.1.39-release-readiness.md](docs/releases/v0.1.39-release-readiness.md)                 | 历史 v0.1.39 门禁、KodaX 0.7.85 合约与发布证据。            |
 | [docs/features/v0.1.38.md](docs/features/v0.1.38.md)                                                     | 历史 v0.1.38 维护范围与 KodaX 0.7.84 边界。                  |
 | [docs/releases/v0.1.38-release-readiness.md](docs/releases/v0.1.38-release-readiness.md)                 | 历史 v0.1.38 门禁、KodaX 0.7.84 合约与发布证据。             |
 | [docs/CODING_AGENT_BEGINNER_BEST_PRACTICES.zh-CN.md](docs/CODING_AGENT_BEGINNER_BEST_PRACTICES.zh-CN.md) | Coding Agent 初学者最佳实践教程，覆盖软件研发和微服务场景。 |
@@ -320,6 +336,7 @@ npm run e2e:headed
 | `v0.1.35`         | 基于已发布 Runtime 学习闭环的最小 learned Skill 安全控制面，不建设第二套存储或多 carrier Learning Center。   |
 | `v0.1.36`         | KodaX 0.7.82、活动 Session 输入准入、history/live 对齐、跨 Session 恢复隔离与发布文档收口。                  |
 | `v0.1.37`         | KodaX 0.7.83、多 Session 恢复、安全退出重启、语义启动背景和发布文档对齐。                                    |
+| `v0.1.40`         | KodaX 0.7.86、sandboxRuntime v3、Issue 128 打包 Shell、stale owner 恢复、可重试 owner 清理与完整发布文档同步。 |
 | `v0.1.39`         | KodaX 0.7.85、Actor settlement convergence、Session journal epoch 隔离、unknown Run 输入、精确 Stop、输入去重与完整发布文档同步。 |
 | `v0.1.38`         | KodaX 0.7.84、Agent progress/Stop 收敛、Session 重新激活恢复、图标打包与完整发布文档同步。                   |
 | `v0.1.42`         | Space 独立实现的中文优先 DOCX/PDF/XLSX/PPTX builtin 与语义 UI 精修，并提供有界执行和真实验证回执。           |

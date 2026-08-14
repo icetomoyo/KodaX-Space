@@ -2,7 +2,7 @@
 
 Last Updated: 2026-08-14
 
-> Historical issue details are preserved as investigation evidence. Resolved items older than 30 days move to [ISSUES_ARCHIVED.md](ISSUES_ARCHIVED.md) without losing their investigation record. The latest published Space [`v0.1.39`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.39) baseline uses exact npm Registry KodaX 0.7.85. Current source uses exact KodaX 0.7.86 and additionally requires `sandboxRuntime:3`. Start from the [documentation hub](README.md) for current behavior and status.
+> Historical issue details are preserved as investigation evidence. Resolved items older than 30 days move to [ISSUES_ARCHIVED.md](ISSUES_ARCHIVED.md) without losing their investigation record. The latest published Space [`v0.1.40`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.40) baseline uses exact npm Registry KodaX 0.7.86 and requires `sandboxRuntime:3`. Start from the [documentation hub](README.md) for current behavior and status.
 
 ## Issue Index
 
@@ -175,7 +175,7 @@ Last Updated: 2026-08-14
 | 177 | High     | Resolved           | History reconciliation could duplicate a recovered answer or place compact notices after a later answer                            | v0.1.38 history/live and local-notice reconciliation         | 2026-08-08 |
 | 178 | High     | Resolved in source | Actor durability unknown blocked input, dropped the live turn after Stop, and misreported self-fence as foreign ownership          | KodaX 0.7.85 / Space v0.1.39                                 | 2026-08-09 |
 | 179 | Medium   | Resolved           | Idle Space exit reported running tasks when only other Runtime clients remained connected                                          | v0.1.39 complete-exit client protection                      | 2026-08-11 |
-| 180 | High     | Resolved           | A crashed inline owner permanently blocked daemon startup until the customer deleted `~/.kodax`                                   | v0.1.38 / KodaX 0.7.84 owner-policy reconciliation           | 2026-08-11 |
+| 180 | High     | Resolved           | A crashed inline owner permanently blocked daemon startup until the customer deleted `~/.kodax`                                   | v0.1.38 / KodaX 0.7.84 owner-policy reconciliation           | 2026-08-14 |
 
 ## Issue Details
 
@@ -184,7 +184,7 @@ Last Updated: 2026-08-14
 - Priority: High
 - Status: Resolved
 - Introduced: v0.1.38 / KodaX 0.7.84 owner-policy reconciliation
-- Fixed: Unreleased Space + KodaX 0.7.86
+- Fixed: v0.1.40 / KodaX 0.7.86
 - Created: 2026-08-11
 - Resolution Date: 2026-08-14
 
@@ -7825,7 +7825,7 @@ Validation:
 - Priority: High
 - Status: Resolved
 - Introduced: v0.1.33 / KodaX 0.7.77 shell-execution adoption
-- Fixed: current Space source / npm-published KodaX 0.7.86
+- Fixed: v0.1.40 / npm-published KodaX 0.7.86
 - Created: 2026-07-28
 - Resolution Date: 2026-08-14
 
@@ -11865,8 +11865,8 @@ evidence, and genuine persistence failure remain unknown rather than being
 force-idled.
 
 Space first consumed that fix through the exact npm Registry KodaX `0.7.84`
-package. Current v0.1.39 source has advanced both manifests, every lock view,
-and installed deduplicated bytes to exact Registry KodaX `0.7.85`, which retains
+package. Current v0.1.40 source has advanced both manifests, every lock view,
+and installed deduplicated bytes to exact Registry KodaX `0.7.86`, which retains
 the fix and adds the explicit Actor-settlement and Session-journal contracts.
 The exact-package Runtime Worker, shared-daemon,
 host Stop-receipt, input-admission, external-Agent, typecheck, and release
