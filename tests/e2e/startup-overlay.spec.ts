@@ -4,6 +4,7 @@ import { launchSpace } from './fixtures.js';
 
 test('boot overlay remains above a painted Shell and is then removed atomically', async () => {
   const space = await launchSpace(`startup-overlay-${Date.now()}`, {
+    waitForRendererReady: false,
     env: {
       SPACE_TEST_BOOT_PAINT_HOLD_MS: '10000',
       SPACE_TEST_STARTUP_OVERLAY_HOLD_MS: '10000',

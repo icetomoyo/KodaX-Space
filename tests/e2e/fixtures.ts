@@ -112,6 +112,8 @@ export interface LaunchSpaceOptions {
   readonly onPageError?: (err: Error) => void;
   /** Additional deterministic environment values for the isolated Electron process. */
   readonly env?: Readonly<Record<string, string>>;
+  /** Skip renderer readiness when a test must observe the initial boot surface. */
+  readonly waitForRendererReady?: boolean;
   /** Test-only hook that runs immediately after Electron connects, before renderer waits. */
   readonly onLaunched?: (app: ElectronApplication) => Promise<void>;
 }
@@ -231,8 +233,10 @@ export async function launchSpace(
     }
     // The main process may show a boot splash first; wait for the real renderer
     // document before tests touch app localStorage or query app controls.
-    await page.waitForLoadState('domcontentloaded');
-    await page.waitForFunction(() => document.getElementById('root') !== null);
+    if (opts?.waitForRendererReady !== false) {
+      await page.waitForLoadState('domcontentloaded');
+      await page.waitForFunction(() => document.getElementById('root') !== null);
+    }
 
     // hook：把 project dir 注入 store + recent list + reload，让 textarea / ModeSelector 都活
     // 抽到这里避免 3 个 spec 都拷一份相同 4 行代码 (review LOW: dedup)
