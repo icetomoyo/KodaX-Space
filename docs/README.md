@@ -51,7 +51,7 @@ Run，变量值只在命令执行 host 读取。超出有界编辑器限制的 C
 | 查看 v0.1.33 的设计与发布证据       | [版本设计与实施状态](features/v0.1.33.md) / [发布记录](releases/v0.1.33-release-readiness.md) / [Feature List](FEATURE_LIST.md)                                           |
 | 查看修正后 v0.1.33 的设计与人工验收 | [版本设计](features/v0.1.33.md) / [F141 人工测试指导](test-guides/FEATURE_141_v0.1.33_TEST_GUIDE.md) / [F142 人工测试指导](test-guides/FEATURE_142_v0.1.33_TEST_GUIDE.md) |
 | 查看 v0.1.34 的设计与发布证据       | [Runtime 安全设计](features/v0.1.34.md) / [发布记录](releases/v0.1.34-release-readiness.md) / [Feature List](FEATURE_LIST.md)                                             |
-| 查看 v0.1.42 文档 Skill 规划        | [F137/F139 设计](features/v0.1.42.md)                                                                                                                                     |
+| 查看 v0.1.61 文档 Skill 规划        | [F137/F139 设计](features/v0.1.61.md)                                                                                                                                     |
 | 查看 post-v0.5.x OS 沙箱补强规划    | [F138 原生文档/工具 OS 沙箱设计](features/v0.5.x-plus.md)                                                                                                                 |
 | 维护或更新 Space builtin skills     | [Builtin skill 维护说明](BUILTIN_SKILLS.md)                                                                                                                               |
 | 报告或核对已知问题                  | [Known Issues](KNOWN_ISSUES.md) / [已归档问题](ISSUES_ARCHIVED.md)                                                                                                        |

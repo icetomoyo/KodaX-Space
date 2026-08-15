@@ -909,9 +909,9 @@ Space 严格遵守：
 | `v0.1.33`           | Stabilize KodaX 0.7.77 Actor/history/usage contracts and add bounded Shell/F140 desktop lifecycle control.                                                                                    |
 | corrected `v0.1.33` | Add safe customer-selectable Coder ownership and exact packaged Runtime dependency/boot gates before reissuing the withdrawn release.                                                         |
 | `v0.1.34`           | Adopt KodaX 0.7.78 safety contracts, resilient integration health, visible complete exit/orphan recovery, physical sandbox helpers, one startup overlay, and exact positional history replay. |
-| `v0.1.42`           | Add the independently authored F137 native document Skill suite and F139 semantic UI polish without weakening F138 boundaries.                                                                |
-| `v0.1.45`           | Extend Workflow snapshot schema for same-session replay provenance; attach evidence review receipts to objects.                                                                               |
-| `v0.1.49`           | Host KX-F260 Memory Agent over existing F228/F088 governance when published.                                                                                                                  |
+| `v0.1.61`           | Add the independently authored F137 native document Skill suite and F139 semantic UI polish without weakening F138 boundaries.                                                                |
+| `v0.1.64`           | F130 Partner Composer-First Skill Workspace becomes the sole Partner task-workspace UX authority over the shipped F095/F103 shell.                                                             |
+| `v0.1.68`           | Host KX-F260 Memory Agent over existing F228/F088 governance when published.                                                                                                                  |
 | `v0.1.35`           | Host the minimum learned-Skill safety surface over published `learningCenter:1` + `skillLearningLoop:1`.                                                                                      |
 | `v0.1.36`           | Harden active-Session input admission, exact run/turn ownership, paged history reconciliation, and renderer recovery without adding a second Runtime store.                                   |
 | `v0.1.37`           | Align the exact KodaX 0.7.83 package and release docs while preserving multi-Session recovery, safe-close recovery, and renderer ownership boundaries.                                        |
@@ -919,7 +919,7 @@ Space 严格遵守：
 | `v0.1.41`           | Consume the existing ordered KodaX provider.recovery event across daemon/live/history/reconnect projections, pin the latest npm KodaX package exactly, and keep Space as a bounded compatibility/presentation host. |
 | `v0.1.40`           | Align the exact KodaX 0.7.86 package and manual, require sandboxRuntime v3, qualify the packaged Windows Shell chain, and reconcile stale inline owners through the SDK. |
 | `v0.1.38`           | Align the exact KodaX 0.7.84 package and manual while preserving bounded Agent progress, same-owner Stop recovery, and Session reactivation identity boundaries.                              |
-| `v0.1.53`           | Complete locale gates, release diagnostics, channels/updater/distribution trust.                                                                                                              |
+| `v0.1.72`           | Complete locale gates, release diagnostics, channels/updater/distribution trust.                                                                                                              |
 
 ### 20.2 Active 0.2.x architecture lanes
 

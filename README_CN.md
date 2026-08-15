@@ -98,7 +98,7 @@ KodaX 0.7.87 保留 `actorSettlementConvergence:1` 与 `sessionEventJournal:1`�
 
 F122-F124 继续提供 Partner 项目来源库、不可变证据/引用和自动 grounded context 闭环。F121 仅因最终人工多客户端验收台账保持 `InProgress`；v0.1.41 对缺失 daemon capability（包括 durable managed Run、Actor settlement convergence、Session journal 和 sandboxRuntime）明确失败，并继续保护活动 Session 的输入准入、history/live 对齐和 journal epoch 隔离。详见 [v0.1.41 发布设计](docs/features/v0.1.41.md)和[能力台账](docs/KODAX_CAPABILITY_LEDGER.md)。
 
-F135 继续把许可证允许再分发的 `frontend-slides` 与 `huashu-design` 作为经审查的 Space builtin 一起打包。F137 改排到 `v0.1.42`，由 Space 独立创作四个中文优先的替代 Skill；本次 v0.1.41 不包含文档 Skill。详见 [v0.1.42 设计](docs/features/v0.1.42.md)、[builtin skill 文档](docs/BUILTIN_SKILLS.md)和 [v0.1.41 发布记录](docs/releases/v0.1.41-release-readiness.md)。
+F135 继续把许可证允许再分发的 `frontend-slides` 与 `huashu-design` 作为经审查的 Space builtin 一起打包。F137 改排到 `v0.1.61`，由 Space 独立创作四个中文优先的替代 Skill；本次 v0.1.41 不包含文档 Skill。详见 [v0.1.61 设计](docs/features/v0.1.61.md)、[builtin skill 文档](docs/BUILTIN_SKILLS.md)和 [v0.1.41 发布记录](docs/releases/v0.1.41-release-readiness.md)。
 
 F136 让 Windows 后台 owner 可见、可控；F140 允许选择“每次询问”“保留托盘运行”或“彻底退出”。关闭最后一个窗口会销毁 renderer，通知区域 owner 可重开 Space。真正退出采用统一跨平台契约：先尝试安全停止；有任务时提供“保持开启 / 强行关闭”，强退仅取消本 Space 所属工作并完全退出，不误杀其他客户端。KodaX 的专用 `daemonOrphanExit:1` 能力只为 Space 自动拉起的 daemon 增加 30 秒空闲孤儿回收期。
 
@@ -354,9 +354,9 @@ npm run e2e:headed
 | `v0.1.40`         | KodaX 0.7.86、sandboxRuntime v3、Issue 128 打包 Shell、stale owner 恢复、可重试 owner 清理与完整发布文档同步。                    |
 | `v0.1.39`         | KodaX 0.7.85、Actor settlement convergence、Session journal epoch 隔离、unknown Run 输入、精确 Stop、输入去重与完整发布文档同步。 |
 | `v0.1.38`         | KodaX 0.7.84、Agent progress/Stop 收敛、Session 重新激活恢复、图标打包与完整发布文档同步。                                        |
-| `v0.1.42`         | Space 独立实现的中文优先 DOCX/PDF/XLSX/PPTX builtin 与语义 UI 精修，并提供有界执行和真实验证回执。                                |
-| `v0.1.40-v0.1.44` | Workflow/Review 证据面、Task/Capability 治理，以及 SDK-gated Memory Agent host。                                                  |
-| `v0.1.48`         | 本地化完成、beta diagnostics、release channel、updater/distribution trust。                                                       |
+| `v0.1.61`         | Space 独立实现的中文优先 DOCX/PDF/XLSX/PPTX builtin 与语义 UI 精修，并提供有界执行和真实验证回执。                                |
+| `v0.1.64`、`v0.1.66-v0.1.68` | Partner Skill workspace、knowledge quality/curation、Presentation Project 与 SDK-gated Memory Agent host。                                                  |
+| `v0.1.72`         | 本地化完成、beta diagnostics、release channel、updater/distribution trust。                                                       |
 | `v0.2.x`          | Governed Browser 与 Partner packs、只读 Connector snapshots、本地 Automations、可刷新 Artifacts。                                 |
 
 Remote runner、Notebook、Knowledge Graph、桌面 screen automation 和未发布 External Agent adapter 都是带 reopen gate 的 watchlist，不是已承诺版本 feature。

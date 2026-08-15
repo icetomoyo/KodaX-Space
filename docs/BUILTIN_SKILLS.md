@@ -123,7 +123,7 @@ KodaX Space. Use a redistributable implementation or obtain explicit
 redistribution permission before adding equivalent builtin skills.
 
 F137 plans independent Chinese-first `docx`, `pdf`, `xlsx`, and `pptx`
-implementations for `v0.1.42`. Their design starts from Space's own document
+implementations for `v0.1.61`. Their design starts from Space's own document
 contracts and public format/library documentation; a later capability-only
 comparison is recorded without copying or translating proprietary prompts,
 code, examples, assets, tests, or structure. GA uses bounded Worker/child-process
@@ -134,4 +134,4 @@ OCR/recalculation/render operations remain unavailable only when their adapters
 or functional/fidelity fixtures do not qualify; the post-v0.5.x F138 OS sandbox
 is not a prerequisite. First-party authored sources are kept separate from
 generated builtin snapshots. See
-[the v0.1.42 design](features/v0.1.42.md).
+[the v0.1.61 design](features/v0.1.61.md).
