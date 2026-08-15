@@ -90,12 +90,17 @@ export function sanitizeInputForDisplay(
   const seen = new WeakSet<object>();
   seen.add(input);
   const entries = Object.entries(input);
+  // 截断时预留两个标记位（__truncated / __originalEntries），保持总数 ≤ 128，
+  // 与 permissionInputSchema 的 refine 上限对齐。
   const entryLimit =
-    entries.length > MAX_COLLECTION_ITEMS ? MAX_COLLECTION_ITEMS - 1 : MAX_COLLECTION_ITEMS;
+    entries.length > MAX_COLLECTION_ITEMS ? MAX_COLLECTION_ITEMS - 2 : MAX_COLLECTION_ITEMS;
   for (const [key, value] of entries.slice(0, entryLimit)) {
     out[key] = sanitizeValue(value, key, 0, seen);
   }
-  if (entries.length > MAX_COLLECTION_ITEMS) out.__truncated = true;
+  if (entries.length > MAX_COLLECTION_ITEMS) {
+    out.__truncated = true;
+    out.__originalEntries = entries.length;
+  }
   return out;
 }
 
@@ -113,7 +118,7 @@ function sanitizeValue(value: unknown, key: string, depth: number, seen: WeakSet
     const itemLimit =
       value.length > MAX_COLLECTION_ITEMS ? MAX_COLLECTION_ITEMS - 1 : MAX_COLLECTION_ITEMS;
     const items = value.slice(0, itemLimit).map((item) => sanitizeValue(item, '', depth + 1, seen));
-    if (value.length > MAX_COLLECTION_ITEMS) items.push('[TRUNCATED]');
+    if (value.length > MAX_COLLECTION_ITEMS) items.push(`[TRUNCATED: ${value.length} items]`);
     return items;
   }
   if (value && typeof value === 'object') {
@@ -122,11 +127,14 @@ function sanitizeValue(value: unknown, key: string, depth: number, seen: WeakSet
     const out: Record<string, unknown> = {};
     const entries = Object.entries(value as Record<string, unknown>);
     const entryLimit =
-      entries.length > MAX_COLLECTION_ITEMS ? MAX_COLLECTION_ITEMS - 1 : MAX_COLLECTION_ITEMS;
+      entries.length > MAX_COLLECTION_ITEMS ? MAX_COLLECTION_ITEMS - 2 : MAX_COLLECTION_ITEMS;
     for (const [nestedKey, nestedValue] of entries.slice(0, entryLimit)) {
       out[nestedKey] = sanitizeValue(nestedValue, nestedKey, depth + 1, seen);
     }
-    if (entries.length > MAX_COLLECTION_ITEMS) out.__truncated = true;
+    if (entries.length > MAX_COLLECTION_ITEMS) {
+      out.__truncated = true;
+      out.__originalEntries = entries.length;
+    }
     return out;
   }
   return value;

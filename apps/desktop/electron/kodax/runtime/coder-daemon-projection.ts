@@ -309,6 +309,10 @@ function jsonValueEnd(source: string, from: number): number | undefined {
   return undefined;
 }
 
+function permissionPreviewSizeLabel(length: number): string {
+  return length >= 1024 ? `${(length / 1024).toFixed(1)} KB` : `${length} chars`;
+}
+
 function recoverPermissionInputPrefix(inputPreview: string): Record<string, unknown> | undefined {
   let index = skipWhitespace(inputPreview, 0);
   if (inputPreview[index] !== '{') return undefined;
@@ -350,7 +354,7 @@ function recoverPermissionInputPrefix(inputPreview: string): Record<string, unkn
   if (Object.keys(recovered).length === 0) return undefined;
   return {
     ...recovered,
-    _inputPreview: '[PARTIAL: recovered display fields from truncated permission input preview]',
+    _inputPreview: `[PARTIAL: recovered display fields from truncated permission input preview (${permissionPreviewSizeLabel(inputPreview.length)})]`,
     __truncated: true,
   };
 }
@@ -359,7 +363,7 @@ function parsePermissionInput(inputPreview: unknown): Record<string, unknown> | 
   if (typeof inputPreview !== 'string' || inputPreview.length === 0) return undefined;
   if (inputPreview.length > MAX_PERMISSION_INPUT_PREVIEW) {
     return {
-      _inputPreview: '[OMITTED: oversized permission input preview]',
+      _inputPreview: `[OMITTED: oversized permission input preview (${permissionPreviewSizeLabel(inputPreview.length)})]`,
       __truncated: true,
     };
   }
@@ -1002,6 +1006,7 @@ function runStatusFromEvent(event: RuntimeTypedEvent): RuntimeRunStatus | undefi
 
 export class CoderSessionProjectionReducer {
   #projection: SpaceSessionLiveProjectionT;
+  #draftTurnId: string | undefined;
   #draftCheckpoint:
     | {
         runId: string;
@@ -1018,6 +1023,7 @@ export class CoderSessionProjectionReducer {
     replayEvents: readonly RuntimeTypedEvent[] = [],
   ) {
     this.#projection = spaceSessionLiveProjectionSchema.parse(projection);
+    this.#draftTurnId = this.#projection.activeRun?.turnId;
     for (const run of runs) this.#runs.set(run.runId, run);
     this.#bootstrapDraftAttempt(replayEvents);
   }
@@ -1043,7 +1049,8 @@ export class CoderSessionProjectionReducer {
     const payload = record(event.payload);
     if (
       isTransientChildRuntimeEvent(event) &&
-      (event.type === 'assistant.delta' ||
+      (event.type === 'turn.started' ||
+        event.type === 'assistant.delta' ||
         event.type === 'thinking.delta' ||
         event.type === 'thinking.finished' ||
         event.type === 'provider.recovery' ||
@@ -1055,6 +1062,24 @@ export class CoderSessionProjectionReducer {
         event.type === 'todo.updated')
     ) {
       return null;
+    }
+    if (
+      event.type === 'turn.started' &&
+      event.runId === this.#projection.activeRun?.runId &&
+      event.turnId !== undefined &&
+      event.turnId !== this.#draftTurnId
+    ) {
+      const activeRun = { ...this.#projection.activeRun, turnId: event.turnId };
+      const run = this.#runs.get(event.runId);
+      if (run) this.#runs.set(event.runId, { ...run, turnId: event.turnId });
+      this.#draftCheckpoint = undefined;
+      this.#draftTurnId = event.turnId;
+      return this.#commit(event.seq, {
+        domain: 'run',
+        activeRun,
+        queuedRuns: this.#projection.queuedRuns,
+        resetRunScopedState: true,
+      });
     }
     if (event.type === 'run.progress' && payload?.kind === 'iteration_start') {
       if (this.#checkpointDrafts(event.runId, event.seq)) {
@@ -1218,6 +1243,10 @@ export class CoderSessionProjectionReducer {
       const resetRunScopedState =
         (TERMINAL_PHASES.has(run.phase as never) && previousActiveRunId === run.runId) ||
         (nextActiveRunId !== undefined && nextActiveRunId !== previousActiveRunId);
+      if (resetRunScopedState) {
+        this.#draftCheckpoint = undefined;
+        this.#draftTurnId = runs.activeRun?.turnId;
+      }
       return this.#commit(
         event.seq,
         {
@@ -1322,6 +1351,7 @@ export class CoderSessionProjectionReducer {
           event.seq <= this.#projection.cursor.seq,
       )
       .sort((left, right) => left.seq - right.seq);
+    if (this.#rebuildCurrentTurnDrafts(retainedEvents)) return;
     let checkpointAvailable = false;
     let hasReplayableRecovery = false;
     let awaitingCompleteCheckpoint = false;
@@ -1403,6 +1433,46 @@ export class CoderSessionProjectionReducer {
       draftRecoveries: rebuilt.draftRecoveries,
       draftCheckpoints: rebuilt.draftCheckpoints,
     });
+  }
+
+  #rebuildCurrentTurnDrafts(retainedEvents: readonly RuntimeTypedEvent[]): boolean {
+    const activeTurnId = this.#projection.activeRun?.turnId;
+    if (!activeTurnId) return false;
+    let turnStartIndex = -1;
+    for (let index = retainedEvents.length - 1; index >= 0; index--) {
+      const event = retainedEvents[index]!;
+      if (
+        !isTransientChildRuntimeEvent(event) &&
+        event.type === 'turn.started' &&
+        event.turnId === activeTurnId
+      ) {
+        turnStartIndex = index;
+        break;
+      }
+    }
+    if (turnStartIndex < 0) return false;
+    const events = retainedEvents.slice(turnStartIndex);
+    const firstSeq = events[0]!.seq;
+    const seed = spaceSessionLiveProjectionSchema.parse({
+      ...this.#projection,
+      cursor: { ...this.#projection.cursor, seq: Math.max(0, firstSeq - 1) },
+      assistantDraft: undefined,
+      thinkingDraft: undefined,
+      draftRecoveries: undefined,
+      draftCheckpoints: undefined,
+    });
+    const replay = new CoderSessionProjectionReducer(seed, [...this.#runs.values()]);
+    for (const event of events) replay.apply(event);
+    this.#draftCheckpoint = replay.#draftCheckpoint;
+    const rebuilt = replay.snapshot();
+    this.#projection = spaceSessionLiveProjectionSchema.parse({
+      ...this.#projection,
+      assistantDraft: rebuilt.assistantDraft,
+      thinkingDraft: rebuilt.thinkingDraft,
+      draftRecoveries: rebuilt.draftRecoveries,
+      draftCheckpoints: rebuilt.draftCheckpoints,
+    });
+    return true;
   }
 
   #commit(

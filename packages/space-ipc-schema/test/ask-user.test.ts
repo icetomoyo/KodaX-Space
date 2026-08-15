@@ -55,6 +55,7 @@ test('askUser.request carries bounded Auto[LLM] diagnostics for guardrail prompt
     toolCall: { toolId: 't_1', toolName: 'bash', input: { command: 'npm test' } },
     autoModeDiagnostics: {
       source: 'classifier_confirm',
+      reason: 'Input exceeds bounded context; unable to verify safety',
       classifierAttempts: [
         {
           attempt: 1,
@@ -66,6 +67,26 @@ test('askUser.request carries bounded Auto[LLM] diagnostics for guardrail prompt
     },
   });
   assert.equal(result.success, true);
+});
+
+test('askUser.request rejects an unbounded Auto[LLM] diagnostics reason', () => {
+  const base = {
+    kind: 'guardrail',
+    reqId: 'req-diagnostics-reason',
+    sessionId: 's_1',
+    reason: 'LLM requested confirmation',
+    toolCall: { toolId: 't_1', toolName: 'bash' },
+  } as const;
+  assert.equal(
+    askUserRequestChannel.payload.safeParse({
+      ...base,
+      autoModeDiagnostics: {
+        source: 'classifier_confirm',
+        reason: 'x'.repeat(513),
+      },
+    }).success,
+    false,
+  );
 });
 
 test('askUser.request rejects unknown or overflowing Auto[LLM] warning codes', () => {

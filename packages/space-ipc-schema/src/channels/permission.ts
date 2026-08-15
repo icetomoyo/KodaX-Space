@@ -44,7 +44,8 @@ const decisionSchema = z.enum(['deny', 'allow_once', 'allow_always']);
 // Structured Auto[LLM] diagnostics shared by the legacy inline askUser lane and
 // the Runtime permission projection. These fields describe how a decision was
 // produced; they never grant authority and never contain classifier prompt or
-// response text.
+// response text. `reason` is the exception surface: a bounded, Runtime-redacted
+// summary of the decision rationale (display-only), never raw model output.
 const autoModeClassifierFailureKindSchema = z.enum([
   'timeout',
   'provider_error',
@@ -121,6 +122,12 @@ export const autoModeDecisionDiagnosticsSchema = z
       'classifier_circuit_breaker',
       'configuration',
     ]),
+    /**
+     * Bounded, redacted summary of the classifier decision rationale produced by
+     * the Runtime. Display-only; never raw classifier prompt/response text and
+     * never an authority source. Omitted by pre-reason Runtimes.
+     */
+    reason: z.string().min(1).max(512).optional(),
     classifierFailureKind: autoModeClassifierFailureKindSchema.optional(),
     classifierAttempts: z.array(autoModeClassifierAttemptSchema).max(4).optional(),
   })

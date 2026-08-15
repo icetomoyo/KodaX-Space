@@ -81,7 +81,13 @@ function diagnosticText(value: unknown, maximum: number): string {
   // without making work proportional to an arbitrarily large malformed field.
   const bounded = value.slice(0, maximum * 4);
   const sanitized = sanitizeInputForDisplay({ value: bounded })?.value;
-  return typeof sanitized === 'string' ? sanitizeForDisplay(sanitized, maximum) : '';
+  if (typeof sanitized !== 'string') return '';
+  // sanitizeForDisplay trims by Unicode scalars, while zod string bounds count
+  // UTF-16 code units: an emoji-heavy field at 512 scalars can reach ~1024 code
+  // units and make the whole strict diagnostics object unparseable. Clamp by
+  // code units last so free-text fields (e.g. classifier reason) never do that.
+  const text = sanitizeForDisplay(sanitized, maximum);
+  return text.length > maximum ? text.slice(0, maximum) : text;
 }
 
 function projectProviderDiagnostics(value: unknown): Record<string, unknown> | undefined {
@@ -168,8 +174,10 @@ export function projectAutoModeDiagnostics(
       })
     : [];
   const classifierFailureKind = enumValue(input.classifierFailureKind, FAILURE_KINDS);
+  const reason = diagnosticText(input.reason, 512);
   const projected = {
     source,
+    ...(reason ? { reason } : {}),
     ...(classifierFailureKind ? { classifierFailureKind } : {}),
     ...(attempts.length > 0 ? { classifierAttempts: attempts } : {}),
   };

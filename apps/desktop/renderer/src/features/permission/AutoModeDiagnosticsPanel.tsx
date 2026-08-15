@@ -49,6 +49,11 @@ export function AutoModeDiagnosticsPanel({
         {t('autoModeDiagnostics.title')}
       </div>
       <div className="text-xs text-fg-primary">{t(SOURCE_LABELS[diagnostics.source])}</div>
+      {diagnostics.reason && (
+        <div className="break-words text-xs text-fg-secondary">
+          {t('autoModeDiagnostics.reason', { reason: diagnostics.reason })}
+        </div>
+      )}
       {diagnostics.classifierFailureKind && (
         <div className="text-xs text-fg-muted">
           {t('autoModeDiagnostics.failureKind')} <code>{diagnostics.classifierFailureKind}</code>

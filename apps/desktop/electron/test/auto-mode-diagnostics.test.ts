@@ -99,3 +99,33 @@ test('Auto[LLM] diagnostic projection bounds warning work before inspecting cand
     },
   );
 });
+
+test('Auto[LLM] diagnostic projection clamps reason by UTF-16 code units for the strict schema', () => {
+  // sanitizeForDisplay trims by Unicode scalars: 511 emoji + ellipsis are ~1023
+  // UTF-16 code units, which zod's .max(512) rejects — without a code-unit
+  // clamp the whole diagnostics object would be dropped (safe but silent).
+  const projected = projectAutoModeDiagnostics({
+    source: 'classifier_confirm',
+    reason: '\u{1F600}'.repeat(600),
+  });
+
+  assert.notEqual(projected, undefined);
+  assert.equal((projected?.reason ?? '').length <= 512, true);
+});
+
+test('Auto[LLM] diagnostic projection bounds, redacts, and strips a long reason', () => {
+  const projected = projectAutoModeDiagnostics({
+    source: 'classifier_confirm',
+    reason: `api_key=sk-secret \u202edlrow ${'x'.repeat(10_000)}`,
+  });
+
+  assert.notEqual(projected, undefined);
+  const reason = projected?.reason ?? '';
+  assert.equal(reason.length <= 512, true);
+  assert.equal(reason.includes('[REDACTED]'), true);
+  assert.equal(reason.includes('\u202e'), false);
+
+  assert.deepEqual(projectAutoModeDiagnostics({ source: 'classifier_confirm', reason: '' }), {
+    source: 'classifier_confirm',
+  });
+});

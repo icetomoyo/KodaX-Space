@@ -148,7 +148,8 @@ test('nested permission collections are bounded before entering the renderer', (
   });
 
   assert.equal((out?.args as unknown[]).length, 128);
-  assert.equal((out?.args as unknown[]).at(-1), '[TRUNCATED]');
+  assert.equal((out?.args as unknown[]).at(-1), '[TRUNCATED: 300 items]');
   assert.equal(Object.keys(out?.nested as Record<string, unknown>).length, 128);
   assert.equal((out?.nested as Record<string, unknown>).__truncated, true);
+  assert.equal((out?.nested as Record<string, unknown>).__originalEntries, 300);
 });

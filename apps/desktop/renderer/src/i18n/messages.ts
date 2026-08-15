@@ -2322,6 +2322,7 @@ export const messages = {
     'permission.risk.high': 'HIGH',
     'permission.risk.danger': 'DANGER',
     'autoModeDiagnostics.title': 'Auto[LLM] decision details',
+  'autoModeDiagnostics.reason': 'Reason: {reason}',
     'autoModeDiagnostics.source.classifierConfirm':
       'The LLM explicitly requested confirmation for this call.',
     'autoModeDiagnostics.source.classifierFailure':
@@ -4523,6 +4524,7 @@ export const messages = {
     'permission.risk.high': '高',
     'permission.risk.danger': '危险',
     'autoModeDiagnostics.title': 'Auto[LLM] 决策详情',
+  'autoModeDiagnostics.reason': '理由：{reason}',
     'autoModeDiagnostics.source.classifierConfirm': 'LLM 明确要求对此调用进行确认。',
     'autoModeDiagnostics.source.classifierFailure':
       '分类器未能产生可用决策；这是分类失败后的兜底确认。',

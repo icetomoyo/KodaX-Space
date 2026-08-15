@@ -161,6 +161,7 @@ const permission = {
   executionCwd: 'C:\\repo',
   autoModeDiagnostics: {
     source: 'classifier_failure',
+    reason: 'Classifier timed out; fallback confirmation required',
     classifierFailureKind: 'timeout',
     classifierAttempts: [
       {
@@ -345,6 +346,7 @@ test('atomic observation maps run, draft, tool, Todo, and interaction truth', ()
     });
     assert.deepEqual(projectedPermission.request.autoModeDiagnostics, {
       source: 'classifier_failure',
+      reason: 'Classifier timed out; fallback confirmation required',
       classifierFailureKind: 'timeout',
       classifierAttempts: [
         {
@@ -448,6 +450,62 @@ test('draft replay fails open when retained journal events cannot establish a re
   const projected = projectRuntimeSessionSnapshotWithDraftReplay(snapshot, replay);
 
   assert.equal(projected.assistantDraft?.text, 'stable replacement');
+});
+
+test('draft replay scopes a cumulative same-Run snapshot to the active root turn', () => {
+  const currentRun = { ...running, turnId: 'turn_current' };
+  const snapshot = {
+    ...observation,
+    cursor: { ...observation.cursor, seq: 6 },
+    runs: [currentRun],
+    live: {
+      ...observation.live,
+      assistantTextByRun: { run_active: 'previous answercurrent answer' },
+      thinkingTextByRun: { run_active: 'previous thinkingcurrent thinking' },
+    },
+  } as unknown as RuntimeSessionObservationSnapshot;
+  const rootEvent = (
+    seq: number,
+    type: RuntimeTypedEvent['type'],
+    turnId: string,
+    payload: unknown,
+  ) =>
+    ({
+      id: `event_root_turn_${seq}`,
+      seq,
+      cursor: { sessionId: 's_code', journalEpoch: 'journal_epoch_shared', seq },
+      time: `2026-07-14T08:04:0${seq}.000Z`,
+      sessionId: 's_code',
+      runId: 'run_active',
+      turnId,
+      type,
+      payload,
+    }) as RuntimeTypedEvent;
+
+  const projected = projectRuntimeSessionSnapshotWithDraftReplay(snapshot, [
+    rootEvent(1, 'turn.started', 'turn_previous', { meta: { contextKind: 'root' } }),
+    rootEvent(2, 'assistant.delta', 'turn_previous', {
+      text: 'previous answer',
+      meta: { contextKind: 'root' },
+    }),
+    rootEvent(3, 'thinking.delta', 'turn_previous', {
+      text: 'previous thinking',
+      meta: { contextKind: 'root' },
+    }),
+    rootEvent(4, 'turn.started', 'turn_current', { meta: { contextKind: 'root' } }),
+    rootEvent(5, 'assistant.delta', 'turn_current', {
+      text: 'current answer',
+      meta: { contextKind: 'root' },
+    }),
+    rootEvent(6, 'thinking.delta', 'turn_current', {
+      text: 'current thinking',
+      meta: { contextKind: 'root' },
+    }),
+  ]);
+
+  assert.equal(projected.activeRun?.turnId, 'turn_current');
+  assert.equal(projected.assistantDraft?.text, 'current answer');
+  assert.equal(projected.thinkingDraft?.text, 'current thinking');
 });
 
 test('draft replay derives a retained checkpoint prefix from the cumulative Runtime draft', () => {
@@ -768,13 +826,14 @@ test('permission projection hides Always allow when Runtime omits a persistent s
 });
 
 test('permission projection does not parse oversized daemon previews', () => {
+  const oversizedPreview = JSON.stringify({ command: 'x'.repeat(9_000) });
   const oversizedObservation = {
     ...observation,
     pendingPermissions: [
       {
         ...permission,
         id: 'permission_oversized',
-        inputPreview: JSON.stringify({ command: 'x'.repeat(9_000) }),
+        inputPreview: oversizedPreview,
       },
     ],
   } as unknown as RuntimeSessionObservationSnapshot;
@@ -785,7 +844,10 @@ test('permission projection does not parse oversized daemon previews', () => {
   if (interaction?.kind === 'permission') {
     assert.equal(interaction.request.toolCall.input?.command, undefined);
     assert.equal(interaction.request.toolCall.input?.__truncated, true);
-    assert.equal(typeof interaction.request.toolCall.input?._inputPreview === 'string', true);
+    assert.equal(
+      interaction.request.toolCall.input?._inputPreview,
+      `[OMITTED: oversized permission input preview (${(oversizedPreview.length / 1024).toFixed(1)} KB)]`,
+    );
   }
 });
 
@@ -816,7 +878,7 @@ test('permission projection recovers bounded display fields from a truncated obj
     assert.equal(interaction.request.toolCall.input?.__truncated, true);
     assert.equal(
       interaction.request.toolCall.input?._inputPreview,
-      '[PARTIAL: recovered display fields from truncated permission input preview]',
+      `[PARTIAL: recovered display fields from truncated permission input preview (${truncatedInputPreview.length} chars)]`,
     );
   }
 });
@@ -1162,8 +1224,21 @@ test('event reducer keeps child activity out of the primary live projection', ()
 
   assert.equal(
     reducer.apply({
-      id: 'event_child_text_42',
+      id: 'event_child_turn_42',
       seq: 42,
+      time: '2026-07-14T08:04:00.000Z',
+      sessionId: 's_code',
+      runId: 'run_active',
+      turnId: 'turn_child',
+      type: 'turn.started',
+      payload: { meta: childMeta },
+    } as unknown as RuntimeTypedEvent),
+    null,
+  );
+  assert.equal(
+    reducer.apply({
+      id: 'event_child_text_43',
+      seq: 43,
       time: '2026-07-14T08:04:00.000Z',
       sessionId: 's_code',
       runId: 'run_active',
@@ -1174,8 +1249,8 @@ test('event reducer keeps child activity out of the primary live projection', ()
   );
   assert.equal(
     reducer.apply({
-      id: 'event_child_thinking_43',
-      seq: 43,
+      id: 'event_child_thinking_44',
+      seq: 44,
       time: '2026-07-14T08:04:01.000Z',
       sessionId: 's_code',
       runId: 'run_active',
@@ -1186,8 +1261,8 @@ test('event reducer keeps child activity out of the primary live projection', ()
   );
   assert.equal(
     reducer.apply({
-      id: 'event_child_tool_44',
-      seq: 44,
+      id: 'event_child_tool_45',
+      seq: 45,
       time: '2026-07-14T08:04:02.000Z',
       sessionId: 's_code',
       runId: 'run_active',
@@ -1198,8 +1273,8 @@ test('event reducer keeps child activity out of the primary live projection', ()
   );
   assert.equal(
     reducer.apply({
-      id: 'event_child_todo_45',
-      seq: 45,
+      id: 'event_child_todo_46',
+      seq: 46,
       time: '2026-07-14T08:04:03.000Z',
       sessionId: 's_code',
       runId: 'run_active',
@@ -1223,8 +1298,8 @@ test('event reducer keeps child activity out of the primary live projection', ()
   assert.equal(unchanged.todos[0]?.id, 'todo_1');
 
   reducer.apply({
-    id: 'event_root_text_46',
-    seq: 46,
+    id: 'event_root_text_47',
+    seq: 47,
     time: '2026-07-14T08:04:04.000Z',
     sessionId: 's_code',
     runId: 'run_active',
@@ -1232,7 +1307,76 @@ test('event reducer keeps child activity out of the primary live projection', ()
     payload: { text: ' root continuation', meta: { contextKind: 'root' } },
   } as unknown as RuntimeTypedEvent);
   assert.equal(reducer.snapshot().assistantDraft?.text, 'partial answer root continuation');
-  assert.equal(reducer.snapshot().cursor.seq, 46);
+  assert.equal(reducer.snapshot().cursor.seq, 47);
+});
+
+test('a new root turn in the same Run resets the previous turn live projection', () => {
+  const reducer = new CoderSessionProjectionReducer(
+    projectRuntimeSessionSnapshot(observation, [askUser]),
+    observation.runs,
+  );
+
+  reducer.apply({
+    id: 'event_next_root_status_42',
+    seq: 42,
+    cursor: { sessionId: 's_code', journalEpoch: 'journal_epoch_shared', seq: 42 },
+    time: '2026-07-14T08:04:00.000Z',
+    sessionId: 's_code',
+    runId: 'run_active',
+    turnId: 'turn_next',
+    type: 'run.updated',
+    payload: { ...running, turnId: 'turn_next' },
+  } as RuntimeTypedEvent);
+  assert.equal(reducer.snapshot().activeRun?.turnId, 'turn_next');
+  assert.equal(reducer.snapshot().assistantDraft?.text, 'partial answer');
+
+  const started = reducer.apply({
+    id: 'event_next_root_turn_43',
+    seq: 43,
+    cursor: { sessionId: 's_code', journalEpoch: 'journal_epoch_shared', seq: 43 },
+    time: '2026-07-14T08:04:01.000Z',
+    sessionId: 's_code',
+    runId: 'run_active',
+    turnId: 'turn_next',
+    type: 'turn.started',
+    payload: { meta: { contextKind: 'root' } },
+  } as RuntimeTypedEvent);
+
+  assert.equal(started?.change.domain, 'run');
+  if (started?.change.domain === 'run') {
+    assert.equal(started.change.activeRun?.turnId, 'turn_next');
+    assert.equal(started.change.resetRunScopedState, true);
+  }
+  assert.equal(reducer.snapshot().assistantDraft, undefined);
+  assert.equal(reducer.snapshot().thinkingDraft, undefined);
+  assert.deepEqual(reducer.snapshot().activeTools, []);
+
+  reducer.apply({
+    id: 'event_next_root_text_44',
+    seq: 44,
+    cursor: { sessionId: 's_code', journalEpoch: 'journal_epoch_shared', seq: 44 },
+    time: '2026-07-14T08:04:02.000Z',
+    sessionId: 's_code',
+    runId: 'run_active',
+    turnId: 'turn_next',
+    type: 'assistant.delta',
+    payload: { text: 'current answer', meta: { contextKind: 'root' } },
+  } as RuntimeTypedEvent);
+  reducer.apply({
+    id: 'event_next_root_thinking_45',
+    seq: 45,
+    cursor: { sessionId: 's_code', journalEpoch: 'journal_epoch_shared', seq: 45 },
+    time: '2026-07-14T08:04:03.000Z',
+    sessionId: 's_code',
+    runId: 'run_active',
+    turnId: 'turn_next',
+    type: 'thinking.delta',
+    payload: { text: 'current thinking', meta: { contextKind: 'root' } },
+  } as RuntimeTypedEvent);
+
+  assert.equal(reducer.snapshot().activeRun?.turnId, 'turn_next');
+  assert.equal(reducer.snapshot().assistantDraft?.text, 'current answer');
+  assert.equal(reducer.snapshot().thinkingDraft?.text, 'current thinking');
 });
 
 test('event reducer replaces only the failed Provider attempt after an iteration checkpoint', () => {
