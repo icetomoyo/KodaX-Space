@@ -162,6 +162,7 @@ export function composeMessages({
   const failedQueuedMessages = queuedUserMessages.filter((queued) => queued.status === 'failed');
   const liveQueuedMessages = queuedUserMessages.filter((queued) => queued.status !== 'failed');
   const selectorTurnIndexes = selectorTurnIndexesByMessageId(userMessages);
+  const routedEvents = routeRuntimeOwnedEvents(events, userMessages);
 
   let cursor = 0;
   const localMessages = [
@@ -232,13 +233,27 @@ export function composeMessages({
       });
     }
     if (userMsg.historyNoAssistantSegment === true) {
+      const ownedEvents = routedEvents.eventsByUserId.get(userMsg.id);
+      if (ownedEvents && userMsg.hiddenProjectionDuplicate !== true) {
+        composeAssistantSegment(
+          ownedEvents,
+          result,
+          userMsg.sentAt,
+          selectorTurnIndexes.get(userMsg.id),
+          includeAuditLineage,
+        );
+      }
       continue;
     }
 
     // 找这条 user message 对应的 events 段：从 cursor 起，到遇到
     // session_complete / session_error / 或所有 events 用完。
-    const segmentEnd = findSegmentEnd(events, cursor);
-    const segment = events.slice(cursor, segmentEnd);
+    const segmentEnd = findSegmentEnd(routedEvents.events, cursor);
+    const segment = mergeRoutedEvents(
+      routedEvents.events.slice(cursor, segmentEnd),
+      routedEvents.eventsByUserId.get(userMsg.id),
+      routedEvents.eventIndexes,
+    );
     cursor = segmentEnd;
     if (userMsg.hiddenProjectionDuplicate !== true) {
       composeAssistantSegment(
@@ -250,9 +265,9 @@ export function composeMessages({
       );
     }
   }
-  if (cursor < events.length) {
+  if (cursor < routedEvents.events.length) {
     composeAssistantSegment(
-      events.slice(cursor),
+      routedEvents.events.slice(cursor),
       result,
       undefined,
       undefined,
@@ -265,6 +280,135 @@ export function composeMessages({
   }
 
   return result;
+}
+
+function routeRuntimeOwnedEvents(
+  events: readonly SessionEvent[],
+  userMessages: readonly UserMessage[],
+): {
+  readonly events: readonly SessionEvent[];
+  readonly eventsByUserId: ReadonlyMap<string, readonly SessionEvent[]>;
+  readonly eventIndexes: ReadonlyMap<SessionEvent, number>;
+} {
+  const owners = [...userMessages]
+    .sort((a, b) => a.sentAt - b.sentAt)
+    .filter((message) => message.historyNoAssistantSegment !== true);
+  const kept: SessionEvent[] = [];
+  const eventsByUserId = new Map<string, SessionEvent[]>();
+  const eventIndexes = new Map(events.map((event, index) => [event, index] as const));
+  let ownerIndex = 0;
+  let segmentStart = 0;
+  let terminalGroup:
+    | { readonly first: SessionEvent; readonly ownerIndex: number; readonly keptEnd: number }
+    | undefined;
+
+  for (const event of events) {
+    // Delivery markers remain in the positional stream because they split multiple user
+    // segments inside one Runtime Run. Other uniquely owned modern events can be detached from
+    // a foreign segment, then merged back by their original event index.
+    if (isUserDeliveryBoundary(event)) {
+      if (kept.length > segmentStart) {
+        ownerIndex++;
+        segmentStart = kept.length;
+      }
+      kept.push(event);
+      terminalGroup = undefined;
+      continue;
+    }
+    const targetIndex = eventOwnerIndex(event, owners);
+    const targetOwner = targetIndex === undefined ? undefined : owners[targetIndex];
+    if (
+      targetOwner !== undefined &&
+      (targetIndex !== ownerIndex || eventsByUserId.has(targetOwner.id))
+    ) {
+      const routed = eventsByUserId.get(targetOwner.id) ?? [];
+      routed.push(event);
+      eventsByUserId.set(targetOwner.id, routed);
+      terminalGroup = undefined;
+      continue;
+    }
+    if (!isTerminalEvent(event)) {
+      kept.push(event);
+      terminalGroup = undefined;
+      continue;
+    }
+
+    const previousGroup = terminalGroup;
+    if (
+      previousGroup !== undefined &&
+      previousGroup.keptEnd === kept.length &&
+      (targetIndex === undefined || targetIndex === previousGroup.ownerIndex) &&
+      terminalBelongsToSameCompatibilitySegment(previousGroup.first, event)
+    ) {
+      kept.push(event);
+      segmentStart = kept.length;
+      terminalGroup = {
+        first: previousGroup.first,
+        ownerIndex: previousGroup.ownerIndex,
+        keptEnd: kept.length,
+      };
+      continue;
+    }
+    const closedOwnerIndex = ownerIndex;
+    kept.push(event);
+    ownerIndex++;
+    segmentStart = kept.length;
+    terminalGroup = { first: event, ownerIndex: closedOwnerIndex, keptEnd: kept.length };
+  }
+
+  return { events: kept, eventsByUserId, eventIndexes };
+}
+
+function mergeRoutedEvents(
+  positional: readonly SessionEvent[],
+  owned: readonly SessionEvent[] | undefined,
+  eventIndexes: ReadonlyMap<SessionEvent, number>,
+): readonly SessionEvent[] {
+  if (!owned || owned.length === 0) return positional;
+  if (positional.length === 0) return owned;
+  return [...positional, ...owned].sort(
+    (left, right) =>
+      (eventIndexes.get(left) ?? Number.MAX_SAFE_INTEGER) -
+      (eventIndexes.get(right) ?? Number.MAX_SAFE_INTEGER),
+  );
+}
+
+function eventOwnerIndex(event: SessionEvent, owners: readonly UserMessage[]): number | undefined {
+  const runId = 'runtimeEvent' in event ? event.runtimeEvent?.runId : undefined;
+  const turnId = 'turnId' in event ? event.turnId : undefined;
+  const indexedOwners = owners.map((owner, index) => ({ owner, index }));
+  if (runId !== undefined) {
+    const runOwners = indexedOwners.filter(({ owner }) => owner.runtimeRunId === runId);
+    if (turnId !== undefined) {
+      const exactOwners = indexedOwners.filter(
+        ({ owner }) =>
+          owner.turnId === turnId &&
+          owner.hiddenProjectionDuplicate !== true &&
+          (owner.runtimeRunId === undefined || owner.runtimeRunId === runId),
+      );
+      if (exactOwners.length === 1) return exactOwners[0]?.index;
+    }
+    if (runOwners.length === 1) return runOwners[0]?.index;
+  }
+  if (runId === undefined && !isTerminalEvent(event)) return undefined;
+  if (turnId === undefined) return undefined;
+  const visibleTurnOwners = indexedOwners.filter(
+    ({ owner }) =>
+      owner.turnId === turnId &&
+      owner.hiddenProjectionDuplicate !== true &&
+      (runId === undefined || owner.runtimeRunId === undefined),
+  );
+  return visibleTurnOwners.length === 1 ? visibleTurnOwners[0]?.index : undefined;
+}
+
+function isTerminalEvent(
+  event: SessionEvent,
+): event is Extract<SessionEvent, { kind: 'session_complete' | 'session_error' }> {
+  return event.kind === 'session_complete' || event.kind === 'session_error';
+}
+
+function isUserDeliveryBoundary(event: SessionEvent): boolean {
+  return event.kind === 'mid_turn_user_prompt' || event.kind === 'queued_user_prompt_started';
 }
 
 function toQueuedConversationMessage(

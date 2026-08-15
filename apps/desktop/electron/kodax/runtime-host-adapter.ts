@@ -1370,9 +1370,9 @@ function assertSpaceDaemonRequiredCapabilities(runtime: KodaXDaemonRuntime): voi
         'Install a compatible KodaX package and restart the Coder daemon.',
     );
   }
-  if (runtimeCapabilityVersion(runtime, 'actorSettlementConvergence') < 1) {
+  if (runtimeCapabilityVersion(runtime, 'actorSettlementConvergence') < 2) {
     throw new Error(
-      'KodaX Runtime does not support the required actorSettlementConvergence v1 capability. ' +
+      'KodaX Runtime does not support the required actorSettlementConvergence v2 capability. ' +
         'Install a compatible KodaX package and restart the Coder daemon.',
     );
   }
@@ -1532,7 +1532,7 @@ export function assertSpaceRuntimeSdkRequiredCapabilities(sdk: {
 }): void {
   const capabilities = sdk.KODAX_RUNTIME_SDK_CAPABILITIES;
   const missing = [
-    ...(capabilities?.actorSettlementConvergence === 1 ? [] : ['actorSettlementConvergence v1']),
+    ...(capabilities?.actorSettlementConvergence === 2 ? [] : ['actorSettlementConvergence v2']),
     ...(capabilities?.daemonOrphanExit === 1 ? [] : ['daemonOrphanExit v1']),
     ...(capabilities?.daemonShutdownVerification === 1 ? [] : ['daemonShutdownVerification v1']),
     ...(capabilities?.managedRunDurability === 1 ? [] : ['managedRunDurability v1']),
@@ -2134,7 +2134,7 @@ export class RuntimeHostAdapter {
             daemonManagement: 1,
             daemonOrphanExit: 1,
             managedRunDurability: 1,
-            actorSettlementConvergence: 1,
+            actorSettlementConvergence: 2,
             runtimeEventCoalescing: 1,
             sandboxRuntime: 3,
             sessionEventJournal: 1,

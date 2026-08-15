@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { access, mkdtemp, rm } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -34,6 +34,19 @@ interface SharedDaemonOwnerMarker extends SharedDaemonProbeContext {
 }
 
 function processIsAlive(pid: number): boolean {
+  if (process.platform === 'win32') {
+    try {
+      const output = execFileSync('tasklist.exe', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'], {
+        encoding: 'utf8',
+        windowsHide: true,
+      });
+      return output
+        .split(/\r?\n/)
+        .some((line) => line.match(/^"[^"]*","(\d+)"/)?.[1] === String(pid));
+    } catch {
+      // Fall back to Node's cross-platform probe if tasklist itself is unavailable.
+    }
+  }
   try {
     process.kill(pid, 0);
     return true;
@@ -337,7 +350,7 @@ const SHARED_DAEMON_REQUIREMENTS = {
   daemonManagement: 1,
   daemonOrphanExit: 1,
   managedRunDurability: 1,
-  actorSettlementConvergence: 1,
+  actorSettlementConvergence: 2,
   runtimeEventCoalescing: 1,
   sandboxRuntime: 3,
   sessionEventJournal: 1,
@@ -456,7 +469,7 @@ try {
 const PUBLISHED_SHARED_DAEMON_HOST_PROBE = String.raw`
 import { spawn } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { connectKodaXRuntime } from '@kodax-ai/kodax/runtime';
@@ -468,25 +481,6 @@ process.stdout.write(
   'KODAX_SHARED_DAEMON_CONTEXT=' + JSON.stringify({ profile, homeDir }) + '\n',
 );
 process.env.KODAX_INTERNAL_DAEMON_TEST_PARENT_PID = String(process.pid);
-
-function processAlive(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function waitForExit(pid, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (!processAlive(pid)) return true;
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  return !processAlive(pid);
-}
 
 function runPeer(sessionId) {
   return new Promise((resolve, reject) => {
@@ -531,41 +525,6 @@ function runPeer(sessionId) {
     });
     child.stdin.end(process.env.KODAX_PEER_PROBE);
   });
-}
-
-async function stopDaemon(pid) {
-  const outcome = await new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [
-      process.env.KODAX_CLI_PATH,
-      'daemon',
-      'stop',
-      '--profile',
-      profile,
-      '--home',
-      homeDir,
-      '--timeout-ms',
-      '10000',
-      '--force',
-      '--json',
-    ], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.setEncoding('utf8');
-    child.stderr.setEncoding('utf8');
-    child.stdout.on('data', (chunk) => { stdout += chunk; });
-    child.stderr.on('data', (chunk) => { stderr += chunk; });
-    child.once('error', reject);
-    child.once('close', (code) => {
-      resolve({ code, stdout, stderr });
-    });
-  });
-  if (Number.isInteger(pid) && pid > 0 && await waitForExit(pid, 10000)) return;
-  if (outcome.code !== 0) {
-    throw new Error('Could not stop compatibility daemon: ' + (outcome.stderr || outcome.stdout));
-  }
-  if (Number.isInteger(pid) && pid > 0) {
-    throw new Error('Compatibility daemon PID ' + pid + ' remained alive after daemon stop.');
-  }
 }
 
 let runtime;
@@ -691,7 +650,7 @@ try {
       a2aConfigReconciler: a2aConfigCapability?.version === 1,
       daemonOrphanExit: daemonOrphanExitCapability?.version === 1,
       managedRunDurability: managedRunDurabilityCapability?.version === 1,
-      actorSettlementConvergence: actorSettlementConvergenceCapability?.version === 1,
+      actorSettlementConvergence: actorSettlementConvergenceCapability?.version === 2,
       runtimeEventCoalescing: runtimeEventCoalescingCapability?.version === 1,
       sessionEventJournal: sessionEventJournalCapability?.version === 1,
       integrationConfigResilience: integrationConfigCapability?.version === 1,
@@ -708,8 +667,6 @@ try {
 } finally {
   observation?.close();
   await runtime?.close();
-  await stopDaemon(daemonPid);
-  await rm(homeDir, { recursive: true, force: true });
 }
 process.stdout.write('KODAX_SHARED_DAEMON_HOST=' + JSON.stringify(result));
 `;
@@ -995,8 +952,8 @@ try {
       runtime: runtime.capabilities.managedRunDurability?.version === 1,
     },
     actorSettlementConvergence: {
-      sdk: KODAX_RUNTIME_SDK_CAPABILITIES.actorSettlementConvergence === 1,
-      runtime: runtime.capabilities.actorSettlementConvergence?.version === 1,
+      sdk: KODAX_RUNTIME_SDK_CAPABILITIES.actorSettlementConvergence === 2,
+      runtime: runtime.capabilities.actorSettlementConvergence?.version === 2,
     },
     sandboxRuntime: {
       sdk: KODAX_RUNTIME_SDK_CAPABILITIES.sandboxRuntime === 3,
@@ -1167,7 +1124,6 @@ function runPublishedSharedDaemonHost(
         ...process.env,
         KODAX_PROBE_REQUIREMENTS: JSON.stringify(SHARED_DAEMON_REQUIREMENTS),
         KODAX_PEER_PROBE: PUBLISHED_SHARED_DAEMON_PEER_PROBE,
-        KODAX_CLI_PATH,
         ...(options.failureMode ? { KODAX_SHARED_DAEMON_FAILURE_MODE: options.failureMode } : {}),
       },
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -1261,17 +1217,22 @@ function runPublishedSharedDaemonHost(
           reject(new Error('Shared daemon failure probe unexpectedly completed successfully.'));
           return;
         }
-        if (processIsAlive(result.daemonPid)) {
-          fail(
-            new Error(
-              `Shared daemon host returned while owned daemon PID ${result.daemonPid} was alive.`,
-            ),
-          );
-          return;
-        }
         settled = true;
         clearTimeout(timeout);
-        resolve(result);
+        void (async (): Promise<void> => {
+          try {
+            if (owner) await stopOwnedSharedDaemon(owner);
+            else if (context) await stopSharedDaemonContext(context);
+            if (processIsAlive(result.daemonPid)) {
+              throw new Error(
+                `Owned compatibility daemon PID ${result.daemonPid} remained alive after cleanup.`,
+              );
+            }
+            resolve(result);
+          } catch (cleanupError: unknown) {
+            reject(cleanupError instanceof Error ? cleanupError : new Error(String(cleanupError)));
+          }
+        })();
       } catch (error) {
         fail(new Error(`Shared daemon host returned invalid JSON: ${stdout}`, { cause: error }));
       }

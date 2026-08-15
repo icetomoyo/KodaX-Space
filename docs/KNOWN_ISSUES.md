@@ -179,6 +179,7 @@ Last Updated: 2026-08-15
 | 181 | High     | Resolved           | Daemon Provider recovery could leave an abandoned answer attempt in the live transcript until Ctrl+R                               | v0.1.38 daemon Runtime recovery projection                   | 2026-08-14 |
 | 182 | High     | Resolved in source | A bounded newest page could pair an earlier live answer with the next query until Ctrl+R                                           | v0.1.41 canonical/live leading-page reconciliation           | 2026-08-15 |
 | 183 | High     | Resolved in source | A successful no-retry Run could render both canonical and unacknowledged live copies until Ctrl+R                                  | v0.1.41 terminal live-owner identity reconciliation          | 2026-08-15 |
+| 185 | High     | Resolved in source | A delayed old Run terminal could close the current query while a Session-level notification reported another Run                   | v0.1.38 daemon transcript / completion notifications         | 2026-08-15 |
 
 ## Issue Details
 
@@ -13220,15 +13221,74 @@ This was not Provider retry leakage, duplicate Runtime persistence, or a missing
   [ISSUE_183_v0.1.41_REGRESSION_GUIDE.md](test-guides/ISSUE_183_v0.1.41_REGRESSION_GUIDE.md)
   for packaged-app acceptance coverage.
 
+## Issue 185: A delayed old Run terminal could close the current query while a Session-level notification reported another Run
+
+- Priority: High
+- Status: Resolved in source
+- Fixed: v0.1.41 post-release maintenance
+- Introduced: v0.1.38 daemon transcript / completion notifications
+- Created: 2026-08-15
+
+### Original Problem
+
+Session `20260815_104533_f87ed64d76932c` displayed `Runtime run interrupted` beneath the current
+query while also showing `Session done`. The current Run had in fact completed and its full answer
+was already canonical; the interruption belonged to an older, explicitly stopped Run in the same
+Session. The live view attached the old terminal to the current query and made the successful Run
+look unfinished.
+
+This is separate from KodaX's Actor settlement persistence defect. KodaX commit `70a030f2` fixes
+that storage contract and advertises `actorSettlementConvergence:2`, but it cannot repair a
+renderer that associates already-correct Runtime events by array position or Session alone.
+
+### Root Cause
+
+- The Runtime adapter preserved `runtimeId`, `runId`, `seq`, and terminal `turnId`, and the store
+  refused to bind a delayed old terminal to a newer user owner. `composeMessages()`, however, still
+  advanced one global event cursor and treated the first `session_complete` or `session_error` as
+  the current user segment's boundary without checking its Runtime owner.
+- Completion notifications remembered one active prompt per `sessionId`. Any later terminal in
+  that Session deleted the active record and could settle the notification even when its Run/Turn
+  identity belonged to older work.
+- Space accepted `actorSettlementConvergence:1`, so a build could still attach to the daemon
+  contract that KodaX replaced in the upstream persistence repair.
+
+### Resolution
+
+- Before positional composition, a Runtime event with a unique visible `runtimeRunId`/`turnId`
+  owner is moved out of a foreign segment and rendered with that owner in original event order.
+  Delivery markers remain positional so multi-prompt Runs still split correctly. Ambiguous and
+  originless legacy events retain the existing fallback; duplicate-terminal bursts still consume
+  only one segment.
+- Completion tracking now records Runtime/Run/Turn identity from the live start. A foreign terminal
+  neither clears the active prompt nor produces its notification; exact modern identity settles it,
+  while fully originless legacy starts and terminals remain Session-compatible.
+- Space now requires `actorSettlementConvergence:2` from both the installed SDK and connected
+  Runtime and requests v2 during connection. This prevents a v2 Space build from silently reusing a
+  v1 daemon. Release packaging still requires an npm package containing KodaX commit `70a030f2`;
+  the currently published 0.7.87 artifact advertises v1.
+
+### Verification
+
+- Regression coverage reproduces canonical old output, a current Run start/content, a delayed old
+  interruption, mixed identity-bearing/legacy current content, and the current successful terminal.
+  The old error stays above the current query and current content retains causal order.
+- Notification tests cover different Run, different Turn in one continued Run, exact-owner success,
+  and originless legacy compatibility.
+- Runtime compatibility tests require v2 and reject the previous v1 SDK contract.
+- See
+  [ISSUE_185_v0.1.41_REGRESSION_GUIDE.md](test-guides/ISSUE_185_v0.1.41_REGRESSION_GUIDE.md)
+  for packaged-app acceptance coverage.
+
 ## Summary
 
-- Total: 171
+- Total: 172
 - Open: 1
 - Ready: 0
 - In Progress: 9
 - Deferred: 0
-- Resolved: 161
-- High: 87
+- Resolved: 162
+- High: 88
 - Medium: 73
 - Low: 11
 - Next to resolve: 165

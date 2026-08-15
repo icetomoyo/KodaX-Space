@@ -801,6 +801,164 @@ test('session_error emits system_notice variant=error with the error text', () =
   }
 });
 
+test('a delayed terminal from an older Runtime Run stays with its owning query', () => {
+  const oldUser: UserMessage = {
+    ...userMsg('u_old', 'old query', 1000),
+    turnId: 'turn_old',
+    runtimeRunId: 'run_old',
+  };
+  const currentUser: UserMessage = {
+    ...userMsg('u_current', 'current query', 2000),
+    turnId: 'turn_current',
+    runtimeRunId: 'run_current',
+  };
+  const events: SessionEvent[] = [
+    {
+      kind: 'text_delta',
+      sessionId: sid,
+      text: 'old answer',
+      turnId: 'turn_old',
+      canonicalIndex: 1,
+    },
+    {
+      kind: 'session_complete',
+      sessionId: sid,
+      turnId: 'turn_old',
+    },
+    {
+      kind: 'session_start',
+      sessionId: sid,
+      provider: 'mock',
+      turnId: 'turn_current',
+      runtimeEvent: { runtimeId: 'runtime_1', runId: 'run_current', seq: 10 },
+    },
+    {
+      kind: 'session_error',
+      sessionId: sid,
+      error: 'Runtime run interrupted',
+      turnId: 'turn_old',
+      runtimeEvent: { runtimeId: 'runtime_1', runId: 'run_old', seq: 11 },
+    },
+    {
+      kind: 'text_delta',
+      sessionId: sid,
+      text: 'current answer',
+      turnId: 'turn_current',
+      runtimeEvent: { runtimeId: 'runtime_1', runId: 'run_current', seq: 12 },
+    },
+    {
+      kind: 'session_complete',
+      sessionId: sid,
+      turnId: 'turn_current',
+      runtimeEvent: { runtimeId: 'runtime_1', runId: 'run_current', seq: 13 },
+    },
+  ];
+
+  const out = composeMessages({ events, userMessages: [oldUser, currentUser] });
+  assert.deepEqual(
+    out.flatMap((message) => {
+      if (message.kind === 'user') return [`user:${message.content}`];
+      if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+      if (message.kind === 'system_notice') return [`${message.variant}:${message.text}`];
+      return [];
+    }),
+    [
+      'user:old query',
+      'assistant:old answer',
+      'error:Runtime run interrupted',
+      'user:current query',
+      'assistant:current answer',
+    ],
+  );
+});
+
+test('Runtime Run identity wins when a terminal carries a conflicting turnId', () => {
+  const users: UserMessage[] = [
+    {
+      ...userMsg('u_old', 'old query', 1000),
+      turnId: 'turn_old',
+      runtimeRunId: 'run_old',
+    },
+    {
+      ...userMsg('u_current', 'current query', 2000),
+      turnId: 'turn_current',
+      runtimeRunId: 'run_current',
+    },
+  ];
+  const events: SessionEvent[] = [
+    {
+      kind: 'session_error',
+      sessionId: sid,
+      error: 'current run failed',
+      turnId: 'turn_old',
+      runtimeEvent: { runtimeId: 'runtime_1', runId: 'run_current', seq: 1 },
+    },
+  ];
+
+  const out = composeMessages({ events, userMessages: users });
+  assert.deepEqual(
+    out.flatMap((message) => {
+      if (message.kind === 'user') return [`user:${message.content}`];
+      if (message.kind === 'system_notice') return [`${message.variant}:${message.text}`];
+      return [];
+    }),
+    ['user:old query', 'user:current query', 'error:current run failed'],
+  );
+});
+
+test('current Run content cannot be captured by an older delayed terminal', () => {
+  const users: UserMessage[] = [
+    { ...userMsg('u_old', 'old query', 1000), runtimeRunId: 'run_old' },
+    { ...userMsg('u_current', 'current query', 2000), runtimeRunId: 'run_current' },
+  ];
+  const events: SessionEvent[] = [
+    {
+      kind: 'session_start',
+      sessionId: sid,
+      provider: 'mock',
+      runtimeEvent: { runtimeId: 'runtime_1', runId: 'run_current', seq: 10 },
+    },
+    {
+      kind: 'text_delta',
+      sessionId: sid,
+      text: 'current answer',
+      runtimeEvent: { runtimeId: 'runtime_1', runId: 'run_current', seq: 11 },
+    },
+    {
+      kind: 'session_error',
+      sessionId: sid,
+      error: 'old run interrupted',
+      runtimeEvent: { runtimeId: 'runtime_1', runId: 'run_old', seq: 12 },
+    },
+    {
+      kind: 'text_delta',
+      sessionId: sid,
+      text: ' tail',
+    },
+    {
+      kind: 'session_complete',
+      sessionId: sid,
+      runtimeEvent: { runtimeId: 'runtime_1', runId: 'run_current', seq: 13 },
+    },
+  ];
+
+  const out = composeMessages({ events, userMessages: users });
+  assert.deepEqual(
+    out.flatMap((message) => {
+      if (message.kind === 'user') return [`user:${message.content}`];
+      if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+      if (message.kind === 'system_notice') return [`${message.variant}:${message.text}`];
+      return [];
+    }),
+    [
+      'user:old query',
+      'error:old run interrupted',
+      'user:current query',
+      'assistant:current answer tail',
+    ],
+  );
+});
+
 test('two user messages with separate event segments: events route to correct user turn', () => {
   // 用户问 1 -> assistant 答 1 + complete -> 用户问 2 -> assistant 答 2 + complete
   const events: SessionEvent[] = [
@@ -1001,6 +1159,57 @@ test('multi-terminal error sequence stays in its own turn (500-error history scr
   // q2 (out[4]) 之后第一条是 reply2，不是错误 notice
   assert.equal(out[4].kind, 'user');
   if (out[4].kind === 'user') assert.equal(out[4].content, 'q2');
+});
+
+test('legacy duplicate terminals do not shift later identity-owned Runtime segments', () => {
+  const users: UserMessage[] = [
+    { ...userMsg('u1', 'legacy failure', 1000), runtimeRunId: 'run_legacy' },
+    { ...userMsg('u2', 'current query', 2000), runtimeRunId: 'run_current' },
+    { ...userMsg('u3', 'next query', 3000), runtimeRunId: 'run_next' },
+  ];
+  const events: SessionEvent[] = [
+    { kind: 'text_delta', sessionId: sid, text: 'partial' },
+    { kind: 'session_error', sessionId: sid, error: 'raw 500' },
+    { kind: 'session_complete', sessionId: sid },
+    { kind: 'session_error', sessionId: sid, error: 'wrapped 500' },
+    {
+      kind: 'queued_user_prompt_started',
+      sessionId: sid,
+      queueMode: 'after-turn',
+      content: 'current query',
+      runtimeEvent: { runtimeId: 'runtime_1', runId: 'run_current', seq: 9 },
+    },
+    {
+      kind: 'text_delta',
+      sessionId: sid,
+      text: 'current answer',
+      runtimeEvent: { runtimeId: 'runtime_1', runId: 'run_current', seq: 10 },
+    },
+    {
+      kind: 'session_complete',
+      sessionId: sid,
+      runtimeEvent: { runtimeId: 'runtime_1', runId: 'run_current', seq: 11 },
+    },
+    {
+      kind: 'text_delta',
+      sessionId: sid,
+      text: 'next answer',
+      runtimeEvent: { runtimeId: 'runtime_1', runId: 'run_next', seq: 12 },
+    },
+    {
+      kind: 'session_complete',
+      sessionId: sid,
+      runtimeEvent: { runtimeId: 'runtime_1', runId: 'run_next', seq: 13 },
+    },
+  ];
+
+  const out = composeMessages({ events, userMessages: users });
+  assert.deepEqual(
+    out.flatMap((message) =>
+      message.kind === 'assistant_text' ? [`assistant:${message.text}`] : [],
+    ),
+    ['assistant:partial', 'assistant:current answer', 'assistant:next answer'],
+  );
 });
 
 test('text_delta after tool_result starts a NEW assistant bubble (flushed by tool_start)', () => {

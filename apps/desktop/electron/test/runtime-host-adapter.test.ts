@@ -114,7 +114,7 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
   assert.doesNotThrow(() =>
     assertSpaceRuntimeSdkRequiredCapabilities({
       KODAX_RUNTIME_SDK_CAPABILITIES: {
-        actorSettlementConvergence: 1,
+        actorSettlementConvergence: 2,
         daemonOrphanExit: 1,
         daemonShutdownVerification: 1,
         managedRunDurability: 1,
@@ -132,6 +132,21 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
           daemonOrphanExit: 1,
           daemonShutdownVerification: 1,
           managedRunDurability: 1,
+          runtimeEventCoalescing: 1,
+          sandboxRuntime: 3,
+          sessionEventJournal: 1,
+        },
+      }),
+    /installed KodaX SDK.*actorSettlementConvergence v2/i,
+  );
+  assert.throws(
+    () =>
+      assertSpaceRuntimeSdkRequiredCapabilities({
+        KODAX_RUNTIME_SDK_CAPABILITIES: {
+          actorSettlementConvergence: 1,
+          daemonOrphanExit: 1,
+          daemonShutdownVerification: 1,
+          managedRunDurability: 1,
           sandboxRuntime: 3,
           sessionEventJournal: 1,
         },
@@ -140,7 +155,7 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
   );
   assert.throws(
     () => assertSpaceRuntimeSdkRequiredCapabilities({}),
-    /installed KodaX SDK.*actorSettlementConvergence v1.*daemonOrphanExit v1.*daemonShutdownVerification v1.*managedRunDurability v1.*runtimeEventCoalescing v1.*sandboxRuntime v3.*sessionEventJournal v1/i,
+    /installed KodaX SDK.*actorSettlementConvergence v2.*daemonOrphanExit v1.*daemonShutdownVerification v1.*managedRunDurability v1.*runtimeEventCoalescing v1.*sandboxRuntime v3.*sessionEventJournal v1/i,
   );
 });
 
@@ -393,7 +408,7 @@ function createFakeRuntime(runtimeId = 'rt_test') {
         bootstrapGrace: true,
       },
       managedRunDurability: { version: 1 },
-      actorSettlementConvergence: { version: 1 },
+      actorSettlementConvergence: { version: 2 },
       runtimeEventCoalescing: { version: 1 },
       sessionEventJournal: { version: 1 },
       sandboxRuntime: {
@@ -1906,7 +1921,7 @@ test('runtime selection attaches one Coder daemon with stable identity and requi
   assert.equal(options[0]?.requirements?.durableRecoveryQueries, 1);
   assert.equal(options[0]?.requirements?.daemonManagement, 1);
   assert.equal(options[0]?.requirements?.daemonOrphanExit, 1);
-  assert.equal(options[0]?.requirements?.actorSettlementConvergence, 1);
+  assert.equal(options[0]?.requirements?.actorSettlementConvergence, 2);
   assert.equal(options[0]?.requirements?.daemonShutdownVerification, undefined);
   assert.equal(options[0]?.requirements?.runtimeEventCoalescing, 1);
   assert.equal(options[0]?.requirements?.sandboxRuntime, 3);

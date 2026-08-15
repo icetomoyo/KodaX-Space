@@ -2,8 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  completionTerminalMatchesPrompt,
   formatElapsed,
   isFreshLivePromptStart,
+  liveStartMatchesPromptRun,
   shouldNotifyForCompletion,
 } from '../../renderer/src/features/notifications/sessionCompleteNotificationModel.js';
 
@@ -57,4 +59,53 @@ test('live prompt start freshness rejects restored history timestamps', () => {
   assert.equal(isFreshLivePromptStart(now + 4_000, now), true);
   assert.equal(isFreshLivePromptStart(now + 6_000, now), false);
   assert.equal(isFreshLivePromptStart(now - 10 * 60_000, now), false);
+});
+
+test('a terminal notification only settles the matching Runtime Run', () => {
+  const activePrompt = {
+    userMessageId: 'u_current',
+    startedAt: 1_000,
+    runtimeId: 'runtime_1',
+    runId: 'run_current',
+    turnId: 'turn_current',
+  };
+
+  assert.equal(
+    completionTerminalMatchesPrompt(activePrompt, {
+      runtimeId: 'runtime_1',
+      runId: 'run_old',
+      turnId: 'turn_old',
+    }),
+    false,
+  );
+  assert.equal(
+    completionTerminalMatchesPrompt(activePrompt, {
+      runtimeId: 'runtime_1',
+      runId: 'run_current',
+      turnId: 'turn_current',
+    }),
+    true,
+  );
+  assert.equal(
+    completionTerminalMatchesPrompt(activePrompt, {
+      runtimeId: 'runtime_1',
+      runId: 'run_current',
+      turnId: 'turn_previous',
+    }),
+    false,
+  );
+});
+
+test('originless legacy completion notifications retain Session-level compatibility', () => {
+  assert.equal(
+    completionTerminalMatchesPrompt({ userMessageId: 'u_legacy', startedAt: 1_000 }, {}),
+    true,
+  );
+});
+
+test('a modern start cannot claim an unbound or differently owned prompt', () => {
+  assert.equal(liveStartMatchesPromptRun('run_current', 'run_current'), true);
+  assert.equal(liveStartMatchesPromptRun(undefined, 'run_old'), false);
+  assert.equal(liveStartMatchesPromptRun('run_current', 'run_old'), false);
+  assert.equal(liveStartMatchesPromptRun(undefined, undefined), true);
 });

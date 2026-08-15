@@ -1,16 +1,16 @@
 import { useEffect, useRef } from 'react';
 import { useAppStore } from '../../store/appStore.js';
 import {
+  completionTerminalMatchesPrompt,
   formatElapsed,
   isFreshLivePromptStart,
+  liveStartMatchesPromptRun,
   shouldNotifyForCompletion,
   type CompletionFocusSnapshot,
+  type CompletionPromptOwner,
 } from './sessionCompleteNotificationModel.js';
 
-interface ActivePromptRecord {
-  readonly userMessageId: string;
-  readonly startedAt: number;
-}
+type ActivePromptRecord = CompletionPromptOwner;
 
 interface SessionLite {
   readonly sessionId: string;
@@ -40,25 +40,32 @@ export function useSessionCompleteNotification(): void {
       const sessionId = event.sessionId;
 
       if (event.kind === 'session_start') {
-        const livePromptStart = getLivePromptStart(state, sessionId);
+        const livePromptStart = getLivePromptStart(state, sessionId, event);
         if (livePromptStart) {
           activePromptRef.current.set(sessionId, livePromptStart);
-        } else {
-          activePromptRef.current.delete(sessionId);
         }
         return;
       }
 
       if (event.kind !== 'session_complete' && event.kind !== 'session_error') return;
+      const activePrompt = activePromptRef.current.get(sessionId);
+      if (
+        !activePrompt ||
+        !completionTerminalMatchesPrompt(activePrompt, {
+          runtimeId: event.runtimeEvent?.runtimeId,
+          runId: event.runtimeEvent?.runId,
+          turnId: event.turnId,
+        })
+      ) {
+        return;
+      }
       if (event.kind === 'session_error' && event.error === 'cancelled') {
         activePromptRef.current.delete(sessionId);
         return;
       }
 
-      const activePrompt = activePromptRef.current.get(sessionId);
       activePromptRef.current.delete(sessionId);
-      if (!activePrompt) return;
-      const terminalKey = `${sessionId}:${activePrompt.userMessageId}:${activePrompt.startedAt}:${event.kind}`;
+      const terminalKey = `${sessionId}:${activePrompt.runId ?? activePrompt.userMessageId}:${activePrompt.turnId ?? activePrompt.startedAt}:${event.kind}`;
       if (notifiedTerminalRef.current.has(terminalKey)) return;
       rememberTerminalNotification(notifiedTerminalRef.current, terminalKey);
 
@@ -76,11 +83,29 @@ export function useSessionCompleteNotification(): void {
 function getLivePromptStart(
   state: ReturnType<typeof useAppStore.getState>,
   sessionId: string,
+  event: Extract<
+    NonNullable<ReturnType<typeof useAppStore.getState>['lastEvent']>,
+    { kind: 'session_start' }
+  >,
 ): ActivePromptRecord | null {
   const messages = state.userMessagesBySession[sessionId] ?? [];
   const last = messages[messages.length - 1];
   if (last?.sentAt && isFreshLivePromptStart(last.sentAt)) {
-    return { userMessageId: last.id, startedAt: last.sentAt };
+    const runId = event.runtimeEvent?.runId;
+    if (!liveStartMatchesPromptRun(last.runtimeRunId, runId)) {
+      return null;
+    }
+    return {
+      userMessageId: last.id,
+      startedAt: last.sentAt,
+      ...(event.runtimeEvent?.runtimeId !== undefined
+        ? { runtimeId: event.runtimeEvent.runtimeId }
+        : {}),
+      ...(runId !== undefined ? { runId } : {}),
+      ...((event.turnId ?? last.turnId) !== undefined
+        ? { turnId: event.turnId ?? last.turnId }
+        : {}),
+    };
   }
   return null;
 }
