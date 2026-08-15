@@ -1,6 +1,6 @@
 # Known Issues
 
-Last Updated: 2026-08-14
+Last Updated: 2026-08-15
 
 > Historical issue details are preserved as investigation evidence. Resolved items older than 30 days move to [ISSUES_ARCHIVED.md](ISSUES_ARCHIVED.md) without losing their investigation record. The latest published Space [`v0.1.41`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.41) baseline uses exact npm Registry KodaX 0.7.87 and requires `sandboxRuntime:3`. Start from the [documentation hub](README.md) for current behavior and status.
 
@@ -177,6 +177,8 @@ Last Updated: 2026-08-14
 | 179 | Medium   | Resolved           | Idle Space exit reported running tasks when only other Runtime clients remained connected                                          | v0.1.39 complete-exit client protection                      | 2026-08-11 |
 | 180 | High     | Resolved           | A crashed inline owner permanently blocked daemon startup until the customer deleted `~/.kodax`                                    | v0.1.38 / KodaX 0.7.84 owner-policy reconciliation           | 2026-08-14 |
 | 181 | High     | Resolved           | Daemon Provider recovery could leave an abandoned answer attempt in the live transcript until Ctrl+R                               | v0.1.38 daemon Runtime recovery projection                   | 2026-08-14 |
+| 182 | High     | Resolved in source | A bounded newest page could pair an earlier live answer with the next query until Ctrl+R                                           | v0.1.41 canonical/live leading-page reconciliation           | 2026-08-15 |
+| 183 | High     | Resolved in source | A successful no-retry Run could render both canonical and unacknowledged live copies until Ctrl+R                                  | v0.1.41 terminal live-owner identity reconciliation          | 2026-08-15 |
 
 ## Issue Details
 
@@ -13111,15 +13113,122 @@ not require a new SDK event, payload field, capability, or KodaX live-projection
   [ISSUE_181_v0.1.41_REGRESSION_GUIDE.md](test-guides/ISSUE_181_v0.1.41_REGRESSION_GUIDE.md)
   for packaged-app acceptance coverage.
 
+## Issue 182: A bounded newest page could pair an earlier live answer with the next query until Ctrl+R
+
+- Priority: High
+- Status: Resolved in source
+- Fixed: v0.1.41 post-release maintenance
+- Introduced: v0.1.34 history/live leading-page reconciliation
+- Created: 2026-08-15
+
+### Original Problem
+
+In Session `20260815_095421_p88e3b8680f28a`, an interrupted review Run was followed by a
+successful review Run and then the query `请提交并推送`. While the Session remained open, the final
+query was rendered with the preceding Run's answer above it and older review output below it.
+Ctrl+R immediately restored the canonical order. The persisted Session JSONL, Runtime events, and
+canonical conversation cache were already complete and correctly ordered.
+
+The deterministic trigger was a bounded newest page that began inside the successful review Run's
+assistant/tool segment while an earlier interrupted live Run was still present in the renderer
+baseline. The page also contained the later commit query and its answer.
+
+### Root Cause
+
+- The renderer keeps user owners and their event segments in parallel positional buffers.
+- Leading-page reconciliation proved that the successful live review was the owner of the
+  canonical assistant suffix, but did not account for an unrelated earlier live turn between that
+  suffix anchor and its live owner.
+- Folding or relocating only the matched review turn left the earlier live owner on the opposite
+  side of the canonical boundary. `composeMessages()` then ordered user owners by `sentAt` while
+  consuming event segments in buffer order, pairing each later answer with the wrong query.
+- Ctrl+R cleared the live baseline and rebuilt solely from canonical history, which is why reload
+  concealed the transient Space-side reconciliation defect.
+
+This was not a timestamp collision, KodaX persistence-order defect, or missing SDK identity field.
+
+### Resolution
+
+- Leading-page stabilization now treats every earlier non-restored live turn and its complete event
+  segment as one ordered prefix. If a later live suffix must reconcile with a canonical leading
+  anchor, that earlier prefix moves atomically instead of leaving owners and segments on opposite
+  sides of the boundary.
+- For an exact suffix, the matching live owner stays after the durable anchor so the existing
+  strong-identity fold removes that one duplicate projection exactly once. Ambiguous ordinal paths
+  remain fail-open, but any prefix relocation preserves the same owner/segment lockstep.
+- No global timestamp sort, content-based deduplication, polling, or KodaX SDK change was added.
+
+### Verification
+
+- A dedicated regression reproduces the real three-Run topology: interrupted A, tool-rich completed
+  B, completed C, followed by a canonical newest page beginning inside B and containing C. It
+  asserts strict `A -> B -> C` query/answer ownership and exact-once rendering of B.
+- The complete history replay and history paging suites cover exact suffixes, ambiguous fail-open
+  projections, retained ordinals, fork/rewind, terminal repair, and subsequent sends.
+- See
+  [ISSUE_182_v0.1.41_REGRESSION_GUIDE.md](test-guides/ISSUE_182_v0.1.41_REGRESSION_GUIDE.md)
+  for packaged-app acceptance coverage.
+
+## Issue 183: A successful no-retry Run could render both canonical and unacknowledged live copies until Ctrl+R
+
+- Priority: High
+- Status: Resolved in source
+- Fixed: v0.1.41 post-release maintenance
+- Introduced: daemon canonical/live reconciliation
+- Created: 2026-08-15
+
+### Original Problem
+
+Session `20260815_094944_bo4d9a9bb19e31` rendered the final successful answer twice while the
+Session stayed open. Ctrl+R immediately restored one copy. The affected Run had two assistant
+blocks separated by tools and contained no Provider recovery.
+
+The Runtime journal held one strictly ordered event lineage and the canonical conversation held
+one copy of each assistant block. The duplication therefore existed only in Space's in-memory
+composition of canonical history and optimistic live events.
+
+### Root Cause
+
+- An optimistic user owner can remain without `runtimeRunId` when its send acknowledgement is late,
+  missed, or overtaken by observation/history reconciliation.
+- A daemon terminal event and terminal snapshot carry authoritative `runId` and `turnId`, but Space
+  previously required the optimistic owner to already carry the same `runtimeRunId` before it
+  could bind that turn identity.
+- Canonical history then had strong turn identity while the equivalent live owner remained
+  anonymous. Strong-identity folding could not prove they were the same turn, so both projections
+  were rendered. Ctrl+R removed the in-memory live projection and concealed the defect.
+
+This was not Provider retry leakage, duplicate Runtime persistence, or a missing KodaX SDK field.
+
+### Resolution
+
+- Terminal event, full-snapshot, and incremental-terminal paths now reconcile a unique anonymous
+  owner only when that owner's own transcript segment contains content from the same Runtime Run.
+- Full snapshots reconcile the terminal Run and a concurrently active Run independently. Terminal
+  changes explicitly target `lastTerminalRun`, so a newer active Run cannot shadow the completed
+  owner.
+- Ambiguous owners, terminals without same-Run content evidence, and delayed old terminals remain
+  fail-open. No content comparison, polling, synthetic SDK event, or KodaX change was added.
+
+### Verification
+
+- Regression coverage includes the observed multi-iteration successful turn, direct terminal
+  events, full terminal snapshots, incremental terminal changes, a concurrently active next Run,
+  multiple anonymous owners, and a delayed old terminal arriving after a new query.
+- TypeScript, lint, focused transcript suites, and the complete repository test suite pass.
+- See
+  [ISSUE_183_v0.1.41_REGRESSION_GUIDE.md](test-guides/ISSUE_183_v0.1.41_REGRESSION_GUIDE.md)
+  for packaged-app acceptance coverage.
+
 ## Summary
 
-- Total: 168
+- Total: 170
 - Open: 0
 - Ready: 0
 - In Progress: 9
 - Deferred: 0
-- Resolved: 158
-- High: 84
+- Resolved: 160
+- High: 86
 - Medium: 73
 - Low: 11
 - Next to resolve: 165

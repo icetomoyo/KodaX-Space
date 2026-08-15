@@ -2389,6 +2389,295 @@ test('equal terminal hydration only closes residual live tools and does not inve
   );
 });
 
+test('a terminal snapshot repairs the unique unacknowledged live owner before history folding', () => {
+  useAppStore.setState({ sessions: [sidebarSession], currentSessionId: 's_1' });
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  const store = useAppStore.getState();
+  const messageId = store.appendUserMessage('s_1', 'snapshot terminal query', 10);
+  assert.notEqual(messageId, null);
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: 's_1',
+    text: 'snapshot terminal answer',
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_snapshot_terminal', seq: 2 },
+  });
+  store.prependSessionHistory(
+    's_1',
+    [
+      {
+        kind: 'user',
+        content: 'snapshot terminal query',
+        canonicalIndex: 0,
+        turnId: 'turn_snapshot_terminal',
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 'snapshot terminal answer',
+        canonicalIndex: 1,
+        turnId: 'turn_snapshot_terminal',
+      },
+    ],
+    10,
+    {
+      replaceLoadedWindow: true,
+      authoritativeNewest: true,
+      sourceRevision: 'snapshot-terminal-history',
+    },
+  );
+  store.replaceSessionLiveProjection({
+    ...live,
+    projectionRevision: 2,
+    cursor: { runtimeId: 'rt_1', seq: 3 },
+    lastTerminalRun: {
+      runId: 'run_snapshot_terminal',
+      sessionId: 's_1',
+      phase: 'completed',
+      turnId: 'turn_snapshot_terminal',
+      completedAt: 20,
+    },
+  });
+
+  const state = useAppStore.getState();
+  assert.deepEqual(
+    composeMessages({
+      events: state.eventsBySession.s_1 ?? [],
+      userMessages: state.userMessagesBySession.s_1 ?? [],
+    }).flatMap((message) => {
+      if (message.kind === 'user') return [`user:${message.content}`];
+      if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
+      return [];
+    }),
+    ['user:snapshot terminal query', 'assistant:snapshot terminal answer'],
+  );
+});
+
+test('a delayed terminal event cannot steal a newer unacknowledged query', () => {
+  useAppStore.setState({ sessions: [sidebarSession], currentSessionId: 's_1' });
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  const store = useAppStore.getState();
+  const completedMessageId = store.appendUserMessage('s_1', 'completed query', 10);
+  assert.notEqual(completedMessageId, null);
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: 's_1',
+    text: 'completed answer',
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_snapshot_terminal', seq: 2 },
+  });
+  store.replaceSessionLiveProjection({
+    ...live,
+    projectionRevision: 2,
+    cursor: { runtimeId: 'rt_1', seq: 3 },
+    lastTerminalRun: {
+      runId: 'run_snapshot_terminal',
+      sessionId: 's_1',
+      phase: 'completed',
+      turnId: 'turn_snapshot_terminal',
+      completedAt: 20,
+    },
+  });
+
+  const nextMessageId = store.appendUserMessage('s_1', 'next query after snapshot', 30);
+  assert.notEqual(nextMessageId, null);
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: 's_1',
+    turnId: 'turn_snapshot_terminal',
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_snapshot_terminal', seq: 4 },
+  });
+  assert.equal(
+    useAppStore
+      .getState()
+      .userMessagesBySession.s_1?.find((message) => message.id === nextMessageId)?.turnId,
+    undefined,
+    'the delayed terminal event cannot steal a newer unacknowledged query',
+  );
+});
+
+test('a full snapshot reconciles a terminal owner even when the next run is already active', () => {
+  useAppStore.setState({ sessions: [sidebarSession], currentSessionId: 's_1' });
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  const store = useAppStore.getState();
+  const terminalMessageId = store.appendUserMessage('s_1', 'completed query', 10);
+  assert.notEqual(terminalMessageId, null);
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: 's_1',
+    text: 'completed answer',
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_completed', seq: 2 },
+  });
+  store.prependSessionHistory(
+    's_1',
+    [
+      {
+        kind: 'user',
+        content: 'completed query',
+        canonicalIndex: 0,
+        turnId: 'turn_completed',
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 'completed answer',
+        canonicalIndex: 1,
+        turnId: 'turn_completed',
+      },
+    ],
+    10,
+    {
+      replaceLoadedWindow: true,
+      authoritativeNewest: true,
+      sourceRevision: 'completed-while-next-active',
+    },
+  );
+  const activeMessageId = store.appendUserMessage('s_1', 'active query', 30);
+  assert.notEqual(activeMessageId, null);
+  store.bindUserMessageRuntimeRun('s_1', activeMessageId!, 'run_active');
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: 's_1',
+    turnId: 'turn_active',
+    provider: 'mock',
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_active', seq: 3 },
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: 's_1',
+    text: 'active answer',
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_active', seq: 4 },
+  });
+
+  store.replaceSessionLiveProjection({
+    ...live,
+    projectionRevision: 2,
+    cursor: { runtimeId: 'rt_1', seq: 5 },
+    activeRun: {
+      runId: 'run_active',
+      sessionId: 's_1',
+      phase: 'running',
+      turnId: 'turn_active',
+      startedAt: 30,
+    },
+    lastTerminalRun: {
+      runId: 'run_completed',
+      sessionId: 's_1',
+      phase: 'completed',
+      turnId: 'turn_completed',
+      startedAt: 10,
+      completedAt: 20,
+    },
+  });
+
+  const state = useAppStore.getState();
+  assert.equal(
+    state.userMessagesBySession.s_1?.filter((message) => message.content === 'completed query')
+      .length,
+    1,
+  );
+  assert.equal(
+    state.userMessagesBySession.s_1?.find((message) => message.id === activeMessageId)?.turnId,
+    'turn_active',
+  );
+  const assistantText = composeMessages({
+    events: state.eventsBySession.s_1 ?? [],
+    userMessages: state.userMessagesBySession.s_1 ?? [],
+  })
+    .flatMap((message) => (message.kind === 'assistant_text' ? [message.text] : []))
+    .join('');
+  assert.equal(assistantText.split('completed answer').length - 1, 1);
+  assert.match(assistantText, /active answer/);
+});
+
+test('a terminal change reconciles its completed run instead of a concurrently active run', () => {
+  useAppStore.setState({ sessions: [sidebarSession], currentSessionId: 's_1' });
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  const store = useAppStore.getState();
+  store.appendUserMessage('s_1', 'incremental completed query', 10);
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: 's_1',
+    text: 'incremental completed answer',
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_incremental_completed', seq: 2 },
+  });
+  store.prependSessionHistory(
+    's_1',
+    [
+      {
+        kind: 'user',
+        content: 'incremental completed query',
+        canonicalIndex: 0,
+        turnId: 'turn_incremental_completed',
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 'incremental completed answer',
+        canonicalIndex: 1,
+        turnId: 'turn_incremental_completed',
+      },
+    ],
+    10,
+    {
+      replaceLoadedWindow: true,
+      authoritativeNewest: true,
+      sourceRevision: 'incremental-completed-history',
+    },
+  );
+  const activeMessageId = store.appendUserMessage('s_1', 'incremental active query', 30);
+  assert.notEqual(activeMessageId, null);
+  store.bindUserMessageRuntimeRun('s_1', activeMessageId!, 'run_incremental_active');
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: 's_1',
+    turnId: 'turn_incremental_active',
+    provider: 'mock',
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_incremental_active', seq: 3 },
+  });
+  store.replaceSessionLiveProjection({
+    ...live,
+    projectionRevision: 2,
+    cursor: { runtimeId: 'rt_1', seq: 3 },
+    activeRun: {
+      runId: 'run_incremental_active',
+      sessionId: 's_1',
+      phase: 'running',
+      turnId: 'turn_incremental_active',
+      startedAt: 30,
+    },
+  });
+
+  const status = store.applySessionLiveProjectionChange({
+    sessionId: 's_1',
+    baseProjectionRevision: 2,
+    projectionRevision: 3,
+    cursor: { runtimeId: 'rt_1', seq: 4 },
+    change: {
+      domain: 'terminal',
+      lastTerminalRun: {
+        runId: 'run_incremental_completed',
+        sessionId: 's_1',
+        phase: 'completed',
+        turnId: 'turn_incremental_completed',
+        startedAt: 10,
+        completedAt: 20,
+      },
+    },
+  });
+
+  assert.equal(status, 'applied');
+  const state = useAppStore.getState();
+  assert.equal(
+    state.userMessagesBySession.s_1?.filter(
+      (message) => message.content === 'incremental completed query',
+    ).length,
+    1,
+  );
+  assert.equal(
+    state.userMessagesBySession.s_1?.find((message) => message.id === activeMessageId)?.turnId,
+    'turn_incremental_active',
+  );
+});
+
 test('snapshot cursor reconciles a delivered suffix and rejects a covered late delta', () => {
   useAppStore.setState({ currentSessionId: 's_1', eventsBySession: { s_1: [] } });
   useAppStore.getState().replaceRuntimeProfileProjection(profile);

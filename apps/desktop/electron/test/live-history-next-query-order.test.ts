@@ -109,11 +109,7 @@ test('a next query stays after the prior answer when the newest page begins in t
 
   const interruptedRunId = 'run-review-interrupted';
   const interruptedTurnId = 'turn-review-interrupted';
-  const interruptedMessageId = store.appendUserMessage(
-    SID,
-    'review the changes',
-    CREATED_AT + 5,
-  );
+  const interruptedMessageId = store.appendUserMessage(SID, 'review the changes', CREATED_AT + 5);
   assert.ok(interruptedMessageId);
   store.bindUserMessageRuntimeRun(SID, interruptedMessageId, interruptedRunId);
   store.appendEvent({
@@ -258,4 +254,110 @@ test('a next query stays after the prior answer when the newest page begins in t
     priorAnswerIndex < nextQueryIndex,
     `the prior answer must remain before the next query: ${JSON.stringify(transcript)}`,
   );
+});
+
+test('every earlier live turn moves with its answer before an exact leading suffix', () => {
+  appendCompletedLiveTurn({
+    prompt: 'first earlier query',
+    sentAt: CREATED_AT + 1,
+    runId: 'run-first-earlier',
+    turnId: 'turn-first-earlier',
+    events: [
+      {
+        kind: 'text_delta',
+        sessionId: SID,
+        text: 'first earlier answer',
+        turnId: 'turn-first-earlier',
+        runtimeEvent: runtimeEvent('run-first-earlier', 2),
+      },
+    ],
+  });
+  appendCompletedLiveTurn({
+    prompt: 'second earlier query',
+    sentAt: CREATED_AT + 10,
+    runId: 'run-second-earlier',
+    turnId: 'turn-second-earlier',
+    events: [
+      {
+        kind: 'text_delta',
+        sessionId: SID,
+        text: 'second earlier answer',
+        turnId: 'turn-second-earlier',
+        runtimeEvent: runtimeEvent('run-second-earlier', 2),
+      },
+    ],
+  });
+  appendCompletedLiveTurn({
+    prompt: 'bounded owner query',
+    sentAt: CREATED_AT + 20,
+    runId: 'run-bounded-owner',
+    turnId: 'turn-bounded-owner',
+    events: [
+      {
+        kind: 'text_delta',
+        sessionId: SID,
+        text: 'bounded owner answer',
+        turnId: 'turn-bounded-owner',
+        runtimeEvent: runtimeEvent('run-bounded-owner', 2),
+      },
+    ],
+  });
+  appendCompletedLiveTurn({
+    prompt: 'later query',
+    sentAt: CREATED_AT + 30,
+    runId: 'run-later',
+    turnId: 'turn-later',
+    events: [
+      {
+        kind: 'text_delta',
+        sessionId: SID,
+        text: 'later answer',
+        turnId: 'turn-later',
+        runtimeEvent: runtimeEvent('run-later', 2),
+      },
+    ],
+  });
+
+  useAppStore.getState().prependSessionHistory(
+    SID,
+    [
+      { kind: 'history_truncation', scope: 'history', omittedItems: 100 },
+      {
+        kind: 'assistant',
+        text: 'bounded owner answer',
+        entryId: 'entry-bounded-owner-answer',
+        canonicalIndex: 100,
+        turnId: 'turn-bounded-owner',
+      },
+      {
+        kind: 'user',
+        content: 'later query',
+        sentAt: CREATED_AT + 30,
+        entryId: 'entry-later-user',
+        canonicalIndex: 101,
+        turnId: 'turn-later',
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 'later answer',
+        entryId: 'entry-later-answer',
+        canonicalIndex: 102,
+        turnId: 'turn-later',
+      },
+    ],
+    CREATED_AT,
+    { replaceLoadedWindow: true, authoritativeNewest: true, sourceRevision: 'source-multi-prefix' },
+  );
+
+  assert.deepEqual(visibleTranscript(), [
+    'user:first earlier query',
+    'assistant:first earlier answer',
+    'user:second earlier query',
+    'assistant:second earlier answer',
+    'user:bounded owner query',
+    'assistant:bounded owner answer',
+    'user:later query',
+    'assistant:later answer',
+  ]);
 });

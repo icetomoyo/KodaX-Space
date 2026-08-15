@@ -2823,17 +2823,28 @@ function stabilizeAmbiguousLeadingHistoryOrder(
     undefined,
   );
   const exactSuffixOwner = liveOwners[0];
-  const exactSuffixCanFoldInPlace =
+  const exactSuffixCanPromote =
     exactSuffixOwner !== undefined &&
     uniqueLeadingHistoryOwnerResolution(durable, exactSuffixOwner, turns) ===
       'promote_live_owner' &&
     (liveTurns.length === 1 ||
       crossingCanonicalTurns.every((turn) => turn.turnId === durable.turnId));
+  const earlierLivePrefix =
+    exactSuffixOwner === undefined
+      ? []
+      : turns.filter(
+          (turn) =>
+            !turn.restoredFromHistory &&
+            turn.userIndex > durable.userIndex &&
+            turn.userIndex < exactSuffixOwner.userIndex,
+        );
+  const exactSuffixCanFoldInPlace = exactSuffixCanPromote && earlierLivePrefix.length === 0;
   if (exactSuffixCanFoldInPlace) {
     return { userMessages, events };
   }
-  const relocatedLiveTurns =
-    retainedSameTurnOrdinal !== undefined
+  const relocationTargets = exactSuffixCanPromote
+    ? earlierLivePrefix
+    : retainedSameTurnOrdinal !== undefined
       ? liveTurns.filter(
           (turn) =>
             turn.turnUserOrdinal !== undefined && turn.turnUserOrdinal < retainedSameTurnOrdinal,
@@ -2841,6 +2852,22 @@ function stabilizeAmbiguousLeadingHistoryOrder(
       : crossingCanonicalTurns.some((turn) => turn.turnId !== durable.turnId)
         ? liveTurns
         : [];
+  const lastRelocationTarget = relocationTargets.at(-1);
+  // User owners and event segments are parallel positional buffers. Moving only the matching live
+  // owner across a retained canonical turn would strand any earlier live turn on the other side;
+  // composeMessages then sorts owners by sentAt while events stay put and pairs every later answer
+  // with the wrong query. Relocate the complete earlier live prefix as one unit. When the matching
+  // suffix is exact, leave that owner after the durable anchor so the normal fold can remove the
+  // duplicate projection in the same reconciliation pass.
+  const relocatedLiveTurns =
+    lastRelocationTarget === undefined
+      ? []
+      : turns.filter(
+          (turn) =>
+            !turn.restoredFromHistory &&
+            turn.userIndex > durable.userIndex &&
+            turn.userIndex <= lastRelocationTarget.userIndex,
+        );
   if (relocatedLiveTurns.length === 0) return { userMessages, events };
 
   const liveUserIndexes = new Set(relocatedLiveTurns.map((turn) => turn.userIndex));
@@ -3716,6 +3743,7 @@ function bindInitialLiveUserTurnIdentity(
   turnId: string,
   runId: string | undefined,
   unscopedMode: 'none' | 'latest' | 'unique',
+  events: readonly SessionEvent[],
 ): readonly UserMessage[] {
   if (
     userMessages.some(
@@ -3725,16 +3753,21 @@ function bindInitialLiveUserTurnIdentity(
   ) {
     return userMessages;
   }
-  const candidates = userMessages.flatMap((message, index) => {
+  const runCandidates: number[] = [];
+  const unscopedCandidates: number[] = [];
+  userMessages.forEach((message, index) => {
     if (
       message.restoredFromHistory ||
       message.hiddenHistoryAnchor ||
       message.turnId !== undefined
     ) {
-      return [];
+      return;
     }
-    if (runId !== undefined && message.runtimeRunId !== runId) return [];
-    return [index];
+    if (runId === undefined || message.runtimeRunId === undefined) {
+      unscopedCandidates.push(index);
+    } else if (message.runtimeRunId === runId) {
+      runCandidates.push(index);
+    }
   });
   const localTerminalMessageId = turnId.startsWith(LOCAL_TERMINAL_TURN_PREFIX)
     ? turnId.slice(LOCAL_TERMINAL_TURN_PREFIX.length)
@@ -3743,15 +3776,28 @@ function bindInitialLiveUserTurnIdentity(
     localTerminalMessageId !== undefined
       ? userMessages.findIndex((message) => message.id === localTerminalMessageId)
       : -1;
+  const provenUnscopedRunTarget =
+    runId !== undefined && unscopedMode === 'unique' && unscopedCandidates.length === 1
+      ? unscopedCandidates.find((index) => {
+          const turn = transcriptTurnSnapshots(userMessages, events).find(
+            (candidate) => candidate.userIndex === index,
+          );
+          if (!turn) return false;
+          const matchingRunEvents = events
+            .slice(turn.eventStart, turn.eventEnd)
+            .filter((event) => 'runtimeEvent' in event && event.runtimeEvent?.runId === runId);
+          return transcriptContentRuns(matchingRunEvents).length > 0;
+        })
+      : undefined;
   const targetIndex =
     localTerminalTargetIndex >= 0
       ? localTerminalTargetIndex
       : runId !== undefined
-        ? candidates.at(-1)
+        ? (runCandidates.at(-1) ?? provenUnscopedRunTarget)
         : unscopedMode === 'latest'
-          ? candidates.at(-1)
-          : unscopedMode === 'unique' && candidates.length === 1
-            ? candidates[0]
+          ? unscopedCandidates.at(-1)
+          : unscopedMode === 'unique' && unscopedCandidates.length === 1
+            ? unscopedCandidates[0]
             : undefined;
   if (targetIndex !== undefined) {
     const next = userMessages.slice();
@@ -3859,25 +3905,70 @@ function preserveKnownProjectionRunTurnIdentity(
   return { ...incoming, activeRun, queuedRuns, lastTerminalRun };
 }
 
-function openActiveSnapshotInitialTurn(
+function reconcileSnapshotInitialTurnOwners(
   sessionId: string,
   userMessages: readonly UserMessage[],
+  events: readonly SessionEvent[],
   projection: SpaceSessionLiveProjectionT | undefined,
+  target: 'active' | 'terminal' | 'all' = 'all',
 ): readonly UserMessage[] {
-  const activeRun = projection?.activeRun;
-  if (activeRun?.turnId === undefined) return userMessages;
-  const opened = openExactRestoredInitialTurn(userMessages, activeRun.turnId, activeRun.runId);
-  if (opened === userMessages) return userMessages;
-  const openedOwner = opened.find(
+  if (projection === undefined) return userMessages;
+  let reconciled = userMessages;
+  if (target !== 'active' && projection.lastTerminalRun !== undefined) {
+    reconciled = reconcileProjectionRunInitialTurnOwner(
+      sessionId,
+      reconciled,
+      events,
+      projection.lastTerminalRun,
+      false,
+    );
+  }
+  if (
+    target !== 'terminal' &&
+    projection.activeRun !== undefined &&
+    (target === 'active' || projection.activeRun.runId !== projection.lastTerminalRun?.runId)
+  ) {
+    reconciled = reconcileProjectionRunInitialTurnOwner(
+      sessionId,
+      reconciled,
+      events,
+      projection.activeRun,
+      true,
+    );
+  }
+  return reconciled;
+}
+
+function reconcileProjectionRunInitialTurnOwner(
+  sessionId: string,
+  userMessages: readonly UserMessage[],
+  events: readonly SessionEvent[],
+  run: NonNullable<
+    SpaceSessionLiveProjectionT['activeRun'] | SpaceSessionLiveProjectionT['lastTerminalRun']
+  >,
+  openRestoredOwner: boolean,
+): readonly UserMessage[] {
+  if (run?.turnId === undefined) return userMessages;
+  const opened = openRestoredOwner
+    ? openExactRestoredInitialTurn(userMessages, run.turnId, run.runId)
+    : userMessages;
+  const reconciled = bindInitialLiveUserTurnIdentity(
+    opened,
+    run.turnId,
+    run.runId,
+    'unique',
+    events,
+  );
+  const openedOwner = reconciled.find(
     (message) =>
       message.restoredFromHistory === true &&
-      message.turnId === activeRun.turnId &&
+      message.turnId === run.turnId &&
       message.turnUserOrdinal === 0 &&
-      message.runtimeRunId === activeRun.runId &&
+      message.runtimeRunId === run.runId &&
       message.historyNoAssistantSegment !== true,
   );
   if (openedOwner !== undefined) rememberOpenedHistoryLiveOwner(sessionId, openedOwner);
-  return opened;
+  return reconciled;
 }
 
 function localTerminalTurnIdForLatestLiveUser(
@@ -5256,15 +5347,14 @@ export const useAppStore = create<AppState>((set) => ({
         ? (liveBaseline?.events ?? state.eventsBySession[sessionId] ?? [])
         : [];
       const currentLocalNotices = state.localNoticesBySession[sessionId] ?? [];
-      const ownerOpenedMsgs = openActiveSnapshotInitialTurn(
+      const historyAndLiveEvents = [...histEvents, ...currentEvents];
+      const ownerOpenedMsgs = reconcileSnapshotInitialTurnOwners(
         sessionId,
         [...histMsgs, ...currentMsgs],
+        historyAndLiveEvents,
         includeLiveProjection ? state.liveProjectionBySession[sessionId] : undefined,
       );
-      const folded = foldStrongIdentityDuplicateTurns(ownerOpenedMsgs, [
-        ...histEvents,
-        ...currentEvents,
-      ]);
+      const folded = foldStrongIdentityDuplicateTurns(ownerOpenedMsgs, historyAndLiveEvents);
       rememberCanonicalizedHistoryLiveOwners(sessionId, folded.canonicalizedLiveOwners ?? []);
       const combinedEvents = dedupePersistedCompactionBoundaries(folded.events);
       const combinedMsgs = hideOpenStrongIdentityDuplicateProjection(
@@ -5678,6 +5768,7 @@ export const useAppStore = create<AppState>((set) => ({
               lifecycleTurnId,
               runtimeRunId,
               unscopedTurnBinding,
+              appendedEvents,
             )
           : initialTurnUsers;
       const lifecycleIdentityChanged = lifecycleBoundUsers !== currentUsers;
@@ -6336,12 +6427,8 @@ export const useAppStore = create<AppState>((set) => ({
         pendingSendBySession: restPending,
         pendingSendRuntimeBaselineBySession: restPendingBaselines,
         sessionFlags: restFlags,
-        deletingSessionIds: new Set(
-          [...state.deletingSessionIds].filter((id) => id !== sessionId),
-        ),
-        removingSessionIds: new Set(
-          [...state.removingSessionIds].filter((id) => id !== sessionId),
-        ),
+        deletingSessionIds: new Set([...state.deletingSessionIds].filter((id) => id !== sessionId)),
+        removingSessionIds: new Set([...state.removingSessionIds].filter((id) => id !== sessionId)),
         permissionQueue: state.permissionQueue.filter((p) => p.sessionId !== sessionId),
         askUserQueue: state.askUserQueue.filter((p) => p.sessionId !== sessionId),
         currentSessionId: state.currentSessionId === sessionId ? null : state.currentSessionId,
@@ -6625,24 +6712,45 @@ export const useAppStore = create<AppState>((set) => ({
         previousBarrier.runId === snapshotRun.runId;
       const currentEvents = state.eventsBySession[projection.sessionId] ?? [];
       const currentUsers = state.userMessagesBySession[projection.sessionId] ?? [];
-      const snapshotOwnedUsers = openActiveSnapshotInitialTurn(
-        projection.sessionId,
-        currentUsers,
-        identityProjection,
-      );
       const hydratedEvents = hydrateSessionEventsFromLiveSnapshot(
         currentEvents,
         identityProjection,
       );
+      const snapshotOwnedUsers = reconcileSnapshotInitialTurnOwners(
+        projection.sessionId,
+        currentUsers,
+        hydratedEvents,
+        identityProjection,
+      );
+      const folded = foldStrongIdentityDuplicateTurns(snapshotOwnedUsers, hydratedEvents);
+      rememberCanonicalizedHistoryLiveOwners(
+        projection.sessionId,
+        folded.canonicalizedLiveOwners ?? [],
+      );
+      const reconciledUsers = hideOpenStrongIdentityDuplicateProjection(
+        folded.userMessages,
+        folded.events,
+      );
+      const reconciledEvents = folded.events;
       const liveBaseline = historyLiveBaselines.get(projection.sessionId);
       if (liveBaseline !== undefined) {
         // Page replacement is rebuilt from this independent live projection. Hydrate the same
         // authoritative Runtime snapshot into that baseline as well, otherwise loading an older
         // page would rebuild from a pre-reconnect baseline and make assistant/thinking/tool state
         // restored by the snapshot disappear.
+        const hydratedBaselineEvents = hydrateSessionEventsFromLiveSnapshot(
+          liveBaseline.events,
+          identityProjection,
+        );
         rememberHistoryLiveBaseline(projection.sessionId, {
           ...liveBaseline,
-          events: hydrateSessionEventsFromLiveSnapshot(liveBaseline.events, identityProjection),
+          userMessages: reconcileSnapshotInitialTurnOwners(
+            projection.sessionId,
+            liveBaseline.userMessages,
+            hydratedBaselineEvents,
+            identityProjection,
+          ),
+          events: hydratedBaselineEvents,
         });
       }
       const clearsPendingSend =
@@ -6699,19 +6807,19 @@ export const useAppStore = create<AppState>((set) => ({
               },
             }
           : {}),
-        ...(hydratedEvents !== currentEvents
+        ...(reconciledEvents !== currentEvents
           ? {
               eventsBySession: {
                 ...state.eventsBySession,
-                [projection.sessionId]: hydratedEvents,
+                [projection.sessionId]: reconciledEvents,
               },
             }
           : {}),
-        ...(snapshotOwnedUsers !== currentUsers
+        ...(reconciledUsers !== currentUsers
           ? {
               userMessagesBySession: {
                 ...state.userMessagesBySession,
-                [projection.sessionId]: snapshotOwnedUsers,
+                [projection.sessionId]: reconciledUsers,
               },
             }
           : {}),
@@ -6766,18 +6874,47 @@ export const useAppStore = create<AppState>((set) => ({
         (change.change.domain === 'run' || change.change.domain === 'terminal');
       const currentEvents = state.eventsBySession[change.sessionId] ?? [];
       const currentUsers = state.userMessagesBySession[change.sessionId] ?? [];
-      const snapshotOwnedUsers =
-        appliesRunIdentity && change.change.domain === 'run'
-          ? openActiveSnapshotInitialTurn(change.sessionId, currentUsers, projection)
-          : currentUsers;
       const hydratedEvents = appliesRunIdentity
         ? hydrateSessionEventsFromLiveSnapshot(currentEvents, projection)
         : currentEvents;
+      const snapshotOwnedUsers = appliesRunIdentity
+        ? reconcileSnapshotInitialTurnOwners(
+            change.sessionId,
+            currentUsers,
+            hydratedEvents,
+            projection,
+            change.change.domain === 'terminal' ? 'terminal' : 'active',
+          )
+        : currentUsers;
+      const folded = appliesRunIdentity
+        ? foldStrongIdentityDuplicateTurns(snapshotOwnedUsers, hydratedEvents)
+        : { userMessages: snapshotOwnedUsers, events: hydratedEvents };
+      if (appliesRunIdentity) {
+        rememberCanonicalizedHistoryLiveOwners(
+          change.sessionId,
+          folded.canonicalizedLiveOwners ?? [],
+        );
+      }
+      const reconciledUsers = appliesRunIdentity
+        ? hideOpenStrongIdentityDuplicateProjection(folded.userMessages, folded.events)
+        : snapshotOwnedUsers;
+      const reconciledEvents = folded.events;
       const liveBaseline = historyLiveBaselines.get(change.sessionId);
       if (appliesRunIdentity && liveBaseline !== undefined) {
+        const hydratedBaselineEvents = hydrateSessionEventsFromLiveSnapshot(
+          liveBaseline.events,
+          projection,
+        );
         rememberHistoryLiveBaseline(change.sessionId, {
           ...liveBaseline,
-          events: hydrateSessionEventsFromLiveSnapshot(liveBaseline.events, projection),
+          userMessages: reconcileSnapshotInitialTurnOwners(
+            change.sessionId,
+            liveBaseline.userMessages,
+            hydratedBaselineEvents,
+            projection,
+            change.change.domain === 'terminal' ? 'terminal' : 'active',
+          ),
+          events: hydratedBaselineEvents,
         });
       }
       const clearsPendingSend =
@@ -6837,19 +6974,19 @@ export const useAppStore = create<AppState>((set) => ({
       return {
         liveProjectionBySession,
         runtimeSnapshotRequiredBySession: result.state.snapshotRequiredBySession,
-        ...(hydratedEvents !== currentEvents
+        ...(reconciledEvents !== currentEvents
           ? {
               eventsBySession: {
                 ...state.eventsBySession,
-                [change.sessionId]: hydratedEvents,
+                [change.sessionId]: reconciledEvents,
               },
             }
           : {}),
-        ...(snapshotOwnedUsers !== currentUsers
+        ...(reconciledUsers !== currentUsers
           ? {
               userMessagesBySession: {
                 ...state.userMessagesBySession,
-                [change.sessionId]: snapshotOwnedUsers,
+                [change.sessionId]: reconciledUsers,
               },
             }
           : {}),

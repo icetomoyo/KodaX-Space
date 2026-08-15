@@ -2560,12 +2560,24 @@ test('authoritative terminal repairs a missed identity-bearing start before fold
     kind: 'session_start',
     sessionId: SID,
     provider: 'mock',
+    runtimeEvent: {
+      runtimeId: 'runtime-terminal-repair',
+      runId: 'run-terminal-repair',
+      journalEpoch: 'epoch-terminal-repair',
+      seq: 1,
+    },
   });
   store.appendEvent({
     kind: 'text_delta',
     sessionId: SID,
     text: 'live answer',
     sentAt: 10_100,
+    runtimeEvent: {
+      runtimeId: 'runtime-terminal-repair',
+      runId: 'run-terminal-repair',
+      journalEpoch: 'epoch-terminal-repair',
+      seq: 2,
+    },
   });
 
   // The observation can be invalidated after run.started and miss turn.started. A canonical
@@ -2624,6 +2636,34 @@ test('authoritative terminal repairs a missed identity-bearing start before fold
     ],
   );
   assertClosedTranscriptStructure(SID);
+});
+
+test('an authoritative terminal never guesses among multiple unacknowledged owners', () => {
+  const store = useAppStore.getState();
+  store.appendUserMessage(SID, 'first unresolved query', 10_000);
+  store.appendUserMessage(SID, 'second unresolved query', 20_000);
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: SID,
+    turnId: 'turn-ambiguous-terminal',
+    runtimeEvent: {
+      runtimeId: 'runtime-ambiguous-terminal',
+      runId: 'run-ambiguous-terminal',
+      journalEpoch: 'epoch-ambiguous-terminal',
+      seq: 2,
+    },
+  });
+
+  assert.deepEqual(
+    (useAppStore.getState().userMessagesBySession[SID] ?? []).map((message) => [
+      message.content,
+      message.turnId,
+    ]),
+    [
+      ['first unresolved query', undefined],
+      ['second unresolved query', undefined],
+    ],
+  );
 });
 
 test('authoritative live transcript identity repairs a missed start while the run is active', () => {
