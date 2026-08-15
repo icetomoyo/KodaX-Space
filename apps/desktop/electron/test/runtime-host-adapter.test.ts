@@ -2978,11 +2978,12 @@ test('active observation rebuilds the current Provider attempt from the Runtime 
       ...observation,
       snapshot: {
         ...observation.snapshot,
-        cursor: testRuntimeCursor(sessionId, 6),
+        cursor: testRuntimeCursor(sessionId, 7),
         runs: [
           {
             runId,
             sessionId,
+            turnId: 'turn_recovered_observation',
             phase: 'running' as const,
             provider: 'mock',
             mode: 'managed_task' as const,
@@ -3002,17 +3003,34 @@ test('active observation rebuilds the current Provider attempt from the Runtime 
     replayCalls += 1;
     assert.equal(filter.runId, runId);
     assert.deepEqual(filter.type, [
+      'turn.started',
       'run.progress',
       'assistant.delta',
       'thinking.delta',
+      'thinking.finished',
       'tool.finished',
       'provider.recovery',
     ]);
     assert.equal(filter.limit, undefined);
     return [
       withTestRuntimeCursor({
-        id: 'event_recovered_iteration',
+        id: 'event_recovered_root_start',
         seq: 1,
+        time: '2026-08-14T00:00:00.050Z',
+        type: 'turn.started',
+        sessionId,
+        runId,
+        payload: {
+          sessionId,
+          seq: 1,
+          turnId: 'turn_recovered_observation',
+          deliveryKind: 'initial',
+          contextKind: 'root',
+        },
+      }),
+      withTestRuntimeCursor({
+        id: 'event_recovered_iteration',
+        seq: 2,
         time: '2026-08-14T00:00:00.100Z',
         type: 'run.progress',
         sessionId,
@@ -3022,7 +3040,7 @@ test('active observation rebuilds the current Provider attempt from the Runtime 
       }),
       withTestRuntimeCursor({
         id: 'event_abandoned_text',
-        seq: 2,
+        seq: 3,
         time: '2026-08-14T00:00:00.200Z',
         type: 'assistant.delta',
         sessionId,
@@ -3032,7 +3050,7 @@ test('active observation rebuilds the current Provider attempt from the Runtime 
       }),
       withTestRuntimeCursor({
         id: 'event_abandoned_thinking',
-        seq: 3,
+        seq: 4,
         time: '2026-08-14T00:00:00.300Z',
         type: 'thinking.delta',
         sessionId,
@@ -3042,7 +3060,7 @@ test('active observation rebuilds the current Provider attempt from the Runtime 
       }),
       withTestRuntimeCursor({
         id: 'event_recovered_boundary',
-        seq: 4,
+        seq: 5,
         time: '2026-08-14T00:00:00.400Z',
         type: 'provider.recovery',
         sessionId,
@@ -3063,7 +3081,7 @@ test('active observation rebuilds the current Provider attempt from the Runtime 
       }),
       withTestRuntimeCursor({
         id: 'event_replacement_text',
-        seq: 5,
+        seq: 6,
         time: '2026-08-14T00:00:00.500Z',
         type: 'assistant.delta',
         sessionId,
@@ -3073,7 +3091,7 @@ test('active observation rebuilds the current Provider attempt from the Runtime 
       }),
       withTestRuntimeCursor({
         id: 'event_replacement_thinking',
-        seq: 6,
+        seq: 7,
         time: '2026-08-14T00:00:00.600Z',
         type: 'thinking.delta',
         sessionId,
@@ -3083,7 +3101,7 @@ test('active observation rebuilds the current Provider attempt from the Runtime 
       }),
       withTestRuntimeCursor({
         id: 'event_after_snapshot_cursor',
-        seq: 7,
+        seq: 8,
         time: '2026-08-14T00:00:00.700Z',
         type: 'assistant.delta',
         sessionId,
@@ -3108,7 +3126,7 @@ test('active observation rebuilds the current Provider attempt from the Runtime 
   assert.equal(replayCalls, 1);
   assert.equal(live.assistantDraft?.text, 'replacement');
   assert.equal(live.thinkingDraft?.text, 'replacement thinking');
-  assert.equal(live.cursor.seq, 6);
+  assert.equal(live.cursor.seq, 7);
   await adapter.close();
 });
 
@@ -3220,7 +3238,7 @@ test('active observation keeps its replayed checkpoint for later Provider recove
   await adapter.close();
 });
 
-test('active observation remains available when supplemental journal replay fails', async () => {
+test('active observation omits a causally unscoped cumulative draft when replay fails', async () => {
   const fake = createFakeRuntime('rt_replay_failure');
   const sessionId = 's_replay_failure';
   const runId = 'run_replay_failure';
@@ -3237,6 +3255,7 @@ test('active observation remains available when supplemental journal replay fail
           {
             runId,
             sessionId,
+            turnId: 'turn_replay_failure',
             phase: 'running' as const,
             provider: 'mock',
             mode: 'managed_task' as const,
@@ -3264,11 +3283,219 @@ test('active observation remains available when supplemental journal replay fail
   await adapter.initialize();
   await adapter.ensureObserved(sessionId);
 
-  assert.equal(
-    (await adapter.readSessionLiveSnapshot(sessionId)).assistantDraft?.text,
-    'authoritative cumulative draft',
-  );
+  const live = await adapter.readSessionLiveSnapshot(sessionId);
+  assert.equal(live.activeRun?.turnId, 'turn_replay_failure');
+  assert.equal(live.assistantDraft, undefined);
   await adapter.close();
+});
+
+test('active observation omits an anonymous cumulative draft when replay fails', async () => {
+  const fake = createFakeRuntime('rt_anonymous_replay_failure');
+  const sessionId = 's_anonymous_replay_failure';
+  const runId = 'run_anonymous_replay_failure';
+  fake.sessions.add(sessionId);
+  const originalObserve = fake.runtime.sessions.observe.bind(fake.runtime.sessions);
+  fake.runtime.sessions.observe = async (...args) => {
+    const observation = await originalObserve(...args);
+    return {
+      ...observation,
+      snapshot: {
+        ...observation.snapshot,
+        cursor: testRuntimeCursor(sessionId, 2),
+        runs: [
+          {
+            runId,
+            sessionId,
+            phase: 'running' as const,
+            provider: 'mock',
+            mode: 'managed_task' as const,
+            startedAt: '2026-08-14T00:00:00.000Z',
+          },
+        ],
+        live: {
+          ...observation.snapshot.live,
+          assistantTextByRun: { [runId]: 'unscoped cumulative draft' },
+        },
+      },
+    };
+  };
+  fake.runtime.events.replay = async () => {
+    throw new Error('journal unavailable');
+  };
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  await adapter.initialize();
+  await adapter.ensureObserved(sessionId);
+
+  const live = await adapter.readSessionLiveSnapshot(sessionId);
+  assert.equal(live.activeRun?.turnId, undefined);
+  assert.equal(live.assistantDraft, undefined);
+  await adapter.close();
+});
+
+test('active observation omits a cumulative draft when replay lacks the current root boundary', async (t) => {
+  const scenarios = [
+    {
+      name: 'empty replay',
+      omitTurnId: false,
+      events: (_sessionId: string, _runId: string) => [],
+    },
+    {
+      name: 'empty replay with an anonymous active turn',
+      omitTurnId: true,
+      events: (_sessionId: string, _runId: string) => [],
+    },
+    {
+      name: 'current content without its root start',
+      omitTurnId: false,
+      events: (sessionId: string, runId: string) => [
+        withTestRuntimeCursor({
+          id: 'event_current_content_without_start',
+          seq: 2,
+          time: '2026-08-14T00:00:00.200Z',
+          type: 'assistant.delta',
+          sessionId,
+          runId,
+          turnId: 'turn_current',
+          payload: { text: 'current tail without boundary' },
+        }),
+      ],
+    },
+    {
+      name: 'only an older root start',
+      omitTurnId: false,
+      events: (sessionId: string, runId: string) => [
+        withTestRuntimeCursor({
+          id: 'event_old_root_start',
+          seq: 1,
+          time: '2026-08-14T00:00:00.100Z',
+          type: 'turn.started',
+          sessionId,
+          runId,
+          turnId: 'turn_old',
+          payload: {
+            sessionId,
+            seq: 1,
+            turnId: 'turn_old',
+            deliveryKind: 'initial',
+            contextKind: 'root',
+          },
+        }),
+        withTestRuntimeCursor({
+          id: 'event_current_content_after_old_start',
+          seq: 2,
+          time: '2026-08-14T00:00:00.200Z',
+          type: 'assistant.delta',
+          sessionId,
+          runId,
+          turnId: 'turn_current',
+          payload: { text: 'current tail after an old boundary' },
+        }),
+      ],
+    },
+    {
+      name: 'current root start beyond the captured snapshot cursor',
+      omitTurnId: false,
+      events: (sessionId: string, runId: string) => [
+        withTestRuntimeCursor({
+          id: 'event_future_current_root_start',
+          seq: 4,
+          time: '2026-08-14T00:00:00.400Z',
+          type: 'turn.started',
+          sessionId,
+          runId,
+          turnId: 'turn_current',
+          payload: {
+            sessionId,
+            seq: 4,
+            turnId: 'turn_current',
+            deliveryKind: 'initial',
+            contextKind: 'root',
+          },
+        }),
+      ],
+    },
+    {
+      name: 'current root start from another journal epoch',
+      omitTurnId: false,
+      events: (sessionId: string, runId: string) => [
+        withTestRuntimeCursor({
+          id: 'event_foreign_epoch_current_root_start',
+          seq: 2,
+          cursor: { sessionId, journalEpoch: 'journal_epoch_foreign', seq: 2 },
+          time: '2026-08-14T00:00:00.200Z',
+          type: 'turn.started',
+          sessionId,
+          runId,
+          turnId: 'turn_current',
+          payload: {
+            sessionId,
+            seq: 2,
+            turnId: 'turn_current',
+            deliveryKind: 'initial',
+            contextKind: 'root',
+          },
+        }),
+      ],
+    },
+  ] as const;
+
+  for (const scenario of scenarios) {
+    await t.test(scenario.name, async () => {
+      const fake = createFakeRuntime(`rt_missing_boundary_${scenario.name.replaceAll(' ', '_')}`);
+      const sessionId = `s_missing_boundary_${scenario.name.replaceAll(' ', '_')}`;
+      const runId = `run_missing_boundary_${scenario.name.replaceAll(' ', '_')}`;
+      fake.sessions.add(sessionId);
+      const originalObserve = fake.runtime.sessions.observe.bind(fake.runtime.sessions);
+      fake.runtime.sessions.observe = async (...args) => {
+        const observation = await originalObserve(...args);
+        return {
+          ...observation,
+          snapshot: {
+            ...observation.snapshot,
+            cursor: testRuntimeCursor(sessionId, 3),
+            runs: [
+              {
+                runId,
+                sessionId,
+                ...(scenario.omitTurnId ? {} : { turnId: 'turn_current' }),
+                phase: 'running' as const,
+                provider: 'mock',
+                mode: 'managed_task' as const,
+                startedAt: '2026-08-14T00:00:00.000Z',
+              },
+            ],
+            live: {
+              ...observation.snapshot.live,
+              assistantTextByRun: { [runId]: 'old answercurrent answer' },
+            },
+          },
+        };
+      };
+      fake.runtime.events.replay = async () => scenario.events(sessionId, runId);
+      const adapter = new RuntimeHostAdapter({
+        mode: 'runtime',
+        profileRoot: path.resolve('C:\\isolated-profile'),
+        runtimeFactory: async () => fake.runtime,
+        identityStore: testIdentityStore,
+        runtimeEventParser: testRuntimeEventParser,
+      });
+
+      await adapter.initialize();
+      await adapter.ensureObserved(sessionId);
+
+      const live = await adapter.readSessionLiveSnapshot(sessionId);
+      assert.equal(live.activeRun?.turnId, scenario.omitTurnId ? undefined : 'turn_current');
+      assert.equal(live.assistantDraft, undefined);
+      await adapter.close();
+    });
+  }
 });
 
 test('a stale missing Session result cannot cancel the replacement Runtime restore', async () => {
@@ -9278,7 +9505,6 @@ test('daemon run lifecycle preserves canonical turn identity in renderer events'
     type: 'turn.started',
     sessionId: 's_1',
     runId: 'run_identity',
-    turnId: 'turn_identity',
     payload: {
       sessionId: 's_1',
       seq: 1,
@@ -9467,7 +9693,6 @@ test('daemon child turn lifecycle cannot bind the root renderer turn identity', 
     type: 'turn.started',
     sessionId: 's_1',
     runId: 'run_identity',
-    turnId: 'turn_child',
     payload: {
       sessionId: 's_1',
       seq: 1,

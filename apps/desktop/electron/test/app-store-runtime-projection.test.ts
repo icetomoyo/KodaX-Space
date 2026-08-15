@@ -1722,30 +1722,6 @@ test('a run change that supplies turn identity opens the restored owner and enri
       .every((event) => event.turnId === 'turn_incremental'),
     true,
   );
-  assert.equal(
-    store.applySessionLiveProjectionChange({
-      sessionId: 's_1',
-      baseProjectionRevision: 3,
-      projectionRevision: 4,
-      cursor: { runtimeId: 'rt_1', seq: 7 },
-      change: {
-        domain: 'run',
-        activeRun: {
-          runId: 'run_incremental',
-          sessionId: 's_1',
-          phase: 'running',
-          turnId: 'turn_incremental_conflict',
-        },
-        queuedRuns: [],
-      },
-    }),
-    'applied',
-  );
-  assert.equal(
-    useAppStore.getState().liveProjectionBySession.s_1?.activeRun?.turnId,
-    'turn_incremental',
-  );
-
   store.prependSessionHistory(
     's_1',
     [
@@ -1774,7 +1750,7 @@ test('a run change that supplies turn identity opens the restored owner and enri
   );
 });
 
-test('a newer snapshot cannot split one run across conflicting active and terminal turn identities', () => {
+test('a newer snapshot preserves known run identities when the incoming snapshot omits them', () => {
   useAppStore.setState({ sessions: [sidebarSession], currentSessionId: 's_1' });
   useAppStore.getState().replaceRuntimeProfileProjection(profile);
   const store = useAppStore.getState();
@@ -1803,8 +1779,15 @@ test('a newer snapshot cannot split one run across conflicting active and termin
     ...live,
     projectionRevision: 3,
     cursor: { runtimeId: 'rt_1', seq: 6 },
-    activeRun: { ...activeRun, turnId: 'turn_conflict' },
-    queuedRuns: [{ ...queuedRun, turnId: 'turn_queued_conflict' }],
+    activeRun: { runId: activeRun.runId, sessionId: 's_1', phase: 'running' },
+    queuedRuns: [
+      {
+        runId: queuedRun.runId,
+        sessionId: 's_1',
+        phase: 'queued',
+        queuedAt: queuedRun.queuedAt,
+      },
+    ],
     assistantDraft: { text: 'ab', startedAt: 2 },
   });
 
@@ -1826,9 +1809,9 @@ test('a newer snapshot cannot split one run across conflicting active and termin
     projectionRevision: 4,
     cursor: { runtimeId: 'rt_1', seq: 7 },
     lastTerminalRun: {
-      ...activeRun,
+      runId: activeRun.runId,
+      sessionId: 's_1',
       phase: 'completed',
-      turnId: 'turn_terminal_conflict',
       completedAt: 3,
     },
   });
@@ -1839,6 +1822,59 @@ test('a newer snapshot cannot split one run across conflicting active and termin
       ?.filter((event) => event.kind === 'text_delta')
       .every((event) => event.turnId === 'turn_original'),
     true,
+  );
+});
+
+test('a newer snapshot advances one managed Run to its explicit next root turn', () => {
+  useAppStore.setState({ sessions: [sidebarSession], currentSessionId: 's_1' });
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  const store = useAppStore.getState();
+  store.replaceSessionLiveProjection({
+    ...live,
+    projectionRevision: 2,
+    cursor: { runtimeId: 'rt_1', seq: 5 },
+    activeRun: {
+      runId: 'run_multi_root',
+      sessionId: 's_1',
+      phase: 'running',
+      turnId: 'turn_a',
+    },
+    assistantDraft: { text: 'answer a', startedAt: 2 },
+  });
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: 's_1',
+    provider: 'mock',
+    turnId: 'turn_b',
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_multi_root', seq: 6 },
+  });
+
+  assert.equal(
+    store.replaceSessionLiveProjection({
+      ...live,
+      projectionRevision: 3,
+      cursor: { runtimeId: 'rt_1', seq: 7 },
+      activeRun: {
+        runId: 'run_multi_root',
+        sessionId: 's_1',
+        phase: 'running',
+        turnId: 'turn_b',
+      },
+      assistantDraft: { text: 'answer b', startedAt: 3 },
+    }),
+    true,
+  );
+
+  const state = useAppStore.getState();
+  assert.equal(state.liveProjectionBySession.s_1?.activeRun?.turnId, 'turn_b');
+  assert.deepEqual(
+    state.eventsBySession.s_1
+      ?.filter((event) => event.kind === 'text_delta')
+      .map((event) => ({ text: event.text, turnId: event.turnId })),
+    [
+      { text: 'answer a', turnId: 'turn_a' },
+      { text: 'answer b', turnId: 'turn_b' },
+    ],
   );
 });
 
@@ -2434,6 +2470,7 @@ test('a terminal snapshot repairs the unique unacknowledged live owner before hi
       sessionId: 's_1',
       phase: 'completed',
       turnId: 'turn_snapshot_terminal',
+      startedAt: 11,
       completedAt: 20,
     },
   });
@@ -2492,6 +2529,623 @@ test('a delayed terminal event cannot steal a newer unacknowledged query', () =>
     undefined,
     'the delayed terminal event cannot steal a newer unacknowledged query',
   );
+});
+
+test('delayed content from a canonicalized Run cannot claim a newer anonymous query', () => {
+  useAppStore.setState({ sessions: [sidebarSession], currentSessionId: 's_1' });
+  const store = useAppStore.getState();
+  store.prependSessionHistory(
+    's_1',
+    [
+      {
+        kind: 'user',
+        content: 'completed query',
+        canonicalIndex: 0,
+        turnId: 'turn_completed',
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 'completed answer',
+        canonicalIndex: 1,
+        turnId: 'turn_completed',
+      },
+    ],
+    10,
+    {
+      replaceLoadedWindow: true,
+      authoritativeNewest: true,
+      sourceRevision: 'completed-before-next-query',
+    },
+  );
+  assert.equal(
+    useAppStore
+      .getState()
+      .userMessagesBySession.s_1?.filter((message) => message.content === 'completed query').length,
+    1,
+    'the old Run is already represented by its canonical row',
+  );
+
+  const nextMessageId = store.appendUserMessage('s_1', 'new anonymous query', 30);
+  assert.notEqual(nextMessageId, null);
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: 's_1',
+    text: 'delayed completed tail',
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_completed', seq: 4 },
+  });
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: 's_1',
+    turnId: 'turn_completed',
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_completed', seq: 5 },
+  });
+
+  const users = useAppStore.getState().userMessagesBySession.s_1 ?? [];
+  const next = users.find((message) => message.id === nextMessageId);
+  assert.ok(next, 'the newer query must remain present');
+  assert.equal(next.turnId, undefined);
+  assert.equal(next.runtimeRunId, undefined);
+  assert.deepEqual(
+    users.map((message) => message.content),
+    ['completed query', 'new anonymous query'],
+  );
+});
+
+test('a delayed complete Run batch cannot claim a newer anonymous query', () => {
+  useAppStore.setState({ sessions: [sidebarSession], currentSessionId: 's_1' });
+  const store = useAppStore.getState();
+  store.prependSessionHistory(
+    's_1',
+    [
+      {
+        kind: 'user',
+        content: 'completed query',
+        canonicalIndex: 0,
+        turnId: 'turn_completed',
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 'completed answer',
+        canonicalIndex: 1,
+        turnId: 'turn_completed',
+      },
+    ],
+    10,
+    {
+      replaceLoadedWindow: true,
+      authoritativeNewest: true,
+      sourceRevision: 'completed-before-delayed-batch',
+    },
+  );
+  const nextMessageId = store.appendUserMessage('s_1', 'new anonymous query', 30);
+  assert.notEqual(nextMessageId, null);
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: 's_1',
+    provider: 'mock',
+    turnId: 'turn_completed',
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_completed', seq: 2 },
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: 's_1',
+    text: 'delayed completed tail',
+    turnId: 'turn_completed',
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_completed', seq: 3 },
+  });
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: 's_1',
+    turnId: 'turn_completed',
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_completed', seq: 4 },
+  });
+
+  const users = useAppStore.getState().userMessagesBySession.s_1 ?? [];
+  const next = users.find((message) => message.id === nextMessageId);
+  assert.ok(next, 'the newer query must survive the entire delayed old Run batch');
+  assert.equal(next.turnId, undefined);
+  assert.equal(next.runtimeRunId, undefined);
+  assert.deepEqual(
+    users.map((message) => message.content),
+    ['completed query', 'new anonymous query'],
+  );
+});
+
+test('a delayed old Run cannot cross the current pending send boundary', () => {
+  useAppStore.setState({ sessions: [sidebarSession], currentSessionId: 's_1' });
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  const store = useAppStore.getState();
+  store.replaceSessionLiveProjection({
+    ...live,
+    cursor: {
+      runtimeId: 'rt_1',
+      sessionId: 's_1',
+      journalEpoch: 'epoch_current',
+      seq: 5,
+    },
+  });
+  const nextMessageId = store.appendUserMessage('s_1', 'new pending query', 30);
+  assert.notEqual(nextMessageId, null);
+  store.setPendingSend('s_1', true);
+
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: 's_1',
+    provider: 'mock',
+    turnId: 'turn_old',
+    runtimeEvent: {
+      runtimeId: 'rt_1',
+      runId: 'run_old',
+      journalEpoch: 'epoch_current',
+      seq: 2,
+    },
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: 's_1',
+    text: 'delayed old answer',
+    turnId: 'turn_old',
+    runtimeEvent: {
+      runtimeId: 'rt_1',
+      runId: 'run_old',
+      journalEpoch: 'epoch_current',
+      seq: 3,
+    },
+  });
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: 's_1',
+    turnId: 'turn_old',
+    runtimeEvent: {
+      runtimeId: 'rt_1',
+      runId: 'run_old',
+      journalEpoch: 'epoch_current',
+      seq: 4,
+    },
+  });
+
+  const state = useAppStore.getState();
+  const next = state.userMessagesBySession.s_1?.find((message) => message.id === nextMessageId);
+  assert.ok(next, 'the pending query must survive a delayed older Run');
+  assert.equal(next.turnId, undefined);
+  assert.equal(next.runtimeRunId, undefined);
+  assert.equal(state.pendingSendBySession.s_1, true);
+});
+
+test('a canonical revalidation arriving after a newer query cannot let an old Run claim it', () => {
+  useAppStore.setState({ sessions: [sidebarSession], currentSessionId: 's_1' });
+  const store = useAppStore.getState();
+  const nextMessageId = store.appendUserMessage('s_1', 'query sent during revalidation', 30);
+  assert.notEqual(nextMessageId, null);
+  store.prependSessionHistory(
+    's_1',
+    [
+      {
+        kind: 'user',
+        content: 'old canonical query',
+        canonicalIndex: 0,
+        turnId: 'turn_old',
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 'old canonical answer',
+        canonicalIndex: 1,
+        turnId: 'turn_old',
+      },
+    ],
+    10,
+    {
+      replaceLoadedWindow: true,
+      authoritativeNewest: true,
+      sourceRevision: 'old-canonical-after-new-query',
+    },
+  );
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: 's_1',
+    provider: 'mock',
+    turnId: 'turn_old',
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_old', seq: 2 },
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: 's_1',
+    text: 'delayed old tail',
+    turnId: 'turn_old',
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_old', seq: 3 },
+  });
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: 's_1',
+    turnId: 'turn_old',
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_old', seq: 4 },
+  });
+
+  const users = useAppStore.getState().userMessagesBySession.s_1 ?? [];
+  const next = users.find((message) => message.id === nextMessageId);
+  assert.ok(next, 'the query sent during revalidation must remain present');
+  assert.equal(next.turnId, undefined);
+  assert.equal(next.runtimeRunId, undefined);
+  assert.deepEqual(
+    users.map((message) => message.content),
+    ['old canonical query', 'query sent during revalidation'],
+  );
+});
+
+test('late old content before canonical revalidation cannot claim the newer query', () => {
+  useAppStore.setState({ sessions: [sidebarSession], currentSessionId: 's_1' });
+  const store = useAppStore.getState();
+  const nextMessageId = store.appendUserMessage('s_1', 'query before old content', 30);
+  assert.notEqual(nextMessageId, null);
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: 's_1',
+    provider: 'mock',
+    turnId: 'turn_old',
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_old', journalEpoch: 'epoch_1', seq: 2 },
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: 's_1',
+    text: 'delayed old content',
+    turnId: 'turn_old',
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_old', journalEpoch: 'epoch_1', seq: 3 },
+  });
+  store.prependSessionHistory(
+    's_1',
+    [
+      {
+        kind: 'user',
+        content: 'old canonical query',
+        canonicalIndex: 0,
+        turnId: 'turn_old',
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 'old canonical answer',
+        canonicalIndex: 1,
+        turnId: 'turn_old',
+      },
+    ],
+    10,
+    {
+      replaceLoadedWindow: true,
+      authoritativeNewest: true,
+      sourceRevision: 'old-canonical-after-delayed-content',
+    },
+  );
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: 's_1',
+    turnId: 'turn_old',
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_old', journalEpoch: 'epoch_1', seq: 4 },
+  });
+
+  const users = useAppStore.getState().userMessagesBySession.s_1 ?? [];
+  const next = users.find((message) => message.id === nextMessageId);
+  assert.ok(next, 'late positional evidence must not delete the newer query');
+  assert.equal(next.turnId, undefined);
+  assert.equal(next.runtimeRunId, undefined);
+});
+
+test('an evicted live baseline cannot authorize an old Run to claim a newer query', () => {
+  useAppStore.setState({ sessions: [sidebarSession], currentSessionId: 's_1' });
+  const store = useAppStore.getState();
+  store.prependSessionHistory(
+    's_1',
+    [
+      {
+        kind: 'user',
+        content: 'completed query',
+        canonicalIndex: 0,
+        turnId: 'turn_completed',
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 'completed answer',
+        canonicalIndex: 1,
+        turnId: 'turn_completed',
+      },
+    ],
+    10,
+    {
+      replaceLoadedWindow: true,
+      authoritativeNewest: true,
+      sourceRevision: 'completed-before-baseline-eviction',
+    },
+  );
+  for (let index = 0; index < 40; index += 1) {
+    store.prependSessionHistory(
+      `s_baseline_filler_${index}`,
+      [{ kind: 'user', content: `filler ${index}`, canonicalIndex: 0 }],
+      1,
+      {
+        replaceLoadedWindow: true,
+        authoritativeNewest: true,
+        sourceRevision: `filler-${index}`,
+      },
+    );
+  }
+
+  const nextMessageId = store.appendUserMessage('s_1', 'new query after eviction', 30);
+  assert.notEqual(nextMessageId, null);
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: 's_1',
+    provider: 'mock',
+    turnId: 'turn_completed',
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_completed', seq: 2 },
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: 's_1',
+    text: 'delayed completed tail',
+    turnId: 'turn_completed',
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_completed', seq: 3 },
+  });
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: 's_1',
+    turnId: 'turn_completed',
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_completed', seq: 4 },
+  });
+
+  const users = useAppStore.getState().userMessagesBySession.s_1 ?? [];
+  const next = users.find((message) => message.id === nextMessageId);
+  assert.ok(next, 'the newer query must survive after its provenance baseline is evicted');
+  assert.equal(next.turnId, undefined);
+  assert.equal(next.runtimeRunId, undefined);
+  assert.deepEqual(
+    users.map((message) => message.content),
+    ['completed query', 'new query after eviction'],
+  );
+});
+
+test('a durable leading assistant anchor blocks an old Run from claiming a newer query', () => {
+  useAppStore.setState({ sessions: [sidebarSession], currentSessionId: 's_1' });
+  const store = useAppStore.getState();
+  store.prependSessionHistory(
+    's_1',
+    [
+      { kind: 'history_truncation', scope: 'history', omittedItems: 50 },
+      {
+        kind: 'assistant',
+        text: 'older answer tail',
+        canonicalIndex: 50,
+        turnId: 'turn_old',
+      },
+    ],
+    10,
+    {
+      replaceLoadedWindow: true,
+      authoritativeNewest: true,
+      sourceRevision: 'leading-old-answer-before-new-query',
+    },
+  );
+  assert.ok(
+    useAppStore
+      .getState()
+      .userMessagesBySession.s_1?.some(
+        (message) => message.hiddenHistoryAnchor && message.turnId === 'turn_old',
+      ),
+    'the bounded page must retain a durable owner for its leading assistant tail',
+  );
+
+  const nextMessageId = store.appendUserMessage('s_1', 'new query after old tail', 30);
+  assert.notEqual(nextMessageId, null);
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: 's_1',
+    provider: 'mock',
+    turnId: 'turn_old',
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_old', seq: 2 },
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: 's_1',
+    text: 'delayed old answer',
+    turnId: 'turn_old',
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_old', seq: 3 },
+  });
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: 's_1',
+    turnId: 'turn_old',
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_old', seq: 4 },
+  });
+
+  const next = useAppStore
+    .getState()
+    .userMessagesBySession.s_1?.find((message) => message.id === nextMessageId);
+  assert.ok(next, 'the query following a durable leading tail must remain present');
+  assert.equal(next.turnId, undefined);
+  assert.equal(next.runtimeRunId, undefined);
+});
+
+test('a delayed terminal snapshot cannot claim a query created after that Run started', () => {
+  useAppStore.setState({ sessions: [sidebarSession], currentSessionId: 's_1' });
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  const store = useAppStore.getState();
+  store.prependSessionHistory(
+    's_1',
+    [
+      {
+        kind: 'user',
+        content: 'completed query',
+        canonicalIndex: 0,
+        turnId: 'turn_completed',
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 'completed answer',
+        canonicalIndex: 1,
+        turnId: 'turn_completed',
+      },
+    ],
+    10,
+    {
+      replaceLoadedWindow: true,
+      authoritativeNewest: true,
+      sourceRevision: 'completed-before-delayed-snapshot',
+    },
+  );
+  const nextMessageId = store.appendUserMessage('s_1', 'new anonymous query', 30);
+  assert.notEqual(nextMessageId, null);
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: 's_1',
+    text: 'delayed completed tail',
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_completed', seq: 2 },
+  });
+
+  assert.equal(
+    store.replaceSessionLiveProjection({
+      ...live,
+      projectionRevision: 2,
+      cursor: { runtimeId: 'rt_1', seq: 3 },
+      lastTerminalRun: {
+        runId: 'run_completed',
+        sessionId: 's_1',
+        phase: 'completed',
+        turnId: 'turn_completed',
+        startedAt: 11,
+        completedAt: 20,
+      },
+    }),
+    true,
+  );
+
+  const next = useAppStore
+    .getState()
+    .userMessagesBySession.s_1?.find((message) => message.id === nextMessageId);
+  assert.ok(next, 'the newer query must survive the delayed terminal snapshot');
+  assert.equal(next.turnId, undefined);
+  assert.equal(next.runtimeRunId, undefined);
+});
+
+test('a terminal snapshot without startedAt cannot claim a newer query from delayed content', () => {
+  useAppStore.setState({ sessions: [sidebarSession], currentSessionId: 's_1' });
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  const store = useAppStore.getState();
+  store.prependSessionHistory(
+    's_1',
+    [
+      {
+        kind: 'user',
+        content: 'completed query',
+        canonicalIndex: 0,
+        turnId: 'turn_completed',
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 'completed answer',
+        canonicalIndex: 1,
+        turnId: 'turn_completed',
+      },
+    ],
+    10,
+    {
+      replaceLoadedWindow: true,
+      authoritativeNewest: true,
+      sourceRevision: 'completed-before-timestampless-terminal',
+    },
+  );
+  const nextMessageId = store.appendUserMessage('s_1', 'new anonymous query', 30);
+  assert.notEqual(nextMessageId, null);
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: 's_1',
+    text: 'delayed completed tail',
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_completed', seq: 2 },
+  });
+
+  store.replaceSessionLiveProjection({
+    ...live,
+    projectionRevision: 2,
+    cursor: { runtimeId: 'rt_1', seq: 3 },
+    lastTerminalRun: {
+      runId: 'run_completed',
+      sessionId: 's_1',
+      phase: 'completed',
+      turnId: 'turn_completed',
+      completedAt: 20,
+    },
+  });
+
+  const next = useAppStore
+    .getState()
+    .userMessagesBySession.s_1?.find((message) => message.id === nextMessageId);
+  assert.ok(next, 'the newer query must survive a terminal snapshot without a start boundary');
+  assert.equal(next.turnId, undefined);
+  assert.equal(next.runtimeRunId, undefined);
+});
+
+test('a raw terminal without a matching start cannot claim an anonymous query', () => {
+  useAppStore.setState({ sessions: [sidebarSession], currentSessionId: 's_1' });
+  const store = useAppStore.getState();
+  const messageId = store.appendUserMessage('s_1', 'anonymous query', 10);
+  assert.notEqual(messageId, null);
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: 's_1',
+    text: 'content without its start boundary',
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_old', seq: 2 },
+  });
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: 's_1',
+    turnId: 'turn_old',
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_old', seq: 3 },
+  });
+
+  const message = useAppStore
+    .getState()
+    .userMessagesBySession.s_1?.find((candidate) => candidate.id === messageId);
+  assert.ok(message);
+  assert.equal(message.turnId, undefined);
+  assert.equal(message.runtimeRunId, undefined);
+});
+
+test('a raw terminal repairs the query already identified by its send ACK', () => {
+  useAppStore.setState({ sessions: [sidebarSession], currentSessionId: 's_1' });
+  const store = useAppStore.getState();
+  const messageId = store.appendUserMessage('s_1', 'owned query', 10);
+  assert.notEqual(messageId, null);
+  store.bindUserMessageRuntimeRun('s_1', messageId!, 'run_owned');
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: 's_1',
+    provider: 'mock',
+    turnId: 'turn_owned',
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_owned', seq: 1 },
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: 's_1',
+    text: 'owned answer',
+    turnId: 'turn_owned',
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_owned', seq: 2 },
+  });
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: 's_1',
+    turnId: 'turn_owned',
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_owned', seq: 3 },
+  });
+
+  const message = useAppStore
+    .getState()
+    .userMessagesBySession.s_1?.find((candidate) => candidate.id === messageId);
+  assert.ok(message);
+  assert.equal(message.turnId, 'turn_owned');
+  assert.equal(message.runtimeRunId, 'run_owned');
 });
 
 test('a full snapshot reconciles a terminal owner even when the next run is already active', () => {

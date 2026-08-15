@@ -2553,9 +2553,11 @@ test('exact entry recovery retains a proven post-retry live extension', () => {
   assert.deepEqual(visible, ['assistant:retry final extended']);
 });
 
-test('authoritative terminal repairs a missed identity-bearing start before folding history', () => {
+test('authoritative terminal repairs a Run-acknowledged owner after a missed turn start', () => {
   const store = useAppStore.getState();
-  store.appendUserMessage(SID, 'terminal repairs the owner', 10_000);
+  const messageId = store.appendUserMessage(SID, 'terminal repairs the owner', 10_000);
+  assert.notEqual(messageId, null);
+  store.bindUserMessageRuntimeRun(SID, messageId!, 'run-terminal-repair');
   store.appendEvent({
     kind: 'session_start',
     sessionId: SID,
@@ -6710,7 +6712,7 @@ test('history overlap folds identical terminal tool turns without losing the rec
   assert.equal(tools[0]?.kind === 'tool_call' ? tools[0].result : undefined, 'file body');
 });
 
-test('bounded terminal history folds an unacknowledged successful multi-iteration turn once', () => {
+test('bounded terminal history folds an acknowledged successful multi-iteration turn once', () => {
   const store = useAppStore.getState();
   const turnId = 'turn-successful-multi-iteration';
   const runId = 'run-successful-multi-iteration';
@@ -6722,8 +6724,8 @@ test('bounded terminal history folds an unacknowledged successful multi-iteratio
   });
   const optimisticId = store.appendUserMessage(SID, 'how should both sides improve?', 10_000);
   assert.ok(optimisticId);
-  // A reload or a late session.start result can leave the optimistic owner without its run ACK.
-  // The daemon terminal still carries authoritative run + turn identity and must close that seam.
+  store.bindUserMessageRuntimeRun(SID, optimisticId, runId);
+  // The send ACK establishes Run ownership; the later turn identity closes the canonical seam.
   store.appendEvent({
     kind: 'session_start',
     sessionId: SID,

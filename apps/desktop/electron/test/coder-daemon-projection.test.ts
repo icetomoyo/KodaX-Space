@@ -1231,7 +1231,13 @@ test('event reducer keeps child activity out of the primary live projection', ()
       runId: 'run_active',
       turnId: 'turn_child',
       type: 'turn.started',
-      payload: { meta: childMeta },
+      payload: {
+        ...childMeta,
+        sessionId: 's_code',
+        seq: 42,
+        turnId: 'turn_child',
+        deliveryKind: 'initial',
+      },
     } as unknown as RuntimeTypedEvent),
     null,
   );
@@ -1337,10 +1343,16 @@ test('a new root turn in the same Run resets the previous turn live projection',
     time: '2026-07-14T08:04:01.000Z',
     sessionId: 's_code',
     runId: 'run_active',
-    turnId: 'turn_next',
     type: 'turn.started',
-    payload: { meta: { contextKind: 'root' } },
-  } as RuntimeTypedEvent);
+    payload: {
+      sessionId: 's_code',
+      seq: 43,
+      turnId: 'turn_next',
+      deliveryKind: 'interrupt',
+      contextKind: 'root',
+      contextRevision: 2,
+    },
+  } satisfies RuntimeTypedEvent<'turn.started'>);
 
   assert.equal(started?.change.domain, 'run');
   if (started?.change.domain === 'run') {

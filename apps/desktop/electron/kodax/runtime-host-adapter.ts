@@ -63,8 +63,10 @@ import {
   CoderSessionProjectionReducer,
   coderRuntimeSessionIds,
   isPartnerRuntimeSessionIdentity,
+  isTransientChildRuntimeEvent,
   projectRuntimeProfile,
   projectRuntimeSessionSnapshot,
+  runtimeTurnStartedId,
 } from './runtime/coder-daemon-projection.js';
 import {
   createPendingSdkRuntimeProjection,
@@ -235,6 +237,39 @@ function runtimeEventRecord(value: unknown): Readonly<Record<string, unknown>> |
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? (value as Readonly<Record<string, unknown>>)
     : undefined;
+}
+
+function omitCausallyUnscopedDraft(
+  projection: SpaceSessionLiveProjectionT,
+): SpaceSessionLiveProjectionT {
+  return {
+    ...projection,
+    assistantDraft: undefined,
+    thinkingDraft: undefined,
+    draftRecoveries: undefined,
+    draftCheckpoints: undefined,
+  };
+}
+
+function replayContainsCurrentRootTurnBoundary(
+  projection: SpaceSessionLiveProjectionT,
+  replayEvents: readonly RuntimeTypedEvent[],
+): boolean {
+  const activeRun = projection.activeRun;
+  if (activeRun === undefined) return true;
+  if (activeRun.turnId === undefined) return false;
+  return replayEvents.some((event) => {
+    return (
+      event.type === 'turn.started' &&
+      event.sessionId === projection.sessionId &&
+      event.runId === activeRun.runId &&
+      event.cursor.sessionId === projection.cursor.sessionId &&
+      event.cursor.journalEpoch === projection.cursor.journalEpoch &&
+      event.seq <= projection.cursor.seq &&
+      runtimeTurnStartedId(event) === activeRun.turnId &&
+      !isTransientChildRuntimeEvent(event)
+    );
+  });
 }
 
 export function runtimeSessionEventOrigin(runtimeId: string | undefined, event: RuntimeTypedEvent) {
@@ -4037,9 +4072,11 @@ export class RuntimeHostAdapter {
         runtime.events.replay({
           runId,
           type: [
+            'turn.started',
             'run.progress',
             'assistant.delta',
             'thinking.delta',
+            'thinking.finished',
             'tool.finished',
             'provider.recovery',
           ],
@@ -4057,13 +4094,22 @@ export class RuntimeHostAdapter {
         if (!parsed.ok) throw new Error(`Malformed Runtime replay event: ${parsed.error}`);
         return parsed.event;
       });
-      return { projection: projected, replayEvents };
+      return {
+        projection: replayContainsCurrentRootTurnBoundary(projected, replayEvents)
+          ? projected
+          : omitCausallyUnscopedDraft(projected),
+        replayEvents,
+      };
     } catch (error) {
       console.warn(
         `[runtime] supplemental draft replay failed for ${snapshot.session.id}:`,
         sanitizeDiagnosticError(error),
       );
-      return { projection: projected, replayEvents: [] };
+      return {
+        projection:
+          projected.activeRun === undefined ? projected : omitCausallyUnscopedDraft(projected),
+        replayEvents: [],
+      };
     } finally {
       if (timer !== undefined) clearTimeout(timer);
     }

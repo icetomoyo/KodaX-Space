@@ -18,11 +18,14 @@ node --test --import tsx `
 
 Expected: every test passes, including these boundaries:
 
-- a daemon-shaped terminal event folds the unique unacknowledged live owner;
+- a daemon-shaped terminal event folds only the owner already bound to the same Run by its send
+  acknowledgement; start/content/terminal adjacency alone never claims an anonymous query;
 - a full snapshot reconciles both a completed Run and a concurrently active next Run;
 - an incremental terminal change targets its completed Run rather than the active Run;
-- multiple unacknowledged owners, missing same-Run content evidence, and a delayed old terminal
-  remain fail-open and never claim a newer query.
+- a snapshot may alternatively repair one anonymous owner when same-Run content and authoritative
+  `startedAt` establish a causal boundary;
+- multiple unacknowledged owners, missing causal evidence, canonical revalidation races, and
+  delayed old start/content/terminal delivery remain fail-open and never claim a newer query.
 
 ## Packaged-App Scenario
 
@@ -44,7 +47,7 @@ the live transcript. Reload must not be needed to remove a duplicate.
 
 ## Incident Evidence
 
-Session `20260815_094944_bo4d9a9bb19e31` supplied the original no-retry reproduction. Its final Run
-had one Runtime journal lineage, no `provider.recovery`, and one canonical copy of each assistant
-block. Duplicate output existed only in the renderer's in-memory canonical/live composition and
-disappeared when Ctrl+R discarded that live buffer.
+Session `20260815_095421_p88e3b8680f28a` supplied the no-retry Ctrl+R-recoverable reproduction. Its
+final Run had one Runtime journal lineage, no `provider.recovery`, and one canonical copy of each
+assistant block. Duplicate output existed only in the renderer's in-memory canonical/live
+composition and disappeared when Ctrl+R discarded that live buffer.

@@ -3738,12 +3738,89 @@ function acknowledgedPendingSendAlreadyObserved(
 
 const LOCAL_TERMINAL_TURN_PREFIX = 'space-local-terminal:';
 
+function initialLiveUserCandidates(
+  userMessages: readonly UserMessage[],
+  runId: string | undefined,
+): { readonly run: readonly number[]; readonly unscoped: readonly number[] } {
+  const run: number[] = [];
+  const unscoped: number[] = [];
+  userMessages.forEach((message, index) => {
+    if (
+      message.restoredFromHistory ||
+      message.hiddenHistoryAnchor ||
+      message.turnId !== undefined
+    ) {
+      return;
+    }
+    if (runId === undefined || message.runtimeRunId === undefined) unscoped.push(index);
+    else if (message.runtimeRunId === runId) run.push(index);
+  });
+  return { run, unscoped };
+}
+
+function causallyProvenUnscopedRunTarget(
+  userMessages: readonly UserMessage[],
+  events: readonly SessionEvent[],
+  candidates: readonly number[],
+  runId: string,
+  runStartedAt: number | undefined,
+): number | undefined {
+  if (candidates.length !== 1) return undefined;
+  const targetIndex = candidates[0]!;
+  const turn = transcriptTurnSnapshots(userMessages, events).find(
+    (candidate) => candidate.userIndex === targetIndex,
+  );
+  if (!turn) return undefined;
+  const matchingRunEvents = events
+    .slice(turn.eventStart, turn.eventEnd)
+    .filter((event) => 'runtimeEvent' in event && event.runtimeEvent?.runId === runId);
+  const predatesAuthoritativeStart =
+    runStartedAt !== undefined && userMessages[targetIndex]!.sentAt <= runStartedAt;
+  if (transcriptContentRuns(matchingRunEvents).length === 0) return undefined;
+  return runStartedAt !== undefined && predatesAuthoritativeStart ? targetIndex : undefined;
+}
+
+function initialLiveUserTargetIndex(
+  userMessages: readonly UserMessage[],
+  events: readonly SessionEvent[],
+  turnId: string,
+  runId: string | undefined,
+  unscopedMode: 'none' | 'latest' | 'unique',
+  runStartedAt: number | undefined,
+): number | undefined {
+  const candidates = initialLiveUserCandidates(userMessages, runId);
+  if (turnId.startsWith(LOCAL_TERMINAL_TURN_PREFIX)) {
+    const messageId = turnId.slice(LOCAL_TERMINAL_TURN_PREFIX.length);
+    const localTarget = userMessages.findIndex((message) => message.id === messageId);
+    if (localTarget >= 0) return localTarget;
+  }
+  if (runId !== undefined) {
+    return (
+      candidates.run.at(-1) ??
+      (unscopedMode === 'unique'
+        ? causallyProvenUnscopedRunTarget(
+            userMessages,
+            events,
+            candidates.unscoped,
+            runId,
+            runStartedAt,
+          )
+        : undefined)
+    );
+  }
+  if (unscopedMode === 'latest') return candidates.unscoped.at(-1);
+  return unscopedMode === 'unique' && candidates.unscoped.length === 1
+    ? candidates.unscoped[0]
+    : undefined;
+}
+
 function bindInitialLiveUserTurnIdentity(
   userMessages: readonly UserMessage[],
   turnId: string,
   runId: string | undefined,
   unscopedMode: 'none' | 'latest' | 'unique',
   events: readonly SessionEvent[],
+  runStartedAt?: number,
 ): readonly UserMessage[] {
   if (
     userMessages.some(
@@ -3753,52 +3830,14 @@ function bindInitialLiveUserTurnIdentity(
   ) {
     return userMessages;
   }
-  const runCandidates: number[] = [];
-  const unscopedCandidates: number[] = [];
-  userMessages.forEach((message, index) => {
-    if (
-      message.restoredFromHistory ||
-      message.hiddenHistoryAnchor ||
-      message.turnId !== undefined
-    ) {
-      return;
-    }
-    if (runId === undefined || message.runtimeRunId === undefined) {
-      unscopedCandidates.push(index);
-    } else if (message.runtimeRunId === runId) {
-      runCandidates.push(index);
-    }
-  });
-  const localTerminalMessageId = turnId.startsWith(LOCAL_TERMINAL_TURN_PREFIX)
-    ? turnId.slice(LOCAL_TERMINAL_TURN_PREFIX.length)
-    : undefined;
-  const localTerminalTargetIndex =
-    localTerminalMessageId !== undefined
-      ? userMessages.findIndex((message) => message.id === localTerminalMessageId)
-      : -1;
-  const provenUnscopedRunTarget =
-    runId !== undefined && unscopedMode === 'unique' && unscopedCandidates.length === 1
-      ? unscopedCandidates.find((index) => {
-          const turn = transcriptTurnSnapshots(userMessages, events).find(
-            (candidate) => candidate.userIndex === index,
-          );
-          if (!turn) return false;
-          const matchingRunEvents = events
-            .slice(turn.eventStart, turn.eventEnd)
-            .filter((event) => 'runtimeEvent' in event && event.runtimeEvent?.runId === runId);
-          return transcriptContentRuns(matchingRunEvents).length > 0;
-        })
-      : undefined;
-  const targetIndex =
-    localTerminalTargetIndex >= 0
-      ? localTerminalTargetIndex
-      : runId !== undefined
-        ? (runCandidates.at(-1) ?? provenUnscopedRunTarget)
-        : unscopedMode === 'latest'
-          ? unscopedCandidates.at(-1)
-          : unscopedMode === 'unique' && unscopedCandidates.length === 1
-            ? unscopedCandidates[0]
-            : undefined;
+  const targetIndex = initialLiveUserTargetIndex(
+    userMessages,
+    events,
+    turnId,
+    runId,
+    unscopedMode,
+    runStartedAt,
+  );
   if (targetIndex !== undefined) {
     const next = userMessages.slice();
     next[targetIndex] = {
@@ -3869,17 +3908,17 @@ function preserveKnownProjectionRunTurnIdentity(
   if (current === undefined || current.cursor.runtimeId !== incoming.cursor.runtimeId)
     return incoming;
   const activeTurnId =
-    incoming.activeRun === undefined
+    incoming.activeRun === undefined || incoming.activeRun.turnId !== undefined
       ? undefined
       : knownProjectionRunTurnId(current, incoming.activeRun.runId);
   const terminalTurnId =
-    incoming.lastTerminalRun === undefined
+    incoming.lastTerminalRun === undefined || incoming.lastTerminalRun.turnId !== undefined
       ? undefined
       : knownProjectionRunTurnId(current, incoming.lastTerminalRun.runId);
   let queuedRunsChanged = false;
   const queuedRuns = incoming.queuedRuns.map((run) => {
     const knownTurnId = knownProjectionRunTurnId(current, run.runId);
-    if (knownTurnId === undefined || knownTurnId === run.turnId) return run;
+    if (run.turnId !== undefined || knownTurnId === undefined) return run;
     queuedRunsChanged = true;
     return { ...run, turnId: knownTurnId };
   });
@@ -3958,6 +3997,7 @@ function reconcileProjectionRunInitialTurnOwner(
     run.runId,
     'unique',
     events,
+    run.startedAt,
   );
   const openedOwner = reconciled.find(
     (message) =>
@@ -5741,9 +5781,17 @@ export const useAppStore = create<AppState>((set) => ({
           : undefined;
       const runtimeRunId =
         'runtimeEvent' in storedEvent ? storedEvent.runtimeEvent?.runId : undefined;
+      const originlessStartCanRepair =
+        event.kind === 'session_start' &&
+        (!('runtimeEvent' in storedEvent) || storedEvent.runtimeEvent === undefined);
+      // Runtime-origin lifecycle events may only claim an owner already bound by the send ACK.
+      // Their position in the live stream is not causal proof: an observation gap can replay an
+      // older Run after a newer anonymous query. Legacy originless starts retain positional repair.
       const unscopedTurnBinding =
         event.kind === 'session_start'
-          ? 'latest'
+          ? originlessStartCanRepair
+            ? 'latest'
+            : 'none'
           : event.kind === 'session_complete' || event.kind === 'session_error'
             ? 'unique'
             : 'none';

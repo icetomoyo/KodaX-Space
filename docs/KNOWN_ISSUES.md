@@ -179,6 +179,7 @@ Last Updated: 2026-08-15
 | 181 | High     | Resolved           | Daemon Provider recovery could leave an abandoned answer attempt in the live transcript until Ctrl+R                               | v0.1.38 daemon Runtime recovery projection                   | 2026-08-14 |
 | 182 | High     | Resolved in source | A bounded newest page could pair an earlier live answer with the next query until Ctrl+R                                           | v0.1.41 canonical/live leading-page reconciliation           | 2026-08-15 |
 | 183 | High     | Resolved in source | A successful no-retry Run could render both canonical and unacknowledged live copies until Ctrl+R                                  | v0.1.41 terminal live-owner identity reconciliation          | 2026-08-15 |
+| 184 | High     | In Progress        | A continued Run could attach cumulative prior-turn output to the latest query while ambiguous compaction survived reload           | v0.1.38 daemon live projection / KodaX 0.7.87 compaction     | 2026-08-15 |
 | 185 | High     | Resolved in source | A delayed old Run terminal could close the current query while a Session-level notification reported another Run                   | v0.1.38 daemon transcript / completion notifications         | 2026-08-15 |
 
 ## Issue Details
@@ -13098,8 +13099,9 @@ not require a new SDK event, payload field, capability, or KodaX live-projection
   attempt; do not clear pre-delta fresh retries or terminal `manual_continue` decisions.
 - Active observation hydration reconstructs the current attempt from the existing Session event
   journal at the captured cursor, while retaining completed tool boundaries, journal prefixes,
-  and all non-draft live state. The supplemental replay is bounded and fail-open: if it is missing,
-  malformed, or unavailable, Space still installs the authoritative Runtime snapshot.
+  and all non-draft live state. If supplemental replay is missing, malformed, or unavailable,
+  Space still installs the Runtime snapshot but does not publish a Run-cumulative draft as the
+  identified current turn without a causal journal boundary.
 - After an observation invalidation, renderer hydration replaces covered draft events with the
   recovered authoritative draft instead of appending it to the abandoned pre-disconnect attempt.
   Space-internal recovery and stable-checkpoint coordinates retain text/tool/text order without
@@ -13203,22 +13205,104 @@ This was not Provider retry leakage, duplicate Runtime persistence, or a missing
 
 ### Resolution
 
-- Terminal event, full-snapshot, and incremental-terminal paths now reconcile a unique anonymous
-  owner only when that owner's own transcript segment contains content from the same Runtime Run.
+- Runtime-origin lifecycle events reconcile only an owner already bound to the same `runId` by the
+  send acknowledgement. A start boundary, content, and terminal arriving beside an anonymous
+  query are still positional evidence and cannot establish ownership across an observation gap.
+- Legacy originless `session_start` delivery retains its positional compatibility repair; it cannot
+  be confused with replayed Runtime lifecycle events because it has no Runtime origin.
+- Full-snapshot and incremental-terminal paths may alternatively use the Run's authoritative
+  `startedAt`: the unique owner must predate that boundary and its segment must contain same-Run
+  content.
 - Full snapshots reconcile the terminal Run and a concurrently active Run independently. Terminal
   changes explicitly target `lastTerminalRun`, so a newer active Run cannot shadow the completed
   owner.
-- Ambiguous owners, terminals without same-Run content evidence, and delayed old terminals remain
-  fail-open. No content comparison, polling, synthetic SDK event, or KodaX change was added.
+- Ambiguous owners, missing send acknowledgement, terminals without authoritative `startedAt`, and
+  delayed old start/content/terminal delivery remain fail-open. No content comparison, polling,
+  synthetic SDK event, or KodaX change was added.
 
 ### Verification
 
 - Regression coverage includes the observed multi-iteration successful turn, direct terminal
   events, full terminal snapshots, incremental terminal changes, a concurrently active next Run,
-  multiple anonymous owners, and a delayed old terminal arriving after a new query.
+  multiple anonymous owners, canonical revalidation racing a new query, and delayed old
+  start/content/event/snapshot terminals arriving before or after that revalidation.
 - TypeScript, lint, focused transcript suites, and the complete repository test suite pass.
 - See
   [ISSUE_183_v0.1.41_REGRESSION_GUIDE.md](test-guides/ISSUE_183_v0.1.41_REGRESSION_GUIDE.md)
+  for packaged-app acceptance coverage.
+
+## Issue 184: A continued managed Run could attach cumulative prior-turn output to the latest query, while an ambiguous compaction survived reload
+
+- Priority: High
+- Status: In Progress (Space projection fix in source; KodaX canonical compaction boundary pending)
+- Introduced: v0.1.38 daemon live projection / KodaX 0.7.87 compaction
+- Created: 2026-08-15
+
+### Original Problem
+
+Session `20260815_094944_bo4d9a9bb19e31` continued one managed Runtime Run through two delivered
+interrupt inputs and therefore three root turns. During the latest turn, a large answer from the
+preceding turn appeared after the latest query. Unlike Issue 182, Ctrl+R did not reliably repair
+the display.
+
+The Runtime event journal itself remained ordered by root `turnId`. The same Session then completed,
+but its canonical conversation cache remained `ambiguous`, reporting
+`compaction_boundary_invalid` and `compaction_predecessor_missing` for the automatic full-prefix
+compaction committed during the third root turn.
+
+### Root Cause
+
+Two independent boundaries failed:
+
+- Space projected `assistantTextByRun` and `thinkingTextByRun` as one cumulative Run draft. A
+  continued managed Run can contain several root turns, but initial observation hydration attached
+  that cumulative draft to the newest `session_start`. The live reducer reset drafts when the Run
+  changed or terminated, not when a new root `turn.started` began inside the same Run. Reloading
+  recreated the same wrong projection, so Ctrl+R could not fix it while the Run stayed active.
+- KodaX committed a successful full-prefix compaction whose new boundary had no topology-proven
+  predecessor and whose retained suffix conflicted with every predecessor branch. The canonical
+  conversation therefore remained ambiguous after the Run terminated. Space cannot invent that
+  missing durable order or safely delete one of the candidates.
+
+This is not a timestamp collision, global sort defect, or a reason to deduplicate equal text.
+
+### Space Resolution
+
+- Observation replay now includes root `turn.started` and `thinking.finished` boundaries. Initial
+  hydration reconstructs assistant/thinking drafts only from the active root turn instead of
+  assigning a whole Run's cumulative text to that turn.
+- A new root turn resets drafts, recovery checkpoints, tools, task state, and interactions even if
+  an earlier `run.updated` event has already advanced the Run's public `turnId`. The reducer tracks
+  draft ownership separately from Run status for this reason.
+- An explicit next root `turnId` in a newer same-Run snapshot advances renderer ownership instead
+  of being overwritten by the previous root identity.
+- Transient child turn starts remain excluded, including the SDK's top-level child-context payload
+  shape. Replay can establish draft ownership only from the current root boundary inside the
+  captured snapshot's Session, journal epoch, and sequence cursor. Missing identity (including an
+  active Run without a current `turnId`), future, foreign-epoch, malformed, or unavailable
+  boundaries keep the observation available but omit the causally unscoped cumulative draft rather
+  than displaying prior-turn output after the current query.
+- Existing canonical/live reconciliation remains identity-based and fail-open. No content equality
+  deduplication, timestamp sort, or synthetic transcript entry was added.
+
+### Remaining KodaX Requirement
+
+A successfully committed automatic compaction inside a continued managed Run must preserve a
+topology-proven canonical boundary for all preceding user/assistant turns. After the Run terminates,
+direct and paged canonical conversation must resolve to the same authoritative order. If that
+boundary cannot be established, compaction must not replace the last resolvable canonical history.
+Space needs no new public timestamp, sequence, visibility, or UI contract for this requirement.
+
+### Verification
+
+- Unit regressions cover cumulative old/current answer and thinking text, observation replay,
+  `run.updated` overtaking `turn.started`, explicit same-Run root advancement, root/child isolation,
+  missing/future/foreign-epoch/anonymous replay boundaries, replay failure, and current-turn
+  continuation after reset.
+- Existing Provider recovery, canonical/live reconciliation, paging, and Runtime observation suites
+  remain green.
+- See
+  [ISSUE_184_v0.1.41_REGRESSION_GUIDE.md](test-guides/ISSUE_184_v0.1.41_REGRESSION_GUIDE.md)
   for packaged-app acceptance coverage.
 
 ## Issue 185: A delayed old Run terminal could close the current query while a Session-level notification reported another Run
@@ -13282,13 +13366,13 @@ renderer that associates already-correct Runtime events by array position or Ses
 
 ## Summary
 
-- Total: 172
+- Total: 173
 - Open: 1
 - Ready: 0
-- In Progress: 9
+- In Progress: 10
 - Deferred: 0
 - Resolved: 162
-- High: 88
+- High: 89
 - Medium: 73
 - Low: 11
 - Next to resolve: 165

@@ -86,8 +86,19 @@ function recoveryReplacesProvisionalAttempt(
   );
 }
 
-function isTransientChildRuntimeEvent(event: RuntimeTypedEvent): boolean {
-  return isTransientChildEvent(record(record(event.payload)?.meta) as ChildMeta);
+export function isTransientChildRuntimeEvent(event: RuntimeTypedEvent): boolean {
+  const payload = record(event.payload);
+  return (
+    isTransientChildEvent(payload as ChildMeta) ||
+    isTransientChildEvent(record(payload?.meta) as ChildMeta)
+  );
+}
+
+export function runtimeTurnStartedId(event: RuntimeTypedEvent): string | undefined {
+  if (event.type !== 'turn.started') return undefined;
+  if (event.turnId !== undefined) return event.turnId;
+  const payload = record(event.payload);
+  return typeof payload?.turnId === 'string' ? payload.turnId : undefined;
 }
 
 /**
@@ -1063,17 +1074,18 @@ export class CoderSessionProjectionReducer {
     ) {
       return null;
     }
+    const startedTurnId = runtimeTurnStartedId(event);
     if (
       event.type === 'turn.started' &&
       event.runId === this.#projection.activeRun?.runId &&
-      event.turnId !== undefined &&
-      event.turnId !== this.#draftTurnId
+      startedTurnId !== undefined &&
+      startedTurnId !== this.#draftTurnId
     ) {
-      const activeRun = { ...this.#projection.activeRun, turnId: event.turnId };
+      const activeRun = { ...this.#projection.activeRun, turnId: startedTurnId };
       const run = this.#runs.get(event.runId);
-      if (run) this.#runs.set(event.runId, { ...run, turnId: event.turnId });
+      if (run) this.#runs.set(event.runId, { ...run, turnId: startedTurnId });
       this.#draftCheckpoint = undefined;
-      this.#draftTurnId = event.turnId;
+      this.#draftTurnId = startedTurnId;
       return this.#commit(event.seq, {
         domain: 'run',
         activeRun,
@@ -1444,7 +1456,7 @@ export class CoderSessionProjectionReducer {
       if (
         !isTransientChildRuntimeEvent(event) &&
         event.type === 'turn.started' &&
-        event.turnId === activeTurnId
+        runtimeTurnStartedId(event) === activeTurnId
       ) {
         turnStartIndex = index;
         break;
