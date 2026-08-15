@@ -4640,13 +4640,19 @@ export class RuntimeHostAdapter {
     if (typeof settings.provider === 'string' && settings.provider.length > 0) {
       session.provider = settings.provider;
     }
-    // Runtime settings are an override snapshot: an absent model means "use
-    // the provider default", not "send an empty model to provider sidecars".
-    // Preserve the current model only as a final fallback for a custom provider
-    // whose descriptor is temporarily unavailable during observation startup.
-    session.model =
-      resolveEffectiveProviderModel(session.provider, settings.model) ??
-      (session.provider === previousProvider ? session.model : undefined);
+    // Runtime settings are an override snapshot. An absent snapshot model means
+    // "no daemon override", NOT "use the provider default": at admission time
+    // the daemon snapshot legitimately precedes Space's first settings push, so
+    // an explicit create-time model must survive this install-time recovery.
+    // Materialize the provider default only when Space has no model of its own,
+    // or the provider switched in this same snapshot.
+    if (settings.model?.trim()) {
+      session.model = resolveEffectiveProviderModel(session.provider, settings.model);
+    } else if (session.provider !== previousProvider) {
+      session.model = resolveEffectiveProviderModel(session.provider, undefined);
+    } else {
+      session.model = session.model ?? resolveEffectiveProviderModel(session.provider, undefined);
+    }
     session.thinking = settings.thinking;
     if (
       settings.reasoningMode === 'off' ||

@@ -11523,6 +11523,58 @@ test('observation with an omitted model keeps a concrete provider default for Au
   await adapter.close();
 });
 
+test('observation with an omitted model preserves an explicit create-time model', async (t) => {
+  // Mirror of the Auto-LLM default-materialization test above: the daemon
+  // admission snapshot omits `model` because Space has not pushed its settings
+  // yet. An explicit create-time model must survive that install-time recovery;
+  // "absent snapshot model" means "no daemon override", not "use provider default".
+  class NoopRuntimeStore extends SessionRuntimeStore {
+    override async set(): Promise<boolean> {
+      return true;
+    }
+  }
+
+  await kodaxHost.disposeAll();
+  setSessionRuntimeStoreForTesting(new NoopRuntimeStore(path.resolve('C:\\unused')));
+  t.after(async () => {
+    setSessionRuntimeStoreForTesting(null);
+    await kodaxHost.disposeAll();
+  });
+  kodaxHost.createSession({
+    existingSessionId: 's_explicit_model',
+    projectRoot: path.resolve('C:\\project'),
+    provider: 'zai-coding',
+    model: 'glm-5.3',
+    permissionMode: 'auto',
+    autoModeEngine: 'llm',
+  });
+
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_explicit_model');
+  fake.settings.set('s_explicit_model', {
+    revision: 0,
+    value: {
+      provider: 'zai-coding',
+      effort: 'high',
+      permissionMode: 'auto',
+      autoModeEngine: 'llm',
+    },
+  });
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  await adapter.ensureObserved('s_explicit_model');
+  await waitForTest(() => kodaxHost.get('s_explicit_model')?.reasoningMode === 'deep');
+
+  assert.equal(kodaxHost.get('s_explicit_model')?.model, 'glm-5.3');
+  await adapter.close();
+});
+
 test('Runtime permission grants keep their CAS revision for listing and revocation', async () => {
   const fake = createFakeRuntime();
   const adapter = new RuntimeHostAdapter({
