@@ -13,10 +13,10 @@ import { useSurfaceStore } from '../../store/surface.js';
 import { sessionMatchesScope } from '../../lib/sessionScope.js';
 import { shouldActivateSessionForCurrentScope } from '../../lib/sessionActivation.js';
 import { invokeWithTimeout } from '../../lib/ipcInvokeWithTimeout.js';
+import { deleteSessionWithFeedback, ROW_COLLAPSE_CLASS } from '../../lib/deleteSession.js';
 import type { SessionMeta } from '@kodax-space/space-ipc-schema';
 import { useI18n } from '../../i18n/I18nProvider.js';
 import type { MessageKey } from '../../i18n/messages.js';
-import { pushToast } from '../../store/toastStore.js';
 
 // 'mock' 永远保留——FEATURE_003 Mock adapter 的入口，未配 key 时也能跑通整个流程。
 // 真 provider 列表从 store 拉（FEATURE_004 已注入）。
@@ -31,7 +31,6 @@ export function SessionList(): JSX.Element {
   const replaceSessionsForScope = useAppStore((s) => s.replaceSessionsForScope);
   const setCurrentSession = useAppStore((s) => s.setCurrentSession);
   const upsertSession = useAppStore((s) => s.upsertSession);
-  const removeSession = useAppStore((s) => s.removeSession);
   const providers = useAppStore((s) => s.providers);
   const defaultProviderId = useAppStore((s) => s.defaultProviderId);
   const kodaxDefaults = useAppStore((s) => s.kodaxDefaults);
@@ -189,19 +188,10 @@ export function SessionList(): JSX.Element {
 
   async function handleDelete(e: React.MouseEvent, sessionId: string): Promise<void> {
     e.stopPropagation();
-    const bridge = window.kodaxSpace;
-    if (!bridge) return;
-    const result = await bridge.invoke('session.delete', { sessionId });
-    if (result.ok && result.data.deleted) {
-      removeSession(sessionId);
-      window.dispatchEvent(new Event('kodax-space.focus-textarea'));
-    } else if (result.ok && result.data.reason === 'session_running') {
-      pushToast(t('menu.session.deleteBusy'), 'warning');
-      if (currentProjectPath) {
-        await refreshSessions(currentProjectPath, replaceSessionsForScope, currentSurface);
-      }
-    } else if (!result.ok) {
-      pushToast(result.error?.message ?? t('common.unknownError'), 'error');
+    // 统一流程：在途守卫 + "删除中"反馈 + 收起动画后移除（见 lib/deleteSession.ts）
+    const outcome = await deleteSessionWithFeedback(sessionId, t);
+    if (outcome === 'busy' && currentProjectPath) {
+      await refreshSessions(currentProjectPath, replaceSessionsForScope, currentSurface);
     }
   }
 
@@ -277,94 +267,167 @@ export function SessionList(): JSX.Element {
         {currentProjectPath && visibleSessions.length === 0 && (
           <div className="text-xs text-fg-faint italic px-1">{t('session.noneYet')}</div>
         )}
-        {visibleSessions.map((s) => {
-          const isActive = s.sessionId === currentSessionId;
-          return (
-            <div
-              key={s.sessionId}
-              role="button"
-              tabIndex={0}
-              onClick={() => setCurrentSession(s.sessionId)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault();
-                  setCurrentSession(s.sessionId);
-                }
-              }}
-              // 选中行: dark 用半透深蓝衬底 (与暗黑卡片层叠出蓝调); light 用实色浅蓝衬底
-              // (在白底卡片上能"鼓出来"). 边线 light 用 blue-300 增强 vs blue-50 衬底的反差。
-              className={`group cursor-pointer text-left px-2 py-2 rounded text-sm flex flex-col gap-0.5 ${
-                isActive
-                  ? 'bg-info/15 border-info/40 text-info border'
-                  : 'hover:bg-hover-bg text-fg-secondary border border-transparent'
-              }`}
+        {visibleSessions.map((s) => (
+          <SessionListRow
+            key={s.sessionId}
+            session={s}
+            isActive={s.sessionId === currentSessionId}
+            isRenaming={renaming === s.sessionId}
+            renameDraft={renameDraft}
+            onSelect={setCurrentSession}
+            onDelete={(e, sessionId) => void handleDelete(e, sessionId)}
+            onStartRename={startRename}
+            onRenameDraftChange={setRenameDraft}
+            onCommitRename={() => void commitRename()}
+            onCancelRename={cancelRename}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+interface SessionListRowProps {
+  readonly session: SessionMeta;
+  readonly isActive: boolean;
+  readonly isRenaming: boolean;
+  readonly renameDraft: string;
+  readonly onSelect: (sessionId: string) => void;
+  readonly onDelete: (e: React.MouseEvent, sessionId: string) => void;
+  readonly onStartRename: (e: React.MouseEvent, sessionId: string, title: string | undefined) => void;
+  readonly onRenameDraftChange: (value: string) => void;
+  readonly onCommitRename: () => void;
+  readonly onCancelRename: () => void;
+}
+
+/**
+ * 单行 session 卡片。deleting/removing 用 per-id 细粒度 selector 订阅（与
+ * LeftSidebar.SessionRow 同模式）——任一行的删除状态变化只重渲染该行，不重渲染整个列表。
+ */
+function SessionListRow({
+  session: s,
+  isActive,
+  isRenaming,
+  renameDraft,
+  onSelect,
+  onDelete,
+  onStartRename,
+  onRenameDraftChange,
+  onCommitRename,
+  onCancelRename,
+}: SessionListRowProps): JSX.Element {
+  const { t } = useI18n();
+  const deleting = useAppStore((st) => st.deletingSessionIds.has(s.sessionId));
+  const removing = useAppStore((st) => st.removingSessionIds.has(s.sessionId));
+  return (
+    // 外层：收起动画容器（removingSessionIds 驱动 grid-rows 1fr→0fr）；
+    // 内层 overflow-hidden 配合 0fr 裁切。见 lib/deleteSession.ts。
+    <div
+      className={`grid ${ROW_COLLAPSE_CLASS} ${
+        removing ? 'grid-rows-[0fr] opacity-0' : 'grid-rows-[1fr]'
+      }`}
+    >
+      <div className="min-h-0 overflow-hidden">
+        <div
+          role="button"
+          tabIndex={0}
+          onClick={() => {
+            if (!deleting) onSelect(s.sessionId);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              if (!deleting) onSelect(s.sessionId);
+            }
+          }}
+          aria-busy={deleting}
+          // 选中行: dark 用半透深蓝衬底 (与暗黑卡片层叠出蓝调); light 用实色浅蓝衬底
+          // (在白底卡片上能"鼓出来"). 边线 light 用 blue-300 增强 vs blue-50 衬底的反差。
+          className={`group cursor-pointer text-left px-2 py-2 rounded text-sm flex flex-col gap-0.5 transition-opacity duration-150 ${
+            deleting ? 'opacity-40 pointer-events-none' : ''
+          } ${
+            isActive
+              ? 'bg-info/15 border-info/40 text-info border'
+              : 'hover:bg-hover-bg text-fg-secondary border border-transparent'
+          }`}
+          title={
+            s.runtimeMetadataSource === 'current-default-fallback'
+              ? `${s.sessionId} — ${t('session.runtimeFallback')}`
+              : s.sessionId
+          }
+        >
+          <div className="flex items-center gap-2">
+            {isRenaming ? (
+              <input
+                type="text"
+                autoFocus
+                value={renameDraft}
+                onChange={(e) => onRenameDraftChange(e.target.value)}
+                onBlur={onCommitRename}
+                onClick={(e) => e.stopPropagation()}
+                onKeyDown={(e) => {
+                  e.stopPropagation();
+                  if (e.key === 'Enter') onCommitRename();
+                  else if (e.key === 'Escape') onCancelRename();
+                }}
+                maxLength={256}
+                className="flex-1 min-w-0 bg-surface border border-border-strong rounded px-1.5 py-0.5 text-sm font-medium text-fg-primary"
+                aria-label={t('session.newTitleAria')}
+              />
+            ) : (
+              <span className="flex-1 truncate font-medium">
+                {s.title ?? t('breadcrumb.untitledSession')}
+              </span>
+            )}
+            {deleting ? (
+              <span
+                className="flex items-center gap-1 text-[11px] text-fg-muted"
+                title={t('session.deleting')}
+              >
+                <span
+                  className="sidebar-status-spinner sidebar-status-spinner--mini"
+                  aria-hidden
+                />
+                {t('session.deleting')}
+              </span>
+            ) : (
+              <span className="opacity-0 group-hover:opacity-100 flex gap-1 text-xs">
+                <button
+                  type="button"
+                  onClick={(e) => onStartRename(e, s.sessionId, s.title)}
+                  className="text-fg-muted hover:text-fg-primary px-1"
+                  aria-label={t('session.renameAria')}
+                >
+                  ✎
+                </button>
+                <button
+                  type="button"
+                  onClick={(e) => onDelete(e, s.sessionId)}
+                  className="text-fg-muted hover:text-danger px-1"
+                  aria-label={t('session.deleteAria')}
+                >
+                  ×
+                </button>
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-2 text-[11px] text-fg-muted">
+            <span
               title={
                 s.runtimeMetadataSource === 'current-default-fallback'
-                  ? `${s.sessionId} \u2014 ${t('session.runtimeFallback')}`
-                  : s.sessionId
+                  ? t('session.runtimeFallback')
+                  : undefined
               }
             >
-              <div className="flex items-center gap-2">
-                {renaming === s.sessionId ? (
-                  <input
-                    type="text"
-                    autoFocus
-                    value={renameDraft}
-                    onChange={(e) => setRenameDraft(e.target.value)}
-                    onBlur={() => void commitRename()}
-                    onClick={(e) => e.stopPropagation()}
-                    onKeyDown={(e) => {
-                      e.stopPropagation();
-                      if (e.key === 'Enter') void commitRename();
-                      else if (e.key === 'Escape') cancelRename();
-                    }}
-                    maxLength={256}
-                    className="flex-1 min-w-0 bg-surface border border-border-strong rounded px-1.5 py-0.5 text-sm font-medium text-fg-primary"
-                    aria-label={t('session.newTitleAria')}
-                  />
-                ) : (
-                  <span className="flex-1 truncate font-medium">
-                    {s.title ?? t('breadcrumb.untitledSession')}
-                  </span>
-                )}
-                <span className="opacity-0 group-hover:opacity-100 flex gap-1 text-xs">
-                  <button
-                    type="button"
-                    onClick={(e) => startRename(e, s.sessionId, s.title)}
-                    className="text-fg-muted hover:text-fg-primary px-1"
-                    aria-label={t('session.renameAria')}
-                  >
-                    ✎
-                  </button>
-                  <button
-                    type="button"
-                    onClick={(e) => void handleDelete(e, s.sessionId)}
-                    className="text-fg-muted hover:text-danger px-1"
-                    aria-label={t('session.deleteAria')}
-                  >
-                    ×
-                  </button>
-                </span>
-              </div>
-              <div className="flex items-center gap-2 text-[11px] text-fg-muted">
-                <span
-                  title={
-                    s.runtimeMetadataSource === 'current-default-fallback'
-                      ? t('session.runtimeFallback')
-                      : undefined
-                  }
-                >
-                  {s.provider}
-                  {s.runtimeMetadataSource === 'current-default-fallback' ? ' *' : ''}
-                </span>
-                <span>·</span>
-                <span>{s.reasoningMode}</span>
-                <span>·</span>
-                <span>{formatRelativeTime(s.lastActivityAt, t)}</span>
-              </div>
-            </div>
-          );
-        })}
+              {s.provider}
+              {s.runtimeMetadataSource === 'current-default-fallback' ? ' *' : ''}
+            </span>
+            <span>·</span>
+            <span>{s.reasoningMode}</span>
+            <span>·</span>
+            <span>{formatRelativeTime(s.lastActivityAt, t)}</span>
+          </div>
+        </div>
       </div>
     </div>
   );

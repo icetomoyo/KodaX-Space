@@ -1,4 +1,5 @@
 import type { SessionMeta } from '@kodax-space/space-ipc-schema';
+import { deleteSessionWithFeedback } from '../lib/deleteSession.js';
 import { openDirectory } from '../lib/openPath.js';
 import { shouldActivateSessionForCurrentScope } from '../lib/sessionActivation.js';
 import { useAppStore } from '../store/appStore.js';
@@ -35,7 +36,6 @@ export function SessionContextMenu({
   const flags = useAppStore((state) => state.sessionFlags[session.sessionId]);
   const toggleFlag = useAppStore((state) => state.toggleSessionFlag);
   const upsertSession = useAppStore((state) => state.upsertSession);
-  const removeSession = useAppStore((state) => state.removeSession);
   const forkBuffers = useAppStore((state) => state.forkSessionBuffers);
   const setCurrentSession = useAppStore((state) => state.setCurrentSession);
   const userMessages = useAppStore((state) => state.userMessagesBySession[session.sessionId]);
@@ -126,17 +126,8 @@ export function SessionContextMenu({
     });
     if (!confirmed) return;
 
-    const result = await window.kodaxSpace.invoke('session.delete', {
-      sessionId: session.sessionId,
-    });
-    if (result.ok && result.data.deleted) {
-      removeSession(session.sessionId);
-      window.dispatchEvent(new Event('kodax-space.focus-textarea'));
-    } else if (result.ok && result.data.reason === 'session_running') {
-      pushToast(t('menu.session.deleteBusy'), 'warning');
-    } else if (!result.ok) {
-      pushToast(result.error?.message ?? t('common.unknownError'), 'error');
-    }
+    // 统一流程：在途守卫 + "删除中"反馈 + 收起动画后移除（见 lib/deleteSession.ts）。
+    await deleteSessionWithFeedback(session.sessionId, t);
   }
 
   const actions: Record<SessionContextMenuActionId, SidebarContextMenuItem> = {

@@ -41,6 +41,7 @@ import { pushToast } from '../store/toastStore.js';
 import type { Project } from '@kodax-space/space-ipc-schema';
 import { useI18n } from '../i18n/I18nProvider.js';
 import { invokeWithTimeout } from '../lib/ipcInvokeWithTimeout.js';
+import { ROW_COLLAPSE_CLASS } from '../lib/deleteSession.js';
 import { runningPeerAction } from './runningPeerAction.js';
 import {
   sessionLoadScopeKey,
@@ -1012,6 +1013,10 @@ function SessionRow({
 }): JSX.Element {
   const { effectiveLocale, t } = useI18n();
   const upsertSession = useAppStore((s) => s.upsertSession);
+  // 删除反馈：deleting（IPC 在途）→ dim + spinner + 禁交互；removing（已成功）→ 收起动画。
+  // 两者由 lib/deleteSession.ts 流程驱动。
+  const deleting = useAppStore((s) => s.deletingSessionIds.has(session.sessionId));
+  const removing = useAppStore((s) => s.removingSessionIds.has(session.sessionId));
   const indent = Math.min(depth, 4); // 不无限缩进；4 层就够
   const padLeft = `${1.6 + indent * 0.9}rem`;
   const timeLabel = formatSidebarTime(session.lastActivityAt, effectiveLocale);
@@ -1056,27 +1061,46 @@ function SessionRow({
   }
 
   return (
-    <button
-      type="button"
-      data-testid="sidebar-session-row"
-      data-session-id={session.sessionId}
-      onClick={() => onSelect(session.sessionId)}
-      onDoubleClick={onStartRename}
-      onContextMenu={(e) => {
-        e.preventDefault();
-        onContextMenu(e.clientX, e.clientY);
-      }}
-      className={`group/sessionrow w-full min-w-0 text-left text-xs px-2 py-1 rounded grid grid-cols-[minmax(0,1fr)_4.25rem] items-center gap-2 min-h-[1.625rem] ${
-        isSelected
-          ? 'bg-surface-3 text-fg-primary'
-          : 'text-fg-secondary hover:bg-hover-bg hover:text-fg-primary'
+    // 外层：收起动画容器（removingSessionIds 驱动 grid-rows 1fr→0fr）；
+    // 内层 overflow-hidden 配合 0fr 裁切。见 lib/deleteSession.ts。
+    <div
+      className={`grid ${ROW_COLLAPSE_CLASS} ${
+        removing ? 'grid-rows-[0fr] opacity-0' : 'grid-rows-[1fr]'
       }`}
-      style={{ paddingLeft: padLeft }}
-      title={`${session.title ?? session.sessionId} - ${timeLabel}${statusLabel ? ` - ${statusLabel}` : ''}${runtimeFallbackLabel ? ` - ${runtimeFallbackLabel}` : ''} (${t('sidebar.session.renameHint')})`}
     >
-      <span className="min-w-0 truncate">{session.title ?? t('sidebar.session.untitled')}</span>
-      <span className="flex min-w-0 items-center justify-end gap-1.5 text-[11px] text-fg-muted">
-        {status === 'running' ? (
+      <div className="min-h-0 overflow-hidden">
+        <button
+          type="button"
+          data-testid="sidebar-session-row"
+          data-session-id={session.sessionId}
+          onClick={() => {
+            if (!deleting) onSelect(session.sessionId);
+          }}
+          onDoubleClick={onStartRename}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            onContextMenu(e.clientX, e.clientY);
+          }}
+          aria-busy={deleting}
+          className={`group/sessionrow w-full min-w-0 text-left text-xs px-2 py-1 rounded grid grid-cols-[minmax(0,1fr)_4.25rem] items-center gap-2 min-h-[1.625rem] transition-opacity duration-150 ${
+            deleting ? 'opacity-40 pointer-events-none' : ''
+          } ${
+            isSelected
+              ? 'bg-surface-3 text-fg-primary'
+              : 'text-fg-secondary hover:bg-hover-bg hover:text-fg-primary'
+          }`}
+          style={{ paddingLeft: padLeft }}
+          title={`${session.title ?? session.sessionId} - ${timeLabel}${statusLabel ? ` - ${statusLabel}` : ''}${runtimeFallbackLabel ? ` - ${runtimeFallbackLabel}` : ''} (${t('sidebar.session.renameHint')})`}
+        >
+          <span className="min-w-0 truncate">{session.title ?? t('sidebar.session.untitled')}</span>
+          <span className="flex min-w-0 items-center justify-end gap-1.5 text-[11px] text-fg-muted">
+            {deleting ? (
+              <span
+                className="sidebar-status-spinner sidebar-status-spinner--mini"
+                aria-hidden
+                title={t('session.deleting')}
+              />
+            ) : status === 'running' ? (
           <span className="sidebar-status-spinner" aria-hidden title={statusLabel ?? undefined} />
         ) : (
           <>
@@ -1105,8 +1129,10 @@ function SessionRow({
             <span className="tnum min-w-[2.15rem] text-right leading-none">{timeLabel}</span>
           </>
         )}
-      </span>
-    </button>
+          </span>
+        </button>
+      </div>
+    </div>
   );
 }
 

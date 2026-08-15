@@ -581,6 +581,10 @@ interface AppState {
    *  存在显式值时**覆盖**默认 — 避免用户点 chevron 视觉无反应（review LOW-6）。*/
   expandedProjects: Readonly<Record<string, boolean>>;
   sessions: readonly SessionMeta[];
+  /** session.delete IPC 在途的 sessionId 集合——侧栏行据此显示"删除中"（dim + spinner + 禁交互）。*/
+  deletingSessionIds: ReadonlySet<string>;
+  /** session.delete 已成功、行收起动画播放中；动画结束后由流程 helper 调 removeSession 收尾。*/
+  removingSessionIds: ReadonlySet<string>;
   currentSessionId: string | null;
   /** 每个 sessionId 一桶事件；append-only。Map 用 plain object 避免 zustand referential 问题。*/
   eventsBySession: Readonly<Record<string, readonly SessionEvent[]>>;
@@ -1007,6 +1011,9 @@ interface AppState {
   rollbackUserMessage(sessionId: string, messageId: string): void;
   upsertSession(meta: SessionMeta): void;
   removeSession(sessionId: string): void;
+  markSessionDeleting(sessionId: string): void;
+  unmarkSessionDeleting(sessionId: string): void;
+  markSessionRemoving(sessionId: string): void;
   enqueuePermission(req: PermissionRequestPayload): void;
   /** 用户决策完 / main 端 cancel 推过来 / session 删除 — 都从队列里挪走。*/
   dequeuePermission(reqId: string): void;
@@ -4292,6 +4299,8 @@ export const useAppStore = create<AppState>((set) => ({
   currentProjectPath: lsGet(LS_KEY_PROJECT),
   expandedProjects: readPersistedExpandedProjects(),
   sessions: [],
+  deletingSessionIds: new Set<string>(),
+  removingSessionIds: new Set<string>(),
   currentSessionId: null,
   eventsBySession: {},
   errorSeenAtBySession: {},
@@ -6327,6 +6336,12 @@ export const useAppStore = create<AppState>((set) => ({
         pendingSendBySession: restPending,
         pendingSendRuntimeBaselineBySession: restPendingBaselines,
         sessionFlags: restFlags,
+        deletingSessionIds: new Set(
+          [...state.deletingSessionIds].filter((id) => id !== sessionId),
+        ),
+        removingSessionIds: new Set(
+          [...state.removingSessionIds].filter((id) => id !== sessionId),
+        ),
         permissionQueue: state.permissionQueue.filter((p) => p.sessionId !== sessionId),
         askUserQueue: state.askUserQueue.filter((p) => p.sessionId !== sessionId),
         currentSessionId: state.currentSessionId === sessionId ? null : state.currentSessionId,
@@ -6336,6 +6351,28 @@ export const useAppStore = create<AppState>((set) => ({
     });
     persistLocalNoticeReplace(sessionId, []);
   },
+
+  // 删除 pending 状态：三个删除入口（SessionMenu ▾菜单/快捷键D、SessionContextMenu
+  // 右键、SessionList 行内 ×）与视觉渲染（SessionList）分属不同组件，故放 store 而非组件 state。
+  markSessionDeleting: (sessionId) =>
+    set((state) => {
+      if (state.deletingSessionIds.has(sessionId)) return state;
+      return { deletingSessionIds: new Set(state.deletingSessionIds).add(sessionId) };
+    }),
+
+  unmarkSessionDeleting: (sessionId) =>
+    set((state) => {
+      if (!state.deletingSessionIds.has(sessionId)) return state;
+      const next = new Set(state.deletingSessionIds);
+      next.delete(sessionId);
+      return { deletingSessionIds: next };
+    }),
+
+  markSessionRemoving: (sessionId) =>
+    set((state) => {
+      if (state.removingSessionIds.has(sessionId)) return state;
+      return { removingSessionIds: new Set(state.removingSessionIds).add(sessionId) };
+    }),
 
   enqueuePermission: (req) =>
     set((state) => {

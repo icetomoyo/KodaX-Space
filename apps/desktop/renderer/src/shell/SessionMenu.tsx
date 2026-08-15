@@ -37,6 +37,7 @@ import { shouldActivateSessionForCurrentScope } from '../lib/sessionActivation.j
 import { SessionLineagePanel } from '../features/session/SessionLineagePanel.js';
 import { useSurfaceStore } from '../store/surface.js';
 import { invokeWithTimeout } from '../lib/ipcInvokeWithTimeout.js';
+import { deleteSessionWithFeedback } from '../lib/deleteSession.js';
 import { requestConfirm } from '../store/confirmStore.js';
 import { pushToast } from '../store/toastStore.js';
 import { useI18n } from '../i18n/I18nProvider.js';
@@ -58,7 +59,6 @@ interface SessionMenuProps {
 export function SessionMenu({ sessionId, onClose }: SessionMenuProps): JSX.Element {
   const { t } = useI18n();
   const sessions = useAppStore((s) => s.sessions);
-  const removeSession = useAppStore((s) => s.removeSession);
   const upsertSession = useAppStore((s) => s.upsertSession);
   const setCurrentSession = useAppStore((s) => s.setCurrentSession);
   const forkSessionBuffers = useAppStore((s) => s.forkSessionBuffers);
@@ -138,15 +138,9 @@ export function SessionMenu({ sessionId, onClose }: SessionMenuProps): JSX.Eleme
       danger: true,
     });
     if (!confirmed) return;
-    const r = await window.kodaxSpace.invoke('session.delete', { sessionId });
-    if (r.ok && r.data.deleted) {
-      removeSession(sessionId);
-      window.dispatchEvent(new Event('kodax-space.focus-textarea'));
-    } else if (r.ok && r.data.reason === 'session_running') {
-      pushToast(t('menu.session.deleteBusy'), 'warning');
-    } else if (!r.ok) {
-      pushToast(r.error?.message ?? t('common.unknownError'), 'error');
-    }
+    // 统一流程：在途守卫 + "删除中"反馈 + 收起动画后移除（见 lib/deleteSession.ts）。
+    // 键盘 D 连按 / 多入口并发由该流程内部守卫。本地数据仍等 IPC 成功才动（F033 MEDIUM-4）。
+    await deleteSessionWithFeedback(sessionId, t);
     onClose();
   }
 
