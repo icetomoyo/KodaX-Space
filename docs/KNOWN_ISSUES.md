@@ -13222,13 +13222,13 @@ This was not Provider retry leakage, duplicate Runtime persistence, or a missing
 
 ## Summary
 
-- Total: 170
-- Open: 0
+- Total: 171
+- Open: 1
 - Ready: 0
 - In Progress: 9
 - Deferred: 0
-- Resolved: 160
-- High: 86
+- Resolved: 161
+- High: 87
 - Medium: 73
 - Low: 11
 - Next to resolve: 165
