@@ -534,6 +534,8 @@ const SPACE_MANUAL_TOPIC_OVERLAYS: readonly KodaXManualTopicInput[] = [
       'Artifact 视图支持列表选择、版本切换、copy、save/export、再改一版、打开 standalone window。interactive HTML 会进入 sandbox 预览。react artifact 当前是占位类型，不作为可交互 LiveCanvas 运行。',
       '',
       'Artifact 不等于项目文件。它默认是会话产物；需要落到项目里时，用户应明确要求保存到指定路径，之后会走常规写文件权限。',
+      '',
+      'Agent 侧生成方式（Coder daemon 会话）：create_artifact / create_office_artifact 不在工具表的顶层名单中，而是以 Space host tool 经 MCP 能力通道暴露。用 mcp_search（server 为 "host"）发现，用 mcp_call 调用，capability id 形如 host:<leaseId>:create_artifact；lease 由 Space 自动绑定到它启动的 Coder run，子 Agent 随父 run 继承同一通道。Embedded 回退模式与 Partner 会话仍使用进程内顶层工具。',
     ),
     aliases: [
       'Artifact',
@@ -543,6 +545,8 @@ const SPACE_MANUAL_TOPIC_OVERLAYS: readonly KodaXManualTopicInput[] = [
       'HTML 产物',
       '导出',
       'standalone window',
+      'create_artifact',
+      'host tool',
     ],
     nextTopics: ['task-dock', 'workflow', 'permissions'],
   },
@@ -761,6 +765,8 @@ const SPACE_MANUAL_TOPIC_OVERLAYS: readonly KodaXManualTopicInput[] = [
       'Space MCP Manager 拥有 server 子进程、状态和日志；Coder 的 MCP 工具发现/reload 同步 Runtime，但 v0.1.41 不会启动第二套桌面 MCP manager。',
       '',
       'SDK filesystem extensions 与 MCP 是两个概念。/extensions sdk 用于查看 SDK 扩展发现/加载诊断；默认安全策略是发现优先，执行扩展代码需要显式 opt-in。',
+      '',
+      'Coder daemon 会话还有一个不可配置的内置 host 能力源（server 名 "host"）：它承载 Space host tools（如 create_artifact、create_office_artifact），按 run 绑定的 lease 作用域经 mcp_search/mcp_call 暴露。它不是用户配置的 server，不出现在 integrations/mcp.json 中。',
     ),
     aliases: [
       'mcp',
