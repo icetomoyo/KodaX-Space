@@ -2597,6 +2597,12 @@ test('authoritative terminal repairs a missed identity-bearing start before fold
     kind: 'session_complete',
     sessionId: SID,
     turnId: 'turn-terminal-repair',
+    runtimeEvent: {
+      runtimeId: 'runtime-terminal-repair',
+      runId: 'run-terminal-repair',
+      journalEpoch: 'epoch-terminal-repair',
+      seq: 4,
+    },
   });
 
   const state = useAppStore.getState();
@@ -6662,6 +6668,194 @@ test('history overlap folds identical terminal tool turns without losing the rec
   const tools = out.filter((message) => message.kind === 'tool_call');
   assert.equal(tools.length, 1);
   assert.equal(tools[0]?.kind === 'tool_call' ? tools[0].result : undefined, 'file body');
+});
+
+test('bounded terminal history folds an unacknowledged successful multi-iteration turn once', () => {
+  const store = useAppStore.getState();
+  const turnId = 'turn-successful-multi-iteration';
+  const runId = 'run-successful-multi-iteration';
+  const runtimeEvent = (seq: number) => ({
+    runtimeId: 'runtime-successful-multi-iteration',
+    runId,
+    journalEpoch: 'epoch-successful-multi-iteration',
+    seq,
+  });
+  const optimisticId = store.appendUserMessage(SID, 'how should both sides improve?', 10_000);
+  assert.ok(optimisticId);
+  // A reload or a late session.start result can leave the optimistic owner without its run ACK.
+  // The daemon terminal still carries authoritative run + turn identity and must close that seam.
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    runtimeEvent: runtimeEvent(1),
+  });
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId,
+    runtimeEvent: runtimeEvent(2),
+  });
+  for (const event of [
+    {
+      kind: 'thinking_delta' as const,
+      sessionId: SID,
+      text: 'inspect both facts',
+      turnId,
+      runtimeEvent: runtimeEvent(3),
+    },
+    {
+      kind: 'text_delta' as const,
+      sessionId: SID,
+      text: 'verify the two facts first',
+      turnId,
+      runtimeEvent: runtimeEvent(4),
+    },
+    {
+      kind: 'tool_start' as const,
+      sessionId: SID,
+      toolId: 'tool-read',
+      toolName: 'read',
+      input: { path: 'PermissionModal.tsx' },
+      turnId,
+      runtimeEvent: runtimeEvent(5),
+    },
+    {
+      kind: 'tool_result' as const,
+      sessionId: SID,
+      toolId: 'tool-read',
+      toolName: 'read',
+      content: 'modal source',
+      turnId,
+      runtimeEvent: runtimeEvent(6),
+    },
+    {
+      kind: 'tool_start' as const,
+      sessionId: SID,
+      toolId: 'tool-grep',
+      toolName: 'grep',
+      input: { pattern: 'autoModeDiagnostics' },
+      turnId,
+      runtimeEvent: runtimeEvent(7),
+    },
+    {
+      kind: 'tool_result' as const,
+      sessionId: SID,
+      toolId: 'tool-grep',
+      toolName: 'grep',
+      content: 'schema source',
+      turnId,
+      runtimeEvent: runtimeEvent(8),
+    },
+    {
+      kind: 'thinking_delta' as const,
+      sessionId: SID,
+      text: 'the facts are confirmed',
+      turnId,
+      runtimeEvent: runtimeEvent(9),
+    },
+    {
+      kind: 'text_delta' as const,
+      sessionId: SID,
+      text: 'the complete recommendation',
+      turnId,
+      runtimeEvent: runtimeEvent(10),
+    },
+  ]) {
+    store.appendEvent(event);
+  }
+  store.prependSessionHistory(
+    SID,
+    [
+      { kind: 'history_truncation', scope: 'history', omittedItems: 14 },
+      {
+        kind: 'user',
+        content: 'how should both sides improve?',
+        sentAt: 10_000,
+        entryId: 'entry-user',
+        logicalId: 'entry-user',
+        canonicalIndex: 60,
+        turnId,
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        thinking: 'inspect both facts',
+        text: 'verify the two facts first',
+        sentAt: 10_100,
+        entryId: 'entry-first-assistant',
+        logicalId: 'entry-first-assistant',
+        canonicalIndex: 61,
+        turnId,
+      },
+      {
+        kind: 'tool_call',
+        toolId: 'tool-read',
+        toolName: 'read',
+        input: { path: 'PermissionModal.tsx' },
+        result: 'modal source',
+        entryId: 'entry-first-assistant',
+        logicalId: 'entry-first-assistant',
+        canonicalIndex: 61,
+        turnId,
+      },
+      {
+        kind: 'tool_call',
+        toolId: 'tool-grep',
+        toolName: 'grep',
+        input: { pattern: 'autoModeDiagnostics' },
+        result: 'schema source',
+        entryId: 'entry-first-assistant',
+        logicalId: 'entry-first-assistant',
+        canonicalIndex: 61,
+        turnId,
+      },
+      {
+        kind: 'assistant',
+        thinking: 'the facts are confirmed',
+        text: 'the complete recommendation',
+        sentAt: 10_200,
+        entryId: 'entry-final-assistant',
+        logicalId: 'entry-final-assistant',
+        canonicalIndex: 63,
+        turnId,
+      },
+    ],
+    FALLBACK_SENT_AT,
+    {
+      replaceLoadedWindow: true,
+      authoritativeNewest: true,
+      sourceRevision: 'source-successful-multi-iteration',
+    },
+  );
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: SID,
+    turnId,
+    runtimeEvent: runtimeEvent(11),
+  });
+
+  const state = useAppStore.getState();
+  const visible = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  });
+  assert.deepEqual(
+    visible.flatMap((message) => {
+      if (message.kind === 'assistant_text') {
+        return [[message.thinking ?? '', message.text]];
+      }
+      if (message.kind === 'tool_call') return [[message.toolName, message.result ?? '']];
+      return [];
+    }),
+    [
+      ['inspect both facts', 'verify the two facts first'],
+      ['read', 'modal source'],
+      ['grep', 'schema source'],
+      ['the facts are confirmed', 'the complete recommendation'],
+    ],
+  );
 });
 
 test('history-first overlap keeps the complete live tool receipt after folding', () => {
