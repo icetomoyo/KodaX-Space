@@ -7,7 +7,9 @@ import { launchSpace } from './fixtures.js';
 const TEST_ID = `session-history-acp-filter-${Date.now()}`;
 
 test('ACP fixtures cannot hide real history and show-all searches beyond the recent limit', async () => {
-  test.setTimeout(120_000);
+  // The full Windows shard runs this serially after a packaged-host startup;
+  // the complete project scan needs more than Playwright's default 120s budget.
+  test.setTimeout(300_000);
   const space = await launchSpace(TEST_ID);
   try {
     await expect
