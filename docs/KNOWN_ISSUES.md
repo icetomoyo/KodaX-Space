@@ -182,7 +182,7 @@ Last Updated: 2026-08-16
 | 184 | High     | In Progress        | A continued Run could attach cumulative prior-turn output to the latest query while ambiguous compaction survived reload           | v0.1.38 daemon live projection / KodaX 0.7.87 compaction     | 2026-08-15 |
 | 185 | High     | Resolved           | A delayed old Run terminal could close the current query while a Session-level notification reported another Run                   | v0.1.42 daemon transcript / completion notifications         | 2026-08-15 |
 | 186 | High     | Resolved           | Multi-session terminal contention or a compaction-damaged canonical page could misorder, duplicate, or endlessly grow the transcript tail; SDK write-side provenance collapse identified cross-repo | KodaX 0.7.88 chained compaction / renderer folding          | 2026-08-16 |
-| 187 | Medium   | ready              | Restored historical Sessions could display history but fork and rewind failed with session_not_found                               | v0.1.42 historical Session mutation admission                | 2026-08-16 |
+| 187 | Medium   | Resolved           | Restored historical Sessions could display history but fork and rewind failed with session_not_found                               | v0.1.42 historical Session mutation admission                | 2026-08-16 |
 
 ## Issue Details
 
@@ -13424,9 +13424,11 @@ Two layers (verified against on-disk data for `20260816_132905_g1806cde81c389`):
 ## Issue 187: Restored historical Sessions could display history but fork and rewind failed with session_not_found
 
 - Priority: Medium
-- Status: ready
+- Status: Resolved
 - Introduced: v0.1.42 historical Session mutation admission
+- Fixed: v0.1.42
 - Created: 2026-08-16
+- Resolution Date: 2026-08-16
 
 ### Original Problem
 
@@ -13460,23 +13462,36 @@ but `session.fork` and `session.rewind` call the host mutation directly. Both ho
 the source Session to exist in `host.sessions`, so a normal post-restart historical selection is
 misclassified as missing before the durable mutation is attempted.
 
-### Proposed Solution
+### Resolution
 
-- At the public fork/rewind IPC boundary, ensure a persisted-only Session is resumed before calling
-  the existing host mutation.
-- Preserve the existing Coder admission, project/surface ownership, exact history-boundary, busy,
-  invalid-index, and missing-disk failure behavior.
-- Add IPC-level regressions for both mutations using a persisted-only Session; do not test the
-  private in-memory map as the behavioral seam.
+- The public fork and rewind IPC handlers now call `kodaxHost.tryResume()` only when the source
+  Session is absent from the host, then run the existing exact-boundary guard and mutation.
+- The existing Coder admission, project/surface ownership, exact history-boundary, busy,
+  invalid-index, missing-disk, fork error, rewind result, and local-notice behavior remain intact.
+- IPC-level regressions exercise both mutations against a persisted-only Session and assert that
+  the exact entry id and source revision reach the Runtime adapter.
+
+### Files Changed
+
+- `apps/desktop/electron/ipc/session.ts`
+- `apps/desktop/electron/kodax/host.ts`
+- `apps/desktop/electron/test/session-historical-mutation-ipc.test.ts`
+
+### Verification
+
+- New persisted-only fork and rewind regressions: 2/2 passed.
+- Related Session mutation/resume/schema suites: 163/163 passed.
+- Full desktop Electron suite: 2639 passed, 0 failed, 4 skipped (2643 total).
+- Desktop and Electron TypeScript checks, full ESLint, and main-process build passed.
 
 ## Summary
 
 - Total: 175
 - Open: 1
-- Ready: 1
+- Ready: 0
 - In Progress: 10
 - Deferred: 0
-- Resolved: 163
+- Resolved: 164
 - High: 90
 - Medium: 74
 - Low: 11
