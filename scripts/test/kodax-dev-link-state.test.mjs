@@ -101,7 +101,7 @@ test('pnpm virtual-store junction is treated as installed package state', async 
   // resolve through an 8.3 short path. Use the actual virtual-store target
   // to derive canonical fixture paths on both runners.
   const canonicalSpaceRoot = path.resolve(
-    await realpath(installedCopy),
+    await realpath(sdkDir),
     '..',
     '..',
     '..',
