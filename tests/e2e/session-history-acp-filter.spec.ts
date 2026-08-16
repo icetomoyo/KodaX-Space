@@ -30,6 +30,8 @@ test('ACP fixtures cannot hide real history and show-all searches beyond the rec
     await fs.mkdir(projectDir, { recursive: true });
     await fs.mkdir(secondaryProjectDir, { recursive: true });
     const manager = createSessionManager({ sessionsDir: path.join(space.testDataDir, 'sessions') });
+    const realSessionCount = 201;
+    const acpSessionCount = 201;
 
     for (let index = 0; index < 3; index += 1) {
       await manager.storage.save(`secondary-${index}`, {
@@ -46,7 +48,7 @@ test('ACP fixtures cannot hide real history and show-all searches beyond the rec
       });
     }
 
-    for (let index = 0; index < 205; index += 1) {
+    for (let index = 0; index < realSessionCount; index += 1) {
       await manager.storage.save(`code-${index}`, {
         messages: [{ role: 'user', content: `real prompt ${index}` }],
         title: index === 0 ? 'Oldest hidden session' : `Real session ${index}`,
@@ -60,7 +62,7 @@ test('ACP fixtures cannot hide real history and show-all searches beyond the rec
         },
       });
     }
-    for (let index = 0; index < 540; index += 1) {
+    for (let index = 0; index < acpSessionCount; index += 1) {
       await manager.storage.save(`acp-${index}`, {
         messages: [],
         title: 'ACP Session',
@@ -127,11 +129,12 @@ test('ACP fixtures cannot hide real history and show-all searches beyond the rec
     const dialog = space.page.getByRole('dialog', { name: /Sessions in/ });
     await expect(dialog).toBeVisible();
     // Opening the picker intentionally expands the bounded 200-row sidebar
-    // snapshot into a complete project scan. Under the full serial E2E suite,
-    // mapping 205 persisted sidecars can exceed the global 5s locator timeout;
-    // under the full Windows shard it can also take longer than the default
-    // 30s while the packaged host is still draining the serial suite.
-    await expect(dialog.getByText('205', { exact: true })).toBeVisible({ timeout: 90_000 });
+    // snapshot into a complete project scan. Keep the fixture just over the
+    // boundary so the test checks the cap without making Windows scan hundreds
+    // of unrelated sidecars.
+    await expect(dialog.getByText(String(realSessionCount), { exact: true })).toBeVisible({
+      timeout: 90_000,
+    });
     await dialog
       .getByRole('textbox', { name: 'Session filter query' })
       .fill('Oldest hidden session');
