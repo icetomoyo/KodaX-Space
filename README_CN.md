@@ -13,7 +13,7 @@
   <a href="https://github.com/icetomoyo/KodaX-Space/releases/latest"><img alt="release" src="https://img.shields.io/github/v/release/icetomoyo/KodaX-Space?style=flat-square"></a>
   <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-KAI--FCL-orange?style=flat-square"></a>
   <a href="https://github.com/icetomoyo/KodaX-Space/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/icetomoyo/KodaX-Space/ci.yml?style=flat-square&label=ci"></a>
-  <img alt="KodaX SDK" src="https://img.shields.io/badge/KodaX_SDK-0.7.88-f0a020?style=flat-square">
+  <img alt="KodaX SDK" src="https://img.shields.io/badge/KodaX_SDK-0.7.89-f0a020?style=flat-square">
   <img alt="platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-34495e?style=flat-square">
 </p>
 
@@ -90,9 +90,9 @@ npm run dev
 
 ## 当前源码基线
 
-**`main` 使用精确的 KodaX 0.7.88 Registry 包，并显式协商 Runtime 安全能力，不通过语义版本号推断支持。** Coder 默认连接 profile-scoped shared daemon，并要求 SDK 和已连接 Runtime 同时提供 `sandboxRuntime:3` 与 `actorSettlementConvergence:2`；旧 v1/v2 daemon 不能继续暴露旧生命周期。F141 的 Daemon / Embedded 开关仍由安全 admission gate 控制，必须先等待运行中入口、交互、队列和其他客户端安全收敛。Space 保留有界 Actor/Turn 投影、精确 history/live 对齐、Runtime-owned interrupt finalization、完整物理请求用量诊断、提示词缓存亲和与 CLI 缓存用量归一化。Partner 继续由 Space embedded-inline 持有；MCP 进程/日志、Workflow library/start/admin、Space Reference Agent 执行和产品 Artifact 仍是明确的 host-provider 边界。
+**`main` 使用精确的 KodaX 0.7.89 Registry 包，并显式协商 Runtime 安全能力，不通过语义版本号推断支持。** Coder 默认连接 profile-scoped shared daemon，并要求 SDK 和已连接 Runtime 同时提供 `sandboxRuntime:3` 与 `actorSettlementConvergence:2`；旧 v1/v2 daemon 不能继续暴露旧生命周期。F141 的 Daemon / Embedded 开关仍由安全 admission gate 控制，必须先等待运行中入口、交互、队列和其他客户端安全收敛。Space 保留有界 Actor/Turn 投影、精确 history/live 对齐、Runtime-owned interrupt finalization、完整物理请求用量诊断、提示词缓存亲和与 CLI 缓存用量归一化。Partner 继续由 Space embedded-inline 持有；MCP 进程/日志、Workflow library/start/admin、Space Reference Agent 执行和产品 Artifact 仍是明确的 host-provider 边界。
 
-KodaX 0.7.88 提供分阶段的 `actorSettlementConvergence:2`：合法的 storage admission wait 不再被伪造成失败 Session，而 replacement 未知、已排队资格等待和提交后维护失败仍保持不同事实。`sessionEventJournal:1` 的 `(sessionId, journalEpoch, seq)` 水位与 sandbox v3 边界继续显式协商。Runtime Shell 仍是 sandbox-first；containment 无法准备时沿用普通权限策略，不重放命令、不重复 classifier，灾难性破坏操作继续硬拒绝。`worker.configuredA2A` 仍是 KodaX CLI Worker-hosted embedded Runtime 配置，不是 Space Settings 开关。
+KodaX 0.7.89 提供分阶段的 `actorSettlementConvergence:2`：合法的 storage admission wait 不再被伪造成失败 Session，而 replacement 未知、已排队资格等待和提交后维护失败仍保持不同事实。`sessionEventJournal:1` 的 `(sessionId, journalEpoch, seq)` 水位与 sandbox v3 边界继续显式协商。Runtime Shell 仍是 sandbox-first；containment 无法准备时沿用普通权限策略，不重放命令、不重复 classifier，灾难性破坏操作继续硬拒绝。`worker.configuredA2A` 仍是 KodaX CLI Worker-hosted embedded Runtime 配置，不是 Space Settings 开关。
 
 底部状态区把主 Agent 上下文压力与整个 Session 累计 Token 分开显示。“上下文窗口”使用最终自动压缩阈值和不含正文的六类构成；完成态物理请求按 request ID 去重，覆盖 root、child、retry、fallback、repair、workflow digest 和 compaction summary。F140 新增“每次询问 / 保留托盘和 Runtime / 彻底退出”偏好。Windows、macOS 或 Linux 真正退出时，Space 会先尝试安全停止 Coder daemon；若有 blocker，则提供默认的“保持开启”和显式“强行关闭”。强行关闭只终止当前 Space 的任务、保留其他客户端的 Runtime 工作，并保证退出不再回到阻塞弹窗。Space 自动拉起的孤儿 daemon 仍会在最后客户端断开且任务空闲后自回收。Terminal 与 Coder 命令工具共享同一个所选 Shell/profile PATH 契约，不接受任意可执行文件，也不把敏感变量投影给 PTY。
 
@@ -108,11 +108,11 @@ F136 让 Windows 后台 owner 可见、可控；F140 允许选择“每次询问
 
 **v0.1.42 - 因果 Transcript 与最新 KodaX 对齐发布**
 
-已于 2026-08-16 正式发布 [`v0.1.42`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.42)：Space package `0.1.42` 精确锁定 npm `latest` KodaX `0.7.88`。本版本保持 Session/Run/Turn 因果归属，收口 canonical/live、延迟 terminal、continued Run、重连与 Ctrl+R 的顺序一致性，并同步 Actor settlement v2、权限原因和 Session 删除反馈。
+已于 2026-08-16 正式发布 [`v0.1.42`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.42)：Space package `0.1.42` 精确锁定 npm `latest` KodaX `0.7.89`。本版本保持 Session/Run/Turn 因果归属，收口 canonical/live、延迟 terminal、continued Run、重连与 Ctrl+R 的顺序一致性，并同步 Actor settlement v2、权限原因和 Session 删除反馈。
 
 | 范围 | 摘要 |
 | --- | --- |
-| 最新 SDK | npm `latest` 在发布准备时核验为 `0.7.88`，manifest、lockfile、安装包和 SRI 均精确一致。 |
+| 最新 SDK | npm `latest` 在发布准备时核验为 `0.7.89`，manifest、lockfile、安装包和 SRI 均精确一致。 |
 | Transcript 与 Runtime | 精确 Session/Run/Turn owner 贯穿实时、历史、延迟 terminal、continued Run、重连和 Ctrl+R；SDK 使用 Actor settlement v2。 |
 | 文档与手册 | README、用户手册、PRD/HLD、Feature List、能力台账、Known Issues、release 记录、回归指南和 `kodax_manual` 统一到 v0.1.42。 |
 
@@ -218,7 +218,7 @@ KodaX `0.7.84`。本版本同步已落地的 Session 重新激活修复、Agent 
 | MCP 和 Skills      | KodaX MCP servers 与 skills 的桌面管理和展示入口，并随包提供经审查的 `frontend-slides` 与 `huashu-design` builtin。                                                                                             |
 | Memory Governance  | 评审、批准、拒绝、检查 memory proposals 和 approved references。                                                                                                                                                |
 | Partner surface    | 已启用 workspace-first 知识工作界面，提供 Sources、KB、Outputs、checkpoint 写入、Office/PDF 便利生成与本地 policy/audit。                                                                                       |
-| External Agents    | KodaX 0.7.88 Runtime 配置的 Coder Agent 使用独占 Actor owner、durable managed Run 和统一 Actor/Turn 任务；Space Reference Agent 保留主窗口管理和 durable Task Dock 干预路径。MCP Tasks 与受治理 HTTP 继续门控。 |
+| External Agents    | KodaX 0.7.89 Runtime 配置的 Coder Agent 使用独占 Actor owner、durable managed Run 和统一 Actor/Turn 任务；Space Reference Agent 保留主窗口管理和 durable Task Dock 干预路径。MCP Tasks 与受治理 HTTP 继续门控。 |
 
 ## 配置模型
 
@@ -320,8 +320,8 @@ npm run e2e:headed
 | [docs/BUILTIN_SKILLS.md](docs/BUILTIN_SKILLS.md)                                                         | builtin skill 的来源、许可、更新、补丁和打包完整性流程。    |
 | [docs/releases/v0.1.34-release-readiness.md](docs/releases/v0.1.34-release-readiness.md)                 | v0.1.34 的发布门禁、产物摘要、已知风险与发布证据。          |
 | [docs/releases/v0.1.37-release-readiness.md](docs/releases/v0.1.37-release-readiness.md)                 | v0.1.37 的 KodaX 0.7.83 合约、门禁与发布证据。              |
-| [docs/features/v0.1.42.md](docs/features/v0.1.42.md)                                                     | v0.1.42 causal transcript, latest KodaX 0.7.88, and release boundary.             |
-| [docs/releases/v0.1.42-release-readiness.md](docs/releases/v0.1.42-release-readiness.md)                 | v0.1.42 gates, exact KodaX 0.7.88 contract, and release evidence.                  |
+| [docs/features/v0.1.42.md](docs/features/v0.1.42.md)                                                     | v0.1.42 causal transcript, latest KodaX 0.7.89, and release boundary.             |
+| [docs/releases/v0.1.42-release-readiness.md](docs/releases/v0.1.42-release-readiness.md)                 | v0.1.42 gates, exact KodaX 0.7.89 contract, and release evidence.                  |
 | [docs/test-guides/ISSUE_182_v0.1.42_REGRESSION_GUIDE.md](docs/test-guides/ISSUE_182_v0.1.42_REGRESSION_GUIDE.md) | v0.1.42 canonical/live ordering regression coverage.           |
 | [docs/test-guides/ISSUE_183_v0.1.42_REGRESSION_GUIDE.md](docs/test-guides/ISSUE_183_v0.1.42_REGRESSION_GUIDE.md) | v0.1.42 terminal owner reconciliation coverage.               |
 | [docs/test-guides/ISSUE_184_v0.1.42_REGRESSION_GUIDE.md](docs/test-guides/ISSUE_184_v0.1.42_REGRESSION_GUIDE.md) | v0.1.42 continued-Run projection coverage.                     |

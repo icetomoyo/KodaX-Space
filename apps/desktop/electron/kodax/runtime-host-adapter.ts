@@ -2151,7 +2151,7 @@ export class RuntimeHostAdapter {
             askUserTransport: 1,
             permissionCas: 1,
             providerCredentialBroker: 1,
-            runBoundHostTools: 1,
+            runBoundHostTools: 2,
             coderOwnerFencing: 1,
             crashOutcomeModel: 1,
             coderFeatureMatrix: 1,

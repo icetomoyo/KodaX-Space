@@ -14,6 +14,19 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ## [Unreleased]
 
+### Changed
+
+- **KodaX 0.7.89 Registry alignment** - Root and Desktop pin the npm `latest`
+  package exactly. The daemon capability requirement for run-bound host tools
+  rises to `runBoundHostTools:2`: lease-bound host tools (`create_artifact` /
+  `create_office_artifact`) are now materialized into the per-run model-visible
+  tool table (FEATURE_294) instead of being discoverable only through the MCP
+  capability channel, and the in-app manual `artifacts` / `mcp` topics document
+  the dual-channel reality. Old daemons without materialization fail closed at
+  connect. The pin also picks up the managed-context topology-transparency fix
+  (conversation page-cache v4 rebuild), which removes the common trigger behind
+  ambiguous compaction projections.
+
 ### Fixed
 
 - **Run-scoped terminal folding** - A Runtime terminal event that omits `turnId` no longer

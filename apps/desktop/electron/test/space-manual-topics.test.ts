@@ -85,6 +85,8 @@ test('Space kodax_manual documents the required current KodaX capability boundar
   }
   assert.match(topics.get('runtime-host')?.body ?? '', /contextCompaction v3/);
   assert.match(topics.get('runtime-host')?.body ?? '', /transcriptSearch v1/);
+  assert.match(topics.get('runtime-host')?.body ?? '', /KodaX 0\.7\.89/);
+  assert.match(topics.get('runtime-host')?.body ?? '', /runBoundHostTools v2/);
   assert.match(topics.get('runtime-host')?.body ?? '', /session\.status/);
   assert.match(topics.get('runtime-host')?.body ?? '', /session\.diagnostics/);
   assert.match(topics.get('runtime-host')?.body ?? '', /不会根据已出现回答文本伪造完成/);
@@ -147,6 +149,9 @@ test('Space kodax_manual documents the daemon host-tool path for artifact creati
   const topics = new Map(SPACE_MANUAL_TOPICS.map((topic) => [topic.id, topic]));
 
   const artifacts = topics.get('artifacts')?.body ?? '';
+  assert.match(artifacts, /runBoundHostTools v2/);
+  assert.match(artifacts, /物化进该 run 的模型可见工具表/);
+  assert.match(artifacts, /SA 与 managed-agent/);
   assert.match(artifacts, /mcp_search（server 为 "host"）/);
   assert.match(artifacts, /host:<leaseId>:create_artifact/);
   assert.match(artifacts, /子 Agent 随父 run 继承同一通道/);
@@ -154,6 +159,9 @@ test('Space kodax_manual documents the daemon host-tool path for artifact creati
   const mcp = topics.get('mcp')?.body ?? '';
   assert.match(mcp, /内置 host 能力源（server 名 "host"）/);
   assert.match(mcp, /按 run 绑定的 lease 作用域经 mcp_search\/mcp_call 暴露/);
+  assert.match(mcp, /host:<leaseId>:<name>/);
+  assert.match(mcp, /runBoundHostTools v2/);
+  assert.match(mcp, /两条通道指向同一实现/);
 });
 
 test('Space kodax_manual describes the v0.1.42 runtime safety, recovery, close, and shell controls', () => {

@@ -1,7 +1,7 @@
 # KodaX Space 文档中心
 
 > **2026-08-16 当前正式发布基线**：KodaX Space [`v0.1.42`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.42)（package `0.1.42`）使用 npm
-> Registry 的精确 KodaX `0.7.88` 包。受管理的 Coder daemon 除既有 Runtime 安全能力外，
+> Registry 的精确 KodaX `0.7.89` 包。受管理的 Coder daemon 除既有 Runtime 安全能力外，
 > 还必须协商 `managedRunDurability:1`、`actorSettlementConvergence:2`、
 > `sessionEventJournal:1` 和 `sandboxRuntime:3`；Space 将 durable `runId`/`turnId` 绑定到
 > optimistic composer history，并按 Session/Run/Turn 因果身份串行化活动 Session 的输入准入与历史重验。
@@ -9,7 +9,7 @@
 > 和 Issue 185 Actor settlement/terminal owner 对齐。
 > 未配置 Auto LLM timeout 时使用 SDK 首次 45 秒、重试 90 秒的默认值。
 
-> **当前源码基线**：root/Desktop 已升级到精确 Registry KodaX `0.7.88`，并在 SDK
+> **当前源码基线**：root/Desktop 已升级到精确 Registry KodaX `0.7.89`，并在 SDK
 > 预检、daemon 连接和正式打包烟测中要求 `sandboxRuntime:3` 与
 > `actorSettlementConvergence:2`。v0.1.41 / KodaX 0.7.87 的发布记录保持历史事实。
 
@@ -25,9 +25,9 @@ KodaX 版本号或 guardrail 版本推断。Partner 继续由 Space inline owner
 
 当前源码维护把底部“上下文窗口”改为按最终自动压缩阈值计算的有效窗口，并把模型最大上下文、自动压缩阈值、最近一次模型输入构成和距压缩剩余量分层展示；“会话 Token 用量”则独立累计根/子 Agent 的 Provider 调用与缓存分类。两者不能互换：前者是最近一次主模型请求的输入压力快照，后者是整个 Session 已发生的累计用量。v0.1.42 继续保留 v0.1.39 的多 Session 恢复、活动 Session 输入准入、历史分页、安全退出恢复隔离和 `(sessionId, journalEpoch, seq)` 水位隔离，并记录 sandbox v3、Issue 128、Issue 180 和 Issue 185 的当前边界。
 
-KodaX 0.7.88 的配置说明也已收口：核心配置仍在 `~/.kodax/config.json`，MCP、可信 Extension 路径和 A2A 分别位于 `~/.kodax/integrations/mcp.json`、`extensions.json`、`a2a.json`。Settings → Runtime 会显示三个域的来源、revision、watcher、最近 reload 和有界诊断；Runtime 对无效更新保留 last-known-good 配置，并发写冲突要求 reload 后重试。应用内 `kodax_manual` 会继承当前安装 SDK 推荐的原始底层能力主题，再叠加 Space 操作说明。Coder 同时要求 `sandboxRuntime:3`、`actorSettlementConvergence:2` 与 `sessionEventJournal:1`，并按 `(sessionId, journalEpoch, seq)` 隔离事件水位。
+KodaX 0.7.89 的配置说明也已收口：核心配置仍在 `~/.kodax/config.json`，MCP、可信 Extension 路径和 A2A 分别位于 `~/.kodax/integrations/mcp.json`、`extensions.json`、`a2a.json`。Settings → Runtime 会显示三个域的来源、revision、watcher、最近 reload 和有界诊断；Runtime 对无效更新保留 last-known-good 配置，并发写冲突要求 reload 后重试。应用内 `kodax_manual` 会继承当前安装 SDK 推荐的原始底层能力主题，再叠加 Space 操作说明。Coder 同时要求 `sandboxRuntime:3`、`actorSettlementConvergence:2` 与 `sessionEventJournal:1`，并按 `(sessionId, journalEpoch, seq)` 隔离事件水位。
 
-当前 KodaX 0.7.88 还提供 Run-scoped `sandbox.envPass`。Settings → Runtime
+当前 KodaX 0.7.89 还提供 Run-scoped `sandbox.envPass`。Settings → Runtime
 可编辑变量名 allow-list；Space 将显式列表投影到所有 Coder、Partner、legacy 与 Workflow
 Run，变量值只在命令执行 host 读取。超出有界编辑器限制的 CLI 配置会完整保留并以只读方式
 显示，避免静默截断。
@@ -71,7 +71,7 @@ Run，变量值只在命令执行 host 读取。超出有界编辑器限制的 C
 | `FEATURE_LIST.md`                                    | 版本路线图                    | 只有可交付、可验证的版本项进入 active list                   |
 | `KNOWN_ISSUES.md`                                    | 当前问题                      | 已解决项保留结论，新增问题需有复现和状态                     |
 | `BUILTIN_SKILLS.md`                                  | builtin 分发维护              | 固定来源、许可、补丁、更新和打包完整性                       |
-| `features/v0.1.42.md`                                | current release design        | Causal transcript, latest KodaX 0.7.88, and release boundary |
+| `features/v0.1.42.md`                                | current release design        | Causal transcript, latest KodaX 0.7.89, and release boundary |
 | `releases/v0.1.42-release-readiness.md`              | current release record        | Gates, GitHub CI, artifact evidence, and regression items    |
 | `test-guides/ISSUE_182_v0.1.42_REGRESSION_GUIDE.md`  | current regression acceptance | Canonical/live ordering and exact owner reconciliation       |
 | `test-guides/ISSUE_183_v0.1.42_REGRESSION_GUIDE.md`  | current regression acceptance | Terminal owner reconciliation and exact-once folding          |
