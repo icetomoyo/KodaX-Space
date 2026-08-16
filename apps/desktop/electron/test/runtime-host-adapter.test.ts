@@ -1220,7 +1220,7 @@ test('daemon startup delegates stale owned inline recovery to the SDK before ini
   });
 
   await adapter.reconcileStartupOwnerPolicy();
-  await adapter.initialize('0.1.41');
+  await adapter.initialize('0.1.42');
 
   assert.deepEqual(calls, ['enable-daemon', 'runtime']);
   await adapter.close();

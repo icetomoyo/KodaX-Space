@@ -57,7 +57,7 @@ function clientInfo(name) {
   return {
     name,
     title: name,
-    version: '0.1.41',
+    version: '0.1.42',
     instanceId: randomUUID(),
     instanceSecret: randomBytes(32).toString('base64url'),
   };

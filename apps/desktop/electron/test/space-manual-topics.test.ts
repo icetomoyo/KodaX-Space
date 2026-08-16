@@ -100,6 +100,8 @@ test('Space kodax_manual documents the required current KodaX capability boundar
   assert.match(topics.get('permissions')?.body ?? '', /Auto\[LLM\].*Auto\[RULES\]/);
   assert.match(topics.get('permissions')?.body ?? '', /最后一次动作/);
   assert.match(topics.get('permissions')?.body ?? '', /\/auto-engine llm/);
+  assert.match(topics.get('permissions')?.body ?? '', /classifier reason/);
+  assert.match(topics.get('sessions')?.body ?? '', /删除中/);
   assert.match(topics.get('agent-coordination')?.body ?? '', /mailbox yield/);
   assert.match(topics.get('agent-coordination')?.body ?? '', /普通 progress.*不会唤醒父模型/);
   assert.match(topics.get('agent-coordination')?.body ?? '', /每条队列消息只出队一次/);
@@ -154,10 +156,10 @@ test('Space kodax_manual documents the daemon host-tool path for artifact creati
   assert.match(mcp, /按 run 绑定的 lease 作用域经 mcp_search\/mcp_call 暴露/);
 });
 
-test('Space kodax_manual describes the v0.1.41 runtime safety, recovery, close, and shell controls', () => {
+test('Space kodax_manual describes the v0.1.42 runtime safety, recovery, close, and shell controls', () => {
   const topics = new Map(SPACE_MANUAL_TOPICS.map((topic) => [topic.id, topic]));
 
-  assert.match(topics.get('runtime-host')?.body ?? '', /v0\.1\.41/);
+  assert.match(topics.get('runtime-host')?.body ?? '', /v0\.1\.42/);
   assert.match(topics.get('background-runtime')?.body ?? '', /F140/);
   assert.match(topics.get('background-runtime')?.body ?? '', /Close button behavior/);
   assert.match(topics.get('background-runtime')?.body ?? '', /macOS Cmd\+Q/);

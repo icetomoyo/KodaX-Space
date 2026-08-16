@@ -1,6 +1,6 @@
 # KodaX Space 高层设计（HLD）
 
-> **2026-08-14 当前发布基线**：v0.1.41 使用精确 npm Registry KodaX `0.7.87`，要求 `sandboxRuntime:3`、`actorSettlementConvergence:1` 与 `sessionEventJournal:1`。sandbox v3 修复 Electron/ASAR Windows Shell 生命周期并采用 sandbox-first、普通权限 fallback；v0.1.39 / KodaX 0.7.85 作为历史正式产品基线保留。
+> **2026-08-16 当前发布基线**：v0.1.42 使用精确 npm Registry KodaX `0.7.88`，要求 `sandboxRuntime:3`、`actorSettlementConvergence:2` 与 `sessionEventJournal:1`。sandbox v3 修复 Electron/ASAR Windows Shell 生命周期并采用 sandbox-first、普通权限 fallback；v0.1.39 / KodaX 0.7.85 作为历史正式产品基线保留。
 > `RuntimeHostAdapter` 要求 `managedRunDurability:1`，使 accepted prompt 与 completed turn
 > 在事件发布前已成为 canonical managed Run；Space 仅用 returned `runId`/`turnId` 关联 UI
 > optimistic state 和 history，不复制持久化职责。未设置 Auto timeout 时，SDK 默认 45 秒首次、90 秒重试。
@@ -11,7 +11,7 @@
 > 默认模型同步为 GLM-5.3。
 >
 > Last updated: 2026-08-16
-> Status: 核心架构决策仍有效；当前正式发布基线为 KodaX Space 0.1.41（package 0.1.41）/ npm 正式发布的精确 KodaX 0.7.87。中间方案与否决理由见 [ADR/](ADR/)；当前能力边界见 [KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md)。
+> Status: 核心架构决策仍有效；当前正式发布基线为 KodaX Space 0.1.42（package 0.1.42）/ npm 正式发布的精确 KodaX 0.7.88。中间方案与否决理由见 [ADR/](ADR/)；当前能力边界见 [KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md)。
 > Companion doc: [PRD](PRD.md)
 
 > **0.1.30 增量**：Electron main 继续拥有特权边界，并新增一个持久、协议中立的 External Agent Executor Plane。Renderer 仅通过 zod IPC 获取脱敏 Registration/Descriptor/Task/Event 投影；管理入口仅接受主应用窗口，任务创建从 main-owned live Session 派生项目/父任务归属，读取与干预均复核任务所属 Session。实时 Session 与 Workflow 共用同一 KodaX 0.7.67 plane。Reference Executor 已接通；v0.1.32 起，Runtime 配置的 A2A 由 KodaX 0.7.76 Coder daemon 持有并按能力协商开放，MCP Tasks/受治理 HTTP 仍按 Runtime capability 门控。Partner 自 0.1.30 起已启用 workspace-first Outputs 与 checkpointed writes。
@@ -922,6 +922,7 @@ Space 严格遵守：
 | `v0.1.37`           | Align the exact KodaX 0.7.83 package and release docs while preserving multi-Session recovery, safe-close recovery, and renderer ownership boundaries.                                                              |
 | `v0.1.39`           | Align the exact KodaX 0.7.85 package and manual while preserving Actor settlement convergence, Session journal epoch isolation, unknown Run admission, exact Stop, and idle-exit client boundaries.                 |
 | `v0.1.41`           | Consume the existing ordered KodaX provider.recovery event across daemon/live/history/reconnect projections, pin the latest npm KodaX package exactly, and keep Space as a bounded compatibility/presentation host. |
+| `v0.1.42`           | Align exact KodaX 0.7.88 Actor settlement v2 and preserve Session/Run/Turn ownership across canonical/live reconciliation, delayed terminals, continued Runs, and completion notifications. |
 | `v0.1.40`           | Align the exact KodaX 0.7.86 package and manual, require sandboxRuntime v3, qualify the packaged Windows Shell chain, and reconcile stale inline owners through the SDK.                                            |
 | `v0.1.38`           | Align the exact KodaX 0.7.84 package and manual while preserving bounded Agent progress, same-owner Stop recovery, and Session reactivation identity boundaries.                                                    |
 | `v0.1.72`           | Complete locale gates, release diagnostics, channels/updater/distribution trust.                                                                                                                                    |

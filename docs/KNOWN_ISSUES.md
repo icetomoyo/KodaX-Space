@@ -2,7 +2,7 @@
 
 Last Updated: 2026-08-16
 
-> Historical issue details are preserved as investigation evidence. Resolved items older than 30 days move to [ISSUES_ARCHIVED.md](ISSUES_ARCHIVED.md) without losing their investigation record. The latest published Space [`v0.1.41`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.41) artifact used KodaX 0.7.87; current source pins exact npm Registry KodaX 0.7.88 and requires `sandboxRuntime:3` plus `actorSettlementConvergence:2`. Start from the [documentation hub](README.md) for current behavior and status.
+> Historical issue details are preserved as investigation evidence. Resolved items older than 30 days move to [ISSUES_ARCHIVED.md](ISSUES_ARCHIVED.md) without losing their investigation record. The latest published Space [`v0.1.42`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.42) artifact uses exact npm Registry KodaX 0.7.88 and requires `sandboxRuntime:3` plus `actorSettlementConvergence:2`. Start from the [documentation hub](README.md) for current behavior and status.
 
 ## Issue Index
 
@@ -177,10 +177,10 @@ Last Updated: 2026-08-16
 | 179 | Medium   | Resolved           | Idle Space exit reported running tasks when only other Runtime clients remained connected                                          | v0.1.39 complete-exit client protection                      | 2026-08-11 |
 | 180 | High     | Resolved           | A crashed inline owner permanently blocked daemon startup until the customer deleted `~/.kodax`                                    | v0.1.38 / KodaX 0.7.84 owner-policy reconciliation           | 2026-08-14 |
 | 181 | High     | Resolved           | Daemon Provider recovery could leave an abandoned answer attempt in the live transcript until Ctrl+R                               | v0.1.38 daemon Runtime recovery projection                   | 2026-08-14 |
-| 182 | High     | Resolved in source | A bounded newest page could pair an earlier live answer with the next query until Ctrl+R                                           | v0.1.41 canonical/live leading-page reconciliation           | 2026-08-15 |
-| 183 | High     | Resolved in source | A successful no-retry Run could render both canonical and unacknowledged live copies until Ctrl+R                                  | v0.1.41 terminal live-owner identity reconciliation          | 2026-08-15 |
+| 182 | High     | Resolved           | A bounded newest page could pair an earlier live answer with the next query until Ctrl+R                                           | v0.1.42 canonical/live leading-page reconciliation           | 2026-08-15 |
+| 183 | High     | Resolved           | A successful no-retry Run could render both canonical and unacknowledged live copies until Ctrl+R                                  | v0.1.42 terminal live-owner identity reconciliation          | 2026-08-15 |
 | 184 | High     | In Progress        | A continued Run could attach cumulative prior-turn output to the latest query while ambiguous compaction survived reload           | v0.1.38 daemon live projection / KodaX 0.7.87 compaction     | 2026-08-15 |
-| 185 | High     | Resolved in source | A delayed old Run terminal could close the current query while a Session-level notification reported another Run                   | v0.1.38 daemon transcript / completion notifications         | 2026-08-15 |
+| 185 | High     | Resolved           | A delayed old Run terminal could close the current query while a Session-level notification reported another Run                   | v0.1.42 daemon transcript / completion notifications         | 2026-08-15 |
 
 ## Issue Details
 
@@ -13120,7 +13120,7 @@ not require a new SDK event, payload field, capability, or KodaX live-projection
 
 - Priority: High
 - Status: Resolved in source
-- Fixed: v0.1.41 post-release maintenance
+- Fixed: v0.1.42
 - Introduced: v0.1.34 history/live leading-page reconciliation
 - Created: 2026-08-15
 
@@ -13169,14 +13169,14 @@ This was not a timestamp collision, KodaX persistence-order defect, or missing S
 - The complete history replay and history paging suites cover exact suffixes, ambiguous fail-open
   projections, retained ordinals, fork/rewind, terminal repair, and subsequent sends.
 - See
-  [ISSUE_182_v0.1.41_REGRESSION_GUIDE.md](test-guides/ISSUE_182_v0.1.41_REGRESSION_GUIDE.md)
+  [ISSUE_182_v0.1.42_REGRESSION_GUIDE.md](test-guides/ISSUE_182_v0.1.42_REGRESSION_GUIDE.md)
   for packaged-app acceptance coverage.
 
 ## Issue 183: A successful no-retry Run could render both canonical and unacknowledged live copies until Ctrl+R
 
 - Priority: High
 - Status: Resolved in source
-- Fixed: v0.1.41 post-release maintenance
+- Fixed: v0.1.42
 - Introduced: daemon canonical/live reconciliation
 - Created: 2026-08-15
 
@@ -13228,7 +13228,7 @@ This was not Provider retry leakage, duplicate Runtime persistence, or a missing
   start/content/event/snapshot terminals arriving before or after that revalidation.
 - TypeScript, lint, focused transcript suites, and the complete repository test suite pass.
 - See
-  [ISSUE_183_v0.1.41_REGRESSION_GUIDE.md](test-guides/ISSUE_183_v0.1.41_REGRESSION_GUIDE.md)
+  [ISSUE_183_v0.1.42_REGRESSION_GUIDE.md](test-guides/ISSUE_183_v0.1.42_REGRESSION_GUIDE.md)
   for packaged-app acceptance coverage.
 
 ## Issue 184: A continued managed Run could attach cumulative prior-turn output to the latest query, while an ambiguous compaction survived reload
@@ -13302,14 +13302,14 @@ Space needs no new public timestamp, sequence, visibility, or UI contract for th
 - Existing Provider recovery, canonical/live reconciliation, paging, and Runtime observation suites
   remain green.
 - See
-  [ISSUE_184_v0.1.41_REGRESSION_GUIDE.md](test-guides/ISSUE_184_v0.1.41_REGRESSION_GUIDE.md)
+  [ISSUE_184_v0.1.42_REGRESSION_GUIDE.md](test-guides/ISSUE_184_v0.1.42_REGRESSION_GUIDE.md)
   for packaged-app acceptance coverage.
 
 ## Issue 185: A delayed old Run terminal could close the current query while a Session-level notification reported another Run
 
 - Priority: High
 - Status: Resolved in source
-- Fixed: v0.1.41 post-release maintenance
+- Fixed: v0.1.42
 - Introduced: v0.1.38 daemon transcript / completion notifications
 - Created: 2026-08-15
 
@@ -13362,7 +13362,7 @@ renderer that associates already-correct Runtime events by array position or Ses
 - Runtime compatibility tests require v2, reject the previous v1 SDK contract, and pass against the
   exact npm Registry KodaX 0.7.88 tarball.
 - See
-  [ISSUE_185_v0.1.41_REGRESSION_GUIDE.md](test-guides/ISSUE_185_v0.1.41_REGRESSION_GUIDE.md)
+  [ISSUE_185_v0.1.42_REGRESSION_GUIDE.md](test-guides/ISSUE_185_v0.1.42_REGRESSION_GUIDE.md)
   for packaged-app acceptance coverage.
 
 ## Summary

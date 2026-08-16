@@ -14,18 +14,46 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ## [Unreleased]
 
+---
+
+## [0.1.42] - 2026-08-16
+
 ### Changed
 
-- Root and Desktop now pin the npm-published `@kodax-ai/kodax@0.7.88` Registry
-  tarball. Space requires `actorSettlementConvergence:2`, and the `zai-coding`
-  and `ark-coding` catalog plus disaster fallbacks follow the new GLM-5.3
+- **KodaX 0.7.88 Registry alignment** - Root and Desktop pin the npm `latest`
+  package exactly, including `actorSettlementConvergence:2`, the phased
+  canonical Actor settlement contract, and the published GLM-5.3 coding
   defaults.
+- **Permission observability** - Auto[LLM] approval prompts surface a bounded,
+  sanitized classifier reason without exposing prompts, full responses, or
+  credentials.
+- **Session lifecycle feedback** - Session deletion now shows an in-flight
+  state, prevents duplicate actions, and removes the row only after the
+  backend confirms deletion.
 
 ### Fixed
 
-- The published SDK now supplies the phased canonical Actor settlement contract
-  required by Space, so legal storage admission waits no longer appear as an
-  ambiguous failed Session while renderer Run/Turn correlation remains exact.
+- **Causal transcript ordering** - Renderer reconciliation now keeps Runtime
+  events attached to their exact Session/Run/Turn owner across live snapshots,
+  canonical history, delayed terminals, and continued Runs; older output can
+  no longer close or reorder a newer query.
+- **Create-time model continuity** - An explicitly selected model remains bound
+  through daemon admission instead of being replaced by a later shared default.
+- **Canonical/live folding** - Leading-page recovery, terminal owner binding,
+  and completion notifications preserve exact query/answer ownership without
+  timestamp sorting or content-based deduplication.
+
+### Documentation
+
+- Synchronized the README files, docs hub, PRD, HLD, Feature List, capability
+  ledger, known issues, usage/user manual, release design, regression guides,
+  changelog, and in-app `kodax_manual` for v0.1.42.
+
+### Verification
+
+- The release preparation keeps system business logic unchanged; any CI
+  hardening remains limited to tests, smoke probes, workflow configuration, or
+  release documentation.
 
 ---
 
