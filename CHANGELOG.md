@@ -14,6 +14,18 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ## [Unreleased]
 
+### Fixed
+
+- **Run-scoped terminal folding** - A Runtime terminal event that omits `turnId` no longer
+  blocks live/canonical folding when its `runtimeEvent.runId` matches the owner bound by
+  `bindUserMessageRuntimeRun`. Previously one turnId-less terminal left its live copy in the
+  baseline forever; window rebuilds then appended the stale segment at the transcript bottom
+  (the "second-to-last answer + newest query sink to the bottom" shape, repaired by Ctrl+R).
+- **Ambiguous history dedupe** - When `session.history` reports `conversation.status:'ambiguous'`,
+  restored rows that share a `logicalId` (KodaX compaction double-books a retained suffix as both
+  a re-created main entry and an archived island entry) now render exactly once instead of being
+  conservatively duplicated across reloads. Resolved pages are never deduped.
+
 ---
 
 ## [0.1.42] - 2026-08-16

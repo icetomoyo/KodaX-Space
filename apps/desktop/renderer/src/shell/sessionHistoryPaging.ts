@@ -413,6 +413,9 @@ function applyHistoryResult(sessionId: string, data: unknown, continuation: bool
     result.conversation?.status === 'resolved'
       ? { authoritativeNewest: true }
       : {}),
+    ...(result.conversation?.status !== undefined
+      ? { conversationStatus: result.conversation.status }
+      : {}),
   });
 }
 

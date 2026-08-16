@@ -943,6 +943,9 @@ interface AppState {
       readonly sourceRevision?: string;
       /** This resolved replacement is the authoritative newest canonical window. */
       readonly authoritativeNewest?: boolean;
+      /** Daemon conversation projection status. Only an 'ambiguous' page carries proven clone
+       * candidates that share logicalId and must be deduped; a resolved page never dedupes. */
+      readonly conversationStatus?: 'resolved' | 'partial' | 'ambiguous';
     },
   ): void;
   /** Drop only the replaceable history projection while retaining independent live rows. */
@@ -1515,6 +1518,7 @@ interface TranscriptTurnSnapshot {
   readonly omittedHistoryUserOrdinal: boolean;
   readonly terminal: boolean;
   readonly terminalTurnId?: string;
+  readonly terminalRunId?: string;
   readonly closed: boolean;
   readonly thinking: string;
   readonly text: string;
@@ -1701,10 +1705,18 @@ function transcriptSegmentSemantic(
   events: readonly SessionEvent[],
 ): Pick<
   TranscriptTurnSnapshot,
-  'terminal' | 'terminalTurnId' | 'thinking' | 'text' | 'tools' | 'notices' | 'visibleSequence'
+  | 'terminal'
+  | 'terminalTurnId'
+  | 'terminalRunId'
+  | 'thinking'
+  | 'text'
+  | 'tools'
+  | 'notices'
+  | 'visibleSequence'
 > {
   let terminal = false;
   let terminalTurnId: string | undefined;
+  let terminalRunId: string | undefined;
   let thinking = '';
   let text = '';
   const tools: Array<{
@@ -1729,6 +1741,9 @@ function transcriptSegmentSemantic(
     if (event.kind === 'session_complete' || event.kind === 'session_error') {
       terminal = true;
       terminalTurnId = event.turnId;
+      const runScopedTerminalRunId =
+        'runtimeEvent' in event ? event.runtimeEvent?.runId : undefined;
+      if (runScopedTerminalRunId !== undefined) terminalRunId = runScopedTerminalRunId;
       if (event.kind === 'session_error') {
         const error = `error:${event.error}`;
         notices.push(error);
@@ -1793,6 +1808,7 @@ function transcriptSegmentSemantic(
   return {
     terminal,
     ...(terminalTurnId !== undefined ? { terminalTurnId } : {}),
+    ...(terminalRunId !== undefined ? { terminalRunId } : {}),
     thinking,
     text,
     tools,
@@ -2280,7 +2296,16 @@ function liveTurnCanFold(turn: TranscriptTurnSnapshot, exactEntryIdentity = fals
   if (!turn.terminal) return true;
   if (turn.restoredFromHistory) return true;
   if (exactEntryIdentity && turn.entryId !== undefined) return true;
-  return turn.turnId !== undefined && turn.terminalTurnId === turn.turnId;
+  if (turn.turnId !== undefined && turn.terminalTurnId === turn.turnId) return true;
+  // A run-scoped terminal that omits turnId still proves closure for the live owner bound to
+  // that Runtime Run (bindUserMessageRuntimeRun). Without this fallback one turnId-less
+  // terminal blocks the fold forever, and the stale live segment resurfaces at the transcript
+  // bottom on every window rebuild (multi-session terminal contention produces such terminals).
+  return (
+    turn.terminalTurnId === undefined &&
+    turn.terminalRunId !== undefined &&
+    turn.terminalRunId === turn.runtimeRunId
+  );
 }
 
 function transcriptContentSequence(turn: TranscriptTurnSnapshot): readonly string[] {
@@ -5084,6 +5109,11 @@ export const useAppStore = create<AppState>((set) => ({
       const leadingPartialTurnId = authoritativeLeadingHistoryTurnId(items);
       const historyAnchorTurnId = leadingPartialTurnId ?? stableHistoryAnchorTurnId(items);
       const historyPrefixAnchorTurnId = `space-history-prefix:${stableHistoryHash(items)}`;
+      // Only an explicitly ambiguous projection may carry proven clone candidates (same logicalId
+      // re-created and archived — verified on disk, session 20260816_132905_g1806cde81c389).
+      // Resolved pages never dedupe: distinct legitimate rows can share a logicalId family.
+      const seenAmbiguousLogicalIds =
+        options?.conversationStatus === 'ambiguous' ? new Set<string>() : null;
       let firstCanonicalHistoricalSentAt: number | undefined;
       for (const item of items) {
         if (item.kind === 'local_notice') continue;
@@ -5182,6 +5212,16 @@ export const useAppStore = create<AppState>((set) => ({
       };
       for (const item of items) {
         const historyOrigin = transcriptHistoryOrigin(item);
+        const itemLogicalId =
+          'logicalId' in item && typeof item.logicalId === 'string' ? item.logicalId : undefined;
+        if (itemLogicalId !== undefined && seenAmbiguousLogicalIds !== null) {
+          // The daemon's ambiguous projection serves both the re-created and the archived copy of
+          // a compaction-retained suffix. logicalId is the documented stable clone identity
+          // (space-ipc-schema session.ts); keep the first candidate and drop proven duplicates
+          // instead of rendering the same logical entry twice.
+          if (seenAmbiguousLogicalIds.has(itemLogicalId)) continue;
+          seenAmbiguousLogicalIds.add(itemLogicalId);
+        }
         if (item.kind === 'user') {
           if (assistantPendingComplete) flushTurnIfNeeded();
           else flushEmptyTurnIfNeeded();

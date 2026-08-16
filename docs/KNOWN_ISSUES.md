@@ -181,6 +181,8 @@ Last Updated: 2026-08-16
 | 183 | High     | Resolved           | A successful no-retry Run could render both canonical and unacknowledged live copies until Ctrl+R                                  | v0.1.42 terminal live-owner identity reconciliation          | 2026-08-15 |
 | 184 | High     | In Progress        | A continued Run could attach cumulative prior-turn output to the latest query while ambiguous compaction survived reload           | v0.1.38 daemon live projection / KodaX 0.7.87 compaction     | 2026-08-15 |
 | 185 | High     | Resolved           | A delayed old Run terminal could close the current query while a Session-level notification reported another Run                   | v0.1.42 daemon transcript / completion notifications         | 2026-08-15 |
+| 186 | High     | Resolved           | Multi-session terminal contention or a compaction-damaged canonical page could misorder, duplicate, or endlessly grow the transcript tail; SDK write-side provenance collapse identified cross-repo | KodaX 0.7.88 chained compaction / renderer folding          | 2026-08-16 |
+| 187 | Medium   | ready              | Restored historical Sessions could display history but fork and rewind failed with session_not_found                               | v0.1.42 historical Session mutation admission                | 2026-08-16 |
 
 ## Issue Details
 
@@ -13365,15 +13367,117 @@ renderer that associates already-correct Runtime events by array position or Ses
   [ISSUE_185_v0.1.42_REGRESSION_GUIDE.md](test-guides/ISSUE_185_v0.1.42_REGRESSION_GUIDE.md)
   for packaged-app acceptance coverage.
 
+## Issue 186: Terminal contention misordered the newest turns, a compaction-damaged canonical page duplicated rows across reload, and orphan live events grew one bottom bubble without bound
+
+### Symptoms
+
+Three user-visible faces of one causal chain (reported together over multiple sessions):
+
+- With several Sessions running concurrently, submitting a new query in one of them left the
+  completed transcript misordered: the newest answer was NOT at the bottom; the bottom showed the
+  prior turn's answer plus the newest (orphaned) query. Ctrl+R repaired it.
+- On compaction-damaged sessions (e.g. `20260816_132905_g1806cde81c389`), restored history
+  duplicated whole turns and showed "部分旧历史存在多种可能解释"; Ctrl+R could NOT repair it.
+- On the same damaged session, one bubble at the very bottom kept growing, absorbing thinking /
+  progress narration from multiple later turns.
+
+### Root Cause
+
+Two layers (verified against on-disk data for `20260816_132905_g1806cde81c389`):
+
+1. **KodaX SDK write side (cross-repo, patch spec handed off)** - `inheritCompactionMessageProvenance`
+   (`packages/agent/src/session-lineage/kodax-session-lineage.ts:263`) collapses `sourceEntryId`
+   transitively to the oldest ancestor, so second-generation retained clones cannot address their
+   direct physical predecessor. `archiveOldIslands` (`:1489-1497`) archives every non-preserved
+   entry without excluding entries still referenced by the retained suffix. Chained compactions
+   with a non-exact retained tail then fail every predecessor-branch match and the conversation
+   projection turns `ambiguous` with `compaction_boundary_invalid` + `compaction_predecessor_missing`
+   (82 logicalIds shared between the re-created suffix in main and `batch_b1c457ba5a97` on disk).
+2. **Space renderer assembly** - `liveTurnCanFold` required `terminalTurnId === turnId`, so one
+   turnId-less terminal (real under multi-session terminal contention) blocked the fold forever;
+   the stale live segment then re-attached at the transcript tail on every window rebuild. And
+   `prependSessionHistory` rendered every ambiguous candidate instead of deduping by `logicalId`
+   (the documented stable clone identity), so SDK ambiguity became user-visible duplication and
+   unbounded tail growth via the ownerless-events tail segment in `composeMessages`.
+
+### Resolution
+
+- `terminalRunId` is now captured per segment; `liveTurnCanFold` accepts a run-scoped terminal
+  whose `runtimeEvent.runId` matches the owner's bound run.
+- `prependSessionHistory` takes `conversationStatus` and dedupes `logicalId` candidates only for
+  an explicitly `ambiguous` page (resolved pages keep exact prior behavior).
+- `sessionHistoryPaging.applyHistoryResult` forwards the daemon's conversation status.
+- SDK-side fix (direct `sourceEntryId`, archive exclusion, cache-invalidation repair for damaged
+  sessions, three regression tests) is specified to file:line precision in the KodaX repo
+  (`packages/agent/src/session-lineage/kodax-session-lineage.ts`, `packages/repl/src/session/…`)
+  and must be applied there; upgrading to a KodaX release containing that fix plus the
+  managed-context transparency change (`f832de83`) removes the ambiguity at its source.
+
+### Verification
+
+- `apps/desktop/electron/test/history-order-regression.test.ts` reproduces both renderer faces
+  deterministically (red before the fix, green after): the turnId-less-terminal misorder and the
+  ambiguous logicalId duplication.
+- Full desktop suite: 2629/2640 pass; the 7 remaining failures (workflow controller / sandbox
+  envPass / tokenBudget) pre-date this change (verified via stash run).
+
+## Issue 187: Restored historical Sessions could display history but fork and rewind failed with session_not_found
+
+- Priority: Medium
+- Status: ready
+- Introduced: v0.1.42 historical Session mutation admission
+- Created: 2026-08-16
+
+### Original Problem
+
+After restarting Space, persisted Session `20260815_100209_dw8cf41233b429` remained selectable and
+its canonical history rendered from disk. Both “fork here” and “rewind here” nevertheless failed:
+fork surfaced `session not found: 20260815_100209_dw8cf41233b429`, while rewind returned
+`session_not_found`.
+
+Expected behavior: an exact fork or rewind selected from readable persisted history must admit the
+historical Session and perform the requested mutation against the same revisioned history boundary.
+
+Reproduction:
+
+1. Persist a Coder Session, then restart Space so the Session is no longer in the main-process
+   in-memory map.
+2. Select the Session from project history and wait for its canonical history to render.
+3. Invoke fork or rewind at a visible exact history boundary.
+4. Observe `session_not_found` even though the Session JSONL and runtime sidecars still exist.
+
+### Context
+
+The reported Session JSONL, conversation cache, Runtime settings, and Space runtime sidecar all
+exist under `~/.kodax`. A read-only harness reproduced `persisted: true`, `inMemory: false`,
+`forkResult: null`, and rewind reason `session_not_found`.
+
+### Root Cause
+
+`session.history` intentionally reads persisted history without executable Coder admission. The
+send and slash IPC paths call `kodaxHost.tryResume()` when a selected Session is persisted-only,
+but `session.fork` and `session.rewind` call the host mutation directly. Both host mutations require
+the source Session to exist in `host.sessions`, so a normal post-restart historical selection is
+misclassified as missing before the durable mutation is attempted.
+
+### Proposed Solution
+
+- At the public fork/rewind IPC boundary, ensure a persisted-only Session is resumed before calling
+  the existing host mutation.
+- Preserve the existing Coder admission, project/surface ownership, exact history-boundary, busy,
+  invalid-index, and missing-disk failure behavior.
+- Add IPC-level regressions for both mutations using a persisted-only Session; do not test the
+  private in-memory map as the behavioral seam.
+
 ## Summary
 
-- Total: 173
+- Total: 175
 - Open: 1
-- Ready: 0
+- Ready: 1
 - In Progress: 10
 - Deferred: 0
-- Resolved: 162
-- High: 89
-- Medium: 73
+- Resolved: 163
+- High: 90
+- Medium: 74
 - Low: 11
 - Next to resolve: 165
