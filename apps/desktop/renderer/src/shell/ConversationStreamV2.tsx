@@ -2016,7 +2016,16 @@ export function ConversationStreamV2(): JSX.Element {
           )}
           <div className="space-y-3">
             {displayMessages.length === 0 &&
-              (currentSessionMsgCount > 0 ? (
+              (historyPaging.phase === 'error' && historyPaging.runtimeUnavailable === true ? (
+                // Runtime 不可用导致正文读不到:重试已终止。明确告知文件未损坏,避免被当成空白/损坏。
+                <div
+                  className="text-fg-faint text-sm"
+                  role="status"
+                  data-testid="history-runtime-unavailable"
+                >
+                  {t('conversation.historyRuntimeUnavailable')}
+                </div>
+              ) : currentSessionMsgCount > 0 ? (
                 // 有 SDK summary msgCount 但 buffer 空 → history IPC 正在 flight,显示骨架
                 // 比 "Send a prompt to start" 更准确,也免去用户盯着空白屏幕等几百毫秒
                 <HistoryRestoreSkeleton />

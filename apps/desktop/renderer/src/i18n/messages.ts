@@ -78,6 +78,8 @@ export const messages = {
     'files.noSearchResults': 'No matching files.',
     'files.backToSidebar': 'Back to sidebar',
     'conversation.emptyPrompt': 'Send a prompt below to start.',
+    'conversation.historyRuntimeUnavailable':
+      'Coder Runtime is unavailable, so this conversation cannot be read right now. The history file is intact and will load once the Runtime is available again.',
     'conversation.searchPlaceholder': 'Find in transcript...',
     'conversation.previousMatch': 'Previous match',
     'conversation.previousMatchTitle': 'Previous match (Shift+Enter)',
@@ -1693,8 +1695,8 @@ export const messages = {
     'sessionTokens.providerComparabilityNote':
       'Providers tokenize and expose cache fields differently. Compare total input and output across models; cache splits reflect only Provider-reported fields.',
     'sessionTokens.cacheHitRateTitle': 'Cache hit rate',
-  'sessionTokens.cacheHitAggregate': 'Aggregate',
-  'sessionTokens.cacheHitLatest': 'Latest',
+    'sessionTokens.cacheHitAggregate': 'Aggregate',
+    'sessionTokens.cacheHitLatest': 'Latest',
     'sessionTokens.latestProviderCall':
       'Latest root physical request: {provider}/{model} · {count} cached-prefix messages',
     'sessionTokens.cacheAffinityActive':
@@ -2324,7 +2326,7 @@ export const messages = {
     'permission.risk.high': 'HIGH',
     'permission.risk.danger': 'DANGER',
     'autoModeDiagnostics.title': 'Auto[LLM] decision details',
-  'autoModeDiagnostics.reason': 'Reason: {reason}',
+    'autoModeDiagnostics.reason': 'Reason: {reason}',
     'autoModeDiagnostics.source.classifierConfirm':
       'The LLM explicitly requested confirmation for this call.',
     'autoModeDiagnostics.source.classifierFailure':
@@ -2583,6 +2585,8 @@ export const messages = {
     'files.noSearchResults': '没有匹配文件。',
     'files.backToSidebar': '返回侧栏',
     'conversation.emptyPrompt': '在下方输入提示词开始。',
+    'conversation.historyRuntimeUnavailable':
+      'Coder Runtime 当前不可用，无法读取该会话正文。历史文件并未损坏，Runtime 恢复后即可查看。',
     'conversation.searchPlaceholder': '在对话中查找...',
     'conversation.previousMatch': '上一个匹配',
     'conversation.previousMatchTitle': '上一个匹配（Shift+Enter）',
@@ -3907,8 +3911,8 @@ export const messages = {
     'sessionTokens.providerComparabilityNote':
       '不同 Provider 的 tokenizer 与缓存字段口径不同。跨模型请比较输入总量和输出；缓存拆分仅反映 Provider 实际返回的字段。',
     'sessionTokens.cacheHitRateTitle': '缓存命中率',
-  'sessionTokens.cacheHitAggregate': '累计',
-  'sessionTokens.cacheHitLatest': '最近一次',
+    'sessionTokens.cacheHitAggregate': '累计',
+    'sessionTokens.cacheHitLatest': '最近一次',
     'sessionTokens.latestProviderCall':
       '最近一次根 Agent 物理请求：{provider}/{model} · 可复用前缀 {count} 条消息',
     'sessionTokens.cacheAffinityActive': '最近一次根 Agent 请求已启用稳定的 Provider 缓存路由。',
@@ -4528,7 +4532,7 @@ export const messages = {
     'permission.risk.high': '高',
     'permission.risk.danger': '危险',
     'autoModeDiagnostics.title': 'Auto[LLM] 决策详情',
-  'autoModeDiagnostics.reason': '理由：{reason}',
+    'autoModeDiagnostics.reason': '理由：{reason}',
     'autoModeDiagnostics.source.classifierConfirm': 'LLM 明确要求对此调用进行确认。',
     'autoModeDiagnostics.source.classifierFailure':
       '分类器未能产生可用决策；这是分类失败后的兜底确认。',

@@ -19,8 +19,11 @@ export interface SessionHistoryPagingState {
   readonly conversationStatus?: 'resolved' | 'partial' | 'ambiguous';
   readonly surface?: 'code' | 'partner';
   readonly hasNewer?: boolean;
+  /** Cause of the current waiting/error cycle: the Coder Runtime is not ready for this
+   * surface. Cleared by ready/data_changed/epoch-reset publishes and re-set by each
+   * runtime_unavailable response, so it never outlives the cycle it describes. */
+  readonly runtimeUnavailable?: boolean;
 }
-
 const IDLE_HISTORY_STATE: SessionHistoryPagingState = {
   phase: 'idle',
   hasMore: false,
@@ -224,6 +227,15 @@ export function historyPhaseAllowsRuntimeObservation(
 
 export function sessionHistoryAllowsRuntimeObservation(sessionId: string): boolean {
   return historyPhaseAllowsRuntimeObservation(sessionHistoryPagingSnapshot(sessionId).phase);
+}
+
+/** Runtime-recovery wakes must also reach the terminal runtime-unavailable error state: the
+ * visible transcript notice promises that history returns with the Runtime, and App-level
+ * runtime edges are its only automatic trigger. */
+function wakableFromRuntimeRecovery(state: SessionHistoryPagingState): boolean {
+  return (
+    state.phase === 'waiting' || (state.phase === 'error' && state.runtimeUnavailable === true)
+  );
 }
 
 /** The paging cache is the sole authority for whether Shell may skip a canonical reload. */
@@ -591,7 +603,7 @@ async function requestHistory(
       publish(sessionId, {
         ...(retainReadyProjection && previous.phase === 'ready'
           ? previous
-          : { ...IDLE_HISTORY_STATE, phase: 'waiting' as const }),
+          : { ...IDLE_HISTORY_STATE, phase: 'waiting' as const, runtimeUnavailable: true }),
         ...(surface ? { surface } : {}),
         ...(boundary.conversationStatus !== undefined
           ? { conversationStatus: boundary.conversationStatus }
@@ -680,7 +692,7 @@ export function wakeWaitingSessionHistory(sessionId: string): Promise<void> {
   if (existingWake?.token === activeToken) return existingWake.promise;
   const existingRead = inFlight.get(sessionId);
   if (
-    sessionHistoryPagingSnapshot(sessionId).phase !== 'waiting' &&
+    !wakableFromRuntimeRecovery(sessionHistoryPagingSnapshot(sessionId)) &&
     existingRead?.token !== activeToken
   ) {
     return Promise.resolve();
@@ -693,7 +705,7 @@ export function wakeWaitingSessionHistory(sessionId: string): Promise<void> {
     }
     if (activeTokens.get(sessionId) !== activeToken) return;
     const state = sessionHistoryPagingSnapshot(sessionId);
-    if (state.phase !== 'waiting') return;
+    if (!wakableFromRuntimeRecovery(state)) return;
     clearRetry(sessionId);
     await requestHistory(sessionId, false, state.surface);
   })().finally(() => {
