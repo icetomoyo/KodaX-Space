@@ -97,6 +97,8 @@ import { buildAttachmentPathOverlay } from '../kodax/attachment-path-overlay.js'
 import { issueSessionImageAttachment } from '../window/session-attachment-protocol.js';
 import type {
   AgentsFileMeta,
+  ChannelInput,
+  ChannelOutput,
   InputArtifact,
   SessionHistoryItem,
   SessionMeta,
@@ -862,6 +864,40 @@ async function ensureCustomProviderRegistered(providerId: string): Promise<void>
   await registerKodaxCustomProviders(providerConfigStore.listCustom());
 }
 
+export async function forkSessionForIpc(
+  input: ChannelInput<'session.fork'>,
+): Promise<ChannelOutput<'session.fork'>> {
+  if (!kodaxHost.get(input.sessionId)) {
+    await kodaxHost.tryResume(input.sessionId);
+  }
+  assertSafePagedHistoryMutation(input.sessionId, input.historyBoundary);
+  const result = await kodaxHost.fork(
+    input.sessionId,
+    input.forkPointTurnIdx,
+    input.historyBoundary,
+  );
+  if (!result) {
+    throw new Error(`session not found: ${input.sessionId}`);
+  }
+  return result;
+}
+
+export async function rewindSessionForIpc(
+  input: ChannelInput<'session.rewind'>,
+): Promise<ChannelOutput<'session.rewind'>> {
+  if (!kodaxHost.get(input.sessionId)) {
+    await kodaxHost.tryResume(input.sessionId);
+  }
+  assertSafePagedHistoryMutation(input.sessionId, input.historyBoundary);
+  const result = await kodaxHost.rewind(
+    input.sessionId,
+    input.rewindPastTurnIdx,
+    input.historyBoundary,
+  );
+  await truncateLocalNoticesAfterSuccessfulRewind(input, result);
+  return result;
+}
+
 export function registerSessionChannels(options: SessionChannelsOptions = {}): void {
   // session.create
   registerChannel('session.create', async (input) => {
@@ -1319,34 +1355,14 @@ export function registerSessionChannels(options: SessionChannelsOptions = {}): v
   // 新 ManagedSession 入 in-memory map。events 复制仍由 renderer 完成（重启后从
   // SDK loadSession 重放是 v0.1.7+ 优化）。
   registerChannel('session.fork', (input) =>
-    runWithCoderAdmission(options, async () => {
-      assertSafePagedHistoryMutation(input.sessionId, input.historyBoundary);
-      const result = await kodaxHost.fork(
-        input.sessionId,
-        input.forkPointTurnIdx,
-        input.historyBoundary,
-      );
-      if (!result) {
-        throw new Error(`session not found: ${input.sessionId}`);
-      }
-      return result;
-    }),
+    runWithCoderAdmission(options, () => forkSessionForIpc(input)),
   );
 
   // session.rewind — FEATURE_038 (持久化)
   // v0.1.6: main 端 cancel in-flight (await)，然后 SDK rewindSession 写盘截断；
   // renderer 截断 events 数组。
   registerChannel('session.rewind', (input) =>
-    runWithCoderAdmission(options, async () => {
-      assertSafePagedHistoryMutation(input.sessionId, input.historyBoundary);
-      const result = await kodaxHost.rewind(
-        input.sessionId,
-        input.rewindPastTurnIdx,
-        input.historyBoundary,
-      );
-      await truncateLocalNoticesAfterSuccessfulRewind(input, result);
-      return result;
-    }),
+    runWithCoderAdmission(options, () => rewindSessionForIpc(input)),
   );
 
   // session.agentsMd — FEATURE_034
