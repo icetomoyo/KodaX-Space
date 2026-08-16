@@ -646,26 +646,32 @@ export function ContextWindowIndicator({
                   })}
                 </div>
               )}
-              <div className="mt-1.5 text-[10px] leading-relaxed text-fg-muted">
-                {t('sessionTokens.providerComparabilityNote')}
-              </div>
               {(aggregateCacheHitPercent !== undefined || latestCacheHitPercent !== undefined) && (
                 <div
                   data-testid="session-token-cache-rates"
-                  className="mt-1.5 text-[10px] text-fg-muted"
+                  className="mt-1.5 rounded-md border border-ok/40 bg-ok/10 px-2.5 py-2"
                 >
-                  {t('sessionTokens.cacheHitRates', {
-                    aggregate:
-                      aggregateCacheHitPercent === undefined
-                        ? '—'
-                        : `${aggregateCacheHitPercent.toFixed(1)}%`,
-                    latest:
-                      latestCacheHitPercent === undefined
-                        ? '—'
-                        : `${latestCacheHitPercent.toFixed(1)}%`,
-                  })}
+                  <div className="flex items-center gap-1.5 text-[10px] font-medium text-fg-secondary">
+                    <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-ok" />
+                    {t('sessionTokens.cacheHitRateTitle')}
+                  </div>
+                  <div className="mt-1.5 flex items-end gap-4">
+                    <CacheRateStat
+                      testId="session-token-cache-rate-aggregate"
+                      label={t('sessionTokens.cacheHitAggregate')}
+                      value={aggregateCacheHitPercent}
+                    />
+                    <CacheRateStat
+                      testId="session-token-cache-rate-latest"
+                      label={t('sessionTokens.cacheHitLatest')}
+                      value={latestCacheHitPercent}
+                    />
+                  </div>
                 </div>
               )}
+              <div className="mt-1.5 text-[10px] leading-relaxed text-fg-muted">
+                {t('sessionTokens.providerComparabilityNote')}
+              </div>
               {latestProviderCacheDiagnostic && (
                 <div className="mt-1 text-[10px] text-fg-muted">
                   {t('sessionTokens.latestProviderCall', {
@@ -763,6 +769,25 @@ function TokenUsageGlyph({
         <path d="M3.75 8v3c0 1.16 1.9 2.1 4.25 2.1s4.25-.94 4.25-2.1V8" />
       </svg>
     </span>
+  );
+}
+
+function CacheRateStat({
+  label,
+  value,
+  testId,
+}: {
+  readonly label: string;
+  readonly value: number | undefined;
+  readonly testId: string;
+}): JSX.Element {
+  return (
+    <div className="min-w-0" data-testid={testId}>
+      <div className="font-mono text-[15px] leading-none font-semibold text-fg-primary">
+        {value === undefined ? '—' : `${value.toFixed(1)}%`}
+      </div>
+      <div className="mt-1 text-[9px] leading-none text-fg-muted">{label}</div>
+    </div>
   );
 }
 

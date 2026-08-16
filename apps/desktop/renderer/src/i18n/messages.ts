@@ -1692,7 +1692,9 @@ export const messages = {
       'The Provider reported {tokens} cache-creation input tokens; they are already included in total input.',
     'sessionTokens.providerComparabilityNote':
       'Providers tokenize and expose cache fields differently. Compare total input and output across models; cache splits reflect only Provider-reported fields.',
-    'sessionTokens.cacheHitRates': 'Cache hit rate: aggregate {aggregate} · latest {latest}',
+    'sessionTokens.cacheHitRateTitle': 'Cache hit rate',
+  'sessionTokens.cacheHitAggregate': 'Aggregate',
+  'sessionTokens.cacheHitLatest': 'Latest',
     'sessionTokens.latestProviderCall':
       'Latest root physical request: {provider}/{model} · {count} cached-prefix messages',
     'sessionTokens.cacheAffinityActive':
@@ -3904,7 +3906,9 @@ export const messages = {
       'Provider 报告了 {tokens} 个缓存创建输入 token；它们已经计入输入总量。',
     'sessionTokens.providerComparabilityNote':
       '不同 Provider 的 tokenizer 与缓存字段口径不同。跨模型请比较输入总量和输出；缓存拆分仅反映 Provider 实际返回的字段。',
-    'sessionTokens.cacheHitRates': '缓存命中率：累计 {aggregate} · 最近一次 {latest}',
+    'sessionTokens.cacheHitRateTitle': '缓存命中率',
+  'sessionTokens.cacheHitAggregate': '累计',
+  'sessionTokens.cacheHitLatest': '最近一次',
     'sessionTokens.latestProviderCall':
       '最近一次根 Agent 物理请求：{provider}/{model} · 可复用前缀 {count} 条消息',
     'sessionTokens.cacheAffinityActive': '最近一次根 Agent 请求已启用稳定的 Provider 缓存路由。',
