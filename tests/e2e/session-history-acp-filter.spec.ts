@@ -109,6 +109,26 @@ test('ACP fixtures cannot hide real history and show-all searches beyond the rec
       secondary.data.sessions.every((session) => session.projectRoot === secondaryProjectDir),
     ).toBe(true);
 
+    // Windows can deliver the SDK's file watcher event after the bounded
+    // sidebar refresh. Wait for the same unbounded project query used by the
+    // picker to observe the complete fixture before opening the modal.
+    await expect
+      .poll(
+        () =>
+          space.page
+            .evaluate(async (projectRoot) => {
+              const result = await window.kodaxSpace.invoke('session.list', {
+                projectRoot,
+                surface: 'code',
+                limit: 50_000,
+              });
+              return result.ok ? result.data.sessions.length : -1;
+            }, projectDir)
+            .catch(() => -1),
+        { timeout: 30_000 },
+      )
+      .toBe(realSessionCount);
+
     const secondaryProjectButton = space.page
       .getByTestId('left-sidebar')
       .getByRole('button', { name: 'secondary-workspace', exact: true });
