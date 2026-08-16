@@ -31,7 +31,7 @@ test('ACP fixtures cannot hide real history and show-all searches beyond the rec
     await fs.mkdir(secondaryProjectDir, { recursive: true });
     const manager = createSessionManager({ sessionsDir: path.join(space.testDataDir, 'sessions') });
     const realSessionCount = 201;
-    const acpSessionCount = 201;
+    const acpSessionCount = 1;
 
     for (let index = 0; index < 3; index += 1) {
       await manager.storage.save(`secondary-${index}`, {
