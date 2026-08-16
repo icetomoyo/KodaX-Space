@@ -126,8 +126,10 @@ test('ACP fixtures cannot hide real history and show-all searches beyond the rec
     await expect(dialog).toBeVisible();
     // Opening the picker intentionally expands the bounded 200-row sidebar
     // snapshot into a complete project scan. Under the full serial E2E suite,
-    // mapping 205 persisted sidecars can exceed the global 5s locator timeout.
-    await expect(dialog.getByText('205', { exact: true })).toBeVisible({ timeout: 30_000 });
+    // mapping 205 persisted sidecars can exceed the global 5s locator timeout;
+    // under the full Windows shard it can also take longer than the default
+    // 30s while the packaged host is still draining the serial suite.
+    await expect(dialog.getByText('205', { exact: true })).toBeVisible({ timeout: 90_000 });
     await dialog
       .getByRole('textbox', { name: 'Session filter query' })
       .fill('Oldest hidden session');
