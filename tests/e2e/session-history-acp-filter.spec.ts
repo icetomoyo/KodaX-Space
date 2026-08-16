@@ -25,11 +25,17 @@ test('ACP fixtures cannot hide real history and show-all searches beyond the rec
       )
       .toBe(true);
 
-    const projectDir = path.join(space.testDataDir, 'workspace');
-    const secondaryProjectDir = path.join(space.testDataDir, 'secondary-workspace');
+    // Windows runners can expose the temp directory through an alias. KodaX's
+    // precise project scan compares canonical project identities, so keep the
+    // fixture paths identical to the filesystem's resolved representation.
+    const canonicalTestDataDir = await fs.realpath(space.testDataDir);
+    const projectDir = path.join(canonicalTestDataDir, 'workspace');
+    const secondaryProjectDir = path.join(canonicalTestDataDir, 'secondary-workspace');
     await fs.mkdir(projectDir, { recursive: true });
     await fs.mkdir(secondaryProjectDir, { recursive: true });
-    const manager = createSessionManager({ sessionsDir: path.join(space.testDataDir, 'sessions') });
+    const manager = createSessionManager({
+      sessionsDir: path.join(canonicalTestDataDir, 'sessions'),
+    });
     const realSessionCount = 201;
     const acpSessionCount = 1;
 
