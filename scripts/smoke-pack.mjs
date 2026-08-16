@@ -422,10 +422,10 @@ async function checkAsarContents(asarPath) {
     );
   }
   ok(`app.asar contains exact @kodax-ai/kodax@${KODAX_VERSION}`);
-  if (packagedKodax.kodaxRuntimeContracts?.actorSettlementConvergence !== 1) {
-    fail('packaged KodaX metadata does not advertise actorSettlementConvergence v1');
+  if (packagedKodax.kodaxRuntimeContracts?.actorSettlementConvergence !== 2) {
+    fail('packaged KodaX metadata does not advertise actorSettlementConvergence v2');
   }
-  ok('packaged KodaX metadata advertises actorSettlementConvergence v1');
+  ok('packaged KodaX metadata advertises actorSettlementConvergence v2');
   if (packagedKodax.kodaxRuntimeContracts?.sessionEventJournal !== 1) {
     fail('packaged KodaX metadata does not advertise sessionEventJournal v1');
   }
@@ -1119,7 +1119,7 @@ function daemonRequirements() {
   return {
     daemonManagement: 1,
     daemonOrphanExit: 1,
-    actorSettlementConvergence: 1,
+    actorSettlementConvergence: 2,
     managedRunDurability: 1,
     runtimeEventCoalescing: 1,
     sandboxRuntime: 3,
@@ -1275,9 +1275,9 @@ try {
   if (KODAX_RUNTIME_SDK_CAPABILITIES?.daemonOrphanExit !== 1) {
     throw new Error('packaged SDK does not advertise daemonOrphanExit v1 before auto-start');
   }
-  if (KODAX_RUNTIME_SDK_CAPABILITIES?.actorSettlementConvergence !== 1) {
+  if (KODAX_RUNTIME_SDK_CAPABILITIES?.actorSettlementConvergence !== 2) {
     throw new Error(
-      'packaged SDK does not advertise actorSettlementConvergence v1 before auto-start',
+      'packaged SDK does not advertise actorSettlementConvergence v2 before auto-start',
     );
   }
   if (KODAX_RUNTIME_SDK_CAPABILITIES?.daemonShutdownVerification !== 1) {
