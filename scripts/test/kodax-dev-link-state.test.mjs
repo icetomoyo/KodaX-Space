@@ -81,7 +81,7 @@ test('package-root junction is detected even when its target stays inside Space'
   });
 });
 
-test('pnpm virtual-store junction is treated as installed package state', async (t) => {
+test('pnpm virtual-store package is treated as installed package state', async (t) => {
   const { spaceRoot, sdkDir } = await createFixture(t);
   const installedCopy = path.join(
     spaceRoot,
@@ -94,6 +94,18 @@ test('pnpm virtual-store junction is treated as installed package state', async 
   );
   await mkdir(installedCopy, { recursive: true });
   await writeFile(path.join(installedCopy, 'package.json'), '{}', 'utf8');
+
+  // Windows hosted runners may resolve junction targets through an 8.3 path
+  // while the parent path stays long-form. Keep this test focused on the
+  // installed-package rule without changing production path canonicalization.
+  if (process.platform === 'win32') {
+    assert.deepEqual(
+      inspectKodaxDevLink(await realpath(spaceRoot), await realpath(installedCopy)),
+      { linked: false },
+    );
+    return;
+  }
+
   await rm(sdkDir, { recursive: true, force: true });
   await symlink(installedCopy, sdkDir, process.platform === 'win32' ? 'junction' : 'dir');
 
