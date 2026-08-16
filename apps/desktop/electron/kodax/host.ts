@@ -976,9 +976,8 @@ class KodaXHost {
    *      入 in-memory map（成为 active session，可以继续 send / cancel）
    *   3. 新 ManagedSession 用 SDK 返回的 sessionId（保证盘 ↔ 内存一致）
    *
-   * **source 必须是 in-flight**：v0.1.6 不支持对纯 historical session fork（要那样
-   * 用户应先 select 让 session 加载到内存）。这是 F033 接 F038 后的合理限制——
-   * 用户在 sidebar 点 historical session 之前 desktop 不知道它的运行时设置。
+   * **source 必须是 in-flight**：这是 host mutation 的内部前置条件。IPC 层会先用
+   * tryResume 恢复 persisted-only Session，再把同一精确 history boundary 交给这里。
    *
    * Returns null 当 source 不在 in-memory，或 SDK fork 失败。
    */
@@ -1111,8 +1110,7 @@ class KodaXHost {
    * FEATURE_038 (持久化): 把 session 回退到 rewindPastTurnIdx。
    *
    * 行为：
-   *   1. 验证 session 在 in-memory（v0.1.6 暂不支持对纯 historical session rewind——
-   *      同 fork 限制，用户得先 select 让它加载到内存）
+   *   1. 验证 session 在 in-memory（IPC 层先用 tryResume 恢复 persisted-only Session）
    *   2. cancel in-flight + pending permission/askUser（**必须 await**）
    *   3. SDK rewindSession 写盘截断（lineage active entry 退到前一个 user entry）
    *   4. 推回 lastActivityAt

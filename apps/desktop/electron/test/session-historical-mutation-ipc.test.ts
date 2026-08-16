@@ -26,8 +26,10 @@ const mutableProviderConfigStore = providerConfigStore as unknown as {
 let mockState: MockSessionState;
 let tmpDir = '';
 let runtimeStore: SessionRuntimeStore;
+let originalProviderConfigStore: typeof mutableProviderConfigStore;
 
 beforeEach(async () => {
+  originalProviderConfigStore = { ...mutableProviderConfigStore };
   mockState = installSessionStoreMock();
   const userConfig: KodaxUserConfigImpl = {
     loadConfig: (() => ({ provider: 'mock' })) as never,
@@ -47,11 +49,33 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  await kodaxHost.disposeAll();
-  setUserConfigImpl(null);
-  setSessionRuntimeStoreForTesting(null);
-  mockState.reset();
-  await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => undefined);
+  const cleanupErrors: unknown[] = [];
+  try {
+    await kodaxHost.disposeAll();
+  } catch (error) {
+    cleanupErrors.push(error);
+  }
+  const synchronousCleanups: readonly (() => void)[] = [
+    () => setUserConfigImpl(null),
+    () => setSessionRuntimeStoreForTesting(null),
+    () => mockState.reset(),
+    () => Object.assign(mutableProviderConfigStore, originalProviderConfigStore),
+  ];
+  for (const cleanup of synchronousCleanups) {
+    try {
+      cleanup();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+  }
+  try {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  } catch (error) {
+    cleanupErrors.push(error);
+  }
+  if (cleanupErrors.length > 0) {
+    throw new AggregateError(cleanupErrors, 'Failed to clean up historical Session IPC test');
+  }
 });
 
 test('session.fork resumes a persisted-only Session and preserves its exact history boundary', async () => {
