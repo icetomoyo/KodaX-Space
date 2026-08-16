@@ -889,21 +889,21 @@ import {
   doctorKodaXSandbox,
   getKodaXSandboxCapability,
   runKodaXSandboxed,
+  setupKodaXSandbox,
 } from ${JSON.stringify(sandboxModuleUrl)};
 
 if (process.platform === 'darwin') process.env.TMPDIR = '/tmp';
-const configuredKodaXHome = process.env.KODAX_HOME?.trim();
-if (process.platform === 'win32' && !configuredKodaXHome) {
-  throw new Error(
-    'Windows packaged Shell smoke requires a dedicated KODAX_HOME prepared with '
-      + 'setupKodaXSandbox().',
-  );
+if (process.platform === 'win32') {
+  for (const name of Object.keys(process.env)) {
+    if (name.toLowerCase() === 'psmodulepath') delete process.env[name];
+  }
 }
-const ownsHomeDir = process.platform !== 'win32';
+const configuredKodaXHome = process.env.KODAX_HOME?.trim();
+const ownsHomeDir = process.platform !== 'win32' || !configuredKodaXHome;
 const homeDir = ownsHomeDir
   ? await mkdtemp(path.join(tmpdir(), 'kodax-space-asar-probe-'))
   : path.dirname(path.resolve(configuredKodaXHome));
-process.env.KODAX_HOME ||= path.join(homeDir, '.kodax');
+process.env.KODAX_HOME = ownsHomeDir ? path.join(homeDir, '.kodax') : configuredKodaXHome;
 let runtime;
 let daemonRuntime;
 let providerServer;
@@ -1186,7 +1186,9 @@ try {
       'packaged sandbox facade is not fail-closed: ' + JSON.stringify(sandboxCapability),
     );
   }
-  const sandboxDoctor = await doctorKodaXSandbox({ refresh: true });
+  const sandboxDoctor = process.platform === 'win32' && ownsHomeDir
+    ? await setupKodaXSandbox()
+    : await doctorKodaXSandbox({ refresh: true });
   const sandboxPathFailure = sandboxDoctor.diagnostics.find((diagnostic) =>
     /(?:(?:ENOENT|EACCES|EPERM).*(?:srt-win|apply-seccomp)|(?:srt-win|apply-seccomp).*(?:ENOENT|EACCES|EPERM)|app\\.asar.*(?:srt-win|apply-seccomp|vendor)|(?:srt-win|apply-seccomp|vendor).*app\\.asar)/i.test(
       diagnostic,
@@ -1527,13 +1529,15 @@ try {
   }
   await runtime?.close().catch(() => undefined);
   await closeProviderServer().catch(() => undefined);
-  if (ownsHomeDir) {
+  if (ownsHomeDir && process.platform !== 'win32') {
     await rm(homeDir, {
       recursive: true,
       force: true,
       maxRetries: 5,
       retryDelay: 100,
     }).catch(() => undefined);
+  } else if (ownsHomeDir) {
+    console.error('KODAX_PACK_SMOKE_HOME_RETAINED=' + homeDir);
   }
   if (daemonBootstrapTail) {
     console.error('KODAX_DAEMON_BOOTSTRAP_TAIL\\n' + daemonBootstrapTail);

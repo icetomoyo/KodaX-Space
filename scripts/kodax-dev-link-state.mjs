@@ -42,13 +42,21 @@ export function inspectKodaxDevLink(spaceRoot, sdkDir) {
     return { linked: false };
   }
 
-  // A package-root reparse point is development state even when it happens to
+  // pnpm installs Registry packages through a junction into its workspace-local
+  // virtual store. That target remains inside Space and is safe for packaging;
+  // treating it as a development link would let npm ci delete the saved target
+  // before pack.mjs tries to restore it.
+  const pnpmVirtualStore = path.join(spaceRoot, 'node_modules', '.pnpm');
+  const isPnpmInstalledPackage = isInside(pnpmVirtualStore, sdkRealpath);
+
+  // Other package-root reparse points are development state even when they
   // target another directory under the Space checkout. Compare the SDK realpath
   // to the path beneath its canonical parent so an ancestor alias such as
   // macOS /var -> /private/var is not mistaken for a package-root link.
   if (
-    sdkLstat.isSymbolicLink() ||
-    path.resolve(sdkRealpath) !== path.resolve(sdkPathFromCanonicalParent)
+    !isPnpmInstalledPackage &&
+    (sdkLstat.isSymbolicLink() ||
+      path.resolve(sdkRealpath) !== path.resolve(sdkPathFromCanonicalParent))
   ) {
     return {
       linked: true,
