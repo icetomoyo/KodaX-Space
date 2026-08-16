@@ -97,9 +97,18 @@ test('pnpm virtual-store junction is treated as installed package state', async 
   await rm(sdkDir, { recursive: true, force: true });
   await symlink(installedCopy, sdkDir, process.platform === 'win32' ? 'junction' : 'dir');
 
-  // macOS exposes /var through /private/var. Use canonical fixture paths so
-  // this test exercises the virtual-store rule instead of that alias.
-  const canonicalSpaceRoot = await realpath(spaceRoot);
+  // macOS exposes /var through /private/var, while Windows junctions can
+  // resolve through an 8.3 short path. Use the actual virtual-store target
+  // to derive canonical fixture paths on both runners.
+  const canonicalSpaceRoot = path.resolve(
+    await realpath(installedCopy),
+    '..',
+    '..',
+    '..',
+    '..',
+    '..',
+    '..',
+  );
   const canonicalSdkDir = path.join(canonicalSpaceRoot, 'node_modules', '@kodax-ai', 'kodax');
   assert.deepEqual(inspectKodaxDevLink(canonicalSpaceRoot, canonicalSdkDir), { linked: false });
 });
