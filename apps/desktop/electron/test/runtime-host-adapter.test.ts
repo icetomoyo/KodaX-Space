@@ -11758,7 +11758,7 @@ test('observation with an omitted model keeps a concrete provider default for Au
   await adapter.ensureObserved('s_auto_default_model');
   await waitForTest(() => kodaxHost.get('s_auto_default_model')?.reasoningMode === 'deep');
 
-  assert.equal(kodaxHost.get('s_auto_default_model')?.model, 'glm-5.2');
+  assert.equal(kodaxHost.get('s_auto_default_model')?.model, 'glm-5.3');
   assert.equal(kodaxHost.get('s_auto_default_model')?.reasoningMode, 'deep');
   await adapter.close();
 });

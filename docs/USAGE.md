@@ -5,11 +5,14 @@
 > 在生命周期事件前持久化为 canonical Run。Space 绑定确认的 `runId` 和流式 `turnId`，不以版本号代替能力协商。
 > 未显式设置 Auto LLM timeout 时，SDK 使用首次 `45000ms`、重试 `90000ms`。
 
+> **当前源码基线（2026-08-16）**：root/Desktop/lockfile 精确锁定 npm Registry
+> KodaX `0.7.88`，并要求 SDK 与 daemon 提供 `actorSettlementConvergence:2`。
+
 > 面向源码使用者、贡献者和发布维护者。普通用户请阅读[用户使用手册](USER_MANUAL.zh-CN.md)。
 >
 > 当前 `main` 对 Space 管理的 daemon 要求专用的 `daemonOrphanExit:1` 能力；
 > 不使用 KodaX 语义版本或 Auto-mode guardrail 版本代替生命周期能力判断。
-> 当前版本为 KodaX Space [`v0.1.41`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.41) / 精确 Registry KodaX `0.7.87`。
+> 当前已发布版本为 KodaX Space [`v0.1.41`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.41) / 精确 Registry KodaX `0.7.87`；当前源码构建使用精确 Registry KodaX `0.7.88`。
 > 本版本包含 v0.1.39 的多 Session 恢复、精确 run/turn history/live 对齐、Session journal epoch 隔离、完整退出恢复、Agent progress/同 owner Stop 收敛，以及 sandbox v3、Issue 128 打包 Shell、Issue 180 owner reconciliation 和对应的 builtin/manual/Node/build/打包工具链维护。
 
 ## 1. 环境要求
@@ -37,7 +40,7 @@ Space 管理的 daemon 必须返回 `daemonOrphanExit:1`，并继续要求
 `permission:grant-admin`、`interruptInput:1`、`actorControlPlane:1`、
 `contextCompaction:3`、`transcriptPaging:1`、`transcriptSearch:1`、
 `skillLearningLoop:1`、`integrationConfigResilience:1` 和
-`runtimeAutoModeGuardrail:4`。`@kodax-ai/kodax/sandbox` 通过独立 facade probe
+`runtimeAutoModeGuardrail:4`、`actorSettlementConvergence:2`。`@kodax-ai/kodax/sandbox` 通过独立 facade probe
 验证，不能用版本号冒充 backend readiness。不得伪造 lockfile URL/SRI；本地测试包必须
 使用 `kodax-ai-kodax-<version>.tgz` 命名、随 checkout 提供，并由 lockfile SRI 锁定内容。
 普通 `npm run build` 和正式发布入口始终拒绝本地 tgz。

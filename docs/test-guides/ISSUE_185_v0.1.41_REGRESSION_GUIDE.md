@@ -2,7 +2,7 @@
 
 ## Automated checks
 
-1. Build KodaX commit `70a030f2`, run `npm run link:kodax`, and confirm
+1. Install the exact Registry package `@kodax-ai/kodax@0.7.88` and confirm
    `KODAX_RUNTIME_SDK_CAPABILITIES.actorSettlementConvergence === 2`.
 2. From `apps/desktop`, run:
    `node --test --test-concurrency=1 --import tsx electron/test/composeMessages.test.ts electron/test/session-complete-notification.test.ts electron/test/app-store-runtime-projection.test.ts electron/test/coder-daemon-projection.test.ts electron/test/runtime-host-adapter.test.ts`.
@@ -25,5 +25,4 @@
 1. Start Space with an SDK or daemon advertising `actorSettlementConvergence:1`.
 2. Confirm Coder startup fails with an actionable v2 compatibility message rather than running on
    the old settlement contract.
-3. Restart with KodaX commit `70a030f2` or a published package advertising v2 and confirm Coder
-   connects normally.
+3. Restart with the exact npm Registry KodaX 0.7.88 package and confirm Coder connects normally.

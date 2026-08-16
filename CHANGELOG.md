@@ -14,7 +14,18 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ## [Unreleased]
 
-_No changes yet._
+### Changed
+
+- Root and Desktop now pin the npm-published `@kodax-ai/kodax@0.7.88` Registry
+  tarball. Space requires `actorSettlementConvergence:2`, and the `zai-coding`
+  and `ark-coding` catalog plus disaster fallbacks follow the new GLM-5.3
+  defaults.
+
+### Fixed
+
+- The published SDK now supplies the phased canonical Actor settlement contract
+  required by Space, so legal storage admission waits no longer appear as an
+  ambiguous failed Session while renderer Run/Turn correlation remains exact.
 
 ---
 

@@ -142,7 +142,7 @@ test('createSession resolves a concrete provider default model for Runtime side 
     projectRoot: '/r',
     provider: 'zai-coding',
   });
-  assert.equal(kodaxHost.get(sessionId)?.model, 'glm-5.2');
+  assert.equal(kodaxHost.get(sessionId)?.model, 'glm-5.3');
 });
 
 test('list: enumerates all created sessions', () => {

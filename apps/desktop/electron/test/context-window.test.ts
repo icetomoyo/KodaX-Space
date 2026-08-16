@@ -109,6 +109,6 @@ test('real SDK: resolveModelCapabilities default-model context bug is FIXED in 0
   assert.equal(
     wasBuggy?.contextWindow,
     1_000_000,
-    'zhipu-coding (default=glm-5.2) now reads model-level 1M too — the 0.7.58 default-model bug is fixed',
+    'zhipu-coding with explicit glm-5.2 reads model-level 1M — the 0.7.58 default-model bug is fixed',
   );
 });

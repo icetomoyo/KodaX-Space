@@ -5,11 +5,12 @@
 > managed-Run `runId`/`turnId`，不维护第二份 Run 状态。未配置的 Auto LLM classifier timeout
 > 使用 KodaX 的首次 45 秒、重试 90 秒默认值。
 
-> **2026-08-14 当前源码增量**：root/Desktop 使用精确 Registry KodaX
-> `0.7.87`，Coder 在自动启动和连接后均要求 `sandboxRuntime:3`。Runtime Shell
-> 采用 sandbox-first 与普通权限 fallback，不重放可能已启动的命令。
+> **2026-08-16 当前源码增量**：root/Desktop 使用精确 Registry KodaX
+> `0.7.88`，Coder 在自动启动和连接后要求 `sandboxRuntime:3` 与
+> `actorSettlementConvergence:2`。Runtime Shell 采用 sandbox-first 与普通权限 fallback，
+> Actor settlement 只把 canonical replacement 结果未知视为提交歧义。
 
-> Last updated: 2026-08-14
+> Last updated: 2026-08-16
 > Status: 长期产品方向文档。当前正式发布基线为 KodaX Space 0.1.41（package 0.1.41）/ 精确 Registry KodaX 0.7.87。v0.1.41 在既有 Runtime owner、canonical Actor/Turn、精确 history/live 与 compaction、完整物理请求诊断、F140-F142、可配置 Shell、独立 integration 配置和正式打包门禁基础上，继续收口 sandboxRuntime v3、Issue 128 打包链路和 Issue 180 owner reconciliation。生命周期支持仍按能力协商，不通过 SemVer 推断；Issue 133 的 macOS/Linux process acceptance/cleanup retry gap 和 F138 完整 OS 隔离继续保持未完成。已交付能力与边界以 [USER_MANUAL.zh-CN.md](USER_MANUAL.zh-CN.md)、[KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md) 和 [FEATURE_LIST.md](FEATURE_LIST.md) 为准。
 > 对标：Anthropic Claude Desktop（Cowork / Code 双面板）+ OpenAI Codex Desktop App（多 agent 本机壳）
 
@@ -572,29 +573,29 @@ File panel 内点击 git diff
 
 ### 9.2 当前 0.1.x 版本链
 
-| Version lane | Outcome                                                                                                                           |
-| ------------ | --------------------------------------------------------------------------------------------------------------------------------- |
-| `v0.1.31`    | 已交付 Runtime/platform trust、`app://space`、redacted diagnostics 与 typed semantic actions                                      |
-| `v0.1.32`    | Shared Coder daemon/live state，以及 Space-owned Partner 本地 Sources、稳定引用、自动 grounded recall                             |
-| `v0.1.33`    | KodaX 0.7.77 Runtime/Actor/history/usage 稳定化、Shell 控制与 F140 可配置关闭行为（已发布）                                       |
-| `v0.1.34`    | KodaX 0.7.78 Runtime 安全、integration resilience、Auto v4、可见彻底退出/orphan recovery、sandbox helper 打包、启动与历史回放加固 |
-| `v0.1.35`    | Learned Skill Safety Surface；复用已发布 `learningCenter:1` + `skillLearningLoop:1`，不建设超出契约的多 carrier Learning Center   |
-| `v0.1.36`    | KodaX 0.7.82、活动 Session 输入准入、history/live 对齐、跨 Session 恢复隔离与发布文档收口                                         |
-| `v0.1.37`    | KodaX 0.7.83、多 Session 恢复、安全退出恢复与发布文档同步                                                                         |
-| `v0.1.38`    | KodaX 0.7.84、Agent progress/同 owner Stop 收敛、Session 重新激活恢复、图标打包与发布文档同步                                     |
-| `v0.1.39`    | KodaX 0.7.85、Actor settlement 自动收敛、unknown after-turn、精确 Stop、输入/历史保留与 Session journal epoch 隔离                |
-| `v0.1.40`    | KodaX 0.7.86、sandboxRuntime v3、Issue 128 打包 Shell、Issue 180 stale owner 恢复与完整发布文档同步                          |
-| `v0.1.41`    | Latest KodaX 0.7.87 alignment, provider recovery transcript reconciliation, GLM-5.3 defaults, and complete release/manual documentation synchronization
-| `v0.1.42-v0.1.60` | 维护与稳定化预留；`v0.1.41` 之后无 feature 分配                                                                              |
-| `v0.1.61`    | F137 中文优先 DOCX/PDF/XLSX/PPTX builtin 与 F139 语义 UI 精修                                                                     |
-| `v0.1.64`    | Partner composer-first Skill workspace                                                                                            |
-| `v0.1.66`    | Partner hybrid retrieval/evidence ranking 与 curated knowledge lifecycle                                                          |
-| `v0.1.67`    | F129 Partner Presentation Project：复用 F137 PPTX format service，增加模板优先 Studio、真实预览和目标 Office 引擎验证             |
-| `v0.1.68`    | Memory Agent Desktop Host；硬门槛为已发布、兼容的 KX-F260 contract                                                                |
-| `v0.1.70`    | Partner knowledge freshness、conflict 与 access integrity                                                                         |
-| `v0.1.71`    | Partner knowledge integrity 稳定化预留                                                                                            |
-| `v0.1.72`    | Localization、beta/release diagnostics、distribution trust 与 Partner knowledge quality                                           |
-| `v0.1.73`    | 0.1.x patch/RC reserve                                                                                                            |
+| Version lane      | Outcome                                                                                                                                                 |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v0.1.31`         | 已交付 Runtime/platform trust、`app://space`、redacted diagnostics 与 typed semantic actions                                                            |
+| `v0.1.32`         | Shared Coder daemon/live state，以及 Space-owned Partner 本地 Sources、稳定引用、自动 grounded recall                                                   |
+| `v0.1.33`         | KodaX 0.7.77 Runtime/Actor/history/usage 稳定化、Shell 控制与 F140 可配置关闭行为（已发布）                                                             |
+| `v0.1.34`         | KodaX 0.7.78 Runtime 安全、integration resilience、Auto v4、可见彻底退出/orphan recovery、sandbox helper 打包、启动与历史回放加固                       |
+| `v0.1.35`         | Learned Skill Safety Surface；复用已发布 `learningCenter:1` + `skillLearningLoop:1`，不建设超出契约的多 carrier Learning Center                         |
+| `v0.1.36`         | KodaX 0.7.82、活动 Session 输入准入、history/live 对齐、跨 Session 恢复隔离与发布文档收口                                                               |
+| `v0.1.37`         | KodaX 0.7.83、多 Session 恢复、安全退出恢复与发布文档同步                                                                                               |
+| `v0.1.38`         | KodaX 0.7.84、Agent progress/同 owner Stop 收敛、Session 重新激活恢复、图标打包与发布文档同步                                                           |
+| `v0.1.39`         | KodaX 0.7.85、Actor settlement 自动收敛、unknown after-turn、精确 Stop、输入/历史保留与 Session journal epoch 隔离                                      |
+| `v0.1.40`         | KodaX 0.7.86、sandboxRuntime v3、Issue 128 打包 Shell、Issue 180 stale owner 恢复与完整发布文档同步                                                     |
+| `v0.1.41`         | Latest KodaX 0.7.87 alignment, provider recovery transcript reconciliation, GLM-5.3 defaults, and complete release/manual documentation synchronization |
+| `v0.1.42-v0.1.60` | 维护与稳定化预留；`v0.1.41` 之后无 feature 分配                                                                                                         |
+| `v0.1.61`         | F137 中文优先 DOCX/PDF/XLSX/PPTX builtin 与 F139 语义 UI 精修                                                                                           |
+| `v0.1.64`         | Partner composer-first Skill workspace                                                                                                                  |
+| `v0.1.66`         | Partner hybrid retrieval/evidence ranking 与 curated knowledge lifecycle                                                                                |
+| `v0.1.67`         | F129 Partner Presentation Project：复用 F137 PPTX format service，增加模板优先 Studio、真实预览和目标 Office 引擎验证                                   |
+| `v0.1.68`         | Memory Agent Desktop Host；硬门槛为已发布、兼容的 KX-F260 contract                                                                                      |
+| `v0.1.70`         | Partner knowledge freshness、conflict 与 access integrity                                                                                               |
+| `v0.1.71`         | Partner knowledge integrity 稳定化预留                                                                                                                  |
+| `v0.1.72`         | Localization、beta/release diagnostics、distribution trust 与 Partner knowledge quality                                                                 |
+| `v0.1.73`         | 0.1.x patch/RC reserve                                                                                                                                  |
 
 KX-F260/F266 未按时发布时，Space 调换 feature lane，不绕过 capability gate。
 

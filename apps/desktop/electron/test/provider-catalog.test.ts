@@ -125,26 +125,32 @@ test('apiKeyEnv values match KodaX upstream catalog (env var naming convention)'
   }
 });
 
-test('zhipu-coding catalog tracks the KodaX 0.7.87 GLM-5.3 default', () => {
+test('zhipu-coding catalog tracks the KodaX 0.7.88 GLM-5.3 default', () => {
   const provider = getBuiltin('zhipu-coding');
   assert.ok(provider);
   assert.equal(provider.defaultModel, 'glm-5.3');
   assert.deepEqual(provider.models, ['glm-5.3', 'glm-5.2', 'glm-5-turbo', 'glm-4.7']);
 });
 
-test('zhipu-coding disaster fallback tracks the KodaX 0.7.87 GLM-5.3 default', () => {
+test('zhipu-coding disaster fallback tracks the KodaX 0.7.88 GLM-5.3 default', () => {
   const provider = buildFallbackProviders().find((item) => item.id === 'zhipu-coding');
   assert.ok(provider);
   assert.equal(provider.defaultModel, 'glm-5.3');
   assert.deepEqual(provider.models, ['glm-5.3']);
 });
 
-test('zai-coding catalog (SDK 0.7.58) has anthropic protocol + friendly name, not the raw slug', () => {
+test('KodaX 0.7.88 disaster fallbacks promote GLM-5.3 for overseas coding routes', () => {
+  const providers = buildFallbackProviders();
+  assert.equal(providers.find((item) => item.id === 'zai-coding')?.defaultModel, 'glm-5.3');
+  assert.equal(providers.find((item) => item.id === 'ark-coding')?.defaultModel, 'glm-5.3');
+});
+
+test('zai-coding catalog follows the KodaX 0.7.88 GLM-5.3 default', () => {
   const provider = getBuiltin('zai-coding');
   assert.ok(provider, 'zai-coding must be in the catalog');
   assert.equal(provider.protocol, 'anthropic');
   assert.notEqual(provider.displayName, 'zai-coding'); // must have a friendly override, not the slug
-  assert.equal(provider.defaultModel, 'glm-5.2');
+  assert.equal(provider.defaultModel, 'glm-5.3');
 });
 
 test('ark-coding catalog includes KodaX 0.7.56 GLM and Kimi code models', () => {

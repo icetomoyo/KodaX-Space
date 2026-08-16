@@ -8,7 +8,7 @@
 //
 // ⚠️ 历史坑（"反复出问题"）：不要用 `resolveModelCapabilities(providerId, model).contextWindow`。
 // SDK 0.7.58 有 bug——当请求的 model 恰好等于 provider 的默认 model 时（zhipu-coding /
-// zai-coding 默认就是 glm-5.2），resolveModelCapabilities 返回 provider 级默认 (200k) 而不是
+// 即使显式选择 zai-coding/glm-5.2，resolveModelCapabilities 也必须返回模型级能力，而不是
 // model 级 override (1M)，导致 GLM-5.2 显示 200k。getEffectiveContextWindow(model) 走 model 级，
 // 不受该 bug 影响，且与 runtime compaction 窗口一致。见 context-window.test.ts 回归守卫。
 

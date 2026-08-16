@@ -1,8 +1,8 @@
 # Known Issues
 
-Last Updated: 2026-08-15
+Last Updated: 2026-08-16
 
-> Historical issue details are preserved as investigation evidence. Resolved items older than 30 days move to [ISSUES_ARCHIVED.md](ISSUES_ARCHIVED.md) without losing their investigation record. The latest published Space [`v0.1.41`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.41) baseline uses exact npm Registry KodaX 0.7.87 and requires `sandboxRuntime:3`. Start from the [documentation hub](README.md) for current behavior and status.
+> Historical issue details are preserved as investigation evidence. Resolved items older than 30 days move to [ISSUES_ARCHIVED.md](ISSUES_ARCHIVED.md) without losing their investigation record. The latest published Space [`v0.1.41`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.41) artifact used KodaX 0.7.87; current source pins exact npm Registry KodaX 0.7.88 and requires `sandboxRuntime:3` plus `actorSettlementConvergence:2`. Start from the [documentation hub](README.md) for current behavior and status.
 
 ## Issue Index
 
@@ -13349,8 +13349,8 @@ renderer that associates already-correct Runtime events by array position or Ses
   while fully originless legacy starts and terminals remain Session-compatible.
 - Space now requires `actorSettlementConvergence:2` from both the installed SDK and connected
   Runtime and requests v2 during connection. This prevents a v2 Space build from silently reusing a
-  v1 daemon. Release packaging still requires an npm package containing KodaX commit `70a030f2`;
-  the currently published 0.7.87 artifact advertises v1.
+  v1 daemon. The exact npm Registry KodaX 0.7.88 package contains commit `70a030f2` and advertises
+  v2, so the source dependency and daemon contract now satisfy this release boundary.
 
 ### Verification
 
@@ -13359,7 +13359,8 @@ renderer that associates already-correct Runtime events by array position or Ses
   The old error stays above the current query and current content retains causal order.
 - Notification tests cover different Run, different Turn in one continued Run, exact-owner success,
   and originless legacy compatibility.
-- Runtime compatibility tests require v2 and reject the previous v1 SDK contract.
+- Runtime compatibility tests require v2, reject the previous v1 SDK contract, and pass against the
+  exact npm Registry KodaX 0.7.88 tarball.
 - See
   [ISSUE_185_v0.1.41_REGRESSION_GUIDE.md](test-guides/ISSUE_185_v0.1.41_REGRESSION_GUIDE.md)
   for packaged-app acceptance coverage.
