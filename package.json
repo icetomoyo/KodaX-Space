@@ -54,7 +54,7 @@
     "smoke:boot": "node e2e/boot-smoke-packaged.mjs"
   },
   "dependencies": {
-    "@kodax-ai/kodax": "0.7.89",
+    "@kodax-ai/kodax": "0.7.90",
     "@napi-rs/keyring": "^1.3.0",
     "better-sqlite3": "12.11.1",
     "react": "19.2.7"
