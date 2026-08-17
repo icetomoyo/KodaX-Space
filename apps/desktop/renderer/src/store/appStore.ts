@@ -5114,6 +5114,28 @@ export const useAppStore = create<AppState>((set) => ({
       // Resolved pages never dedupe: distinct legitimate rows can share a logicalId family.
       const seenAmbiguousLogicalIds =
         options?.conversationStatus === 'ambiguous' ? new Set<string>() : null;
+      // Issue 186 review hardening: among ambiguous candidates sharing a logicalId,
+      // prefer the smallest canonicalIndex when both candidates carry one; mixed or
+      // index-less duplicates keep the first-seen copy (keep-first fallback).
+      const skipAmbiguousItemIndex = new Set<number>();
+      if (seenAmbiguousLogicalIds !== null) {
+        const bestByLogicalId = new Map<string, { index: number; canonicalIndex: number }>();
+        items.forEach((item, index) => {
+          if (!('logicalId' in item) || typeof item.logicalId !== 'string') return;
+          if (!('canonicalIndex' in item) || typeof item.canonicalIndex !== 'number') return;
+          const best = bestByLogicalId.get(item.logicalId);
+          if (best === undefined) {
+            bestByLogicalId.set(item.logicalId, { index, canonicalIndex: item.canonicalIndex });
+            return;
+          }
+          if (item.canonicalIndex < best.canonicalIndex) {
+            skipAmbiguousItemIndex.add(best.index);
+            bestByLogicalId.set(item.logicalId, { index, canonicalIndex: item.canonicalIndex });
+          } else {
+            skipAmbiguousItemIndex.add(index);
+          }
+        });
+      }
       let firstCanonicalHistoricalSentAt: number | undefined;
       for (const item of items) {
         if (item.kind === 'local_notice') continue;
@@ -5210,17 +5232,21 @@ export const useAppStore = create<AppState>((set) => ({
         });
         openUserWithoutAssistant = true;
       };
-      for (const item of items) {
+      for (const [itemIndex, item] of items.entries()) {
         const historyOrigin = transcriptHistoryOrigin(item);
         const itemLogicalId =
           'logicalId' in item && typeof item.logicalId === 'string' ? item.logicalId : undefined;
-        if (itemLogicalId !== undefined && seenAmbiguousLogicalIds !== null) {
+        if (seenAmbiguousLogicalIds !== null) {
           // The daemon's ambiguous projection serves both the re-created and the archived copy of
           // a compaction-retained suffix. logicalId is the documented stable clone identity
-          // (space-ipc-schema session.ts); keep the first candidate and drop proven duplicates
-          // instead of rendering the same logical entry twice.
-          if (seenAmbiguousLogicalIds.has(itemLogicalId)) continue;
-          seenAmbiguousLogicalIds.add(itemLogicalId);
+          // (space-ipc-schema session.ts); drop proven duplicates instead of rendering the same
+          // logical entry twice. When both candidates carry canonicalIndex the pre-scan above
+          // already picked the smaller one; remaining duplicates keep the first-seen copy.
+          if (skipAmbiguousItemIndex.has(itemIndex)) continue;
+          if (itemLogicalId !== undefined) {
+            if (seenAmbiguousLogicalIds.has(itemLogicalId)) continue;
+            seenAmbiguousLogicalIds.add(itemLogicalId);
+          }
         }
         if (item.kind === 'user') {
           if (assistantPendingComplete) flushTurnIfNeeded();

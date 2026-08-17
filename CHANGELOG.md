@@ -38,6 +38,11 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
   restored rows that share a `logicalId` (KodaX compaction double-books a retained suffix as both
   a re-created main entry and an archived island entry) now render exactly once instead of being
   conservatively duplicated across reloads. Resolved pages are never deduped.
+- **Ambiguous dedupe prefers the canonical copy** - When both duplicate candidates of an
+  ambiguous page carry `canonicalIndex`, the renderer keeps the copy with the smaller
+  canonical index even if the archived duplicate arrives first; candidates without a
+  canonical index keep the previous first-seen behavior. The ambiguous-history banner now
+  states that proven duplicates render once instead of claiming all candidates are kept.
 - **Runtime-unavailable transcript notice** - When the Coder Runtime is unavailable and the
   bounded history retry budget is exhausted (`page.outcome:'runtime_unavailable'`), the
   transcript empty state now explains that the Runtime is temporarily unavailable and the

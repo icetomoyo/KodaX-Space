@@ -2476,7 +2476,7 @@ export const messages = {
     'session.historyTruncatedLabel': '{count} earlier history items omitted',
     'session.turnHistoryTruncatedLabel': '{count} items omitted from this long turn',
     'session.historyAmbiguousWarning':
-      'Some legacy history has multiple possible interpretations. All candidates were kept; nothing was guessed or deleted.',
+      'Some legacy history has multiple possible interpretations. Proven duplicates of the same entry are shown once; nothing else was guessed, reordered, or deleted.',
     'session.historyPartialWarning':
       'Some persisted lineage is unavailable. All available conversation records were kept.',
     'session.historyBoundaryUnavailable':
@@ -4678,7 +4678,7 @@ export const messages = {
     'session.historyTruncatedLabel': '已省略较早的 {count} 条历史内容',
     'session.turnHistoryTruncatedLabel': '该超长轮次中有 {count} 条内容已省略',
     'session.historyAmbiguousWarning':
-      '部分旧历史存在多种可能解释。已保留全部候选，没有猜测排序或删除内容。',
+      '部分旧历史存在多种可能解释。同一候选的重复副本已去重为一份显示；除此之外没有猜测排序或删除内容。',
     'session.historyPartialWarning': '部分持久化谱系不可用。已保留当前能够恢复的全部对话记录。',
     'session.historyBoundaryUnavailable': '此操作需要精确的历史边界。请等待历史加载完成后重试。',
     'session.localNoticePersistenceFailed':

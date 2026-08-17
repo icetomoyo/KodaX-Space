@@ -251,3 +251,145 @@ test('an ambiguous canonical page renders each logicalId exactly once', () => {
     'ambiguous dedupe must keep the first candidate (canonicalIndex 0), not the archived duplicate',
   );
 });
+
+test('an ambiguous page with the archived copy first still keeps the canonical candidate', () => {
+  const store = useAppStore.getState();
+  const T0 = CREATED_AT + 6_000;
+  // Same double-booked shape, but the daemon served the archived copy (canonicalIndex 50/51)
+  // BEFORE the re-created main copy (canonicalIndex 0/1). Positional keep-first would render
+  // the archived duplicate; the canonicalIndex pre-scan must prefer the smaller index.
+  const candidates: SessionHistoryItem[] = [
+    {
+      kind: 'user',
+      content: 'do the task',
+      sentAt: T0,
+      entryId: 'entry-arch-u1',
+      logicalId: 'logical-user-2',
+      canonicalIndex: 50,
+      turnId: 'turn-shared-2',
+      turnUserOrdinal: 0,
+    },
+    {
+      kind: 'assistant',
+      text: 'task result',
+      sentAt: T0 + 1,
+      entryId: 'entry-arch-a1',
+      logicalId: 'logical-assistant-2',
+      canonicalIndex: 51,
+      turnId: 'turn-shared-2',
+    },
+    {
+      kind: 'user',
+      content: 'do the task',
+      sentAt: T0 + 2,
+      entryId: 'entry-main-u1',
+      logicalId: 'logical-user-2',
+      canonicalIndex: 0,
+      turnId: 'turn-shared-2',
+      turnUserOrdinal: 0,
+    },
+    {
+      kind: 'assistant',
+      text: 'task result',
+      sentAt: T0 + 3,
+      entryId: 'entry-main-a1',
+      logicalId: 'logical-assistant-2',
+      canonicalIndex: 1,
+      turnId: 'turn-shared-2',
+    },
+  ];
+  store.prependSessionHistory(SID, candidates, CREATED_AT, {
+    replaceLoadedWindow: true,
+    conversationStatus: 'ambiguous',
+  });
+
+  const transcript = visibleTranscript();
+  assert.deepEqual(
+    transcript,
+    ['user:do the task', 'assistant:task result'],
+    `reversed ambiguous candidates must render once: ${JSON.stringify(transcript)}`,
+  );
+  const userRows = useAppStore.getState().userMessagesBySession[SID] ?? [];
+  assert.equal(userRows.length, 1);
+  assert.equal(
+    userRows[0]?.canonicalIndex,
+    0,
+    'canonicalIndex pre-scan must keep the canonical (smaller index) copy even when the archived copy arrives first',
+  );
+});
+
+test('a resolved page never dedupes rows that share a logicalId', () => {
+  const store = useAppStore.getState();
+  const T0 = CREATED_AT + 7_000;
+  // Safety valve: distinct legitimate rows can share a logicalId family on resolved pages
+  // (appStore.ts "Resolved pages never dedupe"). Deduping them would silently drop real history.
+  const candidates: SessionHistoryItem[] = [
+    {
+      kind: 'user',
+      content: 'first send',
+      sentAt: T0,
+      entryId: 'entry-res-u1',
+      logicalId: 'logical-user-3',
+      canonicalIndex: 0,
+      turnId: 'turn-res-1',
+      turnUserOrdinal: 0,
+    },
+    {
+      kind: 'user',
+      content: 'second send',
+      sentAt: T0 + 1,
+      entryId: 'entry-res-u2',
+      logicalId: 'logical-user-3',
+      canonicalIndex: 1,
+      turnId: 'turn-res-2',
+      turnUserOrdinal: 0,
+    },
+  ];
+  store.prependSessionHistory(SID, candidates, CREATED_AT, {
+    replaceLoadedWindow: true,
+  });
+
+  const transcript = visibleTranscript();
+  assert.deepEqual(
+    transcript,
+    ['user:first send', 'user:second send'],
+    `resolved rows sharing a logicalId must both render: ${JSON.stringify(transcript)}`,
+  );
+  const userRows = useAppStore.getState().userMessagesBySession[SID] ?? [];
+  assert.equal(userRows.length, 2, 'resolved pages must never dedupe by logicalId');
+});
+
+test('an ambiguous page with three candidates keeps only the smallest canonicalIndex', () => {
+  const store = useAppStore.getState();
+  const T0 = CREATED_AT + 8_000;
+  // Pins the best-slot displacement: ci=50 wins first, then ci=0 displaces it, then ci=20 loses.
+  const mk = (n: number, canonicalIndex: number, content: string): SessionHistoryItem => ({
+    kind: 'user',
+    content,
+    sentAt: T0 + n,
+    entryId: `entry-three-u${n}`,
+    logicalId: 'logical-user-4',
+    canonicalIndex,
+    turnId: 'turn-three-1',
+    turnUserOrdinal: 0,
+  });
+  const candidates = [
+    mk(0, 50, 'archived copy'),
+    mk(1, 0, 'canonical copy'),
+    mk(2, 20, 'stale copy'),
+  ];
+  store.prependSessionHistory(SID, candidates, CREATED_AT, {
+    replaceLoadedWindow: true,
+    conversationStatus: 'ambiguous',
+  });
+
+  const transcript = visibleTranscript();
+  assert.deepEqual(
+    transcript,
+    ['user:canonical copy'],
+    `three ambiguous candidates must collapse to the smallest canonicalIndex row: ${JSON.stringify(transcript)}`,
+  );
+  const userRows = useAppStore.getState().userMessagesBySession[SID] ?? [];
+  assert.equal(userRows.length, 1);
+  assert.equal(userRows[0]?.canonicalIndex, 0);
+});
