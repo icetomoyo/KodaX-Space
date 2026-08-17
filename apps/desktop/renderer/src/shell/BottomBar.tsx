@@ -2010,7 +2010,6 @@ export function BottomBar(): JSX.Element {
           queueMode,
         })
       : null;
-    const optimisticMessageId = queuedLocalId ? null : appendUserMessage(sessionId, skillEcho);
     const pendingSendGeneration = setPendingSend(sessionId, true);
     const skillSendPayloadWithoutOperation: ChannelInput<'session.send'> = {
       sessionId,
@@ -2025,6 +2024,17 @@ export function BottomBar(): JSX.Element {
       () => `space-send-${crypto.randomUUID()}`,
     );
     retainedSendOperationRef.current = skillSendOperation.retainedOperations;
+    // Created after the send operation so the optimistic bubble can carry the exact
+    // operationId for deterministic lost-ACK claiming by originOperationId.
+    const optimisticMessageId = queuedLocalId
+      ? null
+      : appendUserMessage(
+          sessionId,
+          skillEcho,
+          undefined,
+          undefined,
+          skillSendOperation.operationId,
+        );
     const settleSkillSendOperation = (): void => {
       retainedSendOperationRef.current = settleComposerSendOperation(
         retainedSendOperationRef.current,
@@ -2250,9 +2260,6 @@ export function BottomBar(): JSX.Element {
             attachments: optimisticAttachments,
           })
         : null;
-      const optimisticMessageId = queuedLocalId
-        ? null
-        : appendUserMessage(sid, effectivePrompt, undefined, optimisticAttachments);
       const fileRefsAtSend = pendingFileRefs;
       const artifactsForSend: InputArtifact[] | undefined =
         imagesAtSend.length > 0
@@ -2304,6 +2311,17 @@ export function BottomBar(): JSX.Element {
         () => `space-send-${crypto.randomUUID()}`,
       );
       retainedSendOperationRef.current = sendOperation.retainedOperations;
+      // Created after the send operation so the optimistic bubble can carry the exact
+      // operationId for deterministic lost-ACK claiming by originOperationId.
+      const optimisticMessageId = queuedLocalId
+        ? null
+        : appendUserMessage(
+            sid,
+            effectivePrompt,
+            undefined,
+            optimisticAttachments,
+            sendOperation.operationId,
+          );
       const clearRetainedSendOperation = (): void => {
         retainedSendOperationRef.current = settleComposerSendOperation(
           retainedSendOperationRef.current,

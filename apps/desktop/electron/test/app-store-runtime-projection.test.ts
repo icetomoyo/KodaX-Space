@@ -399,6 +399,136 @@ test('app store exposes snapshot replacement and revision-safe live patch action
   assert.equal(state.liveProjectionBySession.s_1?.todos[0]?.status, 'completed');
 });
 
+test('a lost-ACK optimistic user message is claimed by its run origin operationId', () => {
+  useAppStore.getState().setSessions([sidebarSession]);
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  useAppStore.getState().replaceSessionLiveProjection(live);
+
+  const claimedId = useAppStore.getState().appendUserMessage(
+    's_1',
+    'query whose send acknowledgement was lost',
+    500,
+    undefined,
+    'space-send-op-1',
+  );
+  const untouchedId = useAppStore.getState().appendUserMessage(
+    's_1',
+    'a different pending send',
+    501,
+    undefined,
+    'space-send-op-2',
+  );
+  assert.ok(claimedId);
+  assert.ok(untouchedId);
+
+  const status = useAppStore.getState().applySessionLiveProjectionChange({
+    sessionId: 's_1',
+    baseProjectionRevision: 1,
+    projectionRevision: 2,
+    cursor: { runtimeId: 'rt_1', seq: 2 },
+    change: {
+      domain: 'run',
+      activeRun: {
+        runId: 'run_claimed',
+        sessionId: 's_1',
+        originOperationId: 'space-send-op-1',
+        phase: 'running',
+        startedAt: 10,
+      },
+      queuedRuns: [],
+    },
+  });
+  assert.equal(status, 'applied');
+
+  const users = useAppStore.getState().userMessagesBySession.s_1 ?? [];
+  const claimed = users.find((message) => message.id === claimedId);
+  const untouched = users.find((message) => message.id === untouchedId);
+  assert.equal(claimed?.runtimeRunId, 'run_claimed');
+  assert.equal(claimed?.operationId, 'space-send-op-1');
+  assert.equal(untouched?.runtimeRunId, undefined);
+});
+
+test('two runs sharing one origin operationId cannot overwrite each other within one projection', () => {
+  useAppStore.getState().setSessions([sidebarSession]);
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  useAppStore.getState().replaceSessionLiveProjection(live);
+
+  const claimedId = useAppStore.getState().appendUserMessage(
+    's_1',
+    'retried send whose first run was superseded',
+    500,
+    undefined,
+    'space-send-op-dup',
+  );
+  assert.ok(claimedId);
+
+  const status = useAppStore.getState().applySessionLiveProjectionChange({
+    sessionId: 's_1',
+    baseProjectionRevision: 1,
+    projectionRevision: 2,
+    cursor: { runtimeId: 'rt_1', seq: 2 },
+    change: {
+      domain: 'run',
+      activeRun: {
+        runId: 'run_active',
+        sessionId: 's_1',
+        originOperationId: 'space-send-op-dup',
+        phase: 'running',
+        startedAt: 10,
+      },
+      // A duplicate retained-operation retry surfaces as a queued run with the
+      // same origin operationId. The active run's claim must win and stick.
+      queuedRuns: [
+        {
+          runId: 'run_retry_shadow',
+          sessionId: 's_1',
+          originOperationId: 'space-send-op-dup',
+          phase: 'queued',
+          queuedAt: 5,
+        },
+      ],
+    },
+  });
+  assert.equal(status, 'applied');
+
+  const users = useAppStore.getState().userMessagesBySession.s_1 ?? [];
+  const claimed = users.find((message) => message.id === claimedId);
+  assert.equal(claimed?.runtimeRunId, 'run_active');
+});
+
+test('a snapshot replacement also claims a lost-ACK optimistic message by origin operationId', () => {
+  useAppStore.getState().setSessions([sidebarSession]);
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  useAppStore.getState().replaceSessionLiveProjection(live);
+
+  const claimedId = useAppStore.getState().appendUserMessage(
+    's_1',
+    'send whose acknowledgement raced a reconnect snapshot',
+    500,
+    undefined,
+    'space-send-op-snap',
+  );
+  assert.ok(claimedId);
+
+  useAppStore.getState().replaceSessionLiveProjection({
+    ...live,
+    projectionRevision: 2,
+    cursor: { runtimeId: 'rt_1', seq: 2 },
+    lastTerminalRun: {
+      runId: 'run_snapshot',
+      sessionId: 's_1',
+      originOperationId: 'space-send-op-snap',
+      phase: 'completed',
+      startedAt: 10,
+      completedAt: 20,
+    },
+  });
+
+  const users = useAppStore.getState().userMessagesBySession.s_1 ?? [];
+  const claimed = users.find((message) => message.id === claimedId);
+  assert.equal(claimed?.runtimeRunId, 'run_snapshot');
+});
+
 test('app store drops a live activity snapshot as soon as Runtime authority becomes stale', () => {
   useAppStore.getState().replaceRuntimeProfileProjection(profile);
   useAppStore.getState().replaceSessionLiveProjection({

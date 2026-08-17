@@ -181,6 +181,9 @@ export const spaceRuntimeRunProjectionSchema = z
     runId: idSchema,
     sessionId: idSchema,
     turnId: idSchema.optional(),
+    /** Durable send identity from the run origin (RuntimeRunStatus.origin.operationId);
+     *  lets the renderer deterministically claim a lost-ACK optimistic user message. */
+    originOperationId: idSchema.optional(),
     phase: spaceRuntimeRunPhaseSchema,
     stage: spaceRuntimeRunStageSchema.optional(),
     stageChangedAt: timestampSchema.optional(),

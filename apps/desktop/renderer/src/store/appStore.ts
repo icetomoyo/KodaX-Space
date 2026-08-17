@@ -219,6 +219,9 @@ export interface UserMessage {
   readonly turnUserOrdinal?: number;
   /** Renderer-only admission identity captured from run.started before turnId exists. */
   readonly runtimeRunId?: string;
+  /** Composer send-operation identity; deterministically claims this optimistic message
+   *  when a live run projection arrives with the same originOperationId (lost-ACK recovery). */
+  readonly operationId?: string;
   readonly canonicalIndex?: number;
   /** Absolute visible turn index before bounded history-window truncation. */
   readonly historyTurnIndex?: number;
@@ -956,6 +959,7 @@ interface AppState {
     content: string,
     sentAt?: number,
     attachments?: readonly UserImageAttachment[],
+    operationId?: string,
   ): string | null;
   /** Record the exact Runtime Run admitted by session.send, independent of transcript rows. */
   acknowledgePendingSendRun(sessionId: string, runId: string, expectedGeneration?: number): void;
@@ -3630,6 +3634,7 @@ function createUserMessage(
   sentAt?: number,
   identity?: StrongUserTurnIdentity,
   attachments?: readonly UserImageAttachment[],
+  operationId?: string,
 ): UserMessage {
   return {
     id: `u_${sessionId}_${++userMessageCounter}`,
@@ -3637,6 +3642,7 @@ function createUserMessage(
     sentAt: sentAt ?? nextLocalTranscriptSentAt(),
     ...(attachments && attachments.length > 0 ? { attachments } : {}),
     ...(identity ?? {}),
+    ...(operationId !== undefined ? { operationId } : {}),
   };
 }
 
@@ -3967,6 +3973,35 @@ function preserveKnownProjectionRunTurnIdentity(
     return incoming;
   }
   return { ...incoming, activeRun, queuedRuns, lastTerminalRun };
+}
+
+/** Deterministically claim a lost-ACK optimistic user message when a live run
+ *  projection carries the same send operationId in its origin. This replaces
+ *  positional matching for the exact-send recovery shape. */
+function claimUserMessagesByOriginOperation(
+  users: readonly UserMessage[],
+  projection: SpaceSessionLiveProjectionT,
+): readonly UserMessage[] {
+  const runs = [projection.activeRun, projection.lastTerminalRun, ...projection.queuedRuns];
+  let next: UserMessage[] | undefined;
+  for (const run of runs) {
+    if (run?.originOperationId === undefined) continue;
+    for (let index = 0; index < users.length; index += 1) {
+      // Read through the accumulated result so two runs sharing one operationId
+      // cannot overwrite each other's claim within a single projection pass.
+      const message = (next ?? users)[index]!;
+      if (
+        message.operationId !== run.originOperationId
+        || message.restoredFromHistory === true
+        || message.runtimeRunId !== undefined
+        || message.turnId !== undefined
+      ) {
+        continue;
+      }
+      (next ??= users.slice())[index] = { ...message, runtimeRunId: run.runId };
+    }
+  }
+  return next ?? users;
 }
 
 function reconcileSnapshotInitialTurnOwners(
@@ -4675,7 +4710,7 @@ export const useAppStore = create<AppState>((set) => ({
     if (seenBySessionToPersist !== null) persistErrorSeenRunIds(seenBySessionToPersist);
   },
 
-  appendUserMessage: (sessionId, content, sentAt, attachments) => {
+  appendUserMessage: (sessionId, content, sentAt, attachments, operationId) => {
     let messageId: string | null = null;
     set((state) => {
       if (!state.sessions.some((s) => s.sessionId === sessionId)) return state;
@@ -4686,6 +4721,7 @@ export const useAppStore = create<AppState>((set) => ({
         appendedUserMessageSentAt(bucket, sentAt),
         undefined,
         attachments,
+        operationId,
       );
       messageId = msg.id;
       rememberHistoryLiveUsers(sessionId, [msg]);
@@ -6836,7 +6872,11 @@ export const useAppStore = create<AppState>((set) => ({
         hydratedEvents,
         identityProjection,
       );
-      const folded = foldStrongIdentityDuplicateTurns(snapshotOwnedUsers, hydratedEvents);
+      const operationClaimedUsers = claimUserMessagesByOriginOperation(
+        snapshotOwnedUsers,
+        identityProjection,
+      );
+      const folded = foldStrongIdentityDuplicateTurns(operationClaimedUsers, hydratedEvents);
       rememberCanonicalizedHistoryLiveOwners(
         projection.sessionId,
         folded.canonicalizedLiveOwners ?? [],
@@ -7000,9 +7040,12 @@ export const useAppStore = create<AppState>((set) => ({
             change.change.domain === 'terminal' ? 'terminal' : 'active',
           )
         : currentUsers;
+      const operationClaimedUsers = appliesRunIdentity && projection !== undefined
+        ? claimUserMessagesByOriginOperation(snapshotOwnedUsers, projection)
+        : snapshotOwnedUsers;
       const folded = appliesRunIdentity
-        ? foldStrongIdentityDuplicateTurns(snapshotOwnedUsers, hydratedEvents)
-        : { userMessages: snapshotOwnedUsers, events: hydratedEvents };
+        ? foldStrongIdentityDuplicateTurns(operationClaimedUsers, hydratedEvents)
+        : { userMessages: operationClaimedUsers, events: hydratedEvents };
       if (appliesRunIdentity) {
         rememberCanonicalizedHistoryLiveOwners(
           change.sessionId,
@@ -7011,7 +7054,7 @@ export const useAppStore = create<AppState>((set) => ({
       }
       const reconciledUsers = appliesRunIdentity
         ? hideOpenStrongIdentityDuplicateProjection(folded.userMessages, folded.events)
-        : snapshotOwnedUsers;
+        : operationClaimedUsers;
       const reconciledEvents = folded.events;
       const liveBaseline = historyLiveBaselines.get(change.sessionId);
       if (appliesRunIdentity && liveBaseline !== undefined) {
