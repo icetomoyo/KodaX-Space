@@ -15,13 +15,22 @@ function readJson(packageFile, label) {
 }
 
 function exactVersion(value, label) {
-  const version = String(value ?? '').trim();
-  if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) {
+  const reference = String(value ?? '').trim();
+  const exactSemVer = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+  if (exactSemVer.test(reference)) return reference;
+
+  const normalizedReference = reference.replaceAll('\\', '/');
+  const localTarball = normalizedReference.match(
+    /(?:^|\/)kodax-ai-kodax-(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\.tgz$/,
+  );
+  if (reference.startsWith('file:') && localTarball) return localTarball[1];
+
+  {
     throw new Error(
-      `[pack] ${label} must pin ${KODAX_PACKAGE} to an exact SemVer; found ${version || '(missing)'}.`,
+      `[pack] ${label} must pin ${KODAX_PACKAGE} to an exact SemVer or its versioned local ` +
+        `candidate tarball; found ${reference || '(missing)'}.`,
     );
   }
-  return version;
 }
 
 export function assertKodaxReleaseDependencyState(

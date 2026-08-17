@@ -1,8 +1,8 @@
 # KodaX Space Feature List
 
-> Last reviewed: 2026-08-16
+> Last reviewed: 2026-08-17
 > Latest published release: [`v0.1.42`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.42) (`0.1.42` package baseline; KodaX 0.7.89 Registry, Actor settlement v2, and causal transcript alignment)
-> Current source KodaX SDK baseline: exact npm Registry `@kodax-ai/kodax@0.7.89` across both manifests, lock views, and installed bytes (`sha512-8ytIAFXzHpb+jZLeQGp6iQGuNnfRsYfjAZiKD/U6oRqYPrROmGSq8dOm7rq/HK+L+0XlBMTEr8X28l0X9tqcaw==`). Space-managed daemons require explicit capability contracts in addition to the established shared-session safety surface, including `sandboxRuntime:3`, `managedRunDurability:1`, `actorSettlementConvergence:2`, and `sessionEventJournal:1`; lifecycle support is not inferred from SemVer. Delivered interrupt `entryId` remains feature-detected per event. Session journal cursors are compared only within the same `(sessionId, journalEpoch)` lineage.
+> Current source KodaX SDK baseline: installable local candidate `@kodax-ai/kodax@0.7.91`, consumed from the exact vendored tarball while Registry publication remains pending. Space-managed daemons require explicit capability contracts in addition to the established shared-session safety surface, including local `runtimeExitSettlement:1`, `sandboxRuntime:3`, `managedRunDurability:1`, `actorSettlementConvergence:2`, and `sessionEventJournal:1`; lifecycle support is not inferred from SemVer. Delivered interrupt `entryId` remains feature-detected per event. Session journal cursors are compared only within the same `(sessionId, journalEpoch)` lineage.
 > Scope: active roadmap, recent completion audit, and reviewed-out decisions. Older release history lives in [FEATURES_ARCHIVED.md](FEATURES_ARCHIVED.md), per-version designs, and [CHANGELOG.md](../CHANGELOG.md).
 
 ## Planning rules
@@ -79,7 +79,8 @@
 | `v0.1.40`         | KodaX 0.7.86 sandbox and owner-reconciliation maintenance                                                             | Maintenance fixes                 | Exact 0.7.86 Registry bytes are pinned. SDK and Runtime require sandboxRuntime v3; packaged Windows Shell and stale inline-owner recovery are covered by bounded smoke/regression gates.                                                                                        |
 | `v0.1.41`         | Provider recovery and latest KodaX alignment                                                                          | Maintenance / Recovery            | Exact npm latest KodaX 0.7.87 is pinned. Ordered provider.recovery events reconcile provisional drafts across live, history, reconnect, snapshot hydration, and Ctrl+R without content-based deduplication; docs and kodax_manual are synchronized.                             |
 | `v0.1.42`         | Causal transcript and latest KodaX alignment                                                                          | Maintenance / Recovery            | Exact npm latest KodaX 0.7.89 is pinned. Actor settlement v2, exact Session/Run/Turn owner reconciliation, continued-Run projection, Session deletion feedback, classifier-reason visibility, and the complete manual/release gate are synchronized. |
-| `v0.1.43-v0.1.60` | Reserved after `v0.1.42`                                                                                              | none                              | No feature is assigned to this block; it stays available for maintenance and stabilization releases.                                                                                                                                                                            |
+| `v0.1.43`         | Crash-resumable complete Runtime exit                                                                                 | Maintenance / Recovery            | Exact KodaX 0.7.91 candidate, SDK-owned exit settlement, recovery-before-owner-reconcile startup ordering, Windows same-boot exact-owner repair, and reboot-gated autonomous POSIX recovery without cached-PID signaling.                                                           |
+| `v0.1.44-v0.1.60` | Reserved after `v0.1.43`                                                                                              | none                              | No feature is assigned to this block; it stays available for maintenance and stabilization releases.                                                                                                                                                                            |
 | `v0.1.61`         | Native document Skills and semantic UI polish                                                                         | F137, F139                        | Independently authored document workflows and semantic UI gates pass without weakening file, delivery, accessibility, or validation boundaries.                                                                                                                                 |
 | `v0.1.62`         | —                                                                                                                     | none                              | —                                                                                                                                                                                                                                                                               |
 | `v0.1.63`         | —                                                                                                                     | none                              | —                                                                                                                                                                                                                                                                               |
@@ -231,6 +232,23 @@
 - The candidate aligns every Space package manifest, runtime capability contract, and the in-app kodax_manual to v0.1.42 while pinning the npm latest KodaX package exactly to 0.7.89.
 - Renderer reconciliation preserves exact Session/Run/Turn ownership across canonical/live folding, delayed terminals, continued Runs, reconnect, and Ctrl+R; no timestamp sorting or content-based deduplication is introduced.
 - The release records Actor settlement convergence v2, explicit create-time model continuity, bounded classifier-reason visibility, Session deletion feedback, and the Issue 182-185 regression coverage.
+
+### Maintenance - 2026-08-17: v0.1.43 crash-resumable complete exit
+
+- Space requires local SDK `runtimeExitSettlement:1` and delegates complete
+  Runtime exit to `settleKodaXRuntimeExit()` instead of copying owner, Job, or
+  Windows ACL protocols.
+- Recovery relaunch settles the durable exact-owner ticket before owner-policy
+  reconciliation or daemon auto-start; unresolved post-mutation states block a
+  replacement owner and stay visible.
+- A failed Session/Runtime initialization can still exit an idle existing
+  daemon through a temporary `autoStart:false` management connection and the
+  same SDK settlement; unrelated adapter seams no longer select the legacy
+  shutdown path implicitly.
+- Windows exact-owner recovery is autonomous; macOS/Linux stuck-process paths
+  remain fail-closed during the same boot and recover after a durable reboot
+  fence. See [v0.1.43](features/v0.1.43.md) and
+  [Issue 188](test-guides/ISSUE_188_v0.1.43_REGRESSION_GUIDE.md).
 - Release preparation changes remain limited to version metadata, tests, CI/release configuration, and documentation; system business logic is not changed for the release.
 
 ### Release preparation - 2026-08-14: v0.1.40 KodaX 0.7.86 sandbox and owner-reconciliation maintenance

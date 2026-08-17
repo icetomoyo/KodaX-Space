@@ -23,8 +23,11 @@ const rootDir = path.resolve(__dirname, '..');
 // out/ artifacts. Relative overrides remain anchored to the repository root.
 const outDir = path.resolve(rootDir, process.env.SPACE_PACK_OUT_DIR || 'out');
 const rootPackage = JSON.parse(readFileSync(path.join(rootDir, 'package.json'), 'utf8'));
+const packageLock = JSON.parse(readFileSync(path.join(rootDir, 'package-lock.json'), 'utf8'));
 const SPACE_VERSION = String(rootPackage.version ?? '').trim();
-const KODAX_VERSION = String(rootPackage.dependencies?.['@kodax-ai/kodax'] ?? '').trim();
+const KODAX_VERSION = String(
+  packageLock.packages?.['node_modules/@kodax-ai/kodax']?.version ?? '',
+).trim();
 const SIZE_LIMIT_BYTES = 200 * 1024 * 1024;
 const require = createRequire(import.meta.url);
 const electronBin = require('electron');
@@ -438,6 +441,10 @@ async function checkAsarContents(asarPath) {
     fail('packaged KodaX metadata does not advertise daemonShutdownVerification v1');
   }
   ok('packaged KodaX metadata advertises daemonShutdownVerification v1');
+  if (packagedKodax.kodaxRuntimeContracts?.runtimeExitSettlement !== 1) {
+    fail('packaged KodaX metadata does not advertise runtimeExitSettlement v1');
+  }
+  ok('packaged KodaX metadata advertises runtimeExitSettlement v1');
 
   let packagedRendererHtml;
   try {
@@ -882,6 +889,7 @@ import {
   enableKodaXDaemonOwner,
   getKodaXRuntimeOwnerState,
   KODAX_RUNTIME_SDK_CAPABILITIES,
+  settleKodaXRuntimeExit,
 } from ${JSON.stringify(runtimeModuleUrl)};
 import { loadHandler } from ${JSON.stringify(codingModuleUrl)};
 import {
@@ -1287,6 +1295,12 @@ try {
       'packaged SDK does not advertise daemonShutdownVerification v1 before auto-start',
     );
   }
+  if (KODAX_RUNTIME_SDK_CAPABILITIES?.runtimeExitSettlement !== 1) {
+    throw new Error('packaged SDK does not advertise runtimeExitSettlement v1 before auto-start');
+  }
+  if (typeof settleKodaXRuntimeExit !== 'function') {
+    throw new Error('packaged SDK does not export settleKodaXRuntimeExit');
+  }
   if (KODAX_RUNTIME_SDK_CAPABILITIES?.sessionEventJournal !== 1) {
     throw new Error('packaged SDK does not advertise sessionEventJournal v1 before auto-start');
   }
@@ -1389,45 +1403,55 @@ try {
         management.preflight.blockers.join(','),
     );
   }
-  await daemonRuntime.daemon.stopForInline({
-    expectedRuntimeId: management.runtimeId,
-    expectedRevision: management.revision,
-    expectedOwnerPolicyRevision: management.ownerPolicy.revision,
+  const firstExitSettlement = await settleKodaXRuntimeExit({
+    configHome: process.env.KODAX_HOME,
+    profile: daemonProfile,
+    runtime: daemonRuntime,
   });
-  await daemonRuntime.close();
+  if (firstExitSettlement.status !== 'clean') {
+    throw new Error(
+      'packaged lifecycle probe did not exit cleanly: ' +
+        JSON.stringify(firstExitSettlement),
+    );
+  }
   daemonRuntime = undefined;
-  await waitForDaemonOwnerRelease(management.runtimeId);
   let restartedDaemonShellBackend;
+  let restartedRuntimeExitSettlement;
+  const restartedOwnerPolicy = await enableDaemonOwnerWhenReady();
+  if (restartedOwnerPolicy.mode !== 'daemon') {
+    throw new Error('packaged lifecycle probe did not restore daemon ownership');
+  }
+  daemonRuntime = await createDaemonProbeRuntime('kodax-space-pack-restart-smoke');
   if (providerBaseUrl) {
-    const restartedOwnerPolicy = await enableDaemonOwnerWhenReady();
-    if (restartedOwnerPolicy.mode !== 'daemon') {
-      throw new Error('packaged lifecycle probe did not restore daemon ownership');
-    }
-    daemonRuntime = await createDaemonProbeRuntime('kodax-space-pack-restart-smoke');
     await configureProbeProvider(daemonRuntime, providerBaseUrl);
     restartedDaemonShellBackend = await runDaemonShellProbe(
       daemonRuntime,
       'KODAX_DAEMON_SHELL_PROBE_2=ok',
     );
-    const restartedManagement = await daemonRuntime.daemon.inspect();
-    if (!restartedManagement.preflight.canStop) {
-      throw new Error(
-        'restarted packaged lifecycle probe daemon is not safely stoppable: ' +
-          restartedManagement.preflight.blockers.join(','),
-      );
-    }
-    await daemonRuntime.daemon.stopForInline({
-      expectedRuntimeId: restartedManagement.runtimeId,
-      expectedRevision: restartedManagement.revision,
-      expectedOwnerPolicyRevision: restartedManagement.ownerPolicy.revision,
-    });
-    await daemonRuntime.close();
-    daemonRuntime = undefined;
-    await waitForDaemonOwnerRelease(restartedManagement.runtimeId);
-    const finalOwnerPolicy = await enableDaemonOwnerWhenReady();
-    if (finalOwnerPolicy.mode !== 'daemon') {
-      throw new Error('packaged lifecycle probe did not restore daemon ownership after restart');
-    }
+  }
+  const restartedManagement = await daemonRuntime.daemon.inspect();
+  if (!restartedManagement.preflight.canStop) {
+    throw new Error(
+      'restarted packaged lifecycle probe daemon is not safely stoppable: ' +
+        restartedManagement.preflight.blockers.join(','),
+    );
+  }
+  const restartedExitSettlement = await settleKodaXRuntimeExit({
+    configHome: process.env.KODAX_HOME,
+    profile: daemonProfile,
+    runtime: daemonRuntime,
+  });
+  if (restartedExitSettlement.status !== 'clean') {
+    throw new Error(
+      'restarted packaged lifecycle probe did not exit cleanly: ' +
+        JSON.stringify(restartedExitSettlement),
+    );
+  }
+  restartedRuntimeExitSettlement = restartedExitSettlement.status;
+  daemonRuntime = undefined;
+  const finalOwnerPolicy = await enableDaemonOwnerWhenReady();
+  if (finalOwnerPolicy.mode !== 'daemon') {
+    throw new Error('packaged lifecycle probe did not restore daemon ownership after restart');
   }
   const result = {
     version: runtime.identity.version,
@@ -1441,6 +1465,8 @@ try {
     sessionEventJournal: sessionEventJournal.version,
     sessionCursorValid: true,
     integrationHealth: management.integrations.state,
+    runtimeExitSettlement: firstExitSettlement.status,
+    restartedRuntimeExitSettlement,
     sandboxVersion: sandboxCapability.version,
     sandboxUnavailableBehavior: sandboxCapability.unavailableBehavior,
     sandboxPermissionFallback: sandboxCapability.permissionFallback,
@@ -1462,6 +1488,8 @@ try {
     result.sessionEventJournal !== 1 ||
     !result.sessionCursorValid ||
     result.integrationHealth !== 'healthy' ||
+    result.runtimeExitSettlement !== 'clean' ||
+    result.restartedRuntimeExitSettlement !== 'clean' ||
     result.sandboxVersion !== 3 ||
     result.sandboxUnavailableBehavior !== 'structured-no-execution' ||
     result.sandboxPermissionFallback !== 'normal-permission-policy' ||
@@ -1507,25 +1535,33 @@ try {
     daemonBootstrapTail = '';
   }
   if (daemonRuntime) {
-    let cleanupRuntimeId;
-    await daemonRuntime.daemon
-      .inspect()
-      .then((management) => {
-        cleanupRuntimeId = management.runtimeId;
-        return management.preflight.canStop
-          ? daemonRuntime.daemon.stopForInline({
-              expectedRuntimeId: management.runtimeId,
-              expectedRevision: management.revision,
-              expectedOwnerPolicyRevision: management.ownerPolicy.revision,
-            })
-          : undefined;
-      })
-      .catch(() => undefined);
-    await daemonRuntime.close().catch(() => undefined);
-    daemonRuntime = undefined;
-    if (cleanupRuntimeId) {
-      await waitForDaemonOwnerRelease(cleanupRuntimeId).catch(() => undefined);
+    try {
+      const cleanupSettlement = await settleKodaXRuntimeExit({
+        configHome: process.env.KODAX_HOME,
+        profile: daemonProfile,
+        runtime: daemonRuntime,
+      });
+      if (cleanupSettlement.status === 'blocked') {
+        console.error(
+          'KODAX_PACK_SMOKE_SETTLEMENT_CLEANUP_BLOCKED=' +
+            JSON.stringify(cleanupSettlement),
+        );
+      }
+    } catch (cleanupError) {
+      console.error(
+        'KODAX_PACK_SMOKE_SETTLEMENT_CLEANUP_FAILED=' +
+          (cleanupError instanceof Error ? cleanupError.stack : String(cleanupError)),
+      );
     }
+    try {
+      await daemonRuntime.close();
+    } catch (closeError) {
+      console.error(
+        'KODAX_PACK_SMOKE_RUNTIME_CLOSE_FAILED=' +
+          (closeError instanceof Error ? closeError.stack : String(closeError)),
+      );
+    }
+    daemonRuntime = undefined;
   }
   await runtime?.close().catch(() => undefined);
   await closeProviderServer().catch(() => undefined);
@@ -1553,7 +1589,7 @@ try {
       input: probeSource,
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'pipe'],
-      timeout: 180_000,
+      timeout: 1_100_000,
       windowsHide: true,
       env: {
         ...process.env,

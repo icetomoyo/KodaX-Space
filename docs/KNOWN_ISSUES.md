@@ -183,8 +183,57 @@ Last Updated: 2026-08-16
 | 185 | High     | Resolved           | A delayed old Run terminal could close the current query while a Session-level notification reported another Run                   | v0.1.42 daemon transcript / completion notifications         | 2026-08-15 |
 | 186 | High     | Resolved           | Multi-session terminal contention or a compaction-damaged canonical page could misorder, duplicate, or endlessly grow the transcript tail; SDK write-side provenance collapse identified cross-repo | KodaX 0.7.88 chained compaction / renderer folding          | 2026-08-16 |
 | 187 | Medium   | Resolved           | Restored historical Sessions could display history but fork and rewind failed with session_not_found                               | v0.1.42 historical Session mutation admission                | 2026-08-16 |
+| 188 | High     | Resolved in source | Complete exit could strand an accepted Windows Runtime stop and relaunch before exact cleanup recovery                              | v0.1.37 complete-exit recovery                               | 2026-08-17 |
 
 ## Issue Details
+
+## Issue 188: Complete exit could strand an accepted Windows Runtime stop and relaunch before exact cleanup recovery
+
+- Priority: High
+- Status: Resolved in source
+- Introduced: v0.1.37 complete-exit recovery
+- Fixed: v0.1.43 / KodaX 0.7.91
+- Created: 2026-08-17
+- Resolution Date: 2026-08-17
+
+### Root Cause
+
+Space persisted only `--space-runtime-exit-recovery` after shutdown verification
+failed. On relaunch it followed the ordinary owner reconciliation and daemon
+initialization path, then showed a generic warning. The adapter had already
+closed and cleared its Runtime projection before durable verification, while
+Windows Job/ACL marker recovery remained private to KodaX. Therefore Space
+could neither safely finish the exact accepted stop nor independently recover
+Session service availability. “No visible tasks” did not prove that Runtime
+sandbox cleanup and descendants had settled.
+
+### Resolution
+
+- KodaX 0.7.91 owns the full durable exit settlement transaction and exact
+  Windows recovery authority.
+- Space delegates normal complete exit to that API and retains the live Runtime
+  when preflight says `keep-open`.
+- If normal Runtime initialization failed, Space reconnects only the existing
+  management plane with `autoStart:false` and invokes the same SDK transaction;
+  it does not fall back to CLI stop or create a replacement daemon.
+- Recovery relaunch calls the SDK before owner-policy reconciliation or daemon
+  auto-start. It exits on `clean/recovered`, continues on `keep-open`, and
+  blocks replacement startup for every other unresolved result.
+- Ordinary daemon-mode startup scans the same durable ticket, so a hard process
+  kill that loses the relaunch flag still recovers before owner reconciliation.
+- Ambiguous prepared stops reconnect only the existing management plane with
+  `autoStart:false`; attach failure is followed by one ticket re-scan so a late
+  inline-policy commit converges without replacement startup.
+- Package smoke verifies the public capability/export and uses the same API for
+  real daemon lifecycle probes.
+- macOS/Linux never signal a cached PID/PGID. They remain fail-closed during the
+  same boot, retain the ticket, and recover exact ownership autonomously after
+  an OS reboot changes the durable boot identity.
+
+### Verification
+
+See
+[`ISSUE_188_v0.1.43_REGRESSION_GUIDE.md`](test-guides/ISSUE_188_v0.1.43_REGRESSION_GUIDE.md).
 
 ### 180: A crashed inline owner permanently blocked daemon startup until the customer deleted `~/.kodax`
 

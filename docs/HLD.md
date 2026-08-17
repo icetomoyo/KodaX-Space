@@ -5,14 +5,25 @@
 > 在事件发布前已成为 canonical managed Run；Space 仅用 returned `runId`/`turnId` 关联 UI
 > optimistic state 和 history，不复制持久化职责。未设置 Auto timeout 时，SDK 默认 45 秒首次、90 秒重试。
 
-> **2026-08-16 当前源码增量**：root/Desktop 精确锁定 npm Registry KodaX `0.7.89`，
-> 要求 `actorSettlementConvergence:2`；storage dequeue/eligibility 不进入 5 秒 canonical
-> replacement deadline，已提交后的维护失败只降级诊断。`zai-coding` 与 `ark-coding`
-> 默认模型同步为 GLM-5.3。
+> **2026-08-17 当前源码增量**：root/Desktop 使用同一份可安装的 KodaX `0.7.91`
+> vendored candidate tarball；Registry 发布仍是单独的正式发布门禁。除
+> `actorSettlementConvergence:2` 外，Space 还消费本地 `runtimeExitSettlement:1`，
+> 在 owner reconciliation 与 daemon auto-start 前恢复精确 complete-exit 票据。
 >
-> Last updated: 2026-08-16
+> Last updated: 2026-08-17
 > Status: 核心架构决策仍有效；当前正式发布基线为 KodaX Space 0.1.42（package 0.1.42）/ npm 正式发布的精确 KodaX 0.7.89。中间方案与否决理由见 [ADR/](ADR/)；当前能力边界见 [KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md)。
 > Companion doc: [PRD](PRD.md)
+
+> **2026-08-17 v0.1.43 complete-exit recovery boundary**：Space 只负责退出策略、
+> admission drain、可见 UI 与启动顺序；KodaX 0.7.91 的
+> `settleKodaXRuntimeExit()` 独占 daemon owner、精确进程身份、Windows Job、ACL marker
+> 与持久恢复票据协议。恢复启动必须在 owner-policy reconciliation 和 daemon
+> initialization 之前执行。`clean/recovered` 完成原退出，`keep-open` 恢复正常 UI，
+> 其余 unresolved 结果阻止 replacement owner 启动。macOS/Linux 的正常退出可用；
+> 卡死 owner 在同一 boot 内继续 fail closed 且绝不按 cached PID/PGID 发信号，OS
+> reboot 后由持久 boot identity 自动证明旧树消失并恢复精确 owner。若常规 Runtime
+> 初始化失败，退出路径仅以 `autoStart:false` 连接现存 daemon 管理面，再交给同一
+> SDK transaction；不会退回 CLI stop，也不会为退出创建新 daemon。
 
 > **0.1.30 增量**：Electron main 继续拥有特权边界，并新增一个持久、协议中立的 External Agent Executor Plane。Renderer 仅通过 zod IPC 获取脱敏 Registration/Descriptor/Task/Event 投影；管理入口仅接受主应用窗口，任务创建从 main-owned live Session 派生项目/父任务归属，读取与干预均复核任务所属 Session。实时 Session 与 Workflow 共用同一 KodaX 0.7.67 plane。Reference Executor 已接通；v0.1.32 起，Runtime 配置的 A2A 由 KodaX 0.7.76 Coder daemon 持有并按能力协商开放，MCP Tasks/受治理 HTTP 仍按 Runtime capability 门控。Partner 自 0.1.30 起已启用 workspace-first Outputs 与 checkpointed writes。
 >

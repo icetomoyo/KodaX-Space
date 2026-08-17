@@ -94,6 +94,7 @@ tmp/
 artifacts/
 vendor/*
 !vendor/kodax-ai-kodax-0.7.79.tgz
+!vendor/kodax-ai-kodax-0.7.91.tgz
 
 # Stray tool artifacts: remote-session attachments and pnpm lockfile
 # (this repo pins dependencies via npm package-lock.json)

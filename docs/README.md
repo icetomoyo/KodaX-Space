@@ -9,9 +9,10 @@
 > 和 Issue 185 Actor settlement/terminal owner 对齐。
 > 未配置 Auto LLM timeout 时使用 SDK 首次 45 秒、重试 90 秒的默认值。
 
-> **当前源码基线**：root/Desktop 已升级到精确 Registry KodaX `0.7.89`，并在 SDK
+> **当前源码基线**：root/Desktop 已升级到完整性锁定的 KodaX `0.7.91` 本地候选包，并在 SDK
 > 预检、daemon 连接和正式打包烟测中要求 `sandboxRuntime:3` 与
-> `actorSettlementConvergence:2`。v0.1.41 / KodaX 0.7.87 的发布记录保持历史事实。
+> `actorSettlementConvergence:2`。候选包只用于发布前验收；当前 Registry 正式版仍为 `0.7.89`。
+> v0.1.41 / KodaX 0.7.87 的发布记录保持历史事实。
 
 > 历史发布基线：KodaX Space [`v0.1.40`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.40)（package `0.1.40`）/ npm 正式发布的精确 KodaX `0.7.86`；历史 release 文档继续保留当时事实。
 

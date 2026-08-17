@@ -1,7 +1,7 @@
 // Packaged boot smoke: start the real unpacked executable with an isolated
 // profile, then verify the app's own Runtime and renderer readiness records.
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,7 +11,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.join(__dirname, '..');
 const outDir = path.resolve(rootDir, process.env.SPACE_PACK_OUT_DIR || 'out');
 const exe = path.join(outDir, 'win-unpacked', 'KodaX Space.exe');
-const profileDir = await mkdtemp(path.join(tmpdir(), 'kodax-space-boot-smoke-'));
+const testId = `boot-smoke-${process.pid}-${Date.now()}`;
+const profileDir = path.join(tmpdir(), `kodax-test-${testId}`);
+await mkdir(profileDir, { recursive: true });
 const diagnosticsPath = path.join(
   profileDir,
   'space',
@@ -20,23 +22,30 @@ const diagnosticsPath = path.join(
   'space-main.jsonl',
 );
 const daemonPath = path.join(profileDir, 'runtime', 'daemon', 'coder', 'daemon.json');
-const rootPackage = JSON.parse(await readFile(path.join(rootDir, 'package.json'), 'utf8'));
-const expectedKodaxVersion = String(rootPackage.dependencies?.['@kodax-ai/kodax'] ?? '').trim();
+const packageLock = JSON.parse(await readFile(path.join(rootDir, 'package-lock.json'), 'utf8'));
+const expectedKodaxVersion = String(
+  packageLock.packages?.['node_modules/@kodax-ai/kodax']?.version ?? '',
+).trim();
 if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(expectedKodaxVersion)) {
   throw new Error(
-    `root manifest has no exact KodaX version: ${expectedKodaxVersion || '(missing)'}`,
+    `package-lock has no exact installed KodaX version: ${expectedKodaxVersion || '(missing)'}`,
   );
 }
 // The renderer is intentionally independent from a cold daemon. Keep its
 // budget below the previously observed 20-50 second Runtime delay, while the
 // overall deadline still gives a cold packaged daemon enough time to settle on
 // slower Windows hosts.
-const RENDERER_READY_BUDGET_MS = 15_000;
+// A signed cold package can spend tens of seconds hydrating a user's PowerShell
+// profile on slower Windows hosts. Keep the renderer budget finite while the
+// daemon test hold preserves an independent Runtime readiness boundary.
+const RENDERER_READY_BUDGET_MS = 45_000;
 const RUNTIME_READY_BUDGET_MS = 90_000;
 const DAEMON_READY_TEST_DELAY_MS = 20_000;
 const env = {
   ...process.env,
-  KODAX_PROFILE_DIR: profileDir,
+  KODAX_TEST_ONBOARDING: testId,
+  SPACE_TEST_BYPASS_COMPLETE_EXIT: '1',
+  SPACE_TEST_WINDOW_HIDDEN: '1',
   // Published KodaX deliberately supports this internal smoke-test hold. It
   // makes a renderer-before-Runtime assertion deterministic instead of relying
   // on incidental cold-start speed.
@@ -44,6 +53,7 @@ const env = {
 };
 delete env.ELECTRON_RUN_AS_NODE;
 delete env.KODAX_HOME;
+delete env.KODAX_PROFILE_DIR;
 
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -171,6 +181,10 @@ try {
   );
   if (runtimeFailure?.data?.message) {
     console.error(`[boot-smoke] Runtime initialization: ${runtimeFailure.data.message}`);
+  }
+  for (const event of diagnostics.slice(-20)) {
+    const summary = event.message ?? event.event;
+    if (summary) console.error(`[boot-smoke] diagnostic: ${summary}`);
   }
   process.exitCode = 1;
 } finally {

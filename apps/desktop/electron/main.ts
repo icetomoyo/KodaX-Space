@@ -104,10 +104,11 @@ import { settingsStore } from './settings/store.js';
 import { pushToRenderer, setRendererTarget } from './ipc/push.js';
 import { kodaxHost } from './kodax/host.js';
 import { externalAgentGateway } from './kodax/external-agent-gateway.js';
-import { runtimeHostAdapter } from './kodax/runtime-host-adapter.js';
+import { runtimeHostAdapter, type RuntimeExitSettlement } from './kodax/runtime-host-adapter.js';
 import { startBackgroundRuntimeInitialization } from './kodax/background-runtime-startup.js';
 import { CoderRuntimeModeSwitchCoordinator } from './kodax/coder-runtime-mode-switch.js';
 import { isCoderOwnerRecoveryRestartRequired } from './kodax/coder-owner-recovery-error.js';
+import { runRuntimeStartupBoundary } from './window/runtime-exit-recovery.js';
 import { permissionRegistry } from './permission/registry.js';
 import { permissionBroker } from './permission/broker.js';
 import { askUserBroker } from './permission/ask-user-broker.js';
@@ -386,8 +387,14 @@ let pendingMainWindowActivation = false;
 let queueWatchShutdown: (() => void) | null = null;
 const RUNTIME_EXIT_RECOVERY_ARG = '--space-runtime-exit-recovery';
 const runtimeExitRecoveryRequested = process.argv.includes(RUNTIME_EXIT_RECOVERY_ARG);
+let runtimeExitRecoverySettlement: RuntimeExitSettlement | undefined;
 const testExitBypass =
   Boolean(process.env.KODAX_TEST_ONBOARDING) && process.env.SPACE_TEST_BYPASS_COMPLETE_EXIT === '1';
+const testCompleteExitTrigger =
+  Boolean(process.env.KODAX_TEST_ONBOARDING) &&
+  process.env.SPACE_TEST_COMPLETE_EXIT_TRIGGER === '1';
+const testWindowHidden =
+  Boolean(process.env.KODAX_TEST_ONBOARDING) && process.env.SPACE_TEST_WINDOW_HIDDEN === '1';
 setRendererTarget(() => (mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null));
 
 function loadBootSplashBrandDataUrl(): string | undefined {
@@ -769,7 +776,7 @@ function createMainWindow(): BrowserWindow {
       clearTimeout(bootFallbackTimer);
       bootFallbackTimer = null;
     }
-    win.show();
+    if (!testWindowHidden) win.show();
     if (pendingMainWindowActivation) {
       pendingMainWindowActivation = false;
       win.focus();
@@ -1288,15 +1295,18 @@ async function showRuntimeExitRecoveryNoticeIfNeeded(): Promise<void> {
   restoreVisibleExitControlSurface();
   const locale = await resolveCurrentTrayLocale();
   const zh = locale === 'zh-CN';
+  const settlement = runtimeExitRecoverySettlement;
+  const detail =
+    settlement?.status === 'blocked'
+      ? settlement.message
+      : zh
+        ? 'Runtime 停止请求尚未形成可恢复的安全提交。Space 已继续正常启动；请确认任务状态后再次尝试完整退出。'
+        : 'The Runtime stop did not reach a recoverable committed state. Space continued normal startup; verify work status and retry complete exit.';
   await dialog.showMessageBox({
     type: 'warning',
     title: zh ? 'KodaX Space 已重新打开' : 'KodaX Space reopened',
-    message: zh
-      ? '未能确认 Coder Runtime 已安全停止'
-      : 'Coder Runtime shutdown could not be confirmed',
-    detail: zh
-      ? 'Runtime 停止验证失败后，Space 已重启并恢复有效的控制代次。请查看保留的诊断信息，然后再次尝试完整退出。'
-      : 'Space restarted to restore a valid Runtime control generation after shutdown verification failed. Review the retained diagnostics, then retry complete exit.',
+    message: zh ? 'Coder Runtime 退出尚未提交' : 'Coder Runtime exit was not committed',
+    detail,
     buttons: [zh ? '确定' : 'OK'],
     defaultId: 0,
     noLink: true,
@@ -1466,17 +1476,15 @@ async function collectActiveSpaceExitBlockers(
   const externalTasksPromise = externalAgentGateway.listTasks();
   const runtime = runtimeStatus === undefined ? undefined : await runtimeStatus;
   const runtimeSelected = runtimeHostAdapter.selectedHost() === 'runtime';
-  const runningSessions = kodaxHost
-    .listInFlight()
-    .filter(
-      (session) =>
-        session.isRunning() &&
-        shouldCountLocalSessionExitBlocker({
-          surface: session.surface,
-          runtimeSelected,
-          runtimeAuthorityReady: runtime?.state === 'ready',
-        }),
-    ).length;
+  const runningSessions = kodaxHost.listInFlight().filter(
+    (session) =>
+      session.isRunning() &&
+      shouldCountLocalSessionExitBlocker({
+        surface: session.surface,
+        runtimeSelected,
+        runtimeAuthorityReady: runtime?.state === 'ready',
+      }),
+  ).length;
   const runningWorkflows = workflowController
     .list()
     .filter((run) => run.status === 'running' || run.status === 'paused').length;
@@ -1574,18 +1582,21 @@ async function tryStopDaemonAfterForcedExitCancellation(): Promise<boolean> {
   return true;
 }
 
-async function forceCompleteExit(options: { readonly skipDaemonStop?: boolean } = {}): Promise<void> {
+async function forceCompleteExit(
+  options: { readonly skipDaemonStop?: boolean } = {},
+): Promise<void> {
   const result = await runForcedCompleteExit({
     hideControlSurface: hideExitControlSurfaceForBackgroundShutdown,
     stopOwnedWork: () =>
       runForcedExitStep('Space task cancellation', stopSpaceOwnedWorkForForcedExit()),
-    tryStopDaemon: options.skipDaemonStop === true
-      ? async () => false
-      : () =>
-          runForcedExitStep(
-            'Runtime shutdown after forced cancellation',
-            tryStopDaemonAfterForcedExitCancellation(),
-          ),
+    tryStopDaemon:
+      options.skipDaemonStop === true
+        ? async () => false
+        : () =>
+            runForcedExitStep(
+              'Runtime shutdown after forced cancellation',
+              tryStopDaemonAfterForcedExitCancellation(),
+            ),
     commitExit: (outcome) => {
       forcedExitCommitted = true;
       daemonStopConfirmedBeforeQuit = outcome.daemonStopConfirmed;
@@ -1719,6 +1730,18 @@ async function requestCompleteExit(): Promise<void> {
     }
     completeExitRequested = false;
   }
+}
+
+function installTestCompleteExitTrigger(): void {
+  if (!testCompleteExitTrigger) return;
+  const triggerFile = path.join(getKodaxDir(), 'space', 'complete-exit.trigger');
+  const timer = setInterval(() => {
+    if (!existsSync(triggerFile)) return;
+    clearInterval(timer);
+    void requestCompleteExit();
+  }, 100);
+  timer.unref();
+  app.once('before-quit', () => clearInterval(timer));
 }
 
 function updateWindowsBackgroundTrayMenu(runtime: BackgroundRuntimeStatus): void {
@@ -1992,55 +2015,121 @@ const startupPromise = app
     });
     if (startupShutdownCoordinator.isShutdownRequested()) return;
 
-    // Owner-policy reconciliation is a short, required ordering boundary: it
-    // must settle before initialize() can attach or start the selected owner.
-    // The expensive Runtime connection itself starts below as tracked
-    // background work and no longer holds IPC registration or renderer reveal.
-    const [, , , runtimeOwnerPolicyReady] = await Promise.all([
-      probeKodaxSdk(),
-      probeSkillRegistry(),
-      // F064: 在窗口/首跑前 await 加载 Workflow Host Policy——real-session 同步 get() 读缓存，
-      // 否则首个 session 可能撞上默认值而非用户持久化的策略（~100µs 文件读，零额外延迟）。
-      workflowPolicyStore.load().catch((err) => {
-        console.warn(
-          '[main] workflow policy load failed:',
-          err instanceof Error ? err.message : err,
-        );
-      }),
-      runtimeHostAdapter
-        .reconcileStartupOwnerPolicy()
-        .then(() => true)
-        .catch((err) => {
-          diagnosticsLogger?.warn('runtime', 'owner_policy_reconciliation_failed', undefined, err);
-          console.warn(
-            '[main] Shared Coder Runtime owner policy could not be reconciled; Coder is unavailable:',
-            err instanceof Error ? err.message : err,
-          );
-          return false;
-        }),
-    ]);
+    let startupBoundary: Awaited<ReturnType<typeof runRuntimeStartupBoundary>>;
+    try {
+      startupBoundary = await runRuntimeStartupBoundary({
+        recoveryRequested: runtimeExitRecoveryRequested,
+        scanPendingExit:
+          runtimeExitRecoveryRequested || startupSettings.coderRuntimeMode !== 'embedded',
+        settle: () => runtimeHostAdapter.resumePendingRuntimeExitSettlement(),
+        reconcileOwnerPolicy: () =>
+          runtimeHostAdapter
+            .reconcileStartupOwnerPolicy()
+            .then(() => true)
+            .catch((err) => {
+              diagnosticsLogger?.warn(
+                'runtime',
+                'owner_policy_reconciliation_failed',
+                undefined,
+                err,
+              );
+              console.warn(
+                '[main] Shared Coder Runtime owner policy could not be reconciled; Coder is unavailable:',
+                err instanceof Error ? err.message : err,
+              );
+              return false;
+            }),
+        prepareStartup: async () => {
+          await Promise.all([
+            probeKodaxSdk(),
+            probeSkillRegistry(),
+            // F064: 在窗口/首跑前 await 加载 Workflow Host Policy——real-session 同步 get() 读缓存，
+            // 否则首个 session 可能撞上默认值而非用户持久化的策略（~100µs 文件读，零额外延迟）。
+            workflowPolicyStore.load().catch((err) => {
+              console.warn(
+                '[main] workflow policy load failed:',
+                err instanceof Error ? err.message : err,
+              );
+            }),
+          ]);
+        },
+        initializeRuntime: (runtimeOwnerPolicyReady) => {
+          if (startupShutdownCoordinator.isShutdownRequested()) return;
+          const runtimeInitializationReady = runtimeOwnerPolicyReady
+            ? startBackgroundRuntimeInitialization({
+                // initialize() changes the adapter to its explicit initializing state
+                // synchronously. Later Coder calls join the same initializePromise.
+                initialize: () => runtimeHostAdapter.initialize(app.getVersion()),
+                onReady: () => {
+                  // POSIX SDK hydration can add provider secrets while Runtime attaches.
+                  refreshDiagnosticRedactionOptions();
+                  diagnosticsLogger?.info('runtime', 'host_initialized');
+                },
+                onFailure: (err) => {
+                  diagnosticsLogger?.warn('runtime', 'host_initialization_failed', undefined, err);
+                  console.warn(
+                    '[main] Shared Coder Runtime initialization failed; Coder is unavailable:',
+                    err instanceof Error ? err.message : err,
+                  );
+                },
+              })
+            : Promise.resolve(false);
+          void startupShutdownCoordinator.trackStartupTask(runtimeInitializationReady);
+        },
+      });
+    } catch (error) {
+      if (!runtimeExitRecoveryRequested) throw error;
+      const message = error instanceof Error ? error.message : String(error);
+      restoreVisibleExitControlSurface();
+      setVisibleBootStatus(
+        'Runtime exit recovery could not be verified. Coder startup remains blocked.',
+        'close-only',
+      );
+      await dialog.showMessageBox({
+        type: 'error',
+        title: 'Runtime exit recovery failed',
+        message: 'Space did not start a competing Coder Runtime',
+        detail: message,
+        buttons: ['OK'],
+        defaultId: 0,
+        noLink: true,
+      });
+      return;
+    }
+    runtimeExitRecoverySettlement = startupBoundary.settlement;
+    if (startupBoundary.action === 'exit') {
+      console.info(
+        `[main] Runtime exit ${startupBoundary.settlement.status}; completing the original quit request`,
+      );
+      daemonStopConfirmedBeforeQuit = true;
+      stopDaemonOnQuit = true;
+      app.quit();
+      return;
+    }
+    if (startupBoundary.action === 'block') {
+      const locale = await resolveCurrentTrayLocale();
+      const zh = locale === 'zh-CN';
+      restoreVisibleExitControlSurface();
+      setVisibleBootStatus(
+        zh
+          ? 'Runtime 退出恢复仍被安全边界阻止。'
+          : 'Runtime exit recovery remains blocked by its safety boundary.',
+        'close-only',
+      );
+      await dialog.showMessageBox({
+        type: 'error',
+        title: zh ? 'Runtime 退出恢复被阻止' : 'Runtime exit recovery blocked',
+        message: zh
+          ? 'Space 未启动新的 Coder Runtime'
+          : 'Space did not start a competing Coder Runtime',
+        detail: startupBoundary.settlement.message,
+        buttons: [zh ? '确定' : 'OK'],
+        defaultId: 0,
+        noLink: true,
+      });
+      return;
+    }
     if (startupShutdownCoordinator.isShutdownRequested()) return;
-
-    const runtimeInitializationReady = runtimeOwnerPolicyReady
-      ? startBackgroundRuntimeInitialization({
-          // initialize() changes the adapter to its explicit initializing state
-          // synchronously. Later Coder calls join the same initializePromise.
-          initialize: () => runtimeHostAdapter.initialize(app.getVersion()),
-          onReady: () => {
-            // POSIX SDK hydration can add provider secrets while Runtime attaches.
-            refreshDiagnosticRedactionOptions();
-            diagnosticsLogger?.info('runtime', 'host_initialized');
-          },
-          onFailure: (err) => {
-            diagnosticsLogger?.warn('runtime', 'host_initialization_failed', undefined, err);
-            console.warn(
-              '[main] Shared Coder Runtime initialization failed; Coder is unavailable:',
-              err instanceof Error ? err.message : err,
-            );
-          },
-        })
-      : Promise.resolve(false);
-    void startupShutdownCoordinator.trackStartupTask(runtimeInitializationReady);
 
     // POSIX SDK hydration may add provider secrets after diagnostics was initialized.
     refreshDiagnosticRedactionOptions();
@@ -2260,6 +2349,7 @@ const startupPromise = app
       });
     if (startupShutdownCoordinator.isShutdownRequested()) return;
     rendererStartupGate.release();
+    installTestCompleteExitTrigger();
     void showRuntimeExitRecoveryNoticeIfNeeded().catch((error) => {
       console.warn(
         '[main] could not show the Runtime exit recovery notice:',

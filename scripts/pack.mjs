@@ -93,6 +93,7 @@ function runProductSmokes() {
   run('node', ['scripts/smoke-pack.mjs'], 'packaged dependency smoke');
   if (process.platform === 'win32') {
     run('node', ['e2e/boot-smoke-packaged.mjs'], 'packaged Windows boot smoke');
+    run('node', ['e2e/complete-exit-packaged.mjs'], 'packaged Windows complete-exit smoke');
   }
 }
 

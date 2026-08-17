@@ -42,7 +42,10 @@ import type {
   RuntimeTranscript,
   RuntimeTranscriptSliceEntry,
   RuntimeTypedEvent,
+  RuntimeExitSettlement,
+  RuntimeExitSettlementInput,
 } from '@kodax-ai/kodax/runtime';
+export type { RuntimeExitSettlement, RuntimeExitSettlementInput } from '@kodax-ai/kodax/runtime';
 import { effortToReasoningMode } from './reasoning-effort.js';
 import { getKodaxRuntimeDir } from './data-paths.js';
 import { stopCoderDaemonWhenSafe, type SafeDaemonStopResult } from './runtime-daemon-control.js';
@@ -1247,6 +1250,8 @@ interface RuntimeIdentityStoreLike {
   }>;
 }
 
+type RuntimeClientIdentity = Awaited<ReturnType<RuntimeIdentityStoreLike['openInstance']>>;
+
 interface RuntimeOwnerControl {
   acquireInline(input: {
     readonly homeDir?: string;
@@ -1301,6 +1306,10 @@ type DaemonShutdownVerifier = (
   input: DaemonShutdownVerificationInput,
 ) => Promise<DaemonShutdownVerification>;
 
+export type RuntimeExitSettler = (
+  input: RuntimeExitSettlementInput,
+) => Promise<RuntimeExitSettlement>;
+
 interface RuntimeSessionObservationState {
   readonly sessionId: string;
   readonly runtime: KodaXDaemonRuntime;
@@ -1331,6 +1340,8 @@ export interface RuntimeHostAdapterOptions {
   readonly idleDaemonStop?: () => Promise<SafeDaemonStopResult>;
   /** Test seam for the SDK-owned durable shutdown verifier. */
   readonly daemonShutdownVerifier?: DaemonShutdownVerifier;
+  /** Test seam for the SDK-owned full exit settlement and recovery flow. */
+  readonly runtimeExitSettler?: RuntimeExitSettler | null;
   /** Test seam for confirming that the exact inspected daemon PID has exited. */
   readonly daemonProcessExitWaiter?: (pid: number, timeoutMs: number) => Promise<boolean>;
   /**
@@ -1361,6 +1372,42 @@ async function verifyPublishedDaemonShutdown(
     );
   }
   return verifier(input);
+}
+
+async function settlePublishedRuntimeExit(
+  input: RuntimeExitSettlementInput,
+): Promise<RuntimeExitSettlement> {
+  const sdk = await import('@kodax-ai/kodax/runtime');
+  const settle = (sdk as typeof sdk & { readonly settleKodaXRuntimeExit?: RuntimeExitSettler })
+    .settleKodaXRuntimeExit;
+  if (settle === undefined) {
+    throw new Error(
+      'The installed KodaX SDK cannot settle Runtime exit. Install the matching SDK build.',
+    );
+  }
+  return settle(input);
+}
+
+async function closeManagementRuntime(runtime: KodaXDaemonRuntime): Promise<boolean> {
+  let timer: NodeJS.Timeout | undefined;
+  const timedOut = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(
+      () => reject(new Error('Runtime management transport close timed out.')),
+      250,
+    );
+  });
+  try {
+    await Promise.race([runtime.close(), timedOut]);
+    return true;
+  } catch (error: unknown) {
+    console.warn(
+      '[runtime] temporary management transport did not close cleanly:',
+      error instanceof Error ? error.message : String(error),
+    );
+    return false;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 export function resolveRuntimeHostMode(value: string | undefined): RuntimeHostMode {
@@ -1545,6 +1592,7 @@ async function createPublishedRuntime(
         readonly daemonOrphanExit?: number;
         readonly daemonShutdownVerification?: number;
         readonly managedRunDurability?: number;
+        readonly runtimeExitSettlement?: number;
         readonly runtimeEventCoalescing?: number;
         readonly sandboxRuntime?: number;
         readonly sessionEventJournal?: number;
@@ -1560,6 +1608,7 @@ export function assertSpaceRuntimeSdkRequiredCapabilities(sdk: {
     readonly daemonOrphanExit?: number;
     readonly daemonShutdownVerification?: number;
     readonly managedRunDurability?: number;
+    readonly runtimeExitSettlement?: number;
     readonly runtimeEventCoalescing?: number;
     readonly sandboxRuntime?: number;
     readonly sessionEventJournal?: number;
@@ -1571,6 +1620,7 @@ export function assertSpaceRuntimeSdkRequiredCapabilities(sdk: {
     ...(capabilities?.daemonOrphanExit === 1 ? [] : ['daemonOrphanExit v1']),
     ...(capabilities?.daemonShutdownVerification === 1 ? [] : ['daemonShutdownVerification v1']),
     ...(capabilities?.managedRunDurability === 1 ? [] : ['managedRunDurability v1']),
+    ...(capabilities?.runtimeExitSettlement === 1 ? [] : ['runtimeExitSettlement v1']),
     ...(capabilities?.runtimeEventCoalescing === 1 ? [] : ['runtimeEventCoalescing v1']),
     ...(capabilities?.sandboxRuntime === 3 ? [] : ['sandboxRuntime v3']),
     ...(capabilities?.sessionEventJournal === 1 ? [] : ['sessionEventJournal v1']),
@@ -1809,6 +1859,7 @@ export class RuntimeHostAdapter {
   private readonly ownerControl: RuntimeOwnerControl;
   private readonly idleDaemonStop: () => Promise<SafeDaemonStopResult>;
   private readonly daemonShutdownVerifier: DaemonShutdownVerifier;
+  private readonly runtimeExitSettler: RuntimeExitSettler | undefined;
   private readonly integrationHealthPollMs: number;
   private readonly startupTimingFactory: RuntimeStartupTimingFactory;
   private state: RuntimeHostState = 'uninitialized';
@@ -1948,6 +1999,10 @@ export class RuntimeHostAdapter {
             (await legacyProcessExitWaiter(input.owner.pid, input.timeoutMs))
               ? { status: 'succeeded' as const }
               : { status: 'unverified' as const, reason: 'daemon_active' as const });
+    this.runtimeExitSettler =
+      options.runtimeExitSettler === undefined
+        ? settlePublishedRuntimeExit
+        : (options.runtimeExitSettler ?? undefined);
     this.integrationHealthPollMs =
       options.integrationHealthPollMs ?? (options.runtimeFactory === undefined ? 2_000 : 0);
     this.startupTimingFactory =
@@ -2082,6 +2137,80 @@ export class RuntimeHostAdapter {
     };
   }
 
+  private createRuntimeConnectOptions(
+    identity: RuntimeClientIdentity,
+    autoStart: boolean,
+  ): SpaceRuntimeConnectOptions {
+    return {
+      profile: 'coder',
+      autoStart,
+      daemonOrphanExitMs: 30_000,
+      ...(this.runtimeHomeDir !== undefined ? { homeDir: this.runtimeHomeDir } : {}),
+      sessionsDir: path.join(this.profileRoot, 'sessions'),
+      clientInfo: {
+        name: identity.name,
+        ...(identity.title !== undefined ? { title: identity.title } : {}),
+        version: identity.version,
+        instanceId: identity.instanceId,
+        instanceSecret: identity.instanceSecret,
+      },
+      capabilities: {
+        richEvents: true,
+        permissionPrompts: true,
+        contextDiagnostics: true,
+        operationDeduplication: true,
+      },
+      requirements: {
+        externalAgents: true,
+        externalAgentAdmin: 1,
+        actorControlPlane: 1,
+        learningCenter: 1,
+        skillLearningLoop: 1,
+        a2aConfigReconciler: 1,
+        operationDeduplication: 1,
+        sessionObservation: 1,
+        afterTurnInput: 1,
+        interruptInput: 1,
+        askUserTransport: 1,
+        permissionCas: 1,
+        providerCredentialBroker: 1,
+        runBoundHostTools: 2,
+        coderOwnerFencing: 1,
+        crashOutcomeModel: 1,
+        coderFeatureMatrix: 1,
+        sessionAdmission: 1,
+        completeObservationSnapshot: 1,
+        contextCompaction: 3,
+        conversationHistory: 1,
+        transcriptPaging: 1,
+        transcriptSearch: 1,
+        connectionLifecycle: 1,
+        typedRuntimeEvents: 1,
+        daemonSafeRunInput: 1,
+        sharedSessionSettings: 1,
+        durableRecoveryQueries: 1,
+        daemonManagement: 1,
+        daemonOrphanExit: 1,
+        managedRunDurability: 1,
+        actorSettlementConvergence: 2,
+        runtimeEventCoalescing: 1,
+        sandboxRuntime: 3,
+        sessionEventJournal: 1,
+        integrationConfigResilience: 1,
+        runtimeAutoModeGuardrail: 4,
+      },
+    };
+  }
+
+  private createRuntimeManagementConnectOptions(
+    identity: RuntimeClientIdentity,
+  ): SpaceRuntimeConnectOptions {
+    return {
+      ...this.createRuntimeConnectOptions(identity, false),
+      requirements: { daemonManagement: 1 },
+    };
+  }
+
   initialize(clientVersion?: string): Promise<void> {
     const requestedClientVersion = clientVersion?.trim();
     if (requestedClientVersion) this.clientVersion = requestedClientVersion;
@@ -2118,65 +2247,7 @@ export class RuntimeHostAdapter {
         // copies that principal onto every Run origin.
         this.runtimePrincipalId = identity.instanceId;
         activeStage = 'runtime_factory_connect';
-        const runtime = await this.runtimeFactory({
-          profile: 'coder',
-          autoStart: true,
-          daemonOrphanExitMs: 30_000,
-          ...(this.runtimeHomeDir !== undefined ? { homeDir: this.runtimeHomeDir } : {}),
-          sessionsDir: path.join(this.profileRoot, 'sessions'),
-          clientInfo: {
-            name: identity.name,
-            ...(identity.title !== undefined ? { title: identity.title } : {}),
-            version: identity.version,
-            instanceId: identity.instanceId,
-            instanceSecret: identity.instanceSecret,
-          },
-          capabilities: {
-            richEvents: true,
-            permissionPrompts: true,
-            contextDiagnostics: true,
-            operationDeduplication: true,
-          },
-          requirements: {
-            externalAgents: true,
-            externalAgentAdmin: 1,
-            actorControlPlane: 1,
-            learningCenter: 1,
-            skillLearningLoop: 1,
-            a2aConfigReconciler: 1,
-            operationDeduplication: 1,
-            sessionObservation: 1,
-            afterTurnInput: 1,
-            interruptInput: 1,
-            askUserTransport: 1,
-            permissionCas: 1,
-            providerCredentialBroker: 1,
-            runBoundHostTools: 2,
-            coderOwnerFencing: 1,
-            crashOutcomeModel: 1,
-            coderFeatureMatrix: 1,
-            sessionAdmission: 1,
-            completeObservationSnapshot: 1,
-            contextCompaction: 3,
-            conversationHistory: 1,
-            transcriptPaging: 1,
-            transcriptSearch: 1,
-            connectionLifecycle: 1,
-            typedRuntimeEvents: 1,
-            daemonSafeRunInput: 1,
-            sharedSessionSettings: 1,
-            durableRecoveryQueries: 1,
-            daemonManagement: 1,
-            daemonOrphanExit: 1,
-            managedRunDurability: 1,
-            actorSettlementConvergence: 2,
-            runtimeEventCoalescing: 1,
-            sandboxRuntime: 3,
-            sessionEventJournal: 1,
-            integrationConfigResilience: 1,
-            runtimeAutoModeGuardrail: 4,
-          },
-        });
+        const runtime = await this.runtimeFactory(this.createRuntimeConnectOptions(identity, true));
         timing.mark(activeStage, 'complete', runtimeIdentityTimingData(runtime.identity));
         pendingRuntime = runtime;
         return runtime;
@@ -6195,6 +6266,10 @@ export class RuntimeHostAdapter {
       }
       return;
     }
+    if (this.runtimeExitSettler !== undefined) {
+      await this.stopDaemonWithRuntimeExitSettlement();
+      return;
+    }
     if (this.hasReadyRuntime()) {
       const management = await this.inspectDaemonStop();
       const runtimeId = management.runtimeId;
@@ -6344,6 +6419,130 @@ export class RuntimeHostAdapter {
         'Idle Coder daemon shutdown could not be confirmed; restart required.',
       );
     }
+  }
+
+  /** Resume SDK-owned exit recovery before startup owner reconciliation. */
+  async resumePendingRuntimeExitSettlement(): Promise<RuntimeExitSettlement> {
+    const settler = this.runtimeExitSettler ?? settlePublishedRuntimeExit;
+    try {
+      const settlement = await settler({
+        configHome: this.runtimeConfigHome(),
+        profile: 'coder',
+      });
+      if (
+        settlement.status === 'blocked' &&
+        settlement.reason === 'stop_not_accepted' &&
+        settlement.nextAction === 'relaunch-space'
+      ) {
+        try {
+          return await this.settleRuntimeExitWithManagementRuntime(settler);
+        } catch {
+          // A late accepted stop can enter draining between the ticket scan and
+          // management attach. Re-scan once so inline-policy proof can promote
+          // the retained prepared ticket without starting a replacement.
+          return await settler({
+            configHome: this.runtimeConfigHome(),
+            profile: 'coder',
+          });
+        }
+      }
+      return settlement;
+    } catch (error: unknown) {
+      return {
+        status: 'blocked',
+        reason: 'cleanup_unverified',
+        nextAction: 'manual-recovery',
+        message: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  private async stopDaemonWithRuntimeExitSettlement(): Promise<void> {
+    if (this.state === 'initializing' || this.initializePromise !== null) {
+      throw new Error('Wait for Coder initialization to settle before complete exit.');
+    }
+    const runtime = this.hasReadyRuntime() ? await this.requireRuntime() : undefined;
+    const previousRollbackState = this.rollbackInProgress;
+    this.rollbackInProgress = true;
+    if (this.reconnectTimer !== undefined) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = undefined;
+    let settlement: RuntimeExitSettlement;
+    try {
+      settlement = await this.runtimeExitSettler!({
+        configHome: this.runtimeConfigHome(),
+        profile: 'coder',
+        ...(runtime === undefined ? {} : { runtime }),
+      });
+      if (
+        runtime === undefined &&
+        settlement.status === 'blocked' &&
+        settlement.reason === 'stop_not_accepted'
+      ) {
+        settlement = await this.settleRuntimeExitWithManagementRuntime(this.runtimeExitSettler!);
+      }
+    } catch (error: unknown) {
+      if (isCoderOwnerRecoveryRestartRequired(error)) throw error;
+      throw createCoderOwnerRecoveryRestartError(
+        [error],
+        'Coder Runtime exit settlement failed after its mutation boundary; recovery relaunch required.',
+      );
+    }
+    if (settlement.status === 'blocked') {
+      if (settlement.nextAction === 'keep-open') {
+        this.rollbackInProgress = previousRollbackState;
+        if (this.state === 'uninitialized') this.scheduleReconnect();
+        throw new Error(settlement.message);
+      }
+      throw createCoderOwnerRecoveryRestartError(
+        [new Error(settlement.message)],
+        `Coder Runtime exit settlement is blocked (${settlement.reason}).`,
+      );
+    }
+    // The SDK has already closed (or bounded) this transport while proving the
+    // daemon lifecycle. Do not re-await the same client close singleflight.
+    this.runtime = null;
+    this.closingRuntime = null;
+    await this.close();
+    this.rollbackInProgress = previousRollbackState;
+  }
+
+  private async settleRuntimeExitWithManagementRuntime(
+    settler: RuntimeExitSettler,
+  ): Promise<RuntimeExitSettlement> {
+    const identity = await this.identityStore.openInstance({
+      name: 'kodax-space',
+      title: 'KodaX Space',
+      version: this.clientVersion,
+    });
+    const managementRuntime = await this.runtimeFactory(
+      this.createRuntimeManagementConnectOptions(identity),
+    );
+    let settlement: RuntimeExitSettlement;
+    try {
+      settlement = await settler({
+        configHome: this.runtimeConfigHome(),
+        profile: 'coder',
+        runtime: managementRuntime,
+      });
+    } catch (error: unknown) {
+      await closeManagementRuntime(managementRuntime);
+      throw error;
+    }
+    const managementClosed = await closeManagementRuntime(managementRuntime);
+    if (
+      !managementClosed &&
+      settlement.status === 'blocked' &&
+      settlement.nextAction === 'keep-open'
+    ) {
+      return {
+        status: 'blocked',
+        reason: 'cleanup_unverified',
+        nextAction: 'relaunch-space',
+        message:
+          'Temporary Runtime management transport could not be closed after a nonterminal settlement.',
+      };
+    }
+    return settlement;
   }
 
   async prepareEmbeddedRestart(operationId?: string): Promise<void> {
@@ -6719,6 +6918,12 @@ export class RuntimeHostAdapter {
       profile: 'coder',
       ...(this.runtimeHomeDir !== undefined ? { homeDir: this.runtimeHomeDir } : {}),
     };
+  }
+
+  private runtimeConfigHome(): string {
+    return this.runtimeHomeDir === undefined
+      ? this.profileRoot
+      : path.join(this.runtimeHomeDir, '.kodax');
   }
 }
 

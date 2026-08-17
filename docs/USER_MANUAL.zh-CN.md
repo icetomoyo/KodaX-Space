@@ -11,7 +11,8 @@
 > `daemonOrphanExit:1` 能力，不通过 KodaX 版本号推断生命周期支持。F141 Coder
 > Daemon/Embedded 客户开关、F142 会话文件操作和打包可靠性修复继续保留。
 >
-> 当前源码与正式发布版均使用精确 Registry KodaX `0.7.89`；旧 v1 SDK/daemon 会
+> 当前 `v0.1.43` 源码候选使用完整性锁定的 KodaX `0.7.91` 本地候选包；正式发布仍为
+> Registry KodaX `0.7.89`。`0.7.91` 发布前，这个候选依赖只用于源码与打包验收；旧 v1 SDK/daemon 会
 > fail closed，不能继续执行 Coder。Runtime 的合法排队等待、canonical replacement
 > 和提交后维护失败会保持不同的可诊断事实。
 >

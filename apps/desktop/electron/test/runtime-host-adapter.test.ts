@@ -118,6 +118,7 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
         daemonOrphanExit: 1,
         daemonShutdownVerification: 1,
         managedRunDurability: 1,
+        runtimeExitSettlement: 1,
         runtimeEventCoalescing: 1,
         sandboxRuntime: 3,
         sessionEventJournal: 1,
@@ -132,6 +133,7 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
           daemonOrphanExit: 1,
           daemonShutdownVerification: 1,
           managedRunDurability: 1,
+          runtimeExitSettlement: 1,
           runtimeEventCoalescing: 1,
           sandboxRuntime: 3,
           sessionEventJournal: 1,
@@ -147,6 +149,7 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
           daemonOrphanExit: 1,
           daemonShutdownVerification: 1,
           managedRunDurability: 1,
+          runtimeExitSettlement: 1,
           sandboxRuntime: 3,
           sessionEventJournal: 1,
         },
@@ -155,7 +158,7 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
   );
   assert.throws(
     () => assertSpaceRuntimeSdkRequiredCapabilities({}),
-    /installed KodaX SDK.*actorSettlementConvergence v2.*daemonOrphanExit v1.*daemonShutdownVerification v1.*managedRunDurability v1.*runtimeEventCoalescing v1.*sandboxRuntime v3.*sessionEventJournal v1/i,
+    /installed KodaX SDK.*actorSettlementConvergence v2.*daemonOrphanExit v1.*daemonShutdownVerification v1.*managedRunDurability v1.*runtimeExitSettlement v1.*runtimeEventCoalescing v1.*sandboxRuntime v3.*sessionEventJournal v1/i,
   );
 });
 
@@ -3889,6 +3892,7 @@ test('complete exit atomically stops the inspected daemon and leaves an unowned 
     runtimeFactory: async () => fake.runtime,
     identityStore: testIdentityStore,
     runtimeEventParser: testRuntimeEventParser,
+    runtimeExitSettler: null,
     idleDaemonStop: async () => {
       throw new Error('ready Runtime complete-exit must not use the racy CLI stop path');
     },
@@ -3979,6 +3983,359 @@ test('complete exit atomically stops the inspected daemon and leaves an unowned 
   assert.equal(adapter.snapshot().state, 'closed');
 });
 
+test('production complete exit delegates the exact lifecycle settlement to the SDK', async () => {
+  const fake = createFakeRuntime();
+  const calls: import('../kodax/runtime-host-adapter.js').RuntimeExitSettlementInput[] = [];
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeHomeDir: path.resolve('C:\\runtime-base'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    runtimeExitSettler: async (input) => {
+      calls.push(input);
+      await input.runtime?.close();
+      return {
+        status: 'recovered',
+        repairs: ['windows_process_tree', 'windows_sandbox_acl'],
+      };
+    },
+  });
+
+  await adapter.initialize();
+  await adapter.stopDaemonForCompleteExit('space-sdk-settlement-1');
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.configHome, path.join(path.resolve('C:\\runtime-base'), '.kodax'));
+  assert.equal(calls[0]?.profile, 'coder');
+  assert.equal(calls[0]?.runtime, fake.runtime);
+  assert.equal(fake.calls.daemonStops.length, 0);
+  assert.equal(fake.calls.close, 1);
+  assert.equal(adapter.snapshot().state, 'closed');
+});
+
+test('a settled exit does not re-await the SDK transport close singleflight', async () => {
+  const fake = createFakeRuntime();
+  const hungRuntime = {
+    ...fake.runtime,
+    async close() {
+      fake.calls.close += 1;
+      return new Promise<void>(() => undefined);
+    },
+  } as KodaXDaemonRuntime;
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => hungRuntime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    runtimeExitSettler: async (input) => {
+      void input.runtime?.close();
+      return { status: 'clean', repairs: [] };
+    },
+  });
+
+  await adapter.initialize();
+  const completed = await Promise.race([
+    adapter.stopDaemonForCompleteExit().then(() => true),
+    new Promise<false>((resolve) => setTimeout(() => resolve(false), 100)),
+  ]);
+
+  assert.equal(completed, true);
+  assert.equal(fake.calls.close, 1);
+  assert.equal(adapter.snapshot().state, 'closed');
+});
+
+test('exit settlement fences reconnect after a committed stop loses transport', async () => {
+  const fake = createFakeRuntime();
+  let factoryCalls = 0;
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => {
+      factoryCalls += 1;
+      return fake.runtime;
+    },
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    runtimeExitSettler: async () => {
+      fake.disconnect(true);
+      await new Promise<void>((resolve) => setTimeout(resolve, 1_100));
+      return { status: 'clean', repairs: [] };
+    },
+  });
+
+  await adapter.initialize();
+  await adapter.stopDaemonForCompleteExit();
+
+  assert.equal(factoryCalls, 1);
+  assert.equal(adapter.snapshot().state, 'closed');
+});
+
+test('an SDK settlement rejection after possible mutation requires recovery relaunch', async () => {
+  const fake = createFakeRuntime();
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    runtimeExitSettler: async () => {
+      throw new Error('stop accepted but ticket phase write failed');
+    },
+  });
+
+  await adapter.initialize();
+  await assert.rejects(adapter.stopDaemonForCompleteExit(), (error: unknown) =>
+    isCoderOwnerRecoveryRestartRequired(error),
+  );
+
+  assert.equal(adapter.snapshot().state, 'ready');
+});
+
+test('SDK exit settlement keeps an unmutated active Runtime open when preflight blocks', async () => {
+  const fake = createFakeRuntime();
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    runtimeExitSettler: async () => ({
+      status: 'blocked',
+      reason: 'active_work',
+      nextAction: 'keep-open',
+      message: 'active run remains',
+    }),
+  });
+
+  await adapter.initialize();
+  await assert.rejects(adapter.stopDaemonForCompleteExit(), /active run remains/i);
+
+  assert.equal(fake.calls.close, 0);
+  assert.equal(adapter.snapshot().state, 'ready');
+});
+
+test('SDK exit settlement reconnects management without auto-start when initialization failed', async () => {
+  const fake = createFakeRuntime();
+  const connectAutoStart: Array<boolean | undefined> = [];
+  const managementRequirements: unknown[] = [];
+  const settlementCalls: import('../kodax/runtime-host-adapter.js').RuntimeExitSettlementInput[] =
+    [];
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    runtimeFactory: async (options) => {
+      connectAutoStart.push(options.autoStart);
+      if (options.autoStart) throw new Error('session projection startup failed');
+      managementRequirements.push(options.requirements);
+      return fake.runtime;
+    },
+    runtimeExitSettler: async (input) => {
+      settlementCalls.push(input);
+      return input.runtime === undefined
+        ? {
+            status: 'blocked',
+            reason: 'stop_not_accepted',
+            nextAction: 'keep-open',
+            message: 'management Runtime required',
+          }
+        : { status: 'clean', repairs: [] };
+    },
+  });
+
+  await assert.rejects(adapter.initialize(), /session projection startup failed/i);
+  assert.equal(adapter.snapshot().state, 'failed');
+  await adapter.stopDaemonForCompleteExit();
+
+  assert.deepEqual(connectAutoStart, [true, false]);
+  assert.deepEqual(managementRequirements, [{ daemonManagement: 1 }]);
+  assert.equal(settlementCalls.length, 2);
+  assert.equal(settlementCalls[0]?.runtime, undefined);
+  assert.equal(settlementCalls[1]?.runtime, fake.runtime);
+  assert.equal(fake.calls.daemonStops.length, 0);
+  assert.equal(fake.calls.close, 1);
+  assert.equal(adapter.snapshot().state, 'closed');
+});
+
+test('startup recovery converges an ambiguous prepared stop through management reconnect', async () => {
+  const fake = createFakeRuntime();
+  const connectAutoStart: Array<boolean | undefined> = [];
+  const managementRequirements: unknown[] = [];
+  const settlementCalls: import('../kodax/runtime-host-adapter.js').RuntimeExitSettlementInput[] =
+    [];
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    runtimeFactory: async (options) => {
+      connectAutoStart.push(options.autoStart);
+      managementRequirements.push(options.requirements);
+      return fake.runtime;
+    },
+    runtimeExitSettler: async (input) => {
+      settlementCalls.push(input);
+      return input.runtime === undefined
+        ? {
+            status: 'blocked',
+            reason: 'stop_not_accepted',
+            nextAction: 'relaunch-space',
+            message: 'prepared stop acceptance is ambiguous',
+          }
+        : { status: 'recovered', repairs: [] };
+    },
+  });
+
+  const settlement = await adapter.resumePendingRuntimeExitSettlement();
+
+  assert.deepEqual(settlement, { status: 'recovered', repairs: [] });
+  assert.deepEqual(connectAutoStart, [false]);
+  assert.deepEqual(managementRequirements, [{ daemonManagement: 1 }]);
+  assert.equal(settlementCalls.length, 2);
+  assert.equal(settlementCalls[0]?.runtime, undefined);
+  assert.equal(settlementCalls[1]?.runtime, fake.runtime);
+  assert.equal(fake.calls.close, 1);
+});
+
+test('startup recovery does not let a duplicate management close hide recovered settlement', async () => {
+  const fake = createFakeRuntime();
+  const closeAttempt = new Promise<void>(() => undefined);
+  const hungRuntime = {
+    ...fake.runtime,
+    close() {
+      fake.calls.close += 1;
+      return closeAttempt;
+    },
+  } as KodaXDaemonRuntime;
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    runtimeFactory: async () => hungRuntime,
+    runtimeExitSettler: async (input) => {
+      if (input.runtime === undefined) {
+        return {
+          status: 'blocked',
+          reason: 'stop_not_accepted',
+          nextAction: 'relaunch-space',
+          message: 'management reconnect required',
+        };
+      }
+      void input.runtime.close();
+      return { status: 'recovered', repairs: [] };
+    },
+  });
+
+  const result = await Promise.race([
+    adapter.resumePendingRuntimeExitSettlement(),
+    new Promise<'timed-out'>((resolve) => setTimeout(() => resolve('timed-out'), 1_000)),
+  ]);
+
+  assert.deepEqual(result, { status: 'recovered', repairs: [] });
+});
+
+test('startup recovery fails closed when a blocked temporary management client cannot close', async () => {
+  const fake = createFakeRuntime();
+  const hungRuntime = {
+    ...fake.runtime,
+    close() {
+      fake.calls.close += 1;
+      return new Promise<void>(() => undefined);
+    },
+  } as KodaXDaemonRuntime;
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    runtimeFactory: async () => hungRuntime,
+    runtimeExitSettler: async (input) =>
+      input.runtime === undefined
+        ? {
+            status: 'blocked',
+            reason: 'stop_not_accepted',
+            nextAction: 'relaunch-space',
+            message: 'management reconnect required',
+          }
+        : {
+            status: 'blocked',
+            reason: 'active_work',
+            nextAction: 'keep-open',
+            message: 'active work appeared during management reconnect',
+          },
+  });
+
+  const result = await adapter.resumePendingRuntimeExitSettlement();
+
+  assert.deepEqual(result, {
+    status: 'blocked',
+    reason: 'cleanup_unverified',
+    nextAction: 'relaunch-space',
+    message:
+      'Temporary Runtime management transport could not be closed after a nonterminal settlement.',
+  });
+  assert.equal(fake.calls.close, 1);
+});
+
+test('startup recovery rescans the ticket when a late stop prevents management attach', async () => {
+  let settlementCalls = 0;
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    runtimeFactory: async () => {
+      throw new Error('daemon entered draining before management attach');
+    },
+    runtimeExitSettler: async () => {
+      settlementCalls += 1;
+      return settlementCalls === 1
+        ? {
+            status: 'blocked',
+            reason: 'stop_not_accepted',
+            nextAction: 'relaunch-space',
+            message: 'management reconnect required',
+          }
+        : { status: 'recovered', repairs: [] };
+    },
+  });
+
+  const settlement = await adapter.resumePendingRuntimeExitSettlement();
+
+  assert.deepEqual(settlement, { status: 'recovered', repairs: [] });
+  assert.equal(settlementCalls, 2);
+});
+
+test('post-mutation SDK settlement blockage preserves the live projection and requires restart', async () => {
+  const fake = createFakeRuntime();
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    runtimeExitSettler: async () => ({
+      status: 'blocked',
+      reason: 'cleanup_failed',
+      nextAction: 'restart-system',
+      message: 'durable cleanup failed after stop acceptance',
+    }),
+  });
+
+  await adapter.initialize();
+  await assert.rejects(adapter.stopDaemonForCompleteExit(), (error: unknown) =>
+    isCoderOwnerRecoveryRestartRequired(error),
+  );
+
+  assert.equal(fake.calls.close, 0);
+  assert.equal(adapter.snapshot().state, 'ready');
+});
+
 test('complete exit fails closed and requires recovery when durable daemon cleanup fails', async () => {
   const fake = createFakeRuntime();
   let inlineOwnerCloses = 0;
@@ -3990,6 +4347,7 @@ test('complete exit fails closed and requires recovery when durable daemon clean
     runtimeFactory: async () => fake.runtime,
     identityStore: testIdentityStore,
     runtimeEventParser: testRuntimeEventParser,
+    runtimeExitSettler: null,
     daemonShutdownVerifier: async (input) => {
       assert.equal(input.configHome, path.resolve('C:\\isolated-profile'));
       assert.equal(input.profile, 'coder');
@@ -4081,6 +4439,7 @@ test('complete exit reacquires a fence after transient replacement-fence content
     runtimeFactory: async () => fake.runtime,
     identityStore: testIdentityStore,
     runtimeEventParser: testRuntimeEventParser,
+    runtimeExitSettler: null,
     idleDaemonStop: async () => {
       throw new Error('ready Runtime complete-exit must not use the racy CLI stop path');
     },
@@ -4179,6 +4538,7 @@ test('complete exit fails closed when replacement-fence contention persists', as
     runtimeFactory: async () => fake.runtime,
     identityStore: testIdentityStore,
     runtimeEventParser: testRuntimeEventParser,
+    runtimeExitSettler: null,
     daemonProcessExitWaiter: async () => {
       daemonExitWaited = true;
       return true;
@@ -4255,6 +4615,7 @@ test('complete exit preserves restart-required recovery when compensated fence r
     runtimeFactory: async () => fake.runtime,
     identityStore: testIdentityStore,
     runtimeEventParser: testRuntimeEventParser,
+    runtimeExitSettler: null,
     daemonProcessExitWaiter: async () => {
       daemonExitWaited = true;
       return true;
@@ -4529,6 +4890,7 @@ test('complete exit verifies owner release when daemon transport closes before t
     runtimeFactory: async () => fake.runtime,
     identityStore: testIdentityStore,
     runtimeEventParser: testRuntimeEventParser,
+    runtimeExitSettler: null,
     idleDaemonStop: async () => {
       throw new Error('ready Runtime complete-exit must not use the racy CLI stop path');
     },
@@ -4607,6 +4969,7 @@ test('complete exit stays fail-closed when a lost rollback reply cannot prove ow
     runtimeFactory: async () => fake.runtime,
     identityStore: testIdentityStore,
     runtimeEventParser: testRuntimeEventParser,
+    runtimeExitSettler: null,
     ownerControl: {
       acquireInline: async () => {
         inlineAcquisitions += 1;
@@ -4662,6 +5025,7 @@ test('complete exit preserves restart-required recovery after a lost rollback re
     runtimeFactory: async () => fake.runtime,
     identityStore: testIdentityStore,
     runtimeEventParser: testRuntimeEventParser,
+    runtimeExitSettler: null,
     ownerControl: {
       acquireInline: async () => {
         inlineAcquisitions += 1;
@@ -4710,6 +5074,7 @@ test('complete exit treats CLI missing as confirmation only when owner state is 
     const adapter = new RuntimeHostAdapter({
       mode: 'runtime',
       profileRoot: path.resolve('C:\\isolated-profile'),
+      runtimeExitSettler: null,
       idleDaemonStop: async () => ({ stopped: false, reason: 'missing' }),
       ownerControl: {
         acquireInline: async () => {
@@ -4765,6 +5130,7 @@ test('complete exit verifies the exact idle daemon owner before accepting CLI sh
   const adapter = new RuntimeHostAdapter({
     mode: 'runtime',
     profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeExitSettler: null,
     idleDaemonStop: async () => ({ stopped: true }),
     daemonShutdownVerifier: async (input) => {
       verificationOwner = input.owner as typeof observedOwner;
@@ -4816,6 +5182,7 @@ test('complete exit rejects an idle CLI success without a captured daemon owner'
   const adapter = new RuntimeHostAdapter({
     mode: 'runtime',
     profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeExitSettler: null,
     idleDaemonStop: async () => ({ stopped: true }),
     ownerControl: {
       acquireInline: async () => {
@@ -4855,6 +5222,7 @@ test('complete exit rejects an idle legacy daemon without verified containment',
   const adapter = new RuntimeHostAdapter({
     mode: 'runtime',
     profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeExitSettler: null,
     idleDaemonStop: async () => ({ stopped: true }),
     daemonShutdownVerifier: async () => ({
       status: 'unverified',
@@ -4905,6 +5273,7 @@ test('ambiguous idle daemon stop requires process recovery', async () => {
   const adapter = new RuntimeHostAdapter({
     mode: 'runtime',
     profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeExitSettler: null,
     idleDaemonStop: async () => ({
       stopped: false,
       reason: 'command_failed',
