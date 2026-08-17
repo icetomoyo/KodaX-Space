@@ -2670,6 +2670,7 @@ test('an uncertain warning remains visible while a raced refresh waits for Runti
     surface: 'code',
     hasMore: false,
     conversationStatus: 'partial',
+    runtimeUnavailable: true,
   });
   assert.deepEqual(
     useAppStore.getState().userMessagesBySession[sessionId]?.map((message) => message.content),

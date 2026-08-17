@@ -599,7 +599,7 @@ const transcriptHistoryIdentityShape = {
   parentId: z.string().min(1).max(256).nullable().optional(),
   /** Stable identity shared by proven compaction/fork clones. */
   logicalId: z.string().min(1).max(256).optional(),
-  /** Root physical source when this row was cloned. */
+  /** Direct physical predecessor entry id when this row was cloned (the clone source's own id, not a transitive root — matches the SDK embedder guide). */
   sourceEntryId: z.string().min(1).max(256).optional(),
   /** Body provider when payload authority differed from the first canonical occurrence. */
   authoritativeEntryId: z.string().min(1).max(256).optional(),
