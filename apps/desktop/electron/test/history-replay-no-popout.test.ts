@@ -2357,10 +2357,18 @@ test('terminal non-streaming recovery keeps only the canonical fallback answer w
     turnId: 'turn-fallback',
   });
   store.appendEvent({
+    kind: 'output_segment_started',
+    sessionId: SID,
+    responseId: 'turn-fallback',
+    providerRequestId: 'request-fallback-abandoned',
+    mode: 'append',
+  });
+  store.appendEvent({
     kind: 'text_delta',
     sessionId: SID,
     text: 'abandoned stream',
     sentAt: 9_100,
+    providerRequestId: 'request-fallback-abandoned',
   });
   store.appendEvent({
     kind: 'provider_recovery',
@@ -2375,10 +2383,18 @@ test('terminal non-streaming recovery keeps only the canonical fallback answer w
     fallbackUsed: true,
   });
   store.appendEvent({
+    kind: 'output_segment_started',
+    sessionId: SID,
+    responseId: 'turn-fallback',
+    providerRequestId: 'request-fallback-final',
+    mode: 'replace',
+  });
+  store.appendEvent({
     kind: 'text_delta',
     sessionId: SID,
     text: 'fallback answer',
     sentAt: 9_200,
+    providerRequestId: 'request-fallback-final',
   });
   store.appendEvent({
     kind: 'session_complete',
@@ -2432,10 +2448,18 @@ test('terminal recovery keeps only the canonical retry answer when folding live 
     turnId: 'turn-recovery',
   });
   store.appendEvent({
+    kind: 'output_segment_started',
+    sessionId: SID,
+    responseId: 'turn-recovery',
+    providerRequestId: 'request-recovery-abandoned',
+    mode: 'append',
+  });
+  store.appendEvent({
     kind: 'text_delta',
     sessionId: SID,
     text: 'interim attempt',
     sentAt: 10_100,
+    providerRequestId: 'request-recovery-abandoned',
   });
   store.appendEvent({
     kind: 'provider_recovery',
@@ -2450,10 +2474,18 @@ test('terminal recovery keeps only the canonical retry answer when folding live 
     fallbackUsed: false,
   });
   store.appendEvent({
+    kind: 'output_segment_started',
+    sessionId: SID,
+    responseId: 'turn-recovery',
+    providerRequestId: 'request-recovery-final',
+    mode: 'replace',
+  });
+  store.appendEvent({
     kind: 'text_delta',
     sessionId: SID,
     text: 'retry final',
     sentAt: 10_200,
+    providerRequestId: 'request-recovery-final',
   });
   store.appendEvent({
     kind: 'session_complete',
@@ -2510,7 +2542,19 @@ test('exact entry recovery retains a proven post-retry live extension', () => {
     content: 'continue after retry',
     entryId: 'entry-recovery-extension',
   });
-  store.appendEvent({ kind: 'text_delta', sessionId: SID, text: 'abandoned attempt' });
+  store.appendEvent({
+    kind: 'output_segment_started',
+    sessionId: SID,
+    responseId: 'response-recovery-extension',
+    providerRequestId: 'request-recovery-extension-abandoned',
+    mode: 'append',
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'abandoned attempt',
+    providerRequestId: 'request-recovery-extension-abandoned',
+  });
   store.appendEvent({
     kind: 'provider_recovery',
     sessionId: SID,
@@ -2524,9 +2568,17 @@ test('exact entry recovery retains a proven post-retry live extension', () => {
     fallbackUsed: false,
   });
   store.appendEvent({
+    kind: 'output_segment_started',
+    sessionId: SID,
+    responseId: 'response-recovery-extension',
+    providerRequestId: 'request-recovery-extension-final',
+    mode: 'replace',
+  });
+  store.appendEvent({
     kind: 'text_delta',
     sessionId: SID,
     text: 'retry final extended',
+    providerRequestId: 'request-recovery-extension-final',
   });
   store.appendEvent({ kind: 'session_complete', sessionId: SID });
 
@@ -3611,10 +3663,19 @@ test('a canonicalized recovery turn cannot reappear after the newest window move
     turnId: 'turn-old-recovery',
   });
   store.appendEvent({
+    kind: 'output_segment_started',
+    sessionId: SID,
+    responseId: 'turn-old-recovery',
+    providerRequestId: 'request-old-recovery-abandoned',
+    mode: 'append',
+    turnId: 'turn-old-recovery',
+  });
+  store.appendEvent({
     kind: 'text_delta',
     sessionId: SID,
     text: 'abandoned attempt',
     turnId: 'turn-old-recovery',
+    providerRequestId: 'request-old-recovery-abandoned',
   });
   store.appendEvent({
     kind: 'provider_recovery',
@@ -3629,10 +3690,19 @@ test('a canonicalized recovery turn cannot reappear after the newest window move
     fallbackUsed: false,
   });
   store.appendEvent({
+    kind: 'output_segment_started',
+    sessionId: SID,
+    responseId: 'turn-old-recovery',
+    providerRequestId: 'request-old-recovery-final',
+    mode: 'replace',
+    turnId: 'turn-old-recovery',
+  });
+  store.appendEvent({
     kind: 'text_delta',
     sessionId: SID,
     text: 'retry final',
     turnId: 'turn-old-recovery',
+    providerRequestId: 'request-old-recovery-final',
   });
   store.appendEvent({
     kind: 'session_complete',

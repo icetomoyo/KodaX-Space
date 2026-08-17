@@ -7,8 +7,10 @@
 
 > **2026-08-17 当前源码增量**：root/Desktop 使用同一份可安装的 KodaX `0.7.91`
 > vendored candidate tarball；Registry 发布仍是单独的正式发布门禁。除
-> `actorSettlementConvergence:2` 外，Space 还消费本地 `runtimeExitSettlement:1`，
-> 在 owner reconciliation 与 daemon auto-start 前恢复精确 complete-exit 票据。
+> `actorSettlementConvergence:2` 外，Space 还消费本地 `runtimeExitSettlement:1` 与
+> `liveOutputSegments:1`。Runtime raw journal 保留全部 provider attempt，live snapshot
+> 只提供 SDK 计算后的有效 segment；Space 不运行 checkpoint/text replay 状态机。
+> owner reconciliation 与 daemon auto-start 前仍先恢复精确 complete-exit 票据。
 >
 > Last updated: 2026-08-17
 > Status: 核心架构决策仍有效；当前正式发布基线为 KodaX Space 0.1.42（package 0.1.42）/ npm 正式发布的精确 KodaX 0.7.89。中间方案与否决理由见 [ADR/](ADR/)；当前能力边界见 [KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md)。

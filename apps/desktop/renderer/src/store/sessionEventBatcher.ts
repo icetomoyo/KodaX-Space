@@ -100,6 +100,7 @@ function mergeAdjacentSessionEvents(
       merged[merged.length - 1] = {
         ...event,
         text: previous.text + event.text,
+        textStartOffset: previous.textStartOffset,
         sentAt: previous.sentAt ?? event.sentAt,
       };
     } else if (

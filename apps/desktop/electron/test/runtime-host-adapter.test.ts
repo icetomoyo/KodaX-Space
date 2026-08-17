@@ -12,6 +12,7 @@ import type {
   RuntimeRunResult,
   RuntimeSession,
   RuntimeSessionCursor,
+  RuntimeSessionObservationSnapshot,
   RuntimeSessionSettings,
   RuntimeSessionStatus,
   RuntimeEventType,
@@ -19,6 +20,7 @@ import type {
 } from '@kodax-ai/kodax/runtime';
 import type { AgentEvent, AgentTreeSnapshot } from '@kodax-ai/kodax/agent';
 import { isCoderOwnerRecoveryRestartRequired } from '../kodax/coder-owner-recovery-error.js';
+import { projectRuntimeSessionSnapshot } from '../kodax/runtime/coder-daemon-projection.js';
 import {
   RuntimeHostAdapter,
   assertSpaceRuntimeSdkRequiredCapabilities,
@@ -117,6 +119,7 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
         actorSettlementConvergence: 2,
         daemonOrphanExit: 1,
         daemonShutdownVerification: 1,
+        liveOutputSegments: 1,
         managedRunDurability: 1,
         runtimeExitSettlement: 1,
         runtimeEventCoalescing: 1,
@@ -132,6 +135,7 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
           actorSettlementConvergence: 1,
           daemonOrphanExit: 1,
           daemonShutdownVerification: 1,
+          liveOutputSegments: 1,
           managedRunDurability: 1,
           runtimeExitSettlement: 1,
           runtimeEventCoalescing: 1,
@@ -145,9 +149,10 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
     () =>
       assertSpaceRuntimeSdkRequiredCapabilities({
         KODAX_RUNTIME_SDK_CAPABILITIES: {
-          actorSettlementConvergence: 1,
+          actorSettlementConvergence: 2,
           daemonOrphanExit: 1,
           daemonShutdownVerification: 1,
+          liveOutputSegments: 1,
           managedRunDurability: 1,
           runtimeExitSettlement: 1,
           sandboxRuntime: 3,
@@ -158,7 +163,7 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
   );
   assert.throws(
     () => assertSpaceRuntimeSdkRequiredCapabilities({}),
-    /installed KodaX SDK.*actorSettlementConvergence v2.*daemonOrphanExit v1.*daemonShutdownVerification v1.*managedRunDurability v1.*runtimeExitSettlement v1.*runtimeEventCoalescing v1.*sandboxRuntime v3.*sessionEventJournal v1/i,
+    /installed KodaX SDK.*actorSettlementConvergence v2.*daemonOrphanExit v1.*daemonShutdownVerification v1.*liveOutputSegments v1.*managedRunDurability v1.*runtimeExitSettlement v1.*runtimeEventCoalescing v1.*sandboxRuntime v3.*sessionEventJournal v1/i,
   );
 });
 
@@ -412,6 +417,7 @@ function createFakeRuntime(runtimeId = 'rt_test') {
       },
       managedRunDurability: { version: 1 },
       actorSettlementConvergence: { version: 2 },
+      liveOutputSegments: { version: 1 },
       runtimeEventCoalescing: { version: 1 },
       sessionEventJournal: { version: 1 },
       sandboxRuntime: {
@@ -613,6 +619,7 @@ function createFakeRuntime(runtimeId = 'rt_test') {
             live: {
               assistantTextByRun: {},
               thinkingTextByRun: {},
+              outputSegmentsByRun: {},
               activeTools: [],
               pendingUserInputs: [],
               managedTasks: [],
@@ -2969,7 +2976,7 @@ test('same-runtime-id reconnect restores an active live projection', async () =>
   await adapter.close();
 });
 
-test('active observation rebuilds the current Provider attempt from the Runtime journal', async () => {
+test('active observation trusts the SDK output segment snapshot without replay fallback', async () => {
   const fake = createFakeRuntime('rt_recovered_observation');
   const sessionId = 's_recovered_observation';
   const runId = 'run_recovered_observation';
@@ -2995,8 +3002,21 @@ test('active observation rebuilds the current Provider attempt from the Runtime 
         ],
         live: {
           ...observation.snapshot.live,
-          assistantTextByRun: { [runId]: 'abandonedreplacement' },
-          thinkingTextByRun: { [runId]: 'abandoned thinkingreplacement thinking' },
+          assistantTextByRun: { [runId]: 'replacement' },
+          thinkingTextByRun: { [runId]: 'replacement thinking' },
+          outputSegmentsByRun: {
+            [runId]: {
+              retained: [],
+              active: {
+                responseId: 'response_recovered',
+                providerRequestId: 'request_replacement',
+                mode: 'replace',
+                startedAtSeq: 6,
+                assistantText: 'replacement',
+                thinkingText: 'replacement thinking',
+              },
+            },
+          },
         },
       },
     };
@@ -3126,379 +3146,165 @@ test('active observation rebuilds the current Provider attempt from the Runtime 
   await adapter.ensureObserved(sessionId);
 
   const live = await adapter.readSessionLiveSnapshot(sessionId);
-  assert.equal(replayCalls, 1);
+  assert.equal(replayCalls, 0);
   assert.equal(live.assistantDraft?.text, 'replacement');
   assert.equal(live.thinkingDraft?.text, 'replacement thinking');
+  assert.equal(live.outputSegment?.active?.providerRequestId, 'request_replacement');
   assert.equal(live.cursor.seq, 7);
   await adapter.close();
 });
 
-test('active observation keeps its replayed checkpoint for later Provider recoveries', async () => {
-  const fake = createFakeRuntime('rt_checkpoint_observation');
-  const sessionId = 's_checkpoint_observation';
-  const runId = 'run_checkpoint_observation';
-  fake.sessions.add(sessionId);
-  const originalObserve = fake.runtime.sessions.observe.bind(fake.runtime.sessions);
-  fake.runtime.sessions.observe = async (...args) => {
-    const observation = await originalObserve(...args);
-    return {
-      ...observation,
-      snapshot: {
-        ...observation.snapshot,
-        cursor: testRuntimeCursor(sessionId, 1),
-        runs: [
-          {
-            runId,
-            sessionId,
-            phase: 'running' as const,
-            provider: 'mock',
-            mode: 'managed_task' as const,
-            startedAt: '2026-08-14T00:00:00.000Z',
-          },
-        ],
-        live: observation.snapshot.live,
-      },
-    };
+test('streamed replacement converges with a fresh unbounded output segment snapshot', async () => {
+  const fake = createFakeRuntime('rt_bounded_output_replacement');
+  const sessionId = 's_bounded_output_replacement';
+  const runId = 'run_bounded_output_replacement';
+  const stableText = 's'.repeat(200_000);
+  const abandonedText = 'a'.repeat(100_000);
+  const stableSegment = {
+    responseId: 'response_bounded_output',
+    providerRequestId: 'request_stable',
+    mode: 'append' as const,
+    startedAtSeq: 1,
+    assistantText: stableText,
+    thinkingText: '',
   };
-  fake.runtime.events.replay = async () => [
-    withTestRuntimeCursor({
-      id: 'event_checkpoint_iteration',
-      seq: 1,
-      time: '2026-08-14T00:00:00.100Z',
-      type: 'run.progress',
-      sessionId,
-      runId,
-      payload: { kind: 'iteration_start', iter: 1, maxIter: 200 },
-    }),
-  ];
-  const controller = new RuntimeProjectionController(
-    createPendingSdkRuntimeProjection(100).profileSnapshot(),
-  );
-  const adapter = new RuntimeHostAdapter({
-    mode: 'runtime',
-    profileRoot: path.resolve('C:\\isolated-profile'),
-    runtimeFactory: async () => fake.runtime,
-    identityStore: testIdentityStore,
-    runtimeEventParser: testRuntimeEventParser,
-    projectionController: controller,
-  });
-
-  await adapter.initialize();
-  await adapter.ensureObserved(sessionId);
-  fake.emit({
-    id: 'event_checkpoint_abandoned',
-    seq: 2,
-    time: '2026-08-14T00:00:00.200Z',
-    type: 'assistant.delta',
-    sessionId,
-    runId,
-    payload: { text: 'abandoned' },
-  });
-  fake.emit({
-    id: 'event_checkpoint_recovery_1',
-    seq: 3,
-    time: '2026-08-14T00:00:00.300Z',
-    type: 'provider.recovery',
-    sessionId,
-    runId,
-    payload: {
-      event: { stage: 'mid_stream_text', recoveryAction: 'stable_boundary_retry' },
-    },
-  });
-  fake.emit({
-    id: 'event_checkpoint_replacement_1',
-    seq: 4,
-    time: '2026-08-14T00:00:00.400Z',
-    type: 'assistant.delta',
-    sessionId,
-    runId,
-    payload: { text: 'first replacement' },
-  });
-  fake.emit({
-    id: 'event_checkpoint_recovery_2',
-    seq: 5,
-    time: '2026-08-14T00:00:00.500Z',
-    type: 'provider.recovery',
-    sessionId,
-    runId,
-    payload: {
-      event: { stage: 'mid_stream_text', recoveryAction: 'non_streaming_fallback' },
-    },
-  });
-  fake.emit({
-    id: 'event_checkpoint_replacement_2',
-    seq: 6,
-    time: '2026-08-14T00:00:00.600Z',
-    type: 'assistant.delta',
-    sessionId,
-    runId,
-    payload: { text: 'final replacement' },
-  });
-
-  await waitForTest(
-    () => controller.sessionLiveSnapshot(sessionId).assistantDraft?.text === 'final replacement',
-  );
-  await adapter.close();
-});
-
-test('active observation omits a causally unscoped cumulative draft when replay fails', async () => {
-  const fake = createFakeRuntime('rt_replay_failure');
-  const sessionId = 's_replay_failure';
-  const runId = 'run_replay_failure';
+  const replacementSegment = {
+    responseId: 'response_bounded_output',
+    providerRequestId: 'request_final_replacement',
+    mode: 'replace' as const,
+    startedAtSeq: 10,
+    assistantText: '',
+    thinkingText: '',
+  };
   fake.sessions.add(sessionId);
   const originalObserve = fake.runtime.sessions.observe.bind(fake.runtime.sessions);
+  let initialObservationSnapshot: RuntimeSessionObservationSnapshot | undefined;
   fake.runtime.sessions.observe = async (...args) => {
     const observation = await originalObserve(...args);
-    return {
-      ...observation,
-      snapshot: {
-        ...observation.snapshot,
-        cursor: testRuntimeCursor(sessionId, 2),
-        runs: [
-          {
-            runId,
-            sessionId,
-            turnId: 'turn_replay_failure',
-            phase: 'running' as const,
-            provider: 'mock',
-            mode: 'managed_task' as const,
-            startedAt: '2026-08-14T00:00:00.000Z',
-          },
-        ],
-        live: {
-          ...observation.snapshot.live,
-          assistantTextByRun: { [runId]: 'authoritative cumulative draft' },
+    initialObservationSnapshot = {
+      ...observation.snapshot,
+      cursor: testRuntimeCursor(sessionId, 7),
+      runs: [
+        {
+          runId,
+          sessionId,
+          turnId: 'turn_bounded_output',
+          phase: 'running' as const,
+          provider: 'mock',
+          startedAt: '2026-08-17T00:00:00.000Z',
         },
-      },
-    };
-  };
-  fake.runtime.events.replay = async () => {
-    throw new Error('journal unavailable');
-  };
-  const adapter = new RuntimeHostAdapter({
-    mode: 'runtime',
-    profileRoot: path.resolve('C:\\isolated-profile'),
-    runtimeFactory: async () => fake.runtime,
-    identityStore: testIdentityStore,
-    runtimeEventParser: testRuntimeEventParser,
-  });
-
-  await adapter.initialize();
-  await adapter.ensureObserved(sessionId);
-
-  const live = await adapter.readSessionLiveSnapshot(sessionId);
-  assert.equal(live.activeRun?.turnId, 'turn_replay_failure');
-  assert.equal(live.assistantDraft, undefined);
-  await adapter.close();
-});
-
-test('active observation omits an anonymous cumulative draft when replay fails', async () => {
-  const fake = createFakeRuntime('rt_anonymous_replay_failure');
-  const sessionId = 's_anonymous_replay_failure';
-  const runId = 'run_anonymous_replay_failure';
-  fake.sessions.add(sessionId);
-  const originalObserve = fake.runtime.sessions.observe.bind(fake.runtime.sessions);
-  fake.runtime.sessions.observe = async (...args) => {
-    const observation = await originalObserve(...args);
-    return {
-      ...observation,
-      snapshot: {
-        ...observation.snapshot,
-        cursor: testRuntimeCursor(sessionId, 2),
-        runs: [
-          {
-            runId,
-            sessionId,
-            phase: 'running' as const,
-            provider: 'mock',
-            mode: 'managed_task' as const,
-            startedAt: '2026-08-14T00:00:00.000Z',
-          },
-        ],
-        live: {
-          ...observation.snapshot.live,
-          assistantTextByRun: { [runId]: 'unscoped cumulative draft' },
-        },
-      },
-    };
-  };
-  fake.runtime.events.replay = async () => {
-    throw new Error('journal unavailable');
-  };
-  const adapter = new RuntimeHostAdapter({
-    mode: 'runtime',
-    profileRoot: path.resolve('C:\\isolated-profile'),
-    runtimeFactory: async () => fake.runtime,
-    identityStore: testIdentityStore,
-    runtimeEventParser: testRuntimeEventParser,
-  });
-
-  await adapter.initialize();
-  await adapter.ensureObserved(sessionId);
-
-  const live = await adapter.readSessionLiveSnapshot(sessionId);
-  assert.equal(live.activeRun?.turnId, undefined);
-  assert.equal(live.assistantDraft, undefined);
-  await adapter.close();
-});
-
-test('active observation omits a cumulative draft when replay lacks the current root boundary', async (t) => {
-  const scenarios = [
-    {
-      name: 'empty replay',
-      omitTurnId: false,
-      events: (_sessionId: string, _runId: string) => [],
-    },
-    {
-      name: 'empty replay with an anonymous active turn',
-      omitTurnId: true,
-      events: (_sessionId: string, _runId: string) => [],
-    },
-    {
-      name: 'current content without its root start',
-      omitTurnId: false,
-      events: (sessionId: string, runId: string) => [
-        withTestRuntimeCursor({
-          id: 'event_current_content_without_start',
-          seq: 2,
-          time: '2026-08-14T00:00:00.200Z',
-          type: 'assistant.delta',
-          sessionId,
-          runId,
-          turnId: 'turn_current',
-          payload: { text: 'current tail without boundary' },
-        }),
       ],
-    },
-    {
-      name: 'only an older root start',
-      omitTurnId: false,
-      events: (sessionId: string, runId: string) => [
-        withTestRuntimeCursor({
-          id: 'event_old_root_start',
-          seq: 1,
-          time: '2026-08-14T00:00:00.100Z',
-          type: 'turn.started',
-          sessionId,
-          runId,
-          turnId: 'turn_old',
-          payload: {
-            sessionId,
-            seq: 1,
-            turnId: 'turn_old',
-            deliveryKind: 'initial',
-            contextKind: 'root',
-          },
-        }),
-        withTestRuntimeCursor({
-          id: 'event_current_content_after_old_start',
-          seq: 2,
-          time: '2026-08-14T00:00:00.200Z',
-          type: 'assistant.delta',
-          sessionId,
-          runId,
-          turnId: 'turn_current',
-          payload: { text: 'current tail after an old boundary' },
-        }),
-      ],
-    },
-    {
-      name: 'current root start beyond the captured snapshot cursor',
-      omitTurnId: false,
-      events: (sessionId: string, runId: string) => [
-        withTestRuntimeCursor({
-          id: 'event_future_current_root_start',
-          seq: 4,
-          time: '2026-08-14T00:00:00.400Z',
-          type: 'turn.started',
-          sessionId,
-          runId,
-          turnId: 'turn_current',
-          payload: {
-            sessionId,
-            seq: 4,
-            turnId: 'turn_current',
-            deliveryKind: 'initial',
-            contextKind: 'root',
-          },
-        }),
-      ],
-    },
-    {
-      name: 'current root start from another journal epoch',
-      omitTurnId: false,
-      events: (sessionId: string, runId: string) => [
-        withTestRuntimeCursor({
-          id: 'event_foreign_epoch_current_root_start',
-          seq: 2,
-          cursor: { sessionId, journalEpoch: 'journal_epoch_foreign', seq: 2 },
-          time: '2026-08-14T00:00:00.200Z',
-          type: 'turn.started',
-          sessionId,
-          runId,
-          turnId: 'turn_current',
-          payload: {
-            sessionId,
-            seq: 2,
-            turnId: 'turn_current',
-            deliveryKind: 'initial',
-            contextKind: 'root',
-          },
-        }),
-      ],
-    },
-  ] as const;
-
-  for (const scenario of scenarios) {
-    await t.test(scenario.name, async () => {
-      const fake = createFakeRuntime(`rt_missing_boundary_${scenario.name.replaceAll(' ', '_')}`);
-      const sessionId = `s_missing_boundary_${scenario.name.replaceAll(' ', '_')}`;
-      const runId = `run_missing_boundary_${scenario.name.replaceAll(' ', '_')}`;
-      fake.sessions.add(sessionId);
-      const originalObserve = fake.runtime.sessions.observe.bind(fake.runtime.sessions);
-      fake.runtime.sessions.observe = async (...args) => {
-        const observation = await originalObserve(...args);
-        return {
-          ...observation,
-          snapshot: {
-            ...observation.snapshot,
-            cursor: testRuntimeCursor(sessionId, 3),
-            runs: [
-              {
-                runId,
-                sessionId,
-                ...(scenario.omitTurnId ? {} : { turnId: 'turn_current' }),
-                phase: 'running' as const,
-                provider: 'mock',
-                mode: 'managed_task' as const,
-                startedAt: '2026-08-14T00:00:00.000Z',
-              },
-            ],
-            live: {
-              ...observation.snapshot.live,
-              assistantTextByRun: { [runId]: 'old answercurrent answer' },
+      live: {
+        ...observation.snapshot.live,
+        assistantTextByRun: { [runId]: stableText + abandonedText },
+        outputSegmentsByRun: {
+          [runId]: {
+            retained: [stableSegment],
+            active: {
+              responseId: 'response_bounded_output',
+              providerRequestId: 'request_abandoned',
+              mode: 'append' as const,
+              startedAtSeq: 6,
+              assistantText: abandonedText,
+              thinkingText: '',
             },
           },
-        };
-      };
-      fake.runtime.events.replay = async () => scenario.events(sessionId, runId);
-      const adapter = new RuntimeHostAdapter({
-        mode: 'runtime',
-        profileRoot: path.resolve('C:\\isolated-profile'),
-        runtimeFactory: async () => fake.runtime,
-        identityStore: testIdentityStore,
-        runtimeEventParser: testRuntimeEventParser,
-      });
+        },
+      },
+    };
+    return {
+      ...observation,
+      snapshot: initialObservationSnapshot,
+    };
+  };
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
 
-      await adapter.initialize();
-      await adapter.ensureObserved(sessionId);
+  await adapter.initialize();
+  await adapter.ensureObserved(sessionId);
+  fake.emit({
+    id: 'event_first_replacement_segment_8',
+    seq: 8,
+    time: '2026-08-17T00:00:01.000Z',
+    type: 'output.segment.started',
+    sessionId,
+    runId,
+    turnId: 'turn_bounded_output',
+    payload: {
+      responseId: replacementSegment.responseId,
+      providerRequestId: 'request_first_replacement',
+      mode: replacementSegment.mode,
+    },
+  });
+  fake.emit({
+    id: 'event_first_replacement_delta_9',
+    seq: 9,
+    time: '2026-08-17T00:00:02.000Z',
+    type: 'assistant.delta',
+    sessionId,
+    runId,
+    turnId: 'turn_bounded_output',
+    payload: {
+      providerRequestId: 'request_first_replacement',
+      text: 'r'.repeat(100_000),
+    },
+  });
+  fake.emit({
+    id: 'event_final_replacement_segment_10',
+    seq: 10,
+    time: '2026-08-17T00:00:03.000Z',
+    type: 'output.segment.started',
+    sessionId,
+    runId,
+    turnId: 'turn_bounded_output',
+    payload: {
+      responseId: replacementSegment.responseId,
+      providerRequestId: replacementSegment.providerRequestId,
+      mode: replacementSegment.mode,
+    },
+  });
+  const observationState = (
+    adapter as unknown as {
+      observations: Map<string, { eventQueue: Promise<void> }>;
+    }
+  ).observations.get(sessionId);
+  assert.ok(observationState);
+  await observationState.eventQueue;
 
-      const live = await adapter.readSessionLiveSnapshot(sessionId);
-      assert.equal(live.activeRun?.turnId, scenario.omitTurnId ? undefined : 'turn_current');
-      assert.equal(live.assistantDraft, undefined);
-      await adapter.close();
-    });
-  }
+  const streamed = await adapter.readSessionLiveSnapshot(sessionId);
+  assert.ok(initialObservationSnapshot);
+  const fresh = projectRuntimeSessionSnapshot({
+    ...initialObservationSnapshot,
+    cursor: testRuntimeCursor(sessionId, 10),
+    runs: [
+      {
+        runId,
+        sessionId,
+        turnId: 'turn_bounded_output',
+        phase: 'running' as const,
+        provider: 'mock',
+        startedAt: '2026-08-17T00:00:00.000Z',
+      },
+    ],
+    live: {
+      assistantTextByRun: { [runId]: stableText },
+      thinkingTextByRun: {},
+      outputSegmentsByRun: {
+        [runId]: { retained: [stableSegment], active: replacementSegment },
+      },
+      activeTools: [],
+      pendingUserInputs: [],
+      managedTasks: [],
+    },
+  });
+  assert.equal(streamed.assistantDraft?.text, stableText);
+  assert.deepEqual(streamed.outputSegment, fresh.outputSegment);
+  await adapter.close();
 });
 
 test('a stale missing Session result cannot cancel the replacement Runtime restore', async () => {
@@ -3741,13 +3547,11 @@ test('transient startup retry stops if the daemon then reports a permanent incom
   await adapter.close();
 });
 
-test('idle stale daemon capability mismatch is retired safely and reconnects', async () => {
-  const fake = createFakeRuntime();
+test('Space leaves daemon capability replacement to the SDK and fails closed on rejection', async () => {
   let factoryCalls = 0;
   let safeStopCalls = 0;
   const upgradeError = Object.assign(new Error('runtimeEventCoalescing requires a newer daemon'), {
     code: 'daemon_capability_upgrade_required',
-    preflight: { blockers: [] },
   });
   const adapter = new RuntimeHostAdapter({
     mode: 'runtime',
@@ -3755,8 +3559,8 @@ test('idle stale daemon capability mismatch is retired safely and reconnects', a
     runtimeFactory: async (input) => {
       factoryCalls += 1;
       assert.equal(input.requirements?.runtimeEventCoalescing, 1);
-      if (factoryCalls === 1) throw upgradeError;
-      return fake.runtime;
+      assert.equal(input.requirements?.liveOutputSegments, 1);
+      throw upgradeError;
     },
     identityStore: testIdentityStore,
     runtimeEventParser: testRuntimeEventParser,
@@ -3768,14 +3572,13 @@ test('idle stale daemon capability mismatch is retired safely and reconnects', a
   (adapter as unknown as { reconnectAttempt: number }).reconnectAttempt = -10;
 
   await assert.rejects(adapter.initialize(), /runtimeEventCoalescing/);
-  const deadline = Date.now() + 2_000;
-  while (!adapter.hasReadyRuntime() && Date.now() < deadline) {
-    await new Promise<void>((resolve) => setTimeout(resolve, 20));
-  }
+  await new Promise<void>((resolve) => setTimeout(resolve, 50));
 
-  assert.equal(safeStopCalls, 1);
-  assert.equal(factoryCalls, 2);
-  assert.equal(adapter.hasReadyRuntime(), true);
+  assert.equal(safeStopCalls, 0);
+  assert.equal(factoryCalls, 1);
+  assert.equal(adapter.hasReadyRuntime(), false);
+  assert.match(adapter.snapshot().error ?? '', /safe automatic restart status is unavailable/i);
+  assert.doesNotMatch(adapter.snapshot().error ?? '', /reconnect automatically/i);
   await adapter.close();
 });
 
@@ -4117,10 +3920,8 @@ test('SDK exit settlement keeps an unmutated active Runtime open when preflight 
   assert.equal(adapter.snapshot().state, 'ready');
 });
 
-test('SDK exit settlement reconnects management without auto-start when initialization failed', async () => {
-  const fake = createFakeRuntime();
+test('SDK owns prepared-ticket management reconnect when initialization failed', async () => {
   const connectAutoStart: Array<boolean | undefined> = [];
-  const managementRequirements: unknown[] = [];
   const settlementCalls: import('../kodax/runtime-host-adapter.js').RuntimeExitSettlementInput[] =
     [];
   const adapter = new RuntimeHostAdapter({
@@ -4130,20 +3931,11 @@ test('SDK exit settlement reconnects management without auto-start when initiali
     runtimeEventParser: testRuntimeEventParser,
     runtimeFactory: async (options) => {
       connectAutoStart.push(options.autoStart);
-      if (options.autoStart) throw new Error('session projection startup failed');
-      managementRequirements.push(options.requirements);
-      return fake.runtime;
+      throw new Error('session projection startup failed');
     },
     runtimeExitSettler: async (input) => {
       settlementCalls.push(input);
-      return input.runtime === undefined
-        ? {
-            status: 'blocked',
-            reason: 'stop_not_accepted',
-            nextAction: 'keep-open',
-            message: 'management Runtime required',
-          }
-        : { status: 'clean', repairs: [] };
+      return { status: 'clean', repairs: [] };
     },
   });
 
@@ -4151,20 +3943,14 @@ test('SDK exit settlement reconnects management without auto-start when initiali
   assert.equal(adapter.snapshot().state, 'failed');
   await adapter.stopDaemonForCompleteExit();
 
-  assert.deepEqual(connectAutoStart, [true, false]);
-  assert.deepEqual(managementRequirements, [{ daemonManagement: 1 }]);
-  assert.equal(settlementCalls.length, 2);
+  assert.deepEqual(connectAutoStart, [true]);
+  assert.equal(settlementCalls.length, 1);
   assert.equal(settlementCalls[0]?.runtime, undefined);
-  assert.equal(settlementCalls[1]?.runtime, fake.runtime);
-  assert.equal(fake.calls.daemonStops.length, 0);
-  assert.equal(fake.calls.close, 1);
   assert.equal(adapter.snapshot().state, 'closed');
 });
 
-test('startup recovery converges an ambiguous prepared stop through management reconnect', async () => {
-  const fake = createFakeRuntime();
-  const connectAutoStart: Array<boolean | undefined> = [];
-  const managementRequirements: unknown[] = [];
+test('startup recovery leaves exact prepared-ticket management reconnect to the SDK', async () => {
+  let factoryCalls = 0;
   const settlementCalls: import('../kodax/runtime-host-adapter.js').RuntimeExitSettlementInput[] =
     [];
   const adapter = new RuntimeHostAdapter({
@@ -4172,63 +3958,42 @@ test('startup recovery converges an ambiguous prepared stop through management r
     profileRoot: path.resolve('C:\\isolated-profile'),
     identityStore: testIdentityStore,
     runtimeEventParser: testRuntimeEventParser,
-    runtimeFactory: async (options) => {
-      connectAutoStart.push(options.autoStart);
-      managementRequirements.push(options.requirements);
-      return fake.runtime;
+    runtimeFactory: async () => {
+      factoryCalls += 1;
+      throw new Error('Space must not attach its stable identity for SDK exit recovery.');
     },
     runtimeExitSettler: async (input) => {
       settlementCalls.push(input);
-      return input.runtime === undefined
-        ? {
-            status: 'blocked',
-            reason: 'stop_not_accepted',
-            nextAction: 'relaunch-space',
-            message: 'prepared stop acceptance is ambiguous',
-          }
-        : { status: 'recovered', repairs: [] };
+      return {
+        status: 'blocked',
+        reason: 'stop_not_accepted',
+        nextAction: 'relaunch-space',
+        message: 'prepared stop acceptance is ambiguous',
+      };
     },
   });
 
   const settlement = await adapter.resumePendingRuntimeExitSettlement();
 
-  assert.deepEqual(settlement, { status: 'recovered', repairs: [] });
-  assert.deepEqual(connectAutoStart, [false]);
-  assert.deepEqual(managementRequirements, [{ daemonManagement: 1 }]);
-  assert.equal(settlementCalls.length, 2);
+  assert.deepEqual(settlement, {
+    status: 'blocked',
+    reason: 'stop_not_accepted',
+    nextAction: 'relaunch-space',
+    message: 'prepared stop acceptance is ambiguous',
+  });
+  assert.equal(factoryCalls, 0);
+  assert.equal(settlementCalls.length, 1);
   assert.equal(settlementCalls[0]?.runtime, undefined);
-  assert.equal(settlementCalls[1]?.runtime, fake.runtime);
-  assert.equal(fake.calls.close, 1);
 });
 
-test('startup recovery does not let a duplicate management close hide recovered settlement', async () => {
-  const fake = createFakeRuntime();
-  const closeAttempt = new Promise<void>(() => undefined);
-  const hungRuntime = {
-    ...fake.runtime,
-    close() {
-      fake.calls.close += 1;
-      return closeAttempt;
-    },
-  } as KodaXDaemonRuntime;
+test('startup recovery returns the SDK-owned recovered settlement without a Space close', async () => {
   const adapter = new RuntimeHostAdapter({
     mode: 'runtime',
     profileRoot: path.resolve('C:\\isolated-profile'),
     identityStore: testIdentityStore,
     runtimeEventParser: testRuntimeEventParser,
-    runtimeFactory: async () => hungRuntime,
-    runtimeExitSettler: async (input) => {
-      if (input.runtime === undefined) {
-        return {
-          status: 'blocked',
-          reason: 'stop_not_accepted',
-          nextAction: 'relaunch-space',
-          message: 'management reconnect required',
-        };
-      }
-      void input.runtime.close();
-      return { status: 'recovered', repairs: [] };
-    },
+    runtimeFactory: async () => Promise.reject(new Error('unexpected Space Runtime attach')),
+    runtimeExitSettler: async () => ({ status: 'recovered', repairs: [] }),
   });
 
   const result = await Promise.race([
@@ -4239,35 +4004,19 @@ test('startup recovery does not let a duplicate management close hide recovered 
   assert.deepEqual(result, { status: 'recovered', repairs: [] });
 });
 
-test('startup recovery fails closed when a blocked temporary management client cannot close', async () => {
-  const fake = createFakeRuntime();
-  const hungRuntime = {
-    ...fake.runtime,
-    close() {
-      fake.calls.close += 1;
-      return new Promise<void>(() => undefined);
-    },
-  } as KodaXDaemonRuntime;
+test('startup recovery preserves an SDK-owned nonterminal cleanup result', async () => {
   const adapter = new RuntimeHostAdapter({
     mode: 'runtime',
     profileRoot: path.resolve('C:\\isolated-profile'),
     identityStore: testIdentityStore,
     runtimeEventParser: testRuntimeEventParser,
-    runtimeFactory: async () => hungRuntime,
-    runtimeExitSettler: async (input) =>
-      input.runtime === undefined
-        ? {
-            status: 'blocked',
-            reason: 'stop_not_accepted',
-            nextAction: 'relaunch-space',
-            message: 'management reconnect required',
-          }
-        : {
-            status: 'blocked',
-            reason: 'active_work',
-            nextAction: 'keep-open',
-            message: 'active work appeared during management reconnect',
-          },
+    runtimeFactory: async () => Promise.reject(new Error('unexpected Space Runtime attach')),
+    runtimeExitSettler: async () => ({
+      status: 'blocked',
+      reason: 'cleanup_unverified',
+      nextAction: 'relaunch-space',
+      message: 'SDK could not close its temporary management client.',
+    }),
   });
 
   const result = await adapter.resumePendingRuntimeExitSettlement();
@@ -4276,39 +4025,43 @@ test('startup recovery fails closed when a blocked temporary management client c
     status: 'blocked',
     reason: 'cleanup_unverified',
     nextAction: 'relaunch-space',
-    message:
-      'Temporary Runtime management transport could not be closed after a nonterminal settlement.',
+    message: 'SDK could not close its temporary management client.',
   });
-  assert.equal(fake.calls.close, 1);
 });
 
-test('startup recovery rescans the ticket when a late stop prevents management attach', async () => {
+test('startup recovery does not rescan an SDK-owned prepared ticket', async () => {
   let settlementCalls = 0;
+  let factoryCalls = 0;
   const adapter = new RuntimeHostAdapter({
     mode: 'runtime',
     profileRoot: path.resolve('C:\\isolated-profile'),
     identityStore: testIdentityStore,
     runtimeEventParser: testRuntimeEventParser,
     runtimeFactory: async () => {
-      throw new Error('daemon entered draining before management attach');
+      factoryCalls += 1;
+      throw new Error('Space must not attach during SDK ticket recovery');
     },
     runtimeExitSettler: async () => {
       settlementCalls += 1;
-      return settlementCalls === 1
-        ? {
-            status: 'blocked',
-            reason: 'stop_not_accepted',
-            nextAction: 'relaunch-space',
-            message: 'management reconnect required',
-          }
-        : { status: 'recovered', repairs: [] };
+      return {
+        status: 'blocked',
+        reason: 'stop_not_accepted',
+        nextAction: 'relaunch-space',
+        message: 'management reconnect remains SDK-owned',
+      };
     },
   });
 
   const settlement = await adapter.resumePendingRuntimeExitSettlement();
 
-  assert.deepEqual(settlement, { status: 'recovered', repairs: [] });
-  assert.equal(settlementCalls, 2);
+  assert.deepEqual(settlement, {
+    status: 'blocked',
+    reason: 'stop_not_accepted',
+    nextAction: 'relaunch-space',
+    message: 'management reconnect remains SDK-owned',
+  });
+  assert.equal(settlementCalls, 1);
+  assert.equal(factoryCalls, 0);
 });
 
 test('post-mutation SDK settlement blockage preserves the live projection and requires restart', async () => {
@@ -6734,10 +6487,26 @@ test('committed compaction without a physical entry ID stays provisional and per
   } as import('@kodax-ai/kodax/runtime').RuntimeTypedEvent);
   fake.emit({
     ...eventBase,
-    id: 'evt_text_after_unbound_compaction',
+    id: 'evt_segment_after_unbound_compaction',
     seq: 2,
+    type: 'output.segment.started',
+    payload: {
+      responseId: 'response_compaction',
+      providerRequestId: 'request_compaction',
+      mode: 'append',
+      meta: { contextKind: 'root' },
+    },
+  } as import('@kodax-ai/kodax/runtime').RuntimeTypedEvent);
+  fake.emit({
+    ...eventBase,
+    id: 'evt_text_after_unbound_compaction',
+    seq: 3,
     type: 'assistant.delta',
-    payload: { text: 'still streaming', meta: { contextKind: 'root' } },
+    payload: {
+      text: 'still streaming',
+      providerRequestId: 'request_compaction',
+      meta: { contextKind: 'root' },
+    },
   } as import('@kodax-ai/kodax/runtime').RuntimeTypedEvent);
 
   await waitForTest(() =>
@@ -6821,10 +6590,26 @@ test('committed compaction stays visible and does not block later output when pa
   } as import('@kodax-ai/kodax/runtime').RuntimeTypedEvent);
   fake.emit({
     ...eventBase,
-    id: 'evt_text_after_compaction',
+    id: 'evt_segment_after_compaction',
     seq: 2,
+    type: 'output.segment.started',
+    payload: {
+      responseId: 'response_compaction',
+      providerRequestId: 'request_compaction',
+      mode: 'append',
+      meta: { contextKind: 'root' },
+    },
+  } as import('@kodax-ai/kodax/runtime').RuntimeTypedEvent);
+  fake.emit({
+    ...eventBase,
+    id: 'evt_text_after_compaction',
+    seq: 3,
     type: 'assistant.delta',
-    payload: { text: 'still streaming', meta: { contextKind: 'root' } },
+    payload: {
+      text: 'still streaming',
+      providerRequestId: 'request_compaction',
+      meta: { contextKind: 'root' },
+    },
   } as import('@kodax-ai/kodax/runtime').RuntimeTypedEvent);
 
   await waitForTest(() =>
@@ -8679,6 +8464,21 @@ test('initialization requires Session-scoped Runtime event journals', async () =
   assert.equal(fake.calls.close, 1);
 });
 
+test('initialization requires SDK-owned live output segment semantics', async () => {
+  const fake = createFakeRuntime();
+  delete (fake.runtime.capabilities as Record<string, unknown>).liveOutputSegments;
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+  });
+
+  await assert.rejects(adapter.initialize(), /liveOutputSegments v1/i);
+  assert.equal(adapter.snapshot().state, 'failed');
+  assert.equal(fake.calls.close, 1);
+});
+
 test('initialization requires the sandbox v3 execution lifecycle', async () => {
   const fake = createFakeRuntime();
   (fake.runtime.capabilities as Record<string, unknown>).sandboxRuntime = {
@@ -10148,26 +9948,40 @@ test('daemon bridge preserves Runtime turn identity on live transcript events', 
     } as import('@kodax-ai/kodax/runtime').RuntimeTypedEvent);
   };
 
-  emit(1, 'thinking.delta', { text: 'reasoning', meta: { contextKind: 'root' } });
-  emit(2, 'assistant.delta', { text: 'answer', meta: { contextKind: 'root' } });
-  emit(3, 'thinking.finished', {
+  emit(1, 'output.segment.started', {
+    responseId: 'response_turn_identity',
+    providerRequestId: 'request_turn_identity',
+    mode: 'append',
+    meta: { contextKind: 'root' },
+  });
+  emit(2, 'thinking.delta', {
+    text: 'reasoning',
+    providerRequestId: 'request_turn_identity',
+    meta: { contextKind: 'root' },
+  });
+  emit(3, 'assistant.delta', {
+    text: 'answer',
+    providerRequestId: 'request_turn_identity',
+    meta: { contextKind: 'root' },
+  });
+  emit(4, 'thinking.finished', {
     thinking: 'reasoning done',
     meta: { contextKind: 'root' },
   });
-  emit(4, 'tool.started', {
+  emit(5, 'tool.started', {
     tool: { id: 'tool_1', name: 'read', input: { path: 'notes.md' } },
     meta: { contextKind: 'root', toolCallId: 'tool_1' },
   });
-  emit(5, 'tool.progress', {
+  emit(6, 'tool.progress', {
     update: { id: 'tool_1', message: 'reading' },
     meta: { contextKind: 'root', toolCallId: 'tool_1' },
   });
-  emit(6, 'tool.progress', {
+  emit(7, 'tool.progress', {
     partialJson: '{"path":"notes.md"}',
     toolName: 'read',
     meta: { contextKind: 'root', toolCallId: 'tool_1' },
   });
-  emit(7, 'tool.finished', {
+  emit(8, 'tool.finished', {
     result: { id: 'tool_1', name: 'read', content: 'done' },
     meta: { contextKind: 'root', toolCallId: 'tool_1' },
   });
@@ -10178,6 +9992,7 @@ test('daemon bridge preserves Runtime turn identity on live transcript events', 
       return [row.kind, row.turnId];
     }),
     [
+      ['output_segment_started', 'turn_authoritative'],
       ['thinking_delta', 'turn_authoritative'],
       ['text_delta', 'turn_authoritative'],
       ['thinking_end', 'turn_authoritative'],
@@ -12422,4 +12237,24 @@ test('daemon capability upgrade failures explain restart and active blockers', a
   assert.match(adapter.snapshot().error ?? '', /automatic restart is blocked/i);
   assert.match(adapter.snapshot().error ?? '', /active_runs, pending_interactions/);
   await adapter.close();
+
+  const attemptedError = Object.assign(new Error('durable settlement needs recovery'), {
+    code: 'daemon_capability_upgrade_required',
+    recoverable: true,
+    restartRequired: true,
+    preflight: { blockers: [] },
+  });
+  const attemptedAdapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => Promise.reject(attemptedError),
+    identityStore: testIdentityStore,
+  });
+  await assert.rejects(attemptedAdapter.initialize(), /durable settlement/);
+  assert.match(
+    attemptedAdapter.snapshot().error ?? '',
+    /replacement was attempted but did not complete/i,
+  );
+  assert.doesNotMatch(attemptedAdapter.snapshot().error ?? '', /reconnect automatically/i);
+  await attemptedAdapter.close();
 });

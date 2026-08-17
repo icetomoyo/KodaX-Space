@@ -78,8 +78,8 @@ function restoreLink(link) {
   console.log(`[pack] restored dev link: @kodax-ai/kodax → ${link.target}`);
 }
 
-function verifyReleaseSdk(allowLocalTarball) {
-  const dependency = assertKodaxReleaseDependencyState(SPACE_ROOT, SDK_DIR, {
+async function verifyReleaseSdk(allowLocalTarball) {
+  const dependency = await assertKodaxReleaseDependencyState(SPACE_ROOT, SDK_DIR, {
     allowLocalTarball,
   });
   const sourceLabel = dependency.source === 'registry' ? 'Registry' : 'local test tarball';
@@ -127,7 +127,7 @@ if (allowLocalTarball) {
 }
 
 if (!link.linked) {
-  verifyReleaseSdk(allowLocalTarball);
+  await verifyReleaseSdk(allowLocalTarball);
   // 干净状态：直接打包（CI / 已 unlink 的 release checkout）
   run(
     'node',
@@ -157,7 +157,7 @@ try {
     NODE_ENV: 'development',
   });
   assertManifestUnchanged(manifestSnapshot, 'npm ci (locked SDK)');
-  verifyReleaseSdk(allowLocalTarball);
+  await verifyReleaseSdk(allowLocalTarball);
   run(
     'node',
     ['scripts/ensure-sqlite-native.mjs', 'electron'],

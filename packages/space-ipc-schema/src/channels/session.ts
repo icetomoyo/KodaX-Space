@@ -951,29 +951,6 @@ const contextBudgetTokenBreakdownSchema = z.object({
 
 const sha256HexSchema = z.string().regex(/^[a-f0-9]{64}$/);
 
-const PROVISIONAL_PROVIDER_FAILURE_STAGES: ReadonlySet<string> = new Set([
-  'mid_stream_text',
-  'mid_stream_thinking',
-  'mid_stream_tool_input',
-  'post_tool_execution_pre_assistant_close',
-]);
-const REPLACEMENT_PROVIDER_RECOVERY_ACTIONS: ReadonlySet<string> = new Set([
-  'stable_boundary_retry',
-  'non_streaming_fallback',
-  'sanitize_thinking_and_retry',
-]);
-
-/** True when a Provider recovery invalidates the current provisional output attempt. */
-export function providerRecoveryReplacesDraft(recovery: {
-  readonly stage: string;
-  readonly recoveryAction: string;
-}): boolean {
-  return (
-    PROVISIONAL_PROVIDER_FAILURE_STAGES.has(recovery.stage) &&
-    REPLACEMENT_PROVIDER_RECOVERY_ACTIONS.has(recovery.recoveryAction)
-  );
-}
-
 // alpha.1 KodaX 0.7.40 全 surface 接通 — todo / managed_task_status / compact_* / retry_after /
 // repointel_trace / session_start / iteration_start / stream_end / thinking_end / tool_input_delta /
 // provider_recovery — payload shape 对照 KodaX packages/coding/src/types.ts KodaXEvents 抽取（subset；
@@ -1110,9 +1087,20 @@ export const sessionEventChannel = {
     z.object({
       ...runtimeSessionEventOriginShape,
       ...transcriptHistoryIdentityShape,
+      kind: z.literal('output_segment_started'),
+      sessionId: z.string().min(1),
+      responseId: z.string().min(1).max(256),
+      providerRequestId: z.string().min(1).max(256),
+      mode: z.enum(['replace', 'append']),
+    }),
+    z.object({
+      ...runtimeSessionEventOriginShape,
+      ...transcriptHistoryIdentityShape,
       kind: z.literal('text_delta'),
       sessionId: z.string().min(1),
       text: z.string().max(MAX_TEXT_CHUNK),
+      providerRequestId: z.string().min(1).max(256).optional(),
+      textStartOffset: z.number().int().nonnegative().optional(),
       /** Optional producer/store timestamp for the first chunk in one assistant text block. */
       sentAt: z.number().int().nonnegative().optional(),
     }),
@@ -1122,6 +1110,8 @@ export const sessionEventChannel = {
       kind: z.literal('thinking_delta'),
       sessionId: z.string().min(1),
       text: z.string().max(MAX_TEXT_CHUNK),
+      providerRequestId: z.string().min(1).max(256).optional(),
+      textStartOffset: z.number().int().nonnegative().optional(),
       /** Optional producer/store timestamp for the first chunk in one assistant thinking block. */
       sentAt: z.number().int().nonnegative().optional(),
     }),

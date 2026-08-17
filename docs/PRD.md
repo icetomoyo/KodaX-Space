@@ -8,7 +8,9 @@
 > **2026-08-17 当前源码增量**：root/Desktop 使用同一份可安装的 KodaX
 > `0.7.91` vendored candidate tarball，Registry 发布仍待正式 release gate。Coder 除
 > `sandboxRuntime:3` 与 `actorSettlementConvergence:2` 外，还消费本地
-> `runtimeExitSettlement:1`，在任何 replacement daemon 启动前恢复持久退出票据。
+> `runtimeExitSettlement:1` 与 `liveOutputSegments:1`。Provider 实时输出以 SDK 的
+> response/request segment 投影为唯一真理；Space 不保留 checkpoint replay 执行回退。
+> 在任何 replacement daemon 启动前恢复持久退出票据。
 
 > Last updated: 2026-08-17
 > Status: 长期产品方向文档。当前正式发布基线为 KodaX Space 0.1.42（package 0.1.42）/ 精确 Registry KodaX 0.7.89。v0.1.42 在既有 Runtime owner、canonical Actor/Turn、精确 history/live 与 compaction、完整物理请求诊断、F140-F142、可配置 Shell、独立 integration 配置和正式打包门禁基础上，继续收口 Actor settlement convergence v2、因果 transcript owner reconciliation、Issue 185 completion notification 与最新 SDK/manual 对齐。生命周期支持仍按能力协商，不通过 SemVer 推断；Issue 133 的 macOS/Linux process acceptance/cleanup retry gap 和 F138 完整 OS 隔离继续保持未完成。已交付能力与边界以 [USER_MANUAL.zh-CN.md](USER_MANUAL.zh-CN.md)、[KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md) 和 [FEATURE_LIST.md](FEATURE_LIST.md) 为准。

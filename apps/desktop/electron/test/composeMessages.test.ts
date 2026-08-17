@@ -19,6 +19,19 @@ import type {
 
 const sid = 's_1';
 
+function outputSegmentStarted(
+  providerRequestId: string,
+  mode: 'append' | 'replace',
+): SessionEvent {
+  return {
+    kind: 'output_segment_started',
+    sessionId: sid,
+    responseId: 'response_1',
+    providerRequestId,
+    mode,
+  };
+}
+
 function userMsg(id: string, content: string, sentAt = 1000): UserMessage {
   return { id, content, sentAt };
 }
@@ -56,9 +69,15 @@ test('empty in → empty out', () => {
   assert.deepEqual(composeMessages({ events: [], userMessages: [] }), []);
 });
 
-test('provider recovery replaces the abandoned live assistant draft before history arrives', () => {
+test('replacement output segment removes the abandoned live assistant draft before history arrives', () => {
   const events: SessionEvent[] = [
-    { kind: 'text_delta', sessionId: sid, text: 'abandoned attempt' },
+    outputSegmentStarted('request_abandoned', 'append'),
+    {
+      kind: 'text_delta',
+      sessionId: sid,
+      text: 'abandoned attempt',
+      providerRequestId: 'request_abandoned',
+    },
     {
       kind: 'provider_recovery',
       sessionId: sid,
@@ -71,7 +90,13 @@ test('provider recovery replaces the abandoned live assistant draft before histo
       ladderStep: 2,
       fallbackUsed: false,
     },
-    { kind: 'text_delta', sessionId: sid, text: 'retry answer' },
+    outputSegmentStarted('request_retry', 'replace'),
+    {
+      kind: 'text_delta',
+      sessionId: sid,
+      text: 'retry answer',
+      providerRequestId: 'request_retry',
+    },
   ];
 
   const out = composeMessages({ events, userMessages: [] });
@@ -81,10 +106,16 @@ test('provider recovery replaces the abandoned live assistant draft before histo
   );
 });
 
-test('provider recovery invalidates the abandoned draft before replacement text starts', () => {
+test('replacement output segment invalidates the abandoned draft before replacement text starts', () => {
   const out = composeMessages({
     events: [
-      { kind: 'text_delta', sessionId: sid, text: 'abandoned attempt' },
+      outputSegmentStarted('request_abandoned', 'append'),
+      {
+        kind: 'text_delta',
+        sessionId: sid,
+        text: 'abandoned attempt',
+        providerRequestId: 'request_abandoned',
+      },
       {
         kind: 'provider_recovery',
         sessionId: sid,
@@ -97,6 +128,7 @@ test('provider recovery invalidates the abandoned draft before replacement text 
         ladderStep: 2,
         fallbackUsed: false,
       },
+      outputSegmentStarted('request_retry', 'replace'),
     ],
     userMessages: [],
   });
@@ -107,10 +139,16 @@ test('provider recovery invalidates the abandoned draft before replacement text 
   );
 });
 
-test('thinking sanitization recovery replaces the provisional thinking attempt', () => {
+test('thinking replacement segment removes the provisional thinking attempt', () => {
   const out = composeMessages({
     events: [
-      { kind: 'thinking_delta', sessionId: sid, text: 'invalid thinking' },
+      outputSegmentStarted('request_invalid_thinking', 'append'),
+      {
+        kind: 'thinking_delta',
+        sessionId: sid,
+        text: 'invalid thinking',
+        providerRequestId: 'request_invalid_thinking',
+      },
       {
         kind: 'provider_recovery',
         sessionId: sid,
@@ -123,8 +161,19 @@ test('thinking sanitization recovery replaces the provisional thinking attempt',
         ladderStep: 2,
         fallbackUsed: false,
       },
-      { kind: 'thinking_delta', sessionId: sid, text: 'replacement thinking' },
-      { kind: 'text_delta', sessionId: sid, text: 'replacement answer' },
+      outputSegmentStarted('request_replacement', 'replace'),
+      {
+        kind: 'thinking_delta',
+        sessionId: sid,
+        text: 'replacement thinking',
+        providerRequestId: 'request_replacement',
+      },
+      {
+        kind: 'text_delta',
+        sessionId: sid,
+        text: 'replacement answer',
+        providerRequestId: 'request_replacement',
+      },
     ],
     userMessages: [],
   });
@@ -137,10 +186,16 @@ test('thinking sanitization recovery replaces the provisional thinking attempt',
   );
 });
 
-test('provider recovery preserves output and tools completed before the current attempt', () => {
+test('replacement output segment preserves output and tools completed before the current attempt', () => {
   const out = composeMessages({
     events: [
-      { kind: 'text_delta', sessionId: sid, text: 'stable output' },
+      outputSegmentStarted('request_stable', 'append'),
+      {
+        kind: 'text_delta',
+        sessionId: sid,
+        text: 'stable output',
+        providerRequestId: 'request_stable',
+      },
       { kind: 'tool_start', sessionId: sid, toolId: 'tool_1', toolName: 'read', input: {} },
       {
         kind: 'tool_result',
@@ -149,7 +204,13 @@ test('provider recovery preserves output and tools completed before the current 
         toolName: 'read',
         content: 'stable result',
       },
-      { kind: 'text_delta', sessionId: sid, text: 'abandoned attempt' },
+      outputSegmentStarted('request_abandoned', 'append'),
+      {
+        kind: 'text_delta',
+        sessionId: sid,
+        text: 'abandoned attempt',
+        providerRequestId: 'request_abandoned',
+      },
       {
         kind: 'provider_recovery',
         sessionId: sid,
@@ -162,7 +223,13 @@ test('provider recovery preserves output and tools completed before the current 
         ladderStep: 2,
         fallbackUsed: false,
       },
-      { kind: 'text_delta', sessionId: sid, text: 'replacement' },
+      outputSegmentStarted('request_replacement', 'replace'),
+      {
+        kind: 'text_delta',
+        sessionId: sid,
+        text: 'replacement',
+        providerRequestId: 'request_replacement',
+      },
     ],
     userMessages: [],
   });
@@ -174,7 +241,7 @@ test('provider recovery preserves output and tools completed before the current 
   assert.equal(out.filter((message) => message.kind === 'tool_call').length, 1);
 });
 
-test('consecutive provider recoveries retain only the latest live assistant attempt', () => {
+test('consecutive replacement segments retain only the latest live assistant attempt', () => {
   const recovery = (
     attempt: number,
     recoveryAction: 'stable_boundary_retry' | 'non_streaming_fallback',
@@ -191,11 +258,29 @@ test('consecutive provider recoveries retain only the latest live assistant atte
     fallbackUsed: recoveryAction === 'non_streaming_fallback',
   });
   const events: SessionEvent[] = [
-    { kind: 'text_delta', sessionId: sid, text: 'first attempt' },
+    outputSegmentStarted('request_first', 'append'),
+    {
+      kind: 'text_delta',
+      sessionId: sid,
+      text: 'first attempt',
+      providerRequestId: 'request_first',
+    },
     recovery(1, 'stable_boundary_retry'),
-    { kind: 'text_delta', sessionId: sid, text: 'second attempt' },
+    outputSegmentStarted('request_second', 'replace'),
+    {
+      kind: 'text_delta',
+      sessionId: sid,
+      text: 'second attempt',
+      providerRequestId: 'request_second',
+    },
     recovery(2, 'non_streaming_fallback'),
-    { kind: 'text_delta', sessionId: sid, text: 'fallback answer' },
+    outputSegmentStarted('request_fallback', 'replace'),
+    {
+      kind: 'text_delta',
+      sessionId: sid,
+      text: 'fallback answer',
+      providerRequestId: 'request_fallback',
+    },
   ];
 
   const out = composeMessages({ events, userMessages: [] });

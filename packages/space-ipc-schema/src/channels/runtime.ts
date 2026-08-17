@@ -501,6 +501,45 @@ export const spaceRuntimeDraftSchema = z
   })
   .strict();
 
+const spaceRuntimeOutputSegmentStateSchema = z
+  .object({
+    responseId: idSchema,
+    providerRequestId: idSchema,
+    mode: z.enum(['replace', 'append']),
+    startedAtSeq: z.number().int().nonnegative().optional(),
+    assistantText: z.string().max(MAX_DRAFT),
+    thinkingText: z.string().max(MAX_DRAFT),
+    assistantTextStartOffset: z.number().int().nonnegative(),
+    thinkingTextStartOffset: z.number().int().nonnegative(),
+  })
+  .strict();
+
+export const spaceRuntimeOutputSegmentProjectionSchema = z
+  .object({
+    retained: z.array(spaceRuntimeOutputSegmentStateSchema).max(128),
+    active: spaceRuntimeOutputSegmentStateSchema.optional(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    const segments = [...value.retained, ...(value.active ? [value.active] : [])];
+    if (
+      segments.reduce((length, segment) => length + segment.assistantText.length, 0) > MAX_DRAFT
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'output segment assistant text exceeds the live draft bound',
+        path: ['retained'],
+      });
+    }
+    if (segments.reduce((length, segment) => length + segment.thinkingText.length, 0) > MAX_DRAFT) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'output segment thinking text exceeds the live draft bound',
+        path: ['retained'],
+      });
+    }
+  });
+
 export const spaceRuntimeToolSandboxSchema = z.discriminatedUnion('state', [
   z
     .object({
@@ -596,28 +635,6 @@ export const spaceRuntimeQueuedInputSchema = z
   })
   .strict();
 
-const spaceRuntimeDraftRecoverySchema = z
-  .object({
-    runId: idSchema,
-    checkpointSeq: z.number().int().nonnegative(),
-    recoverySeq: z.number().int().positive(),
-    assistantCheckpointLength: z.number().int().nonnegative().max(262_144),
-    thinkingCheckpointLength: z.number().int().nonnegative().max(262_144),
-  })
-  .strict()
-  .refine((value) => value.checkpointSeq < value.recoverySeq, {
-    message: 'draft recovery checkpoint must precede recovery',
-  });
-
-const spaceRuntimeDraftCheckpointSchema = z
-  .object({
-    runId: idSchema,
-    seq: z.number().int().positive(),
-    assistantLength: z.number().int().nonnegative().max(262_144),
-    thinkingLength: z.number().int().nonnegative().max(262_144),
-  })
-  .strict();
-
 export const spaceSessionLiveProjectionSchema = z
   .object({
     sessionId: idSchema,
@@ -629,8 +646,7 @@ export const spaceSessionLiveProjectionSchema = z
     lastTerminalRun: spaceRuntimeRunProjectionSchema.optional(),
     assistantDraft: spaceRuntimeDraftSchema.optional(),
     thinkingDraft: spaceRuntimeDraftSchema.optional(),
-    draftRecoveries: z.array(spaceRuntimeDraftRecoverySchema).max(512).optional(),
-    draftCheckpoints: z.array(spaceRuntimeDraftCheckpointSchema).max(512).optional(),
+    outputSegment: spaceRuntimeOutputSegmentProjectionSchema.optional(),
     activeTools: z.array(spaceRuntimeActiveToolSchema).max(MAX_ACTIVE_TOOLS),
     todos: z.array(spaceRuntimeTodoSchema).max(MAX_TODOS),
     managedTask: spaceRuntimeManagedTaskSchema.optional(),
@@ -663,30 +679,6 @@ export const spaceSessionLiveProjectionSchema = z
         path: ['interactions'],
       });
     }
-    if (
-      value.draftRecoveries?.some(
-        (recovery) =>
-          value.activeRun?.runId !== recovery.runId || recovery.recoverySeq > value.cursor.seq,
-      )
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'draft recovery must belong to the active Run and precede the projection cursor',
-        path: ['draftRecoveries'],
-      });
-    }
-    if (
-      value.draftCheckpoints?.some(
-        (checkpoint) =>
-          value.activeRun?.runId !== checkpoint.runId || checkpoint.seq > value.cursor.seq,
-      )
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'draft checkpoint must belong to the active Run and precede the projection cursor',
-        path: ['draftCheckpoints'],
-      });
-    }
   });
 
 const runChangeSchema = z
@@ -703,8 +695,7 @@ const draftChangeSchema = z
     domain: z.literal('draft'),
     assistantDraft: spaceRuntimeDraftSchema.nullable(),
     thinkingDraft: spaceRuntimeDraftSchema.nullable(),
-    draftRecoveries: z.array(spaceRuntimeDraftRecoverySchema).max(512).optional(),
-    draftCheckpoints: z.array(spaceRuntimeDraftCheckpointSchema).max(512).optional(),
+    outputSegment: spaceRuntimeOutputSegmentProjectionSchema,
   })
   .strict();
 const toolsChangeSchema = z
@@ -802,26 +793,6 @@ export const spaceSessionLiveChangedSchema = z
             code: z.ZodIssueCode.custom,
             message: 'all queued inputs must belong to the selected session',
             path: ['change', 'queuedInputs'],
-          });
-        }
-        break;
-      case 'draft':
-        if (
-          value.change.draftRecoveries?.some((recovery) => recovery.recoverySeq > value.cursor.seq)
-        ) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            message: 'draft recovery must precede the projection cursor',
-            path: ['change', 'draftRecoveries'],
-          });
-        }
-        if (
-          value.change.draftCheckpoints?.some((checkpoint) => checkpoint.seq > value.cursor.seq)
-        ) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            message: 'draft checkpoint must precede the projection cursor',
-            path: ['change', 'draftCheckpoints'],
           });
         }
         break;

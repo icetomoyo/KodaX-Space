@@ -514,8 +514,7 @@ function applyDomainChange(
           ? {
               assistantDraft: undefined,
               thinkingDraft: undefined,
-              draftRecoveries: undefined,
-              draftCheckpoints: undefined,
+              outputSegment: undefined,
               activeTools: [],
               managedTask: undefined,
               interactions: [],
@@ -527,12 +526,7 @@ function applyDomainChange(
         ...base,
         assistantDraft: update.change.assistantDraft ?? undefined,
         thinkingDraft: update.change.thinkingDraft ?? undefined,
-        ...(update.change.draftRecoveries !== undefined
-          ? { draftRecoveries: update.change.draftRecoveries }
-          : {}),
-        ...(update.change.draftCheckpoints !== undefined
-          ? { draftCheckpoints: update.change.draftCheckpoints }
-          : {}),
+        outputSegment: update.change.outputSegment,
       };
     case 'tools':
       return { ...base, activeTools: update.change.activeTools };
@@ -580,18 +574,6 @@ export function applySessionLiveChange(
   ) {
     return requireSnapshot(state, update.sessionId);
   }
-  if (
-    update.change.domain === 'draft' &&
-    (update.change.draftRecoveries?.some(
-      (recovery) => recovery.runId !== current.activeRun?.runId,
-    ) ||
-      update.change.draftCheckpoints?.some(
-        (checkpoint) => checkpoint.runId !== current.activeRun?.runId,
-      ))
-  ) {
-    return requireSnapshot(state, update.sessionId);
-  }
-
   const nextProjection = applyDomainChange(current, update);
   return {
     state: {

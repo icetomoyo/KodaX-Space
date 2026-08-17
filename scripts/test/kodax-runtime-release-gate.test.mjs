@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { create as createTar } from 'tar';
 
 import { assertKodaxReleaseDependencyState } from '../kodax-runtime-release-gate.mjs';
 
@@ -20,16 +21,22 @@ async function writeReleaseDependencyFixture(root, versions = {}) {
   let integrity = versions.integrity;
   await mkdir(path.join(root, 'apps', 'desktop'), { recursive: true });
   await mkdir(path.join(root, 'node_modules', '@kodax-ai', 'kodax'), { recursive: true });
+  const packageJson = JSON.stringify({ name: '@kodax-ai/kodax', version: installedVersion });
+  const runtimeBytes = 'export const runtimeContract = 1;\n';
+  const tarballName = `kodax-ai-kodax-${lockPackageVersion}.tgz`;
+  const tarballPath = path.join(root, 'fixtures', tarballName);
+  const tarRoot = path.join(root, 'tar-root');
+  await mkdir(path.join(tarRoot, 'package'), { recursive: true });
+  await writeFile(path.join(tarRoot, 'package', 'package.json'), packageJson, 'utf8');
+  await writeFile(path.join(tarRoot, 'package', 'runtime.js'), runtimeBytes, 'utf8');
+  await mkdir(path.dirname(tarballPath), { recursive: true });
+  await createTar({ gzip: true, file: tarballPath, cwd: tarRoot }, ['package']);
+  const tarball = await readFile(tarballPath);
   if (versions.localTarball) {
-    const tarball = Buffer.from('local KodaX test tarball');
-    const tarballName = `kodax-ai-kodax-${lockPackageVersion}.tgz`;
-    const tarballPath = path.join(root, 'fixtures', tarballName);
-    await mkdir(path.dirname(tarballPath), { recursive: true });
-    await writeFile(tarballPath, tarball);
     resolved = `file:fixtures/${tarballName}`;
     integrity ??= `sha512-${createHash('sha512').update(tarball).digest('base64')}`;
   } else {
-    integrity ??= 'sha512-YWJjZA==';
+    integrity ??= `sha512-${createHash('sha512').update(tarball).digest('base64')}`;
   }
   await writeFile(
     path.join(root, 'package.json'),
@@ -59,19 +66,26 @@ async function writeReleaseDependencyFixture(root, versions = {}) {
   );
   await writeFile(
     path.join(root, 'node_modules', '@kodax-ai', 'kodax', 'package.json'),
-    JSON.stringify({ name: '@kodax-ai/kodax', version: installedVersion }),
+    packageJson,
     'utf8',
   );
+  await writeFile(
+    path.join(root, 'node_modules', '@kodax-ai', 'kodax', 'runtime.js'),
+    runtimeBytes,
+    'utf8',
+  );
+  return { tarballPath };
 }
 
 test('release dependency gate accepts one exact Registry version everywhere', async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'space-kodax-dependency-gate-'));
   t.after(() => rm(root, { recursive: true, force: true }));
-  await writeReleaseDependencyFixture(root);
+  const fixture = await writeReleaseDependencyFixture(root);
 
-  const result = assertKodaxReleaseDependencyState(
+  const result = await assertKodaxReleaseDependencyState(
     root,
     path.join(root, 'node_modules', '@kodax-ai', 'kodax'),
+    { readRegistryTarball: () => readFile(fixture.tarballPath) },
   );
   assert.equal(result.version, '0.7.80');
   assert.match(result.resolved, /registry\.npmjs\.org/);
@@ -84,8 +98,8 @@ test('release dependency gate rejects a local test tarball by default', async (t
   t.after(() => rm(root, { recursive: true, force: true }));
   await writeReleaseDependencyFixture(root, { root: '0.7.80', localTarball: true });
 
-  assert.throws(
-    () =>
+  await assert.rejects(
+    async () =>
       assertKodaxReleaseDependencyState(
         root,
         path.join(root, 'node_modules', '@kodax-ai', 'kodax'),
@@ -99,7 +113,7 @@ test('release dependency gate accepts an explicitly allowed integrity-pinned loc
   t.after(() => rm(root, { recursive: true, force: true }));
   await writeReleaseDependencyFixture(root, { root: '0.7.80', localTarball: true });
 
-  const result = assertKodaxReleaseDependencyState(
+  const result = await assertKodaxReleaseDependencyState(
     root,
     path.join(root, 'node_modules', '@kodax-ai', 'kodax'),
     { allowLocalTarball: true },
@@ -118,8 +132,8 @@ test('release dependency gate rejects a local test tarball integrity mismatch', 
     integrity: 'sha512-YWJjZA==',
   });
 
-  assert.throws(
-    () =>
+  await assert.rejects(
+    async () =>
       assertKodaxReleaseDependencyState(
         root,
         path.join(root, 'node_modules', '@kodax-ai', 'kodax'),
@@ -132,13 +146,14 @@ test('release dependency gate rejects a local test tarball integrity mismatch', 
 test('release dependency gate rejects an unmarked installed-version mismatch', async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'space-kodax-dependency-gate-'));
   t.after(() => rm(root, { recursive: true, force: true }));
-  await writeReleaseDependencyFixture(root, { installed: '0.7.76' });
+  const fixture = await writeReleaseDependencyFixture(root, { installed: '0.7.76' });
 
-  assert.throws(
-    () =>
+  await assert.rejects(
+    async () =>
       assertKodaxReleaseDependencyState(
         root,
         path.join(root, 'node_modules', '@kodax-ai', 'kodax'),
+        { readRegistryTarball: () => readFile(fixture.tarballPath) },
       ),
     /installed=0\.7\.76/i,
   );
@@ -147,14 +162,39 @@ test('release dependency gate rejects an unmarked installed-version mismatch', a
 test('release dependency gate rejects manifest and lock drift', async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'space-kodax-dependency-gate-'));
   t.after(() => rm(root, { recursive: true, force: true }));
-  await writeReleaseDependencyFixture(root, { desktop: '0.7.76', lockDesktop: '0.7.76' });
+  const fixture = await writeReleaseDependencyFixture(root, {
+    desktop: '0.7.76',
+    lockDesktop: '0.7.76',
+  });
 
-  assert.throws(
-    () =>
+  await assert.rejects(
+    async () =>
       assertKodaxReleaseDependencyState(
         root,
         path.join(root, 'node_modules', '@kodax-ai', 'kodax'),
+        { readRegistryTarball: () => readFile(fixture.tarballPath) },
       ),
     /desktop=0\.7\.76/i,
+  );
+});
+
+test('release dependency gate rejects same-version installed content drift', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'space-kodax-dependency-gate-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await writeReleaseDependencyFixture(root, { root: '0.7.80', localTarball: true });
+  await writeFile(
+    path.join(root, 'node_modules', '@kodax-ai', 'kodax', 'runtime.js'),
+    'tampered but still version 0.7.80\n',
+    'utf8',
+  );
+
+  await assert.rejects(
+    async () =>
+      assertKodaxReleaseDependencyState(
+        root,
+        path.join(root, 'node_modules', '@kodax-ai', 'kodax'),
+        { allowLocalTarball: true },
+      ),
+    /installed KodaX content mismatch.*runtime\.js/i,
   );
 });

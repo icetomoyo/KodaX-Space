@@ -35,10 +35,7 @@ import type {
   SessionHistoryItem,
 } from '@kodax-space/space-ipc-schema';
 import { bufferIndexForSelectorTurn } from '../features/session/turnIndex.js';
-import {
-  canonProjectRoot as canonProjectRootShared,
-  providerRecoveryReplacesDraft,
-} from '@kodax-space/space-ipc-schema';
+import { canonProjectRoot as canonProjectRootShared } from '@kodax-space/space-ipc-schema';
 import {
   type VisualQuality,
   VISUAL_QUALITY_KEY,
@@ -66,6 +63,7 @@ import {
   type ApplySessionLiveChangeStatus,
 } from './runtimeProjectionState.js';
 import {
+  filterEffectiveOutputSegmentEvents,
   hydrateSessionEventsFromLiveSnapshot,
   projectionTextSuffix,
   runtimeDeltasShareSnapshotSide,
@@ -1453,7 +1451,12 @@ function appendSessionEvent(
   ) {
     return [
       ...bucket.slice(0, -1),
-      { ...event, text: last.text + event.text, sentAt: last.sentAt ?? event.sentAt },
+      {
+        ...event,
+        text: last.text + event.text,
+        textStartOffset: last.textStartOffset,
+        sentAt: last.sentAt ?? event.sentAt,
+      },
     ];
   }
   if (
@@ -1977,22 +1980,26 @@ function projectedEventText(
     .join('');
 }
 
-function liveTextProjectionAfterReplacingRecovery(
-  events: readonly SessionEvent[],
-): readonly SessionEvent[] {
-  let resetIndex = -1;
-  for (let index = 0; index < events.length; index++) {
-    const event = events[index]!;
-    if (event.kind === 'provider_recovery' && providerRecoveryReplacesDraft(event)) {
-      resetIndex = index;
-    }
-  }
-  return resetIndex === -1 ? events : events.slice(resetIndex + 1);
-}
-
 function cumulativeProjectionTextSuffix(durable: string, live: string): string {
   if (live.length === 0 || durable.includes(live)) return '';
   return live.startsWith(durable) ? live.slice(durable.length) : '';
+}
+
+function projectionSuffixChunks(
+  events: readonly SessionEvent[],
+  kind: 'text_delta' | 'thinking_delta',
+  suffix: string,
+): ReadonlyMap<number, string> {
+  const chunks = new Map<number, string>();
+  let remaining = suffix.length;
+  for (let index = events.length - 1; index >= 0 && remaining > 0; index--) {
+    const event = events[index]!;
+    if (event.kind !== kind) continue;
+    const length = Math.min(event.text.length, remaining);
+    if (length > 0) chunks.set(index, event.text.slice(-length));
+    remaining -= length;
+  }
+  return chunks;
 }
 
 function projectionNoticeKey(event: SessionEvent): string | undefined {
@@ -2140,7 +2147,8 @@ function mergeCanonicalTurnProjections(
   liveEvents: readonly SessionEvent[],
   exactEntryIdentity = false,
 ): SessionEvent[] {
-  const liveTerminals = liveEvents.filter(isTranscriptTerminal);
+  const effectiveLiveEvents = filterEffectiveOutputSegmentEvents(liveEvents);
+  const liveTerminals = effectiveLiveEvents.filter(isTranscriptTerminal);
   const durableTerminals = durableEvents.filter(isTranscriptTerminal);
   // A delivered-prompt event is both Runtime state and the positional start boundary for its
   // user-owned segment. History has already reconstructed the canonical user row, so folding must
@@ -2148,9 +2156,27 @@ function mergeCanonicalTurnProjections(
   // turn it into an interior boundary; the next reconciliation scan would then shift every later
   // assistant segment to the following user.
   const leadingPromptBoundary =
-    durableEvents.find(isPromptSegmentBoundary) ?? liveEvents.find(isPromptSegmentBoundary);
+    durableEvents.find(isPromptSegmentBoundary) ??
+    effectiveLiveEvents.find(isPromptSegmentBoundary);
   const durableBody = durableEvents.filter(
     (event) => !isTranscriptTerminal(event) && !isPromptSegmentBoundary(event),
+  );
+  const textSuffixProjector = exactEntryIdentity
+    ? cumulativeProjectionTextSuffix
+    : projectionTextSuffix;
+  const textSuffix = textSuffixProjector(
+    projectedEventText(durableEvents, 'text_delta'),
+    projectedEventText(effectiveLiveEvents, 'text_delta'),
+  );
+  const thinkingSuffix = textSuffixProjector(
+    projectedEventText(durableEvents, 'thinking_delta'),
+    projectedEventText(effectiveLiveEvents, 'thinking_delta'),
+  );
+  const liveTextChunks = projectionSuffixChunks(effectiveLiveEvents, 'text_delta', textSuffix);
+  const liveThinkingChunks = projectionSuffixChunks(
+    effectiveLiveEvents,
+    'thinking_delta',
+    thinkingSuffix,
   );
   const mergedBody = [...durableBody];
   const durableToolStarts = new Set(
@@ -2170,15 +2196,19 @@ function mergeCanonicalTurnProjections(
     if (noticeKey !== undefined) durableNoticeKeys.add(noticeKey);
   }
 
-  const liveAttemptBoundaries: SessionEvent[] = [];
   const liveExtras: SessionEvent[] = [];
-  for (const event of liveEvents) {
-    if (
-      isTranscriptTerminal(event) ||
-      isPromptSegmentBoundary(event) ||
-      event.kind === 'text_delta' ||
-      event.kind === 'thinking_delta'
-    ) {
+  for (const [eventIndex, event] of effectiveLiveEvents.entries()) {
+    if (isTranscriptTerminal(event) || isPromptSegmentBoundary(event)) {
+      continue;
+    }
+    if (event.kind === 'text_delta') {
+      const text = liveTextChunks.get(eventIndex);
+      if (text) liveExtras.push({ ...event, text });
+      continue;
+    }
+    if (event.kind === 'thinking_delta') {
+      const text = liveThinkingChunks.get(eventIndex);
+      if (text) liveExtras.push({ ...event, text });
       continue;
     }
     if (event.kind === 'tool_start') {
@@ -2205,12 +2235,6 @@ function mergeCanonicalTurnProjections(
       }
       continue;
     }
-    if (event.kind === 'provider_recovery' && providerRecoveryReplacesDraft(event)) {
-      // History already contains the successful replacement attempt. Keep the recovery marker at
-      // its causal boundary, before that canonical output, so rendering cannot invalidate history.
-      liveAttemptBoundaries.push(event);
-      continue;
-    }
     const noticeKey = projectionNoticeKey(event);
     if (noticeKey !== undefined) {
       if (!durableNoticeKeys.has(noticeKey)) {
@@ -2224,47 +2248,10 @@ function mergeCanonicalTurnProjections(
     liveExtras.push(event);
   }
 
-  const textSuffixProjector = exactEntryIdentity
-    ? cumulativeProjectionTextSuffix
-    : projectionTextSuffix;
-  // A replacing recovery starts a new Provider text attempt. The marker remains for diagnostics,
-  // but the abandoned draft has no canonical authority after the retry succeeds.
-  const liveTextProjection = liveTextProjectionAfterReplacingRecovery(liveEvents);
-  const textSuffix = textSuffixProjector(
-    projectedEventText(durableEvents, 'text_delta'),
-    projectedEventText(liveTextProjection, 'text_delta'),
-  );
-  const thinkingSuffix = textSuffixProjector(
-    projectedEventText(durableEvents, 'thinking_delta'),
-    projectedEventText(liveTextProjection, 'thinking_delta'),
-  );
-  const liveTextEvent = liveTextProjection.find((event) => event.kind === 'text_delta');
-  const liveThinkingEvent = liveTextProjection.find((event) => event.kind === 'thinking_delta');
-  if (thinkingSuffix.length > 0) {
-    liveExtras.push({
-      kind: 'thinking_delta',
-      sessionId: liveEvents[0]?.sessionId ?? durableEvents[0]?.sessionId ?? '',
-      text: thinkingSuffix,
-      ...(liveThinkingEvent?.kind === 'thinking_delta' && liveThinkingEvent.sentAt !== undefined
-        ? { sentAt: liveThinkingEvent.sentAt }
-        : {}),
-    });
-  }
-  if (textSuffix.length > 0) {
-    liveExtras.push({
-      kind: 'text_delta',
-      sessionId: liveEvents[0]?.sessionId ?? durableEvents[0]?.sessionId ?? '',
-      text: textSuffix,
-      ...(liveTextEvent?.kind === 'text_delta' && liveTextEvent.sentAt !== undefined
-        ? { sentAt: liveTextEvent.sentAt }
-        : {}),
-    });
-  }
-
   const body =
     leadingPromptBoundary !== undefined
-      ? [leadingPromptBoundary, ...liveAttemptBoundaries, ...mergedBody, ...liveExtras]
-      : [...liveAttemptBoundaries, ...mergedBody, ...liveExtras];
+      ? [leadingPromptBoundary, ...mergedBody, ...liveExtras]
+      : [...mergedBody, ...liveExtras];
   // Runtime terminals are authoritative when available. Preserve the whole consecutive sequence:
   // older adapters/reconnect paths may emit error -> complete -> wrapped error, and the selector
   // intentionally renders both errors while treating every terminal as one segment delimiter.
@@ -3991,10 +3978,10 @@ function claimUserMessagesByOriginOperation(
       // cannot overwrite each other's claim within a single projection pass.
       const message = (next ?? users)[index]!;
       if (
-        message.operationId !== run.originOperationId
-        || message.restoredFromHistory === true
-        || message.runtimeRunId !== undefined
-        || message.turnId !== undefined
+        message.operationId !== run.originOperationId ||
+        message.restoredFromHistory === true ||
+        message.runtimeRunId !== undefined ||
+        message.turnId !== undefined
       ) {
         continue;
       }
@@ -7040,9 +7027,10 @@ export const useAppStore = create<AppState>((set) => ({
             change.change.domain === 'terminal' ? 'terminal' : 'active',
           )
         : currentUsers;
-      const operationClaimedUsers = appliesRunIdentity && projection !== undefined
-        ? claimUserMessagesByOriginOperation(snapshotOwnedUsers, projection)
-        : snapshotOwnedUsers;
+      const operationClaimedUsers =
+        appliesRunIdentity && projection !== undefined
+          ? claimUserMessagesByOriginOperation(snapshotOwnedUsers, projection)
+          : snapshotOwnedUsers;
       const folded = appliesRunIdentity
         ? foldStrongIdentityDuplicateTurns(operationClaimedUsers, hydratedEvents)
         : { userMessages: operationClaimedUsers, events: hydratedEvents };

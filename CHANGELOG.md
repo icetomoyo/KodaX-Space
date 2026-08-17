@@ -29,6 +29,19 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ### Fixed
 
+- **SDK-owned provider output replacement** - Coder now consumes KodaX
+  `liveOutputSegments:1` with logical response, physical provider-request, and
+  append/replace identity. Abandoned retry/fallback text remains available in
+  the Runtime audit journal but is removed from the effective live projection;
+  max-token continuation still appends. Reconnect and snapshot hydration use
+  that projection directly, with no Space checkpoint replay or text-equality
+  deduplication state machine.
+- **Fenced incompatible-daemon replacement** - Space delegates capability
+  replacement entirely to the KodaX SDK. An idle incompatible daemon is
+  replaced only after exact owner/process identity, client/work quiescence,
+  durable owner-policy transition, and verified shutdown pass. A daemon used
+  by another KodaX client or carrying governed work is preserved and the new
+  client fails closed; Space performs no protocol downgrade or second stop.
 - **Run-scoped terminal folding** - A Runtime terminal event that omits `turnId` no longer
   blocks live/canonical folding when its `runtimeEvent.runId` matches the owner bound by
   `bindUserMessageRuntimeRun`. Previously one turnId-less terminal left its live copy in the

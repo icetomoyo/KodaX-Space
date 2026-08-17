@@ -180,7 +180,6 @@ export {
   type InputArtifactSource,
   sessionImageAttachmentSchema,
   isSessionAttachmentPreviewUrl,
-  providerRecoveryReplacesDraft,
   type SessionImageAttachment,
   type SessionSendQueueMode,
   type SessionSendRejectionReason,

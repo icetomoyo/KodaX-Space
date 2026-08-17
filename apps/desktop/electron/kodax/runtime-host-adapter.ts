@@ -45,6 +45,7 @@ import type {
   RuntimeExitSettlement,
   RuntimeExitSettlementInput,
 } from '@kodax-ai/kodax/runtime';
+import type { KodaXOutputSegmentProjection } from '@kodax-ai/kodax/coding';
 export type { RuntimeExitSettlement, RuntimeExitSettlementInput } from '@kodax-ai/kodax/runtime';
 import { effortToReasoningMode } from './reasoning-effort.js';
 import { getKodaxRuntimeDir } from './data-paths.js';
@@ -66,10 +67,8 @@ import {
   CoderSessionProjectionReducer,
   coderRuntimeSessionIds,
   isPartnerRuntimeSessionIdentity,
-  isTransientChildRuntimeEvent,
   projectRuntimeProfile,
   projectRuntimeSessionSnapshot,
-  runtimeTurnStartedId,
 } from './runtime/coder-daemon-projection.js';
 import {
   createPendingSdkRuntimeProjection,
@@ -242,39 +241,6 @@ function runtimeEventRecord(value: unknown): Readonly<Record<string, unknown>> |
     : undefined;
 }
 
-function omitCausallyUnscopedDraft(
-  projection: SpaceSessionLiveProjectionT,
-): SpaceSessionLiveProjectionT {
-  return {
-    ...projection,
-    assistantDraft: undefined,
-    thinkingDraft: undefined,
-    draftRecoveries: undefined,
-    draftCheckpoints: undefined,
-  };
-}
-
-function replayContainsCurrentRootTurnBoundary(
-  projection: SpaceSessionLiveProjectionT,
-  replayEvents: readonly RuntimeTypedEvent[],
-): boolean {
-  const activeRun = projection.activeRun;
-  if (activeRun === undefined) return true;
-  if (activeRun.turnId === undefined) return false;
-  return replayEvents.some((event) => {
-    return (
-      event.type === 'turn.started' &&
-      event.sessionId === projection.sessionId &&
-      event.runId === activeRun.runId &&
-      event.cursor.sessionId === projection.cursor.sessionId &&
-      event.cursor.journalEpoch === projection.cursor.journalEpoch &&
-      event.seq <= projection.cursor.seq &&
-      runtimeTurnStartedId(event) === activeRun.turnId &&
-      !isTransientChildRuntimeEvent(event)
-    );
-  });
-}
-
 export function runtimeSessionEventOrigin(runtimeId: string | undefined, event: RuntimeTypedEvent) {
   return runtimeId
     ? {
@@ -393,7 +359,6 @@ export type RuntimeConversationHistoryPageResult =
   | { readonly outcome: 'data_changed' };
 
 const RUNTIME_READ_TIMEOUT_MS = 15_000;
-const RUNTIME_DRAFT_REPLAY_TIMEOUT_MS = 2_000;
 const RUNTIME_TRANSCRIPT_TOTAL_TIMEOUT_MS = 60_000;
 const MAX_RUNTIME_TRANSCRIPT_RESYNCS = 2;
 const MAX_PROFILE_REFRESH_CONFLICT_RETRIES = 2;
@@ -1199,6 +1164,8 @@ type SpaceRuntimeConnectOptions = Omit<ConnectKodaXRuntimeOptions, 'requirements
     readonly runtimeEventCoalescing?: 1;
     /** Runtime event ordering and replay are scoped to one Session journal epoch. */
     readonly sessionEventJournal?: 1;
+    /** Provider-request-owned live output with explicit replacement semantics. */
+    readonly liveOutputSegments?: 1;
   };
 };
 
@@ -1388,28 +1355,6 @@ async function settlePublishedRuntimeExit(
   return settle(input);
 }
 
-async function closeManagementRuntime(runtime: KodaXDaemonRuntime): Promise<boolean> {
-  let timer: NodeJS.Timeout | undefined;
-  const timedOut = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(
-      () => reject(new Error('Runtime management transport close timed out.')),
-      250,
-    );
-  });
-  try {
-    await Promise.race([runtime.close(), timedOut]);
-    return true;
-  } catch (error: unknown) {
-    console.warn(
-      '[runtime] temporary management transport did not close cleanly:',
-      error instanceof Error ? error.message : String(error),
-    );
-    return false;
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-  }
-}
-
 export function resolveRuntimeHostMode(value: string | undefined): RuntimeHostMode {
   return value?.trim().toLowerCase() === 'legacy' ? 'legacy' : 'runtime';
 }
@@ -1482,6 +1427,12 @@ function assertSpaceDaemonRequiredCapabilities(runtime: KodaXDaemonRuntime): voi
         'Install a compatible KodaX package and restart the Coder daemon.',
     );
   }
+  if (runtimeCapabilityVersion(runtime, 'liveOutputSegments') < 1) {
+    throw new Error(
+      'KodaX Runtime does not support the required liveOutputSegments v1 capability. ' +
+        'Install a compatible KodaX package and restart the Coder daemon.',
+    );
+  }
   if (runtimeCapabilityVersion(runtime, 'conversationHistory') < 1) {
     throw new Error(
       'KodaX Runtime does not support the required conversationHistory v1 capability. ' +
@@ -1507,29 +1458,16 @@ function runtimeInitializationDiagnostic(error: unknown): string {
     return diagnostic;
   }
   const preflight = (error as { preflight?: { blockers?: readonly string[] } }).preflight;
-  const blockers = preflight?.blockers?.length
-    ? ` Safe automatic restart is blocked by: ${preflight.blockers.join(', ')}.`
-    : ' Space will safely retire the idle stale daemon and reconnect automatically.';
+  const blockers =
+    preflight === undefined
+      ? ' Safe automatic restart status is unavailable because the SDK returned no daemon preflight; restart KodaX Space after the stale daemon is stopped.'
+      : preflight.blockers?.length
+        ? ` Safe automatic restart is blocked by: ${preflight.blockers.join(', ')}.`
+        : ' Safe replacement was attempted but did not complete; follow the SDK diagnostic before restarting KodaX Space.';
   return `Coder daemon capability upgrade required.${blockers} ${diagnostic}`.slice(
     0,
     MAX_DIAGNOSTIC_ERROR,
   );
-}
-
-function isDaemonCapabilityUpgradeFailure(error: unknown): boolean {
-  return (
-    error !== null &&
-    typeof error === 'object' &&
-    (error as { code?: unknown }).code === 'daemon_capability_upgrade_required'
-  );
-}
-
-function capabilityUpgradeBlockers(error: unknown): readonly string[] {
-  if (!isDaemonCapabilityUpgradeFailure(error)) return [];
-  const blockers = (error as { preflight?: { blockers?: unknown } }).preflight?.blockers;
-  return Array.isArray(blockers)
-    ? blockers.filter((blocker): blocker is string => typeof blocker === 'string')
-    : [];
 }
 
 function isTransientDaemonHealthFailure(error: unknown): boolean {
@@ -1596,6 +1534,7 @@ async function createPublishedRuntime(
         readonly runtimeEventCoalescing?: number;
         readonly sandboxRuntime?: number;
         readonly sessionEventJournal?: number;
+        readonly liveOutputSegments?: number;
       };
     },
   );
@@ -1607,6 +1546,7 @@ export function assertSpaceRuntimeSdkRequiredCapabilities(sdk: {
     readonly actorSettlementConvergence?: number;
     readonly daemonOrphanExit?: number;
     readonly daemonShutdownVerification?: number;
+    readonly liveOutputSegments?: number;
     readonly managedRunDurability?: number;
     readonly runtimeExitSettlement?: number;
     readonly runtimeEventCoalescing?: number;
@@ -1619,6 +1559,7 @@ export function assertSpaceRuntimeSdkRequiredCapabilities(sdk: {
     ...(capabilities?.actorSettlementConvergence === 2 ? [] : ['actorSettlementConvergence v2']),
     ...(capabilities?.daemonOrphanExit === 1 ? [] : ['daemonOrphanExit v1']),
     ...(capabilities?.daemonShutdownVerification === 1 ? [] : ['daemonShutdownVerification v1']),
+    ...(capabilities?.liveOutputSegments === 1 ? [] : ['liveOutputSegments v1']),
     ...(capabilities?.managedRunDurability === 1 ? [] : ['managedRunDurability v1']),
     ...(capabilities?.runtimeExitSettlement === 1 ? [] : ['runtimeExitSettlement v1']),
     ...(capabilities?.runtimeEventCoalescing === 1 ? [] : ['runtimeEventCoalescing v1']),
@@ -2196,18 +2137,10 @@ export class RuntimeHostAdapter {
         runtimeEventCoalescing: 1,
         sandboxRuntime: 3,
         sessionEventJournal: 1,
+        liveOutputSegments: 1,
         integrationConfigResilience: 1,
         runtimeAutoModeGuardrail: 4,
       },
-    };
-  }
-
-  private createRuntimeManagementConnectOptions(
-    identity: RuntimeClientIdentity,
-  ): SpaceRuntimeConnectOptions {
-    return {
-      ...this.createRuntimeConnectOptions(identity, false),
-      requirements: { daemonManagement: 1 },
     };
   }
 
@@ -2401,36 +2334,13 @@ export class RuntimeHostAdapter {
           if (this.runtime === runtime) this.runtime = null;
           if (this.hostToolLeaseId === attachedHostToolLeaseId) this.hostToolLeaseId = undefined;
         }
-        const capabilityUpgrade = isDaemonCapabilityUpgradeFailure(error);
-        const upgradeBlockers = capabilityUpgradeBlockers(error);
-        let capabilityRecoveryReady = false;
-        if (
-          capabilityUpgrade &&
-          upgradeBlockers.length === 0 &&
-          (this.state as RuntimeHostState) !== 'closed'
-        ) {
-          try {
-            const stopped = await this.idleDaemonStop();
-            capabilityRecoveryReady = stopped.stopped || stopped.reason === 'missing';
-            if (!capabilityRecoveryReady) {
-              console.warn(
-                `[runtime] stale Coder daemon could not be retired safely (${stopped.reason ?? 'unknown'}).`,
-              );
-            }
-          } catch (stopError) {
-            console.warn(
-              `[runtime] stale Coder daemon retirement failed: ${sanitizeDiagnosticError(stopError)}`,
-            );
-          }
-        }
-
         this.initializePromise = null;
         if (this.state === 'closed') throw error;
         this.lastError = runtimeInitializationDiagnostic(error);
         const retryableHealthFailure = isTransientDaemonHealthFailure(error);
-        this.state = capabilityRecoveryReady ? 'uninitialized' : 'failed';
+        this.state = 'failed';
         this.publishUnavailable(
-          retryableHealthFailure || capabilityRecoveryReady ? 'reconnecting' : 'incompatible',
+          retryableHealthFailure ? 'reconnecting' : 'incompatible',
           this.lastError,
         );
         // The SDK deliberately refuses to start a competing daemon while a
@@ -2438,8 +2348,7 @@ export class RuntimeHostAdapter {
         // That condition can clear without user action, so keep probing through
         // the existing bounded backoff instead of leaving Coder permanently in
         // a failed state until the first send happens to retry initialize().
-        if (capabilityRecoveryReady) this.scheduleReconnect();
-        else if (retryableHealthFailure) this.scheduleReconnect(true);
+        if (retryableHealthFailure) this.scheduleReconnect(true);
         throw error;
       });
     return this.initializePromise;
@@ -2714,6 +2623,11 @@ export class RuntimeHostAdapter {
         id: 'runtime.events.sessionJournal',
         version: version('sessionEventJournal'),
         available: available('sessionEventJournal'),
+      },
+      {
+        id: 'runtime.live.outputSegments',
+        version: version('liveOutputSegments'),
+        available: available('liveOutputSegments'),
       },
       {
         id: 'runtime.externalAgents',
@@ -4123,67 +4037,20 @@ export class RuntimeHostAdapter {
     return pending;
   }
 
-  private async projectObservationSnapshot(
-    runtime: KodaXDaemonRuntime,
+  private projectObservationSnapshot(
     snapshot: RuntimeSessionObservationSnapshot,
-    parseRuntimeEvent: RuntimeEventParser,
-  ): Promise<{
+  ): {
     readonly projection: SpaceSessionLiveProjectionT;
-    readonly replayEvents: readonly RuntimeTypedEvent[];
-  }> {
+    readonly outputSegment?: KodaXOutputSegmentProjection;
+  } {
     const projected = projectRuntimeSessionSnapshot(snapshot);
-    const runId = projected.activeRun?.runId;
-    if (!runId) {
-      return { projection: projected, replayEvents: [] };
-    }
-
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      const replay = await Promise.race([
-        runtime.events.replay({
-          runId,
-          type: [
-            'turn.started',
-            'run.progress',
-            'assistant.delta',
-            'thinking.delta',
-            'thinking.finished',
-            'tool.finished',
-            'provider.recovery',
-          ],
-        }),
-        new Promise<never>((_resolve, reject) => {
-          timer = setTimeout(
-            () => reject(new Error('Runtime draft replay timed out.')),
-            RUNTIME_DRAFT_REPLAY_TIMEOUT_MS,
-          );
-          timer.unref?.();
-        }),
-      ]);
-      const replayEvents = replay.map((event) => {
-        const parsed = parseRuntimeEvent(event);
-        if (!parsed.ok) throw new Error(`Malformed Runtime replay event: ${parsed.error}`);
-        return parsed.event;
-      });
-      return {
-        projection: replayContainsCurrentRootTurnBoundary(projected, replayEvents)
-          ? projected
-          : omitCausallyUnscopedDraft(projected),
-        replayEvents,
-      };
-    } catch (error) {
-      console.warn(
-        `[runtime] supplemental draft replay failed for ${snapshot.session.id}:`,
-        sanitizeDiagnosticError(error),
-      );
-      return {
-        projection:
-          projected.activeRun === undefined ? projected : omitCausallyUnscopedDraft(projected),
-        replayEvents: [],
-      };
-    } finally {
-      if (timer !== undefined) clearTimeout(timer);
-    }
+    const outputSegment = projected.activeRun
+      ? snapshot.live.outputSegmentsByRun[projected.activeRun.runId]
+      : undefined;
+    return {
+      projection: projected,
+      ...(outputSegment ? { outputSegment } : {}),
+    };
   }
 
   private async openObservation(
@@ -4231,11 +4098,7 @@ export class RuntimeHostAdapter {
         throw new Error('Coder daemon connection changed while validating session observation.');
       }
       assertRuntimeSessionIdentity(session, { sessionId });
-      const replayed = await this.projectObservationSnapshot(
-        runtime,
-        observation.snapshot,
-        parseRuntimeEvent,
-      );
+      const replayed = this.projectObservationSnapshot(observation.snapshot);
       const initialProjection = {
         ...replayed.projection,
         projectionRevision: Math.max(
@@ -4246,7 +4109,7 @@ export class RuntimeHostAdapter {
       const reducer = new CoderSessionProjectionReducer(
         initialProjection,
         observation.snapshot.runs,
-        replayed.replayEvents,
+        replayed.outputSegment,
       );
       const initial = reducer.snapshot();
       for (const run of observation.snapshot.runs) this.runProviders.set(run.runId, run.provider);
@@ -4851,6 +4714,7 @@ export class RuntimeHostAdapter {
         return;
       }
       if (
+        event.type === 'output.segment.started' ||
         event.type === 'assistant.delta' ||
         event.type === 'thinking.delta' ||
         event.type === 'thinking.finished' ||
@@ -4862,6 +4726,23 @@ export class RuntimeHostAdapter {
         return;
       }
     }
+    if (
+      event.type === 'output.segment.started' &&
+      typeof payload?.responseId === 'string' &&
+      typeof payload?.providerRequestId === 'string' &&
+      (payload.mode === 'append' || payload.mode === 'replace')
+    ) {
+      this.push('session.event', {
+        ...runtimeSessionEventOrigin(runtimeId, event),
+        ...runtimeTranscriptTurnIdentity(event),
+        kind: 'output_segment_started',
+        sessionId: event.sessionId,
+        responseId: payload.responseId,
+        providerRequestId: payload.providerRequestId,
+        mode: payload.mode,
+      });
+      return;
+    }
     if (event.type === 'assistant.delta' && typeof payload?.text === 'string') {
       this.push('session.event', {
         ...runtimeSessionEventOrigin(runtimeId, event),
@@ -4869,6 +4750,9 @@ export class RuntimeHostAdapter {
         kind: 'text_delta',
         sessionId: event.sessionId,
         text: payload.text,
+        ...(typeof payload.providerRequestId === 'string'
+          ? { providerRequestId: payload.providerRequestId }
+          : {}),
       });
       return;
     }
@@ -4879,6 +4763,9 @@ export class RuntimeHostAdapter {
         kind: 'thinking_delta',
         sessionId: event.sessionId,
         text: payload.text,
+        ...(typeof payload.providerRequestId === 'string'
+          ? { providerRequestId: payload.providerRequestId }
+          : {}),
       });
       return;
     }
@@ -6429,23 +6316,6 @@ export class RuntimeHostAdapter {
         configHome: this.runtimeConfigHome(),
         profile: 'coder',
       });
-      if (
-        settlement.status === 'blocked' &&
-        settlement.reason === 'stop_not_accepted' &&
-        settlement.nextAction === 'relaunch-space'
-      ) {
-        try {
-          return await this.settleRuntimeExitWithManagementRuntime(settler);
-        } catch {
-          // A late accepted stop can enter draining between the ticket scan and
-          // management attach. Re-scan once so inline-policy proof can promote
-          // the retained prepared ticket without starting a replacement.
-          return await settler({
-            configHome: this.runtimeConfigHome(),
-            profile: 'coder',
-          });
-        }
-      }
       return settlement;
     } catch (error: unknown) {
       return {
@@ -6473,13 +6343,6 @@ export class RuntimeHostAdapter {
         profile: 'coder',
         ...(runtime === undefined ? {} : { runtime }),
       });
-      if (
-        runtime === undefined &&
-        settlement.status === 'blocked' &&
-        settlement.reason === 'stop_not_accepted'
-      ) {
-        settlement = await this.settleRuntimeExitWithManagementRuntime(this.runtimeExitSettler!);
-      }
     } catch (error: unknown) {
       if (isCoderOwnerRecoveryRestartRequired(error)) throw error;
       throw createCoderOwnerRecoveryRestartError(
@@ -6504,45 +6367,6 @@ export class RuntimeHostAdapter {
     this.closingRuntime = null;
     await this.close();
     this.rollbackInProgress = previousRollbackState;
-  }
-
-  private async settleRuntimeExitWithManagementRuntime(
-    settler: RuntimeExitSettler,
-  ): Promise<RuntimeExitSettlement> {
-    const identity = await this.identityStore.openInstance({
-      name: 'kodax-space',
-      title: 'KodaX Space',
-      version: this.clientVersion,
-    });
-    const managementRuntime = await this.runtimeFactory(
-      this.createRuntimeManagementConnectOptions(identity),
-    );
-    let settlement: RuntimeExitSettlement;
-    try {
-      settlement = await settler({
-        configHome: this.runtimeConfigHome(),
-        profile: 'coder',
-        runtime: managementRuntime,
-      });
-    } catch (error: unknown) {
-      await closeManagementRuntime(managementRuntime);
-      throw error;
-    }
-    const managementClosed = await closeManagementRuntime(managementRuntime);
-    if (
-      !managementClosed &&
-      settlement.status === 'blocked' &&
-      settlement.nextAction === 'keep-open'
-    ) {
-      return {
-        status: 'blocked',
-        reason: 'cleanup_unverified',
-        nextAction: 'relaunch-space',
-        message:
-          'Temporary Runtime management transport could not be closed after a nonterminal settlement.',
-      };
-    }
-    return settlement;
   }
 
   async prepareEmbeddedRestart(operationId?: string): Promise<void> {

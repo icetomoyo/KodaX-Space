@@ -351,6 +351,7 @@ const SHARED_DAEMON_REQUIREMENTS = {
   daemonOrphanExit: 1,
   managedRunDurability: 1,
   actorSettlementConvergence: 2,
+  liveOutputSegments: 1,
   runtimeEventCoalescing: 1,
   sandboxRuntime: 3,
   sessionEventJournal: 1,
@@ -606,6 +607,7 @@ try {
   const daemonOrphanExitCapability = runtime.capabilities.daemonOrphanExit;
   const managedRunDurabilityCapability = runtime.capabilities.managedRunDurability;
   const actorSettlementConvergenceCapability = runtime.capabilities.actorSettlementConvergence;
+  const liveOutputSegmentsCapability = runtime.capabilities.liveOutputSegments;
   const runtimeEventCoalescingCapability = runtime.capabilities.runtimeEventCoalescing;
   const sessionEventJournalCapability = runtime.capabilities.sessionEventJournal;
   const runtimeAutoModeGuardrailCapability = runtime.capabilities.runtimeAutoModeGuardrail;
@@ -651,6 +653,7 @@ try {
       daemonOrphanExit: daemonOrphanExitCapability?.version === 1,
       managedRunDurability: managedRunDurabilityCapability?.version === 1,
       actorSettlementConvergence: actorSettlementConvergenceCapability?.version === 2,
+      liveOutputSegments: liveOutputSegmentsCapability?.version === 1,
       runtimeEventCoalescing: runtimeEventCoalescingCapability?.version === 1,
       sessionEventJournal: sessionEventJournalCapability?.version === 1,
       integrationConfigResilience: integrationConfigCapability?.version === 1,
@@ -947,6 +950,10 @@ try {
       sdk: KODAX_RUNTIME_SDK_CAPABILITIES.runtimeEventCoalescing === 1,
       runtime: runtime.capabilities.runtimeEventCoalescing?.version === 1,
     },
+    liveOutputSegments: {
+      sdk: KODAX_RUNTIME_SDK_CAPABILITIES.liveOutputSegments === 1,
+      runtime: runtime.capabilities.liveOutputSegments?.version === 1,
+    },
     managedRunDurability: {
       sdk: KODAX_RUNTIME_SDK_CAPABILITIES.managedRunDurability === 1,
       runtime: runtime.capabilities.managedRunDurability?.version === 1,
@@ -1097,6 +1104,7 @@ interface SharedDaemonHostResult {
     readonly daemonOrphanExit: boolean;
     readonly managedRunDurability: boolean;
     readonly actorSettlementConvergence: boolean;
+    readonly liveOutputSegments: boolean;
     readonly runtimeEventCoalescing: boolean;
     readonly sessionEventJournal: boolean;
     readonly integrationConfigResilience: boolean;
@@ -1262,7 +1270,7 @@ async function runPublishedSharedDaemonFailureProbe(): Promise<SharedDaemonOwner
   return result;
 }
 
-test('installed KodaX bytes match the exact Space dependency pin', () => {
+test('installed KodaX version matches the exact Space dependency pin', () => {
   assert.equal(INSTALLED_KODAX_VERSION, EXPECTED_KODAX_VERSION);
 });
 
@@ -1307,6 +1315,7 @@ test(
       ready: true,
     });
     assert.deepEqual(result.eventCoalescing, { sdk: true, runtime: true });
+    assert.deepEqual(result.liveOutputSegments, { sdk: true, runtime: true });
     assert.deepEqual(result.managedRunDurability, { sdk: true, runtime: true });
     assert.deepEqual(result.actorSettlementConvergence, { sdk: true, runtime: true });
     assert.deepEqual(result.sandboxRuntime, { sdk: true, runtime: true });
@@ -1875,6 +1884,7 @@ test(
     assert.equal(result.management.daemonOrphanExit, true);
     assert.equal(result.management.managedRunDurability, true);
     assert.equal(result.management.actorSettlementConvergence, true);
+    assert.equal(result.management.liveOutputSegments, true);
     assert.equal(result.management.runtimeEventCoalescing, true);
     assert.equal(result.management.sessionEventJournal, true);
     assert.equal(result.management.integrationConfigResilience, true);

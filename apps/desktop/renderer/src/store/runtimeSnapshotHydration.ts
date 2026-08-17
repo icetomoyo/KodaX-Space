@@ -14,6 +14,7 @@ type SnapshotRunEvent = Extract<
   {
     kind:
       | DraftEventKind
+      | 'output_segment_started'
       | 'thinking_end'
       | 'tool_start'
       | 'tool_input_delta'
@@ -26,6 +27,10 @@ type SnapshotEventBarrierCursor = SpaceRuntimeCursorT & {
   readonly assistantDraftSeq?: number;
   readonly thinkingDraftSeq?: number;
 };
+
+function isUserDeliveryBoundary(event: SessionEvent): boolean {
+  return event.kind === 'mid_turn_user_prompt' || event.kind === 'queued_user_prompt_started';
+}
 
 export function runtimeDeltasShareSnapshotSide(
   previous: StreamDeltaEvent,
@@ -58,7 +63,7 @@ export function runtimeDeltasShareSnapshotSide(
 function activeRunSegmentStart(events: readonly SessionEvent[]): number {
   for (let index = events.length - 1; index >= 0; index--) {
     const event = events[index]!;
-    if (event.kind === 'session_start') return index;
+    if (event.kind === 'session_start' || isUserDeliveryBoundary(event)) return index;
     if (event.kind === 'session_complete' || event.kind === 'session_error') return index + 1;
   }
   return 0;
@@ -76,7 +81,7 @@ function terminalRunSegmentStart(events: readonly SessionEvent[]): number {
   if (terminalIndex === -1) return activeRunSegmentStart(events);
   for (let index = terminalIndex - 1; index >= 0; index--) {
     const event = events[index]!;
-    if (event.kind === 'session_start') return index;
+    if (event.kind === 'session_start' || isUserDeliveryBoundary(event)) return index;
     if (event.kind === 'session_complete' || event.kind === 'session_error') return index + 1;
   }
   return 0;
@@ -160,6 +165,123 @@ function belongsToRun(
   );
 }
 
+interface OutputSegmentFilterState {
+  activeResponseId?: string;
+  activeProviderRequestId?: string;
+  readonly responseProviderRequestIds: Set<string>;
+  readonly segmentByIndex: Map<number, string>;
+  readonly discardedSegments: Set<string>;
+  readonly staleDeltaIndexes: Set<number>;
+  readonly effectiveProviderRequestIds?: ReadonlySet<string>;
+}
+
+function projectedProviderRequestIds(
+  projection: SpaceSessionLiveProjectionT | undefined,
+): ReadonlySet<string> | undefined {
+  const output = projection?.outputSegment;
+  if (!output) return undefined;
+  return new Set([
+    ...output.retained.map((segment) => segment.providerRequestId),
+    ...(output.active ? [output.active.providerRequestId] : []),
+  ]);
+}
+
+function discardExcludedProjectedSegment(
+  event: SessionEvent,
+  providerRequestId: string,
+  state: OutputSegmentFilterState,
+  projection: SpaceSessionLiveProjectionT | undefined,
+): void {
+  if (state.effectiveProviderRequestIds === undefined || projection?.activeRun === undefined)
+    return;
+  const origin = runtimeEventOrigin(event);
+  if (
+    belongsToRun(origin, projection, projection.activeRun.runId) &&
+    origin!.seq <= projection.cursor.seq &&
+    !state.effectiveProviderRequestIds.has(providerRequestId)
+  ) {
+    state.discardedSegments.add(providerRequestId);
+  }
+}
+
+function scanOutputSegmentStart(
+  event: Extract<SessionEvent, { kind: 'output_segment_started' }>,
+  index: number,
+  state: OutputSegmentFilterState,
+  projection: SpaceSessionLiveProjectionT | undefined,
+): void {
+  const isDuplicate =
+    event.responseId === state.activeResponseId &&
+    event.providerRequestId === state.activeProviderRequestId;
+  if (!isDuplicate) {
+    if (state.activeResponseId !== undefined && event.responseId !== state.activeResponseId) {
+      for (const requestId of state.responseProviderRequestIds) {
+        state.discardedSegments.add(requestId);
+      }
+      state.responseProviderRequestIds.clear();
+    } else if (event.mode === 'replace' && state.activeProviderRequestId !== undefined) {
+      state.discardedSegments.add(state.activeProviderRequestId);
+    }
+    state.activeResponseId = event.responseId;
+    state.activeProviderRequestId = event.providerRequestId;
+    state.responseProviderRequestIds.add(event.providerRequestId);
+  }
+  state.segmentByIndex.set(index, event.providerRequestId);
+  discardExcludedProjectedSegment(event, event.providerRequestId, state, projection);
+}
+
+function scanOutputSegmentDelta(
+  event: Extract<SessionEvent, { kind: DraftEventKind }>,
+  index: number,
+  state: OutputSegmentFilterState,
+  projection: SpaceSessionLiveProjectionT | undefined,
+): void {
+  const requestId = event.providerRequestId;
+  if (requestId === undefined) return;
+  if (requestId === state.activeProviderRequestId) state.segmentByIndex.set(index, requestId);
+  else state.staleDeltaIndexes.add(index);
+  discardExcludedProjectedSegment(event, requestId, state, projection);
+}
+
+function scanOutputSegmentEvents(
+  events: readonly SessionEvent[],
+  projection: SpaceSessionLiveProjectionT | undefined,
+): OutputSegmentFilterState {
+  const state: OutputSegmentFilterState = {
+    responseProviderRequestIds: new Set(),
+    segmentByIndex: new Map(),
+    discardedSegments: new Set(),
+    staleDeltaIndexes: new Set(),
+    effectiveProviderRequestIds: projectedProviderRequestIds(projection),
+  };
+  events.forEach((event, index) => {
+    if (isUserDeliveryBoundary(event)) {
+      state.activeResponseId = undefined;
+      state.activeProviderRequestId = undefined;
+      state.responseProviderRequestIds.clear();
+    } else if (event.kind === 'output_segment_started') {
+      scanOutputSegmentStart(event, index, state, projection);
+    } else if (event.kind === 'text_delta' || event.kind === 'thinking_delta') {
+      scanOutputSegmentDelta(event, index, state, projection);
+    }
+  });
+  return state;
+}
+
+/** Apply Runtime's explicit append/replace segment protocol without text heuristics. */
+export function filterEffectiveOutputSegmentEvents(
+  events: readonly SessionEvent[],
+  projection?: SpaceSessionLiveProjectionT,
+): readonly SessionEvent[] {
+  const state = scanOutputSegmentEvents(events, projection);
+  if (state.discardedSegments.size === 0 && state.staleDeltaIndexes.size === 0) return events;
+  return events.filter((_, index) => {
+    if (state.staleDeltaIndexes.has(index)) return false;
+    const requestId = state.segmentByIndex.get(index);
+    return requestId === undefined || !state.discardedSegments.has(requestId);
+  });
+}
+
 function firstPostSnapshotIndex(
   events: readonly SessionEvent[],
   projection: SpaceSessionLiveProjectionT,
@@ -180,6 +302,8 @@ function draftEvent(
   text: string,
   sentAt: number | undefined,
   seq = projection.cursor.seq,
+  providerRequestId?: string,
+  textStartOffset?: number,
 ): SessionEvent {
   const base = {
     kind,
@@ -195,12 +319,15 @@ function draftEvent(
     },
     ...(turnId !== undefined ? { turnId } : {}),
     ...(sentAt !== undefined ? { sentAt } : {}),
+    ...(providerRequestId !== undefined ? { providerRequestId } : {}),
+    ...(textStartOffset !== undefined ? { textStartOffset } : {}),
   };
   return base as SessionEvent;
 }
 
 function isSnapshotRunEvent(event: SessionEvent): event is SnapshotRunEvent {
   return (
+    event.kind === 'output_segment_started' ||
     event.kind === 'text_delta' ||
     event.kind === 'thinking_delta' ||
     event.kind === 'thinking_end' ||
@@ -233,6 +360,235 @@ function enrichCoveredRunTurnIdentity(
     return { ...event, turnId };
   });
   return changed ? next : events;
+}
+
+type OutputSegmentState = NonNullable<
+  SpaceSessionLiveProjectionT['outputSegment']
+>['retained'][number];
+
+function outputSegmentMarker(
+  projection: SpaceSessionLiveProjectionT,
+  runId: string,
+  turnId: string | undefined,
+  segment: OutputSegmentState,
+): Extract<SessionEvent, { kind: 'output_segment_started' }> {
+  return {
+    kind: 'output_segment_started',
+    sessionId: projection.sessionId,
+    responseId: segment.responseId,
+    providerRequestId: segment.providerRequestId,
+    mode: segment.mode,
+    runtimeEvent: {
+      runtimeId: projection.cursor.runtimeId,
+      runId,
+      ...(projection.cursor.journalEpoch !== undefined
+        ? { journalEpoch: projection.cursor.journalEpoch }
+        : {}),
+      seq: segment.startedAtSeq ?? projection.cursor.seq,
+    },
+    ...(turnId !== undefined ? { turnId } : {}),
+  };
+}
+
+function segmentInsertionIndex(
+  events: readonly SessionEvent[],
+  projection: SpaceSessionLiveProjectionT,
+  runId: string,
+  segment: OutputSegmentState,
+): number {
+  const startSeq = segment.startedAtSeq ?? projection.cursor.seq;
+  const postSnapshot = firstPostSnapshotIndex(events, projection, runId);
+  const laterCoveredEvent = events.slice(0, postSnapshot).findIndex((event) => {
+    const origin = runtimeEventOrigin(event);
+    return belongsToRun(origin, projection, runId) && origin!.seq > startSeq;
+  });
+  return laterCoveredEvent === -1 ? postSnapshot : laterCoveredEvent;
+}
+
+interface DeliveredOutputSegmentText {
+  readonly text: string;
+  readonly startOffset: number;
+}
+
+function coveredOutputSegmentText(
+  events: readonly SessionEvent[],
+  projection: SpaceSessionLiveProjectionT,
+  runId: string,
+  providerRequestId: string,
+  kind: DraftEventKind,
+): DeliveredOutputSegmentText {
+  const chunks = events.filter((event): event is StreamDeltaEvent => {
+    if (event.kind !== kind || event.providerRequestId !== providerRequestId) return false;
+    const origin = runtimeEventOrigin(event);
+    return belongsToRun(origin, projection, runId) && origin!.seq <= projection.cursor.seq;
+  });
+  return {
+    text: chunks.map((event) => event.text).join(''),
+    startOffset: chunks[0]?.textStartOffset ?? 0,
+  };
+}
+
+function reconcileOutputSegmentText(
+  delivered: DeliveredOutputSegmentText,
+  projected: string,
+  projectedStartOffset: number,
+): DeliveredOutputSegmentText {
+  if (delivered.startOffset !== 0 || delivered.text.length < projectedStartOffset) {
+    return { text: projected, startOffset: projectedStartOffset };
+  }
+  return {
+    text: `${delivered.text.slice(0, projectedStartOffset)}${projected}`,
+    startOffset: 0,
+  };
+}
+
+function reconciledOutputSegmentDraft(
+  events: readonly SessionEvent[],
+  projection: SpaceSessionLiveProjectionT,
+  runId: string,
+  turnId: string | undefined,
+  segment: OutputSegmentState,
+  kind: DraftEventKind,
+): SessionEvent | undefined {
+  const delivered = coveredOutputSegmentText(
+    events,
+    projection,
+    runId,
+    segment.providerRequestId,
+    kind,
+  );
+  const projected = kind === 'thinking_delta' ? segment.thinkingText : segment.assistantText;
+  const projectedStartOffset =
+    kind === 'thinking_delta' ? segment.thinkingTextStartOffset : segment.assistantTextStartOffset;
+  const reconciled = reconcileOutputSegmentText(delivered, projected, projectedStartOffset);
+  if (!reconciled.text) return undefined;
+  const sentAt =
+    kind === 'thinking_delta'
+      ? projection.thinkingDraft?.startedAt
+      : projection.assistantDraft?.startedAt;
+  return draftEvent(
+    kind,
+    projection,
+    runId,
+    turnId,
+    reconciled.text,
+    sentAt,
+    segment.startedAtSeq,
+    segment.providerRequestId,
+    reconciled.startOffset,
+  );
+}
+
+function removeCoveredOutputSegmentDeltas(
+  events: readonly SessionEvent[],
+  projection: SpaceSessionLiveProjectionT,
+  runId: string,
+  providerRequestId: string,
+): SessionEvent[] {
+  return events.filter((event) => {
+    if (
+      (event.kind !== 'text_delta' && event.kind !== 'thinking_delta') ||
+      event.providerRequestId !== providerRequestId
+    ) {
+      return true;
+    }
+    const origin = runtimeEventOrigin(event);
+    return !(belongsToRun(origin, projection, runId) && origin!.seq <= projection.cursor.seq);
+  });
+}
+
+function coveredOutputSegmentMarkerIndex(
+  events: readonly SessionEvent[],
+  projection: SpaceSessionLiveProjectionT,
+  runId: string,
+  providerRequestId: string,
+): number {
+  return events.findIndex((event) => {
+    if (event.kind !== 'output_segment_started' || event.providerRequestId !== providerRequestId) {
+      return false;
+    }
+    const origin = runtimeEventOrigin(event);
+    return belongsToRun(origin, projection, runId) && origin!.seq <= projection.cursor.seq;
+  });
+}
+
+function hydrateOutputSegment(
+  events: readonly SessionEvent[],
+  projection: SpaceSessionLiveProjectionT,
+  runId: string,
+  turnId: string | undefined,
+  segment: OutputSegmentState,
+): SessionEvent[] {
+  const synthetic = (['thinking_delta', 'text_delta'] as const).flatMap((kind) => {
+    const event = reconciledOutputSegmentDraft(events, projection, runId, turnId, segment, kind);
+    return event ? [event] : [];
+  });
+  const next = removeCoveredOutputSegmentDeltas(
+    events,
+    projection,
+    runId,
+    segment.providerRequestId,
+  );
+  let markerIndex = coveredOutputSegmentMarkerIndex(
+    next,
+    projection,
+    runId,
+    segment.providerRequestId,
+  );
+  if (markerIndex === -1) {
+    markerIndex = segmentInsertionIndex(next, projection, runId, segment);
+    next.splice(markerIndex, 0, outputSegmentMarker(projection, runId, turnId, segment));
+  }
+  next.splice(markerIndex + 1, 0, ...synthetic);
+  return next;
+}
+
+function filterPostSnapshotOutputSegmentEvents(
+  events: readonly SessionEvent[],
+  projection: SpaceSessionLiveProjectionT,
+  runId: string,
+  initialProviderRequestId: string | undefined,
+): readonly SessionEvent[] {
+  let activeProviderRequestId = initialProviderRequestId;
+  return events.filter((event) => {
+    const origin = runtimeEventOrigin(event);
+    const isPostSnapshot =
+      belongsToRun(origin, projection, runId) && origin!.seq > projection.cursor.seq;
+    if (!isPostSnapshot) return true;
+    if (event.kind === 'output_segment_started') {
+      activeProviderRequestId = event.providerRequestId;
+      return true;
+    }
+    if (
+      (event.kind === 'text_delta' || event.kind === 'thinking_delta') &&
+      event.providerRequestId !== undefined
+    ) {
+      return event.providerRequestId === activeProviderRequestId;
+    }
+    return true;
+  });
+}
+
+/** Replace covered chunks with SDK segment snapshots while preserving their causal anchors. */
+function hydrateOutputSegments(
+  events: readonly SessionEvent[],
+  projection: SpaceSessionLiveProjectionT,
+  runId: string,
+  turnId: string | undefined,
+): readonly SessionEvent[] {
+  const output = projection.outputSegment;
+  if (!output) return events;
+  const segments = [...output.retained, ...(output.active ? [output.active] : [])];
+  const hydrated = segments.reduce<SessionEvent[]>(
+    (next, segment) => hydrateOutputSegment(next, projection, runId, turnId, segment),
+    [...events],
+  );
+  return filterPostSnapshotOutputSegmentEvents(
+    hydrated,
+    projection,
+    runId,
+    output.active?.providerRequestId,
+  );
 }
 
 function alignCoveredDraftChunks(
@@ -339,58 +695,6 @@ function hydrateDraft(
     const insertion = last === -1 ? adjustedBarrier : last + 1;
     next.splice(insertion, 0, draftEvent(kind, projection, runId, turnId, recovery.suffix, sentAt));
   }
-  return next;
-}
-
-function removeCoveredDraftAttempt(
-  events: readonly SessionEvent[],
-  projection: SpaceSessionLiveProjectionT,
-  runId: string,
-  kind: DraftEventKind,
-  checkpointSeq: number,
-  recoverySeq: number,
-): readonly SessionEvent[] {
-  return events.filter((event) => {
-    const origin = runtimeEventOrigin(event);
-    return !(
-      event.kind === kind &&
-      belongsToRun(origin, projection, runId) &&
-      origin!.seq > checkpointSeq &&
-      origin!.seq < recoverySeq
-    );
-  });
-}
-
-function replaceCoveredDraftInterval(
-  events: readonly SessionEvent[],
-  projection: SpaceSessionLiveProjectionT,
-  runId: string,
-  turnId: string | undefined,
-  kind: DraftEventKind,
-  text: string,
-  sentAt: number | undefined,
-  afterSeq: number,
-  throughSeq: number,
-): readonly SessionEvent[] {
-  const next = events.filter((event) => {
-    const origin = runtimeEventOrigin(event);
-    return !(
-      event.kind === kind &&
-      belongsToRun(origin, projection, runId) &&
-      origin!.seq > afterSeq &&
-      origin!.seq <= throughSeq
-    );
-  });
-  if (text.length === 0) return next;
-  const insertion = next.findIndex((event) => {
-    const origin = runtimeEventOrigin(event);
-    return belongsToRun(origin, projection, runId) && origin!.seq > afterSeq;
-  });
-  next.splice(
-    insertion >= 0 ? insertion : firstPostSnapshotIndex(next, projection, runId),
-    0,
-    draftEvent(kind, projection, runId, turnId, text, sentAt, throughSeq),
-  );
   return next;
 }
 
@@ -525,100 +829,16 @@ export function hydrateSessionEventsFromLiveSnapshot(
   const segmentStart = projection.activeRun
     ? activeRunSegmentStart(events)
     : terminalRunSegmentStart(events);
-  const prefix = events.slice(0, segmentStart);
+  const prefix = filterEffectiveOutputSegmentEvents(events.slice(0, segmentStart));
   let active: readonly SessionEvent[] = enrichCoveredRunTurnIdentity(
-    events.slice(segmentStart),
+    filterEffectiveOutputSegmentEvents(events.slice(segmentStart), projection),
     projection,
     run.runId,
     run.turnId,
   );
-  if (projection.activeRun !== undefined) {
-    const recoveries = (projection.draftRecoveries ?? [])
-      .filter((recovery) => recovery.runId === run.runId)
-      .sort((left, right) => left.recoverySeq - right.recoverySeq);
-    for (const recovery of recoveries) {
-      active = removeCoveredDraftAttempt(
-        active,
-        projection,
-        run.runId,
-        'thinking_delta',
-        recovery.checkpointSeq,
-        recovery.recoverySeq,
-      );
-      active = removeCoveredDraftAttempt(
-        active,
-        projection,
-        run.runId,
-        'text_delta',
-        recovery.checkpointSeq,
-        recovery.recoverySeq,
-      );
-    }
-    const checkpoints = (projection.draftCheckpoints ?? [])
-      .filter((checkpoint) => checkpoint.runId === run.runId)
-      .sort((left, right) => left.seq - right.seq);
-    for (const [kind, cumulative, sentAt, recoveryLength, checkpointLength] of [
-      [
-        'thinking_delta',
-        projection.thinkingDraft?.text ?? '',
-        projection.thinkingDraft?.startedAt,
-        'thinkingCheckpointLength',
-        'thinkingLength',
-      ],
-      [
-        'text_delta',
-        projection.assistantDraft?.text ?? '',
-        projection.assistantDraft?.startedAt,
-        'assistantCheckpointLength',
-        'assistantLength',
-      ],
-    ] as const) {
-      for (let index = 0; index < recoveries.length; index++) {
-        const recovery = recoveries[index]!;
-        const nextRecovery = recoveries[index + 1];
-        let afterSeq = recovery.recoverySeq;
-        let offset = Math.min(recovery[recoveryLength], cumulative.length);
-        const stableCheckpoints = checkpoints.filter(
-          (checkpoint) =>
-            checkpoint.seq > afterSeq &&
-            (nextRecovery === undefined || checkpoint.seq < nextRecovery.recoverySeq),
-        );
-        for (const checkpoint of stableCheckpoints) {
-          const end = Math.min(checkpoint[checkpointLength], cumulative.length);
-          active = replaceCoveredDraftInterval(
-            active,
-            projection,
-            run.runId,
-            run.turnId,
-            kind,
-            cumulative.slice(offset, end),
-            sentAt,
-            afterSeq,
-            checkpoint.seq,
-          );
-          offset = end;
-          afterSeq = checkpoint.seq;
-        }
-        const end = Math.min(
-          nextRecovery?.[recoveryLength] ?? cumulative.length,
-          cumulative.length,
-        );
-        const throughSeq = nextRecovery?.checkpointSeq ?? projection.cursor.seq;
-        if (throughSeq > afterSeq || end > offset) {
-          active = replaceCoveredDraftInterval(
-            active,
-            projection,
-            run.runId,
-            run.turnId,
-            kind,
-            cumulative.slice(offset, end),
-            sentAt,
-            afterSeq,
-            Math.max(afterSeq, throughSeq),
-          );
-        }
-      }
-    }
+  if (projection.activeRun !== undefined && projection.outputSegment !== undefined) {
+    active = hydrateOutputSegments(active, projection, run.runId, run.turnId);
+  } else if (projection.activeRun !== undefined) {
     active = hydrateDraft(
       active,
       projection,

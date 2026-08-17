@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { lstatSync, readFileSync, readdirSync, readlinkSync } from 'node:fs';
 import path from 'node:path';
+import { Parser } from 'tar';
 
 const KODAX_PACKAGE = '@kodax-ai/kodax';
 
@@ -33,10 +34,125 @@ function exactVersion(value, label) {
   }
 }
 
-export function assertKodaxReleaseDependencyState(
+function lockedTarballEntries(tarball) {
+  const entries = new Map();
+  let parseError;
+  const parser = new Parser({
+    strict: true,
+    onReadEntry(entry) {
+      const normalized = entry.path.replaceAll('\\', '/');
+      if (!normalized.startsWith('package/')) {
+        parseError = new Error(`[pack] Locked KodaX tarball contains an invalid entry: ${entry.path}.`);
+        entry.resume();
+        return;
+      }
+      const relative = normalized.slice('package/'.length).replace(/\/$/, '');
+      if (!relative || relative.split('/').includes('..') || path.posix.isAbsolute(relative)) {
+        entry.resume();
+        return;
+      }
+      if (entries.has(relative)) {
+        parseError = new Error(`[pack] Locked KodaX tarball contains duplicate entry ${relative}.`);
+        entry.resume();
+        return;
+      }
+      if (entry.type === 'File' || entry.type === 'OldFile') {
+        const chunks = [];
+        entry.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+        entry.on('end', () => entries.set(relative, {
+          type: 'file',
+          bytes: Buffer.concat(chunks),
+        }));
+        return;
+      }
+      if (entry.type === 'SymbolicLink') {
+        entries.set(relative, { type: 'symlink', target: entry.linkpath });
+        entry.resume();
+        return;
+      }
+      if (entry.type !== 'Directory') {
+        parseError = new Error(
+          `[pack] Locked KodaX tarball uses unsupported ${entry.type} entry ${relative}.`,
+        );
+      }
+      entry.resume();
+    },
+  });
+  parser.on('error', (error) => {
+    parseError = error;
+  });
+  parser.end(tarball);
+  if (parseError) {
+    throw new Error('[pack] Cannot inspect the locked KodaX tarball entries.', {
+      cause: parseError,
+    });
+  }
+  return entries;
+}
+
+function installedPackageEntries(root) {
+  const entries = new Set();
+  const visit = (directory, prefix = '') => {
+    for (const item of readdirSync(directory, { withFileTypes: true })) {
+      const relative = prefix ? `${prefix}/${item.name}` : item.name;
+      const absolute = path.join(directory, item.name);
+      if (item.isDirectory()) visit(absolute, relative);
+      else entries.add(relative);
+    }
+  };
+  visit(root);
+  return entries;
+}
+
+function assertInstalledPackageMatchesTarball(sdkDir, tarball) {
+  const lockedEntries = lockedTarballEntries(tarball);
+  const installedEntries = installedPackageEntries(sdkDir);
+  for (const [relative, expected] of lockedEntries) {
+    const absolute = path.resolve(sdkDir, ...relative.split('/'));
+    const withinPackage = path.relative(path.resolve(sdkDir), absolute);
+    if (withinPackage.startsWith('..') || path.isAbsolute(withinPackage)) {
+      throw new Error(`[pack] Locked KodaX entry escapes the installed package: ${relative}.`);
+    }
+    let stat;
+    try {
+      stat = lstatSync(absolute);
+    } catch (error) {
+      throw new Error(`[pack] Installed KodaX content mismatch at ${relative}: entry is missing.`, {
+        cause: error,
+      });
+    }
+    if (expected.type === 'file') {
+      if (!stat.isFile() || !readFileSync(absolute).equals(expected.bytes)) {
+        throw new Error(`[pack] Installed KodaX content mismatch at ${relative}.`);
+      }
+    } else if (!stat.isSymbolicLink() || readlinkSync(absolute) !== expected.target) {
+      throw new Error(`[pack] Installed KodaX content mismatch at ${relative}.`);
+    }
+    installedEntries.delete(relative);
+  }
+  // Package managers may materialize declared transitive dependencies inside
+  // this directory. They are governed by their own lock entries, not by the
+  // KodaX package tarball.
+  const unexpected = [...installedEntries]
+    .filter((relative) => relative !== 'node_modules' && !relative.startsWith('node_modules/'))
+    .sort()[0];
+  if (unexpected !== undefined) {
+    throw new Error(`[pack] Installed KodaX content mismatch: unexpected entry ${unexpected}.`);
+  }
+}
+
+async function fetchRegistryTarball(resolved) {
+  const response = await fetch(resolved, { redirect: 'follow' });
+  if (!response.ok) {
+    throw new Error(`[pack] Cannot fetch locked KodaX tarball: HTTP ${response.status}.`);
+  }
+  return Buffer.from(await response.arrayBuffer());
+}
+
+export async function assertKodaxReleaseDependencyState(
   spaceRoot,
   sdkDir,
-  { allowLocalTarball = false } = {},
+  { allowLocalTarball = false, readRegistryTarball = fetchRegistryTarball } = {},
 ) {
   const rootManifest = readJson(path.join(spaceRoot, 'package.json'), 'the root manifest');
   const desktopManifest = readJson(
@@ -89,11 +205,18 @@ export function assertKodaxReleaseDependencyState(
     `^https://registry\\.npmjs\\.org/@kodax-ai/kodax/-/kodax-${expected.replaceAll('.', '\\.')}\\.tgz$`,
     'i',
   );
+  let tarball;
+  let source;
   if (registryPattern.test(resolved)) {
-    return { version: expected, resolved, integrity, source: 'registry' };
-  }
-
-  if (resolved.startsWith('file:')) {
+    try {
+      tarball = Buffer.from(await readRegistryTarball(resolved));
+    } catch (error) {
+      throw new Error(`[pack] Cannot read the locked Registry KodaX tarball at ${resolved}.`, {
+        cause: error,
+      });
+    }
+    source = 'registry';
+  } else if (resolved.startsWith('file:')) {
     if (!allowLocalTarball) {
       throw new Error(
         `[pack] Refusing local ${KODAX_PACKAGE}@${expected} tarball in release mode. ` +
@@ -109,27 +232,28 @@ export function assertKodaxReleaseDependencyState(
       );
     }
 
-    let actualIntegrity;
     try {
-      actualIntegrity = `sha512-${createHash('sha512')
-        .update(readFileSync(tarballPath))
-        .digest('base64')}`;
+      tarball = readFileSync(tarballPath);
     } catch (error) {
       throw new Error(`[pack] Cannot read the locked local KodaX tarball at ${tarballPath}.`, {
         cause: error,
       });
     }
-    if (actualIntegrity !== integrity) {
-      throw new Error(
-        `[pack] Locked local KodaX tarball integrity mismatch at ${tarballPath}. ` +
-          'Regenerate package-lock.json from the intended test package before packaging.',
-      );
-    }
-    return { version: expected, resolved, integrity, source: 'local-tarball' };
+    source = 'local-tarball';
+  } else {
+    throw new Error(
+      `[pack] package-lock.json must resolve ${KODAX_PACKAGE}@${expected} from the npm Registry ` +
+        'or a versioned local test tarball before packaging.',
+    );
   }
 
-  throw new Error(
-    `[pack] package-lock.json must resolve ${KODAX_PACKAGE}@${expected} from the npm Registry ` +
-      'or a versioned local test tarball before packaging.',
-  );
+  const actualIntegrity = `sha512-${createHash('sha512').update(tarball).digest('base64')}`;
+  if (actualIntegrity !== integrity) {
+    throw new Error(
+      `[pack] Locked ${source === 'registry' ? 'Registry' : 'local'} KodaX tarball integrity mismatch. ` +
+        'Restore the intended lockfile and package before packaging.',
+    );
+  }
+  assertInstalledPackageMatchesTarball(sdkDir, tarball);
+  return { version: expected, resolved, integrity, source };
 }

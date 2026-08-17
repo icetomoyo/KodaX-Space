@@ -15,6 +15,7 @@ import {
   runtimeSessionNeedsObservation,
 } from '../../renderer/src/store/runtimeProjectionState.js';
 import {
+  filterEffectiveOutputSegmentEvents,
   hydrateSessionEventsFromLiveSnapshot,
   runtimeDeltasShareSnapshotSide,
 } from '../../renderer/src/store/runtimeSnapshotHydration.js';
@@ -404,20 +405,18 @@ test('a lost-ACK optimistic user message is claimed by its run origin operationI
   useAppStore.getState().replaceRuntimeProfileProjection(profile);
   useAppStore.getState().replaceSessionLiveProjection(live);
 
-  const claimedId = useAppStore.getState().appendUserMessage(
-    's_1',
-    'query whose send acknowledgement was lost',
-    500,
-    undefined,
-    'space-send-op-1',
-  );
-  const untouchedId = useAppStore.getState().appendUserMessage(
-    's_1',
-    'a different pending send',
-    501,
-    undefined,
-    'space-send-op-2',
-  );
+  const claimedId = useAppStore
+    .getState()
+    .appendUserMessage(
+      's_1',
+      'query whose send acknowledgement was lost',
+      500,
+      undefined,
+      'space-send-op-1',
+    );
+  const untouchedId = useAppStore
+    .getState()
+    .appendUserMessage('s_1', 'a different pending send', 501, undefined, 'space-send-op-2');
   assert.ok(claimedId);
   assert.ok(untouchedId);
 
@@ -453,13 +452,15 @@ test('two runs sharing one origin operationId cannot overwrite each other within
   useAppStore.getState().replaceRuntimeProfileProjection(profile);
   useAppStore.getState().replaceSessionLiveProjection(live);
 
-  const claimedId = useAppStore.getState().appendUserMessage(
-    's_1',
-    'retried send whose first run was superseded',
-    500,
-    undefined,
-    'space-send-op-dup',
-  );
+  const claimedId = useAppStore
+    .getState()
+    .appendUserMessage(
+      's_1',
+      'retried send whose first run was superseded',
+      500,
+      undefined,
+      'space-send-op-dup',
+    );
   assert.ok(claimedId);
 
   const status = useAppStore.getState().applySessionLiveProjectionChange({
@@ -501,13 +502,15 @@ test('a snapshot replacement also claims a lost-ACK optimistic message by origin
   useAppStore.getState().replaceRuntimeProfileProjection(profile);
   useAppStore.getState().replaceSessionLiveProjection(live);
 
-  const claimedId = useAppStore.getState().appendUserMessage(
-    's_1',
-    'send whose acknowledgement raced a reconnect snapshot',
-    500,
-    undefined,
-    'space-send-op-snap',
-  );
+  const claimedId = useAppStore
+    .getState()
+    .appendUserMessage(
+      's_1',
+      'send whose acknowledgement raced a reconnect snapshot',
+      500,
+      undefined,
+      'space-send-op-snap',
+    );
   assert.ok(claimedId);
 
   useAppStore.getState().replaceSessionLiveProjection({
@@ -674,108 +677,7 @@ test('observation invalidation removes stale live authority before snapshot relo
   assert.equal(useAppStore.getState().runtimeSnapshotRequiredBySession.s_1, undefined);
 });
 
-test('an invalidation recovery replaces covered abandoned draft events from its snapshot', () => {
-  useAppStore.getState().replaceRuntimeProfileProjection(profile);
-  const activeRun = {
-    runId: 'run_1',
-    sessionId: 's_1',
-    phase: 'running' as const,
-    startedAt: 10,
-  };
-  useAppStore.setState({
-    currentSessionId: 's_1',
-    eventsBySession: {
-      s_1: [
-        { kind: 'session_start', sessionId: 's_1', provider: 'mock' },
-        {
-          kind: 'text_delta',
-          sessionId: 's_1',
-          text: 'stable',
-          entryId: 'canonical_stable',
-          canonicalIndex: 0,
-        },
-        {
-          kind: 'tool_start',
-          sessionId: 's_1',
-          toolId: 'tool_1',
-          toolName: 'read',
-          input: {},
-          runtimeEvent: {
-            runtimeId: 'rt_1',
-            runId: 'run_1',
-            journalEpoch: 'epoch_1',
-            seq: 2,
-          },
-        },
-        {
-          kind: 'tool_result',
-          sessionId: 's_1',
-          toolId: 'tool_1',
-          toolName: 'read',
-          content: 'done',
-          runtimeEvent: {
-            runtimeId: 'rt_1',
-            runId: 'run_1',
-            journalEpoch: 'epoch_1',
-            seq: 3,
-          },
-        },
-        {
-          kind: 'text_delta',
-          sessionId: 's_1',
-          text: 'abandoned',
-          runtimeEvent: {
-            runtimeId: 'rt_1',
-            runId: 'run_1',
-            journalEpoch: 'epoch_1',
-            seq: 4,
-          },
-        },
-      ],
-    },
-  });
-  useAppStore.getState().replaceSessionLiveProjection({
-    ...live,
-    projectionRevision: 2,
-    cursor: { runtimeId: 'rt_1', journalEpoch: 'epoch_1', seq: 4 },
-    activeRun,
-    assistantDraft: { text: 'stableabandoned', startedAt: 10 },
-  });
-  useAppStore.getState().invalidateSessionLiveProjection({
-    sessionId: 's_1',
-    runtimeId: 'rt_1',
-    reason: 'event_overflow',
-    message: 'Recover from an authoritative snapshot.',
-  });
-
-  useAppStore.getState().replaceSessionLiveProjection({
-    ...live,
-    projectionRevision: 3,
-    cursor: { runtimeId: 'rt_1', journalEpoch: 'epoch_1', seq: 6 },
-    activeRun,
-    assistantDraft: { text: 'stablereplacement', startedAt: 10 },
-    draftRecoveries: [
-      {
-        runId: 'run_1',
-        checkpointSeq: 3,
-        recoverySeq: 5,
-        assistantCheckpointLength: 6,
-        thinkingCheckpointLength: 0,
-      },
-    ],
-  });
-
-  const messages = composeMessages({
-    userMessages: useAppStore.getState().userMessagesBySession.s_1 ?? [],
-    events: useAppStore.getState().eventsBySession.s_1 ?? [],
-  });
-  assert.deepEqual(
-    messages.filter((message) => message.kind === 'assistant_text').map((message) => message.text),
-    ['stable', 'replacement'],
-  );
-});
-
-test('recovery snapshot hydration preserves delivered replacement text and tool order', () => {
+test('output segment snapshot removes an abandoned attempt and preserves tool order', () => {
   const origin = (seq: number) => ({
     runtimeId: 'rt_1',
     runId: 'run_1',
@@ -784,32 +686,28 @@ test('recovery snapshot hydration preserves delivered replacement text and tool 
   });
   const events: SessionEvent[] = [
     { kind: 'session_start', sessionId: 's_1', provider: 'mock' },
-    { kind: 'text_delta', sessionId: 's_1', text: 'stable', runtimeEvent: origin(1) },
     {
-      kind: 'tool_start',
+      kind: 'output_segment_started',
       sessionId: 's_1',
-      toolId: 'tool_0',
-      toolName: 'read',
-      input: {},
+      responseId: 'response_1',
+      providerRequestId: 'request_stable',
+      mode: 'append',
+      runtimeEvent: origin(1),
+    },
+    {
+      kind: 'text_delta',
+      sessionId: 's_1',
+      text: 'stable',
+      providerRequestId: 'request_stable',
       runtimeEvent: origin(2),
     },
     {
-      kind: 'tool_result',
-      sessionId: 's_1',
-      toolId: 'tool_0',
-      toolName: 'read',
-      content: 'done',
-      runtimeEvent: origin(3),
-    },
-    { kind: 'text_delta', sessionId: 's_1', text: 'abandoned', runtimeEvent: origin(4) },
-    { kind: 'text_delta', sessionId: 's_1', text: 'replacement', runtimeEvent: origin(6) },
-    {
       kind: 'tool_start',
       sessionId: 's_1',
       toolId: 'tool_1',
       toolName: 'read',
       input: {},
-      runtimeEvent: origin(7),
+      runtimeEvent: origin(3),
     },
     {
       kind: 'tool_result',
@@ -817,38 +715,61 @@ test('recovery snapshot hydration preserves delivered replacement text and tool 
       toolId: 'tool_1',
       toolName: 'read',
       content: 'done',
-      runtimeEvent: origin(8),
+      runtimeEvent: origin(4),
     },
-    { kind: 'text_delta', sessionId: 's_1', text: 'current', runtimeEvent: origin(9) },
+    {
+      kind: 'output_segment_started',
+      sessionId: 's_1',
+      responseId: 'response_1',
+      providerRequestId: 'request_abandoned',
+      mode: 'append',
+      runtimeEvent: origin(5),
+    },
+    {
+      kind: 'text_delta',
+      sessionId: 's_1',
+      text: 'abandoned',
+      providerRequestId: 'request_abandoned',
+      runtimeEvent: origin(6),
+    },
+    {
+      kind: 'text_delta',
+      sessionId: 's_1',
+      text: 'late abandoned',
+      providerRequestId: 'request_abandoned',
+      runtimeEvent: origin(10),
+    },
   ];
   const projection: SpaceSessionLiveProjectionT = {
     ...live,
     projectionRevision: 3,
     cursor: { runtimeId: 'rt_1', journalEpoch: 'epoch_1', seq: 9 },
-    activeRun: {
-      runId: 'run_1',
-      sessionId: 's_1',
-      phase: 'running',
-      startedAt: 10,
+    activeRun: { runId: 'run_1', sessionId: 's_1', phase: 'running', startedAt: 10 },
+    assistantDraft: { text: 'stablereplacement', startedAt: 10 },
+    outputSegment: {
+      retained: [
+        {
+          responseId: 'response_1',
+          providerRequestId: 'request_stable',
+          mode: 'append',
+          startedAtSeq: 1,
+          assistantText: 'stable',
+          thinkingText: '',
+          assistantTextStartOffset: 0,
+          thinkingTextStartOffset: 0,
+        },
+      ],
+      active: {
+        responseId: 'response_1',
+        providerRequestId: 'request_replacement',
+        mode: 'replace',
+        startedAtSeq: 8,
+        assistantText: 'replacement',
+        thinkingText: '',
+        assistantTextStartOffset: 0,
+        thinkingTextStartOffset: 0,
+      },
     },
-    assistantDraft: { text: 'stablereplacementcurrent', startedAt: 10 },
-    draftRecoveries: [
-      {
-        runId: 'run_1',
-        checkpointSeq: 3,
-        recoverySeq: 5,
-        assistantCheckpointLength: 6,
-        thinkingCheckpointLength: 0,
-      },
-    ],
-    draftCheckpoints: [
-      {
-        runId: 'run_1',
-        seq: 8,
-        assistantLength: 'stablereplacement'.length,
-        thinkingLength: 0,
-      },
-    ],
   };
 
   const hydrated = hydrateSessionEventsFromLiveSnapshot(events, projection);
@@ -858,11 +779,168 @@ test('recovery snapshot hydration preserves delivered replacement text and tool 
       if (event.kind === 'tool_start') return [`tool:${event.toolId}`];
       return [];
     }),
-    ['text:stable', 'tool:tool_0', 'text:replacement', 'tool:tool_1', 'text:current'],
+    ['text:stable', 'tool:tool_1', 'text:replacement'],
   );
 });
 
-test('snapshot hydration leaves an already delivered recovery boundary in causal order', () => {
+test('a new logical response discards every prior response segment', () => {
+  const events: SessionEvent[] = [
+    {
+      kind: 'output_segment_started',
+      sessionId: 's_1',
+      responseId: 'response_old',
+      providerRequestId: 'request_old_1',
+      mode: 'append',
+    },
+    {
+      kind: 'text_delta',
+      sessionId: 's_1',
+      providerRequestId: 'request_old_1',
+      text: 'old ',
+    },
+    {
+      kind: 'output_segment_started',
+      sessionId: 's_1',
+      responseId: 'response_old',
+      providerRequestId: 'request_old_2',
+      mode: 'append',
+    },
+    {
+      kind: 'text_delta',
+      sessionId: 's_1',
+      providerRequestId: 'request_old_2',
+      text: 'response',
+    },
+    {
+      kind: 'output_segment_started',
+      sessionId: 's_1',
+      responseId: 'response_new',
+      providerRequestId: 'request_new',
+      mode: 'append',
+    },
+    {
+      kind: 'text_delta',
+      sessionId: 's_1',
+      providerRequestId: 'request_new',
+      text: 'new response',
+    },
+  ];
+
+  const effective = filterEffectiveOutputSegmentEvents(events);
+  assert.deepEqual(
+    effective.flatMap((event) =>
+      event.kind === 'output_segment_started' || event.kind === 'text_delta'
+        ? [event.providerRequestId]
+        : [],
+    ),
+    ['request_new', 'request_new'],
+  );
+  assert.deepEqual(
+    composeMessages({ events, userMessages: [] })
+      .filter((message) => message.kind === 'assistant_text')
+      .map((message) => message.text),
+    ['new response'],
+  );
+});
+
+test('snapshot hydration preserves a completed response before a same-run user delivery', () => {
+  const origin = (seq: number) => ({
+    runtimeId: 'rt_1',
+    runId: 'run_1',
+    journalEpoch: 'epoch_1',
+    seq,
+  });
+  const oldResponse: SessionEvent[] = [
+    {
+      kind: 'output_segment_started',
+      sessionId: 's_1',
+      responseId: 'response_old',
+      providerRequestId: 'request_old',
+      mode: 'append',
+      runtimeEvent: origin(1),
+    },
+    {
+      kind: 'text_delta',
+      sessionId: 's_1',
+      providerRequestId: 'request_old',
+      text: 'old answer',
+      runtimeEvent: origin(2),
+    },
+  ];
+  const newResponse: SessionEvent[] = [
+    {
+      kind: 'output_segment_started',
+      sessionId: 's_1',
+      responseId: 'response_new',
+      providerRequestId: 'request_new',
+      mode: 'append',
+      runtimeEvent: origin(3),
+    },
+    {
+      kind: 'text_delta',
+      sessionId: 's_1',
+      providerRequestId: 'request_new',
+      text: 'new answer',
+      runtimeEvent: origin(4),
+    },
+  ];
+  const boundaries: SessionEvent[] = [
+    { kind: 'mid_turn_user_prompt', sessionId: 's_1', content: 'interrupt follow up' },
+    {
+      kind: 'queued_user_prompt_started',
+      sessionId: 's_1',
+      queueMode: 'after-turn',
+      content: 'queued follow up',
+    },
+  ];
+
+  for (const boundary of boundaries) {
+    const hydrated = hydrateSessionEventsFromLiveSnapshot(
+      [
+        { kind: 'session_start', sessionId: 's_1', provider: 'mock' },
+        ...oldResponse,
+        boundary,
+        ...newResponse,
+      ],
+      {
+        ...live,
+        projectionRevision: 3,
+        cursor: { runtimeId: 'rt_1', journalEpoch: 'epoch_1', seq: 4 },
+        activeRun: { runId: 'run_1', sessionId: 's_1', phase: 'running', startedAt: 10 },
+        assistantDraft: { text: 'new answer', startedAt: 10 },
+        outputSegment: {
+          retained: [],
+          active: {
+            responseId: 'response_new',
+            providerRequestId: 'request_new',
+            mode: 'append',
+            startedAtSeq: 3,
+            assistantText: 'new answer',
+            thinkingText: '',
+            assistantTextStartOffset: 0,
+            thinkingTextStartOffset: 0,
+          },
+        },
+      },
+    );
+
+    assert.deepEqual(
+      hydrated
+        .filter(
+          (event): event is Extract<SessionEvent, { kind: 'text_delta' }> =>
+            event.kind === 'text_delta',
+        )
+        .map((event) => event.text),
+      ['old answer', 'new answer'],
+      boundary.kind,
+    );
+  }
+});
+
+test('output segment offset extends repeated delivered text beyond its bounded tail', () => {
+  const delivered = 'x'.repeat(280_000);
+  const boundedTail = 'x'.repeat(262_144);
+  const complete = 'x'.repeat(300_000);
   const origin = (seq: number) => ({
     runtimeId: 'rt_1',
     runId: 'run_1',
@@ -871,265 +949,110 @@ test('snapshot hydration leaves an already delivered recovery boundary in causal
   });
   const events: SessionEvent[] = [
     { kind: 'session_start', sessionId: 's_1', provider: 'mock' },
-    { kind: 'text_delta', sessionId: 's_1', text: 'abandoned', runtimeEvent: origin(2) },
     {
-      kind: 'provider_recovery',
+      kind: 'output_segment_started',
       sessionId: 's_1',
-      stage: 'mid_stream_text',
-      errorClass: 'connection_failure',
-      attempt: 1,
-      maxAttempts: 4,
-      delayMs: 0,
-      recoveryAction: 'stable_boundary_retry',
-      ladderStep: 2,
-      fallbackUsed: false,
-      runtimeEvent: origin(3),
+      responseId: 'response_1',
+      providerRequestId: 'request_1',
+      mode: 'append',
+      runtimeEvent: origin(1),
     },
-    { kind: 'text_delta', sessionId: 's_1', text: 'replacement', runtimeEvent: origin(4) },
+    {
+      kind: 'text_delta',
+      sessionId: 's_1',
+      providerRequestId: 'request_1',
+      text: delivered,
+      runtimeEvent: origin(2),
+    },
   ];
+
   const hydrated = hydrateSessionEventsFromLiveSnapshot(events, {
     ...live,
     projectionRevision: 3,
-    cursor: { runtimeId: 'rt_1', journalEpoch: 'epoch_1', seq: 4 },
-    activeRun: {
-      runId: 'run_1',
-      sessionId: 's_1',
-      phase: 'running',
-      startedAt: 10,
-    },
-    assistantDraft: { text: 'replacement', startedAt: 10 },
-    draftRecoveries: [
-      {
-        runId: 'run_1',
-        checkpointSeq: 1,
-        recoverySeq: 3,
-        assistantCheckpointLength: 0,
-        thinkingCheckpointLength: 0,
-      },
-    ],
-  });
-
-  assert.deepEqual(
-    composeMessages({ events: hydrated, userMessages: [] })
-      .filter((message) => message.kind === 'assistant_text')
-      .map((message) => message.text),
-    ['replacement'],
-  );
-});
-
-test('snapshot hydration retains recovery order when the final replacement exists only in the snapshot', () => {
-  const origin = (seq: number) => ({
-    runtimeId: 'rt_1',
-    runId: 'run_1',
-    journalEpoch: 'epoch_1',
-    seq,
-  });
-  const recovery = (seq: number): SessionEvent => ({
-    kind: 'provider_recovery',
-    sessionId: 's_1',
-    stage: 'mid_stream_text',
-    errorClass: 'connection_failure',
-    attempt: 1,
-    maxAttempts: 4,
-    delayMs: 0,
-    recoveryAction: 'stable_boundary_retry',
-    ladderStep: 2,
-    fallbackUsed: false,
-    runtimeEvent: origin(seq),
-  });
-  const events: SessionEvent[] = [
-    { kind: 'session_start', sessionId: 's_1', provider: 'mock' },
-    { kind: 'text_delta', sessionId: 's_1', text: 'abandoned one', runtimeEvent: origin(2) },
-    { kind: 'text_delta', sessionId: 's_1', text: 'replacement one', runtimeEvent: origin(4) },
-    {
-      kind: 'tool_start',
-      sessionId: 's_1',
-      toolId: 'tool_1',
-      toolName: 'read',
-      input: {},
-      runtimeEvent: origin(5),
-    },
-    {
-      kind: 'tool_result',
-      sessionId: 's_1',
-      toolId: 'tool_1',
-      toolName: 'read',
-      content: 'done',
-      runtimeEvent: origin(6),
-    },
-    { kind: 'text_delta', sessionId: 's_1', text: 'abandoned two', runtimeEvent: origin(7) },
-    recovery(8),
-  ];
-  const hydrated = hydrateSessionEventsFromLiveSnapshot(events, {
-    ...live,
-    projectionRevision: 4,
-    cursor: { runtimeId: 'rt_1', journalEpoch: 'epoch_1', seq: 9 },
-    activeRun: {
-      runId: 'run_1',
-      sessionId: 's_1',
-      phase: 'running',
-      startedAt: 10,
-    },
-    assistantDraft: { text: 'replacement onefinal', startedAt: 10 },
-    draftRecoveries: [
-      {
-        runId: 'run_1',
-        checkpointSeq: 1,
-        recoverySeq: 3,
-        assistantCheckpointLength: 0,
-        thinkingCheckpointLength: 0,
-      },
-      {
-        runId: 'run_1',
-        checkpointSeq: 6,
-        recoverySeq: 8,
-        assistantCheckpointLength: 'replacement one'.length,
-        thinkingCheckpointLength: 0,
-      },
-    ],
-  });
-
-  assert.deepEqual(
-    composeMessages({ events: hydrated, userMessages: [] })
-      .filter((message) => message.kind === 'assistant_text')
-      .map((message) => message.text),
-    ['replacement one', 'final'],
-  );
-});
-
-test('snapshot-only replacement stays after tools executed following recovery', () => {
-  const origin = (seq: number) => ({
-    runtimeId: 'rt_1',
-    runId: 'run_1',
-    journalEpoch: 'epoch_1',
-    seq,
-  });
-  const events: SessionEvent[] = [
-    { kind: 'session_start', sessionId: 's_1', provider: 'mock' },
-    { kind: 'text_delta', sessionId: 's_1', text: 'abandoned', runtimeEvent: origin(2) },
-    {
-      kind: 'provider_recovery',
-      sessionId: 's_1',
-      stage: 'mid_stream_text',
-      errorClass: 'connection_failure',
-      attempt: 1,
-      maxAttempts: 4,
-      delayMs: 0,
-      recoveryAction: 'stable_boundary_retry',
-      ladderStep: 2,
-      fallbackUsed: false,
-      runtimeEvent: origin(3),
-    },
-    {
-      kind: 'tool_start',
-      sessionId: 's_1',
-      toolId: 'tool_1',
-      toolName: 'read',
-      input: {},
-      runtimeEvent: origin(4),
-    },
-    {
-      kind: 'tool_result',
-      sessionId: 's_1',
-      toolId: 'tool_1',
-      toolName: 'read',
-      content: 'done',
-      runtimeEvent: origin(5),
-    },
-  ];
-  const hydrated = hydrateSessionEventsFromLiveSnapshot(events, {
-    ...live,
-    projectionRevision: 4,
-    cursor: { runtimeId: 'rt_1', journalEpoch: 'epoch_1', seq: 7 },
-    activeRun: {
-      runId: 'run_1',
-      sessionId: 's_1',
-      phase: 'running',
-      startedAt: 10,
-    },
-    assistantDraft: { text: 'final', startedAt: 10 },
-    draftRecoveries: [
-      {
-        runId: 'run_1',
-        checkpointSeq: 1,
-        recoverySeq: 3,
-        assistantCheckpointLength: 0,
-        thinkingCheckpointLength: 0,
-      },
-    ],
-    draftCheckpoints: [{ runId: 'run_1', seq: 5, assistantLength: 0, thinkingLength: 0 }],
-  });
-
-  assert.deepEqual(
-    composeMessages({ events: hydrated, userMessages: [] }).map((message) => message.kind),
-    ['tool_call', 'assistant_text'],
-  );
-});
-
-test('snapshot recovery keeps a missing text prefix before an intervening tool', () => {
-  const origin = (seq: number) => ({
-    runtimeId: 'rt_1',
-    runId: 'run_1',
-    journalEpoch: 'epoch_1',
-    seq,
-  });
-  const events: SessionEvent[] = [
-    { kind: 'text_delta', sessionId: 's_1', text: 'abandoned', runtimeEvent: origin(2) },
-    {
-      kind: 'provider_recovery',
-      sessionId: 's_1',
-      stage: 'mid_stream_text',
-      errorClass: 'connection_failure',
-      attempt: 1,
-      maxAttempts: 4,
-      delayMs: 0,
-      recoveryAction: 'stable_boundary_retry',
-      ladderStep: 2,
-      fallbackUsed: false,
-      runtimeEvent: origin(3),
-    },
-    {
-      kind: 'tool_start',
-      sessionId: 's_1',
-      toolId: 'tool_1',
-      toolName: 'read',
-      input: {},
-      runtimeEvent: origin(5),
-    },
-    {
-      kind: 'tool_result',
-      sessionId: 's_1',
-      toolId: 'tool_1',
-      toolName: 'read',
-      content: 'done',
-      runtimeEvent: origin(6),
-    },
-    { kind: 'text_delta', sessionId: 's_1', text: 'Y', runtimeEvent: origin(8) },
-  ];
-  const hydrated = hydrateSessionEventsFromLiveSnapshot(events, {
-    ...live,
-    projectionRevision: 4,
-    cursor: { runtimeId: 'rt_1', journalEpoch: 'epoch_1', seq: 8 },
+    cursor: { runtimeId: 'rt_1', journalEpoch: 'epoch_1', seq: 2 },
     activeRun: { runId: 'run_1', sessionId: 's_1', phase: 'running', startedAt: 10 },
-    assistantDraft: { text: 'XY', startedAt: 10 },
-    draftRecoveries: [
-      {
-        runId: 'run_1',
-        checkpointSeq: 1,
-        recoverySeq: 3,
-        assistantCheckpointLength: 0,
-        thinkingCheckpointLength: 0,
+    assistantDraft: { text: boundedTail, startedAt: 10 },
+    outputSegment: {
+      retained: [],
+      active: {
+        responseId: 'response_1',
+        providerRequestId: 'request_1',
+        mode: 'append',
+        startedAtSeq: 1,
+        assistantText: boundedTail,
+        thinkingText: '',
+        assistantTextStartOffset: complete.length - boundedTail.length,
+        thinkingTextStartOffset: 0,
       },
-    ],
-    draftCheckpoints: [{ runId: 'run_1', seq: 6, assistantLength: 1, thinkingLength: 0 }],
+    },
   });
 
-  assert.deepEqual(
-    composeMessages({ events: hydrated, userMessages: [] }).map((message) =>
-      message.kind === 'assistant_text' ? `text:${message.text}` : message.kind,
-    ),
-    ['text:X', 'tool_call', 'text:Y'],
+  assert.equal(
+    hydrated
+      .filter(
+        (event): event is Extract<SessionEvent, { kind: 'text_delta' }> =>
+          event.kind === 'text_delta',
+      )
+      .map((event) => event.text)
+      .join(''),
+    complete,
   );
+});
+
+test('a bounded tail never becomes a false original prefix on the next snapshot', () => {
+  const origin = (seq: number) => ({
+    runtimeId: 'rt_1',
+    runId: 'run_1',
+    journalEpoch: 'epoch_1',
+    seq,
+  });
+  const events: SessionEvent[] = [
+    { kind: 'session_start', sessionId: 's_1', provider: 'mock' },
+    {
+      kind: 'output_segment_started',
+      sessionId: 's_1',
+      responseId: 'response_1',
+      providerRequestId: 'request_1',
+      mode: 'append',
+      runtimeEvent: origin(1),
+    },
+    {
+      kind: 'text_delta',
+      sessionId: 's_1',
+      providerRequestId: 'request_1',
+      text: 'x'.repeat(10_000),
+      runtimeEvent: origin(2),
+    },
+  ];
+  const projection = (revision: number, offset: number): SpaceSessionLiveProjectionT => ({
+    ...live,
+    projectionRevision: revision,
+    cursor: { runtimeId: 'rt_1', journalEpoch: 'epoch_1', seq: revision },
+    activeRun: { runId: 'run_1', sessionId: 's_1', phase: 'running', startedAt: 10 },
+    assistantDraft: { text: 'x'.repeat(262_144), startedAt: 10 },
+    outputSegment: {
+      retained: [],
+      active: {
+        responseId: 'response_1',
+        providerRequestId: 'request_1',
+        mode: 'append',
+        startedAtSeq: 1,
+        assistantText: 'x'.repeat(262_144),
+        thinkingText: '',
+        assistantTextStartOffset: offset,
+        thinkingTextStartOffset: 0,
+      },
+    },
+  });
+
+  const first = hydrateSessionEventsFromLiveSnapshot(events, projection(2, 37_856));
+  const second = hydrateSessionEventsFromLiveSnapshot(first, projection(3, 57_856));
+  const text = second.find(
+    (event): event is Extract<SessionEvent, { kind: 'text_delta' }> => event.kind === 'text_delta',
+  );
+
+  assert.equal(text?.text.length, 262_144);
+  assert.equal(text?.textStartOffset, 57_856);
 });
 
 test('ordinary invalidation hydration preserves a bounded repeated Runtime draft', () => {

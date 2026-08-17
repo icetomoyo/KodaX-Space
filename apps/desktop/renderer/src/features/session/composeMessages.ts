@@ -16,7 +16,7 @@
 //
 // 设计原则：纯函数。给定相同输入产相同输出，便于 useMemo + 单元测试。
 
-import { providerRecoveryReplacesDraft, type SessionEvent } from '@kodax-space/space-ipc-schema';
+import type { SessionEvent } from '@kodax-space/space-ipc-schema';
 import type {
   LocalNoticeMessage,
   QueuedUserMessage,
@@ -501,7 +501,10 @@ function composeAssistantSegment(
     completed?: boolean;
     sentAt?: number;
   } | null = null;
-  let currentTextIsCanonical = false;
+  let activeResponseId: string | undefined;
+  let activeProviderRequestId: string | undefined;
+  let activeSegmentTextIds = new Set<string>();
+  const responseSegmentTextIds = new Set<string>();
   let lastTextBubble: Extract<ConversationMessage, { kind: 'assistant_text' }> | null = null;
   let segmentHadError = false;
   // tool_call 卡片按 toolId 查找——同一个 toolId 的 start/progress/result 合并到一张卡
@@ -537,15 +540,52 @@ function composeAssistantSegment(
       out.push(currentText);
       lastTextBubble = flushed;
       currentText = null;
-      currentTextIsCanonical = false;
       return flushed;
     }
     return null;
   }
 
+  function discardTextBubbles(textIds: ReadonlySet<string>): void {
+    if (currentText && textIds.has(currentText.id)) currentText = null;
+    if (textIds.size > 0) {
+      for (let index = out.length - 1; index >= 0; index--) {
+        const message = out[index];
+        if (message?.kind === 'assistant_text' && textIds.has(message.id)) out.splice(index, 1);
+      }
+    }
+    lastTextBubble = null;
+  }
+
   for (const evt of segment) {
     switch (evt.kind) {
+      case 'output_segment_started': {
+        if (
+          evt.responseId === activeResponseId &&
+          evt.providerRequestId === activeProviderRequestId
+        ) {
+          break;
+        }
+        if (activeResponseId !== undefined && evt.responseId !== activeResponseId) {
+          discardTextBubbles(responseSegmentTextIds);
+          responseSegmentTextIds.clear();
+        } else if (evt.mode === 'replace') {
+          discardTextBubbles(activeSegmentTextIds);
+          for (const textId of activeSegmentTextIds) responseSegmentTextIds.delete(textId);
+        } else {
+          flushTextBubble();
+        }
+        activeResponseId = evt.responseId;
+        activeProviderRequestId = evt.providerRequestId;
+        activeSegmentTextIds = new Set();
+        break;
+      }
       case 'text_delta': {
+        if (
+          evt.providerRequestId !== undefined &&
+          evt.providerRequestId !== activeProviderRequestId
+        ) {
+          break;
+        }
         if (!currentText) {
           currentText = {
             kind: 'assistant_text',
@@ -554,15 +594,21 @@ function composeAssistantSegment(
             ...(turnIndex !== undefined ? { turnIndex } : {}),
             sentAt: evt.sentAt ?? parentSentAt,
           };
-          currentTextIsCanonical =
-            evt.canonicalIndex !== undefined ||
-            evt.entryId !== undefined ||
-            evt.logicalId !== undefined;
+          if (evt.providerRequestId !== undefined) {
+            activeSegmentTextIds.add(currentText.id);
+            responseSegmentTextIds.add(currentText.id);
+          }
         }
         currentText.text += evt.text;
         break;
       }
       case 'thinking_delta': {
+        if (
+          evt.providerRequestId !== undefined &&
+          evt.providerRequestId !== activeProviderRequestId
+        ) {
+          break;
+        }
         if (!currentText) {
           currentText = {
             kind: 'assistant_text',
@@ -571,20 +617,15 @@ function composeAssistantSegment(
             ...(turnIndex !== undefined ? { turnIndex } : {}),
             sentAt: evt.sentAt ?? parentSentAt,
           };
-          currentTextIsCanonical =
-            evt.canonicalIndex !== undefined ||
-            evt.entryId !== undefined ||
-            evt.logicalId !== undefined;
+          if (evt.providerRequestId !== undefined) {
+            activeSegmentTextIds.add(currentText.id);
+            responseSegmentTextIds.add(currentText.id);
+          }
         }
         currentText.thinking = (currentText.thinking ?? '') + evt.text;
         break;
       }
       case 'provider_recovery': {
-        if (providerRecoveryReplacesDraft(evt) && !currentTextIsCanonical) {
-          currentText = null;
-          currentTextIsCanonical = false;
-          lastTextBubble = null;
-        }
         break;
       }
       case 'tool_start': {
