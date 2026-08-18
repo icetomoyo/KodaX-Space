@@ -5,9 +5,10 @@
 > 在生命周期事件前持久化为 canonical Run。Space 绑定确认的 `runId` 和流式 `turnId`，不以版本号代替能力协商。
 > 未显式设置 Auto LLM timeout 时，SDK 使用首次 `45000ms`、重试 `90000ms`。
 
-> **当前源码基线**：root/Desktop/lockfile 精确锁定 KodaX `0.7.91` 本地候选包（发布前验收），并要求
+> **当前源码基线**：root/Desktop/lockfile 精确锁定 npm Registry KodaX `0.7.91`，并要求
 > SDK 与 daemon 提供 `actorSettlementConvergence:2`；Space 还保持精确
-> Session/Run/Turn owner 关联和 continued-Run history/live 边界。
+> Session/Run/Turn owner 关联和 continued-Run history/live 边界。完整退出使用 SDK 本地
+> `runtimeExitSettlement:1`，不把版本号当作运行时能力证明。
 
 > 面向源码使用者、贡献者和发布维护者。普通用户请阅读[用户使用手册](USER_MANUAL.zh-CN.md)。
 >

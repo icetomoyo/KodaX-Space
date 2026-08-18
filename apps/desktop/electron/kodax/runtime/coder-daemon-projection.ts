@@ -8,12 +8,7 @@ import type {
   RuntimeUserInputRequest,
   RuntimeTypedEvent,
 } from '@kodax-ai/kodax/runtime';
-import {
-  createOutputSegmentProjection,
-  effectiveOutputSegmentText,
-  reduceOutputSegmentProjection,
-  type KodaXOutputSegmentProjection,
-} from '@kodax-ai/kodax/coding';
+import type { KodaXOutputSegmentProjection } from '@kodax-ai/kodax/coding';
 import {
   spaceRuntimeProfileProjectionSchema,
   spaceRuntimeToolSandboxSchema,
@@ -32,6 +27,50 @@ import { assessRisk } from '../../permission/risk.js';
 import { sanitizeForDisplay, sanitizeInputForDisplay } from '../../permission/sanitize.js';
 import { projectAutoModeDiagnostics } from '../../permission/auto-mode-diagnostics.js';
 import { isTransientChildEvent, type ChildMeta } from '../workflow-activity.js';
+
+type OutputSegmentSdk = Pick<
+  typeof import('@kodax-ai/kodax/coding'),
+  'createOutputSegmentProjection' | 'effectiveOutputSegmentText' | 'reduceOutputSegmentProjection'
+>;
+
+let outputSegmentSdk: OutputSegmentSdk | undefined;
+let outputSegmentSdkPromise: Promise<OutputSegmentSdk> | undefined;
+
+export async function initializeCoderDaemonProjectionSdk(): Promise<void> {
+  if (outputSegmentSdk !== undefined) return;
+  const loading = outputSegmentSdkPromise ?? import('@kodax-ai/kodax/coding');
+  outputSegmentSdkPromise = loading;
+  try {
+    outputSegmentSdk = await loading;
+  } finally {
+    if (outputSegmentSdkPromise === loading) outputSegmentSdkPromise = undefined;
+  }
+}
+
+function requireOutputSegmentSdk(): OutputSegmentSdk {
+  if (outputSegmentSdk === undefined) {
+    throw new Error('KodaX output-segment projection SDK was not initialized.');
+  }
+  return outputSegmentSdk;
+}
+
+function createOutputSegmentProjection(): KodaXOutputSegmentProjection {
+  return requireOutputSegmentSdk().createOutputSegmentProjection();
+}
+
+function effectiveOutputSegmentText(
+  state: KodaXOutputSegmentProjection,
+  kind: 'assistant' | 'thinking',
+): string {
+  return requireOutputSegmentSdk().effectiveOutputSegmentText(state, kind);
+}
+
+function reduceOutputSegmentProjection(
+  state: KodaXOutputSegmentProjection,
+  event: Parameters<OutputSegmentSdk['reduceOutputSegmentProjection']>[1],
+): ReturnType<OutputSegmentSdk['reduceOutputSegmentProjection']> {
+  return requireOutputSegmentSdk().reduceOutputSegmentProjection(state, event);
+}
 
 const MAX_DRAFT = 256 * 1024;
 const MAX_REASON = 512;

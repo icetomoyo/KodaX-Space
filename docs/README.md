@@ -9,9 +9,9 @@
 > 和 Issue 185 Actor settlement/terminal owner 对齐。
 > 未配置 Auto LLM timeout 时使用 SDK 首次 45 秒、重试 90 秒的默认值。
 
-> **当前源码基线**：root/Desktop 已升级到完整性锁定的 KodaX `0.7.91` 本地候选包，并在 SDK
+> **当前源码基线**：root/Desktop 已升级到 npm 正式发布、完整性锁定的 KodaX `0.7.91` Registry 包，并在 SDK
 > 预检、daemon 连接和正式打包烟测中要求 `sandboxRuntime:3` 与
-> `actorSettlementConvergence:2`。候选包只用于发布前验收；当前 Registry 正式版仍为 `0.7.89`。
+> `actorSettlementConvergence:2`；完整退出路径还要求 SDK 本地能力 `runtimeExitSettlement:1`。
 > v0.1.41 / KodaX 0.7.87 的发布记录保持历史事实。
 
 > 历史发布基线：KodaX Space [`v0.1.40`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.40)（package `0.1.40`）/ npm 正式发布的精确 KodaX `0.7.86`；历史 release 文档继续保留当时事实。
@@ -75,8 +75,8 @@ Run，变量值只在命令执行 host 读取。超出有界编辑器限制的 C
 | `features/v0.1.42.md`                                | current release design        | Causal transcript, latest KodaX 0.7.89, and release boundary |
 | `releases/v0.1.42-release-readiness.md`              | current release record        | Gates, GitHub CI, artifact evidence, and regression items    |
 | `test-guides/ISSUE_182_v0.1.42_REGRESSION_GUIDE.md`  | current regression acceptance | Canonical/live ordering and exact owner reconciliation       |
-| `test-guides/ISSUE_183_v0.1.42_REGRESSION_GUIDE.md`  | current regression acceptance | Terminal owner reconciliation and exact-once folding          |
-| `test-guides/ISSUE_184_v0.1.42_REGRESSION_GUIDE.md`  | current regression acceptance | Continued-Run turn projection and compaction boundary       |
+| `test-guides/ISSUE_183_v0.1.42_REGRESSION_GUIDE.md`  | current regression acceptance | Terminal owner reconciliation and exact-once folding         |
+| `test-guides/ISSUE_184_v0.1.42_REGRESSION_GUIDE.md`  | current regression acceptance | Continued-Run turn projection and compaction boundary        |
 | `test-guides/ISSUE_185_v0.1.42_REGRESSION_GUIDE.md`  | current regression acceptance | Completion notification and Actor settlement v2              |
 | `features/v0.1.40.md`                                | 历史 release 设计             | KodaX 0.7.86、sandbox v3、owner reconciliation 与发布边界    |
 | `releases/v0.1.40-release-readiness.md`              | 历史发布记录                  | 门禁、GitHub CI、产物证据和人工项                            |

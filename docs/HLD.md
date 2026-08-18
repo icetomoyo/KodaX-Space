@@ -5,8 +5,8 @@
 > 在事件发布前已成为 canonical managed Run；Space 仅用 returned `runId`/`turnId` 关联 UI
 > optimistic state 和 history，不复制持久化职责。未设置 Auto timeout 时，SDK 默认 45 秒首次、90 秒重试。
 
-> **2026-08-17 当前源码增量**：root/Desktop 使用同一份可安装的 KodaX `0.7.91`
-> vendored candidate tarball；Registry 发布仍是单独的正式发布门禁。除
+> **2026-08-18 当前源码增量**：root/Desktop 使用 npm 正式发布的同一份精确 KodaX `0.7.91`
+> Registry 包；manifest、lockfile、物理安装与打包 ASAR 必须匹配官方 URL/SRI。除
 > `actorSettlementConvergence:2` 外，Space 还消费本地 `runtimeExitSettlement:1` 与
 > `liveOutputSegments:1`。Runtime raw journal 保留全部 provider attempt，live snapshot
 > 只提供 SDK 计算后的有效 segment；Space 不运行 checkpoint/text replay 状态机。
@@ -935,7 +935,7 @@ Space 严格遵守：
 | `v0.1.37`           | Align the exact KodaX 0.7.83 package and release docs while preserving multi-Session recovery, safe-close recovery, and renderer ownership boundaries.                                                              |
 | `v0.1.39`           | Align the exact KodaX 0.7.85 package and manual while preserving Actor settlement convergence, Session journal epoch isolation, unknown Run admission, exact Stop, and idle-exit client boundaries.                 |
 | `v0.1.41`           | Consume the existing ordered KodaX provider.recovery event across daemon/live/history/reconnect projections, pin the latest npm KodaX package exactly, and keep Space as a bounded compatibility/presentation host. |
-| `v0.1.42`           | Align exact KodaX 0.7.89 Actor settlement v2 and preserve Session/Run/Turn ownership across canonical/live reconciliation, delayed terminals, continued Runs, and completion notifications. |
+| `v0.1.42`           | Align exact KodaX 0.7.89 Actor settlement v2 and preserve Session/Run/Turn ownership across canonical/live reconciliation, delayed terminals, continued Runs, and completion notifications.                         |
 | `v0.1.40`           | Align the exact KodaX 0.7.86 package and manual, require sandboxRuntime v3, qualify the packaged Windows Shell chain, and reconcile stale inline owners through the SDK.                                            |
 | `v0.1.38`           | Align the exact KodaX 0.7.84 package and manual while preserving bounded Agent progress, same-owner Stop recovery, and Session reactivation identity boundaries.                                                    |
 | `v0.1.72`           | Complete locale gates, release diagnostics, channels/updater/distribution trust.                                                                                                                                    |

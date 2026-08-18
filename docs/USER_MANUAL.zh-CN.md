@@ -11,12 +11,12 @@
 > `daemonOrphanExit:1` 能力，不通过 KodaX 版本号推断生命周期支持。F141 Coder
 > Daemon/Embedded 客户开关、F142 会话文件操作和打包可靠性修复继续保留。
 >
-> 当前 `v0.1.43` 源码候选使用完整性锁定的 KodaX `0.7.91` 本地候选包；正式发布仍为
-> Registry KodaX `0.7.89`。`0.7.91` 发布前，这个候选依赖只用于源码与打包验收；旧 v1 SDK/daemon 会
+> 当前 `v0.1.43` 源码候选使用 npm 正式发布、完整性锁定的 KodaX `0.7.91` Registry 包；当前 Space
+> 正式发布仍为 v0.1.42。旧 v1 SDK/daemon 会
 > fail closed，不能继续执行 Coder。Runtime 的合法排队等待、canonical replacement
 > 和提交后维护失败会保持不同的可诊断事实。
 >
-> 更新日期：2026-08-16
+> 更新日期：2026-08-18
 >
 > 如果你的界面与本文不同，请先在 Settings → License/版本信息中确认构建版本。
 > 本手册对应 `v0.1.42` 正式发布产物；历史安装包的界面与行为可能不同。
@@ -422,12 +422,12 @@ Workflow 只在显式 Workflow 强信号、`/workflow`、命名 Workflow 或 SDK
 
 ## 10. 会话历史、Fork、Rewind 与 Compact
 
-| 操作    | 用途                   | 注意                             |
-| ------- | ---------------------- | -------------------------------- |
-| Rename  | 给会话一个容易找的名字 | 标题由 Space 兼容层维护          |
-| Fork    | 从当前分支派生新会话   | 源会话不变，新会话继承运行设置   |
-| Rewind  | 回到较早的用户轮次     | 会先停止当前运行，再截断活动分支 |
-| Compact | 压缩长会话上下文       | UI 仍回放完整 append-order 历史  |
+| 操作    | 用途                   | 注意                                                            |
+| ------- | ---------------------- | --------------------------------------------------------------- |
+| Rename  | 给会话一个容易找的名字 | 标题由 Space 兼容层维护                                         |
+| Fork    | 从当前分支派生新会话   | 源会话不变，新会话继承运行设置                                  |
+| Rewind  | 回到较早的用户轮次     | 会先停止当前运行，再截断活动分支                                |
+| Compact | 压缩长会话上下文       | UI 仍回放完整 append-order 历史                                 |
 | Delete  | 删除会话               | 先确认没有其他 KodaX 进程占用；删除中会锁定行，成功后再收起移除 |
 
 Compact 只缩减下一次模型请求使用的活动上下文，不等于删除完整历史。0.7.77 保留 compaction v3 的 durable-before-evict 语义：精确历史先写入 lineage/sidecar，再发布精简快照；精确 checkpoint/恢复指引、first-kept pointer 和压缩后附件位于同一活动 lineage，命令式手动压缩也会先从精确 flat Session history 对齐 lineage，旧的无后缀 checkpoint 仍能恢复。Space 通过有界 page/chunk/search 读取，历史搜索结果绑定具体 revision。旧版已经丢弃且从未保存的字节无法凭空恢复。

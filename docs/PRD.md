@@ -5,14 +5,14 @@
 > managed-Run `runId`/`turnId`，不维护第二份 Run 状态。未配置的 Auto LLM classifier timeout
 > 使用 KodaX 的首次 45 秒、重试 90 秒默认值。
 
-> **2026-08-17 当前源码增量**：root/Desktop 使用同一份可安装的 KodaX
-> `0.7.91` vendored candidate tarball，Registry 发布仍待正式 release gate。Coder 除
+> **2026-08-18 当前源码增量**：root/Desktop 使用 npm 正式发布的同一份精确 KodaX
+> `0.7.91` Registry 包，lockfile 与物理安装匹配官方 URL/SRI。Coder 除
 > `sandboxRuntime:3` 与 `actorSettlementConvergence:2` 外，还消费本地
 > `runtimeExitSettlement:1` 与 `liveOutputSegments:1`。Provider 实时输出以 SDK 的
 > response/request segment 投影为唯一真理；Space 不保留 checkpoint replay 执行回退。
 > 在任何 replacement daemon 启动前恢复持久退出票据。
 
-> Last updated: 2026-08-17
+> Last updated: 2026-08-18
 > Status: 长期产品方向文档。当前正式发布基线为 KodaX Space 0.1.42（package 0.1.42）/ 精确 Registry KodaX 0.7.89。v0.1.42 在既有 Runtime owner、canonical Actor/Turn、精确 history/live 与 compaction、完整物理请求诊断、F140-F142、可配置 Shell、独立 integration 配置和正式打包门禁基础上，继续收口 Actor settlement convergence v2、因果 transcript owner reconciliation、Issue 185 completion notification 与最新 SDK/manual 对齐。生命周期支持仍按能力协商，不通过 SemVer 推断；Issue 133 的 macOS/Linux process acceptance/cleanup retry gap 和 F138 完整 OS 隔离继续保持未完成。已交付能力与边界以 [USER_MANUAL.zh-CN.md](USER_MANUAL.zh-CN.md)、[KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md) 和 [FEATURE_LIST.md](FEATURE_LIST.md) 为准。
 > 对标：Anthropic Claude Desktop（Cowork / Code 双面板）+ OpenAI Codex Desktop App（多 agent 本机壳）
 
@@ -588,7 +588,7 @@ File panel 内点击 git diff
 | `v0.1.39`         | KodaX 0.7.85、Actor settlement 自动收敛、unknown after-turn、精确 Stop、输入/历史保留与 Session journal epoch 隔离                                      |
 | `v0.1.40`         | KodaX 0.7.86、sandboxRuntime v3、Issue 128 打包 Shell、Issue 180 stale owner 恢复与完整发布文档同步                                                     |
 | `v0.1.41`         | Latest KodaX 0.7.87 alignment, provider recovery transcript reconciliation, GLM-5.3 defaults, and complete release/manual documentation synchronization |
-| `v0.1.42`         | Latest KodaX 0.7.89 alignment, Actor settlement convergence v2, causal transcript ownership, and complete release/manual documentation synchronization |
+| `v0.1.42`         | Latest KodaX 0.7.89 alignment, Actor settlement convergence v2, causal transcript ownership, and complete release/manual documentation synchronization  |
 | `v0.1.43-v0.1.60` | 维护与稳定化预留；`v0.1.42` 之后无 feature 分配                                                                                                         |
 | `v0.1.61`         | F137 中文优先 DOCX/PDF/XLSX/PPTX builtin 与 F139 语义 UI 精修                                                                                           |
 | `v0.1.64`         | Partner composer-first Skill workspace                                                                                                                  |

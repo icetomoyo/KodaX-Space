@@ -16,19 +16,21 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ### Changed
 
-- **KodaX 0.7.89 Registry alignment** - Root and Desktop pin the npm `latest`
-  package exactly. The daemon capability requirement for run-bound host tools
-  rises to `runBoundHostTools:2`: lease-bound host tools (`create_artifact` /
-  `create_office_artifact`) are now materialized into the per-run model-visible
-  tool table (FEATURE_294) instead of being discoverable only through the MCP
-  capability channel, and the in-app manual `artifacts` / `mcp` topics document
-  the dual-channel reality. Old daemons without materialization fail closed at
-  connect. The pin also picks up the managed-context topology-transparency fix
-  (conversation page-cache v4 rebuild), which removes the common trigger behind
-  ambiguous compaction projections.
+- **KodaX 0.7.91 Registry alignment** - Root and Desktop pin the exact npm
+  Registry package and official integrity. `runtimeExitSettlement:1` gives
+  complete exit an SDK-owned, crash-resumable exact-owner ticket and resumes it
+  before Space reconciles or starts a daemon. The package also retains the
+  0.7.89 `runBoundHostTools:2` materialization of lease-bound host tools into the
+  per-run model-visible tool table and the managed-context topology-transparency
+  fix. Old or unverifiable daemon ownership remains fail-closed.
 
 ### Fixed
 
+- **Packaged Electron SDK loading** - The CommonJS main bundle now loads KodaX's
+  ESM-only SDK subpaths through dynamic import before Runtime projection work.
+  A release regression test rejects static imports, re-exports, and direct
+  `require()` calls that would make a packaged Space process hang before its
+  diagnostics or window could initialize.
 - **SDK-owned provider output replacement** - Coder now consumes KodaX
   `liveOutputSegments:1` with logical response, physical provider-request, and
   append/replace identity. Abandoned retry/fallback text remains available in

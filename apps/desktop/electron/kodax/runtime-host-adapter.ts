@@ -66,6 +66,7 @@ import { RuntimeClientIdentityStore } from './runtime/runtime-client-identity.js
 import {
   CoderSessionProjectionReducer,
   coderRuntimeSessionIds,
+  initializeCoderDaemonProjectionSdk,
   isPartnerRuntimeSessionIdentity,
   projectRuntimeProfile,
   projectRuntimeSessionSnapshot,
@@ -2194,6 +2195,9 @@ export class RuntimeHostAdapter {
           timing.mark('initialize', 'skipped', { reason: 'host-closed' });
           return;
         }
+        activeStage = 'output_segment_projection_import';
+        await initializeCoderDaemonProjectionSdk();
+        timing.mark(activeStage, 'complete');
         activeStage = 'capability_validation';
         assertSpaceDaemonRequiredCapabilities(runtime);
         this.assertRequiredScopes(runtime);
@@ -4037,9 +4041,7 @@ export class RuntimeHostAdapter {
     return pending;
   }
 
-  private projectObservationSnapshot(
-    snapshot: RuntimeSessionObservationSnapshot,
-  ): {
+  private projectObservationSnapshot(snapshot: RuntimeSessionObservationSnapshot): {
     readonly projection: SpaceSessionLiveProjectionT;
     readonly outputSegment?: KodaXOutputSegmentProjection;
   } {

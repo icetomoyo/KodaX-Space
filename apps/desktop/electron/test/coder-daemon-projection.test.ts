@@ -11,6 +11,7 @@ import type { KodaXOutputSegmentProjection } from '@kodax-ai/kodax/coding';
 import type { SpaceCoderConnectionProjectionT } from '@kodax-space/space-ipc-schema';
 import {
   CoderSessionProjectionReducer,
+  initializeCoderDaemonProjectionSdk,
   projectRuntimeProfile,
   projectRuntimeSessionSnapshot,
 } from '../kodax/runtime/coder-daemon-projection.js';
@@ -19,6 +20,8 @@ import {
   runtimeEventChangesProfile,
   runtimeSessionEventOrigin,
 } from '../kodax/runtime-host-adapter.js';
+
+await initializeCoderDaemonProjectionSdk();
 
 test('profile refresh classification excludes transcript hot-path events', () => {
   for (const type of [

@@ -20,7 +20,10 @@ import type {
 } from '@kodax-ai/kodax/runtime';
 import type { AgentEvent, AgentTreeSnapshot } from '@kodax-ai/kodax/agent';
 import { isCoderOwnerRecoveryRestartRequired } from '../kodax/coder-owner-recovery-error.js';
-import { projectRuntimeSessionSnapshot } from '../kodax/runtime/coder-daemon-projection.js';
+import {
+  initializeCoderDaemonProjectionSdk,
+  projectRuntimeSessionSnapshot,
+} from '../kodax/runtime/coder-daemon-projection.js';
 import {
   RuntimeHostAdapter,
   assertSpaceRuntimeSdkRequiredCapabilities,
@@ -45,6 +48,8 @@ import {
   createPendingSdkRuntimeProjection,
 } from '../kodax/runtime/runtime-projection-controller.js';
 import { encodeRuntimeActorTaskId } from '../kodax/runtime/runtime-agent-projection.js';
+
+await initializeCoderDaemonProjectionSdk();
 
 afterEach(() => {
   setSessionStoreImpl(null);
@@ -1170,6 +1175,7 @@ test('daemon startup reconciles an unowned inline policy before Runtime initiali
       'runtime-host-initialize:initialize:start',
       'runtime-host-initialize:identity_open:complete',
       'runtime-host-initialize:runtime_factory_connect:complete',
+      'runtime-host-initialize:output_segment_projection_import:complete',
       'runtime-host-initialize:capability_validation:complete',
       'runtime-host-initialize:host_tools_module_import:complete',
       'runtime-host-initialize:host_tools_register:complete',
@@ -1183,8 +1189,12 @@ test('daemon startup reconciles an unowned inline policy before Runtime initiali
     ],
   );
   assert.equal(timingEvents[1]?.data?.ownerStatus, 'unowned');
-  assert.equal(timingEvents[6]?.data?.runtimeId, 'rt_test');
-  assert.equal(typeof timingEvents[6]?.data?.runtimeAgeMs, 'number');
+  const runtimeConnectTiming = timingEvents.find(
+    ({ scope, stage }) =>
+      scope === 'runtime-host-initialize' && stage === 'runtime_factory_connect',
+  );
+  assert.equal(runtimeConnectTiming?.data?.runtimeId, 'rt_test');
+  assert.equal(typeof runtimeConnectTiming?.data?.runtimeAgeMs, 'number');
   await adapter.close();
 });
 
@@ -8303,20 +8313,26 @@ test('same-session starts are delegated to daemon ordering instead of rejected l
 test('close racing initialization closes the late Runtime exactly once', async () => {
   const fake = createFakeRuntime();
   let releaseFactory: ((runtime: KodaXDaemonRuntime) => void) | undefined;
+  let signalFactoryStarted: (() => void) | undefined;
+  const factoryStarted = new Promise<void>((resolve) => {
+    signalFactoryStarted = resolve;
+  });
   const adapter = new RuntimeHostAdapter({
     mode: 'runtime',
     profileRoot: path.resolve('C:\\isolated-profile'),
     runtimeFactory: () =>
       new Promise<KodaXDaemonRuntime>((resolve) => {
         releaseFactory = resolve;
+        signalFactoryStarted?.();
       }),
     identityStore: testIdentityStore,
   });
 
   const initialization = adapter.initialize();
-  await Promise.resolve();
+  await factoryStarted;
   const closing = adapter.close();
-  releaseFactory?.(fake.runtime);
+  assert.ok(releaseFactory);
+  releaseFactory(fake.runtime);
   await Promise.all([initialization, closing]);
 
   assert.equal(adapter.snapshot().state, 'closed');
