@@ -40,6 +40,10 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
   Stop state machine. Ordinary-permission fallback remains available only
   inside KodaX and still acquires the shared filesystem-effect fence.
 
+- **Packaged macOS lifecycle home** - The packaged Runtime lifecycle probe now
+  creates its isolated `KODAX_HOME` on the real `/private/tmp` path. KodaX
+  0.7.91+ exit settlement rejects a directory whose ancestors include a
+  symbolic link, and Darwin `/tmp` is such an alias.
 - **Packaged Electron SDK loading** - The CommonJS main bundle now loads KodaX's
   ESM-only SDK subpaths through dynamic import before Runtime projection work.
   A release regression test rejects static imports, re-exports, and direct
