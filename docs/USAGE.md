@@ -1,11 +1,10 @@
 # KodaX Space 运行与开发指南
 
-> **当前发布基线（2026-08-16）**：KodaX Space `v0.1.42` / npm Registry KodaX `0.7.89`。
+> **当前发布基线（2026-08-19）**：KodaX Space `v0.1.43` / npm Registry KodaX `0.7.92`。
 > Space 管理的 daemon 需要 `managedRunDurability:1`：接受的首条/队列输入及完成回合
 > 在生命周期事件前持久化为 canonical Run。Space 绑定确认的 `runId` 和流式 `turnId`，不以版本号代替能力协商。
 > 未显式设置 Auto LLM timeout 时，SDK 使用首次 `45000ms`、重试 `90000ms`。
-
-> **当前源码基线**：root/Desktop/lockfile 精确锁定 npm Registry KodaX `0.7.92` 正式包及其 SRI，并要求
+> root/Desktop/lockfile 精确锁定 npm Registry KodaX `0.7.92` 正式包及其 SRI，并要求
 > SDK 与 daemon 提供 `sandboxRuntime:4`、`crashOutcomeModel:2` 和 `actorSettlementConvergence:2`；Space 还保持精确
 > Session/Run/Turn owner 关联和 continued-Run history/live 边界。完整退出使用 SDK 本地
 > `runtimeExitSettlement:1`，不把版本号当作运行时能力证明。
@@ -14,8 +13,8 @@
 >
 > 当前 `main` 对 Space 管理的 daemon 要求专用的 `daemonOrphanExit:1` 能力；
 > 不使用 KodaX 语义版本或 Auto-mode guardrail 版本代替生命周期能力判断。
-> 当前已发布版本为 KodaX Space [`v0.1.42`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.42) / 精确 Registry KodaX `0.7.89`。
-> 本版本包含 v0.1.39 的多 Session 恢复、精确 run/turn history/live 对齐、Session journal epoch 隔离、完整退出恢复、Agent progress/同 owner Stop 收敛，以及 sandbox v3、Issue 128 打包 Shell、Issue 180 owner reconciliation、Issue 185 Actor settlement 和对应的 builtin/manual/Node/build/打包工具链维护。
+> 当前已发布版本为 KodaX Space [`v0.1.43`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.43) / 精确 Registry KodaX `0.7.92`。
+> 本版本包含 crash-resumable complete exit、sandbox v4 / crash-outcome v2、SDK 有效输出 segment，以及 v0.1.39 起的多 Session 恢复、精确 run/turn history/live 对齐、Session journal epoch 隔离、Agent progress/同 owner Stop 收敛、Issue 128 打包 Shell、Issue 180 owner reconciliation、Issue 185 Actor settlement 和对应的 builtin/manual/Node/build/打包工具链维护。
 
 ## 1. 环境要求
 

@@ -4,23 +4,21 @@
   <img src="../resources/icon.png" alt="KodaX Space 应用图标" width="96">
 </p>
 
-> 已发布产品基线：KodaX Space [`v0.1.42`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.42)（package `0.1.42`）/ npm 正式发布的精确 KodaX `0.7.89`。
+> 已发布产品基线：KodaX Space [`v0.1.43`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.43)（package `0.1.43`）/ npm 正式发布的精确 KodaX `0.7.92`。
 >
-> 当前发布版使用精确 Registry KodaX `0.7.89`，并要求当时发布包提供的
-> `sandboxRuntime:3`、`actorSettlementConvergence:2`、`sessionEventJournal:1` 以及专用的
+> 当前发布版使用精确 Registry KodaX `0.7.92`，并要求 `sandboxRuntime:4`、
+> `crashOutcomeModel:2`、`actorSettlementConvergence:2`、`sessionEventJournal:1`、
+> `liveOutputSegments:1`、本地 `runtimeExitSettlement:1` 以及专用的
 > `daemonOrphanExit:1` 能力，不通过 KodaX 版本号推断生命周期支持。F141 Coder
 > Daemon/Embedded 客户开关、F142 会话文件操作和打包可靠性修复继续保留。
 >
-> 当前 `v0.1.43` 源码使用完整性锁定的 npm Registry KodaX `0.7.92` 正式包，并额外要求
-> `sandboxRuntime:4` 与 `crashOutcomeModel:2`；当前 Space
-> 正式发布仍为 v0.1.42。旧能力 SDK/daemon 会
-> fail closed，不能继续执行 Coder。Runtime 的合法排队等待、canonical replacement
-> 和提交后维护失败会保持不同的可诊断事实。
+> 旧能力 SDK/daemon 会 fail closed，不能继续执行 Coder。Runtime 的合法排队等待、
+> canonical replacement 和提交后维护失败会保持不同的可诊断事实。
 >
-> 更新日期：2026-08-18
+> 更新日期：2026-08-19
 >
 > 如果你的界面与本文不同，请先在 Settings → License/版本信息中确认构建版本。
-> 本手册对应 `v0.1.42` 正式发布产物；历史安装包的界面与行为可能不同。
+> 本手册对应 `v0.1.43` 正式发布产物；历史安装包的界面与行为可能不同。
 
 这份手册面向第一次使用 KodaX Space 的开发者、技术团队成员和代码相关知识工作者。它以“完成一件真实工作”为主线；架构和开发细节分别放在 [HLD](HLD.md) 与 [USAGE](USAGE.md)。文中的实拍界面使用隔离的 mock 数据和示例项目生成，不包含真实 API Key、会话内容或本地路径。
 
@@ -169,7 +167,7 @@ _图 1：已打开示例项目但尚未创建会话时的 Coder 工作台。实�
 
 ### 5.2 上下文窗口与会话 Token 用量
 
-当前源码在 Composer 右下角提供两个相邻但含义不同的指标：
+当前发布版在 Composer 右下角提供两个相邻但含义不同的指标：
 
 | 指标                | 回答的问题                                  | 统计范围                                 | 典型变化                                           |
 | ------------------- | ------------------------------------------- | ---------------------------------------- | -------------------------------------------------- |
@@ -217,7 +215,7 @@ _图 1：已打开示例项目但尚未创建会话时的 Coder 工作台。实�
 
 <a id="runtime-host"></a>
 
-### Coder 的 Daemon / Embedded 运行模式（v0.1.42）
+### Coder 的 Daemon / Embedded 运行模式（v0.1.43）
 
 打开 **Settings → Runtime → Coder 运行模式**，可以选择：
 
@@ -254,17 +252,17 @@ flowchart LR
     Bridge --- P["Partner inline / MCP processes+logs<br/>Workflow library+start+admin / Reference Agent / Artifacts"]
 ```
 
-多个受信任的 KodaX 客户端可以观察同一 Coder 会话；Space 会同步 provider/model/effort/mode 等共享设置，并通过 Runtime 处理权限 grant、AskUser、队列、Workflow 观察/暂停/恢复/停止、Learning Center 命令、MCP 工具发现/reload 和已配置 External Agent 的 Actor/Turn。当前源码要求 `sandboxRuntime:4`、`crashOutcomeModel:2`、`daemonOrphanExit:1`、`managedRunDurability:1`、`actorSettlementConvergence:2`、`sessionEventJournal:1`、`liveOutputSegments:1`、`integrationConfigResilience:1`、`runtimeAutoModeGuardrail:4`、`skillLearningLoop:1`、`interruptInput:1`、`actorControlPlane:1`、`contextCompaction:3`、`transcriptPaging:1` 与 `transcriptSearch:1`；Runtime 不可用或能力不足时 Coder fail closed，不会在背后重放到 inline owner。`sandboxRuntime:4` 的过期 coordinator ticket 与已记录释放事实收敛由 SDK 独占，普通权限执行仍须取得同一个 filesystem-effect fence；`crashOutcomeModel:2` 要求 canonical Session 提交先于 managed terminal。Space 不删除锁、不按错误文本选择 native shell，也不把 Stop unknown 强制改成 idle。Partner 不受 daemon 可用性影响。
+多个受信任的 KodaX 客户端可以观察同一 Coder 会话；Space 会同步 provider/model/effort/mode 等共享设置，并通过 Runtime 处理权限 grant、AskUser、队列、Workflow 观察/暂停/恢复/停止、Learning Center 命令、MCP 工具发现/reload 和已配置 External Agent 的 Actor/Turn。当前发布版要求 `sandboxRuntime:4`、`crashOutcomeModel:2`、`daemonOrphanExit:1`、`managedRunDurability:1`、`actorSettlementConvergence:2`、`sessionEventJournal:1`、`liveOutputSegments:1`、`integrationConfigResilience:1`、`runtimeAutoModeGuardrail:4`、`skillLearningLoop:1`、`interruptInput:1`、`actorControlPlane:1`、`contextCompaction:3`、`transcriptPaging:1` 与 `transcriptSearch:1`；Runtime 不可用或能力不足时 Coder fail closed，不会在背后重放到 inline owner。`sandboxRuntime:4` 的过期 coordinator ticket 与已记录释放事实收敛由 SDK 独占，普通权限执行仍须取得同一个 filesystem-effect fence；`crashOutcomeModel:2` 要求 canonical Session 提交先于 managed terminal。Space 不删除锁、不按错误文本选择 native shell，也不把 Stop unknown 强制改成 idle。Partner 不受 daemon 可用性影响。
 
-Daemon 模式还会核对 daemon 的实际能力，而不只看已经安装的 npm 包版本：缺少上述契约的长驻 daemon 会被拒绝并提示安全重启。`sandboxRuntime:4` 在 v3 containment/termination-proof 基础上增加同一长寿命 daemon 内的过期排队票据与已记录释放事实收敛；只有 stale 且不持有精确 coordinator lock 的票据可恢复，精确 active lock 与结果未知的进程树继续 fail closed。`sessionEventJournal:1` 让每个 observation 使用 `(sessionId, journalEpoch, seq)` cursor，Space 在 epoch 改变时重置水位，绝不跨 Session 比较 seq。`daemonOrphanExit:1` 只在当前 host 确实启用了孤儿回收策略时出现，不能由语义版本号替代。compaction v3 会先耐久化精确 pre-compaction lineage，再缩减活动上下文；Runtime 会复用精确 checkpoint/恢复指引字节，并在命令式手动压缩前把精确 flat Session history 对齐进 lineage，使 compaction entry、first-kept pointer 与压缩后附件留在同一 active path，同时继续读取旧的无后缀 checkpoint。Space 使用 revision-bound page/chunk/search 恢复可见历史，root 与持久 child 的历史保持隔离。Coder Session 使用 KodaX 的公开 `resolveAutoModeSettings()` 解析 `engine`、classifier model、timeout 与 `speculativeWindowMs`，并把缺失值写入可修订的 Runtime 设置；`0` 是有效的 speculative window 值。未显式配置时，KodaX 0.7.89 使用首次 `45000ms`、一次重试 `90000ms`。底部会直接显示 `Auto[LLM]` 或 `Auto[RULES]`；快速连续切换按最后一次动作收敛。只有用户手动选择或持久化选择的 `Auto[RULES]` 才保持粘性，并需用 `/auto-engine llm` 显式切回。Auto v4 的 classifier 超时、Provider 错误或输出契约错误会立即重试一次；仍失败时仅对当前工具调用采用 Accept-edits 兼容回退，`engine` 继续是 `llm`，不会静默切到 Rules。Agent Home/root 控制面破坏不可授权。Runtime Shell 先尝试 sandbox；containment 无法准备且可证明命令未启动时，已授权命令按普通权限策略执行；该路径仍需共享 effect fence，不会重放命令或再次调用 classifier。Auto[rules] 会对工作区内可完整建模的编辑直接放行，对工作区外、受保护、动态或无法完整建模的效果继续请求确认；Auto[LLM] 中合法的 `decision=allow|ask` 是单次调用的最终权限决策，Space 不再用静态危险模式二次覆盖。项目内编辑、删除、移动、Git stash 及正常的全局依赖安装/卸载/升级/重装，不会仅因“是写动作”而确认；只有明确读取密钥、令牌或凭据存储，或者正常工作区域外有具体证据会破坏系统稳定性、导致其他软件不可用的异常写入，才应请求确认。Auto[LLM] 缺失 classifier model 时不请求 Provider，并走同一有界的当前调用回退，不改变 engine。输入 `/auto-denials` 可以查看当前 Runtime 版本、classifier model、timeout、speculative window 及不含提示正文的 classifier 时序/终止阶段。
+Daemon 模式还会核对 daemon 的实际能力，而不只看已经安装的 npm 包版本：缺少上述契约的长驻 daemon 会被拒绝并提示安全重启。`sandboxRuntime:4` 在 v3 containment/termination-proof 基础上增加同一长寿命 daemon 内的过期排队票据与已记录释放事实收敛；只有 stale 且不持有精确 coordinator lock 的票据可恢复，精确 active lock 与结果未知的进程树继续 fail closed。`sessionEventJournal:1` 让每个 observation 使用 `(sessionId, journalEpoch, seq)` cursor，Space 在 epoch 改变时重置水位，绝不跨 Session 比较 seq。`daemonOrphanExit:1` 只在当前 host 确实启用了孤儿回收策略时出现，不能由语义版本号替代。compaction v3 会先耐久化精确 pre-compaction lineage，再缩减活动上下文；Runtime 会复用精确 checkpoint/恢复指引字节，并在命令式手动压缩前把精确 flat Session history 对齐进 lineage，使 compaction entry、first-kept pointer 与压缩后附件留在同一 active path，同时继续读取旧的无后缀 checkpoint。Space 使用 revision-bound page/chunk/search 恢复可见历史，root 与持久 child 的历史保持隔离。Coder Session 使用 KodaX 的公开 `resolveAutoModeSettings()` 解析 `engine`、classifier model、timeout 与 `speculativeWindowMs`，并把缺失值写入可修订的 Runtime 设置；`0` 是有效的 speculative window 值。未显式配置时，KodaX 0.7.92 使用首次 `45000ms`、一次重试 `90000ms`。底部会直接显示 `Auto[LLM]` 或 `Auto[RULES]`；快速连续切换按最后一次动作收敛。只有用户手动选择或持久化选择的 `Auto[RULES]` 才保持粘性，并需用 `/auto-engine llm` 显式切回。Auto v4 的 classifier 超时、Provider 错误或输出契约错误会立即重试一次；仍失败时仅对当前工具调用采用 Accept-edits 兼容回退，`engine` 继续是 `llm`，不会静默切到 Rules。Agent Home/root 控制面破坏不可授权。Runtime Shell 先尝试 sandbox；containment 无法准备且可证明命令未启动时，已授权命令按普通权限策略执行；该路径仍需共享 effect fence，不会重放命令或再次调用 classifier。Auto[rules] 会对工作区内可完整建模的编辑直接放行，对工作区外、受保护、动态或无法完整建模的效果继续请求确认；Auto[LLM] 中合法的 `decision=allow|ask` 是单次调用的最终权限决策，Space 不再用静态危险模式二次覆盖。项目内编辑、删除、移动、Git stash 及正常的全局依赖安装/卸载/升级/重装，不会仅因“是写动作”而确认；只有明确读取密钥、令牌或凭据存储，或者正常工作区域外有具体证据会破坏系统稳定性、导致其他软件不可用的异常写入，才应请求确认。Auto[LLM] 缺失 classifier model 时不请求 Provider，并走同一有界的当前调用回退，不改变 engine。输入 `/auto-denials` 可以查看当前 Runtime 版本、classifier model、timeout、speculative window 及不含提示正文的 classifier 时序/终止阶段。
 
 如果 daemon 启动时发现 inline owner，Space 不删除 `~/.kodax` 试图恢复；它把可读的 owner 状态交给 KodaX 的原子 daemon-enable reconciliation。只有 SDK 证明 owner 已废弃时才允许恢复，活动、不可读或不可验证 owner 继续 fail closed。Space 关闭时保留 inline owner handle，短暂 close 失败会重试；重试耗尽会报告清理错误，而不是把 ownership fence 静默遗留。
 
-> **历史 v0.1.38/v0.1.39 说明**：本节此前任何“未配置时 classifier timeout 为 `30000ms`”的表述均已失效。KodaX 0.7.84/0.7.85 在未显式配置 timeout 时使用首次 `45000ms`、一次重试 `90000ms`；v0.1.42 使用 KodaX 0.7.89，Space 只转发用户显式配置的值。
+> **历史 v0.1.38/v0.1.39 说明**：本节此前任何“未配置时 classifier timeout 为 `30000ms`”的表述均已失效。KodaX 0.7.84/0.7.85 在未显式配置 timeout 时使用首次 `45000ms`、一次重试 `90000ms`；v0.1.43 使用 KodaX 0.7.92，Space 只转发用户显式配置的值。
 
 ### Provider recovery 与 Ctrl+R transcript 一致性
 
-当前源码把 `provider.recovery` 仅作为诊断事件；它不再驱动文本替换。KodaX Runtime 的 `output.segment.started` 为每个 logical response 和 physical provider request 提供 append/replace 身份，raw journal 保留被放弃 attempt，live snapshot 只暴露有效输出。Space 的实时渲染、Session 切换、daemon 重连、历史重验、snapshot hydration 与 Ctrl+R 直接消费同一 SDK 投影，不运行 checkpoint replay 或文本相似度去重。已完成工具回执继续保留，延迟旧 request delta、旧 terminal、continued Run 的前一轮输出和 canonical/live leading-page 不会跨 query 归属。
+当前发布版把 `provider.recovery` 仅作为诊断事件；它不再驱动文本替换。KodaX Runtime 的 `output.segment.started` 为每个 logical response 和 physical provider request 提供 append/replace 身份，raw journal 保留被放弃 attempt，live snapshot 只暴露有效输出。Space 的实时渲染、Session 切换、daemon 重连、历史重验、snapshot hydration 与 Ctrl+R 直接消费同一 SDK 投影，不运行 checkpoint replay 或文本相似度去重。已完成工具回执继续保留，延迟旧 request delta、旧 terminal、continued Run 的前一轮输出和 canonical/live leading-page 不会跨 query 归属。
 
 这不是正文去重：没有 Provider recovery 时，合法的重复文本仍会保留；fresh retry、`manual_continue`、malformed/child recovery 也不会误清理。该路径消费现有 KodaX Runtime 事件，不新增 SDK 事件、字段、能力或 Runtime projector。
 
@@ -512,7 +510,7 @@ Space 0.1.33 保留并验证真实 `/experimental-memory` 导出和 policy，在
 
 MCP 面板展示 server 状态、命令/URL、start/stop、工具、日志/诊断和扩展卸载。`v0.1.33` 的 Coder 工具目录与 reload 会同步 Runtime；server 进程、状态和日志仍由 Space MCP Manager 负责，不会启动第二套桌面 manager。只安装可信来源的扩展。
 
-KodaX 0.7.89 继续把集成配置从核心 `config.json` 分离，并为独立配置增加
+KodaX 0.7.92 继续把集成配置从核心 `config.json` 分离，并为独立配置增加
 last-known-good 恢复、revisioned reload、watcher 状态和有界诊断：
 
 | 范围              | 规范路径                                 | 格式与 Space 行为                                                                                             |
@@ -664,10 +662,10 @@ flowchart TD
 
 ## 20. 当前限制与诚实边界
 
-- 当前 `v0.1.42` 默认让 Coder 连接 profile-scoped shared daemon；Partner、其工具、权限、知识与交付仍由 Space embedded inline owner 管理，不会迁入 Coder daemon。
+- 当前 `v0.1.43` 默认让 Coder 连接 profile-scoped shared daemon；Partner、其工具、权限、知识与交付仍由 Space embedded inline owner 管理，不会迁入 Coder daemon。
 - Runtime Learning Center 的兼容契约已接入，但完整 F118 管理界面尚未交付；Memory Agent 的 0.7.68 起始运行契约和 0.7.77 governed intervention 仍由 Runtime 持有，完整 F117 桌面管理体验尚未交付。
 - `daemonOrphanExit:1` 只证明当前 daemon host 启用了 orphan idle-exit，不证明异步 host cleanup 失败后一定重试成功；正式包 macOS/Linux process-level 验收和上游 cleanup retry/verification 缺口继续由 Issue 133 跟踪。
-- KodaX 0.7.89 sandbox v3、已打包 helper 与 F143 显式 setup/readiness UI 提供命令 containment；Runtime Shell 在 sandbox 不可用时使用普通权限策略，且不会重放可能已启动的命令。它仍不等于 F138 规划的文档 staging、凭据、native-resource 和跨平台完整 OS 隔离。
+- KodaX 0.7.92 sandbox v4、已打包 helper 与 F143 显式 setup/readiness UI 提供命令 containment；Runtime Shell 在 sandbox 不可用时使用普通权限策略，且不会重放可能已启动的命令。普通权限执行仍取得同一 filesystem-effect fence。它仍不等于 F138 规划的文档 staging、凭据、native-resource 和跨平台完整 OS 隔离。
 - Partner 浏览器、通用 Connector、远程任务、桌面电脑控制和自动化尚未交付。
 - External Agent 的本地 Reference Executor 可用；Coder daemon 的 A2A 取决于显式配置与能力协商，MCP Tasks/governed HTTP 尚未作为通用能力开放。
 - Quick Ask 不是完全无 session side query。

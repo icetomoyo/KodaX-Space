@@ -96,9 +96,9 @@ npm run dev
 
 底部状态区把主 Agent 上下文压力与整个 Session 累计 Token 分开显示。“上下文窗口”使用最终自动压缩阈值和不含正文的六类构成；完成态物理请求按 request ID 去重，覆盖 root、child、retry、fallback、repair、workflow digest 和 compaction summary。F140 新增“每次询问 / 保留托盘和 Runtime / 彻底退出”偏好。Windows、macOS 或 Linux 真正退出时，Space 会先尝试安全停止 Coder daemon；若有 blocker，则提供默认的“保持开启”和显式“强行关闭”。强行关闭只终止当前 Space 的任务、保留其他客户端的 Runtime 工作，并保证退出不再回到阻塞弹窗。Space 自动拉起的孤儿 daemon 仍会在最后客户端断开且任务空闲后自回收。Terminal 与 Coder 命令工具共享同一个所选 Shell/profile PATH 契约，不接受任意可执行文件，也不把敏感变量投影给 PTY。
 
-F122-F124 继续提供 Partner 项目来源库、不可变证据/引用和自动 grounded context 闭环。F121 仅因最终人工多客户端验收台账保持 `InProgress`；v0.1.42 对缺失 daemon capability（包括 durable managed Run、Actor settlement convergence v2、Session journal 和 sandboxRuntime）明确失败，并继续保护活动 Session 的输入准入、history/live 对齐和 journal epoch 隔离。详见 [v0.1.42 发布设计](docs/features/v0.1.42.md)和[能力台账](docs/KODAX_CAPABILITY_LEDGER.md)。
+F122-F124 继续提供 Partner 项目来源库、不可变证据/引用和自动 grounded context 闭环。F121 仅因最终人工多客户端验收台账保持 `InProgress`；v0.1.43 对缺失 daemon capability（包括 durable managed Run、Actor settlement convergence v2、Session journal、sandboxRuntime v4、crashOutcomeModel v2 和 runtimeExitSettlement）明确失败，并继续保护活动 Session 的输入准入、history/live 对齐和 journal epoch 隔离。详见 [v0.1.43 发布设计](docs/features/v0.1.43.md)和[能力台账](docs/KODAX_CAPABILITY_LEDGER.md)。
 
-F135 继续把许可证允许再分发的 `frontend-slides` 与 `huashu-design` 作为经审查的 Space builtin 一起打包。F137 改排到 `v0.1.61`，由 Space 独立创作四个中文优先的替代 Skill；本次 v0.1.42 不包含文档 Skill。详见 [v0.1.61 设计](docs/features/v0.1.61.md)、[builtin skill 文档](docs/BUILTIN_SKILLS.md)和 [v0.1.42 发布记录](docs/releases/v0.1.42-release-readiness.md)。
+F135 继续把许可证允许再分发的 `frontend-slides` 与 `huashu-design` 作为经审查的 Space builtin 一起打包。F137 改排到 `v0.1.61`，由 Space 独立创作四个中文优先的替代 Skill；本次 v0.1.43 不包含文档 Skill。详见 [v0.1.61 设计](docs/features/v0.1.61.md)、[builtin skill 文档](docs/BUILTIN_SKILLS.md)和 [v0.1.43 发布记录](docs/releases/v0.1.43-release-readiness.md)。
 
 F136 让 Windows 后台 owner 可见、可控；F140 允许选择“每次询问”“保留托盘运行”或“彻底退出”。关闭最后一个窗口会销毁 renderer，通知区域 owner 可重开 Space。真正退出采用统一跨平台契约：先尝试安全停止；有任务时提供“保持开启 / 强行关闭”，强退仅取消本 Space 所属工作并完全退出，不误杀其他客户端。KodaX 的专用 `daemonOrphanExit:1` 能力只为 Space 自动拉起的 daemon 增加 30 秒空闲孤儿回收期。
 
@@ -106,17 +106,23 @@ F136 让 Windows 后台 owner 可见、可控；F140 允许选择“每次询问
 
 ## 当前正式版本
 
+**v0.1.43 - Runtime 退出与 filesystem-effect 收敛发布**
+
+已于 2026-08-19 正式发布 [`v0.1.43`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.43)：Space package `0.1.43` 精确锁定 npm `latest` KodaX `0.7.92`。本版本把完整退出交给 SDK 结算事务，要求 sandbox Runtime v4 与 crash-outcome v2，并用 SDK 有效输出 segment 替代 host checkpoint replay。
+
+| 范围                  | 摘要                                                                                                                           |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| 最新 SDK              | npm `latest` 在发布准备时核验为 `0.7.92`，manifest、lockfile、安装包和 SRI 均精确一致。                                        |
+| 退出与 sandbox        | `runtimeExitSettlement:1`、`sandboxRuntime:4`、`crashOutcomeModel:2` 与 `liveOutputSegments:1` 均为显式能力门，不由 SemVer 推断。 |
+| 文档与手册            | README、用户手册、PRD/HLD、Feature List、能力台账、Known Issues、release 记录、回归指南和 `kodax_manual` 统一到 v0.1.43。      |
+
+详细内容见 [v0.1.43 设计](docs/features/v0.1.43.md)、[发布记录](docs/releases/v0.1.43-release-readiness.md) 和 [Issue 188 / 256 回归指南](docs/test-guides/ISSUE_188_v0.1.43_REGRESSION_GUIDE.md)。
+
 **v0.1.42 - 因果 Transcript 与最新 KodaX 对齐发布**
 
-已于 2026-08-16 正式发布 [`v0.1.42`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.42)：Space package `0.1.42` 精确锁定 npm `latest` KodaX `0.7.89`。本版本保持 Session/Run/Turn 因果归属，收口 canonical/live、延迟 terminal、continued Run、重连与 Ctrl+R 的顺序一致性，并同步 Actor settlement v2、权限原因和 Session 删除反馈。
+2026-08-16 源码快照 `0.1.42` 精确锁定 KodaX `0.7.89`。该快照保持 Session/Run/Turn 因果归属，收口 canonical/live、延迟 terminal、continued Run、重连与 Ctrl+R 的顺序一致性，并同步 Actor settlement v2。
 
-| 范围                  | 摘要                                                                                                                      |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| 最新 SDK              | npm `latest` 在发布准备时核验为 `0.7.89`，manifest、lockfile、安装包和 SRI 均精确一致。                                   |
-| Transcript 与 Runtime | 精确 Session/Run/Turn owner 贯穿实时、历史、延迟 terminal、continued Run、重连和 Ctrl+R；SDK 使用 Actor settlement v2。   |
-| 文档与手册            | README、用户手册、PRD/HLD、Feature List、能力台账、Known Issues、release 记录、回归指南和 `kodax_manual` 统一到 v0.1.42。 |
-
-详细内容见 [v0.1.42 设计](docs/features/v0.1.42.md)、[发布记录](docs/releases/v0.1.42-release-readiness.md) 和 [Issue 182-185 回归指南](docs/test-guides/ISSUE_182_v0.1.42_REGRESSION_GUIDE.md)。
+详细内容见 [v0.1.42 设计](docs/features/v0.1.42.md) 与 [v0.1.42 发布记录](docs/releases/v0.1.42-release-readiness.md)。
 
 **v0.1.40 - KodaX 0.7.86 Sandbox 与 Owner 收敛发布**
 
@@ -315,13 +321,17 @@ npm run e2e:headed
 | [README.md](README.md)                                                                                           | 英文 README。                                                         |
 | [CONTRIBUTING.md](CONTRIBUTING.md)                                                                               | 贡献边界、验证要求和文档同步规则。                                    |
 | [docs/README.md](docs/README.md)                                                                                 | 文档中心，以及当前文档/历史文档索引。                                 |
-| [docs/USER_MANUAL.zh-CN.md](docs/USER_MANUAL.zh-CN.md)                                                           | 面向 v0.1.42 发布基线的图解中文手册。                                 |
+| [docs/USER_MANUAL.zh-CN.md](docs/USER_MANUAL.zh-CN.md)                                                           | 面向 v0.1.43 发布基线的图解中文手册。                                 |
 | [docs/USAGE.md](docs/USAGE.md)                                                                                   | 源码启动、profile、Runtime Host、测试、打包与排障。                   |
 | [docs/BUILTIN_SKILLS.md](docs/BUILTIN_SKILLS.md)                                                                 | builtin skill 的来源、许可、更新、补丁和打包完整性流程。              |
 | [docs/releases/v0.1.34-release-readiness.md](docs/releases/v0.1.34-release-readiness.md)                         | v0.1.34 的发布门禁、产物摘要、已知风险与发布证据。                    |
 | [docs/releases/v0.1.37-release-readiness.md](docs/releases/v0.1.37-release-readiness.md)                         | v0.1.37 的 KodaX 0.7.83 合约、门禁与发布证据。                        |
-| [docs/features/v0.1.42.md](docs/features/v0.1.42.md)                                                             | v0.1.42 causal transcript, latest KodaX 0.7.89, and release boundary. |
-| [docs/releases/v0.1.42-release-readiness.md](docs/releases/v0.1.42-release-readiness.md)                         | v0.1.42 gates, exact KodaX 0.7.89 contract, and release evidence.     |
+| [docs/features/v0.1.43.md](docs/features/v0.1.43.md)                                                             | v0.1.43 Runtime 退出、KodaX 0.7.92、sandbox v4 与发布边界。           |
+| [docs/releases/v0.1.43-release-readiness.md](docs/releases/v0.1.43-release-readiness.md)                         | v0.1.43 门禁、精确 KodaX 0.7.92 合约与发布证据。                      |
+| [docs/test-guides/ISSUE_188_v0.1.43_REGRESSION_GUIDE.md](docs/test-guides/ISSUE_188_v0.1.43_REGRESSION_GUIDE.md) | v0.1.43 完整退出结算与恢复覆盖。                                      |
+| [docs/test-guides/ISSUE_256_v0.1.43_REGRESSION_GUIDE.md](docs/test-guides/ISSUE_256_v0.1.43_REGRESSION_GUIDE.md) | v0.1.43 sandbox v4 / crash-outcome v2 覆盖。                          |
+| [docs/features/v0.1.42.md](docs/features/v0.1.42.md)                                                             | 历史 v0.1.42 causal transcript, latest KodaX 0.7.89, and release boundary. |
+| [docs/releases/v0.1.42-release-readiness.md](docs/releases/v0.1.42-release-readiness.md)                         | 历史 v0.1.42 gates, exact KodaX 0.7.89 contract, and release evidence.     |
 | [docs/test-guides/ISSUE_182_v0.1.42_REGRESSION_GUIDE.md](docs/test-guides/ISSUE_182_v0.1.42_REGRESSION_GUIDE.md) | v0.1.42 canonical/live ordering regression coverage.                  |
 | [docs/test-guides/ISSUE_183_v0.1.42_REGRESSION_GUIDE.md](docs/test-guides/ISSUE_183_v0.1.42_REGRESSION_GUIDE.md) | v0.1.42 terminal owner reconciliation coverage.                       |
 | [docs/test-guides/ISSUE_184_v0.1.42_REGRESSION_GUIDE.md](docs/test-guides/ISSUE_184_v0.1.42_REGRESSION_GUIDE.md) | v0.1.42 continued-Run projection coverage.                            |
