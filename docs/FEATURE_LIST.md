@@ -1,7 +1,7 @@
 # KodaX Space Feature List
 
-> Last reviewed: 2026-08-18
-> Latest published release: [`v0.1.42`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.42) (`0.1.42` package baseline; KodaX 0.7.89 Registry, Actor settlement v2, and causal transcript alignment)
+> Last reviewed: 2026-08-19
+> Latest published release: [`v0.1.43`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.43) (`0.1.43` package baseline; KodaX 0.7.92 Registry, SDK-owned exit settlement, sandbox v4, and crash-outcome v2)
 > Current source KodaX SDK baseline: exact audited npm Registry `@kodax-ai/kodax@0.7.92`. Root/Desktop manifests, lockfile, installed bytes, and packaged ASAR must resolve the same Registry URL and integrity. Space-managed daemons require explicit capability contracts in addition to the established shared-session safety surface, including local `runtimeExitSettlement:1`, `sandboxRuntime:4`, `crashOutcomeModel:2`, `managedRunDurability:1`, `actorSettlementConvergence:2`, and `sessionEventJournal:1`; lifecycle support is not inferred from SemVer. Delivered interrupt `entryId` remains feature-detected per event. Session journal cursors are compared only within the same `(sessionId, journalEpoch)` lineage.
 > Scope: active roadmap, recent completion audit, and reviewed-out decisions. Older release history lives in [FEATURES_ARCHIVED.md](FEATURES_ARCHIVED.md), per-version designs, and [CHANGELOG.md](../CHANGELOG.md).
 
@@ -22,7 +22,7 @@
 | Planned                  | 20                                                                                                                                                                                                                                                  |
 | InProgress               | 4                                                                                                                                                                                                                                                   |
 | Recent Completed         | 27                                                                                                                                                                                                                                                  |
-| Latest published release | [`v0.1.42`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.42) (KodaX 0.7.89 Registry/Actor settlement v2, causal transcript ownership, Session lifecycle feedback, and release documentation synchronization)                          |
+| Latest published release | [`v0.1.43`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.43) (KodaX 0.7.92 Registry, SDK-owned complete-exit settlement, sandboxRuntime v4, crashOutcomeModel v2, live output segments, and release documentation synchronization)      |
 | 0.1.x completion target  | `v0.1.72`, followed by `v0.1.73` patch/RC reserve                                                                                                                                                                                                   |
 | Far-future candidates    | F144 is scheduled after `v0.2.x`; F138 is explicitly deferred until after `v0.5.x`; other candidates remain in [KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md) and [FEATURES_ARCHIVED.md](FEATURES_ARCHIVED.md#watchlist-and-reopen-gates) |
 
@@ -232,6 +232,12 @@
 - The candidate aligns every Space package manifest, runtime capability contract, and the in-app kodax_manual to v0.1.42 while pinning the npm latest KodaX package exactly to 0.7.89.
 - Renderer reconciliation preserves exact Session/Run/Turn ownership across canonical/live folding, delayed terminals, continued Runs, reconnect, and Ctrl+R; no timestamp sorting or content-based deduplication is introduced.
 - The release records Actor settlement convergence v2, explicit create-time model continuity, bounded classifier-reason visibility, Session deletion feedback, and the Issue 182-185 regression coverage.
+
+### Release preparation - 2026-08-19: v0.1.43 Runtime exit and filesystem-effect convergence
+
+- The candidate aligns every Space package manifest, runtime capability contract, and the in-app kodax_manual to v0.1.43 while pinning the npm latest KodaX package exactly to 0.7.92.
+- Complete exit delegates to `settleKodaXRuntimeExit()`; sandboxRuntime v4 and crashOutcomeModel v2 are required from SDK and connected Runtime; live output uses SDK `liveOutputSegments:1`.
+- Release documentation includes the v0.1.43 feature design, readiness record, Issue 188/256 regression guides, README/manual updates, capability ledger, known-issue resolution, and changelog entry.
 
 ### Maintenance - 2026-08-17: v0.1.43 crash-resumable complete exit
 

@@ -1,8 +1,8 @@
 # Known Issues
 
-Last Updated: 2026-08-16
+Last Updated: 2026-08-19
 
-> Historical issue details are preserved as investigation evidence. Resolved items older than 30 days move to [ISSUES_ARCHIVED.md](ISSUES_ARCHIVED.md) without losing their investigation record. The latest published Space [`v0.1.42`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.42) artifact uses exact npm Registry KodaX 0.7.88 and requires `sandboxRuntime:3` plus `actorSettlementConvergence:2`. Start from the [documentation hub](README.md) for current behavior and status.
+> Historical issue details are preserved as investigation evidence. Resolved items older than 30 days move to [ISSUES_ARCHIVED.md](ISSUES_ARCHIVED.md) without losing their investigation record. The latest published Space [`v0.1.43`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.43) artifact uses exact npm Registry KodaX 0.7.92 and requires `sandboxRuntime:4`, `crashOutcomeModel:2`, and `actorSettlementConvergence:2`. Start from the [documentation hub](README.md) for current behavior and status.
 
 ## Issue Index
 
@@ -183,16 +183,16 @@ Last Updated: 2026-08-16
 | 185 | High     | Resolved           | A delayed old Run terminal could close the current query while a Session-level notification reported another Run                   | v0.1.42 daemon transcript / completion notifications         | 2026-08-15 |
 | 186 | High     | Resolved           | Multi-session terminal contention or a compaction-damaged canonical page could misorder, duplicate, or endlessly grow the transcript tail; SDK write-side provenance collapse identified cross-repo | KodaX 0.7.88 chained compaction / renderer folding          | 2026-08-16 |
 | 187 | Medium   | Resolved           | Restored historical Sessions could display history but fork and rewind failed with session_not_found                               | v0.1.42 historical Session mutation admission                | 2026-08-16 |
-| 188 | High     | Resolved in source | Complete exit could strand an accepted Windows Runtime stop and relaunch before exact cleanup recovery                              | v0.1.37 complete-exit recovery                               | 2026-08-17 |
+| 188 | High     | Resolved           | Complete exit could strand an accepted Windows Runtime stop and relaunch before exact cleanup recovery                              | v0.1.37 complete-exit recovery                               | 2026-08-17 |
 
 ## Issue Details
 
 ## Issue 188: Complete exit could strand an accepted Windows Runtime stop and relaunch before exact cleanup recovery
 
 - Priority: High
-- Status: Resolved in source
+- Status: Resolved
 - Introduced: v0.1.37 complete-exit recovery
-- Fixed: v0.1.43 / KodaX 0.7.91
+- Fixed: v0.1.43 / KodaX 0.7.91 / KodaX 0.7.92
 - Created: 2026-08-17
 - Resolution Date: 2026-08-17
 

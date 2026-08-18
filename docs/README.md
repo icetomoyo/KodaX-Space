@@ -1,20 +1,16 @@
 # KodaX Space 文档中心
 
-> **2026-08-16 当前正式发布基线**：KodaX Space [`v0.1.42`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.42)（package `0.1.42`）使用 npm
-> Registry 的精确 KodaX `0.7.89` 包。受管理的 Coder daemon 除既有 Runtime 安全能力外，
+> **2026-08-19 当前正式发布基线**：KodaX Space [`v0.1.43`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.43)（package `0.1.43`）使用 npm
+> Registry 的精确 KodaX `0.7.92` 包。受管理的 Coder daemon 除既有 Runtime 安全能力外，
 > 还必须协商 `managedRunDurability:1`、`actorSettlementConvergence:2`、
-> `sessionEventJournal:1` 和 `sandboxRuntime:3`；Space 将 durable `runId`/`turnId` 绑定到
+> `sessionEventJournal:1`、`sandboxRuntime:4` 与 `crashOutcomeModel:2`；完整退出路径还要求 SDK
+> 本地能力 `runtimeExitSettlement:1`。Space 将 durable `runId`/`turnId` 绑定到
 > optimistic composer history，并按 Session/Run/Turn 因果身份串行化活动 Session 的输入准入与历史重验。
-> v0.1.42 还覆盖 sandbox-first Shell、Issue 128 打包链路、Issue 180 owner reconciliation
-> 和 Issue 185 Actor settlement/terminal owner 对齐。
+> v0.1.43 还覆盖 SDK 有效输出 segment、crash-resumable complete exit、Issue 188 退出恢复
+> 和 Issue 256 filesystem-effect 收敛。
 > 未配置 Auto LLM timeout 时使用 SDK 首次 45 秒、重试 90 秒的默认值。
-
-> **当前源码基线**：root/Desktop 使用完整性锁定的 npm Registry KodaX `0.7.92` 正式包，并在 SDK
-> 预检、daemon 连接和正式打包烟测中要求 `sandboxRuntime:4`、
-> `crashOutcomeModel:2` 与 `actorSettlementConvergence:2`；完整退出路径还要求 SDK
-> 本地能力 `runtimeExitSettlement:1`。root/Desktop manifest、lockfile、物理安装与打包
-> ASAR 必须解析到同一个正式 Registry URL/SRI。
-> v0.1.41 / KodaX 0.7.87 的发布记录保持历史事实。
+> root/Desktop manifest、lockfile、物理安装与打包 ASAR 必须解析到同一个正式 Registry URL/SRI。
+> v0.1.42 / v0.1.41 的发布记录保持历史事实。
 
 > 历史发布基线：KodaX Space [`v0.1.40`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.40)（package `0.1.40`）/ npm 正式发布的精确 KodaX `0.7.86`；历史 release 文档继续保留当时事实。
 
@@ -26,11 +22,11 @@ interrupt input、Actor/Turn v1 和 Auto LLM guardrail；Settings 可在无活�
 KodaX 版本号或 guardrail 版本推断。Partner 继续由 Space inline owner 管理，完整 F117/F118
 桌面管理体验仍在后续路线中。历史设计和 release 记录保留当时语境。
 
-当前源码维护把底部“上下文窗口”改为按最终自动压缩阈值计算的有效窗口，并把模型最大上下文、自动压缩阈值、最近一次模型输入构成和距压缩剩余量分层展示；“会话 Token 用量”则独立累计根/子 Agent 的 Provider 调用与缓存分类。两者不能互换：前者是最近一次主模型请求的输入压力快照，后者是整个 Session 已发生的累计用量。v0.1.42 继续保留 v0.1.39 的多 Session 恢复、活动 Session 输入准入、历史分页、安全退出恢复隔离和 `(sessionId, journalEpoch, seq)` 水位隔离，并记录当时发布的 sandbox v3、Issue 128、Issue 180 和 Issue 185 边界；v0.1.43 源码以正式 KodaX 0.7.92 的 sandbox v4 / crash outcome v2 门禁验证本次修复。
+当前发布版把底部“上下文窗口”改为按最终自动压缩阈值计算的有效窗口，并把模型最大上下文、自动压缩阈值、最近一次模型输入构成和距压缩剩余量分层展示；“会话 Token 用量”则独立累计根/子 Agent 的 Provider 调用与缓存分类。两者不能互换：前者是最近一次主模型请求的输入压力快照，后者是整个 Session 已发生的累计用量。v0.1.43 继续保留 v0.1.39 的多 Session 恢复、活动 Session 输入准入、历史分页、安全退出恢复隔离和 `(sessionId, journalEpoch, seq)` 水位隔离，并以正式 KodaX 0.7.92 的 sandbox v4 / crash outcome v2 门禁验证完整退出与 filesystem-effect 收敛。
 
-KodaX 0.7.89 的配置说明也已收口：核心配置仍在 `~/.kodax/config.json`，MCP、可信 Extension 路径和 A2A 分别位于 `~/.kodax/integrations/mcp.json`、`extensions.json`、`a2a.json`。Settings → Runtime 会显示三个域的来源、revision、watcher、最近 reload 和有界诊断；Runtime 对无效更新保留 last-known-good 配置，并发写冲突要求 reload 后重试。应用内 `kodax_manual` 会继承当前安装 SDK 推荐的原始底层能力主题，再叠加 Space 操作说明。当前源码 Coder 要求 `sandboxRuntime:4`、`crashOutcomeModel:2`、`actorSettlementConvergence:2` 与 `sessionEventJournal:1`，并按 `(sessionId, journalEpoch, seq)` 隔离事件水位。
+KodaX 0.7.92 的配置说明也已收口：核心配置仍在 `~/.kodax/config.json`，MCP、可信 Extension 路径和 A2A 分别位于 `~/.kodax/integrations/mcp.json`、`extensions.json`、`a2a.json`。Settings → Runtime 会显示三个域的来源、revision、watcher、最近 reload 和有界诊断；Runtime 对无效更新保留 last-known-good 配置，并发写冲突要求 reload 后重试。应用内 `kodax_manual` 会继承当前安装 SDK 推荐的原始底层能力主题，再叠加 Space 操作说明。当前发布版 Coder 要求 `sandboxRuntime:4`、`crashOutcomeModel:2`、`actorSettlementConvergence:2` 与 `sessionEventJournal:1`，并按 `(sessionId, journalEpoch, seq)` 隔离事件水位。
 
-当前 KodaX 0.7.89 还提供 Run-scoped `sandbox.envPass`。Settings → Runtime
+当前 KodaX 0.7.92 还提供 Run-scoped `sandbox.envPass`。Settings → Runtime
 可编辑变量名 allow-list；Space 将显式列表投影到所有 Coder、Partner、legacy 与 Workflow
 Run，变量值只在命令执行 host 读取。超出有界编辑器限制的 CLI 配置会完整保留并以只读方式
 显示，避免静默截断。
@@ -74,12 +70,16 @@ Run，变量值只在命令执行 host 读取。超出有界编辑器限制的 C
 | `FEATURE_LIST.md`                                    | 版本路线图                    | 只有可交付、可验证的版本项进入 active list                   |
 | `KNOWN_ISSUES.md`                                    | 当前问题                      | 已解决项保留结论，新增问题需有复现和状态                     |
 | `BUILTIN_SKILLS.md`                                  | builtin 分发维护              | 固定来源、许可、补丁、更新和打包完整性                       |
-| `features/v0.1.42.md`                                | current release design        | Causal transcript, latest KodaX 0.7.89, and release boundary |
-| `releases/v0.1.42-release-readiness.md`              | current release record        | Gates, GitHub CI, artifact evidence, and regression items    |
-| `test-guides/ISSUE_182_v0.1.42_REGRESSION_GUIDE.md`  | current regression acceptance | Canonical/live ordering and exact owner reconciliation       |
-| `test-guides/ISSUE_183_v0.1.42_REGRESSION_GUIDE.md`  | current regression acceptance | Terminal owner reconciliation and exact-once folding         |
-| `test-guides/ISSUE_184_v0.1.42_REGRESSION_GUIDE.md`  | current regression acceptance | Continued-Run turn projection and compaction boundary        |
-| `test-guides/ISSUE_185_v0.1.42_REGRESSION_GUIDE.md`  | current regression acceptance | Completion notification and Actor settlement v2              |
+| `features/v0.1.43.md`                                | current release design        | Runtime exit, latest KodaX 0.7.92, sandbox v4, and release boundary |
+| `releases/v0.1.43-release-readiness.md`              | current release record        | Gates, GitHub CI, artifact evidence, and regression items           |
+| `test-guides/ISSUE_188_v0.1.43_REGRESSION_GUIDE.md`  | current regression acceptance | Complete-exit settlement and recovery                               |
+| `test-guides/ISSUE_256_v0.1.43_REGRESSION_GUIDE.md`  | current regression acceptance | sandbox v4 / crash-outcome v2 filesystem-effect convergence         |
+| `features/v0.1.42.md`                                | 历史 release 设计             | Causal transcript, latest KodaX 0.7.89, and release boundary        |
+| `releases/v0.1.42-release-readiness.md`              | 历史发布记录                  | Gates, GitHub CI, artifact evidence, and regression items           |
+| `test-guides/ISSUE_182_v0.1.42_REGRESSION_GUIDE.md`  | 历史回归验收                  | Canonical/live ordering and exact owner reconciliation              |
+| `test-guides/ISSUE_183_v0.1.42_REGRESSION_GUIDE.md`  | 历史回归验收                  | Terminal owner reconciliation and exact-once folding                |
+| `test-guides/ISSUE_184_v0.1.42_REGRESSION_GUIDE.md`  | 历史回归验收                  | Continued-Run turn projection and compaction boundary               |
+| `test-guides/ISSUE_185_v0.1.42_REGRESSION_GUIDE.md`  | 历史回归验收                  | Completion notification and Actor settlement v2                     |
 | `features/v0.1.40.md`                                | 历史 release 设计             | KodaX 0.7.86、sandbox v3、owner reconciliation 与发布边界    |
 | `releases/v0.1.40-release-readiness.md`              | 历史发布记录                  | 门禁、GitHub CI、产物证据和人工项                            |
 | `features/v0.1.39.md`                                | 历史 release 设计             | KodaX 0.7.85、Actor convergence、journal epoch 与发布边界    |

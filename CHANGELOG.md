@@ -14,6 +14,10 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ## [Unreleased]
 
+---
+
+## [0.1.43] - 2026-08-19
+
 ### Changed
 
 - **KodaX 0.7.92 Registry alignment** - Root and Desktop pin the same published
@@ -73,6 +77,18 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
   transcript empty state now explains that the Runtime is temporarily unavailable and the
   history file is intact, instead of showing an indefinite restore skeleton that looked like
   a broken or corrupted session. Normal daemon startup still shows the skeleton until ready.
+
+### Documentation
+
+- Synchronized the README files, docs hub, PRD, HLD, Feature List, capability
+  ledger, known issues, usage/user manual, release design, regression guides,
+  changelog, and in-app `kodax_manual` for v0.1.43.
+
+### Verification
+
+- The release preparation keeps system business logic unchanged; any CI
+  hardening remains limited to tests, smoke probes, workflow configuration, or
+  release documentation.
 
 ---
 
