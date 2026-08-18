@@ -1128,9 +1128,10 @@ function daemonRequirements() {
     daemonManagement: 1,
     daemonOrphanExit: 1,
     actorSettlementConvergence: 2,
+    crashOutcomeModel: 2,
     managedRunDurability: 1,
     runtimeEventCoalescing: 1,
-    sandboxRuntime: 3,
+    sandboxRuntime: 4,
     sessionEventJournal: 1,
     ...(process.platform === 'win32' ? { daemonShutdownVerification: 1 } : {}),
     integrationConfigResilience: 1,
@@ -1184,7 +1185,7 @@ try {
   await Promise.all(${JSON.stringify(publicFacadeUrls)}.map((moduleUrl) => import(moduleUrl)));
   const sandboxCapability = getKodaXSandboxCapability();
   if (
-    sandboxCapability.version !== 3 ||
+    sandboxCapability.version !== 4 ||
     sandboxCapability.asrtVersion !== KODAX_ASRT_VERSION ||
     sandboxCapability.unavailableBehavior !== 'structured-no-execution' ||
     sandboxCapability.ordinaryCallsTriggerSetup !== false ||
@@ -1304,8 +1305,11 @@ try {
   if (KODAX_RUNTIME_SDK_CAPABILITIES?.sessionEventJournal !== 1) {
     throw new Error('packaged SDK does not advertise sessionEventJournal v1 before auto-start');
   }
-  if (KODAX_RUNTIME_SDK_CAPABILITIES?.sandboxRuntime !== 3) {
-    throw new Error('packaged SDK does not advertise sandboxRuntime v3 before auto-start');
+  if (KODAX_RUNTIME_SDK_CAPABILITIES?.crashOutcomeModel !== 2) {
+    throw new Error('packaged SDK does not advertise crashOutcomeModel v2 before auto-start');
+  }
+  if (KODAX_RUNTIME_SDK_CAPABILITIES?.sandboxRuntime !== 4) {
+    throw new Error('packaged SDK does not advertise sandboxRuntime v4 before auto-start');
   }
   const providerBaseUrl = sandboxDoctor.ready ? await startProviderServer() : undefined;
   const initialOwnerPolicy = await enableDaemonOwnerWhenReady();
@@ -1352,10 +1356,10 @@ try {
   if (
     typeof daemonSandboxRuntime !== 'object' ||
     daemonSandboxRuntime === null ||
-    daemonSandboxRuntime.version !== 3
+    daemonSandboxRuntime.version !== 4
   ) {
     throw new Error(
-      'packaged daemon did not negotiate sandboxRuntime v3: ' +
+      'packaged daemon did not negotiate sandboxRuntime v4: ' +
         JSON.stringify(daemonSandboxRuntime),
     );
   }
@@ -1484,13 +1488,13 @@ try {
     !result.sessionRoundTrip ||
     result.constructedHandlerIsMainThread !== 'false' ||
     result.daemonOrphanExit !== 1 ||
-    result.daemonSandboxRuntime !== 3 ||
+    result.daemonSandboxRuntime !== 4 ||
     result.sessionEventJournal !== 1 ||
     !result.sessionCursorValid ||
     result.integrationHealth !== 'healthy' ||
     result.runtimeExitSettlement !== 'clean' ||
     result.restartedRuntimeExitSettlement !== 'clean' ||
-    result.sandboxVersion !== 3 ||
+    result.sandboxVersion !== 4 ||
     result.sandboxUnavailableBehavior !== 'structured-no-execution' ||
     result.sandboxPermissionFallback !== 'normal-permission-policy' ||
     (result.sandboxDoctorReady && !result.sandboxCommandExecuted) ||

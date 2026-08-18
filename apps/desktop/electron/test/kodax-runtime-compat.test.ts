@@ -8,7 +8,7 @@ import test from 'node:test';
 
 const PROBE_MARKER = 'KODAX_RUNTIME_PROBE=';
 const PROBE_TIMEOUT_MS = 30_000;
-const EXPECTED_KODAX_VERSION = '0.7.91';
+const EXPECTED_KODAX_VERSION = '0.7.92';
 const INSTALLED_KODAX_VERSION = (
   createRequire(import.meta.url)('@kodax-ai/kodax/package.json') as { readonly version: string }
 ).version;
@@ -334,7 +334,7 @@ const SHARED_DAEMON_REQUIREMENTS = {
   providerCredentialBroker: 1,
   runBoundHostTools: 2,
   coderOwnerFencing: 1,
-  crashOutcomeModel: 1,
+  crashOutcomeModel: 2,
   coderFeatureMatrix: 1,
   sessionAdmission: 1,
   completeObservationSnapshot: 1,
@@ -353,7 +353,7 @@ const SHARED_DAEMON_REQUIREMENTS = {
   actorSettlementConvergence: 2,
   liveOutputSegments: 1,
   runtimeEventCoalescing: 1,
-  sandboxRuntime: 3,
+  sandboxRuntime: 4,
   sessionEventJournal: 1,
   integrationConfigResilience: 1,
   runtimeAutoModeGuardrail: 4,
@@ -963,8 +963,8 @@ try {
       runtime: runtime.capabilities.actorSettlementConvergence?.version === 2,
     },
     sandboxRuntime: {
-      sdk: KODAX_RUNTIME_SDK_CAPABILITIES.sandboxRuntime === 3,
-      runtime: runtime.capabilities.sandboxRuntime?.version === 3,
+      sdk: KODAX_RUNTIME_SDK_CAPABILITIES.sandboxRuntime === 4,
+      runtime: runtime.capabilities.sandboxRuntime?.version === 4,
     },
     sessionEventJournal: {
       sdk: KODAX_RUNTIME_SDK_CAPABILITIES.sessionEventJournal === 1,
@@ -1371,7 +1371,7 @@ test(`KodaX ${EXPECTED_KODAX_VERSION} exposes fail-closed standalone command con
   const { KODAX_ASRT_VERSION, doctorKodaXSandbox, getKodaXSandboxCapability, runKodaXSandboxed } =
     await import('@kodax-ai/kodax/sandbox');
   const capability = getKodaXSandboxCapability();
-  assert.equal(capability.version, 3);
+  assert.equal(capability.version, 4);
   assert.equal(capability.asrtVersion, KODAX_ASRT_VERSION);
   assert.equal(capability.genericCommandExecution, true);
   assert.deepEqual(capability.controls, [

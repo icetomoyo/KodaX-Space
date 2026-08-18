@@ -5,9 +5,10 @@
 > managed-Run `runId`/`turnId`，不维护第二份 Run 状态。未配置的 Auto LLM classifier timeout
 > 使用 KodaX 的首次 45 秒、重试 90 秒默认值。
 
-> **2026-08-18 当前源码增量**：root/Desktop 使用 npm 正式发布的同一份精确 KodaX
-> `0.7.91` Registry 包，lockfile 与物理安装匹配官方 URL/SRI。Coder 除
-> `sandboxRuntime:3` 与 `actorSettlementConvergence:2` 外，还消费本地
+> **2026-08-18 当前源码增量**：root/Desktop 使用同一份完整性锁定的 KodaX
+> `0.7.92` 本地候选包，lockfile 与物理安装匹配候选字节；正式发布后切换到相同
+> 字节的 Registry URL/SRI。Coder 除 `sandboxRuntime:4`、`crashOutcomeModel:2`
+> 与 `actorSettlementConvergence:2` 外，还消费本地
 > `runtimeExitSettlement:1` 与 `liveOutputSegments:1`。Provider 实时输出以 SDK 的
 > response/request segment 投影为唯一真理；Space 不保留 checkpoint replay 执行回退。
 > 在任何 replacement daemon 启动前恢复持久退出票据。

@@ -1155,8 +1155,8 @@ type SpaceRuntimeConnectOptions = Omit<ConnectKodaXRuntimeOptions, 'requirements
   /** Opt-in lifecycle policy for Space-managed daemons. */
   readonly daemonOrphanExitMs?: number;
   readonly requirements?: NonNullable<ConnectKodaXRuntimeOptions['requirements']> & {
-    /** Windows sandbox ownership, policy identity, and recovery use the v3 contract. */
-    readonly sandboxRuntime?: 3;
+    /** Windows sandbox ownership and filesystem-effect convergence use the v4 contract. */
+    readonly sandboxRuntime?: 4;
     /** The current daemon host actually has Space's orphan idle-exit policy enabled. */
     readonly daemonOrphanExit?: 1;
     /** Managed Run lifecycle events have canonical persistence boundaries. */
@@ -1392,9 +1392,15 @@ function runtimeCapabilityVersion(runtime: KodaXDaemonRuntime, name: string): nu
 }
 
 function assertSpaceDaemonRequiredCapabilities(runtime: KodaXDaemonRuntime): void {
-  if (runtimeCapabilityVersion(runtime, 'sandboxRuntime') < 3) {
+  if (runtimeCapabilityVersion(runtime, 'sandboxRuntime') < 4) {
     throw new Error(
-      'KodaX Runtime does not support the required sandboxRuntime v3 capability. ' +
+      'KodaX Runtime does not support the required sandboxRuntime v4 capability. ' +
+        'Install a compatible KodaX package and restart the Coder daemon.',
+    );
+  }
+  if (runtimeCapabilityVersion(runtime, 'crashOutcomeModel') < 2) {
+    throw new Error(
+      'KodaX Runtime does not support the required crashOutcomeModel v2 capability. ' +
         'Install a compatible KodaX package and restart the Coder daemon.',
     );
   }
@@ -1528,6 +1534,7 @@ async function createPublishedRuntime(
     sdk as typeof sdk & {
       readonly KODAX_RUNTIME_SDK_CAPABILITIES?: {
         readonly actorSettlementConvergence?: number;
+        readonly crashOutcomeModel?: number;
         readonly daemonOrphanExit?: number;
         readonly daemonShutdownVerification?: number;
         readonly managedRunDurability?: number;
@@ -1545,6 +1552,7 @@ async function createPublishedRuntime(
 export function assertSpaceRuntimeSdkRequiredCapabilities(sdk: {
   readonly KODAX_RUNTIME_SDK_CAPABILITIES?: {
     readonly actorSettlementConvergence?: number;
+    readonly crashOutcomeModel?: number;
     readonly daemonOrphanExit?: number;
     readonly daemonShutdownVerification?: number;
     readonly liveOutputSegments?: number;
@@ -1558,13 +1566,14 @@ export function assertSpaceRuntimeSdkRequiredCapabilities(sdk: {
   const capabilities = sdk.KODAX_RUNTIME_SDK_CAPABILITIES;
   const missing = [
     ...(capabilities?.actorSettlementConvergence === 2 ? [] : ['actorSettlementConvergence v2']),
+    ...(capabilities?.crashOutcomeModel === 2 ? [] : ['crashOutcomeModel v2']),
     ...(capabilities?.daemonOrphanExit === 1 ? [] : ['daemonOrphanExit v1']),
     ...(capabilities?.daemonShutdownVerification === 1 ? [] : ['daemonShutdownVerification v1']),
     ...(capabilities?.liveOutputSegments === 1 ? [] : ['liveOutputSegments v1']),
     ...(capabilities?.managedRunDurability === 1 ? [] : ['managedRunDurability v1']),
     ...(capabilities?.runtimeExitSettlement === 1 ? [] : ['runtimeExitSettlement v1']),
     ...(capabilities?.runtimeEventCoalescing === 1 ? [] : ['runtimeEventCoalescing v1']),
-    ...(capabilities?.sandboxRuntime === 3 ? [] : ['sandboxRuntime v3']),
+    ...(capabilities?.sandboxRuntime === 4 ? [] : ['sandboxRuntime v4']),
     ...(capabilities?.sessionEventJournal === 1 ? [] : ['sessionEventJournal v1']),
   ];
   if (missing.length > 0) {
@@ -2118,7 +2127,7 @@ export class RuntimeHostAdapter {
         providerCredentialBroker: 1,
         runBoundHostTools: 2,
         coderOwnerFencing: 1,
-        crashOutcomeModel: 1,
+        crashOutcomeModel: 2,
         coderFeatureMatrix: 1,
         sessionAdmission: 1,
         completeObservationSnapshot: 1,
@@ -2136,7 +2145,7 @@ export class RuntimeHostAdapter {
         managedRunDurability: 1,
         actorSettlementConvergence: 2,
         runtimeEventCoalescing: 1,
-        sandboxRuntime: 3,
+        sandboxRuntime: 4,
         sessionEventJournal: 1,
         liveOutputSegments: 1,
         integrationConfigResilience: 1,

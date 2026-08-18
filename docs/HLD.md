@@ -5,14 +5,15 @@
 > 在事件发布前已成为 canonical managed Run；Space 仅用 returned `runId`/`turnId` 关联 UI
 > optimistic state 和 history，不复制持久化职责。未设置 Auto timeout 时，SDK 默认 45 秒首次、90 秒重试。
 
-> **2026-08-18 当前源码增量**：root/Desktop 使用 npm 正式发布的同一份精确 KodaX `0.7.91`
-> Registry 包；manifest、lockfile、物理安装与打包 ASAR 必须匹配官方 URL/SRI。除
+> **2026-08-18 当前源码增量**：root/Desktop 使用同一份完整性锁定的 KodaX `0.7.92`
+> 本地候选包；manifest、lockfile、物理安装与打包 ASAR 必须匹配候选字节，发布后再切换
+> 到相同字节的 Registry URL/SRI。除 `sandboxRuntime:4`、`crashOutcomeModel:2` 与
 > `actorSettlementConvergence:2` 外，Space 还消费本地 `runtimeExitSettlement:1` 与
 > `liveOutputSegments:1`。Runtime raw journal 保留全部 provider attempt，live snapshot
 > 只提供 SDK 计算后的有效 segment；Space 不运行 checkpoint/text replay 状态机。
 > owner reconciliation 与 daemon auto-start 前仍先恢复精确 complete-exit 票据。
 >
-> Last updated: 2026-08-17
+> Last updated: 2026-08-18
 > Status: 核心架构决策仍有效；当前正式发布基线为 KodaX Space 0.1.42（package 0.1.42）/ npm 正式发布的精确 KodaX 0.7.89。中间方案与否决理由见 [ADR/](ADR/)；当前能力边界见 [KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md)。
 > Companion doc: [PRD](PRD.md)
 

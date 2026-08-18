@@ -15,14 +15,11 @@ export interface SandboxDoctorResult {
 }
 
 export interface SandboxCapability {
-  readonly version: 3;
+  readonly version: 4;
   readonly asrtVersion: string;
   readonly platform: 'darwin' | 'linux' | 'win32';
   readonly backend:
-    | 'windows-restricted-user'
-    | 'macos-seatbelt'
-    | 'linux-bubblewrap'
-    | 'unsupported';
+    'windows-restricted-user' | 'macos-seatbelt' | 'linux-bubblewrap' | 'unsupported';
   readonly genericCommandExecution: true;
   readonly controls: readonly ['filesystem', 'network', 'environment', 'timeout', 'output'];
   readonly ordinaryCallsTriggerSetup: false;
@@ -153,7 +150,7 @@ function normalizeCapability(value: unknown): SandboxCapability {
     value.backend === 'linux-bubblewrap' ||
     value.backend === 'unsupported';
   if (
-    value.version !== 3 ||
+    value.version !== 4 ||
     typeof value.asrtVersion !== 'string' ||
     !/^\d+\.\d+\.\d+$/.test(value.asrtVersion) ||
     !validPlatform ||
@@ -304,8 +301,7 @@ function operationForReadiness(
 export class SandboxController {
   readonly #loadSdk: () => Promise<SandboxSdkFacade>;
   readonly #onDoctor:
-    | ((capability: SandboxCapability, doctor: SandboxDoctorResult) => void)
-    | undefined;
+    ((capability: SandboxCapability, doctor: SandboxDoctorResult) => void) | undefined;
   readonly #now: () => Date;
   #sdkPromise: Promise<SandboxSdkFacade> | null = null;
   #status: SandboxStatusT | null = null;

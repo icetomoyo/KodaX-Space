@@ -28,13 +28,10 @@ export type SandboxSdkCapability =
   | { readonly status: 'unprobed' }
   | {
       readonly status: 'available';
-      readonly version: 3;
+      readonly version: 4;
       readonly asrtVersion: string;
       readonly backend:
-        | 'windows-restricted-user'
-        | 'macos-seatbelt'
-        | 'linux-bubblewrap'
-        | 'unsupported';
+        'windows-restricted-user' | 'macos-seatbelt' | 'linux-bubblewrap' | 'unsupported';
       readonly unavailableBehavior: 'structured-no-execution';
       readonly setupMayElevate: boolean;
       readonly readiness: 'checking' | 'ready' | 'setup-required' | 'unavailable';
@@ -136,7 +133,7 @@ export function inspectSandboxModule(
   for (const control of ['filesystem', 'network', 'environment', 'timeout', 'output']) {
     if (!controls.includes(control)) failures.push(`sandbox controls missing ${control}`);
   }
-  if (capability.version !== 3) failures.push('sandbox capability version expected 3');
+  if (capability.version !== 4) failures.push('sandbox capability version expected 4');
   if (capability.asrtVersion !== asrtVersion) {
     failures.push('sandbox capability ASRT version does not match KODAX_ASRT_VERSION');
   }
@@ -168,7 +165,7 @@ export function inspectSandboxModule(
 
   return {
     status: 'available',
-    version: 3,
+    version: 4,
     asrtVersion: asrtVersion as string,
     backend: backend as Extract<SandboxSdkCapability, { status: 'available' }>['backend'],
     unavailableBehavior: 'structured-no-execution',
@@ -203,13 +200,10 @@ export function projectSandboxDoctorResult(
 
 export function updateSandboxSdkDoctorResult(
   reportedCapability: {
-    readonly version: 3;
+    readonly version: 4;
     readonly asrtVersion: string;
     readonly backend:
-      | 'windows-restricted-user'
-      | 'macos-seatbelt'
-      | 'linux-bubblewrap'
-      | 'unsupported';
+      'windows-restricted-user' | 'macos-seatbelt' | 'linux-bubblewrap' | 'unsupported';
     readonly setupMayElevate: boolean;
   },
   doctorValue: unknown,

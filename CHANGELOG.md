@@ -16,8 +16,12 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ### Changed
 
-- **KodaX 0.7.91 Registry alignment** - Root and Desktop pin the exact npm
-  Registry package and official integrity. `runtimeExitSettlement:1` gives
+- **KodaX 0.7.92 candidate alignment** - Root and Desktop pin the same audited
+  candidate tarball and integrity while Registry publication remains a separate
+  release step. Space now requires SDK and daemon `sandboxRuntime:4` plus
+  `crashOutcomeModel:2`; an idle stale daemon is replaced through the existing
+  fenced upgrade flow, while busy or multi-client daemons fail closed.
+- **KodaX 0.7.91 exit settlement retained** - `runtimeExitSettlement:1` gives
   complete exit an SDK-owned, crash-resumable exact-owner ticket and resumes it
   before Space reconciles or starts a daemon. The package also retains the
   0.7.89 `runBoundHostTools:2` materialization of lease-bound host tools into the
@@ -25,6 +29,12 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
   fix. Old or unverifiable daemon ownership remains fail-closed.
 
 ### Fixed
+
+- **Filesystem-effect lock convergence** - Space consumes the SDK-owned
+  same-daemon operation-lease recovery and terminal-commit ordering without
+  adding a host lock cleaner, native-shell bypass, force-idle timer, or second
+  Stop state machine. Ordinary-permission fallback remains available only
+  inside KodaX and still acquires the shared filesystem-effect fence.
 
 - **Packaged Electron SDK loading** - The CommonJS main bundle now loads KodaX's
   ESM-only SDK subpaths through dynamic import before Runtime projection work.

@@ -85,7 +85,7 @@ test('Space kodax_manual documents the required current KodaX capability boundar
   }
   assert.match(topics.get('runtime-host')?.body ?? '', /contextCompaction v3/);
   assert.match(topics.get('runtime-host')?.body ?? '', /transcriptSearch v1/);
-  assert.match(topics.get('runtime-host')?.body ?? '', /KodaX 0\.7\.91/);
+  assert.match(topics.get('runtime-host')?.body ?? '', /KodaX 0\.7\.92/);
   assert.match(topics.get('runtime-host')?.body ?? '', /runBoundHostTools v2/);
   assert.match(topics.get('runtime-host')?.body ?? '', /session\.status/);
   assert.match(topics.get('runtime-host')?.body ?? '', /session\.diagnostics/);
@@ -167,7 +167,7 @@ test('Space kodax_manual documents the daemon host-tool path for artifact creati
 test('Space kodax_manual describes the v0.1.43 runtime safety, recovery, close, and shell controls', () => {
   const topics = new Map(SPACE_MANUAL_TOPICS.map((topic) => [topic.id, topic]));
 
-  assert.match(topics.get('runtime-host')?.body ?? '', /0\.7\.91 candidate/);
+  assert.match(topics.get('runtime-host')?.body ?? '', /0\.7\.92 候选包/);
   assert.match(topics.get('background-runtime')?.body ?? '', /F140/);
   assert.match(topics.get('background-runtime')?.body ?? '', /Close button behavior/);
   assert.match(topics.get('background-runtime')?.body ?? '', /macOS Cmd\+Q/);
@@ -178,11 +178,14 @@ test('Space kodax_manual describes the v0.1.43 runtime safety, recovery, close, 
   assert.match(topics.get('runtime-host')?.body ?? '', /daemonShutdownVerification v1/);
   assert.match(topics.get('runtime-host')?.body ?? '', /runtimeExitSettlement v1/);
   assert.match(topics.get('background-runtime')?.body ?? '', /settleKodaXRuntimeExit/);
-  assert.match(topics.get('background-runtime')?.body ?? '', /owner reconciliation.*daemon auto-start/);
+  assert.match(
+    topics.get('background-runtime')?.body ?? '',
+    /owner reconciliation.*daemon auto-start/,
+  );
   assert.match(topics.get('background-runtime')?.body ?? '', /缓存 PID\/PGID/);
   assert.match(topics.get('background-runtime')?.body ?? '', /保留恢复票据/);
-  assert.match(topics.get('background-runtime')?.body ?? '', /不要手工删除 exit-settlement\.json/);
-  assert.match(topics.get('runtime-host')?.body ?? '', /sandboxRuntime v3/);
+  assert.match(topics.get('background-runtime')?.body ?? '', /不要手工删除 effect\/exit lock/);
+  assert.match(topics.get('runtime-host')?.body ?? '', /sandboxRuntime v4/);
   assert.match(topics.get('overview')?.body ?? '', /stale inline owner reconciliation/);
   assert.match(topics.get('runtime-host')?.body ?? '', /managedRunDurability v1/);
   assert.match(topics.get('runtime-host')?.body ?? '', /runtimeEventCoalescing v1/);

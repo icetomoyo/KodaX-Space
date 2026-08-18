@@ -122,13 +122,14 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
     assertSpaceRuntimeSdkRequiredCapabilities({
       KODAX_RUNTIME_SDK_CAPABILITIES: {
         actorSettlementConvergence: 2,
+        crashOutcomeModel: 2,
         daemonOrphanExit: 1,
         daemonShutdownVerification: 1,
         liveOutputSegments: 1,
         managedRunDurability: 1,
         runtimeExitSettlement: 1,
         runtimeEventCoalescing: 1,
-        sandboxRuntime: 3,
+        sandboxRuntime: 4,
         sessionEventJournal: 1,
       },
     }),
@@ -138,13 +139,14 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
       assertSpaceRuntimeSdkRequiredCapabilities({
         KODAX_RUNTIME_SDK_CAPABILITIES: {
           actorSettlementConvergence: 1,
+          crashOutcomeModel: 2,
           daemonOrphanExit: 1,
           daemonShutdownVerification: 1,
           liveOutputSegments: 1,
           managedRunDurability: 1,
           runtimeExitSettlement: 1,
           runtimeEventCoalescing: 1,
-          sandboxRuntime: 3,
+          sandboxRuntime: 4,
           sessionEventJournal: 1,
         },
       }),
@@ -155,12 +157,13 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
       assertSpaceRuntimeSdkRequiredCapabilities({
         KODAX_RUNTIME_SDK_CAPABILITIES: {
           actorSettlementConvergence: 2,
+          crashOutcomeModel: 2,
           daemonOrphanExit: 1,
           daemonShutdownVerification: 1,
           liveOutputSegments: 1,
           managedRunDurability: 1,
           runtimeExitSettlement: 1,
-          sandboxRuntime: 3,
+          sandboxRuntime: 4,
           sessionEventJournal: 1,
         },
       }),
@@ -168,7 +171,7 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
   );
   assert.throws(
     () => assertSpaceRuntimeSdkRequiredCapabilities({}),
-    /installed KodaX SDK.*actorSettlementConvergence v2.*daemonOrphanExit v1.*daemonShutdownVerification v1.*liveOutputSegments v1.*managedRunDurability v1.*runtimeExitSettlement v1.*runtimeEventCoalescing v1.*sandboxRuntime v3.*sessionEventJournal v1/i,
+    /installed KodaX SDK.*actorSettlementConvergence v2.*crashOutcomeModel v2.*daemonOrphanExit v1.*daemonShutdownVerification v1.*liveOutputSegments v1.*managedRunDurability v1.*runtimeExitSettlement v1.*runtimeEventCoalescing v1.*sandboxRuntime v4.*sessionEventJournal v1/i,
   );
 });
 
@@ -392,7 +395,7 @@ function createFakeRuntime(runtimeId = 'rt_test') {
       providerCredentialBroker: { version: 1 },
       runBoundHostTools: { version: 1 },
       coderOwnerFencing: { version: 1 },
-      crashOutcomeModel: { version: 1 },
+      crashOutcomeModel: { version: 2 },
       coderFeatureMatrix: { version: 1, managedRun: true, todoProjection: true },
       sessionAdmission: { version: 1 },
       completeObservationSnapshot: { version: 1 },
@@ -426,7 +429,7 @@ function createFakeRuntime(runtimeId = 'rt_test') {
       runtimeEventCoalescing: { version: 1 },
       sessionEventJournal: { version: 1 },
       sandboxRuntime: {
-        version: 3,
+        version: 4,
         asrtVersion: '0.0.65',
         backend: 'unsupported',
       },
@@ -1944,7 +1947,8 @@ test('runtime selection attaches one Coder daemon with stable identity and requi
   assert.equal(options[0]?.requirements?.actorSettlementConvergence, 2);
   assert.equal(options[0]?.requirements?.daemonShutdownVerification, undefined);
   assert.equal(options[0]?.requirements?.runtimeEventCoalescing, 1);
-  assert.equal(options[0]?.requirements?.sandboxRuntime, 3);
+  assert.equal(options[0]?.requirements?.crashOutcomeModel, 2);
+  assert.equal(options[0]?.requirements?.sandboxRuntime, 4);
   assert.equal(options[0]?.requirements?.sessionEventJournal, 1);
   assert.equal(options[0]?.requirements?.integrationConfigResilience, 1);
   assert.equal(options[0]?.requirements?.runtimeAutoModeGuardrail, 4);
@@ -7441,8 +7445,7 @@ test('cached idle snapshot ownership rejects an external retag without a profile
     ['s_cached_retag', { title: '', messages: [], gitRoot: 'C:\\repo', tag: 'code' }],
   ]);
   let notifySessionChange:
-    | ((event: { kind: 'change' | 'add' | 'remove'; sessionId: string }) => void)
-    | undefined;
+    ((event: { kind: 'change' | 'add' | 'remove'; sessionId: string }) => void) | undefined;
   setSessionStoreImpl({
     listSessions: async () => [],
     forkSession: async () => null,
@@ -8495,7 +8498,22 @@ test('initialization requires SDK-owned live output segment semantics', async ()
   assert.equal(fake.calls.close, 1);
 });
 
-test('initialization requires the sandbox v3 execution lifecycle', async () => {
+test('initialization requires crash outcome convergence v2', async () => {
+  const fake = createFakeRuntime();
+  (fake.runtime.capabilities as Record<string, unknown>).crashOutcomeModel = { version: 1 };
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+  });
+
+  await assert.rejects(adapter.initialize(), /crashOutcomeModel v2/i);
+  assert.equal(adapter.snapshot().state, 'failed');
+  assert.equal(fake.calls.close, 1);
+});
+
+test('initialization requires the sandbox v4 effect-recovery lifecycle', async () => {
   const fake = createFakeRuntime();
   (fake.runtime.capabilities as Record<string, unknown>).sandboxRuntime = {
     version: 2,
@@ -8509,7 +8527,7 @@ test('initialization requires the sandbox v3 execution lifecycle', async () => {
     identityStore: testIdentityStore,
   });
 
-  await assert.rejects(adapter.initialize(), /sandboxRuntime v3/i);
+  await assert.rejects(adapter.initialize(), /sandboxRuntime v4/i);
   assert.equal(adapter.snapshot().state, 'failed');
   assert.equal(fake.calls.close, 1);
 });
