@@ -16,6 +16,7 @@ import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { resolvePackagedLifecycleHome } from './packaged-lifecycle-home.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, '..');
@@ -880,7 +881,7 @@ function checkKodaxWorkersExecuteFromAsar(asarPath) {
   );
   const marker = 'KODAX_ASAR_WORKER_PROBE=';
   const probeSource = `
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -900,18 +901,26 @@ import {
   setupKodaXSandbox,
 } from ${JSON.stringify(sandboxModuleUrl)};
 
-if (process.platform === 'darwin') process.env.TMPDIR = '/tmp';
 if (process.platform === 'win32') {
   for (const name of Object.keys(process.env)) {
     if (name.toLowerCase() === 'psmodulepath') delete process.env[name];
   }
 }
-const configuredKodaXHome = process.env.KODAX_HOME?.trim();
-const ownsHomeDir = process.platform !== 'win32' || !configuredKodaXHome;
-const homeDir = ownsHomeDir
-  ? await mkdtemp(path.join(tmpdir(), 'kodax-space-asar-probe-'))
-  : path.dirname(path.resolve(configuredKodaXHome));
-process.env.KODAX_HOME = ownsHomeDir ? path.join(homeDir, '.kodax') : configuredKodaXHome;
+const resolvePackagedLifecycleHome = ${resolvePackagedLifecycleHome.toString()};
+const isolatedHome = await resolvePackagedLifecycleHome({
+  platform: process.platform,
+  configuredKodaXHome: process.env.KODAX_HOME?.trim(),
+  tmpdir,
+  mkdtemp,
+  realpath,
+  join: path.join,
+  dirname: path.dirname,
+  resolve: path.resolve,
+});
+if (isolatedHome.tmpdir !== undefined) process.env.TMPDIR = isolatedHome.tmpdir;
+process.env.KODAX_HOME = isolatedHome.kodaxHome;
+const ownsHomeDir = isolatedHome.ownsHomeDir;
+const homeDir = isolatedHome.homeDir;
 let runtime;
 let daemonRuntime;
 let providerServer;
