@@ -9,12 +9,11 @@
 > 和 Issue 185 Actor settlement/terminal owner 对齐。
 > 未配置 Auto LLM timeout 时使用 SDK 首次 45 秒、重试 90 秒的默认值。
 
-> **当前源码基线**：root/Desktop 使用完整性锁定的 KodaX `0.7.92` 本地候选包，并在 SDK
+> **当前源码基线**：root/Desktop 使用完整性锁定的 npm Registry KodaX `0.7.92` 正式包，并在 SDK
 > 预检、daemon 连接和正式打包烟测中要求 `sandboxRuntime:4`、
 > `crashOutcomeModel:2` 与 `actorSettlementConvergence:2`；完整退出路径还要求 SDK
-> 本地能力 `runtimeExitSettlement:1`。候选包由 KodaX 的正式 `release.mjs --pack-only`
-> 路径生成（发布形状为 `private:false`）；npm 发布后必须以同一候选字节的正式 Registry
-> URL/SRI 替换本地候选引用。
+> 本地能力 `runtimeExitSettlement:1`。root/Desktop manifest、lockfile、物理安装与打包
+> ASAR 必须解析到同一个正式 Registry URL/SRI。
 > v0.1.41 / KodaX 0.7.87 的发布记录保持历史事实。
 
 > 历史发布基线：KodaX Space [`v0.1.40`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.40)（package `0.1.40`）/ npm 正式发布的精确 KodaX `0.7.86`；历史 release 文档继续保留当时事实。
@@ -27,7 +26,7 @@ interrupt input、Actor/Turn v1 和 Auto LLM guardrail；Settings 可在无活�
 KodaX 版本号或 guardrail 版本推断。Partner 继续由 Space inline owner 管理，完整 F117/F118
 桌面管理体验仍在后续路线中。历史设计和 release 记录保留当时语境。
 
-当前源码维护把底部“上下文窗口”改为按最终自动压缩阈值计算的有效窗口，并把模型最大上下文、自动压缩阈值、最近一次模型输入构成和距压缩剩余量分层展示；“会话 Token 用量”则独立累计根/子 Agent 的 Provider 调用与缓存分类。两者不能互换：前者是最近一次主模型请求的输入压力快照，后者是整个 Session 已发生的累计用量。v0.1.42 继续保留 v0.1.39 的多 Session 恢复、活动 Session 输入准入、历史分页、安全退出恢复隔离和 `(sessionId, journalEpoch, seq)` 水位隔离，并记录当时发布的 sandbox v3、Issue 128、Issue 180 和 Issue 185 边界；v0.1.43 源码候选另以 sandbox v4 / crash outcome v2 门禁验证本次修复。
+当前源码维护把底部“上下文窗口”改为按最终自动压缩阈值计算的有效窗口，并把模型最大上下文、自动压缩阈值、最近一次模型输入构成和距压缩剩余量分层展示；“会话 Token 用量”则独立累计根/子 Agent 的 Provider 调用与缓存分类。两者不能互换：前者是最近一次主模型请求的输入压力快照，后者是整个 Session 已发生的累计用量。v0.1.42 继续保留 v0.1.39 的多 Session 恢复、活动 Session 输入准入、历史分页、安全退出恢复隔离和 `(sessionId, journalEpoch, seq)` 水位隔离，并记录当时发布的 sandbox v3、Issue 128、Issue 180 和 Issue 185 边界；v0.1.43 源码以正式 KodaX 0.7.92 的 sandbox v4 / crash outcome v2 门禁验证本次修复。
 
 KodaX 0.7.89 的配置说明也已收口：核心配置仍在 `~/.kodax/config.json`，MCP、可信 Extension 路径和 A2A 分别位于 `~/.kodax/integrations/mcp.json`、`extensions.json`、`a2a.json`。Settings → Runtime 会显示三个域的来源、revision、watcher、最近 reload 和有界诊断；Runtime 对无效更新保留 last-known-good 配置，并发写冲突要求 reload 后重试。应用内 `kodax_manual` 会继承当前安装 SDK 推荐的原始底层能力主题，再叠加 Space 操作说明。当前源码 Coder 要求 `sandboxRuntime:4`、`crashOutcomeModel:2`、`actorSettlementConvergence:2` 与 `sessionEventJournal:1`，并按 `(sessionId, journalEpoch, seq)` 隔离事件水位。
 

@@ -16,9 +16,9 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ### Changed
 
-- **KodaX 0.7.92 candidate alignment** - Root and Desktop pin the same audited
-  candidate tarball and integrity while Registry publication remains a separate
-  release step. Space now requires SDK and daemon `sandboxRuntime:4` plus
+- **KodaX 0.7.92 Registry alignment** - Root and Desktop pin the same published
+  npm Registry URL and integrity; the local candidate tarball is removed. Space
+  now requires SDK and daemon `sandboxRuntime:4` plus
   `crashOutcomeModel:2`; an idle stale daemon is replaced through the existing
   fenced upgrade flow, while busy or multi-client daemons fail closed.
 - **KodaX 0.7.91 exit settlement retained** - `runtimeExitSettlement:1` gives

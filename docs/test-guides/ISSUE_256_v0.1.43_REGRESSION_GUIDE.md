@@ -8,7 +8,7 @@ inferred from these capability gates.
 1. Start Space against an installed SDK that lacks either
    `sandboxRuntime:4` or `crashOutcomeModel:2`. Verify startup fails before
    daemon use and identifies the missing contract.
-2. Leave an idle older daemon running, then start the candidate Space. Verify
+2. Leave an idle older daemon running, then start the current Space. Verify
    the SDK performs the existing fenced upgrade and the connected Runtime
    advertises both required versions.
 3. Repeat with another client or active/queued work. Verify Space fails closed

@@ -167,7 +167,7 @@ test('Space kodax_manual documents the daemon host-tool path for artifact creati
 test('Space kodax_manual describes the v0.1.43 runtime safety, recovery, close, and shell controls', () => {
   const topics = new Map(SPACE_MANUAL_TOPICS.map((topic) => [topic.id, topic]));
 
-  assert.match(topics.get('runtime-host')?.body ?? '', /0\.7\.92 候选包/);
+  assert.match(topics.get('runtime-host')?.body ?? '', /npm Registry KodaX 0\.7\.92 正式包/);
   assert.match(topics.get('background-runtime')?.body ?? '', /F140/);
   assert.match(topics.get('background-runtime')?.body ?? '', /Close button behavior/);
   assert.match(topics.get('background-runtime')?.body ?? '', /macOS Cmd\+Q/);

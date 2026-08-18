@@ -11,8 +11,8 @@
 > `daemonOrphanExit:1` 能力，不通过 KodaX 版本号推断生命周期支持。F141 Coder
 > Daemon/Embedded 客户开关、F142 会话文件操作和打包可靠性修复继续保留。
 >
-> 当前 `v0.1.43` 源码候选使用完整性锁定的 KodaX `0.7.92` 本地候选包，并额外要求
-> `sandboxRuntime:4` 与 `crashOutcomeModel:2`；Registry 发布和正式 SRI 切换仍是独立发布步骤，当前 Space
+> 当前 `v0.1.43` 源码使用完整性锁定的 npm Registry KodaX `0.7.92` 正式包，并额外要求
+> `sandboxRuntime:4` 与 `crashOutcomeModel:2`；当前 Space
 > 正式发布仍为 v0.1.42。旧能力 SDK/daemon 会
 > fail closed，不能继续执行 Coder。Runtime 的合法排队等待、canonical replacement
 > 和提交后维护失败会保持不同的可诊断事实。
