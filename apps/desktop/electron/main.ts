@@ -15,8 +15,10 @@ import {
   session,
   dialog,
   ipcMain,
+  nativeImage,
   type IpcMainEvent,
   type MenuItemConstructorOptions,
+  type NativeImage,
 } from 'electron';
 import path from 'node:path';
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
@@ -82,6 +84,11 @@ import { workflowPolicyStore } from './kodax/workflow-policy.js';
 import { registerArtifactWindowChannel } from './artifact/artifact-window.js';
 import { installNavigationGuards } from './window/navigation-guards.js';
 import { installWindowActivityPublisher } from './window/activity.js';
+import {
+  AppBadgeController,
+  createWindowsBadgeBitmap,
+  drawWindowsBadge,
+} from './window/app-badge.js';
 import { installTopmostGuard } from './window/topmost-guard.js';
 import { resolveWindowIconPath } from './window/window-icon.js';
 import {
@@ -355,6 +362,29 @@ let backgroundTray: Tray | null = null;
 let backgroundTrayRefreshTimer: ReturnType<typeof setInterval> | null = null;
 let backgroundTrayRefreshing = false;
 let backgroundTrayLocale: BackgroundTrayLocale = 'en-US';
+const baseTrayImage = WINDOW_ICON_PATH
+  ? nativeImage.createFromPath(WINDOW_ICON_PATH)
+  : nativeImage.createEmpty();
+const appBadgeController = new AppBadgeController<NativeImage>({
+  platform: process.platform,
+  setApplicationBadgeCount: (count) => app.setBadgeCount(count),
+  getWindow: () => (mainWindow && !mainWindow.isDestroyed() ? mainWindow : null),
+  getTray: () => (backgroundTray && !backgroundTray.isDestroyed() ? backgroundTray : null),
+  baseTrayImage,
+  createWindowsOverlayImage: (count) =>
+    nativeImage.createFromBitmap(createWindowsBadgeBitmap(count), {
+      width: 16,
+      height: 16,
+      scaleFactor: 1,
+    }),
+  createWindowsTrayImage: createWindowsTrayBadgeImage,
+  onError: (error) => {
+    console.warn(
+      '[main] native app badge update failed:',
+      error instanceof Error ? error.message : String(error),
+    );
+  },
+});
 let backgroundCloseNoticeShown = false;
 let stopDaemonOnQuit = false;
 let daemonStopConfirmedBeforeQuit = false;
@@ -376,6 +406,21 @@ const rendererStartupGate = new RendererStartupGate();
 const startupShutdownCoordinator = new StartupShutdownCoordinator();
 let fatalStartupStatus: string | null = null;
 let bootSplashBrandDataUrl: string | undefined;
+
+function createWindowsTrayBadgeImage(count: number): NativeImage {
+  const size = 32;
+  const base = baseTrayImage.resize({ width: size, height: size, quality: 'best' });
+  const bitmap = Buffer.from(base.toBitmap({ scaleFactor: 1 }));
+  drawWindowsBadge(bitmap, {
+    width: size,
+    height: size,
+    count,
+    x: size / 2,
+    y: size / 2,
+    size: size / 2,
+  });
+  return nativeImage.createFromBitmap(bitmap, { width: size, height: size, scaleFactor: 1 });
+}
 let mainWindowBootOverlay: BootSplashOverlay<WebContentsView> | null = null;
 type BootRecoveryActionMode =
   | 'none'
@@ -583,6 +628,7 @@ function createMainWindow(): BrowserWindow {
   mainWindowAwaitingInitialReveal = true;
   pendingMainWindowActivation = false;
   installWindowActivityPublisher(win);
+  appBadgeController.refresh();
   const uninstallTopmostGuard = installTopmostGuard(win, { label: 'main window' });
   const invalidateMainWindow = (): void => {
     if (!win.isDestroyed() && !win.webContents.isDestroyed()) win.webContents.invalidate();
@@ -1934,6 +1980,7 @@ function installWindowsBackgroundTray(): void {
     backgroundTray = tray;
     tray.on('click', activateMainWindow);
     tray.on('double-click', activateMainWindow);
+    appBadgeController.refresh();
     updateWindowsBackgroundTrayMenu({
       state: 'checking',
       activeWork: 0,
@@ -2379,7 +2426,10 @@ const startupPromise = app
     registerPartnerCheckpointChannels();
     registerPartnerFileProposalChannels();
     registerTitlebarChannels();
-    registerWindowChannels(() => (mainWindow && !mainWindow.isDestroyed() ? mainWindow : null));
+    registerWindowChannels(
+      () => (mainWindow && !mainWindow.isDestroyed() ? mainWindow : null),
+      (count) => appBadgeController.setCount(count),
+    );
     registerSettingsChannels({
       switchCoderRuntimeMode: (target) => coderRuntimeModeSwitchCoordinator.switchMode(target),
       beginCoderAdmission: () => coderRuntimeModeSwitchCoordinator.beginCoderAdmission(),

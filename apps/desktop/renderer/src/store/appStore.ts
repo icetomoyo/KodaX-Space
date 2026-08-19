@@ -6356,6 +6356,15 @@ export const useAppStore = create<AppState>((set) => ({
           next.managedTaskStatusBySession = restMtsComplete;
         }
       } else if (event.kind === 'session_error') {
+        if (event.error !== 'cancelled' && !isSessionVisiblyOpen(state, event.sessionId)) {
+          const unreadFlags = setSessionFlagValue(
+            next.sessionFlags ?? state.sessionFlags,
+            event.sessionId,
+            'unread',
+            true,
+          );
+          if (unreadFlags !== state.sessionFlags) next.sessionFlags = unreadFlags;
+        }
         // #4 fix: 同 session_complete——出错终止时也清掉 managed_task_status 快照,不让已经
         // 结束(哪怕是异常结束)的 run 一直显示成活跃状态。
         if (state.managedTaskStatusBySession[event.sessionId] !== undefined) {

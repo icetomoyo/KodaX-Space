@@ -25,6 +25,19 @@ export const windowControlChannel = {
   output: windowStateSchema,
 } as const;
 
+export const windowSetBadgeCountChannel = {
+  name: 'window.setBadgeCount',
+  direction: 'invoke',
+  input: z
+    .object({
+      count: z.number().int().min(0).max(9999),
+    })
+    .strict(),
+  output: z.object({
+    applied: z.boolean(),
+  }),
+} as const;
+
 export const windowActivityChannel = {
   name: 'window.activity',
   direction: 'push',
@@ -51,4 +64,5 @@ export type WindowCompleteExitProgressPayload = z.infer<
   typeof windowCompleteExitProgressChannel.payload
 >;
 export type WindowControlActionT = z.infer<typeof windowControlActionSchema>;
+export type WindowSetBadgeCountInput = z.infer<typeof windowSetBadgeCountChannel.input>;
 export type WindowStateT = z.infer<typeof windowStateSchema>;

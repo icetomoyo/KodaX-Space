@@ -207,6 +207,7 @@ import {
   windowActivityChannel,
   windowCompleteExitProgressChannel,
   windowControlChannel,
+  windowSetBadgeCountChannel,
   windowStateChannel,
 } from './window.js';
 import { updaterCheckChannel, updaterInstallChannel, updaterStatusChannel } from './updater.js';
@@ -446,6 +447,7 @@ export const invokeChannels = {
   [notificationShowChannel.name]: notificationShowChannel,
   [windowStateChannel.name]: windowStateChannel,
   [windowControlChannel.name]: windowControlChannel,
+  [windowSetBadgeCountChannel.name]: windowSetBadgeCountChannel,
   [updaterCheckChannel.name]: updaterCheckChannel,
   [updaterInstallChannel.name]: updaterInstallChannel,
   [mcpbInstallChannel.name]: mcpbInstallChannel,

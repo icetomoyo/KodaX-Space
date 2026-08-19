@@ -21,6 +21,7 @@ import { useI18n } from './i18n/I18nProvider.js';
 import { SettingsModal } from './features/settings/SettingsModal.js';
 import { QuickAskPopover } from './features/quick-ask/QuickAskPopover.js';
 import { useSessionCompleteNotification } from './features/notifications/useSessionCompleteNotification.js';
+import { useAppBadgeCount } from './features/notifications/useAppBadgeCount.js';
 import { Shell } from './shell/Shell.js';
 import { CompleteExitOverlay } from './shell/CompleteExitOverlay.js';
 import { formatWorkflowEventNotices } from './features/workflow/workflowNotices.js';
@@ -1074,6 +1075,8 @@ export default function App(): JSX.Element {
 
   // F020 long-task complete OS notification — 在前台时不通知，>60s 任务才通知
   useSessionCompleteNotification();
+  // F145 unread/action-required Sessions → native taskbar, Dock, or launcher badge.
+  useAppBadgeCount();
 
   useEffect(() => {
     if (!currentSessionId) return;

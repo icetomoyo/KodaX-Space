@@ -619,12 +619,14 @@ export {
   windowCompleteExitProgressChannel,
   windowControlActionSchema,
   windowControlChannel,
+  windowSetBadgeCountChannel,
   windowStateChannel,
   windowStateSchema,
   type WindowActivityPayload,
   type WindowActivityStateT,
   type WindowCompleteExitProgressPayload,
   type WindowControlActionT,
+  type WindowSetBadgeCountInput,
   type WindowStateT,
 } from './channels/window.js';
 

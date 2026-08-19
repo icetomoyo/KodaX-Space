@@ -16,8 +16,15 @@ function projectWindowState(win: BrowserWindow | null): {
   };
 }
 
-export function registerWindowChannels(getMainWindow: () => BrowserWindow | null): void {
+export function registerWindowChannels(
+  getMainWindow: () => BrowserWindow | null,
+  setBadgeCount: (count: number) => boolean,
+): void {
   registerChannel('window.state', () => projectWindowState(getMainWindow()));
+
+  registerChannel('window.setBadgeCount', ({ count }) => ({
+    applied: setBadgeCount(count),
+  }));
 
   registerChannel('window.control', ({ action }) => {
     const win = getMainWindow();
