@@ -24,10 +24,15 @@ export function shouldRequestCompleteExitOnBeforeQuit(state: BeforeQuitState): b
   );
 }
 
+export function shouldKeepLastWindowVisibleForCompleteExit(
+  platform: NodeJS.Platform,
+  hasUsableTray: boolean,
+): boolean {
+  return platform !== 'darwin' && !hasUsableTray;
+}
+
 export type CompleteExitDisposition =
-  | 'stop-runtime-and-exit'
-  | 'exit-preserve-runtime'
-  | 'confirm-blocked-exit';
+  'stop-runtime-and-exit' | 'exit-preserve-runtime' | 'confirm-blocked-exit';
 
 /**
  * Other clients prevent stopping their shared Runtime, not closing this idle Space. Keep every
@@ -67,9 +72,7 @@ export function resolveFailedCompleteExitAction(
   return restartRequired ? 'restart-recovery' : 'keep-open';
 }
 
-export function shouldRetryDaemonStopAfterFailedCompleteExit(
-  restartRequired: boolean,
-): boolean {
+export function shouldRetryDaemonStopAfterFailedCompleteExit(restartRequired: boolean): boolean {
   return !restartRequired;
 }
 
@@ -138,18 +141,43 @@ export function collectSpaceExitWorkBlockers(snapshot: SpaceExitWorkSnapshot): r
 }
 
 /**
- * Keep the visible progress surface until daemon shutdown is authoritatively
- * verified. Hiding first makes a fail-closed cleanup look like Space quit and
- * then reopened. Once cleanup succeeds, hiding and committing are adjacent.
+ * Once preflight admits the exit, let the visible window leave immediately
+ * while the tray-owned background process finishes authoritative Runtime
+ * settlement. The caller restores the window if settlement fails.
  */
 export async function runAdmittedCompleteExit(input: {
   readonly hideControlSurface: () => void;
   readonly stopDaemon: () => Promise<void>;
+  readonly beginLocalFinalization: () => void;
+  readonly handlePresentationError: (error: unknown) => void;
   readonly commitExit: () => void;
 }): Promise<void> {
+  tryCompleteExitPresentation(input.hideControlSurface, input.handlePresentationError);
   await input.stopDaemon();
-  input.hideControlSurface();
+  tryCompleteExitPresentation(input.beginLocalFinalization, input.handlePresentationError);
   input.commitExit();
+}
+
+export function runPreservedRuntimeCompleteExit(input: {
+  readonly beginBackgroundExit: () => void;
+  readonly beginLocalFinalization: () => void;
+  readonly handlePresentationError: (error: unknown) => void;
+  readonly commitExit: () => void;
+}): void {
+  tryCompleteExitPresentation(input.beginBackgroundExit, input.handlePresentationError);
+  tryCompleteExitPresentation(input.beginLocalFinalization, input.handlePresentationError);
+  input.commitExit();
+}
+
+function tryCompleteExitPresentation(
+  present: () => void,
+  handleError: (error: unknown) => void,
+): void {
+  try {
+    present();
+  } catch (error) {
+    handleError(error);
+  }
 }
 
 export interface ForcedCompleteExitResult {

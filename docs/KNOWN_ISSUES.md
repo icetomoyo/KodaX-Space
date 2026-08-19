@@ -184,8 +184,71 @@ Last Updated: 2026-08-19
 | 186 | High     | Resolved           | Multi-session terminal contention or a compaction-damaged canonical page could misorder, duplicate, or endlessly grow the transcript tail; SDK write-side provenance collapse identified cross-repo | KodaX 0.7.88 chained compaction / renderer folding          | 2026-08-16 |
 | 187 | Medium   | Resolved           | Restored historical Sessions could display history but fork and rewind failed with session_not_found                               | v0.1.42 historical Session mutation admission                | 2026-08-16 |
 | 188 | High     | Resolved           | Complete exit could strand an accepted Windows Runtime stop and relaunch before exact cleanup recovery                              | v0.1.37 complete-exit recovery                               | 2026-08-17 |
+| 189 | Medium | Resolved in source | Safe complete exit held an unresponsive foreground overlay throughout the Runtime orderly-cleanup window | v0.1.43 complete-exit settlement | 2026-08-19 |
 
 ## Issue Details
+
+## Issue 189: Safe complete exit held an unresponsive foreground overlay throughout the Runtime orderly-cleanup window
+
+- Priority: Medium
+- Status: Resolved in source
+- Introduced: v0.1.43 complete-exit settlement
+- Fixed: v0.1.44 development
+- Created: 2026-08-19
+- Resolution Date: 2026-08-19
+
+### Original Problem
+
+After complete-exit preflight admitted an idle Runtime, Space kept every window
+behind a modal progress overlay until SDK settlement finished. Windows Runtime
+cleanup legitimately has a long worst-case safety budget, so a failed sandbox
+cleanup could leave the application apparently frozen for more than 20 seconds
+and, in the reported incident, for almost the full orderly-exit window. The
+single static message did not disclose elapsed time, background ownership, or
+that cleanup would finish autonomously.
+
+### Root Cause
+
+The complete-exit policy hid the control surface only after authoritative
+Runtime settlement returned. The renderer exposed only a boolean progress bit,
+and the Windows tray had no exit-settlement state. A safety budget was therefore
+presented as a foreground interaction deadline even though no further user
+decision was safe or required after stop acceptance.
+
+### Resolution
+
+- Keep active-work and ownership preflight visible and fail closed as before.
+- Once preflight admits the exit, transfer settlement to the existing Windows
+  tray owner, hide the main windows, and continue cleanup autonomously.
+- Show explicit safe-cleanup copy and elapsed seconds in both the overlay and
+  tray; reopening the tray surface shows current progress.
+- Disable duplicate close/quit commands during settlement, exit automatically
+  on success, and restore the visible window on failure.
+- Keep the tray alive through bounded Electron-local finalization after Runtime
+  settlement and distinguish that phase from Runtime cleanup.
+- If no usable Windows tray exists, retain the visible control surface so Space
+  never becomes an invisible unresolved process, including last-window close.
+
+### Files Changed
+
+- `apps/desktop/electron/main.ts`
+- `apps/desktop/electron/window/background-tray-model.ts`
+- `apps/desktop/electron/window/complete-exit-policy.ts`
+- `apps/desktop/renderer/src/shell/CompleteExitOverlay.tsx`
+- `apps/desktop/renderer/src/i18n/messages.ts`
+
+### Tests Added
+
+- Complete-exit policy ordering proves background transfer precedes settlement.
+- Tray presentation proves elapsed safe-cleanup and autonomous-exit messaging.
+- No-tray close policy proves non-macOS keeps the last window for coordination.
+- Overlay rendering proves elapsed progress remains visible when reopened.
+- Packaged Electron complete-exit holds admitted settlement long enough to
+  prove a visible window transfers to a live background process before the
+  existing two-lifecycle residue and Session-history assertions complete.
+
+See
+[`ISSUE_189_v0.1.44_REGRESSION_GUIDE.md`](test-guides/ISSUE_189_v0.1.44_REGRESSION_GUIDE.md).
 
 ## Issue 188: Complete exit could strand an accepted Windows Runtime stop and relaunch before exact cleanup recovery
 

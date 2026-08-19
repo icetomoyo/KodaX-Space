@@ -144,8 +144,10 @@ import {
   shouldRetryDaemonStopAfterFailedCompleteExit,
   runAdmittedCompleteExit,
   runForcedCompleteExit,
+  runPreservedRuntimeCompleteExit,
   shouldCancelSessionWideOnForcedExit,
   shouldCountLocalSessionExitBlocker,
+  shouldKeepLastWindowVisibleForCompleteExit,
   shouldRecoverRuntimeAfterShutdownTimeout,
   shouldRequestCompleteExitOnBeforeQuit,
 } from './window/complete-exit-policy.js';
@@ -363,6 +365,8 @@ let startupRecoveryRestartScheduled = false;
 let secondaryInstanceExit = false;
 let completeExitRequested = false;
 let completeExitProgressActive = false;
+let completeExitBackgroundStartedAt: number | undefined;
+let completeExitBackgroundPhase: 'runtime' | 'finalizing-local' = 'runtime';
 let runtimeExitRecoveryScheduled = false;
 let runtimeExitRecoveryFallbackActive = false;
 let beginCoderShutdown: (() => Promise<() => void>) | null = null;
@@ -393,6 +397,14 @@ const testExitBypass =
 const testCompleteExitTrigger =
   Boolean(process.env.KODAX_TEST_ONBOARDING) &&
   process.env.SPACE_TEST_COMPLETE_EXIT_TRIGGER === '1';
+const testCompleteExitBackgroundHoldCandidate = Number(
+  process.env.SPACE_TEST_COMPLETE_EXIT_BACKGROUND_HOLD_MS ?? 0,
+);
+const testCompleteExitBackgroundHoldMs =
+  Boolean(process.env.KODAX_TEST_ONBOARDING) &&
+  Number.isFinite(testCompleteExitBackgroundHoldCandidate)
+    ? Math.min(10_000, Math.max(0, testCompleteExitBackgroundHoldCandidate))
+    : 0;
 const testWindowHidden =
   Boolean(process.env.KODAX_TEST_ONBOARDING) && process.env.SPACE_TEST_WINDOW_HIDDEN === '1';
 setRendererTarget(() => (mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null));
@@ -598,7 +610,13 @@ function createMainWindow(): BrowserWindow {
   win.on('close', (event) => {
     if (_quitting || systemSessionEnding) return;
     if (backgroundCloseBypass.delete(win)) return;
-    if (!hasUsableWindowsBackgroundTray()) return;
+    const hasUsableTray = hasUsableWindowsBackgroundTray();
+    if (shouldKeepLastWindowVisibleForCompleteExit(process.platform, hasUsableTray)) {
+      event.preventDefault();
+      void requestCompleteExit();
+      return;
+    }
+    if (!hasUsableTray) return;
     event.preventDefault();
     void handleMainWindowCloseRequest(win).catch((error) => {
       console.warn(
@@ -846,6 +864,7 @@ function createMainWindow(): BrowserWindow {
 
   const rendererReadyListener = (event: IpcMainEvent): void => {
     if (event.sender !== win.webContents) return;
+    pushToRenderer('window.completeExitProgress', { active: completeExitProgressActive });
     if (rendererReadyCommitTimer !== null) return;
     const requestedDelay = Number(process.env.SPACE_TEST_STARTUP_OVERLAY_HOLD_MS ?? 0);
     const holdMs =
@@ -1193,7 +1212,16 @@ function setCompleteExitProgress(active: boolean): void {
   pushToRenderer('window.completeExitProgress', { active });
 }
 
+function logCompleteExitPresentationError(error: unknown): void {
+  console.warn(
+    '[main] complete exit presentation failed:',
+    error instanceof Error ? error.message : String(error),
+  );
+}
+
 function restoreVisibleExitControlSurface(): void {
+  completeExitBackgroundStartedAt = undefined;
+  completeExitBackgroundPhase = 'runtime';
   setCompleteExitProgress(false);
   try {
     installWindowsBackgroundTray();
@@ -1204,9 +1232,81 @@ function restoreVisibleExitControlSurface(): void {
     );
   }
   activateMainWindow();
+  void refreshWindowsBackgroundTray();
+}
+
+function continueCompleteExitInBackground(locale: BackgroundTrayLocale): void {
+  try {
+    installWindowsBackgroundTray();
+  } catch (error) {
+    console.warn(
+      '[main] could not prepare background safe-exit tray:',
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+  if (!hasUsableWindowsBackgroundTray()) return;
+  completeExitBackgroundStartedAt = Date.now();
+  completeExitBackgroundPhase = 'runtime';
+  backgroundTrayLocale = locale;
+  updateWindowsBackgroundTrayMenu({
+    state: 'exiting',
+    activeWork: 0,
+    otherClients: 0,
+    canStop: false,
+    blockers: [],
+    exitElapsedSeconds: 0,
+  });
+  try {
+    backgroundTray?.displayBalloon({
+      title:
+        locale === 'zh-CN'
+          ? 'KodaX Space 正在后台安全退出'
+          : 'KodaX Space is quitting safely in the background',
+      content:
+        locale === 'zh-CN'
+          ? '正在安全清理 Runtime；完成后会自动退出。若清理失败，Space 会自动恢复窗口。'
+          : 'Runtime cleanup continues safely. Space exits automatically when done and restores the window if cleanup fails.',
+      iconType: 'info',
+    });
+  } catch (error) {
+    console.warn(
+      '[main] could not show background safe-exit notice:',
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+  hideExitWindowsForBackgroundShutdown();
+}
+
+function markCompleteExitLocalFinalization(): void {
+  const startedAt = completeExitBackgroundStartedAt;
+  if (startedAt === undefined) return;
+  completeExitBackgroundPhase = 'finalizing-local';
+  updateWindowsBackgroundTrayMenu({
+    state: 'exiting',
+    activeWork: 0,
+    otherClients: 0,
+    canStop: false,
+    blockers: [],
+    exitElapsedSeconds: Math.floor((Date.now() - startedAt) / 1_000),
+    exitPhase: completeExitBackgroundPhase,
+  });
+  hideExitWindowsForBackgroundShutdown();
+}
+
+function hideExitWindowsForBackgroundShutdown(): void {
+  if (completeExitProgressActive && !forcedExitCommitted && !hasUsableWindowsBackgroundTray())
+    return;
+  hideWindowsForShutdown(BrowserWindow.getAllWindows(), (error) => {
+    console.warn(
+      '[main] could not move a window behind background safe exit:',
+      error instanceof Error ? error.message : String(error),
+    );
+  });
 }
 
 function hideExitControlSurfaceForBackgroundShutdown(): void {
+  completeExitBackgroundStartedAt = undefined;
+  completeExitBackgroundPhase = 'runtime';
   hideWindowsForShutdown(BrowserWindow.getAllWindows(), (error) => {
     console.warn(
       '[main] could not hide a window during shutdown:',
@@ -1243,6 +1343,9 @@ function scheduleRuntimeExitRecovery(reason: string): boolean {
 function keepSpaceVisibleAfterRecoveryRelaunchFailure(): void {
   const firstFallbackActivation = !runtimeExitRecoveryFallbackActive;
   runtimeExitRecoveryFallbackActive = true;
+  completeExitBackgroundStartedAt = undefined;
+  completeExitBackgroundPhase = 'runtime';
+  setCompleteExitProgress(false);
   stopDaemonOnQuit = false;
   daemonStopConfirmedBeforeQuit = false;
   _quitting = false;
@@ -1255,6 +1358,7 @@ function keepSpaceVisibleAfterRecoveryRelaunchFailure(): void {
       'Runtime shutdown could not be recovered automatically. Restart KodaX Space.',
       'runtime-exit-recovery',
     );
+    void refreshWindowsBackgroundTray();
   } catch (error) {
     console.error(
       '[main] could not restore the existing control surface after relaunch failure:',
@@ -1279,6 +1383,7 @@ function keepSpaceVisibleAfterRecoveryRelaunchFailure(): void {
     .then((result) => {
       if (result.response !== 0) return;
       if (scheduleRuntimeExitRecovery('the user retried recovery after relaunch failure')) {
+        hideExitControlSurfaceForBackgroundShutdown();
         app.exit(0);
       }
     })
@@ -1636,7 +1741,12 @@ async function requestCompleteExit(): Promise<void> {
     if (disposition === 'exit-preserve-runtime') {
       exitCommitted = true;
       sharedRuntimeExitCommitted = true;
-      app.quit();
+      runPreservedRuntimeCompleteExit({
+        beginBackgroundExit: () => continueCompleteExitInBackground(locale),
+        beginLocalFinalization: markCompleteExitLocalFinalization,
+        handlePresentationError: logCompleteExitPresentationError,
+        commitExit: () => app.quit(),
+      });
       return;
     }
     if (disposition === 'confirm-blocked-exit') {
@@ -1664,10 +1774,17 @@ async function requestCompleteExit(): Promise<void> {
       return;
     }
     await runAdmittedCompleteExit({
-      // Keep the progress surface visible until Runtime shutdown is verified; hiding and commit
-      // then happen adjacently so a fail-closed stop never looks like Space quit and reopened.
-      hideControlSurface: hideExitControlSurfaceForBackgroundShutdown,
-      stopDaemon: () => runtimeHostAdapter.stopDaemonForCompleteExit(),
+      hideControlSurface: () => continueCompleteExitInBackground(locale),
+      stopDaemon: async () => {
+        if (testCompleteExitBackgroundHoldMs > 0) {
+          await new Promise<void>((resolve) =>
+            setTimeout(resolve, testCompleteExitBackgroundHoldMs),
+          );
+        }
+        await runtimeHostAdapter.stopDaemonForCompleteExit();
+      },
+      beginLocalFinalization: markCompleteExitLocalFinalization,
+      handlePresentationError: logCompleteExitPresentationError,
       commitExit: () => {
         daemonStopConfirmedBeforeQuit = true;
         stopDaemonOnQuit = true;
@@ -1717,6 +1834,7 @@ async function requestCompleteExit(): Promise<void> {
     } else if (failureAction === 'restart-recovery') {
       if (scheduleRuntimeExitRecovery('daemon shutdown recovery requires a restart')) {
         exitCommitted = true;
+        hideExitControlSurfaceForBackgroundShutdown();
         app.exit(0);
       } else {
         keepCoderAdmissionClosed = true;
@@ -1753,17 +1871,21 @@ function updateWindowsBackgroundTrayMenu(runtime: BackgroundRuntimeStatus): void
     { label: copy.status, enabled: false },
     { label: copy.details, enabled: false },
     { type: 'separator' },
-    { label: copy.open, click: activateMainWindow },
+    { label: copy.open, enabled: copy.openEnabled, click: activateMainWindow },
     {
       label: copy.closeWindow,
-      enabled: mainWindow !== null && !mainWindow.isDestroyed(),
+      enabled: runtime.state !== 'exiting' && mainWindow !== null && !mainWindow.isDestroyed(),
       click: () => {
         const win = mainWindow;
         if (win && !win.isDestroyed()) closeMainWindowToBackground(win);
       },
     },
     { type: 'separator' },
-    { label: copy.quitCompletely, click: () => void requestCompleteExit() },
+    {
+      label: copy.quitCompletely,
+      enabled: runtime.state !== 'exiting',
+      click: () => void requestCompleteExit(),
+    },
   ];
   tray.setContextMenu(Menu.buildFromTemplate(template));
 }
@@ -1775,7 +1897,22 @@ async function refreshWindowsBackgroundTray(): Promise<void> {
   backgroundTrayRefreshing = true;
   try {
     backgroundTrayLocale = await resolveCurrentTrayLocale();
-    updateWindowsBackgroundTrayMenu(await collectBackgroundRuntimeStatus());
+    const backgroundStartedAt = completeExitBackgroundStartedAt;
+    if (backgroundStartedAt !== undefined) {
+      updateWindowsBackgroundTrayMenu({
+        state: 'exiting',
+        activeWork: 0,
+        otherClients: 0,
+        canStop: false,
+        blockers: [],
+        exitElapsedSeconds: Math.floor((Date.now() - backgroundStartedAt) / 1_000),
+        exitPhase: completeExitBackgroundPhase,
+      });
+    } else {
+      const runtime = await collectBackgroundRuntimeStatus();
+      if (completeExitBackgroundStartedAt !== backgroundStartedAt) return;
+      updateWindowsBackgroundTrayMenu(runtime);
+    }
   } catch (error) {
     console.warn(
       '[main] Windows background tray refresh failed:',
@@ -2453,6 +2590,7 @@ app.on('before-quit', (event) => {
     })
   ) {
     event.preventDefault();
+    if (!hasUsableWindowsBackgroundTray()) activateMainWindow();
     void requestCompleteExit();
     return;
   }
@@ -2465,12 +2603,12 @@ app.on('before-quit', (event) => {
   // 异步清理需要 await 完才能让进程死，否则子进程 kill 与进程退出赛跑 → 孤儿残留。
   event.preventDefault();
   // The process may remain alive for bounded Runtime/child-process cleanup.
-  // Hide every surface synchronously once quit is committed so the user's
-  // first confirmation looks immediate instead of requiring a second close.
-  hideExitControlSurfaceForBackgroundShutdown();
+  // A usable tray owns that background interval. Without one, safe complete
+  // exit keeps the progress window reachable until final process disposal.
+  hideExitWindowsForBackgroundShutdown();
 
-  // Run synchronous, idempotent cleanup after the visual close so the surface
-  // disappears on the same input event even when a broker has pending work.
+  // Run synchronous, idempotent cleanup after the background handoff (or while
+  // the no-tray progress surface remains visible).
   permissionBroker.cancelAll('shutdown');
   askUserBroker.cancelAll('shutdown');
   spaceControlRendererBroker.cancelAll('shutdown');
@@ -2551,10 +2689,12 @@ app.on('before-quit', (event) => {
         daemonStopCommitted: stopDaemonOnQuit,
       })
     ) {
+      hideExitControlSurfaceForBackgroundShutdown();
       app.exit(0);
       return;
     }
     if (scheduleRuntimeExitRecovery('shutdown timed out before daemon stop was confirmed')) {
+      hideExitControlSurfaceForBackgroundShutdown();
       app.exit(0);
       return;
     }
@@ -2578,6 +2718,7 @@ app.on('before-quit', (event) => {
     .finally(() => {
       clearTimeout(watchdog);
       if (mayExitProcess) {
+        hideExitControlSurfaceForBackgroundShutdown();
         app.exit(0);
         return;
       }

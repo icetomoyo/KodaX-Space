@@ -24,7 +24,8 @@ export const messages = {
     'windowControls.close': 'Close window',
     'completeExit.preparingTitle': 'Quitting KodaX Space…',
     'completeExit.preparingDetail':
-      'Checking active work and stopping Runtime safely. Please wait.',
+      'Checking active work and cleaning Runtime safely. No further action is needed; cleanup continues if Space moves to the background and exits automatically when done.',
+    'completeExit.elapsed': 'Safe exit in progress · {seconds}s',
     'renderer.renderError': 'KodaX Space hit a render error',
     'renderer.reload': 'Reload',
     'activity.sending': 'Sending...',
@@ -2534,7 +2535,9 @@ export const messages = {
     'windowControls.restore': '还原窗口',
     'windowControls.close': '关闭窗口',
     'completeExit.preparingTitle': '正在安全退出 KodaX Space…',
-    'completeExit.preparingDetail': '正在检查运行中的任务并安全停止 Runtime，请稍候。',
+    'completeExit.preparingDetail':
+      '正在检查运行中的任务并安全清理 Runtime；无需继续操作，转入后台后清理仍会自主继续，完成后自动退出。',
+    'completeExit.elapsed': '安全退出已进行 · {seconds} 秒',
     'renderer.renderError': 'KodaX Space 渲染出错',
     'renderer.reload': '重新加载',
     'activity.sending': '发送中...',

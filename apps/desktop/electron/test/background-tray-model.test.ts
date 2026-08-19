@@ -36,3 +36,37 @@ test('background tray presentation makes Runtime work and control state visible'
   assert.match(english.status, /idle/);
   assert.match(english.quitCompletely, /Quit completely/);
 });
+
+test('background tray makes autonomous safe-exit progress explicit', () => {
+  const presentation = buildBackgroundTrayPresentation('zh-CN', {
+    state: 'exiting',
+    activeWork: 0,
+    otherClients: 0,
+    canStop: false,
+    blockers: [],
+    exitElapsedSeconds: 20,
+  });
+
+  assert.match(presentation.tooltip, /安全退出/);
+  assert.match(presentation.status, /20 秒/);
+  assert.match(presentation.details, /后台清理/);
+  assert.match(presentation.details, /自动退出/);
+  assert.equal(presentation.openEnabled, true);
+});
+
+test('background tray keeps local finalization visible after Runtime settlement', () => {
+  const presentation = buildBackgroundTrayPresentation('zh-CN', {
+    state: 'exiting',
+    activeWork: 0,
+    otherClients: 0,
+    canStop: false,
+    blockers: [],
+    exitElapsedSeconds: 24,
+    exitPhase: 'finalizing-local',
+  });
+
+  assert.match(presentation.status, /应用收尾/);
+  assert.match(presentation.status, /24 秒/);
+  assert.match(presentation.details, /自动退出/);
+  assert.equal(presentation.openEnabled, false);
+});

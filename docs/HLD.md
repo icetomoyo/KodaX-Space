@@ -13,6 +13,14 @@
 > Status: 核心架构决策仍有效；当前正式发布基线为 KodaX Space 0.1.43（package 0.1.43）/ npm 正式发布的精确 KodaX 0.7.92。中间方案与否决理由见 [ADR/](ADR/)；当前能力边界见 [KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md)。
 > Companion doc: [PRD](PRD.md)
 
+> **2026-08-19 v0.1.44 complete-exit background settlement**：完整退出仍先在
+> 可见窗口内完成 active-work、owner 与 Runtime preflight。准入后不再把最长安全清理
+> 窗口表现为不可交互的前台等待：Windows 在可用托盘下隐藏主窗口，由同一 Electron
+> main/SDK transaction 在后台自主完成清理，并通过托盘与可重新打开的 overlay 展示
+> “安全清理中”、已用时间和完成后自动退出。失败恢复可见窗口；无可用托盘的平台保持
+> 原可见 fail-closed 控制面。该交互变化不缩短 KodaX 的 orderly-exit、Job containment
+> 或 ACL recovery 安全预算。
+
 > **2026-08-17 v0.1.43 complete-exit recovery boundary**：Space 只负责退出策略、
 > admission drain、可见 UI 与启动顺序；KodaX 0.7.91 的
 > `settleKodaXRuntimeExit()` 独占 daemon owner、精确进程身份、Windows Job、ACL marker

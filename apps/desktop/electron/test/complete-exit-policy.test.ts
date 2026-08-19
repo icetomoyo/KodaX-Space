@@ -8,12 +8,14 @@ import {
   resolveCompleteExitDisposition,
   runAdmittedCompleteExit,
   runForcedCompleteExit,
+  runPreservedRuntimeCompleteExit,
   resolveBlockedCompleteExitAction,
   resolveFailedCompleteExitAction,
   shouldRetryDaemonStopAfterFailedCompleteExit,
   shouldCancelSessionWideOnForcedExit,
   shouldCountLocalSessionExitBlocker,
   shouldRecoverRuntimeAfterShutdownTimeout,
+  shouldKeepLastWindowVisibleForCompleteExit,
   shouldRequestCompleteExitOnBeforeQuit,
 } from '../window/complete-exit-policy.js';
 
@@ -51,6 +53,13 @@ test('all ordinary app quit requests enter complete-exit coordination', () => {
     }),
     true,
   );
+});
+
+test('non-macOS no-tray close keeps the last window visible for complete-exit coordination', () => {
+  assert.equal(shouldKeepLastWindowVisibleForCompleteExit('win32', false), true);
+  assert.equal(shouldKeepLastWindowVisibleForCompleteExit('linux', false), true);
+  assert.equal(shouldKeepLastWindowVisibleForCompleteExit('darwin', false), false);
+  assert.equal(shouldKeepLastWindowVisibleForCompleteExit('win32', true), false);
 });
 
 test('internal restart, committed cleanup, and secondary processes bypass complete-exit admission', () => {
@@ -219,7 +228,7 @@ test('complete exit reports every Space-owned executable-work blocker', () => {
   );
 });
 
-test('admitted complete exit keeps its surface visible until daemon shutdown is verified', async () => {
+test('admitted complete exit continues in the background while daemon shutdown is verified', async () => {
   const events: string[] = [];
   let finishDaemonStop: (() => void) | undefined;
   const daemonStopped = new Promise<void>((resolve) => {
@@ -233,21 +242,81 @@ test('admitted complete exit keeps its surface visible until daemon shutdown is 
       await daemonStopped;
       events.push('daemon:stopped');
     },
+    beginLocalFinalization: () => events.push('local:finalizing'),
+    handlePresentationError: () => events.push('local:error'),
     commitExit: () => events.push('exit:committed'),
   });
 
-  assert.deepEqual(events, ['daemon:stopping']);
+  assert.deepEqual(events, ['surface:hidden', 'daemon:stopping']);
   finishDaemonStop?.();
   await exit;
   assert.deepEqual(events, [
+    'surface:hidden',
     'daemon:stopping',
     'daemon:stopped',
-    'surface:hidden',
+    'local:finalizing',
     'exit:committed',
   ]);
 });
 
-test('failed admitted shutdown stays visible and uncommitted', async () => {
+test('shared Runtime exit commits even when background presentation fails', () => {
+  const events: string[] = [];
+
+  runPreservedRuntimeCompleteExit({
+    beginBackgroundExit: () => {
+      events.push('background:starting');
+      throw new Error('tray unavailable');
+    },
+    beginLocalFinalization: () => {
+      events.push('local:finalizing');
+      throw new Error('tray update failed');
+    },
+    handlePresentationError: (error) => {
+      assert.ok(error instanceof Error);
+      events.push(`presentation:error:${error.message}`);
+    },
+    commitExit: () => events.push('exit:committed'),
+  });
+
+  assert.deepEqual(events, [
+    'background:starting',
+    'presentation:error:tray unavailable',
+    'local:finalizing',
+    'presentation:error:tray update failed',
+    'exit:committed',
+  ]);
+});
+
+test('local finalization presentation failure cannot block an already-settled exit', async () => {
+  const events: string[] = [];
+  const presentationFailure = new Error('tray update failed');
+
+  await runAdmittedCompleteExit({
+    hideControlSurface: () => events.push('surface:hidden'),
+    stopDaemon: async () => {
+      events.push('daemon:stopped');
+    },
+    beginLocalFinalization: () => {
+      events.push('local:finalizing');
+      throw presentationFailure;
+    },
+    handlePresentationError: (error) => {
+      assert.equal(error, presentationFailure);
+      events.push('local:error');
+    },
+    commitExit: () => events.push('exit:committed'),
+  });
+
+  assert.deepEqual(events, [
+    'surface:hidden',
+    'daemon:stopped',
+    'local:finalizing',
+    'local:error',
+    'exit:committed',
+  ]);
+});
+
+test('failed admitted shutdown remains uncommitted after entering the background', async () => {
   const events: string[] = [];
   const failure = new Error('daemon stop failed');
 
@@ -258,11 +327,13 @@ test('failed admitted shutdown stays visible and uncommitted', async () => {
         events.push('daemon:stopping');
         throw failure;
       },
+      beginLocalFinalization: () => events.push('local:finalizing'),
+      handlePresentationError: () => events.push('local:error'),
       commitExit: () => events.push('exit:committed'),
     }),
     failure,
   );
-  assert.deepEqual(events, ['daemon:stopping']);
+  assert.deepEqual(events, ['surface:hidden', 'daemon:stopping']);
 });
 
 test('forced complete exit stops Space-owned work before attempting daemon shutdown', async () => {

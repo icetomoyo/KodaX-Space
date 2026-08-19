@@ -71,7 +71,7 @@ async function launchPackagedApp(previousRuntimeId) {
     KODAX_TEST_ONBOARDING: testId,
     SPACE_TEST_COMPLETE_EXIT_TRIGGER: '1',
     SPACE_TEST_BYPASS_COMPLETE_EXIT: '1',
-    SPACE_TEST_WINDOW_HIDDEN: '1',
+    SPACE_TEST_COMPLETE_EXIT_BACKGROUND_HOLD_MS: '1500',
   };
   delete childEnv.ELECTRON_RUN_AS_NODE;
   delete childEnv.KODAX_HOME;
@@ -116,8 +116,25 @@ async function launchPackagedApp(previousRuntimeId) {
 
 async function requestProductCompleteExit(instance) {
   const processExit = once(instance.appProcess, 'exit');
+  const wasVisible = await instance.app.evaluate(({ BrowserWindow }) =>
+    BrowserWindow.getAllWindows().some((window) => window.isVisible()),
+  );
+  if (!wasVisible) throw new Error('packaged complete-exit window was not visible before exit');
   await mkdir(path.dirname(triggerPath), { recursive: true });
   await writeFile(triggerPath, 'complete-exit\n', 'utf8');
+  await waitFor(
+    async () => {
+      if (instance.appProcess.exitCode !== null) return false;
+      return instance.app
+        .evaluate(({ BrowserWindow }) => {
+          const windows = BrowserWindow.getAllWindows();
+          return windows.length > 0 && windows.every((window) => !window.isVisible());
+        })
+        .catch(() => false);
+    },
+    10_000,
+    'visible complete-exit window to transfer into background settlement',
+  );
   const [code, signal] = await Promise.race([
     processExit,
     sleep(600_000).then(() => {
