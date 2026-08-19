@@ -361,3 +361,382 @@ test('every earlier live turn moves with its answer before an exact leading suff
     'assistant:later answer',
   ]);
 });
+
+test('an unmatched earlier live turn relocates before a page-head canonical turn (latest query must not sink)', () => {
+  const store = useAppStore.getState();
+  appendCompletedLiveTurn({
+    prompt: 'first query',
+    sentAt: CREATED_AT + 1,
+    runId: 'run-first',
+    turnId: 'turn-first',
+    events: [
+      {
+        kind: 'text_delta',
+        sessionId: SID,
+        text: 'first answer',
+        turnId: 'turn-first',
+        runtimeEvent: runtimeEvent('run-first', 2),
+      },
+    ],
+  });
+  appendCompletedLiveTurn({
+    prompt: 'latest query',
+    sentAt: CREATED_AT + 10,
+    runId: 'run-latest',
+    turnId: 'turn-latest',
+    events: [
+      {
+        kind: 'text_delta',
+        sessionId: SID,
+        text: 'latest answer',
+        turnId: 'turn-latest',
+        runtimeEvent: runtimeEvent('run-latest', 2),
+      },
+    ],
+  });
+
+  // The canonical page starts WITH the latest turn's user row (not a leadingPartial anchor)
+  // and leaves the earlier live-only turn outside its window.
+  store.prependSessionHistory(
+    SID,
+    [
+      { kind: 'history_truncation', scope: 'history', omittedItems: 100 },
+      {
+        kind: 'user',
+        content: 'latest query',
+        sentAt: CREATED_AT + 10,
+        entryId: 'entry-latest-user',
+        canonicalIndex: 101,
+        turnId: 'turn-latest',
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 'latest answer',
+        sentAt: CREATED_AT + 11,
+        entryId: 'entry-latest-answer',
+        canonicalIndex: 102,
+        turnId: 'turn-latest',
+      },
+    ],
+    CREATED_AT,
+    { replaceLoadedWindow: true, authoritativeNewest: true, sourceRevision: 'source-page-head' },
+  );
+
+  assert.deepEqual(visibleTranscript(), [
+    'user:first query',
+    'assistant:first answer',
+    'user:latest query',
+    'assistant:latest answer',
+  ]);
+});
+
+test('a tool-shaped latest turn keeps its canonical answer paired with its own query', () => {
+  const store = useAppStore.getState();
+  appendCompletedLiveTurn({
+    prompt: 'first query',
+    sentAt: CREATED_AT + 1,
+    runId: 'run-first',
+    turnId: 'turn-first',
+    events: [
+      {
+        kind: 'text_delta',
+        sessionId: SID,
+        text: 'first answer',
+        turnId: 'turn-first',
+        runtimeEvent: runtimeEvent('run-first', 2),
+      },
+    ],
+  });
+
+  // Latest turn streams thinking + a tool call; its final answer text lives only in canonical.
+  const toolRunId = 'run-latest';
+  const toolTurnId = 'turn-latest';
+  const toolMessageId = store.appendUserMessage(SID, 'latest query', CREATED_AT + 10);
+  assert.ok(toolMessageId);
+  store.bindUserMessageRuntimeRun(SID, toolMessageId, toolRunId);
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: toolTurnId,
+    runtimeEvent: runtimeEvent(toolRunId, 1),
+  });
+  store.appendEvent({
+    kind: 'thinking_delta',
+    sessionId: SID,
+    text: 'plan the diagrams',
+    turnId: toolTurnId,
+    runtimeEvent: runtimeEvent(toolRunId, 2),
+  });
+  store.appendEvent({
+    kind: 'tool_start',
+    sessionId: SID,
+    toolId: 'tool-latest',
+    toolName: 'multi_edit',
+    input: { path: 'doc.md' },
+    turnId: toolTurnId,
+    runtimeEvent: runtimeEvent(toolRunId, 3),
+  });
+  store.appendEvent({
+    kind: 'tool_result',
+    sessionId: SID,
+    toolId: 'tool-latest',
+    toolName: 'multi_edit',
+    content: 'edited',
+    turnId: toolTurnId,
+    runtimeEvent: runtimeEvent(toolRunId, 4),
+  });
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: SID,
+    turnId: toolTurnId,
+    runtimeEvent: runtimeEvent(toolRunId, 100),
+  });
+
+  store.prependSessionHistory(
+    SID,
+    [
+      { kind: 'history_truncation', scope: 'history', omittedItems: 100 },
+      {
+        kind: 'user',
+        content: 'latest query',
+        sentAt: CREATED_AT + 10,
+        entryId: 'entry-latest-user',
+        canonicalIndex: 101,
+        turnId: toolTurnId,
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 'six diagrams inserted',
+        sentAt: CREATED_AT + 11,
+        entryId: 'entry-latest-answer',
+        canonicalIndex: 102,
+        turnId: toolTurnId,
+      },
+    ],
+    CREATED_AT,
+    { replaceLoadedWindow: true, authoritativeNewest: true, sourceRevision: 'source-tool-head' },
+  );
+
+  const transcript = visibleTranscript();
+  const latestQueryCount = transcript.filter((line) => line === 'user:latest query').length;
+  assert.equal(latestQueryCount, 1, `the latest query must render exactly once: ${JSON.stringify(transcript)}`);
+  const canonicalAnswerIndex = transcript.indexOf('assistant:six diagrams inserted');
+  const latestQueryIndex = transcript.indexOf('user:latest query');
+  const firstAnswerIndex = transcript.indexOf('assistant:first answer');
+  assert.ok(
+    canonicalAnswerIndex > latestQueryIndex,
+    `the canonical answer must stay after its own query: ${JSON.stringify(transcript)}`,
+  );
+  assert.ok(
+    firstAnswerIndex < latestQueryIndex,
+    `the earlier answer must stay before the latest query: ${JSON.stringify(transcript)}`,
+  );
+});
+
+test('a live turn matched by a later canonical row folds once while an older live turn relocates', () => {
+  const store = useAppStore.getState();
+  appendCompletedLiveTurn({
+    prompt: 'B query',
+    sentAt: CREATED_AT + 5,
+    runId: 'run-b',
+    turnId: 'turn-b',
+    events: [
+      {
+        kind: 'text_delta',
+        sessionId: SID,
+        text: 'B live answer',
+        turnId: 'turn-b',
+        runtimeEvent: runtimeEvent('run-b', 2),
+      },
+    ],
+  });
+  appendCompletedLiveTurn({
+    prompt: 'old query',
+    sentAt: CREATED_AT + 8,
+    runId: 'run-old',
+    turnId: 'turn-old',
+    events: [
+      {
+        kind: 'text_delta',
+        sessionId: SID,
+        text: 'old answer',
+        turnId: 'turn-old',
+        runtimeEvent: runtimeEvent('run-old', 2),
+      },
+    ],
+  });
+
+  store.prependSessionHistory(
+    SID,
+    [
+      { kind: 'history_truncation', scope: 'history', omittedItems: 100 },
+      {
+        kind: 'user',
+        content: 'A query',
+        sentAt: CREATED_AT + 10,
+        entryId: 'entry-a-user',
+        canonicalIndex: 101,
+        turnId: 'turn-a',
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 'A canonical answer',
+        sentAt: CREATED_AT + 11,
+        entryId: 'entry-a-answer',
+        canonicalIndex: 102,
+        turnId: 'turn-a',
+      },
+      {
+        kind: 'user',
+        content: 'B query',
+        sentAt: CREATED_AT + 20,
+        entryId: 'entry-b-user',
+        canonicalIndex: 103,
+        turnId: 'turn-b',
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 'B canonical answer',
+        sentAt: CREATED_AT + 21,
+        entryId: 'entry-b-answer',
+        canonicalIndex: 104,
+        turnId: 'turn-b',
+      },
+    ],
+    CREATED_AT,
+    { replaceLoadedWindow: true, authoritativeNewest: true, sourceRevision: 'source-mixed-block' },
+  );
+
+  const transcript = visibleTranscript();
+  const bQueryCount = transcript.filter((line) => line === 'user:B query').length;
+  assert.equal(bQueryCount, 1, `the matched live turn must fold, not duplicate: ${JSON.stringify(transcript)}`);
+  const order = transcript.filter((line) => line.startsWith('user:'));
+  assert.deepEqual(order, [
+    'user:old query',
+    'user:A query',
+    'user:B query',
+  ]);
+  assert.ok(
+    transcript.some((line) => line.startsWith('assistant:B canonical answer')),
+    `the canonical B answer must remain visible: ${JSON.stringify(transcript)}`,
+  );
+});
+
+test('a second older page keeps the relocated live order', () => {
+  const store = useAppStore.getState();
+  appendCompletedLiveTurn({
+    prompt: 'old query',
+    sentAt: CREATED_AT + 5,
+    runId: 'run-old',
+    turnId: 'turn-old',
+    events: [
+      {
+        kind: 'text_delta',
+        sessionId: SID,
+        text: 'old answer',
+        turnId: 'turn-old',
+        runtimeEvent: runtimeEvent('run-old', 2),
+      },
+    ],
+  });
+  appendCompletedLiveTurn({
+    prompt: 'new query',
+    sentAt: CREATED_AT + 15,
+    runId: 'run-new',
+    turnId: 'turn-new',
+    events: [
+      {
+        kind: 'text_delta',
+        sessionId: SID,
+        text: 'new answer',
+        turnId: 'turn-new',
+        runtimeEvent: runtimeEvent('run-new', 2),
+      },
+    ],
+  });
+
+  store.prependSessionHistory(
+    SID,
+    [
+      { kind: 'history_truncation', scope: 'history', omittedItems: 90 },
+      {
+        kind: 'user',
+        content: 'A query',
+        sentAt: CREATED_AT + 10,
+        entryId: 'entry-a-user',
+        canonicalIndex: 101,
+        turnId: 'turn-a',
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 'A canonical answer',
+        sentAt: CREATED_AT + 11,
+        entryId: 'entry-a-answer',
+        canonicalIndex: 102,
+        turnId: 'turn-a',
+      },
+    ],
+    CREATED_AT,
+    { replaceLoadedWindow: true, authoritativeNewest: true, sourceRevision: 'source-page-1' },
+  );
+
+  store.prependSessionHistory(
+    SID,
+    [
+      { kind: 'history_truncation', scope: 'history', omittedItems: 50 },
+      {
+        kind: 'user',
+        content: 'Z query',
+        sentAt: CREATED_AT + 1,
+        entryId: 'entry-z-user',
+        canonicalIndex: 10,
+        turnId: 'turn-z',
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 'Z canonical answer',
+        sentAt: CREATED_AT + 2,
+        entryId: 'entry-z-answer',
+        canonicalIndex: 11,
+        turnId: 'turn-z',
+      },
+      {
+        kind: 'user',
+        content: 'A query',
+        sentAt: CREATED_AT + 10,
+        entryId: 'entry-a-user',
+        canonicalIndex: 101,
+        turnId: 'turn-a',
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 'A canonical answer',
+        sentAt: CREATED_AT + 11,
+        entryId: 'entry-a-answer',
+        canonicalIndex: 102,
+        turnId: 'turn-a',
+      },
+    ],
+    CREATED_AT,
+    { replaceLoadedWindow: true, includeLiveProjection: true, sourceRevision: 'source-page-2' },
+  );
+
+  assert.deepEqual(visibleTranscript(), [
+    'user:Z query',
+    'assistant:Z canonical answer',
+    'user:old query',
+    'assistant:old answer',
+    'user:A query',
+    'assistant:A canonical answer',
+    'user:new query',
+    'assistant:new answer',
+  ]);
+});

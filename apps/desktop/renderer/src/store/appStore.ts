@@ -2869,12 +2869,6 @@ function stabilizeAmbiguousLeadingHistoryOrder(
         ? liveTurns
         : [];
   const lastRelocationTarget = relocationTargets.at(-1);
-  // User owners and event segments are parallel positional buffers. Moving only the matching live
-  // owner across a retained canonical turn would strand any earlier live turn on the other side;
-  // composeMessages then sorts owners by sentAt while events stay put and pairs every later answer
-  // with the wrong query. Relocate the complete earlier live prefix as one unit. When the matching
-  // suffix is exact, leave that owner after the durable anchor so the normal fold can remove the
-  // duplicate projection in the same reconciliation pass.
   const relocatedLiveTurns =
     lastRelocationTarget === undefined
       ? []
@@ -2884,8 +2878,31 @@ function stabilizeAmbiguousLeadingHistoryOrder(
             turn.userIndex > durable.userIndex &&
             turn.userIndex <= lastRelocationTarget.userIndex,
         );
-  if (relocatedLiveTurns.length === 0) return { userMessages, events };
+  return (
+    relocateLiveTurnsBeforeDurableAnchor(userMessages, events, durable, relocatedLiveTurns) ?? {
+      userMessages,
+      events,
+    }
+  );
+}
 
+/**
+ * User owners and event segments are parallel positional buffers. Moving only the matching live
+ * owner across a retained canonical turn would strand any earlier live turn on the other side;
+ * composeMessages then sorts owners by sentAt while events stay put and pairs every later answer
+ * with the wrong query. Relocation therefore moves the complete live turn block (owner rows plus
+ * event segments) before the durable anchor as one unit, clamping each relocated sentAt below
+ * the anchor so the owner order matches the new segment order. When the matching suffix is
+ * exact, the caller leaves that owner after the durable anchor so the normal fold can remove
+ * the duplicate projection in the same reconciliation pass.
+ */
+function relocateLiveTurnsBeforeDurableAnchor(
+  userMessages: readonly UserMessage[],
+  events: readonly SessionEvent[],
+  durable: TranscriptTurnSnapshot,
+  relocatedLiveTurns: readonly TranscriptTurnSnapshot[],
+): ReconciledTranscriptBuffers | undefined {
+  if (relocatedLiveTurns.length === 0) return undefined;
   const liveUserIndexes = new Set(relocatedLiveTurns.map((turn) => turn.userIndex));
   const liveEventIndexes = new Set<number>();
   for (const turn of relocatedLiveTurns) {
@@ -2920,6 +2937,71 @@ function stabilizeAmbiguousLeadingHistoryOrder(
       ...remainingEvents.slice(durable.eventStart),
     ],
   };
+}
+
+/**
+ * A canonical page that begins with a complete user row never triggers
+ * stabilizeAmbiguousLeadingHistoryOrder, yet its reconstructed segments are still prepended ahead
+ * of live turns that are chronologically older. composeMessages sorts owners by sentAt while
+ * pairing segments positionally, so that inversion splices canonical text into an earlier owner's
+ * segment and leaves the latest query's segment empty at the bottom. Relocate only the truly
+ * misplaced live turns (closed, strong identity, no canonical counterpart anywhere in the loaded
+ * page, older than some canonical row behind them) before the earliest canonical row that is
+ * newer than the block. A live turn matched by a canonical row stays behind its durable copy so
+ * the fold keeps its durable-before-duplicate premise, and each re-loaded page re-derives the
+ * placement, so older pagination anchors cannot resurrect the inversion. Live turns without
+ * turnId keep today's behavior (no identity basis for a safe move).
+ */
+function stabilizeCanonicalPageHeadBeforeEarlierLiveTurns(
+  userMessages: readonly UserMessage[],
+  events: readonly SessionEvent[],
+): ReconciledTranscriptBuffers {
+  const turns = transcriptTurnSnapshots(userMessages, events);
+  if (turns.length < 2) return { userMessages, events };
+  const canonicalTurnIds = new Set(
+    turns.flatMap((turn) =>
+      turn.restoredFromHistory &&
+      turn.turnId !== undefined &&
+      turn.canonicalIndex !== undefined
+        ? [turn.turnId]
+        : [],
+    ),
+  );
+  if (canonicalTurnIds.size === 0) return { userMessages, events };
+  const misplacedLiveTurns = turns.filter(
+    (turn) =>
+      !turn.restoredFromHistory &&
+      turn.turnId !== undefined &&
+      !canonicalTurnIds.has(turn.turnId) &&
+      turn.terminal &&
+      // A live turn sitting behind a chronologically newer canonical row proves the inversion;
+      // a live turn newer than every canonical row before it keeps its position (a stale page
+      // head must not drag newer runs across the page).
+      turns.some(
+        (canonical) =>
+          canonical.restoredFromHistory &&
+          canonical.userIndex < turn.userIndex &&
+          turn.sentAt < canonical.sentAt,
+      ),
+  );
+  if (misplacedLiveTurns.length === 0) return { userMessages, events };
+  const lastRelocationTarget = misplacedLiveTurns[misplacedLiveTurns.length - 1]!;
+  const anchor = turns.find(
+    (turn) =>
+      turn.restoredFromHistory &&
+      turn.canonicalIndex !== undefined &&
+      turn.leadingPartialHistory !== true &&
+      turn.sentAt > lastRelocationTarget.sentAt,
+  );
+  if (!anchor || anchor.userIndex >= lastRelocationTarget.userIndex) {
+    return { userMessages, events };
+  }
+  return (
+    relocateLiveTurnsBeforeDurableAnchor(userMessages, events, anchor, misplacedLiveTurns) ?? {
+      userMessages,
+      events,
+    }
+  );
 }
 
 /**
@@ -5476,10 +5558,21 @@ export const useAppStore = create<AppState>((set) => ({
         ? (liveBaseline?.events ?? state.eventsBySession[sessionId] ?? [])
         : [];
       const currentLocalNotices = state.localNoticesBySession[sessionId] ?? [];
-      const historyAndLiveEvents = [...histEvents, ...currentEvents];
+      let historyAndLiveEvents: readonly SessionEvent[] = [...histEvents, ...currentEvents];
+      let combinedHeadMsgs: readonly UserMessage[] = [...histMsgs, ...currentMsgs];
+      // An ambiguous projection's proven clone candidates flow through the logicalId dedupe
+      // below; relocating them here is untested against that path, so keep today's order.
+      if (options?.conversationStatus !== 'ambiguous') {
+        const stabilizedHead = stabilizeCanonicalPageHeadBeforeEarlierLiveTurns(
+          combinedHeadMsgs,
+          historyAndLiveEvents,
+        );
+        combinedHeadMsgs = stabilizedHead.userMessages;
+        historyAndLiveEvents = stabilizedHead.events;
+      }
       const ownerOpenedMsgs = reconcileSnapshotInitialTurnOwners(
         sessionId,
-        [...histMsgs, ...currentMsgs],
+        combinedHeadMsgs,
         historyAndLiveEvents,
         includeLiveProjection ? state.liveProjectionBySession[sessionId] : undefined,
       );
