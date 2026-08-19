@@ -14,6 +14,29 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ## [Unreleased]
 
+---
+
+## [0.1.44] - 2026-08-20
+
+### Added
+
+- **F145 cross-platform native attention badge** - Unread results and pending
+  permission/AskUser interactions are counted once per Session. Windows uses
+  the taskbar overlay and matching tray badge; macOS and supported Linux
+  launchers use the native application badge. Unsupported Linux desktops
+  degrade without affecting Session work.
+
+### Changed
+
+- **KodaX 0.7.93 Registry alignment** - Root and Desktop manifests, the tracked
+  npm lockfile, installed bytes, and release validation use the exact audited
+  npm Registry package and SRI. KodaX retains the v0.1.43 exit/sandbox/runtime
+  contracts and adds fail-closed recovery for a wholly canonical
+  previous-boot Windows ACL marker set.
+- **Live activity surfaces** - Task Dock keeps current Agent/Workflow activity
+  aligned with live Runtime facts, and Runtime repo-intelligence traces now
+  reach the Repointel status chip without creating a second state owner.
+
 ### Fixed
 
 - **Actionable Windows ACL recovery** - Runtime startup still blocks before
@@ -23,6 +46,25 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
   never invokes Setup or elevation from startup. Published KodaX 0.7.93 now owns
   verified previous-boot recovery inside settlement, and both Space manifests
   plus the lockfile pin its audited Registry package and integrity.
+- **Responsive background complete exit** - After visible admission passes,
+  Windows hides to the tray while the same SDK settlement continues. Reopening
+  shows the same elapsed progress; failures restore the window and actionable
+  diagnostics instead of leaving an unresponsive foreground overlay.
+- **Quiet ordinary safe exit** - Successful clean/recovered complete exit no
+  longer emits a prominent Windows system notification. States that require
+  user action still restore the visible Space surface.
+- **Canonical page-head stability** - Older live turns no longer displace the
+  newest canonical page head while history and live projections converge.
+- **Persisted external-task states** - A historical Session with no external
+  tasks renders the normal empty state; real list failures remain retryable and
+  do not turn the completed main Run into a failure.
+
+### Documentation
+
+- README files, Chinese user manual, usage guide, docs hub, PRD/HLD, Feature
+  List, capability ledger, Known Issues, v0.1.44 design/readiness, F145 and
+  Issue 189-192 guides, and the in-app `kodax_manual` now describe the same
+  v0.1.44 / KodaX 0.7.93 boundary.
 
 ---
 

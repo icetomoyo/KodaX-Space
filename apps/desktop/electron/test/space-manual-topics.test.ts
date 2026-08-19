@@ -85,7 +85,7 @@ test('Space kodax_manual documents the required current KodaX capability boundar
   }
   assert.match(topics.get('runtime-host')?.body ?? '', /contextCompaction v3/);
   assert.match(topics.get('runtime-host')?.body ?? '', /transcriptSearch v1/);
-  assert.match(topics.get('runtime-host')?.body ?? '', /KodaX 0\.7\.92/);
+  assert.match(topics.get('runtime-host')?.body ?? '', /KodaX 0\.7\.93/);
   assert.match(topics.get('runtime-host')?.body ?? '', /runBoundHostTools v2/);
   assert.match(topics.get('runtime-host')?.body ?? '', /session\.status/);
   assert.match(topics.get('runtime-host')?.body ?? '', /session\.diagnostics/);
@@ -164,10 +164,10 @@ test('Space kodax_manual documents the daemon host-tool path for artifact creati
   assert.match(mcp, /两条通道指向同一实现/);
 });
 
-test('Space kodax_manual describes the v0.1.43 runtime safety, recovery, close, and shell controls', () => {
+test('Space kodax_manual describes the v0.1.44 runtime safety, recovery, attention, and shell controls', () => {
   const topics = new Map(SPACE_MANUAL_TOPICS.map((topic) => [topic.id, topic]));
 
-  assert.match(topics.get('runtime-host')?.body ?? '', /v0\.1\.43 正式发布使用经过审计并带完整性锁定的 npm Registry KodaX 0\.7\.92 正式包/);
+  assert.match(topics.get('runtime-host')?.body ?? '', /v0\.1\.44 正式发布使用经过审计并带完整性锁定的 npm Registry KodaX 0\.7\.93 正式包/);
   assert.match(topics.get('background-runtime')?.body ?? '', /F140/);
   assert.match(topics.get('background-runtime')?.body ?? '', /Close button behavior/);
   assert.match(topics.get('background-runtime')?.body ?? '', /macOS Cmd\+Q/);
@@ -185,6 +185,9 @@ test('Space kodax_manual describes the v0.1.43 runtime safety, recovery, close, 
   assert.match(topics.get('background-runtime')?.body ?? '', /缓存 PID\/PGID/);
   assert.match(topics.get('background-runtime')?.body ?? '', /保留恢复票据/);
   assert.match(topics.get('background-runtime')?.body ?? '', /不要手工删除 effect\/exit lock/);
+  assert.match(topics.get('background-runtime')?.body ?? '', /唯一 Session 数/);
+  assert.match(topics.get('background-runtime')?.body ?? '', /普通 clean\/recovered 成功直接退出，不发送系统通知/);
+  assert.match(topics.get('background-runtime')?.body ?? '', /打开诊断目录/);
   assert.match(topics.get('runtime-host')?.body ?? '', /sandboxRuntime v4/);
   assert.match(topics.get('overview')?.body ?? '', /stale inline owner reconciliation/);
   assert.match(topics.get('runtime-host')?.body ?? '', /managedRunDurability v1/);
@@ -198,4 +201,7 @@ test('Space kodax_manual describes the v0.1.43 runtime safety, recovery, close, 
   assert.match(topics.get('mcp')?.body ?? '', /revision.*watcher.*最近 reload/);
   assert.match(topics.get('settings')?.body ?? '', /Terminal Shell/);
   assert.match(topics.get('preview-terminal')?.body ?? '', /Coder 命令工具/);
+  assert.match(topics.get('task-dock')?.body ?? '', /当前 live activity/);
+  assert.match(topics.get('external-agents')?.body ?? '', /正常空态/);
+  assert.match(topics.get('repo-intelligence')?.body ?? '', /Repointel 状态芯片/);
 });

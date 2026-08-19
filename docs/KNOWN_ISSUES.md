@@ -1,8 +1,8 @@
 # Known Issues
 
-Last Updated: 2026-08-19
+Last Updated: 2026-08-20
 
-> Historical issue details are preserved as investigation evidence. Resolved items older than 30 days move to [ISSUES_ARCHIVED.md](ISSUES_ARCHIVED.md) without losing their investigation record. The latest published Space [`v0.1.43`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.43) artifact uses exact npm Registry KodaX 0.7.92 and requires `sandboxRuntime:4`, `crashOutcomeModel:2`, and `actorSettlementConvergence:2`. Start from the [documentation hub](README.md) for current behavior and status.
+> Historical issue details are preserved as investigation evidence. Resolved items older than 30 days move to [ISSUES_ARCHIVED.md](ISSUES_ARCHIVED.md) without losing their investigation record. The latest published Space [`v0.1.44`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.44) artifact uses exact npm Registry KodaX 0.7.93 and requires `sandboxRuntime:4`, `crashOutcomeModel:2`, and `actorSettlementConvergence:2`. Start from the [documentation hub](README.md) for current behavior and status.
 
 ## Issue Index
 
@@ -184,19 +184,19 @@ Last Updated: 2026-08-19
 | 186 | High     | Resolved           | Multi-session terminal contention or a compaction-damaged canonical page could misorder, duplicate, or endlessly grow the transcript tail; SDK write-side provenance collapse identified cross-repo | KodaX 0.7.88 chained compaction / renderer folding          | 2026-08-16 |
 | 187 | Medium   | Resolved           | Restored historical Sessions could display history but fork and rewind failed with session_not_found                               | v0.1.42 historical Session mutation admission                | 2026-08-16 |
 | 188 | High     | Resolved           | Complete exit could strand an accepted Windows Runtime stop and relaunch before exact cleanup recovery                              | v0.1.37 complete-exit recovery                               | 2026-08-17 |
-| 189 | Medium | Resolved in source | Safe complete exit held an unresponsive foreground overlay throughout the Runtime orderly-cleanup window | v0.1.43 complete-exit settlement | 2026-08-19 |
-| 190 | High | Resolved in source | Previous-boot Windows ACL markers blocked Runtime startup without actionable recovery guidance | v0.1.43 / KodaX 0.7.92 exit settlement | 2026-08-19 |
-| 191 | Medium | Resolved in source | Persisted Sessions with no external Agent tasks surfaced session_not_found instead of a normal empty state | v0.1.43 historical Task Dock | 2026-08-19 |
-| 192 | Medium | Resolved in source | Every ordinary safe exit showed a prominent Windows notification despite requiring no user action | v0.1.43 background complete-exit presentation | 2026-08-19 |
+| 189 | Medium | Resolved in v0.1.44 | Safe complete exit held an unresponsive foreground overlay throughout the Runtime orderly-cleanup window | v0.1.43 complete-exit settlement | 2026-08-19 |
+| 190 | High | Resolved in v0.1.44 | Previous-boot Windows ACL markers blocked Runtime startup without actionable recovery guidance | v0.1.43 / KodaX 0.7.92 exit settlement | 2026-08-19 |
+| 191 | Medium | Resolved in v0.1.44 | Persisted Sessions with no external Agent tasks surfaced session_not_found instead of a normal empty state | v0.1.43 historical Task Dock | 2026-08-19 |
+| 192 | Medium | Resolved in v0.1.44 | Every ordinary safe exit showed a prominent Windows notification despite requiring no user action | v0.1.43 background complete-exit presentation | 2026-08-19 |
 
 ## Issue Details
 
 ## Issue 192: Every ordinary safe exit showed a prominent Windows notification despite requiring no user action
 
 - Priority: Medium
-- Status: Resolved in source
+- Status: Resolved in v0.1.44
 - Introduced: v0.1.43 background complete-exit presentation
-- Fixed: v0.1.44 development
+- Fixed: v0.1.44
 - Created: 2026-08-19
 - Resolution Date: 2026-08-19
 
@@ -237,9 +237,9 @@ See
 ## Issue 191: Persisted Sessions with no external Agent tasks surfaced session_not_found instead of a normal empty state
 
 - Priority: Medium
-- Status: Resolved in source
+- Status: Resolved in v0.1.44
 - Introduced: v0.1.43 historical Task Dock
-- Fixed: v0.1.44 development
+- Fixed: v0.1.44
 - Created: 2026-08-19
 - Resolution Date: 2026-08-19
 
@@ -286,9 +286,9 @@ See
 ## Issue 190: Previous-boot Windows ACL markers blocked Runtime startup without actionable recovery guidance
 
 - Priority: High
-- Status: Resolved in source
+- Status: Resolved in v0.1.44
 - Introduced: v0.1.43 / KodaX 0.7.92 exit settlement
-- Fixed: v0.1.44 development with published KodaX 0.7.93
+- Fixed: v0.1.44 with published KodaX 0.7.93
 - Created: 2026-08-19
 - Resolution Date: 2026-08-19
 
@@ -348,9 +348,9 @@ See
 ## Issue 189: Safe complete exit held an unresponsive foreground overlay throughout the Runtime orderly-cleanup window
 
 - Priority: Medium
-- Status: Resolved in source
+- Status: Resolved in v0.1.44
 - Introduced: v0.1.43 complete-exit settlement
-- Fixed: v0.1.44 development
+- Fixed: v0.1.44
 - Created: 2026-08-19
 - Resolution Date: 2026-08-19
 

@@ -1,7 +1,7 @@
 # KodaX Space Feature List
 
-> Last reviewed: 2026-08-19
-> Latest published release: [`v0.1.43`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.43) (`0.1.43` package baseline; KodaX 0.7.92 Registry, SDK-owned exit settlement, sandbox v4, and crash-outcome v2)
+> Last reviewed: 2026-08-20
+> Latest published release: [`v0.1.44`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.44) (`0.1.44` package baseline; exact KodaX 0.7.93 Registry, F145 native attention, background exit settlement, and recovery-surface alignment)
 > Current source KodaX SDK baseline: exact audited npm Registry `@kodax-ai/kodax@0.7.93`. Root/Desktop manifests, lockfile, installed bytes, and packaged ASAR must resolve the same Registry URL and integrity. Space-managed daemons require explicit capability contracts in addition to the established shared-session safety surface, including local `runtimeExitSettlement:1`, `sandboxRuntime:4`, `crashOutcomeModel:2`, `managedRunDurability:1`, `actorSettlementConvergence:2`, and `sessionEventJournal:1`; lifecycle support is not inferred from SemVer. Delivered interrupt `entryId` remains feature-detected per event. Session journal cursors are compared only within the same `(sessionId, journalEpoch)` lineage.
 > Scope: active roadmap, recent completion audit, and reviewed-out decisions. Older release history lives in [FEATURES_ARCHIVED.md](FEATURES_ARCHIVED.md), per-version designs, and [CHANGELOG.md](../CHANGELOG.md).
 
@@ -22,7 +22,7 @@
 | Planned                  | 20                                                                                                                                                                                                                                                  |
 | InProgress               | 4                                                                                                                                                                                                                                                   |
 | Recent Completed         | 28                                                                                                                                                                                                                                                  |
-| Latest published release | [`v0.1.43`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.43) (KodaX 0.7.92 Registry, SDK-owned complete-exit settlement, sandboxRuntime v4, crashOutcomeModel v2, live output segments, and release documentation synchronization)    |
+| Latest published release | [`v0.1.44`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.44) (KodaX 0.7.93 Registry, F145 native attention, background complete-exit settlement, Task Dock/Repointel/history alignment, external-task recovery states, and synchronized release documentation) |
 | 0.1.x completion target  | `v0.1.72`, followed by `v0.1.73` patch/RC reserve                                                                                                                                                                                                   |
 | Far-future candidates    | F144 is scheduled after `v0.2.x`; F138 is explicitly deferred until after `v0.5.x`; other candidates remain in [KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md) and [FEATURES_ARCHIVED.md](FEATURES_ARCHIVED.md#watchlist-and-reopen-gates) |
 
@@ -81,7 +81,7 @@
 | `v0.1.41`         | Provider recovery and latest KodaX alignment                                                                          | Maintenance / Recovery            | Exact npm latest KodaX 0.7.87 is pinned. Ordered provider.recovery events reconcile provisional drafts across live, history, reconnect, snapshot hydration, and Ctrl+R without content-based deduplication; docs and kodax_manual are synchronized.                             |
 | `v0.1.42`         | Causal transcript and latest KodaX alignment                                                                          | Maintenance / Recovery            | Exact npm latest KodaX 0.7.89 is pinned. Actor settlement v2, exact Session/Run/Turn owner reconciliation, continued-Run projection, Session deletion feedback, classifier-reason visibility, and the complete manual/release gate are synchronized.                            |
 | `v0.1.43`         | Runtime exit and filesystem-effect convergence                                                                        | Maintenance / Recovery            | Exact audited npm Registry KodaX 0.7.92 bytes, SDK-owned exit settlement, stale coordinator-ticket/recorded-release convergence, canonical managed terminal ordering, and capability-fenced daemon replacement.                                                                 |
-| `v0.1.44`         | Native attention badge                                                                                                | F145                              | Unread and action-required Sessions stay represented once across the Windows taskbar/tray, macOS Dock, and supported Linux launchers, then clear when the owning Session is read or its interaction is resolved.                                                                |
+| `v0.1.44`         | Native attention and recovery-surface alignment                                                                       | F145 / Maintenance                | Exact KodaX 0.7.93; unique Session attention across native surfaces; background complete exit; canonical page-head, Task Dock and Repointel alignment; recoverable external-task states; actionable previous-boot Windows ACL guidance.                                          |
 | `v0.1.45-v0.1.60` | Reserved after `v0.1.44`                                                                                              | none                              | No feature is assigned to this block; it stays available for maintenance and stabilization releases.                                                                                                                                                                            |
 | `v0.1.61`         | Native document Skills and semantic UI polish                                                                         | F137, F139                        | Independently authored document workflows and semantic UI gates pass without weakening file, delivery, accessibility, or validation boundaries.                                                                                                                                 |
 | `v0.1.62`         | —                                                                                                                     | none                              | —                                                                                                                                                                                                                                                                               |
@@ -234,6 +234,24 @@
 - The candidate aligns every Space package manifest, runtime capability contract, and the in-app kodax_manual to v0.1.42 while pinning the npm latest KodaX package exactly to 0.7.89.
 - Renderer reconciliation preserves exact Session/Run/Turn ownership across canonical/live folding, delayed terminals, continued Runs, reconnect, and Ctrl+R; no timestamp sorting or content-based deduplication is introduced.
 - The release records Actor settlement convergence v2, explicit create-time model continuity, bounded classifier-reason visibility, Session deletion feedback, and the Issue 182-185 regression coverage.
+
+### Release preparation - 2026-08-20: v0.1.44 native attention and recovery-surface alignment
+
+- The release aligns every Space package manifest, runtime capability contract,
+  lock view, public manual, and in-app `kodax_manual` to v0.1.44 while pinning
+  npm `latest` KodaX exactly to audited Registry 0.7.93.
+- F145 projects one count per unread or action-required Session to the Windows
+  taskbar/tray, macOS Dock, and supported Linux launchers without adding a
+  second notification store.
+- Maintenance scope keeps admitted Windows complete-exit settlement in the
+  background, removes ordinary success balloons, aligns canonical page heads,
+  Task Dock and Repointel with live Runtime facts, distinguishes persisted
+  external-task empty/error states, and makes previous-boot ACL blocks
+  actionable without Setup or elevation.
+- Release documentation includes the v0.1.44 feature design, readiness record,
+  F145 acceptance guide, Issue 189-192 regression guides, README/manual updates,
+  capability ledger, known-issue resolutions, and changelog entry. Release
+  preparation changes only metadata, tests, release automation, and docs.
 
 ### Release preparation - 2026-08-19: v0.1.43 Runtime exit and filesystem-effect convergence
 

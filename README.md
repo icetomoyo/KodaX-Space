@@ -98,11 +98,11 @@ KodaX 0.7.89 keeps the canonical interrupt `entryId` and ordered Runtime identit
 
 The bottom bar separates root-Agent context pressure from cumulative Session token usage. The Context window meter uses the final automatic-compaction threshold and a privacy-safe six-part composition; completed physical requests are deduplicated by request ID across root, child, retry, fallback, repair, workflow-digest, and compaction-summary calls. F140 adds an Ask/keep-in-tray/complete-exit preference. A real quit on Windows, macOS, or Linux first attempts to stop the Coder daemon safely. If work blocks that attempt, Space offers Keep open or Force close; Force close cancels only this Space's work, preserves other clients, and exits without returning to the blocker loop. A Space-started orphan daemon still self-reaps after its final client disconnects and work becomes idle. Terminal plus Coder command tools share one selected Shell/profile-PATH contract without projecting arbitrary executables or secrets.
 
-F122-F124 continue to provide the Partner project-source, immutable evidence/citation, and automatic grounded-context loop. F121 remains `InProgress` only for the final human multi-client acceptance ledger; v0.1.43 still fails closed on missing daemon capabilities, including durable managed-Run, Actor settlement convergence v2, Session journal, sandbox v4, crash-outcome v2, and exit-settlement contracts. See the [v0.1.43 release design](docs/features/v0.1.43.md) and [capability ledger](docs/KODAX_CAPABILITY_LEDGER.md).
+F122-F124 continue to provide the Partner project-source, immutable evidence/citation, and automatic grounded-context loop. F121 remains `InProgress` only for the final human multi-client acceptance ledger; v0.1.44 still fails closed on missing daemon capabilities, including durable managed-Run, Actor settlement convergence v2, Session journal, sandbox v4, crash-outcome v2, and exit-settlement contracts. See the [v0.1.44 release design](docs/features/v0.1.44.md) and [capability ledger](docs/KODAX_CAPABILITY_LEDGER.md).
 
-F135 also packages the redistributable `frontend-slides` and `huashu-design` skills as vetted Space builtins, so users do not install the skills separately. The distributed Huashua adaptation removes default promotional watermark/signature markup and instructions while retaining the upstream MIT license and authorship. Optional browser/video/TTS/AI-review pipelines still need their documented external runtimes or credentials. The locally installed `pdf`, `pptx`, `xlsx`, and `docx` skills are not bundled because their current license prohibits redistribution. F137 plans independently authored, Chinese-first replacements for `v0.1.61`; they are not part of this v0.1.43 maintenance release. See the [v0.1.61 design](docs/features/v0.1.61.md), [builtin skill maintenance](docs/BUILTIN_SKILLS.md), and the [v0.1.43 release-readiness record](docs/releases/v0.1.43-release-readiness.md).
+F135 also packages the redistributable `frontend-slides` and `huashu-design` skills as vetted Space builtins, so users do not install the skills separately. The distributed Huashua adaptation removes default promotional watermark/signature markup and instructions while retaining the upstream MIT license and authorship. Optional browser/video/TTS/AI-review pipelines still need their documented external runtimes or credentials. The locally installed `pdf`, `pptx`, `xlsx`, and `docx` skills are not bundled because their current license prohibits redistribution. F137 plans independently authored, Chinese-first replacements for `v0.1.61`; they are not part of this v0.1.44 maintenance release. See the [v0.1.61 design](docs/features/v0.1.61.md), [builtin skill maintenance](docs/BUILTIN_SKILLS.md), and the [v0.1.44 release-readiness record](docs/releases/v0.1.44-release-readiness.md).
 
-F136 makes the Windows background owner visible and controllable; F140 lets users choose Ask, keep running in the tray, or complete exit. Closing the last window destroys its renderer while the notification-area owner can reopen Space. Complete exit has one cross-platform contract: it first attempts safe cancellation and daemon stop; blockers present a conservative Keep open default plus an explicit Force close that terminates Space-owned work and exits while retaining Runtime work needed by other clients. KodaX's opt-in `daemonOrphanExit:1` lifecycle adds a 30-second idle orphan grace only to daemons auto-started by Space.
+F136 makes the Windows background owner visible and controllable; F140 lets users choose Ask, keep running in the tray, or complete exit. Once complete exit passes its visible admission checks, Windows hides to the tray while SDK settlement continues, and reopening Space shows the same elapsed progress; ordinary successful exit stays quiet, while a failure restores the window with diagnostics. F145 projects unique unread or action-required Sessions to the Windows taskbar/tray, macOS Dock, and supported Linux launchers, clearing each Session only when it is read or its interaction is resolved. KodaX's opt-in `daemonOrphanExit:1` lifecycle adds a 30-second idle orphan grace only to daemons auto-started by Space.
 
 Resolved release blocker: KodaX 0.7.76 retains the centralized Windows
 `windowsHide` hardening introduced in 0.7.75, so ordinary daemon-backed Coder
@@ -112,20 +112,25 @@ official Registry package without vendoring an SDK patch. See
 
 ## Current Release
 
-**v0.1.43 - Runtime Exit and Filesystem-Effect Convergence**
+**v0.1.44 - Native Attention and Background Settlement**
 
-Released on 2026-08-19 as [`v0.1.43`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.43), with package version `0.1.43` and the latest npm `@kodax-ai/kodax` release pinned exactly to `0.7.92`. The release delegates complete exit to the SDK settlement transaction, requires sandbox Runtime v4 plus crash-outcome v2, and consumes SDK-owned live output segments instead of host checkpoint replay.
+Released on 2026-08-20 as [`v0.1.44`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.44), with package version `0.1.44` and the latest npm `@kodax-ai/kodax` release pinned exactly to `0.7.93`. The release adds a cross-platform native attention badge, keeps admitted complete-exit settlement in the background, aligns Task Dock and Repointel with live Runtime activity, and improves recoverable external-task and Windows ACL guidance.
 
 | Area                 | Summary                                                                                                                                               |
 | -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Runtime contract     | KodaX 0.7.92 exact Registry bytes; Space requires `runtimeExitSettlement:1`, `sandboxRuntime:4`, `crashOutcomeModel:2`, and `liveOutputSegments:1`.    |
-| Complete exit        | `settleKodaXRuntimeExit()` owns crash-resumable stop, Job/ACL recovery, and ticket resume before owner reconciliation.                                |
-| Filesystem effects   | sandboxRuntime v4 reclaims stale same-daemon tickets from recorded-release facts; exact active locks and unknown process trees stay fail-closed.      |
-| Documentation        | README files, manuals, capability ledger, release design/readiness, regression guides, changelog, and `kodax_manual` share the v0.1.43 boundary.      |
+| Runtime contract     | KodaX 0.7.93 exact Registry bytes retain the explicit exit, sandbox, crash-outcome, Actor-settlement, journal, and live-output gates.                 |
+| Native attention     | One count per unread/action-required Session is projected to Windows taskbar/tray, macOS Dock, and supported Linux launchers.                         |
+| Exit and recovery    | Admitted Windows settlement continues in the tray; ordinary success stays quiet, failures restore the UI, and previous-boot ACL blocks are actionable. |
+| Activity surfaces    | Canonical page heads, Task Dock live activity, Repointel repo-intel traces, and persisted external-task empty/error states remain aligned.            |
+| Documentation        | README files, manuals, capability ledger, release design/readiness, regression guides, changelog, and `kodax_manual` share the v0.1.44 boundary.      |
 
-See [CHANGELOG.md](CHANGELOG.md), the [v0.1.43 design](docs/features/v0.1.43.md), and the [v0.1.43 release record](docs/releases/v0.1.43-release-readiness.md).
+See [CHANGELOG.md](CHANGELOG.md), the [v0.1.44 design](docs/features/v0.1.44.md), and the [v0.1.44 release record](docs/releases/v0.1.44-release-readiness.md).
 
 ### Historical releases
+
+**v0.1.43 - Runtime Exit and Filesystem-Effect Convergence**
+
+Released on 2026-08-19 as [`v0.1.43`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.43), with package version `0.1.43` and exact Registry KodaX `0.7.92`. It introduced SDK-owned crash-resumable complete-exit settlement, sandbox Runtime v4, crash-outcome v2, and SDK effective live-output segments. See the [v0.1.43 design](docs/features/v0.1.43.md) and [release record](docs/releases/v0.1.43-release-readiness.md).
 
 **v0.1.42 - Causal Transcript and Latest KodaX Alignment**
 
@@ -196,7 +201,7 @@ Released on 2026-08-06 as [`v0.1.37`](https://github.com/icetomoyo/KodaX-Space/r
 | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Recovery       | Session hydration, history paging, live projection, and Runtime recovery preserve project, surface, Session, request, and owner identity.                |
 | Safe close     | Shutdown remains visible until verified; Keep Open relaunches through a controlled path after Runtime authority closes.                                  |
-| KodaX baseline | Historical v0.1.37 used KodaX 0.7.83; the published v0.1.43 release now uses exact Registry KodaX 0.7.92 bytes documented above.                         |
+| KodaX baseline | Historical v0.1.37 used KodaX 0.7.83; the published v0.1.44 release now uses exact Registry KodaX 0.7.93 bytes documented above.                         |
 | Documentation  | The Chinese manual, capability ledger, release design, readiness record, regression guide, and in-app `kodax_manual` describe the same current boundary. |
 
 See [CHANGELOG.md](CHANGELOG.md), the [v0.1.37 design](docs/features/v0.1.37.md), and the [v0.1.37 release record](docs/releases/v0.1.37-release-readiness.md).
@@ -389,11 +394,18 @@ npm run e2e:headed
 | [README_CN.md](README_CN.md)                                                                                     | Chinese README.                                                                          |
 | [CONTRIBUTING.md](CONTRIBUTING.md)                                                                               | Contribution boundaries, validation, and documentation requirements.                     |
 | [docs/README.md](docs/README.md)                                                                                 | Documentation hub and current-vs-historical document map.                                |
-| [docs/USER_MANUAL.zh-CN.md](docs/USER_MANUAL.zh-CN.md)                                                           | Illustrated Chinese manual for the v0.1.43 release baseline.                             |
+| [docs/USER_MANUAL.zh-CN.md](docs/USER_MANUAL.zh-CN.md)                                                           | Illustrated Chinese manual for the v0.1.44 release baseline.                             |
 | [docs/USAGE.md](docs/USAGE.md)                                                                                   | Source launch, profiles, Runtime Host, testing, packaging, and troubleshooting.          |
 | [docs/BUILTIN_SKILLS.md](docs/BUILTIN_SKILLS.md)                                                                 | Builtin skill provenance, licensing, update, patch, and package-integrity workflow.      |
 | [docs/releases/v0.1.34-release-readiness.md](docs/releases/v0.1.34-release-readiness.md)                         | v0.1.34 gates, production evidence, artifact digests, and known-risk record.             |
 | [docs/releases/v0.1.37-release-readiness.md](docs/releases/v0.1.37-release-readiness.md)                         | v0.1.37 gates, KodaX 0.7.83 contract, and release evidence.                              |
+| [docs/features/v0.1.44.md](docs/features/v0.1.44.md)                                                             | v0.1.44 native attention, background settlement, and KodaX 0.7.93 boundary.              |
+| [docs/releases/v0.1.44-release-readiness.md](docs/releases/v0.1.44-release-readiness.md)                         | v0.1.44 gates, exact KodaX 0.7.93 contract, and release evidence.                        |
+| [docs/test-guides/FEATURE_145_v0.1.44_TEST_GUIDE.md](docs/test-guides/FEATURE_145_v0.1.44_TEST_GUIDE.md)         | v0.1.44 native attention badge acceptance coverage.                                      |
+| [docs/test-guides/ISSUE_189_v0.1.44_REGRESSION_GUIDE.md](docs/test-guides/ISSUE_189_v0.1.44_REGRESSION_GUIDE.md) | v0.1.44 background complete-exit settlement coverage.                                    |
+| [docs/test-guides/ISSUE_190_v0.1.44_REGRESSION_GUIDE.md](docs/test-guides/ISSUE_190_v0.1.44_REGRESSION_GUIDE.md) | v0.1.44 previous-boot Windows ACL recovery coverage.                                     |
+| [docs/test-guides/ISSUE_191_v0.1.44_REGRESSION_GUIDE.md](docs/test-guides/ISSUE_191_v0.1.44_REGRESSION_GUIDE.md) | v0.1.44 external-task empty and retry state coverage.                                    |
+| [docs/test-guides/ISSUE_192_v0.1.44_REGRESSION_GUIDE.md](docs/test-guides/ISSUE_192_v0.1.44_REGRESSION_GUIDE.md) | v0.1.44 quiet safe-exit notification coverage.                                           |
 | [docs/features/v0.1.43.md](docs/features/v0.1.43.md)                                                             | v0.1.43 Runtime exit, KodaX 0.7.92, sandbox v4, and release boundary.                    |
 | [docs/releases/v0.1.43-release-readiness.md](docs/releases/v0.1.43-release-readiness.md)                         | v0.1.43 gates, exact KodaX 0.7.92 contract, and release evidence.                        |
 | [docs/test-guides/ISSUE_188_v0.1.43_REGRESSION_GUIDE.md](docs/test-guides/ISSUE_188_v0.1.43_REGRESSION_GUIDE.md) | v0.1.43 complete-exit settlement and recovery coverage.                                  |
@@ -431,11 +443,12 @@ Near-term planned work is tracked in [docs/FEATURE_LIST.md](docs/FEATURE_LIST.md
 | `v0.1.35`                    | Published KodaX 0.7.80, durable managed-Run negotiation, session-history integrity, Auto timeout defaults, and the matching manual/test contract.                                         |
 | `v0.1.36`                    | Session input-admission, history/live reconciliation, renderer recovery, and KodaX 0.7.82 maintenance hardening.                                                                          |
 | `v0.1.37`                    | KodaX 0.7.83, multi-Session recovery, safe-close relaunch, semantic bootstrap surface, and release documentation alignment.                                                               |
-| `v0.1.43`                    | Latest KodaX 0.7.92, SDK-owned complete-exit settlement, sandboxRuntime v4, crashOutcomeModel v2, live output segments, and complete release documentation alignment.                      |
-| `v0.1.42`                    | Latest KodaX 0.7.89, Actor settlement convergence v2, causal transcript ownership, Session deletion feedback, permission reason visibility, and complete release documentation alignment. |
-| `v0.1.40`                    | KodaX 0.7.86, sandboxRuntime v3, Issue 128 packaged Shell coverage, stale owner recovery, retryable owner cleanup, and complete release documentation alignment.                          |
-| `v0.1.39`                    | KodaX 0.7.85, Actor settlement convergence, Session journal epoch isolation, unknown Run admission, exact Stop, input deduplication, and complete release documentation alignment.        |
 | `v0.1.38`                    | KodaX 0.7.84, Agent progress/Stop convergence, Session reactivation recovery, tracked icon packaging, and complete release documentation alignment.                                       |
+| `v0.1.39`                    | KodaX 0.7.85, Actor settlement convergence, Session journal epoch isolation, unknown Run admission, exact Stop, input deduplication, and complete release documentation alignment.        |
+| `v0.1.40`                    | KodaX 0.7.86, sandboxRuntime v3, Issue 128 packaged Shell coverage, stale owner recovery, retryable owner cleanup, and complete release documentation alignment.                          |
+| `v0.1.42`                    | Latest KodaX 0.7.89, Actor settlement convergence v2, causal transcript ownership, Session deletion feedback, permission reason visibility, and complete release documentation alignment. |
+| `v0.1.43`                    | Latest KodaX 0.7.92, SDK-owned complete-exit settlement, sandboxRuntime v4, crashOutcomeModel v2, live output segments, and complete release documentation alignment.                      |
+| `v0.1.44`                    | Exact KodaX 0.7.93, F145 native attention, background complete exit, Task Dock/Repointel/history alignment, and recoverable external-task states.                                        |
 | `v0.1.61`                    | Independently authored Chinese-first DOCX/PDF/XLSX/PPTX builtins plus semantic UI polish, with bounded execution and truthful validation receipts.                                        |
 | `v0.1.64`、`v0.1.66-v0.1.68` | Partner Skill workspace, knowledge quality/curation, Presentation Project, and the SDK-gated Memory Agent host.                                                                           |
 | `v0.1.72`                    | Localization completion, beta diagnostics, release channels, updater/distribution trust.                                                                                                  |
