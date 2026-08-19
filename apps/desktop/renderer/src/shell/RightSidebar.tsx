@@ -19,6 +19,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  AlertTriangle,
   Check,
   Bot,
   ChevronRight,
@@ -86,6 +87,10 @@ import type { TaskDockRunViewModel } from './taskDockProjection.js';
 import { useTaskDockRunView } from './useTaskDockRunView.js';
 import { RightSidebarFrame, type RightSidebarWidthMode } from './RightSidebarFrame.js';
 import { LearningSafetySection } from '../features/learning/LearningSafetySection.js';
+import {
+  buildExternalAgentTasksView,
+  type ExternalAgentTasksLoadState,
+} from './externalAgentTasksView.js';
 
 const EMPTY_EVENTS: readonly SessionEvent[] = [];
 const SECTION_OPEN_STORAGE_KEY = 'kodax-space.rightSidebar.sectionOpen';
@@ -869,36 +874,64 @@ function AgentSection({
 function ExternalAgentTasksSection(): JSX.Element | null {
   const { t } = useI18n();
   const currentSessionId = useAppStore((s) => s.currentSessionId);
-  const [tasks, setTasks] = useState<ExternalAgentTaskT[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  const [taskList, setTaskList] = useState<{
+    readonly sessionId: string | null;
+    readonly loadState: ExternalAgentTasksLoadState;
+    readonly tasks: ExternalAgentTaskT[];
+  }>({ sessionId: null, loadState: 'loading', tasks: [] });
+  const [actionError, setActionError] = useState(false);
   const [busyTaskId, setBusyTaskId] = useState<string | null>(null);
   const [inputByTask, setInputByTask] = useState<Record<string, string>>({});
   const [eventsByTask, setEventsByTask] = useState<Record<string, ExternalAgentTaskEventT[]>>({});
   const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null);
   const activeSessionRef = useRef(currentSessionId);
   activeSessionRef.current = currentSessionId;
+  const currentTaskList =
+    taskList.sessionId === currentSessionId
+      ? taskList
+      : { sessionId: currentSessionId, loadState: 'loading' as const, tasks: [] };
+  const tasks = currentTaskList.tasks;
 
   const refresh = useCallback(async (): Promise<ExternalAgentTaskT[] | null> => {
     const sessionId = currentSessionId;
-    if (!window.kodaxSpace || !sessionId) return [];
-    const result = await window.kodaxSpace.invoke('agent.external.task.list', {
-      sessionId,
-    });
-    if (activeSessionRef.current !== sessionId) return null;
-    if (!result.ok) {
-      setError(result.error.message);
+    if (!sessionId) return [];
+    if (!window.kodaxSpace) {
+      setTaskList((current) => ({
+        sessionId,
+        loadState: 'error',
+        tasks: current.sessionId === sessionId ? current.tasks : [],
+      }));
       return null;
     }
-    setError(null);
-    setTasks(result.data.tasks);
-    return result.data.tasks;
+    try {
+      const result = await window.kodaxSpace.invoke('agent.external.task.list', { sessionId });
+      if (activeSessionRef.current !== sessionId) return null;
+      if (!result.ok) {
+        setTaskList((current) => ({
+          sessionId,
+          loadState: 'error',
+          tasks: current.sessionId === sessionId ? current.tasks : [],
+        }));
+        return null;
+      }
+      setTaskList({ sessionId, loadState: 'ready', tasks: result.data.tasks });
+      return result.data.tasks;
+    } catch {
+      if (activeSessionRef.current !== sessionId) return null;
+      setTaskList((current) => ({
+        sessionId,
+        loadState: 'error',
+        tasks: current.sessionId === sessionId ? current.tasks : [],
+      }));
+      return null;
+    }
   }, [currentSessionId]);
 
   useEffect(() => {
     let cancelled = false;
     let timer: number | null = null;
-    setTasks([]);
-    setError(null);
+    setTaskList({ sessionId: currentSessionId, loadState: 'loading', tasks: [] });
+    setActionError(false);
     setEventsByTask({});
     setExpandedTaskId(null);
     setBusyTaskId(null);
@@ -936,13 +969,14 @@ function ExternalAgentTasksSection(): JSX.Element | null {
         });
         if (activeSessionRef.current !== sessionId) return null;
         if (!result.ok) {
-          setError(result.error.message);
+          setActionError(true);
           return null;
         }
         events.push(...result.data.events);
         if (result.data.events.length < 512 || result.data.nextCursor <= cursor) break;
         cursor = result.data.nextCursor;
       }
+      setActionError(false);
       setEventsByTask((current) => ({ ...current, [taskId]: events }));
       return events;
     },
@@ -991,8 +1025,9 @@ function ExternalAgentTasksSection(): JSX.Element | null {
     });
     if (activeSessionRef.current !== sessionId) return;
     setBusyTaskId(null);
-    if (!result.ok) setError(result.error.message);
+    if (!result.ok) setActionError(true);
     else {
+      setActionError(false);
       setInputByTask((current) => ({ ...current, [taskId]: '' }));
       await Promise.all([refresh(), loadEvents(taskId, sessionId)]);
     }
@@ -1009,8 +1044,11 @@ function ExternalAgentTasksSection(): JSX.Element | null {
     });
     if (activeSessionRef.current !== sessionId) return;
     setBusyTaskId(null);
-    if (!result.ok) setError(result.error.message);
-    else await Promise.all([refresh(), loadEvents(taskId, sessionId)]);
+    if (!result.ok) setActionError(true);
+    else {
+      setActionError(false);
+      await Promise.all([refresh(), loadEvents(taskId, sessionId)]);
+    }
   }
 
   async function reconcileTask(taskId: string): Promise<void> {
@@ -1023,19 +1061,92 @@ function ExternalAgentTasksSection(): JSX.Element | null {
     });
     if (activeSessionRef.current !== sessionId) return;
     setBusyTaskId(null);
-    if (!result.ok) setError(result.error.message);
-    else await Promise.all([refresh(), loadEvents(taskId, sessionId)]);
+    if (!result.ok) setActionError(true);
+    else {
+      setActionError(false);
+      await Promise.all([refresh(), loadEvents(taskId, sessionId)]);
+    }
   }
 
-  if (tasks.length === 0 && !error) return null;
-  const activeCount = tasks.filter((task) => !isExternalTaskTerminal(task.state)).length;
+  if (!currentSessionId) return null;
+  const view = buildExternalAgentTasksView(currentTaskList.loadState, tasks.length);
+  const title = view.showCount
+    ? t('right.externalAgentTasksCount', { count: tasks.length })
+    : view.kind === 'error'
+      ? t('right.externalAgentTasksUnavailable')
+      : t('right.externalAgentTasks');
+
+  function retryTaskList(): void {
+    setTaskList((current) => ({
+      sessionId: currentSessionId,
+      loadState: 'loading',
+      tasks: current.sessionId === currentSessionId ? current.tasks : [],
+    }));
+    void refresh();
+  }
+
   return (
     <Section
-      title={t('right.externalAgentTasksCount', { count: tasks.length })}
-      defaultOpen={activeCount > 0}
+      title={title}
       autoOpenKey={tasks.find((task) => !isExternalTaskTerminal(task.state))?.taskId ?? null}
     >
-      {error && <div className="mb-2 text-[11px] text-danger">{error}</div>}
+      {view.kind === 'loading' && (
+        <div
+          className="flex items-center gap-2 py-1 text-[11px] text-fg-muted"
+          role="status"
+          aria-live="polite"
+          data-testid="external-agent-task-loading"
+        >
+          <Loader2 size={13} className="animate-spin text-fg-faint" aria-hidden />
+          <span>{t('right.externalAgentTasksLoading')}</span>
+        </div>
+      )}
+      {view.kind === 'empty' && (
+        <div
+          className="flex items-center gap-2 py-1.5 text-[11px] text-fg-muted"
+          role="status"
+          data-testid="external-agent-task-empty"
+        >
+          <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center text-fg-faint">
+            <Bot size={15} aria-hidden />
+          </span>
+          <span>{t('right.externalAgentTasksEmpty')}</span>
+        </div>
+      )}
+      {view.kind === 'error' && (
+        <div
+          className="mb-2 py-1.5"
+          role="status"
+          aria-live="polite"
+          data-testid="external-agent-task-error"
+        >
+          <div className="flex items-start gap-2">
+            <AlertTriangle size={15} className="mt-0.5 shrink-0 text-warn" aria-hidden />
+            <div className="min-w-0">
+              <div className="text-[11px] font-medium text-fg-primary">
+                {t('right.externalAgentTasksLoadFailed')}
+              </div>
+              <div className="mt-0.5 text-[10px] leading-4 text-fg-muted">
+                {t('right.externalAgentTasksLoadFailedHelp')}
+                {view.showTasks && ` ${t('right.externalAgentTasksShowingLastResult')}`}
+              </div>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={retryTaskList}
+            className="ml-[23px] mt-2 inline-flex min-h-6 items-center gap-1.5 rounded border border-border-strong bg-surface-2 px-2 text-[10px] text-fg-secondary hover:bg-surface-3 hover:text-fg-primary"
+          >
+            <RotateCcw size={10} aria-hidden />
+            {t('right.externalAgentTasksRetry')}
+          </button>
+        </div>
+      )}
+      {actionError && view.kind !== 'loading' && (
+        <div className="mb-2 rounded bg-warn/10 px-2 py-1.5 text-[10px] text-warn" role="status">
+          {t('right.externalAgentTaskActionFailed')}
+        </div>
+      )}
       <div className="space-y-2" data-testid="external-agent-task-list">
         {tasks.map((task) => {
           const expanded = expandedTaskId === task.taskId;

@@ -21,6 +21,7 @@ import {
   type CoderAdmissionOptions,
 } from '../kodax/coder-runtime-mode-switch.js';
 import type { IpcMainInvokeEvent } from 'electron';
+import type { ChannelInput, ChannelOutput } from '@kodax-space/space-ipc-schema';
 
 type SdkCodingModule = typeof import('@kodax-ai/kodax/coding');
 let sdkCodingCache: SdkCodingModule | null = null;
@@ -51,6 +52,30 @@ function requireSession(sessionId: string) {
   const session = kodaxHost.get(sessionId);
   if (!session) throw new Error('session not found');
   return session;
+}
+
+export async function listExternalAgentTasksForIpc(
+  input: ChannelInput<'agent.external.task.list'>,
+): Promise<ChannelOutput<'agent.external.task.list'>> {
+  const liveSession = kodaxHost.get(input.sessionId);
+  if (!liveSession && !(await kodaxHost.hasSession(input.sessionId))) return { tasks: [] };
+
+  const localTasks = await externalAgentGateway.listTasks({
+    parentTaskId: input.sessionId,
+    ...(input.agentId ? { agentId: input.agentId } : {}),
+  });
+  if (liveSession?.surface === 'partner' || !runtimeHostAdapter.isRuntimeSelected()) {
+    return { tasks: localTasks };
+  }
+
+  const runtimeTasks = await runtimeHostAdapter
+    .listRuntimeActorTasks(input.sessionId, input.agentId)
+    .catch(() => []);
+  return {
+    tasks: [...runtimeTasks, ...localTasks]
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+      .slice(0, 256),
+  };
 }
 
 export function registerAgentChannels(options: CoderAdmissionOptions = {}): void {
@@ -211,27 +236,7 @@ export function registerAgentChannels(options: CoderAdmissionOptions = {}): void
   registerChannelWithEvent('agent.external.task.list', (input, event) =>
     runWithCoderAdmission(options, async () => {
       assertPrimaryRenderer(event);
-      const session = requireSession(input.sessionId);
-      if (session.surface === 'code' && runtimeHostAdapter.isRuntimeSelected()) {
-        const runtimeTasks = await runtimeHostAdapter
-          .listRuntimeActorTasks(input.sessionId, input.agentId)
-          .catch(() => []);
-        const localTasks = await externalAgentGateway.listTasks({
-          parentTaskId: input.sessionId,
-          ...(input.agentId ? { agentId: input.agentId } : {}),
-        });
-        return {
-          tasks: [...runtimeTasks, ...localTasks]
-            .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
-            .slice(0, 256),
-        };
-      }
-      return {
-        tasks: await externalAgentGateway.listTasks({
-          parentTaskId: input.sessionId,
-          ...(input.agentId ? { agentId: input.agentId } : {}),
-        }),
-      };
+      return listExternalAgentTasksForIpc(input);
     }),
   );
 

@@ -186,3 +186,69 @@ No actionable P0, P1, or P2 visual differences remain.
 - P3: Aurora Gate uses broader blurred ribbons to keep the CSS-only first frame inexpensive.
 
 Randomized early boot splash result: passed
+
+---
+
+# External Agent Task List Design QA
+
+## Evidence
+
+### Source visual truth
+
+- Loading: `C:/Users/ADMIN/.codex/generated_images/01a019aa-ca04-7f01-9894-68873687b850/exec-a39c07ac-4327-4002-83c4-7cdd43c79916.png`
+- Empty: `C:/Users/ADMIN/.codex/generated_images/01a019aa-ca04-7f01-9894-68873687b850/exec-1cd5a910-b5a8-43a8-856f-869ab0289726.png`
+- Two tasks: `C:/Users/ADMIN/.codex/generated_images/01a019aa-ca04-7f01-9894-68873687b850/exec-90c8fbdf-7490-4064-a7b4-05e23480003e.png`
+- Recoverable error: `C:/Users/ADMIN/.codex/generated_images/01a019aa-ca04-7f01-9894-68873687b850/exec-a61e3327-ced8-4230-9684-c70b97790ae1.png`
+
+### Rendered implementation
+
+- Loading: `C:/Users/ADMIN/.codex/visualizations/2026/08/19/01a019aa-ca04-7f01-9894-68873687b850/external-agent-loading-implementation.png`
+- Empty: `C:/Users/ADMIN/.codex/visualizations/2026/08/19/01a019aa-ca04-7f01-9894-68873687b850/external-agent-empty-implementation.png`
+- Two tasks: `C:/Users/ADMIN/.codex/visualizations/2026/08/19/01a019aa-ca04-7f01-9894-68873687b850/external-agent-tasks-implementation.png`
+- Recoverable error: `C:/Users/ADMIN/.codex/visualizations/2026/08/19/01a019aa-ca04-7f01-9894-68873687b850/external-agent-error-implementation.png`
+
+### Capture normalization
+
+- Browser: Codex in-app browser, local Vite renderer.
+- CSS viewport: 650 x 860, `deviceScaleFactor: 1`.
+- Implementation pixels: 650 x 859.
+- Source pixels: 1090 x 1443, normalized to 650 x 859 with Lanczos resampling before comparison.
+- States: loading, ready-empty, ready-with-two-completed-tasks, and recoverable error.
+- Console check: no warnings or errors in the rendered fixture.
+- Interaction check: Retry is enabled in error state; raw `HANDLER_ERROR` and `session not found` text is absent.
+
+## Comparison evidence
+
+Full-view comparisons:
+
+- `C:/Users/ADMIN/.codex/visualizations/2026/08/19/01a019aa-ca04-7f01-9894-68873687b850/external-agent-loading-comparison.png`
+- `C:/Users/ADMIN/.codex/visualizations/2026/08/19/01a019aa-ca04-7f01-9894-68873687b850/external-agent-empty-comparison.png`
+- `C:/Users/ADMIN/.codex/visualizations/2026/08/19/01a019aa-ca04-7f01-9894-68873687b850/external-agent-tasks-comparison.png`
+- `C:/Users/ADMIN/.codex/visualizations/2026/08/19/01a019aa-ca04-7f01-9894-68873687b850/external-agent-error-comparison.png`
+
+Focused Task Dock comparisons:
+
+- `C:/Users/ADMIN/.codex/visualizations/2026/08/19/01a019aa-ca04-7f01-9894-68873687b850/external-agent-loading-focused-comparison.png`
+- `C:/Users/ADMIN/.codex/visualizations/2026/08/19/01a019aa-ca04-7f01-9894-68873687b850/external-agent-empty-focused-comparison.png`
+- `C:/Users/ADMIN/.codex/visualizations/2026/08/19/01a019aa-ca04-7f01-9894-68873687b850/external-agent-tasks-focused-comparison.png`
+- `C:/Users/ADMIN/.codex/visualizations/2026/08/19/01a019aa-ca04-7f01-9894-68873687b850/external-agent-error-focused-comparison.png`
+
+## Findings
+
+No actionable P0, P1, or P2 differences remain in the four external-task states.
+
+- Fonts and typography: the implementation keeps the product's Geist/JetBrains Mono stack and existing Task Dock type scale. The generated effect images use an enlarged conceptual density; retaining the production type tokens is intentional and consistent with adjacent sections.
+- Spacing and layout rhythm: headers, state content, and following sections retain the current sidebar grid. Empty and error states now use transparent rows rather than nested cards, matching the selected direction.
+- Colors and visual tokens: loading/empty remain neutral; error uses the existing warning token without implying that the completed main run failed; completed task cards retain the existing success token.
+- Image quality and asset fidelity: these states contain no raster imagery or logos. Icons come from the product's existing Lucide dependency and render sharply at the captured density.
+- Copy and content: all four Chinese labels match the selected direction. Error copy explicitly says the main result is unaffected and exposes Retry without technical details.
+- Existing-task cards intentionally retain progress, audit, cancellation, and input affordances that the conceptual static mock omitted. This is an accepted functional constraint rather than design drift.
+
+## Comparison history
+
+1. Initial empty state used a bordered inset card, which added unnecessary hierarchy compared with the selected transparent empty row. Fixed by removing the nested border/background and increasing the icon to the shared row size. Earlier capture: `external-agent-empty-implementation-iteration0.png`; post-fix evidence: `external-agent-empty-focused-comparison.png`.
+2. Initial error state used a full amber card, which visually competed with the completed Run summary. Fixed by using a transparent warning row and neutral outlined Retry button. Earlier capture: `external-agent-error-implementation-iteration0.png`; post-fix evidence: `external-agent-error-focused-comparison.png`.
+
+## Final result
+
+final result: passed

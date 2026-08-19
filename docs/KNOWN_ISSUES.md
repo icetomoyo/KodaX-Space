@@ -186,8 +186,58 @@ Last Updated: 2026-08-19
 | 188 | High     | Resolved           | Complete exit could strand an accepted Windows Runtime stop and relaunch before exact cleanup recovery                              | v0.1.37 complete-exit recovery                               | 2026-08-17 |
 | 189 | Medium | Resolved in source | Safe complete exit held an unresponsive foreground overlay throughout the Runtime orderly-cleanup window | v0.1.43 complete-exit settlement | 2026-08-19 |
 | 190 | High | Resolved in source | Previous-boot Windows ACL markers blocked Runtime startup without actionable recovery guidance | v0.1.43 / KodaX 0.7.92 exit settlement | 2026-08-19 |
+| 191 | Medium | Resolved in source | Persisted Sessions with no external Agent tasks surfaced session_not_found instead of a normal empty state | v0.1.43 historical Task Dock | 2026-08-19 |
 
 ## Issue Details
+
+## Issue 191: Persisted Sessions with no external Agent tasks surfaced session_not_found instead of a normal empty state
+
+- Priority: Medium
+- Status: Resolved in source
+- Introduced: v0.1.43 historical Task Dock
+- Fixed: v0.1.44 development
+- Created: 2026-08-19
+- Resolution Date: 2026-08-19
+
+### Original Problem
+
+Opening a persisted Session after restart could render its completed conversation while the right
+sidebar showed `[agent.external.task.list] handler threw: session not found`. A Session that had not
+called any external Agent should instead show a normal zero-task state.
+
+### Root Cause
+
+The read-only `agent.external.task.list` handler required an in-memory executable Session before it
+queried the durable external-task ledger. Historical Session reads intentionally do not resume
+provider or Runtime state, so a valid persisted-only Session was misclassified as missing. The
+renderer also conflated an empty response with absence of the whole section and exposed raw IPC
+errors when loading failed.
+
+### Resolution
+
+- Task listing now uses the side-effect-free persisted Session ownership probe and returns
+  `{ tasks: [] }` when no owned Session or tasks exist; it does not resume Runtime state.
+- Durable task-store failures remain errors instead of being silently converted to an empty list.
+- The Task Dock now distinguishes loading, ready-empty, ready-with-tasks, and recoverable-error
+  states. Error copy is non-blocking, offers Retry, and preserves the last successful task list.
+- Task mutations and audit reads retain their existing strict Session ownership checks.
+
+### Files Changed
+
+- `apps/desktop/electron/ipc/agent.ts`
+- `apps/desktop/renderer/src/shell/RightSidebar.tsx`
+- `apps/desktop/renderer/src/shell/externalAgentTasksView.ts`
+- `apps/desktop/renderer/src/i18n/messages.ts`
+- adjacent Electron and renderer unit tests
+
+### Verification
+
+- Persisted-only empty task list and real store-failure regressions passed.
+- Four-state renderer projection and the existing external-agent gateway suite passed.
+- Desktop renderer/Electron TypeScript checks and targeted ESLint passed.
+
+See
+[`ISSUE_191_v0.1.44_REGRESSION_GUIDE.md`](test-guides/ISSUE_191_v0.1.44_REGRESSION_GUIDE.md).
 
 ## Issue 190: Previous-boot Windows ACL markers blocked Runtime startup without actionable recovery guidance
 
@@ -13661,13 +13711,13 @@ misclassified as missing before the durable mutation is attempted.
 
 ## Summary
 
-- Total: 176
+- Total: 177
 - Open: 1
 - Ready: 0
 - In Progress: 10
 - Deferred: 0
-- Resolved: 165
+- Resolved: 166
 - High: 91
-- Medium: 74
+- Medium: 75
 - Low: 11
 - Next to resolve: 165
