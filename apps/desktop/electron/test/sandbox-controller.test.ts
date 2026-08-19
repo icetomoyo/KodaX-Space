@@ -184,6 +184,32 @@ test('Windows ACL recovery blocks expose v4 recovery guidance instead of Setup',
   assert.equal(JSON.stringify(status).includes('ProgramData'), false);
 });
 
+test('foreign Windows ACL owner diagnostics use recovery guidance instead of Setup', async () => {
+  const recoveryDiagnostic =
+    'Windows sandbox ACL recovery found a foreign or unverifiable owner marker.';
+  const blocked = doctor({
+    ready: false,
+    setupRequired: false,
+    diagnostics: [recoveryDiagnostic],
+  });
+  const controller = new SandboxController({
+    loadSdk: async () =>
+      fakeSdk({
+        doctorKodaXSandbox: async () => blocked,
+        getKodaXSandboxSetupGuidance: () => [recoveryDiagnostic],
+      }),
+    now: () => new Date('2026-08-19T08:00:00.000Z'),
+  });
+
+  const status = await controller.status();
+
+  assert.equal(status.readiness, 'unavailable');
+  assert.equal(status.setup.canSetup, false);
+  assert.deepEqual(status.diagnostics, ['Windows sandbox ACL cleanup is unconfirmed.']);
+  assert.ok(status.guidance.some((line) => /restart Windows/i.test(line)));
+  assert.equal(JSON.stringify(status).includes('foreign or unverifiable'), false);
+});
+
 test('confirmed Windows setup activates once and verifies a fresh ready doctor result', async () => {
   let ready = false;
   let activationCount = 0;

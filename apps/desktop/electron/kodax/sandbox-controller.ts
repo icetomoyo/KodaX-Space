@@ -67,12 +67,13 @@ function compactText(value: string): string {
     .slice(0, MAX_SANDBOX_STATUS_TEXT);
 }
 
-function isWindowsAclRecoveryText(value: string): boolean {
+export function isWindowsAclRecoveryText(value: string): boolean {
   const normalized = value.toLowerCase();
   return (
     normalized.includes('acl_cleanup_unconfirmed') ||
     (normalized.includes('windows sandbox') &&
       (normalized.includes('acl cleanup') ||
+        normalized.includes('acl recovery') ||
         normalized.includes('poison marker') ||
         normalized.includes('boot identity') ||
         normalized.includes('process tree')))

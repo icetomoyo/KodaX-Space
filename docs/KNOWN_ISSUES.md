@@ -185,8 +185,71 @@ Last Updated: 2026-08-19
 | 187 | Medium   | Resolved           | Restored historical Sessions could display history but fork and rewind failed with session_not_found                               | v0.1.42 historical Session mutation admission                | 2026-08-16 |
 | 188 | High     | Resolved           | Complete exit could strand an accepted Windows Runtime stop and relaunch before exact cleanup recovery                              | v0.1.37 complete-exit recovery                               | 2026-08-17 |
 | 189 | Medium | Resolved in source | Safe complete exit held an unresponsive foreground overlay throughout the Runtime orderly-cleanup window | v0.1.43 complete-exit settlement | 2026-08-19 |
+| 190 | High | Resolved in source | Previous-boot Windows ACL markers blocked Runtime startup without actionable recovery guidance | v0.1.43 / KodaX 0.7.92 exit settlement | 2026-08-19 |
 
 ## Issue Details
+
+## Issue 190: Previous-boot Windows ACL markers blocked Runtime startup without actionable recovery guidance
+
+- Priority: High
+- Status: Resolved in source
+- Introduced: v0.1.43 / KodaX 0.7.92 exit settlement
+- Fixed: v0.1.44 development with unreleased KodaX SDK source
+- Created: 2026-08-19
+- Resolution Date: 2026-08-19
+
+### Original Problem
+
+When SDK settlement reported `Windows sandbox ACL recovery found a foreign or
+unverifiable owner marker.`, Space correctly refused to create a competing
+Coder Runtime but displayed only the raw English SDK message. The Settings
+sandbox projection did not classify that wording as an ACL recovery block, so
+it could fall back to generic unavailable/setup guidance instead of restart and
+diagnostic steps.
+
+### Root Cause
+
+Space recognized `acl cleanup`, poison-marker, boot-identity, and process-tree
+phrases but not the SDK's `ACL recovery` wording. The startup dialog also bound
+its detail directly to the SDK message instead of projecting the authoritative
+`nextAction` into localized user guidance. Automatic marker recovery correctly
+remained outside Space, but the SDK's exact-owner settlement could not converge
+multiple owners that were all provably from an earlier Windows boot.
+
+### Resolution
+
+- Classify `Windows sandbox ... ACL recovery` as the existing bounded ACL
+  recovery diagnostic and continue to disable Setup for that state.
+- Project blocked startup settlement into localized restart/support steps and a
+  main-process “Open diagnostics folder” action that is reachable before normal
+  renderer startup. Known ACL blocks do not echo raw marker messages or paths.
+- Keep startup ordering and safety unchanged: settlement completes or blocks
+  before owner reconciliation and Runtime initialization; Space never calls
+  sandbox Setup/activation from startup.
+- Unreleased KodaX settlement source now owns recovery of multiple markers only
+  when a changed boot and a machine-lock recheck prove that every marker has a
+  canonical non-current Windows boot identity. Space v0.1.44 must not ship this
+  automatic recovery claim until that SDK is published and integrity-pinned.
+
+### Files Changed
+
+- `apps/desktop/electron/kodax/sandbox-controller.ts`
+- `apps/desktop/electron/window/runtime-exit-recovery.ts`
+- `apps/desktop/electron/main.ts`
+- adjacent Electron main tests
+
+### Tests Added
+
+- The reported foreign/unverifiable marker sentence maps to bounded ACL recovery
+  diagnostics and recovery guidance, never Setup.
+- Chinese and English startup notices expose the reachable diagnostics-folder
+  action without exposing raw SDK messages, paths, or control characters.
+- `manual-recovery` ACL blocks do not recommend another ineffective reboot.
+- Existing startup-boundary tests continue to prove that blocked settlement
+  prevents owner reconciliation and Runtime initialization.
+
+See
+[`ISSUE_190_v0.1.44_REGRESSION_GUIDE.md`](test-guides/ISSUE_190_v0.1.44_REGRESSION_GUIDE.md).
 
 ## Issue 189: Safe complete exit held an unresponsive foreground overlay throughout the Runtime orderly-cleanup window
 
@@ -13598,13 +13661,13 @@ misclassified as missing before the durable mutation is attempted.
 
 ## Summary
 
-- Total: 175
+- Total: 176
 - Open: 1
 - Ready: 0
 - In Progress: 10
 - Deferred: 0
-- Resolved: 164
-- High: 90
+- Resolved: 165
+- High: 91
 - Medium: 74
 - Low: 11
 - Next to resolve: 165

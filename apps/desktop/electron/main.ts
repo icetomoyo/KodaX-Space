@@ -115,7 +115,11 @@ import { runtimeHostAdapter, type RuntimeExitSettlement } from './kodax/runtime-
 import { startBackgroundRuntimeInitialization } from './kodax/background-runtime-startup.js';
 import { CoderRuntimeModeSwitchCoordinator } from './kodax/coder-runtime-mode-switch.js';
 import { isCoderOwnerRecoveryRestartRequired } from './kodax/coder-owner-recovery-error.js';
-import { runRuntimeStartupBoundary } from './window/runtime-exit-recovery.js';
+import {
+  handleRuntimeExitRecoveryDialogResponse,
+  runRuntimeStartupBoundary,
+  runtimeExitRecoveryBlockedNotice,
+} from './window/runtime-exit-recovery.js';
 import { permissionRegistry } from './permission/registry.js';
 import { permissionBroker } from './permission/broker.js';
 import { askUserBroker } from './permission/ask-user-broker.js';
@@ -123,6 +127,7 @@ import { providerConfigStore } from './providers/config.js';
 import {
   initializeDiagnostics,
   flushDiagnostics,
+  getDiagnosticLogDirectory,
   refreshDiagnosticRedactionOptions,
 } from './diagnostics/runtime.js';
 import { registerDiagnosticsChannels } from './ipc/diagnostics.js';
@@ -2293,6 +2298,10 @@ const startupPromise = app
     if (startupBoundary.action === 'block') {
       const locale = await resolveCurrentTrayLocale();
       const zh = locale === 'zh-CN';
+      const notice = runtimeExitRecoveryBlockedNotice(
+        startupBoundary.settlement,
+        zh ? 'zh-CN' : 'en',
+      );
       restoreVisibleExitControlSurface();
       setVisibleBootStatus(
         zh
@@ -2300,16 +2309,27 @@ const startupPromise = app
           : 'Runtime exit recovery remains blocked by its safety boundary.',
         'close-only',
       );
-      await dialog.showMessageBox({
+      const blockerDialog = await dialog.showMessageBox({
         type: 'error',
-        title: zh ? 'Runtime 退出恢复被阻止' : 'Runtime exit recovery blocked',
-        message: zh
-          ? 'Space 未启动新的 Coder Runtime'
-          : 'Space did not start a competing Coder Runtime',
-        detail: startupBoundary.settlement.message,
-        buttons: [zh ? '确定' : 'OK'],
-        defaultId: 0,
+        ...notice,
+        buttons: [zh ? '打开诊断目录' : 'Open diagnostics folder', zh ? '关闭' : 'Close'],
+        defaultId: 1,
+        cancelId: 1,
         noLink: true,
+      });
+      await handleRuntimeExitRecoveryDialogResponse(blockerDialog.response, {
+        diagnosticsDirectory: () =>
+          getDiagnosticLogDirectory() ?? path.join(app.getPath('userData'), 'diagnostics'),
+        ensureDirectory: (directory) => mkdirSync(directory, { recursive: true }),
+        openDirectory: (directory) => shell.openPath(directory),
+        onOpenError: (openError) => {
+          diagnosticsLogger?.warn(
+            'diagnostics',
+            'runtime-exit-recovery-folder-open-failed',
+            'The Runtime recovery diagnostics directory could not be opened.',
+            { error: openError.slice(0, 512) },
+          );
+        },
       });
       return;
     }
