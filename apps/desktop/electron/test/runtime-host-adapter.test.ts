@@ -10161,6 +10161,107 @@ test('daemon bridge rejects malformed and transient child Provider recovery even
   await adapter.close();
 });
 
+test('daemon bridge projects root repo-intelligence traces onto the Repointel chip event', async () => {
+  const sessionEvents: unknown[] = [];
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    push: (channel, payload) => {
+      if (channel === 'session.event') sessionEvents.push(payload);
+    },
+  });
+  const bridgeRuntimeEvent = bindTestRuntimeEventBridge(adapter);
+
+  bridgeRuntimeEvent({
+    id: 'event_repo_intel_trace',
+    seq: 44,
+    time: '2026-08-19T00:00:00.000Z',
+    type: 'repo_intelligence.trace',
+    sessionId: 's_repointel',
+    runId: 'run_repointel',
+    turnId: 'turn_repointel',
+    payload: {
+      stage: 'preturn',
+      summary: 'stage=preturn | mode=full/full/ok | cache_hit=yes',
+      capability: {
+        mode: 'full',
+        engine: 'full',
+        level: 'enhanced',
+        status: 'ok',
+        warnings: [],
+      },
+      trace: {
+        mode: 'full',
+        engine: 'full',
+        triggeredAt: '2026-08-19T00:00:00.000Z',
+        source: 'full',
+        cacheHit: true,
+      },
+    },
+  });
+
+  assert.deepEqual(sessionEvents, [
+    {
+      kind: 'repointel_trace',
+      sessionId: 's_repointel',
+      event: {
+        kind: 'preturn',
+        mode: 'full',
+        engine: 'full',
+        status: 'ok',
+        cacheHit: true,
+      },
+    },
+  ]);
+  await adapter.close();
+});
+
+test('daemon bridge drops transient child repo-intelligence traces', async () => {
+  const sessionEvents: unknown[] = [];
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    push: (channel, payload) => {
+      if (channel === 'session.event') sessionEvents.push(payload);
+    },
+  });
+  const bridgeRuntimeEvent = bindTestRuntimeEventBridge(adapter);
+
+  bridgeRuntimeEvent({
+    id: 'event_child_repo_intel_trace',
+    seq: 45,
+    time: '2026-08-19T00:00:01.000Z',
+    type: 'repo_intelligence.trace',
+    sessionId: 's_repointel',
+    runId: 'run_repointel',
+    turnId: 'turn_repointel',
+    payload: {
+      stage: 'module',
+      summary: 'stage=module',
+      capability: {
+        mode: 'full',
+        engine: 'full',
+        level: 'enhanced',
+        status: 'ok',
+        warnings: [],
+      },
+      meta: {
+        contextKind: 'child',
+        contextId: 'child_context_1',
+        parentContextId: 's_repointel',
+        childAgentId: 'child_1',
+        childAgentName: 'Researcher',
+        liveOnly: true,
+        workflowCorrelation: {
+          workflowRunId: 'workflow_1',
+          childAgentId: 'child_1',
+        },
+      },
+    },
+  } as import('@kodax-ai/kodax/runtime').RuntimeTypedEvent);
+
+  assert.deepEqual(sessionEvents, []);
+  await adapter.close();
+});
+
 test('daemon bridge routes child activity without inserting it into the primary transcript', async () => {
   const sessionEvents: unknown[] = [];
   const workflowActivities: unknown[] = [];

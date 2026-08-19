@@ -4730,6 +4730,7 @@ export class RuntimeHostAdapter {
         event.type === 'thinking.delta' ||
         event.type === 'thinking.finished' ||
         event.type === 'provider.recovery' ||
+        event.type === 'repo_intelligence.trace' ||
         event.type === 'tool.progress' ||
         event.type === 'tool.sandbox' ||
         event.type === 'todo.updated'
@@ -4808,6 +4809,25 @@ export class RuntimeHostAdapter {
         fallbackUsed: recovery.fallbackUsed,
       });
       if (parsed.success && parsed.data.kind === 'provider_recovery') {
+        this.push('session.event', parsed.data);
+      }
+      return;
+    }
+    if (event.type === 'repo_intelligence.trace') {
+      const capability = runtimeEventRecord(payload?.capability);
+      const trace = runtimeEventRecord(payload?.trace);
+      const parsed = sessionEventChannel.payload.safeParse({
+        kind: 'repointel_trace',
+        sessionId: event.sessionId,
+        event: {
+          kind: payload?.stage,
+          ...(typeof capability?.mode === 'string' ? { mode: capability.mode } : {}),
+          ...(typeof capability?.engine === 'string' ? { engine: capability.engine } : {}),
+          ...(typeof capability?.status === 'string' ? { status: capability.status } : {}),
+          ...(typeof trace?.cacheHit === 'boolean' ? { cacheHit: trace.cacheHit } : {}),
+        },
+      });
+      if (parsed.success && parsed.data.kind === 'repointel_trace') {
         this.push('session.event', parsed.data);
       }
       return;
