@@ -20,9 +20,9 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
   owner reconciliation when SDK settlement is unresolved, but foreign Windows
   sandbox ACL diagnostics now produce localized restart/support steps and a
   reachable diagnostics-folder action without exposing raw marker text. Space
-  never invokes Setup or elevation from startup; verified previous-boot recovery
-  remains inside the unreleased SDK-owned settlement fix and must be published
-  and pinned before v0.1.44 ships.
+  never invokes Setup or elevation from startup. Published KodaX 0.7.93 now owns
+  verified previous-boot recovery inside settlement, and both Space manifests
+  plus the lockfile pin its audited Registry package and integrity.
 
 ---
 

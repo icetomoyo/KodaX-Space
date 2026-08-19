@@ -288,7 +288,7 @@ See
 - Priority: High
 - Status: Resolved in source
 - Introduced: v0.1.43 / KodaX 0.7.92 exit settlement
-- Fixed: v0.1.44 development with unreleased KodaX SDK source
+- Fixed: v0.1.44 development with published KodaX 0.7.93
 - Created: 2026-08-19
 - Resolution Date: 2026-08-19
 
@@ -320,10 +320,10 @@ multiple owners that were all provably from an earlier Windows boot.
 - Keep startup ordering and safety unchanged: settlement completes or blocks
   before owner reconciliation and Runtime initialization; Space never calls
   sandbox Setup/activation from startup.
-- Unreleased KodaX settlement source now owns recovery of multiple markers only
+- Published KodaX 0.7.93 settlement owns recovery of multiple markers only
   when a changed boot and a machine-lock recheck prove that every marker has a
-  canonical non-current Windows boot identity. Space v0.1.44 must not ship this
-  automatic recovery claim until that SDK is published and integrity-pinned.
+  canonical non-current Windows boot identity. Both Space manifests and the
+  lockfile now pin the audited Registry package and integrity.
 
 ### Files Changed
 

@@ -4,7 +4,7 @@
 > Coder daemon 必须显式提供 `managedRunDurability:1`；Space 只消费其 canonical
 > managed-Run `runId`/`turnId`，不维护第二份 Run 状态。未配置的 Auto LLM classifier timeout
 > 使用 KodaX 的首次 45 秒、重试 90 秒默认值。root/Desktop 使用同一份完整性锁定的 npm Registry
-> KodaX `0.7.92` 正式包，lockfile 与物理安装匹配正式 Registry URL/SRI。Provider 实时输出以 SDK 的
+> KodaX `0.7.93` 正式包，lockfile 与物理安装匹配正式 Registry URL/SRI。Provider 实时输出以 SDK 的
 > response/request segment 投影为唯一真理；Space 不保留 checkpoint replay 执行回退。
 > 在任何 replacement daemon 启动前恢复持久退出票据。
 

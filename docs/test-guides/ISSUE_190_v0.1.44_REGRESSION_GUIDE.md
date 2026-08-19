@@ -23,8 +23,8 @@
 2. Verify startup does not show UAC and does not invoke sandbox Setup.
 3. On the blocking boot surface, select “Open diagnostics folder” and verify the
    main-process log directory opens without admitting normal renderer startup.
-4. After the fixed SDK is published and integrity-pinned, restart Windows and
-   relaunch with two valid previous-boot markers. Verify settlement completes
+4. With the published, integrity-pinned KodaX 0.7.93 package, restart Windows
+   and relaunch with two valid previous-boot markers. Verify settlement completes
    before owner reconciliation and Space no longer shows the blocker.
 5. Repeat with a current-boot, identity-free, or corrupt marker. Verify startup
    remains blocked and the diagnostic evidence is retained.

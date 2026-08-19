@@ -55,7 +55,7 @@
     "smoke:complete-exit": "node e2e/complete-exit-packaged.mjs"
   },
   "dependencies": {
-    "@kodax-ai/kodax": "0.7.92",
+    "@kodax-ai/kodax": "0.7.93",
     "@napi-rs/keyring": "^1.3.0",
     "better-sqlite3": "12.11.1",
     "react": "19.2.7"

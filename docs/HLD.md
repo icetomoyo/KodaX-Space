@@ -4,7 +4,7 @@
 > `RuntimeHostAdapter` 要求 `managedRunDurability:1`，使 accepted prompt 与 completed turn
 > 在事件发布前已成为 canonical managed Run；Space 仅用 returned `runId`/`turnId` 关联 UI
 > optimistic state 和 history，不复制持久化职责。未设置 Auto timeout 时，SDK 默认 45 秒首次、90 秒重试。
-> root/Desktop 使用同一份完整性锁定的 npm Registry KodaX `0.7.92`
+> root/Desktop 使用同一份完整性锁定的 npm Registry KodaX `0.7.93`
 > 正式包；manifest、lockfile、物理安装与打包 ASAR 必须匹配正式 Registry URL/SRI。Runtime raw journal 保留全部 provider attempt，live snapshot
 > 只提供 SDK 计算后的有效 segment；Space 不运行 checkpoint/text replay 状态机。
 > owner reconciliation 与 daemon auto-start 前仍先恢复精确 complete-exit 票据。
