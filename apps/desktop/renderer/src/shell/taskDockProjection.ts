@@ -33,14 +33,7 @@ export interface TaskDockRunViewModel {
   readonly detail?: string;
   readonly metrics: readonly TaskDockMetric[];
   readonly primaryTarget?:
-    | 'run'
-    | 'plan'
-    | 'workflow'
-    | 'agents'
-    | 'changes'
-    | 'sources'
-    | 'artifacts'
-    | 'context';
+    'run' | 'plan' | 'workflow' | 'agents' | 'changes' | 'sources' | 'artifacts' | 'context';
   readonly attentionKind?: 'permission' | 'ask_user' | 'budget' | 'error' | 'blocked';
 }
 
@@ -48,6 +41,7 @@ export interface BuildTaskDockRunInput {
   readonly hasProject: boolean;
   readonly hasSession: boolean;
   readonly pendingSend: boolean;
+  readonly isStreaming: boolean;
   readonly todos?: readonly TodoItem[];
   readonly managedStatus?: ManagedTaskStatus;
   readonly actorSnapshot?: AgentActorTreeSnapshotT;
@@ -98,8 +92,8 @@ export function buildTaskDockRunView(input: BuildTaskDockRunInput): TaskDockRunV
     );
   }
 
-  const latestError = latestEventKind(input.events, 'session_error');
-  if (latestError) {
+  const latestTerminalKind = latestRootSessionTerminalKind(input.events);
+  if (latestTerminalKind === 'session_error' && !input.isStreaming) {
     return {
       mode: 'error',
       severity: 'danger',
@@ -164,7 +158,18 @@ export function buildTaskDockRunView(input: BuildTaskDockRunInput): TaskDockRunV
     };
   }
 
-  if (latestEventKind(input.events, 'session_complete')) {
+  if (input.isStreaming) {
+    return {
+      mode: 'running',
+      severity: 'running',
+      headline: t('taskDock.runInProgress'),
+      detail: t('taskDock.runInProgressDetail'),
+      metrics: buildMetrics(input, agents, t),
+      primaryTarget: 'run',
+    };
+  }
+
+  if (latestTerminalKind === 'session_complete') {
     return {
       mode: 'completed',
       severity: 'success',
@@ -267,13 +272,21 @@ function formatAgentMetricValue(
   return String(total);
 }
 
-function latestEventKind(
+function latestRootSessionTerminalKind(
   events: readonly SessionEvent[] | undefined,
-  kind: SessionEvent['kind'],
-): boolean {
-  if (!events || events.length === 0) return false;
+): 'session_complete' | 'session_error' | undefined {
+  if (!events || events.length === 0) return undefined;
   for (let i = events.length - 1; i >= Math.max(0, events.length - 8); i--) {
-    if (events[i]?.kind === kind) return true;
+    const event = events[i];
+    if (!event || ('contextKind' in event && event.contextKind === 'child')) continue;
+    if (event.kind === 'session_complete' || event.kind === 'session_error') return event.kind;
+    if (
+      event.kind === 'session_start' ||
+      event.kind === 'queued_user_prompt_started' ||
+      event.kind === 'mid_turn_user_prompt'
+    ) {
+      return undefined;
+    }
   }
-  return false;
+  return undefined;
 }

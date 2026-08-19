@@ -10,6 +10,7 @@ test('task dock run projection prioritizes blocking permission attention', () =>
     hasProject: true,
     hasSession: true,
     pendingSend: true,
+    isStreaming: false,
     hasPermissionRequest: true,
   });
 
@@ -18,11 +19,65 @@ test('task dock run projection prioritizes blocking permission attention', () =>
   assert.equal(view.primaryTarget, 'run');
 });
 
+test('task dock remains running after the current turn starts streaming', () => {
+  const view = buildTaskDockRunView({
+    hasProject: true,
+    hasSession: true,
+    pendingSend: false,
+    isStreaming: true,
+    events: [
+      { kind: 'session_complete', sessionId: 'session-1' },
+      { kind: 'session_start', sessionId: 'session-1', provider: 'codex' },
+      { kind: 'thinking_delta', sessionId: 'session-1', text: 'Still thinking' },
+    ],
+  });
+
+  assert.equal(view.mode, 'running');
+  assert.equal(view.severity, 'running');
+  assert.equal(view.primaryTarget, 'run');
+  assert.equal(view.headline, 'Run in progress');
+});
+
+test('task dock current streaming turn outranks an error from the previous turn', () => {
+  const view = buildTaskDockRunView({
+    hasProject: true,
+    hasSession: true,
+    pendingSend: false,
+    isStreaming: true,
+    events: [
+      { kind: 'session_error', sessionId: 'session-1', error: 'Previous turn failed' },
+      { kind: 'session_start', sessionId: 'session-1', provider: 'codex' },
+      { kind: 'thinking_delta', sessionId: 'session-1', text: 'Retry is running' },
+    ],
+  });
+
+  assert.equal(view.mode, 'running');
+  assert.equal(view.headline, 'Run in progress');
+});
+
+test('task dock successful retry outranks an error from the previous turn', () => {
+  const view = buildTaskDockRunView({
+    hasProject: true,
+    hasSession: true,
+    pendingSend: false,
+    isStreaming: false,
+    events: [
+      { kind: 'session_error', sessionId: 'session-1', error: 'Previous turn failed' },
+      { kind: 'session_start', sessionId: 'session-1', provider: 'codex' },
+      { kind: 'session_complete', sessionId: 'session-1' },
+    ],
+  });
+
+  assert.equal(view.mode, 'completed');
+  assert.equal(view.headline, 'Run complete');
+});
+
 test('task dock run projection routes active worker to agents', () => {
   const view = buildTaskDockRunView({
     hasProject: true,
     hasSession: true,
     pendingSend: false,
+    isStreaming: false,
     managedStatus: {
       agentMode: 'ama',
       harnessProfile: 'H2_PLAN_EXECUTE_EVAL',
@@ -50,6 +105,7 @@ test('task dock run projection summarizes active and completed agents', () => {
     hasProject: true,
     hasSession: true,
     pendingSend: false,
+    isStreaming: false,
     managedStatus: {
       agentMode: 'ama',
       harnessProfile: 'H2_PLAN_EXECUTE_EVAL',
@@ -130,6 +186,7 @@ test('task dock run projection uses the Runtime Actor tree for root and child st
     hasProject: true,
     hasSession: true,
     pendingSend: false,
+    isStreaming: false,
     actorSnapshot,
     managedStatus: {
       agentMode: 'ama',
@@ -163,6 +220,7 @@ test('task dock plan metric counts completed items only', () => {
     hasProject: true,
     hasSession: true,
     pendingSend: false,
+    isStreaming: false,
     todos: [
       { id: 'a', content: 'A', status: 'completed' },
       { id: 'b', content: 'B', status: 'in_progress' },
@@ -181,6 +239,7 @@ test('task dock run projection gives no-project actionable state', () => {
     hasProject: false,
     hasSession: false,
     pendingSend: false,
+    isStreaming: false,
   });
 
   assert.equal(view.mode, 'no_project');
@@ -192,6 +251,7 @@ test('task dock run projection gives neutral idle state before a session exists'
     hasProject: true,
     hasSession: false,
     pendingSend: false,
+    isStreaming: false,
   });
 
   assert.equal(view.mode, 'idle');
@@ -208,6 +268,7 @@ test('task dock run view cache reuses the same raw input snapshot', () => {
     hasProject: true,
     hasSession: true,
     pendingSend: false,
+    isStreaming: false,
     workflowRuns,
     events,
     t,
@@ -215,9 +276,12 @@ test('task dock run view cache reuses the same raw input snapshot', () => {
 
   const first = getCachedTaskDockRunView(input);
   const second = getCachedTaskDockRunView({ ...input, workflowRuns: [workflowRun] });
+  const streaming = getCachedTaskDockRunView({ ...input, isStreaming: true });
   const third = getCachedTaskDockRunView({ ...input, events: [] });
 
   assert.equal(second, first);
+  assert.notEqual(streaming, first);
+  assert.equal(streaming.mode, 'running');
   assert.notEqual(third, first);
 });
 
