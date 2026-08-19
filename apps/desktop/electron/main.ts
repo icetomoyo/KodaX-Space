@@ -1307,24 +1307,6 @@ function continueCompleteExitInBackground(locale: BackgroundTrayLocale): void {
     blockers: [],
     exitElapsedSeconds: 0,
   });
-  try {
-    backgroundTray?.displayBalloon({
-      title:
-        locale === 'zh-CN'
-          ? 'KodaX Space 正在后台安全退出'
-          : 'KodaX Space is quitting safely in the background',
-      content:
-        locale === 'zh-CN'
-          ? '正在安全清理 Runtime；完成后会自动退出。若清理失败，Space 会自动恢复窗口。'
-          : 'Runtime cleanup continues safely. Space exits automatically when done and restores the window if cleanup fails.',
-      iconType: 'info',
-    });
-  } catch (error) {
-    console.warn(
-      '[main] could not show background safe-exit notice:',
-      error instanceof Error ? error.message : String(error),
-    );
-  }
   hideExitWindowsForBackgroundShutdown();
 }
 

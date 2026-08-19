@@ -187,8 +187,52 @@ Last Updated: 2026-08-19
 | 189 | Medium | Resolved in source | Safe complete exit held an unresponsive foreground overlay throughout the Runtime orderly-cleanup window | v0.1.43 complete-exit settlement | 2026-08-19 |
 | 190 | High | Resolved in source | Previous-boot Windows ACL markers blocked Runtime startup without actionable recovery guidance | v0.1.43 / KodaX 0.7.92 exit settlement | 2026-08-19 |
 | 191 | Medium | Resolved in source | Persisted Sessions with no external Agent tasks surfaced session_not_found instead of a normal empty state | v0.1.43 historical Task Dock | 2026-08-19 |
+| 192 | Medium | Resolved in source | Every ordinary safe exit showed a prominent Windows notification despite requiring no user action | v0.1.43 background complete-exit presentation | 2026-08-19 |
 
 ## Issue Details
+
+## Issue 192: Every ordinary safe exit showed a prominent Windows notification despite requiring no user action
+
+- Priority: Medium
+- Status: Resolved in source
+- Introduced: v0.1.43 background complete-exit presentation
+- Fixed: v0.1.44 development
+- Created: 2026-08-19
+- Resolution Date: 2026-08-19
+
+### Original Problem
+
+Every ordinary complete exit displayed a large Windows notification saying that KodaX Space was
+cleaning Runtime in the background. The user had already requested the exit, the message offered no
+action, and the same progress was available through the in-app exit surface and system tray.
+
+### Root Cause
+
+`continueCompleteExitInBackground` unconditionally called the Windows tray `displayBalloon` API
+whenever complete exit moved behind the tray. The notification was therefore expected on every
+successful handoff rather than being reserved for a failure or decision that needed attention.
+
+### Resolution
+
+- Ordinary safe exit no longer emits a Windows balloon notification.
+- The immediate in-app exit status, tray tooltip/menu progress, elapsed time, and automatic exit
+  remain unchanged.
+- Failed cleanup still restores the Space window, and active-work or forced-exit decisions still use
+  their existing actionable dialogs.
+
+### Files Changed
+
+- `apps/desktop/electron/main.ts`
+- `apps/desktop/electron/test/complete-exit-notification.test.ts`
+
+### Verification
+
+- A source-boundary regression prevents the background complete-exit handoff from calling
+  `displayBalloon` while requiring tray progress and window hiding to remain present.
+- Complete-exit policy, overlay, tray presentation, and shutdown-window tests passed.
+
+See
+[`ISSUE_192_v0.1.44_REGRESSION_GUIDE.md`](test-guides/ISSUE_192_v0.1.44_REGRESSION_GUIDE.md).
 
 ## Issue 191: Persisted Sessions with no external Agent tasks surfaced session_not_found instead of a normal empty state
 
@@ -13711,13 +13755,13 @@ misclassified as missing before the durable mutation is attempted.
 
 ## Summary
 
-- Total: 177
+- Total: 180
 - Open: 1
 - Ready: 0
 - In Progress: 10
 - Deferred: 0
-- Resolved: 166
-- High: 91
-- Medium: 75
+- Resolved: 169
+- High: 92
+- Medium: 77
 - Low: 11
 - Next to resolve: 165
