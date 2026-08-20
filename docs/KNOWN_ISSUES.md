@@ -189,8 +189,56 @@ Last Updated: 2026-08-20
 | 191 | Medium | Resolved in v0.1.44 | Persisted Sessions with no external Agent tasks surfaced session_not_found instead of a normal empty state | v0.1.43 historical Task Dock | 2026-08-19 |
 | 192 | Medium | Resolved in v0.1.44 | Every ordinary safe exit showed a prominent Windows notification despite requiring no user action | v0.1.43 background complete-exit presentation | 2026-08-19 |
 | 193 | High     | Resolved in source | Active transcript reconciliation can move thinking to the tail and reload can hide sidecar or queued interrupt content              | v0.1.44 canonical/live reconciliation                        | 2026-08-20 |
+| 194 | Medium   | Resolved in source | Packaged standalone Artifact windows rendered `invalid-url` instead of their persisted content                                    | v0.1.31 `app://space` renderer migration                     | 2026-08-20 |
 
 ## Issue Details
+
+## Issue 194: Packaged standalone Artifact windows rendered `invalid-url` instead of their persisted content
+
+- Priority: Medium
+- Status: Resolved in source
+- Introduced: v0.1.31 `app://space` renderer migration
+- Created: 2026-08-20
+- Resolved: 2026-08-20
+
+### Original Problem
+
+Opening any persisted Artifact in its standalone BrowserWindow produced a black page with no
+Artifact content. The same Artifact remained readable in the right sidebar.
+
+Expected behavior: `artifact.openWindow` loads the standalone renderer and displays the selected
+Artifact version just as the embedded viewer does.
+
+### Root Cause
+
+The standalone window retained the documented client-side route
+`app://space/index.html#artifact?id=...` after the packaged renderer migrated from `file://` to the
+custom `app://space` protocol. Electron includes the fragment in custom-protocol requests, while
+the Space protocol resolver rejected every fragment with `400 invalid-url`. The renderer therefore
+never booted; the failure occurred before Artifact IPC reads or SDK behavior were involved.
+
+### Resolution
+
+- The immutable app protocol now permits fragments only on `/index.html`, where they select a
+  client-side renderer route without changing the file being served.
+- Queries and fragments on packaged assets remain rejected, preserving the existing canonical
+  asset and traversal boundary.
+- A real Electron regression creates a persisted interactive HTML Artifact, opens it through
+  `artifact.openWindow`, and asserts its sandboxed content renders in the standalone window.
+- No KodaX SDK change was required.
+
+### Files Changed
+
+- `apps/desktop/electron/window/app-protocol-policy.ts`
+- `apps/desktop/electron/test/app-protocol-policy.test.ts`
+- `tests/e2e/artifact-html-runtime.spec.ts`
+
+### Verification
+
+- App protocol policy: 6 passed, 1 platform-permission skip.
+- Artifact HTML Electron E2E: 5 passed.
+- Desktop renderer and Electron TypeScript checks passed.
+- Focused ESLint passed with zero warnings.
 
 ## Issue 193: Active transcript reconciliation can move thinking to the tail and reload can hide sidecar or queued interrupt content
 
@@ -13865,13 +13913,13 @@ misclassified as missing before the durable mutation is attempted.
 
 ## Summary
 
-- Total: 181
+- Total: 182
 - Open: 1
 - Ready: 0
 - In Progress: 10
 - Deferred: 0
-- Resolved: 170
+- Resolved: 171
 - High: 93
-- Medium: 77
+- Medium: 78
 - Low: 11
 - Next to resolve: 165

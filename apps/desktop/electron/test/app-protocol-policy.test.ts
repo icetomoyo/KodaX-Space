@@ -29,21 +29,29 @@ test('app protocol resolves root and regular renderer assets', async () => {
   const { root } = await fixture();
   const canonicalRoot = await realpath(root);
   const index = await resolveAppProtocolPath('app://space/', root);
+  const artifactIndex = await resolveAppProtocolPath(
+    'app://space/index.html#artifact?id=artifact-1',
+    root,
+  );
   const asset = await resolveAppProtocolPath('app://space/assets/main.js', root);
 
   assert.deepEqual(index, { ok: true, filePath: path.join(canonicalRoot, 'index.html') });
+  assert.deepEqual(artifactIndex, {
+    ok: true,
+    filePath: path.join(canonicalRoot, 'index.html'),
+  });
   assert.deepEqual(asset, { ok: true, filePath: path.join(canonicalRoot, 'assets', 'main.js') });
   assert.equal(APP_PROTOCOL_INDEX_URL, 'app://space/index.html');
 });
 
-test('app protocol rejects hosts, credentials, ports, query, and fragments', async () => {
+test('app protocol rejects hosts, credentials, ports, query, and asset fragments', async () => {
   const { root } = await fixture();
   for (const url of [
     'app://other/index.html',
     'app://user@space/index.html',
     'app://space:42/index.html',
     'app://space/index.html?debug=1',
-    'app://space/index.html#fragment',
+    'app://space/assets/main.js#fragment',
   ]) {
     const result = await resolveAppProtocolPath(url, root);
     assert.equal(result.ok, false, url);

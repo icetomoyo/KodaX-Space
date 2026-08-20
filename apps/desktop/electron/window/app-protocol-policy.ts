@@ -116,7 +116,11 @@ export async function resolveAppProtocolPath(
   if (!match) return failure(400, 'invalid-url');
   const [, authority, encodedPath = '', query, fragment] = match;
   if (authority !== APP_PROTOCOL_HOST) return failure(403, 'invalid-authority');
-  if (query !== undefined || fragment !== undefined) return failure(400, 'invalid-url');
+  // Electron forwards URL fragments to custom protocol handlers. Allow them only on the
+  // renderer document, where they are client-side routes and cannot change the served file.
+  if (query !== undefined || (fragment !== undefined && encodedPath !== '/index.html')) {
+    return failure(400, 'invalid-url');
+  }
   if (/%(?:2e|2f|5c)/i.test(encodedPath)) return failure(400, 'non-canonical-path');
 
   let decodedPath: string;

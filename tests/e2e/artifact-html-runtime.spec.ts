@@ -239,3 +239,39 @@ test('current Artifact payload refreshes when a new version becomes latest', asy
     await space.close();
   }
 });
+
+test('standalone Artifact window renders persisted interactive HTML content', async () => {
+  const { space, sessionId } = await launchArtifactSpace(`artifact-html-standalone-${Date.now()}`);
+  try {
+    const artifact = await invokeArtifactCreate(space, {
+      sessionId,
+      surface: 'code',
+      kind: 'interactive-html',
+      title: 'Standalone HTML',
+      content:
+        '<!doctype html><html><body><main id="standalone-state">standalone-ready</main></body></html>',
+    });
+
+    const opened = space.app.waitForEvent('window');
+    const result = await space.page.evaluate(async (id) => {
+      const bridge = (
+        window as unknown as {
+          kodaxSpace: {
+            invoke: (channel: string, input: unknown) => Promise<InvokeEnvelope<unknown>>;
+          };
+        }
+      ).kodaxSpace;
+      return bridge.invoke('artifact.openWindow', { id });
+    }, artifact.id);
+    expect(result.ok).toBe(true);
+
+    const standalone = await opened;
+    await standalone.waitForLoadState('domcontentloaded');
+    const frame = standalone.frameLocator('iframe[title="Interactive HTML artifact"]');
+    await expect(frame.locator('#standalone-state')).toHaveText('standalone-ready', {
+      timeout: 10_000,
+    });
+  } finally {
+    await space.close();
+  }
+});
