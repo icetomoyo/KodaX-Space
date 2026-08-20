@@ -4330,3 +4330,234 @@ test('run reset removes terminal Runtime interactions from modal queues', () => 
   assert.equal(status, 'applied');
   assert.deepEqual(useAppStore.getState().askUserQueue, []);
 });
+
+test('a live snapshot restores a queued interrupt after renderer reload', () => {
+  useAppStore.setState({ sessions: [sidebarSession] });
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+
+  useAppStore.getState().replaceSessionLiveProjection({
+    ...live,
+    queuedInputs: [
+      {
+        inputId: 'input_interrupt',
+        sessionId: 's_1',
+        delivery: 'interrupt',
+        state: 'queued',
+        createdAt: 200,
+        position: 1,
+        contentPreview: 'Check the verifier feedback first.',
+      },
+    ],
+  });
+
+  assert.deepEqual(useAppStore.getState().queuedUserMessagesBySession.s_1, [
+    {
+      id: 'runtime-queue:interrupt:input_interrupt',
+      queueId: 'input_interrupt',
+      content: 'Check the verifier feedback first.',
+      matchContent: 'Check the verifier feedback first.',
+      queueMode: 'interrupt',
+      status: 'queued',
+      sentAt: 200,
+    },
+  ]);
+});
+
+test('a delivered interrupt snapshot restores one formal user boundary before bridge replay', () => {
+  useAppStore.setState({ sessions: [sidebarSession] });
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  useAppStore.getState().appendEvent({
+    kind: 'text_delta',
+    sessionId: 's_1',
+    text: 'Output that crossed the reload before its delivered snapshot.',
+    turnId: 'turn_1',
+    runtimeEvent: {
+      runtimeId: 'rt_1',
+      runId: 'run_1',
+      journalEpoch: 'journal_1',
+      seq: 3,
+    },
+  });
+  useAppStore.getState().replaceSessionLiveProjection({
+    ...live,
+    cursor: { runtimeId: 'rt_1', sessionId: 's_1', journalEpoch: 'journal_1', seq: 3 },
+    queuedInputs: [
+      {
+        inputId: 'input_delivered',
+        sessionId: 's_1',
+        delivery: 'interrupt',
+        state: 'delivered',
+        createdAt: 150,
+        deliveredAt: 200,
+        runId: 'run_1',
+        deliverySeq: 2,
+        contentPreview: 'Apply the verifier feedback.',
+        entryId: 'entry_delivered',
+        turnId: 'turn_1',
+        turnUserOrdinal: 1,
+      },
+    ],
+  });
+
+  useAppStore.getState().appendEvent({
+    kind: 'mid_turn_user_prompt',
+    sessionId: 's_1',
+    queueId: 'input_delivered',
+    content: 'Apply the verifier feedback.',
+    entryId: 'entry_delivered',
+    turnId: 'turn_1',
+    turnUserOrdinal: 1,
+    sentAt: 200,
+    runtimeEvent: {
+      runtimeId: 'rt_1',
+      runId: 'run_1',
+      journalEpoch: 'journal_1',
+      seq: 2,
+    },
+  });
+
+  assert.equal(useAppStore.getState().queuedUserMessagesBySession.s_1?.length, 0);
+  assert.deepEqual(
+    (useAppStore.getState().userMessagesBySession.s_1 ?? []).map((message) => ({
+      content: message.content,
+      entryId: message.entryId,
+      turnId: message.turnId,
+      ordinal: message.turnUserOrdinal,
+    })),
+    [
+      {
+        content: 'Apply the verifier feedback.',
+        entryId: 'entry_delivered',
+        turnId: 'turn_1',
+        ordinal: 1,
+      },
+    ],
+  );
+  assert.equal(
+    (useAppStore.getState().eventsBySession.s_1 ?? []).filter(
+      (event) => event.kind === 'mid_turn_user_prompt',
+    ).length,
+    1,
+  );
+  assert.deepEqual(
+    (useAppStore.getState().eventsBySession.s_1 ?? []).flatMap((event) => {
+      if (event.kind === 'mid_turn_user_prompt') return ['boundary'];
+      if (event.kind === 'text_delta') return ['text'];
+      return [];
+    }),
+    ['boundary', 'text'],
+  );
+});
+
+test('a sidecar change survives equal snapshot hydration and event bridging exactly once', () => {
+  useAppStore.setState({ sessions: [sidebarSession] });
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  useAppStore.getState().replaceSessionLiveProjection({ ...live, sidecarMessages: [] });
+  useAppStore.getState().appendEvent({
+    kind: 'text_delta',
+    sessionId: 's_1',
+    text: 'Later answer.',
+    turnId: 'turn_1',
+    runtimeEvent: {
+      runtimeId: 'rt_1',
+      runId: 'run_2',
+      journalEpoch: 'journal_1',
+      seq: 3,
+    },
+  });
+  const projection = {
+    ...live,
+    projectionRevision: 2,
+    cursor: {
+      runtimeId: 'rt_1',
+      sessionId: 's_1',
+      journalEpoch: 'journal_1',
+      seq: 2,
+    },
+    sidecarMessages: [
+      {
+        eventId: 'event_sidecar_2',
+        runId: 'run_1',
+        turnId: 'turn_1',
+        seq: 2,
+        createdAt: 200,
+        message: {
+          source: 'sidecar-verifier' as const,
+          verdict: 'revise' as const,
+          recipient: 'main-agent' as const,
+          delivery: 'synthetic-user-message' as const,
+          content: 'Please revise the answer.',
+        },
+      },
+    ],
+  };
+
+  const status = useAppStore.getState().applySessionLiveProjectionChange({
+    sessionId: 's_1',
+    baseProjectionRevision: 1,
+    projectionRevision: 2,
+    cursor: projection.cursor,
+    change: {
+      domain: 'sidecar',
+      sidecarMessages: projection.sidecarMessages,
+    },
+  });
+  assert.equal(status, 'applied');
+  useAppStore
+    .getState()
+    .replaceSessionLiveProjection({ ...projection }, { allowEqualHydration: true });
+  useAppStore.getState().appendEvent({
+    kind: 'sidecar_message',
+    sessionId: 's_1',
+    turnId: 'turn_1',
+    sentAt: 200,
+    runtimeEvent: {
+      runtimeId: 'rt_1',
+      runId: 'run_1',
+      journalEpoch: 'journal_1',
+      seq: 2,
+    },
+    message: {
+      source: 'sidecar-verifier',
+      verdict: 'revise',
+      recipient: 'main-agent',
+      delivery: 'synthetic-user-message',
+      content: 'Please revise the answer.',
+    },
+  });
+
+  assert.deepEqual(
+    (useAppStore.getState().eventsBySession.s_1 ?? []).filter(
+      (event) => event.kind === 'sidecar_message',
+    ),
+    [
+      {
+        kind: 'sidecar_message',
+        sessionId: 's_1',
+        turnId: 'turn_1',
+        sentAt: 200,
+        runtimeEvent: {
+          runtimeId: 'rt_1',
+          runId: 'run_1',
+          journalEpoch: 'journal_1',
+          seq: 2,
+        },
+        message: {
+          source: 'sidecar-verifier',
+          verdict: 'revise',
+          recipient: 'main-agent',
+          delivery: 'synthetic-user-message',
+          content: 'Please revise the answer.',
+        },
+      },
+    ],
+  );
+  assert.deepEqual(
+    (useAppStore.getState().eventsBySession.s_1 ?? []).flatMap((event) => {
+      if (event.kind === 'sidecar_message') return ['sidecar'];
+      if (event.kind === 'text_delta') return ['text'];
+      return [];
+    }),
+    ['sidecar', 'text'],
+  );
+});

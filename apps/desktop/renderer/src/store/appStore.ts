@@ -2003,7 +2003,12 @@ function projectionSuffixChunks(
 }
 
 function projectionNoticeKey(event: SessionEvent): string | undefined {
-  if (event.kind === 'sidecar_message') return `sidecar:${stableJson(event.message)}`;
+  // History can only reconstruct a neutral Sidecar receipt: verdict/delivery are placeholders and
+  // `historical` is true. Source + content are the stable semantic identity shared with the live
+  // journal event; per-turn multiplicity is handled by the callers' counters.
+  if (event.kind === 'sidecar_message') {
+    return `sidecar:${event.message.source}:${event.message.content}`;
+  }
   if (event.kind === 'lineage_notice') {
     if (event.entryId !== undefined) return `lineage-entry:${event.entryId}`;
     if (event.provisionalId !== undefined) return `lineage-provisional:${event.provisionalId}`;
@@ -2158,6 +2163,20 @@ function mergeCanonicalTurnProjections(
   const leadingPromptBoundary =
     durableEvents.find(isPromptSegmentBoundary) ??
     effectiveLiveEvents.find(isPromptSegmentBoundary);
+  const hasCausalOutputSegments = effectiveLiveEvents.some(
+    (event) => event.kind === 'output_segment_started',
+  );
+  if (
+    hasCausalOutputSegments &&
+    liveProjectionCoversDurableProjection(durableEvents, effectiveLiveEvents)
+  ) {
+    const liveBody = effectiveLiveEvents.filter(
+      (event) => !isTranscriptTerminal(event) && !isPromptSegmentBoundary(event),
+    );
+    const merged = leadingPromptBoundary ? [leadingPromptBoundary, ...liveBody] : liveBody;
+    const terminals = liveTerminals.length > 0 ? liveTerminals : durableTerminals;
+    return terminals.length > 0 ? [...merged, ...terminals] : merged;
+  }
   const durableBody = durableEvents.filter(
     (event) => !isTranscriptTerminal(event) && !isPromptSegmentBoundary(event),
   );
@@ -2188,12 +2207,14 @@ function mergeCanonicalTurnProjections(
       .map((event) => event.toolId),
   );
   const durableToolResultIndex = new Map<string, number>();
-  const durableNoticeKeys = new Set<string>();
+  const durableNoticeCounts = new Map<string, number>();
   for (let index = 0; index < mergedBody.length; index++) {
     const event = mergedBody[index]!;
     if (event.kind === 'tool_result') durableToolResultIndex.set(event.toolId, index);
     const noticeKey = projectionNoticeKey(event);
-    if (noticeKey !== undefined) durableNoticeKeys.add(noticeKey);
+    if (noticeKey !== undefined) {
+      durableNoticeCounts.set(noticeKey, (durableNoticeCounts.get(noticeKey) ?? 0) + 1);
+    }
   }
 
   const liveExtras: SessionEvent[] = [];
@@ -2237,10 +2258,10 @@ function mergeCanonicalTurnProjections(
     }
     const noticeKey = projectionNoticeKey(event);
     if (noticeKey !== undefined) {
-      if (!durableNoticeKeys.has(noticeKey)) {
-        durableNoticeKeys.add(noticeKey);
-        liveExtras.push(event);
-      }
+      const remaining = durableNoticeCounts.get(noticeKey) ?? 0;
+      if (remaining === 0) liveExtras.push(event);
+      else if (remaining === 1) durableNoticeCounts.delete(noticeKey);
+      else durableNoticeCounts.set(noticeKey, remaining - 1);
       continue;
     }
     // Lifecycle, tool progress, artifact/todo/context diagnostics and other runtime-only events
@@ -2449,6 +2470,80 @@ function transcriptContentRuns(events: readonly SessionEvent[]): TranscriptConte
     }
   }
   return runs;
+}
+
+function projectedTextRuns(
+  events: readonly SessionEvent[],
+  kind: 'thinking_delta' | 'text_delta',
+): string[] {
+  const prefix = kind === 'thinking_delta' ? 'thinking:' : 'text:';
+  return transcriptContentRuns(events)
+    .filter((run) => run.textKind === kind)
+    .map((run) => run.key.slice(prefix.length));
+}
+
+function projectedTextRunsCover(
+  durableEvents: readonly SessionEvent[],
+  liveEvents: readonly SessionEvent[],
+  kind: 'thinking_delta' | 'text_delta',
+): boolean {
+  const required = projectedTextRuns(durableEvents, kind).join('');
+  if (!required) return true;
+  const available = projectedTextRuns(liveEvents, kind);
+  for (let start = 0; start < available.length; start++) {
+    let candidate = '';
+    for (let end = start; end < available.length; end++) {
+      candidate += available[end]!;
+      if (candidate === required || candidate.startsWith(required)) return true;
+      if (!required.startsWith(candidate)) break;
+    }
+  }
+  return false;
+}
+
+function liveProjectionCoversDurableProjection(
+  durableEvents: readonly SessionEvent[],
+  liveEvents: readonly SessionEvent[],
+): boolean {
+  for (const kind of ['thinking_delta', 'text_delta'] as const) {
+    if (!projectedTextRunsCover(durableEvents, liveEvents, kind)) return false;
+  }
+  const availableTools = transcriptContentRuns(liveEvents)
+    .map((run) => run.key)
+    .filter((key) => key.startsWith('tool-start:') || key.startsWith('tool-result:'));
+  const requiredTools = transcriptContentRuns(durableEvents)
+    .map((run) => run.key)
+    .filter((key) => key.startsWith('tool-start:') || key.startsWith('tool-result:'));
+  let toolCursor = 0;
+  for (const key of requiredTools) {
+    while (toolCursor < availableTools.length && availableTools[toolCursor] !== key) toolCursor++;
+    if (toolCursor === availableTools.length) return false;
+    toolCursor++;
+  }
+  const availableExtras = new Map<string, number>();
+  for (const event of liveEvents) {
+    const key = projectionMergeKey(event);
+    if (key !== undefined) availableExtras.set(key, (availableExtras.get(key) ?? 0) + 1);
+  }
+  for (const event of durableEvents) {
+    if (
+      event.kind === 'thinking_delta' ||
+      event.kind === 'text_delta' ||
+      event.kind === 'tool_start' ||
+      event.kind === 'tool_result' ||
+      isTranscriptTerminal(event) ||
+      isPromptSegmentBoundary(event)
+    ) {
+      continue;
+    }
+    const key = projectionMergeKey(event);
+    if (key === undefined) return false;
+    const remaining = availableExtras.get(key) ?? 0;
+    if (remaining === 0) return false;
+    if (remaining === 1) availableExtras.delete(key);
+    else availableExtras.set(key, remaining - 1);
+  }
+  return true;
 }
 
 function collapseAdjacentTextRuns(runs: readonly TranscriptContentRun[]): TranscriptContentRun[] {
@@ -2960,9 +3055,7 @@ function stabilizeCanonicalPageHeadBeforeEarlierLiveTurns(
   if (turns.length < 2) return { userMessages, events };
   const canonicalTurnIds = new Set(
     turns.flatMap((turn) =>
-      turn.restoredFromHistory &&
-      turn.turnId !== undefined &&
-      turn.canonicalIndex !== undefined
+      turn.restoredFromHistory && turn.turnId !== undefined && turn.canonicalIndex !== undefined
         ? [turn.turnId]
         : [],
     ),
@@ -4415,6 +4508,254 @@ function queuedMessageMatches(entry: QueuedUserMessage, matchContent: string): b
     normalized.startsWith(`${entry.matchContent}\n\n`) ||
     normalized.startsWith(`${entry.content}\n\n`)
   );
+}
+
+function reconcileRuntimeQueuedMessages(
+  current: readonly QueuedUserMessage[],
+  projection: SpaceSessionLiveProjectionT,
+): QueuedUserMessage[] {
+  const next = [...current];
+  for (const input of projection.queuedInputs) {
+    if (input.state !== 'queued' && input.state !== 'delivering') continue;
+    const queueMode = input.delivery === 'after-turn' ? 'after-turn' : 'interrupt';
+    const index = next.findIndex(
+      (entry) => entry.queueMode === queueMode && entry.queueId === input.inputId,
+    );
+    if (index !== -1) {
+      const existing = next[index]!;
+      next[index] = {
+        ...existing,
+        status: existing.status === 'failed' ? 'failed' : 'queued',
+      };
+      continue;
+    }
+    const content = input.contentPreview ?? '';
+    next.push({
+      id: `runtime-queue:${input.delivery}:${input.inputId}`,
+      queueId: input.inputId,
+      content,
+      matchContent: content,
+      queueMode,
+      status: 'queued',
+      sentAt: input.createdAt,
+    });
+  }
+  return next;
+}
+
+interface RuntimeDeliveredInputReconciliation {
+  readonly events: SessionEvent[];
+  readonly userMessages: UserMessage[];
+  readonly queuedMessages: QueuedUserMessage[];
+}
+
+type RuntimeQueuedInputProjection = SpaceSessionLiveProjectionT['queuedInputs'][number];
+
+function deliveredInputIdentity(
+  input: RuntimeQueuedInputProjection,
+): StrongUserTurnIdentity | undefined {
+  return input.turnId !== undefined && input.turnUserOrdinal !== undefined
+    ? { turnId: input.turnId, turnUserOrdinal: input.turnUserOrdinal }
+    : undefined;
+}
+
+function createDeliveredInputUserMessage(
+  projection: SpaceSessionLiveProjectionT,
+  input: RuntimeQueuedInputProjection,
+  queued: QueuedUserMessage | undefined,
+  content: string,
+): UserMessage {
+  return {
+    ...createUserMessage(
+      projection.sessionId,
+      content,
+      input.deliveredAt ?? input.createdAt,
+      deliveredInputIdentity(input),
+      queued?.attachments,
+    ),
+    deliveryQueueId: input.inputId,
+    deliveryQueueMode: 'interrupt',
+    deliveredInterrupt: true,
+    ...(queued ? { sourceQueuedLocalId: queued.id } : {}),
+    entryId: input.entryId,
+  };
+}
+
+function createDeliveredInputBoundary(
+  projection: SpaceSessionLiveProjectionT,
+  input: RuntimeQueuedInputProjection,
+  content: string,
+): Extract<SessionEvent, { kind: 'mid_turn_user_prompt' }> {
+  return {
+    kind: 'mid_turn_user_prompt',
+    sessionId: projection.sessionId,
+    queueId: input.inputId,
+    content,
+    entryId: input.entryId,
+    ...(deliveredInputIdentity(input) ?? {}),
+    ...(input.deliveredAt !== undefined ? { sentAt: input.deliveredAt } : {}),
+    ...(input.runId !== undefined && input.deliverySeq !== undefined
+      ? {
+          runtimeEvent: {
+            runtimeId: projection.cursor.runtimeId,
+            runId: input.runId,
+            ...(projection.cursor.journalEpoch !== undefined
+              ? { journalEpoch: projection.cursor.journalEpoch }
+              : {}),
+            seq: input.deliverySeq,
+          },
+        }
+      : {}),
+  };
+}
+
+function deliveredInputBoundaryInsertionIndex(
+  events: readonly SessionEvent[],
+  projection: SpaceSessionLiveProjectionT,
+  input: RuntimeQueuedInputProjection,
+): number {
+  const deliverySeq = input.deliverySeq;
+  if (deliverySeq !== undefined) {
+    return events.findIndex((event) => {
+      const origin = 'runtimeEvent' in event ? event.runtimeEvent : undefined;
+      return (
+        origin?.runtimeId === projection.cursor.runtimeId &&
+        origin?.journalEpoch === projection.cursor.journalEpoch &&
+        origin.seq > deliverySeq
+      );
+    });
+  }
+  const deliveredAt = input.deliveredAt;
+  if (deliveredAt === undefined) return -1;
+  return events.findIndex((event) => {
+    const origin = 'runtimeEvent' in event ? event.runtimeEvent : undefined;
+    const sentAt = 'sentAt' in event ? event.sentAt : undefined;
+    const sameOwner =
+      (input.runId !== undefined && origin?.runId === input.runId) ||
+      (input.turnId !== undefined && 'turnId' in event && event.turnId === input.turnId);
+    return sameOwner && sentAt !== undefined && sentAt >= deliveredAt;
+  });
+}
+
+function reconcileRuntimeDeliveredInputs(
+  events: readonly SessionEvent[],
+  userMessages: readonly UserMessage[],
+  queuedMessages: readonly QueuedUserMessage[],
+  projection: SpaceSessionLiveProjectionT,
+): RuntimeDeliveredInputReconciliation {
+  const nextEvents = [...events];
+  const nextUsers = [...userMessages];
+  let nextQueued = [...queuedMessages];
+  for (const input of projection.queuedInputs) {
+    if (input.delivery !== 'interrupt' || input.state !== 'delivered' || !input.entryId) continue;
+    const queued = nextQueued.find(
+      (entry) => entry.queueMode === 'interrupt' && entry.queueId === input.inputId,
+    );
+    nextQueued = nextQueued.filter(
+      (entry) => entry.queueMode !== 'interrupt' || entry.queueId !== input.inputId,
+    );
+    const content = queued?.content ?? input.contentPreview ?? '';
+    if (!nextUsers.some((message) => message.entryId === input.entryId)) {
+      nextUsers.push(createDeliveredInputUserMessage(projection, input, queued, content));
+    }
+    if (
+      !nextEvents.some(
+        (event) => event.kind === 'mid_turn_user_prompt' && event.entryId === input.entryId,
+      )
+    ) {
+      const boundary = createDeliveredInputBoundary(projection, input, content);
+      const insertionIndex = deliveredInputBoundaryInsertionIndex(nextEvents, projection, input);
+      if (insertionIndex === -1) nextEvents.push(boundary);
+      else nextEvents.splice(insertionIndex, 0, boundary);
+    }
+  }
+  return { events: nextEvents, userMessages: nextUsers, queuedMessages: nextQueued };
+}
+
+type ProjectedSidecarMessage = NonNullable<SpaceSessionLiveProjectionT['sidecarMessages']>[number];
+
+function toProjectedSidecarEvent(
+  projection: SpaceSessionLiveProjectionT,
+  item: ProjectedSidecarMessage,
+): Extract<SessionEvent, { kind: 'sidecar_message' }> {
+  return {
+    kind: 'sidecar_message',
+    sessionId: projection.sessionId,
+    ...(item.turnId !== undefined ? { turnId: item.turnId } : {}),
+    sentAt: item.createdAt,
+    runtimeEvent: {
+      runtimeId: projection.cursor.runtimeId,
+      runId: item.runId,
+      ...(projection.cursor.journalEpoch !== undefined
+        ? { journalEpoch: projection.cursor.journalEpoch }
+        : {}),
+      seq: item.seq,
+    },
+    message: item.message,
+  };
+}
+
+function projectedSidecarMatches(
+  event: SessionEvent,
+  projected: Extract<SessionEvent, { kind: 'sidecar_message' }>,
+): boolean {
+  const origin = 'runtimeEvent' in event ? event.runtimeEvent : undefined;
+  return (
+    event.kind === 'sidecar_message' &&
+    origin?.runtimeId === projected.runtimeEvent?.runtimeId &&
+    origin?.runId === projected.runtimeEvent?.runId &&
+    origin?.journalEpoch === projected.runtimeEvent?.journalEpoch &&
+    origin?.seq === projected.runtimeEvent?.seq &&
+    event.message.source === projected.message.source &&
+    event.message.content === projected.message.content
+  );
+}
+
+function projectedSidecarInsertionIndex(
+  events: readonly SessionEvent[],
+  projected: Extract<SessionEvent, { kind: 'sidecar_message' }>,
+): number {
+  return events.findIndex((event) => {
+    const origin = 'runtimeEvent' in event ? event.runtimeEvent : undefined;
+    return (
+      origin?.runtimeId === projected.runtimeEvent?.runtimeId &&
+      origin?.journalEpoch === projected.runtimeEvent?.journalEpoch &&
+      origin !== undefined &&
+      projected.runtimeEvent !== undefined &&
+      origin.seq > projected.runtimeEvent.seq
+    );
+  });
+}
+
+function hydrateProjectedSidecarMessages(
+  events: readonly SessionEvent[],
+  projection: SpaceSessionLiveProjectionT,
+): SessionEvent[] {
+  const sidecars = projection.sidecarMessages ?? [];
+  if (sidecars.length === 0) return events as SessionEvent[];
+  const next = [...events];
+  const matchedHistoryIndexes = new Set<number>();
+  for (const item of sidecars) {
+    const projected = toProjectedSidecarEvent(projection, item);
+    if (next.some((event) => projectedSidecarMatches(event, projected))) continue;
+    const historyIndex = next.findIndex(
+      (event, index) =>
+        !matchedHistoryIndexes.has(index) &&
+        event.kind === 'sidecar_message' &&
+        event.runtimeEvent === undefined &&
+        event.message.source === item.message.source &&
+        event.message.content === item.message.content &&
+        (event.turnId === undefined || item.turnId === undefined || event.turnId === item.turnId),
+    );
+    if (historyIndex !== -1) {
+      matchedHistoryIndexes.add(historyIndex);
+      continue;
+    }
+    const laterIndex = projectedSidecarInsertionIndex(next, projected);
+    if (laterIndex === -1) next.push(projected);
+    else next.splice(laterIndex, 0, projected);
+  }
+  return next.length === events.length ? (events as SessionEvent[]) : next;
 }
 
 function promoteQueuedUserMessageForPrompt(
@@ -6951,13 +7292,23 @@ export const useAppStore = create<AppState>((set) => ({
         previousBarrier.runId === snapshotRun.runId;
       const currentEvents = state.eventsBySession[projection.sessionId] ?? [];
       const currentUsers = state.userMessagesBySession[projection.sessionId] ?? [];
-      const hydratedEvents = hydrateSessionEventsFromLiveSnapshot(
+      const deliveredInputs = reconcileRuntimeDeliveredInputs(
         currentEvents,
+        currentUsers,
+        state.queuedUserMessagesBySession[projection.sessionId] ?? [],
+        identityProjection,
+      );
+      const sidecarHydratedEvents = hydrateProjectedSidecarMessages(
+        deliveredInputs.events,
+        identityProjection,
+      );
+      const hydratedEvents = hydrateSessionEventsFromLiveSnapshot(
+        sidecarHydratedEvents,
         identityProjection,
       );
       const snapshotOwnedUsers = reconcileSnapshotInitialTurnOwners(
         projection.sessionId,
-        currentUsers,
+        deliveredInputs.userMessages,
         hydratedEvents,
         identityProjection,
       );
@@ -6981,15 +7332,21 @@ export const useAppStore = create<AppState>((set) => ({
         // authoritative Runtime snapshot into that baseline as well, otherwise loading an older
         // page would rebuild from a pre-reconnect baseline and make assistant/thinking/tool state
         // restored by the snapshot disappear.
-        const hydratedBaselineEvents = hydrateSessionEventsFromLiveSnapshot(
+        const deliveredBaseline = reconcileRuntimeDeliveredInputs(
           liveBaseline.events,
+          liveBaseline.userMessages,
+          [],
+          identityProjection,
+        );
+        const hydratedBaselineEvents = hydrateSessionEventsFromLiveSnapshot(
+          hydrateProjectedSidecarMessages(deliveredBaseline.events, identityProjection),
           identityProjection,
         );
         rememberHistoryLiveBaseline(projection.sessionId, {
           ...liveBaseline,
           userMessages: reconcileSnapshotInitialTurnOwners(
             projection.sessionId,
-            liveBaseline.userMessages,
+            deliveredBaseline.userMessages,
             hydratedBaselineEvents,
             identityProjection,
           ),
@@ -7025,6 +7382,10 @@ export const useAppStore = create<AppState>((set) => ({
             interaction.kind === 'ask-user' && interaction.state === 'pending',
         )
         .map((interaction) => interaction.request);
+      const queuedUserMessages = reconcileRuntimeQueuedMessages(
+        deliveredInputs.queuedMessages,
+        projection,
+      );
       return {
         sessions: mergeRuntimeSettingsIntoSessions(state.sessions, projection),
         liveProjectionBySession,
@@ -7074,6 +7435,10 @@ export const useAppStore = create<AppState>((set) => ({
           ...state.askUserQueue.filter((request) => request.sessionId !== projection.sessionId),
           ...runtimeAskUser,
         ],
+        queuedUserMessagesBySession: {
+          ...state.queuedUserMessagesBySession,
+          [projection.sessionId]: queuedUserMessages,
+        },
         ...pendingSendPatch,
       };
     });
@@ -7115,20 +7480,41 @@ export const useAppStore = create<AppState>((set) => ({
         result.status === 'applied' &&
         projection !== undefined &&
         (change.change.domain === 'run' || change.change.domain === 'terminal');
+      const appliesSidecar =
+        result.status === 'applied' &&
+        projection !== undefined &&
+        change.change.domain === 'sidecar';
       const currentEvents = state.eventsBySession[change.sessionId] ?? [];
       const currentUsers = state.userMessagesBySession[change.sessionId] ?? [];
+      const deliveredInputs =
+        appliesRunIdentity && projection !== undefined
+          ? reconcileRuntimeDeliveredInputs(
+              currentEvents,
+              currentUsers,
+              state.queuedUserMessagesBySession[change.sessionId] ?? [],
+              projection,
+            )
+          : {
+              events: currentEvents,
+              userMessages: currentUsers,
+              queuedMessages: state.queuedUserMessagesBySession[change.sessionId] ?? [],
+            };
+      const sidecarHydratedEvents =
+        (appliesRunIdentity || appliesSidecar) && projection !== undefined
+          ? hydrateProjectedSidecarMessages(deliveredInputs.events, projection)
+          : deliveredInputs.events;
       const hydratedEvents = appliesRunIdentity
-        ? hydrateSessionEventsFromLiveSnapshot(currentEvents, projection)
-        : currentEvents;
+        ? hydrateSessionEventsFromLiveSnapshot(sidecarHydratedEvents, projection)
+        : sidecarHydratedEvents;
       const snapshotOwnedUsers = appliesRunIdentity
         ? reconcileSnapshotInitialTurnOwners(
             change.sessionId,
-            currentUsers,
+            deliveredInputs.userMessages,
             hydratedEvents,
             projection,
             change.change.domain === 'terminal' ? 'terminal' : 'active',
           )
-        : currentUsers;
+        : deliveredInputs.userMessages;
       const operationClaimedUsers =
         appliesRunIdentity && projection !== undefined
           ? claimUserMessagesByOriginOperation(snapshotOwnedUsers, projection)
@@ -7147,20 +7533,36 @@ export const useAppStore = create<AppState>((set) => ({
         : operationClaimedUsers;
       const reconciledEvents = folded.events;
       const liveBaseline = historyLiveBaselines.get(change.sessionId);
-      if (appliesRunIdentity && liveBaseline !== undefined) {
-        const hydratedBaselineEvents = hydrateSessionEventsFromLiveSnapshot(
-          liveBaseline.events,
+      if ((appliesRunIdentity || appliesSidecar) && liveBaseline !== undefined) {
+        const deliveredBaseline = appliesRunIdentity
+          ? reconcileRuntimeDeliveredInputs(
+              liveBaseline.events,
+              liveBaseline.userMessages,
+              [],
+              projection,
+            )
+          : {
+              events: liveBaseline.events,
+              userMessages: liveBaseline.userMessages,
+            };
+        const sidecarHydratedBaseline = hydrateProjectedSidecarMessages(
+          deliveredBaseline.events,
           projection,
         );
+        const hydratedBaselineEvents = appliesRunIdentity
+          ? hydrateSessionEventsFromLiveSnapshot(sidecarHydratedBaseline, projection)
+          : sidecarHydratedBaseline;
         rememberHistoryLiveBaseline(change.sessionId, {
           ...liveBaseline,
-          userMessages: reconcileSnapshotInitialTurnOwners(
-            change.sessionId,
-            liveBaseline.userMessages,
-            hydratedBaselineEvents,
-            projection,
-            change.change.domain === 'terminal' ? 'terminal' : 'active',
-          ),
+          userMessages: appliesRunIdentity
+            ? reconcileSnapshotInitialTurnOwners(
+                change.sessionId,
+                deliveredBaseline.userMessages,
+                hydratedBaselineEvents,
+                projection,
+                change.change.domain === 'terminal' ? 'terminal' : 'active',
+              )
+            : deliveredBaseline.userMessages,
           events: hydratedBaselineEvents,
         });
       }
@@ -7218,6 +7620,20 @@ export const useAppStore = create<AppState>((set) => ({
         change.change.domain === 'settings' && projection
           ? { sessions: mergeRuntimeSettingsIntoSessions(state.sessions, projection) }
           : {};
+      const queuePatch =
+        result.status === 'applied' &&
+        projection !== undefined &&
+        (change.change.domain === 'run' || change.change.domain === 'queue')
+          ? {
+              queuedUserMessagesBySession: {
+                ...state.queuedUserMessagesBySession,
+                [change.sessionId]: reconcileRuntimeQueuedMessages(
+                  deliveredInputs.queuedMessages,
+                  projection,
+                ),
+              },
+            }
+          : {};
       return {
         liveProjectionBySession,
         runtimeSnapshotRequiredBySession: result.state.snapshotRequiredBySession,
@@ -7239,6 +7655,7 @@ export const useAppStore = create<AppState>((set) => ({
           : {}),
         ...interactionPatch,
         ...settingsPatch,
+        ...queuePatch,
         ...pendingSendPatch,
       };
     });

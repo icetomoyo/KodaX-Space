@@ -387,6 +387,11 @@ function eventOwnerIndex(event: SessionEvent, owners: readonly UserMessage[]): n
           (owner.runtimeRunId === undefined || owner.runtimeRunId === runId),
       );
       if (exactOwners.length === 1) return exactOwners[0]?.index;
+      // A Runtime Run may deliver more than one user input mid-turn. Once that happens,
+      // run identity alone cannot choose an owner: the delivery boundary in the positional
+      // event stream is authoritative. Falling through to the sole run-bound root owner
+      // would pull every event after that boundary back above the delivered user.
+      if (exactOwners.length > 1) return undefined;
     }
     if (runOwners.length === 1) return runOwners[0]?.index;
   }

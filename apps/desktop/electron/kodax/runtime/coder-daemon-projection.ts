@@ -11,6 +11,7 @@ import type {
 import type { KodaXOutputSegmentProjection } from '@kodax-ai/kodax/coding';
 import {
   spaceRuntimeProfileProjectionSchema,
+  spaceRuntimeSidecarMessagePayloadSchema,
   spaceRuntimeToolSandboxSchema,
   spaceSessionLiveChangedSchema,
   spaceSessionLiveProjectionSchema,
@@ -822,7 +823,7 @@ function queuedInputsProjection(
   runs: readonly RuntimeRunStatus[],
   sessionId: string,
 ): SpaceSessionLiveProjectionT['queuedInputs'] {
-  return runs
+  const afterTurn = runs
     .filter(
       (run) =>
         run.sessionId === sessionId &&
@@ -837,6 +838,7 @@ function queuedInputsProjection(
       delivery: 'after-turn' as const,
       state: 'queued' as const,
       createdAt: timestamp(run.queuedAt ?? run.acceptedAt ?? run.startedAt),
+      runId: run.runId,
       position: index + 1,
       contentPreview: run.continuation!.contentPreview.slice(0, 4_096),
       ...(run.origin
@@ -848,6 +850,71 @@ function queuedInputsProjection(
           }
         : {}),
     }));
+  const interrupts = runs.flatMap((run) =>
+    run.sessionId !== sessionId
+      ? []
+      : (run.interruptInputs ?? []).flatMap((input, inputIndex) => {
+          if (input.state !== 'queued' && !(input.state === 'delivered' && input.entryId)) {
+            return [];
+          }
+          const origin = input.origin ?? run.origin;
+          return [
+            {
+              inputId: input.inputId,
+              sessionId: run.sessionId,
+              delivery: 'interrupt' as const,
+              state: input.state,
+              createdAt: timestamp(input.queuedAt),
+              ...(input.deliveredAt ? { deliveredAt: timestamp(input.deliveredAt) } : {}),
+              runId: run.runId,
+              contentPreview: input.contentPreview.slice(0, 4_096),
+              ...(input.entryId ? { entryId: input.entryId } : {}),
+              ...(run.turnId ? { turnId: run.turnId } : {}),
+              ...(input.state === 'delivered' ? { turnUserOrdinal: inputIndex + 1 } : {}),
+              ...(origin
+                ? {
+                    initiatedBy: {
+                      clientId: origin.principalId.slice(0, 128),
+                      name: (origin.clientName ?? origin.principalId).slice(0, 128),
+                    },
+                  }
+                : {}),
+            },
+          ];
+        }),
+  );
+  return [...afterTurn, ...interrupts]
+    .sort((left, right) => left.createdAt - right.createdAt)
+    .slice(0, 500)
+    .map((input, index) => ({ ...input, position: index + 1 }));
+}
+
+function retainDeliveredInputSequences(
+  next: SpaceSessionLiveProjectionT['queuedInputs'],
+  previous: SpaceSessionLiveProjectionT['queuedInputs'],
+): SpaceSessionLiveProjectionT['queuedInputs'] {
+  return next.map((input) => {
+    if (
+      input.delivery !== 'interrupt' ||
+      input.state !== 'delivered' ||
+      input.runId === undefined ||
+      input.entryId === undefined
+    ) {
+      return input;
+    }
+    const retained = previous.find(
+      (candidate) =>
+        candidate.delivery === 'interrupt' &&
+        candidate.state === 'delivered' &&
+        candidate.runId === input.runId &&
+        candidate.inputId === input.inputId &&
+        candidate.entryId === input.entryId &&
+        candidate.deliverySeq !== undefined,
+    );
+    return retained?.deliverySeq === undefined
+      ? input
+      : { ...input, deliverySeq: retained.deliverySeq };
+  });
 }
 
 const REASONING_MODES = new Set(['off', 'auto', 'quick', 'balanced', 'deep']);
@@ -976,6 +1043,7 @@ export function projectRuntimeSessionSnapshot(
     ...(managedTask ? { managedTask } : {}),
     settings: settingsProjection(snapshot.settings.revision, snapshot.settings.value),
     queuedInputs: queuedInputsProjection(snapshot.runs, snapshot.session.id),
+    sidecarMessages: [],
     interactions: projectRuntimeInteractions(
       snapshot.pendingPermissions,
       userInputs,
@@ -1257,6 +1325,56 @@ export class CoderSessionProjectionReducer {
         settings: settingsProjection(Number(revision), settings as RuntimeSessionSettings),
       });
     }
+    if (event.type === 'sidecar.message') {
+      const message = spaceRuntimeSidecarMessagePayloadSchema.safeParse(event.payload);
+      if (!message.success) return null;
+      const sidecarMessages = [
+        ...(this.#projection.sidecarMessages ?? []).filter((item) => item.eventId !== event.id),
+        {
+          eventId: event.id.slice(0, 128),
+          runId: event.runId.slice(0, 128),
+          ...(text(event.turnId, 256) ? { turnId: text(event.turnId, 256)! } : {}),
+          seq: event.seq,
+          createdAt: timestamp(event.time),
+          message: message.data,
+        },
+      ].slice(-100);
+      return this.#commit(event.seq, { domain: 'sidecar', sidecarMessages });
+    }
+    if (event.type === 'run.input.delivered') {
+      const inputs = Array.isArray(payload?.inputs) ? payload.inputs : [];
+      const delivered = new Map<string, Readonly<Record<string, unknown>>>();
+      for (const value of inputs) {
+        const input = record(value);
+        const inputId = text(input?.inputId, 128);
+        if (inputId) delivered.set(inputId, input!);
+      }
+      if (delivered.size === 0) return null;
+      const run = this.#runs.get(event.runId);
+      let changed = false;
+      const queuedInputs = this.#projection.queuedInputs.map((input) => {
+        const delivery = delivered.get(input.inputId);
+        if (!delivery) return input;
+        changed = true;
+        const deliveredAt = text(delivery.deliveredAt, 128);
+        const entryId = text(delivery.entryId, 256);
+        const interruptIndex = run?.interruptInputs?.findIndex(
+          (candidate) => candidate.inputId === input.inputId,
+        );
+        return {
+          ...input,
+          state: 'delivered' as const,
+          runId: event.runId,
+          deliverySeq: event.seq,
+          ...(interruptIndex !== undefined && interruptIndex >= 0
+            ? { turnUserOrdinal: interruptIndex + 1 }
+            : {}),
+          ...(deliveredAt ? { deliveredAt: timestamp(deliveredAt) } : {}),
+          ...(entryId ? { entryId } : {}),
+        };
+      });
+      return changed ? this.#commit(event.seq, { domain: 'queue', queuedInputs }) : null;
+    }
     if (event.type.startsWith('run.')) {
       const previousActiveRunId = this.#projection.activeRun?.runId;
       const run = runStatusFromEvent(event);
@@ -1277,9 +1395,9 @@ export class CoderSessionProjectionReducer {
           domain: 'run',
           activeRun: runs.activeRun ?? null,
           queuedRuns: runs.queuedRuns,
-          queuedInputs: queuedInputsProjection(
-            [...this.#runs.values()],
-            this.#projection.sessionId,
+          queuedInputs: retainDeliveredInputSequences(
+            queuedInputsProjection([...this.#runs.values()], this.#projection.sessionId),
+            this.#projection.queuedInputs,
           ),
           ...(resetRunScopedState ? { resetRunScopedState: true } : {}),
         },
@@ -1409,6 +1527,14 @@ export class CoderSessionProjectionReducer {
           projectionRevision,
           cursor,
           lastTerminalRun: change.lastTerminalRun,
+        };
+        break;
+      case 'sidecar':
+        this.#projection = {
+          ...this.#projection,
+          projectionRevision,
+          cursor,
+          sidecarMessages: change.sidecarMessages,
         };
         break;
     }

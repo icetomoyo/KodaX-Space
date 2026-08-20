@@ -3870,6 +3870,43 @@ export class RuntimeHostAdapter {
     return revision;
   }
 
+  private previousLiveProjection(
+    sessionId: string,
+    cursor: SpaceSessionLiveProjectionT['cursor'],
+  ): SpaceSessionLiveProjectionT | undefined {
+    try {
+      const previous = this.projectionController.sessionLiveSnapshot(sessionId);
+      if (
+        previous.cursor.runtimeId === cursor.runtimeId &&
+        previous.cursor.journalEpoch === cursor.journalEpoch &&
+        previous.cursor.seq <= cursor.seq
+      ) {
+        return previous;
+      }
+    } catch (error: unknown) {
+      if (!(error instanceof RuntimeProjectionUnavailableError)) throw error;
+    }
+    return undefined;
+  }
+
+  private restoreDeliveredInputSequences(
+    current: SpaceSessionLiveProjectionT['queuedInputs'],
+    previous: SpaceSessionLiveProjectionT | undefined,
+  ): SpaceSessionLiveProjectionT['queuedInputs'] {
+    if (!previous) return current;
+    return current.map((input) => {
+      const retained = previous.queuedInputs.find(
+        (candidate) =>
+          candidate.inputId === input.inputId &&
+          candidate.runId === input.runId &&
+          candidate.entryId === input.entryId,
+      );
+      return retained?.deliverySeq === undefined
+        ? input
+        : { ...input, deliverySeq: retained.deliverySeq };
+    });
+  }
+
   private recordLiveProjectionRevision(projection: SpaceSessionLiveProjectionT): void {
     this.liveProjectionRevisions.set(projection.sessionId, {
       runtimeId: projection.cursor.runtimeId,
@@ -4110,8 +4147,16 @@ export class RuntimeHostAdapter {
       }
       assertRuntimeSessionIdentity(session, { sessionId });
       const replayed = this.projectObservationSnapshot(observation.snapshot);
+      const previousProjection = this.previousLiveProjection(sessionId, replayed.projection.cursor);
       const initialProjection = {
         ...replayed.projection,
+        queuedInputs: this.restoreDeliveredInputSequences(
+          replayed.projection.queuedInputs,
+          previousProjection,
+        ),
+        ...(previousProjection?.sidecarMessages !== undefined
+          ? { sidecarMessages: previousProjection.sidecarMessages }
+          : {}),
         projectionRevision: Math.max(
           replayed.projection.projectionRevision,
           this.previousLiveProjectionRevision(sessionId, replayed.projection.cursor.runtimeId) + 1,
@@ -4744,6 +4789,7 @@ export class RuntimeHostAdapter {
       typeof payload?.providerRequestId === 'string' &&
       (payload.mode === 'append' || payload.mode === 'replace')
     ) {
+      const sentAt = Date.parse(event.time);
       this.push('session.event', {
         ...runtimeSessionEventOrigin(runtimeId, event),
         ...runtimeTranscriptTurnIdentity(event),
@@ -4752,6 +4798,7 @@ export class RuntimeHostAdapter {
         responseId: payload.responseId,
         providerRequestId: payload.providerRequestId,
         mode: payload.mode,
+        ...(Number.isFinite(sentAt) ? { sentAt } : {}),
       });
       return;
     }
@@ -4948,9 +4995,13 @@ export class RuntimeHostAdapter {
       return;
     }
     if (event.type === 'sidecar.message') {
+      const sentAt = Date.parse(event.time);
       const parsed = sessionEventChannel.payload.safeParse({
+        ...runtimeSessionEventOrigin(runtimeId, event),
+        ...runtimeTranscriptTurnIdentity(event),
         kind: 'sidecar_message',
         sessionId: event.sessionId,
+        ...(Number.isFinite(sentAt) ? { sentAt } : {}),
         message: payload,
       });
       if (!parsed.success || parsed.data.kind !== 'sidecar_message') return;
@@ -4965,6 +5016,7 @@ export class RuntimeHostAdapter {
       return;
     }
     if (event.type === 'run.input.delivered') {
+      const sentAt = Date.parse(event.time);
       const inputs = Array.isArray(payload?.inputs) ? payload.inputs : [];
       for (const value of inputs) {
         const delivered = runtimeEventRecord(value);
@@ -4990,6 +5042,7 @@ export class RuntimeHostAdapter {
           content: clampRuntimePromptEventText(content),
           ...(event.turnId ? { turnId: event.turnId } : {}),
           ...(turnUserOrdinal !== undefined ? { turnUserOrdinal } : {}),
+          ...(Number.isFinite(sentAt) ? { sentAt } : {}),
         });
         if (parsed.success) this.push('session.event', parsed.data);
       }

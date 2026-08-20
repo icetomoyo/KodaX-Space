@@ -8,7 +8,10 @@
 
 import { z } from 'zod';
 import { partnerKnowledgeScopeSchema } from './partner-knowledge.js';
-import { spaceRuntimeRunStopReceiptSchema } from './runtime.js';
+import {
+  spaceRuntimeRunStopReceiptSchema,
+  spaceRuntimeSidecarMessagePayloadSchema,
+} from './runtime.js';
 
 // ---- Reasoning mode (镜像 @kodax-ai/llm 的 KodaXReasoningMode 闭集) ----
 export const reasoningModeSchema = z.enum(['off', 'auto', 'quick', 'balanced', 'deep']);
@@ -1037,21 +1040,6 @@ const managedTaskStatusSchema = z.object({
   idleWaiting: z.boolean().optional(),
   idleWaitingPendingCount: z.number().int().nonnegative().max(100).optional(),
 });
-const sidecarMessageSchema = z.object({
-  source: z.literal('sidecar-verifier'),
-  verdict: z.enum(['revise', 'blocked']),
-  recipient: z.enum(['main-agent', 'user']),
-  delivery: z.enum(['synthetic-user-message', 'budget-exhausted', 'terminal-block']),
-  content: z.string().max(MAX_TEXT_CHUNK),
-  suggestedFix: z.string().max(MAX_TEXT_CHUNK).optional(),
-  trace: z.string().max(MAX_TEXT_CHUNK).optional(),
-  agentProfile: agentProfileSummarySchema.optional(),
-  /** v0.1.x: 见 historySidecarMessageSchema 同名字段注释——true 时是 session.history 回放
-   *  出来的记录（verdict 等字段是占位值），renderer 渲染中性历史标签而非真实 verdict。
-   *  实时事件永远不设这个字段。 */
-  historical: z.boolean().optional(),
-});
-
 const todoDriftWarningSchema = z.object({
   kind: z.literal('work_started_without_claimed_todo'),
   toolName: z.string().min(1).max(128),
@@ -1092,6 +1080,7 @@ export const sessionEventChannel = {
       responseId: z.string().min(1).max(256),
       providerRequestId: z.string().min(1).max(256),
       mode: z.enum(['replace', 'append']),
+      sentAt: z.number().int().nonnegative().optional(),
     }),
     z.object({
       ...runtimeSessionEventOriginShape,
@@ -1182,6 +1171,7 @@ export const sessionEventChannel = {
       entryId: z.string().min(1).max(256).optional(),
       turnId: z.string().min(1).max(128).optional(),
       turnUserOrdinal: z.number().int().nonnegative().max(1_000_000).optional(),
+      sentAt: z.number().int().nonnegative().optional(),
     }),
     z.object({
       ...runtimeSessionEventOriginShape,
@@ -1403,10 +1393,12 @@ export const sessionEventChannel = {
     }),
     // ---- SDK sidecar / todo hygiene observability ----
     z.object({
+      ...runtimeSessionEventOriginShape,
       ...transcriptHistoryIdentityShape,
       kind: z.literal('sidecar_message'),
       sessionId: z.string().min(1),
-      message: sidecarMessageSchema,
+      sentAt: z.number().int().nonnegative().optional(),
+      message: spaceRuntimeSidecarMessagePayloadSchema,
     }),
     // ---- Raw/audit compatibility: fork/rewind branch_summary / compaction lineage ----
     // Ordinary main chat uses KodaX conversation projection and does not render these rows. This

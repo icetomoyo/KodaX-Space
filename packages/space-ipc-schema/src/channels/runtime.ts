@@ -15,6 +15,7 @@ const MAX_INTERACTIONS = 500;
 const MAX_NOTIFICATIONS = 500;
 const MAX_TODOS = 1_000;
 const MAX_ACTIVE_TOOLS = 128;
+const MAX_SIDECAR_MESSAGES = 100;
 
 const idSchema = z.string().min(1).max(MAX_ID);
 const timestampSchema = z.number().int().nonnegative();
@@ -629,9 +630,46 @@ export const spaceRuntimeQueuedInputSchema = z
     delivery: z.enum(['interrupt', 'after-turn']),
     state: z.enum(['queued', 'delivering', 'delivered', 'cancelled', 'failed']),
     createdAt: timestampSchema,
+    deliveredAt: timestampSchema.optional(),
+    runId: idSchema.optional(),
+    /** Exact Session-journal position of run.input.delivered when Space observed it. */
+    deliverySeq: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
     contentPreview: z.string().max(4096).optional(),
+    entryId: z.string().min(1).max(256).optional(),
+    turnId: z.string().min(1).max(256).optional(),
+    turnUserOrdinal: z.number().int().nonnegative().max(1_000_000).optional(),
     position: z.number().int().positive().max(MAX_QUEUE_ITEMS).optional(),
     initiatedBy: spaceRuntimeInitiatorSchema.optional(),
+  })
+  .strict();
+
+export const spaceRuntimeSidecarMessagePayloadSchema = z.object({
+  source: z.literal('sidecar-verifier'),
+  verdict: z.enum(['revise', 'blocked']),
+  recipient: z.enum(['main-agent', 'user']),
+  delivery: z.enum(['synthetic-user-message', 'budget-exhausted', 'terminal-block']),
+  content: z.string().max(MAX_DRAFT),
+  suggestedFix: z.string().max(MAX_DRAFT).optional(),
+  trace: z.string().max(MAX_DRAFT).optional(),
+  agentProfile: z
+    .object({
+      surface: z.string().min(1).max(64).optional(),
+      id: z.string().min(1).max(128).optional(),
+      version: z.string().min(1).max(64).optional(),
+      name: z.string().min(1).max(128).optional(),
+    })
+    .optional(),
+  historical: z.boolean().optional(),
+});
+
+export const spaceRuntimeSidecarMessageSchema = z
+  .object({
+    eventId: idSchema,
+    runId: idSchema,
+    turnId: z.string().min(1).max(256).optional(),
+    seq: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    createdAt: timestampSchema,
+    message: spaceRuntimeSidecarMessagePayloadSchema,
   })
   .strict();
 
@@ -652,6 +690,7 @@ export const spaceSessionLiveProjectionSchema = z
     managedTask: spaceRuntimeManagedTaskSchema.optional(),
     settings: spaceRuntimeSessionSettingsSchema.optional(),
     queuedInputs: z.array(spaceRuntimeQueuedInputSchema).max(MAX_QUEUE_ITEMS),
+    sidecarMessages: z.array(spaceRuntimeSidecarMessageSchema).max(MAX_SIDECAR_MESSAGES).optional(),
     interactions: z.array(spaceRuntimeInteractionSchema).max(MAX_INTERACTIONS),
   })
   .strict()
@@ -740,6 +779,12 @@ const interactionChangeSchema = z
     interactions: z.array(spaceRuntimeInteractionSchema).max(MAX_INTERACTIONS),
   })
   .strict();
+const sidecarChangeSchema = z
+  .object({
+    domain: z.literal('sidecar'),
+    sidecarMessages: z.array(spaceRuntimeSidecarMessageSchema).max(MAX_SIDECAR_MESSAGES),
+  })
+  .strict();
 
 export const spaceSessionLiveDomainChangeSchema = z.discriminatedUnion('domain', [
   runChangeSchema,
@@ -751,6 +796,7 @@ export const spaceSessionLiveDomainChangeSchema = z.discriminatedUnion('domain',
   queueChangeSchema,
   terminalChangeSchema,
   interactionChangeSchema,
+  sidecarChangeSchema,
 ]);
 
 export const spaceSessionLiveChangedSchema = z
@@ -883,6 +929,7 @@ export type SpaceRuntimeInteractionT = z.infer<typeof spaceRuntimeInteractionSch
 export type SpaceRuntimeIntegrationHealthT = z.infer<typeof spaceRuntimeIntegrationHealthSchema>;
 export type SpaceRuntimeProfileProjectionT = z.infer<typeof spaceRuntimeProfileProjectionSchema>;
 export type SpaceRuntimeToolSandboxT = z.infer<typeof spaceRuntimeToolSandboxSchema>;
+export type SpaceRuntimeSidecarMessageT = z.infer<typeof spaceRuntimeSidecarMessageSchema>;
 export type SpaceSessionLiveProjectionT = z.infer<typeof spaceSessionLiveProjectionSchema>;
 export type SpaceRuntimeSessionSettingsT = z.infer<typeof spaceRuntimeSessionSettingsSchema>;
 export type SpaceSessionLiveDomainChangeT = z.infer<typeof spaceSessionLiveDomainChangeSchema>;

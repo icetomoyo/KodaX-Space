@@ -421,6 +421,7 @@ test('atomic observation maps run, draft, tool, Todo, and interaction truth', ()
       delivery: 'after-turn',
       state: 'queued',
       createdAt: Date.parse(queued.queuedAt),
+      runId: 'run_queued',
       position: 1,
       contentPreview: 'Also update the tests.',
     },
@@ -456,6 +457,240 @@ test('a terminal observation never projects residual or foreign Run drafts as an
   assert.equal(projection.lastTerminalRun?.runId, 'run_active');
   assert.equal(projection.assistantDraft, undefined);
   assert.equal(projection.thinkingDraft, undefined);
+});
+
+test('active interrupt inputs remain visible in the live queued-input projection', () => {
+  const projection = projectRuntimeSessionSnapshot(
+    {
+      ...observation,
+      runs: [
+        {
+          ...running,
+          interruptInputs: [
+            {
+              inputId: 'input_delivered',
+              afterRunId: running.runId,
+              delivery: 'interrupt',
+              state: 'delivered',
+              contentPreview: 'Already delivered prompt.',
+              queuedAt: '2026-07-14T08:01:00.000Z',
+              deliveredAt: '2026-07-14T08:01:30.000Z',
+              entryId: 'entry_delivered',
+            },
+            {
+              inputId: 'input_interrupt',
+              afterRunId: running.runId,
+              delivery: 'interrupt',
+              state: 'queued',
+              contentPreview: 'Check the verifier feedback first.',
+              queuedAt: '2026-07-14T08:02:00.000Z',
+              origin: {
+                principalId: 'client:interrupt-author',
+                clientName: 'interrupt-author',
+              },
+            },
+          ],
+        },
+      ],
+    } as RuntimeSessionObservationSnapshot,
+    [],
+  );
+
+  assert.deepEqual(projection.queuedInputs, [
+    {
+      inputId: 'input_delivered',
+      sessionId: 's_code',
+      delivery: 'interrupt',
+      state: 'delivered',
+      createdAt: Date.parse('2026-07-14T08:01:00.000Z'),
+      deliveredAt: Date.parse('2026-07-14T08:01:30.000Z'),
+      runId: 'run_active',
+      position: 1,
+      contentPreview: 'Already delivered prompt.',
+      entryId: 'entry_delivered',
+      turnId: 'turn_active',
+      turnUserOrdinal: 1,
+      initiatedBy: {
+        clientId: 'client:space-installation',
+        name: 'kodax-space',
+      },
+    },
+    {
+      inputId: 'input_interrupt',
+      sessionId: 's_code',
+      delivery: 'interrupt',
+      state: 'queued',
+      createdAt: Date.parse('2026-07-14T08:02:00.000Z'),
+      runId: 'run_active',
+      position: 2,
+      contentPreview: 'Check the verifier feedback first.',
+      turnId: 'turn_active',
+      initiatedBy: {
+        clientId: 'client:interrupt-author',
+        name: 'interrupt-author',
+      },
+    },
+  ]);
+});
+
+test('delivered interrupt changes retain their exact journal position for reload ordering', () => {
+  const queuedRun = {
+    ...running,
+    interruptInputs: [
+      {
+        inputId: 'input_causal_delivery',
+        afterRunId: running.runId,
+        delivery: 'interrupt' as const,
+        state: 'queued' as const,
+        contentPreview: 'Continue after this boundary.',
+        queuedAt: '2026-07-14T08:01:00.000Z',
+      },
+    ],
+  };
+  const snapshot = {
+    ...observation,
+    runs: [queuedRun],
+  } as RuntimeSessionObservationSnapshot;
+  const reducer = new CoderSessionProjectionReducer(
+    projectRuntimeSessionSnapshot(snapshot, []),
+    snapshot.runs,
+  );
+
+  const change = reducer.apply({
+    id: 'event_input_delivered_42',
+    seq: 42,
+    cursor: { sessionId: 's_code', journalEpoch: 'journal_epoch_shared', seq: 42 },
+    time: '2026-07-14T08:01:30.000Z',
+    sessionId: 's_code',
+    runId: 'run_active',
+    turnId: 'turn_active',
+    type: 'run.input.delivered',
+    payload: {
+      inputs: [
+        {
+          inputId: 'input_causal_delivery',
+          afterRunId: 'run_active',
+          input: [{ type: 'text', text: 'Continue after this boundary.' }],
+          queuedAt: '2026-07-14T08:01:00.000Z',
+          deliveredAt: '2026-07-14T08:01:30.000Z',
+          entryId: 'entry_causal_delivery',
+        },
+      ],
+    },
+  } as RuntimeTypedEvent);
+
+  assert.equal(change?.change.domain, 'queue');
+  assert.deepEqual(reducer.snapshot().queuedInputs[0], {
+    inputId: 'input_causal_delivery',
+    sessionId: 's_code',
+    delivery: 'interrupt',
+    state: 'delivered',
+    createdAt: Date.parse('2026-07-14T08:01:00.000Z'),
+    deliveredAt: Date.parse('2026-07-14T08:01:30.000Z'),
+    runId: 'run_active',
+    deliverySeq: 42,
+    position: 1,
+    contentPreview: 'Continue after this boundary.',
+    entryId: 'entry_causal_delivery',
+    turnId: 'turn_active',
+    turnUserOrdinal: 1,
+    initiatedBy: {
+      clientId: 'client:space-installation',
+      name: 'kodax-space',
+    },
+  });
+
+  reducer.apply({
+    id: 'event_run_updated_43',
+    seq: 43,
+    cursor: { sessionId: 's_code', journalEpoch: 'journal_epoch_shared', seq: 43 },
+    time: '2026-07-14T08:01:31.000Z',
+    sessionId: 's_code',
+    runId: 'run_active',
+    turnId: 'turn_active',
+    type: 'run.updated',
+    payload: {
+      ...queuedRun,
+      interruptInputs: [
+        {
+          ...queuedRun.interruptInputs[0],
+          state: 'delivered',
+          deliveredAt: '2026-07-14T08:01:30.000Z',
+          entryId: 'entry_causal_delivery',
+        },
+      ],
+    },
+  } as RuntimeTypedEvent);
+
+  assert.equal(
+    reducer.snapshot().queuedInputs[0]?.deliverySeq,
+    42,
+    'the following run snapshot must not erase the causal delivery position',
+  );
+});
+
+test('sidecar verifier messages are retained by the live projection reducer', () => {
+  const reducer = new CoderSessionProjectionReducer(
+    projectRuntimeSessionSnapshot(observation, []),
+    observation.runs,
+  );
+  const change = reducer.apply({
+    id: 'event_sidecar_42',
+    seq: 42,
+    cursor: { sessionId: 's_code', journalEpoch: 'journal_epoch_shared', seq: 42 },
+    time: '2026-07-14T08:04:00.000Z',
+    sessionId: 's_code',
+    runId: 'run_active',
+    turnId: 'turn_active',
+    type: 'sidecar.message',
+    payload: {
+      source: 'sidecar-verifier',
+      verdict: 'revise',
+      recipient: 'main-agent',
+      delivery: 'synthetic-user-message',
+      content: 'Please revise the answer.',
+    },
+  } as RuntimeTypedEvent);
+
+  assert.equal(change?.change.domain, 'sidecar');
+  assert.deepEqual(reducer.snapshot().sidecarMessages, [
+    {
+      eventId: 'event_sidecar_42',
+      runId: 'run_active',
+      turnId: 'turn_active',
+      seq: 42,
+      createdAt: Date.parse('2026-07-14T08:04:00.000Z'),
+      message: {
+        source: 'sidecar-verifier',
+        verdict: 'revise',
+        recipient: 'main-agent',
+        delivery: 'synthetic-user-message',
+        content: 'Please revise the answer.',
+      },
+    },
+  ]);
+  for (let seq = 43; seq <= 142; seq++) {
+    reducer.apply({
+      id: `event_sidecar_${seq}`,
+      seq,
+      cursor: { sessionId: 's_code', journalEpoch: 'journal_epoch_shared', seq },
+      time: '2026-07-14T08:04:00.000Z',
+      sessionId: 's_code',
+      runId: 'run_active',
+      turnId: 'turn_active',
+      type: 'sidecar.message',
+      payload: {
+        source: 'sidecar-verifier',
+        verdict: 'revise',
+        recipient: 'main-agent',
+        delivery: 'synthetic-user-message',
+        content: `Revision ${seq}`,
+      },
+    } as RuntimeTypedEvent);
+  }
+  assert.equal(reducer.snapshot().sidecarMessages?.length, 100);
+  assert.equal(reducer.snapshot().sidecarMessages?.[0]?.eventId, 'event_sidecar_43');
+  assert.equal(reducer.snapshot().sidecarMessages?.[99]?.eventId, 'event_sidecar_142');
 });
 
 test('waiting-agent, recovering, and unknown lifecycle phases remain authoritative active Runs', () => {

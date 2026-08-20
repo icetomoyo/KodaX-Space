@@ -188,8 +188,118 @@ Last Updated: 2026-08-20
 | 190 | High | Resolved in v0.1.44 | Previous-boot Windows ACL markers blocked Runtime startup without actionable recovery guidance | v0.1.43 / KodaX 0.7.92 exit settlement | 2026-08-19 |
 | 191 | Medium | Resolved in v0.1.44 | Persisted Sessions with no external Agent tasks surfaced session_not_found instead of a normal empty state | v0.1.43 historical Task Dock | 2026-08-19 |
 | 192 | Medium | Resolved in v0.1.44 | Every ordinary safe exit showed a prominent Windows notification despite requiring no user action | v0.1.43 background complete-exit presentation | 2026-08-19 |
+| 193 | High     | Resolved in source | Active transcript reconciliation can move thinking to the tail and reload can hide sidecar or queued interrupt content              | v0.1.44 canonical/live reconciliation                        | 2026-08-20 |
 
 ## Issue Details
+
+## Issue 193: Active transcript reconciliation can move thinking to the tail and reload can hide sidecar or queued interrupt content
+
+- Priority: High
+- Status: Resolved in source
+- Introduced: v0.1.44 canonical/live reconciliation
+- Created: 2026-08-20
+- Resolved: 2026-08-20
+
+### Original Problem
+
+Completed Session `20260820_092213_n095738cfef291` could render all collapsed thinking receipts
+after the final assistant answer even though its persisted conversation kept thinking, tools, and
+text in causal order. Ctrl+R restored the correct canonical layout.
+
+During active Session `20260816_110200_432759c1554ee5`, a live Sidecar Verifier notice, assistant
+content produced after that notice, and an accepted interrupt query could disappear after Ctrl+R.
+The queued query became visible again only after Runtime delivered it as formal mid-turn input.
+Session `20260820_095600_hk0bcd138cea99` exposed the related mid-flight failure: a canonical page
+arriving while a long Run was still streaming caused later live content to be folded twice, while a
+mid-turn user boundary was rendered after the final answer. Ctrl+R again restored canonical order.
+
+Expected behavior:
+
+- canonical/live reconciliation preserves thinking, text, tool, and notice order without moving
+  unmatched live chunks to the transcript tail;
+- provider replacement is not required to trigger safe reconciliation: narrow canonical windows
+  and different canonical/live chunk boundaries remain ordered;
+- renderer reload preserves live Sidecar Verifier notices and accepted queued interrupt queries;
+  and
+- queued interrupt input upgrades to one canonical user boundary on delivery without disappearing
+  or duplicating.
+
+### Context
+
+The first Session has correct persisted assistant-content order and a Runtime provider-recovery
+attempt. A deterministic store harness also reproduces the tail placement with append-only live
+segments when the canonical page covers a narrower content window or arrives in multiple stages
+while streaming continues. The second Session's Sidecar Verifier message and queued interrupt are
+present in the Runtime journal while the active canonical conversation still ends at the turn's
+initial user prompt.
+
+### Root Cause
+
+`mergeCanonicalTurnProjections()` concatenates every durable and live thinking/text chunk for a
+turn, computes one string suffix, and appends every unmatched live event after the durable body.
+That assumes identical cross-source chunk coverage and ordering, which does not hold across
+provider recovery, bounded history pages, or canonical assistant block grouping.
+
+Separately, Space projects only after-turn continuations into `queuedInputs`, even though the SDK
+already exposes active `interruptInputs`. Live Sidecar Verifier messages are pushed as transient
+renderer events but are absent from the Space live snapshot, so renderer reload cannot restore
+them. Finally, composer ownership falls back to the sole run-bound root user when several user
+boundaries share one Runtime Run. That fallback pulls events after a mid-turn delivery boundary
+back into the root segment and leaves the delivered query at the transcript tail.
+
+### Proposed Solution
+
+- Replace whole-turn string-suffix folding with causally ordered, boundary-aware canonical/live
+  reconciliation and keep unmatched live content at its original event position.
+- Project active Runtime interrupt inputs and reconcile them into queued renderer messages until
+  the exact delivered `entryId` becomes canonical.
+- Retain bounded live Sidecar Verifier messages in the Space projection and hydrate them after
+  renderer reload, deduplicating against canonical history.
+- Add red/green regressions for provider replacement, append-only narrow canonical coverage,
+  partial suffix chunking, active sidecar reload, and queued interrupt reload/delivery.
+
+### Resolution
+
+- Causally segmented live turns now reuse the existing structural merge when they cover the
+  canonical content, treating the complete live causal sequence as authoritative after proving it
+  covers canonical text, tools, and notices. This preserves live positions across narrow and
+  mid-flight canonical pages instead of appending or duplicating unmatched whole-turn suffixes.
+  Legacy unsegmented projections retain their previous compatibility path.
+- Active and delivered Runtime `interruptInputs` now join the bounded queued-input projection.
+  Delivered entries carry exact entry/turn identity and the delivery journal sequence; later
+  `run.updated` snapshots retain that sequence. Renderer reload can therefore restore one formal
+  user boundary before already-observed post-delivery output, even before the event bridge or
+  canonical history catches up.
+- When multiple user boundaries share one Runtime Run, composer routing now defers to the explicit
+  delivery boundary instead of assigning later output to the run-bound root user. Mid-turn queries
+  therefore remain between their preceding and following output.
+- Runtime snapshots now retain the latest 100 Sidecar messages. Full snapshots and incremental
+  Sidecar changes hydrate them into the transcript, while Runtime cursor and canonical-content
+  checks prevent duplicate notices across the live event bridge and history hydration.
+- No SDK change was required: the existing output-segment markers, `interruptInputs`, journal
+  cursor, and Sidecar journal events provide the identities needed by Space.
+
+### Files Changed
+
+- `apps/desktop/renderer/src/store/appStore.ts`
+- `apps/desktop/renderer/src/store/runtimeProjectionState.ts`
+- `apps/desktop/renderer/src/features/session/composeMessages.ts`
+- `apps/desktop/electron/kodax/runtime/coder-daemon-projection.ts`
+- `apps/desktop/electron/kodax/runtime-host-adapter.ts`
+- `packages/space-ipc-schema/src/channels/runtime.ts`
+- `packages/space-ipc-schema/src/channels/session.ts`
+- `packages/space-ipc-schema/src/index.ts`
+- Related Electron regression tests and
+  `docs/test-guides/ISSUE_193_v0.1.45_REGRESSION_GUIDE.md`
+
+### Verification
+
+- New regressions cover append-only narrow canonical tails, mid-flight page replacement, same-Run
+  mid-turn query placement, delivered interrupt reload, bounded Sidecar projection/reopen, higher
+  journal sequence arrival, and live-event deduplication.
+- Related reconciliation, projection, adapter, and store suites: 454/454 passed.
+- Full desktop Electron suite: 2697 passed, 0 failed, 4 skipped (2701 total).
+- IPC schema build, Desktop and Electron TypeScript checks, and ESLint passed.
 
 ## Issue 192: Every ordinary safe exit showed a prominent Windows notification despite requiring no user action
 
@@ -13755,13 +13865,13 @@ misclassified as missing before the durable mutation is attempted.
 
 ## Summary
 
-- Total: 180
+- Total: 181
 - Open: 1
 - Ready: 0
 - In Progress: 10
 - Deferred: 0
-- Resolved: 169
-- High: 92
+- Resolved: 170
+- High: 93
 - Medium: 77
 - Low: 11
 - Next to resolve: 165

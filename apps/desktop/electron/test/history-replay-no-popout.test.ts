@@ -6970,6 +6970,579 @@ test('bounded terminal history folds an acknowledged successful multi-iteration 
   );
 });
 
+test('a narrow canonical tail keeps append-only live thinking and tools before the final answer', () => {
+  const store = useAppStore.getState();
+  const turnId = 'turn-narrow-thinking-tail';
+  const runId = 'run-narrow-thinking-tail';
+  const runtimeEvent = (seq: number) => ({
+    runtimeId: 'runtime-narrow-thinking-tail',
+    runId,
+    journalEpoch: 'epoch-narrow-thinking-tail',
+    seq,
+  });
+  const optimisticId = store.appendUserMessage(SID, 'inspect the narrow page', 20_000);
+  assert.ok(optimisticId);
+  store.bindUserMessageRuntimeRun(SID, optimisticId, runId);
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId,
+    runtimeEvent: runtimeEvent(1),
+  });
+  for (const event of [
+    {
+      kind: 'output_segment_started' as const,
+      sessionId: SID,
+      responseId: 'response-1',
+      providerRequestId: 'provider-1',
+      mode: 'append' as const,
+      turnId,
+      runtimeEvent: runtimeEvent(2),
+    },
+    {
+      kind: 'thinking_delta' as const,
+      sessionId: SID,
+      text: 'first thought',
+      providerRequestId: 'provider-1',
+      turnId,
+      runtimeEvent: runtimeEvent(3),
+    },
+    {
+      kind: 'tool_start' as const,
+      sessionId: SID,
+      toolId: 'tool-narrow',
+      toolName: 'read',
+      input: { path: 'source.ts' },
+      turnId,
+      runtimeEvent: runtimeEvent(4),
+    },
+    {
+      kind: 'tool_result' as const,
+      sessionId: SID,
+      toolId: 'tool-narrow',
+      toolName: 'read',
+      content: 'source body',
+      turnId,
+      runtimeEvent: runtimeEvent(5),
+    },
+    {
+      kind: 'sidecar_message' as const,
+      sessionId: SID,
+      message: {
+        source: 'sidecar-verifier' as const,
+        verdict: 'revise' as const,
+        recipient: 'main-agent' as const,
+        delivery: 'synthetic-user-message' as const,
+        content: 'Check the first tool result.',
+      },
+      turnId,
+      runtimeEvent: runtimeEvent(6),
+    },
+    {
+      kind: 'output_segment_started' as const,
+      sessionId: SID,
+      responseId: 'response-1',
+      providerRequestId: 'provider-2',
+      mode: 'append' as const,
+      turnId,
+      runtimeEvent: runtimeEvent(7),
+    },
+    {
+      kind: 'thinking_delta' as const,
+      sessionId: SID,
+      text: 'second thought',
+      providerRequestId: 'provider-2',
+      turnId,
+      runtimeEvent: runtimeEvent(8),
+    },
+    {
+      kind: 'text_delta' as const,
+      sessionId: SID,
+      text: 'final answer',
+      providerRequestId: 'provider-2',
+      turnId,
+      runtimeEvent: runtimeEvent(9),
+    },
+    {
+      kind: 'session_complete' as const,
+      sessionId: SID,
+      turnId,
+      runtimeEvent: runtimeEvent(10),
+    },
+  ]) {
+    store.appendEvent(event);
+  }
+
+  store.prependSessionHistory(
+    SID,
+    [
+      { kind: 'history_truncation', scope: 'history', omittedItems: 20 },
+      {
+        kind: 'user',
+        content: 'inspect the narrow page',
+        sentAt: 20_000,
+        entryId: 'entry-narrow-user',
+        logicalId: 'entry-narrow-user',
+        canonicalIndex: 100,
+        turnId,
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'sidecar_message',
+        message: {
+          source: 'sidecar-verifier',
+          verdict: 'revise',
+          recipient: 'main-agent',
+          delivery: 'synthetic-user-message',
+          content: 'Check the first tool result.',
+          historical: true,
+        },
+        turnId,
+      },
+      {
+        kind: 'assistant',
+        text: 'final answer',
+        sentAt: 20_100,
+        entryId: 'entry-narrow-answer',
+        logicalId: 'entry-narrow-answer',
+        canonicalIndex: 101,
+        turnId,
+      },
+    ],
+    FALLBACK_SENT_AT,
+    {
+      replaceLoadedWindow: true,
+      authoritativeNewest: true,
+      sourceRevision: 'source-narrow-thinking-tail',
+    },
+  );
+
+  const events = useAppStore.getState().eventsBySession[SID] ?? [];
+  assert.deepEqual(
+    events.flatMap((event) => {
+      if (event.kind === 'thinking_delta') return [`thinking:${event.text}`];
+      if (event.kind === 'tool_start') return [`tool:${event.toolName}`];
+      if (event.kind === 'tool_result') return [`result:${event.content}`];
+      if (event.kind === 'sidecar_message') return [`sidecar:${event.message.content}`];
+      if (event.kind === 'text_delta') return [`text:${event.text}`];
+      return [];
+    }),
+    [
+      'thinking:first thought',
+      'tool:read',
+      'result:source body',
+      'sidecar:Check the first tool result.',
+      'thinking:second thought',
+      'text:final answer',
+    ],
+  );
+});
+
+test('causal coverage does not replace canonical text with an internal live substring match', () => {
+  const store = useAppStore.getState();
+  const turnId = 'turn-causal-internal-substring';
+  const runId = 'run-causal-internal-substring';
+  const runtimeEvent = (seq: number) => ({
+    runtimeId: 'runtime-causal-internal-substring',
+    runId,
+    journalEpoch: 'epoch-causal-internal-substring',
+    seq,
+  });
+  const optimisticId = store.appendUserMessage(SID, 'check the final wording', 30_000);
+  assert.ok(optimisticId);
+  store.bindUserMessageRuntimeRun(SID, optimisticId, runId);
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId,
+    runtimeEvent: runtimeEvent(1),
+  });
+  store.appendEvent({
+    kind: 'output_segment_started',
+    sessionId: SID,
+    responseId: 'response-substring',
+    providerRequestId: 'request-substring',
+    mode: 'append',
+    turnId,
+    runtimeEvent: runtimeEvent(2),
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'not done',
+    providerRequestId: 'request-substring',
+    turnId,
+    runtimeEvent: runtimeEvent(3),
+  });
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: SID,
+    turnId,
+    runtimeEvent: runtimeEvent(4),
+  });
+
+  store.prependSessionHistory(
+    SID,
+    [
+      {
+        kind: 'user',
+        content: 'check the final wording',
+        sentAt: 30_000,
+        entryId: 'entry-substring-user',
+        canonicalIndex: 0,
+        turnId,
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 'done',
+        sentAt: 30_100,
+        entryId: 'entry-substring-answer',
+        canonicalIndex: 1,
+        turnId,
+      },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true, authoritativeNewest: true, sourceRevision: 'substring-source' },
+  );
+
+  const assistantText = composeMessages({
+    events: useAppStore.getState().eventsBySession[SID] ?? [],
+    userMessages: useAppStore.getState().userMessagesBySession[SID] ?? [],
+  }).flatMap((message) => (message.kind === 'assistant_text' ? [message.text] : []));
+  assert.equal(assistantText[0], 'done');
+});
+
+test('legacy folding preserves repeated identical Sidecar occurrences beyond canonical coverage', () => {
+  const store = useAppStore.getState();
+  const turnId = 'turn-repeated-sidecar';
+  const runId = 'run-repeated-sidecar';
+  const runtimeEvent = (seq: number) => ({
+    runtimeId: 'runtime-repeated-sidecar',
+    runId,
+    journalEpoch: 'epoch-repeated-sidecar',
+    seq,
+  });
+  const sidecar = {
+    source: 'sidecar-verifier' as const,
+    verdict: 'revise' as const,
+    recipient: 'main-agent' as const,
+    delivery: 'synthetic-user-message' as const,
+    content: 'Please revise this exact point.',
+  };
+  const optimisticId = store.appendUserMessage(SID, 'preserve repeated verifier feedback', 31_000);
+  assert.ok(optimisticId);
+  store.bindUserMessageRuntimeRun(SID, optimisticId, runId);
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId,
+    runtimeEvent: runtimeEvent(1),
+  });
+  store.appendEvent({
+    kind: 'sidecar_message',
+    sessionId: SID,
+    message: sidecar,
+    turnId,
+    runtimeEvent: runtimeEvent(2),
+  });
+  store.appendEvent({
+    kind: 'sidecar_message',
+    sessionId: SID,
+    message: sidecar,
+    turnId,
+    runtimeEvent: runtimeEvent(3),
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'revised answer',
+    turnId,
+    runtimeEvent: runtimeEvent(4),
+  });
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: SID,
+    turnId,
+    runtimeEvent: runtimeEvent(5),
+  });
+
+  store.prependSessionHistory(
+    SID,
+    [
+      {
+        kind: 'user',
+        content: 'preserve repeated verifier feedback',
+        sentAt: 31_000,
+        entryId: 'entry-repeated-sidecar-user',
+        canonicalIndex: 0,
+        turnId,
+        turnUserOrdinal: 0,
+      },
+      { kind: 'sidecar_message', message: { ...sidecar, historical: true }, turnId },
+      {
+        kind: 'assistant',
+        text: 'revised answer',
+        sentAt: 31_100,
+        entryId: 'entry-repeated-sidecar-answer',
+        canonicalIndex: 1,
+        turnId,
+      },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true, authoritativeNewest: true, sourceRevision: 'sidecar-source' },
+  );
+
+  const sidecarCount = composeMessages({
+    events: useAppStore.getState().eventsBySession[SID] ?? [],
+    userMessages: useAppStore.getState().userMessagesBySession[SID] ?? [],
+  }).filter((message) => message.kind === 'system_notice' && message.variant === 'sidecar').length;
+  assert.equal(sidecarCount, 2);
+});
+
+test('mid-flight canonical pages neither duplicate a long turn nor sink its delivered user', () => {
+  const store = useAppStore.getState();
+  const turnId = 'turn-mid-flight-pages';
+  const runId = 'run-mid-flight-pages';
+  let seq = 1;
+  const runtimeEvent = () => ({
+    runtimeId: 'runtime-mid-flight-pages',
+    runId,
+    journalEpoch: 'epoch-mid-flight-pages',
+    seq: seq++,
+  });
+  const appendIteration = (iteration: number) => {
+    const providerRequestId = `request-mid-flight-${iteration}`;
+    store.appendEvent({
+      kind: 'output_segment_started',
+      sessionId: SID,
+      responseId: 'response-mid-flight',
+      providerRequestId,
+      mode: 'append',
+      turnId,
+      runtimeEvent: runtimeEvent(),
+    });
+    store.appendEvent({
+      kind: 'thinking_delta',
+      sessionId: SID,
+      text: `thought ${iteration}`,
+      providerRequestId,
+      turnId,
+      runtimeEvent: runtimeEvent(),
+    });
+    if (iteration % 2 === 0) {
+      store.appendEvent({
+        kind: 'tool_start',
+        sessionId: SID,
+        toolId: `tool-mid-flight-${iteration}`,
+        toolName: 'read',
+        input: { path: 'source.ts' },
+        turnId,
+        runtimeEvent: runtimeEvent(),
+      });
+      store.appendEvent({
+        kind: 'tool_result',
+        sessionId: SID,
+        toolId: `tool-mid-flight-${iteration}`,
+        toolName: 'read',
+        content: 'ok',
+        turnId,
+        runtimeEvent: runtimeEvent(),
+      });
+    }
+    if (iteration === 3) {
+      store.appendEvent({
+        kind: 'text_delta',
+        sessionId: SID,
+        text: 'final summary',
+        providerRequestId,
+        turnId,
+        runtimeEvent: runtimeEvent(),
+      });
+    }
+  };
+  const canonicalIteration = (iteration: number, canonicalIndex: number) => {
+    const items: SessionHistoryItem[] = [
+      {
+        kind: 'assistant',
+        text: iteration === 3 ? 'final summary' : '',
+        thinking: `thought ${iteration}`,
+        sentAt: 40_010 + iteration,
+        entryId: `entry-mid-flight-assistant-${iteration}`,
+        canonicalIndex,
+        turnId,
+      },
+    ];
+    if (iteration % 2 === 0) {
+      items.push({
+        kind: 'tool_call',
+        toolId: `tool-mid-flight-${iteration}`,
+        toolName: 'read',
+        input: { path: 'source.ts' },
+        result: 'ok',
+        entryId: `entry-mid-flight-tool-${iteration}`,
+        canonicalIndex: canonicalIndex + 1,
+        turnId,
+      });
+    }
+    return items;
+  };
+  const rootUser: SessionHistoryItem = {
+    kind: 'user',
+    content: 'move the roadmap slots',
+    sentAt: 40_000,
+    entryId: 'entry-mid-flight-root',
+    canonicalIndex: 0,
+    turnId,
+    turnUserOrdinal: 0,
+  };
+
+  const optimisticId = store.appendUserMessage(SID, 'move the roadmap slots', 40_000);
+  assert.ok(optimisticId);
+  store.bindUserMessageRuntimeRun(SID, optimisticId, runId);
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId,
+    runtimeEvent: runtimeEvent(),
+  });
+  appendIteration(0);
+  appendIteration(1);
+  store.prependSessionHistory(
+    SID,
+    [
+      { kind: 'history_truncation', scope: 'history', omittedItems: 20 },
+      rootUser,
+      ...canonicalIteration(0, 1),
+      ...canonicalIteration(1, 3),
+    ],
+    FALLBACK_SENT_AT,
+    {
+      replaceLoadedWindow: true,
+      authoritativeNewest: true,
+      sourceRevision: 'mid-flight-partial',
+    },
+  );
+
+  const queuedId = store.appendQueuedUserMessage(SID, {
+    content: 'continue after the reminder',
+    matchContent: 'continue after the reminder',
+    queueMode: 'interrupt',
+    sentAt: 40_020,
+  });
+  assert.ok(queuedId);
+  store.markQueuedUserMessageAccepted(SID, queuedId, runId, 'interrupt');
+  store.appendEvent({
+    kind: 'mid_turn_user_prompt',
+    sessionId: SID,
+    queueId: 'input-mid-flight',
+    content: 'continue after the reminder',
+    entryId: 'entry-mid-flight-reminder',
+    turnId,
+    turnUserOrdinal: 1,
+    runtimeEvent: runtimeEvent(),
+  });
+  appendIteration(2);
+  appendIteration(3);
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: SID,
+    turnId,
+    runtimeEvent: runtimeEvent(),
+  });
+  const beforeFinalHistory = composeMessages({
+    events: useAppStore.getState().eventsBySession[SID] ?? [],
+    userMessages: useAppStore.getState().userMessagesBySession[SID] ?? [],
+  });
+  assert.deepEqual(
+    beforeFinalHistory.flatMap((message) =>
+      message.kind === 'user' ? [`user:${message.content}`] : [],
+    ),
+    ['user:move the roadmap slots', 'user:continue after the reminder'],
+  );
+  assert.deepEqual(
+    beforeFinalHistory.flatMap((message) => {
+      if (message.kind === 'user') return [`user:${message.content}`];
+      if (message.kind === 'assistant_text') {
+        return [
+          ...(message.thinking ? [`thinking:${message.thinking}`] : []),
+          ...(message.text ? [`text:${message.text}`] : []),
+        ];
+      }
+      if (message.kind === 'tool_call') return [`tool:${message.toolId}`];
+      return [];
+    }),
+    [
+      'user:move the roadmap slots',
+      'thinking:thought 0',
+      'tool:tool-mid-flight-0',
+      'thinking:thought 1',
+      'user:continue after the reminder',
+      'thinking:thought 2',
+      'tool:tool-mid-flight-2',
+      'thinking:thought 3',
+      'text:final summary',
+    ],
+  );
+  store.prependSessionHistory(
+    SID,
+    [
+      { kind: 'history_truncation', scope: 'history', omittedItems: 20 },
+      rootUser,
+      ...canonicalIteration(0, 1),
+      ...canonicalIteration(1, 3),
+      {
+        kind: 'user',
+        content: 'continue after the reminder',
+        sentAt: 40_020,
+        entryId: 'entry-mid-flight-reminder',
+        canonicalIndex: 4,
+        turnId,
+        turnUserOrdinal: 1,
+      },
+      ...canonicalIteration(2, 5),
+      ...canonicalIteration(3, 7),
+    ],
+    FALLBACK_SENT_AT,
+    {
+      replaceLoadedWindow: true,
+      authoritativeNewest: true,
+      sourceRevision: 'mid-flight-final',
+    },
+  );
+
+  const state = useAppStore.getState();
+  const visible = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  }).flatMap((message) => {
+    if (message.kind === 'user') return [`user:${message.content}`];
+    if (message.kind === 'assistant_text') {
+      return [
+        ...(message.thinking ? [`thinking:${message.thinking}`] : []),
+        ...(message.text ? [`text:${message.text}`] : []),
+      ];
+    }
+    if (message.kind === 'tool_call') return [`tool:${message.toolId}`];
+    return [];
+  });
+  assert.deepEqual(visible, [
+    'user:move the roadmap slots',
+    'thinking:thought 0',
+    'tool:tool-mid-flight-0',
+    'thinking:thought 1',
+    'user:continue after the reminder',
+    'thinking:thought 2',
+    'tool:tool-mid-flight-2',
+    'thinking:thought 3',
+    'text:final summary',
+  ]);
+});
+
 test('history-first overlap keeps the complete live tool receipt after folding', () => {
   useAppStore.getState().appendUserMessage(SID, 'read after early history', 10_000);
   const restoredItems: SessionHistoryItem[] = [

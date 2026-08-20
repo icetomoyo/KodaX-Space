@@ -7445,7 +7445,8 @@ test('cached idle snapshot ownership rejects an external retag without a profile
     ['s_cached_retag', { title: '', messages: [], gitRoot: 'C:\\repo', tag: 'code' }],
   ]);
   let notifySessionChange:
-    ((event: { kind: 'change' | 'add' | 'remove'; sessionId: string }) => void) | undefined;
+    | ((event: { kind: 'change' | 'add' | 'remove'; sessionId: string }) => void)
+    | undefined;
   setSessionStoreImpl({
     listSessions: async () => [],
     forkSession: async () => null,
@@ -9469,6 +9470,7 @@ test('daemon delivered interrupt batch becomes ordered queue-addressable session
       content: 'first interrupt\n\nattachment overlay',
       turnId: 'turn_active',
       turnUserOrdinal: 1,
+      sentAt: Date.parse('2026-07-21T00:00:00.000Z'),
     },
     {
       runtimeEvent: {
@@ -9484,6 +9486,7 @@ test('daemon delivered interrupt batch becomes ordered queue-addressable session
       content: 'second interrupt',
       turnId: 'turn_active',
       turnUserOrdinal: 2,
+      sentAt: Date.parse('2026-07-21T00:00:00.000Z'),
     },
   ]);
   await adapter.close();
@@ -9544,6 +9547,7 @@ test('a queued Runtime turn defers its user boundary until the delivered input a
       content: 'queued turn prompt',
       turnId: 'turn_queued',
       turnUserOrdinal: 0,
+      sentAt: Date.parse('2026-07-29T06:46:27.453Z'),
     },
   ]);
   await adapter.close();
@@ -9671,6 +9675,7 @@ test('same-adapter reconnect drops stale user ordinals when turn.started is not 
       queueId: 'input-after-reconnect',
       content: 'same text may be new',
       turnId: 'turn_active',
+      sentAt: Date.parse('2026-07-21T00:01:00.000Z'),
     },
   ]);
   await adapter.close();
@@ -10470,25 +10475,28 @@ test('daemon terminal sidecar block is surfaced as a notice and closes without a
   });
   const bridgeRuntimeEvent = bindTestRuntimeEventBridge(adapter);
 
-  bridgeRuntimeEvent({
-    id: 'event_sidecar_blocked',
-    seq: 1,
-    time: '2026-07-24T02:30:13.157Z',
-    type: 'sidecar.message',
-    sessionId: 's_1',
-    runId: 'run_blocked',
-    payload: {
-      source: 'sidecar-verifier',
-      verdict: 'blocked',
-      recipient: 'user',
-      delivery: 'terminal-block',
-      content: 'Please confirm the next step.',
-      suggestedFix: 'Reply with approval to continue.',
-      trace: 'verifier_ok',
+  bridgeRuntimeEvent(
+    {
+      id: 'event_sidecar_blocked',
+      seq: 1,
+      time: '2026-07-24T02:30:13.157Z',
+      type: 'sidecar.message',
       sessionId: 's_1',
-      seq: 91083,
+      runId: 'run_blocked',
+      payload: {
+        source: 'sidecar-verifier',
+        verdict: 'blocked',
+        recipient: 'user',
+        delivery: 'terminal-block',
+        content: 'Please confirm the next step.',
+        suggestedFix: 'Reply with approval to continue.',
+        trace: 'verifier_ok',
+        sessionId: 's_1',
+        seq: 91083,
+      },
     },
-  });
+    'rt_1',
+  );
   bridgeRuntimeEvent({
     id: 'event_run_failed_after_block',
     seq: 2,
@@ -10516,6 +10524,13 @@ test('daemon terminal sidecar block is surfaced as a notice and closes without a
     {
       kind: 'sidecar_message',
       sessionId: 's_1',
+      sentAt: Date.parse('2026-07-24T02:30:13.157Z'),
+      runtimeEvent: {
+        runtimeId: 'rt_1',
+        runId: 'run_blocked',
+        journalEpoch: 'journal_epoch_1',
+        seq: 1,
+      },
       message: {
         source: 'sidecar-verifier',
         verdict: 'blocked',
@@ -11347,7 +11362,7 @@ test('a same-Runtime observation generation immediately replaces its retired pre
       ...observation,
       snapshot: {
         ...observation.snapshot,
-        cursor: testRuntimeCursor('s_reobserve', 3),
+        cursor: testRuntimeCursor('s_reobserve', 4),
         runs: [
           {
             runId: 'run_second',
@@ -11393,8 +11408,24 @@ test('a same-Runtime observation generation immediately replaces its retired pre
     },
   });
   fake.emit({
-    id: 'evt_first_completed',
+    id: 'evt_first_sidecar',
     seq: 2,
+    time: '2026-08-05T01:00:00.500Z',
+    sessionId: 's_reobserve',
+    runId: 'run_first',
+    turnId: 'turn_first',
+    type: 'sidecar.message',
+    payload: {
+      source: 'sidecar-verifier',
+      verdict: 'revise',
+      recipient: 'main-agent',
+      delivery: 'synthetic-user-message',
+      content: 'Retain this verifier message.',
+    },
+  });
+  fake.emit({
+    id: 'evt_first_completed',
+    seq: 3,
     time: '2026-08-05T01:00:01.000Z',
     sessionId: 's_reobserve',
     runId: 'run_first',
@@ -11416,6 +11447,7 @@ test('a same-Runtime observation generation immediately replaces its retired pre
   await adapter.ensureObserved('s_reobserve');
   const second = controller.sessionLiveSnapshot('s_reobserve');
   assert.equal(second.activeRun?.runId, 'run_second');
+  assert.equal(second.sidecarMessages?.[0]?.message.content, 'Retain this verifier message.');
   assert.ok(second.projectionRevision > firstTerminalRevision);
   await adapter.close();
 });

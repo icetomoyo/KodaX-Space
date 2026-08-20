@@ -538,6 +538,8 @@ function applyDomainChange(
       return { ...base, settings: update.change.settings };
     case 'queue':
       return { ...base, queuedInputs: update.change.queuedInputs };
+    case 'sidecar':
+      return { ...base, sidecarMessages: update.change.sidecarMessages };
     case 'terminal':
       return { ...base, lastTerminalRun: update.change.lastTerminalRun };
     case 'interaction':
