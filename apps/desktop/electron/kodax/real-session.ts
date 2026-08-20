@@ -898,7 +898,7 @@ export class RealKodaXSession implements ManagedSession {
   /**
    * FEATURE_030: 把 KodaX `AutoModeAskUser` callback 桥接到 Space askUserBroker。
    * KodaX guardrail 升级路径（denial threshold / circuit breaker / classifier
-   * decision escalate）会调这个；broker 推 IPC 弹 AskUserModal；用户答复 → verdict 回 KodaX。
+   * decision escalate）会调这个；broker 推 IPC 由对话流内联卡（AskUserInline）渲染；用户答复 → verdict 回 KodaX。
    *
    * 把 signals 从 KodaX shape (ToolCallSignal[]) 映射到 Space schema 的 AskUserSignal：
    * KodaX 内部 signal severity 是 string；Space schema 限 'info'|'warning'|'danger'。

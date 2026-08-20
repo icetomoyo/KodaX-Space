@@ -50,10 +50,10 @@ import { Breadcrumb } from './Breadcrumb.js';
 import { CommandToolbar, type PopoutKind } from './CommandToolbar.js';
 import { BottomBar } from './BottomBar.js';
 import { ConversationStreamV2 } from './ConversationStreamV2.js';
+import { AskUserDockBar, FOCUS_ASK_USER_EVENT } from '../features/ask-user/AskUserInline.js';
 import { PopoutOverlay } from './popouts/PopoutOverlay.js';
 import { FilesPanel } from './popouts/FilesPanel.js';
 import { PermissionModal } from '../features/permission/PermissionModal.js';
-import { AskUserModal } from '../features/ask-user/AskUserModal.js';
 import { ConfirmDialog } from './ConfirmDialog.js';
 import { ThemeToggle } from './ThemeToggle.js';
 import { VisualQualityToggle } from './VisualQualityToggle.js';
@@ -886,6 +886,17 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
     setRightSidebarOpenForCurrentSurface,
   ]);
   const rightSidebarWorkspaceMode = rightSidebarVisible && rightSidebarWidthMode === 'max';
+
+  // FEATURE_032 v2：内联提问卡与停靠条都在 center-pane 内，右侧栏 max 模式（display:none）
+  // 下不可见（旧 modal 挂 Shell 根不受影响）。「查看」召回时退出 max 模式，让问题卡回到可视区。
+  useEffect(() => {
+    if (!rightSidebarWorkspaceMode) return;
+    const onFocusAskUser = (): void => {
+      setRightSidebarWidthMode('default');
+    };
+    window.addEventListener(FOCUS_ASK_USER_EVENT, onFocusAskUser);
+    return () => window.removeEventListener(FOCUS_ASK_USER_EVENT, onFocusAskUser);
+  }, [rightSidebarWorkspaceMode]);
   const platformClass = getRendererPlatformClass();
   const isWindows = platformClass === 'platform-win32';
 
@@ -1113,8 +1124,16 @@ export function Shell({ version = null }: ShellProps): JSX.Element {
 
       {/* 模态/命令面板：在面板区之外，保证 position:fixed 相对视口正常铺满 */}
       <PermissionModal />
-      <AskUserModal />
       <ConfirmDialog />
+      {/* FEATURE_032 v2：max 模式下 center-pane 隐藏，停靠条在此兜底常驻
+          （点击「查看」会退出 max 模式并定位到队首卡，见上方 FOCUS_ASK_USER_EVENT 监听） */}
+      {rightSidebarWorkspaceMode && (
+        <div className="pointer-events-none fixed bottom-6 left-1/2 z-40 -translate-x-1/2">
+          <div className="pointer-events-auto">
+            <AskUserDockBar />
+          </div>
+        </div>
+      )}
       {settingsOpen && (
         <SettingsModal
           initialTab={settingsInitialTab}

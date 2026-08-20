@@ -799,7 +799,7 @@ export default function App(): JSX.Element {
       }),
     );
 
-    // FEATURE_032: askUser ask-and-wait — push 进 askUser 队列，AskUserModal 渲染队列头
+    // FEATURE_032: askUser ask-and-wait — push 进 askUser 队列，AskUserInlineStack 在对话流尾部渲染内联卡
     unsubsRef.current.push(
       bridge.on('askUser.request', (payload) => {
         enqueueAskUser(payload);
@@ -1142,7 +1142,7 @@ export default function App(): JSX.Element {
     };
   }, []);
 
-  // Settings overlay 仍 hoist 在这里；PermissionModal / AskUserModal 由 Shell 内部 mount。
+  // Settings overlay 仍 hoist 在这里；PermissionModal 由 Shell 内部 mount；askUser 走对话流内联卡（AskUserInline）。
   return (
     <>
       <Shell version={version} />

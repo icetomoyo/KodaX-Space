@@ -47,6 +47,7 @@ import { useActivityState } from './ActivitySpinner.js';
 import { AgentModeSelector } from './AgentModeSelector.js';
 // Retired StashNotice; file changes now live in RightSidebar.ChangesSection.
 import { RetryBanner } from './RetryBanner.js';
+import { AskUserDockBar } from '../features/ask-user/AskUserInline.js';
 import { NotificationsSurface } from './NotificationsSurface.js';
 import { pushToast } from '../store/toastStore.js';
 import { sessionMatchesScope } from '../lib/sessionScope.js';
@@ -2650,6 +2651,8 @@ export function BottomBar(): JSX.Element {
       <NotificationsSurface />
 
       <RetryBanner />
+
+      <AskUserDockBar />
 
       <div className="relative">
         {mascotMode === 'legacy' && (

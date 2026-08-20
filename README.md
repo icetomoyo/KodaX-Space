@@ -79,7 +79,7 @@ npm run dev
     </td>
     <td valign="top">
       <h3>Governed automation</h3>
-      Permission modes, ask-user modals, keychain-backed credentials, trusted IPC schemas, and local license gates keep agent work visible and reviewable.
+      Permission modes, inline ask-user cards in the conversation stream, keychain-backed credentials, trusted IPC schemas, and local license gates keep agent work visible and reviewable.
     </td>
     <td valign="top">
       <h3>Rich project context</h3>

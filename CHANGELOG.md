@@ -14,6 +14,16 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ## [Unreleased]
 
+### Changed
+
+- **FEATURE_032 v2 inline ask-user cards** - `ask_user_question` and guardrail
+  prompts now render as focused cards in the conversation stream (composer
+  dock recall strip with count + jump-to-card, keyboard 1-9/Enter/Esc on the
+  head card with overlay-aware yielding) instead of a full-screen modal.
+  Pure renderer change: reply IPC, askUserBroker persistence, and timeout
+  semantics are unchanged; validation rules moved to a tested pure module.
+  The full-screen AskUserModal is removed.
+
 ---
 
 ## [0.1.44] - 2026-08-20

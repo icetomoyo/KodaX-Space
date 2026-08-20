@@ -45,6 +45,7 @@ import {
   snapshotFromCreateArtifactTool,
   type TransientArtifactSnapshot,
 } from '../features/artifact/transientArtifact.js';
+import { AskUserInlineStack } from '../features/ask-user/AskUserInline.js';
 
 // **稳定空数组**：useAppStore selector 里返回 `?? []` literal 会每次 render 创建新引用，
 // zustand 默认 Object.is 比对触发 subscribe re-render → re-eval selector → 又新 [] → 无限循环
@@ -2054,6 +2055,8 @@ export function ConversationStreamV2(): JSX.Element {
             {/* 流式 spinner —— v0.1.4：从 BottomBar 搬到这里，把"正在做什么"
             放在对话流末尾。ActivitySpinner 自己 return null 时本块也不渲染。 */}
             <StreamingSpinnerRow />
+            {/* 流内聚焦卡：pending askUser 渲染在对话流尾部，无模态遮罩 */}
+            <AskUserInlineStack />
           </div>
         </div>
       </div>
@@ -2070,7 +2073,10 @@ export function ConversationStreamV2(): JSX.Element {
 
       {/* P4a 搜索框 — 右上角浮窗 */}
       {searchOpen && (
-        <div className="absolute top-2 right-4 z-30 flex items-center gap-1 bg-surface-2 border border-border-strong rounded shadow-xl px-2 py-1">
+        <div
+          data-testid="transcript-search-bar"
+          className="absolute top-2 right-4 z-30 flex items-center gap-1 bg-surface-2 border border-border-strong rounded shadow-xl px-2 py-1"
+        >
           <input
             ref={searchInputRef}
             type="search"

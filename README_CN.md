@@ -79,7 +79,7 @@ npm run dev
     </td>
     <td valign="top">
       <h3>受治理的自动化</h3>
-      Permission mode、ask-user 弹窗、系统 Keychain、可信 IPC schema 与本地 license gate，让 agent 工作可见、可审、可控。
+      Permission mode、对话流内联提问卡、系统 Keychain、可信 IPC schema 与本地 license gate，让 agent 工作可见、可审、可控。
     </td>
     <td valign="top">
       <h3>丰富的项目上下文</h3>
