@@ -3889,22 +3889,15 @@ export class RuntimeHostAdapter {
     return undefined;
   }
 
-  private restoreDeliveredInputSequences(
-    current: SpaceSessionLiveProjectionT['queuedInputs'],
+  private restoreCurrentSidecarMessages(
+    current: SpaceSessionLiveProjectionT,
     previous: SpaceSessionLiveProjectionT | undefined,
-  ): SpaceSessionLiveProjectionT['queuedInputs'] {
-    if (!previous) return current;
-    return current.map((input) => {
-      const retained = previous.queuedInputs.find(
-        (candidate) =>
-          candidate.inputId === input.inputId &&
-          candidate.runId === input.runId &&
-          candidate.entryId === input.entryId,
-      );
-      return retained?.deliverySeq === undefined
-        ? input
-        : { ...input, deliverySeq: retained.deliverySeq };
-    });
+  ): SpaceSessionLiveProjectionT['sidecarMessages'] {
+    const owner = current.activeRun ?? current.lastTerminalRun;
+    if (!previous || !owner?.turnId) return [];
+    return (previous.sidecarMessages ?? []).filter(
+      (item) => item.runId === owner.runId && item.turnId === owner.turnId,
+    );
   }
 
   private recordLiveProjectionRevision(projection: SpaceSessionLiveProjectionT): void {
@@ -4150,13 +4143,10 @@ export class RuntimeHostAdapter {
       const previousProjection = this.previousLiveProjection(sessionId, replayed.projection.cursor);
       const initialProjection = {
         ...replayed.projection,
-        queuedInputs: this.restoreDeliveredInputSequences(
-          replayed.projection.queuedInputs,
+        sidecarMessages: this.restoreCurrentSidecarMessages(
+          replayed.projection,
           previousProjection,
         ),
-        ...(previousProjection?.sidecarMessages !== undefined
-          ? { sidecarMessages: previousProjection.sidecarMessages }
-          : {}),
         projectionRevision: Math.max(
           replayed.projection.projectionRevision,
           this.previousLiveProjectionRevision(sessionId, replayed.projection.cursor.runtimeId) + 1,
@@ -4645,7 +4635,14 @@ export class RuntimeHostAdapter {
         await this.revokeCredentialLease(runtime, leaseId);
       }
     }
-    await this.bridgeRuntimeEvent(event, runtime.identity.runtimeId);
+    // These transcript events synthesize user-visible rows from the same projection state. If the
+    // reducer rejected their run/turn owner, bridging them anyway would bypass the causal gate and
+    // make retired queries or verifier messages reappear until the next reload.
+    const bridgeRequiresProjectionAcceptance =
+      event.type === 'sidecar.message' || event.type === 'run.input.delivered';
+    if (!bridgeRequiresProjectionAcceptance || change) {
+      await this.bridgeRuntimeEvent(event, runtime.identity.runtimeId);
+    }
     if (runtimeEventChangesProfile(event.type)) {
       this.scheduleProfileRefresh(event.seq);
     }

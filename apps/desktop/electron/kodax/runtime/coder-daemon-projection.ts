@@ -833,7 +833,9 @@ function queuedInputsProjection(
     .sort((a, b) => (a.sessionOrder ?? 0) - (b.sessionOrder ?? 0))
     .slice(0, 500)
     .map((run, index) => ({
-      inputId: run.continuation!.inputId,
+      // session.send and queued_user_prompt_started both expose the continuation Run id as the
+      // public after-turn queue identity. Keep the live projection on that same identity.
+      inputId: run.runId,
       sessionId: run.sessionId,
       delivery: 'after-turn' as const,
       state: 'queued' as const,
@@ -841,6 +843,7 @@ function queuedInputsProjection(
       runId: run.runId,
       position: index + 1,
       contentPreview: run.continuation!.contentPreview.slice(0, 4_096),
+      ...(run.origin?.operationId ? { originOperationId: run.origin.operationId } : {}),
       ...(run.origin
         ? {
             initiatedBy: {
@@ -853,10 +856,11 @@ function queuedInputsProjection(
   const interrupts = runs.flatMap((run) =>
     run.sessionId !== sessionId
       ? []
-      : (run.interruptInputs ?? []).flatMap((input, inputIndex) => {
-          if (input.state !== 'queued' && !(input.state === 'delivered' && input.entryId)) {
-            return [];
-          }
+      : (run.interruptInputs ?? []).flatMap((input) => {
+          // Delivered input is durable transcript history, not session-wide live queue state.
+          // The reducer emits it once from run.input.delivered with an exact journal position;
+          // snapshots must never resurrect old owners from completed or earlier turns.
+          if (input.state !== 'queued') return [];
           const origin = input.origin ?? run.origin;
           return [
             {
@@ -868,9 +872,10 @@ function queuedInputsProjection(
               ...(input.deliveredAt ? { deliveredAt: timestamp(input.deliveredAt) } : {}),
               runId: run.runId,
               contentPreview: input.contentPreview.slice(0, 4_096),
-              ...(input.entryId ? { entryId: input.entryId } : {}),
               ...(run.turnId ? { turnId: run.turnId } : {}),
-              ...(input.state === 'delivered' ? { turnUserOrdinal: inputIndex + 1 } : {}),
+              // Per-input operation identity is authoritative for interrupts. Falling back to the
+              // root Run origin would alias every interrupt submitted to that Run.
+              ...(input.origin?.operationId ? { originOperationId: input.origin.operationId } : {}),
               ...(origin
                 ? {
                     initiatedBy: {
@@ -887,34 +892,6 @@ function queuedInputsProjection(
     .sort((left, right) => left.createdAt - right.createdAt)
     .slice(0, 500)
     .map((input, index) => ({ ...input, position: index + 1 }));
-}
-
-function retainDeliveredInputSequences(
-  next: SpaceSessionLiveProjectionT['queuedInputs'],
-  previous: SpaceSessionLiveProjectionT['queuedInputs'],
-): SpaceSessionLiveProjectionT['queuedInputs'] {
-  return next.map((input) => {
-    if (
-      input.delivery !== 'interrupt' ||
-      input.state !== 'delivered' ||
-      input.runId === undefined ||
-      input.entryId === undefined
-    ) {
-      return input;
-    }
-    const retained = previous.find(
-      (candidate) =>
-        candidate.delivery === 'interrupt' &&
-        candidate.state === 'delivered' &&
-        candidate.runId === input.runId &&
-        candidate.inputId === input.inputId &&
-        candidate.entryId === input.entryId &&
-        candidate.deliverySeq !== undefined,
-    );
-    return retained?.deliverySeq === undefined
-      ? input
-      : { ...input, deliverySeq: retained.deliverySeq };
-  });
 }
 
 const REASONING_MODES = new Set(['off', 'auto', 'quick', 'balanced', 'deep']);
@@ -1212,6 +1189,7 @@ export class CoderSessionProjectionReducer {
         domain: 'run',
         activeRun,
         queuedRuns: this.#projection.queuedRuns,
+        queuedInputs: this.#projection.queuedInputs.filter((input) => input.state !== 'delivered'),
         resetRunScopedState: true,
       });
     }
@@ -1326,6 +1304,16 @@ export class CoderSessionProjectionReducer {
       });
     }
     if (event.type === 'sidecar.message') {
+      const recoveryRun = this.#projection.activeRun ?? this.#projection.lastTerminalRun;
+      if (
+        recoveryRun === undefined ||
+        recoveryRun.runId !== event.runId ||
+        recoveryRun.turnId === undefined ||
+        event.turnId === undefined ||
+        recoveryRun.turnId !== event.turnId
+      ) {
+        return null;
+      }
       const message = spaceRuntimeSidecarMessagePayloadSchema.safeParse(event.payload);
       if (!message.success) return null;
       const sidecarMessages = [
@@ -1342,6 +1330,16 @@ export class CoderSessionProjectionReducer {
       return this.#commit(event.seq, { domain: 'sidecar', sidecarMessages });
     }
     if (event.type === 'run.input.delivered') {
+      const activeRun = this.#projection.activeRun;
+      if (
+        activeRun === undefined ||
+        activeRun.runId !== event.runId ||
+        activeRun.turnId === undefined ||
+        event.turnId === undefined ||
+        activeRun.turnId !== event.turnId
+      ) {
+        return null;
+      }
       const inputs = Array.isArray(payload?.inputs) ? payload.inputs : [];
       const delivered = new Map<string, Readonly<Record<string, unknown>>>();
       for (const value of inputs) {
@@ -1350,7 +1348,6 @@ export class CoderSessionProjectionReducer {
         if (inputId) delivered.set(inputId, input!);
       }
       if (delivered.size === 0) return null;
-      const run = this.#runs.get(event.runId);
       let changed = false;
       const queuedInputs = this.#projection.queuedInputs.map((input) => {
         const delivery = delivered.get(input.inputId);
@@ -1358,17 +1355,12 @@ export class CoderSessionProjectionReducer {
         changed = true;
         const deliveredAt = text(delivery.deliveredAt, 128);
         const entryId = text(delivery.entryId, 256);
-        const interruptIndex = run?.interruptInputs?.findIndex(
-          (candidate) => candidate.inputId === input.inputId,
-        );
         return {
           ...input,
           state: 'delivered' as const,
           runId: event.runId,
           deliverySeq: event.seq,
-          ...(interruptIndex !== undefined && interruptIndex >= 0
-            ? { turnUserOrdinal: interruptIndex + 1 }
-            : {}),
+          ...(event.turnId !== undefined ? { turnId: event.turnId } : {}),
           ...(deliveredAt ? { deliveredAt: timestamp(deliveredAt) } : {}),
           ...(entryId ? { entryId } : {}),
         };
@@ -1395,9 +1387,9 @@ export class CoderSessionProjectionReducer {
           domain: 'run',
           activeRun: runs.activeRun ?? null,
           queuedRuns: runs.queuedRuns,
-          queuedInputs: retainDeliveredInputSequences(
-            queuedInputsProjection([...this.#runs.values()], this.#projection.sessionId),
-            this.#projection.queuedInputs,
+          queuedInputs: queuedInputsProjection(
+            [...this.#runs.values()],
+            this.#projection.sessionId,
           ),
           ...(resetRunScopedState ? { resetRunScopedState: true } : {}),
         },
@@ -1463,6 +1455,7 @@ export class CoderSessionProjectionReducer {
                 activeTools: [],
                 managedTask: undefined,
                 interactions: [],
+                ...(change.activeRun !== null ? { sidecarMessages: [] } : {}),
               }
             : {}),
           ...(lastTerminalRun ? { lastTerminalRun } : {}),

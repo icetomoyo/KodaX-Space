@@ -11349,8 +11349,10 @@ test('terminal Session observations retire and are not restored after reconnect'
   await adapter.close();
 });
 
-test('a same-Runtime observation generation immediately replaces its retired predecessor', async () => {
+test('observation reopen keeps the same terminal sidecar once and rejects retired owner events', async () => {
   const fake = createFakeRuntime();
+  const pushed: unknown[] = [];
+  const liveChanges: unknown[] = [];
   fake.sessions.add('s_reobserve');
   const originalObserve = fake.runtime.sessions.observe.bind(fake.runtime.sessions);
   let observationGeneration = 0;
@@ -11358,20 +11360,43 @@ test('a same-Runtime observation generation immediately replaces its retired pre
     const observation = await originalObserve(...args);
     observationGeneration += 1;
     if (observationGeneration === 1) return observation;
+    const reopensTerminalOwner = observationGeneration === 2;
     return {
       ...observation,
       snapshot: {
         ...observation.snapshot,
-        cursor: testRuntimeCursor('s_reobserve', 4),
+        cursor: testRuntimeCursor('s_reobserve', reopensTerminalOwner ? 4 : 5),
         runs: [
-          {
-            runId: 'run_second',
-            sessionId: 's_reobserve',
-            phase: 'running' as const,
-            provider: 'mock',
-            mode: 'managed_task' as const,
-            startedAt: '2026-08-05T01:01:00.000Z',
-          },
+          reopensTerminalOwner
+            ? {
+                runId: 'run_first',
+                sessionId: 's_reobserve',
+                turnId: 'turn_first',
+                phase: 'completed' as const,
+                provider: 'mock',
+                mode: 'managed_task' as const,
+                startedAt: '2026-08-05T01:00:00.000Z',
+                endedAt: '2026-08-05T01:00:01.000Z',
+              }
+            : {
+                runId: 'run_second',
+                sessionId: 's_reobserve',
+                turnId: 'turn_second',
+                phase: 'running' as const,
+                provider: 'mock',
+                mode: 'managed_task' as const,
+                startedAt: '2026-08-05T01:01:00.000Z',
+                interruptInputs: [
+                  {
+                    inputId: 'input-shared',
+                    afterRunId: 'run_second',
+                    delivery: 'interrupt' as const,
+                    state: 'queued' as const,
+                    contentPreview: 'Current turn queued query.',
+                    queuedAt: '2026-08-05T01:01:00.000Z',
+                  },
+                ],
+              },
         ],
       },
     };
@@ -11386,6 +11411,10 @@ test('a same-Runtime observation generation immediately replaces its retired pre
     identityStore: testIdentityStore,
     runtimeEventParser: testRuntimeEventParser,
     projectionController: controller,
+    push: (channel, payload) => {
+      if (channel === 'session.event') pushed.push(payload);
+      if (channel === 'session.liveChanged') liveChanges.push(payload);
+    },
   });
 
   await adapter.initialize();
@@ -11445,10 +11474,60 @@ test('a same-Runtime observation generation immediately replaces its retired pre
   const firstTerminalRevision = controller.sessionLiveSnapshot('s_reobserve').projectionRevision;
 
   await adapter.ensureObserved('s_reobserve');
+  const reopenedTerminal = await adapter.readSessionLiveSnapshot('s_reobserve');
+  assert.equal(reopenedTerminal.lastTerminalRun?.runId, 'run_first');
+  assert.equal(reopenedTerminal.sidecarMessages?.length, 1);
+  assert.equal(reopenedTerminal.sidecarMessages?.[0]?.eventId, 'evt_first_sidecar');
+  await waitForTest(() => fake.calls.observationCloses === 2);
+
+  await adapter.ensureObserved('s_reobserve');
   const second = controller.sessionLiveSnapshot('s_reobserve');
   assert.equal(second.activeRun?.runId, 'run_second');
-  assert.equal(second.sidecarMessages?.[0]?.message.content, 'Retain this verifier message.');
+  assert.deepEqual(second.sidecarMessages, []);
   assert.ok(second.projectionRevision > firstTerminalRevision);
+  pushed.length = 0;
+  liveChanges.length = 0;
+  fake.emit({
+    id: 'evt_late_retired_sidecar',
+    seq: 6,
+    time: '2026-08-05T01:01:00.500Z',
+    sessionId: 's_reobserve',
+    runId: 'run_first',
+    turnId: 'turn_first',
+    type: 'sidecar.message',
+    payload: {
+      source: 'sidecar-verifier',
+      verdict: 'revise',
+      recipient: 'main-agent',
+      delivery: 'synthetic-user-message',
+      content: 'This retired verifier result arrived too late.',
+    },
+  });
+  fake.emit({
+    id: 'evt_late_retired_delivery',
+    seq: 7,
+    time: '2026-08-05T01:01:01.000Z',
+    sessionId: 's_reobserve',
+    runId: 'run_first',
+    turnId: 'turn_first',
+    type: 'run.input.delivered',
+    payload: {
+      inputs: [
+        {
+          inputId: 'input-shared',
+          entryId: 'entry-retired',
+          afterRunId: 'run_first',
+          input: [{ type: 'text', text: 'retired queued query' }],
+          queuedAt: '2026-08-05T01:00:00.000Z',
+          deliveredAt: '2026-08-05T01:01:01.000Z',
+        },
+      ],
+    },
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(pushed, []);
+  assert.deepEqual(liveChanges, []);
+  assert.deepEqual(controller.sessionLiveSnapshot('s_reobserve').sidecarMessages, []);
   await adapter.close();
 });
 

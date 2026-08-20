@@ -2004,13 +2004,6 @@ export function BottomBar(): JSX.Element {
       return;
     }
     appendInputHistory(sessionId, skillEcho);
-    const queuedLocalId = isStreaming
-      ? appendQueuedUserMessage(sessionId, {
-          content: skillEcho,
-          matchContent: resolvedPrompt,
-          queueMode,
-        })
-      : null;
     const pendingSendGeneration = setPendingSend(sessionId, true);
     const skillSendPayloadWithoutOperation: ChannelInput<'session.send'> = {
       sessionId,
@@ -2025,6 +2018,14 @@ export function BottomBar(): JSX.Element {
       () => `space-send-${crypto.randomUUID()}`,
     );
     retainedSendOperationRef.current = skillSendOperation.retainedOperations;
+    const queuedLocalId = isStreaming
+      ? appendQueuedUserMessage(sessionId, {
+          content: skillEcho,
+          matchContent: resolvedPrompt,
+          queueMode,
+          operationId: skillSendOperation.operationId,
+        })
+      : null;
     // Created after the send operation so the optimistic bubble can carry the exact
     // operationId for deterministic lost-ACK claiming by originOperationId.
     const optimisticMessageId = queuedLocalId
@@ -2253,14 +2254,6 @@ export function BottomBar(): JSX.Element {
           previewUrl: image.dataUrl,
         }),
       );
-      const queuedLocalId = isStreaming
-        ? appendQueuedUserMessage(sid, {
-            content: effectivePrompt,
-            matchContent: promptForAI,
-            queueMode: effectiveQueueMode,
-            attachments: optimisticAttachments,
-          })
-        : null;
       const fileRefsAtSend = pendingFileRefs;
       const artifactsForSend: InputArtifact[] | undefined =
         imagesAtSend.length > 0
@@ -2312,6 +2305,15 @@ export function BottomBar(): JSX.Element {
         () => `space-send-${crypto.randomUUID()}`,
       );
       retainedSendOperationRef.current = sendOperation.retainedOperations;
+      const queuedLocalId = isStreaming
+        ? appendQueuedUserMessage(sid, {
+            content: effectivePrompt,
+            matchContent: promptForAI,
+            queueMode: effectiveQueueMode,
+            attachments: optimisticAttachments,
+            operationId: sendOperation.operationId,
+          })
+        : null;
       // Created after the send operation so the optimistic bubble can carry the exact
       // operationId for deterministic lost-ACK claiming by originOperationId.
       const optimisticMessageId = queuedLocalId

@@ -173,6 +173,7 @@ test('selected-session live projection carries semantic spinner, Todo and queue 
         delivery: 'after-turn',
         state: 'queued',
         createdAt: 5,
+        originOperationId: 'space-send-operation-1',
         position: 1,
       },
     ],

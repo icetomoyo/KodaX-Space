@@ -638,6 +638,8 @@ export const spaceRuntimeQueuedInputSchema = z
     entryId: z.string().min(1).max(256).optional(),
     turnId: z.string().min(1).max(256).optional(),
     turnUserOrdinal: z.number().int().nonnegative().max(1_000_000).optional(),
+    /** Exact session.send operation identity used to join optimistic UI before its ACK. */
+    originOperationId: idSchema.optional(),
     position: z.number().int().positive().max(MAX_QUEUE_ITEMS).optional(),
     initiatedBy: spaceRuntimeInitiatorSchema.optional(),
   })

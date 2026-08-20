@@ -416,7 +416,7 @@ test('atomic observation maps run, draft, tool, Todo, and interaction truth', ()
   assert.equal(projection.transcriptRevision, 'transcript_rev_41');
   assert.deepEqual(projection.queuedInputs, [
     {
-      inputId: 'input_after_turn',
+      inputId: 'run_queued',
       sessionId: 's_code',
       delivery: 'after-turn',
       state: 'queued',
@@ -459,7 +459,7 @@ test('a terminal observation never projects residual or foreign Run drafts as an
   assert.equal(projection.thinkingDraft, undefined);
 });
 
-test('active interrupt inputs remain visible in the live queued-input projection', () => {
+test('snapshot projection restores queued inputs without resurrecting delivered history', () => {
   const projection = projectRuntimeSessionSnapshot(
     {
       ...observation,
@@ -498,31 +498,13 @@ test('active interrupt inputs remain visible in the live queued-input projection
 
   assert.deepEqual(projection.queuedInputs, [
     {
-      inputId: 'input_delivered',
-      sessionId: 's_code',
-      delivery: 'interrupt',
-      state: 'delivered',
-      createdAt: Date.parse('2026-07-14T08:01:00.000Z'),
-      deliveredAt: Date.parse('2026-07-14T08:01:30.000Z'),
-      runId: 'run_active',
-      position: 1,
-      contentPreview: 'Already delivered prompt.',
-      entryId: 'entry_delivered',
-      turnId: 'turn_active',
-      turnUserOrdinal: 1,
-      initiatedBy: {
-        clientId: 'client:space-installation',
-        name: 'kodax-space',
-      },
-    },
-    {
       inputId: 'input_interrupt',
       sessionId: 's_code',
       delivery: 'interrupt',
       state: 'queued',
       createdAt: Date.parse('2026-07-14T08:02:00.000Z'),
       runId: 'run_active',
-      position: 2,
+      position: 1,
       contentPreview: 'Check the verifier feedback first.',
       turnId: 'turn_active',
       initiatedBy: {
@@ -533,7 +515,64 @@ test('active interrupt inputs remain visible in the live queued-input projection
   ]);
 });
 
-test('delivered interrupt changes retain their exact journal position for reload ordering', () => {
+test('queued projection exposes the exact send operation and public queue identity', () => {
+  const projection = projectRuntimeSessionSnapshot(
+    {
+      ...observation,
+      runs: [
+        {
+          ...running,
+          interruptInputs: [
+            {
+              inputId: 'input_interrupt_operation',
+              afterRunId: running.runId,
+              delivery: 'interrupt',
+              state: 'queued',
+              contentPreview: 'Interrupt prompt.',
+              queuedAt: '2026-07-14T08:02:00.000Z',
+              origin: {
+                principalId: 'client:interrupt-author',
+                clientName: 'interrupt-author',
+                operationId: 'operation-interrupt',
+              },
+            },
+          ],
+        },
+        {
+          ...queued,
+          origin: {
+            principalId: 'client:after-turn-author',
+            clientName: 'after-turn-author',
+            operationId: 'operation-after-turn',
+          },
+        },
+      ],
+    } as RuntimeSessionObservationSnapshot,
+    [],
+  );
+
+  assert.deepEqual(
+    projection.queuedInputs.map((input) => ({
+      inputId: input.inputId,
+      delivery: input.delivery,
+      operationId: input.originOperationId,
+    })),
+    [
+      {
+        inputId: 'run_queued',
+        delivery: 'after-turn',
+        operationId: 'operation-after-turn',
+      },
+      {
+        inputId: 'input_interrupt_operation',
+        delivery: 'interrupt',
+        operationId: 'operation-interrupt',
+      },
+    ],
+  );
+});
+
+test('delivered interrupt changes are one-shot causal boundaries and never revive from run state', () => {
   const queuedRun = {
     ...running,
     interruptInputs: [
@@ -593,7 +632,6 @@ test('delivered interrupt changes retain their exact journal position for reload
     contentPreview: 'Continue after this boundary.',
     entryId: 'entry_causal_delivery',
     turnId: 'turn_active',
-    turnUserOrdinal: 1,
     initiatedBy: {
       clientId: 'client:space-installation',
       name: 'kodax-space',
@@ -622,11 +660,95 @@ test('delivered interrupt changes retain their exact journal position for reload
     },
   } as RuntimeTypedEvent);
 
-  assert.equal(
-    reducer.snapshot().queuedInputs[0]?.deliverySeq,
-    42,
-    'the following run snapshot must not erase the causal delivery position',
+  assert.deepEqual(
+    reducer.snapshot().queuedInputs,
+    [],
+    'durable run state must not turn a delivered boundary into session-wide live history',
   );
+});
+
+test('a new root turn drops delivered and sidecar recovery owned by the previous turn', () => {
+  const queuedRun = {
+    ...running,
+    interruptInputs: [
+      {
+        inputId: 'input_turn_a',
+        afterRunId: running.runId,
+        delivery: 'interrupt' as const,
+        state: 'queued' as const,
+        contentPreview: 'Turn A follow-up.',
+        queuedAt: '2026-07-14T08:01:00.000Z',
+      },
+    ],
+  };
+  const snapshot = { ...observation, runs: [queuedRun] } as RuntimeSessionObservationSnapshot;
+  const reducer = new CoderSessionProjectionReducer(
+    projectRuntimeSessionSnapshot(snapshot, []),
+    snapshot.runs,
+  );
+
+  reducer.apply({
+    id: 'event_turn_a_delivered_42',
+    seq: 42,
+    cursor: { sessionId: 's_code', journalEpoch: 'journal_epoch_shared', seq: 42 },
+    time: '2026-07-14T08:01:30.000Z',
+    sessionId: 's_code',
+    runId: 'run_active',
+    turnId: 'turn_active',
+    type: 'run.input.delivered',
+    payload: {
+      inputs: [
+        {
+          inputId: 'input_turn_a',
+          afterRunId: 'run_active',
+          input: [{ type: 'text', text: 'Turn A follow-up.' }],
+          queuedAt: '2026-07-14T08:01:00.000Z',
+          deliveredAt: '2026-07-14T08:01:30.000Z',
+          entryId: 'entry_turn_a',
+        },
+      ],
+    },
+  } as RuntimeTypedEvent);
+  reducer.apply({
+    id: 'event_turn_a_sidecar_43',
+    seq: 43,
+    cursor: { sessionId: 's_code', journalEpoch: 'journal_epoch_shared', seq: 43 },
+    time: '2026-07-14T08:01:31.000Z',
+    sessionId: 's_code',
+    runId: 'run_active',
+    turnId: 'turn_active',
+    type: 'sidecar.message',
+    payload: {
+      source: 'sidecar-verifier',
+      verdict: 'revise',
+      recipient: 'main-agent',
+      delivery: 'synthetic-user-message',
+      content: 'Turn A feedback.',
+    },
+  } as RuntimeTypedEvent);
+
+  const started = reducer.apply({
+    id: 'event_turn_b_started_44',
+    seq: 44,
+    cursor: { sessionId: 's_code', journalEpoch: 'journal_epoch_shared', seq: 44 },
+    time: '2026-07-14T08:01:32.000Z',
+    sessionId: 's_code',
+    runId: 'run_active',
+    turnId: 'turn_b',
+    type: 'turn.started',
+    payload: {
+      sessionId: 's_code',
+      seq: 44,
+      turnId: 'turn_b',
+      deliveryKind: 'interrupt',
+      contextKind: 'root',
+      contextRevision: 2,
+    },
+  } as RuntimeTypedEvent);
+
+  assert.equal(started?.change.domain, 'run');
+  assert.deepEqual(reducer.snapshot().queuedInputs, []);
+  assert.deepEqual(reducer.snapshot().sidecarMessages, []);
 });
 
 test('sidecar verifier messages are retained by the live projection reducer', () => {
@@ -691,6 +813,85 @@ test('sidecar verifier messages are retained by the live projection reducer', ()
   assert.equal(reducer.snapshot().sidecarMessages?.length, 100);
   assert.equal(reducer.snapshot().sidecarMessages?.[0]?.eventId, 'event_sidecar_43');
   assert.equal(reducer.snapshot().sidecarMessages?.[99]?.eventId, 'event_sidecar_142');
+});
+
+test('terminal recovery retains its own sidecar until a new active Run takes ownership', () => {
+  const reducer = new CoderSessionProjectionReducer(
+    projectRuntimeSessionSnapshot(observation, []),
+    observation.runs,
+  );
+  reducer.apply({
+    id: 'event_terminal_sidecar_42',
+    seq: 42,
+    cursor: { sessionId: 's_code', journalEpoch: 'journal_epoch_shared', seq: 42 },
+    time: '2026-07-14T08:04:00.000Z',
+    sessionId: 's_code',
+    runId: 'run_active',
+    turnId: 'turn_active',
+    type: 'sidecar.message',
+    payload: {
+      source: 'sidecar-verifier',
+      verdict: 'revise',
+      recipient: 'main-agent',
+      delivery: 'synthetic-user-message',
+      content: 'Keep through the terminal refresh race.',
+    },
+  } as RuntimeTypedEvent);
+  reducer.apply({
+    id: 'event_terminal_sidecar_completed_43',
+    seq: 43,
+    cursor: { sessionId: 's_code', journalEpoch: 'journal_epoch_shared', seq: 43 },
+    time: '2026-07-14T08:04:01.000Z',
+    sessionId: 's_code',
+    runId: 'run_active',
+    turnId: 'turn_active',
+    type: 'run.completed',
+    payload: {
+      ...running,
+      phase: 'completed',
+      endedAt: '2026-07-14T08:04:01.000Z',
+    },
+  } as RuntimeTypedEvent);
+  assert.equal(
+    reducer.snapshot().sidecarMessages?.[0]?.message.content,
+    'Keep through the terminal refresh race.',
+  );
+  reducer.apply({
+    id: 'event_terminal_sidecar_late_44',
+    seq: 44,
+    cursor: { sessionId: 's_code', journalEpoch: 'journal_epoch_shared', seq: 44 },
+    time: '2026-07-14T08:04:02.000Z',
+    sessionId: 's_code',
+    runId: 'run_active',
+    turnId: 'turn_active',
+    type: 'sidecar.message',
+    payload: {
+      source: 'sidecar-verifier',
+      verdict: 'revise',
+      recipient: 'main-agent',
+      delivery: 'synthetic-user-message',
+      content: 'A terminal-owner verifier receipt remains recoverable.',
+    },
+  } as RuntimeTypedEvent);
+  assert.equal(reducer.snapshot().sidecarMessages?.length, 2);
+
+  reducer.apply({
+    id: 'event_terminal_sidecar_next_run_45',
+    seq: 45,
+    cursor: { sessionId: 's_code', journalEpoch: 'journal_epoch_shared', seq: 45 },
+    time: '2026-07-14T08:05:00.000Z',
+    sessionId: 's_code',
+    runId: 'run_queued',
+    turnId: 'turn_next',
+    type: 'run.started',
+    payload: {
+      ...queued,
+      turnId: 'turn_next',
+      phase: 'running',
+      runningAt: '2026-07-14T08:05:00.000Z',
+    },
+  } as RuntimeTypedEvent);
+  assert.deepEqual(reducer.snapshot().sidecarMessages, []);
 });
 
 test('waiting-agent, recovering, and unknown lifecycle phases remain authoritative active Runs', () => {

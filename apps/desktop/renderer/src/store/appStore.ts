@@ -537,6 +537,8 @@ export interface WorkflowNoticeMessage {
 export interface QueuedUserMessage {
   readonly id: string;
   readonly queueId?: string;
+  /** Exact session.send operation identity, available before the queue ACK returns. */
+  readonly operationId?: string;
   readonly content: string;
   readonly matchContent: string;
   readonly attachments?: readonly UserImageAttachment[];
@@ -981,6 +983,7 @@ interface AppState {
       readonly content: string;
       readonly matchContent?: string;
       readonly queueMode: 'interrupt' | 'after-turn';
+      readonly operationId?: string;
       readonly sentAt?: number;
       readonly attachments?: readonly UserImageAttachment[];
     },
@@ -4782,25 +4785,47 @@ function reconcileRuntimeQueuedMessages(
   current: readonly QueuedUserMessage[],
   projection: SpaceSessionLiveProjectionT,
 ): QueuedUserMessage[] {
-  const next = [...current];
+  let next = [...current];
   for (const input of projection.queuedInputs) {
     if (input.state !== 'queued' && input.state !== 'delivering') continue;
     const queueMode = input.delivery === 'after-turn' ? 'after-turn' : 'interrupt';
-    const index = next.findIndex(
-      (entry) => entry.queueMode === queueMode && entry.queueId === input.inputId,
+    const matchingIndexes = next.flatMap((entry, index) =>
+      (entry.queueMode === queueMode && entry.queueId === input.inputId) ||
+      (input.originOperationId !== undefined && entry.operationId === input.originOperationId)
+        ? [index]
+        : [],
     );
-    if (index !== -1) {
-      const existing = next[index]!;
-      next[index] = {
+    if (matchingIndexes.length > 0) {
+      const preferredIndex =
+        matchingIndexes.find((index) => !next[index]!.id.startsWith('runtime-queue:')) ??
+        matchingIndexes[0]!;
+      const existing = next[preferredIndex]!;
+      const failed = matchingIndexes
+        .map((index) => next[index]!)
+        .find((entry) => entry.status === 'failed');
+      const merged: QueuedUserMessage = {
         ...existing,
-        status: existing.status === 'failed' ? 'failed' : 'queued',
+        queueId: input.inputId,
+        queueMode,
+        ...(existing.operationId !== undefined
+          ? { operationId: existing.operationId }
+          : input.originOperationId !== undefined
+            ? { operationId: input.originOperationId }
+            : {}),
+        status: failed ? 'failed' : 'queued',
+        ...(failed?.failureReason !== undefined ? { failureReason: failed.failureReason } : {}),
       };
+      const insertionIndex = Math.min(...matchingIndexes);
+      const matched = new Set(matchingIndexes);
+      next = next.filter((_entry, index) => !matched.has(index));
+      next.splice(insertionIndex, 0, merged);
       continue;
     }
     const content = input.contentPreview ?? '';
     next.push({
       id: `runtime-queue:${input.delivery}:${input.inputId}`,
       queueId: input.inputId,
+      ...(input.originOperationId !== undefined ? { operationId: input.originOperationId } : {}),
       content,
       matchContent: content,
       queueMode,
@@ -4809,6 +4834,49 @@ function reconcileRuntimeQueuedMessages(
     });
   }
   return next;
+}
+
+interface AcceptedQueuedMessageResolution {
+  readonly target: QueuedUserMessage;
+  readonly acceptedMode: QueuedUserMessage['queueMode'];
+  readonly accepted: QueuedUserMessage;
+  readonly remaining: QueuedUserMessage[];
+  readonly insertionIndex: number;
+}
+
+function resolveAcceptedQueuedMessage(
+  bucket: readonly QueuedUserMessage[],
+  localId: string,
+  queueId: string | undefined,
+  queueMode: QueuedUserMessage['queueMode'] | undefined,
+): AcceptedQueuedMessageResolution | undefined {
+  const target = bucket.find((entry) => entry.id === localId);
+  if (!target) return undefined;
+  const acceptedMode = queueMode ?? target.queueMode;
+  const matchingIndexes = bucket.flatMap((entry, index) =>
+    entry.id === localId ||
+    (entry.queueMode === acceptedMode && queueId !== undefined && entry.queueId === queueId) ||
+    (target.operationId !== undefined && entry.operationId === target.operationId)
+      ? [index]
+      : [],
+  );
+  const failed = matchingIndexes
+    .map((index) => bucket[index]!)
+    .find((entry) => entry.status === 'failed');
+  const matched = new Set(matchingIndexes);
+  return {
+    target,
+    acceptedMode,
+    accepted: {
+      ...target,
+      ...(queueId !== undefined ? { queueId } : {}),
+      queueMode: acceptedMode,
+      status: failed ? 'failed' : 'queued',
+      ...(failed?.failureReason !== undefined ? { failureReason: failed.failureReason } : {}),
+    },
+    remaining: bucket.filter((_entry, index) => !matched.has(index)),
+    insertionIndex: Math.min(...matchingIndexes),
+  };
 }
 
 interface RuntimeDeliveredInputReconciliation {
@@ -4845,6 +4913,7 @@ function createDeliveredInputUserMessage(
     deliveryQueueMode: 'interrupt',
     deliveredInterrupt: true,
     ...(queued ? { sourceQueuedLocalId: queued.id } : {}),
+    ...(queued?.operationId !== undefined ? { operationId: queued.operationId } : {}),
     entryId: input.entryId,
   };
 }
@@ -4915,13 +4984,28 @@ function reconcileRuntimeDeliveredInputs(
   const nextUsers = [...userMessages];
   let nextQueued = [...queuedMessages];
   for (const input of projection.queuedInputs) {
-    if (input.delivery !== 'interrupt' || input.state !== 'delivered' || !input.entryId) continue;
-    const queued = nextQueued.find(
-      (entry) => entry.queueMode === 'interrupt' && entry.queueId === input.inputId,
+    const activeRun = projection.activeRun;
+    if (
+      input.delivery !== 'interrupt' ||
+      input.state !== 'delivered' ||
+      !input.entryId ||
+      input.deliverySeq === undefined ||
+      activeRun === undefined ||
+      input.runId !== activeRun.runId ||
+      (activeRun.turnId !== undefined && input.turnId !== activeRun.turnId)
+    ) {
+      continue;
+    }
+    const matchingQueued = nextQueued.filter(
+      (entry) =>
+        entry.queueMode === 'interrupt' &&
+        (entry.queueId === input.inputId ||
+          (input.originOperationId !== undefined && entry.operationId === input.originOperationId)),
     );
-    nextQueued = nextQueued.filter(
-      (entry) => entry.queueMode !== 'interrupt' || entry.queueId !== input.inputId,
-    );
+    const queued =
+      matchingQueued.find((entry) => !entry.id.startsWith('runtime-queue:')) ?? matchingQueued[0];
+    const matchingQueuedIds = new Set(matchingQueued.map((entry) => entry.id));
+    nextQueued = nextQueued.filter((entry) => !matchingQueuedIds.has(entry.id));
     const content = queued?.content ?? input.contentPreview ?? '';
     if (!nextUsers.some((message) => message.entryId === input.entryId)) {
       nextUsers.push(createDeliveredInputUserMessage(projection, input, queued, content));
@@ -4999,7 +5083,14 @@ function hydrateProjectedSidecarMessages(
   events: readonly SessionEvent[],
   projection: SpaceSessionLiveProjectionT,
 ): SessionEvent[] {
-  const sidecars = projection.sidecarMessages ?? [];
+  const recoveryOwner = projection.activeRun ?? projection.lastTerminalRun;
+  const sidecars = (projection.sidecarMessages ?? []).filter(
+    (item) =>
+      recoveryOwner !== undefined &&
+      recoveryOwner.turnId !== undefined &&
+      item.runId === recoveryOwner.runId &&
+      item.turnId === recoveryOwner.turnId,
+  );
   if (sidecars.length === 0) return events as SessionEvent[];
   const next = [...events];
   const matchedHistoryIndexes = new Set<number>();
@@ -5054,6 +5145,7 @@ function promoteQueuedUserMessageForPrompt(
     content: string,
     attachments?: readonly UserImageAttachment[],
     sourceQueuedLocalId?: string,
+    operationId?: string,
   ): UserMessage => ({
     ...createUserMessage(
       sessionId,
@@ -5066,6 +5158,7 @@ function promoteQueuedUserMessageForPrompt(
     ...(queueMode === 'interrupt' ? { deliveredInterrupt: true as const } : {}),
     ...(queueMode === 'after-turn' && queueId !== undefined ? { runtimeRunId: queueId } : {}),
     ...(sourceQueuedLocalId !== undefined ? { sourceQueuedLocalId } : {}),
+    ...(operationId !== undefined ? { operationId } : {}),
     ...(entryId !== undefined ? { entryId } : {}),
   });
 
@@ -5112,7 +5205,15 @@ function promoteQueuedUserMessageForPrompt(
       ...state.userMessagesBySession,
       [sessionId]: alreadyLiveByIdentity
         ? userBucket
-        : [...userBucket, createPromotedUserMessage(entry.content, entry.attachments, entry.id)],
+        : [
+            ...userBucket,
+            createPromotedUserMessage(
+              entry.content,
+              entry.attachments,
+              entry.id,
+              entry.operationId,
+            ),
+          ],
     },
   };
 }
@@ -5585,6 +5686,7 @@ export const useAppStore = create<AppState>((set) => ({
           ? { attachments: input.attachments }
           : {}),
         queueMode: input.queueMode,
+        ...(input.operationId !== undefined ? { operationId: input.operationId } : {}),
         status: 'pending-ack',
         sentAt: input.sentAt ?? Date.now(),
       };
@@ -5645,22 +5747,47 @@ export const useAppStore = create<AppState>((set) => ({
     set((state) => {
       const bucket = state.queuedUserMessagesBySession[sessionId];
       if (!bucket) return state;
-      let changed = false;
-      const nextBucket = bucket.map((entry) => {
-        if (entry.id !== localId) return entry;
-        changed = true;
-        return {
-          ...entry,
-          ...(queueId !== undefined ? { queueId } : {}),
-          ...(queueMode !== undefined ? { queueMode } : {}),
-          status: entry.status === 'failed' ? ('failed' as const) : ('queued' as const),
+      const resolution = resolveAcceptedQueuedMessage(bucket, localId, queueId, queueMode);
+      if (!resolution) return state;
+      const formalIndex =
+        queueId === undefined
+          ? -1
+          : (state.userMessagesBySession[sessionId] ?? []).findIndex(
+              (message) =>
+                message.deliveryQueueId === queueId &&
+                message.deliveryQueueMode === resolution.acceptedMode,
+            );
+      if (formalIndex !== -1) {
+        const userBucket = state.userMessagesBySession[sessionId] ?? [];
+        const formal = userBucket[formalIndex]!;
+        const nextUsers = userBucket.slice();
+        nextUsers[formalIndex] = {
+          ...formal,
+          content: resolution.target.content,
+          ...(resolution.target.attachments !== undefined
+            ? { attachments: resolution.target.attachments }
+            : {}),
+          sourceQueuedLocalId: localId,
+          ...(resolution.target.operationId !== undefined
+            ? { operationId: resolution.target.operationId }
+            : {}),
         };
-      });
-      if (!changed) return state;
+        return {
+          queuedUserMessagesBySession: {
+            ...state.queuedUserMessagesBySession,
+            [sessionId]: resolution.remaining,
+          },
+          userMessagesBySession: {
+            ...state.userMessagesBySession,
+            [sessionId]: nextUsers,
+          },
+        };
+      }
+      resolution.remaining.splice(resolution.insertionIndex, 0, resolution.accepted);
       return {
         queuedUserMessagesBySession: {
           ...state.queuedUserMessagesBySession,
-          [sessionId]: nextBucket,
+          [sessionId]: resolution.remaining,
         },
       };
     }),
@@ -5689,7 +5816,14 @@ export const useAppStore = create<AppState>((set) => ({
       const entry = bucket[idx]!;
       const userBucket = state.userMessagesBySession[sessionId] ?? [];
       const promotedMessage = {
-        ...createUserMessage(sessionId, entry.content, sentAt, undefined, entry.attachments),
+        ...createUserMessage(
+          sessionId,
+          entry.content,
+          sentAt,
+          undefined,
+          entry.attachments,
+          entry.operationId,
+        ),
         sourceQueuedLocalId: localId,
       };
       promotedMessageId = promotedMessage.id;
@@ -5727,6 +5861,7 @@ export const useAppStore = create<AppState>((set) => ({
         content: input.content,
         matchContent: input.matchContent ?? input.content,
         ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
+        ...(message.operationId !== undefined ? { operationId: message.operationId } : {}),
         queueMode: input.queueMode,
         status: 'queued',
         sentAt: input.sentAt ?? message.sentAt,
@@ -7560,10 +7695,11 @@ export const useAppStore = create<AppState>((set) => ({
         previousBarrier.runId === snapshotRun.runId;
       const currentEvents = state.eventsBySession[projection.sessionId] ?? [];
       const currentUsers = state.userMessagesBySession[projection.sessionId] ?? [];
+      const currentQueued = state.queuedUserMessagesBySession[projection.sessionId] ?? [];
       const deliveredInputs = reconcileRuntimeDeliveredInputs(
         currentEvents,
         currentUsers,
-        state.queuedUserMessagesBySession[projection.sessionId] ?? [],
+        currentQueued,
         identityProjection,
       );
       const sidecarHydratedEvents = hydrateProjectedSidecarMessages(
@@ -7603,7 +7739,7 @@ export const useAppStore = create<AppState>((set) => ({
         const deliveredBaseline = reconcileRuntimeDeliveredInputs(
           liveBaseline.events,
           liveBaseline.userMessages,
-          [],
+          currentQueued,
           identityProjection,
         );
         const hydratedBaselineEvents = hydrateSessionEventsFromLiveSnapshot(
@@ -7748,24 +7884,24 @@ export const useAppStore = create<AppState>((set) => ({
         result.status === 'applied' &&
         projection !== undefined &&
         (change.change.domain === 'run' || change.change.domain === 'terminal');
+      const appliesDeliveredInputs =
+        result.status === 'applied' &&
+        projection !== undefined &&
+        (appliesRunIdentity || change.change.domain === 'queue');
       const appliesSidecar =
         result.status === 'applied' &&
         projection !== undefined &&
         change.change.domain === 'sidecar';
       const currentEvents = state.eventsBySession[change.sessionId] ?? [];
       const currentUsers = state.userMessagesBySession[change.sessionId] ?? [];
+      const currentQueued = state.queuedUserMessagesBySession[change.sessionId] ?? [];
       const deliveredInputs =
-        appliesRunIdentity && projection !== undefined
-          ? reconcileRuntimeDeliveredInputs(
-              currentEvents,
-              currentUsers,
-              state.queuedUserMessagesBySession[change.sessionId] ?? [],
-              projection,
-            )
+        appliesDeliveredInputs && projection !== undefined
+          ? reconcileRuntimeDeliveredInputs(currentEvents, currentUsers, currentQueued, projection)
           : {
               events: currentEvents,
               userMessages: currentUsers,
-              queuedMessages: state.queuedUserMessagesBySession[change.sessionId] ?? [],
+              queuedMessages: currentQueued,
             };
       const sidecarHydratedEvents =
         (appliesRunIdentity || appliesSidecar) && projection !== undefined
@@ -7801,12 +7937,12 @@ export const useAppStore = create<AppState>((set) => ({
         : operationClaimedUsers;
       const reconciledEvents = folded.events;
       const liveBaseline = historyLiveBaselines.get(change.sessionId);
-      if ((appliesRunIdentity || appliesSidecar) && liveBaseline !== undefined) {
-        const deliveredBaseline = appliesRunIdentity
+      if ((appliesDeliveredInputs || appliesSidecar) && liveBaseline !== undefined) {
+        const deliveredBaseline = appliesDeliveredInputs
           ? reconcileRuntimeDeliveredInputs(
               liveBaseline.events,
               liveBaseline.userMessages,
-              [],
+              currentQueued,
               projection,
             )
           : {

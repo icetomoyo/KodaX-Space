@@ -4381,6 +4381,13 @@ test('a delivered interrupt snapshot restores one formal user boundary before br
   useAppStore.getState().replaceSessionLiveProjection({
     ...live,
     cursor: { runtimeId: 'rt_1', sessionId: 's_1', journalEpoch: 'journal_1', seq: 3 },
+    activeRun: {
+      runId: 'run_1',
+      sessionId: 's_1',
+      turnId: 'turn_1',
+      phase: 'running',
+      startedAt: 100,
+    },
     queuedInputs: [
       {
         inputId: 'input_delivered',
@@ -4449,10 +4456,245 @@ test('a delivered interrupt snapshot restores one formal user boundary before br
   );
 });
 
+test('a queue-domain delivery consumes only its optimistic operation before bridge and ACK', () => {
+  useAppStore.setState({ sessions: [sidebarSession] });
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  const firstLocalId = useAppStore.getState().appendQueuedUserMessage('s_1', {
+    content: 'Apply the full feedback.',
+    queueMode: 'interrupt',
+    operationId: 'operation-other',
+  });
+  const deliveredLocalId = useAppStore.getState().appendQueuedUserMessage('s_1', {
+    content: 'Apply the full feedback.',
+    queueMode: 'interrupt',
+    operationId: 'operation-delivery',
+    attachments: [
+      {
+        id: 'delivery-image',
+        kind: 'image',
+        mediaType: 'image/png',
+        status: 'available',
+        thumbnailUrl: 'data:image/png;base64,AA==',
+        previewUrl: 'data:image/png;base64,AA==',
+      },
+    ],
+  });
+  assert.ok(firstLocalId);
+  assert.ok(deliveredLocalId);
+  useAppStore.getState().prependSessionHistory('s_1', [], 0, {
+    replaceLoadedWindow: true,
+    sourceRevision: 'before-queue-delivery',
+  });
+
+  useAppStore.getState().replaceSessionLiveProjection({
+    ...live,
+    cursor: { runtimeId: 'rt_1', sessionId: 's_1', journalEpoch: 'journal_1', seq: 1 },
+    activeRun: {
+      runId: 'run_1',
+      sessionId: 's_1',
+      turnId: 'turn_1',
+      phase: 'running',
+      startedAt: 100,
+    },
+    queuedInputs: [
+      {
+        inputId: 'input_delivery',
+        sessionId: 's_1',
+        delivery: 'interrupt',
+        state: 'queued',
+        createdAt: 150,
+        runId: 'run_1',
+        contentPreview: 'Apply the truncated feedback.',
+        turnId: 'turn_1',
+        originOperationId: 'operation-delivery',
+      },
+    ],
+  });
+  assert.equal(
+    useAppStore.getState().applySessionLiveProjectionChange({
+      sessionId: 's_1',
+      baseProjectionRevision: 1,
+      projectionRevision: 2,
+      cursor: {
+        runtimeId: 'rt_1',
+        sessionId: 's_1',
+        journalEpoch: 'journal_1',
+        seq: 2,
+      },
+      change: {
+        domain: 'queue',
+        queuedInputs: [
+          {
+            inputId: 'input_delivery',
+            sessionId: 's_1',
+            delivery: 'interrupt',
+            state: 'delivered',
+            createdAt: 150,
+            deliveredAt: 200,
+            runId: 'run_1',
+            deliverySeq: 2,
+            contentPreview: 'Apply the truncated feedback.',
+            entryId: 'entry_delivery',
+            turnId: 'turn_1',
+            originOperationId: 'operation-delivery',
+          },
+        ],
+      },
+    }),
+    'applied',
+  );
+
+  assert.deepEqual(
+    (useAppStore.getState().queuedUserMessagesBySession.s_1 ?? []).map((entry) => entry.id),
+    [firstLocalId],
+  );
+  const formal = useAppStore.getState().userMessagesBySession.s_1 ?? [];
+  assert.equal(formal.length, 1);
+  assert.equal(formal[0]?.content, 'Apply the full feedback.');
+  assert.equal(formal[0]?.attachments?.[0]?.id, 'delivery-image');
+  assert.equal(formal[0]?.operationId, 'operation-delivery');
+  assert.equal(formal[0]?.deliveryQueueId, 'input_delivery');
+
+  useAppStore.getState().appendEvent({
+    kind: 'mid_turn_user_prompt',
+    sessionId: 's_1',
+    queueId: 'input_delivery',
+    content: 'Apply the truncated feedback.',
+    entryId: 'entry_delivery',
+    turnId: 'turn_1',
+    sentAt: 200,
+    runtimeEvent: {
+      runtimeId: 'rt_1',
+      runId: 'run_1',
+      journalEpoch: 'journal_1',
+      seq: 2,
+    },
+  });
+  useAppStore
+    .getState()
+    .markQueuedUserMessageAccepted('s_1', deliveredLocalId, 'input_delivery', 'interrupt');
+  assert.deepEqual(
+    (useAppStore.getState().queuedUserMessagesBySession.s_1 ?? []).map((entry) => entry.id),
+    [firstLocalId],
+  );
+  assert.equal(useAppStore.getState().userMessagesBySession.s_1?.length, 1);
+
+  useAppStore.getState().prependSessionHistory('s_1', [], 0, {
+    replaceLoadedWindow: true,
+    sourceRevision: 'after-queue-delivery',
+  });
+  const rebuilt = useAppStore.getState().userMessagesBySession.s_1 ?? [];
+  assert.equal(rebuilt.length, 1);
+  assert.equal(rebuilt[0]?.content, 'Apply the full feedback.');
+  assert.equal(rebuilt[0]?.attachments?.[0]?.id, 'delivery-image');
+  assert.equal(rebuilt[0]?.operationId, 'operation-delivery');
+});
+
+test('a delivered input outside the active run and turn cannot inject an old query owner', () => {
+  useAppStore.setState({ sessions: [sidebarSession] });
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  useAppStore.getState().appendUserMessage('s_1', 'current query', 300);
+
+  useAppStore.getState().replaceSessionLiveProjection({
+    ...live,
+    cursor: { runtimeId: 'rt_1', sessionId: 's_1', journalEpoch: 'journal_1', seq: 8 },
+    activeRun: {
+      runId: 'run_current',
+      sessionId: 's_1',
+      turnId: 'turn_current',
+      phase: 'running',
+      startedAt: 250,
+    },
+    queuedInputs: [
+      {
+        inputId: 'input_old',
+        sessionId: 's_1',
+        delivery: 'interrupt',
+        state: 'delivered',
+        createdAt: 100,
+        deliveredAt: 120,
+        runId: 'run_old',
+        deliverySeq: 2,
+        contentPreview: 'old query outside the newest page',
+        entryId: 'entry_old',
+        turnId: 'turn_old',
+      },
+      {
+        inputId: 'input_same_run_old_turn',
+        sessionId: 's_1',
+        delivery: 'interrupt',
+        state: 'delivered',
+        createdAt: 130,
+        deliveredAt: 140,
+        runId: 'run_current',
+        deliverySeq: 3,
+        contentPreview: 'old query from the previous root turn',
+        entryId: 'entry_same_run_old_turn',
+        turnId: 'turn_previous',
+      },
+    ],
+  });
+
+  assert.deepEqual(
+    (useAppStore.getState().userMessagesBySession.s_1 ?? []).map((message) => message.content),
+    ['current query'],
+  );
+});
+
+test('a sidecar snapshot owned by an older turn cannot reappear in the active turn', () => {
+  useAppStore.setState({ sessions: [sidebarSession] });
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  useAppStore.getState().replaceSessionLiveProjection({
+    ...live,
+    cursor: { runtimeId: 'rt_1', sessionId: 's_1', journalEpoch: 'journal_1', seq: 8 },
+    activeRun: {
+      runId: 'run_1',
+      sessionId: 's_1',
+      turnId: 'turn_b',
+      phase: 'running',
+      startedAt: 250,
+    },
+    sidecarMessages: [
+      {
+        eventId: 'event_sidecar_turn_a',
+        runId: 'run_1',
+        turnId: 'turn_a',
+        seq: 2,
+        createdAt: 120,
+        message: {
+          source: 'sidecar-verifier',
+          verdict: 'revise',
+          recipient: 'main-agent',
+          delivery: 'synthetic-user-message',
+          content: 'Feedback from turn A.',
+        },
+      },
+    ],
+  });
+
+  assert.equal(
+    (useAppStore.getState().eventsBySession.s_1 ?? []).filter(
+      (event) => event.kind === 'sidecar_message',
+    ).length,
+    0,
+  );
+});
+
 test('a sidecar change survives equal snapshot hydration and event bridging exactly once', () => {
   useAppStore.setState({ sessions: [sidebarSession] });
   useAppStore.getState().replaceRuntimeProfileProjection(profile);
-  useAppStore.getState().replaceSessionLiveProjection({ ...live, sidecarMessages: [] });
+  const activeSidecarRun = {
+    runId: 'run_1',
+    sessionId: 's_1',
+    turnId: 'turn_1',
+    phase: 'running' as const,
+    startedAt: 100,
+  };
+  useAppStore.getState().replaceSessionLiveProjection({
+    ...live,
+    activeRun: activeSidecarRun,
+    sidecarMessages: [],
+  });
   useAppStore.getState().appendEvent({
     kind: 'text_delta',
     sessionId: 's_1',
@@ -4467,6 +4709,7 @@ test('a sidecar change survives equal snapshot hydration and event bridging exac
   });
   const projection = {
     ...live,
+    activeRun: activeSidecarRun,
     projectionRevision: 2,
     cursor: {
       runtimeId: 'rt_1',

@@ -24,6 +24,25 @@ const session: SessionMeta = {
   lastActivityAt: 1700000000000,
 };
 
+function installQueueRuntimeAuthority(): void {
+  useAppStore.setState({ liveProjectionBySession: {}, runtimeSnapshotRequiredBySession: {} });
+  useAppStore.getState().replaceRuntimeProfileProjection({
+    connection: {
+      state: 'ready',
+      changedAt: 1,
+      stale: false,
+      runtimeId: 'rt-queue',
+      profile: 'coder',
+      capabilities: [{ id: 'runtime.live.observe', version: 1, available: true }],
+    },
+    projectionRevision: 1,
+    cursor: { runtimeId: 'rt-queue', seq: 0 },
+    sessions: [],
+    interactions: [],
+    notifications: [],
+  });
+}
+
 beforeEach(() => {
   useToastStore.getState().clear();
   useAppStore.setState({
@@ -271,6 +290,25 @@ test('mid_turn_user_prompt promotes a pending interrupt queued message', () => {
   assert.equal(state.queuedUserMessagesBySession[SID]?.length ?? 0, 0);
   assert.equal(state.userMessagesBySession[SID]?.at(-1)?.content, 'q2');
   assert.equal(state.userMessagesBySession[SID]?.at(-1)?.entryId, 'entry-q2');
+});
+
+test('direct queue promotion preserves the exact send operation identity', () => {
+  const store = useAppStore.getState();
+  const localId = store.appendQueuedUserMessage(SID, {
+    content: 'start immediately after the status changed',
+    queueMode: 'interrupt',
+    operationId: 'operation-direct-start',
+  });
+  assert.ok(localId);
+
+  const promotedId = store.promoteQueuedUserMessage(SID, localId, 456);
+
+  assert.ok(promotedId);
+  const promoted = useAppStore
+    .getState()
+    .userMessagesBySession[SID]?.find((message) => message.id === promotedId);
+  assert.equal(promoted?.operationId, 'operation-direct-start');
+  assert.equal(promoted?.sentAt, 456);
 });
 
 test('mid_turn_user_prompt consumes the matching queue id without rendering its host overlay', () => {
@@ -558,6 +596,173 @@ test('queued acknowledgement replaces an optimistic interrupt mode with after-tu
   assert.equal(queued?.queueId, 'run_follow_up');
   assert.equal(queued?.queueMode, 'after-turn');
   assert.equal(queued?.status, 'queued');
+});
+
+test('Runtime queue projection and acknowledgement coalesce by send operation identity', () => {
+  const store = useAppStore.getState();
+  installQueueRuntimeAuthority();
+  const localId = store.appendQueuedUserMessage(SID, {
+    content: 'same prompt',
+    queueMode: 'interrupt',
+    operationId: 'operation-1',
+  });
+  assert.ok(localId);
+
+  store.replaceSessionLiveProjection({
+    sessionId: SID,
+    projectionRevision: 1,
+    cursor: { runtimeId: 'rt-queue', sessionId: SID, journalEpoch: 'journal-1', seq: 1 },
+    transcriptRevision: 'tx-1',
+    queuedRuns: [],
+    activeTools: [],
+    todos: [],
+    queuedInputs: [
+      {
+        inputId: 'run-after-turn',
+        sessionId: SID,
+        delivery: 'after-turn',
+        state: 'queued',
+        createdAt: 100,
+        contentPreview: 'same prompt',
+        originOperationId: 'operation-1',
+      },
+    ],
+    interactions: [],
+  });
+  const projected = useAppStore.getState().queuedUserMessagesBySession[SID] ?? [];
+  assert.equal(projected.length, 1);
+  assert.equal(projected[0]?.id, localId);
+  assert.equal(projected[0]?.queueId, 'run-after-turn');
+  assert.equal(projected[0]?.queueMode, 'after-turn');
+  store.markQueuedUserMessageAccepted(SID, localId, 'run-after-turn', 'after-turn');
+
+  const queued = useAppStore.getState().queuedUserMessagesBySession[SID] ?? [];
+  assert.equal(queued.length, 1);
+  assert.equal(queued[0]?.id, localId);
+  assert.equal(queued[0]?.queueId, 'run-after-turn');
+  assert.equal(queued[0]?.queueMode, 'after-turn');
+  assert.equal(queued[0]?.operationId, 'operation-1');
+});
+
+test('identical queued prompts with different operations never cross-match', () => {
+  const store = useAppStore.getState();
+  installQueueRuntimeAuthority();
+  const firstId = store.appendQueuedUserMessage(SID, {
+    content: 'same prompt',
+    queueMode: 'interrupt',
+    operationId: 'operation-first',
+  });
+  const secondId = store.appendQueuedUserMessage(SID, {
+    content: 'same prompt',
+    queueMode: 'interrupt',
+    operationId: 'operation-second',
+  });
+  assert.ok(firstId);
+  assert.ok(secondId);
+
+  store.replaceSessionLiveProjection({
+    sessionId: SID,
+    projectionRevision: 1,
+    cursor: { runtimeId: 'rt-queue', sessionId: SID, journalEpoch: 'journal-1', seq: 1 },
+    transcriptRevision: 'tx-1',
+    queuedRuns: [],
+    activeTools: [],
+    todos: [],
+    queuedInputs: [
+      {
+        inputId: 'input-second',
+        sessionId: SID,
+        delivery: 'interrupt',
+        state: 'queued',
+        createdAt: 101,
+        contentPreview: 'same prompt',
+        originOperationId: 'operation-second',
+      },
+      {
+        inputId: 'input-first',
+        sessionId: SID,
+        delivery: 'interrupt',
+        state: 'queued',
+        createdAt: 100,
+        contentPreview: 'same prompt',
+        originOperationId: 'operation-first',
+      },
+    ],
+    interactions: [],
+  });
+  store.markQueuedUserMessageAccepted(SID, secondId, 'input-second', 'interrupt');
+  store.markQueuedUserMessageAccepted(SID, firstId, 'input-first', 'interrupt');
+
+  assert.deepEqual(
+    (useAppStore.getState().queuedUserMessagesBySession[SID] ?? []).map((entry) => ({
+      id: entry.id,
+      operationId: entry.operationId,
+      queueId: entry.queueId,
+    })),
+    [
+      { id: firstId, operationId: 'operation-first', queueId: 'input-first' },
+      { id: secondId, operationId: 'operation-second', queueId: 'input-second' },
+    ],
+  );
+});
+
+test('a delivered Runtime placeholder cannot be resurrected by a late queue acknowledgement', () => {
+  const store = useAppStore.getState();
+  installQueueRuntimeAuthority();
+  const localId = store.appendQueuedUserMessage(SID, {
+    content: 'review the screenshot',
+    queueMode: 'interrupt',
+    operationId: 'operation-delivered',
+    attachments: [
+      {
+        id: 'optimistic-image',
+        kind: 'image',
+        mediaType: 'image/png',
+        status: 'available',
+        thumbnailUrl: 'data:image/png;base64,AA==',
+        previewUrl: 'data:image/png;base64,AA==',
+      },
+    ],
+  });
+  assert.ok(localId);
+
+  store.replaceSessionLiveProjection({
+    sessionId: SID,
+    projectionRevision: 1,
+    cursor: { runtimeId: 'rt-queue', sessionId: SID, journalEpoch: 'journal-1', seq: 1 },
+    transcriptRevision: 'tx-1',
+    queuedRuns: [],
+    activeTools: [],
+    todos: [],
+    queuedInputs: [
+      {
+        inputId: 'input-delivered',
+        sessionId: SID,
+        delivery: 'interrupt',
+        state: 'queued',
+        createdAt: 100,
+        contentPreview: 'review the screenshot',
+        originOperationId: 'operation-delivered',
+      },
+    ],
+    interactions: [],
+  });
+  store.appendEvent({
+    kind: 'mid_turn_user_prompt',
+    sessionId: SID,
+    queueId: 'input-delivered',
+    content: 'review the screenshot',
+    entryId: 'entry-delivered',
+  });
+  store.markQueuedUserMessageAccepted(SID, localId, 'input-delivered', 'interrupt');
+
+  const state = useAppStore.getState();
+  assert.equal(state.queuedUserMessagesBySession[SID]?.length ?? 0, 0);
+  const formal = state.userMessagesBySession[SID] ?? [];
+  assert.equal(formal.length, 1);
+  assert.equal(formal[0]?.content, 'review the screenshot');
+  assert.equal(formal[0]?.attachments?.[0]?.id, 'optimistic-image');
+  assert.equal(formal[0]?.sourceQueuedLocalId, localId);
 });
 
 test('appendLocalNotice stores slash/info output outside real user turns', () => {

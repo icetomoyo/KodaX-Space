@@ -518,6 +518,7 @@ function applyDomainChange(
               activeTools: [],
               managedTask: undefined,
               interactions: [],
+              ...(update.change.activeRun !== null ? { sidecarMessages: [] } : {}),
             }
           : {}),
       };
