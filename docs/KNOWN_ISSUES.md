@@ -247,6 +247,15 @@ them. Finally, composer ownership falls back to the sole run-bound root user whe
 boundaries share one Runtime Run. That fallback pulls events after a mid-turn delivery boundary
 back into the root segment and leaves the delivered query at the transcript tail.
 
+Two active-window cases remained after the first causal fold. A canonical snapshot containing only
+the current answer is not a structural prefix of a live `thinking -> answer` projection, so the
+open turn stayed duplicated until its terminal event arrived. A newest history page can also begin
+inside one Runtime turn after the 64-entry page limit; that hidden leading anchor was allowed to
+adopt its unique live owner only after the owner closed. Switching Sessions or refreshing during
+either open interval exposed the duplicate projection. History user ordinals also counted hidden
+tool-result, synthetic reminder, and Sidecar carrier messages even though the visible projection
+discarded them.
+
 ### Proposed Solution
 
 - Replace whole-turn string-suffix folding with causally ordered, boundary-aware canonical/live
@@ -276,6 +285,22 @@ back into the root segment and leaves the delivered query at the transcript tail
 - Runtime snapshots now retain the latest 100 Sidecar messages. Full snapshots and incremental
   Sidecar changes hydrate them into the transcript, while Runtime cursor and canonical-content
   checks prevent duplicate notices across the live event bridge and history hydration.
+- An open live turn with exact owner identity may now absorb a narrower canonical projection when
+  an effective output segment proves one unique contiguous mapping of canonical thinking, text, and
+  tools into live causal order. Canonical-only notices are retained at their mapped content anchor;
+  historical/live Sidecar receipts share the stable `source + content` identity and multiplicity.
+  A page that starts inside a turn uses the stricter proof of one ordinal-zero owner and one
+  same-turn live user boundary. The same proof covers open and delayed terminal pages, including a
+  canonical span inside newer live output. Only the final text run may be a cumulative extension.
+- A segmented projection that contradicts canonical cross-kind order now fails open and never falls
+  through to the legacy string-suffix merger, including `session_error` cancellation. Exact
+  canonical user-only shells safely adopt the complete segmented live turn, while a Sidecar-only
+  phase can reconcile through one unique normalized notice span. Divergent, ambiguous, or legacy
+  unsegmented projections remain visible instead of being guessed away.
+- Promoting an open leading-page owner no longer synthesizes a terminal, so subsequent Runtime
+  deltas stay attached in place. History ordinals now count only user messages that the history
+  projection actually renders, excluding tool-result carriers, Sidecar messages, and synthetic
+  reminders.
 - No SDK change was required: the existing output-segment markers, `interruptInputs`, journal
   cursor, and Sidecar journal events provide the identities needed by Space.
 
@@ -284,6 +309,7 @@ back into the root segment and leaves the delivered query at the transcript tail
 - `apps/desktop/renderer/src/store/appStore.ts`
 - `apps/desktop/renderer/src/store/runtimeProjectionState.ts`
 - `apps/desktop/renderer/src/features/session/composeMessages.ts`
+- `apps/desktop/electron/ipc/session.ts`
 - `apps/desktop/electron/kodax/runtime/coder-daemon-projection.ts`
 - `apps/desktop/electron/kodax/runtime-host-adapter.ts`
 - `packages/space-ipc-schema/src/channels/runtime.ts`
@@ -296,9 +322,12 @@ back into the root segment and leaves the delivered query at the transcript tail
 
 - New regressions cover append-only narrow canonical tails, mid-flight page replacement, same-Run
   mid-turn query placement, delivered interrupt reload, bounded Sidecar projection/reopen, higher
-  journal sequence arrival, and live-event deduplication.
-- Related reconciliation, projection, adapter, and store suites: 454/454 passed.
-- Full desktop Electron suite: 2697 passed, 0 failed, 4 skipped (2701 total).
+  journal sequence arrival, live-event deduplication, open text-only canonical snapshots, active
+  and delayed-terminal leading-page spans, post-fold streaming, canonical-only and Sidecar-only
+  phases, cancellation conflicts, internal-tool ambiguity, divergent fail-open behavior, and
+  visible-user ordinals.
+- Focused history and ordinal suites: 140/140 passed.
+- Full tracked desktop suite: 2708 passed, 0 failed, 4 skipped (2712 total).
 - IPC schema build, Desktop and Electron TypeScript checks, and ESLint passed.
 
 ## Issue 192: Every ordinary safe exit showed a prominent Windows notification despite requiring no user action

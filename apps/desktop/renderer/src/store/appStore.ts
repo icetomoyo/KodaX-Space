@@ -1854,7 +1854,13 @@ function userEntryIdentityRelation(
   return rightIds.some((entryId) => leftIds.has(entryId)) ? 'match' : 'conflict';
 }
 
-type LeadingHistoryOwnerResolution = 'promote_live_owner' | 'enrich_canonical_owner';
+type LeadingHistoryOwnerResolution =
+  | { readonly kind: 'promote_live_owner' | 'enrich_canonical_owner' }
+  | {
+      readonly kind: 'promote_open_live_owner';
+      readonly liveEvents: readonly SessionEvent[];
+      readonly match: CausalProjectionMatch;
+    };
 
 function visibleProjectionIsSuffix(durable: readonly string[], live: readonly string[]): boolean {
   if (durable.length === 0 || durable.length > live.length) return false;
@@ -1869,6 +1875,7 @@ function uniqueLeadingHistoryOwnerResolution(
   durable: TranscriptTurnSnapshot,
   duplicate: TranscriptTurnSnapshot,
   turns: readonly TranscriptTurnSnapshot[],
+  events: readonly SessionEvent[],
 ): LeadingHistoryOwnerResolution | undefined {
   if (
     !durable.restoredFromHistory ||
@@ -1877,30 +1884,41 @@ function uniqueLeadingHistoryOwnerResolution(
     durable.turnUserOrdinal !== undefined ||
     duplicate.restoredFromHistory ||
     !hasStrongTurnIdentity(duplicate) ||
-    duplicate.turnId !== durable.turnId ||
-    !liveTurnCanFold(duplicate)
+    duplicate.turnId !== durable.turnId
   ) {
     return undefined;
   }
   if (durable.leadingPartialHistory) {
-    // A later mid-turn prompt is positive evidence that it cannot own the assistant prefix which
-    // precedes its user boundary. The canonical response must also be a verified sequence suffix
-    // of the live projection; turnId identifies the Runtime run, not an inner user segment.
+    const durableProjection = events.slice(durable.eventStart, durable.eventEnd);
+    const effectiveCausalProjection = effectiveCausalLiveProjection(
+      events.slice(duplicate.eventStart, duplicate.eventEnd),
+    );
+    const causalProjectionMatch =
+      effectiveCausalProjection === undefined
+        ? undefined
+        : orderedCausalProjectionMatch(durableProjection, effectiveCausalProjection);
+    if (!liveTurnCanFold(duplicate) && effectiveCausalProjection === undefined) return undefined;
+    // A later mid-turn prompt cannot own the assistant prefix which precedes its user boundary.
+    // The canonical response must also map to one unique contiguous live content span; turnId
+    // identifies the Runtime run, not an inner user segment.
     if (
       duplicate.turnUserOrdinal !== 0 ||
-      !visibleProjectionIsSuffix(durable.visibleSequence, duplicate.visibleSequence)
+      !(effectiveCausalProjection === undefined
+        ? visibleProjectionIsSuffix(durable.visibleSequence, duplicate.visibleSequence)
+        : causalProjectionMatch !== undefined)
     ) {
       return undefined;
     }
-    // Ordinal zero is the only possible owner of an assistant prefix before later user boundaries.
-    // Reject an unidentified or second ordinal-zero live candidate, but do not treat proven later
-    // ordinals from the same Runtime turn as alternate owners.
-    const possibleLiveOwners = turns.filter(
-      (candidate) =>
-        !candidate.restoredFromHistory &&
-        candidate.turnId === durable.turnId &&
-        (candidate.turnUserOrdinal === undefined || candidate.turnUserOrdinal === 0),
+    // The omitted page head does not prove whether it falls before or after a later inner-user
+    // boundary. While the turn is open, require exactly one same-turn live owner of any ordinal.
+    const sameTurnLiveOwners = turns.filter(
+      (candidate) => !candidate.restoredFromHistory && candidate.turnId === durable.turnId,
     );
+    const possibleLiveOwners = duplicate.closed
+      ? sameTurnLiveOwners.filter(
+          (candidate) => candidate.turnUserOrdinal === undefined || candidate.turnUserOrdinal === 0,
+        )
+      : sameTurnLiveOwners;
     if (
       possibleLiveOwners.length !== 1 ||
       possibleLiveOwners[0]?.messageId !== duplicate.messageId
@@ -1917,8 +1935,17 @@ function uniqueLeadingHistoryOwnerResolution(
         candidate.turnId === durable.turnId &&
         (candidate.turnUserOrdinal === undefined || candidate.turnUserOrdinal === 0),
     );
-    return hasRetainedCanonicalOwner ? undefined : 'promote_live_owner';
+    if (hasRetainedCanonicalOwner) return undefined;
+    if (duplicate.closed) return { kind: 'promote_live_owner' };
+    if (effectiveCausalProjection === undefined || causalProjectionMatch === undefined)
+      return undefined;
+    return {
+      kind: 'promote_open_live_owner',
+      liveEvents: effectiveCausalProjection,
+      match: causalProjectionMatch,
+    };
   }
+  if (!liveTurnCanFold(duplicate)) return undefined;
   // Outside a leading partial page, one same-turn live user is required because a Runtime turn can
   // contain several real inputs and no omitted assistant prefix constrains their ownership.
   const unique =
@@ -1948,7 +1975,7 @@ function uniqueLeadingHistoryOwnerResolution(
   ).length;
   // Repeated identical prompts inside one Runtime turn are legal. Without canonical ordinals a
   // single live row cannot prove which identical canonical boundary it represents.
-  return matchingCanonicalOwners === 1 ? 'enrich_canonical_owner' : undefined;
+  return matchingCanonicalOwners === 1 ? { kind: 'enrich_canonical_owner' } : undefined;
 }
 
 function exactRestoredTurnIdentityMatches(
@@ -2142,12 +2169,12 @@ function isTranscriptTerminal(
 }
 
 /**
- * Durable history and Runtime live events are two projections of one canonical turn. History
- * contains canonical root tool calls (including todo tools); live contains runtime-only state
- * such as artifacts, diagnostics and todo snapshots. Keep the durable visible ordering, add only
- * live-visible information that history does not contain, and retain every live-only state event.
+ * Merge unsegmented history/live projections after identity has proved they are one canonical turn.
+ * Segmented projections are admitted by the ordered causal matcher before reaching this legacy
+ * compatibility path. Keep durable visible order, add only missing live-visible information, and
+ * retain live-only runtime state such as artifacts, diagnostics and todo snapshots.
  */
-function mergeCanonicalTurnProjections(
+function mergeLegacyUnsegmentedTurnProjections(
   durableEvents: readonly SessionEvent[],
   liveEvents: readonly SessionEvent[],
   exactEntryIdentity = false,
@@ -2163,20 +2190,6 @@ function mergeCanonicalTurnProjections(
   const leadingPromptBoundary =
     durableEvents.find(isPromptSegmentBoundary) ??
     effectiveLiveEvents.find(isPromptSegmentBoundary);
-  const hasCausalOutputSegments = effectiveLiveEvents.some(
-    (event) => event.kind === 'output_segment_started',
-  );
-  if (
-    hasCausalOutputSegments &&
-    liveProjectionCoversDurableProjection(durableEvents, effectiveLiveEvents)
-  ) {
-    const liveBody = effectiveLiveEvents.filter(
-      (event) => !isTranscriptTerminal(event) && !isPromptSegmentBoundary(event),
-    );
-    const merged = leadingPromptBoundary ? [leadingPromptBoundary, ...liveBody] : liveBody;
-    const terminals = liveTerminals.length > 0 ? liveTerminals : durableTerminals;
-    return terminals.length > 0 ? [...merged, ...terminals] : merged;
-  }
   const durableBody = durableEvents.filter(
     (event) => !isTranscriptTerminal(event) && !isPromptSegmentBoundary(event),
   );
@@ -2365,6 +2378,13 @@ function openLiveProjectionCoversDurablePrefix(
   );
 }
 
+function effectiveCausalLiveProjection(
+  events: readonly SessionEvent[],
+): readonly SessionEvent[] | undefined {
+  const effective = filterEffectiveOutputSegmentEvents(events);
+  return effective.some((event) => event.kind === 'output_segment_started') ? effective : undefined;
+}
+
 function contentProjectionIsPrefix(
   durableSequence: readonly string[],
   liveSequence: readonly string[],
@@ -2472,78 +2492,37 @@ function transcriptContentRuns(events: readonly SessionEvent[]): TranscriptConte
   return runs;
 }
 
-function projectedTextRuns(
-  events: readonly SessionEvent[],
-  kind: 'thinking_delta' | 'text_delta',
-): string[] {
-  const prefix = kind === 'thinking_delta' ? 'thinking:' : 'text:';
-  return transcriptContentRuns(events)
-    .filter((run) => run.textKind === kind)
-    .map((run) => run.key.slice(prefix.length));
+function contentRunMatches(
+  durable: TranscriptContentRun,
+  live: TranscriptContentRun,
+  finalDurableRun: boolean,
+): boolean {
+  if (durable.key === live.key) return true;
+  return (
+    finalDurableRun &&
+    durable.textKind !== undefined &&
+    durable.textKind === live.textKind &&
+    live.key.startsWith(durable.key)
+  );
 }
 
-function projectedTextRunsCover(
-  durableEvents: readonly SessionEvent[],
-  liveEvents: readonly SessionEvent[],
-  kind: 'thinking_delta' | 'text_delta',
-): boolean {
-  const required = projectedTextRuns(durableEvents, kind).join('');
-  if (!required) return true;
-  const available = projectedTextRuns(liveEvents, kind);
-  for (let start = 0; start < available.length; start++) {
-    let candidate = '';
-    for (let end = start; end < available.length; end++) {
-      candidate += available[end]!;
-      if (candidate === required || candidate.startsWith(required)) return true;
-      if (!required.startsWith(candidate)) break;
-    }
+function uniqueContiguousContentRunMapping(
+  durableRuns: readonly TranscriptContentRun[],
+  liveRuns: readonly TranscriptContentRun[],
+): readonly number[] | undefined {
+  if (durableRuns.length === 0 || durableRuns.length > liveRuns.length) return undefined;
+  let matchedStart: number | undefined;
+  for (let start = 0; start <= liveRuns.length - durableRuns.length; start++) {
+    const matches = durableRuns.every((durable, index) =>
+      contentRunMatches(durable, liveRuns[start + index]!, index === durableRuns.length - 1),
+    );
+    if (!matches) continue;
+    if (matchedStart !== undefined) return undefined;
+    matchedStart = start;
   }
-  return false;
-}
-
-function liveProjectionCoversDurableProjection(
-  durableEvents: readonly SessionEvent[],
-  liveEvents: readonly SessionEvent[],
-): boolean {
-  for (const kind of ['thinking_delta', 'text_delta'] as const) {
-    if (!projectedTextRunsCover(durableEvents, liveEvents, kind)) return false;
-  }
-  const availableTools = transcriptContentRuns(liveEvents)
-    .map((run) => run.key)
-    .filter((key) => key.startsWith('tool-start:') || key.startsWith('tool-result:'));
-  const requiredTools = transcriptContentRuns(durableEvents)
-    .map((run) => run.key)
-    .filter((key) => key.startsWith('tool-start:') || key.startsWith('tool-result:'));
-  let toolCursor = 0;
-  for (const key of requiredTools) {
-    while (toolCursor < availableTools.length && availableTools[toolCursor] !== key) toolCursor++;
-    if (toolCursor === availableTools.length) return false;
-    toolCursor++;
-  }
-  const availableExtras = new Map<string, number>();
-  for (const event of liveEvents) {
-    const key = projectionMergeKey(event);
-    if (key !== undefined) availableExtras.set(key, (availableExtras.get(key) ?? 0) + 1);
-  }
-  for (const event of durableEvents) {
-    if (
-      event.kind === 'thinking_delta' ||
-      event.kind === 'text_delta' ||
-      event.kind === 'tool_start' ||
-      event.kind === 'tool_result' ||
-      isTranscriptTerminal(event) ||
-      isPromptSegmentBoundary(event)
-    ) {
-      continue;
-    }
-    const key = projectionMergeKey(event);
-    if (key === undefined) return false;
-    const remaining = availableExtras.get(key) ?? 0;
-    if (remaining === 0) return false;
-    if (remaining === 1) availableExtras.delete(key);
-    else availableExtras.set(key, remaining - 1);
-  }
-  return true;
+  return matchedStart === undefined
+    ? undefined
+    : durableRuns.map((_, index) => matchedStart + index);
 }
 
 function collapseAdjacentTextRuns(runs: readonly TranscriptContentRun[]): TranscriptContentRun[] {
@@ -2611,17 +2590,38 @@ function anchoredProjectionExtras(
   events: readonly SessionEvent[],
   positions: ReadonlyMap<number, ProjectionContentPosition>,
 ): AnchoredProjectionEvent[] {
+  const nextPositions: Array<ProjectionContentPosition | undefined> = Array.from({
+    length: events.length,
+  });
+  let nextPosition: ProjectionContentPosition | undefined;
+  for (let eventIndex = events.length - 1; eventIndex >= 0; eventIndex--) {
+    nextPositions[eventIndex] = nextPosition;
+    nextPosition = positions.get(eventIndex) ?? nextPosition;
+  }
   const extras: AnchoredProjectionEvent[] = [];
-  let runIndex = 0;
-  let offset = 0;
+  let previousPosition: ProjectionContentPosition | undefined;
   for (let eventIndex = 0; eventIndex < events.length; eventIndex++) {
     const event = events[eventIndex]!;
     const position = positions.get(eventIndex);
     if (position !== undefined) {
-      runIndex = position.runIndex;
-      offset = position.endOffset;
+      previousPosition = position;
     } else if (!isTranscriptTerminal(event) && !isPromptSegmentBoundary(event)) {
-      extras.push({ runIndex, offset, event });
+      const followingPosition = nextPositions[eventIndex];
+      let anchor: { runIndex: number; offset: number };
+      if (
+        previousPosition !== undefined &&
+        followingPosition !== undefined &&
+        previousPosition.runIndex === followingPosition.runIndex
+      ) {
+        anchor = { runIndex: previousPosition.runIndex, offset: previousPosition.endOffset };
+      } else if (followingPosition !== undefined) {
+        anchor = { runIndex: followingPosition.runIndex, offset: followingPosition.startOffset };
+      } else if (previousPosition !== undefined) {
+        anchor = { runIndex: previousPosition.runIndex, offset: previousPosition.endOffset };
+      } else {
+        anchor = { runIndex: 0, offset: 0 };
+      }
+      extras.push({ ...anchor, event });
     }
   }
   return extras;
@@ -2652,6 +2652,171 @@ function unmatchedDurableProjectionExtras(
     else liveCounts.set(key, remaining - 1);
     return false;
   });
+}
+
+interface CausalProjectionMatch {
+  readonly durableExtras: readonly AnchoredProjectionEvent[];
+}
+
+type OpenLiveAdoption =
+  | { readonly kind: 'replace' | 'merge' }
+  | {
+      readonly kind: 'causal_merge';
+      readonly liveEvents: readonly SessionEvent[];
+      readonly match: CausalProjectionMatch;
+    };
+
+interface ClosedCausalAdoption {
+  readonly liveEvents: readonly SessionEvent[];
+  readonly match: CausalProjectionMatch;
+}
+
+interface MappedDurableProjectionEvent extends AnchoredProjectionEvent {
+  readonly minimumRunIndex: number;
+  readonly minimumOffset: number;
+  readonly maximumRunIndex: number;
+  readonly maximumOffset: number;
+}
+
+function projectionRunSize(run: TranscriptContentRun): number {
+  if (run.textKind === undefined) return 1;
+  const prefix = run.textKind === 'thinking_delta' ? 'thinking:' : 'text:';
+  return run.key.length - prefix.length;
+}
+
+function remapProjectionExtras(
+  extras: readonly AnchoredProjectionEvent[],
+  runMapping: readonly number[],
+  durableRuns: readonly TranscriptContentRun[],
+  liveRuns: readonly TranscriptContentRun[],
+): MappedDurableProjectionEvent[] | undefined {
+  const mapped: MappedDurableProjectionEvent[] = [];
+  for (const extra of extras) {
+    const runIndex = runMapping[extra.runIndex];
+    if (runIndex === undefined) return undefined;
+    const liveOffset = Math.min(extra.offset, projectionRunSize(liveRuns[runIndex]!));
+    let minimumRunIndex = runIndex;
+    let minimumOffset = liveOffset;
+    let maximumRunIndex = runIndex;
+    let maximumOffset = liveOffset;
+    if (extra.offset === 0) {
+      const previousRunIndex = extra.runIndex === 0 ? undefined : runMapping[extra.runIndex - 1];
+      minimumRunIndex = previousRunIndex ?? 0;
+      minimumOffset =
+        previousRunIndex === undefined ? 0 : projectionRunSize(liveRuns[previousRunIndex]!);
+    } else if (
+      extra.runIndex === durableRuns.length - 1 &&
+      extra.offset >= projectionRunSize(durableRuns[extra.runIndex]!)
+    ) {
+      maximumRunIndex = liveRuns.length - 1;
+      maximumOffset = projectionRunSize(liveRuns[maximumRunIndex]!);
+    }
+    mapped.push({
+      ...extra,
+      runIndex,
+      offset: liveOffset,
+      minimumRunIndex,
+      minimumOffset,
+      maximumRunIndex,
+      maximumOffset,
+    });
+  }
+  return mapped;
+}
+
+function unmatchedMappedDurableExtras(
+  durable: readonly MappedDurableProjectionEvent[],
+  live: readonly AnchoredProjectionEvent[],
+): AnchoredProjectionEvent[] | undefined {
+  const liveByKey = new Map<string, AnchoredProjectionEvent[]>();
+  for (const extra of live) {
+    const key = projectionMergeKey(extra.event);
+    if (key === undefined) continue;
+    const matching = liveByKey.get(key) ?? [];
+    matching.push(extra);
+    liveByKey.set(key, matching);
+  }
+  const unmatched: AnchoredProjectionEvent[] = [];
+  for (const extra of durable) {
+    const key = projectionMergeKey(extra.event);
+    if (key === undefined) return undefined;
+    const liveCandidates = liveByKey.get(key) ?? [];
+    const matchingIndex = liveCandidates.findIndex(
+      (candidate) =>
+        projectionPositionCompare(
+          candidate.runIndex,
+          candidate.offset,
+          extra.minimumRunIndex,
+          extra.minimumOffset,
+        ) >= 0 &&
+        projectionPositionCompare(
+          candidate.runIndex,
+          candidate.offset,
+          extra.maximumRunIndex,
+          extra.maximumOffset,
+        ) <= 0,
+    );
+    if (matchingIndex !== -1) {
+      liveCandidates.splice(matchingIndex, 1);
+    } else if (liveCandidates.length > 0) {
+      return undefined;
+    } else {
+      unmatched.push(extra);
+    }
+  }
+  return unmatched;
+}
+
+function noticeOnlyCausalProjectionMatch(
+  durableEvents: readonly SessionEvent[],
+  liveEvents: readonly SessionEvent[],
+): CausalProjectionMatch | undefined {
+  const durableKeys: string[] = [];
+  for (const event of durableEvents) {
+    if (isTranscriptTerminal(event) || isPromptSegmentBoundary(event)) continue;
+    const key = projectionMergeKey(event);
+    if (key === undefined) return undefined;
+    durableKeys.push(key);
+  }
+  if (durableKeys.length === 0) return undefined;
+  const liveKeys = liveEvents.flatMap((event) => {
+    const key = projectionMergeKey(event);
+    return key === undefined ? [] : [key];
+  });
+  let matched = false;
+  for (let start = 0; start <= liveKeys.length - durableKeys.length; start++) {
+    if (!durableKeys.every((key, index) => liveKeys[start + index] === key)) continue;
+    if (matched) return undefined;
+    matched = true;
+  }
+  return matched ? { durableExtras: [] } : undefined;
+}
+
+function orderedCausalProjectionMatch(
+  durableEvents: readonly SessionEvent[],
+  liveEvents: readonly SessionEvent[],
+): CausalProjectionMatch | undefined {
+  const durableRuns = collapseAdjacentTextRuns(transcriptContentRuns(durableEvents));
+  const liveRuns = collapseAdjacentTextRuns(transcriptContentRuns(liveEvents));
+  if (durableRuns.length === 0) {
+    return noticeOnlyCausalProjectionMatch(durableEvents, liveEvents);
+  }
+  const runMapping = uniqueContiguousContentRunMapping(durableRuns, liveRuns);
+  if (runMapping === undefined) return undefined;
+  const durablePositions = projectionContentPositions(durableEvents, durableRuns);
+  const livePositions = projectionContentPositions(liveEvents, liveRuns);
+  const mappedDurableExtras = remapProjectionExtras(
+    anchoredProjectionExtras(durableEvents, durablePositions),
+    runMapping,
+    durableRuns,
+    liveRuns,
+  );
+  if (mappedDurableExtras === undefined) return undefined;
+  const unmatched = unmatchedMappedDurableExtras(
+    mappedDurableExtras,
+    anchoredProjectionExtras(liveEvents, livePositions),
+  );
+  return unmatched === undefined ? undefined : { durableExtras: unmatched };
 }
 
 interface ProjectionEventGroup {
@@ -2714,6 +2879,15 @@ function mergeCollapsedOpenLiveProjection(
   const groups = anchoredProjectionGroups(
     unmatchedDurableProjectionExtras(durableExtras, liveExtras),
   );
+  return mergeLiveProjectionWithDurableGroups(liveEvents, livePositions, groups, promptBoundary);
+}
+
+function mergeLiveProjectionWithDurableGroups(
+  liveEvents: readonly SessionEvent[],
+  livePositions: ReadonlyMap<number, ProjectionContentPosition>,
+  groups: readonly ProjectionEventGroup[],
+  promptBoundary: SessionEvent | undefined,
+): SessionEvent[] {
   const merged: SessionEvent[] = promptBoundary === undefined ? [] : [promptBoundary];
   let groupCursor = 0;
   for (let eventIndex = 0; eventIndex < liveEvents.length; eventIndex++) {
@@ -2759,6 +2933,39 @@ function mergeCollapsedOpenLiveProjection(
   }
   while (groupCursor < groups.length) merged.push(...groups[groupCursor++]!.events);
   return merged;
+}
+
+function mergeOrderedCausalProjection(
+  liveEvents: readonly SessionEvent[],
+  promptBoundary: SessionEvent | undefined,
+  match: CausalProjectionMatch,
+): SessionEvent[] {
+  const liveRuns = collapseAdjacentTextRuns(transcriptContentRuns(liveEvents));
+  const livePositions = projectionContentPositions(liveEvents, liveRuns);
+  return mergeLiveProjectionWithDurableGroups(
+    liveEvents,
+    livePositions,
+    anchoredProjectionGroups(match.durableExtras),
+    promptBoundary,
+  );
+}
+
+function mergeClosedCausalProjection(
+  durableEvents: readonly SessionEvent[],
+  adoption: ClosedCausalAdoption,
+): SessionEvent[] {
+  const promptBoundary =
+    durableEvents.find(isPromptSegmentBoundary) ??
+    adoption.liveEvents.find(isPromptSegmentBoundary);
+  const body = mergeOrderedCausalProjection(
+    adoption.liveEvents,
+    promptBoundary,
+    adoption.match,
+  ).filter((event) => !isTranscriptTerminal(event));
+  const liveTerminals = adoption.liveEvents.filter(isTranscriptTerminal);
+  const terminals =
+    liveTerminals.length > 0 ? liveTerminals : durableEvents.filter(isTranscriptTerminal);
+  return terminals.length > 0 ? [...body, ...terminals] : body;
 }
 
 function projectionContentGaps(
@@ -2934,10 +3141,13 @@ function stabilizeAmbiguousLeadingHistoryOrder(
     undefined,
   );
   const exactSuffixOwner = liveOwners[0];
+  const exactSuffixOwnerResolution =
+    exactSuffixOwner === undefined
+      ? undefined
+      : uniqueLeadingHistoryOwnerResolution(durable, exactSuffixOwner, turns, events);
   const exactSuffixCanPromote =
-    exactSuffixOwner !== undefined &&
-    uniqueLeadingHistoryOwnerResolution(durable, exactSuffixOwner, turns) ===
-      'promote_live_owner' &&
+    (exactSuffixOwnerResolution?.kind === 'promote_live_owner' ||
+      exactSuffixOwnerResolution?.kind === 'promote_open_live_owner') &&
     (liveTurns.length === 1 ||
       crossingCanonicalTurns.every((turn) => turn.turnId === durable.turnId));
   const earlierLivePrefix =
@@ -3119,7 +3329,8 @@ function foldStrongIdentityDuplicateTurns(
           readonly durable: TranscriptTurnSnapshot;
           readonly duplicate: TranscriptTurnSnapshot;
           readonly ownerResolution?: LeadingHistoryOwnerResolution;
-          readonly openLiveAdoption?: 'replace' | 'merge';
+          readonly openLiveAdoption?: OpenLiveAdoption;
+          readonly closedCausalAdoption?: ClosedCausalAdoption;
         }
       | undefined;
 
@@ -3132,6 +3343,12 @@ function foldStrongIdentityDuplicateTurns(
       ) {
         continue;
       }
+      const closedLiveEvents =
+        !duplicate.restoredFromHistory && duplicate.closed
+          ? effectiveCausalLiveProjection(
+              nextEvents.slice(duplicate.eventStart, duplicate.eventEnd),
+            )
+          : undefined;
       for (let durableIndex = 0; durableIndex < duplicateIndex; durableIndex++) {
         const durable = turns[durableIndex]!;
         const entryIdentity = userEntryIdentityRelation(durable, duplicate);
@@ -3153,23 +3370,43 @@ function foldStrongIdentityDuplicateTurns(
         // Its empty durable segment and the exact open live owner are two projections of one turn,
         // not a complete history copy plus a duplicate. Move the live segment under the canonical
         // owner now so compose never hides the only draft while the Runtime is still streaming.
-        const openLiveAdoption =
+        const canAdoptOpenLive =
           durable.restoredFromHistory &&
           !duplicate.restoredFromHistory &&
           !duplicate.closed &&
           sameRuntimeRun &&
-          (entryIdentity === 'match' || strongTurnIdentityMatches(durable, duplicate))
-            ? durableMessage?.historyNoAssistantSegment === true &&
-              durable.eventStart === durable.eventEnd
-              ? 'replace'
-              : openLiveProjectionCoversDurablePrefix(durable, duplicate)
-                ? 'merge'
-                : undefined
-            : undefined;
+          (entryIdentity === 'match' || strongTurnIdentityMatches(durable, duplicate));
+        let openLiveAdoption: OpenLiveAdoption | undefined;
+        if (canAdoptOpenLive) {
+          if (
+            durableMessage?.historyNoAssistantSegment === true &&
+            durable.eventStart === durable.eventEnd
+          ) {
+            openLiveAdoption = { kind: 'replace' };
+          } else if (openLiveProjectionCoversDurablePrefix(durable, duplicate)) {
+            openLiveAdoption = { kind: 'merge' };
+          } else {
+            const durableCandidateSegment = nextEvents.slice(durable.eventStart, durable.eventEnd);
+            const effectiveLiveCandidate = effectiveCausalLiveProjection(
+              nextEvents.slice(duplicate.eventStart, duplicate.eventEnd),
+            );
+            const causalMatch =
+              effectiveLiveCandidate === undefined
+                ? undefined
+                : orderedCausalProjectionMatch(durableCandidateSegment, effectiveLiveCandidate);
+            if (effectiveLiveCandidate !== undefined && causalMatch !== undefined) {
+              openLiveAdoption = {
+                kind: 'causal_merge',
+                liveEvents: effectiveLiveCandidate,
+                match: causalMatch,
+              };
+            }
+          }
+        }
         const ownerResolution =
           entryIdentity === 'match' && durable.omittedHistoryUserOrdinal
-            ? 'enrich_canonical_owner'
-            : uniqueLeadingHistoryOwnerResolution(durable, duplicate, turns);
+            ? { kind: 'enrich_canonical_owner' as const }
+            : uniqueLeadingHistoryOwnerResolution(durable, duplicate, turns, nextEvents);
         if (
           !durable.restoredFromHistory ||
           (duplicate.restoredFromHistory
@@ -3179,15 +3416,30 @@ function foldStrongIdentityDuplicateTurns(
               ownerResolution === undefined) ||
           (!duplicate.restoredFromHistory &&
             openLiveAdoption === undefined &&
+            ownerResolution?.kind !== 'promote_open_live_owner' &&
             !liveTurnCanFold(duplicate, entryIdentity === 'match'))
         ) {
           continue;
         }
+        const durableCausalSegment = nextEvents.slice(durable.eventStart, durable.eventEnd);
+        const closedCausalMatch =
+          closedLiveEvents === undefined
+            ? undefined
+            : durableCausalSegment.length === 0 &&
+                durableMessage?.historyNoAssistantSegment === true
+              ? { durableExtras: [] }
+              : orderedCausalProjectionMatch(durableCausalSegment, closedLiveEvents);
+        if (closedLiveEvents !== undefined && closedCausalMatch === undefined) continue;
+        const closedCausalAdoption =
+          closedLiveEvents !== undefined && closedCausalMatch !== undefined
+            ? { liveEvents: closedLiveEvents, match: closedCausalMatch }
+            : undefined;
         pair = {
           durable,
           duplicate,
           ...(ownerResolution !== undefined ? { ownerResolution } : {}),
           ...(openLiveAdoption !== undefined ? { openLiveAdoption } : {}),
+          ...(closedCausalAdoption !== undefined ? { closedCausalAdoption } : {}),
         };
         break;
       }
@@ -3196,32 +3448,49 @@ function foldStrongIdentityDuplicateTurns(
 
     const durableSegment = nextEvents.slice(pair.durable.eventStart, pair.durable.eventEnd);
     const duplicateSegment = nextEvents.slice(pair.duplicate.eventStart, pair.duplicate.eventEnd);
-    // A leading bounded page is a canonical suffix of the complete live projection. Its admission
-    // check already proved that visible suffix entry-by-entry. The generic projection merger is
-    // intentionally durable-first and therefore cannot preserve the omitted live prefix: it would
-    // append early text/tools after the durable suffix and duplicate overlapping text. Once the
-    // unique live owner is promoted, retain that complete live projection in its original order.
-    // For an open live extension, retain the canonical prefix/notices and append only the proven
-    // live suffix in its original text/tool order. Other folds continue to use the canonical merger
-    // because their durable segment is not truncated.
+    // A bounded page can retain only an interior canonical span of the complete live projection.
+    // Causal admission maps that unique span into live order and reanchors canonical-only notices;
+    // closed legacy pages still require an exact visible suffix. Root-present open turns use the
+    // same mapped merge, while unsegmented folds retain the canonical-first compatibility path.
+    const promotesLiveOwner =
+      pair.ownerResolution?.kind === 'promote_live_owner' ||
+      pair.ownerResolution?.kind === 'promote_open_live_owner';
     const mergedProjection =
-      pair.openLiveAdoption !== undefined
-        ? mergeOpenLiveTurnProjections(pair.durable, durableSegment, duplicateSegment)
-        : pair.ownerResolution === 'promote_live_owner'
-          ? [...duplicateSegment]
-          : mergeCanonicalTurnProjections(
-              durableSegment,
-              duplicateSegment,
-              userEntryIdentityRelation(pair.durable, pair.duplicate) === 'match',
-            );
-    const mergedSegment =
-      pair.openLiveAdoption === undefined
-        ? preserveRelocatedSegmentClosure(mergedProjection, pair.duplicate)
-        : mergedProjection.filter((event) => !isTranscriptTerminal(event));
+      pair.closedCausalAdoption !== undefined
+        ? mergeClosedCausalProjection(durableSegment, pair.closedCausalAdoption)
+        : pair.openLiveAdoption?.kind === 'causal_merge'
+          ? mergeOrderedCausalProjection(
+              pair.openLiveAdoption.liveEvents,
+              durableSegment.find(isPromptSegmentBoundary) ??
+                pair.openLiveAdoption.liveEvents.find(isPromptSegmentBoundary),
+              pair.openLiveAdoption.match,
+            )
+          : pair.openLiveAdoption !== undefined
+            ? mergeOpenLiveTurnProjections(pair.durable, durableSegment, duplicateSegment)
+            : pair.ownerResolution?.kind === 'promote_open_live_owner'
+              ? mergeOrderedCausalProjection(
+                  pair.ownerResolution.liveEvents,
+                  durableSegment.find(isPromptSegmentBoundary) ??
+                    pair.ownerResolution.liveEvents.find(isPromptSegmentBoundary),
+                  pair.ownerResolution.match,
+                )
+              : promotesLiveOwner
+                ? [...duplicateSegment]
+                : mergeLegacyUnsegmentedTurnProjections(
+                    durableSegment,
+                    duplicateSegment,
+                    userEntryIdentityRelation(pair.durable, pair.duplicate) === 'match',
+                  );
+    const retainsOpenLiveProjection =
+      pair.openLiveAdoption !== undefined ||
+      pair.ownerResolution?.kind === 'promote_open_live_owner';
+    const mergedSegment = retainsOpenLiveProjection
+      ? mergedProjection.filter((event) => !isTranscriptTerminal(event))
+      : preserveRelocatedSegmentClosure(mergedProjection, pair.duplicate);
     const duplicateMessage = nextUsers[pair.duplicate.userIndex];
     if (
       pair.openLiveAdoption === undefined &&
-      pair.ownerResolution !== 'promote_live_owner' &&
+      !promotesLiveOwner &&
       !pair.duplicate.restoredFromHistory &&
       duplicateMessage !== undefined &&
       pair.durable.canonicalIndex !== undefined &&
@@ -3246,10 +3515,9 @@ function foldStrongIdentityDuplicateTurns(
       .map((message, index) => {
         if (index !== pair.durable.userIndex) return message;
         const promoteLiveOwner =
-          pair.ownerResolution === 'promote_live_owner' &&
-          durableMessage?.leadingPartialHistory === true;
+          promotesLiveOwner && durableMessage?.leadingPartialHistory === true;
         const enrichCanonicalOwner =
-          pair.ownerResolution === 'enrich_canonical_owner' &&
+          pair.ownerResolution?.kind === 'enrich_canonical_owner' &&
           durableMessage?.omittedHistoryUserOrdinal === true;
         const baseMessage = promoteLiveOwner && duplicateMessage ? duplicateMessage : message;
         let rest: Omit<UserMessage, 'historyNoAssistantSegment'>;

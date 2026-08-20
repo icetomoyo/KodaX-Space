@@ -62,7 +62,7 @@ function assertClosedTranscriptStructure(sessionId: string): void {
     (message) => message.historyNoAssistantSegment !== true,
   );
   const segments: SessionEvent[][] = [];
-  for (let cursor = 0; cursor < events.length; ) {
+  for (let cursor = 0; cursor < events.length;) {
     const end = testSegmentEnd(events, cursor);
     assert.ok(end > cursor, 'every event segment must advance the cursor');
     segments.push(events.slice(cursor, end));
@@ -686,7 +686,472 @@ test('a leading canonical suffix preserves the complete live text and tool prefi
   assertClosedTranscriptStructure(SID);
 });
 
-test('a leading partial history turn stays ambiguous when several live users share its turnId', () => {
+test('an open leading canonical suffix adopts its unique causal live owner', () => {
+  const store = useAppStore.getState();
+  const turnId = 'turn-open-leading-suffix';
+  const runId = 'run-open-leading-suffix';
+  const runtimeEvent = (seq: number) => ({
+    runtimeId: 'runtime-open-leading-suffix',
+    runId,
+    journalEpoch: 'epoch-open-leading-suffix',
+    seq,
+  });
+  const messageId = store.appendUserMessage(SID, 'query before the bounded page', 10_000);
+  assert.ok(messageId);
+  store.bindUserMessageRuntimeRun(SID, messageId, runId);
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId,
+    runtimeEvent: runtimeEvent(1),
+  });
+  store.appendEvent({
+    kind: 'output_segment_started',
+    sessionId: SID,
+    responseId: 'response-open-leading-suffix',
+    providerRequestId: 'request-open-leading-abandoned',
+    mode: 'append',
+    turnId,
+    runtimeEvent: runtimeEvent(2),
+  });
+  store.appendEvent({
+    kind: 'thinking_delta',
+    sessionId: SID,
+    text: 'abandoned live thought',
+    providerRequestId: 'request-open-leading-abandoned',
+    turnId,
+    runtimeEvent: runtimeEvent(3),
+  });
+  store.appendEvent({
+    kind: 'sidecar_message',
+    sessionId: SID,
+    message: {
+      source: 'sidecar-verifier',
+      verdict: 'revise',
+      recipient: 'main-agent',
+      delivery: 'synthetic-user-message',
+      content: 'verify before answering',
+    },
+    turnId,
+    runtimeEvent: runtimeEvent(4),
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'abandoned live answer',
+    providerRequestId: 'request-open-leading-abandoned',
+    turnId,
+    runtimeEvent: runtimeEvent(5),
+  });
+  store.appendEvent({
+    kind: 'output_segment_started',
+    sessionId: SID,
+    responseId: 'response-open-leading-suffix',
+    providerRequestId: 'request-open-leading-suffix',
+    mode: 'replace',
+    turnId,
+    runtimeEvent: runtimeEvent(6),
+  });
+  store.appendEvent({
+    kind: 'thinking_delta',
+    sessionId: SID,
+    text: 'earlier live thought',
+    providerRequestId: 'request-open-leading-suffix',
+    turnId,
+    runtimeEvent: runtimeEvent(7),
+  });
+  store.appendEvent({
+    kind: 'tool_start',
+    sessionId: SID,
+    toolId: 'tool-open-leading-suffix',
+    toolName: 'read',
+    input: { path: 'source.ts' },
+    turnId,
+    runtimeEvent: runtimeEvent(8),
+  });
+  store.appendEvent({
+    kind: 'tool_result',
+    sessionId: SID,
+    toolId: 'tool-open-leading-suffix',
+    toolName: 'read',
+    content: 'source body',
+    turnId,
+    runtimeEvent: runtimeEvent(9),
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'retained canonical tail',
+    providerRequestId: 'request-open-leading-suffix',
+    turnId,
+    runtimeEvent: runtimeEvent(10),
+  });
+
+  const newestPage: SessionHistoryItem[] = [
+    { kind: 'history_truncation', scope: 'history', omittedItems: 64 },
+    {
+      kind: 'sidecar_message',
+      message: {
+        source: 'sidecar-verifier',
+        verdict: 'revise',
+        recipient: 'main-agent',
+        delivery: 'synthetic-user-message',
+        content: 'verify before answering',
+        historical: true,
+      },
+      turnId,
+    },
+    {
+      kind: 'assistant',
+      text: 'retained canonical tail',
+      sentAt: 10_100,
+      entryId: 'entry-open-leading-tail',
+      canonicalIndex: 64,
+      turnId,
+    },
+  ];
+  store.prependSessionHistory(SID, newestPage, FALLBACK_SENT_AT, {
+    replaceLoadedWindow: true,
+    authoritativeNewest: true,
+    sourceRevision: 'source-open-leading-suffix',
+  });
+
+  const state = useAppStore.getState();
+  const users = state.userMessagesBySession[SID] ?? [];
+  assert.equal(
+    users.filter((message) => message.leadingPartialHistory === true).length,
+    0,
+    'the hidden bounded-page anchor is consumed immediately',
+  );
+  assert.equal(
+    users.find((message) => message.content === 'query before the bounded page')
+      ?.restoredFromHistory,
+    true,
+  );
+  assert.deepEqual(
+    composeMessages({ events: state.eventsBySession[SID] ?? [], userMessages: users }).flatMap(
+      (message) => {
+        if (message.kind === 'user') return [`user:${message.content}`];
+        if (message.kind === 'system_notice' && message.variant === 'sidecar') {
+          return [`sidecar:${message.text}`];
+        }
+        if (message.kind === 'assistant_text') {
+          return [
+            ...(message.thinking ? [`thinking:${message.thinking}`] : []),
+            ...(message.text ? [`text:${message.text}`] : []),
+          ];
+        }
+        if (message.kind === 'tool_call') return [`tool:${message.toolId}`];
+        return [];
+      },
+    ),
+    [
+      'user:query before the bounded page',
+      'sidecar:Sidecar verifier requested revision: verify before answering',
+      'thinking:earlier live thought',
+      'tool:tool-open-leading-suffix',
+      'text:retained canonical tail',
+    ],
+  );
+  assert.equal(
+    (state.eventsBySession[SID] ?? []).filter(
+      (event) =>
+        event.kind === 'sidecar_message' && event.message.content === 'verify before answering',
+    ).length,
+    1,
+    'historical and live Sidecar payloads share one normalized causal anchor',
+  );
+
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: ' continued',
+    providerRequestId: 'request-open-leading-suffix',
+    turnId,
+    runtimeEvent: runtimeEvent(11),
+  });
+  const continuedState = useAppStore.getState();
+  assert.deepEqual(
+    composeMessages({
+      events: continuedState.eventsBySession[SID] ?? [],
+      userMessages: continuedState.userMessagesBySession[SID] ?? [],
+    }).flatMap((message) =>
+      message.kind === 'assistant_text' && message.text ? [message.text] : [],
+    ),
+    ['retained canonical tail continued'],
+    'later live deltas remain attached instead of falling behind a synthetic terminal',
+  );
+
+  store.appendEvent({
+    kind: 'output_segment_started',
+    sessionId: SID,
+    responseId: 'response-open-leading-suffix',
+    providerRequestId: 'request-open-leading-later',
+    mode: 'append',
+    turnId,
+    runtimeEvent: runtimeEvent(12),
+  });
+  store.appendEvent({
+    kind: 'thinking_delta',
+    sessionId: SID,
+    text: 'later live thought',
+    providerRequestId: 'request-open-leading-later',
+    turnId,
+    runtimeEvent: runtimeEvent(13),
+  });
+  store.appendEvent({
+    kind: 'tool_start',
+    sessionId: SID,
+    toolId: 'tool-open-leading-later',
+    toolName: 'grep',
+    input: { pattern: 'later' },
+    turnId,
+    runtimeEvent: runtimeEvent(14),
+  });
+  store.appendEvent({
+    kind: 'tool_result',
+    sessionId: SID,
+    toolId: 'tool-open-leading-later',
+    toolName: 'grep',
+    content: 'later match',
+    turnId,
+    runtimeEvent: runtimeEvent(15),
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'later answer',
+    providerRequestId: 'request-open-leading-later',
+    turnId,
+    runtimeEvent: runtimeEvent(16),
+  });
+
+  store.evictRestoredSessionHistory(SID);
+  store.prependSessionHistory(SID, newestPage, FALLBACK_SENT_AT, {
+    replaceLoadedWindow: true,
+    authoritativeNewest: true,
+    sourceRevision: 'source-open-leading-suffix',
+  });
+  const reopenedState = useAppStore.getState();
+  const reopened = composeMessages({
+    events: reopenedState.eventsBySession[SID] ?? [],
+    userMessages: reopenedState.userMessagesBySession[SID] ?? [],
+  });
+  assert.equal(reopened.filter((message) => message.kind === 'user').length, 1);
+  assert.deepEqual(
+    reopened.flatMap((message) =>
+      message.kind === 'assistant_text' && message.text ? [message.text] : [],
+    ),
+    ['retained canonical tail continued', 'later answer'],
+    'deactivate and reactivate preserve the open causal owner exactly once',
+  );
+});
+
+test('a completed leading page adopts its unique internal causal span', () => {
+  const store = useAppStore.getState();
+  const turnId = 'turn-closed-leading-internal-span';
+  store.appendUserMessage(SID, 'query before a delayed bounded page', 10_500);
+  for (const event of [
+    { kind: 'session_start' as const, sessionId: SID, provider: 'mock', turnId },
+    {
+      kind: 'output_segment_started' as const,
+      sessionId: SID,
+      responseId: 'response-closed-leading-internal-span',
+      providerRequestId: 'request-closed-leading-first',
+      mode: 'append' as const,
+      turnId,
+    },
+    {
+      kind: 'thinking_delta' as const,
+      sessionId: SID,
+      text: 'early thought',
+      providerRequestId: 'request-closed-leading-first',
+      turnId,
+    },
+    {
+      kind: 'text_delta' as const,
+      sessionId: SID,
+      text: 'canonical snapshot',
+      providerRequestId: 'request-closed-leading-first',
+      turnId,
+    },
+    {
+      kind: 'output_segment_started' as const,
+      sessionId: SID,
+      responseId: 'response-closed-leading-internal-span',
+      providerRequestId: 'request-closed-leading-later',
+      mode: 'append' as const,
+      turnId,
+    },
+    {
+      kind: 'thinking_delta' as const,
+      sessionId: SID,
+      text: 'later thought',
+      providerRequestId: 'request-closed-leading-later',
+      turnId,
+    },
+    {
+      kind: 'text_delta' as const,
+      sessionId: SID,
+      text: 'later answer',
+      providerRequestId: 'request-closed-leading-later',
+      turnId,
+    },
+    { kind: 'session_complete' as const, sessionId: SID, turnId },
+  ]) {
+    store.appendEvent(event);
+  }
+  store.prependSessionHistory(
+    SID,
+    [
+      { kind: 'history_truncation', scope: 'history', omittedItems: 64 },
+      { kind: 'assistant', text: 'canonical snapshot', canonicalIndex: 64, turnId },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true, authoritativeNewest: true },
+  );
+
+  const state = useAppStore.getState();
+  const visible = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  });
+  assert.equal(visible.filter((message) => message.kind === 'user').length, 1);
+  assert.equal(
+    (state.userMessagesBySession[SID] ?? []).filter(
+      (message) => message.leadingPartialHistory === true,
+    ).length,
+    0,
+  );
+  assert.deepEqual(
+    visible.flatMap((message) =>
+      message.kind === 'assistant_text'
+        ? [
+            ...(message.thinking ? [`thinking:${message.thinking}`] : []),
+            ...(message.text ? [`text:${message.text}`] : []),
+          ]
+        : [],
+    ),
+    [
+      'thinking:early thought',
+      'text:canonical snapshot',
+      'thinking:later thought',
+      'text:later answer',
+    ],
+  );
+});
+
+test('an unsegmented open leading suffix remains unresolved', () => {
+  const store = useAppStore.getState();
+  store.appendUserMessage(SID, 'legacy bounded-page query', 11_000);
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-unsegmented-leading-suffix',
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'legacy retained tail',
+    turnId: 'turn-unsegmented-leading-suffix',
+  });
+
+  store.prependSessionHistory(
+    SID,
+    [
+      { kind: 'history_truncation', scope: 'history', omittedItems: 64 },
+      {
+        kind: 'assistant',
+        text: 'legacy retained tail',
+        canonicalIndex: 64,
+        turnId: 'turn-unsegmented-leading-suffix',
+      },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true, authoritativeNewest: true },
+  );
+
+  const users = useAppStore.getState().userMessagesBySession[SID] ?? [];
+  assert.equal(users.filter((message) => message.leadingPartialHistory === true).length, 1);
+  assert.equal(
+    users.some(
+      (message) =>
+        message.content === 'legacy bounded-page query' && message.restoredFromHistory !== true,
+    ),
+    true,
+    'legacy events have no causal marker that can safely prove the omitted prefix owner',
+  );
+});
+
+test('an ambiguous repeated open span cannot claim a leading history owner', () => {
+  const store = useAppStore.getState();
+  const turnId = 'turn-ambiguous-open-leading-span';
+  store.appendUserMessage(SID, 'ambiguous bounded-page query', 11_500);
+  for (const event of [
+    { kind: 'session_start' as const, sessionId: SID, provider: 'mock', turnId },
+    {
+      kind: 'output_segment_started' as const,
+      sessionId: SID,
+      responseId: 'response-ambiguous-open-leading',
+      providerRequestId: 'request-ambiguous-open-leading',
+      mode: 'append' as const,
+      turnId,
+    },
+    {
+      kind: 'text_delta' as const,
+      sessionId: SID,
+      text: 'repeated canonical tail',
+      providerRequestId: 'request-ambiguous-open-leading',
+      turnId,
+    },
+    {
+      kind: 'tool_start' as const,
+      sessionId: SID,
+      toolId: 'tool-ambiguous-open-leading',
+      toolName: 'read',
+      input: { path: 'source.ts' },
+      turnId,
+    },
+    {
+      kind: 'tool_result' as const,
+      sessionId: SID,
+      toolId: 'tool-ambiguous-open-leading',
+      toolName: 'read',
+      content: 'source body',
+      turnId,
+    },
+    {
+      kind: 'text_delta' as const,
+      sessionId: SID,
+      text: 'repeated canonical tail',
+      providerRequestId: 'request-ambiguous-open-leading',
+      turnId,
+    },
+  ]) {
+    store.appendEvent(event);
+  }
+
+  store.prependSessionHistory(
+    SID,
+    [
+      { kind: 'history_truncation', scope: 'history', omittedItems: 64 },
+      { kind: 'assistant', text: 'repeated canonical tail', canonicalIndex: 64, turnId },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true, authoritativeNewest: true },
+  );
+
+  const users = useAppStore.getState().userMessagesBySession[SID] ?? [];
+  assert.equal(
+    users.filter((message) => message.leadingPartialHistory === true).length,
+    1,
+    'two equally valid semantic spans must remain fail-open',
+  );
+});
+
+test('a leading partial causal turn promotes only the root before a later live prompt', () => {
   const store = useAppStore.getState();
   store.appendUserMessage(SID, 'first prompt', 10_000);
   store.appendEvent({
@@ -696,10 +1161,20 @@ test('a leading partial history turn stays ambiguous when several live users sha
     turnId: 'turn-multi-prompt',
   });
   store.appendEvent({
+    kind: 'output_segment_started',
+    sessionId: SID,
+    responseId: 'response-multi-prompt',
+    providerRequestId: 'request-first-prompt',
+    mode: 'append',
+    turnId: 'turn-multi-prompt',
+  });
+  store.appendEvent({
     kind: 'text_delta',
     sessionId: SID,
     text: 'first response',
     sentAt: 10_100,
+    providerRequestId: 'request-first-prompt',
+    turnId: 'turn-multi-prompt',
   });
   store.appendEvent({
     kind: 'mid_turn_user_prompt',
@@ -710,14 +1185,19 @@ test('a leading partial history turn stays ambiguous when several live users sha
     turnUserOrdinal: 1,
   });
   store.appendEvent({
+    kind: 'output_segment_started',
+    sessionId: SID,
+    responseId: 'response-multi-prompt',
+    providerRequestId: 'request-second-prompt',
+    mode: 'append',
+    turnId: 'turn-multi-prompt',
+  });
+  store.appendEvent({
     kind: 'text_delta',
     sessionId: SID,
     text: 'second response',
     sentAt: 10_200,
-  });
-  store.appendEvent({
-    kind: 'session_complete',
-    sessionId: SID,
+    providerRequestId: 'request-second-prompt',
     turnId: 'turn-multi-prompt',
   });
 
@@ -727,7 +1207,7 @@ test('a leading partial history turn stays ambiguous when several live users sha
       { kind: 'history_truncation', scope: 'history', omittedItems: 50 },
       {
         kind: 'assistant',
-        text: 'partial canonical response',
+        text: 'first response',
         sentAt: 10_150,
         canonicalIndex: 50,
         turnId: 'turn-multi-prompt',
@@ -743,13 +1223,17 @@ test('a leading partial history turn stays ambiguous when several live users sha
     users.filter(
       (message) => message.turnId === 'turn-multi-prompt' && !message.restoredFromHistory,
     ).length,
-    2,
-    'an omitted ordinal must not be guessed from two possible live owners',
+    1,
+    'the later prompt remains an independent live owner',
   );
   assert.equal(
     users.filter((message) => message.leadingPartialHistory === true).length,
-    1,
-    'the unresolved canonical prefix remains an explicit hidden owner',
+    0,
+    'the unique closed root span consumes the hidden bounded-page owner',
+  );
+  assert.equal(
+    users.find((message) => message.content === 'first prompt')?.restoredFromHistory,
+    true,
   );
 });
 
@@ -3210,6 +3694,482 @@ test('a canonical user-only tail adopts its exact open live answer without hidin
       (message) => message.kind === 'assistant_text' && message.text === 'live answer tail',
     ).length,
     1,
+  );
+});
+
+test('a completed segmented live turn adopts an exact canonical user-only tail', () => {
+  const store = useAppStore.getState();
+  const turnId = 'turn-closed-segmented-user-only-history';
+  store.appendUserMessage(SID, 'completed query before assistant persistence', 11_000);
+  for (const event of [
+    { kind: 'session_start' as const, sessionId: SID, provider: 'mock', turnId },
+    {
+      kind: 'output_segment_started' as const,
+      sessionId: SID,
+      responseId: 'response-closed-segmented-user-only',
+      providerRequestId: 'request-closed-segmented-user-only',
+      mode: 'append' as const,
+      turnId,
+    },
+    {
+      kind: 'text_delta' as const,
+      sessionId: SID,
+      text: 'completed answer',
+      providerRequestId: 'request-closed-segmented-user-only',
+      turnId,
+    },
+    { kind: 'session_complete' as const, sessionId: SID, turnId },
+  ]) {
+    store.appendEvent(event);
+  }
+  store.prependSessionHistory(
+    SID,
+    [
+      {
+        kind: 'user',
+        content: 'completed query before assistant persistence',
+        canonicalIndex: 0,
+        turnId,
+        turnUserOrdinal: 0,
+      },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true, authoritativeNewest: true },
+  );
+
+  const state = useAppStore.getState();
+  const visible = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  });
+  assert.equal(visible.filter((message) => message.kind === 'user').length, 1);
+  assert.equal(
+    visible.filter(
+      (message) => message.kind === 'assistant_text' && message.text === 'completed answer',
+    ).length,
+    1,
+  );
+});
+
+test('an open sidecar-only causal projection folds by normalized notice identity', () => {
+  const store = useAppStore.getState();
+  const turnId = 'turn-open-sidecar-only';
+  store.appendUserMessage(SID, 'wait for verifier before output', 11_500);
+  for (const event of [
+    { kind: 'session_start' as const, sessionId: SID, provider: 'mock', turnId },
+    {
+      kind: 'output_segment_started' as const,
+      sessionId: SID,
+      responseId: 'response-open-sidecar-only',
+      providerRequestId: 'request-open-sidecar-only',
+      mode: 'append' as const,
+      turnId,
+    },
+    {
+      kind: 'sidecar_message' as const,
+      sessionId: SID,
+      message: {
+        source: 'sidecar-verifier' as const,
+        verdict: 'revise' as const,
+        recipient: 'main-agent' as const,
+        delivery: 'synthetic-user-message' as const,
+        content: 'verify before generating text',
+      },
+      turnId,
+    },
+  ]) {
+    store.appendEvent(event);
+  }
+  store.prependSessionHistory(
+    SID,
+    [
+      {
+        kind: 'user',
+        content: 'wait for verifier before output',
+        canonicalIndex: 0,
+        turnId,
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'sidecar_message',
+        message: {
+          source: 'sidecar-verifier',
+          verdict: 'revise',
+          recipient: 'main-agent',
+          delivery: 'synthetic-user-message',
+          content: 'verify before generating text',
+          historical: true,
+        },
+        turnId,
+      },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true, authoritativeNewest: true },
+  );
+
+  const state = useAppStore.getState();
+  const visible = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  });
+  assert.equal(visible.filter((message) => message.kind === 'user').length, 1);
+  assert.equal(
+    visible.filter((message) => message.kind === 'system_notice' && message.variant === 'sidecar')
+      .length,
+    1,
+  );
+});
+
+test('an open segmented live turn absorbs a text-only canonical snapshot without reordering', () => {
+  const store = useAppStore.getState();
+  const turnId = 'turn-open-segmented-text-only-history';
+  const runId = 'run-open-segmented-text-only-history';
+  const runtimeEvent = (seq: number) => ({
+    runtimeId: 'runtime-open-segmented-text-only-history',
+    runId,
+    journalEpoch: 'epoch-open-segmented-text-only-history',
+    seq,
+  });
+  const messageId = store.appendUserMessage(SID, 'inspect the active turn', 12_000);
+  assert.ok(messageId);
+  store.bindUserMessageRuntimeRun(SID, messageId, runId);
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId,
+    runtimeEvent: runtimeEvent(1),
+  });
+  store.appendEvent({
+    kind: 'output_segment_started',
+    sessionId: SID,
+    responseId: 'response-open-segmented',
+    providerRequestId: 'request-open-segmented',
+    mode: 'append',
+    turnId,
+    runtimeEvent: runtimeEvent(2),
+  });
+  store.appendEvent({
+    kind: 'thinking_delta',
+    sessionId: SID,
+    text: 'reason before answer',
+    providerRequestId: 'request-open-segmented',
+    turnId,
+    runtimeEvent: runtimeEvent(3),
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'current answer',
+    providerRequestId: 'request-open-segmented',
+    turnId,
+    runtimeEvent: runtimeEvent(5),
+  });
+
+  store.prependSessionHistory(
+    SID,
+    [
+      {
+        kind: 'user',
+        content: 'inspect the active turn',
+        sentAt: 12_000,
+        entryId: 'entry-open-segmented-user',
+        canonicalIndex: 0,
+        turnId,
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'sidecar_message',
+        message: {
+          source: 'sidecar-verifier',
+          verdict: 'revise',
+          recipient: 'main-agent',
+          delivery: 'synthetic-user-message',
+          content: 'verify before answering',
+          historical: true,
+        },
+        turnId,
+      },
+      {
+        kind: 'assistant',
+        text: 'current answer',
+        sentAt: 12_100,
+        entryId: 'entry-open-segmented-answer',
+        canonicalIndex: 1,
+        turnId,
+      },
+    ],
+    FALLBACK_SENT_AT,
+    {
+      replaceLoadedWindow: true,
+      authoritativeNewest: true,
+      sourceRevision: 'source-open-segmented-text-only-history',
+    },
+  );
+
+  const state = useAppStore.getState();
+  const visible = composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  });
+  assert.equal(
+    visible.filter((message) => message.kind === 'user').length,
+    1,
+    'the canonical window and live stream keep one strong owner',
+  );
+  assert.deepEqual(
+    visible.flatMap((message) => {
+      if (message.kind === 'assistant_text') {
+        return [
+          ...(message.thinking ? [`thinking:${message.thinking}`] : []),
+          ...(message.text ? [`text:${message.text}`] : []),
+        ];
+      }
+      if (message.kind === 'system_notice' && message.variant === 'sidecar') {
+        return [`sidecar:${message.text}`];
+      }
+      return [];
+    }),
+    ['thinking:reason before answer', 'sidecar:verify before answering', 'text:current answer'],
+  );
+  assert.equal(
+    (state.eventsBySession[SID] ?? []).filter((event) => event.kind === 'output_segment_started')
+      .length,
+    1,
+    'the causal segment marker remains attached for later live deltas',
+  );
+});
+
+test('an open causal projection keeps divergent canonical content visible', () => {
+  const store = useAppStore.getState();
+  const turnId = 'turn-open-causal-divergence';
+  const messageId = store.appendUserMessage(SID, 'compare the active projection', 13_000);
+  assert.ok(messageId);
+  store.bindUserMessageRuntimeRun(SID, messageId, 'run-open-causal-divergence');
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId,
+    runtimeEvent: {
+      runtimeId: 'runtime-open-causal-divergence',
+      runId: 'run-open-causal-divergence',
+      seq: 1,
+    },
+  });
+  store.appendEvent({
+    kind: 'output_segment_started',
+    sessionId: SID,
+    responseId: 'response-open-causal-divergence',
+    providerRequestId: 'request-open-causal-divergence',
+    mode: 'append',
+    turnId,
+  });
+  store.appendEvent({
+    kind: 'thinking_delta',
+    sessionId: SID,
+    text: 'live reasoning',
+    providerRequestId: 'request-open-causal-divergence',
+    turnId,
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'live answer',
+    providerRequestId: 'request-open-causal-divergence',
+    turnId,
+  });
+
+  store.prependSessionHistory(
+    SID,
+    [
+      {
+        kind: 'user',
+        content: 'compare the active projection',
+        entryId: 'entry-open-causal-divergence-user',
+        canonicalIndex: 0,
+        turnId,
+        turnUserOrdinal: 0,
+      },
+      {
+        kind: 'assistant',
+        text: 'different canonical answer',
+        canonicalIndex: 1,
+        turnId,
+      },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true, authoritativeNewest: true },
+  );
+
+  const state = useAppStore.getState();
+  assert.equal(
+    (state.userMessagesBySession[SID] ?? []).some(
+      (message) => message.hiddenProjectionDuplicate === true,
+    ),
+    false,
+  );
+  assert.deepEqual(
+    composeMessages({
+      events: state.eventsBySession[SID] ?? [],
+      userMessages: state.userMessagesBySession[SID] ?? [],
+    })
+      .filter((message) => message.kind === 'assistant_text')
+      .map((message) => message.text),
+    ['different canonical answer', 'live answer'],
+  );
+});
+
+test('a cancelled causal projection fails open when content kinds contradict canonical order', () => {
+  const store = useAppStore.getState();
+  const turnId = 'turn-cancelled-causal-order-conflict';
+  store.appendUserMessage(SID, 'cancel the conflicting projection', 14_000);
+  for (const event of [
+    { kind: 'session_start' as const, sessionId: SID, provider: 'mock', turnId },
+    {
+      kind: 'output_segment_started' as const,
+      sessionId: SID,
+      responseId: 'response-cancelled-causal-order-conflict',
+      providerRequestId: 'request-cancelled-causal-order-conflict',
+      mode: 'append' as const,
+      turnId,
+    },
+    {
+      kind: 'text_delta' as const,
+      sessionId: SID,
+      text: 'answer',
+      providerRequestId: 'request-cancelled-causal-order-conflict',
+      turnId,
+    },
+    {
+      kind: 'sidecar_message' as const,
+      sessionId: SID,
+      message: {
+        source: 'sidecar-verifier' as const,
+        verdict: 'revise' as const,
+        recipient: 'main-agent' as const,
+        delivery: 'synthetic-user-message' as const,
+        content: 'check causal order',
+      },
+      turnId,
+    },
+    {
+      kind: 'thinking_delta' as const,
+      sessionId: SID,
+      text: 'reason',
+      providerRequestId: 'request-cancelled-causal-order-conflict',
+      turnId,
+    },
+    { kind: 'session_error' as const, sessionId: SID, error: 'cancelled', turnId },
+  ]) {
+    store.appendEvent(event);
+  }
+
+  store.prependSessionHistory(
+    SID,
+    [
+      {
+        kind: 'user',
+        content: 'cancel the conflicting projection',
+        canonicalIndex: 0,
+        turnId,
+        turnUserOrdinal: 0,
+      },
+      { kind: 'assistant', thinking: 'reason', text: '', canonicalIndex: 1, turnId },
+      {
+        kind: 'sidecar_message',
+        message: {
+          source: 'sidecar-verifier',
+          verdict: 'revise',
+          recipient: 'main-agent',
+          delivery: 'synthetic-user-message',
+          content: 'check causal order',
+          historical: true,
+        },
+        turnId,
+      },
+      { kind: 'assistant', text: 'answer', canonicalIndex: 2, turnId },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true, authoritativeNewest: true },
+  );
+
+  const state = useAppStore.getState();
+  assert.equal(
+    (state.userMessagesBySession[SID] ?? []).length,
+    2,
+    'a terminal marker must not route a causal conflict through the legacy suffix merger',
+  );
+});
+
+test('an open causal projection rejects a live-only tool inside the canonical content span', () => {
+  const store = useAppStore.getState();
+  const turnId = 'turn-open-causal-internal-tool';
+  store.appendUserMessage(SID, 'inspect the internal tool span', 14_500);
+  for (const event of [
+    { kind: 'session_start' as const, sessionId: SID, provider: 'mock', turnId },
+    {
+      kind: 'output_segment_started' as const,
+      sessionId: SID,
+      responseId: 'response-open-causal-internal-tool',
+      providerRequestId: 'request-open-causal-internal-tool',
+      mode: 'append' as const,
+      turnId,
+    },
+    {
+      kind: 'thinking_delta' as const,
+      sessionId: SID,
+      text: 'reason',
+      providerRequestId: 'request-open-causal-internal-tool',
+      turnId,
+    },
+    {
+      kind: 'tool_start' as const,
+      sessionId: SID,
+      toolId: 'tool-open-causal-internal',
+      toolName: 'read',
+      input: { path: 'source.ts' },
+      turnId,
+    },
+    {
+      kind: 'tool_result' as const,
+      sessionId: SID,
+      toolId: 'tool-open-causal-internal',
+      toolName: 'read',
+      content: 'source body',
+      turnId,
+    },
+    {
+      kind: 'text_delta' as const,
+      sessionId: SID,
+      text: 'answer',
+      providerRequestId: 'request-open-causal-internal-tool',
+      turnId,
+    },
+  ]) {
+    store.appendEvent(event);
+  }
+
+  store.prependSessionHistory(
+    SID,
+    [
+      {
+        kind: 'user',
+        content: 'inspect the internal tool span',
+        canonicalIndex: 0,
+        turnId,
+        turnUserOrdinal: 0,
+      },
+      { kind: 'assistant', thinking: 'reason', text: 'answer', canonicalIndex: 1, turnId },
+    ],
+    FALLBACK_SENT_AT,
+    { replaceLoadedWindow: true, authoritativeNewest: true },
+  );
+
+  assert.equal(
+    (useAppStore.getState().userMessagesBySession[SID] ?? []).length,
+    2,
+    'a tool side effect inside the matched span cannot be skipped as if it were text chunking',
   );
 });
 

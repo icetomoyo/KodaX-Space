@@ -294,6 +294,40 @@ function isVisibleConversationUserMessage(message: unknown): boolean {
   );
 }
 
+export function visibleTurnUserOrdinalsByCanonicalIndex(
+  entries: readonly {
+    readonly canonicalIndex?: unknown;
+    readonly turnId?: unknown;
+    readonly message: unknown;
+  }[],
+  leadingTurnPrefixOmitted: boolean,
+): ReadonlyMap<number, number> {
+  const ordinals = new Map<number, number>();
+  const visibleUserCountByTurnId = new Map<string, number>();
+  let leadingOmittedTurnId: string | undefined;
+  let crossedLeadingOmittedTurn = !leadingTurnPrefixOmitted;
+  for (const entry of entries) {
+    const messageTurnId = isRecord(entry.message) ? stringField(entry.message.turnId) : undefined;
+    const turnId = stringField(entry.turnId) ?? messageTurnId;
+    if (!crossedLeadingOmittedTurn && turnId !== undefined) {
+      if (leadingOmittedTurnId === undefined) leadingOmittedTurnId = turnId;
+      else if (turnId !== leadingOmittedTurnId) crossedLeadingOmittedTurn = true;
+    }
+    if (
+      !crossedLeadingOmittedTurn ||
+      turnId === undefined ||
+      typeof entry.canonicalIndex !== 'number' ||
+      !isVisibleConversationUserMessage(entry.message)
+    ) {
+      continue;
+    }
+    const ordinal = visibleUserCountByTurnId.get(turnId) ?? 0;
+    ordinals.set(entry.canonicalIndex, ordinal);
+    visibleUserCountByTurnId.set(turnId, ordinal + 1);
+  }
+  return ordinals;
+}
+
 function conversationTurnBoundaries(
   entries: readonly IndexedConversationEntry[],
   sourceRevision: string,
@@ -1689,26 +1723,10 @@ export function registerSessionChannels(options: SessionChannelsOptions = {}): v
       const allEntries: readonly TranscriptEntryLike[] = Array.isArray(rawTranscriptEntries)
         ? (rawTranscriptEntries as TranscriptEntryLike[])
         : data.messages.map((message) => ({ type: 'message', message }));
-      const turnUserOrdinalByCanonicalIndex = new Map<number, number>();
-      const globalVisibleUserCountByTurnId = new Map<string, number>();
-      let leadingOmittedTurnId: string | undefined;
-      let crossedLeadingOmittedTurn =
-        !usesConversationProjection || omittedConversationEntries === 0;
-      for (const entry of allEntries) {
-        if (!isRecord(entry.message)) continue;
-        const messageTurnId = stringField(entry.message.turnId);
-        const turnId = stringField(entry.turnId) ?? messageTurnId;
-        if (!crossedLeadingOmittedTurn && turnId !== undefined) {
-          if (leadingOmittedTurnId === undefined) leadingOmittedTurnId = turnId;
-          else if (turnId !== leadingOmittedTurnId) crossedLeadingOmittedTurn = true;
-        }
-        if (entry.message.role !== 'user') continue;
-        if (turnId === undefined || typeof entry.canonicalIndex !== 'number') continue;
-        if (!crossedLeadingOmittedTurn) continue;
-        const ordinal = globalVisibleUserCountByTurnId.get(turnId) ?? 0;
-        turnUserOrdinalByCanonicalIndex.set(entry.canonicalIndex, ordinal);
-        globalVisibleUserCountByTurnId.set(turnId, ordinal + 1);
-      }
+      const turnUserOrdinalByCanonicalIndex = visibleTurnUserOrdinalsByCanonicalIndex(
+        allEntries,
+        usesConversationProjection && omittedConversationEntries > 0,
+      );
       const entries = allEntries;
 
       // Workflow 结果原位还原用:一条 `<task-completed>` 块只有当它的 task_id 命名了一个 Space 落盘的

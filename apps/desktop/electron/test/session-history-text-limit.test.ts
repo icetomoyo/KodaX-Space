@@ -8,6 +8,7 @@ import {
   collectCrossPageTurnBoundaries,
   consumeRuntimePresentationContinuation,
   conversationHistoryAsTranscript,
+  visibleTurnUserOrdinalsByCanonicalIndex,
   truncateLocalNoticesAfterSuccessfulRewind,
 } from '../ipc/session.js';
 import { MAX_RUNTIME_HISTORY_PAGE_ITEMS, pageSessionHistoryItems } from '../ipc/history-window.js';
@@ -56,6 +57,58 @@ test('conversation projection retains every proven physical entry alias', () => 
     'entry-interrupt-original',
     'entry-compacted-clone',
   ]);
+});
+
+test('turn user ordinals ignore hidden Runtime user-role carriers', () => {
+  const turnId = 'turn-visible-user-ordinals';
+  const ordinals = visibleTurnUserOrdinalsByCanonicalIndex(
+    [
+      { canonicalIndex: 0, turnId, message: { role: 'user', content: 'root query', turnId } },
+      {
+        canonicalIndex: 1,
+        turnId,
+        message: {
+          role: 'user',
+          content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'tool output' }],
+          turnId,
+        },
+      },
+      {
+        canonicalIndex: 2,
+        turnId,
+        message: {
+          role: 'user',
+          content: 'verifier feedback',
+          source: 'sidecar-verifier',
+          turnId,
+        },
+      },
+      {
+        canonicalIndex: 3,
+        turnId,
+        message: {
+          role: 'user',
+          content: '<system-reminder>internal context</system-reminder>',
+          _synthetic: true,
+          turnId,
+        },
+      },
+      {
+        canonicalIndex: 4,
+        turnId,
+        message: { role: 'user', content: 'delivered follow-up', turnId },
+      },
+    ],
+    false,
+  );
+
+  assert.deepEqual(
+    [...ordinals],
+    [
+      [0, 0],
+      [4, 1],
+    ],
+  );
 });
 
 test('conversation page seam preserves an exact tool result split after the 64th entry', () => {
@@ -288,14 +341,12 @@ test('same-page projection continuation retains a huge turn query exact boundary
   const itemCount = 1 + toolBlocks.length;
   const newestSlice = pageSessionHistoryItems([
     { kind: 'user', content: 'query' },
-    ...toolBlocks.map(
-      (block): SessionHistoryItem => ({
-        kind: 'tool_call',
-        toolId: block.id,
-        toolName: block.name,
-        input: block.input,
-      }),
-    ),
+    ...toolBlocks.map((block): SessionHistoryItem => ({
+      kind: 'tool_call',
+      toolId: block.id,
+      toolName: block.name,
+      input: block.input,
+    })),
   ]);
   assert.ok(newestSlice.nextEndExclusive !== undefined);
 
