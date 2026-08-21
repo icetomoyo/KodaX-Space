@@ -2,7 +2,7 @@
 //
 // KodaX skill 体系（user-/project-/plugin-/builtin-level SKILL.md frontmatter 注册）。
 // Space wire：
-//   - skill.discover  → 列已注册的 user-invocable skill（meta only，不读 full body）
+//   - skill.discover  → 列所有 enabled、可显式调用的 skill（meta only，不读 full body）
 //   - skill.invoke    → 拿 args，main 端用 VariableResolver 解析 SKILL.md body 里
 //                      $1/${VAR}/$ARGUMENTS/!`cmd`，返回 resolvedPrompt 给 renderer。
 //                      renderer 再走 session.send 把 prompt 喂给 KodaX——
@@ -80,7 +80,7 @@ export const skillInvokeChannel = {
     ok: z.boolean(),
     /** 仅 ok:true 有 — 已经 resolve $VAR / $ARGUMENTS / !`cmd` 的完整 prompt 文本。 */
     resolvedPrompt: z.string().max(1_048_576).optional(),
-    /** 仅 ok:false 有 — user-displayable 失败原因（SKILL.md 解析失败 / model invocation disabled / ... ） */
+    /** 仅 ok:false 有 — user-displayable 失败原因（SKILL.md 解析失败 / dynamic context 执行失败 / ... ） */
     error: z.string().max(2048).optional(),
   }),
 } as const;

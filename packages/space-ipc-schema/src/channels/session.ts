@@ -9,6 +9,7 @@
 import { z } from 'zod';
 import { partnerKnowledgeScopeSchema } from './partner-knowledge.js';
 import {
+  spaceRuntimeRunFailureKindSchema,
   spaceRuntimeRunStopReceiptSchema,
   spaceRuntimeSidecarMessagePayloadSchema,
 } from './runtime.js';
@@ -1225,6 +1226,8 @@ export const sessionEventChannel = {
       turnId: z.string().min(1).max(128).optional(),
       /** 用户可读文案 (已经过 wrapSdkError 友好化)。renderer 显示这条。*/
       error: z.string(),
+      /** Credential-safe KodaX 0.7.94 provider failure classification. */
+      failureKind: spaceRuntimeRunFailureKindSchema.optional(),
       /** OC-11 wrapSdkError 分类 —— renderer 据此决定 retry / open-settings 按钮。
        *  optional 保持向后兼容：旧 'cancelled' / guardrail 失败等仍可不带 category。*/
       category: z

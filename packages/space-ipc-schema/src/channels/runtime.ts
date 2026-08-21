@@ -177,6 +177,16 @@ export const spaceRuntimeRunStageSchema = z.enum([
   'verifying',
 ]);
 
+export const spaceRuntimeRunFailureKindSchema = z.enum([
+  'auth',
+  'rate_limit',
+  'network',
+  'provider_aborted',
+  'invalid_response',
+  'runtime_cleanup',
+  'provider',
+]);
+
 export const spaceRuntimeRunProjectionSchema = z
   .object({
     runId: idSchema,
@@ -194,6 +204,7 @@ export const spaceRuntimeRunProjectionSchema = z
     completedAt: timestampSchema.optional(),
     queuePosition: z.number().int().positive().max(MAX_QUEUE_ITEMS).optional(),
     terminalReason: z.string().min(1).max(MAX_REASON).optional(),
+    failureKind: spaceRuntimeRunFailureKindSchema.optional(),
     lifecycleError: z
       .object({
         code: z.enum([
@@ -928,6 +939,7 @@ export type SpaceRuntimeCapabilityT = z.infer<typeof spaceRuntimeCapabilitySchem
 export type SpaceCoderConnectionStateT = z.infer<typeof spaceCoderConnectionStateSchema>;
 export type SpaceCoderConnectionProjectionT = z.infer<typeof spaceCoderConnectionProjectionSchema>;
 export type SpaceRuntimeRunPhaseT = z.infer<typeof spaceRuntimeRunPhaseSchema>;
+export type SpaceRuntimeRunFailureKindT = z.infer<typeof spaceRuntimeRunFailureKindSchema>;
 export type SpaceRuntimeRunStopReceiptT = z.infer<typeof spaceRuntimeRunStopReceiptSchema>;
 export type SpaceRuntimeRunStageT = z.infer<typeof spaceRuntimeRunStageSchema>;
 export type SpaceRuntimeRunProjectionT = z.infer<typeof spaceRuntimeRunProjectionSchema>;

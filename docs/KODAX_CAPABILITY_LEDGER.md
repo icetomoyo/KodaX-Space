@@ -1,13 +1,13 @@
 # KodaX Capability Ledger
 
-> Last reviewed: 2026-08-20
+> Last reviewed: 2026-08-22
 > Space baseline: [`v0.1.44`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.44) released (`0.1.44` package baseline; v0.1.43 / v0.1.42 remain historical)
-> Source SDK baseline: npm Registry `@kodax-ai/kodax@0.7.93` (`sha512-psUEaYnxeOoyCLhajLcRmGOBXsEKpFnX+Us9nQkUynddhCsjRXLhoBsUmtZBz8SK1eHiHCJFGmQhr7dziRYdqA==`, SHA-256 `71974340A63BD742FFF4B0BEC15DB7ADB2ECC00871D7F0D0299777BB5D219429`).
-> Source evidence: public tag `v0.7.93` resolves to KodaX commit `c96e5f5b0222822a36b4f84019e70d32d4aaa0e9`. The installed package metadata and all 142 Registry package files byte-match the official tarball; its Runtime settlement bundle contains the reviewed previous-boot ACL recovery fix.
+> Source SDK baseline: npm Registry `@kodax-ai/kodax@0.7.94` (`sha512-G2o0WAofKmLihqS5D3eeJuJCAYagVwZydvfK+dKN2xijzBU6ZKuj70Vxia3F3p6RZTUde2C0HACzTioW33kB5g==`, SHA-256 `A679D9A613DCDEB55A0B719C3BB29D553D35B5C8020AA00E5906F6929D9D8D25`).
+> Source evidence: public tag `v0.7.94` resolves to KodaX commit `d061088ae45bc9dba4c152202744f8bef149aa33`. The installed package metadata and Registry tarball match the exact locked integrity.
 > Workspace dependency: root and Desktop manifests, lockfile, installed bytes, and packaged ASAR resolve the same exact Registry URL/integrity after a clean install.
 > Package/source evidence: a formal release requires both workspaces to resolve one deduplicated exact Registry package whose root/desktop manifests, lock views, installed package, tarball URL, and integrity agree. Release acceptance also imports every public KodaX facade, verifies ancestor-aware transitive dependencies, loads packaged `better-sqlite3` from unpacked native bytes, and boots the packaged application.
 > Published KodaX review: all earlier compaction/history/Actor/usage/learning/external-agent contracts plus 0.7.78 ownership/integration/sandbox contracts, 0.7.80 `managedRunDurability:1`, 0.7.81 canonical delivered-interrupt `entryId`, 0.7.83 active-run/session-recovery and exact-shutdown fixes, 0.7.84 same-owner Actor settlement recovery, 0.7.85 `actorSettlementConvergence:1` plus `sessionEventJournal:1`, 0.7.87 `sandboxRuntime:3`, 0.7.88 `actorSettlementConvergence:2`, 0.7.89 `runBoundHostTools:2` plus `materializedAgentTools`, and 0.7.91 `runtimeExitSettlement:1` plus `liveOutputSegments:1` have been reviewed. F118 is released; broader F117/F138 work remains planned.
-> Published 0.7.93 retains the 0.7.92 capability contracts and adds fail-closed, SDK-owned recovery for an entirely canonical previous-boot Windows ACL marker set. Space treats lifecycle support as capability contracts, not SemVer inference.
+> Published 0.7.94 adds `conversationHistory:2`, typed daemon disconnect facts, credential-safe Run failure classification, fail-closed Run/sandbox finalization hardening, and the explicit-Skill contract in which legacy `user-invocable` no longer gates execution while `disable-model-invocation` gates only model discovery/tool use. Space treats lifecycle support as capability contracts, not SemVer inference.
 
 This is the Space-side source of truth for SDK-dependent capability planning. A capability is supported only when a public contract exists and Space has verified/consumed it. A KodaX design document or version number alone is not support.
 

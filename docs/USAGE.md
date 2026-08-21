@@ -4,7 +4,7 @@
 > Space 管理的 daemon 需要 `managedRunDurability:1`：接受的首条/队列输入及完成回合
 > 在生命周期事件前持久化为 canonical Run。Space 绑定确认的 `runId` 和流式 `turnId`，不以版本号代替能力协商。
 > 未显式设置 Auto LLM timeout 时，SDK 使用首次 `45000ms`、重试 `90000ms`。
-> root/Desktop/lockfile 精确锁定 npm Registry KodaX `0.7.93` 正式包及其 SRI，并要求
+> 当前源码的 root/Desktop/lockfile 精确锁定 npm Registry KodaX `0.7.94` 正式包及其 SRI，并要求
 > SDK 与 daemon 提供 `sandboxRuntime:4`、`crashOutcomeModel:2` 和 `actorSettlementConvergence:2`；Space 还保持精确
 > Session/Run/Turn owner 关联和 continued-Run history/live 边界。完整退出使用 SDK 本地
 > `runtimeExitSettlement:1`，不把版本号当作运行时能力证明。

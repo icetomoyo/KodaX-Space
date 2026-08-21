@@ -52,7 +52,8 @@ function keepValidSkillMetas(skills: readonly SkillMeta[]): SkillMeta[] {
 
 export function registerSkillChannels(): void {
   // skill.discover
-  // 列 user-invocable skill（不含 disableModelInvocation 的）。
+  // 列出所有可显式调用的 enabled Skill。KodaX 0.7.94 起
+  // disableModelInvocation 只影响模型发现/模型 skill tool，不影响用户 /skill。
   // 输入 projectRoot —— 不依赖 live SDK session：用户从 Recents 恢复历史会话时
   // UI 有 sessionId 但 kodaxHost 没对应 session；discover 是只读操作不需要 live session。
   registerChannel('skill.discover', async (input) => {

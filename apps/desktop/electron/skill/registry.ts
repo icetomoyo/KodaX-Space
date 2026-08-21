@@ -105,8 +105,9 @@ export function invalidateSkillCache(projectRoot?: string): void {
 
 /**
  * 把 SDK SkillMetadata 映射到 IPC schema SkillMeta 形态。
- * 过滤 !userInvocable / disableModelInvocation 的 skill —— 用户在 popover 里
- * 看不到的应当压根别 emit 给 renderer。
+ * KodaX 0.7.94 makes every enabled Skill explicitly invocable. Legacy
+ * `userInvocable` and model-only `disableModelInvocation` flags do not affect
+ * the popover; SDK model discovery enforces the latter separately.
  */
 export function toSkillMeta(m: SkillMetadata): {
   name: string;

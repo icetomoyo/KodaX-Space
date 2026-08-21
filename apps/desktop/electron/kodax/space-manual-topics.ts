@@ -624,7 +624,7 @@ const SPACE_MANUAL_TOPIC_OVERLAYS: readonly KodaXManualTopicInput[] = [
       '',
       '任务结束后，SDK 可写入有界 Outcome Digest，并通过 proposal/preview/fingerprint/apply 进入现有治理流程。Space 0.1.44 会在启动时验证 /experimental-memory 契约并记录不含正文的生命周期诊断；完整 Episodes、Activity、correction、forget/purge 桌面体验仍属于后续 F117，不应从版本号推断为已交付。',
       '',
-      '当前依赖声明是精确 0.7.93；Memory Agent 的公开 policy 版本以 SDK 的 /experimental-memory 导出为准。若必需的 export 或 policy shape 缺失，应用启动会 fail-fast，而不是按包版本号或固定 feature 编号伪造能力。现有 Inbox、Refs、Governance 和 Hints 仍由 F228 治理。',
+      '当前依赖声明是精确 0.7.94；Memory Agent 的公开 policy 版本以 SDK 的 /experimental-memory 导出为准。若必需的 export 或 policy shape 缺失，应用启动会 fail-fast，而不是按包版本号或固定 feature 编号伪造能力。现有 Inbox、Refs、Governance 和 Hints 仍由 F228 治理。',
       '',
       'Partner 的 Knowledge Base 是单独的产品面，不等同于 Coder memory governance；Partner 当前已启用。',
     ),

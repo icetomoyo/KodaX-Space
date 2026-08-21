@@ -26,6 +26,12 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ### Fixed
 
+- **KodaX 0.7.94 Registry alignment** - Root and Desktop now pin the exact
+  published package and integrity. Space recognizes typed daemon disconnect
+  facts for exact-`runId` recovery, and
+  preserves credential-safe Run `failureKind` through Runtime projections and
+  actionable error recovery. Enabled Skills remain explicitly invocable;
+  `disable-model-invocation` now gates only model discovery and model tool use.
 - **Recover admitted Runs after daemon reconnect** - Once Space has a `runId`,
   a reconnect now queries and awaits that exact Run on the replacement Runtime.
   It never calls `runs.start()` again, so a recoverable transport loss no longer

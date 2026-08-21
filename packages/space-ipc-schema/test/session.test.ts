@@ -463,6 +463,7 @@ test('session_error event: full OC-11 + OC-23 shape OK', () => {
     sessionId: 's_1',
     error: 'Rate limit reached. Wait a moment and try again.',
     category: 'rate_limit',
+    failureKind: 'rate_limit',
     retriable: true,
     action: 'retry',
     retryAvailableAt: Date.now() + 30000,
@@ -476,6 +477,16 @@ test('session_error event: unknown category rejected', () => {
     sessionId: 's_1',
     error: 'x',
     category: 'made_up_category',
+  });
+  assert.equal(r.success, false);
+});
+
+test('session_error event: unknown Runtime failure kind rejected', () => {
+  const r = sessionEventChannel.payload.safeParse({
+    kind: 'session_error',
+    sessionId: 's_1',
+    error: 'x',
+    failureKind: 'made_up_failure',
   });
   assert.equal(r.success, false);
 });

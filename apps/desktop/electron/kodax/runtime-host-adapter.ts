@@ -21,6 +21,7 @@ import type {
   RuntimeOwnerState,
   RuntimeRewindSessionInput,
   RuntimeRunHandle,
+  RuntimeRunFailureKind,
   RuntimeRunResult,
   RuntimeRunStopReceipt,
   RuntimeRunStatus,
@@ -1787,6 +1788,7 @@ function isSessionSettingsRevisionConflict(error: unknown): boolean {
 }
 
 function isDaemonStopTransportClosure(error: unknown): boolean {
+  if (isRuntimeDaemonDisconnectFailure(error)) return true;
   const message = error instanceof Error ? error.message : String(error);
   return /^Runtime daemon transport (?:closed|disconnected)\.?$/i.test(message.trim());
 }
@@ -1807,6 +1809,41 @@ function isReconnectableFailure(error: unknown): boolean {
   );
 }
 
+function isRuntimeDaemonDisconnectFailure(error: unknown): error is {
+  readonly code: 'protocol_closed' | 'transport_error' | 'invalid_frame' | 'client_closed';
+  readonly connectionId: string;
+  readonly reconnectable: boolean;
+} {
+  if (error === null || typeof error !== 'object' || !('code' in error)) return false;
+  const code = error.code;
+  return (
+    (code === 'protocol_closed' ||
+      code === 'transport_error' ||
+      code === 'invalid_frame' ||
+      code === 'client_closed') &&
+    'connectionId' in error &&
+    typeof error.connectionId === 'string' &&
+    error.connectionId.length > 0 &&
+    'reconnectable' in error &&
+    typeof error.reconnectable === 'boolean'
+  );
+}
+
+function runtimeFailureKind(value: unknown): RuntimeRunFailureKind | undefined {
+  switch (value) {
+    case 'auth':
+    case 'rate_limit':
+    case 'network':
+    case 'provider_aborted':
+    case 'invalid_response':
+    case 'runtime_cleanup':
+    case 'provider':
+      return value;
+    default:
+      return undefined;
+  }
+}
+
 function isReconnectableInitializationFailure(error: unknown): boolean {
   return error instanceof RuntimeInitializationAuthorityLostError || isReconnectableFailure(error);
 }
@@ -1815,10 +1852,27 @@ function isRunRecoveryInitializationFailure(error: unknown): boolean {
   return isReconnectableInitializationFailure(error) || isTransientDaemonHealthFailure(error);
 }
 
-function isReconnectableRunTransportLoss(runtime: KodaXDaemonRuntime, error: unknown): boolean {
-  if (isReconnectableFailure(error)) return true;
-  const connection = runtime.connection?.current();
-  return connection?.state === 'disconnected' && connection.reconnectable;
+function isReconnectableRunTransportLoss(error: unknown): boolean {
+  return isRuntimeDaemonDisconnectFailure(error) && error.reconnectable;
+}
+
+function runtimeFailurePresentation(
+  failureKind: unknown,
+): {
+  readonly category: 'auth' | 'rate_limit' | 'network' | 'unknown';
+  readonly retriable: boolean;
+  readonly action?: 'retry' | 'open_provider_settings' | 'check_network';
+} {
+  switch (failureKind) {
+    case 'auth':
+      return { category: 'auth', retriable: false, action: 'open_provider_settings' };
+    case 'rate_limit':
+      return { category: 'rate_limit', retriable: true, action: 'retry' };
+    case 'network':
+      return { category: 'network', retriable: true, action: 'check_network' };
+    default:
+      return { category: 'unknown', retriable: false };
+  }
 }
 
 export class RuntimeHostAdapter {
@@ -5192,6 +5246,7 @@ export class RuntimeHostAdapter {
         return;
       }
       const terminal = runtimeEventRecord(payload?.terminal);
+      const failureKind = runtimeFailureKind(terminal?.failureKind);
       const terminalMessage =
         event.type === 'run.failed' && typeof terminal?.message === 'string'
           ? terminal.message.trim() || undefined
@@ -5206,14 +5261,19 @@ export class RuntimeHostAdapter {
               : event.type === 'run.interrupted'
                 ? 'Runtime run interrupted'
                 : 'Runtime run failed';
+      const failurePresentation = runtimeFailurePresentation(failureKind);
       this.push('session.event', {
         ...runtimeSessionEventOrigin(runtimeId, event),
         kind: 'session_error',
         sessionId: event.sessionId,
         ...(event.turnId ? { turnId: event.turnId } : {}),
         error,
-        category: event.type === 'run.cancelled' ? 'cancelled' : 'unknown',
-        retriable: event.type !== 'run.failed',
+        ...(failureKind !== undefined ? { failureKind } : {}),
+        category: event.type === 'run.cancelled' ? 'cancelled' : failurePresentation.category,
+        retriable: event.type === 'run.failed' ? failurePresentation.retriable : true,
+        ...(event.type === 'run.failed' && failurePresentation.action !== undefined
+          ? { action: failurePresentation.action }
+          : {}),
       });
     }
   }
@@ -5474,7 +5534,8 @@ export class RuntimeHostAdapter {
       failure = error;
     }
     for (;;) {
-      if (!isReconnectableRunTransportLoss(runtime, failure)) throw failure;
+      if (!isReconnectableRunTransportLoss(failure)) throw failure;
+      const disconnectFailure = failure;
       try {
         runtime = await this.requireRuntime();
       } catch (error: unknown) {
@@ -5482,7 +5543,9 @@ export class RuntimeHostAdapter {
         const recovery = this.waitForRunRecovery();
         this.scheduleReconnect();
         await recovery;
-        failure = error;
+        // Initialization failures describe replacement attachment, not the admitted Run's
+        // result. Preserve the typed disconnect fact that authorized exact-runId recovery.
+        failure = disconnectFailure;
         continue;
       }
       try {
@@ -6040,7 +6103,7 @@ export class RuntimeHostAdapter {
 
   async listRuntimeSkills(projectRoot: string) {
     const runtime = await this.requireRuntime();
-    return runtime.catalog.skills({ projectRoot, userInvocableOnly: true });
+    return runtime.catalog.skills({ projectRoot });
   }
 
   async listRuntimeCommands(projectRoot?: string) {

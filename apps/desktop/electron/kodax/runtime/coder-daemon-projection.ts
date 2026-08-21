@@ -224,6 +224,9 @@ export function projectRuntimeRun(
       : run.error
         ? { terminalReason: run.error.slice(0, MAX_REASON) }
         : {}),
+    ...(run.terminal?.failureKind !== undefined
+      ? { failureKind: run.terminal.failureKind }
+      : {}),
     ...(run.lifecycleError !== undefined
       ? {
           lifecycleError: {

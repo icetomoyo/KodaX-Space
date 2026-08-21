@@ -12,6 +12,7 @@ import type { SpaceCoderConnectionProjectionT } from '@kodax-space/space-ipc-sch
 import {
   CoderSessionProjectionReducer,
   initializeCoderDaemonProjectionSdk,
+  projectRuntimeRun,
   projectRuntimeProfile,
   projectRuntimeSessionSnapshot,
 } from '../kodax/runtime/coder-daemon-projection.js';
@@ -147,6 +148,23 @@ const queued = {
     contentPreview: 'Also update the tests.',
   },
 } as const;
+
+test('Runtime Run projection preserves credential-safe provider failure classification', () => {
+  const projected = projectRuntimeRun({
+    ...running,
+    phase: 'failed',
+    endedAt: '2026-08-21T08:00:00.000Z',
+    terminal: {
+      revision: 1,
+      kind: 'failed',
+      code: 'run_failed',
+      effectOutcome: 'known',
+      failureKind: 'network',
+    },
+  });
+
+  assert.equal(projected.failureKind, 'network');
+});
 
 const permission = {
   id: 'permission_1',

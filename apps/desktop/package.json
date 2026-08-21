@@ -13,7 +13,7 @@
   "dependencies": {
     "@fontsource-variable/geist": "^5.2.9",
     "@fontsource-variable/jetbrains-mono": "^5.2.8",
-    "@kodax-ai/kodax": "0.7.93",
+    "@kodax-ai/kodax": "0.7.94",
     "@kodax-space/space-ipc-schema": "*",
     "@kodax-space/space-ui-kit": "*",
     "@monaco-editor/react": "^4.7.0",

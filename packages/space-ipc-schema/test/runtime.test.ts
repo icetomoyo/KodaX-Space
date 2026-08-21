@@ -11,6 +11,7 @@ import {
   sessionLiveInvalidatedChannel,
   sessionLiveSnapshotChannel,
   spaceRuntimeProfileProjectionSchema,
+  spaceRuntimeRunProjectionSchema,
   spaceSessionLiveChangedSchema,
   spaceSessionLiveProjectionSchema,
 } from '../src/index.js';
@@ -120,6 +121,25 @@ test('profile projection is bounded and accepts only trusted Coder session owner
         ...valid.sessions[0],
         sessionId: `s_${index}`,
       })),
+    }).success,
+    false,
+  );
+});
+
+test('run projection accepts KodaX failureKind and rejects unknown classifications', () => {
+  const failedRun = {
+    runId: 'run_1',
+    sessionId: 's_1',
+    phase: 'failed',
+    completedAt: 3,
+    failureKind: 'network',
+  } as const;
+
+  assert.equal(spaceRuntimeRunProjectionSchema.safeParse(failedRun).success, true);
+  assert.equal(
+    spaceRuntimeRunProjectionSchema.safeParse({
+      ...failedRun,
+      failureKind: 'made_up_failure',
     }).success,
     false,
   );

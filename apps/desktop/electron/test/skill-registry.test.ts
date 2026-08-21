@@ -2,7 +2,8 @@
 //
 // 验证：
 //   - 真实跑 SDK SkillRegistry.discover()：扫 ${projectRoot}/.kodax/skills/ 找 SKILL.md
-//   - listUserInvocable 过滤 disable-model-invocation: true 的 skill
+//   - enabled skills remain explicitly invocable regardless of legacy/model-only flags
+//   - disable-model-invocation only removes a skill from model discovery
 //   - invoke 解析 SKILL.md body 内 $ARGUMENTS / $1
 //   - TTL 缓存命中：同 projectRoot 第二次拿到的是同一个 instance（保留 discover 结果）
 
@@ -57,33 +58,61 @@ test('registry: discovers project-level skill from .kodax/skills/<name>/SKILL.md
   assert.equal(echo.source, 'project');
 });
 
-test('registry: listUserInvocable filters user-invocable:false skills', async () => {
+test('registry: explicit invocation ignores legacy user-invocable and model-only disable flags', async () => {
   const skillsDir = path.join(tmpProjectRoot, '.kodax', 'skills');
   fs.mkdirSync(skillsDir, { recursive: true });
   // 命名加 tmp 前缀避免和 user-level ~/.kodax/skills 已有 skill 冲突 (开发机污染)
   const openName = `tmp-open-${Date.now()}`;
-  const hiddenName = `tmp-hidden-${Date.now()}`;
-  // SDK: listUserInvocable() 按 frontmatter `user-invocable`（缺省 true）过滤；
-  // `disable-model-invocation: true` 是另一个 flag（在 invoke() 时拒绝），不影响 list filter
+  const legacyName = `tmp-legacy-${Date.now()}`;
+  const modelHiddenName = `tmp-model-hidden-${Date.now()}`;
+  // KodaX 0.7.94: every enabled Skill is explicitly invocable. `user-invocable`
+  // remains parse-compatible only; `disable-model-invocation` gates model discovery/tool use.
   writeSkill(skillsDir, openName, `name: ${openName}\ndescription: User-callable`, 'public skill');
   writeSkill(
     skillsDir,
-    hiddenName,
-    `name: ${hiddenName}\ndescription: Internal\nuser-invocable: false`,
-    'should not show up in popover',
+    legacyName,
+    `name: ${legacyName}\ndescription: Legacy flag\nuser-invocable: false`,
+    'legacy explicit skill',
+  );
+  writeSkill(
+    skillsDir,
+    modelHiddenName,
+    `name: ${modelHiddenName}\ndescription: Explicit only\ndisable-model-invocation: true`,
+    'explicit-only skill',
   );
 
   const reg = await getSkillRegistry(tmpProjectRoot);
   const all = reg.list();
   assert.ok(all.some((s) => s.name === openName), 'list() includes open skill');
-  assert.ok(all.some((s) => s.name === hiddenName), 'list() includes hidden skill');
+  assert.ok(all.some((s) => s.name === legacyName), 'list() includes legacy-flag skill');
+  assert.ok(all.some((s) => s.name === modelHiddenName), 'list() includes model-hidden skill');
 
   const userOnly = reg.listUserInvocable();
   assert.ok(userOnly.some((s) => s.name === openName), 'listUserInvocable includes open');
+  assert.ok(
+    userOnly.some((s) => s.name === legacyName),
+    'legacy user-invocable:false does not revoke explicit invocation',
+  );
+  assert.ok(
+    userOnly.some((s) => s.name === modelHiddenName),
+    'disable-model-invocation does not revoke explicit invocation',
+  );
+
+  const result = await reg.invoke(modelHiddenName, '', {
+    sessionId: 's_test',
+    workingDirectory: tmpProjectRoot,
+    environment: {},
+  });
+  assert.equal(result.success, true, 'explicit invocation remains available');
   assert.equal(
-    userOnly.some((s) => s.name === hiddenName),
+    reg.getSystemPromptSnippet().includes(modelHiddenName),
     false,
-    'listUserInvocable filters out user-invocable:false',
+    'disable-model-invocation removes the skill from model discovery',
+  );
+  assert.equal(
+    reg.getSystemPromptSnippet().includes(legacyName),
+    true,
+    'legacy user-invocable:false does not affect model discovery',
   );
 });
 
