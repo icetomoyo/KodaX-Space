@@ -24,6 +24,13 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
   semantics are unchanged; validation rules moved to a tested pure module.
   The full-screen AskUserModal is removed.
 
+### Fixed
+
+- **Recover admitted Runs after daemon reconnect** - Once Space has a `runId`,
+  a reconnect now queries and awaits that exact Run on the replacement Runtime.
+  It never calls `runs.start()` again, so a recoverable transport loss no longer
+  ends the conversation or risks replaying provider/tool effects.
+
 ---
 
 ## [0.1.44] - 2026-08-20

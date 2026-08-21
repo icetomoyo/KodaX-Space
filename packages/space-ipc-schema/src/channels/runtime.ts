@@ -196,7 +196,11 @@ export const spaceRuntimeRunProjectionSchema = z
     terminalReason: z.string().min(1).max(MAX_REASON).optional(),
     lifecycleError: z
       .object({
-        code: z.enum(['actor_settlement_retrying', 'actor_settlement_not_persisted']),
+        code: z.enum([
+          'actor_settlement_retrying',
+          'actor_settlement_not_persisted',
+          'run_settlement_not_persisted',
+        ]),
         message: z.string().min(1).max(MAX_REASON),
         retryable: z.boolean(),
       })

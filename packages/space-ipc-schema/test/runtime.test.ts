@@ -203,8 +203,8 @@ test('new Runtime lifecycle phases remain active and preserve stage, subtasks, a
         ...(phase === 'unknown'
           ? {
               lifecycleError: {
-                code: 'actor_settlement_not_persisted',
-                message: 'Actor state could not be persisted.',
+                code: 'run_settlement_not_persisted',
+                message: 'Run terminal state could not be persisted.',
                 retryable: false,
               },
               stop: {

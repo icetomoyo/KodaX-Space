@@ -234,6 +234,8 @@ function createFakeRuntime(runtimeId = 'rt_test') {
     sessionStatuses: [] as string[],
     sessionDiagnostics: [] as Array<{ sessionId: string; runId?: string }>,
     started: [] as unknown[],
+    runGets: [] as string[],
+    runAwaits: [] as string[],
     aborted: [] as string[],
     transcripts: [] as string[],
     compacted: [] as unknown[],
@@ -289,7 +291,13 @@ function createFakeRuntime(runtimeId = 'rt_test') {
     string,
     (invalidation: import('@kodax-ai/kodax/runtime').RuntimeObservationInvalidation) => void
   >();
-  const pending = new Map<string, (result: RuntimeRunResult) => void>();
+  const pending = new Map<
+    string,
+    {
+      readonly resolve: (result: RuntimeRunResult) => void;
+      readonly reject: (error: Error) => void;
+    }
+  >();
   const connectionListeners = new Set<(state: RuntimeConnectionState) => void>();
   const actorEvents = new Map<string, AgentEvent[]>();
   const actorTrees = new Map<string, AgentTreeSnapshot>();
@@ -692,13 +700,14 @@ function createFakeRuntime(runtimeId = 'rt_test') {
       async start(input: { sessionId: string }): Promise<RuntimeRunHandle> {
         calls.started.push(input);
         const runId = `run_${++runSeq}`;
-        const result = new Promise<RuntimeRunResult>((resolve) => pending.set(runId, resolve));
+        const result = new Promise<RuntimeRunResult>((resolve, reject) => {
+          pending.set(runId, { resolve, reject });
+        });
         return { runId, sessionId: input.sessionId, result };
       },
       async abort(runId: string) {
         calls.aborted.push(runId);
-        const resolve = pending.get(runId);
-        resolve?.({ runId, sessionId: 's_1', phase: 'cancelled' });
+        pending.get(runId)?.resolve({ runId, sessionId: 's_1', phase: 'cancelled' });
         pending.delete(runId);
         return {
           runId,
@@ -714,6 +723,7 @@ function createFakeRuntime(runtimeId = 'rt_test') {
         return [];
       },
       async get(runId: string) {
+        calls.runGets.push(runId);
         return {
           runId,
           sessionId: 's_1',
@@ -721,6 +731,12 @@ function createFakeRuntime(runtimeId = 'rt_test') {
           startedAt: '2026-07-12T00:00:00.000Z',
           provider: 'anthropic',
         };
+      },
+      async await(runId: string) {
+        calls.runAwaits.push(runId);
+        return new Promise<RuntimeRunResult>((resolve, reject) => {
+          pending.set(runId, { resolve, reject });
+        });
       },
       async submitInput(input: unknown) {
         calls.submitted.push(input);
@@ -9017,13 +9033,380 @@ test('Space-started runs receive scoped credential and host-tool leases', async 
     await broker({ provider: 'anthropic', sessionId: 's_1', runId: handle.runId }),
     'secret-from-keychain',
   );
-  fake.pending.get(handle.runId)?.({
+  fake.pending.get(handle.runId)?.resolve({
     runId: handle.runId,
     sessionId: 's_1',
     phase: 'completed',
   });
   await handle.result;
   assert.deepEqual(fake.calls.credentialRevokes, ['credential_1']);
+});
+
+test('an admitted Run resumes by the same runId after reconnect without replaying start', async () => {
+  const first = createFakeRuntime('rt_run_recovery_first');
+  const replacement = createFakeRuntime('rt_run_recovery_second');
+  const sessionId = 's_run_recovery';
+  first.sessions.add(sessionId);
+  replacement.sessions.add(sessionId);
+  let factoryCalls = 0;
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => (factoryCalls++ === 0 ? first.runtime : replacement.runtime),
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+  const handle = await adapter.startManagedRun({
+    sessionId,
+    prompt: 'recover this exact run',
+    options: { provider: 'anthropic' },
+  });
+  replacement.runtime.runs.get = async (runId) => {
+    replacement.calls.runGets.push(runId);
+    return {
+      runId,
+      sessionId,
+      phase: 'interrupted',
+      startedAt: '2026-08-21T00:00:00.000Z',
+      endedAt: '2026-08-21T00:00:01.000Z',
+      provider: 'anthropic',
+      terminal: {
+        revision: 1,
+        kind: 'interrupted',
+        code: 'daemon_crashed',
+        effectOutcome: 'unknown',
+      },
+    };
+  };
+  replacement.runtime.runs.await = async (runId) => {
+    replacement.calls.runAwaits.push(runId);
+    return {
+      runId,
+      sessionId,
+      phase: 'interrupted',
+      terminal: {
+        revision: 1,
+        kind: 'interrupted',
+        code: 'daemon_crashed',
+        effectOutcome: 'unknown',
+      },
+    };
+  };
+
+  first.disconnect(true);
+  first.pending.get(handle.runId)?.reject(
+    Object.assign(new Error('Runtime daemon transport closed.'), {
+      code: 'protocol_closed',
+      reconnectable: true,
+    }),
+  );
+
+  await assert.doesNotReject(handle.result);
+  assert.deepEqual(await handle.result, {
+    runId: handle.runId,
+    sessionId,
+    phase: 'interrupted',
+    terminal: {
+      revision: 1,
+      kind: 'interrupted',
+      code: 'daemon_crashed',
+      effectOutcome: 'unknown',
+    },
+  });
+  assert.equal(first.calls.started.length, 1);
+  assert.deepEqual(replacement.calls.started, []);
+  assert.deepEqual(replacement.calls.runGets, [handle.runId]);
+  assert.deepEqual(replacement.calls.runAwaits, [handle.runId]);
+  await adapter.close();
+});
+
+test('Run recovery survives another reconnect while querying the admitted runId', async () => {
+  const first = createFakeRuntime('rt_run_recovery_first');
+  const second = createFakeRuntime('rt_run_recovery_second');
+  const third = createFakeRuntime('rt_run_recovery_third');
+  const sessionId = 's_run_recovery';
+  first.sessions.add(sessionId);
+  second.sessions.add(sessionId);
+  third.sessions.add(sessionId);
+  const runtimes = [first.runtime, second.runtime, third.runtime];
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => runtimes.shift() ?? third.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+  const handle = await adapter.startManagedRun({
+    sessionId,
+    prompt: 'recover this run across two disconnects',
+    options: { provider: 'anthropic' },
+  });
+  second.runtime.runs.get = async (runId) => {
+    second.calls.runGets.push(runId);
+    second.disconnect(true);
+    throw Object.assign(new Error('Runtime daemon transport closed.'), {
+      code: 'protocol_closed',
+      reconnectable: true,
+    });
+  };
+  third.runtime.runs.get = async (runId) => {
+    third.calls.runGets.push(runId);
+    return {
+      runId,
+      sessionId,
+      phase: 'interrupted',
+      startedAt: '2026-08-21T00:00:00.000Z',
+      endedAt: '2026-08-21T00:00:01.000Z',
+      provider: 'anthropic',
+      terminal: {
+        revision: 1,
+        kind: 'interrupted',
+        code: 'daemon_crashed',
+        effectOutcome: 'unknown',
+      },
+    };
+  };
+  third.runtime.runs.await = async (runId) => {
+    third.calls.runAwaits.push(runId);
+    return {
+      runId,
+      sessionId,
+      phase: 'interrupted',
+      terminal: {
+        revision: 1,
+        kind: 'interrupted',
+        code: 'daemon_crashed',
+        effectOutcome: 'unknown',
+      },
+    };
+  };
+
+  first.disconnect(true);
+  first.pending.get(handle.runId)?.reject(
+    Object.assign(new Error('Runtime daemon transport closed.'), {
+      code: 'protocol_closed',
+      reconnectable: true,
+    }),
+  );
+
+  await assert.doesNotReject(handle.result);
+  assert.equal(first.calls.started.length, 1);
+  assert.deepEqual(second.calls.started, []);
+  assert.deepEqual(third.calls.started, []);
+  assert.deepEqual(second.calls.runGets, [handle.runId]);
+  assert.deepEqual(third.calls.runGets, [handle.runId]);
+  assert.deepEqual(third.calls.runAwaits, [handle.runId]);
+  await adapter.close();
+});
+
+test('Run recovery waits through a reconnectable Runtime initialization failure', async () => {
+  const first = createFakeRuntime('rt_run_recovery_first');
+  const recovered = createFakeRuntime('rt_run_recovery_recovered');
+  const sessionId = 's_run_recovery';
+  first.sessions.add(sessionId);
+  recovered.sessions.add(sessionId);
+  let factoryCalls = 0;
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => {
+      factoryCalls += 1;
+      if (factoryCalls === 1) return first.runtime;
+      if (factoryCalls === 2) {
+        throw Object.assign(new Error('Runtime daemon transport closed.'), {
+          code: 'protocol_closed',
+          reconnectable: true,
+        });
+      }
+      return recovered.runtime;
+    },
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+  const handle = await adapter.startManagedRun({
+    sessionId,
+    prompt: 'recover after a failed replacement attachment',
+    options: { provider: 'anthropic' },
+  });
+  recovered.runtime.runs.get = async (runId) => {
+    recovered.calls.runGets.push(runId);
+    return {
+      runId,
+      sessionId,
+      phase: 'interrupted',
+      startedAt: '2026-08-21T00:00:00.000Z',
+      endedAt: '2026-08-21T00:00:01.000Z',
+      provider: 'anthropic',
+      terminal: {
+        revision: 1,
+        kind: 'interrupted',
+        code: 'daemon_crashed',
+        effectOutcome: 'unknown',
+      },
+    };
+  };
+  recovered.runtime.runs.await = async (runId) => {
+    recovered.calls.runAwaits.push(runId);
+    return {
+      runId,
+      sessionId,
+      phase: 'interrupted',
+      terminal: {
+        revision: 1,
+        kind: 'interrupted',
+        code: 'daemon_crashed',
+        effectOutcome: 'unknown',
+      },
+    };
+  };
+
+  first.disconnect(true);
+  first.pending.get(handle.runId)?.reject(
+    Object.assign(new Error('Runtime daemon transport closed.'), {
+      code: 'protocol_closed',
+      reconnectable: true,
+    }),
+  );
+
+  await assert.doesNotReject(handle.result);
+  assert.equal(factoryCalls, 3);
+  assert.equal(first.calls.started.length, 1);
+  assert.deepEqual(recovered.calls.started, []);
+  assert.deepEqual(recovered.calls.runGets, [handle.runId]);
+  assert.deepEqual(recovered.calls.runAwaits, [handle.runId]);
+  await adapter.close();
+});
+
+test('Run recovery waits through a transient daemon health failure', async () => {
+  const first = createFakeRuntime('rt_run_recovery_first');
+  const recovered = createFakeRuntime('rt_run_recovery_recovered');
+  const sessionId = 's_1';
+  first.sessions.add(sessionId);
+  recovered.sessions.add(sessionId);
+  let factoryCalls = 0;
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => {
+      factoryCalls += 1;
+      if (factoryCalls === 1) return first.runtime;
+      if (factoryCalls === 2) {
+        throw new Error('Runtime daemon is unhealthy; refusing to start a competing owner.');
+      }
+      return recovered.runtime;
+    },
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+  recovered.runtime.runs.await = async (runId) => {
+    recovered.calls.runAwaits.push(runId);
+    return { runId, sessionId, phase: 'interrupted' };
+  };
+  const handle = await adapter.startManagedRun({
+    sessionId,
+    prompt: 'recover after a transient health failure',
+    options: { provider: 'anthropic' },
+  });
+
+  first.disconnect(true);
+  first.pending.get(handle.runId)?.reject(
+    Object.assign(new Error('Runtime daemon transport closed.'), {
+      code: 'protocol_closed',
+      reconnectable: true,
+    }),
+  );
+
+  assert.equal((await handle.result).runId, handle.runId);
+  assert.equal(factoryCalls, 3);
+  assert.deepEqual(recovered.calls.started, []);
+  assert.deepEqual(recovered.calls.runGets, [handle.runId]);
+  assert.deepEqual(recovered.calls.runAwaits, [handle.runId]);
+  await adapter.close();
+});
+
+test('Run recovery surfaces a permanent error from a scheduled replacement', async () => {
+  const first = createFakeRuntime('rt_run_recovery_first');
+  const sessionId = 's_run_recovery';
+  first.sessions.add(sessionId);
+  let factoryCalls = 0;
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => {
+      factoryCalls += 1;
+      if (factoryCalls === 1) return first.runtime;
+      if (factoryCalls === 2) {
+        throw Object.assign(new Error('Runtime daemon transport closed.'), {
+          code: 'protocol_closed',
+          reconnectable: true,
+        });
+      }
+      throw new Error('replacement Runtime is incompatible');
+    },
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+  const handle = await adapter.startManagedRun({
+    sessionId,
+    prompt: 'surface a permanent replacement failure',
+    options: { provider: 'anthropic' },
+  });
+  const settled = assert.rejects(handle.result, /replacement Runtime is incompatible/);
+
+  first.disconnect(true);
+  first.pending
+    .get(handle.runId)
+    ?.reject(
+      Object.assign(new Error('Runtime daemon transport closed.'), {
+        code: 'protocol_closed',
+        reconnectable: true,
+      }),
+    );
+
+  await settled;
+  assert.equal(factoryCalls, 3);
+  await adapter.close();
+});
+
+test('closing the adapter immediately settles a Run waiting for reconnect', async () => {
+  const first = createFakeRuntime('rt_run_recovery_first');
+  const sessionId = 's_run_recovery';
+  first.sessions.add(sessionId);
+  let factoryCalls = 0;
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => {
+      factoryCalls += 1;
+      if (factoryCalls === 1) return first.runtime;
+      throw Object.assign(new Error('Runtime daemon transport closed.'), {
+        code: 'protocol_closed',
+        reconnectable: true,
+      });
+    },
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+  const handle = await adapter.startManagedRun({
+    sessionId,
+    prompt: 'close while recovering this run',
+    options: { provider: 'anthropic' },
+  });
+  const settled = assert.rejects(handle.result, /closed during Run recovery/i);
+
+  first.disconnect(true);
+  first.pending.get(handle.runId)?.reject(
+    Object.assign(new Error('Runtime daemon transport closed.'), {
+      code: 'protocol_closed',
+      reconnectable: true,
+    }),
+  );
+  await waitForTest(() => factoryCalls === 2);
+
+  await adapter.close();
+  await settled;
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(factoryCalls, 2);
 });
 
 test('failed after-turn submission revokes its newly registered credential lease', async () => {

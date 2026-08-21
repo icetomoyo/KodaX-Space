@@ -21,6 +21,7 @@ import type {
   RuntimeOwnerState,
   RuntimeRewindSessionInput,
   RuntimeRunHandle,
+  RuntimeRunResult,
   RuntimeRunStopReceipt,
   RuntimeRunStatus,
   RuntimeObservationInvalidation,
@@ -1797,6 +1798,29 @@ class RuntimeInitializationAuthorityLostError extends Error {
   }
 }
 
+function isReconnectableFailure(error: unknown): boolean {
+  return (
+    error !== null &&
+    typeof error === 'object' &&
+    'reconnectable' in error &&
+    error.reconnectable === true
+  );
+}
+
+function isReconnectableInitializationFailure(error: unknown): boolean {
+  return error instanceof RuntimeInitializationAuthorityLostError || isReconnectableFailure(error);
+}
+
+function isRunRecoveryInitializationFailure(error: unknown): boolean {
+  return isReconnectableInitializationFailure(error) || isTransientDaemonHealthFailure(error);
+}
+
+function isReconnectableRunTransportLoss(runtime: KodaXDaemonRuntime, error: unknown): boolean {
+  if (isReconnectableFailure(error)) return true;
+  const connection = runtime.connection?.current();
+  return connection?.state === 'disconnected' && connection.reconnectable;
+}
+
 export class RuntimeHostAdapter {
   private mode: RuntimeHostMode;
   private readonly profileRoot: string;
@@ -1906,6 +1930,11 @@ export class RuntimeHostAdapter {
   private connectionSubscription: RuntimeSubscription | undefined;
   private workflowSubscription: RuntimeSubscription | undefined;
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  private reconnectMustContinue = false;
+  private readonly runRecoveryWaiters = new Set<{
+    readonly resolve: () => void;
+    readonly reject: (error: Error) => void;
+  }>();
   private integrationHealthPollTimer: ReturnType<typeof setTimeout> | undefined;
   private integrationHealthPollRuntime: KodaXDaemonRuntime | undefined;
   private integrationHealth: RuntimeDaemonManagementState['integrations'];
@@ -2323,6 +2352,8 @@ export class RuntimeHostAdapter {
             // Runtime attachment by throwing from its observer.
           }
         }
+        this.reconnectMustContinue = false;
+        this.resolveRunRecoveryWaiters();
       })
       .catch(async (error: unknown) => {
         timing.mark(activeStage, 'failed', runtimeStartupFailureData(error));
@@ -2514,7 +2545,7 @@ export class RuntimeHostAdapter {
     this.state = reconnectable ? 'uninitialized' : 'failed';
     await attached.close().catch(() => undefined);
     if (this.rollbackInProgress) {
-      this.state = 'closed';
+      this.enterClosedState();
       return;
     }
     if (reconnectable) this.scheduleReconnect();
@@ -2524,17 +2555,21 @@ export class RuntimeHostAdapter {
   }
 
   private scheduleReconnect(retryOnlyTransientHealthFailure = false): void {
-    if (this.state === 'closed' || this.rollbackInProgress || this.reconnectTimer) return;
+    if (this.state === 'closed' || this.rollbackInProgress) return;
+    if (!retryOnlyTransientHealthFailure) this.reconnectMustContinue = true;
+    if (this.reconnectTimer) return;
     const delay = Math.min(30_000, 1_000 * 2 ** Math.min(this.reconnectAttempt, 5));
     this.reconnectTimer = setTimeout(() => {
       if (this.state === 'closed') {
         this.reconnectTimer = undefined;
+        this.reconnectMustContinue = false;
         return;
       }
       void this.initialize()
         .then(() => {
           this.reconnectTimer = undefined;
           this.reconnectAttempt = 0;
+          this.reconnectMustContinue = false;
         })
         .catch((error: unknown) => {
           // Keep the timer registered until initialize() settles. Its own error
@@ -2542,7 +2577,10 @@ export class RuntimeHostAdapter {
           // retry; retaining this handle prevents two retry chains from racing.
           this.reconnectTimer = undefined;
           this.reconnectAttempt += 1;
-          if (retryOnlyTransientHealthFailure) {
+          if (!isRunRecoveryInitializationFailure(error)) {
+            this.rejectRunRecoveryWaiters(error);
+          }
+          if (!this.reconnectMustContinue) {
             if (!isTransientDaemonHealthFailure(error)) return;
             this.scheduleReconnect(true);
             return;
@@ -5404,16 +5442,91 @@ export class RuntimeHostAdapter {
     }
     this.spaceOwnedRunIds.add(handle.runId);
     this.activeRuns.set(input.sessionId, handle.runId);
-    const result = handle.result.finally(async () => {
+    const result = this.awaitRunResultAcrossReconnects(
+      runtime,
+      input.sessionId,
+      handle.runId,
+      handle.result,
+    ).finally(async () => {
       if (this.activeRuns.get(input.sessionId) === handle.runId) {
         this.activeRuns.delete(input.sessionId);
       }
-      if (registeredCredential && this.runtime === runtime && this.state === 'ready') {
-        await this.revokeCredentialLease(runtime, registeredCredential.leaseId);
+      const activeRuntime = this.runtime;
+      if (registeredCredential && activeRuntime !== null && this.state === 'ready') {
+        await this.revokeCredentialLease(activeRuntime, registeredCredential.leaseId);
       }
       this.retireObservationIfQuiescent(input.sessionId);
     });
     return { ...handle, result };
+  }
+
+  private async awaitRunResultAcrossReconnects(
+    attached: KodaXDaemonRuntime,
+    sessionId: string,
+    runId: string,
+    initial: Promise<RuntimeRunResult>,
+  ): Promise<RuntimeRunResult> {
+    let runtime = attached;
+    let failure: unknown;
+    try {
+      return await initial;
+    } catch (error: unknown) {
+      failure = error;
+    }
+    for (;;) {
+      if (!isReconnectableRunTransportLoss(runtime, failure)) throw failure;
+      try {
+        runtime = await this.requireRuntime();
+      } catch (error: unknown) {
+        if (!isRunRecoveryInitializationFailure(error)) throw error;
+        const recovery = this.waitForRunRecovery();
+        this.scheduleReconnect();
+        await recovery;
+        failure = error;
+        continue;
+      }
+      try {
+        const status = await runtime.runs.get(runId);
+        if (status.runId !== runId || status.sessionId !== sessionId) {
+          throw new Error('Coder daemon returned a recovered Run with a different identity.');
+        }
+        if (this.runtime !== runtime || this.state !== 'ready') {
+          throw new Error('Coder Runtime changed while recovering an admitted Run.');
+        }
+        return await runtime.runs.await(runId);
+      } catch (error: unknown) {
+        failure = error;
+      }
+    }
+  }
+
+  private waitForRunRecovery(): Promise<void> {
+    if (this.hasReadyRuntime()) return Promise.resolve();
+    if (this.state === 'closed') {
+      return Promise.reject(new Error('Runtime host closed during Run recovery.'));
+    }
+    return new Promise<void>((resolve, reject) => {
+      this.runRecoveryWaiters.add({ resolve, reject });
+    });
+  }
+
+  private resolveRunRecoveryWaiters(): void {
+    for (const waiter of this.runRecoveryWaiters) waiter.resolve();
+    this.runRecoveryWaiters.clear();
+  }
+
+  private rejectRunRecoveryWaiters(error: unknown): void {
+    const reason = error instanceof Error ? error : new Error(String(error));
+    for (const waiter of this.runRecoveryWaiters) waiter.reject(reason);
+    this.runRecoveryWaiters.clear();
+  }
+
+  private enterClosedState(): void {
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = undefined;
+    this.reconnectMustContinue = false;
+    this.state = 'closed';
+    this.rejectRunRecoveryWaiters(new Error('Runtime host closed during Run recovery.'));
   }
 
   private async registerCredentialLease(
@@ -6489,7 +6602,7 @@ export class RuntimeHostAdapter {
         ...this.runtimeOwnerTarget(),
         enableRollback: true,
       });
-      this.state = 'closed';
+      this.enterClosedState();
       this.lastError = undefined;
     } catch (error) {
       let restoreError: unknown;
@@ -6547,7 +6660,7 @@ export class RuntimeHostAdapter {
       const policy = await this.ownerControl.enableDaemon({
         ...this.runtimeOwnerTarget(),
       });
-      this.state = 'closed';
+      this.enterClosedState();
       this.lastError = undefined;
       return policy;
     } catch (error) {
@@ -6586,7 +6699,7 @@ export class RuntimeHostAdapter {
         ...this.runtimeOwnerTarget(),
       });
       this.rollbackInProgress = false;
-      this.state = 'closed';
+      this.enterClosedState();
       this.lastError = undefined;
       return policy;
     } catch (error) {
@@ -6598,7 +6711,7 @@ export class RuntimeHostAdapter {
           ...this.runtimeOwnerTarget(),
           enableRollback: true,
         });
-        this.state = 'closed';
+        this.enterClosedState();
       } catch (fenceError) {
         this.state = 'failed';
         this.lastError = `${this.lastError}; failed to reacquire inline owner fence: ${sanitizeDiagnosticError(fenceError)}`;
@@ -6773,7 +6886,7 @@ export class RuntimeHostAdapter {
     this.transcriptGenerations.clear();
     this.desiredObservations.clear();
     this.runtimeReadyObservers.clear();
-    this.state = 'closed';
+    this.enterClosedState();
     const closing = (async () => {
       const errors: unknown[] = [];
       try {
