@@ -1278,7 +1278,7 @@ test('installed KodaX version matches the exact Space dependency pin', () => {
 
 test(
   `KodaX ${EXPECTED_KODAX_VERSION} persists raw explicit-Skill input instead of its execution overlay`,
-  { timeout: PROBE_TIMEOUT_MS + 5_000 },
+  { timeout: SHARED_DAEMON_TIMEOUT_MS + 5_000 },
   async () => {
     const homeDir = await mkdtemp(path.join(tmpdir(), 'kodax-space-raw-skill-'));
     const credentialName = 'KODAX_SPACE_RAW_SKILL_PROBE_KEY';
@@ -1368,7 +1368,10 @@ test(
     } finally {
       await runtime?.close();
       await new Promise<void>((resolve) => server.close(() => resolve()));
-      await rm(homeDir, { recursive: true, force: true });
+      // The runtime's memory-review flush can land one write after close();
+      // retry the rmdir like removeSharedDaemonHome so teardown cannot fail
+      // the already-verified test body.
+      await rm(homeDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
       if (previousCredential === undefined) delete process.env[credentialName];
       else process.env[credentialName] = previousCredential;
     }
