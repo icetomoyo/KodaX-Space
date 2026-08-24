@@ -1,17 +1,17 @@
 # KodaX Space 产品需求文档（PRD）
 
-> **2026-08-24 当前源码基线**：精确 npm Registry KodaX `0.7.95`，要求 `conversationHistory:2`、`runtimeExitSettlement:2` 与 `sandboxRuntime:5`。Session 历史在 Runtime-ready 重验时保留已加载 canonical 前缀；排队输入、live 回复、分页加载和当前 Runtime 身份保持同一因果投影。退出恢复自动重试临时 `unconfirmed-owner`，不要求人工删除标记，也不阻塞无关工作。以下 v0.1.44 / KodaX 0.7.93 内容保留为已发布历史基线。
+> **2026-08-24 当前正式发布基线**：KodaX Space [`v0.1.45`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.45) 对齐 npm 正式发布的精确 KodaX `0.7.95`，要求 `conversationHistory:2`、`runtimeExitSettlement:2` 与 `sandboxRuntime:5`。Session 历史在 Runtime-ready 重验时保留已加载 canonical 前缀；排队输入、live 回复、分页加载和当前 Runtime 身份保持同一因果投影。退出恢复自动重试临时 `unconfirmed-owner`，不要求人工删除标记，也不阻塞无关工作。v0.1.45 还把 ask_user 与 guardrail 授权从全屏模态改为对话流内的聚焦提问卡（召回停靠条与队首卡 1-9/Enter/Esc 键盘操作），恢复 daemon 重连后已准入的 Runs，并保证幂等发送只产生一个气泡。
 >
-> **2026-08-20 当前正式发布基线**：KodaX Space [`v0.1.44`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.44) 对齐 npm 正式发布的精确 KodaX `0.7.93`，要求 sandboxRuntime v4、crashOutcomeModel v2、Actor settlement convergence v2、Session-scoped event journal、liveOutputSegments v1 与本地 runtimeExitSettlement v1；v0.1.43 / v0.1.42 保留为历史正式产品基线。
+> **2026-08-20 已发布历史基线**：KodaX Space [`v0.1.44`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.44) 对齐 npm 正式发布的精确 KodaX `0.7.93`，要求 sandboxRuntime v4、crashOutcomeModel v2、Actor settlement convergence v2、Session-scoped event journal、liveOutputSegments v1 与本地 runtimeExitSettlement v1；v0.1.43 / v0.1.42 保留为历史正式产品基线。
 > Coder daemon 必须显式提供 `managedRunDurability:1`；Space 只消费其 canonical
 > managed-Run `runId`/`turnId`，不维护第二份 Run 状态。未配置的 Auto LLM classifier timeout
 > 使用 KodaX 的首次 45 秒、重试 90 秒默认值。root/Desktop 使用同一份完整性锁定的 npm Registry
-> KodaX `0.7.93` 正式包，lockfile 与物理安装匹配正式 Registry URL/SRI。Provider 实时输出以 SDK 的
+> KodaX `0.7.95` 正式包，lockfile 与物理安装匹配正式 Registry URL/SRI。Provider 实时输出以 SDK 的
 > response/request segment 投影为唯一真理；Space 不保留 checkpoint replay 执行回退。
 > 在任何 replacement daemon 启动前恢复持久退出票据。
 
-> Last updated: 2026-08-20
-> Status: 长期产品方向文档。当前正式发布基线为 KodaX Space 0.1.44（package 0.1.44）/ 精确 Registry KodaX 0.7.93。v0.1.44 在既有 Runtime owner、canonical Actor/Turn、精确 history/live 与 compaction、完整物理请求诊断、F140-F142、可配置 Shell、独立 integration 配置和正式打包门禁基础上，新增 F145 原生 Session 提醒，并收口后台退出结算、Task Dock/Repointel 活动投影、外部任务恢复态与 previous-boot Windows ACL 指引。生命周期支持仍按能力协商，不通过 SemVer 推断；Issue 133 的 macOS/Linux process acceptance/cleanup retry gap 和 F138 完整 OS 隔离继续保持未完成。已交付能力与边界以 [USER_MANUAL.zh-CN.md](USER_MANUAL.zh-CN.md)、[KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md) 和 [FEATURE_LIST.md](FEATURE_LIST.md) 为准。
+> Last updated: 2026-08-24
+> Status: 长期产品方向文档。当前正式发布基线为 KodaX Space 0.1.45（package 0.1.45）/ npm 正式发布的精确 KodaX 0.7.95。v0.1.45 在 v0.1.44 的既有 Runtime owner、canonical Actor/Turn、精确 history/live 与 compaction、完整物理请求诊断、F145 原生 Session 提醒、可配置 Shell、独立 integration 配置和正式打包门禁基础上，把 ask_user 与 guardrail 授权改为对话流内的聚焦提问卡（FEATURE_032 v2，全屏模态移除），并收口 KodaX 0.7.95 契约对齐（`conversationHistory:2`/`runtimeExitSettlement:2`/`sandboxRuntime:5`）、daemon 重连后已准入 Run 的恢复与幂等发送的单一气泡。生命周期支持仍按能力协商，不通过 SemVer 推断；Issue 133 的 macOS/Linux process acceptance/cleanup retry gap 和 F138 完整 OS 隔离继续保持未完成。已交付能力与边界以 [USER_MANUAL.zh-CN.md](USER_MANUAL.zh-CN.md)、[KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md) 和 [FEATURE_LIST.md](FEATURE_LIST.md) 为准。
 > 对标：Anthropic Claude Desktop（Cowork / Code 双面板）+ OpenAI Codex Desktop App（多 agent 本机壳）
 
 > **当前落地摘要**：Coder 与 Partner 均可用；Partner 已具备 workspace-first Outputs、Sources/KB、checkpointed writes、Office/PDF 便利产物和本地 policy/audit。0.1.30 接入 KodaX 0.7.67 Reference External Agent 管理、Workflow/Worker 路由和 Task Dock 干预；v0.1.31 已发布 inline RuntimeHostAdapter 的 managed run、transcript、compact、fork、rewind；v0.1.32 由 KodaX 0.7.76 Coder daemon 在能力协商通过后提供 Runtime 配置的 A2A；v0.1.33 对齐 KodaX 0.7.77 并收口 Actor、精确回放、用量诊断、Shell、关闭行为和独立 integration 配置。底部把“距自动压缩的活动输入压力”和“Session 累计 Token 用量”拆为两个入口，避免把模型最大上下文、绝对阈值、输出容量预留和 Provider 账单混为一谈。MCP Tasks、受治理 HTTP、通用 Connector/浏览器控制/自动化/远程任务仍未作为当前能力开放。
@@ -589,7 +589,8 @@ File panel 内点击 git diff
 | `v0.1.42`         | Latest KodaX 0.7.89 alignment, Actor settlement convergence v2, causal transcript ownership, and complete release/manual documentation synchronization  |
 | `v0.1.43`         | Latest KodaX 0.7.92 alignment, SDK-owned complete-exit settlement, sandboxRuntime v4, crashOutcomeModel v2, live output segments, and documentation sync |
 | `v0.1.44`         | F145 跨平台原生提醒、后台完整退出、Task Dock/Repointel/历史页头对齐、外部任务恢复态与 KodaX 0.7.93                                                    |
-| `v0.1.45-v0.1.60` | 维护与稳定化预留；`v0.1.44` 之后无 feature 分配                                                                                                         |
+| `v0.1.45`         | FEATURE_032 v2 流内提问卡、KodaX 0.7.95（conversationHistory:2/runtimeExitSettlement:2/sandboxRuntime:5）、准入 Run 重连恢复与幂等发送单一气泡        |
+| `v0.1.46-v0.1.60` | 维护与稳定化预留；`v0.1.45` 之后无 feature 分配                                                                                                         |
 | `v0.1.61`         | F137 中文优先 DOCX/PDF/XLSX/PPTX builtin 与 F139 语义 UI 精修                                                                                           |
 | `v0.1.64`         | Partner composer-first Skill workspace                                                                                                                  |
 | `v0.1.66`         | Partner hybrid retrieval/evidence ranking 与 curated knowledge lifecycle                                                                                |

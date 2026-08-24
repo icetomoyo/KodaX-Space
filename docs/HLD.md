@@ -1,18 +1,18 @@
 # KodaX Space 高层设计（HLD）
 
-> **2026-08-24 当前源码基线**：root/Desktop/lockfile 精确锁定 npm Registry KodaX `0.7.95`，并要求 `conversationHistory:2`、`runtimeExitSettlement:2` 与 `sandboxRuntime:5`。Space 在 SDK 启动门、daemon 协商、IPC status 与打包 smoke 四个边界保持同一版本；同一 boot 的临时 `unconfirmed-owner` 自动重试，等待会在应用退出时取消。以下 v0.1.44 / KodaX 0.7.93 内容保留为已发布历史基线。
+> **2026-08-24 当前发布基线**：v0.1.45 使用 root/Desktop/lockfile 精确锁定的 npm Registry KodaX `0.7.95`，并要求 `conversationHistory:2`、`runtimeExitSettlement:2` 与 `sandboxRuntime:5`。Space 在 SDK 启动门、daemon 协商、IPC status 与打包 smoke 四个边界保持同一版本；同一 boot 的临时 `unconfirmed-owner` 自动重试，等待会在应用退出时取消。
 >
-> **2026-08-20 当前发布基线**：v0.1.44 使用精确 npm Registry KodaX `0.7.93`，要求 `sandboxRuntime:4`、`crashOutcomeModel:2`、`actorSettlementConvergence:2`、`sessionEventJournal:1`、`liveOutputSegments:1` 与本地 `runtimeExitSettlement:1`。sandbox v4 在 v3 containment 基础上增加 stale coordinator-ticket / recorded-release 收敛；v0.1.43 / v0.1.42 作为历史正式产品基线保留。
+> **2026-08-20 v0.1.44 已发布历史基线**：v0.1.44 使用精确 npm Registry KodaX `0.7.93`，要求 `sandboxRuntime:4`、`crashOutcomeModel:2`、`actorSettlementConvergence:2`、`sessionEventJournal:1`、`liveOutputSegments:1` 与本地 `runtimeExitSettlement:1`。sandbox v4 在 v3 containment 基础上增加 stale coordinator-ticket / recorded-release 收敛；v0.1.43 / v0.1.42 作为历史正式产品基线保留。
 > `RuntimeHostAdapter` 要求 `managedRunDurability:1`，使 accepted prompt 与 completed turn
 > 在事件发布前已成为 canonical managed Run；Space 仅用 returned `runId`/`turnId` 关联 UI
 > optimistic state 和 history，不复制持久化职责。未设置 Auto timeout 时，SDK 默认 45 秒首次、90 秒重试。
-> root/Desktop 使用同一份完整性锁定的 npm Registry KodaX `0.7.93`
+> root/Desktop 使用同一份完整性锁定的 npm Registry KodaX `0.7.95`
 > 正式包；manifest、lockfile、物理安装与打包 ASAR 必须匹配正式 Registry URL/SRI。Runtime raw journal 保留全部 provider attempt，live snapshot
 > 只提供 SDK 计算后的有效 segment；Space 不运行 checkpoint/text replay 状态机。
 > owner reconciliation 与 daemon auto-start 前仍先恢复精确 complete-exit 票据。
 >
-> Last updated: 2026-08-20
-> Status: 核心架构决策仍有效；当前正式发布基线为 KodaX Space 0.1.44（package 0.1.44）/ npm 正式发布的精确 KodaX 0.7.93。中间方案与否决理由见 [ADR/](ADR/)；当前能力边界见 [KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md)。
+> Last updated: 2026-08-24
+> Status: 核心架构决策仍有效；当前正式发布基线为 KodaX Space 0.1.45（package 0.1.45）/ npm 正式发布的精确 KodaX 0.7.95。中间方案与否决理由见 [ADR/](ADR/)；当前能力边界见 [KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md)。
 > Companion doc: [PRD](PRD.md)
 
 > **2026-08-19 v0.1.44 complete-exit background settlement**：完整退出仍先在
@@ -948,6 +948,7 @@ Space 严格遵守：
 | `v0.1.42`           | Align exact KodaX 0.7.89 Actor settlement v2 and preserve Session/Run/Turn ownership across canonical/live reconciliation, delayed terminals, continued Runs, and completion notifications.                         |
 | `v0.1.43`           | Align exact KodaX 0.7.92, consume SDK-owned complete-exit settlement, require sandboxRuntime v4 plus crashOutcomeModel v2, and project live output from SDK segments only.                                          |
 | `v0.1.44`           | Align exact KodaX 0.7.93, project one native attention count per Session, continue admitted exit settlement in the background, and align Task Dock, Repointel, history, and external-task recovery surfaces.        |
+| `v0.1.45`           | Align exact KodaX 0.7.95 with `conversationHistory:2`/`runtimeExitSettlement:2`/`sandboxRuntime:5`, replace the ask-user modal with inline conversation cards plus dock recall and head-card keyboard control, recover admitted Runs after daemon reconnect, and keep one bubble per idempotent send. |
 | `v0.1.40`           | Align the exact KodaX 0.7.86 package and manual, require sandboxRuntime v3, qualify the packaged Windows Shell chain, and reconcile stale inline owners through the SDK.                                            |
 | `v0.1.38`           | Align the exact KodaX 0.7.84 package and manual while preserving bounded Agent progress, same-owner Stop recovery, and Session reactivation identity boundaries.                                                    |
 | `v0.1.72`           | Complete locale gates, release diagnostics, channels/updater/distribution trust.                                                                                                                                    |

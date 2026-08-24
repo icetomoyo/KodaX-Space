@@ -1,7 +1,7 @@
 # KodaX Capability Ledger
 
 > Last reviewed: 2026-08-24
-> Space baseline: [`v0.1.44`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.44) released (`0.1.44` package baseline; v0.1.43 / v0.1.42 remain historical)
+> Space baseline: [`v0.1.45`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.45) released (`0.1.45` package baseline; v0.1.44 / v0.1.43 remain historical)
 > Source SDK baseline: npm Registry `@kodax-ai/kodax@0.7.95` (`sha512-epPTSXr2vR/ElrSpPIThC1UvFH/oVS+sWNk1eD4Zk+Y+rhOS0yiSx8vRJnB9+Cojn+9H/IeOuK/+ilFd35zrNg==`, SHA-256 `CACC80258C506B208903F78514792DB9D58932F9FEF5A6B8A155011268A71E8F`).
 > Source evidence: Registry metadata, the installed package, the lockfile, and the downloaded 5,266,899-byte tarball agree on version, URL, and integrity. Registry metadata currently publishes no `gitHead`, so this ledger does not invent a source-commit claim.
 > Workspace dependency: root and Desktop manifests, lockfile, installed bytes, and packaged ASAR resolve the same exact Registry URL/integrity after a clean install.
@@ -31,9 +31,9 @@ This is the Space-side source of truth for SDK-dependent capability planning. A 
 
 ## Runtime and session capabilities
 
-### Current source KodaX 0.7.95 baseline
+### v0.1.45 published KodaX 0.7.95 baseline
 
-The current unreleased Space source pins exact Registry KodaX `0.7.95` in both
+The v0.1.45 release pins exact Registry KodaX `0.7.95` in both
 manifests and lockfiles. It requires `conversationHistory:2`, recovers an admitted
 Run only from typed reconnectable transport loss by querying the same `runId`, and
 preserves the SDK's credential-safe `failureKind` without exposing provider text.
@@ -42,7 +42,7 @@ visibility continues to honor `disable-model-invocation` independently. Space al
 requires `runtimeExitSettlement:2` and `sandboxRuntime:5`, retries the SDK's
 same-boot transient owner verification until it converges or app shutdown cancels
 the wait, and verifies that explicit-Skill durable history contains only the raw query.
-The published Space v0.1.44 baseline below remains historical until the next release.
+The published Space v0.1.44 baseline below remains historical.
 
 ### v0.1.44 published KodaX 0.7.93 baseline
 

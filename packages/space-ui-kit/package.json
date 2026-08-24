@@ -1,6 +1,6 @@
 {
   "name": "@kodax-space/space-ui-kit",
-  "version": "0.1.44",
+  "version": "0.1.45",
   "description": "Shared design system primitives (Tailwind + shadcn-derived)",
   "private": true,
   "type": "module",

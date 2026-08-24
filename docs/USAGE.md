@@ -1,11 +1,11 @@
 # KodaX Space 运行与开发指南
 
-> **当前发布基线（2026-08-20）**：KodaX Space `v0.1.44` / npm Registry KodaX `0.7.93`。
+> **当前发布基线（2026-08-24）**：KodaX Space `v0.1.45` / npm Registry KodaX `0.7.95`。
 > Space 管理的 daemon 需要 `managedRunDurability:1`：接受的首条/队列输入及完成回合
 > 在生命周期事件前持久化为 canonical Run。Space 绑定确认的 `runId` 和流式 `turnId`，不以版本号代替能力协商。
 > 未显式设置 Auto LLM timeout 时，SDK 使用首次 `45000ms`、重试 `90000ms`。
-> 当前源码的 root/Desktop/lockfile 精确锁定 npm Registry KodaX `0.7.95` 正式包及其 SRI，并要求
-> SDK 与 daemon 提供 `sandboxRuntime:5`、`crashOutcomeModel:2` 和 `actorSettlementConvergence:2`；Space 还保持精确
+> v0.1.45 的 root/Desktop/lockfile 精确锁定 npm Registry KodaX `0.7.95` 正式包及其 SRI，并要求
+> SDK 与 daemon 提供 `sandboxRuntime:5`、`crashOutcomeModel:2`、`conversationHistory:2` 和 `actorSettlementConvergence:2`；Space 还保持精确
 > Session/Run/Turn owner 关联和 continued-Run history/live 边界。完整退出使用 SDK 本地
 > `runtimeExitSettlement:2`，同一 boot 的暂时性 owner 验证由 SDK 与 Space 自动重试，不把版本号当作运行时能力证明。
 
@@ -13,8 +13,8 @@
 >
 > 当前 `main` 对 Space 管理的 daemon 要求专用的 `daemonOrphanExit:1` 能力；
 > 不使用 KodaX 语义版本或 Auto-mode guardrail 版本代替生命周期能力判断。
-> 当前已发布版本为 KodaX Space [`v0.1.44`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.44) / 精确 Registry KodaX `0.7.93`。
-> 本版本包含 F145 跨平台原生 Session 角标、后台 complete-exit settlement、安静的普通成功退出、previous-boot Windows ACL 恢复指引，以及 canonical page-head、Task Dock、Repointel 与外部任务恢复态对齐；同时保留 crash-resumable exit、sandbox v4 / crash-outcome v2、SDK 有效输出 segment 和既有多 Session/Actor/Turn 安全边界。
+> 当前已发布版本为 KodaX Space [`v0.1.45`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.45) / 精确 Registry KodaX `0.7.95`。
+> 本版本把 ask_user 与 guardrail 授权改为对话流内的聚焦提问卡（全屏模态移除，召回停靠条与队首卡 1-9/Enter/Esc 键盘操作），对齐 `conversationHistory:2`、`runtimeExitSettlement:2` 与 `sandboxRuntime:5`，并恢复 daemon 重连后已准入的 Runs、保证幂等发送只产生一个气泡；同时保留 v0.1.44 的 F145 原生 Session 角标、后台 complete-exit settlement、安静的普通成功退出、previous-boot Windows ACL 恢复指引与 canonical page-head、Task Dock、Repointel、外部任务恢复态对齐，以及 crash-resumable exit、crash-outcome v2、SDK 有效输出 segment 和既有多 Session/Actor/Turn 安全边界。
 
 ## 1. 环境要求
 
@@ -290,9 +290,10 @@ dispatcher teardown 都有界，超时或非法 URL 会明确失败并结束进�
 `scripts/pack.mjs`，先核对 `HTTPS_PROXY`/`NO_PROXY` 和 Registry 连通性，再运行
 `npm run test:release`；不要用扩大超时或跳过完整性校验掩盖网络问题。
 
-[v0.1.34 发布记录](releases/v0.1.34-release-readiness.md)是当前正式版证据的真理源；历史
-[v0.1.33 发布记录](releases/v0.1.33-release-readiness.md)继续保留当时事实。v0.1.34 已通过
-精确 Registry 依赖一致性、`daemonOrphanExit:1` Runtime 能力、完整依赖闭包、
+[v0.1.45 发布记录](releases/v0.1.45-release-readiness.md)是当前正式版证据的真理源；历史
+[v0.1.44 发布记录](releases/v0.1.44-release-readiness.md)与
+[v0.1.34 发布记录](releases/v0.1.34-release-readiness.md)等继续保留当时事实。v0.1.45 已通过
+精确 Registry 依赖一致性、`conversationHistory:2`/`runtimeExitSettlement:2`/`sandboxRuntime:5` 契约、完整依赖闭包、
 native SQLite load、物理 sandbox helper/doctor、真实 packaged boot 和 GitHub CI 门禁后
 发布。
 

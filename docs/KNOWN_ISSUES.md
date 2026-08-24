@@ -2,7 +2,7 @@
 
 Last Updated: 2026-08-24
 
-> Historical issue details are preserved as investigation evidence. Resolved items older than 30 days move to [ISSUES_ARCHIVED.md](ISSUES_ARCHIVED.md) without losing their investigation record. The latest published Space [`v0.1.44`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.44) artifact uses exact npm Registry KodaX 0.7.93; current source pins published KodaX 0.7.95 and additionally requires `conversationHistory:2`, `runtimeExitSettlement:2`, and `sandboxRuntime:5`. Start from the [documentation hub](README.md) for current behavior and status.
+> Historical issue details are preserved as investigation evidence. Resolved items older than 30 days move to [ISSUES_ARCHIVED.md](ISSUES_ARCHIVED.md) without losing their investigation record. The latest published Space [`v0.1.45`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.45) artifact uses exact npm Registry KodaX 0.7.95 and requires `conversationHistory:2`, `runtimeExitSettlement:2`, and `sandboxRuntime:5`. Start from the [documentation hub](README.md) for current behavior and status.
 
 ## Issue Index
 
@@ -188,18 +188,18 @@ Last Updated: 2026-08-24
 | 190 | High     | Resolved in v0.1.44 | Previous-boot Windows ACL markers blocked Runtime startup without actionable recovery guidance                                                                                                      | v0.1.43 / KodaX 0.7.92 exit settlement                       | 2026-08-19 |
 | 191 | Medium   | Resolved in v0.1.44 | Persisted Sessions with no external Agent tasks surfaced session_not_found instead of a normal empty state                                                                                          | v0.1.43 historical Task Dock                                 | 2026-08-19 |
 | 192 | Medium   | Resolved in v0.1.44 | Every ordinary safe exit showed a prominent Windows notification despite requiring no user action                                                                                                   | v0.1.43 background complete-exit presentation                | 2026-08-19 |
-| 193 | High     | Resolved in source  | Active transcript reconciliation can move thinking to the tail and reload can hide sidecar or queued interrupt content                                                                              | v0.1.44 canonical/live reconciliation                        | 2026-08-20 |
-| 194 | High     | Resolved in source  | An uncertain exact send could create a second query bubble, while history v1 negotiation allowed a stale daemon projection                                                                          | v0.1.41 send retry / conversation history negotiation        | 2026-08-21 |
-| 195 | Medium   | Resolved in source  | Explicit Skill execution expanded in a separate IPC and lost the SDK's structured policy and lifecycle admission                                                                                    | KodaX 0.7.94 explicit-Skill adoption                         | 2026-08-22 |
-| 196 | High     | Resolved in source  | Live history replacement could shrink or reorder the transcript and leave loading or activity state stale until Ctrl+R                                                                              | v0.1.44 history paging and Runtime reconnect                 | 2026-08-23 |
-| 197 | High     | Resolved in source  | Release dependency verification and startup recovery could keep build or quit alive after their work had ended                                                                                      | v0.1.44 release gate and exit recovery                       | 2026-08-23 |
+| 193 | High     | Resolved in v0.1.45 | Active transcript reconciliation can move thinking to the tail and reload can hide sidecar or queued interrupt content                                                                              | v0.1.44 canonical/live reconciliation                        | 2026-08-20 |
+| 194 | High     | Resolved in v0.1.45 | An uncertain exact send could create a second query bubble, while history v1 negotiation allowed a stale daemon projection                                                                          | v0.1.41 send retry / conversation history negotiation        | 2026-08-21 |
+| 195 | Medium   | Resolved in v0.1.45 | Explicit Skill execution expanded in a separate IPC and lost the SDK's structured policy and lifecycle admission                                                                                    | KodaX 0.7.94 explicit-Skill adoption                         | 2026-08-22 |
+| 196 | High     | Resolved in v0.1.45 | Live history replacement could shrink or reorder the transcript and leave loading or activity state stale until Ctrl+R                                                                              | v0.1.44 history paging and Runtime reconnect                 | 2026-08-23 |
+| 197 | High     | Resolved in v0.1.45 | Release dependency verification and startup recovery could keep build or quit alive after their work had ended                                                                                      | v0.1.44 release gate and exit recovery                       | 2026-08-23 |
 
 ## Issue Details
 
 ## Issue 197: Release dependency verification and startup recovery could keep build or quit alive after their work had ended
 
 - Priority: High
-- Status: Resolved in source
+- Status: Resolved in v0.1.45
 - Introduced: v0.1.44 release gate and exit recovery
 - Created: 2026-08-23
 - Resolved: 2026-08-23
@@ -240,7 +240,7 @@ work alive or show a late blocking dialog after the user had already requested s
 ## Issue 196: Live history replacement could shrink or reorder the transcript and leave loading or activity state stale until Ctrl+R
 
 - Priority: High
-- Status: Resolved in source
+- Status: Resolved in v0.1.45
 - Introduced: v0.1.44 history paging and Runtime reconnect
 - Created: 2026-08-23
 - Resolved: 2026-08-23
@@ -296,7 +296,7 @@ in-memory projection.
 ## Issue 195: Explicit Skill execution expanded outside the authoritative send admission
 
 - Priority: Medium
-- Status: Resolved in source
+- Status: Resolved in v0.1.45
 - Introduced: legacy `skill.invoke` compatibility flow
 - Created: 2026-08-22
 
@@ -356,7 +356,7 @@ displayable after history reload.
 ## Issue 194: An uncertain exact send could create a second query bubble, while history v1 negotiation allowed a stale daemon projection
 
 - Priority: High
-- Status: Resolved in source
+- Status: Resolved in v0.1.45
 - Introduced: v0.1.41 idempotent send retry and conversation history v1 integration
 - Created: 2026-08-21
 - Resolved: 2026-08-22
@@ -447,7 +447,7 @@ ordinary restored Sessions exposed to the superseded ambiguity contract.
 ## Issue 193: Active transcript reconciliation can move thinking to the tail and reload can hide sidecar or queued interrupt content
 
 - Priority: High
-- Status: Resolved in source
+- Status: Resolved in v0.1.45
 - Introduced: v0.1.44 canonical/live reconciliation
 - Created: 2026-08-20
 - Resolved: 2026-08-20

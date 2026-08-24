@@ -2636,7 +2636,9 @@ export class RuntimeHostAdapter {
           this.scheduleReconnect();
         });
     }, delay);
-    this.reconnectTimer.unref?.();
+    // An admitted Run waiting for recovery is real pending work: its reconnect
+    // timer must keep the host event loop alive outside Electron's native loop.
+    if (this.runRecoveryWaiters.size === 0) this.reconnectTimer.unref?.();
   }
 
   private async requireRuntime(): Promise<KodaXDaemonRuntime> {
@@ -5569,6 +5571,9 @@ export class RuntimeHostAdapter {
     }
     return new Promise<void>((resolve, reject) => {
       this.runRecoveryWaiters.add({ resolve, reject });
+      // The pending reconnect timer may have been created (unref'd) before this
+      // waiter existed; ref it so Run recovery cannot outlive the event loop.
+      this.reconnectTimer?.ref?.();
     });
   }
 

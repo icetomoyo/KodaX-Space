@@ -12,7 +12,7 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 > v0.1.7 内容 (F011/F023/F024/F026/F038) 跟 v0.1.8 一起发。GitHub Releases 顶部仍是 v0.1.5，
 > 0.1.7 这条 section 留作历史记录、git log 引用入口。
 
-## [Unreleased]
+## [0.1.45] - 2026-08-24
 
 ### Changed
 
@@ -95,7 +95,11 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
   environment through a scoped dispatcher, rejects unsafe URLs, and destroys
   failed connections after the bounded timeout. App shutdown now aborts any
   automatic Runtime-recovery delay and fences late reconciliation or dialogs.
-  These maintenance changes do not bump a version or perform a release.
+- **Run-recovery reconnect timers stay scheduled** - A pending admitted-Run
+  recovery wait now keeps its reconnect timer refed, so the host event loop can
+  no longer drain while a waiter still depends on the timer firing. Without
+  Electron's native loop this previously left the recovery wait unresolved and
+  cancelled unrelated pending tests; production timing is unchanged.
 
 ---
 

@@ -1,7 +1,7 @@
 # KodaX Space Feature List
 
-> Last reviewed: 2026-08-20
-> Latest published release: [`v0.1.44`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.44) (`0.1.44` package baseline; exact KodaX 0.7.93 Registry, F145 native attention, background exit settlement, and recovery-surface alignment)
+> Last reviewed: 2026-08-24
+> Latest published release: [`v0.1.45`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.45) (`0.1.45` package baseline; exact KodaX 0.7.95 Registry, FEATURE_032 v2 inline ask-user cards, admitted-Run reconnect recovery, and KodaX 0.7.95 contract alignment)
 > Current source KodaX SDK baseline: exact audited npm Registry `@kodax-ai/kodax@0.7.95`. Root/Desktop manifests, lockfile, installed bytes, and packaged ASAR must resolve the same Registry URL and integrity. Space-managed daemons require explicit capability contracts in addition to the established shared-session safety surface, including local `runtimeExitSettlement:2`, `sandboxRuntime:5`, `crashOutcomeModel:2`, `managedRunDurability:1`, `actorSettlementConvergence:2`, `sessionEventJournal:1`, and `conversationHistory:2`; lifecycle support is not inferred from SemVer. Delivered interrupt `entryId` remains feature-detected per event. Session journal cursors are compared only within the same `(sessionId, journalEpoch)` lineage.
 > Scope: active roadmap, recent completion audit, and reviewed-out decisions. Older release history lives in [FEATURES_ARCHIVED.md](FEATURES_ARCHIVED.md), per-version designs, and [CHANGELOG.md](../CHANGELOG.md).
 
@@ -22,7 +22,7 @@
 | Planned                  | 20                                                                                                                                                                                                                                                                           |
 | InProgress               | 4                                                                                                                                                                                                                                                                            |
 | Recent Completed         | 28                                                                                                                                                                                                                                                                           |
-| Latest published release | [`v0.1.44`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.44) (KodaX 0.7.93 Registry, F145 native attention, background complete-exit settlement, Task Dock/Repointel/history alignment, external-task recovery states, and synchronized release documentation) |
+| Latest published release | [`v0.1.45`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.45) (KodaX 0.7.95 Registry, FEATURE_032 v2 inline ask-user cards, admitted-Run reconnect recovery, idempotent-send bubble fix, and synchronized release documentation) |
 | 0.1.x completion target  | `v0.1.72`, followed by `v0.1.73` patch/RC reserve                                                                                                                                                                                                                            |
 | Far-future candidates    | F144 is scheduled after `v0.2.x`; F138 is explicitly deferred until after `v0.5.x`; other candidates remain in [KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md) and [FEATURES_ARCHIVED.md](FEATURES_ARCHIVED.md#watchlist-and-reopen-gates)                          |
 
@@ -82,7 +82,8 @@
 | `v0.1.42`         | Causal transcript and latest KodaX alignment                                                                          | Maintenance / Recovery            | Exact npm latest KodaX 0.7.89 is pinned. Actor settlement v2, exact Session/Run/Turn owner reconciliation, continued-Run projection, Session deletion feedback, classifier-reason visibility, and the complete manual/release gate are synchronized.                            |
 | `v0.1.43`         | Runtime exit and filesystem-effect convergence                                                                        | Maintenance / Recovery            | Exact audited npm Registry KodaX 0.7.92 bytes, SDK-owned exit settlement, stale coordinator-ticket/recorded-release convergence, canonical managed terminal ordering, and capability-fenced daemon replacement.                                                                 |
 | `v0.1.44`         | Native attention and recovery-surface alignment                                                                       | F145 / Maintenance                | Exact KodaX 0.7.93; unique Session attention across native surfaces; background complete exit; canonical page-head, Task Dock and Repointel alignment; recoverable external-task states; actionable previous-boot Windows ACL guidance.                                         |
-| `v0.1.45-v0.1.60` | Reserved after `v0.1.44`                                                                                              | none                              | No feature is assigned to this block; it stays available for maintenance and stabilization releases.                                                                                                                                                                            |
+| `v0.1.45`         | Inline ask-user cards and KodaX 0.7.95 alignment                                                                       | FEATURE_032 v2 / Maintenance      | Exact KodaX 0.7.95 with `conversationHistory:2`, `runtimeExitSettlement:2`, and `sandboxRuntime:5`; ask_user/guardrail answers move from the deleted full-screen modal to inline conversation cards with a dock recall bar and head-card 1-9/Enter/Esc keyboard control; admitted Runs recover after daemon reconnect; one bubble per idempotent send; topology-safe history negotiation. |
+| `v0.1.46-v0.1.60` | Reserved after `v0.1.45`                                                                                              | none                              | No feature is assigned to this block; it stays available for maintenance and stabilization releases.                                                                                                                                                                            |
 | `v0.1.61`         | Native document Skills and semantic UI polish                                                                         | F137, F139                        | Independently authored document workflows and semantic UI gates pass without weakening file, delivery, accessibility, or validation boundaries.                                                                                                                                 |
 | `v0.1.62`         | —                                                                                                                     | none                              | —                                                                                                                                                                                                                                                                               |
 | `v0.1.63`         | —                                                                                                                     | none                              | —                                                                                                                                                                                                                                                                               |
@@ -253,6 +254,25 @@
 - The candidate aligns every Space package manifest, runtime capability contract, and the in-app kodax_manual to v0.1.42 while pinning the npm latest KodaX package exactly to 0.7.89.
 - Renderer reconciliation preserves exact Session/Run/Turn ownership across canonical/live folding, delayed terminals, continued Runs, reconnect, and Ctrl+R; no timestamp sorting or content-based deduplication is introduced.
 - The release records Actor settlement convergence v2, explicit create-time model continuity, bounded classifier-reason visibility, Session deletion feedback, and the Issue 182-185 regression coverage.
+
+### Release preparation - 2026-08-24: v0.1.45 inline ask-user cards and KodaX 0.7.95 alignment
+
+- The release aligns every Space package manifest, runtime capability contract,
+  lock view, public manual, and in-app `kodax_manual` to v0.1.45 while pinning
+  npm `latest` KodaX exactly to audited Registry 0.7.95.
+- FEATURE_032 v2 replaces the deleted full-screen AskUserModal with inline
+  conversation cards: every pending card stays answerable, a dock recall bar
+  above the composer shows the count and flash-locates the head card, and the
+  head card owns 1-9/Enter/Esc keyboard control with four yielding layers.
+  The change is renderer-only and preserves per-reqId settlement semantics.
+- Maintenance scope requires `conversationHistory:2`, `runtimeExitSettlement:2`,
+  and `sandboxRuntime:5`, recovers admitted Runs after daemon reconnect, keeps
+  one bubble per idempotent send, negotiates history by the current Session's
+  stable topology, and keeps loading/status/compaction feedback truthful.
+- Release documentation includes the v0.1.45 feature design, readiness record,
+  Issue 193/196/197 regression guides, README/manual updates, capability
+  ledger, known-issue resolutions, and changelog entry. Release preparation
+  changes only metadata, tests, release automation, and docs.
 
 ### Release preparation - 2026-08-20: v0.1.44 native attention and recovery-surface alignment
 

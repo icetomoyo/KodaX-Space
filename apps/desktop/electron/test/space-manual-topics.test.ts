@@ -83,7 +83,7 @@ test('Space kodax_manual documents the required current KodaX capability boundar
       assert.ok(topics.has(nextTopic), `${topic.id} references missing next topic ${nextTopic}`);
     }
   }
-  assert.match(topics.get('runtime-host')?.body ?? '', /当前源码.*KodaX 0\.7\.95/);
+  assert.match(topics.get('runtime-host')?.body ?? '', /v0\.1\.45 正式发布.*KodaX 0\.7\.95/);
   assert.match(topics.get('runtime-host')?.body ?? '', /conversationHistory v2/);
   assert.match(topics.get('runtime-host')?.body ?? '', /contextCompaction v3/);
   assert.match(topics.get('runtime-host')?.body ?? '', /transcriptSearch v1/);
@@ -170,7 +170,7 @@ test('Space kodax_manual documents the daemon host-tool path for artifact creati
   assert.match(mcp, /两条通道指向同一实现/);
 });
 
-test('Space kodax_manual describes the v0.1.44 runtime safety, recovery, attention, and shell controls', () => {
+test('Space kodax_manual describes the v0.1.45 runtime safety, recovery, attention, and shell controls', () => {
   const topics = new Map(SPACE_MANUAL_TOPICS.map((topic) => [topic.id, topic]));
 
   assert.match(
@@ -222,4 +222,33 @@ test('Space kodax_manual describes the v0.1.44 runtime safety, recovery, attenti
   assert.match(topics.get('task-dock')?.body ?? '', /当前 live activity/);
   assert.match(topics.get('external-agents')?.body ?? '', /正常空态/);
   assert.match(topics.get('repo-intelligence')?.body ?? '', /Repointel 状态芯片/);
+});
+
+test('Space kodax_manual describes the v0.1.45 inline ask-user conversation cards', () => {
+  const topics = new Map(SPACE_MANUAL_TOPICS.map((topic) => [topic.id, topic]));
+
+  assert.match(
+    topics.get('overview')?.body ?? '',
+    /v0\.1\.45 再把 ask_user 与 guardrail 授权从全屏模态改为对话流内的聚焦提问卡/,
+  );
+
+  const permissions = topics.get('permissions')?.body ?? '';
+  assert.match(permissions, /对话流尾部的聚焦提问卡/);
+  assert.match(permissions, /全屏模态已移除/);
+  assert.match(permissions, /select 单选\/多选、逐题 multi、文本 input/);
+  assert.match(permissions, /Other\/自定义输入/);
+  assert.match(permissions, /多张待答卡并存且互不影响/);
+  assert.match(permissions, /召回停靠条显示待答计数/);
+  assert.match(permissions, /定位.*闪光.*队首卡/);
+  assert.match(permissions, /1-9 快选、Enter 提交\/允许、Esc 取消\/阻止/);
+  assert.match(permissions, /打开时键盘让位/);
+  assert.match(permissions, /对话历史仍可自由滚动和搜索/);
+  assert.match(permissions, /ask_user 提问卡渲染在该 Session 自己的对话流尾部/);
+  assert.match(permissions, /每个 reqId 独立结算/);
+
+  const uiMap = topics.get('ui-map')?.body ?? '';
+  assert.match(uiMap, /聚焦提问卡/);
+  assert.match(uiMap, /召回停靠条显示计数并可定位闪光到队首卡/);
+  assert.match(uiMap, /ask_user 与 guardrail 提问卡不是浮层/);
+  assert.match(uiMap, /对话历史保持可滚动/);
 });
