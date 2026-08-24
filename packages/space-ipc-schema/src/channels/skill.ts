@@ -3,13 +3,9 @@
 // KodaX skill 体系（user-/project-/plugin-/builtin-level SKILL.md frontmatter 注册）。
 // Space wire：
 //   - skill.discover  → 列所有 enabled、可显式调用的 skill（meta only，不读 full body）
-//   - skill.invoke    → 拿 args，main 端用 VariableResolver 解析 SKILL.md body 里
-//                      $1/${VAR}/$ARGUMENTS/!`cmd`，返回 resolvedPrompt 给 renderer。
-//                      renderer 再走 session.send 把 prompt 喂给 KodaX——
-//                      让用户在 conversation stream 里看到这条 prompt。
-//
-// 不让 main 端直接 session.send 是因为：UI 还要展示"用户发了 /<skill> args"这条记录，
-// renderer 需要参与 appendUserMessage。把 resolve + send 分两段保持职责单一。
+//   - skill.invoke    → compatibility-only prompt preview for older callers. Production
+//                      execution uses one session.send carrying the raw slash text plus
+//                      a name/args intent; main resolves trusted policy and admits the Run.
 
 import { z } from 'zod';
 
@@ -58,9 +54,12 @@ export const skillDiscoverChannel = {
 
 // ---- Invoke: skill.invoke ----
 //
-// main 端拿 name + args → SkillRegistry.invoke 返回 SkillInvokeResult，
+// Compatibility-only preview: main 拿 name + args → SkillRegistry.invoke 返回 SkillInvokeResult，
 // success → { ok:true, resolvedPrompt }，
 // !success → { ok:false, error:string }
+//
+// Do not use this channel to execute a Skill. Splitting expansion from session.send loses the
+// SDK's structured Skill policy, lifecycle and single idempotent admission boundary.
 //
 // args 与 slash.exec args 上限对齐 (max 20 strings @ 2048 char)，单 prompt 上限 1MB
 // 在 session.send 处由 sessionSendChannel 把守，这里不重复 cap。

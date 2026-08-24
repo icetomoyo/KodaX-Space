@@ -9,7 +9,9 @@ import {
   isComposerTimeoutResult,
   pendingSendAcknowledgement,
   queueModeForRuntimePhase,
+  reconcileRetainedComposerSendOperation,
   retainComposerSendOperation,
+  rotateSettledComposerSendOperation,
   resolveComposerStopTarget,
   routeComposerFailure,
 } from '../../renderer/src/shell/composerInvoke.js';
@@ -46,6 +48,50 @@ test('composer send reuses an operation only for the exact ambiguous request', (
 
   assert.equal(retry.operationId, first.operationId);
   assert.notEqual(edited.operationId, first.operationId);
+});
+
+test('a stale rejection cannot release the operation identity owned by a newer exact retry', () => {
+  let sequence = 0;
+  const createOperationId = (): string => `operation-${++sequence}`;
+  const signature = '{"prompt":"same"}';
+  const first = retainComposerSendOperation(new Map(), signature, createOperationId);
+  const retry = retainComposerSendOperation(first.retainedOperations, signature, createOperationId);
+
+  const afterStaleRejection = reconcileRetainedComposerSendOperation(
+    retry.retainedOperations,
+    first,
+    'stale',
+  );
+  const afterRetryTransportFailure = reconcileRetainedComposerSendOperation(
+    afterStaleRejection,
+    retry,
+    'retained',
+  );
+  const nextRetry = retainComposerSendOperation(
+    afterRetryTransportFailure,
+    signature,
+    createOperationId,
+  );
+
+  assert.equal(nextRetry.operationId, first.operationId);
+  assert.equal(sequence, 1);
+});
+
+test('a settled retained owner rotates before an intentional same-payload send', () => {
+  let sequence = 0;
+  const createOperationId = (): string => `operation-${++sequence}`;
+  const signature = '{"prompt":"intentional repeat"}';
+  const ambiguous = retainComposerSendOperation(new Map(), signature, createOperationId);
+  const repeated = rotateSettledComposerSendOperation(
+    ambiguous.retainedOperations,
+    ambiguous,
+    createOperationId,
+  );
+
+  assert.notEqual(repeated.operationId, ambiguous.operationId);
+  assert.equal(repeated.requestSignature, signature);
+  assert.equal(repeated.retainedOperations.get(signature), repeated.operationId);
+  assert.equal(sequence, 2);
 });
 
 function installDeferredSendBridge(
@@ -175,7 +221,7 @@ test('composer queues input after an automatically fenced unknown Run', () => {
   assert.equal(queueModeForRuntimePhase('after-turn', 'unknown'), 'after-turn');
 });
 
-test('unknown Runtime state keeps both exact Stop and after-turn Send available', () => {
+test('a running Runtime keeps both exact Stop and queue Send available', () => {
   assert.deepEqual(composerRunControls(true, false, 'unknown'), {
     showStop: true,
     showSend: true,
@@ -183,8 +229,8 @@ test('unknown Runtime state keeps both exact Stop and after-turn Send available'
   });
   assert.deepEqual(composerRunControls(true, false, 'running'), {
     showStop: true,
-    showSend: false,
-    canSendDuringActivity: false,
+    showSend: true,
+    canSendDuringActivity: true,
   });
 });
 

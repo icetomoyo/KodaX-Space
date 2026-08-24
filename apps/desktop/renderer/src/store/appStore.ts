@@ -220,6 +220,8 @@ export interface UserMessage {
   /** Composer send-operation identity; deterministically claims this optimistic message
    *  when a live run projection arrives with the same originOperationId (lost-ACK recovery). */
   readonly operationId?: string;
+  readonly operationReservation?: SendOperationReservation;
+  readonly sendAdmissionSettled?: true;
   readonly canonicalIndex?: number;
   /** Absolute visible turn index before bounded history-window truncation. */
   readonly historyTurnIndex?: number;
@@ -539,6 +541,8 @@ export interface QueuedUserMessage {
   readonly queueId?: string;
   /** Exact session.send operation identity, available before the queue ACK returns. */
   readonly operationId?: string;
+  readonly operationReservation?: SendOperationReservation;
+  readonly sendAdmissionSettled?: true;
   readonly content: string;
   readonly matchContent: string;
   readonly attachments?: readonly UserImageAttachment[];
@@ -546,6 +550,29 @@ export interface QueuedUserMessage {
   readonly status: 'pending-ack' | 'queued' | 'failed';
   readonly failureReason?: Extract<SessionEvent, { kind: 'queued_user_prompt_failed' }>['reason'];
   readonly sentAt: number;
+}
+
+export type LocalSendOperationMessage =
+  | { readonly kind: 'user'; readonly id: string }
+  | { readonly kind: 'queued'; readonly id: string }
+  | { readonly kind: 'settled'; readonly id: string };
+
+export type SendOperationRollbackResult = 'retained' | 'rolled-back' | 'settled' | 'stale';
+export type SendOperationFailureDisposition = 'ambiguous' | 'definitive';
+
+interface ReserveSendOperationInput {
+  readonly content: string;
+  readonly matchContent?: string;
+  readonly queueMode: 'interrupt' | 'after-turn';
+  readonly operationId: string;
+  readonly requestGeneration: number;
+  readonly queued: boolean;
+  readonly sentAt?: number;
+  readonly attachments?: readonly UserImageAttachment[];
+}
+
+interface SendOperationReservation {
+  readonly requestGeneration: number;
 }
 
 interface RuntimeSnapshotEventBarrier extends SpaceRuntimeCursorT {
@@ -961,6 +988,17 @@ interface AppState {
     attachments?: readonly UserImageAttachment[],
     operationId?: string,
   ): string | null;
+  reserveSendOperationMessage(
+    sessionId: string,
+    input: ReserveSendOperationInput,
+  ): LocalSendOperationMessage | null;
+  rollbackSendOperationMessage(
+    sessionId: string,
+    operationId: string,
+    expectedGeneration: number | undefined,
+    failureDisposition: SendOperationFailureDisposition,
+  ): SendOperationRollbackResult;
+  settleSendOperationMessage(sessionId: string, operationId: string): void;
   /** Record the exact Runtime Run admitted by session.send, independent of transcript rows. */
   acknowledgePendingSendRun(sessionId: string, runId: string, expectedGeneration?: number): void;
   /** Bind the exact optimistic row to the fresh Runtime Run acknowledged by session.send. */
@@ -968,6 +1006,11 @@ interface AppState {
   updateUserMessageAttachments(
     sessionId: string,
     messageId: string,
+    attachments: readonly UserImageAttachment[],
+  ): void;
+  updateSendOperationAttachments(
+    sessionId: string,
+    operationId: string,
     attachments: readonly UserImageAttachment[],
   ): void;
   /** 追加一条**本地提示条**(slash echo / 本地命令输出):参与时间排序,但不消费 SDK 事件段。
@@ -1604,6 +1647,200 @@ function transcriptTurnSnapshots(
   return turns;
 }
 
+type CanonicalTranscriptRecordKind =
+  'user' | 'assistant' | 'tool' | 'sidecar' | 'lineage' | 'workflow';
+
+interface CanonicalTranscriptRecord {
+  readonly kind: CanonicalTranscriptRecordKind;
+  readonly entryId: string;
+  readonly canonicalIndex: number;
+  readonly turnIndex: number;
+  readonly turnId?: string;
+  readonly turnUserOrdinal?: number;
+  readonly userSemantic?: string;
+  readonly eventIndex?: number;
+}
+
+function canonicalHistoryEventKind(event: SessionEvent): CanonicalTranscriptRecordKind | undefined {
+  if (event.kind === 'text_delta' || event.kind === 'thinking_delta') return 'assistant';
+  if (event.kind === 'tool_start' || event.kind === 'tool_result') return 'tool';
+  if (event.kind === 'sidecar_message') return 'sidecar';
+  if (event.kind === 'lineage_notice') return 'lineage';
+  if (event.kind === 'workflow_notice') return 'workflow';
+  return undefined;
+}
+
+function canonicalHistoryEventRecord(
+  event: SessionEvent,
+  eventIndex: number,
+  turnIndex: number,
+): CanonicalTranscriptRecord | undefined {
+  const kind = canonicalHistoryEventKind(event);
+  if (
+    kind === undefined ||
+    !restoredHistoryEvents.has(event) ||
+    !('entryId' in event) ||
+    typeof event.entryId !== 'string' ||
+    !('canonicalIndex' in event) ||
+    typeof event.canonicalIndex !== 'number'
+  ) {
+    return undefined;
+  }
+  const turnId = 'turnId' in event && typeof event.turnId === 'string' ? event.turnId : undefined;
+  return {
+    kind,
+    entryId: event.entryId,
+    canonicalIndex: event.canonicalIndex,
+    turnIndex,
+    eventIndex,
+    ...(turnId !== undefined ? { turnId } : {}),
+  };
+}
+
+function canonicalTranscriptRecords(
+  events: readonly SessionEvent[],
+  turns: readonly TranscriptTurnSnapshot[],
+): CanonicalTranscriptRecord[] {
+  const records: CanonicalTranscriptRecord[] = [];
+  const seen = new Set<string>();
+  for (const [turnIndex, turn] of turns.entries()) {
+    if (
+      turn.restoredFromHistory &&
+      turn.entryId !== undefined &&
+      turn.canonicalIndex !== undefined
+    ) {
+      records.push({
+        kind: 'user',
+        entryId: turn.entryId,
+        canonicalIndex: turn.canonicalIndex,
+        turnIndex,
+        userSemantic: turn.userSemantic,
+        ...(turn.turnId !== undefined ? { turnId: turn.turnId } : {}),
+        ...(turn.turnUserOrdinal !== undefined ? { turnUserOrdinal: turn.turnUserOrdinal } : {}),
+      });
+    }
+    for (let eventIndex = turn.eventStart; eventIndex < turn.eventEnd; eventIndex += 1) {
+      const record = canonicalHistoryEventRecord(events[eventIndex]!, eventIndex, turnIndex);
+      if (record === undefined) continue;
+      const key = `${record.kind}\u0000${record.entryId}\u0000${record.canonicalIndex}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      records.push(record);
+    }
+  }
+  return records;
+}
+
+function sameCanonicalTranscriptRecord(
+  current: CanonicalTranscriptRecord,
+  incoming: CanonicalTranscriptRecord,
+): boolean {
+  if (
+    current.kind !== incoming.kind ||
+    current.entryId !== incoming.entryId ||
+    current.canonicalIndex !== incoming.canonicalIndex
+  ) {
+    return false;
+  }
+  if (current.turnId !== undefined && incoming.turnId !== undefined) {
+    if (current.turnId !== incoming.turnId) return false;
+  }
+  if (current.kind !== 'user') return true;
+  return (
+    current.userSemantic === incoming.userSemantic &&
+    !(
+      current.turnUserOrdinal !== undefined &&
+      incoming.turnUserOrdinal !== undefined &&
+      current.turnUserOrdinal !== incoming.turnUserOrdinal
+    )
+  );
+}
+
+function appendTranscriptTurn(
+  users: UserMessage[],
+  events: SessionEvent[],
+  sourceUsers: readonly UserMessage[],
+  sourceEvents: readonly SessionEvent[],
+  turn: TranscriptTurnSnapshot,
+): void {
+  const sourceUser = sourceUsers[turn.userIndex]!;
+  const previousSentAt = users[users.length - 1]?.sentAt ?? Number.NEGATIVE_INFINITY;
+  const sentAt = Math.max(sourceUser.sentAt, previousSentAt + 1);
+  users.push(sentAt === sourceUser.sentAt ? sourceUser : { ...sourceUser, sentAt });
+  events.push(...sourceEvents.slice(turn.eventStart, turn.eventEnd));
+}
+
+function appendTranscriptTurnWithEvents(
+  users: UserMessage[],
+  events: SessionEvent[],
+  sourceUser: UserMessage,
+  turnEvents: readonly SessionEvent[],
+): void {
+  const previousSentAt = users[users.length - 1]?.sentAt ?? Number.NEGATIVE_INFINITY;
+  const sentAt = Math.max(sourceUser.sentAt, previousSentAt + 1);
+  users.push(sentAt === sourceUser.sentAt ? sourceUser : { ...sourceUser, sentAt });
+  events.push(...turnEvents);
+}
+
+function retainLoadedHistoryPrefix(
+  currentUsers: readonly UserMessage[],
+  currentEvents: readonly SessionEvent[],
+  incomingUsers: readonly UserMessage[],
+  incomingEvents: readonly SessionEvent[],
+): ReconciledTranscriptBuffers {
+  // The canonicalIndex discipline below is self-verifying: a complete newest page starts at
+  // the earliest canonical index (nothing older exists to retain), an older browsing window
+  // holds only indexes below the loaded ones, and a compaction re-root restarts at zero. Do
+  // not gate retention on an explicit history_truncation marker: the ordinary bounded newest
+  // window omits the loaded prefix without one, and a mid-run replacement of that window
+  // collapsed the conversation to the page (history shrinking until Ctrl+R).
+  const incomingTurns = transcriptTurnSnapshots(incomingUsers, incomingEvents);
+  const currentTurns = transcriptTurnSnapshots(currentUsers, currentEvents);
+  const incomingRecords = canonicalTranscriptRecords(incomingEvents, incomingTurns);
+  const firstCanonical = incomingRecords[0];
+  if (firstCanonical === undefined) return { userMessages: incomingUsers, events: incomingEvents };
+  const currentRecords = canonicalTranscriptRecords(currentEvents, currentTurns);
+  const currentCanonical = currentRecords.find((record) =>
+    sameCanonicalTranscriptRecord(record, firstCanonical),
+  );
+  if (currentCanonical === undefined) {
+    return { userMessages: incomingUsers, events: incomingEvents };
+  }
+  const canonicalTurnIndexes = new Set(currentRecords.map((record) => record.turnIndex));
+  const retained = currentTurns
+    .slice(0, currentCanonical.turnIndex)
+    .filter((turn, turnIndex) => turn.restoredFromHistory && canonicalTurnIndexes.has(turnIndex));
+
+  const users: UserMessage[] = [];
+  const events: SessionEvent[] = [];
+  for (const turn of incomingTurns.slice(0, firstCanonical.turnIndex)) {
+    appendTranscriptTurn(users, events, incomingUsers, incomingEvents, turn);
+  }
+  for (const turn of retained) {
+    appendTranscriptTurn(users, events, currentUsers, currentEvents, turn);
+  }
+  if (firstCanonical.eventIndex !== undefined && currentCanonical.eventIndex !== undefined) {
+    const currentTurn = currentTurns[currentCanonical.turnIndex]!;
+    const incomingTurn = incomingTurns[firstCanonical.turnIndex]!;
+    appendTranscriptTurnWithEvents(users, events, currentUsers[currentTurn.userIndex]!, [
+      ...currentEvents.slice(currentTurn.eventStart, currentCanonical.eventIndex),
+      ...incomingEvents.slice(incomingTurn.eventStart, incomingTurn.eventEnd),
+    ]);
+  } else {
+    appendTranscriptTurn(
+      users,
+      events,
+      incomingUsers,
+      incomingEvents,
+      incomingTurns[firstCanonical.turnIndex]!,
+    );
+  }
+  for (const turn of incomingTurns.slice(firstCanonical.turnIndex + 1)) {
+    appendTranscriptTurn(users, events, incomingUsers, incomingEvents, turn);
+  }
+  return { userMessages: users, events };
+}
+
 function transcriptCutForSelectorTurn(
   userMessages: readonly UserMessage[],
   events: readonly SessionEvent[],
@@ -1676,6 +1913,7 @@ function alignSegmentOwnersBeforePrompt(
   userMessages: readonly UserMessage[],
   events: readonly SessionEvent[],
   deliveryBoundaryIndex: number,
+  promptSentAt?: number,
 ): readonly UserMessage[] {
   if (
     deliveryBoundaryIndex < 0 ||
@@ -1703,8 +1941,12 @@ function alignSegmentOwnersBeforePrompt(
 
   const aligned = [...userMessages];
   for (let index = 0; index < missingOwners; index++) {
+    const sentAt =
+      promptSentAt === undefined
+        ? nextUserMessageSentAtAfter(aligned)
+        : Math.max(Number.MIN_SAFE_INTEGER, promptSentAt - missingOwners + index);
     aligned.push({
-      ...createUserMessage(sessionId, '', nextUserMessageSentAtAfter(aligned)),
+      ...createUserMessage(sessionId, '', sentAt),
       hiddenHistoryAnchor: true,
     });
   }
@@ -3552,6 +3794,12 @@ function foldStrongIdentityDuplicateTurns(
         const deliveryQueueMode = rest.deliveryQueueMode ?? duplicateMessage?.deliveryQueueMode;
         const deliveredInterrupt = rest.deliveredInterrupt ?? duplicateMessage?.deliveredInterrupt;
         const runtimeRunId = rest.runtimeRunId ?? duplicateMessage?.runtimeRunId;
+        // operationId is renderer admission provenance, not part of the SDK history schema. Once
+        // this fold has proven that both rows are the same canonical turn, carry that exact
+        // idempotency owner onto the durable copy so a post-refresh retry cannot append it again.
+        const operationId = rest.operationId ?? duplicateMessage?.operationId;
+        const operationReservation =
+          rest.operationReservation ?? duplicateMessage?.operationReservation;
         const reconciled = {
           ...rest,
           ...(promoteLiveOwner ? { restoredFromHistory: true as const } : {}),
@@ -3562,6 +3810,8 @@ function foldStrongIdentityDuplicateTurns(
           ...(deliveryQueueMode !== undefined ? { deliveryQueueMode } : {}),
           ...(deliveredInterrupt === true ? { deliveredInterrupt: true as const } : {}),
           ...(runtimeRunId !== undefined ? { runtimeRunId } : {}),
+          ...(operationId !== undefined ? { operationId } : {}),
+          ...(operationReservation !== undefined ? { operationReservation } : {}),
         };
         return mergedSegment.length > 0
           ? reconciled
@@ -4079,6 +4329,237 @@ function createUserMessage(
   };
 }
 
+function userMessageHasSettledSendAdmission(message: UserMessage): boolean {
+  return (
+    message.sendAdmissionSettled === true ||
+    message.restoredFromHistory === true ||
+    message.runtimeRunId !== undefined ||
+    message.turnId !== undefined ||
+    message.entryId !== undefined ||
+    message.authoritativeEntryId !== undefined ||
+    message.deliveryQueueId !== undefined ||
+    message.sourceQueuedLocalId !== undefined
+  );
+}
+
+function queuedMessageHasSettledSendAdmission(message: QueuedUserMessage): boolean {
+  return (
+    message.sendAdmissionSettled === true ||
+    message.status !== 'pending-ack' ||
+    message.queueId !== undefined
+  );
+}
+
+interface SendOperationMessages {
+  readonly users: readonly UserMessage[];
+  readonly queued: readonly QueuedUserMessage[];
+  readonly settledUser?: UserMessage;
+  readonly settledQueued?: QueuedUserMessage;
+  readonly provisionalUser?: UserMessage;
+  readonly provisionalQueued?: QueuedUserMessage;
+}
+
+interface ExistingSendOperationOwner {
+  readonly owner: LocalSendOperationMessage;
+  readonly updatedUser?: UserMessage;
+  readonly updatedQueued?: QueuedUserMessage;
+}
+
+function resolveSendOperationMessages(
+  users: readonly UserMessage[],
+  queued: readonly QueuedUserMessage[],
+  operationId: string,
+): SendOperationMessages {
+  const matchingUsers = users.filter((message) => message.operationId === operationId);
+  const matchingQueued = queued.filter((message) => message.operationId === operationId);
+  return {
+    users: matchingUsers,
+    queued: matchingQueued,
+    settledUser: matchingUsers.find(userMessageHasSettledSendAdmission),
+    settledQueued: matchingQueued.find(queuedMessageHasSettledSendAdmission),
+    provisionalUser: matchingUsers.find((message) => !userMessageHasSettledSendAdmission(message)),
+    provisionalQueued: matchingQueued.find(
+      (message) => !queuedMessageHasSettledSendAdmission(message),
+    ),
+  };
+}
+
+function refreshedSendOperationReservation(requestGeneration: number): SendOperationReservation {
+  return { requestGeneration };
+}
+
+function existingSendOperationOwner(
+  messages: SendOperationMessages,
+  requestGeneration: number,
+): ExistingSendOperationOwner | undefined {
+  const settled = messages.settledUser ?? messages.settledQueued;
+  if (settled !== undefined) return { owner: { kind: 'settled', id: settled.id } };
+  if (messages.provisionalUser !== undefined) {
+    const updatedUser = {
+      ...messages.provisionalUser,
+      operationReservation: refreshedSendOperationReservation(requestGeneration),
+    };
+    return { owner: { kind: 'user', id: updatedUser.id }, updatedUser };
+  }
+  if (messages.provisionalQueued !== undefined) {
+    const updatedQueued = {
+      ...messages.provisionalQueued,
+      operationReservation: refreshedSendOperationReservation(requestGeneration),
+    };
+    return { owner: { kind: 'queued', id: updatedQueued.id }, updatedQueued };
+  }
+  return undefined;
+}
+
+function pendingSendCleanupPatch(
+  state: Pick<AppState, 'pendingSendBySession' | 'pendingSendRuntimeBaselineBySession'>,
+  sessionId: string,
+  expectedGeneration: number,
+): Partial<Pick<AppState, 'pendingSendBySession' | 'pendingSendRuntimeBaselineBySession'>> {
+  if (
+    !state.pendingSendBySession[sessionId] ||
+    state.pendingSendRuntimeBaselineBySession[sessionId]?.requestGeneration !== expectedGeneration
+  ) {
+    return {};
+  }
+  const { [sessionId]: _pending, ...remainingPending } = state.pendingSendBySession;
+  const { [sessionId]: _baseline, ...remainingBaselines } =
+    state.pendingSendRuntimeBaselineBySession;
+  return {
+    pendingSendBySession: remainingPending,
+    pendingSendRuntimeBaselineBySession: remainingBaselines,
+  };
+}
+
+function existingSendOperationPatch(
+  state: AppState,
+  sessionId: string,
+  existing: ExistingSendOperationOwner,
+): Partial<AppState> {
+  if (existing.updatedUser !== undefined) {
+    rememberHistoryLiveUsers(sessionId, [existing.updatedUser]);
+    return {
+      userMessagesBySession: {
+        ...state.userMessagesBySession,
+        [sessionId]: (state.userMessagesBySession[sessionId] ?? []).map((message) =>
+          message.id === existing.updatedUser?.id ? existing.updatedUser : message,
+        ),
+      },
+    };
+  }
+  if (existing.updatedQueued !== undefined) {
+    return {
+      queuedUserMessagesBySession: {
+        ...state.queuedUserMessagesBySession,
+        [sessionId]: (state.queuedUserMessagesBySession[sessionId] ?? []).map((message) =>
+          message.id === existing.updatedQueued?.id ? existing.updatedQueued : message,
+        ),
+      },
+    };
+  }
+  return {};
+}
+
+function createReservedQueuedMessage(
+  sessionId: string,
+  input: ReserveSendOperationInput,
+): QueuedUserMessage {
+  return {
+    id: `qu_${sessionId}_${++queuedUserMessageCounter}`,
+    content: input.content,
+    matchContent: input.matchContent ?? input.content,
+    ...(input.attachments && input.attachments.length > 0
+      ? { attachments: input.attachments }
+      : {}),
+    queueMode: input.queueMode,
+    operationId: input.operationId,
+    operationReservation: {
+      requestGeneration: input.requestGeneration,
+    },
+    status: 'pending-ack',
+    sentAt: input.sentAt ?? Date.now(),
+  };
+}
+
+function createReservedUserMessage(
+  sessionId: string,
+  input: ReserveSendOperationInput,
+  users: readonly UserMessage[],
+): UserMessage {
+  return {
+    ...createUserMessage(
+      sessionId,
+      input.content,
+      appendedUserMessageSentAt(users, input.sentAt),
+      undefined,
+      input.attachments,
+      input.operationId,
+    ),
+    operationReservation: {
+      requestGeneration: input.requestGeneration,
+    },
+  };
+}
+
+function settledSendOperationPatch(
+  state: AppState,
+  sessionId: string,
+  operationId: string,
+  messages: SendOperationMessages,
+  pendingPatch: Partial<AppState>,
+): Partial<AppState> {
+  const removedUserIds = messages.users
+    .filter((message) => !userMessageHasSettledSendAdmission(message))
+    .map((message) => message.id);
+  if (removedUserIds.length > 0) forgetHistoryLiveUsers(sessionId, removedUserIds);
+  const removedUserIdSet = new Set(removedUserIds);
+  return {
+    ...pendingPatch,
+    userMessagesBySession: {
+      ...state.userMessagesBySession,
+      [sessionId]: (state.userMessagesBySession[sessionId] ?? []).filter(
+        (message) => !removedUserIdSet.has(message.id),
+      ),
+    },
+    queuedUserMessagesBySession: {
+      ...state.queuedUserMessagesBySession,
+      [sessionId]: (state.queuedUserMessagesBySession[sessionId] ?? []).filter(
+        (message) =>
+          message.operationId !== operationId || queuedMessageHasSettledSendAdmission(message),
+      ),
+    },
+  };
+}
+
+function removeProvisionalSendOperationPatch(
+  state: AppState,
+  sessionId: string,
+  provisional: UserMessage | QueuedUserMessage,
+  removesUser: boolean,
+  pendingPatch: Partial<AppState>,
+): Partial<AppState> {
+  if (removesUser) forgetHistoryLiveUsers(sessionId, [provisional.id]);
+  return {
+    ...pendingPatch,
+    userMessagesBySession: {
+      ...state.userMessagesBySession,
+      [sessionId]: removesUser
+        ? (state.userMessagesBySession[sessionId] ?? []).filter(
+            (message) => message.id !== provisional.id,
+          )
+        : (state.userMessagesBySession[sessionId] ?? []),
+    },
+    queuedUserMessagesBySession: {
+      ...state.queuedUserMessagesBySession,
+      [sessionId]: removesUser
+        ? (state.queuedUserMessagesBySession[sessionId] ?? [])
+        : (state.queuedUserMessagesBySession[sessionId] ?? []).filter(
+            (message) => message.id !== provisional.id,
+          ),
+    },
+  };
+}
+
 function pendingSendRuntimeBaseline(
   state: Pick<AppState, 'runtimeConnection' | 'runtimeProfile' | 'liveProjectionBySession'>,
   sessionId: string,
@@ -4155,9 +4636,15 @@ function eventClearsPendingSend(
     );
   }
   if (origin === undefined) return false;
+  const sameKnownLiveLineage =
+    baseline.liveCursorSessionId === undefined ||
+    baseline.liveCursorJournalEpoch === undefined ||
+    origin.journalEpoch === undefined ||
+    (baseline.liveCursorSessionId === event.sessionId &&
+      baseline.liveCursorJournalEpoch === origin.journalEpoch);
   if (
     (baseline.runtimeId !== undefined && origin.runtimeId !== baseline.runtimeId) ||
-    origin.seq <= baseline.liveCursorSeq
+    (sameKnownLiveLineage && origin.seq <= baseline.liveCursorSeq)
   ) {
     return false;
   }
@@ -4781,27 +5268,74 @@ function queuedMessageMatches(entry: QueuedUserMessage, matchContent: string): b
   );
 }
 
+interface RuntimeQueuedInputReconciliation {
+  readonly userMessages: UserMessage[];
+  readonly queuedMessages: QueuedUserMessage[];
+}
+
+interface RuntimeStartedAfterTurnReconciliation extends RuntimeQueuedInputReconciliation {
+  readonly events: SessionEvent[];
+}
+
+function queuedMessageFromUserOwner(
+  owner: UserMessage,
+  input: RuntimeQueuedInputProjection,
+  queueMode: QueuedUserMessage['queueMode'],
+): QueuedUserMessage {
+  return {
+    id: owner.id,
+    content: owner.content,
+    matchContent: input.contentPreview ?? owner.content,
+    ...(owner.attachments !== undefined ? { attachments: owner.attachments } : {}),
+    queueId: input.inputId,
+    queueMode,
+    operationId: input.originOperationId,
+    ...(owner.operationReservation !== undefined
+      ? { operationReservation: owner.operationReservation }
+      : {}),
+    status: 'queued',
+    sentAt: owner.sentAt,
+  };
+}
+
 function reconcileRuntimeQueuedMessages(
-  current: readonly QueuedUserMessage[],
+  currentUsers: readonly UserMessage[],
+  currentQueued: readonly QueuedUserMessage[],
   projection: SpaceSessionLiveProjectionT,
-): QueuedUserMessage[] {
-  let next = [...current];
+): RuntimeQueuedInputReconciliation {
+  let nextUsers = [...currentUsers];
+  let nextQueued = [...currentQueued];
   for (const input of projection.queuedInputs) {
     if (input.state !== 'queued' && input.state !== 'delivering') continue;
     const queueMode = input.delivery === 'after-turn' ? 'after-turn' : 'interrupt';
-    const matchingIndexes = next.flatMap((entry, index) =>
+    const operationOwnerIndex =
+      input.originOperationId === undefined
+        ? -1
+        : nextUsers.findIndex((message) => message.operationId === input.originOperationId);
+    const operationOwner = operationOwnerIndex === -1 ? undefined : nextUsers[operationOwnerIndex];
+    const matchingIndexes = nextQueued.flatMap((entry, index) =>
       (entry.queueMode === queueMode && entry.queueId === input.inputId) ||
       (input.originOperationId !== undefined && entry.operationId === input.originOperationId)
         ? [index]
         : [],
     );
-    if (matchingIndexes.length > 0) {
+    if (operationOwner !== undefined && userMessageHasSettledSendAdmission(operationOwner)) {
+      const matched = new Set(matchingIndexes);
+      nextQueued = nextQueued.filter((_entry, index) => !matched.has(index));
+      continue;
+    }
+    const migratedOwner =
+      operationOwner === undefined
+        ? undefined
+        : queuedMessageFromUserOwner(operationOwner, input, queueMode);
+    if (operationOwnerIndex !== -1) nextUsers.splice(operationOwnerIndex, 1);
+    if (matchingIndexes.length > 0 || migratedOwner !== undefined) {
       const preferredIndex =
-        matchingIndexes.find((index) => !next[index]!.id.startsWith('runtime-queue:')) ??
+        matchingIndexes.find((index) => !nextQueued[index]!.id.startsWith('runtime-queue:')) ??
         matchingIndexes[0]!;
-      const existing = next[preferredIndex]!;
+      const existing = migratedOwner ?? nextQueued[preferredIndex]!;
       const failed = matchingIndexes
-        .map((index) => next[index]!)
+        .map((index) => nextQueued[index]!)
         .find((entry) => entry.status === 'failed');
       const merged: QueuedUserMessage = {
         ...existing,
@@ -4815,14 +5349,15 @@ function reconcileRuntimeQueuedMessages(
         status: failed ? 'failed' : 'queued',
         ...(failed?.failureReason !== undefined ? { failureReason: failed.failureReason } : {}),
       };
-      const insertionIndex = Math.min(...matchingIndexes);
+      const insertionIndex =
+        matchingIndexes.length === 0 ? nextQueued.length : Math.min(...matchingIndexes);
       const matched = new Set(matchingIndexes);
-      next = next.filter((_entry, index) => !matched.has(index));
-      next.splice(insertionIndex, 0, merged);
+      nextQueued = nextQueued.filter((_entry, index) => !matched.has(index));
+      nextQueued.splice(insertionIndex, 0, merged);
       continue;
     }
     const content = input.contentPreview ?? '';
-    next.push({
+    nextQueued.push({
       id: `runtime-queue:${input.delivery}:${input.inputId}`,
       queueId: input.inputId,
       ...(input.originOperationId !== undefined ? { operationId: input.originOperationId } : {}),
@@ -4833,7 +5368,119 @@ function reconcileRuntimeQueuedMessages(
       sentAt: input.createdAt,
     });
   }
-  return next;
+  return { userMessages: nextUsers, queuedMessages: nextQueued };
+}
+
+type RuntimeRunProjection = NonNullable<SpaceSessionLiveProjectionT['activeRun']>;
+
+function startedAfterTurnOwner(
+  projection: SpaceSessionLiveProjectionT,
+  run: RuntimeRunProjection,
+  queued: QueuedUserMessage,
+  owner: UserMessage | undefined,
+): UserMessage {
+  const operationId = queued.operationId ?? run.originOperationId;
+  const identity = run.turnId === undefined ? {} : { turnId: run.turnId, turnUserOrdinal: 0 };
+  const base =
+    owner ??
+    createUserMessage(
+      projection.sessionId,
+      queued.content,
+      queued.sentAt,
+      run.turnId === undefined ? undefined : { turnId: run.turnId, turnUserOrdinal: 0 },
+      queued.attachments,
+    );
+  return {
+    ...base,
+    ...identity,
+    ...(owner === undefined ? { id: queued.id } : {}),
+    ...(owner?.attachments === undefined && queued.attachments !== undefined
+      ? { attachments: queued.attachments }
+      : {}),
+    deliveryQueueId: queued.queueId ?? run.runId,
+    deliveryQueueMode: 'after-turn',
+    runtimeRunId: run.runId,
+    sourceQueuedLocalId: queued.id,
+    ...(operationId !== undefined ? { operationId } : {}),
+  };
+}
+
+function ensureStartedAfterTurnBoundary(
+  events: SessionEvent[],
+  projection: SpaceSessionLiveProjectionT,
+  run: RuntimeRunProjection,
+  queued: QueuedUserMessage,
+): number {
+  const existing = events.findIndex(
+    (event) =>
+      event.kind === 'queued_user_prompt_started' &&
+      ((queued.queueId !== undefined && event.queueId === queued.queueId) ||
+        (run.turnId !== undefined && event.turnId === run.turnId)),
+  );
+  if (existing !== -1) return existing;
+  const exactTurnStart =
+    run.turnId === undefined
+      ? -1
+      : events.findIndex((event) => 'turnId' in event && event.turnId === run.turnId);
+  const insertionIndex = exactTurnStart === -1 ? events.length : exactTurnStart;
+  events.splice(insertionIndex, 0, {
+    kind: 'queued_user_prompt_started',
+    sessionId: projection.sessionId,
+    queueId: queued.queueId ?? run.runId,
+    queueMode: 'after-turn',
+    content: queued.content,
+    ...(run.turnId !== undefined ? { turnId: run.turnId, turnUserOrdinal: 0 } : {}),
+  });
+  return insertionIndex;
+}
+
+function reconcileRuntimeStartedAfterTurnInputs(
+  events: readonly SessionEvent[],
+  currentUsers: readonly UserMessage[],
+  currentQueued: readonly QueuedUserMessage[],
+  projection: SpaceSessionLiveProjectionT,
+): RuntimeStartedAfterTurnReconciliation {
+  const runs = [projection.activeRun, projection.lastTerminalRun].filter(
+    (run): run is RuntimeRunProjection => run !== undefined,
+  );
+  const nextEvents = [...events];
+  let nextUsers = [...currentUsers];
+  let nextQueued = [...currentQueued];
+  for (const run of runs) {
+    const matches = nextQueued.filter(
+      (entry) =>
+        entry.queueMode === 'after-turn' &&
+        (entry.queueId === run.runId ||
+          (run.originOperationId !== undefined && entry.operationId === run.originOperationId)),
+    );
+    if (matches.length === 0) continue;
+    const queued = matches.find((entry) => !entry.id.startsWith('runtime-queue:')) ?? matches[0]!;
+    const matchedIds = new Set(matches.map((entry) => entry.id));
+    nextQueued = nextQueued.filter((entry) => !matchedIds.has(entry.id));
+    const ownerIndex = nextUsers.findIndex(
+      (message) =>
+        message.runtimeRunId === run.runId ||
+        (run.originOperationId !== undefined && message.operationId === run.originOperationId) ||
+        (run.turnId !== undefined &&
+          message.turnId === run.turnId &&
+          (message.turnUserOrdinal ?? 0) === 0),
+    );
+    const owner = ownerIndex === -1 ? undefined : nextUsers[ownerIndex];
+    const promoted = startedAfterTurnOwner(projection, run, queued, owner);
+    let remainingUsers: readonly UserMessage[] = nextUsers.filter(
+      (_message, index) => index !== ownerIndex,
+    );
+    const boundaryIndex = ensureStartedAfterTurnBoundary(nextEvents, projection, run, queued);
+    remainingUsers = alignSegmentOwnersBeforePrompt(
+      projection.sessionId,
+      remainingUsers,
+      nextEvents,
+      boundaryIndex,
+      promoted.sentAt,
+    );
+    nextUsers = [...remainingUsers, promoted];
+  }
+  return { events: nextEvents, userMessages: nextUsers, queuedMessages: nextQueued };
 }
 
 interface AcceptedQueuedMessageResolution {
@@ -4901,19 +5548,62 @@ function createDeliveredInputUserMessage(
   queued: QueuedUserMessage | undefined,
   content: string,
 ): UserMessage {
+  const created = createUserMessage(
+    projection.sessionId,
+    content,
+    input.deliveredAt ?? input.createdAt,
+    deliveredInputIdentity(input),
+    queued?.attachments,
+  );
   return {
-    ...createUserMessage(
-      projection.sessionId,
-      content,
-      input.deliveredAt ?? input.createdAt,
-      deliveredInputIdentity(input),
-      queued?.attachments,
-    ),
+    ...created,
+    // A queued projection can migrate an ordinary provisional row before delivery. Moving it
+    // back must retain that renderer owner and its attempt fence, not manufacture another row.
+    ...(queued !== undefined ? { id: queued.id } : {}),
     deliveryQueueId: input.inputId,
     deliveryQueueMode: 'interrupt',
     deliveredInterrupt: true,
     ...(queued ? { sourceQueuedLocalId: queued.id } : {}),
-    ...(queued?.operationId !== undefined ? { operationId: queued.operationId } : {}),
+    ...(queued?.operationId !== undefined
+      ? { operationId: queued.operationId }
+      : input.originOperationId !== undefined
+        ? { operationId: input.originOperationId }
+        : {}),
+    ...(queued?.operationReservation !== undefined
+      ? { operationReservation: queued.operationReservation }
+      : {}),
+    entryId: input.entryId,
+  };
+}
+
+function deliveredInputUserMessage(
+  projection: SpaceSessionLiveProjectionT,
+  input: RuntimeQueuedInputProjection,
+  owner: UserMessage | undefined,
+  queued: QueuedUserMessage | undefined,
+  content: string,
+): UserMessage {
+  if (owner === undefined)
+    return createDeliveredInputUserMessage(projection, input, queued, content);
+  return {
+    ...owner,
+    content,
+    sentAt: input.deliveredAt ?? input.createdAt,
+    ...(deliveredInputIdentity(input) ?? {}),
+    deliveryQueueId: input.inputId,
+    deliveryQueueMode: 'interrupt',
+    deliveredInterrupt: true,
+    ...(queued !== undefined ? { sourceQueuedLocalId: queued.id } : {}),
+    ...(owner.operationId !== undefined
+      ? { operationId: owner.operationId }
+      : input.originOperationId !== undefined
+        ? { operationId: input.originOperationId }
+        : {}),
+    ...(owner.attachments !== undefined
+      ? { attachments: owner.attachments }
+      : queued?.attachments !== undefined
+        ? { attachments: queued.attachments }
+        : {}),
     entryId: input.entryId,
   };
 }
@@ -4989,7 +5679,7 @@ function reconcileRuntimeDeliveredInputs(
       input.delivery !== 'interrupt' ||
       input.state !== 'delivered' ||
       !input.entryId ||
-      input.deliverySeq === undefined ||
+      (input.deliverySeq === undefined && input.deliveredAt === undefined) ||
       activeRun === undefined ||
       input.runId !== activeRun.runId ||
       (activeRun.turnId !== undefined && input.turnId !== activeRun.turnId)
@@ -5006,20 +5696,42 @@ function reconcileRuntimeDeliveredInputs(
       matchingQueued.find((entry) => !entry.id.startsWith('runtime-queue:')) ?? matchingQueued[0];
     const matchingQueuedIds = new Set(matchingQueued.map((entry) => entry.id));
     nextQueued = nextQueued.filter((entry) => !matchingQueuedIds.has(entry.id));
-    const content = queued?.content ?? input.contentPreview ?? '';
-    if (!nextUsers.some((message) => message.entryId === input.entryId)) {
-      nextUsers.push(createDeliveredInputUserMessage(projection, input, queued, content));
-    }
-    if (
-      !nextEvents.some(
-        (event) => event.kind === 'mid_turn_user_prompt' && event.entryId === input.entryId,
-      )
-    ) {
+    const matchingUserIndexes = nextUsers.flatMap((message, index) =>
+      message.entryId === input.entryId ||
+      (input.originOperationId !== undefined && message.operationId === input.originOperationId)
+        ? [index]
+        : [],
+    );
+    const ownerIndex =
+      matchingUserIndexes.find(
+        (index) =>
+          input.originOperationId !== undefined &&
+          nextUsers[index]?.operationId === input.originOperationId,
+      ) ?? matchingUserIndexes[0];
+    const owner = ownerIndex === undefined ? undefined : nextUsers[ownerIndex];
+    const content = owner?.content ?? queued?.content ?? input.contentPreview ?? '';
+    const delivered = deliveredInputUserMessage(projection, input, owner, queued, content);
+    const matchedUsers = new Set(matchingUserIndexes);
+    let remainingUsers: readonly UserMessage[] = nextUsers.filter(
+      (_message, index) => !matchedUsers.has(index),
+    );
+    let boundaryIndex = nextEvents.findIndex(
+      (event) => event.kind === 'mid_turn_user_prompt' && event.entryId === input.entryId,
+    );
+    if (boundaryIndex === -1) {
       const boundary = createDeliveredInputBoundary(projection, input, content);
       const insertionIndex = deliveredInputBoundaryInsertionIndex(nextEvents, projection, input);
-      if (insertionIndex === -1) nextEvents.push(boundary);
-      else nextEvents.splice(insertionIndex, 0, boundary);
+      boundaryIndex = insertionIndex === -1 ? nextEvents.length : insertionIndex;
+      nextEvents.splice(boundaryIndex, 0, boundary);
     }
+    remainingUsers = alignSegmentOwnersBeforePrompt(
+      projection.sessionId,
+      remainingUsers,
+      nextEvents,
+      boundaryIndex,
+      delivered.sentAt,
+    );
+    nextUsers.splice(0, nextUsers.length, ...remainingUsers, delivered);
   }
   return { events: nextEvents, userMessages: nextUsers, queuedMessages: nextQueued };
 }
@@ -5478,8 +6190,6 @@ export const useAppStore = create<AppState>((set) => ({
         ? canonProjectRootShared(state.currentProjectPath, IS_WIN_RENDERER)
         : null;
       if (targetCanon === currentCanon) return { currentSessionId: sessionId, ...patch };
-      // 跟 setCurrentProject 同款 LS 持久化 — 重启后 sidebar 仍在该项目
-      lsSet(LS_KEY_PROJECT, found.projectRoot);
       return {
         currentSessionId: sessionId,
         currentProjectPath: found.projectRoot,
@@ -5518,6 +6228,125 @@ export const useAppStore = create<AppState>((set) => ({
     });
     return messageId;
   },
+
+  reserveSendOperationMessage: (sessionId, input) => {
+    let owner: LocalSendOperationMessage | null = null;
+    set((state) => {
+      if (!state.sessions.some((session) => session.sessionId === sessionId)) return state;
+      const users = state.userMessagesBySession[sessionId] ?? [];
+      const queued = state.queuedUserMessagesBySession[sessionId] ?? [];
+      const existing = existingSendOperationOwner(
+        resolveSendOperationMessages(users, queued, input.operationId),
+        input.requestGeneration,
+      );
+      if (existing !== undefined) {
+        owner = existing.owner;
+        const patch = existingSendOperationPatch(state, sessionId, existing);
+        return Object.keys(patch).length === 0 ? state : patch;
+      }
+
+      if (input.queued) {
+        const message = createReservedQueuedMessage(sessionId, input);
+        owner = { kind: 'queued', id: message.id };
+        return {
+          queuedUserMessagesBySession: {
+            ...state.queuedUserMessagesBySession,
+            [sessionId]: [...queued, message],
+          },
+        };
+      }
+
+      const message = createReservedUserMessage(sessionId, input, users);
+      owner = { kind: 'user', id: message.id };
+      rememberHistoryLiveUsers(sessionId, [message]);
+      return {
+        sessions: state.sessions.map((session) =>
+          session.sessionId === sessionId && message.sentAt > session.lastActivityAt
+            ? { ...session, lastActivityAt: message.sentAt }
+            : session,
+        ),
+        userMessagesBySession: {
+          ...state.userMessagesBySession,
+          [sessionId]: [...users, message],
+        },
+      };
+    });
+    return owner;
+  },
+
+  rollbackSendOperationMessage: (
+    sessionId,
+    operationId,
+    expectedGeneration,
+    failureDisposition,
+  ) => {
+    let result: SendOperationRollbackResult = 'stale';
+    set((state) => {
+      if (expectedGeneration === undefined) return state;
+      const users = state.userMessagesBySession[sessionId] ?? [];
+      const queued = state.queuedUserMessagesBySession[sessionId] ?? [];
+      const messages = resolveSendOperationMessages(users, queued, operationId);
+      const settled = messages.settledUser ?? messages.settledQueued;
+      const pendingPatch = pendingSendCleanupPatch(state, sessionId, expectedGeneration);
+      if (settled !== undefined) {
+        result = 'settled';
+        return settledSendOperationPatch(state, sessionId, operationId, messages, pendingPatch);
+      }
+
+      const provisional = messages.provisionalUser ?? messages.provisionalQueued;
+      if (provisional === undefined) {
+        result = failureDisposition === 'ambiguous' ? 'retained' : 'rolled-back';
+        return Object.keys(pendingPatch).length === 0 ? state : pendingPatch;
+      }
+      if (provisional.operationReservation?.requestGeneration !== expectedGeneration) return state;
+      if (failureDisposition === 'ambiguous') {
+        result = 'retained';
+        return Object.keys(pendingPatch).length === 0 ? state : pendingPatch;
+      }
+
+      const removesUser = messages.provisionalUser?.id === provisional.id;
+      result = 'rolled-back';
+      return removeProvisionalSendOperationPatch(
+        state,
+        sessionId,
+        provisional,
+        removesUser,
+        pendingPatch,
+      );
+    });
+    return result;
+  },
+
+  settleSendOperationMessage: (sessionId, operationId) =>
+    set((state) => {
+      let changed = false;
+      const userBucket = state.userMessagesBySession[sessionId] ?? [];
+      const nextUsers = userBucket.map((message) => {
+        if (message.operationId !== operationId || message.sendAdmissionSettled === true) {
+          return message;
+        }
+        changed = true;
+        return { ...message, sendAdmissionSettled: true as const };
+      });
+      const queuedBucket = state.queuedUserMessagesBySession[sessionId] ?? [];
+      const nextQueued = queuedBucket.map((message) => {
+        if (message.operationId !== operationId || message.sendAdmissionSettled === true) {
+          return message;
+        }
+        changed = true;
+        return { ...message, sendAdmissionSettled: true as const };
+      });
+      if (!changed) return state;
+      const updatedUsers = nextUsers.filter((message) => message.operationId === operationId);
+      if (updatedUsers.length > 0) rememberHistoryLiveUsers(sessionId, updatedUsers);
+      return {
+        userMessagesBySession: { ...state.userMessagesBySession, [sessionId]: nextUsers },
+        queuedUserMessagesBySession: {
+          ...state.queuedUserMessagesBySession,
+          [sessionId]: nextQueued,
+        },
+      };
+    }),
 
   acknowledgePendingSendRun: (sessionId, runId, expectedGeneration) =>
     set((state) => {
@@ -5650,6 +6479,45 @@ export const useAppStore = create<AppState>((set) => ({
         userMessagesBySession: {
           ...state.userMessagesBySession,
           [sessionId]: nextBucket,
+        },
+      };
+    }),
+
+  updateSendOperationAttachments: (sessionId, operationId, attachments) =>
+    set((state) => {
+      let changed = false;
+      const mergeAttachments = (
+        previousAttachments: readonly UserImageAttachment[] | undefined,
+      ): readonly UserImageAttachment[] =>
+        attachments.map((attachment, index) => {
+          const previousLabel = previousAttachments?.[index]?.label;
+          return attachment.label === undefined && previousLabel !== undefined
+            ? { ...attachment, label: previousLabel }
+            : attachment;
+        });
+      const userBucket = state.userMessagesBySession[sessionId] ?? [];
+      const nextUserBucket = userBucket.map((message) => {
+        if (message.operationId !== operationId) return message;
+        changed = true;
+        return { ...message, attachments: mergeAttachments(message.attachments) };
+      });
+      const queuedBucket = state.queuedUserMessagesBySession[sessionId] ?? [];
+      const nextQueuedBucket = queuedBucket.map((message) => {
+        if (message.operationId !== operationId) return message;
+        changed = true;
+        return { ...message, attachments: mergeAttachments(message.attachments) };
+      });
+      if (!changed) return state;
+      const updatedUsers = nextUserBucket.filter((message) => message.operationId === operationId);
+      if (updatedUsers.length > 0) rememberHistoryLiveUsers(sessionId, updatedUsers);
+      return {
+        userMessagesBySession: {
+          ...state.userMessagesBySession,
+          [sessionId]: nextUserBucket,
+        },
+        queuedUserMessagesBySession: {
+          ...state.queuedUserMessagesBySession,
+          [sessionId]: nextQueuedBucket,
         },
       };
     }),
@@ -5852,6 +6720,10 @@ export const useAppStore = create<AppState>((set) => ({
       if (messageIndex === -1) return state;
       const message = userBucket[messageIndex];
       if (!message) return state;
+      // The acknowledgement belongs to the original provisional phase. Runtime delivery or
+      // canonical reconciliation may have settled that same owner while IPC was in flight; a
+      // late/cached queued result must never move the admitted user turn back into the queue.
+      if (userMessageHasSettledSendAdmission(message)) return state;
 
       forgetHistoryLiveUsers(sessionId, [message.id]);
       localId = `qu_${sessionId}_${++queuedUserMessageCounter}`;
@@ -6161,9 +7033,6 @@ export const useAppStore = create<AppState>((set) => ({
           });
           markTurnHasEvents();
         } else if (item.kind === 'lineage_notice') {
-          // #3 fix: fork/rewind 产生的 branch_summary / compaction 摘要——不是用户消息，
-          // 路由到非 user 的 lineage_notice 事件，composeMessages 渲染成 system_notice
-          // (variant='lineage')，不再显示成假的用户气泡。
           ensureLeadingHistoryAnchor();
           histEvents.push({
             ...historyOrigin,
@@ -6190,9 +7059,6 @@ export const useAppStore = create<AppState>((set) => ({
           }
           markTurnHasEvents();
         } else if (item.kind === 'workflow_notice') {
-          // Workflow 结果/失败提示条:SDK 把它作为 `<task-completed>` 合成消息存进 transcript,
-          // session.history 识别后发这个 kind。路由成 workflow_notice 事件 → composeMessages
-          // 原位渲染成 system_notice(variant='workflow'),不再走侧存储按 wall-clock 重排。
           ensureLeadingHistoryAnchor();
           histEvents.push({
             ...historyOrigin,
@@ -6222,8 +7088,10 @@ export const useAppStore = create<AppState>((set) => ({
             ...(item.variant !== undefined ? { variant: item.variant } : {}),
           });
         } else {
-          // tool_call: emit tool_start + (optional) tool_result。 result 缺失时 (history 损坏
-          // 或 tool_use 没匹配上 tool_result) 仍 emit tool_start 让 UI 显示一张 "running" 卡片。
+          // A bounded page can begin after a history_truncation in the middle of a turn. Keep
+          // the prefix notice on its own invisible owner and attach the leading tool segment to
+          // the authoritative partial-turn anchor so live/canonical folding cannot strand a
+          // duplicate tool above the query that owns it.
           ensureLeadingHistoryAnchor();
           histEvents.push({
             ...historyOrigin,
@@ -6251,6 +7119,9 @@ export const useAppStore = create<AppState>((set) => ({
       else flushEmptyTurnIfNeeded();
       for (const event of histEvents) restoredHistoryEvents.add(event);
       const replaceLoadedWindow = options?.replaceLoadedWindow === true;
+      const prefixOmitted = items.some(
+        (item) => item.kind === 'history_truncation' && item.scope === 'history',
+      );
       let liveBaseline = replaceLoadedWindow ? historyLiveBaselines.get(sessionId) : undefined;
       if (replaceLoadedWindow && liveBaseline === undefined) {
         liveBaseline = {
@@ -6272,9 +7143,6 @@ export const useAppStore = create<AppState>((set) => ({
           liveBaseline.canonicalIndexByUserId.clear();
           liveBaseline.canonicalSourceRevision = sourceRevision;
         }
-        const prefixOmitted = items.some(
-          (item) => item.kind === 'history_truncation' && item.scope === 'history',
-        );
         const firstRetainedCanonicalIndex = histMsgs.reduce<number | undefined>(
           (first, message) =>
             message.canonicalIndex === undefined
@@ -6302,8 +7170,22 @@ export const useAppStore = create<AppState>((set) => ({
         ? (liveBaseline?.events ?? state.eventsBySession[sessionId] ?? [])
         : [];
       const currentLocalNotices = state.localNoticesBySession[sessionId] ?? [];
-      let historyAndLiveEvents: readonly SessionEvent[] = [...histEvents, ...currentEvents];
-      let combinedHeadMsgs: readonly UserMessage[] = [...histMsgs, ...currentMsgs];
+      const retainedHistory = replaceLoadedWindow
+        ? retainLoadedHistoryPrefix(
+            state.userMessagesBySession[sessionId] ?? [],
+            state.eventsBySession[sessionId] ?? [],
+            histMsgs,
+            histEvents,
+          )
+        : { userMessages: histMsgs, events: histEvents };
+      let historyAndLiveEvents: readonly SessionEvent[] = [
+        ...retainedHistory.events,
+        ...currentEvents,
+      ];
+      let combinedHeadMsgs: readonly UserMessage[] = [
+        ...retainedHistory.userMessages,
+        ...currentMsgs,
+      ];
       // An ambiguous projection's proven clone candidates flow through the logicalId dedupe
       // below; relocating them here is untested against that path, so keep today's order.
       if (options?.conversationStatus !== 'ambiguous') {
@@ -7499,6 +8381,23 @@ export const useAppStore = create<AppState>((set) => ({
       const replacesKnownRuntime =
         state.runtimeConnection.runtimeId !== undefined &&
         state.runtimeConnection.runtimeId !== next.connection.runtimeId;
+      const retiredRuntimeSessionIds = new Set<string>();
+      if (replacesKnownRuntime) {
+        for (const session of state.sessions) {
+          if ((session.surface ?? 'code') === 'code') {
+            retiredRuntimeSessionIds.add(session.sessionId);
+          }
+        }
+        for (const session of state.runtimeProfile?.sessions ?? []) {
+          retiredRuntimeSessionIds.add(session.sessionId);
+        }
+        for (const interaction of state.runtimeProfile?.interactions ?? []) {
+          retiredRuntimeSessionIds.add(interaction.request.sessionId);
+        }
+        for (const sessionId of Object.keys(state.liveProjectionBySession)) {
+          retiredRuntimeSessionIds.add(sessionId);
+        }
+      }
       const pendingSendRuntimeBaselineBySession = Object.fromEntries(
         Object.keys(state.pendingSendBySession).map((sessionId) => {
           const baseline = state.pendingSendRuntimeBaselineBySession[sessionId] ?? {
@@ -7527,6 +8426,12 @@ export const useAppStore = create<AppState>((set) => ({
                 ? {
                     pendingSendBySession: {},
                     pendingSendRuntimeBaselineBySession: {},
+                    permissionQueue: state.permissionQueue.filter(
+                      (request) => !retiredRuntimeSessionIds.has(request.sessionId),
+                    ),
+                    askUserQueue: state.askUserQueue.filter(
+                      (request) => !retiredRuntimeSessionIds.has(request.sessionId),
+                    ),
                   }
                 : { pendingSendRuntimeBaselineBySession }),
             }),
@@ -7696,10 +8601,21 @@ export const useAppStore = create<AppState>((set) => ({
       const currentEvents = state.eventsBySession[projection.sessionId] ?? [];
       const currentUsers = state.userMessagesBySession[projection.sessionId] ?? [];
       const currentQueued = state.queuedUserMessagesBySession[projection.sessionId] ?? [];
-      const deliveredInputs = reconcileRuntimeDeliveredInputs(
-        currentEvents,
+      const queuedInputs = reconcileRuntimeQueuedMessages(
         currentUsers,
         currentQueued,
+        identityProjection,
+      );
+      const startedAfterTurnInputs = reconcileRuntimeStartedAfterTurnInputs(
+        currentEvents,
+        queuedInputs.userMessages,
+        queuedInputs.queuedMessages,
+        identityProjection,
+      );
+      const deliveredInputs = reconcileRuntimeDeliveredInputs(
+        startedAfterTurnInputs.events,
+        startedAfterTurnInputs.userMessages,
+        startedAfterTurnInputs.queuedMessages,
         identityProjection,
       );
       const sidecarHydratedEvents = hydrateProjectedSidecarMessages(
@@ -7736,10 +8652,21 @@ export const useAppStore = create<AppState>((set) => ({
         // authoritative Runtime snapshot into that baseline as well, otherwise loading an older
         // page would rebuild from a pre-reconnect baseline and make assistant/thinking/tool state
         // restored by the snapshot disappear.
-        const deliveredBaseline = reconcileRuntimeDeliveredInputs(
-          liveBaseline.events,
+        const queuedBaseline = reconcileRuntimeQueuedMessages(
           liveBaseline.userMessages,
           currentQueued,
+          identityProjection,
+        );
+        const startedAfterTurnBaseline = reconcileRuntimeStartedAfterTurnInputs(
+          liveBaseline.events,
+          queuedBaseline.userMessages,
+          queuedBaseline.queuedMessages,
+          identityProjection,
+        );
+        const deliveredBaseline = reconcileRuntimeDeliveredInputs(
+          startedAfterTurnBaseline.events,
+          startedAfterTurnBaseline.userMessages,
+          startedAfterTurnBaseline.queuedMessages,
           identityProjection,
         );
         const hydratedBaselineEvents = hydrateSessionEventsFromLiveSnapshot(
@@ -7786,10 +8713,6 @@ export const useAppStore = create<AppState>((set) => ({
             interaction.kind === 'ask-user' && interaction.state === 'pending',
         )
         .map((interaction) => interaction.request);
-      const queuedUserMessages = reconcileRuntimeQueuedMessages(
-        deliveredInputs.queuedMessages,
-        projection,
-      );
       return {
         sessions: mergeRuntimeSettingsIntoSessions(state.sessions, projection),
         liveProjectionBySession,
@@ -7841,7 +8764,7 @@ export const useAppStore = create<AppState>((set) => ({
         ],
         queuedUserMessagesBySession: {
           ...state.queuedUserMessagesBySession,
-          [projection.sessionId]: queuedUserMessages,
+          [projection.sessionId]: deliveredInputs.queuedMessages,
         },
         ...pendingSendPatch,
       };
@@ -7895,9 +8818,27 @@ export const useAppStore = create<AppState>((set) => ({
       const currentEvents = state.eventsBySession[change.sessionId] ?? [];
       const currentUsers = state.userMessagesBySession[change.sessionId] ?? [];
       const currentQueued = state.queuedUserMessagesBySession[change.sessionId] ?? [];
+      const queuedInputs =
+        appliesDeliveredInputs && projection !== undefined
+          ? reconcileRuntimeQueuedMessages(currentUsers, currentQueued, projection)
+          : { userMessages: currentUsers, queuedMessages: currentQueued };
+      const startedAfterTurnInputs =
+        appliesDeliveredInputs && projection !== undefined
+          ? reconcileRuntimeStartedAfterTurnInputs(
+              currentEvents,
+              queuedInputs.userMessages,
+              queuedInputs.queuedMessages,
+              projection,
+            )
+          : { events: currentEvents, ...queuedInputs };
       const deliveredInputs =
         appliesDeliveredInputs && projection !== undefined
-          ? reconcileRuntimeDeliveredInputs(currentEvents, currentUsers, currentQueued, projection)
+          ? reconcileRuntimeDeliveredInputs(
+              startedAfterTurnInputs.events,
+              startedAfterTurnInputs.userMessages,
+              startedAfterTurnInputs.queuedMessages,
+              projection,
+            )
           : {
               events: currentEvents,
               userMessages: currentUsers,
@@ -7938,17 +8879,25 @@ export const useAppStore = create<AppState>((set) => ({
       const reconciledEvents = folded.events;
       const liveBaseline = historyLiveBaselines.get(change.sessionId);
       if ((appliesDeliveredInputs || appliesSidecar) && liveBaseline !== undefined) {
-        const deliveredBaseline = appliesDeliveredInputs
-          ? reconcileRuntimeDeliveredInputs(
+        const queuedBaseline = appliesDeliveredInputs
+          ? reconcileRuntimeQueuedMessages(liveBaseline.userMessages, currentQueued, projection)
+          : { userMessages: liveBaseline.userMessages, queuedMessages: currentQueued };
+        const startedAfterTurnBaseline = appliesDeliveredInputs
+          ? reconcileRuntimeStartedAfterTurnInputs(
               liveBaseline.events,
-              liveBaseline.userMessages,
-              currentQueued,
+              queuedBaseline.userMessages,
+              queuedBaseline.queuedMessages,
               projection,
             )
-          : {
-              events: liveBaseline.events,
-              userMessages: liveBaseline.userMessages,
-            };
+          : { events: liveBaseline.events, ...queuedBaseline };
+        const deliveredBaseline = appliesDeliveredInputs
+          ? reconcileRuntimeDeliveredInputs(
+              startedAfterTurnBaseline.events,
+              startedAfterTurnBaseline.userMessages,
+              startedAfterTurnBaseline.queuedMessages,
+              projection,
+            )
+          : { events: liveBaseline.events, userMessages: liveBaseline.userMessages };
         const sidecarHydratedBaseline = hydrateProjectedSidecarMessages(
           deliveredBaseline.events,
           projection,
@@ -8031,10 +8980,7 @@ export const useAppStore = create<AppState>((set) => ({
           ? {
               queuedUserMessagesBySession: {
                 ...state.queuedUserMessagesBySession,
-                [change.sessionId]: reconcileRuntimeQueuedMessages(
-                  deliveredInputs.queuedMessages,
-                  projection,
-                ),
+                [change.sessionId]: deliveredInputs.queuedMessages,
               },
             }
           : {};
@@ -8111,8 +9057,6 @@ export const useAppStore = create<AppState>((set) => ({
     set({ pendingAgentMode: mode });
   },
   setPendingModel: (model) => {
-    // model 名是 provider-specific 字符串；写 LS 让重启后默认沿用上次选择。
-    lsSet(LS_KEY_PENDING_MODEL, model);
     set({ pendingModel: model });
   },
 

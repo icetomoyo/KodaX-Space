@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 
 import { projectEmbeddedMidTurnUserMessages, RealKodaXSession } from '../kodax/real-session.js';
@@ -87,6 +90,537 @@ test('embedded Coder send rejects before acceptance when the inline owner is una
   await assert.rejects(session.send('must not be accepted'), /inline owner unavailable/);
   assert.equal(session.isRunning(), false);
   assert.deepEqual(events, []);
+});
+
+test('an explicit Skill is rejected factually while any run is active', async () => {
+  const session = new RealKodaXSession({
+    sessionId: 'session_busy_skill',
+    projectRoot: process.cwd(),
+    provider: 'test-provider',
+    reasoningMode: 'balanced',
+    permissionMode: 'accept-edits',
+    surface: 'partner',
+    emit: () => undefined,
+    requestPermission: async () => 'allow_once',
+  });
+  const internal = session as unknown as {
+    currentAbort: AbortController | null;
+    resolveExplicitSkillReference(): Promise<{
+      readonly name: string;
+      readonly argumentsText: string;
+      readonly registered: boolean;
+    }>;
+  };
+  internal.currentAbort = new AbortController();
+  internal.resolveExplicitSkillReference = async () => ({
+    name: 'code-review',
+    argumentsText: '--strict',
+    registered: true,
+  });
+
+  assert.deepEqual(
+    await session.send('/code-review --strict', undefined, {
+      queueMode: 'after-turn',
+    }),
+    {
+      accepted: false,
+      reason: 'skill_requires_idle',
+      queueMode: 'after-turn',
+    },
+  );
+});
+
+test('a fresh explicit Skill is prepared once before the run starts', async () => {
+  const session = new RealKodaXSession({
+    sessionId: 'session_fresh_skill',
+    projectRoot: process.cwd(),
+    provider: 'test-provider',
+    reasoningMode: 'balanced',
+    permissionMode: 'accept-edits',
+    surface: 'partner',
+    emit: () => undefined,
+    requestPermission: async () => 'allow_once',
+  });
+  const prepared = {
+    executionPrompt: 'prepared execution prompt',
+    modelOverride: 'skill-model',
+    skillInvocation: {
+      name: 'code-review',
+      path: 'C:\\trusted\\code-review\\SKILL.md',
+      expandedContent: 'trusted skill body',
+      runtimePolicy: { enforceAtRuntime: true },
+    },
+    finalize: async () => undefined,
+  };
+  let prepareCalls = 0;
+  let startedWith: unknown;
+  const internal = session as unknown as {
+    resolveExplicitSkillReference(): Promise<{
+      readonly name: string;
+      readonly argumentsText: string;
+      readonly registered: boolean;
+    }>;
+    prepareExplicitSkillExecution(
+      rawUserInput: string,
+      reference: { readonly name: string; readonly argumentsText: string },
+      permissionMode: string,
+    ): Promise<{ readonly prepared?: unknown; readonly rejectionReason?: string }>;
+    startRun(...args: unknown[]): null;
+  };
+  internal.resolveExplicitSkillReference = async () => ({
+    name: 'code-review',
+    argumentsText: '--strict',
+    registered: true,
+  });
+  internal.prepareExplicitSkillExecution = async (rawUserInput, reference, permissionMode) => {
+    prepareCalls += 1;
+    assert.equal(rawUserInput, '/code-review --strict');
+    assert.deepEqual(reference, {
+      name: 'code-review',
+      argumentsText: '--strict',
+      registered: true,
+    });
+    assert.equal(permissionMode, 'accept-edits');
+    return { prepared };
+  };
+  internal.startRun = (...args) => {
+    startedWith = args[6];
+    return null;
+  };
+
+  assert.deepEqual(
+    await session.send('/code-review --strict', undefined, {
+      operationId: 'operation-skill',
+    }),
+    { accepted: true, queued: false },
+  );
+  assert.equal(prepareCalls, 1);
+  assert.equal(startedWith, prepared);
+});
+
+test('distinct sends cannot cross the same fresh-run preparation boundary', async () => {
+  const session = new RealKodaXSession({
+    sessionId: 'session_concurrent_skill_preparation',
+    projectRoot: process.cwd(),
+    provider: 'test-provider',
+    reasoningMode: 'balanced',
+    permissionMode: 'accept-edits',
+    surface: 'partner',
+    emit: () => undefined,
+    requestPermission: async () => 'allow_once',
+  });
+  const prepared = {
+    executionPrompt: 'prepared execution prompt',
+    skillInvocation: {
+      name: 'code-review',
+      path: 'C:\\trusted\\code-review\\SKILL.md',
+      expandedContent: 'trusted skill body',
+      runtimePolicy: { enforceAtRuntime: true },
+    },
+    finalize: async () => undefined,
+  };
+  let releasePreparation!: () => void;
+  const preparationGate = new Promise<void>((resolve) => {
+    releasePreparation = resolve;
+  });
+  let preparationCalls = 0;
+  const internal = session as unknown as {
+    currentAbort: AbortController | null;
+    resolveExplicitSkillReference(): Promise<{
+      readonly name: string;
+      readonly argumentsText: string;
+      readonly registered: boolean;
+    }>;
+    prepareExplicitSkillExecution(): Promise<{ readonly prepared: unknown }>;
+    startRun(...args: unknown[]): null;
+  };
+  internal.resolveExplicitSkillReference = async () => ({
+    name: 'code-review',
+    argumentsText: 'first',
+    registered: true,
+  });
+  internal.prepareExplicitSkillExecution = async () => {
+    preparationCalls += 1;
+    await preparationGate;
+    return { prepared };
+  };
+  internal.startRun = () => {
+    internal.currentAbort = new AbortController();
+    return null;
+  };
+
+  const first = session.send('/code-review first', undefined, {
+    operationId: 'operation-skill-first',
+  });
+  await waitForTest(() => preparationCalls === 1);
+  const second = session.send('/code-review second', undefined, {
+    operationId: 'operation-skill-second',
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.equal(preparationCalls, 1, 'the second send must wait outside Skill preparation');
+  releasePreparation();
+  assert.deepEqual(await first, { accepted: true, queued: false });
+  assert.deepEqual(await second, {
+    accepted: false,
+    reason: 'skill_requires_idle',
+    queueMode: 'interrupt',
+  });
+  assert.equal(preparationCalls, 1);
+});
+
+for (const action of ['cancel', 'dispose'] as const) {
+  test(`${action} during explicit Skill preparation prevents a ghost Run and finalizes once`, async () => {
+    const session = new RealKodaXSession({
+      sessionId: `session_skill_${action}_during_preparation`,
+      projectRoot: process.cwd(),
+      provider: 'test-provider',
+      reasoningMode: 'balanced',
+      permissionMode: 'accept-edits',
+      surface: 'partner',
+      emit: () => undefined,
+      requestPermission: async () => 'allow_once',
+    });
+    let releasePreparation!: () => void;
+    const preparationGate = new Promise<void>((resolve) => {
+      releasePreparation = resolve;
+    });
+    let preparationStarted = false;
+    let finalizations = 0;
+    let starts = 0;
+    const internal = session as unknown as {
+      resolveExplicitSkillReference(): Promise<{
+        readonly name: string;
+        readonly argumentsText: string;
+        readonly registered: boolean;
+      }>;
+      prepareExplicitSkillExecution(): Promise<{ readonly prepared: unknown }>;
+      startRun(...args: unknown[]): null;
+    };
+    internal.resolveExplicitSkillReference = async () => ({
+      name: 'code-review',
+      argumentsText: '--strict',
+      registered: true,
+    });
+    internal.prepareExplicitSkillExecution = async () => {
+      preparationStarted = true;
+      await preparationGate;
+      return {
+        prepared: {
+          executionPrompt: 'prepared prompt',
+          skillInvocation: {
+            name: 'code-review',
+            path: 'C:\\trusted\\code-review\\SKILL.md',
+            expandedContent: 'trusted body',
+            runtimePolicy: { enforceAtRuntime: true },
+          },
+          finalize: async () => {
+            finalizations += 1;
+          },
+        },
+      };
+    };
+    internal.startRun = () => {
+      starts += 1;
+      return null;
+    };
+
+    const send = session.send('/code-review --strict');
+    await waitForTest(() => preparationStarted);
+    const stop = action === 'cancel' ? session.cancel() : session.dispose();
+    releasePreparation();
+
+    assert.deepEqual(await send, {
+      accepted: false,
+      reason: 'cancelled_before_admission',
+      queueMode: 'interrupt',
+    });
+    await stop;
+    assert.equal(starts, 0);
+    assert.equal(finalizations, 1);
+  });
+}
+
+test('fork Skill is rejected before dynamic context or permission can execute', async (t) => {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'space-fork-skill-'));
+  t.after(() => fs.rmSync(projectRoot, { recursive: true, force: true }));
+  const skillName = `fork-skill-${Date.now()}`;
+  const skillDir = path.join(projectRoot, '.kodax', 'skills', skillName);
+  fs.mkdirSync(skillDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(skillDir, 'SKILL.md'),
+    `---\nname: ${skillName}\ndescription: fork safety\ncontext: fork\n---\n!\`echo must-not-run\`\n`,
+  );
+  let permissionRequests = 0;
+  const session = new RealKodaXSession({
+    sessionId: 'session_fork_skill_preflight',
+    projectRoot,
+    provider: 'test-provider',
+    reasoningMode: 'balanced',
+    permissionMode: 'accept-edits',
+    surface: 'code',
+    emit: () => undefined,
+    requestPermission: async () => {
+      permissionRequests += 1;
+      return 'allow_once';
+    },
+  });
+  const internal = session as unknown as {
+    resolveExplicitSkillReference(rawUserInput: string): Promise<
+      | {
+          readonly name: string;
+          readonly argumentsText: string;
+          readonly registered: boolean;
+        }
+      | undefined
+    >;
+    prepareExplicitSkillExecution(
+      rawUserInput: string,
+      reference: { readonly name: string; readonly argumentsText: string },
+      permissionMode: string,
+    ): Promise<{ readonly rejectionReason?: string }>;
+  };
+  const rawUserInput = `/${skillName}`;
+  const reference = await internal.resolveExplicitSkillReference(rawUserInput);
+  assert.ok(reference);
+
+  assert.deepEqual(
+    await internal.prepareExplicitSkillExecution(rawUserInput, reference, 'accept-edits'),
+    { rejectionReason: 'skill_fork_unsupported' },
+  );
+  assert.equal(permissionRequests, 0);
+});
+
+for (const prompt of ['/skill:definitely-missing --strict', '/definitely-missing --strict']) {
+  test(`unregistered explicit Skill is rejected without a model Run: ${prompt}`, async () => {
+    const session = new RealKodaXSession({
+      sessionId: `session_missing_skill_${prompt.startsWith('/skill:') ? 'qualified' : 'bare'}`,
+      projectRoot: process.cwd(),
+      provider: 'test-provider',
+      reasoningMode: 'balanced',
+      permissionMode: 'accept-edits',
+      surface: 'partner',
+      emit: () => undefined,
+      requestPermission: async () => 'allow_once',
+    });
+    let starts = 0;
+    (session as unknown as { startRun(...args: unknown[]): null }).startRun = () => {
+      starts += 1;
+      return null;
+    };
+
+    assert.deepEqual(await session.send(prompt), {
+      accepted: false,
+      reason: 'skill_not_found',
+      queueMode: 'interrupt',
+    });
+    assert.equal(starts, 0);
+  });
+}
+
+test('multiple registered explicit Skill references are rejected before preparation', async (t) => {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'space-multiple-skills-'));
+  t.after(() => fs.rmSync(projectRoot, { recursive: true, force: true }));
+  const skillName = `single-skill-${Date.now()}`;
+  const skillDir = path.join(projectRoot, '.kodax', 'skills', skillName);
+  fs.mkdirSync(skillDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(skillDir, 'SKILL.md'),
+    `---\nname: ${skillName}\ndescription: single Skill contract\n---\nReview $ARGUMENTS.\n`,
+  );
+  const session = new RealKodaXSession({
+    sessionId: 'session_multiple_explicit_skills',
+    projectRoot,
+    provider: 'test-provider',
+    reasoningMode: 'balanced',
+    permissionMode: 'accept-edits',
+    surface: 'partner',
+    emit: () => undefined,
+    requestPermission: async () => 'allow_once',
+  });
+  let preparationCalls = 0;
+  let starts = 0;
+  const internal = session as unknown as {
+    prepareExplicitSkillExecution(): Promise<{ readonly rejectionReason: string }>;
+    startRun(...args: unknown[]): null;
+  };
+  internal.prepareExplicitSkillExecution = async () => {
+    preparationCalls += 1;
+    return { rejectionReason: 'skill_preparation_failed' };
+  };
+  internal.startRun = () => {
+    starts += 1;
+    return null;
+  };
+
+  assert.deepEqual(await session.send(`/${skillName} one /${skillName} two`), {
+    accepted: false,
+    reason: 'skill_multiple_references',
+    queueMode: 'interrupt',
+  });
+  assert.equal(preparationCalls, 0);
+  assert.equal(starts, 0);
+});
+
+test('explicit Skill resolution supports a middle token and preserves its exact suffix', async (t) => {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'space-explicit-skill-'));
+  t.after(() => fs.rmSync(projectRoot, { recursive: true, force: true }));
+  const skillName = `release-skill-${Date.now()}`;
+  const skillDir = path.join(projectRoot, '.kodax', 'skills', skillName);
+  fs.mkdirSync(skillDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(skillDir, 'SKILL.md'),
+    `---\nname: ${skillName}\ndescription: release contract\nallowed-tools: read\n---\nReview $ARGUMENTS carefully.\n`,
+  );
+  const session = new RealKodaXSession({
+    sessionId: 'session_real_skill_prepare',
+    projectRoot,
+    provider: 'test-provider',
+    reasoningMode: 'balanced',
+    permissionMode: 'accept-edits',
+    surface: 'code',
+    emit: () => undefined,
+    requestPermission: async () => 'allow_once',
+  });
+  const result = await (session as unknown as {
+    resolveExplicitSkillReference(rawUserInput: string): Promise<
+      | {
+          readonly name: string;
+          readonly argumentsText: string;
+          readonly registered: boolean;
+        }
+      | undefined
+    >;
+    prepareExplicitSkillExecution(
+      rawUserInput: string,
+      reference: { readonly name: string; readonly argumentsText: string },
+      permissionMode: string,
+    ): Promise<{
+      readonly prepared?: {
+        readonly executionPrompt: string;
+        readonly skillInvocation: Record<string, unknown>;
+        readonly finalize: () => Promise<void>;
+      };
+      readonly rejectionReason?: string;
+    }>;
+  });
+  const rawUserInput = `Please run /skill:${skillName} "src/a b.ts"  --strict`;
+  const reference = await result.resolveExplicitSkillReference(rawUserInput);
+  assert.deepEqual(reference, {
+    name: skillName,
+    argumentsText: '"src/a b.ts"  --strict',
+    registered: true,
+  });
+  assert.ok(reference);
+  const preparation = await result.prepareExplicitSkillExecution(
+    rawUserInput,
+    reference,
+    'accept-edits',
+  );
+
+  assert.equal(preparation.rejectionReason, undefined);
+  assert.match(preparation.prepared?.executionPrompt ?? '', /User request:/);
+  assert.equal(preparation.prepared?.skillInvocation.name, skillName);
+  assert.match(
+    String(preparation.prepared?.skillInvocation.expandedContent),
+    /Review "src\/a b\.ts" {2}--strict carefully/,
+  );
+  assert.deepEqual(preparation.prepared?.skillInvocation.runtimePolicy, {
+    enforceAtRuntime: true,
+  });
+  await preparation.prepared?.finalize();
+});
+
+test('an admitted explicit Skill finalizes once even when stream preflight fails', async () => {
+  const session = new RealKodaXSession({
+    sessionId: 'session_skill_finalize',
+    projectRoot: process.cwd(),
+    provider: 'test-provider',
+    reasoningMode: 'balanced',
+    permissionMode: 'accept-edits',
+    surface: 'partner',
+    emit: () => undefined,
+    requestPermission: async () => 'allow_once',
+  });
+  let finalizations = 0;
+  let finalizationError: string | undefined;
+  const internal = session as unknown as {
+    runRealStream(...args: unknown[]): Promise<void>;
+    startRun(...args: unknown[]): unknown;
+  };
+  internal.runRealStream = async () => {
+    throw new Error('preflight exploded');
+  };
+  internal.startRun(
+    '/code-review',
+    undefined,
+    undefined,
+    'accept-edits',
+    'operation-finalize',
+    false,
+    {
+      executionPrompt: 'prepared prompt',
+      skillInvocation: {
+        name: 'code-review',
+        path: 'C:\\trusted\\code-review\\SKILL.md',
+        expandedContent: 'body',
+        runtimePolicy: { enforceAtRuntime: true },
+      },
+      finalize: async (error?: Error) => {
+        finalizations += 1;
+        finalizationError = error?.message;
+      },
+    },
+  );
+
+  await waitForTest(() => !session.isRunning());
+  assert.equal(finalizations, 1);
+  assert.equal(finalizationError, 'preflight exploded');
+});
+
+test('an admitted explicit Skill finalizes with a fulfilled embedded terminal failure', async () => {
+  const session = new RealKodaXSession({
+    sessionId: 'session_skill_embedded_terminal_failure',
+    projectRoot: process.cwd(),
+    provider: 'test-provider',
+    reasoningMode: 'balanced',
+    permissionMode: 'accept-edits',
+    surface: 'partner',
+    emit: () => undefined,
+    requestPermission: async () => 'allow_once',
+  });
+  let finalizations = 0;
+  let finalizationError: string | undefined;
+  const internal = session as unknown as {
+    runRealStream(...args: unknown[]): Promise<Error | undefined>;
+    startRun(...args: unknown[]): unknown;
+  };
+  internal.runRealStream = async () => new Error('embedded terminal failed');
+  internal.startRun(
+    '/code-review',
+    undefined,
+    undefined,
+    'accept-edits',
+    'operation-embedded-terminal-failure',
+    false,
+    {
+      executionPrompt: 'prepared prompt',
+      skillInvocation: {
+        name: 'code-review',
+        path: 'C:\\trusted\\code-review\\SKILL.md',
+        expandedContent: 'body',
+        runtimePolicy: { enforceAtRuntime: true },
+      },
+      finalize: async (error?: Error) => {
+        finalizations += 1;
+        finalizationError = error?.message;
+      },
+    },
+  );
+
+  await waitForTest(() => !session.isRunning());
+  assert.equal(finalizations, 1);
+  assert.equal(finalizationError, 'embedded terminal failed');
 });
 
 test('daemon Coder restores the draft when the persisted boundary changes before admission', async (t) => {
@@ -659,8 +1193,7 @@ test('active daemon run preserves interrupt intent and requires explicit after-t
 
   let submittedInput: Record<string, unknown> | undefined;
   let settingsUpdate:
-    | { readonly sessionId: string; readonly patch: Record<string, unknown> }
-    | undefined;
+    { readonly sessionId: string; readonly patch: Record<string, unknown> } | undefined;
   const settingsUpdates: Array<{
     readonly sessionId: string;
     readonly patch: Record<string, unknown>;
@@ -840,7 +1373,7 @@ test('active daemon run preserves interrupt intent and requires explicit after-t
   );
 });
 
-test('daemon run refreshes settings and hides exit_plan_mode without an approval bridge', async (t) => {
+test('daemon run refreshes settings and transports trusted Skill context without hook commands', async (t) => {
   setUserConfigImpl({
     loadConfig: (() => ({ sandbox: { envPass: ['GH_TOKEN', 'GITHUB_TOKEN'] } })) as never,
     registerCustomProviders: () => undefined,
@@ -863,9 +1396,9 @@ test('daemon run refreshes settings and hides exit_plan_mode without an approval
   });
 
   let settingsUpdate:
-    | { readonly sessionId: string; readonly patch: Record<string, unknown> }
-    | undefined;
+    { readonly sessionId: string; readonly patch: Record<string, unknown> } | undefined;
   let managedRunInput: Record<string, unknown> | undefined;
+  let managedRunCalls = 0;
   patchMethod('initialize', async () => undefined);
   patchMethod('ensureSession', async () => false);
   patchMethod(
@@ -876,6 +1409,7 @@ test('daemon run refreshes settings and hides exit_plan_mode without an approval
   );
   patchMethod('ensureObserved', async () => undefined);
   patchMethod('startManagedRun', async (input: Record<string, unknown>) => {
+    managedRunCalls += 1;
     managedRunInput = input;
     return {
       runId: 'run_daemon',
@@ -907,15 +1441,29 @@ test('daemon run refreshes settings and hides exit_plan_mode without an approval
         promptOverlay?: string,
         admission?: unknown,
         operationId?: string,
+        explicitSkill?: unknown,
       ): Promise<void>;
     }
   ).runCoderDaemon(
-    'inspect',
+    '/code-review --strict',
     new AbortController().signal,
     undefined,
     undefined,
     undefined,
     'space-send-start-1',
+    {
+      executionPrompt: 'prepared daemon Skill prompt',
+      modelOverride: 'skill-model',
+      skillInvocation: {
+        name: 'code-review',
+        path: 'C:\\trusted\\code-review\\SKILL.md',
+        allowedTools: 'read',
+        hookEvents: ['PreToolUse'],
+        expandedContent: 'trusted Skill body',
+        runtimePolicy: { enforceAtRuntime: true },
+      },
+      finalize: async () => undefined,
+    },
   );
 
   assert.ok(settingsUpdate);
@@ -945,14 +1493,85 @@ test('daemon run refreshes settings and hides exit_plan_mode without an approval
         readonly context?: {
           readonly excludeTools?: readonly string[];
           readonly shellExecution?: unknown;
+          readonly rawUserInput?: string;
+          readonly skillInvocation?: Record<string, unknown>;
         };
+        readonly modelOverride?: string;
         readonly sandbox?: { readonly envPass?: readonly string[] };
       }
     | undefined;
   assert.ok(options?.context?.excludeTools?.includes('exit_plan_mode'));
   assert.deepEqual(options?.context?.shellExecution, shellExecution);
+  assert.equal(managedRunCalls, 1);
+  assert.equal(options?.context?.rawUserInput, '/code-review --strict');
+  assert.equal(options?.context?.skillInvocation?.name, 'code-review');
+  assert.deepEqual(options?.context?.skillInvocation?.runtimePolicy, {
+    enforceAtRuntime: true,
+  });
+  assert.equal(options?.modelOverride, 'skill-model');
   assert.deepEqual(options?.sandbox?.envPass, ['GH_TOKEN', 'GITHUB_TOKEN']);
   assert.deepEqual(managedRunInput?.operation, { operationId: 'space-send-start-1' });
+  assert.deepEqual(managedRunInput?.input, [
+    { type: 'text', text: 'prepared daemon Skill prompt' },
+  ]);
+  const serializedSkill = JSON.stringify(options?.context?.skillInvocation);
+  assert.equal(serializedSkill.includes('"hooks"'), false);
+  assert.equal(serializedSkill.includes('"command"'), false);
+});
+
+test('daemon fulfilled terminal failure remains a Skill finalization failure', async (t) => {
+  const adapter = runtimeHostAdapter as unknown as Record<string, unknown>;
+  const patchedMethods = new Map<string, { readonly existed: boolean; readonly value: unknown }>();
+  const patchMethod = (name: string, value: unknown): void => {
+    patchedMethods.set(name, {
+      existed: Object.prototype.hasOwnProperty.call(adapter, name),
+      value: adapter[name],
+    });
+    adapter[name] = value;
+  };
+  t.after(() => {
+    for (const [name, original] of patchedMethods) {
+      if (original.existed) adapter[name] = original.value;
+      else delete adapter[name];
+    }
+  });
+  patchMethod('initialize', async () => undefined);
+  patchMethod('ensureSession', async () => false);
+  patchMethod('updateSessionSettings', async () => undefined);
+  patchMethod('ensureObserved', async () => undefined);
+  patchMethod('startManagedRun', async () => ({
+    runId: 'run_daemon_terminal_failure',
+    result: Promise.resolve({
+      runId: 'run_daemon_terminal_failure',
+      sessionId: 'session_daemon_terminal_failure',
+      phase: 'failed',
+      terminal: {
+        revision: 1,
+        kind: 'failed',
+        code: 'provider_error',
+        effectOutcome: 'none',
+        message: 'daemon terminal failed',
+      },
+    }),
+  }));
+
+  const session = new RealKodaXSession({
+    sessionId: 'session_daemon_terminal_failure',
+    projectRoot: process.cwd(),
+    provider: 'test-provider',
+    reasoningMode: 'balanced',
+    permissionMode: 'accept-edits',
+    surface: 'code',
+    emit: () => undefined,
+    requestPermission: async () => 'allow_once',
+  });
+  const failure = await (
+    session as unknown as {
+      runCoderDaemon(prompt: string, signal: AbortSignal): Promise<Error | undefined>;
+    }
+  ).runCoderDaemon('fail factually', new AbortController().signal);
+
+  assert.equal(failure?.message, 'daemon terminal failed');
 });
 
 test('daemon permission sync keeps mode changes made during initialize and an in-flight settings write', async (t) => {

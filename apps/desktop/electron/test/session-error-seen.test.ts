@@ -153,6 +153,54 @@ test('a persisted terminal runId suppresses its restored session_error but not a
   );
 });
 
+test('a scoped start from the previous Runtime cannot revive the sidebar spinner', () => {
+  assert.equal(
+    deriveSessionStatus({
+      pending: false,
+      events: [
+        {
+          kind: 'session_start',
+          sessionId: SID,
+          provider: 'mock',
+          runtimeEvent: { runtimeId: 'rt_old', runId: 'run_old', seq: 1 },
+        },
+      ],
+      awaitingPermission: false,
+      awaitingAskUser: false,
+      errorSeenAt: 0,
+      errorSeenRunId: undefined,
+      runtimeLive: undefined,
+      runtimeProfileActive: false,
+      currentRuntimeId: 'rt_new',
+    }),
+    'idle',
+  );
+});
+
+test('losing the current Runtime id fences every scoped live and event activity signal', () => {
+  assert.equal(
+    deriveSessionStatus({
+      pending: false,
+      events: [
+        {
+          kind: 'session_start',
+          sessionId: SID,
+          provider: 'mock',
+          runtimeEvent: { runtimeId: 'rt_old', runId: 'run_old', seq: 2 },
+        },
+      ],
+      awaitingPermission: false,
+      awaitingAskUser: false,
+      errorSeenAt: 0,
+      errorSeenRunId: undefined,
+      runtimeLive: liveWithActiveRun('run_old'),
+      runtimeProfileActive: false,
+      currentRuntimeId: undefined,
+    }),
+    'idle',
+  );
+});
+
 test('visiting a Session acknowledges distinct profile and live terminal Runs without ordering IDs', () => {
   const connection = {
     state: 'ready' as const,
@@ -279,6 +327,80 @@ test('fresh profile activity can only add running evidence and never clears live
   );
 });
 
+test('an exact terminal event closes lagging profile activity without comparing cursor domains or closing a successor Run', () => {
+  const terminalEvent = {
+    kind: 'session_complete' as const,
+    sessionId: SID,
+    runtimeEvent: { runtimeId: 'rt_1', runId: 'run_done', seq: 8 },
+  };
+  const base = {
+    pending: false,
+    events: [terminalEvent],
+    awaitingPermission: false,
+    awaitingAskUser: false,
+    errorSeenAt: 0,
+    errorSeenRunId: undefined,
+    runtimeLive: undefined,
+    runtimeProfileActive: true,
+    currentRuntimeId: 'rt_1',
+  };
+
+  assert.equal(
+    deriveSessionStatus({
+      ...base,
+      runtimeProfileActivity: {
+        runtimeId: 'rt_1',
+        runIds: ['run_done'],
+      },
+    }),
+    'idle',
+  );
+  assert.equal(
+    deriveSessionStatus({
+      ...base,
+      runtimeProfileActivity: {
+        runtimeId: 'rt_1',
+        runIds: ['run_successor'],
+      },
+    }),
+    'running',
+  );
+  assert.equal(
+    deriveSessionStatus({
+      ...base,
+      events: [
+        {
+          ...terminalEvent,
+          runtimeEvent: { runtimeId: 'rt_1', runId: 'run_done', seq: 3 },
+        },
+      ],
+      runtimeProfileActivity: {
+        runtimeId: 'rt_1',
+        runIds: ['run_done'],
+      },
+    }),
+    'idle',
+  );
+  assert.equal(
+    deriveSessionStatus({
+      ...base,
+      events: [
+        {
+          kind: 'session_error',
+          sessionId: SID,
+          error: 'failed',
+          runtimeEvent: { runtimeId: 'rt_1', runId: 'run_failed', seq: 10 },
+        },
+      ],
+      runtimeProfileActivity: {
+        runtimeId: 'rt_1',
+        runIds: ['run_failed'],
+      },
+    }),
+    'error',
+  );
+});
+
 test('an exact profile terminal closes stale live activity only for the same Run', () => {
   assert.equal(
     deriveSessionStatus({
@@ -308,6 +430,42 @@ test('an exact profile terminal closes stale live activity only for the same Run
       runtimeProfileTerminalRun: { runId: 'run_previous', phase: 'completed' },
     }),
     'running',
+  );
+});
+
+test('a later terminal for another Run cannot hide the current Runtime terminal fence', () => {
+  assert.equal(
+    deriveSessionStatus({
+      pending: false,
+      events: [
+        {
+          kind: 'session_complete',
+          sessionId: SID,
+          runtimeEvent: { runtimeId: 'rt_1', runId: 'run_stale_active', seq: 4 },
+        },
+        {
+          kind: 'session_complete',
+          sessionId: SID,
+          runtimeEvent: { runtimeId: 'rt_1', runId: 'run_latest_done', seq: 5 },
+        },
+      ],
+      awaitingPermission: false,
+      awaitingAskUser: false,
+      errorSeenAt: 0,
+      errorSeenRunId: undefined,
+      runtimeLive: {
+        ...liveWithActiveRun('run_stale_active'),
+        lastTerminalRun: {
+          runId: 'run_latest_done',
+          sessionId: SID,
+          phase: 'completed',
+          completedAt: 5,
+        },
+      },
+      runtimeProfileActive: false,
+      currentRuntimeId: 'rt_1',
+    }),
+    'idle',
   );
 });
 

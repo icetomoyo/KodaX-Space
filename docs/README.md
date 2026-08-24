@@ -12,6 +12,10 @@
 > root/Desktop manifest、lockfile、物理安装与打包 ASAR 必须解析到同一个正式 Registry URL/SRI。
 > v0.1.43 / v0.1.42 的发布记录保持历史事实。
 
+> **当前 `main` 源码基线（2026-08-24）**：精确 KodaX `0.7.95`，要求
+> `conversationHistory:2`、`runtimeExitSettlement:2` 与 `sandboxRuntime:5`。同一 boot 的
+> 临时 owner 验证会自动重试；显式 Skill 的 durable transcript 只保存原始 query，不保存模型执行 overlay。
+
 > 历史发布基线：KodaX Space [`v0.1.40`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.40)（package `0.1.40`）/ npm 正式发布的精确 KodaX `0.7.86`；历史 release 文档继续保留当时事实。
 
 这里是文档的统一入口。当前 `main` 的完整退出修复要求 Runtime 明确提供
@@ -59,49 +63,51 @@ Run，变量值只在命令执行 host 读取。超出有界编辑器限制的 C
 
 ## 当前有效文档
 
-| 文档                                                 | 性质                          | 更新规则                                                     |
-| ---------------------------------------------------- | ----------------------------- | ------------------------------------------------------------ |
-| `README.md` / `README_CN.md`                         | 项目入口                      | 只概括公开版本和下一开发基线                                 |
-| `USER_MANUAL.zh-CN.md`                               | 面向用户                      | 必须与当前 UI、快捷键和实际能力一致                          |
-| `USAGE.md`                                           | 面向开发/运维                 | 必须与 package scripts、数据路径和验证流程一致               |
-| `PRD.md`                                             | 产品目标与路线                | 保留长期方向，明确已交付/开发中/观察项                       |
-| `HLD.md`                                             | 当前高层架构                  | 反映真实 owner、边界和降级策略                               |
-| `KODAX_CAPABILITY_LEDGER.md`                         | 能力接入事实                  | 每次 SDK/Runtime 接入后更新状态与证据                        |
-| `FEATURE_LIST.md`                                    | 版本路线图                    | 只有可交付、可验证的版本项进入 active list                   |
-| `KNOWN_ISSUES.md`                                    | 当前问题                      | 已解决项保留结论，新增问题需有复现和状态                     |
-| `BUILTIN_SKILLS.md`                                  | builtin 分发维护              | 固定来源、许可、补丁、更新和打包完整性                       |
+| 文档                                                 | 性质                          | 更新规则                                                                 |
+| ---------------------------------------------------- | ----------------------------- | ------------------------------------------------------------------------ |
+| `README.md` / `README_CN.md`                         | 项目入口                      | 只概括公开版本和下一开发基线                                             |
+| `USER_MANUAL.zh-CN.md`                               | 面向用户                      | 必须与当前 UI、快捷键和实际能力一致                                      |
+| `USAGE.md`                                           | 面向开发/运维                 | 必须与 package scripts、数据路径和验证流程一致                           |
+| `PRD.md`                                             | 产品目标与路线                | 保留长期方向，明确已交付/开发中/观察项                                   |
+| `HLD.md`                                             | 当前高层架构                  | 反映真实 owner、边界和降级策略                                           |
+| `KODAX_CAPABILITY_LEDGER.md`                         | 能力接入事实                  | 每次 SDK/Runtime 接入后更新状态与证据                                    |
+| `FEATURE_LIST.md`                                    | 版本路线图                    | 只有可交付、可验证的版本项进入 active list                               |
+| `KNOWN_ISSUES.md`                                    | 当前问题                      | 已解决项保留结论，新增问题需有复现和状态                                 |
+| `BUILTIN_SKILLS.md`                                  | builtin 分发维护              | 固定来源、许可、补丁、更新和打包完整性                                   |
 | `features/v0.1.44.md`                                | current release design        | Native attention, background settlement, and exact KodaX 0.7.93 boundary |
 | `releases/v0.1.44-release-readiness.md`              | current release record        | Gates, GitHub CI, artifact evidence, and regression items                |
-| `test-guides/FEATURE_145_v0.1.44_TEST_GUIDE.md`      | current feature acceptance    | Cross-platform native attention badge                                   |
-| `test-guides/ISSUE_189_v0.1.44_REGRESSION_GUIDE.md` | current regression acceptance | Background complete-exit settlement                                     |
-| `test-guides/ISSUE_190_v0.1.44_REGRESSION_GUIDE.md` | current regression acceptance | Previous-boot Windows ACL recovery                                      |
-| `test-guides/ISSUE_191_v0.1.44_REGRESSION_GUIDE.md` | current regression acceptance | External-task empty and recoverable-error states                        |
-| `test-guides/ISSUE_192_v0.1.44_REGRESSION_GUIDE.md` | current regression acceptance | Quiet ordinary safe exit                                                |
-| `features/v0.1.43.md`                                | 历史 release 设计             | Runtime exit, KodaX 0.7.92, sandbox v4, and release boundary            |
-| `releases/v0.1.43-release-readiness.md`              | 历史发布记录                  | Gates, GitHub CI, artifact evidence, and regression items               |
-| `test-guides/ISSUE_188_v0.1.43_REGRESSION_GUIDE.md`  | 历史回归验收                  | Complete-exit settlement and recovery                                   |
-| `test-guides/ISSUE_256_v0.1.43_REGRESSION_GUIDE.md`  | 历史回归验收                  | sandbox v4 / crash-outcome v2 filesystem-effect convergence             |
-| `features/v0.1.42.md`                                | 历史 release 设计             | Causal transcript, latest KodaX 0.7.89, and release boundary        |
-| `releases/v0.1.42-release-readiness.md`              | 历史发布记录                  | Gates, GitHub CI, artifact evidence, and regression items           |
-| `test-guides/ISSUE_182_v0.1.42_REGRESSION_GUIDE.md`  | 历史回归验收                  | Canonical/live ordering and exact owner reconciliation              |
-| `test-guides/ISSUE_183_v0.1.42_REGRESSION_GUIDE.md`  | 历史回归验收                  | Terminal owner reconciliation and exact-once folding                |
-| `test-guides/ISSUE_184_v0.1.42_REGRESSION_GUIDE.md`  | 历史回归验收                  | Continued-Run turn projection and compaction boundary               |
-| `test-guides/ISSUE_185_v0.1.42_REGRESSION_GUIDE.md`  | 历史回归验收                  | Completion notification and Actor settlement v2                     |
-| `features/v0.1.40.md`                                | 历史 release 设计             | KodaX 0.7.86、sandbox v3、owner reconciliation 与发布边界    |
-| `releases/v0.1.40-release-readiness.md`              | 历史发布记录                  | 门禁、GitHub CI、产物证据和人工项                            |
-| `features/v0.1.39.md`                                | 历史 release 设计             | KodaX 0.7.85、Actor convergence、journal epoch 与发布边界    |
-| `releases/v0.1.39-release-readiness.md`              | 历史发布记录                  | 门禁、GitHub CI、产物证据和人工项                            |
-| `features/v0.1.38.md`                                | 历史 release 设计             | KodaX 0.7.84、Session reactivation 与发布边界                |
-| `releases/v0.1.38-release-readiness.md`              | 历史发布记录                  | 门禁、GitHub CI、产物证据和发布资产                          |
-| `releases/v0.1.37-release-readiness.md`              | 历史发布记录                  | 保留 v0.1.37 门禁、GitHub CI、产物证据和人工项               |
-| `releases/v0.1.35-release-readiness.md`              | 历史发布记录                  | 保留已发布版本的门禁、产物哈希和人工项                       |
-| `test-guides/ISSUE_128_v0.1.40_REGRESSION_GUIDE.md`  | 历史回归验收                  | 覆盖 sandbox v3、打包 Windows Shell 和重启链路               |
-| `test-guides/ISSUE_178_v0.1.39_REGRESSION_GUIDE.md`  | 历史回归验收                  | 覆盖 unknown Run、精确 Stop、journal epoch 和输入去重        |
-| `test-guides/ISSUE_176_v0.1.38_REGRESSION_GUIDE.md`  | 历史回归验收                  | 覆盖 Session 重新激活、canonical 去重和跨 Session 隔离       |
-| `test-guides/ISSUE_175_v0.1.37_REGRESSION_GUIDE.md`  | 历史回归验收                  | 覆盖安全退出、daemon 恢复和多 Session 隔离                   |
-| `test-guides/FEATURE_141_v0.1.33_TEST_GUIDE.md`      | 当前人工验收                  | 覆盖两种 owner、双向切换、打包闭包和真实启动                 |
-| `test-guides/FEATURE_142_v0.1.33_TEST_GUIDE.md`      | 当前人工验收                  | 覆盖会话文件路径的共享文件动作                               |
-| `apps/desktop/electron/kodax/space-manual-topics.ts` | 应用内 AI 自说明              | 与用户手册同步更新，防止 AI 给出旧操作说明                   |
+| `test-guides/FEATURE_145_v0.1.44_TEST_GUIDE.md`      | current feature acceptance    | Cross-platform native attention badge                                    |
+| `test-guides/ISSUE_189_v0.1.44_REGRESSION_GUIDE.md`  | current regression acceptance | Background complete-exit settlement                                      |
+| `test-guides/ISSUE_190_v0.1.44_REGRESSION_GUIDE.md`  | current regression acceptance | Previous-boot Windows ACL recovery                                       |
+| `test-guides/ISSUE_191_v0.1.44_REGRESSION_GUIDE.md`  | current regression acceptance | External-task empty and recoverable-error states                         |
+| `test-guides/ISSUE_192_v0.1.44_REGRESSION_GUIDE.md`  | current regression acceptance | Quiet ordinary safe exit                                                 |
+| `test-guides/ISSUE_196_v0.1.45_REGRESSION_GUIDE.md`  | current source regression     | Live history, queue ordering, loading, status, and compaction feedback   |
+| `test-guides/ISSUE_197_v0.1.45_REGRESSION_GUIDE.md`  | current source regression     | Proxy-aware build gate and shutdown-cancelled startup recovery           |
+| `features/v0.1.43.md`                                | 历史 release 设计             | Runtime exit, KodaX 0.7.92, sandbox v4, and release boundary             |
+| `releases/v0.1.43-release-readiness.md`              | 历史发布记录                  | Gates, GitHub CI, artifact evidence, and regression items                |
+| `test-guides/ISSUE_188_v0.1.43_REGRESSION_GUIDE.md`  | 历史回归验收                  | Complete-exit settlement and recovery                                    |
+| `test-guides/ISSUE_256_v0.1.43_REGRESSION_GUIDE.md`  | 历史回归验收                  | sandbox v4 / crash-outcome v2 filesystem-effect convergence              |
+| `features/v0.1.42.md`                                | 历史 release 设计             | Causal transcript, latest KodaX 0.7.89, and release boundary             |
+| `releases/v0.1.42-release-readiness.md`              | 历史发布记录                  | Gates, GitHub CI, artifact evidence, and regression items                |
+| `test-guides/ISSUE_182_v0.1.42_REGRESSION_GUIDE.md`  | 历史回归验收                  | Canonical/live ordering and exact owner reconciliation                   |
+| `test-guides/ISSUE_183_v0.1.42_REGRESSION_GUIDE.md`  | 历史回归验收                  | Terminal owner reconciliation and exact-once folding                     |
+| `test-guides/ISSUE_184_v0.1.42_REGRESSION_GUIDE.md`  | 历史回归验收                  | Continued-Run turn projection and compaction boundary                    |
+| `test-guides/ISSUE_185_v0.1.42_REGRESSION_GUIDE.md`  | 历史回归验收                  | Completion notification and Actor settlement v2                          |
+| `features/v0.1.40.md`                                | 历史 release 设计             | KodaX 0.7.86、sandbox v3、owner reconciliation 与发布边界                |
+| `releases/v0.1.40-release-readiness.md`              | 历史发布记录                  | 门禁、GitHub CI、产物证据和人工项                                        |
+| `features/v0.1.39.md`                                | 历史 release 设计             | KodaX 0.7.85、Actor convergence、journal epoch 与发布边界                |
+| `releases/v0.1.39-release-readiness.md`              | 历史发布记录                  | 门禁、GitHub CI、产物证据和人工项                                        |
+| `features/v0.1.38.md`                                | 历史 release 设计             | KodaX 0.7.84、Session reactivation 与发布边界                            |
+| `releases/v0.1.38-release-readiness.md`              | 历史发布记录                  | 门禁、GitHub CI、产物证据和发布资产                                      |
+| `releases/v0.1.37-release-readiness.md`              | 历史发布记录                  | 保留 v0.1.37 门禁、GitHub CI、产物证据和人工项                           |
+| `releases/v0.1.35-release-readiness.md`              | 历史发布记录                  | 保留已发布版本的门禁、产物哈希和人工项                                   |
+| `test-guides/ISSUE_128_v0.1.40_REGRESSION_GUIDE.md`  | 历史回归验收                  | 覆盖 sandbox v3、打包 Windows Shell 和重启链路                           |
+| `test-guides/ISSUE_178_v0.1.39_REGRESSION_GUIDE.md`  | 历史回归验收                  | 覆盖 unknown Run、精确 Stop、journal epoch 和输入去重                    |
+| `test-guides/ISSUE_176_v0.1.38_REGRESSION_GUIDE.md`  | 历史回归验收                  | 覆盖 Session 重新激活、canonical 去重和跨 Session 隔离                   |
+| `test-guides/ISSUE_175_v0.1.37_REGRESSION_GUIDE.md`  | 历史回归验收                  | 覆盖安全退出、daemon 恢复和多 Session 隔离                               |
+| `test-guides/FEATURE_141_v0.1.33_TEST_GUIDE.md`      | 当前人工验收                  | 覆盖两种 owner、双向切换、打包闭包和真实启动                             |
+| `test-guides/FEATURE_142_v0.1.33_TEST_GUIDE.md`      | 当前人工验收                  | 覆盖会话文件路径的共享文件动作                                           |
+| `apps/desktop/electron/kodax/space-manual-topics.ts` | 应用内 AI 自说明              | 与用户手册同步更新，防止 AI 给出旧操作说明                               |
 
 ## 历史文档
 

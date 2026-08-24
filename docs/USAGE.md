@@ -4,10 +4,10 @@
 > Space 管理的 daemon 需要 `managedRunDurability:1`：接受的首条/队列输入及完成回合
 > 在生命周期事件前持久化为 canonical Run。Space 绑定确认的 `runId` 和流式 `turnId`，不以版本号代替能力协商。
 > 未显式设置 Auto LLM timeout 时，SDK 使用首次 `45000ms`、重试 `90000ms`。
-> 当前源码的 root/Desktop/lockfile 精确锁定 npm Registry KodaX `0.7.94` 正式包及其 SRI，并要求
-> SDK 与 daemon 提供 `sandboxRuntime:4`、`crashOutcomeModel:2` 和 `actorSettlementConvergence:2`；Space 还保持精确
+> 当前源码的 root/Desktop/lockfile 精确锁定 npm Registry KodaX `0.7.95` 正式包及其 SRI，并要求
+> SDK 与 daemon 提供 `sandboxRuntime:5`、`crashOutcomeModel:2` 和 `actorSettlementConvergence:2`；Space 还保持精确
 > Session/Run/Turn owner 关联和 continued-Run history/live 边界。完整退出使用 SDK 本地
-> `runtimeExitSettlement:1`，不把版本号当作运行时能力证明。
+> `runtimeExitSettlement:2`，同一 boot 的暂时性 owner 验证由 SDK 与 Space 自动重试，不把版本号当作运行时能力证明。
 
 > 面向源码使用者、贡献者和发布维护者。普通用户请阅读[用户使用手册](USER_MANUAL.zh-CN.md)。
 >
@@ -283,6 +283,12 @@ npm run build:linux
 `windows-latest` 的 Visual Studio 2026 工具链上。`afterPack` 通过固定的
 `resedit@1.7.2` 直接修改 PE icon/version resources，不再扫描或启动缓存中的
 `rcedit.exe`。相关依赖和资源门禁失败必须让安装/打包失败，不能用 `|| true` 吞掉。
+
+正式 `build:pack` 会下载 lockfile 锁定的 KodaX Registry tarball 并校验 URL、SRI 与安装
+字节。当前源码通过 `EnvHttpProxyAgent` 读取标准代理环境；代理凭据不会写入日志。下载和
+dispatcher teardown 都有界，超时或非法 URL 会明确失败并结束进程。如果构建停在
+`scripts/pack.mjs`，先核对 `HTTPS_PROXY`/`NO_PROXY` 和 Registry 连通性，再运行
+`npm run test:release`；不要用扩大超时或跳过完整性校验掩盖网络问题。
 
 [v0.1.34 发布记录](releases/v0.1.34-release-readiness.md)是当前正式版证据的真理源；历史
 [v0.1.33 发布记录](releases/v0.1.33-release-readiness.md)继续保留当时事实。v0.1.34 已通过

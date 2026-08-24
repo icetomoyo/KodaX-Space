@@ -1,5 +1,7 @@
 # KodaX Space 产品需求文档（PRD）
 
+> **2026-08-24 当前源码基线**：精确 npm Registry KodaX `0.7.95`，要求 `conversationHistory:2`、`runtimeExitSettlement:2` 与 `sandboxRuntime:5`。Session 历史在 Runtime-ready 重验时保留已加载 canonical 前缀；排队输入、live 回复、分页加载和当前 Runtime 身份保持同一因果投影。退出恢复自动重试临时 `unconfirmed-owner`，不要求人工删除标记，也不阻塞无关工作。以下 v0.1.44 / KodaX 0.7.93 内容保留为已发布历史基线。
+>
 > **2026-08-20 当前正式发布基线**：KodaX Space [`v0.1.44`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.44) 对齐 npm 正式发布的精确 KodaX `0.7.93`，要求 sandboxRuntime v4、crashOutcomeModel v2、Actor settlement convergence v2、Session-scoped event journal、liveOutputSegments v1 与本地 runtimeExitSettlement v1；v0.1.43 / v0.1.42 保留为历史正式产品基线。
 > Coder daemon 必须显式提供 `managedRunDurability:1`；Space 只消费其 canonical
 > managed-Run `runId`/`turnId`，不维护第二份 Run 状态。未配置的 Auto LLM classifier timeout

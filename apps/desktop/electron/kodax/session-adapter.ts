@@ -111,9 +111,7 @@ export interface LocalSessionCancelOutcome {
 }
 
 export type ManagedSessionCancelOutcome =
-  | SpaceRuntimeRunStopReceiptT
-  | LocalSessionCancelOutcome
-  | void;
+  SpaceRuntimeRunStopReceiptT | LocalSessionCancelOutcome | void;
 
 export interface ManagedSession {
   readonly sessionId: string;

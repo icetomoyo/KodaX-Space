@@ -1,5 +1,7 @@
 # KodaX Space 高层设计（HLD）
 
+> **2026-08-24 当前源码基线**：root/Desktop/lockfile 精确锁定 npm Registry KodaX `0.7.95`，并要求 `conversationHistory:2`、`runtimeExitSettlement:2` 与 `sandboxRuntime:5`。Space 在 SDK 启动门、daemon 协商、IPC status 与打包 smoke 四个边界保持同一版本；同一 boot 的临时 `unconfirmed-owner` 自动重试，等待会在应用退出时取消。以下 v0.1.44 / KodaX 0.7.93 内容保留为已发布历史基线。
+>
 > **2026-08-20 当前发布基线**：v0.1.44 使用精确 npm Registry KodaX `0.7.93`，要求 `sandboxRuntime:4`、`crashOutcomeModel:2`、`actorSettlementConvergence:2`、`sessionEventJournal:1`、`liveOutputSegments:1` 与本地 `runtimeExitSettlement:1`。sandbox v4 在 v3 containment 基础上增加 stale coordinator-ticket / recorded-release 收敛；v0.1.43 / v0.1.42 作为历史正式产品基线保留。
 > `RuntimeHostAdapter` 要求 `managedRunDurability:1`，使 accepted prompt 与 completed turn
 > 在事件发布前已成为 canonical managed Run；Space 仅用 returned `runId`/`turnId` 关联 UI
@@ -51,6 +53,8 @@
 > **2026-07-26 全局按钮交互维护（v0.1.33）**：Renderer 以 Session Token 控件的柔和扫光与边缘亮起为视觉基准，在 `body` 级交互层统一普通、语义、弹层和键盘焦点反馈。语义色继续来自既有 token；全宽列表降低强度；Windows 窗口控件、Monaco、xterm、disabled 与显式 opt-out 保持各自契约。该层仅绘制伪元素，不改变布局、业务 action、权限或 Runtime owner。
 >
 > **2026-07-27 F140 与 Shell 生命周期收口（v0.1.33）**：Windows 用户驱动的主窗口关闭由 Electron main 串行决策为每次询问、保留托盘/Runtime，或进入 F136 安全彻底退出；记住选择只写入 Space 设置，显式托盘命令、app quit、OS session end 与无托盘 fallback 不进入该策略。Terminal Shell 设置由 main 解析登录环境，并为 PTY 与 Coder 命令工具提供同一脱敏执行环境。
+>
+> **2026-08-23 Session 投影与生命周期维护**：renderer 安装 bounded newest history 时，以 canonical entry identity/index 自证与已加载前缀的交集，页首为 assistant/tool 也在所属 turn 内拼接；不依赖可选 truncation marker，不按时间或正文猜测。Runtime-ready 重验、queue delivery、sidebar activity、terminal 与 compaction 都受当前 Runtime identity 约束。历史未到达时 UI 展示 waiting/retry，压缩时展示不确定进度。main 的 shutdown coordinator 同时拥有启动恢复等待的 abort signal；release gate 的代理 dispatcher 在失败时有界销毁。
 >
 > **2026-07-28 KodaX integration 配置与 self-manual 收口（v0.1.33）**：KodaX 0.7.77 的核心 `config.json` 与 `integrations/mcp.json`、`integrations/extensions.json`、`integrations/a2a.json` 已按 owner 分离。Space 的 MCP Manager、项目 MCP 兼容层、Settings 概览/迁移入口和 SDK filesystem Extension discovery 全部消费公开 reader/CRUD/migration 契约，并保留旧 `config.json#mcpServers`/`#extensions` 的只读迁移回退。`kodax_manual` 不再以 `baseTopics: []` 清空 SDK 机制手册，而是在 ESM-only `/coding` 子路径动态加载后，用 SDK 发布的底层能力主题清单做基线；同名 Space 主题动态合成当前安装 `MANUAL_REGISTRY` 的原始正文、aliases 和 sources。
 >
@@ -370,7 +374,7 @@ KodaX ACP 演进（如新增 notification / endpoint）对 Space **没有直接�
 | `@kodax-ai/kodax/skills`  | ✅ daemon-first Coder discovery；install/invoke 与 Partner residual 留 Space host provider | ❌ runtime                      |
 | `@kodax-ai/kodax/mcp`     | ✅ Coder tool discovery/reload 同步 daemon；进程/日志与 Partner residual 留 main           | ❌                              |
 | `@kodax-ai/kodax/session` | ✅ persisted-session utilities where Runtime lacks an equivalent                           | ❌                              |
-| `@kodax-ai/kodax/repl`    | ❌ terminal UI only                                                                        | ❌                              |
+| `@kodax-ai/kodax/repl`    | ✅ audited public explicit-Skill preparation/lifecycle helpers only                        | ❌                              |
 
 Space pins the root package and uses its documented public subpath exports. Internal workspace-package paths and generated chunk filenames are not contracts.
 
@@ -435,6 +439,7 @@ Skill 继续通过 KodaX public Skill API 与 Space compatibility bridge 管理�
 
 - Skill 发现路径：`~/.kodax/skills/`、`<project>/.kodax/skills/`、Space 内置；用户/项目同名项保持 KodaX 既有优先级，不修改安装包内容
 - UI 提供 Skill 浏览器和安装入口；目录发现/调用保持现有 public Skill bridge
+- 显式 `/<skill>` 或 query 中段 `/skill:<name>` 执行只走一次幂等 `session.send`：Renderer 沿普通发送路径原样提交用户文本与附件，不解析、重建或附带第二份 Skill 意图。Electron main 在同一 admission 内用可信 registry 识别 Skill，保留 token 后的原始参数后缀，执行启动钩子并把结构化 `skillInvocation` 交给 Runtime。Renderer 不接收展开正文、工具策略、路径或 hook 命令；忙碌 Session、未知的明确 Skill 和 fork-context Skill 均事实性拒绝，不降级成普通文本
 - 自然语言触发逻辑在 KodaX；Space 在触发后显示 `skill-active` 标签
 - F135 把 `frontend-slides` 与 `huashu-design` 作为 Space-owned plugin root 注册，并在 UI 中映射为 `builtin`。资源位于安装包 `resources/builtin-skills` 而非 `app.asar`，使 Python/Node/shell/二进制资产获得普通文件系统路径；启动注册 best-effort，单个 builtin 故障不会阻止应用启动；Coder daemon 模式下，Space-owned builtin 目录与 Runtime 目录按名称合并并由 Space builtin 优先去重
 - builtin 来源由上游 Git revision、许可哈希、Space 补丁和逐文件 SHA-256 lock 固定；同步拒绝许可漂移、symlink、secret/dynamic shell 风险和 release 中的 `installed:` 临时 revision，package smoke 要求文件集与字节完全一致
@@ -941,8 +946,8 @@ Space 严格遵守：
 | `v0.1.39`           | Align the exact KodaX 0.7.85 package and manual while preserving Actor settlement convergence, Session journal epoch isolation, unknown Run admission, exact Stop, and idle-exit client boundaries.                 |
 | `v0.1.41`           | Consume the existing ordered KodaX provider.recovery event across daemon/live/history/reconnect projections, pin the latest npm KodaX package exactly, and keep Space as a bounded compatibility/presentation host. |
 | `v0.1.42`           | Align exact KodaX 0.7.89 Actor settlement v2 and preserve Session/Run/Turn ownership across canonical/live reconciliation, delayed terminals, continued Runs, and completion notifications.                         |
-| `v0.1.43`           | Align exact KodaX 0.7.92, consume SDK-owned complete-exit settlement, require sandboxRuntime v4 plus crashOutcomeModel v2, and project live output from SDK segments only.                                           |
-| `v0.1.44`           | Align exact KodaX 0.7.93, project one native attention count per Session, continue admitted exit settlement in the background, and align Task Dock, Repointel, history, and external-task recovery surfaces.         |
+| `v0.1.43`           | Align exact KodaX 0.7.92, consume SDK-owned complete-exit settlement, require sandboxRuntime v4 plus crashOutcomeModel v2, and project live output from SDK segments only.                                          |
+| `v0.1.44`           | Align exact KodaX 0.7.93, project one native attention count per Session, continue admitted exit settlement in the background, and align Task Dock, Repointel, history, and external-task recovery surfaces.        |
 | `v0.1.40`           | Align the exact KodaX 0.7.86 package and manual, require sandboxRuntime v3, qualify the packaged Windows Shell chain, and reconcile stale inline owners through the SDK.                                            |
 | `v0.1.38`           | Align the exact KodaX 0.7.84 package and manual while preserving bounded Agent progress, same-owner Stop recovery, and Session reactivation identity boundaries.                                                    |
 | `v0.1.72`           | Complete locale gates, release diagnostics, channels/updater/distribution trust.                                                                                                                                    |

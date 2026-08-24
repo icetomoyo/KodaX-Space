@@ -446,6 +446,110 @@ test('atomic observation maps run, draft, tool, Todo, and interaction truth', ()
   ]);
 });
 
+test('an observation retains only the current delivered interrupt so a missed delivery can repair the renderer', () => {
+  const projection = projectRuntimeSessionSnapshot(
+    {
+      ...observation,
+      runs: [
+        {
+          ...running,
+          turnId: 'turn_current_interrupt',
+          interruptInputs: [
+            {
+              inputId: 'input_previous_interrupt',
+              afterRunId: running.runId,
+              delivery: 'interrupt',
+              state: 'delivered',
+              contentPreview: 'previous query',
+              queuedAt: '2026-07-14T08:01:00.000Z',
+              deliveredAt: '2026-07-14T08:02:00.000Z',
+              entryId: 'entry_previous_interrupt',
+            },
+            {
+              inputId: 'input_current_interrupt',
+              afterRunId: running.runId,
+              delivery: 'interrupt',
+              state: 'delivered',
+              contentPreview: 'current query',
+              queuedAt: '2026-07-14T08:03:00.000Z',
+              deliveredAt: '2026-07-14T08:04:00.000Z',
+              entryId: 'entry_current_interrupt',
+            },
+          ],
+        },
+      ],
+    } as unknown as RuntimeSessionObservationSnapshot,
+    [],
+  );
+
+  assert.equal(
+    projection.queuedInputs.some((input) => input.inputId === 'input_previous_interrupt'),
+    false,
+  );
+  assert.deepEqual(
+    projection.queuedInputs.find((input) => input.inputId === 'input_current_interrupt'),
+    {
+      inputId: 'input_current_interrupt',
+      sessionId: 's_code',
+      delivery: 'interrupt',
+      state: 'delivered',
+      createdAt: Date.parse('2026-07-14T08:03:00.000Z'),
+      deliveredAt: Date.parse('2026-07-14T08:04:00.000Z'),
+      runId: 'run_active',
+      contentPreview: 'current query',
+      entryId: 'entry_current_interrupt',
+      turnId: 'turn_current_interrupt',
+      position: 1,
+      initiatedBy: {
+        clientId: 'client:space-installation',
+        name: 'kodax-space',
+      },
+    },
+  );
+});
+
+test('equal delivered timestamps still project one deterministic repair witness', () => {
+  const projection = projectRuntimeSessionSnapshot(
+    {
+      ...observation,
+      runs: [
+        {
+          ...running,
+          turnId: 'turn_equal_delivery_time',
+          interruptInputs: [
+            {
+              inputId: 'input_equal_first',
+              afterRunId: running.runId,
+              delivery: 'interrupt',
+              state: 'delivered',
+              contentPreview: 'first query',
+              queuedAt: '2026-07-14T08:03:00.000Z',
+              deliveredAt: '2026-07-14T08:04:00.000Z',
+              entryId: 'entry_equal_first',
+            },
+            {
+              inputId: 'input_equal_last',
+              afterRunId: running.runId,
+              delivery: 'interrupt',
+              state: 'delivered',
+              contentPreview: 'last query',
+              queuedAt: '2026-07-14T08:03:30.000Z',
+              deliveredAt: '2026-07-14T08:04:00.000Z',
+              entryId: 'entry_equal_last',
+            },
+          ],
+        },
+      ],
+    } as unknown as RuntimeSessionObservationSnapshot,
+    [],
+  );
+
+  assert.deepEqual(
+    projection.queuedInputs.map((input) => input.inputId),
+    ['input_equal_last'],
+  );
+});
+
 test('a terminal observation never projects residual or foreign Run drafts as answer text', () => {
   const terminalObservation = {
     ...observation,
@@ -477,7 +581,7 @@ test('a terminal observation never projects residual or foreign Run drafts as an
   assert.equal(projection.thinkingDraft, undefined);
 });
 
-test('snapshot projection restores queued inputs without resurrecting delivered history', () => {
+test('snapshot projection restores queued inputs and only the current delivered repair witness', () => {
   const projection = projectRuntimeSessionSnapshot(
     {
       ...observation,
@@ -516,13 +620,30 @@ test('snapshot projection restores queued inputs without resurrecting delivered 
 
   assert.deepEqual(projection.queuedInputs, [
     {
+      inputId: 'input_delivered',
+      sessionId: 's_code',
+      delivery: 'interrupt',
+      state: 'delivered',
+      createdAt: Date.parse('2026-07-14T08:01:00.000Z'),
+      deliveredAt: Date.parse('2026-07-14T08:01:30.000Z'),
+      runId: 'run_active',
+      position: 1,
+      contentPreview: 'Already delivered prompt.',
+      entryId: 'entry_delivered',
+      turnId: 'turn_active',
+      initiatedBy: {
+        clientId: 'client:space-installation',
+        name: 'kodax-space',
+      },
+    },
+    {
       inputId: 'input_interrupt',
       sessionId: 's_code',
       delivery: 'interrupt',
       state: 'queued',
       createdAt: Date.parse('2026-07-14T08:02:00.000Z'),
       runId: 'run_active',
-      position: 1,
+      position: 2,
       contentPreview: 'Check the verifier feedback first.',
       turnId: 'turn_active',
       initiatedBy: {
@@ -590,7 +711,7 @@ test('queued projection exposes the exact send operation and public queue identi
   );
 });
 
-test('delivered interrupt changes are one-shot causal boundaries and never revive from run state', () => {
+test('durable run state retains the current delivered interrupt as a bounded repair witness', () => {
   const queuedRun = {
     ...running,
     interruptInputs: [
@@ -679,9 +800,12 @@ test('delivered interrupt changes are one-shot causal boundaries and never reviv
   } as RuntimeTypedEvent);
 
   assert.deepEqual(
-    reducer.snapshot().queuedInputs,
-    [],
-    'durable run state must not turn a delivered boundary into session-wide live history',
+    reducer.snapshot().queuedInputs.map((input) => ({
+      inputId: input.inputId,
+      state: input.state,
+      turnId: input.turnId,
+    })),
+    [{ inputId: 'input_causal_delivery', state: 'delivered', turnId: 'turn_active' }],
   );
 });
 
@@ -1748,6 +1872,14 @@ test('terminal and next-run events reset run-scoped live state before new deltas
   assert.equal(terminal?.change.domain, 'run');
   if (terminal?.change.domain === 'run') {
     assert.equal(terminal.change.resetRunScopedState, true);
+    assert.equal(
+      (
+        terminal.change as typeof terminal.change & {
+          lastTerminalRun?: { runId: string };
+        }
+      ).lastTerminalRun?.runId,
+      'run_active',
+    );
   }
   assert.equal(reducer.snapshot().assistantDraft, undefined);
   assert.equal(reducer.snapshot().thinkingDraft, undefined);

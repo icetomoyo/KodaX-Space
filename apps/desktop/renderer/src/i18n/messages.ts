@@ -1656,10 +1656,13 @@ export const messages = {
       '{label}: {percent}% remaining to auto-compact ({used} / {threshold} used)',
     'contextWindow.tooltipAtThreshold':
       '{label}: estimated request input {used} / {threshold} ({percent}%), at or above the auto-compact threshold',
+    'contextWindow.tooltipCompacting':
+      '{label}: compacting context (auto-compact threshold {threshold}); exact pre-compaction usage will be shown when available',
     'contextWindow.clickForBreakdown': 'click for breakdown',
     'contextWindow.progressToAutoCompact': '{percent}% to auto-compact',
     'contextWindow.estimatedRequestInput': 'Estimated request input',
     'contextWindow.currentContextInput': 'Current context input',
+    'contextWindow.compactionInputPending': 'Reading exact pre-compaction input',
     'contextWindow.remainingTokens': '{tokens} until auto-compact',
     'contextWindow.thresholdReached': 'Estimated input has reached the auto-compact threshold',
     'contextWindow.thresholdExceeded':
@@ -2279,6 +2282,20 @@ export const messages = {
       'Message not sent: the active run has passed its final safe insertion point. Your draft was restored; retry after the run finishes.',
     'bottom.sendRejected.sessionDataChanged':
       'Message not sent: the Session persistence boundary changed while Space was preparing the request. Your draft was restored; retry now.',
+    'bottom.sendRejected.cancelledBeforeAdmission':
+      'Message not sent: the request was cancelled before a Run started. Your draft was restored.',
+    'bottom.sendRejected.skillRequiresIdle':
+      'Skill not sent: explicit Skills require an idle Session. Wait for the current run to finish, then retry.',
+    'bottom.sendRejected.skillNotFound':
+      'Skill not sent: the selected Skill is no longer available. Refresh the Skill list and retry.',
+    'bottom.sendRejected.skillMultipleReferences':
+      'Skill not sent: only one explicit Skill can be active in a request.',
+    'bottom.sendRejected.skillForkUnsupported':
+      'Skill not sent: fork-context Skills are not yet supported by Space.',
+    'bottom.sendRejected.skillBlocked':
+      'Skill not sent: its startup policy or hook blocked execution.',
+    'bottom.sendRejected.skillPreparationFailed':
+      'Skill not sent: Space could not safely prepare its trusted execution context.',
     'bottom.noAssistantMessageToCopy': 'No assistant message to copy',
     'bottom.copiedChars': 'Copied {count} chars to clipboard',
     'bottom.clipboardWriteFailed': 'Clipboard write failed: {message}',
@@ -2395,10 +2412,10 @@ export const messages = {
     'askUser.hint.range': 'Choose {min}-{max}.',
     'askUser.hint.min': 'Choose at least {min}.',
     'askUser.hint.max': 'Choose up to {max}.',
-  'askUser.inline.kbdHint': '1-9 select · Enter submit · Esc cancel',
-  'askUser.dock.awaitingQuestion': 'Awaiting answer - {question}',
-  'askUser.dock.awaitingGuardrail': 'Awaiting approval - {tool}',
-  'askUser.dock.view': 'View',
+    'askUser.inline.kbdHint': '1-9 select · Enter submit · Esc cancel',
+    'askUser.dock.awaitingQuestion': 'Awaiting answer - {question}',
+    'askUser.dock.awaitingGuardrail': 'Awaiting approval - {tool}',
+    'askUser.dock.view': 'View',
     'quickAsk.title': 'Quick Ask',
     'quickAsk.subtitle': 'plan mode / temporary',
     'quickAsk.openProjectFirst': 'Open a project first to use Quick Ask.',
@@ -2491,9 +2508,11 @@ export const messages = {
     'session.compactionHistoryLabel': 'Conversation compacted',
     'session.branchSummaryHistoryLabel': 'Returned from another branch',
     'session.historyTruncatedLabel': '{count} earlier history items omitted',
+    'session.loadingEarlierHistory': 'Loading earlier history…',
+    'session.waitingForHistoryRuntime': 'Waiting for Runtime to restore history…',
     'session.turnHistoryTruncatedLabel': '{count} items omitted from this long turn',
     'session.historyAmbiguousWarning':
-      'Some legacy history has multiple possible interpretations. Proven duplicates of the same entry are shown once; nothing else was guessed, reordered, or deleted.',
+      'Persisted history failed an integrity check. Space kept the SDK candidates without guessing their order or deleting unproven duplicates. Reload after the persistence issue is resolved.',
     'session.historyPartialWarning':
       'Some persisted lineage is unavailable. All available conversation records were kept.',
     'session.historyBoundaryUnavailable':
@@ -3894,10 +3913,13 @@ export const messages = {
     'contextWindow.tooltip': '{label}：距离自动压缩还剩 {percent}%（已用 {used} / {threshold}）',
     'contextWindow.tooltipAtThreshold':
       '{label}：预计请求输入 {used} / {threshold}（{percent}%），已达到或超过自动压缩阈值',
+    'contextWindow.tooltipCompacting':
+      '{label}：正在压缩上下文（自动压缩阈值 {threshold}）；精确的压缩前用量将在可用后显示',
     'contextWindow.clickForBreakdown': '点击查看详情',
     'contextWindow.progressToAutoCompact': '自动压缩进度 {percent}%',
     'contextWindow.estimatedRequestInput': '预计请求输入',
     'contextWindow.currentContextInput': '当前上下文输入',
+    'contextWindow.compactionInputPending': '正在读取精确的压缩前输入',
     'contextWindow.remainingTokens': '距自动压缩还剩 {tokens}',
     'contextWindow.thresholdReached': '预计输入已达到自动压缩阈值',
     'contextWindow.thresholdExceeded': '预计输入已超过自动压缩阈值 {tokens}',
@@ -4504,6 +4526,15 @@ export const messages = {
       '消息未发送：当前任务已越过最后一个安全插入点。草稿已恢复，请在任务结束后重试。',
     'bottom.sendRejected.sessionDataChanged':
       '消息未发送：Space 准备请求时 Session 的持久化边界发生了变化。草稿已恢复，请立即重试。',
+    'bottom.sendRejected.cancelledBeforeAdmission':
+      '消息未发送：请求已在任务启动前取消。草稿已恢复。',
+    'bottom.sendRejected.skillRequiresIdle':
+      '技能未发送：显式技能只能在 Session 空闲时启动。请等待当前任务结束后重试。',
+    'bottom.sendRejected.skillNotFound': '技能未发送：所选技能已不可用。请刷新技能列表后重试。',
+    'bottom.sendRejected.skillMultipleReferences': '技能未发送：每个请求只能激活一个显式技能。',
+    'bottom.sendRejected.skillForkUnsupported': '技能未发送：Space 暂不支持 fork context 技能。',
+    'bottom.sendRejected.skillBlocked': '技能未发送：启动策略或 hook 阻止了执行。',
+    'bottom.sendRejected.skillPreparationFailed': '技能未发送：Space 无法安全准备可信执行上下文。',
     'bottom.noAssistantMessageToCopy': '没有可复制的助手消息',
     'bottom.copiedChars': '已复制 {count} 个字符到剪贴板',
     'bottom.clipboardWriteFailed': '写入剪贴板失败：{message}',
@@ -4710,9 +4741,11 @@ export const messages = {
     'session.compactionHistoryLabel': '上下文已压缩',
     'session.branchSummaryHistoryLabel': '已从另一分支返回',
     'session.historyTruncatedLabel': '已省略较早的 {count} 条历史内容',
+    'session.loadingEarlierHistory': '正在加载较早的历史内容…',
+    'session.waitingForHistoryRuntime': '正在等待 Runtime 恢复历史内容…',
     'session.turnHistoryTruncatedLabel': '该超长轮次中有 {count} 条内容已省略',
     'session.historyAmbiguousWarning':
-      '部分旧历史存在多种可能解释。同一候选的重复副本已去重为一份显示；除此之外没有猜测排序或删除内容。',
+      '持久化历史未通过完整性校验。Space 已保留 SDK 返回的候选记录，未猜测顺序或删除无法证明的重复项；请在持久化问题解决后重新加载。',
     'session.historyPartialWarning': '部分持久化谱系不可用。已保留当前能够恢复的全部对话记录。',
     'session.historyBoundaryUnavailable': '此操作需要精确的历史边界。请等待历史加载完成后重试。',
     'session.localNoticePersistenceFailed':

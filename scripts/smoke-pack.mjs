@@ -442,10 +442,10 @@ async function checkAsarContents(asarPath) {
     fail('packaged KodaX metadata does not advertise daemonShutdownVerification v1');
   }
   ok('packaged KodaX metadata advertises daemonShutdownVerification v1');
-  if (packagedKodax.kodaxRuntimeContracts?.runtimeExitSettlement !== 1) {
-    fail('packaged KodaX metadata does not advertise runtimeExitSettlement v1');
+  if (packagedKodax.kodaxRuntimeContracts?.runtimeExitSettlement !== 2) {
+    fail('packaged KodaX metadata does not advertise runtimeExitSettlement v2');
   }
-  ok('packaged KodaX metadata advertises runtimeExitSettlement v1');
+  ok('packaged KodaX metadata advertises runtimeExitSettlement v2');
 
   let packagedRendererHtml;
   try {
@@ -1140,7 +1140,7 @@ function daemonRequirements() {
     crashOutcomeModel: 2,
     managedRunDurability: 1,
     runtimeEventCoalescing: 1,
-    sandboxRuntime: 4,
+    sandboxRuntime: 5,
     sessionEventJournal: 1,
     ...(process.platform === 'win32' ? { daemonShutdownVerification: 1 } : {}),
     integrationConfigResilience: 1,
@@ -1194,7 +1194,7 @@ try {
   await Promise.all(${JSON.stringify(publicFacadeUrls)}.map((moduleUrl) => import(moduleUrl)));
   const sandboxCapability = getKodaXSandboxCapability();
   if (
-    sandboxCapability.version !== 4 ||
+    sandboxCapability.version !== 5 ||
     sandboxCapability.asrtVersion !== KODAX_ASRT_VERSION ||
     sandboxCapability.unavailableBehavior !== 'structured-no-execution' ||
     sandboxCapability.ordinaryCallsTriggerSetup !== false ||
@@ -1305,8 +1305,8 @@ try {
       'packaged SDK does not advertise daemonShutdownVerification v1 before auto-start',
     );
   }
-  if (KODAX_RUNTIME_SDK_CAPABILITIES?.runtimeExitSettlement !== 1) {
-    throw new Error('packaged SDK does not advertise runtimeExitSettlement v1 before auto-start');
+  if (KODAX_RUNTIME_SDK_CAPABILITIES?.runtimeExitSettlement !== 2) {
+    throw new Error('packaged SDK does not advertise runtimeExitSettlement v2 before auto-start');
   }
   if (typeof settleKodaXRuntimeExit !== 'function') {
     throw new Error('packaged SDK does not export settleKodaXRuntimeExit');
@@ -1314,11 +1314,14 @@ try {
   if (KODAX_RUNTIME_SDK_CAPABILITIES?.sessionEventJournal !== 1) {
     throw new Error('packaged SDK does not advertise sessionEventJournal v1 before auto-start');
   }
+  if (KODAX_RUNTIME_SDK_CAPABILITIES?.conversationHistory !== 2) {
+    throw new Error('packaged SDK does not advertise conversationHistory v2 before auto-start');
+  }
   if (KODAX_RUNTIME_SDK_CAPABILITIES?.crashOutcomeModel !== 2) {
     throw new Error('packaged SDK does not advertise crashOutcomeModel v2 before auto-start');
   }
-  if (KODAX_RUNTIME_SDK_CAPABILITIES?.sandboxRuntime !== 4) {
-    throw new Error('packaged SDK does not advertise sandboxRuntime v4 before auto-start');
+  if (KODAX_RUNTIME_SDK_CAPABILITIES?.sandboxRuntime !== 5) {
+    throw new Error('packaged SDK does not advertise sandboxRuntime v5 before auto-start');
   }
   const providerBaseUrl = sandboxDoctor.ready ? await startProviderServer() : undefined;
   const initialOwnerPolicy = await enableDaemonOwnerWhenReady();
@@ -1365,10 +1368,10 @@ try {
   if (
     typeof daemonSandboxRuntime !== 'object' ||
     daemonSandboxRuntime === null ||
-    daemonSandboxRuntime.version !== 4
+    daemonSandboxRuntime.version !== 5
   ) {
     throw new Error(
-      'packaged daemon did not negotiate sandboxRuntime v4: ' +
+      'packaged daemon did not negotiate sandboxRuntime v5: ' +
         JSON.stringify(daemonSandboxRuntime),
     );
   }
@@ -1497,13 +1500,13 @@ try {
     !result.sessionRoundTrip ||
     result.constructedHandlerIsMainThread !== 'false' ||
     result.daemonOrphanExit !== 1 ||
-    result.daemonSandboxRuntime !== 4 ||
+    result.daemonSandboxRuntime !== 5 ||
     result.sessionEventJournal !== 1 ||
     !result.sessionCursorValid ||
     result.integrationHealth !== 'healthy' ||
     result.runtimeExitSettlement !== 'clean' ||
     result.restartedRuntimeExitSettlement !== 'clean' ||
-    result.sandboxVersion !== 4 ||
+    result.sandboxVersion !== 5 ||
     result.sandboxUnavailableBehavior !== 'structured-no-execution' ||
     result.sandboxPermissionFallback !== 'normal-permission-policy' ||
     (result.sandboxDoctorReady && !result.sandboxCommandExecuted) ||

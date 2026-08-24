@@ -76,3 +76,17 @@ test('tracked startup failures settle without blocking disposal', async () => {
 
   assert.equal(disposalStarted, true);
 });
+
+test('requesting shutdown aborts startup waits exactly once', () => {
+  const coordinator = new StartupShutdownCoordinator();
+  let aborts = 0;
+  coordinator.shutdownSignal.addEventListener('abort', () => {
+    aborts += 1;
+  });
+
+  coordinator.requestShutdown();
+  coordinator.requestShutdown();
+
+  assert.equal(coordinator.shutdownSignal.aborted, true);
+  assert.equal(aborts, 1);
+});

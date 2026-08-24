@@ -125,6 +125,27 @@ test('pnpm virtual-store package is treated as installed package state', async (
   assert.deepEqual(inspectKodaxDevLink(canonicalSpaceRoot, canonicalSdkDir), { linked: false });
 });
 
+test('pnpm package-root junction with physical package children remains installed state', async (t) => {
+  const { spaceRoot, sdkDir } = await createFixture(t);
+  const installedCopy = path.join(
+    spaceRoot,
+    'node_modules',
+    '.pnpm',
+    '@kodax-ai+kodax@0.7.94',
+    'node_modules',
+    '@kodax-ai',
+    'kodax',
+  );
+  await mkdir(path.join(installedCopy, 'dist'), { recursive: true });
+  await mkdir(path.join(installedCopy, 'node_modules'), { recursive: true });
+  await mkdir(path.join(installedCopy, 'scripts'), { recursive: true });
+  await writeFile(path.join(installedCopy, 'package.json'), '{}', 'utf8');
+  await rm(sdkDir, { recursive: true, force: true });
+  await symlink(installedCopy, sdkDir, process.platform === 'win32' ? 'junction' : 'dir');
+
+  assert.deepEqual(inspectKodaxDevLink(spaceRoot, sdkDir), { linked: false });
+});
+
 test('nested staging junction is detected even when its target stays inside Space', async (t) => {
   const { spaceRoot, sdkDir } = await createFixture(t);
   const localDist = path.join(spaceRoot, 'local-kodax-dist');

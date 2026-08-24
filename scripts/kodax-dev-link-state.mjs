@@ -74,11 +74,12 @@ export function inspectKodaxDevLink(spaceRoot, sdkDir) {
   for (const child of ['dist', 'node_modules', 'scripts']) {
     try {
       const childPath = path.join(sdkDir, child);
+      const installedChildPath = path.join(sdkRealpath, child);
       const childLstat = fs.lstatSync(childPath);
       const childRealpath = fs.realpathSync(childPath);
       if (
         childLstat.isSymbolicLink() ||
-        path.resolve(childRealpath) !== path.resolve(childPath) ||
+        path.resolve(childRealpath) !== path.resolve(installedChildPath) ||
         !isInside(spaceRoot, childRealpath)
       ) {
         return { linked: true, layout: 'staging' };

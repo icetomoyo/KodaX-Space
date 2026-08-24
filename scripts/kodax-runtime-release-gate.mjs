@@ -2,8 +2,10 @@ import { createHash } from 'node:crypto';
 import { lstatSync, readFileSync, readdirSync, readlinkSync } from 'node:fs';
 import path from 'node:path';
 import { Parser } from 'tar';
+import { EnvHttpProxyAgent } from 'undici';
 
 const KODAX_PACKAGE = '@kodax-ai/kodax';
+const REGISTRY_TARBALL_TIMEOUT_MS = 30_000;
 
 function readJson(packageFile, label) {
   try {
@@ -42,7 +44,9 @@ function lockedTarballEntries(tarball) {
     onReadEntry(entry) {
       const normalized = entry.path.replaceAll('\\', '/');
       if (!normalized.startsWith('package/')) {
-        parseError = new Error(`[pack] Locked KodaX tarball contains an invalid entry: ${entry.path}.`);
+        parseError = new Error(
+          `[pack] Locked KodaX tarball contains an invalid entry: ${entry.path}.`,
+        );
         entry.resume();
         return;
       }
@@ -59,10 +63,12 @@ function lockedTarballEntries(tarball) {
       if (entry.type === 'File' || entry.type === 'OldFile') {
         const chunks = [];
         entry.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
-        entry.on('end', () => entries.set(relative, {
-          type: 'file',
-          bytes: Buffer.concat(chunks),
-        }));
+        entry.on('end', () =>
+          entries.set(relative, {
+            type: 'file',
+            bytes: Buffer.concat(chunks),
+          }),
+        );
         return;
       }
       if (entry.type === 'SymbolicLink') {
@@ -141,12 +147,67 @@ function assertInstalledPackageMatchesTarball(sdkDir, tarball) {
   }
 }
 
-async function fetchRegistryTarball(resolved) {
-  const response = await fetch(resolved, { redirect: 'follow' });
-  if (!response.ok) {
-    throw new Error(`[pack] Cannot fetch locked KodaX tarball: HTTP ${response.status}.`);
+export async function fetchRegistryTarball(
+  resolved,
+  {
+    env = process.env,
+    fetchImpl = fetch,
+    timeoutMs = REGISTRY_TARBALL_TIMEOUT_MS,
+    createProxyDispatcher = (options) => new EnvHttpProxyAgent(options),
+  } = {},
+) {
+  const httpProxy = env.http_proxy ?? env.HTTP_PROXY;
+  const httpsProxy = env.https_proxy ?? env.HTTPS_PROXY;
+  let dispatcher;
+  if (httpProxy || httpsProxy) {
+    try {
+      dispatcher = createProxyDispatcher({
+        ...(httpProxy ? { httpProxy } : {}),
+        ...(httpsProxy ? { httpsProxy } : {}),
+        noProxy: env.no_proxy ?? env.NO_PROXY ?? '',
+      });
+    } catch (error) {
+      throw new Error('[pack] Cannot configure Registry proxy from the proxy environment.', {
+        cause: error,
+      });
+    }
   }
-  return Buffer.from(await response.arrayBuffer());
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  let tarball;
+  let failure;
+  try {
+    const response = await fetchImpl(resolved, {
+      redirect: 'follow',
+      signal: controller.signal,
+      ...(dispatcher ? { dispatcher } : {}),
+    });
+    if (!response.ok) {
+      throw new Error(`[pack] Cannot fetch locked KodaX tarball: HTTP ${response.status}.`);
+    }
+    tarball = Buffer.from(await response.arrayBuffer());
+  } catch (error) {
+    failure = controller.signal.aborted
+      ? new Error(`[pack] Registry tarball fetch timed out after ${timeoutMs} ms.`, {
+          cause: error,
+        })
+      : error;
+  } finally {
+    clearTimeout(timeout);
+  }
+  try {
+    if (failure) await dispatcher?.destroy(failure);
+    else await dispatcher?.close();
+  } catch (error) {
+    failure = failure
+      ? new AggregateError(
+          [failure, error],
+          '[pack] Registry tarball fetch and proxy cleanup failed.',
+        )
+      : new Error('[pack] Registry proxy cleanup failed.', { cause: error });
+  }
+  if (failure) throw failure;
+  return tarball;
 }
 
 export async function assertKodaxReleaseDependencyState(

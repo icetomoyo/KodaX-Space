@@ -614,6 +614,12 @@ test('run changes project queued inputs and reset run-scoped live state atomical
       domain: 'run',
       activeRun: null,
       queuedRuns: [],
+      lastTerminalRun: {
+        runId: 'run_1',
+        sessionId: 's_1',
+        phase: 'completed',
+        completedAt: 2,
+      },
       queuedInputs: [
         {
           inputId: 'input_1',
@@ -631,6 +637,7 @@ test('run changes project queued inputs and reset run-scoped live state atomical
 
   const projection = result.state.liveBySession.s_1;
   assert.equal(result.status, 'applied');
+  assert.equal(projection?.lastTerminalRun?.runId, 'run_1');
   assert.equal(projection?.queuedInputs[0]?.inputId, 'input_1');
   assert.equal(projection?.assistantDraft, undefined);
   assert.equal(projection?.thinkingDraft, undefined);

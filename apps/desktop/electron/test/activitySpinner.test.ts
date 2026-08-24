@@ -455,6 +455,53 @@ test('stale Runtime activity retains its exact Stop identity while connection au
   assert.deepEqual(identity, { requiresExactRunId: true, runId: 'run_visible_old' });
 });
 
+test('a replacement Runtime cannot inherit spinner or Stop state from the previous Runtime', () => {
+  const profileSession: SpaceRuntimeProfileProjectionT['sessions'][number] = {
+    sessionId: sid,
+    surface: 'code',
+    createdAt: 10,
+    lastActivityAt: 20,
+    activeRun: {
+      runId: 'run_previous_runtime',
+      sessionId: sid,
+      phase: 'running',
+      startedAt: 10,
+    },
+    queuedRuns: [],
+  };
+  const events: SessionEvent[] = [
+    {
+      kind: 'session_start',
+      sessionId: sid,
+      provider: 'mock',
+      runtimeEvent: { runtimeId: 'rt_previous', runId: 'run_previous_runtime', seq: 12 },
+    },
+  ];
+  const scope = { currentRuntimeId: 'rt_replacement' };
+
+  const snapshot = selectActivitySnapshot(
+    undefined,
+    events,
+    false,
+    undefined,
+    profileSession,
+    true,
+    { runtimeId: 'rt_previous', seq: 12 },
+    scope,
+  );
+  const stop = selectRuntimeStopIdentity(
+    undefined,
+    events,
+    profileSession,
+    true,
+    { runtimeId: 'rt_previous', seq: 12 },
+    scope,
+  );
+
+  assert.equal(snapshot.streaming, false);
+  assert.deepEqual(stop, { requiresExactRunId: false });
+});
+
 test('legacy activity generation changes at the next root turn boundary', () => {
   const first: SessionEvent[] = [
     { kind: 'session_start', sessionId: sid, provider: 'mock', turnId: 'turn_old' },
@@ -824,6 +871,46 @@ test('a terminal event still fences its Run when a newer profile snapshot is sta
     staleProfileSession,
     true,
     { runtimeId: 'rt_1', seq: 11 },
+  );
+
+  assert.deepEqual(selected, { streaming: false, status: '', startedAt: null });
+});
+
+test('a later terminal for another Run cannot hide the terminal that closes stale profile activity', () => {
+  const staleProfileSession: SpaceRuntimeProfileProjectionT['sessions'][number] = {
+    sessionId: sid,
+    surface: 'code',
+    createdAt: 10,
+    lastActivityAt: 40,
+    activeRun: {
+      runId: 'run_done',
+      sessionId: sid,
+      phase: 'running',
+      startedAt: 10,
+    },
+    queuedRuns: [],
+  };
+  const events: SessionEvent[] = [
+    {
+      kind: 'session_complete',
+      sessionId: sid,
+      runtimeEvent: { runtimeId: 'rt_1', runId: 'run_done', seq: 10 },
+    },
+    {
+      kind: 'session_complete',
+      sessionId: sid,
+      runtimeEvent: { runtimeId: 'rt_1', runId: 'run_other', seq: 12 },
+    },
+  ];
+
+  const selected = selectActivitySnapshot(
+    undefined,
+    events,
+    false,
+    undefined,
+    staleProfileSession,
+    true,
+    { runtimeId: 'rt_1', seq: 13 },
   );
 
   assert.deepEqual(selected, { streaming: false, status: '', startedAt: null });

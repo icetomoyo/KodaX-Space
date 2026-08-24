@@ -392,6 +392,11 @@ function eventOwnerIndex(event: SessionEvent, owners: readonly UserMessage[]): n
       // event stream is authoritative. Falling through to the sole run-bound root owner
       // would pull every event after that boundary back above the delivered user.
       if (exactOwners.length > 1) return undefined;
+      // A known turn must not fall back to a different known turn merely because both share one
+      // long-lived Runtime Run. That would route the previous reply around its delivery boundary.
+      if (!isTerminalEvent(event) && runOwners.some(({ owner }) => owner.turnId !== undefined)) {
+        return undefined;
+      }
     }
     if (runOwners.length === 1) return runOwners[0]?.index;
   }
@@ -795,11 +800,19 @@ function composeAssistantSegment(
       case 'mid_turn_user_prompt': {
         flushTextBubble();
         lastTextBubble = null;
+        activeResponseId = undefined;
+        activeProviderRequestId = undefined;
+        activeSegmentTextIds.clear();
+        responseSegmentTextIds.clear();
         break;
       }
       case 'queued_user_prompt_started': {
         flushTextBubble();
         lastTextBubble = null;
+        activeResponseId = undefined;
+        activeProviderRequestId = undefined;
+        activeSegmentTextIds.clear();
+        responseSegmentTextIds.clear();
         break;
       }
       case 'queued_user_prompt_failed': {

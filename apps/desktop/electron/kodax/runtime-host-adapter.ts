@@ -121,12 +121,7 @@ import {
 
 export type RuntimeHostMode = 'legacy' | 'runtime';
 export type RuntimeHostState =
-  | 'uninitialized'
-  | 'initializing'
-  | 'legacy'
-  | 'ready'
-  | 'failed'
-  | 'closed';
+  'uninitialized' | 'initializing' | 'legacy' | 'ready' | 'failed' | 'closed';
 export type RuntimeCapabilityOwner = 'runtime' | 'space-bridge' | 'legacy' | 'unavailable';
 export type RuntimeCapabilitySupport = 'supported' | 'partial' | 'unavailable';
 
@@ -1157,8 +1152,8 @@ type SpaceRuntimeConnectOptions = Omit<ConnectKodaXRuntimeOptions, 'requirements
   /** Opt-in lifecycle policy for Space-managed daemons. */
   readonly daemonOrphanExitMs?: number;
   readonly requirements?: NonNullable<ConnectKodaXRuntimeOptions['requirements']> & {
-    /** Windows sandbox ownership and filesystem-effect convergence use the v4 contract. */
-    readonly sandboxRuntime?: 4;
+    /** Windows sandbox ownership and filesystem-effect convergence use the v5 contract. */
+    readonly sandboxRuntime?: 5;
     /** The current daemon host actually has Space's orphan idle-exit policy enabled. */
     readonly daemonOrphanExit?: 1;
     /** Managed Run lifecycle events have canonical persistence boundaries. */
@@ -1259,10 +1254,7 @@ type DaemonShutdownVerification =
   | {
       readonly status: 'unverified';
       readonly reason:
-        | 'daemon_active'
-        | 'containment_active'
-        | 'containment_unavailable'
-        | 'outcome_missing';
+        'daemon_active' | 'containment_active' | 'containment_unavailable' | 'outcome_missing';
     };
 
 interface DaemonShutdownVerificationInput {
@@ -1394,9 +1386,9 @@ function runtimeCapabilityVersion(runtime: KodaXDaemonRuntime, name: string): nu
 }
 
 function assertSpaceDaemonRequiredCapabilities(runtime: KodaXDaemonRuntime): void {
-  if (runtimeCapabilityVersion(runtime, 'sandboxRuntime') < 4) {
+  if (runtimeCapabilityVersion(runtime, 'sandboxRuntime') < 5) {
     throw new Error(
-      'KodaX Runtime does not support the required sandboxRuntime v4 capability. ' +
+      'KodaX Runtime does not support the required sandboxRuntime v5 capability. ' +
         'Install a compatible KodaX package and restart the Coder daemon.',
     );
   }
@@ -1442,9 +1434,9 @@ function assertSpaceDaemonRequiredCapabilities(runtime: KodaXDaemonRuntime): voi
         'Install a compatible KodaX package and restart the Coder daemon.',
     );
   }
-  if (runtimeCapabilityVersion(runtime, 'conversationHistory') < 1) {
+  if (runtimeCapabilityVersion(runtime, 'conversationHistory') < 2) {
     throw new Error(
-      'KodaX Runtime does not support the required conversationHistory v1 capability. ' +
+      'KodaX Runtime does not support the required conversationHistory v2 capability. ' +
         'Install a compatible KodaX package and restart the Coder daemon.',
     );
   }
@@ -1536,6 +1528,7 @@ async function createPublishedRuntime(
     sdk as typeof sdk & {
       readonly KODAX_RUNTIME_SDK_CAPABILITIES?: {
         readonly actorSettlementConvergence?: number;
+        readonly conversationHistory?: number;
         readonly crashOutcomeModel?: number;
         readonly daemonOrphanExit?: number;
         readonly daemonShutdownVerification?: number;
@@ -1554,6 +1547,7 @@ async function createPublishedRuntime(
 export function assertSpaceRuntimeSdkRequiredCapabilities(sdk: {
   readonly KODAX_RUNTIME_SDK_CAPABILITIES?: {
     readonly actorSettlementConvergence?: number;
+    readonly conversationHistory?: number;
     readonly crashOutcomeModel?: number;
     readonly daemonOrphanExit?: number;
     readonly daemonShutdownVerification?: number;
@@ -1568,14 +1562,15 @@ export function assertSpaceRuntimeSdkRequiredCapabilities(sdk: {
   const capabilities = sdk.KODAX_RUNTIME_SDK_CAPABILITIES;
   const missing = [
     ...(capabilities?.actorSettlementConvergence === 2 ? [] : ['actorSettlementConvergence v2']),
+    ...(capabilities?.conversationHistory === 2 ? [] : ['conversationHistory v2']),
     ...(capabilities?.crashOutcomeModel === 2 ? [] : ['crashOutcomeModel v2']),
     ...(capabilities?.daemonOrphanExit === 1 ? [] : ['daemonOrphanExit v1']),
     ...(capabilities?.daemonShutdownVerification === 1 ? [] : ['daemonShutdownVerification v1']),
     ...(capabilities?.liveOutputSegments === 1 ? [] : ['liveOutputSegments v1']),
     ...(capabilities?.managedRunDurability === 1 ? [] : ['managedRunDurability v1']),
-    ...(capabilities?.runtimeExitSettlement === 1 ? [] : ['runtimeExitSettlement v1']),
+    ...(capabilities?.runtimeExitSettlement === 2 ? [] : ['runtimeExitSettlement v2']),
     ...(capabilities?.runtimeEventCoalescing === 1 ? [] : ['runtimeEventCoalescing v1']),
-    ...(capabilities?.sandboxRuntime === 4 ? [] : ['sandboxRuntime v4']),
+    ...((capabilities?.sandboxRuntime ?? 0) >= 5 ? [] : ['sandboxRuntime v5']),
     ...(capabilities?.sessionEventJournal === 1 ? [] : ['sessionEventJournal v1']),
   ];
   if (missing.length > 0) {
@@ -1856,9 +1851,7 @@ function isReconnectableRunTransportLoss(error: unknown): boolean {
   return isRuntimeDaemonDisconnectFailure(error) && error.reconnectable;
 }
 
-function runtimeFailurePresentation(
-  failureKind: unknown,
-): {
+function runtimeFailurePresentation(failureKind: unknown): {
   readonly category: 'auth' | 'rate_limit' | 'network' | 'unknown';
   readonly retriable: boolean;
   readonly action?: 'retry' | 'open_provider_settings' | 'check_network';
@@ -2215,7 +2208,7 @@ export class RuntimeHostAdapter {
         sessionAdmission: 1,
         completeObservationSnapshot: 1,
         contextCompaction: 3,
-        conversationHistory: 1,
+        conversationHistory: 2,
         transcriptPaging: 1,
         transcriptSearch: 1,
         connectionLifecycle: 1,
@@ -2228,7 +2221,7 @@ export class RuntimeHostAdapter {
         managedRunDurability: 1,
         actorSettlementConvergence: 2,
         runtimeEventCoalescing: 1,
-        sandboxRuntime: 4,
+        sandboxRuntime: 5,
         sessionEventJournal: 1,
         liveOutputSegments: 1,
         integrationConfigResilience: 1,
@@ -5554,7 +5547,13 @@ export class RuntimeHostAdapter {
           throw new Error('Coder daemon returned a recovered Run with a different identity.');
         }
         if (this.runtime !== runtime || this.state !== 'ready') {
-          throw new Error('Coder Runtime changed while recovering an admitted Run.');
+          // runs.get() described the exact admitted Run, but the attachment that answered
+          // may have disconnected before we could await its terminal result. Preserve the
+          // typed transport-loss fact that authorizes another exact-runId recovery cycle;
+          // turning this guard into an ordinary Error would permanently reject the admitted
+          // Run even when a healthy replacement Runtime is already available.
+          failure = disconnectFailure;
+          continue;
         }
         return await runtime.runs.await(runId);
       } catch (error: unknown) {

@@ -300,6 +300,13 @@ const sessionSendRejectionReasonSchema = z.enum([
   'unsupported_capability',
   'interrupt_window_closed',
   'session_data_changed',
+  'cancelled_before_admission',
+  'skill_requires_idle',
+  'skill_not_found',
+  'skill_multiple_references',
+  'skill_fork_unsupported',
+  'skill_blocked',
+  'skill_preparation_failed',
 ]);
 export type SessionSendRejectionReason = z.infer<typeof sessionSendRejectionReasonSchema>;
 

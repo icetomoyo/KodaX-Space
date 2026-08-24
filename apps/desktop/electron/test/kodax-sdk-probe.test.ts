@@ -22,7 +22,7 @@ test('probeKodaxSdk: standalone sandbox surface is shape-probed without triggeri
   await probeKodaxSdk();
   const capability = getSandboxSdkCapability();
   assert.equal(capability.status, 'available');
-  assert.equal(capability.version, 4);
+  assert.equal(capability.version, 5);
   assert.equal(capability.asrtVersion, '0.0.65');
   assert.equal(capability.unavailableBehavior, 'structured-no-execution');
   assert.ok(['checking', 'ready', 'setup-required', 'unavailable'].includes(capability.readiness));
@@ -32,7 +32,7 @@ test('sandbox capability distinguishes facade shape from doctor-confirmed readin
   const shaped = inspectSandboxModule({
     KODAX_ASRT_VERSION: '0.0.65',
     getKodaXSandboxCapability: () => ({
-      version: 4,
+      version: 5,
       asrtVersion: '0.0.65',
       platform: process.platform,
       backend: 'unsupported',
@@ -101,7 +101,7 @@ test('inspectSandboxModule rejects an executor that could hide unavailable conta
       inspectSandboxModule({
         KODAX_ASRT_VERSION: '0.0.65',
         getKodaXSandboxCapability: () => ({
-          version: 4,
+          version: 5,
           asrtVersion: '0.0.65',
           platform: process.platform,
           backend: 'unsupported',

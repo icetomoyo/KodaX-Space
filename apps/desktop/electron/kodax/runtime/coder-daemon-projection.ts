@@ -224,9 +224,7 @@ export function projectRuntimeRun(
       : run.error
         ? { terminalReason: run.error.slice(0, MAX_REASON) }
         : {}),
-    ...(run.terminal?.failureKind !== undefined
-      ? { failureKind: run.terminal.failureKind }
-      : {}),
+    ...(run.terminal?.failureKind !== undefined ? { failureKind: run.terminal.failureKind } : {}),
     ...(run.lifecycleError !== undefined
       ? {
           lifecycleError: {
@@ -859,37 +857,58 @@ function queuedInputsProjection(
   const interrupts = runs.flatMap((run) =>
     run.sessionId !== sessionId
       ? []
-      : (run.interruptInputs ?? []).flatMap((input) => {
-          // Delivered input is durable transcript history, not session-wide live queue state.
-          // The reducer emits it once from run.input.delivered with an exact journal position;
-          // snapshots must never resurrect old owners from completed or earlier turns.
-          if (input.state !== 'queued') return [];
-          const origin = input.origin ?? run.origin;
-          return [
-            {
-              inputId: input.inputId,
-              sessionId: run.sessionId,
-              delivery: 'interrupt' as const,
-              state: input.state,
-              createdAt: timestamp(input.queuedAt),
-              ...(input.deliveredAt ? { deliveredAt: timestamp(input.deliveredAt) } : {}),
-              runId: run.runId,
-              contentPreview: input.contentPreview.slice(0, 4_096),
-              ...(run.turnId ? { turnId: run.turnId } : {}),
-              // Per-input operation identity is authoritative for interrupts. Falling back to the
-              // root Run origin would alias every interrupt submitted to that Run.
-              ...(input.origin?.operationId ? { originOperationId: input.origin.operationId } : {}),
-              ...(origin
-                ? {
-                    initiatedBy: {
-                      clientId: origin.principalId.slice(0, 128),
-                      name: (origin.clientName ?? origin.principalId).slice(0, 128),
-                    },
-                  }
-                : {}),
-            },
-          ];
-        }),
+      : (() => {
+          const inputs = run.interruptInputs ?? [];
+          const latestDelivered = inputs.reduce<(typeof inputs)[number] | undefined>(
+            (latest, input) =>
+              input.state === 'delivered' &&
+              input.deliveredAt !== undefined &&
+              (latest === undefined ||
+                timestamp(input.deliveredAt) >= timestamp(latest.deliveredAt))
+                ? input
+                : latest,
+            undefined,
+          );
+          return inputs.flatMap((input) => {
+            // Retain the current active turn's newest delivered input as a bounded repair witness.
+            // Older delivered inputs are durable history and must not be resurrected as queue state.
+            const currentDelivered =
+              input.state === 'delivered' &&
+              input === latestDelivered &&
+              input.entryId !== undefined &&
+              run.turnId !== undefined &&
+              ACTIVE_PHASES.has(run.phase as never);
+            if (input.state !== 'queued' && !currentDelivered) return [];
+            const origin = input.origin ?? run.origin;
+            return [
+              {
+                inputId: input.inputId,
+                sessionId: run.sessionId,
+                delivery: 'interrupt' as const,
+                state: input.state,
+                createdAt: timestamp(input.queuedAt),
+                ...(input.deliveredAt ? { deliveredAt: timestamp(input.deliveredAt) } : {}),
+                runId: run.runId,
+                contentPreview: input.contentPreview.slice(0, 4_096),
+                ...(input.entryId ? { entryId: input.entryId } : {}),
+                ...(run.turnId ? { turnId: run.turnId } : {}),
+                // Per-input operation identity is authoritative for interrupts. Falling back to the
+                // root Run origin would alias every interrupt submitted to that Run.
+                ...(input.origin?.operationId
+                  ? { originOperationId: input.origin.operationId }
+                  : {}),
+                ...(origin
+                  ? {
+                      initiatedBy: {
+                        clientId: origin.principalId.slice(0, 128),
+                        name: (origin.clientName ?? origin.principalId).slice(0, 128),
+                      },
+                    }
+                  : {}),
+              },
+            ];
+          });
+        })(),
   );
   return [...afterTurn, ...interrupts]
     .sort((left, right) => left.createdAt - right.createdAt)
@@ -1384,20 +1403,14 @@ export class CoderSessionProjectionReducer {
         this.#outputSegment = createOutputSegmentProjection();
         this.#draftTurnId = runs.activeRun?.turnId;
       }
-      return this.#commit(
-        event.seq,
-        {
-          domain: 'run',
-          activeRun: runs.activeRun ?? null,
-          queuedRuns: runs.queuedRuns,
-          queuedInputs: queuedInputsProjection(
-            [...this.#runs.values()],
-            this.#projection.sessionId,
-          ),
-          ...(resetRunScopedState ? { resetRunScopedState: true } : {}),
-        },
-        runs.lastTerminalRun,
-      );
+      return this.#commit(event.seq, {
+        domain: 'run',
+        activeRun: runs.activeRun ?? null,
+        queuedRuns: runs.queuedRuns,
+        ...(runs.lastTerminalRun ? { lastTerminalRun: runs.lastTerminalRun } : {}),
+        queuedInputs: queuedInputsProjection([...this.#runs.values()], this.#projection.sessionId),
+        ...(resetRunScopedState ? { resetRunScopedState: true } : {}),
+      });
     }
     return null;
   }
@@ -1433,11 +1446,7 @@ export class CoderSessionProjectionReducer {
     });
   }
 
-  #commit(
-    seq: number,
-    change: SpaceSessionLiveChangedT['change'],
-    lastTerminalRun?: SpaceRuntimeRunProjectionT,
-  ): SpaceSessionLiveChangedT {
+  #commit(seq: number, change: SpaceSessionLiveChangedT['change']): SpaceSessionLiveChangedT {
     const baseProjectionRevision = this.#projection.projectionRevision;
     const projectionRevision = baseProjectionRevision + 1;
     const cursor = { ...this.#projection.cursor, seq };
@@ -1449,6 +1458,7 @@ export class CoderSessionProjectionReducer {
           cursor,
           activeRun: change.activeRun ?? undefined,
           queuedRuns: change.queuedRuns,
+          ...(change.lastTerminalRun ? { lastTerminalRun: change.lastTerminalRun } : {}),
           ...(change.queuedInputs !== undefined ? { queuedInputs: change.queuedInputs } : {}),
           ...(change.resetRunScopedState
             ? {
@@ -1461,7 +1471,6 @@ export class CoderSessionProjectionReducer {
                 ...(change.activeRun !== null ? { sidecarMessages: [] } : {}),
               }
             : {}),
-          ...(lastTerminalRun ? { lastTerminalRun } : {}),
         };
         break;
       case 'draft':

@@ -1,10 +1,13 @@
 import { useMemo } from 'react';
 import { useShallow } from 'zustand/react/shallow';
-import type { SessionEvent, SpaceSessionLiveProjectionT } from '@kodax-space/space-ipc-schema';
+import type {
+  SessionEvent,
+  SpaceRuntimeProfileProjectionT,
+  SpaceSessionLiveProjectionT,
+} from '@kodax-space/space-ipc-schema';
 import { useAppStore } from '../../store/appStore.js';
 import {
   runtimeConnectionHasFreshLiveAuthority,
-  runtimeProfileActivityOutranksLive,
   runtimeProfileSessionActivityOutranksLive,
   runtimeProfileSessionTerminalEvidence,
   runtimeProfileTerminalEvidence,
@@ -18,6 +21,11 @@ interface RuntimeTerminalEvidence {
   readonly runtimeId?: string;
   readonly startedAt?: number;
   readonly completedAt?: number;
+}
+
+interface RuntimeProfileActivityEvidence {
+  readonly runtimeId: string;
+  readonly runIds: readonly string[];
 }
 
 export function isUnseenTerminalError(
@@ -40,11 +48,57 @@ export function deriveSessionStatus(input: {
   readonly errorSeenRunIds?: readonly string[];
   readonly runtimeLive: SpaceSessionLiveProjectionT | undefined;
   readonly runtimeProfileActive: boolean;
+  readonly runtimeProfileActivity?: RuntimeProfileActivityEvidence;
   readonly runtimeProfileTerminalRun?: RuntimeTerminalEvidence;
+  readonly currentRuntimeId?: string;
 }): SessionStatus {
-  const { runtimeLive } = input;
+  const hasCurrentRuntimeId = 'currentRuntimeId' in input;
+  const scopedRuntimeAvailable = !hasCurrentRuntimeId || input.currentRuntimeId !== undefined;
+  const eventBelongsToCurrentRuntime = (event: SessionEvent): boolean =>
+    !('runtimeEvent' in event) ||
+    event.runtimeEvent === undefined ||
+    !hasCurrentRuntimeId ||
+    (input.currentRuntimeId !== undefined &&
+      event.runtimeEvent.runtimeId === input.currentRuntimeId);
+  const runtimeLive =
+    scopedRuntimeAvailable &&
+    (!hasCurrentRuntimeId || input.runtimeLive?.cursor.runtimeId === input.currentRuntimeId)
+      ? input.runtimeLive
+      : undefined;
+  const runtimeProfileActivity =
+    input.runtimeProfileActivity !== undefined &&
+    scopedRuntimeAvailable &&
+    (!hasCurrentRuntimeId || input.runtimeProfileActivity.runtimeId === input.currentRuntimeId)
+      ? input.runtimeProfileActivity
+      : undefined;
+  const terminalEventOrigins = (input.events ?? [])
+    .filter(
+      (event) =>
+        eventBelongsToCurrentRuntime(event) &&
+        (event.kind === 'session_complete' || event.kind === 'session_error'),
+    )
+    .flatMap((event) =>
+      'runtimeEvent' in event && event.runtimeEvent !== undefined ? [event.runtimeEvent] : [],
+    );
+  const activeProfileRunIds = runtimeProfileActivity?.runIds.filter(
+    (runId) =>
+      !terminalEventOrigins.some(
+        (origin) => origin.runtimeId === runtimeProfileActivity.runtimeId && origin.runId === runId,
+      ),
+  );
+  const runtimeProfileActive =
+    activeProfileRunIds !== undefined
+      ? activeProfileRunIds.length > 0
+      : input.runtimeProfileActivity === undefined && scopedRuntimeAvailable
+        ? input.runtimeProfileActive
+        : false;
+  const terminalClosesProfileActivity =
+    runtimeProfileActivity !== undefined &&
+    runtimeProfileActivity.runIds.length > 0 &&
+    activeProfileRunIds?.length === 0;
   const terminalRunIds = new Set<string>();
   if (runtimeLive?.lastTerminalRun) terminalRunIds.add(runtimeLive.lastTerminalRun.runId);
+  for (const origin of terminalEventOrigins) terminalRunIds.add(origin.runId);
   const profileTerminalAppliesToLive =
     input.runtimeProfileTerminalRun !== undefined &&
     (input.runtimeProfileTerminalRun.runtimeId === undefined ||
@@ -64,10 +118,11 @@ export function deriveSessionStatus(input: {
   const queuedRuns = runtimeLive?.queuedRuns.filter((run) => !terminalRunIds.has(run.runId)) ?? [];
   const terminalClosesUnboundActivity =
     terminalClosesActiveRun ||
+    terminalClosesProfileActivity ||
     (runtimeLive?.activeRun === undefined &&
       terminalClosesQueuedRun &&
       queuedRuns.length === 0 &&
-      !input.runtimeProfileActive);
+      !runtimeProfileActive);
   if (
     activeRun?.phase === 'waiting_permission' ||
     activeRun?.phase === 'waiting_user_input' ||
@@ -82,7 +137,7 @@ export function deriveSessionStatus(input: {
   ) {
     return 'awaiting';
   }
-  if (activeRun !== undefined || queuedRuns.length > 0 || input.runtimeProfileActive) {
+  if (activeRun !== undefined || queuedRuns.length > 0 || runtimeProfileActive) {
     return 'running';
   }
   const seenTerminalRunIds = new Set(
@@ -105,6 +160,7 @@ export function deriveSessionStatus(input: {
   if (input.events) {
     for (let index = input.events.length - 1; index >= 0; index--) {
       const event = input.events[index]!;
+      if (!eventBelongsToCurrentRuntime(event)) continue;
       if (event.kind === 'session_error') {
         if (
           event.runtimeEvent?.runId !== undefined &&
@@ -159,17 +215,39 @@ function profileTerminalForSession(
 function profileActivityForSession(
   sessionId: string | null,
   state: ReturnType<typeof useAppStore.getState>,
-): boolean {
-  if (!sessionId || !runtimeConnectionHasFreshLiveAuthority(state.runtimeConnection)) return false;
+): RuntimeProfileActivityEvidence | undefined {
+  if (!sessionId || !runtimeConnectionHasFreshLiveAuthority(state.runtimeConnection)) {
+    return undefined;
+  }
   const profile = state.runtimeProfile;
   if (profile === null || profile.connection.runtimeId !== state.runtimeConnection.runtimeId) {
-    return false;
+    return undefined;
   }
-  return runtimeProfileActivityOutranksLive(
-    profile,
-    sessionId,
-    state.liveProjectionBySession[sessionId],
-  );
+  return profileActivityEvidence(profile, sessionId, state.liveProjectionBySession[sessionId]);
+}
+
+function profileActivityEvidence(
+  profile: SpaceRuntimeProfileProjectionT,
+  sessionId: string,
+  live: SpaceSessionLiveProjectionT | undefined,
+): RuntimeProfileActivityEvidence | undefined {
+  const session = profile.sessions.find((candidate) => candidate.sessionId === sessionId);
+  const runtimeId = profile.connection.runtimeId ?? profile.cursor?.runtimeId;
+  if (
+    session === undefined ||
+    runtimeId === undefined ||
+    profile.cursor === undefined ||
+    !runtimeProfileSessionActivityOutranksLive(session, live)
+  ) {
+    return undefined;
+  }
+  return {
+    runtimeId,
+    runIds: [
+      ...(session.activeRun ? [session.activeRun.runId] : []),
+      ...session.queuedRuns.map((run) => run.runId),
+    ],
+  };
 }
 
 export function useSessionStatus(sessionId: string | null): SessionStatus {
@@ -195,10 +273,13 @@ export function useSessionStatus(sessionId: string | null): SessionStatus {
   const runtimeLive = useAppStore((state) =>
     sessionId ? state.liveProjectionBySession[sessionId] : undefined,
   );
-  const runtimeProfileActive = useAppStore((state) => profileActivityForSession(sessionId, state));
+  const runtimeProfileActivity = useAppStore((state) =>
+    profileActivityForSession(sessionId, state),
+  );
   const runtimeProfileTerminalRun = useAppStore((state) =>
     profileTerminalForSession(sessionId, state),
   );
+  const currentRuntimeId = useAppStore((state) => state.runtimeConnection.runtimeId);
 
   return useMemo(() => {
     if (!sessionId) return 'idle';
@@ -211,8 +292,10 @@ export function useSessionStatus(sessionId: string | null): SessionStatus {
       errorSeenRunId,
       errorSeenRunIds,
       runtimeLive,
-      runtimeProfileActive,
+      runtimeProfileActive: runtimeProfileActivity !== undefined,
+      runtimeProfileActivity,
       runtimeProfileTerminalRun,
+      currentRuntimeId,
     });
   }, [
     sessionId,
@@ -224,8 +307,9 @@ export function useSessionStatus(sessionId: string | null): SessionStatus {
     errorSeenRunId,
     errorSeenRunIds,
     runtimeLive,
-    runtimeProfileActive,
+    runtimeProfileActivity,
     runtimeProfileTerminalRun,
+    currentRuntimeId,
   ]);
 }
 
@@ -246,7 +330,7 @@ export function useSessionStatusMap(
       const runtimeProfile = state.runtimeProfile;
       const permissionSessionIds = new Set(permissionQueue.map((request) => request.sessionId));
       const askUserSessionIds = new Set(askUserQueue.map((request) => request.sessionId));
-      const profileActiveSessionIds = new Set<string>();
+      const profileActivityBySession = new Map<string, RuntimeProfileActivityEvidence>();
       const profileTerminalRunBySession = new Map<string, RuntimeTerminalEvidence>();
       const freshProfile = runtimeProfile;
       if (
@@ -259,13 +343,13 @@ export function useSessionStatusMap(
           if (terminal !== undefined) {
             profileTerminalRunBySession.set(session.sessionId, terminal);
           }
-          if (
-            runtimeProfileSessionActivityOutranksLive(
-              session,
-              liveProjectionBySession[session.sessionId],
-            )
-          ) {
-            profileActiveSessionIds.add(session.sessionId);
+          const activity = profileActivityEvidence(
+            freshProfile,
+            session.sessionId,
+            liveProjectionBySession[session.sessionId],
+          );
+          if (activity !== undefined) {
+            profileActivityBySession.set(session.sessionId, activity);
           }
         }
       }
@@ -280,8 +364,10 @@ export function useSessionStatusMap(
           errorSeenRunId: errorSeenRunIdMap[sessionId],
           errorSeenRunIds: errorSeenRunIdsMap[sessionId],
           runtimeLive: liveProjectionBySession[sessionId],
-          runtimeProfileActive: profileActiveSessionIds.has(sessionId),
+          runtimeProfileActive: profileActivityBySession.has(sessionId),
+          runtimeProfileActivity: profileActivityBySession.get(sessionId),
           runtimeProfileTerminalRun: profileTerminalRunBySession.get(sessionId),
+          currentRuntimeId: runtimeConnection.runtimeId,
         });
       }
       return statuses;

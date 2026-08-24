@@ -118,6 +118,8 @@ import { isCoderOwnerRecoveryRestartRequired } from './kodax/coder-owner-recover
 import {
   handleRuntimeExitRecoveryDialogResponse,
   runRuntimeStartupBoundary,
+  runtimeExitFailureDialog,
+  runtimeExitFailureRequiresRestart,
   runtimeExitRecoveryBlockedNotice,
 } from './window/runtime-exit-recovery.js';
 import { permissionRegistry } from './permission/registry.js';
@@ -428,14 +430,9 @@ function createWindowsTrayBadgeImage(count: number): NativeImage {
 }
 let mainWindowBootOverlay: BootSplashOverlay<WebContentsView> | null = null;
 type BootRecoveryActionMode =
-  | 'none'
-  | 'renderer-retry'
-  | 'app-restart'
-  | 'runtime-exit-recovery'
-  | 'close-only';
+  'none' | 'renderer-retry' | 'app-restart' | 'runtime-exit-recovery' | 'close-only';
 let mainWindowBootStatusUpdater:
-  | ((message: string, action: BootRecoveryActionMode) => void)
-  | null = null;
+  ((message: string, action: BootRecoveryActionMode) => void) | null = null;
 let mainWindowAwaitingInitialReveal = false;
 let pendingMainWindowActivation = false;
 let queueWatchShutdown: (() => void) | null = null;
@@ -1835,34 +1832,32 @@ async function requestCompleteExit(): Promise<void> {
       return 'en-US' as const;
     });
     const zh = locale === 'zh-CN';
-    console.warn(
-      '[main] complete exit preparation failed:',
-      error instanceof Error ? error.message : String(error),
+    const failureMessage = error instanceof Error ? error.message : String(error);
+    const restartRequired = runtimeExitFailureRequiresRestart(
+      failureMessage,
+      isCoderOwnerRecoveryRestartRequired(error),
     );
+    const presentation = runtimeExitFailureDialog(
+      failureMessage,
+      restartRequired,
+      zh ? 'zh-CN' : 'en',
+    );
+    console.warn('[main] complete exit preparation failed:', failureMessage);
     const result = await dialog.showMessageBox({
       type: 'warning',
-      title: zh ? '暂时无法安全退出' : 'Space cannot quit safely yet',
-      message: zh
-        ? '退出准备没有安全完成，是否强行关闭？'
-        : 'The complete-exit preparation did not finish safely. Force close?',
-      detail: zh
-        ? '选择“强行关闭”会停止当前 Space 所属的任务并完全退出。无法确认归属的其他客户端任务不会被终止，共享 Runtime 可能继续保留。'
-        : '“Force close” stops work owned by this Space and exits completely. Work whose ownership cannot be proven is preserved, and the shared Runtime may remain available.',
-      buttons: zh ? ['保持 Space 开启', '强行关闭'] : ['Keep Space open', 'Force close'],
+      title: presentation.title,
+      message: presentation.message,
+      detail: presentation.detail,
+      buttons: [...presentation.buttons],
       defaultId: 0,
       cancelId: 0,
       noLink: true,
     });
-    const failureAction = resolveFailedCompleteExitAction(
-      result.response,
-      isCoderOwnerRecoveryRestartRequired(error),
-    );
+    const failureAction = resolveFailedCompleteExitAction(result.response, restartRequired);
     if (failureAction === 'force-close') {
       exitCommitted = true;
       await forceCompleteExit({
-        skipDaemonStop: !shouldRetryDaemonStopAfterFailedCompleteExit(
-          isCoderOwnerRecoveryRestartRequired(error),
-        ),
+        skipDaemonStop: !shouldRetryDaemonStopAfterFailedCompleteExit(restartRequired),
       });
     } else if (failureAction === 'restart-recovery') {
       if (scheduleRuntimeExitRecovery('daemon shutdown recovery requires a restart')) {
@@ -2193,6 +2188,8 @@ const startupPromise = app
         scanPendingExit:
           runtimeExitRecoveryRequested || startupSettings.coderRuntimeMode !== 'embedded',
         settle: () => runtimeHostAdapter.resumePendingRuntimeExitSettlement(),
+        continueAutomaticRetry: () => !startupShutdownCoordinator.isShutdownRequested(),
+        shutdownSignal: startupShutdownCoordinator.shutdownSignal,
         reconcileOwnerPolicy: () =>
           runtimeHostAdapter
             .reconcileStartupOwnerPolicy()
@@ -2249,6 +2246,7 @@ const startupPromise = app
         },
       });
     } catch (error) {
+      if (startupShutdownCoordinator.isShutdownRequested()) return;
       if (!runtimeExitRecoveryRequested) throw error;
       const message = error instanceof Error ? error.message : String(error);
       restoreVisibleExitControlSurface();
@@ -2268,6 +2266,7 @@ const startupPromise = app
       return;
     }
     runtimeExitRecoverySettlement = startupBoundary.settlement;
+    if (startupBoundary.action === 'cancelled') return;
     if (startupBoundary.action === 'exit') {
       console.info(
         `[main] Runtime exit ${startupBoundary.settlement.status}; completing the original quit request`,
@@ -2278,6 +2277,7 @@ const startupPromise = app
       return;
     }
     if (startupBoundary.action === 'block') {
+      if (startupShutdownCoordinator.isShutdownRequested()) return;
       const locale = await resolveCurrentTrayLocale();
       const zh = locale === 'zh-CN';
       const notice = runtimeExitRecoveryBlockedNotice(

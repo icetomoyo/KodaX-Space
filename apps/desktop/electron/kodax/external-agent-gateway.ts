@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 
 import type {
@@ -25,7 +26,11 @@ import { getSpaceDataDir } from './data-paths.js';
 
 type SdkAgentModule = typeof import('@kodax-ai/kodax/agent');
 
-const KODAX_SDK_VERSION = '0.7.89';
+const moduleMeta = import.meta;
+const requireFromModule = typeof require === 'function' ? require : createRequire(moduleMeta.url);
+const KODAX_SDK_VERSION = (
+  requireFromModule('@kodax-ai/kodax/package.json') as { readonly version: string }
+).version;
 const REFERENCE_EXECUTOR_ID = 'kodax-space-reference-v1';
 const REFERENCE_MANAGEMENT_OWNER = 'kodax-space:reference';
 const MAX_STORE_FILE_BYTES = 16 * 1024 * 1024;

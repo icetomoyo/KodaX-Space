@@ -43,6 +43,12 @@ function installQueueRuntimeAuthority(): void {
   });
 }
 
+function beginPendingSend(): number {
+  const generation = useAppStore.getState().setPendingSend(SID, true);
+  if (generation === undefined) throw new Error('expected a pending-send generation');
+  return generation;
+}
+
 beforeEach(() => {
   useToastStore.getState().clear();
   useAppStore.setState({
@@ -547,6 +553,63 @@ test('convertUserMessageToQueued replaces the addressed optimistic bubble after 
   assert.equal(queued?.sentAt, 1234);
 });
 
+test('a late queued acknowledgement cannot requeue a Runtime-admitted user owner', () => {
+  const store = useAppStore.getState();
+  const messageId = store.appendUserMessage(
+    SID,
+    'already admitted once',
+    1234,
+    undefined,
+    'operation-admitted-before-ack',
+  );
+  assert.ok(messageId);
+  store.bindUserMessageRuntimeRun(SID, messageId, 'run-admitted-before-ack');
+
+  assert.equal(
+    store.convertUserMessageToQueued(SID, messageId, {
+      content: 'already admitted once',
+      queueMode: 'after-turn',
+    }),
+    null,
+  );
+  assert.equal(useAppStore.getState().userMessagesBySession[SID]?.[0]?.id, messageId);
+  assert.equal(
+    useAppStore.getState().userMessagesBySession[SID]?.[0]?.runtimeRunId,
+    'run-admitted-before-ack',
+  );
+  assert.equal(useAppStore.getState().queuedUserMessagesBySession[SID]?.length ?? 0, 0);
+});
+
+test('a late queued acknowledgement cannot requeue a canonicalized user owner', () => {
+  useAppStore.setState({
+    userMessagesBySession: {
+      [SID]: [
+        {
+          id: 'canonical-owner-before-ack',
+          content: 'already canonical once',
+          operationId: 'operation-canonical-before-ack',
+          entryId: 'entry-canonical-before-ack',
+          restoredFromHistory: true,
+          sentAt: 1234,
+        },
+      ],
+    },
+  });
+
+  assert.equal(
+    useAppStore.getState().convertUserMessageToQueued(SID, 'canonical-owner-before-ack', {
+      content: 'already canonical once',
+      queueMode: 'interrupt',
+    }),
+    null,
+  );
+  assert.equal(
+    useAppStore.getState().userMessagesBySession[SID]?.[0]?.id,
+    'canonical-owner-before-ack',
+  );
+  assert.equal(useAppStore.getState().queuedUserMessagesBySession[SID]?.length ?? 0, 0);
+});
+
 test('rollbackUserMessage removes only the addressed optimistic bubble after a newer send', () => {
   const store = useAppStore.getState();
   const staleMessageId = store.appendUserMessage(SID, 'same prompt', 1234);
@@ -644,6 +707,241 @@ test('Runtime queue projection and acknowledgement coalesce by send operation id
   assert.equal(queued[0]?.operationId, 'operation-1');
 });
 
+test('a late queued projection migrates the exact lost-ACK owner instead of duplicating it', () => {
+  installQueueRuntimeAuthority();
+  const generation = beginPendingSend();
+  const owner = useAppStore.getState().reserveSendOperationMessage(SID, {
+    content: 'queue this after the idle boundary moved',
+    queueMode: 'after-turn',
+    operationId: 'operation-late-queued-projection',
+    requestGeneration: generation,
+    queued: false,
+  });
+  assert.equal(
+    useAppStore
+      .getState()
+      .rollbackSendOperationMessage(
+        SID,
+        'operation-late-queued-projection',
+        generation,
+        'ambiguous',
+      ),
+    'retained',
+  );
+
+  useAppStore.getState().replaceSessionLiveProjection({
+    sessionId: SID,
+    projectionRevision: 1,
+    cursor: { runtimeId: 'rt-queue', sessionId: SID, journalEpoch: 'journal-1', seq: 1 },
+    transcriptRevision: 'tx-late-queued',
+    queuedRuns: [],
+    activeTools: [],
+    todos: [],
+    queuedInputs: [
+      {
+        inputId: 'input-late-queued',
+        sessionId: SID,
+        delivery: 'after-turn',
+        state: 'queued',
+        createdAt: 100,
+        contentPreview: 'queue this after the idle boundary moved',
+        originOperationId: 'operation-late-queued-projection',
+      },
+    ],
+    interactions: [],
+  });
+
+  assert.equal(useAppStore.getState().userMessagesBySession[SID]?.length ?? 0, 0);
+  const queued = useAppStore.getState().queuedUserMessagesBySession[SID] ?? [];
+  assert.equal(queued.length, 1);
+  assert.equal(queued[0]?.id, owner?.id);
+  assert.equal(queued[0]?.queueId, 'input-late-queued');
+  assert.equal(queued[0]?.operationId, 'operation-late-queued-projection');
+});
+
+test('a late delivered queue change settles the exact lost-ACK owner in place', () => {
+  installQueueRuntimeAuthority();
+  const generation = beginPendingSend();
+  const owner = useAppStore.getState().reserveSendOperationMessage(SID, {
+    content: 'deliver this interrupt once',
+    queueMode: 'interrupt',
+    operationId: 'operation-late-delivered-projection',
+    requestGeneration: generation,
+    queued: false,
+  });
+  assert.equal(owner?.kind, 'user');
+  assert.equal(
+    useAppStore
+      .getState()
+      .rollbackSendOperationMessage(
+        SID,
+        'operation-late-delivered-projection',
+        generation,
+        'ambiguous',
+      ),
+    'retained',
+  );
+  useAppStore.getState().replaceSessionLiveProjection({
+    sessionId: SID,
+    projectionRevision: 1,
+    cursor: { runtimeId: 'rt-queue', sessionId: SID, journalEpoch: 'journal-1', seq: 1 },
+    transcriptRevision: 'tx-before-delivery',
+    activeRun: {
+      runId: 'run-delivery-owner',
+      sessionId: SID,
+      turnId: 'turn-delivery-owner',
+      phase: 'running',
+      startedAt: 90,
+    },
+    queuedRuns: [],
+    activeTools: [],
+    todos: [],
+    queuedInputs: [],
+    interactions: [],
+  });
+
+  assert.equal(
+    useAppStore.getState().applySessionLiveProjectionChange({
+      sessionId: SID,
+      baseProjectionRevision: 1,
+      projectionRevision: 2,
+      cursor: { runtimeId: 'rt-queue', sessionId: SID, journalEpoch: 'journal-1', seq: 2 },
+      change: {
+        domain: 'queue',
+        queuedInputs: [
+          {
+            inputId: 'input-late-delivered',
+            sessionId: SID,
+            delivery: 'interrupt',
+            state: 'delivered',
+            createdAt: 100,
+            deliveredAt: 110,
+            runId: 'run-delivery-owner',
+            deliverySeq: 2,
+            contentPreview: 'deliver this interrupt once',
+            entryId: 'entry-late-delivered',
+            turnId: 'turn-delivery-owner',
+            turnUserOrdinal: 1,
+            originOperationId: 'operation-late-delivered-projection',
+          },
+        ],
+      },
+    }),
+    'applied',
+  );
+
+  const users = useAppStore.getState().userMessagesBySession[SID] ?? [];
+  assert.equal(users.length, 1);
+  assert.equal(users[0]?.id, owner?.id);
+  assert.equal(users[0]?.entryId, 'entry-late-delivered');
+  assert.equal(users[0]?.operationId, 'operation-late-delivered-projection');
+  assert.equal(useAppStore.getState().queuedUserMessagesBySession[SID]?.length ?? 0, 0);
+});
+
+test('an ordinary owner keeps its identity through queued then delivered projections', () => {
+  installQueueRuntimeAuthority();
+  const generation = beginPendingSend();
+  const operationId = 'operation-two-stage-projection';
+  const owner = useAppStore.getState().reserveSendOperationMessage(SID, {
+    content: 'preserve this owner across both Runtime phases',
+    queueMode: 'interrupt',
+    operationId,
+    requestGeneration: generation,
+    queued: false,
+  });
+  assert.equal(owner?.kind, 'user');
+  assert.equal(
+    useAppStore.getState().rollbackSendOperationMessage(SID, operationId, generation, 'ambiguous'),
+    'retained',
+  );
+
+  useAppStore.getState().replaceSessionLiveProjection({
+    sessionId: SID,
+    projectionRevision: 1,
+    cursor: { runtimeId: 'rt-queue', sessionId: SID, journalEpoch: 'journal-1', seq: 1 },
+    transcriptRevision: 'tx-two-stage-queued',
+    activeRun: {
+      runId: 'run-two-stage',
+      sessionId: SID,
+      turnId: 'turn-two-stage',
+      phase: 'running',
+      startedAt: 90,
+    },
+    queuedRuns: [],
+    activeTools: [],
+    todos: [],
+    queuedInputs: [
+      {
+        inputId: 'input-two-stage',
+        sessionId: SID,
+        delivery: 'interrupt',
+        state: 'queued',
+        createdAt: 100,
+        contentPreview: 'preserve this owner across both Runtime phases',
+        originOperationId: operationId,
+      },
+    ],
+    interactions: [],
+  });
+  const queued = useAppStore.getState().queuedUserMessagesBySession[SID] ?? [];
+  assert.equal(queued.length, 1);
+  assert.equal(queued[0]?.id, owner?.id);
+  assert.equal(queued[0]?.operationReservation?.requestGeneration, generation);
+  useAppStore.getState().updateSendOperationAttachments(SID, operationId, [
+    {
+      id: 'durable-two-stage-image',
+      kind: 'image',
+      mediaType: 'image/png',
+      status: 'available',
+      previewUrl: 'app://attachments/durable-two-stage-image',
+      thumbnailUrl: 'app://attachments/durable-two-stage-image?thumbnail=1',
+    },
+  ]);
+  assert.equal(
+    useAppStore.getState().queuedUserMessagesBySession[SID]?.[0]?.attachments?.[0]?.id,
+    'durable-two-stage-image',
+  );
+
+  assert.equal(
+    useAppStore.getState().applySessionLiveProjectionChange({
+      sessionId: SID,
+      baseProjectionRevision: 1,
+      projectionRevision: 2,
+      cursor: { runtimeId: 'rt-queue', sessionId: SID, journalEpoch: 'journal-1', seq: 2 },
+      change: {
+        domain: 'queue',
+        queuedInputs: [
+          {
+            inputId: 'input-two-stage',
+            sessionId: SID,
+            delivery: 'interrupt',
+            state: 'delivered',
+            createdAt: 100,
+            deliveredAt: 110,
+            runId: 'run-two-stage',
+            deliverySeq: 2,
+            contentPreview: 'preserve this owner across both Runtime phases',
+            entryId: 'entry-two-stage',
+            turnId: 'turn-two-stage',
+            turnUserOrdinal: 1,
+            originOperationId: operationId,
+          },
+        ],
+      },
+    }),
+    'applied',
+  );
+
+  const users = useAppStore.getState().userMessagesBySession[SID] ?? [];
+  assert.equal(users.length, 1);
+  assert.equal(users[0]?.id, owner?.id);
+  assert.equal(users[0]?.operationId, operationId);
+  assert.equal(users[0]?.operationReservation?.requestGeneration, generation);
+  assert.equal(users[0]?.entryId, 'entry-two-stage');
+  assert.equal(users[0]?.attachments?.[0]?.id, 'durable-two-stage-image');
+  assert.equal(useAppStore.getState().queuedUserMessagesBySession[SID]?.length ?? 0, 0);
+});
+
 test('identical queued prompts with different operations never cross-match', () => {
   const store = useAppStore.getState();
   installQueueRuntimeAuthority();
@@ -704,6 +1002,570 @@ test('identical queued prompts with different operations never cross-match', () 
       { id: secondId, operationId: 'operation-second', queueId: 'input-second' },
     ],
   );
+});
+
+test('an exact send retry reuses one optimistic bubble across direct and queued phases', () => {
+  const store = useAppStore.getState();
+  const direct = store.reserveSendOperationMessage(SID, {
+    content: 'retry this exact request',
+    matchContent: 'retry this exact request',
+    queueMode: 'interrupt',
+    operationId: 'operation-retry-direct',
+    requestGeneration: 1,
+    queued: false,
+  });
+  const whileRunning = useAppStore.getState().reserveSendOperationMessage(SID, {
+    content: 'retry this exact request',
+    matchContent: 'retry this exact request',
+    queueMode: 'interrupt',
+    operationId: 'operation-retry-direct',
+    requestGeneration: 2,
+    queued: true,
+  });
+
+  assert.deepEqual(whileRunning, direct);
+  assert.deepEqual(direct, {
+    kind: 'user',
+    id: direct?.id,
+  });
+  assert.equal(useAppStore.getState().userMessagesBySession[SID]?.length, 1);
+  assert.equal(useAppStore.getState().queuedUserMessagesBySession[SID]?.length ?? 0, 0);
+});
+
+test('an exact queued retry remains one bubble after the Session becomes idle', () => {
+  const store = useAppStore.getState();
+  const queued = store.reserveSendOperationMessage(SID, {
+    content: 'deliver this once',
+    queueMode: 'after-turn',
+    operationId: 'operation-retry-queued',
+    requestGeneration: 1,
+    queued: true,
+  });
+  const afterTurn = useAppStore.getState().reserveSendOperationMessage(SID, {
+    content: 'deliver this once',
+    queueMode: 'after-turn',
+    operationId: 'operation-retry-queued',
+    requestGeneration: 2,
+    queued: false,
+  });
+
+  assert.deepEqual(afterTurn, queued);
+  assert.deepEqual(queued, {
+    kind: 'queued',
+    id: queued?.id,
+  });
+  assert.equal(useAppStore.getState().queuedUserMessagesBySession[SID]?.length, 1);
+  assert.equal(useAppStore.getState().userMessagesBySession[SID]?.length ?? 0, 0);
+});
+
+test('distinct send operations retain distinct bubbles even when their text is identical', () => {
+  const store = useAppStore.getState();
+  const first = store.reserveSendOperationMessage(SID, {
+    content: 'deliberate repeat',
+    queueMode: 'interrupt',
+    operationId: 'operation-repeat-first',
+    requestGeneration: 1,
+    queued: false,
+  });
+  const second = useAppStore.getState().reserveSendOperationMessage(SID, {
+    content: 'deliberate repeat',
+    queueMode: 'interrupt',
+    operationId: 'operation-repeat-second',
+    requestGeneration: 2,
+    queued: false,
+  });
+
+  assert.notEqual(first?.id, second?.id);
+  assert.equal(useAppStore.getState().userMessagesBySession[SID]?.length, 2);
+});
+
+test('a stale direct-send failure cannot remove the bubble accepted by an exact retry', () => {
+  const firstGeneration = beginPendingSend();
+  const owner = useAppStore.getState().reserveSendOperationMessage(SID, {
+    content: 'keep the accepted retry',
+    queueMode: 'interrupt',
+    operationId: 'operation-late-direct-failure',
+    requestGeneration: firstGeneration,
+    queued: false,
+  });
+  const retryGeneration = beginPendingSend();
+  useAppStore.getState().reserveSendOperationMessage(SID, {
+    content: 'keep the accepted retry',
+    queueMode: 'interrupt',
+    operationId: 'operation-late-direct-failure',
+    requestGeneration: retryGeneration,
+    queued: false,
+  });
+  useAppStore.getState().acknowledgePendingSendRun(SID, 'run-accepted-retry', retryGeneration);
+
+  assert.equal(
+    useAppStore
+      .getState()
+      .rollbackSendOperationMessage(
+        SID,
+        'operation-late-direct-failure',
+        firstGeneration,
+        'definitive',
+      ),
+    'stale',
+  );
+  assert.equal(useAppStore.getState().userMessagesBySession[SID]?.[0]?.id, owner?.id);
+  assert.equal(useAppStore.getState().userMessagesBySession[SID]?.length, 1);
+});
+
+test('an accepted direct operation without a Run settles the owner across retry attempts', () => {
+  const firstGeneration = beginPendingSend();
+  const operationId = 'operation-accepted-without-run';
+  const owner = useAppStore.getState().reserveSendOperationMessage(SID, {
+    content: 'accept this without a Runtime Run',
+    queueMode: 'interrupt',
+    operationId,
+    requestGeneration: firstGeneration,
+    queued: false,
+  });
+  const retryGeneration = beginPendingSend();
+  useAppStore.getState().reserveSendOperationMessage(SID, {
+    content: 'accept this without a Runtime Run',
+    queueMode: 'interrupt',
+    operationId,
+    requestGeneration: retryGeneration,
+    queued: false,
+  });
+
+  useAppStore.getState().settleSendOperationMessage(SID, operationId);
+  assert.equal(
+    useAppStore
+      .getState()
+      .rollbackSendOperationMessage(SID, operationId, retryGeneration, 'ambiguous'),
+    'settled',
+  );
+  assert.deepEqual(
+    useAppStore.getState().reserveSendOperationMessage(SID, {
+      content: 'accept this without a Runtime Run',
+      queueMode: 'interrupt',
+      operationId,
+      requestGeneration: retryGeneration + 1,
+      queued: false,
+    }),
+    { kind: 'settled', id: owner?.id },
+  );
+  assert.equal(useAppStore.getState().userMessagesBySession[SID]?.[0]?.id, owner?.id);
+});
+
+test('a stale queued-send failure cannot remove the bubble accepted by an exact retry', () => {
+  const firstGeneration = beginPendingSend();
+  const owner = useAppStore.getState().reserveSendOperationMessage(SID, {
+    content: 'keep the accepted queued retry',
+    queueMode: 'after-turn',
+    operationId: 'operation-late-queued-failure',
+    requestGeneration: firstGeneration,
+    queued: true,
+  });
+  const retryGeneration = beginPendingSend();
+  useAppStore.getState().reserveSendOperationMessage(SID, {
+    content: 'keep the accepted queued retry',
+    queueMode: 'after-turn',
+    operationId: 'operation-late-queued-failure',
+    requestGeneration: retryGeneration,
+    queued: true,
+  });
+  useAppStore.getState().setPendingSend(SID, false, retryGeneration);
+
+  assert.equal(
+    useAppStore
+      .getState()
+      .rollbackSendOperationMessage(
+        SID,
+        'operation-late-queued-failure',
+        firstGeneration,
+        'definitive',
+      ),
+    'stale',
+  );
+  assert.equal(useAppStore.getState().queuedUserMessagesBySession[SID]?.[0]?.id, owner?.id);
+  assert.equal(useAppStore.getState().queuedUserMessagesBySession[SID]?.length, 1);
+});
+
+test('the current failed send removes only its own operation bubble and pending admission', () => {
+  const generation = beginPendingSend();
+  useAppStore.getState().reserveSendOperationMessage(SID, {
+    content: 'remove this failed attempt',
+    queueMode: 'interrupt',
+    operationId: 'operation-current-failure',
+    requestGeneration: generation,
+    queued: false,
+  });
+
+  assert.equal(
+    useAppStore
+      .getState()
+      .rollbackSendOperationMessage(SID, 'operation-current-failure', generation, 'definitive'),
+    'rolled-back',
+  );
+  assert.equal(useAppStore.getState().userMessagesBySession[SID]?.length ?? 0, 0);
+  assert.equal(useAppStore.getState().pendingSendBySession[SID], undefined);
+});
+
+test('a definitive failure cleans up its own operation without clearing a newer unrelated send', () => {
+  const firstGeneration = beginPendingSend();
+  const firstOwner = useAppStore.getState().reserveSendOperationMessage(SID, {
+    content: 'first operation failed definitively',
+    queueMode: 'interrupt',
+    operationId: 'operation-first-definitive-failure',
+    requestGeneration: firstGeneration,
+    queued: false,
+  });
+  const secondGeneration = beginPendingSend();
+  const secondOwner = useAppStore.getState().reserveSendOperationMessage(SID, {
+    content: 'second operation is still pending',
+    queueMode: 'interrupt',
+    operationId: 'operation-second-still-pending',
+    requestGeneration: secondGeneration,
+    queued: false,
+  });
+
+  assert.equal(
+    useAppStore
+      .getState()
+      .rollbackSendOperationMessage(
+        SID,
+        'operation-first-definitive-failure',
+        firstGeneration,
+        'definitive',
+      ),
+    'rolled-back',
+  );
+  assert.deepEqual(
+    (useAppStore.getState().userMessagesBySession[SID] ?? []).map((message) => message.id),
+    [secondOwner?.id],
+  );
+  assert.notEqual(firstOwner?.id, secondOwner?.id);
+  assert.equal(useAppStore.getState().pendingSendBySession[SID], true);
+  assert.equal(
+    useAppStore.getState().pendingSendRuntimeBaselineBySession[SID]?.requestGeneration,
+    secondGeneration,
+  );
+});
+
+test('a failed exact retry keeps the earlier ambiguous bubble while reporting the retry failure', () => {
+  const firstGeneration = beginPendingSend();
+  const firstOwner = useAppStore.getState().reserveSendOperationMessage(SID, {
+    content: 'retry after an ambiguous timeout',
+    queueMode: 'interrupt',
+    operationId: 'operation-ambiguous-exact-retry',
+    requestGeneration: firstGeneration,
+    queued: false,
+  });
+  const retryGeneration = beginPendingSend();
+  const retriedOwner = useAppStore.getState().reserveSendOperationMessage(SID, {
+    content: 'retry after an ambiguous timeout',
+    queueMode: 'interrupt',
+    operationId: 'operation-ambiguous-exact-retry',
+    requestGeneration: retryGeneration,
+    queued: true,
+  });
+
+  assert.equal(firstGeneration !== retryGeneration, true);
+  assert.deepEqual(retriedOwner, firstOwner);
+  assert.equal(
+    useAppStore
+      .getState()
+      .rollbackSendOperationMessage(
+        SID,
+        'operation-ambiguous-exact-retry',
+        retryGeneration,
+        'ambiguous',
+      ),
+    'retained',
+  );
+  assert.equal(useAppStore.getState().userMessagesBySession[SID]?.[0]?.id, firstOwner?.id);
+  assert.equal(useAppStore.getState().pendingSendBySession[SID], undefined);
+});
+
+test('a factual rejection of an exact retry removes the shared provisional operation owner', () => {
+  const firstGeneration = beginPendingSend();
+  useAppStore.getState().reserveSendOperationMessage(SID, {
+    content: 'retry until the Runtime gives a factual answer',
+    queueMode: 'interrupt',
+    operationId: 'operation-definitive-exact-retry',
+    requestGeneration: firstGeneration,
+    queued: false,
+  });
+  const retryGeneration = beginPendingSend();
+  useAppStore.getState().reserveSendOperationMessage(SID, {
+    content: 'retry until the Runtime gives a factual answer',
+    queueMode: 'interrupt',
+    operationId: 'operation-definitive-exact-retry',
+    requestGeneration: retryGeneration,
+    queued: true,
+  });
+
+  assert.equal(
+    useAppStore
+      .getState()
+      .rollbackSendOperationMessage(
+        SID,
+        'operation-definitive-exact-retry',
+        retryGeneration,
+        'definitive',
+      ),
+    'rolled-back',
+  );
+  assert.equal(useAppStore.getState().userMessagesBySession[SID]?.length ?? 0, 0);
+  assert.equal(useAppStore.getState().queuedUserMessagesBySession[SID]?.length ?? 0, 0);
+  assert.equal(useAppStore.getState().pendingSendBySession[SID], undefined);
+});
+
+test('an older failure cannot roll back an exact-operation owner claimed by a newer retry', () => {
+  const firstGeneration = beginPendingSend();
+  const owner = useAppStore.getState().reserveSendOperationMessage(SID, {
+    content: 'the newer retry owns this provisional row',
+    queueMode: 'after-turn',
+    operationId: 'operation-newer-retry-owner',
+    requestGeneration: firstGeneration,
+    queued: true,
+  });
+  const retryGeneration = beginPendingSend();
+  useAppStore.getState().reserveSendOperationMessage(SID, {
+    content: 'the newer retry owns this provisional row',
+    queueMode: 'after-turn',
+    operationId: 'operation-newer-retry-owner',
+    requestGeneration: retryGeneration,
+    queued: false,
+  });
+
+  assert.equal(
+    useAppStore
+      .getState()
+      .rollbackSendOperationMessage(
+        SID,
+        'operation-newer-retry-owner',
+        firstGeneration,
+        'definitive',
+      ),
+    'stale',
+  );
+  assert.equal(useAppStore.getState().queuedUserMessagesBySession[SID]?.[0]?.id, owner?.id);
+});
+
+test('an exact retry recognizes a canonicalized operation owner as already settled', () => {
+  useAppStore.setState({
+    userMessagesBySession: {
+      [SID]: [
+        {
+          id: 'canonicalized-operation-owner',
+          content: 'already persisted once',
+          operationId: 'operation-restored-owner',
+          entryId: 'entry-restored-owner',
+          restoredFromHistory: true,
+          sentAt: 100,
+        },
+      ],
+    },
+  });
+
+  const owner = useAppStore.getState().reserveSendOperationMessage(SID, {
+    content: 'already persisted once',
+    queueMode: 'interrupt',
+    operationId: 'operation-restored-owner',
+    requestGeneration: 1,
+    queued: true,
+  });
+
+  assert.deepEqual(owner, {
+    kind: 'settled',
+    id: 'canonicalized-operation-owner',
+  });
+  assert.equal(useAppStore.getState().userMessagesBySession[SID]?.length, 1);
+  assert.equal(useAppStore.getState().queuedUserMessagesBySession[SID]?.length ?? 0, 0);
+});
+
+test('canonical history folding preserves the exact send operation owner for a later retry', () => {
+  const store = useAppStore.getState();
+  const generation = beginPendingSend();
+  const optimistic = store.reserveSendOperationMessage(SID, {
+    content: 'persist this operation once',
+    queueMode: 'interrupt',
+    operationId: 'operation-folded-canonical-owner',
+    requestGeneration: generation,
+    queued: false,
+  });
+  assert.equal(optimistic?.kind, 'user');
+  if (optimistic?.kind !== 'user') throw new Error('expected optimistic user owner');
+  store.bindUserMessageRuntimeRun(SID, optimistic.id, 'run-folded-canonical-owner');
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: 'turn-folded-canonical-owner',
+    runtimeEvent: {
+      runtimeId: 'runtime-folded-canonical-owner',
+      runId: 'run-folded-canonical-owner',
+      journalEpoch: 'epoch-folded-canonical-owner',
+      seq: 1,
+    },
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: 'persisted answer',
+    turnId: 'turn-folded-canonical-owner',
+  });
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: SID,
+    turnId: 'turn-folded-canonical-owner',
+  });
+  store.prependSessionHistory(
+    SID,
+    [
+      {
+        kind: 'user',
+        content: 'persist this operation once',
+        entryId: 'entry-folded-canonical-owner',
+        canonicalIndex: 0,
+        turnId: 'turn-folded-canonical-owner',
+        turnUserOrdinal: 0,
+        sentAt: 100,
+      },
+      {
+        kind: 'assistant',
+        text: 'persisted answer',
+        entryId: 'entry-folded-canonical-answer',
+        canonicalIndex: 1,
+        turnId: 'turn-folded-canonical-owner',
+        sentAt: 101,
+      },
+    ],
+    100,
+    { replaceLoadedWindow: true, authoritativeNewest: true, sourceRevision: 'source-folded' },
+  );
+
+  const canonicalOwner = useAppStore.getState().userMessagesBySession[SID]?.[0];
+  assert.equal(canonicalOwner?.operationId, 'operation-folded-canonical-owner');
+  assert.equal(canonicalOwner?.operationReservation?.requestGeneration, generation);
+  const retryGeneration = beginPendingSend();
+  assert.deepEqual(
+    useAppStore.getState().reserveSendOperationMessage(SID, {
+      content: 'persist this operation once',
+      queueMode: 'interrupt',
+      operationId: 'operation-folded-canonical-owner',
+      requestGeneration: retryGeneration,
+      queued: false,
+    }),
+    { kind: 'settled', id: canonicalOwner?.id },
+  );
+  assert.equal(useAppStore.getState().userMessagesBySession[SID]?.length, 1);
+});
+
+test('an exact retry cannot requeue a delivered operation owner', () => {
+  const store = useAppStore.getState();
+  const queued = store.reserveSendOperationMessage(SID, {
+    content: 'deliver me once',
+    queueMode: 'interrupt',
+    operationId: 'operation-delivered-owner',
+    requestGeneration: 1,
+    queued: true,
+  });
+  assert.equal(queued?.kind, 'queued');
+  if (queued?.kind !== 'queued') throw new Error('expected queued owner');
+  store.markQueuedUserMessageAccepted(SID, queued.id, 'input-delivered-owner', 'interrupt');
+  const promotedId = store.promoteQueuedUserMessage(SID, queued.id, 200);
+  assert.ok(promotedId);
+
+  const retried = useAppStore.getState().reserveSendOperationMessage(SID, {
+    content: 'deliver me once',
+    queueMode: 'interrupt',
+    operationId: 'operation-delivered-owner',
+    requestGeneration: 2,
+    queued: true,
+  });
+
+  assert.deepEqual(retried, { kind: 'settled', id: promotedId });
+  assert.equal(useAppStore.getState().userMessagesBySession[SID]?.length, 1);
+  assert.equal(useAppStore.getState().queuedUserMessagesBySession[SID]?.length ?? 0, 0);
+});
+
+test('a current retry failure settles pending state without deleting an admitted owner', () => {
+  const store = useAppStore.getState();
+  const queued = store.reserveSendOperationMessage(SID, {
+    content: 'keep admitted owner',
+    queueMode: 'after-turn',
+    operationId: 'operation-admitted-failure',
+    requestGeneration: 1,
+    queued: true,
+  });
+  assert.equal(queued?.kind, 'queued');
+  if (queued?.kind !== 'queued') throw new Error('expected queued owner');
+  store.markQueuedUserMessageAccepted(SID, queued.id, 'input-admitted-owner', 'after-turn');
+  assert.deepEqual(
+    useAppStore.getState().reserveSendOperationMessage(SID, {
+      content: 'keep admitted owner',
+      queueMode: 'after-turn',
+      operationId: 'operation-admitted-failure',
+      requestGeneration: 2,
+      queued: false,
+    }),
+    { kind: 'settled', id: queued.id },
+  );
+  const generation = beginPendingSend();
+
+  assert.equal(
+    useAppStore
+      .getState()
+      .rollbackSendOperationMessage(SID, 'operation-admitted-failure', generation, 'definitive'),
+    'settled',
+  );
+  assert.equal(useAppStore.getState().queuedUserMessagesBySession[SID]?.[0]?.id, queued.id);
+  assert.equal(useAppStore.getState().queuedUserMessagesBySession[SID]?.[0]?.status, 'queued');
+  assert.equal(useAppStore.getState().pendingSendBySession[SID], undefined);
+});
+
+test('a settled owner wins over a provisional cross-bucket duplicate for the same operation', () => {
+  const store = useAppStore.getState();
+  const queued = store.reserveSendOperationMessage(SID, {
+    content: 'one operation owner',
+    queueMode: 'after-turn',
+    operationId: 'operation-cross-bucket-settled',
+    requestGeneration: 1,
+    queued: true,
+  });
+  assert.equal(queued?.kind, 'queued');
+  if (queued?.kind !== 'queued') throw new Error('expected queued owner');
+  store.markQueuedUserMessageAccepted(SID, queued.id, 'input-cross-bucket', 'after-turn');
+  const provisionalUserId = store.appendUserMessage(
+    SID,
+    'one operation owner',
+    300,
+    undefined,
+    'operation-cross-bucket-settled',
+  );
+  assert.ok(provisionalUserId);
+
+  assert.deepEqual(
+    useAppStore.getState().reserveSendOperationMessage(SID, {
+      content: 'one operation owner',
+      queueMode: 'after-turn',
+      operationId: 'operation-cross-bucket-settled',
+      requestGeneration: 2,
+      queued: false,
+    }),
+    { kind: 'settled', id: queued.id },
+  );
+  const generation = beginPendingSend();
+  assert.equal(
+    useAppStore
+      .getState()
+      .rollbackSendOperationMessage(
+        SID,
+        'operation-cross-bucket-settled',
+        generation,
+        'definitive',
+      ),
+    'settled',
+  );
+  assert.equal(useAppStore.getState().userMessagesBySession[SID]?.length ?? 0, 0);
+  assert.equal(useAppStore.getState().queuedUserMessagesBySession[SID]?.[0]?.id, queued.id);
 });
 
 test('a delivered Runtime placeholder cannot be resurrected by a late queue acknowledgement', () => {

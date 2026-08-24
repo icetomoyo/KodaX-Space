@@ -4,9 +4,32 @@ import test from 'node:test';
 import {
   handleRuntimeExitRecoveryDialogResponse,
   resolveRuntimeExitRecoveryStartup,
+  runtimeExitFailureDialog,
+  runtimeExitFailureRequiresRestart,
   runtimeExitRecoveryBlockedNotice,
   runRuntimeStartupBoundary,
 } from '../window/runtime-exit-recovery.js';
+
+test('failed ACL cleanup names the real recovery action instead of promising to keep Space open', () => {
+  const dialog = runtimeExitFailureDialog(
+    'Runtime close: Windows sandbox ACL cleanup was not confirmed; stop the retained owner or restart Windows before more sandboxed commands.',
+    true,
+    'zh-CN',
+  );
+
+  assert.match(dialog.message, /ACL/);
+  assert.match(dialog.detail, /重启 Windows/);
+  assert.match(dialog.detail, /请勿手动删除 ACL marker/);
+  assert.deepEqual(dialog.buttons, ['重启 Space 尝试恢复', '强行关闭 Space']);
+});
+
+test('ACL text alone selects the Space recovery restart action', () => {
+  const message = 'Windows sandbox ACL cleanup was not confirmed.';
+  assert.equal(runtimeExitFailureRequiresRestart(message, false), true);
+  const presentation = runtimeExitFailureDialog(message, false, 'zh-CN');
+  assert.equal(presentation.buttons[0], '重启 Space 尝试恢复');
+  assert.match(presentation.detail, /若仍提示同一 Windows 启动周期/);
+});
 
 test('the actual startup boundary orders settlement, owner reconciliation, and initialization', async () => {
   const order: string[] = [];
@@ -91,6 +114,97 @@ test('an ambiguous prepared exit blocks startup until management convergence', a
   });
 
   assert.deepEqual(decision, { action: 'block', settlement });
+});
+
+test('transient Windows settlement uncertainty retries automatically until recovery is proved', async () => {
+  const order: string[] = [];
+  let attempts = 0;
+  const decision = await resolveRuntimeExitRecoveryStartup({
+    requested: true,
+    scanPending: true,
+    settle: async () => {
+      attempts += 1;
+      order.push(`settle:${attempts}`);
+      return attempts < 3
+        ? {
+            status: 'blocked' as const,
+            reason: 'cleanup_unverified' as const,
+            nextAction: 'retry-automatically' as const,
+            message: 'the exact Windows owner has not settled yet',
+          }
+        : { status: 'recovered' as const, repairs: ['windows_sandbox_acl'] as const };
+    },
+    waitBeforeAutomaticRetry: async (attempt) => {
+      order.push(`wait:${attempt}`);
+    },
+  });
+
+  assert.deepEqual(decision, {
+    action: 'exit',
+    settlement: { status: 'recovered', repairs: ['windows_sandbox_acl'] },
+  });
+  assert.deepEqual(order, ['settle:1', 'wait:1', 'settle:2', 'wait:2', 'settle:3']);
+});
+
+test('shutdown aborts an automatic recovery wait without showing a stale blocker', async () => {
+  const shutdown = new AbortController();
+  let waiting = false;
+  const decisionPromise = resolveRuntimeExitRecoveryStartup({
+    requested: true,
+    scanPending: true,
+    settle: async () => ({
+      status: 'blocked' as const,
+      reason: 'cleanup_unverified' as const,
+      nextAction: 'retry-automatically' as const,
+      message: 'the exact Windows owner has not settled yet',
+    }),
+    waitBeforeAutomaticRetry: async () => {
+      waiting = true;
+      await new Promise<void>(() => undefined);
+    },
+    shutdownSignal: shutdown.signal,
+  });
+
+  while (!waiting) await Promise.resolve();
+  shutdown.abort();
+
+  assert.deepEqual(await decisionPromise, { action: 'cancelled' });
+});
+
+test('shutdown cancellation prevents owner reconciliation and Runtime initialization', async () => {
+  const shutdown = new AbortController();
+  const order: string[] = [];
+  const decisionPromise = runRuntimeStartupBoundary({
+    recoveryRequested: true,
+    scanPendingExit: true,
+    settle: async () => ({
+      status: 'blocked' as const,
+      reason: 'cleanup_unverified' as const,
+      nextAction: 'retry-automatically' as const,
+      message: 'the exact Windows owner has not settled yet',
+    }),
+    waitBeforeAutomaticRetry: async () => {
+      order.push('wait');
+      await new Promise<void>(() => undefined);
+    },
+    shutdownSignal: shutdown.signal,
+    reconcileOwnerPolicy: async () => {
+      order.push('owner-reconcile');
+      return true;
+    },
+    prepareStartup: async () => {
+      order.push('prepare');
+    },
+    initializeRuntime: () => {
+      order.push('initialize');
+    },
+  });
+
+  while (order.length === 0) await Promise.resolve();
+  shutdown.abort();
+
+  assert.deepEqual(await decisionPromise, { action: 'cancelled' });
+  assert.deepEqual(order, ['wait']);
 });
 
 test('unverified containment blocks the full startup boundary before starting a competitor', async () => {

@@ -1,10 +1,15 @@
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import test from 'node:test';
 
 import { ExternalAgentGateway } from '../kodax/external-agent-gateway.js';
+
+const INSTALLED_KODAX_VERSION = (
+  createRequire(import.meta.url)('@kodax-ai/kodax/package.json') as { readonly version: string }
+).version;
 
 test('external-agent gateway persists the reference catalog and task ledger', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'kodax-space-external-agent-'));
@@ -72,7 +77,7 @@ test('external-agent gateway persists the reference catalog and task ledger', as
   const reloaded = new ExternalAgentGateway(root);
   try {
     const status = await reloaded.status();
-    assert.equal(status.sdkVersion, '0.7.89');
+    assert.equal(status.sdkVersion, INSTALLED_KODAX_VERSION);
     assert.equal(status.enabled, true);
     assert.equal(status.referenceExecutor, true);
     assert.deepEqual(status.adapters, { a2a: false, mcpTasks: false, governedHttp: false });

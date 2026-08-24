@@ -1,6 +1,7 @@
 // Skill IPC handlers — FEATURE_035.
 //
-// 启动 main 时 main.ts 调 registerSkillChannels()，注册 skill.discover + skill.invoke。
+// 启动 main 时 main.ts 调 registerSkillChannels()，注册 skill.discover + compatibility-only
+// skill.invoke。Composer 的真实执行路径是单次 session.send；这里不拥有 Run admission。
 
 import { BrowserWindow, dialog, type OpenDialogOptions } from 'electron';
 import { skillMetaSchema } from '@kodax-space/space-ipc-schema';
@@ -141,7 +142,8 @@ export function registerSkillChannels(): void {
     return installed;
   });
 
-  // skill.invoke
+  // Compatibility prompt preview only. Production explicit-Skill execution resolves trusted
+  // metadata and lifecycle inside the idempotent session.send admission.
   // SDK SkillRegistry.invoke 内部做 markdown 解析 + VariableResolver；输出 SkillInvokeResult
   // { success, content, error } 映射到 IPC envelope。
   //

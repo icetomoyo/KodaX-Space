@@ -33,7 +33,7 @@ import {
   isAtInputHistoryBoundary,
   type InputHistoryDirection,
 } from './inputHistoryNavigation.js';
-import { parseLegacySkillToken, safeSkillSlashText, skillSlashEchoText } from './skillSlash.js';
+import { parseLegacySkillToken, safeSkillSlashText } from './skillSlash.js';
 import { registerInsertReceiver } from './inputBridge.js';
 import { resolveSessionCreateInputs } from './createSession.js';
 import {
@@ -60,16 +60,19 @@ import { useI18n } from '../i18n/I18nProvider.js';
 import type { MessageKey } from '../i18n/messages.js';
 import {
   applyTrackedStateAction,
+  buildComposerSessionSendPayload,
   composerRunControls,
   composerResultOwnsCurrentSession,
   invokeComposerIpc,
   isComposerTimeoutResult,
   pendingSendAcknowledgement,
   queueModeForRuntimePhase,
+  reconcileRetainedComposerSendOperation,
   retainComposerSendOperation,
+  rotateSettledComposerSendOperation,
   resolveComposerStopTarget,
   routeComposerFailure,
-  settleComposerSendOperation,
+  type ComposerSendOperationSettlement,
   type TrackedStateAction,
 } from './composerInvoke.js';
 import {
@@ -116,6 +119,20 @@ export function rejectedSessionSendText(result: RejectedSessionSend, t: Translat
       return t('bottom.sendRejected.interruptWindowClosed');
     case 'session_data_changed':
       return t('bottom.sendRejected.sessionDataChanged');
+    case 'cancelled_before_admission':
+      return t('bottom.sendRejected.cancelledBeforeAdmission');
+    case 'skill_requires_idle':
+      return t('bottom.sendRejected.skillRequiresIdle');
+    case 'skill_not_found':
+      return t('bottom.sendRejected.skillNotFound');
+    case 'skill_multiple_references':
+      return t('bottom.sendRejected.skillMultipleReferences');
+    case 'skill_fork_unsupported':
+      return t('bottom.sendRejected.skillForkUnsupported');
+    case 'skill_blocked':
+      return t('bottom.sendRejected.skillBlocked');
+    case 'skill_preparation_failed':
+      return t('bottom.sendRejected.skillPreparationFailed');
   }
 }
 
@@ -486,21 +503,17 @@ export function BottomBar(): JSX.Element {
   const pendingAutoModeEngine = useAppStore((s) => s.pendingAutoModeEngine);
   const pendingAgentMode = useAppStore((s) => s.pendingAgentMode);
   const setPendingProviderId = useAppStore((s) => s.setPendingProviderId);
-  const appendUserMessage = useAppStore((s) => s.appendUserMessage);
   const acknowledgePendingSendRun = useAppStore((s) => s.acknowledgePendingSendRun);
   const bindUserMessageRuntimeRun = useAppStore((s) => s.bindUserMessageRuntimeRun);
-  const updateUserMessageAttachments = useAppStore((s) => s.updateUserMessageAttachments);
+  const updateSendOperationAttachments = useAppStore((s) => s.updateSendOperationAttachments);
   const appendLocalNotice = useAppStore((s) => s.appendLocalNotice);
-  const appendQueuedUserMessage = useAppStore((s) => s.appendQueuedUserMessage);
-  const updateQueuedUserMessageAttachments = useAppStore(
-    (s) => s.updateQueuedUserMessageAttachments,
-  );
+  const reserveSendOperationMessage = useAppStore((s) => s.reserveSendOperationMessage);
+  const settleSendOperationMessage = useAppStore((s) => s.settleSendOperationMessage);
   const markQueuedUserMessageAccepted = useAppStore((s) => s.markQueuedUserMessageAccepted);
-  const removeQueuedUserMessage = useAppStore((s) => s.removeQueuedUserMessage);
+  const rollbackSendOperationMessage = useAppStore((s) => s.rollbackSendOperationMessage);
   const promoteQueuedUserMessage = useAppStore((s) => s.promoteQueuedUserMessage);
   const convertUserMessageToQueued = useAppStore((s) => s.convertUserMessageToQueued);
   const appendWorkflowNotice = useAppStore((s) => s.appendWorkflowNotice);
-  const rollbackUserMessage = useAppStore((s) => s.rollbackUserMessage);
   const resetSessionMessages = useAppStore((s) => s.resetSessionMessages);
   const upsertSession = useAppStore((s) => s.upsertSession);
   const setCurrentSession = useAppStore((s) => s.setCurrentSession);
@@ -1122,17 +1135,16 @@ export function BottomBar(): JSX.Element {
     sessionId: string,
     name: string,
     args: string[],
-    queueMode: QueueMode = 'interrupt',
-  ): Promise<void> {
+  ): Promise<boolean> {
     // 本函数追加进 transcript 的每一条(slash echo + 本地反馈)都**没有 SDK 回合**在背后
-    // ——真正触发 SDK turn 的只有技能(走 invokeSkill,另一函数)。所以这里把 appendUserMessage
+    // ——真正触发 SDK turn 的技能会在 unknownCommand 后回到统一 session.send 路径。所以这里把 appendUserMessage
     // 局部改道到 appendLocalNotice:它们只按时间排序、**不消费一段 assistant events**,否则一条
     // 没有 events 的本地 slash 会把下一条真 query 的回答吃走(错位 bug)。workflow 走 appendWorkflowNotice,不受影响。
     const appendUserMessage = appendLocalNotice;
     if (!window.kodaxSpace) {
       setErr(t('bottom.ipcUnavailable'));
       appendUserMessage(sessionId, '[slash] IPC unavailable');
-      return;
+      return false;
     }
     const pendingWorkflowMessage = workflowPendingMessage(name, args, t);
     const optimisticWorkflow = pendingWorkflowMessage !== null;
@@ -1169,16 +1181,15 @@ export function BottomBar(): JSX.Element {
         setErr(
           `${result.error?.code ?? 'ERR_UNKNOWN'}: ${result.error?.message ?? t('common.unknownError')}`,
         );
-        return;
+        return false;
       }
       const { ok, message, echo, clearStream, unknownCommand } = result.data;
       if (unknownCommand) {
-        await invokeSkill(sessionId, name, args, queueMode);
-        return;
+        return true;
       }
       if (ok && message?.startsWith('__action__:')) {
         await dispatchSlashAction(sessionId, name, args, message.slice('__action__:'.length));
-        return;
+        return false;
       }
       if (echo && message) {
         // F031: show the command and the handler feedback in the conversation stream.
@@ -1197,6 +1208,7 @@ export function BottomBar(): JSX.Element {
       } else if (ok && message && !echo) {
         if (optimisticWorkflow) appendWorkflowNotice(sessionId, message);
       }
+      return false;
     } finally {
       setBusySlashName(null);
       setBusy(false);
@@ -1961,191 +1973,6 @@ export function BottomBar(): JSX.Element {
     appendUserMessage(sessionId, `[unknown action: ${action}]`);
   }
 
-  async function invokeSkill(
-    sessionId: string,
-    name: string,
-    args: string[],
-    queueMode: QueueMode = 'interrupt',
-  ): Promise<void> {
-    if (!window.kodaxSpace) return;
-    const skillEcho = skillSlashEchoText(name, args);
-    const resultOwnsComposer = (): boolean =>
-      composerResultOwnsCurrentSession(sessionId, useAppStore.getState().currentSessionId);
-    const reportSkillFailure = (message: string): void => {
-      appendInputHistory(sessionId, skillEcho);
-      routeComposerFailure(
-        sessionId,
-        useAppStore.getState().currentSessionId,
-        { late: false, currentComposerOccupied: false },
-        () => {
-          setPrompt(skillEcho);
-          draftRef.current = skillEcho;
-          setErr(message);
-        },
-        () => {
-          appendLocalNotice(sessionId, `[send failed] ${message}\n\nUnsent input:\n${skillEcho}`);
-        },
-      );
-    };
-    const result = await invokeComposerIpc('skill.invoke', {
-      sessionId,
-      skillName: name,
-      args,
-    });
-    if (!result.ok) {
-      reportSkillFailure(
-        `${result.error?.code ?? 'ERR_UNKNOWN'}: ${result.error?.message ?? t('common.unknownError')}`,
-      );
-      return;
-    }
-    const { ok, resolvedPrompt, error } = result.data;
-    if (!ok || resolvedPrompt === undefined) {
-      reportSkillFailure(error ?? t('bottom.skillFailed', { name }));
-      return;
-    }
-    appendInputHistory(sessionId, skillEcho);
-    const pendingSendGeneration = setPendingSend(sessionId, true);
-    const skillSendPayloadWithoutOperation: ChannelInput<'session.send'> = {
-      sessionId,
-      prompt: resolvedPrompt,
-      queueMode,
-      ...(currentProjectPath ? { expectedProjectRoot: currentProjectPath } : {}),
-      expectedSurface: currentSurface,
-    };
-    const skillSendOperation = retainComposerSendOperation(
-      retainedSendOperationRef.current,
-      JSON.stringify(skillSendPayloadWithoutOperation),
-      () => `space-send-${crypto.randomUUID()}`,
-    );
-    retainedSendOperationRef.current = skillSendOperation.retainedOperations;
-    const queuedLocalId = isStreaming
-      ? appendQueuedUserMessage(sessionId, {
-          content: skillEcho,
-          matchContent: resolvedPrompt,
-          queueMode,
-          operationId: skillSendOperation.operationId,
-        })
-      : null;
-    // Created after the send operation so the optimistic bubble can carry the exact
-    // operationId for deterministic lost-ACK claiming by originOperationId.
-    const optimisticMessageId = queuedLocalId
-      ? null
-      : appendUserMessage(
-          sessionId,
-          skillEcho,
-          undefined,
-          undefined,
-          skillSendOperation.operationId,
-        );
-    const settleSkillSendOperation = (): void => {
-      retainedSendOperationRef.current = settleComposerSendOperation(
-        retainedSendOperationRef.current,
-        skillSendOperation,
-      );
-    };
-    const restoreUnacceptedSkillSend = (message: string, late: boolean): void => {
-      setPendingSend(sessionId, false, pendingSendGeneration);
-      if (queuedLocalId) removeQueuedUserMessage(sessionId, queuedLocalId);
-      else if (optimisticMessageId) rollbackUserMessage(sessionId, optimisticMessageId);
-      routeComposerFailure(
-        sessionId,
-        useAppStore.getState().currentSessionId,
-        { late, currentComposerOccupied: composerDraftIsOccupied() },
-        () => {
-          if (!late) {
-            setPrompt(skillEcho);
-            draftRef.current = skillEcho;
-          } else {
-            setPrompt((current) => (current.length === 0 ? skillEcho : current));
-            if (draftRef.current.length === 0) draftRef.current = skillEcho;
-          }
-          setErr(message);
-        },
-        () => {
-          appendLocalNotice(sessionId, `[send failed] ${message}\n\nUnsent input:\n${skillEcho}`);
-        },
-      );
-    };
-    const restoreFailedSkillSend = (
-      failed: Extract<IpcResult<ChannelOutput<'session.send'>>, { ok: false }>,
-      late: boolean,
-    ): void => {
-      restoreUnacceptedSkillSend(
-        `${failed.error?.code ?? 'ERR_UNKNOWN'}: ${failed.error?.message ?? t('common.unknownError')}`,
-        late,
-      );
-    };
-    const applySkillSendResult = (data: ChannelOutput<'session.send'>, late: boolean): void => {
-      settleSkillSendOperation();
-      if (!data.accepted) {
-        restoreUnacceptedSkillSend(rejectedSessionSendText(data, t), late);
-        return;
-      }
-      if (late) {
-        if (resultOwnsComposer()) setErr(null);
-        pushToast(t('bottom.sendAcceptedInBackground'), 'info');
-      }
-      const pendingAcknowledgement = pendingSendAcknowledgement(data);
-      if (pendingAcknowledgement.kind === 'clear') {
-        setPendingSend(sessionId, false, pendingSendGeneration);
-      } else if (pendingAcknowledgement.kind === 'run') {
-        acknowledgePendingSendRun(sessionId, pendingAcknowledgement.runId, pendingSendGeneration);
-      }
-      if (data.queued) {
-        const acceptedQueueMode = data.queueMode ?? queueMode;
-        if (queuedLocalId) {
-          markQueuedUserMessageAccepted(sessionId, queuedLocalId, data.queueId, acceptedQueueMode);
-        } else {
-          const convertedLocalId = optimisticMessageId
-            ? convertUserMessageToQueued(sessionId, optimisticMessageId, {
-                content: skillEcho,
-                matchContent: resolvedPrompt,
-                queueMode: acceptedQueueMode,
-              })
-            : null;
-          if (convertedLocalId) {
-            markQueuedUserMessageAccepted(
-              sessionId,
-              convertedLocalId,
-              data.queueId,
-              acceptedQueueMode,
-            );
-          }
-        }
-        pushToast(queuedToastText(acceptedQueueMode, t), 'info');
-        return;
-      }
-      const admittedMessageId = queuedLocalId
-        ? promoteQueuedUserMessage(sessionId, queuedLocalId)
-        : optimisticMessageId;
-      if (data.runId && admittedMessageId) {
-        bindUserMessageRuntimeRun(sessionId, admittedMessageId, data.runId);
-      }
-    };
-    const sendResult = await invokeComposerIpc(
-      'session.send',
-      {
-        ...skillSendPayloadWithoutOperation,
-        operationId: skillSendOperation.operationId,
-      },
-      {
-        onLateResult: (lateResult) => {
-          if (lateResult.ok) applySkillSendResult(lateResult.data, true);
-          else restoreFailedSkillSend(lateResult, true);
-        },
-      },
-    );
-    if (!sendResult.ok) {
-      if (isComposerTimeoutResult(sendResult)) {
-        if (resultOwnsComposer()) setErr(sendResult.error.message);
-        return;
-      }
-      restoreFailedSkillSend(sendResult, false);
-    } else {
-      applySkillSendResult(sendResult.data, false);
-    }
-  }
-
   async function handleSend(
     queueMode: QueueMode = 'interrupt',
     promptOverride?: string,
@@ -2160,6 +1987,7 @@ export function BottomBar(): JSX.Element {
     const effectivePrompt =
       textAndFilePrompt !== '' ? textAndFilePrompt : pendingImages.length > 0 ? '(image)' : '';
     if (effectivePrompt === '') return;
+    let resolvedSessionId: string | null = null;
     if (trimmed.startsWith('/')) {
       const head = trimmed.slice(1);
       const spaceIdx = head.search(/\s/);
@@ -2180,42 +2008,36 @@ export function BottomBar(): JSX.Element {
         setBusy(false);
       }
       if (!sid) return; // err is already set
-      setPrompt('');
-      if (pendingImages.length > 0) {
-        for (const ownerSessionId of new Set(pendingImages.map((image) => image.sessionId))) {
-          void invokeComposerIpc('clipboard.cleanupSession', {
-            sessionId: ownerSessionId,
-          }).then((result) => {
-            if (!result.ok) {
-              setImageErr(
-                `${result.error?.code ?? 'ERR_UNKNOWN'}: ${
-                  result.error?.message ?? 'draft cleanup failed'
-                }`,
-              );
-            }
-          });
+      const shouldSendThroughSession =
+        legacySkillName !== null || (await execSlashOrSkill(sid, token, args));
+      if (!shouldSendThroughSession) {
+        setPrompt('');
+        if (pendingImages.length > 0) {
+          for (const ownerSessionId of new Set(pendingImages.map((image) => image.sessionId))) {
+            void invokeComposerIpc('clipboard.cleanupSession', {
+              sessionId: ownerSessionId,
+            }).then((result) => {
+              if (!result.ok) {
+                setImageErr(
+                  `${result.error?.code ?? 'ERR_UNKNOWN'}: ${
+                    result.error?.message ?? 'draft cleanup failed'
+                  }`,
+                );
+              }
+            });
+          }
         }
+        setPendingImages([]);
+        setPendingFileRefs([]);
+        setImageErr(null);
+        return;
       }
-      setPendingImages([]);
-      setPendingFileRefs([]);
-      setImageErr(null);
-      if (legacySkillName) {
-        setBusy(true);
-        setErr(null);
-        try {
-          await invokeSkill(sid, legacySkillName, args, effectiveQueueMode);
-        } finally {
-          setBusy(false);
-        }
-      } else {
-        await execSlashOrSkill(sid, token, args, effectiveQueueMode);
-      }
-      return;
+      resolvedSessionId = sid;
     }
     setErr(null);
     setBusy(true);
     try {
-      const sid = await ensureSession();
+      const sid = resolvedSessionId ?? (await ensureSession());
       if (!sid) return;
       const resultOwnsComposer = (): boolean =>
         composerResultOwnsCurrentSession(sid, useAppStore.getState().currentSessionId);
@@ -2287,9 +2109,12 @@ export function BottomBar(): JSX.Element {
       draftRef.current = '';
 
       const pendingSendGeneration = setPendingSend(sid, true);
-      const sendPayloadWithoutOperation: ChannelInput<'session.send'> = {
+      if (pendingSendGeneration === undefined) {
+        throw new Error('setPendingSend(true) did not allocate a request generation');
+      }
+      const sendPayloadWithoutOperation = buildComposerSessionSendPayload({
         sessionId: sid,
-        prompt: promptForAI,
+        rawPrompt: promptForAI,
         queueMode: effectiveQueueMode,
         ...(currentProjectPath ? { expectedProjectRoot: currentProjectPath } : {}),
         expectedSurface: currentSurface,
@@ -2298,47 +2123,70 @@ export function BottomBar(): JSX.Element {
           ? { attachmentPaths: [...attachmentPathsForSend] }
           : {}),
         ...(artifactsForSend ? { artifacts: artifactsForSend } : {}),
-      };
-      const sendOperation = retainComposerSendOperation(
+      });
+      let sendOperation = retainComposerSendOperation(
         retainedSendOperationRef.current,
         JSON.stringify(sendPayloadWithoutOperation),
         () => `space-send-${crypto.randomUUID()}`,
       );
       retainedSendOperationRef.current = sendOperation.retainedOperations;
-      const queuedLocalId = isStreaming
-        ? appendQueuedUserMessage(sid, {
-            content: effectivePrompt,
-            matchContent: promptForAI,
-            queueMode: effectiveQueueMode,
-            attachments: optimisticAttachments,
-            operationId: sendOperation.operationId,
-          })
-        : null;
-      // Created after the send operation so the optimistic bubble can carry the exact
-      // operationId for deterministic lost-ACK claiming by originOperationId.
-      const optimisticMessageId = queuedLocalId
-        ? null
-        : appendUserMessage(
-            sid,
-            effectivePrompt,
-            undefined,
-            optimisticAttachments,
-            sendOperation.operationId,
-          );
-      const clearRetainedSendOperation = (): void => {
-        retainedSendOperationRef.current = settleComposerSendOperation(
+      // One idempotent operation owns one local bubble even when an exact retry happens after
+      // the Session crosses from idle to running (or back). Reserving across both buckets avoids
+      // rendering the retry as a second user turn before the shared Runtime acknowledgement lands.
+      let localSendMessage = reserveSendOperationMessage(sid, {
+        content: effectivePrompt,
+        matchContent: promptForAI,
+        queueMode: effectiveQueueMode,
+        attachments: optimisticAttachments,
+        operationId: sendOperation.operationId,
+        requestGeneration: pendingSendGeneration,
+        queued: isStreaming,
+      });
+      if (localSendMessage?.kind === 'settled') {
+        sendOperation = rotateSettledComposerSendOperation(
           retainedSendOperationRef.current,
           sendOperation,
+          () => `space-send-${crypto.randomUUID()}`,
+        );
+        retainedSendOperationRef.current = sendOperation.retainedOperations;
+        localSendMessage = reserveSendOperationMessage(sid, {
+          content: effectivePrompt,
+          matchContent: promptForAI,
+          queueMode: effectiveQueueMode,
+          attachments: optimisticAttachments,
+          operationId: sendOperation.operationId,
+          requestGeneration: pendingSendGeneration,
+          queued: isStreaming,
+        });
+      }
+      const queuedLocalId = localSendMessage?.kind === 'queued' ? localSendMessage.id : null;
+      const optimisticMessageId = localSendMessage?.kind === 'user' ? localSendMessage.id : null;
+      const settleRetainedSendOperation = (outcome: ComposerSendOperationSettlement): void => {
+        retainedSendOperationRef.current = reconcileRetainedComposerSendOperation(
+          retainedSendOperationRef.current,
+          sendOperation,
+          outcome,
         );
       };
       const sendPayload: ChannelInput<'session.send'> = {
         ...sendPayloadWithoutOperation,
         operationId: sendOperation.operationId,
       };
-      const restoreUnacceptedSend = (message: string, late: boolean): void => {
-        setPendingSend(sid, false, pendingSendGeneration);
-        if (queuedLocalId) removeQueuedUserMessage(sid, queuedLocalId);
-        else if (optimisticMessageId) rollbackUserMessage(sid, optimisticMessageId);
+      const restoreUnacceptedSend = (
+        message: string,
+        late: boolean,
+        failureDisposition: 'ambiguous' | 'definitive',
+      ): void => {
+        const rollback = rollbackSendOperationMessage(
+          sid,
+          sendOperation.operationId,
+          pendingSendGeneration,
+          failureDisposition,
+        );
+        settleRetainedSendOperation(rollback);
+        if (rollback === 'settled' || rollback === 'stale') {
+          return;
+        }
         routeComposerFailure(
           sid,
           useAppStore.getState().currentSessionId,
@@ -2379,22 +2227,17 @@ export function BottomBar(): JSX.Element {
         restoreUnacceptedSend(
           `${result.error?.code ?? 'ERR_UNKNOWN'}: ${result.error?.message ?? t('common.unknownError')}`,
           late,
+          'ambiguous',
         );
       };
 
       const applySendResult = (data: ChannelOutput<'session.send'>, late: boolean): void => {
-        // Both accepted and factual business rejection settle this exact operation. Transport
-        // failures deliberately retain it so an exact manual retry cannot duplicate admission.
-        clearRetainedSendOperation();
         if (!data.accepted) {
-          restoreUnacceptedSend(rejectedSessionSendText(data, t), late);
+          restoreUnacceptedSend(rejectedSessionSendText(data, t), late, 'definitive');
           return;
         }
-        if (optimisticMessageId && data.attachments) {
-          updateUserMessageAttachments(sid, optimisticMessageId, data.attachments);
-        }
-        if (queuedLocalId && data.attachments) {
-          updateQueuedUserMessageAttachments(sid, queuedLocalId, data.attachments);
+        if (data.attachments) {
+          updateSendOperationAttachments(sid, sendOperation.operationId, data.attachments);
         }
         if (late) {
           if (resultOwnsComposer()) setErr(null);
@@ -2433,6 +2276,8 @@ export function BottomBar(): JSX.Element {
             bindUserMessageRuntimeRun(sid, admittedMessageId, data.runId);
           }
         }
+        settleSendOperationMessage(sid, sendOperation.operationId);
+        settleRetainedSendOperation('accepted');
       };
 
       const result = await invokeComposerIpc('session.send', sendPayload, {

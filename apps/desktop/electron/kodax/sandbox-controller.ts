@@ -15,7 +15,7 @@ export interface SandboxDoctorResult {
 }
 
 export interface SandboxCapability {
-  readonly version: 4;
+  readonly version: 5;
   readonly asrtVersion: string;
   readonly platform: 'darwin' | 'linux' | 'win32';
   readonly backend:
@@ -151,7 +151,7 @@ function normalizeCapability(value: unknown): SandboxCapability {
     value.backend === 'linux-bubblewrap' ||
     value.backend === 'unsupported';
   if (
-    value.version !== 4 ||
+    value.version !== 5 ||
     typeof value.asrtVersion !== 'string' ||
     !/^\d+\.\d+\.\d+$/.test(value.asrtVersion) ||
     !validPlatform ||

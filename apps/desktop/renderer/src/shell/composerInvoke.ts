@@ -18,12 +18,42 @@ export interface RetainedComposerSendOperation {
   readonly retainedOperations: ReadonlyMap<string, string>;
 }
 
+export type ComposerSendOperationSettlement =
+  'accepted' | 'retained' | 'rolled-back' | 'settled' | 'stale';
+
 type AcceptedSessionSend = Extract<ChannelOutput<'session.send'>, { readonly accepted: true }>;
 
 export type PendingSendAcknowledgement =
   | { readonly kind: 'none' }
   | { readonly kind: 'clear' }
   | { readonly kind: 'run'; readonly runId: string };
+
+export function buildComposerSessionSendPayload(input: {
+  readonly sessionId: string;
+  /** Exact pre-expansion user text. Main is the only authority that resolves a Skill. */
+  readonly rawPrompt: string;
+  readonly queueMode: 'interrupt' | 'after-turn';
+  readonly expectedProjectRoot?: string;
+  readonly expectedSurface?: 'code' | 'partner';
+  readonly partnerPromptOverlay?: string;
+  readonly attachmentPaths?: ChannelInput<'session.send'>['attachmentPaths'];
+  readonly artifacts?: ChannelInput<'session.send'>['artifacts'];
+}): ChannelInput<'session.send'> {
+  return {
+    sessionId: input.sessionId,
+    prompt: input.rawPrompt,
+    queueMode: input.queueMode,
+    ...(input.expectedProjectRoot !== undefined
+      ? { expectedProjectRoot: input.expectedProjectRoot }
+      : {}),
+    ...(input.expectedSurface !== undefined ? { expectedSurface: input.expectedSurface } : {}),
+    ...(input.partnerPromptOverlay !== undefined
+      ? { partnerPromptOverlay: input.partnerPromptOverlay }
+      : {}),
+    ...(input.attachmentPaths !== undefined ? { attachmentPaths: input.attachmentPaths } : {}),
+    ...(input.artifacts !== undefined ? { artifacts: input.artifacts } : {}),
+  };
+}
 
 export function applyTrackedStateAction<T>(current: T, next: TrackedStateAction<T>): T {
   return typeof next === 'function' ? (next as (value: T) => T)(current) : next;
@@ -53,6 +83,30 @@ export function settleComposerSendOperation(
   return retainedOperations;
 }
 
+/** Release a retained idempotency key only after the owning attempt reached a final outcome. */
+export function reconcileRetainedComposerSendOperation(
+  current: ReadonlyMap<string, string>,
+  operation: Pick<RetainedComposerSendOperation, 'requestSignature' | 'operationId'>,
+  outcome: ComposerSendOperationSettlement,
+): ReadonlyMap<string, string> {
+  return outcome === 'accepted' || outcome === 'rolled-back' || outcome === 'settled'
+    ? settleComposerSendOperation(current, operation)
+    : current;
+}
+
+/** A settled owner proves that the same payload is a new user action, not an exact retry. */
+export function rotateSettledComposerSendOperation(
+  current: ReadonlyMap<string, string>,
+  operation: Pick<RetainedComposerSendOperation, 'requestSignature' | 'operationId'>,
+  createOperationId: () => string,
+): RetainedComposerSendOperation {
+  return retainComposerSendOperation(
+    settleComposerSendOperation(current, operation),
+    operation.requestSignature,
+    createOperationId,
+  );
+}
+
 export function pendingSendAcknowledgement(
   result: AcceptedSessionSend,
 ): PendingSendAcknowledgement {
@@ -71,17 +125,17 @@ export function queueModeForRuntimePhase(
 export function composerRunControls(
   isStreaming: boolean,
   compactingSlash: boolean,
-  runtimePhase: string | undefined,
+  _runtimePhase: string | undefined,
 ): {
   readonly showStop: boolean;
   readonly showSend: boolean;
   readonly canSendDuringActivity: boolean;
 } {
-  const unknownRun = isStreaming && runtimePhase === 'unknown';
+  const canQueue = isStreaming && !compactingSlash;
   return {
     showStop: isStreaming && !compactingSlash,
-    showSend: !isStreaming || unknownRun,
-    canSendDuringActivity: !isStreaming || unknownRun,
+    showSend: !isStreaming || canQueue,
+    canSendDuringActivity: !isStreaming || canQueue,
   };
 }
 

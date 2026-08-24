@@ -122,14 +122,15 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
     assertSpaceRuntimeSdkRequiredCapabilities({
       KODAX_RUNTIME_SDK_CAPABILITIES: {
         actorSettlementConvergence: 2,
+        conversationHistory: 2,
         crashOutcomeModel: 2,
         daemonOrphanExit: 1,
         daemonShutdownVerification: 1,
         liveOutputSegments: 1,
         managedRunDurability: 1,
-        runtimeExitSettlement: 1,
+        runtimeExitSettlement: 2,
         runtimeEventCoalescing: 1,
-        sandboxRuntime: 4,
+        sandboxRuntime: 5,
         sessionEventJournal: 1,
       },
     }),
@@ -139,14 +140,15 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
       assertSpaceRuntimeSdkRequiredCapabilities({
         KODAX_RUNTIME_SDK_CAPABILITIES: {
           actorSettlementConvergence: 1,
+          conversationHistory: 2,
           crashOutcomeModel: 2,
           daemonOrphanExit: 1,
           daemonShutdownVerification: 1,
           liveOutputSegments: 1,
           managedRunDurability: 1,
-          runtimeExitSettlement: 1,
+          runtimeExitSettlement: 2,
           runtimeEventCoalescing: 1,
-          sandboxRuntime: 4,
+          sandboxRuntime: 5,
           sessionEventJournal: 1,
         },
       }),
@@ -157,13 +159,33 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
       assertSpaceRuntimeSdkRequiredCapabilities({
         KODAX_RUNTIME_SDK_CAPABILITIES: {
           actorSettlementConvergence: 2,
+          conversationHistory: 1,
           crashOutcomeModel: 2,
           daemonOrphanExit: 1,
           daemonShutdownVerification: 1,
           liveOutputSegments: 1,
           managedRunDurability: 1,
-          runtimeExitSettlement: 1,
-          sandboxRuntime: 4,
+          runtimeExitSettlement: 2,
+          runtimeEventCoalescing: 1,
+          sandboxRuntime: 5,
+          sessionEventJournal: 1,
+        },
+      }),
+    /installed KodaX SDK.*conversationHistory v2/i,
+  );
+  assert.throws(
+    () =>
+      assertSpaceRuntimeSdkRequiredCapabilities({
+        KODAX_RUNTIME_SDK_CAPABILITIES: {
+          actorSettlementConvergence: 2,
+          conversationHistory: 2,
+          crashOutcomeModel: 2,
+          daemonOrphanExit: 1,
+          daemonShutdownVerification: 1,
+          liveOutputSegments: 1,
+          managedRunDurability: 1,
+          runtimeExitSettlement: 2,
+          sandboxRuntime: 5,
           sessionEventJournal: 1,
         },
       }),
@@ -171,7 +193,7 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
   );
   assert.throws(
     () => assertSpaceRuntimeSdkRequiredCapabilities({}),
-    /installed KodaX SDK.*actorSettlementConvergence v2.*crashOutcomeModel v2.*daemonOrphanExit v1.*daemonShutdownVerification v1.*liveOutputSegments v1.*managedRunDurability v1.*runtimeExitSettlement v1.*runtimeEventCoalescing v1.*sandboxRuntime v4.*sessionEventJournal v1/i,
+    /installed KodaX SDK.*actorSettlementConvergence v2.*conversationHistory v2.*crashOutcomeModel v2.*daemonOrphanExit v1.*daemonShutdownVerification v1.*liveOutputSegments v1.*managedRunDurability v1.*runtimeExitSettlement v2.*runtimeEventCoalescing v1.*sandboxRuntime v5.*sessionEventJournal v1/i,
   );
 });
 
@@ -409,10 +431,12 @@ function createFakeRuntime(runtimeId = 'rt_test') {
       completeObservationSnapshot: { version: 1 },
       contextCompaction: { version: 3 },
       conversationHistory: {
-        version: 1,
+        version: 2,
         immutablePaging: true,
         revisionedBoundaries: true,
         ambiguityReporting: true,
+        topologyTransparentManagedContext: true,
+        directCloneProvenance: true,
       },
       transcriptPaging: { version: 1 },
       transcriptSearch: { version: 1 },
@@ -437,7 +461,7 @@ function createFakeRuntime(runtimeId = 'rt_test') {
       runtimeEventCoalescing: { version: 1 },
       sessionEventJournal: { version: 1 },
       sandboxRuntime: {
-        version: 4,
+        version: 5,
         asrtVersion: '0.0.65',
         backend: 'unsupported',
       },
@@ -1964,7 +1988,7 @@ test('runtime selection attaches one Coder daemon with stable identity and requi
   assert.equal(options[0]?.requirements?.daemonShutdownVerification, undefined);
   assert.equal(options[0]?.requirements?.runtimeEventCoalescing, 1);
   assert.equal(options[0]?.requirements?.crashOutcomeModel, 2);
-  assert.equal(options[0]?.requirements?.sandboxRuntime, 4);
+  assert.equal(options[0]?.requirements?.sandboxRuntime, 5);
   assert.equal(options[0]?.requirements?.sessionEventJournal, 1);
   assert.equal(options[0]?.requirements?.integrationConfigResilience, 1);
   assert.equal(options[0]?.requirements?.runtimeAutoModeGuardrail, 4);
@@ -7461,8 +7485,7 @@ test('cached idle snapshot ownership rejects an external retag without a profile
     ['s_cached_retag', { title: '', messages: [], gitRoot: 'C:\\repo', tag: 'code' }],
   ]);
   let notifySessionChange:
-    | ((event: { kind: 'change' | 'add' | 'remove'; sessionId: string }) => void)
-    | undefined;
+    ((event: { kind: 'change' | 'add' | 'remove'; sessionId: string }) => void) | undefined;
   setSessionStoreImpl({
     listSessions: async () => [],
     forkSession: async () => null,
@@ -8530,10 +8553,10 @@ test('initialization requires crash outcome convergence v2', async () => {
   assert.equal(fake.calls.close, 1);
 });
 
-test('initialization requires the sandbox v4 effect-recovery lifecycle', async () => {
+test('initialization requires the sandbox v5 automatic-recovery lifecycle', async () => {
   const fake = createFakeRuntime();
   (fake.runtime.capabilities as Record<string, unknown>).sandboxRuntime = {
-    version: 2,
+    version: 4,
     asrtVersion: '0.0.65',
     backend: 'windows-restricted-user',
   };
@@ -8544,12 +8567,12 @@ test('initialization requires the sandbox v4 effect-recovery lifecycle', async (
     identityStore: testIdentityStore,
   });
 
-  await assert.rejects(adapter.initialize(), /sandboxRuntime v4/i);
+  await assert.rejects(adapter.initialize(), /sandboxRuntime v5/i);
   assert.equal(adapter.snapshot().state, 'failed');
   assert.equal(fake.calls.close, 1);
 });
 
-test('initialization requires SDK-owned ordinary conversation history', async () => {
+test('initialization requires topology-safe SDK-owned ordinary conversation history', async () => {
   const fake = createFakeRuntime();
   delete (fake.runtime.capabilities as Record<string, unknown>).conversationHistory;
   const adapter = new RuntimeHostAdapter({
@@ -8559,7 +8582,27 @@ test('initialization requires SDK-owned ordinary conversation history', async ()
     identityStore: testIdentityStore,
   });
 
-  await assert.rejects(adapter.initialize(), /conversationHistory v1/i);
+  await assert.rejects(adapter.initialize(), /conversationHistory v2/i);
+  assert.equal(adapter.snapshot().state, 'failed');
+  assert.equal(fake.calls.close, 1);
+});
+
+test('initialization rejects the legacy conversation history contract', async () => {
+  const fake = createFakeRuntime();
+  (fake.runtime.capabilities as Record<string, unknown>).conversationHistory = {
+    version: 1,
+    immutablePaging: true,
+    revisionedBoundaries: true,
+    ambiguityReporting: true,
+  };
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+  });
+
+  await assert.rejects(adapter.initialize(), /conversationHistory v2/i);
   assert.equal(adapter.snapshot().state, 'failed');
   assert.equal(fake.calls.close, 1);
 });
@@ -9151,7 +9194,9 @@ test('Run recovery ignores unrelated retryable business failures while transport
 
   fake.pending
     .get(handle.runId)
-    ?.reject(Object.assign(new Error('Provider retry remains a Run failure.'), { reconnectable: true }));
+    ?.reject(
+      Object.assign(new Error('Provider retry remains a Run failure.'), { reconnectable: true }),
+    );
 
   await assert.rejects(handle.result, /Provider retry remains a Run failure/);
   assert.deepEqual(fake.calls.runGets, []);
@@ -9281,6 +9326,84 @@ test('Run recovery survives another reconnect while querying the admitted runId'
   assert.deepEqual(second.calls.started, []);
   assert.deepEqual(third.calls.started, []);
   assert.deepEqual(second.calls.runGets, [handle.runId]);
+  assert.deepEqual(third.calls.runGets, [handle.runId]);
+  assert.deepEqual(third.calls.runAwaits, [handle.runId]);
+  await adapter.close();
+});
+
+test('Run recovery retries when attachment changes after runs.get returns', async () => {
+  const first = createFakeRuntime('rt_run_recovery_guard_first');
+  const second = createFakeRuntime('rt_run_recovery_guard_second');
+  const third = createFakeRuntime('rt_run_recovery_guard_third');
+  const sessionId = 's_run_recovery_guard';
+  first.sessions.add(sessionId);
+  second.sessions.add(sessionId);
+  third.sessions.add(sessionId);
+  const runtimes = [first.runtime, second.runtime, third.runtime];
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => runtimes.shift() ?? third.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+  const handle = await adapter.startManagedRun({
+    sessionId,
+    prompt: 'recover the exact run after a post-read attachment swap',
+    options: { provider: 'anthropic' },
+  });
+  second.runtime.runs.get = async (runId) => {
+    second.calls.runGets.push(runId);
+    second.disconnect(true);
+    return {
+      runId,
+      sessionId,
+      phase: 'running',
+      startedAt: '2026-08-21T00:00:00.000Z',
+      provider: 'anthropic',
+    };
+  };
+  third.runtime.runs.get = async (runId) => {
+    third.calls.runGets.push(runId);
+    return {
+      runId,
+      sessionId,
+      phase: 'interrupted',
+      startedAt: '2026-08-21T00:00:00.000Z',
+      endedAt: '2026-08-21T00:00:01.000Z',
+      provider: 'anthropic',
+      terminal: {
+        revision: 1,
+        kind: 'interrupted',
+        code: 'daemon_crashed',
+        effectOutcome: 'unknown',
+      },
+    };
+  };
+  third.runtime.runs.await = async (runId) => {
+    third.calls.runAwaits.push(runId);
+    return {
+      runId,
+      sessionId,
+      phase: 'interrupted',
+      terminal: {
+        revision: 1,
+        kind: 'interrupted',
+        code: 'daemon_crashed',
+        effectOutcome: 'unknown',
+      },
+    };
+  };
+
+  first.disconnect(true);
+  first.pending.get(handle.runId)?.reject(testRuntimeDaemonDisconnectError());
+
+  await assert.doesNotReject(handle.result);
+  assert.equal(first.calls.started.length, 1);
+  assert.deepEqual(second.calls.started, []);
+  assert.deepEqual(third.calls.started, []);
+  assert.deepEqual(second.calls.runGets, [handle.runId]);
+  assert.deepEqual(second.calls.runAwaits, []);
   assert.deepEqual(third.calls.runGets, [handle.runId]);
   assert.deepEqual(third.calls.runAwaits, [handle.runId]);
   await adapter.close();
@@ -9425,9 +9548,7 @@ test('Run recovery surfaces a permanent error from a scheduled replacement', asy
   const settled = assert.rejects(handle.result, /replacement Runtime is incompatible/);
 
   first.disconnect(true);
-  first.pending
-    .get(handle.runId)
-    ?.reject(testRuntimeDaemonDisconnectError());
+  first.pending.get(handle.runId)?.reject(testRuntimeDaemonDisconnectError());
 
   await settled;
   assert.equal(factoryCalls, 3);
@@ -11169,7 +11290,7 @@ test('Runtime exact-history capabilities expose conversation, compaction, paging
       .map(({ id, version, available }) => ({ id, version, available })),
     [
       { id: 'runtime.context.compaction', version: 3, available: true },
-      { id: 'runtime.conversation.history', version: 1, available: true },
+      { id: 'runtime.conversation.history', version: 2, available: true },
       { id: 'runtime.transcript.paging', version: 1, available: true },
       { id: 'runtime.transcript.search', version: 1, available: true },
     ],

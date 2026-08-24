@@ -79,6 +79,11 @@ function restoreLink(link) {
 }
 
 async function verifyReleaseSdk(allowLocalTarball) {
+  process.stdout.write(
+    allowLocalTarball
+      ? '[pack] verifying the exact integrity-pinned local KodaX package...\n'
+      : '[pack] verifying the exact locked KodaX package (Registry timeout: 30s)...\n',
+  );
   const dependency = await assertKodaxReleaseDependencyState(SPACE_ROOT, SDK_DIR, {
     allowLocalTarball,
   });

@@ -742,6 +742,7 @@ const runChangeSchema = z
     domain: z.literal('run'),
     activeRun: spaceRuntimeRunProjectionSchema.nullable(),
     queuedRuns: z.array(spaceRuntimeRunProjectionSchema).max(MAX_QUEUE_ITEMS),
+    lastTerminalRun: spaceRuntimeRunProjectionSchema.optional(),
     queuedInputs: z.array(spaceRuntimeQueuedInputSchema).max(MAX_QUEUE_ITEMS).optional(),
     resetRunScopedState: z.boolean().optional(),
   })
@@ -839,7 +840,7 @@ export const spaceSessionLiveChangedSchema = z
           value.sessionId,
           value.change.activeRun ?? undefined,
           value.change.queuedRuns,
-          undefined,
+          value.change.lastTerminalRun,
           ctx,
         );
         if (value.change.queuedInputs?.some((input) => input.sessionId !== value.sessionId)) {

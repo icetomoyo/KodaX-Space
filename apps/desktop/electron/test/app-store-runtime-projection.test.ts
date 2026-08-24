@@ -244,6 +244,171 @@ test('historical terminal Sessions do not start the expensive observation plane'
   );
 });
 
+test('a snapshot repairs a missed after-turn delivery without leaving the query below its reply', () => {
+  const sessionId = 's_1';
+  const store = useAppStore.getState();
+  useAppStore.setState({ sessions: [sidebarSession], currentSessionId: sessionId });
+  store.replaceRuntimeProfileProjection(profile);
+
+  const operationId = 'operation-current-interrupt';
+  const optimisticId = store.appendUserMessage(
+    sessionId,
+    'current queued query',
+    3_000,
+    undefined,
+    operationId,
+  );
+  assert.ok(optimisticId);
+  const queuedId = store.convertUserMessageToQueued(sessionId, optimisticId, {
+    content: 'current queued query',
+    queueMode: 'after-turn',
+    sentAt: 3_000,
+  });
+  assert.ok(queuedId);
+  store.markQueuedUserMessageAccepted(sessionId, queuedId, 'run_1', 'after-turn');
+
+  store.prependSessionHistory(
+    sessionId,
+    [
+      { kind: 'history_truncation', scope: 'history', omittedItems: 57 },
+      {
+        kind: 'user',
+        content: 'current queued query',
+        entryId: 'entry-current-interrupt',
+        turnId: 'turn-current-interrupt',
+        turnUserOrdinal: 0,
+        canonicalIndex: 10,
+        sentAt: 4_000,
+      },
+    ],
+    1_000,
+    { replaceLoadedWindow: true },
+  );
+  store.appendEvent({
+    kind: 'output_segment_started',
+    sessionId,
+    responseId: 'response-previous',
+    providerRequestId: 'request-previous',
+    mode: 'append',
+    turnId: 'turn-previous',
+    sentAt: 3_500,
+    runtimeEvent: {
+      runtimeId: 'rt_1',
+      runId: 'run_1',
+      journalEpoch: 'journal_1',
+      seq: 10,
+    },
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId,
+    text: 'previous reply',
+    providerRequestId: 'request-previous',
+    turnId: 'turn-previous',
+    sentAt: 3_600,
+    runtimeEvent: {
+      runtimeId: 'rt_1',
+      runId: 'run_1',
+      journalEpoch: 'journal_1',
+      seq: 11,
+    },
+  });
+  store.appendEvent({
+    kind: 'output_segment_started',
+    sessionId,
+    responseId: 'response-current',
+    providerRequestId: 'request-current',
+    mode: 'append',
+    turnId: 'turn-current-interrupt',
+    sentAt: 4_100,
+    runtimeEvent: {
+      runtimeId: 'rt_1',
+      runId: 'run_1',
+      journalEpoch: 'journal_1',
+      seq: 31,
+    },
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId,
+    text: 'current reply',
+    providerRequestId: 'request-current',
+    turnId: 'turn-current-interrupt',
+    sentAt: 4_200,
+    runtimeEvent: {
+      runtimeId: 'rt_1',
+      runId: 'run_1',
+      journalEpoch: 'journal_1',
+      seq: 32,
+    },
+  });
+
+  const beforeRepair = composeMessages({
+    events: useAppStore.getState().eventsBySession[sessionId] ?? [],
+    userMessages: useAppStore.getState().userMessagesBySession[sessionId] ?? [],
+    queuedUserMessages: useAppStore.getState().queuedUserMessagesBySession[sessionId] ?? [],
+  });
+  assert.equal(beforeRepair.at(-1)?.kind, 'queued_user');
+
+  assert.equal(
+    store.replaceSessionLiveProjection({
+      ...live,
+      sessionId,
+      projectionRevision: 1,
+      cursor: {
+        runtimeId: 'rt_1',
+        sessionId,
+        journalEpoch: 'journal_1',
+        seq: 32,
+      },
+      activeRun: {
+        runId: 'run_1',
+        sessionId,
+        turnId: 'turn-current-interrupt',
+        phase: 'running',
+        startedAt: 1_000,
+        originOperationId: operationId,
+      },
+      queuedInputs: [],
+      assistantDraft: { text: 'current reply', startedAt: 4_100 },
+      outputSegment: {
+        retained: [],
+        active: {
+          responseId: 'response-current',
+          providerRequestId: 'request-current',
+          mode: 'append',
+          startedAtSeq: 31,
+          assistantText: 'current reply',
+          thinkingText: '',
+          assistantTextStartOffset: 0,
+          thinkingTextStartOffset: 0,
+        },
+      },
+    }),
+    true,
+  );
+
+  const state = useAppStore.getState();
+  assert.equal(state.queuedUserMessagesBySession[sessionId]?.length ?? 0, 0);
+  const repaired = composeMessages({
+    events: state.eventsBySession[sessionId] ?? [],
+    userMessages: state.userMessagesBySession[sessionId] ?? [],
+    queuedUserMessages: state.queuedUserMessagesBySession[sessionId] ?? [],
+  });
+  assert.deepEqual(
+    repaired.flatMap((message) =>
+      message.kind === 'user'
+        ? [`user:${message.content}`]
+        : message.kind === 'assistant_text'
+          ? [`assistant:${message.text}`]
+          : message.kind === 'queued_user'
+            ? [`queued:${message.content}`]
+            : [],
+    ),
+    ['assistant:previous reply', 'user:current queued query', 'assistant:current reply'],
+  );
+});
+
 test('loading an older history page preserves live content hydrated from a Runtime snapshot', () => {
   useAppStore.getState().setSessions([sidebarSession]);
   useAppStore.getState().replaceRuntimeProfileProjection(profile);
@@ -645,6 +810,68 @@ test('a late live snapshot cannot rebuild derived state under stale degraded aut
   assert.equal(state.sessions[0]?.provider, 'current-provider');
   assert.deepEqual(state.permissionQueue, []);
   assert.deepEqual(state.askUserQueue, []);
+});
+
+test('replacing the Runtime clears Coder interactions without dropping Partner prompts', () => {
+  useAppStore
+    .getState()
+    .setSessions([
+      sidebarSession,
+      { ...sidebarSession, sessionId: 'partner_1', surface: 'partner' },
+    ]);
+  useAppStore.getState().setCoderRuntimeConnection({
+    ...profile.connection,
+    runtimeId: 'rt_old',
+  });
+  useAppStore.getState().enqueuePermission({
+    reqId: 'permission_old',
+    sessionId: 's_1',
+    risk: 'medium',
+    reason: 'old Runtime permission',
+    toolCall: {
+      toolId: 'tool_old',
+      toolName: 'write_file',
+      operation: 'write',
+    },
+  });
+  useAppStore.getState().enqueueAskUser({
+    kind: 'input',
+    reqId: 'ask_old',
+    sessionId: 's_1',
+    question: 'old Runtime question',
+  });
+  useAppStore.getState().enqueuePermission({
+    reqId: 'permission_partner',
+    sessionId: 'partner_1',
+    risk: 'medium',
+    reason: 'Partner permission',
+    toolCall: {
+      toolId: 'tool_partner',
+      toolName: 'partner_tool',
+      operation: 'unknown',
+    },
+  });
+  useAppStore.getState().enqueueAskUser({
+    kind: 'input',
+    reqId: 'ask_partner',
+    sessionId: 'partner_1',
+    question: 'Partner question',
+  });
+
+  useAppStore.getState().setCoderRuntimeConnection({
+    ...profile.connection,
+    runtimeId: 'rt_new',
+    changedAt: 2,
+  });
+
+  assert.deepEqual(
+    useAppStore.getState().permissionQueue.map((request) => request.reqId),
+    ['permission_partner'],
+  );
+  assert.deepEqual(
+    useAppStore.getState().askUserQueue.map((request) => request.reqId),
+    ['ask_partner'],
+  );
 });
 
 test('observation invalidation removes stale live authority before snapshot reload', () => {
@@ -2318,6 +2545,37 @@ test('a new Session journal epoch can confirm an exact send after its sequence r
       sessionId: 's_1',
       phase: 'running',
       startedAt: 1,
+    },
+  });
+
+  assert.equal(useAppStore.getState().pendingSendBySession.s_1, undefined);
+});
+
+test('a lifecycle event from a new Session journal epoch clears its exact pending send after sequence reset', () => {
+  useAppStore.setState({ sessions: [sidebarSession], currentSessionId: 's_1' });
+  useAppStore.getState().replaceRuntimeProfileProjection(profile);
+  useAppStore.getState().replaceSessionLiveProjection({
+    ...live,
+    projectionRevision: 1_000,
+    cursor: {
+      runtimeId: 'rt_1',
+      sessionId: 's_1',
+      journalEpoch: 'epoch_old',
+      seq: 1_000,
+    },
+  });
+  useAppStore.getState().setPendingSend('s_1', true);
+  useAppStore.getState().acknowledgePendingSendRun('s_1', 'run_new_epoch_event');
+
+  useAppStore.getState().appendEvent({
+    kind: 'session_start',
+    sessionId: 's_1',
+    provider: 'mock',
+    runtimeEvent: {
+      runtimeId: 'rt_1',
+      runId: 'run_new_epoch_event',
+      journalEpoch: 'epoch_new',
+      seq: 1,
     },
   });
 

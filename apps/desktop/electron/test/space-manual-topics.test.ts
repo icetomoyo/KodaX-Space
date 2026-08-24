@@ -83,6 +83,8 @@ test('Space kodax_manual documents the required current KodaX capability boundar
       assert.ok(topics.has(nextTopic), `${topic.id} references missing next topic ${nextTopic}`);
     }
   }
+  assert.match(topics.get('runtime-host')?.body ?? '', /当前源码.*KodaX 0\.7\.95/);
+  assert.match(topics.get('runtime-host')?.body ?? '', /conversationHistory v2/);
   assert.match(topics.get('runtime-host')?.body ?? '', /contextCompaction v3/);
   assert.match(topics.get('runtime-host')?.body ?? '', /transcriptSearch v1/);
   assert.match(topics.get('runtime-host')?.body ?? '', /KodaX 0\.7\.93/);
@@ -108,6 +110,10 @@ test('Space kodax_manual documents the required current KodaX capability boundar
   assert.match(topics.get('agent-coordination')?.body ?? '', /普通 progress.*不会唤醒父模型/);
   assert.match(topics.get('agent-coordination')?.body ?? '', /每条队列消息只出队一次/);
   assert.match(topics.get('tools')?.body ?? '', /Goal 生命周期工具.*完整常驻契约/);
+  assert.match(topics.get('skills')?.body ?? '', /每个 enabled Skill.*显式调用/);
+  assert.match(topics.get('skills')?.body ?? '', /disable-model-invocation.*模型发现/);
+  assert.match(topics.get('skills')?.body ?? '', /user-invocable.*兼容元数据/);
+  assert.match(topics.get('skills')?.body ?? '', /allowed-tools.*hook JSON.*诊断/);
 });
 
 test('Space kodax_manual explains the customer runtime-mode switch without replacing SDK facts', () => {
@@ -167,7 +173,10 @@ test('Space kodax_manual documents the daemon host-tool path for artifact creati
 test('Space kodax_manual describes the v0.1.44 runtime safety, recovery, attention, and shell controls', () => {
   const topics = new Map(SPACE_MANUAL_TOPICS.map((topic) => [topic.id, topic]));
 
-  assert.match(topics.get('runtime-host')?.body ?? '', /v0\.1\.44 正式发布使用经过审计并带完整性锁定的 npm Registry KodaX 0\.7\.93 正式包/);
+  assert.match(
+    topics.get('runtime-host')?.body ?? '',
+    /v0\.1\.44 正式发布使用经过审计并带完整性锁定的 npm Registry KodaX 0\.7\.93 正式包/,
+  );
   assert.match(topics.get('background-runtime')?.body ?? '', /F140/);
   assert.match(topics.get('background-runtime')?.body ?? '', /Close button behavior/);
   assert.match(topics.get('background-runtime')?.body ?? '', /macOS Cmd\+Q/);
@@ -177,6 +186,7 @@ test('Space kodax_manual describes the v0.1.44 runtime safety, recovery, attenti
   assert.match(topics.get('runtime-host')?.body ?? '', /daemonOrphanExit v1/);
   assert.match(topics.get('runtime-host')?.body ?? '', /daemonShutdownVerification v1/);
   assert.match(topics.get('runtime-host')?.body ?? '', /runtimeExitSettlement v1/);
+  assert.match(topics.get('runtime-host')?.body ?? '', /runtimeExitSettlement v2/);
   assert.match(topics.get('background-runtime')?.body ?? '', /settleKodaXRuntimeExit/);
   assert.match(
     topics.get('background-runtime')?.body ?? '',
@@ -186,9 +196,17 @@ test('Space kodax_manual describes the v0.1.44 runtime safety, recovery, attenti
   assert.match(topics.get('background-runtime')?.body ?? '', /保留恢复票据/);
   assert.match(topics.get('background-runtime')?.body ?? '', /不要手工删除 effect\/exit lock/);
   assert.match(topics.get('background-runtime')?.body ?? '', /唯一 Session 数/);
-  assert.match(topics.get('background-runtime')?.body ?? '', /普通 clean\/recovered 成功直接退出，不发送系统通知/);
+  assert.match(
+    topics.get('background-runtime')?.body ?? '',
+    /普通 clean\/recovered 成功直接退出，不发送系统通知/,
+  );
   assert.match(topics.get('background-runtime')?.body ?? '', /打开诊断目录/);
+  assert.match(topics.get('background-runtime')?.body ?? '', /临时 unconfirmed-owner.*自动重试/);
+  assert.match(topics.get('background-runtime')?.body ?? '', /不要求用户删除标记/);
   assert.match(topics.get('runtime-host')?.body ?? '', /sandboxRuntime v4/);
+  assert.match(topics.get('runtime-host')?.body ?? '', /sandboxRuntime v5/);
+  assert.match(topics.get('runtime-host')?.body ?? '', /KodaX 0\.7\.95/);
+  assert.match(topics.get('skills')?.body ?? '', /prepared User request overlay.*模型执行/);
   assert.match(topics.get('overview')?.body ?? '', /stale inline owner reconciliation/);
   assert.match(topics.get('runtime-host')?.body ?? '', /managedRunDurability v1/);
   assert.match(topics.get('runtime-host')?.body ?? '', /runtimeEventCoalescing v1/);

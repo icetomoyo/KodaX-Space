@@ -30,10 +30,7 @@ export interface RuntimeTerminalEvidence {
 }
 
 export type ApplySessionLiveChangeStatus =
-  | 'applied'
-  | 'ignored'
-  | 'snapshot-required'
-  | 'snapshot-pending';
+  'applied' | 'ignored' | 'snapshot-required' | 'snapshot-pending';
 
 export function shouldRequestSessionLiveSnapshot(status: ApplySessionLiveChangeStatus): boolean {
   return status === 'snapshot-required' || status === 'snapshot-pending';
@@ -507,6 +504,9 @@ function applyDomainChange(
         ...base,
         activeRun: update.change.activeRun ?? undefined,
         queuedRuns: update.change.queuedRuns,
+        ...(update.change.lastTerminalRun !== undefined
+          ? { lastTerminalRun: update.change.lastTerminalRun }
+          : {}),
         ...(update.change.queuedInputs !== undefined
           ? { queuedInputs: update.change.queuedInputs }
           : {}),

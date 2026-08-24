@@ -6,7 +6,91 @@ import path from 'node:path';
 import test from 'node:test';
 import { create as createTar } from 'tar';
 
-import { assertKodaxReleaseDependencyState } from '../kodax-runtime-release-gate.mjs';
+import {
+  assertKodaxReleaseDependencyState,
+  fetchRegistryTarball,
+} from '../kodax-runtime-release-gate.mjs';
+
+test('Registry tarball fetch fails with a bounded timeout', async () => {
+  let aborted = false;
+  const fetchImpl = (_resolved, { signal }) =>
+    new Promise((_resolve, reject) => {
+      signal.addEventListener(
+        'abort',
+        () => {
+          aborted = true;
+          reject(new Error('fetch aborted'));
+        },
+        { once: true },
+      );
+    });
+
+  await assert.rejects(
+    fetchRegistryTarball('https://registry.npmjs.org/example.tgz', {
+      fetchImpl,
+      timeoutMs: 10,
+    }),
+    /timed out after 10 ms/i,
+  );
+  assert.equal(aborted, true);
+});
+
+test('Registry tarball fetch honors the configured environment proxy', async () => {
+  let dispatcher;
+  const fetchImpl = async (_resolved, options) => {
+    dispatcher = options.dispatcher;
+    return new Response(Buffer.from('registry tarball'));
+  };
+
+  const tarball = await fetchRegistryTarball('https://registry.npmjs.org/example.tgz', {
+    env: {
+      HTTPS_PROXY: 'http://127.0.0.1:7897',
+      NO_PROXY: '',
+    },
+    fetchImpl,
+  });
+
+  assert.equal(tarball.toString('utf8'), 'registry tarball');
+  assert.equal(dispatcher?.constructor.name, 'EnvHttpProxyAgent');
+});
+
+test('a timed-out Registry proxy is destroyed instead of waiting forever for graceful close', async () => {
+  let destroyedWith;
+  const dispatcher = {
+    close: () => new Promise(() => undefined),
+    destroy: async (error) => {
+      destroyedWith = error;
+    },
+  };
+  const fetchImpl = (_resolved, { signal }) =>
+    new Promise((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(new Error('fetch aborted')), { once: true });
+    });
+
+  await assert.rejects(
+    fetchRegistryTarball('https://registry.npmjs.org/example.tgz', {
+      env: { HTTPS_PROXY: 'http://127.0.0.1:7897' },
+      fetchImpl,
+      timeoutMs: 10,
+      createProxyDispatcher: () => dispatcher,
+    }),
+    /timed out after 10 ms/i,
+  );
+  assert.match(destroyedWith?.message ?? '', /timed out after 10 ms/i);
+});
+
+test('invalid proxy configuration fails with safe pack context', async () => {
+  await assert.rejects(
+    fetchRegistryTarball('https://registry.npmjs.org/example.tgz', {
+      env: { HTTPS_PROXY: 'not a url with credentials secret@example.test' },
+    }),
+    (error) => {
+      assert.match(error.message, /^\[pack\] Cannot configure Registry proxy/);
+      assert.doesNotMatch(error.message, /secret@example/);
+      return true;
+    },
+  );
+});
 
 async function writeReleaseDependencyFixture(root, versions = {}) {
   const rootVersion = versions.root ?? '0.7.80';

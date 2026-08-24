@@ -85,7 +85,7 @@ import { Caret } from '../components/Caret.js';
 import { Reveal } from '../components/Reveal.js';
 import { Collapse } from '../components/Collapse.js';
 import { ScrollCapBox } from '../components/ScrollCapBox.js';
-import { ChevronDown, FileOutput, Maximize2 } from 'lucide-react';
+import { ChevronDown, FileOutput, LoaderCircle, Maximize2 } from 'lucide-react';
 import { shouldActivateSessionForCurrentScope } from '../lib/sessionActivation.js';
 import { useSurfaceStore } from '../store/surface.js';
 import { requestConfirm } from '../store/confirmStore.js';
@@ -825,6 +825,11 @@ export function ConversationStreamV2(): JSX.Element {
   const isStreaming = useIsStreaming();
   const currentSessionId = useAppStore((s) => s.currentSessionId);
   const historyPaging = useSessionHistoryPaging(currentSessionId);
+  const [olderHistoryFeedback, setOlderHistoryFeedback] = useState<{
+    readonly sessionId: string;
+    readonly phase: 'loading' | 'error';
+  } | null>(null);
+  useEffect(() => setOlderHistoryFeedback(null), [currentSessionId]);
   const events = useAppStore((s) =>
     currentSessionId ? (s.eventsBySession[currentSessionId] ?? EMPTY_EVENTS) : EMPTY_EVENTS,
   );
@@ -976,15 +981,58 @@ export function ConversationStreamV2(): JSX.Element {
         : viewMessages,
     [viewMessages, transcriptView],
   );
+  const historyBoundaryLoading =
+    historyPaging.phase === 'loading' &&
+    displayMessages.some(
+      (message) =>
+        message.kind === 'system_notice' &&
+        message.lineageKind === 'history_truncation' &&
+        message.historyTruncationScope === 'history',
+    );
+  const historyBoundaryWaiting =
+    historyPaging.phase === 'waiting' &&
+    displayMessages.some(
+      (message) =>
+        message.kind === 'system_notice' &&
+        message.lineageKind === 'history_truncation' &&
+        message.historyTruncationScope === 'history',
+    );
+  const displayMessagesForRender = useMemo(() => {
+    if (
+      (olderHistoryFeedback?.sessionId !== currentSessionId ||
+        olderHistoryFeedback?.phase !== 'loading') &&
+      !historyBoundaryLoading &&
+      !historyBoundaryWaiting
+    ) {
+      return displayMessages;
+    }
+    // The animated paging row occupies the persisted history boundary while the older page is
+    // loading. Restore the durable notice as soon as the request settles so it remains a fact in
+    // the transcript without showing two competing explanations for the same boundary.
+    return displayMessages.filter(
+      (message) =>
+        !(
+          message.kind === 'system_notice' &&
+          message.lineageKind === 'history_truncation' &&
+          message.historyTruncationScope === 'history'
+        ),
+    );
+  }, [
+    currentSessionId,
+    displayMessages,
+    historyBoundaryLoading,
+    historyBoundaryWaiting,
+    olderHistoryFeedback,
+  ]);
   const renderItems = useMemo(() => {
-    const fresh = buildConversationRenderItems(displayMessages);
+    const fresh = buildConversationRenderItems(displayMessagesForRender);
     const previous = renderItemsCacheRef.current;
     const stable =
       previous?.sessionId === currentSessionId
         ? retainStableRenderItems(previous.items, fresh)
         : fresh;
     return stable;
-  }, [displayMessages, currentSessionId]);
+  }, [displayMessagesForRender, currentSessionId]);
   useLayoutEffect(() => {
     renderItemsCacheRef.current = { sessionId: currentSessionId, items: renderItems };
   }, [currentSessionId, renderItems]);
@@ -1473,10 +1521,12 @@ export function ConversationStreamV2(): JSX.Element {
       scroller,
     };
     prependAnchorRestoreRef.current = restoreState;
+    setOlderHistoryFeedback({ sessionId: requestedSessionId, phase: 'loading' });
     wasAtBottomRef.current = false;
     void loadOlderSessionHistory(requestedSessionId)
       .then(() => {
         if (prependAnchorRestoreRef.current?.token !== token) return;
+        setOlderHistoryFeedback(null);
         const snapshot = restoreState.snapshot;
         restoreState.phase = 'restoring';
         let layoutWaitFrames = 2;
@@ -1527,7 +1577,7 @@ export function ConversationStreamV2(): JSX.Element {
       })
       .catch(() => {
         if (prependAnchorRestoreRef.current?.token === token) cancelPrependAnchorRestore();
-        // The paging state records the failure. Keep the current stable window visible.
+        setOlderHistoryFeedback({ sessionId: requestedSessionId, phase: 'error' });
       });
   }
 
@@ -2016,8 +2066,40 @@ export function ConversationStreamV2(): JSX.Element {
             />
           )}
           <div className="space-y-3">
+            {(olderHistoryFeedback?.sessionId === currentSessionId ||
+              historyBoundaryLoading ||
+              historyBoundaryWaiting) && (
+              <HistoryPagingSentinel
+                phase={
+                  olderHistoryFeedback?.sessionId === currentSessionId
+                    ? olderHistoryFeedback.phase
+                    : historyBoundaryWaiting
+                      ? 'waiting'
+                      : 'loading'
+                }
+                onRetry={() => {
+                  const scroller = scrollRef.current;
+                  if (scroller !== null) requestOlderHistoryAtCurrentAnchor(scroller);
+                }}
+              />
+            )}
+            {olderHistoryFeedback?.sessionId !== currentSessionId &&
+              currentSessionId !== null &&
+              displayMessages.length > 0 &&
+              historyPaging.phase === 'error' && (
+                <HistoryPagingSentinel
+                  phase="error"
+                  onRetry={() => {
+                    if (historyPaging.surface !== undefined) {
+                      void restoreNewestSessionHistory(currentSessionId, historyPaging.surface);
+                    }
+                  }}
+                />
+              )}
             {displayMessages.length === 0 &&
-              (historyPaging.phase === 'error' && historyPaging.runtimeUnavailable === true ? (
+              (historyPaging.phase === 'waiting' && currentSessionMsgCount > 0 ? (
+                <HistoryPagingSentinel phase="waiting" onRetry={() => undefined} />
+              ) : historyPaging.phase === 'error' && historyPaging.runtimeUnavailable === true ? (
                 // Runtime 不可用导致正文读不到:重试已终止。明确告知文件未损坏,避免被当成空白/损坏。
                 <div
                   className="text-fg-faint text-sm"
@@ -2831,13 +2913,63 @@ function ToolCluster({ cluster, followTail, expanded, onToggle }: ToolClusterPro
   );
 }
 
+function HistoryPagingSentinel({
+  phase,
+  onRetry,
+}: {
+  readonly phase: 'loading' | 'waiting' | 'error';
+  readonly onRetry: () => void;
+}): JSX.Element {
+  const { t } = useI18n();
+  if (phase === 'loading' || phase === 'waiting') {
+    return (
+      <div
+        className="flex items-center justify-center gap-2 py-1 text-xs text-fg-muted"
+        role="status"
+        aria-live="polite"
+        aria-busy="true"
+        data-testid="history-paging-status"
+      >
+        <LoaderCircle className="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" aria-hidden />
+        <span>
+          {t(
+            phase === 'waiting'
+              ? 'session.waitingForHistoryRuntime'
+              : 'session.loadingEarlierHistory',
+          )}
+        </span>
+      </div>
+    );
+  }
+  return (
+    <div
+      className="flex items-center justify-center gap-2 py-1 text-xs text-danger"
+      role="alert"
+      data-testid="history-paging-error"
+    >
+      <span>{t('conversation.historyLoadFailed')}</span>
+      <button
+        type="button"
+        onClick={onRetry}
+        className="rounded border border-danger/40 px-2 py-1 hover:bg-danger/10"
+      >
+        {t('message.action.retry')}
+      </button>
+    </div>
+  );
+}
+
 // 历史会话加载骨架 — 点旧 session 后 jsonl IPC 在 flight 时显示 (~50-200ms)。
 // 一组 user/assistant 气泡 shimmer,让用户知道"正在加载"而不是"空白会话"。
 // 用 animate-pulse + 几条灰度 bar 模拟消息形态,无额外 CSS keyframe。
 function HistoryRestoreSkeleton(): JSX.Element {
   const { t } = useI18n();
   return (
-    <div className="space-y-4 animate-pulse" aria-label={t('conversation.loadingHistory')}>
+    <div
+      className="space-y-4 animate-pulse motion-reduce:animate-none"
+      role="status"
+      aria-label={t('conversation.loadingHistory')}
+    >
       {/* user 气泡 (右对齐) */}
       <div className="flex justify-end">
         <div className="bg-surface-3/60 rounded-lg px-3 py-2 max-w-[60%]">

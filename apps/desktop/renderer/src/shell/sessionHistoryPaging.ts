@@ -31,7 +31,14 @@ const IDLE_HISTORY_STATE: SessionHistoryPagingState = {
 
 const states = new Map<string, SessionHistoryPagingState>();
 const listeners = new Map<string, Set<() => void>>();
-const inFlight = new Map<string, { readonly token: symbol; readonly promise: Promise<void> }>();
+const inFlight = new Map<
+  string,
+  {
+    readonly token: symbol;
+    readonly continuation: boolean;
+    readonly promise: Promise<void>;
+  }
+>();
 const runtimeReadyWakeups = new Map<
   string,
   { readonly token: symbol; readonly promise: Promise<void> }
@@ -62,6 +69,7 @@ const terminalHistoryEvidenceBySession = new Map<string, TerminalHistoryWorkflow
 const MAX_TERMINAL_HISTORY_RUN_IDS = 16;
 const MAX_RUNTIME_RETRY_ATTEMPTS = 30;
 const MAX_CACHED_SESSION_HISTORIES = 32;
+const MAX_NEWEST_STITCH_PAGES = 16;
 let historyRequestOrdinal = 0;
 
 function updateTerminalHistoryWorkflow(
@@ -391,6 +399,104 @@ function mergeLoadedHistoryItems(
   ];
 }
 
+type HistoryUserItem = Extract<SessionHistoryItem, { readonly kind: 'user' }>;
+type CanonicalHistoryItem = Exclude<
+  SessionHistoryItem,
+  { readonly kind: 'history_truncation' | 'local_notice' }
+> & { readonly entryId: string; readonly canonicalIndex: number };
+
+function sameHistoryUserSemantic(left: HistoryUserItem, right: HistoryUserItem): boolean {
+  if (left.content !== right.content) return false;
+  const attachmentSemantic = (item: HistoryUserItem): string =>
+    JSON.stringify(
+      (item.attachments ?? []).map(({ id, kind, mediaType, bytes, status }) => ({
+        id,
+        kind,
+        mediaType,
+        bytes,
+        status,
+      })),
+    );
+  return attachmentSemantic(left) === attachmentSemantic(right);
+}
+
+/** Physical Runtime identity plus canonical position is the proof that two bounded pages overlap. */
+function sameCanonicalHistoryItem(
+  left: CanonicalHistoryItem,
+  right: CanonicalHistoryItem,
+): boolean {
+  if (
+    left.kind !== right.kind ||
+    left.entryId === undefined ||
+    right.entryId === undefined ||
+    left.entryId !== right.entryId ||
+    left.canonicalIndex === undefined ||
+    left.canonicalIndex !== right.canonicalIndex
+  ) {
+    return false;
+  }
+  if (left.turnId !== undefined && right.turnId !== undefined && left.turnId !== right.turnId) {
+    return false;
+  }
+  if (left.kind !== 'user' || right.kind !== 'user') return true;
+  if (!sameHistoryUserSemantic(left, right)) return false;
+  return !(
+    left.turnUserOrdinal !== undefined &&
+    right.turnUserOrdinal !== undefined &&
+    left.turnUserOrdinal !== right.turnUserOrdinal
+  );
+}
+
+function hasCanonicalHistoryIdentity(item: SessionHistoryItem): item is CanonicalHistoryItem {
+  return (
+    item.kind !== 'history_truncation' &&
+    item.kind !== 'local_notice' &&
+    item.entryId !== undefined &&
+    item.canonicalIndex !== undefined
+  );
+}
+
+function canonicalHistoryItemsOverlap(
+  loaded: readonly SessionHistoryItem[],
+  incoming: readonly SessionHistoryItem[],
+): boolean {
+  const loadedItemsByIndex = new Map<number, CanonicalHistoryItem[]>();
+  for (const item of loaded) {
+    if (hasCanonicalHistoryIdentity(item)) {
+      const candidates = loadedItemsByIndex.get(item.canonicalIndex) ?? [];
+      candidates.push(item);
+      loadedItemsByIndex.set(item.canonicalIndex, candidates);
+    }
+  }
+  return incoming.some((item) => {
+    if (!hasCanonicalHistoryIdentity(item)) return false;
+    return (
+      loadedItemsByIndex
+        .get(item.canonicalIndex)
+        ?.some((candidate) => sameCanonicalHistoryItem(candidate, item)) === true
+    );
+  });
+}
+
+interface HistoryResultData {
+  readonly sessionId: string;
+  readonly requestId: string;
+  readonly items: readonly SessionHistoryItem[];
+  readonly conversation?: { readonly status: 'resolved' | 'partial' | 'ambiguous' };
+  readonly page?:
+    | {
+        readonly outcome: 'ready';
+        readonly revision: string;
+        readonly sourceRevision: string;
+        readonly hasMore: boolean;
+        readonly nextCursor?: string;
+        readonly windowMode: 'replace' | 'prepend';
+        readonly hasNewer: boolean;
+      }
+    | { readonly outcome: 'data_changed' }
+    | { readonly outcome: 'runtime_unavailable' };
+}
+
 function applyHistoryResult(sessionId: string, data: unknown, continuation: boolean): void {
   // Kept as a narrow runtime helper below; this signature prevents exporting generated IPC types
   // through a renderer-only module.
@@ -544,34 +650,49 @@ async function requestHistory(
     if (!(retainReadyProjection && boundary.phase === 'ready')) {
       publish(sessionId, { ...boundary, phase: 'loading', ...(surface ? { surface } : {}) });
     }
-    const requestId = nextHistoryRequestId();
-    const response = await invokeWithTimeout(bridge, 'session.history', {
-      sessionId,
-      requestId,
-      ...(surface !== undefined ? { expectedSurface: surface } : {}),
-      ...(continueFromCurrentBoundary && boundary.nextCursor !== undefined
+    const invokeHistoryPage = async (pageBoundary?: {
+      readonly cursor: string;
+      readonly revision?: string;
+      readonly sourceRevision?: string;
+    }): Promise<HistoryResultData> => {
+      const requestId = nextHistoryRequestId();
+      const response = await invokeWithTimeout(bridge, 'session.history', {
+        sessionId,
+        requestId,
+        ...(surface !== undefined ? { expectedSurface: surface } : {}),
+        ...(pageBoundary !== undefined
+          ? {
+              cursor: pageBoundary.cursor,
+              revision: pageBoundary.revision,
+              sourceRevision: pageBoundary.sourceRevision,
+            }
+          : {}),
+      });
+      if (!response.ok) throw new Error(response.error?.message ?? 'Session history load failed.');
+      if (response.data.sessionId !== sessionId || response.data.requestId !== requestId) {
+        console.error('[session.history] rejected a response with foreign ownership', {
+          requestedSessionId: sessionId,
+          responseSessionId: response.data.sessionId,
+          requestId,
+          responseRequestId: response.data.requestId,
+        });
+        throw new Error('Session history response ownership mismatch.');
+      }
+      return response.data;
+    };
+    let result = await invokeHistoryPage(
+      continueFromCurrentBoundary && boundary.nextCursor !== undefined
         ? {
             cursor: boundary.nextCursor,
             revision: boundary.revision,
             sourceRevision: boundary.sourceRevision,
           }
-        : {}),
-    });
+        : undefined,
+    );
     if (activeTokens.get(sessionId) !== activeToken) return;
-    if (!response.ok) throw new Error(response.error?.message ?? 'Session history load failed.');
-    if (response.data.sessionId !== sessionId || response.data.requestId !== requestId) {
-      console.error('[session.history] rejected a response with foreign ownership', {
-        requestedSessionId: sessionId,
-        responseSessionId: response.data.sessionId,
-        requestId,
-        responseRequestId: response.data.requestId,
-      });
-      throw new Error('Session history response ownership mismatch.');
-    }
     if ((invalidationEpochs.get(sessionId) ?? 0) !== requestedEpoch) {
       // A terminal/lineage persistence boundary overtook this read. Do not install a page or a
       // diagnostic from the older source generation; restart from the newest canonical boundary.
-      loadedItems.delete(sessionId);
       loadedEpochs.delete(sessionId);
       publish(sessionId, {
         ...(retainReadyProjection && previous.phase === 'ready'
@@ -585,9 +706,8 @@ async function requestHistory(
       scheduleRuntimeRetry(sessionId, surface, retainReadyProjection);
       return;
     }
-    const page = response.data.page;
+    let page = result.page;
     if (page?.outcome === 'data_changed') {
-      loadedItems.delete(sessionId);
       loadedEpochs.delete(sessionId);
       publish(sessionId, {
         ...(retainReadyProjection && previous.phase === 'ready' ? previous : IDLE_HISTORY_STATE),
@@ -612,12 +732,142 @@ async function requestHistory(
       scheduleRuntimeRetry(sessionId, surface, retainReadyProjection);
       return;
     }
-    if (retainReadyProjection && previous.phase === 'ready' && sessionHasOpenLiveTurn(sessionId)) {
+    const installsPrepend = continueFromCurrentBoundary && page?.windowMode === 'prepend';
+    if (!installsPrepend && previous.phase === 'ready' && sessionHasOpenLiveTurn(sessionId)) {
       // A background revalidation can overtake the next run and return a canonical copy of its
       // still-open turn. Replacing an already-painted ready window here would overlap that copy
       // with the live projection and temporarily reorder or suppress streaming content. Keep the
       // prior canonical window until the run reaches its persistence boundary; that terminal
-      // event invalidates and revalidates the newest generation.
+      // event invalidates and revalidates the newest generation. Only a response that will
+      // actually install as an immutable prepend window may proceed while a Run is open: an
+      // invalidated continuation restarts at newest and therefore needs this same deferral.
+      if (sessionHistoryPagingSnapshot(sessionId).phase !== 'ready') {
+        publish(sessionId, previous);
+      }
+      deferredReadyRevalidations.add(sessionId);
+      return;
+    }
+    const previouslyLoaded = loadedItems.get(sessionId) ?? [];
+    if (
+      !continueFromCurrentBoundary &&
+      loadedItems.has(sessionId) &&
+      page?.outcome === 'ready' &&
+      page.windowMode === 'replace' &&
+      page.hasMore &&
+      page.nextCursor !== undefined &&
+      previouslyLoaded.some(hasCanonicalHistoryIdentity) &&
+      !canonicalHistoryItemsOverlap(previouslyLoaded, result.items)
+    ) {
+      const newestPage = page;
+      let stagedItems = [...result.items];
+      let foundOverlap = false;
+      let reachedResolvedRoot = false;
+      for (let pageCount = 1; pageCount < MAX_NEWEST_STITCH_PAGES; pageCount += 1) {
+        const stagedPage = result.page;
+        if (
+          stagedPage?.outcome !== 'ready' ||
+          !stagedPage.hasMore ||
+          stagedPage.nextCursor === undefined
+        ) {
+          break;
+        }
+        const older = await invokeHistoryPage({
+          cursor: stagedPage.nextCursor,
+          revision: stagedPage.revision,
+          sourceRevision: stagedPage.sourceRevision,
+        });
+        if (activeTokens.get(sessionId) !== activeToken) return;
+        if ((invalidationEpochs.get(sessionId) ?? 0) !== requestedEpoch) {
+          if (previous.phase === 'ready') publish(sessionId, previous);
+          scheduleRuntimeRetry(
+            sessionId,
+            surface,
+            previous.phase === 'ready' || retainReadyProjection,
+          );
+          return;
+        }
+        const olderPage = older.page;
+        if (
+          olderPage?.outcome !== 'ready' ||
+          olderPage.revision !== newestPage.revision ||
+          olderPage.sourceRevision !== newestPage.sourceRevision
+        ) {
+          if (previous.phase === 'ready') publish(sessionId, previous);
+          scheduleRuntimeRetry(sessionId, surface, true);
+          return;
+        }
+        stagedItems = [...mergeLoadedHistoryItems(stagedItems, older.items)];
+        result = older;
+        if (canonicalHistoryItemsOverlap(previouslyLoaded, older.items)) {
+          foundOverlap = true;
+          result = {
+            ...older,
+            items: stagedItems,
+            conversation: result.conversation,
+            page: {
+              ...olderPage,
+              windowMode: 'replace',
+              hasNewer: newestPage.hasNewer,
+            },
+          };
+          page = result.page;
+          break;
+        }
+        if (!olderPage.hasMore && older.conversation?.status === 'resolved') {
+          reachedResolvedRoot = true;
+          break;
+        }
+      }
+      if (!foundOverlap) {
+        if (reachedResolvedRoot) {
+          const resetNewest = await invokeHistoryPage();
+          if (activeTokens.get(sessionId) !== activeToken) return;
+          if ((invalidationEpochs.get(sessionId) ?? 0) !== requestedEpoch) {
+            if (previous.phase === 'ready') publish(sessionId, previous);
+            scheduleRuntimeRetry(
+              sessionId,
+              surface,
+              previous.phase === 'ready' || retainReadyProjection,
+            );
+            return;
+          }
+          const resetPage = resetNewest.page;
+          if (
+            resetPage?.outcome === 'ready' &&
+            resetPage.windowMode === 'replace' &&
+            resetPage.revision === newestPage.revision &&
+            resetPage.sourceRevision === newestPage.sourceRevision
+          ) {
+            result = resetNewest;
+            page = resetPage;
+          } else {
+            if (previous.phase === 'ready') publish(sessionId, previous);
+            scheduleRuntimeRetry(sessionId, surface, true);
+            return;
+          }
+        } else {
+          if (result.page?.outcome === 'ready' && result.page.hasMore) {
+            // Retrying from the cursorless newest boundary would scan these same pages forever.
+            // Keep the proven prior transcript painted, release observation, and make a later
+            // activation/user retry start a fresh bounded attempt instead of hiding an active loop.
+            clearRetry(sessionId);
+            updateAllTerminalHistoryWorkflows(sessionId, 'in-flight', 'pending');
+            publish(sessionId, { ...previous, phase: 'error' });
+          } else if (previous.phase === 'ready') {
+            publish(sessionId, previous);
+          }
+          return;
+        }
+      }
+    }
+    // Stitching can span several IPC round trips. Re-check the live owner immediately before the
+    // single install so a Run that started after the first response gets the same deferral fence.
+    if (
+      !continueFromCurrentBoundary &&
+      previous.phase === 'ready' &&
+      sessionHasOpenLiveTurn(sessionId)
+    ) {
+      if (sessionHistoryPagingSnapshot(sessionId).phase !== 'ready') publish(sessionId, previous);
       deferredReadyRevalidations.add(sessionId);
       return;
     }
@@ -639,7 +889,7 @@ async function requestHistory(
     // boundary. A KodaX cursor may still validly serve that immutable old snapshot, so epoch
     // mismatch must restart at newest instead of accidentally certifying an old continuation as
     // the current generation.
-    applyHistoryResult(sessionId, response.data, continueFromCurrentBoundary);
+    applyHistoryResult(sessionId, result, continueFromCurrentBoundary);
     deferredReadyRevalidations.delete(sessionId);
     loadedEpochs.set(sessionId, requestedEpoch);
     clearRetry(sessionId);
@@ -655,8 +905,8 @@ async function requestHistory(
             ...(page.nextCursor !== undefined ? { nextCursor: page.nextCursor } : {}),
           }
         : { hasMore: false }),
-      ...(response.data.conversation?.status !== undefined
-        ? { conversationStatus: response.data.conversation.status }
+      ...(result.conversation?.status !== undefined
+        ? { conversationStatus: result.conversation.status }
         : {}),
     });
   })()
@@ -676,7 +926,7 @@ async function requestHistory(
     .finally(() => {
       if (inFlight.get(sessionId)?.promise === pending) inFlight.delete(sessionId);
     });
-  inFlight.set(sessionId, { token: activeToken, promise: pending });
+  inFlight.set(sessionId, { token: activeToken, continuation, promise: pending });
   return pending;
 }
 
@@ -735,7 +985,18 @@ export function restoreNewestSessionHistory(
   return requestHistory(sessionId, false, expectedSurface, retainReadyProjection);
 }
 
-export function loadOlderSessionHistory(sessionId: string): Promise<void> {
+export async function loadOlderSessionHistory(sessionId: string): Promise<void> {
+  const activeToken = activeTokens.get(sessionId);
+  if (activeToken === undefined) return;
+  const existing = inFlight.get(sessionId);
+  if (existing?.token === activeToken) {
+    if (existing.continuation) return existing.promise;
+    // A retained newest revalidation leaves the older-page affordance usable. Preserve the
+    // user's explicit prepend intent: wait for that replacement to establish its current cursor,
+    // then continue from the same lifecycle token instead of treating the newest read as success.
+    await existing.promise.catch(() => undefined);
+    if (activeTokens.get(sessionId) !== activeToken) return;
+  }
   return requestHistory(sessionId, true);
 }
 

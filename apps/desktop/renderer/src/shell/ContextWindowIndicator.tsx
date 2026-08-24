@@ -14,6 +14,7 @@
 //   - 历史 fallback: 查询期间 / IPC 失败时仍用 modelContextCaps 硬编码表兜底，避免空窗显示
 
 import { useEffect, useState, type CSSProperties } from 'react';
+import { LoaderCircle } from 'lucide-react';
 import { useI18n } from '../i18n/I18nProvider.js';
 import { useAppStore } from '../store/appStore.js';
 import {
@@ -191,12 +192,11 @@ export function ContextWindowIndicator({
       : undefined,
   );
   const tokenCount = inputReading.tokens;
-  const activeContextBudget = inputReading.budgetTokens !== undefined ? contextBudget : undefined;
-  const providerReportedTokens = resolveProviderReportedTokens(
-    inputReading,
-    tokenInfo?.source,
-    tokenInfo?.tokenSource,
-  );
+  const activeContextBudget =
+    !compacting && inputReading.budgetTokens !== undefined ? contextBudget : undefined;
+  const providerReportedTokens = compacting
+    ? undefined
+    : resolveProviderReportedTokens(inputReading, tokenInfo?.source, tokenInfo?.tokenSource);
   const lastCompaction = tokenInfo?.lastCompaction;
   const compactionSourceLabel =
     lastCompaction?.source === 'manual'
@@ -218,7 +218,7 @@ export function ContextWindowIndicator({
   const autoCompactPercent = (tokenCount / autoCompactThreshold) * 100;
   const displayPercent = Math.min(100, autoCompactPercent);
   // Runtime budget 和历史恢复都属于 estimate — 加 "≈" 前缀让用户知道是近似。
-  const tokenStr = `${isEstimate ? '≈' : ''}${formatTokens(tokenCount)}`;
+  const tokenStr = compacting ? '—' : `${isEstimate ? '≈' : ''}${formatTokens(tokenCount)}`;
   const capStr = formatTokens(cap);
   const thresholdStr = formatTokens(autoCompactThreshold);
   const remainingPercent = Math.max(0, 100 - displayPercent);
@@ -226,13 +226,13 @@ export function ContextWindowIndicator({
   const exceededTokenCount = Math.max(0, tokenCount - autoCompactThreshold);
   const thresholdExceeded = tokenCount > autoCompactThreshold;
   const thresholdReached = tokenCount >= autoCompactThreshold;
-  const inputSourceLabel = isEstimate
-    ? t('contextWindow.estimatedRequestInput')
-    : t('contextWindow.currentContextInput');
+  const inputSourceLabel = compacting
+    ? t('contextWindow.compactionInputPending')
+    : isEstimate
+      ? t('contextWindow.estimatedRequestInput')
+      : t('contextWindow.currentContextInput');
   const progressStatus = compacting
-    ? thresholdExceeded
-      ? t('contextWindow.compactingExceeded', { tokens: formatTokens(exceededTokenCount) })
-      : t('contextWindow.compacting')
+    ? t('contextWindow.compacting')
     : thresholdExceeded
       ? t('contextWindow.thresholdExceeded', { tokens: formatTokens(exceededTokenCount) })
       : thresholdReached
@@ -305,45 +305,75 @@ export function ContextWindowIndicator({
       ]
     : [];
 
-  const gaugeTone = remainingPercent <= 20 ? 'danger' : remainingPercent <= 40 ? 'warn' : 'ok';
+  const gaugeTone = compacting
+    ? 'neutral'
+    : remainingPercent <= 20
+      ? 'danger'
+      : remainingPercent <= 40
+        ? 'warn'
+        : 'ok';
   const toneClass =
-    gaugeTone === 'ok' ? 'text-ok' : gaugeTone === 'warn' ? 'text-warn' : 'text-danger';
-  const barColor = gaugeTone === 'ok' ? 'bg-ok' : gaugeTone === 'warn' ? 'bg-warn' : 'bg-danger';
+    gaugeTone === 'neutral'
+      ? 'text-fg-muted'
+      : gaugeTone === 'ok'
+        ? 'text-ok'
+        : gaugeTone === 'warn'
+          ? 'text-warn'
+          : 'text-danger';
+  const barColor =
+    gaugeTone === 'neutral'
+      ? 'bg-fg-muted/50'
+      : gaugeTone === 'ok'
+        ? 'bg-ok'
+        : gaugeTone === 'warn'
+          ? 'bg-warn'
+          : 'bg-danger';
   const gaugeStyle: ContextGaugeStyle = {
     '--cw-level':
-      gaugeTone === 'ok'
-        ? 'rgb(var(--ok))'
-        : gaugeTone === 'warn'
-          ? 'rgb(var(--warn))'
-          : 'rgb(var(--danger))',
+      gaugeTone === 'neutral'
+        ? 'rgb(var(--fg-muted))'
+        : gaugeTone === 'ok'
+          ? 'rgb(var(--ok))'
+          : gaugeTone === 'warn'
+            ? 'rgb(var(--warn))'
+            : 'rgb(var(--danger))',
     '--cw-level-dim':
-      gaugeTone === 'ok'
-        ? 'rgb(var(--ok) / 0.7)'
-        : gaugeTone === 'warn'
-          ? 'rgb(var(--warn) / 0.68)'
-          : 'rgb(var(--danger) / 0.68)',
+      gaugeTone === 'neutral'
+        ? 'rgb(var(--fg-muted) / 0.5)'
+        : gaugeTone === 'ok'
+          ? 'rgb(var(--ok) / 0.7)'
+          : gaugeTone === 'warn'
+            ? 'rgb(var(--warn) / 0.68)'
+            : 'rgb(var(--danger) / 0.68)',
     '--cw-level-glow':
-      gaugeTone === 'ok'
-        ? 'rgb(var(--ok) / 0.34)'
-        : gaugeTone === 'warn'
-          ? 'rgb(var(--warn) / 0.36)'
-          : 'rgb(var(--danger) / 0.44)',
-    '--cw-level-height': `${remainingPercent}%`,
+      gaugeTone === 'neutral'
+        ? 'rgb(var(--fg-muted) / 0.2)'
+        : gaugeTone === 'ok'
+          ? 'rgb(var(--ok) / 0.34)'
+          : gaugeTone === 'warn'
+            ? 'rgb(var(--warn) / 0.36)'
+            : 'rgb(var(--danger) / 0.44)',
+    '--cw-level-height': compacting ? '0%' : `${remainingPercent}%`,
   };
   const contextLabel = currentSessionId ? t('contextWindow.title') : t('contextWindow.title.next');
-  const tooltip = thresholdReached
-    ? t('contextWindow.tooltipAtThreshold', {
+  const tooltip = compacting
+    ? t('contextWindow.tooltipCompacting', {
         label: contextLabel,
-        percent: autoCompactPercent.toFixed(1),
-        used: tokenStr,
         threshold: thresholdStr,
       })
-    : t('contextWindow.tooltip', {
-        label: contextLabel,
-        percent: remainingPercent.toFixed(0),
-        used: tokenStr,
-        threshold: thresholdStr,
-      });
+    : thresholdReached
+      ? t('contextWindow.tooltipAtThreshold', {
+          label: contextLabel,
+          percent: autoCompactPercent.toFixed(1),
+          used: tokenStr,
+          threshold: thresholdStr,
+        })
+      : t('contextWindow.tooltip', {
+          label: contextLabel,
+          percent: remainingPercent.toFixed(0),
+          used: tokenStr,
+          threshold: thresholdStr,
+        });
   const sessionUsageTooltip = currentSessionId
     ? t('sessionTokens.tooltip', {
         total: sessionTotalTokens === undefined ? '—' : formatTokens(sessionTotalTokens),
@@ -373,10 +403,21 @@ export function ContextWindowIndicator({
         aria-label={tooltip}
       >
         <span className="sr-only">{contextLabel}</span>
-        <span aria-hidden className="context-liquid-gauge h-7 w-7" style={gaugeStyle}>
-          <span className="context-liquid-gauge__fill" />
-          <span className="context-liquid-gauge__surface" />
-          <span className="context-liquid-gauge__wave" />
+        <span
+          aria-hidden
+          aria-busy={compacting}
+          className="context-liquid-gauge h-7 w-7 flex items-center justify-center"
+          style={gaugeStyle}
+        >
+          {compacting ? (
+            <LoaderCircle className="h-4 w-4 animate-spin motion-reduce:animate-none" />
+          ) : (
+            <>
+              <span className="context-liquid-gauge__fill" />
+              <span className="context-liquid-gauge__surface" />
+              <span className="context-liquid-gauge__wave" />
+            </>
+          )}
         </span>
       </button>
 
@@ -437,7 +478,7 @@ export function ContextWindowIndicator({
               </div>
             </div>
             <span className={`font-mono text-[13px] font-medium leading-none ${toneClass}`}>
-              {autoCompactPercent.toFixed(1)}%
+              {compacting ? '—' : `${autoCompactPercent.toFixed(1)}%`}
             </span>
           </div>
 
@@ -447,12 +488,22 @@ export function ContextWindowIndicator({
             role="progressbar"
             aria-valuemin={0}
             aria-valuemax={autoCompactThreshold}
-            aria-valuenow={Math.min(tokenCount, autoCompactThreshold)}
-            aria-label={t('contextWindow.progressToAutoCompact', {
-              percent: autoCompactPercent.toFixed(1),
-            })}
+            aria-valuenow={compacting ? undefined : Math.min(tokenCount, autoCompactThreshold)}
+            aria-busy={compacting}
+            aria-label={
+              compacting
+                ? progressStatus
+                : t('contextWindow.progressToAutoCompact', {
+                    percent: autoCompactPercent.toFixed(1),
+                  })
+            }
           >
-            {activeContextBudget ? (
+            {compacting ? (
+              <div
+                data-testid="context-indeterminate-progress"
+                className="h-full w-full animate-pulse bg-fg-muted/30 motion-reduce:animate-none"
+              />
+            ) : activeContextBudget ? (
               inputCompositionRows.map((row) => (
                 <div
                   key={row.key}
@@ -478,7 +529,7 @@ export function ContextWindowIndicator({
 
           <div
             data-testid="context-threshold-status"
-            className={`mt-2 text-[11px] ${thresholdReached || compacting ? 'text-danger' : 'text-fg-muted'}`}
+            className={`mt-2 text-[11px] ${!compacting && thresholdReached ? 'text-danger' : 'text-fg-muted'}`}
           >
             {progressStatus}
           </div>

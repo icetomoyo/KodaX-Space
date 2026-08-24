@@ -412,25 +412,22 @@ function currentRuntimeTerminalRunIds(
   const terminalRunIds = new Set<string>();
   if (projection?.lastTerminalRun) terminalRunIds.add(projection.lastTerminalRun.runId);
   if (profileSession?.lastTerminalRun) terminalRunIds.add(profileSession.lastTerminalRun.runId);
-  let terminalOrigin:
-    | NonNullable<Extract<SessionEvent, { kind: 'session_complete' }>['runtimeEvent']>
-    | undefined;
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index]!;
     if (
       (event.kind === 'session_complete' || event.kind === 'session_error') &&
       'runtimeEvent' in event &&
-      event.runtimeEvent !== undefined
+      event.runtimeEvent !== undefined &&
+      runtimeActivityOriginBelongsToCurrentRuntime(
+        event.runtimeEvent,
+        projection?.cursor,
+        profileCursor,
+      )
     ) {
-      terminalOrigin = event.runtimeEvent;
-      break;
+      // Run IDs are terminal identities. Keep every observed terminal fence: a later terminal for
+      // another Run must not revive stale profile/live activity for an earlier completed Run.
+      terminalRunIds.add(event.runtimeEvent.runId);
     }
-  }
-  if (
-    terminalOrigin !== undefined &&
-    runtimeActivityOriginBelongsToCurrentRuntime(terminalOrigin, projection?.cursor, profileCursor)
-  ) {
-    terminalRunIds.add(terminalOrigin.runId);
   }
   return terminalRunIds;
 }
@@ -461,6 +458,43 @@ export interface RuntimeStopIdentity {
   readonly runId?: string;
 }
 
+export interface RuntimeActivityScope {
+  /** Presence of this object means Runtime identity is known to the caller, even when undefined. */
+  readonly currentRuntimeId?: string;
+}
+
+function scopeRuntimeActivitySources(
+  projection: SpaceSessionLiveProjectionT | undefined,
+  events: readonly SessionEvent[],
+  profileSession: RuntimeProfileSession | undefined,
+  profileCursor: SpaceRuntimeProfileProjectionT['cursor'] | undefined,
+  scope: RuntimeActivityScope | undefined,
+): {
+  readonly projection: SpaceSessionLiveProjectionT | undefined;
+  readonly events: readonly SessionEvent[];
+  readonly profileSession: RuntimeProfileSession | undefined;
+  readonly profileCursor: SpaceRuntimeProfileProjectionT['cursor'] | undefined;
+} {
+  if (scope === undefined) return { projection, events, profileSession, profileCursor };
+  const runtimeId = scope.currentRuntimeId;
+  return {
+    projection:
+      runtimeId !== undefined && projection?.cursor.runtimeId === runtimeId
+        ? projection
+        : undefined,
+    events: events.filter((event) => {
+      const origin = 'runtimeEvent' in event ? event.runtimeEvent : undefined;
+      return origin === undefined || (runtimeId !== undefined && origin.runtimeId === runtimeId);
+    }),
+    profileSession:
+      runtimeId !== undefined && profileCursor?.runtimeId === runtimeId
+        ? profileSession
+        : undefined,
+    profileCursor:
+      runtimeId !== undefined && profileCursor?.runtimeId === runtimeId ? profileCursor : undefined,
+  };
+}
+
 /** Keep a stale Runtime Run identity only as a safe exact Stop target; never retarget by Session. */
 export function selectRuntimeStopIdentity(
   projection: SpaceSessionLiveProjectionT | undefined,
@@ -468,23 +502,31 @@ export function selectRuntimeStopIdentity(
   profileSession: RuntimeProfileSession | undefined,
   runtimeConnectionAuthoritative: boolean,
   profileCursor?: SpaceRuntimeProfileProjectionT['cursor'],
+  scope?: RuntimeActivityScope,
 ): RuntimeStopIdentity {
-  const activeRun = selectEffectiveRuntimeActiveRun(
+  const scoped = scopeRuntimeActivitySources(
     projection,
     events,
     profileSession,
-    runtimeConnectionAuthoritative,
     profileCursor,
+    scope,
+  );
+  const activeRun = selectEffectiveRuntimeActiveRun(
+    scoped.projection,
+    scoped.events,
+    scoped.profileSession,
+    runtimeConnectionAuthoritative,
+    scoped.profileCursor,
   );
   if (activeRun !== undefined) {
     return { requiresExactRunId: true, runId: activeRun.runId };
   }
-  const eventOrigin = latestRuntimeActivityOrigin(events);
+  const eventOrigin = latestRuntimeActivityOrigin(scoped.events);
   const runId =
-    eventOrigin?.runId ?? projection?.activeRun?.runId ?? profileSession?.activeRun?.runId;
-  return runId === undefined
-    ? { requiresExactRunId: false }
-    : { requiresExactRunId: true, runId };
+    eventOrigin?.runId ??
+    scoped.projection?.activeRun?.runId ??
+    scoped.profileSession?.activeRun?.runId;
+  return runId === undefined ? { requiresExactRunId: false } : { requiresExactRunId: true, runId };
 }
 
 export function selectActivityGeneration(
@@ -496,10 +538,11 @@ export function selectActivityGeneration(
     const event = events[index]!;
     if ('contextKind' in event && event.contextKind === 'child') continue;
     if (
-      event.kind !== 'session_start'
-      && event.kind !== 'queued_user_prompt_started'
-      && event.kind !== 'mid_turn_user_prompt'
-    ) continue;
+      event.kind !== 'session_start' &&
+      event.kind !== 'queued_user_prompt_started' &&
+      event.kind !== 'mid_turn_user_prompt'
+    )
+      continue;
     if ('turnId' in event && typeof event.turnId === 'string') return `turn:${event.turnId}`;
     if ('queueId' in event && typeof event.queueId === 'string') return `queue:${event.queueId}`;
     return `event:${index}:${event.kind}`;
@@ -515,7 +558,19 @@ export function selectActivitySnapshot(
   profileSession?: RuntimeProfileSession,
   runtimeConnectionAuthoritative = true,
   profileCursor?: SpaceRuntimeProfileProjectionT['cursor'],
+  scope?: RuntimeActivityScope,
 ): ActivitySnapshot {
+  const scoped = scopeRuntimeActivitySources(
+    projection,
+    events,
+    profileSession,
+    profileCursor,
+    scope,
+  );
+  projection = scoped.projection;
+  events = scoped.events;
+  profileSession = scoped.profileSession;
+  profileCursor = scoped.profileCursor;
   // Runtime bridge events are appended in the daemon's monotonic per-Runtime sequence, and root
   // admission cannot start a successor Run before its predecessor has terminalized. The event-only
   // lifecycle below relies on that contract: a terminal for an older root Run cannot legally arrive
@@ -674,6 +729,7 @@ export function ActivitySpinner(): ReactJSX.Element | null {
       : undefined,
   );
   const runtimeProfileCursor = useAppStore((s) => s.runtimeProfile?.cursor);
+  const currentRuntimeId = useAppStore((s) => s.runtimeConnection.runtimeId);
   const runtimeConnectionAuthoritative = useAppStore((s) =>
     runtimeConnectionHasFreshLiveAuthority(s.runtimeConnection),
   );
@@ -686,6 +742,7 @@ export function ActivitySpinner(): ReactJSX.Element | null {
     runtimeProfileSession,
     runtimeConnectionAuthoritative,
     runtimeProfileCursor,
+    { currentRuntimeId },
   );
   // Elapsed display still ticks once per second; spinner motion itself is CSS-driven.
   const [, forceTick] = useState(0);
@@ -791,37 +848,46 @@ export function useActivityState(): ActivityState {
       : undefined,
   );
   const runtimeProfileCursor = useAppStore((s) => s.runtimeProfile?.cursor);
+  const currentRuntimeId = useAppStore((s) => s.runtimeConnection.runtimeId);
   const runtimeConnectionAuthoritative = useAppStore((s) =>
     runtimeConnectionHasFreshLiveAuthority(s.runtimeConnection),
   );
-  const snapshot = selectActivitySnapshot(
+  const runtimeScope = { currentRuntimeId };
+  const scoped = scopeRuntimeActivitySources(
     runtimeLive,
     events,
+    runtimeProfileSession,
+    runtimeProfileCursor,
+    runtimeScope,
+  );
+  const snapshot = selectActivitySnapshot(
+    scoped.projection,
+    scoped.events,
     pending,
     managedPhase,
-    runtimeProfileSession,
+    scoped.profileSession,
     runtimeConnectionAuthoritative,
-    runtimeProfileCursor,
+    scoped.profileCursor,
   );
   const runtimeStopIdentity = selectRuntimeStopIdentity(
-    runtimeLive,
-    events,
-    runtimeProfileSession,
+    scoped.projection,
+    scoped.events,
+    scoped.profileSession,
     runtimeConnectionAuthoritative,
-    runtimeProfileCursor,
+    scoped.profileCursor,
   );
   return {
     isStreaming: snapshot.streaming,
     isCompacting: snapshot.streaming && snapshot.compacting === true,
     runtimeActiveRun: selectEffectiveRuntimeActiveRun(
-      runtimeLive,
-      events,
-      runtimeProfileSession,
+      scoped.projection,
+      scoped.events,
+      scoped.profileSession,
       runtimeConnectionAuthoritative,
-      runtimeProfileCursor,
+      scoped.profileCursor,
     ),
     runtimeStopIdentity,
-    activityGeneration: selectActivityGeneration(events, runtimeStopIdentity.runId),
+    activityGeneration: selectActivityGeneration(scoped.events, runtimeStopIdentity.runId),
   };
 }
 

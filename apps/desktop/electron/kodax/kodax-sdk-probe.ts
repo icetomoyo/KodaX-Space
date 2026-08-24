@@ -28,7 +28,7 @@ export type SandboxSdkCapability =
   | { readonly status: 'unprobed' }
   | {
       readonly status: 'available';
-      readonly version: 4;
+      readonly version: 5;
       readonly asrtVersion: string;
       readonly backend:
         'windows-restricted-user' | 'macos-seatbelt' | 'linux-bubblewrap' | 'unsupported';
@@ -133,7 +133,7 @@ export function inspectSandboxModule(
   for (const control of ['filesystem', 'network', 'environment', 'timeout', 'output']) {
     if (!controls.includes(control)) failures.push(`sandbox controls missing ${control}`);
   }
-  if (capability.version !== 4) failures.push('sandbox capability version expected 4');
+  if (capability.version !== 5) failures.push('sandbox capability version expected 5');
   if (capability.asrtVersion !== asrtVersion) {
     failures.push('sandbox capability ASRT version does not match KODAX_ASRT_VERSION');
   }
@@ -165,7 +165,7 @@ export function inspectSandboxModule(
 
   return {
     status: 'available',
-    version: 4,
+    version: 5,
     asrtVersion: asrtVersion as string,
     backend: backend as Extract<SandboxSdkCapability, { status: 'available' }>['backend'],
     unavailableBehavior: 'structured-no-execution',
@@ -200,7 +200,7 @@ export function projectSandboxDoctorResult(
 
 export function updateSandboxSdkDoctorResult(
   reportedCapability: {
-    readonly version: 4;
+    readonly version: 5;
     readonly asrtVersion: string;
     readonly backend:
       'windows-restricted-user' | 'macos-seatbelt' | 'linux-bubblewrap' | 'unsupported';

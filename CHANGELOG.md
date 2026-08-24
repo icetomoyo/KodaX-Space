@@ -26,16 +26,76 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ### Fixed
 
-- **KodaX 0.7.94 Registry alignment** - Root and Desktop now pin the exact
+- **KodaX 0.7.95 Registry alignment** - Root and Desktop now pin the exact
   published package and integrity. Space recognizes typed daemon disconnect
   facts for exact-`runId` recovery, and
   preserves credential-safe Run `failureKind` through Runtime projections and
   actionable error recovery. Enabled Skills remain explicitly invocable;
   `disable-model-invocation` now gates only model discovery and model tool use.
+  Explicit `/<skill>` execution now enters through one idempotent `session.send`:
+  renderer sends the exact ordinary input and attachments without a second
+  Skill intent; main recognizes trusted head or middle references, preserves
+  their exact argument suffix, and owns registry policy and lifecycle once.
+  Runtime receives structured `skillInvocation` without renderer-supplied
+  paths, policy, or hook commands. Cancellation terminates dynamic-context
+  process trees, and failed/cancelled Runtime results reach Skill finalization.
+  Busy Sessions, unsupported fork-context Skills, and requests containing more
+  than one registered Skill reference are rejected factually before expansion
+  or hooks instead of silently running an arbitrary expanded body. Space
+  supplies `rawUserInput`, and 0.7.95 persists that original query for durable
+  display while keeping the prepared model prompt execution-only. Space also
+  requires `runtimeExitSettlement:2` and `sandboxRuntime:5`, continuously
+  retries self-healing same-boot owner recovery, and accepts no stale v4 daemon.
 - **Recover admitted Runs after daemon reconnect** - Once Space has a `runId`,
   a reconnect now queries and awaits that exact Run on the replacement Runtime.
   It never calls `runs.start()` again, so a recoverable transport loss no longer
-  ends the conversation or risks replaying provider/tool effects.
+  ends the conversation or risks replaying provider/tool effects. A second
+  attachment swap after the exact Run read continues the same recovery loop
+  instead of converting transport loss into a permanent generic error.
+- **One bubble per idempotent send** - Exact retries now reuse the renderer
+  bubble already owned by the same `session.send` operation, even when the
+  Session crosses between idle and running while the acknowledgement is
+  uncertain. Per-operation attempt fencing keeps an older callback from
+  touching a newer retry without blocking failure cleanup for an unrelated
+  send. Ambiguous transport failures retain the idempotent owner, while a
+  factual Runtime rejection removes it. A late callback from an older attempt
+  cannot release the idempotency key retained by its newer retry. Authoritative
+  queued and delivered projections migrate that same exact owner across the
+  renderer's ordinary/queued buckets instead of appending a second row; its
+  attachment capability and attempt fence move with it. Proven canonical folds
+  preserve the renderer operation identity, so a history refresh cannot make
+  the same retry append another bubble. Once Runtime has settled that owner, a
+  deliberate later send of the same payload receives a fresh operation rather
+  than replaying the prior admission. An accepted response also settles the
+  exact owner before releasing its retry key even when the backend has no
+  Runtime Run ID. Distinct operations with identical text remain distinct.
+- **Topology-safe history negotiation** - Space now requires
+  `conversationHistory:2`, preventing a new renderer from silently attaching
+  to a stale daemon that predates managed-context transparency and direct clone
+  provenance. The legacy ambiguity banner now reports an exceptional persisted
+  history integrity failure instead of presenting ambiguity as normal history.
+- **Stable live history replacement** - Runtime-ready revalidation retains a
+  previously loaded canonical prefix even when the newest bounded page has no
+  truncation marker or begins with an assistant/tool entry. Exact entry/index
+  overlap splices the page at its owning turn, while queued-delivery recovery
+  keeps each query and reply in causal order. No text or timestamp heuristic is
+  introduced, and Ctrl+R is no longer required to restore the painted history.
+- **Truthful Session activity feedback** - History reads now show a loading or
+  retry state instead of presenting temporary omission as permanent loss.
+  Session activity and terminals are fenced to the current Runtime identity,
+  so a replaced Runtime cannot leave the sidebar spinner or Stop affordance
+  active. Exact terminal `runId` facts also close lagging profile activity
+  without comparing the independent Session-journal and aggregate-profile
+  sequence domains; a later terminal for another Run cannot hide that fence.
+  A new Session journal epoch may reset its sequence and still settle the exact
+  pending send, so reconnect cannot leave a local admission spinner behind.
+  Compaction uses an indeterminate meter and hides stale token readings until a
+  new factual snapshot arrives.
+- **Bounded build and shutdown recovery** - Registry verification honors proxy
+  environment through a scoped dispatcher, rejects unsafe URLs, and destroys
+  failed connections after the bounded timeout. App shutdown now aborts any
+  automatic Runtime-recovery delay and fences late reconciliation or dialogs.
+  These maintenance changes do not bump a version or perform a release.
 
 ---
 

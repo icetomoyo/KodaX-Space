@@ -29,6 +29,15 @@ async function loadSdkCoding(): Promise<SdkCodingModule> {
   return sdkCodingCache;
 }
 
+type SdkReplModule = typeof import('@kodax-ai/kodax/repl');
+let sdkReplCache: SdkReplModule | null = null;
+async function loadSdkRepl(): Promise<SdkReplModule> {
+  if (sdkReplCache === null) {
+    sdkReplCache = await import('@kodax-ai/kodax/repl');
+  }
+  return sdkReplCache;
+}
+
 // OC-23: SDK /llm 暴露 extractHeadersFromError + parseRetryAfter 帮我们从 rate_limit
 // 错误里抠出 Retry-After header 的等待时间 (Anthropic 还有 retry-after-ms 扩展)。
 // 单独 lazy-load /llm 子包；失败时返 null 不影响主错误流程。
@@ -132,11 +141,16 @@ import type {
   KodaXSessionStorage,
   ToolCallSignal,
 } from '@kodax-ai/kodax/coding';
-import type { RuntimeDaemonKodaXOptions, RuntimeInput } from '@kodax-ai/kodax/runtime';
+import type {
+  RuntimeDaemonKodaXOptions,
+  RuntimeInput,
+  RuntimeRunResult,
+} from '@kodax-ai/kodax/runtime';
 import type {
   InputArtifact,
   PermissionMode,
   SessionEvent,
+  SessionSendRejectionReason,
   SpaceRuntimeRunStopReceiptT,
   Surface,
 } from '@kodax-space/space-ipc-schema';
@@ -157,6 +171,41 @@ interface RuntimeAdmissionState {
   readonly resolve: (outcome: RuntimeAdmissionOutcome) => void;
 }
 
+type PreparedSkillInvocationContext = NonNullable<
+  NonNullable<KodaXOptions['context']>['skillInvocation']
+>;
+
+interface PreparedExplicitSkillExecution {
+  readonly executionPrompt: string;
+  readonly modelOverride?: string;
+  readonly skillInvocation: PreparedSkillInvocationContext;
+  readonly finalize: (error?: Error) => Promise<void>;
+}
+
+interface ResolvedExplicitSkillReference {
+  readonly name: string;
+  readonly argumentsText: string;
+  readonly registered: boolean;
+  readonly rejectionReason?: 'skill_multiple_references';
+}
+
+function runtimeTerminalFailure(result: RuntimeRunResult): Error | undefined {
+  if (result.phase !== 'failed' && result.phase !== 'interrupted' && result.phase !== 'cancelled') {
+    return undefined;
+  }
+  return result.error ?? new Error(result.terminal?.message ?? `KodaX Runtime run ${result.phase}`);
+}
+
+type ExplicitSkillPreparation =
+  | { readonly prepared: PreparedExplicitSkillExecution; readonly rejectionReason?: never }
+  | {
+      readonly prepared?: never;
+      readonly rejectionReason: Extract<
+        SessionSendRejectionReason,
+        'skill_not_found' | 'skill_fork_unsupported' | 'skill_blocked' | 'skill_preparation_failed'
+      >;
+    };
+
 function createRuntimeAdmissionState(
   abort: AbortController,
   restoreDraftOnBoundaryConflict: boolean,
@@ -169,6 +218,7 @@ function createRuntimeAdmissionState(
 }
 import { askUserBroker } from '../permission/ask-user-broker.js';
 import { resolveSpacePermissionBrokerMode } from '../permission/decision-owner.js';
+import { getSkillRegistry } from '../skill/registry.js';
 import {
   createAutoSkillDynamicContextAuthorizer,
   createSkillDynamicContextExecutor,
@@ -417,6 +467,10 @@ export class RealKodaXSession implements ManagedSession {
   private readonly requestPermission: PermissionRequestFn;
   private currentAbort: AbortController | null = null;
   private runtimeAdmission: RuntimeAdmissionState | null = null;
+  /** Serializes the pre-admission decision for distinct sends targeting this Session. */
+  private sendAdmissionTail: Promise<void> = Promise.resolve();
+  /** Includes both the reservation holder and sends still waiting behind it. */
+  private readonly sendAdmissionAborts = new Set<AbortController>();
   private disposed = false;
   private abortRuntimeRunOnDispose = false;
   private extensionRuntimeHandle: SpaceSdkExtensionRuntimeHandle | undefined = undefined;
@@ -494,31 +548,232 @@ export class RealKodaXSession implements ManagedSession {
     return shellExecution;
   }
 
+  /**
+   * Parse only identity and source position at the main-process trust boundary. Registry
+   * membership decides whether a slash token is a Skill; renderer hints never participate.
+   */
+  private async resolveExplicitSkillReference(
+    rawUserInput: string,
+  ): Promise<ResolvedExplicitSkillReference | undefined> {
+    const coding = await loadSdkCoding();
+    const references = [
+      ...coding
+        .parseInlineSkillReferences(rawUserInput)
+        .map((reference) => ({ reference, unambiguous: true })),
+      ...coding
+        .parseBareInlineSlashReferences(rawUserInput)
+        .map((reference) => ({ reference, unambiguous: reference.start === 0 })),
+    ].sort(
+      (left, right) =>
+        left.reference.start - right.reference.start || left.reference.end - right.reference.end,
+    );
+    if (references.length === 0) return undefined;
+
+    const registry = await getSkillRegistry(this.projectRoot);
+    const registeredReferences = references.filter(
+      ({ reference }) => registry.get(reference.name) !== undefined,
+    );
+    if (registeredReferences.length > 1) {
+      return {
+        name: registeredReferences.map(({ reference }) => reference.name).join(', '),
+        argumentsText: '',
+        registered: true,
+        rejectionReason: 'skill_multiple_references',
+      };
+    }
+    const candidate =
+      registeredReferences[0] ?? references.find((reference) => reference.unambiguous);
+    if (candidate === undefined) return undefined;
+    const candidateIndex = references.indexOf(candidate);
+    const nextReferenceStart = references[candidateIndex + 1]?.reference.start;
+    return {
+      name: candidate.reference.name,
+      argumentsText: rawUserInput
+        .slice(candidate.reference.end, nextReferenceStart ?? rawUserInput.length)
+        .trim(),
+      registered: registry.get(candidate.reference.name) !== undefined,
+    };
+  }
+
+  private async prepareExplicitSkillExecution(
+    rawUserInput: string,
+    reference: ResolvedExplicitSkillReference,
+    runPermissionMode: PermissionMode,
+    admissionSignal?: AbortSignal,
+  ): Promise<ExplicitSkillPreparation> {
+    try {
+      if (!reference.registered) return { rejectionReason: 'skill_not_found' };
+      // loadFull reads trusted metadata without expanding variables or dynamic context. Fork must
+      // fail before createUserSkillInvocation can execute any dynamic-context command.
+      const registry = await getSkillRegistry(this.projectRoot);
+      const fullSkill = await registry.loadFull(reference.name);
+      if (fullSkill.context === 'fork') {
+        return { rejectionReason: 'skill_fork_unsupported' };
+      }
+
+      const sdk = await loadSdkRepl();
+      const request = await sdk.createUserSkillInvocation(reference.name, reference.argumentsText, {
+        workingDirectory: this.projectRoot,
+        projectRoot: this.projectRoot,
+        sessionId: this.sessionId,
+        environment: {},
+        ...(this.surface === 'partner'
+          ? { disableDynamicContext: true }
+          : {
+              executeDynamicContext: createSkillDynamicContextExecutor({
+                sessionId: this.sessionId,
+                permissionMode: runPermissionMode,
+                surface: this.surface,
+                signal: admissionSignal,
+              }),
+            }),
+      });
+      if (request === undefined) {
+        return { rejectionReason: 'skill_not_found' };
+      }
+      // The metadata preflight above is authoritative; retain this SDK result guard for a registry
+      // change between loadFull() and invocation creation.
+      if (request.context === 'fork') {
+        return { rejectionReason: 'skill_fork_unsupported' };
+      }
+
+      const hookEvents: KodaXEvents = {
+        beforeToolExecute: async (tool, input, meta) => {
+          if (this.surface === 'partner') return false;
+          try {
+            const decision = await this.requestPermission({
+              toolId: meta?.toolId ?? `skill_hook_${tool}_${Date.now()}`,
+              toolName: tool,
+              input,
+              mode: runPermissionMode,
+              surface: this.surface,
+            });
+            return decision !== 'deny';
+          } catch (error) {
+            console.warn(
+              `[real-session ${this.sessionId}] Skill hook permission failed: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+            return false;
+          }
+        },
+      };
+      const prepared = await sdk.prepareInvocationExecution(
+        {
+          provider: this.provider,
+          context: { gitRoot: this.projectRoot, executionCwd: this.projectRoot },
+          events: hookEvents,
+        },
+        request,
+        rawUserInput,
+        (message) => {
+          console.warn(`[real-session ${this.sessionId}] Skill diagnostic: ${message}`);
+        },
+      );
+      if (prepared.mode === 'manual') {
+        await prepared.finalize();
+        return { rejectionReason: 'skill_blocked' };
+      }
+      if (prepared.mode === 'fork') {
+        await prepared.finalize();
+        return { rejectionReason: 'skill_fork_unsupported' };
+      }
+      const skillInvocation = prepared.options?.context?.skillInvocation;
+      if (!prepared.prompt || !skillInvocation) {
+        await prepared.finalize();
+        return { rejectionReason: 'skill_preparation_failed' };
+      }
+      let finalization: Promise<void> | undefined;
+      const finalizeOnce = (error?: Error): Promise<void> => {
+        finalization ??= prepared.finalize(error);
+        return finalization;
+      };
+      return {
+        prepared: {
+          executionPrompt: prepared.prompt,
+          ...(prepared.options?.modelOverride !== undefined
+            ? { modelOverride: prepared.options.modelOverride }
+            : {}),
+          skillInvocation,
+          finalize: finalizeOnce,
+        },
+      };
+    } catch (error) {
+      console.warn(
+        `[real-session ${this.sessionId}] explicit Skill preparation failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return { rejectionReason: 'skill_preparation_failed' };
+    }
+  }
+
   async send(
     prompt: string,
     artifacts?: readonly InputArtifact[],
     options?: SendOptions,
   ): Promise<SendResult> {
-    if (this.disposed) {
-      throw new Error(`[real-session ${this.sessionId}] already disposed`);
+    const admissionAbort = new AbortController();
+    this.sendAdmissionAborts.add(admissionAbort);
+    const predecessor = this.sendAdmissionTail;
+    let releaseReservation!: () => void;
+    const reservation = new Promise<void>((resolve) => {
+      releaseReservation = resolve;
+    });
+    this.sendAdmissionTail = predecessor.then(() => reservation);
+    await predecessor;
+    try {
+      return await this.sendWithAdmissionReservation(
+        prompt,
+        artifacts,
+        options,
+        admissionAbort.signal,
+      );
+    } finally {
+      this.sendAdmissionAborts.delete(admissionAbort);
+      releaseReservation();
     }
+  }
 
+  private async sendWithAdmissionReservation(
+    prompt: string,
+    artifacts?: readonly InputArtifact[],
+    options?: SendOptions,
+    admissionSignal?: AbortSignal,
+  ): Promise<SendResult> {
+    const queueMode = options?.queueMode ?? 'interrupt';
+    if (admissionSignal?.aborted || this.disposed) {
+      return { accepted: false, reason: 'cancelled_before_admission', queueMode };
+    }
     // Capture the embedded/Partner permission authority at the synchronous
     // admission boundary. In particular, ensureLegacyOwner() may wait on
     // another process; a settings change during that wait belongs to the next
     // embedded run. Daemon Coder intentionally ignores this snapshot and keeps
     // Runtime settings live for the next concrete tool call.
     const runPermissionMode = this.permissionMode;
+    const explicitSkillReference = await this.resolveExplicitSkillReference(prompt);
+    if (admissionSignal?.aborted || this.disposed) {
+      return { accepted: false, reason: 'cancelled_before_admission', queueMode };
+    }
+    if (explicitSkillReference?.rejectionReason !== undefined) {
+      return { accepted: false, reason: explicitSkillReference.rejectionReason, queueMode };
+    }
+    if (explicitSkillReference !== undefined && !explicitSkillReference.registered) {
+      return { accepted: false, reason: 'skill_not_found', queueMode };
+    }
 
     if (this.surface === 'code' && !runtimeHostAdapter.isRuntimeSelected()) {
       // Keep the admission gate held until the embedded owner has been proven.
       // Otherwise send() can report acceptance and only fail later inside the
       // fire-and-forget stream task after a failed owner recovery.
       await runtimeHostAdapter.ensureLegacyOwner();
+      if (admissionSignal?.aborted || this.disposed) {
+        return { accepted: false, reason: 'cancelled_before_admission', queueMode };
+      }
     }
 
     if (this.surface === 'code' && runtimeHostAdapter.isRuntimeSelected()) {
-      const queueMode = options?.queueMode ?? 'interrupt';
       let activeRunId: string | undefined;
       try {
         await runtimeHostAdapter.initialize();
@@ -532,6 +787,9 @@ export class RealKodaXSession implements ManagedSession {
         activeRunId =
           runtimeHostAdapter.activeRunId(this.sessionId) ??
           (await runtimeHostAdapter.findActiveRunId(this.sessionId));
+        if (admissionSignal?.aborted || this.disposed) {
+          return { accepted: false, reason: 'cancelled_before_admission', queueMode };
+        }
         if (this.currentAbort || activeRunId) {
           if (!activeRunId) {
             throw new Error('The Coder daemon is still accepting the current run; retry shortly.');
@@ -540,6 +798,9 @@ export class RealKodaXSession implements ManagedSession {
           // missing or stale. Reconcile before attaching a continuation; a fresh run
           // performs the same one-time reconciliation at its execution boundary.
           await this.syncRuntimeSessionSettings();
+          if (admissionSignal?.aborted || this.disposed) {
+            return { accepted: false, reason: 'cancelled_before_admission', queueMode };
+          }
         }
       } catch (error: unknown) {
         // This catch deliberately ends before submitInput()/startRun(). Retrying or translating an
@@ -551,6 +812,9 @@ export class RealKodaXSession implements ManagedSession {
         throw error;
       }
       if (this.currentAbort || activeRunId) {
+        if (explicitSkillReference !== undefined) {
+          return { accepted: false, reason: 'skill_requires_idle', queueMode };
+        }
         if (!activeRunId) {
           throw new Error('The Coder daemon is still accepting the current run; retry shortly.');
         }
@@ -593,6 +857,28 @@ export class RealKodaXSession implements ManagedSession {
           queueMode,
         };
       }
+      const skillPreparation =
+        explicitSkillReference !== undefined
+          ? await this.prepareExplicitSkillExecution(
+              prompt,
+              explicitSkillReference,
+              runPermissionMode,
+              admissionSignal,
+            )
+          : undefined;
+      if (admissionSignal?.aborted || this.disposed) {
+        await skillPreparation?.prepared?.finalize(
+          new Error('Session send cancelled before admission'),
+        );
+        return { accepted: false, reason: 'cancelled_before_admission', queueMode };
+      }
+      if (skillPreparation?.rejectionReason !== undefined) {
+        return {
+          accepted: false,
+          reason: skillPreparation.rejectionReason,
+          queueMode,
+        };
+      }
       const admission = this.startRun(
         prompt,
         artifacts,
@@ -600,6 +886,7 @@ export class RealKodaXSession implements ManagedSession {
         runPermissionMode,
         options?.operationId,
         true,
+        skillPreparation?.prepared,
       );
       const outcome = admission ? await admission.promise : 'admitted';
       if (outcome === 'not_admitted' && admission?.rejectionReason !== undefined) {
@@ -620,12 +907,14 @@ export class RealKodaXSession implements ManagedSession {
     // main-thread queue for safe mid-turn drains, while after-turn stays in
     // Space's per-session queue until this turn settles.
     if (this.currentAbort) {
+      if (explicitSkillReference !== undefined) {
+        return { accepted: false, reason: 'skill_requires_idle', queueMode };
+      }
       if (artifacts && artifacts.length > 0) {
         throw new Error(
           'Cannot attach images while a turn is running; wait for the current response to finish, then paste again.',
         );
       }
-      const queueMode = options?.queueMode ?? 'interrupt';
       const queueId = await enqueueUserPrompt(
         this.sessionId,
         prompt,
@@ -635,12 +924,36 @@ export class RealKodaXSession implements ManagedSession {
       this.lastActivityAt = Date.now();
       return { accepted: true, queued: true, queueId, queueMode };
     }
+    const skillPreparation =
+      explicitSkillReference !== undefined
+        ? await this.prepareExplicitSkillExecution(
+            prompt,
+            explicitSkillReference,
+            runPermissionMode,
+            admissionSignal,
+          )
+        : undefined;
+    if (admissionSignal?.aborted || this.disposed) {
+      await skillPreparation?.prepared?.finalize(
+        new Error('Session send cancelled before admission'),
+      );
+      return { accepted: false, reason: 'cancelled_before_admission', queueMode };
+    }
+    if (skillPreparation?.rejectionReason !== undefined) {
+      return {
+        accepted: false,
+        reason: skillPreparation.rejectionReason,
+        queueMode,
+      };
+    }
     this.startRun(
       prompt,
       artifacts,
       options?.promptOverlay,
       runPermissionMode,
       options?.operationId,
+      false,
+      skillPreparation?.prepared,
     );
     return { accepted: true, queued: false };
   }
@@ -651,14 +964,12 @@ export class RealKodaXSession implements ManagedSession {
   ): readonly RuntimeInput[] {
     return [
       { type: 'text', text: prompt },
-      ...(artifacts ?? []).map(
-        (artifact): RuntimeInput => ({
-          type: 'image',
-          path: artifact.path,
-          mediaType: artifact.mediaType,
-          source: artifact.source,
-        }),
-      ),
+      ...(artifacts ?? []).map((artifact): RuntimeInput => ({
+        type: 'image',
+        path: artifact.path,
+        mediaType: artifact.mediaType,
+        source: artifact.source,
+      })),
     ];
   }
 
@@ -669,6 +980,7 @@ export class RealKodaXSession implements ManagedSession {
     runPermissionMode: PermissionMode = this.permissionMode,
     operationId?: string,
     restoreDraftOnBoundaryConflict = false,
+    explicitSkill?: PreparedExplicitSkillExecution,
   ): RuntimeAdmissionState | null {
     const abort = new AbortController();
     const runtimeAdmission =
@@ -678,6 +990,7 @@ export class RealKodaXSession implements ManagedSession {
     this.currentAbort = abort;
     this.runtimeAdmission = runtimeAdmission;
     this.lastActivityAt = Date.now();
+    let runFailure: Error | undefined;
 
     void this.runRealStream(
       prompt,
@@ -687,8 +1000,13 @@ export class RealKodaXSession implements ManagedSession {
       runtimeAdmission,
       runPermissionMode,
       operationId,
+      explicitSkill,
     )
+      .then((failure) => {
+        runFailure = failure;
+      })
       .catch((error: unknown) => {
+        runFailure = error instanceof Error ? error : new Error(String(error));
         if (this.disposed || abort.signal.aborted) return;
         const wrapped = wrapSdkError(error);
         console.warn(
@@ -704,7 +1022,16 @@ export class RealKodaXSession implements ManagedSession {
           ...(wrapped.action ? { action: wrapped.action } : {}),
         });
       })
-      .finally(() => {
+      .finally(async () => {
+        if (explicitSkill !== undefined) {
+          await explicitSkill.finalize(runFailure).catch((error: unknown) => {
+            console.warn(
+              `[real-session ${this.sessionId}] Skill finalization failed: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+          });
+        }
         if (this.currentAbort === abort) this.currentAbort = null;
         if (this.runtimeAdmission === runtimeAdmission) this.runtimeAdmission = null;
         if (!this.disposed && !abort.signal.aborted) {
@@ -805,6 +1132,8 @@ export class RealKodaXSession implements ManagedSession {
   async cancel(
     runId?: string,
   ): Promise<SpaceRuntimeRunStopReceiptT | LocalSessionCancelOutcome | void> {
+    const hadPendingAdmission = this.sendAdmissionAborts.size > 0;
+    for (const admissionAbort of this.sendAdmissionAborts) admissionAbort.abort();
     const currentAbort = this.currentAbort;
     const admission =
       currentAbort !== null && this.runtimeAdmission?.abort === currentAbort
@@ -816,6 +1145,9 @@ export class RealKodaXSession implements ManagedSession {
     }
     currentAbort?.abort();
     if (runtimeCoder) {
+      if (currentAbort === null && hadPendingAdmission) {
+        return { kind: 'local_cancelled_before_admission' };
+      }
       if (admission?.phase === 'preparing') {
         this.settleRuntimeAdmission(admission, 'not_admitted', true);
         if (this.currentAbort === currentAbort) this.currentAbort = null;
@@ -867,6 +1199,7 @@ export class RealKodaXSession implements ManagedSession {
     const hadCurrentRun = this.currentAbort !== null;
     if (abortRuntimeRun) this.abortRuntimeRunOnDispose = true;
     this.disposed = true;
+    for (const admissionAbort of this.sendAdmissionAborts) admissionAbort.abort();
     if (this.currentAbort) this.currentAbort.abort();
     if (
       abortRuntimeRun &&
@@ -973,7 +1306,8 @@ export class RealKodaXSession implements ManagedSession {
     promptOverlay?: string,
     admission?: RuntimeAdmissionState | null,
     operationId?: string,
-  ): Promise<void> {
+    explicitSkill?: PreparedExplicitSkillExecution,
+  ): Promise<Error | undefined> {
     const sid = this.sessionId;
     try {
       await runtimeHostAdapter.initialize();
@@ -995,6 +1329,9 @@ export class RealKodaXSession implements ManagedSession {
         reasoningMode: this.reasoningMode,
         agentMode: this.agentMode,
         ...(this.model !== undefined ? { model: this.model } : {}),
+        ...(explicitSkill?.modelOverride !== undefined
+          ? { modelOverride: explicitSkill.modelOverride }
+          : {}),
         ...(this.thinking !== undefined ? { thinking: this.thinking } : {}),
         compaction: runConfig.compaction,
         sandbox: runConfig.sandbox,
@@ -1009,6 +1346,14 @@ export class RealKodaXSession implements ManagedSession {
           excludeTools: ['exit_plan_mode'],
           ...(promptOverlay ? { promptOverlay } : {}),
           ...(skillsPrompt ? { skillsPrompt } : {}),
+          ...(explicitSkill !== undefined
+            ? {
+                // Keep the exact slash text as the durable user record. The separately prepared
+                // prompt below is model-safe and carries the trusted expanded Skill context.
+                rawUserInput: prompt,
+                skillInvocation: explicitSkill.skillInvocation,
+              }
+            : {}),
         },
         selfManual,
         workflowHostPolicy: buildWorkflowHostPolicy(workflowPolicy),
@@ -1017,12 +1362,12 @@ export class RealKodaXSession implements ManagedSession {
       };
       if (signal.aborted) {
         this.settleRuntimeAdmission(admission, 'not_admitted', !this.disposed);
-        return;
+        return new Error('Session run cancelled before daemon admission');
       }
       if (admission) admission.phase = 'starting';
       const startInput = {
         sessionId: sid,
-        input: this.buildRuntimeInput(prompt, artifacts),
+        input: this.buildRuntimeInput(explicitSkill?.executionPrompt ?? prompt, artifacts),
         mode: 'managed_task' as const,
         options,
         ...(operationId !== undefined ? { operation: { operationId } } : {}),
@@ -1070,11 +1415,11 @@ export class RealKodaXSession implements ManagedSession {
       ) {
         await runtimeHostAdapter.abortSessionRun(sid).catch(() => false);
       }
-      await handle.result;
+      return runtimeTerminalFailure(await handle.result);
     } catch (error) {
       if (signal.aborted || this.disposed) {
         this.settleRuntimeAdmission(admission, 'not_admitted', signal.aborted && !this.disposed);
-        return;
+        return error instanceof Error ? error : new Error(String(error));
       }
       if (
         admission !== undefined &&
@@ -1086,11 +1431,13 @@ export class RealKodaXSession implements ManagedSession {
       ) {
         admission.rejectionReason = 'session_data_changed';
         this.settleRuntimeAdmission(admission, 'not_admitted');
-        return;
+        return error instanceof Error ? error : new Error(String(error));
       }
       this.settleRuntimeAdmission(admission, 'not_admitted');
       const retryAfterMs = await extractRetryAfterMs(error);
-      if (signal.aborted || this.disposed) return;
+      if (signal.aborted || this.disposed) {
+        return error instanceof Error ? error : new Error(String(error));
+      }
       const wrapped = wrapSdkError(
         error,
         retryAfterMs !== undefined ? { retryAfterMs } : undefined,
@@ -1109,6 +1456,7 @@ export class RealKodaXSession implements ManagedSession {
         ...(wrapped.action ? { action: wrapped.action } : {}),
         ...(retryAvailableAt !== undefined ? { retryAvailableAt } : {}),
       });
+      return error instanceof Error ? error : new Error(String(error));
     } finally {
       this.settleRuntimeAdmission(admission, 'not_admitted', signal.aborted && !this.disposed);
     }
@@ -1122,17 +1470,18 @@ export class RealKodaXSession implements ManagedSession {
     runtimeAdmission?: RuntimeAdmissionState | null,
     runPermissionMode: PermissionMode = this.permissionMode,
     operationId?: string,
-  ): Promise<void> {
+    explicitSkill?: PreparedExplicitSkillExecution,
+  ): Promise<Error | undefined> {
     if (this.surface === 'code' && runtimeHostAdapter.isRuntimeSelected()) {
-      await this.runCoderDaemon(
+      return this.runCoderDaemon(
         prompt,
         signal,
         artifacts,
         promptOverlay,
         runtimeAdmission,
         operationId,
+        explicitSkill,
       );
-      return;
     }
     if (this.surface === 'code') {
       await runtimeHostAdapter.ensureLegacyOwner();
@@ -1204,6 +1553,7 @@ export class RealKodaXSession implements ManagedSession {
     //     AMA 走外层 catch、SA 走 await 之后的补发——两条路径互斥，且 latch 防重发。
     let pendingTerminalError: unknown = null;
     let terminalEmitted = false;
+    let runFinalizationError: Error | undefined;
     const emitTerminalError = async (err: unknown): Promise<void> => {
       if (terminalEmitted || isStopped()) return;
       terminalEmitted = true;
@@ -2052,7 +2402,7 @@ export class RealKodaXSession implements ManagedSession {
             retriable: true,
           });
         }
-        return;
+        return new Error('Session run cancelled before embedded admission');
       }
       try {
         const bootstrap = await bootstrapAutoMode({
@@ -2247,6 +2597,12 @@ export class RealKodaXSession implements ManagedSession {
         ...(combinedPromptOverlay ? { promptOverlay: combinedPromptOverlay } : {}),
         // skillsPrompt 仅在非空时挂——避免在 SDK 视角注入空字符串字段。
         ...(skillsPrompt ? { skillsPrompt } : {}),
+        ...(explicitSkill !== undefined
+          ? {
+              rawUserInput: prompt,
+              skillInvocation: explicitSkill.skillInvocation,
+            }
+          : {}),
         // OC-31 v0.1.9 — 用户粘贴 / 拖拽的图片走这条路径。SDK
         // buildPromptMessageContent(prompt, inputArtifacts) 会自动把每张图拼成
         // multimodal content block ({type:'image', path, mediaType})。空数组就不传
@@ -2309,6 +2665,9 @@ export class RealKodaXSession implements ManagedSession {
         agentMode: this.agentMode,
         // SDK 0.7.42 wired (P0): /model + /thinking 设置在下一 turn 生效
         ...(this.model !== undefined ? { model: this.model } : {}),
+        ...(explicitSkill?.modelOverride !== undefined
+          ? { modelOverride: explicitSkill.modelOverride }
+          : {}),
         ...(this.thinking !== undefined ? { thinking: this.thinking } : {}),
         compaction: runConfig.compaction,
         sandbox: runConfig.sandbox,
@@ -2385,13 +2744,14 @@ export class RealKodaXSession implements ManagedSession {
               runWithSessionQueueScope(sid, () =>
                 runtimeHostAdapter.startManagedRun({
                   sessionId: sid,
-                  prompt,
+                  prompt: explicitSkill?.executionPrompt ?? prompt,
                   mode: 'managed_task',
                   options,
                 }),
               ),
           );
           const outcome = await handle.result;
+          runFinalizationError = runtimeTerminalFailure(outcome);
           if ((outcome.phase === 'failed' || outcome.phase === 'interrupted') && !signal.aborted) {
             await emitTerminalError(
               outcome.error ??
@@ -2413,6 +2773,10 @@ export class RealKodaXSession implements ManagedSession {
             );
           } else if (pendingTerminalError !== null && !signal.aborted) {
             await emitTerminalError(pendingTerminalError);
+            runFinalizationError =
+              pendingTerminalError instanceof Error
+                ? pendingTerminalError
+                : new Error(String(pendingTerminalError));
           }
         } else {
           // Partner inline driver, or the explicitly selected legacy Coder rollback driver.
@@ -2423,16 +2787,24 @@ export class RealKodaXSession implements ManagedSession {
               projectRoot: this.projectRoot,
               permissionMode: runPermissionMode,
             },
-            () => runWithSessionQueueScope(sid, () => sdk.runManagedTask(options, prompt)),
+            () =>
+              runWithSessionQueueScope(sid, () =>
+                sdk.runManagedTask(options, explicitSkill?.executionPrompt ?? prompt),
+              ),
           );
           // SA errors resolve success:false while AMA errors throw; the shared callback
           // latch normalizes both paths to one Space terminal event.
           if (pendingTerminalError !== null && !signal.aborted) {
             await emitTerminalError(pendingTerminalError);
+            runFinalizationError =
+              pendingTerminalError instanceof Error
+                ? pendingTerminalError
+                : new Error(String(pendingTerminalError));
           }
         }
       } catch (err) {
         if (err instanceof DOMException && err.name === 'AbortError') {
+          runFinalizationError = err;
           // 用户取消：必须用 this.emit 而非 emitLive——此刻 signal.aborted=true，emitLive 的
           // isStopped() 会把"cancelled"通知吞掉。但 disposed 时 channel 已关，无意义且应跳过。
           // 同时置 terminalEmitted，与 emitTerminalError 共享同一 latch，杜绝任何重发。
@@ -2451,10 +2823,15 @@ export class RealKodaXSession implements ManagedSession {
             );
           }
         } else if (!signal.aborted) {
+          runFinalizationError = err instanceof Error ? err : new Error(String(err));
           // AMA 路径：SDK catch 已先调过 onError(暂存 err)，这里 throw 上来。统一走
           // emitTerminalError 收口（内部 latch 去重 + wrapSdkError 富文案 + retry 倒计时）。
           await emitTerminalError(err);
         } else if (pendingTerminalError !== null && !terminalEmitted) {
+          runFinalizationError =
+            pendingTerminalError instanceof Error
+              ? pendingTerminalError
+              : new Error(String(pendingTerminalError));
           // 竞态：SDK error 与用户 cancel 几乎同时发生（signal 在 throw 前已 aborted）。
           // 终止事件不再发（host 端在 s.cancel() 前已推过 cancelled，UI 已停），但不能让
           // SDK error 彻底无声蒸发——落一条 main 日志便于排查（review HIGH-2）。
@@ -2476,5 +2853,6 @@ export class RealKodaXSession implements ManagedSession {
         }
       }
     }
+    return runFinalizationError;
   }
 }

@@ -21,6 +21,94 @@ import type { SkillDynamicContextExecutor } from '@kodax-ai/kodax/skills';
 
 const EXEC_TIMEOUT_MS = 30_000;
 const MAX_STDOUT_BYTES = 1_048_576; // 1 MB
+const PROCESS_TREE_TERMINATION_TIMEOUT_MS = 5_000;
+
+function admissionCancelledError(): Error {
+  return new Error('[skill dynamic-context cancelled before admission]');
+}
+
+function throwIfAdmissionCancelled(signal?: AbortSignal): void {
+  if (signal?.aborted) throw admissionCancelledError();
+}
+
+/**
+ * Terminate an approved dynamic-context command and its descendants before the
+ * surrounding Skill admission settles. Windows needs taskkill /T because
+ * ChildProcess.kill() only terminates the intermediate shell.
+ */
+export async function terminateDynamicContextProcessTree(
+  child: Pick<ReturnType<typeof spawn>, 'pid' | 'kill'>,
+): Promise<void> {
+  if (process.platform !== 'win32') {
+    try {
+      if (child.pid !== undefined) {
+        process.kill(-child.pid, 'SIGKILL');
+      } else if (!child.kill('SIGKILL')) {
+        throw new Error('spawned process has no terminable PID');
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+    }
+    return;
+  }
+
+  if (child.pid === undefined) {
+    throw new Error('spawned Windows process has no PID for tree termination');
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const helper = spawn('taskkill', ['/F', '/T', '/PID', String(child.pid)], {
+      windowsHide: true,
+      stdio: 'ignore',
+    });
+    const finish = (error?: Error): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      helper.removeAllListeners();
+      if (error) reject(error);
+      else resolve();
+    };
+    const deadline = setTimeout(() => {
+      helper.kill('SIGKILL');
+      finish(
+        new Error(
+          `Windows process-tree termination did not settle within ${PROCESS_TREE_TERMINATION_TIMEOUT_MS}ms`,
+        ),
+      );
+    }, PROCESS_TREE_TERMINATION_TIMEOUT_MS);
+    helper.once('error', (error) => {
+      finish(new Error(`Windows process-tree termination failed to start: ${error.message}`));
+    });
+    helper.once('close', (code) => {
+      finish(
+        code === 0
+          ? undefined
+          : new Error(`Windows process-tree termination failed with taskkill exit ${code}`),
+      );
+    });
+  });
+}
+
+async function awaitWithAdmissionAbort<T>(pending: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (signal === undefined) return pending;
+  throwIfAdmissionCancelled(signal);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => reject(admissionCancelledError());
+    signal.addEventListener('abort', onAbort, { once: true });
+    pending.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
+  });
+}
 
 type AutoGuardrailBeforeTool = NonNullable<AutoModeToolGuardrail['beforeTool']>;
 type AutoGuardrailContext = Parameters<AutoGuardrailBeforeTool>[1];
@@ -59,10 +147,13 @@ export function createSkillDynamicContextExecutor(opts: {
   readonly sessionId: string;
   readonly permissionMode: PermissionMode;
   readonly surface?: Surface;
+  /** Cancels authorization and terminates a spawned command before Run admission. */
+  readonly signal?: AbortSignal;
   /** Run-owned guardrail authorization. Omit only when the broker is the owner. */
   readonly authorize?: (command: string, cwd: string, toolId: string) => Promise<boolean>;
 }): SkillDynamicContextExecutor {
   return async (command, cwd) => {
+    throwIfAdmissionCancelled(opts.signal);
     // Partner is intentionally shell-free. Dynamic-context commands execute
     // inside Skill expansion rather than as ordinary tools, so enforce the
     // surface boundary here even if a future caller forgets `disable: true`.
@@ -72,7 +163,10 @@ export function createSkillDynamicContextExecutor(opts: {
 
     const toolId = randomUUID();
     if (opts.authorize) {
-      const allowed = await opts.authorize(command, cwd, toolId);
+      const allowed = await awaitWithAdmissionAbort(
+        opts.authorize(command, cwd, toolId),
+        opts.signal,
+      );
       if (!allowed) {
         throw new Error(`[skill dynamic-context denied by Auto guardrail] ${command}`);
       }
@@ -87,11 +181,12 @@ export function createSkillDynamicContextExecutor(opts: {
         mode: opts.permissionMode,
         surface: opts.surface,
       };
-      const result = await permissionBroker.request(req);
+      const result = await awaitWithAdmissionAbort(permissionBroker.request(req), opts.signal);
       if (result.decision === 'deny') {
         throw new Error(`[skill dynamic-context denied by user] ${command}`);
       }
     }
+    throwIfAdmissionCancelled(opts.signal);
 
     // 2) 用户批准 → spawn 命令。shell:true 使用 OS 默认 shell,支持 piped/redirect 命令。
     //    用户已经看到完整命令 string,trust 转移成功 (与 SDK 旧版 execSync 行为一致)。
@@ -105,29 +200,56 @@ export function createSkillDynamicContextExecutor(opts: {
         cwd,
         shell: true,
         windowsHide: true,
+        // On POSIX, a separate process group lets cancellation kill the shell and every
+        // descendant it launched. Killing only the shell PID leaves approved commands
+        // running after the surrounding Skill admission has been cancelled.
+        detached: process.platform !== 'win32',
         // env: 显式空对象 — 不泄 KODAX_ / ANTHROPIC_ 等敏感 env 给用户授权的命令。
         // PATH 仍需要才能找 git / node 等,所以保留 PATH; 其他全部清掉。
         env: { PATH: process.env.PATH ?? '' },
       });
+
+      const clearLifecycle = (): void => {
+        clearTimeout(timer);
+        opts.signal?.removeEventListener('abort', onAbort);
+      };
+      const onAbort = (): void => {
+        if (resolved) return;
+        resolved = true;
+        clearLifecycle();
+        void terminateDynamicContextProcessTree(child).then(
+          () => reject(admissionCancelledError()),
+          (error: unknown) =>
+            reject(
+              new Error('[skill dynamic-context cancellation could not terminate process tree]', {
+                cause: error,
+              }),
+            ),
+        );
+      };
 
       const timer = setTimeout(() => {
         if (resolved) return;
         resolved = true;
         // Windows: child.kill 只 kill shell (cmd.exe),它 spawn 的真实 git/find/etc 不在
         // job object 里,会成为孤儿继续跑。用 taskkill /F /T /PID 杀整棵进程树 (审查 H1)。
-        // POSIX: 默认 detached=false,child 与 parent 同 process group,直接 kill PID 即可。
-        try {
-          if (process.platform === 'win32' && child.pid !== undefined) {
-            // fire-and-forget; taskkill 失败就退回 child.kill (单进程,杀不掉 shell 子孙)
-            spawn('taskkill', ['/F', '/T', '/PID', String(child.pid)], { windowsHide: true });
-          } else {
-            child.kill('SIGKILL');
-          }
-        } catch {
-          /* 杀进程失败一般是 race (已退出); 不再重试 */
-        }
-        reject(new Error(`[skill dynamic-context timeout after ${EXEC_TIMEOUT_MS}ms] ${command}`));
+        // POSIX: child owns a dedicated process group, so the negative PID kills the tree.
+        clearLifecycle();
+        void terminateDynamicContextProcessTree(child).then(
+          () =>
+            reject(
+              new Error(`[skill dynamic-context timeout after ${EXEC_TIMEOUT_MS}ms] ${command}`),
+            ),
+          (error: unknown) =>
+            reject(
+              new Error('[skill dynamic-context timeout could not terminate process tree]', {
+                cause: error,
+              }),
+            ),
+        );
       }, EXEC_TIMEOUT_MS);
+      opts.signal?.addEventListener('abort', onAbort, { once: true });
+      if (opts.signal?.aborted) onAbort();
 
       child.stdout?.on('data', (chunk: Buffer) => {
         if (truncated) return;
@@ -147,14 +269,14 @@ export function createSkillDynamicContextExecutor(opts: {
       child.on('error', (err) => {
         if (resolved) return;
         resolved = true;
-        clearTimeout(timer);
+        clearLifecycle();
         reject(new Error(`[skill dynamic-context spawn error] ${err.message}`));
       });
 
       child.on('close', (code) => {
         if (resolved) return;
         resolved = true;
-        clearTimeout(timer);
+        clearLifecycle();
         if (code !== 0) {
           const errTail = stderr.toString('utf8').slice(-512);
           reject(

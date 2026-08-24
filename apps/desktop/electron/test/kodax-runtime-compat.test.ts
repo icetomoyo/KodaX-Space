@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
-import { access, mkdtemp, rm } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -8,7 +9,7 @@ import test from 'node:test';
 
 const PROBE_MARKER = 'KODAX_RUNTIME_PROBE=';
 const PROBE_TIMEOUT_MS = 30_000;
-const EXPECTED_KODAX_VERSION = '0.7.94';
+const EXPECTED_KODAX_VERSION = '0.7.95';
 const INSTALLED_KODAX_VERSION = (
   createRequire(import.meta.url)('@kodax-ai/kodax/package.json') as { readonly version: string }
 ).version;
@@ -339,7 +340,7 @@ const SHARED_DAEMON_REQUIREMENTS = {
   sessionAdmission: 1,
   completeObservationSnapshot: 1,
   contextCompaction: 3,
-  conversationHistory: 1,
+  conversationHistory: 2,
   transcriptPaging: 1,
   transcriptSearch: 1,
   connectionLifecycle: 1,
@@ -353,7 +354,7 @@ const SHARED_DAEMON_REQUIREMENTS = {
   actorSettlementConvergence: 2,
   liveOutputSegments: 1,
   runtimeEventCoalescing: 1,
-  sandboxRuntime: 4,
+  sandboxRuntime: 5,
   sessionEventJournal: 1,
   integrationConfigResilience: 1,
   runtimeAutoModeGuardrail: 4,
@@ -702,7 +703,7 @@ try {
       hardDispose: true,
       learningCenter: 1,
       actorControlPlane: 1,
-      conversationHistory: 1,
+      conversationHistory: 2,
     },
     homeDir,
     sessionsDir: path.join(homeDir, 'sessions'),
@@ -925,7 +926,8 @@ try {
       diagnosticErrorCodes: sessionDiagnostics.run.errors.map((error) => error.code),
     },
     conversationHistory: {
-      capability: runtime.capabilities.conversationHistory?.version === 1,
+      sdkCapability: KODAX_RUNTIME_SDK_CAPABILITIES.conversationHistory === 2,
+      capability: runtime.capabilities.conversationHistory?.version === 2,
       directAvailable: conversation !== null,
       pageAvailable: conversationPage !== null,
       directStatus: conversation?.status,
@@ -963,8 +965,8 @@ try {
       runtime: runtime.capabilities.actorSettlementConvergence?.version === 2,
     },
     sandboxRuntime: {
-      sdk: KODAX_RUNTIME_SDK_CAPABILITIES.sandboxRuntime === 4,
-      runtime: runtime.capabilities.sandboxRuntime?.version === 4,
+      sdk: KODAX_RUNTIME_SDK_CAPABILITIES.sandboxRuntime === 5,
+      runtime: runtime.capabilities.sandboxRuntime?.version === 5,
     },
     sessionEventJournal: {
       sdk: KODAX_RUNTIME_SDK_CAPABILITIES.sessionEventJournal === 1,
@@ -1275,6 +1277,105 @@ test('installed KodaX version matches the exact Space dependency pin', () => {
 });
 
 test(
+  `KodaX ${EXPECTED_KODAX_VERSION} persists raw explicit-Skill input instead of its execution overlay`,
+  { timeout: 20_000 },
+  async () => {
+    const homeDir = await mkdtemp(path.join(tmpdir(), 'kodax-space-raw-skill-'));
+    const credentialName = 'KODAX_SPACE_RAW_SKILL_PROBE_KEY';
+    const previousCredential = process.env[credentialName];
+    const server = createServer((request, response) => {
+      request.resume();
+      request.once('end', () => {
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.end(
+          `data: ${JSON.stringify({
+            id: 'chatcmpl-space-raw-skill',
+            object: 'chat.completion.chunk',
+            created: 0,
+            model: 'space-probe-model',
+            choices: [
+              {
+                index: 0,
+                delta: { role: 'assistant', content: 'done' },
+                finish_reason: 'stop',
+              },
+            ],
+            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+          })}\n\ndata: [DONE]\n\n`,
+        );
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    assert.ok(address !== null && typeof address === 'object');
+    process.env[credentialName] = 'test-only';
+    await mkdir(path.join(homeDir, '.kodax'), { recursive: true });
+    await writeFile(
+      path.join(homeDir, '.kodax', 'config.json'),
+      JSON.stringify({
+        provider: 'space-raw-skill-probe',
+        model: 'space-probe-model',
+        repoIntelligenceMode: 'off',
+        customProviders: [
+          {
+            name: 'space-raw-skill-probe',
+            protocol: 'openai',
+            baseUrl: `http://127.0.0.1:${address.port}/v1`,
+            apiKeyEnv: credentialName,
+            model: 'space-probe-model',
+            reasoning: 'none',
+          },
+        ],
+      }),
+    );
+
+    const sdk = await import('@kodax-ai/kodax/runtime');
+    let runtime: Awaited<ReturnType<typeof sdk.createKodaXRuntime>> | undefined;
+    try {
+      runtime = await sdk.createKodaXRuntime({
+        mode: 'embedded',
+        isolation: 'inline',
+        homeDir,
+        sessionsDir: path.join(homeDir, 'sessions'),
+      });
+      const session = await runtime.sessions.create({
+        title: 'Raw explicit Skill probe',
+        projectPath: process.cwd(),
+        surface: 'code',
+        tag: 'code',
+      });
+      const rawUserInput = '/code-review src/a.ts';
+      const executionPrompt = 'User request: expanded private execution overlay';
+      const handle = await runtime.runs.start({
+        sessionId: session.id,
+        prompt: executionPrompt,
+        mode: 'coding',
+        options: {
+          provider: 'space-raw-skill-probe',
+          model: 'space-probe-model',
+          maxIter: 1,
+          agentMode: 'sa',
+          context: { rawUserInput, disableAutoTaskReroute: true },
+        },
+      });
+      assert.equal((await handle.result).phase, 'completed');
+      const transcript = await runtime.sessions.transcript(session.id);
+      assert.ok(transcript);
+      const userMessages = transcript.messages.filter((message) => message.role === 'user');
+      assert.equal(userMessages.length, 1);
+      assert.equal(userMessages[0]?.content, rawUserInput);
+      assert.equal(JSON.stringify(transcript.messages).includes(executionPrompt), false);
+    } finally {
+      await runtime?.close();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await rm(homeDir, { recursive: true, force: true });
+      if (previousCredential === undefined) delete process.env[credentialName];
+      else process.env[credentialName] = previousCredential;
+    }
+  },
+);
+
+test(
   `KodaX ${INSTALLED_KODAX_VERSION} Runtime satisfies Worker and external-agent compatibility`,
   {
     timeout: PROBE_TIMEOUT_MS + 5_000,
@@ -1298,6 +1399,7 @@ test(
       diagnosticErrorCodes: ['run_control_unknown'],
     });
     assert.deepEqual(result.conversationHistory, {
+      sdkCapability: true,
       capability: true,
       directAvailable: true,
       pageAvailable: true,
@@ -1371,7 +1473,7 @@ test(`KodaX ${EXPECTED_KODAX_VERSION} exposes fail-closed standalone command con
   const { KODAX_ASRT_VERSION, doctorKodaXSandbox, getKodaXSandboxCapability, runKodaXSandboxed } =
     await import('@kodax-ai/kodax/sandbox');
   const capability = getKodaXSandboxCapability();
-  assert.equal(capability.version, 4);
+  assert.equal(capability.version, 5);
   assert.equal(capability.asrtVersion, KODAX_ASRT_VERSION);
   assert.equal(capability.genericCommandExecution, true);
   assert.deepEqual(capability.controls, [

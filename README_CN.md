@@ -13,7 +13,7 @@
   <a href="https://github.com/icetomoyo/KodaX-Space/releases/latest"><img alt="release" src="https://img.shields.io/github/v/release/icetomoyo/KodaX-Space?style=flat-square"></a>
   <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-KAI--FCL-orange?style=flat-square"></a>
   <a href="https://github.com/icetomoyo/KodaX-Space/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/icetomoyo/KodaX-Space/ci.yml?style=flat-square&label=ci"></a>
-  <img alt="KodaX SDK" src="https://img.shields.io/badge/KodaX_SDK-0.7.93-2ea44f?style=flat-square">
+  <img alt="KodaX SDK" src="https://img.shields.io/badge/KodaX_SDK-0.7.95-2ea44f?style=flat-square">
   <img alt="platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-34495e?style=flat-square">
 </p>
 
@@ -90,9 +90,11 @@ npm run dev
 
 ## 当前源码基线
 
-**`main` 使用 npm Registry 正式发布且完整性锁定的 KodaX 0.7.93，并显式协商 Runtime 安全能力，不通过语义版本号推断支持。** root/Desktop manifest、lockfile、物理安装与打包 ASAR 均锁定正式 Registry URL/SRI。Coder 默认连接 profile-scoped shared daemon；完整退出路径要求 SDK 提供 `runtimeExitSettlement:1`，daemon 连接要求 `sandboxRuntime:4`、`crashOutcomeModel:2` 与 `actorSettlementConvergence:2`。F141 的 Daemon / Embedded 开关仍由安全 admission gate 控制，必须先等待运行中入口、交互、队列和其他客户端安全收敛。Space 保留有界 Actor/Turn 投影、精确 history/live 对齐、Runtime-owned interrupt finalization、完整物理请求用量诊断、提示词缓存亲和与 CLI 缓存用量归一化。Partner 继续由 Space embedded-inline 持有；MCP 进程/日志、Workflow library/start/admin、Space Reference Agent 执行和产品 Artifact 仍是明确的 host-provider 边界。
+**`main` 使用 npm Registry 正式发布且完整性锁定的 KodaX 0.7.95，并显式协商 Runtime 安全能力，不通过语义版本号推断支持。** root/Desktop manifest、lockfile、物理安装与打包 ASAR 均锁定正式 Registry URL/SRI。Coder 默认连接 profile-scoped shared daemon；完整退出路径要求 SDK 提供 `runtimeExitSettlement:2`，daemon 连接要求 `sandboxRuntime:5`、`crashOutcomeModel:2`、`actorSettlementConvergence:2` 与 `conversationHistory:2`。F141 的 Daemon / Embedded 开关仍由安全 admission gate 控制，必须先等待运行中入口、交互、队列和其他客户端安全收敛。Space 保留有界 Actor/Turn 投影、精确 history/live 对齐、Runtime-owned interrupt finalization、完整物理请求用量诊断、提示词缓存亲和与 CLI 缓存用量归一化。Partner 继续由 Space embedded-inline 持有；MCP 进程/日志、Workflow library/start/admin、Space Reference Agent 执行和产品 Artifact 仍是明确的 host-provider 边界。
 
-正式发布的 KodaX 0.7.93 保留 `actorSettlementConvergence:2`、`sessionEventJournal:1`、`sandboxRuntime:4` 与 `crashOutcomeModel:2`，并在 SDK-owned settlement 内恢复经全局锁复查、全部可证明属于上一次 Windows boot 的 ACL marker 集合；混合、缺失、损坏、当前 boot 或并发 owner 仍 fail closed，且不进入 Setup/UAC。合法的 storage admission wait 不会被伪造成失败 Session，replacement 未知、已排队资格等待和提交后维护失败仍保持不同事实。Runtime Shell 仍是 sandbox-first；containment 无法准备时沿用普通权限策略，但普通权限执行仍取得同一 filesystem-effect fence，不重放命令、不重复 classifier，灾难性破坏操作继续硬拒绝。`worker.configuredA2A` 仍是 KodaX CLI Worker-hosted embedded Runtime 配置，不是 Space Settings 开关。
+当前源码锁定的 KodaX 0.7.95 保留 `actorSettlementConvergence:2`、`sessionEventJournal:1`、`conversationHistory:2` 与 `crashOutcomeModel:2`，并把退出结算提升到 v2、Windows sandbox 提升到 v5。同一 boot 的 `unconfirmed-owner` 票据由 SDK 后台自动重试进程排空、ACL 复原和 effect-fence 释放，只在精确 sandbox-user SID 探针证明账号空闲后清除；探针暂时失败时仅对 sandbox 工作 fail closed，不阻塞无关的非 sandbox 工作。崩溃遗留的零字节 authority lock 也会在字节/stat 未变化证明后自动回收，仍存活或已被继任者接管的 owner 不会被误删。Runtime Shell 仍是 sandbox-first；containment 无法准备时沿用普通权限策略，但普通权限执行仍取得同一 filesystem-effect fence，不重放命令、不重复 classifier，灾难性破坏操作继续硬拒绝。`worker.configuredA2A` 仍是 KodaX CLI Worker-hosted embedded Runtime 配置，不是 Space Settings 开关。
+
+当前源码还会在 Runtime-ready 重验时保留已经绘制的 canonical 历史，包括首个重叠项是 assistant 或 tool 的分页；queue query 与恢复回复保持同一因果 turn，历史分页显示加载/重试状态，活动和终态只接受当前 Runtime 身份的证据。压缩期间上下文表盘保持不确定进度，直到新的事实读数到达。发布依赖闸门会读取代理环境并在超时后有界销毁连接，应用退出则取消尚未完成的启动恢复等待。显式 Skill 准入传递原始 `rawUserInput`；KodaX 0.7.95 已只把它持久化为用户 query，并把 prepared `User request:` 保留为模型执行 overlay。包含多个已注册 Skill 引用的请求会在展开、Hook 和 Run 准入前被事实性拒绝。
 
 底部状态区把主 Agent 上下文压力与整个 Session 累计 Token 分开显示。“上下文窗口”使用最终自动压缩阈值和不含正文的六类构成；完成态物理请求按 request ID 去重，覆盖 root、child、retry、fallback、repair、workflow digest 和 compaction summary。F140 新增“每次询问 / 保留托盘和 Runtime / 彻底退出”偏好。Windows、macOS 或 Linux 真正退出时，Space 会先尝试安全停止 Coder daemon；若有 blocker，则提供默认的“保持开启”和显式“强行关闭”。强行关闭只终止当前 Space 的任务、保留其他客户端的 Runtime 工作，并保证退出不再回到阻塞弹窗。Space 自动拉起的孤儿 daemon 仍会在最后客户端断开且任务空闲后自回收。Terminal 与 Coder 命令工具共享同一个所选 Shell/profile PATH 契约，不接受任意可执行文件，也不把敏感变量投影给 PTY。
 
@@ -110,12 +112,12 @@ F136 让 Windows 后台 owner 可见、可控；F140 允许选择“每次询问
 
 已于 2026-08-20 正式发布 [`v0.1.44`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.44)：Space package `0.1.44` 精确锁定 npm `latest` KodaX `0.7.93`。本版本新增跨平台原生数字角标，让已准入的完整退出在后台继续，并对齐 Task Dock、Repointel、历史页头、外部任务恢复态与 Windows ACL 排障指引。
 
-| 范围                  | 摘要                                                                                                                           |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| 最新 SDK              | npm `latest` 在发布准备时核验为 `0.7.93`，manifest、lockfile、安装包和 SRI 均精确一致。                                        |
-| 原生提醒              | 未读结果和待处理交互按唯一 Session 计数，同步到 Windows 任务栏/托盘、macOS Dock 与受支持的 Linux launcher。                   |
-| 后台退出与恢复        | Windows 后台继续已准入 settlement，普通成功退出不发系统通知；失败恢复窗口，previous-boot ACL 阻断提供可执行指引。            |
-| 文档与手册            | README、用户手册、PRD/HLD、Feature List、能力台账、Known Issues、release 记录、回归指南和 `kodax_manual` 统一到 v0.1.44。      |
+| 范围           | 摘要                                                                                                                      |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| 最新 SDK       | npm `latest` 在发布准备时核验为 `0.7.93`，manifest、lockfile、安装包和 SRI 均精确一致。                                   |
+| 原生提醒       | 未读结果和待处理交互按唯一 Session 计数，同步到 Windows 任务栏/托盘、macOS Dock 与受支持的 Linux launcher。               |
+| 后台退出与恢复 | Windows 后台继续已准入 settlement，普通成功退出不发系统通知；失败恢复窗口，previous-boot ACL 阻断提供可执行指引。         |
+| 文档与手册     | README、用户手册、PRD/HLD、Feature List、能力台账、Known Issues、release 记录、回归指南和 `kodax_manual` 统一到 v0.1.44。 |
 
 详细内容见 [v0.1.44 设计](docs/features/v0.1.44.md)、[发布记录](docs/releases/v0.1.44-release-readiness.md)、[F145 验收指南](docs/test-guides/FEATURE_145_v0.1.44_TEST_GUIDE.md)和 [Issue 189-192 回归指南](docs/test-guides/ISSUE_189_v0.1.44_REGRESSION_GUIDE.md)。
 
@@ -321,47 +323,49 @@ npm run e2e:headed
 
 ## 文档
 
-| 文档                                                                                                             | 用途                                                                  |
-| ---------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| [README.md](README.md)                                                                                           | 英文 README。                                                         |
-| [CONTRIBUTING.md](CONTRIBUTING.md)                                                                               | 贡献边界、验证要求和文档同步规则。                                    |
-| [docs/README.md](docs/README.md)                                                                                 | 文档中心，以及当前文档/历史文档索引。                                 |
-| [docs/USER_MANUAL.zh-CN.md](docs/USER_MANUAL.zh-CN.md)                                                           | 面向 v0.1.44 发布基线的图解中文手册。                                 |
-| [docs/USAGE.md](docs/USAGE.md)                                                                                   | 源码启动、profile、Runtime Host、测试、打包与排障。                   |
-| [docs/BUILTIN_SKILLS.md](docs/BUILTIN_SKILLS.md)                                                                 | builtin skill 的来源、许可、更新、补丁和打包完整性流程。              |
-| [docs/releases/v0.1.34-release-readiness.md](docs/releases/v0.1.34-release-readiness.md)                         | v0.1.34 的发布门禁、产物摘要、已知风险与发布证据。                    |
-| [docs/releases/v0.1.37-release-readiness.md](docs/releases/v0.1.37-release-readiness.md)                         | v0.1.37 的 KodaX 0.7.83 合约、门禁与发布证据。                        |
-| [docs/features/v0.1.44.md](docs/features/v0.1.44.md)                                                             | v0.1.44 原生提醒、后台退出结算与 KodaX 0.7.93 边界。                  |
-| [docs/releases/v0.1.44-release-readiness.md](docs/releases/v0.1.44-release-readiness.md)                         | v0.1.44 门禁、精确 KodaX 0.7.93 合约与发布证据。                      |
-| [docs/test-guides/FEATURE_145_v0.1.44_TEST_GUIDE.md](docs/test-guides/FEATURE_145_v0.1.44_TEST_GUIDE.md)         | v0.1.44 原生数字角标验收覆盖。                                        |
-| [docs/test-guides/ISSUE_189_v0.1.44_REGRESSION_GUIDE.md](docs/test-guides/ISSUE_189_v0.1.44_REGRESSION_GUIDE.md) | v0.1.44 后台完整退出结算覆盖。                                        |
-| [docs/test-guides/ISSUE_190_v0.1.44_REGRESSION_GUIDE.md](docs/test-guides/ISSUE_190_v0.1.44_REGRESSION_GUIDE.md) | v0.1.44 previous-boot Windows ACL 恢复覆盖。                           |
-| [docs/test-guides/ISSUE_191_v0.1.44_REGRESSION_GUIDE.md](docs/test-guides/ISSUE_191_v0.1.44_REGRESSION_GUIDE.md) | v0.1.44 外部任务空态与重试态覆盖。                                    |
-| [docs/test-guides/ISSUE_192_v0.1.44_REGRESSION_GUIDE.md](docs/test-guides/ISSUE_192_v0.1.44_REGRESSION_GUIDE.md) | v0.1.44 安静安全退出通知覆盖。                                        |
-| [docs/features/v0.1.43.md](docs/features/v0.1.43.md)                                                             | v0.1.43 Runtime 退出、KodaX 0.7.92、sandbox v4 与发布边界。           |
-| [docs/releases/v0.1.43-release-readiness.md](docs/releases/v0.1.43-release-readiness.md)                         | v0.1.43 门禁、精确 KodaX 0.7.92 合约与发布证据。                      |
-| [docs/test-guides/ISSUE_188_v0.1.43_REGRESSION_GUIDE.md](docs/test-guides/ISSUE_188_v0.1.43_REGRESSION_GUIDE.md) | v0.1.43 完整退出结算与恢复覆盖。                                      |
-| [docs/test-guides/ISSUE_256_v0.1.43_REGRESSION_GUIDE.md](docs/test-guides/ISSUE_256_v0.1.43_REGRESSION_GUIDE.md) | v0.1.43 sandbox v4 / crash-outcome v2 覆盖。                          |
+| 文档                                                                                                             | 用途                                                                       |
+| ---------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| [README.md](README.md)                                                                                           | 英文 README。                                                              |
+| [CONTRIBUTING.md](CONTRIBUTING.md)                                                                               | 贡献边界、验证要求和文档同步规则。                                         |
+| [docs/README.md](docs/README.md)                                                                                 | 文档中心，以及当前文档/历史文档索引。                                      |
+| [docs/USER_MANUAL.zh-CN.md](docs/USER_MANUAL.zh-CN.md)                                                           | 面向 v0.1.44 发布基线的图解中文手册。                                      |
+| [docs/USAGE.md](docs/USAGE.md)                                                                                   | 源码启动、profile、Runtime Host、测试、打包与排障。                        |
+| [docs/BUILTIN_SKILLS.md](docs/BUILTIN_SKILLS.md)                                                                 | builtin skill 的来源、许可、更新、补丁和打包完整性流程。                   |
+| [docs/releases/v0.1.34-release-readiness.md](docs/releases/v0.1.34-release-readiness.md)                         | v0.1.34 的发布门禁、产物摘要、已知风险与发布证据。                         |
+| [docs/releases/v0.1.37-release-readiness.md](docs/releases/v0.1.37-release-readiness.md)                         | v0.1.37 的 KodaX 0.7.83 合约、门禁与发布证据。                             |
+| [docs/features/v0.1.44.md](docs/features/v0.1.44.md)                                                             | v0.1.44 原生提醒、后台退出结算与 KodaX 0.7.93 边界。                       |
+| [docs/releases/v0.1.44-release-readiness.md](docs/releases/v0.1.44-release-readiness.md)                         | v0.1.44 门禁、精确 KodaX 0.7.93 合约与发布证据。                           |
+| [docs/test-guides/FEATURE_145_v0.1.44_TEST_GUIDE.md](docs/test-guides/FEATURE_145_v0.1.44_TEST_GUIDE.md)         | v0.1.44 原生数字角标验收覆盖。                                             |
+| [docs/test-guides/ISSUE_189_v0.1.44_REGRESSION_GUIDE.md](docs/test-guides/ISSUE_189_v0.1.44_REGRESSION_GUIDE.md) | v0.1.44 后台完整退出结算覆盖。                                             |
+| [docs/test-guides/ISSUE_190_v0.1.44_REGRESSION_GUIDE.md](docs/test-guides/ISSUE_190_v0.1.44_REGRESSION_GUIDE.md) | v0.1.44 previous-boot Windows ACL 恢复覆盖。                               |
+| [docs/test-guides/ISSUE_191_v0.1.44_REGRESSION_GUIDE.md](docs/test-guides/ISSUE_191_v0.1.44_REGRESSION_GUIDE.md) | v0.1.44 外部任务空态与重试态覆盖。                                         |
+| [docs/test-guides/ISSUE_192_v0.1.44_REGRESSION_GUIDE.md](docs/test-guides/ISSUE_192_v0.1.44_REGRESSION_GUIDE.md) | v0.1.44 安静安全退出通知覆盖。                                             |
+| [docs/test-guides/ISSUE_196_v0.1.45_REGRESSION_GUIDE.md](docs/test-guides/ISSUE_196_v0.1.45_REGRESSION_GUIDE.md) | 当前源码 Session 历史、queue、状态、加载与压缩反馈覆盖。                   |
+| [docs/test-guides/ISSUE_197_v0.1.45_REGRESSION_GUIDE.md](docs/test-guides/ISSUE_197_v0.1.45_REGRESSION_GUIDE.md) | 当前源码构建代理与退出恢复覆盖。                                           |
+| [docs/features/v0.1.43.md](docs/features/v0.1.43.md)                                                             | v0.1.43 Runtime 退出、KodaX 0.7.92、sandbox v4 与发布边界。                |
+| [docs/releases/v0.1.43-release-readiness.md](docs/releases/v0.1.43-release-readiness.md)                         | v0.1.43 门禁、精确 KodaX 0.7.92 合约与发布证据。                           |
+| [docs/test-guides/ISSUE_188_v0.1.43_REGRESSION_GUIDE.md](docs/test-guides/ISSUE_188_v0.1.43_REGRESSION_GUIDE.md) | v0.1.43 完整退出结算与恢复覆盖。                                           |
+| [docs/test-guides/ISSUE_256_v0.1.43_REGRESSION_GUIDE.md](docs/test-guides/ISSUE_256_v0.1.43_REGRESSION_GUIDE.md) | v0.1.43 sandbox v4 / crash-outcome v2 覆盖。                               |
 | [docs/features/v0.1.42.md](docs/features/v0.1.42.md)                                                             | 历史 v0.1.42 causal transcript, latest KodaX 0.7.89, and release boundary. |
 | [docs/releases/v0.1.42-release-readiness.md](docs/releases/v0.1.42-release-readiness.md)                         | 历史 v0.1.42 gates, exact KodaX 0.7.89 contract, and release evidence.     |
-| [docs/test-guides/ISSUE_182_v0.1.42_REGRESSION_GUIDE.md](docs/test-guides/ISSUE_182_v0.1.42_REGRESSION_GUIDE.md) | v0.1.42 canonical/live ordering regression coverage.                  |
-| [docs/test-guides/ISSUE_183_v0.1.42_REGRESSION_GUIDE.md](docs/test-guides/ISSUE_183_v0.1.42_REGRESSION_GUIDE.md) | v0.1.42 terminal owner reconciliation coverage.                       |
-| [docs/test-guides/ISSUE_184_v0.1.42_REGRESSION_GUIDE.md](docs/test-guides/ISSUE_184_v0.1.42_REGRESSION_GUIDE.md) | v0.1.42 continued-Run projection coverage.                            |
-| [docs/test-guides/ISSUE_185_v0.1.42_REGRESSION_GUIDE.md](docs/test-guides/ISSUE_185_v0.1.42_REGRESSION_GUIDE.md) | v0.1.42 completion notification and Actor v2 coverage.                |
-| [docs/features/v0.1.40.md](docs/features/v0.1.40.md)                                                             | v0.1.40 维护范围与 KodaX 0.7.86 sandbox 边界。                        |
-| [docs/releases/v0.1.40-release-readiness.md](docs/releases/v0.1.40-release-readiness.md)                         | v0.1.40 门禁、KodaX 0.7.86 合约与发布证据。                           |
-| [docs/features/v0.1.39.md](docs/features/v0.1.39.md)                                                             | 历史 v0.1.39 维护范围与 KodaX 0.7.85 边界。                           |
-| [docs/releases/v0.1.39-release-readiness.md](docs/releases/v0.1.39-release-readiness.md)                         | 历史 v0.1.39 门禁、KodaX 0.7.85 合约与发布证据。                      |
-| [docs/features/v0.1.38.md](docs/features/v0.1.38.md)                                                             | 历史 v0.1.38 维护范围与 KodaX 0.7.84 边界。                           |
-| [docs/releases/v0.1.38-release-readiness.md](docs/releases/v0.1.38-release-readiness.md)                         | 历史 v0.1.38 门禁、KodaX 0.7.84 合约与发布证据。                      |
-| [docs/CODING_AGENT_BEGINNER_BEST_PRACTICES.zh-CN.md](docs/CODING_AGENT_BEGINNER_BEST_PRACTICES.zh-CN.md)         | Coding Agent 初学者最佳实践教程，覆盖软件研发和微服务场景。           |
-| [docs/PRD.md](docs/PRD.md)                                                                                       | 产品需求和产品定位。                                                  |
-| [docs/HLD.md](docs/HLD.md)                                                                                       | 高层架构与系统设计。                                                  |
-| [docs/ADR/](docs/ADR/)                                                                                           | 架构决策记录。                                                        |
-| [docs/FEATURE_LIST.md](docs/FEATURE_LIST.md)                                                                     | Feature ledger、roadmap 和 release planning 状态。                    |
-| [docs/FEATURES_ARCHIVED.md](docs/FEATURES_ARCHIVED.md)                                                           | 已归档版本索引、reviewed-out 决策和 reopen gates。                    |
-| [docs/KODAX_CAPABILITY_LEDGER.md](docs/KODAX_CAPABILITY_LEDGER.md)                                               | KodaX SDK 能力消费和降级说明。                                        |
-| [CHANGELOG.md](CHANGELOG.md)                                                                                     | 版本历史。                                                            |
+| [docs/test-guides/ISSUE_182_v0.1.42_REGRESSION_GUIDE.md](docs/test-guides/ISSUE_182_v0.1.42_REGRESSION_GUIDE.md) | v0.1.42 canonical/live ordering regression coverage.                       |
+| [docs/test-guides/ISSUE_183_v0.1.42_REGRESSION_GUIDE.md](docs/test-guides/ISSUE_183_v0.1.42_REGRESSION_GUIDE.md) | v0.1.42 terminal owner reconciliation coverage.                            |
+| [docs/test-guides/ISSUE_184_v0.1.42_REGRESSION_GUIDE.md](docs/test-guides/ISSUE_184_v0.1.42_REGRESSION_GUIDE.md) | v0.1.42 continued-Run projection coverage.                                 |
+| [docs/test-guides/ISSUE_185_v0.1.42_REGRESSION_GUIDE.md](docs/test-guides/ISSUE_185_v0.1.42_REGRESSION_GUIDE.md) | v0.1.42 completion notification and Actor v2 coverage.                     |
+| [docs/features/v0.1.40.md](docs/features/v0.1.40.md)                                                             | v0.1.40 维护范围与 KodaX 0.7.86 sandbox 边界。                             |
+| [docs/releases/v0.1.40-release-readiness.md](docs/releases/v0.1.40-release-readiness.md)                         | v0.1.40 门禁、KodaX 0.7.86 合约与发布证据。                                |
+| [docs/features/v0.1.39.md](docs/features/v0.1.39.md)                                                             | 历史 v0.1.39 维护范围与 KodaX 0.7.85 边界。                                |
+| [docs/releases/v0.1.39-release-readiness.md](docs/releases/v0.1.39-release-readiness.md)                         | 历史 v0.1.39 门禁、KodaX 0.7.85 合约与发布证据。                           |
+| [docs/features/v0.1.38.md](docs/features/v0.1.38.md)                                                             | 历史 v0.1.38 维护范围与 KodaX 0.7.84 边界。                                |
+| [docs/releases/v0.1.38-release-readiness.md](docs/releases/v0.1.38-release-readiness.md)                         | 历史 v0.1.38 门禁、KodaX 0.7.84 合约与发布证据。                           |
+| [docs/CODING_AGENT_BEGINNER_BEST_PRACTICES.zh-CN.md](docs/CODING_AGENT_BEGINNER_BEST_PRACTICES.zh-CN.md)         | Coding Agent 初学者最佳实践教程，覆盖软件研发和微服务场景。                |
+| [docs/PRD.md](docs/PRD.md)                                                                                       | 产品需求和产品定位。                                                       |
+| [docs/HLD.md](docs/HLD.md)                                                                                       | 高层架构与系统设计。                                                       |
+| [docs/ADR/](docs/ADR/)                                                                                           | 架构决策记录。                                                             |
+| [docs/FEATURE_LIST.md](docs/FEATURE_LIST.md)                                                                     | Feature ledger、roadmap 和 release planning 状态。                         |
+| [docs/FEATURES_ARCHIVED.md](docs/FEATURES_ARCHIVED.md)                                                           | 已归档版本索引、reviewed-out 决策和 reopen gates。                         |
+| [docs/KODAX_CAPABILITY_LEDGER.md](docs/KODAX_CAPABILITY_LEDGER.md)                                               | KodaX SDK 能力消费和降级说明。                                             |
+| [CHANGELOG.md](CHANGELOG.md)                                                                                     | 版本历史。                                                                 |
 
 ## 路线图
 
@@ -376,9 +380,9 @@ npm run e2e:headed
 | `v0.1.35`                    | 基于已发布 Runtime 学习闭环的最小 learned Skill 安全控制面，不建设第二套存储或多 carrier Learning Center。                        |
 | `v0.1.36`                    | KodaX 0.7.82、活动 Session 输入准入、history/live 对齐、跨 Session 恢复隔离与发布文档收口。                                       |
 | `v0.1.37`                    | KodaX 0.7.83、多 Session 恢复、安全退出重启、语义启动背景和发布文档对齐。                                                         |
-| `v0.1.44`                    | 精确 KodaX 0.7.93、F145 原生提醒、后台完整退出、Task Dock/Repointel/历史对齐与外部任务恢复态。                                     |
+| `v0.1.44`                    | 精确 KodaX 0.7.93、F145 原生提醒、后台完整退出、Task Dock/Repointel/历史对齐与外部任务恢复态。                                    |
 | `v0.1.43`                    | 精确 KodaX 0.7.92、SDK-owned 完整退出、sandboxRuntime v4、crashOutcomeModel v2 与有效 live-output segment。                       |
-| `v0.1.42`                    | 精确 KodaX 0.7.89、Actor settlement v2 与 Session/Run/Turn 因果 transcript 对齐。                                                  |
+| `v0.1.42`                    | 精确 KodaX 0.7.89、Actor settlement v2 与 Session/Run/Turn 因果 transcript 对齐。                                                 |
 | `v0.1.40`                    | KodaX 0.7.86、sandboxRuntime v3、Issue 128 打包 Shell、stale owner 恢复、可重试 owner 清理与完整发布文档同步。                    |
 | `v0.1.39`                    | KodaX 0.7.85、Actor settlement convergence、Session journal epoch 隔离、unknown Run 输入、精确 Stop、输入去重与完整发布文档同步。 |
 | `v0.1.38`                    | KodaX 0.7.84、Agent progress/Stop 收敛、Session 重新激活恢复、图标打包与完整发布文档同步。                                        |

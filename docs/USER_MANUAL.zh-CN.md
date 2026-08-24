@@ -4,6 +4,8 @@
   <img src="../resources/icon.png" alt="KodaX Space 应用图标" width="96">
 </p>
 
+> 当前 `main` 源码精确锁定 KodaX `0.7.95`，要求 `conversationHistory:2`、`runtimeExitSettlement:2` 与 `sandboxRuntime:5`。同一 boot 的临时 `unconfirmed-owner` 会自动重试；Space 不要求用户删除标记，且只在缺少安全证明时阻断有竞争风险的 sandbox/owner 操作。以下 v0.1.44 / KodaX 0.7.93 内容描述当前已发布安装包。
+>
 > 已发布产品基线：KodaX Space [`v0.1.44`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.44)（package `0.1.44`）/ npm 正式发布的精确 KodaX `0.7.93`。
 >
 > 当前发布版使用精确 Registry KodaX `0.7.93`，并要求 `sandboxRuntime:4`、
@@ -550,6 +552,7 @@ Runtime owner。
 - 项目 Skill：`<project>/.kodax/skills/`
 - Space builtin：安装包自带 `frontend-slides` 与 `huashu-design`，应用启动时自动注册，无需复制到用户目录。Space 分发的 Huashu 适配已移除默认推广水印/签名的标记与指令，但仍保留上游 MIT 许可证和作者信息。
 - 在 `/` 补全中调用；重名时使用 `/skill:<name>`。
+- 每个请求只能激活一个显式 Skill；包含多个已注册 Skill 引用时，Space 会在内容展开、Hook 和任务启动前拒绝，并保留原输入供用户修改。
 - 用户/项目 Skill 可按 KodaX 的发现优先级覆盖同名 builtin；覆盖只影响当前发现结果，不会改写安装包内文件。
 - builtin 表示 skill 本体随应用提供，不表示所有可选工具都被嵌入。Huashu 的浏览器、视频、TTS、AI 评审等扩展流程仍可能需要 Node/Python package、Playwright 浏览器、`ffmpeg`、POSIX-compatible shell 或 API 凭据；不使用这些流程时无需准备。
 - 本机可能存在的 `pdf`、`pptx`、`xlsx`、`docx` skill 不随 Space 分发，因为当前来源许可证禁止复制、修改或再分发。Space 仍可预览这些文件格式；这与是否打包同名 skill 是两件事。

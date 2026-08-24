@@ -2,7 +2,7 @@
 
 > Last reviewed: 2026-08-20
 > Latest published release: [`v0.1.44`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.44) (`0.1.44` package baseline; exact KodaX 0.7.93 Registry, F145 native attention, background exit settlement, and recovery-surface alignment)
-> Current source KodaX SDK baseline: exact audited npm Registry `@kodax-ai/kodax@0.7.93`. Root/Desktop manifests, lockfile, installed bytes, and packaged ASAR must resolve the same Registry URL and integrity. Space-managed daemons require explicit capability contracts in addition to the established shared-session safety surface, including local `runtimeExitSettlement:1`, `sandboxRuntime:4`, `crashOutcomeModel:2`, `managedRunDurability:1`, `actorSettlementConvergence:2`, and `sessionEventJournal:1`; lifecycle support is not inferred from SemVer. Delivered interrupt `entryId` remains feature-detected per event. Session journal cursors are compared only within the same `(sessionId, journalEpoch)` lineage.
+> Current source KodaX SDK baseline: exact audited npm Registry `@kodax-ai/kodax@0.7.95`. Root/Desktop manifests, lockfile, installed bytes, and packaged ASAR must resolve the same Registry URL and integrity. Space-managed daemons require explicit capability contracts in addition to the established shared-session safety surface, including local `runtimeExitSettlement:2`, `sandboxRuntime:5`, `crashOutcomeModel:2`, `managedRunDurability:1`, `actorSettlementConvergence:2`, `sessionEventJournal:1`, and `conversationHistory:2`; lifecycle support is not inferred from SemVer. Delivered interrupt `entryId` remains feature-detected per event. Session journal cursors are compared only within the same `(sessionId, journalEpoch)` lineage.
 > Scope: active roadmap, recent completion audit, and reviewed-out decisions. Older release history lives in [FEATURES_ARCHIVED.md](FEATURES_ARCHIVED.md), per-version designs, and [CHANGELOG.md](../CHANGELOG.md).
 
 ## Planning rules
@@ -17,14 +17,14 @@
 
 ## Current summary
 
-| Item                     | Value                                                                                                                                                                                                                                               |
-| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Planned                  | 20                                                                                                                                                                                                                                                  |
-| InProgress               | 4                                                                                                                                                                                                                                                   |
-| Recent Completed         | 28                                                                                                                                                                                                                                                  |
+| Item                     | Value                                                                                                                                                                                                                                                                        |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Planned                  | 20                                                                                                                                                                                                                                                                           |
+| InProgress               | 4                                                                                                                                                                                                                                                                            |
+| Recent Completed         | 28                                                                                                                                                                                                                                                                           |
 | Latest published release | [`v0.1.44`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.44) (KodaX 0.7.93 Registry, F145 native attention, background complete-exit settlement, Task Dock/Repointel/history alignment, external-task recovery states, and synchronized release documentation) |
-| 0.1.x completion target  | `v0.1.72`, followed by `v0.1.73` patch/RC reserve                                                                                                                                                                                                   |
-| Far-future candidates    | F144 is scheduled after `v0.2.x`; F138 is explicitly deferred until after `v0.5.x`; other candidates remain in [KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md) and [FEATURES_ARCHIVED.md](FEATURES_ARCHIVED.md#watchlist-and-reopen-gates) |
+| 0.1.x completion target  | `v0.1.72`, followed by `v0.1.73` patch/RC reserve                                                                                                                                                                                                                            |
+| Far-future candidates    | F144 is scheduled after `v0.2.x`; F138 is explicitly deferred until after `v0.5.x`; other candidates remain in [KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md) and [FEATURES_ARCHIVED.md](FEATURES_ARCHIVED.md#watchlist-and-reopen-gates)                          |
 
 ## Active features
 
@@ -81,7 +81,7 @@
 | `v0.1.41`         | Provider recovery and latest KodaX alignment                                                                          | Maintenance / Recovery            | Exact npm latest KodaX 0.7.87 is pinned. Ordered provider.recovery events reconcile provisional drafts across live, history, reconnect, snapshot hydration, and Ctrl+R without content-based deduplication; docs and kodax_manual are synchronized.                             |
 | `v0.1.42`         | Causal transcript and latest KodaX alignment                                                                          | Maintenance / Recovery            | Exact npm latest KodaX 0.7.89 is pinned. Actor settlement v2, exact Session/Run/Turn owner reconciliation, continued-Run projection, Session deletion feedback, classifier-reason visibility, and the complete manual/release gate are synchronized.                            |
 | `v0.1.43`         | Runtime exit and filesystem-effect convergence                                                                        | Maintenance / Recovery            | Exact audited npm Registry KodaX 0.7.92 bytes, SDK-owned exit settlement, stale coordinator-ticket/recorded-release convergence, canonical managed terminal ordering, and capability-fenced daemon replacement.                                                                 |
-| `v0.1.44`         | Native attention and recovery-surface alignment                                                                       | F145 / Maintenance                | Exact KodaX 0.7.93; unique Session attention across native surfaces; background complete exit; canonical page-head, Task Dock and Repointel alignment; recoverable external-task states; actionable previous-boot Windows ACL guidance.                                          |
+| `v0.1.44`         | Native attention and recovery-surface alignment                                                                       | F145 / Maintenance                | Exact KodaX 0.7.93; unique Session attention across native surfaces; background complete exit; canonical page-head, Task Dock and Repointel alignment; recoverable external-task states; actionable previous-boot Windows ACL guidance.                                         |
 | `v0.1.45-v0.1.60` | Reserved after `v0.1.44`                                                                                              | none                              | No feature is assigned to this block; it stays available for maintenance and stabilization releases.                                                                                                                                                                            |
 | `v0.1.61`         | Native document Skills and semantic UI polish                                                                         | F137, F139                        | Independently authored document workflows and semantic UI gates pass without weakening file, delivery, accessibility, or validation boundaries.                                                                                                                                 |
 | `v0.1.62`         | —                                                                                                                     | none                              | —                                                                                                                                                                                                                                                                               |
@@ -185,6 +185,25 @@
   active/queued Runs, pending interactions, snapshot gaps, and active compaction retain observation.
   Reconnect and invalidation paths preserve those same demand rules instead of reviving every
   historical Session.
+
+### Current-source maintenance - 2026-08-23: stabilize live history, status, build, and shutdown
+
+- Runtime-ready newest-page revalidation retains a loaded prefix through exact canonical item
+  identity even without a truncation marker and when the overlap begins with assistant/tool output.
+  Queued delivery is spliced at its causal turn; renderer reconciliation never sorts timestamps or
+  deduplicates equal text.
+- History loading uses a waiting spinner and factual retry state. Sidebar activity, Stop controls,
+  terminal state, and compaction telemetry are fenced to the current Runtime identity. Exact
+  terminal Run identity closes lagging profile activity without comparing Session-journal and
+  aggregate-profile sequence domains, and later terminal events cannot erase an earlier Run fence.
+  A new Session journal epoch may reset its sequence while still settling the exact pending send.
+  Compaction does not present a stale token snapshot as current progress.
+- Release dependency verification honors proxy environment, validates Registry URLs, and tears down
+  failed sockets after its bounded timeout. App shutdown aborts pending startup-recovery waits so
+  late Runtime reconciliation cannot reopen or block an exiting Space process.
+- Exact KodaX 0.7.95 closes explicit-Skill durable display: Space passes `rawUserInput`, the SDK
+  persists that original query once, and the prepared execution prompt remains model-only. The
+  same baseline advances exit settlement to v2 and sandbox recovery to v5. No release is prepared here.
 
 ### Roadmap rebase - 2026-07-30: move the document and semantic UI lane to v0.1.37
 

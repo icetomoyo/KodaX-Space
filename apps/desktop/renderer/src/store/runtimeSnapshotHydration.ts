@@ -60,13 +60,34 @@ export function runtimeDeltasShareSnapshotSide(
   return previous.runtimeEvent.seq <= coveredSeq === event.runtimeEvent.seq <= coveredSeq;
 }
 
-function activeRunSegmentStart(events: readonly SessionEvent[]): number {
+function activeRunSegmentStart(
+  events: readonly SessionEvent[],
+  projection?: SpaceSessionLiveProjectionT,
+): number {
+  let lifecycleBoundary = 0;
   for (let index = events.length - 1; index >= 0; index--) {
     const event = events[index]!;
-    if (event.kind === 'session_start' || isUserDeliveryBoundary(event)) return index;
-    if (event.kind === 'session_complete' || event.kind === 'session_error') return index + 1;
+    if (event.kind === 'session_start' || isUserDeliveryBoundary(event)) {
+      lifecycleBoundary = index;
+      break;
+    }
+    if (event.kind === 'session_complete' || event.kind === 'session_error') {
+      lifecycleBoundary = index + 1;
+      break;
+    }
   }
-  return 0;
+
+  // A reconnect snapshot can be the first evidence that an accepted after-turn input started.
+  // In that case the renderer has no queued_user_prompt_started boundary yet. The Runtime turn id
+  // is still sufficient to keep an earlier response from the same managed Run outside the active
+  // snapshot segment; otherwise output-segment replacement discards that visible prefix.
+  const activeTurnId = projection?.activeRun?.turnId;
+  if (activeTurnId === undefined) return lifecycleBoundary;
+  const turnStart = events.findIndex(
+    (event, index) =>
+      index >= lifecycleBoundary && 'turnId' in event && event.turnId === activeTurnId,
+  );
+  return turnStart === -1 ? lifecycleBoundary : turnStart;
 }
 
 function terminalRunSegmentStart(events: readonly SessionEvent[]): number {
@@ -827,7 +848,7 @@ export function hydrateSessionEventsFromLiveSnapshot(
   if (!run) return events;
 
   const segmentStart = projection.activeRun
-    ? activeRunSegmentStart(events)
+    ? activeRunSegmentStart(events, projection)
     : terminalRunSegmentStart(events);
   const prefix = filterEffectiveOutputSegmentEvents(events.slice(0, segmentStart));
   let active: readonly SessionEvent[] = enrichCoveredRunTurnIdentity(

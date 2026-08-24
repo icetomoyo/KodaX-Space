@@ -8,6 +8,7 @@
  */
 export class StartupShutdownCoordinator {
   private shutdownRequested = false;
+  private readonly shutdownController = new AbortController();
   private startupSettled: Promise<void> = Promise.resolve();
   private readonly trackedStartupTasks = new Set<Promise<void>>();
 
@@ -32,10 +33,15 @@ export class StartupShutdownCoordinator {
 
   requestShutdown(): void {
     this.shutdownRequested = true;
+    this.shutdownController.abort();
   }
 
   isShutdownRequested(): boolean {
     return this.shutdownRequested;
+  }
+
+  get shutdownSignal(): AbortSignal {
+    return this.shutdownController.signal;
   }
 
   async disposeAfterStartup(
