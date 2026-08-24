@@ -28,6 +28,15 @@ function readLinkTarget(entryPath, fallback) {
  * only the package root silently packages an incomplete dependency tree.
  */
 export function inspectKodaxDevLink(spaceRoot, sdkDir) {
+  // Compare against the canonical Space root so a checkout reached through an
+  // aliased prefix (macOS /var -> /private/var, Windows 8.3 short names) does
+  // not make every realpath-resolved SDK path look like it escapes Space.
+  let canonicalSpaceRoot = spaceRoot;
+  try {
+    canonicalSpaceRoot = fs.realpathSync(spaceRoot);
+  } catch {
+    // An unresolvable Space root keeps the caller's spelling.
+  }
   let sdkLstat;
   let sdkRealpath;
   let sdkPathFromCanonicalParent;
@@ -46,7 +55,7 @@ export function inspectKodaxDevLink(spaceRoot, sdkDir) {
   // virtual store. That target remains inside Space and is safe for packaging;
   // treating it as a development link would let npm ci delete the saved target
   // before pack.mjs tries to restore it.
-  const pnpmVirtualStore = path.join(spaceRoot, 'node_modules', '.pnpm');
+  const pnpmVirtualStore = path.join(canonicalSpaceRoot, 'node_modules', '.pnpm');
   const isPnpmInstalledPackage = isInside(pnpmVirtualStore, sdkRealpath);
 
   // Other package-root reparse points are development state even when they
@@ -80,7 +89,7 @@ export function inspectKodaxDevLink(spaceRoot, sdkDir) {
       if (
         childLstat.isSymbolicLink() ||
         path.resolve(childRealpath) !== path.resolve(installedChildPath) ||
-        !isInside(spaceRoot, childRealpath)
+        !isInside(canonicalSpaceRoot, childRealpath)
       ) {
         return { linked: true, layout: 'staging' };
       }

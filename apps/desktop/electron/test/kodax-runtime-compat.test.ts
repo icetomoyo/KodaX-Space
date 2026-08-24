@@ -1278,7 +1278,7 @@ test('installed KodaX version matches the exact Space dependency pin', () => {
 
 test(
   `KodaX ${EXPECTED_KODAX_VERSION} persists raw explicit-Skill input instead of its execution overlay`,
-  { timeout: 20_000 },
+  { timeout: PROBE_TIMEOUT_MS + 5_000 },
   async () => {
     const homeDir = await mkdtemp(path.join(tmpdir(), 'kodax-space-raw-skill-'));
     const credentialName = 'KODAX_SPACE_RAW_SKILL_PROBE_KEY';
