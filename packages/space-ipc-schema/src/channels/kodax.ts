@@ -11,7 +11,19 @@
 
 import { z } from 'zod';
 
-const reasoningModeSchema = z.enum(['off', 'auto', 'quick', 'balanced', 'deep']);
+const reasoningModeSchema = z.enum([
+  'off',
+  'auto',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+  'quick',
+  'balanced',
+  'deep',
+]);
 // 严格匹配 main loader (normalizePermissionMode) 实际产出值——KodaX 的 'default' /
 // 'bypass-permissions' map 到 undefined，所以 schema 里没有它们；'auto' 是 Space 自己的模式
 // 不对应 KodaX config 任何值，因此这里也没有（renderer 用 Space session create 时另行选）

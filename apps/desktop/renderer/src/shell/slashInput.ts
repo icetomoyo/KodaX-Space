@@ -54,7 +54,7 @@ const STATIC_ARG_OPTIONS: Readonly<Record<string, readonly string[]>> = {
   memory: ['inbox', 'pending', 'list', 'show', 'approve', 'reject', 'curate', 'open', 'help'],
   mode: ['plan', 'accept-edits', 'auto'],
   paste: ['list', 'show', 'help'],
-  reasoning: ['off', 'auto', 'quick', 'balanced', 'deep'],
+  reasoning: ['off', 'auto', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
   recover: ['seed', 'prompt', 'candidate', 'help'],
   repointel: ['status', 'mode', 'trace', 'warm', 'endpoint', 'bin'],
   review: ['--lean', '--workflow', 'base', 'sha', 'help'],
@@ -62,7 +62,7 @@ const STATIC_ARG_OPTIONS: Readonly<Record<string, readonly string[]>> = {
   skills: ['pending', 'ledger'],
   'stall-log': ['on', 'off'],
   status: ['workspace', 'worktree', 'runtime', 'peers'],
-  thinking: ['on', 'off', 'auto', 'quick', 'balanced', 'deep'],
+  thinking: ['on', 'off', 'auto', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
   'verifier-log': ['on', 'off'],
 };
 

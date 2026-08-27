@@ -42,9 +42,15 @@ type Translate = (key: MessageKey, vars?: Record<string, string | number>) => st
 
 const EFFORT_LABEL_KEYS: Record<ReasoningMode, MessageKey> = {
   off: 'modelPicker.effort.off',
+  auto: 'modelPicker.effort.auto',
+  minimal: 'modelPicker.effort.minimal',
+  low: 'modelPicker.effort.low',
+  medium: 'modelPicker.effort.medium',
+  high: 'modelPicker.effort.high',
+  xhigh: 'modelPicker.effort.xhigh',
+  max: 'modelPicker.effort.max',
   quick: 'modelPicker.effort.quick',
   balanced: 'modelPicker.effort.balanced',
-  auto: 'modelPicker.effort.auto',
   deep: 'modelPicker.effort.deep',
 };
 
@@ -115,19 +121,20 @@ export function ModelEffortSelector(): JSX.Element {
   });
   const runtimeModel = session ? (session.model ?? activeProvider?.defaultModel ?? '—') : undefined;
   const activeModel = runtimeModel ?? preferredModel;
-  const activeEffort: ReasoningMode =
+  const configuredEffort: ReasoningMode =
     session?.reasoningMode ??
     pendingReasoningMode ??
     runtimeDefaults.reasoningMode ??
     kodaxDefaults?.reasoningMode ??
     'auto';
+  const activeEffort = sdkEffortToReasoningMode(configuredEffort) ?? 'auto';
 
   // Effort ladder built from the active model's SDK-declared efforts (falls back
   // to the full fixed ladder when unknown). The model's own default rung is
   // annotated so the user can see "what this model prefers".
   const visibleEfforts = visibleEffortLadder(
     modelEfforts?.supported,
-    modelEfforts?.canDisableThinking ?? true,
+    modelEfforts?.canDisableThinking ?? false,
   );
   const modelDefaultMode = modelEfforts?.default
     ? sdkEffortToReasoningMode(modelEfforts.default)
@@ -256,7 +263,7 @@ export function ModelEffortSelector(): JSX.Element {
         if (cancelled || !r.ok) return;
         setModelEfforts({
           supported: r.data.supportedEfforts ?? [],
-          canDisableThinking: r.data.canDisableThinking ?? true,
+          canDisableThinking: r.data.canDisableThinking ?? false,
           ...(r.data.defaultEffort ? { default: r.data.defaultEffort } : {}),
         });
       } catch {
@@ -280,7 +287,7 @@ export function ModelEffortSelector(): JSX.Element {
         e.preventDefault();
         const ladder = visibleEffortLadder(
           modelEfforts?.supported,
-          modelEfforts?.canDisableThinking ?? true,
+          modelEfforts?.canDisableThinking ?? false,
         );
         const idx = ladder.indexOf(activeEffort);
         const next = ladder[(idx + 1) % ladder.length] ?? ladder[0];

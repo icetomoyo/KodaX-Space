@@ -106,13 +106,13 @@ test('reasoningCeiling preferred over reasoningMode when both set (v0.7.29+ comp
     reasoningCeiling: 'deep',
   });
   const d = await loadKodaxUserDefaults();
-  assert.equal(d.reasoningMode, 'deep');
+  assert.equal(d.reasoningMode, 'max');
 });
 
 test('reasoningCeiling alone is used', async () => {
   mockUserConfig({ reasoningCeiling: 'balanced' });
   const d = await loadKodaxUserDefaults();
-  assert.equal(d.reasoningMode, 'balanced');
+  assert.equal(d.reasoningMode, 'medium');
 });
 
 test('effort preferred over legacy reasoning fields (v0.7.57 compat)', async () => {
@@ -122,7 +122,7 @@ test('effort preferred over legacy reasoning fields (v0.7.57 compat)', async () 
     reasoningMode: 'quick',
   });
   const d = await loadKodaxUserDefaults();
-  assert.equal(d.reasoningMode, 'balanced');
+  assert.equal(d.reasoningMode, 'medium');
 });
 
 test('effort aliases map to Space reasoning defaults', async () => {
@@ -130,7 +130,10 @@ test('effort aliases map to Space reasoning defaults', async () => {
   assert.equal((await loadKodaxUserDefaults()).reasoningMode, 'off');
 
   mockUserConfig({ effort: 'max' });
-  assert.equal((await loadKodaxUserDefaults()).reasoningMode, 'deep');
+  assert.equal((await loadKodaxUserDefaults()).reasoningMode, 'max');
+
+  mockUserConfig({ effort: 'xhigh' });
+  assert.equal((await loadKodaxUserDefaults()).reasoningMode, 'xhigh');
 
   mockUserConfig({ effort: 'vendor-custom' });
   assert.equal((await loadKodaxUserDefaults()).reasoningMode, undefined);

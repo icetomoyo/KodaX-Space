@@ -22,7 +22,7 @@ import { getSpaceDataDir } from './data-paths.js';
 import { pushToRenderer } from '../ipc/push.js';
 import { artifactStore } from '../artifact/store.js';
 import { detectArtifactKind } from '../artifact/workflow-artifact-bridge.js';
-import { resolveWireEffort, type ReasoningProfileLike } from './reasoning-effort.js';
+import { resolveSpaceWireEffort } from './reasoning-effort.js';
 import { workflowPolicyStore, buildWorkflowHostPolicy } from './workflow-policy.js';
 import { externalAgentGateway } from './external-agent-gateway.js';
 import { repoIntelContextFields } from './repo-intel-gate.js';
@@ -1786,24 +1786,7 @@ export class WorkflowController {
   // ---- 内部 ----
 
   private async launchOptions(s: LaunchSession): Promise<Record<string, unknown>> {
-    // C4/C5: resolve the effort against the provider's real ladder (workflow child agents hit the
-    // same localReject-crash / low-ceiling hazards as the chat path).
-    let reasoningProfile: ReasoningProfileLike | undefined;
-    try {
-      const sdk = await loadCodingSdk();
-      const resolveProvider = (
-        sdk as unknown as {
-          resolveProvider?: (id: string) =>
-            | {
-                getReasoningProfile?: (model?: string) => ReasoningProfileLike | undefined;
-              }
-            | undefined;
-        } | null
-      )?.resolveProvider;
-      reasoningProfile = resolveProvider?.(s.provider)?.getReasoningProfile?.(s.model ?? undefined);
-    } catch {
-      reasoningProfile = undefined;
-    }
+    const sdk = await loadCodingSdk();
     // Also exclude efforts the wire layer already rejected this process (parity with the chat path),
     // so a previously-400'd effort isn't re-sent on every workflow run.
     const rejectedEfforts =
@@ -1833,7 +1816,13 @@ export class WorkflowController {
     });
     return {
       provider: s.provider,
-      effort: resolveWireEffort(s.reasoningMode, reasoningProfile, rejectedEfforts),
+      effort: resolveSpaceWireEffort({
+        provider: s.provider,
+        ...(s.model ? { model: s.model } : {}),
+        reasoningMode: s.reasoningMode,
+        rejectedEfforts,
+        resolveWireEffort: sdk?.resolveWireEffort,
+      }),
       agentMode: s.agentMode,
       ...(s.model ? { model: s.model } : {}),
       // C9: agentProfile.surface makes create_artifact's resolveSessionRunContext succeed for
@@ -2156,6 +2145,7 @@ interface SavedWorkflowDirsLite {
 }
 
 interface CodingSdkSubset {
+  resolveWireEffort?: import('./reasoning-effort.js').ResolveWireEffortFn;
   listBuiltinWorkflows?: () => readonly WorkflowMetaLite[];
   listWorkflowPatternTemplates?: () => readonly WorkflowPatternLite[];
   getBuiltinWorkflow?: (name: string) => unknown;

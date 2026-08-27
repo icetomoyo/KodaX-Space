@@ -684,14 +684,20 @@ export function registerProviderChannels(): void {
       const defaultEffort =
         reasoningProfile?.defaultEffort ??
         reasoningProfile?.supportedEfforts?.find((effort) => effort.isDefault)?.value;
-      // "Off" is only honorable when the provider doesn't HARD-reject the 'none' effort. kimi-code /
-      // minimax-coding localRejectEfforts=['none','minimal'] → can't disable thinking; the picker
-      // hides "Off" for those (else it mislabels a control the runtime clamps up to the weakest rung).
-      // Anthropic disables via a separate `thinking` flag and doesn't localReject none → stays true.
+      // "Off" is only honorable when the profile explicitly supports disabling or advertises none.
+      // Absence of a local rejection is not proof of support, especially for custom providers whose
+      // reasoning capability was never declared.
       const localRejectEfforts =
         (reasoningProfile as { localRejectEfforts?: readonly string[] } | undefined)
           ?.localRejectEfforts ?? [];
-      const canDisableThinking = !localRejectEfforts.includes('none');
+      const disabledEfforts = reasoningProfile?.disabledEfforts ?? [];
+      const noneIsUsable =
+        supportedEfforts?.includes('none') === true &&
+        !localRejectEfforts.includes('none') &&
+        !disabledEfforts.includes('none');
+      const canDisableThinking =
+        reasoningProfile?.supportsDisabledThinking === true ||
+        (reasoningProfile?.supportsDisabledThinking === undefined && noneIsUsable);
       return {
         contextWindow: cw,
         source,

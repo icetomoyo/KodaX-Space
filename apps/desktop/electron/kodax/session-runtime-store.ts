@@ -26,7 +26,21 @@ const sessionRuntimeSchema = z
     thinking: z.boolean().optional(),
     permissionMode: z.enum(['plan', 'accept-edits', 'auto']).optional(),
     autoModeEngine: z.enum(['llm', 'rules']).optional(),
-    reasoningMode: z.enum(['off', 'auto', 'quick', 'balanced', 'deep']).optional(),
+    reasoningMode: z
+      .enum([
+        'off',
+        'auto',
+        'minimal',
+        'low',
+        'medium',
+        'high',
+        'xhigh',
+        'max',
+        'quick',
+        'balanced',
+        'deep',
+      ])
+      .optional(),
     agentMode: persistedAgentModeSchema.optional(),
     updatedAt: z.string().min(1),
   })

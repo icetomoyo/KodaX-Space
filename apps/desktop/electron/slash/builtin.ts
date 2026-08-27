@@ -5,7 +5,7 @@
 //   /auto-engine <llm|rules>            切 auto sub-engine
 //   /model <name>                       switch the current provider model
 //   /provider <name>                    切 provider (kodaxHost.setProvider)
-//   /reasoning <off|auto|quick|balanced|deep>
+//   /reasoning <off|auto|minimal|low|medium|high|xhigh|max>
 //   /thinking <on|off>                  switch thinking output and reasoning mode
 //   /clear                              主动 emit 'session_clear' (renderer 自决清屏)
 //   /help                               列出所有命令
@@ -23,6 +23,7 @@ import type {
   MemoryGovernanceReportT,
   MemoryItemRefT,
   MemoryRejectResultT,
+  ReasoningMode,
 } from '@kodax-space/space-ipc-schema';
 import type {
   ReviewableLearningProposal,
@@ -56,8 +57,17 @@ import { getBuiltin } from '../providers/catalog.js';
 import { memoryGovernanceService } from '../memory/memory-service.js';
 import { runtimeHostAdapter } from '../kodax/runtime-host-adapter.js';
 
-const REASONING_MODES = ['off', 'auto', 'quick', 'balanced', 'deep'] as const;
-type ReasoningMode = (typeof REASONING_MODES)[number];
+const REASONING_MODES: readonly ReasoningMode[] = [
+  'off',
+  'auto',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+];
+const LEGACY_REASONING_MODES: readonly ReasoningMode[] = ['quick', 'balanced', 'deep'];
 
 const PERMISSION_MODES: readonly PermissionMode[] = ['plan', 'accept-edits', 'auto'];
 const AUTO_ENGINES: readonly AutoModeEngine[] = ['llm', 'rules'];
@@ -72,7 +82,10 @@ function isAutoEngine(s: string): s is AutoModeEngine {
 }
 
 function isReasoningMode(s: string): s is ReasoningMode {
-  return REASONING_MODES.includes(s as ReasoningMode);
+  return (
+    REASONING_MODES.includes(s as ReasoningMode) ||
+    LEGACY_REASONING_MODES.includes(s as ReasoningMode)
+  );
 }
 
 function normalizeAgentMode(s: string): AgentMode | 'toggle' | 'retired' | undefined {
@@ -1703,7 +1716,7 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
     name: 'reasoning',
     aliases: ['reason'],
     description: 'Show or switch reasoning mode',
-    argsHint: '[off|auto|quick|balanced|deep]',
+    argsHint: '[off|auto|minimal|low|medium|high|xhigh|max]',
     source: 'builtin',
     handler: async (ctx) => {
       const session = kodaxHost.get(ctx.sessionId);
@@ -1911,7 +1924,7 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
     name: 'thinking',
     aliases: ['think', 't'],
     description: 'Show or change thinking/reasoning output for next turn.',
-    argsHint: '[on|off|auto|quick|balanced|deep]',
+    argsHint: '[on|off|auto|minimal|low|medium|high|xhigh|max]',
     source: 'builtin',
     handler: async (ctx) => {
       const target = ctx.args[0];
@@ -1920,7 +1933,7 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
       if (!target) {
         return {
           ok: true,
-          message: `Thinking: ${session.thinking === undefined ? 'default' : session.thinking ? 'on' : 'off'}\nReasoning mode: ${session.reasoningMode}\nUsage: /thinking [on|off|auto|quick|balanced|deep]`,
+          message: `Thinking: ${session.thinking === undefined ? 'default' : session.thinking ? 'on' : 'off'}\nReasoning mode: ${session.reasoningMode}\nUsage: /thinking [on|off|auto|minimal|low|medium|high|xhigh|max]`,
           echo: true,
         };
       }
@@ -1944,7 +1957,10 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
           `reasoning -> ${target} (applies on next send)`,
         );
       }
-      return { ok: false, message: 'Usage: /thinking [on|off|auto|quick|balanced|deep]' };
+      return {
+        ok: false,
+        message: 'Usage: /thinking [on|off|auto|minimal|low|medium|high|xhigh|max]',
+      };
     },
   },
 

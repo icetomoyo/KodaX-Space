@@ -21,6 +21,7 @@ import {
   sessionRewindChannel,
   sessionAgentsMdChannel,
   sessionSetAgentModeChannel,
+  sessionSetReasoningModeChannel,
 } from '../src/index.js';
 
 const historyEnvelope = { sessionId: 's_1', requestId: 'history-1' } as const;
@@ -525,6 +526,32 @@ test('session.create input: rejects bogus reasoningMode', () => {
     reasoningMode: 'bogus',
   });
   assert.equal(result.success, false);
+});
+
+test('reasoning settings accept canonical efforts and legacy Space aliases', () => {
+  for (const mode of [
+    'off',
+    'auto',
+    'minimal',
+    'low',
+    'medium',
+    'high',
+    'xhigh',
+    'max',
+    'quick',
+    'balanced',
+    'deep',
+  ]) {
+    assert.equal(
+      sessionSetReasoningModeChannel.input.safeParse({ sessionId: 's_1', mode }).success,
+      true,
+      `should accept ${mode}`,
+    );
+  }
+  assert.equal(
+    sessionSetReasoningModeChannel.input.safeParse({ sessionId: 's_1', mode: 'ultra' }).success,
+    false,
+  );
 });
 
 test('agentMode enum accepts canonical AMA and SA only', () => {

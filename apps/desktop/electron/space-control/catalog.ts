@@ -101,7 +101,7 @@ export const SPACE_ACTION_DESCRIPTORS: readonly SpaceActionDescriptor[] = [
     surfaces: ['code'],
     planModeAllowed: false,
     valueType: 'enum',
-    allowedValues: ['off', 'auto', 'quick', 'balanced', 'deep'],
+    allowedValues: ['off', 'auto', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
     aliases: ['reasoning', 'thinking', 'deep reasoning', 'effort default'],
   },
 ] as const;

@@ -66,7 +66,11 @@ function reasoningDefaultOf(reasoning: CustomProviderReasoning | undefined): str
 }
 
 /** Build the SDK friendly reasoning declaration from the form fields (undefined = not declared). */
-function buildReasoning(none: boolean, effortsCsv: string, defaultEffort: string): CustomProviderReasoning | undefined {
+function buildReasoning(
+  none: boolean,
+  effortsCsv: string,
+  defaultEffort: string,
+): CustomProviderReasoning | undefined {
   if (none) return 'none';
   const efforts = effortsCsv
     .split(',')
@@ -180,7 +184,9 @@ export function CustomProviderForm({
   );
   const [modelsCsv, setModelsCsv] = useState(initialModelsCsv);
   const [reasoningNone, setReasoningNone] = useState(provider?.reasoning === 'none');
-  const [reasoningEfforts, setReasoningEfforts] = useState(reasoningEffortsCsv(provider?.reasoning));
+  const [reasoningEfforts, setReasoningEfforts] = useState(
+    reasoningEffortsCsv(provider?.reasoning),
+  );
   const [reasoningDefault, setReasoningDefault] = useState(reasoningDefaultOf(provider?.reasoning));
   const [apiKey, setApiKey] = useState('');
   const [revealKey, setRevealKey] = useState(false);
@@ -645,7 +651,7 @@ export function CustomProviderForm({
                 type="text"
                 value={reasoningEfforts}
                 onChange={(e) => setReasoningEfforts(e.target.value)}
-                placeholder="off, low, medium, high"
+                placeholder="off, low, medium, high, xhigh, max"
                 className={`${inputClass} font-mono`}
                 disabled={formLocked}
                 aria-label={t('customProvider.reasoning.efforts.label')}

@@ -52,6 +52,7 @@ import {
 } from '../ipc/clipboard.js';
 import { revokeSessionAttachmentPreviews } from '../window/session-attachment-protocol.js';
 import { runtimeHostAdapter } from './runtime-host-adapter.js';
+import { resolveSdkSpaceWireEffort, runtimeSettingEffort } from './reasoning-effort.js';
 
 // alpha.2: Real KodaX 内核 vs Mock 切换。
 //
@@ -236,7 +237,7 @@ class KodaXHost {
   createSession(opts: {
     projectRoot: string;
     provider: string;
-    reasoningMode?: 'off' | 'auto' | 'quick' | 'balanced' | 'deep';
+    reasoningMode?: import('@kodax-space/space-ipc-schema').ReasoningMode;
     permissionMode?: import('@kodax-space/space-ipc-schema').PermissionMode;
     autoModeEngine?: import('@kodax-space/space-ipc-schema').AutoModeEngine;
     /** 缺省 'ama'。SA 是接口并发受限的 fallback；与 KodaX SDK 默认一致。*/
@@ -398,6 +399,11 @@ class KodaXHost {
       }
       const autoModeEngineChanged = before.autoModeEngine !== session.autoModeEngine;
       if (session.surface === 'code' && runtimeHostAdapter.hasReadyRuntime()) {
+        const wireEffort = await resolveSdkSpaceWireEffort({
+          provider: session.provider,
+          ...(session.model ? { model: session.model } : {}),
+          reasoningMode: session.reasoningMode,
+        });
         // A newly-created Space session is intentionally admitted to the daemon
         // lazily. Settings can be changed before the first send, so admit it here
         // as well and seed the complete settings snapshot instead of applying only
@@ -408,7 +414,8 @@ class KodaXHost {
             provider: session.provider,
             model: session.model ?? null,
             thinking: session.thinking ?? null,
-            reasoningMode: session.reasoningMode,
+            effort: runtimeSettingEffort(session.reasoningMode, wireEffort),
+            reasoningMode: null,
             permissionMode: session.permissionMode,
             executionCwd: session.projectRoot,
             agentMode: session.agentMode,
@@ -434,12 +441,26 @@ class KodaXHost {
         return 'ok';
       }
       if (session.surface === 'code' && runtimeHostAdapter.hasReadyRuntime()) {
+        const reasoningContextChanged =
+          before.provider !== session.provider ||
+          before.model !== session.model ||
+          before.reasoningMode !== session.reasoningMode;
+        const rollbackWireEffort = reasoningContextChanged
+          ? await resolveSdkSpaceWireEffort({
+              provider: before.provider,
+              ...(before.model ? { model: before.model } : {}),
+              reasoningMode: before.reasoningMode,
+            })
+          : undefined;
         const rollbackPatch = {
           ...(before.provider !== session.provider ? { provider: before.provider } : {}),
           ...(before.model !== session.model ? { model: before.model ?? null } : {}),
           ...(before.thinking !== session.thinking ? { thinking: before.thinking ?? null } : {}),
-          ...(before.reasoningMode !== session.reasoningMode
-            ? { reasoningMode: before.reasoningMode }
+          ...(reasoningContextChanged
+            ? {
+                effort: runtimeSettingEffort(before.reasoningMode, rollbackWireEffort),
+                reasoningMode: null,
+              }
             : {}),
           ...(before.permissionMode !== session.permissionMode
             ? { permissionMode: before.permissionMode }

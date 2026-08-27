@@ -113,7 +113,7 @@ test('space control apply denies stale, mismatched, plan-mode, and missing tool-
     permissionMode: 'plan' as const,
   };
   const planInspection = (await service.inspect(
-    { actionId: 'settings.reasoningMode.setDefault', args: { value: 'deep' } },
+    { actionId: 'settings.reasoningMode.setDefault', args: { value: 'max' } },
     planContext,
   )) as { actions: Array<Record<string, unknown>> };
   assert.equal(planInspection.actions[0].available, false);
@@ -124,7 +124,7 @@ test('space control apply denies stale, mismatched, plan-mode, and missing tool-
       await service.apply(
         {
           actionId: 'settings.reasoningMode.setDefault',
-          args: { value: 'deep' },
+          args: { value: 'max' },
           expectedRevision: 4,
           preconditionToken: 'precondition-token',
         },

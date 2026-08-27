@@ -26,7 +26,7 @@ test('SessionRuntimeStore merges partial runtime patches', async () => {
     permissionMode: 'auto',
     autoModeEngine: 'rules',
   });
-  await store.set('s_runtime-1', { reasoningMode: 'deep', agentMode: 'sa' });
+  await store.set('s_runtime-1', { reasoningMode: 'xhigh', agentMode: 'sa' });
 
   assert.deepEqual(await store.read('s_runtime-1'), {
     provider: 'zhipu-coding',
@@ -34,7 +34,7 @@ test('SessionRuntimeStore merges partial runtime patches', async () => {
     thinking: true,
     permissionMode: 'auto',
     autoModeEngine: 'rules',
-    reasoningMode: 'deep',
+    reasoningMode: 'xhigh',
     agentMode: 'sa',
   });
 });
@@ -144,14 +144,14 @@ test('SessionRuntimeStore serializes concurrent partial runtime writes', async (
   await Promise.all([
     store.set('s_runtime-concurrent', { permissionMode: 'auto' }),
     store.set('s_runtime-concurrent', { autoModeEngine: 'rules' }),
-    store.set('s_runtime-concurrent', { reasoningMode: 'deep' }),
+    store.set('s_runtime-concurrent', { reasoningMode: 'max' }),
     store.set('s_runtime-concurrent', { agentMode: 'sa' }),
   ]);
 
   assert.deepEqual(await store.read('s_runtime-concurrent'), {
     permissionMode: 'auto',
     autoModeEngine: 'rules',
-    reasoningMode: 'deep',
+    reasoningMode: 'max',
     agentMode: 'sa',
   });
 });

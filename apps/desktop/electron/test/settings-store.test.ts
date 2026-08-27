@@ -290,11 +290,11 @@ test('setRuntimeDefaults merges and persists runtime defaults', async () => {
     autoModeEngine: 'rules',
   });
 
-  const merged = await store.setRuntimeDefaults({ reasoningMode: 'deep', agentMode: 'sa' });
+  const merged = await store.setRuntimeDefaults({ reasoningMode: 'max', agentMode: 'sa' });
   assert.deepEqual(merged.runtimeDefaults, {
     permissionMode: 'auto',
     autoModeEngine: 'rules',
-    reasoningMode: 'deep',
+    reasoningMode: 'max',
     agentMode: 'sa',
   });
 

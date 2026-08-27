@@ -48,7 +48,19 @@ const SETTINGS_TABS = new Set<SettingsTab>([
   'license',
 ]);
 const WIDTH_PRESETS = new Set<TaskDockWidthPreset>(['default', 'half', 'max']);
-const REASONING_MODES = new Set<ReasoningMode>(['off', 'auto', 'quick', 'balanced', 'deep']);
+const REASONING_MODES = new Set<ReasoningMode>([
+  'off',
+  'auto',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+  'quick',
+  'balanced',
+  'deep',
+]);
 const RENDERER_INSTANCE_ID = globalThis.crypto.randomUUID();
 
 function isStringIn<T extends string>(values: ReadonlySet<T>, value: unknown): value is T {

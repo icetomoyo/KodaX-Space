@@ -62,7 +62,7 @@ function loadSdkLlm(): Promise<SdkLlmModule | null> {
 }
 
 // /agent 子路径——只用它的 reasoning-effort 能力学习缓存（getCachedRejectedEfforts /
-// recordRejectedEffort）。加载失败返 null，effort 解析退回纯 profile（不影响主回路）。
+// recordRejectedEffort）。加载失败返 null，canonical resolver 仍可在没有拒绝缓存时工作。
 type SdkAgentModule = typeof import('@kodax-ai/kodax/agent');
 let sdkAgentCache: Promise<SdkAgentModule | null> | null = null;
 function loadSdkAgent(): Promise<SdkAgentModule | null> {
@@ -149,6 +149,7 @@ import type {
 import type {
   InputArtifact,
   PermissionMode,
+  ReasoningMode,
   SessionEvent,
   SessionSendRejectionReason,
   SpaceRuntimeRunStopReceiptT,
@@ -284,10 +285,10 @@ import {
   drainQueueForSession,
   enqueueUserPrompt,
 } from '../ipc/queue.js';
-import { resolveWireEffort, type ReasoningProfileLike } from './reasoning-effort.js';
+import { resolveSpaceWireEffort, runtimeSettingEffort } from './reasoning-effort.js';
 import { runtimeHostAdapter } from './runtime-host-adapter.js';
 
-type SpaceReasoning = 'off' | 'auto' | 'quick' | 'balanced' | 'deep';
+type SpaceReasoning = ReasoningMode;
 
 function canonicalAgentMode(mode: KodaXAgentMode): 'ama' | 'sa' {
   return mode === 'sa' ? 'sa' : 'ama';
@@ -502,6 +503,18 @@ export class RealKodaXSession implements ManagedSession {
     return this.currentAbort !== null;
   }
 
+  private async resolveCurrentWireEffort(): Promise<string | undefined> {
+    const [sdk, agent] = await Promise.all([loadSdkCoding(), loadSdkAgent()]);
+    return resolveSpaceWireEffort({
+      provider: this.provider,
+      ...(this.model ? { model: this.model } : {}),
+      reasoningMode: this.reasoningMode,
+      rejectedEfforts:
+        agent?.getCachedRejectedEfforts(this.provider, this.model ?? undefined) ?? [],
+      resolveWireEffort: sdk.resolveWireEffort,
+    });
+  }
+
   private async syncRuntimeSessionSettings(): Promise<KodaXShellExecutionContract | undefined> {
     const { terminalShell } = await settingsStore.load();
     const shellExecution = await resolveKodaXShellExecutionContract(terminalShell, {
@@ -510,11 +523,13 @@ export class RealKodaXSession implements ManagedSession {
     const shellExecutionFingerprint = JSON.stringify(shellExecution ?? null);
     const shellExecutionChanged = this.shellExecutionFingerprint !== shellExecutionFingerprint;
     const dispatchedPermissionMode = this.permissionMode;
+    const wireEffort = await this.resolveCurrentWireEffort();
     await runtimeHostAdapter.updateSessionSettings(this.sessionId, {
       provider: this.provider,
       model: this.model ?? null,
       thinking: this.thinking ?? null,
-      reasoningMode: this.reasoningMode,
+      effort: runtimeSettingEffort(this.reasoningMode, wireEffort),
+      reasoningMode: null,
       permissionMode: dispatchedPermissionMode,
       executionCwd: this.projectRoot,
       // Reconcile this at every execution boundary: the daemon session may have
@@ -1317,16 +1332,17 @@ export class RealKodaXSession implements ManagedSession {
       const shellExecution = await this.syncRuntimeSessionSettings();
       await runtimeHostAdapter.ensureObserved(sid);
 
-      const [skillsPrompt, runConfig, sdk] = await Promise.all([
+      const [skillsPrompt, runConfig, sdk, wireEffort] = await Promise.all([
         buildSkillsPromptForSurface('code', this.projectRoot),
         loadKodaxRunConfig(),
         loadSdkCoding(),
+        this.resolveCurrentWireEffort(),
       ]);
       const selfManual = buildSpaceManual(sdk);
       const workflowPolicy = workflowPolicyStore.get();
       const options: RuntimeDaemonKodaXOptions = {
         provider: this.provider,
-        reasoningMode: this.reasoningMode,
+        ...(wireEffort !== undefined ? { effort: wireEffort } : {}),
         agentMode: this.agentMode,
         ...(this.model !== undefined ? { model: this.model } : {}),
         ...(explicitSkill?.modelOverride !== undefined
@@ -2610,23 +2626,7 @@ export class RealKodaXSession implements ManagedSession {
         ...(inputArtifacts ? { inputArtifacts } : {}),
       };
 
-      // C4/C5/C1: 解析 Space 的 5 档 reasoning 到 provider 真实档位。绝不发 provider 本地硬拒的
-      // 档位（kimi-code/minimax 的 'none'/'minimal' 会 throw），"Deep" 触及真实天花板（GLM-5.2 'max'），
-      // 并排除本进程 wire 层已拒过的档位（onReasoningEffortRejected → getCachedRejectedEfforts）。
-      let reasoningProfile: ReasoningProfileLike | undefined;
-      try {
-        reasoningProfile = (
-          sdk.resolveProvider(this.provider) as {
-            getReasoningProfile?: (model?: string) => ReasoningProfileLike | undefined;
-          }
-        )?.getReasoningProfile?.(this.model ?? undefined);
-      } catch {
-        reasoningProfile = undefined; // custom_* / 未识别 provider → 走 legacy 静态映射
-      }
-      const rejectedEfforts =
-        (await loadSdkAgent())?.getCachedRejectedEfforts(this.provider, this.model ?? undefined) ??
-        [];
-      const wireEffort = resolveWireEffort(this.reasoningMode, reasoningProfile, rejectedEfforts);
+      const wireEffort = await this.resolveCurrentWireEffort();
       const runConfig = await loadKodaxRunConfig();
       const persistedSkillSession =
         sessionStorage !== undefined

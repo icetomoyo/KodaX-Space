@@ -8849,7 +8849,7 @@ test('a stale snapshot settings task cannot overwrite a newer Runtime revision',
   });
 
   assert.equal(kodaxHost.get(sessionId)?.provider, 'openai');
-  assert.equal(kodaxHost.get(sessionId)?.reasoningMode, 'deep');
+  assert.equal(kodaxHost.get(sessionId)?.reasoningMode, 'max');
   await adapter.close();
 });
 
@@ -12810,10 +12810,10 @@ test('observation with an omitted model keeps a concrete provider default for Au
   });
 
   await adapter.ensureObserved('s_auto_default_model');
-  await waitForTest(() => kodaxHost.get('s_auto_default_model')?.reasoningMode === 'deep');
+  await waitForTest(() => kodaxHost.get('s_auto_default_model')?.reasoningMode === 'high');
 
   assert.equal(kodaxHost.get('s_auto_default_model')?.model, 'glm-5.3');
-  assert.equal(kodaxHost.get('s_auto_default_model')?.reasoningMode, 'deep');
+  assert.equal(kodaxHost.get('s_auto_default_model')?.reasoningMode, 'high');
   await adapter.close();
 });
 
@@ -12863,7 +12863,7 @@ test('observation with an omitted model preserves an explicit create-time model'
   });
 
   await adapter.ensureObserved('s_explicit_model');
-  await waitForTest(() => kodaxHost.get('s_explicit_model')?.reasoningMode === 'deep');
+  await waitForTest(() => kodaxHost.get('s_explicit_model')?.reasoningMode === 'high');
 
   assert.equal(kodaxHost.get('s_explicit_model')?.model, 'glm-5.3');
   await adapter.close();

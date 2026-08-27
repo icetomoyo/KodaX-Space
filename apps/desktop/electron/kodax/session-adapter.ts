@@ -20,6 +20,7 @@ import type {
   InputArtifact,
   PermissionDecision,
   PermissionMode,
+  ReasoningMode,
   SessionEvent,
   SessionSendRejectionReason,
   SessionSendQueueMode,
@@ -41,7 +42,7 @@ export type SessionCreateOptions = {
   readonly sessionId: string;
   readonly projectRoot: string;
   readonly provider: string;
-  readonly reasoningMode: 'off' | 'auto' | 'quick' | 'balanced' | 'deep';
+  readonly reasoningMode: ReasoningMode;
   readonly permissionMode: PermissionMode;
   readonly autoModeEngine?: AutoModeEngine;
   readonly agentMode?: AgentMode;

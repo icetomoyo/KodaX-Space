@@ -22,13 +22,16 @@ export function mergeRuntimeSettingsIntoSessions(
   return sessions.map((session) => {
     if (session.sessionId !== projection.sessionId || session.surface !== 'code') return session;
     const effortMode = settings.effort ? sdkEffortToReasoningMode(settings.effort) : null;
+    const legacyMode = settings.reasoningMode
+      ? sdkEffortToReasoningMode(settings.reasoningMode)
+      : null;
     const next: SessionMeta = {
       ...session,
       ...(settings.provider ? { provider: settings.provider } : {}),
-      ...(settings.reasoningMode
-        ? { reasoningMode: settings.reasoningMode }
-        : effortMode
-          ? { reasoningMode: effortMode }
+      ...(effortMode
+        ? { reasoningMode: effortMode }
+        : legacyMode
+          ? { reasoningMode: legacyMode }
           : {}),
       ...(settings.permissionMode ? { permissionMode: settings.permissionMode } : {}),
       ...(settings.agentMode ? { agentMode: settings.agentMode } : {}),

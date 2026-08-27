@@ -13,7 +13,19 @@ import { getSpaceDataDir } from '../data-paths.js';
 
 const MAX_CONFIG_BYTES = 32 * 1024;
 const TRANSIENT_INSTALL_ALIAS_RETRIES = 4;
-const reasoningModeSchema = z.enum(['off', 'auto', 'quick', 'balanced', 'deep']);
+const reasoningModeSchema = z.enum([
+  'off',
+  'auto',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+  'quick',
+  'balanced',
+  'deep',
+]);
 const permissionModeSchema = z.enum(['plan', 'accept-edits', 'auto']);
 const autoModeEngineSchema = z.enum(['llm', 'rules']);
 const agentModeSchema = z.preprocess(

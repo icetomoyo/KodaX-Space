@@ -14,8 +14,22 @@ import {
   spaceRuntimeSidecarMessagePayloadSchema,
 } from './runtime.js';
 
-// ---- Reasoning mode (镜像 @kodax-ai/llm 的 KodaXReasoningMode 闭集) ----
-export const reasoningModeSchema = z.enum(['off', 'auto', 'quick', 'balanced', 'deep']);
+// ---- Reasoning effort ----
+// Canonical UI values preserve the SDK's real effort rungs. quick/balanced/deep
+// remain accepted only so persisted pre-effort Space sessions continue to load.
+export const reasoningModeSchema = z.enum([
+  'off',
+  'auto',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+  'quick',
+  'balanced',
+  'deep',
+]);
 export type ReasoningMode = z.infer<typeof reasoningModeSchema>;
 
 // ---- Permission mode (FEATURE_029 / alpha.1) — 对齐 KodaX REPL canonical ----

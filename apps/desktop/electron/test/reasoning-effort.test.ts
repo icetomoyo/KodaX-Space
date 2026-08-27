@@ -1,91 +1,149 @@
-import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveWireEffort, type ReasoningProfileLike } from '../kodax/reasoning-effort.js';
+import test from 'node:test';
 
-// Profiles mirror the real SDK getReasoningProfile() output (verified against 0.7.71).
-const KIMI_CODE: ReasoningProfileLike = {
-  supportedEfforts: [
-    { value: 'low' },
-    { value: 'medium' },
-    { value: 'high' },
-    { value: 'xhigh' },
-    { value: 'max' },
-  ],
-  localRejectEfforts: ['none', 'minimal'],
-  defaultEffort: 'high',
-};
-const GLM_CODING: ReasoningProfileLike = {
-  supportedEfforts: [
-    { value: 'none' },
-    { value: 'minimal' },
-    { value: 'low' },
-    { value: 'medium' },
-    { value: 'high' },
-    { value: 'xhigh' },
-    { value: 'max' },
-  ],
-  // none/minimal are disabledEfforts (fold to off) but NOT localReject — safe to send.
-  defaultEffort: 'max',
-};
-const ANTHROPIC: ReasoningProfileLike = {
-  supportedEfforts: [
-    { value: 'low' },
-    { value: 'medium' },
-    { value: 'high' },
-    { value: 'xhigh' },
-    { value: 'max' },
-  ],
-  defaultEffort: 'high',
-};
-const KIMI_K3: ReasoningProfileLike = {
-  supportedEfforts: [{ value: 'none' }, { value: 'low' }, { value: 'high' }, { value: 'max' }],
-  defaultEffort: 'max',
-};
+import {
+  registerCustomProviders,
+  resolveWireEffort as resolveSdkWireEffort,
+} from '@kodax-ai/kodax/coding';
 
-test('C4: "Off" never emits a locally-rejected effort (kimi-code/minimax clamp up, no crash)', () => {
-  // kimi-code hard-rejects none/minimal → "Off" clamps to the weakest usable rung, not a throw.
-  assert.equal(resolveWireEffort('off', KIMI_CODE), 'low');
+import {
+  effortToReasoningMode,
+  reasoningModeToEffort,
+  resolveSdkSpaceWireEffort,
+  resolveSpaceWireEffort,
+  runtimeSettingEffort,
+} from '../kodax/reasoning-effort.js';
+
+test('canonical efforts are preserved while legacy Space modes remain readable', () => {
+  assert.equal(reasoningModeToEffort('off'), 'none');
+  assert.equal(reasoningModeToEffort('minimal'), 'minimal');
+  assert.equal(reasoningModeToEffort('low'), 'low');
+  assert.equal(reasoningModeToEffort('medium'), 'medium');
+  assert.equal(reasoningModeToEffort('high'), 'high');
+  assert.equal(reasoningModeToEffort('xhigh'), 'xhigh');
+  assert.equal(reasoningModeToEffort('max'), 'max');
+  assert.equal(reasoningModeToEffort('quick'), 'low');
+  assert.equal(reasoningModeToEffort('balanced'), 'medium');
+  assert.equal(reasoningModeToEffort('deep'), 'max');
 });
 
-test('C5: "Deep" reaches the provider ceiling (GLM-5.2 -> max, not a static high)', () => {
-  assert.equal(resolveWireEffort('deep', GLM_CODING), 'max');
-  assert.equal(resolveWireEffort('deep', KIMI_CODE), 'max');
-  assert.equal(resolveWireEffort('deep', ANTHROPIC), 'max');
-  assert.equal(resolveWireEffort('deep', KIMI_K3), 'max');
+test('SDK effort projection keeps xhigh/max distinct and normalizes legacy aliases', () => {
+  assert.equal(effortToReasoningMode('none'), 'off');
+  assert.equal(effortToReasoningMode('minimal'), 'minimal');
+  assert.equal(effortToReasoningMode('low'), 'low');
+  assert.equal(effortToReasoningMode('medium'), 'medium');
+  assert.equal(effortToReasoningMode('high'), 'high');
+  assert.equal(effortToReasoningMode('xhigh'), 'xhigh');
+  assert.equal(effortToReasoningMode('max'), 'max');
+  assert.equal(effortToReasoningMode('quick'), 'low');
+  assert.equal(effortToReasoningMode('balanced'), 'medium');
+  assert.equal(effortToReasoningMode('deep'), 'max');
 });
 
-test('Kimi K3 keeps explicit thinking-off while its deep tier reaches max', () => {
-  assert.equal(resolveWireEffort('off', KIMI_K3), 'none');
-  assert.equal(resolveWireEffort('deep', KIMI_K3), 'max');
+test('custom provider without a reasoning declaration omits reasoning_effort', () => {
+  registerCustomProviders([
+    {
+      name: 'space-unprofiled-qwen',
+      protocol: 'openai',
+      baseUrl: 'http://127.0.0.1:8000/v1',
+      apiKeyEnv: 'SPACE_TEST_QWEN_KEY',
+      model: 'qwen3.8-27b',
+    },
+  ]);
+
+  assert.equal(
+    resolveSpaceWireEffort({
+      provider: 'space-unprofiled-qwen',
+      model: 'qwen3.8-27b',
+      reasoningMode: 'deep',
+      resolveWireEffort: resolveSdkWireEffort,
+    }),
+    undefined,
+  );
 });
 
-test('no regression: providers that accept "none" for Off still get none', () => {
-  // Anthropic doesn't list 'none' in supportedEfforts, but accepts it for Off (thinking flag is
-  // separate) — must NOT be clamped to 'low'.
-  assert.equal(resolveWireEffort('off', ANTHROPIC), 'none');
-  // GLM lists none (disabled, folds to off) and doesn't localReject it → send none.
-  assert.equal(resolveWireEffort('off', GLM_CODING), 'none');
+test('SDK registry resolver also omits auto for an unprofiled custom provider', async () => {
+  registerCustomProviders([
+    {
+      name: 'space-unprofiled-auto-qwen',
+      protocol: 'openai',
+      baseUrl: 'http://127.0.0.1:8000/v1',
+      apiKeyEnv: 'SPACE_TEST_QWEN_KEY',
+      model: 'qwen3.8-27b',
+    },
+  ]);
+
+  assert.equal(
+    await resolveSdkSpaceWireEffort({
+      provider: 'space-unprofiled-auto-qwen',
+      model: 'qwen3.8-27b',
+      reasoningMode: 'auto',
+    }),
+    undefined,
+  );
 });
 
-test('quick/balanced pass through the mapped rung when not rejected', () => {
-  assert.equal(resolveWireEffort('quick', GLM_CODING), 'low'); // SDK aliases low->high at the wire
-  assert.equal(resolveWireEffort('balanced', KIMI_CODE), 'medium');
+test('Runtime settings preserve supported auto intent but omit unsupported auto', () => {
+  assert.equal(runtimeSettingEffort('auto', 'high'), 'auto');
+  assert.equal(runtimeSettingEffort('auto', undefined), null);
+  assert.equal(runtimeSettingEffort('high', 'xhigh'), 'xhigh');
 });
 
-test('auto and unset pass through untouched', () => {
-  assert.equal(resolveWireEffort('auto', KIMI_CODE), 'auto');
-  assert.equal(resolveWireEffort(undefined, KIMI_CODE), undefined);
+test('SDK fallback matrix resolves unsupported high/max to declared xhigh', () => {
+  registerCustomProviders([
+    {
+      name: 'space-profiled-qwen',
+      protocol: 'openai',
+      baseUrl: 'http://127.0.0.1:8000/v1',
+      apiKeyEnv: 'SPACE_TEST_QWEN_KEY',
+      model: 'qwen3.8-27b',
+      reasoning: {
+        efforts: ['off', 'low', 'medium', 'xhigh'],
+        default: 'xhigh',
+      },
+    },
+  ]);
+
+  const resolve = (reasoningMode: 'high' | 'xhigh' | 'max' | 'off'): string | undefined =>
+    resolveSpaceWireEffort({
+      provider: 'space-profiled-qwen',
+      model: 'qwen3.8-27b',
+      reasoningMode,
+      resolveWireEffort: resolveSdkWireEffort,
+    });
+
+  assert.equal(resolve('high'), 'xhigh');
+  assert.equal(resolve('xhigh'), 'xhigh');
+  assert.equal(resolve('max'), 'xhigh');
+  assert.equal(resolve('off'), 'none');
 });
 
-test('C1: observed wire-rejected efforts are excluded on subsequent turns', () => {
-  // After the API 400s on 'max', it's recorded; "Deep" then falls to the next ceiling (xhigh).
-  assert.equal(resolveWireEffort('deep', GLM_CODING, ['max']), 'xhigh');
-  assert.equal(resolveWireEffort('deep', GLM_CODING, ['max', 'xhigh']), 'high');
-});
+test('learned wire rejections are delegated to the SDK resolver', () => {
+  registerCustomProviders([
+    {
+      name: 'space-rejected-max',
+      protocol: 'openai',
+      baseUrl: 'http://127.0.0.1:8000/v1',
+      apiKeyEnv: 'SPACE_TEST_QWEN_KEY',
+      model: 'reasoner',
+      reasoning: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'], default: 'max' },
+    },
+  ]);
 
-test('no profile (custom_* / resolve failure) falls back to the static legacy mapping', () => {
-  assert.equal(resolveWireEffort('off', undefined), 'none');
-  assert.equal(resolveWireEffort('deep', undefined), 'high');
-  assert.equal(resolveWireEffort('quick', undefined), 'low');
-  assert.equal(resolveWireEffort('balanced', null), 'medium');
+  const resolved = resolveSpaceWireEffort({
+    provider: 'space-rejected-max',
+    model: 'reasoner',
+    reasoningMode: 'max',
+    rejectedEfforts: ['max'],
+    resolveWireEffort: resolveSdkWireEffort,
+  });
+  const sdkResolved = resolveSdkWireEffort({
+    provider: 'space-rejected-max',
+    model: 'reasoner',
+    desiredEffort: 'max',
+    rejectedEfforts: ['max'],
+  }).effort;
+
+  assert.equal(resolved, sdkResolved);
+  assert.notEqual(resolved, 'max');
 });

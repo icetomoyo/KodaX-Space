@@ -1204,7 +1204,19 @@ const MASCOT_MODE_VALUES = ['legacy', 'sprite', 'off'] as const;
 
 // 持久化 pending* 模式时校验合法 enum 值，避免 LS 被改成非法值后崩 (typescript 编译期没法知道)
 const PERMISSION_MODE_VALUES = ['plan', 'accept-edits', 'auto'] as const;
-const REASONING_MODE_VALUES = ['off', 'auto', 'quick', 'balanced', 'deep'] as const;
+const REASONING_MODE_VALUES = [
+  'off',
+  'auto',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+  'quick',
+  'balanced',
+  'deep',
+] as const;
 const AUTO_MODE_ENGINE_VALUES = ['llm', 'rules'] as const;
 const AGENT_MODE_VALUES = ['ama', 'sa'] as const;
 

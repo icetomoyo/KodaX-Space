@@ -4774,17 +4774,17 @@ export class RuntimeHostAdapter {
       session.model = session.model ?? resolveEffectiveProviderModel(session.provider, undefined);
     }
     session.thinking = settings.thinking;
-    if (
+    const effortMode = effortToReasoningMode(settings.effort);
+    if (effortMode !== undefined) {
+      session.reasoningMode = effortMode;
+    } else if (
       settings.reasoningMode === 'off' ||
       settings.reasoningMode === 'auto' ||
       settings.reasoningMode === 'quick' ||
       settings.reasoningMode === 'balanced' ||
       settings.reasoningMode === 'deep'
     ) {
-      session.reasoningMode = settings.reasoningMode;
-    } else {
-      const effortMode = effortToReasoningMode(settings.effort);
-      if (effortMode !== undefined) session.reasoningMode = effortMode;
+      session.reasoningMode = effortToReasoningMode(settings.reasoningMode) ?? 'auto';
     }
     if (
       settings.permissionMode === 'plan' ||

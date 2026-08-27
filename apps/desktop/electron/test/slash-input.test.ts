@@ -51,6 +51,8 @@ test('shouldOpenSlashCompletion opens command, subcommand, and selected arg comp
   assert.equal(shouldOpenSlashCompletion('/rep'), true);
   assert.equal(shouldOpenSlashCompletion('/repointel s'), true);
   assert.equal(shouldOpenSlashCompletion('/mode a'), true);
+  assert.equal(shouldOpenSlashCompletion('/reasoning xh'), true);
+  assert.equal(shouldOpenSlashCompletion('/thinking min'), true);
   assert.equal(shouldOpenSlashCompletion('/workflow re'), true);
   assert.equal(shouldOpenSlashCompletion('/extensions sdk l'), true);
   assert.equal(shouldOpenSlashCompletion('/workflow runs --lim'), true);
@@ -59,6 +61,7 @@ test('shouldOpenSlashCompletion opens command, subcommand, and selected arg comp
 
 test('shouldOpenSlashCompletion stays quiet for unsupported freeform arguments', () => {
   assert.equal(shouldOpenSlashCompletion('/mode auto'), false);
+  assert.equal(shouldOpenSlashCompletion('/reasoning quick'), false);
   assert.equal(shouldOpenSlashCompletion('/repointel status'), false);
   assert.equal(shouldOpenSlashCompletion('/extensions sdk load'), false);
   assert.equal(shouldOpenSlashCompletion('/compact instructions'), false);

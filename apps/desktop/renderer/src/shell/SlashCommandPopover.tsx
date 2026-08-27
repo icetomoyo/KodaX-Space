@@ -470,10 +470,29 @@ function buildSlashArgSuggestions(
       suggestions = staticOptions(['ama', 'sa', 'toggle']);
       break;
     case 'reasoning':
-      suggestions = staticOptions(['off', 'auto', 'quick', 'balanced', 'deep']);
+      suggestions = staticOptions([
+        'off',
+        'auto',
+        'minimal',
+        'low',
+        'medium',
+        'high',
+        'xhigh',
+        'max',
+      ]);
       break;
     case 'thinking':
-      suggestions = staticOptions(['on', 'off', 'auto', 'quick', 'balanced', 'deep']);
+      suggestions = staticOptions([
+        'on',
+        'off',
+        'auto',
+        'minimal',
+        'low',
+        'medium',
+        'high',
+        'xhigh',
+        'max',
+      ]);
       break;
     case 'provider':
       suggestions = providerSuggestions(query, providers, true, t);
@@ -664,14 +683,12 @@ export function SlashCommandPopover(props: SlashCommandPopoverProps): JSX.Elemen
         if (cancelled) return;
         const merged: SlashPickerItem[] = [
           ...cmds.map((c): SlashPickerItem => ({ kind: 'slash', meta: c })),
-          ...skills.map(
-            (s): SlashPickerItem => ({
-              kind: 'skill',
-              meta: s,
-              displayName: safeSkillSlashText(s.name, cmds),
-              insertText: skillSlashInsertText(s.name, cmds),
-            }),
-          ),
+          ...skills.map((s): SlashPickerItem => ({
+            kind: 'skill',
+            meta: s,
+            displayName: safeSkillSlashText(s.name, cmds),
+            insertText: skillSlashInsertText(s.name, cmds),
+          })),
         ];
         merged.sort((a, b) => pickerItemName(a).localeCompare(pickerItemName(b)));
         setItems(merged);

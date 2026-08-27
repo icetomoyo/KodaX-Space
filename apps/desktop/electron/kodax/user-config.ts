@@ -39,6 +39,7 @@ import {
 } from '../mcp/kodax-user-config-loader.js';
 import { getKodaxRuntimeDir } from './data-paths.js';
 import { effortToReasoningMode, isSpaceReasoningMode } from './reasoning-effort.js';
+import type { ReasoningMode } from '@kodax-space/space-ipc-schema';
 
 type SdkRootModule = typeof import('@kodax-ai/kodax');
 type SdkLoadConfigReturn = ReturnType<SdkRootModule['loadConfig']>;
@@ -53,7 +54,7 @@ export interface KodaxUserDefaults {
   readonly provider?: string;
   readonly model?: string;
   readonly thinking?: boolean;
-  readonly reasoningMode?: 'off' | 'auto' | 'quick' | 'balanced' | 'deep';
+  readonly reasoningMode?: ReasoningMode;
   readonly permissionMode?: KodaxMappablePermissionMode;
   readonly autoModeEngine?: 'llm' | 'rules';
   readonly autoModeClassifierModel?: string;
@@ -508,7 +509,7 @@ export async function registerKodaxCustomProviders(
 /** SDK 可能返回 string 标记的 reasoningMode；mapped 到 Space 的 union；其它值丢弃。*/
 function normalizeReasoningMode(v: unknown): KodaxUserDefaults['reasoningMode'] {
   if (typeof v !== 'string') return undefined;
-  return isSpaceReasoningMode(v) ? v : undefined;
+  return isSpaceReasoningMode(v) ? effortToReasoningMode(v) : undefined;
 }
 
 /**
