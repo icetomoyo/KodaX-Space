@@ -125,11 +125,27 @@ test('apiKeyEnv values match KodaX upstream catalog (env var naming convention)'
   }
 });
 
-test('zhipu-coding catalog tracks the KodaX 0.7.89 GLM-5.3 default', () => {
+test('zhipu-coding catalog tracks the KodaX 0.7.96 GLM-5.3 family', () => {
   const provider = getBuiltin('zhipu-coding');
   assert.ok(provider);
   assert.equal(provider.defaultModel, 'glm-5.3');
-  assert.deepEqual(provider.models, ['glm-5.3', 'glm-5.2', 'glm-5-turbo', 'glm-4.7']);
+  assert.deepEqual(provider.models, [
+    'glm-5.3',
+    'glm-5.3-flash',
+    'glm-5.2',
+    'glm-5-turbo',
+    'glm-4.7',
+  ]);
+});
+
+test('KodaX 0.7.96 catalog exposes the new flash and vision model routes', () => {
+  for (const providerId of ['zhipu', 'zhipu-coding', 'zai-coding']) {
+    assert.ok(getBuiltin(providerId)?.models?.includes('glm-5.3-flash'), providerId);
+  }
+  assert.ok(
+    getBuiltin('deepseek')?.models?.includes('deepseek-v4-flash-vision-exp'),
+    'deepseek',
+  );
 });
 
 test('zhipu-coding disaster fallback tracks the KodaX 0.7.89 GLM-5.3 default', () => {

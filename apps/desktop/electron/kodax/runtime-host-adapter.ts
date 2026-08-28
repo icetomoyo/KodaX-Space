@@ -84,6 +84,7 @@ import { areLearningMutationsEnabled } from './learning-policy.js';
 import {
   canonProjectRoot,
   sessionEventChannel,
+  spaceRuntimeFailureDetailSchema,
   workflowProcessSnapshotSchema,
   workflowRunSchema,
   type AgentActorTreeSnapshotT,
@@ -96,6 +97,7 @@ import {
   type ExternalAgentTaskT,
   type SessionEvent,
   type SpaceCoderConnectionProjectionT,
+  type SpaceRuntimeFailureDetailT,
   type SpaceRuntimeProfileProjectionT,
   type SpaceSessionLiveProjectionT,
 } from '@kodax-space/space-ipc-schema';
@@ -1152,8 +1154,8 @@ type SpaceRuntimeConnectOptions = Omit<ConnectKodaXRuntimeOptions, 'requirements
   /** Opt-in lifecycle policy for Space-managed daemons. */
   readonly daemonOrphanExitMs?: number;
   readonly requirements?: NonNullable<ConnectKodaXRuntimeOptions['requirements']> & {
-    /** Windows sandbox ownership and filesystem-effect convergence use the v5 contract. */
-    readonly sandboxRuntime?: 5;
+    /** Host text transactions and native Windows token/job enforcement use the v6 contract. */
+    readonly sandboxRuntime?: 6;
     /** The current daemon host actually has Space's orphan idle-exit policy enabled. */
     readonly daemonOrphanExit?: 1;
     /** Managed Run lifecycle events have canonical persistence boundaries. */
@@ -1386,9 +1388,9 @@ function runtimeCapabilityVersion(runtime: KodaXDaemonRuntime, name: string): nu
 }
 
 function assertSpaceDaemonRequiredCapabilities(runtime: KodaXDaemonRuntime): void {
-  if (runtimeCapabilityVersion(runtime, 'sandboxRuntime') < 5) {
+  if (runtimeCapabilityVersion(runtime, 'sandboxRuntime') < 6) {
     throw new Error(
-      'KodaX Runtime does not support the required sandboxRuntime v5 capability. ' +
+      'KodaX Runtime does not support the required sandboxRuntime v6 capability. ' +
         'Install a compatible KodaX package and restart the Coder daemon.',
     );
   }
@@ -1570,7 +1572,7 @@ export function assertSpaceRuntimeSdkRequiredCapabilities(sdk: {
     ...(capabilities?.managedRunDurability === 1 ? [] : ['managedRunDurability v1']),
     ...(capabilities?.runtimeExitSettlement === 2 ? [] : ['runtimeExitSettlement v2']),
     ...(capabilities?.runtimeEventCoalescing === 1 ? [] : ['runtimeEventCoalescing v1']),
-    ...((capabilities?.sandboxRuntime ?? 0) >= 5 ? [] : ['sandboxRuntime v5']),
+    ...((capabilities?.sandboxRuntime ?? 0) >= 6 ? [] : ['sandboxRuntime v6']),
     ...(capabilities?.sessionEventJournal === 1 ? [] : ['sessionEventJournal v1']),
   ];
   if (missing.length > 0) {
@@ -1829,14 +1831,25 @@ function runtimeFailureKind(value: unknown): RuntimeRunFailureKind | undefined {
     case 'auth':
     case 'rate_limit':
     case 'network':
+    case 'not_found':
+    case 'unknown_provider':
+    case 'request':
+    case 'upstream':
+    case 'cancelled':
     case 'provider_aborted':
     case 'invalid_response':
     case 'runtime_cleanup':
+    case 'context_capacity':
     case 'provider':
       return value;
     default:
       return undefined;
   }
+}
+
+function runtimeFailureDetail(value: unknown): SpaceRuntimeFailureDetailT | undefined {
+  const parsed = spaceRuntimeFailureDetailSchema.safeParse(value);
+  return parsed.success ? parsed.data : undefined;
 }
 
 function isReconnectableInitializationFailure(error: unknown): boolean {
@@ -1851,18 +1864,99 @@ function isReconnectableRunTransportLoss(error: unknown): boolean {
   return isRuntimeDaemonDisconnectFailure(error) && error.reconnectable;
 }
 
-function runtimeFailurePresentation(failureKind: unknown): {
-  readonly category: 'auth' | 'rate_limit' | 'network' | 'unknown';
+type RuntimeFailurePresentation = {
+  readonly category:
+    | 'auth'
+    | 'rate_limit'
+    | 'network'
+    | 'model_unavailable'
+    | 'bad_request'
+    | 'server_error'
+    | 'cancelled'
+    | 'unknown';
   readonly retriable: boolean;
-  readonly action?: 'retry' | 'open_provider_settings' | 'check_network';
-} {
+  readonly action?: 'retry' | 'open_provider_settings' | 'check_network' | 'change_model';
+};
+
+function providerFailurePresentation(
+  code: SpaceRuntimeFailureDetailT['providerErrorCode'] | undefined,
+  retryAfterMs?: number,
+): RuntimeFailurePresentation | undefined {
+  switch (code) {
+    case 'credential_unavailable':
+    case 'authentication_failed':
+      return { category: 'auth', retriable: false, action: 'open_provider_settings' };
+    case 'rate_limited':
+      return retryAfterMs === undefined
+        ? { category: 'rate_limit', retriable: false }
+        : { category: 'rate_limit', retriable: true, action: 'retry' };
+    case 'network_error':
+    case 'tls_error':
+    case 'request_timeout':
+      return { category: 'network', retriable: true, action: 'check_network' };
+    case 'provider_not_registered':
+    case 'catalog_error':
+    case 'endpoint_not_found':
+    case 'protocol_mismatch':
+      return { category: 'bad_request', retriable: false, action: 'open_provider_settings' };
+    case 'model_not_found':
+      return { category: 'model_unavailable', retriable: false, action: 'change_model' };
+    case 'upstream_server_error':
+      return { category: 'server_error', retriable: true, action: 'retry' };
+    case 'resource_not_found':
+    case 'request_build_failed':
+    case 'upstream_client_error':
+    case 'response_stream_error':
+      return { category: 'bad_request', retriable: false };
+    case 'context_capacity_exceeded':
+      return { category: 'bad_request', retriable: false, action: 'change_model' };
+    case 'cancelled':
+      return { category: 'cancelled', retriable: false };
+    case 'runtime_settlement_failed':
+    case 'provider_error':
+      return { category: 'unknown', retriable: false };
+    default:
+      return undefined;
+  }
+}
+
+function runtimeFailurePresentation(
+  failureKind: unknown,
+  providerErrorCode?: SpaceRuntimeFailureDetailT['providerErrorCode'],
+  retryAfterMs?: number,
+): RuntimeFailurePresentation {
+  if (failureKind === 'provider_aborted') return { category: 'unknown', retriable: false };
+  if (providerErrorCode === 'cancelled' && failureKind !== 'cancelled') {
+    return { category: 'unknown', retriable: false };
+  }
+  const specific = providerFailurePresentation(providerErrorCode, retryAfterMs);
+  if (specific !== undefined) return specific;
+  // A present-but-new stable code must use the neutral default path. Broad failureKind
+  // fallback is only for older Runtime builds that do not publish failureDetail codes.
+  if (providerErrorCode !== undefined) return { category: 'unknown', retriable: false };
   switch (failureKind) {
     case 'auth':
       return { category: 'auth', retriable: false, action: 'open_provider_settings' };
+    case 'unknown_provider':
+      return { category: 'bad_request', retriable: false, action: 'open_provider_settings' };
     case 'rate_limit':
       return { category: 'rate_limit', retriable: true, action: 'retry' };
     case 'network':
       return { category: 'network', retriable: true, action: 'check_network' };
+    case 'not_found':
+      return { category: 'bad_request', retriable: false };
+    case 'request':
+      return { category: 'bad_request', retriable: false };
+    case 'upstream':
+      return { category: 'unknown', retriable: false };
+    case 'cancelled':
+      return { category: 'cancelled', retriable: false };
+    case 'provider_aborted':
+      return { category: 'unknown', retriable: false };
+    case 'invalid_response':
+      return { category: 'bad_request', retriable: false, action: 'open_provider_settings' };
+    case 'context_capacity':
+      return { category: 'bad_request', retriable: false, action: 'change_model' };
     default:
       return { category: 'unknown', retriable: false };
   }
@@ -2221,7 +2315,7 @@ export class RuntimeHostAdapter {
         managedRunDurability: 1,
         actorSettlementConvergence: 2,
         runtimeEventCoalescing: 1,
-        sandboxRuntime: 5,
+        sandboxRuntime: 6,
         sessionEventJournal: 1,
         liveOutputSegments: 1,
         integrationConfigResilience: 1,
@@ -5241,22 +5335,20 @@ export class RuntimeHostAdapter {
         return;
       }
       const terminal = runtimeEventRecord(payload?.terminal);
-      const failureKind = runtimeFailureKind(terminal?.failureKind);
-      const terminalMessage =
-        event.type === 'run.failed' && typeof terminal?.message === 'string'
-          ? terminal.message.trim() || undefined
-          : undefined;
+      const failureDetail = runtimeFailureDetail(payload?.failureDetail);
+      const failureKind = failureDetail?.failureKind ?? runtimeFailureKind(terminal?.failureKind);
       const error =
-        typeof payload?.error === 'string'
-          ? payload.error
-          : terminalMessage !== undefined
-            ? terminalMessage
-            : event.type === 'run.cancelled'
-              ? 'cancelled'
-              : event.type === 'run.interrupted'
-                ? 'Runtime run interrupted'
-                : 'Runtime run failed';
-      const failurePresentation = runtimeFailurePresentation(failureKind);
+        failureDetail?.safeMessage ??
+        (event.type === 'run.cancelled'
+          ? 'cancelled'
+          : event.type === 'run.interrupted'
+            ? 'Runtime run interrupted'
+            : 'Runtime run failed');
+      const failurePresentation = runtimeFailurePresentation(
+        failureKind,
+        failureDetail?.providerErrorCode,
+        failureDetail?.retryAfterMs,
+      );
       this.push('session.event', {
         ...runtimeSessionEventOrigin(runtimeId, event),
         kind: 'session_error',
@@ -5264,8 +5356,18 @@ export class RuntimeHostAdapter {
         ...(event.turnId ? { turnId: event.turnId } : {}),
         error,
         ...(failureKind !== undefined ? { failureKind } : {}),
+        ...(failureDetail !== undefined ? { failureDetail } : {}),
         category: event.type === 'run.cancelled' ? 'cancelled' : failurePresentation.category,
         retriable: event.type === 'run.failed' ? failurePresentation.retriable : true,
+        ...(failureDetail?.retryAfterMs !== undefined
+          ? {
+              retryAvailableAt: Math.min(
+                Number.MAX_SAFE_INTEGER,
+                (Number.isFinite(Date.parse(event.time)) ? Date.parse(event.time) : Date.now()) +
+                  failureDetail.retryAfterMs,
+              ),
+            }
+          : {}),
         ...(event.type === 'run.failed' && failurePresentation.action !== undefined
           ? { action: failurePresentation.action }
           : {}),

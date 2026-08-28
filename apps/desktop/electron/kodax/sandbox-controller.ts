@@ -15,7 +15,7 @@ export interface SandboxDoctorResult {
 }
 
 export interface SandboxCapability {
-  readonly version: 5;
+  readonly version: 6;
   readonly asrtVersion: string;
   readonly platform: 'darwin' | 'linux' | 'win32';
   readonly backend:
@@ -26,6 +26,9 @@ export interface SandboxCapability {
   readonly setupMayElevate: boolean;
   readonly unavailableBehavior: 'structured-no-execution';
   readonly permissionFallback: 'normal-permission-policy';
+  readonly trustedTextAuthority: 'host-transaction';
+  readonly windowsShellAuthority: 'native-token-job-v2';
+  readonly commandLifetimeFilesystemLease: false;
 }
 
 export interface SandboxSetupOutcome {
@@ -151,7 +154,7 @@ function normalizeCapability(value: unknown): SandboxCapability {
     value.backend === 'linux-bubblewrap' ||
     value.backend === 'unsupported';
   if (
-    value.version !== 5 ||
+    value.version !== 6 ||
     typeof value.asrtVersion !== 'string' ||
     !/^\d+\.\d+\.\d+$/.test(value.asrtVersion) ||
     !validPlatform ||
@@ -161,7 +164,10 @@ function normalizeCapability(value: unknown): SandboxCapability {
     value.ordinaryCallsTriggerSetup !== false ||
     typeof value.setupMayElevate !== 'boolean' ||
     value.unavailableBehavior !== 'structured-no-execution' ||
-    value.permissionFallback !== 'normal-permission-policy'
+    value.permissionFallback !== 'normal-permission-policy' ||
+    value.trustedTextAuthority !== 'host-transaction' ||
+    value.windowsShellAuthority !== 'native-token-job-v2' ||
+    value.commandLifetimeFilesystemLease !== false
   ) {
     throw new Error('Sandbox capability is incompatible.');
   }

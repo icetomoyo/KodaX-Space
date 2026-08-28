@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 import { build } from 'esbuild';
 
-test('packaged dependency smoke requires conversationHistory v2', async () => {
+test('packaged dependency smoke requires conversationHistory v2 and sandboxRuntime v6', async () => {
   const source = await readFile(
     new URL('../../../../scripts/smoke-pack.mjs', import.meta.url),
     'utf8',
@@ -15,8 +15,27 @@ test('packaged dependency smoke requires conversationHistory v2', async () => {
 
   assert.match(source, /KODAX_RUNTIME_SDK_CAPABILITIES\?\.conversationHistory\s*!==\s*2/);
   assert.match(source, /KODAX_RUNTIME_SDK_CAPABILITIES\?\.runtimeExitSettlement\s*!==\s*2/);
-  assert.match(source, /KODAX_RUNTIME_SDK_CAPABILITIES\?\.sandboxRuntime\s*!==\s*5/);
-  assert.match(source, /daemonSandboxRuntime\.version\s*!==\s*5/);
+  assert.match(source, /KODAX_RUNTIME_SDK_CAPABILITIES\?\.sandboxRuntime\s*!==\s*6/);
+  assert.match(source, /daemonSandboxRuntime\.version\s*!==\s*6/);
+  assert.match(source, /result\.daemonSandboxRuntime\s*!==\s*6/);
+  assert.match(source, /result\.sandboxVersion\s*!==\s*6/);
+  assert.doesNotMatch(source, /(?:daemonSandboxRuntime|sandboxVersion)\s*!==\s*5/);
+  assert.match(source, /kodax-windows-sandbox\.exe/);
+  assert.match(source, /kodax-windows-text-transaction\.node/);
+  assert.match(source, /kodax-text-transaction\.node/);
+  assert.match(source, /native artifact hash mismatch/);
+});
+
+test('electron-builder keeps the complete KodaX native authority on the physical filesystem', async () => {
+  const source = await readFile(
+    new URL('../../../../electron-builder.yml', import.meta.url),
+    'utf8',
+  );
+
+  assert.match(
+    source,
+    /asarUnpack:[\s\S]*['"]\*\*\/node_modules\/@kodax-ai\/kodax\/dist\/native\/\*\*['"]/,
+  );
 });
 
 test('external-agent gateway preserves the Electron CJS require boundary', async () => {

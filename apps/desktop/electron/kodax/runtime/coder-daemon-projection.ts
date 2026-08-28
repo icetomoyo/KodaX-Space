@@ -1,4 +1,5 @@
 import type {
+  RuntimeFailureDetail,
   RuntimeIntegrationHealth,
   RuntimePermissionRequest,
   RuntimeRunStatus,
@@ -16,6 +17,7 @@ import {
   spaceSessionLiveChangedSchema,
   spaceSessionLiveProjectionSchema,
   type SpaceRuntimeCapabilityT,
+  type SpaceRuntimeFailureDetailT,
   type SpaceRuntimeIntegrationHealthT,
   type SpaceRuntimeInteractionT,
   type SpaceRuntimeProfileProjectionT,
@@ -75,6 +77,7 @@ function reduceOutputSegmentProjection(
 
 const MAX_DRAFT = 256 * 1024;
 const MAX_REASON = 512;
+const MAX_RUNTIME_FAILURE_MESSAGE = 1_024;
 const MAX_PERMISSION_INPUT_PREVIEW = 8_192;
 const MAX_TODOS = 1_000;
 const MAX_TOOLS = 128;
@@ -194,6 +197,29 @@ function runtimePhase(phase: RuntimeRunStatus['phase']): SpaceRuntimeRunProjecti
   return phase;
 }
 
+function projectRuntimeFailureDetail(detail: RuntimeFailureDetail): SpaceRuntimeFailureDetailT {
+  return {
+    failureKind: detail.failureKind,
+    stage: detail.stage,
+    providerErrorCode: detail.providerErrorCode,
+    safeMessage: detail.safeMessage.slice(0, MAX_RUNTIME_FAILURE_MESSAGE),
+    ...(detail.httpStatus !== undefined ? { httpStatus: detail.httpStatus } : {}),
+    ...(detail.upstreamErrorCode !== undefined
+      ? { upstreamErrorCode: detail.upstreamErrorCode.slice(0, 200) }
+      : {}),
+    ...(detail.requestId !== undefined ? { requestId: detail.requestId.slice(0, 200) } : {}),
+    ...(detail.retryAfterMs !== undefined ? { retryAfterMs: detail.retryAfterMs } : {}),
+    ...(detail.contextTokens !== undefined
+      ? {
+          contextTokens: {
+            required: detail.contextTokens.required,
+            available: detail.contextTokens.available,
+          },
+        }
+      : {}),
+  };
+}
+
 export function projectRuntimeRun(
   run: RuntimeRunStatus,
   queuePosition?: number,
@@ -219,12 +245,25 @@ export function projectRuntimeRun(
       : {}),
     ...(run.endedAt !== undefined ? { completedAt: timestamp(run.endedAt) } : {}),
     ...(queuePosition !== undefined ? { queuePosition } : {}),
-    ...(run.terminal?.message !== undefined || run.terminal?.code !== undefined
-      ? { terminalReason: (run.terminal?.message ?? run.terminal?.code ?? '').slice(0, MAX_REASON) }
-      : run.error
-        ? { terminalReason: run.error.slice(0, MAX_REASON) }
-        : {}),
+    ...(run.failureDetail !== undefined
+      ? { terminalReason: run.failureDetail.safeMessage.slice(0, MAX_REASON) }
+      : run.terminal?.message !== undefined || run.terminal?.code !== undefined
+        ? {
+            terminalReason: (run.terminal?.message ?? run.terminal?.code ?? '').slice(
+              0,
+              MAX_REASON,
+            ),
+          }
+        : run.error
+          ? { terminalReason: run.error.slice(0, MAX_REASON) }
+          : {}),
     ...(run.terminal?.failureKind !== undefined ? { failureKind: run.terminal.failureKind } : {}),
+    ...(run.failureDetail !== undefined
+      ? {
+          failureKind: run.failureDetail.failureKind,
+          failureDetail: projectRuntimeFailureDetail(run.failureDetail),
+        }
+      : {}),
     ...(run.lifecycleError !== undefined
       ? {
           lifecycleError: {

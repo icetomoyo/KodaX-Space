@@ -6,6 +6,10 @@
 
 > 当前发布精确锁定 KodaX `0.7.95`，要求 `conversationHistory:2`、`runtimeExitSettlement:2` 与 `sandboxRuntime:5`。同一 boot 的临时 `unconfirmed-owner` 会自动重试；Space 不要求用户删除标记，且只在缺少安全证明时阻断有竞争风险的 sandbox/owner 操作。
 >
+> 当前源码候选精确锁定 KodaX `0.7.96-alpha.2`，并要求 `sandboxRuntime:6`。
+> Windows 既有安装首次迁移可能需要用户在 Settings → Runtime 明确执行一次 Sandbox Setup；
+> 普通启动、Refresh 和工具调用不会隐式提升权限。正式发布版的 0.7.95 说明保留为历史事实。
+>
 > 已发布产品基线：KodaX Space [`v0.1.45`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.45)（package `0.1.45`）/ npm 正式发布的精确 KodaX `0.7.95`。ask_user 与 guardrail 授权以对话流内的聚焦提问卡呈现：全部待答卡并存可答，composer 上方有带计数与定位闪光的召回停靠条，队首卡支持 1-9/Enter/Esc 键盘操作，对话历史保持可滚动。
 >
 > 上一代已发布基线 `v0.1.44` 使用精确 Registry KodaX `0.7.93`，要求 `sandboxRuntime:4`、
@@ -263,6 +267,20 @@ Daemon 模式还会核对 daemon 的实际能力，而不只看已经安装的 n
 如果 daemon 启动时发现 inline owner，Space 不删除 `~/.kodax` 试图恢复；它把可读的 owner 状态交给 KodaX 的原子 daemon-enable reconciliation。只有 SDK 证明 owner 已废弃时才允许恢复，活动、不可读或不可验证 owner 继续 fail closed。Space 关闭时保留 inline owner handle，短暂 close 失败会重试；重试耗尽会报告清理错误，而不是把 ownership fence 静默遗留。
 
 > **历史 v0.1.38/v0.1.39 说明**：本节此前任何“未配置时 classifier timeout 为 `30000ms`”的表述均已失效。KodaX 0.7.84/0.7.85 在未显式配置 timeout 时使用首次 `45000ms`、一次重试 `90000ms`；v0.1.43 使用 KodaX 0.7.92，Space 只转发用户显式配置的值。
+
+### Runtime 失败详情
+
+当前源码候选接入 KodaX 0.7.96-alpha.2 的凭据安全
+`RuntimeFailureDetail`。真实 Run 失败时，错误条优先显示 SDK 固定且有界的
+`safeMessage`；展开“Runtime 失败详情”可以查看稳定 KodaX 错误码、失败阶段、
+Run/Request ID、HTTP 状态、上游短错误码、建议等待时间和上下文容量数据（仅在
+SDK 提供时显示）。Space 根据稳定的 `providerErrorCode` 决定打开 Provider 设置、
+切换模型、检查网络或重试；连接旧 daemon 时继续使用 `failureKind` 和通用终态文案。
+
+这些详情不会包含 API key、Authorization/Cookie、请求或响应正文、prompt、完整
+URL、本地路径、headers、stack 或原始 Error。测试连接成功只证明验证接口可用，
+不等于实际模型、对话 endpoint、streaming、tool-call/reasoning 格式及 daemon
+Provider catalog 全部兼容；真实 Run 的错误条和诊断导出才是对应 Run 的权威信息。
 
 ### Provider recovery 与 Ctrl+R transcript 一致性
 
@@ -670,7 +688,7 @@ flowchart TD
 | Terminal 找不到命令         | Settings → Preferences → Terminal Shell；确认所选 shell 的登录环境包含该命令                                |
 | Partner 没有浏览器/邮件发送 | 当前未交付，不是配置错误                                                                                    |
 | External Agent 不可选       | Reference 注册需 enabled 且 preflight 通过；真实网络适配器尚未交付                                          |
-| External Agent 任务区报错   | 无历史任务应显示空态；真正读取失败可点“重试”，主 Run 结果不因此变成失败                                    |
+| External Agent 任务区报错   | 无历史任务应显示空态；真正读取失败可点“重试”，主 Run 结果不因此变成失败                                     |
 | Quick Ask 不能打开          | 先打开项目；使用 `Mod+K`，不要与命令面板混淆                                                                |
 | 语言切换后仍有英文          | 模型输出、工具日志、文件内容和第三方数据不会被强制翻译                                                      |
 | UI 白屏或状态异常           | 记录版本、打开 DevTools、查看 `~/.kodax/space/logs`，不要直接删除整个 `~/.kodax`                            |

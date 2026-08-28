@@ -136,10 +136,60 @@ test('run projection accepts KodaX failureKind and rejects unknown classificatio
   } as const;
 
   assert.equal(spaceRuntimeRunProjectionSchema.safeParse(failedRun).success, true);
+  for (const failureKind of [
+    'not_found',
+    'unknown_provider',
+    'request',
+    'upstream',
+    'cancelled',
+    'context_capacity',
+  ]) {
+    assert.equal(
+      spaceRuntimeRunProjectionSchema.safeParse({ ...failedRun, failureKind }).success,
+      true,
+      `expected ${failureKind} to be accepted`,
+    );
+  }
   assert.equal(
     spaceRuntimeRunProjectionSchema.safeParse({
       ...failedRun,
       failureKind: 'made_up_failure',
+    }).success,
+    false,
+  );
+});
+
+test('run projection preserves bounded future provider diagnostics without forwarding extensions', () => {
+  const safeMessage = 'x'.repeat(1_024);
+  const result = spaceRuntimeRunProjectionSchema.safeParse({
+    runId: 'run_future_failure',
+    sessionId: 'session_future_failure',
+    phase: 'failed',
+    failureKind: 'provider',
+    failureDetail: {
+      failureKind: 'provider',
+      stage: 'transport',
+      providerErrorCode: 'future_provider_code_v2',
+      safeMessage,
+      upstreamErrorCode: 'gateway/model rejected=v2',
+      requestId: 'req/custom== shard 2',
+      retryAfterMs: 86_400_000,
+      futureDiagnostic: 'must-not-cross-space-ipc',
+    },
+  });
+
+  assert.equal(result.success, true);
+  if (!result.success) return;
+  assert.equal(result.data.failureDetail?.providerErrorCode, 'future_provider_code_v2');
+  assert.equal(result.data.failureDetail?.safeMessage, safeMessage);
+  assert.equal(result.data.failureDetail?.upstreamErrorCode, 'gateway/model rejected=v2');
+  assert.equal(result.data.failureDetail?.requestId, 'req/custom== shard 2');
+  assert.equal('futureDiagnostic' in (result.data.failureDetail ?? {}), false);
+
+  assert.equal(
+    spaceRuntimeRunProjectionSchema.safeParse({
+      ...result.data,
+      failureDetail: { ...result.data.failureDetail, retryAfterMs: 86_400_001 },
     }).success,
     false,
   );

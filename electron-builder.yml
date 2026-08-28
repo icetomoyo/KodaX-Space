@@ -175,9 +175,12 @@ extraResources:
       - '**/*.mjs'
 
 # build:smoke 已经把 renderer + main 全 bundle 进 dist*。
-# native 模块（keytar 等）走 asarUnpack——asar 内 require .node 会失败
+# native 模块（keytar 等）走 asarUnpack——asar 内 require .node 会失败。
+# KodaX native 目录必须整体解包；只解包 .node 会让 SDK 选中 app.asar.unpacked，
+# 但 Windows sandbox .exe 与 manifest 仍留在 asar，最终形成不可运行的混合目录。
 asarUnpack:
   - '**/*.node'
+  - '**/node_modules/@kodax-ai/kodax/dist/native/**'
   - '**/node_modules/@napi-rs/keyring-*/**'
   - '**/node_modules/better-sqlite3/**'
   # Keep better-sqlite3's native-binding resolver chain on the filesystem next to
@@ -223,7 +226,7 @@ nsis:
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: always
   createStartMenuShortcut: true
-  # 卸载时清理 %APPDATA%/kodax-space —— 不留 user data 残留
+  # 仅清理 %APPDATA%/kodax-space。KodaX Windows sandbox 的共享机器级状态不属于应用数据。
   deleteAppDataOnUninstall: true
   shortcutName: KodaX Space
   artifactName: 'KodaX-Space-Setup-${version}.${ext}'

@@ -5,7 +5,9 @@ import {
   getModelContextCap,
 } from '../../renderer/src/shell/modelContextCaps.js';
 
-test('GLM fallback caps track KodaX 0.7.56 provider capabilities', () => {
+test('GLM fallback caps track KodaX 0.7.96 provider capabilities', () => {
+  assert.equal(getModelContextCap('glm-5.3'), 1_000_000);
+  assert.equal(getModelContextCap('glm-5.3-flash'), 1_000_000);
   assert.equal(getModelContextCap('glm-5.2'), 1_000_000);
   assert.equal(getModelContextCap('glm-5'), 200_000);
   assert.equal(getModelContextCap('glm-5.1'), 200_000);

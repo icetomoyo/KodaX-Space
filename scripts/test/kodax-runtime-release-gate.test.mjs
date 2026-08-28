@@ -9,6 +9,7 @@ import { create as createTar } from 'tar';
 import {
   assertKodaxReleaseDependencyState,
   fetchRegistryTarball,
+  KODAX_NATIVE_PACKAGE_FILES,
 } from '../kodax-runtime-release-gate.mjs';
 
 test('Registry tarball fetch fails with a bounded timeout', async () => {
@@ -113,6 +114,12 @@ async function writeReleaseDependencyFixture(root, versions = {}) {
   await mkdir(path.join(tarRoot, 'package'), { recursive: true });
   await writeFile(path.join(tarRoot, 'package', 'package.json'), packageJson, 'utf8');
   await writeFile(path.join(tarRoot, 'package', 'runtime.js'), runtimeBytes, 'utf8');
+  for (const relative of KODAX_NATIVE_PACKAGE_FILES) {
+    if (relative === versions.omitNativeFile) continue;
+    const target = path.join(tarRoot, 'package', ...relative.split('/'));
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, `fixture:${relative}\n`, 'utf8');
+  }
   await mkdir(path.dirname(tarballPath), { recursive: true });
   await createTar({ gzip: true, file: tarballPath, cwd: tarRoot }, ['package']);
   const tarball = await readFile(tarballPath);
@@ -158,6 +165,18 @@ async function writeReleaseDependencyFixture(root, versions = {}) {
     runtimeBytes,
     'utf8',
   );
+  for (const relative of KODAX_NATIVE_PACKAGE_FILES) {
+    if (relative === versions.omitNativeFile) continue;
+    const target = path.join(
+      root,
+      'node_modules',
+      '@kodax-ai',
+      'kodax',
+      ...relative.split('/'),
+    );
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, `fixture:${relative}\n`, 'utf8');
+  }
   return { tarballPath };
 }
 
@@ -175,6 +194,22 @@ test('release dependency gate accepts one exact Registry version everywhere', as
   assert.match(result.resolved, /registry\.npmjs\.org/);
   assert.match(result.integrity, /^sha512-/);
   assert.equal(result.source, 'registry');
+});
+
+test('release dependency gate rejects a KodaX package without the universal native bundle', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'space-kodax-dependency-gate-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const missing = 'dist/native/win32-x64/kodax-windows-sandbox.exe';
+  const fixture = await writeReleaseDependencyFixture(root, { omitNativeFile: missing });
+
+  await assert.rejects(
+    assertKodaxReleaseDependencyState(
+      root,
+      path.join(root, 'node_modules', '@kodax-ai', 'kodax'),
+      { readRegistryTarball: () => readFile(fixture.tarballPath) },
+    ),
+    /missing native artifact.*kodax-windows-sandbox\.exe/i,
+  );
 });
 
 test('release dependency gate rejects a local test tarball by default', async (t) => {

@@ -13,7 +13,7 @@
   <a href="https://github.com/icetomoyo/KodaX-Space/releases/latest"><img alt="release" src="https://img.shields.io/github/v/release/icetomoyo/KodaX-Space?style=flat-square"></a>
   <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-KAI--FCL-orange?style=flat-square"></a>
   <a href="https://github.com/icetomoyo/KodaX-Space/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/icetomoyo/KodaX-Space/ci.yml?style=flat-square&label=ci"></a>
-  <img alt="KodaX SDK" src="https://img.shields.io/badge/KodaX_SDK-0.7.95-2ea44f?style=flat-square">
+  <img alt="KodaX SDK" src="https://img.shields.io/badge/KodaX_SDK-0.7.96--alpha.2-2ea44f?style=flat-square">
   <img alt="platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-34495e?style=flat-square">
 </p>
 
@@ -90,7 +90,7 @@ npm run dev
 
 ## 当前源码基线
 
-**`v0.1.45` 发布使用 npm Registry 正式发布且完整性锁定的 KodaX 0.7.95，并显式协商 Runtime 安全能力，不通过语义版本号推断支持。** root/Desktop manifest、lockfile、物理安装与打包 ASAR 均锁定正式 Registry URL/SRI。Coder 默认连接 profile-scoped shared daemon；完整退出路径要求 SDK 提供 `runtimeExitSettlement:2`，daemon 连接要求 `sandboxRuntime:5`、`crashOutcomeModel:2`、`actorSettlementConvergence:2` 与 `conversationHistory:2`。F141 的 Daemon / Embedded 开关仍由安全 admission gate 控制，必须先等待运行中入口、交互、队列和其他客户端安全收敛。Space 保留有界 Actor/Turn 投影、精确 history/live 对齐、Runtime-owned interrupt finalization、完整物理请求用量诊断、提示词缓存亲和与 CLI 缓存用量归一化。Partner 继续由 Space embedded-inline 持有；MCP 进程/日志、Workflow library/start/admin、Space Reference Agent 执行和产品 Artifact 仍是明确的 host-provider 边界。
+**当前源码精确锁定已发布的 KodaX 0.7.96-alpha.2，并要求 `sandboxRuntime:6`；能力支持不通过语义版本号推断。** root/Desktop manifest、lockfile、物理安装、打包 ASAR 与整体解包的跨平台 native bundle 使用同一 Registry URL/SRI。启动门与 daemon 门会验证 v6 的可信文本/Windows 原生 authority 标记；发布 smoke 在运行真实命令沙箱前校验 manifest 固定的 native hash。alpha.2 已恢复 alpha.1 缺失的 Windows 生命周期 PowerShell 可执行文件解析器；Space 直接消费精确 Registry 字节，不做依赖补丁。当前正式发布版仍是 Space v0.1.45 / KodaX 0.7.95，本次源码对齐不会改写该历史产物。
 
 v0.1.45 锁定的 KodaX 0.7.95 保留 `actorSettlementConvergence:2`、`sessionEventJournal:1`、`conversationHistory:2` 与 `crashOutcomeModel:2`，并把退出结算提升到 v2、Windows sandbox 提升到 v5。同一 boot 的 `unconfirmed-owner` 票据由 SDK 后台自动重试进程排空、ACL 复原和 effect-fence 释放，只在精确 sandbox-user SID 探针证明账号空闲后清除；探针暂时失败时仅对 sandbox 工作 fail closed，不阻塞无关的非 sandbox 工作。崩溃遗留的零字节 authority lock 也会在字节/stat 未变化证明后自动回收，仍存活或已被继任者接管的 owner 不会被误删。Runtime Shell 仍是 sandbox-first；containment 无法准备时沿用普通权限策略，但普通权限执行仍取得同一 filesystem-effect fence，不重放命令、不重复 classifier，灾难性破坏操作继续硬拒绝。`worker.configuredA2A` 仍是 KodaX CLI Worker-hosted embedded Runtime 配置，不是 Space Settings 开关。
 

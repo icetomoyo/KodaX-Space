@@ -9,6 +9,7 @@ import {
   type CompletionFocusSnapshot,
   type CompletionPromptOwner,
 } from './sessionCompleteNotificationModel.js';
+import { isCancelledSessionError } from '../session/sessionError.js';
 
 type ActivePromptRecord = CompletionPromptOwner;
 
@@ -59,7 +60,7 @@ export function useSessionCompleteNotification(): void {
       ) {
         return;
       }
-      if (event.kind === 'session_error' && event.error === 'cancelled') {
+      if (isCancelledSessionError(event)) {
         activePromptRef.current.delete(sessionId);
         return;
       }

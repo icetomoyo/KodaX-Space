@@ -35,8 +35,8 @@ const RULES: readonly CapRule[] = [
   { match: /^kimi-for-coding/, cap: 256_000 },
   // Qwen 3.5 — 1M
   { match: /^qwen3\.5/, cap: 1_000_000 },
-  // GLM-5.2 (Zhipu / Z.ai Coding Plan) - 1M; keep this before the broader GLM-5 fallback.
-  { match: /^glm-5\.2$/, cap: 1_000_000 },
+  // GLM-5.2 / 5.3 (Zhipu / Z.ai Coding Plan) - 1M; keep before the broader GLM-5 fallback.
+  { match: /^glm-5\.[23](?:-flash)?$/, cap: 1_000_000 },
   // GLM-5 / GLM-5.1 / GLM-5 Turbo - 200k fallback.
   { match: /^glm-5(?:$|\.1$|-turbo$)/, cap: 200_000 },
   // GLM-4.7 - 200k.

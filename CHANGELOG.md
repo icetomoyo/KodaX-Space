@@ -12,6 +12,32 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 > v0.1.7 内容 (F011/F023/F024/F026/F038) 跟 v0.1.8 一起发。GitHub Releases 顶部仍是 v0.1.5，
 > 0.1.7 这条 section 留作历史记录、git log 引用入口。
 
+## [Unreleased]
+
+### Changed
+
+- **KodaX 0.7.96-alpha.2 sandbox v6 alignment** - Root and Desktop pin the
+  exact published prerelease and Registry integrity. SDK startup, daemon
+  admission, connected Runtime checks, and packaged smoke now require
+  `sandboxRuntime:6` plus its trusted-text/native-Windows authority markers.
+  Release packaging unpacks the complete cross-platform `dist/native` bundle;
+  the dependency gate requires every native target, and packaged smoke verifies
+  the manifest-pinned hashes before exercising the real command sandbox.
+  The alpha.2 republish restores the Windows lifecycle PowerShell executable
+  resolver that was missing from alpha.1.
+- **KodaX 0.7.96 provider catalog alignment** - Surface the SDK's new
+  `glm-5.3-flash` model and keep its 1M-token renderer fallback consistent with
+  the SDK catalog.
+- **Structured Runtime failure diagnostics** - Preserve KodaX 0.7.96
+  credential-safe `failureDetail` across daemon events, live Run projections,
+  Space IPC, and conversation notices. Error notices now expose the stable
+  KodaX code and bounded support metadata, including context-token
+  `required / available` counts. Space displays the SDK `safeMessage`, keeps a
+  forward-compatible unknown-code path, and never offers blind retry for a
+  terminal `context_capacity_exceeded` result. The SDK's capacity-debt recovery
+  now runs before that terminal outcome, so Space no longer invents a local
+  context-threshold failure around completed tool results.
+
 ## [0.1.45] - 2026-08-24
 
 ### Changed

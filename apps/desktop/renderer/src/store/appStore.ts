@@ -74,6 +74,7 @@ import {
 } from './runtimeSessionSettings.js';
 import { pushToast, useToastStore } from './toastStore.js';
 import { translateMessage } from '../i18n/I18nProvider.js';
+import { isCancelledSessionError } from '../features/session/sessionError.js';
 
 export type MascotMode = 'legacy' | 'sprite' | 'off';
 
@@ -7564,7 +7565,7 @@ export const useAppStore = create<AppState>((set) => ({
       const eventWithLocalOwner =
         localTerminalTurnId === undefined ? event : { ...event, turnId: localTerminalTurnId };
       const storedEvent = stampLiveStreamEvent(eventWithLocalOwner);
-      if (event.kind === 'session_error' && event.error === 'cancelled') {
+      if (isCancelledSessionError(event)) {
         // Deduplicate the optimistic BottomBar cancellation and the later main-process receipt.
         // Renderer-local owners make consecutive pre-admission cancellations distinguishable even
         // when neither has a session_start. Fall back to positional dedupe only when both legacy
@@ -7574,7 +7575,7 @@ export const useAppStore = create<AppState>((set) => ({
           const previous = bucket[i];
           if (!previous) continue;
           if (previous.kind === 'session_start') break;
-          if (previous.kind === 'session_error' && previous.error === 'cancelled') {
+          if (previous.kind === 'session_error' && isCancelledSessionError(previous)) {
             if (storedTerminalTurnId !== undefined || previous.turnId !== undefined) {
               if (storedTerminalTurnId !== undefined && storedTerminalTurnId === previous.turnId) {
                 return state;
@@ -7780,7 +7781,7 @@ export const useAppStore = create<AppState>((set) => ({
         );
       } else if (event.kind === 'queued_user_prompt_failed') {
         Object.assign(next, failQueuedUserMessageForPrompt(state, event));
-      } else if (event.kind === 'session_error' && event.error === 'cancelled') {
+      } else if (isCancelledSessionError(event)) {
         const queued = state.queuedUserMessagesBySession[event.sessionId];
         if (queued && queued.length > 0) {
           const retained = queued.filter((entry) => entry.status === 'failed');
@@ -7994,7 +7995,7 @@ export const useAppStore = create<AppState>((set) => ({
           next.managedTaskStatusBySession = restMtsComplete;
         }
       } else if (event.kind === 'session_error') {
-        if (event.error !== 'cancelled' && !isSessionVisiblyOpen(state, event.sessionId)) {
+        if (!isCancelledSessionError(event) && !isSessionVisiblyOpen(state, event.sessionId)) {
           const unreadFlags = setSessionFlagValue(
             next.sessionFlags ?? state.sessionFlags,
             event.sessionId,

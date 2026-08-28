@@ -9,7 +9,7 @@ import test from 'node:test';
 
 const PROBE_MARKER = 'KODAX_RUNTIME_PROBE=';
 const PROBE_TIMEOUT_MS = 30_000;
-const EXPECTED_KODAX_VERSION = '0.7.95';
+const EXPECTED_KODAX_VERSION = '0.7.96-alpha.2';
 const INSTALLED_KODAX_VERSION = (
   createRequire(import.meta.url)('@kodax-ai/kodax/package.json') as { readonly version: string }
 ).version;
@@ -354,7 +354,7 @@ const SHARED_DAEMON_REQUIREMENTS = {
   actorSettlementConvergence: 2,
   liveOutputSegments: 1,
   runtimeEventCoalescing: 1,
-  sandboxRuntime: 5,
+  sandboxRuntime: 6,
   sessionEventJournal: 1,
   integrationConfigResilience: 1,
   runtimeAutoModeGuardrail: 4,
@@ -965,8 +965,8 @@ try {
       runtime: runtime.capabilities.actorSettlementConvergence?.version === 2,
     },
     sandboxRuntime: {
-      sdk: KODAX_RUNTIME_SDK_CAPABILITIES.sandboxRuntime === 5,
-      runtime: runtime.capabilities.sandboxRuntime?.version === 5,
+      sdk: KODAX_RUNTIME_SDK_CAPABILITIES.sandboxRuntime === 6,
+      runtime: runtime.capabilities.sandboxRuntime?.version === 6,
     },
     sessionEventJournal: {
       sdk: KODAX_RUNTIME_SDK_CAPABILITIES.sessionEventJournal === 1,
@@ -1453,7 +1453,7 @@ test(
       settings?: Record<string, unknown>;
     };
     assert.equal(inlineManagedResult.phase, 'failed');
-    assert.match(String(inlineManagedResult.error), /Unknown provider: space-probe-missing/);
+    assert.equal(inlineManagedResult.error, 'Provider is not registered in the catalog.');
     assert.equal(inlineManagedResult.failedEventCount, 1);
     // Provider resolution fails before the coding loop owns callbacks. Space must
     // therefore normalize RuntimeRunResult.error instead of relying on onError/onComplete.
@@ -1476,7 +1476,7 @@ test(`KodaX ${EXPECTED_KODAX_VERSION} exposes fail-closed standalone command con
   const { KODAX_ASRT_VERSION, doctorKodaXSandbox, getKodaXSandboxCapability, runKodaXSandboxed } =
     await import('@kodax-ai/kodax/sandbox');
   const capability = getKodaXSandboxCapability();
-  assert.equal(capability.version, 5);
+  assert.equal(capability.version, 6);
   assert.equal(capability.asrtVersion, KODAX_ASRT_VERSION);
   assert.equal(capability.genericCommandExecution, true);
   assert.deepEqual(capability.controls, [
@@ -1489,6 +1489,9 @@ test(`KodaX ${EXPECTED_KODAX_VERSION} exposes fail-closed standalone command con
   assert.equal(capability.ordinaryCallsTriggerSetup, false);
   assert.equal(capability.unavailableBehavior, 'structured-no-execution');
   assert.equal(capability.permissionFallback, 'normal-permission-policy');
+  assert.equal(capability.trustedTextAuthority, 'host-transaction');
+  assert.equal(capability.windowsShellAuthority, 'native-token-job-v2');
+  assert.equal(capability.commandLifetimeFilesystemLease, false);
   assert.equal(typeof runKodaXSandboxed, 'function');
 
   const doctor = await doctorKodaXSandbox();

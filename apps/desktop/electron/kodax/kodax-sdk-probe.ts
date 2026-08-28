@@ -28,12 +28,15 @@ export type SandboxSdkCapability =
   | { readonly status: 'unprobed' }
   | {
       readonly status: 'available';
-      readonly version: 5;
+      readonly version: 6;
       readonly asrtVersion: string;
       readonly backend:
         'windows-restricted-user' | 'macos-seatbelt' | 'linux-bubblewrap' | 'unsupported';
       readonly unavailableBehavior: 'structured-no-execution';
       readonly setupMayElevate: boolean;
+      readonly trustedTextAuthority: 'host-transaction';
+      readonly windowsShellAuthority: 'native-token-job-v2';
+      readonly commandLifetimeFilesystemLease: false;
       readonly readiness: 'checking' | 'ready' | 'setup-required' | 'unavailable';
       readonly diagnosticCount: number;
     };
@@ -133,7 +136,7 @@ export function inspectSandboxModule(
   for (const control of ['filesystem', 'network', 'environment', 'timeout', 'output']) {
     if (!controls.includes(control)) failures.push(`sandbox controls missing ${control}`);
   }
-  if (capability.version !== 5) failures.push('sandbox capability version expected 5');
+  if (capability.version !== 6) failures.push('sandbox capability version expected 6');
   if (capability.asrtVersion !== asrtVersion) {
     failures.push('sandbox capability ASRT version does not match KODAX_ASRT_VERSION');
   }
@@ -148,6 +151,15 @@ export function inspectSandboxModule(
   }
   if (capability.permissionFallback !== 'normal-permission-policy') {
     failures.push('sandbox permissionFallback expected normal-permission-policy');
+  }
+  if (capability.trustedTextAuthority !== 'host-transaction') {
+    failures.push('sandbox trustedTextAuthority expected host-transaction');
+  }
+  if (capability.windowsShellAuthority !== 'native-token-job-v2') {
+    failures.push('sandbox windowsShellAuthority expected native-token-job-v2');
+  }
+  if (capability.commandLifetimeFilesystemLease !== false) {
+    failures.push('sandbox commandLifetimeFilesystemLease expected false');
   }
   const backend = capability.backend;
   if (
@@ -165,11 +177,14 @@ export function inspectSandboxModule(
 
   return {
     status: 'available',
-    version: 5,
+    version: 6,
     asrtVersion: asrtVersion as string,
     backend: backend as Extract<SandboxSdkCapability, { status: 'available' }>['backend'],
     unavailableBehavior: 'structured-no-execution',
     setupMayElevate: capability.setupMayElevate as boolean,
+    trustedTextAuthority: 'host-transaction',
+    windowsShellAuthority: 'native-token-job-v2',
+    commandLifetimeFilesystemLease: false,
     readiness: 'checking',
     diagnosticCount: 0,
   };
@@ -200,11 +215,14 @@ export function projectSandboxDoctorResult(
 
 export function updateSandboxSdkDoctorResult(
   reportedCapability: {
-    readonly version: 5;
+    readonly version: 6;
     readonly asrtVersion: string;
     readonly backend:
       'windows-restricted-user' | 'macos-seatbelt' | 'linux-bubblewrap' | 'unsupported';
     readonly setupMayElevate: boolean;
+    readonly trustedTextAuthority: 'host-transaction';
+    readonly windowsShellAuthority: 'native-token-job-v2';
+    readonly commandLifetimeFilesystemLease: false;
   },
   doctorValue: unknown,
 ): SandboxSdkCapability {
@@ -215,7 +233,11 @@ export function updateSandboxSdkDoctorResult(
     reportedCapability.version !== sandboxCapability.version ||
     reportedCapability.asrtVersion !== sandboxCapability.asrtVersion ||
     reportedCapability.backend !== sandboxCapability.backend ||
-    reportedCapability.setupMayElevate !== sandboxCapability.setupMayElevate
+    reportedCapability.setupMayElevate !== sandboxCapability.setupMayElevate ||
+    reportedCapability.trustedTextAuthority !== sandboxCapability.trustedTextAuthority ||
+    reportedCapability.windowsShellAuthority !== sandboxCapability.windowsShellAuthority ||
+    reportedCapability.commandLifetimeFilesystemLease !==
+      sandboxCapability.commandLifetimeFilesystemLease
   ) {
     throw new Error('sandbox capability changed after startup shape negotiation');
   }

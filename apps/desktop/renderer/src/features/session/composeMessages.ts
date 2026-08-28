@@ -16,7 +16,11 @@
 //
 // 设计原则：纯函数。给定相同输入产相同输出，便于 useMemo + 单元测试。
 
-import type { SessionEvent } from '@kodax-space/space-ipc-schema';
+import type {
+  SessionEvent,
+  SpaceRuntimeFailureDetailT,
+  SpaceRuntimeRunFailureKindT,
+} from '@kodax-space/space-ipc-schema';
 import type {
   LocalNoticeMessage,
   QueuedUserMessage,
@@ -95,6 +99,10 @@ export type ConversationMessage =
       /** OC-11: error variant 携带的 wrapSdkError 分类。SystemNotice 据此渲染按钮。*/
       action?: 'retry' | 'open_provider_settings' | 'check_network' | 'change_model';
       retriable?: boolean;
+      /** Credential-safe Runtime classification and exact Run provenance for error details. */
+      failureKind?: SpaceRuntimeRunFailureKindT;
+      failureDetail?: SpaceRuntimeFailureDetailT;
+      runtimeRunId?: string;
       /** OC-23 倒计时：retry 按钮在此 epoch ms 之前 disabled + 显示 "Retry in Ns"。
        *  Main 端在 emit session_error 时已 stamp = Date.now() + waitMs，selector 这里
        *  直接透传 evt.retryAvailableAt 不再加工，避免 composeMessages 每次重跑都让倒计时
@@ -791,6 +799,11 @@ function composeAssistantSegment(
           // OC-11 透传分类信息 —— SystemNotice 据此渲染 retry / open-settings 按钮
           ...(evt.action !== undefined ? { action: evt.action } : {}),
           ...(evt.retriable !== undefined ? { retriable: evt.retriable } : {}),
+          ...(evt.failureKind !== undefined ? { failureKind: evt.failureKind } : {}),
+          ...(evt.failureDetail !== undefined ? { failureDetail: evt.failureDetail } : {}),
+          ...(evt.runtimeEvent?.runId !== undefined
+            ? { runtimeRunId: evt.runtimeEvent.runId }
+            : {}),
           // OC-23 retry-after 倒计时；retryAvailableAt 已经是 main 端 stamp 的绝对
           // 时间戳，直接透传，不在 selector 里重 stamp 防漂移 (review HIGH-2)
           ...(evt.retryAvailableAt !== undefined ? { retryAvailableAt: evt.retryAvailableAt } : {}),

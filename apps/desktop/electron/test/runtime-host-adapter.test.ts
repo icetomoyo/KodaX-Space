@@ -130,7 +130,7 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
         managedRunDurability: 1,
         runtimeExitSettlement: 2,
         runtimeEventCoalescing: 1,
-        sandboxRuntime: 5,
+        sandboxRuntime: 6,
         sessionEventJournal: 1,
       },
     }),
@@ -148,7 +148,7 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
           managedRunDurability: 1,
           runtimeExitSettlement: 2,
           runtimeEventCoalescing: 1,
-          sandboxRuntime: 5,
+          sandboxRuntime: 6,
           sessionEventJournal: 1,
         },
       }),
@@ -167,7 +167,7 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
           managedRunDurability: 1,
           runtimeExitSettlement: 2,
           runtimeEventCoalescing: 1,
-          sandboxRuntime: 5,
+          sandboxRuntime: 6,
           sessionEventJournal: 1,
         },
       }),
@@ -185,7 +185,7 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
           liveOutputSegments: 1,
           managedRunDurability: 1,
           runtimeExitSettlement: 2,
-          sandboxRuntime: 5,
+          sandboxRuntime: 6,
           sessionEventJournal: 1,
         },
       }),
@@ -193,7 +193,7 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
   );
   assert.throws(
     () => assertSpaceRuntimeSdkRequiredCapabilities({}),
-    /installed KodaX SDK.*actorSettlementConvergence v2.*conversationHistory v2.*crashOutcomeModel v2.*daemonOrphanExit v1.*daemonShutdownVerification v1.*liveOutputSegments v1.*managedRunDurability v1.*runtimeExitSettlement v2.*runtimeEventCoalescing v1.*sandboxRuntime v5.*sessionEventJournal v1/i,
+    /installed KodaX SDK.*actorSettlementConvergence v2.*conversationHistory v2.*crashOutcomeModel v2.*daemonOrphanExit v1.*daemonShutdownVerification v1.*liveOutputSegments v1.*managedRunDurability v1.*runtimeExitSettlement v2.*runtimeEventCoalescing v1.*sandboxRuntime v6.*sessionEventJournal v1/i,
   );
 });
 
@@ -461,7 +461,7 @@ function createFakeRuntime(runtimeId = 'rt_test') {
       runtimeEventCoalescing: { version: 1 },
       sessionEventJournal: { version: 1 },
       sandboxRuntime: {
-        version: 5,
+        version: 6,
         asrtVersion: '0.0.65',
         backend: 'unsupported',
       },
@@ -1988,7 +1988,7 @@ test('runtime selection attaches one Coder daemon with stable identity and requi
   assert.equal(options[0]?.requirements?.daemonShutdownVerification, undefined);
   assert.equal(options[0]?.requirements?.runtimeEventCoalescing, 1);
   assert.equal(options[0]?.requirements?.crashOutcomeModel, 2);
-  assert.equal(options[0]?.requirements?.sandboxRuntime, 5);
+  assert.equal(options[0]?.requirements?.sandboxRuntime, 6);
   assert.equal(options[0]?.requirements?.sessionEventJournal, 1);
   assert.equal(options[0]?.requirements?.integrationConfigResilience, 1);
   assert.equal(options[0]?.requirements?.runtimeAutoModeGuardrail, 4);
@@ -7485,7 +7485,8 @@ test('cached idle snapshot ownership rejects an external retag without a profile
     ['s_cached_retag', { title: '', messages: [], gitRoot: 'C:\\repo', tag: 'code' }],
   ]);
   let notifySessionChange:
-    ((event: { kind: 'change' | 'add' | 'remove'; sessionId: string }) => void) | undefined;
+    | ((event: { kind: 'change' | 'add' | 'remove'; sessionId: string }) => void)
+    | undefined;
   setSessionStoreImpl({
     listSessions: async () => [],
     forkSession: async () => null,
@@ -8553,10 +8554,10 @@ test('initialization requires crash outcome convergence v2', async () => {
   assert.equal(fake.calls.close, 1);
 });
 
-test('initialization requires the sandbox v5 automatic-recovery lifecycle', async () => {
+test('initialization requires the sandbox v6 native-token lifecycle', async () => {
   const fake = createFakeRuntime();
   (fake.runtime.capabilities as Record<string, unknown>).sandboxRuntime = {
-    version: 4,
+    version: 5,
     asrtVersion: '0.0.65',
     backend: 'windows-restricted-user',
   };
@@ -8567,7 +8568,7 @@ test('initialization requires the sandbox v5 automatic-recovery lifecycle', asyn
     identityStore: testIdentityStore,
   });
 
-  await assert.rejects(adapter.initialize(), /sandboxRuntime v5/i);
+  await assert.rejects(adapter.initialize(), /sandboxRuntime v6/i);
   assert.equal(adapter.snapshot().state, 'failed');
   assert.equal(fake.calls.close, 1);
 });
@@ -10478,7 +10479,7 @@ test('daemon child turn lifecycle cannot bind the root renderer turn identity', 
   await adapter.close();
 });
 
-test('daemon run failure falls back to the structured terminal message', async () => {
+test('daemon run failure prefers the credential-safe failure detail', async () => {
   const pushed: unknown[] = [];
   const adapter = new RuntimeHostAdapter({
     mode: 'runtime',
@@ -10501,6 +10502,15 @@ test('daemon run failure falls back to the structured terminal message', async (
       phase: 'failed',
       startedAt: '2026-07-24T02:26:35.310Z',
       provider: 'mock',
+      failureDetail: {
+        failureKind: 'auth',
+        stage: 'credential',
+        providerErrorCode: 'authentication_failed',
+        safeMessage: 'Provider authentication failed.',
+        httpStatus: 401,
+        upstreamErrorCode: 'gateway/invalid api key=v2',
+        requestId: 'req/custom== shard 2',
+      },
       terminal: {
         revision: 1,
         kind: 'failed',
@@ -10516,13 +10526,122 @@ test('daemon run failure falls back to the structured terminal message', async (
     {
       kind: 'session_error',
       sessionId: 's_1',
-      error: 'Choose the target API version.',
+      error: 'Provider authentication failed.',
       category: 'auth',
       failureKind: 'auth',
+      failureDetail: {
+        failureKind: 'auth',
+        stage: 'credential',
+        providerErrorCode: 'authentication_failed',
+        safeMessage: 'Provider authentication failed.',
+        httpStatus: 401,
+        upstreamErrorCode: 'gateway/invalid api key=v2',
+        requestId: 'req/custom== shard 2',
+      },
       retriable: false,
       action: 'open_provider_settings',
     },
   ]);
+  await adapter.close();
+});
+
+test('legacy daemon failure text cannot cross the credential-safe IPC boundary', async () => {
+  const pushed: unknown[] = [];
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    push: (channel, payload) => {
+      if (channel === 'session.event') pushed.push(payload);
+    },
+  });
+  const bridgeRuntimeEvent = bindTestRuntimeEventBridge(adapter);
+
+  bridgeRuntimeEvent({
+    id: 'event_legacy_provider_failure',
+    seq: 1,
+    time: '2026-08-28T00:00:00.000Z',
+    type: 'run.failed',
+    sessionId: 's_1',
+    runId: 'run_legacy_provider_failure',
+    payload: {
+      runId: 'run_legacy_provider_failure',
+      sessionId: 's_1',
+      phase: 'failed',
+      startedAt: '2026-08-28T00:00:00.000Z',
+      provider: 'custom',
+      error: 'upstream body echoed sk-secret and the user prompt',
+      terminal: {
+        revision: 1,
+        kind: 'failed',
+        code: 'run_failed',
+        effectOutcome: 'known',
+        failureKind: 'provider',
+        message: 'Authorization: Bearer sk-secret',
+      },
+    },
+  });
+
+  assert.equal(pushed.length, 1);
+  const projected = pushed[0] as Record<string, unknown>;
+  assert.equal(projected.error, 'Runtime run failed');
+  assert.equal(projected.failureKind, 'provider');
+  assert.doesNotMatch(JSON.stringify(projected), /sk-secret|user prompt|Authorization/);
+  await adapter.close();
+});
+
+test('daemon cancelled and interrupted terminals preserve structured Runtime diagnostics', async () => {
+  const pushed: unknown[] = [];
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    push: (channel, payload) => {
+      if (channel === 'session.event') pushed.push(payload);
+    },
+  });
+  const bridgeRuntimeEvent = bindTestRuntimeEventBridge(adapter);
+
+  (['run.cancelled', 'run.interrupted'] as const).forEach((type, index) => {
+    bridgeRuntimeEvent({
+      id: `event_structured_${type}`,
+      seq: index + 1,
+      time: '2026-08-28T00:00:00.000Z',
+      type,
+      sessionId: 's_1',
+      runId: `run_${type}`,
+      payload: {
+        runId: `run_${type}`,
+        sessionId: 's_1',
+        phase: type === 'run.cancelled' ? 'cancelled' : 'interrupted',
+        startedAt: '2026-08-28T00:00:00.000Z',
+        provider: 'mock',
+        failureDetail: {
+          failureKind: 'runtime_cleanup',
+          stage: 'runtime_settlement',
+          providerErrorCode: 'runtime_settlement_failed',
+          safeMessage: `Safe ${type} diagnostic.`,
+          requestId: `request_${index}`,
+        },
+      },
+    });
+  });
+
+  assert.deepEqual(
+    pushed.map((value) => {
+      const event = value as Record<string, unknown>;
+      const detail = event.failureDetail as Record<string, unknown>;
+      return { error: event.error, code: detail.providerErrorCode, requestId: detail.requestId };
+    }),
+    [
+      {
+        error: 'Safe run.cancelled diagnostic.',
+        code: 'runtime_settlement_failed',
+        requestId: 'request_0',
+      },
+      {
+        error: 'Safe run.interrupted diagnostic.',
+        code: 'runtime_settlement_failed',
+        requestId: 'request_1',
+      },
+    ],
+  );
   await adapter.close();
 });
 
@@ -10538,6 +10657,14 @@ test('daemon failureKind drives credential-safe recovery actions', async () => {
   const cases = [
     ['rate_limit', 'rate_limit', true, 'retry'],
     ['network', 'network', true, 'check_network'],
+    ['unknown_provider', 'bad_request', false, 'open_provider_settings'],
+    ['not_found', 'bad_request', false, undefined],
+    ['request', 'bad_request', false, undefined],
+    ['upstream', 'unknown', false, undefined],
+    ['cancelled', 'cancelled', false, undefined],
+    ['provider_aborted', 'unknown', false, undefined],
+    ['invalid_response', 'bad_request', false, 'open_provider_settings'],
+    ['context_capacity', 'bad_request', false, 'change_model'],
   ] as const;
 
   cases.forEach(([failureKind], index) => {
@@ -10582,6 +10709,275 @@ test('daemon failureKind drives credential-safe recovery actions', async () => {
       action,
     })),
   );
+  await adapter.close();
+});
+
+test('daemon failureDetail uses stable provider codes for recovery actions', async () => {
+  const pushed: unknown[] = [];
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    push: (channel, payload) => {
+      if (channel === 'session.event') pushed.push(payload);
+    },
+  });
+  const bridgeRuntimeEvent = bindTestRuntimeEventBridge(adapter);
+  const cases = [
+    ['credential_unavailable', 'credential', 'auth', false, 'open_provider_settings'],
+    ['authentication_failed', 'credential', 'auth', false, 'open_provider_settings'],
+    ['rate_limited', 'transport', 'rate_limit', false, undefined],
+    ['network_error', 'transport', 'network', true, 'check_network'],
+    ['tls_error', 'transport', 'network', true, 'check_network'],
+    ['request_timeout', 'transport', 'network', true, 'check_network'],
+    ['provider_not_registered', 'catalog', 'bad_request', false, 'open_provider_settings'],
+    ['catalog_error', 'catalog', 'bad_request', false, 'open_provider_settings'],
+    ['model_not_found', 'transport', 'model_unavailable', false, 'change_model'],
+    ['endpoint_not_found', 'transport', 'bad_request', false, 'open_provider_settings'],
+    ['resource_not_found', 'transport', 'bad_request', false, undefined],
+    ['request_build_failed', 'request_build', 'bad_request', false, undefined],
+    ['upstream_client_error', 'transport', 'bad_request', false, undefined],
+    ['upstream_server_error', 'transport', 'server_error', true, 'retry'],
+    ['protocol_mismatch', 'response_stream', 'bad_request', false, 'open_provider_settings'],
+    ['response_stream_error', 'response_stream', 'bad_request', false, undefined],
+    ['cancelled', 'runtime_control', 'unknown', false, undefined],
+    ['runtime_settlement_failed', 'runtime_settlement', 'unknown', false, undefined],
+    ['context_capacity_exceeded', 'runtime_control', 'bad_request', false, 'change_model'],
+    ['provider_error', 'transport', 'unknown', false, undefined],
+  ] as const;
+
+  cases.forEach(([providerErrorCode, stage], index) => {
+    bridgeRuntimeEvent({
+      id: `event_failure_code_${providerErrorCode}`,
+      seq: index + 1,
+      time: '2026-08-28T00:00:00.000Z',
+      type: 'run.failed',
+      sessionId: 's_1',
+      runId: `run_${providerErrorCode}`,
+      payload: {
+        runId: `run_${providerErrorCode}`,
+        sessionId: 's_1',
+        phase: 'failed',
+        startedAt: '2026-08-28T00:00:00.000Z',
+        provider: 'mock',
+        failureDetail: {
+          failureKind: 'provider',
+          stage,
+          providerErrorCode,
+          safeMessage: `Safe ${providerErrorCode}.`,
+        },
+        terminal: {
+          revision: 1,
+          kind: 'failed',
+          code: 'run_failed',
+          effectOutcome: 'known',
+        },
+      },
+    });
+  });
+
+  assert.deepEqual(
+    pushed.map((event) => {
+      const record = event as Record<string, unknown>;
+      return {
+        category: record.category,
+        retriable: record.retriable,
+        action: record.action,
+      };
+    }),
+    cases.map(([, , category, retriable, action]) => ({ category, retriable, action })),
+  );
+  await adapter.close();
+});
+
+test('daemon rate-limit failureDetail projects the authoritative retry delay', async () => {
+  const pushed: unknown[] = [];
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    push: (channel, payload) => {
+      if (channel === 'session.event') pushed.push(payload);
+    },
+  });
+  const bridgeRuntimeEvent = bindTestRuntimeEventBridge(adapter);
+  const originalNow = Date.now;
+  Date.now = () => 9_000_000;
+  try {
+    bridgeRuntimeEvent({
+      id: 'event_rate_limit_detail',
+      seq: 1,
+      time: '1970-01-01T00:33:20.000Z',
+      type: 'run.failed',
+      sessionId: 's_1',
+      runId: 'run_rate_limit_detail',
+      payload: {
+        runId: 'run_rate_limit_detail',
+        sessionId: 's_1',
+        phase: 'failed',
+        startedAt: '2026-08-28T00:00:00.000Z',
+        provider: 'mock',
+        failureDetail: {
+          failureKind: 'rate_limit',
+          stage: 'transport',
+          providerErrorCode: 'rate_limited',
+          safeMessage: 'The provider rate limit was reached.',
+          retryAfterMs: 2_500,
+        },
+        terminal: {
+          revision: 1,
+          kind: 'failed',
+          code: 'run_failed',
+          effectOutcome: 'known',
+        },
+      },
+    });
+  } finally {
+    Date.now = originalNow;
+  }
+
+  const event = pushed[0] as Record<string, unknown>;
+  assert.equal(event.retryAvailableAt, 2_002_500);
+  assert.equal(event.retriable, true);
+  assert.equal(event.action, 'retry');
+  await adapter.close();
+});
+
+test('daemon rate-limit failureDetail without a retry delay does not offer immediate retry', async () => {
+  const pushed: unknown[] = [];
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    push: (channel, payload) => {
+      if (channel === 'session.event') pushed.push(payload);
+    },
+  });
+  const bridgeRuntimeEvent = bindTestRuntimeEventBridge(adapter);
+
+  bridgeRuntimeEvent({
+    id: 'event_rate_limit_without_delay',
+    seq: 1,
+    time: '2026-08-28T00:00:00.000Z',
+    type: 'run.failed',
+    sessionId: 's_1',
+    runId: 'run_rate_limit_without_delay',
+    payload: {
+      runId: 'run_rate_limit_without_delay',
+      sessionId: 's_1',
+      phase: 'failed',
+      startedAt: '2026-08-28T00:00:00.000Z',
+      provider: 'mock',
+      failureDetail: {
+        failureKind: 'rate_limit',
+        stage: 'transport',
+        providerErrorCode: 'rate_limited',
+        safeMessage: 'The provider rate limit was reached.',
+      },
+      terminal: {
+        revision: 1,
+        kind: 'failed',
+        code: 'run_failed',
+        effectOutcome: 'known',
+      },
+    },
+  });
+
+  const event = pushed[0] as Record<string, unknown>;
+  assert.equal(event.retriable, false);
+  assert.equal(event.action, undefined);
+  assert.equal(event.retryAvailableAt, undefined);
+  await adapter.close();
+});
+
+test('daemon unknown provider code keeps the default UI path instead of broad-kind actions', async () => {
+  const pushed: unknown[] = [];
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    push: (channel, payload) => {
+      if (channel === 'session.event') pushed.push(payload);
+    },
+  });
+  const bridgeRuntimeEvent = bindTestRuntimeEventBridge(adapter);
+
+  const futureEvent = {
+    id: 'event_future_provider_code',
+    seq: 1,
+    time: '2026-08-28T00:00:00.000Z',
+    type: 'run.failed',
+    sessionId: 's_1',
+    runId: 'run_future_provider_code',
+    payload: {
+      runId: 'run_future_provider_code',
+      sessionId: 's_1',
+      phase: 'failed',
+      startedAt: '2026-08-28T00:00:00.000Z',
+      provider: 'mock',
+      failureDetail: {
+        failureKind: 'rate_limit',
+        stage: 'transport',
+        providerErrorCode: 'future_rate_limit_policy',
+        safeMessage: 'The provider rejected the request.',
+      },
+      terminal: {
+        revision: 1,
+        kind: 'failed',
+        code: 'run_failed',
+        effectOutcome: 'known',
+      },
+    },
+  } as unknown as TestRuntimeEvent;
+  bridgeRuntimeEvent(futureEvent);
+
+  const event = pushed[0] as Record<string, unknown>;
+  assert.equal(event.category, 'unknown');
+  assert.equal(event.retriable, false);
+  assert.equal(event.action, undefined);
+  await adapter.close();
+});
+
+test('daemon context-capacity failure preserves token facts and never offers blind retry', async () => {
+  const pushed: unknown[] = [];
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    push: (channel, payload) => {
+      if (channel === 'session.event') pushed.push(payload);
+    },
+  });
+  const bridgeRuntimeEvent = bindTestRuntimeEventBridge(adapter);
+
+  bridgeRuntimeEvent({
+    id: 'event_context_capacity_detail',
+    seq: 1,
+    time: '2026-08-28T00:00:00.000Z',
+    type: 'run.failed',
+    sessionId: 's_1',
+    runId: 'run_context_capacity_detail',
+    payload: {
+      runId: 'run_context_capacity_detail',
+      sessionId: 's_1',
+      phase: 'failed',
+      startedAt: '2026-08-28T00:00:00.000Z',
+      provider: 'mock',
+      failureDetail: {
+        failureKind: 'context_capacity',
+        stage: 'runtime_control',
+        providerErrorCode: 'context_capacity_exceeded',
+        safeMessage: 'The request still exceeds the model context capacity after recovery.',
+        contextTokens: { required: 143_400, available: 131_072 },
+      },
+      terminal: {
+        revision: 1,
+        kind: 'failed',
+        code: 'run_failed',
+        effectOutcome: 'known',
+      },
+    },
+  });
+
+  const event = pushed[0] as Record<string, unknown>;
+  assert.equal(event.error, 'The request still exceeds the model context capacity after recovery.');
+  assert.equal(event.failureKind, 'context_capacity');
+  assert.equal(event.retriable, false);
+  assert.equal(event.retryAvailableAt, undefined);
+  assert.deepEqual((event.failureDetail as { contextTokens?: unknown }).contextTokens, {
+    required: 143_400,
+    available: 131_072,
+  });
   await adapter.close();
 });
 

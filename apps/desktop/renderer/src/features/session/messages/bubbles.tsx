@@ -1,7 +1,7 @@
 // Bubble + ToolCallCard + SystemNotice 组件集合。
 // 单文件聚合：每个组件 < 80 行，共享 ConversationMessage 类型，拆分反而提高复杂度。
 
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   Check,
   ChevronDown,
@@ -940,6 +940,60 @@ function useRetryCountdown(retryAvailableAt: number | undefined): number {
   return remainingMs > 0 ? Math.ceil(remainingMs / 1000) : 0;
 }
 
+type SystemNoticeMessage = Extract<ConversationMessage, { kind: 'system_notice' }>;
+type RuntimeFailureRow = { readonly label: MessageKey; readonly value: string };
+type RuntimeFailureDetailsProps = Pick<
+  SystemNoticeMessage,
+  'failureDetail' | 'failureKind' | 'runtimeRunId'
+>;
+
+function runtimeFailureRows(message: RuntimeFailureDetailsProps): RuntimeFailureRow[] {
+  const { failureDetail, failureKind, runtimeRunId } = message;
+  const rows: RuntimeFailureRow[] = [];
+  const add = (label: MessageKey, value: string | number | undefined): void => {
+    if (value !== undefined && value !== '') rows.push({ label, value: String(value) });
+  };
+  add('message.runtimeFailure.runId', runtimeRunId);
+  add('message.runtimeFailure.kind', failureDetail?.failureKind ?? failureKind);
+  add('message.runtimeFailure.stage', failureDetail?.stage);
+  add('message.runtimeFailure.code', failureDetail?.providerErrorCode);
+  add('message.runtimeFailure.httpStatus', failureDetail?.httpStatus);
+  add('message.runtimeFailure.upstreamCode', failureDetail?.upstreamErrorCode);
+  add('message.runtimeFailure.requestId', failureDetail?.requestId);
+  add(
+    'message.runtimeFailure.retryAfterMs',
+    failureDetail?.retryAfterMs === undefined ? undefined : `${failureDetail.retryAfterMs} ms`,
+  );
+  add(
+    'message.runtimeFailure.contextTokens',
+    failureDetail?.contextTokens === undefined
+      ? undefined
+      : `${failureDetail.contextTokens.required} / ${failureDetail.contextTokens.available}`,
+  );
+  return rows;
+}
+
+function RuntimeFailureDetails(message: RuntimeFailureDetailsProps): JSX.Element | null {
+  const { t } = useI18n();
+  const rows = runtimeFailureRows(message);
+  if (rows.length === 0) return null;
+  return (
+    <details className="basis-full mx-auto max-w-3xl px-3 pb-1 text-left text-fg-secondary">
+      <summary className="cursor-pointer select-none text-center text-fg-muted">
+        {t('message.runtimeFailure.details')}
+      </summary>
+      <dl className="mt-1 grid grid-cols-[max-content_minmax(0,1fr)] gap-x-3 gap-y-0.5 rounded border border-current/20 px-2 py-1.5">
+        {rows.map((row) => (
+          <Fragment key={row.label}>
+            <dt>{t(row.label)}</dt>
+            <dd className="min-w-0 break-all text-fg-primary">{row.value}</dd>
+          </Fragment>
+        ))}
+      </dl>
+    </details>
+  );
+}
+
 export function SystemNotice({
   variant,
   text,
@@ -950,6 +1004,9 @@ export function SystemNotice({
   retryAvailableAt,
   sentAt,
   historical,
+  failureKind,
+  failureDetail,
+  runtimeRunId,
 }: Extract<ConversationMessage, { kind: 'system_notice' }>): JSX.Element {
   const { t } = useI18n();
   const isWorkflow = variant === 'workflow';
@@ -1021,6 +1078,11 @@ export function SystemNotice({
           {countdownActive ? t('message.retryIn', { seconds: secondsLeft }) : t(actionDef.labelKey)}
         </button>
       )}
+      <RuntimeFailureDetails
+        {...(failureKind !== undefined ? { failureKind } : {})}
+        {...(failureDetail !== undefined ? { failureDetail } : {})}
+        {...(runtimeRunId !== undefined ? { runtimeRunId } : {})}
+      />
     </div>
   );
 }

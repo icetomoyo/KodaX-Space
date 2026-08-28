@@ -149,11 +149,18 @@ const queued = {
   },
 } as const;
 
-test('Runtime Run projection preserves credential-safe provider failure classification', () => {
+test('Runtime Run projection preserves credential-safe provider failure details', () => {
   const projected = projectRuntimeRun({
     ...running,
     phase: 'failed',
     endedAt: '2026-08-21T08:00:00.000Z',
+    failureDetail: {
+      failureKind: 'network',
+      stage: 'transport',
+      providerErrorCode: 'tls_error',
+      safeMessage: 'The secure provider connection failed.',
+      requestId: 'req_projection',
+    },
     terminal: {
       revision: 1,
       kind: 'failed',
@@ -164,6 +171,47 @@ test('Runtime Run projection preserves credential-safe provider failure classifi
   });
 
   assert.equal(projected.failureKind, 'network');
+  assert.equal(projected.terminalReason, 'The secure provider connection failed.');
+  assert.deepEqual(projected.failureDetail, {
+    failureKind: 'network',
+    stage: 'transport',
+    providerErrorCode: 'tls_error',
+    safeMessage: 'The secure provider connection failed.',
+    requestId: 'req_projection',
+  });
+});
+
+test('run.updated keeps settlement uncertainty active and publishes its safe diagnostics', () => {
+  const reducer = new CoderSessionProjectionReducer(
+    projectRuntimeSessionSnapshot(observation, []),
+    observation.runs,
+  );
+  const failureDetail = {
+    failureKind: 'runtime_cleanup',
+    stage: 'runtime_settlement',
+    providerErrorCode: 'runtime_settlement_failed',
+    safeMessage: 'The Runtime could not confirm settlement.',
+    requestId: 'req_settlement',
+  } as const;
+
+  const update = reducer.apply({
+    id: 'event_settlement_unknown',
+    seq: 42,
+    cursor: { sessionId: 's_code', journalEpoch: 'journal_epoch_shared', seq: 42 },
+    time: '2026-08-28T08:00:00.000Z',
+    sessionId: 's_code',
+    runId: 'run_active',
+    type: 'run.updated',
+    payload: {
+      ...running,
+      phase: 'unknown',
+      failureDetail,
+    },
+  } as RuntimeTypedEvent);
+
+  assert.equal(update?.change.domain, 'run');
+  assert.equal(reducer.snapshot().activeRun?.phase, 'unknown');
+  assert.deepEqual(reducer.snapshot().activeRun?.failureDetail, failureDetail);
 });
 
 const permission = {

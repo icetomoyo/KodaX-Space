@@ -8,6 +8,8 @@ import { autoModeDecisionDiagnosticsSchema } from './permission.js';
 
 const MAX_ID = 128;
 const MAX_REASON = 512;
+const MAX_RUNTIME_FAILURE_MESSAGE = 1_024;
+const MAX_RUNTIME_RETRY_AFTER_MS = 24 * 60 * 60 * 1_000;
 const MAX_DRAFT = 256 * 1024;
 const MAX_PROFILE_SESSIONS = 500;
 const MAX_QUEUE_ITEMS = 500;
@@ -181,11 +183,80 @@ export const spaceRuntimeRunFailureKindSchema = z.enum([
   'auth',
   'rate_limit',
   'network',
+  'not_found',
+  'unknown_provider',
+  'request',
+  'upstream',
+  'cancelled',
   'provider_aborted',
   'invalid_response',
   'runtime_cleanup',
+  'context_capacity',
   'provider',
 ]);
+
+export const spaceRuntimeFailureStageSchema = z.enum([
+  'catalog',
+  'credential',
+  'request_build',
+  'transport',
+  'response_stream',
+  'runtime_control',
+  'runtime_settlement',
+]);
+
+export const spaceRuntimeProviderErrorCodeSchema = z.enum([
+  'credential_unavailable',
+  'authentication_failed',
+  'rate_limited',
+  'network_error',
+  'tls_error',
+  'request_timeout',
+  'provider_not_registered',
+  'catalog_error',
+  'model_not_found',
+  'endpoint_not_found',
+  'resource_not_found',
+  'request_build_failed',
+  'upstream_client_error',
+  'upstream_server_error',
+  'protocol_mismatch',
+  'response_stream_error',
+  'cancelled',
+  'runtime_settlement_failed',
+  'context_capacity_exceeded',
+  'provider_error',
+]);
+
+const runtimeFailureIdentifierSchema = z
+  .string()
+  .min(1)
+  .max(200)
+  .regex(/^[A-Za-z0-9_.:-]+$/);
+
+const runtimeFailureMetadataSchema = z.string().max(200);
+
+export const spaceRuntimeFailureDetailSchema = z
+  .object({
+    failureKind: spaceRuntimeRunFailureKindSchema,
+    stage: spaceRuntimeFailureStageSchema,
+    // Keep a bounded default path for codes introduced by a newer compatible Runtime.
+    providerErrorCode: spaceRuntimeProviderErrorCodeSchema.or(runtimeFailureIdentifierSchema),
+    safeMessage: z.string().min(1).max(MAX_RUNTIME_FAILURE_MESSAGE),
+    httpStatus: z.number().int().min(100).max(599).optional(),
+    upstreamErrorCode: runtimeFailureMetadataSchema.optional(),
+    requestId: runtimeFailureMetadataSchema.optional(),
+    retryAfterMs: z.number().int().nonnegative().max(MAX_RUNTIME_RETRY_AFTER_MS).optional(),
+    contextTokens: z
+      .object({
+        required: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+        available: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+      })
+      .strip()
+      .optional(),
+  })
+  // Strip additive diagnostic fields instead of rejecting the complete safe fact.
+  .strip();
 
 export const spaceRuntimeRunProjectionSchema = z
   .object({
@@ -205,6 +276,7 @@ export const spaceRuntimeRunProjectionSchema = z
     queuePosition: z.number().int().positive().max(MAX_QUEUE_ITEMS).optional(),
     terminalReason: z.string().min(1).max(MAX_REASON).optional(),
     failureKind: spaceRuntimeRunFailureKindSchema.optional(),
+    failureDetail: spaceRuntimeFailureDetailSchema.optional(),
     lifecycleError: z
       .object({
         code: z.enum([
@@ -941,6 +1013,9 @@ export type SpaceCoderConnectionStateT = z.infer<typeof spaceCoderConnectionStat
 export type SpaceCoderConnectionProjectionT = z.infer<typeof spaceCoderConnectionProjectionSchema>;
 export type SpaceRuntimeRunPhaseT = z.infer<typeof spaceRuntimeRunPhaseSchema>;
 export type SpaceRuntimeRunFailureKindT = z.infer<typeof spaceRuntimeRunFailureKindSchema>;
+export type SpaceRuntimeFailureStageT = z.infer<typeof spaceRuntimeFailureStageSchema>;
+export type SpaceRuntimeProviderErrorCodeT = z.infer<typeof spaceRuntimeProviderErrorCodeSchema>;
+export type SpaceRuntimeFailureDetailT = z.infer<typeof spaceRuntimeFailureDetailSchema>;
 export type SpaceRuntimeRunStopReceiptT = z.infer<typeof spaceRuntimeRunStopReceiptSchema>;
 export type SpaceRuntimeRunStageT = z.infer<typeof spaceRuntimeRunStageSchema>;
 export type SpaceRuntimeRunProjectionT = z.infer<typeof spaceRuntimeRunProjectionSchema>;

@@ -47,6 +47,13 @@ const KODAX_PUBLIC_FACADE_FILES = [
   'sdk-session.js',
   'sdk-skills.js',
 ];
+const KODAX_NATIVE_TARGETS = [
+  ['darwin-arm64', 'darwin', 'arm64', 'kodax-text-transaction.node'],
+  ['darwin-x64', 'darwin', 'x64', 'kodax-text-transaction.node'],
+  ['linux-arm64', 'linux', 'arm64', 'kodax-text-transaction.node'],
+  ['linux-x64', 'linux', 'x64', 'kodax-text-transaction.node'],
+  ['win32-x64', 'win32', 'x64', 'kodax-windows-text-transaction.node'],
+];
 
 function fail(msg) {
   console.error(`[smoke-pack] FAIL: ${msg}`);
@@ -100,6 +107,76 @@ async function listFilesRecursive(dir) {
     }
   }
   return out;
+}
+
+async function verifyHashPinnedNativeFile(root, entry, label) {
+  if (
+    typeof entry !== 'object' ||
+    entry === null ||
+    typeof entry.file !== 'string' ||
+    path.basename(entry.file) !== entry.file ||
+    typeof entry.sha256 !== 'string' ||
+    !/^[a-f0-9]{64}$/.test(entry.sha256)
+  ) {
+    fail(`KodaX native manifest has an invalid ${label} entry`);
+  }
+  const filePath = path.join(root, entry.file);
+  let content;
+  try {
+    content = await fs.readFile(filePath);
+  } catch (error) {
+    fail(
+      `KodaX native artifact missing outside asar: ${filePath} ` +
+        `(${error instanceof Error ? error.message : String(error)})`,
+    );
+  }
+  const digest = createHash('sha256').update(content).digest('hex');
+  if (digest !== entry.sha256) {
+    fail(`KodaX native artifact hash mismatch: ${filePath}`);
+  }
+}
+
+async function verifyPackagedKodaxNativeArtifacts(unpackedDir) {
+  for (const [directory, platform, arch, textTransactionFile] of KODAX_NATIVE_TARGETS) {
+    const nativeRoot = path.join(
+      unpackedDir,
+      'node_modules',
+      '@kodax-ai',
+      'kodax',
+      'dist',
+      'native',
+      directory,
+    );
+    let manifest;
+    try {
+      manifest = JSON.parse(await fs.readFile(path.join(nativeRoot, 'manifest.json'), 'utf8'));
+    } catch (error) {
+      fail(
+        `KodaX native manifest missing outside asar: ${directory} ` +
+          `(${error instanceof Error ? error.message : String(error)})`,
+      );
+    }
+    if (manifest.version !== 1 || manifest.platform !== platform || manifest.arch !== arch) {
+      fail(`KodaX native manifest target mismatch: ${directory}`);
+    }
+    if (manifest.textTransaction?.file !== textTransactionFile) {
+      fail(`KodaX native text transaction entry mismatch: ${directory}`);
+    }
+    await verifyHashPinnedNativeFile(nativeRoot, manifest.textTransaction, `${directory} text`);
+    if (platform === 'win32') {
+      if (manifest.shellSandbox?.file !== 'kodax-windows-sandbox.exe') {
+        fail('KodaX Windows native sandbox entry is missing');
+      }
+      await verifyHashPinnedNativeFile(nativeRoot, manifest.shellSandbox, `${directory} sandbox`);
+    }
+    if (!Array.isArray(manifest.legal) || manifest.legal.length === 0) {
+      fail(`KodaX native legal entries are missing: ${directory}`);
+    }
+    for (const legal of manifest.legal) {
+      await verifyHashPinnedNativeFile(nativeRoot, legal, `${directory} legal`);
+    }
+    ok(`KodaX native ${directory} artifacts are physical and hash-pinned`);
+  }
 }
 
 function keyringNativePatternForAsar(asarPath) {
@@ -674,6 +751,7 @@ async function checkAsarContents(asarPath) {
   const unpackedFiles = (await pathExists(unpackedDir))
     ? (await listFilesRecursive(unpackedDir)).map((f) => f.replace(/\\/g, '/'))
     : [];
+  await verifyPackagedKodaxNativeArtifacts(unpackedDir);
   const asrtAsarPrefix = '/node_modules/@anthropic-ai/sandbox-runtime/';
   if (normalized.some((file) => file.startsWith(asrtAsarPrefix))) {
     fail(
@@ -1140,7 +1218,7 @@ function daemonRequirements() {
     crashOutcomeModel: 2,
     managedRunDurability: 1,
     runtimeEventCoalescing: 1,
-    sandboxRuntime: 5,
+    sandboxRuntime: 6,
     sessionEventJournal: 1,
     ...(process.platform === 'win32' ? { daemonShutdownVerification: 1 } : {}),
     integrationConfigResilience: 1,
@@ -1194,11 +1272,14 @@ try {
   await Promise.all(${JSON.stringify(publicFacadeUrls)}.map((moduleUrl) => import(moduleUrl)));
   const sandboxCapability = getKodaXSandboxCapability();
   if (
-    sandboxCapability.version !== 5 ||
+    sandboxCapability.version !== 6 ||
     sandboxCapability.asrtVersion !== KODAX_ASRT_VERSION ||
     sandboxCapability.unavailableBehavior !== 'structured-no-execution' ||
     sandboxCapability.ordinaryCallsTriggerSetup !== false ||
-    sandboxCapability.permissionFallback !== 'normal-permission-policy'
+    sandboxCapability.permissionFallback !== 'normal-permission-policy' ||
+    sandboxCapability.trustedTextAuthority !== 'host-transaction' ||
+    sandboxCapability.windowsShellAuthority !== 'native-token-job-v2' ||
+    sandboxCapability.commandLifetimeFilesystemLease !== false
   ) {
     throw new Error(
       'packaged sandbox facade is not fail-closed: ' + JSON.stringify(sandboxCapability),
@@ -1320,8 +1401,8 @@ try {
   if (KODAX_RUNTIME_SDK_CAPABILITIES?.crashOutcomeModel !== 2) {
     throw new Error('packaged SDK does not advertise crashOutcomeModel v2 before auto-start');
   }
-  if (KODAX_RUNTIME_SDK_CAPABILITIES?.sandboxRuntime !== 5) {
-    throw new Error('packaged SDK does not advertise sandboxRuntime v5 before auto-start');
+  if (KODAX_RUNTIME_SDK_CAPABILITIES?.sandboxRuntime !== 6) {
+    throw new Error('packaged SDK does not advertise sandboxRuntime v6 before auto-start');
   }
   const providerBaseUrl = sandboxDoctor.ready ? await startProviderServer() : undefined;
   const initialOwnerPolicy = await enableDaemonOwnerWhenReady();
@@ -1368,10 +1449,10 @@ try {
   if (
     typeof daemonSandboxRuntime !== 'object' ||
     daemonSandboxRuntime === null ||
-    daemonSandboxRuntime.version !== 5
+    daemonSandboxRuntime.version !== 6
   ) {
     throw new Error(
-      'packaged daemon did not negotiate sandboxRuntime v5: ' +
+      'packaged daemon did not negotiate sandboxRuntime v6: ' +
         JSON.stringify(daemonSandboxRuntime),
     );
   }
@@ -1500,13 +1581,13 @@ try {
     !result.sessionRoundTrip ||
     result.constructedHandlerIsMainThread !== 'false' ||
     result.daemonOrphanExit !== 1 ||
-    result.daemonSandboxRuntime !== 5 ||
+    result.daemonSandboxRuntime !== 6 ||
     result.sessionEventJournal !== 1 ||
     !result.sessionCursorValid ||
     result.integrationHealth !== 'healthy' ||
     result.runtimeExitSettlement !== 'clean' ||
     result.restartedRuntimeExitSettlement !== 'clean' ||
-    result.sandboxVersion !== 5 ||
+    result.sandboxVersion !== 6 ||
     result.sandboxUnavailableBehavior !== 'structured-no-execution' ||
     result.sandboxPermissionFallback !== 'normal-permission-policy' ||
     (result.sandboxDoctorReady && !result.sandboxCommandExecuted) ||

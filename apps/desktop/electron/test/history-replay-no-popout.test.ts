@@ -62,7 +62,7 @@ function assertClosedTranscriptStructure(sessionId: string): void {
     (message) => message.historyNoAssistantSegment !== true,
   );
   const segments: SessionEvent[][] = [];
-  for (let cursor = 0; cursor < events.length;) {
+  for (let cursor = 0; cursor < events.length; ) {
     const end = testSegmentEnd(events, cursor);
     assert.ok(end > cursor, 'every event segment must advance the cursor');
     segments.push(events.slice(cursor, end));
@@ -6701,8 +6701,21 @@ test('pre-admission and stopped-run failures cannot leave later root output one 
   store.appendEvent({
     kind: 'session_error',
     sessionId: SID,
-    error: 'Provider run failed while using a run-scoped credential.',
+    error: 'The provider response was incomplete or incompatible.',
+    failureKind: 'invalid_response',
+    failureDetail: {
+      failureKind: 'invalid_response',
+      stage: 'response_stream',
+      providerErrorCode: 'protocol_mismatch',
+      safeMessage: 'The provider response was incomplete or incompatible.',
+      requestId: 'req_history_failure',
+    },
     turnId: 'turn-stopped',
+    runtimeEvent: {
+      runtimeId: 'runtime-provider-diagnostics',
+      runId: 'run-provider-diagnostics',
+      seq: 1,
+    },
   });
 
   store.appendUserMessage(SID, 'second report', 4_000);
@@ -6733,7 +6746,9 @@ test('pre-admission and stopped-run failures cannot leave later root output one 
     if (message.kind === 'user') return [`user:${message.content}`];
     if (message.kind === 'assistant_text') return [`assistant:${message.text}`];
     if (message.kind === 'system_notice' && message.variant === 'error') {
-      return [`error:${message.text}`];
+      return [
+        `error:${message.text}:${message.failureKind ?? 'none'}:${message.failureDetail?.providerErrorCode ?? 'none'}:${message.runtimeRunId ?? 'none'}`,
+      ];
     }
     return [];
   });
@@ -6742,9 +6757,9 @@ test('pre-admission and stopped-run failures cannot leave later root output one 
     'user:older query',
     'assistant:older answer',
     'user:first report',
-    'error:Session data changed during the read boundary: session.lock',
+    'error:Session data changed during the read boundary: session.lock:none:none:none',
     'user:continue',
-    'error:Provider run failed while using a run-scoped credential.',
+    'error:The provider response was incomplete or incompatible.:invalid_response:protocol_mismatch:run-provider-diagnostics',
     'user:second report',
     'assistant:current answer',
   ]);

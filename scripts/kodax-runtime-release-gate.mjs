@@ -6,6 +6,18 @@ import { EnvHttpProxyAgent } from 'undici';
 
 const KODAX_PACKAGE = '@kodax-ai/kodax';
 const REGISTRY_TARBALL_TIMEOUT_MS = 30_000;
+export const KODAX_NATIVE_PACKAGE_FILES = [
+  ...['darwin-arm64', 'darwin-x64', 'linux-arm64', 'linux-x64'].flatMap((target) => [
+    `dist/native/${target}/manifest.json`,
+    `dist/native/${target}/LICENSE-APACHE.txt`,
+    `dist/native/${target}/kodax-text-transaction.node`,
+  ]),
+  'dist/native/win32-x64/manifest.json',
+  'dist/native/win32-x64/LICENSE-APACHE.txt',
+  'dist/native/win32-x64/NOTICE-windows-sandbox.txt',
+  'dist/native/win32-x64/kodax-windows-text-transaction.node',
+  'dist/native/win32-x64/kodax-windows-sandbox.exe',
+];
 
 function readJson(packageFile, label) {
   try {
@@ -112,6 +124,11 @@ function installedPackageEntries(root) {
 
 function assertInstalledPackageMatchesTarball(sdkDir, tarball) {
   const lockedEntries = lockedTarballEntries(tarball);
+  for (const relative of KODAX_NATIVE_PACKAGE_FILES) {
+    if (lockedEntries.get(relative)?.type !== 'file') {
+      throw new Error(`[pack] Locked KodaX tarball is missing native artifact ${relative}.`);
+    }
+  }
   const installedEntries = installedPackageEntries(sdkDir);
   for (const [relative, expected] of lockedEntries) {
     const absolute = path.resolve(sdkDir, ...relative.split('/'));

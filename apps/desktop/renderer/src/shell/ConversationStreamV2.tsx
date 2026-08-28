@@ -35,6 +35,11 @@ import {
 } from '../store/appStore.js';
 import { composeMessages, type ConversationMessage } from '../features/session/composeMessages.js';
 import {
+  appendRuntimeFailureNotices,
+  runtimeFailureProfileHasCurrentAuthority,
+} from '../features/session/runtimeFailureNotice.js';
+import { runtimeFailureProjectionMatches } from '../features/session/runtimeFailureProjection.js';
+import {
   canRewindSelectorTurn,
   localNoticeCutoffSentAtForSelectorTurn,
   selectorTurnIndexesByMessageId,
@@ -424,6 +429,7 @@ function viewMessagesShareProjection(previous: ViewMessage, next: ViewMessage): 
         previous.action === next.action &&
         previous.retriable === next.retriable &&
         previous.retryAvailableAt === next.retryAvailableAt &&
+        runtimeFailureProjectionMatches(previous, next) &&
         previous.sentAt === next.sentAt
       );
     case 'tool_cluster':
@@ -833,6 +839,15 @@ export function ConversationStreamV2(): JSX.Element {
   const events = useAppStore((s) =>
     currentSessionId ? (s.eventsBySession[currentSessionId] ?? EMPTY_EVENTS) : EMPTY_EVENTS,
   );
+  const runtimeLive = useAppStore((s) =>
+    currentSessionId ? s.liveProjectionBySession[currentSessionId] : undefined,
+  );
+  const runtimeProfileSession = useAppStore((s) =>
+    currentSessionId &&
+    runtimeFailureProfileHasCurrentAuthority(s.runtimeConnection, s.runtimeProfile?.cursor)
+      ? s.runtimeProfile?.sessions.find((session) => session.sessionId === currentSessionId)
+      : undefined,
+  );
   const userMessages = useAppStore((s) =>
     currentSessionId
       ? (s.userMessagesBySession[currentSessionId] ?? EMPTY_USER_MESSAGES)
@@ -885,7 +900,7 @@ export function ConversationStreamV2(): JSX.Element {
     entries: Map<string, { readonly source: string; readonly tokens: number }>;
   }>({ sessionId: null, entries: new Map() });
 
-  const messages = useMemo(() => {
+  const eventMessages = useMemo(() => {
     const cache = composeCacheRef.current;
     const inputsUnchangedExceptEvents =
       cache?.sessionId === currentSessionId &&
@@ -922,7 +937,7 @@ export function ConversationStreamV2(): JSX.Element {
       localNotices,
       queuedUserMessages,
       workflowNotices,
-      messages,
+      messages: eventMessages,
     };
   }, [
     currentSessionId,
@@ -931,8 +946,12 @@ export function ConversationStreamV2(): JSX.Element {
     localNotices,
     queuedUserMessages,
     workflowNotices,
-    messages,
+    eventMessages,
   ]);
+  const messages = useMemo(
+    () => appendRuntimeFailureNotices(eventMessages, runtimeLive, runtimeProfileSession),
+    [eventMessages, runtimeLive, runtimeProfileSession],
+  );
   const groupedProjection = useMemo(() => {
     const pendingTokenEntries = new Map<
       string,

@@ -492,6 +492,53 @@ test('session_error event: unknown Runtime failure kind rejected', () => {
   assert.equal(r.success, false);
 });
 
+test('session_error event accepts the KodaX 0.7.96 structured failure kinds', () => {
+  for (const failureKind of [
+    'not_found',
+    'unknown_provider',
+    'request',
+    'upstream',
+    'cancelled',
+    'context_capacity',
+  ]) {
+    assert.equal(
+      sessionEventChannel.payload.safeParse({
+        kind: 'session_error',
+        sessionId: 's_1',
+        error: 'Safe Runtime failure.',
+        failureKind,
+      }).success,
+      true,
+      `expected ${failureKind} to be accepted`,
+    );
+  }
+});
+
+test('session_error event accepts KodaX 0.7.96 credential-safe failure details', () => {
+  const r = sessionEventChannel.payload.safeParse({
+    kind: 'session_error',
+    sessionId: 's_1',
+    error: 'The configured model was not found.',
+    failureKind: 'not_found',
+    failureDetail: {
+      failureKind: 'not_found',
+      stage: 'transport',
+      providerErrorCode: 'model_not_found',
+      safeMessage: 'The configured model was not found.',
+      httpStatus: 404,
+      upstreamErrorCode: 'model/not found=v2',
+      requestId: 'req/custom== shard 2',
+      retryAfterMs: 250,
+    },
+  });
+
+  assert.equal(r.success, true);
+  if (!r.success || r.data.kind !== 'session_error') return;
+  assert.equal(r.data.failureDetail?.providerErrorCode, 'model_not_found');
+  assert.equal(r.data.failureDetail?.upstreamErrorCode, 'model/not found=v2');
+  assert.equal(r.data.failureDetail?.requestId, 'req/custom== shard 2');
+});
+
 test('session_error event: retryAvailableAt accepts large future epoch', () => {
   // 1h ahead, 1 year ahead — schema 不应当 clip 这些 (avoid the old rejection-on-cap bug)
   for (const ms of [60_000, 3_600_000, 365 * 24 * 3_600_000]) {

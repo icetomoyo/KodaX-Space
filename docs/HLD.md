@@ -2,6 +2,13 @@
 
 > **2026-08-24 当前发布基线**：v0.1.45 使用 root/Desktop/lockfile 精确锁定的 npm Registry KodaX `0.7.95`，并要求 `conversationHistory:2`、`runtimeExitSettlement:2` 与 `sandboxRuntime:5`。Space 在 SDK 启动门、daemon 协商、IPC status 与打包 smoke 四个边界保持同一版本；同一 boot 的临时 `unconfirmed-owner` 自动重试，等待会在应用退出时取消。
 >
+> **2026-08-28 当前源码候选**：root/Desktop/lockfile 精确锁定 KodaX
+> `0.7.96-alpha.2`，SDK 启动、daemon 协商和连接后门禁统一提升到
+> `sandboxRuntime:6`。`dist/native` 整体位于 `app.asar.unpacked`；dependency gate
+> 验证 universal native 集合，packaged smoke 按每个 manifest 的 SHA-256 验证物理 sidecar。
+> alpha.2 已恢复 alpha.1 缺失的 Windows 生命周期 PowerShell 可执行文件解析器；Space
+> 直接消费完整性锁定的 Registry 字节，不补丁依赖。
+>
 > **2026-08-20 v0.1.44 已发布历史基线**：v0.1.44 使用精确 npm Registry KodaX `0.7.93`，要求 `sandboxRuntime:4`、`crashOutcomeModel:2`、`actorSettlementConvergence:2`、`sessionEventJournal:1`、`liveOutputSegments:1` 与本地 `runtimeExitSettlement:1`。sandbox v4 在 v3 containment 基础上增加 stale coordinator-ticket / recorded-release 收敛；v0.1.43 / v0.1.42 作为历史正式产品基线保留。
 > `RuntimeHostAdapter` 要求 `managedRunDurability:1`，使 accepted prompt 与 completed turn
 > 在事件发布前已成为 canonical managed Run；Space 仅用 returned `runId`/`turnId` 关联 UI
@@ -11,7 +18,7 @@
 > 只提供 SDK 计算后的有效 segment；Space 不运行 checkpoint/text replay 状态机。
 > owner reconciliation 与 daemon auto-start 前仍先恢复精确 complete-exit 票据。
 >
-> Last updated: 2026-08-24
+> Last updated: 2026-08-28
 > Status: 核心架构决策仍有效；当前正式发布基线为 KodaX Space 0.1.45（package 0.1.45）/ npm 正式发布的精确 KodaX 0.7.95。中间方案与否决理由见 [ADR/](ADR/)；当前能力边界见 [KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md)。
 > Companion doc: [PRD](PRD.md)
 

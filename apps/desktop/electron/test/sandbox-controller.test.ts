@@ -8,7 +8,7 @@ import {
 } from '../kodax/sandbox-controller.js';
 
 const capability = {
-  version: 5 as const,
+  version: 6 as const,
   asrtVersion: '0.0.65',
   platform: 'win32' as const,
   backend: 'windows-restricted-user' as const,
@@ -18,6 +18,9 @@ const capability = {
   setupMayElevate: true,
   unavailableBehavior: 'structured-no-execution' as const,
   permissionFallback: 'normal-permission-policy' as const,
+  trustedTextAuthority: 'host-transaction' as const,
+  windowsShellAuthority: 'native-token-job-v2' as const,
+  commandLifetimeFilesystemLease: false as const,
 };
 
 function doctor(input: Partial<SandboxDoctorResult> = {}): SandboxDoctorResult {
@@ -148,7 +151,7 @@ test('refresh re-runs doctor and exposes setup-required without leaking raw path
   assert.equal(refreshed.lastOperation?.outcome, 'setup-required');
 });
 
-test('Windows ACL recovery blocks expose v5 recovery guidance instead of Setup', async () => {
+test('Windows ACL recovery blocks expose v6 recovery guidance instead of Setup', async () => {
   const recoveryDiagnostic =
     '[acl_cleanup_unconfirmed] An unconfirmed Windows sandbox process tree from the same Windows boot may still have live descendants; restart Windows before retrying. ' +
     'After stopping every KodaX and KodaX Space process, run "C:\\Users\\alice\\AppData\\Local\\Temp\\kodax-srt\\srt-win.exe" acl recover --force --json, then delete "C:\\ProgramData\\KodaX\\sandbox-runtime\\acl-poison".';

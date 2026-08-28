@@ -15,6 +15,11 @@
 > 不使用 KodaX 语义版本或 Auto-mode guardrail 版本代替生命周期能力判断。
 > 当前已发布版本为 KodaX Space [`v0.1.45`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.45) / 精确 Registry KodaX `0.7.95`。
 > 本版本把 ask_user 与 guardrail 授权改为对话流内的聚焦提问卡（全屏模态移除，召回停靠条与队首卡 1-9/Enter/Esc 键盘操作），对齐 `conversationHistory:2`、`runtimeExitSettlement:2` 与 `sandboxRuntime:5`，并恢复 daemon 重连后已准入的 Runs、保证幂等发送只产生一个气泡；同时保留 v0.1.44 的 F145 原生 Session 角标、后台 complete-exit settlement、安静的普通成功退出、previous-boot Windows ACL 恢复指引与 canonical page-head、Task Dock、Repointel、外部任务恢复态对齐，以及 crash-resumable exit、crash-outcome v2、SDK 有效输出 segment 和既有多 Session/Actor/Turn 安全边界。
+>
+> 当前源码候选已精确升级到 KodaX `0.7.96-alpha.2` / `sandboxRuntime:6`；alpha.2 已恢复
+> alpha.1 缺失的 Windows 生命周期 PowerShell 可执行文件解析器。
+> 打包必须整体解包 `@kodax-ai/kodax/dist/native`；发布检查会验证 universal native
+> 文件集合和 manifest hash，再运行真实 sandbox smoke。正式 v0.1.45 说明仍对应 KodaX 0.7.95。
 
 ## 1. 环境要求
 
