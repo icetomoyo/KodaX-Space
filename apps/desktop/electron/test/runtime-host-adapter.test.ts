@@ -1072,6 +1072,39 @@ function createFakeRuntime(runtimeId = 'rt_test') {
   };
 }
 
+test('Runtime config patch reports the committed result even when profile refresh fails', async () => {
+  const fake = createFakeRuntime();
+  const patches: Record<string, unknown>[] = [];
+  (
+    fake.runtime.config as unknown as {
+      patch(patch: Record<string, unknown>): Promise<unknown>;
+    }
+  ).patch = async (patch) => {
+    patches.push(patch);
+    return { fallbackProviders: ['ark-coding'] };
+  };
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+  await adapter.initialize();
+  const privateAdapter = adapter as unknown as {
+    refreshProfile(cursor: number): Promise<void>;
+  };
+  privateAdapter.refreshProfile = async () => {
+    throw new Error('profile refresh unavailable');
+  };
+
+  const result = await adapter.patchRuntimeConfig({ fallbackProviders: ['ark-coding'] });
+
+  assert.deepEqual(result, { fallbackProviders: ['ark-coding'] });
+  assert.deepEqual(patches, [{ fallbackProviders: ['ark-coding'] }]);
+  await adapter.close();
+});
+
 test('resolveRuntimeHostMode defaults to runtime and accepts explicit legacy rollback', () => {
   assert.equal(resolveRuntimeHostMode(undefined), 'runtime');
   assert.equal(resolveRuntimeHostMode('runtime'), 'runtime');
@@ -9114,6 +9147,7 @@ test('an admitted Run resumes by the same runId after reconnect without replayin
     runtimeFactory: async () => (factoryCalls++ === 0 ? first.runtime : replacement.runtime),
     identityStore: testIdentityStore,
     runtimeEventParser: testRuntimeEventParser,
+    credentialResolver: async () => 'test-credential',
   });
   const handle = await adapter.startManagedRun({
     sessionId,
@@ -9174,6 +9208,70 @@ test('an admitted Run resumes by the same runId after reconnect without replayin
   await adapter.close();
 });
 
+test('non-mock Runtime runs fail closed when Space cannot resolve the exact credential', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_missing_credential');
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    credentialResolver: async () => undefined,
+  });
+
+  await assert.rejects(
+    adapter.startManagedRun({
+      sessionId: 's_missing_credential',
+      prompt: 'hello',
+      options: { provider: 'anthropic' },
+    }),
+    /no exact Space credential/i,
+  );
+  assert.equal(fake.calls.credentialRegistrations.length, 0);
+  assert.equal(fake.calls.started.length, 0);
+  await adapter.close();
+});
+
+test('true external env credentials are still bound exactly for a shared Runtime daemon', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_external_credential');
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    credentialResolver: async () => 'external-credential',
+  });
+
+  await adapter.startManagedRun({
+    sessionId: 's_external_credential',
+    prompt: 'hello',
+    options: { provider: 'anthropic' },
+  });
+
+  assert.equal(fake.calls.credentialRegistrations.length, 1);
+  const started = fake.calls.started[0] as {
+    credential?: { leaseId: string; provider: string };
+  };
+  assert.deepEqual(started.credential, {
+    leaseId: 'credential_1',
+    provider: 'anthropic',
+  });
+  const broker = fake.calls.credentialBrokers[0];
+  assert.ok(broker);
+  assert.equal(
+    await broker({
+      provider: 'anthropic',
+      sessionId: 's_external_credential',
+      runId: 'run_1',
+    }),
+    'external-credential',
+  );
+  await adapter.close();
+});
+
 test('Run recovery ignores unrelated retryable business failures while transport stays connected', async () => {
   const fake = createFakeRuntime('rt_run_business_failure');
   const sessionId = 's_1';
@@ -9184,6 +9282,7 @@ test('Run recovery ignores unrelated retryable business failures while transport
     runtimeFactory: async () => fake.runtime,
     identityStore: testIdentityStore,
     runtimeEventParser: testRuntimeEventParser,
+    credentialResolver: async () => 'test-credential',
   });
   const handle = await adapter.startManagedRun({
     sessionId,
@@ -9217,6 +9316,7 @@ test('Run recovery preserves a typed non-reconnectable disconnect failure', asyn
     runtimeFactory: async () => fake.runtime,
     identityStore: testIdentityStore,
     runtimeEventParser: testRuntimeEventParser,
+    credentialResolver: async () => 'test-credential',
   });
   const handle = await adapter.startManagedRun({
     sessionId,
@@ -9243,6 +9343,7 @@ test('Run recovery ignores a business failure that races with a disconnected Run
     runtimeFactory: async () => fake.runtime,
     identityStore: testIdentityStore,
     runtimeEventParser: testRuntimeEventParser,
+    credentialResolver: async () => 'test-credential',
   });
   const handle = await adapter.startManagedRun({
     sessionId,
@@ -9278,6 +9379,7 @@ test('Run recovery survives another reconnect while querying the admitted runId'
     runtimeFactory: async () => runtimes.shift() ?? third.runtime,
     identityStore: testIdentityStore,
     runtimeEventParser: testRuntimeEventParser,
+    credentialResolver: async () => 'test-credential',
   });
   const handle = await adapter.startManagedRun({
     sessionId,
@@ -9349,6 +9451,7 @@ test('Run recovery retries when attachment changes after runs.get returns', asyn
     runtimeFactory: async () => runtimes.shift() ?? third.runtime,
     identityStore: testIdentityStore,
     runtimeEventParser: testRuntimeEventParser,
+    credentialResolver: async () => 'test-credential',
   });
   const handle = await adapter.startManagedRun({
     sessionId,
@@ -9432,6 +9535,7 @@ test('Run recovery waits through a reconnectable Runtime initialization failure'
     },
     identityStore: testIdentityStore,
     runtimeEventParser: testRuntimeEventParser,
+    credentialResolver: async () => 'test-credential',
   });
   const handle = await adapter.startManagedRun({
     sessionId,
@@ -9502,6 +9606,7 @@ test('Run recovery waits through a transient daemon health failure', async () =>
     },
     identityStore: testIdentityStore,
     runtimeEventParser: testRuntimeEventParser,
+    credentialResolver: async () => 'test-credential',
   });
   recovered.runtime.runs.await = async (runId) => {
     recovered.calls.runAwaits.push(runId);
@@ -9542,6 +9647,7 @@ test('Run recovery surfaces a permanent error from a scheduled replacement', asy
     },
     identityStore: testIdentityStore,
     runtimeEventParser: testRuntimeEventParser,
+    credentialResolver: async () => 'test-credential',
   });
   const handle = await adapter.startManagedRun({
     sessionId,
@@ -9573,6 +9679,7 @@ test('closing the adapter immediately settles a Run waiting for reconnect', asyn
     },
     identityStore: testIdentityStore,
     runtimeEventParser: testRuntimeEventParser,
+    credentialResolver: async () => 'test-credential',
   });
   const handle = await adapter.startManagedRun({
     sessionId,

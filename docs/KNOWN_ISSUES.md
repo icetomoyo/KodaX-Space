@@ -1,6 +1,6 @@
 # Known Issues
 
-Last Updated: 2026-08-28
+Last Updated: 2026-08-29
 
 > Historical issue details are preserved as investigation evidence. Resolved items older than 30 days move to [ISSUES_ARCHIVED.md](ISSUES_ARCHIVED.md) without losing their investigation record. The latest published Space [`v0.1.45`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.45) artifact uses exact npm Registry KodaX 0.7.95 and requires `conversationHistory:2`, `runtimeExitSettlement:2`, and `sandboxRuntime:5`. Start from the [documentation hub](README.md) for current behavior and status.
 
@@ -196,8 +196,59 @@ Last Updated: 2026-08-28
 | 198 | Low      | Resolved in source  | Right-sidebar work-budget display is accurate but the SDK 90% budget-approval askUser loop has been retired from the main AMA loop in KodaX 0.7.95                                                  | KodaX 0.7.95 adoption                                        | 2026-08-27 |
 | 199 | Medium   | ready               | Manual `/compact` cannot use a Provider key stored only in the Space OS keychain                                                                                                                    | <= v0.1.37 / KodaX 0.7.83                                    | 2026-08-28 |
 | 200 | Medium   | Resolved in source  | Fixed Space reasoning enums dropped provider-specific SDK efforts and could fall back from a stronger request to a distant model default                                                            | <= v0.1.45 reasoning picker                                  | 2026-08-28 |
+| 201 | High     | Resolved in source  | Space-owned Provider paths could reuse another Provider's keychain credential or bypass the active Runtime configuration                                                                            | <= v0.1.45                                                   | 2026-08-29 |
 
 ## Issue Details
+
+## Issue 201: Space-owned Provider paths could reuse another Provider's keychain credential or bypass the active Runtime configuration
+
+- Priority: High
+- Status: Resolved in source
+- Introduced: <= v0.1.45
+- Created: 2026-08-29
+- Resolved: 2026-08-29
+
+### Problem
+
+Space treated any keychain accounts with the same `apiKeyEnv` as interchangeable. Two custom
+Providers could therefore point at different endpoints while Provider B silently received Provider
+A's secret. Provider status and connection testing could report the same false configuration.
+
+Several Space-owned calls also bypassed the credential or process boundary already used by an
+ordinary daemon Run: embedded/Partner/legacy managed tasks, standalone Workflow generation and
+execution, embedded manual compaction, and Provider connection testing. Separately, `/fallback`,
+`/verifier-log`, and `/stall-log` changed the Electron process environment even when the active
+Coder lived in the already-running Runtime daemon.
+
+### Resolution
+
+- Keychain lookup is exact by Provider identity. The only shared-account compatibility rule is the
+  explicit bidirectional `openai` / `codex-cli` alias for `OPENAI_API_KEY`; a matching env name alone
+  is never authorization to reuse a secret.
+- Space tracks startup environment credentials separately from managed keychain injection, so a
+  managed value cannot configure or auto-activate an unrelated Provider. Every Space-owned direct
+  LLM operation binds either source to one exact Provider for its full asynchronous lifetime; a
+  missing exact credential fails closed before SDK code can fall back to a concurrently changed
+  process environment.
+- Provider testing invokes the constructed Provider instance inside that exact scope instead of a
+  top-level helper that preflights `process.env`.
+- Runtime Run and after-turn admission now fail closed when Space cannot create an exact credential
+  lease. Environment-only credentials are also leased because a shared daemon's inherited
+  environment is not authoritative to the current Space process. An inherited Space-managed env
+  value can no longer become an unbound fallback secret.
+- Runtime-backed slash settings now read and patch persisted daemon configuration only for Coder
+  Sessions. Partner/embedded Sessions continue to use the Space process environment even when
+  Runtime is globally selected. The current SDK does not expose effective daemon environment
+  overrides, so Space labels the displayed value as persisted config and does not infer daemon
+  state from Electron `process.env`.
+- Runtime manual compaction now fails closed for every credentialed Provider until Issue 199's SDK
+  contract exists. Space cannot prove or bind the shared daemon's credential source; automatic
+  threshold compaction remains bound to its admitted Run.
+- Exact primary-Provider scoping is intentionally safe but does not make secondary keychain
+  credentials available to fallback Providers, model tiers, or Provider-overridden sidecars. Space
+  surfaces that limitation on `/fallback`. Space-started Runtime Runs use an exact lease, and
+  Space-started embedded Runs use an exact scope, so cross-Provider routing in either host requires
+  an SDK multi-Provider credential broker.
 
 ## Issue 200: Fixed Space reasoning enums dropped provider-specific SDK efforts and could fall back from a stronger request to a distant model default
 
@@ -275,6 +326,15 @@ Reproduction:
 only by `runs.start()` / continuation admission. KodaX resolves the summarizer Provider outside a
 `runWithProviderCredential()` scope, so its only remaining credential source is the daemon's
 environment variable.
+
+### Current Space Mitigation
+
+Embedded manual compaction now uses Space's exact-Provider credential scope. Runtime-backed manual
+compaction fails closed for every credentialed Provider before invoking the daemon because the
+current SDK exposes neither a compact credential binding nor the shared daemon's effective
+environment source. This removes the misleading `API_KEY not set` failure and avoids trusting or
+copying process-global secrets. Automatic threshold compaction is unchanged because it already runs
+inside an admitted, credential-bound Run.
 
 ### Proposed Solution
 

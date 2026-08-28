@@ -1,7 +1,7 @@
-// test-connection — 走 SDK verifyProviderCredential（FEATURE_216 / SDK 0.7.45）后的单测。
+// test-connection — 走 SDK Provider.verifyCredential（FEATURE_216 / SDK 0.7.45）后的单测。
 //
 // 用依赖注入（testProvider 的第 3 参数 `deps`）替换 SDK，不碰真实网络 / 真实 SDK runtime：
-//   - deps = 对象  → 用注入的 verifyProviderCredential / createCustomProvider
+//   - deps = 对象  → 用注入的 getProvider / createCustomProvider
 //   - deps = null  → 模拟 SDK 动态 import 失败（降级路径）
 //   - deps = undefined（生产）→ 真实 lazy-import @kodax-ai/kodax/llm
 
@@ -12,7 +12,9 @@ import { testProvider, type TestProviderModule } from '../providers/test-connect
 import type { BuiltinProvider } from '../providers/catalog.js';
 import type { CustomProvider } from '../providers/config.js';
 
-type VerifyResult = Awaited<ReturnType<TestProviderModule['verifyProviderCredential']>>;
+type VerifyResult = Awaited<
+  ReturnType<ReturnType<TestProviderModule['getProvider']>['verifyCredential']>
+>;
 
 const BUILTIN: BuiltinProvider = {
   id: 'anthropic',
@@ -44,20 +46,22 @@ function vr(over: Partial<VerifyResult>): VerifyResult {
   } as VerifyResult;
 }
 
-/** deps：注入 verifyProviderCredential（builtin 路径）+ createCustomProvider（custom 路径）。*/
+/** deps：注入 getProvider（builtin 路径）+ createCustomProvider（custom 路径）。*/
 function deps(opts: {
   verify?: VerifyResult;
   custom?: VerifyResult;
   createThrows?: boolean;
 }): TestProviderModule {
   return {
-    verifyProviderCredential: async () => opts.verify ?? vr({ ok: true }),
+    getProvider: (() => ({
+      verifyCredential: async () => opts.verify ?? vr({ ok: true }),
+    })) as TestProviderModule['getProvider'],
     createCustomProvider: (() => {
       if (opts.createThrows) throw new Error('bad config: protocol invalid');
       // 只需 verifyCredential，其余 KodaXBaseProvider 方法测试用不到
-      return { verifyCredential: async () => opts.custom ?? vr({ ok: true }) } as unknown as ReturnType<
-        TestProviderModule['createCustomProvider']
-      >;
+      return {
+        verifyCredential: async () => opts.custom ?? vr({ ok: true }),
+      } as unknown as ReturnType<TestProviderModule['createCustomProvider']>;
     }) as TestProviderModule['createCustomProvider'],
   };
 }
@@ -68,6 +72,18 @@ test('builtin ok → { ok:true, latencyMs }', async () => {
   const r = await testProvider(BUILTIN, {}, deps({ verify: vr({ ok: true, durationMs: 42 }) }));
   assert.equal(r.ok, true);
   assert.equal(r.latencyMs, 42);
+});
+
+test('builtin verification uses the Provider instance instead of the env-prefiltered helper', async () => {
+  const sdk = Object.assign(deps({ verify: vr({ ok: false, error: 'unconfigured' }) }), {
+    getProvider: () => ({
+      verifyCredential: async () => vr({ ok: true, durationMs: 17 }),
+    }),
+  }) as TestProviderModule;
+
+  const r = await testProvider(BUILTIN, {}, sdk);
+
+  assert.deepEqual(r, { ok: true, latencyMs: 17 });
 });
 
 const ERROR_CASES: ReadonlyArray<readonly [VerifyResult['error'], string]> = [
@@ -98,9 +114,19 @@ test('custom provider ok → { ok:true }', async () => {
 });
 
 test('custom provider unauthorized → mapped message', async () => {
-  const r = await testProvider(CUSTOM, {}, deps({ custom: vr({ ok: false, error: 'unauthorized' }) }));
+  const r = await testProvider(
+    CUSTOM,
+    {},
+    deps({ custom: vr({ ok: false, error: 'unauthorized' }) }),
+  );
   assert.equal(r.ok, false);
   assert.equal(r.error, 'unauthorized (check API key)');
+});
+
+test('production connection test reports a missing exact credential without starting a request', async () => {
+  const r = await testProvider(CUSTOM);
+
+  assert.deepEqual(r, { ok: false, error: 'no API key configured' });
 });
 
 test('custom provider createCustomProvider throws → invalid config error', async () => {

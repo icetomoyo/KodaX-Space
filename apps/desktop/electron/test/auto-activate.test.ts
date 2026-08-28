@@ -20,6 +20,7 @@ import {
 import { providerConfigStore } from '../providers/config.js';
 import { BUILTIN_PROVIDERS } from '../providers/catalog.js';
 import { _resetMemoryStoreForTesting } from '../providers/keychain.js';
+import { restoreManagedProviderEnvs, setManagedProviderEnv } from '../providers/managed-env.js';
 
 let tmpDir = '';
 // 保存所有 builtin provider 的 apiKeyEnv 原值 —— 用户机器可能任何一个都已 set
@@ -32,6 +33,7 @@ before(() => {
 
 beforeEach(async () => {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kodax-auto-activate-'));
+  restoreManagedProviderEnvs();
   // 清掉所有 builtin apiKeyEnv，避免用户 shell 真实环境影响测试
   for (const k of ALL_API_KEY_ENVS) delete process.env[k];
   _resetMemoryStoreForTesting();
@@ -54,6 +56,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  restoreManagedProviderEnvs();
   // 恢复所有 builtin apiKeyEnv 原始值
   for (const k of ALL_API_KEY_ENVS) {
     const orig = originalEnvValues[k];
@@ -79,6 +82,16 @@ test('does not override existing default', async () => {
 test('no default + no env keys → no change', async () => {
   await providerConfigStore.load();
   await autoActivateProvidersFromEnv();
+  assert.equal(providerConfigStore.getDefaultProviderId(), null);
+  assert.deepEqual(getAutoActivatedThisBoot(), []);
+});
+
+test('Space-managed env from another Provider does not auto-activate a builtin', async () => {
+  await providerConfigStore.load();
+  setManagedProviderEnv('ANTHROPIC_API_KEY', 'managed-custom-key');
+
+  await autoActivateProvidersFromEnv();
+
   assert.equal(providerConfigStore.getDefaultProviderId(), null);
   assert.deepEqual(getAutoActivatedThisBoot(), []);
 });

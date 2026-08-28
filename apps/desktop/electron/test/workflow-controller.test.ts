@@ -818,6 +818,53 @@ function generatedCapsule(name = 'generated-workflow') {
   return { manifest, source: 'export default {}' };
 }
 
+test('generated workflow creation binds both generation and execution to its session Provider', async () => {
+  const { dir, file } = freshFile();
+  let activeProvider: string | undefined;
+  const observed: string[] = [];
+  _setCodingSdkForTesting({
+    async generateWorkflowFromOptions() {
+      observed.push(`generate:${activeProvider ?? 'none'}`);
+      return generatedWorkflow('credential-bound-flow');
+    },
+  });
+  try {
+    async function runProviderOperation<T>(
+      provider: string,
+      operation: () => T,
+    ): Promise<Awaited<T>> {
+      activeProvider = provider;
+      try {
+        return await operation();
+      } finally {
+        activeProvider = undefined;
+      }
+    }
+    const ctrl = new WorkflowController(
+      () => {},
+      file,
+      join(dir, 'workflow-runs'),
+      runProviderOperation,
+    );
+    const mgr = fakeManager();
+    mgr.startFromOptions = (input) => {
+      observed.push(`start:${activeProvider ?? 'none'}`);
+      mgr.started.push(input);
+      return { runId: String(input.runId) };
+    };
+    await ctrl.init(mgr);
+
+    const result = await ctrl.createGeneratedWorkflow('make it', LAUNCH_SESSION);
+
+    assert.ok('runId' in result, JSON.stringify(result));
+    assert.deepEqual(observed, ['generate:mock', 'start:mock']);
+    await ctrl.flush();
+  } finally {
+    _setCodingSdkForTesting(null);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('generated workflow controller methods delegate to SDK and start/save successfully', async () => {
   const { dir, file } = freshFile();
   try {

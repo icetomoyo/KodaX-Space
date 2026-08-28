@@ -108,6 +108,30 @@ function compactSlashMessage(message: string, max = 1900): string {
   if (message.length <= max) return message;
   return `${message.slice(0, max - 12)}\n... truncated`;
 }
+
+function runtimeConfigRecord(value: unknown): Readonly<Record<string, unknown>> {
+  return value !== null && typeof value === 'object'
+    ? (value as Readonly<Record<string, unknown>>)
+    : {};
+}
+
+function fallbackChain(value: unknown): readonly string[] {
+  const entries: readonly unknown[] = Array.isArray(value)
+    ? value
+    : typeof value === 'string'
+      ? value.split(',')
+      : [];
+  return entries
+    .filter((entry: unknown): entry is string => typeof entry === 'string')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+const RUNTIME_EFFECTIVE_CONFIG_NOTE =
+  'Runtime effective environment overrides are not exposed by the current KodaX SDK; this shows persisted daemon config only.';
+const RUNTIME_FALLBACK_CREDENTIAL_NOTE =
+  'Cross-Provider fallback is not available for Space-started Runtime or embedded Runs because their credential binding is exact-Provider; SDK multi-Provider credential brokering is required.';
+
 type AgentSdkModule = typeof import('@kodax-ai/kodax/agent');
 let agentSdkModule: Promise<AgentSdkModule> | null = null;
 
@@ -180,9 +204,13 @@ function learningProposalMatchesFilter(
   return destination === 'memdir_handoff';
 }
 
-function usesRuntimeLearning(sessionId: string): boolean {
+function usesRuntimeSession(sessionId: string): boolean {
   const session = kodaxHost.get(sessionId);
   return session?.surface === 'code' && runtimeHostAdapter.isRuntimeSelected();
+}
+
+function usesRuntimeLearning(sessionId: string): boolean {
+  return usesRuntimeSession(sessionId);
 }
 
 function runtimeLearningMatchesFilter(
@@ -2689,8 +2717,9 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
           echo: true,
         };
       }
-      const runtimeSnapshot = runtimeHostAdapter.snapshot();
-      const runtimeSettings = runtimeHostAdapter.isRuntimeSelected()
+      const usesRuntime = usesRuntimeSession(ctx.sessionId);
+      const runtimeSnapshot = usesRuntime ? runtimeHostAdapter.snapshot() : undefined;
+      const runtimeSettings = usesRuntime
         ? await runtimeHostAdapter
             .getSessionSettingsVersioned(ctx.sessionId)
             .then((snapshot) => snapshot.value)
@@ -2707,7 +2736,7 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
         message: [
           '[auto-mode classifier stats]',
           `  engine: ${session.autoModeEngine}`,
-          `  runtime: ${runtimeSnapshot.identity?.version ?? runtimeSnapshot.state}`,
+          `  host: ${runtimeSnapshot ? `Runtime ${runtimeSnapshot.identity?.version ?? runtimeSnapshot.state}` : 'embedded'}`,
           `  classifier model: ${classifierModel}`,
           `  timeout: ${timeoutMs !== undefined ? `${timeoutMs}ms (configured)` : 'SDK default (45s first / 90s retry)'}`,
           '  thresholds:',
@@ -2723,30 +2752,44 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
 
   {
     name: 'fallback',
-    description: 'Configure the child-task provider fallback chain for this Space process',
+    description: 'Configure the child-task provider fallback chain',
     argsHint: '[status | <p1,p2,...> | off]',
     source: 'builtin',
     handler: async (ctx) => {
-      const current = (process.env.KODAX_FALLBACK_PROVIDERS ?? '')
-        .split(',')
-        .map((entry) => entry.trim())
-        .filter(Boolean);
+      const usesRuntime = usesRuntimeSession(ctx.sessionId);
+      const configured = usesRuntime
+        ? runtimeConfigRecord(await runtimeHostAdapter.readRuntimeConfig()).fallbackProviders
+        : undefined;
+      const currentSource = usesRuntime
+        ? Array.isArray(configured)
+          ? configured
+          : []
+        : (process.env.KODAX_FALLBACK_PROVIDERS ?? '');
+      const current = fallbackChain(currentSource);
+      const fallbackNotes = [
+        ...(usesRuntime ? [RUNTIME_EFFECTIVE_CONFIG_NOTE] : []),
+        RUNTIME_FALLBACK_CREDENTIAL_NOTE,
+      ];
       const sub = ctx.args[0]?.toLowerCase();
       if (!sub || sub === 'status') {
+        const status =
+          current.length === 0
+            ? 'Child-task provider fallback: off (no chain configured)'
+            : `Child-task provider fallback: on\n  Order: ${current.join(' -> ')}`;
         return {
           ok: true,
-          message:
-            current.length === 0
-              ? 'Child-task provider fallback: off (no chain configured)'
-              : `Child-task provider fallback: on\n  Order: ${current.join(' -> ')}`,
+          message: [status, ...fallbackNotes].join('\n'),
           echo: true,
         };
       }
       if (sub === 'off' || sub === 'clear' || sub === 'none') {
-        delete process.env.KODAX_FALLBACK_PROVIDERS;
+        if (usesRuntime) await runtimeHostAdapter.patchRuntimeConfig({ fallbackProviders: [] });
+        else delete process.env.KODAX_FALLBACK_PROVIDERS;
         return {
           ok: true,
-          message: 'Child-task provider fallback disabled for this Space process.',
+          message: usesRuntime
+            ? `Child-task provider fallback disabled in persisted Coder daemon config.\n${RUNTIME_EFFECTIVE_CONFIG_NOTE}`
+            : 'Child-task provider fallback disabled for this Space process.',
           echo: true,
         };
       }
@@ -2758,10 +2801,14 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
       if (chain.length === 0) {
         return { ok: false, message: 'Usage: /fallback ark-coding,kimi-code (or /fallback off)' };
       }
-      process.env.KODAX_FALLBACK_PROVIDERS = chain.join(',');
+      if (usesRuntime) await runtimeHostAdapter.patchRuntimeConfig({ fallbackProviders: chain });
+      else process.env.KODAX_FALLBACK_PROVIDERS = chain.join(',');
       return {
         ok: true,
-        message: `Child-task fallback order: ${chain.join(' -> ')}\nNote: this is a runtime override for the current Space process.`,
+        message: [
+          `Child-task fallback order: ${chain.join(' -> ')}\n${usesRuntime ? 'Saved to persisted Coder daemon config.' : 'Applied to the current Space process.'}`,
+          ...fallbackNotes,
+        ].join('\n'),
         echo: true,
       };
     },
@@ -2773,18 +2820,35 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
     argsHint: '[on|off]',
     source: 'builtin',
     handler: async (ctx) => {
+      const usesRuntime = usesRuntimeSession(ctx.sessionId);
+      const runtimeConfig = usesRuntime
+        ? runtimeConfigRecord(await runtimeHostAdapter.readRuntimeConfig())
+        : undefined;
       const parsed = parseToggleValue(ctx.args[0]);
       if (!ctx.args[0]) {
+        const enabled = usesRuntime
+          ? runtimeConfig?.verifierLog === true
+          : process.env.KODAX_VERIFIER_LOG === '1';
         return {
           ok: true,
-          message: `Sidecar Verifier log: ${process.env.KODAX_VERIFIER_LOG === '1' ? 'on' : 'off'}\nUsage: /verifier-log [on|off]`,
+          message: usesRuntime
+            ? `Sidecar Verifier log config: ${enabled ? 'on' : 'off'}\n${RUNTIME_EFFECTIVE_CONFIG_NOTE}\nUsage: /verifier-log [on|off]`
+            : `Sidecar Verifier log: ${enabled ? 'on' : 'off'}\nUsage: /verifier-log [on|off]`,
           echo: true,
         };
       }
       if (!parsed) return { ok: false, message: 'Usage: /verifier-log [on|off]' };
-      if (parsed === 'on') process.env.KODAX_VERIFIER_LOG = '1';
+      if (usesRuntime) {
+        await runtimeHostAdapter.patchRuntimeConfig({ verifierLog: parsed === 'on' });
+      } else if (parsed === 'on') process.env.KODAX_VERIFIER_LOG = '1';
       else delete process.env.KODAX_VERIFIER_LOG;
-      return { ok: true, message: `Sidecar Verifier log: ${parsed}`, echo: true };
+      return {
+        ok: true,
+        message: usesRuntime
+          ? `Sidecar Verifier log config saved: ${parsed}.\n${RUNTIME_EFFECTIVE_CONFIG_NOTE}`
+          : `Sidecar Verifier log: ${parsed} for this Space process`,
+        echo: true,
+      };
     },
   },
 
@@ -2794,18 +2858,35 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
     argsHint: '[on|off]',
     source: 'builtin',
     handler: async (ctx) => {
+      const usesRuntime = usesRuntimeSession(ctx.sessionId);
+      const runtimeConfig = usesRuntime
+        ? runtimeConfigRecord(await runtimeHostAdapter.readRuntimeConfig())
+        : undefined;
       const parsed = parseToggleValue(ctx.args[0]);
       if (!ctx.args[0]) {
+        const enabled = usesRuntime
+          ? runtimeConfig?.stallLog === true
+          : process.env.KODAX_STALL_LOG === '1';
         return {
           ok: true,
-          message: `Stall Sidecar log: ${process.env.KODAX_STALL_LOG === '1' ? 'on' : 'off'}\nUsage: /stall-log [on|off]`,
+          message: usesRuntime
+            ? `Stall Sidecar log config: ${enabled ? 'on' : 'off'}\n${RUNTIME_EFFECTIVE_CONFIG_NOTE}\nUsage: /stall-log [on|off]`
+            : `Stall Sidecar log: ${enabled ? 'on' : 'off'}\nUsage: /stall-log [on|off]`,
           echo: true,
         };
       }
       if (!parsed) return { ok: false, message: 'Usage: /stall-log [on|off]' };
-      if (parsed === 'on') process.env.KODAX_STALL_LOG = '1';
+      if (usesRuntime) {
+        await runtimeHostAdapter.patchRuntimeConfig({ stallLog: parsed === 'on' });
+      } else if (parsed === 'on') process.env.KODAX_STALL_LOG = '1';
       else delete process.env.KODAX_STALL_LOG;
-      return { ok: true, message: `Stall Sidecar log: ${parsed}`, echo: true };
+      return {
+        ok: true,
+        message: usesRuntime
+          ? `Stall Sidecar log config saved: ${parsed}.\n${RUNTIME_EFFECTIVE_CONFIG_NOTE}`
+          : `Stall Sidecar log: ${parsed} for this Space process`,
+        echo: true,
+      };
     },
   },
 

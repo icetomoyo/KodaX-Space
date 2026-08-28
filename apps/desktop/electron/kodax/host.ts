@@ -34,6 +34,7 @@ import {
   sdkTagToSurface,
   invalidatePersistedSessionListCache,
 } from './session-store.js';
+import { runWithExactProviderCredential } from '../providers/credential-scope.js';
 import {
   loadKodaxCustomProviders,
   loadKodaxUserDefaults,
@@ -888,7 +889,14 @@ class KodaXHost {
     const s = this.sessions.get(sessionId);
     if (!s) return { ok: false, reason: `session not found: ${sessionId}` };
 
-    const usesRuntime = s.surface === 'code' && runtimeHostAdapter.hasReadyRuntime();
+    const usesRuntime = s.surface === 'code' && runtimeHostAdapter.isRuntimeSelected();
+    if (usesRuntime && s.provider !== 'mock') {
+      return {
+        ok: false,
+        reason:
+          'Manual Runtime compaction cannot safely bind this Provider credential until KodaX Runtime exposes a compact credential binding. The shared daemon environment source is not exposed to Space. Automatic threshold compaction remains credential-bound.',
+      };
+    }
     // Runtime-backed sessions emit their own revisioned lifecycle. The compatibility events below
     // are retained only for embedded/legacy sessions, which do not have a daemon observation.
     if (!usesRuntime) pushToRenderer('session.event', { kind: 'compact_start', sessionId });
@@ -907,7 +915,9 @@ class KodaXHost {
               tokensAfter: 0,
               reason: err instanceof Error ? err.message : String(err),
             }))
-        : await compactPersistedSession(sessionId, compactInput);
+        : await runWithExactProviderCredential(s.provider, () =>
+            compactPersistedSession(sessionId, compactInput),
+          );
       if (!usesRuntime && result.compacted) {
         pushToRenderer('session.event', {
           kind: 'compact_stats',

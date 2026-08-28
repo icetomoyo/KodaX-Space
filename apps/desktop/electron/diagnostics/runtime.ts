@@ -3,6 +3,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { StructuredLogger, type DiagnosticLogLevel } from './logger.js';
 import type { DiagnosticRedactionOptions } from './redaction.js';
+import { managedProviderSecretValues } from '../providers/managed-env.js';
 
 const originalConsole = {
   debug: console.debug.bind(console),
@@ -31,7 +32,7 @@ function readSdkVersion(): string {
 }
 
 function configuredSecretValues(): string[] {
-  return Object.entries(process.env)
+  const environmentSecrets = Object.entries(process.env)
     .filter(([key, value]) =>
       Boolean(
         value && /(?:api.?key|token|secret|password|authorization|cookie|credential)/i.test(key),
@@ -39,6 +40,9 @@ function configuredSecretValues(): string[] {
     )
     .map(([, value]) => value!)
     .filter((value) => value.length >= 6);
+  return [...new Set([...environmentSecrets, ...managedProviderSecretValues()])].filter(
+    (value) => value.length >= 6,
+  );
 }
 
 function formatConsoleArgs(args: readonly unknown[]): { message?: string; data?: unknown } {

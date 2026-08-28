@@ -2,7 +2,7 @@
 //
 // 验证 injectAllKeysToEnv 的两条新性质：
 //   1) 删 key 后对应 apiKeyEnv 不再残留旧值
-//   2) 共享 apiKeyEnv 的 provider 互不影响
+//   2) 只有显式声明的 builtin alias 可共享 keychain account
 //   3) 未知 account 不会修改 env，但会 log warn
 
 import { test, beforeEach, afterEach } from 'node:test';
@@ -11,11 +11,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { ProviderConfigStore } from '../providers/config.js';
-import {
-  setKey,
-  deleteKey,
-  _resetMemoryStoreForTesting,
-} from '../providers/keychain.js';
+import { setKey, deleteKey, _resetMemoryStoreForTesting } from '../providers/keychain.js';
 import { BUILTIN_PROVIDERS } from '../providers/catalog.js';
 import {
   _credentialSourceForTesting,
@@ -108,7 +104,7 @@ test('managed env from a shared keychain account is reported as runtime', () => 
   );
 });
 
-test('ensureProviderKeyInjected reuses a keychain account with the same apiKeyEnv', async () => {
+test('ensureProviderKeyInjected supports the explicit openai to codex-cli credential alias', async () => {
   delete process.env.OPENAI_API_KEY;
   await setKey('openai', 'sk-openai');
 
@@ -119,10 +115,7 @@ test('ensureProviderKeyInjected reuses a keychain account with the same apiKeyEn
 test('external env-only provider is reported as env', () => {
   process.env.KIMI_CODE_API_KEY = 'sk-external';
 
-  assert.equal(
-    _credentialSourceForTesting('kimi-code', 'KIMI_CODE_API_KEY', new Set()),
-    'env',
-  );
+  assert.equal(_credentialSourceForTesting('kimi-code', 'KIMI_CODE_API_KEY', new Set()), 'env');
 });
 
 test('external env plus keychain provider is reported as both', () => {

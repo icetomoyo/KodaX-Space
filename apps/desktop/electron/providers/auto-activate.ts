@@ -9,7 +9,7 @@
 //   2. 至少 1 个 built-in provider 的 apiKeyEnv 在 process.env 里有非空值
 //
 // 上游：shell-env-hydrate.ts 已经把用户 shell rc 的 env merge 到 process.env，
-// 所以 process.env 在本函数运行时是"shell 真实状态 + Space 自己 inject 过的 keychain key"。
+// 所以本函数必须区分 shell 真实状态与 Space 自己 inject 过的 keychain key。
 //
 // 选择策略：按 PRIORITY 顺序选第一个 env-active 的（"coding 偏好"列表，让有 ANTHROPIC
 // 和 ZHIPU 两个 key 的用户默认走 anthropic 而不是 zhipu）。
@@ -21,6 +21,7 @@
 import { BUILTIN_PROVIDERS } from './catalog.js';
 import { providerConfigStore } from './config.js';
 import { listConfiguredAccounts } from './keychain.js';
+import { externalProviderEnvValue } from './managed-env.js';
 
 // "coding 偏好"优先级。Anthropic / Codex CLI 类 coding-first provider 排前。
 // 在 PRIORITY 表里同时有 env 的 → 取最靠前；不在 PRIORITY 表里的 → 落到表尾（unknown）。
@@ -52,8 +53,8 @@ const PRIORITY: readonly string[] = [
 let autoActivatedThisBoot: readonly string[] = [];
 
 /**
- * 启动期调用。providerConfigStore.load() + injectAllKeysToEnv() 之后再调
- * 才能保证 process.env 是最新状态。
+ * 启动期调用。managed-env 保留注入前快照，因此调用顺序不会把某个 custom Provider
+ * 注入的同名变量误认成 builtin 的外部凭据。
  *
  * 首次启动逻辑：
  *   - 已有 defaultProviderId → 直接 return，不覆盖用户选择
@@ -67,8 +68,7 @@ export async function autoActivateProvidersFromEnv(): Promise<void> {
     await listConfiguredAccounts(BUILTIN_PROVIDERS.map((provider) => provider.id)),
   );
   const envActive = BUILTIN_PROVIDERS.filter((b) => {
-    const v = process.env[b.apiKeyEnv];
-    return (v !== undefined && v.trim().length > 0) || keychainActive.has(b.id);
+    return externalProviderEnvValue(b.apiKeyEnv) !== undefined || keychainActive.has(b.id);
   });
   if (envActive.length === 0) return;
 

@@ -1,6 +1,6 @@
 // Test connection — FEATURE_004，FEATURE_216 (SDK 0.7.45) 起改走 SDK。
 //
-// 验证 API key 对 provider 是否有效。**走 SDK `verifyProviderCredential`**，不再手写
+// 验证 API key 对 provider 是否有效。**走 SDK Provider `verifyCredential()`**，不再手写
 // HTTP probe —— 与实际对话/coding 调用同源（SDK 按 provider-capabilities.json 的
 // verifyStrategy 自动选 count-tokens / models-list / minimal-message），消除「测连接 vs
 // 实际调用」双实现漂移：SDK 新增 provider 时 Space 零改动自动跟上。
@@ -8,14 +8,19 @@
 // 成本：多数 provider 走 count-tokens / models-list = 0 token；zhipu / mimo / mimo-coding
 // 走 minimal-message ≈ 6-7 token（SDK 侧 count-tokens 对它们返 404 才退化到此）。
 //
-// 凭证：SDK 从 `process.env[apiKeyEnv]` 读（main 启动期 injectAllKeysToEnv 注入；setKey
-// 时 injectSingleKey 保持同步）。env 缺失 → SDK 返 error:'unconfigured'（never-throws，不崩）。
+// 凭证：Space keychain 和启动前真实 env 都使用 SDK 的 exact-provider credential scope。
+// 不能调用顶层 verifyProviderCredential：它会在创建 Provider 前先检查 process.env，看不到只
+// 存在于 scope 的 keychain 凭据，也可能读到并发注入的另一个 Provider 凭据。
 //
-// 错误脱敏：apiKey 不再经过本模块——SDK 自己从 env 取，物理上不可见。
+// 错误脱敏：本模块只把凭据交给 SDK exact scope，不记录、拼接或返回 secret。
 
 import type { BuiltinProvider } from './catalog.js';
 import type { CustomProvider } from './config.js';
 import { validateBaseUrl } from './url-guard.js';
+import {
+  MissingExactProviderCredentialError,
+  runWithExactProviderCredential,
+} from './credential-scope.js';
 
 export interface CustomProviderProbe {
   readonly id: string;
@@ -41,12 +46,12 @@ interface VerifyOpts {
 }
 
 // SDK /llm 走真实 d.ts（ambient kodax-sdk-types.d.ts 不声明 /llm，真实 sdk-llm.d.ts 提供
-// verifyProviderCredential / createCustomProvider / KodaXVerifyCredentialResult）。
+// getProvider / createCustomProvider / KodaXVerifyCredentialResult）。
 type SdkLlm = typeof import('@kodax-ai/kodax/llm');
-/** 测连接只用到 SDK 的这两个 API；导出供测试用 deps 注入。*/
-export type TestProviderModule = Pick<SdkLlm, 'verifyProviderCredential' | 'createCustomProvider'>;
+/** 测连接只用到 SDK 的 Provider factories。*/
+export type TestProviderModule = Pick<SdkLlm, 'getProvider' | 'createCustomProvider'>;
 
-type VerifyResult = Awaited<ReturnType<SdkLlm['verifyProviderCredential']>>;
+type VerifyResult = Awaited<ReturnType<ReturnType<SdkLlm['getProvider']>['verifyCredential']>>;
 
 const DEFAULT_TIMEOUT_MS = 8000;
 
@@ -92,12 +97,26 @@ function toResult(r: VerifyResult): TestResult {
   return { ok: false, latencyMs: r.durationMs, error: mapSdkError(r.error) };
 }
 
+async function runCredentialVerification(
+  provider: string,
+  operation: () => Promise<TestResult>,
+): Promise<TestResult> {
+  try {
+    return await runWithExactProviderCredential(provider, operation);
+  } catch (error) {
+    if (error instanceof MissingExactProviderCredentialError) {
+      return { ok: false, error: 'no API key configured' };
+    }
+    throw error;
+  }
+}
+
 /**
- * 用 env 里的 key 探测一次 provider，结果用于 UI 绿/红状态。
+ * 用 exact Space credential 或启动前 env 探测一次 provider，结果用于 UI 绿/红状态。
  *
  * @param deps  测试注入：`undefined` = 真实 lazy import；`null` = 模拟 SDK 不可用降级。
  *
- * builtin → `verifyProviderCredential(id)`。
+ * builtin → `getProvider(id).verifyCredential()`。
  * custom（Space `custom_*` 不在 SDK runtime registry）→ `createCustomProvider(config).verifyCredential()`。
  */
 export async function testProvider(
@@ -140,13 +159,22 @@ export async function testProvider(
       // 不回传 err.message —— SDK 的 validateCustomProviderConfig 错误可能含 apiKeyEnv 名等配置字段。
       return { ok: false, error: 'invalid custom provider config' };
     }
-    return toResult(await instance.verifyCredential(verifyOpts));
+    return deps === undefined
+      ? runCredentialVerification(provider.id, async () =>
+          toResult(await instance.verifyCredential(verifyOpts)),
+        )
+      : toResult(await instance.verifyCredential(verifyOpts));
   }
 
-  // v0.1.4：probe 把 verifyProviderCredential 缺失降级成 warn 后，运行时再用一道
-  // 短路防御：SDK 没有此函数时直接返 graceful error，让 UI 显示"不支持"而不是 crash。
-  if (typeof sdk.verifyProviderCredential !== 'function') {
-    return { ok: false, error: 'Provider connection test requires SDK with verifyProviderCredential (FEATURE_216). Upgrade @kodax-ai/kodax.' };
+  if (typeof sdk.getProvider !== 'function') {
+    return {
+      ok: false,
+      error: 'Provider connection test requires SDK with getProvider(). Upgrade @kodax-ai/kodax.',
+    };
   }
-  return toResult(await sdk.verifyProviderCredential(provider.id, verifyOpts));
+  return deps === undefined
+    ? runCredentialVerification(provider.id, async () =>
+        toResult(await sdk.getProvider(provider.id).verifyCredential(verifyOpts)),
+      )
+    : toResult(await sdk.getProvider(provider.id).verifyCredential(verifyOpts));
 }

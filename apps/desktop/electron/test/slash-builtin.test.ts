@@ -30,6 +30,7 @@ import {
   SessionRuntimeStore,
   setSessionRuntimeStoreForTesting,
 } from '../kodax/session-runtime-store.js';
+import { runtimeHostAdapter } from '../kodax/runtime-host-adapter.js';
 
 let captured: Array<{ channel: string; payload: unknown }>;
 let tempProjectRoots: string[];
@@ -201,6 +202,259 @@ test('listSlashCommands returns all builtin commands in alpha order', () => {
   }
   // 排序正确性仍校验
   assert.deepEqual(sorted, [...cmds].sort());
+});
+
+test('/fallback reads and patches the selected Coder daemon config', async (t) => {
+  const originalOverride = process.env.KODAX_FALLBACK_PROVIDERS;
+  delete process.env.KODAX_FALLBACK_PROVIDERS;
+  const adapter = runtimeHostAdapter as unknown as {
+    isRuntimeSelected(): boolean;
+    readRuntimeConfig(): Promise<unknown>;
+    patchRuntimeConfig(patch: Record<string, unknown>): Promise<unknown>;
+  };
+  const originals = {
+    isRuntimeSelected: adapter.isRuntimeSelected,
+    readRuntimeConfig: adapter.readRuntimeConfig,
+    patchRuntimeConfig: adapter.patchRuntimeConfig,
+  };
+  const patches: Record<string, unknown>[] = [];
+  adapter.isRuntimeSelected = () => true;
+  adapter.readRuntimeConfig = async () => ({ fallbackProviders: ['old-provider'] });
+  adapter.patchRuntimeConfig = async (patch) => {
+    patches.push(patch);
+    return {};
+  };
+  t.after(() => {
+    Object.assign(adapter, originals);
+    if (originalOverride === undefined) delete process.env.KODAX_FALLBACK_PROVIDERS;
+    else process.env.KODAX_FALLBACK_PROVIDERS = originalOverride;
+  });
+
+  const { sessionId } = kodaxHost.createSession({
+    projectRoot: '/r',
+    provider: 'mock',
+    surface: 'code',
+  });
+  const status = await runCmd('fallback', sessionId, ['status']);
+  const updated = await runCmd('fallback', sessionId, ['ark-coding,kimi-code']);
+
+  assert.match(status.message ?? '', /old-provider/);
+  assert.match(status.message ?? '', /effective.*not exposed/i);
+  assert.match(status.message ?? '', /not available.*SDK/i);
+  assert.equal(updated.ok, true);
+  assert.deepEqual(patches, [{ fallbackProviders: ['ark-coding', 'kimi-code'] }]);
+});
+
+test('/fallback does not infer shared daemon state from the Electron environment', async (t) => {
+  const originalOverride = process.env.KODAX_FALLBACK_PROVIDERS;
+  process.env.KODAX_FALLBACK_PROVIDERS = 'env-provider';
+  const adapter = runtimeHostAdapter as unknown as {
+    isRuntimeSelected(): boolean;
+    readRuntimeConfig(): Promise<unknown>;
+    patchRuntimeConfig(patch: Record<string, unknown>): Promise<unknown>;
+  };
+  const originals = {
+    isRuntimeSelected: adapter.isRuntimeSelected,
+    readRuntimeConfig: adapter.readRuntimeConfig,
+    patchRuntimeConfig: adapter.patchRuntimeConfig,
+  };
+  const patches: Record<string, unknown>[] = [];
+  adapter.isRuntimeSelected = () => true;
+  adapter.readRuntimeConfig = async () => ({ fallbackProviders: ['config-provider'] });
+  adapter.patchRuntimeConfig = async (patch) => {
+    patches.push(patch);
+    return {};
+  };
+  t.after(() => {
+    Object.assign(adapter, originals);
+    if (originalOverride === undefined) delete process.env.KODAX_FALLBACK_PROVIDERS;
+    else process.env.KODAX_FALLBACK_PROVIDERS = originalOverride;
+  });
+
+  const { sessionId } = kodaxHost.createSession({
+    projectRoot: '/r',
+    provider: 'mock',
+    surface: 'code',
+  });
+  const status = await runCmd('fallback', sessionId, ['status']);
+  const update = await runCmd('fallback', sessionId, ['ark-coding']);
+
+  assert.doesNotMatch(status.message ?? '', /env-provider/);
+  assert.match(status.message ?? '', /config-provider/);
+  assert.match(status.message ?? '', /effective.*not exposed/i);
+  assert.equal(update.ok, true);
+  assert.match(update.message ?? '', /saved/i);
+  assert.deepEqual(patches, [{ fallbackProviders: ['ark-coding'] }]);
+});
+
+test('daemon observability slash commands patch Runtime config instead of Electron env', async (t) => {
+  const originalVerifierOverride = process.env.KODAX_VERIFIER_LOG;
+  const originalStallOverride = process.env.KODAX_STALL_LOG;
+  delete process.env.KODAX_VERIFIER_LOG;
+  delete process.env.KODAX_STALL_LOG;
+  const adapter = runtimeHostAdapter as unknown as {
+    isRuntimeSelected(): boolean;
+    readRuntimeConfig(): Promise<unknown>;
+    patchRuntimeConfig(patch: Record<string, unknown>): Promise<unknown>;
+  };
+  const originals = {
+    isRuntimeSelected: adapter.isRuntimeSelected,
+    readRuntimeConfig: adapter.readRuntimeConfig,
+    patchRuntimeConfig: adapter.patchRuntimeConfig,
+  };
+  const patches: Record<string, unknown>[] = [];
+  adapter.isRuntimeSelected = () => true;
+  adapter.readRuntimeConfig = async () => ({ verifierLog: true, stallLog: false });
+  adapter.patchRuntimeConfig = async (patch) => {
+    patches.push(patch);
+    return {};
+  };
+  t.after(() => {
+    Object.assign(adapter, originals);
+    if (originalVerifierOverride === undefined) delete process.env.KODAX_VERIFIER_LOG;
+    else process.env.KODAX_VERIFIER_LOG = originalVerifierOverride;
+    if (originalStallOverride === undefined) delete process.env.KODAX_STALL_LOG;
+    else process.env.KODAX_STALL_LOG = originalStallOverride;
+  });
+
+  const { sessionId } = kodaxHost.createSession({
+    projectRoot: '/r',
+    provider: 'mock',
+    surface: 'code',
+  });
+  assert.match((await runCmd('verifier-log', sessionId)).message ?? '', /on/);
+  assert.match((await runCmd('stall-log', sessionId)).message ?? '', /off/);
+  await runCmd('verifier-log', sessionId, ['off']);
+  await runCmd('stall-log', sessionId, ['on']);
+
+  assert.deepEqual(patches, [{ verifierLog: false }, { stallLog: true }]);
+});
+
+test('daemon observability commands do not infer shared daemon state from Electron env', async (t) => {
+  const originalVerifierOverride = process.env.KODAX_VERIFIER_LOG;
+  const originalStallOverride = process.env.KODAX_STALL_LOG;
+  process.env.KODAX_VERIFIER_LOG = '1';
+  process.env.KODAX_STALL_LOG = '0';
+  const adapter = runtimeHostAdapter as unknown as {
+    isRuntimeSelected(): boolean;
+    readRuntimeConfig(): Promise<unknown>;
+    patchRuntimeConfig(patch: Record<string, unknown>): Promise<unknown>;
+  };
+  const originals = {
+    isRuntimeSelected: adapter.isRuntimeSelected,
+    readRuntimeConfig: adapter.readRuntimeConfig,
+    patchRuntimeConfig: adapter.patchRuntimeConfig,
+  };
+  const patches: Record<string, unknown>[] = [];
+  adapter.isRuntimeSelected = () => true;
+  adapter.readRuntimeConfig = async () => ({ verifierLog: false, stallLog: true });
+  adapter.patchRuntimeConfig = async (patch) => {
+    patches.push(patch);
+    return {};
+  };
+  t.after(() => {
+    Object.assign(adapter, originals);
+    if (originalVerifierOverride === undefined) delete process.env.KODAX_VERIFIER_LOG;
+    else process.env.KODAX_VERIFIER_LOG = originalVerifierOverride;
+    if (originalStallOverride === undefined) delete process.env.KODAX_STALL_LOG;
+    else process.env.KODAX_STALL_LOG = originalStallOverride;
+  });
+
+  const { sessionId } = kodaxHost.createSession({
+    projectRoot: '/r',
+    provider: 'mock',
+    surface: 'code',
+  });
+  assert.match((await runCmd('verifier-log', sessionId)).message ?? '', /config: off/i);
+  assert.match((await runCmd('stall-log', sessionId)).message ?? '', /config: on/i);
+  assert.equal((await runCmd('verifier-log', sessionId, ['off'])).ok, true);
+  assert.equal((await runCmd('stall-log', sessionId, ['on'])).ok, true);
+  assert.deepEqual(patches, [{ verifierLog: false }, { stallLog: true }]);
+});
+
+test('Partner config commands stay on the embedded process when Runtime is selected', async (t) => {
+  const originalFallback = process.env.KODAX_FALLBACK_PROVIDERS;
+  const originalVerifier = process.env.KODAX_VERIFIER_LOG;
+  const originalStall = process.env.KODAX_STALL_LOG;
+  process.env.KODAX_FALLBACK_PROVIDERS = 'partner-old';
+  process.env.KODAX_VERIFIER_LOG = '0';
+  process.env.KODAX_STALL_LOG = '1';
+  const adapter = runtimeHostAdapter as unknown as {
+    isRuntimeSelected(): boolean;
+    readRuntimeConfig(): Promise<unknown>;
+    patchRuntimeConfig(patch: Record<string, unknown>): Promise<unknown>;
+  };
+  const originals = {
+    isRuntimeSelected: adapter.isRuntimeSelected,
+    readRuntimeConfig: adapter.readRuntimeConfig,
+    patchRuntimeConfig: adapter.patchRuntimeConfig,
+  };
+  adapter.isRuntimeSelected = () => true;
+  adapter.readRuntimeConfig = async () => {
+    throw new Error('Partner command must not read Runtime config');
+  };
+  adapter.patchRuntimeConfig = async () => {
+    throw new Error('Partner command must not patch Runtime config');
+  };
+  t.after(() => {
+    Object.assign(adapter, originals);
+    if (originalFallback === undefined) delete process.env.KODAX_FALLBACK_PROVIDERS;
+    else process.env.KODAX_FALLBACK_PROVIDERS = originalFallback;
+    if (originalVerifier === undefined) delete process.env.KODAX_VERIFIER_LOG;
+    else process.env.KODAX_VERIFIER_LOG = originalVerifier;
+    if (originalStall === undefined) delete process.env.KODAX_STALL_LOG;
+    else process.env.KODAX_STALL_LOG = originalStall;
+  });
+  const { sessionId } = kodaxHost.createSession({
+    projectRoot: '/r',
+    provider: 'mock',
+    surface: 'partner',
+  });
+
+  const fallbackStatus = await runCmd('fallback', sessionId, ['status']);
+  const fallbackUpdate = await runCmd('fallback', sessionId, ['partner-new']);
+  const verifierUpdate = await runCmd('verifier-log', sessionId, ['on']);
+  const stallUpdate = await runCmd('stall-log', sessionId, ['off']);
+
+  assert.match(fallbackStatus.message ?? '', /partner-old/);
+  assert.match(fallbackUpdate.message ?? '', /current Space process/i);
+  assert.equal(verifierUpdate.ok, true);
+  assert.equal(stallUpdate.ok, true);
+  assert.equal(process.env.KODAX_FALLBACK_PROVIDERS, 'partner-new');
+  assert.equal(process.env.KODAX_VERIFIER_LOG, '1');
+  assert.equal(process.env.KODAX_STALL_LOG, undefined);
+});
+
+test('Partner auto-denials reports the embedded host without reading daemon settings', async (t) => {
+  const adapter = runtimeHostAdapter as unknown as {
+    isRuntimeSelected(): boolean;
+    getSessionSettingsVersioned(sessionId: string): Promise<unknown>;
+  };
+  const originals = {
+    isRuntimeSelected: adapter.isRuntimeSelected,
+    getSessionSettingsVersioned: adapter.getSessionSettingsVersioned,
+  };
+  let runtimeSettingsRead = false;
+  adapter.isRuntimeSelected = () => true;
+  adapter.getSessionSettingsVersioned = async () => {
+    runtimeSettingsRead = true;
+    throw new Error('Partner command must not read Runtime Session settings');
+  };
+  t.after(() => Object.assign(adapter, originals));
+  const { sessionId } = kodaxHost.createSession({
+    projectRoot: '/r',
+    provider: 'mock',
+    model: 'partner-model',
+    surface: 'partner',
+  });
+  assert.equal(kodaxHost.setPermissionMode(sessionId, 'auto'), true);
+
+  const result = await runCmd('auto-denials', sessionId);
+
+  assert.equal(result.ok, true);
+  assert.match(result.message ?? '', /host: embedded/i);
+  assert.match(result.message ?? '', /classifier model: partner-model/i);
+  assert.equal(runtimeSettingsRead, false);
 });
 
 test('/mode plan switches permission mode', async () => {

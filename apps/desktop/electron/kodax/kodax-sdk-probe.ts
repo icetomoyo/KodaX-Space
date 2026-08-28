@@ -10,7 +10,7 @@
 //                                getRegisteredToolDefinition / getBuiltinRegisteredToolDefinition /
 //                                resolveProvider / parseSandboxEnvironmentPass
 //   @kodax-ai/kodax/skills       SkillRegistry (skill/registry.ts 自己也 probe，这里重复防御)
-//   @kodax-ai/kodax/llm          verifyProviderCredential (FEATURE_216 — 测连接)
+//   @kodax-ai/kodax/llm          getProvider().verifyCredential() (FEATURE_216 — 测连接)
 //   @kodax-ai/kodax/a2a          authenticated A2A config/server/task-migration public surface
 //
 // **静态 import 改 dynamic**：SDK subpath exports 只声明 "import" 条件（ESM），CJS-built
@@ -31,7 +31,10 @@ export type SandboxSdkCapability =
       readonly version: 6;
       readonly asrtVersion: string;
       readonly backend:
-        'windows-restricted-user' | 'macos-seatbelt' | 'linux-bubblewrap' | 'unsupported';
+        | 'windows-restricted-user'
+        | 'macos-seatbelt'
+        | 'linux-bubblewrap'
+        | 'unsupported';
       readonly unavailableBehavior: 'structured-no-execution';
       readonly setupMayElevate: boolean;
       readonly trustedTextAuthority: 'host-transaction';
@@ -218,7 +221,10 @@ export function updateSandboxSdkDoctorResult(
     readonly version: 6;
     readonly asrtVersion: string;
     readonly backend:
-      'windows-restricted-user' | 'macos-seatbelt' | 'linux-bubblewrap' | 'unsupported';
+      | 'windows-restricted-user'
+      | 'macos-seatbelt'
+      | 'linux-bubblewrap'
+      | 'unsupported';
     readonly setupMayElevate: boolean;
     readonly trustedTextAuthority: 'host-transaction';
     readonly windowsShellAuthority: 'native-token-job-v2';
@@ -313,7 +319,7 @@ export async function probeKodaxSdk(): Promise<void> {
     );
   }
 
-  // /llm：测连接走 verifyProviderCredential（FEATURE_216）。
+  // /llm：测连接走 Provider instance verifyCredential（FEATURE_216）。
   // v0.1.4 修复：之前作 hard failure 抛错，但 npm-published @kodax-ai/kodax@0.7.45
   // 还没合 FEATURE_216 commit（本地 `npm run link:kodax` 时有，CI npm install 时没有）。
   // 让 release pipeline 全平台死。降级成 console.warn — 缺失时 test-connection.ts
@@ -324,9 +330,18 @@ export async function probeKodaxSdk(): Promise<void> {
       `@kodax-ai/kodax/llm.resolveModelCapabilities: expected function, got ${typeof llmModule.resolveModelCapabilities}`,
     );
   }
-  if (typeof llmModule.verifyProviderCredential !== 'function') {
+  let providerVerifierAvailable = false;
+  if (typeof llmModule.getProvider === 'function') {
+    try {
+      providerVerifierAvailable =
+        typeof llmModule.getProvider('anthropic').verifyCredential === 'function';
+    } catch {
+      providerVerifierAvailable = false;
+    }
+  }
+  if (!providerVerifierAvailable) {
     console.warn(
-      '[kodax-sdk-probe] @kodax-ai/kodax/llm.verifyProviderCredential not present in this SDK build. ' +
+      '[kodax-sdk-probe] @kodax-ai/kodax/llm getProvider().verifyCredential() is not available in this SDK build. ' +
         'Provider connection test will be disabled until the SDK is upgraded.',
     );
   }

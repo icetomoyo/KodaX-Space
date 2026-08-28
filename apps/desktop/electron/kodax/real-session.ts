@@ -266,6 +266,7 @@ import { workflowController } from './workflow-controller.js';
 import { externalAgentGateway } from './external-agent-gateway.js';
 import { loadKodaxRunConfig } from './user-config.js';
 import { pushToRenderer } from '../ipc/push.js';
+import { runWithExactProviderCredential } from '../providers/credential-scope.js';
 import {
   isTransientChildEvent,
   buildChildActivity,
@@ -979,12 +980,14 @@ export class RealKodaXSession implements ManagedSession {
   ): readonly RuntimeInput[] {
     return [
       { type: 'text', text: prompt },
-      ...(artifacts ?? []).map((artifact): RuntimeInput => ({
-        type: 'image',
-        path: artifact.path,
-        mediaType: artifact.mediaType,
-        source: artifact.source,
-      })),
+      ...(artifacts ?? []).map(
+        (artifact): RuntimeInput => ({
+          type: 'image',
+          path: artifact.path,
+          mediaType: artifact.mediaType,
+          source: artifact.source,
+        }),
+      ),
     ];
   }
 
@@ -2780,17 +2783,19 @@ export class RealKodaXSession implements ManagedSession {
           }
         } else {
           // Partner inline driver, or the explicitly selected legacy Coder rollback driver.
-          await withSessionRunContext(
-            {
-              sessionId: sid,
-              surface: this.surface,
-              projectRoot: this.projectRoot,
-              permissionMode: runPermissionMode,
-            },
-            () =>
-              runWithSessionQueueScope(sid, () =>
-                sdk.runManagedTask(options, explicitSkill?.executionPrompt ?? prompt),
-              ),
+          await runWithExactProviderCredential(this.provider, () =>
+            withSessionRunContext(
+              {
+                sessionId: sid,
+                surface: this.surface,
+                projectRoot: this.projectRoot,
+                permissionMode: runPermissionMode,
+              },
+              () =>
+                runWithSessionQueueScope(sid, () =>
+                  sdk.runManagedTask(options, explicitSkill?.executionPrompt ?? prompt),
+                ),
+            ),
           );
           // SA errors resolve success:false while AMA errors throw; the shared callback
           // latch normalizes both paths to one Space terminal event.

@@ -8,6 +8,7 @@ import type {
   RuntimeAppendNoticeInput,
   RuntimeCompactSessionInput,
   RuntimeCompactSessionResult,
+  RuntimeConfigPatch,
   RuntimeConversationHistory,
   RuntimeConversationHistoryBoundary,
   RuntimeConversationHistorySliceEntry,
@@ -1308,7 +1309,7 @@ export interface RuntimeHostAdapterOptions {
   readonly identityStore?: RuntimeIdentityStoreLike;
   readonly projectionController?: RuntimeProjectionController;
   readonly push?: RuntimeProjectionPush;
-  readonly credentialResolver?: (provider: string) => Promise<string | undefined>;
+  readonly credentialResolver?: RuntimeProviderCredentialResolver;
   readonly runtimeEventParser?: RuntimeEventParser;
   readonly ownerControl?: RuntimeOwnerControl;
   readonly autoModeDefaultsResolver?: () => Promise<KodaxAutoModeDefaults>;
@@ -1328,6 +1329,8 @@ export interface RuntimeHostAdapterOptions {
   /** Test seam for the opt-in Runtime startup timing recorder. */
   readonly startupTimingFactory?: RuntimeStartupTimingFactory;
 }
+
+type RuntimeProviderCredentialResolver = (provider: string) => Promise<string | undefined>;
 
 const MAX_DIAGNOSTIC_ERROR = 512;
 const DAEMON_PROCESS_EXIT_TIMEOUT_MS = 15_000;
@@ -1879,7 +1882,7 @@ export class RuntimeHostAdapter {
   private readonly identityStore: RuntimeIdentityStoreLike;
   private readonly projectionController: RuntimeProjectionController;
   private readonly push: RuntimeProjectionPush;
-  private readonly credentialResolver: (provider: string) => Promise<string | undefined>;
+  private readonly credentialResolver: RuntimeProviderCredentialResolver;
   private readonly ownerControl: RuntimeOwnerControl;
   private readonly idleDaemonStop: () => Promise<SafeDaemonStopResult>;
   private readonly daemonShutdownVerifier: DaemonShutdownVerifier;
@@ -5630,7 +5633,13 @@ export class RuntimeHostAdapter {
       }
     | undefined
   > {
-    if (!(await this.credentialResolver(provider))) return undefined;
+    const credential = await this.credentialResolver(provider);
+    if (!credential) {
+      if (provider === 'mock') return undefined;
+      throw new Error(
+        `Provider "${provider}" has no exact Space credential; Runtime Run admission was refused.`,
+      );
+    }
     const runBinding: SpaceCredentialLeaseBinding['runBinding'] = {};
     const broker: RuntimeCredentialBroker = async (request) => {
       if (request.provider !== provider || request.sessionId !== sessionId) return undefined;
@@ -6095,6 +6104,14 @@ export class RuntimeHostAdapter {
     const runtime = await this.requireRuntime();
     await runtime.config.reload();
     await this.refreshProfile(this.currentProfileCursor());
+  }
+
+  async readRuntimeConfig(): Promise<unknown> {
+    return (await this.requireRuntime()).config.read();
+  }
+
+  async patchRuntimeConfig(patch: RuntimeConfigPatch): Promise<unknown> {
+    return (await this.requireRuntime()).config.patch(patch);
   }
 
   async listRuntimeCustomProviders(): Promise<readonly SdkCustomProviderConfig[]> {

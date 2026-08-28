@@ -8,7 +8,7 @@
 //     现在 KodaX 改 → Space 自动跟上。
 //   • Space override (本文件 SPACE_OVERRIDES)：displayName / protocol —— 纯 UI 元数据
 //     SDK 不关心这些（KodaX 用 `capabilityProfile` 表达更丰富的能力）。protocol 现仅用于
-//     UI 显示与 custom provider 表单；测连接已改走 SDK verifyProviderCredential（FEATURE_216），
+//     UI 显示与 custom provider 表单；测连接已改走 SDK Provider.verifyCredential（FEATURE_216），
 //     不再需要 Space 手维护 testEndpoint。
 //
 // 为什么不 dynamic-import @kodax-ai/kodax 读 KODAX_PROVIDER_SNAPSHOTS：

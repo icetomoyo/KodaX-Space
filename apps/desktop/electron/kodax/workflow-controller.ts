@@ -28,6 +28,7 @@ import { externalAgentGateway } from './external-agent-gateway.js';
 import { repoIntelContextFields } from './repo-intel-gate.js';
 import { replaceFileWithoutFollowingAliases } from './atomic-file.js';
 import { loadKodaxRunConfig } from './user-config.js';
+import { runWithExactProviderCredential } from '../providers/credential-scope.js';
 
 // ---- SDK 形状(只取本控制器用到的子集,避免硬依赖 SDK 类型导出) ----
 interface SdkProcessSnapshot {
@@ -50,6 +51,8 @@ export interface WorkflowRunManagerLike {
   /** F063 启动:把已解析的 module + options 提交到进程管理器,事件经订阅回流。可能异步。 */
   startFromOptions(input: Record<string, unknown>): unknown | Promise<unknown>;
 }
+
+type RunProviderOperation = typeof runWithExactProviderCredential;
 
 // ---- F063 库 / 启动 类型 ----
 export interface WorkflowMetaLite {
@@ -1086,6 +1089,7 @@ export class WorkflowController {
     private readonly originsFile: string = path.join(getSpaceDataDir(), 'workflow-origins.json'),
     /** Space 自有 run base dir——F063 启动 run 与 F062 durable 控制(delete/prune)共用。 */
     private readonly runBaseDir: string = path.join(path.dirname(originsFile), 'workflow-runs'),
+    private readonly runProviderOperation: RunProviderOperation = runWithExactProviderCredential,
   ) {}
 
   getRunBaseDir(): string {
@@ -1385,7 +1389,8 @@ export class WorkflowController {
     const partnerBlocked = this.assertCoderSurface(input.session);
     if (partnerBlocked) return partnerBlocked;
     const sdk = await loadCodingSdk();
-    if (!sdk || !this.manager) return { error: 'workflow runtime unavailable' };
+    const manager = this.manager;
+    if (!sdk || !manager) return { error: 'workflow runtime unavailable' };
     let module: unknown;
     try {
       module =
@@ -1429,33 +1434,35 @@ export class WorkflowController {
     try {
       // await:startFromOptions 可能异步（建 run 目录/注册进程/spawn）。不 await 会让
       // 异步错误变 unhandled rejection，且 registerOrigin 抢跑在启动确认之前（ghost run）。
-      await this.manager.startFromOptions({
-        module,
-        args: input.args ?? {},
-        // workflow 子 agent 用精简 options（无 session block）——run 是**短命**的，自带
-        // run 目录（run.json/events.jsonl/artifacts），不写对话 lineage。刻意设计。
-        options,
-        runId,
-        runDir,
-        processMetadata: {
-          displayName: meta?.name,
-          source: 'sdk',
-          hostMetadata: {
-            ...this.hostMetadata(s, patternsFromWorkflowModule(module)),
-            ...(resolvedAgentTarget
-              ? {
-                  externalAgentId: resolvedAgentTarget.agentId,
-                  ...(resolvedAgentTarget.expectedConfigurationRevision
-                    ? {
-                        externalAgentConfigurationRevision:
-                          resolvedAgentTarget.expectedConfigurationRevision,
-                      }
-                    : {}),
-                }
-              : {}),
+      await this.runProviderOperation(s.provider, () =>
+        manager.startFromOptions({
+          module,
+          args: input.args ?? {},
+          // workflow 子 agent 用精简 options（无 session block）——run 是**短命**的，自带
+          // run 目录（run.json/events.jsonl/artifacts），不写对话 lineage。刻意设计。
+          options,
+          runId,
+          runDir,
+          processMetadata: {
+            displayName: meta?.name,
+            source: 'sdk',
+            hostMetadata: {
+              ...this.hostMetadata(s, patternsFromWorkflowModule(module)),
+              ...(resolvedAgentTarget
+                ? {
+                    externalAgentId: resolvedAgentTarget.agentId,
+                    ...(resolvedAgentTarget.expectedConfigurationRevision
+                      ? {
+                          externalAgentConfigurationRevision:
+                            resolvedAgentTarget.expectedConfigurationRevision,
+                        }
+                      : {}),
+                  }
+                : {}),
+            },
           },
-        },
-      });
+        }),
+      );
     } catch (err) {
       return { error: err instanceof Error ? err.message : String(err) };
     }
@@ -1477,13 +1484,14 @@ export class WorkflowController {
     const partnerBlocked = this.assertCoderSurface(session);
     if (partnerBlocked) return partnerBlocked;
     const sdk = await loadCodingSdk();
-    if (!sdk?.generateWorkflowFromOptions) return { error: 'workflow generation unavailable' };
+    const generateWorkflow = sdk?.generateWorkflowFromOptions;
+    if (!generateWorkflow) return { error: 'workflow generation unavailable' };
     let generated: WorkflowGenerationResultLite;
     try {
-      generated = await sdk.generateWorkflowFromOptions({
-        request,
-        options: await this.launchOptions(session),
-      });
+      const options = await this.launchOptions(session);
+      generated = await this.runProviderOperation(session.provider, () =>
+        generateWorkflow({ request, options }),
+      );
     } catch (err) {
       return { error: err instanceof Error ? err.message : String(err) };
     }
@@ -1617,7 +1625,8 @@ export class WorkflowController {
       return { error: 'revise --replace requires a saved workflow name target' };
     }
     const sdk = await loadCodingSdk();
-    if (!sdk?.generateWorkflowFromOptions) return { error: 'workflow revision unavailable' };
+    const generateWorkflow = sdk?.generateWorkflowFromOptions;
+    if (!generateWorkflow) return { error: 'workflow revision unavailable' };
     let capsule: WorkflowCapsuleLite;
     try {
       if (input.saved) {
@@ -1650,10 +1659,10 @@ export class WorkflowController {
     });
     let generated: WorkflowGenerationResultLite;
     try {
-      generated = await sdk.generateWorkflowFromOptions({
-        request: revisionRequest,
-        options: await this.launchOptions(input.session),
-      });
+      const options = await this.launchOptions(input.session);
+      generated = await this.runProviderOperation(input.session.provider, () =>
+        generateWorkflow({ request: revisionRequest, options }),
+      );
     } catch (err) {
       return { error: err instanceof Error ? err.message : String(err) };
     }
@@ -1866,25 +1875,29 @@ export class WorkflowController {
     readonly patterns?: readonly string[];
     readonly processMetadata?: Record<string, unknown>;
   }): Promise<WorkflowStartResult> {
-    if (!this.manager) return { error: 'workflow runtime unavailable' };
+    const manager = this.manager;
+    if (!manager) return { error: 'workflow runtime unavailable' };
     const runId = `wf_${randomUUID()}`;
     const runDir = path.join(this.runBaseDir, runId);
     const displayName = workflowNameFromModule(input.module);
     try {
-      await this.manager.startFromOptions({
-        module: input.module,
-        args: input.args ?? {},
-        options: await this.launchOptions(input.session),
-        runId,
-        runDir,
-        ...(input.scriptSnapshot ? { scriptSnapshot: input.scriptSnapshot } : {}),
-        processMetadata: {
-          displayName,
-          ...input.processMetadata,
-          source: input.source,
-          hostMetadata: this.hostMetadata(input.session, input.patterns),
-        },
-      });
+      const options = await this.launchOptions(input.session);
+      await this.runProviderOperation(input.session.provider, () =>
+        manager.startFromOptions({
+          module: input.module,
+          args: input.args ?? {},
+          options,
+          runId,
+          runDir,
+          ...(input.scriptSnapshot ? { scriptSnapshot: input.scriptSnapshot } : {}),
+          processMetadata: {
+            displayName,
+            ...input.processMetadata,
+            source: input.source,
+            hostMetadata: this.hostMetadata(input.session, input.patterns),
+          },
+        }),
+      );
     } catch (err) {
       return { error: err instanceof Error ? err.message : String(err) };
     }
