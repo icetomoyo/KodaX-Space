@@ -144,8 +144,6 @@ function sectionForMetric(key: TaskDockRunViewModel['metrics'][number]['key']): 
       return 'agents';
     case 'workflow':
       return 'workflow';
-    case 'budget':
-      return 'agents';
   }
 }
 

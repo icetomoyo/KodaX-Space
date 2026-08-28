@@ -156,8 +156,6 @@ export const messages = {
     'right.externalAgentCancellationState.unknown': 'unknown',
     'right.agentFanout': '{count} active',
     'right.agentFanoutWithClass': '{count} active / {className}',
-    'right.budget': 'budget',
-    'right.approvalNeeded': 'approval needed',
     'right.running': 'Running',
     'right.waiting': 'Waiting',
     'right.done': 'Done',
@@ -745,9 +743,6 @@ export const messages = {
     'tasks.state': 'State',
     'tasks.waitingPendingResults': 'Waiting for {count} pending result(s)',
     'tasks.agentsEmpty': 'Agents appear here when a task is delegated, split, or run in parallel.',
-    'tasks.budget': 'Budget',
-    'tasks.noBudget': 'No budget data yet.',
-    'tasks.approvalNeeded': 'approval needed',
     'tasks.harness': 'Harness',
     'tasks.unknown': 'Unknown',
     'tasks.round': 'round {round}',
@@ -1577,6 +1572,9 @@ export const messages = {
     'customProvider.promptCacheAffinity.title': 'Enable stable prompt-cache routing',
     'customProvider.promptCacheAffinity.description':
       'Enable only when this exact endpoint accepts the protocol cache-affinity field. Strict compatible gateways may reject it.',
+    'customProvider.imageInput.title': 'Enable image input',
+    'customProvider.imageInput.description':
+      'Enable only when the endpoint model supports vision. KodaX will then allow image artifacts and forward them using the selected compatible protocol.',
     'customProvider.credentialMode.label': 'Credential source',
     'customProvider.credentialMode.hint':
       'Choose one: protect a pasted key with OS credential storage, or point to an environment variable you already set.',
@@ -2049,7 +2047,6 @@ export const messages = {
     'taskDock.metric.agentsDone': '{total} / {completed} done',
     'taskDock.metric.agentsActiveDone': '{total} / {active} running / {completed} done',
     'taskDock.metric.workflow': 'Workflow',
-    'taskDock.metric.budget': 'Budget',
     'taskDock.section.run': 'Run',
     'taskDock.section.plan': 'Plan',
     'taskDock.section.workflow': 'Workflow',
@@ -2715,8 +2712,6 @@ export const messages = {
     'right.externalAgentCancellationState.unknown': '未知',
     'right.agentFanout': '{count} 个活跃',
     'right.agentFanoutWithClass': '{count} 个活跃 / {className}',
-    'right.budget': '预算',
-    'right.approvalNeeded': '需要审批',
     'right.running': '运行中',
     'right.waiting': '等待中',
     'right.done': '已完成',
@@ -3290,9 +3285,6 @@ export const messages = {
     'tasks.state': '状态',
     'tasks.waitingPendingResults': '正在等待 {count} 个待处理结果',
     'tasks.agentsEmpty': '当任务被委托、拆分或并行运行时，agents 会显示在这里。',
-    'tasks.budget': '预算',
-    'tasks.noBudget': '还没有预算数据。',
-    'tasks.approvalNeeded': '需要批准',
     'tasks.harness': 'Harness',
     'tasks.unknown': '未知',
     'tasks.round': '第 {round} 轮',
@@ -3858,6 +3850,9 @@ export const messages = {
     'customProvider.promptCacheAffinity.title': '启用稳定的提示词缓存路由',
     'customProvider.promptCacheAffinity.description':
       '仅在确认该端点支持协议缓存路由字段时启用；严格兼容网关可能拒绝未知字段。',
+    'customProvider.imageInput.title': '启用图片输入',
+    'customProvider.imageInput.description':
+      '仅在端点模型确实支持视觉输入时启用。KodaX 随后会放行图片 Artifact，并按所选兼容协议转发。',
     'customProvider.credentialMode.label': '凭证来源',
     'customProvider.credentialMode.hint':
       '二选一：用系统凭据存储保护粘贴的 API Key，或引用你已经设置好的环境变量。',
@@ -4313,7 +4308,6 @@ export const messages = {
     'taskDock.metric.agentsDone': '{total} / {completed} 完成',
     'taskDock.metric.agentsActiveDone': '{total} / {active} 运行 / {completed} 完成',
     'taskDock.metric.workflow': '工作流',
-    'taskDock.metric.budget': '预算',
     'taskDock.section.run': '运行',
     'taskDock.section.plan': '计划',
     'taskDock.section.workflow': '工作流',

@@ -777,10 +777,6 @@ function AgentSection({
   const events = useAppStore((s) =>
     currentSessionId ? s.eventsBySession[currentSessionId] : undefined,
   );
-  const budget = useAppStore((s) =>
-    currentSessionId ? s.workBudgetBySession[currentSessionId] : undefined,
-  );
-
   const currentTurnActorSnapshot = useMemo(
     () => scopeAgentActorSnapshotToCurrentTurn(actorSnapshot, events),
     [actorSnapshot, events],
@@ -789,9 +785,6 @@ function AgentSection({
     () => buildAgentStatuses(status, t, currentTurnActorSnapshot),
     [currentTurnActorSnapshot, status, t],
   );
-
-  // Hide empty agent content, matching the no-content strategy used by PlanSection.
-  if (agents.length === 0 && !budget) return null;
 
   // active = workers that are actually moving now; idle/done should not dominate summary.
   const runningCount = agents.filter((agent) => agent.state === 'active').length;
@@ -816,6 +809,17 @@ function AgentSection({
         : t('right.agentFanout', { count: status.childFanoutCount })
       : null;
 
+  // Work-unit telemetry is not a user-facing round limit. Keep this section only
+  // for real agent activity or an actionable Runtime state.
+  if (
+    agents.length === 0 &&
+    !status?.idleWaiting &&
+    !fanoutLabel &&
+    !status?.budgetApprovalRequired
+  ) {
+    return null;
+  }
+
   return (
     <Section
       title={t('right.agentsCount', { count: agents.length })}
@@ -825,22 +829,6 @@ function AgentSection({
       autoOpenKey={activeAgentKey || null}
       popoutKind="tasks"
     >
-      {budget && (
-        <div className="mb-2 text-[11px]">
-          <div className="text-fg-secondary font-mono">
-            {t('right.budget')} {budget.used}/{budget.cap}
-            {status?.budgetApprovalRequired && (
-              <span className="ml-2 text-warn">/ {t('right.approvalNeeded')}</span>
-            )}
-          </div>
-          <div className="h-1 bg-surface-3 rounded overflow-hidden mt-0.5">
-            <div
-              className="h-full bg-ok"
-              style={{ width: `${Math.min(100, (budget.used / budget.cap) * 100)}%` }}
-            />
-          </div>
-        </div>
-      )}
       {agents.length > 0 && (
         <div className="mb-2 flex flex-wrap gap-1">
           {runningCount > 0 && <AgentMetric label={t('right.running')} value={runningCount} />}
@@ -852,6 +840,9 @@ function AgentSection({
           {fanoutLabel && <AgentMetric label={t('right.fanout')} value={fanoutLabel} />}
         </div>
       )}
+      {status?.budgetApprovalRequired && (
+        <div className="mb-2 text-xs text-warn">{t('right.budgetApprovalNeeded')}</div>
+      )}
       {agents.length === 0 ? (
         status?.idleWaiting ? (
           <div className="text-xs text-fg-muted">
@@ -859,8 +850,6 @@ function AgentSection({
           </div>
         ) : fanoutLabel ? (
           <div className="text-xs text-fg-muted">{fanoutLabel}</div>
-        ) : status?.budgetApprovalRequired ? (
-          <div className="text-xs text-warn">{t('right.budgetApprovalNeeded')}</div>
         ) : (
           <div className="text-xs text-fg-muted">{t('right.noDelegatedAgents')}</div>
         )

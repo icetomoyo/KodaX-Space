@@ -19,6 +19,7 @@ import { promisify } from 'node:util';
 import { z } from 'zod';
 import {
   coderRuntimeModeSchema,
+  reasoningModeSchema,
   terminalShellPreferenceSchema,
   windowCloseBehaviorSchema,
   type CoderRuntimeModeT,
@@ -48,21 +49,7 @@ const MAX_SETTINGS_MIGRATION_BYTES = 1024 * 1024;
 const runtimeDefaultFieldSchemas = {
   permissionMode: z.enum(['plan', 'accept-edits', 'auto']).optional(),
   autoModeEngine: z.enum(['llm', 'rules']).optional(),
-  reasoningMode: z
-    .enum([
-      'off',
-      'auto',
-      'minimal',
-      'low',
-      'medium',
-      'high',
-      'xhigh',
-      'max',
-      'quick',
-      'balanced',
-      'deep',
-    ])
-    .optional(),
+  reasoningMode: reasoningModeSchema.optional(),
   agentMode: persistedAgentModeSchema.optional(),
 } as const;
 

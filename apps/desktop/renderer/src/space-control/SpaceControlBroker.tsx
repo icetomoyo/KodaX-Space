@@ -5,9 +5,9 @@ import type {
   SpaceActionValueT,
   SpaceControlResultT,
   PushPayload,
-  ReasoningMode,
   Surface,
 } from '@kodax-space/space-ipc-schema';
+import { reasoningModeSchema } from '@kodax-space/space-ipc-schema';
 import { useAppStore } from '../store/appStore.js';
 import { useSurfaceStore } from '../store/surface.js';
 import { useI18n } from '../i18n/I18nProvider.js';
@@ -48,19 +48,6 @@ const SETTINGS_TABS = new Set<SettingsTab>([
   'license',
 ]);
 const WIDTH_PRESETS = new Set<TaskDockWidthPreset>(['default', 'half', 'max']);
-const REASONING_MODES = new Set<ReasoningMode>([
-  'off',
-  'auto',
-  'minimal',
-  'low',
-  'medium',
-  'high',
-  'xhigh',
-  'max',
-  'quick',
-  'balanced',
-  'deep',
-]);
 const RENDERER_INSTANCE_ID = globalThis.crypto.randomUUID();
 
 function isStringIn<T extends string>(values: ReadonlySet<T>, value: unknown): value is T {
@@ -161,8 +148,9 @@ export function SpaceControlBroker(props: SpaceControlBrokerProps): null {
           onSetTaskDockWidthMode(value);
           return undefined;
         case 'settings.reasoningMode.setDefault': {
-          if (!isStringIn(REASONING_MODES, value)) return 'invalid-arguments';
-          return (await setSpaceReasoningDefault(value)) ? undefined : 'persistence-failed';
+          const parsed = reasoningModeSchema.safeParse(value);
+          if (!parsed.success) return 'invalid-arguments';
+          return (await setSpaceReasoningDefault(parsed.data)) ? undefined : 'persistence-failed';
         }
       }
     },

@@ -234,6 +234,50 @@ test('task dock plan metric counts completed items only', () => {
   );
 });
 
+test('task dock does not present SDK work units as a user budget limit', () => {
+  const input = {
+    hasProject: true,
+    hasSession: true,
+    pendingSend: false,
+    isStreaming: false,
+    budget: { used: 200, cap: 200 },
+  };
+  const view = buildTaskDockRunView(input);
+
+  assert.equal(
+    view.metrics.some((metric) => metric.value === '200/200'),
+    false,
+  );
+});
+
+test('task dock keeps a real budget approval signal when an agent is active', () => {
+  const view = buildTaskDockRunView({
+    hasProject: true,
+    hasSession: true,
+    pendingSend: false,
+    isStreaming: false,
+    managedStatus: {
+      agentMode: 'ama',
+      harnessProfile: 'H1_EXECUTE_EVAL',
+      budgetApprovalRequired: true,
+      activeWorkerId: 'reviewer',
+      activeWorkerTitle: 'Reviewer',
+      events: [
+        {
+          key: 'review-progress',
+          kind: 'progress',
+          workerId: 'reviewer',
+          workerTitle: 'Reviewer',
+          summary: 'Reviewing',
+        },
+      ],
+    },
+  });
+
+  assert.equal(view.mode, 'attention');
+  assert.equal(view.attentionKind, 'budget');
+});
+
 test('task dock run projection gives no-project actionable state', () => {
   const view = buildTaskDockRunView({
     hasProject: false,

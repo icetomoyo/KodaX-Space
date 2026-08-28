@@ -92,6 +92,7 @@ export interface KodaxConfigCustomProvider {
   readonly defaultModel: string;
   readonly models?: readonly string[];
   readonly promptCacheAffinity?: boolean;
+  readonly imageInput?: boolean;
   readonly contextWindow?: number;
   readonly reasoning?: CustomProviderReasoning;
 }
@@ -105,6 +106,7 @@ export interface KodaxConfigCustomProviderUpdate {
   readonly defaultModel: string;
   readonly models?: readonly string[];
   readonly promptCacheAffinity?: boolean;
+  readonly imageInput?: boolean;
   readonly contextWindow?: number;
   readonly reasoning?: CustomProviderReasoning;
 }
@@ -117,6 +119,7 @@ export interface SpaceCustomProviderForSdk {
   readonly defaultModel: string;
   readonly models?: readonly string[];
   readonly promptCacheAffinity?: boolean;
+  readonly imageInput?: boolean;
   readonly contextWindow?: number;
   readonly reasoning?: CustomProviderReasoning;
 }
@@ -506,7 +509,7 @@ export async function registerKodaxCustomProviders(
 
 // ---- helpers ----
 
-/** SDK 可能返回 string 标记的 reasoningMode；mapped 到 Space 的 union；其它值丢弃。*/
+/** SDK 可能返回自定义 reasoningMode；保留规范化 token，并兼容旧版 Space 别名。 */
 function normalizeReasoningMode(v: unknown): KodaxUserDefaults['reasoningMode'] {
   if (typeof v !== 'string') return undefined;
   return isSpaceReasoningMode(v) ? effortToReasoningMode(v) : undefined;
@@ -568,6 +571,7 @@ function normalizeKodaxConfigCustomProvider(
 
   const models = normalizeModelList(raw.models);
   const promptCacheAffinity = raw.promptCacheAffinity === true ? true : undefined;
+  const imageInput = raw.imageInput === true ? true : undefined;
   const contextWindow = normalizeCustomProviderContextWindow(raw.contextWindow);
   const reasoning = normalizeReasoningConfig(raw.reasoning);
   return {
@@ -580,6 +584,7 @@ function normalizeKodaxConfigCustomProvider(
     defaultModel: model,
     ...(models ? { models } : {}),
     ...(promptCacheAffinity ? { promptCacheAffinity } : {}),
+    ...(imageInput ? { imageInput } : {}),
     ...(contextWindow !== undefined ? { contextWindow } : {}),
     ...(reasoning ? { reasoning } : {}),
   };
@@ -625,6 +630,9 @@ function spaceCustomProviderToSdk(provider: SpaceCustomProviderForSdk): SdkCusto
   }
   if (provider.promptCacheAffinity === true) {
     config.promptCacheAffinity = true;
+  }
+  if (provider.imageInput === true) {
+    config.imageInput = true;
   }
   if (provider.contextWindow !== undefined) {
     config.contextWindow = provider.contextWindow;
@@ -975,6 +983,7 @@ const CUSTOM_PROVIDER_MODELED_KEYS: ReadonlySet<string> = new Set([
   'model',
   'models',
   'promptCacheAffinity',
+  'imageInput',
   'contextWindow',
   // 'reasoning' 是 Space 表单建模并作为其权威编辑器的字段（表单会用现有值预填,见
   // CustomProviderForm reasoningNone/reasoningEfforts/reasoningDefault）。必须纳入 modeled
@@ -1049,6 +1058,7 @@ function customProviderUpdateToSdk(
     defaultModel: update.defaultModel,
     models: update.models,
     promptCacheAffinity: update.promptCacheAffinity,
+    imageInput: update.imageInput,
     contextWindow: update.contextWindow,
     ...(update.reasoning !== undefined ? { reasoning: update.reasoning } : {}),
   });

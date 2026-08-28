@@ -21,7 +21,7 @@
 > 旧能力 SDK/daemon 会 fail closed，不能继续执行 Coder。Runtime 的合法排队等待、
 > canonical replacement 和提交后维护失败会保持不同的可诊断事实。
 >
-> 更新日期：2026-08-24
+> 更新日期：2026-08-28
 >
 > 如果你的界面与本文不同，请先在 Settings → License/版本信息中确认构建版本。
 > 本手册对应 `v0.1.45` 正式发布产物；历史安装包的界面与行为可能不同。
@@ -416,14 +416,16 @@ Settings 有四个主标签：Preferences、Providers、Runtime、License。
 
 ### Provider
 
-内置 Provider 和自定义 OpenAI-compatible/Anthropic-compatible Provider 都从 Providers 管理。环境变量也可提供凭据；UI 会尽量说明凭据来源。自定义 Provider 的 Base URL、协议和模型名必须与服务端实际兼容。
+内置 Provider 和自定义 OpenAI-compatible/Anthropic-compatible Provider 都从 Providers 管理。环境变量也可提供凭据；UI 会尽量说明凭据来源。自定义 Provider 的 Base URL、协议和模型名必须与服务端实际兼容。如果端点模型确实支持视觉输入，可显式勾选“启用图片输入”；KodaX 会据此放行并转发图片 Artifact，但不会替你验证上游模型的真实视觉能力，纯文本模型不要启用。
+
+当前版本还会从 KodaX 目录展示 DeepSeek 的视觉专用模型 `deepseek-v4-flash-vision-exp`，以及 `zhipu`、`zhipu-coding`、`zai-coding` 三条路由上的多模态 `glm-5.3-flash`。DeepSeek 的 `deepseek-v4-flash` / `deepseek-v4-pro` 仍是纯文本；GLM Flash 的目录元数据为 1M 上下文、131072 最大输出且不能关闭思考。已有默认模型不因此改变。
 
 KodaX 0.7.77 会为确认兼容的内置 Provider 建立稳定的提示词缓存路由：同一逻辑 Session 在连续 run、retry、fallback、resume 和 compaction 后保持稳定，子 Agent 按其规范路径隔离。自定义兼容端点默认不启用；只有确认网关接受相应协议字段时，才在 Provider 表单勾选“启用稳定的提示词缓存路由”。严格兼容网关可能拒绝未知字段，因此这个开关不会自动推断。
 
 ### Model 与 Reasoning Effort
 
 - 会话可覆盖 Provider 和 Model。
-- Effort 使用 `off / auto / quick / balanced / deep` 的 Space 抽象，再映射到模型支持的参数。
+- Effort 选项由当前 Provider/Model 的 KodaX reasoning profile 决定，UI 按 SDK 声明顺序展示可用档位；`quick / balanced / deep` 仅作为旧版兼容别名。
 - `Ctrl+Shift+E` 打开/循环可用 effort；`Ctrl+T` 保留为旧式循环快捷键。
 - Thinking 是模型输出行为，不等于 Effort。
 

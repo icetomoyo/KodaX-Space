@@ -35,7 +35,10 @@ import type {
   SessionHistoryItem,
 } from '@kodax-space/space-ipc-schema';
 import { bufferIndexForSelectorTurn } from '../features/session/turnIndex.js';
-import { canonProjectRoot as canonProjectRootShared } from '@kodax-space/space-ipc-schema';
+import {
+  canonProjectRoot as canonProjectRootShared,
+  reasoningModeSchema,
+} from '@kodax-space/space-ipc-schema';
 import {
   type VisualQuality,
   VISUAL_QUALITY_KEY,
@@ -1205,19 +1208,6 @@ const MASCOT_MODE_VALUES = ['legacy', 'sprite', 'off'] as const;
 
 // 持久化 pending* 模式时校验合法 enum 值，避免 LS 被改成非法值后崩 (typescript 编译期没法知道)
 const PERMISSION_MODE_VALUES = ['plan', 'accept-edits', 'auto'] as const;
-const REASONING_MODE_VALUES = [
-  'off',
-  'auto',
-  'minimal',
-  'low',
-  'medium',
-  'high',
-  'xhigh',
-  'max',
-  'quick',
-  'balanced',
-  'deep',
-] as const;
 const AUTO_MODE_ENGINE_VALUES = ['llm', 'rules'] as const;
 const AGENT_MODE_VALUES = ['ama', 'sa'] as const;
 
@@ -1229,9 +1219,8 @@ function readPersistedPermissionMode(): SessionMeta['permissionMode'] | null {
 }
 function readPersistedReasoningMode(): SessionMeta['reasoningMode'] | null {
   const v = lsGet(LS_KEY_PENDING_REASONING);
-  return v !== null && (REASONING_MODE_VALUES as readonly string[]).includes(v)
-    ? (v as SessionMeta['reasoningMode'])
-    : null;
+  const parsed = reasoningModeSchema.safeParse(v);
+  return parsed.success ? parsed.data : null;
 }
 function readPersistedAutoModeEngine(): SessionMeta['autoModeEngine'] | null {
   const v = lsGet(LS_KEY_PENDING_AUTO_ENGINE);
@@ -1661,7 +1650,12 @@ function transcriptTurnSnapshots(
 }
 
 type CanonicalTranscriptRecordKind =
-  'user' | 'assistant' | 'tool' | 'sidecar' | 'lineage' | 'workflow';
+  | 'user'
+  | 'assistant'
+  | 'tool'
+  | 'sidecar'
+  | 'lineage'
+  | 'workflow';
 
 interface CanonicalTranscriptRecord {
   readonly kind: CanonicalTranscriptRecordKind;

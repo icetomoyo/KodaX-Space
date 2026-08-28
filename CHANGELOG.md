@@ -16,6 +16,13 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ### Changed
 
+- **Truthful agent limits and SDK-driven reasoning efforts** - The Task Dock no
+  longer presents KodaX mixed work-unit telemetry as a `200`-round user limit;
+  real Runtime approval requests remain actionable. Reasoning efforts now pass
+  through bounded SDK/provider strings across IPC, persistence, slash, semantic
+  controls, and the model picker. Unsupported ordered efforts fall back to the
+  nearest lower supported rung before the SDK default, and profiles that use
+  `none` to disable thinking correctly expose the Off choice.
 - **KodaX 0.7.96-alpha.2 sandbox v6 alignment** - Root and Desktop pin the
   exact published prerelease and Registry integrity. SDK startup, daemon
   admission, connected Runtime checks, and packaged smoke now require
@@ -25,9 +32,13 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
   the manifest-pinned hashes before exercising the real command sandbox.
   The alpha.2 republish restores the Windows lifecycle PowerShell executable
   resolver that was missing from alpha.1.
-- **KodaX 0.7.96 provider catalog alignment** - Surface the SDK's new
-  `glm-5.3-flash` model and keep its 1M-token renderer fallback consistent with
-  the SDK catalog.
+- **KodaX 0.7.96 multimodal provider alignment** - Surface DeepSeek's vision-only
+  `deepseek-v4-flash-vision-exp` route and `glm-5.3-flash` on `zhipu`,
+  `zhipu-coding`, and `zai-coding`, keeping the latter's 1M-token renderer
+  fallback consistent with the SDK catalog. Custom OpenAI/Anthropic-compatible
+  providers can now explicitly opt into KodaX image routing with `imageInput`;
+  the setting is validated over IPC, persisted, editable, and synchronized into
+  the live Runtime catalog.
 - **Structured Runtime failure diagnostics** - Preserve KodaX 0.7.96
   credential-safe `failureDetail` across daemon events, live Run projections,
   Space IPC, and conversation notices. Error notices now expose the stable

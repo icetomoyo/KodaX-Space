@@ -3,6 +3,7 @@ import { constants as fsConstants, promises as fs } from 'node:fs';
 import path from 'node:path';
 
 import { z } from 'zod';
+import { reasoningModeSchema } from '@kodax-space/space-ipc-schema';
 
 import {
   replaceFileIfUnchanged,
@@ -13,19 +14,6 @@ import { getSpaceDataDir } from '../data-paths.js';
 
 const MAX_CONFIG_BYTES = 32 * 1024;
 const TRANSIENT_INSTALL_ALIAS_RETRIES = 4;
-const reasoningModeSchema = z.enum([
-  'off',
-  'auto',
-  'minimal',
-  'low',
-  'medium',
-  'high',
-  'xhigh',
-  'max',
-  'quick',
-  'balanced',
-  'deep',
-]);
 const permissionModeSchema = z.enum(['plan', 'accept-edits', 'auto']);
 const autoModeEngineSchema = z.enum(['llm', 'rules']);
 const agentModeSchema = z.preprocess(

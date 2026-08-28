@@ -287,8 +287,8 @@ Repointel 的核心调用契约（`status / warm / preturn / context-pack / impa
 - 多 session 抽屉：每个 session 一行卡片（标题 / provider / 当前模式 / 最后活动）
 - 主交互区：
   - 对话流（含 tool call 折叠卡片）
-  - Work 进度条 + 当前 H0/H1/H2 模式徽标
-  - 当前 reasoning mode（off/auto/quick/balanced/deep）下拉
+  - 任务状态 + 当前 Agent 模式（AMA / SA）徽标
+  - 当前 reasoning effort（由 KodaX reasoning profile 提供，UI 按模型声明展示）
 - 工具调用面板（右抽屉）：
   - bash：完整命令 + 输出 + 退出码
   - read/write/edit：路径 + diff
@@ -462,9 +462,9 @@ Repointel 的核心调用契约（`status / warm / preturn / context-pack / impa
 开窗 → 左侧抽屉点 "+ New session"
   → 选择项目根目录 / provider / reasoning mode
   → 在对话框写任务
-  → Work 进度条显示 H0_DIRECT，3 秒完成
-  → 中等任务自动 escalate 到 H1，顶栏出现 "Round 1/2"
-  → 复杂改动 escalate 到 H2，左侧 session 卡片标志变更
+  → 状态区展示可证实的 Runtime / Harness / Agent / approval 状态
+  → 中等任务进入 Team 协作，任务卡展示实时运行状态
+  → 复杂改动进入 Plan 或 Team，侧栏任务卡同步状态变化
   → 期间打开第二个 session，跑另一个仓库的评审
 ```
 
@@ -553,7 +553,7 @@ File panel 内点击 git diff
 ### 7.5 内容真实性
 
 - **不夸大自主性**：UI 文案禁止使用 "fully autonomous" / "no oversight needed" 等措辞
-- 长任务进度条与 KodaX Work budget 一一对应；不显示假进度
+- 长任务只显示可证实的 Runtime 状态、Agent 活动和审批需求；内部 work-unit 兼容遥测不作为进度条或用户上限展示
 
 ---
 
@@ -718,9 +718,9 @@ Worker/独立子进程、私有 staging、超时取消、禁宏/链接更新和�
 | KodaX 内核 PRD 概念             | KodaX Space 中的体现                                                  |
 | ------------------------------- | --------------------------------------------------------------------- |
 | Single-Agent First              | Coder 面板默认显示 H0/SA；不渲染多角色图                              |
-| Harness On Demand（H0/H1/H2）   | 顶栏徽标 + Work 进度，仅在升级时显示 Round                            |
+| Harness On Demand（H0/H1/H2）   | Task Dock 显示真实 Harness/Agent 状态，仅在升级时显示 Round               |
 | Evidence Before Confidence      | 任务完成展示 contract / handoff / verdict 摘要卡片（可折叠）          |
-| Work-First UX                   | Work 进度条作主预算                                                   |
+| Work-First UX                   | 用计划、Agent 与 Runtime 状态表达进度；不把内部 work units 伪装成轮数上限 |
 | Scout-first AMA                 | UI 仅在 "Scout escalated" 时短暂高亮，不暴露 Scout/Planner 等内部角色 |
 | Skill as Progressive Disclosure | Skill 显示为 "skill-active" 标签，不渲染 workflow tree                |
 
@@ -749,7 +749,7 @@ Worker/独立子进程、私有 staging、超时取消、禁宏/链接更新和�
 | Skill                        | Skill                        | Skill             |
 | Connector                    | MCP server with OAuth UI     | Connector         |
 | Desktop Extension（`.mcpb`） | MCP package                  | Desktop Extension |
-| Work                         | Work budget                  | Tokens / steps    |
+| Agent activity               | Managed task / Actor status  | Agent activity    |
 | Repointel premium-native     | Repo intelligence engine     | （无对应）        |
 
 ---
@@ -780,7 +780,7 @@ M0 状态——Partner 还没上线，所以不显示 tab，直接是 Coder work
 │ out   3.1k │  2) Missing CSRF on /login…               │  Subagents   │
 │ cache 41%  │  3) Plain-text password log…              │  · child-1   │
 │            │                                           │    grep ✓    │
-│ Work 28/200│  > Fix issue 1 with httpOnly cookie       │  · child-2   │
+│ Harness H1 │  > Fix issue 1 with httpOnly cookie       │  · child-2   │
 │ Round —    │                                           │    read ⟳    │
 ├────────────┴──────────────────────────────────────────┴──────────────┤
 │  Terminal: ~/work/myapp $ ▮                                          │

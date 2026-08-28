@@ -180,6 +180,7 @@ export {
   type SessionHistoryItem,
   type SessionLocalNotice,
   sessionEventChannel,
+  reasoningModeSchema,
   type PermissionMode,
   type AutoModeEngine,
   type AgentMode,

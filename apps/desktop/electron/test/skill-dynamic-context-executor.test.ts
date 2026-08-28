@@ -106,16 +106,17 @@ test(
   async (t) => {
     const fixtureRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'space-skill-abort-win-tree-'));
     t.after(() => fs.rm(fixtureRoot, { recursive: true, force: true }));
-    const marker = path.join(fixtureRoot, 'grandchild-survived.txt');
+    const parentFactPath = path.join(fixtureRoot, 'parent.json');
+    const grandchildFactPath = path.join(fixtureRoot, 'grandchild.json');
     const grandchild = path.join(fixtureRoot, 'grandchild.cjs');
     const parent = path.join(fixtureRoot, 'parent.cjs');
     await fs.writeFile(
       grandchild,
-      `setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'alive'), 500);\nsetInterval(() => {}, 1000);\n`,
+      `require('node:fs').writeFileSync(${JSON.stringify(grandchildFactPath)}, JSON.stringify({ pid: process.pid, ppid: process.ppid }));\nsetInterval(() => {}, 1000);\n`,
     );
     await fs.writeFile(
       parent,
-      `require('node:child_process').spawn(process.execPath, [${JSON.stringify(grandchild)}], { stdio: 'ignore' });\nsetInterval(() => {}, 1000);\n`,
+      `require('node:fs').writeFileSync(${JSON.stringify(parentFactPath)}, JSON.stringify({ pid: process.pid, ppid: process.ppid }));\nrequire('node:child_process').spawn(process.execPath, [${JSON.stringify(grandchild)}], { stdio: 'ignore' });\nsetInterval(() => {}, 1000);\n`,
     );
     const abort = new AbortController();
     const execute = createSkillDynamicContextExecutor({
@@ -129,11 +130,43 @@ test(
       `${JSON.stringify(process.execPath)} ${JSON.stringify(parent)}`,
       fixtureRoot,
     );
-    setTimeout(() => abort.abort(), 100);
+    const readyDeadline = Date.now() + 2_000;
+    while (true) {
+      try {
+        await fs.access(grandchildFactPath);
+        break;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        assert.ok(Date.now() < readyDeadline, 'grandchild must start before cancellation');
+        await new Promise<void>((resolve) => setTimeout(resolve, 10));
+      }
+    }
+    abort.abort();
 
     await assert.rejects(execution, /cancelled before admission/i);
-    await new Promise<void>((resolve) => setTimeout(resolve, 600));
-    await assert.rejects(fs.access(marker), /ENOENT/);
+    const parentFact = JSON.parse(await fs.readFile(parentFactPath, 'utf8')) as {
+      pid: number;
+      ppid: number;
+    };
+    const grandchildFact = JSON.parse(await fs.readFile(grandchildFactPath, 'utf8')) as {
+      pid: number;
+      ppid: number;
+    };
+    const isAlive = (pid: number): boolean => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    assert.equal(grandchildFact.ppid, parentFact.pid, 'fixture must create a real descendant');
+    assert.equal(isAlive(parentFact.pid), false, 'parent must exit before cancellation settles');
+    assert.equal(
+      isAlive(grandchildFact.pid),
+      false,
+      'grandchild must exit before cancellation settles',
+    );
   },
 );
 

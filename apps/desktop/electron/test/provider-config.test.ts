@@ -8,10 +8,7 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import {
-  ProviderConfigStore,
-  type ProviderConfigPersist,
-} from '../providers/config.js';
+import { ProviderConfigStore, type ProviderConfigPersist } from '../providers/config.js';
 
 let tmpDir = '';
 let spaceFile = '';
@@ -226,6 +223,23 @@ test('custom providers persist across store reinstantiation', async () => {
   const s2 = newStore();
   await s2.load();
   assert.equal(s2.listCustom().length, 2);
+});
+
+test('custom provider image-input opt-in persists across store reinstantiation', async () => {
+  const writer = newStore();
+  await writer.load();
+  const id = await writer.addCustom({
+    displayName: 'Vision Gateway',
+    protocol: 'openai',
+    baseUrl: 'https://vision.example.com/v1',
+    apiKeyEnv: 'VISION_GATEWAY_API_KEY',
+    defaultModel: 'qwen-vl',
+    imageInput: true,
+  });
+
+  const reader = newStore();
+  await reader.load();
+  assert.equal(reader.getCustom(id)?.imageInput, true);
 });
 
 test('corrupted JSON: invalid syntax → falls back to empty + no throw', async () => {

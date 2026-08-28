@@ -17,11 +17,12 @@ import type { ProviderInfo } from '@kodax-space/space-ipc-schema';
 import { useI18n } from '../../i18n/I18nProvider.js';
 import type { MessageKey } from '../../i18n/messages.js';
 import { requestConfirm } from '../../store/confirmStore.js';
-import { CustomProviderForm } from './CustomProviderForm.js';
 
 interface ProviderCardProps {
   readonly provider: ProviderInfo;
   readonly onChanged: () => Promise<void>;
+  readonly onEditCustom: (provider: ProviderInfo) => void;
+  readonly externallyEditing: boolean;
 }
 
 type TestState =
@@ -32,10 +33,14 @@ type TestState =
 type CredentialSource = ProviderInfo['configuredSource'];
 type Translate = (key: MessageKey, vars?: Record<string, string | number>) => string;
 
-export function ProviderCard({ provider, onChanged }: ProviderCardProps): JSX.Element {
+export function ProviderCard({
+  provider,
+  onChanged,
+  onEditCustom,
+  externallyEditing,
+}: ProviderCardProps): JSX.Element {
   const { t } = useI18n();
   const [editing, setEditing] = useState(false);
-  const [editingCustom, setEditingCustom] = useState(false);
   const [draft, setDraft] = useState('');
   const [reveal, setReveal] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -234,23 +239,7 @@ export function ProviderCard({ provider, onChanged }: ProviderCardProps): JSX.El
         {provider.baseUrl && <MetaRow label="URL" value={provider.baseUrl} />}
       </dl>
 
-      {editingCustom && provider.isCustom ? (
-        <div className="mt-4">
-          <CustomProviderForm
-            provider={provider}
-            onSaved={async () => {
-              setEditingCustom(false);
-              setTest({ kind: 'idle' });
-              await onChanged();
-            }}
-            onPartialSaved={async () => {
-              setTest({ kind: 'idle' });
-              await onChanged();
-            }}
-            onCancel={() => setEditingCustom(false)}
-          />
-        </div>
-      ) : editing ? (
+      {editing ? (
         <div className="mt-4 rounded-lg border border-info/40 bg-info/10 p-3">
           <label className="block text-[11px] font-medium uppercase tracking-wide text-fg-muted">
             {t('provider.apiKey')}
@@ -343,14 +332,14 @@ export function ProviderCard({ provider, onChanged }: ProviderCardProps): JSX.El
             <button
               type="button"
               onClick={() => {
-                setEditingCustom(true);
                 setEditing(false);
                 setDraft('');
                 setReveal(false);
                 setTest({ kind: 'idle' });
                 setErr(null);
+                onEditCustom(provider);
               }}
-              disabled={busy}
+              disabled={busy || externallyEditing}
               className="inline-flex min-h-8 items-center justify-center gap-2 rounded-lg border border-border-default bg-surface-3 px-3 text-xs font-medium text-fg-primary hover:bg-hover-bg disabled:cursor-not-allowed disabled:opacity-50"
             >
               <Pencil className="h-3.5 w-3.5" strokeWidth={1.8} aria-hidden />
@@ -359,11 +348,8 @@ export function ProviderCard({ provider, onChanged }: ProviderCardProps): JSX.El
           )}
           <button
             type="button"
-            onClick={() => {
-              setEditing(true);
-              setEditingCustom(false);
-            }}
-            disabled={busy}
+            onClick={() => setEditing(true)}
+            disabled={busy || externallyEditing}
             className={[
               'inline-flex min-h-8 items-center justify-center gap-2 rounded-lg border px-3 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-50',
               provider.configured
@@ -416,7 +402,8 @@ export function ProviderCard({ provider, onChanged }: ProviderCardProps): JSX.El
             <button
               type="button"
               onClick={() => void handleRemoveCustom()}
-              disabled={busy}
+              // 编辑表单打开时禁用删除：删除会令面板级 editingProviderId 悬空、表单被静默卸载
+              disabled={busy || externallyEditing}
               className="ml-auto inline-flex min-h-8 items-center justify-center gap-2 rounded-lg border border-border-default bg-surface-3 px-3 text-xs text-fg-muted hover:border-danger/40 hover:bg-danger/12 hover:text-danger disabled:cursor-not-allowed disabled:opacity-50"
             >
               <Trash2 className="h-3.5 w-3.5" strokeWidth={1.8} aria-hidden />

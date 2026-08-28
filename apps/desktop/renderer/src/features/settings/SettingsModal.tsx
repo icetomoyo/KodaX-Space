@@ -63,6 +63,12 @@ import { pushToast } from '../../store/toastStore.js';
 import { requestConfirm } from '../../store/confirmStore.js';
 import { ProviderCard } from '../provider/ProviderCard.js';
 import { CustomProviderForm } from '../provider/CustomProviderForm.js';
+import {
+  ADD_PROVIDER_FORM_KEY,
+  beginProviderEdit,
+  retargetProviderEdit,
+  type ProviderEditorState,
+} from '../provider/providerEditorState.js';
 import { WorkflowPolicySection } from '../workflow/WorkflowPolicySection.js';
 import { setSpaceLanguage } from '../../space-control/semanticActions.js';
 import { requestSpaceVersionRefresh } from '../../lib/versionEvents.js';
@@ -2931,6 +2937,7 @@ function ProvidersPanel(): JSX.Element {
   const keychainBackend = useAppStore((s) => s.keychainBackend);
   const setProviders = useAppStore((s) => s.setProviders);
   const [showCustomForm, setShowCustomForm] = useState(false);
+  const [providerEditor, setProviderEditor] = useState<ProviderEditorState | null>(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [query, setQuery] = useState('');
@@ -2942,8 +2949,25 @@ function ProvidersPanel(): JSX.Element {
 
   const filteredBuiltIn = useMemo(() => filterProviders(builtIn, query), [builtIn, query]);
   const filteredCustom = useMemo(() => filterProviders(custom, query), [custom, query]);
+  const editingProviderId = providerEditor?.providerId ?? null;
+  // 编辑态按 id 查找（而非保留对象快照）：部分保存路径会保持表单打开并 refresh，
+  // 需始终基于最新 provider 数据计算（如 hasExistingManagedKey 依赖 configuredSource）。
+  const editingProvider = useMemo(
+    () => (editingProviderId ? (providers.find((p) => p.id === editingProviderId) ?? null) : null),
+    [providers, editingProviderId],
+  );
 
-  async function refresh(): Promise<void> {
+  function beginEditCustom(provider: ProviderInfo): void {
+    setProviderEditor(beginProviderEdit(provider.id));
+    setShowCustomForm(false);
+  }
+
+  function beginAddCustom(): void {
+    setProviderEditor(null);
+    setShowCustomForm(true);
+  }
+
+  async function refresh(nextEditingProviderId?: string): Promise<void> {
     if (!window.kodaxSpace) return;
     setLoading(true);
     setErr(null);
@@ -2952,6 +2976,9 @@ function ProvidersPanel(): JSX.Element {
       if (!result.ok) {
         setErr(`${result.error.code}: ${result.error.message}`);
         return;
+      }
+      if (nextEditingProviderId) {
+        setProviderEditor((current) => retargetProviderEdit(current, nextEditingProviderId));
       }
       setProviders(
         result.data.providers,
@@ -3019,15 +3046,24 @@ function ProvidersPanel(): JSX.Element {
           </button>
           <button
             type="button"
-            onClick={() => setShowCustomForm((v) => !v)}
+            onClick={() => {
+              if (showCustomForm || editingProvider) {
+                setShowCustomForm(false);
+                setProviderEditor(null);
+              } else {
+                beginAddCustom();
+              }
+            }}
             className="btn-accent inline-flex min-h-9 items-center justify-center gap-2 rounded-lg px-3 text-xs font-medium"
           >
-            {showCustomForm ? (
+            {showCustomForm || editingProvider ? (
               <X className="h-3.5 w-3.5" strokeWidth={1.8} />
             ) : (
               <Plus className="h-3.5 w-3.5" strokeWidth={1.8} />
             )}
-            {showCustomForm ? t('settings.providers.closeForm') : t('settings.providers.addCustom')}
+            {showCustomForm || editingProvider
+              ? t('settings.providers.closeForm')
+              : t('settings.providers.addCustom')}
           </button>
         </div>
       </div>
@@ -3050,8 +3086,12 @@ function ProvidersPanel(): JSX.Element {
         </div>
       )}
 
-      {showCustomForm && (
+      {(showCustomForm || editingProvider) && (
         <CustomProviderForm
+          // 编辑另一个 provider 时 remount；部分保存导致 id 变化时保持当前表单，
+          // 避免后续凭据错误因 remount 而消失。
+          key={providerEditor?.formKey ?? ADD_PROVIDER_FORM_KEY}
+          provider={editingProvider ?? undefined}
           onAdded={async () => {
             setShowCustomForm(false);
             await refresh();
@@ -3059,7 +3099,17 @@ function ProvidersPanel(): JSX.Element {
           onPartialAdded={async () => {
             await refresh();
           }}
-          onCancel={() => setShowCustomForm(false)}
+          onSaved={async () => {
+            setProviderEditor(null);
+            await refresh();
+          }}
+          onPartialSaved={async (providerId) => {
+            await refresh(providerId);
+          }}
+          onCancel={() => {
+            setShowCustomForm(false);
+            setProviderEditor(null);
+          }}
         />
       )}
 
@@ -3096,6 +3146,8 @@ function ProvidersPanel(): JSX.Element {
             : t('settings.providers.customGroup.empty')
         }
         onChanged={refresh}
+        onEditCustom={beginEditCustom}
+        externallyEditingId={editingProviderId}
       />
 
       <ProviderGroup
@@ -3108,6 +3160,8 @@ function ProvidersPanel(): JSX.Element {
             : t('settings.providers.builtInGroup.empty')
         }
         onChanged={refresh}
+        onEditCustom={beginEditCustom}
+        externallyEditingId={editingProviderId}
       />
 
       <section className="rounded-lg border border-border-default bg-surface-2 p-4">
@@ -3151,12 +3205,16 @@ function ProviderGroup({
   providers,
   empty,
   onChanged,
+  onEditCustom,
+  externallyEditingId,
 }: {
   readonly title: string;
   readonly description: string;
   readonly providers: readonly ProviderInfo[];
   readonly empty: string;
   readonly onChanged: () => Promise<void>;
+  readonly onEditCustom: (provider: ProviderInfo) => void;
+  readonly externallyEditingId: string | null;
 }): JSX.Element {
   return (
     <section className="space-y-3">
@@ -3174,7 +3232,13 @@ function ProviderGroup({
       ) : (
         <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
           {providers.map((p) => (
-            <ProviderCard key={p.id} provider={p} onChanged={onChanged} />
+            <ProviderCard
+              key={p.id}
+              provider={p}
+              onChanged={onChanged}
+              onEditCustom={onEditCustom}
+              externallyEditing={externallyEditingId === p.id}
+            />
           ))}
         </div>
       )}

@@ -290,11 +290,11 @@ test('setRuntimeDefaults merges and persists runtime defaults', async () => {
     autoModeEngine: 'rules',
   });
 
-  const merged = await store.setRuntimeDefaults({ reasoningMode: 'max', agentMode: 'sa' });
+  const merged = await store.setRuntimeDefaults({ reasoningMode: 'ultra', agentMode: 'sa' });
   assert.deepEqual(merged.runtimeDefaults, {
     permissionMode: 'auto',
     autoModeEngine: 'rules',
-    reasoningMode: 'max',
+    reasoningMode: 'ultra',
     agentMode: 'sa',
   });
 
@@ -316,7 +316,7 @@ test('load preserves valid runtime default fields when one field is invalid', as
         languageMode: 'system',
         runtimeDefaults: {
           permissionMode: 'auto',
-          reasoningMode: 'turbo',
+          reasoningMode: '../unsafe',
           agentMode: 'sa',
           extra: true,
         },
@@ -386,7 +386,7 @@ test('setRuntimeDefaults ignores invalid patch fields without dropping existing 
   await store.setRuntimeDefaults({ permissionMode: 'auto', reasoningMode: 'quick' });
 
   const next = await store.setRuntimeDefaults({
-    reasoningMode: 'turbo',
+    reasoningMode: '../unsafe',
     autoModeEngine: 'rules',
   } as never);
 

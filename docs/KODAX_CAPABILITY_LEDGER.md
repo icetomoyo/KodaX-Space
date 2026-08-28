@@ -47,6 +47,23 @@ a separate release preparation changes its version. Alpha.2 restores the Windows
 lifecycle PowerShell executable resolver missing from alpha.1; Space consumes the
 integrity-pinned Registry bytes without patching them.
 
+Provider adoption includes the built-in DeepSeek vision-only
+`deepseek-v4-flash-vision-exp` route and multimodal `glm-5.3-flash` on `zhipu`,
+`zhipu-coding`, and `zai-coding`. The GLM route advertises a 1,000,000-token
+context window, 131,072-token maximum output, and mandatory thinking; existing
+provider defaults remain unchanged. Space custom OpenAI/Anthropic-compatible
+providers expose the SDK's optional `imageInput` flag through the form, bounded
+IPC, persistence, shared KodaX config, and live Runtime catalog. It remains an
+explicit opt-in because Space cannot prove that a compatible upstream model
+actually supports vision.
+
+The installed README, Chinese README, changelog, and shipped public guides match
+the `v0.7.96-alpha.2` source tag byte-for-byte. The npm package does not include
+every repository document referenced by their relative links (including the
+release checklist and advanced custom-provider guide), so those links require
+the tagged source repository; this is an upstream documentation-packaging
+limitation, not a mutation of the integrity-pinned runtime bytes.
+
 Space also consumes FEATURE_296's structured failure contract. The host keeps
 the SDK-owned `safeMessage`, stable `providerErrorCode`, bounded support IDs,
 retry delay, and local capacity `required` / `available` token facts through

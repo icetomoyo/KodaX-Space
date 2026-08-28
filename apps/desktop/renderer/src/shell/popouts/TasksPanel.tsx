@@ -25,9 +25,6 @@ export function TasksPanel(): JSX.Element {
   const events = useAppStore((s) =>
     currentSessionId ? s.eventsBySession[currentSessionId] : undefined,
   );
-  const budget = useAppStore((s) =>
-    currentSessionId ? s.workBudgetBySession[currentSessionId] : undefined,
-  );
   const harness = useAppStore((s) =>
     currentSessionId ? s.harnessProfileBySession[currentSessionId] : undefined,
   );
@@ -89,12 +86,12 @@ export function TasksPanel(): JSX.Element {
               <Metric label={t('right.interrupted')} value={interruptedCount} />
             )}
             {waitingText && <Metric label={t('tasks.state')} value={waitingText} />}
+            {status?.budgetApprovalRequired && (
+              <Metric label={t('tasks.state')} value={t('right.budgetApprovalNeeded')} />
+            )}
           </div>
         </div>
-        <div className="grid gap-2 sm:grid-cols-2">
-          <BudgetCard budget={budget} approvalRequired={status?.budgetApprovalRequired ?? false} />
-          <HarnessCard harness={harness} status={status} />
-        </div>
+        <HarnessCard harness={harness} status={status} />
       </section>
 
       <section>
@@ -110,54 +107,6 @@ export function TasksPanel(): JSX.Element {
           </ul>
         )}
       </section>
-    </div>
-  );
-}
-
-function BudgetCard({
-  budget,
-  approvalRequired,
-}: {
-  readonly budget:
-    | {
-        readonly used: number;
-        readonly cap: number;
-      }
-    | undefined;
-  readonly approvalRequired: boolean;
-}): JSX.Element {
-  const { t } = useI18n();
-
-  if (!budget) {
-    return (
-      <div className="rounded-md border border-border-default bg-surface p-2">
-        <div className="text-[11px] uppercase tracking-wider text-fg-muted">
-          {t('tasks.budget')}
-        </div>
-        <div className="mt-1 text-fg-faint">{t('tasks.noBudget')}</div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="rounded-md border border-border-default bg-surface p-2">
-      <div className="flex items-center justify-between gap-2">
-        <div className="text-[11px] uppercase tracking-wider text-fg-muted">
-          {t('tasks.budget')}
-        </div>
-        {approvalRequired && (
-          <span className="text-[11px] text-warn">{t('tasks.approvalNeeded')}</span>
-        )}
-      </div>
-      <div className="mt-1 font-mono text-fg-secondary">
-        {budget.used} / {budget.cap}
-      </div>
-      <div className="mt-1.5 h-1.5 overflow-hidden rounded bg-surface-2">
-        <div
-          className="h-full bg-ok"
-          style={{ width: `${Math.min(100, (budget.used / budget.cap) * 100)}%` }}
-        />
-      </div>
     </div>
   );
 }

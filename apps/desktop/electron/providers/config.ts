@@ -53,7 +53,11 @@ type SpaceConfig = z.infer<typeof spaceConfigSchema>;
 // 都用 ANTHROPIC_API_KEY），但同一 apiKeyEnv 在同一时间只能注入一个值；
 // 用户切默认 provider 时会重新注入对应 key。
 const customProviderSchema = z.object({
-  id: z.string().min(1).max(64).regex(/^custom_[a-f0-9]{16}$/),
+  id: z
+    .string()
+    .min(1)
+    .max(64)
+    .regex(/^custom_[a-f0-9]{16}$/),
   displayName: z.string().min(1).max(128),
   protocol: z.enum(['anthropic', 'openai']),
   baseUrl: z.string().min(1).max(512),
@@ -62,6 +66,7 @@ const customProviderSchema = z.object({
   defaultModel: z.string().min(1).max(128),
   models: z.array(z.string().min(1).max(128)).max(64).optional(),
   promptCacheAffinity: z.boolean().optional(),
+  imageInput: z.boolean().optional(),
   contextWindow: z
     .number()
     .int()
@@ -73,11 +78,7 @@ const customProviderSchema = z.object({
 });
 
 export type CustomProvider = z.infer<typeof customProviderSchema>;
-export type ProviderConfigPersist = (
-  dir: string,
-  filePath: string,
-  data: string,
-) => Promise<void>;
+export type ProviderConfigPersist = (dir: string, filePath: string, data: string) => Promise<void>;
 
 const customProvidersFileSchema = z.object({
   version: z.literal(1),
@@ -191,11 +192,7 @@ export class ProviderConfigStore {
       );
       try {
         if (updatedSpace !== previousSpace) {
-          await this.persist(
-            this.spaceDir,
-            this.spaceFile,
-            JSON.stringify(updatedSpace, null, 2),
-          );
+          await this.persist(this.spaceDir, this.spaceFile, JSON.stringify(updatedSpace, null, 2));
         }
       } catch (spaceError) {
         try {

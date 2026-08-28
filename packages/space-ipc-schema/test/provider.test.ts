@@ -1,7 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { providerAddCustomChannel, providerUpdateCustomChannel } from '../src/index.js';
+import {
+  providerAddCustomChannel,
+  providerListChannel,
+  providerUpdateCustomChannel,
+} from '../src/index.js';
 
 const BASE_INPUT = {
   displayName: 'Internal Gateway',
@@ -132,5 +136,58 @@ test('provider custom inputs reject non-boolean prompt-cache affinity values', (
     baseUrl: 'https://gw.example.com/v1',
     promptCacheAffinity: 'yes',
   });
+  assert.equal(result.success, false);
+});
+
+test('provider custom inputs carry an explicit image-input opt-in', () => {
+  const addResult = providerAddCustomChannel.input.safeParse({
+    ...BASE_INPUT,
+    baseUrl: 'https://vision.example.com/v1',
+    imageInput: true,
+  });
+  const updateResult = providerUpdateCustomChannel.input.safeParse({
+    ...BASE_INPUT,
+    providerId: 'custom_0123456789abcdef',
+    baseUrl: 'https://vision.example.com/v1',
+    imageInput: true,
+  });
+
+  assert.equal(addResult.success, true);
+  assert.equal(addResult.success ? addResult.data.imageInput : undefined, true);
+  assert.equal(updateResult.success, true);
+  assert.equal(updateResult.success ? updateResult.data.imageInput : undefined, true);
+});
+
+test('provider.list carries image-input capability to the renderer', () => {
+  const result = providerListChannel.output.safeParse({
+    providers: [
+      {
+        id: 'custom_0123456789abcdef',
+        displayName: 'Vision Gateway',
+        protocol: 'openai',
+        apiKeyEnv: 'VISION_GATEWAY_API_KEY',
+        defaultModel: 'qwen-vl',
+        configured: true,
+        configuredSource: 'keychain',
+        isDefault: true,
+        isCustom: true,
+        imageInput: true,
+      },
+    ],
+    defaultProviderId: 'custom_0123456789abcdef',
+    keychainBackend: 'keychain',
+  });
+
+  assert.equal(result.success, true);
+  assert.equal(result.success ? result.data.providers[0]?.imageInput : undefined, true);
+});
+
+test('provider custom inputs reject non-boolean image-input values', () => {
+  const result = providerAddCustomChannel.input.safeParse({
+    ...BASE_INPUT,
+    baseUrl: 'https://vision.example.com/v1',
+    imageInput: 'yes',
+  });
+
   assert.equal(result.success, false);
 });

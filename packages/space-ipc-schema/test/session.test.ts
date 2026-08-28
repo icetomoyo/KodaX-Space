@@ -566,16 +566,16 @@ test('session.create input: requires projectRoot and provider', () => {
   );
 });
 
-test('session.create input: rejects bogus reasoningMode', () => {
+test('session.create input: rejects unsafe reasoning effort tokens', () => {
   const result = sessionCreateChannel.input.safeParse({
     projectRoot: '/r',
     provider: 'mock',
-    reasoningMode: 'bogus',
+    reasoningMode: '../unsafe',
   });
   assert.equal(result.success, false);
 });
 
-test('reasoning settings accept canonical efforts and legacy Space aliases', () => {
+test('reasoning settings accept SDK-declared efforts and legacy Space aliases', () => {
   for (const mode of [
     'off',
     'auto',
@@ -597,6 +597,10 @@ test('reasoning settings accept canonical efforts and legacy Space aliases', () 
   }
   assert.equal(
     sessionSetReasoningModeChannel.input.safeParse({ sessionId: 's_1', mode: 'ultra' }).success,
+    true,
+  );
+  assert.equal(
+    sessionSetReasoningModeChannel.input.safeParse({ sessionId: 's_1', mode: '../unsafe' }).success,
     false,
   );
 });

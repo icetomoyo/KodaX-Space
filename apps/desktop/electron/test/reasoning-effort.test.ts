@@ -8,6 +8,7 @@ import {
 
 import {
   effortToReasoningMode,
+  projectReasoningProfile,
   reasoningModeToEffort,
   resolveSdkSpaceWireEffort,
   resolveSpaceWireEffort,
@@ -38,6 +39,67 @@ test('SDK effort projection keeps xhigh/max distinct and normalizes legacy alias
   assert.equal(effortToReasoningMode('quick'), 'low');
   assert.equal(effortToReasoningMode('balanced'), 'medium');
   assert.equal(effortToReasoningMode('deep'), 'max');
+  assert.equal(effortToReasoningMode('ultra'), 'ultra');
+});
+
+test('reasoning profile projection folds every disabled effort into thinking off', () => {
+  assert.deepEqual(
+    projectReasoningProfile({
+      supportedEfforts: [
+        { value: 'none' },
+        { value: 'minimal' },
+        { value: 'low' },
+        { value: 'ultra', isDefault: true },
+      ],
+      disabledEfforts: ['none', 'minimal'],
+    }),
+    {
+      supportedEfforts: ['low', 'ultra'],
+      defaultEffort: 'ultra',
+      canDisableThinking: true,
+    },
+  );
+});
+
+test('explicit supportsDisabledThinking false overrides disabled effort metadata', () => {
+  assert.deepEqual(
+    projectReasoningProfile({
+      supportedEfforts: [{ value: 'none' }, { value: 'minimal' }, { value: 'low' }],
+      disabledEfforts: ['none', 'minimal'],
+      supportsDisabledThinking: false,
+    }),
+    {
+      supportedEfforts: ['low'],
+      canDisableThinking: false,
+    },
+  );
+});
+
+test('only-disabled profile preserves a known empty strength ladder', () => {
+  assert.deepEqual(
+    projectReasoningProfile({
+      supportedEfforts: [{ value: 'none' }],
+      disabledEfforts: ['none'],
+    }),
+    {
+      supportedEfforts: [],
+      canDisableThinking: true,
+    },
+  );
+});
+
+test('reasoning-disabled profile preserves a known empty strength ladder', () => {
+  assert.deepEqual(projectReasoningProfile({ effortStrategy: 'none' }), {
+    supportedEfforts: [],
+    canDisableThinking: false,
+  });
+});
+
+test('prompt-only profile does not invent wire effort choices', () => {
+  assert.deepEqual(projectReasoningProfile({ effortStrategy: 'prompt-only' }), {
+    supportedEfforts: [],
+    canDisableThinking: false,
+  });
 });
 
 test('custom provider without a reasoning declaration omits reasoning_effort', () => {
@@ -89,7 +151,7 @@ test('Runtime settings preserve supported auto intent but omit unsupported auto'
   assert.equal(runtimeSettingEffort('high', 'xhigh'), 'xhigh');
 });
 
-test('SDK fallback matrix resolves unsupported high/max to declared xhigh', () => {
+test('Space fallback keeps intent monotonic before using the SDK default', () => {
   registerCustomProviders([
     {
       name: 'space-profiled-qwen',
@@ -112,7 +174,7 @@ test('SDK fallback matrix resolves unsupported high/max to declared xhigh', () =
       resolveWireEffort: resolveSdkWireEffort,
     });
 
-  assert.equal(resolve('high'), 'xhigh');
+  assert.equal(resolve('high'), 'medium');
   assert.equal(resolve('xhigh'), 'xhigh');
   assert.equal(resolve('max'), 'xhigh');
   assert.equal(resolve('off'), 'none');
@@ -137,13 +199,5 @@ test('learned wire rejections are delegated to the SDK resolver', () => {
     rejectedEfforts: ['max'],
     resolveWireEffort: resolveSdkWireEffort,
   });
-  const sdkResolved = resolveSdkWireEffort({
-    provider: 'space-rejected-max',
-    model: 'reasoner',
-    desiredEffort: 'max',
-    rejectedEfforts: ['max'],
-  }).effort;
-
-  assert.equal(resolved, sdkResolved);
-  assert.notEqual(resolved, 'max');
+  assert.equal(resolved, 'xhigh');
 });

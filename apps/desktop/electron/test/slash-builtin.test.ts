@@ -318,6 +318,18 @@ test('/reasoning quick switches reasoning mode', async () => {
   assert.equal(kodaxHost.get(sessionId)?.reasoningMode, 'quick');
 });
 
+test('/reasoning canonicalizes an SDK/provider effort token', async () => {
+  const { sessionId } = kodaxHost.createSession({
+    projectRoot: 'C:\\tmp\\proj',
+    provider: 'mock',
+  });
+  const result = await runCmd('reasoning', sessionId, [' ULTRA ']);
+  assert.equal(result.ok, true);
+  assert.equal(kodaxHost.get(sessionId)?.reasoningMode, 'ultra');
+  assert.equal((await runtimeStore.read(sessionId))?.reasoningMode, 'ultra');
+  assert.match(result.message ?? '', /reasoning -> ultra/);
+});
+
 test('/provider with unknown id rejects (catalog gate)', async () => {
   const { sessionId } = kodaxHost.createSession({
     projectRoot: 'C:\\tmp\\proj',
@@ -559,6 +571,17 @@ test('/thinking off sets thinking=false on session', async () => {
   assert.equal(kodaxHost.get(sessionId)?.thinking, false);
 });
 
+test('/thinking accepts and canonicalizes custom SDK efforts', async () => {
+  const { sessionId } = kodaxHost.createSession({
+    projectRoot: 'C:\\tmp\\proj',
+    provider: 'mock',
+  });
+  const result = await runCmd('thinking', sessionId, ['ULTRA']);
+  assert.equal(result.ok, true);
+  assert.equal(kodaxHost.get(sessionId)?.reasoningMode, 'ultra');
+  assert.match(result.message ?? '', /reasoning -> ultra/);
+});
+
 test('/agent-mode rejects retired AMAW inputs with a migration hint', async () => {
   const { sessionId } = kodaxHost.createSession({
     projectRoot: 'C:\\tmp\\proj',
@@ -755,14 +778,14 @@ test('/thinking on unknown session returns session_not_found', async () => {
   assert.ok(result.message?.includes('session not found'));
 });
 
-test('/thinking with invalid arg returns Usage', async () => {
+test('/thinking with an unsafe effort token returns Usage', async () => {
   const { sessionId } = kodaxHost.createSession({
     projectRoot: 'C:\\tmp\\proj',
     provider: 'mock',
   });
-  const result = await runCmd('thinking', sessionId, ['maybe']);
+  const result = await runCmd('thinking', sessionId, ['../max']);
   assert.equal(result.ok, false);
-  assert.ok(result.message?.includes('Usage:'));
+  assert.ok(result.message?.includes('SDK effort'));
 });
 
 test('unknown command name → getSlashHandler returns undefined', () => {

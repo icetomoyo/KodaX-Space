@@ -8,6 +8,7 @@ import type {
   PermissionMode,
   ReasoningMode,
 } from '@kodax-space/space-ipc-schema';
+import { reasoningModeSchema } from '@kodax-space/space-ipc-schema';
 import { getSpaceDataDir } from './data-paths.js';
 import { replaceFileIfUnchanged, writeNewFileExclusive } from './atomic-file.js';
 
@@ -26,21 +27,7 @@ const sessionRuntimeSchema = z
     thinking: z.boolean().optional(),
     permissionMode: z.enum(['plan', 'accept-edits', 'auto']).optional(),
     autoModeEngine: z.enum(['llm', 'rules']).optional(),
-    reasoningMode: z
-      .enum([
-        'off',
-        'auto',
-        'minimal',
-        'low',
-        'medium',
-        'high',
-        'xhigh',
-        'max',
-        'quick',
-        'balanced',
-        'deep',
-      ])
-      .optional(),
+    reasoningMode: reasoningModeSchema.optional(),
     agentMode: persistedAgentModeSchema.optional(),
     updatedAt: z.string().min(1),
   })

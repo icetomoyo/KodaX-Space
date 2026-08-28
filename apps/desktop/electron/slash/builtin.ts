@@ -5,7 +5,7 @@
 //   /auto-engine <llm|rules>            切 auto sub-engine
 //   /model <name>                       switch the current provider model
 //   /provider <name>                    切 provider (kodaxHost.setProvider)
-//   /reasoning <off|auto|minimal|low|medium|high|xhigh|max>
+//   /reasoning <SDK effort token>
 //   /thinking <on|off>                  switch thinking output and reasoning mode
 //   /clear                              主动 emit 'session_clear' (renderer 自决清屏)
 //   /help                               列出所有命令
@@ -25,6 +25,7 @@ import type {
   MemoryRejectResultT,
   ReasoningMode,
 } from '@kodax-space/space-ipc-schema';
+import { reasoningModeSchema } from '@kodax-space/space-ipc-schema';
 import type {
   ReviewableLearningProposal,
   SkillTrustRecord,
@@ -57,21 +58,10 @@ import { getBuiltin } from '../providers/catalog.js';
 import { memoryGovernanceService } from '../memory/memory-service.js';
 import { runtimeHostAdapter } from '../kodax/runtime-host-adapter.js';
 
-const REASONING_MODES: readonly ReasoningMode[] = [
-  'off',
-  'auto',
-  'minimal',
-  'low',
-  'medium',
-  'high',
-  'xhigh',
-  'max',
-];
-const LEGACY_REASONING_MODES: readonly ReasoningMode[] = ['quick', 'balanced', 'deep'];
-
 const PERMISSION_MODES: readonly PermissionMode[] = ['plan', 'accept-edits', 'auto'];
 const AUTO_ENGINES: readonly AutoModeEngine[] = ['llm', 'rules'];
 const AGENT_MODES: readonly AgentMode[] = ['ama', 'sa'];
+const REASONING_EXAMPLES = ['off', 'auto', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 
 function isPermissionMode(s: string): s is PermissionMode {
   return PERMISSION_MODES.includes(s as PermissionMode);
@@ -81,11 +71,9 @@ function isAutoEngine(s: string): s is AutoModeEngine {
   return AUTO_ENGINES.includes(s as AutoModeEngine);
 }
 
-function isReasoningMode(s: string): s is ReasoningMode {
-  return (
-    REASONING_MODES.includes(s as ReasoningMode) ||
-    LEGACY_REASONING_MODES.includes(s as ReasoningMode)
-  );
+function parseReasoningMode(s: string): ReasoningMode | undefined {
+  const parsed = reasoningModeSchema.safeParse(s);
+  return parsed.success ? parsed.data : undefined;
 }
 
 function normalizeAgentMode(s: string): AgentMode | 'toggle' | 'retired' | undefined {
@@ -1716,7 +1704,7 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
     name: 'reasoning',
     aliases: ['reason'],
     description: 'Show or switch reasoning mode',
-    argsHint: '[off|auto|minimal|low|medium|high|xhigh|max]',
+    argsHint: '[SDK effort]',
     source: 'builtin',
     handler: async (ctx) => {
       const session = kodaxHost.get(ctx.sessionId);
@@ -1725,20 +1713,21 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
       if (!target) {
         return {
           ok: true,
-          message: `Reasoning mode: ${session.reasoningMode}\nUsage: /reasoning [${REASONING_MODES.join('|')}]`,
+          message: `Reasoning mode: ${session.reasoningMode}\nUsage: /reasoning <SDK effort>; common: ${REASONING_EXAMPLES.join(', ')}`,
           echo: true,
         };
       }
-      if (!isReasoningMode(target)) {
+      const normalizedTarget = parseReasoningMode(target);
+      if (!normalizedTarget) {
         return {
           ok: false,
-          message: `unknown reasoning '${target}'; valid: ${REASONING_MODES.join(', ')}`,
+          message: `invalid reasoning effort token '${target}'`,
         };
       }
       return commitRuntimeSlashMutation(
         ctx.sessionId,
-        () => kodaxHost.setReasoningMode(ctx.sessionId, target),
-        `reasoning -> ${target}`,
+        () => kodaxHost.setReasoningMode(ctx.sessionId, normalizedTarget),
+        `reasoning -> ${normalizedTarget}`,
       );
     },
   },
@@ -1924,7 +1913,7 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
     name: 'thinking',
     aliases: ['think', 't'],
     description: 'Show or change thinking/reasoning output for next turn.',
-    argsHint: '[on|off|auto|minimal|low|medium|high|xhigh|max]',
+    argsHint: '[on|off|<SDK effort>]',
     source: 'builtin',
     handler: async (ctx) => {
       const target = ctx.args[0];
@@ -1933,33 +1922,34 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
       if (!target) {
         return {
           ok: true,
-          message: `Thinking: ${session.thinking === undefined ? 'default' : session.thinking ? 'on' : 'off'}\nReasoning mode: ${session.reasoningMode}\nUsage: /thinking [on|off|auto|minimal|low|medium|high|xhigh|max]`,
+          message: `Thinking: ${session.thinking === undefined ? 'default' : session.thinking ? 'on' : 'off'}\nReasoning mode: ${session.reasoningMode}\nUsage: /thinking [on|off|<SDK effort>]; common: ${REASONING_EXAMPLES.join(', ')}`,
           echo: true,
         };
       }
-      if (target === 'on' || target === 'off') {
+      const normalizedTarget = parseReasoningMode(target);
+      if (normalizedTarget === 'on' || normalizedTarget === 'off') {
         return commitRuntimeSlashMutation(
           ctx.sessionId,
           () => {
-            const thinkingOk = kodaxHost.setThinking(ctx.sessionId, target === 'on');
+            const thinkingOk = kodaxHost.setThinking(ctx.sessionId, normalizedTarget === 'on');
             return (
               thinkingOk &&
-              kodaxHost.setReasoningMode(ctx.sessionId, target === 'on' ? 'auto' : 'off')
+              kodaxHost.setReasoningMode(ctx.sessionId, normalizedTarget === 'on' ? 'auto' : 'off')
             );
           },
-          `thinking -> ${target}; reasoning -> ${target === 'on' ? 'auto' : 'off'} (applies on next send)`,
+          `thinking -> ${normalizedTarget}; reasoning -> ${normalizedTarget === 'on' ? 'auto' : 'off'} (applies on next send)`,
         );
       }
-      if (isReasoningMode(target)) {
+      if (normalizedTarget) {
         return commitRuntimeSlashMutation(
           ctx.sessionId,
-          () => kodaxHost.setReasoningMode(ctx.sessionId, target),
-          `reasoning -> ${target} (applies on next send)`,
+          () => kodaxHost.setReasoningMode(ctx.sessionId, normalizedTarget),
+          `reasoning -> ${normalizedTarget} (applies on next send)`,
         );
       }
       return {
         ok: false,
-        message: 'Usage: /thinking [on|off|auto|minimal|low|medium|high|xhigh|max]',
+        message: `Usage: /thinking [on|off|<SDK effort>]; common: ${REASONING_EXAMPLES.join(', ')}`,
       };
     },
   },

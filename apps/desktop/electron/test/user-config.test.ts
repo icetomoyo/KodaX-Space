@@ -136,11 +136,11 @@ test('effort aliases map to Space reasoning defaults', async () => {
   assert.equal((await loadKodaxUserDefaults()).reasoningMode, 'xhigh');
 
   mockUserConfig({ effort: 'vendor-custom' });
-  assert.equal((await loadKodaxUserDefaults()).reasoningMode, undefined);
+  assert.equal((await loadKodaxUserDefaults()).reasoningMode, 'vendor-custom');
 });
 
-test('reasoning invalid value → undefined', async () => {
-  mockUserConfig({ reasoningMode: 'nonsense' });
+test('reasoning unsafe value → undefined', async () => {
+  mockUserConfig({ reasoningMode: '../max' });
   const d = await loadKodaxUserDefaults();
   assert.equal(d.reasoningMode, undefined);
 });
@@ -295,6 +295,51 @@ test('registerKodaxCustomProviders forwards customProviders array to SDK', async
   ]);
 });
 
+test('registerKodaxCustomProviders preserves image-input capability from KodaX config', async () => {
+  const calls: Array<{ customProviders?: unknown[] }> = [];
+  mockUserConfig(
+    {
+      customProviders: [
+        {
+          name: 'vision-gateway',
+          protocol: 'openai',
+          baseUrl: 'https://vision.example.com/v1',
+          apiKeyEnv: 'VISION_GATEWAY_API_KEY',
+          model: 'qwen-vl',
+          imageInput: true,
+        },
+      ],
+    },
+    { registerCalls: calls },
+  );
+
+  assert.deepEqual(await loadKodaxCustomProviders(), [
+    {
+      id: 'vision-gateway',
+      displayName: 'vision-gateway',
+      protocol: 'openai',
+      baseUrl: 'https://vision.example.com/v1',
+      skipBaseUrlValidation: true,
+      apiKeyEnv: 'VISION_GATEWAY_API_KEY',
+      defaultModel: 'qwen-vl',
+      imageInput: true,
+    },
+  ]);
+
+  await registerKodaxCustomProviders();
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].customProviders, [
+    {
+      name: 'vision-gateway',
+      protocol: 'openai',
+      baseUrl: 'https://vision.example.com/v1',
+      apiKeyEnv: 'VISION_GATEWAY_API_KEY',
+      model: 'qwen-vl',
+      imageInput: true,
+    },
+  ]);
+});
+
 test('registerKodaxCustomProviders merges Space custom providers into SDK registry config', async () => {
   const calls: Array<{ customProviders?: unknown[] }> = [];
   mockUserConfig(
@@ -337,6 +382,7 @@ test('registerKodaxCustomProviders merges Space custom providers into SDK regist
       defaultModel: 'space-model',
       models: ['space-model', 'space-alt'],
       promptCacheAffinity: true,
+      imageInput: true,
       contextWindow: 131_072,
     },
     {
@@ -374,6 +420,7 @@ test('registerKodaxCustomProviders merges Space custom providers into SDK regist
       model: 'space-model',
       models: [{ id: 'space-model', contextWindow: 262_144, maxOutputTokens: 16_384 }, 'space-alt'],
       promptCacheAffinity: true,
+      imageInput: true,
       contextWindow: 131_072,
       capabilityProfile: { supportsTools: true },
       maxOutputTokens: 32_768,
@@ -442,6 +489,7 @@ test('updateKodaxConfigCustomProvider writes back custom provider and renames se
     apiKeyEnv: 'NEW_API_KEY',
     defaultModel: 'new-model',
     models: ['new-model', 'new-alt'],
+    imageInput: true,
     contextWindow: 262_144,
   });
 
@@ -457,6 +505,7 @@ test('updateKodaxConfigCustomProvider writes back custom provider and renames se
       apiKeyEnv: 'NEW_API_KEY',
       model: 'new-model',
       models: ['new-model', 'new-alt'],
+      imageInput: true,
       contextWindow: 262_144,
     },
   ]);
@@ -478,6 +527,7 @@ test('updateKodaxConfigCustomProvider clears modeled opt-ins but preserves unmod
           { id: 'removed-model', contextWindow: 16_384 },
         ],
         promptCacheAffinity: true,
+        imageInput: true,
         contextWindow: 200_000,
         reasoning: { efforts: ['low', 'high'], default: 'high' },
         reasoningProfile: { effortStrategy: 'openai-chat-effort' },
@@ -509,6 +559,7 @@ test('updateKodaxConfigCustomProvider clears modeled opt-ins but preserves unmod
     false,
     'promptCacheAffinity must be cleared, not preserved',
   );
+  assert.equal('imageInput' in p, false, 'imageInput must be cleared, not preserved');
   assert.equal('contextWindow' in p, false, 'contextWindow must be cleared, not preserved');
   assert.deepEqual(p.models, [{ id: 'old-model', contextWindow: 131_072, maxOutputTokens: 8_192 }]);
   // unmodeled CLI fields survive:

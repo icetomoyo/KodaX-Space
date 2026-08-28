@@ -45,6 +45,7 @@ import type { ProviderInfo } from '@kodax-space/space-ipc-schema';
 import type { CustomProviderProbe } from '../providers/test-connection.js';
 import { refreshDiagnosticRedactionOptions } from '../diagnostics/runtime.js';
 import { runtimeHostAdapter } from '../kodax/runtime-host-adapter.js';
+import { projectReasoningProfile } from '../kodax/reasoning-effort.js';
 import {
   addSpaceCustomProvider,
   customProviderMutationQueue,
@@ -348,6 +349,7 @@ export function registerProviderChannels(): void {
         baseUrl: c.baseUrl,
         skipBaseUrlValidation: c.skipBaseUrlValidation,
         ...(c.promptCacheAffinity === true ? { promptCacheAffinity: true } : {}),
+        ...(c.imageInput === true ? { imageInput: true } : {}),
         ...(c.contextWindow !== undefined ? { contextWindow: c.contextWindow } : {}),
         ...(c.reasoning !== undefined ? { reasoning: c.reasoning } : {}),
       });
@@ -370,6 +372,7 @@ export function registerProviderChannels(): void {
         baseUrl: c.baseUrl,
         skipBaseUrlValidation: c.skipBaseUrlValidation,
         ...(c.promptCacheAffinity === true ? { promptCacheAffinity: true } : {}),
+        ...(c.imageInput === true ? { imageInput: true } : {}),
         ...(c.contextWindow !== undefined ? { contextWindow: c.contextWindow } : {}),
         ...(c.reasoning !== undefined ? { reasoning: c.reasoning } : {}),
       });
@@ -474,6 +477,7 @@ export function registerProviderChannels(): void {
         defaultModel: input.defaultModel,
         models: input.models,
         ...(input.promptCacheAffinity === true ? { promptCacheAffinity: true } : {}),
+        ...(input.imageInput === true ? { imageInput: true } : {}),
         ...(input.contextWindow !== undefined ? { contextWindow: input.contextWindow } : {}),
         ...(input.reasoning !== undefined ? { reasoning: input.reasoning } : {}),
       });
@@ -506,6 +510,7 @@ export function registerProviderChannels(): void {
         defaultModel: input.defaultModel,
         models: input.models,
         ...(input.promptCacheAffinity === true ? { promptCacheAffinity: true } : {}),
+        ...(input.imageInput === true ? { imageInput: true } : {}),
         ...(input.contextWindow !== undefined ? { contextWindow: input.contextWindow } : {}),
         ...(input.reasoning !== undefined ? { reasoning: input.reasoning } : {}),
       };
@@ -678,35 +683,16 @@ export function registerProviderChannels(): void {
         provider as { getReasoningProfile?: (model: string) => ReasoningProfileT }
       ).getReasoningProfile?.(input.model);
       const reasoningProfile = providerReasoningProfile ?? capabilities?.reasoningProfile;
-      const supportedEfforts = reasoningProfile?.supportedEfforts
-        ?.filter((effort) => effort.isUserVisible !== false)
-        .map((effort) => effort.value);
-      const defaultEffort =
-        reasoningProfile?.defaultEffort ??
-        reasoningProfile?.supportedEfforts?.find((effort) => effort.isDefault)?.value;
-      // "Off" is only honorable when the profile explicitly supports disabling or advertises none.
-      // Absence of a local rejection is not proof of support, especially for custom providers whose
-      // reasoning capability was never declared.
-      const localRejectEfforts =
-        (reasoningProfile as { localRejectEfforts?: readonly string[] } | undefined)
-          ?.localRejectEfforts ?? [];
-      const disabledEfforts = reasoningProfile?.disabledEfforts ?? [];
-      const noneIsUsable =
-        supportedEfforts?.includes('none') === true &&
-        !localRejectEfforts.includes('none') &&
-        !disabledEfforts.includes('none');
-      const canDisableThinking =
-        reasoningProfile?.supportsDisabledThinking === true ||
-        (reasoningProfile?.supportsDisabledThinking === undefined && noneIsUsable);
+      const reasoning = projectReasoningProfile(reasoningProfile);
       return {
         contextWindow: cw,
         source,
         compactionTriggerPercent: compaction.triggerPercent,
         ...(compaction.triggerTokens ? { compactionTriggerTokens: compaction.triggerTokens } : {}),
         compactionEffectiveTriggerTokens: effectiveTriggerTokens,
-        ...(supportedEfforts && supportedEfforts.length > 0 ? { supportedEfforts } : {}),
-        ...(defaultEffort ? { defaultEffort } : {}),
-        canDisableThinking,
+        ...(reasoning.supportedEfforts ? { supportedEfforts: reasoning.supportedEfforts } : {}),
+        ...(reasoning.defaultEffort ? { defaultEffort: reasoning.defaultEffort } : {}),
+        canDisableThinking: reasoning.canDisableThinking,
       };
     } catch (err) {
       // resolveProvider 不识别 custom_* id 时会 throw — 报 fallback 200k 让 UI 渲染

@@ -21,7 +21,7 @@ type TodoItem = {
 type ManagedTaskStatus = Extract<SessionEvent, { kind: 'managed_task_status' }>['status'];
 
 export interface TaskDockMetric {
-  readonly key: 'plan' | 'agents' | 'workflow' | 'budget';
+  readonly key: 'plan' | 'agents' | 'workflow';
   readonly label: string;
   readonly value: string;
 }
@@ -33,7 +33,14 @@ export interface TaskDockRunViewModel {
   readonly detail?: string;
   readonly metrics: readonly TaskDockMetric[];
   readonly primaryTarget?:
-    'run' | 'plan' | 'workflow' | 'agents' | 'changes' | 'sources' | 'artifacts' | 'context';
+    | 'run'
+    | 'plan'
+    | 'workflow'
+    | 'agents'
+    | 'changes'
+    | 'sources'
+    | 'artifacts'
+    | 'context';
   readonly attentionKind?: 'permission' | 'ask_user' | 'budget' | 'error' | 'blocked';
 }
 
@@ -47,7 +54,6 @@ export interface BuildTaskDockRunInput {
   readonly actorSnapshot?: AgentActorTreeSnapshotT;
   readonly workflowRuns?: readonly WorkflowRunT[];
   readonly events?: readonly SessionEvent[];
-  readonly budget?: { readonly used: number; readonly cap: number };
   readonly hasPermissionRequest?: boolean;
   readonly hasAskUserRequest?: boolean;
   readonly t?: (key: MessageKey, vars?: Record<string, string | number>) => string;
@@ -245,13 +251,6 @@ function buildMetrics(
       key: 'workflow',
       label: t('taskDock.metric.workflow'),
       value: String(activeWorkflowCount),
-    });
-  }
-  if (input.budget) {
-    metrics.push({
-      key: 'budget',
-      label: t('taskDock.metric.budget'),
-      value: `${input.budget.used}/${input.budget.cap}`,
     });
   }
   return metrics;

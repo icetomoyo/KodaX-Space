@@ -1,23 +1,14 @@
 // Pure effort-ladder helpers shared by the picker and Runtime projections.
 
-import type { ReasoningMode } from '@kodax-space/space-ipc-schema';
-
-export const EFFORT_ORDER: readonly ReasoningMode[] = [
-  'off',
-  'auto',
-  'minimal',
-  'low',
-  'medium',
-  'high',
-  'xhigh',
-  'max',
-];
+import { reasoningModeSchema, type ReasoningMode } from '@kodax-space/space-ipc-schema';
 
 const UNKNOWN_CAPABILITY_ORDER: readonly ReasoningMode[] = ['auto', 'low', 'medium', 'high'];
 
 /** Preserve real SDK effort levels while accepting persisted Space aliases. */
 export function sdkEffortToReasoningMode(effort: string): ReasoningMode | null {
-  switch (effort.trim().toLowerCase()) {
+  const normalized = reasoningModeSchema.safeParse(effort);
+  if (!normalized.success) return null;
+  switch (normalized.data) {
     case 'off':
     case 'none':
       return 'off';
@@ -34,9 +25,9 @@ export function sdkEffortToReasoningMode(effort: string): ReasoningMode | null {
     case 'high':
     case 'xhigh':
     case 'max':
-      return effort.trim().toLowerCase() as ReasoningMode;
+      return normalized.data;
     default:
-      return null;
+      return normalized.data;
   }
 }
 
@@ -45,15 +36,17 @@ export function visibleEffortLadder(
   supportedEfforts: readonly string[] | undefined,
   canDisableThinking = false,
 ): readonly ReasoningMode[] {
-  if (!supportedEfforts || supportedEfforts.length === 0) {
+  if (supportedEfforts === undefined) {
     return canDisableThinking ? ['off', ...UNKNOWN_CAPABILITY_ORDER] : UNKNOWN_CAPABILITY_ORDER;
   }
 
-  const allowed = new Set<ReasoningMode>(['auto']);
-  if (canDisableThinking) allowed.add('off');
+  const visible: ReasoningMode[] = canDisableThinking ? ['off', 'auto'] : ['auto'];
+  const seen = new Set<ReasoningMode>(visible);
   for (const effort of supportedEfforts) {
     const mode = sdkEffortToReasoningMode(effort);
-    if (mode && (mode !== 'off' || canDisableThinking)) allowed.add(mode);
+    if (!mode || (mode === 'off' && !canDisableThinking) || seen.has(mode)) continue;
+    seen.add(mode);
+    visible.push(mode);
   }
-  return EFFORT_ORDER.filter((mode) => allowed.has(mode));
+  return visible;
 }

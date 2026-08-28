@@ -40,7 +40,7 @@ export { sdkEffortToReasoningMode, visibleEffortLadder };
 type ReasoningMode = SessionMeta['reasoningMode'];
 type Translate = (key: MessageKey, vars?: Record<string, string | number>) => string;
 
-const EFFORT_LABEL_KEYS: Record<ReasoningMode, MessageKey> = {
+const EFFORT_LABEL_KEYS: Readonly<Record<string, MessageKey>> = {
   off: 'modelPicker.effort.off',
   auto: 'modelPicker.effort.auto',
   minimal: 'modelPicker.effort.minimal',
@@ -55,7 +55,8 @@ const EFFORT_LABEL_KEYS: Record<ReasoningMode, MessageKey> = {
 };
 
 function effortLabel(mode: ReasoningMode, t: Translate): string {
-  return t(EFFORT_LABEL_KEYS[mode]);
+  const key = EFFORT_LABEL_KEYS[mode];
+  return key ? t(key) : mode;
 }
 
 export function ModelEffortSelector(): JSX.Element {
@@ -82,11 +83,12 @@ export function ModelEffortSelector(): JSX.Element {
   // 右列展示哪个 provider 的 models — 默认跟随 active provider；
   // 用户在左列点别的 provider 时只改这个，不立即 commit (等点 model 才 commit)。
   const [previewProviderId, setPreviewProviderId] = useState<string | null>(null);
-  // Per-model reasoning ladder from the SDK (resolveModelCapabilities), fetched
-  // lazily when the picker opens. null → not yet known (full fixed ladder shown).
+  // Per-model reasoning ladder from the SDK (resolveModelCapabilities), kept warm
+  // for the active model so keyboard cycling is correct even while the picker is closed.
+  // null → not yet known (stable fallback ladder shown).
   const [modelEfforts, setModelEfforts] = useState<{
-    readonly supported: readonly string[];
-    readonly default?: string;
+    readonly supportedEfforts?: readonly string[];
+    readonly defaultEffort?: string;
     readonly canDisableThinking?: boolean;
   } | null>(null);
 
@@ -130,14 +132,14 @@ export function ModelEffortSelector(): JSX.Element {
   const activeEffort = sdkEffortToReasoningMode(configuredEffort) ?? 'auto';
 
   // Effort ladder built from the active model's SDK-declared efforts (falls back
-  // to the full fixed ladder when unknown). The model's own default rung is
+  // to a stable fallback ladder when unknown). The model's own default rung is
   // annotated so the user can see "what this model prefers".
   const visibleEfforts = visibleEffortLadder(
-    modelEfforts?.supported,
+    modelEfforts?.supportedEfforts,
     modelEfforts?.canDisableThinking ?? false,
   );
-  const modelDefaultMode = modelEfforts?.default
-    ? sdkEffortToReasoningMode(modelEfforts.default)
+  const modelDefaultMode = modelEfforts?.defaultEffort
+    ? sdkEffortToReasoningMode(modelEfforts.defaultEffort)
     : null;
 
   // 右列正在预览的 provider — 打开时初始化为 active；用户左列点别的就更新 preview
@@ -244,14 +246,14 @@ export function ModelEffortSelector(): JSX.Element {
     }
   }
 
-  // Lazily fetch the active model's reasoning ladder (SDK resolveModelCapabilities,
-  // via provider.modelContextWindow) when the picker opens or the model changes.
+  // Fetch the active model's reasoning ladder (SDK resolveModelCapabilities via
+  // provider.modelContextWindow) for both the picker and the global effort shortcut.
   useEffect(() => {
     // Clear any prior model's ladder synchronously on provider/model change so a
     // slow/failed fetch never leaves the previous model's efforts attributed to the
-    // new one (falls back to the full fixed ladder until the fresh fetch resolves).
+    // new one (falls back to the stable fallback ladder until the fresh fetch resolves).
     setModelEfforts(null);
-    if (!open || !activeProviderId || !activeModel || activeModel === '—') return;
+    if (!activeProviderId || !activeModel || activeModel === '—') return;
     let cancelled = false;
     void (async () => {
       try {
@@ -261,20 +263,16 @@ export function ModelEffortSelector(): JSX.Element {
           model: activeModel,
         });
         if (cancelled || !r.ok) return;
-        setModelEfforts({
-          supported: r.data.supportedEfforts ?? [],
-          canDisableThinking: r.data.canDisableThinking ?? false,
-          ...(r.data.defaultEffort ? { default: r.data.defaultEffort } : {}),
-        });
+        setModelEfforts(r.data);
       } catch {
-        // Non-fatal — the selector falls back to the full fixed ladder.
+        // Non-fatal — the selector falls back to the stable fallback ladder.
         if (!cancelled) setModelEfforts(null);
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [open, activeProviderId, activeModel]);
+  }, [activeProviderId, activeModel]);
 
   // Ctrl+Shift+E matches the Effort shortcut shown in the picker.
   // Keep Ctrl+T as a legacy cycle shortcut. Cycles only the model-supported rungs.
@@ -286,7 +284,7 @@ export function ModelEffortSelector(): JSX.Element {
       if (isLegacyCycle || isEffortCycle) {
         e.preventDefault();
         const ladder = visibleEffortLadder(
-          modelEfforts?.supported,
+          modelEfforts?.supportedEfforts,
           modelEfforts?.canDisableThinking ?? false,
         );
         const idx = ladder.indexOf(activeEffort);
@@ -450,7 +448,7 @@ export function ModelEffortSelector(): JSX.Element {
                 <kbd className="px-1 border border-border-strong rounded">E</kbd>
               </span>
             </div>
-            <div className="flex px-2 pb-1 gap-1">
+            <div className="flex flex-wrap px-2 pb-1 gap-1">
               {visibleEfforts.map((m) => {
                 const selected = activeEffort === m;
                 const isModelDefault = modelDefaultMode === m;
@@ -460,7 +458,7 @@ export function ModelEffortSelector(): JSX.Element {
                     type="button"
                     onClick={() => void pickEffort(m)}
                     title={isModelDefault ? t('modelPicker.effort.modelDefault') : undefined}
-                    className={`flex-1 text-center px-1 py-1 rounded hover:bg-hover-bg ${
+                    className={`min-w-14 flex-1 text-center px-1 py-1 rounded hover:bg-hover-bg ${
                       selected ? 'bg-surface-3 text-fg-primary' : 'text-fg-secondary'
                     }`}
                   >

@@ -16,21 +16,16 @@ import {
 } from './runtime.js';
 
 // ---- Reasoning effort ----
-// Canonical UI values preserve the SDK's real effort rungs. quick/balanced/deep
-// remain accepted only so persisted pre-effort Space sessions continue to load.
-export const reasoningModeSchema = z.enum([
-  'off',
-  'auto',
-  'minimal',
-  'low',
-  'medium',
-  'high',
-  'xhigh',
-  'max',
-  'quick',
-  'balanced',
-  'deep',
-]);
+// The SDK intentionally exposes provider-specific string efforts. Keep the IPC
+// boundary bounded and token-only, but do not freeze Space to today's built-ins.
+// quick/balanced/deep remain valid persisted legacy aliases.
+export const reasoningModeSchema = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .min(1)
+  .max(32)
+  .regex(/^[a-z][a-z0-9_-]*$/);
 export type ReasoningMode = z.infer<typeof reasoningModeSchema>;
 
 // ---- Permission mode (FEATURE_029 / alpha.1) — 对齐 KodaX REPL canonical ----

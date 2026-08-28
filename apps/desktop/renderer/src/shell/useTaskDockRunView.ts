@@ -42,9 +42,6 @@ export function useTaskDockRunView(): UseTaskDockRunViewResult {
   const actorSnapshot = useAppStore((s) =>
     currentSessionId ? s.agentActorSnapshotBySession[currentSessionId] : undefined,
   );
-  const budget = useAppStore((s) =>
-    currentSessionId ? s.workBudgetBySession[currentSessionId] : undefined,
-  );
   const events = useAppStore((s) =>
     currentSessionId ? (s.eventsBySession[currentSessionId] ?? EMPTY_EVENTS) : EMPTY_EVENTS,
   );
@@ -74,7 +71,6 @@ export function useTaskDockRunView(): UseTaskDockRunViewResult {
         actorSnapshot,
         workflowRuns,
         events,
-        budget,
         hasPermissionRequest,
         hasAskUserRequest,
         t,
@@ -89,7 +85,6 @@ export function useTaskDockRunView(): UseTaskDockRunViewResult {
       actorSnapshot,
       workflowRuns,
       events,
-      budget,
       hasPermissionRequest,
       hasAskUserRequest,
       t,
@@ -119,7 +114,6 @@ function sameRunViewInput(a: BuildTaskDockRunInput, b: BuildTaskDockRunInput): b
     a.actorSnapshot === b.actorSnapshot &&
     sameArrayItems(a.workflowRuns, b.workflowRuns) &&
     a.events === b.events &&
-    a.budget === b.budget &&
     a.hasPermissionRequest === b.hasPermissionRequest &&
     a.hasAskUserRequest === b.hasAskUserRequest &&
     a.t === b.t

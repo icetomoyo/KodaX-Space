@@ -49,6 +49,18 @@ test('space action catalog filters by product surface and validates bounded valu
     validateSpaceActionArgs(getSpaceActionDescriptor('settings.reasoningMode.setDefault'), {
       value: 'deep',
     }),
+    true,
+  );
+  assert.equal(
+    validateSpaceActionArgs(getSpaceActionDescriptor('settings.reasoningMode.setDefault'), {
+      value: 'ultra',
+    }),
+    true,
+  );
+  assert.equal(
+    validateSpaceActionArgs(getSpaceActionDescriptor('settings.reasoningMode.setDefault'), {
+      value: '../unsafe',
+    }),
     false,
   );
 });
@@ -144,23 +156,25 @@ test('space control tool registration rolls back a partial SDK registration', ()
 });
 
 test('space control keeps the run-owned permission mode after the Session setting changes', async () => {
-  kodaxHost.setFactory((opts): ManagedSession => ({
-    sessionId: opts.sessionId,
-    projectRoot: opts.projectRoot,
-    provider: opts.provider,
-    reasoningMode: opts.reasoningMode,
-    permissionMode: opts.permissionMode,
-    autoModeEngine: opts.autoModeEngine ?? 'llm',
-    agentMode: opts.agentMode ?? 'ama',
-    surface: opts.surface ?? 'code',
-    createdAt: Date.now(),
-    lastActivityAt: Date.now(),
-    title: undefined,
-    isRunning: () => false,
-    send: async () => ({ accepted: true, queued: false }),
-    cancel: async () => {},
-    dispose: async () => {},
-  }));
+  kodaxHost.setFactory(
+    (opts): ManagedSession => ({
+      sessionId: opts.sessionId,
+      projectRoot: opts.projectRoot,
+      provider: opts.provider,
+      reasoningMode: opts.reasoningMode,
+      permissionMode: opts.permissionMode,
+      autoModeEngine: opts.autoModeEngine ?? 'llm',
+      agentMode: opts.agentMode ?? 'ama',
+      surface: opts.surface ?? 'code',
+      createdAt: Date.now(),
+      lastActivityAt: Date.now(),
+      title: undefined,
+      isRunning: () => false,
+      send: async () => ({ accepted: true, queued: false }),
+      cancel: async () => {},
+      dispose: async () => {},
+    }),
+  );
   try {
     const { sessionId } = kodaxHost.createSession({
       projectRoot: '/space-control-run',
