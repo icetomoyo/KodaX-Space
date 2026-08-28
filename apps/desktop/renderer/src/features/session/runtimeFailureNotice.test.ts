@@ -32,6 +32,7 @@ function activeUnknownLive(): SpaceSessionLiveProjectionT {
       phase: 'unknown',
       failureKind: failureDetail.failureKind,
       failureDetail,
+      retriable: false,
     },
     queuedRuns: [],
     activeTools: [],
@@ -53,6 +54,7 @@ test('active unknown run exposes structured settlement diagnostics without fabri
       failureKind: failureDetail.failureKind,
       failureDetail,
       runtimeRunId: 'run_settlement',
+      retriable: false,
     },
   ]);
 });
@@ -220,8 +222,45 @@ test('structured projection details enrich a generic notice for the same run', (
     assert.equal(notices[0].text, failureDetail.safeMessage);
     assert.equal(notices[0].failureDetail, failureDetail);
     assert.equal(notices[0].action, undefined);
-    assert.equal(notices[0].retriable, undefined);
+    assert.equal(notices[0].retriable, false);
     assert.equal(notices[0].retryAvailableAt, undefined);
+  }
+});
+
+test('cold-start rate-limit diagnostics preserve the projected delayed retry action', () => {
+  const delayedRetryDetail = {
+    failureKind: 'rate_limit',
+    stage: 'transport',
+    providerErrorCode: 'rate_limited',
+    safeMessage: 'The provider rate limit was reached.',
+    retryAfterMs: 2_500,
+  } as const;
+  const profileSession: SpaceRuntimeProfileProjectionT['sessions'][number] = {
+    sessionId: 'session_runtime_failure',
+    surface: 'code',
+    createdAt: 1,
+    lastActivityAt: 2_002_500,
+    queuedRuns: [],
+    lastTerminalRun: {
+      runId: 'run_rate_limit',
+      sessionId: 'session_runtime_failure',
+      phase: 'failed',
+      completedAt: 2_000_000,
+      failureKind: delayedRetryDetail.failureKind,
+      failureDetail: delayedRetryDetail,
+      retriable: true,
+      action: 'retry',
+      retryAvailableAt: 2_002_500,
+    },
+  };
+
+  const notices = appendRuntimeFailureNotices([], undefined, profileSession);
+
+  assert.equal(notices[0]?.kind, 'system_notice');
+  if (notices[0]?.kind === 'system_notice') {
+    assert.equal(notices[0].retriable, true);
+    assert.equal(notices[0].action, 'retry');
+    assert.equal(notices[0].retryAvailableAt, 2_002_500);
   }
 });
 

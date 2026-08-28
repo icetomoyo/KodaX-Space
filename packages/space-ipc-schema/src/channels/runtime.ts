@@ -228,24 +228,22 @@ export const spaceRuntimeProviderErrorCodeSchema = z.enum([
   'provider_error',
 ]);
 
-const runtimeFailureIdentifierSchema = z
+export const spaceRuntimeFailureIdentifierSchema = z
   .string()
   .min(1)
   .max(200)
   .regex(/^[A-Za-z0-9_.:-]+$/);
-
-const runtimeFailureMetadataSchema = z.string().max(200);
 
 export const spaceRuntimeFailureDetailSchema = z
   .object({
     failureKind: spaceRuntimeRunFailureKindSchema,
     stage: spaceRuntimeFailureStageSchema,
     // Keep a bounded default path for codes introduced by a newer compatible Runtime.
-    providerErrorCode: spaceRuntimeProviderErrorCodeSchema.or(runtimeFailureIdentifierSchema),
+    providerErrorCode: spaceRuntimeProviderErrorCodeSchema.or(spaceRuntimeFailureIdentifierSchema),
     safeMessage: z.string().min(1).max(MAX_RUNTIME_FAILURE_MESSAGE),
     httpStatus: z.number().int().min(100).max(599).optional(),
-    upstreamErrorCode: runtimeFailureMetadataSchema.optional(),
-    requestId: runtimeFailureMetadataSchema.optional(),
+    upstreamErrorCode: spaceRuntimeFailureIdentifierSchema.optional(),
+    requestId: spaceRuntimeFailureIdentifierSchema.optional(),
     retryAfterMs: z.number().int().nonnegative().max(MAX_RUNTIME_RETRY_AFTER_MS).optional(),
     contextTokens: z
       .object({
@@ -277,6 +275,9 @@ export const spaceRuntimeRunProjectionSchema = z
     terminalReason: z.string().min(1).max(MAX_REASON).optional(),
     failureKind: spaceRuntimeRunFailureKindSchema.optional(),
     failureDetail: spaceRuntimeFailureDetailSchema.optional(),
+    action: z.enum(['retry', 'open_provider_settings', 'check_network', 'change_model']).optional(),
+    retriable: z.boolean().optional(),
+    retryAvailableAt: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
     lifecycleError: z
       .object({
         code: z.enum([

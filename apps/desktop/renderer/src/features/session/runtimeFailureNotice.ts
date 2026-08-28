@@ -13,6 +13,14 @@ import {
 
 type RuntimeProfileSession = SpaceRuntimeProfileProjectionT['sessions'][number];
 
+function projectedFailureAction(run: SpaceRuntimeRunProjectionT) {
+  return {
+    ...(run.action !== undefined ? { action: run.action } : {}),
+    ...(run.retriable !== undefined ? { retriable: run.retriable } : {}),
+    ...(run.retryAvailableAt !== undefined ? { retryAvailableAt: run.retryAvailableAt } : {}),
+  };
+}
+
 function currentDiagnosticRun(
   live: SpaceSessionLiveProjectionT | undefined,
   profileSession: RuntimeProfileSession | undefined,
@@ -48,6 +56,7 @@ export function appendRuntimeFailureNotices(
   const run = currentDiagnosticRun(live, profileSession);
   if (run?.failureDetail === undefined) return messages;
   const failureDetail = run.failureDetail;
+  const failureAction = projectedFailureAction(run);
   const existingIndex = messages.findIndex(
     (message) => message.kind === 'system_notice' && message.runtimeRunId === run.runId,
   );
@@ -67,6 +76,7 @@ export function appendRuntimeFailureNotices(
             text: failureDetail.safeMessage,
             failureKind: failureDetail.failureKind,
             failureDetail,
+            ...failureAction,
           }
         : message,
     );
@@ -81,6 +91,7 @@ export function appendRuntimeFailureNotices(
       failureKind: failureDetail.failureKind,
       failureDetail,
       runtimeRunId: run.runId,
+      ...failureAction,
     },
   ];
 }

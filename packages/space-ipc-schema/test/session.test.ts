@@ -526,8 +526,8 @@ test('session_error event accepts KodaX 0.7.96 credential-safe failure details',
       providerErrorCode: 'model_not_found',
       safeMessage: 'The configured model was not found.',
       httpStatus: 404,
-      upstreamErrorCode: 'model/not found=v2',
-      requestId: 'req/custom== shard 2',
+      upstreamErrorCode: 'model.not_found-v2',
+      requestId: 'req:custom-shard_2',
       retryAfterMs: 250,
     },
   });
@@ -535,8 +535,8 @@ test('session_error event accepts KodaX 0.7.96 credential-safe failure details',
   assert.equal(r.success, true);
   if (!r.success || r.data.kind !== 'session_error') return;
   assert.equal(r.data.failureDetail?.providerErrorCode, 'model_not_found');
-  assert.equal(r.data.failureDetail?.upstreamErrorCode, 'model/not found=v2');
-  assert.equal(r.data.failureDetail?.requestId, 'req/custom== shard 2');
+  assert.equal(r.data.failureDetail?.upstreamErrorCode, 'model.not_found-v2');
+  assert.equal(r.data.failureDetail?.requestId, 'req:custom-shard_2');
 });
 
 test('session_error event: retryAvailableAt accepts large future epoch', () => {

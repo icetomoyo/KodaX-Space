@@ -1273,12 +1273,12 @@ export const sessionEventChannel = {
         .optional(),
       retriable: z.boolean().optional(),
       /** OC-23 限流重试**到点 epoch 毫秒**（绝对时间戳，**非** delta）。
-       *  Main 端 stamp = Date.now() + Retry-After header 等待毫秒；renderer 用
-       *  setInterval 算剩余秒数显示 "Retry in 30s"。
+       *  Main 端仅在 Runtime 提供合法 terminal endedAt 与 retryAfterMs 时，计算
+       *  endedAt + retryAfterMs；renderer 用 setInterval 算剩余秒数显示 "Retry in 30s"。
        *  绝对时间戳比 delta 更稳：composeMessages 是 selector，每次 events 变都重跑，
        *  delta 形式会导致每跑一次就把 retryAvailableAt 推后一格 (review HIGH-2)。
-       *  上限：Date.now() + 1 小时 ≈ 1768000000000ish；下限：0 也接受 (虽然语义古怪)。
-       *  超出上限走 `.catch` clamp 而非 reject —— 不让 1 个异常 header 把整条 error event 丢掉。*/
+       *  SDK/Space failureDetail 将 retryAfterMs 限制为 24 小时；若缺少稳定 endedAt，
+       *  Main 端省略该字段，避免倒计时漂移或盲重试。*/
       retryAvailableAt: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
     }),
     // ---- Context budget diagnostics（KodaX RuntimeContextBudgetSnapshot）----

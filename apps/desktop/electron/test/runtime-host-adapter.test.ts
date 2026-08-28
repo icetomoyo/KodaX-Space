@@ -10,6 +10,7 @@ import type {
   RuntimeInlineOwnerHandle,
   RuntimeRunHandle,
   RuntimeRunResult,
+  RuntimeRunStatus,
   RuntimeSession,
   RuntimeSessionCursor,
   RuntimeSessionObservationSnapshot,
@@ -22,6 +23,7 @@ import type { AgentEvent, AgentTreeSnapshot } from '@kodax-ai/kodax/agent';
 import { isCoderOwnerRecoveryRestartRequired } from '../kodax/coder-owner-recovery-error.js';
 import {
   initializeCoderDaemonProjectionSdk,
+  projectRuntimeRun,
   projectRuntimeSessionSnapshot,
 } from '../kodax/runtime/coder-daemon-projection.js';
 import {
@@ -10508,8 +10510,8 @@ test('daemon run failure prefers the credential-safe failure detail', async () =
         providerErrorCode: 'authentication_failed',
         safeMessage: 'Provider authentication failed.',
         httpStatus: 401,
-        upstreamErrorCode: 'gateway/invalid api key=v2',
-        requestId: 'req/custom== shard 2',
+        upstreamErrorCode: 'gateway.invalid_api_key-v2',
+        requestId: 'req:custom-shard_2',
       },
       terminal: {
         revision: 1,
@@ -10535,14 +10537,127 @@ test('daemon run failure prefers the credential-safe failure detail', async () =
         providerErrorCode: 'authentication_failed',
         safeMessage: 'Provider authentication failed.',
         httpStatus: 401,
-        upstreamErrorCode: 'gateway/invalid api key=v2',
-        requestId: 'req/custom== shard 2',
+        upstreamErrorCode: 'gateway.invalid_api_key-v2',
+        requestId: 'req:custom-shard_2',
       },
       retriable: false,
       action: 'open_provider_settings',
     },
   ]);
   await adapter.close();
+});
+
+test('daemon failureDetail omits malformed optional fields and logs only safe issue paths', async () => {
+  const pushed: unknown[] = [];
+  const warnings: unknown[][] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => warnings.push(args);
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    push: (channel, payload) => {
+      if (channel === 'session.event') pushed.push(payload);
+    },
+  });
+  try {
+    const bridgeRuntimeEvent = bindTestRuntimeEventBridge(adapter);
+    bridgeRuntimeEvent({
+      id: 'event_malformed_optional_identifiers',
+      seq: 1,
+      time: '2026-08-28T00:00:00.000Z',
+      type: 'run.failed',
+      sessionId: 's_safe_diagnostic',
+      runId: 'run_safe_diagnostic',
+      payload: {
+        failureDetail: {
+          failureKind: 'provider',
+          stage: 'transport',
+          providerErrorCode: 'provider_error',
+          safeMessage: 'The provider request failed.',
+          httpStatus: 900,
+          upstreamErrorCode: 'secret/upstream value',
+          requestId: 'secret=request value',
+          retryAfterMs: -1,
+          contextTokens: { required: -1, available: 10 },
+        },
+      },
+    } as unknown as TestRuntimeEvent);
+  } finally {
+    console.warn = originalWarn;
+    await adapter.close();
+  }
+
+  const event = pushed[0] as Record<string, unknown>;
+  assert.deepEqual(event.failureDetail, {
+    failureKind: 'provider',
+    stage: 'transport',
+    providerErrorCode: 'provider_error',
+    safeMessage: 'The provider request failed.',
+  });
+  assert.equal(warnings.length, 1);
+  assert.deepEqual(warnings[0], [
+    '[runtime] sanitized malformed failureDetail',
+    {
+      eventType: 'run.failed',
+      runId: 'run_safe_diagnostic',
+      issuePaths: [
+        'httpStatus',
+        'upstreamErrorCode',
+        'requestId',
+        'retryAfterMs',
+        'contextTokens.required',
+      ],
+    },
+  ]);
+  assert.doesNotMatch(JSON.stringify(warnings), /secret\/upstream|secret=request/);
+});
+
+test('daemon failureDetail parse failure keeps the generic fallback and logs no raw values', async () => {
+  const pushed: unknown[] = [];
+  const warnings: unknown[][] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => warnings.push(args);
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    push: (channel, payload) => {
+      if (channel === 'session.event') pushed.push(payload);
+    },
+  });
+  try {
+    const bridgeRuntimeEvent = bindTestRuntimeEventBridge(adapter);
+    bridgeRuntimeEvent({
+      id: 'event_malformed_failure_detail',
+      seq: 1,
+      time: '2026-08-28T00:00:00.000Z',
+      type: 'run.failed',
+      sessionId: 's_safe_diagnostic',
+      runId: 'run_malformed_failure_detail',
+      payload: {
+        failureDetail: {
+          failureKind: 'provider',
+          stage: 'secret invalid stage',
+          providerErrorCode: 'provider_error',
+          safeMessage: 'must-not-cross-diagnostic-boundary',
+        },
+        terminal: { failureKind: 'provider' },
+      },
+    } as unknown as TestRuntimeEvent);
+  } finally {
+    console.warn = originalWarn;
+    await adapter.close();
+  }
+
+  const event = pushed[0] as Record<string, unknown>;
+  assert.equal(event.error, 'Runtime run failed');
+  assert.equal(event.failureDetail, undefined);
+  assert.deepEqual(warnings[0], [
+    '[runtime] sanitized malformed failureDetail',
+    {
+      eventType: 'run.failed',
+      runId: 'run_malformed_failure_detail',
+      issuePaths: ['stage'],
+    },
+  ]);
+  assert.doesNotMatch(JSON.stringify(warnings), /secret invalid stage|must-not-cross/);
 });
 
 test('legacy daemon failure text cannot cross the credential-safe IPC boundary', async () => {
@@ -10598,7 +10713,31 @@ test('daemon cancelled and interrupted terminals preserve structured Runtime dia
   });
   const bridgeRuntimeEvent = bindTestRuntimeEventBridge(adapter);
 
-  (['run.cancelled', 'run.interrupted'] as const).forEach((type, index) => {
+  const cases = [
+    {
+      type: 'run.cancelled',
+      failureDetail: {
+        failureKind: 'cancelled',
+        stage: 'runtime_control',
+        providerErrorCode: 'cancelled',
+        safeMessage: 'Safe run.cancelled diagnostic.',
+        requestId: 'request_0',
+      },
+      expected: { category: 'cancelled', retriable: false, action: undefined },
+    },
+    {
+      type: 'run.interrupted',
+      failureDetail: {
+        failureKind: 'network',
+        stage: 'transport',
+        providerErrorCode: 'tls_error',
+        safeMessage: 'Safe run.interrupted diagnostic.',
+        requestId: 'request_1',
+      },
+      expected: { category: 'network', retriable: true, action: 'check_network' },
+    },
+  ] as const;
+  cases.forEach(({ type, failureDetail }, index) => {
     bridgeRuntimeEvent({
       id: `event_structured_${type}`,
       seq: index + 1,
@@ -10612,13 +10751,7 @@ test('daemon cancelled and interrupted terminals preserve structured Runtime dia
         phase: type === 'run.cancelled' ? 'cancelled' : 'interrupted',
         startedAt: '2026-08-28T00:00:00.000Z',
         provider: 'mock',
-        failureDetail: {
-          failureKind: 'runtime_cleanup',
-          stage: 'runtime_settlement',
-          providerErrorCode: 'runtime_settlement_failed',
-          safeMessage: `Safe ${type} diagnostic.`,
-          requestId: `request_${index}`,
-        },
+        failureDetail,
       },
     });
   });
@@ -10627,20 +10760,21 @@ test('daemon cancelled and interrupted terminals preserve structured Runtime dia
     pushed.map((value) => {
       const event = value as Record<string, unknown>;
       const detail = event.failureDetail as Record<string, unknown>;
-      return { error: event.error, code: detail.providerErrorCode, requestId: detail.requestId };
+      return {
+        error: event.error,
+        code: detail.providerErrorCode,
+        requestId: detail.requestId,
+        category: event.category,
+        retriable: event.retriable,
+        action: event.action,
+      };
     }),
-    [
-      {
-        error: 'Safe run.cancelled diagnostic.',
-        code: 'runtime_settlement_failed',
-        requestId: 'request_0',
-      },
-      {
-        error: 'Safe run.interrupted diagnostic.',
-        code: 'runtime_settlement_failed',
-        requestId: 'request_1',
-      },
-    ],
+    cases.map(({ failureDetail, expected }) => ({
+      error: failureDetail.safeMessage,
+      code: failureDetail.providerErrorCode,
+      requestId: failureDetail.requestId,
+      ...expected,
+    })),
   );
   await adapter.close();
 });
@@ -10797,6 +10931,14 @@ test('daemon rate-limit failureDetail projects the authoritative retry delay', a
     },
   });
   const bridgeRuntimeEvent = bindTestRuntimeEventBridge(adapter);
+  const endedAt = '1970-01-01T00:50:00.000Z';
+  const failureDetail = {
+    failureKind: 'rate_limit',
+    stage: 'transport',
+    providerErrorCode: 'rate_limited',
+    safeMessage: 'The provider rate limit was reached.',
+    retryAfterMs: 2_500,
+  } as const;
   const originalNow = Date.now;
   Date.now = () => 9_000_000;
   try {
@@ -10812,14 +10954,9 @@ test('daemon rate-limit failureDetail projects the authoritative retry delay', a
         sessionId: 's_1',
         phase: 'failed',
         startedAt: '2026-08-28T00:00:00.000Z',
+        endedAt,
         provider: 'mock',
-        failureDetail: {
-          failureKind: 'rate_limit',
-          stage: 'transport',
-          providerErrorCode: 'rate_limited',
-          safeMessage: 'The provider rate limit was reached.',
-          retryAfterMs: 2_500,
-        },
+        failureDetail,
         terminal: {
           revision: 1,
           kind: 'failed',
@@ -10833,7 +10970,18 @@ test('daemon rate-limit failureDetail projects the authoritative retry delay', a
   }
 
   const event = pushed[0] as Record<string, unknown>;
-  assert.equal(event.retryAvailableAt, 2_002_500);
+  const projected = projectRuntimeRun({
+    runId: 'run_rate_limit_detail',
+    sessionId: 's_1',
+    phase: 'failed',
+    startedAt: '2026-08-28T00:00:00.000Z',
+    endedAt,
+    provider: 'mock',
+    sessionOrder: 1,
+    failureDetail,
+  } as RuntimeRunStatus);
+  assert.equal(event.retryAvailableAt, 3_002_500);
+  assert.equal(event.retryAvailableAt, projected.retryAvailableAt);
   assert.equal(event.retriable, true);
   assert.equal(event.action, 'retry');
   await adapter.close();

@@ -1,5 +1,4 @@
 import type {
-  RuntimeFailureDetail,
   RuntimeIntegrationHealth,
   RuntimePermissionRequest,
   RuntimeRunStatus,
@@ -17,7 +16,6 @@ import {
   spaceSessionLiveChangedSchema,
   spaceSessionLiveProjectionSchema,
   type SpaceRuntimeCapabilityT,
-  type SpaceRuntimeFailureDetailT,
   type SpaceRuntimeIntegrationHealthT,
   type SpaceRuntimeInteractionT,
   type SpaceRuntimeProfileProjectionT,
@@ -30,6 +28,11 @@ import { assessRisk } from '../../permission/risk.js';
 import { sanitizeForDisplay, sanitizeInputForDisplay } from '../../permission/sanitize.js';
 import { projectAutoModeDiagnostics } from '../../permission/auto-mode-diagnostics.js';
 import { isTransientChildEvent, type ChildMeta } from '../workflow-activity.js';
+import {
+  parseRuntimeFailureDetail,
+  runtimeFailurePresentation,
+  runtimeRetryAvailableAt,
+} from './runtime-failure.js';
 
 type OutputSegmentSdk = Pick<
   typeof import('@kodax-ai/kodax/coding'),
@@ -77,7 +80,6 @@ function reduceOutputSegmentProjection(
 
 const MAX_DRAFT = 256 * 1024;
 const MAX_REASON = 512;
-const MAX_RUNTIME_FAILURE_MESSAGE = 1_024;
 const MAX_PERMISSION_INPUT_PREVIEW = 8_192;
 const MAX_TODOS = 1_000;
 const MAX_TOOLS = 128;
@@ -197,27 +199,17 @@ function runtimePhase(phase: RuntimeRunStatus['phase']): SpaceRuntimeRunProjecti
   return phase;
 }
 
-function projectRuntimeFailureDetail(detail: RuntimeFailureDetail): SpaceRuntimeFailureDetailT {
-  return {
-    failureKind: detail.failureKind,
-    stage: detail.stage,
-    providerErrorCode: detail.providerErrorCode,
-    safeMessage: detail.safeMessage.slice(0, MAX_RUNTIME_FAILURE_MESSAGE),
-    ...(detail.httpStatus !== undefined ? { httpStatus: detail.httpStatus } : {}),
-    ...(detail.upstreamErrorCode !== undefined
-      ? { upstreamErrorCode: detail.upstreamErrorCode.slice(0, 200) }
-      : {}),
-    ...(detail.requestId !== undefined ? { requestId: detail.requestId.slice(0, 200) } : {}),
-    ...(detail.retryAfterMs !== undefined ? { retryAfterMs: detail.retryAfterMs } : {}),
-    ...(detail.contextTokens !== undefined
-      ? {
-          contextTokens: {
-            required: detail.contextTokens.required,
-            available: detail.contextTokens.available,
-          },
-        }
-      : {}),
-  };
+function genericRuntimeTerminalReason(phase: RuntimeRunStatus['phase']): string | undefined {
+  switch (phase) {
+    case 'failed':
+      return 'Runtime run failed';
+    case 'cancelled':
+      return 'cancelled';
+    case 'interrupted':
+      return 'Runtime run interrupted';
+    default:
+      return undefined;
+  }
 }
 
 export function projectRuntimeRun(
@@ -226,6 +218,26 @@ export function projectRuntimeRun(
 ): SpaceRuntimeRunProjectionT {
   const origin = run.origin;
   const activeSubtaskCount = nonNegativeInteger(run.activeSubtaskCount);
+  const completedAt = run.endedAt !== undefined ? timestamp(run.endedAt) : undefined;
+  const failureDetailResult = parseRuntimeFailureDetail(run.failureDetail);
+  if (failureDetailResult.issuePaths.length > 0) {
+    console.warn('[runtime] sanitized malformed failureDetail', {
+      eventType: 'runtime.run_projection',
+      runId: run.runId,
+      issuePaths: failureDetailResult.issuePaths,
+    });
+  }
+  const failureDetail = failureDetailResult.detail;
+  const terminalReason = failureDetail?.safeMessage ?? genericRuntimeTerminalReason(run.phase);
+  const retryAvailableAt = runtimeRetryAvailableAt(run.endedAt, failureDetail?.retryAfterMs);
+  const failurePresentation =
+    failureDetail !== undefined
+      ? runtimeFailurePresentation(
+          failureDetail.failureKind,
+          failureDetail.providerErrorCode,
+          retryAvailableAt !== undefined ? failureDetail.retryAfterMs : undefined,
+        )
+      : undefined;
   return {
     runId: run.runId,
     sessionId: run.sessionId,
@@ -243,27 +255,27 @@ export function projectRuntimeRun(
     ...(run.runningAt !== undefined || run.startedAt !== undefined
       ? { startedAt: timestamp(run.runningAt ?? run.startedAt) }
       : {}),
-    ...(run.endedAt !== undefined ? { completedAt: timestamp(run.endedAt) } : {}),
+    ...(completedAt !== undefined ? { completedAt } : {}),
     ...(queuePosition !== undefined ? { queuePosition } : {}),
-    ...(run.failureDetail !== undefined
-      ? { terminalReason: run.failureDetail.safeMessage.slice(0, MAX_REASON) }
-      : run.terminal?.message !== undefined || run.terminal?.code !== undefined
-        ? {
-            terminalReason: (run.terminal?.message ?? run.terminal?.code ?? '').slice(
-              0,
-              MAX_REASON,
-            ),
-          }
-        : run.error
-          ? { terminalReason: run.error.slice(0, MAX_REASON) }
-          : {}),
+    ...(terminalReason !== undefined
+      ? { terminalReason: terminalReason.slice(0, MAX_REASON) }
+      : {}),
     ...(run.terminal?.failureKind !== undefined ? { failureKind: run.terminal.failureKind } : {}),
-    ...(run.failureDetail !== undefined
+    ...(failureDetail !== undefined
       ? {
-          failureKind: run.failureDetail.failureKind,
-          failureDetail: projectRuntimeFailureDetail(run.failureDetail),
+          failureKind: failureDetail.failureKind,
+          failureDetail,
         }
       : {}),
+    ...(failurePresentation !== undefined
+      ? {
+          retriable: failurePresentation.retriable,
+          ...(failurePresentation.action !== undefined
+            ? { action: failurePresentation.action }
+            : {}),
+        }
+      : {}),
+    ...(retryAvailableAt !== undefined ? { retryAvailableAt } : {}),
     ...(run.lifecycleError !== undefined
       ? {
           lifecycleError: {

@@ -171,8 +171,8 @@ test('run projection preserves bounded future provider diagnostics without forwa
       stage: 'transport',
       providerErrorCode: 'future_provider_code_v2',
       safeMessage,
-      upstreamErrorCode: 'gateway/model rejected=v2',
-      requestId: 'req/custom== shard 2',
+      upstreamErrorCode: 'gateway.model_rejected-v2',
+      requestId: 'req:custom-shard_2',
       retryAfterMs: 86_400_000,
       futureDiagnostic: 'must-not-cross-space-ipc',
     },
@@ -182,8 +182,8 @@ test('run projection preserves bounded future provider diagnostics without forwa
   if (!result.success) return;
   assert.equal(result.data.failureDetail?.providerErrorCode, 'future_provider_code_v2');
   assert.equal(result.data.failureDetail?.safeMessage, safeMessage);
-  assert.equal(result.data.failureDetail?.upstreamErrorCode, 'gateway/model rejected=v2');
-  assert.equal(result.data.failureDetail?.requestId, 'req/custom== shard 2');
+  assert.equal(result.data.failureDetail?.upstreamErrorCode, 'gateway.model_rejected-v2');
+  assert.equal(result.data.failureDetail?.requestId, 'req:custom-shard_2');
   assert.equal('futureDiagnostic' in (result.data.failureDetail ?? {}), false);
 
   assert.equal(
@@ -193,6 +193,28 @@ test('run projection preserves bounded future provider diagnostics without forwa
     }).success,
     false,
   );
+});
+
+test('Runtime failure identifiers reject values outside the SDK safe character set', () => {
+  for (const [field, value] of [
+    ['upstreamErrorCode', 'gateway/model rejected=v2'],
+    ['requestId', 'req/custom== shard 2'],
+  ] as const) {
+    const result = spaceRuntimeRunProjectionSchema.safeParse({
+      runId: 'run_failure_identifier',
+      sessionId: 'session_failure_identifier',
+      phase: 'failed',
+      failureDetail: {
+        failureKind: 'provider',
+        stage: 'transport',
+        providerErrorCode: 'provider_error',
+        safeMessage: 'The provider request failed.',
+        [field]: value,
+      },
+    });
+
+    assert.equal(result.success, false, field);
+  }
 });
 
 test('selected-session live projection carries semantic spinner, Todo and queue truth', () => {

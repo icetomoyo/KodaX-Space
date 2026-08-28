@@ -33,10 +33,14 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
   Space IPC, and conversation notices. Error notices now expose the stable
   KodaX code and bounded support metadata, including context-token
   `required / available` counts. Space displays the SDK `safeMessage`, keeps a
-  forward-compatible unknown-code path, and never offers blind retry for a
-  terminal `context_capacity_exceeded` result. The SDK's capacity-debt recovery
-  now runs before that terminal outcome, so Space no longer invents a local
-  context-threshold failure around completed tool results.
+  forward-compatible unknown-code path, enforces the SDK's safe identifier
+  character set, and logs only event/run identity plus schema paths when a
+  malformed detail is sanitized. Live and cold-start projections preserve the
+  same recovery action and stable retry deadline as terminal events, while a
+  terminal `context_capacity_exceeded` result never offers blind retry. The
+  SDK's capacity-debt recovery now runs before that terminal outcome, so Space
+  no longer invents a local context-threshold failure around completed tool
+  results.
 
 ## [0.1.45] - 2026-08-24
 

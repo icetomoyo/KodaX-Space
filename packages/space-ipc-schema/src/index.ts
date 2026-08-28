@@ -69,6 +69,7 @@ export {
   spaceRuntimeFailureDetailSchema,
   spaceRuntimeRunStopReceiptSchema,
   spaceRuntimeRunStageSchema,
+  spaceRuntimeFailureIdentifierSchema,
   spaceRuntimeRunProjectionSchema,
   spaceRuntimeSessionProfileSchema,
   spaceRuntimeInteractionSchema,

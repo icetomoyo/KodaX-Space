@@ -104,9 +104,8 @@ export type ConversationMessage =
       failureDetail?: SpaceRuntimeFailureDetailT;
       runtimeRunId?: string;
       /** OC-23 倒计时：retry 按钮在此 epoch ms 之前 disabled + 显示 "Retry in Ns"。
-       *  Main 端在 emit session_error 时已 stamp = Date.now() + waitMs，selector 这里
-       *  直接透传 evt.retryAvailableAt 不再加工，避免 composeMessages 每次重跑都让倒计时
-       *  漂移 (review HIGH-2 修复后的定型形态)。*/
+       *  Main 端仅在 Runtime terminal endedAt 与 retryAfterMs 都合法时计算绝对时间，
+       *  selector 直接透传 evt.retryAvailableAt，不再加工，避免每次重跑导致倒计时漂移。*/
       retryAvailableAt?: number;
       /** Renderer-local notices (workflow) keep their own wall-clock timestamp for footer UI. */
       sentAt?: number;

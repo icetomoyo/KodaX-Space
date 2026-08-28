@@ -79,12 +79,16 @@ import {
   runtimeProjectionController,
   type RuntimeProjectionController,
 } from './runtime/runtime-projection-controller.js';
+import {
+  parseRuntimeFailureDetail,
+  runtimeFailurePresentation,
+  runtimeRetryAvailableAt,
+} from './runtime/runtime-failure.js';
 import { pushToRenderer } from '../ipc/push.js';
 import { areLearningMutationsEnabled } from './learning-policy.js';
 import {
   canonProjectRoot,
   sessionEventChannel,
-  spaceRuntimeFailureDetailSchema,
   workflowProcessSnapshotSchema,
   workflowRunSchema,
   type AgentActorTreeSnapshotT,
@@ -97,7 +101,6 @@ import {
   type ExternalAgentTaskT,
   type SessionEvent,
   type SpaceCoderConnectionProjectionT,
-  type SpaceRuntimeFailureDetailT,
   type SpaceRuntimeProfileProjectionT,
   type SpaceSessionLiveProjectionT,
 } from '@kodax-space/space-ipc-schema';
@@ -123,7 +126,12 @@ import {
 
 export type RuntimeHostMode = 'legacy' | 'runtime';
 export type RuntimeHostState =
-  'uninitialized' | 'initializing' | 'legacy' | 'ready' | 'failed' | 'closed';
+  | 'uninitialized'
+  | 'initializing'
+  | 'legacy'
+  | 'ready'
+  | 'failed'
+  | 'closed';
 export type RuntimeCapabilityOwner = 'runtime' | 'space-bridge' | 'legacy' | 'unavailable';
 export type RuntimeCapabilitySupport = 'supported' | 'partial' | 'unavailable';
 
@@ -1256,7 +1264,10 @@ type DaemonShutdownVerification =
   | {
       readonly status: 'unverified';
       readonly reason:
-        'daemon_active' | 'containment_active' | 'containment_unavailable' | 'outcome_missing';
+        | 'daemon_active'
+        | 'containment_active'
+        | 'containment_unavailable'
+        | 'outcome_missing';
     };
 
 interface DaemonShutdownVerificationInput {
@@ -1847,11 +1858,6 @@ function runtimeFailureKind(value: unknown): RuntimeRunFailureKind | undefined {
   }
 }
 
-function runtimeFailureDetail(value: unknown): SpaceRuntimeFailureDetailT | undefined {
-  const parsed = spaceRuntimeFailureDetailSchema.safeParse(value);
-  return parsed.success ? parsed.data : undefined;
-}
-
 function isReconnectableInitializationFailure(error: unknown): boolean {
   return error instanceof RuntimeInitializationAuthorityLostError || isReconnectableFailure(error);
 }
@@ -1862,104 +1868,6 @@ function isRunRecoveryInitializationFailure(error: unknown): boolean {
 
 function isReconnectableRunTransportLoss(error: unknown): boolean {
   return isRuntimeDaemonDisconnectFailure(error) && error.reconnectable;
-}
-
-type RuntimeFailurePresentation = {
-  readonly category:
-    | 'auth'
-    | 'rate_limit'
-    | 'network'
-    | 'model_unavailable'
-    | 'bad_request'
-    | 'server_error'
-    | 'cancelled'
-    | 'unknown';
-  readonly retriable: boolean;
-  readonly action?: 'retry' | 'open_provider_settings' | 'check_network' | 'change_model';
-};
-
-function providerFailurePresentation(
-  code: SpaceRuntimeFailureDetailT['providerErrorCode'] | undefined,
-  retryAfterMs?: number,
-): RuntimeFailurePresentation | undefined {
-  switch (code) {
-    case 'credential_unavailable':
-    case 'authentication_failed':
-      return { category: 'auth', retriable: false, action: 'open_provider_settings' };
-    case 'rate_limited':
-      return retryAfterMs === undefined
-        ? { category: 'rate_limit', retriable: false }
-        : { category: 'rate_limit', retriable: true, action: 'retry' };
-    case 'network_error':
-    case 'tls_error':
-    case 'request_timeout':
-      return { category: 'network', retriable: true, action: 'check_network' };
-    case 'provider_not_registered':
-    case 'catalog_error':
-    case 'endpoint_not_found':
-    case 'protocol_mismatch':
-      return { category: 'bad_request', retriable: false, action: 'open_provider_settings' };
-    case 'model_not_found':
-      return { category: 'model_unavailable', retriable: false, action: 'change_model' };
-    case 'upstream_server_error':
-      return { category: 'server_error', retriable: true, action: 'retry' };
-    case 'resource_not_found':
-    case 'request_build_failed':
-    case 'upstream_client_error':
-    case 'response_stream_error':
-      return { category: 'bad_request', retriable: false };
-    case 'context_capacity_exceeded':
-      return { category: 'bad_request', retriable: false, action: 'change_model' };
-    case 'cancelled':
-      return { category: 'cancelled', retriable: false };
-    case 'runtime_settlement_failed':
-    case 'provider_error':
-      return { category: 'unknown', retriable: false };
-    default:
-      return undefined;
-  }
-}
-
-function runtimeFailurePresentation(
-  failureKind: unknown,
-  providerErrorCode?: SpaceRuntimeFailureDetailT['providerErrorCode'],
-  retryAfterMs?: number,
-): RuntimeFailurePresentation {
-  if (failureKind === 'provider_aborted') return { category: 'unknown', retriable: false };
-  if (providerErrorCode === 'cancelled' && failureKind !== 'cancelled') {
-    return { category: 'unknown', retriable: false };
-  }
-  const specific = providerFailurePresentation(providerErrorCode, retryAfterMs);
-  if (specific !== undefined) return specific;
-  // A present-but-new stable code must use the neutral default path. Broad failureKind
-  // fallback is only for older Runtime builds that do not publish failureDetail codes.
-  if (providerErrorCode !== undefined) return { category: 'unknown', retriable: false };
-  switch (failureKind) {
-    case 'auth':
-      return { category: 'auth', retriable: false, action: 'open_provider_settings' };
-    case 'unknown_provider':
-      return { category: 'bad_request', retriable: false, action: 'open_provider_settings' };
-    case 'rate_limit':
-      return { category: 'rate_limit', retriable: true, action: 'retry' };
-    case 'network':
-      return { category: 'network', retriable: true, action: 'check_network' };
-    case 'not_found':
-      return { category: 'bad_request', retriable: false };
-    case 'request':
-      return { category: 'bad_request', retriable: false };
-    case 'upstream':
-      return { category: 'unknown', retriable: false };
-    case 'cancelled':
-      return { category: 'cancelled', retriable: false };
-    case 'provider_aborted':
-      return { category: 'unknown', retriable: false };
-    case 'invalid_response':
-      return { category: 'bad_request', retriable: false, action: 'open_provider_settings' };
-    case 'context_capacity':
-      return { category: 'bad_request', retriable: false, action: 'change_model' };
-    default:
-      return { category: 'unknown', retriable: false };
-  }
 }
 
 export class RuntimeHostAdapter {
@@ -5335,7 +5243,15 @@ export class RuntimeHostAdapter {
         return;
       }
       const terminal = runtimeEventRecord(payload?.terminal);
-      const failureDetail = runtimeFailureDetail(payload?.failureDetail);
+      const failureDetailResult = parseRuntimeFailureDetail(payload?.failureDetail);
+      if (failureDetailResult.issuePaths.length > 0) {
+        console.warn('[runtime] sanitized malformed failureDetail', {
+          eventType: event.type,
+          runId: event.runId,
+          issuePaths: failureDetailResult.issuePaths,
+        });
+      }
+      const failureDetail = failureDetailResult.detail;
       const failureKind = failureDetail?.failureKind ?? runtimeFailureKind(terminal?.failureKind);
       const error =
         failureDetail?.safeMessage ??
@@ -5344,11 +5260,17 @@ export class RuntimeHostAdapter {
           : event.type === 'run.interrupted'
             ? 'Runtime run interrupted'
             : 'Runtime run failed');
+      const endedAt = payload?.endedAt;
+      const retryAvailableAt = runtimeRetryAvailableAt(
+        typeof endedAt === 'string' || typeof endedAt === 'number' ? endedAt : undefined,
+        failureDetail?.retryAfterMs,
+      );
       const failurePresentation = runtimeFailurePresentation(
         failureKind,
         failureDetail?.providerErrorCode,
-        failureDetail?.retryAfterMs,
+        retryAvailableAt !== undefined ? failureDetail?.retryAfterMs : undefined,
       );
+      const hasStructuredFailure = failureDetail !== undefined;
       this.push('session.event', {
         ...runtimeSessionEventOrigin(runtimeId, event),
         kind: 'session_error',
@@ -5357,18 +5279,17 @@ export class RuntimeHostAdapter {
         error,
         ...(failureKind !== undefined ? { failureKind } : {}),
         ...(failureDetail !== undefined ? { failureDetail } : {}),
-        category: event.type === 'run.cancelled' ? 'cancelled' : failurePresentation.category,
-        retriable: event.type === 'run.failed' ? failurePresentation.retriable : true,
-        ...(failureDetail?.retryAfterMs !== undefined
-          ? {
-              retryAvailableAt: Math.min(
-                Number.MAX_SAFE_INTEGER,
-                (Number.isFinite(Date.parse(event.time)) ? Date.parse(event.time) : Date.now()) +
-                  failureDetail.retryAfterMs,
-              ),
-            }
-          : {}),
-        ...(event.type === 'run.failed' && failurePresentation.action !== undefined
+        category:
+          hasStructuredFailure || event.type !== 'run.cancelled'
+            ? failurePresentation.category
+            : 'cancelled',
+        retriable:
+          hasStructuredFailure || event.type === 'run.failed'
+            ? failurePresentation.retriable
+            : true,
+        ...(retryAvailableAt !== undefined ? { retryAvailableAt } : {}),
+        ...((hasStructuredFailure || event.type === 'run.failed') &&
+        failurePresentation.action !== undefined
           ? { action: failurePresentation.action }
           : {}),
       });
